@@ -24,6 +24,9 @@ Signals exposés :
 
 from __future__ import annotations
 
+import re
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -42,6 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
+from ui.panels.encode_panel import EncodePanel
 from ui.panels.merge_dovi_panel import MergeDoviPanel
 from ui.panels.remux_panel import RemuxPanel
 
@@ -302,11 +306,29 @@ class _PlaceholderPage(QWidget):
 class DashboardPage(QWidget):
     """Page d'accueil — résumé des outils disponibles et raccourcis."""
 
+    _hw_detected = Signal(object)   # set[str] — encodeurs HW disponibles
+
+    # codec_id → (label affiché, badge QLabel) pour mise à jour async
+    _HW_VIDEO: list[tuple[str, str]] = [
+        ("hevc_nvenc", "NVENC·HEVC"), ("hevc_amf", "AMF·HEVC"), ("hevc_qsv", "QSV·HEVC"),
+        ("h264_nvenc", "NVENC·H264"), ("h264_amf", "AMF·H264"), ("h264_qsv", "QSV·H264"),
+    ]
+    _SW_VIDEO: list[tuple[str, str]] = [
+        ("libx265", "x265"), ("libx264", "x264"), ("libsvtav1", "SVT-AV1"),
+    ]
+    _AUDIO: list[tuple[str, str]] = [
+        ("aac", "AAC"), ("eac3", "EAC-3"), ("flac", "FLAC"), ("ac3", "AC-3"), ("libopus", "Opus"),
+    ]
+
     def __init__(self, config: AppConfig, log: Callable[[str, LogLevel], None]) -> None:
         super().__init__()
         self._config = config
         self._log = log
+        self._hw_badges: dict[str, tuple[QLabel, str]] = {}   # codec_id → (badge, label)
+        self._executor = ThreadPoolExecutor(max_workers=1)
+        self._hw_detected.connect(self._on_hw_detected, Qt.ConnectionType.QueuedConnection)
         self._build_ui()
+        self._start_hw_detection()
 
     def _build_ui(self) -> None:
         self.setStyleSheet(f"background: {_Colors.BG_DEEP};")
@@ -388,6 +410,8 @@ class DashboardPage(QWidget):
         check_btn.clicked.connect(self._check_tools)
         root.addWidget(check_btn)
 
+        self._build_encoder_section(root)
+
         root.addStretch()
 
         # Infos de chemins
@@ -447,6 +471,127 @@ class DashboardPage(QWidget):
         """)
         return lbl
 
+    # ------------------------------------------------------------------
+    # Section encodeurs
+    # ------------------------------------------------------------------
+
+    def _build_encoder_section(self, root: QVBoxLayout) -> None:
+        """Ajoute la section encodeurs au layout root. Détection SW synchrone, HW asynchrone."""
+        self._hw_badges = {}
+
+        # Détection synchrone des encodeurs logiciels via ffmpeg -encoders
+        all_sw_ids = [c for c, _ in self._SW_VIDEO] + [c for c, _ in self._AUDIO]
+        try:
+            r = subprocess.run(
+                ["ffmpeg", "-encoders"],
+                capture_output=True, text=True, check=False,
+            )
+            sw_avail = {
+                c: bool(re.search(rf"\b{re.escape(c)}\b", r.stdout))
+                for c in all_sw_ids
+            }
+        except FileNotFoundError:
+            sw_avail = {c: False for c in all_sw_ids}
+
+        # Séparateur + titre
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {_Colors.BORDER};")
+        root.addWidget(sep)
+
+        section_title = QLabel("ENCODEURS DISPONIBLES")
+        section_title.setStyleSheet(f"""
+            font-size: 11px; font-weight: 700;
+            color: {_Colors.TEXT_DIM}; letter-spacing: 1.5px; background: transparent;
+        """)
+        root.addWidget(section_title)
+
+        def _row(sub_label: str) -> tuple[QWidget, QHBoxLayout]:
+            row = QWidget()
+            row.setStyleSheet("background: transparent;")
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(8)
+            lbl = QLabel(sub_label)
+            lbl.setFixedWidth(130)
+            lbl.setStyleSheet(f"color:{_Colors.TEXT_SEC};font-size:11px;background:transparent;")
+            rl.addWidget(lbl)
+            return row, rl
+
+        # Vidéo logiciel
+        row, rl = _row("Vidéo — logiciel")
+        for codec_id, label in self._SW_VIDEO:
+            state = "available" if sw_avail.get(codec_id) else "unavailable"
+            rl.addWidget(self._make_encoder_badge(label, state))
+        rl.addStretch()
+        root.addWidget(row)
+
+        # Vidéo matériel (badges en attente → mis à jour par _on_hw_detected)
+        row, rl = _row("Vidéo — matériel")
+        for codec_id, label in self._HW_VIDEO:
+            badge = self._make_encoder_badge(label, "pending")
+            self._hw_badges[codec_id] = (badge, label)
+            rl.addWidget(badge)
+        rl.addStretch()
+        root.addWidget(row)
+
+        # Audio
+        row, rl = _row("Audio")
+        for codec_id, label in self._AUDIO:
+            state = "available" if sw_avail.get(codec_id) else "unavailable"
+            rl.addWidget(self._make_encoder_badge(label, state))
+        rl.addStretch()
+        root.addWidget(row)
+
+    def _make_encoder_badge(self, label: str, state: str) -> QLabel:
+        """Crée un badge d'encodeur. state ∈ {"available", "unavailable", "pending"}."""
+        badge = QLabel()
+        self._apply_encoder_badge_state(badge, label, state)
+        return badge
+
+    def _apply_encoder_badge_state(self, badge: QLabel, label: str, state: str) -> None:
+        if state == "available":
+            symbol, color, bg, border = "●", _Colors.LOG_OK,    "#0f2318", "#1a4a2e"
+        elif state == "unavailable":
+            symbol, color, bg, border = "○", _Colors.LOG_ERROR,  "#1f0e0e", "#3a1515"
+        else:  # pending
+            symbol, color, bg, border = "…", _Colors.TEXT_DIM, _Colors.BG_CARD, _Colors.BORDER
+        badge.setText(f" {symbol}  {label} ")
+        badge.setStyleSheet(f"""
+            QLabel {{
+                background: {bg}; color: {color};
+                border: 1px solid {border}; border-radius: 4px;
+                font-size: 11px; font-family: 'JetBrains Mono', monospace;
+                padding: 3px 8px;
+            }}
+        """)
+
+    # ------------------------------------------------------------------
+    # Détection asynchrone des encodeurs matériels
+    # ------------------------------------------------------------------
+
+    def _start_hw_detection(self) -> None:
+        """Remet les badges HW en état "pending" et soumet la détection à l'executor."""
+        for codec_id, (badge, label) in self._hw_badges.items():
+            self._apply_encoder_badge_state(badge, label, "pending")
+        self._executor.submit(self._run_hw_detection)
+
+    def _run_hw_detection(self) -> None:
+        """Thread worker : probe runtime de chaque encodeur HW."""
+        from core.workflows.encode import HardwareEncoderDetector
+        available = HardwareEncoderDetector().detect()
+        self._hw_detected.emit(available)
+
+    def _on_hw_detected(self, available: set[str]) -> None:
+        """Slot Qt (thread principal) : met à jour les badges HW."""
+        for codec_id, (badge, label) in self._hw_badges.items():
+            state = "available" if codec_id in available else "unavailable"
+            self._apply_encoder_badge_state(badge, label, state)
+
+    # ------------------------------------------------------------------
+    # Vérification manuelle des outils
+    # ------------------------------------------------------------------
+
     def _check_tools(self) -> None:
         self._log("Vérification des outils...", LogLevel.INFO)
         availability = self._config.all_tools_available()
@@ -461,8 +606,9 @@ class DashboardPage(QWidget):
             self._log("Tous les outils sont disponibles.", LogLevel.OK)
         else:
             self._log("Certains outils sont manquants. Vérifiez votre PATH ou les paramètres.", LogLevel.WARN)
-        # Rafraîchit l'affichage des badges
+        # Rafraîchit l'affichage des badges + relance la détection HW
         self._build_ui()
+        self._start_hw_detection()
 
 
 # ---------------------------------------------------------------------------
@@ -606,7 +752,7 @@ class _Sidebar(QWidget):
         layout.addStretch()
 
         # Version
-        version_lbl = QLabel("v0.1.0 — Phase 5")
+        version_lbl = QLabel("v0.1.0 — Phase 6")
         version_lbl.setContentsMargins(16, 0, 0, 12)
         version_lbl.setStyleSheet(f"""
             color: {_Colors.TEXT_DIM};
@@ -719,13 +865,9 @@ class MainWindow(QMainWindow):
         self._dovi_panel = MergeDoviPanel(self._config)
         self._stack.addWidget(self._dovi_panel)
 
-        # Pages 2-4 — Placeholders (implémentées en Phase suivante)
-        self._stack.addWidget(_PlaceholderPage(
-            "Conversion Audio",
-            "♫",
-            "Conversion et mixage : DTS-HD MA → EAC-3, TrueHD → AAC,\n"
-            "extraction core TrueHD sans Atmos…",
-        ))
+        # Page 2 — Encodage (fonctionnelle)
+        self._encode_panel = EncodePanel(self._config)
+        self._stack.addWidget(self._encode_panel)
         # Page 3 — Manipulation Conteneur (fonctionnelle)
         self._remux_panel = RemuxPanel(self._config)
         self._stack.addWidget(self._remux_panel)
@@ -759,6 +901,10 @@ class MainWindow(QMainWindow):
         self.log_requested.connect(self._on_log_requested)
         # MergeDoviPanel → LogPanel global (QueuedConnection : signal émis depuis threads)
         self._dovi_panel.log_message.connect(
+            self.log_requested, Qt.ConnectionType.QueuedConnection
+        )
+        # EncodePanel → LogPanel global
+        self._encode_panel.log_message.connect(
             self.log_requested, Qt.ConnectionType.QueuedConnection
         )
         # RemuxPanel → LogPanel global
