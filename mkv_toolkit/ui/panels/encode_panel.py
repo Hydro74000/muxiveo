@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
-from core.inspector import AudioTrack, FileInfo, FileInspector, HDRType, InspectionError
+from core.inspector import AudioTrack, FileInfo, HDRType
 from core.runner import TaskSignals
 from core.workflows.encode import (
     AUDIO_CODECS, HARDWARE_VIDEO_CODECS, SOFTWARE_VIDEO_CODECS,
@@ -126,7 +126,9 @@ def _input_style() -> str:
     return (f"QLineEdit{{background:{_C.BG_CARD};color:{_C.TEXT_PRI};"
             f"border:1px solid {_C.BORDER};border-radius:5px;"
             f"padding:4px 10px;font-size:11px;}}"
-            f"QLineEdit:focus{{border-color:{_C.ACCENT};}}")
+            f"QLineEdit:focus{{border-color:{_C.ACCENT};}}"
+            f"QLineEdit:disabled{{background:{_C.BG_DEEP};color:{_C.TEXT_DIM};"
+            f"border-color:{_C.BORDER};}}")
 
 
 def _combo_style() -> str:
@@ -439,10 +441,8 @@ class EncodePanel(QWidget):
         log_message(level: str, message: str)
     """
 
-    log_message         = Signal(str, str)
-    _inspection_result  = Signal(object)   # FileInfo
-    _inspection_error   = Signal(str)
-    _hw_detected        = Signal(object)   # set[str]
+    log_message  = Signal(str, str)
+    _hw_detected = Signal(object)   # set[str]
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -457,8 +457,6 @@ class EncodePanel(QWidget):
         self._signals: TaskSignals | None = None
 
         self._workflow.log_message.connect(self.log_message, Qt.ConnectionType.QueuedConnection)
-        self._inspection_result.connect(self._apply_inspection, Qt.ConnectionType.QueuedConnection)
-        self._inspection_error.connect(self._on_inspection_error, Qt.ConnectionType.QueuedConnection)
         self._hw_detected.connect(self._on_hw_detected, Qt.ConnectionType.QueuedConnection)
 
         self._build_ui()
@@ -501,9 +499,7 @@ class EncodePanel(QWidget):
 
         # --- Fichier source ---
         cl.addWidget(_section_label("FICHIER SOURCE"))
-        self._file_zone = _FileZone()
-        self._file_zone.file_selected.connect(self._on_file_selected)
-        cl.addWidget(self._file_zone)
+        cl.addWidget(self._build_source_card())
         cl.addWidget(_separator())
 
         # --- Encodage vidéo ---
@@ -643,6 +639,126 @@ class EncodePanel(QWidget):
         bbl.addWidget(self._cancel_btn)
 
         root.addWidget(btn_bar)
+
+    def _build_source_card(self) -> QWidget:
+        """Carte read-only affichant les infos du fichier sélectionné dans l'onglet Conteneur."""
+        card = _card()
+        cl = QHBoxLayout(card)
+        cl.setContentsMargins(16, 12, 16, 12)
+        cl.setSpacing(12)
+
+        self._src_icon = QLabel("⊞")
+        self._src_icon.setStyleSheet(f"font-size:22px;color:{_C.TEXT_DIM};"
+                                     f"background:transparent;border:none;")
+        cl.addWidget(self._src_icon)
+
+        info_col = QVBoxLayout()
+        info_col.setSpacing(3)
+
+        self._src_placeholder = QLabel(
+            "Aucun fichier — sélectionnez un fichier dans l'onglet Conteneur"
+        )
+        self._src_placeholder.setStyleSheet(f"color:{_C.TEXT_DIM};font-size:11px;"
+                                            f"background:transparent;border:none;")
+        info_col.addWidget(self._src_placeholder)
+
+        self._src_name = QLabel("")
+        self._src_name.setStyleSheet(f"color:{_C.TEXT_PRI};font-size:12px;font-weight:600;"
+                                     f"background:transparent;border:none;")
+        self._src_name.setVisible(False)
+        info_col.addWidget(self._src_name)
+
+        self._src_meta = QLabel("")
+        self._src_meta.setStyleSheet(f"color:{_C.TEXT_DIM};font-size:10px;"
+                                     f"font-family:'JetBrains Mono',monospace;"
+                                     f"background:transparent;border:none;")
+        self._src_meta.setVisible(False)
+        info_col.addWidget(self._src_meta)
+
+        self._src_hdr = QLabel("")
+        self._src_hdr.setStyleSheet(f"color:{_C.INFO};font-size:10px;font-weight:600;"
+                                    f"background:transparent;border:none;")
+        self._src_hdr.setVisible(False)
+        info_col.addWidget(self._src_hdr)
+
+        self._src_audio_count = QLabel("")
+        self._src_audio_count.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:10px;"
+                                            f"background:transparent;border:none;")
+        self._src_audio_count.setVisible(False)
+        info_col.addWidget(self._src_audio_count)
+
+        cl.addLayout(info_col, stretch=1)
+        return card
+
+    # ------------------------------------------------------------------
+    # API publique — appelée par MainWindow depuis RemuxPanel
+    # ------------------------------------------------------------------
+
+    def set_file_info(self, info: FileInfo) -> None:
+        """Reçoit les infos du fichier sélectionné dans l'onglet Conteneur."""
+        self._file_info  = info
+        self._duration_s = info.duration_s
+
+        # Carte source
+        self._src_placeholder.setVisible(False)
+        self._src_icon.setStyleSheet(f"font-size:22px;color:{_C.ACCENT};"
+                                     f"background:transparent;border:none;")
+        self._src_name.setText(info.path.name)
+        self._src_name.setVisible(True)
+
+        parts: list[str] = [info.size_human, info.duration_human, info.format]
+        if info.primary_video:
+            parts.append(info.primary_video.resolution)
+        self._src_meta.setText("   ".join(p for p in parts if p != "?"))
+        self._src_meta.setVisible(True)
+
+        hdr_label = info.hdr_type.label()
+        if hdr_label not in ("SDR", "?"):
+            self._src_hdr.setText(hdr_label)
+            self._src_hdr.setVisible(True)
+        else:
+            self._src_hdr.setVisible(False)
+
+        # Pré-remplir master_display et max_cll
+        if info.primary_video:
+            self._prefill_hdr_meta(info.primary_video.raw)
+
+        # Chemin de sortie par défaut
+        default_out = self._config.output_dir / f"{info.path.stem}_encode.mkv"
+        self._output_edit.setText(str(default_out))
+
+        self._run_btn.setEnabled(True)
+        self._set_status("")
+        self._update_passthrough_controls(auto_check=True)
+        self.log_message.emit(
+            "OK",
+            f"{info.path.name} — "
+            f"{len(info.video_tracks)}V  {len(info.audio_tracks)}A  "
+            f"{len(info.subtitle_tracks)}S  {info.hdr_type.label()}",
+        )
+        self._rebuild_preview()
+
+    def set_audio_tracks(self, tracks: list[AudioTrack]) -> None:
+        """Met à jour les pistes audio depuis les pistes activées dans l'onglet Conteneur."""
+        default_codec   = "copy"
+        default_bitrate = 384
+        profile_name = self._profile_combo.currentText()
+        if profile_name:
+            for p in self._profiles.load_all():
+                if p.name == profile_name:
+                    default_codec   = p.default_audio_codec
+                    default_bitrate = p.default_audio_bitrate_kbps
+                    break
+
+        self._audio_table.load_tracks(tracks, default_codec, default_bitrate)
+        self._update_atmos_warning()
+
+        n = len(tracks)
+        label = f"{n} piste{'s' if n != 1 else ''} audio sélectionnée{'s' if n != 1 else ''}"
+        self._src_audio_count.setText(label)
+        self._src_audio_count.setVisible(True)
+
+        self._rebuild_preview()
 
     # ------------------------------------------------------------------
     # Carte encodage vidéo
@@ -924,68 +1040,6 @@ class EncodePanel(QWidget):
 
         return card
 
-    # ------------------------------------------------------------------
-    # Chargement fichier source
-    # ------------------------------------------------------------------
-
-    def _on_file_selected(self, path_str: str) -> None:
-        path = Path(path_str)
-        self.log_message.emit("INFO", f"Inspection de {path.name}…")
-        self._set_status("Inspection en cours…")
-        self._run_btn.setEnabled(False)
-        self._executor.submit(self._inspect_file, path)
-
-    def _inspect_file(self, path: Path) -> None:
-        try:
-            inspector = FileInspector(
-                ffprobe_bin=self._config.tool_ffprobe,
-                mediainfo_bin=self._config.tool_mediainfo,
-            )
-            info = inspector.inspect(path)
-            self._inspection_result.emit(info)
-        except InspectionError as exc:
-            self.log_message.emit("ERROR", str(exc))
-            self._inspection_error.emit("Erreur d'inspection.")
-        except Exception as exc:
-            self.log_message.emit("ERROR", f"Erreur inattendue : {exc}")
-            self._inspection_error.emit("Erreur d'inspection.")
-
-    def _apply_inspection(self, info: FileInfo) -> None:
-        self._file_info  = info
-        self._duration_s = info.duration_s
-        self._file_zone.set_file_info(info)
-
-        # Pré-remplir master_display et max_cll depuis les métadonnées ffprobe
-        if info.primary_video:
-            v = info.primary_video
-            self._prefill_hdr_meta(v.raw)
-
-        # Valeurs par défaut audio depuis le profil actif, si présent
-        default_codec   = "copy"
-        default_bitrate = 384
-        profile_name = self._profile_combo.currentText()
-        if profile_name:
-            for p in self._profiles.load_all():
-                if p.name == profile_name:
-                    default_codec   = p.default_audio_codec
-                    default_bitrate = p.default_audio_bitrate_kbps
-                    break
-        self._audio_table.load_tracks(info.audio_tracks, default_codec, default_bitrate)
-        self._update_atmos_warning()
-
-        default_out = self._config.output_dir / f"{info.path.stem}_encode.mkv"
-        self._output_edit.setText(str(default_out))
-        self._run_btn.setEnabled(True)
-        self._set_status("")
-        self._update_passthrough_controls(auto_check=True)
-        self.log_message.emit(
-            "OK",
-            f"{info.path.name} — "
-            f"{len(info.video_tracks)}V  {len(info.audio_tracks)}A  "
-            f"{len(info.subtitle_tracks)}S  {info.hdr_type.label()}",
-        )
-        self._rebuild_preview()
-
     def _prefill_hdr_meta(self, raw: dict) -> None:
         """Extrait master_display et max_cll depuis le side_data_list ffprobe."""
         for sd in raw.get("side_data_list", []):
@@ -1014,9 +1068,6 @@ class EncodePanel(QWidget):
                     self._max_cll.setText(f"{maxcll},{maxfall}")
                 except Exception:
                     pass
-
-    def _on_inspection_error(self, message: str) -> None:
-        self._set_status(message)
 
     # ------------------------------------------------------------------
     # Détection encodeurs matériels

@@ -619,6 +619,9 @@ class RemuxPanel(QWidget):
     _inspection_result = Signal(object)   # FileInfo — signal interne thread-safe
     _inspection_error  = Signal(str)      # message d'erreur — signal interne thread-safe
 
+    file_info_changed    = Signal(object)   # FileInfo — émis après chaque inspection réussie
+    audio_tracks_changed = Signal(object)   # list[AudioTrack] — pistes audio activées dans le tableau
+
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._config    = config
@@ -931,10 +934,24 @@ class RemuxPanel(QWidget):
             f"{len(info.subtitle_tracks)}S",
         )
         self._rebuild_preview()
+        self.file_info_changed.emit(info)
+        self._emit_audio_tracks()
 
     # ------------------------------------------------------------------
     # Aperçu de la commande
     # ------------------------------------------------------------------
+
+    def _emit_audio_tracks(self) -> None:
+        """Émet audio_tracks_changed avec les pistes audio actuellement activées."""
+        if self._file_info is None:
+            return
+        track_entries = self._track_table.current_tracks()
+        enabled_tids = {
+            t.mkv_tid for t in track_entries
+            if t.track_type == "audio" and t.enabled
+        }
+        audio = [a for a in self._file_info.audio_tracks if a.index in enabled_tids]
+        self.audio_tracks_changed.emit(audio)
 
     def _rebuild_preview(self) -> None:
         config = self._current_config()
@@ -949,6 +966,7 @@ class RemuxPanel(QWidget):
 
     def _on_table_changed(self, _item: QTableWidgetItem | None = None) -> None:
         self._rebuild_preview()
+        self._emit_audio_tracks()
 
     # ------------------------------------------------------------------
     # Exécution

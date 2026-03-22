@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QMainWindow,
     QPushButton, QScrollArea, QSizePolicy,
     QSplitter, QStackedWidget, QTextEdit,
-    QToolButton, QVBoxLayout, QWidget,
+    QVBoxLayout, QWidget,
 )
 
 from core.config import AppConfig
@@ -111,6 +111,15 @@ _LEVEL_LABELS: dict[LogLevel, str] = {
 # LogPanel
 # ---------------------------------------------------------------------------
 
+class _LogHeader(QWidget):
+    """Barre d'en-tête cliquable du panneau de logs."""
+    clicked = Signal()
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        self.clicked.emit()
+        super().mousePressEvent(event)
+
+
 class LogPanel(QWidget):
     """
     Panneau de logs à niveaux colorés.
@@ -122,9 +131,12 @@ class LogPanel(QWidget):
         panel.log("Fichier introuvable.", LogLevel.ERROR)
     """
 
+    collapse_toggled = Signal(bool)   # True = collapsed
+
     def __init__(self, max_lines: int = 2000, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._max_lines = max_lines
+        self._collapsed = False
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -132,11 +144,12 @@ class LogPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # En-tête barre
-        header = QWidget()
+        # En-tête cliquable
+        header = _LogHeader()
         header.setFixedHeight(32)
+        header.setCursor(Qt.CursorShape.PointingHandCursor)
         header.setStyleSheet(f"""
-            QWidget {{
+            _LogHeader {{
                 background: {_Colors.BG_PANEL};
                 border-top: 1px solid {_Colors.BORDER};
                 border-bottom: 1px solid {_Colors.BORDER};
@@ -147,6 +160,7 @@ class LogPanel(QWidget):
         h_layout.setSpacing(8)
 
         title = QLabel("LOGS")
+        title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         title.setStyleSheet(f"""
             color: {_Colors.TEXT_DIM};
             font-size: 10px;
@@ -157,6 +171,22 @@ class LogPanel(QWidget):
         """)
         h_layout.addWidget(title)
         h_layout.addStretch()
+
+        # Bouton collapse (▲/▼)
+        self._collapse_btn = QPushButton("▲")
+        self._collapse_btn.setFixedSize(20, 20)
+        self._collapse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._collapse_btn.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._collapse_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {_Colors.TEXT_DIM};
+                border: none;
+                font-size: 10px;
+                padding: 0;
+            }}
+        """)
+        h_layout.addWidget(self._collapse_btn)
 
         # Bouton clear
         clear_btn = QPushButton("Effacer")
@@ -179,6 +209,7 @@ class LogPanel(QWidget):
         clear_btn.clicked.connect(self.clear)
         h_layout.addWidget(clear_btn)
 
+        header.clicked.connect(self._toggle)
         layout.addWidget(header)
 
         # Zone de texte
@@ -261,6 +292,12 @@ class LogPanel(QWidget):
 
     def clear(self) -> None:
         self._text.clear()
+
+    def _toggle(self) -> None:
+        self._collapsed = not self._collapsed
+        self._text.setVisible(not self._collapsed)
+        self._collapse_btn.setText("▼" if self._collapsed else "▲")
+        self.collapse_toggled.emit(self._collapsed)
 
 
 # ---------------------------------------------------------------------------
@@ -615,57 +652,86 @@ class DashboardPage(QWidget):
 # Bouton de navigation sidebar
 # ---------------------------------------------------------------------------
 
-class _NavButton(QToolButton):
+class _NavButton(QWidget):
+    """Bouton sidebar avec icône à largeur fixe et label aligné."""
+
+    clicked = Signal()
+
     def __init__(self, label: str, icon_char: str, page_index: int) -> None:
         super().__init__()
         self.page_index = page_index
-        self.setCheckable(True)
-        self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._checked  = False
         self.setFixedHeight(40)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-        # Label composite : icône + texte
-        self.setText(f"  {icon_char}   {label}")
-        font = QFont()
-        font.setPointSize(11)
-        self.setFont(font)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 0, 14, 0)
+        lay.setSpacing(10)
+
+        self._icon_lbl = QLabel(icon_char)
+        self._icon_lbl.setFixedWidth(20)
+        self._icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._icon_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        self._text_lbl = QLabel(label)
+        self._text_lbl.setAlignment(
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
+        )
+        self._text_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        lay.addWidget(self._icon_lbl)
+        lay.addWidget(self._text_lbl)
+        lay.addStretch()
 
         self._update_style(False)
+
+    # ------------------------------------------------------------------
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        self.clicked.emit()
+        super().mousePressEvent(event)
+
+    def setChecked(self, checked: bool) -> None:
+        self._checked = checked
+        self._update_style(checked)
+
+    def isCheckable(self) -> bool:
+        return True
 
     def _update_style(self, checked: bool) -> None:
         if checked:
             bg     = _Colors.BG_ACTIVE
             color  = _Colors.TEXT_PRI
+            icon_c = _Colors.ACCENT
             border = f"border-left: 2px solid {_Colors.ACCENT};"
+            weight = "600"
         else:
             bg     = "transparent"
             color  = _Colors.TEXT_SEC
+            icon_c = _Colors.TEXT_DIM
             border = "border-left: 2px solid transparent;"
+            weight = "400"
 
         self.setStyleSheet(f"""
-            QToolButton {{
+            _NavButton {{
                 background: {bg};
-                color: {color};
                 {border}
                 border-right: none;
                 border-top: none;
                 border-bottom: none;
-                border-radius: 0;
-                padding: 0 16px;
-                text-align: left;
-                font-size: 12px;
-                font-weight: {"600" if checked else "400"};
             }}
-            QToolButton:hover {{
+            _NavButton:hover {{
                 background: {_Colors.BG_HOVER};
-                color: {_Colors.TEXT_PRI};
             }}
         """)
-
-    def setChecked(self, checked: bool) -> None:  # type: ignore[override]
-        super().setChecked(checked)
-        self._update_style(checked)
+        self._icon_lbl.setStyleSheet(
+            f"color: {icon_c}; font-size: 14px; background: transparent; border: none;"
+        )
+        self._text_lbl.setStyleSheet(
+            f"color: {color}; font-size: 12px; font-weight: {weight};"
+            f" background: transparent; border: none;"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -677,9 +743,9 @@ class _Sidebar(QWidget):
 
     _NAV_ITEMS = [
         ("Tableau de bord", "⌂", 0),
-        ("DoVi / HDR10+",   "◈", 1),
-        ("Audio",           "♫", 2),
         ("Conteneur",       "⊞", 3),
+        ("Encodage",        "♫", 2),
+        ("DoVi / HDR10+",   "◈", 1),
         ("Paramètres",      "⚙", 4),
     ]
 
@@ -745,7 +811,7 @@ class _Sidebar(QWidget):
 
         for label, icon, idx in self._NAV_ITEMS:
             btn = _NavButton(label, icon, idx)
-            btn.clicked.connect(lambda checked, b=btn: self._on_nav_click(b))
+            btn.clicked.connect(lambda b=btn: self._on_nav_click(b))
             self._buttons.append(btn)
             layout.addWidget(btn)
 
@@ -838,7 +904,8 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(0)
 
         # ── Splitter vertical : (sidebar + stack) / log panel ──
-        vsplit = QSplitter(Qt.Orientation.Vertical)
+        self._vsplit = QSplitter(Qt.Orientation.Vertical)
+        vsplit = self._vsplit
         vsplit.setHandleWidth(1)
         vsplit.setChildrenCollapsible(False)
 
@@ -883,8 +950,7 @@ class MainWindow(QMainWindow):
 
         # Partie basse : log panel
         self._log_panel = LogPanel(max_lines=self._config.log_max_lines)
-        self._log_panel.setMinimumHeight(120)
-        self._log_panel.setMaximumHeight(400)
+        self._log_panel.setMinimumHeight(32)
         vsplit.addWidget(self._log_panel)
 
         # Proportion initiale : 70% / 30%
@@ -899,6 +965,7 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self._sidebar.page_changed.connect(self._stack.setCurrentIndex)
         self.log_requested.connect(self._on_log_requested)
+        self._log_panel.collapse_toggled.connect(self._on_log_collapsed)
         # MergeDoviPanel → LogPanel global (QueuedConnection : signal émis depuis threads)
         self._dovi_panel.log_message.connect(
             self.log_requested, Qt.ConnectionType.QueuedConnection
@@ -911,6 +978,21 @@ class MainWindow(QMainWindow):
         self._remux_panel.log_message.connect(
             self.log_requested, Qt.ConnectionType.QueuedConnection
         )
+        # RemuxPanel → EncodePanel : fichier partagé
+        self._remux_panel.file_info_changed.connect(self._encode_panel.set_file_info)
+        self._remux_panel.audio_tracks_changed.connect(self._encode_panel.set_audio_tracks)
+
+    # ------------------------------------------------------------------
+    # Collapse du panneau de logs
+    # ------------------------------------------------------------------
+
+    def _on_log_collapsed(self, collapsed: bool) -> None:
+        total = self._vsplit.height()
+        if collapsed:
+            self._vsplit.setSizes([total - 32, 32])
+        else:
+            log_h = max(total // 5, 120)
+            self._vsplit.setSizes([total - log_h, log_h])
 
     # ------------------------------------------------------------------
     # Logging
