@@ -24,13 +24,15 @@ import json
 import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+import shutil
+import tempfile
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
-from core.runner import TaskSignals, ToolRunner
+from core.runner import TaskCancelledError, TaskSignals, ToolRunner
 
 
 # =============================================================================
@@ -130,6 +132,11 @@ class EncodeConfig:
     audio_tracks:     list[AudioTrackSettings]
     copy_subtitles:   bool         = True
     duration_s:       float | None = None   # requis pour le mode taille cible
+    # Passthrough métadonnées dynamiques (HEVC uniquement)
+    copy_dv:          bool         = False  # injecter RPU Dolby Vision via dovi_tool
+    copy_hdr10plus:   bool         = False  # injecter HDR10+ SEI via hdr10plus_tool
+    dovi_profile:     str          = "0"    # flag -m dovi_tool : "0"=conserver, "2"=normaliser P8.1
+    work_dir:         Path | None  = None   # dossier de travail (passlog, fichiers temp)
 
 
 @dataclass
@@ -205,13 +212,30 @@ class HardwareEncoderDetector:
         if not compiled:
             return set()
 
-        # Étape 2 : probe runtime — encode 1 frame nulle pour confirmer le driver
+        # Étape 2 : probe runtime selon la famille d'encodeur
+        #
+        # NVENC : on passe par nvidia-smi plutôt qu'un encode test.
+        #   ffmpeg charge libcuda.so.1 dynamiquement ; dans un container
+        #   (distrobox / Flatpak) la lib n'est souvent pas dans LD_LIBRARY_PATH
+        #   même si le GPU est accessible. nvidia-smi communique directement
+        #   avec le kernel driver (/dev/nvidiactl) sans dépendance CUDA.
+        #
+        # AMF / QSV : encode probe avec format=yuv420p (les HW encoders
+        #   refusent rgb24 produit par nullsrc).
+
+        _NVENC = {"hevc_nvenc", "h264_nvenc"}
         available: set[str] = set()
-        for codec_id in compiled:
+
+        nvenc_compiled = compiled & _NVENC
+        if nvenc_compiled and self._nvidia_ok():
+            available |= nvenc_compiled
+
+        for codec_id in compiled - _NVENC:
             probe = subprocess.run(
                 [
                     ffmpeg_bin,
-                    "-f", "lavfi", "-i", "nullsrc=s=64x64:d=0.04",
+                    "-f", "lavfi", "-i", "nullsrc=s=64x64:r=1:d=0.04",
+                    "-vf", "format=yuv420p",
                     "-frames:v", "1",
                     "-c:v", codec_id,
                     "-f", "null", "-",
@@ -222,7 +246,25 @@ class HardwareEncoderDetector:
             )
             if probe.returncode == 0:
                 available.add(codec_id)
+
         return available
+
+    @staticmethod
+    def _nvidia_ok() -> bool:
+        """Retourne True si un GPU NVIDIA est accessible (via nvidia-smi ou /dev/nvidia0)."""
+        try:
+            r = subprocess.run(
+                ["nvidia-smi", "-L"],
+                capture_output=True,
+                check=False,
+                timeout=5,
+            )
+            if r.returncode == 0:
+                return True
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        # Fallback : présence du device node kernel
+        return Path("/dev/nvidia0").exists()
 
 
 # =============================================================================
@@ -297,11 +339,19 @@ class EncodeWorkflow(QObject):
 
     def __init__(
         self,
-        ffmpeg_bin: str = "ffmpeg",
+        ffmpeg_bin:       str = "ffmpeg",
+        dovi_tool_bin:    str = "dovi_tool",
+        hdr10plus_bin:    str = "hdr10plus_tool",
+        mkvmerge_bin:     str = "mkvmerge",
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._ffmpeg = ffmpeg_bin
+        self._bins: dict[str, str] = {
+            "dovi_tool":      dovi_tool_bin,
+            "hdr10plus_tool": hdr10plus_bin,
+            "mkvmerge":       mkvmerge_bin,
+        }
         self._runner = ToolRunner(max_workers=1, parent=self)
 
     # ------------------------------------------------------------------
@@ -323,7 +373,7 @@ class EncodeWorkflow(QObject):
         return self._build_single_pass(config)
 
     def _build_single_pass(self, config: EncodeConfig) -> list[str]:
-        cmd: list[str] = [self._ffmpeg, "-y", "-i", str(config.source)]
+        cmd: list[str] = [self._ffmpeg, "-hide_banner", "-y", "-i", str(config.source)]
 
         vf = self._build_vf(config.video)
         if vf:
@@ -350,7 +400,7 @@ class EncodeWorkflow(QObject):
         vf = self._build_vf(config.video)
 
         def _base() -> list[str]:
-            c = [self._ffmpeg, "-y", "-i", str(config.source)]
+            c = [self._ffmpeg, "-hide_banner", "-y", "-i", str(config.source)]
             if vf:
                 c.extend(["-vf", vf])
             c.extend(["-map", "0:v:0"])
@@ -548,20 +598,29 @@ class EncodeWorkflow(QObject):
 
         self.log_message.emit("INFO", f"Encodage → {config.output.name}")
 
+        if config.copy_dv or config.copy_hdr10plus:
+            return self._run_with_metadata_inject(config)
+
+        cwd = config.work_dir or config.source.parent
+        if config.work_dir:
+            config.work_dir.mkdir(parents=True, exist_ok=True)
+
         if config.video.quality_mode == QualityMode.SIZE:
             cmds = self._build_two_pass(config)
-            return self._run_two_pass(cmds, cwd=config.source.parent)
+            return self._run_two_pass(cmds, cwd=cwd)
 
         cmd = self._build_single_pass(config)
-        return self._runner.run(cmd, cwd=config.source.parent, label="ffmpeg")
+        return self._runner.run(cmd, cwd=cwd, label="ffmpeg")
 
     def _run_two_pass(
         self,
         cmds: list[list[str]],
         cwd: Path | None,
+        signals: TaskSignals | None = None,
     ) -> TaskSignals:
         """Exécute deux commandes ffmpeg séquentiellement, retourne un TaskSignals commun."""
-        signals = TaskSignals()
+        if signals is None:
+            signals = TaskSignals()
         executor = ThreadPoolExecutor(max_workers=1)
 
         def _task() -> None:
@@ -570,17 +629,167 @@ class EncodeWorkflow(QObject):
                 self._runner._run_cmd(
                     cmds[0], cwd=cwd, label="ffmpeg-pass1",
                     progress_cb=lambda line: signals.progress.emit(line),
+                    signals=signals,
                 )
                 self.log_message.emit("INFO", "Passe 2/2 (encodage)…")
                 output = self._runner._run_cmd(
                     cmds[1], cwd=cwd, label="ffmpeg-pass2",
                     progress_cb=lambda line: signals.progress.emit(line),
+                    signals=signals,
                 )
                 signals.finished.emit(output)
+            except TaskCancelledError:
+                signals.cancelled.emit()
             except Exception as exc:
                 signals.failed.emit(str(exc), exc)
             finally:
                 executor.shutdown(wait=False)
+
+        executor.submit(_task)
+        return signals
+
+    def _run_with_metadata_inject(self, config: EncodeConfig) -> TaskSignals:
+        """
+        Workflow d'encodage avec injection DV RPU / HDR10+ en post-traitement.
+
+        Étapes :
+          1. Extraction HEVC source brut (ffmpeg -c:v copy -f hevc)
+          2. Extraction RPU DoVi (dovi_tool extract-rpu) si copy_dv
+          3. Extraction HDR10+ (hdr10plus_tool extract) si copy_hdr10plus
+          4. Encodage vers fichier MKV temporaire
+          5. Extraction HEVC encodé brut
+          6. Injection RPU DoVi (dovi_tool -m {dovi_profile} inject-rpu) si applicable
+          7. Injection HDR10+ (hdr10plus_tool inject) si applicable
+          8. Remuxage final (mkvmerge : HEVC injecté + audio/subs du MKV encodé)
+
+        Le répertoire temporaire est supprimé quelle que soit l'issue.
+        """
+        signals = TaskSignals()
+        executor = ThreadPoolExecutor(max_workers=1)
+
+        def _task() -> None:
+            work = config.work_dir
+            if work:
+                work.mkdir(parents=True, exist_ok=True)
+            tmp_dir = tempfile.mkdtemp(
+                prefix="mkv_toolkit_encode_",
+                dir=str(work) if work else None,
+            )
+            tmp = Path(tmp_dir)
+            try:
+                def _run(cmd: list[str]) -> str:
+                    return self._runner._run_cmd(
+                        cmd, signals=signals, cwd=tmp,
+                        progress_cb=lambda line: signals.progress.emit(line),
+                    )
+
+                def _check() -> None:
+                    if signals._cancel_event.is_set():
+                        raise TaskCancelledError()
+
+                # ── 1. HEVC source brut ──────────────────────────────────
+                src_hevc = tmp / "src.hevc"
+                signals.progress.emit("Extraction HEVC source…")
+                _run([
+                    self._ffmpeg, "-hide_banner", "-y",
+                    "-i", str(config.source),
+                    "-map", "0:v:0", "-c:v", "copy", "-f", "hevc", str(src_hevc),
+                ])
+                _check()
+
+                # ── 2. RPU Dolby Vision ──────────────────────────────────
+                rpu_bin = tmp / "rpu.bin"
+                if config.copy_dv:
+                    signals.progress.emit("Extraction RPU Dolby Vision…")
+                    _run([
+                        self._bins["dovi_tool"], "extract-rpu",
+                        "-i", str(src_hevc), "-o", str(rpu_bin),
+                    ])
+                    _check()
+
+                # ── 3. HDR10+ ────────────────────────────────────────────
+                hdr10p_json = tmp / "hdr10p.json"
+                if config.copy_hdr10plus:
+                    signals.progress.emit("Extraction métadonnées HDR10+…")
+                    _run([
+                        self._bins["hdr10plus_tool"], "extract",
+                        str(src_hevc), "-o", str(hdr10p_json),
+                    ])
+                    _check()
+
+                # ── 4. Encodage vers MKV temporaire ─────────────────────
+                encoded_mkv = tmp / "encoded.mkv"
+                temp_cfg = replace(
+                    config, output=encoded_mkv,
+                    copy_dv=False, copy_hdr10plus=False,
+                )
+                if config.video.quality_mode == QualityMode.SIZE:
+                    cmds = self._build_two_pass(temp_cfg)
+                    self.log_message.emit("INFO", "Passe 1/2 (analyse)…")
+                    _run(cmds[0])
+                    _check()
+                    self.log_message.emit("INFO", "Passe 2/2 (encodage)…")
+                    _run(cmds[1])
+                else:
+                    _run(self._build_single_pass(temp_cfg))
+                _check()
+
+                # ── 5. HEVC encodé brut ──────────────────────────────────
+                enc_hevc = tmp / "enc.hevc"
+                signals.progress.emit("Extraction HEVC encodé…")
+                _run([
+                    self._ffmpeg, "-hide_banner", "-y",
+                    "-i", str(encoded_mkv),
+                    "-map", "0:v:0", "-c:v", "copy", "-f", "hevc", str(enc_hevc),
+                ])
+                _check()
+
+                # ── 6. Injection RPU DV ──────────────────────────────────
+                current_hevc = enc_hevc
+                if config.copy_dv and rpu_bin.exists():
+                    enc_dv = tmp / "enc_dv.hevc"
+                    signals.progress.emit("Injection RPU Dolby Vision…")
+                    _run([
+                        self._bins["dovi_tool"],
+                        "-m", config.dovi_profile,
+                        "inject-rpu",
+                        "-i", str(current_hevc),
+                        "-r", str(rpu_bin),
+                        "-o", str(enc_dv),
+                    ])
+                    current_hevc = enc_dv
+                    _check()
+
+                # ── 7. Injection HDR10+ ──────────────────────────────────
+                if config.copy_hdr10plus and hdr10p_json.exists():
+                    enc_hdr10p = tmp / "enc_hdr10p.hevc"
+                    signals.progress.emit("Injection métadonnées HDR10+…")
+                    _run([
+                        self._bins["hdr10plus_tool"], "inject",
+                        "-i", str(current_hevc),
+                        "-j", str(hdr10p_json),
+                        "-o", str(enc_hdr10p),
+                    ])
+                    current_hevc = enc_hdr10p
+                    _check()
+
+                # ── 8. Remuxage final ────────────────────────────────────
+                signals.progress.emit("Remuxage final…")
+                _run([
+                    self._bins["mkvmerge"],
+                    "-o", str(config.output),
+                    str(current_hevc),           # piste vidéo avec métadonnées
+                    "--no-video", str(encoded_mkv),  # audio + sous-titres uniquement
+                ])
+                signals.finished.emit(f"Encodage terminé → {config.output.name}")
+
+            except TaskCancelledError:
+                signals.cancelled.emit()
+            except Exception as exc:
+                signals.failed.emit(str(exc), exc)
+            finally:
+                executor.shutdown(wait=False)
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
         executor.submit(_task)
         return signals
