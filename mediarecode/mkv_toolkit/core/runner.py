@@ -348,7 +348,7 @@ class ToolRunner(QObject):
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
+            # Mode binaire : on gère \r et \r\n nous-mêmes
             cwd=str(cwd) if cwd else None,
             env=proc_env,
             # shell=True JAMAIS
@@ -356,8 +356,20 @@ class ToolRunner(QObject):
             lines: list[str] = []
             assert proc.stdout is not None
 
-            for line in proc.stdout:
-                stripped = line.rstrip("\n")
+            buf = b""
+            while chunk := proc.stdout.read(256):
+                # Normalise \r\n et \r solitaire en \n pour un split uniforme
+                buf += chunk.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+                *complete, buf = buf.split(b"\n")
+                for raw in complete:
+                    stripped = raw.decode("utf-8", errors="replace").rstrip()
+                    lines.append(stripped)
+                    if progress_cb and stripped:
+                        progress_cb(stripped)
+
+            # Vide le tampon résiduel (dernière ligne sans \n terminal)
+            if buf.strip():
+                stripped = buf.strip().decode("utf-8", errors="replace")
                 lines.append(stripped)
                 if progress_cb and stripped:
                     progress_cb(stripped)
