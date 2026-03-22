@@ -1,0 +1,11 @@
+# =============================================================================
+# requirements.txt — MKV/MP4 Toolkit
+# Python 3.10+
+# =============================================================================
+ 
+# Interface graphique
+PySide6>=6.6.0
+ 
+# Inspection médias (alternative Python à mediainfo CLI)
+pymediainfo>=6.1.0
+ 

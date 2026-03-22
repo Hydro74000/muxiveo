@@ -1,0 +1,376 @@
+"""
+core/runner.py — Exécution d'outils externes et parallélisation.
+
+Classes publiques :
+    ToolChecker   — vérifie la disponibilité des outils via shutil.which
+    TaskSignals   — signaux Qt émis par chaque tâche (QObject standalone)
+    ToolRunner    — lance des commandes subprocess, séquentielles ou parallèles
+
+Conventions :
+    - Jamais shell=True
+    - pathlib.Path pour tous les chemins
+    - ThreadPoolExecutor pour les tâches I/O parallèles
+    - Signaux Qt thread-safe : connexion via Qt.ConnectionType.QueuedConnection
+      depuis les workers vers l'UI
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import time
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import Callable, Sequence
+
+from PySide6.QtCore import QObject, Signal
+
+
+# ---------------------------------------------------------------------------
+# ToolChecker
+# ---------------------------------------------------------------------------
+
+#: Outils requis par défaut pour le projet
+DEFAULT_TOOLS: tuple[str, ...] = (
+    "mkvextract",
+    "mkvmerge",
+    "dovi_tool",
+    "hdr10plus_tool",
+    "ffmpeg",
+    "mediainfo",
+)
+
+
+class ToolChecker:
+    """
+    Vérifie la disponibilité des outils externes dans le PATH.
+
+    Usage :
+        checker = ToolChecker()
+        checker.check_all()          # dict[str, bool]
+        checker.missing()            # list[str]  — outils absents
+        checker.available("ffmpeg")  # bool
+        checker.require(["ffmpeg", "mkvmerge"])  # lève ToolNotFoundError si manquant
+    """
+
+    def __init__(self, tools: Sequence[str] = DEFAULT_TOOLS) -> None:
+        self._tools: tuple[str, ...] = tuple(tools)
+
+    # ------------------------------------------------------------------
+    # API publique
+    # ------------------------------------------------------------------
+
+    def check_all(self) -> dict[str, bool]:
+        """Retourne un dict {nom_outil: disponible} pour tous les outils."""
+        return {tool: self.available(tool) for tool in self._tools}
+
+    def available(self, tool: str) -> bool:
+        """Retourne True si l'outil est trouvable dans le PATH."""
+        return shutil.which(tool) is not None
+
+    def path_of(self, tool: str) -> Path | None:
+        """Retourne le Path absolu de l'outil, ou None s'il est absent."""
+        found = shutil.which(tool)
+        return Path(found) if found else None
+
+    def missing(self) -> list[str]:
+        """Retourne la liste des outils absents du PATH."""
+        return [t for t in self._tools if not self.available(t)]
+
+    def require(self, tools: Sequence[str]) -> None:
+        """
+        Vérifie que tous les outils listés sont disponibles.
+
+        Lève :
+            ToolNotFoundError : si un ou plusieurs outils sont absents.
+        """
+        absent = [t for t in tools if not self.available(t)]
+        if absent:
+            raise ToolNotFoundError(absent)
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+class ToolNotFoundError(RuntimeError):
+    """Un ou plusieurs outils requis sont absents du PATH."""
+
+    def __init__(self, tools: list[str]) -> None:
+        self.tools = tools
+        super().__init__(
+            f"Outil(s) introuvable(s) dans PATH : {', '.join(tools)}"
+        )
+
+
+class CommandError(RuntimeError):
+    """Une commande externe s'est terminée avec un code de retour non nul."""
+
+    def __init__(
+        self,
+        cmd: list[str],
+        returncode: int,
+        stderr: str,
+    ) -> None:
+        self.cmd = cmd
+        self.returncode = returncode
+        self.stderr = stderr
+        super().__init__(
+            f"Commande échouée (code {returncode}) : {' '.join(cmd)}\n{stderr}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TaskSignals — signaux Qt pour une tâche individuelle
+# ---------------------------------------------------------------------------
+
+class TaskSignals(QObject):
+    """
+    Signaux Qt émis par une tâche ToolRunner.
+
+    Signaux :
+        progress(message: str)
+            Émis à chaque ligne de sortie de la commande, ou pour les
+            messages d'avancement intermédiaires.
+
+        finished(result: str)
+            Émis quand la tâche se termine avec succès.
+            result = sortie stdout+stderr combinée de la commande.
+
+        failed(message: str, exception: Exception)
+            Émis si la commande échoue ou lève une exception.
+
+    Connexion thread-safe recommandée :
+        signals.progress.connect(slot, Qt.ConnectionType.QueuedConnection)
+    """
+
+    progress = Signal(str)
+    finished = Signal(str)
+    failed   = Signal(str, object)   # (message_court, exception)
+
+
+# ---------------------------------------------------------------------------
+# ToolRunner
+# ---------------------------------------------------------------------------
+
+class ToolRunner(QObject):
+    """
+    Lance des commandes externes, séquentiellement ou en parallèle.
+
+    Chaque appel retourne un objet `TaskSignals` auquel l'appelant peut
+    connecter ses slots avant que la tâche ne démarre.
+
+    Usage séquentiel :
+        runner = ToolRunner()
+        sig = runner.run(["ffmpeg", "-i", "in.mkv", "out.mkv"])
+        sig.finished.connect(on_done)
+        sig.failed.connect(on_error)
+
+    Usage parallèle :
+        tasks = [
+            ["mkvextract", "film1.mkv", "tracks", "0:film1.hevc"],
+            ["dovi_tool", "extract-rpu", "-i", "film2.mkv", "-o", "rpu.bin"],
+        ]
+        sig = runner.run_parallel(tasks, label="extraction")
+        sig.progress.connect(on_progress)
+        sig.finished.connect(on_done)
+
+    Notes :
+        - Toutes les commandes sont lancées dans des threads secondaires.
+        - L'objet ToolRunner lui-même vit dans le thread principal.
+        - Les signaux traversent la frontière de threads via QueuedConnection.
+        - max_workers contrôle le parallélisme du ThreadPoolExecutor.
+    """
+
+    def __init__(
+        self,
+        max_workers: int = 4,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._max_workers = max_workers
+
+    # ------------------------------------------------------------------
+    # Exécution séquentielle
+    # ------------------------------------------------------------------
+
+    def run(
+        self,
+        cmd: list[str],
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        label: str = "",
+        on_progress: Callable[[str], None] | None = None,
+    ) -> TaskSignals:
+        """
+        Lance une commande dans un thread secondaire.
+
+        Args :
+            cmd         : commande sous forme de liste (jamais shell=True)
+            cwd         : dossier de travail du sous-processus
+            env         : variables d'environnement (None = héritage)
+            label       : préfixe pour les messages de progression
+            on_progress : callback optionnel appelé sur chaque ligne stdout
+
+        Returns :
+            TaskSignals — connecter les slots avant que la tâche ne démarre.
+        """
+        signals = TaskSignals()
+        executor = ThreadPoolExecutor(max_workers=1)
+
+        def _task() -> None:
+            try:
+                output = self._run_cmd(
+                    cmd,
+                    cwd=cwd,
+                    env=env,
+                    label=label or cmd[0],
+                    progress_cb=lambda line: (
+                        signals.progress.emit(line),
+                        on_progress(line) if on_progress else None,
+                    ),
+                )
+                signals.finished.emit(output)
+            except Exception as exc:
+                signals.failed.emit(str(exc), exc)
+            finally:
+                executor.shutdown(wait=False)
+
+        executor.submit(_task)
+        return signals
+
+    # ------------------------------------------------------------------
+    # Exécution parallèle
+    # ------------------------------------------------------------------
+
+    def run_parallel(
+        self,
+        tasks: list[list[str]],
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        label: str = "parallel",
+    ) -> TaskSignals:
+        """
+        Lance plusieurs commandes en parallèle dans un ThreadPoolExecutor.
+
+        Toutes les tâches sont indépendantes. Le signal `finished` est émis
+        quand TOUTES les tâches ont réussi. Le signal `failed` est émis dès
+        qu'une tâche échoue (les autres continuent jusqu'à leur fin naturelle).
+
+        Args :
+            tasks  : liste de commandes, chacune étant une liste de strings
+            cwd    : dossier de travail commun
+            env    : variables d'environnement communes
+            label  : préfixe pour les messages de progression
+
+        Returns :
+            TaskSignals — connecter les slots avant que la tâche ne démarre.
+        """
+        signals = TaskSignals()
+        executor = ThreadPoolExecutor(max_workers=self._max_workers)
+
+        def _parallel() -> None:
+            t_start = time.monotonic()
+            errors: list[str] = []
+            outputs: list[str] = []
+
+            # Cas liste vide : rien à exécuter, succès immédiat
+            if not tasks:
+                signals.finished.emit("0 tâche(s) terminée(s) en 0.0s")
+                executor.shutdown(wait=False)
+                return
+
+            future_to_label: dict[Future[str], str] = {}
+            for i, cmd in enumerate(tasks):
+                task_label = f"{label}[{i}] {cmd[0]}"
+                fut = executor.submit(
+                    self._run_cmd,
+                    cmd,
+                    cwd=cwd,
+                    env=env,
+                    label=task_label,
+                    progress_cb=lambda line, lbl=task_label: signals.progress.emit(
+                        f"[{lbl}] {line}"
+                    ),
+                )
+                future_to_label[fut] = task_label
+
+            for future in as_completed(future_to_label):
+                lbl = future_to_label[future]
+                try:
+                    out = future.result()
+                    outputs.append(out)
+                    signals.progress.emit(f"[{lbl}] terminé")
+                except Exception as exc:
+                    errors.append(f"[{lbl}] {exc}")
+
+            executor.shutdown(wait=False)
+            elapsed = time.monotonic() - t_start
+
+            if errors:
+                msg = f"Échec de {len(errors)}/{len(tasks)} tâche(s) en {elapsed:.1f}s :\n" + "\n".join(errors)
+                signals.failed.emit(msg, RuntimeError(msg))
+            else:
+                summary = f"{len(tasks)} tâche(s) terminée(s) en {elapsed:.1f}s"
+                signals.finished.emit(summary)
+
+        outer = ThreadPoolExecutor(max_workers=1)
+        outer.submit(_parallel)
+        outer.shutdown(wait=False)
+        return signals
+
+    # ------------------------------------------------------------------
+    # Commande bas niveau
+    # ------------------------------------------------------------------
+
+    def _run_cmd(
+        self,
+        cmd: list[str],
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        label: str = "",
+        progress_cb: Callable[[str], None] | None = None,
+    ) -> str:
+        """
+        Lance une commande subprocess et retourne stdout+stderr combinés.
+
+        Chaque ligne de sortie est transmise à progress_cb si fourni.
+        Lève CommandError si le code de retour est non nul.
+        """
+        import os
+
+        proc_env = {**os.environ, **(env or {})} if env else None
+
+        with subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=str(cwd) if cwd else None,
+            env=proc_env,
+            # shell=True JAMAIS
+        ) as proc:
+            lines: list[str] = []
+            assert proc.stdout is not None
+
+            for line in proc.stdout:
+                stripped = line.rstrip("\n")
+                lines.append(stripped)
+                if progress_cb and stripped:
+                    progress_cb(stripped)
+
+            proc.wait()
+
+            output = "\n".join(lines)
+
+            if proc.returncode != 0:
+                raise CommandError(
+                    cmd=cmd,
+                    returncode=proc.returncode,
+                    stderr=output[-2000:],  # tronqué pour les messages d'erreur
+                )
+
+            return output
