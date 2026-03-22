@@ -9,7 +9,7 @@ Architecture :
     │  │ (NavBar) │  ─ DashboardPage       (index 0)        │   │
     │  │          │  ─ MergeDoviPanel      (index 1) ✓      │   │
     │  │          │  ─ AudioConvPage       (index 2) TODO   │   │
-    │  │          │  ─ ContainerPage       (index 3) TODO   │   │
+    │  │          │  ─ RemuxPanel          (index 3) ✓      │   │
     │  │          │  ─ SettingsPage        (index 4) TODO   │   │
     │  └──────────┴─────────────────────────────────────────┘   │
     │  ┌──────────────────────────────────────────────────────┐  │
@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
 
 from core.config import AppConfig
 from ui.panels.merge_dovi_panel import MergeDoviPanel
+from ui.panels.remux_panel import RemuxPanel
 
 
 # ---------------------------------------------------------------------------
@@ -605,7 +606,7 @@ class _Sidebar(QWidget):
         layout.addStretch()
 
         # Version
-        version_lbl = QLabel("v0.1.0 — Phase 4")
+        version_lbl = QLabel("v0.1.0 — Phase 5")
         version_lbl.setContentsMargins(16, 0, 0, 12)
         version_lbl.setStyleSheet(f"""
             color: {_Colors.TEXT_DIM};
@@ -725,12 +726,9 @@ class MainWindow(QMainWindow):
             "Conversion et mixage : DTS-HD MA → EAC-3, TrueHD → AAC,\n"
             "extraction core TrueHD sans Atmos…",
         ))
-        self._stack.addWidget(_PlaceholderPage(
-            "Manipulation Conteneur",
-            "⊞",
-            "Remuxage, sélection de pistes, métadonnées,\n"
-            "chapitres, sous-titres.",
-        ))
+        # Page 3 — Manipulation Conteneur (fonctionnelle)
+        self._remux_panel = RemuxPanel(self._config)
+        self._stack.addWidget(self._remux_panel)
         self._stack.addWidget(_PlaceholderPage(
             "Paramètres",
             "⚙",
@@ -761,6 +759,10 @@ class MainWindow(QMainWindow):
         self.log_requested.connect(self._on_log_requested)
         # MergeDoviPanel → LogPanel global (QueuedConnection : signal émis depuis threads)
         self._dovi_panel.log_message.connect(
+            self.log_requested, Qt.ConnectionType.QueuedConnection
+        )
+        # RemuxPanel → LogPanel global
+        self._remux_panel.log_message.connect(
             self.log_requested, Qt.ConnectionType.QueuedConnection
         )
 
