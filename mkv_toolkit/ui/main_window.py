@@ -1,0 +1,821 @@
+"""
+ui/main_window.py — Fenêtre principale de MKV/MP4 Toolkit.
+
+Architecture :
+    ┌────────────────────────────────────────────────────────────┐
+    │  MainWindow (QMainWindow)                                  │
+    │  ┌──────────┬─────────────────────────────────────────┐   │
+    │  │ Sidebar  │  QStackedWidget (pages)                 │   │
+    │  │ (NavBar) │  ─ DashboardPage       (index 0)        │   │
+    │  │          │  ─ MergeDoviPanel      (index 1) ✓      │   │
+    │  │          │  ─ AudioConvPage       (index 2) TODO   │   │
+    │  │          │  ─ ContainerPage       (index 3) TODO   │   │
+    │  │          │  ─ SettingsPage        (index 4) TODO   │   │
+    │  └──────────┴─────────────────────────────────────────┘   │
+    │  ┌──────────────────────────────────────────────────────┐  │
+    │  │  LogPanel (niveaux colorés INFO / OK / WARN / ERROR) │  │
+    │  └──────────────────────────────────────────────────────┘  │
+    └────────────────────────────────────────────────────────────┘
+
+Signals exposés :
+    MainWindow.log_requested(level: str, message: str)
+        → peut être connecté depuis n'importe quel worker/module
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from enum import Enum
+from pathlib import Path
+from typing import Callable
+
+from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtGui import (
+    QColor, QFont, QIcon, QPalette,
+    QTextCharFormat, QTextCursor,
+)
+from PySide6.QtWidgets import (
+    QFrame, QHBoxLayout, QLabel, QMainWindow,
+    QPushButton, QScrollArea, QSizePolicy,
+    QSplitter, QStackedWidget, QTextEdit,
+    QToolButton, QVBoxLayout, QWidget,
+)
+
+from core.config import AppConfig
+from ui.panels.merge_dovi_panel import MergeDoviPanel
+
+
+# ---------------------------------------------------------------------------
+# Palette de couleurs (thème sombre)
+# ---------------------------------------------------------------------------
+
+class _Colors:
+    BG_DEEP    = "#0d0f14"
+    BG_PANEL   = "#141720"
+    BG_SIDEBAR = "#0f1117"
+    BG_CARD    = "#1a1e2a"
+    BG_HOVER   = "#1f2435"
+    BG_ACTIVE  = "#232840"
+
+    BORDER     = "#252a3a"
+    BORDER_LT  = "#2e3450"
+
+    TEXT_PRI   = "#e8ecf4"
+    TEXT_SEC   = "#7a85a0"
+    TEXT_DIM   = "#3d4560"
+
+    ACCENT     = "#4f6ef7"
+    ACCENT_DIM = "#2a3a8a"
+
+    # Log levels
+    LOG_INFO   = "#7ab3f5"
+    LOG_OK     = "#5dcc8a"
+    LOG_WARN   = "#f5c842"
+    LOG_ERROR  = "#f55a5a"
+    LOG_TS     = "#3d4560"
+    LOG_BG     = "#0a0c11"
+
+
+# ---------------------------------------------------------------------------
+# Niveaux de log
+# ---------------------------------------------------------------------------
+
+class LogLevel(str, Enum):
+    INFO  = "INFO"
+    OK    = "OK"
+    WARN  = "WARN"
+    ERROR = "ERROR"
+
+
+_LEVEL_COLORS: dict[LogLevel, str] = {
+    LogLevel.INFO:  _Colors.LOG_INFO,
+    LogLevel.OK:    _Colors.LOG_OK,
+    LogLevel.WARN:  _Colors.LOG_WARN,
+    LogLevel.ERROR: _Colors.LOG_ERROR,
+}
+
+_LEVEL_LABELS: dict[LogLevel, str] = {
+    LogLevel.INFO:  " INFO ",
+    LogLevel.OK:    "  OK  ",
+    LogLevel.WARN:  " WARN ",
+    LogLevel.ERROR: " ERR  ",
+}
+
+
+# ---------------------------------------------------------------------------
+# LogPanel
+# ---------------------------------------------------------------------------
+
+class LogPanel(QWidget):
+    """
+    Panneau de logs à niveaux colorés.
+
+    Usage :
+        panel.log("Vérification des dépendances...", LogLevel.INFO)
+        panel.log("Toutes les dépendances sont présentes.", LogLevel.OK)
+        panel.log("Différence de 2 frames tolérée.", LogLevel.WARN)
+        panel.log("Fichier introuvable.", LogLevel.ERROR)
+    """
+
+    def __init__(self, max_lines: int = 2000, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._max_lines = max_lines
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # En-tête barre
+        header = QWidget()
+        header.setFixedHeight(32)
+        header.setStyleSheet(f"""
+            QWidget {{
+                background: {_Colors.BG_PANEL};
+                border-top: 1px solid {_Colors.BORDER};
+                border-bottom: 1px solid {_Colors.BORDER};
+            }}
+        """)
+        h_layout = QHBoxLayout(header)
+        h_layout.setContentsMargins(12, 0, 8, 0)
+        h_layout.setSpacing(8)
+
+        title = QLabel("LOGS")
+        title.setStyleSheet(f"""
+            color: {_Colors.TEXT_DIM};
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            background: transparent;
+            border: none;
+        """)
+        h_layout.addWidget(title)
+        h_layout.addStretch()
+
+        # Bouton clear
+        clear_btn = QPushButton("Effacer")
+        clear_btn.setFixedHeight(20)
+        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        clear_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {_Colors.TEXT_DIM};
+                border: 1px solid {_Colors.BORDER};
+                border-radius: 3px;
+                font-size: 10px;
+                padding: 0 8px;
+            }}
+            QPushButton:hover {{
+                color: {_Colors.TEXT_SEC};
+                border-color: {_Colors.BORDER_LT};
+            }}
+        """)
+        clear_btn.clicked.connect(self.clear)
+        h_layout.addWidget(clear_btn)
+
+        layout.addWidget(header)
+
+        # Zone de texte
+        self._text = QTextEdit()
+        self._text.setReadOnly(True)
+        self._text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        mono = QFont("JetBrains Mono", 9)
+        mono.setStyleHint(QFont.StyleHint.Monospace)
+        self._text.setFont(mono)
+        self._text.setStyleSheet(f"""
+            QTextEdit {{
+                background: {_Colors.LOG_BG};
+                color: {_Colors.TEXT_PRI};
+                border: none;
+                padding: 8px 12px;
+                selection-background-color: {_Colors.ACCENT_DIM};
+            }}
+            QScrollBar:vertical {{
+                background: {_Colors.BG_DEEP};
+                width: 8px;
+                border: none;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {_Colors.BORDER_LT};
+                border-radius: 4px;
+                min-height: 20px;
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0;
+            }}
+        """)
+        layout.addWidget(self._text)
+
+    # ------------------------------------------------------------------
+    # API publique
+    # ------------------------------------------------------------------
+
+    def log(self, message: str, level: LogLevel = LogLevel.INFO) -> None:
+        """Ajoute une ligne de log avec horodatage et niveau coloré."""
+        cursor = self._text.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+
+        ts = datetime.now().strftime("%H:%M:%S")
+        color = _LEVEL_COLORS[level]
+        label = _LEVEL_LABELS[level]
+
+        # Timestamp
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(_Colors.LOG_TS))
+        cursor.insertText(f"{ts}  ", fmt)
+
+        # Badge niveau
+        fmt.setForeground(QColor(color))
+        fmt.setFontWeight(QFont.Weight.Bold)
+        cursor.insertText(label, fmt)
+
+        # Message
+        fmt.setFontWeight(QFont.Weight.Normal)
+        fmt.setForeground(QColor(color if level != LogLevel.INFO else _Colors.TEXT_PRI))
+        cursor.insertText(f"  {message}\n", fmt)
+
+        # Défilement automatique vers le bas
+        self._text.setTextCursor(cursor)
+        self._text.ensureCursorVisible()
+
+        # Limite du nombre de lignes
+        doc = self._text.document()
+        while doc.blockCount() > self._max_lines:
+            cur = QTextCursor(doc.begin())
+            cur.select(QTextCursor.SelectionType.BlockUnderCursor)
+            cur.removeSelectedText()
+            cur.deleteChar()
+
+    def info(self, message: str)  -> None: self.log(message, LogLevel.INFO)
+    def ok(self, message: str)    -> None: self.log(message, LogLevel.OK)
+    def warn(self, message: str)  -> None: self.log(message, LogLevel.WARN)
+    def error(self, message: str) -> None: self.log(message, LogLevel.ERROR)
+
+    def clear(self) -> None:
+        self._text.clear()
+
+
+# ---------------------------------------------------------------------------
+# Page placeholder (remplacée en Phase 2 par des pages réelles)
+# ---------------------------------------------------------------------------
+
+class _PlaceholderPage(QWidget):
+    def __init__(self, title: str, icon: str, description: str) -> None:
+        super().__init__()
+        self.setStyleSheet(f"background: {_Colors.BG_DEEP};")
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setSpacing(16)
+
+        icon_lbl = QLabel(icon)
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon_lbl.setStyleSheet(f"font-size: 48px; color: {_Colors.TEXT_DIM}; background: transparent;")
+        layout.addWidget(icon_lbl)
+
+        title_lbl = QLabel(title)
+        title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_lbl.setStyleSheet(f"""
+            font-size: 18px;
+            font-weight: 700;
+            color: {_Colors.TEXT_PRI};
+            background: transparent;
+            letter-spacing: 0.5px;
+        """)
+        layout.addWidget(title_lbl)
+
+        desc_lbl = QLabel(description)
+        desc_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        desc_lbl.setWordWrap(True)
+        desc_lbl.setMaximumWidth(400)
+        desc_lbl.setStyleSheet(f"color: {_Colors.TEXT_SEC}; font-size: 12px; background: transparent;")
+        layout.addWidget(desc_lbl)
+
+
+# ---------------------------------------------------------------------------
+# Dashboard
+# ---------------------------------------------------------------------------
+
+class DashboardPage(QWidget):
+    """Page d'accueil — résumé des outils disponibles et raccourcis."""
+
+    def __init__(self, config: AppConfig, log: Callable[[str, LogLevel], None]) -> None:
+        super().__init__()
+        self._config = config
+        self._log = log
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        self.setStyleSheet(f"background: {_Colors.BG_DEEP};")
+        root = QVBoxLayout(self)
+        root.setContentsMargins(32, 32, 32, 32)
+        root.setSpacing(24)
+        root.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        # Titre
+        title = QLabel("MKV / MP4 Toolkit")
+        title.setStyleSheet(f"""
+            font-size: 26px;
+            font-weight: 800;
+            color: {_Colors.TEXT_PRI};
+            background: transparent;
+            letter-spacing: -0.5px;
+        """)
+        root.addWidget(title)
+
+        subtitle = QLabel("Manipulation, encodage et injection de métadonnées HDR")
+        subtitle.setStyleSheet(f"color: {_Colors.TEXT_SEC}; font-size: 13px; background: transparent;")
+        root.addWidget(subtitle)
+
+        # Séparateur
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {_Colors.BORDER};")
+        root.addWidget(sep)
+
+        # Statut des outils
+        status_title = QLabel("Outils disponibles")
+        status_title.setStyleSheet(f"""
+            font-size: 11px;
+            font-weight: 700;
+            color: {_Colors.TEXT_DIM};
+            letter-spacing: 1.5px;
+            background: transparent;
+        """)
+        root.addWidget(status_title)
+
+        tools_grid = QWidget()
+        tools_grid.setStyleSheet("background: transparent;")
+        grid_layout = QHBoxLayout(tools_grid)
+        grid_layout.setContentsMargins(0, 0, 0, 0)
+        grid_layout.setSpacing(8)
+        grid_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        availability = self._config.all_tools_available()
+        for tool_name, available in availability.items():
+            badge = self._make_tool_badge(tool_name, available)
+            grid_layout.addWidget(badge)
+
+        root.addWidget(tools_grid)
+
+        # Vérification manuelle
+        check_btn = QPushButton("↻  Vérifier les outils")
+        check_btn.setFixedWidth(200)
+        check_btn.setFixedHeight(34)
+        check_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        check_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {_Colors.BG_CARD};
+                color: {_Colors.TEXT_SEC};
+                border: 1px solid {_Colors.BORDER};
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: 600;
+                padding: 0 16px;
+            }}
+            QPushButton:hover {{
+                background: {_Colors.BG_HOVER};
+                color: {_Colors.TEXT_PRI};
+                border-color: {_Colors.BORDER_LT};
+            }}
+            QPushButton:pressed {{
+                background: {_Colors.BG_ACTIVE};
+            }}
+        """)
+        check_btn.clicked.connect(self._check_tools)
+        root.addWidget(check_btn)
+
+        root.addStretch()
+
+        # Infos de chemins
+        paths_title = QLabel("Chemins configurés")
+        paths_title.setStyleSheet(f"""
+            font-size: 11px;
+            font-weight: 700;
+            color: {_Colors.TEXT_DIM};
+            letter-spacing: 1.5px;
+            background: transparent;
+        """)
+        root.addWidget(paths_title)
+
+        for label, value in [
+            ("Dossier travail", self._config.work_dir),
+            ("Dossier sortie",  self._config.output_dir),
+            ("App data",        self._config.app_data_dir),
+        ]:
+            row = QWidget()
+            row.setStyleSheet("background: transparent;")
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(12)
+
+            key_lbl = QLabel(label)
+            key_lbl.setFixedWidth(110)
+            key_lbl.setStyleSheet(f"color: {_Colors.TEXT_SEC}; font-size: 11px; background: transparent;")
+
+            val_lbl = QLabel(str(value))
+            val_lbl.setStyleSheet(f"""
+                color: {_Colors.TEXT_DIM};
+                font-size: 11px;
+                font-family: 'JetBrains Mono', monospace;
+                background: transparent;
+            """)
+            rl.addWidget(key_lbl)
+            rl.addWidget(val_lbl)
+            rl.addStretch()
+            root.addWidget(row)
+
+    def _make_tool_badge(self, name: str, available: bool) -> QLabel:
+        color  = _Colors.LOG_OK  if available else _Colors.LOG_ERROR
+        bg     = "#0f2318"       if available else "#1f0e0e"
+        border = "#1a4a2e"       if available else "#3a1515"
+        symbol = "●"             if available else "○"
+        lbl = QLabel(f" {symbol}  {name} ")
+        lbl.setStyleSheet(f"""
+            QLabel {{
+                background: {bg};
+                color: {color};
+                border: 1px solid {border};
+                border-radius: 4px;
+                font-size: 11px;
+                font-family: 'JetBrains Mono', monospace;
+                padding: 3px 8px;
+            }}
+        """)
+        return lbl
+
+    def _check_tools(self) -> None:
+        self._log("Vérification des outils...", LogLevel.INFO)
+        availability = self._config.all_tools_available()
+        all_ok = True
+        for name, available in availability.items():
+            if available:
+                self._log(f"{name} — trouvé", LogLevel.OK)
+            else:
+                self._log(f"{name} — introuvable dans PATH", LogLevel.WARN)
+                all_ok = False
+        if all_ok:
+            self._log("Tous les outils sont disponibles.", LogLevel.OK)
+        else:
+            self._log("Certains outils sont manquants. Vérifiez votre PATH ou les paramètres.", LogLevel.WARN)
+        # Rafraîchit l'affichage des badges
+        self._build_ui()
+
+
+# ---------------------------------------------------------------------------
+# Bouton de navigation sidebar
+# ---------------------------------------------------------------------------
+
+class _NavButton(QToolButton):
+    def __init__(self, label: str, icon_char: str, page_index: int) -> None:
+        super().__init__()
+        self.page_index = page_index
+        self.setCheckable(True)
+        self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setFixedHeight(40)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        # Label composite : icône + texte
+        self.setText(f"  {icon_char}   {label}")
+        font = QFont()
+        font.setPointSize(11)
+        self.setFont(font)
+
+        self._update_style(False)
+
+    def _update_style(self, checked: bool) -> None:
+        if checked:
+            bg     = _Colors.BG_ACTIVE
+            color  = _Colors.TEXT_PRI
+            border = f"border-left: 2px solid {_Colors.ACCENT};"
+        else:
+            bg     = "transparent"
+            color  = _Colors.TEXT_SEC
+            border = "border-left: 2px solid transparent;"
+
+        self.setStyleSheet(f"""
+            QToolButton {{
+                background: {bg};
+                color: {color};
+                {border}
+                border-right: none;
+                border-top: none;
+                border-bottom: none;
+                border-radius: 0;
+                padding: 0 16px;
+                text-align: left;
+                font-size: 12px;
+                font-weight: {"600" if checked else "400"};
+            }}
+            QToolButton:hover {{
+                background: {_Colors.BG_HOVER};
+                color: {_Colors.TEXT_PRI};
+            }}
+        """)
+
+    def setChecked(self, checked: bool) -> None:  # type: ignore[override]
+        super().setChecked(checked)
+        self._update_style(checked)
+
+
+# ---------------------------------------------------------------------------
+# Sidebar
+# ---------------------------------------------------------------------------
+
+class _Sidebar(QWidget):
+    page_changed = Signal(int)
+
+    _NAV_ITEMS = [
+        ("Tableau de bord", "⌂", 0),
+        ("DoVi / HDR10+",   "◈", 1),
+        ("Audio",           "♫", 2),
+        ("Conteneur",       "⊞", 3),
+        ("Paramètres",      "⚙", 4),
+    ]
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedWidth(200)
+        self.setStyleSheet(f"""
+            QWidget {{
+                background: {_Colors.BG_SIDEBAR};
+                border-right: 1px solid {_Colors.BORDER};
+            }}
+        """)
+        self._buttons: list[_NavButton] = []
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Logo / App name
+        logo_area = QWidget()
+        logo_area.setFixedHeight(56)
+        logo_area.setStyleSheet(f"""
+            QWidget {{
+                background: {_Colors.BG_SIDEBAR};
+                border-bottom: 1px solid {_Colors.BORDER};
+                border-right: none;
+            }}
+        """)
+        la = QHBoxLayout(logo_area)
+        la.setContentsMargins(16, 0, 16, 0)
+
+        logo_icon = QLabel("▣")
+        logo_icon.setStyleSheet(f"color: {_Colors.ACCENT}; font-size: 18px; background: transparent; border: none;")
+        logo_text = QLabel("MKV Toolkit")
+        logo_text.setStyleSheet(f"""
+            color: {_Colors.TEXT_PRI};
+            font-size: 13px;
+            font-weight: 700;
+            background: transparent;
+            border: none;
+            letter-spacing: 0.3px;
+        """)
+        la.addWidget(logo_icon)
+        la.addSpacing(8)
+        la.addWidget(logo_text)
+        la.addStretch()
+        layout.addWidget(logo_area)
+
+        # Navigation
+        nav_label = QLabel("NAVIGATION")
+        nav_label.setContentsMargins(16, 16, 0, 8)
+        nav_label.setStyleSheet(f"""
+            color: {_Colors.TEXT_DIM};
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            background: transparent;
+            border: none;
+        """)
+        layout.addWidget(nav_label)
+
+        for label, icon, idx in self._NAV_ITEMS:
+            btn = _NavButton(label, icon, idx)
+            btn.clicked.connect(lambda checked, b=btn: self._on_nav_click(b))
+            self._buttons.append(btn)
+            layout.addWidget(btn)
+
+        layout.addStretch()
+
+        # Version
+        version_lbl = QLabel("v0.1.0 — Phase 4")
+        version_lbl.setContentsMargins(16, 0, 0, 12)
+        version_lbl.setStyleSheet(f"""
+            color: {_Colors.TEXT_DIM};
+            font-size: 9px;
+            background: transparent;
+            border: none;
+        """)
+        layout.addWidget(version_lbl)
+
+        # Sélectionner le premier bouton
+        if self._buttons:
+            self._buttons[0].setChecked(True)
+
+    def _on_nav_click(self, clicked: _NavButton) -> None:
+        for btn in self._buttons:
+            if btn is not clicked:
+                btn.setChecked(False)
+        clicked.setChecked(True)
+        self.page_changed.emit(clicked.page_index)
+
+    def select_page(self, index: int) -> None:
+        for btn in self._buttons:
+            btn.setChecked(btn.page_index == index)
+
+
+# ---------------------------------------------------------------------------
+# MainWindow
+# ---------------------------------------------------------------------------
+
+class MainWindow(QMainWindow):
+    """
+    Fenêtre principale de l'application.
+
+    Signal :
+        log_requested(level: str, message: str)
+            Émet un message de log depuis n'importe quel composant.
+            Les workers peuvent s'y connecter via Qt.QueuedConnection
+            pour poster des logs depuis des threads secondaires.
+    """
+
+    log_requested = Signal(str, str)
+
+    def __init__(self, config: AppConfig) -> None:
+        super().__init__()
+        self._config = config
+        self._setup_window()
+        self._build_ui()
+        self._restore_geometry()
+        self._connect_signals()
+        self._post_init_log()
+
+    # ------------------------------------------------------------------
+    # Fenêtre
+    # ------------------------------------------------------------------
+
+    def _setup_window(self) -> None:
+        self.setWindowTitle("MKV / MP4 Toolkit")
+        self.setMinimumSize(1024, 680)
+        self.resize(1280, 800)
+
+        # Fond global
+        self.setStyleSheet(f"""
+            QMainWindow {{
+                background: {_Colors.BG_DEEP};
+            }}
+            QSplitter::handle {{
+                background: {_Colors.BORDER};
+                height: 1px;
+            }}
+        """)
+
+    # ------------------------------------------------------------------
+    # Construction de l'interface
+    # ------------------------------------------------------------------
+
+    def _build_ui(self) -> None:
+        central = QWidget()
+        central.setStyleSheet(f"background: {_Colors.BG_DEEP};")
+        self.setCentralWidget(central)
+
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # ── Splitter vertical : (sidebar + stack) / log panel ──
+        vsplit = QSplitter(Qt.Orientation.Vertical)
+        vsplit.setHandleWidth(1)
+        vsplit.setChildrenCollapsible(False)
+
+        # Partie haute : sidebar + pages
+        top_widget = QWidget()
+        top_widget.setStyleSheet(f"background: {_Colors.BG_DEEP};")
+        top_layout = QHBoxLayout(top_widget)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(0)
+
+        # Sidebar
+        self._sidebar = _Sidebar()
+        top_layout.addWidget(self._sidebar)
+
+        # Stack de pages
+        self._stack = QStackedWidget()
+        self._stack.setStyleSheet(f"background: {_Colors.BG_DEEP};")
+
+        # Page 0 — Dashboard (fonctionnelle)
+        self._dashboard = DashboardPage(self._config, self._log_from_page)
+        self._stack.addWidget(self._dashboard)
+
+        # Page 1 — DoVi / HDR10+ (fonctionnelle)
+        self._dovi_panel = MergeDoviPanel(self._config)
+        self._stack.addWidget(self._dovi_panel)
+
+        # Pages 2-4 — Placeholders (implémentées en Phase suivante)
+        self._stack.addWidget(_PlaceholderPage(
+            "Conversion Audio",
+            "♫",
+            "Conversion et mixage : DTS-HD MA → EAC-3, TrueHD → AAC,\n"
+            "extraction core TrueHD sans Atmos…",
+        ))
+        self._stack.addWidget(_PlaceholderPage(
+            "Manipulation Conteneur",
+            "⊞",
+            "Remuxage, sélection de pistes, métadonnées,\n"
+            "chapitres, sous-titres.",
+        ))
+        self._stack.addWidget(_PlaceholderPage(
+            "Paramètres",
+            "⚙",
+            "Chemins des outils externes, dossiers de travail\n"
+            "et de sortie, préférences d'encodage.",
+        ))
+
+        top_layout.addWidget(self._stack, stretch=1)
+        vsplit.addWidget(top_widget)
+
+        # Partie basse : log panel
+        self._log_panel = LogPanel(max_lines=self._config.log_max_lines)
+        self._log_panel.setMinimumHeight(120)
+        self._log_panel.setMaximumHeight(400)
+        vsplit.addWidget(self._log_panel)
+
+        # Proportion initiale : 70% / 30%
+        vsplit.setSizes([560, 240])
+
+        main_layout.addWidget(vsplit)
+
+    # ------------------------------------------------------------------
+    # Signaux
+    # ------------------------------------------------------------------
+
+    def _connect_signals(self) -> None:
+        self._sidebar.page_changed.connect(self._stack.setCurrentIndex)
+        self.log_requested.connect(self._on_log_requested)
+        # MergeDoviPanel → LogPanel global (QueuedConnection : signal émis depuis threads)
+        self._dovi_panel.log_message.connect(
+            self.log_requested, Qt.ConnectionType.QueuedConnection
+        )
+
+    # ------------------------------------------------------------------
+    # Logging
+    # ------------------------------------------------------------------
+
+    def _log_from_page(self, message: str, level: LogLevel) -> None:
+        """Callback passé aux pages pour poster des logs."""
+        self._log_panel.log(message, level)
+
+    def _on_log_requested(self, level: str, message: str) -> None:
+        """Slot connecté au signal public log_requested(str, str)."""
+        try:
+            lv = LogLevel(level.upper())
+        except ValueError:
+            lv = LogLevel.INFO
+        self._log_panel.log(message, lv)
+
+    # Raccourcis directs
+    def log_info(self, msg: str)  -> None: self._log_panel.info(msg)
+    def log_ok(self, msg: str)    -> None: self._log_panel.ok(msg)
+    def log_warn(self, msg: str)  -> None: self._log_panel.warn(msg)
+    def log_error(self, msg: str) -> None: self._log_panel.error(msg)
+
+    # ------------------------------------------------------------------
+    # Géométrie
+    # ------------------------------------------------------------------
+
+    def _restore_geometry(self) -> None:
+        if self._config.window_geometry:
+            self.restoreGeometry(self._config.window_geometry)
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        self._config.save_geometry(self.saveGeometry().data())
+        self._config.save()
+        super().closeEvent(event)
+
+    # ------------------------------------------------------------------
+    # Post-init
+    # ------------------------------------------------------------------
+
+    def _post_init_log(self) -> None:
+        self._log_panel.info("MKV / MP4 Toolkit démarré.")
+        availability = self._config.all_tools_available()
+        missing = [n for n, ok in availability.items() if not ok]
+        if missing:
+            self._log_panel.warn(
+                f"Outils manquants dans PATH : {', '.join(missing)}"
+            )
+        else:
+            self._log_panel.ok("Tous les outils externes sont disponibles.")
+        self._log_panel.info(
+            f"Dossier de travail : {self._config.work_dir}"
+        )
+        self._log_panel.info(
+            f"Dossier de sortie  : {self._config.output_dir}"
+        )
