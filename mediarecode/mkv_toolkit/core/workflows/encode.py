@@ -744,8 +744,24 @@ class EncodeWorkflow(QObject):
                 ])
                 _check()
 
-                # ── 6. Injection RPU DV ──────────────────────────────────
+                # ── 6. Injection HDR10+ ──────────────────────────────────
+                # HDR10+ en premier sur le HEVC propre : hdr10plus_tool ne gère
+                # pas correctement les NAL DV RPU (type 62) déjà présents dans
+                # le flux. dovi_tool, lui, préserve tous les types de NAL existants.
                 current_hevc = enc_hevc
+                if config.copy_hdr10plus and hdr10p_json.exists():
+                    enc_hdr10p = tmp / "enc_hdr10p.hevc"
+                    signals.progress.emit("Injection métadonnées HDR10+…")
+                    _run([
+                        self._bins["hdr10plus_tool"], "inject",
+                        "-i", str(current_hevc),
+                        "-j", str(hdr10p_json),
+                        "-o", str(enc_hdr10p),
+                    ])
+                    current_hevc = enc_hdr10p
+                    _check()
+
+                # ── 7. Injection RPU DV ──────────────────────────────────
                 if config.copy_dv and rpu_bin.exists():
                     enc_dv = tmp / "enc_dv.hevc"
                     signals.progress.emit("Injection RPU Dolby Vision…")
@@ -758,19 +774,6 @@ class EncodeWorkflow(QObject):
                         "-o", str(enc_dv),
                     ])
                     current_hevc = enc_dv
-                    _check()
-
-                # ── 7. Injection HDR10+ ──────────────────────────────────
-                if config.copy_hdr10plus and hdr10p_json.exists():
-                    enc_hdr10p = tmp / "enc_hdr10p.hevc"
-                    signals.progress.emit("Injection métadonnées HDR10+…")
-                    _run([
-                        self._bins["hdr10plus_tool"], "inject",
-                        "-i", str(current_hevc),
-                        "-j", str(hdr10p_json),
-                        "-o", str(enc_hdr10p),
-                    ])
-                    current_hevc = enc_hdr10p
                     _check()
 
                 # ── 8. Remuxage final ────────────────────────────────────
