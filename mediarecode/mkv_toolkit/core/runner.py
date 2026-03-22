@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -103,6 +104,10 @@ class ToolNotFoundError(RuntimeError):
         )
 
 
+class TaskCancelledError(BaseException):
+    """L'opération a été annulée par l'utilisateur."""
+
+
 class CommandError(RuntimeError):
     """Une commande externe s'est terminée avec un code de retour non nul."""
 
@@ -130,23 +135,62 @@ class TaskSignals(QObject):
 
     Signaux :
         progress(message: str)
-            Émis à chaque ligne de sortie de la commande, ou pour les
-            messages d'avancement intermédiaires.
+            Émis à chaque ligne de sortie de la commande.
 
         finished(result: str)
             Émis quand la tâche se termine avec succès.
-            result = sortie stdout+stderr combinée de la commande.
 
         failed(message: str, exception: Exception)
             Émis si la commande échoue ou lève une exception.
 
-    Connexion thread-safe recommandée :
-        signals.progress.connect(slot, Qt.ConnectionType.QueuedConnection)
+        cancelled()
+            Émis si cancel() a été appelé et que la tâche s'est arrêtée.
+
+    Annulation :
+        signals.cancel()   — tue le(s) processus actif(s) immédiatement.
+        Connexion thread-safe recommandée :
+            signals.progress.connect(slot, Qt.ConnectionType.QueuedConnection)
     """
 
-    progress = Signal(str)
-    finished = Signal(str)
-    failed   = Signal(str, object)   # (message_court, exception)
+    progress  = Signal(str)
+    finished  = Signal(str)
+    failed    = Signal(str, object)   # (message_court, exception)
+    cancelled = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._cancel_event = threading.Event()
+        self._active_procs: list[subprocess.Popen] = []
+        self._procs_lock   = threading.Lock()
+
+    # ------------------------------------------------------------------
+    # API publique
+    # ------------------------------------------------------------------
+
+    def cancel(self) -> None:
+        """Annule l'opération : marque l'événement et tue les processus actifs."""
+        self._cancel_event.set()
+        with self._procs_lock:
+            for proc in list(self._active_procs):
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+
+    # ------------------------------------------------------------------
+    # Usage interne par ToolRunner._run_cmd
+    # ------------------------------------------------------------------
+
+    def _register_proc(self, proc: subprocess.Popen) -> None:
+        with self._procs_lock:
+            self._active_procs.append(proc)
+
+    def _unregister_proc(self, proc: subprocess.Popen) -> None:
+        with self._procs_lock:
+            try:
+                self._active_procs.remove(proc)
+            except ValueError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -230,8 +274,11 @@ class ToolRunner(QObject):
                         signals.progress.emit(line),
                         on_progress(line) if on_progress else None,
                     ),
+                    signals=signals,
                 )
                 signals.finished.emit(output)
+            except TaskCancelledError:
+                signals.cancelled.emit()
             except Exception as exc:
                 signals.failed.emit(str(exc), exc)
             finally:
@@ -294,22 +341,28 @@ class ToolRunner(QObject):
                     progress_cb=lambda line, lbl=task_label: signals.progress.emit(
                         f"[{lbl}] {line}"
                     ),
+                    signals=signals,
                 )
                 future_to_label[fut] = task_label
 
+            cancelled = False
             for future in as_completed(future_to_label):
                 lbl = future_to_label[future]
                 try:
                     out = future.result()
                     outputs.append(out)
                     signals.progress.emit(f"[{lbl}] terminé")
+                except TaskCancelledError:
+                    cancelled = True
                 except Exception as exc:
                     errors.append(f"[{lbl}] {exc}")
 
             executor.shutdown(wait=False)
             elapsed = time.monotonic() - t_start
 
-            if errors:
+            if cancelled:
+                signals.cancelled.emit()
+            elif errors:
                 msg = f"Échec de {len(errors)}/{len(tasks)} tâche(s) en {elapsed:.1f}s :\n" + "\n".join(errors)
                 signals.failed.emit(msg, RuntimeError(msg))
             else:
@@ -333,12 +386,14 @@ class ToolRunner(QObject):
         env: dict[str, str] | None = None,
         label: str = "",
         progress_cb: Callable[[str], None] | None = None,
+        signals: TaskSignals | None = None,
     ) -> str:
         """
         Lance une commande subprocess et retourne stdout+stderr combinés.
 
         Chaque ligne de sortie est transmise à progress_cb si fourni.
         Lève CommandError si le code de retour est non nul.
+        Lève TaskCancelledError si signals.cancel() est appelé pendant l'exécution.
         """
         import os
 
@@ -353,36 +408,52 @@ class ToolRunner(QObject):
             env=proc_env,
             # shell=True JAMAIS
         ) as proc:
-            lines: list[str] = []
-            assert proc.stdout is not None
+            if signals is not None:
+                signals._register_proc(proc)
+            try:
+                lines: list[str] = []
+                assert proc.stdout is not None
 
-            buf = b""
-            while chunk := proc.stdout.read(256):
-                # Normalise \r\n et \r solitaire en \n pour un split uniforme
-                buf += chunk.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-                *complete, buf = buf.split(b"\n")
-                for raw in complete:
-                    stripped = raw.decode("utf-8", errors="replace").rstrip()
+                buf = b""
+                while chunk := proc.stdout.read(256):
+                    # Annulation : le processus a été tué par cancel(), read() retourne b""
+                    # ou on le tue ici si le signal arrive entre deux lectures.
+                    if signals is not None and signals._cancel_event.is_set():
+                        proc.kill()
+                        raise TaskCancelledError()
+                    # Normalise \r\n et \r solitaire en \n pour un split uniforme
+                    buf += chunk.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+                    *complete, buf = buf.split(b"\n")
+                    for raw in complete:
+                        stripped = raw.decode("utf-8", errors="replace").rstrip()
+                        lines.append(stripped)
+                        if progress_cb and stripped:
+                            progress_cb(stripped)
+
+                # Vide le tampon résiduel (dernière ligne sans \n terminal)
+                if buf.strip():
+                    stripped = buf.strip().decode("utf-8", errors="replace")
                     lines.append(stripped)
                     if progress_cb and stripped:
                         progress_cb(stripped)
 
-            # Vide le tampon résiduel (dernière ligne sans \n terminal)
-            if buf.strip():
-                stripped = buf.strip().decode("utf-8", errors="replace")
-                lines.append(stripped)
-                if progress_cb and stripped:
-                    progress_cb(stripped)
+                proc.wait()
 
-            proc.wait()
+                # Si le processus a été tué par cancel() et qu'on sort de la boucle
+                # parce que stdout s'est fermé (b"" retourné) avant la vérification
+                if signals is not None and signals._cancel_event.is_set():
+                    raise TaskCancelledError()
 
-            output = "\n".join(lines)
+                output = "\n".join(lines)
 
-            if proc.returncode != 0:
-                raise CommandError(
-                    cmd=cmd,
-                    returncode=proc.returncode,
-                    stderr=output[-2000:],  # tronqué pour les messages d'erreur
-                )
+                if proc.returncode != 0:
+                    raise CommandError(
+                        cmd=cmd,
+                        returncode=proc.returncode,
+                        stderr=output[-2000:],
+                    )
 
-            return output
+                return output
+            finally:
+                if signals is not None:
+                    signals._unregister_proc(proc)

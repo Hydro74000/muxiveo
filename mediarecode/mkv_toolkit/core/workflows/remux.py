@@ -89,6 +89,7 @@ class RemuxConfig:
     tracks:           list[TrackEntry]
     keep_chapters:    bool = True
     keep_attachments: bool = True   # cover.jpg et autres pièces jointes
+    work_dir:         Path | None = None   # dossier de travail (cwd mkvmerge)
 
 
 # =============================================================================
@@ -339,4 +340,7 @@ class RemuxWorkflow(QObject):
 
         self.log_message.emit("INFO", f"Remuxage → {config.output.name}")
         cmd = self.build_command(config)
-        return self._runner.run(cmd, cwd=config.source.parent, label="mkvmerge")
+        cwd = config.work_dir or config.source.parent
+        if config.work_dir:
+            config.work_dir.mkdir(parents=True, exist_ok=True)
+        return self._runner.run(cmd, cwd=cwd, label="mkvmerge")

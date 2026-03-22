@@ -16,6 +16,7 @@ Signaux exposés :
 
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -24,17 +25,27 @@ from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QFileDialog, QFrame,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
+    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
 from core.config import AppConfig
 from core.inspector import FileInfo, FileInspector, InspectionError
+from core.runner import TaskSignals
 from core.workflows.remux import (
     RemuxConfig, RemuxError, RemuxWorkflow,
     TrackEntry, tracks_from_file_info,
 )
+
+
+def _fmt_eta(seconds: float) -> str:
+    """Formate une durée en 'Xm Xs' ou 'Xs'. Retourne '—' si indéterminé."""
+    if seconds <= 0 or seconds != seconds:
+        return "—"
+    s = int(seconds)
+    m, s = divmod(s, 60)
+    return f"{m}m {s:02d}s" if m else f"{s}s"
 
 
 # =============================================================================
@@ -615,6 +626,7 @@ class RemuxPanel(QWidget):
         self._executor  = ThreadPoolExecutor(max_workers=1)
         self._file_info: FileInfo | None = None
         self._running   = False
+        self._signals: TaskSignals | None = None
 
         self._workflow.log_message.connect(
             self.log_message, Qt.ConnectionType.QueuedConnection
@@ -799,6 +811,13 @@ class RemuxPanel(QWidget):
         btn_bar_layout.setContentsMargins(28, 12, 28, 12)
         btn_bar_layout.setSpacing(12)
 
+        # Conteneur vertical : barre fine + légende (pct · ETA)
+        self._progress_widget = QWidget()
+        self._progress_widget.setStyleSheet("background:transparent;")
+        _pvl = QVBoxLayout(self._progress_widget)
+        _pvl.setContentsMargins(0, 4, 0, 4)
+        _pvl.setSpacing(4)
+
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
@@ -815,8 +834,17 @@ class RemuxPanel(QWidget):
                 border-radius: 3px;
             }}
         """)
-        self._progress_bar.setVisible(False)
-        btn_bar_layout.addWidget(self._progress_bar, stretch=1)
+        _pvl.addWidget(self._progress_bar)
+
+        self._progress_lbl = QLabel("")
+        self._progress_lbl.setStyleSheet(
+            f"color:{_C.TEXT_DIM};font-size:10px;"
+            f"font-family:'JetBrains Mono',monospace;background:transparent;"
+        )
+        _pvl.addWidget(self._progress_lbl)
+
+        self._progress_widget.setVisible(False)
+        btn_bar_layout.addWidget(self._progress_widget, stretch=1)
 
         self._status_lbl = QLabel("")
         self._status_lbl.setStyleSheet(f"""
@@ -832,6 +860,25 @@ class RemuxPanel(QWidget):
         self._run_btn.setEnabled(False)
         self._run_btn.clicked.connect(self._on_run)
         btn_bar_layout.addWidget(self._run_btn)
+
+        self._cancel_btn = QPushButton("✕  Annuler")
+        self._cancel_btn.setFixedWidth(110)
+        self._cancel_btn.setFixedHeight(36)
+        self._cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._cancel_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {_C.BG_CARD}; color: {_C.WARN};
+                border: 1px solid {_C.WARN}; border-radius: 6px;
+                font-size: 12px; font-weight: 600; padding: 0 14px;
+            }}
+            QPushButton:hover {{
+                background: #2a2010; border-color: #f0b030; color: #f0b030;
+            }}
+            QPushButton:pressed {{ background: #1a1608; }}
+        """)
+        self._cancel_btn.setVisible(False)
+        self._cancel_btn.clicked.connect(self._on_cancel)
+        btn_bar_layout.addWidget(self._cancel_btn)
 
         root.addWidget(btn_bar)
 
@@ -923,9 +970,12 @@ class RemuxPanel(QWidget):
             return
 
         self._running = True
+        self._op_start = time.monotonic()
         self._run_btn.setEnabled(False)
+        self._cancel_btn.setVisible(True)
         self._progress_bar.setValue(0)
-        self._progress_bar.setVisible(True)
+        self._progress_lbl.setText("")
+        self._progress_widget.setVisible(True)
         self._set_status("Remuxage en cours…")
         self.log_message.emit("INFO", f"Démarrage → {config.output.name}")
 
@@ -936,6 +986,7 @@ class RemuxPanel(QWidget):
             self._on_run_finished(success=False)
             return
 
+        self._signals = signals
         signals.progress.connect(
             self._on_progress,
             Qt.ConnectionType.QueuedConnection,
@@ -948,28 +999,67 @@ class RemuxPanel(QWidget):
             lambda msg, _exc: self._on_run_finished(success=False, error=msg),
             Qt.ConnectionType.QueuedConnection,
         )
+        signals.cancelled.connect(
+            self._on_run_cancelled,
+            Qt.ConnectionType.QueuedConnection,
+        )
+
+    def _on_cancel(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Confirmer l'annulation",
+            "Annuler le remuxage en cours ?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes and self._signals is not None:
+            self._signals.cancel()
+
+    def _on_run_cancelled(self) -> None:
+        self._running = False
+        self._signals = None
+        self._run_btn.setEnabled(True)
+        self._cancel_btn.setVisible(False)
+        self._progress_widget.setVisible(False)
+        self._progress_lbl.setText("")
+        self._set_status("Annulé.")
+        self.log_message.emit("WARN", "Remuxage annulé.")
 
     def _on_run_finished(self, success: bool, error: str = "") -> None:
         self._running = False
+        self._signals = None
         self._run_btn.setEnabled(True)
+        self._cancel_btn.setVisible(False)
         if success:
             config = self._current_config()
             out = config.output if config else None
             self._progress_bar.setValue(100)
+            self._progress_lbl.setText("100%  ·  terminé")
             self._set_status("Terminé.")
             self.log_message.emit("OK", f"Remuxage terminé → {out}")
         else:
-            self._progress_bar.setVisible(False)
+            self._progress_widget.setVisible(False)
+            self._progress_lbl.setText("")
             self._set_status("Échec.")
             if error:
                 self.log_message.emit("ERROR", error)
 
     def _on_progress(self, line: str) -> None:
-        """Parse les lignes stdout de mkvmerge et met à jour la barre de progression."""
+        """Parse les lignes stdout de mkvmerge et met à jour la barre + légende."""
         if "Progress:" in line:
             try:
                 pct = int(line.split("%")[0].split()[-1])
                 self._progress_bar.setValue(pct)
+
+                elapsed_wall = time.monotonic() - self._op_start
+                if pct > 0 and elapsed_wall > 0:
+                    eta_s = elapsed_wall * (100 - pct) / pct
+                    eta_str = f"ETA {_fmt_eta(eta_s)}"
+                else:
+                    eta_str = ""
+
+                parts = [f"{pct}%", eta_str]
+                self._progress_lbl.setText("  ·  ".join(p for p in parts if p))
             except (ValueError, IndexError):
                 pass
         else:
@@ -995,6 +1085,7 @@ class RemuxPanel(QWidget):
             tracks=tracks,
             keep_chapters=self._chapters_cb.isChecked(),
             keep_attachments=self._attach_cb.isChecked(),
+            work_dir=self._config.work_dir,
         )
 
     def _set_all_tracks(self, enabled: bool) -> None:

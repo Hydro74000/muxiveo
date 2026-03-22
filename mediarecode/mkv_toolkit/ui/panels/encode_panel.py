@@ -19,6 +19,7 @@ Signaux exposés :
 from __future__ import annotations
 
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -27,13 +28,14 @@ from PySide6.QtGui import QDragEnterEvent, QDropEvent, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QFileDialog,
     QFrame, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
-    QLineEdit, QPlainTextEdit, QProgressBar, QPushButton,
+    QLineEdit, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
     QScrollArea, QSlider, QSpinBox, QStackedWidget,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from core.config import AppConfig
-from core.inspector import AudioTrack, FileInfo, FileInspector, InspectionError
+from core.inspector import AudioTrack, FileInfo, FileInspector, HDRType, InspectionError
+from core.runner import TaskSignals
 from core.workflows.encode import (
     AUDIO_CODECS, HARDWARE_VIDEO_CODECS, SOFTWARE_VIDEO_CODECS,
     TONEMAP_ALGORITHMS, AudioTrackSettings, EncodeConfig,
@@ -417,6 +419,16 @@ class _AudioTable(QTableWidget):
 # =============================================================================
 
 _TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+_FPS_RE  = re.compile(r"\bfps=\s*([\d.]+)")
+
+
+def _fmt_eta(seconds: float) -> str:
+    """Formate une durée en 'Xm Xs' ou 'Xs'. Retourne '—' si indéterminé."""
+    if seconds <= 0 or seconds != seconds:   # négatif ou NaN/inf
+        return "—"
+    s = int(seconds)
+    m, s = divmod(s, 60)
+    return f"{m}m {s:02d}s" if m else f"{s}s"
 
 
 class EncodePanel(QWidget):
@@ -442,6 +454,7 @@ class EncodePanel(QWidget):
         self._running   = False
         self._duration_s: float | None = None
         self._hw_encoders: set[str] = set()
+        self._signals: TaskSignals | None = None
 
         self._workflow.log_message.connect(self.log_message, Qt.ConnectionType.QueuedConnection)
         self._inspection_result.connect(self._apply_inspection, Qt.ConnectionType.QueuedConnection)
@@ -575,6 +588,13 @@ class EncodePanel(QWidget):
         bbl.setContentsMargins(28, 12, 28, 12)
         bbl.setSpacing(12)
 
+        # Conteneur vertical : barre fine + légende (pct · fps · ETA)
+        self._progress_widget = QWidget()
+        self._progress_widget.setStyleSheet("background:transparent;")
+        _pvl = QVBoxLayout(self._progress_widget)
+        _pvl.setContentsMargins(0, 4, 0, 4)
+        _pvl.setSpacing(4)
+
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
@@ -584,8 +604,17 @@ class EncodePanel(QWidget):
             f"QProgressBar{{background:{_C.BG_ACTIVE};border:none;border-radius:3px;}}"
             f"QProgressBar::chunk{{background:{_C.ACCENT};border-radius:3px;}}"
         )
-        self._progress_bar.setVisible(False)
-        bbl.addWidget(self._progress_bar, stretch=1)
+        _pvl.addWidget(self._progress_bar)
+
+        self._progress_lbl = QLabel("")
+        self._progress_lbl.setStyleSheet(
+            f"color:{_C.TEXT_DIM};font-size:10px;"
+            f"font-family:'JetBrains Mono',monospace;background:transparent;"
+        )
+        _pvl.addWidget(self._progress_lbl)
+
+        self._progress_widget.setVisible(False)
+        bbl.addWidget(self._progress_widget, stretch=1)
 
         self._status_lbl = QLabel("")
         self._status_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
@@ -597,6 +626,22 @@ class EncodePanel(QWidget):
         self._run_btn.setEnabled(False)
         self._run_btn.clicked.connect(self._on_run)
         bbl.addWidget(self._run_btn)
+
+        self._cancel_btn = QPushButton("✕  Annuler")
+        self._cancel_btn.setFixedWidth(110)
+        self._cancel_btn.setFixedHeight(36)
+        self._cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._cancel_btn.setStyleSheet(f"""
+            QPushButton{{background:{_C.BG_CARD};color:{_C.WARN};
+                         border:1px solid {_C.WARN};border-radius:6px;
+                         font-size:12px;font-weight:600;padding:0 14px;}}
+            QPushButton:hover{{background:#2a2010;border-color:#f0b030;color:#f0b030;}}
+            QPushButton:pressed{{background:#1a1608;}}
+        """)
+        self._cancel_btn.setVisible(False)
+        self._cancel_btn.clicked.connect(self._on_cancel)
+        bbl.addWidget(self._cancel_btn)
+
         root.addWidget(btn_bar)
 
     # ------------------------------------------------------------------
@@ -812,6 +857,40 @@ class EncodePanel(QWidget):
         self._subs_cb.stateChanged.connect(lambda _: self._rebuild_preview())
         cl.addWidget(self._subs_cb)
 
+        cl.addWidget(_separator())
+
+        # Passthrough Dolby Vision RPU
+        self._copy_dv_cb = QCheckBox("Copier le RPU Dolby Vision depuis la source")
+        self._copy_dv_cb.setStyleSheet(_checkbox_style())
+        self._copy_dv_cb.setEnabled(False)
+        self._copy_dv_cb.stateChanged.connect(self._on_dv_toggle)
+        cl.addWidget(self._copy_dv_cb)
+
+        self._dovi_profile_widget = QWidget()
+        self._dovi_profile_widget.setStyleSheet("background:transparent;")
+        dp_l = QHBoxLayout(self._dovi_profile_widget)
+        dp_l.setContentsMargins(20, 0, 0, 0)
+        dp_l.setSpacing(8)
+        dp_lbl = QLabel("Profil dovi_tool")
+        dp_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        self._dovi_profile_combo = QComboBox()
+        self._dovi_profile_combo.setStyleSheet(_combo_style())
+        self._dovi_profile_combo.addItem("P8.1 — conserver (par défaut)", "0")
+        self._dovi_profile_combo.addItem("P8.1 — normaliser / supprimer FEL·MEL", "2")
+        self._dovi_profile_combo.currentIndexChanged.connect(lambda _: self._rebuild_preview())
+        dp_l.addWidget(dp_lbl)
+        dp_l.addWidget(self._dovi_profile_combo)
+        dp_l.addStretch()
+        self._dovi_profile_widget.setVisible(False)
+        cl.addWidget(self._dovi_profile_widget)
+
+        # Passthrough HDR10+ SEI
+        self._copy_hdr10plus_cb = QCheckBox("Copier les métadonnées HDR10+ depuis la source")
+        self._copy_hdr10plus_cb.setStyleSheet(_checkbox_style())
+        self._copy_hdr10plus_cb.setEnabled(False)
+        self._copy_hdr10plus_cb.stateChanged.connect(lambda _: self._rebuild_preview())
+        cl.addWidget(self._copy_hdr10plus_cb)
+
         return card
 
     def _build_profiles_card(self) -> QWidget:
@@ -898,6 +977,7 @@ class EncodePanel(QWidget):
         self._output_edit.setText(str(default_out))
         self._run_btn.setEnabled(True)
         self._set_status("")
+        self._update_passthrough_controls(auto_check=True)
         self.log_message.emit(
             "OK",
             f"{info.path.name} — "
@@ -988,8 +1068,43 @@ class EncodePanel(QWidget):
         self._preset_combo.setCurrentIndex(idx)
         self._preset_combo.setEnabled(bool(presets))
         self._preset_combo.blockSignals(False)
-        # Params avancés : label
+        self._update_passthrough_controls()
         self._rebuild_preview()
+
+    def _on_dv_toggle(self, _state: int) -> None:
+        self._dovi_profile_widget.setVisible(self._copy_dv_cb.isChecked())
+        self._rebuild_preview()
+
+    def _update_passthrough_controls(self, *, auto_check: bool = False) -> None:
+        """Active/désactive les contrôles DV/HDR10+ selon la source et le codec."""
+        if not hasattr(self, "_copy_dv_cb"):
+            return   # appelé pendant l'init avant que le card HDR soit construit
+        if self._file_info is None:
+            self._copy_dv_cb.setEnabled(False)
+            self._copy_hdr10plus_cb.setEnabled(False)
+            return
+
+        codec = self._codec_combo.currentData() or "libx265"
+        is_hevc = codec in ("libx265", "hevc_nvenc", "hevc_amf", "hevc_qsv")
+        hdr = self._file_info.hdr_type
+
+        has_dv       = hdr in (HDRType.DOLBY_VISION, HDRType.DOLBY_VISION_HDR10PLUS)
+        has_hdr10plus = hdr in (HDRType.HDR10PLUS, HDRType.DOLBY_VISION_HDR10PLUS)
+
+        dv_ok       = has_dv and is_hevc
+        hdr10plus_ok = has_hdr10plus and is_hevc
+
+        self._copy_dv_cb.setEnabled(dv_ok)
+        self._copy_hdr10plus_cb.setEnabled(hdr10plus_ok)
+
+        if auto_check:
+            self._copy_dv_cb.setChecked(dv_ok)
+            self._copy_hdr10plus_cb.setChecked(hdr10plus_ok)
+
+        if not dv_ok:
+            self._copy_dv_cb.setChecked(False)
+        if not hdr10plus_ok:
+            self._copy_hdr10plus_cb.setChecked(False)
 
     def _on_mode_changed(self, _idx: int = 0) -> None:
         mode = self._mode_combo.currentData()
@@ -1137,9 +1252,12 @@ class EncodePanel(QWidget):
             return
 
         self._running = True
+        self._op_start = time.monotonic()
         self._run_btn.setEnabled(False)
+        self._cancel_btn.setVisible(True)
         self._progress_bar.setValue(0)
-        self._progress_bar.setVisible(True)
+        self._progress_lbl.setText("")
+        self._progress_widget.setVisible(True)
         self._set_status("Encodage en cours…")
         self.log_message.emit("INFO", f"Démarrage → {config.output.name}")
 
@@ -1150,6 +1268,7 @@ class EncodePanel(QWidget):
             self._on_run_finished(success=False)
             return
 
+        self._signals = signals
         signals.progress.connect(self._on_progress, Qt.ConnectionType.QueuedConnection)
         signals.finished.connect(
             lambda _: self._on_run_finished(success=True),
@@ -1159,30 +1278,81 @@ class EncodePanel(QWidget):
             lambda msg, _exc: self._on_run_finished(success=False, error=msg),
             Qt.ConnectionType.QueuedConnection,
         )
+        signals.cancelled.connect(
+            self._on_run_cancelled,
+            Qt.ConnectionType.QueuedConnection,
+        )
+
+    # Patterns de lignes ffmpeg à ignorer silencieusement (bibliothèques compilées
+    # mais non disponibles à l'exécution, e.g. libvmaf sans modèles installés).
+    _NOISE_RE = re.compile(r"libvmaf\s+ERROR|could not read model from path")
 
     def _on_progress(self, line: str) -> None:
-        """Parse les stats ffmpeg (frame=… time=…) pour mettre à jour la barre."""
+        """Parse les stats ffmpeg (frame=… fps=… time=…) et met à jour la barre + légende."""
+        if self._NOISE_RE.search(line):
+            return
         m = _TIME_RE.search(line)
         if m:
-            elapsed = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
-            if self._duration_s and self._duration_s > 0:
-                pct = min(99, int(elapsed / self._duration_s * 100))
+            elapsed_video = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+            dur = self._duration_s
+            if dur and dur > 0:
+                pct = min(99, int(elapsed_video / dur * 100))
                 self._progress_bar.setValue(pct)
-            # Les lignes de stats ffmpeg ne sont pas loguées (trop verbeuses)
+
+                # FPS d'encodage (throughput, pas le fps du fichier source)
+                fps_m = _FPS_RE.search(line)
+                fps_str = f"{float(fps_m.group(1)):.1f} fps" if fps_m else ""
+
+                # ETA : temps restant basé sur le ratio vidéo encodée / temps réel
+                elapsed_wall = time.monotonic() - self._op_start
+                if elapsed_wall > 0 and elapsed_video > 0:
+                    speed = elapsed_video / elapsed_wall          # s_video / s_réel
+                    eta_s = (dur - elapsed_video) / speed
+                    eta_str = f"ETA {_fmt_eta(eta_s)}"
+                else:
+                    eta_str = ""
+
+                parts = [f"{pct}%", fps_str, eta_str]
+                self._progress_lbl.setText("  ·  ".join(p for p in parts if p))
             return
         self.log_message.emit("INFO", line)
 
+    def _on_cancel(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Confirmer l'annulation",
+            "Annuler l'encodage en cours ?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes and self._signals is not None:
+            self._signals.cancel()
+
+    def _on_run_cancelled(self) -> None:
+        self._running = False
+        self._signals = None
+        self._run_btn.setEnabled(True)
+        self._cancel_btn.setVisible(False)
+        self._progress_widget.setVisible(False)
+        self._progress_lbl.setText("")
+        self._set_status("Annulé.")
+        self.log_message.emit("WARN", "Encodage annulé.")
+
     def _on_run_finished(self, success: bool, error: str = "") -> None:
         self._running = False
+        self._signals = None
         self._run_btn.setEnabled(True)
+        self._cancel_btn.setVisible(False)
         if success:
             config = self._current_config()
             out = config.output if config else None
             self._progress_bar.setValue(100)
+            self._progress_lbl.setText("100%  ·  terminé")
             self._set_status("Terminé.")
             self.log_message.emit("OK", f"Encodage terminé → {out}")
         else:
-            self._progress_bar.setVisible(False)
+            self._progress_widget.setVisible(False)
+            self._progress_lbl.setText("")
             self._set_status("Échec.")
             if error:
                 self.log_message.emit("ERROR", error)
@@ -1231,6 +1401,10 @@ class EncodePanel(QWidget):
             audio_tracks=self._audio_table.current_audio_settings(),
             copy_subtitles=self._subs_cb.isChecked(),
             duration_s=self._duration_s,
+            copy_dv=self._copy_dv_cb.isChecked(),
+            copy_hdr10plus=self._copy_hdr10plus_cb.isChecked(),
+            dovi_profile=self._dovi_profile_combo.currentData() or "0",
+            work_dir=self._config.work_dir,
         )
 
     def _browse_output(self) -> None:
