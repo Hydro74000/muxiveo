@@ -3,21 +3,32 @@ ui/panels/remux_panel.py — Panneau de remuxage MKV/MP4 sans réencodage.
 
 Architecture :
     RemuxPanel (QWidget)
-    ├── _FileZone            — sélection/drop du fichier source + résumé
-    ├── _TrackTable          — tableau de pistes avec drag-drop et cases à cocher
+    ├── _FileListWidget      — liste de fichiers sources (multi-fichiers, drag-drop)
+    │   └── _FileRow         — ligne par fichier : nom, infos, bouton retrait
+    ├── _TrackTable          — tableau de pistes multi-sources avec drag-drop et cases à cocher
     ├── Options              — conserver chapitres / pièces jointes
     ├── Section sortie       — chemin du fichier de sortie
     └── Aperçu commande      — QPlainTextEdit read-only, mis à jour en temps réel
 
+Modèle de données :
+    SourceFile (dataclass) — représente un fichier source chargé avec ses infos et pistes
+
 Signaux exposés :
     RemuxPanel.log_message(level: str, message: str)
         → connecter à MainWindow.log_requested
+    RemuxPanel.file_info_changed(FileInfo)
+        → émet les infos du premier fichier source (pour EncodePanel)
+    RemuxPanel.audio_tracks_changed(list[AudioTrack])
+        → émet toutes les pistes audio activées, tous sources confondus
 """
 
 from __future__ import annotations
 
+import colorsys
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
@@ -26,15 +37,15 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QFileDialog, QFrame,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
-    QTableWidget, QTableWidgetItem,
+    QSizePolicy, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
 from core.config import AppConfig
-from core.inspector import FileInfo, FileInspector, InspectionError
+from core.inspector import AudioTrack, FileInfo, FileInspector, InspectionError
 from core.runner import TaskSignals
 from core.workflows.remux import (
-    RemuxConfig, RemuxError, RemuxWorkflow,
+    RemuxConfig, RemuxError, RemuxWorkflow, SourceInput,
     TrackEntry, tracks_from_file_info,
 )
 
@@ -46,6 +57,47 @@ def _fmt_eta(seconds: float) -> str:
     s = int(seconds)
     m, s = divmod(s, 60)
     return f"{m}m {s:02d}s" if m else f"{s}s"
+
+
+# Hauteurs fixes pour les éléments de la liste de fichiers
+_FILE_ROW_H = 52   # hauteur d'une _FileRow
+_FILE_BAR_H = 36   # barre "Ajouter des fichiers"
+_FILE_PH_H  = 100  # hauteur du placeholder (sans fichiers)
+
+
+def _pick_file_color(index: int) -> str:
+    """
+    Génère une couleur HSL à séparation maximale via l'angle doré (~137.5°).
+
+    Paramètres fixes : saturation 70 %, luminosité 62 % — lisibles sur fond sombre,
+    ni trop clair (≠ blanc) ni trop sombre (≠ noir).
+    """
+    hue = (index * 137.508) % 360
+    r, g, b = colorsys.hls_to_rgb(hue / 360, 0.62, 0.70)
+    return f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
+
+
+# =============================================================================
+# Modèle de données
+# =============================================================================
+
+@dataclass
+class SourceFile:
+    """
+    Représente un fichier source chargé dans le panneau Conteneur.
+
+    id     : UUID unique — permet d'identifier le fichier même après suppression
+             d'autres fichiers de la liste (les TrackEntry.file_id pointent vers lui).
+    path   : chemin absolu du fichier.
+    color  : couleur hex assignée à ce fichier (indicateur visuel).
+    info   : résultat de l'inspection (None pendant et si erreur).
+    tracks : liste complète des pistes du fichier (remplie après inspection).
+    """
+    id:     str
+    path:   Path
+    color:  str = ""
+    info:   FileInfo | None = None
+    tracks: list[TrackEntry] = field(default_factory=list)
 
 
 # =============================================================================
@@ -165,24 +217,147 @@ def _separator() -> QFrame:
 
 
 # =============================================================================
-# Zone de dépôt de fichier source
+# Ligne de fichier source (_FileRow)
 # =============================================================================
 
-class _FileZone(QFrame):
+class _FileRow(QWidget):
     """
-    Zone de sélection et dépôt du fichier source.
+    Ligne représentant un fichier source dans _FileListWidget.
 
-    Signal :
-        file_selected(path: str)
+    Affiche : icône · nom du fichier · infos (après inspection) · bouton retrait.
     """
 
-    file_selected = Signal(str)
+    remove_clicked = Signal(str)   # file_id
 
-    _ACCEPTED = {".mkv", ".mp4", ".m4v", ".mov"}
+    def __init__(self, file_id: str, path: Path, color: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._file_id = file_id
+        self.setFixedHeight(_FILE_ROW_H)
+        self._build_ui(path, color)
+
+    def _build_ui(self, path: Path, color: str) -> None:
+        self.setStyleSheet(f"""
+            _FileRow {{
+                background: {_C.BG_CARD};
+                border-bottom: 1px solid {_C.BORDER};
+            }}
+        """)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 8, 8, 8)
+        lay.setSpacing(10)
+
+        color_square = QLabel()
+        color_square.setFixedSize(12, 12)
+        color_square.setStyleSheet(
+            f"background: {color}; border-radius: 3px; border: none;"
+        )
+        lay.addWidget(color_square)
+
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+
+        self._name_lbl = QLabel(path.name)
+        self._name_lbl.setStyleSheet(f"""
+            color: {_C.TEXT_PRI};
+            font-size: 12px;
+            font-weight: 600;
+            background: transparent;
+            border: none;
+        """)
+
+        self._info_lbl = QLabel("Inspection en cours…")
+        self._info_lbl.setStyleSheet(f"""
+            color: {_C.TEXT_DIM};
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            background: transparent;
+            border: none;
+        """)
+
+        text_col.addWidget(self._name_lbl)
+        text_col.addWidget(self._info_lbl)
+        lay.addLayout(text_col, stretch=1)
+
+        remove_btn = QPushButton("✕")
+        remove_btn.setFixedSize(22, 22)
+        remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        remove_btn.setToolTip("Retirer ce fichier")
+        remove_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {_C.TEXT_DIM};
+                border: 1px solid {_C.BORDER};
+                border-radius: 4px;
+                font-size: 10px;
+                font-weight: 700;
+            }}
+            QPushButton:hover {{
+                color: {_C.ERROR};
+                border-color: {_C.ERROR};
+                background: #1f0e0e;
+            }}
+            QPushButton:pressed {{ background: #2a0f0f; }}
+        """)
+        remove_btn.clicked.connect(lambda: self.remove_clicked.emit(self._file_id))
+        lay.addWidget(remove_btn)
+
+    def set_info(self, info: FileInfo) -> None:
+        """Met à jour la ligne d'informations après inspection réussie."""
+        parts = [info.size_human, info.duration_human, info.format]
+        if info.primary_video:
+            parts.append(info.primary_video.resolution)
+            if info.primary_video.hdr_type.label() != "SDR":
+                parts.append(info.primary_video.hdr_type.label())
+        self._info_lbl.setText("   ·   ".join(p for p in parts if p and p != "?"))
+        self._info_lbl.setStyleSheet(f"""
+            color: {_C.TEXT_SEC};
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            background: transparent;
+            border: none;
+        """)
+
+    def set_error(self, message: str) -> None:
+        """Affiche une erreur d'inspection."""
+        self._info_lbl.setText(f"Erreur : {message}")
+        self._info_lbl.setStyleSheet(f"""
+            color: {_C.ERROR};
+            font-size: 10px;
+            background: transparent;
+            border: none;
+        """)
+
+
+# =============================================================================
+# Zone de liste de fichiers sources (_FileListWidget)
+# =============================================================================
+
+_ACCEPTED_EXT = {".mkv", ".mp4", ".m4v", ".mov"}
+
+
+class _FileListWidget(QFrame):
+    """
+    Widget de sélection multi-fichiers.
+
+    Permet d'ajouter des fichiers :
+      - par bouton "Ajouter des fichiers…" (dialogue multi-sélection)
+      - par glisser-déposer (un ou plusieurs fichiers simultanément)
+
+    Permet de retirer chaque fichier individuellement via le bouton ✕.
+
+    Signaux :
+        add_requested(list[str])     — chemins des fichiers à charger
+        remove_requested(str)        — file_id du fichier à retirer
+    """
+
+    add_requested    = Signal(list)   # list[str]
+    remove_requested = Signal(str)    # file_id
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setAcceptDrops(True)
+        self._rows: dict[str, _FileRow] = {}   # file_id → _FileRow
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -193,91 +368,147 @@ class _FileZone(QFrame):
                 border-radius: 8px;
             }}
         """)
-        self.setMinimumHeight(72)
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(12)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        self._icon = QLabel("⊞")
-        self._icon.setStyleSheet(f"""
-            font-size: 24px;
-            color: {_C.TEXT_DIM};
-            background: transparent;
-            border: none;
+        # Zone de défilement des lignes de fichiers
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self._scroll.setVisible(False)   # Caché tant qu'aucun fichier
+
+        self._rows_container = QWidget()
+        self._rows_container.setStyleSheet("background: transparent;")
+        self._rows_layout = QVBoxLayout(self._rows_container)
+        self._rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._rows_layout.setSpacing(0)
+        self._rows_layout.addStretch()
+
+        self._scroll.setWidget(self._rows_container)
+        root.addWidget(self._scroll, stretch=1)
+
+        # Placeholder (affiché quand aucun fichier)
+        self._placeholder = QWidget()
+        self._placeholder.setStyleSheet("background: transparent;")
+        ph_lay = QVBoxLayout(self._placeholder)
+        ph_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ph_lay.setSpacing(6)
+
+        ph_icon = QLabel("⊞")
+        ph_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ph_icon.setStyleSheet(f"font-size: 28px; color: {_C.TEXT_DIM}; background: transparent; border: none;")
+        ph_lay.addWidget(ph_icon)
+
+        ph_text = QLabel("Déposer des fichiers MKV / MP4 ici")
+        ph_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ph_text.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: 12px; font-weight: 500; background: transparent; border: none;")
+        ph_lay.addWidget(ph_text)
+
+        ph_sub = QLabel("ou cliquer sur « Ajouter des fichiers »")
+        ph_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ph_sub.setStyleSheet(f"color: {_C.TEXT_DIM}; font-size: 10px; background: transparent; border: none;")
+        ph_lay.addWidget(ph_sub)
+
+        root.addWidget(self._placeholder, stretch=1)
+
+        # Barre de bas : bouton Ajouter
+        add_bar = QWidget()
+        add_bar.setStyleSheet(f"""
+            QWidget {{
+                background: {_C.BG_DEEP};
+                border-top: 1px solid {_C.BORDER};
+                border-bottom-left-radius: 8px;
+                border-bottom-right-radius: 8px;
+            }}
         """)
-        layout.addWidget(self._icon)
+        add_bar.setFixedHeight(36)
+        add_bar_lay = QHBoxLayout(add_bar)
+        add_bar_lay.setContentsMargins(12, 0, 12, 0)
+        add_bar_lay.setSpacing(0)
 
-        text_col = QVBoxLayout()
-        text_col.setSpacing(3)
-
-        self._main_lbl = QLabel("Déposer un fichier MKV / MP4 ici")
-        self._main_lbl.setStyleSheet(f"""
-            color: {_C.TEXT_SEC};
-            font-size: 12px;
-            font-weight: 500;
-            background: transparent;
-            border: none;
+        add_btn = QPushButton("+ Ajouter des fichiers…")
+        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {_C.ACCENT};
+                border: none;
+                font-size: 11px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{ color: #8090ff; }}
         """)
-        self._info_lbl = QLabel("")
-        self._info_lbl.setStyleSheet(f"""
-            color: {_C.TEXT_DIM};
-            font-size: 10px;
-            font-family: 'JetBrains Mono', monospace;
-            background: transparent;
-            border: none;
-        """)
-        text_col.addWidget(self._main_lbl)
-        text_col.addWidget(self._info_lbl)
-        layout.addLayout(text_col, stretch=1)
+        add_btn.clicked.connect(self._browse)
+        add_bar_lay.addWidget(add_btn)
+        add_bar_lay.addStretch()
 
-        browse_btn = _secondary_button("Parcourir…")
-        browse_btn.clicked.connect(self._browse)
-        layout.addWidget(browse_btn)
+        root.addWidget(add_bar)
+        self._update_visibility()
 
     # ------------------------------------------------------------------
     # API publique
     # ------------------------------------------------------------------
 
-    def set_file_info(self, info: FileInfo) -> None:
-        """Met à jour l'affichage avec les informations du fichier chargé."""
-        self._main_lbl.setText(info.path.name)
-        self._main_lbl.setStyleSheet(f"""
-            color: {_C.TEXT_PRI};
-            font-size: 12px;
-            font-weight: 600;
-            background: transparent;
-            border: none;
-        """)
-        parts = [info.size_human, info.duration_human, info.format]
-        if info.primary_video:
-            parts.append(info.primary_video.resolution)
-        self._info_lbl.setText("   ".join(p for p in parts if p != "?"))
-        self.setStyleSheet(f"""
-            QFrame {{
-                background: {_C.BG_CARD};
-                border: 1px solid {_C.BORDER_LT};
-                border-radius: 8px;
-            }}
-        """)
+    def add_file(self, sf: SourceFile) -> None:
+        """Ajoute une ligne de fichier dans l'état 'inspection en cours'."""
+        row = _FileRow(sf.id, sf.path, sf.color)
+        row.remove_clicked.connect(self.remove_requested)
+        self._rows[sf.id] = row
 
-    def reset(self) -> None:
-        self._main_lbl.setText("Déposer un fichier MKV / MP4 ici")
-        self._main_lbl.setStyleSheet(f"""
-            color: {_C.TEXT_SEC};
-            font-size: 12px;
-            font-weight: 500;
-            background: transparent;
-            border: none;
-        """)
-        self._info_lbl.setText("")
-        self.setStyleSheet(f"""
-            QFrame {{
-                background: {_C.BG_CARD};
-                border: 1px dashed {_C.BORDER_LT};
-                border-radius: 8px;
-            }}
-        """)
+        # Insérer avant le stretch en fin de layout
+        count = self._rows_layout.count()
+        self._rows_layout.insertWidget(count - 1, row)
+
+        self._update_visibility()
+
+    def update_file(self, sf: SourceFile) -> None:
+        """Met à jour la ligne après inspection réussie."""
+        row = self._rows.get(sf.id)
+        if row and sf.info:
+            row.set_info(sf.info)
+
+    def set_file_error(self, file_id: str, message: str) -> None:
+        """Affiche une erreur sur la ligne correspondante."""
+        row = self._rows.get(file_id)
+        if row:
+            row.set_error(message)
+
+    def remove_file(self, file_id: str) -> None:
+        """Retire visuellement la ligne."""
+        row = self._rows.pop(file_id, None)
+        if row:
+            self._rows_layout.removeWidget(row)
+            row.deleteLater()
+        self._update_visibility()
+
+    def file_count(self) -> int:
+        return len(self._rows)
+
+    # ------------------------------------------------------------------
+    # Interne
+    # ------------------------------------------------------------------
+
+    def _update_visibility(self) -> None:
+        has_files = bool(self._rows)
+        self._scroll.setVisible(has_files)
+        self._placeholder.setVisible(not has_files)
+        n = len(self._rows)
+        h = (_FILE_ROW_H * n + _FILE_BAR_H) if has_files else (_FILE_PH_H + _FILE_BAR_H)
+        self.setFixedHeight(h)
+
+    def _browse(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Sélectionner des fichiers vidéo",
+            "",
+            "Fichiers vidéo (*.mkv *.mp4 *.m4v *.mov);;Tous les fichiers (*)",
+        )
+        if paths:
+            self.add_requested.emit(paths)
 
     # ------------------------------------------------------------------
     # Drag & drop
@@ -286,81 +517,74 @@ class _FileZone(QFrame):
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
-                if Path(url.toLocalFile()).suffix.lower() in self._ACCEPTED:
+                if Path(url.toLocalFile()).suffix.lower() in _ACCEPTED_EXT:
                     event.acceptProposedAction()
                     return
         event.ignore()
 
     def dropEvent(self, event: QDropEvent) -> None:
+        paths = []
         for url in event.mimeData().urls():
-            path = Path(url.toLocalFile())
-            if path.suffix.lower() in self._ACCEPTED and path.is_file():
-                self.file_selected.emit(str(path))
-                event.acceptProposedAction()
-                return
-        event.ignore()
-
-    # ------------------------------------------------------------------
-    # Parcourir
-    # ------------------------------------------------------------------
-
-    def _browse(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Sélectionner un fichier vidéo",
-            "",
-            "Fichiers vidéo (*.mkv *.mp4 *.m4v *.mov);;Tous les fichiers (*)",
-        )
-        if path:
-            self.file_selected.emit(path)
+            p = Path(url.toLocalFile())
+            if p.suffix.lower() in _ACCEPTED_EXT and p.is_file():
+                paths.append(str(p))
+        if paths:
+            self.add_requested.emit(paths)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
 
 # =============================================================================
-# Tableau de pistes avec drag-drop de lignes
+# Tableau de pistes multi-sources (_TrackTable)
 # =============================================================================
 
 class _TrackTable(QTableWidget):
     """
-    Tableau de pistes avec :
+    Tableau de pistes multi-sources avec :
+      - colonne Source (fichier d'origine, lecture seule)
       - cases à cocher pour l'inclusion/exclusion
-      - drag-and-drop pour réordonner les lignes
+      - drag-and-drop pour réordonner les lignes (entre sources possibles)
       - colonnes Langue et Titre éditables inline
       - signal order_changed émis après chaque réordonnancement
 
     Les données de chaque ligne sont stockées dans le UserRole de la
-    colonne 0. La méthode current_tracks() synchronise l'état UI → TrackEntry
-    avant de retourner la liste dans l'ordre courant.
+    colonne COL_CHECK. La méthode current_tracks() synchronise UI → TrackEntry.
     """
 
     order_changed = Signal()
 
+    _TYPE_ORDER: dict[str, int] = {"video": 0, "audio": 1, "subtitle": 2}
+    _MAX_VISIBLE_ROWS = 15
+    _ROW_H_DEFAULT    = 28
+
     # Indices de colonnes
-    COL_CHECK  = 0
-    COL_TYPE   = 1
-    COL_CODEC  = 2
-    COL_INFO   = 3
+    COL_SOURCE = 0
+    COL_CHECK  = 1
+    COL_TYPE   = 2
+    COL_CODEC  = 3
     COL_LANG   = 4
-    COL_TITLE  = 5
+    COL_INFO   = 5
+    COL_TITLE  = 6
 
-    _HEADERS = ["", "Type", "Codec", "Info", "Langue", "Titre"]
+    _HEADERS = ["", "", "Type", "Codec", "Langue", "Info", "Titre"]
 
-    # Flags des cellules non-éditables (les cellules de type/codec/info)
     _FLAG_RO = (
         Qt.ItemFlag.ItemIsEnabled
         | Qt.ItemFlag.ItemIsSelectable
         | Qt.ItemFlag.ItemIsDragEnabled
     )
-    # Flags des cellules éditables (Langue, Titre)
     _FLAG_RW = _FLAG_RO | Qt.ItemFlag.ItemIsEditable
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(0, len(self._HEADERS), parent)
+        self._filter_selected = False
         self._setup_ui()
+        self._adjust_height()
 
     def _setup_ui(self) -> None:
         self.setHorizontalHeaderLabels(self._HEADERS)
 
-        # Drag-drop de lignes entières
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
         self.viewport().setAcceptDrops(True)
@@ -370,7 +594,6 @@ class _TrackTable(QTableWidget):
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
 
-        # Apparence
         self.setShowGrid(False)
         self.setAlternatingRowColors(True)
         self.verticalHeader().setVisible(False)
@@ -379,17 +602,18 @@ class _TrackTable(QTableWidget):
             | QAbstractItemView.EditTrigger.SelectedClicked
         )
 
-        # Redimensionnement des colonnes
         hh = self.horizontalHeader()
-        hh.setSectionResizeMode(self.COL_CHECK, QHeaderView.ResizeMode.Fixed)
-        hh.setSectionResizeMode(self.COL_TYPE,  QHeaderView.ResizeMode.Fixed)
-        hh.setSectionResizeMode(self.COL_CODEC, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(self.COL_INFO,  QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(self.COL_LANG,  QHeaderView.ResizeMode.Fixed)
-        hh.setSectionResizeMode(self.COL_TITLE, QHeaderView.ResizeMode.Stretch)
-        self.setColumnWidth(self.COL_CHECK, 32)
-        self.setColumnWidth(self.COL_TYPE,  48)
-        self.setColumnWidth(self.COL_LANG,  70)
+        hh.setSectionResizeMode(self.COL_SOURCE, QHeaderView.ResizeMode.Fixed)
+        hh.setSectionResizeMode(self.COL_CHECK,  QHeaderView.ResizeMode.Fixed)
+        hh.setSectionResizeMode(self.COL_TYPE,   QHeaderView.ResizeMode.Fixed)
+        hh.setSectionResizeMode(self.COL_CODEC,  QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(self.COL_LANG,   QHeaderView.ResizeMode.Fixed)
+        hh.setSectionResizeMode(self.COL_INFO,   QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(self.COL_TITLE,  QHeaderView.ResizeMode.Stretch)
+        self.setColumnWidth(self.COL_SOURCE, 20)
+        self.setColumnWidth(self.COL_CHECK,  32)
+        self.setColumnWidth(self.COL_TYPE,   48)
+        self.setColumnWidth(self.COL_LANG,   70)
 
         mono = QFont("JetBrains Mono", 10)
         mono.setStyleHint(QFont.StyleHint.Monospace)
@@ -439,20 +663,77 @@ class _TrackTable(QTableWidget):
     # Remplissage
     # ------------------------------------------------------------------
 
-    def load_tracks(self, tracks: list[TrackEntry]) -> None:
-        """Charge la liste de pistes. Efface d'abord le contenu existant."""
-        self.blockSignals(True)
-        self.setRowCount(0)
-        for entry in tracks:
-            row = self.rowCount()
-            self.insertRow(row)
-            self._fill_row(row, entry)
-        self.blockSignals(False)
+    def append_tracks(self, source_color: str, tracks: list[TrackEntry]) -> None:
+        """
+        Insère les pistes dans le tableau en respectant l'ordre V → A → S.
 
-    def _fill_row(self, row: int, entry: TrackEntry) -> None:
+        Chaque piste est insérée après les pistes du même type déjà présentes
+        (et avant celles des types suivants), regroupant ainsi les pistes par type
+        puis par fichier source au sein de chaque type.
+        """
+        self.blockSignals(True)
+        for entry in tracks:
+            pos = self._find_insert_position(entry.track_type)
+            self.insertRow(pos)
+            self._fill_row(pos, entry, source_color)
+        self.blockSignals(False)
+        self._adjust_height()
+
+    def _find_insert_position(self, track_type: str) -> int:
+        """Retourne l'index où insérer une piste du type donné (après toutes les pistes du même type)."""
+        my_order = self._TYPE_ORDER.get(track_type, 3)
+        for row in range(self.rowCount()):
+            item = self.item(row, self.COL_CHECK)
+            if item is None:
+                continue
+            entry: TrackEntry = item.data(Qt.ItemDataRole.UserRole)
+            if entry is None:
+                continue
+            if self._TYPE_ORDER.get(entry.track_type, 3) > my_order:
+                return row
+        return self.rowCount()
+
+    def _adjust_height(self) -> None:
+        """Ajuste la hauteur du tableau au nombre de lignes (max 15 lignes visibles)."""
+        n = self.rowCount()
+        row_h = self.rowHeight(0) if n > 0 else self._ROW_H_DEFAULT
+        header_h = self.horizontalHeader().height()
+        visible = min(n, self._MAX_VISIBLE_ROWS)
+        h = visible * row_h + header_h + 4 if n > 0 else 80 + header_h
+        self.setFixedHeight(h)
+
+    def remove_tracks_by_file_id(self, file_id: str) -> None:
+        """Retire toutes les lignes appartenant au fichier identifié par file_id."""
+        self.blockSignals(True)
+        row = self.rowCount() - 1
+        while row >= 0:
+            item = self.item(row, self.COL_CHECK)
+            if item is not None:
+                entry: TrackEntry = item.data(Qt.ItemDataRole.UserRole)
+                if entry is not None and entry.file_id == file_id:
+                    self.removeRow(row)
+            row -= 1
+        self.blockSignals(False)
+        self._adjust_height()
+
+    def clear_all(self) -> None:
+        """Vide complètement le tableau."""
+        self.setRowCount(0)
+        self._adjust_height()
+
+    def _fill_row(self, row: int, entry: TrackEntry, source_color: str) -> None:
         """Remplit une ligne depuis un TrackEntry."""
 
-        # Col 0 — case à cocher + stockage de l'entrée
+        # Col 0 — carré coloré représentant le fichier source
+        src_item = QTableWidgetItem("█")
+        src_item.setFlags(self._FLAG_RO & ~Qt.ItemFlag.ItemIsDragEnabled)
+        src_item.setForeground(QColor(source_color))
+        src_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        src_item.setFont(QFont("Arial", 11))
+        src_item.setData(Qt.ItemDataRole.UserRole, source_color)
+        self.setItem(row, self.COL_SOURCE, src_item)
+
+        # Col 1 — case à cocher + stockage de l'entrée
         chk = QTableWidgetItem()
         chk.setData(Qt.ItemDataRole.UserRole, entry)
         chk.setFlags(
@@ -467,7 +748,7 @@ class _TrackTable(QTableWidget):
         chk.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setItem(row, self.COL_CHECK, chk)
 
-        # Col 1 — type (lettre colorée)
+        # Col 2 — type (lettre colorée)
         type_item = QTableWidgetItem(entry.type_label)
         type_item.setFlags(self._FLAG_RO)
         type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -477,23 +758,23 @@ class _TrackTable(QTableWidget):
             case "subtitle": type_item.setForeground(QColor(_C.TRACK_SUBTITLE))
         self.setItem(row, self.COL_TYPE, type_item)
 
-        # Col 2 — codec
+        # Col 3 — codec
         codec_item = QTableWidgetItem(entry.codec)
         codec_item.setFlags(self._FLAG_RO)
         self.setItem(row, self.COL_CODEC, codec_item)
-
-        # Col 3 — infos techniques
-        info_item = QTableWidgetItem(entry.display_info)
-        info_item.setFlags(self._FLAG_RO)
-        info_item.setForeground(QColor(_C.TEXT_SEC))
-        self.setItem(row, self.COL_INFO, info_item)
 
         # Col 4 — langue (éditable)
         lang_item = QTableWidgetItem(entry.language)
         lang_item.setFlags(self._FLAG_RW)
         self.setItem(row, self.COL_LANG, lang_item)
 
-        # Col 5 — titre (éditable)
+        # Col 5 — infos techniques
+        info_item = QTableWidgetItem(entry.display_info)
+        info_item.setFlags(self._FLAG_RO)
+        info_item.setForeground(QColor(_C.TEXT_SEC))
+        self.setItem(row, self.COL_INFO, info_item)
+
+        # Col 6 — titre (éditable)
         title_item = QTableWidgetItem(entry.title)
         title_item.setFlags(self._FLAG_RW)
         self.setItem(row, self.COL_TITLE, title_item)
@@ -530,10 +811,7 @@ class _TrackTable(QTableWidget):
         return tracks
 
     def set_all_enabled(self, enabled: bool) -> None:
-        """Active ou désactive toutes les pistes d'un coup.
-
-        Le recalcul de l'aperçu est à la charge de l'appelant.
-        """
+        """Active ou désactive toutes les pistes d'un coup."""
         self.blockSignals(True)
         state = Qt.CheckState.Checked if enabled else Qt.CheckState.Unchecked
         for row in range(self.rowCount()):
@@ -541,6 +819,22 @@ class _TrackTable(QTableWidget):
             if item:
                 item.setCheckState(state)
         self.blockSignals(False)
+
+    def set_filter_selected(self, enabled: bool) -> None:
+        """Active/désactive le filtre 'sélectionnées seulement'."""
+        self._filter_selected = enabled
+        self.refresh_filter()
+
+    def refresh_filter(self) -> None:
+        """Applique (ou retire) le filtre sur les lignes décochées."""
+        for row in range(self.rowCount()):
+            item = self.item(row, self.COL_CHECK)
+            hidden = (
+                self._filter_selected
+                and item is not None
+                and item.checkState() != Qt.CheckState.Checked
+            )
+            self.setRowHidden(row, hidden)
 
     # ------------------------------------------------------------------
     # Drag-drop : déplacement de lignes entières
@@ -551,23 +845,17 @@ class _TrackTable(QTableWidget):
             event.ignore()
             return
 
-        # Lecture des lignes sélectionnées avant modification
         src_rows = sorted(set(idx.row() for idx in self.selectedIndexes()))
         if not src_rows:
             event.ignore()
             return
 
-        # Synchronise l'état UI → TrackEntry avant extraction
         all_entries = self.current_tracks()
-
-        # Ligne cible
         drop_row = self._drop_target_row(event)
 
-        # Réordonne la liste en mémoire
-        moving = [all_entries[r] for r in src_rows]
+        moving    = [all_entries[r] for r in src_rows]
         remaining = [e for i, e in enumerate(all_entries) if i not in src_rows]
 
-        # Ajuste drop_row après suppression des lignes sources
         adjusted = drop_row
         for r in src_rows:
             if r < drop_row:
@@ -577,22 +865,32 @@ class _TrackTable(QTableWidget):
         for i, entry in enumerate(moving):
             remaining.insert(adjusted + i, entry)
 
+        # Capture les couleurs de source AVANT de vider le tableau
+        color_by_file_id: dict[str, str] = {}
+        for r in range(self.rowCount()):
+            item_chk = self.item(r, self.COL_CHECK)
+            item_src = self.item(r, self.COL_SOURCE)
+            if item_chk and item_src:
+                e: TrackEntry = item_chk.data(Qt.ItemDataRole.UserRole)
+                if e:
+                    color_by_file_id[e.file_id] = item_src.data(Qt.ItemDataRole.UserRole) or _C.BORDER
+
         # Reconstruit le tableau
         self.blockSignals(True)
         self.setRowCount(0)
         for entry in remaining:
             row = self.rowCount()
             self.insertRow(row)
-            self._fill_row(row, entry)
+            src_color = color_by_file_id.get(entry.file_id, _C.BORDER)
+            self._fill_row(row, entry, src_color)
         self.blockSignals(False)
 
-        # Sélectionne les lignes déplacées
         self.selectRow(adjusted)
         event.accept()
+        self._adjust_height()
         self.order_changed.emit()
 
     def _drop_target_row(self, event: QDropEvent) -> int:
-        """Calcule l'indice d'insertion cible."""
         index = self.indexAt(event.position().toPoint())
         if not index.isValid():
             return self.rowCount()
@@ -609,32 +907,43 @@ class _TrackTable(QTableWidget):
 
 class RemuxPanel(QWidget):
     """
-    Panneau de remuxage MKV/MP4.
+    Panneau de remuxage MKV/MP4 — support multi-sources.
 
     Signaux :
         log_message(level: str, message: str)
+        file_info_changed(FileInfo)      — infos du premier fichier source
+        audio_tracks_changed(list)       — pistes audio activées (tous sources)
     """
 
     log_message = Signal(str, str)
-    _inspection_result = Signal(object)   # FileInfo — signal interne thread-safe
-    _inspection_error  = Signal(str)      # message d'erreur — signal interne thread-safe
 
-    file_info_changed    = Signal(object)   # FileInfo — émis après chaque inspection réussie
-    audio_tracks_changed = Signal(object)   # list[AudioTrack] — pistes audio activées dans le tableau
+    # Signaux internes thread-safe (résultat d'inspection)
+    _inspection_done  = Signal(str, object)   # (file_id, FileInfo)
+    _inspection_error = Signal(str, str)      # (file_id, error_message)
+
+    file_info_changed    = Signal(object)   # FileInfo
+    audio_tracks_changed = Signal(object)   # list[AudioTrack]
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._config    = config
-        self._workflow  = RemuxWorkflow(mkvmerge_bin=config.tool_mkvmerge)
-        self._executor  = ThreadPoolExecutor(max_workers=1)
-        self._file_info: FileInfo | None = None
-        self._running   = False
+        self._config   = config
+        self._workflow = RemuxWorkflow(mkvmerge_bin=config.tool_mkvmerge)
+        self._executor = ThreadPoolExecutor(max_workers=2)
+        self._running  = False
         self._signals: TaskSignals | None = None
+        self._op_start: float = 0.0
+
+        # Liste ordonnée des SourceFile chargés
+        self._source_files: list[SourceFile] = []
+        # Mapping file_id → nom court (pour logs)
+        self._source_names:  dict[str, str] = {}
+        # Mapping file_id → couleur hex (pour colonne source du tableau)
+        self._source_colors: dict[str, str] = {}
 
         self._workflow.log_message.connect(
             self.log_message, Qt.ConnectionType.QueuedConnection
         )
-        self._inspection_result.connect(
+        self._inspection_done.connect(
             self._apply_inspection, Qt.ConnectionType.QueuedConnection
         )
         self._inspection_error.connect(
@@ -687,17 +996,18 @@ class RemuxPanel(QWidget):
             background: transparent;
             letter-spacing: -0.3px;
         """)
-        subtitle = QLabel("Remuxage, sélection et réordonnancement de pistes — sans réencodage")
+        subtitle = QLabel("Remuxage, fusion et sélection de pistes — sans réencodage")
         subtitle.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: 12px; background: transparent;")
         content_layout.addWidget(title)
         content_layout.addWidget(subtitle)
         content_layout.addWidget(_separator())
 
-        # --- Fichier source ---
-        content_layout.addWidget(_section_label("FICHIER SOURCE"))
-        self._file_zone = _FileZone()
-        self._file_zone.file_selected.connect(self._on_file_selected)
-        content_layout.addWidget(self._file_zone)
+        # --- Fichiers sources ---
+        content_layout.addWidget(_section_label("FICHIERS SOURCES"))
+        self._file_list = _FileListWidget()
+        self._file_list.add_requested.connect(self._on_add_files)
+        self._file_list.remove_requested.connect(self._on_remove_file)
+        content_layout.addWidget(self._file_list)
 
         content_layout.addWidget(_separator())
 
@@ -707,13 +1017,42 @@ class RemuxPanel(QWidget):
         track_header.addWidget(_section_label("PISTES"))
         track_header.addStretch()
 
-        btn_all = _secondary_button("Tout activer")
+        btn_all  = _secondary_button("Tout activer")
         btn_none = _secondary_button("Tout désactiver")
         btn_all.clicked.connect(lambda: self._set_all_tracks(True))
         btn_none.clicked.connect(lambda: self._set_all_tracks(False))
         track_header.addWidget(btn_all)
         track_header.addWidget(btn_none)
 
+        self._filter_btn = QPushButton("Sélectionnées seulement")
+        self._filter_btn.setCheckable(True)
+        self._filter_btn.setFixedHeight(28)
+        self._filter_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._filter_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {_C.BG_CARD};
+                color: {_C.TEXT_SEC};
+                border: 1px solid {_C.BORDER};
+                border-radius: 5px;
+                font-size: 11px;
+                font-weight: 500;
+                padding: 0 12px;
+            }}
+            QPushButton:hover {{
+                background: {_C.BG_HOVER};
+                color: {_C.TEXT_PRI};
+                border-color: {_C.BORDER_LT};
+            }}
+            QPushButton:checked {{
+                background: {_C.ACCENT_DIM};
+                color: {_C.ACCENT};
+                border-color: {_C.ACCENT};
+            }}
+        """)
+        self._filter_btn.toggled.connect(
+            lambda checked: self._track_table.set_filter_selected(checked)
+        )
+        track_header.addWidget(self._filter_btn)
         content_layout.addLayout(track_header)
 
         hint = QLabel("Glisser-déposer les lignes pour réordonner · Double-clic pour éditer Langue / Titre")
@@ -721,7 +1060,6 @@ class RemuxPanel(QWidget):
         content_layout.addWidget(hint)
 
         self._track_table = _TrackTable()
-        self._track_table.setMinimumHeight(180)
         self._track_table.itemChanged.connect(self._on_table_changed)
         self._track_table.order_changed.connect(self._rebuild_preview)
         content_layout.addWidget(self._track_table)
@@ -794,7 +1132,7 @@ class RemuxPanel(QWidget):
             }}
         """)
         self._cmd_preview.setPlaceholderText(
-            "Sélectionnez un fichier source et définissez le chemin de sortie…"
+            "Ajoutez au moins un fichier source et définissez le chemin de sortie…"
         )
         content_layout.addWidget(self._cmd_preview)
 
@@ -802,7 +1140,7 @@ class RemuxPanel(QWidget):
         scroll.setWidget(content)
         root.addWidget(scroll, stretch=1)
 
-        # --- Bouton Lancer ---
+        # --- Barre d'action (bouton Lancer) ---
         btn_bar = QWidget()
         btn_bar.setStyleSheet(f"""
             QWidget {{
@@ -814,7 +1152,6 @@ class RemuxPanel(QWidget):
         btn_bar_layout.setContentsMargins(28, 12, 28, 12)
         btn_bar_layout.setSpacing(12)
 
-        # Conteneur vertical : barre fine + légende (pct · ETA)
         self._progress_widget = QWidget()
         self._progress_widget.setStyleSheet("background:transparent;")
         _pvl = QVBoxLayout(self._progress_widget)
@@ -886,72 +1223,121 @@ class RemuxPanel(QWidget):
         root.addWidget(btn_bar)
 
     # ------------------------------------------------------------------
-    # Chargement du fichier source
+    # Ajout de fichiers
     # ------------------------------------------------------------------
 
-    def _on_file_selected(self, path_str: str) -> None:
-        path = Path(path_str)
-        self.log_message.emit("INFO", f"Inspection de {path.name}…")
-        self._set_status("Inspection en cours…")
-        self._run_btn.setEnabled(False)
-        self._executor.submit(self._inspect_file, path)
+    def _on_add_files(self, paths: list[str]) -> None:
+        """Reçoit la liste de chemins à ajouter, crée les SourceFile et lance l'inspection."""
+        for path_str in paths:
+            path = Path(path_str)
+            # Évite les doublons
+            if any(sf.path == path for sf in self._source_files):
+                self.log_message.emit("WARN", f"{path.name} est déjà dans la liste.")
+                continue
 
-    def _inspect_file(self, path: Path) -> None:
-        """Exécuté dans le thread executor. Ne touche jamais l'UI directement."""
+            color = _pick_file_color(len(self._source_files))
+            sf = SourceFile(id=str(uuid.uuid4()), path=path, color=color)
+            self._source_files.append(sf)
+
+            name = path.name
+            short = name[:18] + "…" if len(name) > 20 else name
+            self._source_names[sf.id]  = short
+            self._source_colors[sf.id] = color
+
+            self._file_list.add_file(sf)
+            self.log_message.emit("INFO", f"Inspection de {path.name}…")
+            self._executor.submit(self._inspect_file, sf.id, path)
+
+    def _inspect_file(self, file_id: str, path: Path) -> None:
+        """Thread worker : inspecte un fichier et émet un signal thread-safe."""
         try:
             inspector = FileInspector(
                 ffprobe_bin=self._config.tool_ffprobe,
                 mediainfo_bin=self._config.tool_mediainfo,
             )
             info = inspector.inspect(path)
-            # Repasse dans le thread Qt via signal (thread-safe)
-            self._inspection_result.emit(info)
+            self._inspection_done.emit(file_id, info)
         except InspectionError as exc:
             self.log_message.emit("ERROR", str(exc))
-            self._inspection_error.emit("Erreur d'inspection.")
+            self._inspection_error.emit(file_id, "Erreur d'inspection.")
         except Exception as exc:
-            self.log_message.emit("ERROR", f"Erreur inattendue lors de l'inspection : {exc}")
-            self._inspection_error.emit("Erreur d'inspection.")
+            self.log_message.emit("ERROR", f"Erreur inattendue : {exc}")
+            self._inspection_error.emit(file_id, "Erreur d'inspection.")
 
-    def _apply_inspection(self, info: FileInfo) -> None:
-        """Applique le résultat d'inspection — s'exécute dans le thread Qt."""
-        self._file_info = info
-        self._file_zone.set_file_info(info)
+    def _apply_inspection(self, file_id: str, info: FileInfo) -> None:
+        """Reçu dans le thread Qt après une inspection réussie."""
+        sf = self._find_source(file_id)
+        if sf is None:
+            return  # fichier retiré pendant l'inspection
 
-        tracks = tracks_from_file_info(info)
-        self._track_table.load_tracks(tracks)
+        sf.info   = info
+        sf.tracks = tracks_from_file_info(info, file_id=file_id)
 
-        # Chemin de sortie par défaut
-        default_out = self._config.output_dir / f"{info.path.stem}_remux.mkv"
-        self._output_edit.setText(str(default_out))
+        self._file_list.update_file(sf)
 
-        self._run_btn.setEnabled(True)
-        self._set_status("")
+        source_color = self._source_colors.get(file_id, _C.BORDER)
+        self._track_table.append_tracks(source_color, sf.tracks)
+
         self.log_message.emit(
             "OK",
             f"{info.path.name} chargé — "
             f"{len(info.video_tracks)}V  {len(info.audio_tracks)}A  "
             f"{len(info.subtitle_tracks)}S",
         )
+
+        # Chemin de sortie par défaut (premier fichier uniquement)
+        if self._source_files[0].id == file_id and not self._output_edit.text().strip():
+            default_out = self._config.output_dir / f"{info.path.stem}_remux.mkv"
+            self._output_edit.setText(str(default_out))
+
+        self._update_run_button()
         self._rebuild_preview()
-        self.file_info_changed.emit(info)
-        self._emit_audio_tracks()
+        self._emit_signals()
+
+    def _on_inspection_error(self, file_id: str, message: str) -> None:
+        """Reçu dans le thread Qt après une erreur d'inspection."""
+        self._file_list.set_file_error(file_id, message)
+
+    # ------------------------------------------------------------------
+    # Retrait de fichier
+    # ------------------------------------------------------------------
+
+    def _on_remove_file(self, file_id: str) -> None:
+        """Retire un fichier source et toutes ses pistes du tableau."""
+        sf = self._find_source(file_id)
+        if sf is None:
+            return
+
+        self._source_files.remove(sf)
+        self._source_names.pop(file_id, None)
+        self._source_colors.pop(file_id, None)
+        self._file_list.remove_file(file_id)
+        self._track_table.remove_tracks_by_file_id(file_id)
+
+        # Réinitialise le chemin de sortie si plus aucun fichier
+        if not self._source_files:
+            self._output_edit.clear()
+
+        self._update_run_button()
+        self._rebuild_preview()
+        self._emit_signals()
+
+        self.log_message.emit("INFO", f"{sf.path.name} retiré de la liste.")
+
+    # ------------------------------------------------------------------
+    # Helpers de recherche
+    # ------------------------------------------------------------------
+
+    def _find_source(self, file_id: str) -> SourceFile | None:
+        return next((sf for sf in self._source_files if sf.id == file_id), None)
+
+    def _has_ready_files(self) -> bool:
+        """Retourne True si au moins un fichier a été inspecté avec succès."""
+        return any(sf.info is not None for sf in self._source_files)
 
     # ------------------------------------------------------------------
     # Aperçu de la commande
     # ------------------------------------------------------------------
-
-    def _emit_audio_tracks(self) -> None:
-        """Émet audio_tracks_changed avec les pistes audio actuellement activées."""
-        if self._file_info is None:
-            return
-        track_entries = self._track_table.current_tracks()
-        enabled_tids = {
-            t.mkv_tid for t in track_entries
-            if t.track_type == "audio" and t.enabled
-        }
-        audio = [a for a in self._file_info.audio_tracks if a.index in enabled_tids]
-        self.audio_tracks_changed.emit(audio)
 
     def _rebuild_preview(self) -> None:
         config = self._current_config()
@@ -965,12 +1351,102 @@ class RemuxPanel(QWidget):
             self._cmd_preview.setPlainText("(erreur de construction de la commande)")
 
     def _on_table_changed(self, _item: QTableWidgetItem | None = None) -> None:
+        self._track_table.refresh_filter()
         self._rebuild_preview()
         self._emit_audio_tracks()
 
     # ------------------------------------------------------------------
-    # Exécution
+    # Signaux vers EncodePanel
     # ------------------------------------------------------------------
+
+    def _emit_signals(self) -> None:
+        """Émet file_info_changed (premier fichier) et audio_tracks_changed."""
+        # Premier fichier avec infos disponibles → EncodePanel (vidéo)
+        first_with_info = next((sf for sf in self._source_files if sf.info), None)
+        if first_with_info:
+            self.file_info_changed.emit(first_with_info.info)
+        self._emit_audio_tracks()
+
+    def _emit_audio_tracks(self) -> None:
+        """Émet audio_tracks_changed avec les pistes audio activées (tous fichiers)."""
+        if not self._source_files:
+            return
+
+        track_entries = self._track_table.current_tracks()
+        enabled_audio_ids: dict[str, set[int]] = {}   # file_id → set of mkv_tid
+        for t in track_entries:
+            if t.track_type == "audio" and t.enabled:
+                enabled_audio_ids.setdefault(t.file_id, set()).add(t.mkv_tid)
+
+        audio_tracks: list[AudioTrack] = []
+        for sf in self._source_files:
+            if sf.info is None:
+                continue
+            tids = enabled_audio_ids.get(sf.id, set())
+            audio_tracks.extend(a for a in sf.info.audio_tracks if a.index in tids)
+
+        self.audio_tracks_changed.emit(audio_tracks)
+
+    # ------------------------------------------------------------------
+    # Construction de la configuration
+    # ------------------------------------------------------------------
+
+    def _current_config(self) -> RemuxConfig | None:
+        """Construit un RemuxConfig depuis l'état courant de l'interface."""
+        if not self._has_ready_files():
+            return None
+
+        output_str = self._output_edit.text().strip()
+        if not output_str:
+            return None
+
+        all_tracks = self._track_table.current_tracks()
+        if not all_tracks:
+            return None
+
+        # Construit le mapping file_id → file_index (basé sur _source_files)
+        id_to_index = {sf.id: i for i, sf in enumerate(self._source_files)}
+
+        # SourceInput par fichier : toutes les pistes du fichier
+        sources: list[SourceInput] = []
+        for i, sf in enumerate(self._source_files):
+            if sf.info is None:
+                continue
+            src_tracks = [t for t in all_tracks if t.file_id == sf.id]
+            if not src_tracks:
+                # Fallback sur les pistes stockées dans sf
+                src_tracks = sf.tracks
+            sources.append(SourceInput(
+                path=sf.path,
+                file_index=i,
+                tracks=src_tracks,
+            ))
+
+        if not sources:
+            return None
+
+        # Ordre global des pistes activées (dans l'ordre du tableau)
+        track_order = [
+            (id_to_index[t.file_id], t.mkv_tid)
+            for t in all_tracks
+            if t.enabled and t.file_id in id_to_index
+        ]
+
+        return RemuxConfig(
+            sources=sources,
+            output=Path(output_str),
+            track_order=track_order,
+            keep_chapters=self._chapters_cb.isChecked(),
+            keep_attachments=self._attach_cb.isChecked(),
+            work_dir=self._config.work_dir,
+        )
+
+    # ------------------------------------------------------------------
+    # Bouton Lancer
+    # ------------------------------------------------------------------
+
+    def _update_run_button(self) -> None:
+        self._run_btn.setEnabled(self._has_ready_files() and not self._running)
 
     def _on_run(self) -> None:
         if self._running:
@@ -1005,10 +1481,7 @@ class RemuxPanel(QWidget):
             return
 
         self._signals = signals
-        signals.progress.connect(
-            self._on_progress,
-            Qt.ConnectionType.QueuedConnection,
-        )
+        signals.progress.connect(self._on_progress,  Qt.ConnectionType.QueuedConnection)
         signals.finished.connect(
             lambda _: self._on_run_finished(success=True),
             Qt.ConnectionType.QueuedConnection,
@@ -1017,10 +1490,7 @@ class RemuxPanel(QWidget):
             lambda msg, _exc: self._on_run_finished(success=False, error=msg),
             Qt.ConnectionType.QueuedConnection,
         )
-        signals.cancelled.connect(
-            self._on_run_cancelled,
-            Qt.ConnectionType.QueuedConnection,
-        )
+        signals.cancelled.connect(self._on_run_cancelled, Qt.ConnectionType.QueuedConnection)
 
     def _on_cancel(self) -> None:
         reply = QMessageBox.question(
@@ -1036,7 +1506,7 @@ class RemuxPanel(QWidget):
     def _on_run_cancelled(self) -> None:
         self._running = False
         self._signals = None
-        self._run_btn.setEnabled(True)
+        self._update_run_button()
         self._cancel_btn.setVisible(False)
         self._progress_widget.setVisible(False)
         self._progress_lbl.setText("")
@@ -1046,7 +1516,7 @@ class RemuxPanel(QWidget):
     def _on_run_finished(self, success: bool, error: str = "") -> None:
         self._running = False
         self._signals = None
-        self._run_btn.setEnabled(True)
+        self._update_run_button()
         self._cancel_btn.setVisible(False)
         if success:
             config = self._current_config()
@@ -1063,7 +1533,6 @@ class RemuxPanel(QWidget):
                 self.log_message.emit("ERROR", error)
 
     def _on_progress(self, line: str) -> None:
-        """Parse les lignes stdout de mkvmerge et met à jour la barre + légende."""
         if "Progress:" in line:
             try:
                 pct = int(line.split("%")[0].split()[-1])
@@ -1084,38 +1553,18 @@ class RemuxPanel(QWidget):
             self.log_message.emit("INFO", line)
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Helpers UI
     # ------------------------------------------------------------------
-
-    def _current_config(self) -> RemuxConfig | None:
-        """Construit un RemuxConfig depuis l'état courant de l'interface."""
-        if self._file_info is None:
-            return None
-        output_str = self._output_edit.text().strip()
-        if not output_str:
-            return None
-        tracks = self._track_table.current_tracks()
-        if not tracks:
-            return None
-        return RemuxConfig(
-            source=self._file_info.path,
-            output=Path(output_str),
-            tracks=tracks,
-            keep_chapters=self._chapters_cb.isChecked(),
-            keep_attachments=self._attach_cb.isChecked(),
-            work_dir=self._config.work_dir,
-        )
 
     def _set_all_tracks(self, enabled: bool) -> None:
         self._track_table.set_all_enabled(enabled)
+        self._track_table.refresh_filter()
         self._rebuild_preview()
 
     def _browse_output(self) -> None:
         default = self._output_edit.text() or str(self._config.output_dir)
         path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Fichier de sortie",
-            default,
+            self, "Fichier de sortie", default,
             "Matroska (*.mkv);;Tous les fichiers (*)",
         )
         if path:
@@ -1130,10 +1579,6 @@ class RemuxPanel(QWidget):
 
     def _set_status(self, text: str) -> None:
         self._status_lbl.setText(text)
-
-    def _on_inspection_error(self, message: str) -> None:
-        """Reçu dans le thread Qt depuis le signal _inspection_error."""
-        self._set_status(message)
 
     # ------------------------------------------------------------------
     # Styles réutilisables

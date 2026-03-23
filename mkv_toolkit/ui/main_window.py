@@ -657,16 +657,17 @@ class _NavButton(QWidget):
 
     clicked = Signal()
 
-    def __init__(self, label: str, icon_char: str, page_index: int) -> None:
+    def __init__(self, label: str, icon_char: str, page_index: int, is_sub: bool = False) -> None:
         super().__init__()
         self.page_index = page_index
         self._checked  = False
-        self.setFixedHeight(40)
+        self._is_sub   = is_sub
+        self.setFixedHeight(36 if is_sub else 40)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(14, 0, 14, 0)
+        lay.setContentsMargins(28 if is_sub else 14, 0, 14, 0)
         lay.setSpacing(10)
 
         self._icon_lbl = QLabel(icon_char)
@@ -728,8 +729,9 @@ class _NavButton(QWidget):
         self._icon_lbl.setStyleSheet(
             f"color: {icon_c}; font-size: 14px; background: transparent; border: none;"
         )
+        font_size = "11px" if self._is_sub else "12px"
         self._text_lbl.setStyleSheet(
-            f"color: {color}; font-size: 12px; font-weight: {weight};"
+            f"color: {color}; font-size: {font_size}; font-weight: {weight};"
             f" background: transparent; border: none;"
         )
 
@@ -742,11 +744,11 @@ class _Sidebar(QWidget):
     page_changed = Signal(int)
 
     _NAV_ITEMS = [
-        ("Tableau de bord", "⌂", 0),
-        ("Conteneur",       "⊞", 3),
-        ("Encodage",        "♫", 2),
-        ("DoVi / HDR10+",   "◈", 1),
-        ("Paramètres",      "⚙", 4),
+        ("Tableau de bord", "⌂", 0, False),
+        ("Conteneur",       "⊞", 3, False),
+        ("Encodage",        "🎬", 2, True),   # sous-menu de Conteneur
+        ("DoVi / HDR10+",   "◈", 1, False),
+        ("Paramètres",      "⚙", 4, False),
     ]
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -809,8 +811,8 @@ class _Sidebar(QWidget):
         """)
         layout.addWidget(nav_label)
 
-        for label, icon, idx in self._NAV_ITEMS:
-            btn = _NavButton(label, icon, idx)
+        for label, icon, idx, is_sub in self._NAV_ITEMS:
+            btn = _NavButton(label, icon, idx, is_sub)
             btn.clicked.connect(lambda b=btn: self._on_nav_click(b))
             self._buttons.append(btn)
             layout.addWidget(btn)
