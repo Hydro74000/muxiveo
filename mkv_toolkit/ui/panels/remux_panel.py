@@ -16,10 +16,10 @@ Modèle de données :
 Signaux exposés :
     RemuxPanel.log_message(level: str, message: str)
         → connecter à MainWindow.log_requested
-    RemuxPanel.file_info_changed(FileInfo)
-        → émet les infos du premier fichier source (pour EncodePanel)
-    RemuxPanel.audio_tracks_changed(list[AudioTrack])
-        → émet toutes les pistes audio activées, tous sources confondus
+    RemuxPanel.video_tracks_changed(list[tuple[FileInfo, TrackEntry, str]])
+        → émet toutes les pistes vidéo activées avec leur FileInfo parent et couleur
+    RemuxPanel.audio_tracks_changed(list[tuple[AudioTrack, str]])
+        → émet toutes les pistes audio activées avec leur couleur, tous sources confondus
 """
 
 from __future__ import annotations
@@ -911,8 +911,8 @@ class RemuxPanel(QWidget):
 
     Signaux :
         log_message(level: str, message: str)
-        file_info_changed(FileInfo)      — infos du premier fichier source
-        audio_tracks_changed(list)       — pistes audio activées (tous sources)
+        video_tracks_changed(list)       — pistes vidéo activées (FileInfo, TrackEntry, couleur)
+        audio_tracks_changed(list)       — pistes audio activées avec couleur (tous sources)
     """
 
     log_message = Signal(str, str)
@@ -921,8 +921,8 @@ class RemuxPanel(QWidget):
     _inspection_done  = Signal(str, object)   # (file_id, FileInfo)
     _inspection_error = Signal(str, str)      # (file_id, error_message)
 
-    file_info_changed    = Signal(object)   # FileInfo
-    audio_tracks_changed = Signal(object)   # list[AudioTrack]
+    video_tracks_changed = Signal(object)   # list[tuple[FileInfo, TrackEntry, str]]
+    audio_tracks_changed = Signal(object)   # list[tuple[AudioTrack, str]]
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1360,32 +1360,51 @@ class RemuxPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _emit_signals(self) -> None:
-        """Émet file_info_changed (premier fichier) et audio_tracks_changed."""
-        # Premier fichier avec infos disponibles → EncodePanel (vidéo)
-        first_with_info = next((sf for sf in self._source_files if sf.info), None)
-        if first_with_info:
-            self.file_info_changed.emit(first_with_info.info)
+        """Émet video_tracks_changed et audio_tracks_changed."""
+        self._emit_video_tracks()
         self._emit_audio_tracks()
 
-    def _emit_audio_tracks(self) -> None:
-        """Émet audio_tracks_changed avec les pistes audio activées (tous fichiers)."""
-        if not self._source_files:
-            return
-
+    def _emit_video_tracks(self) -> None:
+        """Émet video_tracks_changed — toutes pistes vidéo activées avec FileInfo et couleur."""
         track_entries = self._track_table.current_tracks()
-        enabled_audio_ids: dict[str, set[int]] = {}   # file_id → set of mkv_tid
+        enabled_video_ids: dict[str, set[int]] = {}
+        for t in track_entries:
+            if t.track_type == "video" and t.enabled:
+                enabled_video_ids.setdefault(t.file_id, set()).add(t.mkv_tid)
+
+        video_tuples: list[tuple] = []
+        for sf in self._source_files:
+            if sf.info is None:
+                continue
+            color = self._source_colors.get(sf.id, _C.BORDER)
+            tids = enabled_video_ids.get(sf.id, set())
+            for track_entry in sf.tracks:
+                if track_entry.track_type == "video" and track_entry.mkv_tid in tids:
+                    video_tuples.append((sf.info, track_entry, color))
+
+        self.video_tracks_changed.emit(video_tuples)
+
+    def _emit_audio_tracks(self) -> None:
+        """Émet audio_tracks_changed avec les pistes audio activées et leurs couleurs."""
+        track_entries = self._track_table.current_tracks()
+        enabled_audio_ids: dict[str, set[int]] = {}
         for t in track_entries:
             if t.track_type == "audio" and t.enabled:
                 enabled_audio_ids.setdefault(t.file_id, set()).add(t.mkv_tid)
 
-        audio_tracks: list[AudioTrack] = []
+        audio_tuples: list[tuple] = []
         for sf in self._source_files:
             if sf.info is None:
                 continue
+            color = self._source_colors.get(sf.id, _C.BORDER)
             tids = enabled_audio_ids.get(sf.id, set())
-            audio_tracks.extend(a for a in sf.info.audio_tracks if a.index in tids)
+            audio_tuples.extend(
+                (a, color)
+                for a in sf.info.audio_tracks
+                if a.index in tids
+            )
 
-        self.audio_tracks_changed.emit(audio_tracks)
+        self.audio_tracks_changed.emit(audio_tuples)
 
     # ------------------------------------------------------------------
     # Construction de la configuration

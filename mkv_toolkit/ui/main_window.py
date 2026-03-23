@@ -981,7 +981,7 @@ class MainWindow(QMainWindow):
             self.log_requested, Qt.ConnectionType.QueuedConnection
         )
         # RemuxPanel → EncodePanel : fichier partagé
-        self._remux_panel.file_info_changed.connect(self._encode_panel.set_file_info)
+        self._remux_panel.video_tracks_changed.connect(self._encode_panel.set_video_tracks)
         self._remux_panel.audio_tracks_changed.connect(self._encode_panel.set_audio_tracks)
 
     # ------------------------------------------------------------------
