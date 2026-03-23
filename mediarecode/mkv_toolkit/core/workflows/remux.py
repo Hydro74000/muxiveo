@@ -3,7 +3,8 @@ core/workflows/remux.py — Workflow de remuxage MKV sans réencodage.
 
 Classes publiques :
     TrackEntry           — piste avec état d'inclusion et métadonnées éditables
-    RemuxConfig          — configuration complète d'un remuxage
+    SourceInput          — un fichier source avec ses pistes associées
+    RemuxConfig          — configuration complète d'un remuxage (multi-source)
     RemuxWorkflow        — construit et exécute la commande mkvmerge
     RemuxError           — exception levée par le workflow
     tracks_from_file_info — fabrique une liste de TrackEntry depuis un FileInfo
@@ -37,6 +38,7 @@ class TrackEntry:
     Représente une piste avec son état d'inclusion et ses métadonnées éditables.
 
     mkv_tid est l'identifiant mkvmerge (= index ffprobe pour les fichiers MKV).
+    file_id est l'identifiant UUID du SourceFile parent (géré par l'UI).
     orig_language / orig_title conservent les valeurs d'origine pour détecter
     les modifications et n'émettre des flags que si nécessaire.
     """
@@ -48,6 +50,7 @@ class TrackEntry:
     language:     str           # tag BCP-47 éditable ("fra", "eng", ...)
     title:        str           # titre de piste éditable
     enabled:      bool = True
+    file_id:      str  = ""    # UUID du SourceFile parent (usage UI uniquement)
 
     orig_language: str = field(default="", repr=False)
     orig_title:    str = field(default="", repr=False)
@@ -72,24 +75,43 @@ class TrackEntry:
 
 
 # =============================================================================
+# Source d'entrée
+# =============================================================================
+
+@dataclass
+class SourceInput:
+    """
+    Un fichier source avec toutes ses pistes (activées ou non).
+
+    file_index est l'indice 0-based de ce fichier dans RemuxConfig.sources ;
+    il est utilisé dans --track-order pour référencer les pistes.
+    """
+
+    path:       Path
+    file_index: int                # 0-based, correspond aux indices dans --track-order
+    tracks:     list[TrackEntry]   # toutes les pistes du fichier (enabled ou non)
+
+
+# =============================================================================
 # Configuration de remuxage
 # =============================================================================
 
 @dataclass
 class RemuxConfig:
     """
-    Configuration complète d'un remuxage.
+    Configuration complète d'un remuxage multi-source.
 
-    tracks : liste ordonnée des pistes — l'ordre définit --track-order dans
-             la commande mkvmerge finale.
+    sources     : liste ordonnée des fichiers source (chacun avec ses pistes).
+    track_order : liste de (file_index, mkv_tid) dans l'ordre désiré en sortie.
+                  Seules les pistes présentes dans track_order sont incluses.
     """
 
-    source:           Path
+    sources:          list[SourceInput]
     output:           Path
-    tracks:           list[TrackEntry]
+    track_order:      list[tuple[int, int]]   # (file_index, mkv_tid) ordonnés
     keep_chapters:    bool = True
-    keep_attachments: bool = True   # cover.jpg et autres pièces jointes
-    work_dir:         Path | None = None   # dossier de travail (cwd mkvmerge)
+    keep_attachments: bool = True
+    work_dir:         Path | None = None
 
 
 # =============================================================================
@@ -104,11 +126,12 @@ class RemuxError(RuntimeError):
 # Fabrique depuis FileInfo
 # =============================================================================
 
-def tracks_from_file_info(info: FileInfo) -> list[TrackEntry]:
+def tracks_from_file_info(info: FileInfo, file_id: str = "") -> list[TrackEntry]:
     """
     Construit la liste des TrackEntry depuis un FileInfo inspecté.
 
     L'ordre est : pistes vidéo, puis audio, puis sous-titres.
+    file_id permet d'associer chaque piste à un SourceFile de l'UI.
     """
     entries: list[TrackEntry] = []
 
@@ -137,6 +160,7 @@ def tracks_from_file_info(info: FileInfo) -> list[TrackEntry]:
             title=v.title or "",
             orig_language=v.language or "",
             orig_title=v.title or "",
+            file_id=file_id,
         ))
 
     for a in info.audio_tracks:
@@ -154,6 +178,7 @@ def tracks_from_file_info(info: FileInfo) -> list[TrackEntry]:
             title=a.title or "",
             orig_language=a.language or "",
             orig_title=a.title or "",
+            file_id=file_id,
         ))
 
     for s in info.subtitle_tracks:
@@ -169,6 +194,7 @@ def tracks_from_file_info(info: FileInfo) -> list[TrackEntry]:
             title=s.title or "",
             orig_language=s.language or "",
             orig_title=s.title or "",
+            file_id=file_id,
         ))
 
     return entries
@@ -180,7 +206,7 @@ def tracks_from_file_info(info: FileInfo) -> list[TrackEntry]:
 
 class RemuxWorkflow(QObject):
     """
-    Construit et exécute un remuxage MKV via mkvmerge.
+    Construit et exécute un remuxage MKV via mkvmerge (support multi-source).
 
     Usage :
         wf = RemuxWorkflow(mkvmerge_bin="mkvmerge")
@@ -211,77 +237,79 @@ class RemuxWorkflow(QObject):
 
     def build_command(self, config: RemuxConfig) -> list[str]:
         """
-        Construit la liste d'arguments mkvmerge correspondant à la configuration.
+        Construit la liste d'arguments mkvmerge pour un remuxage multi-source.
 
-        La commande suit cette structure :
+        Structure :
             mkvmerge -o OUTPUT
-              [--no-video|--video-tracks TIDs]
-              [--no-audio|--audio-tracks TIDs]
-              [--no-subtitles|--subtitle-tracks TIDs]
-              [--no-chapters]  [--no-attachments]
-              [--track-name TID:name ...]
-              [--language TID:lang ...]
-              [--track-order 0:TID,...]
-              SOURCE
+              [--track-order FI:TID,...]
+              [per-source flags] SOURCE0
+              [per-source flags] SOURCE1
+              ...
         """
         cmd: list[str] = [self._mkvmerge, "-o", str(config.output)]
 
-        enabled    = [t for t in config.tracks if t.enabled]
-        videos_all = [t for t in config.tracks if t.track_type == "video"]
-        audios_all = [t for t in config.tracks if t.track_type == "audio"]
-        subs_all   = [t for t in config.tracks if t.track_type == "subtitle"]
-
-        videos_on  = [t for t in enabled if t.track_type == "video"]
-        audios_on  = [t for t in enabled if t.track_type == "audio"]
-        subs_on    = [t for t in enabled if t.track_type == "subtitle"]
-
-        # --- Inclusion/exclusion par type ---
-        if not videos_on:
-            cmd.append("--no-video")
-        elif len(videos_on) < len(videos_all):
-            cmd.extend(["--video-tracks", ",".join(str(t.mkv_tid) for t in videos_on)])
-
-        if not audios_on:
-            cmd.append("--no-audio")
-        elif len(audios_on) < len(audios_all):
-            cmd.extend(["--audio-tracks", ",".join(str(t.mkv_tid) for t in audios_on)])
-
-        if not subs_on:
-            cmd.append("--no-subtitles")
-        elif len(subs_on) < len(subs_all):
-            cmd.extend(["--subtitle-tracks", ",".join(str(t.mkv_tid) for t in subs_on)])
-
-        # --- Options conteneur ---
-        if not config.keep_chapters:
-            cmd.append("--no-chapters")
-        if not config.keep_attachments:
-            cmd.append("--no-attachments")
-
-        # --- Métadonnées de pistes (seulement si modifiées) ---
-        for t in enabled:
-            if t.title != t.orig_title:
-                cmd.extend(["--track-name", f"{t.mkv_tid}:{t.title}"])
-            if t.language != t.orig_language:
-                cmd.extend(["--language", f"{t.mkv_tid}:{t.language}"])
-
-        # --- Ordre des pistes ---
-        if enabled:
-            order = ",".join(f"0:{t.mkv_tid}" for t in enabled)
+        # --- Ordre global des pistes (avant les sources) ---
+        if config.track_order:
+            order = ",".join(f"{fi}:{tid}" for fi, tid in config.track_order)
             cmd.extend(["--track-order", order])
 
-        cmd.append(str(config.source))
+        # Ensemble des (file_index, mkv_tid) activées pour lookup rapide
+        enabled_set: set[tuple[int, int]] = set(config.track_order)
+
+        for src in config.sources:
+            fi = src.file_index
+
+            # Pistes activées de CE fichier
+            enabled_here   = [t for t in src.tracks if (fi, t.mkv_tid) in enabled_set]
+            enabled_tids   = {t.mkv_tid for t in enabled_here}
+
+            videos_all = [t for t in src.tracks if t.track_type == "video"]
+            audios_all = [t for t in src.tracks if t.track_type == "audio"]
+            subs_all   = [t for t in src.tracks if t.track_type == "subtitle"]
+            videos_on  = [t for t in enabled_here if t.track_type == "video"]
+            audios_on  = [t for t in enabled_here if t.track_type == "audio"]
+            subs_on    = [t for t in enabled_here if t.track_type == "subtitle"]
+
+            # --- Inclusion/exclusion par type ---
+            # Émet --no-xxx uniquement si la source POSSÈDE des pistes de ce type
+            # (évite d'émettre --no-video pour une source sans vidéo)
+            if videos_all and not videos_on:
+                cmd.append("--no-video")
+            elif len(videos_on) < len(videos_all):
+                cmd.extend(["--video-tracks", ",".join(str(t.mkv_tid) for t in videos_on)])
+
+            if audios_all and not audios_on:
+                cmd.append("--no-audio")
+            elif len(audios_on) < len(audios_all):
+                cmd.extend(["--audio-tracks", ",".join(str(t.mkv_tid) for t in audios_on)])
+
+            if subs_all and not subs_on:
+                cmd.append("--no-subtitles")
+            elif len(subs_on) < len(subs_all):
+                cmd.extend(["--subtitle-tracks", ",".join(str(t.mkv_tid) for t in subs_on)])
+
+            # --- Options conteneur ---
+            if not config.keep_chapters:
+                cmd.append("--no-chapters")
+            if not config.keep_attachments:
+                cmd.append("--no-attachments")
+
+            # --- Métadonnées de pistes (seulement si modifiées) ---
+            for t in src.tracks:
+                if t.mkv_tid not in enabled_tids:
+                    continue
+                if t.title != t.orig_title:
+                    cmd.extend(["--track-name", f"{t.mkv_tid}:{t.title}"])
+                if t.language != t.orig_language:
+                    cmd.extend(["--language", f"{t.mkv_tid}:{t.language}"])
+
+            cmd.append(str(src.path))
+
         return cmd
 
     def preview_command(self, config: RemuxConfig) -> str:
         """
         Retourne la commande sous forme lisible, une option/valeur par ligne.
-
-        Exemple :
-            mkvmerge \\
-                -o /output/film_remux.mkv \\
-                --no-subtitles \\
-                --track-order 0:0,0:1 \\
-                /source/film.mkv
         """
         parts = self.build_command(config)
         if not parts:
@@ -291,7 +319,6 @@ class RemuxWorkflow(QObject):
         i = 1
         while i < len(parts):
             p = parts[i]
-            # Flag avec valeur : le prochain token ne commence pas par "-"
             if p.startswith("-") and i + 1 < len(parts) and not parts[i + 1].startswith("-"):
                 lines.append(f"    {p} {parts[i + 1]}")
                 i += 2
@@ -313,13 +340,20 @@ class RemuxWorkflow(QObject):
         """
         errors: list[str] = []
 
-        if not config.source.is_file():
-            errors.append(f"Fichier source introuvable : {config.source}")
+        if not config.sources:
+            errors.append("Aucun fichier source.")
+            return errors
+
+        for src in config.sources:
+            if not src.path.is_file():
+                errors.append(f"Fichier source introuvable : {src.path}")
+            if src.path == config.output:
+                errors.append(f"Le fichier de sortie doit être différent de la source : {src.path.name}")
+
         if not config.output.parent.exists():
             errors.append(f"Dossier de sortie inexistant : {config.output.parent}")
-        if config.source == config.output:
-            errors.append("Le fichier de sortie doit être différent du fichier source.")
-        if not any(t.enabled for t in config.tracks):
+
+        if not config.track_order:
             errors.append("Aucune piste sélectionnée.")
 
         return errors
@@ -340,7 +374,7 @@ class RemuxWorkflow(QObject):
 
         self.log_message.emit("INFO", f"Remuxage → {config.output.name}")
         cmd = self.build_command(config)
-        cwd = config.work_dir or config.source.parent
+        cwd = config.work_dir or config.sources[0].path.parent
         if config.work_dir:
             config.work_dir.mkdir(parents=True, exist_ok=True)
         return self._runner.run(cmd, cwd=cwd, label="mkvmerge")
