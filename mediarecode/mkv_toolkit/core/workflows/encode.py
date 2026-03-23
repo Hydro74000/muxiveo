@@ -20,9 +20,12 @@ Conventions :
 
 from __future__ import annotations
 
+import ctypes
 import json
+import os
 import re
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 import shutil
 import tempfile
@@ -339,11 +342,13 @@ class EncodeWorkflow(QObject):
 
     def __init__(
         self,
-        ffmpeg_bin:       str = "ffmpeg",
-        dovi_tool_bin:    str = "dovi_tool",
-        hdr10plus_bin:    str = "hdr10plus_tool",
-        mkvmerge_bin:     str = "mkvmerge",
-        parent: QObject | None = None,
+        ffmpeg_bin:                str  = "ffmpeg",
+        dovi_tool_bin:             str  = "dovi_tool",
+        hdr10plus_bin:             str  = "hdr10plus_tool",
+        mkvmerge_bin:              str  = "mkvmerge",
+        ram_buffer_enabled:        bool = True,
+        ram_buffer_threshold_pct:  int  = 15,
+        parent: QObject | None         = None,
     ) -> None:
         super().__init__(parent)
         self._ffmpeg = ffmpeg_bin
@@ -353,6 +358,8 @@ class EncodeWorkflow(QObject):
             "mkvmerge":       mkvmerge_bin,
         }
         self._runner = ToolRunner(max_workers=1, parent=self)
+        self._ram_buffer_enabled       = ram_buffer_enabled
+        self._ram_buffer_threshold_pct = max(0, min(ram_buffer_threshold_pct, 90))
 
     # ------------------------------------------------------------------
     # Construction de la commande
@@ -432,6 +439,8 @@ class EncodeWorkflow(QObject):
 
     def _video_codec_args_crf(self, v: VideoEncodeSettings) -> list[str]:
         match v.codec:
+            case "copy":
+                return ["-c:v", "copy"]
             case "libx265":
                 args = ["-c:v", "libx265", "-crf", str(v.crf), "-preset", v.preset]
                 if v.extra_params:
@@ -462,6 +471,8 @@ class EncodeWorkflow(QObject):
 
     def _video_codec_args_bitrate(self, v: VideoEncodeSettings, bitrate_kbps: int) -> list[str]:
         match v.codec:
+            case "copy":
+                return ["-c:v", "copy"]
             case "libx265":
                 args = ["-c:v", "libx265", "-b:v", f"{bitrate_kbps}k", "-preset", v.preset]
                 if v.extra_params:
@@ -531,6 +542,133 @@ class EncodeWorkflow(QObject):
         )
         video_bits = total_bits - audio_bps * duration
         return max(500, int(video_bits / duration / 1000))
+
+    # ------------------------------------------------------------------
+    # Helpers RAM / buffer — cross-platform (Linux · macOS · Windows)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _total_ram_bytes() -> int:
+        """
+        Retourne la RAM physique totale en octets.
+        Linux : /proc/meminfo · macOS : sysctl hw.memsize · Windows : ctypes GlobalMemoryStatusEx.
+        Retourne 0 si la valeur ne peut pas être lue.
+        """
+        try:
+            if sys.platform == "linux":
+                text = Path("/proc/meminfo").read_text(encoding="ascii")
+                m = re.search(r"MemTotal:\s+(\d+)\s+kB", text)
+                return int(m.group(1)) * 1024 if m else 0
+            if sys.platform == "darwin":
+                r = subprocess.run(
+                    ["sysctl", "-n", "hw.memsize"],
+                    capture_output=True, text=True, check=False, timeout=5,
+                )
+                v = r.stdout.strip()
+                return int(v) if r.returncode == 0 and v.isdigit() else 0
+            if sys.platform == "win32":
+                return EncodeWorkflow._win_mem_status().ullTotalPhys
+        except Exception:
+            pass
+        return 0
+
+    @staticmethod
+    def _available_ram_bytes() -> int:
+        """
+        Retourne la RAM disponible en octets (MemAvailable sur Linux, équivalent sur macOS/Windows).
+        Retourne 0 si non déterminable.
+        """
+        try:
+            if sys.platform == "linux":
+                text = Path("/proc/meminfo").read_text(encoding="ascii")
+                m = re.search(r"MemAvailable:\s+(\d+)\s+kB", text)
+                return int(m.group(1)) * 1024 if m else 0
+            if sys.platform == "darwin":
+                return EncodeWorkflow._macos_available_ram()
+            if sys.platform == "win32":
+                return EncodeWorkflow._win_mem_status().ullAvailPhys
+        except Exception:
+            pass
+        return 0
+
+    @staticmethod
+    def _macos_available_ram() -> int:
+        """RAM disponible sur macOS via vm_stat (free + inactive + speculative + purgeable)."""
+        r = subprocess.run(
+            ["vm_stat"], capture_output=True, text=True, check=False, timeout=5
+        )
+        if r.returncode != 0:
+            return 0
+        page_m = re.search(r"page size of (\d+) bytes", r.stdout)
+        page = int(page_m.group(1)) if page_m else 4096
+        pages = 0
+        for field in ("Pages free", "Pages inactive", "Pages speculative", "Pages purgeable"):
+            m = re.search(rf"{re.escape(field)}:\s*(\d+)", r.stdout)
+            if m:
+                pages += int(m.group(1))
+        return pages * page
+
+    @staticmethod
+    def _win_mem_status():
+        """Retourne une structure MEMORYSTATUSEX remplie (Windows uniquement)."""
+        class _MEMSTATEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength",                ctypes.c_ulong),
+                ("dwMemoryLoad",            ctypes.c_ulong),
+                ("ullTotalPhys",            ctypes.c_ulonglong),
+                ("ullAvailPhys",            ctypes.c_ulonglong),
+                ("ullTotalPageFile",        ctypes.c_ulonglong),
+                ("ullAvailPageFile",        ctypes.c_ulonglong),
+                ("ullTotalVirtual",         ctypes.c_ulonglong),
+                ("ullAvailVirtual",         ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+        stat = _MEMSTATEX()
+        stat.dwLength = ctypes.sizeof(stat)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))  # type: ignore[attr-defined]
+        return stat
+
+    @staticmethod
+    def _ram_buffer_dir() -> Path | None:
+        """
+        Retourne le répertoire RAM-backed disponible sur cette plateforme, ou None.
+
+        · Linux  : /dev/shm (tmpfs kernel, taille = RAM physique)
+        · macOS  : /dev/shm (POSIX shm namespace, writable sur macOS ≥ 10.15)
+        · Windows: aucun équivalent standard → None (buffer sur disque uniquement)
+        """
+        if sys.platform in ("linux", "darwin"):
+            shm = Path("/dev/shm")
+            if shm.is_dir() and os.access(shm, os.W_OK):
+                return shm
+        return None
+
+    def _shm_path(self, tmp: Path, name: str, file_size: int) -> Path:
+        """
+        Retourne un chemin dans le répertoire RAM si les conditions sont réunies,
+        sinon un chemin dans tmp (disque).
+
+        Conditions (toutes requises) :
+          1. ram_buffer_enabled = True (configuration)
+          2. Un répertoire RAM existe sur cette plateforme (_ram_buffer_dir())
+          3. RAM disponible après chargement ≥ threshold_pct % de la RAM totale
+             formule : available_before - file_size ≥ total_ram × threshold_pct / 100
+
+        La décision est réévaluée à chaque appel (RAM dynamique).
+        """
+        if not self._ram_buffer_enabled:
+            return tmp / name
+        ram_dir = EncodeWorkflow._ram_buffer_dir()
+        if ram_dir is None:
+            return tmp / name
+        total     = EncodeWorkflow._total_ram_bytes()
+        available = EncodeWorkflow._available_ram_bytes()
+        if total <= 0 or available <= 0:
+            return tmp / name
+        min_free_after = int(total * self._ram_buffer_threshold_pct / 100)
+        if available - file_size >= min_free_after:
+            return ram_dir / name
+        return tmp / name
 
     # ------------------------------------------------------------------
     # Aperçu lisible
@@ -652,17 +790,29 @@ class EncodeWorkflow(QObject):
         """
         Workflow d'encodage avec injection DV RPU / HDR10+ en post-traitement.
 
+        Gestion des fichiers de travail — max 2 gros fichiers simultanément :
+          • src.hevc est supprimé dès que RPU et HDR10+ sont extraits (avant l'encodage).
+          • encoded.mkv reste jusqu'au remuxage final (nécessaire pour audio/subs).
+          • Chaque HEVC intermédiaire est alloué via _shm_path() : en RAM (/dev/shm)
+            si RAM libre > taille × 1.10, sinon sur disque.
+          • Chaque intermédiaire HEVC est supprimé immédiatement dès que l'étape
+            suivante l'a consommé.
+          • Les fichiers /dev/shm sont explicitement supprimés dans le finally.
+
+        Ordre d'injection (inchangé — contrainte HDR10+ avant DV) :
+          HDR10+ en premier : hdr10plus_tool ne tolère pas les NAL RPU DV existants.
+          dovi_tool préserve tous les types de NAL.
+
         Étapes :
-          1. Extraction HEVC source brut (ffmpeg -c:v copy -f hevc)
+          1. Extraction HEVC source brut → src.hevc (RAM ou disque)
           2. Extraction RPU DoVi (dovi_tool extract-rpu) si copy_dv
           3. Extraction HDR10+ (hdr10plus_tool extract) si copy_hdr10plus
-          4. Encodage vers fichier MKV temporaire
-          5. Extraction HEVC encodé brut
-          6. Injection RPU DoVi (dovi_tool -m {dovi_profile} inject-rpu) si applicable
-          7. Injection HDR10+ (hdr10plus_tool inject) si applicable
-          8. Remuxage final (mkvmerge : HEVC injecté + audio/subs du MKV encodé)
-
-        Le répertoire temporaire est supprimé quelle que soit l'issue.
+          4. Suppression immédiate de src.hevc
+          5. Encodage vers encoded.mkv
+          6. Extraction HEVC encodé → current_hevc (RAM si possible)
+          7. Injection HDR10+ si applicable → nouveau current_hevc, ancien supprimé
+          8. Injection RPU DV si applicable → nouveau current_hevc, ancien supprimé
+          9. Remuxage final (mkvmerge : current_hevc + audio/subs de encoded.mkv)
         """
         signals = TaskSignals()
         executor = ThreadPoolExecutor(max_workers=1)
@@ -676,19 +826,53 @@ class EncodeWorkflow(QObject):
                 dir=str(work) if work else None,
             )
             tmp = Path(tmp_dir)
+            # Fichiers alloués hors du répertoire de travail tmp (ex. /dev/shm)
+            # → nettoyage explicite dans le finally car shutil.rmtree ne les couvre pas.
+            ext_files: list[Path] = []
+            _ram_dir = EncodeWorkflow._ram_buffer_dir()
+
+            def _run(cmd: list[str]) -> str:
+                return self._runner._run_cmd(
+                    cmd, signals=signals, cwd=tmp,
+                    progress_cb=lambda line: signals.progress.emit(line),
+                )
+
+            def _check() -> None:
+                if signals._cancel_event.is_set():
+                    raise TaskCancelledError()
+
+            def _alloc(name: str, ref_size: int) -> Path:
+                """
+                Alloue un chemin de travail HEVC.
+                Si le buffer RAM est actif et la RAM suffisante → répertoire RAM.
+                Sinon → tmp (disque).
+                Le chemin est enregistré dans ext_files s'il est hors de tmp.
+                """
+                p = self._shm_path(tmp, name, ref_size)
+                if p.parent != tmp:   # hors tmp = répertoire RAM ou autre
+                    ext_files.append(p)
+                return p
+
+            def _free(path: Path) -> None:
+                """
+                Supprime immédiatement un fichier intermédiaire.
+                Le retire de ext_files si présent.
+                Silencieux sur toute erreur OS.
+                """
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                try:
+                    ext_files.remove(path)
+                except ValueError:
+                    pass   # chemin disque, pas dans ext_files
+
             try:
-                def _run(cmd: list[str]) -> str:
-                    return self._runner._run_cmd(
-                        cmd, signals=signals, cwd=tmp,
-                        progress_cb=lambda line: signals.progress.emit(line),
-                    )
-
-                def _check() -> None:
-                    if signals._cancel_event.is_set():
-                        raise TaskCancelledError()
-
                 # ── 1. HEVC source brut ──────────────────────────────────
-                src_hevc = tmp / "src.hevc"
+                # Taille estimée = taille du fichier source (approximation conservative)
+                src_size_est = config.source.stat().st_size
+                src_hevc = _alloc("src.hevc", src_size_est)
                 signals.progress.emit("Extraction HEVC source…")
                 _run([
                     self._ffmpeg, "-hide_banner", "-y",
@@ -717,7 +901,12 @@ class EncodeWorkflow(QObject):
                     ])
                     _check()
 
-                # ── 4. Encodage vers MKV temporaire ─────────────────────
+                # ── 4. Suppression immédiate de src.hevc ─────────────────
+                # src.hevc n'est plus nécessaire : RPU et HDR10+ sont extraits.
+                # Libérer l'espace avant l'encodage (étape 5).
+                _free(src_hevc)
+
+                # ── 5. Encodage vers MKV temporaire ─────────────────────
                 encoded_mkv = tmp / "encoded.mkv"
                 temp_cfg = replace(
                     config, output=encoded_mkv,
@@ -734,36 +923,40 @@ class EncodeWorkflow(QObject):
                     _run(self._build_single_pass(temp_cfg))
                 _check()
 
-                # ── 5. HEVC encodé brut ──────────────────────────────────
-                enc_hevc = tmp / "enc.hevc"
+                # ── 6. HEVC encodé brut ──────────────────────────────────
+                # Sur disque à ce stade : encoded.mkv uniquement.
+                # On alloue enc.hevc en RAM si possible pour ne pas dépasser
+                # 2 gros fichiers disque (encoded.mkv + current_hevc).
+                enc_size_est = encoded_mkv.stat().st_size
+                current_hevc = _alloc("enc.hevc", enc_size_est)
                 signals.progress.emit("Extraction HEVC encodé…")
                 _run([
                     self._ffmpeg, "-hide_banner", "-y",
                     "-i", str(encoded_mkv),
-                    "-map", "0:v:0", "-c:v", "copy", "-f", "hevc", str(enc_hevc),
+                    "-map", "0:v:0", "-c:v", "copy", "-f", "hevc", str(current_hevc),
                 ])
                 _check()
 
-                # ── 6. Injection HDR10+ ──────────────────────────────────
-                # HDR10+ en premier sur le HEVC propre : hdr10plus_tool ne gère
-                # pas correctement les NAL DV RPU (type 62) déjà présents dans
-                # le flux. dovi_tool, lui, préserve tous les types de NAL existants.
-                current_hevc = enc_hevc
+                # ── 7. Injection HDR10+ ──────────────────────────────────
+                # HDR10+ avant DV : hdr10plus_tool ne tolère pas les NAL RPU DV.
                 if config.copy_hdr10plus and hdr10p_json.exists():
-                    enc_hdr10p = tmp / "enc_hdr10p.hevc"
+                    cur_size = current_hevc.stat().st_size
+                    out_hdr10p = _alloc("enc_hdr10p.hevc", cur_size)
                     signals.progress.emit("Injection métadonnées HDR10+…")
                     _run([
                         self._bins["hdr10plus_tool"], "inject",
                         "-i", str(current_hevc),
                         "-j", str(hdr10p_json),
-                        "-o", str(enc_hdr10p),
+                        "-o", str(out_hdr10p),
                     ])
-                    current_hevc = enc_hdr10p
+                    _free(current_hevc)   # libère enc.hevc immédiatement
+                    current_hevc = out_hdr10p
                     _check()
 
-                # ── 7. Injection RPU DV ──────────────────────────────────
+                # ── 8. Injection RPU DV ──────────────────────────────────
                 if config.copy_dv and rpu_bin.exists():
-                    enc_dv = tmp / "enc_dv.hevc"
+                    cur_size = current_hevc.stat().st_size
+                    out_dv = _alloc("enc_dv.hevc", cur_size)
                     signals.progress.emit("Injection RPU Dolby Vision…")
                     _run([
                         self._bins["dovi_tool"],
@@ -771,18 +964,19 @@ class EncodeWorkflow(QObject):
                         "inject-rpu",
                         "-i", str(current_hevc),
                         "-r", str(rpu_bin),
-                        "-o", str(enc_dv),
+                        "-o", str(out_dv),
                     ])
-                    current_hevc = enc_dv
+                    _free(current_hevc)   # libère enc_hdr10p.hevc (ou enc.hevc)
+                    current_hevc = out_dv
                     _check()
 
-                # ── 8. Remuxage final ────────────────────────────────────
+                # ── 9. Remuxage final ────────────────────────────────────
                 signals.progress.emit("Remuxage final…")
                 _run([
                     self._bins["mkvmerge"],
                     "-o", str(config.output),
-                    str(current_hevc),           # piste vidéo avec métadonnées
-                    "--no-video", str(encoded_mkv),  # audio + sous-titres uniquement
+                    str(current_hevc),              # piste vidéo avec métadonnées
+                    "--no-video", str(encoded_mkv), # audio + sous-titres uniquement
                 ])
                 signals.finished.emit(f"Encodage terminé → {config.output.name}")
 
@@ -792,6 +986,13 @@ class EncodeWorkflow(QObject):
                 signals.failed.emit(str(exc), exc)
             finally:
                 executor.shutdown(wait=False)
+                # Supprimer les fichiers hors tmp (ex. /dev/shm) non couverts par rmtree.
+                # Itère sur une copie : _free() mute ext_files.
+                for p in list(ext_files):
+                    try:
+                        p.unlink(missing_ok=True)
+                    except OSError:
+                        pass
                 shutil.rmtree(tmp_dir, ignore_errors=True)
 
         executor.submit(_task)
