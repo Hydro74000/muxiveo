@@ -24,17 +24,19 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QFont
+from PySide6.QtGui import QBrush, QColor, QDragEnterEvent, QDropEvent, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QFileDialog,
     QFrame, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
-    QLineEdit, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
+    QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+    QPlainTextEdit, QProgressBar, QPushButton,
     QScrollArea, QSlider, QSpinBox, QStackedWidget,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from core.config import AppConfig
 from core.inspector import AudioTrack, FileInfo, HDRType
+from core.workflows.remux import TrackEntry
 from core.runner import TaskSignals
 from core.workflows.encode import (
     AUDIO_CODECS, HARDWARE_VIDEO_CODECS, SOFTWARE_VIDEO_CODECS,
@@ -259,19 +261,21 @@ class _AudioTable(QTableWidget):
     Colonnes : #  |  Format  |  Lang  |  Encodage  |  Débit  |  Options
     """
 
-    COL_IDX     = 0
-    COL_FORMAT  = 1
-    COL_LANG    = 2
-    COL_CODEC   = 3
-    COL_BITRATE = 4
-    COL_OPTIONS = 5
-    COL_WARN    = 6
+    COL_SOURCE  = 0   # colored █ square
+    COL_IDX     = 1
+    COL_FORMAT  = 2
+    COL_LANG    = 3
+    COL_CODEC   = 4
+    COL_BITRATE = 5
+    COL_OPTIONS = 6
+    COL_WARN    = 7
 
-    HEADERS = ["#", "Format", "Lang", "Encodage", "Débit", "Options", "⚠"]
+    HEADERS = ["", "#", "Format", "Lang", "Encodage", "Débit", "Options", "⚠"]
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(0, len(self.HEADERS), parent)
         self._tracks: list[AudioTrack] = []
+        self._track_colors: list[str] = []
         self._row_widgets: list[dict] = []   # {combo, bitrate, core_cb}
         self._setup_table()
 
@@ -283,6 +287,7 @@ class _AudioTable(QTableWidget):
         self.setShowGrid(False)
         self.setAlternatingRowColors(False)
         hh = self.horizontalHeader()
+        hh.setSectionResizeMode(self.COL_SOURCE,  QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(self.COL_IDX,     QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(self.COL_FORMAT,  QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(self.COL_LANG,    QHeaderView.ResizeMode.Fixed)
@@ -290,6 +295,7 @@ class _AudioTable(QTableWidget):
         hh.setSectionResizeMode(self.COL_BITRATE, QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(self.COL_OPTIONS, QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(self.COL_WARN,    QHeaderView.ResizeMode.Fixed)
+        self.setColumnWidth(self.COL_SOURCE,  20)
         self.setColumnWidth(self.COL_IDX,     32)
         self.setColumnWidth(self.COL_FORMAT, 110)
         self.setColumnWidth(self.COL_LANG,    48)
@@ -307,19 +313,36 @@ class _AudioTable(QTableWidget):
             QTableWidget::item:selected{{background:{_C.ACCENT_DIM};}}
         """)
 
+    _MAX_VISIBLE_ROWS = 10
+    _ROW_H = 36
+
     def load_tracks(
         self,
-        tracks: list[AudioTrack],
+        tracks: list[tuple],   # list[tuple[AudioTrack, str]] — (track, color)
         default_codec: str = "copy",
         default_bitrate: int = 384,
     ) -> None:
-        self._tracks = tracks
+        self._tracks = [t for t, _ in tracks]
+        self._track_colors = [c for _, c in tracks]
         self._row_widgets = []
         self.setRowCount(0)
-        for track in tracks:
-            self._append_row(track, default_codec, default_bitrate)
+        for track, color in tracks:
+            self._append_row(track, color, default_codec, default_bitrate)
+        self._adjust_height()
 
-    def _append_row(self, track: AudioTrack, default_codec: str, default_bitrate: int) -> None:
+    def _adjust_height(self) -> None:
+        """Ajuste la hauteur du tableau pour afficher jusqu'à 10 lignes."""
+        n = self.rowCount()
+        header_h = self.horizontalHeader().height()
+        if n == 0:
+            self.setFixedHeight(header_h + 40)
+            return
+        visible = min(n, self._MAX_VISIBLE_ROWS)
+        self.setFixedHeight(visible * self._ROW_H + header_h + 4)
+
+    def _append_row(
+        self, track: AudioTrack, color: str, default_codec: str, default_bitrate: int
+    ) -> None:
         row = self.rowCount()
         self.insertRow(row)
         self.setRowHeight(row, 36)
@@ -328,6 +351,13 @@ class _AudioTable(QTableWidget):
             it = QTableWidgetItem(text)
             it.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             return it
+
+        # Colonne source — carré coloré
+        src_item = QTableWidgetItem("█")
+        src_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        src_item.setForeground(QBrush(QColor(color)))
+        src_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setItem(row, self.COL_SOURCE, src_item)
 
         self.setItem(row, self.COL_IDX,    _item(str(track.index)))
         self.setItem(row, self.COL_FORMAT, _item(f"{track.codec.upper()} {track.channels_label}"))
@@ -451,6 +481,7 @@ class EncodePanel(QWidget):
         self._profiles  = ProfileManager(config.app_data_dir / "encode_profiles")
         self._executor  = ThreadPoolExecutor(max_workers=1)
         self._file_info: FileInfo | None = None
+        self._video_tracks: list[tuple[FileInfo, TrackEntry, str]] = []
         self._running   = False
         self._duration_s: float | None = None
         self._hw_encoders: set[str] = set()
@@ -497,9 +528,9 @@ class EncodePanel(QWidget):
         cl.addWidget(subtitle)
         cl.addWidget(_separator())
 
-        # --- Fichier source ---
-        cl.addWidget(_section_label("FICHIER SOURCE"))
-        cl.addWidget(self._build_source_card())
+        # --- Piste vidéo source ---
+        cl.addWidget(_section_label("PISTE VIDÉO SOURCE"))
+        cl.addWidget(self._build_video_source_card())
         cl.addWidget(_separator())
 
         # --- Encodage vidéo ---
@@ -524,7 +555,6 @@ class EncodePanel(QWidget):
         self._atmos_warn.setVisible(False)
         cl.addWidget(self._atmos_warn)
         self._audio_table = _AudioTable()
-        self._audio_table.setMinimumHeight(120)
         cl.addWidget(self._audio_table)
         cl.addWidget(_separator())
 
@@ -640,90 +670,99 @@ class EncodePanel(QWidget):
 
         root.addWidget(btn_bar)
 
-    def _build_source_card(self) -> QWidget:
-        """Carte read-only affichant les infos du fichier sélectionné dans l'onglet Conteneur."""
+    def _build_video_source_card(self) -> QWidget:
+        """Sélecteur de piste vidéo alimenté par l'onglet Conteneur."""
         card = _card()
-        cl = QHBoxLayout(card)
-        cl.setContentsMargins(16, 12, 16, 12)
-        cl.setSpacing(12)
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(0)
 
-        self._src_icon = QLabel("⊞")
-        self._src_icon.setStyleSheet(f"font-size:22px;color:{_C.TEXT_DIM};"
-                                     f"background:transparent;border:none;")
-        cl.addWidget(self._src_icon)
-
-        info_col = QVBoxLayout()
-        info_col.setSpacing(3)
-
-        self._src_placeholder = QLabel(
-            "Aucun fichier — sélectionnez un fichier dans l'onglet Conteneur"
+        self._video_list = QListWidget()
+        self._video_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
         )
-        self._src_placeholder.setStyleSheet(f"color:{_C.TEXT_DIM};font-size:11px;"
-                                            f"background:transparent;border:none;")
-        info_col.addWidget(self._src_placeholder)
+        self._video_list.setStyleSheet(
+            f"QListWidget{{background:{_C.BG_CARD};border:none;border-radius:6px;"
+            f"color:{_C.TEXT_PRI};font-size:11px;font-family:'JetBrains Mono',monospace;}}"
+            f"QListWidget::item{{padding:8px 12px;border-bottom:1px solid {_C.BORDER};}}"
+            f"QListWidget::item:selected{{background:{_C.ACCENT_DIM};}}"
+            f"QListWidget::item:hover{{background:{_C.BG_HOVER};}}"
+        )
+        self._video_list.currentRowChanged.connect(self._on_video_row_changed)
+        cl.addWidget(self._video_list)
 
-        self._src_name = QLabel("")
-        self._src_name.setStyleSheet(f"color:{_C.TEXT_PRI};font-size:12px;font-weight:600;"
-                                     f"background:transparent;border:none;")
-        self._src_name.setVisible(False)
-        info_col.addWidget(self._src_name)
+        self._video_placeholder = QLabel(
+            "Aucune piste vidéo — sélectionnez des fichiers dans l'onglet Conteneur"
+        )
+        self._video_placeholder.setStyleSheet(
+            f"color:{_C.TEXT_DIM};font-size:11px;padding:14px;"
+            f"background:transparent;"
+        )
+        self._video_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cl.addWidget(self._video_placeholder)
 
-        self._src_meta = QLabel("")
-        self._src_meta.setStyleSheet(f"color:{_C.TEXT_DIM};font-size:10px;"
-                                     f"font-family:'JetBrains Mono',monospace;"
-                                     f"background:transparent;border:none;")
-        self._src_meta.setVisible(False)
-        info_col.addWidget(self._src_meta)
+        self._video_list.setVisible(False)
+        self._video_placeholder.setVisible(True)
 
-        self._src_hdr = QLabel("")
-        self._src_hdr.setStyleSheet(f"color:{_C.INFO};font-size:10px;font-weight:600;"
-                                    f"background:transparent;border:none;")
-        self._src_hdr.setVisible(False)
-        info_col.addWidget(self._src_hdr)
-
-        self._src_audio_count = QLabel("")
-        self._src_audio_count.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:10px;"
-                                            f"background:transparent;border:none;")
-        self._src_audio_count.setVisible(False)
-        info_col.addWidget(self._src_audio_count)
-
-        cl.addLayout(info_col, stretch=1)
         return card
 
     # ------------------------------------------------------------------
     # API publique — appelée par MainWindow depuis RemuxPanel
     # ------------------------------------------------------------------
 
-    def set_file_info(self, info: FileInfo) -> None:
-        """Reçoit les infos du fichier sélectionné dans l'onglet Conteneur."""
+    def set_video_tracks(self, tracks: list[tuple]) -> None:
+        """Met à jour la liste des pistes vidéo depuis l'onglet Conteneur."""
+        self._video_tracks = tracks
+        self._video_list.blockSignals(True)
+        self._video_list.clear()
+
+        if not tracks:
+            self._video_list.setVisible(False)
+            self._video_placeholder.setVisible(True)
+            self._file_info = None
+            self._run_btn.setEnabled(False)
+            self._video_list.blockSignals(False)
+            self._rebuild_preview()
+            return
+
+        self._video_placeholder.setVisible(False)
+        self._video_list.setVisible(True)
+
+        for file_info, track, color in tracks:
+            hdr = file_info.hdr_type.label()
+            hdr_part = f"  {hdr}" if hdr not in ("SDR", "?") else ""
+            text = f"█  {file_info.path.name}    {track.codec.upper()}  {track.display_info}{hdr_part}"
+            item = QListWidgetItem(text)
+            item.setData(Qt.ItemDataRole.UserRole, (file_info, track))
+            item.setForeground(QBrush(QColor(color)))
+            self._video_list.addItem(item)
+
+        self._video_list.blockSignals(False)
+        self._adjust_video_list_height()
+        self._video_list.setCurrentRow(0)   # triggers _on_video_row_changed
+
+    def _adjust_video_list_height(self) -> None:
+        """Ajuste la hauteur de la liste vidéo pour afficher exactement n lignes."""
+        n = self._video_list.count()
+        if n == 0:
+            return
+        row_h = self._video_list.sizeHintForRow(0)
+        self._video_list.setFixedHeight(n * row_h + 2)
+
+    def _on_video_row_changed(self, row: int) -> None:
+        if row < 0 or row >= len(self._video_tracks):
+            return
+        file_info, _track, _color = self._video_tracks[row]
+        self._apply_file_info(file_info)
+
+    def _apply_file_info(self, info: FileInfo) -> None:
+        """Applique les infos d'un FileInfo sélectionné comme source d'encodage."""
         self._file_info  = info
         self._duration_s = info.duration_s
 
-        # Carte source
-        self._src_placeholder.setVisible(False)
-        self._src_icon.setStyleSheet(f"font-size:22px;color:{_C.ACCENT};"
-                                     f"background:transparent;border:none;")
-        self._src_name.setText(info.path.name)
-        self._src_name.setVisible(True)
-
-        parts: list[str] = [info.size_human, info.duration_human, info.format]
-        if info.primary_video:
-            parts.append(info.primary_video.resolution)
-        self._src_meta.setText("   ".join(p for p in parts if p != "?"))
-        self._src_meta.setVisible(True)
-
-        hdr_label = info.hdr_type.label()
-        if hdr_label not in ("SDR", "?"):
-            self._src_hdr.setText(hdr_label)
-            self._src_hdr.setVisible(True)
-        else:
-            self._src_hdr.setVisible(False)
-
-        # Pré-remplir master_display et max_cll
         if info.primary_video:
             self._prefill_hdr_meta(info.primary_video.raw)
 
-        # Chemin de sortie par défaut
         default_out = self._config.output_dir / f"{info.path.stem}_encode.mkv"
         self._output_edit.setText(str(default_out))
 
@@ -738,7 +777,7 @@ class EncodePanel(QWidget):
         )
         self._rebuild_preview()
 
-    def set_audio_tracks(self, tracks: list[AudioTrack]) -> None:
+    def set_audio_tracks(self, tracks: list[tuple]) -> None:
         """Met à jour les pistes audio depuis les pistes activées dans l'onglet Conteneur."""
         default_codec   = "copy"
         default_bitrate = 384
@@ -752,12 +791,6 @@ class EncodePanel(QWidget):
 
         self._audio_table.load_tracks(tracks, default_codec, default_bitrate)
         self._update_atmos_warning()
-
-        n = len(tracks)
-        label = f"{n} piste{'s' if n != 1 else ''} audio sélectionnée{'s' if n != 1 else ''}"
-        self._src_audio_count.setText(label)
-        self._src_audio_count.setVisible(True)
-
         self._rebuild_preview()
 
     # ------------------------------------------------------------------
@@ -897,6 +930,66 @@ class EncodePanel(QWidget):
         cl.setContentsMargins(16, 14, 16, 14)
         cl.setSpacing(10)
 
+        # Tone mapping HDR→SDR
+        self._tonemap_cb = QCheckBox("Tone-mapping HDR → SDR  (zscale + tonemap)")
+        self._tonemap_cb.setStyleSheet(_checkbox_style())
+        self._tonemap_cb.stateChanged.connect(self._on_tonemap_toggle)
+        cl.addWidget(self._tonemap_cb)
+
+        self._tonemap_algo_widget = QWidget()
+        self._tonemap_algo_widget.setStyleSheet("background:transparent;")
+        ta_l = QHBoxLayout(self._tonemap_algo_widget)
+        ta_l.setContentsMargins(20, 0, 0, 0)
+        ta_l.setSpacing(8)
+        algo_lbl = QLabel("Algorithme")
+        algo_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        self._tonemap_algo = QComboBox()
+        self._tonemap_algo.setStyleSheet(_combo_style())
+        for algo in TONEMAP_ALGORITHMS:
+            self._tonemap_algo.addItem(algo, algo)
+        self._tonemap_algo.currentIndexChanged.connect(lambda _: self._rebuild_preview())
+        ta_l.addWidget(algo_lbl)
+        ta_l.addWidget(self._tonemap_algo)
+        ta_l.addStretch()
+        self._tonemap_algo_widget.setVisible(False)
+        cl.addWidget(self._tonemap_algo_widget)
+
+        cl.addWidget(_separator())
+
+        # Passthrough Dolby Vision RPU
+        self._copy_dv_cb = QCheckBox("Copier le RPU Dolby Vision depuis la source")
+        self._copy_dv_cb.setStyleSheet(_checkbox_style())
+        self._copy_dv_cb.setEnabled(False)
+        self._copy_dv_cb.stateChanged.connect(self._on_dv_toggle)
+        cl.addWidget(self._copy_dv_cb)
+
+        self._dovi_profile_widget = QWidget()
+        self._dovi_profile_widget.setStyleSheet("background:transparent;")
+        dp_l = QHBoxLayout(self._dovi_profile_widget)
+        dp_l.setContentsMargins(20, 0, 0, 0)
+        dp_l.setSpacing(8)
+        dp_lbl = QLabel("Profil dovi_tool")
+        dp_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        self._dovi_profile_combo = QComboBox()
+        self._dovi_profile_combo.setStyleSheet(_combo_style())
+        self._dovi_profile_combo.addItem("P8.1 — conserver (par défaut)", "0")
+        self._dovi_profile_combo.addItem("P8.1 — normaliser / supprimer FEL·MEL", "2")
+        self._dovi_profile_combo.currentIndexChanged.connect(lambda _: self._rebuild_preview())
+        dp_l.addWidget(dp_lbl)
+        dp_l.addWidget(self._dovi_profile_combo)
+        dp_l.addStretch()
+        self._dovi_profile_widget.setVisible(False)
+        cl.addWidget(self._dovi_profile_widget)
+
+        # Passthrough HDR10+ SEI
+        self._copy_hdr10plus_cb = QCheckBox("Copier les métadonnées HDR10+ depuis la source")
+        self._copy_hdr10plus_cb.setStyleSheet(_checkbox_style())
+        self._copy_hdr10plus_cb.setEnabled(False)
+        self._copy_hdr10plus_cb.stateChanged.connect(lambda _: self._rebuild_preview())
+        cl.addWidget(self._copy_hdr10plus_cb)
+
+        cl.addWidget(_separator())
+
         # Injection métadonnées HDR10 statiques
         self._inject_hdr_cb = QCheckBox("Injecter les métadonnées HDR10 statiques (ST 2086 / MaxCLL)")
         self._inject_hdr_cb.setStyleSheet(_checkbox_style())
@@ -941,71 +1034,6 @@ class EncodePanel(QWidget):
 
         self._hdr_meta_widget.setVisible(False)
         cl.addWidget(self._hdr_meta_widget)
-
-        # Tone mapping HDR→SDR
-        self._tonemap_cb = QCheckBox("Tone-mapping HDR → SDR  (zscale + tonemap)")
-        self._tonemap_cb.setStyleSheet(_checkbox_style())
-        self._tonemap_cb.stateChanged.connect(self._on_tonemap_toggle)
-        cl.addWidget(self._tonemap_cb)
-
-        self._tonemap_algo_widget = QWidget()
-        self._tonemap_algo_widget.setStyleSheet("background:transparent;")
-        ta_l = QHBoxLayout(self._tonemap_algo_widget)
-        ta_l.setContentsMargins(20, 0, 0, 0)
-        ta_l.setSpacing(8)
-        algo_lbl = QLabel("Algorithme")
-        algo_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
-        self._tonemap_algo = QComboBox()
-        self._tonemap_algo.setStyleSheet(_combo_style())
-        for algo in TONEMAP_ALGORITHMS:
-            self._tonemap_algo.addItem(algo, algo)
-        self._tonemap_algo.currentIndexChanged.connect(lambda _: self._rebuild_preview())
-        ta_l.addWidget(algo_lbl)
-        ta_l.addWidget(self._tonemap_algo)
-        ta_l.addStretch()
-        self._tonemap_algo_widget.setVisible(False)
-        cl.addWidget(self._tonemap_algo_widget)
-
-        # Sous-titres
-        self._subs_cb = QCheckBox("Copier les sous-titres")
-        self._subs_cb.setChecked(True)
-        self._subs_cb.setStyleSheet(_checkbox_style())
-        self._subs_cb.stateChanged.connect(lambda _: self._rebuild_preview())
-        cl.addWidget(self._subs_cb)
-
-        cl.addWidget(_separator())
-
-        # Passthrough Dolby Vision RPU
-        self._copy_dv_cb = QCheckBox("Copier le RPU Dolby Vision depuis la source")
-        self._copy_dv_cb.setStyleSheet(_checkbox_style())
-        self._copy_dv_cb.setEnabled(False)
-        self._copy_dv_cb.stateChanged.connect(self._on_dv_toggle)
-        cl.addWidget(self._copy_dv_cb)
-
-        self._dovi_profile_widget = QWidget()
-        self._dovi_profile_widget.setStyleSheet("background:transparent;")
-        dp_l = QHBoxLayout(self._dovi_profile_widget)
-        dp_l.setContentsMargins(20, 0, 0, 0)
-        dp_l.setSpacing(8)
-        dp_lbl = QLabel("Profil dovi_tool")
-        dp_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
-        self._dovi_profile_combo = QComboBox()
-        self._dovi_profile_combo.setStyleSheet(_combo_style())
-        self._dovi_profile_combo.addItem("P8.1 — conserver (par défaut)", "0")
-        self._dovi_profile_combo.addItem("P8.1 — normaliser / supprimer FEL·MEL", "2")
-        self._dovi_profile_combo.currentIndexChanged.connect(lambda _: self._rebuild_preview())
-        dp_l.addWidget(dp_lbl)
-        dp_l.addWidget(self._dovi_profile_combo)
-        dp_l.addStretch()
-        self._dovi_profile_widget.setVisible(False)
-        cl.addWidget(self._dovi_profile_widget)
-
-        # Passthrough HDR10+ SEI
-        self._copy_hdr10plus_cb = QCheckBox("Copier les métadonnées HDR10+ depuis la source")
-        self._copy_hdr10plus_cb.setStyleSheet(_checkbox_style())
-        self._copy_hdr10plus_cb.setEnabled(False)
-        self._copy_hdr10plus_cb.stateChanged.connect(lambda _: self._rebuild_preview())
-        cl.addWidget(self._copy_hdr10plus_cb)
 
         return card
 
@@ -1450,7 +1478,7 @@ class EncodePanel(QWidget):
             output=Path(output_str),
             video=self._current_video_settings(),
             audio_tracks=self._audio_table.current_audio_settings(),
-            copy_subtitles=self._subs_cb.isChecked(),
+            copy_subtitles=False,
             duration_s=self._duration_s,
             copy_dv=self._copy_dv_cb.isChecked(),
             copy_hdr10plus=self._copy_hdr10plus_cb.isChecked(),
