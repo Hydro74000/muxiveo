@@ -117,6 +117,20 @@ class AppConfig:
         self.dovi_profile: str    = env("DOVI_PROFILE")    or s.value("hdr/dovi_profile",    "8")
         self.dovi_compat_id: str  = env("DOVI_COMPAT_ID")  or s.value("hdr/dovi_compat_id",  "1")
 
+        # --- Buffer RAM pour les fichiers HEVC intermédiaires ---
+        # ram_buffer_enabled  : active l'utilisation de /dev/shm (Linux/macOS) comme tampon
+        # ram_buffer_threshold_pct : % de RAM totale devant rester libre après chargement du fichier
+        _rb_env = env("RAM_BUFFER_ENABLED")
+        self.ram_buffer_enabled: bool = (
+            _rb_env.lower() not in ("0", "false", "no") if _rb_env
+            else s.value("encoding/ram_buffer_enabled", "true").lower()
+               not in ("0", "false", "no")
+        )
+        self.ram_buffer_threshold_pct: int = int(
+            env("RAM_BUFFER_THRESHOLD_PCT")
+            or s.value("encoding/ram_buffer_threshold_pct", 15)
+        )
+
         # --- Interface ---
         self.log_max_lines: int = int(
             env("LOG_MAX_LINES") or s.value("ui/log_max_lines", 2000)
@@ -149,6 +163,10 @@ class AppConfig:
 
         s.setValue("hdr/dovi_profile",    self.dovi_profile)
         s.setValue("hdr/dovi_compat_id",  self.dovi_compat_id)
+
+        s.setValue("encoding/ram_buffer_enabled",
+                   "true" if self.ram_buffer_enabled else "false")
+        s.setValue("encoding/ram_buffer_threshold_pct", self.ram_buffer_threshold_pct)
 
         s.setValue("ui/log_max_lines", self.log_max_lines)
         s.setValue("ui/theme",         self.theme)
@@ -217,6 +235,10 @@ class AppConfig:
             "hdr": {
                 "dovi_profile":   self.dovi_profile,
                 "dovi_compat_id": self.dovi_compat_id,
+            },
+            "encoding": {
+                "ram_buffer_enabled":       self.ram_buffer_enabled,
+                "ram_buffer_threshold_pct": self.ram_buffer_threshold_pct,
             },
             "ui": {
                 "log_max_lines": self.log_max_lines,

@@ -886,6 +886,7 @@ class _TrackTable(QTableWidget):
         self.blockSignals(False)
 
         self.selectRow(adjusted)
+        event.setDropAction(Qt.DropAction.IgnoreAction)
         event.accept()
         self._adjust_height()
         self.order_changed.emit()
