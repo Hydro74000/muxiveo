@@ -64,6 +64,26 @@ Plan de couverture :
         Désactivation du buffer RAM :
             - ram_buffer_enabled=False → tous les HEVC vont sur disque (ext_files vide)
 
+    Codec COPY — passthrough métadonnées (TestCopyCodecMetadataPassthrough) :
+        build_command single pass :
+            - codec=copy → -map_metadata 0 présent
+            - codec=copy → -map_metadata:s:v:0 0:s:v:0 présent
+            - codec=copy → -map_metadata avant la sortie
+            - codec≠copy (libx265, libx264, nvenc, amf…) → pas de -map_metadata
+        build_command two pass (SIZE) :
+            - codec=copy → pass2 contient -map_metadata 0
+            - codec=copy → pass1 ne contient PAS -map_metadata
+            - codec≠copy → aucune passe ne contient -map_metadata
+        Interaction : audio, subtitles → -map_metadata toujours présent pour copy
+
+    run() bypass inject (TestRunCopyBypassesInject) :
+        - codec=copy + copy_dv=True  → _run_with_metadata_inject NON appelé
+        - codec=copy + copy_hdr10plus=True → idem
+        - codec=copy + les deux → idem
+        - codec=libx265 + copy_dv=True → _run_with_metadata_inject APPELÉ (régression)
+        - codec=copy + copy_dv → log INFO "passthrough" émis
+        - codec=copy sans flags → runner standard utilisé
+
     Méthodes build_command (régression) :
         - CRF → list[str] ; SIZE → list[list[str]]
         - codec copy → pas de -crf ; audio copy → pas de -b:a ; AAC → bitrate présent
@@ -586,13 +606,14 @@ class TestMetadataInjectFileManagement:
         (True, False), (False, True), (True, True)
     ])
     def test_src_hevc_deleted_before_encoding(self, tmp_path, copy_dv, copy_hdr10plus):
-        """src.hevc absent dans le snapshot qui crée encoded.mkv."""
+        """src.hevc absent dans le snapshot qui crée enc.hevc (l'encodage vidéo)."""
         snapshots = self._run_inject(tmp_path, copy_dv, copy_hdr10plus)
+        # enc.hevc est créé à l'étape 5a (encodage vidéo direct, sans container)
         enc_snap_idx = next(
             (i for i, snap in enumerate(snapshots)
-             if any("encoded.mkv" in str(p) for p in snap)), None
+             if any(p.name == "enc.hevc" for p in snap)), None
         )
-        assert enc_snap_idx is not None, "encoded.mkv jamais créé"
+        assert enc_snap_idx is not None, "enc.hevc jamais créé"
         snap = snapshots[enc_snap_idx]
         assert not any("src.hevc" in str(p) for p in snap)
 
@@ -909,3 +930,626 @@ class TestProfileManager:
         pm.save(EncodePreset(name="P", crf=28))
         loaded = pm.load_all()
         assert len(loaded) == 1 and loaded[0].crf == 28
+
+
+# ===========================================================================
+# _hdr_meta_args — comportement par codec
+# ===========================================================================
+
+class TestHdrMetaArgs:
+    """Vérifie que _hdr_meta_args génère les bons flags selon le codec."""
+
+    def setup_method(self):
+        self.wf = _make_workflow()
+
+    def _vs(self, codec: str, master: str = "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,50)",
+            max_cll: str = "343,203") -> VideoEncodeSettings:
+        return _make_video_settings(codec=codec, inject_hdr_meta=True,
+                                    master_display=master, max_cll=max_cll)
+
+    def test_libx265_color_flags_only_no_standalone_master_display(self):
+        """libx265 : couleur seulement — master_display/max_cll via -x265-params."""
+        args = self.wf._hdr_meta_args(self._vs("libx265"))
+        assert "-color_primaries" in args
+        assert "-master_display" not in args
+        assert "-max_cll" not in args
+
+    def test_libx265_x265_params_contains_master_display(self, tmp_path):
+        """libx265 : -x265-params fusionné avec master-display et max-cll."""
+        src = tmp_path / "s.mkv"; src.touch()
+        vs = self._vs("libx265")
+        config = _make_config(src, tmp_path / "o.mkv", video=vs)
+        cmd = self.wf.build_command_single(config)
+        idx = cmd.index("-x265-params")
+        params = cmd[idx + 1]
+        assert "master-display=" in params
+        assert "max-cll=" in params
+
+    def test_libx265_x265_params_merges_extra_params(self, tmp_path):
+        """libx265 : extra_params + HDR meta fusionnés dans un seul -x265-params."""
+        src = tmp_path / "s.mkv"; src.touch()
+        vs = _make_video_settings(codec="libx265", inject_hdr_meta=True,
+                                   master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,50)",
+                                   max_cll="343,203", extra_params="hdr-opt=1:repeat-headers=1")
+        config = _make_config(src, tmp_path / "o.mkv", video=vs)
+        cmd = self.wf.build_command_single(config)
+        # Un seul -x265-params dans la commande
+        assert cmd.count("-x265-params") == 1
+        params = cmd[cmd.index("-x265-params") + 1]
+        assert "hdr-opt=1" in params
+        assert "master-display=" in params
+        assert "max-cll=" in params
+
+    def test_hevc_nvenc_adds_master_display_and_max_cll(self):
+        """hevc_nvenc : -master_display et -max_cll ajoutés comme options encoder."""
+        args = self.wf._hdr_meta_args(self._vs("hevc_nvenc"))
+        assert "-color_primaries" in args
+        assert "-master_display" in args
+        assert "-max_cll" in args
+        md_idx = args.index("-master_display")
+        assert "G(8500" in args[md_idx + 1]
+
+    def test_hevc_nvenc_no_master_display_when_empty(self):
+        """hevc_nvenc : pas de -master_display si master_display vide."""
+        vs = _make_video_settings(codec="hevc_nvenc", inject_hdr_meta=True,
+                                   master_display="", max_cll="")
+        args = self.wf._hdr_meta_args(vs)
+        assert "-master_display" not in args
+        assert "-max_cll" not in args
+        assert "-color_primaries" in args
+
+    def test_hevc_amf_color_flags_only(self):
+        """hevc_amf : couleur seulement, pas de master_display/max_cll."""
+        args = self.wf._hdr_meta_args(self._vs("hevc_amf"))
+        assert "-color_primaries" in args
+        assert "-master_display" not in args
+        assert "-max_cll" not in args
+
+    def test_hevc_qsv_color_flags_only(self):
+        """hevc_qsv : couleur seulement."""
+        args = self.wf._hdr_meta_args(self._vs("hevc_qsv"))
+        assert "-color_primaries" in args
+        assert "-master_display" not in args
+
+    def test_libsvtav1_color_flags_only(self):
+        """libsvtav1 : couleur seulement, pas de master_display/max_cll."""
+        args = self.wf._hdr_meta_args(self._vs("libsvtav1"))
+        assert "-color_primaries" in args
+        assert "-master_display" not in args
+
+    def test_copy_no_color_flags(self):
+        """copy : aucun flag de couleur — pas pertinent pour un stream copié."""
+        args = self.wf._hdr_meta_args(self._vs("copy"))
+        assert args == []
+
+    def test_h264_codecs_no_flags(self):
+        """h264_* et libx264 : aucun flag HDR — H.264 est SDR."""
+        for codec in ("libx264", "h264_nvenc", "h264_amf", "h264_qsv"):
+            args = self.wf._hdr_meta_args(self._vs(codec))
+            assert args == [], f"{codec} devrait retourner [] mais retourne {args}"
+
+
+# ===========================================================================
+# _run_with_metadata_inject — optimisation codec copy
+# ===========================================================================
+
+class TestMetadataInjectCopyCodec:
+    """
+    Vérifie que _run_with_metadata_inject fonctionne correctement quand il est
+    appelé directement avec codec=copy (cas rare — en usage normal, run() dévie
+    vers le chemin standard avant d'appeler cette méthode).
+
+    Depuis la refactorisation copy :
+      - src.hevc est toujours supprimé avant l'encodage (plus de branche _copy_video)
+      - enc.hevc est toujours extrait depuis encoded.mkv
+      - test_copy_inject_completes_and_produces_output reste valide
+    """
+
+    def _run_inject_copy(self, tmp_path: Path, copy_dv: bool, copy_hdr10plus: bool):
+        """Lance le workflow copy+inject et retourne (cmds_run, snapshots)."""
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 200_000)
+        config = _make_config(
+            source=src, output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="copy"),
+            copy_dv=copy_dv, copy_hdr10plus=copy_hdr10plus,
+            work_dir=tmp_path / "work",
+        )
+        wf = _make_workflow(enabled=False)
+        cmds_run: list[list[str]] = []
+        snapshots: list[list[str]] = []
+
+        def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
+            cmds_run.append(list(cmd))
+            for arg in reversed(cmd):
+                s = str(arg)
+                if any(s.endswith(ext) for ext in (".hevc", ".mkv", ".bin", ".json")):
+                    p = Path(s)
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(b"\x00" * 100_000)
+                    break
+            work = tmp_path / "work"
+            if work.exists():
+                names = [p.name for p in work.rglob("*")
+                         if p.is_file() and p.suffix in (".hevc", ".mkv")]
+                snapshots.append(names[:])
+            return ""
+
+        with patch.object(EncodeWorkflow, "_shm_path",
+                          side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
+            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+                sigs = wf._run_with_metadata_inject(config)
+                _collect_signals(sigs)
+
+        return cmds_run, snapshots
+
+    def test_src_hevc_deleted_before_encode_for_copy(self, tmp_path):
+        """
+        src.hevc est supprimé AVANT l'étape d'encodage vidéo (enc.hevc).
+        Plus de branche spéciale _copy_video, plus de encoded.mkv.
+        """
+        _, snapshots = self._run_inject_copy(tmp_path, copy_dv=True, copy_hdr10plus=False)
+        enc_snap = next(
+            (s for s in snapshots if any("enc.hevc" in n for n in s)), None
+        )
+        assert enc_snap is not None, "enc.hevc jamais créé"
+        assert not any("src.hevc" in n for n in enc_snap), \
+            f"src.hevc encore présent lors de l'encodage vidéo : {enc_snap}"
+
+    def test_enc_hevc_created_by_direct_encode_not_extraction(self, tmp_path):
+        """
+        enc.hevc est créé DIRECTEMENT par la commande d'encodage vidéo (-f hevc),
+        pas par extraction depuis un encoded.mkv (qui n'existe plus).
+        La commande 'ffmpeg -i encoded.mkv ... enc.hevc' ne doit pas apparaître.
+        """
+        cmds, _ = self._run_inject_copy(tmp_path, copy_dv=True, copy_hdr10plus=False)
+        # Aucune commande ffmpeg avec encoded.mkv en entrée
+        extraction_from_mkv = [
+            c for c in cmds
+            if "encoded.mkv" in " ".join(c)
+            and any("encoded.mkv" in c[i+1] for i, a in enumerate(c[:-1]) if a == "-i")
+        ]
+        assert len(extraction_from_mkv) == 0, \
+            f"Commande d'extraction depuis encoded.mkv trouvée (ne devrait pas exister) : {extraction_from_mkv}"
+        # enc.hevc est créé par une commande ffmpeg avec -f hevc en sortie
+        direct_encode_cmds = [
+            c for c in cmds
+            if "-f" in c and "hevc" in c and "enc.hevc" in " ".join(c)
+            and not any("encoded.mkv" in c[i+1] for i, a in enumerate(c[:-1]) if a == "-i")
+        ]
+        assert len(direct_encode_cmds) >= 1, \
+            "enc.hevc non créé par encodage direct (-f hevc)"
+
+    @pytest.mark.parametrize("copy_dv,copy_hdr10plus", [
+        (True, False), (False, True), (True, True)
+    ])
+    def test_copy_inject_completes_and_produces_output(self, tmp_path,
+                                                        copy_dv, copy_hdr10plus):
+        """Le workflow se termine et la commande ffmpeg de reconstitution finale est émise."""
+        cmds, _ = self._run_inject_copy(tmp_path, copy_dv, copy_hdr10plus)
+        # La reconstitution finale est une commande ffmpeg avec 2 inputs et output.mkv
+        recon_cmds = [
+            c for c in cmds
+            if c[0] == "ffmpeg" and "output.mkv" in " ".join(c)
+        ]
+        assert len(recon_cmds) == 1, \
+            f"Commande de reconstitution ffmpeg absente ou dupliquée. Cmds : {[c[0] for c in cmds]}"
+        assert "output.mkv" in " ".join(recon_cmds[0])
+
+    def test_copy_dv_injects_rpu_into_enc_hevc(self, tmp_path):
+        """
+        Depuis la refactorisation, dovi_tool inject-rpu opère sur enc.hevc
+        (extrait de encoded.mkv), pas sur src.hevc (qui est supprimé avant l'encodage).
+        """
+        cmds, _ = self._run_inject_copy(tmp_path, copy_dv=True, copy_hdr10plus=False)
+        dv_injects = [c for c in cmds if "inject-rpu" in c]
+        assert len(dv_injects) == 1
+        # Le fichier d'entrée de inject-rpu doit être enc.hevc (plus src.hevc)
+        inj_cmd = dv_injects[0]
+        i_flag = inj_cmd.index("-i")
+        input_file = inj_cmd[i_flag + 1]
+        assert "enc.hevc" in input_file or "enc_hdr10p.hevc" in input_file, \
+            f"inject-rpu n'opère pas sur enc.hevc : {input_file}"
+
+
+# ===========================================================================
+# Codec COPY — passthrough métadonnées dans les commandes FFmpeg
+# ===========================================================================
+
+class TestCopyCodecMetadataPassthrough:
+    """
+    Vérifie que -map_metadata 0 et -map_metadata:s:v:0 0:s:v:0 sont injectés
+    dans les commandes FFmpeg quand et seulement quand codec=copy.
+
+    Justification :
+      -map_metadata 0            : préserve titre, chapitres, attachments container.
+      -map_metadata:s:v:0 0:s:v:0 : préserve color primaries, mastering display,
+                                    content light level, etc. au niveau du stream.
+      Avec -c:v copy les NAL SEI (RPU DoVi, HDR10+) sont déjà dans le bitstream.
+    """
+
+    def setup_method(self):
+        self.wf = _make_workflow()
+
+    def _cmd_copy(self, tmp_path, **video_kw) -> list[str]:
+        src = tmp_path / "src.mkv"; src.touch()
+        vs = _make_video_settings(codec="copy", **video_kw)
+        return self.wf.build_command_single(
+            _make_config(src, tmp_path / "out.mkv", video=vs)
+        )
+
+    def _cmd_x265(self, tmp_path) -> list[str]:
+        src = tmp_path / "src.mkv"; src.touch()
+        return self.wf.build_command_single(
+            _make_config(src, tmp_path / "out.mkv",
+                         video=_make_video_settings(codec="libx265"))
+        )
+
+    # ── single pass ──────────────────────────────────────────────────────────
+
+    def test_copy_single_pass_has_map_metadata_global(self, tmp_path):
+        """-map_metadata 0 présent dans la commande single pass (copy)."""
+        cmd = self._cmd_copy(tmp_path)
+        assert "-map_metadata" in cmd
+        idx = cmd.index("-map_metadata")
+        assert cmd[idx + 1] == "0"
+
+    def test_copy_single_pass_has_map_metadata_stream(self, tmp_path):
+        """-map_metadata:s:v:0 0:s:v:0 présent dans la commande single pass (copy)."""
+        cmd = self._cmd_copy(tmp_path)
+        assert "-map_metadata:s:v:0" in cmd
+        idx = cmd.index("-map_metadata:s:v:0")
+        assert cmd[idx + 1] == "0:s:v:0"
+
+    def test_copy_single_pass_metadata_before_output(self, tmp_path):
+        """-map_metadata apparaît avant le chemin de sortie."""
+        src = tmp_path / "src.mkv"; src.touch()
+        out = tmp_path / "out.mkv"
+        vs = _make_video_settings(codec="copy")
+        cmd = self.wf.build_command_single(
+            _make_config(src, out, video=vs)
+        )
+        assert cmd.index("-map_metadata") < cmd.index(str(out))
+
+    def test_non_copy_single_pass_no_map_metadata(self, tmp_path):
+        """-map_metadata absent pour les codecs de réencodage (libx265)."""
+        cmd = self._cmd_x265(tmp_path)
+        assert "-map_metadata" not in cmd
+
+    @pytest.mark.parametrize("codec", ["libx264", "libsvtav1", "hevc_nvenc", "hevc_amf"])
+    def test_non_copy_codecs_no_map_metadata(self, tmp_path, codec):
+        """-map_metadata absent pour tout codec de réencodage."""
+        src = tmp_path / "src.mkv"; src.touch()
+        cmd = self.wf.build_command_single(
+            _make_config(src, tmp_path / "out.mkv",
+                         video=_make_video_settings(codec=codec))
+        )
+        assert "-map_metadata" not in cmd
+
+    # ── two pass (mode SIZE) ──────────────────────────────────────────────────
+
+    def test_copy_two_pass_pass2_has_map_metadata(self, tmp_path):
+        """La passe 2 contient -map_metadata 0 pour codec=copy en mode SIZE."""
+        src = tmp_path / "src.mkv"; src.touch()
+        vs = _make_video_settings(codec="copy", quality_mode=QualityMode.SIZE)
+        cmds = self.wf.build_command(
+            _make_config(src, tmp_path / "out.mkv", video=vs, duration_s=3600.0)
+        )
+        assert isinstance(cmds[0], list), "mode SIZE doit retourner list[list[str]]"
+        pass2 = cmds[1]
+        assert "-map_metadata" in pass2
+        idx = pass2.index("-map_metadata")
+        assert pass2[idx + 1] == "0"
+
+    def test_copy_two_pass_pass1_no_map_metadata(self, tmp_path):
+        """La passe 1 ne contient PAS -map_metadata (analyse seule, pas de sortie)."""
+        src = tmp_path / "src.mkv"; src.touch()
+        vs = _make_video_settings(codec="copy", quality_mode=QualityMode.SIZE)
+        cmds = self.wf.build_command(
+            _make_config(src, tmp_path / "out.mkv", video=vs, duration_s=3600.0)
+        )
+        pass1 = cmds[0]
+        assert "-map_metadata" not in pass1
+
+    def test_non_copy_two_pass_no_map_metadata(self, tmp_path):
+        """Passe 2 sans -map_metadata pour codec de réencodage en mode SIZE."""
+        src = tmp_path / "src.mkv"; src.touch()
+        vs = _make_video_settings(codec="libx265", quality_mode=QualityMode.SIZE)
+        cmds = self.wf.build_command(
+            _make_config(src, tmp_path / "out.mkv", video=vs, duration_s=3600.0)
+        )
+        for pass_cmd in cmds:
+            assert "-map_metadata" not in pass_cmd
+
+    # ── interaction avec d'autres flags ──────────────────────────────────────
+
+    def test_copy_with_audio_tracks_metadata_still_present(self, tmp_path):
+        """-map_metadata présent même avec des pistes audio configurées."""
+        src = tmp_path / "src.mkv"; src.touch()
+        audio = [AudioTrackSettings(stream_index=1, codec="copy")]
+        vs = _make_video_settings(codec="copy")
+        cmd = self.wf.build_command_single(
+            _make_config(src, tmp_path / "out.mkv", video=vs, audio_tracks=audio)
+        )
+        assert "-map_metadata" in cmd
+
+    def test_copy_with_subtitles_metadata_still_present(self, tmp_path):
+        """-map_metadata présent même avec copy_subtitles=True."""
+        src = tmp_path / "src.mkv"; src.touch()
+        vs = _make_video_settings(codec="copy")
+        cmd = self.wf.build_command_single(
+            _make_config(src, tmp_path / "out.mkv", video=vs, copy_subtitles=True)
+        )
+        assert "-map_metadata" in cmd
+
+
+# ===========================================================================
+# run() — codec COPY dévie vers chemin standard (pas _run_with_metadata_inject)
+# ===========================================================================
+
+class TestRunCopyBypassesInject:
+    """
+    Vérifie que run() n'appelle PAS _run_with_metadata_inject quand codec=copy,
+    même si copy_dv ou copy_hdr10plus est activé.
+
+    Comportement attendu :
+      - codec=copy + copy_dv=True  → chemin standard FFmpeg (passthrough)
+      - codec=copy + copy_hdr10plus=True → idem
+      - codec=libx265 + copy_dv=True → _run_with_metadata_inject (inchangé)
+      - log_message("INFO", "...passthrough...") émis quand copy est court-circuité
+    """
+
+    def _make_copy_config(self, tmp_path, copy_dv=False, copy_hdr10plus=False) -> EncodeConfig:
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 1000)
+        return _make_config(
+            source=src, output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="copy"),
+            copy_dv=copy_dv, copy_hdr10plus=copy_hdr10plus,
+        )
+
+    @pytest.mark.parametrize("copy_dv,copy_hdr10plus", [
+        (True, False), (False, True), (True, True)
+    ])
+    def test_copy_codec_does_not_call_metadata_inject(self, tmp_path, copy_dv, copy_hdr10plus):
+        """run() avec codec=copy ne doit jamais appeler _run_with_metadata_inject."""
+        config = self._make_copy_config(tmp_path, copy_dv=copy_dv,
+                                        copy_hdr10plus=copy_hdr10plus)
+        wf = _make_workflow()
+        inject_called = [False]
+
+        original = wf._run_with_metadata_inject
+
+        def _spy(cfg):
+            inject_called[0] = True
+            return original(cfg)
+
+        with patch.object(wf, "_run_with_metadata_inject", side_effect=_spy), \
+             patch.object(wf._runner, "run") as mock_run:
+            mock_run.return_value = MagicMock()
+            wf.run(config)
+
+        assert not inject_called[0], \
+            "codec=copy ne doit pas passer par _run_with_metadata_inject"
+
+    def test_non_copy_with_copy_dv_calls_metadata_inject(self, tmp_path):
+        """run() avec codec=libx265 + copy_dv=True DOIT appeler _run_with_metadata_inject."""
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 1000)
+        config = _make_config(
+            source=src, output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="libx265"),
+            copy_dv=True,
+        )
+        wf = _make_workflow()
+        inject_called = [False]
+
+        def _spy(cfg):
+            inject_called[0] = True
+            return MagicMock()
+
+        with patch.object(wf, "_run_with_metadata_inject", side_effect=_spy):
+            wf.run(config)
+
+        assert inject_called[0], \
+            "codec≠copy + copy_dv doit passer par _run_with_metadata_inject"
+
+    @pytest.mark.parametrize("copy_dv,copy_hdr10plus", [
+        (True, False), (False, True), (True, True)
+    ])
+    def test_copy_codec_emits_passthrough_log(self, tmp_path, copy_dv, copy_hdr10plus):
+        """run() émet un log INFO 'passthrough' quand copy_dv/hdr10+ est ignoré."""
+        config = self._make_copy_config(tmp_path, copy_dv=copy_dv,
+                                        copy_hdr10plus=copy_hdr10plus)
+        wf = _make_workflow()
+        log_msgs: list[tuple[str, str]] = []
+        wf.log_message.connect(lambda lvl, msg: log_msgs.append((lvl, msg)))
+
+        with patch.object(wf._runner, "run") as mock_run:
+            mock_run.return_value = MagicMock()
+            wf.run(config)
+
+        passthrough_logs = [
+            (lvl, msg) for lvl, msg in log_msgs
+            if lvl == "INFO" and "passthrough" in msg.lower()
+        ]
+        assert len(passthrough_logs) >= 1, \
+            f"Aucun log INFO 'passthrough' émis. Logs reçus : {log_msgs}"
+
+    def test_copy_no_flags_uses_standard_ffmpeg_runner(self, tmp_path):
+        """run() avec codec=copy sans copy_dv/hdr10+ utilise le runner standard."""
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 1000)
+        config = _make_config(
+            source=src, output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="copy"),
+        )
+        wf = _make_workflow()
+        with patch.object(wf._runner, "run") as mock_run:
+            mock_run.return_value = MagicMock()
+            wf.run(config)
+        assert mock_run.called
+
+
+# ===========================================================================
+# _run_with_metadata_inject — pistes audio dans la reconstitution finale
+# ===========================================================================
+
+class TestMetadataInjectAudio:
+    """
+    Vérifie que la commande de reconstitution finale dans _run_with_metadata_inject
+    contient les bons arguments audio (map, codec, bitrate, BSF).
+
+    Contexte :
+      - La reconstitution ffmpeg utilise deux inputs :
+          input 0 = current_hevc (flux vidéo injecté)
+          input 1 = source (audio + subs)
+      - L'audio est donc mappé via "-map 1:{stream_index}".
+      - Les arguments codec sont appliqués par output stream index (0-based).
+
+    Scénarios testés :
+      - Aucune piste audio → aucun -map audio ni -c:a dans la reconstitution
+      - Audio copy → -map 1:N, -c:a:0 copy, pas de -b:a:0
+      - Audio AAC → -map 1:N, -c:a:0 aac, -b:a:0 NNNk
+      - Audio EAC3 → -map 1:N, -c:a:0 eac3, -b:a:0 NNNk
+      - Audio FLAC → -map 1:N, -c:a:0 flac, pas de -b:a:0
+      - Plusieurs pistes → -map 1:N1, -c:a:0, -map 1:N2, -c:a:1
+      - TrueHD core → -bsf:a:0 truehd_core avant -c:a:0 copy
+      - copy_subtitles=True → -map 1:s? -c:s copy dans la reconstitution
+    """
+
+    def _run_inject_with_audio(
+        self,
+        tmp_path: Path,
+        audio_tracks: list,
+        copy_subtitles: bool = False,
+    ) -> list[list[str]]:
+        """
+        Lance _run_with_metadata_inject (libx265 + copy_dv) avec les pistes audio données.
+        Retourne la liste de toutes les commandes exécutées.
+        """
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 200_000)
+        config = _make_config(
+            source=src,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="libx265"),
+            audio_tracks=audio_tracks,
+            copy_subtitles=copy_subtitles,
+            copy_dv=True,
+            work_dir=tmp_path / "work",
+        )
+        wf = _make_workflow(enabled=False)
+        cmds_run: list[list[str]] = []
+
+        def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
+            cmds_run.append(list(cmd))
+            for arg in reversed(cmd):
+                s = str(arg)
+                if any(s.endswith(ext) for ext in (".hevc", ".mkv", ".bin", ".json")):
+                    p = Path(s)
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(b"\x00" * 100_000)
+                    break
+            return ""
+
+        with patch.object(EncodeWorkflow, "_shm_path",
+                          side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
+            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+                sigs = wf._run_with_metadata_inject(config)
+                _collect_signals(sigs)
+
+        return cmds_run
+
+    def _get_recon_cmd(self, cmds: list[list[str]]) -> list[str]:
+        """Extrait la commande de reconstitution finale (ffmpeg avec output.mkv)."""
+        recon = [c for c in cmds if c[0] == "ffmpeg" and "output.mkv" in " ".join(c)]
+        assert len(recon) == 1, f"Commande de reconstitution introuvable. Cmds: {[c[0] for c in cmds]}"
+        return recon[0]
+
+    def test_no_audio_tracks_no_audio_args(self, tmp_path):
+        """Sans pistes audio, la reconstitution ne contient ni -map audio ni -c:a."""
+        cmds = self._run_inject_with_audio(tmp_path, audio_tracks=[])
+        recon = self._get_recon_cmd(cmds)
+        assert "-c:a:0" not in recon
+        assert not any(arg.startswith("-c:a") for arg in recon)
+
+    def test_audio_copy_maps_from_source_input(self, tmp_path):
+        """Audio copy : mappé depuis l'input 1 (source), pas l'input 0 (HEVC)."""
+        track = AudioTrackSettings(stream_index=2, codec="copy")
+        cmds = self._run_inject_with_audio(tmp_path, [track])
+        recon = self._get_recon_cmd(cmds)
+        assert "-map" in recon
+        assert "1:2" in recon, f"Attendu -map 1:2 (source input 1). Reconstitution: {recon}"
+        # Pas de -map 0:2 (l'HEVC n'a pas d'audio)
+        cmd_str = " ".join(recon)
+        assert "0:2" not in cmd_str, "Audio ne doit pas être mappé depuis le HEVC (input 0)"
+
+    def test_audio_copy_no_bitrate(self, tmp_path):
+        """Audio copy : pas de -b:a dans la reconstitution."""
+        track = AudioTrackSettings(stream_index=1, codec="copy", bitrate_kbps=384)
+        cmds = self._run_inject_with_audio(tmp_path, [track])
+        recon = self._get_recon_cmd(cmds)
+        assert "-b:a:0" not in recon
+        assert "-c:a:0" in recon
+        assert "copy" in recon
+
+    def test_audio_aac_has_codec_and_bitrate(self, tmp_path):
+        """Audio AAC : -c:a:0 aac et -b:a:0 NNNk présents dans la reconstitution."""
+        track = AudioTrackSettings(stream_index=1, codec="aac", bitrate_kbps=192)
+        cmds = self._run_inject_with_audio(tmp_path, [track])
+        recon = self._get_recon_cmd(cmds)
+        assert "-c:a:0" in recon
+        assert "aac" in recon
+        assert "-b:a:0" in recon
+        assert "192k" in recon
+
+    def test_audio_eac3_has_codec_and_bitrate(self, tmp_path):
+        """Audio EAC3 : -c:a:0 eac3 et -b:a:0 NNNk présents dans la reconstitution."""
+        track = AudioTrackSettings(stream_index=1, codec="eac3", bitrate_kbps=640)
+        cmds = self._run_inject_with_audio(tmp_path, [track])
+        recon = self._get_recon_cmd(cmds)
+        assert "eac3" in recon
+        assert "640k" in recon
+
+    def test_audio_flac_no_bitrate(self, tmp_path):
+        """Audio FLAC : -c:a:0 flac sans -b:a (codec sans débit)."""
+        track = AudioTrackSettings(stream_index=1, codec="flac")
+        cmds = self._run_inject_with_audio(tmp_path, [track])
+        recon = self._get_recon_cmd(cmds)
+        assert "flac" in recon
+        assert "-b:a:0" not in recon
+
+    def test_multiple_audio_tracks(self, tmp_path):
+        """Plusieurs pistes : chaque track mappée depuis source avec le bon index de sortie."""
+        tracks = [
+            AudioTrackSettings(stream_index=1, codec="copy"),
+            AudioTrackSettings(stream_index=3, codec="aac", bitrate_kbps=256),
+        ]
+        cmds = self._run_inject_with_audio(tmp_path, tracks)
+        recon = self._get_recon_cmd(cmds)
+        # Piste 0 : copy depuis stream 1 de la source
+        assert "1:1" in recon
+        assert "-c:a:0" in recon
+        # Piste 1 : aac depuis stream 3 de la source
+        assert "1:3" in recon
+        assert "-c:a:1" in recon
+        assert "256k" in recon
+
+    def test_truehd_core_bsf_in_reconstitution(self, tmp_path):
+        """extract_truehd_core=True : -bsf:a:0 truehd_core dans la reconstitution."""
+        track = AudioTrackSettings(stream_index=1, codec="copy", extract_truehd_core=True)
+        cmds = self._run_inject_with_audio(tmp_path, [track])
+        recon = self._get_recon_cmd(cmds)
+        cmd_str = " ".join(recon)
+        assert "truehd_core" in cmd_str, \
+            f"BSF truehd_core absent de la reconstitution. Cmd: {recon}"
+
+    def test_copy_subtitles_mapped_from_source(self, tmp_path):
+        """copy_subtitles=True : -map 1:s? -c:s copy dans la reconstitution."""
+        cmds = self._run_inject_with_audio(tmp_path, audio_tracks=[], copy_subtitles=True)
+        recon = self._get_recon_cmd(cmds)
+        cmd_str = " ".join(recon)
+        assert "1:s?" in cmd_str, \
+            f"Subs non mappés depuis source (attendu '1:s?'). Cmd: {recon}"
+        assert "-c:s" in recon and "copy" in recon

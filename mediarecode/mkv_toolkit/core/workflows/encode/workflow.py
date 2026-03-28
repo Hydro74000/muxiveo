@@ -1,327 +1,30 @@
 """
-core/workflows/encode.py — Workflow d'encodage vidéo/audio via ffmpeg.
+core/workflows/encode/workflow.py — FFmpeg encode workflow with optional HDR metadata injection.
 
-Classes publiques :
-    VideoEncodeSettings  — paramètres d'encodage vidéo (codec, qualité, HDR)
-    AudioTrackSettings   — paramètres par piste audio
-    EncodeConfig         — configuration complète d'un encodage
-    EncodePreset         — profil sauvegardable en JSON
-    HardwareEncoderDetector — détecte les encodeurs matériels disponibles à l'exécution (probe runtime)
-    ProfileManager       — sauvegarde/charge les profils JSON
-    EncodeWorkflow       — construit et exécute la commande ffmpeg
-    EncodeError          — exception levée par le workflow
-
-Conventions :
-    - Jamais shell=True
-    - pathlib.Path pour tous les chemins
-    - ffmpeg uniquement (pas de mkvmerge)
-    - Signaux Qt thread-safe pour la communication vers l'UI
+Public:
+    EncodeWorkflow
 """
 
 from __future__ import annotations
 
 import ctypes
-import json
 import os
 import re
+import shutil
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
-import shutil
 import tempfile
-from dataclasses import dataclass, replace
-from enum import Enum
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
 from core.runner import TaskCancelledError, TaskSignals, ToolRunner
+from core.workflows.encode.models import (
+    EncodeConfig, EncodeError, QualityMode,
+    VideoEncodeSettings, AudioTrackSettings,
+)
 
-
-# =============================================================================
-# Enums et constantes
-# =============================================================================
-
-class QualityMode(str, Enum):
-    CRF     = "crf"
-    BITRATE = "bitrate"
-    SIZE    = "size"
-
-    def label(self) -> str:
-        return {"crf": "CRF", "bitrate": "Débit (kbps)", "size": "Taille cible (Mo)"}[self.value]
-
-
-SOFTWARE_VIDEO_CODECS: list[tuple[str, str]] = [
-    ("libx265",   "x265 — HEVC (logiciel)"),
-    ("libx264",   "x264 — H.264 (logiciel)"),
-    ("libsvtav1", "SVT-AV1 (logiciel)"),
-]
-
-HARDWARE_VIDEO_CODECS: list[tuple[str, str]] = [
-    ("hevc_nvenc", "NVENC — HEVC (NVIDIA)"),
-    ("hevc_amf",   "AMF — HEVC (AMD)"),
-    ("hevc_qsv",   "QSV — HEVC (Intel)"),
-    ("h264_nvenc", "NVENC — H.264 (NVIDIA)"),
-    ("h264_amf",   "AMF — H.264 (AMD)"),
-    ("h264_qsv",   "QSV — H.264 (Intel)"),
-]
-
-AUDIO_CODECS: list[tuple[str, str]] = [
-    ("copy",  "Copie (sans réencodage)"),
-    ("aac",   "AAC"),
-    ("eac3",  "EAC-3 (Dolby Digital+)"),
-    ("flac",  "FLAC (sans perte)"),
-]
-
-X265_PRESETS   = ["ultrafast", "superfast", "veryfast", "faster", "fast",
-                  "medium", "slow", "slower", "veryslow", "placebo"]
-X264_PRESETS   = X265_PRESETS
-SVTAV1_PRESETS = [str(i) for i in range(13)]   # 0 = qualité max, 12 = vitesse max
-NVENC_PRESETS  = ["p1", "p2", "p3", "p4", "p5", "p6", "p7",
-                  "slow", "medium", "fast", "hp", "hq"]
-
-TONEMAP_ALGORITHMS = ["hable", "mobius", "reinhard", "gamma", "linear", "clip"]
-
-
-def presets_for_codec(codec: str) -> list[str]:
-    """Retourne la liste de presets appropriée pour le codec donné."""
-    if codec == "libsvtav1":
-        return SVTAV1_PRESETS
-    if codec in ("hevc_nvenc", "h264_nvenc"):
-        return NVENC_PRESETS
-    if codec in ("hevc_amf", "hevc_qsv", "h264_amf", "h264_qsv"):
-        return []   # pas de preset standardisé
-    return X265_PRESETS   # libx265, libx264
-
-
-# =============================================================================
-# Dataclasses
-# =============================================================================
-
-@dataclass
-class VideoEncodeSettings:
-    """Paramètres d'encodage vidéo."""
-    codec:            str          = "libx265"
-    quality_mode:     QualityMode  = QualityMode.CRF
-    crf:              int          = 18
-    bitrate_kbps:     int          = 5000
-    target_size_mb:   int          = 4000
-    preset:           str          = "slow"
-    extra_params:     str          = ""    # x265-params / svtav1-params passthrough
-    # HDR statique
-    inject_hdr_meta:  bool         = False
-    master_display:   str          = ""   # ex. "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(40000000,50)"
-    max_cll:          str          = ""   # ex. "1000,400"
-    # Tone mapping
-    tonemap_to_sdr:   bool         = False
-    tonemap_algorithm: str         = "hable"
-
-
-@dataclass
-class AudioTrackSettings:
-    """Paramètres d'encodage pour une piste audio."""
-    stream_index:        int         # index global ffprobe
-    codec:               str = "copy"
-    bitrate_kbps:        int = 384
-    extract_truehd_core: bool = False   # strip Atmos via BSF truehd_core
-
-
-@dataclass
-class EncodeConfig:
-    """Configuration complète d'un encodage."""
-    source:           Path
-    output:           Path
-    video:            VideoEncodeSettings
-    audio_tracks:     list[AudioTrackSettings]
-    copy_subtitles:   bool         = True
-    duration_s:       float | None = None   # requis pour le mode taille cible
-    # Passthrough métadonnées dynamiques (HEVC uniquement)
-    copy_dv:          bool         = False  # injecter RPU Dolby Vision via dovi_tool
-    copy_hdr10plus:   bool         = False  # injecter HDR10+ SEI via hdr10plus_tool
-    dovi_profile:     str          = "0"    # flag -m dovi_tool : "0"=conserver, "2"=normaliser P8.1
-    work_dir:         Path | None  = None   # dossier de travail (passlog, fichiers temp)
-
-
-@dataclass
-class EncodePreset:
-    """Profil d'encodage sauvegardable en JSON."""
-    name:                       str  = "Nouveau profil"
-    description:                str  = ""
-    codec:                      str  = "libx265"
-    quality_mode:               str  = QualityMode.CRF.value
-    crf:                        int  = 18
-    bitrate_kbps:               int  = 5000
-    target_size_mb:             int  = 4000
-    preset:                     str  = "slow"
-    extra_params:               str  = ""
-    inject_hdr_meta:            bool = False
-    master_display:             str  = ""
-    max_cll:                    str  = ""
-    tonemap_to_sdr:             bool = False
-    tonemap_algorithm:          str  = "hable"
-    default_audio_codec:        str  = "copy"
-    default_audio_bitrate_kbps: int  = 384
-
-    def to_video_settings(self) -> VideoEncodeSettings:
-        return VideoEncodeSettings(
-            codec=self.codec,
-            quality_mode=QualityMode(self.quality_mode),
-            crf=self.crf,
-            bitrate_kbps=self.bitrate_kbps,
-            target_size_mb=self.target_size_mb,
-            preset=self.preset,
-            extra_params=self.extra_params,
-            inject_hdr_meta=self.inject_hdr_meta,
-            master_display=self.master_display,
-            max_cll=self.max_cll,
-            tonemap_to_sdr=self.tonemap_to_sdr,
-            tonemap_algorithm=self.tonemap_algorithm,
-        )
-
-
-# =============================================================================
-# Détection des encodeurs matériels
-# =============================================================================
-
-class HardwareEncoderDetector:
-    """
-    Détecte les encodeurs matériels réellement utilisables à l'exécution.
-
-    Un encodeur peut être compilé dans ffmpeg (visible dans `-encoders`) mais
-    inutilisable si le driver GPU est absent (ex: libcuda.so.1 manquant pour NVENC).
-    On probe chaque encodeur avec une frame nulle pour confirmer sa disponibilité.
-
-    Synchrone et thread-safe — à exécuter dans un ThreadPoolExecutor.
-    """
-
-    def detect(self, ffmpeg_bin: str = "ffmpeg") -> set[str]:
-        """Retourne l'ensemble des identifiants d'encodeurs matériels disponibles."""
-        # Étape 1 : filtre rapide — encodeurs compilés dans ce ffmpeg
-        try:
-            result = subprocess.run(
-                [ffmpeg_bin, "-encoders"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            compiled = {
-                codec_id
-                for codec_id, _ in HARDWARE_VIDEO_CODECS
-                if re.search(rf"\b{re.escape(codec_id)}\b", result.stdout)
-            }
-        except FileNotFoundError:
-            return set()
-
-        if not compiled:
-            return set()
-
-        # Étape 2 : probe runtime selon la famille d'encodeur
-        #
-        # NVENC : on passe par nvidia-smi plutôt qu'un encode test.
-        #   ffmpeg charge libcuda.so.1 dynamiquement ; dans un container
-        #   (distrobox / Flatpak) la lib n'est souvent pas dans LD_LIBRARY_PATH
-        #   même si le GPU est accessible. nvidia-smi communique directement
-        #   avec le kernel driver (/dev/nvidiactl) sans dépendance CUDA.
-        #
-        # AMF / QSV : encode probe avec format=yuv420p (les HW encoders
-        #   refusent rgb24 produit par nullsrc).
-
-        _NVENC = {"hevc_nvenc", "h264_nvenc"}
-        available: set[str] = set()
-
-        nvenc_compiled = compiled & _NVENC
-        if nvenc_compiled and self._nvidia_ok():
-            available |= nvenc_compiled
-
-        for codec_id in compiled - _NVENC:
-            probe = subprocess.run(
-                [
-                    ffmpeg_bin,
-                    "-f", "lavfi", "-i", "nullsrc=s=64x64:r=1:d=0.04",
-                    "-vf", "format=yuv420p",
-                    "-frames:v", "1",
-                    "-c:v", codec_id,
-                    "-f", "null", "-",
-                    "-loglevel", "error",
-                ],
-                capture_output=True,
-                check=False,
-            )
-            if probe.returncode == 0:
-                available.add(codec_id)
-
-        return available
-
-    @staticmethod
-    def _nvidia_ok() -> bool:
-        """Retourne True si un GPU NVIDIA est accessible (via nvidia-smi ou /dev/nvidia0)."""
-        try:
-            r = subprocess.run(
-                ["nvidia-smi", "-L"],
-                capture_output=True,
-                check=False,
-                timeout=5,
-            )
-            if r.returncode == 0:
-                return True
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
-        # Fallback : présence du device node kernel
-        return Path("/dev/nvidia0").exists()
-
-
-# =============================================================================
-# Gestionnaire de profils JSON
-# =============================================================================
-
-class ProfileManager:
-    """
-    Sauvegarde et charge les profils EncodePreset en JSON.
-
-    Dossier : <app_data_dir>/encode_profiles/
-    """
-
-    _FIELDS = EncodePreset.__dataclass_fields__
-
-    def __init__(self, profiles_dir: Path) -> None:
-        self._dir = profiles_dir
-        self._dir.mkdir(parents=True, exist_ok=True)
-
-    def save(self, preset: EncodePreset) -> None:
-        safe = re.sub(r"[^\w\-]", "_", preset.name)
-        path = self._dir / f"{safe}.json"
-        data = {f: getattr(preset, f) for f in self._FIELDS}
-        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    def load_all(self) -> list[EncodePreset]:
-        presets: list[EncodePreset] = []
-        for f in sorted(self._dir.glob("*.json")):
-            try:
-                raw = json.loads(f.read_text(encoding="utf-8"))
-                presets.append(EncodePreset(**{k: v for k, v in raw.items() if k in self._FIELDS}))
-            except Exception:
-                pass
-        return presets
-
-    def delete(self, name: str) -> None:
-        safe = re.sub(r"[^\w\-]", "_", name)
-        (self._dir / f"{safe}.json").unlink(missing_ok=True)
-
-    def names(self) -> list[str]:
-        return [p.name for p in self.load_all()]
-
-
-# =============================================================================
-# Exception
-# =============================================================================
-
-class EncodeError(RuntimeError):
-    """Erreur levée lors de la validation ou de l'exécution d'un encodage."""
-
-
-# =============================================================================
-# Workflow
-# =============================================================================
 
 class EncodeWorkflow(QObject):
     """
@@ -389,6 +92,13 @@ class EncodeWorkflow(QObject):
         cmd.extend(["-map", "0:v:0"])
         cmd.extend(self._video_codec_args(config.video, config.video.bitrate_kbps))
 
+        # Passthrough métadonnées container et stream vidéo (codec COPY uniquement).
+        # -map_metadata 0            : titre, chapitres, attachments du container source.
+        # -map_metadata:s:v:0 0:s:v:0 : color primaries, mastering display, content light level, etc.
+        # Les NAL units SEI (RPU DoVi, HDR10+) sont conservées dans le bitstream par -c:v copy.
+        if config.video.codec == "copy":
+            cmd.extend(["-map_metadata", "0", "-map_metadata:s:v:0", "0:s:v:0"])
+
         if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
             cmd.extend(self._hdr_meta_args(config.video))
 
@@ -417,6 +127,8 @@ class EncodeWorkflow(QObject):
         pass1 = _base() + ["-pass", "1", "-an", "-f", "null", "/dev/null"]
 
         pass2 = _base() + ["-pass", "2"]
+        if config.video.codec == "copy":
+            pass2.extend(["-map_metadata", "0", "-map_metadata:s:v:0", "0:s:v:0"])
         if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
             pass2.extend(self._hdr_meta_args(config.video))
         for i, a in enumerate(config.audio_tracks):
@@ -443,8 +155,9 @@ class EncodeWorkflow(QObject):
                 return ["-c:v", "copy"]
             case "libx265":
                 args = ["-c:v", "libx265", "-crf", str(v.crf), "-preset", v.preset]
-                if v.extra_params:
-                    args.extend(["-x265-params", v.extra_params])
+                x265 = self._x265_params(v)
+                if x265:
+                    args.extend(["-x265-params", x265])
                 return args
             case "libx264":
                 args = ["-c:v", "libx264", "-crf", str(v.crf), "-preset", v.preset]
@@ -475,8 +188,9 @@ class EncodeWorkflow(QObject):
                 return ["-c:v", "copy"]
             case "libx265":
                 args = ["-c:v", "libx265", "-b:v", f"{bitrate_kbps}k", "-preset", v.preset]
-                if v.extra_params:
-                    args.extend(["-x265-params", v.extra_params])
+                x265 = self._x265_params(v)
+                if x265:
+                    args.extend(["-x265-params", x265])
                 return args
             case "libx264":
                 return ["-c:v", "libx264", "-b:v", f"{bitrate_kbps}k", "-preset", v.preset]
@@ -505,13 +219,46 @@ class EncodeWorkflow(QObject):
             "format=yuv420p"
         )
 
+    def _x265_params(self, v: VideoEncodeSettings) -> str:
+        """
+        Construit la valeur de -x265-params en fusionnant extra_params et les
+        métadonnées HDR10 statiques (master-display, max-cll) si inject_hdr_meta est actif.
+
+        Retourne une chaîne vide si aucun paramètre n'est à passer.
+        """
+        parts: list[str] = []
+        if v.extra_params:
+            parts.append(v.extra_params.strip(":"))
+        if v.inject_hdr_meta and not v.tonemap_to_sdr:
+            if v.master_display:
+                parts.append(f"master-display={v.master_display}")
+            if v.max_cll:
+                parts.append(f"max-cll={v.max_cll}")
+        return ":".join(p for p in parts if p)
+
     def _hdr_meta_args(self, v: VideoEncodeSettings) -> list[str]:
-        """Flags de couleur + métadonnées statiques HDR10 (ST 2086 / MaxCLL)."""
+        """
+        Flags de couleur container-level + métadonnées SEI selon le codec.
+
+        Couleur (valides pour tout codec HEVC/AV1 re-encodé) :
+            -color_primaries bt2020  -color_trc smpte2084  -colorspace bt2020nc
+
+        master_display / max_cll par codec :
+            libx265          → injectés via -x265-params (dans _video_codec_args_crf/bitrate)
+            hevc_nvenc        → options privées du codec (-master_display / -max_cll)
+            hevc_amf, hevc_qsv, libsvtav1 → pas de mécanisme standardisé → ignorés
+            copy, h264_*, libx264 → couleur non applicable / pas de HDR10 → rien
+        """
+        if v.codec in ("copy", "libx264", "h264_nvenc", "h264_amf", "h264_qsv"):
+            return []
         args = ["-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc"]
-        if v.master_display:
-            args.extend(["-master_display", v.master_display])
-        if v.max_cll:
-            args.extend(["-max_cll", v.max_cll])
+        if v.codec == "hevc_nvenc":
+            if v.master_display:
+                args.extend(["-master_display", v.master_display])
+            if v.max_cll:
+                args.extend(["-max_cll", v.max_cll])
+        # libx265 : master_display/max_cll déjà fusionnés dans -x265-params
+        # hevc_amf, hevc_qsv, libsvtav1 : couleur only, SEI non géré
         return args
 
     def _audio_codec_args(self, out_idx: int, a: AudioTrackSettings) -> list[str]:
@@ -531,6 +278,52 @@ class EncodeWorkflow(QObject):
             case _:
                 args.extend([f"-c:a:{out_idx}", a.codec])
         return args
+
+    # ------------------------------------------------------------------
+    # Commandes spécialisées pour _run_with_metadata_inject
+    # ------------------------------------------------------------------
+
+    def _build_video_only_cmd(self, config: EncodeConfig, output_hevc: Path) -> list[str]:
+        """
+        ffmpeg : vidéo seule, sortie HEVC brut (-f hevc, sans container).
+        Pas d'audio ni de subs. Utilisé pour encoder directement vers un
+        flux HEVC injectable, sans passer par un MKV intermédiaire.
+        """
+        cmd = [self._ffmpeg, "-hide_banner", "-y", "-i", str(config.source)]
+        vf = self._build_vf(config.video)
+        if vf:
+            cmd.extend(["-vf", vf])
+        cmd.extend(["-map", "0:v:0"])
+        cmd.extend(self._video_codec_args(config.video, config.video.bitrate_kbps))
+        if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
+            cmd.extend(self._hdr_meta_args(config.video))
+        cmd.extend(["-an", "-f", "hevc", str(output_hevc)])
+        return cmd
+
+    def _build_video_only_two_pass(
+        self, config: EncodeConfig, output_hevc: Path
+    ) -> list[list[str]]:
+        """
+        Deux passes ffmpeg : vidéo seule, sortie HEVC brut.
+        Utilisé en mode SIZE pour l'étape vidéo de _run_with_metadata_inject.
+        """
+        bitrate = self._size_to_bitrate_kbps(config)
+        vf = self._build_vf(config.video)
+
+        def _base() -> list[str]:
+            c = [self._ffmpeg, "-hide_banner", "-y", "-i", str(config.source)]
+            if vf:
+                c.extend(["-vf", vf])
+            c.extend(["-map", "0:v:0"])
+            c.extend(self._video_codec_args_bitrate(config.video, bitrate))
+            return c
+
+        pass1 = _base() + ["-pass", "1", "-an", "-f", "null", "/dev/null"]
+        pass2 = _base() + ["-pass", "2"]
+        if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
+            pass2.extend(self._hdr_meta_args(config.video))
+        pass2.extend(["-an", "-f", "hevc", str(output_hevc)])
+        return [pass1, pass2]
 
     def _size_to_bitrate_kbps(self, config: EncodeConfig) -> int:
         duration = config.duration_s or 3600.0
@@ -737,7 +530,16 @@ class EncodeWorkflow(QObject):
         self.log_message.emit("INFO", f"Encodage → {config.output.name}")
 
         if config.copy_dv or config.copy_hdr10plus:
-            return self._run_with_metadata_inject(config)
+            if config.video.codec == "copy":
+                # Codec COPY : les NAL units DoVi/HDR10+ sont déjà dans le bitstream source.
+                # Extraction + réinjection inutiles sans réencodage — remux direct avec passthrough.
+                self.log_message.emit(
+                    "INFO",
+                    "Codec COPY : injection DoVi/HDR10+ ignorée — "
+                    "métadonnées préservées par passthrough ffmpeg.",
+                )
+            else:
+                return self._run_with_metadata_inject(config)
 
         cwd = config.work_dir or config.source.parent
         if config.work_dir:
@@ -789,17 +591,21 @@ class EncodeWorkflow(QObject):
     def _run_with_metadata_inject(self, config: EncodeConfig) -> TaskSignals:
         """
         Workflow d'encodage avec injection DV RPU / HDR10+ en post-traitement.
+        Appelé uniquement quand copy_dv ou copy_hdr10plus est actif ET codec ≠ copy.
 
-        Gestion des fichiers de travail — max 2 gros fichiers simultanément :
-          • src.hevc est supprimé dès que RPU et HDR10+ sont extraits (avant l'encodage).
-          • encoded.mkv reste jusqu'au remuxage final (nécessaire pour audio/subs).
+        Gestion des fichiers de travail :
+          • Pas de encoded.mkv : la vidéo est encodée directement en HEVC brut (enc.hevc).
+          • L'audio copy est pris directement depuis la source via mkvmerge — aucun
+            traitement. Un fichier audio_subs.mkv n'est créé que si un réencodage audio
+            ou une extraction TrueHD core (BSF) est nécessaire.
+          • La source n'est jamais modifiée.
           • Chaque HEVC intermédiaire est alloué via _shm_path() : en RAM (/dev/shm)
-            si RAM libre > taille × 1.10, sinon sur disque.
+            si RAM libre > seuil, sinon sur disque.
           • Chaque intermédiaire HEVC est supprimé immédiatement dès que l'étape
             suivante l'a consommé.
           • Les fichiers /dev/shm sont explicitement supprimés dans le finally.
 
-        Ordre d'injection (inchangé — contrainte HDR10+ avant DV) :
+        Ordre d'injection (contrainte HDR10+ avant DV) :
           HDR10+ en premier : hdr10plus_tool ne tolère pas les NAL RPU DV existants.
           dovi_tool préserve tous les types de NAL.
 
@@ -808,11 +614,18 @@ class EncodeWorkflow(QObject):
           2. Extraction RPU DoVi (dovi_tool extract-rpu) si copy_dv
           3. Extraction HDR10+ (hdr10plus_tool extract) si copy_hdr10plus
           4. Suppression immédiate de src.hevc
-          5. Encodage vers encoded.mkv
-          6. Extraction HEVC encodé → current_hevc (RAM si possible)
-          7. Injection HDR10+ si applicable → nouveau current_hevc, ancien supprimé
-          8. Injection RPU DV si applicable → nouveau current_hevc, ancien supprimé
-          9. Remuxage final (mkvmerge : current_hevc + audio/subs de encoded.mkv)
+          5. Encodage vidéo seule → enc.hevc (HEVC brut, sans container)
+             Mode SIZE : deux passes (analyse + encodage direct en .hevc)
+          6. Injection HDR10+ si applicable → nouveau current_hevc, ancien supprimé
+          7. Injection RPU DV si applicable → nouveau current_hevc, ancien supprimé
+          8. Reconstitution finale via ffmpeg (une seule commande, depuis la source) :
+             ffmpeg -i current_hevc -i source
+               -map 0:v:0 -c:v copy            (vidéo injectée)
+               -map 1:stream_idx [codec args]   (audio depuis source, copy ou réencodage)
+               -map 1:s? -c:s copy              (subs depuis source)
+               output.mkv
+             Pas de mkvmerge, pas de fichier audio intermédiaire.
+             La source n'est jamais modifiée.
         """
         signals = TaskSignals()
         executor = ThreadPoolExecutor(max_workers=1)
@@ -829,7 +642,6 @@ class EncodeWorkflow(QObject):
             # Fichiers alloués hors du répertoire de travail tmp (ex. /dev/shm)
             # → nettoyage explicite dans le finally car shutil.rmtree ne les couvre pas.
             ext_files: list[Path] = []
-            _ram_dir = EncodeWorkflow._ram_buffer_dir()
 
             def _run(cmd: list[str]) -> str:
                 return self._runner._run_cmd(
@@ -901,43 +713,29 @@ class EncodeWorkflow(QObject):
                     ])
                     _check()
 
-                # ── 4. Suppression immédiate de src.hevc ─────────────────
-                # src.hevc n'est plus nécessaire : RPU et HDR10+ sont extraits.
-                # Libérer l'espace avant l'encodage (étape 5).
+                # ── 4. Libération de src.hevc ────────────────────────────
+                # Libéré avant l'encodage pour maximiser l'espace disque/RAM.
                 _free(src_hevc)
 
-                # ── 5. Encodage vers MKV temporaire ─────────────────────
-                encoded_mkv = tmp / "encoded.mkv"
-                temp_cfg = replace(
-                    config, output=encoded_mkv,
-                    copy_dv=False, copy_hdr10plus=False,
-                )
+                # ── 5a. Encodage vidéo → enc.hevc brut ──────────────────
+                # Encodage direct en HEVC sans container ni audio.
+                # Élimine encoded.mkv et l'étape d'extraction HEVC redondante.
+                # La taille estimée = taille source (approximation conservative).
+                enc_hevc = _alloc("enc.hevc", src_size_est)
+                signals.progress.emit("Encodage vidéo…")
                 if config.video.quality_mode == QualityMode.SIZE:
-                    cmds = self._build_two_pass(temp_cfg)
+                    v_cmds = self._build_video_only_two_pass(config, enc_hevc)
                     self.log_message.emit("INFO", "Passe 1/2 (analyse)…")
-                    _run(cmds[0])
+                    _run(v_cmds[0])
                     _check()
                     self.log_message.emit("INFO", "Passe 2/2 (encodage)…")
-                    _run(cmds[1])
+                    _run(v_cmds[1])
                 else:
-                    _run(self._build_single_pass(temp_cfg))
+                    _run(self._build_video_only_cmd(config, enc_hevc))
                 _check()
+                current_hevc = enc_hevc
 
-                # ── 6. HEVC encodé brut ──────────────────────────────────
-                # Sur disque à ce stade : encoded.mkv uniquement.
-                # On alloue enc.hevc en RAM si possible pour ne pas dépasser
-                # 2 gros fichiers disque (encoded.mkv + current_hevc).
-                enc_size_est = encoded_mkv.stat().st_size
-                current_hevc = _alloc("enc.hevc", enc_size_est)
-                signals.progress.emit("Extraction HEVC encodé…")
-                _run([
-                    self._ffmpeg, "-hide_banner", "-y",
-                    "-i", str(encoded_mkv),
-                    "-map", "0:v:0", "-c:v", "copy", "-f", "hevc", str(current_hevc),
-                ])
-                _check()
-
-                # ── 7. Injection HDR10+ ──────────────────────────────────
+                # ── 6. Injection HDR10+ ──────────────────────────────────
                 # HDR10+ avant DV : hdr10plus_tool ne tolère pas les NAL RPU DV.
                 if config.copy_hdr10plus and hdr10p_json.exists():
                     cur_size = current_hevc.stat().st_size
@@ -953,7 +751,7 @@ class EncodeWorkflow(QObject):
                     current_hevc = out_hdr10p
                     _check()
 
-                # ── 8. Injection RPU DV ──────────────────────────────────
+                # ── 7. Injection RPU DV ──────────────────────────────────
                 if config.copy_dv and rpu_bin.exists():
                     cur_size = current_hevc.stat().st_size
                     out_dv = _alloc("enc_dv.hevc", cur_size)
@@ -970,14 +768,24 @@ class EncodeWorkflow(QObject):
                     current_hevc = out_dv
                     _check()
 
-                # ── 9. Remuxage final ────────────────────────────────────
-                signals.progress.emit("Remuxage final…")
-                _run([
-                    self._bins["mkvmerge"],
-                    "-o", str(config.output),
-                    str(current_hevc),              # piste vidéo avec métadonnées
-                    "--no-video", str(encoded_mkv), # audio + sous-titres uniquement
-                ])
+                # ── 8. Reconstitution finale ─────────────────────────────
+                # Une seule commande ffmpeg combine le HEVC injecté (input 0)
+                # avec audio et subs directement depuis la source (input 1).
+                # Copy ou réencodage audio géré ici — aucun fichier intermédiaire.
+                signals.progress.emit("Reconstitution finale…")
+                recon_cmd = [
+                    self._ffmpeg, "-hide_banner", "-y",
+                    "-i", str(current_hevc),   # input 0 : flux HEVC injecté
+                    "-i", str(config.source),  # input 1 : source (audio + subs)
+                    "-map", "0:v:0", "-c:v", "copy",   # vidéo : copie le HEVC injecté
+                ]
+                for i, a in enumerate(config.audio_tracks):
+                    recon_cmd.extend(["-map", f"1:{a.stream_index}"])
+                    recon_cmd.extend(self._audio_codec_args(i, a))
+                if config.copy_subtitles:
+                    recon_cmd.extend(["-map", "1:s?", "-c:s", "copy"])
+                recon_cmd.append(str(config.output))
+                _run(recon_cmd)
                 signals.finished.emit(f"Encodage terminé → {config.output.name}")
 
             except TaskCancelledError:
