@@ -7,8 +7,6 @@ Public:
 
 from __future__ import annotations
 
-import re
-import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -17,8 +15,8 @@ from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog,
     QFrame, QHBoxLayout, QInputDialog, QLabel,
-    QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
-    QPlainTextEdit, QProgressBar, QPushButton,
+    QLineEdit, QListWidget, QListWidgetItem,
+    QPlainTextEdit, QPushButton,
     QScrollArea, QSlider, QSpinBox, QStackedWidget,
     QVBoxLayout, QWidget,
 )
@@ -30,12 +28,12 @@ from core.runner import TaskSignals
 from core.workflows.encode import (
     AUDIO_CODECS, HARDWARE_VIDEO_CODECS, SOFTWARE_VIDEO_CODECS,
     TONEMAP_ALGORITHMS, AudioTrackSettings, EncodeConfig,
-    EncodeError, EncodePreset, EncodeWorkflow, HardwareEncoderDetector,
+    EncodePreset, EncodeWorkflow, HardwareEncoderDetector,
     ProfileManager, QualityMode, VideoEncodeSettings, presets_for_codec,
 )
 from ui.panels.encode_panel.theme import (
-    _C, _FPS_RE, _TIME_RE, _card, _checkbox_style, _combo_style,
-    _fmt_eta, _input_style, _primary_button, _secondary_button,
+    _C, _card, _checkbox_style, _combo_style,
+    _input_style, _primary_button, _secondary_button,
     _section_label, _separator,
 )
 from ui.panels.encode_panel.widgets import _AudioSourceDialog, _AudioTable
@@ -43,14 +41,16 @@ from ui.panels.encode_panel.widgets import _AudioSourceDialog, _AudioTable
 
 class EncodePanel(QWidget):
     """
-    Panneau d'encodage vidéo/audio — Phase 6.
+    Panneau d'encodage vidéo/audio.
 
     Signaux :
         log_message(level: str, message: str)
+        ready_changed(bool) — True quand une source vidéo est sélectionnée
     """
 
-    log_message  = Signal(str, str)
-    _hw_detected = Signal(object)   # set[str]
+    log_message   = Signal(str, str)
+    ready_changed = Signal(bool)   # émis quand la source vidéo change
+    _hw_detected  = Signal(object)   # set[str]
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -65,11 +65,9 @@ class EncodePanel(QWidget):
         self._executor  = ThreadPoolExecutor(max_workers=1)
         self._file_info: FileInfo | None = None
         self._video_tracks: list[tuple[FileInfo, TrackEntry, str]] = []
-        self._audio_tracks_data: list[tuple] = []   # list[tuple[AudioTrack, str]] pour le popup
-        self._running   = False
+        self._audio_tracks_data: list[tuple] = []   # list[tuple[AudioTrack, str, Path]] pour le popup
         self._duration_s: float | None = None
         self._hw_encoders: set[str] = set()
-        self._signals: TaskSignals | None = None
 
         self._workflow.log_message.connect(self.log_message, Qt.ConnectionType.QueuedConnection)
         self._hw_detected.connect(self._on_hw_detected, Qt.ConnectionType.QueuedConnection)
@@ -192,70 +190,6 @@ class EncodePanel(QWidget):
         scroll.setWidget(content)
         root.addWidget(scroll, stretch=1)
 
-        # --- Barre d'action ---
-        btn_bar = QWidget()
-        btn_bar.setStyleSheet(f"QWidget{{background:{_C.BG_PANEL};"
-                              f"border-top:1px solid {_C.BORDER};}}")
-        bbl = QHBoxLayout(btn_bar)
-        bbl.setContentsMargins(28, 12, 28, 12)
-        bbl.setSpacing(12)
-
-        # Conteneur vertical : barre fine + légende (pct · fps · ETA)
-        self._progress_widget = QWidget()
-        self._progress_widget.setStyleSheet("background:transparent;")
-        _pvl = QVBoxLayout(self._progress_widget)
-        _pvl.setContentsMargins(0, 4, 0, 4)
-        _pvl.setSpacing(4)
-
-        self._progress_bar = QProgressBar()
-        self._progress_bar.setRange(0, 100)
-        self._progress_bar.setValue(0)
-        self._progress_bar.setFixedHeight(6)
-        self._progress_bar.setTextVisible(False)
-        self._progress_bar.setStyleSheet(
-            f"QProgressBar{{background:{_C.BG_ACTIVE};border:none;border-radius:3px;}}"
-            f"QProgressBar::chunk{{background:{_C.ACCENT};border-radius:3px;}}"
-        )
-        _pvl.addWidget(self._progress_bar)
-
-        self._progress_lbl = QLabel("")
-        self._progress_lbl.setStyleSheet(
-            f"color:{_C.TEXT_DIM};font-size:10px;"
-            f"font-family:'JetBrains Mono',monospace;background:transparent;"
-        )
-        _pvl.addWidget(self._progress_lbl)
-
-        self._progress_widget.setVisible(False)
-        bbl.addWidget(self._progress_widget, stretch=1)
-
-        self._status_lbl = QLabel("")
-        self._status_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
-        bbl.addWidget(self._status_lbl)
-        bbl.addSpacing(4)
-
-        self._run_btn = _primary_button("▶  Lancer l'encodage")
-        self._run_btn.setFixedWidth(200)
-        self._run_btn.setEnabled(False)
-        self._run_btn.clicked.connect(self._on_run)
-        bbl.addWidget(self._run_btn)
-
-        self._cancel_btn = QPushButton("✕  Annuler")
-        self._cancel_btn.setFixedWidth(110)
-        self._cancel_btn.setFixedHeight(36)
-        self._cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._cancel_btn.setStyleSheet(f"""
-            QPushButton{{background:{_C.BG_CARD};color:{_C.WARN};
-                         border:1px solid {_C.WARN};border-radius:6px;
-                         font-size:12px;font-weight:600;padding:0 14px;}}
-            QPushButton:hover{{background:#2a2010;border-color:#f0b030;color:#f0b030;}}
-            QPushButton:pressed{{background:#1a1608;}}
-        """)
-        self._cancel_btn.setVisible(False)
-        self._cancel_btn.clicked.connect(self._on_cancel)
-        bbl.addWidget(self._cancel_btn)
-
-        root.addWidget(btn_bar)
-
     def _build_video_source_card(self) -> QWidget:
         """Sélecteur de piste vidéo alimenté par l'onglet Conteneur."""
         card = _card()
@@ -306,7 +240,7 @@ class EncodePanel(QWidget):
             self._video_list.setVisible(False)
             self._video_placeholder.setVisible(True)
             self._file_info = None
-            self._run_btn.setEnabled(False)
+            self.ready_changed.emit(False)
             self._video_list.blockSignals(False)
             self._rebuild_preview()
             return
@@ -352,8 +286,7 @@ class EncodePanel(QWidget):
         default_out = self._config.output_dir / f"{info.path.stem}_encode.mkv"
         self._output_edit.setText(str(default_out))
 
-        self._run_btn.setEnabled(True)
-        self._set_status("")
+        self.ready_changed.emit(True)
         self._update_passthrough_controls(auto_check=True)
         self.log_message.emit(
             "OK",
@@ -364,7 +297,9 @@ class EncodePanel(QWidget):
         self._rebuild_preview()
 
     def set_audio_tracks(self, tracks: list[tuple]) -> None:
-        """Met à jour les pistes audio depuis les pistes activées dans l'onglet Conteneur."""
+        """Met à jour les pistes audio depuis les pistes activées dans l'onglet Conteneur.
+        tracks : list[tuple[AudioTrack, str, Path]] — (piste, couleur, chemin_source)
+        """
         self._audio_tracks_data = tracks
         self._add_audio_btn.setEnabled(bool(tracks))
 
@@ -915,128 +850,36 @@ class EncodePanel(QWidget):
             self.log_message.emit("INFO", f"Profil supprimé : {name}")
 
     # ------------------------------------------------------------------
-    # Exécution
+    # API publique — exécution (déléguée à MainWindow)
     # ------------------------------------------------------------------
 
-    def _on_run(self) -> None:
-        if self._running:
-            return
-        config = self._current_config()
-        if config is None:
-            self.log_message.emit("WARN", "Configuration incomplète.")
-            return
+    def collect_config(self) -> "EncodeConfig | None":
+        """Retourne la configuration d'encodage courante, ou None si incomplète."""
+        return self._current_config()
 
-        errors = self._workflow.validate(config)
-        if errors:
-            for e in errors:
-                self.log_message.emit("ERROR", e)
-            return
+    def get_duration_s(self) -> "float | None":
+        """Durée de la source sélectionnée (pour le calcul de progression dans MainWindow)."""
+        return self._duration_s
 
-        self._running = True
-        self._op_start = time.monotonic()
-        self._run_btn.setEnabled(False)
-        self._cancel_btn.setVisible(True)
-        self._progress_bar.setValue(0)
-        self._progress_lbl.setText("")
-        self._progress_widget.setVisible(True)
-        self._set_status("Encodage en cours…")
-        self.log_message.emit("INFO", f"Démarrage → {config.output.name}")
+    def run_operation(self, config: "EncodeConfig") -> "TaskSignals":
+        """Lance l'encodage et retourne les signaux de progression."""
+        return self._workflow.run(config)
 
-        try:
-            signals = self._workflow.run(config)
-        except EncodeError as exc:
-            self.log_message.emit("ERROR", str(exc))
-            self._on_run_finished(success=False)
-            return
+    def validate_config(self, config: "EncodeConfig") -> list[str]:
+        """Retourne la liste des erreurs de validation (vide = OK)."""
+        return self._workflow.validate(config)
 
-        self._signals = signals
-        signals.progress.connect(self._on_progress, Qt.ConnectionType.QueuedConnection)
-        signals.finished.connect(
-            lambda _: self._on_run_finished(success=True),
-            Qt.ConnectionType.QueuedConnection,
+    def is_pure_copy(self, config: "EncodeConfig") -> bool:
+        """True si tout est en copie et qu'aucune injection HDR n'est demandée."""
+        v = config.video
+        return (
+            v.codec == "copy"
+            and all(a.codec == "copy" for a in config.audio_tracks)
+            and not v.copy_dv
+            and not v.copy_hdr10plus
+            and not v.inject_hdr_meta
+            and not v.tonemap_to_sdr
         )
-        signals.failed.connect(
-            lambda msg, _exc: self._on_run_finished(success=False, error=msg),
-            Qt.ConnectionType.QueuedConnection,
-        )
-        signals.cancelled.connect(
-            self._on_run_cancelled,
-            Qt.ConnectionType.QueuedConnection,
-        )
-
-    # Patterns de lignes ffmpeg à ignorer silencieusement (bibliothèques compilées
-    # mais non disponibles à l'exécution, e.g. libvmaf sans modèles installés).
-    _NOISE_RE = re.compile(r"libvmaf\s+ERROR|could not read model from path")
-
-    def _on_progress(self, line: str) -> None:
-        """Parse les stats ffmpeg (frame=… fps=… time=…) et met à jour la barre + légende."""
-        if self._NOISE_RE.search(line):
-            return
-        m = _TIME_RE.search(line)
-        if m:
-            elapsed_video = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
-            dur = self._duration_s
-            if dur and dur > 0:
-                pct = min(99, int(elapsed_video / dur * 100))
-                self._progress_bar.setValue(pct)
-
-                # FPS d'encodage (throughput, pas le fps du fichier source)
-                fps_m = _FPS_RE.search(line)
-                fps_str = f"{float(fps_m.group(1)):.1f} fps" if fps_m else ""
-
-                # ETA : temps restant basé sur le ratio vidéo encodée / temps réel
-                elapsed_wall = time.monotonic() - self._op_start
-                if elapsed_wall > 0 and elapsed_video > 0:
-                    speed = elapsed_video / elapsed_wall          # s_video / s_réel
-                    eta_s = (dur - elapsed_video) / speed
-                    eta_str = f"ETA {_fmt_eta(eta_s)}"
-                else:
-                    eta_str = ""
-
-                parts = [f"{pct}%", fps_str, eta_str]
-                self._progress_lbl.setText("  ·  ".join(p for p in parts if p))
-            return
-        self.log_message.emit("INFO", line)
-
-    def _on_cancel(self) -> None:
-        reply = QMessageBox.question(
-            self,
-            "Confirmer l'annulation",
-            "Annuler l'encodage en cours ?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.Yes and self._signals is not None:
-            self._signals.cancel()
-
-    def _on_run_cancelled(self) -> None:
-        self._running = False
-        self._signals = None
-        self._run_btn.setEnabled(True)
-        self._cancel_btn.setVisible(False)
-        self._progress_widget.setVisible(False)
-        self._progress_lbl.setText("")
-        self._set_status("Annulé.")
-        self.log_message.emit("WARN", "Encodage annulé.")
-
-    def _on_run_finished(self, success: bool, error: str = "") -> None:
-        self._running = False
-        self._signals = None
-        self._run_btn.setEnabled(True)
-        self._cancel_btn.setVisible(False)
-        if success:
-            config = self._current_config()
-            out = config.output if config else None
-            self._progress_bar.setValue(100)
-            self._progress_lbl.setText("100%  ·  terminé")
-            self._set_status("Terminé.")
-            self.log_message.emit("OK", f"Encodage terminé → {out}")
-        else:
-            self._progress_widget.setVisible(False)
-            self._progress_lbl.setText("")
-            self._set_status("Échec.")
-            if error:
-                self.log_message.emit("ERROR", error)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -1080,7 +923,7 @@ class EncodePanel(QWidget):
             output=Path(output_str),
             video=self._current_video_settings(),
             audio_tracks=self._audio_table.current_audio_settings(),
-            copy_subtitles=False,
+            copy_subtitles=True,
             duration_s=self._duration_s,
             copy_dv=self._copy_dv_cb.isChecked(),
             copy_hdr10plus=self._copy_hdr10plus_cb.isChecked(),
@@ -1103,6 +946,7 @@ class EncodePanel(QWidget):
             dlg.selected_color(),
             dlg.selected_codec(),
             dlg.selected_bitrate(),
+            dlg.selected_source_path(),
         )
         self.log_message.emit(
             "INFO",
@@ -1124,7 +968,3 @@ class EncodePanel(QWidget):
         text = self._cmd_preview.toPlainText()
         if text:
             QApplication.clipboard().setText(text)
-            self._set_status("Commande copiée.")
-
-    def _set_status(self, text: str) -> None:
-        self._status_lbl.setText(text)

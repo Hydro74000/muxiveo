@@ -141,6 +141,25 @@ class ChapterInfo:
 
 
 @dataclass
+class AttachmentInfo:
+    """
+    Pièce jointe MKV (cover art, police de sous-titres, etc.).
+
+    index       : index global ffprobe (utilisé pour -map dans ffmpeg).
+    local_index : position 0-based parmi les attachements du fichier
+                  (mkvmerge ID = local_index + 1).
+    filename    : nom du fichier tel que stocké dans le MKV.
+    mimetype    : type MIME (ex. "image/jpeg", "application/x-truetype-font").
+    size_bytes  : taille en octets (None si non disponible via ffprobe).
+    """
+    index:       int
+    local_index: int
+    filename:    str
+    mimetype:    str
+    size_bytes:  int | None = None
+
+
+@dataclass
 class FileInfo:
     """
     Résultat complet de l'inspection d'un fichier.
@@ -156,9 +175,11 @@ class FileInfo:
     video_tracks:    list[VideoTrack]    = field(default_factory=list)
     audio_tracks:    list[AudioTrack]    = field(default_factory=list)
     subtitle_tracks: list[SubtitleTrack] = field(default_factory=list)
+    attachments:     list[AttachmentInfo] = field(default_factory=list)
     chapters:        ChapterInfo | None  = None
 
     frame_count: int | None = None   # via mediainfo
+    tag_count:   int        = 0      # nombre de balises MKV globales (via mkvmerge --identify)
     hdr_type:    HDRType    = HDRType.NONE  # du flux vidéo principal
 
     @property
@@ -224,9 +245,11 @@ class FileInspector:
         self,
         ffprobe_bin:   str = "ffprobe",
         mediainfo_bin: str = "mediainfo",
+        mkvmerge_bin:  str = "mkvmerge",
     ) -> None:
         self._ffprobe   = ffprobe_bin
         self._mediainfo = mediainfo_bin
+        self._mkvmerge  = mkvmerge_bin
 
     # ------------------------------------------------------------------
     # API publique
@@ -250,6 +273,13 @@ class FileInspector:
             info.frame_count = self.get_frame_count(path)
         except Exception:
             pass  # mediainfo absent ou fichier non supporté — on continue
+
+        # Comptage des balises MKV globales via mkvmerge --identify (MKV uniquement)
+        if "matroska" in info.format or "webm" in info.format:
+            try:
+                info.tag_count = self._get_tag_count(path)
+            except Exception:
+                pass  # mkvmerge absent ou erreur non bloquante
 
         # HDR du flux vidéo principal — réutilise le raw déjà parsé (évite 2e appel ffprobe)
         if info.primary_video:
@@ -418,6 +448,7 @@ class FileInspector:
             bit_rate   = _int_or_none(fmt.get("bit_rate")),
         )
 
+        att_local_idx = 0
         for stream in raw.get("streams", []):
             codec_type = stream.get("codec_type", "")
             match codec_type:
@@ -427,6 +458,11 @@ class FileInspector:
                     info.audio_tracks.append(self._parse_audio(stream))
                 case "subtitle":
                     info.subtitle_tracks.append(self._parse_subtitle(stream))
+                case "attachment":
+                    info.attachments.append(
+                        self._parse_attachment(stream, att_local_idx)
+                    )
+                    att_local_idx += 1
 
         chapters = raw.get("chapters", [])
         if chapters:
@@ -499,6 +535,43 @@ class FileInspector:
             default  = bool(disposition.get("default", 0)),
             raw      = s,
         )
+
+    def _parse_attachment(self, s: dict[str, Any], local_index: int) -> "AttachmentInfo":
+        tags = s.get("tags", {})
+        return AttachmentInfo(
+            index       = s.get("index", 0),
+            local_index = local_index,
+            filename    = tags.get("filename", "attachment"),
+            mimetype    = tags.get("mimetype", "application/octet-stream"),
+            size_bytes  = _int_or_none(s.get("size")),
+        )
+
+    def _get_tag_count(self, path: Path) -> int:
+        """
+        Retourne le nombre de balises MKV globales (<Tags> element) via
+        ``mkvmerge --identify --identification-format json``.
+
+        Retourne 0 si mkvmerge est absent, si le fichier n'a pas de balises,
+        ou si la sortie ne peut pas être parsée.
+        """
+        try:
+            result = subprocess.run(
+                [
+                    self._mkvmerge,
+                    "--identify", "--identification-format", "json",
+                    str(path),
+                ],
+                capture_output=True, text=True, check=False, timeout=15,
+            )
+            if result.returncode not in (0, 1):   # 1 = warnings non bloquants
+                return 0
+            data = json.loads(result.stdout)
+            return sum(
+                entry.get("num_entries", 0)
+                for entry in data.get("global_tags", [])
+            )
+        except (FileNotFoundError, json.JSONDecodeError, Exception):
+            return 0
 
 
 # =============================================================================

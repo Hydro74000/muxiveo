@@ -18,14 +18,13 @@ Signaux exposés :
         → connecter à MainWindow.log_requested
     RemuxPanel.video_tracks_changed(list[tuple[FileInfo, TrackEntry, str]])
         → émet toutes les pistes vidéo activées avec leur FileInfo parent et couleur
-    RemuxPanel.audio_tracks_changed(list[tuple[AudioTrack, str]])
-        → émet toutes les pistes audio activées avec leur couleur, tous sources confondus
+    RemuxPanel.audio_tracks_changed(list[tuple[AudioTrack, str, Path]])
+        → émet toutes les pistes audio activées avec couleur et chemin source
 """
 
 from __future__ import annotations
 
 import colorsys
-import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -36,27 +35,18 @@ from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QFileDialog, QFrame,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
+    QPlainTextEdit, QPushButton, QScrollArea,
     QSizePolicy, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
 from core.config import AppConfig
-from core.inspector import AudioTrack, FileInfo, FileInspector, InspectionError
+from core.inspector import AttachmentInfo, AudioTrack, FileInfo, FileInspector, InspectionError
 from core.runner import TaskSignals
 from core.workflows.remux import (
-    RemuxConfig, RemuxError, RemuxWorkflow, SourceInput,
+    RemuxConfig, RemuxWorkflow, SourceInput,
     TrackEntry, tracks_from_file_info,
 )
-
-
-def _fmt_eta(seconds: float) -> str:
-    """Formate une durée en 'Xm Xs' ou 'Xs'. Retourne '—' si indéterminé."""
-    if seconds <= 0 or seconds != seconds:
-        return "—"
-    s = int(seconds)
-    m, s = divmod(s, 60)
-    return f"{m}m {s:02d}s" if m else f"{s}s"
 
 
 # Hauteurs fixes pour les éléments de la liste de fichiers
@@ -100,6 +90,7 @@ class SourceFile:
     tracks: list[TrackEntry] = field(default_factory=list)
 
 
+
 # =============================================================================
 # Palette de couleurs (cohérente avec le thème sombre de l'application)
 # =============================================================================
@@ -127,9 +118,11 @@ class _C:
     INFO       = "#7ab3f5"
 
     # Couleurs de types de piste
-    TRACK_VIDEO    = "#7ab3f5"   # bleu
-    TRACK_AUDIO    = "#ce93d8"   # violet
-    TRACK_SUBTITLE = "#5dcc8a"   # vert
+    TRACK_VIDEO       = "#7ab3f5"   # bleu
+    TRACK_AUDIO       = "#ce93d8"   # violet
+    TRACK_SUBTITLE    = "#5dcc8a"   # vert
+    TRACK_ATTACHMENT  = "#f5c842"   # jaune ambre
+    TRACK_TAGS        = "#f5a030"   # orange
 
 
 # =============================================================================
@@ -673,23 +666,30 @@ class _TrackTable(QTableWidget):
         """
         self.blockSignals(True)
         for entry in tracks:
-            pos = self._find_insert_position(entry.track_type)
+            order = {"video": 0, "audio": 1, "subtitle": 2}.get(entry.track_type, 2)
+            pos = self._find_insert_position(order)
             self.insertRow(pos)
             self._fill_row(pos, entry, source_color)
         self.blockSignals(False)
         self._adjust_height()
 
-    def _find_insert_position(self, track_type: str) -> int:
-        """Retourne l'index où insérer une piste du type donné (après toutes les pistes du même type)."""
-        my_order = self._TYPE_ORDER.get(track_type, 3)
+    @staticmethod
+    def _row_type_order(data) -> int:
+        """Retourne l'ordre de tri d'une donnée de ligne (TrackEntry)."""
+        if isinstance(data, TrackEntry):
+            return {"video": 0, "audio": 1, "subtitle": 2}.get(data.track_type, 2)
+        return 3
+
+    def _find_insert_position(self, order: int) -> int:
+        """Retourne l'index où insérer une ligne de l'ordre donné (après toutes les lignes du même ordre)."""
         for row in range(self.rowCount()):
             item = self.item(row, self.COL_CHECK)
             if item is None:
                 continue
-            entry: TrackEntry = item.data(Qt.ItemDataRole.UserRole)
-            if entry is None:
+            data = item.data(Qt.ItemDataRole.UserRole)
+            if data is None:
                 continue
-            if self._TYPE_ORDER.get(entry.track_type, 3) > my_order:
+            if self._row_type_order(data) > order:
                 return row
         return self.rowCount()
 
@@ -703,14 +703,14 @@ class _TrackTable(QTableWidget):
         self.setFixedHeight(h)
 
     def remove_tracks_by_file_id(self, file_id: str) -> None:
-        """Retire toutes les lignes appartenant au fichier identifié par file_id."""
+        """Retire toutes les lignes (pistes, attachements, tags) du fichier identifié."""
         self.blockSignals(True)
         row = self.rowCount() - 1
         while row >= 0:
             item = self.item(row, self.COL_CHECK)
             if item is not None:
-                entry: TrackEntry = item.data(Qt.ItemDataRole.UserRole)
-                if entry is not None and entry.file_id == file_id:
+                data = item.data(Qt.ItemDataRole.UserRole)
+                if data is not None and getattr(data, "file_id", None) == file_id:
                     self.removeRow(row)
             row -= 1
         self.blockSignals(False)
@@ -787,14 +787,15 @@ class _TrackTable(QTableWidget):
         """
         Retourne les TrackEntry dans l'ordre courant du tableau, en
         synchronisant l'état UI (enabled, language, title) vers les objets.
+        Seules les lignes de type TrackEntry sont retournées.
         """
         tracks: list[TrackEntry] = []
         for row in range(self.rowCount()):
             item0 = self.item(row, self.COL_CHECK)
             if item0 is None:
                 continue
-            entry: TrackEntry = item0.data(Qt.ItemDataRole.UserRole)
-            if entry is None:
+            entry = item0.data(Qt.ItemDataRole.UserRole)
+            if not isinstance(entry, TrackEntry):
                 continue
 
             entry.enabled = item0.checkState() == Qt.CheckState.Checked
@@ -829,9 +830,11 @@ class _TrackTable(QTableWidget):
         """Applique (ou retire) le filtre sur les lignes décochées."""
         for row in range(self.rowCount()):
             item = self.item(row, self.COL_CHECK)
+            if item is None:
+                self.setRowHidden(row, False)
+                continue
             hidden = (
                 self._filter_selected
-                and item is not None
                 and item.checkState() != Qt.CheckState.Checked
             )
             self.setRowHidden(row, hidden)
@@ -871,8 +874,8 @@ class _TrackTable(QTableWidget):
             item_chk = self.item(r, self.COL_CHECK)
             item_src = self.item(r, self.COL_SOURCE)
             if item_chk and item_src:
-                e: TrackEntry = item_chk.data(Qt.ItemDataRole.UserRole)
-                if e:
+                e = item_chk.data(Qt.ItemDataRole.UserRole)
+                if isinstance(e, TrackEntry):
                     color_by_file_id[e.file_id] = item_src.data(Qt.ItemDataRole.UserRole) or _C.BORDER
 
         # Reconstruit le tableau
@@ -903,6 +906,335 @@ class _TrackTable(QTableWidget):
 
 
 # =============================================================================
+# Panneau Pièces jointes (_AttachmentItemWidget / _AttachmentPanel)
+# =============================================================================
+
+class _AttachmentItemWidget(QWidget):
+    """
+    Ligne dans le panneau des pièces jointes.
+
+    Trois variantes :
+    - Attachement source (file_id, att, source_color)    → case + nom, sans ✕
+    - Balises source    (file_id, is_tag=True, tag_count) → case + "X balises", sans ✕
+    - Ajout manuel      (is_manual=True, manual_path)     → case + nom + ✕
+    """
+
+    remove_clicked = Signal(object)   # self
+    changed        = Signal()
+
+    def __init__(
+        self,
+        file_id:      str,
+        source_color: str               = "",
+        att:          AttachmentInfo | None = None,
+        tag_count:    int               = 0,
+        is_tag:       bool              = False,
+        is_manual:    bool              = False,
+        manual_path:  Path | None       = None,
+        parent:       QWidget | None    = None,
+    ) -> None:
+        super().__init__(parent)
+        self.file_id     = file_id
+        self.att         = att
+        self.tag_count   = tag_count
+        self.is_tag      = is_tag
+        self.is_manual   = is_manual
+        self.manual_path = manual_path
+        self.setFixedHeight(28)
+        self._build_ui(source_color)
+
+    @property
+    def enabled(self) -> bool:
+        return self._cb.isChecked()
+
+    def _build_ui(self, source_color: str) -> None:
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 0, 8, 0)
+        lay.setSpacing(6)
+
+        # Carré coloré source
+        if source_color and not self.is_manual:
+            sq = QLabel("█")
+            sq.setFixedWidth(14)
+            sq.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            sq.setStyleSheet(
+                f"color: {source_color}; background: transparent; border: none; font-size: 11px;"
+            )
+            lay.addWidget(sq)
+        else:
+            sp = QWidget()
+            sp.setFixedWidth(14)
+            lay.addWidget(sp)
+
+        # Case à cocher
+        self._cb = QCheckBox()
+        self._cb.setChecked(not self.is_tag)   # balises décochées par défaut
+        self._cb.setStyleSheet(f"""
+            QCheckBox::indicator {{
+                width: 13px;
+                height: 13px;
+                border-radius: 3px;
+                border: 1px solid {_C.BORDER_LT};
+                background: {_C.BG_DEEP};
+            }}
+            QCheckBox::indicator:checked {{
+                background: {_C.ACCENT};
+                border-color: {_C.ACCENT};
+            }}
+        """)
+        self._cb.stateChanged.connect(self.changed)
+        lay.addWidget(self._cb)
+
+        # Libellé
+        if self.is_tag:
+            text  = f"{self.tag_count} balise{'s' if self.tag_count > 1 else ''}"
+            color = _C.TRACK_TAGS
+        elif self.is_manual:
+            text  = self.manual_path.name if self.manual_path else ""
+            color = _C.TEXT_PRI
+        else:
+            text  = self.att.filename if self.att else ""
+            color = _C.TRACK_ATTACHMENT
+
+        lbl = QLabel(text)
+        if self.is_manual and self.manual_path:
+            lbl.setToolTip(str(self.manual_path))
+        lbl.setStyleSheet(
+            f"color: {color}; background: transparent; border: none; font-size: 11px;"
+        )
+        lay.addWidget(lbl, stretch=1)
+
+        # Bouton ✕ (uniquement pour les ajouts manuels)
+        if self.is_manual:
+            rm_btn = QPushButton("✕")
+            rm_btn.setFixedSize(18, 18)
+            rm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            rm_btn.setToolTip("Retirer cet attachement")
+            rm_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent;
+                    color: {_C.TEXT_DIM};
+                    border: 1px solid {_C.BORDER};
+                    border-radius: 3px;
+                    font-size: 9px;
+                    font-weight: 700;
+                }}
+                QPushButton:hover {{
+                    color: {_C.ERROR};
+                    border-color: {_C.ERROR};
+                    background: #1f0e0e;
+                }}
+            """)
+            rm_btn.clicked.connect(lambda: self.remove_clicked.emit(self))
+            lay.addWidget(rm_btn)
+        else:
+            sp2 = QWidget()
+            sp2.setFixedWidth(18)
+            lay.addWidget(sp2)
+
+
+class _AttachmentPanel(QFrame):
+    """
+    Panneau dédié aux pièces jointes et balises MKV.
+
+    Affiche :
+    - Par fichier source : une ligne par attachement individuel (cochée par défaut)
+    - Par fichier source : une ligne "X balises" (décochée par défaut)
+    - Attachements manuels ajoutés via « Ajouter… » (cochés, avec bouton ✕)
+
+    Signal :
+        changed()  — émis à chaque modification de sélection ou ajout/retrait
+    """
+
+    changed = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._items: list[_AttachmentItemWidget] = []
+        self._build_ui()
+
+    # ------------------------------------------------------------------
+    # Construction
+    # ------------------------------------------------------------------
+
+    def _build_ui(self) -> None:
+        self.setStyleSheet(f"""
+            QFrame {{
+                background: {_C.BG_CARD};
+                border: 1px solid {_C.BORDER};
+                border-radius: 6px;
+            }}
+        """)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # En-tête
+        header = QWidget()
+        header.setStyleSheet(f"""
+            QWidget {{
+                background: {_C.BG_PANEL};
+                border-bottom: 1px solid {_C.BORDER};
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+            }}
+        """)
+        header.setFixedHeight(32)
+        h_lay = QHBoxLayout(header)
+        h_lay.setContentsMargins(12, 0, 8, 0)
+        h_lay.setSpacing(8)
+
+        title_lbl = QLabel("PIÈCES JOINTES  &  BALISES")
+        title_lbl.setStyleSheet(f"""
+            color: {_C.TEXT_DIM};
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            background: transparent;
+            border: none;
+        """)
+        h_lay.addWidget(title_lbl)
+        h_lay.addStretch()
+
+        add_btn = QPushButton("+ Ajouter…")
+        add_btn.setFixedHeight(22)
+        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {_C.ACCENT};
+                border: 1px solid {_C.ACCENT_DIM};
+                border-radius: 4px;
+                font-size: 10px;
+                font-weight: 600;
+                padding: 0 10px;
+            }}
+            QPushButton:hover {{
+                background: {_C.ACCENT_DIM};
+                color: #ffffff;
+            }}
+        """)
+        add_btn.clicked.connect(self._browse_add)
+        h_lay.addWidget(add_btn)
+        root.addWidget(header)
+
+        # Placeholder
+        self._placeholder = QLabel("Aucune pièce jointe ni balise dans les fichiers sources")
+        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._placeholder.setContentsMargins(0, 16, 0, 16)
+        self._placeholder.setStyleSheet(
+            f"color: {_C.TEXT_DIM}; font-size: 11px; background: transparent; border: none;"
+        )
+        root.addWidget(self._placeholder)
+
+        # Conteneur des items
+        self._items_widget = QWidget()
+        self._items_widget.setStyleSheet("background: transparent;")
+        self._items_layout = QVBoxLayout(self._items_widget)
+        self._items_layout.setContentsMargins(0, 4, 0, 4)
+        self._items_layout.setSpacing(0)
+        root.addWidget(self._items_widget)
+
+        self._update_state()
+
+    # ------------------------------------------------------------------
+    # API publique
+    # ------------------------------------------------------------------
+
+    def add_source_attachments(
+        self, file_id: str, source_color: str, attachments: list[AttachmentInfo]
+    ) -> None:
+        """Ajoute les attachements d'un fichier source."""
+        for att in attachments:
+            self._add_item(_AttachmentItemWidget(
+                file_id=file_id, source_color=source_color, att=att,
+            ))
+
+    def add_source_tags(self, file_id: str, source_color: str, tag_count: int) -> None:
+        """Ajoute la ligne de balises d'un fichier source (si tag_count > 0)."""
+        if tag_count > 0:
+            self._add_item(_AttachmentItemWidget(
+                file_id=file_id, source_color=source_color,
+                tag_count=tag_count, is_tag=True,
+            ))
+
+    def remove_by_file_id(self, file_id: str) -> None:
+        """Retire tous les items (attachements + balises) d'un fichier source."""
+        to_remove = [i for i in self._items if i.file_id == file_id]
+        for item in to_remove:
+            self._items.remove(item)
+            self._items_layout.removeWidget(item)
+            item.deleteLater()
+        if to_remove:
+            self._update_state()
+            self.changed.emit()
+
+    def get_extras_per_file(self) -> dict:
+        """
+        Retourne les sélections par fichier source.
+
+        Retourne : dict[file_id, {"selected_attachments": list[AttachmentInfo], "copy_tags": bool}]
+        """
+        result: dict = {}
+        for item in self._items:
+            if item.is_manual:
+                continue
+            entry = result.setdefault(
+                item.file_id, {"selected_attachments": [], "copy_tags": False}
+            )
+            if item.is_tag:
+                if item.enabled:
+                    entry["copy_tags"] = True
+            elif item.att is not None and item.enabled:
+                entry["selected_attachments"].append(item.att)
+        return result
+
+    def get_extra_attachments(self) -> list[Path]:
+        """Retourne les pièces jointes manuelles cochées."""
+        return [
+            item.manual_path
+            for item in self._items
+            if item.is_manual and item.enabled and item.manual_path is not None
+        ]
+
+    # ------------------------------------------------------------------
+    # Interne
+    # ------------------------------------------------------------------
+
+    def _add_item(self, item: _AttachmentItemWidget) -> None:
+        self._items.append(item)
+        self._items_layout.addWidget(item)
+        item.changed.connect(self.changed)
+        item.remove_clicked.connect(self._on_remove_item)
+        self._update_state()
+
+    def _on_remove_item(self, item: _AttachmentItemWidget) -> None:
+        self._items.remove(item)
+        self._items_layout.removeWidget(item)
+        item.deleteLater()
+        self._update_state()
+        self.changed.emit()
+
+    def _update_state(self) -> None:
+        has = bool(self._items)
+        self._placeholder.setVisible(not has)
+        self._items_widget.setVisible(has)
+
+    def _browse_add(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Ajouter des pièces jointes", "",
+            "Tous les fichiers (*)",
+        )
+        for path_str in paths:
+            path = Path(path_str)
+            self._add_item(_AttachmentItemWidget(
+                file_id="", is_manual=True, manual_path=path,
+            ))
+        if paths:
+            self.changed.emit()
+
+
+# =============================================================================
 # Panneau principal
 # =============================================================================
 
@@ -912,8 +1244,9 @@ class RemuxPanel(QWidget):
 
     Signaux :
         log_message(level: str, message: str)
-        video_tracks_changed(list)       — pistes vidéo activées (FileInfo, TrackEntry, couleur)
-        audio_tracks_changed(list)       — pistes audio activées avec couleur (tous sources)
+        video_tracks_changed(list)  — pistes vidéo activées (FileInfo, TrackEntry, couleur)
+        audio_tracks_changed(list)  — pistes audio activées (AudioTrack, couleur, Path source)
+        ready_changed(bool)         — True quand au moins un fichier est inspecté
     """
 
     log_message = Signal(str, str)
@@ -923,16 +1256,14 @@ class RemuxPanel(QWidget):
     _inspection_error = Signal(str, str)      # (file_id, error_message)
 
     video_tracks_changed = Signal(object)   # list[tuple[FileInfo, TrackEntry, str]]
-    audio_tracks_changed = Signal(object)   # list[tuple[AudioTrack, str]]
+    audio_tracks_changed = Signal(object)   # list[tuple[AudioTrack, str, Path]]
+    ready_changed        = Signal(bool)     # True quand des fichiers sont prêts
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._config   = config
         self._workflow = RemuxWorkflow(mkvmerge_bin=config.tool_mkvmerge)
         self._executor = ThreadPoolExecutor(max_workers=2)
-        self._running  = False
-        self._signals: TaskSignals | None = None
-        self._op_start: float = 0.0
 
         # Liste ordonnée des SourceFile chargés
         self._source_files: list[SourceFile] = []
@@ -1067,6 +1398,13 @@ class RemuxPanel(QWidget):
 
         content_layout.addWidget(_separator())
 
+        # --- Pièces jointes & Balises ---
+        self._attachment_panel = _AttachmentPanel()
+        self._attachment_panel.changed.connect(self._rebuild_preview)
+        content_layout.addWidget(self._attachment_panel)
+
+        content_layout.addWidget(_separator())
+
         # --- Options ---
         content_layout.addWidget(_section_label("OPTIONS"))
         opts_card = _card()
@@ -1079,13 +1417,7 @@ class RemuxPanel(QWidget):
         self._chapters_cb.setStyleSheet(self._checkbox_style())
         self._chapters_cb.stateChanged.connect(self._rebuild_preview)
 
-        self._attach_cb = QCheckBox("Conserver les pièces jointes (cover.jpg, …)")
-        self._attach_cb.setChecked(True)
-        self._attach_cb.setStyleSheet(self._checkbox_style())
-        self._attach_cb.stateChanged.connect(self._rebuild_preview)
-
         opts_layout.addWidget(self._chapters_cb)
-        opts_layout.addWidget(self._attach_cb)
         content_layout.addWidget(opts_card)
 
         content_layout.addWidget(_separator())
@@ -1141,88 +1473,6 @@ class RemuxPanel(QWidget):
         scroll.setWidget(content)
         root.addWidget(scroll, stretch=1)
 
-        # --- Barre d'action (bouton Lancer) ---
-        btn_bar = QWidget()
-        btn_bar.setStyleSheet(f"""
-            QWidget {{
-                background: {_C.BG_PANEL};
-                border-top: 1px solid {_C.BORDER};
-            }}
-        """)
-        btn_bar_layout = QHBoxLayout(btn_bar)
-        btn_bar_layout.setContentsMargins(28, 12, 28, 12)
-        btn_bar_layout.setSpacing(12)
-
-        self._progress_widget = QWidget()
-        self._progress_widget.setStyleSheet("background:transparent;")
-        _pvl = QVBoxLayout(self._progress_widget)
-        _pvl.setContentsMargins(0, 4, 0, 4)
-        _pvl.setSpacing(4)
-
-        self._progress_bar = QProgressBar()
-        self._progress_bar.setRange(0, 100)
-        self._progress_bar.setValue(0)
-        self._progress_bar.setFixedHeight(6)
-        self._progress_bar.setTextVisible(False)
-        self._progress_bar.setStyleSheet(f"""
-            QProgressBar {{
-                background: {_C.BG_ACTIVE};
-                border: none;
-                border-radius: 3px;
-            }}
-            QProgressBar::chunk {{
-                background: {_C.ACCENT};
-                border-radius: 3px;
-            }}
-        """)
-        _pvl.addWidget(self._progress_bar)
-
-        self._progress_lbl = QLabel("")
-        self._progress_lbl.setStyleSheet(
-            f"color:{_C.TEXT_DIM};font-size:10px;"
-            f"font-family:'JetBrains Mono',monospace;background:transparent;"
-        )
-        _pvl.addWidget(self._progress_lbl)
-
-        self._progress_widget.setVisible(False)
-        btn_bar_layout.addWidget(self._progress_widget, stretch=1)
-
-        self._status_lbl = QLabel("")
-        self._status_lbl.setStyleSheet(f"""
-            color: {_C.TEXT_SEC};
-            font-size: 11px;
-            background: transparent;
-        """)
-        btn_bar_layout.addWidget(self._status_lbl)
-        btn_bar_layout.addSpacing(4)
-
-        self._run_btn = _primary_button("▶  Lancer le remuxage")
-        self._run_btn.setFixedWidth(200)
-        self._run_btn.setEnabled(False)
-        self._run_btn.clicked.connect(self._on_run)
-        btn_bar_layout.addWidget(self._run_btn)
-
-        self._cancel_btn = QPushButton("✕  Annuler")
-        self._cancel_btn.setFixedWidth(110)
-        self._cancel_btn.setFixedHeight(36)
-        self._cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._cancel_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {_C.BG_CARD}; color: {_C.WARN};
-                border: 1px solid {_C.WARN}; border-radius: 6px;
-                font-size: 12px; font-weight: 600; padding: 0 14px;
-            }}
-            QPushButton:hover {{
-                background: #2a2010; border-color: #f0b030; color: #f0b030;
-            }}
-            QPushButton:pressed {{ background: #1a1608; }}
-        """)
-        self._cancel_btn.setVisible(False)
-        self._cancel_btn.clicked.connect(self._on_cancel)
-        btn_bar_layout.addWidget(self._cancel_btn)
-
-        root.addWidget(btn_bar)
-
     # ------------------------------------------------------------------
     # Ajout de fichiers
     # ------------------------------------------------------------------
@@ -1255,6 +1505,7 @@ class RemuxPanel(QWidget):
             inspector = FileInspector(
                 ffprobe_bin=self._config.tool_ffprobe,
                 mediainfo_bin=self._config.tool_mediainfo,
+                mkvmerge_bin=self._config.tool_mkvmerge,
             )
             info = inspector.inspect(path)
             self._inspection_done.emit(file_id, info)
@@ -1278,12 +1529,16 @@ class RemuxPanel(QWidget):
 
         source_color = self._source_colors.get(file_id, _C.BORDER)
         self._track_table.append_tracks(source_color, sf.tracks)
+        self._attachment_panel.add_source_attachments(file_id, source_color, info.attachments)
+        self._attachment_panel.add_source_tags(file_id, source_color, info.tag_count)
 
+        att_str = f"  {len(info.attachments)}PJ" if info.attachments else ""
+        tag_str = f"  {info.tag_count}Tags" if info.tag_count else ""
         self.log_message.emit(
             "OK",
             f"{info.path.name} chargé — "
             f"{len(info.video_tracks)}V  {len(info.audio_tracks)}A  "
-            f"{len(info.subtitle_tracks)}S",
+            f"{len(info.subtitle_tracks)}S{att_str}{tag_str}",
         )
 
         # Chemin de sortie par défaut (premier fichier uniquement)
@@ -1291,7 +1546,7 @@ class RemuxPanel(QWidget):
             default_out = self._config.output_dir / f"{info.path.stem}_remux.mkv"
             self._output_edit.setText(str(default_out))
 
-        self._update_run_button()
+        self.ready_changed.emit(self._has_ready_files())
         self._rebuild_preview()
         self._emit_signals()
 
@@ -1314,12 +1569,13 @@ class RemuxPanel(QWidget):
         self._source_colors.pop(file_id, None)
         self._file_list.remove_file(file_id)
         self._track_table.remove_tracks_by_file_id(file_id)
+        self._attachment_panel.remove_by_file_id(file_id)
 
         # Réinitialise le chemin de sortie si plus aucun fichier
         if not self._source_files:
             self._output_edit.clear()
 
-        self._update_run_button()
+        self.ready_changed.emit(self._has_ready_files())
         self._rebuild_preview()
         self._emit_signals()
 
@@ -1386,7 +1642,7 @@ class RemuxPanel(QWidget):
         self.video_tracks_changed.emit(video_tuples)
 
     def _emit_audio_tracks(self) -> None:
-        """Émet audio_tracks_changed avec les pistes audio activées et leurs couleurs."""
+        """Émet audio_tracks_changed — tuples (AudioTrack, couleur, chemin_source)."""
         track_entries = self._track_table.current_tracks()
         enabled_audio_ids: dict[str, set[int]] = {}
         for t in track_entries:
@@ -1400,7 +1656,7 @@ class RemuxPanel(QWidget):
             color = self._source_colors.get(sf.id, _C.BORDER)
             tids = enabled_audio_ids.get(sf.id, set())
             audio_tuples.extend(
-                (a, color)
+                (a, color, sf.info.path)
                 for a in sf.info.audio_tracks
                 if a.index in tids
             )
@@ -1427,6 +1683,8 @@ class RemuxPanel(QWidget):
         # Construit le mapping file_id → file_index (basé sur _source_files)
         id_to_index = {sf.id: i for i, sf in enumerate(self._source_files)}
 
+        extras = self._attachment_panel.get_extras_per_file()
+
         # SourceInput par fichier : toutes les pistes du fichier
         sources: list[SourceInput] = []
         for i, sf in enumerate(self._source_files):
@@ -1434,12 +1692,15 @@ class RemuxPanel(QWidget):
                 continue
             src_tracks = [t for t in all_tracks if t.file_id == sf.id]
             if not src_tracks:
-                # Fallback sur les pistes stockées dans sf
                 src_tracks = sf.tracks
+            file_extras = extras.get(sf.id, {})
             sources.append(SourceInput(
                 path=sf.path,
                 file_index=i,
                 tracks=src_tracks,
+                selected_attachments=file_extras.get("selected_attachments", []),
+                attachment_count=len(sf.info.attachments) if sf.info else 0,
+                copy_tags=file_extras.get("copy_tags", False),
             ))
 
         if not sources:
@@ -1457,120 +1718,29 @@ class RemuxPanel(QWidget):
             output=Path(output_str),
             track_order=track_order,
             keep_chapters=self._chapters_cb.isChecked(),
-            keep_attachments=self._attach_cb.isChecked(),
+            extra_attachments=self._attachment_panel.get_extra_attachments(),
             work_dir=self._config.work_dir,
         )
 
     # ------------------------------------------------------------------
-    # Bouton Lancer
+    # API publique — exécution (déléguée à MainWindow)
     # ------------------------------------------------------------------
 
-    def _update_run_button(self) -> None:
-        self._run_btn.setEnabled(self._has_ready_files() and not self._running)
+    def collect_config(self) -> "RemuxConfig | None":
+        """Retourne la configuration de remuxage courante, ou None si incomplète."""
+        return self._current_config()
 
-    def _on_run(self) -> None:
-        if self._running:
-            return
+    def is_ready(self) -> bool:
+        """True si au moins un fichier source est inspecté et prêt."""
+        return self._has_ready_files()
 
-        config = self._current_config()
-        if config is None:
-            self.log_message.emit("WARN", "Configuration incomplète.")
-            return
+    def run_operation(self, config: "RemuxConfig") -> "TaskSignals":
+        """Lance le remuxage et retourne les signaux de progression."""
+        return self._workflow.run(config)
 
-        errors = self._workflow.validate(config)
-        if errors:
-            for e in errors:
-                self.log_message.emit("ERROR", e)
-            return
-
-        self._running = True
-        self._op_start = time.monotonic()
-        self._run_btn.setEnabled(False)
-        self._cancel_btn.setVisible(True)
-        self._progress_bar.setValue(0)
-        self._progress_lbl.setText("")
-        self._progress_widget.setVisible(True)
-        self._set_status("Remuxage en cours…")
-        self.log_message.emit("INFO", f"Démarrage → {config.output.name}")
-
-        try:
-            signals = self._workflow.run(config)
-        except RemuxError as exc:
-            self.log_message.emit("ERROR", str(exc))
-            self._on_run_finished(success=False)
-            return
-
-        self._signals = signals
-        signals.progress.connect(self._on_progress,  Qt.ConnectionType.QueuedConnection)
-        signals.finished.connect(
-            lambda _: self._on_run_finished(success=True),
-            Qt.ConnectionType.QueuedConnection,
-        )
-        signals.failed.connect(
-            lambda msg, _exc: self._on_run_finished(success=False, error=msg),
-            Qt.ConnectionType.QueuedConnection,
-        )
-        signals.cancelled.connect(self._on_run_cancelled, Qt.ConnectionType.QueuedConnection)
-
-    def _on_cancel(self) -> None:
-        reply = QMessageBox.question(
-            self,
-            "Confirmer l'annulation",
-            "Annuler le remuxage en cours ?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.Yes and self._signals is not None:
-            self._signals.cancel()
-
-    def _on_run_cancelled(self) -> None:
-        self._running = False
-        self._signals = None
-        self._update_run_button()
-        self._cancel_btn.setVisible(False)
-        self._progress_widget.setVisible(False)
-        self._progress_lbl.setText("")
-        self._set_status("Annulé.")
-        self.log_message.emit("WARN", "Remuxage annulé.")
-
-    def _on_run_finished(self, success: bool, error: str = "") -> None:
-        self._running = False
-        self._signals = None
-        self._update_run_button()
-        self._cancel_btn.setVisible(False)
-        if success:
-            config = self._current_config()
-            out = config.output if config else None
-            self._progress_bar.setValue(100)
-            self._progress_lbl.setText("100%  ·  terminé")
-            self._set_status("Terminé.")
-            self.log_message.emit("OK", f"Remuxage terminé → {out}")
-        else:
-            self._progress_widget.setVisible(False)
-            self._progress_lbl.setText("")
-            self._set_status("Échec.")
-            if error:
-                self.log_message.emit("ERROR", error)
-
-    def _on_progress(self, line: str) -> None:
-        if "Progress:" in line:
-            try:
-                pct = int(line.split("%")[0].split()[-1])
-                self._progress_bar.setValue(pct)
-
-                elapsed_wall = time.monotonic() - self._op_start
-                if pct > 0 and elapsed_wall > 0:
-                    eta_s = elapsed_wall * (100 - pct) / pct
-                    eta_str = f"ETA {_fmt_eta(eta_s)}"
-                else:
-                    eta_str = ""
-
-                parts = [f"{pct}%", eta_str]
-                self._progress_lbl.setText("  ·  ".join(p for p in parts if p))
-            except (ValueError, IndexError):
-                pass
-        else:
-            self.log_message.emit("INFO", line)
+    def validate_config(self, config: "RemuxConfig") -> list[str]:
+        """Retourne la liste des erreurs de validation (vide = OK)."""
+        return self._workflow.validate(config)
 
     # ------------------------------------------------------------------
     # Helpers UI
@@ -1595,10 +1765,6 @@ class RemuxPanel(QWidget):
         text = self._cmd_preview.toPlainText()
         if text:
             QApplication.clipboard().setText(text)
-            self._set_status("Commande copiée.")
-
-    def _set_status(self, text: str) -> None:
-        self._status_lbl.setText(text)
 
     # ------------------------------------------------------------------
     # Styles réutilisables

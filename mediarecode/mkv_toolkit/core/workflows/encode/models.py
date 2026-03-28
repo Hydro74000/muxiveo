@@ -14,7 +14,7 @@ Public:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
@@ -101,10 +101,11 @@ class VideoEncodeSettings:
 @dataclass
 class AudioTrackSettings:
     """Paramètres d'encodage pour une piste audio."""
-    stream_index:        int         # index global ffprobe
+    stream_index:        int         # index global ffprobe dans le fichier source
     codec:               str = "copy"
     bitrate_kbps:        int = 384
     extract_truehd_core: bool = False   # strip Atmos via BSF truehd_core
+    source_path:         Path | None = None  # None = même fichier que la vidéo (config.source)
 
 
 @dataclass
@@ -115,6 +116,15 @@ class EncodeConfig:
     video:            VideoEncodeSettings
     audio_tracks:     list[AudioTrackSettings]
     copy_subtitles:   bool         = True
+    # Pistes de sous-titres multi-sources : (chemin_source, stream_index_ffprobe)
+    # Si non vide, remplace le copy_subtitles générique.
+    subtitle_tracks:  list = field(default_factory=list)   # list[tuple[Path, int]]
+    keep_chapters:    bool         = True
+    # Flux d'attachements à copier : (chemin_source, stream_index_ffprobe)
+    # Sélection individuelle — remplace l'ancien attachment_sources global.
+    attachment_streams: list = field(default_factory=list)   # list[tuple[Path, int]]
+    # Sources dont on copie les balises MKV (<Tags> element) via mkvpropedit post-traitement.
+    tag_sources:      list = field(default_factory=list)    # list[Path]
     duration_s:       float | None = None   # requis pour le mode taille cible
     # Passthrough métadonnées dynamiques (HEVC uniquement)
     copy_dv:          bool         = False  # injecter RPU Dolby Vision via dovi_tool

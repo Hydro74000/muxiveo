@@ -49,6 +49,8 @@ class EncodeWorkflow(QObject):
         dovi_tool_bin:             str  = "dovi_tool",
         hdr10plus_bin:             str  = "hdr10plus_tool",
         mkvmerge_bin:              str  = "mkvmerge",
+        mkvextract_bin:            str  = "mkvextract",
+        mkvpropedit_bin:           str  = "mkvpropedit",
         ram_buffer_enabled:        bool = True,
         ram_buffer_threshold_pct:  int  = 15,
         parent: QObject | None         = None,
@@ -59,6 +61,8 @@ class EncodeWorkflow(QObject):
             "dovi_tool":      dovi_tool_bin,
             "hdr10plus_tool": hdr10plus_bin,
             "mkvmerge":       mkvmerge_bin,
+            "mkvextract":     mkvextract_bin,
+            "mkvpropedit":    mkvpropedit_bin,
         }
         self._runner = ToolRunner(max_workers=1, parent=self)
         self._ram_buffer_enabled       = ram_buffer_enabled
@@ -83,7 +87,24 @@ class EncodeWorkflow(QObject):
         return self._build_single_pass(config)
 
     def _build_single_pass(self, config: EncodeConfig) -> list[str]:
-        cmd: list[str] = [self._ffmpeg, "-hide_banner", "-y", "-i", str(config.source)]
+        # ── Collecte des sources d'entrée ────────────────────────────────────
+        # L'ordre détermine les indices -i : source principale = 0, extras = 1+
+        all_sources: list[Path] = [config.source]
+        for a in config.audio_tracks:
+            sp = a.source_path or config.source
+            if sp not in all_sources:
+                all_sources.append(sp)
+        for src_path, _idx in config.subtitle_tracks:
+            if src_path not in all_sources:
+                all_sources.append(src_path)
+        for src_path, _idx in config.attachment_streams:
+            if src_path not in all_sources:
+                all_sources.append(src_path)
+        source_idx: dict[Path, int] = {p: i for i, p in enumerate(all_sources)}
+
+        cmd: list[str] = [self._ffmpeg, "-hide_banner", "-y"]
+        for src in all_sources:
+            cmd.extend(["-i", str(src)])
 
         vf = self._build_vf(config.video)
         if vf:
@@ -93,9 +114,6 @@ class EncodeWorkflow(QObject):
         cmd.extend(self._video_codec_args(config.video, config.video.bitrate_kbps))
 
         # Passthrough métadonnées container et stream vidéo (codec COPY uniquement).
-        # -map_metadata 0            : titre, chapitres, attachments du container source.
-        # -map_metadata:s:v:0 0:s:v:0 : color primaries, mastering display, content light level, etc.
-        # Les NAL units SEI (RPU DoVi, HDR10+) sont conservées dans le bitstream par -c:v copy.
         if config.video.codec == "copy":
             cmd.extend(["-map_metadata", "0", "-map_metadata:s:v:0", "0:s:v:0"])
 
@@ -103,11 +121,29 @@ class EncodeWorkflow(QObject):
             cmd.extend(self._hdr_meta_args(config.video))
 
         for i, a in enumerate(config.audio_tracks):
-            cmd.extend(["-map", f"0:{a.stream_index}"])
+            inp = source_idx.get(a.source_path or config.source, 0)
+            cmd.extend(["-map", f"{inp}:{a.stream_index}"])
             cmd.extend(self._audio_codec_args(i, a))
 
-        if config.copy_subtitles:
-            cmd.extend(["-map", "0:s?", "-c:s", "copy"])
+        # Sous-titres : soit liste explicite (multi-sources), soit map générique source 0
+        if config.subtitle_tracks:
+            for src_path, stream_idx in config.subtitle_tracks:
+                inp = source_idx.get(src_path, 0)
+                cmd.extend(["-map", f"{inp}:{stream_idx}"])
+            cmd.extend(["-c:s", "copy"])
+        elif config.copy_subtitles:
+            for inp_i in range(len(all_sources)):
+                cmd.extend(["-map", f"{inp_i}:s?"])
+            cmd.extend(["-c:s", "copy"])
+
+        if config.attachment_streams:
+            for src_path, stream_idx in config.attachment_streams:
+                inp = source_idx.get(src_path, 0)
+                cmd.extend(["-map", f"{inp}:{stream_idx}"])
+            cmd.extend(["-c:t", "copy"])
+
+        if config.keep_chapters:
+            cmd.extend(["-map_chapters", "0"])
 
         cmd.append(str(config.output))
         return cmd
@@ -116,8 +152,24 @@ class EncodeWorkflow(QObject):
         bitrate = self._size_to_bitrate_kbps(config)
         vf = self._build_vf(config.video)
 
+        # Sources d'entrée (multi-sources pour audio, sous-titres, attachements)
+        all_sources: list[Path] = [config.source]
+        for a in config.audio_tracks:
+            sp = a.source_path or config.source
+            if sp not in all_sources:
+                all_sources.append(sp)
+        for src_path, _idx in config.subtitle_tracks:
+            if src_path not in all_sources:
+                all_sources.append(src_path)
+        for src_path, _idx in config.attachment_streams:
+            if src_path not in all_sources:
+                all_sources.append(src_path)
+        source_idx: dict[Path, int] = {p: i for i, p in enumerate(all_sources)}
+
         def _base() -> list[str]:
-            c = [self._ffmpeg, "-hide_banner", "-y", "-i", str(config.source)]
+            c = [self._ffmpeg, "-hide_banner", "-y"]
+            for src in all_sources:
+                c.extend(["-i", str(src)])
             if vf:
                 c.extend(["-vf", vf])
             c.extend(["-map", "0:v:0"])
@@ -132,10 +184,26 @@ class EncodeWorkflow(QObject):
         if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
             pass2.extend(self._hdr_meta_args(config.video))
         for i, a in enumerate(config.audio_tracks):
-            pass2.extend(["-map", f"0:{a.stream_index}"])
+            inp = source_idx.get(a.source_path or config.source, 0)
+            pass2.extend(["-map", f"{inp}:{a.stream_index}"])
             pass2.extend(self._audio_codec_args(i, a))
-        if config.copy_subtitles:
-            pass2.extend(["-map", "0:s?", "-c:s", "copy"])
+        if config.subtitle_tracks:
+            for src_path, stream_idx in config.subtitle_tracks:
+                inp = source_idx.get(src_path, 0)
+                pass2.extend(["-map", f"{inp}:{stream_idx}"])
+            pass2.extend(["-c:s", "copy"])
+        elif config.copy_subtitles:
+            for inp_i in range(len(all_sources)):
+                pass2.extend(["-map", f"{inp_i}:s?"])
+            pass2.extend(["-c:s", "copy"])
+        if config.attachment_streams:
+            for src_path, stream_idx in config.attachment_streams:
+                inp = source_idx.get(src_path, 0)
+                pass2.extend(["-map", f"{inp}:{stream_idx}"])
+            pass2.extend(["-c:t", "copy"])
+
+        if config.keep_chapters:
+            pass2.extend(["-map_chapters", "0"])
         pass2.append(str(config.output))
 
         return [pass1, pass2]
@@ -545,11 +613,17 @@ class EncodeWorkflow(QObject):
         if config.work_dir:
             config.work_dir.mkdir(parents=True, exist_ok=True)
 
+        has_tags = bool(config.tag_sources)
+
         if config.video.quality_mode == QualityMode.SIZE:
             cmds = self._build_two_pass(config)
-            return self._run_two_pass(cmds, cwd=cwd)
+            post = (lambda s: self._inject_tags_inplace(config.output, config.tag_sources, s)) \
+                   if has_tags else None
+            return self._run_two_pass(cmds, cwd=cwd, post_fn=post)
 
         cmd = self._build_single_pass(config)
+        if has_tags:
+            return self._run_single_with_postproc(cmd, config, cwd)
         return self._runner.run(cmd, cwd=cwd, label="ffmpeg")
 
     def _run_two_pass(
@@ -557,8 +631,12 @@ class EncodeWorkflow(QObject):
         cmds: list[list[str]],
         cwd: Path | None,
         signals: TaskSignals | None = None,
+        post_fn=None,   # Callable[[TaskSignals], None] | None
     ) -> TaskSignals:
-        """Exécute deux commandes ffmpeg séquentiellement, retourne un TaskSignals commun."""
+        """Exécute deux commandes ffmpeg séquentiellement, retourne un TaskSignals commun.
+
+        post_fn : si fourni, appelé après la passe 2 avant signals.finished (ex. injection tags).
+        """
         if signals is None:
             signals = TaskSignals()
         executor = ThreadPoolExecutor(max_workers=1)
@@ -577,6 +655,100 @@ class EncodeWorkflow(QObject):
                     progress_cb=lambda line: signals.progress.emit(line),
                     signals=signals,
                 )
+                if post_fn is not None:
+                    post_fn(signals)
+                signals.finished.emit(output)
+            except TaskCancelledError:
+                signals.cancelled.emit()
+            except Exception as exc:
+                signals.failed.emit(str(exc), exc)
+            finally:
+                executor.shutdown(wait=False)
+
+        executor.submit(_task)
+        return signals
+
+    def _inject_tags_inplace(
+        self,
+        output: Path,
+        tag_sources: list,
+        signals: "TaskSignals | None" = None,
+    ) -> None:
+        """
+        Injecte les balises MKV (<Tags>) depuis les sources vers output.mkv, sans fichier
+        vidéo intermédiaire.
+
+        Processus :
+          1. mkvextract <source> tags  → XML vers stdout (quelques Ko)
+          2. Écriture dans un NamedTemporaryFile XML (supprimé immédiatement après)
+          3. mkvpropedit <output> --tags all:<xml>  → modification in-place
+
+        Les balises de sources multiples sont injectées séquentiellement ;
+        chaque appel remplace les balises existantes (dernier appel gagne).
+        """
+        if not tag_sources:
+            return
+
+        mkvextract_bin  = self._bins["mkvextract"]
+        mkvpropedit_bin = self._bins["mkvpropedit"]
+
+        if signals:
+            signals.progress.emit("Injection balises MKV…")
+
+        for src in tag_sources:
+            # ── Extraction XML depuis la source ─────────────────────────────
+            result = subprocess.run(
+                [mkvextract_bin, str(src), "tags"],
+                capture_output=True, text=True, timeout=30,
+            )
+            tags_xml = result.stdout.strip()
+            if not tags_xml or result.returncode != 0:
+                self.log_message.emit(
+                    "WARN",
+                    f"Aucune balise dans {Path(src).name} "
+                    f"(mkvextract code={result.returncode})",
+                )
+                continue
+
+            # ── Fichier XML temporaire (quelques Ko, supprimé immédiatement) ─
+            with tempfile.NamedTemporaryFile(
+                suffix=".xml", mode="w", encoding="utf-8",
+                delete=False, prefix="mkv_tags_",
+            ) as f:
+                f.write(tags_xml)
+                xml_path = Path(f.name)
+
+            try:
+                r = subprocess.run(
+                    [mkvpropedit_bin, str(output), "--tags", f"all:{xml_path}"],
+                    capture_output=True, text=True, timeout=60,
+                )
+                if r.returncode != 0:
+                    self.log_message.emit("WARN", f"mkvpropedit: {r.stderr.strip()}")
+                else:
+                    self.log_message.emit(
+                        "INFO", f"Balises MKV injectées depuis {Path(src).name}"
+                    )
+            finally:
+                xml_path.unlink(missing_ok=True)
+
+    def _run_single_with_postproc(
+        self, cmd: list[str], config: EncodeConfig, cwd: Path
+    ) -> TaskSignals:
+        """
+        Exécute une passe ffmpeg unique puis _inject_tags_inplace dans le même thread.
+        Utilisé quand config.tag_sources est non vide pour le mode single-pass.
+        """
+        signals = TaskSignals()
+        executor = ThreadPoolExecutor(max_workers=1)
+
+        def _task() -> None:
+            try:
+                output = self._runner._run_cmd(
+                    cmd, cwd=cwd, label="ffmpeg", signals=signals,
+                    progress_cb=lambda line: signals.progress.emit(line),
+                )
+                self._inject_tags_inplace(config.output, config.tag_sources, signals)
                 signals.finished.emit(output)
             except TaskCancelledError:
                 signals.cancelled.emit()
@@ -769,23 +941,66 @@ class EncodeWorkflow(QObject):
                     _check()
 
                 # ── 8. Reconstitution finale ─────────────────────────────
-                # Une seule commande ffmpeg combine le HEVC injecté (input 0)
-                # avec audio et subs directement depuis la source (input 1).
-                # Copy ou réencodage audio géré ici — aucun fichier intermédiaire.
+                # ffmpeg multi-input :
+                #   input 0 = HEVC injecté, input 1 = source principale,
+                #   input 2+ = sources audio / sous-titres / attachements supplémentaires.
                 signals.progress.emit("Reconstitution finale…")
-                recon_cmd = [
-                    self._ffmpeg, "-hide_banner", "-y",
-                    "-i", str(current_hevc),   # input 0 : flux HEVC injecté
-                    "-i", str(config.source),  # input 1 : source (audio + subs)
-                    "-map", "0:v:0", "-c:v", "copy",   # vidéo : copie le HEVC injecté
-                ]
+                extra_sources: list[Path] = []
+                for a in config.audio_tracks:
+                    sp = a.source_path or config.source
+                    if sp != config.source and sp not in extra_sources:
+                        extra_sources.append(sp)
+                for src_path, _idx in config.subtitle_tracks:
+                    if src_path != config.source and src_path not in extra_sources:
+                        extra_sources.append(src_path)
+                for src_path, _idx in config.attachment_streams:
+                    if src_path != config.source and src_path not in extra_sources:
+                        extra_sources.append(src_path)
+
+                # Indice ffmpeg : 0=HEVC, 1=source, 2+=extras
+                def _inp(src_path: Path) -> int:
+                    if src_path == config.source:
+                        return 1
+                    return 2 + extra_sources.index(src_path)
+
+                recon_cmd = [self._ffmpeg, "-hide_banner", "-y",
+                             "-i", str(current_hevc),
+                             "-i", str(config.source)]
+                for sp in extra_sources:
+                    recon_cmd.extend(["-i", str(sp)])
+                recon_cmd.extend(["-map", "0:v:0", "-c:v", "copy"])
+
                 for i, a in enumerate(config.audio_tracks):
-                    recon_cmd.extend(["-map", f"1:{a.stream_index}"])
+                    inp = _inp(a.source_path or config.source)
+                    recon_cmd.extend(["-map", f"{inp}:{a.stream_index}"])
                     recon_cmd.extend(self._audio_codec_args(i, a))
-                if config.copy_subtitles:
-                    recon_cmd.extend(["-map", "1:s?", "-c:s", "copy"])
+
+                if config.subtitle_tracks:
+                    for src_path, stream_idx in config.subtitle_tracks:
+                        inp = _inp(src_path)
+                        recon_cmd.extend(["-map", f"{inp}:{stream_idx}"])
+                    recon_cmd.extend(["-c:s", "copy"])
+                elif config.copy_subtitles:
+                    n_inputs = 2 + len(extra_sources)
+                    for inp_i in range(1, n_inputs):   # skip input 0 (HEVC brut, pas de subs)
+                        recon_cmd.extend(["-map", f"{inp_i}:s?"])
+                    recon_cmd.extend(["-c:s", "copy"])
+
+                if config.attachment_streams:
+                    for src_path, stream_idx in config.attachment_streams:
+                        inp = _inp(src_path)
+                        recon_cmd.extend(["-map", f"{inp}:{stream_idx}"])
+                    recon_cmd.extend(["-c:t", "copy"])
+
+                if config.keep_chapters:
+                    recon_cmd.extend(["-map_chapters", "1"])   # chapitres depuis source
+
                 recon_cmd.append(str(config.output))
                 _run(recon_cmd)
+
+                # ── 9. Injection balises MKV (mkvpropedit in-place) ──────────
+                self._inject_tags_inplace(config.output, config.tag_sources, signals)
+
                 signals.finished.emit(f"Encodage terminé → {config.output.name}")
 
             except TaskCancelledError:

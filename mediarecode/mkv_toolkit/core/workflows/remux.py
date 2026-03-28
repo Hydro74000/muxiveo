@@ -24,7 +24,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
-from core.inspector import FileInfo, HDRType
+from core.inspector import AttachmentInfo, FileInfo, HDRType
 from core.runner import TaskSignals, ToolRunner
 
 
@@ -87,9 +87,15 @@ class SourceInput:
     il est utilisé dans --track-order pour référencer les pistes.
     """
 
-    path:       Path
-    file_index: int                # 0-based, correspond aux indices dans --track-order
-    tracks:     list[TrackEntry]   # toutes les pistes du fichier (enabled ou non)
+    path:                    Path
+    file_index:              int                    # 0-based, --track-order
+    tracks:                  list[TrackEntry]       # toutes les pistes (enabled ou non)
+    # Attachements sélectionnés (vide = aucun).
+    # Chaque AttachmentInfo.local_index + 1 = ID mkvmerge.
+    # AttachmentInfo.index = stream index ffprobe pour ffmpeg -map.
+    selected_attachments:    list[AttachmentInfo]   = field(default_factory=list)
+    attachment_count:        int                    = 0   # total dans le fichier source
+    copy_tags:               bool                   = False
 
 
 # =============================================================================
@@ -101,17 +107,18 @@ class RemuxConfig:
     """
     Configuration complète d'un remuxage multi-source.
 
-    sources     : liste ordonnée des fichiers source (chacun avec ses pistes).
-    track_order : liste de (file_index, mkv_tid) dans l'ordre désiré en sortie.
-                  Seules les pistes présentes dans track_order sont incluses.
+    sources           : liste ordonnée des fichiers source (chacun avec ses pistes).
+    track_order       : liste de (file_index, mkv_tid) dans l'ordre désiré en sortie.
+                        Seules les pistes présentes dans track_order sont incluses.
+    extra_attachments : fichiers externes à attacher en plus (--attach-file).
     """
 
-    sources:          list[SourceInput]
-    output:           Path
-    track_order:      list[tuple[int, int]]   # (file_index, mkv_tid) ordonnés
-    keep_chapters:    bool = True
-    keep_attachments: bool = True
-    work_dir:         Path | None = None
+    sources:             list[SourceInput]
+    output:              Path
+    track_order:         list[tuple[int, int]]   # (file_index, mkv_tid) ordonnés
+    keep_chapters:       bool          = True
+    extra_attachments:   list          = field(default_factory=list)  # list[Path]
+    work_dir:            Path | None   = None
 
 
 # =============================================================================
@@ -291,8 +298,20 @@ class RemuxWorkflow(QObject):
             # --- Options conteneur ---
             if not config.keep_chapters:
                 cmd.append("--no-chapters")
-            if not config.keep_attachments:
-                cmd.append("--no-attachments")
+
+            # --- Attachements (sélection per-source) ---
+            # attachment_count > 0 = la source possède des attachements
+            if src.attachment_count > 0:
+                sel = src.selected_attachments
+                if not sel:
+                    cmd.append("--no-attachments")
+                elif len(sel) < src.attachment_count:
+                    ids = ",".join(
+                        str(a.local_index + 1)
+                        for a in sorted(sel, key=lambda a: a.local_index)
+                    )
+                    cmd.extend(["--attachments", ids])
+                # sinon : tous sélectionnés → mkvmerge les copie par défaut
 
             # --- Métadonnées de pistes (seulement si modifiées) ---
             for t in src.tracks:
@@ -304,6 +323,10 @@ class RemuxWorkflow(QObject):
                     cmd.extend(["--language", f"{t.mkv_tid}:{t.language}"])
 
             cmd.append(str(src.path))
+
+        # Pièces jointes supplémentaires (ajout manuel)
+        for att_path in config.extra_attachments:
+            cmd.extend(["--attach-file", str(att_path)])
 
         return cmd
 
