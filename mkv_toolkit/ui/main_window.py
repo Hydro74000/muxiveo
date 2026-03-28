@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from enum import Enum
@@ -38,14 +39,18 @@ from PySide6.QtGui import (
     QTextCharFormat, QTextCursor,
 )
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QMainWindow,
-    QPushButton, QScrollArea, QSizePolicy,
+    QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+    QProgressBar, QPushButton, QScrollArea, QSizePolicy,
     QSplitter, QStackedWidget, QTextEdit,
     QVBoxLayout, QWidget,
 )
 
 from core.config import AppConfig
+from core.runner import TaskSignals
+from core.workflows.encode import EncodeError
+from core.workflows.remux import RemuxError
 from ui.panels.encode_panel import EncodePanel
+from ui.panels.encode_panel.theme import _FPS_RE, _TIME_RE, _fmt_eta
 from ui.panels.merge_dovi_panel import MergeDoviPanel
 from ui.panels.remux_panel import RemuxPanel
 
@@ -866,6 +871,10 @@ class MainWindow(QMainWindow):
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
         self._config = config
+        self._running   = False
+        self._signals: TaskSignals | None = None
+        self._op_start: float = 0.0
+        self._op_mode: str = ""   # "remux" ou "encode"
         self._setup_window()
         self._build_ui()
         self._restore_geometry()
@@ -905,16 +914,23 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # ── Splitter vertical : (sidebar + stack) / log panel ──
+        # ── Splitter vertical : (sidebar + stack + action bar) / log panel ──
         self._vsplit = QSplitter(Qt.Orientation.Vertical)
         vsplit = self._vsplit
         vsplit.setHandleWidth(1)
         vsplit.setChildrenCollapsible(False)
 
-        # Partie haute : sidebar + pages
+        # Partie haute : sidebar + pages + barre d'action globale
         top_widget = QWidget()
         top_widget.setStyleSheet(f"background: {_Colors.BG_DEEP};")
-        top_layout = QHBoxLayout(top_widget)
+        top_vbox = QVBoxLayout(top_widget)
+        top_vbox.setContentsMargins(0, 0, 0, 0)
+        top_vbox.setSpacing(0)
+
+        # Ligne principale : sidebar + stack
+        content_widget = QWidget()
+        content_widget.setStyleSheet(f"background: {_Colors.BG_DEEP};")
+        top_layout = QHBoxLayout(content_widget)
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(0)
 
@@ -937,9 +953,11 @@ class MainWindow(QMainWindow):
         # Page 2 — Encodage (fonctionnelle)
         self._encode_panel = EncodePanel(self._config)
         self._stack.addWidget(self._encode_panel)
+
         # Page 3 — Manipulation Conteneur (fonctionnelle)
         self._remux_panel = RemuxPanel(self._config)
         self._stack.addWidget(self._remux_panel)
+
         self._stack.addWidget(_PlaceholderPage(
             "Paramètres",
             "⚙",
@@ -948,6 +966,11 @@ class MainWindow(QMainWindow):
         ))
 
         top_layout.addWidget(self._stack, stretch=1)
+        top_vbox.addWidget(content_widget, stretch=1)
+
+        # ── Barre d'action globale ───────────────────────────────────────────
+        top_vbox.addWidget(self._build_action_bar())
+
         vsplit.addWidget(top_widget)
 
         # Partie basse : log panel
@@ -959,6 +982,90 @@ class MainWindow(QMainWindow):
         vsplit.setSizes([560, 240])
 
         main_layout.addWidget(vsplit)
+
+    def _build_action_bar(self) -> QWidget:
+        """Construit la barre d'action globale avec bouton unique 'Exécuter l'opération'."""
+        bar = QWidget()
+        bar.setStyleSheet(
+            f"QWidget{{background:{_Colors.BG_PANEL};"
+            f"border-top:1px solid {_Colors.BORDER};}}"
+        )
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(28, 10, 28, 10)
+        layout.setSpacing(12)
+
+        # Zone progress (barre fine + légende)
+        self._prog_widget = QWidget()
+        self._prog_widget.setStyleSheet("background:transparent;")
+        pv = QVBoxLayout(self._prog_widget)
+        pv.setContentsMargins(0, 4, 0, 4)
+        pv.setSpacing(4)
+
+        self._prog_bar = QProgressBar()
+        self._prog_bar.setRange(0, 100)
+        self._prog_bar.setValue(0)
+        self._prog_bar.setFixedHeight(6)
+        self._prog_bar.setTextVisible(False)
+        self._prog_bar.setStyleSheet(
+            f"QProgressBar{{background:{_Colors.BG_CARD};border:none;border-radius:3px;}}"
+            f"QProgressBar::chunk{{background:{_Colors.ACCENT};border-radius:3px;}}"
+        )
+        pv.addWidget(self._prog_bar)
+
+        self._prog_lbl = QLabel("")
+        self._prog_lbl.setStyleSheet(
+            f"color:{_Colors.TEXT_DIM};font-size:10px;"
+            f"font-family:'JetBrains Mono',monospace;background:transparent;"
+        )
+        pv.addWidget(self._prog_lbl)
+
+        self._prog_widget.setVisible(False)
+        layout.addWidget(self._prog_widget, stretch=1)
+
+        self._status_lbl = QLabel("")
+        self._status_lbl.setStyleSheet(
+            f"color:{_Colors.TEXT_SEC};font-size:11px;background:transparent;"
+        )
+        layout.addWidget(self._status_lbl)
+        layout.addSpacing(4)
+
+        # Bouton principal unique
+        self._run_btn = QPushButton("▶  Exécuter l'opération")
+        self._run_btn.setFixedHeight(36)
+        self._run_btn.setMinimumWidth(220)
+        self._run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._run_btn.setEnabled(False)
+        self._run_btn.setStyleSheet(f"""
+            QPushButton{{
+                background:{_Colors.ACCENT};color:#ffffff;
+                border:none;border-radius:6px;
+                font-size:12px;font-weight:700;padding:0 20px;
+            }}
+            QPushButton:hover{{background:#6070f8;}}
+            QPushButton:pressed{{background:{_Colors.ACCENT_DIM};}}
+            QPushButton:disabled{{background:{_Colors.BG_CARD};
+                color:{_Colors.TEXT_DIM};border:1px solid {_Colors.BORDER};}}
+        """)
+        self._run_btn.clicked.connect(self._on_run)
+        layout.addWidget(self._run_btn)
+
+        # Bouton annulation
+        self._cancel_btn = QPushButton("✕  Annuler")
+        self._cancel_btn.setFixedWidth(110)
+        self._cancel_btn.setFixedHeight(36)
+        self._cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._cancel_btn.setStyleSheet(f"""
+            QPushButton{{background:{_Colors.BG_CARD};color:#f5c842;
+                border:1px solid #f5c842;border-radius:6px;
+                font-size:12px;font-weight:600;padding:0 14px;}}
+            QPushButton:hover{{background:#2a2010;border-color:#f0b030;color:#f0b030;}}
+            QPushButton:pressed{{background:#1a1608;}}
+        """)
+        self._cancel_btn.setVisible(False)
+        self._cancel_btn.clicked.connect(self._on_cancel_op)
+        layout.addWidget(self._cancel_btn)
+
+        return bar
 
     # ------------------------------------------------------------------
     # Signaux
@@ -980,9 +1087,227 @@ class MainWindow(QMainWindow):
         self._remux_panel.log_message.connect(
             self.log_requested, Qt.ConnectionType.QueuedConnection
         )
-        # RemuxPanel → EncodePanel : fichier partagé
+        # RemuxPanel → EncodePanel : pistes partagées
         self._remux_panel.video_tracks_changed.connect(self._encode_panel.set_video_tracks)
         self._remux_panel.audio_tracks_changed.connect(self._encode_panel.set_audio_tracks)
+        # État "prêt" → bouton Exécuter
+        self._remux_panel.ready_changed.connect(self._on_ready_changed)
+        self._encode_panel.ready_changed.connect(self._on_ready_changed)
+
+    # ------------------------------------------------------------------
+    # Bouton "Exécuter l'opération" — logique hybride remux / encode
+    # ------------------------------------------------------------------
+
+    _NOISE_RE = re.compile(r"libvmaf\s+ERROR|could not read model from path")
+
+    def _on_ready_changed(self, _ready: bool) -> None:
+        """Met à jour l'état du bouton selon la disponibilité des deux panneaux."""
+        enabled = (self._remux_panel.is_ready() or self._encode_panel.collect_config() is not None)
+        self._run_btn.setEnabled(enabled and not self._running)
+
+    def _on_run(self) -> None:
+        if self._running:
+            return
+
+        remux_cfg  = self._remux_panel.collect_config()
+        encode_cfg = self._encode_panel.collect_config()
+
+        # ── Décision du mode ────────────────────────────────────────────────
+        # Encode si une source vidéo est sélectionnée ET (codec ≠ copy ou HDR actif)
+        use_encode = (
+            encode_cfg is not None
+            and not self._encode_panel.is_pure_copy(encode_cfg)
+        )
+
+        if use_encode:
+            # Enrichir l'encode config avec les sous-titres / chapitres du remux
+            if remux_cfg is not None:
+                encode_cfg = self._merge_remux_extras(encode_cfg, remux_cfg)
+            errors = self._encode_panel.validate_config(encode_cfg)
+            if errors:
+                for e in errors:
+                    self.log_requested.emit("ERROR", e)
+                return
+            self._op_mode = "encode"
+            self.log_requested.emit("INFO", f"Encodage → {encode_cfg.output.name}")
+            try:
+                signals = self._encode_panel.run_operation(encode_cfg)
+            except EncodeError as exc:
+                self.log_requested.emit("ERROR", str(exc))
+                return
+
+        elif remux_cfg is not None:
+            errors = self._remux_panel.validate_config(remux_cfg)
+            if errors:
+                for e in errors:
+                    self.log_requested.emit("ERROR", e)
+                return
+            self._op_mode = "remux"
+            self.log_requested.emit("INFO", f"Remuxage → {remux_cfg.output.name}")
+            try:
+                signals = self._remux_panel.run_operation(remux_cfg)
+            except RemuxError as exc:
+                self.log_requested.emit("ERROR", str(exc))
+                return
+
+        else:
+            self.log_requested.emit("WARN", "Aucune opération configurée.")
+            return
+
+        # ── Connexion des signaux de progression ────────────────────────────
+        self._running  = True
+        self._op_start = time.monotonic()
+        self._signals  = signals
+        self._run_btn.setEnabled(False)
+        self._cancel_btn.setVisible(True)
+        self._prog_bar.setValue(0)
+        self._prog_lbl.setText("")
+        self._prog_widget.setVisible(True)
+        label = "Encodage en cours…" if self._op_mode == "encode" else "Remuxage en cours…"
+        self._status_lbl.setText(label)
+
+        signals.progress.connect(self._on_op_progress, Qt.ConnectionType.QueuedConnection)
+        signals.finished.connect(
+            lambda _: self._on_op_finished(success=True),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        signals.failed.connect(
+            lambda msg, _exc: self._on_op_finished(success=False, error=msg),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        signals.cancelled.connect(self._on_op_cancelled, Qt.ConnectionType.QueuedConnection)
+
+    def _merge_remux_extras(self, encode_cfg, remux_cfg):
+        """
+        Enrichit l'encode config avec les informations du remux panel :
+          - sous-titres multi-sources (subtitle_tracks)
+          - attachements MKV (attachment_sources)
+          - balises MKV (tag_sources)
+          - chapitres (keep_chapters)
+
+        Retourne une EncodeConfig enrichie. Si le remux panel n'apporte rien,
+        retourne encode_cfg inchangé (sauf keep_chapters toujours synchronisé).
+        """
+        from core.workflows.encode.models import EncodeConfig
+
+        sub_tracks:         list = []
+        attachment_streams: list = []   # list[tuple[Path, int]]  — (source, ffprobe_stream_index)
+        tag_sources:        list = []
+
+        for src in remux_cfg.sources:
+            for track in src.tracks:
+                if track.track_type == "subtitle" and track.enabled:
+                    sub_tracks.append((src.path, track.mkv_tid))
+            for att in src.selected_attachments:
+                attachment_streams.append((src.path, att.index))
+            if src.copy_tags:
+                tag_sources.append(src.path)
+
+        # Rien à fusionner et keep_chapters identique → pas de reconstruction
+        if (not sub_tracks and not attachment_streams and not tag_sources
+                and encode_cfg.keep_chapters == remux_cfg.keep_chapters):
+            return encode_cfg
+
+        return EncodeConfig(
+            source=encode_cfg.source,
+            output=encode_cfg.output,
+            video=encode_cfg.video,
+            audio_tracks=encode_cfg.audio_tracks,
+            copy_subtitles=encode_cfg.copy_subtitles if not sub_tracks else False,
+            subtitle_tracks=sub_tracks or encode_cfg.subtitle_tracks,
+            keep_chapters=remux_cfg.keep_chapters,
+            attachment_streams=attachment_streams,
+            tag_sources=tag_sources,
+            duration_s=encode_cfg.duration_s,
+            copy_dv=encode_cfg.copy_dv,
+            copy_hdr10plus=encode_cfg.copy_hdr10plus,
+            dovi_profile=encode_cfg.dovi_profile,
+            work_dir=encode_cfg.work_dir,
+        )
+
+    def _on_op_progress(self, line: str) -> None:
+        """Gère la progression selon le mode (remux ou encode)."""
+        if self._op_mode == "remux":
+            if "Progress:" in line:
+                try:
+                    pct = int(line.split("%")[0].split()[-1])
+                    self._prog_bar.setValue(pct)
+                    elapsed = time.monotonic() - self._op_start
+                    if pct > 0 and elapsed > 0:
+                        eta_s = elapsed * (100 - pct) / pct
+                        eta_str = f"ETA {_fmt_eta(eta_s)}"
+                    else:
+                        eta_str = ""
+                    parts = [f"{pct}%", eta_str]
+                    self._prog_lbl.setText("  ·  ".join(p for p in parts if p))
+                except (ValueError, IndexError):
+                    pass
+            else:
+                self.log_requested.emit("INFO", line)
+        else:
+            if self._NOISE_RE.search(line):
+                return
+            m = _TIME_RE.search(line)
+            if m:
+                elapsed_video = (
+                    int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+                )
+                dur = self._encode_panel.get_duration_s()
+                if dur and dur > 0:
+                    pct = min(99, int(elapsed_video / dur * 100))
+                    self._prog_bar.setValue(pct)
+                    fps_m = _FPS_RE.search(line)
+                    fps_str = f"{float(fps_m.group(1)):.1f} fps" if fps_m else ""
+                    elapsed_wall = time.monotonic() - self._op_start
+                    if elapsed_wall > 0 and elapsed_video > 0:
+                        speed = elapsed_video / elapsed_wall
+                        eta_s = (dur - elapsed_video) / speed
+                        eta_str = f"ETA {_fmt_eta(eta_s)}"
+                    else:
+                        eta_str = ""
+                    parts = [f"{pct}%", fps_str, eta_str]
+                    self._prog_lbl.setText("  ·  ".join(p for p in parts if p))
+                return
+            self.log_requested.emit("INFO", line)
+
+    def _on_cancel_op(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Confirmer l'annulation",
+            "Annuler l'opération en cours ?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes and self._signals is not None:
+            self._signals.cancel()
+
+    def _on_op_cancelled(self) -> None:
+        self._running = False
+        self._signals = None
+        self._run_btn.setEnabled(True)
+        self._cancel_btn.setVisible(False)
+        self._prog_widget.setVisible(False)
+        self._prog_lbl.setText("")
+        self._status_lbl.setText("Annulé.")
+        self.log_requested.emit("WARN", "Opération annulée.")
+
+    def _on_op_finished(self, success: bool, error: str = "") -> None:
+        self._running = False
+        self._signals = None
+        self._run_btn.setEnabled(True)
+        self._cancel_btn.setVisible(False)
+        if success:
+            self._prog_bar.setValue(100)
+            self._prog_lbl.setText("100%  ·  terminé")
+            self._status_lbl.setText("Terminé.")
+            label = "Encodage terminé" if self._op_mode == "encode" else "Remuxage terminé"
+            self.log_requested.emit("OK", label)
+        else:
+            self._prog_widget.setVisible(False)
+            self._prog_lbl.setText("")
+            self._status_lbl.setText("Échec.")
+            if error:
+                self.log_requested.emit("ERROR", error)
 
     # ------------------------------------------------------------------
     # Collapse du panneau de logs

@@ -140,17 +140,20 @@ class _AudioSourceDialog(QDialog):
     """
     Fenêtre popup pour ajouter une piste audio custom.
     Permet de choisir la piste source, l'encodage et le débit cible.
+
+    tracks : list[tuple[AudioTrack, str]] ou list[tuple[AudioTrack, str, Path]]
     """
 
     def __init__(
         self,
-        tracks: list[tuple],   # list[tuple[AudioTrack, str]] — (track, color)
+        tracks: list[tuple],   # (track, color) ou (track, color, source_path)
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._tracks = tracks
-        self._result_track:  AudioTrack | None = None
-        self._result_color:  str = "#ffffff"
+        self._result_track:       AudioTrack | None = None
+        self._result_color:       str = "#ffffff"
+        self._result_source_path = None   # Path | None
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -191,14 +194,16 @@ class _AudioSourceDialog(QDialog):
             f"QListWidget::item:selected{{background:{_C.ACCENT_DIM};}}"
             f"QListWidget::item:hover{{background:{_C.BG_HOVER};}}"
         )
-        for track, color in self._tracks:
+        for entry in self._tracks:
+            track, color = entry[0], entry[1]
+            source_path = entry[2] if len(entry) > 2 else None
             ch = track.channels_label
             lang = track.language or "—"
             title_part = f"  {track.title}" if track.title else ""
             text = f"█  #{track.index}  {track.codec.upper()} {ch}  [{lang}]{title_part}"
             item = QListWidgetItem(text)
             item.setForeground(QBrush(QColor(color)))
-            item.setData(Qt.ItemDataRole.UserRole, (track, color))
+            item.setData(Qt.ItemDataRole.UserRole, (track, color, source_path))
             self._track_list.addItem(item)
         if self._track_list.count():
             self._track_list.setCurrentRow(0)
@@ -266,7 +271,10 @@ class _AudioSourceDialog(QDialog):
         item = self._track_list.currentItem()
         if item is None:
             return
-        self._result_track, self._result_color = item.data(Qt.ItemDataRole.UserRole)
+        data = item.data(Qt.ItemDataRole.UserRole)
+        self._result_track       = data[0]
+        self._result_color       = data[1]
+        self._result_source_path = data[2] if len(data) > 2 else None
         self.accept()
 
     def selected_track(self) -> AudioTrack | None:
@@ -274,6 +282,9 @@ class _AudioSourceDialog(QDialog):
 
     def selected_color(self) -> str:
         return self._result_color
+
+    def selected_source_path(self):   # -> Path | None
+        return self._result_source_path
 
     def selected_codec(self) -> str:
         return self._codec_combo.currentData() or "copy"
@@ -309,7 +320,7 @@ class _AudioTable(QTableWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(0, len(self.HEADERS), parent)
-        self._row_data: list[dict] = []   # {combo, bitrate, has_atmos, track, color, del_btn}
+        self._row_data: list[dict] = []   # {combo, bitrate, has_atmos, track, color, source_path, del_btn}
         self._changed_cb = None
         self._setup_table()
 
@@ -357,21 +368,24 @@ class _AudioTable(QTableWidget):
 
     def load_tracks(
         self,
-        tracks: list[tuple],   # list[tuple[AudioTrack, str]]
+        tracks: list[tuple],   # list[tuple[AudioTrack, str]] ou [AudioTrack, str, Path]
         default_codec: str = "copy",
         default_bitrate: int = 384,
     ) -> None:
         self._row_data = []
         self.setRowCount(0)
-        for track, color in tracks:
-            self._append_row(track, color, default_codec, default_bitrate)
+        for entry in tracks:
+            track, color = entry[0], entry[1]
+            source_path = entry[2] if len(entry) > 2 else None
+            self._append_row(track, color, default_codec, default_bitrate, source_path)
         self._refresh_delete_buttons()
         self._adjust_height()
 
     def add_custom_row(
-        self, track: AudioTrack, color: str, codec: str = "copy", bitrate: int = 384
+        self, track: AudioTrack, color: str, codec: str = "copy", bitrate: int = 384,
+        source_path=None,   # Path | None
     ) -> None:
-        self._append_row(track, color, codec, bitrate)
+        self._append_row(track, color, codec, bitrate, source_path)
         self._refresh_delete_buttons()
         self._adjust_height()
         if self._changed_cb:
@@ -390,6 +404,7 @@ class _AudioTable(QTableWidget):
                 codec=codec,
                 bitrate_kbps=bitrate,
                 extract_truehd_core=d["has_atmos"] and codec != "copy",
+                source_path=d.get("source_path"),
             ))
         return result
 
@@ -407,7 +422,8 @@ class _AudioTable(QTableWidget):
         self.setFixedHeight(visible * self._ROW_H + header_h + 4)
 
     def _append_row(
-        self, track: AudioTrack, color: str, codec: str, bitrate: int
+        self, track: AudioTrack, color: str, codec: str, bitrate: int,
+        source_path=None,   # Path | None
     ) -> None:
         row = self.rowCount()
         self.insertRow(row)
@@ -471,12 +487,13 @@ class _AudioTable(QTableWidget):
         self.setCellWidget(row, self.COL_DEL, del_w)
 
         self._row_data.append({
-            "combo":     combo,
-            "bitrate":   bitrate_edit,
-            "has_atmos": _has_atmos(track),
-            "track":     track,
-            "color":     color,
-            "del_btn":   del_btn,
+            "combo":       combo,
+            "bitrate":     bitrate_edit,
+            "has_atmos":   _has_atmos(track),
+            "track":       track,
+            "color":       color,
+            "source_path": source_path,
+            "del_btn":     del_btn,
         })
 
     def _make_codec_handler(self, combo: QComboBox):
