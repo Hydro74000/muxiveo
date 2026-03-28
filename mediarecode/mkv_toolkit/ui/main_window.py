@@ -31,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Callable
+from typing import Callable, TYPE_CHECKING
 
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import (
@@ -53,6 +53,10 @@ from ui.panels.encode_panel import EncodePanel
 from ui.panels.encode_panel.theme import _FPS_RE, _TIME_RE, _fmt_eta
 from ui.panels.merge_dovi_panel import MergeDoviPanel
 from ui.panels.remux_panel import RemuxPanel
+
+if TYPE_CHECKING:
+    from core.workflows.encode.models import EncodeConfig
+    from core.workflows.remux import RemuxConfig
 
 
 # ---------------------------------------------------------------------------
@@ -945,6 +949,7 @@ class MainWindow(QMainWindow):
         self._stack = QStackedWidget()
         self._stack.setStyleSheet(f"background: {_Colors.BG_DEEP};")
         self._stack.setMinimumHeight(0)
+        self._stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         # Page 0 — Dashboard (fonctionnelle)
         self._dashboard = DashboardPage(self._config, self._log_from_page)
@@ -969,7 +974,15 @@ class MainWindow(QMainWindow):
             "et de sortie, préférences d'encodage.",
         ))
 
-        top_layout.addWidget(self._stack, stretch=1)
+        self._page_area = QScrollArea()
+        self._page_area.setWidgetResizable(True)
+        self._page_area.setFrameShape(QFrame.Shape.NoFrame)
+        self._page_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._page_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._page_area.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self._page_area.setWidget(self._stack)
+
+        top_layout.addWidget(self._page_area, stretch=1)
         top_vbox.addWidget(content_widget, stretch=1)
 
         # ── Barre d'action globale ───────────────────────────────────────────
@@ -1118,12 +1131,13 @@ class MainWindow(QMainWindow):
 
         # ── Décision du mode ────────────────────────────────────────────────
         # Encode si une source vidéo est sélectionnée ET (codec ≠ copy ou HDR actif)
-        use_encode = (
-            encode_cfg is not None
-            and not self._encode_panel.is_pure_copy(encode_cfg)
-        )
+        if encode_cfg is None:
+            use_encode = False
+        else:
+            use_encode = not self._encode_panel.is_pure_copy(encode_cfg)
 
         if use_encode:
+            assert encode_cfg is not None
             # Enrichir l'encode config avec les sous-titres / chapitres du remux
             if remux_cfg is not None:
                 encode_cfg = self._merge_remux_extras(encode_cfg, remux_cfg)
@@ -1181,7 +1195,11 @@ class MainWindow(QMainWindow):
         )
         signals.cancelled.connect(self._on_op_cancelled, Qt.ConnectionType.QueuedConnection)
 
-    def _merge_remux_extras(self, encode_cfg, remux_cfg):
+    def _merge_remux_extras(
+        self,
+        encode_cfg: "EncodeConfig",
+        remux_cfg: "RemuxConfig",
+    ) -> "EncodeConfig":
         """
         Enrichit l'encode config avec les informations du remux panel :
           - sous-titres multi-sources (subtitle_tracks)
