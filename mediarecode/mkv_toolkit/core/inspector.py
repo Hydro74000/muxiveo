@@ -453,7 +453,16 @@ class FileInspector:
             codec_type = stream.get("codec_type", "")
             match codec_type:
                 case "video":
-                    info.video_tracks.append(self._parse_video(stream))
+                    # Les images de couverture (cover art) sont reportées par ffprobe
+                    # avec codec_type="video" mais disposition.attached_pic=1.
+                    # On les traite comme des attachements.
+                    if stream.get("disposition", {}).get("attached_pic", 0):
+                        info.attachments.append(
+                            self._parse_attachment(stream, att_local_idx)
+                        )
+                        att_local_idx += 1
+                    else:
+                        info.video_tracks.append(self._parse_video(stream))
                 case "audio":
                     info.audio_tracks.append(self._parse_audio(stream))
                 case "subtitle":

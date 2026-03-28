@@ -248,6 +248,7 @@ class LogPanel(QWidget):
                 height: 0;
             }}
         """)
+        self._text.setMinimumHeight(0)
         layout.addWidget(self._text)
 
     # ------------------------------------------------------------------
@@ -917,12 +918,13 @@ class MainWindow(QMainWindow):
         # ── Splitter vertical : (sidebar + stack + action bar) / log panel ──
         self._vsplit = QSplitter(Qt.Orientation.Vertical)
         vsplit = self._vsplit
-        vsplit.setHandleWidth(1)
+        vsplit.setHandleWidth(5)
         vsplit.setChildrenCollapsible(False)
 
         # Partie haute : sidebar + pages + barre d'action globale
         top_widget = QWidget()
         top_widget.setStyleSheet(f"background: {_Colors.BG_DEEP};")
+        top_widget.setMinimumHeight(1)
         top_vbox = QVBoxLayout(top_widget)
         top_vbox.setContentsMargins(0, 0, 0, 0)
         top_vbox.setSpacing(0)
@@ -930,6 +932,7 @@ class MainWindow(QMainWindow):
         # Ligne principale : sidebar + stack
         content_widget = QWidget()
         content_widget.setStyleSheet(f"background: {_Colors.BG_DEEP};")
+        content_widget.setMinimumHeight(1)
         top_layout = QHBoxLayout(content_widget)
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(0)
@@ -941,6 +944,7 @@ class MainWindow(QMainWindow):
         # Stack de pages
         self._stack = QStackedWidget()
         self._stack.setStyleSheet(f"background: {_Colors.BG_DEEP};")
+        self._stack.setMinimumHeight(0)
 
         # Page 0 — Dashboard (fonctionnelle)
         self._dashboard = DashboardPage(self._config, self._log_from_page)
