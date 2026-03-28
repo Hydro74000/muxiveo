@@ -875,8 +875,8 @@ class EncodePanel(QWidget):
         return (
             v.codec == "copy"
             and all(a.codec == "copy" for a in config.audio_tracks)
-            and not v.copy_dv
-            and not v.copy_hdr10plus
+            and not config.copy_dv
+            and not config.copy_hdr10plus
             and not v.inject_hdr_meta
             and not v.tonemap_to_sdr
         )
