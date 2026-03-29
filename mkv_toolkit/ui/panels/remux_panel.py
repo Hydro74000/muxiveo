@@ -585,11 +585,11 @@ class _TrackTable(QTableWidget):
     COL_TYPE   = 2
     COL_CODEC  = 3
     COL_LANG   = 4
-    COL_INFO   = 5
-    COL_TITLE  = 6
+    COL_TITLE  = 5
+    COL_INFO   = 6
     COL_EDIT   = 7
 
-    _HEADERS = ["", "", "Type", "Codec", "Langue", "Info", "Titre", ""]
+    _HEADERS = ["", "", "Type", "Codec", "Langue", "Titre", "Info", ""]
 
     _FLAG_RO = (
         Qt.ItemFlag.ItemIsEnabled
@@ -887,6 +887,10 @@ class _TrackTable(QTableWidget):
         if dlg.exec() == TrackEditDialog.DialogCode.Accepted:
             row = self._find_row_for_entry(entry)
             if row is not None:
+                # Block signals during all updates so that:
+                # - _on_item_changed (lang check) does not fire mid-update
+                # - _on_table_changed / current_tracks() cannot read a stale title
+                self.blockSignals(True)
                 lang_item = self.item(row, self.COL_LANG)
                 if lang_item:
                     lang_item.setText(entry.language)
@@ -896,6 +900,10 @@ class _TrackTable(QTableWidget):
                 info_item = self.item(row, self.COL_INFO)
                 if info_item:
                     info_item.setText(entry.full_info_label)
+                self.blockSignals(False)
+                # Emit once to validate lang and trigger preview/signal refresh
+                if lang_item is not None:
+                    self.itemChanged.emit(lang_item)
 
     def update_audio_meta(self, file_id: str, mkv_tid: int, lang: str, title: str) -> None:
         """Met à jour lang/titre d'une piste audio sans émettre de signal (sync depuis EncodePanel)."""
@@ -1549,6 +1557,16 @@ class RemuxPanel(QWidget):
         self._chapters_cb.stateChanged.connect(self._rebuild_preview)
 
         opts_layout.addWidget(self._chapters_cb)
+
+        title_lbl = _section_label("TITRE DU FICHIER")
+        opts_layout.addWidget(title_lbl)
+
+        self._file_title_edit = QLineEdit()
+        self._file_title_edit.setPlaceholderText("Titre du conteneur MKV (balise Title)")
+        self._file_title_edit.setStyleSheet(self._input_style())
+        self._file_title_edit.textChanged.connect(self._rebuild_preview)
+        opts_layout.addWidget(self._file_title_edit)
+
         content_layout.addWidget(opts_card)
 
         content_layout.addWidget(_separator())
@@ -1672,10 +1690,12 @@ class RemuxPanel(QWidget):
             f"{len(info.subtitle_tracks)}S{att_str}{tag_str}",
         )
 
-        # Chemin de sortie par défaut (premier fichier uniquement)
+        # Chemin de sortie + titre par défaut (premier fichier uniquement)
         if self._source_files[0].id == file_id and not self._output_edit.text().strip():
             default_out = self._config.output_dir / f"{info.path.stem}-MRecode.mkv"
             self._output_edit.setText(str(default_out))
+            if not self._file_title_edit.text().strip():
+                self._file_title_edit.setText(info.title)
 
         self.ready_changed.emit(self._has_ready_files())
         self._rebuild_preview()
@@ -1851,6 +1871,7 @@ class RemuxPanel(QWidget):
             keep_chapters=self._chapters_cb.isChecked(),
             extra_attachments=self._attachment_panel.get_extra_attachments(),
             work_dir=self._config.work_dir,
+            file_title=self._file_title_edit.text().strip(),
         )
 
     # ------------------------------------------------------------------
@@ -1876,6 +1897,10 @@ class RemuxPanel(QWidget):
         """Retourne le chemin de sortie courant saisi dans ce panneau, ou None si vide."""
         text = self._output_edit.text().strip()
         return Path(text) if text else None
+
+    def current_file_title(self) -> str:
+        """Retourne le titre de fichier courant saisi dans les options."""
+        return self._file_title_edit.text().strip()
 
     def is_ready(self) -> bool:
         """True si au moins un fichier source est inspecté et prêt."""

@@ -164,6 +164,7 @@ class RemuxConfig:
     keep_chapters:       bool          = True
     extra_attachments:   list          = field(default_factory=list)  # list[Path]
     work_dir:            Path | None   = None
+    file_title:          str           = ""      # balise Title du segment de sortie
 
 
 # =============================================================================
@@ -327,6 +328,9 @@ class RemuxWorkflow(QObject):
               ...
         """
         cmd: list[str] = [self._mkvmerge, "-o", str(config.output)]
+
+        # --- Titre du segment de sortie (toujours appliqué, même vide) ---
+        cmd.extend(["--title", config.file_title])
 
         # --- Ordre global des pistes (avant les sources) ---
         if config.track_order:

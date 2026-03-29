@@ -215,6 +215,7 @@ class FileInfo:
     frame_count: int | None = None   # via mediainfo
     tag_count:   int        = 0      # nombre de balises MKV globales (via mkvmerge --identify)
     hdr_type:    HDRType    = HDRType.NONE  # du flux vidéo principal
+    title:       str        = ""     # titre de segment (balise Title du conteneur)
 
     @property
     def primary_video(self) -> VideoTrack | None:
@@ -498,6 +499,7 @@ class FileInspector:
             duration_s = _float_or_none(fmt.get("duration")),
             size_bytes = _int_or_none(fmt.get("size")),
             bit_rate   = _int_or_none(fmt.get("bit_rate")),
+            title      = fmt.get("tags", {}).get("title", ""),
         )
 
         att_local_idx = 0
