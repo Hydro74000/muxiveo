@@ -732,10 +732,27 @@ class EncodeWorkflow(QObject):
             finally:
                 xml_path.unlink(missing_ok=True)
 
+    def _set_writing_app_inplace(self, output: Path) -> None:
+        """Écrit le tag Multiplexing Application dans les infos de segment via mkvpropedit."""
+        mkvpropedit_bin = self._bins["mkvpropedit"]
+        cmd = [
+            mkvpropedit_bin, str(output),
+            "--edit", "info",
+            "--set", "muxing-application=MediaRecode v1.0 by Hydro74000 - VibeCode Proof of Concept",
+        ]
+        try:
+            self.log_message.emit("INFO", "$ " + " ".join(cmd))
+            r = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=30)
+            if r.returncode != 0:
+                self.log_message.emit("WARN", f"mkvpropedit (writing-app) : {r.stderr.strip()}")
+        except FileNotFoundError:
+            self.log_message.emit("WARN", "mkvpropedit introuvable — writing-app non appliqué.")
+
     def _postproc(self, config: EncodeConfig, signals: "TaskSignals | None" = None) -> None:
-        """Post-traitements in-place : balises MKV + métadonnées de pistes."""
+        """Post-traitements in-place : balises MKV + métadonnées de pistes + writing-app."""
         self._inject_tags_inplace(config.output, config.tag_sources, signals)
         self._apply_track_meta_edits_inplace(config.output, config.track_meta_edits)
+        self._set_writing_app_inplace(config.output)
 
     def _apply_track_meta_edits_inplace(self, output: Path, edits: list) -> None:
         """
