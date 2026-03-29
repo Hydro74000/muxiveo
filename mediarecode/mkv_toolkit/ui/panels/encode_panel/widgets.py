@@ -12,17 +12,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QFileDialog,
     QFrame, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit, QListWidget, QListWidgetItem,
-    QPushButton, QTableWidget, QTableWidgetItem,
+    QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
 from core.inspector import AudioTrack, FileInfo
+from core.lang_tags import Rfc5646LanguageTags
 from core.workflows.encode.models import AUDIO_CODECS, AudioTrackSettings
 from ui.panels.encode_panel.theme import (
     _C, _combo_style, _input_style, _primary_button, _secondary_button, _separator,
@@ -317,17 +318,18 @@ class _AudioTable(QTableWidget):
     COL_SOURCE  = 0
     COL_IDX     = 1
     COL_FORMAT  = 2
-    COL_TITLE   = 3
-    COL_LANG    = 4
+    COL_LANG    = 3
+    COL_TITLE   = 4
     COL_CODEC   = 5
     COL_BITRATE = 6
     COL_DEL     = 7
-    HEADERS = ["", "#", "Format", "Nom", "Lang", "Encodage", "Débit", ""]
+    HEADERS = ["", "#", "Format", "Lang", "Nom", "Encodage", "Débit", ""]
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(0, len(self.HEADERS), parent)
         self._row_data: list[dict] = []   # {combo, bitrate, has_atmos, track, color, source_path, del_btn}
         self._changed_cb = None
+        self._prev_lang: dict[int, str] = {}
         self._setup_table()
         self.itemChanged.connect(self._on_item_changed)
 
@@ -345,15 +347,16 @@ class _AudioTable(QTableWidget):
         hh.setSectionResizeMode(self.COL_SOURCE,  QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(self.COL_IDX,     QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(self.COL_FORMAT,  QHeaderView.ResizeMode.Fixed)
-        hh.setSectionResizeMode(self.COL_TITLE,   QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(self.COL_LANG,    QHeaderView.ResizeMode.Fixed)
-        hh.setSectionResizeMode(self.COL_CODEC,   QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(self.COL_TITLE,   QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(self.COL_CODEC,   QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(self.COL_BITRATE, QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(self.COL_DEL,     QHeaderView.ResizeMode.Fixed)
         self.setColumnWidth(self.COL_SOURCE,  20)
         self.setColumnWidth(self.COL_IDX,     32)
-        self.setColumnWidth(self.COL_FORMAT, 130)
-        self.setColumnWidth(self.COL_LANG,    48)
+        self.setColumnWidth(self.COL_FORMAT, 170)
+        self.setColumnWidth(self.COL_LANG,    56)
+        self.setColumnWidth(self.COL_CODEC,  210)
         self.setColumnWidth(self.COL_BITRATE, 80)
         self.setColumnWidth(self.COL_DEL,     36)
         self.setStyleSheet(f"""
@@ -462,6 +465,7 @@ class _AudioTable(QTableWidget):
         self.setItem(row, self.COL_IDX,    _item(str(track.index)))
         self.setItem(row, self.COL_FORMAT, _item("  ".join(fmt_parts)))
         self.setItem(row, self.COL_TITLE,  _item_rw(track.title or ""))
+        self._prev_lang[row] = track.language or ""
         self.setItem(row, self.COL_LANG,   _item_rw(track.language or ""))
 
         # Sélecteur codec
@@ -523,6 +527,16 @@ class _AudioTable(QTableWidget):
             return
         if row >= len(self._row_data):
             return
+        if col == self.COL_LANG:
+            if not Rfc5646LanguageTags.validate_item(item, self._prev_lang):
+                prev = self._prev_lang.get(row, "")
+                self.blockSignals(True)
+                item.setText(prev)
+                self.blockSignals(False)
+                QTimer.singleShot(0, lambda: QMessageBox.warning(
+                    self, "Erreur", "Erreur : code langue non reconnu"
+                ))
+                return
         d = self._row_data[row]
         lang_item  = self.item(row, self.COL_LANG)
         title_item = self.item(row, self.COL_TITLE)
