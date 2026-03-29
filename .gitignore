@@ -1,6 +1,7 @@
 # Python
 __pycache__/
 *.py[cod]
+*.pyc
 *.pyo
 *.pyd
 *.so
@@ -51,6 +52,7 @@ test-results/
 .claude/
 mediarecode/CLAUDE.md
 *.iml
+*.log
 
 # OS
 .DS_Store

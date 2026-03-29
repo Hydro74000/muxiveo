@@ -27,11 +27,11 @@ from __future__ import annotations
 import colorsys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dc_replace
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont, QPainter, QPixmap
+from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox,
@@ -212,14 +212,13 @@ def _separator() -> QFrame:
     return sep
 
 
-def _pencil_icon(color: str = _C.TEXT_SEC, size: int = 14) -> "QIcon":
+def _pencil_icon(color: str = _C.TEXT_SEC, size: int = 14) -> QIcon:
     """
     Icône crayon rendue depuis un SVG inline via QSvgRenderer.
 
     Utilise le tracé Feather Icons (pencil) — un contour simple, sans remplissage,
     adapté à un thème sombre.
     """
-    from PySide6.QtGui import QIcon
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
         f' fill="none" stroke="{color}" stroke-width="2.2"'
@@ -884,6 +883,30 @@ class _TrackTable(QTableWidget):
                 if info_item:
                     info_item.setText(entry.full_info_label)
 
+    def update_audio_meta(self, file_id: str, mkv_tid: int, lang: str, title: str) -> None:
+        """Met à jour lang/titre d'une piste audio sans émettre de signal (sync depuis EncodePanel)."""
+        self.blockSignals(True)
+        try:
+            for row in range(self.rowCount()):
+                item0 = self.item(row, self.COL_CHECK)
+                if item0 is None:
+                    continue
+                entry = item0.data(Qt.ItemDataRole.UserRole)
+                if not isinstance(entry, TrackEntry):
+                    continue
+                if entry.file_id == file_id and entry.mkv_tid == mkv_tid:
+                    lang_item = self.item(row, self.COL_LANG)
+                    if lang_item:
+                        lang_item.setText(lang)
+                    title_item = self.item(row, self.COL_TITLE)
+                    if title_item:
+                        title_item.setText(title)
+                    entry.language = lang
+                    entry.title = title
+                    break
+        finally:
+            self.blockSignals(False)
+
     def _find_row_for_entry(self, entry: "TrackEntry") -> int | None:
         """Retourne l'index de ligne dont le COL_CHECK stocke l'entrée donnée."""
         for row in range(self.rowCount()):
@@ -1049,7 +1072,7 @@ class _AttachmentItemWidget(QWidget):
 
         # Case à cocher
         self._cb = QCheckBox()
-        self._cb.setChecked(not self.is_tag)   # balises décochées par défaut
+        self._cb.setChecked(True)
         self._cb.setStyleSheet(f"""
             QCheckBox::indicator {{
                 width: 13px;
@@ -1624,7 +1647,7 @@ class RemuxPanel(QWidget):
 
         # Chemin de sortie par défaut (premier fichier uniquement)
         if self._source_files[0].id == file_id and not self._output_edit.text().strip():
-            default_out = self._config.output_dir / f"{info.path.stem}_remux.mkv"
+            default_out = self._config.output_dir / f"{info.path.stem}-MRecode.mkv"
             self._output_edit.setText(str(default_out))
 
         self.ready_changed.emit(self._has_ready_files())
@@ -1725,22 +1748,22 @@ class RemuxPanel(QWidget):
     def _emit_audio_tracks(self) -> None:
         """Émet audio_tracks_changed — tuples (AudioTrack, couleur, chemin_source)."""
         track_entries = self._track_table.current_tracks()
-        enabled_audio_ids: dict[str, set[int]] = {}
+        enabled_audio: dict[str, dict[int, TrackEntry]] = {}
         for t in track_entries:
             if t.track_type == "audio" and t.enabled:
-                enabled_audio_ids.setdefault(t.file_id, set()).add(t.mkv_tid)
+                enabled_audio.setdefault(t.file_id, {})[t.mkv_tid] = t
 
         audio_tuples: list[tuple] = []
         for sf in self._source_files:
             if sf.info is None:
                 continue
             color = self._source_colors.get(sf.id, _C.BORDER)
-            tids = enabled_audio_ids.get(sf.id, set())
-            audio_tuples.extend(
-                (a, color, sf.info.path)
-                for a in sf.info.audio_tracks
-                if a.index in tids
-            )
+            tid_map = enabled_audio.get(sf.id, {})
+            for a in sf.info.audio_tracks:
+                entry = tid_map.get(a.index)
+                if entry is not None:
+                    a = dc_replace(a, language=entry.language, title=entry.title)
+                    audio_tuples.append((a, color, sf.info.path))
 
         self.audio_tracks_changed.emit(audio_tuples)
 
@@ -1810,6 +1833,22 @@ class RemuxPanel(QWidget):
     def collect_config(self) -> "RemuxConfig | None":
         """Retourne la configuration de remuxage courante, ou None si incomplète."""
         return self._current_config()
+
+    def update_audio_track_meta(self, stream_index: int, source_path, lang: str, title: str) -> None:
+        """Met à jour lang/titre d'une piste audio depuis l'EncodePanel (sync bidirectionnelle)."""
+        file_id = next(
+            (sf.id for sf in self._source_files if sf.info and sf.info.path == source_path),
+            None,
+        )
+        if file_id is None:
+            return
+        self._track_table.update_audio_meta(file_id, stream_index, lang, title)
+        self._rebuild_preview()
+
+    def current_output_path(self) -> "Path | None":
+        """Retourne le chemin de sortie courant saisi dans ce panneau, ou None si vide."""
+        text = self._output_edit.text().strip()
+        return Path(text) if text else None
 
     def is_ready(self) -> bool:
         """True si au moins un fichier source est inspecté et prêt."""

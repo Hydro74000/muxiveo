@@ -109,6 +109,21 @@ class AudioTrackSettings:
 
 
 @dataclass
+class TrackMetaEdit:
+    """
+    Édition de métadonnées d'une piste de sortie, appliquée via mkvpropedit.
+
+    track_order : numéro de piste 1-based dans le fichier de sortie (sélecteur @N).
+    language    : balise IETF BCP-47 à écrire, ou "" pour ne pas toucher.
+    title       : nom de la piste à écrire, ou None pour ne pas toucher
+                  (chaîne vide "" = effacer le titre existant).
+    """
+    track_order: int
+    language:    str        = ""
+    title:       str | None = None
+
+
+@dataclass
 class EncodeConfig:
     """Configuration complète d'un encodage."""
     source:           Path
@@ -125,6 +140,8 @@ class EncodeConfig:
     attachment_streams: list = field(default_factory=list)   # list[tuple[Path, int]]
     # Sources dont on copie les balises MKV (<Tags> element) via mkvpropedit post-traitement.
     tag_sources:      list = field(default_factory=list)    # list[Path]
+    # Éditions de métadonnées de pistes (langue, titre) appliquées via mkvpropedit.
+    track_meta_edits: list = field(default_factory=list)    # list[TrackMetaEdit]
     duration_s:       float | None = None   # requis pour le mode taille cible
     # Passthrough métadonnées dynamiques (HEVC uniquement)
     copy_dv:          bool         = False  # injecter RPU Dolby Vision via dovi_tool

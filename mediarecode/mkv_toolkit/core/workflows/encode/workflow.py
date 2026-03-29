@@ -613,16 +613,17 @@ class EncodeWorkflow(QObject):
         if config.work_dir:
             config.work_dir.mkdir(parents=True, exist_ok=True)
 
-        has_tags = bool(config.tag_sources)
+        has_tags        = bool(config.tag_sources)
+        has_meta_edits  = bool(config.track_meta_edits)
+        needs_postproc  = has_tags or has_meta_edits
 
         if config.video.quality_mode == QualityMode.SIZE:
             cmds = self._build_two_pass(config)
-            post = (lambda s: self._inject_tags_inplace(config.output, config.tag_sources, s)) \
-                   if has_tags else None
+            post = (lambda s: self._postproc(config, s)) if needs_postproc else None
             return self._run_two_pass(cmds, cwd=cwd, post_fn=post)
 
         cmd = self._build_single_pass(config)
-        if has_tags:
+        if needs_postproc:
             return self._run_single_with_postproc(cmd, config, cwd)
         return self._runner.run(cmd, cwd=cwd, label="ffmpeg")
 
@@ -719,10 +720,9 @@ class EncodeWorkflow(QObject):
                 xml_path = Path(f.name)
 
             try:
-                r = subprocess.run(
-                    [mkvpropedit_bin, str(output), "--tags", f"all:{xml_path}"],
-                    capture_output=True, text=True, timeout=60,
-                )
+                tags_cmd = [mkvpropedit_bin, str(output), "--tags", f"all:{xml_path}"]
+                self.log_message.emit("INFO", "$ " + " ".join(tags_cmd))
+                r = subprocess.run(tags_cmd, capture_output=True, text=True, timeout=60)
                 if r.returncode != 0:
                     self.log_message.emit("WARN", f"mkvpropedit: {r.stderr.strip()}")
                 else:
@@ -732,12 +732,41 @@ class EncodeWorkflow(QObject):
             finally:
                 xml_path.unlink(missing_ok=True)
 
+    def _postproc(self, config: EncodeConfig, signals: "TaskSignals | None" = None) -> None:
+        """Post-traitements in-place : balises MKV + métadonnées de pistes."""
+        self._inject_tags_inplace(config.output, config.tag_sources, signals)
+        self._apply_track_meta_edits_inplace(config.output, config.track_meta_edits)
+
+    def _apply_track_meta_edits_inplace(self, output: Path, edits: list) -> None:
+        """
+        Applique les éditions de langue/titre de pistes via mkvpropedit.
+
+        Chaque TrackMetaEdit.track_order est le numéro 1-based de la piste dans
+        le fichier de sortie (sélecteur ``@N`` de mkvpropedit).
+        """
+        if not edits:
+            return
+        mkvpropedit_bin = self._bins["mkvpropedit"]
+        cmd: list[str] = [mkvpropedit_bin, str(output)]
+        for edit in edits:
+            cmd.extend(["--edit", f"track:@{edit.track_order}"])
+            if edit.language:
+                cmd.extend(["--set", f"language-ietf={edit.language}"])
+            if edit.title is not None:
+                cmd.extend(["--set", f"name={edit.title}"])
+        try:
+            self.log_message.emit("INFO", "$ " + " ".join(cmd))
+            r = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=30)
+            if r.returncode != 0:
+                self.log_message.emit("WARN", f"mkvpropedit (métadonnées) : {r.stderr.strip()}")
+        except FileNotFoundError:
+            self.log_message.emit("WARN", "mkvpropedit introuvable — métadonnées de pistes non appliquées.")
+
     def _run_single_with_postproc(
         self, cmd: list[str], config: EncodeConfig, cwd: Path
     ) -> TaskSignals:
         """
-        Exécute une passe ffmpeg unique puis _inject_tags_inplace dans le même thread.
-        Utilisé quand config.tag_sources est non vide pour le mode single-pass.
+        Exécute une passe ffmpeg unique puis les post-traitements (balises + métadonnées pistes).
         """
         signals = TaskSignals()
         executor = ThreadPoolExecutor(max_workers=1)
@@ -748,7 +777,7 @@ class EncodeWorkflow(QObject):
                     cmd, cwd=cwd, label="ffmpeg", signals=signals,
                     progress_cb=lambda line: signals.progress.emit(line),
                 )
-                self._inject_tags_inplace(config.output, config.tag_sources, signals)
+                self._postproc(config, signals)
                 signals.finished.emit(output)
             except TaskCancelledError:
                 signals.cancelled.emit()
@@ -998,8 +1027,8 @@ class EncodeWorkflow(QObject):
                 recon_cmd.append(str(config.output))
                 _run(recon_cmd)
 
-                # ── 9. Injection balises MKV (mkvpropedit in-place) ──────────
-                self._inject_tags_inplace(config.output, config.tag_sources, signals)
+                # ── 9. Post-traitements (balises MKV + métadonnées pistes) ────
+                self._postproc(config, signals)
 
                 signals.finished.emit(f"Encodage terminé → {config.output.name}")
 

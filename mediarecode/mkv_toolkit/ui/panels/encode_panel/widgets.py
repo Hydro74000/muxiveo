@@ -311,6 +311,9 @@ class _AudioTable(QTableWidget):
     Colonnes : src  |  #  |  Format  |  Nom  |  Lang  |  Encodage  |  Débit  |  Del
     """
 
+    # Émis quand l'utilisateur modifie lang ou titre : (stream_index, source_path, lang, title)
+    track_meta_changed = Signal(int, object, str, str)
+
     COL_SOURCE  = 0
     COL_IDX     = 1
     COL_FORMAT  = 2
@@ -326,6 +329,7 @@ class _AudioTable(QTableWidget):
         self._row_data: list[dict] = []   # {combo, bitrate, has_atmos, track, color, source_path, del_btn}
         self._changed_cb = None
         self._setup_table()
+        self.itemChanged.connect(self._on_item_changed)
 
     def set_changed_callback(self, cb) -> None:
         self._changed_cb = cb
@@ -333,7 +337,7 @@ class _AudioTable(QTableWidget):
     def _setup_table(self) -> None:
         self.setHorizontalHeaderLabels(self.HEADERS)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
         self.verticalHeader().setVisible(False)
         self.setShowGrid(False)
         self.setAlternatingRowColors(False)
@@ -450,10 +454,15 @@ class _AudioTable(QTableWidget):
         elif track.dtsx_flag:
             fmt_parts.append("DTS:X")
 
+        def _item_rw(text: str) -> QTableWidgetItem:
+            it = QTableWidgetItem(text)
+            it.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEditable)
+            return it
+
         self.setItem(row, self.COL_IDX,    _item(str(track.index)))
         self.setItem(row, self.COL_FORMAT, _item("  ".join(fmt_parts)))
-        self.setItem(row, self.COL_TITLE,  _item(track.title or ""))
-        self.setItem(row, self.COL_LANG,   _item(track.language or "—"))
+        self.setItem(row, self.COL_TITLE,  _item_rw(track.title or ""))
+        self.setItem(row, self.COL_LANG,   _item_rw(track.language or ""))
 
         # Sélecteur codec
         combo = QComboBox()
@@ -506,6 +515,22 @@ class _AudioTable(QTableWidget):
             "source_path": source_path,
             "del_btn":     del_btn,
         })
+
+    def _on_item_changed(self, item: QTableWidgetItem) -> None:
+        row = item.row()
+        col = item.column()
+        if col not in (self.COL_TITLE, self.COL_LANG):
+            return
+        if row >= len(self._row_data):
+            return
+        d = self._row_data[row]
+        lang_item  = self.item(row, self.COL_LANG)
+        title_item = self.item(row, self.COL_TITLE)
+        lang  = lang_item.text()  if lang_item  else ""
+        title = title_item.text() if title_item else ""
+        self.track_meta_changed.emit(d["track"].index, d.get("source_path"), lang, title)
+        if self._changed_cb:
+            self._changed_cb()
 
     def _make_codec_handler(self, combo: QComboBox):
         def _handler(_idx: int = 0) -> None:

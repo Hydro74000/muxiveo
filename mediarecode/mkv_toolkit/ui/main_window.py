@@ -1104,9 +1104,11 @@ class MainWindow(QMainWindow):
         self._remux_panel.log_message.connect(
             self.log_requested, Qt.ConnectionType.QueuedConnection
         )
-        # RemuxPanel → EncodePanel : pistes partagées
+        # RemuxPanel → EncodePanel : pistes partagées + chemin de sortie commun
         self._remux_panel.video_tracks_changed.connect(self._encode_panel.set_video_tracks)
         self._remux_panel.audio_tracks_changed.connect(self._encode_panel.set_audio_tracks)
+        self._encode_panel.audio_track_meta_changed.connect(self._remux_panel.update_audio_track_meta)
+        self._encode_panel.set_output_provider(self._remux_panel.current_output_path)
         # État "prêt" → bouton Exécuter
         self._remux_panel.ready_changed.connect(self._on_ready_changed)
         self._encode_panel.ready_changed.connect(self._on_ready_changed)
@@ -1206,11 +1208,12 @@ class MainWindow(QMainWindow):
           - attachements MKV (attachment_sources)
           - balises MKV (tag_sources)
           - chapitres (keep_chapters)
+          - éditions langue/titre de pistes (track_meta_edits)
 
         Retourne une EncodeConfig enrichie. Si le remux panel n'apporte rien,
         retourne encode_cfg inchangé (sauf keep_chapters toujours synchronisé).
         """
-        from core.workflows.encode.models import EncodeConfig
+        from core.workflows.encode.models import EncodeConfig, TrackMetaEdit
 
         sub_tracks:         list = []
         attachment_streams: list = []   # list[tuple[Path, int]]  — (source, ffprobe_stream_index)
@@ -1225,8 +1228,81 @@ class MainWindow(QMainWindow):
             if src.copy_tags:
                 tag_sources.append(src.path)
 
+        # --- Métadonnées de pistes (langue + titre) via mkvpropedit post-encodage ---
+        # ffmpeg ne préserve pas les métadonnées de pistes (langue, titre).
+        # On les réécrit systématiquement pour toutes les pistes ayant des métadonnées.
+        #
+        # Ordre des pistes dans le fichier de sortie ffmpeg :
+        #   @1 = vidéo  |  @2…@N+1 = audio  |  @N+2… = sous-titres
+        track_meta_edits: list[TrackMetaEdit] = []
+
+        # Construire un dict de lookup rapide : (source_path, stream_index) → TrackEntry
+        remux_track_map: dict[tuple, object] = {}
+        for src in remux_cfg.sources:
+            for t in src.tracks:
+                remux_track_map[(src.path, t.mkv_tid)] = t
+
+        def _make_edit(track_order: int, t) -> "TrackMetaEdit | None":
+            """Retourne un TrackMetaEdit si la piste a une langue ou un titre à écrire."""
+            lang  = t.language or ""
+            title = t.title    or ""
+            if not lang and not title:
+                return None
+            return TrackMetaEdit(
+                track_order = track_order,
+                language    = lang,
+                title       = title if title else None,
+            )
+
+        def _find_track(src_path, stream_index, track_type):
+            t = remux_track_map.get((src_path, stream_index))
+            if t is not None:
+                return t
+            # Fichier source unique : cherche uniquement par stream_index + type
+            for entry in remux_track_map.values():
+                if getattr(entry, "mkv_tid", None) == stream_index and \
+                   getattr(entry, "track_type", None) == track_type:
+                    return entry
+            return None
+
+        # @1 — piste vidéo (toujours depuis encode_cfg.source)
+        video_entry = _find_track(encode_cfg.source, 0, "video")
+        if video_entry is None:
+            # La vidéo peut être sur n'importe quel stream_index
+            for entry in remux_track_map.values():
+                if getattr(entry, "track_type", None) == "video":
+                    video_entry = entry
+                    break
+        if video_entry is not None:
+            edit = _make_edit(1, video_entry)
+            if edit:
+                track_meta_edits.append(edit)
+
+        # @2+ — pistes audio
+        audio_offset = 2
+        for audio_order, ats in enumerate(encode_cfg.audio_tracks):
+            src_path = ats.source_path or encode_cfg.source
+            t = _find_track(src_path, ats.stream_index, "audio")
+            if t is None:
+                continue
+            edit = _make_edit(audio_offset + audio_order, t)
+            if edit:
+                track_meta_edits.append(edit)
+
+        # @N+2+ — pistes sous-titres
+        sub_offset = audio_offset + len(encode_cfg.audio_tracks)
+        used_sub_tracks = sub_tracks or encode_cfg.subtitle_tracks
+        for sub_order, (sub_path, sub_sid) in enumerate(used_sub_tracks):
+            t = remux_track_map.get((sub_path, sub_sid))
+            if t is None:
+                continue
+            edit = _make_edit(sub_offset + sub_order, t)
+            if edit:
+                track_meta_edits.append(edit)
+
         # Rien à fusionner et keep_chapters identique → pas de reconstruction
         if (not sub_tracks and not attachment_streams and not tag_sources
+                and not track_meta_edits
                 and encode_cfg.keep_chapters == remux_cfg.keep_chapters):
             return encode_cfg
 
@@ -1240,6 +1316,7 @@ class MainWindow(QMainWindow):
             keep_chapters=remux_cfg.keep_chapters,
             attachment_streams=attachment_streams,
             tag_sources=tag_sources,
+            track_meta_edits=track_meta_edits,
             duration_s=encode_cfg.duration_s,
             copy_dv=encode_cfg.copy_dv,
             copy_hdr10plus=encode_cfg.copy_hdr10plus,

@@ -7,13 +7,14 @@ Public:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QFrame, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem,
     QPlainTextEdit, QPushButton,
@@ -48,9 +49,10 @@ class EncodePanel(QWidget):
         ready_changed(bool) — True quand une source vidéo est sélectionnée
     """
 
-    log_message   = Signal(str, str)
-    ready_changed = Signal(bool)   # émis quand la source vidéo change
-    _hw_detected  = Signal(object)   # set[str]
+    log_message              = Signal(str, str)
+    ready_changed            = Signal(bool)     # émis quand la source vidéo change
+    audio_track_meta_changed = Signal(int, object, str, str)  # (stream_index, source_path, lang, title)
+    _hw_detected             = Signal(object)   # set[str]
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -68,6 +70,8 @@ class EncodePanel(QWidget):
         self._audio_tracks_data: list[tuple] = []   # list[tuple[AudioTrack, str, Path]] pour le popup
         self._duration_s: float | None = None
         self._hw_encoders: set[str] = set()
+        # Callable fourni par MainWindow pour récupérer le chemin de sortie depuis RemuxPanel.
+        self._output_provider: Callable[[], Path | None] = lambda: None
 
         self._workflow.log_message.connect(self.log_message, Qt.ConnectionType.QueuedConnection)
         self._hw_detected.connect(self._on_hw_detected, Qt.ConnectionType.QueuedConnection)
@@ -129,6 +133,7 @@ class EncodePanel(QWidget):
         cl.addWidget(_section_label("PISTES AUDIO"))
         self._audio_table = _AudioTable()
         self._audio_table.set_changed_callback(self._rebuild_preview)
+        self._audio_table.track_meta_changed.connect(self.audio_track_meta_changed)
         cl.addWidget(self._audio_table)
 
         add_track_row = QHBoxLayout()
@@ -145,21 +150,6 @@ class EncodePanel(QWidget):
         # --- Profils ---
         cl.addWidget(_section_label("PROFILS"))
         cl.addWidget(self._build_profiles_card())
-        cl.addWidget(_separator())
-
-        # --- Fichier de sortie ---
-        cl.addWidget(_section_label("FICHIER DE SORTIE"))
-        out_row = QHBoxLayout()
-        out_row.setSpacing(8)
-        self._output_edit = QLineEdit()
-        self._output_edit.setPlaceholderText("/chemin/vers/sortie.mkv")
-        self._output_edit.setStyleSheet(_input_style())
-        self._output_edit.textChanged.connect(self._rebuild_preview)
-        out_row.addWidget(self._output_edit, stretch=1)
-        browse_out = _secondary_button("Choisir…")
-        browse_out.clicked.connect(self._browse_output)
-        out_row.addWidget(browse_out)
-        cl.addLayout(out_row)
         cl.addWidget(_separator())
 
         # --- Aperçu commande ---
@@ -283,8 +273,7 @@ class EncodePanel(QWidget):
         if info.primary_video:
             self._prefill_hdr_meta(info.primary_video.raw)
 
-        default_out = self._config.output_dir / f"{info.path.stem}_encode.mkv"
-        self._output_edit.setText(str(default_out))
+        pass  # Fichier de sortie géré par RemuxPanel
 
         self.ready_changed.emit(True)
         self._update_passthrough_controls(auto_check=True)
@@ -912,15 +901,22 @@ class EncodePanel(QWidget):
             tonemap_algorithm=self._tonemap_algo.currentData() or "hable",
         )
 
+    def set_output_provider(self, provider: Callable[[], "Path | None"]) -> None:
+        """
+        Fournit un callable qui retourne le chemin de sortie courant (depuis RemuxPanel).
+        Appelé par MainWindow après création des panneaux.
+        """
+        self._output_provider = provider
+
     def _current_config(self) -> EncodeConfig | None:
         if self._file_info is None:
             return None
-        output_str = self._output_edit.text().strip()
-        if not output_str:
+        output = self._output_provider()
+        if output is None:
             return None
         return EncodeConfig(
             source=self._file_info.path,
-            output=Path(output_str),
+            output=output,
             video=self._current_video_settings(),
             audio_tracks=self._audio_table.current_audio_settings(),
             copy_subtitles=True,
@@ -953,15 +949,6 @@ class EncodePanel(QWidget):
             f"Piste audio ajoutée : #{track.index} {track.codec.upper()} "
             f"{track.channels_label} → {dlg.selected_codec()}",
         )
-
-    def _browse_output(self) -> None:
-        default = self._output_edit.text() or str(self._config.output_dir)
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Fichier de sortie", default,
-            "Matroska (*.mkv);;MP4 (*.mp4);;Tous (*)",
-        )
-        if path:
-            self._output_edit.setText(path)
 
     def _copy_command(self) -> None:
         from PySide6.QtWidgets import QApplication
