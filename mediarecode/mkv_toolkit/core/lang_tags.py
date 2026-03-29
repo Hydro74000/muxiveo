@@ -318,6 +318,30 @@ class Rfc5646LanguageTags:
         if not code:
             return None
         return cls._ISO639_2_TO_IETF.get(code.lower())
+    @classmethod
+    def to_iso639_2(cls, ietf: str) -> str | None:
+        """
+        Convertit une balise IETF BCP 47 en code ISO 639-2/T (3 lettres).
+
+        Tronque le sous-tag région avant la recherche (ex : 'en-US' → 'en').
+        Retourne None si la balise est inconnue.
+        Retourne 'und' si la balise est 'und' ou vide.
+        """
+        if not ietf:
+            return None
+        # Normalise : prend seulement la partie langue (avant le premier '-')
+        lang_part = ietf.split("-")[0].lower()
+        if lang_part in ("und", ""):
+            return "und"
+        # Recherche inverse dans _ISO639_2_TO_IETF (première correspondance)
+        for iso, tag in cls._ISO639_2_TO_IETF.items():
+            if tag == lang_part and len(iso) == 3 and iso not in (
+                # Exclure les variantes /B (bibliographiques) en faveur de /T
+                'alb', 'arm', 'baq', 'chi', 'cze', 'dut', 'fre', 'geo',
+                'ger', 'gre', 'ice', 'mac', 'may', 'per', 'rum', 'slo', 'wel',
+            ):
+                return iso
+        return None
 
     @classmethod
     def items(cls) -> list[tuple[str, str]]:

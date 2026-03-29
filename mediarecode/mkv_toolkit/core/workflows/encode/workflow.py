@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
-
+from core.lang_tags import Rfc5646LanguageTags as LangTags
 from core.runner import TaskCancelledError, TaskSignals, ToolRunner
 from core.workflows.encode.models import (
     EncodeConfig, EncodeError, QualityMode,
@@ -768,7 +768,9 @@ class EncodeWorkflow(QObject):
         for edit in edits:
             cmd.extend(["--edit", f"track:@{edit.track_order}"])
             if edit.language:
+                cmd.extend(["--set", f"language={LangTags.to_iso639_2(edit.language)}"])
                 cmd.extend(["--set", f"language-ietf={edit.language}"])
+                self.log_message.emit("INFO", "Lang set for track " + str(edit.track_order) + " to " + edit.language + " (ISO639-2: " + LangTags.to_iso639_2(edit.language) + ") in workflow")
             if edit.title is not None:
                 cmd.extend(["--set", f"name={edit.title}"])
         try:

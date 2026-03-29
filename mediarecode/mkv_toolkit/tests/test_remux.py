@@ -943,9 +943,9 @@ class TestTrackTable:
         """Modifier la cellule Langue → language mis à jour dans current_tracks()."""
         _fill_table(table, 1)
         lang_item = table.item(0, _TrackTable.COL_LANG)
-        lang_item.setText("jpn")
+        lang_item.setText("zh-CN")
         tracks = table.current_tracks()
-        assert tracks[0].language == "jpn"
+        assert tracks[0].language == "zh-CN"
 
     def test_current_tracks_syncs_title(self, table):
         _fill_table(table, 1)
