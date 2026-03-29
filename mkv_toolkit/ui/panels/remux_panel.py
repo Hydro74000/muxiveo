@@ -1902,6 +1902,10 @@ class RemuxPanel(QWidget):
         """Retourne le titre de fichier courant saisi dans les options."""
         return self._file_title_edit.text().strip()
 
+    def current_extra_attachments(self) -> list:
+        """Retourne les pièces jointes manuelles cochées (list[Path])."""
+        return self._attachment_panel.get_extra_attachments()
+
     def is_ready(self) -> bool:
         """True si au moins un fichier source est inspecté et prêt."""
         return self._has_ready_files()

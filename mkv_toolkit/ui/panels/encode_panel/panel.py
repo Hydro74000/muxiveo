@@ -74,6 +74,8 @@ class EncodePanel(QWidget):
         self._output_provider: Callable[[], Path | None] = lambda: None
         # Callable fourni par MainWindow pour récupérer le titre de fichier depuis RemuxPanel.
         self._file_title_provider: Callable[[], str] = lambda: ""
+        # Callable fourni par MainWindow pour récupérer les pièces jointes manuelles depuis RemuxPanel.
+        self._extra_attachments_provider: Callable[[], list] = lambda: []
 
         self._workflow.log_message.connect(self.log_message, Qt.ConnectionType.QueuedConnection)
         self._hw_detected.connect(self._on_hw_detected, Qt.ConnectionType.QueuedConnection)
@@ -917,6 +919,13 @@ class EncodePanel(QWidget):
         """
         self._file_title_provider = provider
 
+    def set_extra_attachments_provider(self, provider: Callable[[], list]) -> None:
+        """
+        Fournit un callable qui retourne les pièces jointes manuelles (depuis RemuxPanel).
+        Appelé par MainWindow après création des panneaux.
+        """
+        self._extra_attachments_provider = provider
+
     def _current_config(self) -> EncodeConfig | None:
         if self._file_info is None:
             return None
@@ -935,6 +944,7 @@ class EncodePanel(QWidget):
             dovi_profile=self._dovi_profile_combo.currentData() or "0",
             work_dir=self._config.work_dir,
             file_title=self._file_title_provider(),
+            extra_attachments=self._extra_attachments_provider(),
         )
 
     def _on_add_audio_track(self) -> None:

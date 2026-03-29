@@ -1110,6 +1110,7 @@ class MainWindow(QMainWindow):
         self._encode_panel.audio_track_meta_changed.connect(self._remux_panel.update_audio_track_meta)
         self._encode_panel.set_output_provider(self._remux_panel.current_output_path)
         self._encode_panel.set_file_title_provider(self._remux_panel.current_file_title)
+        self._encode_panel.set_extra_attachments_provider(self._remux_panel.current_extra_attachments)
         # État "prêt" → bouton Exécuter
         self._remux_panel.ready_changed.connect(self._on_ready_changed)
         self._encode_panel.ready_changed.connect(self._on_ready_changed)

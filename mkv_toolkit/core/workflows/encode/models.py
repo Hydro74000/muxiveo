@@ -138,6 +138,8 @@ class EncodeConfig:
     # Flux d'attachements à copier : (chemin_source, stream_index_ffprobe)
     # Sélection individuelle — remplace l'ancien attachment_sources global.
     attachment_streams: list = field(default_factory=list)   # list[tuple[Path, int]]
+    # Fichiers externes à attacher (ajout manuel, via -attach ffmpeg).
+    extra_attachments:  list = field(default_factory=list)   # list[Path]
     # Sources dont on copie les balises MKV (<Tags> element) via mkvpropedit post-traitement.
     tag_sources:      list = field(default_factory=list)    # list[Path]
     # Éditions de métadonnées de pistes (langue, titre) appliquées via mkvpropedit.

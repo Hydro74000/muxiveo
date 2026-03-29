@@ -1390,3 +1390,168 @@ class TestAttachmentItemWidgetDefaultChecked:
         w = _AttachmentItemWidget(file_id="fid", is_tag=True, tag_count=3)
         assert w.enabled is True
         w.close()
+
+
+# ===========================================================================
+# RemuxWorkflow.build_command — balise Title du segment (file_title)
+# ===========================================================================
+
+class TestBuildCommandFileTitle:
+    """
+    Vérifie que --title est toujours émis dans build_command, avec la valeur
+    exacte fournie dans RemuxConfig.file_title (chaîne vide incluse).
+    """
+
+    def setup_method(self):
+        self.wf = _workflow()
+
+    def _simple_cfg(self, title: str) -> RemuxConfig:
+        t = _track(0, "video", file_id="id0")
+        src = _source(Path("/a.mkv"), 0, [t])
+        return RemuxConfig(
+            sources=[src], output=Path("/out.mkv"),
+            track_order=[(0, 0)],
+            file_title=title,
+        )
+
+    def _cmd(self, cfg: RemuxConfig) -> list[str]:
+        return self.wf.build_command(cfg)
+
+    def test_title_flag_present(self):
+        """--title est toujours présent dans la commande."""
+        cmd = self._cmd(self._simple_cfg("Mon Film"))
+        assert "--title" in cmd
+
+    def test_title_value_correct(self):
+        """La valeur suivant --title correspond exactement à file_title."""
+        cmd = self._cmd(self._simple_cfg("Mon Film"))
+        idx = cmd.index("--title")
+        assert cmd[idx + 1] == "Mon Film"
+
+    def test_title_empty_string(self):
+        """file_title='' → --title '' (vide, pour effacer un titre existant)."""
+        cmd = self._cmd(self._simple_cfg(""))
+        assert "--title" in cmd
+        idx = cmd.index("--title")
+        assert cmd[idx + 1] == ""
+
+    def test_title_before_source_file(self):
+        """--title doit précéder le chemin du fichier source dans la commande."""
+        cmd = self._cmd(self._simple_cfg("Film"))
+        assert cmd.index("--title") < cmd.index("/a.mkv")
+
+    def test_title_after_output(self):
+        """--title apparaît après -o OUTPUT, avant les sources."""
+        cmd = self._cmd(self._simple_cfg("Film"))
+        o_idx = cmd.index("-o")
+        t_idx = cmd.index("--title")
+        src_idx = cmd.index("/a.mkv")
+        assert o_idx < t_idx < src_idx
+
+
+# ===========================================================================
+# RemuxWorkflow.build_command — pièces jointes manuelles (extra_attachments)
+# ===========================================================================
+
+class TestBuildCommandExtraAttachments:
+    """
+    Vérifie le comportement de --attach-file dans build_command :
+      - --attach-file est émis pour chaque chemin dans extra_attachments
+      - --attach-file précède tous les chemins de fichiers source
+      - --attachment-name cover est émis pour les fichiers dont le stem est "cover"
+      - --attachment-name n'est PAS émis pour les autres fichiers
+      - Plusieurs attachements → autant de paires --attach-file
+    """
+
+    def setup_method(self):
+        self.wf = _workflow()
+
+    def _cfg(self, extras: list[Path]) -> RemuxConfig:
+        t = _track(0, "video", file_id="id0")
+        src = _source(Path("/a.mkv"), 0, [t])
+        return RemuxConfig(
+            sources=[src], output=Path("/out.mkv"),
+            track_order=[(0, 0)],
+            extra_attachments=extras,
+        )
+
+    def _cmd(self, cfg: RemuxConfig) -> list[str]:
+        return self.wf.build_command(cfg)
+
+    def test_attach_file_present(self):
+        """--attach-file est émis pour un attachement manuel."""
+        cmd = self._cmd(self._cfg([Path("/extra/poster.jpg")]))
+        assert "--attach-file" in cmd
+
+    def test_attach_file_path_correct(self):
+        """La valeur suivant --attach-file est le chemin absolu du fichier."""
+        cmd = self._cmd(self._cfg([Path("/extra/poster.jpg")]))
+        idx = cmd.index("--attach-file")
+        assert cmd[idx + 1] == "/extra/poster.jpg"
+
+    def test_attach_file_before_source(self):
+        """--attach-file doit précéder le chemin du fichier source (option globale)."""
+        cmd = self._cmd(self._cfg([Path("/extra/poster.jpg")]))
+        assert cmd.index("--attach-file") < cmd.index("/a.mkv")
+
+    def test_multiple_attachments(self):
+        """Plusieurs attachements → autant d'occurrences de --attach-file."""
+        extras = [Path("/extra/poster.jpg"), Path("/extra/notes.txt")]
+        cmd = self._cmd(self._cfg(extras))
+        count = sum(1 for a in cmd if a == "--attach-file")
+        assert count == 2
+
+    def test_multiple_attachments_all_before_source(self):
+        """Tous les --attach-file doivent précéder le fichier source."""
+        extras = [Path("/extra/poster.jpg"), Path("/extra/notes.txt")]
+        cmd = self._cmd(self._cfg(extras))
+        src_idx = cmd.index("/a.mkv")
+        attach_indices = [i for i, a in enumerate(cmd) if a == "--attach-file"]
+        for ai in attach_indices:
+            assert ai < src_idx, f"--attach-file à l'index {ai} suit la source à {src_idx}"
+
+    def test_no_attach_file_when_empty(self):
+        """extra_attachments=[] → aucun --attach-file dans la commande."""
+        cmd = self._cmd(self._cfg([]))
+        assert "--attach-file" not in cmd
+
+    def test_cover_jpg_gets_attachment_name(self):
+        """Fichier nommé cover.jpg → --attachment-name cover émis."""
+        cmd = self._cmd(self._cfg([Path("/extra/cover.jpg")]))
+        assert "--attachment-name" in cmd
+        idx = cmd.index("--attachment-name")
+        assert cmd[idx + 1] == "cover"
+
+    def test_cover_png_gets_attachment_name(self):
+        """Fichier nommé cover.png → --attachment-name cover émis."""
+        cmd = self._cmd(self._cfg([Path("/extra/cover.png")]))
+        assert "--attachment-name" in cmd
+        idx = cmd.index("--attachment-name")
+        assert cmd[idx + 1] == "cover"
+
+    def test_cover_case_insensitive(self):
+        """Fichier nommé COVER.JPG (majuscules) → --attachment-name cover émis."""
+        cmd = self._cmd(self._cfg([Path("/extra/COVER.JPG")]))
+        assert "--attachment-name" in cmd
+        idx = cmd.index("--attachment-name")
+        assert cmd[idx + 1] == "cover"
+
+    def test_cover_attachment_name_before_attach_file(self):
+        """--attachment-name doit précéder --attach-file pour le même fichier."""
+        cmd = self._cmd(self._cfg([Path("/extra/cover.jpg")]))
+        assert cmd.index("--attachment-name") < cmd.index("--attach-file")
+
+    def test_non_cover_file_no_attachment_name(self):
+        """Fichier non nommé cover → pas de --attachment-name."""
+        cmd = self._cmd(self._cfg([Path("/extra/poster.jpg")]))
+        assert "--attachment-name" not in cmd
+
+    def test_mixed_cover_and_regular(self):
+        """Mix cover + autre : --attachment-name uniquement pour cover."""
+        extras = [Path("/extra/cover.jpg"), Path("/extra/notes.txt")]
+        cmd = self._cmd(self._cfg(extras))
+        assert "--attachment-name" in cmd
+        idx = cmd.index("--attachment-name")
+        assert cmd[idx + 1] == "cover"
+        # Un seul --attachment-name
+        assert sum(1 for a in cmd if a == "--attachment-name") == 1
