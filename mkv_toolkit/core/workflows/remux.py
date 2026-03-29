@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
-
+from core.lang_tags import Rfc5646LanguageTags as LangTags
 from core.inspector import AttachmentInfo, FileInfo, HDRType
 from core.runner import TaskCancelledError, TaskSignals, ToolRunner
 
@@ -397,7 +397,9 @@ class RemuxWorkflow(QObject):
                 if lang != orig_lang:
                     # Langue modifiée ou vidée → émettre --language-ietf
                     emit_lang = lang if lang else "und"
+                    cmd.extend(["--language", f"{t.mkv_tid}:{LangTags.to_iso639_2(emit_lang)}"])
                     cmd.extend(["--language-ietf", f"{t.mkv_tid}:{emit_lang}"])
+                    self.log_message.emit("INFO", f"Lang set for track {t.mkv_tid} to {emit_lang} (ISO639-2: {LangTags.to_iso639_2(emit_lang)}) in workflow")   
                 # Flags MKV
                 if t.flag_enabled != t.orig_flag_enabled:
                     cmd.extend(["--track-enabled-flag",  f"{t.mkv_tid}:{'1' if t.flag_enabled else '0'}"])
