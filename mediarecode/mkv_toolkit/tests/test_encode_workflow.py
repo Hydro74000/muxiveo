@@ -1553,3 +1553,317 @@ class TestMetadataInjectAudio:
         assert "1:s?" in cmd_str, \
             f"Subs non mappés depuis source (attendu '1:s?'). Cmd: {recon}"
         assert "-c:s" in recon and "copy" in recon
+
+
+# ===========================================================================
+# file_title — balise Title du segment dans les commandes FFmpeg
+# ===========================================================================
+
+class TestEncodeFileTitleCommand:
+    """
+    Vérifie que -metadata title=<value> est injecté dans chaque variante
+    de build_command (single-pass, two-pass pass2) avec la valeur exacte.
+    """
+
+    def setup_method(self):
+        self.wf = _make_workflow()
+
+    def _src(self, tmp_path: Path) -> Path:
+        src = tmp_path / "src.mkv"
+        src.touch()
+        return src
+
+    # ── single pass ──────────────────────────────────────────────────────────
+
+    def test_single_pass_title_flag_present(self, tmp_path):
+        """-metadata title=... présent dans le single pass."""
+        src = self._src(tmp_path)
+        cmd = self.wf.build_command_single(
+            _make_config(src, tmp_path / "out.mkv", file_title="Mon Film")
+        )
+        assert "-metadata" in cmd
+        idx = cmd.index("-metadata")
+        assert cmd[idx + 1] == "title=Mon Film"
+
+    def test_single_pass_title_empty(self, tmp_path):
+        """-metadata title= (vide) présent si file_title=''."""
+        src = self._src(tmp_path)
+        cmd = self.wf.build_command_single(
+            _make_config(src, tmp_path / "out.mkv", file_title="")
+        )
+        assert "-metadata" in cmd
+        idx = cmd.index("-metadata")
+        assert cmd[idx + 1] == "title="
+
+    def test_single_pass_title_before_output(self, tmp_path):
+        """-metadata title= précède le chemin de sortie."""
+        src = self._src(tmp_path)
+        out = tmp_path / "out.mkv"
+        cmd = self.wf.build_command_single(
+            _make_config(src, out, file_title="Film")
+        )
+        assert cmd.index("-metadata") < cmd.index(str(out))
+
+    # ── two pass (mode SIZE) ─────────────────────────────────────────────────
+
+    def test_two_pass_pass2_title_present(self, tmp_path):
+        """-metadata title=... présent dans la passe 2 (mode SIZE)."""
+        src = self._src(tmp_path)
+        vs = _make_video_settings(quality_mode=QualityMode.SIZE)
+        cmds = self.wf.build_command(
+            _make_config(src, tmp_path / "out.mkv", video=vs,
+                         duration_s=3600.0, file_title="Film Encode")
+        )
+        pass2 = cmds[1]
+        assert "-metadata" in pass2
+        idx = pass2.index("-metadata")
+        assert pass2[idx + 1] == "title=Film Encode"
+
+    def test_two_pass_pass1_no_title(self, tmp_path):
+        """-metadata absent de la passe 1 (analyse seule)."""
+        src = self._src(tmp_path)
+        vs = _make_video_settings(quality_mode=QualityMode.SIZE)
+        cmds = self.wf.build_command(
+            _make_config(src, tmp_path / "out.mkv", video=vs,
+                         duration_s=3600.0, file_title="Film Encode")
+        )
+        pass1 = cmds[0]
+        assert "-metadata" not in pass1
+
+
+# ===========================================================================
+# extra_attachments — pièces jointes manuelles dans les commandes FFmpeg
+# ===========================================================================
+
+class TestEncodeExtraAttachments:
+    """
+    Vérifie que -attach / -metadata:s:t:N sont injectés pour chaque fichier
+    dans EncodeConfig.extra_attachments, dans les trois variantes :
+      - single pass (build_command_single)
+      - two-pass pass2 (build_command avec mode SIZE)
+      - reconstitution finale (_run_with_metadata_inject)
+
+    Conventions ffmpeg :
+      -attach <path>                       — attache le fichier
+      -metadata:s:t:N mimetype=<mime>      — type MIME de l'attachement N
+      -metadata:s:t:N filename=<name>      — nom dans le MKV (cover → "cover")
+    """
+
+    def setup_method(self):
+        self.wf = _make_workflow()
+
+    def _src(self, tmp_path: Path) -> Path:
+        src = tmp_path / "src.mkv"
+        src.touch()
+        return src
+
+    # ── helpers ─────────────────────────────────────────────────────────────
+
+    def _single(self, tmp_path: Path, extras: list[Path], **kw) -> list[str]:
+        src = self._src(tmp_path)
+        return self.wf.build_command_single(
+            _make_config(src, tmp_path / "out.mkv",
+                         extra_attachments=extras, **kw)
+        )
+
+    def _pass2(self, tmp_path: Path, extras: list[Path]) -> list[str]:
+        src = self._src(tmp_path)
+        vs = _make_video_settings(quality_mode=QualityMode.SIZE)
+        cmds = self.wf.build_command(
+            _make_config(src, tmp_path / "out.mkv", video=vs,
+                         duration_s=3600.0, extra_attachments=extras)
+        )
+        return cmds[1]   # pass2
+
+    # ── single pass — présence et valeurs ────────────────────────────────────
+
+    def test_single_attach_flag_present(self, tmp_path):
+        """-attach présent pour un attachement manuel (single pass)."""
+        extras = [tmp_path / "poster.jpg"]
+        cmd = self._single(tmp_path, extras)
+        assert "-attach" in cmd
+
+    def test_single_attach_path_correct(self, tmp_path):
+        """Le chemin suivant -attach est le chemin absolu du fichier."""
+        poster = tmp_path / "poster.jpg"
+        cmd = self._single(tmp_path, [poster])
+        idx = cmd.index("-attach")
+        assert cmd[idx + 1] == str(poster)
+
+    def test_single_attach_mimetype_jpeg(self, tmp_path):
+        """-metadata:s:t:0 mimetype=image/jpeg pour un .jpg."""
+        cmd = self._single(tmp_path, [tmp_path / "poster.jpg"])
+        assert "-metadata:s:t:0" in cmd
+        idx = cmd.index("-metadata:s:t:0")
+        assert cmd[idx + 1] == "mimetype=image/jpeg"
+
+    def test_single_attach_mimetype_png(self, tmp_path):
+        """-metadata:s:t:0 mimetype=image/png pour un .png."""
+        cmd = self._single(tmp_path, [tmp_path / "cover.png"])
+        assert "-metadata:s:t:0" in cmd
+        idx = cmd.index("-metadata:s:t:0")
+        assert cmd[idx + 1] == "mimetype=image/png"
+
+    def test_single_attach_mimetype_unknown(self, tmp_path):
+        """-metadata:s:t:0 mimetype=application/octet-stream pour extension inconnue."""
+        cmd = self._single(tmp_path, [tmp_path / "data.bin"])
+        assert "-metadata:s:t:0" in cmd
+        idx = cmd.index("-metadata:s:t:0")
+        assert cmd[idx + 1] == "mimetype=application/octet-stream"
+
+    def test_single_attach_filename_non_cover(self, tmp_path):
+        """-metadata:s:t:0 filename=<basename> pour un fichier non-cover."""
+        cmd = self._single(tmp_path, [tmp_path / "poster.jpg"])
+        # Il y a deux -metadata:s:t:0 : mimetype puis filename — prendre le second
+        indices = [i for i, a in enumerate(cmd) if a == "-metadata:s:t:0"]
+        assert len(indices) == 2
+        filename_val = cmd[indices[1] + 1]
+        assert filename_val == "filename=poster.jpg"
+
+    def test_single_attach_filename_cover(self, tmp_path):
+        """-metadata:s:t:0 filename=cover pour un fichier nommé cover.*."""
+        cmd = self._single(tmp_path, [tmp_path / "cover.jpg"])
+        indices = [i for i, a in enumerate(cmd) if a == "-metadata:s:t:0"]
+        assert len(indices) == 2
+        filename_val = cmd[indices[1] + 1]
+        assert filename_val == "filename=cover"
+
+    def test_single_cover_case_insensitive(self, tmp_path):
+        """COVER.JPG → filename=cover (insensible à la casse)."""
+        cmd = self._single(tmp_path, [tmp_path / "COVER.JPG"])
+        indices = [i for i, a in enumerate(cmd) if a == "-metadata:s:t:0"]
+        filename_val = cmd[indices[1] + 1]
+        assert filename_val == "filename=cover"
+
+    def test_single_no_extra_no_attach(self, tmp_path):
+        """extra_attachments=[] → aucun -attach dans la commande."""
+        cmd = self._single(tmp_path, [])
+        assert "-attach" not in cmd
+
+    # ── single pass — indices multiples ──────────────────────────────────────
+
+    def test_single_two_attachments_indices(self, tmp_path):
+        """Deux attachements → indices 0 et 1 dans les metadata:s:t:N."""
+        extras = [tmp_path / "cover.jpg", tmp_path / "notes.txt"]
+        cmd = self._single(tmp_path, extras)
+        assert "-metadata:s:t:0" in cmd
+        assert "-metadata:s:t:1" in cmd
+
+    def test_single_two_attach_flags(self, tmp_path):
+        """Deux attachements → deux occurrences de -attach."""
+        extras = [tmp_path / "cover.jpg", tmp_path / "notes.txt"]
+        cmd = self._single(tmp_path, extras)
+        assert sum(1 for a in cmd if a == "-attach") == 2
+
+    def test_single_attachment_streams_offset(self, tmp_path):
+        """attachment_streams existants → extra_attachments commencent à l'index N."""
+        src = self._src(tmp_path)
+        att_streams = [(src, 5)]   # 1 stream existant → extra débute à l'index 1
+        extras = [tmp_path / "cover.jpg"]
+        cmd = self.wf.build_command_single(
+            _make_config(src, tmp_path / "out.mkv",
+                         attachment_streams=att_streams,
+                         extra_attachments=extras)
+        )
+        # Le premier attachement extra doit utiliser l'index 1, pas 0
+        assert "-metadata:s:t:1" in cmd
+        assert "-metadata:s:t:0" not in cmd or \
+            all(cmd[i + 1].startswith("mimetype=") or cmd[i + 1].startswith("filename=")
+                is False
+                for i in [j for j, a in enumerate(cmd) if a == "-metadata:s:t:0"])
+
+    # ── two-pass pass2 ───────────────────────────────────────────────────────
+
+    def test_pass2_attach_flag_present(self, tmp_path):
+        """-attach présent dans la passe 2 (mode SIZE)."""
+        cmd = self._pass2(tmp_path, [tmp_path / "poster.jpg"])
+        assert "-attach" in cmd
+
+    def test_pass2_attach_mimetype(self, tmp_path):
+        """-metadata:s:t:0 mimetype=image/jpeg dans la passe 2."""
+        cmd = self._pass2(tmp_path, [tmp_path / "cover.jpg"])
+        assert "-metadata:s:t:0" in cmd
+        idx = cmd.index("-metadata:s:t:0")
+        assert cmd[idx + 1] == "mimetype=image/jpeg"
+
+    def test_pass2_cover_filename(self, tmp_path):
+        """-metadata:s:t:0 filename=cover dans la passe 2 pour cover.*."""
+        cmd = self._pass2(tmp_path, [tmp_path / "cover.jpg"])
+        indices = [i for i, a in enumerate(cmd) if a == "-metadata:s:t:0"]
+        filename_val = cmd[indices[1] + 1]
+        assert filename_val == "filename=cover"
+
+    def test_pass1_no_attach(self, tmp_path):
+        """-attach absent de la passe 1 (analyse seule, pas de sortie)."""
+        src = self._src(tmp_path)
+        vs = _make_video_settings(quality_mode=QualityMode.SIZE)
+        cmds = self.wf.build_command(
+            _make_config(src, tmp_path / "out.mkv", video=vs,
+                         duration_s=3600.0, extra_attachments=[tmp_path / "cover.jpg"])
+        )
+        pass1 = cmds[0]
+        assert "-attach" not in pass1
+
+    # ── reconstitution finale (_run_with_metadata_inject) ────────────────────
+
+    def _run_inject_with_extras(
+        self, tmp_path: Path, extras: list[Path]
+    ) -> list[list[str]]:
+        """Lance _run_with_metadata_inject (libx265 + copy_dv) avec extra_attachments."""
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 200_000)
+        config = _make_config(
+            source=src,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="libx265"),
+            copy_dv=True,
+            work_dir=tmp_path / "work",
+            extra_attachments=extras,
+        )
+        wf = _make_workflow(enabled=False)
+        cmds_run: list[list[str]] = []
+
+        def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
+            cmds_run.append(list(cmd))
+            for arg in reversed(cmd):
+                s = str(arg)
+                if any(s.endswith(ext) for ext in (".hevc", ".mkv", ".bin", ".json")):
+                    p = Path(s)
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(b"\x00" * 100_000)
+                    break
+            return ""
+
+        with patch.object(EncodeWorkflow, "_shm_path",
+                          side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
+            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+                sigs = wf._run_with_metadata_inject(config)
+                _collect_signals(sigs)
+
+        return cmds_run
+
+    def _get_recon_cmd(self, cmds: list[list[str]]) -> list[str]:
+        recon = [c for c in cmds if c[0] == "ffmpeg" and "output.mkv" in " ".join(c)]
+        assert len(recon) == 1
+        return recon[0]
+
+    def test_inject_attach_flag_present(self, tmp_path):
+        """-attach présent dans la reconstitution finale (chemin DV/HDR10+)."""
+        extras = [tmp_path / "cover.jpg"]
+        cmds = self._run_inject_with_extras(tmp_path, extras)
+        recon = self._get_recon_cmd(cmds)
+        assert "-attach" in recon
+
+    def test_inject_cover_filename(self, tmp_path):
+        """filename=cover dans la reconstitution finale pour cover.*."""
+        extras = [tmp_path / "cover.jpg"]
+        cmds = self._run_inject_with_extras(tmp_path, extras)
+        recon = self._get_recon_cmd(cmds)
+        indices = [i for i, a in enumerate(recon) if a == "-metadata:s:t:0"]
+        assert any(recon[i + 1] == "filename=cover" for i in indices)
+
+    def test_inject_no_attach_when_empty(self, tmp_path):
+        """extra_attachments=[] → aucun -attach dans la reconstitution."""
+        cmds = self._run_inject_with_extras(tmp_path, [])
+        recon = self._get_recon_cmd(cmds)
+        assert "-attach" not in recon

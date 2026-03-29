@@ -26,6 +26,21 @@ from core.workflows.encode.models import (
 )
 
 
+_MIME_BY_EXT: dict[str, str] = {
+    ".jpg":  "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png":  "image/png",
+    ".gif":  "image/gif",
+    ".bmp":  "image/bmp",
+    ".webp": "image/webp",
+    ".tif":  "image/tiff",
+    ".tiff": "image/tiff",
+}
+
+def _mime_for(path: Path) -> str:
+    return _MIME_BY_EXT.get(path.suffix.lower(), "application/octet-stream")
+
+
 class EncodeWorkflow(QObject):
     """
     Construit et exécute un encodage ffmpeg.
@@ -142,6 +157,14 @@ class EncodeWorkflow(QObject):
                 cmd.extend(["-map", f"{inp}:{stream_idx}"])
             cmd.extend(["-c:t", "copy"])
 
+        existing_att = len(config.attachment_streams)
+        for i, att_path in enumerate(config.extra_attachments):
+            att_idx = existing_att + i
+            att_name = "cover" if att_path.stem.lower() == "cover" else att_path.name
+            cmd.extend(["-attach", str(att_path)])
+            cmd.extend([f"-metadata:s:t:{att_idx}", f"mimetype={_mime_for(att_path)}"])
+            cmd.extend([f"-metadata:s:t:{att_idx}", f"filename={att_name}"])
+
         if config.keep_chapters:
             cmd.extend(["-map_chapters", "0"])
 
@@ -202,6 +225,14 @@ class EncodeWorkflow(QObject):
                 inp = source_idx.get(src_path, 0)
                 pass2.extend(["-map", f"{inp}:{stream_idx}"])
             pass2.extend(["-c:t", "copy"])
+
+        existing_att = len(config.attachment_streams)
+        for i, att_path in enumerate(config.extra_attachments):
+            att_idx = existing_att + i
+            att_name = "cover" if att_path.stem.lower() == "cover" else att_path.name
+            pass2.extend(["-attach", str(att_path)])
+            pass2.extend([f"-metadata:s:t:{att_idx}", f"mimetype={_mime_for(att_path)}"])
+            pass2.extend([f"-metadata:s:t:{att_idx}", f"filename={att_name}"])
 
         if config.keep_chapters:
             pass2.extend(["-map_chapters", "0"])
@@ -1041,6 +1072,14 @@ class EncodeWorkflow(QObject):
                         inp = _inp(src_path)
                         recon_cmd.extend(["-map", f"{inp}:{stream_idx}"])
                     recon_cmd.extend(["-c:t", "copy"])
+
+                existing_att = len(config.attachment_streams)
+                for i, att_path in enumerate(config.extra_attachments):
+                    att_idx = existing_att + i
+                    att_name = "cover" if att_path.stem.lower() == "cover" else att_path.name
+                    recon_cmd.extend(["-attach", str(att_path)])
+                    recon_cmd.extend([f"-metadata:s:t:{att_idx}", f"mimetype={_mime_for(att_path)}"])
+                    recon_cmd.extend([f"-metadata:s:t:{att_idx}", f"filename={att_name}"])
 
                 if config.keep_chapters:
                     recon_cmd.extend(["-map_chapters", "1"])   # chapitres depuis source

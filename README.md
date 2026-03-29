@@ -303,9 +303,16 @@ Les paramètres peuvent être sauvegardés en profil réutilisable :
 
 ### Ce qui se passe quand on clique sur Exécuter
 
-#### Cas 1 — Copie pure → `mkvmerge`
+La logique de décision est la suivante :
 
-**Condition** : codec vidéo = Copie ET tous les codecs audio = Copie ET pas d'injection HDR.
+1. Les deux panneaux sont collectés : `RemuxConfig` (panneau Conteneur) et `EncodeConfig` (panneau Encodage).
+2. Si aucun fichier source n'est sélectionné dans le panneau Encodage (`EncodeConfig` = None) → **Mode Remux**.
+3. Sinon, `is_pure_copy` est évalué : codec vidéo = Copie **ET** tous les codecs audio = Copie **ET** pas de `copy_dv` / `copy_hdr10plus` / injection HDR / tone mapping → **Mode Remux**.
+4. Dans tous les autres cas → **Mode Encode**. Le RemuxConfig enrichit alors l'EncodeConfig (sous-titres, pièces jointes, tags, chapitres, métadonnées de pistes).
+
+---
+
+#### Mode Remux → `mkvmerge`
 
 ```bash
 mkvmerge -o SORTIE.mkv
@@ -320,19 +327,21 @@ mkvmerge -o SORTIE.mkv
   SOURCE1.mkv [SOURCE2.mkv ...]
 ```
 
-#### Cas 2 — Encodage → `ffmpeg`
+---
 
-**Condition** : au moins un codec actif est sélectionné.
+#### Mode Encode standard → `ffmpeg`
 
-Toutes les pistes (vidéo, audio, sous-titres, pièces jointes, chapitres) configurées dans les deux panneaux sont assemblées en une seule commande `ffmpeg`. Suivi de `mkvpropedit` pour les métadonnées de pistes et les tags MKV.
+**Condition** : au moins un codec actif, sans passthrough DoVi/HDR10+.
+
+Toutes les pistes (vidéo, audio, sous-titres, pièces jointes, chapitres) sont assemblées en une seule commande `ffmpeg`.
 
 ```bash
 ffmpeg -hide_banner -y
   -i SOURCE.mkv [-i SOURCE2.mkv ...]
-  [-vf "zscale=...,tonemap=...,zscale=..."]        # si tone mapping
+  [-vf "zscale=...,tonemap=...,zscale=..."]        # si tone mapping actif
   -map 0:v:0
   -c:v libx265 -crf 20 -preset slow
-  [-x265-params "master-display=...:max-cll=..."]  # si inject HDR
+  [-x265-params "master-display=...:max-cll=..."]  # si inject HDR statique
   [-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc]
   -map 0:a:0  -c:a:0 aac -b:a:0 384k
   -map 0:a:1  -c:a:1 copy
@@ -340,50 +349,79 @@ ffmpeg -hide_banner -y
   -map 0:t:0  -c:t copy          # pièces jointes du panneau Conteneur
   -map_chapters 0                # si chapitres activés
   SORTIE.mkv
-
-# Post-traitement des métadonnées de pistes
-mkvpropedit SORTIE.mkv \
-  --edit track:@1 --set language-ietf=fra --set name="Français" \
-  --edit track:@2 --set language-ietf=eng
 ```
 
-#### Cas 3 — Encodage avec HDR passthrough (DoVi / HDR10+)
-
-**Condition** : réencodage actif ET option copie DoVi ou HDR10+ cochée.
-
-Un pipeline intermédiaire est exécuté avant l'assemblage final :
+Si des tags MKV ou des métadonnées de pistes (langue, titre) sont définis, `mkvpropedit` est exécuté en post-traitement :
 
 ```bash
-# 1. Extraire le flux HEVC brut de la source
+mkvpropedit SORTIE.mkv \
+  --edit track:@1 --set language-ietf=fra --set name="Français" \
+  --edit track:@2 --set language-ietf=eng \
+  --edit info --set muxing-application="MediaRecode v1.0..."
+```
+
+---
+
+#### Mode Encode avec passthrough DoVi/HDR10+ + codec = Copie
+
+**Condition** : `copy_dv` ou `copy_hdr10plus` coché, mais codec vidéo = Copie.
+
+Aucune extraction ni injection n'est effectuée. Les métadonnées HDR sont déjà présentes dans le bitstream HEVC et sont préservées telles quelles par ffmpeg. Le traitement continue comme un encode standard.
+
+---
+
+#### Mode Encode avec passthrough DoVi/HDR10+ + codec actif
+
+**Condition** : `copy_dv` ou `copy_hdr10plus` coché ET codec vidéo ≠ Copie.
+
+Un pipeline en 9 étapes séquentielles est exécuté. Les fichiers HEVC intermédiaires sont alloués en RAM (`/dev/shm`) si suffisamment de mémoire est disponible, sinon sur disque. Chaque intermédiaire est supprimé immédiatement dès qu'il n'est plus nécessaire.
+
+```bash
+# 1. Extraction HEVC source brut
 ffmpeg -i SOURCE.mkv -map 0:v:0 -c:v copy -f hevc src.hevc
 
-# 2. Extraire le RPU Dolby Vision (si DoVi activé)
+# 2. Extraction RPU Dolby Vision (si copy_dv activé)
 dovi_tool extract-rpu -i src.hevc -o rpu.bin
 
-# 3. Extraire les métadonnées HDR10+ (si HDR10+ activé)
+# 3. Extraction métadonnées HDR10+ (si copy_hdr10plus activé)
 hdr10plus_tool extract src.hevc -o hdr10p.json
 
-# 4. Encoder la vidéo seule (1 ou 2 passes selon le mode qualité)
-ffmpeg [args qualité] -an -f hevc enc.hevc
+# 4. Libération de src.hevc (avant encodage pour libérer l'espace RAM/disque)
 
-# 5. Injecter HDR10+ dans le HEVC encodé (si activé)
+# 5. Encodage vidéo seule → enc.hevc (sans container, sans audio)
+#    CRF ou Débit : 1 passe
+#    Mode Taille  : 2 passes (analyse + encodage)
+ffmpeg [args qualité] ... -f hevc enc.hevc
+
+# 6. Injection HDR10+ (si copy_hdr10plus activé ET hdr10p.json présent)
+#    HDR10+ injecté EN PREMIER — hdr10plus_tool ne tolère pas les NAL RPU DoVi existants
 hdr10plus_tool inject -i enc.hevc -j hdr10p.json -o enc_hdr10p.hevc
+# → enc.hevc supprimé immédiatement
 
-# 6. Injecter le RPU DoVi (si activé)
-dovi_tool -m 0 inject-rpu -i enc_hdr10p.hevc -r rpu.bin -o enc_final.hevc
+# 7. Injection RPU DoVi (si copy_dv activé ET rpu.bin présent)
+dovi_tool -m {dovi_profile} inject-rpu -i enc_hdr10p.hevc -r rpu.bin -o enc_dv.hevc
+# → enc_hdr10p.hevc supprimé immédiatement
 
-# 7. Assembler : HEVC enrichi + audio + sous-titres + pièces jointes + chapitres
-ffmpeg -y -hide_banner \
-  -i enc_final.hevc \
+# 8. Assemblage final (ffmpeg multi-input)
+#    input 0 = HEVC enrichi final
+#    input 1 = source principale (audio, subs, chapitres)
+#    input 2+ = sources supplémentaires (audio/subs/pièces jointes depuis d'autres fichiers)
+ffmpeg -hide_banner -y \
+  -i enc_dv.hevc \
   -i SOURCE.mkv \
+  [-i EXTRA_SOURCE ...] \
   -map 0:v:0 -c:v copy \
-  -map 1:a:0 -c:a:0 aac -b:a:0 384k \
-  -map 1:s?  -c:s copy \
-  -map_chapters 1 \
+  -map 1:AUDIO_IDX -c:a:0 aac -b:a:0 384k \
+  [-map 1:s? -c:s copy]           # sous-titres copy_subtitles ou subtitle_tracks
+  [-map 1:t:IDX -c:t copy]        # pièces jointes
+  [-map_chapters 1]               # chapitres depuis source
   SORTIE.mkv
 
-# 8. Post-traitement métadonnées (langues, titres, tags)
-mkvpropedit SORTIE.mkv --edit track:@1 --set language-ietf=fra ...
+# 9. Post-traitement (toujours exécuté dans ce mode)
+mkvpropedit SORTIE.mkv \
+  --edit track:@1 --set language-ietf=fra \
+  --tags all:tags.xml \
+  --edit info --set muxing-application="MediaRecode v1.0..."
 ```
 
 ---
@@ -539,49 +577,56 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A([▶ Exécuter]) --> B[MainWindow._on_run]
-    B --> C[RemuxPanel.collect_config\n→ RemuxConfig]
-    B --> D[EncodePanel.collect_config\n→ EncodeConfig\noutput = RemuxPanel.current_output_path]
+    A([▶ Exécuter]) --> B[_on_run\nRemuxPanel.collect_config → RemuxConfig\nEncodePanel.collect_config → EncodeConfig]
 
-    C & D --> E{is_pure_copy ?\ncodec vidéo = copy\nET tous audio = copy\nET pas d'injection HDR}
+    B --> C{EncodeConfig\nexiste ?}
+    C -->|NON — pas de source vidéo| REMUX
+    C -->|OUI| D{is_pure_copy ?\ncodec vidéo=copy\nET tous audio=copy\nET pas copy_dv · copy_hdr10plus\nni inject_hdr · tonemap}
 
-    E -->|OUI| F[Mode REMUX]
-    E -->|NON| G[Mode ENCODE\n_merge_remux_extras\nInjecte dans EncodeConfig :\nsubtitle_tracks · attachment_streams\ntag_sources · track_meta_edits\nkeep_chapters]
+    D -->|OUI| REMUX
+    D -->|NON| MERGE[_merge_remux_extras\nsi RemuxConfig présent :\nsubtitle_tracks\nattachment_streams\ntag_sources\ntrack_meta_edits\nkeep_chapters]
 
-    F --> F1[mkvmerge\npistes sélectionnées\nlangues · titres · drapeaux]
-    F1 --> OK1[✅ Fichier MKV créé]
+    REMUX[Mode REMUX\nremux_panel.run_operation] --> MKV[mkvmerge\npistes · langues · titres · drapeaux]
+    MKV --> OK1[✅ Fichier MKV créé]
 
-    G --> H{copy_dv ou\ncopy_hdr10plus ?}
+    MERGE --> HDR{copy_dv ou\ncopy_hdr10plus ?}
 
-    H -->|NON| I[ffmpeg passe unique\nou 2 passes si mode Taille\nvideo + audio + subs\n+ attachments + chapitres]
-    H -->|OUI| J[Pipeline HDR passthrough]
+    HDR -->|NON| STD[Mode Encode standard\nffmpeg passe unique\nou 2 passes si mode Taille\nvideo+audio+subs\n+attachments+chapitres]
+    HDR -->|OUI · codec = copy| PASS[Passthrough\nDoVi/HDR10+ déjà dans le bitstream\nffmpeg préserve sans modifier\n→ même chemin que encode standard]
+    HDR -->|OUI · codec actif| INJECT[Pipeline HDR passthrough]
 
-    J --> J1[ffmpeg → HEVC brut source]
-    J1 --> J2{DoVi ?}
-    J2 -->|OUI| J3[dovi_tool extract-rpu]
-    J2 -->|NON| J4
-    J3 --> J4{HDR10+ ?}
-    J4 -->|OUI| J5[hdr10plus_tool extract]
-    J4 -->|NON| J6
-    J5 --> J6[ffmpeg encode vidéo seule\n1 passe CRF/Débit\nou 2 passes Taille]
-    J6 --> J7{HDR10+ à injecter ?}
-    J7 -->|OUI| J8[hdr10plus_tool inject]
-    J7 -->|NON| J9
-    J8 --> J9{DoVi à injecter ?}
-    J9 -->|OUI| J10[dovi_tool inject-rpu]
-    J9 -->|NON| J11
-    J10 --> J11[ffmpeg assemblage final\nHEVC enrichi + audio\n+ subs + attachments\n+ chapitres]
+    PASS --> STD
 
-    I --> POST
-    J11 --> POST
+    INJECT --> I1[1. ffmpeg extract → src.hevc\nRAM si dispo sinon disque]
+    I1 --> I2{copy_dv ?}
+    I2 -->|OUI| I3[2. dovi_tool extract-rpu → rpu.bin]
+    I2 -->|NON| I4
+    I3 --> I4{copy_hdr10plus ?}
+    I4 -->|OUI| I5[3. hdr10plus_tool extract → hdr10p.json]
+    I4 -->|NON| I6
+    I5 --> I6[4. FREE src.hevc\nlibération espace avant encodage]
+    I6 --> I7[5. Encodage vidéo seule → enc.hevc\nCRF/Débit : 1 passe\nTaille : 2 passes]
+    I7 --> I8{copy_hdr10plus\net hdr10p.json existe ?}
+    I8 -->|OUI| I9[6. hdr10plus_tool inject → enc_hdr10p.hevc\nHDR10+ injecté AVANT DoVi\nFREE enc.hevc]
+    I8 -->|NON| I10
+    I9 --> I10{copy_dv\net rpu.bin existe ?}
+    I10 -->|OUI| I11[7. dovi_tool -m dovi_profile inject-rpu\n→ enc_dv.hevc\nFREE précédent]
+    I10 -->|NON| I12
+    I11 --> I12[8. ffmpeg assemblage final\ninput 0=HEVC enrichi\ninput 1=source principale\ninput 2+=sources supplémentaires\naudio+subs+attachments+chapitres]
+    I12 --> POSTPROC_FORCED[9. mkvpropedit\ntags MKV · langues · titres\nwriting-app\ntoujours exécuté]
+    POSTPROC_FORCED --> OK2[✅ Fichier de sortie prêt]
 
-    POST[mkvpropedit\nlangues · titres · tags MKV\nwriting-app]
-    POST --> OK2[✅ Fichier de sortie prêt]
+    STD --> POSTCOND{tag_sources ou\ntrack_meta_edits ?}
+    POSTCOND -->|OUI| POSTPROC[mkvpropedit\ntags MKV · langues · titres\nwriting-app]
+    POSTCOND -->|NON| OK2
+    POSTPROC --> OK2
 
     style A fill:#4f6ef7,color:#ffffff
     style OK1 fill:#1a3a2a,color:#5dcc8a
     style OK2 fill:#1a3a2a,color:#5dcc8a
-    style POST fill:#1a2a3a,color:#7ab3f5
+    style POSTPROC fill:#1a2a3a,color:#7ab3f5
+    style POSTPROC_FORCED fill:#1a2a3a,color:#7ab3f5
+    style PASS fill:#2a2a1a,color:#f5c842
 ```
 
 ---
@@ -596,16 +641,22 @@ flowchart LR
 
     R -->|video_tracks_changed\nFileInfo + TrackEntry + couleur| E
     R -->|audio_tracks_changed\nAudioTrack + couleur + chemin source| E
-    R -->|current_output_path\nchemin de sortie partagé| E
+    R -.->|set_output_provider\ncurrent_output_path — chemin de sortie partagé| E
+    R -.->|set_file_title_provider\ncurrent_file_title — titre du fichier| E
+    R -.->|set_extra_attachments_provider\ncurrent_extra_attachments| E
     R -->|ready_changed| MW
 
-    E -->|audio_track_meta_changed\nlang + titre → sync retour| R
+    E -->|audio_track_meta_changed\nstream_index + source_path + lang + titre| R
     E -->|ready_changed| MW
 
     style R fill:#1a1e2a,color:#e8ecf4
     style E fill:#1a1e2a,color:#e8ecf4
     style MW fill:#4f6ef7,color:#ffffff
 ```
+
+> Les flèches pleines (`→`) sont des **signaux Qt** émis à chaque changement.
+> Les flèches pointillées (`-.->`) sont des **providers** — callbacks enregistrés une fois au démarrage, appelés à la demande lors de `collect_config`.
+
 
 ---
 
