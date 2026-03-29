@@ -334,25 +334,27 @@ class TestTracksFromFileInfo:
         entries = tracks_from_file_info(info)
         assert "5.1" in entries[0].display_info
 
-    def test_audio_display_info_includes_sample_rate(self):
+    def test_audio_display_info_excludes_sample_rate(self):
+        # Le sample rate n'est plus inclus dans display_info (supprimé)
         info = _file_info(audios=[_audio(1, sample_rate=48000)])
         entries = tracks_from_file_info(info)
-        assert "48 kHz" in entries[0].display_info
+        assert "kHz" not in entries[0].display_info
 
     def test_audio_display_info_includes_bitrate(self):
         info = _file_info(audios=[_audio(1, bit_rate=640_000)])
         entries = tracks_from_file_info(info)
         assert "640 kbps" in entries[0].display_info
 
-    def test_subtitle_forced_flag_in_display_info(self):
+    def test_subtitle_forced_flag_in_full_info_label(self):
+        # Les flags sont exposés via full_info_label (flags_label), pas display_info
         info = _file_info(subs=[_subtitle(2, forced=True)])
         entries = tracks_from_file_info(info)
-        assert "forcé" in entries[0].display_info
+        assert "forcé" in entries[0].full_info_label
 
-    def test_subtitle_default_flag_in_display_info(self):
+    def test_subtitle_default_flag_in_full_info_label(self):
         info = _file_info(subs=[_subtitle(2, default=True)])
         entries = tracks_from_file_info(info)
-        assert "défaut" in entries[0].display_info
+        assert "défaut" in entries[0].full_info_label
 
     def test_subtitle_neither_forced_nor_default(self):
         info = _file_info(subs=[_subtitle(2, forced=False, default=False)])
@@ -533,10 +535,13 @@ class TestBuildCommand:
 
     def test_no_attachments_flag(self):
         tracks = [_track(0, "video", file_id="id0")]
-        src = _source(Path("/a.mkv"), 0, tracks)
+        src = SourceInput(
+            path=Path("/a.mkv"), file_index=0, tracks=tracks,
+            attachment_count=2, selected_attachments=[],
+        )
         cfg = RemuxConfig(
             sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 0)], keep_attachments=False,
+            track_order=[(0, 0)],
         )
         cmd = self._cmd(cfg)
         assert "--no-attachments" in cmd
@@ -566,32 +571,44 @@ class TestBuildCommand:
         assert "--track-name" not in cmd
 
     def test_language_emitted_when_modified(self):
-        t = _track(1, "audio", file_id="id0", language="eng", orig_language="fra")
+        t = _track(1, "audio", file_id="id0", language="en", orig_language="fr")
         src = _source(Path("/a.mkv"), 0, [t])
         cfg = RemuxConfig(
             sources=[src], output=Path("/out.mkv"),
             track_order=[(0, 1)],
         )
         cmd = self._cmd(cfg)
-        assert "--language" in cmd
-        idx = cmd.index("--language")
-        assert cmd[idx + 1] == "1:eng"
+        assert "--language-ietf" in cmd
+        idx = cmd.index("--language-ietf")
+        assert cmd[idx + 1] == "1:en"
 
     def test_language_not_emitted_when_unchanged(self):
-        t = _track(1, "audio", file_id="id0", language="fra", orig_language="fra")
+        t = _track(1, "audio", file_id="id0", language="fr", orig_language="fr")
         src = _source(Path("/a.mkv"), 0, [t])
         cfg = RemuxConfig(
             sources=[src], output=Path("/out.mkv"),
             track_order=[(0, 1)],
         )
         cmd = self._cmd(cfg)
-        assert "--language" not in cmd
+        assert "--language-ietf" not in cmd
+
+    def test_language_cleared_emits_und(self):
+        t = _track(1, "audio", file_id="id0", language="", orig_language="fr")
+        src = _source(Path("/a.mkv"), 0, [t])
+        cfg = RemuxConfig(
+            sources=[src], output=Path("/out.mkv"),
+            track_order=[(0, 1)],
+        )
+        cmd = self._cmd(cfg)
+        assert "--language-ietf" in cmd
+        idx = cmd.index("--language-ietf")
+        assert cmd[idx + 1] == "1:und"
 
     def test_metadata_not_emitted_for_disabled_tracks(self):
-        """--track-name et --language ne sont pas émis pour les pistes désactivées."""
+        """--track-name et --language-ietf ne sont pas émis pour les pistes désactivées."""
         t = _track(1, "audio", file_id="id0",
                    title="Modified", orig_title="",
-                   language="eng", orig_language="fra")
+                   language="en", orig_language="fr")
         src = _source(Path("/a.mkv"), 0, [t])
         cfg = RemuxConfig(
             sources=[src], output=Path("/out.mkv"),
@@ -599,7 +616,7 @@ class TestBuildCommand:
         )
         cmd = self._cmd(cfg)
         assert "--track-name" not in cmd
-        assert "--language" not in cmd
+        assert "--language-ietf" not in cmd
 
     # --- Multi-source ---
 
@@ -1111,16 +1128,16 @@ class TestTrackTableSort:
         assert types == ["video", "video", "audio", "audio"]
 
     def test_find_insert_position_video_empty_table(self, table):
-        assert table._find_insert_position("video") == 0
+        assert table._find_insert_position(0) == 0   # order 0 = video
 
     def test_find_insert_position_audio_after_video(self, table):
         _fill_table(table, 2, track_type="video")
-        assert table._find_insert_position("audio") == 2
+        assert table._find_insert_position(1) == 2   # order 1 = audio
 
     def test_find_insert_position_subtitle_after_audio(self, table):
         _fill_table(table, 1, track_type="video")
         _fill_table(table, 2, track_type="audio")
-        assert table._find_insert_position("subtitle") == 3
+        assert table._find_insert_position(2) == 3   # order 2 = subtitle
 
 
 # ===========================================================================
