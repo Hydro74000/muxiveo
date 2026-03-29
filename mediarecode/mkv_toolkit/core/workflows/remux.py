@@ -340,6 +340,14 @@ class RemuxWorkflow(QObject):
         # Ensemble des (file_index, mkv_tid) activées pour lookup rapide
         enabled_set: set[tuple[int, int]] = set(config.track_order)
 
+        # --- Pièces jointes supplémentaires (ajout manuel) — avant les sources ---
+        # --attach-file est une option globale : doit précéder les fichiers source.
+        for att_path in config.extra_attachments:
+            # Fichiers nommés "cover.*" → forcer l'attachment-name à "cover"
+            if att_path.stem.lower() == "cover":
+                cmd.extend(["--attachment-name", "cover"])
+            cmd.extend(["--attach-file", str(att_path)])
+
         for src in config.sources:
             fi = src.file_index
 
@@ -421,10 +429,6 @@ class RemuxWorkflow(QObject):
                     cmd.extend(["--commentary-flag",      f"{t.mkv_tid}:{'1' if t.flag_commentary else '0'}"])
 
             cmd.append(str(src.path))
-
-        # Pièces jointes supplémentaires (ajout manuel)
-        for att_path in config.extra_attachments:
-            cmd.extend(["--attach-file", str(att_path)])
 
         return cmd
 
