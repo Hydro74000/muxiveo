@@ -19,13 +19,15 @@ Conventions :
 
 from __future__ import annotations
 
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
 from core.inspector import AttachmentInfo, FileInfo, HDRType
-from core.runner import TaskSignals, ToolRunner
+from core.runner import TaskCancelledError, TaskSignals, ToolRunner
 
 
 # =============================================================================
@@ -301,10 +303,12 @@ class RemuxWorkflow(QObject):
     def __init__(
         self,
         mkvmerge_bin: str = "mkvmerge",
+        mkvpropedit_bin: str = "mkvpropedit",
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._mkvmerge = mkvmerge_bin
+        self._mkvpropedit = mkvpropedit_bin
         self._runner = ToolRunner(max_workers=1, parent=self)
 
     # ------------------------------------------------------------------
@@ -473,9 +477,25 @@ class RemuxWorkflow(QObject):
     # Exécution
     # ------------------------------------------------------------------
 
+    def _set_writing_app_inplace(self, output: Path) -> None:
+        """Écrit le tag Multiplexing Application dans les infos de segment via mkvpropedit."""
+        cmd = [
+            self._mkvpropedit, str(output),
+            "--edit", "info",
+            "--set", "muxing-application=MediaRecode v1.0 by Hydro74000 - VibeCode Proof of Concept",
+        ]
+        try:
+            self.log_message.emit("INFO", "$ " + " ".join(cmd))
+            r = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=30)
+            if r.returncode != 0:
+                self.log_message.emit("WARN", f"mkvpropedit (writing-app) : {r.stderr.strip()}")
+        except FileNotFoundError:
+            self.log_message.emit("WARN", "mkvpropedit introuvable — writing-app non appliqué.")
+
     def run(self, config: RemuxConfig) -> TaskSignals:
         """
-        Lance le remuxage dans un thread secondaire via ToolRunner.
+        Lance le remuxage dans un thread secondaire via ToolRunner,
+        puis applique le tag Writing Application via mkvpropedit.
 
         Les signaux du TaskSignals retourné permettent de suivre la progression.
         """
@@ -488,4 +508,25 @@ class RemuxWorkflow(QObject):
         cwd = config.work_dir or config.sources[0].path.parent
         if config.work_dir:
             config.work_dir.mkdir(parents=True, exist_ok=True)
-        return self._runner.run(cmd, cwd=cwd, label="mkvmerge")
+
+        signals = TaskSignals()
+        executor = ThreadPoolExecutor(max_workers=1)
+
+        def _task() -> None:
+            try:
+                output = self._runner._run_cmd(
+                    cmd, cwd=cwd, label="mkvmerge",
+                    progress_cb=lambda line: signals.progress.emit(line),
+                    signals=signals,
+                )
+                self._set_writing_app_inplace(config.output)
+                signals.finished.emit(output)
+            except TaskCancelledError:
+                signals.cancelled.emit()
+            except Exception as exc:
+                signals.failed.emit(str(exc), exc)
+            finally:
+                executor.shutdown(wait=False)
+
+        executor.submit(_task)
+        return signals
