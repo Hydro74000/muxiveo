@@ -271,8 +271,8 @@ class ToolRunner(QObject):
                     env=env,
                     label=label or cmd[0],
                     progress_cb=lambda line: (
-                        signals.progress.emit(line),
-                        on_progress(line) if on_progress else None,
+                        signals.progress.emit(line)
+                        or (on_progress(line) if on_progress else None)
                     ),
                     signals=signals,
                 )
@@ -398,6 +398,9 @@ class ToolRunner(QObject):
         import os
 
         proc_env = {**os.environ, **(env or {})} if env else None
+
+        if progress_cb:
+            progress_cb("$ " + " ".join(cmd))
 
         with subprocess.Popen(
             cmd,

@@ -96,6 +96,17 @@ Plan de couverture :
         - Hauteur avec N fichiers = N * _FILE_ROW_H + _FILE_BAR_H
         - file_count() retourne le bon nombre
 
+    _TrackTable.update_audio_meta :
+        - Met à jour language et title dans la cellule et dans l'objet TrackEntry
+        - N'émet pas de signal itemChanged (blockSignals)
+        - Cible uniquement la ligne correspondant à (file_id, mkv_tid)
+        - Laisse les autres lignes intactes
+        - Sans effet si (file_id, mkv_tid) introuvable
+
+    _AttachmentItemWidget — balises cochées par défaut :
+        - is_tag=False → case cochée
+        - is_tag=True → case cochée (nouveau comportement)
+
 Exécution :
     pytest tests/test_remux.py -v
 """
@@ -120,7 +131,7 @@ from core.workflows.remux import (
 )
 from ui.panels.remux_panel import (
     SourceFile, _FILE_BAR_H, _FILE_PH_H, _FILE_ROW_H,
-    _FileListWidget, _TrackTable, _pick_file_color,
+    _AttachmentItemWidget, _FileListWidget, _TrackTable, _pick_file_color,
 )
 
 
@@ -1286,3 +1297,96 @@ class TestFileListWidgetSize:
         file_list.add_file(sf)
         file_list.remove_file(sf.id)
         assert file_list.file_count() == 0
+
+
+# ===========================================================================
+# _TrackTable.update_audio_meta (synchronisation depuis EncodePanel)
+# ===========================================================================
+
+class TestTrackTableUpdateAudioMeta:
+
+    def test_updates_language_cell(self, table):
+        """update_audio_meta met à jour la cellule Langue."""
+        tracks = [_track(5, "audio", file_id="fid", language="fra")]
+        table.append_tracks(_COLOR_A, tracks)
+        table.update_audio_meta("fid", 5, "jpn", "")
+        lang_item = table.item(0, _TrackTable.COL_LANG)
+        assert lang_item.text() == "jpn"
+
+    def test_updates_title_cell(self, table):
+        """update_audio_meta met à jour la cellule Titre."""
+        tracks = [_track(5, "audio", file_id="fid", title="Original")]
+        table.append_tracks(_COLOR_A, tracks)
+        table.update_audio_meta("fid", 5, "fra", "Nouveau titre")
+        title_item = table.item(0, _TrackTable.COL_TITLE)
+        assert title_item.text() == "Nouveau titre"
+
+    def test_updates_track_entry_language(self, table):
+        """L'objet TrackEntry est aussi mis à jour (pas seulement la cellule UI)."""
+        tracks = [_track(5, "audio", file_id="fid", language="fra")]
+        table.append_tracks(_COLOR_A, tracks)
+        table.update_audio_meta("fid", 5, "eng", "")
+        result = table.current_tracks()
+        assert result[0].language == "eng"
+
+    def test_updates_track_entry_title(self, table):
+        tracks = [_track(5, "audio", file_id="fid", title="Avant")]
+        table.append_tracks(_COLOR_A, tracks)
+        table.update_audio_meta("fid", 5, "fra", "Après")
+        result = table.current_tracks()
+        assert result[0].title == "Après"
+
+    def test_no_item_changed_signal_emitted(self, table):
+        """update_audio_meta doit bloquer les signaux pour éviter une boucle de sync."""
+        tracks = [_track(5, "audio", file_id="fid")]
+        table.append_tracks(_COLOR_A, tracks)
+        emitted: list = []
+        table.itemChanged.connect(lambda _: emitted.append(True))
+        table.update_audio_meta("fid", 5, "jpn", "X")
+        assert emitted == []
+
+    def test_does_not_affect_other_rows(self, table):
+        """Seule la ligne ciblée est modifiée, les autres restent intactes."""
+        t0 = _track(1, "audio", file_id="fid", language="fra", title="Piste 1")
+        t1 = _track(2, "audio", file_id="fid", language="eng", title="Piste 2")
+        table.append_tracks(_COLOR_A, [t0, t1])
+        table.update_audio_meta("fid", 1, "jpn", "Modifiée")
+        result = table.current_tracks()
+        other = next(t for t in result if t.mkv_tid == 2)
+        assert other.language == "eng"
+        assert other.title == "Piste 2"
+
+    def test_unknown_file_id_is_noop(self, table):
+        """file_id inconnu → aucune modification."""
+        tracks = [_track(1, "audio", file_id="fid", language="fra")]
+        table.append_tracks(_COLOR_A, tracks)
+        table.update_audio_meta("unknown", 1, "jpn", "X")
+        result = table.current_tracks()
+        assert result[0].language == "fra"
+
+    def test_unknown_mkv_tid_is_noop(self, table):
+        """mkv_tid inconnu → aucune modification."""
+        tracks = [_track(1, "audio", file_id="fid", language="fra")]
+        table.append_tracks(_COLOR_A, tracks)
+        table.update_audio_meta("fid", 99, "jpn", "X")
+        result = table.current_tracks()
+        assert result[0].language == "fra"
+
+
+# ===========================================================================
+# _AttachmentItemWidget — case cochée par défaut (tags et attachements)
+# ===========================================================================
+
+class TestAttachmentItemWidgetDefaultChecked:
+
+    def test_attachment_checked_by_default(self, qt_app):
+        """Un attachement normal (is_tag=False) est coché par défaut."""
+        w = _AttachmentItemWidget(file_id="fid")
+        assert w.enabled is True
+        w.close()
+
+    def test_tag_checked_by_default(self, qt_app):
+        """Un widget de balises (is_tag=True) est coché par défaut (nouveau comportement)."""
+        w = _AttachmentItemWidget(file_id="fid", is_tag=True, tag_count=3)
+        assert w.enabled is True
+        w.close()
