@@ -145,6 +145,7 @@ class EncodeWorkflow(QObject):
         if config.keep_chapters:
             cmd.extend(["-map_chapters", "0"])
 
+        cmd.extend(["-metadata", f"title={config.file_title}"])
         cmd.append(str(config.output))
         return cmd
 
@@ -204,6 +205,7 @@ class EncodeWorkflow(QObject):
 
         if config.keep_chapters:
             pass2.extend(["-map_chapters", "0"])
+        pass2.extend(["-metadata", f"title={config.file_title}"])
         pass2.append(str(config.output))
 
         return [pass1, pass2]

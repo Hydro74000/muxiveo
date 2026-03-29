@@ -142,6 +142,7 @@ class EncodeConfig:
     tag_sources:      list = field(default_factory=list)    # list[Path]
     # Éditions de métadonnées de pistes (langue, titre) appliquées via mkvpropedit.
     track_meta_edits: list = field(default_factory=list)    # list[TrackMetaEdit]
+    file_title:       str          = ""     # balise Title du segment de sortie
     duration_s:       float | None = None   # requis pour le mode taille cible
     # Passthrough métadonnées dynamiques (HEVC uniquement)
     copy_dv:          bool         = False  # injecter RPU Dolby Vision via dovi_tool

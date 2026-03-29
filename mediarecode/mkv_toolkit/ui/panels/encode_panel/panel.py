@@ -72,6 +72,8 @@ class EncodePanel(QWidget):
         self._hw_encoders: set[str] = set()
         # Callable fourni par MainWindow pour récupérer le chemin de sortie depuis RemuxPanel.
         self._output_provider: Callable[[], Path | None] = lambda: None
+        # Callable fourni par MainWindow pour récupérer le titre de fichier depuis RemuxPanel.
+        self._file_title_provider: Callable[[], str] = lambda: ""
 
         self._workflow.log_message.connect(self.log_message, Qt.ConnectionType.QueuedConnection)
         self._hw_detected.connect(self._on_hw_detected, Qt.ConnectionType.QueuedConnection)
@@ -908,6 +910,13 @@ class EncodePanel(QWidget):
         """
         self._output_provider = provider
 
+    def set_file_title_provider(self, provider: Callable[[], str]) -> None:
+        """
+        Fournit un callable qui retourne le titre de fichier courant (depuis RemuxPanel).
+        Appelé par MainWindow après création des panneaux.
+        """
+        self._file_title_provider = provider
+
     def _current_config(self) -> EncodeConfig | None:
         if self._file_info is None:
             return None
@@ -925,6 +934,7 @@ class EncodePanel(QWidget):
             copy_hdr10plus=self._copy_hdr10plus_cb.isChecked(),
             dovi_profile=self._dovi_profile_combo.currentData() or "0",
             work_dir=self._config.work_dir,
+            file_title=self._file_title_provider(),
         )
 
     def _on_add_audio_track(self) -> None:
