@@ -34,12 +34,8 @@ from ui.panels.encode_panel.theme import (
 # =============================================================================
 
 def _has_atmos(track: AudioTrack) -> bool:
-    """Détecte si une piste TrueHD contient une couche Atmos/JOC."""
-    if track.codec.lower() != "truehd":
-        return False
-    profile = track.raw.get("profile", "").lower()
-    title   = (track.title or "").lower()
-    return "atmos" in profile or "atmos" in title or "joc" in profile
+    """True si la piste est TrueHD avec couche Atmos (utilisé pour extract_truehd_core)."""
+    return track.codec.lower() == "truehd" and track.atmos_flag
 
 
 # =============================================================================
@@ -200,7 +196,13 @@ class _AudioSourceDialog(QDialog):
             ch = track.channels_label
             lang = track.language or "—"
             title_part = f"  {track.title}" if track.title else ""
-            text = f"█  #{track.index}  {track.codec.upper()} {ch}  [{lang}]{title_part}"
+            if track.atmos_flag:
+                fmt_tag = "  Atmos"
+            elif track.dtsx_flag:
+                fmt_tag = "  DTS:X"
+            else:
+                fmt_tag = ""
+            text = f"█  #{track.index}  {track.codec.upper()} {ch}{fmt_tag}  [{lang}]{title_part}"
             item = QListWidgetItem(text)
             item.setForeground(QBrush(QColor(color)))
             item.setData(Qt.ItemDataRole.UserRole, (track, color, source_path))
@@ -306,17 +308,18 @@ class _AudioTable(QTableWidget):
     Chaque ligne dispose d'un bouton de suppression, désactivé si c'est la
     dernière entrée pour cette piste source.
 
-    Colonnes : src  |  #  |  Format  |  Lang  |  Encodage  |  Débit  |  Del
+    Colonnes : src  |  #  |  Format  |  Nom  |  Lang  |  Encodage  |  Débit  |  Del
     """
 
     COL_SOURCE  = 0
     COL_IDX     = 1
     COL_FORMAT  = 2
-    COL_LANG    = 3
-    COL_CODEC   = 4
-    COL_BITRATE = 5
-    COL_DEL     = 6
-    HEADERS = ["", "#", "Format", "Lang", "Encodage", "Débit", ""]
+    COL_TITLE   = 3
+    COL_LANG    = 4
+    COL_CODEC   = 5
+    COL_BITRATE = 6
+    COL_DEL     = 7
+    HEADERS = ["", "#", "Format", "Nom", "Lang", "Encodage", "Débit", ""]
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(0, len(self.HEADERS), parent)
@@ -338,13 +341,14 @@ class _AudioTable(QTableWidget):
         hh.setSectionResizeMode(self.COL_SOURCE,  QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(self.COL_IDX,     QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(self.COL_FORMAT,  QHeaderView.ResizeMode.Fixed)
+        hh.setSectionResizeMode(self.COL_TITLE,   QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(self.COL_LANG,    QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(self.COL_CODEC,   QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(self.COL_BITRATE, QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(self.COL_DEL,     QHeaderView.ResizeMode.Fixed)
         self.setColumnWidth(self.COL_SOURCE,  20)
         self.setColumnWidth(self.COL_IDX,     32)
-        self.setColumnWidth(self.COL_FORMAT, 110)
+        self.setColumnWidth(self.COL_FORMAT, 130)
         self.setColumnWidth(self.COL_LANG,    48)
         self.setColumnWidth(self.COL_BITRATE, 80)
         self.setColumnWidth(self.COL_DEL,     36)
@@ -440,8 +444,15 @@ class _AudioTable(QTableWidget):
         src_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setItem(row, self.COL_SOURCE, src_item)
 
+        fmt_parts = [f"{track.codec.upper()} {track.channels_label}"]
+        if track.atmos_flag:
+            fmt_parts.append("Atmos")
+        elif track.dtsx_flag:
+            fmt_parts.append("DTS:X")
+
         self.setItem(row, self.COL_IDX,    _item(str(track.index)))
-        self.setItem(row, self.COL_FORMAT, _item(f"{track.codec.upper()} {track.channels_label}"))
+        self.setItem(row, self.COL_FORMAT, _item("  ".join(fmt_parts)))
+        self.setItem(row, self.COL_TITLE,  _item(track.title or ""))
         self.setItem(row, self.COL_LANG,   _item(track.language or "—"))
 
         # Sélecteur codec

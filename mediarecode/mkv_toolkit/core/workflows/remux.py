@@ -55,6 +55,49 @@ class TrackEntry:
     orig_language: str = field(default="", repr=False)
     orig_title:    str = field(default="", repr=False)
 
+    # Flags MKV éditables (transmis à mkvmerge uniquement si modifiés)
+    flag_enabled:          bool = field(default=True,  repr=False)  # --track-enabled-flag
+    flag_default:          bool = field(default=False, repr=False)  # --default-track-flag
+    flag_forced:           bool = field(default=False, repr=False)  # --forced-track
+    flag_hearing_impaired: bool = field(default=False, repr=False)  # --hearing-impaired-flag
+    flag_visual_impaired:  bool = field(default=False, repr=False)  # --visual-impaired-flag
+    flag_original:         bool = field(default=False, repr=False)  # --original-flag
+    flag_commentary:       bool = field(default=False, repr=False)  # --commentary-flag
+
+    orig_flag_enabled:          bool = field(default=True,  repr=False)
+    orig_flag_default:          bool = field(default=False, repr=False)
+    orig_flag_forced:           bool = field(default=False, repr=False)
+    orig_flag_hearing_impaired: bool = field(default=False, repr=False)
+    orig_flag_visual_impaired:  bool = field(default=False, repr=False)
+    orig_flag_original:         bool = field(default=False, repr=False)
+    orig_flag_commentary:       bool = field(default=False, repr=False)
+
+    @property
+    def flags_label(self) -> str:
+        """Résumé court des flags actifs (pour la colonne Info du tableau)."""
+        parts: list[str] = []
+        if not self.flag_enabled:
+            parts.append("désact.")
+        if self.flag_default:
+            parts.append("défaut")
+        if self.flag_forced:
+            parts.append("forcé")
+        if self.flag_hearing_impaired:
+            parts.append("malent.")
+        if self.flag_visual_impaired:
+            parts.append("malvoy.")
+        if self.flag_original:
+            parts.append("orig.")
+        if self.flag_commentary:
+            parts.append("comm.")
+        return "  ·  ".join(parts)
+
+    @property
+    def full_info_label(self) -> str:
+        """Info technique + flags actifs (affichage colonne Info)."""
+        parts = [p for p in (self.display_info, self.flags_label) if p]
+        return "  ·  ".join(parts)
+
     @property
     def type_label(self) -> str:
         """Lettre courte pour l'affichage dans le tableau."""
@@ -142,6 +185,23 @@ def tracks_from_file_info(info: FileInfo, file_id: str = "") -> list[TrackEntry]
     """
     entries: list[TrackEntry] = []
 
+    def _flags_from_disp(raw: dict) -> dict:
+        disp = raw.get("disposition", {})
+        return dict(
+            flag_default          = bool(disp.get("default",          0)),
+            flag_forced           = bool(disp.get("forced",           0)),
+            flag_hearing_impaired = bool(disp.get("hearing_impaired", 0)),
+            flag_visual_impaired  = bool(disp.get("visual_impaired",  0)),
+            flag_original         = bool(disp.get("original",         0)),
+            flag_commentary       = bool(disp.get("comment",          0)),
+            orig_flag_default          = bool(disp.get("default",          0)),
+            orig_flag_forced           = bool(disp.get("forced",           0)),
+            orig_flag_hearing_impaired = bool(disp.get("hearing_impaired", 0)),
+            orig_flag_visual_impaired  = bool(disp.get("visual_impaired",  0)),
+            orig_flag_original         = bool(disp.get("original",         0)),
+            orig_flag_commentary       = bool(disp.get("comment",          0)),
+        )
+
     for v in info.video_tracks:
         parts: list[str] = [v.resolution]
         if v.hdr_type != HDRType.NONE:
@@ -168,14 +228,17 @@ def tracks_from_file_info(info: FileInfo, file_id: str = "") -> list[TrackEntry]
             orig_language=v.language or "",
             orig_title=v.title or "",
             file_id=file_id,
+            **_flags_from_disp(v.raw),
         ))
 
     for a in info.audio_tracks:
         parts = [a.channels_label]
-        if a.sample_rate:
-            parts.append(f"{a.sample_rate // 1000} kHz")
         if a.bit_rate:
             parts.append(f"{a.bit_rate // 1000} kbps")
+        if a.atmos_flag:
+            parts.append("Atmos")
+        elif a.dtsx_flag:
+            parts.append("DTS:X")
         entries.append(TrackEntry(
             mkv_tid=a.index,
             track_type="audio",
@@ -186,22 +249,28 @@ def tracks_from_file_info(info: FileInfo, file_id: str = "") -> list[TrackEntry]
             orig_language=a.language or "",
             orig_title=a.title or "",
             file_id=file_id,
+            **_flags_from_disp(a.raw),
         ))
 
     for s in info.subtitle_tracks:
-        flags: list[str] = []
-        if s.forced:  flags.append("forcé")
-        if s.default: flags.append("défaut")
+        disp_flags = _flags_from_disp(s.raw)
+        # SubtitleTrack.forced / .default are the authoritative source;
+        # override whatever raw["disposition"] may (or may not) contain.
+        disp_flags["flag_forced"]      = s.forced
+        disp_flags["orig_flag_forced"] = s.forced
+        disp_flags["flag_default"]      = s.default
+        disp_flags["orig_flag_default"] = s.default
         entries.append(TrackEntry(
             mkv_tid=s.index,
             track_type="subtitle",
             codec=s.codec.upper(),
-            display_info=", ".join(flags),
+            display_info="",
             language=s.language or "",
             title=s.title or "",
             orig_language=s.language or "",
             orig_title=s.title or "",
             file_id=file_id,
+            **disp_flags,
         ))
 
     return entries
@@ -319,8 +388,27 @@ class RemuxWorkflow(QObject):
                     continue
                 if t.title != t.orig_title:
                     cmd.extend(["--track-name", f"{t.mkv_tid}:{t.title}"])
-                if t.language != t.orig_language:
-                    cmd.extend(["--language", f"{t.mkv_tid}:{t.language}"])
+                lang     = (t.language      or "").strip()
+                orig_lang = (t.orig_language or "").strip()
+                if lang != orig_lang:
+                    # Langue modifiée ou vidée → émettre --language-ietf
+                    emit_lang = lang if lang else "und"
+                    cmd.extend(["--language-ietf", f"{t.mkv_tid}:{emit_lang}"])
+                # Flags MKV
+                if t.flag_enabled != t.orig_flag_enabled:
+                    cmd.extend(["--track-enabled-flag",  f"{t.mkv_tid}:{'1' if t.flag_enabled else '0'}"])
+                if t.flag_default != t.orig_flag_default:
+                    cmd.extend(["--default-track-flag",  f"{t.mkv_tid}:{'1' if t.flag_default else '0'}"])
+                if t.flag_forced != t.orig_flag_forced:
+                    cmd.extend(["--forced-track",        f"{t.mkv_tid}:{'1' if t.flag_forced else '0'}"])
+                if t.flag_hearing_impaired != t.orig_flag_hearing_impaired:
+                    cmd.extend(["--hearing-impaired-flag", f"{t.mkv_tid}:{'1' if t.flag_hearing_impaired else '0'}"])
+                if t.flag_visual_impaired != t.orig_flag_visual_impaired:
+                    cmd.extend(["--visual-impaired-flag", f"{t.mkv_tid}:{'1' if t.flag_visual_impaired else '0'}"])
+                if t.flag_original != t.orig_flag_original:
+                    cmd.extend(["--original-flag",        f"{t.mkv_tid}:{'1' if t.flag_original else '0'}"])
+                if t.flag_commentary != t.orig_flag_commentary:
+                    cmd.extend(["--commentary-flag",      f"{t.mkv_tid}:{'1' if t.flag_commentary else '0'}"])
 
             cmd.append(str(src.path))
 

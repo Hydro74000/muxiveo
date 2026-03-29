@@ -28,6 +28,8 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Any
 
+from core.lang_tags import Rfc5646LanguageTags
+
 
 # =============================================================================
 # Enum HDR
@@ -119,6 +121,38 @@ class AudioTrack:
             case 2: return "Stereo"
             case 1: return "Mono"
             case _: return str(self.channels) if self.channels else "?"
+
+    @property
+    def atmos_flag(self) -> bool:
+        """True si la piste contient une couche Atmos (TrueHD Atmos ou E-AC-3 JOC)."""
+        profile    = (self.raw.get("profile") or "").lower()
+        title      = (self.title       or "").lower()
+        codec_long = self.codec_long.lower()
+        return (
+            "atmos"  in profile    or
+            "atmos"  in title      or
+            "atmos"  in codec_long or
+            "joc"    in profile    or
+            "joc"    in codec_long
+        )
+
+    @property
+    def dtsx_flag(self) -> bool:
+        """True si la piste est DTS:X (XLL X)."""
+        if self.codec.lower() != "dts":
+            return False
+        profile    = (self.raw.get("profile") or "").lower()
+        title      = (self.title       or "").lower()
+        codec_long = self.codec_long.lower()
+        return (
+            "dts-x"  in profile    or
+            "dts:x"  in profile    or
+            "dtsx"   in profile    or
+            "dts-x"  in title      or
+            "dts:x"  in title      or
+            "xll x"  in codec_long or
+            "dts-x"  in codec_long
+        )
 
 
 @dataclass
@@ -274,12 +308,30 @@ class FileInspector:
         except Exception:
             pass  # mediainfo absent ou fichier non supporté — on continue
 
-        # Comptage des balises MKV globales via mkvmerge --identify (MKV uniquement)
+        # Enrichissement MKV via mkvmerge --identify (tag count + language_ietf)
         if "matroska" in info.format or "webm" in info.format:
             try:
-                info.tag_count = self._get_tag_count(path)
+                tag_count, ietf_langs = self._get_mkvmerge_track_data(path)
+                info.tag_count = tag_count
+                # Remplace les codes ISO 639-2 de ffprobe par les balises IETF
+                # de mkvmerge, qui sont plus précises (ex : "en-US", "fr-FR").
+                for track in (*info.video_tracks, *info.audio_tracks, *info.subtitle_tracks):
+                    lang = ietf_langs.get(track.index)
+                    if lang is not None:
+                        track.language = lang if lang != "und" else None
             except Exception:
                 pass  # mkvmerge absent ou erreur non bloquante
+        else:
+            # Pour les formats non-MKV (MP4, TS…), ffprobe renvoie de l'ISO 639-2.
+            # On convertit en IETF BCP 47 pour garder un format homogène.
+            for track in (*info.video_tracks, *info.audio_tracks, *info.subtitle_tracks):
+                if not track.language:
+                    continue
+                converted = Rfc5646LanguageTags.from_iso639_2(track.language)
+                if converted and converted != "und":
+                    track.language = converted
+                elif converted == "und" or not converted:
+                    track.language = None
 
         # HDR du flux vidéo principal — réutilise le raw déjà parsé (évite 2e appel ffprobe)
         if info.primary_video:
@@ -555,13 +607,16 @@ class FileInspector:
             size_bytes  = _int_or_none(s.get("size")),
         )
 
-    def _get_tag_count(self, path: Path) -> int:
+    def _get_mkvmerge_track_data(
+        self, path: Path
+    ) -> tuple[int, dict[int, str]]:
         """
-        Retourne le nombre de balises MKV globales (<Tags> element) via
-        ``mkvmerge --identify --identification-format json``.
+        Appelle ``mkvmerge --identify --identification-format json`` et retourne :
+          - le nombre de balises MKV globales (int)
+          - un dict {track_id: language_ietf} pour chaque piste
 
-        Retourne 0 si mkvmerge est absent, si le fichier n'a pas de balises,
-        ou si la sortie ne peut pas être parsée.
+        Retourne (0, {}) si mkvmerge est absent ou si la sortie ne peut pas
+        être parsée.
         """
         try:
             result = subprocess.run(
@@ -573,14 +628,21 @@ class FileInspector:
                 capture_output=True, text=True, check=False, timeout=15,
             )
             if result.returncode not in (0, 1):   # 1 = warnings non bloquants
-                return 0
+                return 0, {}
             data = json.loads(result.stdout)
-            return sum(
+            tag_count = sum(
                 entry.get("num_entries", 0)
                 for entry in data.get("global_tags", [])
             )
+            lang_map: dict[int, str] = {}
+            for track in data.get("tracks", []):
+                tid = track.get("id")
+                lang = track.get("properties", {}).get("language_ietf")
+                if tid is not None and lang:
+                    lang_map[tid] = lang
+            return tag_count, lang_map
         except (FileNotFoundError, json.JSONDecodeError, Exception):
-            return 0
+            return 0, {}
 
 
 # =============================================================================

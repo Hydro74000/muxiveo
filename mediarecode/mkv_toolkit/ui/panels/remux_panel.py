@@ -31,9 +31,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont
+from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont, QPainter, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QFileDialog, QFrame,
+    QAbstractItemView, QCheckBox,
+    QFileDialog, QFrame,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QPlainTextEdit, QPushButton, QScrollArea,
     QSizePolicy, QTableWidget, QTableWidgetItem,
@@ -47,6 +49,7 @@ from core.workflows.remux import (
     RemuxConfig, RemuxWorkflow, SourceInput,
     TrackEntry, tracks_from_file_info,
 )
+from ui.panels.track_edit_dialog import TrackEditDialog
 
 
 # Hauteurs fixes pour les éléments de la liste de fichiers
@@ -207,6 +210,30 @@ def _separator() -> QFrame:
     sep.setFixedHeight(1)
     sep.setStyleSheet(f"background: {_C.BORDER}; border: none;")
     return sep
+
+
+def _pencil_icon(color: str = _C.TEXT_SEC, size: int = 14) -> "QIcon":
+    """
+    Icône crayon rendue depuis un SVG inline via QSvgRenderer.
+
+    Utilise le tracé Feather Icons (pencil) — un contour simple, sans remplissage,
+    adapté à un thème sombre.
+    """
+    from PySide6.QtGui import QIcon
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
+        f' fill="none" stroke="{color}" stroke-width="2.2"'
+        ' stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>'
+        '</svg>'
+    )
+    renderer = QSvgRenderer(svg.encode())
+    pix = QPixmap(size, size)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pix)
 
 
 # =============================================================================
@@ -528,6 +555,7 @@ class _FileListWidget(QFrame):
             event.ignore()
 
 
+
 # =============================================================================
 # Tableau de pistes multi-sources (_TrackTable)
 # =============================================================================
@@ -559,8 +587,9 @@ class _TrackTable(QTableWidget):
     COL_LANG   = 4
     COL_INFO   = 5
     COL_TITLE  = 6
+    COL_EDIT   = 7
 
-    _HEADERS = ["", "", "Type", "Codec", "Langue", "Info", "Titre"]
+    _HEADERS = ["", "", "Type", "Codec", "Langue", "Info", "Titre", ""]
 
     _FLAG_RO = (
         Qt.ItemFlag.ItemIsEnabled
@@ -603,10 +632,12 @@ class _TrackTable(QTableWidget):
         hh.setSectionResizeMode(self.COL_LANG,   QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(self.COL_INFO,   QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(self.COL_TITLE,  QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(self.COL_EDIT,   QHeaderView.ResizeMode.Fixed)
         self.setColumnWidth(self.COL_SOURCE, 20)
         self.setColumnWidth(self.COL_CHECK,  32)
         self.setColumnWidth(self.COL_TYPE,   48)
         self.setColumnWidth(self.COL_LANG,   70)
+        self.setColumnWidth(self.COL_EDIT,   30)
 
         mono = QFont("JetBrains Mono", 10)
         mono.setStyleHint(QFont.StyleHint.Monospace)
@@ -768,8 +799,8 @@ class _TrackTable(QTableWidget):
         lang_item.setFlags(self._FLAG_RW)
         self.setItem(row, self.COL_LANG, lang_item)
 
-        # Col 5 — infos techniques
-        info_item = QTableWidgetItem(entry.display_info)
+        # Col 5 — infos techniques + flags actifs
+        info_item = QTableWidgetItem(entry.full_info_label)
         info_item.setFlags(self._FLAG_RO)
         info_item.setForeground(QColor(_C.TEXT_SEC))
         self.setItem(row, self.COL_INFO, info_item)
@@ -778,6 +809,32 @@ class _TrackTable(QTableWidget):
         title_item = QTableWidgetItem(entry.title)
         title_item.setFlags(self._FLAG_RW)
         self.setItem(row, self.COL_TITLE, title_item)
+
+        # Col 7 — bouton édition (icône crayon SVG)
+        edit_btn = QPushButton()
+        from PySide6.QtCore import QSize
+        edit_btn.setIcon(_pencil_icon(_C.TEXT_SEC, 13))
+        edit_btn.setIconSize(QSize(13, 13))
+        edit_btn.setFixedSize(22, 22)
+        edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        edit_btn.setToolTip("Éditer les métadonnées de cette piste")
+        edit_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                border: 1px solid {_C.BORDER};
+                border-radius: 4px;
+                padding: 0;
+            }}
+            QPushButton:hover {{
+                border-color: {_C.ACCENT};
+                background: {_C.ACCENT_DIM};
+            }}
+            QPushButton:pressed {{
+                background: {_C.BG_ACTIVE};
+            }}
+        """)
+        edit_btn.clicked.connect(lambda _=None, e=entry: self._open_edit_dialog(e))
+        self.setCellWidget(row, self.COL_EDIT, edit_btn)
 
     # ------------------------------------------------------------------
     # Lecture de l'état courant
@@ -810,6 +867,30 @@ class _TrackTable(QTableWidget):
 
             tracks.append(entry)
         return tracks
+
+    def _open_edit_dialog(self, entry: "TrackEntry") -> None:
+        """Ouvre le dialogue d'édition pour la piste donnée et synchronise le tableau."""
+        dlg = TrackEditDialog(entry, parent=self)
+        if dlg.exec() == TrackEditDialog.DialogCode.Accepted:
+            row = self._find_row_for_entry(entry)
+            if row is not None:
+                lang_item = self.item(row, self.COL_LANG)
+                if lang_item:
+                    lang_item.setText(entry.language)
+                title_item = self.item(row, self.COL_TITLE)
+                if title_item:
+                    title_item.setText(entry.title)
+                info_item = self.item(row, self.COL_INFO)
+                if info_item:
+                    info_item.setText(entry.full_info_label)
+
+    def _find_row_for_entry(self, entry: "TrackEntry") -> int | None:
+        """Retourne l'index de ligne dont le COL_CHECK stocke l'entrée donnée."""
+        for row in range(self.rowCount()):
+            item = self.item(row, self.COL_CHECK)
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) is entry:
+                return row
+        return None
 
     def set_all_enabled(self, enabled: bool) -> None:
         """Active ou désactive toutes les pistes d'un coup."""
