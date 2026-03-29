@@ -30,20 +30,21 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace as dc_replace
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox,
     QFileDialog, QFrame,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QPlainTextEdit, QPushButton, QScrollArea,
+    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
     QSizePolicy, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
 from core.config import AppConfig
 from core.inspector import AttachmentInfo, AudioTrack, FileInfo, FileInspector, InspectionError
+from core.lang_tags import Rfc5646LanguageTags
 from core.runner import TaskSignals
 from core.workflows.remux import (
     RemuxConfig, RemuxWorkflow, SourceInput,
@@ -600,8 +601,10 @@ class _TrackTable(QTableWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(0, len(self._HEADERS), parent)
         self._filter_selected = False
+        self._prev_lang: dict[int, str] = {}
         self._setup_ui()
         self._adjust_height()
+        self.itemChanged.connect(self._on_item_changed)
 
     def _setup_ui(self) -> None:
         self.setHorizontalHeaderLabels(self._HEADERS)
@@ -744,12 +747,22 @@ class _TrackTable(QTableWidget):
                     self.removeRow(row)
             row -= 1
         self.blockSignals(False)
+        self._rebuild_prev_lang()
         self._adjust_height()
 
     def clear_all(self) -> None:
         """Vide complètement le tableau."""
         self.setRowCount(0)
+        self._prev_lang.clear()
         self._adjust_height()
+
+    def _rebuild_prev_lang(self) -> None:
+        """Reconstruit _prev_lang depuis les valeurs actuelles du tableau (après un décalage de lignes)."""
+        self._prev_lang.clear()
+        for row in range(self.rowCount()):
+            lang_item = self.item(row, self.COL_LANG)
+            if lang_item is not None:
+                self._prev_lang[row] = lang_item.text()
 
     def _fill_row(self, row: int, entry: TrackEntry, source_color: str) -> None:
         """Remplit une ligne depuis un TrackEntry."""
@@ -796,6 +809,7 @@ class _TrackTable(QTableWidget):
         # Col 4 — langue (éditable)
         lang_item = QTableWidgetItem(entry.language)
         lang_item.setFlags(self._FLAG_RW)
+        self._prev_lang[row] = entry.language
         self.setItem(row, self.COL_LANG, lang_item)
 
         # Col 5 — infos techniques + flags actifs
@@ -898,6 +912,7 @@ class _TrackTable(QTableWidget):
                     lang_item = self.item(row, self.COL_LANG)
                     if lang_item:
                         lang_item.setText(lang)
+                        self._prev_lang[row] = lang
                     title_item = self.item(row, self.COL_TITLE)
                     if title_item:
                         title_item.setText(title)
@@ -906,6 +921,18 @@ class _TrackTable(QTableWidget):
                     break
         finally:
             self.blockSignals(False)
+
+    def _on_item_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() != self.COL_LANG:
+            return
+        if not Rfc5646LanguageTags.validate_item(item, self._prev_lang):
+            prev = self._prev_lang.get(item.row(), "")
+            self.blockSignals(True)
+            item.setText(prev)
+            self.blockSignals(False)
+            QTimer.singleShot(0, lambda: QMessageBox.warning(
+                self, "Erreur", "Erreur : code langue non reconnu"
+            ))
 
     def _find_row_for_entry(self, entry: "TrackEntry") -> int | None:
         """Retourne l'index de ligne dont le COL_CHECK stocke l'entrée donnée."""

@@ -340,3 +340,18 @@ class Rfc5646LanguageTags:
         if not tag or tag == 'und':
             return True
         return bool(cls._RE.match(tag))
+
+    @classmethod
+    def validate_item(cls, item, prev_lang: dict) -> bool:
+        """
+        Valide le tag de langue d'un QTableWidgetItem.
+
+        - Si valide : met à jour prev_lang[row] et retourne True.
+        - Si invalide : retourne False sans modifier item ni prev_lang.
+        """
+        row = item.row()
+        tag = item.text().strip()
+        if not tag or cls.is_known(tag):
+            prev_lang[row] = tag
+            return True
+        return False
