@@ -1630,6 +1630,65 @@ class TestEncodeFileTitleCommand:
         pass1 = cmds[0]
         assert "-metadata" not in pass1
 
+    # ── reconstitution finale (_run_with_metadata_inject) ────────────────────
+
+    def _run_inject(self, tmp_path: Path, file_title: str) -> list[str]:
+        """Lance _run_with_metadata_inject et retourne la commande de reconstitution."""
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 200_000)
+        config = _make_config(
+            source=src,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="libx265"),
+            copy_dv=True,
+            work_dir=tmp_path / "work",
+            file_title=file_title,
+        )
+        wf = _make_workflow(enabled=False)
+        cmds_run: list[list[str]] = []
+
+        def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
+            cmds_run.append(list(cmd))
+            for arg in reversed(cmd):
+                s = str(arg)
+                if any(s.endswith(ext) for ext in (".hevc", ".mkv", ".bin", ".json")):
+                    p = Path(s)
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(b"\x00" * 100_000)
+                    break
+            return ""
+
+        with patch.object(EncodeWorkflow, "_shm_path",
+                          side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
+            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+                sigs = wf._run_with_metadata_inject(config)
+                _collect_signals(sigs)
+
+        recon = [c for c in cmds_run if c[0] == "ffmpeg" and "output.mkv" in " ".join(c)]
+        assert len(recon) == 1, f"Commande de reconstitution introuvable. Cmds: {cmds_run}"
+        return recon[0]
+
+    def test_inject_path_title_present(self, tmp_path):
+        """-metadata title=... présent dans la reconstitution finale (DV/HDR10+)."""
+        recon = self._run_inject(tmp_path, "Mon Film DV")
+        assert "-metadata" in recon
+        idx = recon.index("-metadata")
+        assert recon[idx + 1] == "title=Mon Film DV"
+
+    def test_inject_path_title_empty(self, tmp_path):
+        """-metadata title= (vide) présent si file_title='' dans le chemin DV/HDR10+."""
+        recon = self._run_inject(tmp_path, "")
+        assert "-metadata" in recon
+        idx = recon.index("-metadata")
+        assert recon[idx + 1] == "title="
+
+    def test_inject_path_title_before_output(self, tmp_path):
+        """-metadata title= précède le chemin de sortie dans la reconstitution finale."""
+        recon = self._run_inject(tmp_path, "Film DV")
+        meta_idx = recon.index("-metadata")
+        # output.mkv est le dernier argument de la commande de reconstitution
+        assert meta_idx < len(recon) - 1
+
 
 # ===========================================================================
 # extra_attachments — pièces jointes manuelles dans les commandes FFmpeg
