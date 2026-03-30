@@ -7,9 +7,8 @@ Interface graphique pour le traitement avancé de fichiers vidéo MKV et MP4 —
 ## 📋 Table des matières
 
 - [À quoi ça sert ?](#-à-quoi-ça-sert-)
-- [Prérequis](#-prérequis)
-- [Lancement](#-lancement)
-- [Interface générale](#-interface-générale)
+- [Installation](#️⃣-installation)
+- [Interface générale](#️⃣-interface-générale)
 - [Fonctionnalité 1 — Conteneur & Encodage](#-fonctionnalité-1--conteneur--encodage)
 - [Fonctionnalité 2 — Fusion Dolby Vision / HDR10+](#-fonctionnalité-2--fusion-dolby-vision--hdr10)
 - [Paramètres et configuration](#️-paramètres-et-configuration)
@@ -47,49 +46,99 @@ Ce logiciel s'adresse aux personnes qui travaillent avec des fichiers vidéo hau
 
 ---
 
-## 📦 Prérequis
+## 🛠️ Installation
 
-### Dépendances Python
+### Prérequis système
 
-- Python 3.10+
-- PySide6
+- **Python 3.10+**
+- **Git** (pour cloner le dépôt)
+
+### Étape 1 — Cloner le dépôt
 
 ```bash
-pip install PySide6
+git clone <url-du-dépôt>
+cd mediarecode
 ```
 
-### Outils externes requis
+### Étape 2 — Lancer le script de setup
 
-Ces programmes doivent être installés et accessibles dans le `PATH` :
+Le script `setup.py` installe automatiquement les dépendances Python et tous les outils externes selon la plateforme détectée.
+
+#### Linux — Debian / Ubuntu
+
+```bash
+python3 setup.py
+```
+
+- Installe via `apt` : `ffmpeg`, `mkvtoolnix`, `mediainfo`
+- Télécharge depuis GitHub : `dovi_tool`, `hdr10plus_tool`
+
+#### Linux — Fedora / RHEL
+
+```bash
+python3 setup.py
+```
+
+- Active RPM Fusion Free automatiquement si nécessaire
+- Installe via `dnf` : `ffmpeg`, `mkvtoolnix`, `mediainfo`
+- Télécharge depuis GitHub : `dovi_tool`, `hdr10plus_tool`
+
+#### macOS
+
+```bash
+python3 setup.py
+```
+
+- Installe via [Homebrew](https://brew.sh) : `ffmpeg`, `mkvtoolnix`, `mediainfo`
+- Télécharge depuis GitHub : `dovi_tool`, `hdr10plus_tool` (binaire universel arm64 / x86_64)
+
+> Homebrew doit être installé au préalable : https://brew.sh
+
+#### Windows
+
+```bash
+python setup.py
+```
+
+- Installe via `winget` (Windows 10 1809+ / Windows 11) : `ffmpeg`, `mkvtoolnix`, `mediainfo`
+- Télécharge depuis GitHub : `dovi_tool`, `hdr10plus_tool`
+- Les binaires GitHub sont placés dans `%LOCALAPPDATA%\mkv-toolkit\bin`
+
+> Ajouter ce dossier au `PATH` : Paramètres → Système → Informations → Paramètres système avancés → Variables d'environnement
+
+### Options du script
+
+| Option | Effet |
+|--------|-------|
+| `--dry-run` | Affiche ce qui serait fait, sans rien exécuter |
+| `--no-github` | Ignore le téléchargement de `dovi_tool` / `hdr10plus_tool` |
+| `--prefix PATH` | Dossier d'installation pour les binaires GitHub (défaut : `/usr/local` sur Linux/macOS) |
+
+### Outil optionnel (Windows uniquement)
+
+`eac3to` — conversion audio avancée. Non installable automatiquement.
+Télécharger manuellement : https://forum.doom9.org/showthread.php?t=125966
+
+### Outils externes — récapitulatif
 
 | Outil | Rôle | Requis pour |
 |-------|------|-------------|
 | `ffmpeg` | Encodage vidéo/audio, copie de flux, reconstruction finale | Conteneur & Encodage |
 | `ffprobe` | Analyse des fichiers vidéo | Toutes les fonctions |
-| `mkvmerge` | Remuxage pur (copie intégrale) et remuxage final HDR | Copie pure, Fusion HDR |
+| `mkvmerge` | Remuxage pur et remuxage final HDR | Copie pure, Fusion HDR |
 | `mkvextract` | Extraction de pistes | Fusion HDR |
-| `mkvinfo` | Informations MKV | Analyse |
 | `mkvpropedit` | Modification des métadonnées post-encodage | Conteneur & Encodage |
+| `mkvinfo` | Informations MKV | Analyse |
 | `mediainfo` | Métadonnées et comptage d'images | Fusion HDR, Analyse |
 | `dovi_tool` | Extraction / injection RPU Dolby Vision | Fusion HDR (DoVi) |
 | `hdr10plus_tool` | Extraction / injection HDR10+ | Fusion HDR (HDR10+) |
 
-> Les chemins vers ces outils sont configurables dans les paramètres si ils ne sont pas dans le PATH système.
+> Les chemins vers ces outils sont configurables dans les **Paramètres** si ils ne sont pas dans le `PATH` système.
 
----
-
-## 🚀 Lancement
+### Étape 3 — Lancer l'application
 
 ```bash
-cd mediarecode
-python mkv_toolkit/main.py
-```
-
-Ou utiliser le script d'installation automatique :
-
-```bash
-python3 setup.py          # installe tout (Linux Debian/Fedora)
-python3 setup.py --dry-run  # aperçu sans rien modifier
+python3 mkv_toolkit/main.py
 ```
 
 ---
