@@ -1084,6 +1084,7 @@ class EncodeWorkflow(QObject):
                 if config.keep_chapters:
                     recon_cmd.extend(["-map_chapters", "1"])   # chapitres depuis source
 
+                recon_cmd.extend(["-metadata", f"title={config.file_title}"])
                 recon_cmd.append(str(config.output))
                 _run(recon_cmd)
 
