@@ -1,5 +1,5 @@
 """
-ui/main_window.py — Fenêtre principale de MKV/MP4 Toolkit.
+ui/main_window.py — Fenêtre principale de Mediarecode.
 
 Architecture :
     ┌────────────────────────────────────────────────────────────┐
@@ -385,7 +385,7 @@ class DashboardPage(QWidget):
         root.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         # Titre
-        title = QLabel("MKV / MP4 Toolkit")
+        title = QLabel("Mediarecode")
         title.setStyleSheet(f"""
             font-size: 26px;
             font-weight: 800;
@@ -793,7 +793,7 @@ class _Sidebar(QWidget):
 
         logo_icon = QLabel("▣")
         logo_icon.setStyleSheet(f"color: {_Colors.ACCENT}; font-size: 18px; background: transparent; border: none;")
-        logo_text = QLabel("MKV Toolkit")
+        logo_text = QLabel("Mediarecode")
         logo_text.setStyleSheet(f"""
             color: {_Colors.TEXT_PRI};
             font-size: 13px;
@@ -891,7 +891,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _setup_window(self) -> None:
-        self.setWindowTitle("MKV / MP4 Toolkit")
+        self.setWindowTitle("Mediarecode")
         self.setMinimumSize(1024, 680)
         self.resize(1280, 800)
 
@@ -1471,7 +1471,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _post_init_log(self) -> None:
-        self._log_panel.info("MKV / MP4 Toolkit démarré.")
+        self._log_panel.info("Mediarecode démarré.")
         availability = self._config.all_tools_available()
         missing = [n for n, ok in availability.items() if not ok]
         if missing:

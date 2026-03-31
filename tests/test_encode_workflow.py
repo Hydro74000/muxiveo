@@ -96,7 +96,7 @@ Plan de couverture :
         - save/load round-trip, delete, names(), overwrite
 
 Exécution :
-    cd mkv_toolkit && pytest tests/test_encode_workflow.py -v
+    cd mediarecode && pytest tests/test_encode_workflow.py -v
 """
 
 from __future__ import annotations
@@ -514,27 +514,34 @@ class TestAppConfigRamBuffer:
         assert cfg.ram_buffer_enabled is True
         assert cfg.ram_buffer_threshold_pct == 15
 
-    def test_env_var_disables_ram_buffer(self, tmp_path):
-        """RAM_BUFFER_ENABLED=false désactive le buffer."""
+    def test_ini_disables_ram_buffer(self, tmp_path):
+        """config.ini ram_buffer_enabled=false désactive le buffer."""
+        import configparser
+        import core.config as cfg_mod
         from core.config import AppConfig
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[encoding]\nram_buffer_enabled = false\n")
         with patch("core.config.QSettings") as mock_qs:
             inst = MagicMock()
             inst.value.side_effect = lambda key, default=None: default
             mock_qs.return_value = inst
             with patch("core.config._app_data_dir", return_value=tmp_path), \
-                 patch.dict(os.environ, {"RAM_BUFFER_ENABLED": "false"}):
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
                 cfg = AppConfig()
         assert cfg.ram_buffer_enabled is False
 
-    def test_env_var_sets_threshold(self, tmp_path):
-        """RAM_BUFFER_THRESHOLD_PCT=25 fixe le seuil à 25."""
+    def test_ini_sets_threshold(self, tmp_path):
+        """config.ini ram_buffer_threshold_pct=25 fixe le seuil à 25."""
+        import core.config as cfg_mod
         from core.config import AppConfig
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[encoding]\nram_buffer_threshold_pct = 25\n")
         with patch("core.config.QSettings") as mock_qs:
             inst = MagicMock()
             inst.value.side_effect = lambda key, default=None: default
             mock_qs.return_value = inst
             with patch("core.config._app_data_dir", return_value=tmp_path), \
-                 patch.dict(os.environ, {"RAM_BUFFER_THRESHOLD_PCT": "25"}):
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
                 cfg = AppConfig()
         assert cfg.ram_buffer_threshold_pct == 25
 

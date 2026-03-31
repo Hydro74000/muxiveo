@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-MKV/MP4 Toolkit — Setup & Dependency Installer
-===============================================
+Mediarecode — Setup & Dependency Installer
+==========================================
 
 Installs Python dependencies and external tools required by the application.
 
@@ -17,7 +17,7 @@ Options:
     --no-github     Skip downloading dovi_tool / hdr10plus_tool from GitHub
     --prefix PATH   Installation prefix for GitHub binaries
                     Default: /usr/local on Linux/macOS,
-                             %LOCALAPPDATA%\\mkv-toolkit on Windows
+                             <mediarecode folder>\\tools on Windows
     --dry-run       Print what would be done without executing anything
 """
 
@@ -267,9 +267,9 @@ def _arch_key() -> str:
 def _default_prefix() -> Path:
     """Return a sensible default install prefix for the current OS."""
     if OS == "Windows":
-        local_app = os.environ.get("LOCALAPPDATA")
-        base = Path(local_app) if local_app else Path.home() / "AppData" / "Local"
-        return base / "mkv-toolkit"
+        # On Windows: GitHub binaries go to the 'tools' subfolder of the
+        # mediarecode package directory (next to this setup.py file).
+        return Path(__file__).parent / "tools"
     return Path("/usr/local")
 
 # ---------------------------------------------------------------------------
@@ -478,7 +478,7 @@ def install_winget(dry_run: bool) -> None:
 def _github_latest_release(repo: str) -> dict:
     """Fetch latest release metadata from GitHub API."""
     url = f"https://api.github.com/repos/{repo}/releases/latest"
-    req = urllib.request.Request(url, headers={"User-Agent": "mkv-toolkit-setup/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "mediarecode-setup/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read().decode())
@@ -488,7 +488,7 @@ def _github_latest_release(repo: str) -> dict:
 def _download_file(url: str, dest: Path) -> None:
     """Download url → dest with a simple progress indicator."""
     info(f"Downloading {url}")
-    req = urllib.request.Request(url, headers={"User-Agent": "mkv-toolkit-setup/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "mediarecode-setup/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=120) as resp, open(dest, "wb") as out:
             total = int(resp.headers.get("Content-Length", 0))
@@ -546,7 +546,13 @@ def install_github_tools(prefix: Path, dry_run: bool) -> None:
     title("Step 3 — GitHub binary tools (dovi_tool, hdr10plus_tool)")
 
     arch = _arch_key()
-    bin_dir = prefix / "bin"
+
+    # On Windows: binaries go directly into prefix (mediarecode/tools/).
+    # On Linux/macOS: binaries go into prefix/bin/ (/usr/local/bin/).
+    if OS == "Windows":
+        bin_dir = prefix
+    else:
+        bin_dir = prefix / "bin"
 
     # On Windows we install to a user-writable directory (no sudo needed).
     use_sudo = OS != "Windows"
@@ -709,7 +715,7 @@ def main() -> None:
 
     print(_c("1;34", """
 ╔══════════════════════════════════════════╗
-║       MKV/MP4 Toolkit — Setup            ║
+║          Mediarecode — Setup             ║
 ╚══════════════════════════════════════════╝
 """))
 
@@ -811,7 +817,7 @@ def main() -> None:
     # ── Done ──────────────────────────────────────────────────────────────
     title("Setup complete")
     ok("Run the application with:")
-    print(_c("1;37", "\n    python3 mkv_toolkit/main.py\n"))
+    print(_c("1;37", "\n    python3 main.py\n"))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-main.py — Point d'entrée de l'application MKV/MP4 Toolkit.
+main.py — Point d'entrée de l'application Mediarecode.
 
 Lance la MainWindow PySide6 après initialisation de la configuration.
 """
@@ -26,9 +26,9 @@ def main() -> int:
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps)
 
     app = QApplication(sys.argv)
-    app.setApplicationName("MKV/MP4 Toolkit")
+    app.setApplicationName("Mediarecode")
     app.setApplicationVersion("0.1.0")
-    app.setOrganizationName("mkv_toolkit")
+    app.setOrganizationName("mediarecode")
 
     # Police par défaut propre
     default_font = QFont("Segoe UI", 10) if sys.platform == "win32" else QFont("SF Pro Text", 10)
