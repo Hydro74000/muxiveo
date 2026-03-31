@@ -32,6 +32,34 @@ from core.lang_tags import Rfc5646LanguageTags
 
 
 # =============================================================================
+# Tags MKV standard (spec Matroska officielle)
+# =============================================================================
+
+#: Noms de balises MKV reconnus par la spec officielle Matroska.
+#: Sert à distinguer les tags standard des tags propriétaires (préfixe _, etc.)
+#: lors de l'affichage et de l'édition dans l'UI.
+STANDARD_MKV_TAGS: frozenset[str] = frozenset({
+    "TITLE", "SUBTITLE", "URL", "SYNOPSIS", "DESCRIPTION",
+    "KEYWORDS", "SUMMARY", "COMMENT", "COLLECTION",
+    "SEASON", "EPISODE", "PART_NUMBER",
+    "DATE_RECORDED", "DATE_TAGGED", "DATE_RELEASED",
+    "DATE_ENCODED", "DATE_WRITTEN", "DATE_PURCHASED",
+    "ENCODER", "ENCODER_SETTINGS", "ORIGINAL",
+    "DIRECTOR", "CAST", "GENRE", "MOOD",
+    "RATING", "COUNTRY", "LANGUAGE",
+    "LAW_RATING", "ICRA",
+    "TOTAL_PARTS", "PART_OFFSET",
+    "SORT_WITH", "INSTRUMENTS",
+    "EMAIL", "PHONE", "FAX", "ADDRESS",
+    "MEASURE", "TUNING",
+    "REPLAY_GAIN_GAIN", "REPLAY_GAIN_PEAK",
+    "POPULARITY_METER", "PLAY_COUNTER", "RATING",
+    "SOURCE", "SOURCE_ID", "BPS", "DURATION",
+    "NUMBER_OF_FRAMES", "NUMBER_OF_BYTES",
+})
+
+
+# =============================================================================
 # Enum HDR
 # =============================================================================
 
@@ -212,10 +240,14 @@ class FileInfo:
     attachments:     list[AttachmentInfo] = field(default_factory=list)
     chapters:        ChapterInfo | None  = None
 
-    frame_count: int | None = None   # via mediainfo
-    tag_count:   int        = 0      # nombre de balises MKV globales (via mkvmerge --identify)
-    hdr_type:    HDRType    = HDRType.NONE  # du flux vidéo principal
-    title:       str        = ""     # titre de segment (balise Title du conteneur)
+    frame_count:  int | None        = None   # via mediainfo
+    tag_count:    int               = 0      # nombre de balises MKV globales (via mkvmerge --identify)
+    hdr_type:     HDRType           = HDRType.NONE  # du flux vidéo principal
+    title:        str               = ""     # titre de segment (balise Title du conteneur)
+    #: Balises MKV globales du conteneur (clés en MAJUSCULES, hors TITLE).
+    #: Inclut les tags standard et propriétaires (ex. _PROGRAM_LABEL).
+    #: Peuplé depuis ffprobe format.tags lors de l'inspection.
+    global_tags:  dict[str, str]    = field(default_factory=dict)
 
     @property
     def primary_video(self) -> VideoTrack | None:
@@ -493,13 +525,22 @@ class FileInspector:
         """Convertit la sortie brute ffprobe en FileInfo structuré."""
         fmt = raw.get("format", {})
 
+        raw_tags = fmt.get("tags", {})
+        # Normalise les clés en MAJUSCULES et exclut TITLE (déjà dans .title)
+        global_tags: dict[str, str] = {
+            k.upper(): str(v)
+            for k, v in raw_tags.items()
+            if k.upper() != "TITLE" and str(v).strip()
+        }
+
         info = FileInfo(
-            path       = path,
-            format     = fmt.get("format_name", "?"),
-            duration_s = _float_or_none(fmt.get("duration")),
-            size_bytes = _int_or_none(fmt.get("size")),
-            bit_rate   = _int_or_none(fmt.get("bit_rate")),
-            title      = fmt.get("tags", {}).get("title", ""),
+            path        = path,
+            format      = fmt.get("format_name", "?"),
+            duration_s  = _float_or_none(fmt.get("duration")),
+            size_bytes  = _int_or_none(fmt.get("size")),
+            bit_rate    = _int_or_none(fmt.get("bit_rate")),
+            title       = raw_tags.get("title", "") or raw_tags.get("TITLE", ""),
+            global_tags = global_tags,
         )
 
         att_local_idx = 0

@@ -30,7 +30,7 @@ from core.workflows.encode import (
     AUDIO_CODECS, HARDWARE_VIDEO_CODECS, SOFTWARE_VIDEO_CODECS,
     TONEMAP_ALGORITHMS, AudioTrackSettings, EncodeConfig,
     EncodePreset, EncodeWorkflow, HardwareEncoderDetector,
-    ProfileManager, QualityMode, VideoEncodeSettings, presets_for_codec,
+    ProfileManager, QualityMode, TrackMetaEdit, VideoEncodeSettings, presets_for_codec,
 )
 from ui.panels.encode_panel.theme import (
     _C, _card, _checkbox_style, _combo_style,
@@ -76,6 +76,8 @@ class EncodePanel(QWidget):
         self._file_title_provider: Callable[[], str] = lambda: ""
         # Callable fourni par MainWindow pour récupérer les pièces jointes manuelles depuis RemuxPanel.
         self._extra_attachments_provider: Callable[[], list] = lambda: []
+        # Callable fourni par MainWindow pour récupérer les tag_overrides depuis RemuxPanel.
+        self._tag_overrides_provider: Callable[[], "dict | None"] = lambda: None
 
         self._workflow.log_message.connect(self.log_message, Qt.ConnectionType.QueuedConnection)
         self._hw_detected.connect(self._on_hw_detected, Qt.ConnectionType.QueuedConnection)
@@ -218,6 +220,27 @@ class EncodePanel(QWidget):
         self._video_list.setVisible(False)
         self._video_placeholder.setVisible(True)
 
+        # --- Langue de la piste vidéo de sortie ---
+        lang_row = QHBoxLayout()
+        lang_row.setContentsMargins(12, 8, 12, 8)
+        lang_row.setSpacing(8)
+        lang_lbl = QLabel("Langue")
+        lang_lbl.setStyleSheet(
+            f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;min-width:52px;"
+        )
+        self._video_lang_edit = QLineEdit()
+        self._video_lang_edit.setPlaceholderText("ex : fr, en, und…")
+        self._video_lang_edit.setFixedWidth(110)
+        self._video_lang_edit.setStyleSheet(_input_style())
+        self._video_lang_edit.setToolTip(
+            "Balise langue RFC 5646 appliquée à la piste vidéo du fichier encodé"
+        )
+        self._video_lang_edit.textChanged.connect(lambda _: self._rebuild_preview())
+        lang_row.addWidget(lang_lbl)
+        lang_row.addWidget(self._video_lang_edit)
+        lang_row.addStretch()
+        cl.addLayout(lang_row)
+
         return card
 
     # ------------------------------------------------------------------
@@ -236,6 +259,9 @@ class EncodePanel(QWidget):
             self._file_info = None
             self.ready_changed.emit(False)
             self._video_list.blockSignals(False)
+            self._video_lang_edit.blockSignals(True)
+            self._video_lang_edit.clear()
+            self._video_lang_edit.blockSignals(False)
             self._rebuild_preview()
             return
 
@@ -266,7 +292,10 @@ class EncodePanel(QWidget):
     def _on_video_row_changed(self, row: int) -> None:
         if row < 0 or row >= len(self._video_tracks):
             return
-        file_info, _track, _color = self._video_tracks[row]
+        file_info, track, _color = self._video_tracks[row]
+        self._video_lang_edit.blockSignals(True)
+        self._video_lang_edit.setText(track.language or "")
+        self._video_lang_edit.blockSignals(False)
         self._apply_file_info(file_info)
 
     def _apply_file_info(self, info: FileInfo) -> None:
@@ -926,12 +955,21 @@ class EncodePanel(QWidget):
         """
         self._extra_attachments_provider = provider
 
+    def set_tag_overrides_provider(self, provider: "Callable[[], dict | None]") -> None:
+        """
+        Fournit un callable qui retourne les balises MKV éditées (depuis RemuxPanel).
+        Appelé par MainWindow après création des panneaux.
+        """
+        self._tag_overrides_provider = provider
+
     def _current_config(self) -> EncodeConfig | None:
         if self._file_info is None:
             return None
         output = self._output_provider()
         if output is None:
             return None
+        video_lang = self._video_lang_edit.text().strip()
+        track_meta_edits = [TrackMetaEdit(track_order=1, language=video_lang)] if video_lang else []
         return EncodeConfig(
             source=self._file_info.path,
             output=output,
@@ -945,6 +983,8 @@ class EncodePanel(QWidget):
             work_dir=self._config.work_dir,
             file_title=self._file_title_provider(),
             extra_attachments=self._extra_attachments_provider(),
+            track_meta_edits=track_meta_edits,
+            tag_overrides=self._tag_overrides_provider(),
         )
 
     def _on_add_audio_track(self) -> None:

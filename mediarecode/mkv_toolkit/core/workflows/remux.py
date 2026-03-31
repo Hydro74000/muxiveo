@@ -20,9 +20,11 @@ Conventions :
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
+from xml.sax.saxutils import escape as _xml_escape
 
 from PySide6.QtCore import QObject, Signal
 from core.lang_tags import Rfc5646LanguageTags as LangTags
@@ -165,6 +167,11 @@ class RemuxConfig:
     extra_attachments:   list          = field(default_factory=list)  # list[Path]
     work_dir:            Path | None   = None
     file_title:          str           = ""      # balise Title du segment de sortie
+    #: Balises MKV globales à écrire dans le fichier de sortie via mkvpropedit.
+    #: None  → comportement par défaut (mkvmerge copie les balises des sources).
+    #: dict  → supprime les balises des sources (--no-global-tags) et écrit ce dict.
+    #: {}    → supprime toutes les balises (--no-global-tags, rien n'est écrit).
+    tag_overrides:       dict[str, str] | None = None
 
 
 # =============================================================================
@@ -384,6 +391,13 @@ class RemuxWorkflow(QObject):
             if not config.keep_chapters:
                 cmd.append("--no-chapters")
 
+            # --- Balises globales ---
+            # Si tag_overrides est défini : on supprime les balises de cette source
+            # (elles seront remplacées via mkvpropedit après le remuxage).
+            # Si copy_tags=False et pas d'overrides : suppression explicite.
+            if config.tag_overrides is not None or not src.copy_tags:
+                cmd.append("--no-global-tags")
+
             # --- Attachements (sélection per-source) ---
             # attachment_count > 0 = la source possède des attachements
             if src.attachment_count > 0:
@@ -487,6 +501,54 @@ class RemuxWorkflow(QObject):
     # Exécution
     # ------------------------------------------------------------------
 
+    def _apply_tags_inplace(self, output: Path, tags: dict[str, str]) -> None:
+        """
+        Écrit les balises MKV globales depuis un dict via mkvpropedit (in-place).
+
+        Construit un fichier XML Matroska Tags temporaire et l'applique avec
+        ``mkvpropedit --tags all:<xmlfile>``. Supprime le fichier temp après usage.
+        """
+        if not tags:
+            return
+
+        simples = "\n".join(
+            f"    <Simple><Name>{_xml_escape(k)}</Name>"
+            f"<String>{_xml_escape(v)}</String></Simple>"
+            for k, v in tags.items()
+            if v.strip()
+        )
+        xml_content = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<Tags>\n"
+            "  <Tag>\n"
+            "    <Targets />\n"
+            f"{simples}\n"
+            "  </Tag>\n"
+            "</Tags>\n"
+        )
+
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".xml", delete=False, encoding="utf-8"
+            ) as f:
+                f.write(xml_content)
+                tmp_path = Path(f.name)
+
+            cmd = [self._mkvpropedit, str(output), "--tags", f"all:{tmp_path}"]
+            self.log_message.emit("INFO", "$ " + " ".join(cmd))
+            r = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
+            if r.returncode != 0:
+                self.log_message.emit("WARN", f"mkvpropedit (balises) : {r.stderr.strip()}")
+        except FileNotFoundError:
+            self.log_message.emit("WARN", "mkvpropedit introuvable — balises non appliquées.")
+        finally:
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
+
     def _set_writing_app_inplace(self, output: Path) -> None:
         """Écrit le tag Multiplexing Application dans les infos de segment via mkvpropedit."""
         cmd = [
@@ -529,6 +591,8 @@ class RemuxWorkflow(QObject):
                     progress_cb=lambda line: signals.progress.emit(line),
                     signals=signals,
                 )
+                if config.tag_overrides:
+                    self._apply_tags_inplace(config.output, config.tag_overrides)
                 self._set_writing_app_inplace(config.output)
                 signals.finished.emit(output)
             except TaskCancelledError:

@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from xml.sax.saxutils import escape as _xml_escape
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -646,7 +647,7 @@ class EncodeWorkflow(QObject):
         if config.work_dir:
             config.work_dir.mkdir(parents=True, exist_ok=True)
 
-        has_tags        = bool(config.tag_sources)
+        has_tags        = bool(config.tag_sources) or config.tag_overrides is not None
         has_meta_edits  = bool(config.track_meta_edits)
         needs_postproc  = has_tags or has_meta_edits
 
@@ -781,9 +782,68 @@ class EncodeWorkflow(QObject):
         except FileNotFoundError:
             self.log_message.emit("WARN", "mkvpropedit introuvable — writing-app non appliqué.")
 
+    def _apply_tags_dict_inplace(
+        self,
+        output: Path,
+        tags: dict,
+        signals: "TaskSignals | None" = None,
+    ) -> None:
+        """
+        Écrit les balises MKV globales depuis un dict via mkvpropedit (in-place).
+
+        Construit un fichier XML Matroska Tags temporaire et l'applique avec
+        ``mkvpropedit --tags all:<xmlfile>``. Supprime le fichier temp après usage.
+        """
+        mkvpropedit_bin = self._bins["mkvpropedit"]
+
+        if signals:
+            signals.progress.emit("Écriture balises MKV…")
+
+        simples = "\n".join(
+            f"    <Simple><Name>{_xml_escape(str(k))}</Name>"
+            f"<String>{_xml_escape(str(v))}</String></Simple>"
+            for k, v in tags.items()
+            if str(v).strip()
+        )
+        xml_content = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<Tags>\n"
+            "  <Tag>\n"
+            "    <Targets />\n"
+            f"{simples}\n"
+            "  </Tag>\n"
+            "</Tags>\n"
+        )
+
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".xml", delete=False, encoding="utf-8"
+            ) as f:
+                f.write(xml_content)
+                tmp_path = Path(f.name)
+
+            cmd = [mkvpropedit_bin, str(output), "--tags", f"all:{tmp_path}"]
+            self.log_message.emit("INFO", "$ " + " ".join(cmd))
+            r = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
+            if r.returncode != 0:
+                self.log_message.emit("WARN", f"mkvpropedit (balises) : {r.stderr.strip()}")
+        except FileNotFoundError:
+            self.log_message.emit("WARN", "mkvpropedit introuvable — balises non appliquées.")
+        finally:
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
+
     def _postproc(self, config: EncodeConfig, signals: "TaskSignals | None" = None) -> None:
         """Post-traitements in-place : balises MKV + métadonnées de pistes + writing-app."""
-        self._inject_tags_inplace(config.output, config.tag_sources, signals)
+        if config.tag_overrides is not None:
+            # tag_overrides prioritaire : écriture directe sans extraction source
+            self._apply_tags_dict_inplace(config.output, config.tag_overrides, signals)
+        else:
+            self._inject_tags_inplace(config.output, config.tag_sources, signals)
         self._apply_track_meta_edits_inplace(config.output, config.track_meta_edits)
         self._set_writing_app_inplace(config.output)
 
