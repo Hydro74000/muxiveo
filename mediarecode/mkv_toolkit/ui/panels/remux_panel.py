@@ -1841,6 +1841,21 @@ class RemuxPanel(QWidget):
 
         content_layout.addWidget(_separator())
 
+        # --- Titre du fichier ---
+        title_card = _card()
+        title_card_layout = QVBoxLayout(title_card)
+        title_card_layout.setContentsMargins(16, 10, 16, 10)
+        title_card_layout.setSpacing(6)
+        title_card_layout.addWidget(_section_label("TITRE DU FICHIER"))
+
+        self._file_title_edit = QLineEdit()
+        self._file_title_edit.setPlaceholderText("Titre du conteneur MKV (balise Title)")
+        self._file_title_edit.setStyleSheet(self._input_style())
+        self._file_title_edit.textChanged.connect(self._rebuild_preview)
+        title_card_layout.addWidget(self._file_title_edit)
+
+        content_layout.addWidget(title_card)
+
         # --- Pièces jointes & Balises ---
         self._attachment_panel = _AttachmentPanel()
         self._attachment_panel.changed.connect(self._rebuild_preview)
@@ -1861,15 +1876,6 @@ class RemuxPanel(QWidget):
         self._chapters_cb.stateChanged.connect(self._rebuild_preview)
 
         opts_layout.addWidget(self._chapters_cb)
-
-        title_lbl = _section_label("TITRE DU FICHIER")
-        opts_layout.addWidget(title_lbl)
-
-        self._file_title_edit = QLineEdit()
-        self._file_title_edit.setPlaceholderText("Titre du conteneur MKV (balise Title)")
-        self._file_title_edit.setStyleSheet(self._input_style())
-        self._file_title_edit.textChanged.connect(self._rebuild_preview)
-        opts_layout.addWidget(self._file_title_edit)
 
         content_layout.addWidget(opts_card)
 
