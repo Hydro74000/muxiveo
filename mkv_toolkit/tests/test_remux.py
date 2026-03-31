@@ -1387,8 +1387,10 @@ class TestAttachmentItemWidgetDefaultChecked:
 
     def test_tag_checked_by_default(self, qt_app):
         """Un widget de balises (is_tag=True) est coché par défaut (nouveau comportement)."""
-        w = _AttachmentItemWidget(file_id="fid", is_tag=True, tag_count=3)
+        tags = {"COLLECTION": "MyShow", "SEASON": "1", "EPISODE": "2"}
+        w = _AttachmentItemWidget(file_id="fid", is_tag=True, tags=tags)
         assert w.enabled is True
+        assert w.tag_count == 3
         w.close()
 
 

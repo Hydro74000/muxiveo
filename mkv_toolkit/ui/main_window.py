@@ -1111,6 +1111,7 @@ class MainWindow(QMainWindow):
         self._encode_panel.set_output_provider(self._remux_panel.current_output_path)
         self._encode_panel.set_file_title_provider(self._remux_panel.current_file_title)
         self._encode_panel.set_extra_attachments_provider(self._remux_panel.current_extra_attachments)
+        self._encode_panel.set_tag_overrides_provider(self._remux_panel.current_tag_overrides)
         # État "prêt" → bouton Exécuter
         self._remux_panel.ready_changed.connect(self._on_ready_changed)
         self._encode_panel.ready_changed.connect(self._on_ready_changed)
@@ -1230,6 +1231,10 @@ class MainWindow(QMainWindow):
             if src.copy_tags:
                 tag_sources.append(src.path)
 
+        # tag_overrides depuis RemuxConfig (balises éditées dans l'UI)
+        # Prioritaire sur tag_sources : si présent, on ignore tag_sources pour l'encode.
+        tag_overrides = remux_cfg.tag_overrides
+
         # --- Métadonnées de pistes (langue + titre) via mkvpropedit post-encodage ---
         # ffmpeg ne préserve pas les métadonnées de pistes (langue, titre).
         # On les réécrit systématiquement pour toutes les pistes ayant des métadonnées.
@@ -1304,6 +1309,7 @@ class MainWindow(QMainWindow):
 
         # Rien à fusionner et keep_chapters identique → pas de reconstruction
         if (not sub_tracks and not attachment_streams and not tag_sources
+                and tag_overrides is None
                 and not track_meta_edits
                 and encode_cfg.keep_chapters == remux_cfg.keep_chapters):
             return encode_cfg
@@ -1317,13 +1323,16 @@ class MainWindow(QMainWindow):
             subtitle_tracks=sub_tracks or encode_cfg.subtitle_tracks,
             keep_chapters=remux_cfg.keep_chapters,
             attachment_streams=attachment_streams,
-            tag_sources=tag_sources,
+            tag_sources=[] if tag_overrides is not None else tag_sources,
+            tag_overrides=tag_overrides,
             track_meta_edits=track_meta_edits,
             duration_s=encode_cfg.duration_s,
             copy_dv=encode_cfg.copy_dv,
             copy_hdr10plus=encode_cfg.copy_hdr10plus,
             dovi_profile=encode_cfg.dovi_profile,
             work_dir=encode_cfg.work_dir,
+            file_title=encode_cfg.file_title,
+            extra_attachments=encode_cfg.extra_attachments,
         )
 
     def _on_op_progress(self, line: str) -> None:

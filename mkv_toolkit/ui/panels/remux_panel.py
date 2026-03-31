@@ -35,6 +35,7 @@ from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont, QIcon, QPa
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox,
+    QComboBox, QDialog, QDialogButtonBox,
     QFileDialog, QFrame,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
@@ -43,7 +44,10 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
-from core.inspector import AttachmentInfo, AudioTrack, FileInfo, FileInspector, InspectionError
+from core.inspector import (
+    STANDARD_MKV_TAGS,
+    AttachmentInfo, AudioTrack, FileInfo, FileInspector, InspectionError,
+)
 from core.lang_tags import Rfc5646LanguageTags
 from core.runner import TaskSignals
 from core.workflows.remux import (
@@ -1047,6 +1051,216 @@ class _TrackTable(QTableWidget):
 # =============================================================================
 # Panneau Pièces jointes (_AttachmentItemWidget / _AttachmentPanel)
 # =============================================================================
+# Dialogue d'édition des balises MKV
+# =============================================================================
+
+class _TagEditDialog(QDialog):
+    """
+    Dialogue d'édition des balises MKV globales d'un fichier source.
+
+    Affiche les balises existantes (tag name figé + value éditable) et permet
+    d'en ajouter via un bouton « + Ajouter ».
+    """
+
+    def __init__(self, tags: dict[str, str], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Éditer les balises")
+        self.setMinimumWidth(580)
+        self.setMinimumHeight(320)
+        self.setStyleSheet(f"""
+            QDialog {{ background: {_C.BG_DEEP}; color: {_C.TEXT_PRI}; }}
+            QLabel  {{ color: {_C.TEXT_PRI}; background: transparent; border: none; font-size: 11px; }}
+        """)
+        # Liste mutable (name_widget, value_edit, row_widget)
+        self._rows: list[tuple[QComboBox | QLabel, QLineEdit, QWidget]] = []
+        self._build_ui(tags)
+
+    # ------------------------------------------------------------------
+    # Construction
+    # ------------------------------------------------------------------
+
+    def _build_ui(self, tags: dict[str, str]) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(8)
+
+        # Scroll pour les lignes de tags
+        self._rows_widget = QWidget()
+        self._rows_widget.setStyleSheet("background: transparent;")
+        self._rows_layout = QVBoxLayout(self._rows_widget)
+        self._rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._rows_layout.setSpacing(4)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet(
+            f"QScrollArea {{ background: {_C.BG_CARD}; border: 1px solid {_C.BORDER}; border-radius: 4px; }}"
+        )
+        scroll.setWidget(self._rows_widget)
+        root.addWidget(scroll, stretch=1)
+
+        # Tags existants
+        for name, value in tags.items():
+            self._add_existing_row(name, value)
+
+        # Bouton Ajouter
+        add_btn = QPushButton("+ Ajouter un tag")
+        add_btn.setFixedHeight(26)
+        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {_C.ACCENT};
+                border: 1px solid {_C.ACCENT_DIM};
+                border-radius: 4px;
+                font-size: 10px;
+                font-weight: 600;
+                padding: 0 12px;
+            }}
+            QPushButton:hover {{ background: {_C.ACCENT_DIM}; color: #fff; }}
+        """)
+        add_btn.clicked.connect(self._add_new_row)
+        root.addWidget(add_btn)
+
+        # OK / Annuler
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        btns.setStyleSheet(f"""
+            QPushButton {{
+                background: {_C.BG_PANEL};
+                color: {_C.TEXT_PRI};
+                border: 1px solid {_C.BORDER_LT};
+                border-radius: 4px;
+                font-size: 11px;
+                padding: 4px 16px;
+            }}
+            QPushButton:hover {{ background: {_C.BG_CARD}; }}
+        """)
+        root.addWidget(btns)
+
+    def _row_stylesheet(self) -> str:
+        return (
+            f"QLineEdit {{ background: {_C.BG_DEEP}; color: {_C.TEXT_PRI}; "
+            f"border: 1px solid {_C.BORDER}; border-radius: 3px; font-size: 11px; padding: 2px 6px; }}"
+            f"QLineEdit:focus {{ border-color: {_C.ACCENT}; }}"
+        )
+
+    def _add_existing_row(self, name: str, value: str) -> None:
+        """Ajoute une ligne avec tag name en label fixe + value éditable."""
+        row = QWidget()
+        row.setStyleSheet("background: transparent;")
+        h = QHBoxLayout(row)
+        h.setContentsMargins(4, 2, 4, 2)
+        h.setSpacing(8)
+
+        name_lbl = QLabel(name)
+        name_lbl.setFixedWidth(160)
+        name_lbl.setStyleSheet(
+            f"color: {_C.TEXT_DIM}; font-size: 10px; font-weight: 600; "
+            "background: transparent; border: none;"
+        )
+        h.addWidget(name_lbl)
+
+        val_edit = QLineEdit(value)
+        val_edit.setStyleSheet(self._row_stylesheet())
+        h.addWidget(val_edit, stretch=1)
+
+        rm_btn = self._make_remove_btn(row, name_lbl, val_edit)
+        h.addWidget(rm_btn)
+
+        self._rows_layout.addWidget(row)
+        self._rows.append((name_lbl, val_edit, row))  # type: ignore[arg-type]
+
+    def _add_new_row(self) -> None:
+        """Ajoute une ligne avec combobox (noms standards) + value éditable."""
+        row = QWidget()
+        row.setStyleSheet("background: transparent;")
+        h = QHBoxLayout(row)
+        h.setContentsMargins(4, 2, 4, 2)
+        h.setSpacing(8)
+
+        name_combo = QComboBox()
+        name_combo.setEditable(True)
+        name_combo.setFixedWidth(160)
+        sorted_tags = sorted(STANDARD_MKV_TAGS - {"TITLE"})
+        name_combo.addItems(sorted_tags)
+        name_combo.setCurrentText("")
+        name_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: {_C.BG_DEEP};
+                color: {_C.TEXT_PRI};
+                border: 1px solid {_C.BORDER};
+                border-radius: 3px;
+                font-size: 11px;
+                padding: 2px 6px;
+            }}
+            QComboBox:focus {{ border-color: {_C.ACCENT}; }}
+            QComboBox QAbstractItemView {{
+                background: {_C.BG_PANEL};
+                color: {_C.TEXT_PRI};
+                selection-background-color: {_C.ACCENT_DIM};
+            }}
+        """)
+        h.addWidget(name_combo)
+
+        val_edit = QLineEdit()
+        val_edit.setPlaceholderText("valeur…")
+        val_edit.setStyleSheet(self._row_stylesheet())
+        h.addWidget(val_edit, stretch=1)
+
+        rm_btn = self._make_remove_btn(row, name_combo, val_edit)
+        h.addWidget(rm_btn)
+
+        self._rows_layout.addWidget(row)
+        self._rows.append((name_combo, val_edit, row))
+
+    def _make_remove_btn(
+        self, row: QWidget, name_w: QWidget, val_edit: QLineEdit
+    ) -> QPushButton:
+        btn = QPushButton("✕")
+        btn.setFixedSize(20, 20)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {_C.TEXT_DIM};
+                border: 1px solid {_C.BORDER}; border-radius: 3px;
+                font-size: 9px; font-weight: 700;
+            }}
+            QPushButton:hover {{ color: {_C.ERROR}; border-color: {_C.ERROR}; background: #1f0e0e; }}
+        """)
+        btn.clicked.connect(lambda: self._remove_row(row, name_w, val_edit))
+        return btn
+
+    def _remove_row(self, row: QWidget, name_w: QWidget, val_edit: QLineEdit) -> None:
+        self._rows = [(n, v, r) for n, v, r in self._rows if r is not row]
+        self._rows_layout.removeWidget(row)
+        row.deleteLater()
+
+    # ------------------------------------------------------------------
+    # Résultat
+    # ------------------------------------------------------------------
+
+    def result_tags(self) -> dict[str, str]:
+        """Retourne le dict tag_name → valeur après confirmation."""
+        result: dict[str, str] = {}
+        for name_w, val_edit, _row in self._rows:
+            if isinstance(name_w, QComboBox):
+                name = name_w.currentText().strip().upper()
+            elif isinstance(name_w, QLabel):
+                name = name_w.text().strip().upper()
+            else:
+                continue
+            value = val_edit.text().strip()
+            if name and value:
+                result[name] = value
+        return result
+
+
+# =============================================================================
 
 class _AttachmentItemWidget(QWidget):
     """
@@ -1066,21 +1280,29 @@ class _AttachmentItemWidget(QWidget):
         file_id:      str,
         source_color: str               = "",
         att:          AttachmentInfo | None = None,
-        tag_count:    int               = 0,
+        tags:         dict[str, str]    | None = None,   # balises MKV globales
         is_tag:       bool              = False,
         is_manual:    bool              = False,
         manual_path:  Path | None       = None,
         parent:       QWidget | None    = None,
     ) -> None:
         super().__init__(parent)
-        self.file_id     = file_id
-        self.att         = att
-        self.tag_count   = tag_count
-        self.is_tag      = is_tag
-        self.is_manual   = is_manual
-        self.manual_path = manual_path
+        self.file_id      = file_id
+        self.att          = att
+        self.is_tag       = is_tag
+        self.is_manual    = is_manual
+        self.manual_path  = manual_path
+        self._orig_tags:   dict[str, str] = tags or {}
         self.setFixedHeight(28)
         self._build_ui(source_color)
+
+    @property
+    def tag_count(self) -> int:
+        return len(self._orig_tags)
+
+    @property
+    def tags(self) -> dict[str, str]:
+        return self._orig_tags
 
     @property
     def enabled(self) -> bool:
@@ -1126,8 +1348,11 @@ class _AttachmentItemWidget(QWidget):
 
         # Libellé
         if self.is_tag:
-            text  = f"{self.tag_count} balise{'s' if self.tag_count > 1 else ''}"
-            color = _C.TRACK_TAGS
+            n = self.tag_count
+            names = ", ".join(self._orig_tags.keys())
+            prefix = f"{n} Tag{'s' if n > 1 else ''}"
+            text   = f"{prefix} : {names}" if names else prefix
+            color  = _C.TRACK_TAGS
         elif self.is_manual:
             text  = self.manual_path.name if self.manual_path else ""
             color = _C.TEXT_PRI
@@ -1166,7 +1391,7 @@ class _AttachmentItemWidget(QWidget):
             """)
             rm_btn.clicked.connect(lambda: self.remove_clicked.emit(self))
             lay.addWidget(rm_btn)
-        else:
+        elif not self.is_tag:
             sp2 = QWidget()
             sp2.setFixedWidth(18)
             lay.addWidget(sp2)
@@ -1190,6 +1415,7 @@ class _AttachmentPanel(QFrame):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._items: list[_AttachmentItemWidget] = []
+        self._panel_tag_overrides: dict[str, str] | None = None  # None = utiliser tags source
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -1234,6 +1460,31 @@ class _AttachmentPanel(QFrame):
         """)
         h_lay.addWidget(title_lbl)
         h_lay.addStretch()
+
+        self._edit_tags_btn = QPushButton("Éditer les tags")
+        self._edit_tags_btn.setFixedHeight(22)
+        self._edit_tags_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._edit_tags_btn.setEnabled(False)
+        self._edit_tags_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {_C.TRACK_TAGS};
+                border: 1px solid {_C.TRACK_TAGS};
+                border-radius: 4px;
+                font-size: 10px;
+                font-weight: 600;
+                padding: 0 10px;
+            }}
+            QPushButton:hover {{
+                background: rgba(245,160,48,0.15);
+            }}
+            QPushButton:disabled {{
+                color: {_C.TEXT_DIM};
+                border-color: {_C.BORDER};
+            }}
+        """)
+        self._edit_tags_btn.clicked.connect(self._open_global_tag_dialog)
+        h_lay.addWidget(self._edit_tags_btn)
 
         add_btn = QPushButton("+ Ajouter…")
         add_btn.setFixedHeight(22)
@@ -1289,12 +1540,12 @@ class _AttachmentPanel(QFrame):
                 file_id=file_id, source_color=source_color, att=att,
             ))
 
-    def add_source_tags(self, file_id: str, source_color: str, tag_count: int) -> None:
-        """Ajoute la ligne de balises d'un fichier source (si tag_count > 0)."""
-        if tag_count > 0:
+    def add_source_tags(self, file_id: str, source_color: str, tags: dict[str, str]) -> None:
+        """Ajoute la ligne de balises d'un fichier source (si tags non vide)."""
+        if tags:
             self._add_item(_AttachmentItemWidget(
                 file_id=file_id, source_color=source_color,
-                tag_count=tag_count, is_tag=True,
+                tags=tags, is_tag=True,
             ))
 
     def remove_by_file_id(self, file_id: str) -> None:
@@ -1305,25 +1556,51 @@ class _AttachmentPanel(QFrame):
             self._items_layout.removeWidget(item)
             item.deleteLater()
         if to_remove:
+            # Réinitialise les tags édités car la fusion peut avoir changé
+            self._panel_tag_overrides = None
             self._update_state()
             self.changed.emit()
+
+    def get_global_tag_overrides(self) -> "dict[str, str] | None":
+        """
+        Retourne les balises à appliquer globalement sur le fichier de sortie.
+
+        - Si l'utilisateur a édité via le dialogue global → retourne les tags édités.
+        - Sinon → fusionne les tags sources de toutes les lignes cochées
+          (priorité au premier fichier importé pour les clés en commun).
+        - Retourne None si aucune ligne de balises n'est cochée.
+        """
+        if self._panel_tag_overrides is not None:
+            return self._panel_tag_overrides
+        # Merge first-wins depuis les items de tags activés
+        merged: dict[str, str] | None = None
+        for item in self._items:
+            if item.is_tag and item.enabled:
+                if merged is None:
+                    merged = {}
+                for k, v in item.tags.items():
+                    merged.setdefault(k, v)   # premier fichier garde la priorité
+        return merged
 
     def get_extras_per_file(self) -> dict:
         """
         Retourne les sélections par fichier source.
 
-        Retourne : dict[file_id, {"selected_attachments": list[AttachmentInfo], "copy_tags": bool}]
+        Retourne : dict[file_id, {
+            "selected_attachments": list[AttachmentInfo],
+            "has_tags": bool,   — True si la ligne de balises de ce fichier est cochée
+        }]
         """
         result: dict = {}
         for item in self._items:
             if item.is_manual:
                 continue
             entry = result.setdefault(
-                item.file_id, {"selected_attachments": [], "copy_tags": False}
+                item.file_id, {"selected_attachments": [], "has_tags": False}
             )
             if item.is_tag:
                 if item.enabled:
-                    entry["copy_tags"] = True
+                    entry["has_tags"] = True
             elif item.att is not None and item.enabled:
                 entry["selected_attachments"].append(item.att)
         return result
@@ -1354,10 +1631,37 @@ class _AttachmentPanel(QFrame):
         self._update_state()
         self.changed.emit()
 
+    def _merged_source_tags(self) -> dict[str, str]:
+        """Fusionne les tags de toutes les lignes de balises (premier fichier prioritaire)."""
+        merged: dict[str, str] = {}
+        for item in self._items:
+            if item.is_tag and item.enabled:
+                for k, v in item.tags.items():
+                    merged.setdefault(k, v)
+        return merged
+
+    def _open_global_tag_dialog(self) -> None:
+        """Ouvre le dialogue d'édition global des balises (toutes sources fusionnées)."""
+        current = self._panel_tag_overrides if self._panel_tag_overrides is not None \
+            else self._merged_source_tags()
+        dlg = _TagEditDialog(current, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._panel_tag_overrides = dlg.result_tags()
+            # Met à jour le libellé du bouton pour indiquer qu'il y a des modifications
+            n = len(self._panel_tag_overrides)
+            label = f"Tags édités ({n})" if n else "Tags supprimés"
+            self._edit_tags_btn.setText(label)
+            self.changed.emit()
+
     def _update_state(self) -> None:
         has = bool(self._items)
+        has_tags = any(i.is_tag for i in self._items)
         self._placeholder.setVisible(not has)
         self._items_widget.setVisible(has)
+        self._edit_tags_btn.setEnabled(has_tags)
+        if not has_tags:
+            self._panel_tag_overrides = None
+            self._edit_tags_btn.setText("Éditer les tags")
 
     def _browse_add(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -1679,7 +1983,7 @@ class RemuxPanel(QWidget):
         source_color = self._source_colors.get(file_id, _C.BORDER)
         self._track_table.append_tracks(source_color, sf.tracks)
         self._attachment_panel.add_source_attachments(file_id, source_color, info.attachments)
-        self._attachment_panel.add_source_tags(file_id, source_color, info.tag_count)
+        self._attachment_panel.add_source_tags(file_id, source_color, info.global_tags)
 
         att_str = f"  {len(info.attachments)}PJ" if info.attachments else ""
         tag_str = f"  {info.tag_count}Tags" if info.tag_count else ""
@@ -1835,6 +2139,7 @@ class RemuxPanel(QWidget):
         id_to_index = {sf.id: i for i, sf in enumerate(self._source_files)}
 
         extras = self._attachment_panel.get_extras_per_file()
+        merged_tag_overrides = self._attachment_panel.get_global_tag_overrides()
 
         # SourceInput par fichier : toutes les pistes du fichier
         sources: list[SourceInput] = []
@@ -1845,13 +2150,14 @@ class RemuxPanel(QWidget):
             if not src_tracks:
                 src_tracks = sf.tracks
             file_extras = extras.get(sf.id, {})
+            has_tags = file_extras.get("has_tags", False)
             sources.append(SourceInput(
                 path=sf.path,
                 file_index=i,
                 tracks=src_tracks,
                 selected_attachments=file_extras.get("selected_attachments", []),
                 attachment_count=len(sf.info.attachments) if sf.info else 0,
-                copy_tags=file_extras.get("copy_tags", False),
+                copy_tags=has_tags,
             ))
 
         if not sources:
@@ -1872,6 +2178,7 @@ class RemuxPanel(QWidget):
             extra_attachments=self._attachment_panel.get_extra_attachments(),
             work_dir=self._config.work_dir,
             file_title=self._file_title_edit.text().strip(),
+            tag_overrides=merged_tag_overrides,
         )
 
     # ------------------------------------------------------------------
@@ -1905,6 +2212,13 @@ class RemuxPanel(QWidget):
     def current_extra_attachments(self) -> list:
         """Retourne les pièces jointes manuelles cochées (list[Path])."""
         return self._attachment_panel.get_extra_attachments()
+
+    def current_tag_overrides(self) -> "dict[str, str] | None":
+        """
+        Retourne les balises MKV à appliquer sur la sortie, ou None si aucune
+        ligne de balises n'est cochée. Utilisé par EncodePanel via provider.
+        """
+        return self._attachment_panel.get_global_tag_overrides()
 
     def is_ready(self) -> bool:
         """True si au moins un fichier source est inspecté et prêt."""

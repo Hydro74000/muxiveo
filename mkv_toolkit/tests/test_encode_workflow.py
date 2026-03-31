@@ -1926,3 +1926,154 @@ class TestEncodeExtraAttachments:
         cmds = self._run_inject_with_extras(tmp_path, [])
         recon = self._get_recon_cmd(cmds)
         assert "-attach" not in recon
+
+
+# ===========================================================================
+# _apply_track_meta_edits_inplace — commande mkvpropedit
+# ===========================================================================
+
+class TestApplyTrackMetaEdits:
+    """
+    Vérifie que _apply_track_meta_edits_inplace construit la commande mkvpropedit
+    correctement pour chaque TrackMetaEdit :
+      - --edit track:@N sélectionne la piste 1-based
+      - --set language=<ISO639-2> précède --set language-ietf=<IETF>
+      - --set name=<title> est émis si title est fourni
+      - langage régional (fr-FR) → ISO 639-2 = fra, IETF conservé tel quel
+    """
+
+    def setup_method(self):
+        self.wf = _make_workflow()
+
+    def _run_edits(self, edits: list, output: Path) -> list[str]:
+        """Lance _apply_track_meta_edits_inplace et retourne la commande capturée."""
+        captured: list[list[str]] = []
+
+        def _fake_run(cmd, **_kw):
+            captured.append(list(cmd))
+            return MagicMock(returncode=0, stderr="")
+
+        with patch("subprocess.run", side_effect=_fake_run):
+            self.wf._apply_track_meta_edits_inplace(output, edits)
+
+        assert len(captured) == 1, f"Une seule commande attendue, reçu : {captured}"
+        return captured[0]
+
+    # ── fr-FR : langue régionale ──────────────────────────────────────────────
+
+    def test_fr_FR_iso_code_is_fra(self, tmp_path):
+        """fr-FR → --set language=fra (ISO 639-2/T)."""
+        from core.workflows.encode.models import TrackMetaEdit
+        output = tmp_path / "out.mkv"
+        output.touch()
+        edit = TrackMetaEdit(track_order=1, language="fr-FR")
+
+        cmd = self._run_edits([edit], output)
+
+        assert "--set" in cmd
+        assert "language=fra" in cmd
+
+    def test_fr_FR_ietf_tag_preserved(self, tmp_path):
+        """fr-FR → --set language-ietf=fr-FR (balise IETF conservée intacte)."""
+        from core.workflows.encode.models import TrackMetaEdit
+        output = tmp_path / "out.mkv"
+        output.touch()
+        edit = TrackMetaEdit(track_order=1, language="fr-FR")
+
+        cmd = self._run_edits([edit], output)
+
+        assert "language-ietf=fr-FR" in cmd
+
+    def test_fr_FR_language_before_language_ietf(self, tmp_path):
+        """--set language=fra doit précéder --set language-ietf=fr-FR."""
+        from core.workflows.encode.models import TrackMetaEdit
+        output = tmp_path / "out.mkv"
+        output.touch()
+        edit = TrackMetaEdit(track_order=1, language="fr-FR")
+
+        cmd = self._run_edits([edit], output)
+
+        idx_lang = cmd.index("language=fra")
+        idx_ietf = cmd.index("language-ietf=fr-FR")
+        assert idx_lang < idx_ietf, \
+            f"language= ({idx_lang}) doit précéder language-ietf= ({idx_ietf})"
+
+    def test_fr_FR_track_selector(self, tmp_path):
+        """--edit track:@1 est émis pour track_order=1."""
+        from core.workflows.encode.models import TrackMetaEdit
+        output = tmp_path / "out.mkv"
+        output.touch()
+        edit = TrackMetaEdit(track_order=1, language="fr-FR")
+
+        cmd = self._run_edits([edit], output)
+
+        assert "track:@1" in cmd
+
+    # ── langue simple (fr) ───────────────────────────────────────────────────
+
+    def test_fr_iso_code_is_fra(self, tmp_path):
+        """fr (sans région) → --set language=fra."""
+        from core.workflows.encode.models import TrackMetaEdit
+        output = tmp_path / "out.mkv"
+        output.touch()
+        edit = TrackMetaEdit(track_order=2, language="fr")
+
+        cmd = self._run_edits([edit], output)
+
+        assert "language=fra" in cmd
+        assert "language-ietf=fr" in cmd
+
+    # ── title seul (pas de langue) ───────────────────────────────────────────
+
+    def test_title_only_no_language_set(self, tmp_path):
+        """title seul → --set name=X, aucun language= dans la commande."""
+        from core.workflows.encode.models import TrackMetaEdit
+        output = tmp_path / "out.mkv"
+        output.touch()
+        edit = TrackMetaEdit(track_order=1, language="", title="Commentaires")
+
+        cmd = self._run_edits([edit], output)
+
+        assert "name=Commentaires" in cmd
+        assert not any(a.startswith("language=") for a in cmd)
+
+    # ── merge remux extras : fr-FR transmis tel quel dans TrackMetaEdit ───────
+
+    def test_merge_fr_FR_in_track_meta_edit(self, tmp_path):
+        """
+        _merge_remux_extras avec une piste language='fr-FR' doit produire
+        un TrackMetaEdit avec language='fr-FR' (conservé tel quel).
+        """
+        from core.workflows.remux import RemuxConfig, SourceInput, TrackEntry
+        from core.workflows.encode.models import EncodeConfig, VideoEncodeSettings
+        from ui.main_window import MainWindow
+
+        src = tmp_path / "src.mkv"
+        src.touch()
+        out = tmp_path / "out.mkv"
+
+        track = TrackEntry(
+            mkv_tid=0, track_type="video", codec="H264",
+            display_info="", language="fr-FR", title="",
+            orig_language="fr-FR", orig_title="",
+        )
+        source = SourceInput(
+            path=src, file_index=0, tracks=[track],
+            selected_attachments=[], attachment_count=0, copy_tags=True,
+        )
+        rmx = RemuxConfig(
+            sources=[source], output=out,
+            track_order=[(0, 0)], keep_chapters=True,
+        )
+        enc = EncodeConfig(
+            source=src, output=out,
+            video=VideoEncodeSettings(),
+            audio_tracks=[],
+        )
+
+        result = MainWindow._merge_remux_extras(None, enc, rmx)
+
+        assert result.track_meta_edits, "Aucun TrackMetaEdit généré"
+        edit = result.track_meta_edits[0]
+        assert edit.language == "fr-FR", \
+            f"Langue dans TrackMetaEdit : attendu 'fr-FR', obtenu {edit.language!r}"

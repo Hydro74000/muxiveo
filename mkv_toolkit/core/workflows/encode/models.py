@@ -142,6 +142,11 @@ class EncodeConfig:
     extra_attachments:  list = field(default_factory=list)   # list[Path]
     # Sources dont on copie les balises MKV (<Tags> element) via mkvpropedit post-traitement.
     tag_sources:      list = field(default_factory=list)    # list[Path]
+    #: Balises MKV globales à écrire directement (prioritaire sur tag_sources).
+    #: None  → utiliser tag_sources si présents.
+    #: dict  → écrire ces balises et ignorer tag_sources.
+    #: {}    → supprimer toutes les balises existantes.
+    tag_overrides:    dict | None = None                    # dict[str, str] | None
     # Éditions de métadonnées de pistes (langue, titre) appliquées via mkvpropedit.
     track_meta_edits: list = field(default_factory=list)    # list[TrackMetaEdit]
     file_title:       str          = ""     # balise Title du segment de sortie
