@@ -948,7 +948,7 @@ class EncodeWorkflow(QObject):
             if work:
                 work.mkdir(parents=True, exist_ok=True)
             tmp_dir = tempfile.mkdtemp(
-                prefix="mkv_toolkit_encode_",
+                prefix="mediarecode_encode_",
                 dir=str(work) if work else None,
             )
             tmp = Path(tmp_dir)

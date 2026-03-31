@@ -176,7 +176,7 @@ class TestAudioTableTrackMetaChanged:
         _load_one(table)
         emitted: list = []
         table.track_meta_changed.connect(lambda *a: emitted.append(a))
-        table.item(0, _AudioTable.COL_LANG).setText("jpn")
+        table.item(0, _AudioTable.COL_LANG).setText("ja")
         assert len(emitted) == 1
 
     def test_signal_carries_correct_stream_index(self, table):
@@ -209,9 +209,9 @@ class TestAudioTableTrackMetaChanged:
         _load_one(table, _at(language="fra", title="Mon titre"))
         emitted: list = []
         table.track_meta_changed.connect(lambda *a: emitted.append(a))
-        table.item(0, _AudioTable.COL_LANG).setText("jpn")
+        table.item(0, _AudioTable.COL_LANG).setText("ja")
         _, _, lang, title = emitted[0]
-        assert lang == "jpn"
+        assert lang == "ja"
         assert title == "Mon titre"
 
     def test_no_signal_for_non_editable_column(self, table):

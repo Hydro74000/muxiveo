@@ -2,13 +2,14 @@
 core/config.py — Configuration centralisée de l'application.
 
 Priorité de résolution :
-    1. Variable d'environnement
+    1. config.ini  (fichier statique à côté de main.py)
     2. Fichier de configuration persistant (QSettings)
     3. Valeur par défaut
 """
 
 from __future__ import annotations
 
+import configparser
 import json
 import os
 import shutil
@@ -16,6 +17,26 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QSettings, QStandardPaths
+
+
+# ---------------------------------------------------------------------------
+# Chemin du fichier config.ini
+# ---------------------------------------------------------------------------
+
+# config.ini est placé dans le même dossier que main.py
+# (mediarecode/config.ini), soit le dossier parent de core/
+_INI_PATH = Path(__file__).parent.parent / "config.ini"
+
+
+def _load_ini() -> configparser.ConfigParser:
+    """Charge config.ini s'il existe, retourne un parser vide sinon."""
+    parser = configparser.ConfigParser(
+        inline_comment_prefixes=("#",),
+        default_section="DEFAULT",
+    )
+    if _INI_PATH.exists():
+        parser.read(_INI_PATH, encoding="utf-8")
+    return parser
 
 
 # ---------------------------------------------------------------------------
@@ -27,7 +48,7 @@ def _app_data_dir() -> Path:
     raw = QStandardPaths.writableLocation(
         QStandardPaths.StandardLocation.AppDataLocation
     )
-    p = Path(raw) / "mkv_toolkit"
+    p = Path(raw) / "mediarecode"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -36,7 +57,7 @@ def _default_work_dir() -> Path:
     tmp = Path(
         os.environ.get("TMPDIR", os.environ.get("TEMP", "/tmp"))
     )
-    p = tmp / "mkv_toolkit_work"
+    p = tmp / "mediarecode_work"
     return p
 
 
@@ -56,8 +77,8 @@ class AppConfig:
     Configuration centralisée de l'application.
 
     Les propriétés sont persistées via QSettings (INI) dans le dossier
-    app data. Les variables d'environnement ont priorité sur les valeurs
-    sauvegardées, elles-mêmes prioritaires sur les défauts.
+    app data. config.ini a priorité sur les valeurs sauvegardées,
+    elles-mêmes prioritaires sur les défauts.
 
     Usage :
         config = AppConfig()
@@ -69,8 +90,8 @@ class AppConfig:
     """
 
     # Chemin du fichier QSettings
-    _SETTINGS_ORG  = "mkv_toolkit"
-    _SETTINGS_APP  = "MKVToolkit"
+    _SETTINGS_ORG  = "mediarecode"
+    _SETTINGS_APP  = "Mediarecode"
 
     def __init__(self) -> None:
         self._settings = QSettings(
@@ -79,64 +100,78 @@ class AppConfig:
             self._SETTINGS_ORG,
             self._SETTINGS_APP,
         )
+        self._ini = _load_ini()
         self._load()
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _ini_get(self, section: str, key: str) -> str:
+        """Retourne la valeur depuis config.ini, ou '' si absente/vide."""
+        try:
+            return self._ini.get(section, key).strip()
+        except (configparser.NoSectionError, configparser.NoOptionError):
+            return ""
 
     # ------------------------------------------------------------------
     # Chargement
     # ------------------------------------------------------------------
 
     def _load(self) -> None:
-        env = os.environ.get
-        s   = self._settings
+        s = self._settings
 
         # --- Dossiers ---
         self.work_dir: Path = Path(
-            env("WORK_DIR")
+            self._ini_get("paths", "work_dir")
             or s.value("paths/work_dir", "")
             or str(_default_work_dir())
         )
         self.output_dir: Path = Path(
-            env("OUTPUT_DIR")
+            self._ini_get("paths", "output_dir")
             or s.value("paths/output_dir", "")
             or str(_default_output_dir())
         )
         self.app_data_dir: Path = _app_data_dir()
 
         # --- Outils externes (noms ou chemins absolus) ---
-        self.tool_ffmpeg: str       = env("TOOL_FFMPEG")       or s.value("tools/ffmpeg",        "ffmpeg")
-        self.tool_ffprobe: str      = env("TOOL_FFPROBE")      or s.value("tools/ffprobe",       "ffprobe")
-        self.tool_mkvmerge: str     = env("TOOL_MKVMERGE")     or s.value("tools/mkvmerge",      "mkvmerge")
-        self.tool_mkvextract: str   = env("TOOL_MKVEXTRACT")   or s.value("tools/mkvextract",    "mkvextract")
-        self.tool_mkvinfo: str      = env("TOOL_MKVINFO")      or s.value("tools/mkvinfo",       "mkvinfo")
-        self.tool_mediainfo: str    = env("TOOL_MEDIAINFO")    or s.value("tools/mediainfo",     "mediainfo")
-        self.tool_dovi_tool: str    = env("TOOL_DOVI_TOOL")    or s.value("tools/dovi_tool",     "dovi_tool")
-        self.tool_hdr10plus: str    = env("TOOL_HDR10PLUS")    or s.value("tools/hdr10plus_tool","hdr10plus_tool")
-        self.tool_eac3to: str       = env("TOOL_EAC3TO")       or s.value("tools/eac3to",        "eac3to")
+        # Les valeurs dans config.ini [tools] surchargent les valeurs
+        # persistées et les défauts, mais ne désactivent pas l'autodetect.
+        self.tool_ffmpeg: str       = self._ini_get("tools", "ffmpeg")       or s.value("tools/ffmpeg",        "ffmpeg")
+        self.tool_ffprobe: str      = self._ini_get("tools", "ffprobe")      or s.value("tools/ffprobe",       "ffprobe")
+        self.tool_mkvmerge: str     = self._ini_get("tools", "mkvmerge")     or s.value("tools/mkvmerge",      "mkvmerge")
+        self.tool_mkvextract: str   = self._ini_get("tools", "mkvextract")   or s.value("tools/mkvextract",    "mkvextract")
+        self.tool_mkvinfo: str      = self._ini_get("tools", "mkvinfo")      or s.value("tools/mkvinfo",       "mkvinfo")
+        self.tool_mediainfo: str    = self._ini_get("tools", "mediainfo")    or s.value("tools/mediainfo",     "mediainfo")
+        self.tool_dovi_tool: str    = self._ini_get("tools", "dovi_tool")    or s.value("tools/dovi_tool",     "dovi_tool")
+        self.tool_hdr10plus: str    = self._ini_get("tools", "hdr10plus_tool") or s.value("tools/hdr10plus_tool","hdr10plus_tool")
+        self.tool_eac3to: str       = self._ini_get("tools", "eac3to")       or s.value("tools/eac3to",        "eac3to")
 
         # --- Paramètres HDR ---
-        self.dovi_profile: str    = env("DOVI_PROFILE")    or s.value("hdr/dovi_profile",    "8")
-        self.dovi_compat_id: str  = env("DOVI_COMPAT_ID")  or s.value("hdr/dovi_compat_id",  "1")
+        self.dovi_profile: str    = self._ini_get("hdr", "dovi_profile")    or s.value("hdr/dovi_profile",    "8")
+        self.dovi_compat_id: str  = self._ini_get("hdr", "dovi_compat_id")  or s.value("hdr/dovi_compat_id",  "1")
 
         # --- Buffer RAM pour les fichiers HEVC intermédiaires ---
         # ram_buffer_enabled  : active l'utilisation de /dev/shm (Linux/macOS) comme tampon
         # ram_buffer_threshold_pct : % de RAM totale devant rester libre après chargement du fichier
-        _rb_env = env("RAM_BUFFER_ENABLED")
+        _rb_ini = self._ini_get("encoding", "ram_buffer_enabled")
         self.ram_buffer_enabled: bool = (
-            _rb_env.lower() not in ("0", "false", "no") if _rb_env
+            _rb_ini.lower() not in ("0", "false", "no") if _rb_ini
             else s.value("encoding/ram_buffer_enabled", "true").lower()
                not in ("0", "false", "no")
         )
+        _rbt_ini = self._ini_get("encoding", "ram_buffer_threshold_pct")
         self.ram_buffer_threshold_pct: int = int(
-            env("RAM_BUFFER_THRESHOLD_PCT")
+            _rbt_ini
             or s.value("encoding/ram_buffer_threshold_pct", 15)
         )
 
         # --- Interface ---
         self.log_max_lines: int = int(
-            env("LOG_MAX_LINES") or s.value("ui/log_max_lines", 2000)
+            self._ini_get("ui", "log_max_lines") or s.value("ui/log_max_lines", 2000)
         )
         self.theme: str = (
-            env("APP_THEME") or s.value("ui/theme", "dark")
+            self._ini_get("ui", "theme") or s.value("ui/theme", "dark")
         )
         self.window_geometry: bytes | None = s.value("ui/geometry", None)
 

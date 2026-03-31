@@ -1083,14 +1083,20 @@ class TestTrackTableColumnOrder:
     def test_col_lang_is_4(self):
         assert _TrackTable.COL_LANG == 4
 
-    def test_col_info_is_5(self):
-        assert _TrackTable.COL_INFO == 5
+    def test_col_title_is_5(self):
+        assert _TrackTable.COL_TITLE == 5
+
+    def test_col_info_is_6(self):
+        assert _TrackTable.COL_INFO == 6
 
     def test_header_langue_at_index_4(self):
         assert _TrackTable._HEADERS[4] == "Langue"
 
-    def test_header_info_at_index_5(self):
-        assert _TrackTable._HEADERS[5] == "Info"
+    def test_header_titre_at_index_5(self):
+        assert _TrackTable._HEADERS[5] == "Titre"
+
+    def test_header_info_at_index_6(self):
+        assert _TrackTable._HEADERS[6] == "Info"
 
 
 # ===========================================================================

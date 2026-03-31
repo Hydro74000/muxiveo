@@ -201,13 +201,13 @@ class TestRunCmd:
         assert exc_info.value.returncode == 42
 
     def test_run_cmd_calls_progress_cb_for_each_line(self):
-        """_run_cmd() appelle progress_cb pour chaque ligne de sortie."""
+        """_run_cmd() appelle progress_cb pour la ligne de commande puis chaque ligne de sortie."""
         lines_received: list[str] = []
-        self.runner._run_cmd(
-            [sys.executable, "-c", "print('A'); print('B'); print('C')"],
-            progress_cb=lines_received.append,
-        )
-        assert lines_received == ["A", "B", "C"]
+        cmd = [sys.executable, "-c", "print('A'); print('B'); print('C')"]
+        self.runner._run_cmd(cmd, progress_cb=lines_received.append)
+        # First call is the command echo ("$ <cmd>"), followed by output lines
+        assert lines_received[0].startswith("$ ")
+        assert lines_received[1:] == ["A", "B", "C"]
 
     def test_run_cmd_empty_lines_not_forwarded_to_progress_cb(self):
         """Les lignes vides ne sont pas transmises au progress_cb."""

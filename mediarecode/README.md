@@ -1,4 +1,4 @@
-# 🎬 MKV/MP4 Toolkit
+# 🎬 Mediarecode
 
 Interface graphique pour le traitement avancé de fichiers vidéo MKV et MP4 — remuxage sans perte, injection de métadonnées HDR Dolby Vision / HDR10+, et encodage vidéo.
 
@@ -102,7 +102,7 @@ python setup.py
 
 - Installe via `winget` (Windows 10 1809+ / Windows 11) : `ffmpeg`, `mkvtoolnix`, `mediainfo`
 - Télécharge depuis GitHub : `dovi_tool`, `hdr10plus_tool`
-- Les binaires GitHub sont placés dans `%LOCALAPPDATA%\mkv-toolkit\bin`
+- Les binaires GitHub sont placés dans `%LOCALAPPDATA%\mediarecode\tools`
 
 > Ajouter ce dossier au `PATH` : Paramètres → Système → Informations → Paramètres système avancés → Variables d'environnement
 
@@ -138,7 +138,7 @@ Télécharger manuellement : https://forum.doom9.org/showthread.php?t=125966
 ### Étape 3 — Lancer l'application
 
 ```bash
-python3 mkv_toolkit/main.py
+python3 main.py
 ```
 
 ---
@@ -527,7 +527,7 @@ mkvmerge -o SORTIE.mkv --no-video FILM1.mkv film1_final.hevc --track-order ...
 
 | Paramètre | Défaut | Description |
 |-----------|--------|-------------|
-| `work_dir` | `/tmp/mkv_toolkit_work` | Répertoire pour les fichiers intermédiaires |
+| `work_dir` | `/tmp/mediarecode_work` | Répertoire pour les fichiers intermédiaires |
 | `output_dir` | `~/Videos` | Répertoire de sortie par défaut |
 
 ### Chemins des outils
@@ -549,7 +549,7 @@ Toutes les options peuvent être surchargées via des variables d'environnement 
 export TOOL_FFMPEG=/opt/ffmpeg/bin/ffmpeg
 export TOOL_DOVI_TOOL=/usr/local/bin/dovi_tool
 export OUTPUT_DIR=/mnt/nas/videos
-python mkv_toolkit/main.py
+python main.py
 ```
 
 ---
@@ -775,4 +775,4 @@ flowchart TD
 
 ---
 
-*MKV/MP4 Toolkit v0.1.0*
+*Mediarecode v0.1.0*
