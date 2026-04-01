@@ -40,10 +40,12 @@ SOFTWARE_VIDEO_CODECS: list[tuple[str, str]] = [
 
 HARDWARE_VIDEO_CODECS: list[tuple[str, str]] = [
     ("hevc_nvenc", "NVENC — HEVC (NVIDIA)"),
-    ("hevc_amf",   "AMF — HEVC (AMD)"),
+    ("hevc_amf",   "AMF — HEVC (AMD-WIN)"),
+    ("hevc_vaapi",   "VAAPI — HEVC (AMD)"),
     ("hevc_qsv",   "QSV — HEVC (Intel)"),
     ("h264_nvenc", "NVENC — H.264 (NVIDIA)"),
-    ("h264_amf",   "AMF — H.264 (AMD)"),
+    ("h264_amf",   "AMF — H.264 (AMD-WIN)"),
+    ("h264_vaapi",   "VAAPI — H.264 (AMD)"),
     ("h264_qsv",   "QSV — H.264 (Intel)"),
 ]
 

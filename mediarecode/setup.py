@@ -95,6 +95,20 @@ PYTHON_PACKAGES = [
 # format: { "executable": {"apt": "pkg", "dnf": "pkg", "brew": "pkg",
 #                          "winget": "id", "desc": "..."} }
 SYSTEM_TOOLS: dict[str, dict] = {
+    "pip": {
+        "apt":    "python3-pip",
+        "dnf":    "python3-pip",
+        "brew":   "python",
+        "winget": "buyukakyuz.install-nothing",
+        "desc":   "Python Package Installer",
+    },
+    "openGL": {
+        "apt":    "libegl1-mesa",
+        "dnf":    "mesa-libEGL",
+        "brew":   "xquartz",
+        "winget": "Microsoft.DirectX",
+        "desc":   "OpenGL libraries",
+    },
     "ffmpeg": {
         "apt":    "ffmpeg",
         "dnf":    "ffmpeg",
@@ -724,13 +738,6 @@ def main() -> None:
     if dry_run:
         warn("DRY-RUN mode — no changes will be made")
 
-    # ── Python packages (all platforms) ──────────────────────────────────
-    try:
-        install_python_packages(dry_run)
-    except Exception as e:
-        error(f"Python packages: {e}")
-        sys.exit(1)
-
     # ── Platform-specific ─────────────────────────────────────────────────
     if OS == "Linux":
         distro = detect_linux_distro()
@@ -813,6 +820,13 @@ def main() -> None:
     else:
         warn(f"Unknown platform '{OS}' — skipping system package installation")
         check_tools_presence()
+
+    # ── Python packages (all platforms) ──────────────────────────────────
+    try:
+        install_python_packages(dry_run)
+    except Exception as e:
+        error(f"Python packages: {e}")
+        sys.exit(1)
 
     # ── Done ──────────────────────────────────────────────────────────────
     title("Setup complete")
