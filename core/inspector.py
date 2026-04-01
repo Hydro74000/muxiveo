@@ -196,10 +196,20 @@ class SubtitleTrack:
 
 
 @dataclass
+class ChapterEntry:
+    """Un chapitre avec son code temporel et son nom."""
+    timecode_s: float   # secondes depuis le début du fichier
+    name:       str     # nom du chapitre (peut être vide)
+
+
+@dataclass
 class ChapterInfo:
     """Informations sur les chapitres du fichier."""
-    count:  int
-    titles: list[str] = field(default_factory=list)
+    entries: list[ChapterEntry] = field(default_factory=list)
+
+    @property
+    def count(self) -> int:
+        return len(self.entries)
 
 
 @dataclass
@@ -570,10 +580,13 @@ class FileInspector:
 
         chapters = raw.get("chapters", [])
         if chapters:
-            info.chapters = ChapterInfo(
-                count  = len(chapters),
-                titles = [c.get("tags", {}).get("title", "") for c in chapters],
-            )
+            entries: list[ChapterEntry] = []
+            for c in chapters:
+                start_s = _float_or_none(c.get("start_time")) or 0.0
+                title   = c.get("tags", {}).get("title", "")
+                entries.append(ChapterEntry(timecode_s=start_s, name=title))
+            if entries:
+                info.chapters = ChapterInfo(entries=entries)
 
         return info
 
@@ -704,3 +717,66 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+# =============================================================================
+# Génération XML de chapitres (format Matroska)
+# =============================================================================
+
+def fmt_timecode_display(seconds: float) -> str:
+    """
+    Formate un nombre de secondes en HH:MM:SS.mmm (affichage UI et édition).
+    """
+    h  = int(seconds // 3600)
+    mn = int((seconds % 3600) // 60)
+    sc = seconds % 60
+    s  = int(sc)
+    ms = int(round((sc - s) * 1000))
+    return f"{h:02d}:{mn:02d}:{s:02d}.{ms:03d}"
+
+
+def _fmt_chapter_time(seconds: float) -> str:
+    """
+    Formate un nombre de secondes en chaîne HH:MM:SS.nnnnnnnnn (format mkvmerge).
+    """
+    h  = int(seconds // 3600)
+    mn = int((seconds % 3600) // 60)
+    sc = seconds % 60
+    s  = int(sc)
+    ns = int(round((sc - s) * 1_000_000_000))
+    return f"{h:02d}:{mn:02d}:{s:02d}.{ns:09d}"
+
+
+def build_chapter_xml(entries: "list[ChapterEntry]") -> str:
+    """
+    Construit un fichier XML Matroska Chapters depuis une liste de ChapterEntry.
+
+    Le format est compatible avec mkvmerge (--chapters) et mkvpropedit (--chapters).
+    Les chapitres sont triés par timecode croissant.
+    """
+    from xml.sax.saxutils import escape as _xe
+    atoms: list[str] = []
+    for e in sorted(entries, key=lambda x: x.timecode_s):
+        tc   = _fmt_chapter_time(e.timecode_s)
+        name = _xe(e.name) if e.name else ""
+        atoms.append(
+            "    <ChapterAtom>\n"
+            f"      <ChapterTimeStart>{tc}</ChapterTimeStart>\n"
+            "      <ChapterDisplay>\n"
+            f"        <ChapterString>{name}</ChapterString>\n"
+            "        <ChapterLanguage>und</ChapterLanguage>\n"
+            "      </ChapterDisplay>\n"
+            "    </ChapterAtom>"
+        )
+    body = "\n".join(atoms)
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE Chapters SYSTEM "matroskachapters.dtd">\n'
+        "<Chapters>\n"
+        "  <EditionEntry>\n"
+        "    <EditionFlagHidden>0</EditionFlagHidden>\n"
+        "    <EditionFlagDefault>1</EditionFlagDefault>\n"
+        f"{body}\n"
+        "  </EditionEntry>\n"
+        "</Chapters>\n"
+    )

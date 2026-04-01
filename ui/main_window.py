@@ -1112,6 +1112,7 @@ class MainWindow(QMainWindow):
         self._encode_panel.set_file_title_provider(self._remux_panel.current_file_title)
         self._encode_panel.set_extra_attachments_provider(self._remux_panel.current_extra_attachments)
         self._encode_panel.set_tag_overrides_provider(self._remux_panel.current_tag_overrides)
+        self._encode_panel.set_chapters_provider(self._remux_panel.current_chapter_overrides)
         # État "prêt" → bouton Exécuter
         self._remux_panel.ready_changed.connect(self._on_ready_changed)
         self._encode_panel.ready_changed.connect(self._on_ready_changed)
@@ -1307,11 +1308,14 @@ class MainWindow(QMainWindow):
             if edit:
                 track_meta_edits.append(edit)
 
-        # Rien à fusionner et keep_chapters identique → pas de reconstruction
+        chapter_overrides = remux_cfg.chapter_overrides
+
+        # Rien à fusionner et keep_chapters / chapter_overrides identiques → pas de reconstruction
         if (not sub_tracks and not attachment_streams and not tag_sources
                 and tag_overrides is None
                 and not track_meta_edits
-                and encode_cfg.keep_chapters == remux_cfg.keep_chapters):
+                and encode_cfg.keep_chapters == remux_cfg.keep_chapters
+                and remux_cfg.chapter_overrides is None):
             return encode_cfg
 
         return EncodeConfig(
@@ -1322,6 +1326,7 @@ class MainWindow(QMainWindow):
             copy_subtitles=encode_cfg.copy_subtitles if not sub_tracks else False,
             subtitle_tracks=sub_tracks or encode_cfg.subtitle_tracks,
             keep_chapters=remux_cfg.keep_chapters,
+            chapter_overrides=chapter_overrides,
             attachment_streams=attachment_streams,
             tag_sources=[] if tag_overrides is not None else tag_sources,
             tag_overrides=tag_overrides,

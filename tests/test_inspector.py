@@ -431,13 +431,27 @@ class TestParseFFprobe:
 
     def test_parse_chapters(self):
         raw = _make_ffprobe_output(chapters=[
-            {"tags": {"title": "Chapitre 1"}},
-            {"tags": {"title": "Chapitre 2"}},
+            {"start_time": "0.000000", "tags": {"title": "Chapitre 1"}},
+            {"start_time": "300.000000", "tags": {"title": "Chapitre 2"}},
         ])
         info = self.insp._parse_ffprobe(self.path, raw)
         assert info.chapters is not None
         assert info.chapters.count == 2
-        assert "Chapitre 1" in info.chapters.titles
+        names = [e.name for e in info.chapters.entries]
+        assert "Chapitre 1" in names
+        assert "Chapitre 2" in names
+
+    def test_parse_chapters_timecodes(self):
+        """Les timecodes des chapitres sont correctement parsés en secondes."""
+        raw = _make_ffprobe_output(chapters=[
+            {"start_time": "0.000000",   "tags": {"title": "Intro"}},
+            {"start_time": "3661.500000", "tags": {"title": "Acte 2"}},
+        ])
+        info = self.insp._parse_ffprobe(self.path, raw)
+        assert info.chapters is not None
+        tcs = [e.timecode_s for e in info.chapters.entries]
+        assert tcs[0] == pytest.approx(0.0)
+        assert tcs[1] == pytest.approx(3661.5)
 
     def test_parse_no_chapters(self):
         raw = _make_ffprobe_output()

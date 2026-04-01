@@ -838,7 +838,9 @@ class EncodeWorkflow(QObject):
                     pass
 
     def _postproc(self, config: EncodeConfig, signals: "TaskSignals | None" = None) -> None:
-        """Post-traitements in-place : balises MKV + métadonnées de pistes + writing-app."""
+        """Post-traitements in-place : chapitres + balises MKV + métadonnées pistes + writing-app."""
+        if config.chapter_overrides is not None:
+            self._apply_chapters_inplace(config.output, config.chapter_overrides)
         if config.tag_overrides is not None:
             # tag_overrides prioritaire : écriture directe sans extraction source
             self._apply_tags_dict_inplace(config.output, config.tag_overrides, signals)
@@ -846,6 +848,36 @@ class EncodeWorkflow(QObject):
             self._inject_tags_inplace(config.output, config.tag_sources, signals)
         self._apply_track_meta_edits_inplace(config.output, config.track_meta_edits)
         self._set_writing_app_inplace(config.output)
+
+    def _apply_chapters_inplace(self, output: Path, chapters: list) -> None:
+        """
+        Écrit les chapitres personnalisés dans le fichier de sortie via
+        ``mkvpropedit --chapters <xml>``.
+        """
+        if not chapters:
+            return
+        from core.inspector import build_chapter_xml
+        xml_content = build_chapter_xml(chapters)
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".xml", delete=False, encoding="utf-8"
+            ) as f:
+                f.write(xml_content)
+                tmp_path = Path(f.name)
+            cmd = [self._bins["mkvpropedit"], str(output), "--chapters", str(tmp_path)]
+            self.log_message.emit("INFO", "$ " + " ".join(cmd))
+            r = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
+            if r.returncode != 0:
+                self.log_message.emit("WARN", f"mkvpropedit (chapitres) : {r.stderr.strip()}")
+        except FileNotFoundError:
+            self.log_message.emit("WARN", "mkvpropedit introuvable — chapitres non appliqués.")
+        finally:
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
 
     def _apply_track_meta_edits_inplace(self, output: Path, edits: list) -> None:
         """

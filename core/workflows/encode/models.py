@@ -135,6 +135,10 @@ class EncodeConfig:
     # Si non vide, remplace le copy_subtitles générique.
     subtitle_tracks:  list = field(default_factory=list)   # list[tuple[Path, int]]
     keep_chapters:    bool         = True
+    #: Chapitres personnalisés à appliquer en post-traitement via mkvpropedit.
+    #: None  → comportement keep_chapters (copie depuis la source ou rien).
+    #: list  → écrase les chapitres existants avec ces entrées.
+    chapter_overrides: list | None = None  # list[ChapterEntry] | None
     # Flux d'attachements à copier : (chemin_source, stream_index_ffprobe)
     # Sélection individuelle — remplace l'ancien attachment_sources global.
     attachment_streams: list = field(default_factory=list)   # list[tuple[Path, int]]

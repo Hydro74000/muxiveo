@@ -78,6 +78,8 @@ class EncodePanel(QWidget):
         self._extra_attachments_provider: Callable[[], list] = lambda: []
         # Callable fourni par MainWindow pour récupérer les tag_overrides depuis RemuxPanel.
         self._tag_overrides_provider: Callable[[], "dict | None"] = lambda: None
+        # Callable fourni par MainWindow pour récupérer les chapter_overrides depuis RemuxPanel.
+        self._chapters_provider: Callable[[], "list | None"] = lambda: None
 
         self._workflow.log_message.connect(self.log_message, Qt.ConnectionType.QueuedConnection)
         self._hw_detected.connect(self._on_hw_detected, Qt.ConnectionType.QueuedConnection)
@@ -962,6 +964,13 @@ class EncodePanel(QWidget):
         """
         self._tag_overrides_provider = provider
 
+    def set_chapters_provider(self, provider: "Callable[[], list | None]") -> None:
+        """
+        Fournit un callable qui retourne les chapter_overrides (depuis RemuxPanel).
+        Appelé par MainWindow après création des panneaux.
+        """
+        self._chapters_provider = provider
+
     def _current_config(self) -> EncodeConfig | None:
         if self._file_info is None:
             return None
@@ -985,6 +994,7 @@ class EncodePanel(QWidget):
             extra_attachments=self._extra_attachments_provider(),
             track_meta_edits=track_meta_edits,
             tag_overrides=self._tag_overrides_provider(),
+            chapter_overrides=self._chapters_provider(),
         )
 
     def _on_add_audio_track(self) -> None:
