@@ -357,8 +357,8 @@ class DashboardPage(QWidget):
 
     # codec_id → (label affiché, badge QLabel) pour mise à jour async
     _HW_VIDEO: list[tuple[str, str]] = [
-        ("hevc_nvenc", "NVENC·HEVC"), ("hevc_amf", "AMF·HEVC"), ("hevc_qsv", "QSV·HEVC"),
-        ("h264_nvenc", "NVENC·H264"), ("h264_amf", "AMF·H264"), ("h264_qsv", "QSV·H264"),
+        ("hevc_nvenc", "NVENC·HEVC"), ("hevc_amf", "AMF·HEVC"), ("hevc_vaapi", "VAAPI·HEVC"), ("hevc_qsv", "QSV·HEVC"),
+        ("h264_nvenc", "NVENC·H264"), ("h264_amf", "AMF·H264"), ("h264_vaapi", "VAAPI·HEVC"), ("h264_qsv", "QSV·H264"),
     ]
     _SW_VIDEO: list[tuple[str, str]] = [
         ("libx265", "x265"), ("libx264", "x264"), ("libsvtav1", "SVT-AV1"),

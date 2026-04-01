@@ -44,6 +44,7 @@ class HardwareEncoderDetector:
             return set()
 
         if not compiled:
+            
             return set()
 
         # Étape 2 : probe runtime selon la famille d'encodeur
@@ -54,30 +55,48 @@ class HardwareEncoderDetector:
         #   même si le GPU est accessible. nvidia-smi communique directement
         #   avec le kernel driver (/dev/nvidiactl) sans dépendance CUDA.
         #
+        # VAAPI : nécessite l'init du device (-vaapi_device) et un upload
+        #   explicite vers le GPU (format=nv12,hwupload). La taille minimale
+        #   acceptée par le driver est >130x130 — on utilise 256x256.
+        #
         # AMF / QSV : encode probe avec format=yuv420p (les HW encoders
-        #   refusent rgb24 produit par nullsrc).
+        #   refusent rgb24 produit par nullsrc). Taille 256x256 par cohérence.
 
         _NVENC = {"hevc_nvenc", "h264_nvenc"}
+        _VAAPI = {"hevc_vaapi", "h264_vaapi"}
         available: set[str] = set()
 
         nvenc_compiled = compiled & _NVENC
         if nvenc_compiled and self._nvidia_ok():
             available |= nvenc_compiled
 
+        vaapi_device = self._vaapi_device()
+
         for codec_id in compiled - _NVENC:
-            probe = subprocess.run(
-                [
+            if codec_id in _VAAPI:
+                if vaapi_device is None:
+                    continue
+                cmd = [
                     ffmpeg_bin,
-                    "-f", "lavfi", "-i", "nullsrc=s=64x64:r=1:d=0.04",
+                    "-vaapi_device", vaapi_device,
+                    "-f", "lavfi", "-i", "nullsrc=s=256x256:r=1:d=0.04",
+                    "-vf", "format=nv12,hwupload",
+                    "-frames:v", "1",
+                    "-c:v", codec_id,
+                    "-f", "null", "-",
+                    "-loglevel", "error",
+                ]
+            else:
+                cmd = [
+                    ffmpeg_bin,
+                    "-f", "lavfi", "-i", "nullsrc=s=256x256:r=1:d=0.04",
                     "-vf", "format=yuv420p",
                     "-frames:v", "1",
                     "-c:v", codec_id,
                     "-f", "null", "-",
                     "-loglevel", "error",
-                ],
-                capture_output=True,
-                check=False,
-            )
+                ]
+            probe = subprocess.run(cmd, capture_output=True, check=False)
             if probe.returncode == 0:
                 available.add(codec_id)
 
@@ -99,3 +118,12 @@ class HardwareEncoderDetector:
             pass
         # Fallback : présence du device node kernel
         return Path("/dev/nvidia0").exists()
+
+    @staticmethod
+    def _vaapi_device() -> str | None:
+        """Retourne le chemin du premier device VAAPI disponible, ou None."""
+        for i in range(8):
+            node = Path(f"/dev/dri/renderD{128 + i}")
+            if node.exists():
+                return str(node)
+        return None
