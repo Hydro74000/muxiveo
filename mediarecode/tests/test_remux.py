@@ -123,7 +123,8 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
 from core.inspector import (
-    AudioTrack, FileInfo, HDRType, SubtitleTrack, VideoTrack,
+    AudioTrack, ChapterEntry, ChapterInfo, FileInfo, HDRType, SubtitleTrack, VideoTrack,
+    build_chapter_xml,
 )
 from core.workflows.remux import (
     RemuxConfig, RemuxError, RemuxWorkflow, SourceInput,
@@ -1563,3 +1564,141 @@ class TestBuildCommandExtraAttachments:
         assert cmd[idx + 1] == "cover"
         # Un seul --attachment-name
         assert sum(1 for a in cmd if a == "--attachment-name") == 1
+
+# ===========================================================================
+# ChapterEntry / build_chapter_xml
+# ===========================================================================
+
+class TestChapterEntry:
+
+    def test_chapter_entry_fields(self):
+        e = ChapterEntry(timecode_s=3661.5, name="Acte 2")
+        assert e.timecode_s == pytest.approx(3661.5)
+        assert e.name == "Acte 2"
+
+    def test_chapter_info_count_property(self):
+        ci = ChapterInfo(entries=[
+            ChapterEntry(0.0, "Intro"),
+            ChapterEntry(300.0, "Part 1"),
+        ])
+        assert ci.count == 2
+
+    def test_chapter_info_empty(self):
+        ci = ChapterInfo()
+        assert ci.count == 0
+        assert ci.entries == []
+
+
+class TestBuildChapterXml:
+
+    def test_xml_contains_chapter_name(self):
+        entries = [ChapterEntry(0.0, "Intro"), ChapterEntry(300.0, "Acte 1")]
+        xml = build_chapter_xml(entries)
+        assert "Intro" in xml
+        assert "Acte 1" in xml
+
+    def test_xml_timecode_format(self):
+        entries = [ChapterEntry(3661.5, "Test")]
+        xml = build_chapter_xml(entries)
+        # 3661.5 s = 01:01:01.500000000
+        assert "01:01:01." in xml
+
+    def test_xml_sorted_by_timecode(self):
+        entries = [
+            ChapterEntry(300.0, "Second"),
+            ChapterEntry(0.0,   "First"),
+        ]
+        xml = build_chapter_xml(entries)
+        assert xml.index("First") < xml.index("Second")
+
+    def test_xml_special_chars_escaped(self):
+        entries = [ChapterEntry(0.0, "Chapitre <1> & 'special'")]
+        xml = build_chapter_xml(entries)
+        assert "<1>" not in xml
+        assert "&lt;" in xml or "&#" in xml or "&amp;" in xml
+
+    def test_xml_empty_name(self):
+        entries = [ChapterEntry(0.0, "")]
+        xml = build_chapter_xml(entries)
+        assert "<ChapterString></ChapterString>" in xml
+
+
+# ===========================================================================
+# RemuxWorkflow — chapter_overrides
+# ===========================================================================
+
+class TestRemuxWorkflowChapterOverrides:
+
+    def _workflow(self) -> RemuxWorkflow:
+        return RemuxWorkflow(mkvmerge_bin="mkvmerge")
+
+    def _cfg(self, overrides: list | None) -> RemuxConfig:
+        t = _track(0, "video", file_id="id0")
+        src = SourceInput(path=Path("/a.mkv"), file_index=0, tracks=[t])
+        return RemuxConfig(
+            sources=[src],
+            output=Path("/out.mkv"),
+            track_order=[(0, 0)],
+            chapter_overrides=overrides,
+        )
+
+    def _cmd(self, cfg: RemuxConfig) -> list[str]:
+        return RemuxWorkflow(mkvmerge_bin="mkvmerge").build_command(cfg)
+
+    def test_no_chapters_flag_when_keep_false(self):
+        t = _track(0, "video", file_id="id0")
+        src = SourceInput(path=Path("/a.mkv"), file_index=0, tracks=[t])
+        cfg = RemuxConfig(
+            sources=[src], output=Path("/out.mkv"),
+            track_order=[(0, 0)], keep_chapters=False,
+        )
+        cmd = self._cmd(cfg)
+        assert "--no-chapters" in cmd
+
+    def test_chapter_overrides_adds_chapters_placeholder(self):
+        entries = [ChapterEntry(0.0, "Intro"), ChapterEntry(300.0, "Acte")]
+        cmd = self._cmd(self._cfg(entries))
+        assert "--chapters" in cmd
+        idx = cmd.index("--chapters")
+        assert cmd[idx + 1] == "<chapitres.xml>"
+
+    def test_chapter_overrides_suppresses_source_chapters(self):
+        """Quand chapter_overrides est défini, --no-chapters est émis pour la source."""
+        entries = [ChapterEntry(0.0, "Intro")]
+        cmd = self._cmd(self._cfg(entries))
+        assert "--no-chapters" in cmd
+
+    def test_no_chapter_overrides_no_chapters_flag_by_default(self):
+        """Sans chapter_overrides et keep_chapters=True : pas de --no-chapters."""
+        cmd = self._cmd(self._cfg(None))
+        assert "--no-chapters" not in cmd
+
+    def test_chapters_option_before_source_path(self):
+        """--chapters doit apparaître avant le chemin de source."""
+        entries = [ChapterEntry(0.0, "Intro")]
+        cmd = self._cmd(self._cfg(entries))
+        assert cmd.index("--chapters") < cmd.index(str(Path("/a.mkv")))
+
+    def test_write_chapter_xml_creates_file(self, tmp_path):
+        """_write_chapter_xml crée un fichier XML avec le contenu attendu."""
+        wf = self._workflow()
+        entries = [ChapterEntry(0.0, "Intro"), ChapterEntry(60.0, "Acte")]
+        path = wf._write_chapter_xml(entries)
+        try:
+            assert path.exists()
+            content = path.read_text(encoding="utf-8")
+            assert "Intro" in content
+            assert "Acte" in content
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_build_command_with_chapters_file(self, tmp_path):
+        """Avec chapters_file, --chapters pointe vers le vrai fichier."""
+        xml_file = tmp_path / "chapters.xml"
+        xml_file.write_text("<Chapters/>")
+        entries = [ChapterEntry(0.0, "Intro")]
+        cfg = self._cfg(entries)
+        cmd = RemuxWorkflow(mkvmerge_bin="mkvmerge").build_command(cfg, chapters_file=xml_file)
+        assert "--chapters" in cmd
+        idx = cmd.index("--chapters")
+        assert cmd[idx + 1] == str(xml_file)

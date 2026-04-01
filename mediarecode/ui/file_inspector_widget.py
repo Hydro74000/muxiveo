@@ -244,7 +244,7 @@ _SUB_HEADERS = [
     "#", "Codec", "Langue", "Titre", "Défaut", "Forcé",
 ]
 
-_CHAPTER_HEADERS = ["#", "Titre"]
+_CHAPTER_HEADERS = ["#", "Timecode", "Titre"]
 
 
 def _video_rows(tracks: list[VideoTrack]) -> list[list[str]]:
@@ -300,8 +300,11 @@ def _subtitle_rows(tracks: list[SubtitleTrack]) -> list[list[str]]:
 def _chapter_rows(info: ChapterInfo | None) -> list[list[str]]:
     if info is None:
         return []
-    return [[str(i + 1), title or f"Chapitre {i + 1}"]
-            for i, title in enumerate(info.titles)]
+    from core.inspector import fmt_timecode_display
+    return [
+        [str(i + 1), fmt_timecode_display(e.timecode_s), e.name or f"Chapitre {i + 1}"]
+        for i, e in enumerate(info.entries)
+    ]
 
 
 def _fmt_fps(raw: str | None) -> str:

@@ -28,7 +28,7 @@ from xml.sax.saxutils import escape as _xml_escape
 
 from PySide6.QtCore import QObject, Signal
 from core.lang_tags import Rfc5646LanguageTags as LangTags
-from core.inspector import AttachmentInfo, FileInfo, HDRType
+from core.inspector import AttachmentInfo, ChapterEntry, FileInfo, HDRType, build_chapter_xml
 from core.runner import TaskCancelledError, TaskSignals, ToolRunner
 
 
@@ -164,6 +164,10 @@ class RemuxConfig:
     output:              Path
     track_order:         list[tuple[int, int]]   # (file_index, mkv_tid) ordonnés
     keep_chapters:       bool          = True
+    #: None  → mkvmerge copie les chapitres des sources (comportement par défaut).
+    #: list  → on passe un XML de chapitres à mkvmerge (--chapters) et on supprime
+    #:         les chapitres des sources (--no-chapters per source).
+    chapter_overrides:   list | None   = None  # list[ChapterEntry] | None
     extra_attachments:   list          = field(default_factory=list)  # list[Path]
     work_dir:            Path | None   = None
     file_title:          str           = ""      # balise Title du segment de sortie
@@ -323,21 +327,38 @@ class RemuxWorkflow(QObject):
     # Construction de la commande
     # ------------------------------------------------------------------
 
-    def build_command(self, config: RemuxConfig) -> list[str]:
+    def build_command(
+        self,
+        config: RemuxConfig,
+        chapters_file: "Path | None" = None,
+    ) -> list[str]:
         """
         Construit la liste d'arguments mkvmerge pour un remuxage multi-source.
 
         Structure :
             mkvmerge -o OUTPUT
+              [--chapters FILE]
               [--track-order FI:TID,...]
               [per-source flags] SOURCE0
               [per-source flags] SOURCE1
               ...
+
+        chapters_file : chemin vers un fichier XML de chapitres à passer à
+                        --chapters.  Fourni par run() depuis un fichier temporaire ;
+                        pour l'aperçu (preview_command) il vaut None et on affiche
+                        un placeholder.
         """
         cmd: list[str] = [self._mkvmerge, "-o", str(config.output)]
 
         # --- Titre du segment de sortie (toujours appliqué, même vide) ---
         cmd.extend(["--title", config.file_title])
+
+        # --- Chapitres personnalisés (avant les sources, option globale) ---
+        if config.chapter_overrides is not None:
+            if chapters_file is not None:
+                cmd.extend(["--chapters", str(chapters_file)])
+            else:
+                cmd.extend(["--chapters", "<chapitres.xml>"])
 
         # --- Ordre global des pistes (avant les sources) ---
         if config.track_order:
@@ -388,7 +409,10 @@ class RemuxWorkflow(QObject):
                 cmd.extend(["--subtitle-tracks", ",".join(str(t.mkv_tid) for t in subs_on)])
 
             # --- Options conteneur ---
-            if not config.keep_chapters:
+            # Supprime les chapitres de cette source si :
+            #   a) l'utilisateur veut garder ses chapitres personnalisés (chapter_overrides),
+            #   b) ou si keep_chapters est False.
+            if config.chapter_overrides is not None or not config.keep_chapters:
                 cmd.append("--no-chapters")
 
             # --- Balises globales ---
@@ -501,6 +525,15 @@ class RemuxWorkflow(QObject):
     # Exécution
     # ------------------------------------------------------------------
 
+    def _write_chapter_xml(self, entries: list) -> Path:
+        """Écrit un XML Matroska Chapters dans un fichier temporaire et retourne son chemin."""
+        xml_content = build_chapter_xml(entries)
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".xml", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(xml_content)
+            return Path(f.name)
+
     def _apply_tags_inplace(self, output: Path, tags: dict[str, str]) -> None:
         """
         Écrit les balises MKV globales depuis un dict via mkvpropedit (in-place).
@@ -576,7 +609,6 @@ class RemuxWorkflow(QObject):
             raise RemuxError("\n".join(errors))
 
         self.log_message.emit("INFO", f"Remuxage → {config.output.name}")
-        cmd = self.build_command(config)
         cwd = config.work_dir or config.sources[0].path.parent
         if config.work_dir:
             config.work_dir.mkdir(parents=True, exist_ok=True)
@@ -585,7 +617,11 @@ class RemuxWorkflow(QObject):
         executor = ThreadPoolExecutor(max_workers=1)
 
         def _task() -> None:
+            chapters_file: Path | None = None
             try:
+                if config.chapter_overrides is not None:
+                    chapters_file = self._write_chapter_xml(config.chapter_overrides)
+                cmd = self.build_command(config, chapters_file=chapters_file)
                 output = self._runner._run_cmd(
                     cmd, cwd=cwd, label="mkvmerge",
                     progress_cb=lambda line: signals.progress.emit(line),
@@ -600,6 +636,11 @@ class RemuxWorkflow(QObject):
             except Exception as exc:
                 signals.failed.emit(str(exc), exc)
             finally:
+                if chapters_file is not None:
+                    try:
+                        chapters_file.unlink()
+                    except Exception:
+                        pass
                 executor.shutdown(wait=False)
 
         executor.submit(_task)
