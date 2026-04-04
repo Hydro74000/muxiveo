@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import configparser
 import json
+import locale
 import os
 import platform
 import shutil
@@ -40,6 +41,8 @@ import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Optional
+
+from core.lang_tags import Rfc5646LanguageTags
 
 # ---------------------------------------------------------------------------
 # Terminal colours (no external deps)
@@ -364,6 +367,28 @@ def _tools_section_bounds(lines: list[str]) -> tuple[int, int]:
     return start, end
 
 
+def _section_bounds(lines: list[str], section: str) -> tuple[int, int]:
+    start = -1
+    end = len(lines)
+    target = f"[{section.lower()}]"
+
+    for index, line in enumerate(lines):
+        if line.strip().lower() == target:
+            start = index
+            break
+
+    if start == -1:
+        return -1, len(lines)
+
+    for index in range(start + 1, len(lines)):
+        stripped = lines[index].strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            end = index
+            break
+
+    return start, end
+
+
 def _update_ini_tools_section(
     path: Path,
     tool_values: dict[str, str],
@@ -423,6 +448,81 @@ def _update_ini_tools_section(
         return
 
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def _system_language_code() -> str:
+    candidates: list[str | None] = [
+        os.environ.get("LC_ALL"),
+        (os.environ.get("LANGUAGE") or "").split(":", 1)[0] or None,
+        os.environ.get("LANG"),
+    ]
+    try:
+        candidates.append(locale.getlocale()[0])
+    except (TypeError, ValueError):
+        pass
+
+    for candidate in candidates:
+        code = Rfc5646LanguageTags.from_locale_name(candidate)
+        if code:
+            return code
+    return "eng"
+
+
+def initialize_config_ini_language(dry_run: bool, force: bool = False) -> None:
+    """Initialise la langue UI dans config.ini depuis la locale système."""
+    title("Step 5 — config.ini UI language")
+
+    ini_path = _config_ini_path()
+    detected = _system_language_code()
+    info(f"Detected UI language: {detected}")
+
+    parser = configparser.ConfigParser(
+        inline_comment_prefixes=("#",),
+        default_section="DEFAULT",
+    )
+    if ini_path.exists():
+        parser.read(ini_path, encoding="utf-8")
+
+    existing = ""
+    if parser.has_option("ui", "language"):
+        existing = parser.get("ui", "language").strip()
+
+    if existing and not force:
+        ok(f"config.ini already defines ui.language = {existing}")
+        return
+
+    text = ini_path.read_text(encoding="utf-8") if ini_path.exists() else ""
+    lines = text.splitlines()
+    start, end = _section_bounds(lines, "ui")
+
+    if start == -1:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(["[ui]"])
+        start = len(lines) - 1
+        end = len(lines)
+
+    updated = False
+    for index in range(start + 1, end):
+        stripped = lines[index].strip()
+        if not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
+            continue
+        lhs, _rhs = stripped.split("=", 1)
+        if lhs.strip().lower() != "language":
+            continue
+        lines[index] = f"language = {detected}"
+        updated = True
+        break
+
+    if not updated:
+        lines.insert(end, f"language = {detected}")
+
+    if dry_run:
+        ok(f"[dry-run] config.ini UI language would be set to {detected}")
+        return
+
+    ini_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    ok(f"config.ini UI language set to {detected}")
 
 
 def _windows_winget_root() -> Path:
@@ -1145,6 +1245,11 @@ def main() -> None:
         warn(f"Unknown platform '{OS}' — skipping system package installation")
         check_tools_presence()
 
+    try:
+        initialize_config_ini_language(dry_run, force=force)
+    except Exception as e:
+        error(f"config.ini language initialisation failed: {e}")
+
     # ── Python packages (all platforms) ──────────────────────────────────
     try:
         install_python_packages(dry_run, force=force)
@@ -1160,4 +1265,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

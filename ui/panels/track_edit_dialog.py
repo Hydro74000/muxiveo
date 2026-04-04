@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from core.i18n import apply_translations
 from core.lang_tags import Rfc5646LanguageTags
 from core.workflows.remux import TrackEntry
 
@@ -194,6 +195,7 @@ class TrackEditDialog(QDialog):
         self._build_ui()
         self._configure_for_type(tt)
         self._populate(entry)
+        apply_translations(self)
 
     # ------------------------------------------------------------------
     # Construction de l'UI

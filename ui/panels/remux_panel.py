@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
+from core.i18n import translate_text
 from core.inspector import (
     STANDARD_MKV_TAGS,
     AttachmentInfo, AudioTrack, ChapterEntry, FileInfo, FileInspector, InspectionError,
@@ -973,7 +974,9 @@ class _TrackTable(QTableWidget):
             item.setText(prev)
             self.blockSignals(False)
             QTimer.singleShot(0, lambda: QMessageBox.warning(
-                self, "Erreur", "Erreur : code langue non reconnu"
+                self,
+                translate_text("Erreur"),
+                translate_text("Erreur : code langue non reconnu"),
             ))
 
     def _find_row_for_entry(self, entry: "TrackEntry") -> int | None:
@@ -2183,8 +2186,9 @@ class _ChapterPanel(QFrame):
                 item.setText(prev)
                 self._table.blockSignals(False)
                 QTimer.singleShot(0, lambda: QMessageBox.warning(
-                    self, "Timecode invalide",
-                    "Format attendu : HH:MM:SS ou HH:MM:SS.mmm"
+                    self,
+                    translate_text("Timecode invalide"),
+                    translate_text("Format attendu : HH:MM:SS ou HH:MM:SS.mmm"),
                 ))
                 return
             # Valide : met à jour l'entrée + retrie
