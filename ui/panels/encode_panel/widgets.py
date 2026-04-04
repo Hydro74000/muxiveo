@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.inspector import AudioTrack, FileInfo
-from core.i18n import translate_text
+from core.i18n import apply_translations, translate_text
 from core.lang_tags import Rfc5646LanguageTags
 from core.workflows.encode.models import AUDIO_CODECS, AudioTrackSettings
 from ui.panels.encode_panel.theme import (
@@ -52,6 +52,7 @@ class _FileZone(QFrame):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self._build_ui()
+        apply_translations(self)
 
     def _build_ui(self) -> None:
         self.setStyleSheet(f"QFrame{{background:{_C.BG_CARD};"
@@ -97,7 +98,7 @@ class _FileZone(QFrame):
                            f"border:1px solid {_C.BORDER_LT};border-radius:8px;}}")
 
     def reset(self) -> None:
-        self._main_lbl.setText("Déposer un fichier vidéo ici")
+        self._main_lbl.setText(translate_text("Déposer un fichier vidéo ici"))
         self._main_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:12px;"
                                      f"font-weight:500;background:transparent;border:none;")
         self._info_lbl.setText("")
@@ -123,8 +124,10 @@ class _FileZone(QFrame):
 
     def _browse(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Sélectionner un fichier vidéo", "",
-            "Vidéos (*.mkv *.mp4 *.m4v *.mov *.ts *.m2ts);;Tous (*)",
+            self,
+            translate_text("Sélectionner un fichier vidéo"),
+            "",
+            translate_text("Vidéos (*.mkv *.mp4 *.m4v *.mov *.ts *.m2ts);;Tous (*)"),
         )
         if path:
             self.file_selected.emit(path)
@@ -266,6 +269,7 @@ class _AudioSourceDialog(QDialog):
         btn_row.addSpacing(8)
         btn_row.addWidget(add_btn)
         layout.addLayout(btn_row)
+        apply_translations(self)
 
     def _on_codec_changed(self, _idx: int = 0) -> None:
         codec = self._codec_combo.currentData()
@@ -333,6 +337,7 @@ class _AudioTable(QTableWidget):
         self._prev_lang: dict[int, str] = {}
         self._setup_table()
         self.itemChanged.connect(self._on_item_changed)
+        apply_translations(self)
 
     def set_changed_callback(self, cb) -> None:
         self._changed_cb = cb

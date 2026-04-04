@@ -92,7 +92,7 @@ class TestAppConfigRamBuffer:
         assert cfg.work_dir == default_work_dir
 
     def test_ini_language_accepts_iso639_2_alias(self, tmp_path):
-        """Le code UI peut utiliser un alias ISO639-2 présent dans _ISO639_2_TO_IETF."""
+        """Le code UI peut utiliser un alias ISO639-2, normalisé vers le code canonique."""
         import core.config as cfg_mod
         from core.config import AppConfig
 
@@ -107,7 +107,7 @@ class TestAppConfigRamBuffer:
                  patch.object(cfg_mod, "_INI_PATH", ini_path):
                 cfg = AppConfig()
 
-        assert cfg.language == "fre"
+        assert cfg.language == "fra"
 
 
 class TestAppConfigWindowsToolAutodetect:

@@ -45,7 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
-from core.i18n import translate_text
+from core.i18n import apply_translations, translate_text
 from core.inspector import (
     STANDARD_MKV_TAGS,
     AttachmentInfo, AudioTrack, ChapterEntry, FileInfo, FileInspector, InspectionError,
@@ -375,7 +375,7 @@ class _FileRow(QWidget):
 
     def set_error(self, message: str) -> None:
         """Affiche une erreur d'inspection."""
-        self._info_lbl.setText(f"Erreur : {message}")
+        self._info_lbl.setText(translate_text("Erreur : {message}", message=message))
         self._info_lbl.setStyleSheet(f"""
             color: {_C.ERROR};
             font-size: 10px;
@@ -558,9 +558,9 @@ class _FileListWidget(QFrame):
     def _browse(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
             self,
-            "Sélectionner des fichiers vidéo",
+            translate_text("Sélectionner des fichiers vidéo"),
             "",
-            "Fichiers vidéo (*.mkv *.mp4 *.m4v *.mov);;Tous les fichiers (*)",
+            translate_text("Fichiers vidéo (*.mkv *.mp4 *.m4v *.mov);;Tous les fichiers (*)"),
         )
         if paths:
             self.add_requested.emit(paths)
@@ -1107,6 +1107,7 @@ class _TagEditDialog(QDialog):
         # Liste mutable (name_widget, value_edit, row_widget)
         self._rows: list[tuple[QComboBox | QLabel, QLineEdit, QWidget]] = []
         self._build_ui(tags)
+        apply_translations(self)
 
     # ------------------------------------------------------------------
     # Construction
@@ -1691,7 +1692,7 @@ class _AttachmentPanel(QFrame):
             self._panel_tag_overrides = dlg.result_tags()
             # Met à jour le libellé du bouton pour indiquer qu'il y a des modifications
             n = len(self._panel_tag_overrides)
-            label = f"Tags édités ({n})" if n else "Tags supprimés"
+            label = translate_text("Tags édités ({count})", count=n) if n else translate_text("Tags supprimés")
             self._edit_tags_btn.setText(label)
             self.changed.emit()
 
@@ -1703,12 +1704,14 @@ class _AttachmentPanel(QFrame):
         self._edit_tags_btn.setEnabled(has_tags)
         if not has_tags:
             self._panel_tag_overrides = None
-            self._edit_tags_btn.setText("Éditer les tags")
+            self._edit_tags_btn.setText(translate_text("Éditer les tags"))
 
     def _browse_add(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "Ajouter des pièces jointes", "",
-            "Tous les fichiers (*)",
+            self,
+            translate_text("Ajouter des pièces jointes"),
+            "",
+            translate_text("Tous les fichiers (*)"),
         )
         for path_str in paths:
             path = Path(path_str)
@@ -1744,6 +1747,7 @@ class _AddChapterDialog(QDialog):
         self._tc_edit:   QLineEdit | None = None
         self._name_edit: QLineEdit | None = None
         self._build_ui()
+        apply_translations(self)
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -1808,7 +1812,7 @@ class _AddChapterDialog(QDialog):
     def _on_accept(self) -> None:
         tc_text = self._tc_edit.text().strip() if self._tc_edit else ""
         if _parse_timecode(tc_text) is None:
-            self._err_lbl.setText("Timecode invalide — format : HH:MM:SS ou HH:MM:SS.mmm")
+            self._err_lbl.setText(translate_text("Timecode invalide — format : HH:MM:SS ou HH:MM:SS.mmm"))
             self._err_lbl.setVisible(True)
             return
         self._err_lbl.setVisible(False)
@@ -2261,6 +2265,7 @@ class RemuxPanel(QWidget):
         )
 
         self._build_ui()
+        apply_translations(self)
 
     # ------------------------------------------------------------------
     # Construction de l'interface
@@ -2466,7 +2471,7 @@ class RemuxPanel(QWidget):
             path = Path(path_str)
             # Évite les doublons
             if any(sf.path == path for sf in self._source_files):
-                self.log_message.emit("WARN", f"{path.name} est déjà dans la liste.")
+                self.log_message.emit("WARN", translate_text("{name} est déjà dans la liste.", name=path.name))
                 continue
 
             color = _pick_file_color(self._color_index)
@@ -2480,7 +2485,7 @@ class RemuxPanel(QWidget):
             self._source_colors[sf.id] = color
 
             self._file_list.add_file(sf)
-            self.log_message.emit("INFO", f"Inspection de {path.name}…")
+            self.log_message.emit("INFO", translate_text("Inspection de {name}…", name=path.name))
             self._executor.submit(self._inspect_file, sf.id, path)
 
     def _inspect_file(self, file_id: str, path: Path) -> None:
@@ -2495,10 +2500,10 @@ class RemuxPanel(QWidget):
             self._inspection_done.emit(file_id, info)
         except InspectionError as exc:
             self.log_message.emit("ERROR", str(exc))
-            self._inspection_error.emit(file_id, "Erreur d'inspection.")
+            self._inspection_error.emit(file_id, translate_text("Erreur d'inspection."))
         except Exception as exc:
-            self.log_message.emit("ERROR", f"Erreur inattendue : {exc}")
-            self._inspection_error.emit(file_id, "Erreur d'inspection.")
+            self.log_message.emit("ERROR", translate_text("Erreur inattendue : {exc}", exc=exc))
+            self._inspection_error.emit(file_id, translate_text("Erreur d'inspection."))
 
     def _apply_inspection(self, file_id: str, info: FileInfo) -> None:
         """Reçu dans le thread Qt après une inspection réussie."""
@@ -2521,9 +2526,16 @@ class RemuxPanel(QWidget):
         chap_str = f"  {info.chapters.count}Chap" if info.chapters else ""
         self.log_message.emit(
             "OK",
-            f"{info.path.name} chargé — "
-            f"{len(info.video_tracks)}V  {len(info.audio_tracks)}A  "
-            f"{len(info.subtitle_tracks)}S{att_str}{tag_str}{chap_str}",
+            translate_text(
+                "{name} chargé — {video}V  {audio}A  {subtitle}S{att}{tag}{chap}",
+                name=info.path.name,
+                video=len(info.video_tracks),
+                audio=len(info.audio_tracks),
+                subtitle=len(info.subtitle_tracks),
+                att=att_str,
+                tag=tag_str,
+                chap=chap_str,
+            ),
         )
 
         # Met à jour les chapitres (règle d'or appliquée)
@@ -2570,7 +2582,7 @@ class RemuxPanel(QWidget):
         self._rebuild_preview()
         self._emit_signals()
 
-        self.log_message.emit("INFO", f"{sf.path.name} retiré de la liste.")
+        self.log_message.emit("INFO", translate_text("{name} retiré de la liste.", name=sf.path.name))
 
     # ------------------------------------------------------------------
     # Helpers de recherche
@@ -2839,8 +2851,10 @@ class RemuxPanel(QWidget):
     def _browse_output(self) -> None:
         default = self._output_edit.text() or str(self._config.output_dir)
         path, _ = QFileDialog.getSaveFileName(
-            self, "Fichier de sortie", default,
-            "Matroska (*.mkv);;Tous les fichiers (*)",
+            self,
+            translate_text("Fichier de sortie"),
+            default,
+            translate_text("Matroska (*.mkv);;Tous les fichiers (*)"),
         )
         if path:
             self._output_edit.setText(path)

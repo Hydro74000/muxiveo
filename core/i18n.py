@@ -10,12 +10,14 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QLocale, Qt
 from PySide6.QtWidgets import (
     QAbstractButton,
+    QComboBox,
     QGroupBox,
     QLineEdit,
     QPlainTextEdit,
+    QTabWidget,
     QTableWidget,
     QTextEdit,
     QWidget,
@@ -28,6 +30,7 @@ _LOCALES_PATH = Path(__file__).parent.parent / "locales.json"
 _FALLBACK_LANGUAGE = "eng"
 _PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 _HEADER_SOURCE_ROLE = int(Qt.ItemDataRole.UserRole) + 913
+_COMBO_SOURCE_ROLE = int(Qt.ItemDataRole.UserRole) + 914
 
 _current_language = _FALLBACK_LANGUAGE
 _catalog_cache: dict[str, dict[str, str]] | None = None
@@ -67,8 +70,11 @@ def normalize_language(code: str | None) -> str:
     raw = code.strip()
     if not raw:
         return _FALLBACK_LANGUAGE
-    if len(raw) == 3 and Rfc5646LanguageTags.from_iso639_2(raw):
-        return raw.lower()
+    if len(raw) == 3:
+        ietf = Rfc5646LanguageTags.from_iso639_2(raw)
+        if ietf:
+            canonical = Rfc5646LanguageTags.to_iso639_2(ietf) or raw.lower()
+            return canonical.lower()
     normalized = Rfc5646LanguageTags.from_locale_name(raw)
     return normalized or _FALLBACK_LANGUAGE
 
@@ -84,7 +90,34 @@ def current_language() -> str:
 
 
 def available_languages() -> list[tuple[str, str]]:
-    return Rfc5646LanguageTags.iso639_2_items()
+    codes: set[str] = set()
+    for values in _catalog().values():
+        codes.update(str(code).lower() for code in values)
+
+    normalized_codes: set[str] = set()
+    for code in codes:
+        normalized = normalize_language(code)
+        if len(normalized) == 3 and Rfc5646LanguageTags.from_iso639_2(normalized):
+            normalized_codes.add(normalized)
+
+    if not normalized_codes:
+        normalized_codes = {"fra", "eng"}
+
+    items: list[tuple[str, str]] = []
+    for code in sorted(normalized_codes):
+        ietf = Rfc5646LanguageTags.from_iso639_2(code) or code
+        locale = QLocale(ietf)
+        native = locale.nativeLanguageName().strip()
+        if code == "eng":
+            native = "English"
+        elif not native:
+            native = QLocale.languageToString(locale.language()).strip()
+        if not native:
+            native = Rfc5646LanguageTags.iso639_2_name(code) or code
+        name = native[:1].upper() + native[1:] if native else code
+        items.append((code, name))
+
+    return sorted(items, key=lambda item: item[1].lower())
 
 
 def _lookup_template(template: str, language: str) -> str:
@@ -190,6 +223,37 @@ def _translate_table_headers(table: QTableWidget) -> None:
         item.setText(translate_text(str(source)))
 
 
+def _translate_combo_items(combo: QComboBox) -> None:
+    for index in range(combo.count()):
+        source = combo.itemData(index, _COMBO_SOURCE_ROLE) or combo.itemText(index)
+        if not source:
+            continue
+        combo.setItemData(index, source, _COMBO_SOURCE_ROLE)
+        combo.setItemText(index, translate_text(str(source)))
+
+
+def _translate_tab_titles(tabs: QTabWidget) -> None:
+    prop_key = "_i18n_tab_sources"
+    count = tabs.count()
+    sources_prop = tabs.property(prop_key)
+    sources = list(sources_prop) if isinstance(sources_prop, list) else []
+
+    if len(sources) < count:
+        for index in range(len(sources), count):
+            sources.append(tabs.tabText(index))
+    elif len(sources) > count:
+        sources = sources[:count]
+
+    for index in range(count):
+        source = sources[index] or tabs.tabText(index)
+        if not source:
+            continue
+        sources[index] = source
+        tabs.setTabText(index, translate_text(str(source)))
+
+    tabs.setProperty(prop_key, sources)
+
+
 def apply_translations(root: QWidget) -> None:
     widgets = [root]
     widgets.extend(root.findChildren(QWidget))
@@ -212,6 +276,12 @@ def apply_translations(root: QWidget) -> None:
 
         if isinstance(widget, (QPlainTextEdit, QTextEdit)):
             _translate_widget_property(widget, "placeholderText", "setPlaceholderText", "placeholder")
+
+        if isinstance(widget, QComboBox):
+            _translate_combo_items(widget)
+
+        if isinstance(widget, QTabWidget):
+            _translate_tab_titles(widget)
 
         if isinstance(widget, QTableWidget):
             _translate_table_headers(widget)

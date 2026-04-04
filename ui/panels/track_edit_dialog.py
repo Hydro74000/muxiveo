@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from core.i18n import apply_translations
+from core.i18n import apply_translations, translate_text
 from core.lang_tags import Rfc5646LanguageTags
 from core.workflows.remux import TrackEntry
 
@@ -91,9 +91,9 @@ class TrackEditDialog(QDialog):
         tt = entry.track_type
 
         title = (
-            "Langue de la piste"
+            translate_text("Langue de la piste")
             if tt == "video"
-            else "Éditer la piste"
+            else translate_text("Éditer la piste")
         )
         self.setWindowTitle(f"{title} — {entry.type_long}  ·  {entry.codec}")
         self.setModal(True)
