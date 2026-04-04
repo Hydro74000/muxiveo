@@ -480,6 +480,21 @@ class TestBuildCommand:
         cmd = self._cmd(cfg)
         assert "--audio-tracks" in cmd
 
+    def test_track_order_preserves_reordered_audio_tracks(self):
+        tracks = [
+            _track(0, "video", file_id="id0"),
+            _track(1, "audio", file_id="id0"),
+            _track(2, "audio", file_id="id0"),
+        ]
+        src = _source(Path("/a.mkv"), 0, tracks)
+        cfg = RemuxConfig(
+            sources=[src], output=Path("/out.mkv"),
+            track_order=[(0, 0), (0, 2), (0, 1)],
+        )
+        cmd = self._cmd(cfg)
+        idx = cmd.index("--track-order")
+        assert cmd[idx + 1] == "0:0,0:2,0:1"
+
     def test_single_source_no_subtitles_when_all_disabled(self):
         tracks = [_track(3, "subtitle", file_id="id0")]
         src = _source(Path("/a.mkv"), 0, tracks)

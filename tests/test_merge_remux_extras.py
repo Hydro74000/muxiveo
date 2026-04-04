@@ -328,3 +328,76 @@ class TestTagOverridesPropagated:
             f"tag_sources attendu [{src}], obtenu : {result.tag_sources!r}"
         assert result.tag_overrides is None, \
             f"tag_overrides devrait être None : {result.tag_overrides!r}"
+
+
+class TestTrackMetaEditsOrdering:
+
+    def test_audio_track_meta_edits_follow_reordered_encode_audio_tracks(self, tmp_path, qt_app):
+        src = tmp_path / "src.mkv"
+        src.touch()
+        out = tmp_path / "out.mkv"
+
+        video = TrackEntry(
+            mkv_tid=0, track_type="video", codec="H264", display_info="",
+            language="", title="", orig_language="", orig_title="",
+        )
+        audio_1 = TrackEntry(
+            mkv_tid=1, track_type="audio", codec="EAC3", display_info="",
+            language="fra", title="VF", orig_language="", orig_title="",
+        )
+        audio_2 = TrackEntry(
+            mkv_tid=2, track_type="audio", codec="EAC3", display_info="",
+            language="eng", title="VO", orig_language="", orig_title="",
+        )
+
+        enc = _encode_cfg(
+            src,
+            out,
+            audio_tracks=[
+                AudioTrackSettings(stream_index=2, source_path=src),
+                AudioTrackSettings(stream_index=1, source_path=src),
+            ],
+        )
+        rmx = _remux_cfg(src, out, tracks=[video, audio_2, audio_1])
+
+        result = _merge(None, enc, rmx)
+
+        assert [(edit.track_order, edit.title, edit.language) for edit in result.track_meta_edits] == [
+            (2, "VO", "eng"),
+            (3, "VF", "fra"),
+        ]
+
+    def test_subtitle_tracks_and_metadata_follow_remux_track_order(self, tmp_path, qt_app):
+        src_a = tmp_path / "src_a.mkv"
+        src_b = tmp_path / "src_b.mkv"
+        src_a.touch()
+        src_b.touch()
+        out = tmp_path / "out.mkv"
+
+        sub_a = TrackEntry(
+            mkv_tid=4, track_type="subtitle", codec="PGS", display_info="",
+            language="fra", title="Sous A", orig_language="", orig_title="",
+        )
+        sub_b = TrackEntry(
+            mkv_tid=7, track_type="subtitle", codec="PGS", display_info="",
+            language="eng", title="Sous B", orig_language="", orig_title="",
+        )
+
+        enc = _encode_cfg(src_a, out)
+        rmx = RemuxConfig(
+            sources=[
+                SourceInput(path=src_a, file_index=0, tracks=[sub_a]),
+                SourceInput(path=src_b, file_index=1, tracks=[sub_b]),
+            ],
+            output=out,
+            track_order=[(1, 7), (0, 4)],
+            keep_chapters=True,
+        )
+
+        result = _merge(None, enc, rmx)
+
+        assert result.subtitle_tracks == [(src_b, 7), (src_a, 4)]
+        assert [(edit.track_order, edit.title, edit.language) for edit in result.track_meta_edits] == [
+            (2, "Sous B", "eng"),
+            (3, "Sous A", "fra"),
+        ]

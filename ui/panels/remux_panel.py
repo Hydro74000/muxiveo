@@ -1591,6 +1591,15 @@ class _AttachmentPanel(QFrame):
             self._update_state()
             self.changed.emit()
 
+    def clear_all(self) -> None:
+        """Vide complètement le panneau, y compris les ajouts manuels."""
+        for item in self._items[:]:
+            self._items_layout.removeWidget(item)
+            item.deleteLater()
+        self._items.clear()
+        self._panel_tag_overrides = None
+        self._update_state()
+
     def get_global_tag_overrides(self) -> "dict[str, str] | None":
         """
         Retourne les balises à appliquer globalement sur le fichier de sortie.
@@ -2032,6 +2041,13 @@ class _ChapterPanel(QFrame):
         self._chapters = sorted(entries, key=lambda e: e.timecode_s)
         self._modified = False
         self._rebuild_table()
+
+    def clear_all(self) -> None:
+        """Restaure l'état initial du panneau quand il n'y a plus de source."""
+        self._keep_cb.blockSignals(True)
+        self._keep_cb.setChecked(True)
+        self._keep_cb.blockSignals(False)
+        self.reset_chapters([])
 
     def is_modified(self) -> bool:
         return self._modified
@@ -2538,12 +2554,10 @@ class RemuxPanel(QWidget):
         self._track_table.remove_tracks_by_file_id(file_id)
         self._attachment_panel.remove_by_file_id(file_id)
 
-        # Met à jour les chapitres après retrait du fichier
-        self._update_chapters_from_sources()
-
-        # Réinitialise le chemin de sortie si plus aucun fichier
-        if not self._source_files:
-            self._output_edit.clear()
+        if self._source_files:
+            self._update_chapters_from_sources()
+        else:
+            self._reset_empty_state()
 
         self.ready_changed.emit(self._has_ready_files())
         self._rebuild_preview()
@@ -2594,42 +2608,48 @@ class RemuxPanel(QWidget):
     def _emit_video_tracks(self) -> None:
         """Émet video_tracks_changed — toutes pistes vidéo activées avec FileInfo et couleur."""
         track_entries = self._track_table.current_tracks()
-        enabled_video_ids: dict[str, set[int]] = {}
-        for t in track_entries:
-            if t.track_type == "video" and t.enabled:
-                enabled_video_ids.setdefault(t.file_id, set()).add(t.mkv_tid)
+        file_info_by_id = {
+            sf.id: sf.info
+            for sf in self._source_files
+            if sf.info is not None
+        }
 
         video_tuples: list[tuple] = []
-        for sf in self._source_files:
-            if sf.info is None:
+        for entry in track_entries:
+            if entry.track_type != "video" or not entry.enabled:
                 continue
-            color = self._source_colors.get(sf.id, _C.BORDER)
-            tids = enabled_video_ids.get(sf.id, set())
-            for track_entry in sf.tracks:
-                if track_entry.track_type == "video" and track_entry.mkv_tid in tids:
-                    video_tuples.append((sf.info, track_entry, color))
+            file_info = file_info_by_id.get(entry.file_id)
+            if file_info is None:
+                continue
+            color = self._source_colors.get(entry.file_id, _C.BORDER)
+            video_tuples.append((file_info, entry, color))
 
         self.video_tracks_changed.emit(video_tuples)
 
     def _emit_audio_tracks(self) -> None:
         """Émet audio_tracks_changed — tuples (AudioTrack, couleur, chemin_source)."""
         track_entries = self._track_table.current_tracks()
-        enabled_audio: dict[str, dict[int, TrackEntry]] = {}
-        for t in track_entries:
-            if t.track_type == "audio" and t.enabled:
-                enabled_audio.setdefault(t.file_id, {})[t.mkv_tid] = t
-
-        audio_tuples: list[tuple] = []
+        audio_lookup: dict[tuple[str, int], tuple[AudioTrack, str, Path]] = {}
         for sf in self._source_files:
             if sf.info is None:
                 continue
             color = self._source_colors.get(sf.id, _C.BORDER)
-            tid_map = enabled_audio.get(sf.id, {})
-            for a in sf.info.audio_tracks:
-                entry = tid_map.get(a.index)
-                if entry is not None:
-                    a = dc_replace(a, language=entry.language, title=entry.title)
-                    audio_tuples.append((a, color, sf.info.path))
+            for audio_track in sf.info.audio_tracks:
+                audio_lookup[(sf.id, audio_track.index)] = (audio_track, color, sf.info.path)
+
+        audio_tuples: list[tuple] = []
+        for entry in track_entries:
+            if entry.track_type != "audio" or not entry.enabled:
+                continue
+            audio_data = audio_lookup.get((entry.file_id, entry.mkv_tid))
+            if audio_data is None:
+                continue
+            audio_track, color, source_path = audio_data
+            audio_tuples.append((
+                dc_replace(audio_track, language=entry.language, title=entry.title),
+                color,
+                source_path,
+            ))
 
         self.audio_tracks_changed.emit(audio_tuples)
 
@@ -2766,6 +2786,16 @@ class RemuxPanel(QWidget):
         """Recalcule les chapitres de base depuis les fichiers sources (règle d'or)."""
         base = self._resolve_base_chapters()
         self._chapter_panel.reset_chapters(base)
+
+    def _reset_empty_state(self) -> None:
+        """Restaure l'état initial du panneau quand toutes les sources ont été retirées."""
+        self._color_index = 0
+        self._track_table.clear_all()
+        self._attachment_panel.clear_all()
+        self._chapter_panel.clear_all()
+        self._filter_btn.setChecked(False)
+        self._file_title_edit.clear()
+        self._output_edit.clear()
 
     def _resolve_base_chapters(self) -> "list[ChapterEntry]":
         """

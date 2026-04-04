@@ -1223,14 +1223,32 @@ class MainWindow(QMainWindow):
         attachment_streams: list = []   # list[tuple[Path, int]]  — (source, ffprobe_stream_index)
         tag_sources:        list = []
 
+        source_by_index = {src.file_index: src for src in remux_cfg.sources}
+        remux_track_map: dict[tuple, object] = {}
+
         for src in remux_cfg.sources:
             for track in src.tracks:
-                if track.track_type == "subtitle" and track.enabled:
-                    sub_tracks.append((src.path, track.mkv_tid))
+                remux_track_map[(src.path, track.mkv_tid)] = track
             for att in src.selected_attachments:
                 attachment_streams.append((src.path, att.index))
             if src.copy_tags:
                 tag_sources.append(src.path)
+
+        ordered_tracks: list[tuple[Path, object]] = []
+        for file_index, mkv_tid in remux_cfg.track_order:
+            src = source_by_index.get(file_index)
+            if src is None:
+                continue
+            track = remux_track_map.get((src.path, mkv_tid))
+            if track is None:
+                continue
+            ordered_tracks.append((src.path, track))
+
+        sub_tracks = [
+            (src_path, track.mkv_tid)
+            for src_path, track in ordered_tracks
+            if getattr(track, "track_type", None) == "subtitle"
+        ]
 
         # tag_overrides depuis RemuxConfig (balises éditées dans l'UI)
         # Prioritaire sur tag_sources : si présent, on ignore tag_sources pour l'encode.
@@ -1243,12 +1261,6 @@ class MainWindow(QMainWindow):
         # Ordre des pistes dans le fichier de sortie ffmpeg :
         #   @1 = vidéo  |  @2…@N+1 = audio  |  @N+2… = sous-titres
         track_meta_edits: list[TrackMetaEdit] = []
-
-        # Construire un dict de lookup rapide : (source_path, stream_index) → TrackEntry
-        remux_track_map: dict[tuple, object] = {}
-        for src in remux_cfg.sources:
-            for t in src.tracks:
-                remux_track_map[(src.path, t.mkv_tid)] = t
 
         def _make_edit(track_order: int, t) -> "TrackMetaEdit | None":
             """Retourne un TrackMetaEdit si la piste a une langue ou un titre à écrire."""
@@ -1276,7 +1288,12 @@ class MainWindow(QMainWindow):
         # @1 — piste vidéo (toujours depuis encode_cfg.source)
         video_entry = _find_track(encode_cfg.source, 0, "video")
         if video_entry is None:
-            # La vidéo peut être sur n'importe quel stream_index
+            # La vidéo peut être sur n'importe quel stream_index ; garde le premier ordre remux.
+            for _src_path, entry in ordered_tracks:
+                if getattr(entry, "track_type", None) == "video":
+                    video_entry = entry
+                    break
+        if video_entry is None:
             for entry in remux_track_map.values():
                 if getattr(entry, "track_type", None) == "video":
                     video_entry = entry

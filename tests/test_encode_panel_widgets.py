@@ -276,3 +276,32 @@ class TestAudioTableAddCustomRow:
         table.item(0, _AudioTable.COL_TITLE).setText("Custom")
         assert len(emitted) == 1
         assert emitted[0][0] == 5
+
+
+class TestAudioTableReloadPreservesSettings:
+
+    @staticmethod
+    def _set_codec(table: _AudioTable, row: int, codec_id: str) -> None:
+        combo = table.cellWidget(row, _AudioTable.COL_CODEC)
+        assert combo is not None
+        idx = next(i for i in range(combo.count()) if combo.itemData(i) == codec_id)
+        combo.setCurrentIndex(idx)
+
+    def test_load_tracks_preserves_codec_and_bitrate_when_order_changes(self, table):
+        at1 = _at(index=1, title="VF")
+        at2 = _at(index=2, title="VO")
+        table.load_tracks([(at1, _COLOR, _PATH_A), (at2, _COLOR, _PATH_B)])
+
+        self._set_codec(table, 0, "aac")
+        table.cellWidget(0, _AudioTable.COL_BITRATE).setText("256")
+        self._set_codec(table, 1, "eac3")
+        table.cellWidget(1, _AudioTable.COL_BITRATE).setText("640")
+
+        table.load_tracks([(at2, _COLOR, _PATH_B), (at1, _COLOR, _PATH_A)])
+
+        assert table.item(0, _AudioTable.COL_IDX).text() == "2"
+        assert table.item(1, _AudioTable.COL_IDX).text() == "1"
+        assert table.cellWidget(0, _AudioTable.COL_CODEC).currentData() == "eac3"
+        assert table.cellWidget(0, _AudioTable.COL_BITRATE).text() == "640"
+        assert table.cellWidget(1, _AudioTable.COL_CODEC).currentData() == "aac"
+        assert table.cellWidget(1, _AudioTable.COL_BITRATE).text() == "256"

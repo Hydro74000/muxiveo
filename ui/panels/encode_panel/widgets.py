@@ -383,12 +383,31 @@ class _AudioTable(QTableWidget):
         default_codec: str = "copy",
         default_bitrate: int = 384,
     ) -> None:
+        previous_settings: dict[tuple[object, int], list[tuple[str, int]]] = {}
+        for data in self._row_data:
+            key = (data.get("source_path"), data["track"].index)
+            codec = data["combo"].currentData() or default_codec
+            try:
+                bitrate = int(data["bitrate"].text())
+            except ValueError:
+                bitrate = default_bitrate
+            previous_settings.setdefault(key, []).append((codec, bitrate))
+
+        self.blockSignals(True)
         self._row_data = []
+        self._prev_lang = {}
         self.setRowCount(0)
         for entry in tracks:
             track, color = entry[0], entry[1]
             source_path = entry[2] if len(entry) > 2 else None
-            self._append_row(track, color, default_codec, default_bitrate, source_path)
+            key = (source_path, track.index)
+            codec = default_codec
+            bitrate = default_bitrate
+            saved_settings = previous_settings.get(key)
+            if saved_settings:
+                codec, bitrate = saved_settings.pop(0)
+            self._append_row(track, color, codec, bitrate, source_path)
+        self.blockSignals(False)
         self._refresh_delete_buttons()
         self._adjust_height()
 
