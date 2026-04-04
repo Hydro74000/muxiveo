@@ -30,6 +30,7 @@ from PySide6.QtCore import QObject, Signal
 from core.lang_tags import Rfc5646LanguageTags as LangTags
 from core.inspector import AttachmentInfo, ChapterEntry, FileInfo, HDRType, build_chapter_xml
 from core.runner import TaskCancelledError, TaskSignals, ToolRunner
+from core.subprocess_utils import subprocess_text_kwargs
 
 
 # =============================================================================
@@ -331,6 +332,8 @@ class RemuxWorkflow(QObject):
         self,
         config: RemuxConfig,
         chapters_file: "Path | None" = None,
+        *,
+        emit_metadata_logs: bool = False,
     ) -> list[str]:
         """
         Construit la liste d'arguments mkvmerge pour un remuxage multi-source.
@@ -449,7 +452,12 @@ class RemuxWorkflow(QObject):
                     emit_lang = lang if lang else "und"
                     cmd.extend(["--language", f"{t.mkv_tid}:{LangTags.to_iso639_2(emit_lang)}"])
                     cmd.extend(["--language-ietf", f"{t.mkv_tid}:{emit_lang}"])
-                    self.log_message.emit("INFO", f"Lang set for track {t.mkv_tid} to {emit_lang} (ISO639-2: {LangTags.to_iso639_2(emit_lang)}) in workflow")   
+                    if emit_metadata_logs:
+                        self.log_message.emit(
+                            "INFO",
+                            f"Lang set for track {t.mkv_tid} to {emit_lang} "
+                            f"(ISO639-2: {LangTags.to_iso639_2(emit_lang)}) in workflow",
+                        )
                 # Flags MKV
                 if t.flag_enabled != t.orig_flag_enabled:
                     cmd.extend(["--track-enabled-flag",  f"{t.mkv_tid}:{'1' if t.flag_enabled else '0'}"])
@@ -570,7 +578,9 @@ class RemuxWorkflow(QObject):
 
             cmd = [self._mkvpropedit, str(output), "--tags", f"all:{tmp_path}"]
             self.log_message.emit("INFO", "$ " + " ".join(cmd))
-            r = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
+            r = subprocess.run(
+                cmd, capture_output=True, check=False, timeout=60, **subprocess_text_kwargs()
+            )
             if r.returncode != 0:
                 self.log_message.emit("WARN", f"mkvpropedit (balises) : {r.stderr.strip()}")
         except FileNotFoundError:
@@ -591,7 +601,9 @@ class RemuxWorkflow(QObject):
         ]
         try:
             self.log_message.emit("INFO", "$ " + " ".join(cmd))
-            r = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=30)
+            r = subprocess.run(
+                cmd, capture_output=True, check=False, timeout=30, **subprocess_text_kwargs()
+            )
             if r.returncode != 0:
                 self.log_message.emit("WARN", f"mkvpropedit (writing-app) : {r.stderr.strip()}")
         except FileNotFoundError:
@@ -621,7 +633,11 @@ class RemuxWorkflow(QObject):
             try:
                 if config.chapter_overrides is not None:
                     chapters_file = self._write_chapter_xml(config.chapter_overrides)
-                cmd = self.build_command(config, chapters_file=chapters_file)
+                cmd = self.build_command(
+                    config,
+                    chapters_file=chapters_file,
+                    emit_metadata_logs=True,
+                )
                 output = self._runner._run_cmd(
                     cmd, cwd=cwd, label="mkvmerge",
                     progress_cb=lambda line: signals.progress.emit(line),

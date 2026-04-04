@@ -19,6 +19,7 @@ Options:
                     Default: /usr/local on Linux/macOS,
                              <mediarecode folder>\\tools on Windows
     --dry-run       Print what would be done without executing anything
+    --force         Retry installs and regenerate Windows tool paths
 """
 
 from __future__ import annotations
@@ -34,8 +35,8 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import urllib.request
 import urllib.error
+import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Optional
@@ -70,6 +71,7 @@ WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
     "mkvmerge": ("mkvmerge.exe",),
     "mkvextract": ("mkvextract.exe",),
     "mkvinfo": ("mkvinfo.exe",),
+    "mkvpropedit": ("mkvpropedit.exe",),
     "mediainfo": ("MediaInfo.exe", "mediainfo.exe"),
     "dovi_tool": ("dovi_tool.exe",),
     "hdr10plus_tool": ("hdr10plus_tool.exe",),
@@ -82,8 +84,22 @@ WINDOWS_WINGET_PATTERNS: dict[str, tuple[str, ...]] = {
     "mkvmerge": ("MKVToolNix.MKVToolNix*",),
     "mkvextract": ("MKVToolNix.MKVToolNix*",),
     "mkvinfo": ("MKVToolNix.MKVToolNix*",),
-    "mediainfo": ("MediaArea.MediaInfo.CLI*",),
+    "mkvpropedit": ("MKVToolNix.MKVToolNix*",),
+    "mediainfo": ("MediaArea.MediaInfo_*",),
 }
+
+WINDOWS_CONFIG_TOOL_ORDER: tuple[str, ...] = (
+    "ffmpeg",
+    "ffprobe",
+    "mkvmerge",
+    "mkvextract",
+    "mkvinfo",
+    "mkvpropedit",
+    "mediainfo",
+    "dovi_tool",
+    "hdr10plus_tool",
+    "eac3to",
+)
 
 def detect_linux_distro() -> str:
     """Return 'debian', 'fedora', or 'unknown'."""
@@ -179,7 +195,7 @@ SYSTEM_TOOLS: dict[str, dict] = {
         "apt":    "mediainfo",
         "dnf":    "mediainfo",
         "brew":   "mediainfo",
-        "winget": "MediaArea.MediaInfo.CLI",
+        "winget": "MediaArea.MediaInfo",
         "desc":   "Media metadata tool",
     },
 }
@@ -264,6 +280,7 @@ def run(cmd: list[str], dry_run: bool = False, check: bool = True,
         )
     return result
 
+
 # ---------------------------------------------------------------------------
 # Privilege helpers
 # ---------------------------------------------------------------------------
@@ -347,10 +364,18 @@ def _tools_section_bounds(lines: list[str]) -> tuple[int, int]:
     return start, end
 
 
-def _update_ini_tools_section(path: Path, tool_values: dict[str, str], dry_run: bool = False) -> None:
+def _update_ini_tools_section(
+    path: Path,
+    tool_values: dict[str, str],
+    dry_run: bool = False,
+    replace_keys: set[str] | None = None,
+    prune_keys: set[str] | None = None,
+) -> None:
     """Ajoute les chemins détectés dans [tools] sans écraser une valeur explicite."""
-    if not tool_values:
+    if not tool_values and not prune_keys:
         return
+    replace_keys = {key.lower() for key in (replace_keys or set())}
+    prune_keys = {key.lower() for key in (prune_keys or set())}
 
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     lines = text.splitlines()
@@ -363,6 +388,17 @@ def _update_ini_tools_section(path: Path, tool_values: dict[str, str], dry_run: 
         start = len(lines) - 1
         end = len(lines)
 
+    if prune_keys:
+        for index in range(end - 1, start, -1):
+            stripped = lines[index].strip()
+            if not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
+                continue
+            lhs, _rhs = stripped.split("=", 1)
+            if lhs.strip().lower() not in prune_keys:
+                continue
+            del lines[index]
+            end -= 1
+
     insert_at = end
     for key, value in tool_values.items():
         updated = False
@@ -373,7 +409,7 @@ def _update_ini_tools_section(path: Path, tool_values: dict[str, str], dry_run: 
             lhs, rhs = stripped.split("=", 1)
             if lhs.strip().lower() != key.lower():
                 continue
-            if not rhs.strip():
+            if not rhs.strip() or key.lower() in replace_keys:
                 lines[index] = f"{key} = {value}"
             updated = True
             break
@@ -408,20 +444,47 @@ def _windows_program_files_dirs() -> list[Path]:
     return _dedupe_paths(dirs)
 
 
+def _is_windows_mediainfo_cli_path(path: str) -> bool:
+    raw = (path or "").strip()
+    if not raw:
+        return False
+
+    lower = raw.lower()
+    if lower in ("mediainfo", "mediainfo.exe"):
+        return True
+    if lower == "mediaarea.mediainfo":
+        return True
+    if "mediaarea.mediainfo.cli" in lower:
+        return True
+    if "\\mediainfo cli\\" in lower or "\\mediainfocli\\" in lower:
+        return True
+    return False
+
+
 def _windows_default_tool_candidates(tool_name: str, prefix: Path) -> list[Path]:
     exe_names = WINDOWS_TOOL_FILENAMES.get(tool_name, (f"{tool_name}.exe",))
     candidates: list[Path] = []
 
-    for directory in (prefix, prefix / "bin", Path(__file__).parent / "tools", Path(__file__).parent / "tools" / "bin"):
-        for exe_name in exe_names:
-            candidates.append(directory / exe_name)
+    include_prefix_dirs = tool_name != "mediainfo"
+    if include_prefix_dirs:
+        for directory in (prefix, prefix / "bin", Path(__file__).parent / "tools", Path(__file__).parent / "tools" / "bin"):
+            for exe_name in exe_names:
+                candidates.append(directory / exe_name)
+
+    winget_root = _windows_winget_root()
+    if winget_root.exists():
+        for pattern in WINDOWS_WINGET_PATTERNS.get(tool_name, ()):
+            for package_dir in winget_root.glob(pattern):
+                for exe_name in exe_names:
+                    candidates.append(package_dir / exe_name)
+                    candidates.extend(path for path in package_dir.rglob(exe_name))
 
     for base_dir in _windows_program_files_dirs():
         if tool_name in ("ffmpeg", "ffprobe"):
             for folder in ("ffmpeg", "FFmpeg"):
                 for exe_name in exe_names:
                     candidates.append(base_dir / folder / "bin" / exe_name)
-        elif tool_name in ("mkvmerge", "mkvextract", "mkvinfo"):
+        elif tool_name in ("mkvmerge", "mkvextract", "mkvinfo", "mkvpropedit"):
             for exe_name in exe_names:
                 candidates.append(base_dir / "MKVToolNix" / exe_name)
         elif tool_name == "mediainfo":
@@ -431,14 +494,6 @@ def _windows_default_tool_candidates(tool_name: str, prefix: Path) -> list[Path]
         elif tool_name == "eac3to":
             for exe_name in exe_names:
                 candidates.append(base_dir / "eac3to" / exe_name)
-
-    winget_root = _windows_winget_root()
-    if winget_root.exists():
-        for pattern in WINDOWS_WINGET_PATTERNS.get(tool_name, ()):
-            for package_dir in winget_root.glob(pattern):
-                for exe_name in exe_names:
-                    candidates.append(package_dir / exe_name)
-                    candidates.extend(path for path in package_dir.rglob(exe_name))
 
     return _dedupe_paths(candidates)
 
@@ -455,7 +510,7 @@ def _detect_windows_tool_path(tool_name: str, prefix: Path) -> str | None:
     return None
 
 
-def _existing_ini_tool_keys(path: Path) -> set[str]:
+def _existing_ini_tool_values(path: Path) -> dict[str, str]:
     parser = configparser.ConfigParser(
         inline_comment_prefixes=("#",),
         default_section="DEFAULT",
@@ -463,35 +518,38 @@ def _existing_ini_tool_keys(path: Path) -> set[str]:
     if path.exists():
         parser.read(path, encoding="utf-8")
     if not parser.has_section("tools"):
-        return set()
+        return {}
     return {
-        key.strip().lower()
+        key.strip().lower(): value.strip()
         for key, value in parser.items("tools")
         if value.strip()
     }
 
 
-def autofill_windows_config_ini(prefix: Path, dry_run: bool) -> None:
+def autofill_windows_config_ini(prefix: Path, dry_run: bool, force: bool = False) -> None:
     """Détecte les outils Windows et remplit config.ini avec leurs chemins."""
     title("Step 4 — Windows config.ini tool paths")
 
     ini_path = _config_ini_path()
-    explicit_keys = _existing_ini_tool_keys(ini_path)
+    existing_values = _existing_ini_tool_values(ini_path)
     detected: dict[str, str] = {}
+    replace_keys: set[str] = set()
 
-    for tool_name in (
-        "ffmpeg",
-        "ffprobe",
-        "mkvmerge",
-        "mkvextract",
-        "mkvinfo",
-        "mediainfo",
-        "dovi_tool",
-        "hdr10plus_tool",
-        "eac3to",
-    ):
-        if tool_name.lower() in explicit_keys:
+    for tool_name in WINDOWS_CONFIG_TOOL_ORDER:
+        if force:
+            replace_keys.add(tool_name)
+            resolved = _detect_windows_tool_path(tool_name, prefix)
+            if resolved:
+                detected[tool_name] = resolved
             continue
+
+        existing_value = existing_values.get(tool_name.lower(), "")
+        if existing_value:
+            if tool_name != "mediainfo":
+                continue
+            if _is_windows_mediainfo_cli_path(existing_value):
+                continue
+            replace_keys.add(tool_name)
         resolved = _detect_windows_tool_path(tool_name, prefix)
         if resolved:
             detected[tool_name] = resolved
@@ -503,7 +561,13 @@ def autofill_windows_config_ini(prefix: Path, dry_run: bool) -> None:
     for tool_name, path in detected.items():
         info(f"{tool_name:15s} → {path}")
 
-    _update_ini_tools_section(ini_path, detected, dry_run=dry_run)
+    _update_ini_tools_section(
+        ini_path,
+        detected,
+        dry_run=dry_run,
+        replace_keys=replace_keys,
+        prune_keys=set(WINDOWS_CONFIG_TOOL_ORDER) if force else None,
+    )
     if dry_run:
         ok(f"[dry-run] config.ini would be updated at {ini_path}")
     else:
@@ -513,8 +577,17 @@ def autofill_windows_config_ini(prefix: Path, dry_run: bool) -> None:
 # Step 1 — Python packages
 # ---------------------------------------------------------------------------
 
-def install_python_packages(dry_run: bool) -> None:
+def install_python_packages(dry_run: bool, force: bool = False) -> None:
     title("Step 1 — Python packages")
+
+    if force:
+        step(f"Installing: {', '.join(PYTHON_PACKAGES)}")
+        run(
+            [sys.executable, "-m", "pip", "install", "--upgrade"] + PYTHON_PACKAGES,
+            dry_run=dry_run,
+        )
+        ok("Python packages installed")
+        return
 
     missing = []
     for pkg in PYTHON_PACKAGES:
@@ -540,7 +613,7 @@ def install_python_packages(dry_run: bool) -> None:
 # Step 2a — System packages: apt (Debian/Ubuntu)
 # ---------------------------------------------------------------------------
 
-def _apt_packages_to_install(dry_run: bool) -> list[str]:
+def _apt_packages_to_install(force: bool = False) -> list[str]:
     already_seen: set[str] = set()
     to_install: list[str] = []
     for exe, meta in SYSTEM_TOOLS.items():
@@ -548,20 +621,20 @@ def _apt_packages_to_install(dry_run: bool) -> list[str]:
         if pkg in already_seen:
             continue
         already_seen.add(pkg)
-        if shutil.which(exe):
+        if not force and shutil.which(exe):
             ok(f"{exe} already present")
         else:
             to_install.append(pkg)
     return to_install
 
-def install_apt(dry_run: bool) -> None:
+def install_apt(dry_run: bool, force: bool = False) -> None:
     title("Step 2 — System packages (apt / Debian·Ubuntu)")
     sudo = sudo_prefix(dry_run)
 
     step("Refreshing package index")
     run(sudo + ["apt-get", "update", "-qq"], dry_run=dry_run)
 
-    to_install = _apt_packages_to_install(dry_run)
+    to_install = _apt_packages_to_install(force=force)
     if not to_install:
         ok("All system packages already installed")
         return
@@ -602,11 +675,11 @@ def _ensure_rpmfusion(dry_run: bool, sudo: list[str]) -> None:
     run(sudo + ["dnf", "install", "-y", rpmfusion_url], dry_run=dry_run)
     ok("RPM Fusion Free enabled")
 
-def install_dnf(dry_run: bool) -> None:
+def install_dnf(dry_run: bool, force: bool = False) -> None:
     title("Step 2 — System packages (dnf / Fedora·RHEL)")
     sudo = sudo_prefix(dry_run)
 
-    if not shutil.which("ffmpeg"):
+    if force or not shutil.which("ffmpeg"):
         _ensure_rpmfusion(dry_run, sudo)
 
     already_seen: set[str] = set()
@@ -616,7 +689,7 @@ def install_dnf(dry_run: bool) -> None:
         if pkg in already_seen:
             continue
         already_seen.add(pkg)
-        if shutil.which(exe):
+        if not force and shutil.which(exe):
             ok(f"{exe} already present")
         else:
             to_install.append(pkg)
@@ -634,7 +707,7 @@ def install_dnf(dry_run: bool) -> None:
 # Step 2c — System packages: Homebrew (macOS)
 # ---------------------------------------------------------------------------
 
-def install_brew(dry_run: bool) -> None:
+def install_brew(dry_run: bool, force: bool = False) -> None:
     title("Step 2 — System packages (Homebrew / macOS)")
 
     brew = shutil.which("brew")
@@ -653,7 +726,7 @@ def install_brew(dry_run: bool) -> None:
         if not pkg or pkg in already_seen:
             continue
         already_seen.add(pkg)
-        if shutil.which(exe):
+        if not force and shutil.which(exe):
             ok(f"{exe} already present")
         else:
             to_install.append(pkg)
@@ -671,7 +744,7 @@ def install_brew(dry_run: bool) -> None:
 # Step 2d — System packages: winget (Windows)
 # ---------------------------------------------------------------------------
 
-def install_winget(dry_run: bool) -> None:
+def install_winget(dry_run: bool, force: bool = False) -> None:
     title("Step 2 — System packages (winget / Windows)")
 
     winget = shutil.which("winget")
@@ -690,7 +763,13 @@ def install_winget(dry_run: bool) -> None:
         if not winget_id or winget_id in already_seen:
             continue
         already_seen.add(winget_id)
-        if shutil.which(exe):
+        if winget_id == "buyukakyuz.install-nothing" and force:
+            if shutil.which(exe):
+                ok(f"{exe} already present")
+            else:
+                warn("Skipping pip force-reinstall on Windows (winget placeholder package)")
+            continue
+        if not force and shutil.which(exe):
             ok(f"{exe} already present")
         else:
             to_install.append(winget_id)
@@ -701,11 +780,14 @@ def install_winget(dry_run: bool) -> None:
 
     for pkg_id in to_install:
         step(f"Installing via winget: {pkg_id}")
-        run(
+        result = run(
             [winget, "install", "--id", pkg_id, "--silent", "--accept-package-agreements",
              "--accept-source-agreements"],
             dry_run=dry_run,
+            check=False,
         )
+        if result is not None and result.returncode != 0:
+            warn(f"winget returned exit {result.returncode} for {pkg_id}; continuing")
     ok("System packages installed")
 
 # ---------------------------------------------------------------------------
@@ -779,7 +861,7 @@ def _extract_binary(archive_path: Path, binary_name: str, fmt: str, dest_dir: Pa
     extracted.chmod(extracted.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     return extracted
 
-def install_github_tools(prefix: Path, dry_run: bool) -> None:
+def install_github_tools(prefix: Path, dry_run: bool, force: bool = False) -> None:
     title("Step 3 — GitHub binary tools (dovi_tool, hdr10plus_tool)")
 
     arch = _arch_key()
@@ -798,7 +880,7 @@ def install_github_tools(prefix: Path, dry_run: bool) -> None:
     path_reminder_shown = False
 
     for exe, meta in GITHUB_TOOLS.items():
-        if shutil.which(exe):
+        if not force and shutil.which(exe):
             ok(f"{exe} already present ({shutil.which(exe)})")
             continue
 
@@ -926,7 +1008,7 @@ def parse_args() -> argparse.Namespace:
     default_prefix = str(_default_prefix())
     description = __doc__.replace(
         "See platform-specific command shown by --help output.",
-        f"{PYTHON_CMD} setup.py [--no-github] [--prefix PATH] [--dry-run]",
+        f"{PYTHON_CMD} setup.py [--no-github] [--prefix PATH] [--dry-run] [--force]",
     )
     p = argparse.ArgumentParser(
         description=description,
@@ -948,6 +1030,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print what would be done without executing anything",
     )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="Retry installations and regenerate Windows tool paths",
+    )
     return p.parse_args()
 
 
@@ -955,6 +1042,7 @@ def main() -> None:
     args = parse_args()
     dry_run = args.dry_run
     prefix  = Path(args.prefix)
+    force   = args.force
 
     print(_c("1;34", """
 ╔══════════════════════════════════════════╗
@@ -964,6 +1052,8 @@ def main() -> None:
 
     info(f"Python  : {sys.version.split()[0]}")
     info(f"Platform: {OS} / {platform.machine()}")
+    if force:
+        warn("FORCE mode - installations will be retried and Windows tool paths regenerated")
     if dry_run:
         warn("DRY-RUN mode — no changes will be made")
 
@@ -974,14 +1064,14 @@ def main() -> None:
 
         if distro == "debian":
             try:
-                install_apt(dry_run)
+                install_apt(dry_run, force=force)
             except Exception as e:
                 error(f"apt install failed: {e}")
                 sys.exit(1)
 
         elif distro == "fedora":
             try:
-                install_dnf(dry_run)
+                install_dnf(dry_run, force=force)
             except Exception as e:
                 error(f"dnf install failed: {e}")
                 sys.exit(1)
@@ -994,7 +1084,7 @@ def main() -> None:
 
         if not args.no_github:
             try:
-                install_github_tools(prefix, dry_run)
+                install_github_tools(prefix, dry_run, force=force)
             except Exception as e:
                 error(f"GitHub tool installation failed: {e}")
                 warn("Install dovi_tool and hdr10plus_tool manually:")
@@ -1008,13 +1098,13 @@ def main() -> None:
 
     elif OS == "Darwin":
         try:
-            install_brew(dry_run)
+            install_brew(dry_run, force=force)
         except Exception as e:
             error(f"Homebrew install failed: {e}")
 
         if not args.no_github:
             try:
-                install_github_tools(prefix, dry_run)
+                install_github_tools(prefix, dry_run, force=force)
             except Exception as e:
                 error(f"GitHub tool installation failed: {e}")
                 warn("Install dovi_tool and hdr10plus_tool manually:")
@@ -1028,13 +1118,13 @@ def main() -> None:
 
     elif OS == "Windows":
         try:
-            install_winget(dry_run)
+            install_winget(dry_run, force=force)
         except Exception as e:
             error(f"winget install failed: {e}")
 
         if not args.no_github:
             try:
-                install_github_tools(prefix, dry_run)
+                install_github_tools(prefix, dry_run, force=force)
             except Exception as e:
                 error(f"GitHub tool installation failed: {e}")
                 warn("Install dovi_tool and hdr10plus_tool manually:")
@@ -1044,7 +1134,7 @@ def main() -> None:
             info("Skipping GitHub tools (--no-github)")
 
         try:
-            autofill_windows_config_ini(prefix, dry_run)
+            autofill_windows_config_ini(prefix, dry_run, force=force)
         except Exception as e:
             error(f"config.ini auto-fill failed: {e}")
 
@@ -1057,7 +1147,7 @@ def main() -> None:
 
     # ── Python packages (all platforms) ──────────────────────────────────
     try:
-        install_python_packages(dry_run)
+        install_python_packages(dry_run, force=force)
     except Exception as e:
         error(f"Python packages: {e}")
         sys.exit(1)
@@ -1070,3 +1160,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

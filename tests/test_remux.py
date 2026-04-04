@@ -631,6 +631,37 @@ class TestBuildCommand:
         idx = cmd.index("--language-ietf")
         assert cmd[idx + 1] == "1:und"
 
+    def test_build_command_does_not_emit_language_log_by_default(self):
+        t = _track(1, "audio", file_id="id0", language="en", orig_language="fr")
+        src = _source(Path("/a.mkv"), 0, [t])
+        cfg = RemuxConfig(
+            sources=[src], output=Path("/out.mkv"),
+            track_order=[(0, 1)],
+        )
+        logs: list[tuple[str, str]] = []
+        self.wf.log_message.connect(lambda level, msg: logs.append((level, msg)))
+
+        cmd = self._cmd(cfg)
+
+        assert "--language-ietf" in cmd
+        assert logs == []
+
+    def test_build_command_can_emit_language_log_when_requested(self):
+        t = _track(1, "audio", file_id="id0", language="en", orig_language="fr")
+        src = _source(Path("/a.mkv"), 0, [t])
+        cfg = RemuxConfig(
+            sources=[src], output=Path("/out.mkv"),
+            track_order=[(0, 1)],
+        )
+        logs: list[tuple[str, str]] = []
+        self.wf.log_message.connect(lambda level, msg: logs.append((level, msg)))
+
+        self.wf.build_command(cfg, emit_metadata_logs=True)
+
+        assert len(logs) == 1
+        assert logs[0][0] == "INFO"
+        assert "Lang set for track 1 to en" in logs[0][1]
+
     def test_metadata_not_emitted_for_disabled_tracks(self):
         """--track-name et --language-ietf ne sont pas émis pour les pistes désactivées."""
         t = _track(1, "audio", file_id="id0",
@@ -778,6 +809,22 @@ class TestPreviewCommand:
         preview = self.wf.preview_command(cfg)
         assert any("--track-order" in line and "0:0" in line
                    for line in preview.split(" \\\n"))
+
+
+    def test_preview_does_not_emit_language_log(self):
+        tracks = [_track(1, "audio", file_id="id0", language="en", orig_language="fr")]
+        src = _source(Path("/a.mkv"), 0, tracks)
+        cfg = RemuxConfig(
+            sources=[src], output=Path("/out.mkv"),
+            track_order=[(0, 1)],
+        )
+        logs: list[tuple[str, str]] = []
+        self.wf.log_message.connect(lambda level, msg: logs.append((level, msg)))
+
+        preview = self.wf.preview_command(cfg)
+
+        assert "--language-ietf 1:en" in preview
+        assert logs == []
 
 
 # ===========================================================================

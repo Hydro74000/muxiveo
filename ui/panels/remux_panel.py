@@ -2231,7 +2231,10 @@ class RemuxPanel(QWidget):
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._config   = config
-        self._workflow = RemuxWorkflow(mkvmerge_bin=config.tool_mkvmerge)
+        self._workflow = RemuxWorkflow(
+            mkvmerge_bin=config.tool_mkvmerge,
+            mkvpropedit_bin=config.tool_mkvpropedit,
+        )
         self._executor = ThreadPoolExecutor(max_workers=2)
 
         # Liste ordonnée des SourceFile chargés

@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QObject, Signal
+from core.subprocess_utils import subprocess_text_kwargs
 
 
 # =============================================================================
@@ -583,7 +584,7 @@ class MergeDoviWorkflow(QObject):
         try:
             result = subprocess.run(
                 [self._bins["dovi_tool"], "info", "-i", str(final)],
-                capture_output=True, text=True, check=False,
+                capture_output=True, check=False, **subprocess_text_kwargs(),
             )
             raw = result.stdout + result.stderr
         except Exception as exc:
@@ -636,7 +637,7 @@ class MergeDoviWorkflow(QObject):
         # Détecter le nombre de pistes dans Film 1
         id_result = subprocess.run(
             [self._bins["mkvmerge"], "--identify", str(film1)],
-            capture_output=True, text=True, check=False,
+            capture_output=True, check=False, **subprocess_text_kwargs(),
         )
         nb_tracks = sum(
             1 for line in id_result.stdout.splitlines()
@@ -785,7 +786,7 @@ class MergeDoviWorkflow(QObject):
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
+                **subprocess_text_kwargs(),
             ) as proc:
                 lines: list[str] = []
                 assert proc.stdout is not None
@@ -816,8 +817,8 @@ class MergeDoviWorkflow(QObject):
         result = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
             check=False,
+            **subprocess_text_kwargs(),
         )
         if result.returncode != 0:
             raise RuntimeError(
@@ -834,7 +835,7 @@ class MergeDoviWorkflow(QObject):
         """Lance mediainfo --Inform et retourne la sortie brute."""
         result = subprocess.run(
             [self._bins["mediainfo"], f"--Inform={inform}", str(path)],
-            capture_output=True, text=True, check=False,
+            capture_output=True, check=False, **subprocess_text_kwargs(),
         )
         return result.stdout
 

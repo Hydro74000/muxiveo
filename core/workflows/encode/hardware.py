@@ -12,6 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from core.subprocess_utils import subprocess_text_kwargs
 from core.workflows.encode.models import HARDWARE_VIDEO_CODECS
 
 
@@ -39,8 +40,8 @@ class HardwareEncoderDetector:
             result = subprocess.run(
                 [ffmpeg_bin, "-hide_banner", "-encoders"],
                 capture_output=True,
-                text=True,
                 check=False,
+                **subprocess_text_kwargs(),
             )
         except FileNotFoundError:
             return set()
