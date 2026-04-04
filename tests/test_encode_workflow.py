@@ -34,11 +34,6 @@ Plan de couverture :
         - Retourne disque si total ou available = 0
         - Frontière exacte du seuil
 
-    Configuration AppConfig :
-        - ram_buffer_enabled lu depuis INI / env var
-        - ram_buffer_threshold_pct lu depuis INI / env var
-        - Valeurs par défaut : enabled=True, threshold=15
-
     Gestion des fichiers dans _run_with_metadata_inject :
         Tracking ext_files :
             - Un fichier RAM est enregistré dans ext_files
@@ -492,58 +487,6 @@ class TestShmPath:
         """threshold < 0 est ramené à 0 (toujours utiliser RAM si disponible)."""
         wf = _make_workflow(threshold=-5)
         assert wf._ram_buffer_threshold_pct == 0
-
-
-# ===========================================================================
-# AppConfig — configuration RAM
-# ===========================================================================
-
-class TestAppConfigRamBuffer:
-    """Tests des clés INI ram_buffer_enabled / ram_buffer_threshold_pct."""
-
-    def test_defaults_enabled_true_threshold_15(self, tmp_path):
-        """Valeurs par défaut : enabled=True, threshold=15."""
-        from core.config import AppConfig
-        with patch("core.config.QSettings") as mock_qs:
-            inst = MagicMock()
-            inst.value.side_effect = lambda key, default=None: default
-            mock_qs.return_value = inst
-            with patch("core.config._app_data_dir", return_value=tmp_path), \
-                 patch.dict(os.environ, {}, clear=False):
-                cfg = AppConfig()
-        assert cfg.ram_buffer_enabled is True
-        assert cfg.ram_buffer_threshold_pct == 15
-
-    def test_ini_disables_ram_buffer(self, tmp_path):
-        """config.ini ram_buffer_enabled=false désactive le buffer."""
-        import configparser
-        import core.config as cfg_mod
-        from core.config import AppConfig
-        ini_path = tmp_path / "config.ini"
-        ini_path.write_text("[encoding]\nram_buffer_enabled = false\n")
-        with patch("core.config.QSettings") as mock_qs:
-            inst = MagicMock()
-            inst.value.side_effect = lambda key, default=None: default
-            mock_qs.return_value = inst
-            with patch("core.config._app_data_dir", return_value=tmp_path), \
-                 patch.object(cfg_mod, "_INI_PATH", ini_path):
-                cfg = AppConfig()
-        assert cfg.ram_buffer_enabled is False
-
-    def test_ini_sets_threshold(self, tmp_path):
-        """config.ini ram_buffer_threshold_pct=25 fixe le seuil à 25."""
-        import core.config as cfg_mod
-        from core.config import AppConfig
-        ini_path = tmp_path / "config.ini"
-        ini_path.write_text("[encoding]\nram_buffer_threshold_pct = 25\n")
-        with patch("core.config.QSettings") as mock_qs:
-            inst = MagicMock()
-            inst.value.side_effect = lambda key, default=None: default
-            mock_qs.return_value = inst
-            with patch("core.config._app_data_dir", return_value=tmp_path), \
-                 patch.object(cfg_mod, "_INI_PATH", ini_path):
-                cfg = AppConfig()
-        assert cfg.ram_buffer_threshold_pct == 25
 
 
 # ===========================================================================

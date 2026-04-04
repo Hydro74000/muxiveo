@@ -11,7 +11,7 @@ Installs Python dependencies and external tools required by the application.
   Windows                → pip + winget packages + GitHub binaries (user-local)
 
 Usage:
-    python3 setup.py [--no-github] [--prefix PATH] [--dry-run]
+    See platform-specific command shown by --help output.
 
 Options:
     --no-github     Skip downloading dovi_tool / hdr10plus_tool from GitHub
@@ -24,6 +24,7 @@ Options:
 from __future__ import annotations
 
 import argparse
+import configparser
 import json
 import os
 import platform
@@ -61,6 +62,28 @@ def step(msg: str)   -> None: print(_c("1;37", f"\n  ▸ {msg}"))
 
 OS      = platform.system()           # "Linux" | "Windows" | "Darwin"
 MACHINE = platform.machine().lower()  # "x86_64" | "aarch64" | "arm64" | "amd64"
+PYTHON_CMD = "py" if OS == "Windows" else "python3"
+
+WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
+    "ffmpeg": ("ffmpeg.exe",),
+    "ffprobe": ("ffprobe.exe",),
+    "mkvmerge": ("mkvmerge.exe",),
+    "mkvextract": ("mkvextract.exe",),
+    "mkvinfo": ("mkvinfo.exe",),
+    "mediainfo": ("MediaInfo.exe", "mediainfo.exe"),
+    "dovi_tool": ("dovi_tool.exe",),
+    "hdr10plus_tool": ("hdr10plus_tool.exe",),
+    "eac3to": ("eac3to.exe",),
+}
+
+WINDOWS_WINGET_PATTERNS: dict[str, tuple[str, ...]] = {
+    "ffmpeg": ("Gyan.FFmpeg*",),
+    "ffprobe": ("Gyan.FFmpeg*",),
+    "mkvmerge": ("MKVToolNix.MKVToolNix*",),
+    "mkvextract": ("MKVToolNix.MKVToolNix*",),
+    "mkvinfo": ("MKVToolNix.MKVToolNix*",),
+    "mediainfo": ("MediaArea.MediaInfo.CLI*",),
+}
 
 def detect_linux_distro() -> str:
     """Return 'debian', 'fedora', or 'unknown'."""
@@ -285,6 +308,206 @@ def _default_prefix() -> Path:
         # mediarecode package directory (next to this setup.py file).
         return Path(__file__).parent / "tools"
     return Path("/usr/local")
+
+
+def _config_ini_path() -> Path:
+    return Path(__file__).parent / "config.ini"
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in paths:
+        key = str(path).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
+def _tools_section_bounds(lines: list[str]) -> tuple[int, int]:
+    start = -1
+    end = len(lines)
+
+    for index, line in enumerate(lines):
+        if line.strip().lower() == "[tools]":
+            start = index
+            break
+
+    if start == -1:
+        return -1, len(lines)
+
+    for index in range(start + 1, len(lines)):
+        stripped = lines[index].strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            end = index
+            break
+
+    return start, end
+
+
+def _update_ini_tools_section(path: Path, tool_values: dict[str, str], dry_run: bool = False) -> None:
+    """Ajoute les chemins détectés dans [tools] sans écraser une valeur explicite."""
+    if not tool_values:
+        return
+
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    lines = text.splitlines()
+    start, end = _tools_section_bounds(lines)
+
+    if start == -1:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(["[tools]"])
+        start = len(lines) - 1
+        end = len(lines)
+
+    insert_at = end
+    for key, value in tool_values.items():
+        updated = False
+        for index in range(start + 1, end):
+            stripped = lines[index].strip()
+            if not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
+                continue
+            lhs, rhs = stripped.split("=", 1)
+            if lhs.strip().lower() != key.lower():
+                continue
+            if not rhs.strip():
+                lines[index] = f"{key} = {value}"
+            updated = True
+            break
+
+        if not updated:
+            lines.insert(insert_at, f"{key} = {value}")
+            insert_at += 1
+            end += 1
+
+    if dry_run:
+        return
+
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def _windows_winget_root() -> Path:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        return Path(local_app_data) / "Microsoft" / "WinGet" / "Packages"
+    return Path.home() / "AppData" / "Local" / "Microsoft" / "WinGet" / "Packages"
+
+
+def _windows_program_files_dirs() -> list[Path]:
+    dirs: list[Path] = []
+    for env_name, default in (
+        ("ProgramFiles", r"C:\Program Files"),
+        ("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+    ):
+        raw = os.environ.get(env_name, default)
+        if raw:
+            dirs.append(Path(raw))
+    return _dedupe_paths(dirs)
+
+
+def _windows_default_tool_candidates(tool_name: str, prefix: Path) -> list[Path]:
+    exe_names = WINDOWS_TOOL_FILENAMES.get(tool_name, (f"{tool_name}.exe",))
+    candidates: list[Path] = []
+
+    for directory in (prefix, prefix / "bin", Path(__file__).parent / "tools", Path(__file__).parent / "tools" / "bin"):
+        for exe_name in exe_names:
+            candidates.append(directory / exe_name)
+
+    for base_dir in _windows_program_files_dirs():
+        if tool_name in ("ffmpeg", "ffprobe"):
+            for folder in ("ffmpeg", "FFmpeg"):
+                for exe_name in exe_names:
+                    candidates.append(base_dir / folder / "bin" / exe_name)
+        elif tool_name in ("mkvmerge", "mkvextract", "mkvinfo"):
+            for exe_name in exe_names:
+                candidates.append(base_dir / "MKVToolNix" / exe_name)
+        elif tool_name == "mediainfo":
+            for folder in ("MediaInfo", "MediaInfo CLI", "MediaInfoCLI"):
+                for exe_name in exe_names:
+                    candidates.append(base_dir / folder / exe_name)
+        elif tool_name == "eac3to":
+            for exe_name in exe_names:
+                candidates.append(base_dir / "eac3to" / exe_name)
+
+    winget_root = _windows_winget_root()
+    if winget_root.exists():
+        for pattern in WINDOWS_WINGET_PATTERNS.get(tool_name, ()):
+            for package_dir in winget_root.glob(pattern):
+                for exe_name in exe_names:
+                    candidates.append(package_dir / exe_name)
+                    candidates.extend(path for path in package_dir.rglob(exe_name))
+
+    return _dedupe_paths(candidates)
+
+
+def _detect_windows_tool_path(tool_name: str, prefix: Path) -> str | None:
+    resolved = shutil.which(tool_name)
+    if resolved:
+        return resolved
+
+    for candidate in _windows_default_tool_candidates(tool_name, prefix):
+        if candidate.is_file():
+            return str(candidate)
+
+    return None
+
+
+def _existing_ini_tool_keys(path: Path) -> set[str]:
+    parser = configparser.ConfigParser(
+        inline_comment_prefixes=("#",),
+        default_section="DEFAULT",
+    )
+    if path.exists():
+        parser.read(path, encoding="utf-8")
+    if not parser.has_section("tools"):
+        return set()
+    return {
+        key.strip().lower()
+        for key, value in parser.items("tools")
+        if value.strip()
+    }
+
+
+def autofill_windows_config_ini(prefix: Path, dry_run: bool) -> None:
+    """Détecte les outils Windows et remplit config.ini avec leurs chemins."""
+    title("Step 4 — Windows config.ini tool paths")
+
+    ini_path = _config_ini_path()
+    explicit_keys = _existing_ini_tool_keys(ini_path)
+    detected: dict[str, str] = {}
+
+    for tool_name in (
+        "ffmpeg",
+        "ffprobe",
+        "mkvmerge",
+        "mkvextract",
+        "mkvinfo",
+        "mediainfo",
+        "dovi_tool",
+        "hdr10plus_tool",
+        "eac3to",
+    ):
+        if tool_name.lower() in explicit_keys:
+            continue
+        resolved = _detect_windows_tool_path(tool_name, prefix)
+        if resolved:
+            detected[tool_name] = resolved
+
+    if not detected:
+        warn("No default Windows tool path detected to write into config.ini")
+        return
+
+    for tool_name, path in detected.items():
+        info(f"{tool_name:15s} → {path}")
+
+    _update_ini_tools_section(ini_path, detected, dry_run=dry_run)
+    if dry_run:
+        ok(f"[dry-run] config.ini would be updated at {ini_path}")
+    else:
+        ok(f"config.ini updated: {ini_path}")
 
 # ---------------------------------------------------------------------------
 # Step 1 — Python packages
@@ -641,7 +864,7 @@ def install_github_tools(prefix: Path, dry_run: bool) -> None:
 # Tool presence check (fallback / final verification)
 # ---------------------------------------------------------------------------
 
-def check_tools_presence() -> None:
+def check_tools_presence(prefix: Path | None = None) -> None:
     title("External tool check")
 
     all_tools = list(SYSTEM_TOOLS.keys()) + list(GITHUB_TOOLS.keys())
@@ -654,6 +877,8 @@ def check_tools_presence() -> None:
         seen.add(exe)
 
         path = shutil.which(exe)
+        if not path and OS == "Windows" and prefix is not None and exe in WINDOWS_TOOL_FILENAMES:
+            path = _detect_windows_tool_path(exe, prefix)
         if path:
             ok(f"{exe:20s}  →  {path}")
         else:
@@ -699,8 +924,12 @@ def check_tools_presence() -> None:
 
 def parse_args() -> argparse.Namespace:
     default_prefix = str(_default_prefix())
+    description = __doc__.replace(
+        "See platform-specific command shown by --help output.",
+        f"{PYTHON_CMD} setup.py [--no-github] [--prefix PATH] [--dry-run]",
+    )
     p = argparse.ArgumentParser(
-        description=__doc__,
+        description=description,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument(
@@ -814,8 +1043,13 @@ def main() -> None:
         else:
             info("Skipping GitHub tools (--no-github)")
 
+        try:
+            autofill_windows_config_ini(prefix, dry_run)
+        except Exception as e:
+            error(f"config.ini auto-fill failed: {e}")
+
         title("Final tool verification")
-        check_tools_presence()
+        check_tools_presence(prefix)
 
     else:
         warn(f"Unknown platform '{OS}' — skipping system package installation")
@@ -831,7 +1065,7 @@ def main() -> None:
     # ── Done ──────────────────────────────────────────────────────────────
     title("Setup complete")
     ok("Run the application with:")
-    print(_c("1;37", "\n    python3 main.py\n"))
+    print(_c("1;37", f"\n    {PYTHON_CMD} main.py\n"))
 
 
 if __name__ == "__main__":
