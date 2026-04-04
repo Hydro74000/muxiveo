@@ -1,0 +1,493 @@
+23:33:20   INFO   $ mkvpropedit /home/hydromel/Vidéos/Daredevil.Born.Again.S01E01.2025.WEB.2160p.HDR.DV.MULTI.VFF.5.1.ATMOS.H265-HYDROMUX-MRecode.mkv --chapters /tmp/tmpmmtiiup7.xml
+23:33:20   INFO   Écriture balises MKV…
+23:33:20   INFO   $ mkvpropedit /home/hydromel/Vidéos/Daredevil.Born.Again.S01E01.2025.WEB.2160p.HDR.DV.MULTI.VFF.5.1.ATMOS.H265-HYDROMUX-MRecode.mkv --tags all:/tmp/tmpj70jtkvr.xml
+23:33:20   INFO   Lang set for track 2 to fr-CA (ISO639-2: fra) in workflow
+23:33:20   ERR    can only concatenate str (not "NoneType") to str
+23:33:20   INFO   Lang set for track 3 to en-US (ISO639-2: eng) in workflow
+23:33:20   INFO   Lang set for track 4 to en-US (ISO639-2: eng) in workflow
+23:33:20   INFO   Lang set for track 5 to fr-FR (ISO639-2: fra) in workflow
+23:33:20   INFO   Lang set for track 6 to fr (ISO639-2: fra) in workflow
+
+
+
+
+
+
+
+"Continue the mediarecode project — read the context and pick up where we left off."
+
+[bug]  Les langues éditées sont mal passée après un test réel Ex: track video n'a pas pris le und après remux, et les autres tracks ont tous pris une langue "dv"
+[enhancement] si piste audio avec Atmos, ajouter indicateur Atmos, et si dts:x (XLL X) rajouter indicateur X sur la piste dans le tile Pistes. Tile Audio de l'encode Panel, ajouter le nom de piste + l'indicateur Atmos/X également.
+
+host-spawn -- bash -c "distrobox enter my-distrobox -- mkvmerge --version 2>&1" 2>&1 | head -3
+
+20:41:43    OK    Agent.Zeta.2026.MULTi.HDR.DV.2160p.WEB.H265-SUPPLY.mkv — 1V  2A  3S  Dolby Vision + HDR10+
+20:41:50   INFO   Démarrage → Agent.Zeta.2026.MULTi.HDR.DV.2160p.WEB.H265-SUPPLY_encode.mkv
+20:41:50   INFO   Encodage → Agent.Zeta.2026.MULTi.HDR.DV.2160p.WEB.H265-SUPPLY_encode.mkv
+20:41:50   INFO   Extraction HEVC source…
+20:41:50   INFO   Input #0, matroska,webm, from '/home/hydromel/Téléchargements/complete/Agent.Zeta.2026.MULTi.HDR.DV.2160p.WEB.H265-SUPPLY/Agent.Zeta.2026.MULTi.HDR.DV.2160p.WEB.H265-SUPPLY.mkv':
+20:41:50   INFO     Metadata:
+20:41:50   INFO       title           : AGENT ZETA (2026)
+20:41:50   INFO       encoder         : libebml v1.4.5 + libmatroska v1.7.1
+20:41:50   INFO       creation_time   : 2026-03-20T10:51:54.000000Z
+20:41:50   INFO     Duration: 02:13:56.45, start: 0.000000, bitrate: 15940 kb/s
+20:41:50   INFO     Stream #0:0: Video: hevc (Main 10), yuv420p10le(tv, bt2020nc/bt2020/smpte2084), 3840x1600 [SAR 1:1 DAR 12:5], 24 fps, 24 tbr, 1k tbn (default)
+20:41:50   INFO         Metadata:
+20:41:50   INFO           BPS             : 14722168
+20:41:50   INFO           DURATION        : 02:13:56.417000000
+20:41:50   INFO           NUMBER_OF_FRAMES: 192874
+20:41:50   INFO           NUMBER_OF_BYTES : 14789185515
+20:41:50   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+20:41:50   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+20:41:50   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+20:41:50   INFO         Side data:
+20:41:50   INFO           DOVI configuration record: version: 1.0, profile: 8, level: 6, rpu flag: 1, el flag: 0, bl flag: 1, compatibility id: 1, compression: 0
+20:41:50   INFO     Stream #0:1(fre): Audio: eac3, 48000 Hz, 5.1(side), fltp, 640 kb/s (default)
+20:41:50   INFO         Metadata:
+20:41:50   INFO           title           : French (France)
+20:41:50   INFO           BPS             : 640000
+20:41:50   INFO           DURATION        : 02:13:56.448000000
+20:41:50   INFO           NUMBER_OF_FRAMES: 251139
+20:41:50   INFO           NUMBER_OF_BYTES : 642915840
+20:41:50   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+20:41:50   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+20:41:50   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+20:41:50   INFO     Stream #0:2(spa): Audio: eac3 (Dolby Digital Plus + Dolby Atmos), 48000 Hz, 5.1(side), fltp, 576 kb/s
+20:41:50   INFO         Metadata:
+20:41:50   INFO           BPS             : 576000
+20:41:50   INFO           DURATION        : 02:13:56.448000000
+20:41:50   INFO           NUMBER_OF_FRAMES: 251139
+20:41:50   INFO           NUMBER_OF_BYTES : 578624256
+20:41:50   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+20:41:50   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+20:41:50   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+20:41:50   INFO     Stream #0:3(fre): Subtitle: subrip (srt) (default) (forced)
+20:41:50   INFO         Metadata:
+20:41:50   INFO           title           : French (France) Forced
+20:41:50   INFO           BPS             : 1
+20:41:50   INFO           DURATION        : 02:00:52.959000000
+20:41:50   INFO           NUMBER_OF_FRAMES: 56
+20:41:50   INFO           NUMBER_OF_BYTES : 1307
+20:41:50   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+20:41:50   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+20:41:50   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+20:41:50   INFO     Stream #0:4(fre): Subtitle: subrip (srt)
+20:41:50   INFO         Metadata:
+20:41:50   INFO           title           : French (France)
+20:41:50   INFO           BPS             : 53
+20:41:50   INFO           DURATION        : 02:12:13.625000000
+20:41:50   INFO           NUMBER_OF_FRAMES: 1551
+20:41:50   INFO           NUMBER_OF_BYTES : 53119
+20:41:50   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+20:41:50   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+20:41:50   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+20:41:50   INFO     Stream #0:5(spa): Subtitle: subrip (srt) (hearing impaired)
+20:41:50   INFO         Metadata:
+20:41:50   INFO           title           : SDH
+20:41:50   INFO           BPS             : 72
+20:41:50   INFO           DURATION        : 02:04:22.958000000
+20:41:50   INFO           NUMBER_OF_FRAMES: 1797
+20:41:50   INFO           NUMBER_OF_BYTES : 67763
+20:41:50   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+20:41:50   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+20:41:50   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+20:41:50   INFO   Stream mapping:
+20:41:50   INFO     Stream #0:0 -> #0:0 (copy)
+20:41:50   INFO   Output #0, hevc, to '/run/media/hydromel/Drive 2/temp/WIP/mkv_toolkit_encode_uq0jtr4j/src.hevc':
+20:41:50   INFO     Metadata:
+20:41:50   INFO       title           : AGENT ZETA (2026)
+20:41:50   INFO       encoder         : Lavf61.7.100
+20:41:50   INFO     Stream #0:0: Video: hevc (Main 10), yuv420p10le(tv, bt2020nc/bt2020/smpte2084), 3840x1600 [SAR 1:1 DAR 12:5], q=2-31, 24 fps, 24 tbr, 1k tbn (default)
+20:41:50   INFO         Metadata:
+20:41:50   INFO           BPS             : 14722168
+20:41:50   INFO           DURATION        : 02:13:56.417000000
+20:41:50   INFO           NUMBER_OF_FRAMES: 192874
+20:41:50   INFO           NUMBER_OF_BYTES : 14789185515
+20:41:50   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+20:41:50   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+20:41:50   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+20:41:50   INFO         Side data:
+20:41:52   INFO           DOVI configuration record: version: 1.0, profile: 8, level: 6, rpu flag: 1, el flag: 0, bl flag: 1, compatibility id: 1, compression: 0
+20:41:52   INFO   Press [q] to stop, [?] for help
+20:42:58   INFO   [out#0/hevc @ 0x55d8b8b93540] video:14442564KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.002446%
+20:42:58   INFO   Extraction RPU Dolby Vision…
+20:43:20   INFO   Reordering metadata... Done.
+20:43:20   INFO   Extraction métadonnées HDR10+…
+20:43:44   INFO   Filling metadata gaps... Done.
+20:43:44   INFO   Reordering metadata... Done.
+20:43:44   INFO   Reading parsed dynamic metadata... Done.
+20:43:44   INFO   Generating and writing metadata to JSON file... Done.
+20:43:44   INFO   Input #0, matroska,webm, from '/home/hydromel/Téléchargements/complete/Agent.Zeta.2026.MULTi.HDR.DV.2160p.WEB.H265-SUPPLY/Agent.Zeta.2026.MULTi.HDR.DV.2160p.WEB.H265-SUPPLY.mkv':
+20:43:44   INFO     Metadata:
+20:43:44   INFO       title           : AGENT ZETA (2026)
+20:43:44   INFO       encoder         : libebml v1.4.5 + libmatroska v1.7.1
+20:43:44   INFO       creation_time   : 2026-03-20T10:51:54.000000Z
+20:43:44   INFO     Duration: 02:13:56.45, start: 0.000000, bitrate: 15940 kb/s
+20:43:44   INFO     Stream #0:0: Video: hevc (Main 10), yuv420p10le(tv, bt2020nc/bt2020/smpte2084), 3840x1600 [SAR 1:1 DAR 12:5], 24 fps, 24 tbr, 1k tbn (default)
+20:43:44   INFO         Metadata:
+20:43:44   INFO           BPS             : 14722168
+20:43:44   INFO           DURATION        : 02:13:56.417000000
+20:43:44   INFO           NUMBER_OF_FRAMES: 192874
+20:43:44   INFO           NUMBER_OF_BYTES : 14789185515
+20:43:44   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+20:43:44   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+20:43:44   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+20:43:44   INFO         Side data:
+20:43:44   INFO           DOVI configuration record: version: 1.0, profile: 8, level: 6, rpu flag: 1, el flag: 0, bl flag: 1, compatibility id: 1, compression: 0
+20:43:44   INFO     Stream #0:1(fre): Audio: eac3, 48000 Hz, 5.1(side), fltp, 640 kb/s (default)
+20:43:44   INFO         Metadata:
+20:43:44   INFO           title           : French (France)
+20:43:44   INFO           BPS             : 640000
+20:43:44   INFO           DURATION        : 02:13:56.448000000
+20:43:44   INFO           NUMBER_OF_FRAMES: 251139
+20:43:44   INFO           NUMBER_OF_BYTES : 642915840
+20:43:44   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+20:43:44   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+20:43:44   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+20:43:44   INFO     Stream #0:2(spa): Audio: eac3 (Dolby Digital Plus + Dolby Atmos), 48000 Hz, 5.1(side), fltp, 576 kb/s
+20:43:44   INFO         Metadata:
+20:43:44   INFO           BPS             : 576000
+20:43:44   INFO           DURATION        : 02:13:56.448000000
+20:43:44   INFO           NUMBER_OF_FRAMES: 251139
+20:43:44   INFO           NUMBER_OF_BYTES : 578624256
+20:43:44   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+20:43:44   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+20:43:44   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+20:43:44   INFO     Stream #0:3(fre): Subtitle: subrip (srt) (default) (forced)
+20:43:44   INFO         Metadata:
+20:43:44   INFO           title           : French (France) Forced
+20:43:44   INFO           BPS             : 1
+20:43:44   INFO           DURATION        : 02:00:52.959000000
+20:43:44   INFO           NUMBER_OF_FRAMES: 56
+20:43:44   INFO           NUMBER_OF_BYTES : 1307
+20:43:44   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+20:43:44   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+20:43:44   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+20:43:44   INFO     Stream #0:4(fre): Subtitle: subrip (srt)
+20:43:44   INFO         Metadata:
+20:43:44   INFO           title           : French (France)
+20:43:44   INFO           BPS             : 53
+20:43:44   INFO           DURATION        : 02:12:13.625000000
+20:43:44   INFO           NUMBER_OF_FRAMES: 1551
+20:43:44   INFO           NUMBER_OF_BYTES : 53119
+20:43:44   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+20:43:44   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+20:43:44   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+20:43:44   INFO     Stream #0:5(spa): Subtitle: subrip (srt) (hearing impaired)
+20:43:44   INFO         Metadata:
+20:43:44   INFO           title           : SDH
+20:43:44   INFO           BPS             : 72
+20:43:44   INFO           DURATION        : 02:04:22.958000000
+20:43:44   INFO           NUMBER_OF_FRAMES: 1797
+20:43:44   INFO           NUMBER_OF_BYTES : 67763
+20:43:44   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+20:43:44   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+20:43:44   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+20:43:44   INFO   Stream mapping:
+20:43:44   INFO     Stream #0:0 -> #0:0 (hevc (native) -> hevc (hevc_nvenc))
+20:43:44   INFO     Stream #0:1 -> #0:1 (copy)
+20:43:44   INFO     Stream #0:2 -> #0:2 (copy)
+20:43:45   INFO     Stream #0:3 -> #0:3 (copy)
+20:43:45   INFO     Stream #0:4 -> #0:4 (copy)
+20:43:45   INFO     Stream #0:5 -> #0:5 (copy)
+20:43:45   INFO   Press [q] to stop, [?] for help
+20:43:45   INFO   Output #0, matroska, to '/run/media/hydromel/Drive 2/temp/WIP/mkv_toolkit_encode_uq0jtr4j/encoded.mkv':
+20:43:45   INFO     Metadata:
+20:43:45   INFO       title           : AGENT ZETA (2026)
+20:43:45   INFO       encoder         : Lavf61.7.100
+20:43:45   INFO     Stream #0:0: Video: hevc (Main 10), p010le(tv, bt2020nc/bt2020/smpte2084, progressive), 3840x1600 [SAR 1:1 DAR 12:5], q=2-31, 24 fps, 1k tbn (default)
+20:43:45   INFO         Metadata:
+20:43:45   INFO           BPS             : 14722168
+20:43:45   INFO           DURATION        : 02:13:56.417000000
+20:43:45   INFO           NUMBER_OF_FRAMES: 192874
+20:43:45   INFO           NUMBER_OF_BYTES : 14789185515
+20:43:45   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+20:43:45   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+20:43:45   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+20:43:45   INFO           encoder         : Lavc61.19.101 hevc_nvenc
+20:43:45   INFO         Side data:
+20:43:45   INFO           Mastering Display Metadata, has_primaries:1 has_luminance:1 r(0.6800,0.3200) g(0.2650,0.6900) b(0.1500 0.0600) wp(0.3127, 0.3290) min_luminance=0.000100, max_luminance=1000.000000
+20:43:45   INFO           Content Light Level Metadata, MaxCLL=997, MaxFALL=203
+20:43:45   INFO           cpb: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+20:43:45   INFO     Stream #0:1(fre): Audio: eac3 ([0] [0][0] / 0x2000), 48000 Hz, 5.1(side), fltp, 640 kb/s (default)
+20:43:45   INFO         Metadata:
+20:43:45   INFO           title           : French (France)
+20:43:45   INFO           BPS             : 640000
+20:43:45   INFO           DURATION        : 02:13:56.448000000
+20:43:45   INFO           NUMBER_OF_FRAMES: 251139
+20:43:45   INFO           NUMBER_OF_BYTES : 642915840
+20:43:45   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+20:43:45   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+20:43:45   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+20:43:45   INFO     Stream #0:2(spa): Audio: eac3 (Dolby Digital Plus + Dolby Atmos) ([0] [0][0] / 0x2000), 48000 Hz, 5.1(side), fltp, 576 kb/s
+20:43:45   INFO         Metadata:
+20:43:45   INFO           BPS             : 576000
+20:43:45   INFO           DURATION        : 02:13:56.448000000
+20:43:45   INFO           NUMBER_OF_FRAMES: 251139
+20:43:45   INFO           NUMBER_OF_BYTES : 578624256
+20:43:45   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+20:43:45   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+20:43:45   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+20:43:45   INFO     Stream #0:3(fre): Subtitle: subrip (default) (forced)
+20:43:45   INFO         Metadata:
+20:43:45   INFO           title           : French (France) Forced
+20:43:45   INFO           BPS             : 1
+20:43:45   INFO           DURATION        : 02:00:52.959000000
+20:43:45   INFO           NUMBER_OF_FRAMES: 56
+20:43:45   INFO           NUMBER_OF_BYTES : 1307
+20:43:45   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+20:43:45   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+20:43:45   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+20:43:45   INFO     Stream #0:4(fre): Subtitle: subrip
+20:43:45   INFO         Metadata:
+20:43:45   INFO           title           : French (France)
+20:43:45   INFO           BPS             : 53
+20:43:45   INFO           DURATION        : 02:12:13.625000000
+20:43:45   INFO           NUMBER_OF_FRAMES: 1551
+20:43:45   INFO           NUMBER_OF_BYTES : 53119
+20:43:45   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+20:43:45   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+20:43:45   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+20:43:45   INFO     Stream #0:5(spa): Subtitle: subrip (hearing impaired)
+20:43:45   INFO         Metadata:
+20:43:45   INFO           title           : SDH
+20:43:45   INFO           BPS             : 72
+20:43:45   INFO           DURATION        : 02:04:22.958000000
+20:43:45   INFO           NUMBER_OF_FRAMES: 1797
+20:43:45   INFO           NUMBER_OF_BYTES : 67763
+20:43:45   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+20:43:45   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+20:43:46   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+20:43:46   INFO   frame=   41 fps=0.0 q=12.0 size=       3KiB time=N/A bitrate=N/A speed=N/A
+20:43:46   INFO   frame=   87 fps= 87 q=12.0 size=       3KiB time=N/A bitrate=N/A speed=N/A
+20:43:46   INFO   frame=  167 fps=111 q=11.0 size=       3KiB time=N/A bitrate=N/A speed=N/A
+20:43:48   INFO   frame=  253 fps=126 q=14.0 size=       3KiB time=N/A bitrate=N/A speed=N/A
+20:43:48   INFO   frame=  344 fps=138 q=13.0 size=    3328KiB time=N/A bitrate=N/A speed=N/A
+20:43:48   INFO   frame=  462 fps=154 q=12.0 size=   14848KiB time=N/A bitrate=N/A speed=N/A
+20:43:49   INFO   frame=  591 fps=169 q=12.0 size=   25088KiB time=N/A bitrate=N/A speed=N/A
+20:43:49   INFO   frame=  707 fps=177 q=15.0 size=   29184KiB time=N/A bitrate=N/A speed=N/A
+20:43:49   INFO   frame=  785 fps=174 q=19.0 size=   29440KiB time=N/A bitrate=N/A speed=N/A
+20:43:51   INFO   frame=  856 fps=171 q=20.0 size=   30208KiB time=N/A bitrate=N/A speed=N/A
+20:43:51   INFO   frame=  930 fps=169 q=20.0 size=   30208KiB time=N/A bitrate=N/A speed=N/A
+20:43:51   INFO   frame= 1001 fps=167 q=20.0 size=   38656KiB time=N/A bitrate=N/A speed=N/A
+20:43:53   INFO   frame= 1079 fps=166 q=18.0 size=   48896KiB time=N/A bitrate=N/A speed=N/A
+20:43:53   INFO   frame= 1145 fps=163 q=18.0 size=   54016KiB time=N/A bitrate=N/A speed=N/A
+20:43:53   INFO   frame= 1224 fps=163 q=18.0 size=   65792KiB time=N/A bitrate=N/A speed=N/A
+20:43:53   INFO   frame= 1305 fps=163 q=19.0 size=   70912KiB time=N/A bitrate=N/A speed=N/A
+20:43:54   INFO   frame= 1377 fps=162 q=19.0 size=   81152KiB time=N/A bitrate=N/A speed=N/A
+20:43:54   INFO   frame= 1451 fps=161 q=20.0 size=   86528KiB time=N/A bitrate=N/A speed=N/A
+20:43:54   INFO   frame= 1519 fps=160 q=21.0 size=   97792KiB time=N/A bitrate=N/A speed=N/A
+21:05:36   INFO   [out#0/matroska @ 0x55a14fbb7300] video:18593671KiB audio:1192910KiB subtitle:119KiB other streams:0KiB global headers:0KiB muxing overhead: 0.026105%
+21:05:36   INFO   Extraction HEVC encodé…
+21:05:36   INFO   Input #0, matroska,webm, from '/run/media/hydromel/Drive 2/temp/WIP/mkv_toolkit_encode_uq0jtr4j/encoded.mkv':
+21:05:36   INFO     Metadata:
+21:05:36   INFO       title           : AGENT ZETA (2026)
+21:05:36   INFO       ENCODER         : Lavf61.7.100
+21:05:36   INFO     Duration: 02:13:56.45, start: 0.000000, bitrate: 20174 kb/s
+21:05:36   INFO     Stream #0:0: Video: hevc (Main 10), yuv420p10le(tv, bt2020nc/bt2020/smpte2084, progressive), 3840x1600 [SAR 1:1 DAR 12:5], 24 fps, 24 tbr, 1k tbn (default)
+21:05:36   INFO         Metadata:
+21:05:36   INFO           BPS             : 14722168
+21:05:36   INFO           NUMBER_OF_FRAMES: 192874
+21:05:36   INFO           NUMBER_OF_BYTES : 14789185515
+21:05:36   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+21:05:36   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+21:05:36   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+21:05:36   INFO           ENCODER         : Lavc61.19.101 hevc_nvenc
+21:05:36   INFO           DURATION        : 02:13:56.417000000
+21:05:36   INFO         Side data:
+21:05:36   INFO           Content Light Level Metadata, MaxCLL=997, MaxFALL=203
+21:05:36   INFO           Mastering Display Metadata, has_primaries:1 has_luminance:1 r(0.6800,0.3200) g(0.2650,0.6900) b(0.1500 0.0600) wp(0.3127, 0.3290) min_luminance=0.000100, max_luminance=1000.000000
+21:05:36   INFO     Stream #0:1(fre): Audio: eac3, 48000 Hz, 5.1(side), fltp, 640 kb/s (default)
+21:05:36   INFO         Metadata:
+21:05:36   INFO           title           : French (France)
+21:05:36   INFO           BPS             : 640000
+21:05:36   INFO           NUMBER_OF_FRAMES: 251139
+21:05:36   INFO           NUMBER_OF_BYTES : 642915840
+21:05:36   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+21:05:36   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+21:05:36   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+21:05:36   INFO           DURATION        : 02:13:56.448000000
+21:05:36   INFO     Stream #0:2(spa): Audio: eac3 (Dolby Digital Plus + Dolby Atmos), 48000 Hz, 5.1(side), fltp, 576 kb/s
+21:05:36   INFO         Metadata:
+21:05:36   INFO           BPS             : 576000
+21:05:36   INFO           NUMBER_OF_FRAMES: 251139
+21:05:36   INFO           NUMBER_OF_BYTES : 578624256
+21:05:36   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+21:05:36   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+21:05:36   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+21:05:36   INFO           DURATION        : 02:13:56.448000000
+21:05:36   INFO     Stream #0:3(fre): Subtitle: subrip (srt) (default) (forced)
+21:05:36   INFO         Metadata:
+21:05:36   INFO           title           : French (France) Forced
+21:05:36   INFO           BPS             : 1
+21:05:36   INFO           NUMBER_OF_FRAMES: 56
+21:05:36   INFO           NUMBER_OF_BYTES : 1307
+21:05:36   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+21:05:36   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+21:05:36   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+21:05:36   INFO           DURATION        : 02:02:00.250000000
+21:05:36   INFO     Stream #0:4(fre): Subtitle: subrip (srt)
+21:05:36   INFO         Metadata:
+21:05:36   INFO           title           : French (France)
+21:05:36   INFO           BPS             : 53
+21:05:36   INFO           NUMBER_OF_FRAMES: 1551
+21:05:36   INFO           NUMBER_OF_BYTES : 53119
+21:05:36   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+21:05:36   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+21:05:36   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+21:05:36   INFO           DURATION        : 02:12:49.333000000
+21:05:36   INFO     Stream #0:5(spa): Subtitle: subrip (srt) (hearing impaired)
+21:05:36   INFO         Metadata:
+21:05:36   INFO           title           : SDH
+21:05:36   INFO           BPS             : 72
+21:05:36   INFO           NUMBER_OF_FRAMES: 1797
+21:05:36   INFO           NUMBER_OF_BYTES : 67763
+21:05:36   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+21:05:36   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+21:05:36   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+21:05:36   INFO           DURATION        : 02:04:58.666000000
+21:05:36   INFO   Stream mapping:
+21:05:36   INFO     Stream #0:0 -> #0:0 (copy)
+21:05:36   INFO   Output #0, hevc, to '/run/media/hydromel/Drive 2/temp/WIP/mkv_toolkit_encode_uq0jtr4j/enc.hevc':
+21:05:36   INFO     Metadata:
+21:05:36   INFO       title           : AGENT ZETA (2026)
+21:05:36   INFO       encoder         : Lavf61.7.100
+21:05:36   INFO     Stream #0:0: Video: hevc (Main 10), yuv420p10le(tv, bt2020nc/bt2020/smpte2084, progressive), 3840x1600 [SAR 1:1 DAR 12:5], q=2-31, 24 fps, 24 tbr, 1k tbn (default)
+21:05:36   INFO         Metadata:
+21:05:36   INFO           BPS             : 14722168
+21:05:36   INFO           NUMBER_OF_FRAMES: 192874
+21:05:36   INFO           NUMBER_OF_BYTES : 14789185515
+21:05:36   INFO           _STATISTICS_WRITING_APP: mkvmerge v97.0 ('You Don't Have A Clue') 64-bit
+21:05:36   INFO           _STATISTICS_WRITING_DATE_UTC: 2026-03-20 10:51:54
+21:05:36   INFO           _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+21:05:36   INFO           ENCODER         : Lavc61.19.101 hevc_nvenc
+21:05:36   INFO           DURATION        : 02:13:56.417000000
+21:05:36   INFO         Side data:
+21:05:37   INFO           Content Light Level Metadata, MaxCLL=997, MaxFALL=203
+21:05:37   INFO           Mastering Display Metadata, has_primaries:1 has_luminance:1 r(0.6800,0.3200) g(0.2650,0.6900) b(0.1500 0.0600) wp(0.3127, 0.3290) min_luminance=0.000100, max_luminance=1000.000000
+21:05:37   INFO   Press [q] to stop, [?] for help
+21:07:40   INFO   [out#0/hevc @ 0x5639ac251500] video:18593671KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.000426%
+21:07:40   INFO   Injection RPU Dolby Vision…
+21:10:16   INFO   Parsing RPU file...
+21:10:16   INFO   Processing input video for frame order info...
+21:10:16   INFO   Rewriting file with interleaved RPU NALs..
+21:10:16   INFO   Injection métadonnées HDR10+…
+21:12:33   INFO   Parsing JSON file...
+21:12:33   INFO   Processing input video for frame order info...
+21:12:33   INFO   Rewriting file with interleaved HDR10+ SEI NALs..
+21:12:33   INFO   Remuxage final…
+21:12:33   INFO   mkvmerge v96.0 ('It's My Life') 64-bit
+21:12:33   INFO   « /run/media/hydromel/Drive 2/temp/WIP/mkv_toolkit_encode_uq0jtr4j/enc_hdr10p.hevc » : utilisation du démultiplexeur pour le format « HEVC/H.265 ».
+21:12:33   INFO   « /run/media/hydromel/Drive 2/temp/WIP/mkv_toolkit_encode_uq0jtr4j/encoded.mkv » : utilisation du démultiplexeur pour le format « Matroska ».
+21:12:33   INFO   « /run/media/hydromel/Drive 2/temp/WIP/mkv_toolkit_encode_uq0jtr4j/enc_hdr10p.hevc » piste 0 : utilisation du module de sortie pour le format « HEVC/H.265 (sans trame) ».
+21:12:33   INFO   « /run/media/hydromel/Drive 2/temp/WIP/mkv_toolkit_encode_uq0jtr4j/encoded.mkv » piste 1 : utilisation du module de sortie pour le format « AC-3 ».
+21:12:33   INFO   « /run/media/hydromel/Drive 2/temp/WIP/mkv_toolkit_encode_uq0jtr4j/encoded.mkv » piste 2 : utilisation du module de sortie pour le format « AC-3 ».
+21:12:33   INFO   « /run/media/hydromel/Drive 2/temp/WIP/mkv_toolkit_encode_uq0jtr4j/encoded.mkv » piste 3 : utilisation du module de sortie pour le format « sous-titres texte ».
+21:12:33   INFO   « /run/media/hydromel/Drive 2/temp/WIP/mkv_toolkit_encode_uq0jtr4j/encoded.mkv » piste 4 : utilisation du module de sortie pour le format « sous-titres texte ».
+21:12:33   INFO   « /run/media/hydromel/Drive 2/temp/WIP/mkv_toolkit_encode_uq0jtr4j/encoded.mkv » piste 5 : utilisation du module de sortie pour le format « sous-titres texte ».
+21:12:33   INFO   Le fichier « /home/hydromel/Vidéos/Agent.Zeta.2026.MULTi.HDR.DV.2160p.WEB.H265-SUPPLY_encode.mkv » est ouvert en écriture.
+21:12:36   INFO   « /run/media/hydromel/Drive 2/temp/WIP/mkv_toolkit_encode_uq0jtr4j/enc_hdr10p.hevc » piste 0 : Informations de ratio d'aspect ratio extraites du flux binaire vidéo et dimensions d'affichage définies à 3840/1600.
+21:12:36   INFO   Progression : 0%
+21:12:36   INFO   Progression : 1%
+21:12:36   INFO   Progression : 2%
+21:12:36   INFO   Progression : 3%
+21:12:36   INFO   Progression : 4%
+21:12:36   INFO   Progression : 5%
+21:12:36   INFO   Progression : 6%
+21:12:44   INFO   Progression : 7%
+21:12:44   INFO   Progression : 8%
+21:12:44   INFO   Progression : 9%
+21:12:44   INFO   Progression : 10%
+21:12:44   INFO   Progression : 11%
+21:12:44   INFO   Progression : 12%
+21:12:44   INFO   Progression : 13%
+21:12:44   INFO   Progression : 14%
+21:12:44   INFO   Progression : 15%
+21:12:44   INFO   Progression : 16%
+21:12:44   INFO   Progression : 17%
+21:12:44   INFO   Progression : 18%
+21:12:44   INFO   Progression : 19%
+21:12:44   INFO   Progression : 20%
+21:12:52   INFO   Progression : 21%
+21:12:52   INFO   Progression : 22%
+21:12:52   INFO   Progression : 23%
+21:12:52   INFO   Progression : 24%
+21:12:52   INFO   Progression : 25%
+21:12:52   INFO   Progression : 26%
+21:12:52   INFO   Progression : 27%
+21:12:52   INFO   Progression : 28%
+21:12:52   INFO   Progression : 29%
+21:12:52   INFO   Progression : 30%
+21:12:52   INFO   Progression : 31%
+21:12:52   INFO   Progression : 32%
+21:12:52   INFO   Progression : 33%
+21:12:52   INFO   Progression : 34%
+21:13:00   INFO   Progression : 35%
+21:13:00   INFO   Progression : 36%
+21:13:00   INFO   Progression : 37%
+21:13:00   INFO   Progression : 38%
+21:13:00   INFO   Progression : 39%
+21:13:00   INFO   Progression : 40%
+21:13:00   INFO   Progression : 41%
+21:13:00   INFO   Progression : 42%
+21:13:00   INFO   Progression : 43%
+21:13:00   INFO   Progression : 44%
+21:13:00   INFO   Progression : 45%
+21:13:00   INFO   Progression : 46%
+21:13:00   INFO   Progression : 47%
+21:13:00   INFO   Progression : 48%
+21:13:10   INFO   Progression : 49%
+21:13:10   INFO   Progression : 50%
+21:13:10   INFO   Progression : 51%
+21:13:10   INFO   Progression : 52%
+21:13:10   INFO   Progression : 53%
+21:13:10   INFO   Progression : 54%
+21:13:10   INFO   Progression : 55%
+21:13:10   INFO   Progression : 56%
+21:13:10   INFO   Progression : 57%
+21:13:10   INFO   Progression : 58%
+21:13:10   INFO   Progression : 59%
+21:13:10   INFO   Progression : 60%
+21:13:10   INFO   Progression : 61%
+21:13:10   INFO   Progression : 62%
+21:13:10   INFO   Progression : 63%
+21:13:18   INFO   Progression : 64%
+21:13:18   INFO   Progression : 65%
+21:13:18   INFO   Progression : 66%
+21:13:18   INFO   Progression : 67%
+21:13:18   INFO   Progression : 68%
+21:13:18   INFO   Progression : 69%
+21:13:18   INFO   Progression : 70%
+21:13:18   INFO   Progression : 71%
+21:13:18   INFO   Progression : 72%
+21:13:18   INFO   Progression : 73%
+21:13:18   INFO   Progression : 74%
+21:13:18   INFO   Progression : 75%
+21:13:18   INFO   Progression : 76%
+21:13:18   INFO   Progression : 77%
+21:13:26   INFO   Progression : 78%
+21:13:26   INFO   Progression : 79%
+21:13:26   INFO   Progression : 80%
+21:13:26   INFO   Progression : 81%
+21:13:26   INFO   Progression : 82%
+21:13:26   INFO   Progression : 83%
+21:13:26   INFO   Progression : 84%
+21:13:26   INFO   Progression : 85%
+21:13:26   INFO   Progression : 86%
+21:13:26   INFO   Progression : 87%
+21:13:26   INFO   Progression : 88%
+21:13:26   INFO   Progression : 89%
+21:13:26   INFO   Progression : 90%
+21:13:26   INFO   Progression : 91%
+21:13:32   INFO   Progression : 92%
+21:13:32   INFO   Progression : 93%
+21:13:32   INFO   Progression : 94%
+21:13:32   INFO   Progression : 95%
+21:13:32   INFO   Progression : 96%
+21:13:32   INFO   Progression : 97%
+21:13:32   INFO   Progression : 98%
+21:13:32   INFO   Progression : 99%
+21:13:32   INFO   Progression : 100%
+21:13:32   INFO   Les entrées CUE (l'index) sont en cours d'écriture…
+21:13:32   INFO   Le multiplexage a pris 59 secondes.
+21:13:32    OK    Encodage terminé → /home/hydromel/Vidéos/Agent.Zeta.2026.MULTi.HDR.DV.2160p.WEB.H265-SUPPLY_encode.mkv

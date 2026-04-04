@@ -855,6 +855,82 @@ class TestBuildCommand:
                                                  audio_tracks=[track]))
         assert "truehd_core" in " ".join(cmd)
 
+    def test_audio_track_order_follows_config_across_sources(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        alt = tmp_path / "alt.mkv"; alt.touch()
+        tracks = [
+            AudioTrackSettings(stream_index=5, codec="aac", bitrate_kbps=192, source_path=alt),
+            AudioTrackSettings(stream_index=1, codec="copy", source_path=src),
+        ]
+        cmd = self.wf.build_command(_make_config(src, tmp_path / "out.mkv", audio_tracks=tracks))
+
+        map_values = [cmd[i + 1] for i, arg in enumerate(cmd[:-1]) if arg == "-map"]
+        assert map_values[:3] == ["0:v:0", "1:5", "0:1"]
+        assert "-c:a:0" in cmd and cmd[cmd.index("-c:a:0") + 1] == "aac"
+        assert "-b:a:0" in cmd and cmd[cmd.index("-b:a:0") + 1] == "192k"
+        assert "-c:a:1" in cmd and cmd[cmd.index("-c:a:1") + 1] == "copy"
+
+    def test_subtitle_track_order_follows_config_across_sources(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        alt = tmp_path / "alt.mkv"; alt.touch()
+        cmd = self.wf.build_command(_make_config(
+            src,
+            tmp_path / "out.mkv",
+            copy_subtitles=False,
+            subtitle_tracks=[(alt, 7), (src, 4)],
+        ))
+
+        map_values = [cmd[i + 1] for i, arg in enumerate(cmd[:-1]) if arg == "-map"]
+        assert map_values[:3] == ["0:v:0", "1:7", "0:4"]
+        assert "-c:s" in cmd and cmd[cmd.index("-c:s") + 1] == "copy"
+
+    def test_vaapi_single_pass_adds_device_and_hwupload_only_for_vaapi_codec(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        with patch.object(EncodeWorkflow, "_vaapi_device", return_value="/dev/dri/renderD128"):
+            cmd = self.wf.build_command_single(
+                _make_config(src, tmp_path / "out.mkv",
+                             video=_make_video_settings(codec="hevc_vaapi"))
+            )
+
+        assert "-vaapi_device" in cmd
+        assert cmd[cmd.index("-vaapi_device") + 1] == "/dev/dri/renderD128"
+        assert cmd.index("-vaapi_device") < cmd.index("-i")
+        assert "-vf" in cmd
+        assert cmd[cmd.index("-vf") + 1] == "format=nv12,hwupload"
+
+    def test_vaapi_two_pass_adds_device_and_hwupload_on_both_passes(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        with patch.object(EncodeWorkflow, "_vaapi_device", return_value="/dev/dri/renderD128"):
+            cmds = self.wf.build_command(
+                _make_config(
+                    src,
+                    tmp_path / "out.mkv",
+                    video=_make_video_settings(codec="h264_vaapi", quality_mode=QualityMode.SIZE),
+                    duration_s=3600.0,
+                )
+            )
+
+        for pass_cmd in cmds:
+            assert "-vaapi_device" in pass_cmd
+            assert pass_cmd[pass_cmd.index("-vaapi_device") + 1] == "/dev/dri/renderD128"
+            assert "-vf" in pass_cmd
+            assert pass_cmd[pass_cmd.index("-vf") + 1] == "format=nv12,hwupload"
+
+    def test_non_vaapi_codec_does_not_receive_vaapi_args(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        with patch.object(EncodeWorkflow, "_vaapi_device", return_value="/dev/dri/renderD128"):
+            cmd = self.wf.build_command_single(
+                _make_config(
+                    src,
+                    tmp_path / "out.mkv",
+                    video=_make_video_settings(codec="libx265", tonemap_to_sdr=True),
+                )
+            )
+
+        assert "-vaapi_device" not in cmd
+        assert "-vf" in cmd
+        assert "hwupload" not in cmd[cmd.index("-vf") + 1]
+
 
 # ===========================================================================
 # validate
@@ -1542,6 +1618,21 @@ class TestMetadataInjectAudio:
         assert "1:3" in recon
         assert "-c:a:1" in recon
         assert "256k" in recon
+
+    def test_reordered_audio_tracks_across_sources_preserved_in_reconstitution(self, tmp_path):
+        alt = tmp_path / "alt.mkv"
+        tracks = [
+            AudioTrackSettings(stream_index=5, codec="aac", bitrate_kbps=192, source_path=alt),
+            AudioTrackSettings(stream_index=1, codec="copy"),
+        ]
+        cmds = self._run_inject_with_audio(tmp_path, tracks)
+        recon = self._get_recon_cmd(cmds)
+
+        map_values = [recon[i + 1] for i, arg in enumerate(recon[:-1]) if arg == "-map"]
+        assert map_values[:3] == ["0:v:0", "2:5", "1:1"]
+        assert "-c:a:0" in recon and recon[recon.index("-c:a:0") + 1] == "aac"
+        assert "-b:a:0" in recon and recon[recon.index("-b:a:0") + 1] == "192k"
+        assert "-c:a:1" in recon and recon[recon.index("-c:a:1") + 1] == "copy"
 
     def test_truehd_core_bsf_in_reconstitution(self, tmp_path):
         """extract_truehd_core=True : -bsf:a:0 truehd_core dans la reconstitution."""

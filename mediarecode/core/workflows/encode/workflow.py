@@ -38,6 +38,8 @@ _MIME_BY_EXT: dict[str, str] = {
     ".tiff": "image/tiff",
 }
 
+_VAAPI_CODECS = {"hevc_vaapi", "h264_vaapi"}
+
 def _mime_for(path: Path) -> str:
     return _MIME_BY_EXT.get(path.suffix.lower(), "application/octet-stream")
 
@@ -119,10 +121,11 @@ class EncodeWorkflow(QObject):
         source_idx: dict[Path, int] = {p: i for i, p in enumerate(all_sources)}
 
         cmd: list[str] = [self._ffmpeg, "-hide_banner", "-y"]
+        cmd.extend(self._hardware_input_args(config.video))
         for src in all_sources:
             cmd.extend(["-i", str(src)])
 
-        vf = self._build_vf(config.video)
+        vf = self._build_encoder_vf(config.video)
         if vf:
             cmd.extend(["-vf", vf])
 
@@ -175,7 +178,7 @@ class EncodeWorkflow(QObject):
 
     def _build_two_pass(self, config: EncodeConfig) -> list[list[str]]:
         bitrate = self._size_to_bitrate_kbps(config)
-        vf = self._build_vf(config.video)
+        vf = self._build_encoder_vf(config.video)
 
         # Sources d'entrée (multi-sources pour audio, sous-titres, attachements)
         all_sources: list[Path] = [config.source]
@@ -193,6 +196,7 @@ class EncodeWorkflow(QObject):
 
         def _base() -> list[str]:
             c = [self._ffmpeg, "-hide_banner", "-y"]
+            c.extend(self._hardware_input_args(config.video))
             for src in all_sources:
                 c.extend(["-i", str(src)])
             if vf:
@@ -321,6 +325,36 @@ class EncodeWorkflow(QObject):
             "format=yuv420p"
         )
 
+    def _build_encoder_vf(self, v: VideoEncodeSettings) -> str:
+        """
+        Retourne la chaîne de filtres finale adaptée au codec de sortie.
+
+        Les encodeurs VAAPI ont besoin d'un upload explicite vers le device
+        matériel. On ajoute donc `format=nv12,hwupload` uniquement pour les
+        réencodages `_vaapi`, en conservant les autres filtres inchangés.
+        """
+        vf = self._build_vf(v)
+        if v.codec not in _VAAPI_CODECS:
+            return vf
+        vaapi_upload = "format=nv12,hwupload"
+        return f"{vf},{vaapi_upload}" if vf else vaapi_upload
+
+    def _hardware_input_args(self, v: VideoEncodeSettings) -> list[str]:
+        """Flags ffmpeg requis avant les entrées pour certains encodeurs matériels."""
+        if v.codec not in _VAAPI_CODECS:
+            return []
+        vaapi_device = self._vaapi_device()
+        return ["-vaapi_device", vaapi_device] if vaapi_device else []
+
+    @staticmethod
+    def _vaapi_device() -> str | None:
+        """Retourne le premier render node VAAPI disponible, ou None."""
+        for i in range(8):
+            node = Path(f"/dev/dri/renderD{128 + i}")
+            if node.exists():
+                return str(node)
+        return None
+
     def _x265_params(self, v: VideoEncodeSettings) -> str:
         """
         Construit la valeur de -x265-params en fusionnant extra_params et les
@@ -391,8 +425,10 @@ class EncodeWorkflow(QObject):
         Pas d'audio ni de subs. Utilisé pour encoder directement vers un
         flux HEVC injectable, sans passer par un MKV intermédiaire.
         """
-        cmd = [self._ffmpeg, "-hide_banner", "-y", "-i", str(config.source)]
-        vf = self._build_vf(config.video)
+        cmd = [self._ffmpeg, "-hide_banner", "-y"]
+        cmd.extend(self._hardware_input_args(config.video))
+        cmd.extend(["-i", str(config.source)])
+        vf = self._build_encoder_vf(config.video)
         if vf:
             cmd.extend(["-vf", vf])
         cmd.extend(["-map", "0:v:0"])
@@ -410,10 +446,12 @@ class EncodeWorkflow(QObject):
         Utilisé en mode SIZE pour l'étape vidéo de _run_with_metadata_inject.
         """
         bitrate = self._size_to_bitrate_kbps(config)
-        vf = self._build_vf(config.video)
+        vf = self._build_encoder_vf(config.video)
 
         def _base() -> list[str]:
-            c = [self._ffmpeg, "-hide_banner", "-y", "-i", str(config.source)]
+            c = [self._ffmpeg, "-hide_banner", "-y"]
+            c.extend(self._hardware_input_args(config.video))
+            c.extend(["-i", str(config.source)])
             if vf:
                 c.extend(["-vf", vf])
             c.extend(["-map", "0:v:0"])
