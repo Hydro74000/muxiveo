@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
+from core.subprocess_utils import subprocess_text_kwargs
 from core.workflows.merge_dovi import (
     DoviProfile, FrameCountResult,
     MergeDoviWorkflow, StepResult, WorkflowStep,
@@ -1058,7 +1059,7 @@ class MergeDoviPanel(QWidget):
             def fc(path: Path) -> int | None:
                 res = subprocess.run(
                     [mediainfo_bin, "--Inform=Video;%FrameCount%", str(path)],
-                    capture_output=True, text=True, check=False,
+                    capture_output=True, check=False, **subprocess_text_kwargs(),
                 )
                 raw = res.stdout.strip()
                 return int(raw) if re.fullmatch(r"\d+", raw) else None

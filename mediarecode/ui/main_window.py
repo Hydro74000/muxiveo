@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
 
 from core.config import AppConfig
 from core.runner import TaskSignals
+from core.subprocess_utils import subprocess_text_kwargs
 from core.workflows.encode import EncodeError
 from core.workflows.remux import RemuxError
 from ui.panels.encode_panel import EncodePanel
@@ -594,8 +595,8 @@ class DashboardPage(QWidget):
             result = subprocess.run(
                 [ffmpeg_bin, "-hide_banner", "-encoders"],
                 capture_output=True,
-                text=True,
                 check=False,
+                **subprocess_text_kwargs(),
             )
             encoders_output = "\n".join(part for part in (result.stdout, result.stderr) if part)
             return {

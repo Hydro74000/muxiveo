@@ -59,6 +59,11 @@ class EncodePanel(QWidget):
         self._config    = config
         self._workflow  = EncodeWorkflow(
             ffmpeg_bin=config.tool_ffmpeg,
+            dovi_tool_bin=config.tool_dovi_tool,
+            hdr10plus_bin=config.tool_hdr10plus,
+            mkvmerge_bin=config.tool_mkvmerge,
+            mkvextract_bin=config.tool_mkvextract,
+            mkvpropedit_bin=config.tool_mkvpropedit,
             ram_buffer_enabled=config.ram_buffer_enabled,
             ram_buffer_threshold_pct=config.ram_buffer_threshold_pct,
             parent=self,

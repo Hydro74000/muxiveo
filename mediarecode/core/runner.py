@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from PySide6.QtCore import QObject, Signal
+from core.subprocess_utils import decode_subprocess_output
 
 
 # ---------------------------------------------------------------------------
@@ -428,14 +429,14 @@ class ToolRunner(QObject):
                     buf += chunk.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
                     *complete, buf = buf.split(b"\n")
                     for raw in complete:
-                        stripped = raw.decode("utf-8", errors="replace").rstrip()
+                        stripped = decode_subprocess_output(raw).rstrip()
                         lines.append(stripped)
                         if progress_cb and stripped:
                             progress_cb(stripped)
 
                 # Vide le tampon résiduel (dernière ligne sans \n terminal)
                 if buf.strip():
-                    stripped = buf.strip().decode("utf-8", errors="replace")
+                    stripped = decode_subprocess_output(buf.strip())
                     lines.append(stripped)
                     if progress_cb and stripped:
                         progress_cb(stripped)

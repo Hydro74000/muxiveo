@@ -21,6 +21,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 from core.lang_tags import Rfc5646LanguageTags as LangTags
 from core.runner import TaskCancelledError, TaskSignals, ToolRunner
+from core.subprocess_utils import subprocess_text_kwargs
 from core.workflows.encode.models import (
     EncodeConfig, EncodeError, QualityMode,
     VideoEncodeSettings, AudioTrackSettings,
@@ -495,7 +496,7 @@ class EncodeWorkflow(QObject):
             if sys.platform == "darwin":
                 r = subprocess.run(
                     ["sysctl", "-n", "hw.memsize"],
-                    capture_output=True, text=True, check=False, timeout=5,
+                    capture_output=True, check=False, timeout=5, **subprocess_text_kwargs(),
                 )
                 v = r.stdout.strip()
                 return int(v) if r.returncode == 0 and v.isdigit() else 0
@@ -528,7 +529,7 @@ class EncodeWorkflow(QObject):
     def _macos_available_ram() -> int:
         """RAM disponible sur macOS via vm_stat (free + inactive + speculative + purgeable)."""
         r = subprocess.run(
-            ["vm_stat"], capture_output=True, text=True, check=False, timeout=5
+            ["vm_stat"], capture_output=True, check=False, timeout=5, **subprocess_text_kwargs()
         )
         if r.returncode != 0:
             return 0
@@ -772,7 +773,7 @@ class EncodeWorkflow(QObject):
             # ── Extraction XML depuis la source ─────────────────────────────
             result = subprocess.run(
                 [mkvextract_bin, str(src), "tags"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, timeout=30, **subprocess_text_kwargs(),
             )
             tags_xml = result.stdout.strip()
             if not tags_xml or result.returncode != 0:
@@ -794,7 +795,7 @@ class EncodeWorkflow(QObject):
             try:
                 tags_cmd = [mkvpropedit_bin, str(output), "--tags", f"all:{xml_path}"]
                 self.log_message.emit("INFO", "$ " + " ".join(tags_cmd))
-                r = subprocess.run(tags_cmd, capture_output=True, text=True, timeout=60)
+                r = subprocess.run(tags_cmd, capture_output=True, timeout=60, **subprocess_text_kwargs())
                 if r.returncode != 0:
                     self.log_message.emit("WARN", f"mkvpropedit: {r.stderr.strip()}")
                 else:
@@ -814,7 +815,9 @@ class EncodeWorkflow(QObject):
         ]
         try:
             self.log_message.emit("INFO", "$ " + " ".join(cmd))
-            r = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=30)
+            r = subprocess.run(
+                cmd, capture_output=True, check=False, timeout=30, **subprocess_text_kwargs()
+            )
             if r.returncode != 0:
                 self.log_message.emit("WARN", f"mkvpropedit (writing-app) : {r.stderr.strip()}")
         except FileNotFoundError:
@@ -863,7 +866,9 @@ class EncodeWorkflow(QObject):
 
             cmd = [mkvpropedit_bin, str(output), "--tags", f"all:{tmp_path}"]
             self.log_message.emit("INFO", "$ " + " ".join(cmd))
-            r = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
+            r = subprocess.run(
+                cmd, capture_output=True, check=False, timeout=60, **subprocess_text_kwargs()
+            )
             if r.returncode != 0:
                 self.log_message.emit("WARN", f"mkvpropedit (balises) : {r.stderr.strip()}")
         except FileNotFoundError:
@@ -905,7 +910,9 @@ class EncodeWorkflow(QObject):
                 tmp_path = Path(f.name)
             cmd = [self._bins["mkvpropedit"], str(output), "--chapters", str(tmp_path)]
             self.log_message.emit("INFO", "$ " + " ".join(cmd))
-            r = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
+            r = subprocess.run(
+                cmd, capture_output=True, check=False, timeout=60, **subprocess_text_kwargs()
+            )
             if r.returncode != 0:
                 self.log_message.emit("WARN", f"mkvpropedit (chapitres) : {r.stderr.strip()}")
         except FileNotFoundError:
@@ -938,7 +945,9 @@ class EncodeWorkflow(QObject):
                 cmd.extend(["--set", f"name={edit.title}"])
         try:
             self.log_message.emit("INFO", "$ " + " ".join(cmd))
-            r = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=30)
+            r = subprocess.run(
+                cmd, capture_output=True, check=False, timeout=30, **subprocess_text_kwargs()
+            )
             if r.returncode != 0:
                 self.log_message.emit("WARN", f"mkvpropedit (métadonnées) : {r.stderr.strip()}")
         except FileNotFoundError:

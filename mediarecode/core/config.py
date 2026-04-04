@@ -34,6 +34,7 @@ _WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
     "mkvmerge": ("mkvmerge.exe",),
     "mkvextract": ("mkvextract.exe",),
     "mkvinfo": ("mkvinfo.exe",),
+    "mkvpropedit": ("mkvpropedit.exe",),
     "mediainfo": ("MediaInfo.exe", "mediainfo.exe"),
     "dovi_tool": ("dovi_tool.exe",),
     "hdr10plus_tool": ("hdr10plus_tool.exe",),
@@ -46,7 +47,8 @@ _WINDOWS_WINGET_PATTERNS: dict[str, tuple[str, ...]] = {
     "mkvmerge": ("MKVToolNix.MKVToolNix*",),
     "mkvextract": ("MKVToolNix.MKVToolNix*",),
     "mkvinfo": ("MKVToolNix.MKVToolNix*",),
-    "mediainfo": ("MediaArea.MediaInfo.CLI*",),
+    "mkvpropedit": ("MKVToolNix.MKVToolNix*",),
+    "mediainfo": ("MediaArea.MediaInfo_*",),
 }
 
 
@@ -174,7 +176,7 @@ def _windows_default_tool_candidates(tool_name: str) -> list[Path]:
             for folder in ("ffmpeg", "FFmpeg"):
                 for exe_name in exe_names:
                     candidates.append(base_dir / folder / "bin" / exe_name)
-        elif tool_name in ("mkvmerge", "mkvextract", "mkvinfo"):
+        elif tool_name in ("mkvmerge", "mkvextract", "mkvinfo", "mkvpropedit"):
             for exe_name in exe_names:
                 candidates.append(base_dir / "MKVToolNix" / exe_name)
         elif tool_name == "mediainfo":
@@ -339,6 +341,7 @@ class AppConfig:
         self.tool_mkvmerge: str     = self._resolve_tool_value("mkvmerge", "tools/mkvmerge", "mkvmerge")
         self.tool_mkvextract: str   = self._resolve_tool_value("mkvextract", "tools/mkvextract", "mkvextract")
         self.tool_mkvinfo: str      = self._resolve_tool_value("mkvinfo", "tools/mkvinfo", "mkvinfo")
+        self.tool_mkvpropedit: str  = self._resolve_tool_value("mkvpropedit", "tools/mkvpropedit", "mkvpropedit")
         self.tool_mediainfo: str    = self._resolve_tool_value("mediainfo", "tools/mediainfo", "mediainfo")
         self.tool_dovi_tool: str    = self._resolve_tool_value("dovi_tool", "tools/dovi_tool", "dovi_tool")
         self.tool_hdr10plus: str    = self._resolve_tool_value("hdr10plus_tool", "tools/hdr10plus_tool", "hdr10plus_tool")
@@ -388,6 +391,7 @@ class AppConfig:
         s.setValue("tools/mkvmerge",       self.tool_mkvmerge)
         s.setValue("tools/mkvextract",     self.tool_mkvextract)
         s.setValue("tools/mkvinfo",        self.tool_mkvinfo)
+        s.setValue("tools/mkvpropedit",    self.tool_mkvpropedit)
         s.setValue("tools/mediainfo",      self.tool_mediainfo)
         s.setValue("tools/dovi_tool",      self.tool_dovi_tool)
         s.setValue("tools/hdr10plus_tool", self.tool_hdr10plus)
@@ -428,6 +432,7 @@ class AppConfig:
             "mkvmerge":      self.tool_mkvmerge,
             "mkvextract":    self.tool_mkvextract,
             "mkvinfo":       self.tool_mkvinfo,
+            "mkvpropedit":   self.tool_mkvpropedit,
             "mediainfo":     self.tool_mediainfo,
             "dovi_tool":     self.tool_dovi_tool,
             "hdr10plus_tool":self.tool_hdr10plus,
@@ -459,6 +464,7 @@ class AppConfig:
                 "mkvmerge":       self.tool_mkvmerge,
                 "mkvextract":     self.tool_mkvextract,
                 "mkvinfo":        self.tool_mkvinfo,
+                "mkvpropedit":    self.tool_mkvpropedit,
                 "mediainfo":      self.tool_mediainfo,
                 "dovi_tool":      self.tool_dovi_tool,
                 "hdr10plus_tool": self.tool_hdr10plus,

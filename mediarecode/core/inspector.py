@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from core.lang_tags import Rfc5646LanguageTags
+from core.subprocess_utils import subprocess_text_kwargs
 
 
 # =============================================================================
@@ -393,8 +394,8 @@ class FileInspector:
             result = subprocess.run(
                 [self._mediainfo, "--Inform=Video;%FrameCount%", str(path)],
                 capture_output=True,
-                text=True,
                 check=False,
+                **subprocess_text_kwargs(),
                 # shell=True JAMAIS
             )
             raw = result.stdout.strip()
@@ -484,8 +485,8 @@ class FileInspector:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
-                text=True,
                 check=False,
+                **subprocess_text_kwargs(),
                 # shell=True JAMAIS
             )
         except FileNotFoundError:
@@ -511,14 +512,14 @@ class FileInspector:
             # Dolby Vision : champ HDR_Format contient "Dolby Vision"
             r_dovi = subprocess.run(
                 [self._mediainfo, "--Inform=Video;%HDR_Format%", str(path)],
-                capture_output=True, text=True, check=False,
+                capture_output=True, check=False, **subprocess_text_kwargs(),
             )
             has_dovi = "dolby vision" in r_dovi.stdout.lower()
 
             # HDR10+ : champ HDR_Format_Compatibility contient "HDR10+"
             r_hdr10p = subprocess.run(
                 [self._mediainfo, "--Inform=Video;%HDR_Format_Compatibility%", str(path)],
-                capture_output=True, text=True, check=False,
+                capture_output=True, check=False, **subprocess_text_kwargs(),
             )
             has_hdr10plus = "hdr10+" in r_hdr10p.stdout.lower()
 
@@ -681,7 +682,7 @@ class FileInspector:
                     "--identify", "--identification-format", "json",
                     str(path),
                 ],
-                capture_output=True, text=True, check=False, timeout=15,
+                capture_output=True, check=False, timeout=15, **subprocess_text_kwargs(),
             )
             if result.returncode not in (0, 1):   # 1 = warnings non bloquants
                 return 0, {}
