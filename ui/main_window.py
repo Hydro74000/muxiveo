@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
+from core.i18n import apply_translations, set_current_language, translate_text
 from core.runner import TaskSignals
 from core.subprocess_utils import subprocess_text_kwargs
 from core.workflows.encode import EncodeError
@@ -54,6 +55,7 @@ from ui.panels.encode_panel import EncodePanel
 from ui.panels.encode_panel.theme import _FPS_RE, _TIME_RE, _fmt_eta
 from ui.panels.merge_dovi_panel import MergeDoviPanel
 from ui.panels.remux_panel import RemuxPanel
+from ui.panels.settings_panel import SettingsPanel
 
 if TYPE_CHECKING:
     from core.workflows.encode.models import EncodeConfig
@@ -264,6 +266,8 @@ class LogPanel(QWidget):
         """Ajoute une ligne de log avec horodatage et niveau coloré."""
         cursor = self._text.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
+
+        message = translate_text(message)
 
         ts = datetime.now().strftime("%H:%M:%S")
         color = _LEVEL_COLORS[level]
@@ -665,6 +669,7 @@ class DashboardPage(QWidget):
             self._log("Certains outils sont manquants. Vérifiez votre PATH ou les paramètres.", LogLevel.WARN)
         # Rafraîchit l'affichage des badges + relance la détection HW
         self._build_ui()
+        apply_translations(self)
         self._start_hw_detection()
 
 
@@ -894,6 +899,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._restore_geometry()
         self._connect_signals()
+        self._apply_locale()
         self._post_init_log()
 
     # ------------------------------------------------------------------
@@ -977,12 +983,8 @@ class MainWindow(QMainWindow):
         self._remux_panel = RemuxPanel(self._config)
         self._stack.addWidget(self._remux_panel)
 
-        self._stack.addWidget(_PlaceholderPage(
-            "Paramètres",
-            "⚙",
-            "Chemins des outils externes, dossiers de travail\n"
-            "et de sortie, préférences d'encodage.",
-        ))
+        self._settings_panel = SettingsPanel(self._config)
+        self._stack.addWidget(self._settings_panel)
 
         self._page_area = QScrollArea()
         self._page_area.setWidgetResizable(True)
@@ -1126,6 +1128,11 @@ class MainWindow(QMainWindow):
         # État "prêt" → bouton Exécuter
         self._remux_panel.ready_changed.connect(self._on_ready_changed)
         self._encode_panel.ready_changed.connect(self._on_ready_changed)
+        self._settings_panel.settings_saved.connect(self._on_settings_saved)
+
+    def _apply_locale(self) -> None:
+        set_current_language(self._config.language)
+        apply_translations(self)
 
     # ------------------------------------------------------------------
     # Bouton "Exécuter l'opération" — logique hybride remux / encode
@@ -1197,7 +1204,7 @@ class MainWindow(QMainWindow):
         self._prog_bar.setValue(0)
         self._prog_lbl.setText("")
         self._prog_widget.setVisible(True)
-        label = "Encodage en cours…" if self._op_mode == "encode" else "Remuxage en cours…"
+        label = translate_text("Encodage en cours…") if self._op_mode == "encode" else translate_text("Remuxage en cours…")
         self._status_lbl.setText(label)
 
         signals.progress.connect(self._on_op_progress, Qt.ConnectionType.QueuedConnection)
@@ -1415,8 +1422,8 @@ class MainWindow(QMainWindow):
     def _on_cancel_op(self) -> None:
         reply = QMessageBox.question(
             self,
-            "Confirmer l'annulation",
-            "Annuler l'opération en cours ?",
+            translate_text("Confirmer l'annulation"),
+            translate_text("Annuler l'opération en cours ?"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -1430,7 +1437,7 @@ class MainWindow(QMainWindow):
         self._cancel_btn.setVisible(False)
         self._prog_widget.setVisible(False)
         self._prog_lbl.setText("")
-        self._status_lbl.setText("Annulé.")
+        self._status_lbl.setText(translate_text("Annulé."))
         self.log_requested.emit("WARN", "Opération annulée.")
 
     def _on_op_finished(self, success: bool, error: str = "") -> None:
@@ -1440,16 +1447,22 @@ class MainWindow(QMainWindow):
         self._cancel_btn.setVisible(False)
         if success:
             self._prog_bar.setValue(100)
-            self._prog_lbl.setText("100%  ·  terminé")
-            self._status_lbl.setText("Terminé.")
+            self._prog_lbl.setText(translate_text("100%  ·  terminé"))
+            self._status_lbl.setText(translate_text("Terminé."))
             label = "Encodage terminé" if self._op_mode == "encode" else "Remuxage terminé"
             self.log_requested.emit("OK", label)
         else:
             self._prog_widget.setVisible(False)
             self._prog_lbl.setText("")
-            self._status_lbl.setText("Échec.")
+            self._status_lbl.setText(translate_text("Échec."))
             if error:
                 self.log_requested.emit("ERROR", error)
+
+    def _on_settings_saved(self) -> None:
+        self._config.reload()
+        self._log_panel._max_lines = self._config.log_max_lines
+        self._apply_locale()
+        self.log_requested.emit("OK", "Configuration appliquée depuis config.ini.")
 
     # ------------------------------------------------------------------
     # Collapse du panneau de logs

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.inspector import AudioTrack, FileInfo
+from core.i18n import translate_text
 from core.lang_tags import Rfc5646LanguageTags
 from core.workflows.encode.models import AUDIO_CODECS, AudioTrackSettings
 from ui.panels.encode_panel.theme import (
@@ -553,7 +554,9 @@ class _AudioTable(QTableWidget):
                 item.setText(prev)
                 self.blockSignals(False)
                 QTimer.singleShot(0, lambda: QMessageBox.warning(
-                    self, "Erreur", "Erreur : code langue non reconnu"
+                    self,
+                    translate_text("Erreur"),
+                    translate_text("Erreur : code langue non reconnu"),
                 ))
                 return
         d = self._row_data[row]

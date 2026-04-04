@@ -318,6 +318,7 @@ class Rfc5646LanguageTags:
         if not code:
             return None
         return cls._ISO639_2_TO_IETF.get(code.lower())
+
     @classmethod
     def to_iso639_2(cls, ietf: str) -> str | None:
         """
@@ -342,6 +343,42 @@ class Rfc5646LanguageTags:
             ):
                 return iso
         return None
+
+    @classmethod
+    def from_locale_name(cls, locale_name: str | None) -> str | None:
+        """
+        Convertit un nom de locale système (ex. ``fr_FR.UTF-8``) en ISO 639-2/T.
+        """
+        if not locale_name:
+            return None
+        normalized = locale_name.strip().split(".", 1)[0].replace("_", "-")
+        return cls.to_iso639_2(normalized)
+
+    @classmethod
+    def iso639_2_name(cls, code: str) -> str | None:
+        """Retourne le nom affichable d'un code ISO 639-2/T ou /B."""
+        ietf = cls.from_iso639_2(code)
+        if ietf is None:
+            return None
+        return cls.TAGS.get(ietf, ietf)
+
+    @classmethod
+    def iso639_2_items(cls) -> list[tuple[str, str]]:
+        """
+        Retourne les langues ISO 639-2 (3 lettres) triées par libellé puis code.
+
+        Les alias bibliographiques (/B) sont conservés pour refléter fidèlement
+        les entrées présentes dans ``_ISO639_2_TO_IETF``.
+        """
+        items: list[tuple[str, str]] = []
+        for iso in cls._ISO639_2_TO_IETF:
+            if len(iso) != 3:
+                continue
+            name = cls.iso639_2_name(iso)
+            if name is None:
+                continue
+            items.append((iso, name))
+        return sorted(items, key=lambda item: (item[1].lower(), item[0]))
 
     @classmethod
     def items(cls) -> list[tuple[str, str]]:
