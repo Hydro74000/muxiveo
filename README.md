@@ -62,7 +62,7 @@ cd mediarecode
 
 ### Étape 2 — Lancer le script de setup
 
-Le script `setup.py` installe automatiquement les dépendances Python et tous les outils externes selon la plateforme détectée.
+Le script `setup.py` installe automatiquement les dépendances Python et les outils externes selon la plateforme détectée. Sous Windows, il tente ensuite de retrouver les exécutables installés (PATH, dossier `tools`, `Program Files`, paquets WinGet) puis écrit leurs chemins dans `config.ini`.
 
 #### Linux — Debian / Ubuntu
 
@@ -100,11 +100,12 @@ python3 setup.py
 python setup.py
 ```
 
-- Installe via `winget` (Windows 10 1809+ / Windows 11) : `ffmpeg`, `mkvtoolnix`, `mediainfo`
+- Installe via `winget` (Windows 10 1809+ / Windows 11) : `ffmpeg`, `mkvtoolnix` (`mkvmerge`, `mkvextract`, `mkvinfo`, `mkvpropedit`), `mediainfo`
 - Télécharge depuis GitHub : `dovi_tool`, `hdr10plus_tool`
-- Les binaires GitHub sont placés dans `%LOCALAPPDATA%\mediarecode\tools`
+- Les binaires GitHub sont placés dans `mediarecode\tools`
+- Remplit automatiquement la section `[tools]` de `config.ini` avec les chemins détectés
 
-> Ajouter ce dossier au `PATH` : Paramètres → Système → Informations → Paramètres système avancés → Variables d'environnement
+> Ajouter `mediarecode\tools` au `PATH` reste recommandé pour un usage manuel, mais l'application peut aussi s'appuyer sur les chemins absolus écrits dans `config.ini`.
 
 ### Options du script
 
@@ -113,6 +114,7 @@ python setup.py
 | `--dry-run` | Affiche ce qui serait fait, sans rien exécuter |
 | `--no-github` | Ignore le téléchargement de `dovi_tool` / `hdr10plus_tool` |
 | `--prefix PATH` | Dossier d'installation pour les binaires GitHub (défaut : `/usr/local` sur Linux/macOS) |
+| `--force` | Relance les installations et régénère les chemins d'outils Windows dans `config.ini` |
 
 ### Outil optionnel (Windows uniquement)
 
@@ -127,7 +129,7 @@ Télécharger manuellement : https://forum.doom9.org/showthread.php?t=125966
 | `ffprobe` | Analyse des fichiers vidéo | Toutes les fonctions |
 | `mkvmerge` | Remuxage pur et remuxage final HDR | Copie pure, Fusion HDR |
 | `mkvextract` | Extraction de pistes | Fusion HDR |
-| `mkvpropedit` | Modification des métadonnées post-encodage | Conteneur & Encodage |
+| `mkvpropedit` | Finalisation MKV post-traitement (chapitres, tags, langues/titres) | Conteneur & Encodage |
 | `mkvinfo` | Informations MKV | Analyse |
 | `mediainfo` | Métadonnées et comptage d'images | Fusion HDR, Analyse |
 | `dovi_tool` | Extraction / injection RPU Dolby Vision | Fusion HDR (DoVi) |
@@ -164,11 +166,22 @@ L'interface est divisée en trois zones :
 
 | Bouton | Page |
 |--------|------|
-| Tableau de bord | Page d'accueil |
+| Tableau de bord | Statut des outils, encodeurs détectés et chemins configurés |
 | Fusion DoVi | Injection Dolby Vision / HDR10+ |
 | Encodage | Configuration codec/qualité vidéo et audio |
 | Remuxage | Configuration des pistes et du conteneur |
 | Paramètres | Configuration des outils et chemins |
+
+### Tableau de bord
+
+Le tableau de bord affiche :
+
+- l'état des outils externes détectés (`ffmpeg`, `mkvmerge`, `mkvpropedit`, `mediainfo`, etc.)
+- les dossiers configurés (travail, sortie, app data)
+- les encodeurs logiciels détectés via `ffmpeg -encoders`
+- les encodeurs matériels réellement testés au runtime (`NVENC`, `AMF`, `VAAPI`, `QSV`)
+
+> La disponibilité matérielle n'est pas déduite uniquement de la compilation de `ffmpeg` : l'application lance un probe réel pour vérifier que l'encodeur est réellement utilisable.
 
 ### Journal de log (bas)
 
@@ -189,7 +202,7 @@ Le journal est pliable (cliquer sur l'en-tête). Sa hauteur maximale est configu
 
 Les panneaux **Remuxage** et **Encodage** fonctionnent ensemble comme un seul outil. Ils sont connectés en temps réel :
 
-- Le panneau **Remuxage** contrôle : quels fichiers sources, quelles pistes inclure, dans quel ordre, avec quels métadonnées, et le chemin de sortie.
+- Le panneau **Remuxage** contrôle : quels fichiers sources, quelles pistes inclure, dans quel ordre, avec quelles métadonnées, ainsi que le titre du conteneur, les balises globales, les pièces jointes, les chapitres et le chemin de sortie.
 - Le panneau **Encodage** contrôle : comment traiter la vidéo et l'audio (copie ou réencodage, codec, qualité, HDR).
 - Le bouton **Exécuter** est unique et décide automatiquement du mode d'exécution.
 
@@ -202,7 +215,7 @@ Quand vous cliquez sur **Exécuter**, l'outil inspecte la configuration :
 | Vidéo en `copie` **ET** tous les audios en `copie` **ET** aucune injection HDR | **Remuxage pur** | `mkvmerge` |
 | N'importe quel autre réglage (réencodage vidéo, audio, tone mapping, HDR…) | **Encodage** | `ffmpeg` + `mkvpropedit` |
 
-> En mode **remuxage pur**, l'opération est instantanée et sans perte. En mode **encodage**, `ffmpeg` gère la totalité : vidéo, audio, sous-titres, pièces jointes et chapitres en une seule commande.
+> Les options de conteneur seules (titre, tags, chapitres, pièces jointes, ordre des pistes) ne forcent pas l'encodage. En mode **remuxage pur**, l'opération reste sans perte ; en mode **encodage**, `ffmpeg` produit le fichier puis `mkvpropedit` finalise les éléments MKV qui demandent un post-traitement.
 
 ---
 
@@ -224,6 +237,8 @@ Cliquer sur le bouton **Inspecter** à côté d'un fichier pour voir le détail 
 - **Audio** : codec, canaux, débit, indicateurs Atmos/DTS:X
 - **Sous-titres** : codec, langue, drapeaux forcé/défaut
 - **Chapitres** : liste des chapitres
+- **Pièces jointes** : couvertures, polices ou autres attachements intégrés
+- **Balises globales MKV** : titre de segment et tags du conteneur
 
 ##### 3. Sélectionner et ordonner les pistes
 
@@ -253,10 +268,14 @@ Double-cliquer sur une ligne ouvre un dialogue d'édition :
 
 > Les modifications de langue et de titre faites dans le panneau Remuxage ou dans le panneau Encodage sont synchronisées dans les deux sens en temps réel.
 
-##### 5. Options globales
+##### 5. Options globales du conteneur
 
-- **Conserver les chapitres** : inclure ou non les chapitres dans le fichier de sortie
-- **Sélectionner les pièces jointes** : si le fichier contient des attachements (ex : image de couverture), choisir lesquels inclure
+- **Titre du fichier** : définit la balise `Title` du conteneur MKV de sortie
+- **Pièces jointes** : choisir quels attachements source copier, ou ajouter des fichiers externes manuellement (ex : `cover.jpg`)
+- **Balises globales MKV** : copier les tags d'une ou plusieurs sources, puis les fusionner/éditer dans un dialogue global
+- **Chapitres** : conserver les chapitres, puis les renommer, ajouter, supprimer ou retimer les entrées
+
+> Pour les tags en conflit, la priorité revient au premier fichier importé. Pour les chapitres, le panneau prend comme base la première source qui contient des chapitres, puis vous laisse les modifier.
 
 ##### 6. Chemin de sortie
 
@@ -283,7 +302,8 @@ Laisser sur **Copie** pour ne pas réencoder la vidéo. Sinon, choisir un codec 
 | Codec | Description |
 |-------|-------------|
 | `hevc_nvenc` / `h264_nvenc` | GPU NVIDIA |
-| `hevc_amf` / `h264_amf` | GPU AMD |
+| `hevc_amf` / `h264_amf` | GPU AMD sous Windows (AMF) |
+| `hevc_vaapi` / `h264_vaapi` | GPU exposé via VAAPI sous Linux |
 | `hevc_qsv` / `h264_qsv` | GPU Intel |
 
 ##### 8. Choisir le mode de qualité
@@ -330,7 +350,7 @@ Les pistes audio viennent du panneau Remuxage. Pour chaque piste :
 
 ##### 13. Aperçu de commande
 
-La commande `ffmpeg` ou `mkvmerge` complète est affichée et mise à jour en temps réel.
+La commande principale `ffmpeg` ou `mkvmerge` complète est affichée et mise à jour en temps réel. En mode encodage, elle est suivie d'un post-traitement `mkvpropedit` pour les chapitres personnalisés, les tags MKV, les langues/titres de pistes et la writing-app.
 
 ##### 14. Exécuter
 
@@ -346,10 +366,15 @@ Utilisé quand tout est en copie et qu'aucune modification HDR n'est demandée.
 
 ```bash
 mkvmerge -o SORTIE.mkv
+  --title "Titre du conteneur"
+  [--chapters chapitres.xml]
   [--track-order 0:1,0:2,1:0]
   [--video-tracks 1]
   [--audio-tracks 2,3]
   [--no-subtitles]
+  [--attachments 1,2]
+  [--attach-file cover.jpg]
+  [--no-global-tags]
   [--no-chapters]
   [--track-name 2:Français]
   [--language-ietf 2:fr]
@@ -357,12 +382,12 @@ mkvmerge -o SORTIE.mkv
   SOURCE1.mkv [SOURCE2.mkv ...]
 ```
 
-Suivi de `mkvpropedit` si des métadonnées de pistes doivent être modifiées.
+`mkvmerge` applique directement l'ordre des pistes, les langues, les titres, les flags, le titre du segment, les chapitres personnalisés et les pièces jointes. `mkvpropedit` intervient ensuite pour les balises globales MKV et la writing-app.
 
 #### Mode Encodage (ffmpeg)
 
 Utilisé dès qu'un codec est actif, ou qu'un tone mapping / injection HDR est demandé.
-`ffmpeg` gère tout en une seule commande : vidéo, audio, sous-titres, pièces jointes et chapitres.
+`ffmpeg` construit le fichier principal (vidéo, audio, sous-titres, pièces jointes, titre du conteneur), puis `mkvpropedit` finalise ce que `ffmpeg` ne préserve pas proprement dans un workflow MKV avancé : chapitres personnalisés, tags globaux, langues/titres de pistes et writing-app.
 
 ```bash
 ffmpeg -hide_banner -y
@@ -378,11 +403,13 @@ ffmpeg -hide_banner -y
   [-bsf:a:0 truehd_core]             # si extraction noyau TrueHD
   -map 0:s:0 -c:s copy               # sous-titres depuis panneau remux
   -map 0:t:0 -c:t copy               # pièces jointes depuis panneau remux
+  [-attach cover.jpg]                # pièce jointe ajoutée manuellement
   -map_chapters 0
+  -metadata title="Titre du conteneur"
   SORTIE.mkv
 ```
 
-Suivi de `mkvpropedit` pour les métadonnées et balises MKV.
+Suivi de `mkvpropedit` pour les chapitres personnalisés, les balises globales MKV, les langues/titres de pistes et la writing-app.
 
 #### Mode Encodage avec copie DoVi / HDR10+ (workflow en plusieurs étapes)
 
@@ -417,7 +444,9 @@ ffmpeg -hide_banner -y
   -map_chapters 1
   SORTIE.mkv
 
-# 8. Post-traitement métadonnées
+# 8. Post-traitement MKV
+mkvpropedit SORTIE.mkv --chapters chapitres.xml
+mkvpropedit SORTIE.mkv --tags all:tags.xml
 mkvpropedit SORTIE.mkv --edit track:@1 --set language-ietf=fra ...
 ```
 
@@ -523,34 +552,51 @@ mkvmerge -o SORTIE.mkv --no-video FILM1.mkv film1_final.hevc --track-order ...
 
 ## ⚙️ Paramètres et configuration
 
+### Priorité de configuration
+
+L'application lit ses réglages dans cet ordre :
+
+1. `config.ini` à la racine du projet
+2. les valeurs persistées par l'interface (`QSettings`)
+3. les valeurs par défaut internes
+
+Sous Windows, `setup.py` et le démarrage de l'application peuvent auto-détecter les outils et renseigner la section `[tools]` de `config.ini`.
+
 ### Chemins configurables
 
 | Paramètre | Défaut | Description |
 |-----------|--------|-------------|
-| `work_dir` | `/tmp/mediarecode_work` | Répertoire pour les fichiers intermédiaires |
+| `work_dir` | `/tmp/mediarecode_work` (`%TEMP%\mediarecode_work` sur Windows) | Répertoire pour les fichiers intermédiaires |
 | `output_dir` | `~/Videos` | Répertoire de sortie par défaut |
 
 ### Chemins des outils
 
-Si les outils ne sont pas dans le PATH, il est possible de spécifier leur chemin complet dans les paramètres.
+Si les outils ne sont pas dans le `PATH`, il est possible de spécifier leur chemin complet dans `config.ini` ou dans les paramètres. Les clés utiles sont :
 
-### Buffer RAM (Linux)
+- `ffmpeg`, `ffprobe`
+- `mkvmerge`, `mkvextract`, `mkvinfo`, `mkvpropedit`
+- `mediainfo`
+- `dovi_tool`, `hdr10plus_tool`
+- `eac3to` (optionnel, Windows)
+
+Exemple :
+
+```ini
+[paths]
+output_dir = /mnt/nas/videos
+
+[tools]
+ffmpeg = /opt/ffmpeg/bin/ffmpeg
+mkvpropedit = /usr/bin/mkvpropedit
+dovi_tool = /usr/local/bin/dovi_tool
+```
+
+### Buffer RAM (Linux / macOS)
 
 | Paramètre | Défaut | Description |
 |-----------|--------|-------------|
-| `ram_buffer_enabled` | `true` | Utiliser `/dev/shm` pour les fichiers HEVC intermédiaires |
+| `ram_buffer_enabled` | `true` | Utiliser `/dev/shm` pour les fichiers HEVC intermédiaires quand disponible |
 | `ram_buffer_threshold_pct` | `15` | % de RAM libre minimum requis avant d'utiliser le buffer |
-
-### Variables d'environnement
-
-Toutes les options peuvent être surchargées via des variables d'environnement :
-
-```bash
-export TOOL_FFMPEG=/opt/ffmpeg/bin/ffmpeg
-export TOOL_DOVI_TOOL=/usr/local/bin/dovi_tool
-export OUTPUT_DIR=/mnt/nas/videos
-python main.py
-```
 
 ---
 
@@ -586,14 +632,16 @@ flowchart TD
         D --> E1[Activer / désactiver pistes]
         D --> E2[Réordonner par glisser-déposer]
         D --> E3[Modifier langue · titre · drapeaux\ndouble-clic → dialogue]
-        D --> E4[Sélectionner pièces jointes]
-        D --> E5[Option : conserver chapitres]
+        D --> E4[Titre du conteneur]
+        D --> E5[Sélectionner / ajouter pièces jointes]
+        D --> E6[Éditer les balises MKV globales]
+        D --> E7[Conserver / éditer les chapitres]
         E3 --> SYNC1[🔄 Sync bidirectionnelle\nvers panneau Encodage]
     end
 
     subgraph ENCODE_PANEL["🎛️ Panneau Encodage — Configuration du traitement"]
         F[Pistes audio reçues\ndepuis panneau Remuxage]
-        F --> G[Codec vidéo :\ncopy · x265 · x264 · AV1 · NVENC · AMF · QSV]
+        F --> G[Codec vidéo :\ncopy · x265 · x264 · AV1 · NVENC · AMF · VAAPI · QSV]
         G --> H[Mode qualité :\nCRF · Débit · Taille cible]
         H --> I[Preset vitesse/qualité]
         I --> J{Options HDR}
@@ -605,7 +653,7 @@ flowchart TD
         K --> SYNC2[🔄 Sync bidirectionnelle\nvers panneau Remuxage]
     end
 
-    E1 & E2 & E3 & E4 & E5 --> F
+    E1 & E2 & E3 & E4 & E5 & E6 & E7 --> F
     SYNC1 -.->|lang · titre| F
     SYNC2 -.->|lang · titre| D
 
@@ -618,10 +666,9 @@ flowchart TD
     O -->|✅ OUI| P1[Mode : Remuxage pur\nmkvmerge]
     O -->|❌ NON| P2[Mode : Encodage\nffmpeg]
 
-    P1 --> Q1[mkvmerge -o SORTIE\n--track-order ...\n--language-ietf ...\nSOURCE.mkv]
-    Q1 --> R1{Métadonnées\nà modifier ?}
-    R1 -->|Oui| S1[mkvpropedit\n--edit track:@N\n--set language-ietf=...]
-    R1 -->|Non| OK1
+    P1 --> Q1[mkvmerge -o SORTIE\n--title ...\n--track-order ...\nSOURCE.mkv]
+    Q1 --> S1[mkvpropedit post-remux\nbalises MKV + writing-app]
+    S1 --> OK1
 
     P2 --> Q2{Copier DoVi\nou HDR10+ ?}
 
@@ -647,9 +694,8 @@ flowchart TD
     HDR10 --> HDR11[7. ffmpeg reconstruction\nHEVC final + audio/subs/chapitres\n→ SORTIE.mkv]
     HDR11 --> POSTPROC
 
-    POSTPROC[mkvpropedit post-encodage\nbalisage MKV + métadonnées pistes]
-    POSTPROC --> S1
-    S1 --> OK1[✅ Fichier de sortie prêt]
+    POSTPROC[mkvpropedit post-encodage\nchapitres + balises MKV + métadonnées pistes]
+    POSTPROC --> OK1[✅ Fichier de sortie prêt]
 
     ERR[❌ Erreur dans le journal]
 
@@ -768,10 +814,10 @@ flowchart TD
 | **ffmpeg** | Encodage, copie de flux, reconstruction finale HDR, tone mapping | Toute opération qui n'est pas une copie intégrale |
 | **mkvmerge** | Remuxage pur (copie intégrale) et remuxage final Fusion HDR | Quand tout est en copie sans modification |
 | **mkvextract** | Fusion HDR | Extraction flux HEVC d'un MKV |
-| **mkvpropedit** | Post-encodage | Balises MKV, langue/titre des pistes, writing-app |
+| **mkvpropedit** | Post-encodage | Chapitres, balises MKV, langue/titre des pistes, writing-app |
 | **dovi_tool** | Fusion HDR, copie DoVi lors de l'encodage | Extraction RPU, injection RPU, vérification |
 | **hdr10plus_tool** | Fusion HDR, copie HDR10+ lors de l'encodage | Extraction JSON, injection |
-| **nvidia-smi** | Détection GPU NVIDIA | Présence encodeur NVENC |
+| **nvidia-smi** | Détection GPU NVIDIA sous Linux | Fallback de présence NVENC |
 
 ---
 
