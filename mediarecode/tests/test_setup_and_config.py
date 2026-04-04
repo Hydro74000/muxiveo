@@ -1,0 +1,152 @@
+"""
+tests/test_setup_and_config.py — Tests unitaires pour setup.py et core/config.py
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _qt_app(qt_app):
+    """Assure qu'une QApplication existe pour les accès Qt/QSettings."""
+    return qt_app
+
+
+class TestAppConfigRamBuffer:
+    """Tests des clés INI ram_buffer_enabled / ram_buffer_threshold_pct."""
+
+    def test_defaults_enabled_true_threshold_15(self, tmp_path):
+        """Valeurs par défaut : enabled=True, threshold=15."""
+        from core.config import AppConfig
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.dict(os.environ, {}, clear=False):
+                cfg = AppConfig()
+
+        assert cfg.ram_buffer_enabled is True
+        assert cfg.ram_buffer_threshold_pct == 15
+
+    def test_ini_disables_ram_buffer(self, tmp_path):
+        """config.ini ram_buffer_enabled=false désactive le buffer."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[encoding]\nram_buffer_enabled = false\n")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.ram_buffer_enabled is False
+
+    def test_ini_sets_threshold(self, tmp_path):
+        """config.ini ram_buffer_threshold_pct=25 fixe le seuil à 25."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[encoding]\nram_buffer_threshold_pct = 25\n")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.ram_buffer_threshold_pct == 25
+
+
+class TestAppConfigWindowsToolAutodetect:
+    """Tests de détection et persistance auto des outils Windows dans config.ini."""
+
+    def _mock_qsettings(self):
+        inst = MagicMock()
+        inst.value.side_effect = lambda key, default=None: default
+        return inst
+
+    def test_windows_autodetects_repo_tool_and_updates_ini(self, tmp_path):
+        """Un binaire local dans tools/ est détecté et écrit dans config.ini."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[tools]\n", encoding="utf-8")
+        tool_path = tmp_path / "tools" / "dovi_tool.exe"
+        tool_path.parent.mkdir(parents=True, exist_ok=True)
+        tool_path.write_text("", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs, \
+             patch("core.config.sys.platform", "win32"), \
+             patch("core.config.shutil.which", return_value=None), \
+             patch("core.config._app_data_dir", return_value=tmp_path), \
+             patch.object(cfg_mod, "_INI_PATH", ini_path):
+            mock_qs.return_value = self._mock_qsettings()
+            cfg = AppConfig()
+
+        assert cfg.tool_dovi_tool == str(tool_path)
+        assert f"dovi_tool = {tool_path}" in ini_path.read_text(encoding="utf-8")
+
+    def test_windows_autodetects_winget_tool_and_updates_ini(self, tmp_path):
+        """Un binaire installé via winget est détecté et écrit dans config.ini."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[tools]\n", encoding="utf-8")
+        ffmpeg_path = (
+            tmp_path / "localapp" / "Microsoft" / "WinGet" / "Packages"
+            / "Gyan.FFmpeg_1.0.0_x64__test" / "ffmpeg-7.1-full_build" / "bin" / "ffmpeg.exe"
+        )
+        ffmpeg_path.parent.mkdir(parents=True, exist_ok=True)
+        ffmpeg_path.write_text("", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs, \
+             patch("core.config.sys.platform", "win32"), \
+             patch("core.config.shutil.which", return_value=None), \
+             patch("core.config._app_data_dir", return_value=tmp_path), \
+             patch.object(cfg_mod, "_INI_PATH", ini_path), \
+             patch.dict(os.environ, {"LOCALAPPDATA": str(tmp_path / "localapp")}, clear=False):
+            mock_qs.return_value = self._mock_qsettings()
+            cfg = AppConfig()
+
+        assert cfg.tool_ffmpeg == str(ffmpeg_path)
+        assert f"ffmpeg = {ffmpeg_path}" in ini_path.read_text(encoding="utf-8")
+
+    def test_windows_keeps_explicit_ini_tool_value(self, tmp_path):
+        """Une valeur explicite dans config.ini reste prioritaire sur l'autodetect."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        explicit = r"C:\custom\ffmpeg.exe"
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text(f"[tools]\nffmpeg = {explicit}\n", encoding="utf-8")
+        detected_path = tmp_path / "tools" / "ffmpeg.exe"
+        detected_path.parent.mkdir(parents=True, exist_ok=True)
+        detected_path.write_text("", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs, \
+             patch("core.config.sys.platform", "win32"), \
+             patch("core.config.shutil.which", return_value=None), \
+             patch("core.config._app_data_dir", return_value=tmp_path), \
+             patch.object(cfg_mod, "_INI_PATH", ini_path):
+            mock_qs.return_value = self._mock_qsettings()
+            cfg = AppConfig()
+
+        assert cfg.tool_ffmpeg == explicit
+        assert ini_path.read_text(encoding="utf-8").count("ffmpeg =") == 1
