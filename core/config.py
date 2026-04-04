@@ -298,8 +298,11 @@ def _normalize_language_code(code: str | None) -> str:
     raw = code.strip()
     if not raw:
         return _default_language_code()
-    if len(raw) == 3 and Rfc5646LanguageTags.from_iso639_2(raw):
-        return raw.lower()
+    if len(raw) == 3:
+        ietf = Rfc5646LanguageTags.from_iso639_2(raw)
+        if ietf:
+            canonical = Rfc5646LanguageTags.to_iso639_2(ietf) or raw.lower()
+            return canonical.lower()
     converted = Rfc5646LanguageTags.from_locale_name(raw)
     return converted or _default_language_code()
 

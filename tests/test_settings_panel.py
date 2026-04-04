@@ -30,7 +30,8 @@ def test_settings_panel_language_combo_shows_full_language_name(tmp_path, qt_app
 
     panel = SettingsPanel(cfg)
     combo = panel.widget_for("ui", "language")
-    assert combo.currentData() == "fre"
+    assert combo.currentData() == "fra"
+    assert "=" not in combo.currentText()
     assert "Français" in combo.currentText() or "French" in combo.currentText()
 
 
@@ -50,10 +51,10 @@ def test_settings_panel_writes_selected_language_to_ini(tmp_path, qt_app):
 
         panel = SettingsPanel(cfg)
         combo = panel.widget_for("ui", "language")
-        index = combo.findData("fre")
+        index = combo.findData("fra")
         assert index >= 0
         combo.setCurrentIndex(index)
         panel._on_save_clicked()
 
-        assert "language = fre" in ini_path.read_text(encoding="utf-8")
-        assert cfg.language == "fre"
+        assert "language = fra" in ini_path.read_text(encoding="utf-8")
+        assert cfg.language == "fra"

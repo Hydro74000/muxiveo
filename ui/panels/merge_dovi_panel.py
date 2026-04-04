@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
+from core.i18n import apply_translations, translate_text
 from core.subprocess_utils import subprocess_text_kwargs
 from core.workflows.merge_dovi import (
     DoviProfile, FrameCountResult,
@@ -270,8 +271,10 @@ class _FilePairSection(QWidget):
 
         def open_dialog() -> None:
             path, _ = QFileDialog.getOpenFileName(
-                self, dialog_title, "",
-                "Fichiers vidéo (*.mkv *.hevc);;Tous les fichiers (*)",
+                self,
+                translate_text(dialog_title),
+                "",
+                translate_text("Fichiers vidéo (*.mkv *.hevc);;Tous les fichiers (*)"),
             )
             if path:
                 on_path_selected(path)
@@ -495,7 +498,11 @@ class _ConfigSection(QWidget):
 
             btn = _secondary_button("…", 32)
             def open_dir(le=le) -> None:
-                d = QFileDialog.getExistingDirectory(self, "Sélectionner un dossier", le.text())
+                d = QFileDialog.getExistingDirectory(
+                    self,
+                    translate_text("Sélectionner un dossier"),
+                    le.text(),
+                )
                 if d:
                     le.setText(d)
             btn.clicked.connect(open_dir)
@@ -584,7 +591,7 @@ class _StepIndicator(QWidget):
         self._icon.setText("◉")
         self._icon.setStyleSheet(f"color: {_C.ACCENT}; font-size: 12px; background: transparent; border: none;")
         self._name.setStyleSheet(f"color: {_C.TEXT_PRI}; font-size: 12px; font-weight: 600; background: transparent; border: none;")
-        self._detail.setText("en cours…")
+        self._detail.setText(translate_text("en cours…"))
         self._detail.setStyleSheet(f"color: {_C.ACCENT}; font-size: 11px; font-family: 'JetBrains Mono', monospace; background: transparent; border: none;")
 
     def set_progress(self, message: str) -> None:
@@ -825,6 +832,7 @@ class MergeDoviPanel(QWidget):
         self._workflow: MergeDoviWorkflow | None = None
         self._running   = False
         self._build_ui()
+        apply_translations(self)
         self._init_workflow()
 
     # ------------------------------------------------------------------
@@ -954,7 +962,7 @@ class MergeDoviPanel(QWidget):
         film2 = self._file_section.film2
 
         if not film1 or not film2:
-            self._error_section.show_error("Sélectionnez Film 1 et Film 2 avant de lancer.")
+            self._error_section.show_error(translate_text("Sélectionnez Film 1 et Film 2 avant de lancer."))
             self._result_section.hide_result()
             return
 
@@ -965,7 +973,14 @@ class MergeDoviPanel(QWidget):
         self._run_btn.setEnabled(False)
         self._cancel_btn.setEnabled(True)
 
-        self.log_message.emit("INFO", f"Démarrage workflow DoVi : {film1.name} ← {film2.name}")
+        self.log_message.emit(
+            "INFO",
+            translate_text(
+                "Démarrage workflow DoVi : {film1} ← {film2}",
+                film1=film1.name,
+                film2=film2.name,
+            ),
+        )
 
         assert self._workflow is not None
         self._workflow.start(
@@ -986,7 +1001,7 @@ class MergeDoviPanel(QWidget):
         if self._workflow:
             self._workflow.cancel()
         self._cancel_btn.setEnabled(False)
-        self.log_message.emit("WARN", "Annulation demandée — en attente de fin d'étape…")
+        self.log_message.emit("WARN", translate_text("Annulation demandée — en attente de fin d'étape…"))
 
     # ------------------------------------------------------------------
     # Slots workflow (thread Qt principal via QueuedConnection)
@@ -994,31 +1009,64 @@ class MergeDoviPanel(QWidget):
 
     def _on_step_started(self, step: WorkflowStep) -> None:
         self._step_progress.set_running(step)
-        self.log_message.emit("INFO", f"[{_STEP_LABELS[step]}] Démarrage…")
+        step_label = translate_text(_STEP_LABELS[step])
+        self.log_message.emit("INFO", translate_text("[{step}] Démarrage…", step=step_label))
 
     def _on_step_progress(self, step: WorkflowStep, message: str) -> None:
-        self._step_progress.set_progress(step, message)
-        self.log_message.emit("INFO", f"[{_STEP_LABELS[step]}] {message}")
+        step_label = translate_text(_STEP_LABELS[step])
+        local_message = translate_text(message)
+        self._step_progress.set_progress(step, local_message)
+        self.log_message.emit(
+            "INFO",
+            translate_text("[{step}] {message}", step=step_label, message=local_message),
+        )
 
     def _on_step_finished(self, step: WorkflowStep, result: StepResult) -> None:
-        self._step_progress.set_ok(step, result)
-        self.log_message.emit("OK", f"[{_STEP_LABELS[step]}] {result.message}  ({result.duration:.1f}s)")
+        step_label = translate_text(_STEP_LABELS[step])
+        local_message = translate_text(result.message)
+        local_result = StepResult(
+            step=result.step,
+            success=result.success,
+            message=local_message,
+            duration=result.duration,
+            detail=result.detail,
+        )
+        self._step_progress.set_ok(step, local_result)
+        self.log_message.emit(
+            "OK",
+            translate_text(
+                "[{step}] {message}  ({duration}s)",
+                step=step_label,
+                message=local_message,
+                duration=f"{result.duration:.1f}",
+            ),
+        )
 
     def _on_workflow_finished(self, output_path: str) -> None:
         self._result_section.show_result(output_path)
         self._error_section.hide_error()
         self._set_idle_state()
-        self.log_message.emit("OK", f"Fichier de sortie : {output_path}")
+        self.log_message.emit("OK", translate_text("Fichier de sortie : {path}", path=output_path))
 
     def _on_workflow_failed(self, step: WorkflowStep, message: str) -> None:
-        cancelled = "annulé" in message.lower()
+        lowered = message.lower()
+        cancelled = "annulé" in lowered or "cancel" in lowered
         if cancelled:
             self._error_section.hide_error()
-            self.log_message.emit("WARN", "Workflow annulé par l'utilisateur.")
+            self.log_message.emit("WARN", translate_text("Workflow annulé par l'utilisateur."))
         else:
-            self._step_progress.set_error(step, message)
-            self._error_section.show_error(f"[{_STEP_LABELS[step]}] {message}")
-            self.log_message.emit("ERROR", f"Workflow échoué à l'étape {_STEP_LABELS[step]} : {message}")
+            step_label = translate_text(_STEP_LABELS[step])
+            local_message = translate_text(message)
+            self._step_progress.set_error(step, local_message)
+            self._error_section.show_error(f"[{step_label}] {local_message}")
+            self.log_message.emit(
+                "ERROR",
+                translate_text(
+                    "Workflow échoué à l'étape {step} : {message}",
+                    step=step_label,
+                    message=local_message,
+                ),
+            )
         self._set_idle_state()
 
     # ------------------------------------------------------------------

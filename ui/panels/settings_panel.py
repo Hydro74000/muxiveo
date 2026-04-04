@@ -7,7 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QLocale, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QLayout,
     QScrollArea,
     QSizePolicy,
     QSpinBox,
@@ -80,10 +81,12 @@ class SettingsPanel(QWidget):
         )
 
         content = QWidget()
+        content.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         content.setStyleSheet(f"background:{_C.BG_DEEP};")
         layout = QVBoxLayout(content)
         layout.setContentsMargins(28, 24, 28, 24)
         layout.setSpacing(20)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
 
         title = QLabel("Réglages")
         title.setStyleSheet(
@@ -101,7 +104,8 @@ class SettingsPanel(QWidget):
         layout.addWidget(subtitle)
         layout.addWidget(_separator())
 
-        for group in INI_FIELD_GROUPS:
+        groups = sorted(INI_FIELD_GROUPS, key=lambda group: 0 if group["section"] == "ui" else 1)
+        for group in groups:
             layout.addWidget(_section_label(group["title"].upper()))
             layout.addWidget(self._build_group_card(group))
 
@@ -121,7 +125,6 @@ class SettingsPanel(QWidget):
         actions.addWidget(reload_btn)
         actions.addWidget(save_btn)
         layout.addLayout(actions)
-        layout.addStretch()
 
         scroll.setWidget(content)
         root.addWidget(scroll, stretch=1)
@@ -206,20 +209,12 @@ class SettingsPanel(QWidget):
             combo = QComboBox()
             combo.setObjectName(f"{section}.{field['key']}")
             combo.setStyleSheet(_combo_style())
-            for code, _name in available_languages():
-                combo.addItem(self._language_display(code), code)
+            for code, name in available_languages():
+                combo.addItem(name, code)
             self._field_widgets[key] = combo
             return combo
 
         raise ValueError(f"Unsupported settings field kind: {kind}")
-
-    def _language_display(self, code: str) -> str:
-        ietf = Rfc5646LanguageTags.from_iso639_2(code) or code
-        native = QLocale(ietf).nativeLanguageName().strip()
-        if not native:
-            native = Rfc5646LanguageTags.iso639_2_name(code) or code
-        native = native[:1].upper() + native[1:] if native else code
-        return f"{code} = {native}"
 
     def _field_value(self, section: str, field: dict[str, Any]) -> str:
         widget = self._field_widgets[(section, field["key"])]
@@ -250,6 +245,11 @@ class SettingsPanel(QWidget):
                 elif isinstance(widget, QComboBox):
                     lookup = str(value)
                     index = widget.findData(lookup)
+                    if index < 0 and field["kind"] == "language":
+                        ietf = Rfc5646LanguageTags.from_iso639_2(lookup)
+                        canonical = Rfc5646LanguageTags.to_iso639_2(ietf) if ietf else None
+                        if canonical:
+                            index = widget.findData(canonical)
                     if index >= 0:
                         widget.setCurrentIndex(index)
 
