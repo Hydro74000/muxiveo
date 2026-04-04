@@ -840,7 +840,7 @@ class _Sidebar(QWidget):
         layout.addStretch()
 
         # Version
-        version_lbl = QLabel("v0.1.0 — Phase 6")
+        version_lbl = QLabel("v1.1")
         version_lbl.setContentsMargins(16, 0, 0, 12)
         version_lbl.setStyleSheet(f"""
             color: {_Colors.TEXT_DIM};
