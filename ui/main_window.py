@@ -525,20 +525,11 @@ class DashboardPage(QWidget):
     def _build_encoder_section(self, root: QVBoxLayout) -> None:
         """Ajoute la section encodeurs au layout root. Détection SW synchrone, HW asynchrone."""
         self._hw_badges = {}
+        ffmpeg_bin = self._config.tool_ffmpeg
 
         # Détection synchrone des encodeurs logiciels via ffmpeg -encoders
         all_sw_ids = [c for c, _ in self._SW_VIDEO] + [c for c, _ in self._AUDIO]
-        try:
-            r = subprocess.run(
-                ["ffmpeg", "-encoders"],
-                capture_output=True, text=True, check=False,
-            )
-            sw_avail = {
-                c: bool(re.search(rf"\b{re.escape(c)}\b", r.stdout))
-                for c in all_sw_ids
-            }
-        except FileNotFoundError:
-            sw_avail = {c: False for c in all_sw_ids}
+        sw_avail = self._scan_encoder_availability(ffmpeg_bin, all_sw_ids)
 
         # Séparateur + titre
         sep = QFrame()
@@ -596,6 +587,24 @@ class DashboardPage(QWidget):
         self._apply_encoder_badge_state(badge, label, state)
         return badge
 
+    @staticmethod
+    def _scan_encoder_availability(ffmpeg_bin: str, codec_ids: list[str]) -> dict[str, bool]:
+        """Retourne l'état de disponibilité des codecs présents dans `ffmpeg -encoders`."""
+        try:
+            result = subprocess.run(
+                [ffmpeg_bin, "-hide_banner", "-encoders"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            encoders_output = "\n".join(part for part in (result.stdout, result.stderr) if part)
+            return {
+                codec_id: bool(re.search(rf"\b{re.escape(codec_id)}\b", encoders_output))
+                for codec_id in codec_ids
+            }
+        except FileNotFoundError:
+            return {codec_id: False for codec_id in codec_ids}
+
     def _apply_encoder_badge_state(self, badge: QLabel, label: str, state: str) -> None:
         if state == "available":
             symbol, color, bg, border = "●", _Colors.LOG_OK,    "#0f2318", "#1a4a2e"
@@ -626,7 +635,7 @@ class DashboardPage(QWidget):
     def _run_hw_detection(self) -> None:
         """Thread worker : probe runtime de chaque encodeur HW."""
         from core.workflows.encode import HardwareEncoderDetector
-        available = HardwareEncoderDetector().detect()
+        available = HardwareEncoderDetector().detect(self._config.tool_ffmpeg)
         self._hw_detected.emit(available)
 
     def _on_hw_detected(self, available: set[str]) -> None:
