@@ -18,7 +18,8 @@ Cette documentation correspond à **Mediarecode v1.1**.
 ### Prérequis
 
 - **Python 3.10+**
-- **Git**
+
+`setup.py` installe ensuite **tous les autres prérequis** pour **Windows**, **Linux Fedora / RHEL**, **Linux Debian / Ubuntu** et **macOS**, y compris **PySide6** et les outils externes nécessaires.
 
 ### Cloner le dépôt
 
@@ -29,12 +30,23 @@ cd mediarecode
 
 ### Installer les dépendances et les outils
 
+Le script `setup.py` installe automatiquement :
+
+| Catégorie | Installé par `setup.py` |
+|-----------|-------------------------|
+| Dépendance Python | `PySide6` |
+| Outils système | `ffmpeg`, `ffprobe`, `mkvmerge`, `mkvextract`, `mkvinfo`, `mkvpropedit`, `mediainfo` |
+| Outils GitHub | `dovi_tool`, `hdr10plus_tool` |
+| Notes plateforme | Debian/Ubuntu via `apt`, Fedora/RHEL via `dnf`, macOS via Homebrew, Windows via `winget` + binaires locaux |
+
+> Sous Windows, `setup.py` renseigne aussi `config.ini` avec les chemins détectés. Sur toutes les plateformes, vous pouvez garder cette configuration auto ou définir vos propres chemins d'outils dans `config.ini`.
+
 | Plateforme | Commande | Détails |
 |------------|----------|---------|
 | Linux Debian / Ubuntu | `python3 setup.py` | installe `ffmpeg`, `mkvtoolnix`, `mediainfo` via `apt`, puis `dovi_tool` et `hdr10plus_tool` depuis GitHub |
 | Linux Fedora / RHEL | `python3 setup.py` | active RPM Fusion si nécessaire, installe `ffmpeg`, `mkvtoolnix`, `mediainfo` via `dnf`, puis les outils GitHub |
 | macOS | `python3 setup.py` | installe `ffmpeg`, `mkvtoolnix`, `mediainfo` via Homebrew, puis `dovi_tool` et `hdr10plus_tool` |
-| Windows | `python setup.py` | installe `ffmpeg`, `mkvtoolnix` et `mediainfo` via `winget`, place `dovi_tool` et `hdr10plus_tool` dans `mediarecode\\tools`, puis renseigne `config.ini` avec les chemins détectés |
+| Windows | `py setup.py` | installe `ffmpeg`, `mkvtoolnix` et `mediainfo` via `winget`, place `dovi_tool` et `hdr10plus_tool` dans `mediarecode\\tools`, puis renseigne `config.ini` avec les chemins détectés |
 
 Options utiles du script :
 
@@ -53,7 +65,7 @@ Options utiles du script :
 python3 main.py
 ```
 
-Sous Windows, utilisez `python main.py`.
+Sous Windows, utilisez `py main.py`.
 
 ## Interface et usage
 
