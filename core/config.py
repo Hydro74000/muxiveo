@@ -27,9 +27,24 @@ from core.lang_tags import Rfc5646LanguageTags
 # Chemin du fichier config.ini
 # ---------------------------------------------------------------------------
 
-# config.ini est placé dans le même dossier que main.py
-# (mediarecode/config.ini), soit le dossier parent de core/
-_INI_PATH = Path(__file__).parent.parent / "config.ini"
+# config.ini est placé à côté de l'exécutable / de l'AppImage, ou à la
+# racine du projet en mode développement.
+def _resolve_ini_path() -> Path:
+    """
+    Résout le chemin de config.ini selon la plateforme et le contexte :
+    - Linux / macOS (toujours)  → ~/.config/mediarecode/config.ini
+    - Windows dev               → racine du projet (parent de core/)
+    - Windows frozen            → dossier contenant l'exécutable
+    """
+    if sys.platform != "win32":
+        xdg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+        return xdg / "mediarecode" / "config.ini"
+    # Windows
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent / "config.ini"
+    return Path(__file__).parent.parent / "config.ini"
+
+_INI_PATH = _resolve_ini_path()
 _MISSING = object()
 
 _WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {

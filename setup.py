@@ -468,11 +468,16 @@ def _system_language_code() -> str:
     return "eng"
 
 
-def initialize_config_ini_language(dry_run: bool, force: bool = False) -> None:
+def initialize_config_ini_language(
+    dry_run: bool,
+    force: bool = False,
+    ini_path: Path | None = None,
+) -> None:
     """Initialise la langue UI dans config.ini depuis la locale système."""
     title("Step 5 — config.ini UI language")
 
-    ini_path = _config_ini_path()
+    if ini_path is None:
+        ini_path = _config_ini_path()
     detected = _system_language_code()
     info(f"Detected UI language: {detected}")
 
