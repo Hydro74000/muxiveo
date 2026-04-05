@@ -71,6 +71,44 @@ class TestAppConfigRamBuffer:
 
         assert cfg.ram_buffer_threshold_pct == 25
 
+    def test_explicit_blank_ini_uses_default_instead_of_qsettings(self, tmp_path):
+        """Une clé présente mais vide revient au défaut documenté, pas à QSettings."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[paths]\nwork_dir =\n", encoding="utf-8")
+        default_work_dir = tmp_path / "default-work"
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: "/tmp/qsettings-work" if key == "paths/work_dir" else default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch("core.config._default_work_dir", return_value=default_work_dir), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.work_dir == default_work_dir
+
+    def test_ini_language_accepts_iso639_2_alias(self, tmp_path):
+        """Le code UI peut utiliser un alias ISO639-2, normalisé vers le code canonique."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[ui]\nlanguage = fre\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.language == "fra"
+
 
 class TestAppConfigWindowsToolAutodetect:
     """Tests de détection et persistance auto des outils Windows dans config.ini."""
@@ -150,3 +188,17 @@ class TestAppConfigWindowsToolAutodetect:
 
         assert cfg.tool_ffmpeg == explicit
         assert ini_path.read_text(encoding="utf-8").count("ffmpeg =") == 1
+
+
+def test_setup_initializes_ui_language_in_config_ini(tmp_path):
+    """setup.py initialise ui.language depuis la langue système quand la clé est absente."""
+    import setup as setup_mod
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[ui]\n", encoding="utf-8")
+
+    with patch.object(setup_mod, "_config_ini_path", return_value=ini_path), \
+         patch.object(setup_mod, "_system_language_code", return_value="fra"):
+        setup_mod.initialize_config_ini_language(dry_run=False, force=False)
+
+    assert "language = fra" in ini_path.read_text(encoding="utf-8")
