@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
+from core.i18n import apply_translations, translate_text
 from core.inspector import (
     AudioTrack, ChapterInfo, FileInfo, FileInspector,
     HDRType, InspectionError, SubtitleTrack, VideoTrack,
@@ -145,7 +146,7 @@ class _TrackTableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.DisplayRole:
             if orientation == Qt.Orientation.Horizontal:
                 try:
-                    return self._headers[section]
+                    return translate_text(self._headers[section])
                 except IndexError:
                     return ""
         if role == Qt.ItemDataRole.ForegroundRole:
@@ -291,8 +292,8 @@ def _subtitle_rows(tracks: list[SubtitleTrack]) -> list[list[str]]:
             t.codec,
             t.language or "—",
             t.title or "—",
-            "Oui" if t.default else "—",
-            "Oui" if t.forced  else "—",
+            translate_text("Oui") if t.default else "—",
+            translate_text("Oui") if t.forced  else "—",
         ])
     return rows
 
@@ -302,7 +303,11 @@ def _chapter_rows(info: ChapterInfo | None) -> list[list[str]]:
         return []
     from core.inspector import fmt_timecode_display
     return [
-        [str(i + 1), fmt_timecode_display(e.timecode_s), e.name or f"Chapitre {i + 1}"]
+        [
+            str(i + 1),
+            fmt_timecode_display(e.timecode_s),
+            e.name or translate_text("Chapitre {index}", index=i + 1),
+        ]
         for i, e in enumerate(info.entries)
     ]
 
@@ -387,9 +392,9 @@ class _FileDropZone(QWidget):
     def _open_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Ouvrir un fichier vidéo",
+            translate_text("Ouvrir un fichier vidéo"),
             "",
-            "Fichiers vidéo (*.mkv *.mp4 *.m4v *.mov *.m2ts *.ts);;Tous les fichiers (*)",
+            translate_text("Fichiers vidéo (*.mkv *.mp4 *.m4v *.mov *.m2ts *.ts);;Tous les fichiers (*)"),
         )
         if path:
             self.file_selected.emit(path)
@@ -575,6 +580,7 @@ class FileInspectorWidget(QWidget):
 
         self._build_ui()
         self._connect_signals()
+        apply_translations(self)
 
     # ------------------------------------------------------------------
     # Construction UI
@@ -679,7 +685,7 @@ class FileInspectorWidget(QWidget):
 
     def inspect_file(self, path: Path) -> None:
         """Lance l'inspection du fichier dans un thread secondaire."""
-        self._set_status(f"Analyse de {path.name}…", _C.TEXT_SEC)
+        self._set_status(translate_text("Analyse de {name}…", name=path.name), _C.TEXT_SEC)
         self._summary.reset()
         self.inspection_started.emit(str(path))
 
@@ -691,7 +697,7 @@ class FileInspectorWidget(QWidget):
             except InspectionError as exc:
                 self._deliver_error(str(exc))
             except Exception as exc:
-                self._deliver_error(f"Erreur inattendue : {exc}")
+                self._deliver_error(translate_text("Erreur inattendue : {exc}", exc=exc))
 
         self._executor.submit(_run)
 
@@ -725,19 +731,26 @@ class FileInspectorWidget(QWidget):
         self._chapter_view.update_data(info.chapters)
 
         # Mise à jour des titres d'onglets avec le comptage
-        self._tabs.setTabText(0, f"▣  Vidéo ({len(info.video_tracks)})")
-        self._tabs.setTabText(1, f"♫  Audio ({len(info.audio_tracks)})")
-        self._tabs.setTabText(2, f"⬛  Sous-titres ({len(info.subtitle_tracks)})")
+        self._tabs.setTabText(0, translate_text("▣  Vidéo ({count})", count=len(info.video_tracks)))
+        self._tabs.setTabText(1, translate_text("♫  Audio ({count})", count=len(info.audio_tracks)))
+        self._tabs.setTabText(2, translate_text("⬛  Sous-titres ({count})", count=len(info.subtitle_tracks)))
         ch = info.chapters.count if info.chapters else 0
-        self._tabs.setTabText(3, f"◉  Chapitres ({ch})")
+        self._tabs.setTabText(3, translate_text("◉  Chapitres ({count})", count=ch))
 
-        self._set_status(f"✓ {info.path.name} — {len(info.video_tracks)}V "
-                         f"{len(info.audio_tracks)}A {len(info.subtitle_tracks)}S",
-                         _C.OK)
+        self._set_status(
+            translate_text(
+                "✓ {name} — {video}V {audio}A {subtitle}S",
+                name=info.path.name,
+                video=len(info.video_tracks),
+                audio=len(info.audio_tracks),
+                subtitle=len(info.subtitle_tracks),
+            ),
+            _C.OK,
+        )
 
     def on_inspection_failed(self, error: str) -> None:
         """À connecter à inspection_failed."""
-        self._set_status(f"✗ {error}", _C.ERROR)
+        self._set_status(translate_text("✗ {error}", error=error), _C.ERROR)
 
     # ------------------------------------------------------------------
     # Utilitaires

@@ -1,0 +1,1086 @@
+{
+  "Réglages": {
+    "fra": "Réglages",
+    "eng": "Settings"
+  },
+  "Modifiez toutes les valeurs persistées dans config.ini. Les changements de langue sont appliqués aux textes maîtrisés par l'application ; un redémarrage reste conseillé pour repartir sur un état propre.": {
+    "fra": "Modifiez toutes les valeurs persistées dans config.ini. Les changements de langue sont appliqués aux textes maîtrisés par l'application ; un redémarrage reste conseillé pour repartir sur un état propre.",
+    "eng": "Edit every value stored in config.ini. Language changes are applied to UI text and internal messages controlled by the application; restarting is still recommended to start from a clean state."
+  },
+  "CHEMINS": {
+    "fra": "CHEMINS",
+    "eng": "PATHS"
+  },
+  "OUTILS EXTERNES": {
+    "fra": "OUTILS EXTERNES",
+    "eng": "EXTERNAL TOOLS"
+  },
+  "ENCODAGE": {
+    "fra": "ENCODAGE",
+    "eng": "ENCODING"
+  },
+  "INTERFACE": {
+    "fra": "INTERFACE",
+    "eng": "INTERFACE"
+  },
+  "Dossier de travail": {
+    "fra": "Dossier de travail",
+    "eng": "Work directory"
+  },
+  "Répertoire des fichiers intermédiaires utilisés par les workflows.": {
+    "fra": "Répertoire des fichiers intermédiaires utilisés par les workflows.",
+    "eng": "Directory used for intermediate workflow files."
+  },
+  "Dossier de sortie": {
+    "fra": "Dossier de sortie",
+    "eng": "Output directory"
+  },
+  "Répertoire par défaut des fichiers produits.": {
+    "fra": "Répertoire par défaut des fichiers produits.",
+    "eng": "Default directory for generated files."
+  },
+  "Binaire FFmpeg utilisé pour l'encodage et certaines inspections.": {
+    "fra": "Binaire FFmpeg utilisé pour l'encodage et certaines inspections.",
+    "eng": "FFmpeg binary used for encoding and some inspections."
+  },
+  "Binaire FFprobe utilisé pour l'analyse des médias.": {
+    "fra": "Binaire FFprobe utilisé pour l'analyse des médias.",
+    "eng": "FFprobe binary used for media analysis."
+  },
+  "Binaire MKVToolNix utilisé pour le remuxage.": {
+    "fra": "Binaire MKVToolNix utilisé pour le remuxage.",
+    "eng": "MKVToolNix binary used for remuxing."
+  },
+  "Binaire MKVToolNix utilisé pour extraire des pistes.": {
+    "fra": "Binaire MKVToolNix utilisé pour extraire des pistes.",
+    "eng": "MKVToolNix binary used to extract tracks."
+  },
+  "Binaire MKVToolNix utilisé pour l'inspection des conteneurs.": {
+    "fra": "Binaire MKVToolNix utilisé pour l'inspection des conteneurs.",
+    "eng": "MKVToolNix binary used to inspect containers."
+  },
+  "Binaire MKVToolNix utilisé pour réécrire des métadonnées.": {
+    "fra": "Binaire MKVToolNix utilisé pour réécrire des métadonnées.",
+    "eng": "MKVToolNix binary used to rewrite metadata."
+  },
+  "Binaire MediaInfo utilisé pour enrichir l'inspection.": {
+    "fra": "Binaire MediaInfo utilisé pour enrichir l'inspection.",
+    "eng": "MediaInfo binary used to enrich inspection data."
+  },
+  "Outil Dolby Vision utilisé pour les workflows DoVi.": {
+    "fra": "Outil Dolby Vision utilisé pour les workflows DoVi.",
+    "eng": "Dolby Vision tool used for DoVi workflows."
+  },
+  "Outil HDR10+ utilisé pour les workflows HDR.": {
+    "fra": "Outil HDR10+ utilisé pour les workflows HDR.",
+    "eng": "HDR10+ tool used for HDR workflows."
+  },
+  "Option facultative sous Windows pour la conversion audio avancée.": {
+    "fra": "Option facultative sous Windows pour la conversion audio avancée.",
+    "eng": "Optional Windows-only tool for advanced audio conversion."
+  },
+  "Profil DoVi": {
+    "fra": "Profil DoVi",
+    "eng": "DoVi profile"
+  },
+  "Profil Dolby Vision utilisé lors de l'injection RPU.": {
+    "fra": "Profil Dolby Vision utilisé lors de l'injection RPU.",
+    "eng": "Dolby Vision profile used during RPU injection."
+  },
+  "Compatibility ID DoVi": {
+    "fra": "Compatibility ID DoVi",
+    "eng": "DoVi compatibility ID"
+  },
+  "Compatibility ID Dolby Vision appliqué lors de l'injection.": {
+    "fra": "Compatibility ID Dolby Vision appliqué lors de l'injection.",
+    "eng": "Dolby Vision compatibility ID applied during injection."
+  },
+  "Buffer RAM activé": {
+    "fra": "Buffer RAM activé",
+    "eng": "RAM buffer enabled"
+  },
+  "Active le buffer RAM pour les fichiers HEVC intermédiaires quand le seuil le permet.": {
+    "fra": "Active le buffer RAM pour les fichiers HEVC intermédiaires quand le seuil le permet.",
+    "eng": "Enable RAM buffering for intermediate HEVC files when the threshold allows it."
+  },
+  "Seuil buffer RAM (%)": {
+    "fra": "Seuil buffer RAM (%)",
+    "eng": "RAM buffer threshold (%)"
+  },
+  "Pourcentage minimal de RAM libre à conserver.": {
+    "fra": "Pourcentage minimal de RAM libre à conserver.",
+    "eng": "Minimum percentage of free RAM to keep available."
+  },
+  "Langue de l'interface": {
+    "fra": "Langue de l'interface",
+    "eng": "Interface language"
+  },
+  "Langue utilisée pour l'UI et les messages internes.": {
+    "fra": "Langue utilisée pour l'UI et les messages internes.",
+    "eng": "Language used for the UI and internal messages."
+  },
+  "Nombre max de lignes de log": {
+    "fra": "Nombre max de lignes de log",
+    "eng": "Maximum log lines"
+  },
+  "Nombre maximum de lignes conservées dans le panneau de log.": {
+    "fra": "Nombre maximum de lignes conservées dans le panneau de log.",
+    "eng": "Maximum number of lines kept in the log panel."
+  },
+  "Thème": {
+    "fra": "Thème",
+    "eng": "Theme"
+  },
+  "Thème principal de l'interface.": {
+    "fra": "Thème principal de l'interface.",
+    "eng": "Primary application theme."
+  },
+  "Parcourir…": {
+    "fra": "Parcourir…",
+    "eng": "Browse..."
+  },
+  "Recharger depuis config.ini": {
+    "fra": "Recharger depuis config.ini",
+    "eng": "Reload from config.ini"
+  },
+  "Enregistrer dans config.ini": {
+    "fra": "Enregistrer dans config.ini",
+    "eng": "Save to config.ini"
+  },
+  "Configuration rechargée depuis config.ini.": {
+    "fra": "Configuration rechargée depuis config.ini.",
+    "eng": "Configuration reloaded from config.ini."
+  },
+  "Configuration enregistrée dans config.ini. Certains changements peuvent nécessiter de rouvrir les panneaux ou l'application.": {
+    "fra": "Configuration enregistrée dans config.ini. Certains changements peuvent nécessiter de rouvrir les panneaux ou l'application.",
+    "eng": "Configuration saved to config.ini. Some changes may require reopening panels or the application."
+  },
+  "Configuration appliquée depuis config.ini.": {
+    "fra": "Configuration appliquée depuis config.ini.",
+    "eng": "Configuration applied from config.ini."
+  },
+  "LOGS": {
+    "fra": "LOGS",
+    "eng": "LOGS"
+  },
+  "Effacer": {
+    "fra": "Effacer",
+    "eng": "Clear"
+  },
+  "NAVIGATION": {
+    "fra": "NAVIGATION",
+    "eng": "NAVIGATION"
+  },
+  "Tableau de bord": {
+    "fra": "Tableau de bord",
+    "eng": "Dashboard"
+  },
+  "Conteneur": {
+    "fra": "Conteneur",
+    "eng": "Container"
+  },
+  "Encodage": {
+    "fra": "Encodage",
+    "eng": "Encoding"
+  },
+  "DoVi / HDR10+": {
+    "fra": "DoVi / HDR10+",
+    "eng": "DoVi / HDR10+"
+  },
+  "Manipulation, encodage et injection de métadonnées HDR": {
+    "fra": "Manipulation, encodage et injection de métadonnées HDR",
+    "eng": "HDR metadata processing, encoding, and injection"
+  },
+  "Outils disponibles": {
+    "fra": "Outils disponibles",
+    "eng": "Available tools"
+  },
+  "↻  Vérifier les outils": {
+    "fra": "↻  Vérifier les outils",
+    "eng": "↻  Check tools"
+  },
+  "Chemins configurés": {
+    "fra": "Chemins configurés",
+    "eng": "Configured paths"
+  },
+  "Dossier travail": {
+    "fra": "Dossier travail",
+    "eng": "Work dir"
+  },
+  "Dossier sortie": {
+    "fra": "Dossier sortie",
+    "eng": "Output dir"
+  },
+  "ENCODEURS DISPONIBLES": {
+    "fra": "ENCODEURS DISPONIBLES",
+    "eng": "AVAILABLE ENCODERS"
+  },
+  "Vidéo — logiciel": {
+    "fra": "Vidéo — logiciel",
+    "eng": "Video - software"
+  },
+  "Vidéo — matériel": {
+    "fra": "Vidéo — matériel",
+    "eng": "Video - hardware"
+  },
+  "Vérification des outils...": {
+    "fra": "Vérification des outils...",
+    "eng": "Checking tools..."
+  },
+  "{name} — trouvé": {
+    "fra": "{name} — trouvé",
+    "eng": "{name} - found"
+  },
+  "{name} — introuvable dans PATH": {
+    "fra": "{name} — introuvable dans PATH",
+    "eng": "{name} - not found in PATH"
+  },
+  "Tous les outils sont disponibles.": {
+    "fra": "Tous les outils sont disponibles.",
+    "eng": "All tools are available."
+  },
+  "Certains outils sont manquants. Vérifiez votre PATH ou les paramètres.": {
+    "fra": "Certains outils sont manquants. Vérifiez votre PATH ou les paramètres.",
+    "eng": "Some tools are missing. Check your PATH or the settings."
+  },
+  "▶  Exécuter l'opération": {
+    "fra": "▶  Exécuter l'opération",
+    "eng": "▶  Run operation"
+  },
+  "✕  Annuler": {
+    "fra": "✕  Annuler",
+    "eng": "✕  Cancel"
+  },
+  "Encodage en cours…": {
+    "fra": "Encodage en cours…",
+    "eng": "Encoding in progress..."
+  },
+  "Remuxage en cours…": {
+    "fra": "Remuxage en cours…",
+    "eng": "Remuxing in progress..."
+  },
+  "Confirmer l'annulation": {
+    "fra": "Confirmer l'annulation",
+    "eng": "Confirm cancellation"
+  },
+  "Annuler l'opération en cours ?": {
+    "fra": "Annuler l'opération en cours ?",
+    "eng": "Cancel the current operation?"
+  },
+  "Annulé.": {
+    "fra": "Annulé.",
+    "eng": "Cancelled."
+  },
+  "Terminé.": {
+    "fra": "Terminé.",
+    "eng": "Completed."
+  },
+  "Échec.": {
+    "fra": "Échec.",
+    "eng": "Failed."
+  },
+  "100%  ·  terminé": {
+    "fra": "100%  ·  terminé",
+    "eng": "100%  ·  done"
+  },
+  "Opération annulée.": {
+    "fra": "Opération annulée.",
+    "eng": "Operation cancelled."
+  },
+  "Encodage terminé": {
+    "fra": "Encodage terminé",
+    "eng": "Encoding completed"
+  },
+  "Remuxage terminé": {
+    "fra": "Remuxage terminé",
+    "eng": "Remuxing completed"
+  },
+  "Aucune opération configurée.": {
+    "fra": "Aucune opération configurée.",
+    "eng": "No operation configured."
+  },
+  "Mediarecode démarré.": {
+    "fra": "Mediarecode démarré.",
+    "eng": "Mediarecode started."
+  },
+  "Tous les outils externes sont disponibles.": {
+    "fra": "Tous les outils externes sont disponibles.",
+    "eng": "All external tools are available."
+  },
+  "Outils manquants dans PATH : {items}": {
+    "fra": "Outils manquants dans PATH : {items}",
+    "eng": "Missing tools in PATH: {items}"
+  },
+  "Dossier de travail : {path}": {
+    "fra": "Dossier de travail : {path}",
+    "eng": "Work directory: {path}"
+  },
+  "Dossier de sortie  : {path}": {
+    "fra": "Dossier de sortie  : {path}",
+    "eng": "Output directory: {path}"
+  },
+  "Erreur": {
+    "fra": "Erreur",
+    "eng": "Error"
+  },
+  "Erreur : code langue non reconnu": {
+    "fra": "Erreur : code langue non reconnu",
+    "eng": "Error: unknown language code"
+  },
+  "Timecode invalide": {
+    "fra": "Timecode invalide",
+    "eng": "Invalid timecode"
+  },
+  "Format attendu : HH:MM:SS ou HH:MM:SS.mmm": {
+    "fra": "Format attendu : HH:MM:SS ou HH:MM:SS.mmm",
+    "eng": "Expected format: HH:MM:SS or HH:MM:SS.mmm"
+  },
+  "Encodage Vidéo / Audio": {
+    "fra": "Encodage Vidéo / Audio",
+    "eng": "Video / Audio Encoding"
+  },
+  "PISTE VIDÉO SOURCE": {
+    "fra": "PISTE VIDÉO SOURCE",
+    "eng": "SOURCE VIDEO TRACK"
+  },
+  "ENCODAGE VIDÉO": {
+    "fra": "ENCODAGE VIDÉO",
+    "eng": "VIDEO ENCODING"
+  },
+  "PISTES AUDIO": {
+    "fra": "PISTES AUDIO",
+    "eng": "AUDIO TRACKS"
+  },
+  "PROFILS": {
+    "fra": "PROFILS",
+    "eng": "PROFILES"
+  },
+  "APERÇU COMMANDE": {
+    "fra": "APERÇU COMMANDE",
+    "eng": "COMMAND PREVIEW"
+  },
+  "Copier": {
+    "fra": "Copier",
+    "eng": "Copy"
+  },
+  "Sélectionnez un fichier source et configurez l'encodage…": {
+    "fra": "Sélectionnez un fichier source et configurez l'encodage…",
+    "eng": "Select a source file and configure the encode..."
+  },
+  "Aucune piste vidéo — sélectionnez des fichiers dans l'onglet Conteneur": {
+    "fra": "Aucune piste vidéo — sélectionnez des fichiers dans l'onglet Conteneur",
+    "eng": "No video track - select files in the Container tab"
+  },
+  "Manipulation Conteneur": {
+    "fra": "Manipulation Conteneur",
+    "eng": "Container Processing"
+  },
+  "Remuxage, fusion et sélection de pistes — sans réencodage": {
+    "fra": "Remuxage, fusion et sélection de pistes — sans réencodage",
+    "eng": "Remuxing, merging, and track selection - without re-encoding"
+  },
+  "Sélectionnées seulement": {
+    "fra": "Sélectionnées seulement",
+    "eng": "Selected only"
+  },
+  "Glisser-déposer les lignes pour réordonner · Double-clic pour éditer Langue / Titre": {
+    "fra": "Glisser-déposer les lignes pour réordonner · Double-clic pour éditer Langue / Titre",
+    "eng": "Drag and drop rows to reorder · Double-click to edit Language / Title"
+  },
+  "Injection DoVi RPU + HDR10+": {
+    "fra": "Injection DoVi RPU + HDR10+",
+    "eng": "DoVi RPU + HDR10+ Injection"
+  },
+  "Encodage → {name}": {
+    "fra": "Encodage → {name}",
+    "eng": "Encoding -> {name}"
+  },
+  "Remuxage → {name}": {
+    "fra": "Remuxage → {name}",
+    "eng": "Remuxing -> {name}"
+  },
+  "Profil chargé : {name}": {
+    "fra": "Profil chargé : {name}",
+    "eng": "Profile loaded: {name}"
+  },
+  "Profil enregistré : {name}": {
+    "fra": "Profil enregistré : {name}",
+    "eng": "Profile saved: {name}"
+  },
+  "Profil supprimé : {name}": {
+    "fra": "Profil supprimé : {name}",
+    "eng": "Profile removed: {name}"
+  },
+  "{name} est déjà dans la liste.": {
+    "fra": "{name} est déjà dans la liste.",
+    "eng": "{name} is already in the list."
+  },
+  "Inspection de {name}…": {
+    "fra": "Inspection de {name}…",
+    "eng": "Inspecting {name}..."
+  },
+  "Erreur inattendue : {exc}": {
+    "fra": "Erreur inattendue : {exc}",
+    "eng": "Unexpected error: {exc}"
+  },
+  "{name} retiré de la liste.": {
+    "fra": "{name} retiré de la liste.",
+    "eng": "{name} removed from the list."
+  },
+  "Démarrage workflow DoVi : {left} ← {right}": {
+    "fra": "Démarrage workflow DoVi : {left} ← {right}",
+    "eng": "Starting DoVi workflow: {left} <- {right}"
+  },
+  "Annulation demandée — en attente de fin d'étape…": {
+    "fra": "Annulation demandée — en attente de fin d'étape…",
+    "eng": "Cancellation requested - waiting for the current step to finish..."
+  },
+  "[{step}] Démarrage…": {
+    "fra": "[{step}] Démarrage…",
+    "eng": "[{step}] Starting..."
+  },
+  "[{step}] {message}": {
+    "fra": "[{step}] {message}",
+    "eng": "[{step}] {message}"
+  },
+  "[{step}] {message}  ({duration}s)": {
+    "fra": "[{step}] {message}  ({duration}s)",
+    "eng": "[{step}] {message}  ({duration}s)"
+  },
+  "Fichier de sortie : {path}": {
+    "fra": "Fichier de sortie : {path}",
+    "eng": "Output file: {path}"
+  },
+  "Workflow annulé par l'utilisateur.": {
+    "fra": "Workflow annulé par l'utilisateur.",
+    "eng": "Workflow cancelled by the user."
+  },
+  "Workflow échoué à l'étape {step} : {message}": {
+    "fra": "Workflow échoué à l'étape {step} : {message}",
+    "eng": "Workflow failed at step {step}: {message}"
+  },
+  "Mediarecode": {
+    "fra": "Mediarecode",
+    "eng": "Mediarecode"
+  },
+  "v1.1": {
+    "fra": "v1.1",
+    "eng": "v1.1"
+  },
+  "Déposer un fichier MKV / MP4 ici": {
+    "fra": "Déposer un fichier MKV / MP4 ici",
+    "eng": "Drop an MKV / MP4 file here"
+  },
+  "Aucun chapitre détecté": {
+    "fra": "Aucun chapitre détecté",
+    "eng": "No chapters detected"
+  },
+  "▣  Vidéo": {
+    "fra": "▣  Vidéo",
+    "eng": "▣  Video"
+  },
+  "♫  Audio": {
+    "fra": "♫  Audio",
+    "eng": "♫  Audio"
+  },
+  "⬛  Sous-titres": {
+    "fra": "⬛  Sous-titres",
+    "eng": "⬛  Subtitles"
+  },
+  "◉  Chapitres": {
+    "fra": "◉  Chapitres",
+    "eng": "◉  Chapters"
+  },
+  "Inspection en cours…": {
+    "fra": "Inspection en cours…",
+    "eng": "Inspection in progress..."
+  },
+  "Retirer ce fichier": {
+    "fra": "Retirer ce fichier",
+    "eng": "Remove this file"
+  },
+  "Erreur :": {
+    "fra": "Erreur :",
+    "eng": "Error:"
+  },
+  "Déposer des fichiers MKV / MP4 ici": {
+    "fra": "Déposer des fichiers MKV / MP4 ici",
+    "eng": "Drop MKV / MP4 files here"
+  },
+  "ou cliquer sur « Ajouter des fichiers »": {
+    "fra": "ou cliquer sur « Ajouter des fichiers »",
+    "eng": "or click \"Add files\""
+  },
+  "+ Ajouter des fichiers…": {
+    "fra": "+ Ajouter des fichiers…",
+    "eng": "+ Add files..."
+  },
+  "Éditer les métadonnées de cette piste": {
+    "fra": "Éditer les métadonnées de cette piste",
+    "eng": "Edit this track metadata"
+  },
+  "Éditer les balises": {
+    "fra": "Éditer les balises",
+    "eng": "Edit tags"
+  },
+  "+ Ajouter un tag": {
+    "fra": "+ Ajouter un tag",
+    "eng": "+ Add tag"
+  },
+  "valeur…": {
+    "fra": "valeur…",
+    "eng": "value..."
+  },
+  "PIÈCES JOINTES  &  BALISES": {
+    "fra": "PIÈCES JOINTES  &  BALISES",
+    "eng": "ATTACHMENTS  &  TAGS"
+  },
+  "Éditer les tags": {
+    "fra": "Éditer les tags",
+    "eng": "Edit tags"
+  },
+  "+ Ajouter…": {
+    "fra": "+ Ajouter…",
+    "eng": "+ Add..."
+  },
+  "Aucune pièce jointe ni balise dans les fichiers sources": {
+    "fra": "Aucune pièce jointe ni balise dans les fichiers sources",
+    "eng": "No attachments or tags in source files"
+  },
+  "Ajouter un chapitre": {
+    "fra": "Ajouter un chapitre",
+    "eng": "Add chapter"
+  },
+  "Chapitre…": {
+    "fra": "Chapitre…",
+    "eng": "Chapter..."
+  },
+  "Ajouter": {
+    "fra": "Ajouter",
+    "eng": "Add"
+  },
+  "CHAPITRES": {
+    "fra": "CHAPITRES",
+    "eng": "CHAPTERS"
+  },
+  "+ Ajouter un chapitre": {
+    "fra": "+ Ajouter un chapitre",
+    "eng": "+ Add chapter"
+  },
+  "Conserver les chapitres": {
+    "fra": "Conserver les chapitres",
+    "eng": "Keep chapters"
+  },
+  "Aucun chapitre dans les fichiers sources": {
+    "fra": "Aucun chapitre dans les fichiers sources",
+    "eng": "No chapters in source files"
+  },
+  "Supprimer ce chapitre": {
+    "fra": "Supprimer ce chapitre",
+    "eng": "Delete this chapter"
+  },
+  "Tout activer": {
+    "fra": "Tout activer",
+    "eng": "Enable all"
+  },
+  "Tout désactiver": {
+    "fra": "Tout désactiver",
+    "eng": "Disable all"
+  },
+  "Titre du conteneur MKV (balise Title)": {
+    "fra": "Titre du conteneur MKV (balise Title)",
+    "eng": "MKV container title (Title tag)"
+  },
+  "/chemin/vers/sortie.mkv": {
+    "fra": "/chemin/vers/sortie.mkv",
+    "eng": "/path/to/output.mkv"
+  },
+  "Choisir…": {
+    "fra": "Choisir…",
+    "eng": "Choose..."
+  },
+  "Ajoutez au moins un fichier source et définissez le chemin de sortie…": {
+    "fra": "Ajoutez au moins un fichier source et définissez le chemin de sortie…",
+    "eng": "Add at least one source file and define the output path..."
+  },
+  "Retirer cet attachement": {
+    "fra": "Retirer cet attachement",
+    "eng": "Remove this attachment"
+  },
+  "Timecode (HH:MM:SS ou HH:MM:SS.mmm)": {
+    "fra": "Timecode (HH:MM:SS ou HH:MM:SS.mmm)",
+    "eng": "Timecode (HH:MM:SS or HH:MM:SS.mmm)"
+  },
+  "Nom du chapitre": {
+    "fra": "Nom du chapitre",
+    "eng": "Chapter name"
+  },
+  "FICHIERS SOURCES": {
+    "fra": "FICHIERS SOURCES",
+    "eng": "SOURCE FILES"
+  },
+  "PISTES": {
+    "fra": "PISTES",
+    "eng": "TRACKS"
+  },
+  "TITRE DU FICHIER": {
+    "fra": "TITRE DU FICHIER",
+    "eng": "FILE TITLE"
+  },
+  "FICHIER DE SORTIE": {
+    "fra": "FICHIER DE SORTIE",
+    "eng": "OUTPUT FILE"
+  },
+  "Aucun fichier sélectionné": {
+    "fra": "Aucun fichier sélectionné",
+    "eng": "No file selected"
+  },
+  "FRAMES": {
+    "fra": "FRAMES",
+    "eng": "FRAMES"
+  },
+  "Profil Dolby Vision :": {
+    "fra": "Profil Dolby Vision :",
+    "eng": "Dolby Vision profile:"
+  },
+  "Profile 8.1  —  -m 2, standard remux UHD (recommandé)": {
+    "fra": "Profile 8.1  —  -m 2, standard remux UHD (recommandé)",
+    "eng": "Profile 8.1  -  -m 2, standard UHD remux (recommended)"
+  },
+  "Mode 0  —  rewrite untouched, préserve le profil source": {
+    "fra": "Mode 0  —  rewrite untouched, préserve le profil source",
+    "eng": "Mode 0  -  rewrite untouched, preserve source profile"
+  },
+  "s": {
+    "fra": "s",
+    "eng": "s"
+  },
+  "Workflow terminé avec succès": {
+    "fra": "Workflow terminé avec succès",
+    "eng": "Workflow completed successfully"
+  },
+  "⬜  Ouvrir le dossier": {
+    "fra": "⬜  Ouvrir le dossier",
+    "eng": "⬜  Open folder"
+  },
+  "⎘  Copier le chemin": {
+    "fra": "⎘  Copier le chemin",
+    "eng": "⎘  Copy path"
+  },
+  "Workflow échoué": {
+    "fra": "Workflow échoué",
+    "eng": "Workflow failed"
+  },
+  "Transfère les métadonnées Dolby Vision et/ou HDR10+ de Film 2 (source) vers Film 1 (cible).": {
+    "fra": "Transfère les métadonnées Dolby Vision et/ou HDR10+ de Film 2 (source) vers Film 1 (cible).",
+    "eng": "Transfers Dolby Vision and/or HDR10+ metadata from Film 2 (source) to Film 1 (target)."
+  },
+  "▶  Lancer le workflow": {
+    "fra": "▶  Lancer le workflow",
+    "eng": "▶  Start workflow"
+  },
+  "⏹  Annuler": {
+    "fra": "⏹  Annuler",
+    "eng": "⏹  Cancel"
+  },
+  "FICHIERS SOURCE": {
+    "fra": "FICHIERS SOURCE",
+    "eng": "SOURCE FILES"
+  },
+  "·   Mo": {
+    "fra": "·   Mo",
+    "eng": "·   MB"
+  },
+  "CONFIGURATION": {
+    "fra": "CONFIGURATION",
+    "eng": "CONFIGURATION"
+  },
+  "PROGRESSION": {
+    "fra": "PROGRESSION",
+    "eng": "PROGRESS"
+  },
+  "x265 · x264 · SVT-AV1 · NVENC/AMF/QSV — HDR10 · Tone mapping · Audio multicanal": {
+    "fra": "x265 · x264 · SVT-AV1 · NVENC/AMF/QSV — HDR10 · Tone mapping · Audio multicanal",
+    "eng": "x265 · x264 · SVT-AV1 · NVENC/AMF/QSV - HDR10 · Tone mapping · Multichannel audio"
+  },
+  "＋  Ajouter une piste…": {
+    "fra": "＋  Ajouter une piste…",
+    "eng": "＋  Add track..."
+  },
+  "Langue": {
+    "fra": "Langue",
+    "eng": "Language"
+  },
+  "ex : fr, en, und…": {
+    "fra": "ex : fr, en, und…",
+    "eng": "e.g. : fr, en, und..."
+  },
+  "Balise langue RFC 5646 appliquée à la piste vidéo du fichier encodé": {
+    "fra": "Balise langue RFC 5646 appliquée à la piste vidéo du fichier encodé",
+    "eng": "RFC 5646 language tag applied to the encoded file video track"
+  },
+  "Codec": {
+    "fra": "Codec",
+    "eng": "Codec"
+  },
+  "Preset": {
+    "fra": "Preset",
+    "eng": "Preset"
+  },
+  "Mode": {
+    "fra": "Mode",
+    "eng": "Mode"
+  },
+  "kbps": {
+    "fra": "kbps",
+    "eng": "kbps"
+  },
+  "Mo": {
+    "fra": "Mo",
+    "eng": "MB"
+  },
+  "Params avancés  (x265-params / svtav1-params)": {
+    "fra": "Params avancés  (x265-params / svtav1-params)",
+    "eng": "Advanced params  (x265-params / svtav1-params)"
+  },
+  "ex. no-open-gop=1:hdr10=1:hdr10-opt=1": {
+    "fra": "ex. no-open-gop=1:hdr10=1:hdr10-opt=1",
+    "eng": "e.g. no-open-gop=1:hdr10=1:hdr10-opt=1"
+  },
+  "Injecter les métadonnées HDR10 statiques (ST 2086 / MaxCLL)": {
+    "fra": "Injecter les métadonnées HDR10 statiques (ST 2086 / MaxCLL)",
+    "eng": "Inject static HDR10 metadata (ST 2086 / MaxCLL)"
+  },
+  "Master Display": {
+    "fra": "Master Display",
+    "eng": "Master Display"
+  },
+  "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(40000000,50)": {
+    "fra": "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(40000000,50)",
+    "eng": "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(40000000,50)"
+  },
+  "MaxCLL / MaxFALL": {
+    "fra": "MaxCLL / MaxFALL",
+    "eng": "MaxCLL / MaxFALL"
+  },
+  "Copier le RPU Dolby Vision depuis la source": {
+    "fra": "Copier le RPU Dolby Vision depuis la source",
+    "eng": "Copy Dolby Vision RPU from source"
+  },
+  "Profil dovi_tool": {
+    "fra": "Profil dovi_tool",
+    "eng": "dovi_tool profile"
+  },
+  "P8.1 — conserver (par défaut)": {
+    "fra": "P8.1 — conserver (par défaut)",
+    "eng": "P8.1 - keep (default)"
+  },
+  "P8.1 — normaliser / supprimer FEL·MEL": {
+    "fra": "P8.1 — normaliser / supprimer FEL·MEL",
+    "eng": "P8.1 - normalize / remove FEL·MEL"
+  },
+  "Copier les métadonnées HDR10+ depuis la source": {
+    "fra": "Copier les métadonnées HDR10+ depuis la source",
+    "eng": "Copy HDR10+ metadata from source"
+  },
+  "Tone-mapping HDR → SDR  (zscale + tonemap)": {
+    "fra": "Tone-mapping HDR → SDR  (zscale + tonemap)",
+    "eng": "Tone-mapping HDR -> SDR  (zscale + tonemap)"
+  },
+  "Algorithme": {
+    "fra": "Algorithme",
+    "eng": "Algorithm"
+  },
+  "Charger": {
+    "fra": "Charger",
+    "eng": "Load"
+  },
+  "Supprimer": {
+    "fra": "Supprimer",
+    "eng": "Delete"
+  },
+  "Nom du profil…": {
+    "fra": "Nom du profil…",
+    "eng": "Profile name..."
+  },
+  "Enregistrer": {
+    "fra": "Enregistrer",
+    "eng": "Save"
+  },
+  "Copy — remux (sans conversion)": {
+    "fra": "Copy — remux (sans conversion)",
+    "eng": "Copy - remux (no conversion)"
+  },
+  "copy": {
+    "fra": "copy",
+    "eng": "copy"
+  },
+  "HDR": {
+    "fra": "HDR",
+    "eng": "HDR"
+  },
+  "Déposer un fichier vidéo ici": {
+    "fra": "Déposer un fichier vidéo ici",
+    "eng": "Drop a video file here"
+  },
+  "Ajouter une piste audio": {
+    "fra": "Ajouter une piste audio",
+    "eng": "Add audio track"
+  },
+  "Sélectionner la piste source": {
+    "fra": "Sélectionner la piste source",
+    "eng": "Select source track"
+  },
+  "La piste sera ajoutée en tant qu'encodage supplémentaire de la source choisie.": {
+    "fra": "La piste sera ajoutée en tant qu'encodage supplémentaire de la source choisie.",
+    "eng": "The track will be added as an additional encode from the selected source."
+  },
+  "Débit cible": {
+    "fra": "Débit cible",
+    "eng": "Target bitrate"
+  },
+  "Annuler": {
+    "fra": "Annuler",
+    "eng": "Cancel"
+  },
+  "Ajouter la piste": {
+    "fra": "Ajouter la piste",
+    "eng": "Add track"
+  },
+  "NOM DE LA PISTE": {
+    "fra": "NOM DE LA PISTE",
+    "eng": "TRACK NAME"
+  },
+  "Titre de la piste (facultatif)": {
+    "fra": "Titre de la piste (facultatif)",
+    "eng": "Track title (optional)"
+  },
+  "LANGUE  (RFC 5646)": {
+    "fra": "LANGUE  (RFC 5646)",
+    "eng": "LANGUAGE  (RFC 5646)"
+  },
+  "ex : fr, en, ja, und…": {
+    "fra": "ex : fr, en, ja, und…",
+    "eng": "e.g. : fr, en, ja, und..."
+  },
+  "— sélectionner —": {
+    "fra": "— sélectionner —",
+    "eng": "— select —"
+  },
+  "⚠  Balise non reconnue — vérifiez la valeur RFC 5646": {
+    "fra": "⚠  Balise non reconnue — vérifiez la valeur RFC 5646",
+    "eng": "⚠  Unrecognized tag - check RFC 5646 value"
+  },
+  "Piste activée": {
+    "fra": "Piste activée",
+    "eng": "Track enabled"
+  },
+  "Piste par défaut": {
+    "fra": "Piste par défaut",
+    "eng": "Default track"
+  },
+  "Forcé  (forced track)": {
+    "fra": "Forcé  (forced track)",
+    "eng": "Forced  (forced track)"
+  },
+  "Malentendant  (hearing impaired)": {
+    "fra": "Malentendant  (hearing impaired)",
+    "eng": "Hearing impaired  (hearing impaired)"
+  },
+  "Malvoyant  (visual impaired)": {
+    "fra": "Malvoyant  (visual impaired)",
+    "eng": "Visual impaired  (visual impaired)"
+  },
+  "Langue d'origine  (original language)": {
+    "fra": "Langue d'origine  (original language)",
+    "eng": "Original language  (original language)"
+  },
+  "Commentaires  (commentary)": {
+    "fra": "Commentaires  (commentary)",
+    "eng": "Commentary  (commentary)"
+  },
+  "en cours…": {
+    "fra": "en cours…",
+    "eng": "in progress..."
+  },
+  "Fichier de sortie": {
+    "fra": "Fichier de sortie",
+    "eng": "Output file"
+  },
+  "Matroska (*.mkv);;Tous les fichiers (*)": {
+    "fra": "Matroska (*.mkv);;Tous les fichiers (*)",
+    "eng": "Matroska (*.mkv);;All files (*)"
+  },
+  "Ajouter des pièces jointes": {
+    "fra": "Ajouter des pièces jointes",
+    "eng": "Add attachments"
+  },
+  "Tous les fichiers (*)": {
+    "fra": "Tous les fichiers (*)",
+    "eng": "All files (*)"
+  },
+  "Sélectionner des fichiers vidéo": {
+    "fra": "Sélectionner des fichiers vidéo",
+    "eng": "Select video files"
+  },
+  "Fichiers vidéo (*.mkv *.mp4 *.m4v *.mov);;Tous les fichiers (*)": {
+    "fra": "Fichiers vidéo (*.mkv *.mp4 *.m4v *.mov);;Tous les fichiers (*)",
+    "eng": "Video files (*.mkv *.mp4 *.m4v *.mov);;All files (*)"
+  },
+  "Sélectionner un fichier vidéo": {
+    "fra": "Sélectionner un fichier vidéo",
+    "eng": "Select a video file"
+  },
+  "Vidéos (*.mkv *.mp4 *.m4v *.mov *.ts *.m2ts);;Tous (*)": {
+    "fra": "Vidéos (*.mkv *.mp4 *.m4v *.mov *.ts *.m2ts);;Tous (*)",
+    "eng": "Videos (*.mkv *.mp4 *.m4v *.mov *.ts *.m2ts);;All (*)"
+  },
+  "Ouvrir un fichier vidéo": {
+    "fra": "Ouvrir un fichier vidéo",
+    "eng": "Open a video file"
+  },
+  "Fichiers vidéo (*.mkv *.mp4 *.m4v *.mov *.m2ts *.ts);;Tous les fichiers (*)": {
+    "fra": "Fichiers vidéo (*.mkv *.mp4 *.m4v *.mov *.m2ts *.ts);;Tous les fichiers (*)",
+    "eng": "Video files (*.mkv *.mp4 *.m4v *.mov *.m2ts *.ts);;All files (*)"
+  },
+  "Oui": {
+    "fra": "Oui",
+    "eng": "Yes"
+  },
+  "Chapitre {index}": {
+    "fra": "Chapitre {index}",
+    "eng": "Chapter {index}"
+  },
+  "Analyse de {name}…": {
+    "fra": "Analyse de {name}…",
+    "eng": "Analyzing {name}..."
+  },
+  "▣  Vidéo ({count})": {
+    "fra": "▣  Vidéo ({count})",
+    "eng": "▣  Video ({count})"
+  },
+  "♫  Audio ({count})": {
+    "fra": "♫  Audio ({count})",
+    "eng": "♫  Audio ({count})"
+  },
+  "⬛  Sous-titres ({count})": {
+    "fra": "⬛  Sous-titres ({count})",
+    "eng": "⬛  Subtitles ({count})"
+  },
+  "◉  Chapitres ({count})": {
+    "fra": "◉  Chapitres ({count})",
+    "eng": "◉  Chapters ({count})"
+  },
+  "✓ {name} — {video}V {audio}A {subtitle}S": {
+    "fra": "✓ {name} — {video}V {audio}A {subtitle}S",
+    "eng": "✓ {name} - {video}V {audio}A {subtitle}S"
+  },
+  "✗ {error}": {
+    "fra": "✗ {error}",
+    "eng": "✗ {error}"
+  },
+  "Tags édités ({count})": {
+    "fra": "Tags édités ({count})",
+    "eng": "Edited tags ({count})"
+  },
+  "Tags supprimés": {
+    "fra": "Tags supprimés",
+    "eng": "Removed tags"
+  },
+  "(erreur de construction de la commande)": {
+    "fra": "(erreur de construction de la commande)",
+    "eng": "(command build error)"
+  },
+  "Enregistrer le profil": {
+    "fra": "Enregistrer le profil",
+    "eng": "Save profile"
+  },
+  "Nom du profil :": {
+    "fra": "Nom du profil :",
+    "eng": "Profile name:"
+  },
+  "Sélectionnez Film 1 et Film 2 avant de lancer.": {
+    "fra": "Sélectionnez Film 1 et Film 2 avant de lancer.",
+    "eng": "Select Film 1 and Film 2 before starting."
+  },
+  "Sélectionner un dossier": {
+    "fra": "Sélectionner un dossier",
+    "eng": "Select a folder"
+  },
+  "FLAGS": {
+    "fra": "FLAGS",
+    "eng": "FLAGS"
+  },
+  "Fichiers vidéo (*.mkv *.hevc);;Tous les fichiers (*)": {
+    "fra": "Fichiers vidéo (*.mkv *.hevc);;Tous les fichiers (*)",
+    "eng": "Video files (*.mkv *.hevc);;All files (*)"
+  },
+  "Langue de la piste": {
+    "fra": "Langue de la piste",
+    "eng": "Track language"
+  },
+  "Éditer la piste": {
+    "fra": "Éditer la piste",
+    "eng": "Edit track"
+  },
+  "Timecode invalide — format : HH:MM:SS ou HH:MM:SS.mmm": {
+    "fra": "Timecode invalide — format : HH:MM:SS ou HH:MM:SS.mmm",
+    "eng": "Invalid timecode - format: HH:MM:SS or HH:MM:SS.mmm"
+  },
+  "Erreur : {message}": {
+    "fra": "Erreur : {message}",
+    "eng": "Error: {message}"
+  },
+  "Erreur d'inspection.": {
+    "fra": "Erreur d'inspection.",
+    "eng": "Inspection error."
+  },
+  "{name} chargé — {video}V  {audio}A  {subtitle}S{att}{tag}{chap}": {
+    "fra": "{name} chargé — {video}V  {audio}A  {subtitle}S{att}{tag}{chap}",
+    "eng": "{name} loaded - {video}V  {audio}A  {subtitle}S{att}{tag}{chap}"
+  },
+  "Démarrage workflow DoVi : {film1} ← {film2}": {
+    "fra": "Démarrage workflow DoVi : {film1} ← {film2}",
+    "eng": "Starting DoVi workflow: {film1} <- {film2}"
+  },
+  "Encodeurs matériels détectés : {items}": {
+    "fra": "Encodeurs matériels détectés : {items}",
+    "eng": "Detected hardware encoders: {items}"
+  },
+  "Piste audio ajoutée : #{index} {codec} {channels} → {target}": {
+    "fra": "Piste audio ajoutée : #{index} {codec} {channels} → {target}",
+    "eng": "Audio track added: #{index} {codec} {channels} -> {target}"
+  },
+  "Validation": {
+    "fra": "Validation",
+    "eng": "Validation"
+  },
+  "Frame count": {
+    "fra": "Frame count",
+    "eng": "Frame count"
+  },
+  "Extractions": {
+    "fra": "Extractions",
+    "eng": "Extraction"
+  },
+  "Injection DoVi": {
+    "fra": "Injection DoVi",
+    "eng": "DoVi injection"
+  },
+  "Injection HDR10+": {
+    "fra": "Injection HDR10+",
+    "eng": "HDR10+ injection"
+  },
+  "Vérification": {
+    "fra": "Vérification",
+    "eng": "Verification"
+  },
+  "Remuxage": {
+    "fra": "Remuxage",
+    "eng": "Remuxing"
+  },
+  "Nettoyage": {
+    "fra": "Nettoyage",
+    "eng": "Cleanup"
+  }
+}

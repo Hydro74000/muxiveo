@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from core.config import AppConfig
 from core.inspector import FileInfo, HDRType
+from core.i18n import apply_translations, translate_text
 from core.workflows.remux import TrackEntry
 from core.runner import TaskSignals
 from core.workflows.encode import (
@@ -90,6 +91,7 @@ class EncodePanel(QWidget):
         self._hw_detected.connect(self._on_hw_detected, Qt.ConnectionType.QueuedConnection)
 
         self._build_ui()
+        apply_translations(self)
         self._executor.submit(self._detect_hw_encoders)
 
     # ------------------------------------------------------------------
@@ -690,7 +692,11 @@ class EncodePanel(QWidget):
                 break
         if detected:
             self.log_message.emit(
-                "OK", f"Encodeurs matériels détectés : {', '.join(sorted(detected))}"
+                "OK",
+                translate_text(
+                    "Encodeurs matériels détectés : {items}",
+                    items=", ".join(sorted(detected)),
+                ),
             )
 
     def _populate_codec_combo(self) -> None:
@@ -799,7 +805,7 @@ class EncodePanel(QWidget):
             text = self._workflow.preview_command(config)
             self._cmd_preview.setPlainText(text)
         except Exception:
-            self._cmd_preview.setPlainText("(erreur de construction de la commande)")
+            self._cmd_preview.setPlainText(translate_text("(erreur de construction de la commande)"))
 
     # ------------------------------------------------------------------
     # Profils
@@ -841,12 +847,16 @@ class EncodePanel(QWidget):
                          if self._tonemap_algo.itemData(i) == vs.tonemap_algorithm), 0)
         self._tonemap_algo.setCurrentIndex(idx_algo)
         self._rebuild_preview()
-        self.log_message.emit("OK", f"Profil chargé : {name}")
+        self.log_message.emit("OK", translate_text("Profil chargé : {name}", name=name))
 
     def _save_profile(self) -> None:
         name = self._profile_name.text().strip()
         if not name:
-            name, ok = QInputDialog.getText(self, "Enregistrer le profil", "Nom du profil :")
+            name, ok = QInputDialog.getText(
+                self,
+                translate_text("Enregistrer le profil"),
+                translate_text("Nom du profil :"),
+            )
             if not ok or not name.strip():
                 return
             name = name.strip()
@@ -869,14 +879,14 @@ class EncodePanel(QWidget):
         self._profiles.save(preset)
         self._refresh_profiles()
         self._profile_name.clear()
-        self.log_message.emit("OK", f"Profil enregistré : {name}")
+        self.log_message.emit("OK", translate_text("Profil enregistré : {name}", name=name))
 
     def _delete_profile(self) -> None:
         name = self._profile_combo.currentText()
         if name:
             self._profiles.delete(name)
             self._refresh_profiles()
-            self.log_message.emit("INFO", f"Profil supprimé : {name}")
+            self.log_message.emit("INFO", translate_text("Profil supprimé : {name}", name=name))
 
     # ------------------------------------------------------------------
     # API publique — exécution (déléguée à MainWindow)
@@ -1021,8 +1031,13 @@ class EncodePanel(QWidget):
         )
         self.log_message.emit(
             "INFO",
-            f"Piste audio ajoutée : #{track.index} {track.codec.upper()} "
-            f"{track.channels_label} → {dlg.selected_codec()}",
+            translate_text(
+                "Piste audio ajoutée : #{index} {codec} {channels} → {target}",
+                index=track.index,
+                codec=track.codec.upper(),
+                channels=track.channels_label,
+                target=dlg.selected_codec(),
+            ),
         )
 
     def _copy_command(self) -> None:
