@@ -11,6 +11,8 @@ import os
 import re
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from core.subprocess_utils import subprocess_text_kwargs
@@ -38,6 +40,16 @@ class HardwareEncoderDetector:
 
     Synchrone et thread-safe - a executer dans un ThreadPoolExecutor.
     """
+
+    def __init__(self) -> None:
+        # Cache par instance pour éviter les subprocess redondants quand
+        # detect() et detect_software() sont appelés à la suite.
+        self._cache_lock = threading.RLock()
+        self._encoders_output_cache: dict[str, str] = {}
+        self._system_ffmpeg_cache: str | None = None
+        self._system_ffmpeg_cached = False
+        self._vaapi_device_cache: str | None = None
+        self._vaapi_device_cached = False
 
     @staticmethod
     def _resolve_ffmpeg(ffmpeg_bin: str) -> str:
@@ -76,6 +88,9 @@ class HardwareEncoderDetector:
     def _get_encoders_output(self, ffmpeg_bin: str) -> str:
         """Retourne la sortie de `ffmpeg -encoders`, chaîne vide si échec."""
         resolved = self._resolve_ffmpeg(ffmpeg_bin)
+        with self._cache_lock:
+            if resolved in self._encoders_output_cache:
+                return self._encoders_output_cache[resolved]
         try:
             result = subprocess.run(
                 [resolved, "-hide_banner", "-encoders"],
@@ -84,8 +99,34 @@ class HardwareEncoderDetector:
                 **subprocess_text_kwargs(),
             )
         except (FileNotFoundError, OSError):
-            return ""
-        return "\n".join(part for part in (result.stdout, result.stderr) if part)
+            output = ""
+        else:
+            output = "\n".join(part for part in (result.stdout, result.stderr) if part)
+        with self._cache_lock:
+            self._encoders_output_cache[resolved] = output
+        return output
+
+    def _system_ffmpeg(self) -> str | None:
+        """Retourne le ffmpeg système (AppImage) avec cache par instance."""
+        with self._cache_lock:
+            if self._system_ffmpeg_cached:
+                return self._system_ffmpeg_cache
+        detected = self._find_system_ffmpeg()
+        with self._cache_lock:
+            self._system_ffmpeg_cache = detected
+            self._system_ffmpeg_cached = True
+        return detected
+
+    def _cached_vaapi_device(self) -> str | None:
+        """Retourne le render node VAAPI avec cache par instance."""
+        with self._cache_lock:
+            if self._vaapi_device_cached:
+                return self._vaapi_device_cache
+        device = self._vaapi_device()
+        with self._cache_lock:
+            self._vaapi_device_cache = device
+            self._vaapi_device_cached = True
+        return device
 
     def detect_software(self, ffmpeg_bin: str = "ffmpeg") -> set[str]:
         """
@@ -105,7 +146,7 @@ class HardwareEncoderDetector:
                     available.add(codec_id)
 
         # Dans un AppImage : complète avec le ffmpeg système si différent
-        system_ff = self._find_system_ffmpeg()
+        system_ff = self._system_ffmpeg()
         if system_ff:
             sys_output = self._get_encoders_output(system_ff)
             if sys_output:
@@ -129,19 +170,14 @@ class HardwareEncoderDetector:
             return set(), ffmpeg_bin
 
         resolved = self._resolve_ffmpeg(ff)
-        vaapi_device = self._vaapi_device()
+        vaapi_device = self._cached_vaapi_device()
         available: set[str] = set()
         nvenc_compiled = compiled & _NVENC_CODECS
 
         if nvenc_compiled:
             available |= self._detect_nvenc(resolved, nvenc_compiled, vaapi_device)
 
-        for codec_id in compiled - _NVENC_CODECS:
-            cmd = self._probe_command(resolved, codec_id, vaapi_device)
-            if cmd is None:
-                continue
-            if self._probe_encoder(cmd):
-                available.add(codec_id)
+        available |= self._probe_codecs(resolved, compiled - _NVENC_CODECS, vaapi_device)
 
         return available, ff
 
@@ -158,7 +194,7 @@ class HardwareEncoderDetector:
             return ffmpeg_bin, compiled
 
         # Fallback : ffmpeg système (AppImage uniquement)
-        system_ff = self._find_system_ffmpeg()
+        system_ff = self._system_ffmpeg()
         if system_ff:
             sys_output = self._get_encoders_output(system_ff)
             sys_compiled = self._parse_hw_codecs(sys_output)
@@ -224,13 +260,37 @@ class HardwareEncoderDetector:
         vaapi_device: str | None,
     ) -> set[str]:
         """Probe une liste de codecs et retourne ceux qui sont utilisables."""
-        available: set[str] = set()
+        jobs: list[tuple[str, list[str]]] = []
         for codec_id in codec_ids:
             cmd = self._probe_command(ffmpeg_bin, codec_id, vaapi_device)
             if cmd is None:
                 continue
+            jobs.append((codec_id, cmd))
+
+        available: set[str] = set()
+        if not jobs:
+            return available
+
+        if len(jobs) == 1:
+            codec_id, cmd = jobs[0]
             if self._probe_encoder(cmd):
                 available.add(codec_id)
+            return available
+
+        # Les probes sont indépendants ; on les lance en parallèle pour réduire
+        # le temps mural quand plusieurs codecs HW sont compilés.
+        max_workers = min(4, len(jobs))
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="hw-probe") as pool:
+            futures = {pool.submit(self._probe_encoder, cmd): codec_id for codec_id, cmd in jobs}
+            for future in as_completed(futures):
+                codec_id = futures[future]
+                try:
+                    ok = future.result()
+                except Exception:
+                    ok = False
+                if ok:
+                    available.add(codec_id)
+
         return available
 
     @staticmethod
