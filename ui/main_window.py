@@ -363,7 +363,8 @@ class DashboardPage(QWidget):
     # codec_id → (label affiché, badge QLabel) pour mise à jour async
     _HW_VIDEO: list[tuple[str, str]] = [
         ("hevc_nvenc", "NVENC·HEVC"), ("hevc_amf", "AMF·HEVC"), ("hevc_vaapi", "VAAPI·HEVC"), ("hevc_qsv", "QSV·HEVC"),
-        ("h264_nvenc", "NVENC·H264"), ("h264_amf", "AMF·H264"), ("h264_vaapi", "VAAPI·HEVC"), ("h264_qsv", "QSV·H264"),
+        ("h264_nvenc", "NVENC·H264"), ("h264_amf", "AMF·H264"), ("h264_vaapi", "VAAPI·H264"), ("h264_qsv", "QSV·H264"),
+        ("av1_nvenc",  "NVENC·AV1"),  ("av1_amf",  "AMF·AV1"),  ("av1_vaapi",  "VAAPI·AV1"),  ("av1_qsv",  "QSV·AV1"),
     ]
     _SW_VIDEO: list[tuple[str, str]] = [
         ("libx265", "x265"), ("libx264", "x264"), ("libsvtav1", "SVT-AV1"),
@@ -569,9 +570,18 @@ class DashboardPage(QWidget):
         rl.addStretch()
         root.addWidget(row)
 
-        # Vidéo matériel (badges en attente → mis à jour par _on_hw_detected)
+        # Vidéo matériel — ligne 1 : HEVC + H.264
         row, rl = _row("Vidéo — matériel")
-        for codec_id, label in self._HW_VIDEO:
+        for codec_id, label in self._HW_VIDEO[:8]:
+            badge = self._make_encoder_badge(label, "pending")
+            self._hw_badges[codec_id] = (badge, label)
+            rl.addWidget(badge)
+        rl.addStretch()
+        root.addWidget(row)
+
+        # Vidéo matériel — ligne 2 : AV1
+        row, rl = _row("  ↳ AV1")
+        for codec_id, label in self._HW_VIDEO[8:]:
             badge = self._make_encoder_badge(label, "pending")
             self._hw_badges[codec_id] = (badge, label)
             rl.addWidget(badge)
@@ -595,9 +605,11 @@ class DashboardPage(QWidget):
     @staticmethod
     def _scan_encoder_availability(ffmpeg_bin: str, codec_ids: list[str]) -> dict[str, bool]:
         """Retourne l'état de disponibilité des codecs présents dans `ffmpeg -encoders`."""
+        import shutil
+        resolved = shutil.which(ffmpeg_bin) or ffmpeg_bin
         try:
             result = subprocess.run(
-                [ffmpeg_bin, "-hide_banner", "-encoders"],
+                [resolved, "-hide_banner", "-encoders"],
                 capture_output=True,
                 check=False,
                 **subprocess_text_kwargs(),
@@ -640,7 +652,9 @@ class DashboardPage(QWidget):
     def _run_hw_detection(self) -> None:
         """Thread worker : probe runtime de chaque encodeur HW."""
         from core.workflows.encode import HardwareEncoderDetector
-        available = HardwareEncoderDetector().detect(self._config.tool_ffmpeg)
+        detector = HardwareEncoderDetector()
+        ffmpeg = self._config.tool_ffmpeg
+        available, _used_ffmpeg = detector.detect(ffmpeg)
         self._hw_detected.emit(available)
 
     def _on_hw_detected(self, available: set[str]) -> None:

@@ -32,13 +32,18 @@ from core.lang_tags import Rfc5646LanguageTags
 def _resolve_ini_path() -> Path:
     """
     Résout le chemin de config.ini selon la plateforme et le contexte :
-    - Linux / macOS (toujours)  → ~/.config/mediarecode/config.ini
-    - Windows dev               → racine du projet (parent de core/)
-    - Windows frozen            → dossier contenant l'exécutable
+    - Linux / macOS frozen (AppImage)  → ~/.config/mediarecode/config.ini (XDG)
+    - Linux / macOS dev                → racine du projet (parent de core/)
+    - Windows frozen                   → dossier contenant l'exécutable
+    - Windows dev                      → racine du projet (parent de core/)
     """
     if sys.platform != "win32":
-        xdg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-        return xdg / "mediarecode" / "config.ini"
+        if getattr(sys, "frozen", False):
+            # AppImage / PyInstaller : répertoire XDG (toujours accessible en écriture)
+            xdg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+            return xdg / "mediarecode" / "config.ini"
+        # Développement : config.ini à la racine du projet
+        return Path(__file__).parent.parent / "config.ini"
     # Windows
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent / "config.ini"
@@ -84,6 +89,19 @@ def _load_ini() -> configparser.ConfigParser:
 
 def _is_windows() -> bool:
     return sys.platform == "win32"
+
+
+def _appimage_tools_dir() -> Path | None:
+    """
+    Dans un AppImage all-inclusive, retourne le chemin absolu de usr/bin/tools/.
+    $APPDIR est exporté par AppRun avant le lancement de l'exécutable.
+    Retourne None si on ne tourne pas dans un AppImage allinc.
+    """
+    appdir = os.environ.get("APPDIR")
+    if not appdir:
+        return None
+    tools = Path(appdir) / "usr" / "bin" / "tools"
+    return tools if tools.is_dir() else None
 
 
 def _dedupe_paths(paths: list[Path]) -> list[Path]:
@@ -470,6 +488,13 @@ class AppConfig:
 
     def _resolve_tool_value(self, ini_key: str, settings_key: str, default: str) -> str:
         """Résout une valeur d'outil et persiste l'autodetect Windows dans config.ini."""
+        # Priorité 1 : AppImage allinc — chemin absolu garanti dans tools/
+        tools_dir = _appimage_tools_dir()
+        if tools_dir is not None:
+            candidate = tools_dir / ini_key
+            if candidate.is_file():
+                return str(candidate)
+
         ini_value = self._ini_lookup("tools", ini_key)
         if ini_value is not _MISSING:
             if ini_value != "":

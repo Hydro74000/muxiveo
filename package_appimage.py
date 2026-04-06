@@ -85,16 +85,24 @@ def _pip_install(packages: list[str]) -> None:
     run([sys.executable, "-m", "pip", "install", "--upgrade", *packages])
 
 
-def _install_system_package(package: str) -> None:
-    """Installe un paquet système via dnf ou apt selon la distro disponible."""
+def _install_system_package(package: str, fatal: bool = True) -> bool:
+    """
+    Installe un paquet système via dnf ou apt selon la distro disponible.
+    Retourne True si l'installation a réussi ou si le gestionnaire est connu.
+    Si fatal=True, exit(1) en cas d'échec.
+    """
     if shutil.which("dnf"):
         run(["sudo", "dnf", "install", "-y", package])
+        return True
     elif shutil.which("apt-get"):
         run(["sudo", "apt-get", "install", "-y", package])
+        return True
     else:
         err(f"Impossible d'installer '{package}' automatiquement — gestionnaire de paquets inconnu.")
         err(f"Installez-le manuellement : {package}")
-        sys.exit(1)
+        if fatal:
+            sys.exit(1)
+        return False
 
 
 def ensure_build_deps() -> None:
@@ -123,13 +131,12 @@ def ensure_build_deps() -> None:
         info(f"Paquets Python manquants : {', '.join(missing_py)}")
         _pip_install(missing_py)
 
-    # ── mksquashfs — requis par appimagetool pour créer le squashfs ───────
+    # ── mksquashfs — appimagetool l'embarque en interne, non bloquant ────────
     if not shutil.which("mksquashfs"):
-        info("mksquashfs introuvable — installation de squashfs-tools…")
-        _install_system_package("squashfs-tools")
+        info("mksquashfs introuvable — tentative d'installation de squashfs-tools…")
+        _install_system_package("squashfs-tools", fatal=False)
         if not shutil.which("mksquashfs"):
-            err("mksquashfs toujours introuvable après installation.")
-            sys.exit(1)
+            info("mksquashfs absent du PATH — appimagetool utilisera son mksquashfs interne.")
 
     ok("Toutes les dépendances sont présentes")
 
@@ -378,14 +385,27 @@ def _extract_from_tar(archive: Path, binary_names: list[str], dest_dir: Path) ->
 
 
 def _dl_ffmpeg(tools_dir: Path, arch: str) -> None:
-    step("Téléchargement ffmpeg + ffprobe (static)")
-    _arch = {"x86_64": "amd64", "aarch64": "arm64"}.get(arch, arch)
-    url = f"https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-{_arch}-static.tar.xz"
+    """
+    Télécharge ffmpeg/ffprobe depuis BtbN/FFmpeg-Builds (master, GPL static).
+
+    Ces builds incluent NVENC, VAAPI, QSV, AMF, libsvtav1.
+    Ce sont des binaires statiques — aucune lib externe à embarquer.
+    URL directe : github.com/BtbN/FFmpeg-Builds/releases/download/latest/
+                  ffmpeg-master-latest-linux64-gpl.tar.xz
+    """
+    step("Téléchargement ffmpeg + ffprobe (BtbN/FFmpeg-Builds, master GPL static)")
+
+    _arch_tag = {"x86_64": "linux64", "aarch64": "linuxarm64"}.get(arch, f"linux{arch}")
+    filename = f"ffmpeg-master-latest-{_arch_tag}-gpl.tar.xz"
+    url = f"https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/{filename}"
+    info(f"Asset : {filename}")
+
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "ffmpeg.tar.xz"
-        _download(url, archive)
+        _download(url, archive, timeout=120)
         _extract_from_tar(archive, ["ffmpeg", "ffprobe"], tools_dir)
-    ok("ffmpeg + ffprobe installés")
+
+    ok("ffmpeg + ffprobe (BtbN master GPL) installés")
 
 
 def _mkvtoolnix_latest_url(arch: str) -> str:
@@ -530,15 +550,42 @@ def bundle_tools(appdir: Path, arch: str) -> None:
 # Étape 2 — AppDir
 # ---------------------------------------------------------------------------
 
-def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64") -> None:
+def _clean_appdir(path: Path) -> None:
+    """Supprime le répertoire AppDir, même si les fichiers appartiennent à un autre uid."""
+    if not path.exists():
+        return
+    try:
+        shutil.rmtree(path)
+        return
+    except PermissionError:
+        pass
+    # Tentative via rm système (peut échouer en sandbox sans sudo)
+    result = subprocess.run(["rm", "-rf", str(path)], check=False)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Impossible de supprimer {path} (fichiers appartenant à un autre uid).\n"
+            "Supprimez-le manuellement depuis le distrobox :\n"
+            f"  rm -rf {path}"
+        )
+
+
+def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64") -> Path:
     step("Construction de l'AppDir")
 
-    if APPDIR.exists():
-        shutil.rmtree(APPDIR)
-    APPDIR.mkdir()
+    appdir = APPDIR
+    if appdir.exists():
+        try:
+            _clean_appdir(appdir)
+        except RuntimeError as exc:
+            # Dossier non suppressible (permissions uid différent) → utilise un répertoire temporaire
+            import tempfile
+            appdir = Path(tempfile.mkdtemp(prefix="Mediarecode.AppDir.", dir=ROOT))
+            info(f"AppDir alternatif utilisé : {appdir}  ({exc})")
+    if not appdir.exists():
+        appdir.mkdir()
 
     # usr/bin/ ← contenu du bundle PyInstaller
-    usr_bin = APPDIR / "usr" / "bin"
+    usr_bin = appdir / "usr" / "bin"
     usr_bin.mkdir(parents=True)
     info(f"Copie du bundle → {usr_bin} …")
     shutil.copytree(bundle_dir, usr_bin, dirs_exist_ok=True)
@@ -547,16 +594,16 @@ def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64") -
     # Marqueur all-inclusive lu par launcher.py au démarrage
     if allinc:
         (usr_bin / "_ALLINC").touch()
-        bundle_tools(APPDIR, arch)
+        bundle_tools(appdir, arch)
 
     # AppRun
-    apprun = APPDIR / "AppRun"
+    apprun = appdir / "AppRun"
     apprun.write_text(_APPRUN_ALLINC if allinc else _APPRUN)
     apprun.chmod(apprun.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     ok("AppRun créé")
 
     # .desktop
-    desktop = APPDIR / f"{APP_NAME}.desktop"
+    desktop = appdir / f"{APP_NAME}.desktop"
     desktop.write_text(_DESKTOP)
     ok(".desktop créé")
 
@@ -573,17 +620,18 @@ def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64") -
             break
 
     if icon_src:
-        dest_icon = APPDIR / f"{APP_NAME}{icon_src.suffix}"
+        dest_icon = appdir / f"{APP_NAME}{icon_src.suffix}"
         shutil.copy(icon_src, dest_icon)
-        (APPDIR / ".DirIcon").symlink_to(dest_icon.name)
+        (appdir / ".DirIcon").symlink_to(dest_icon.name)
         ok(f"Icône copiée : {icon_src.name}")
     else:
-        svg_path = APPDIR / f"{APP_NAME}.svg"
+        svg_path = appdir / f"{APP_NAME}.svg"
         svg_path.write_text(_ICON_SVG)
-        (APPDIR / ".DirIcon").symlink_to(svg_path.name)
+        (appdir / ".DirIcon").symlink_to(svg_path.name)
         info("Icône SVG de secours utilisée (ajoutez icon.png 256×256 à la racine du projet)")
 
-    ok(f"AppDir prêt : {APPDIR}")
+    ok(f"AppDir prêt : {appdir}")
+    return appdir
 
 
 # ---------------------------------------------------------------------------
@@ -624,7 +672,7 @@ def get_appimagetool(arch: str) -> Path:
 # Étape 4 — AppImage finale
 # ---------------------------------------------------------------------------
 
-def build_appimage(appimagetool: Path, arch: str, allinc: bool = False) -> Path:
+def build_appimage(appimagetool: Path, appdir: Path, arch: str, allinc: bool = False) -> Path:
     step("Création de l'AppImage")
 
     suffix = "_allinc" if allinc else ""
@@ -640,7 +688,7 @@ def build_appimage(appimagetool: Path, arch: str, allinc: bool = False) -> Path:
     env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
 
     run(
-        [appimagetool, "--no-appstream", str(APPDIR), str(output)],
+        [appimagetool, "--no-appstream", str(appdir), str(output)],
         env=env,
     )
 
@@ -710,9 +758,9 @@ def main() -> None:
     else:
         bundle_dir = build_onedir()
 
-    build_appdir(bundle_dir, allinc=allinc, arch=arch)
+    appdir = build_appdir(bundle_dir, allinc=allinc, arch=arch)
     appimagetool = get_appimagetool(arch)
-    appimage_path = build_appimage(appimagetool, arch, allinc=allinc)
+    appimage_path = build_appimage(appimagetool, appdir, arch, allinc=allinc)
 
     print(_c("1;32", """
 ╔══════════════════════════════════════════╗

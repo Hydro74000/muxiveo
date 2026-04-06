@@ -87,6 +87,10 @@ class EncodeWorkflow(QObject):
         self._ram_buffer_enabled       = ram_buffer_enabled
         self._ram_buffer_threshold_pct = max(0, min(ram_buffer_threshold_pct, 90))
 
+    def set_ffmpeg(self, ffmpeg_bin: str) -> None:
+        """Met à jour le binaire ffmpeg utilisé pour l'encodage (ex: ffmpeg système pour HW)."""
+        self._ffmpeg = ffmpeg_bin
+
     # ------------------------------------------------------------------
     # Construction de la commande
     # ------------------------------------------------------------------
