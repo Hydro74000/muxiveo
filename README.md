@@ -5,7 +5,7 @@ FULL Vibecoded App for Proof of Concept - no human code, only human prompts and 
 Custom GUI de [mkvtoolnix](https://github.com/nmaier/mkvtoolnix) qui ajoute des options d'encodage video et audio :
 Interface graphique pour préparer des fichiers vidéo, remuxer sans perte, réencoder avec `ffmpeg`, et fusionner des métadonnées Dolby Vision / HDR10+.
 
-Cette documentation correspond à **Mediarecode v1.1**.
+Cette documentation correspond à **Mediarecode v1.2**.
 
 ## Vue rapide
 
@@ -49,7 +49,7 @@ Le script `setup.py` installe automatiquement :
 | Linux Debian / Ubuntu | `python3 setup.py` | installe `ffmpeg`, `mkvtoolnix`, `mediainfo` via `apt`, puis `dovi_tool` et `hdr10plus_tool` depuis GitHub |
 | Linux Fedora / RHEL | `python3 setup.py` | active RPM Fusion si nécessaire, installe `ffmpeg`, `mkvtoolnix`, `mediainfo` via `dnf`, puis les outils GitHub |
 | macOS | `python3 setup.py` | installe `ffmpeg`, `mkvtoolnix`, `mediainfo` via Homebrew, puis `dovi_tool` et `hdr10plus_tool` |
-| Windows | `py setup.py` | installe `ffmpeg`, `mkvtoolnix` et `mediainfo` via `winget`, place `dovi_tool` et `hdr10plus_tool` dans `mediarecode\\tools`, puis renseigne `config.ini` avec les chemins détectés |
+| Windows | `py setup.py` | installe `ffmpeg`, `mkvtoolnix` et `mediainfo` via `winget`, place `dovi_tool` et `hdr10plus_tool` dans `mediarecode\tools`, puis renseigne `config.ini` avec les chemins détectés |
 
 Options utiles du script :
 
@@ -70,6 +70,27 @@ python3 main.py
 
 Sous Windows, utilisez `py main.py`.
 
+## Distribution
+
+L'application peut également être distribuée sous forme de binaire autonome via `package.py`.
+
+| Cible | Commande | Artefact produit |
+|-------|----------|-----------------|
+| AppImage Linux | `python3 package.py` | `dist/Mediarecode-x86_64.AppImage` |
+| Binaire Windows (natif) | `py package.py` | `dist/mediarecode/mediarecode.exe` |
+| Installateur Windows (natif + NSIS) | `py package.py --nsis` | `dist/Mediarecode-Setup.exe` |
+| Installateur Windows cross (depuis Linux) | `python3 package.py --windows` | `dist/Mediarecode-Setup.exe` via Wine + NSIS |
+
+Options utiles de `package.py` :
+
+| Option | Effet |
+|--------|-------|
+| `--onefile` | binaire monolithique (lent au démarrage, ignoré pour AppImage) |
+| `--exe` | force le packaging `.exe` sur Linux (PyInstaller natif, sans AppImage) |
+| `--windows` | cross-compile un installateur Windows depuis Linux via Wine + NSIS |
+| `--skip-wine` | réutilise `dist/mediarecode-win/` existant (saute l'étape Wine/PyInstaller) |
+| `--clean` | nettoie tous les artefacts de build (`build/`, `dist/`, `.wine_build/`, `*.AppImage`…) |
+
 ## Interface et usage
 
 ### Tableau de bord
@@ -81,7 +102,7 @@ Le tableau de bord affiche :
 - les encodeurs logiciels vus par `ffmpeg -encoders`
 - les encodeurs matériels réellement testés au runtime (`NVENC`, `AMF`, `VAAPI`, `QSV`)
 
-> Les encodeurs matériels ne sont pas marqués disponibles simplement parce qu'ils apparaissent dans `ffmpeg`. L'application lance un probe réel pour confirmer qu'ils fonctionnent.
+> Les encodeurs matériels ne sont pas marqués disponibles simplement parce qu'ils apparaissent dans `ffmpeg`. L'application lance un probe réel pour confirmer qu'ils fonctionnent. Les probes sont exécutés en parallèle pour minimiser le délai au démarrage.
 
 ### Conteneur & Encodage
 
@@ -129,6 +150,34 @@ Profils Dolby Vision proposés :
 | **Profile 8.1** | normalise l'injection en profil 8.1, recommandé pour les remux UHD |
 | **Mode 0** | conserve le profil source sans réécriture |
 
+### Paramètres
+
+Le panneau **Paramètres** est un éditeur complet de `config.ini` intégré à l'interface. Il regroupe :
+
+- **Interface** : thème (`dark` / `light`), langue, nombre maximal de lignes de log
+- **Chemins** : dossier de travail, dossier de sortie, dossier app data
+- **Outils externes** : chemins explicites pour chaque outil (`ffmpeg`, `mkvmerge`, `dovi_tool`, etc.)
+- **Encodage** : profil DoVi, compat-id, buffer RAM
+
+Les changements sont appliqués section par section ou en une seule fois via le bouton **Sauvegarder toute la configuration**. Un rechargement depuis `config.ini` est possible sans redémarrer l'application.
+
+## Thèmes
+
+L'application supporte deux thèmes visuels, sélectionnables dans le panneau Paramètres :
+
+| Thème | Description |
+|-------|-------------|
+| `dark` (défaut) | fond sombre, accents bleus |
+| `light` | fond clair, contrastes adaptés |
+
+Le changement de thème est appliqué immédiatement sans redémarrage.
+
+## Localisation
+
+L'interface est traduite en **français** et **anglais**. La langue active est détectée automatiquement depuis la locale système au premier lancement, puis peut être modifiée dans le panneau Paramètres.
+
+Les tags de langue saisis (pistes audio, sous-titres) sont normalisés automatiquement vers le format RFC 5646 / ISO 639-2 : une saisie comme `fr`, `french` ou `French` est convertie en `fra`.
+
 ## Configuration
 
 ### Priorité des réglages
@@ -145,8 +194,10 @@ Sous Windows, `setup.py` et le démarrage de l'application peuvent auto-détecte
 
 | Paramètre | Défaut | Description |
 |-----------|--------|-------------|
-| `work_dir` | `/tmp/mediarecode_work` sur Linux/macOS, `%TEMP%\\mediarecode_work` sur Windows | dossier des fichiers temporaires |
+| `work_dir` | `/tmp/mediarecode_work` sur Linux/macOS, `%TEMP%\mediarecode_work` sur Windows | dossier des fichiers temporaires |
 | `output_dir` | dossier Vidéos de l'OS | dossier de sortie par défaut |
+| `theme` | `dark` | thème visuel (`dark` ou `light`) |
+| `language` | auto-détecté | langue de l'interface (`fra` ou `eng`) |
 | `ram_buffer_enabled` | `true` | autorise l'usage de `/dev/shm` pour les HEVC intermédiaires si disponible |
 | `ram_buffer_threshold_pct` | `15` | pourcentage minimal de RAM libre à conserver pour activer ce buffer |
 
@@ -170,6 +221,10 @@ output_dir = /mnt/nas/videos
 ffmpeg = /opt/ffmpeg/bin/ffmpeg
 mkvpropedit = /usr/bin/mkvpropedit
 dovi_tool = /usr/local/bin/dovi_tool
+
+[ui]
+theme = light
+language = eng
 ```
 
 ## Workflows
@@ -283,4 +338,4 @@ flowchart TD
 
 ---
 
-*Mediarecode v1.1*
+*Mediarecode v1.2*
