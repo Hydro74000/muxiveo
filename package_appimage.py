@@ -19,7 +19,7 @@ Modes :
   4. Télécharge appimagetool si nécessaire
   5. Produit l'AppImage finale
 
-Étapes Windows :
+Étapes Windows :separate
   1. Vérifie / installe Wine + un préfixe Python Windows dédié
   2. Installe PyInstaller + dépendances dans le préfixe Wine
   3. Construit un bundle --onedir via wine python.exe -m PyInstaller
