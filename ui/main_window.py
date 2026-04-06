@@ -35,10 +35,11 @@ from typing import Callable, TYPE_CHECKING
 
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import (
-    QColor, QFont, QIcon, QPalette,
+    QColor, QFont, QIcon,
     QTextCharFormat, QTextCursor,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
     QProgressBar, QPushButton, QScrollArea, QSizePolicy,
     QSplitter, QStackedWidget, QTextEdit,
@@ -56,41 +57,11 @@ from ui.panels.encode_panel.theme import _FPS_RE, _TIME_RE, _fmt_eta
 from ui.panels.merge_dovi_panel import MergeDoviPanel
 from ui.panels.remux_panel import RemuxPanel
 from ui.panels.settings_panel import SettingsPanel
+from ui.design_system import DesignSystem, colors as _Colors
 
 if TYPE_CHECKING:
     from core.workflows.encode.models import EncodeConfig
     from core.workflows.remux import RemuxConfig
-
-
-# ---------------------------------------------------------------------------
-# Palette de couleurs (thème sombre)
-# ---------------------------------------------------------------------------
-
-class _Colors:
-    BG_DEEP    = "#0d0f14"
-    BG_PANEL   = "#141720"
-    BG_SIDEBAR = "#0f1117"
-    BG_CARD    = "#1a1e2a"
-    BG_HOVER   = "#1f2435"
-    BG_ACTIVE  = "#232840"
-
-    BORDER     = "#252a3a"
-    BORDER_LT  = "#2e3450"
-
-    TEXT_PRI   = "#e8ecf4"
-    TEXT_SEC   = "#7a85a0"
-    TEXT_DIM   = "#3d4560"
-
-    ACCENT     = "#4f6ef7"
-    ACCENT_DIM = "#2a3a8a"
-
-    # Log levels
-    LOG_INFO   = "#7ab3f5"
-    LOG_OK     = "#5dcc8a"
-    LOG_WARN   = "#f5c842"
-    LOG_ERROR  = "#f55a5a"
-    LOG_TS     = "#3d4560"
-    LOG_BG     = "#0a0c11"
 
 
 # ---------------------------------------------------------------------------
@@ -104,12 +75,14 @@ class LogLevel(str, Enum):
     ERROR = "ERROR"
 
 
-_LEVEL_COLORS: dict[LogLevel, str] = {
-    LogLevel.INFO:  _Colors.LOG_INFO,
-    LogLevel.OK:    _Colors.LOG_OK,
-    LogLevel.WARN:  _Colors.LOG_WARN,
-    LogLevel.ERROR: _Colors.LOG_ERROR,
-}
+def _level_color(level: LogLevel) -> str:
+    if level == LogLevel.OK:
+        return _Colors.LOG_OK
+    if level == LogLevel.WARN:
+        return _Colors.LOG_WARN
+    if level == LogLevel.ERROR:
+        return _Colors.LOG_ERROR
+    return _Colors.LOG_INFO
 
 _LEVEL_LABELS: dict[LogLevel, str] = {
     LogLevel.INFO:  " INFO ",
@@ -270,7 +243,7 @@ class LogPanel(QWidget):
         message = translate_text(message)
 
         ts = datetime.now().strftime("%H:%M:%S")
-        color = _LEVEL_COLORS[level]
+        color = _level_color(level)
         label = _LEVEL_LABELS[level]
 
         # Timestamp
@@ -507,8 +480,8 @@ class DashboardPage(QWidget):
 
     def _make_tool_badge(self, name: str, available: bool) -> QLabel:
         color  = _Colors.LOG_OK  if available else _Colors.LOG_ERROR
-        bg     = "#0f2318"       if available else "#1f0e0e"
-        border = "#1a4a2e"       if available else "#3a1515"
+        bg     = _Colors.BADGE_OK_BG if available else _Colors.BADGE_ERROR_BG
+        border = _Colors.BADGE_OK_BORDER if available else _Colors.BADGE_ERROR_BORDER
         symbol = "●"             if available else "○"
         lbl = QLabel(f" {symbol}  {name} ")
         lbl.setStyleSheet(f"""
@@ -624,11 +597,11 @@ class DashboardPage(QWidget):
 
     def _apply_encoder_badge_state(self, badge: QLabel, label: str, state: str) -> None:
         if state == "available":
-            symbol, color, bg, border = "●", _Colors.LOG_OK,    "#0f2318", "#1a4a2e"
+            symbol, color, bg, border = "●", _Colors.LOG_OK, _Colors.BADGE_OK_BG, _Colors.BADGE_OK_BORDER
         elif state == "unavailable":
-            symbol, color, bg, border = "○", _Colors.LOG_ERROR,  "#1f0e0e", "#3a1515"
+            symbol, color, bg, border = "○", _Colors.LOG_ERROR, _Colors.BADGE_ERROR_BG, _Colors.BADGE_ERROR_BORDER
         else:  # pending
-            symbol, color, bg, border = "…", _Colors.TEXT_DIM, _Colors.BG_CARD, _Colors.BORDER
+            symbol, color, bg, border = "…", _Colors.TEXT_DIM, _Colors.BADGE_PENDING_BG, _Colors.BADGE_PENDING_BORDER
         badge.setText(f" {symbol}  {label} ")
         badge.setStyleSheet(f"""
             QLabel {{
@@ -654,7 +627,12 @@ class DashboardPage(QWidget):
         from core.workflows.encode import HardwareEncoderDetector
         detector = HardwareEncoderDetector()
         ffmpeg = self._config.tool_ffmpeg
-        available, _used_ffmpeg = detector.detect(ffmpeg)
+        result = detector.detect(ffmpeg)
+        # Compatibilité : certains tests/mocks retournent encore un set simple.
+        if isinstance(result, tuple):
+            available = result[0]
+        else:
+            available = result
         self._hw_detected.emit(available)
 
     def _on_hw_detected(self, available: set[str]) -> None:
@@ -905,6 +883,7 @@ class MainWindow(QMainWindow):
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
         self._config = config
+        DesignSystem.set_theme(config.theme)
         self._running   = False
         self._signals: TaskSignals | None = None
         self._op_start: float = 0.0
@@ -1473,9 +1452,17 @@ class MainWindow(QMainWindow):
                 self.log_requested.emit("ERROR", error)
 
     def _on_settings_saved(self) -> None:
+        previous_theme = DesignSystem.current_theme()
         self._config.reload()
+        new_theme = DesignSystem.set_theme(self._config.theme)
+        DesignSystem.apply_to_application(QApplication.instance())
         self._log_panel._max_lines = self._config.log_max_lines
         self._apply_locale()
+        if new_theme != previous_theme:
+            self.log_requested.emit(
+                "INFO",
+                "Nouveau thème chargé. Un redémarrage de l'application est recommandé pour recolorer tous les panneaux ouverts.",
+            )
         self.log_requested.emit("OK", "Configuration appliquée depuis config.ini.")
 
     # ------------------------------------------------------------------

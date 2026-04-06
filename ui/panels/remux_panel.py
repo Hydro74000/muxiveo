@@ -57,6 +57,7 @@ from core.workflows.remux import (
     RemuxConfig, RemuxWorkflow, SourceInput,
     TrackEntry, tracks_from_file_info,
 )
+from ui.design_system import colors as _C
 from ui.panels.track_edit_dialog import TrackEditDialog
 
 
@@ -128,40 +129,6 @@ class SourceFile:
     info:   FileInfo | None = None
     tracks: list[TrackEntry] = field(default_factory=list)
 
-
-
-# =============================================================================
-# Palette de couleurs (cohérente avec le thème sombre de l'application)
-# =============================================================================
-
-class _C:
-    BG_DEEP    = "#0d0f14"
-    BG_PANEL   = "#141720"
-    BG_CARD    = "#1a1e2a"
-    BG_HOVER   = "#1f2435"
-    BG_ACTIVE  = "#232840"
-
-    BORDER     = "#252a3a"
-    BORDER_LT  = "#2e3450"
-
-    TEXT_PRI   = "#e8ecf4"
-    TEXT_SEC   = "#7a85a0"
-    TEXT_DIM   = "#3d4560"
-
-    ACCENT     = "#4f6ef7"
-    ACCENT_DIM = "#2a3a8a"
-
-    OK         = "#5dcc8a"
-    WARN       = "#f5c842"
-    ERROR      = "#f55a5a"
-    INFO       = "#7ab3f5"
-
-    # Couleurs de types de piste
-    TRACK_VIDEO       = "#7ab3f5"   # bleu
-    TRACK_AUDIO       = "#ce93d8"   # violet
-    TRACK_SUBTITLE    = "#5dcc8a"   # vert
-    TRACK_ATTACHMENT  = "#f5c842"   # jaune ambre
-    TRACK_TAGS        = "#f5a030"   # orange
 
 
 # =============================================================================
@@ -248,13 +215,14 @@ def _separator() -> QFrame:
     return sep
 
 
-def _pencil_icon(color: str = _C.TEXT_SEC, size: int = 14) -> QIcon:
+def _pencil_icon(color: str | None = None, size: int = 14) -> QIcon:
     """
     Icône crayon rendue depuis un SVG inline via QSvgRenderer.
 
     Utilise le tracé Feather Icons (pencil) — un contour simple, sans remplissage,
     adapté à un thème sombre.
     """
+    color = color or _C.TEXT_SEC
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
         f' fill="none" stroke="{color}" stroke-width="2.2"'

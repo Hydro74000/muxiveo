@@ -399,7 +399,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         "fields": (
             {"key": "language", "attr": "language", "kind": "language", "label": "Langue de l'interface", "description": "Langue utilisée pour l'UI et les messages internes."},
             {"key": "log_max_lines", "attr": "log_max_lines", "kind": "int", "label": "Nombre max de lignes de log", "description": "Nombre maximum de lignes conservées dans le panneau de log."},
-            {"key": "theme", "attr": "theme", "kind": "choice", "label": "Thème", "description": "Thème principal de l'interface.", "options": (("dark", "Sombre"), ("light", "Clair"))},
+            {"key": "theme", "attr": "theme", "kind": "choice", "label": "Thème", "description": "Thème principal pour l'interface. Le changement de thème nécessite de redémarrer l'application.", "options": (("dark", "Sombre"), ("light", "Clair"))},
         ),
     },
 )
