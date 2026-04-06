@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
-package_appimage.py — Crée un AppImage autonome de Mediarecode.
+package_appimage.py — Packaging multiplateforme de Mediarecode.
 
-Deux variantes :
-  Mediarecode-<arch>.AppImage          Build standard : outils installés au 1er lancement
-  Mediarecode-<arch>_allinc.AppImage   All-inclusive  : tous les outils externes embarqués
+Modes :
+  AppImage Linux (défaut)
+    Mediarecode-<arch>.AppImage          outils installés au 1er lancement
+    Mediarecode-<arch>_allinc.AppImage   tous les outils embarqués (--allinc)
 
-Étapes :
+  Installateur Windows (--windows)
+    Mediarecode-Setup.exe                construit via Wine + PyInstaller + NSIS
+    Nécessite : wine, winetricks, makensis (installés automatiquement si absents)
+
+Étapes AppImage :
   1. Vérifie / installe PyInstaller + dépendances
   2. Construit un bundle --onedir avec PyInstaller (entrée : launcher.py)
   3. Assemble l'AppDir (structure AppImage standard)
@@ -14,16 +19,25 @@ Deux variantes :
   4. Télécharge appimagetool si nécessaire
   5. Produit l'AppImage finale
 
+Étapes Windows :
+  1. Vérifie / installe Wine + un préfixe Python Windows dédié
+  2. Installe PyInstaller + dépendances dans le préfixe Wine
+  3. Construit un bundle --onedir via wine python.exe -m PyInstaller
+  4. Génère un script NSIS et produit l'installateur .exe via makensis
+
 Usage :
     distrobox enter my-distrobox -- python3 package_appimage.py
     distrobox enter my-distrobox -- python3 package_appimage.py --allinc
     distrobox enter my-distrobox -- python3 package_appimage.py --skip-pyinstaller
     distrobox enter my-distrobox -- python3 package_appimage.py --arch aarch64
+    distrobox enter my-distrobox -- python3 package_appimage.py --windows
+    distrobox enter my-distrobox -- python3 package_appimage.py --windows --skip-pyinstaller
 
 Options :
     --allinc             Embarque tous les outils externes dans l'AppImage
     --skip-pyinstaller   Réutilise le bundle PyInstaller existant dans dist/
-    --arch ARCH          Architecture cible : x86_64 (défaut) ou aarch64
+    --arch ARCH          Architecture cible AppImage : x86_64 (défaut) ou aarch64
+    --windows            Build installateur Windows via Wine (cross-compilation)
 """
 
 from __future__ import annotations
@@ -50,6 +64,13 @@ APPDIR = ROOT / "Mediarecode.AppDir"
 APP_NAME = "mediarecode"
 APP_DISPLAY_NAME = "Mediarecode"
 APP_VERSION = "1.0.0"
+
+# Préfixe Wine dédié au build Windows (isolé du préfixe utilisateur ~/.wine)
+WINE_PREFIX = ROOT / ".wine_build"
+# Répertoire d'installation de Python Windows dans ce préfixe
+_WINE_PY_VER  = "3.11.9"
+_WINE_PY_URL  = f"https://www.python.org/ftp/python/{_WINE_PY_VER}/python-{_WINE_PY_VER}-amd64.exe"
+_WINE_PY_DEST = ROOT / f"python-{_WINE_PY_VER}-amd64.exe"
 
 # ---------------------------------------------------------------------------
 # Helpers

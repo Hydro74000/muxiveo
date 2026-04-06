@@ -203,3 +203,31 @@ class TestHardwareEncoderDetector:
 
         assert detected == {"h264_nvenc"}
         assert used_ff == "/system/bin/ffmpeg"
+
+    def test_detect_and_detect_software_reuse_encoders_cache(self):
+        """
+        Sur une même instance, la sortie `ffmpeg -encoders` doit être réutilisée
+        entre detect() et detect_software() pour éviter un subprocess redondant.
+        """
+        encoders = """
+        V....D hevc_nvenc           NVIDIA NVENC hevc encoder
+        V....D libx265              libx265 H.265 / HEVC
+        """
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(list(cmd))
+            if cmd == ["ffmpeg", "-hide_banner", "-encoders"]:
+                return _completed(stdout=encoders)
+            raise AssertionError(f"Commande inattendue: {cmd}")
+
+        with patch("core.workflows.encode.hardware.subprocess.run", side_effect=fake_run), \
+             patch.object(HardwareEncoderDetector, "_nvidia_ok", return_value=True), \
+             _no_system_ff:
+            detector = HardwareEncoderDetector()
+            detected, _ff = detector.detect("ffmpeg")
+            software = detector.detect_software("ffmpeg")
+
+        assert detected == {"hevc_nvenc"}
+        assert software == {"libx265"}
+        assert calls.count(["ffmpeg", "-hide_banner", "-encoders"]) == 1

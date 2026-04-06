@@ -89,6 +89,15 @@ Mediarecode.AppDir/
 appimagetool-*.AppImage
 
 # ---------------------------------------------------------------------------
+# Windows packaging (Wine cross-build)
+# ---------------------------------------------------------------------------
+mediarecode-win/
+Mediarecode-Setup.exe
+mediarecode.nsi
+.wine_build/
+python-*.exe
+
+# ---------------------------------------------------------------------------
 # Config locale (ne pas versionner les surcharges utilisateur)
 # ---------------------------------------------------------------------------
 config.ini
