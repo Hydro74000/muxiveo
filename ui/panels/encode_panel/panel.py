@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 from core.config import AppConfig
 from core.inspector import FileInfo, HDRType
 from core.i18n import apply_translations, translate_text
+from core.lang_tags import Rfc5646LanguageTags
 from core.workflows.remux import TrackEntry
 from core.runner import TaskSignals
 from core.workflows.encode import (
@@ -53,7 +54,7 @@ class EncodePanel(QWidget):
     log_message              = Signal(str, str)
     ready_changed            = Signal(bool)     # émis quand la source vidéo change
     audio_track_meta_changed = Signal(int, object, str, str)  # (stream_index, source_path, lang, title)
-    _hw_detected             = Signal(object)   # set[str]
+    _hw_detected             = Signal(object, object, object)   # (hw: set[str], sw: set[str], hw_ffmpeg: str)
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -87,6 +88,7 @@ class EncodePanel(QWidget):
         # Callable fourni par MainWindow pour récupérer les chapter_overrides depuis RemuxPanel.
         self._chapters_provider: Callable[[], "list | None"] = lambda: None
 
+        self._sw_encoders: set[str] = {codec_id for codec_id, _ in SOFTWARE_VIDEO_CODECS}
         self._workflow.log_message.connect(self.log_message, Qt.ConnectionType.QueuedConnection)
         self._hw_detected.connect(self._on_hw_detected, Qt.ConnectionType.QueuedConnection)
 
@@ -244,7 +246,7 @@ class EncodePanel(QWidget):
         self._video_lang_edit.setToolTip(
             "Balise langue RFC 5646 appliquée à la piste vidéo du fichier encodé"
         )
-        self._video_lang_edit.textChanged.connect(lambda _: self._rebuild_preview())
+        self._video_lang_edit.textChanged.connect(self._on_video_lang_changed)
         lang_row.addWidget(lang_lbl)
         lang_row.addWidget(self._video_lang_edit)
         lang_row.addStretch()
@@ -678,11 +680,24 @@ class EncodePanel(QWidget):
     # ------------------------------------------------------------------
 
     def _detect_hw_encoders(self) -> None:
-        detected = HardwareEncoderDetector().detect(self._config.tool_ffmpeg)
-        self._hw_detected.emit(detected)
+        detector = HardwareEncoderDetector()
+        ffmpeg = self._config.tool_ffmpeg
+        hw, hw_ffmpeg = detector.detect(ffmpeg)
+        sw = detector.detect_software(ffmpeg)
+        # hw_ffmpeg peut être le ffmpeg système si le ffmpeg embarqué manque de HW codecs.
+        # On l'envoie avec le signal pour que le workflow l'utilise lors de l'encodage HW.
+        self._hw_detected.emit(hw, sw, hw_ffmpeg)
 
-    def _on_hw_detected(self, detected: set[str]) -> None:
-        self._hw_encoders = detected
+    def _on_hw_detected(self, hw: set[str], sw: set[str], hw_ffmpeg: str) -> None:
+        self._hw_encoders = hw
+        # Ne met à jour les codecs SW que si la détection a retourné au moins un résultat.
+        # Un set vide signifie une erreur de détection (ffmpeg absent), pas "aucun codec".
+        if sw:
+            self._sw_encoders = sw
+        # Si le ffmpeg HW est différent du ffmpeg embarqué (AppImage : système vs bundled),
+        # mettre à jour le workflow pour que l'encodage HW utilise le bon binaire.
+        if hw and hw_ffmpeg != self._config.tool_ffmpeg:
+            self._workflow.set_ffmpeg(hw_ffmpeg)
         current = self._codec_combo.currentData()
         self._populate_codec_combo()
         # Restaure la sélection précédente si toujours disponible
@@ -690,12 +705,13 @@ class EncodePanel(QWidget):
             if self._codec_combo.itemData(i) == current:
                 self._codec_combo.setCurrentIndex(i)
                 break
-        if detected:
+        all_detected = hw | sw
+        if all_detected:
             self.log_message.emit(
                 "OK",
                 translate_text(
-                    "Encodeurs matériels détectés : {items}",
-                    items=", ".join(sorted(detected)),
+                    "Encodeurs détectés : {items}",
+                    items=", ".join(sorted(all_detected)),
                 ),
             )
 
@@ -704,7 +720,8 @@ class EncodePanel(QWidget):
         self._codec_combo.clear()
         self._codec_combo.addItem("Copy — remux (sans conversion)", "copy")
         for codec_id, label in SOFTWARE_VIDEO_CODECS:
-            self._codec_combo.addItem(label, codec_id)
+            if codec_id in self._sw_encoders:
+                self._codec_combo.addItem(label, codec_id)
         for codec_id, label in HARDWARE_VIDEO_CODECS:
             if codec_id in self._hw_encoders:
                 self._codec_combo.addItem(f"⚡ {label}", codec_id)
@@ -788,6 +805,15 @@ class EncodePanel(QWidget):
         self._tonemap_algo_widget.setVisible(visible)
         if visible:
             self._inject_hdr_cb.setChecked(False)
+        self._rebuild_preview()
+
+    def _on_video_lang_changed(self, text: str) -> None:
+        """Corrige silencieusement la casse du code langue vidéo, puis rafraîchit l'aperçu."""
+        canonical = Rfc5646LanguageTags.normalize(text.strip())
+        if canonical is not None and canonical != text.strip():
+            self._video_lang_edit.blockSignals(True)
+            self._video_lang_edit.setText(canonical)
+            self._video_lang_edit.blockSignals(False)
         self._rebuild_preview()
 
     # ------------------------------------------------------------------

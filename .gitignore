@@ -93,3 +93,4 @@ appimagetool-*.AppImage
 # ---------------------------------------------------------------------------
 config.ini
 config.ini
+.claude/settings.json

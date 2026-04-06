@@ -30,6 +30,9 @@ class Rfc5646LanguageTags:
 
     _RE = re.compile(r'^[a-zA-Z]{2,8}(-[a-zA-Z0-9]{1,8})*$')
 
+    # Index insensible à la casse : clé en minuscules → code canonique du registre
+    _TAGS_LOWER: dict[str, str] = {}
+
     # ------------------------------------------------------------------
     # Registre principal  (code → nom anglais, ordre : und puis alpha)
     # ------------------------------------------------------------------
@@ -307,10 +310,149 @@ class Rfc5646LanguageTags:
         'und': 'und',
     }
 
+    # Variante régionale canonique par défaut pour chaque code ISO 639-2.
+    # Utilisée lors de la conversion de pistes de fichiers médias : on préfère
+    # la forme xx-XX (langue + région) à la forme courte xx.
+    # Lorsqu'aucune région évidente n'existe (eo, ts…), on garde le code court.
+    _ISO639_2_TO_REGIONAL_IETF: dict[str, str] = {
+        # ISO 639-2/T
+        'afr': 'af-ZA', 'ara': 'ar-SA', 'aze': 'az-AZ', 'bel': 'be-BY',
+        'bul': 'bg-BG', 'bos': 'bs-BA', 'cat': 'ca-ES', 'ces': 'cs-CZ',
+        'cym': 'cy-GB', 'dan': 'da-DK', 'deu': 'de-DE', 'div': 'dv-MV',
+        'ell': 'el-GR', 'eng': 'en-US', 'epo': 'eo',    'est': 'et-EE',
+        'eus': 'eu-ES', 'fas': 'fa-IR', 'fin': 'fi-FI', 'fao': 'fo-FO',
+        'fra': 'fr-FR', 'glg': 'gl-ES', 'guj': 'gu-IN', 'heb': 'he-IL',
+        'hin': 'hi-IN', 'hrv': 'hr-HR', 'hun': 'hu-HU', 'hye': 'hy-AM',
+        'ind': 'id-ID', 'isl': 'is-IS', 'ita': 'it-IT', 'jpn': 'ja-JP',
+        'kat': 'ka-GE', 'kaz': 'kk-KZ', 'kan': 'kn-IN', 'kor': 'ko-KR',
+        'kok': 'kok-IN','kir': 'ky-KG', 'lit': 'lt-LT', 'lav': 'lv-LV',
+        'mri': 'mi-NZ', 'mkd': 'mk-MK', 'mon': 'mn-MN', 'mar': 'mr-IN',
+        'msa': 'ms-MY', 'mlt': 'mt-MT', 'nob': 'nb-NO', 'nld': 'nl-NL',
+        'nno': 'nn-NO', 'pan': 'pa-IN', 'pol': 'pl-PL', 'pus': 'ps-AR',
+        'por': 'pt-PT', 'que': 'qu-PE', 'ron': 'ro-RO', 'rus': 'ru-RU',
+        'san': 'sa-IN', 'sme': 'se-NO', 'slk': 'sk-SK', 'slv': 'sl-SI',
+        'sqi': 'sq-AL', 'srp': 'sr-SP', 'swe': 'sv-SE', 'swa': 'sw-KE',
+        'syr': 'syr-SY','tam': 'ta-IN', 'tel': 'te-IN', 'tha': 'th-TH',
+        'tgl': 'tl-PH', 'tsn': 'tn-ZA', 'tur': 'tr-TR', 'tat': 'tt-RU',
+        'tso': 'ts',    'ukr': 'uk-UA', 'urd': 'ur-PK', 'uzb': 'uz-UZ',
+        'vie': 'vi-VN', 'xho': 'xh-ZA', 'zho': 'zh-CN', 'zul': 'zu-ZA',
+        # ISO 639-2/B
+        'alb': 'sq-AL', 'arm': 'hy-AM', 'baq': 'eu-ES', 'chi': 'zh-CN',
+        'cze': 'cs-CZ', 'dut': 'nl-NL', 'fre': 'fr-FR', 'geo': 'ka-GE',
+        'ger': 'de-DE', 'gre': 'el-GR', 'ice': 'is-IS', 'mac': 'mk-MK',
+        'may': 'ms-MY', 'per': 'fa-IR', 'rum': 'ro-RO', 'slo': 'sk-SK',
+        'wel': 'cy-GB',
+        # Indéfini
+        'und': 'und',
+    }
+
+    # Règles de déduction de la région depuis le titre d'une piste.
+    # Format : { base_lang_2: [ (keywords_tuple, regional_tag), ... ] }
+    # Les mots-clés sont recherchés en minuscules dans le titre normalisé.
+    _TITLE_REGION_HINTS: dict[str, list[tuple[tuple[str, ...], str]]] = {
+        'fr': [
+            (('canad', 'québec', 'quebec'),                      'fr-CA'),
+            (('belgi', 'belgique'),                              'fr-BE'),
+            (('swiss', 'suisse', 'schweiz', 'switzerland'),      'fr-CH'),
+            (('luxembourg',),                                    'fr-LU'),
+            (('monaco',),                                        'fr-MC'),
+        ],
+        'pt': [
+            (('brazil', 'brasil', 'brazilian', 'brésilier'),     'pt-BR'),
+            (('portugal',),                                      'pt-PT'),
+        ],
+        'es': [
+            (('latin', 'latino', 'latinoam', 'amérique latine'), 'es-MX'),
+            (('mexico', 'méxico', 'mexique'),                    'es-MX'),
+            (('argentin',),                                      'es-AR'),
+            (('spain', 'españa', 'espagne', 'espagnol'),         'es-ES'),
+        ],
+        'zh': [
+            (('traditional', 'traditionnel', '繁體', '繁体',
+              'taiwan', 'hong kong', 'hk', 'macau', 'macao'),    'zh-TW'),
+            (('simplified', 'simplifié', '简体', '简体',
+              'mainland', 'china', 'chine', 'prc'),              'zh-CN'),
+            (('hong kong', 'hk'),                                'zh-HK'),
+            (('singapore', 'singapour'),                         'zh-SG'),
+        ],
+        'de': [
+            (('austri', 'autriche', 'österreich'),               'de-AT'),
+            (('swiss', 'suisse', 'schweiz', 'switzerland'),      'de-CH'),
+        ],
+        'en': [
+            (('british', 'uk', 'united kingdom', 'england',
+              'anglais britannique'),                             'en-GB'),
+            (('australian', 'australia'),                        'en-AU'),
+            (('canad',),                                         'en-CA'),
+        ],
+        'nl': [
+            (('belgique', 'belgium', 'belgi'),                   'nl-BE'),
+        ],
+        'sv': [
+            (('finland', 'finlande'),                            'sv-FI'),
+        ],
+        'ar': [
+            (('egypt', 'egypte', 'égypte'),                      'ar-EG'),
+            (('saudi', 'arabie', 'arabia'),                      'ar-SA'),
+            (('morocco', 'maroc'),                               'ar-MA'),
+        ],
+        'sr': [
+            (('cyrillic', 'cyrillique', 'cyrl'),                 'sr-Cyrl-SP'),
+            (('latin',),                                         'sr-SP'),
+        ],
+        'az': [
+            (('cyrillic', 'cyrillique', 'cyrl'),                 'az-Cyrl-AZ'),
+        ],
+        'uz': [
+            (('cyrillic', 'cyrillique', 'cyrl'),                 'uz-Cyrl-UZ'),
+        ],
+    }
+
+    @classmethod
+    def infer_region_from_title(cls, base_ietf: str, title: str) -> str | None:
+        """
+        Tente de déduire une variante régionale depuis le titre d'une piste.
+
+        Exemples :
+            infer_region_from_title('fr', 'Français (Canadien)')  → 'fr-CA'
+            infer_region_from_title('pt', 'Portuguese (Brazil)')  → 'pt-BR'
+            infer_region_from_title('zh', 'Chinese Traditional')  → 'zh-TW'
+
+        Retourne None si aucun indice n'est trouvé.
+        """
+        if not title:
+            return None
+        lang = base_ietf.split('-')[0].lower()
+        hints = cls._TITLE_REGION_HINTS.get(lang)
+        if not hints:
+            return None
+        title_lower = title.lower()
+        for keywords, regional_tag in hints:
+            if any(kw in title_lower for kw in keywords):
+                return regional_tag
+        return None
+
+    @classmethod
+    def _ensure_lower_index(cls) -> None:
+        """Construit _TAGS_LOWER à la première utilisation."""
+        if not cls._TAGS_LOWER:
+            cls._TAGS_LOWER = {k.lower(): k for k in cls.TAGS}
+
+    @classmethod
+    def normalize(cls, tag: str) -> str | None:
+        """
+        Retourne la forme canonique (casse correcte) d'une balise.
+
+        Recherche insensible à la casse dans le registre.
+        Retourne None si la balise est absente du registre.
+        """
+        cls._ensure_lower_index()
+        return cls._TAGS_LOWER.get(tag.lower())
+
     @classmethod
     def from_iso639_2(cls, code: str) -> str | None:
         """
-        Convertit un code ISO 639-2 (/T ou /B) en balise IETF BCP 47.
+        Convertit un code ISO 639-2 (/T ou /B) en balise IETF BCP 47 courte (xx).
 
         Retourne None si le code est inconnu.
         Retourne 'und' si le code est 'und'.
@@ -318,6 +460,19 @@ class Rfc5646LanguageTags:
         if not code:
             return None
         return cls._ISO639_2_TO_IETF.get(code.lower())
+
+    @classmethod
+    def from_iso639_2_regional(cls, code: str) -> str | None:
+        """
+        Convertit un code ISO 639-2 (/T ou /B) en balise IETF BCP 47 régionale (xx-XX).
+
+        Retourne la forme régionale canonique (ex. 'fra' → 'fr-FR', 'spa' → 'es-ES').
+        Retourne None si le code est inconnu.
+        Retourne 'und' si le code est 'und'.
+        """
+        if not code:
+            return None
+        return cls._ISO639_2_TO_REGIONAL_IETF.get(code.lower())
 
     @classmethod
     def to_iso639_2(cls, ietf: str) -> str | None:
@@ -408,11 +563,18 @@ class Rfc5646LanguageTags:
         Valide le tag de langue d'un QTableWidgetItem.
 
         - Si valide : met à jour prev_lang[row] et retourne True.
+          Si la casse diffère du registre, corrige le texte de l'item.
         - Si invalide : retourne False sans modifier item ni prev_lang.
         """
         row = item.row()
         tag = item.text().strip()
-        if not tag or cls.is_known(tag):
+        if not tag:
             prev_lang[row] = tag
+            return True
+        canonical = cls.normalize(tag)
+        if canonical is not None:
+            if canonical != tag:
+                item.setText(canonical)
+            prev_lang[row] = canonical
             return True
         return False
