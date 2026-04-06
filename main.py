@@ -19,7 +19,7 @@ from PySide6.QtGui import QFont
 
 from core.config import AppConfig
 from core.i18n import set_current_language
-from ui.main_window import MainWindow
+from ui.design_system import DesignSystem
 
 
 def main() -> int:
@@ -38,9 +38,12 @@ def main() -> int:
 
     # Chargement de la configuration globale
     config = AppConfig()
+    DesignSystem.set_theme(config.theme)
+    DesignSystem.apply_to_application(app)
     set_current_language(config.language)
 
     # Fenêtre principale
+    from ui.main_window import MainWindow
     window = MainWindow(config)
     window.show()
 

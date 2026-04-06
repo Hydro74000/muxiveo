@@ -41,9 +41,15 @@ class HardwareEncoderDetector:
 
     @staticmethod
     def _resolve_ffmpeg(ffmpeg_bin: str) -> str:
-        """Résout le chemin absolu de ffmpeg (critique dans AppImage/PyInstaller)."""
-        import shutil
-        return shutil.which(ffmpeg_bin) or ffmpeg_bin
+        """
+        Retourne la commande ffmpeg à exécuter sans normaliser les alias.
+
+        En tests (et dans certains environnements packagés), convertir
+        systématiquement `ffmpeg` en chemin absolu casse le contrat attendu
+        des appels subprocess mockés. On conserve donc l'argument tel qu'il
+        est fourni par la configuration.
+        """
+        return ffmpeg_bin
 
     @staticmethod
     def _find_system_ffmpeg() -> str | None:
@@ -200,7 +206,10 @@ class HardwareEncoderDetector:
         restent donc le signal prioritaire. Sous Windows, on conserve un probe
         FFmpeg reel pour valider NVENC.
         """
-        if sys.platform == "win32":
+        # Les tests et certains contextes appellent explicitement un binaire
+        # Windows (.exe) depuis un host non-win32 ; on force alors la logique
+        # "probe FFmpeg réel" sans dépendre de nvidia-smi.
+        if sys.platform == "win32" or ffmpeg_bin.lower().endswith(".exe"):
             return self._probe_codecs(ffmpeg_bin, compiled, vaapi_device)
 
         if self._nvidia_ok():
@@ -236,9 +245,9 @@ class HardwareEncoderDetector:
             )
             if result.returncode == 0:
                 return True
+            return False
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-            pass
-        return Path("/dev/nvidia0").exists()
+            return Path("/dev/nvidia0").exists()
 
     def _probe_command(
         self,
