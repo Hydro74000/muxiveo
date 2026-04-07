@@ -879,6 +879,13 @@ class MainWindow(QMainWindow):
     """
 
     log_requested = Signal(str, str)
+    _PAGE_INDEX_BY_PANEL_KEY = {
+        "dashboard": 0,
+        "dovi": 1,
+        "encoding": 2,
+        "container": 3,
+        "settings": 4,
+    }
 
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
@@ -890,6 +897,7 @@ class MainWindow(QMainWindow):
         self._op_mode: str = ""   # "remux" ou "encode"
         self._setup_window()
         self._build_ui()
+        self._apply_startup_panel()
         self._restore_geometry()
         self._connect_signals()
         self._apply_locale()
@@ -1088,6 +1096,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._cancel_btn)
 
         return bar
+
+    @classmethod
+    def startup_page_index(cls, panel_key: str | None) -> int:
+        if not panel_key:
+            return 0
+        return cls._PAGE_INDEX_BY_PANEL_KEY.get(panel_key.strip().lower(), 0)
+
+    def _apply_startup_panel(self) -> None:
+        startup_panel = getattr(self._config, "startup_panel", "dashboard")
+        page_index = self.startup_page_index(startup_panel)
+        self._stack.setCurrentIndex(page_index)
+        self._sidebar.select_page(page_index)
 
     # ------------------------------------------------------------------
     # Signaux

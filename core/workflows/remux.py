@@ -604,7 +604,7 @@ class RemuxWorkflow(QObject):
         cmd = [
             self._mkvpropedit, str(output),
             "--edit", "info",
-            "--set", "muxing-application=MediaRecode v1.1 by Hydro74000 - https://github.com/Hydro74000/mediarecode/",
+            "--set", "muxing-application=MediaRecode v1.2 by Hydro74000 - https://github.com/Hydro74000/mediarecode/",
         ]
         try:
             self.log_message.emit("INFO", "$ " + " ".join(str(c) for c in cmd))

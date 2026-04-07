@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
+from core.media_info_fetcher import MediaDetails, clean_filename_for_search, extract_year_from_filename
 from core.i18n import apply_translations, translate_text
 from core.inspector import (
     STANDARD_MKV_TAGS,
@@ -58,6 +59,7 @@ from core.workflows.remux import (
     TrackEntry, tracks_from_file_info,
 )
 from ui.design_system import colors as _C
+from ui.panels.tmdb_search_modal import TmdbSearchModal, extract_season_episode
 from ui.panels.track_edit_dialog import TrackEditDialog
 
 
@@ -1413,12 +1415,28 @@ class _AttachmentPanel(QFrame):
     """
 
     changed = Signal()
+    tmdb_details_selected = Signal(object)  # MediaDetails
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, config: "AppConfig", parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._config  = config
         self._items: list[_AttachmentItemWidget] = []
         self._panel_tag_overrides: dict[str, str] | None = None  # None = utiliser tags source
+        self._suggested_title: str = ""
+        self._suggested_season: int = 0
+        self._suggested_episode: int = 0
         self._build_ui()
+
+    def set_suggested_title(self, title: str, season: int = 0, episode: int = 0) -> None:
+        """
+        Mémorise les suggestions de recherche TMDB.
+
+        title : texte pré-rempli dans la recherche.
+        season/episode : pré-remplissage optionnel des champs de série.
+        """
+        self._suggested_title = title
+        self._suggested_season = season if season > 0 else 0
+        self._suggested_episode = episode if episode > 0 else 0
 
     # ------------------------------------------------------------------
     # Construction
@@ -1462,6 +1480,27 @@ class _AttachmentPanel(QFrame):
         """)
         h_lay.addWidget(title_lbl)
         h_lay.addStretch()
+
+        self._imdb_btn = QPushButton("IMDb / TMDB")
+        self._imdb_btn.setFixedHeight(22)
+        self._imdb_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._imdb_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {_C.ACCENT};
+                border: 1px solid {_C.ACCENT_DIM};
+                border-radius: 4px;
+                font-size: 10px;
+                font-weight: 600;
+                padding: 0 10px;
+            }}
+            QPushButton:hover {{
+                background: {_C.ACCENT_DIM};
+                color: #ffffff;
+            }}
+        """)
+        self._imdb_btn.clicked.connect(self._open_media_search)
+        h_lay.addWidget(self._imdb_btn)
 
         self._edit_tags_btn = QPushButton("Éditer les tags")
         self._edit_tags_btn.setFixedHeight(22)
@@ -1650,6 +1689,51 @@ class _AttachmentPanel(QFrame):
                 for k, v in item.tags.items():
                     merged.setdefault(k, v)
         return merged
+
+    def _open_media_search(self) -> None:
+        """
+        Ouvre la modale de recherche TMDB et injecte les métadonnées en balises MKV.
+
+        Le titre suggéré est celui mémorisé par set_suggested_title() ; il peut être
+        issu du champ Titre saisi manuellement ou du nom de fichier nettoyé.
+        Les balises récupérées sont fusionnées avec les balises existantes
+        (les données TMDB ont la priorité), puis ouvertes dans le dialogue
+        d'édition pour une révision éventuelle avant confirmation.
+        """
+        dlg = TmdbSearchModal(
+            self._config,
+            suggested_title=self._suggested_title,
+            suggested_season=self._suggested_season,
+            suggested_episode=self._suggested_episode,
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        details = dlg.fetched_details
+        if details is None:
+            return
+        self.tmdb_details_selected.emit(details)
+
+        new_tags = details.to_mkv_tags()
+        current  = (
+            self._panel_tag_overrides
+            if self._panel_tag_overrides is not None
+            else self._merged_source_tags()
+        )
+        # Les données TMDB prennent la priorité sur les balises sources
+        merged = {**current, **new_tags}
+        self._panel_tag_overrides = merged
+
+        # Ouvrir le dialogue d'édition pour relecture/corrections
+        edit_dlg = _TagEditDialog(merged, parent=self)
+        if edit_dlg.exec() == QDialog.DialogCode.Accepted:
+            self._panel_tag_overrides = edit_dlg.result_tags()
+
+        n = len(self._panel_tag_overrides)
+        label = translate_text("Tags édités ({count})", count=n) if n else translate_text("Tags supprimés")
+        self._edit_tags_btn.setText(label)
+        self._edit_tags_btn.setEnabled(True)
+        self.changed.emit()
 
     def _open_global_tag_dialog(self) -> None:
         """Ouvre le dialogue d'édition global des balises (toutes sources fusionnées)."""
@@ -2360,14 +2444,17 @@ class RemuxPanel(QWidget):
         self._file_title_edit.setPlaceholderText("Titre du conteneur MKV (balise Title)")
         self._file_title_edit.setStyleSheet(self._input_style())
         self._file_title_edit.textChanged.connect(self._rebuild_preview)
+        self._file_title_edit.textChanged.connect(self._sync_tmdb_suggested_title)
         title_card_layout.addWidget(self._file_title_edit)
 
         content_layout.addWidget(title_card)
 
         # --- Pièces jointes & Balises ---
-        self._attachment_panel = _AttachmentPanel()
+        self._attachment_panel = _AttachmentPanel(self._config)
         self._attachment_panel.changed.connect(self._rebuild_preview)
+        self._attachment_panel.tmdb_details_selected.connect(self._on_tmdb_details_selected)
         content_layout.addWidget(self._attachment_panel)
+        self._sync_tmdb_suggested_title()
 
         content_layout.addWidget(_separator())
 
@@ -2456,6 +2543,10 @@ class RemuxPanel(QWidget):
             self.log_message.emit("INFO", translate_text("Inspection de {name}…", name=path.name))
             self._executor.submit(self._inspect_file, sf.id, path)
 
+        # Alimente immédiatement la suggestion TMDB depuis le nom de fichier
+        # si aucun titre n'est saisi.
+        self._sync_tmdb_suggested_title()
+
     def _inspect_file(self, file_id: str, path: Path) -> None:
         """Thread worker : inspecte un fichier et émet un signal thread-safe."""
         try:
@@ -2516,6 +2607,7 @@ class RemuxPanel(QWidget):
             if not self._file_title_edit.text().strip():
                 self._file_title_edit.setText(info.title)
 
+        self._sync_tmdb_suggested_title()
         self.ready_changed.emit(self._has_ready_files())
         self._rebuild_preview()
         self._emit_signals()
@@ -2546,6 +2638,7 @@ class RemuxPanel(QWidget):
         else:
             self._reset_empty_state()
 
+        self._sync_tmdb_suggested_title()
         self.ready_changed.emit(self._has_ready_files())
         self._rebuild_preview()
         self._emit_signals()
@@ -2562,6 +2655,70 @@ class RemuxPanel(QWidget):
     def _has_ready_files(self) -> bool:
         """Retourne True si au moins un fichier a été inspecté avec succès."""
         return any(sf.info is not None for sf in self._source_files)
+
+    def _default_tmdb_suggested_title(self) -> str:
+        """
+        Calcule un titre suggéré TMDB à partir de la première source.
+
+        Toujours basé sur le nom de fichier nettoyé (+ année si présente).
+        Cela garantit qu'après suppression du champ "Titre", on retombe
+        sur un comportement identique à "titre jamais saisi".
+        """
+        if not self._source_files:
+            return ""
+
+        first = self._source_files[0]
+        suggested = clean_filename_for_search(first.path)
+
+        year = extract_year_from_filename(first.path)
+        if year and suggested and not re.search(r"\b" + re.escape(year) + r"\b", suggested):
+            suggested = f"{suggested} {year}"
+        return suggested.strip()
+
+    def _default_tmdb_season_episode(self) -> tuple[int, int]:
+        """
+        Déduit (saison, épisode) depuis les données du premier fichier source.
+
+        Priorité :
+        1) titre du conteneur détecté (si disponible)
+        2) nom de fichier (stem)
+        """
+        if not self._source_files:
+            return 0, 0
+
+        first = self._source_files[0]
+        candidates: list[str] = []
+        if first.info and first.info.title:
+            candidates.append(first.info.title)
+        candidates.append(first.path.stem)
+
+        for text in candidates:
+            match = extract_season_episode(text)
+            if match is not None:
+                return match
+        return 0, 0
+
+    def _sync_tmdb_suggested_title(self, _text: str = "") -> None:
+        """
+        Synchronise le titre suggéré TMDB :
+        - utilise le titre saisi dans l'input si non vide ;
+        - sinon revient sur la valeur dérivée du fichier source.
+        """
+        manual_title = self._file_title_edit.text().strip()
+        suggested = manual_title or self._default_tmdb_suggested_title()
+        parsed = extract_season_episode(manual_title) if manual_title else None
+        season, episode = parsed if parsed is not None else self._default_tmdb_season_episode()
+        self._attachment_panel.set_suggested_title(suggested, season=season, episode=episode)
+
+    def _on_tmdb_details_selected(self, details: object) -> None:
+        """
+        Applique le titre conteneur depuis TMDB en remplaçant le titre actuel.
+        """
+        if not isinstance(details, MediaDetails):
+            return
+        title = details.formatted_container_title().strip()
+        if title:
+            self._file_title_edit.setText(title)
 
     # ------------------------------------------------------------------
     # Aperçu de la commande
@@ -2783,6 +2940,7 @@ class RemuxPanel(QWidget):
         self._filter_btn.setChecked(False)
         self._file_title_edit.clear()
         self._output_edit.clear()
+        self._sync_tmdb_suggested_title()
 
     def _resolve_base_chapters(self) -> "list[ChapterEntry]":
         """

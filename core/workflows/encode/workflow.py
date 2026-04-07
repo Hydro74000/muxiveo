@@ -815,7 +815,7 @@ class EncodeWorkflow(QObject):
         cmd = [
             mkvpropedit_bin, str(output),
             "--edit", "info",
-            "--set", "muxing-application=MediaRecode v1.0 by Hydro74000 - VibeCode Proof of Concept",
+            "--set", "muxing-application=MediaRecode v1.2 by Hydro74000 - VibeCode Proof of Concept",
         ]
         try:
             self.log_message.emit("INFO", "$ " + " ".join(cmd))

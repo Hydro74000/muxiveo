@@ -11,7 +11,7 @@ Cette documentation correspond à **Mediarecode v1.2**.
 
 | Outil | Usage | Qualité |
 |-------|-------|---------|
-| **Conteneur & Encodage** | sélectionner les pistes, les réordonner, éditer langue/titre/flags, gérer titre/tags/chapitres/pièces jointes, puis copier ou réencoder | copie = sans perte, encodage = avec recompression |
+| **Conteneur & Encodage** | sélectionner les pistes, les réordonner, éditer langue/titre/flags, gérer titre/tags/chapitres/pièces jointes, enrichir les tags via TMDB/IMDb, puis copier ou réencoder | copie = sans perte, encodage = avec recompression |
 | **Fusion DoVi / HDR10+** | injecter les métadonnées HDR d'un fichier source dans le flux vidéo HEVC d'un autre fichier | sans perte |
 
 > Les panneaux **Remuxage** et **Encodage** forment un seul workflow. Le panneau Remuxage prépare le conteneur ; le panneau Encodage décide comment traiter la vidéo et l'audio.
@@ -42,7 +42,8 @@ Le script `setup.py` installe automatiquement :
 | Outils GitHub | `dovi_tool`, `hdr10plus_tool` |
 | Notes plateforme | Debian/Ubuntu via `apt`, Fedora/RHEL via `dnf`, macOS via Homebrew, Windows via `winget` + binaires locaux |
 
-> Sous Windows, `setup.py` renseigne aussi `config.ini` avec les chemins détectés. Sur toutes les plateformes, vous pouvez garder cette configuration auto ou définir vos propres chemins d'outils dans `config.ini`.
+> `setup.py` renseigne `config.ini` avec les chemins détectés.  
+> Emplacement de `config.ini` : Linux/macOS `~/.config/mediarecode/config.ini` (XDG), Windows dev `./config.ini`, Windows packagé `config.ini` à côté de l'exécutable.
 
 | Plateforme | Commande | Détails |
 |------------|----------|---------|
@@ -113,6 +114,10 @@ Le workflow unifié permet de :
 - activer, exclure et réordonner les pistes
 - éditer langue, titre et flags de chaque piste
 - définir le titre du conteneur, les balises globales, les chapitres et les pièces jointes
+- ouvrir une fenêtre de recherche **TMDB** depuis le panneau balises pour rechercher film/série (préremplissage auto depuis titre/nom de fichier)
+- détecter automatiquement les motifs de série (`SxxExx`, `x`) pour préremplir saison/épisode et positionner la recherche sur **Séries** si pertinent
+- injecter les métadonnées TMDB dans les tags MKV (`DATE_RELEASED`, `GENRE`, `DIRECTOR`, `CAST`, `SUBTITLE`, `SYNOPSIS`, `COUNTRY`, `URL`, `DESCRIPTION`, `COLLECTION`, `SEASON`, `EPISODE`)
+- remplacer automatiquement le **titre du conteneur** par le titre formaté TMDB lors de la validation (film : `Titre (Année)`, série : `Titre - SxxExx - Titre épisode`)
 - choisir pour chaque piste audio un mode `copy`, `aac`, `eac3` ou `flac`
 - choisir pour la vidéo `copy`, `libx265`, `libx264`, `libsvtav1`, `NVENC`, `AMF`, `VAAPI` ou `QSV`
 
@@ -154,10 +159,11 @@ Profils Dolby Vision proposés :
 
 Le panneau **Paramètres** est un éditeur complet de `config.ini` intégré à l'interface. Il regroupe :
 
-- **Interface** : thème (`dark` / `light`), langue, nombre maximal de lignes de log
+- **Interface** : thème (`dark` / `light`), langue, nombre maximal de lignes de log, panneau affiché au démarrage
 - **Chemins** : dossier de travail, dossier de sortie, dossier app data
 - **Outils externes** : chemins explicites pour chaque outil (`ffmpeg`, `mkvmerge`, `dovi_tool`, etc.)
 - **Encodage** : profil DoVi, compat-id, buffer RAM
+- **Métadonnées** : clé API TMDB v3 (`tmdb_api_key`)
 
 Les changements sont appliqués section par section ou en une seule fois via le bouton **Sauvegarder toute la configuration**. Un rechargement depuis `config.ini` est possible sans redémarrer l'application.
 
@@ -176,6 +182,8 @@ Le changement de thème est appliqué immédiatement sans redémarrage.
 
 L'interface est traduite en **français** et **anglais**. La langue active est détectée automatiquement depuis la locale système au premier lancement, puis peut être modifiée dans le panneau Paramètres.
 
+Les textes de l'application sont centralisés dans `locales.json`.
+
 Les tags de langue saisis (pistes audio, sous-titres) sont normalisés automatiquement vers le format RFC 5646 / ISO 639-2 : une saisie comme `fr`, `french` ou `French` est convertie en `fra`.
 
 ## Configuration
@@ -184,7 +192,7 @@ Les tags de langue saisis (pistes audio, sous-titres) sont normalisés automatiq
 
 L'application résout ses paramètres dans cet ordre :
 
-1. `config.ini` à la racine du projet
+1. `config.ini` (Linux/macOS : `~/.config/mediarecode/config.ini` ; Windows dev : racine du projet ; Windows packagé : dossier de l'exécutable)
 2. les valeurs persistées par l'interface (`QSettings`)
 3. les valeurs par défaut internes
 
@@ -198,6 +206,8 @@ Sous Windows, `setup.py` et le démarrage de l'application peuvent auto-détecte
 | `output_dir` | dossier Vidéos de l'OS | dossier de sortie par défaut |
 | `theme` | `dark` | thème visuel (`dark` ou `light`) |
 | `language` | auto-détecté | langue de l'interface (`fra` ou `eng`) |
+| `startup_panel` | `dashboard` | panneau ouvert au démarrage (`dashboard`, `container`, `encoding`, `dovi`, `settings`) |
+| `tmdb_api_key` | vide | clé API TMDB v3 utilisée par la recherche IMDb/TMDB |
 | `ram_buffer_enabled` | `true` | autorise l'usage de `/dev/shm` pour les HEVC intermédiaires si disponible |
 | `ram_buffer_threshold_pct` | `15` | pourcentage minimal de RAM libre à conserver pour activer ce buffer |
 
@@ -225,6 +235,10 @@ dovi_tool = /usr/local/bin/dovi_tool
 [ui]
 theme = light
 language = eng
+startup_panel = container
+
+[metadata]
+tmdb_api_key = <VOTRE_CLE_API_TMDB_V3>
 ```
 
 ## Workflows

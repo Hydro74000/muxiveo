@@ -132,8 +132,10 @@ from core.workflows.remux import (
 )
 from ui.panels.remux_panel import (
     SourceFile, _FILE_BAR_H, _FILE_PH_H, _FILE_ROW_H,
-    _AttachmentItemWidget, _FileListWidget, _TrackTable, _pick_file_color,
+    _AttachmentItemWidget, _FileListWidget, _TrackTable,
+    _pick_file_color,
 )
+from ui.panels.tmdb_search_modal import extract_season_episode
 
 
 # ===========================================================================
@@ -239,6 +241,29 @@ def _source(
 def _workflow() -> RemuxWorkflow:
     """RemuxWorkflow instancié avec un binaire factice (tests sans exécution)."""
     return RemuxWorkflow(mkvmerge_bin="mkvmerge")
+
+
+# ===========================================================================
+# Helpers TMDB (saison/épisode)
+# ===========================================================================
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("s01 e01", (1, 1)),
+        (".s01.e01.", (1, 1)),
+        (".s01e01.", (1, 1)),
+        (".s1e1.", (1, 1)),
+        (".01x01.", (1, 1)),
+        (
+            "Daredevil.Born.Again.S02E01.Le.Northern.Star.2160p.DSNP.WEB.DV.HDR.MULTi.AD.VFF.DDP.5.1.ATMOS.H265-HYDROMUX-MRecode",
+            (2, 1),
+        ),
+        ("Movie.Without.Episode.Tag", None),
+    ],
+)
+def test_extract_season_episode_supported_patterns(text: str, expected):
+    assert extract_season_episode(text) == expected
 
 
 # ===========================================================================
