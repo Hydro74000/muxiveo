@@ -365,37 +365,17 @@ class FileInspector:
                         track.language = lang if lang != "und" else None
             except Exception:
                 pass  # mkvmerge absent ou erreur non bloquante
-        else:
-            # Pour les formats non-MKV (MP4, TS…), ffprobe renvoie de l'ISO 639-2.
-            # On convertit en IETF BCP 47 régional (xx-XX) pour un format homogène,
-            # en utilisant le titre de la piste pour affiner la région si possible.
-            for track in (*info.video_tracks, *info.audio_tracks, *info.subtitle_tracks):
-                if not track.language:
-                    continue
-                base = Rfc5646LanguageTags.from_iso639_2(track.language)
-                if not base or base == "und":
-                    track.language = None
-                    continue
-                title = getattr(track, "title", None) or ""
-                inferred = Rfc5646LanguageTags.infer_region_from_title(base, title)
-                converted = inferred or Rfc5646LanguageTags.from_iso639_2_regional(track.language)
-                track.language = converted if converted and converted != "und" else None
 
-        # Passe de normalisation finale : convertit tout code ISO 639-2 restant
-        # (MKV sans language_ietf mkvmerge, ou mkvmerge absent) en IETF régional.
-        # Si le titre de la piste contient un indice de région, on l'utilise en
-        # priorité sur la région par défaut (ex : "fre / Français (Canadien)" → fr-CA).
+        # Passe de normalisation finale : homogénéise tous les tags langue en IETF
+        # régional lorsque possible, pour les entrées ISO 639-2 (xxx) et RFC 5646
+        # courtes (xx). Les indices de région dans le titre restent prioritaires.
         for track in (*info.video_tracks, *info.audio_tracks, *info.subtitle_tracks):
-            lang = track.language
-            if not lang or len(lang) != 3 or lang.lower() == "und":
-                continue
-            base = Rfc5646LanguageTags.from_iso639_2(lang)
-            if not base or base == "und":
-                track.language = None
+            lang = (track.language or "").strip()
+            if not lang:
                 continue
             title = getattr(track, "title", None) or ""
-            inferred = Rfc5646LanguageTags.infer_region_from_title(base, title)
-            track.language = inferred or Rfc5646LanguageTags.from_iso639_2_regional(lang)
+            normalized = Rfc5646LanguageTags.regionalize_track_language(lang, title)
+            track.language = normalized if normalized and normalized != "und" else None
 
         # HDR du flux vidéo principal — réutilise le raw déjà parsé (évite 2e appel ffprobe)
         if info.primary_video:
