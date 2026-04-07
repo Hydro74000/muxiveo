@@ -84,6 +84,8 @@ class EncodeWorkflow(QObject):
         ram_buffer_enabled:        bool = True,
         ram_buffer_threshold_pct:  int  = 15,
         parent: QObject | None         = None,
+        *,
+        writing_application:       str  = "",
     ) -> None:
         super().__init__(parent)
         self._ffmpeg = ffmpeg_bin
@@ -97,10 +99,15 @@ class EncodeWorkflow(QObject):
         self._runner = ToolRunner(max_workers=1, parent=self)
         self._ram_buffer_enabled       = ram_buffer_enabled
         self._ram_buffer_threshold_pct = max(0, min(ram_buffer_threshold_pct, 90))
+        self._writing_application = writing_application.strip()
 
     def set_ffmpeg(self, ffmpeg_bin: str) -> None:
         """Met à jour le binaire ffmpeg utilisé pour l'encodage (ex: ffmpeg système pour HW)."""
         self._ffmpeg = ffmpeg_bin
+
+    def set_writing_application(self, writing_application: str) -> None:
+        """Met à jour la valeur du tag Multiplexing Application."""
+        self._writing_application = writing_application.strip()
 
     # ------------------------------------------------------------------
     # Construction de la commande
@@ -1028,11 +1035,14 @@ class EncodeWorkflow(QObject):
 
     def _set_writing_app_inplace(self, output: Path) -> None:
         """Écrit le tag Multiplexing Application dans les infos de segment via mkvpropedit."""
+        if not self._writing_application:
+            self.log_message.emit("WARN", "Writing-app non configuré — balise non appliquée.")
+            return
         mkvpropedit_bin = self._bins["mkvpropedit"]
         cmd = [
             mkvpropedit_bin, str(output),
             "--edit", "info",
-            "--set", "muxing-application=MediaRecode v1.2 by Hydro74000 - VibeCode Proof of Concept",
+            "--set", f"muxing-application={self._writing_application}",
         ]
         try:
             self.log_message.emit("INFO", "$ " + " ".join(cmd))

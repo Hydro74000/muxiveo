@@ -391,6 +391,26 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         ),
     },
     {
+        "section": "audio_encoding",
+        "title": "Encodage audio",
+        "fields": (
+            {
+                "key": "default_bitrate_per_channel_kbps",
+                "attr": "audio_default_bitrate_per_channel_kbps",
+                "kind": "int",
+                "label": "Bitrate par canal par défaut (kbps)",
+                "description": "Valeur utilisée pour les encodages audio lossy hors FLAC. Exemple : 192 donne 1152 kbps pour une piste 5.1.",
+            },
+            {
+                "key": "bitrate_step_per_channel_kbps",
+                "attr": "audio_bitrate_step_per_channel_kbps",
+                "kind": "int",
+                "label": "Palier par canal de la combobox (kbps)",
+                "description": "Incrément utilisé pour les choix AAC / EAC-3 dans le panneau d'encodage. La valeur par défaut passe a 64 kbps par canal.",
+            },
+        ),
+    },
+    {
         "section": "tools",
         "title": "Outils externes",
         "fields": (
@@ -580,6 +600,19 @@ class AppConfig:
         self.dovi_profile = self._resolve_text("hdr", "dovi_profile", "hdr/dovi_profile", "8")
         self.dovi_compat_id = self._resolve_text("hdr", "dovi_compat_id", "hdr/dovi_compat_id", "1")
 
+        self.audio_default_bitrate_per_channel_kbps = self._resolve_int(
+            "audio_encoding",
+            "default_bitrate_per_channel_kbps",
+            "audio_encoding/default_bitrate_per_channel_kbps",
+            192,
+        )
+        self.audio_bitrate_step_per_channel_kbps = self._resolve_int(
+            "audio_encoding",
+            "bitrate_step_per_channel_kbps",
+            "audio_encoding/bitrate_step_per_channel_kbps",
+            64,
+        )
+
         self.ram_buffer_enabled = self._resolve_bool("encoding", "ram_buffer_enabled", "encoding/ram_buffer_enabled", True)
         self.ram_buffer_threshold_pct = self._resolve_int("encoding", "ram_buffer_threshold_pct", "encoding/ram_buffer_threshold_pct", 15)
 
@@ -625,6 +658,9 @@ class AppConfig:
 
         s.setValue("hdr/dovi_profile", self.dovi_profile)
         s.setValue("hdr/dovi_compat_id", self.dovi_compat_id)
+
+        s.setValue("audio_encoding/default_bitrate_per_channel_kbps", self.audio_default_bitrate_per_channel_kbps)
+        s.setValue("audio_encoding/bitrate_step_per_channel_kbps", self.audio_bitrate_step_per_channel_kbps)
 
         s.setValue("encoding/ram_buffer_enabled", "true" if self.ram_buffer_enabled else "false")
         s.setValue("encoding/ram_buffer_threshold_pct", self.ram_buffer_threshold_pct)
@@ -715,6 +751,10 @@ class AppConfig:
             "hdr": {
                 "dovi_profile": self.dovi_profile,
                 "dovi_compat_id": self.dovi_compat_id,
+            },
+            "audio_encoding": {
+                "default_bitrate_per_channel_kbps": self.audio_default_bitrate_per_channel_kbps,
+                "bitrate_step_per_channel_kbps": self.audio_bitrate_step_per_channel_kbps,
             },
             "encoding": {
                 "ram_buffer_enabled": self.ram_buffer_enabled,

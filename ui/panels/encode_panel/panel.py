@@ -56,7 +56,13 @@ class EncodePanel(QWidget):
     audio_track_meta_changed = Signal(int, object, str, str)  # (stream_index, source_path, lang, title)
     _hw_detected             = Signal(object, object, object)   # (hw: set[str], sw: set[str], hw_ffmpeg: str)
 
-    def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        parent: QWidget | None = None,
+        *,
+        writing_application: str = "",
+    ) -> None:
         super().__init__(parent)
         self._config    = config
         self._workflow  = EncodeWorkflow(
@@ -69,6 +75,7 @@ class EncodePanel(QWidget):
             ram_buffer_enabled=config.ram_buffer_enabled,
             ram_buffer_threshold_pct=config.ram_buffer_threshold_pct,
             parent=self,
+            writing_application=writing_application,
         )
         self._profiles  = ProfileManager(config.app_data_dir / "encode_profiles")
         self._executor  = ThreadPoolExecutor(max_workers=1)
@@ -148,7 +155,7 @@ class EncodePanel(QWidget):
 
         # --- Pistes audio ---
         cl.addWidget(_section_label("PISTES AUDIO"))
-        self._audio_table = _AudioTable()
+        self._audio_table = _AudioTable(self._config)
         self._audio_table.set_changed_callback(self._rebuild_preview)
         self._audio_table.track_meta_changed.connect(self.audio_track_meta_changed)
         cl.addWidget(self._audio_table)
@@ -1042,7 +1049,7 @@ class EncodePanel(QWidget):
         """Ouvre le popup de sélection pour ajouter une piste audio custom."""
         if not self._audio_tracks_data:
             return
-        dlg = _AudioSourceDialog(self._audio_tracks_data, parent=self)
+        dlg = _AudioSourceDialog(self._audio_tracks_data, config=self._config, parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         track = dlg.selected_track()
@@ -1065,6 +1072,10 @@ class EncodePanel(QWidget):
                 target=dlg.selected_codec(),
             ),
         )
+
+    def refresh_runtime_settings(self) -> None:
+        self._audio_table.refresh_runtime_settings()
+        self._rebuild_preview()
 
     def _copy_command(self) -> None:
         from PySide6.QtWidgets import QApplication

@@ -318,11 +318,18 @@ class RemuxWorkflow(QObject):
         mkvmerge_bin: str = "mkvmerge",
         mkvpropedit_bin: str = "mkvpropedit",
         parent: QObject | None = None,
+        *,
+        writing_application: str = "",
     ) -> None:
         super().__init__(parent)
         self._mkvmerge = mkvmerge_bin
         self._mkvpropedit = mkvpropedit_bin
         self._runner = ToolRunner(max_workers=1, parent=self)
+        self._writing_application = writing_application.strip()
+
+    def set_writing_application(self, writing_application: str) -> None:
+        """Met à jour la valeur du tag Multiplexing Application."""
+        self._writing_application = writing_application.strip()
 
     # ------------------------------------------------------------------
     # Construction de la commande
@@ -601,10 +608,13 @@ class RemuxWorkflow(QObject):
         if not self._mkvpropedit:
             self.log_message.emit("WARN", "mkvpropedit non configuré — writing-app non appliqué.")
             return
+        if not self._writing_application:
+            self.log_message.emit("WARN", "Writing-app non configuré — balise non appliquée.")
+            return
         cmd = [
             self._mkvpropedit, str(output),
             "--edit", "info",
-            "--set", "muxing-application=MediaRecode v1.2 by Hydro74000 - https://github.com/Hydro74000/mediarecode/",
+            "--set", f"muxing-application={self._writing_application}",
         ]
         try:
             self.log_message.emit("INFO", "$ " + " ".join(str(c) for c in cmd))
