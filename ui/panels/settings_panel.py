@@ -104,7 +104,8 @@ class SettingsPanel(QWidget):
         layout.addWidget(subtitle)
         layout.addWidget(_separator())
 
-        groups = sorted(INI_FIELD_GROUPS, key=lambda group: 0 if group["section"] == "ui" else 1)
+        _section_order = {"ui": 0, "metadata": 1, "paths": 2}
+        groups = sorted(INI_FIELD_GROUPS, key=lambda group: _section_order.get(group["section"], 3))
         for group in groups:
             layout.addWidget(_section_label(group["title"].upper()))
             layout.addWidget(self._build_group_card(group))

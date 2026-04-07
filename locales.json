@@ -1082,5 +1082,97 @@
   "Nettoyage": {
     "fra": "Nettoyage",
     "eng": "Cleanup"
+  },
+  "Recherche film / série — IMDb / TMDB": {
+    "fra": "Recherche film / série — IMDb / TMDB",
+    "eng": "Movie / TV search — IMDb / TMDB"
+  },
+  "Titre du film ou de la série…": {
+    "fra": "Titre du film ou de la série…",
+    "eng": "Movie or TV title..."
+  },
+  "Tout": {
+    "fra": "Tout",
+    "eng": "All"
+  },
+  "Films": {
+    "fra": "Films",
+    "eng": "Movies"
+  },
+  "Séries": {
+    "fra": "Séries",
+    "eng": "Series"
+  },
+  "Rechercher": {
+    "fra": "Rechercher",
+    "eng": "Search"
+  },
+  "Saison :": {
+    "fra": "Saison :",
+    "eng": "Season:"
+  },
+  "Épisode :": {
+    "fra": "Épisode :",
+    "eng": "Episode:"
+  },
+  "This product uses the TMDB API": {
+    "fra": "Ce produit utilise l'API TMDB",
+    "eng": "This product uses the TMDB API"
+  },
+  "This product uses the TMDB API but is not\nendorsed or certified by TMDB.": {
+    "fra": "Ce produit utilise l'API TMDB mais n'est ni approuvé\nni certifié par TMDB.",
+    "eng": "This product uses the TMDB API but is not\nendorsed or certified by TMDB."
+  },
+  "Insérer les balises": {
+    "fra": "Insérer les balises",
+    "eng": "Insert tags"
+  },
+  "Clé API TMDB manquante": {
+    "fra": "Clé API TMDB manquante",
+    "eng": "Missing TMDB API key"
+  },
+  "Aucune clé API TMDB n'est configurée.\n\nRendez-vous dans Paramètres → Métadonnées pour renseigner\nvotre clé API TMDB v3 (gratuite sur themoviedb.org).": {
+    "fra": "Aucune clé API TMDB n'est configurée.\n\nRendez-vous dans Paramètres → Métadonnées pour renseigner\nvotre clé API TMDB v3 (gratuite sur themoviedb.org).",
+    "eng": "No TMDB API key is configured.\n\nGo to Settings -> Metadata to enter\nyour TMDB v3 API key (free on themoviedb.org)."
+  },
+  "Chargement…": {
+    "fra": "Chargement…",
+    "eng": "Loading..."
+  },
+  "Aucun résultat.": {
+    "fra": "Aucun résultat.",
+    "eng": "No results."
+  },
+  "Série": {
+    "fra": "Série",
+    "eng": "Series"
+  },
+  "Film": {
+    "fra": "Film",
+    "eng": "Movie"
+  },
+  "Clé API TMDB manquante.": {
+    "fra": "Clé API TMDB manquante.",
+    "eng": "Missing TMDB API key."
+  },
+  "Clé API TMDB invalide ou expirée (401).": {
+    "fra": "Clé API TMDB invalide ou expirée (401).",
+    "eng": "Invalid or expired TMDB API key (401)."
+  },
+  "Ressource introuvable sur TMDB (404) : {endpoint}": {
+    "fra": "Ressource introuvable sur TMDB (404) : {endpoint}",
+    "eng": "Resource not found on TMDB (404): {endpoint}"
+  },
+  "Erreur HTTP {code} lors de la requête TMDB.": {
+    "fra": "Erreur HTTP {code} lors de la requête TMDB.",
+    "eng": "HTTP error {code} while requesting TMDB."
+  },
+  "Impossible de contacter TMDB : {reason}": {
+    "fra": "Impossible de contacter TMDB : {reason}",
+    "eng": "Unable to reach TMDB: {reason}"
+  },
+  "Réponse TMDB invalide : {error}": {
+    "fra": "Réponse TMDB invalide : {error}",
+    "eng": "Invalid TMDB response: {error}"
   }
 }
