@@ -96,6 +96,7 @@ Exécution :
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 from contextlib import ExitStack
@@ -133,6 +134,7 @@ from core.workflows.encode import (
     QualityMode,
     VideoEncodeSettings,
 )
+from core.runner import TaskSignals
 
 
 # ---------------------------------------------------------------------------
@@ -790,6 +792,40 @@ class TestBuildCommand:
                                                  audio_tracks=[track]))
         assert "-b:a:0" in cmd and "256k" in cmd
 
+    def test_audio_ac3_has_bitrate(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        track = AudioTrackSettings(stream_index=1, codec="ac3", bitrate_kbps=448)
+        cmd = self.wf.build_command(_make_config(src, tmp_path / "out.mkv",
+                                                 audio_tracks=[track]))
+        assert "-c:a:0" in cmd and cmd[cmd.index("-c:a:0") + 1] == "ac3"
+        assert "-b:a:0" in cmd and "448k" in cmd
+
+    def test_audio_eac3_7_1_forces_5_1_downmix(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        track = AudioTrackSettings(
+            stream_index=1,
+            codec="eac3",
+            bitrate_kbps=640,
+            input_channels=8,
+            input_channel_layout="7.1",
+        )
+        cmd = self.wf.build_command(_make_config(src, tmp_path / "out.mkv", audio_tracks=[track]))
+        assert "-ac:a:0" in cmd and cmd[cmd.index("-ac:a:0") + 1] == "6"
+        assert "-channel_layout:a:0" in cmd and cmd[cmd.index("-channel_layout:a:0") + 1] == "5.1"
+
+    def test_audio_eac3_5_1_keeps_native_channels(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        track = AudioTrackSettings(
+            stream_index=1,
+            codec="eac3",
+            bitrate_kbps=640,
+            input_channels=6,
+            input_channel_layout="5.1",
+        )
+        cmd = self.wf.build_command(_make_config(src, tmp_path / "out.mkv", audio_tracks=[track]))
+        assert "-ac:a:0" not in cmd
+        assert "-channel_layout:a:0" not in cmd
+
     def test_truehd_core_bsf_present(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()
         track = AudioTrackSettings(stream_index=2, codec="copy",
@@ -797,6 +833,16 @@ class TestBuildCommand:
         cmd = self.wf.build_command(_make_config(src, tmp_path / "out.mkv",
                                                  audio_tracks=[track]))
         assert "truehd_core" in " ".join(cmd)
+
+    def test_truehd_core_bsf_ignored_for_transcoded_audio(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        track = AudioTrackSettings(stream_index=2, codec="eac3",
+                                   bitrate_kbps=640, extract_truehd_core=True)
+        cmd = self.wf.build_command(_make_config(src, tmp_path / "out.mkv",
+                                                 audio_tracks=[track]))
+        assert "truehd_core" not in cmd
+        assert "-bsf:a:0" not in cmd
+        assert "-c:a:0" in cmd and cmd[cmd.index("-c:a:0") + 1] == "eac3"
 
     def test_audio_track_order_follows_config_across_sources(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()
@@ -1414,6 +1460,65 @@ class TestRunCopyBypassesInject:
         with patch.object(wf._runner, "run") as mock_run:
             mock_run.return_value = MagicMock()
             wf.run(config)
+
+
+class TestSelectedAttachedPicHandling:
+
+    def test_run_converts_selected_cover_to_attach(self, tmp_path):
+        """
+        Un attachment sélectionné reporté par ffprobe comme attached_pic ne doit
+        plus être remappé via -map 0:stream, mais extrait puis réattaché avec
+        -attach pour conserver son statut d'attachment logique.
+        """
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 1000)
+        out = tmp_path / "output.mkv"
+        config = _make_config(
+            source=src,
+            output=out,
+            video=_make_video_settings(codec="copy"),
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="ac3", bitrate_kbps=384)],
+            attachment_streams=[(src, 9)],
+        )
+        wf = _make_workflow()
+        captured: list[list[str]] = []
+
+        ffprobe_payload = json.dumps({
+            "streams": [
+                {
+                    "index": 9,
+                    "disposition": {"attached_pic": 1},
+                    "tags": {"filename": "cover.jpg", "mimetype": "image/jpeg"},
+                }
+            ]
+        })
+
+        def _fake_subprocess_run(cmd, *args, **kwargs):
+            prog = Path(cmd[0]).name
+            if prog.startswith("ffprobe"):
+                return MagicMock(returncode=0, stdout=ffprobe_payload, stderr="")
+            if prog == "ffmpeg" and "-map" in cmd and "0:9" in cmd:
+                Path(cmd[-1]).write_bytes(b"jpeg-data")
+                return MagicMock(returncode=0, stdout="", stderr="")
+            raise AssertionError(f"Commande subprocess inattendue: {cmd}")
+
+        with patch("subprocess.run", side_effect=_fake_subprocess_run), \
+             patch.object(wf._runner, "run") as mock_run:
+            signals = TaskSignals()
+            mock_run.side_effect = lambda cmd, **_kw: captured.append(list(cmd)) or signals
+            returned = wf.run(config)
+            returned.finished.emit("done")
+
+        assert returned is signals
+        assert len(captured) == 1
+        cmd = captured[0]
+        assert "-attach" in cmd
+        attach_path = Path(cmd[cmd.index("-attach") + 1])
+        assert attach_path.name == "cover.jpg"
+        assert "0:9" not in cmd, f"Le stream cover ne doit plus être remappé: {cmd}"
+        assert "-metadata:s:t:0" in cmd
+        idx = cmd.index("-metadata:s:t:0")
+        assert cmd[idx + 1] == "mimetype=image/jpeg"
         assert mock_run.called
 
 
@@ -1537,6 +1642,19 @@ class TestMetadataInjectAudio:
         recon = self._get_recon_cmd(cmds)
         assert "eac3" in recon
         assert "640k" in recon
+
+    def test_audio_eac3_7_1_is_downmixed_to_5_1_in_reconstitution(self, tmp_path):
+        track = AudioTrackSettings(
+            stream_index=1,
+            codec="eac3",
+            bitrate_kbps=640,
+            input_channels=8,
+            input_channel_layout="7.1(side)",
+        )
+        cmds = self._run_inject_with_audio(tmp_path, [track])
+        recon = self._get_recon_cmd(cmds)
+        assert "-ac:a:0" in recon and recon[recon.index("-ac:a:0") + 1] == "6"
+        assert "-channel_layout:a:0" in recon and recon[recon.index("-channel_layout:a:0") + 1] == "5.1"
 
     def test_audio_flac_no_bitrate(self, tmp_path):
         """Audio FLAC : -c:a:0 flac sans -b:a (codec sans débit)."""
@@ -2063,6 +2181,54 @@ class TestApplyTrackMetaEdits:
 
         assert "language=fra" in cmd
         assert "language-ietf=fr" in cmd
+
+    def test_es_iso_code_is_spa(self, tmp_path):
+        """es → --set language=spa."""
+        from core.workflows.encode.models import TrackMetaEdit
+        output = tmp_path / "out.mkv"
+        output.touch()
+        edit = TrackMetaEdit(track_order=2, language="es")
+
+        cmd = self._run_edits([edit], output)
+
+        assert "language=spa" in cmd
+        assert "language-ietf=es" in cmd
+
+    def test_no_iso_code_is_nor(self, tmp_path):
+        """no → --set language=nor."""
+        from core.workflows.encode.models import TrackMetaEdit
+        output = tmp_path / "out.mkv"
+        output.touch()
+        edit = TrackMetaEdit(track_order=2, language="no")
+
+        cmd = self._run_edits([edit], output)
+
+        assert "language=nor" in cmd
+        assert "language-ietf=no" in cmd
+
+    def test_ns_iso_code_is_nso(self, tmp_path):
+        """ns → --set language=nso."""
+        from core.workflows.encode.models import TrackMetaEdit
+        output = tmp_path / "out.mkv"
+        output.touch()
+        edit = TrackMetaEdit(track_order=2, language="ns")
+
+        cmd = self._run_edits([edit], output)
+
+        assert "language=nso" in cmd
+        assert "language-ietf=ns" in cmd
+
+    def test_iso639_2_input_is_accepted(self, tmp_path):
+        """eng déjà en ISO639-2 reste accepté sans lever d'exception."""
+        from core.workflows.encode.models import TrackMetaEdit
+        output = tmp_path / "out.mkv"
+        output.touch()
+        edit = TrackMetaEdit(track_order=2, language="eng")
+
+        cmd = self._run_edits([edit], output)
+
+        assert "language=eng" in cmd
+        assert "language-ietf=eng" in cmd
 
     # ── title seul (pas de langue) ───────────────────────────────────────────
 

@@ -224,12 +224,15 @@ class AttachmentInfo:
     filename    : nom du fichier tel que stocké dans le MKV.
     mimetype    : type MIME (ex. "image/jpeg", "application/x-truetype-font").
     size_bytes  : taille en octets (None si non disponible via ffprobe).
+    is_attached_pic : True si la pièce jointe provient d'un stream vidéo
+                  marqué ``disposition.attached_pic=1``.
     """
     index:       int
     local_index: int
     filename:    str
     mimetype:    str
     size_bytes:  int | None = None
+    is_attached_pic: bool = False
 
 
 @dataclass
@@ -662,6 +665,7 @@ class FileInspector:
             filename    = tags.get("filename", "attachment"),
             mimetype    = tags.get("mimetype", "application/octet-stream"),
             size_bytes  = _int_or_none(s.get("size")),
+            is_attached_pic = bool(s.get("disposition", {}).get("attached_pic", 0)),
         )
 
     def _get_mkvmerge_track_data(
