@@ -1111,7 +1111,8 @@ def check_tools_presence(prefix: Path | None = None) -> None:
 
 def parse_args() -> argparse.Namespace:
     default_prefix = str(_default_prefix())
-    description = __doc__.replace(
+    module_doc = __doc__ or ""
+    description = module_doc.replace(
         "See platform-specific command shown by --help output.",
         f"{PYTHON_CMD} setup.py [--no-github] [--prefix PATH] [--dry-run] [--force]",
     )

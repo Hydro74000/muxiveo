@@ -32,6 +32,9 @@ class Rfc5646LanguageTags:
 
     # Index insensible à la casse : clé en minuscules → code canonique du registre
     _TAGS_LOWER: dict[str, str] = {}
+    # Index des codes IETF courts (xx) vers leur variante régionale par défaut.
+    # Construit dynamiquement depuis les mappings ISO 639-2.
+    _IETF_SHORT_TO_REGIONAL_IETF: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Registre principal  (code → nom anglais, ordre : und puis alpha)
@@ -439,6 +442,27 @@ class Rfc5646LanguageTags:
             cls._TAGS_LOWER = {k.lower(): k for k in cls.TAGS}
 
     @classmethod
+    def _ensure_short_regional_index(cls) -> None:
+        """
+        Construit _IETF_SHORT_TO_REGIONAL_IETF à la première utilisation.
+
+        La logique reprend exactement les variantes régionales définies pour
+        les codes ISO 639-2 afin d'assurer un comportement identique entre
+        entrées 3 lettres (ISO 639-2) et 2 lettres (RFC 5646).
+        """
+        if cls._IETF_SHORT_TO_REGIONAL_IETF:
+            return
+        mapping: dict[str, str] = {}
+        for iso_code, ietf_short in cls._ISO639_2_TO_IETF.items():
+            if len(ietf_short) != 2 and ietf_short != "und":
+                continue
+            regional = cls._ISO639_2_TO_REGIONAL_IETF.get(iso_code)
+            if not regional:
+                continue
+            mapping.setdefault(ietf_short, regional)
+        cls._IETF_SHORT_TO_REGIONAL_IETF = mapping
+
+    @classmethod
     def normalize(cls, tag: str) -> str | None:
         """
         Retourne la forme canonique (casse correcte) d'une balise.
@@ -473,6 +497,72 @@ class Rfc5646LanguageTags:
         if not code:
             return None
         return cls._ISO639_2_TO_REGIONAL_IETF.get(code.lower())
+
+    @classmethod
+    def from_ietf_short_regional(cls, code: str) -> str | None:
+        """
+        Convertit une balise IETF courte (xx) en variante régionale par défaut.
+
+        Exemples :
+            'fr' -> 'fr-FR'
+            'en' -> 'en-US'
+            'eo' -> 'eo' (pas de région canonique)
+        """
+        if not code:
+            return None
+        cls._ensure_short_regional_index()
+        return cls._IETF_SHORT_TO_REGIONAL_IETF.get(code.lower())
+
+    @classmethod
+    def regionalize_track_language(cls, tag: str, title: str | None = None) -> str | None:
+        """
+        Normalise un tag de piste en IETF, en privilégiant les formes régionales.
+
+        Règles :
+        - ISO 639-2 (xxx) : conversion vers xx-XX (avec inférence régionale via titre).
+        - RFC 5646 court (xx) : conversion vers xx-XX selon la même table régionale.
+        - Tag déjà régional (xx-XX / xx-Script-XX) : conservé tel quel (casse canonique si connue).
+        - 'und' ou invalide : retourne 'und' ou None.
+        """
+        if not tag:
+            return None
+
+        raw = tag.strip()
+        if not raw:
+            return None
+
+        canonical = cls.normalize(raw) or raw
+        if canonical.lower() == "und":
+            return "und"
+
+        track_title = title or ""
+
+        # ISO 639-2 (3 lettres) -> forme régionale canonique.
+        if len(canonical) == 3 and "-" not in canonical:
+            base_ietf = cls.from_iso639_2(canonical)
+            if not base_ietf or base_ietf == "und":
+                return None
+            inferred = cls.infer_region_from_title(base_ietf, track_title)
+            return inferred or cls.from_iso639_2_regional(canonical)
+
+        # RFC 5646 court (2 lettres) -> même logique régionale que l'ISO 639-2.
+        if len(canonical) == 2 and "-" not in canonical:
+            base_ietf = canonical.lower()
+            inferred = cls.infer_region_from_title(base_ietf, track_title)
+            if inferred:
+                return inferred
+            default_regional = cls.from_ietf_short_regional(base_ietf)
+            if default_regional:
+                return default_regional
+            if cls.is_valid(base_ietf):
+                return cls.normalize(base_ietf) or base_ietf
+            return None
+
+        # Balise complète (régionale, script, etc.) : conserve si syntaxe valide.
+        if cls.is_valid(canonical):
+            return canonical
+
+        return None
 
     @classmethod
     def to_iso639_2(cls, ietf: str) -> str | None:
