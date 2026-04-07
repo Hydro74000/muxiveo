@@ -56,6 +56,7 @@ HARDWARE_VIDEO_CODECS: list[tuple[str, str]] = [
 AUDIO_CODECS: list[tuple[str, str]] = [
     ("copy",  "Copie (sans réencodage)"),
     ("aac",   "AAC"),
+    ("ac3",   "AC-3 (Dolby Digital)"),
     ("eac3",  "EAC-3 (Dolby Digital+)"),
     ("flac",  "FLAC (sans perte)"),
 ]
@@ -111,6 +112,8 @@ class AudioTrackSettings:
     codec:               str = "copy"
     bitrate_kbps:        int = 384
     extract_truehd_core: bool = False   # strip Atmos via BSF truehd_core
+    input_channels:      int | None = None   # nb de canaux de la piste source (ffprobe)
+    input_channel_layout: str | None = None  # layout source (ex: "7.1", "5.1(side)")
     source_path:         Path | None = None  # None = même fichier que la vidéo (config.source)
 
 

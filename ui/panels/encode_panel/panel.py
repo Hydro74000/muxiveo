@@ -337,7 +337,7 @@ class EncodePanel(QWidget):
         self._add_audio_btn.setEnabled(bool(tracks))
 
         default_codec   = "copy"
-        default_bitrate = 384
+        default_bitrate = None
         profile_name = self._profile_combo.currentText()
         if profile_name:
             for p in self._profiles.load_all():

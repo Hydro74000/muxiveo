@@ -297,13 +297,17 @@ class Rfc5646LanguageTags:
         'ita': 'it', 'jpn': 'ja', 'kat': 'ka', 'kaz': 'kk', 'kan': 'kn',
         'kor': 'ko', 'kok': 'kok', 'kir': 'ky', 'lit': 'lt', 'lav': 'lv',
         'mri': 'mi', 'mkd': 'mk', 'mon': 'mn', 'mar': 'mr', 'msa': 'ms',
-        'mlt': 'mt', 'nob': 'nb', 'nld': 'nl', 'nno': 'nn', 'pan': 'pa',
-        'pol': 'pl', 'pus': 'ps', 'por': 'pt', 'que': 'qu', 'ron': 'ro',
+        'mlt': 'mt', 'nob': 'nb', 'nld': 'nl', 'nno': 'nn', 'nso': 'ns',
+        'pan': 'pa', 'pol': 'pl', 'pus': 'ps', 'por': 'pt', 'que': 'qu',
+        'ron': 'ro',
         'rus': 'ru', 'san': 'sa', 'sme': 'se', 'slk': 'sk', 'slv': 'sl',
-        'sqi': 'sq', 'srp': 'sr', 'swe': 'sv', 'swa': 'sw', 'syr': 'syr',
+        'spa': 'es', 'sqi': 'sq', 'srp': 'sr', 'swe': 'sv', 'swa': 'sw',
+        'syr': 'syr',
         'tam': 'ta', 'tel': 'te', 'tha': 'th', 'tgl': 'tl', 'tsn': 'tn',
         'tur': 'tr', 'tat': 'tt', 'tso': 'ts', 'ukr': 'uk', 'urd': 'ur',
         'uzb': 'uz', 'vie': 'vi', 'xho': 'xh', 'zho': 'zh', 'zul': 'zu',
+        # Alias utiles rencontrés dans les pistes Matroska
+        'nor': 'no',
         # ISO 639-2/B (bibliographique — variantes alternatives)
         'alb': 'sq', 'arm': 'hy', 'baq': 'eu', 'chi': 'zh', 'cze': 'cs',
         'dut': 'nl', 'fre': 'fr', 'geo': 'ka', 'ger': 'de', 'gre': 'el',
@@ -331,14 +335,17 @@ class Rfc5646LanguageTags:
         'kok': 'kok-IN','kir': 'ky-KG', 'lit': 'lt-LT', 'lav': 'lv-LV',
         'mri': 'mi-NZ', 'mkd': 'mk-MK', 'mon': 'mn-MN', 'mar': 'mr-IN',
         'msa': 'ms-MY', 'mlt': 'mt-MT', 'nob': 'nb-NO', 'nld': 'nl-NL',
-        'nno': 'nn-NO', 'pan': 'pa-IN', 'pol': 'pl-PL', 'pus': 'ps-AR',
+        'nno': 'nn-NO', 'nso': 'ns-ZA', 'pan': 'pa-IN', 'pol': 'pl-PL',
+        'pus': 'ps-AR',
         'por': 'pt-PT', 'que': 'qu-PE', 'ron': 'ro-RO', 'rus': 'ru-RU',
         'san': 'sa-IN', 'sme': 'se-NO', 'slk': 'sk-SK', 'slv': 'sl-SI',
-        'sqi': 'sq-AL', 'srp': 'sr-SP', 'swe': 'sv-SE', 'swa': 'sw-KE',
+        'spa': 'es-ES', 'sqi': 'sq-AL', 'srp': 'sr-SP', 'swe': 'sv-SE',
+        'swa': 'sw-KE',
         'syr': 'syr-SY','tam': 'ta-IN', 'tel': 'te-IN', 'tha': 'th-TH',
         'tgl': 'tl-PH', 'tsn': 'tn-ZA', 'tur': 'tr-TR', 'tat': 'tt-RU',
         'tso': 'ts',    'ukr': 'uk-UA', 'urd': 'ur-PK', 'uzb': 'uz-UZ',
         'vie': 'vi-VN', 'xho': 'xh-ZA', 'zho': 'zh-CN', 'zul': 'zu-ZA',
+        'nor': 'no',
         # ISO 639-2/B
         'alb': 'sq-AL', 'arm': 'hy-AM', 'baq': 'eu-ES', 'chi': 'zh-CN',
         'cze': 'cs-CZ', 'dut': 'nl-NL', 'fre': 'fr-FR', 'geo': 'ka-GE',
@@ -575,10 +582,21 @@ class Rfc5646LanguageTags:
         """
         if not ietf:
             return None
-        # Normalise : prend seulement la partie langue (avant le premier '-')
-        lang_part = ietf.split("-")[0].lower()
+        raw = ietf.strip()
+        if not raw:
+            return None
+        # Accepte aussi les entrées déjà en ISO 639-2 (/T ou /B).
+        lang_part = raw.split("-")[0].lower()
         if lang_part in ("und", ""):
             return "und"
+        if lang_part in cls._ISO639_2_TO_IETF:
+            return {
+                'alb': 'sqi', 'arm': 'hye', 'baq': 'eus', 'chi': 'zho',
+                'cze': 'ces', 'dut': 'nld', 'fre': 'fra', 'geo': 'kat',
+                'ger': 'deu', 'gre': 'ell', 'ice': 'isl', 'mac': 'mkd',
+                'may': 'msa', 'per': 'fas', 'rum': 'ron', 'slo': 'slk',
+                'wel': 'cym',
+            }.get(lang_part, lang_part)
         # Recherche inverse dans _ISO639_2_TO_IETF (première correspondance)
         for iso, tag in cls._ISO639_2_TO_IETF.items():
             if tag == lang_part and len(iso) == 3 and iso not in (
