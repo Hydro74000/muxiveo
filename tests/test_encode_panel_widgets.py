@@ -7,12 +7,15 @@ Plan de couverture :
         - COL_TITLE a le flag ItemIsEditable
         - COL_LANG a le flag ItemIsEditable
         - COL_FORMAT n'a pas le flag ItemIsEditable (non-régression)
+        - COL_SRC_BR n'a pas le flag ItemIsEditable (non-régression)
         - COL_IDX n'a pas le flag ItemIsEditable (non-régression)
         - COL_SOURCE n'a pas le flag ItemIsEditable (non-régression)
 
     _AudioTable — valeurs initiales :
         - Titre initial depuis AudioTrack.title
         - Langue initiale depuis AudioTrack.language
+        - Bitrate source initial depuis AudioTrack.bit_rate
+        - Bitrate source affiche un fallback visuel si AudioTrack.bit_rate est absent
         - Titre vide si AudioTrack.title est None
         - Langue vide si AudioTrack.language est None
 
@@ -62,6 +65,7 @@ def _at(
     codec: str = "eac3",
     codec_long: str | None = None,
     channels: int = 6,
+    bit_rate: int | None = 640_000,
     language: str | None = "fra",
     title: str | None = "Piste principale",
     raw: dict | None = None,
@@ -69,7 +73,7 @@ def _at(
     return AudioTrack(
         index=index, codec=codec, codec_long=codec_long or codec,
         channels=channels, channel_layout=None,
-        sample_rate=48000, bit_rate=640_000,
+        sample_rate=48000, bit_rate=bit_rate,
         language=language, title=title,
         raw=raw or {},
     )
@@ -153,6 +157,13 @@ class TestAudioTableEditableFlags:
         assert item is not None
         assert not (item.flags() & Qt.ItemFlag.ItemIsEditable)
 
+    def test_source_bitrate_cell_not_editable(self, table):
+        """COL_SRC_BR est lecture seule (non-régression)."""
+        _load_one(table)
+        item = table.item(0, _AudioTable.COL_SRC_BR)
+        assert item is not None
+        assert not (item.flags() & Qt.ItemFlag.ItemIsEditable)
+
     def test_idx_cell_not_editable(self, table):
         """COL_IDX est lecture seule (non-régression)."""
         _load_one(table)
@@ -183,6 +194,16 @@ class TestAudioTableInitialValues:
         _load_one(table, _at(language="jpn"))
         item = table.item(0, _AudioTable.COL_LANG)
         assert item.text() == "jpn"
+
+    def test_source_bitrate_populated_from_track(self, table):
+        _load_one(table, _at())
+        item = table.item(0, _AudioTable.COL_SRC_BR)
+        assert item.text() == "640"
+
+    def test_source_bitrate_uses_visual_fallback_when_missing(self, table):
+        _load_one(table, _at(raw={}, title="Sans bitrate", bit_rate=None))
+        item = table.item(0, _AudioTable.COL_SRC_BR)
+        assert item.text() == "—"
 
     def test_title_empty_when_track_title_is_none(self, table):
         _load_one(table, _at(title=None))
@@ -329,18 +350,18 @@ class TestAudioTableReloadPreservesSettings:
         table.load_tracks([(at1, _COLOR, _PATH_A), (at2, _COLOR, _PATH_B)])
 
         _set_codec(table, 0, "aac")
-        _set_bitrate(table, 0, 640)
+        _set_bitrate(table, 0, 960)
         _set_codec(table, 1, "eac3")
-        _set_bitrate(table, 1, 640)
+        _set_bitrate(table, 1, 960)
 
         table.load_tracks([(at2, _COLOR, _PATH_B), (at1, _COLOR, _PATH_A)])
 
         assert table.item(0, _AudioTable.COL_IDX).text() == "2"
         assert table.item(1, _AudioTable.COL_IDX).text() == "1"
         assert _codec_combo(table, 0).currentData() == "eac3"
-        assert _bitrate_value(table, 0) == 640
+        assert _bitrate_value(table, 0) == 960
         assert _codec_combo(table, 1).currentData() == "aac"
-        assert _bitrate_value(table, 1) == 640
+        assert _bitrate_value(table, 1) == 960
 
 
 class TestAudioTableCurrentAudioSettings:

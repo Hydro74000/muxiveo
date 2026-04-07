@@ -2288,12 +2288,19 @@ class RemuxPanel(QWidget):
     audio_tracks_changed = Signal(object)   # list[tuple[AudioTrack, str, Path]]
     ready_changed        = Signal(bool)     # True quand des fichiers sont prêts
 
-    def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        parent: QWidget | None = None,
+        *,
+        writing_application: str = "",
+    ) -> None:
         super().__init__(parent)
         self._config   = config
         self._workflow = RemuxWorkflow(
             mkvmerge_bin=config.tool_mkvmerge,
             mkvpropedit_bin=config.tool_mkvpropedit,
+            writing_application=writing_application,
         )
         self._executor = ThreadPoolExecutor(max_workers=2)
 

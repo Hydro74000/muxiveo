@@ -83,3 +83,36 @@ def test_settings_panel_writes_selected_startup_panel_to_ini(tmp_path, qt_app):
 
         assert "startup_panel = encoding" in ini_path.read_text(encoding="utf-8")
         assert cfg.startup_panel == "encoding"
+
+
+def test_settings_panel_writes_audio_encoding_values_to_ini(tmp_path, qt_app):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text(
+        "[audio_encoding]\n"
+        "default_bitrate_per_channel_kbps = 192\n"
+        "bitrate_step_per_channel_kbps = 64\n",
+        encoding="utf-8",
+    )
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path):
+        mock_qs.return_value = _mock_qsettings()
+        cfg = AppConfig()
+
+        panel = SettingsPanel(cfg)
+        default_spin = panel.widget_for("audio_encoding", "default_bitrate_per_channel_kbps")
+        step_spin = panel.widget_for("audio_encoding", "bitrate_step_per_channel_kbps")
+        default_spin.setValue(160)
+        step_spin.setValue(48)
+        panel._on_save_clicked()
+
+        ini_text = ini_path.read_text(encoding="utf-8")
+        assert "default_bitrate_per_channel_kbps = 160" in ini_text
+        assert "bitrate_step_per_channel_kbps = 48" in ini_text
+        assert cfg.audio_default_bitrate_per_channel_kbps == 160
+        assert cfg.audio_bitrate_step_per_channel_kbps == 48

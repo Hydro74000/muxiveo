@@ -91,6 +91,10 @@ _LEVEL_LABELS: dict[LogLevel, str] = {
     LogLevel.ERROR: " ERR  ",
 }
 
+MEDIARECODE_WRITING_APPLICATION = (
+    "MediaRecode v1.2 - https://github.com/Hydro74000/mediarecode/"
+)
+
 
 # ---------------------------------------------------------------------------
 # LogPanel
@@ -879,6 +883,7 @@ class MainWindow(QMainWindow):
     """
 
     log_requested = Signal(str, str)
+    WRITING_APPLICATION = MEDIARECODE_WRITING_APPLICATION
     _PAGE_INDEX_BY_PANEL_KEY = {
         "dashboard": 0,
         "dovi": 1,
@@ -928,6 +933,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
+        writing_application = self.writing_application_tag()
+
         central = QWidget()
         central.setStyleSheet(f"background: {_Colors.BG_DEEP};")
         self.setCentralWidget(central)
@@ -977,11 +984,17 @@ class MainWindow(QMainWindow):
         self._stack.addWidget(self._dovi_panel)
 
         # Page 2 — Encodage (fonctionnelle)
-        self._encode_panel = EncodePanel(self._config)
+        self._encode_panel = EncodePanel(
+            self._config,
+            writing_application=writing_application,
+        )
         self._stack.addWidget(self._encode_panel)
 
         # Page 3 — Manipulation Conteneur (fonctionnelle)
-        self._remux_panel = RemuxPanel(self._config)
+        self._remux_panel = RemuxPanel(
+            self._config,
+            writing_application=writing_application,
+        )
         self._stack.addWidget(self._remux_panel)
 
         self._settings_panel = SettingsPanel(self._config)
@@ -1012,6 +1025,10 @@ class MainWindow(QMainWindow):
         vsplit.setSizes([560, 240])
 
         main_layout.addWidget(vsplit)
+
+    @classmethod
+    def writing_application_tag(cls) -> str:
+        return cls.WRITING_APPLICATION
 
     def _build_action_bar(self) -> QWidget:
         """Construit la barre d'action globale avec bouton unique 'Exécuter l'opération'."""
@@ -1477,6 +1494,7 @@ class MainWindow(QMainWindow):
         new_theme = DesignSystem.set_theme(self._config.theme)
         DesignSystem.apply_to_application(QApplication.instance())
         self._log_panel._max_lines = self._config.log_max_lines
+        self._encode_panel.refresh_runtime_settings()
         self._apply_locale()
         if new_theme != previous_theme:
             self.log_requested.emit(
