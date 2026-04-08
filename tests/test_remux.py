@@ -137,7 +137,7 @@ from core.workflows.remux import (
 from ui.panels.remux_panel import (
     SourceFile, _FILE_BAR_H, _FILE_PH_H, _FILE_ROW_H,
     _AttachmentItemWidget, _AttachmentPanel, _FileListWidget, _TrackTable,
-    _pick_file_color,
+    _normalize_tmdb_manual_title_suggestion, _pick_file_color,
 )
 from ui.panels.tmdb_search_modal import extract_season_episode
 
@@ -268,6 +268,15 @@ def _workflow() -> RemuxWorkflow:
 )
 def test_extract_season_episode_supported_patterns(text: str, expected):
     assert extract_season_episode(text) == expected
+
+
+def test_normalize_tmdb_manual_title_suggestion_cleans_release_noise():
+    raw = "Fallout.S01E01.The.End.2160p.UHD.BluRay.HDR10.10Bit.AC-3.TrueHD7.1Atmos"
+    assert _normalize_tmdb_manual_title_suggestion(raw) == "Fallout"
+
+
+def test_normalize_tmdb_manual_title_suggestion_keeps_year():
+    assert _normalize_tmdb_manual_title_suggestion("Inception (2010)") == "Inception 2010"
 
 
 # ===========================================================================
