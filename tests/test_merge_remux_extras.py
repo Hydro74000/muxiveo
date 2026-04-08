@@ -242,6 +242,41 @@ class TestNoMergeReturnsOriginal:
 
 
 # ---------------------------------------------------------------------------
+# Langue vidée (encode)
+# ---------------------------------------------------------------------------
+
+class TestLanguageClearPropagation:
+    """
+    Vérifie qu'une langue supprimée dans le remux panel reste une instruction
+    explicite dans le workflow encode (conversion en `und`).
+    """
+
+    def test_cleared_video_language_emits_und_track_meta_edit(self, tmp_path, qt_app):
+        src = tmp_path / "src.mkv"
+        src.touch()
+        out = tmp_path / "out.mkv"
+
+        cleared_video = TrackEntry(
+            mkv_tid=0,
+            track_type="video",
+            codec="H264",
+            display_info="",
+            language="",
+            title="",
+            orig_language="fra",
+            orig_title="",
+        )
+        enc = _encode_cfg(src, out)
+        rmx = _remux_cfg(src, out, tracks=[cleared_video])
+
+        result = _merge(None, enc, rmx)
+
+        assert [(edit.track_order, edit.language, edit.title) for edit in result.track_meta_edits] == [
+            (1, "und", None),
+        ]
+
+
+# ---------------------------------------------------------------------------
 # tag_overrides propagés depuis RemuxConfig
 # ---------------------------------------------------------------------------
 

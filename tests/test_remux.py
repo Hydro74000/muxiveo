@@ -643,9 +643,9 @@ class TestBuildCommand:
             track_order=[(0, 1)],
         )
         cmd = self._cmd(cfg)
-        assert "--language-ietf" in cmd
-        idx = cmd.index("--language-ietf")
-        assert cmd[idx + 1] == "1:en"
+        assert "--language" in cmd
+        idx = cmd.index("--language")
+        assert cmd[idx + 1] == "1:eng"
 
     def test_language_not_emitted_when_unchanged(self):
         t = _track(1, "audio", file_id="id0", language="fr", orig_language="fr")
@@ -655,7 +655,7 @@ class TestBuildCommand:
             track_order=[(0, 1)],
         )
         cmd = self._cmd(cfg)
-        assert "--language-ietf" not in cmd
+        assert "--language" not in cmd
 
     def test_language_cleared_emits_und(self):
         t = _track(1, "audio", file_id="id0", language="", orig_language="fr")
@@ -665,8 +665,81 @@ class TestBuildCommand:
             track_order=[(0, 1)],
         )
         cmd = self._cmd(cfg)
+        assert "--language" in cmd
+        idx = cmd.index("--language")
+        assert cmd[idx + 1] == "1:und"
+
+    def test_language_ietf_not_emitted_by_default(self):
+        t = _track(1, "audio", file_id="id0", language="fr-FR", orig_language="fr")
+        src = _source(Path("/a.mkv"), 0, [t])
+        cfg = RemuxConfig(
+            sources=[src], output=Path("/out.mkv"),
+            track_order=[(0, 1)],
+        )
+        cmd = self._cmd(cfg)
+        assert "--language-ietf" not in cmd
+
+    def test_language_ietf_emitted_for_mkvmerge_pre98(self):
+        t = _track(1, "audio", file_id="id0", language="fr-FR", orig_language="fr")
+        src = _source(Path("/a.mkv"), 0, [t])
+        cfg = RemuxConfig(
+            sources=[src], output=Path("/out.mkv"),
+            track_order=[(0, 1)],
+        )
+        wf = RemuxWorkflow(mkvmerge_bin="mkvmerge", mkvmerge_major_version=97)
+        cmd = wf.build_command(cfg)
         assert "--language-ietf" in cmd
         idx = cmd.index("--language-ietf")
+        assert cmd[idx + 1] == "1:fr-FR"
+
+    def test_language_ietf_not_emitted_for_und_even_pre98(self):
+        t = _track(1, "audio", file_id="id0", language="und", orig_language="fr")
+        src = _source(Path("/a.mkv"), 0, [t])
+        cfg = RemuxConfig(
+            sources=[src], output=Path("/out.mkv"),
+            track_order=[(0, 1)],
+        )
+        wf = RemuxWorkflow(mkvmerge_bin="mkvmerge", mkvmerge_major_version=97)
+        cmd = wf.build_command(cfg)
+        assert "--language-ietf" not in cmd
+
+    def test_language_for_mkvmerge_98_uses_ietf_tag(self):
+        t = _track(1, "audio", file_id="id0", language="fr-FR", orig_language="fr")
+        src = _source(Path("/a.mkv"), 0, [t])
+        cfg = RemuxConfig(
+            sources=[src], output=Path("/out.mkv"),
+            track_order=[(0, 1)],
+        )
+        wf = RemuxWorkflow(mkvmerge_bin="mkvmerge", mkvmerge_major_version=98)
+        cmd = wf.build_command(cfg)
+        assert "--language" in cmd
+        idx = cmd.index("--language")
+        assert cmd[idx + 1] == "1:fr-FR"
+        assert "--language-ietf" not in cmd
+
+    def test_language_for_mkvmerge_98_regionalizes_short_ietf(self):
+        t = _track(1, "audio", file_id="id0", language="fr", orig_language="en")
+        src = _source(Path("/a.mkv"), 0, [t])
+        cfg = RemuxConfig(
+            sources=[src], output=Path("/out.mkv"),
+            track_order=[(0, 1)],
+        )
+        wf = RemuxWorkflow(mkvmerge_bin="mkvmerge", mkvmerge_major_version=98)
+        cmd = wf.build_command(cfg)
+        assert "--language" in cmd
+        idx = cmd.index("--language")
+        assert cmd[idx + 1] == "1:fr-FR"
+
+    def test_language_set_to_und_is_emitted(self):
+        t = _track(1, "audio", file_id="id0", language="und", orig_language="fr")
+        src = _source(Path("/a.mkv"), 0, [t])
+        cfg = RemuxConfig(
+            sources=[src], output=Path("/out.mkv"),
+            track_order=[(0, 1)],
+        )
+        cmd = self._cmd(cfg)
+        assert "--language" in cmd
+        idx = cmd.index("--language")
         assert cmd[idx + 1] == "1:und"
 
     def test_build_command_does_not_emit_language_log_by_default(self):
@@ -681,7 +754,7 @@ class TestBuildCommand:
 
         cmd = self._cmd(cfg)
 
-        assert "--language-ietf" in cmd
+        assert "--language" in cmd
         assert logs == []
 
     def test_build_command_can_emit_language_log_when_requested(self):
@@ -701,7 +774,7 @@ class TestBuildCommand:
         assert "Lang set for track 1 to en" in logs[0][1]
 
     def test_metadata_not_emitted_for_disabled_tracks(self):
-        """--track-name et --language-ietf ne sont pas émis pour les pistes désactivées."""
+        """--track-name et --language ne sont pas émis pour les pistes désactivées."""
         t = _track(1, "audio", file_id="id0",
                    title="Modified", orig_title="",
                    language="en", orig_language="fr")
@@ -712,7 +785,7 @@ class TestBuildCommand:
         )
         cmd = self._cmd(cfg)
         assert "--track-name" not in cmd
-        assert "--language-ietf" not in cmd
+        assert "--language" not in cmd
 
     # --- Multi-source ---
 
@@ -861,7 +934,7 @@ class TestPreviewCommand:
 
         preview = self.wf.preview_command(cfg)
 
-        assert "--language-ietf 1:en" in preview
+        assert "--language 1:eng" in preview
         assert logs == []
 
 
