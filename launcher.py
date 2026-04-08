@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
-launcher.py — Point d'entrée packagé de Mediarecode.
+launcher.py â€” Point d'entrée packagé de Mediarecode.
 
 Vérifie la présence de config.ini dans le dossier de configuration utilisateur :
-  Linux / macOS  → $XDG_CONFIG_HOME/mediarecode/config.ini  (défaut : ~/.config/…)
-  Windows frozen → %APPDATA%\\mediarecode\\config.ini
-  Windows dev    → racine du projet
+  Linux / macOS  â†’ $XDG_CONFIG_HOME/mediarecode/config.ini  (défaut : ~/.config/â€¦)
+  Windows frozen â†’ %APPDATA%\\mediarecode\\config.ini
+  Windows dev    â†’ racine du projet
 
-Si absent → lance le setup système, puis démarre l'application Qt.
+Si absent â†’ lance le setup systÃ¨me, puis démarre l'application Qt.
 """
 
 from __future__ import annotations
 
+import ctypes
 import os
 import subprocess
 import sys
@@ -27,9 +28,13 @@ def _ensure_text_stream(name: str, mode: str) -> None:
 _ensure_text_stream("stdout", "w")
 _ensure_text_stream("stderr", "w")
 
+SETUP_RC_OK = 0
+SETUP_RC_ERROR = 1
+SETUP_RC_HANDOFF = 2
+
 
 # ---------------------------------------------------------------------------
-# Résolution du dossier de référence (là où config.ini doit vivre)
+# Résolution du dossier de référence (lÃ  oÃ¹ config.ini doit vivre)
 # ---------------------------------------------------------------------------
 
 def _is_allinc() -> bool:
@@ -39,7 +44,7 @@ def _is_allinc() -> bool:
     """
     if not getattr(sys, "frozen", False):
         return False
-    # Le marqueur est à côté de l'exécutable (dist/mediarecode/_ALLINC)
+    # Le marqueur est Ã  cÃ´té de l'exécutable (dist/mediarecode/_ALLINC)
     return (Path(sys.executable).parent / "_ALLINC").exists()
 
 
@@ -53,9 +58,9 @@ def _windows_config_dir() -> Path:
 def _get_config_path() -> Path:
     """
     Retourne le chemin de config.ini selon la plateforme :
-    - Linux / macOS  → ~/.config/mediarecode/config.ini  (XDG)
-    - Windows frozen → %APPDATA%\\mediarecode\\config.ini
-    - Windows dev    → racine du projet
+    - Linux / macOS  â†’ ~/.config/mediarecode/config.ini  (XDG)
+    - Windows frozen â†’ %APPDATA%\\mediarecode\\config.ini
+    - Windows dev    â†’ racine du projet
     """
     if sys.platform != "win32":
         xdg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
@@ -63,6 +68,48 @@ def _get_config_path() -> Path:
     if getattr(sys, "frozen", False):
         return _windows_config_dir() / "config.ini"
     return Path(__file__).parent / "config.ini"
+
+
+def _windows_is_admin() -> bool:
+    """Retourne True si le processus courant tourne en mode élevé (admin)."""
+    if sys.platform != "win32":
+        return False
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _windows_ensure_admin() -> bool:
+    """
+    Sur Windows, si le processus n'est pas élevé, le relance en mode admin
+    via ShellExecute 'runas' et retourne True (le processus appelant doit
+    alors quitter immédiatement).
+
+    Retourne False si déjÃ  admin ou hors Windows (rien Ã  faire).
+    """
+    if sys.platform != "win32" or _windows_is_admin():
+        return False
+
+    try:
+        if getattr(sys, "frozen", False):
+            exe = sys.executable
+            params = None
+        else:
+            exe = sys.executable
+            params = f'"{Path(__file__).resolve()}"'
+
+        ret = ctypes.windll.shell32.ShellExecuteW(
+            None,
+            "runas",
+            exe,
+            params,
+            None,
+            1,
+        )
+        return int(ret) > 32
+    except Exception:
+        return False
 
 
 def _restart_current_app() -> bool:
@@ -83,14 +130,111 @@ def _restart_current_app() -> bool:
         return False
 
 
+def _windows_show_restart_required_popup() -> None:
+    """Affiche une popup Windows indiquant qu'un redémarrage manuel est requis."""
+    if sys.platform != "win32":
+        return
+    text = (
+        "Windows Security a été mis Ã  jour.\n\n"
+        "Veuillez fermer cette fenÃªtre puis relancer Mediarecode manuellement."
+    )
+    title = "Mediarecode - Redémarrage requis"
+    mb_ok = 0x00000000
+    mb_icon_info = 0x00000040
+    mb_topmost = 0x00040000
+    try:
+        ctypes.windll.user32.MessageBoxW(None, text, title, mb_ok | mb_icon_info | mb_topmost)
+    except Exception:
+        pass
+
+
+def _windows_show_setup_error_popup(details: str) -> None:
+    """Affiche une popup Windows pour une erreur bloquante pendant le setup."""
+    if sys.platform != "win32":
+        return
+    text = (
+        "Mediarecode n'a pas pu terminer son initialisation.\n\n"
+        f"{details}"
+    )
+    title = "Mediarecode - Erreur d'initialisation"
+    mb_ok = 0x00000000
+    mb_icon_error = 0x00000010
+    mb_topmost = 0x00040000
+    try:
+        ctypes.windll.user32.MessageBoxW(None, text, title, mb_ok | mb_icon_error | mb_topmost)
+    except Exception:
+        pass
+
+
+def _windows_open_setup_console() -> tuple[tuple[object, object, object], bool] | None:
+    """Open a visible console dedicated to first-launch setup logs."""
+    if sys.platform != "win32":
+        return None
+
+    old_streams = (sys.stdin, sys.stdout, sys.stderr)
+    allocated = False
+
+    try:
+        has_console = bool(ctypes.windll.kernel32.GetConsoleWindow())
+    except Exception:
+        has_console = False
+
+    try:
+        if not has_console:
+            allocated = bool(ctypes.windll.kernel32.AllocConsole())
+            if not allocated:
+                return None
+
+        sys.stdin = open("CONIN$", "r", encoding="utf-8", errors="replace")
+        sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace", buffering=1)
+        sys.stderr = open("CONOUT$", "w", encoding="utf-8", errors="replace", buffering=1)
+        return (old_streams, allocated)
+    except Exception:
+        sys.stdin, sys.stdout, sys.stderr = old_streams
+        if allocated:
+            try:
+                ctypes.windll.kernel32.FreeConsole()
+            except Exception:
+                pass
+        return None
+
+
+def _windows_close_setup_console(token: tuple[tuple[object, object, object], bool] | None) -> None:
+    """Restore original stdio streams and close setup console when needed."""
+    if sys.platform != "win32" or token is None:
+        return
+
+    old_streams, allocated = token
+    current_streams = (sys.stdin, sys.stdout, sys.stderr)
+    for stream in current_streams:
+        if stream in old_streams:
+            continue
+        try:
+            stream.flush()
+        except Exception:
+            pass
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+    sys.stdin, sys.stdout, sys.stderr = old_streams
+
+    if allocated:
+        try:
+            ctypes.windll.kernel32.FreeConsole()
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Setup premier lancement
 # ---------------------------------------------------------------------------
 
 def _run_first_time_setup(install_dir: Path) -> int:
     """
-    Lance le setup système (outils externes + config.ini initial).
-    Retourne 0 en succès, 1 en échec bloquant.
+    Lance le setup systÃ¨me (outils externes + config.ini initial).
+    Retourne SETUP_RC_OK, SETUP_RC_ERROR, ou SETUP_RC_HANDOFF.
     """
     import platform
 
@@ -98,13 +242,13 @@ def _run_first_time_setup(install_dir: Path) -> int:
 
     print("\n" + "=" * 60)
     if allinc:
-        print("  Mediarecode — Initialisation (all-inclusive)")
+        print("  Mediarecode â€” Initialisation (all-inclusive)")
     else:
-        print("  Mediarecode — Première installation")
+        print("  Mediarecode â€” PremiÃ¨re installation")
     print("=" * 60)
     print(f"\n  config.ini introuvable dans : {install_dir}")
     if allinc:
-        print("  Les outils sont déjà embarqués — initialisation de la configuration...\n")
+        print("  Les outils sont déjÃ  embarqués â€” initialisation de la configuration...\n")
     else:
         print("  Lancement du setup...\n")
 
@@ -117,8 +261,9 @@ def _run_first_time_setup(install_dir: Path) -> int:
     try:
         import setup as _setup  # bundled alongside launcher or in project root
     except ImportError as exc:
-        print(f"\n  ERREUR : impossible d'importer setup.py — {exc}", file=sys.stderr)
-        return 1
+        print(f"\n  ERREUR : impossible d'importer setup.py â€” {exc}", file=sys.stderr)
+        _windows_show_setup_error_popup(f"Impossible d'importer setup.py.\n\n{exc}")
+        return SETUP_RC_ERROR
 
     _os = platform.system()
     prefix = _setup._default_prefix()
@@ -131,9 +276,19 @@ def _run_first_time_setup(install_dir: Path) -> int:
     except OSError:
         pass
 
+    if _os == "Windows" and not allinc:
+        if _windows_ensure_admin():
+            print(
+                "\n  Ã‰lévation des privilÃ¨ges demandée."
+                "\n  Mediarecode va redémarrer avec les droits administrateur...\n"
+            )
+            return SETUP_RC_HANDOFF
+
+    setup_console_token = _windows_open_setup_console() if _os == "Windows" else None
+
     try:
         if allinc:
-            # Mode all-inclusive : outils déjà embarqués dans l'AppImage,
+            # Mode all-inclusive : outils déjÃ  embarqués dans l'AppImage,
             # on initialise uniquement la langue / config.ini.
             _setup.initialize_config_ini_language(
                 dry_run, force=force, ini_path=install_dir / "config.ini"
@@ -148,7 +303,7 @@ def _run_first_time_setup(install_dir: Path) -> int:
                     _setup.install_dnf(dry_run, force=force)
                 else:
                     print(
-                        "  Distribution non reconnue — installez manuellement :\n"
+                        "  Distribution non reconnue â€” installez manuellement :\n"
                         "    ffmpeg  mkvtoolnix  mediainfo",
                         file=sys.stderr,
                     )
@@ -170,58 +325,56 @@ def _run_first_time_setup(install_dir: Path) -> int:
                 )
 
             else:
-                print(f"  Plateforme inconnue '{_os}' — setup système ignoré.", file=sys.stderr)
+                print(f"  Plateforme inconnue '{_os}' â€” setup systÃ¨me ignoré.", file=sys.stderr)
 
             # Initialise la langue dans QSettings (et config.ini si absents)
             _setup.initialize_config_ini_language(
                 dry_run, force=force, ini_path=install_dir / "config.ini"
             )
 
-            # Packages Python : inutiles dans un bundle (déjà embarqués)
+            # Packages Python : inutiles dans un bundle (déjÃ  embarqués)
             if not getattr(sys, "frozen", False):
                 _setup.install_python_packages(dry_run, force=force)
 
     except Exception as exc:
         print(f"\n  ERREUR pendant le setup : {exc}", file=sys.stderr)
+        _windows_show_setup_error_popup(str(exc))
         try:
-            answer = input("\n  Continuer quand même ? [o/N] ").strip().lower()
-        except (EOFError, RuntimeError):
+            answer = input("\n  Continuer quand mÃªme ? [o/N] ").strip().lower()
+        except (EOFError, OSError, RuntimeError):
             answer = ""
         if answer not in ("o", "oui", "y", "yes"):
-            return 1
+            _windows_close_setup_console(setup_console_token)
+            return SETUP_RC_ERROR
 
     # Crée un config.ini marqueur dans install_dir pour signaler que le setup
-    # a été effectué (évite de relancer le setup à chaque démarrage).
+    # a été effectué (évite de relancer le setup Ã  chaque démarrage).
     marker = install_dir / "config.ini"
     if not marker.exists():
         try:
             install_dir.mkdir(parents=True, exist_ok=True)
             marker.write_text(
-                "# Mediarecode — configuration locale\n"
+                "# Mediarecode â€” configuration locale\n"
                 "# Décommentez et modifiez les clés pour surcharger les valeurs par défaut.\n"
-                "# Voir la section Configuration dans CLAUDE.md pour la liste complète.\n",
+                "# Voir la section Configuration dans CLAUDE.md pour la liste complÃ¨te.\n",
                 encoding="utf-8",
             )
         except OSError:
-            # Dossier en lecture seule (AppImage dans /opt, /usr …) — non bloquant
+            # Dossier en lecture seule (AppImage dans /opt, /usr â€¦) â€” non bloquant
             pass
 
     if _os == "Windows" and str(cfa_result.get("status") or "") == "updated":
         print(
-            "\n  Windows Security a été mis à jour."
-            "\n  Redémarrage de Mediarecode pour appliquer l'autorisation...\n"
+            "\n  Windows Security a été mise Ã  jour."
+            "\n  Veuillez redémarrer Mediarecode manuellement pour appliquer l'autorisation.\n"
         )
-        if _restart_current_app():
-            return 0
-        print(
-            "  Impossible de relancer automatiquement l'application."
-            "\n  Fermez cette fenêtre puis relancez Mediarecode manuellement.\n",
-            file=sys.stderr,
-        )
-        return 1
+        _windows_show_restart_required_popup()
+        _windows_close_setup_console(setup_console_token)
+        return SETUP_RC_HANDOFF
 
     print("\n  Setup terminé. Démarrage de l'application...\n")
-    return 0
+    _windows_close_setup_console(setup_console_token)
+    return SETUP_RC_OK
 
 
 # ---------------------------------------------------------------------------
@@ -233,10 +386,12 @@ def main() -> int:
 
     if not config_path.exists():
         rc = _run_first_time_setup(config_path.parent)
-        if rc != 0:
+        if rc == SETUP_RC_HANDOFF:
+            return SETUP_RC_OK
+        if rc != SETUP_RC_OK:
             try:
                 input("Appuyez sur Entrée pour quitter...")
-            except (EOFError, RuntimeError):
+            except (EOFError, OSError, RuntimeError):
                 pass
             return rc
 

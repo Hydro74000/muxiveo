@@ -144,7 +144,7 @@ VSVersionInfo(
 # ── Icône (optionnelle) ───────────────────────────────────────────────────────
 # Placez une icône 256×256 px à cet emplacement pour l'intégrer au bundle.
 ICON_PNG = ROOT / "icon.png"
-ICON_ICO = ROOT / "icon.ico"   # Windows uniquement
+ICON_ICO = ROOT / "icon.ico"
 ICON_ICO_GENERATED = ROOT / "build" / "icon.ico"
 
 
@@ -823,6 +823,11 @@ def _verify_windows_runtime_bundle(bundle_dir: Path) -> None:
     _ok("Vérification runtime Windows: DLLs critiques présentes")
 
 
+def _pyinstaller_frontend_flag(target_os: str) -> str:
+    """Return the right PyInstaller UI mode for the target platform."""
+    return "--windowed" if target_os == "Windows" else "--console"
+
+
 def _build_pyinstaller(onefile: bool) -> Path:
     """Lance PyInstaller et retourne le chemin du binaire produit."""
     _title("Étape 1 — PyInstaller")
@@ -839,7 +844,7 @@ def _build_pyinstaller(onefile: bool) -> Path:
     cmd: list[str] = [
         sys.executable, "-m", "PyInstaller",
         "--name", "mediarecode",
-        "--console",          # terminal visible — utile pour le setup première installation
+        _pyinstaller_frontend_flag(OS),
         "--noconfirm",
         "--clean",
         "--paths", str(ROOT),
@@ -953,13 +958,7 @@ def _build_appdir() -> Path:
     _ok(".desktop créé")
 
     # Icône
-    if ICON_PNG.exists():
-        shutil.copy(ICON_PNG, appdir / "Mediarecode.png")
-        _ok("Icône copiée")
-    else:
-        # Icône vide 1×1 px (PNG valide minimum) pour que appimagetool ne bloque pas
-        _warn(f"Icône absente ({ICON_PNG.name}) — icône de substitution utilisée")
-        _write_minimal_png(appdir / "Mediarecode.png")
+    _write_linux_app_icon_png(appdir / "Mediarecode.png")
 
     return appdir
 
@@ -984,6 +983,58 @@ def _write_minimal_png(dest: Path) -> None:
         + _chunk(b"IEND", b"")
     )
     dest.write_bytes(png_bytes)
+
+
+def _convert_ico_to_png(src_ico: Path, dest_png: Path) -> bool:
+    """Convert an ICO file to PNG using Qt image plugins."""
+    try:
+        qtgui = importlib.import_module("PySide6.QtGui")
+        QImage = qtgui.QImage
+    except Exception:
+        _warn("PySide6 unavailable to convert icon.ico to PNG.")
+        return False
+
+    image = QImage(str(src_ico))
+    if image.isNull():
+        _warn(f"Unable to read ICO file: {src_ico.name}")
+        return False
+
+    dest_png.parent.mkdir(parents=True, exist_ok=True)
+    if not image.save(str(dest_png), "PNG"):
+        _warn(f"Unable to write PNG icon: {dest_png.name}")
+        return False
+    return True
+
+
+def _write_linux_app_icon_png(dest_png: Path) -> None:
+    """
+    Write the AppImage icon file (PNG).
+
+    Priority:
+    1) icon.ico (converted to PNG)
+    2) icon.png
+    3) generated 1x1 placeholder
+    """
+    if ICON_ICO.exists():
+        if _convert_ico_to_png(ICON_ICO, dest_png):
+            _ok(f"Icon converted from {ICON_ICO.name}")
+            return
+        if ICON_PNG.exists():
+            _warn(f"{ICON_ICO.name} conversion failed; fallback to {ICON_PNG.name}")
+            shutil.copy(ICON_PNG, dest_png)
+            _ok("Icon copied")
+            return
+        _warn(f"Icon missing after {ICON_ICO.name} conversion failure; using placeholder")
+        _write_minimal_png(dest_png)
+        return
+
+    if ICON_PNG.exists():
+        shutil.copy(ICON_PNG, dest_png)
+        _ok("Icon copied")
+        return
+
+    _warn(f"Icon missing ({ICON_ICO.name} / {ICON_PNG.name}) - using placeholder")
+    _write_minimal_png(dest_png)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1075,16 +1126,45 @@ def _ensure_wine() -> None:
     _ok("wine installé")
 
 
+_NSIS_COMMON_DIRS: list[Path] = [
+    Path(r"C:\Program Files (x86)\NSIS"),
+    Path(r"C:\Program Files\NSIS"),
+]
+
+
+def _find_makensis() -> str | None:
+    """
+    Cherche makensis.exe dans le PATH puis dans les dossiers d'installation
+    courants de NSIS sur Windows (utile quand NSIS vient d'être installé et
+    que le PATH de la session courante n'a pas encore été mis à jour).
+    """
+    found = shutil.which("makensis")
+    if found:
+        return found
+    if OS == "Windows":
+        for nsis_dir in _NSIS_COMMON_DIRS:
+            candidate = nsis_dir / "makensis.exe"
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
 def _ensure_makensis() -> None:
     """Vérifie que makensis (NSIS) est installé, sinon tente de l'installer."""
-    if shutil.which("makensis"):
+    if _find_makensis():
         _ok("makensis trouvé")
         return
     _info("makensis introuvable — tentative d'installation…")
     if OS == "Windows":
-        # Sur Windows, winget est disponible sur W10 1709+ et W11
         if shutil.which("winget"):
-            _run(["winget", "install", "--id", "NSIS.NSIS", "-e", "--silent"])
+            # winget renvoie un code non-nul quand le paquet est déjà installé
+            # (ex. 2316632107 = APPINSTALLER_ERROR_UPDATE_NOT_APPLICABLE) ;
+            # on ignore le code de retour et on vérifie la présence après.
+            _run(
+                ["winget", "install", "--id", "NSIS.NSIS", "-e", "--silent",
+                 "--accept-package-agreements", "--accept-source-agreements"],
+                check=False,
+            )
         else:
             print(
                 "  Installez NSIS manuellement : https://nsis.sourceforge.io\n"
@@ -1099,7 +1179,7 @@ def _ensure_makensis() -> None:
     else:
         print("  Installez NSIS manuellement : https://nsis.sourceforge.io", file=sys.stderr)
         sys.exit(1)
-    if not shutil.which("makensis"):
+    if not _find_makensis():
         print("  makensis toujours introuvable après installation.", file=sys.stderr)
         sys.exit(1)
     _ok("makensis installé")
@@ -1229,7 +1309,7 @@ def _build_pyinstaller_wine() -> Path:
         "--name", "mediarecode",
         "--onedir",
         "--noconfirm",
-        "--windowed",           # pas de console sur Windows (launcher gère son propre terminal)
+        _pyinstaller_frontend_flag("Windows"),
         *add_data,
         "--hidden-import", "PySide6.QtCore",
         "--hidden-import", "PySide6.QtWidgets",
@@ -1307,8 +1387,10 @@ def _build_pyinstaller_wine() -> Path:
 
 # ── Script NSIS ────────────────────────────────────────────────────────────────
 
-_NSIS_TEMPLATE = """\
+_NSIS_TEMPLATE = r"""\
 Unicode true
+; Cible 64 bits : registre non redirigé, $PROGRAMFILES64, RegView 64
+!include "x64.nsh"
 
 !define APP_NAME      "{app_name}"
 !define APP_VERSION   "{app_version}"
@@ -1329,18 +1411,17 @@ Page instfiles
 
 Section "Application" SEC_MAIN
   SetOutPath "$INSTDIR"
-  File /r "{bundle_dir}/*"
+  File /r "{bundle_dir_pattern}"
 
   ; Raccourci Menu Démarrer
   CreateDirectory "$SMPROGRAMS\\Mediarecode"
-  CreateShortcut  "$SMPROGRAMS\\Mediarecode\\Mediarecode.lnk" \\
-                  "$INSTDIR\\${{EXE_NAME}}" "" "$INSTDIR\\${{EXE_NAME}}" 0
+  CreateShortcut  "$SMPROGRAMS\\Mediarecode\\Mediarecode.lnk" "$INSTDIR\\${{EXE_NAME}}" "" "$INSTDIR\\${{EXE_NAME}}" 0
 
   ; Raccourci Bureau
-  CreateShortcut "$DESKTOP\\Mediarecode.lnk" \\
-                 "$INSTDIR\\${{EXE_NAME}}" "" "$INSTDIR\\${{EXE_NAME}}" 0
+  CreateShortcut "$DESKTOP\\Mediarecode.lnk" "$INSTDIR\\${{EXE_NAME}}" "" "$INSTDIR\\${{EXE_NAME}}" 0
 
-  ; Clés désinstalleur
+  ; Clés désinstalleur — registre 64 bits (évite la redirection WoW64)
+  SetRegView 64
   WriteRegStr   HKLM "${{UNINSTALL_KEY}}" "DisplayName"      "${{APP_NAME}}"
   WriteRegStr   HKLM "${{UNINSTALL_KEY}}" "DisplayVersion"   "${{APP_VERSION}}"
   WriteRegStr   HKLM "${{UNINSTALL_KEY}}" "Publisher"        "Mediarecode"
@@ -1348,19 +1429,48 @@ Section "Application" SEC_MAIN
   WriteRegStr   HKLM "${{UNINSTALL_KEY}}" "UninstallString"  "$INSTDIR\\Uninstall.exe"
   WriteRegDWORD HKLM "${{UNINSTALL_KEY}}" "NoModify"         1
   WriteRegDWORD HKLM "${{UNINSTALL_KEY}}" "NoRepair"         1
+  SetRegView lastused
 
   WriteUninstaller "$INSTDIR\\Uninstall.exe"
+
+  ; ── Windows Security — Controlled Folder Access ─────────────────────────
+  ; L'installateur tourne déjà en admin : pas de prompt UAC supplémentaire.
+  ; Add-MpPreference est idempotent (pas de doublon si déjà présent).
+  ; Note : les variables PowerShell sont préfixées $$ dans le script NSIS
+  ;        pour que NSIS les transmette littéralement comme $var à PowerShell.
+  DetailPrint "Configuration Windows Security (Controlled Folder Access)..."
+  nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$ErrorActionPreference=''SilentlyContinue''; $$p=Get-MpPreference; if([int]$$p.EnableControlledFolderAccess -gt 0){{Add-MpPreference -ControlledFolderAccessAllowedApplications ''$INSTDIR\${{EXE_NAME}}''}}"'
 SectionEnd
 
 Section "Uninstall"
+  ; ── Retrait de l'allowlist CFA ───────────────────────────────────────────
+  nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$ErrorActionPreference=''SilentlyContinue''; Remove-MpPreference -ControlledFolderAccessAllowedApplications ''$INSTDIR\${{EXE_NAME}}''"'
+
   Delete "$INSTDIR\\Uninstall.exe"
   RMDir /r "$INSTDIR"
   Delete "$SMPROGRAMS\\Mediarecode\\Mediarecode.lnk"
   RMDir  "$SMPROGRAMS\\Mediarecode"
   Delete "$DESKTOP\\Mediarecode.lnk"
+
+  ; Suppression des clés registre 64 bits
+  SetRegView 64
   DeleteRegKey HKLM "${{UNINSTALL_KEY}}"
+  SetRegView lastused
 SectionEnd
 """
+
+
+def _nsis_bundle_glob(bundle_dir: Path) -> str:
+    """
+    Retourne le glob source à passer à `File /r` selon l'OS du build host.
+
+    Le chemin est résolu par makensis au moment de la compilation, donc il doit
+    utiliser les séparateurs du système local: POSIX pour le cross-build Linux,
+    backslashes pour un build natif Windows.
+    """
+    if OS == "Windows":
+        return str(bundle_dir).replace("/", "\\").rstrip("/\\") + "\\*"
+    return bundle_dir.as_posix().rstrip("/\\") + "/*"
 
 
 def _build_nsis_installer(bundle_dir: Path) -> Path:
@@ -1375,19 +1485,26 @@ def _build_nsis_installer(bundle_dir: Path) -> Path:
         icon_path = str(win_icon).replace("\\", "/")
         icon_block = f'Icon "{icon_path}"\nUninstallIcon "{icon_path}"'
 
+    # `File /r` lit le système de fichiers local au moment du build.
+    bundle_dir_pattern = _nsis_bundle_glob(bundle_dir)
+
     nsi.write_text(
         _NSIS_TEMPLATE.format(
             app_name=APP_NAME,
             app_version=APP_VERSION,
             outfile=str(output),
-            bundle_dir=str(bundle_dir),
+            bundle_dir_pattern=bundle_dir_pattern,
             icon_block=icon_block,
         ),
         encoding="utf-8",
     )
     _info(f"Script NSIS : {nsi}")
 
-    _run(["makensis", str(nsi)])
+    makensis = _find_makensis()
+    if not makensis:
+        print("  makensis introuvable.", file=sys.stderr)
+        sys.exit(1)
+    _run([makensis, str(nsi)])
 
     if not output.exists():
         print(f"  Installateur introuvable après makensis : {output}", file=sys.stderr)
@@ -1509,8 +1626,8 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "Génère un installateur NSIS (.exe) après PyInstaller. "
-            "Sur Linux : inclus automatiquement dans --windows. "
-            "Sur Windows natif : génère l'installateur après le bundle."
+            "Sur Windows natif : inclus automatiquement (ce flag est ignoré). "
+            "Sur Linux : inclus automatiquement dans --windows."
         ),
     )
     p.add_argument(
@@ -1542,31 +1659,24 @@ if __name__ == "__main__":
         sys.exit(0)
 
     if OS == "Windows":
-        # Sur Windows natif : PyInstaller direct, puis NSIS optionnel
+        # Sur Windows natif : PyInstaller puis NSIS automatiquement
         _ensure_pyinstaller()
+        _ensure_makensis()
         exe_path = _build_pyinstaller(onefile=args.onefile)
-        final_file = exe_path
+        # onedir → exe_path = dist/mediarecode/mediarecode.exe
+        #          NSIS doit recevoir dist/mediarecode/ (le dossier bundle)
+        # onefile → un seul exe dans dist/ : on crée un sous-dossier propre
+        if args.onefile:
+            onefile_dir = ROOT / "dist" / "mediarecode-onefile"
+            onefile_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(exe_path, onefile_dir / exe_path.name)
+            bundle_dir = onefile_dir
+        else:
+            bundle_dir = exe_path.parent  # dist/mediarecode/
+        installer = _build_nsis_installer(bundle_dir)
+        final_file = _copy_final_file_if_requested(installer, args.dest)
         _title("Résultat")
-        _ok(f"Bundle : {exe_path}")
-        if args.nsis:
-            _ensure_makensis()
-            # onedir → exe_path = dist/mediarecode/mediarecode.exe
-            #          NSIS doit recevoir dist/mediarecode/ (le dossier bundle)
-            # onefile → un seul exe dans dist/ : on crée un sous-dossier propre
-            if args.onefile:
-                onefile_dir = ROOT / "dist" / "mediarecode-onefile"
-                onefile_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(exe_path, onefile_dir / exe_path.name)
-                bundle_dir = onefile_dir
-            else:
-                bundle_dir = exe_path.parent  # dist/mediarecode/
-            installer = _build_nsis_installer(bundle_dir)
-            final_file = installer
-        final_file = _copy_final_file_if_requested(final_file, args.dest)
-        if args.nsis:
-            _ok(f"Installateur : {final_file}")
-        elif final_file.resolve(strict=False) != exe_path.resolve(strict=False):
-            _ok(f"Exécutable copié : {final_file}")
+        _ok(f"Installateur : {final_file}")
     elif args.allinc:
         # Délègue à package_appimage.py --allinc
         script = ROOT / "package_appimage.py"

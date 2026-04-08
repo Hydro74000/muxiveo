@@ -8,12 +8,40 @@ du système. On force donc l'UTF-8 pour éviter le mojibake du type `FranÃ§ais
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from typing import Any
 
 
 _TOOL_TEXT_ENCODING = "utf-8"
 _TOOL_TEXT_ERRORS = "replace"
+
+
+def subprocess_windows_no_window_kwargs() -> dict[str, Any]:
+    """
+    Return subprocess kwargs that prevent a console window from flashing on Windows.
+
+    Safe to pass to both subprocess.run() and subprocess.Popen().
+    """
+    if sys.platform != "win32":
+        return {}
+
+    kwargs: dict[str, Any] = {}
+
+    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if create_no_window:
+        kwargs["creationflags"] = create_no_window
+
+    startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo_cls is not None:
+        startupinfo = startupinfo_cls()
+        startf_use_showwindow = getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+        if startf_use_showwindow:
+            startupinfo.dwFlags |= startf_use_showwindow
+        startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+        kwargs["startupinfo"] = startupinfo
+
+    return kwargs
 
 
 def subprocess_text_kwargs() -> dict[str, Any]:
@@ -27,6 +55,7 @@ def subprocess_text_kwargs() -> dict[str, Any]:
     if sys.platform == "win32":
         kwargs["encoding"] = _TOOL_TEXT_ENCODING
         kwargs["errors"] = _TOOL_TEXT_ERRORS
+        kwargs.update(subprocess_windows_no_window_kwargs())
     return kwargs
 
 

@@ -52,6 +52,20 @@ _EXT_BY_MIME: dict[str, str] = {
 
 _VAAPI_CODECS = {"hevc_vaapi", "h264_vaapi"}
 
+
+def _default_ffmpeg_thread_count() -> int:
+    """Default FFmpeg thread count: logical CPU count × 1.5, rounded up."""
+    cpu_count = os.cpu_count() or 1
+    return max(1, cpu_count + ((cpu_count + 1) // 2))
+
+
+def _normalize_ffmpeg_thread_count(value: int | None) -> int:
+    """Return a safe FFmpeg thread count, preserving 0 as ffmpeg auto mode."""
+    if value is None or value < 0:
+        return _default_ffmpeg_thread_count()
+    return value
+
+
 def _mime_for(path: Path) -> str:
     return _MIME_BY_EXT.get(path.suffix.lower(), "application/octet-stream")
 
@@ -83,6 +97,7 @@ class EncodeWorkflow(QObject):
         mkvpropedit_bin:           str  = "mkvpropedit",
         ram_buffer_enabled:        bool = True,
         ram_buffer_threshold_pct:  int  = 15,
+        ffmpeg_threads:            int | None = None,
         parent: QObject | None         = None,
         *,
         writing_application:       str  = "",
@@ -99,6 +114,7 @@ class EncodeWorkflow(QObject):
         self._runner = ToolRunner(max_workers=1, parent=self)
         self._ram_buffer_enabled       = ram_buffer_enabled
         self._ram_buffer_threshold_pct = max(0, min(ram_buffer_threshold_pct, 90))
+        self._ffmpeg_threads = _normalize_ffmpeg_thread_count(ffmpeg_threads)
         self._writing_application = writing_application.strip()
 
     def set_ffmpeg(self, ffmpeg_bin: str) -> None:
@@ -108,6 +124,13 @@ class EncodeWorkflow(QObject):
     def set_writing_application(self, writing_application: str) -> None:
         """Met à jour la valeur du tag Multiplexing Application."""
         self._writing_application = writing_application.strip()
+
+    def set_ffmpeg_threads(self, ffmpeg_threads: int | None) -> None:
+        """Met à jour le nombre de threads passé à FFmpeg via `-threads`."""
+        self._ffmpeg_threads = _normalize_ffmpeg_thread_count(ffmpeg_threads)
+
+    def _ffmpeg_thread_args(self) -> list[str]:
+        return ["-threads", str(self._ffmpeg_threads)]
 
     # ------------------------------------------------------------------
     # Construction de la commande
@@ -152,6 +175,7 @@ class EncodeWorkflow(QObject):
         if vf:
             cmd.extend(["-vf", vf])
 
+        cmd.extend(self._ffmpeg_thread_args())
         cmd.extend(["-map", "0:v:0"])
         cmd.extend(self._video_codec_args(config.video, config.video.bitrate_kbps))
 
@@ -224,6 +248,7 @@ class EncodeWorkflow(QObject):
                 c.extend(["-i", str(src)])
             if vf:
                 c.extend(["-vf", vf])
+            c.extend(self._ffmpeg_thread_args())
             c.extend(["-map", "0:v:0"])
             c.extend(self._video_codec_args_bitrate(config.video, bitrate))
             return c
@@ -477,6 +502,7 @@ class EncodeWorkflow(QObject):
         vf = self._build_encoder_vf(config.video)
         if vf:
             cmd.extend(["-vf", vf])
+        cmd.extend(self._ffmpeg_thread_args())
         cmd.extend(["-map", "0:v:0"])
         cmd.extend(self._video_codec_args(config.video, config.video.bitrate_kbps))
         if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
@@ -500,6 +526,7 @@ class EncodeWorkflow(QObject):
             c.extend(["-i", str(config.source)])
             if vf:
                 c.extend(["-vf", vf])
+            c.extend(self._ffmpeg_thread_args())
             c.extend(["-map", "0:v:0"])
             c.extend(self._video_codec_args_bitrate(config.video, bitrate))
             return c
@@ -936,6 +963,7 @@ class EncodeWorkflow(QObject):
             "-hide_banner", "-y",
             "-i", str(source),
             "-map", f"0:{stream_idx}",
+            *self._ffmpeg_thread_args(),
             "-c", "copy",
             "-frames:v", "1",
             str(dest),
@@ -1351,7 +1379,9 @@ class EncodeWorkflow(QObject):
                 _run([
                     self._ffmpeg, "-hide_banner", "-y",
                     "-i", str(config.source),
-                    "-map", "0:v:0", "-c:v", "copy", "-f", "hevc", str(src_hevc),
+                    "-map", "0:v:0",
+                    *self._ffmpeg_thread_args(),
+                    "-c:v", "copy", "-f", "hevc", str(src_hevc),
                 ])
                 _check()
 
@@ -1458,6 +1488,7 @@ class EncodeWorkflow(QObject):
                              "-i", str(config.source)]
                 for sp in extra_sources:
                     recon_cmd.extend(["-i", str(sp)])
+                recon_cmd.extend(self._ffmpeg_thread_args())
                 recon_cmd.extend(["-map", "0:v:0", "-c:v", "copy"])
 
                 for i, a in enumerate(config.audio_tracks):

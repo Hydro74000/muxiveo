@@ -24,10 +24,11 @@ from ui.design_system import DesignSystem
 
 
 def main() -> int:
-    # High-DPI : activé par défaut sous Qt 6, mais on force le scaling exact
-    QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps)
-
-    app = QApplication(sys.argv)
+    app = QApplication.instance()
+    if app is None:
+        # High-DPI : activé par défaut sous Qt 6, mais on force le scaling exact
+        QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps)
+        app = QApplication(sys.argv)
     app.setApplicationName("Mediarecode")
     app.setApplicationVersion(APP_VERSION)
     app.setOrganizationName("mediarecode")

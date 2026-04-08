@@ -1875,7 +1875,7 @@ class TestRemuxWorkflowChapterOverrides:
         """--chapters doit apparaître avant le chemin de source."""
         entries = [ChapterEntry(0.0, "Intro")]
         cmd = self._cmd(self._cfg(entries))
-        assert cmd.index("--chapters") < cmd.index(str(Path("/a.mkv")))
+        assert cmd.index("--chapters") < cmd.index(Path("/a.mkv").as_posix())
 
     def test_write_chapter_xml_creates_file(self, tmp_path):
         """_write_chapter_xml crée un fichier XML avec le contenu attendu."""
@@ -1899,4 +1899,4 @@ class TestRemuxWorkflowChapterOverrides:
         cmd = RemuxWorkflow(mkvmerge_bin="mkvmerge").build_command(cfg, chapters_file=xml_file)
         assert "--chapters" in cmd
         idx = cmd.index("--chapters")
-        assert cmd[idx + 1] == str(xml_file)
+        assert cmd[idx + 1] == xml_file.as_posix()

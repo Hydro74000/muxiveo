@@ -152,10 +152,10 @@ WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
 WINDOWS_WINGET_PATTERNS: dict[str, tuple[str, ...]] = {
     "ffmpeg": ("Gyan.FFmpeg*",),
     "ffprobe": ("Gyan.FFmpeg*",),
-    "mkvmerge": ("MKVToolNix.MKVToolNix*",),
-    "mkvextract": ("MKVToolNix.MKVToolNix*",),
-    "mkvinfo": ("MKVToolNix.MKVToolNix*",),
-    "mkvpropedit": ("MKVToolNix.MKVToolNix*",),
+    "mkvmerge": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
+    "mkvextract": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
+    "mkvinfo": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
+    "mkvpropedit": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
     "mediainfo": ("MediaArea.MediaInfo_*",),
 }
 
@@ -222,8 +222,9 @@ SYSTEM_TOOLS: dict[str, dict] = {
         "apt":    "libegl1-mesa",
         "dnf":    "mesa-libEGL",
         "brew":   "xquartz",
-        "winget": "Microsoft.DirectX",
+        "winget": "",
         "desc":   "OpenGL libraries",
+        "path_check": False,
     },
     "ffmpeg": {
         "apt":    "ffmpeg",
@@ -244,28 +245,28 @@ SYSTEM_TOOLS: dict[str, dict] = {
         "apt":    "mkvtoolnix",
         "dnf":    "mkvtoolnix",
         "brew":   "mkvtoolnix",
-        "winget": "MKVToolNix.MKVToolNix",
+        "winget": "MoritzBunkus.MKVToolNix",
         "desc":   "MKV container muxer",
     },
     "mkvextract": {
         "apt":    "mkvtoolnix",
         "dnf":    "mkvtoolnix",
         "brew":   "mkvtoolnix",
-        "winget": "MKVToolNix.MKVToolNix",
+        "winget": "MoritzBunkus.MKVToolNix",
         "desc":   "MKV track extractor (ships with mkvtoolnix)",
     },
     "mkvinfo": {
         "apt":    "mkvtoolnix",
         "dnf":    "mkvtoolnix",
         "brew":   "mkvtoolnix",
-        "winget": "MKVToolNix.MKVToolNix",
+        "winget": "MoritzBunkus.MKVToolNix",
         "desc":   "MKV info tool (ships with mkvtoolnix)",
     },
     "mkvpropedit": {
         "apt":    "mkvtoolnix",
         "dnf":    "mkvtoolnix",
         "brew":   "mkvtoolnix",
-        "winget": "MKVToolNix.MKVToolNix",
+        "winget": "MoritzBunkus.MKVToolNix",
         "desc":   "MKV metadata editor (ships with mkvtoolnix)",
     },
     "mediainfo": {
@@ -336,6 +337,40 @@ MANUAL_TOOLS: dict[str, dict] = {
 # Command runner
 # ---------------------------------------------------------------------------
 
+def _windows_no_window_subprocess_kwargs() -> dict[str, object]:
+    """Return subprocess kwargs that hide console windows on Windows."""
+    if OS != "Windows":
+        return {}
+    # If a console is already visible (first-launch setup), keep child process
+    # output in that same console.
+    try:
+        if bool(ctypes.windll.kernel32.GetConsoleWindow()):
+            return {}
+    except Exception:
+        pass
+
+    if not getattr(sys, "frozen", False):
+        # CLI execution from a terminal should keep standard behavior.
+        return {}
+
+    kwargs: dict[str, object] = {}
+
+    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if create_no_window:
+        kwargs["creationflags"] = create_no_window
+
+    startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo_cls is not None:
+        startupinfo = startupinfo_cls()
+        startf_use_showwindow = getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+        if startf_use_showwindow:
+            startupinfo.dwFlags |= startf_use_showwindow
+        startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+        kwargs["startupinfo"] = startupinfo
+
+    return kwargs
+
+
 def run(cmd: list[str], dry_run: bool = False, check: bool = True,
         capture: bool = False) -> Optional[subprocess.CompletedProcess]:
     """Run a shell command, optionally printing only (dry_run)."""
@@ -348,6 +383,7 @@ def run(cmd: list[str], dry_run: bool = False, check: bool = True,
         capture_output=capture,
         text=True,
         check=False,
+        **_windows_no_window_subprocess_kwargs(),
     )
     if check and result.returncode != 0:
         stderr = getattr(result, "stderr", "")
@@ -467,9 +503,13 @@ def verify_windows_frozen_python_runtime() -> None:
 
 
 def _config_ini_path() -> Path:
-    if OS == "Windows" and getattr(sys, "frozen", False):
-        return _windows_config_dir() / "config.ini"
-    return Path(__file__).parent / "config.ini"
+    """Return the config.ini path used by the application on the current OS."""
+    if OS == "Windows":
+        if getattr(sys, "frozen", False):
+            return _windows_config_dir() / "config.ini"
+        return Path(__file__).parent / "config.ini"
+    xdg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return xdg / "mediarecode" / "config.ini"
 
 
 def _dedupe_paths(paths: list[Path]) -> list[Path]:
@@ -607,18 +647,195 @@ def _system_language_code() -> str:
     return "eng"
 
 
+def _available_ui_languages() -> list[tuple[str, str]]:
+    """
+    Return the list of UI languages available in locales.json as
+    (iso639-2 code, display name) pairs, sorted by display name.
+    """
+    iso_names: dict[str, str] = {
+        "eng": "English",
+        "fra": "Français",
+        "deu": "Deutsch",
+        "spa": "Español",
+        "ita": "Italiano",
+        "por": "Português",
+        "nld": "Nederlands",
+        "pol": "Polski",
+        "rus": "Русский",
+        "jpn": "日本語",
+        "zho": "中文",
+        "kor": "한국어",
+        "ara": "العربية",
+    }
+    try:
+        locales_path = Path(__file__).parent / "locales.json"
+        data: dict = json.loads(locales_path.read_text(encoding="utf-8"))
+        codes: set[str] = set()
+        for values in data.values():
+            if isinstance(values, dict):
+                codes.update(str(key).lower() for key in values)
+        if codes:
+            items = [(code, iso_names.get(code, code)) for code in sorted(codes)]
+            return sorted(items, key=lambda item: item[1].lower())
+    except Exception:
+        pass
+    return [("eng", "English"), ("fra", "Français")]
+
+
+def _ask_language_dialog_qt_in_process(languages: list[tuple[str, str]]) -> str | None:
+    """Show the language dialog in-process and return the selected code."""
+    try:
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import (
+            QApplication,
+            QComboBox,
+            QDialog,
+            QDialogButtonBox,
+            QLabel,
+            QVBoxLayout,
+        )
+    except Exception:
+        return None
+
+    _app = QApplication.instance() or QApplication(sys.argv[:1])
+    dlg = QDialog()
+    dlg.setWindowTitle("Mediarecode - Interface Language")
+    dlg.setWindowFlags(dlg.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+    dlg.setMinimumWidth(380)
+    layout = QVBoxLayout(dlg)
+    layout.setContentsMargins(16, 16, 16, 16)
+    layout.setSpacing(10)
+    label = QLabel("Select the interface language / Choisissez la langue:")
+    label.setWordWrap(True)
+    layout.addWidget(label)
+    combo = QComboBox()
+    for code, name in languages:
+        combo.addItem(name, code)
+    layout.addWidget(combo)
+    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+    buttons.accepted.connect(dlg.accept)
+    layout.addWidget(buttons)
+    if dlg.exec() == QDialog.DialogCode.Accepted:
+        selected = combo.currentData()
+        if isinstance(selected, str):
+            return selected.strip().lower()
+    return None
+
+
+def _python_executable_for_qt_subprocess() -> str | None:
+    """Return a Python interpreter suitable for `python -c` subprocess calls."""
+    candidates = [getattr(sys, "executable", ""), getattr(sys, "_base_executable", "")]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        name = Path(candidate).name.lower()
+        if name.startswith("python") or name in {"py", "py.exe"}:
+            return candidate
+
+    for command in ("python3", "python", "py"):
+        found = shutil.which(command)
+        if found:
+            return found
+    return None
+
+
+def _ask_language_dialog(languages: list[tuple[str, str]]) -> str | None:
+    """Show a language picker and return the chosen ISO 639-2 code."""
+    if not languages:
+        return None
+
+    valid_codes = {code for code, _ in languages}
+
+    if getattr(sys, "frozen", False):
+        # In PyInstaller bundles, sys.executable is mediarecode.exe, not python.exe.
+        code = _ask_language_dialog_qt_in_process(languages)
+        if code in valid_codes:
+            return code
+    else:
+        qt_script = """\
+import sys, json
+from PySide6.QtWidgets import (
+    QApplication, QDialog, QVBoxLayout, QLabel, QComboBox, QDialogButtonBox,
+)
+from PySide6.QtCore import Qt
+
+languages = json.loads(sys.argv[1])
+app = QApplication.instance() or QApplication(sys.argv[:1])
+dlg = QDialog()
+dlg.setWindowTitle("Mediarecode - Interface Language")
+dlg.setWindowFlags(dlg.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+dlg.setMinimumWidth(380)
+layout = QVBoxLayout(dlg)
+layout.setContentsMargins(16, 16, 16, 16)
+layout.setSpacing(10)
+label = QLabel("Select the interface language / Choisissez la langue:")
+label.setWordWrap(True)
+layout.addWidget(label)
+combo = QComboBox()
+for code, name in languages:
+    combo.addItem(name, code)
+layout.addWidget(combo)
+buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+buttons.accepted.connect(dlg.accept)
+layout.addWidget(buttons)
+if dlg.exec() == QDialog.DialogCode.Accepted:
+    print(combo.currentData(), end="")
+"""
+        python_exe = _python_executable_for_qt_subprocess()
+        if python_exe:
+            try:
+                result = subprocess.run(
+                    [python_exe, "-c", qt_script, json.dumps(languages)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=120,
+                    **_windows_no_window_subprocess_kwargs(),
+                )
+                if result.returncode == 0:
+                    code = result.stdout.strip().lower()
+                    if code in valid_codes:
+                        return code
+            except Exception:
+                pass
+
+    if not _stream_isatty(sys.stdin) or not _stream_isatty(sys.stdout):
+        return None
+
+    bar = _UI_BAR * 40
+    print(f"\n  {bar}")
+    print("  Select interface language / Choisissez la langue :")
+    for index, (code, name) in enumerate(languages, 1):
+        print(f"    {index:2d}. {name}  ({code})")
+    print(f"  {bar}")
+    try:
+        raw = input(f"  Choice [1-{len(languages)}] (Enter = auto-detect): ").strip()
+    except (EOFError, RuntimeError):
+        return None
+    if not raw:
+        return None
+    if raw.isdigit():
+        selected_index = int(raw) - 1
+        if 0 <= selected_index < len(languages):
+            return languages[selected_index][0]
+    return None
+
+
 def initialize_config_ini_language(
     dry_run: bool,
     force: bool = False,
     ini_path: Path | None = None,
 ) -> None:
-    """Initialise la langue UI dans config.ini depuis la locale système."""
+    """
+    Initialise la langue UI dans config.ini.
+
+    - Windows : popup de sélection de langue.
+    - Linux / macOS : détection automatique depuis la locale système.
+    """
     title("Step 5 — config.ini UI language")
 
     if ini_path is None:
         ini_path = _config_ini_path()
-    detected = _system_language_code()
-    info(f"Detected UI language: {detected}")
 
     parser = configparser.ConfigParser(
         inline_comment_prefixes=("#",),
@@ -634,6 +851,17 @@ def initialize_config_ini_language(
     if existing and not force:
         ok(f"config.ini already defines ui.language = {existing}")
         return
+
+    chosen: str | None = None
+    if not dry_run and OS == "Windows":
+        chosen = _ask_language_dialog(_available_ui_languages())
+        if chosen:
+            info(f"Language selected by user: {chosen}")
+        else:
+            info("Language dialog cancelled or unavailable — falling back to system detection")
+
+    detected = chosen or _system_language_code()
+    info(f"UI language: {detected}")
 
     text = ini_path.read_text(encoding="utf-8") if ini_path.exists() else ""
     lines = text.splitlines()
@@ -749,6 +977,48 @@ def _detect_windows_tool_path(tool_name: str, prefix: Path) -> str | None:
         return resolved
 
     for candidate in _windows_default_tool_candidates(tool_name, prefix):
+        if candidate.is_file():
+            return str(candidate)
+
+    return None
+
+
+def _non_windows_tool_candidates(tool_name: str, prefix: Path | None = None) -> list[Path]:
+    candidates: list[Path] = []
+    if prefix is not None:
+        candidates.extend([prefix / "bin" / tool_name, prefix / tool_name])
+
+    repo_root = Path(__file__).parent
+    candidates.extend(
+        [
+            repo_root / "tools" / tool_name,
+            repo_root / "tools" / "bin" / tool_name,
+            Path.home() / ".local" / "bin" / tool_name,
+            Path("/usr/local/bin") / tool_name,
+            Path("/usr/bin") / tool_name,
+        ]
+    )
+    if OS == "Darwin":
+        candidates.extend(
+            [
+                Path("/opt/homebrew/bin") / tool_name,
+                Path("/opt/local/bin") / tool_name,
+            ]
+        )
+
+    return _dedupe_paths(candidates)
+
+
+def _detect_non_windows_tool_path(tool_name: str, prefix: Path | None = None) -> str | None:
+    resolved = shutil.which(tool_name)
+    if resolved:
+        return resolved
+
+    ini_value = _existing_ini_tool_values(_config_ini_path()).get(tool_name.lower(), "")
+    if ini_value and Path(ini_value).is_file():
+        return ini_value
+
+    for candidate in _non_windows_tool_candidates(tool_name, prefix):
         if candidate.is_file():
             return str(candidate)
 
@@ -1154,6 +1424,7 @@ def _windows_controlled_folder_access_state() -> int | None:
         capture_output=True,
         text=True,
         check=False,
+        **_windows_no_window_subprocess_kwargs(),
     )
     if result.returncode != 0:
         return None
@@ -1326,6 +1597,7 @@ exit 0
                 capture_output=True,
                 text=True,
                 check=False,
+                **_windows_no_window_subprocess_kwargs(),
             )
         else:
             launcher = (
@@ -1345,6 +1617,7 @@ exit 0
                 capture_output=True,
                 text=True,
                 check=False,
+                **_windows_no_window_subprocess_kwargs(),
             )
 
         payload: dict[str, object]
@@ -1478,6 +1751,7 @@ def _windows_fetch_text(url: str) -> str:
             text=True,
             check=False,
             env=env,
+            **_windows_no_window_subprocess_kwargs(),
         )
         if result.returncode == 0:
             return result.stdout
@@ -1492,6 +1766,7 @@ def _windows_fetch_text(url: str) -> str:
         capture_output=True,
         text=True,
         check=False,
+        **_windows_no_window_subprocess_kwargs(),
     )
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
@@ -1518,6 +1793,7 @@ def _windows_download_file(url: str, dest: Path) -> None:
             text=True,
             check=False,
             env=env,
+            **_windows_no_window_subprocess_kwargs(),
         )
         if result.returncode == 0:
             return
@@ -1532,6 +1808,7 @@ def _windows_download_file(url: str, dest: Path) -> None:
         capture_output=True,
         text=True,
         check=False,
+        **_windows_no_window_subprocess_kwargs(),
     )
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
@@ -1590,12 +1867,24 @@ def install_github_tools(prefix: Path, dry_run: bool, force: bool = False) -> No
     # On Windows we install to a user-writable directory (no sudo needed).
     use_sudo = OS != "Windows"
     sudo = sudo_prefix(dry_run) if use_sudo else []
+    ini_path = _config_ini_path()
 
     path_reminder_shown = False
+    detected_tool_paths: dict[str, str] = {}
 
     for exe, meta in GITHUB_TOOLS.items():
-        if not force and shutil.which(exe):
-            ok(f"{exe} already present ({shutil.which(exe)})")
+        binary_name = meta["binary_name"].get(OS, meta["binary_name"].get("Linux"))
+        dest = bin_dir / binary_name
+
+        if not force and dest.is_file():
+            ok(f"{exe} already present ({dest})")
+            detected_tool_paths[exe] = str(dest)
+            continue
+
+        existing = shutil.which(exe)
+        if not force and existing:
+            ok(f"{exe} already present ({existing})")
+            detected_tool_paths[exe] = existing
             continue
 
         pattern_key = (OS, arch)
@@ -1607,13 +1896,13 @@ def install_github_tools(prefix: Path, dry_run: bool, force: bool = False) -> No
             )
             continue
 
-        binary_name = meta["binary_name"].get(OS, meta["binary_name"].get("Linux"))
         step(f"Installing {exe}  ({meta['desc']})")
         info(f"Fetching latest release from github.com/{meta['repo']}")
 
         if dry_run:
-            info(f"[dry-run] Would download and install {exe} to {bin_dir / binary_name}")
-            ok(f"{exe} installed → {bin_dir / binary_name}")
+            info(f"[dry-run] Would download and install {exe} to {dest}")
+            detected_tool_paths[exe] = str(dest)
+            ok(f"{exe} installed → {dest}")
             continue
 
         release = _github_latest_release(meta["repo"])
@@ -1635,16 +1924,17 @@ def install_github_tools(prefix: Path, dry_run: bool, force: bool = False) -> No
             _download_file(download_url, archive_path)
             extracted = _extract_binary(archive_path, binary_name, pattern["fmt"], tmp_path)
 
-            dest = bin_dir / binary_name
             info(f"Installing to {dest}")
 
             if use_sudo and not is_root():
+                run(sudo + ["mkdir", "-p", str(bin_dir)])
                 run(sudo + ["install", "-m", "755", str(extracted), str(dest)])
             else:
                 bin_dir.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(extracted, dest)
                 dest.chmod(dest.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
+        detected_tool_paths[exe] = str(dest)
         ok(f"{exe} installed → {dest}")
 
         # Remind Windows users to add the directory to PATH once
@@ -1655,6 +1945,13 @@ def install_github_tools(prefix: Path, dry_run: bool, force: bool = False) -> No
                 f"    {bin_dir}\n"
                 f"  (Settings → System → About → Advanced system settings → Environment Variables)"
             )
+
+    if detected_tool_paths:
+        _update_ini_tools_section(ini_path, detected_tool_paths, dry_run=dry_run)
+        if dry_run:
+            ok(f"[dry-run] config.ini would be updated at {ini_path}")
+        else:
+            ok(f"config.ini updated: {ini_path}")
 
 # ---------------------------------------------------------------------------
 # Tool presence check (fallback / final verification)
@@ -1672,15 +1969,19 @@ def check_tools_presence(prefix: Path | None = None) -> None:
             continue
         seen.add(exe)
 
+        meta = SYSTEM_TOOLS.get(exe, GITHUB_TOOLS.get(exe, {}))
+        if meta.get("path_check", True) is False:
+            continue
+
         path = shutil.which(exe)
         if not path and OS == "Windows" and prefix is not None and exe in WINDOWS_TOOL_FILENAMES:
             path = _detect_windows_tool_path(exe, prefix)
+        if not path and OS != "Windows":
+            path = _detect_non_windows_tool_path(exe, prefix)
         if path:
             ok(f"{exe:20s}  →  {path}")
         else:
-            desc = (
-                SYSTEM_TOOLS.get(exe, GITHUB_TOOLS.get(exe, {})).get("desc", "")
-            )
+            desc = meta.get("desc", "")
             missing.append((exe, desc))
 
     if missing:

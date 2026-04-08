@@ -15,7 +15,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from core.subprocess_utils import subprocess_text_kwargs
+from core.subprocess_utils import subprocess_text_kwargs, subprocess_windows_no_window_kwargs
 from core.workflows.encode.models import HARDWARE_VIDEO_CODECS, SOFTWARE_VIDEO_CODECS
 
 
@@ -222,6 +222,7 @@ class HardwareEncoderDetector:
                 capture_output=True,
                 check=False,
                 timeout=5,
+                **subprocess_windows_no_window_kwargs(),
             )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             return False
@@ -302,6 +303,7 @@ class HardwareEncoderDetector:
                 capture_output=True,
                 check=False,
                 timeout=5,
+                **subprocess_windows_no_window_kwargs(),
             )
             if result.returncode == 0:
                 return True
