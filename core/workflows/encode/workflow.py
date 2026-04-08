@@ -54,9 +54,9 @@ _VAAPI_CODECS = {"hevc_vaapi", "h264_vaapi"}
 
 
 def _default_ffmpeg_thread_count() -> int:
-    """Default FFmpeg thread count: logical CPU count × 1.5, rounded up."""
+    """Default FFmpeg thread count: logical CPU count × 0.75, rounded up."""
     cpu_count = os.cpu_count() or 1
-    return max(1, cpu_count + ((cpu_count + 1) // 2))
+    return max(1, (cpu_count * 3 + 3) // 4)
 
 
 def _normalize_ffmpeg_thread_count(value: int | None) -> int:
@@ -132,6 +132,17 @@ class EncodeWorkflow(QObject):
     def _ffmpeg_thread_args(self) -> list[str]:
         return ["-threads", str(self._ffmpeg_threads)]
 
+    @staticmethod
+    def _ffmpeg_progress_args() -> list[str]:
+        """
+        Force une progression machine stable pour l'UI.
+
+        Les stats texte classiques (`time=...`) dépendent du build FFmpeg et du
+        codec utilisé. `-progress pipe:1` garantit une sortie structurée
+        (`out_time=...`) que l'UI peut parser de façon fiable.
+        """
+        return ["-progress", "pipe:1", "-nostats"]
+
     # ------------------------------------------------------------------
     # Construction de la commande
     # ------------------------------------------------------------------
@@ -167,6 +178,7 @@ class EncodeWorkflow(QObject):
         source_idx: dict[Path, int] = {p: i for i, p in enumerate(all_sources)}
 
         cmd: list[str] = [self._ffmpeg, "-hide_banner", "-y"]
+        cmd.extend(self._ffmpeg_progress_args())
         cmd.extend(self._hardware_input_args(config.video))
         for src in all_sources:
             cmd.extend(["-i", str(src)])
@@ -243,6 +255,7 @@ class EncodeWorkflow(QObject):
 
         def _base() -> list[str]:
             c = [self._ffmpeg, "-hide_banner", "-y"]
+            c.extend(self._ffmpeg_progress_args())
             c.extend(self._hardware_input_args(config.video))
             for src in all_sources:
                 c.extend(["-i", str(src)])
@@ -253,7 +266,7 @@ class EncodeWorkflow(QObject):
             c.extend(self._video_codec_args_bitrate(config.video, bitrate))
             return c
 
-        pass1 = _base() + ["-pass", "1", "-an", "-f", "null", "/dev/null"]
+        pass1 = _base() + ["-pass", "1", "-an", "-f", "null", os.devnull]
 
         pass2 = _base() + ["-pass", "2"]
         if config.video.codec == "copy":
@@ -497,6 +510,7 @@ class EncodeWorkflow(QObject):
         flux HEVC injectable, sans passer par un MKV intermédiaire.
         """
         cmd = [self._ffmpeg, "-hide_banner", "-y"]
+        cmd.extend(self._ffmpeg_progress_args())
         cmd.extend(self._hardware_input_args(config.video))
         cmd.extend(["-i", str(config.source)])
         vf = self._build_encoder_vf(config.video)
@@ -522,6 +536,7 @@ class EncodeWorkflow(QObject):
 
         def _base() -> list[str]:
             c = [self._ffmpeg, "-hide_banner", "-y"]
+            c.extend(self._ffmpeg_progress_args())
             c.extend(self._hardware_input_args(config.video))
             c.extend(["-i", str(config.source)])
             if vf:
@@ -531,7 +546,7 @@ class EncodeWorkflow(QObject):
             c.extend(self._video_codec_args_bitrate(config.video, bitrate))
             return c
 
-        pass1 = _base() + ["-pass", "1", "-an", "-f", "null", "/dev/null"]
+        pass1 = _base() + ["-pass", "1", "-an", "-f", "null", os.devnull]
         pass2 = _base() + ["-pass", "2"]
         if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
             pass2.extend(self._hdr_meta_args(config.video))
@@ -1378,6 +1393,7 @@ class EncodeWorkflow(QObject):
                 signals.progress.emit("Extraction HEVC source…")
                 _run([
                     self._ffmpeg, "-hide_banner", "-y",
+                    *self._ffmpeg_progress_args(),
                     "-i", str(config.source),
                     "-map", "0:v:0",
                     *self._ffmpeg_thread_args(),
@@ -1484,6 +1500,7 @@ class EncodeWorkflow(QObject):
                     return 2 + extra_sources.index(src_path)
 
                 recon_cmd = [self._ffmpeg, "-hide_banner", "-y",
+                             *self._ffmpeg_progress_args(),
                              "-i", str(current_hevc),
                              "-i", str(config.source)]
                 for sp in extra_sources:

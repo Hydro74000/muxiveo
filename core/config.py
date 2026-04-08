@@ -99,14 +99,14 @@ def _is_windows() -> bool:
 
 def _default_ffmpeg_thread_count() -> int:
     """
-    Default FFmpeg thread count: logical CPU count × 1.5, rounded up.
+    Default FFmpeg thread count: logical CPU count × 0.75, rounded up.
 
     Examples:
-        4 cores -> 6 threads
-        8 cores -> 12 threads
+        4 cores -> 3 threads
+        8 cores -> 6 threads
     """
     cpu_count = os.cpu_count() or 1
-    return max(1, cpu_count + ((cpu_count + 1) // 2))
+    return max(1, (cpu_count * 3 + 3) // 4)
 
 
 def _normalize_ffmpeg_thread_count(value: int | None) -> int:
