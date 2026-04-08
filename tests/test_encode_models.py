@@ -85,10 +85,11 @@ class TestConstants:
         assert "hevc_qsv"   in ids
         assert "h264_nvenc" in ids
 
-    def test_audio_codecs_include_copy_aac_eac3_flac(self):
+    def test_audio_codecs_include_copy_aac_ac3_eac3_flac(self):
         ids = [c for c, _ in AUDIO_CODECS]
         assert "copy" in ids
         assert "aac"  in ids
+        assert "ac3"  in ids
         assert "eac3" in ids
         assert "flac" in ids
 
@@ -189,6 +190,8 @@ class TestAudioTrackSettings:
         assert a.codec == "copy"
         assert a.bitrate_kbps == 384
         assert a.extract_truehd_core is False
+        assert a.input_channels is None
+        assert a.input_channel_layout is None
 
     def test_custom_codec(self):
         a = AudioTrackSettings(stream_index=1, codec="aac", bitrate_kbps=192)

@@ -27,9 +27,27 @@ from core.lang_tags import Rfc5646LanguageTags
 # Chemin du fichier config.ini
 # ---------------------------------------------------------------------------
 
-# config.ini est placé dans le même dossier que main.py
-# (mediarecode/config.ini), soit le dossier parent de core/
-_INI_PATH = Path(__file__).parent.parent / "config.ini"
+# config.ini est placé à côté de l'exécutable / de l'AppImage, ou à la
+# racine du projet en mode développement.
+def _resolve_ini_path() -> Path:
+    """
+    Résout le chemin de config.ini selon la plateforme et le contexte :
+    - Linux / macOS  → ~/.config/mediarecode/config.ini  (XDG, dev ET frozen)
+    - Windows frozen → dossier contenant l'exécutable
+    - Windows dev    → racine du projet (parent de core/)
+
+    Sur Linux/macOS, on utilise toujours le chemin XDG — y compris en mode
+    développement — car setup.py y écrit les chemins absolus des outils détectés.
+    """
+    if sys.platform != "win32":
+        xdg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+        return xdg / "mediarecode" / "config.ini"
+    # Windows
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent / "config.ini"
+    return Path(__file__).parent.parent / "config.ini"
+
+_INI_PATH = _resolve_ini_path()
 _MISSING = object()
 
 _WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
@@ -69,6 +87,19 @@ def _load_ini() -> configparser.ConfigParser:
 
 def _is_windows() -> bool:
     return sys.platform == "win32"
+
+
+def _appimage_tools_dir() -> Path | None:
+    """
+    Dans un AppImage all-inclusive, retourne le chemin absolu de usr/bin/tools/.
+    $APPDIR est exporté par AppRun avant le lancement de l'exécutable.
+    Retourne None si on ne tourne pas dans un AppImage allinc.
+    """
+    appdir = os.environ.get("APPDIR")
+    if not appdir:
+        return None
+    tools = Path(appdir) / "usr" / "bin" / "tools"
+    return tools if tools.is_dir() else None
 
 
 def _dedupe_paths(paths: list[Path]) -> list[Path]:
@@ -307,6 +338,37 @@ def _normalize_language_code(code: str | None) -> str:
     return converted or _default_language_code()
 
 
+UI_STARTUP_PANEL_CHOICES: tuple[tuple[str, str], ...] = (
+    ("dashboard", "Tableau de bord"),
+    ("container", "Conteneur"),
+    ("encoding", "Encodage"),
+    ("dovi", "DoVi / HDR10+"),
+    ("settings", "Paramètres"),
+)
+
+
+def _normalize_startup_panel(value: str | None) -> str:
+    if not value:
+        return "dashboard"
+    raw = value.strip().lower()
+    aliases = {
+        "dashboard": "dashboard",
+        "tableau_de_bord": "dashboard",
+        "tableau de bord": "dashboard",
+        "home": "dashboard",
+        "container": "container",
+        "conteneur": "container",
+        "encoding": "encoding",
+        "encodage": "encoding",
+        "dovi": "dovi",
+        "dovi / hdr10+": "dovi",
+        "settings": "settings",
+        "parametres": "settings",
+        "paramètres": "settings",
+    }
+    return aliases.get(raw, "dashboard")
+
+
 INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
     {
         "section": "paths",
@@ -325,6 +387,26 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
                 "kind": "directory",
                 "label": "Dossier de sortie",
                 "description": "Répertoire par défaut des fichiers produits.",
+            },
+        ),
+    },
+    {
+        "section": "audio_encoding",
+        "title": "Encodage audio",
+        "fields": (
+            {
+                "key": "default_bitrate_per_channel_kbps",
+                "attr": "audio_default_bitrate_per_channel_kbps",
+                "kind": "int",
+                "label": "Bitrate par canal par défaut (kbps)",
+                "description": "Valeur utilisée pour les encodages audio lossy hors FLAC. Exemple : 192 donne 1152 kbps pour une piste 5.1.",
+            },
+            {
+                "key": "bitrate_step_per_channel_kbps",
+                "attr": "audio_bitrate_step_per_channel_kbps",
+                "kind": "int",
+                "label": "Palier par canal de la combobox (kbps)",
+                "description": "Incrément utilisé pour les choix AAC / EAC-3 dans le panneau d'encodage. La valeur par défaut passe a 64 kbps par canal.",
             },
         ),
     },
@@ -366,7 +448,16 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         "fields": (
             {"key": "language", "attr": "language", "kind": "language", "label": "Langue de l'interface", "description": "Langue utilisée pour l'UI et les messages internes."},
             {"key": "log_max_lines", "attr": "log_max_lines", "kind": "int", "label": "Nombre max de lignes de log", "description": "Nombre maximum de lignes conservées dans le panneau de log."},
-            {"key": "theme", "attr": "theme", "kind": "choice", "label": "Thème", "description": "Thème principal de l'interface.", "options": (("dark", "Sombre"), ("light", "Clair"))},
+            {"key": "theme", "attr": "theme", "kind": "choice", "label": "Thème", "description": "Thème principal pour l'interface. Le changement de thème nécessite de redémarrer l'application.", "options": (("dark", "Sombre"), ("light", "Clair"))},
+            {"key": "startup_panel", "attr": "startup_panel", "kind": "choice", "label": "Panneau à afficher au démarrage", "description": "Panneau chargé en premier au lancement de l'application.", "options": UI_STARTUP_PANEL_CHOICES},
+        ),
+    },
+    {
+        "section": "metadata",
+        "title": "Métadonnées",
+        "fields": (
+            {"key": "tmdb_api_key", "attr": "tmdb_api_key", "kind": "text", "label": "Clé API TMDB", "description": "Clé API TMDB v3 (gratuite sur https://www.themoviedb.org/settings/api)."},
+            {"key": "tmdb_bearer_token", "attr": "tmdb_bearer_token", "kind": "text", "label": "Token Bearer TMDB", "description": "Token v4 TMDB optionnel. Utilisé si la clé API est vide. Peut aussi être défini via MEDIARECODE_TMDB_BEARER_TOKEN."},
         ),
     },
 )
@@ -454,23 +545,37 @@ class AppConfig:
         return _as_bool(str(value if value not in (None, "") else default_text))
 
     def _resolve_tool_value(self, ini_key: str, settings_key: str, default: str) -> str:
-        """Résout une valeur d'outil et persiste l'autodetect Windows dans config.ini."""
+        """
+        Résout la valeur d'un outil externe.
+
+        Priorité :
+          1. AppImage allinc  — chemin absolu dans $APPDIR/usr/bin/tools/
+          2. config.ini       — valeur explicite dans [tools]
+          3. Linux / macOS    — nom brut (ex: "ffmpeg") appelé directement via PATH
+             Windows          — autodetect (Program Files, WinGet, QSettings)
+        """
+        # Priorité 1 : AppImage allinc
+        tools_dir = _appimage_tools_dir()
+        if tools_dir is not None:
+            candidate = tools_dir / ini_key
+            if candidate.is_file():
+                return str(candidate)
+
+        # Priorité 2 : config.ini
         ini_value = self._ini_lookup("tools", ini_key)
-        if ini_value is not _MISSING:
-            if ini_value != "":
-                return str(ini_value)
-            current_value = default
-        else:
-            raw = self._settings.value(settings_key, default)
-            current_value = str(raw if raw not in (None, "") else default)
+        if ini_value is not _MISSING and ini_value != "":
+            return str(ini_value)
 
+        # Priorité 3a : Linux / macOS — appel direct, résolution par le PATH à l'exécution
+        if not _is_windows():
+            return default
+
+        # Priorité 3b : Windows — autodetect étendu + persistance dans QSettings
+        raw = self._settings.value(settings_key, default)
+        current_value = str(raw if raw not in (None, "") else default)
         resolved = _detect_windows_tool_path(ini_key, current_value)
-
-        if _is_windows():
-            resolved_path = Path(resolved)
-            if resolved_path.is_file():
-                self._detected_ini_tools.setdefault(ini_key, str(resolved_path))
-
+        if Path(resolved).is_file():
+            self._detected_ini_tools.setdefault(ini_key, resolved)
         return resolved
 
     # ------------------------------------------------------------------
@@ -496,6 +601,19 @@ class AppConfig:
         self.dovi_profile = self._resolve_text("hdr", "dovi_profile", "hdr/dovi_profile", "8")
         self.dovi_compat_id = self._resolve_text("hdr", "dovi_compat_id", "hdr/dovi_compat_id", "1")
 
+        self.audio_default_bitrate_per_channel_kbps = self._resolve_int(
+            "audio_encoding",
+            "default_bitrate_per_channel_kbps",
+            "audio_encoding/default_bitrate_per_channel_kbps",
+            192,
+        )
+        self.audio_bitrate_step_per_channel_kbps = self._resolve_int(
+            "audio_encoding",
+            "bitrate_step_per_channel_kbps",
+            "audio_encoding/bitrate_step_per_channel_kbps",
+            64,
+        )
+
         self.ram_buffer_enabled = self._resolve_bool("encoding", "ram_buffer_enabled", "encoding/ram_buffer_enabled", True)
         self.ram_buffer_threshold_pct = self._resolve_int("encoding", "ram_buffer_threshold_pct", "encoding/ram_buffer_threshold_pct", 15)
 
@@ -504,7 +622,18 @@ class AppConfig:
         )
         self.log_max_lines = self._resolve_int("ui", "log_max_lines", "ui/log_max_lines", 2000)
         self.theme = self._resolve_text("ui", "theme", "ui/theme", "dark")
+        self.startup_panel = _normalize_startup_panel(
+            self._resolve_text("ui", "startup_panel", "ui/startup_panel", "dashboard")
+        )
         self.window_geometry: bytes | None = self._settings.value("ui/geometry", None)
+
+        self.tmdb_api_key = self._resolve_text("metadata", "tmdb_api_key", "metadata/tmdb_api_key", "")
+        self.tmdb_bearer_token = self._resolve_text(
+            "metadata",
+            "tmdb_bearer_token",
+            "metadata/tmdb_bearer_token",
+            "",
+        )
 
     def reload(self) -> None:
         self._ini = _load_ini()
@@ -537,12 +666,19 @@ class AppConfig:
         s.setValue("hdr/dovi_profile", self.dovi_profile)
         s.setValue("hdr/dovi_compat_id", self.dovi_compat_id)
 
+        s.setValue("audio_encoding/default_bitrate_per_channel_kbps", self.audio_default_bitrate_per_channel_kbps)
+        s.setValue("audio_encoding/bitrate_step_per_channel_kbps", self.audio_bitrate_step_per_channel_kbps)
+
         s.setValue("encoding/ram_buffer_enabled", "true" if self.ram_buffer_enabled else "false")
         s.setValue("encoding/ram_buffer_threshold_pct", self.ram_buffer_threshold_pct)
 
         s.setValue("ui/language", self.language)
         s.setValue("ui/log_max_lines", self.log_max_lines)
         s.setValue("ui/theme", self.theme)
+        s.setValue("ui/startup_panel", self.startup_panel)
+
+        s.setValue("metadata/tmdb_api_key", self.tmdb_api_key)
+        s.setValue("metadata/tmdb_bearer_token", self.tmdb_bearer_token)
         s.sync()
 
     def save_to_ini(self) -> None:
@@ -624,6 +760,10 @@ class AppConfig:
                 "dovi_profile": self.dovi_profile,
                 "dovi_compat_id": self.dovi_compat_id,
             },
+            "audio_encoding": {
+                "default_bitrate_per_channel_kbps": self.audio_default_bitrate_per_channel_kbps,
+                "bitrate_step_per_channel_kbps": self.audio_bitrate_step_per_channel_kbps,
+            },
             "encoding": {
                 "ram_buffer_enabled": self.ram_buffer_enabled,
                 "ram_buffer_threshold_pct": self.ram_buffer_threshold_pct,
@@ -632,6 +772,11 @@ class AppConfig:
                 "language": self.language,
                 "log_max_lines": self.log_max_lines,
                 "theme": self.theme,
+                "startup_panel": self.startup_panel,
+            },
+            "metadata": {
+                "tmdb_api_key": self.tmdb_api_key,
+                "tmdb_bearer_token": self.tmdb_bearer_token,
             },
         }
 

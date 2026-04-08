@@ -31,14 +31,15 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Callable, TYPE_CHECKING
+from typing import Callable, TYPE_CHECKING, cast
 
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import (
-    QColor, QFont, QIcon, QPalette,
+    QColor, QFont, QIcon,
     QTextCharFormat, QTextCursor,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
     QProgressBar, QPushButton, QScrollArea, QSizePolicy,
     QSplitter, QStackedWidget, QTextEdit,
@@ -49,6 +50,7 @@ from core.config import AppConfig
 from core.i18n import apply_translations, set_current_language, translate_text
 from core.runner import TaskSignals
 from core.subprocess_utils import subprocess_text_kwargs
+from core.version import APP_VERSION_LABEL, WRITING_APPLICATION_TAG
 from core.workflows.encode import EncodeError
 from core.workflows.remux import RemuxError
 from ui.panels.encode_panel import EncodePanel
@@ -56,41 +58,11 @@ from ui.panels.encode_panel.theme import _FPS_RE, _TIME_RE, _fmt_eta
 from ui.panels.merge_dovi_panel import MergeDoviPanel
 from ui.panels.remux_panel import RemuxPanel
 from ui.panels.settings_panel import SettingsPanel
+from ui.design_system import DesignSystem, colors as _Colors
 
 if TYPE_CHECKING:
     from core.workflows.encode.models import EncodeConfig
-    from core.workflows.remux import RemuxConfig
-
-
-# ---------------------------------------------------------------------------
-# Palette de couleurs (thème sombre)
-# ---------------------------------------------------------------------------
-
-class _Colors:
-    BG_DEEP    = "#0d0f14"
-    BG_PANEL   = "#141720"
-    BG_SIDEBAR = "#0f1117"
-    BG_CARD    = "#1a1e2a"
-    BG_HOVER   = "#1f2435"
-    BG_ACTIVE  = "#232840"
-
-    BORDER     = "#252a3a"
-    BORDER_LT  = "#2e3450"
-
-    TEXT_PRI   = "#e8ecf4"
-    TEXT_SEC   = "#7a85a0"
-    TEXT_DIM   = "#3d4560"
-
-    ACCENT     = "#4f6ef7"
-    ACCENT_DIM = "#2a3a8a"
-
-    # Log levels
-    LOG_INFO   = "#7ab3f5"
-    LOG_OK     = "#5dcc8a"
-    LOG_WARN   = "#f5c842"
-    LOG_ERROR  = "#f55a5a"
-    LOG_TS     = "#3d4560"
-    LOG_BG     = "#0a0c11"
+    from core.workflows.remux import RemuxConfig, TrackEntry
 
 
 # ---------------------------------------------------------------------------
@@ -104,12 +76,14 @@ class LogLevel(str, Enum):
     ERROR = "ERROR"
 
 
-_LEVEL_COLORS: dict[LogLevel, str] = {
-    LogLevel.INFO:  _Colors.LOG_INFO,
-    LogLevel.OK:    _Colors.LOG_OK,
-    LogLevel.WARN:  _Colors.LOG_WARN,
-    LogLevel.ERROR: _Colors.LOG_ERROR,
-}
+def _level_color(level: LogLevel) -> str:
+    if level == LogLevel.OK:
+        return _Colors.LOG_OK
+    if level == LogLevel.WARN:
+        return _Colors.LOG_WARN
+    if level == LogLevel.ERROR:
+        return _Colors.LOG_ERROR
+    return _Colors.LOG_INFO
 
 _LEVEL_LABELS: dict[LogLevel, str] = {
     LogLevel.INFO:  " INFO ",
@@ -117,7 +91,6 @@ _LEVEL_LABELS: dict[LogLevel, str] = {
     LogLevel.WARN:  " WARN ",
     LogLevel.ERROR: " ERR  ",
 }
-
 
 # ---------------------------------------------------------------------------
 # LogPanel
@@ -270,7 +243,7 @@ class LogPanel(QWidget):
         message = translate_text(message)
 
         ts = datetime.now().strftime("%H:%M:%S")
-        color = _LEVEL_COLORS[level]
+        color = _level_color(level)
         label = _LEVEL_LABELS[level]
 
         # Timestamp
@@ -363,7 +336,8 @@ class DashboardPage(QWidget):
     # codec_id → (label affiché, badge QLabel) pour mise à jour async
     _HW_VIDEO: list[tuple[str, str]] = [
         ("hevc_nvenc", "NVENC·HEVC"), ("hevc_amf", "AMF·HEVC"), ("hevc_vaapi", "VAAPI·HEVC"), ("hevc_qsv", "QSV·HEVC"),
-        ("h264_nvenc", "NVENC·H264"), ("h264_amf", "AMF·H264"), ("h264_vaapi", "VAAPI·HEVC"), ("h264_qsv", "QSV·H264"),
+        ("h264_nvenc", "NVENC·H264"), ("h264_amf", "AMF·H264"), ("h264_vaapi", "VAAPI·H264"), ("h264_qsv", "QSV·H264"),
+        ("av1_nvenc",  "NVENC·AV1"),  ("av1_amf",  "AMF·AV1"),  ("av1_vaapi",  "VAAPI·AV1"),  ("av1_qsv",  "QSV·AV1"),
     ]
     _SW_VIDEO: list[tuple[str, str]] = [
         ("libx265", "x265"), ("libx264", "x264"), ("libsvtav1", "SVT-AV1"),
@@ -506,8 +480,8 @@ class DashboardPage(QWidget):
 
     def _make_tool_badge(self, name: str, available: bool) -> QLabel:
         color  = _Colors.LOG_OK  if available else _Colors.LOG_ERROR
-        bg     = "#0f2318"       if available else "#1f0e0e"
-        border = "#1a4a2e"       if available else "#3a1515"
+        bg     = _Colors.BADGE_OK_BG if available else _Colors.BADGE_ERROR_BG
+        border = _Colors.BADGE_OK_BORDER if available else _Colors.BADGE_ERROR_BORDER
         symbol = "●"             if available else "○"
         lbl = QLabel(f" {symbol}  {name} ")
         lbl.setStyleSheet(f"""
@@ -569,9 +543,18 @@ class DashboardPage(QWidget):
         rl.addStretch()
         root.addWidget(row)
 
-        # Vidéo matériel (badges en attente → mis à jour par _on_hw_detected)
+        # Vidéo matériel — ligne 1 : HEVC + H.264
         row, rl = _row("Vidéo — matériel")
-        for codec_id, label in self._HW_VIDEO:
+        for codec_id, label in self._HW_VIDEO[:8]:
+            badge = self._make_encoder_badge(label, "pending")
+            self._hw_badges[codec_id] = (badge, label)
+            rl.addWidget(badge)
+        rl.addStretch()
+        root.addWidget(row)
+
+        # Vidéo matériel — ligne 2 : AV1
+        row, rl = _row("  ↳ AV1")
+        for codec_id, label in self._HW_VIDEO[8:]:
             badge = self._make_encoder_badge(label, "pending")
             self._hw_badges[codec_id] = (badge, label)
             rl.addWidget(badge)
@@ -595,9 +578,11 @@ class DashboardPage(QWidget):
     @staticmethod
     def _scan_encoder_availability(ffmpeg_bin: str, codec_ids: list[str]) -> dict[str, bool]:
         """Retourne l'état de disponibilité des codecs présents dans `ffmpeg -encoders`."""
+        import shutil
+        resolved = shutil.which(ffmpeg_bin) or ffmpeg_bin
         try:
             result = subprocess.run(
-                [ffmpeg_bin, "-hide_banner", "-encoders"],
+                [resolved, "-hide_banner", "-encoders"],
                 capture_output=True,
                 check=False,
                 **subprocess_text_kwargs(),
@@ -612,11 +597,11 @@ class DashboardPage(QWidget):
 
     def _apply_encoder_badge_state(self, badge: QLabel, label: str, state: str) -> None:
         if state == "available":
-            symbol, color, bg, border = "●", _Colors.LOG_OK,    "#0f2318", "#1a4a2e"
+            symbol, color, bg, border = "●", _Colors.LOG_OK, _Colors.BADGE_OK_BG, _Colors.BADGE_OK_BORDER
         elif state == "unavailable":
-            symbol, color, bg, border = "○", _Colors.LOG_ERROR,  "#1f0e0e", "#3a1515"
+            symbol, color, bg, border = "○", _Colors.LOG_ERROR, _Colors.BADGE_ERROR_BG, _Colors.BADGE_ERROR_BORDER
         else:  # pending
-            symbol, color, bg, border = "…", _Colors.TEXT_DIM, _Colors.BG_CARD, _Colors.BORDER
+            symbol, color, bg, border = "…", _Colors.TEXT_DIM, _Colors.BADGE_PENDING_BG, _Colors.BADGE_PENDING_BORDER
         badge.setText(f" {symbol}  {label} ")
         badge.setStyleSheet(f"""
             QLabel {{
@@ -640,7 +625,14 @@ class DashboardPage(QWidget):
     def _run_hw_detection(self) -> None:
         """Thread worker : probe runtime de chaque encodeur HW."""
         from core.workflows.encode import HardwareEncoderDetector
-        available = HardwareEncoderDetector().detect(self._config.tool_ffmpeg)
+        detector = HardwareEncoderDetector()
+        ffmpeg = self._config.tool_ffmpeg
+        result = detector.detect(ffmpeg)
+        # Compatibilité : certains tests/mocks retournent encore un set simple.
+        if isinstance(result, tuple):
+            available = result[0]
+        else:
+            available = result
         self._hw_detected.emit(available)
 
     def _on_hw_detected(self, available: set[str]) -> None:
@@ -845,7 +837,7 @@ class _Sidebar(QWidget):
         layout.addStretch()
 
         # Version
-        version_lbl = QLabel("v1.1")
+        version_lbl = QLabel(APP_VERSION_LABEL)
         version_lbl.setContentsMargins(16, 0, 0, 12)
         version_lbl.setStyleSheet(f"""
             color: {_Colors.TEXT_DIM};
@@ -887,16 +879,26 @@ class MainWindow(QMainWindow):
     """
 
     log_requested = Signal(str, str)
+    WRITING_APPLICATION = WRITING_APPLICATION_TAG
+    _PAGE_INDEX_BY_PANEL_KEY = {
+        "dashboard": 0,
+        "dovi": 1,
+        "encoding": 2,
+        "container": 3,
+        "settings": 4,
+    }
 
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
         self._config = config
+        DesignSystem.set_theme(config.theme)
         self._running   = False
         self._signals: TaskSignals | None = None
         self._op_start: float = 0.0
         self._op_mode: str = ""   # "remux" ou "encode"
         self._setup_window()
         self._build_ui()
+        self._apply_startup_panel()
         self._restore_geometry()
         self._connect_signals()
         self._apply_locale()
@@ -927,6 +929,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
+        writing_application = self.writing_application_tag()
+
         central = QWidget()
         central.setStyleSheet(f"background: {_Colors.BG_DEEP};")
         self.setCentralWidget(central)
@@ -976,11 +980,17 @@ class MainWindow(QMainWindow):
         self._stack.addWidget(self._dovi_panel)
 
         # Page 2 — Encodage (fonctionnelle)
-        self._encode_panel = EncodePanel(self._config)
+        self._encode_panel = EncodePanel(
+            self._config,
+            writing_application=writing_application,
+        )
         self._stack.addWidget(self._encode_panel)
 
         # Page 3 — Manipulation Conteneur (fonctionnelle)
-        self._remux_panel = RemuxPanel(self._config)
+        self._remux_panel = RemuxPanel(
+            self._config,
+            writing_application=writing_application,
+        )
         self._stack.addWidget(self._remux_panel)
 
         self._settings_panel = SettingsPanel(self._config)
@@ -1011,6 +1021,10 @@ class MainWindow(QMainWindow):
         vsplit.setSizes([560, 240])
 
         main_layout.addWidget(vsplit)
+
+    @classmethod
+    def writing_application_tag(cls) -> str:
+        return cls.WRITING_APPLICATION
 
     def _build_action_bar(self) -> QWidget:
         """Construit la barre d'action globale avec bouton unique 'Exécuter l'opération'."""
@@ -1095,6 +1109,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._cancel_btn)
 
         return bar
+
+    @classmethod
+    def startup_page_index(cls, panel_key: str | None) -> int:
+        if not panel_key:
+            return 0
+        return cls._PAGE_INDEX_BY_PANEL_KEY.get(panel_key.strip().lower(), 0)
+
+    def _apply_startup_panel(self) -> None:
+        startup_panel = getattr(self._config, "startup_panel", "dashboard")
+        page_index = self.startup_page_index(startup_panel)
+        self._stack.setCurrentIndex(page_index)
+        self._sidebar.select_page(page_index)
 
     # ------------------------------------------------------------------
     # Signaux
@@ -1236,12 +1262,12 @@ class MainWindow(QMainWindow):
         """
         from core.workflows.encode.models import EncodeConfig, TrackMetaEdit
 
-        sub_tracks:         list = []
-        attachment_streams: list = []   # list[tuple[Path, int]]  — (source, ffprobe_stream_index)
-        tag_sources:        list = []
+        sub_tracks: list[tuple[Path, int]] = []
+        attachment_streams: list[tuple[Path, int]] = []   # (source, ffprobe_stream_index)
+        tag_sources: list[Path] = []
 
         source_by_index = {src.file_index: src for src in remux_cfg.sources}
-        remux_track_map: dict[tuple, object] = {}
+        remux_track_map: dict[tuple[Path, int], TrackEntry] = {}
 
         for src in remux_cfg.sources:
             for track in src.tracks:
@@ -1251,7 +1277,7 @@ class MainWindow(QMainWindow):
             if src.copy_tags:
                 tag_sources.append(src.path)
 
-        ordered_tracks: list[tuple[Path, object]] = []
+        ordered_tracks: list[tuple[Path, TrackEntry]] = []
         for file_index, mkv_tid in remux_cfg.track_order:
             src = source_by_index.get(file_index)
             if src is None:
@@ -1264,7 +1290,7 @@ class MainWindow(QMainWindow):
         sub_tracks = [
             (src_path, track.mkv_tid)
             for src_path, track in ordered_tracks
-            if getattr(track, "track_type", None) == "subtitle"
+            if track.track_type == "subtitle"
         ]
 
         # tag_overrides depuis RemuxConfig (balises éditées dans l'UI)
@@ -1279,7 +1305,7 @@ class MainWindow(QMainWindow):
         #   @1 = vidéo  |  @2…@N+1 = audio  |  @N+2… = sous-titres
         track_meta_edits: list[TrackMetaEdit] = []
 
-        def _make_edit(track_order: int, t) -> "TrackMetaEdit | None":
+        def _make_edit(track_order: int, t: TrackEntry) -> "TrackMetaEdit | None":
             """Retourne un TrackMetaEdit si la piste a une langue ou un titre à écrire."""
             lang  = t.language or ""
             title = t.title    or ""
@@ -1291,14 +1317,13 @@ class MainWindow(QMainWindow):
                 title       = title if title else None,
             )
 
-        def _find_track(src_path, stream_index, track_type):
+        def _find_track(src_path: Path, stream_index: int, track_type: str) -> TrackEntry | None:
             t = remux_track_map.get((src_path, stream_index))
             if t is not None:
                 return t
             # Fichier source unique : cherche uniquement par stream_index + type
             for entry in remux_track_map.values():
-                if getattr(entry, "mkv_tid", None) == stream_index and \
-                   getattr(entry, "track_type", None) == track_type:
+                if entry.mkv_tid == stream_index and entry.track_type == track_type:
                     return entry
             return None
 
@@ -1307,12 +1332,12 @@ class MainWindow(QMainWindow):
         if video_entry is None:
             # La vidéo peut être sur n'importe quel stream_index ; garde le premier ordre remux.
             for _src_path, entry in ordered_tracks:
-                if getattr(entry, "track_type", None) == "video":
+                if entry.track_type == "video":
                     video_entry = entry
                     break
         if video_entry is None:
             for entry in remux_track_map.values():
-                if getattr(entry, "track_type", None) == "video":
+                if entry.track_type == "video":
                     video_entry = entry
                     break
         if video_entry is not None:
@@ -1459,9 +1484,19 @@ class MainWindow(QMainWindow):
                 self.log_requested.emit("ERROR", error)
 
     def _on_settings_saved(self) -> None:
+        previous_theme = DesignSystem.current_theme()
         self._config.reload()
+        new_theme = DesignSystem.set_theme(self._config.theme)
+        app = cast(QApplication | None, QApplication.instance())
+        DesignSystem.apply_to_application(app)
         self._log_panel._max_lines = self._config.log_max_lines
+        self._encode_panel.refresh_runtime_settings()
         self._apply_locale()
+        if new_theme != previous_theme:
+            self.log_requested.emit(
+                "INFO",
+                "Nouveau thème chargé. Un redémarrage de l'application est recommandé pour recolorer tous les panneaux ouverts.",
+            )
         self.log_requested.emit("OK", "Configuration appliquée depuis config.ini.")
 
     # ------------------------------------------------------------------

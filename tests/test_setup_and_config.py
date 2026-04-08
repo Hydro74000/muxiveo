@@ -109,6 +109,77 @@ class TestAppConfigRamBuffer:
 
         assert cfg.language == "fra"
 
+    def test_default_startup_panel_is_dashboard(self, tmp_path):
+        """Sans clé explicite, le panneau de démarrage est le dashboard."""
+        from core.config import AppConfig
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.dict(os.environ, {}, clear=False):
+                cfg = AppConfig()
+
+        assert cfg.startup_panel == "dashboard"
+
+    def test_invalid_startup_panel_falls_back_to_dashboard(self, tmp_path):
+        """Une valeur startup_panel invalide revient à dashboard."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[ui]\nstartup_panel = unknown\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.startup_panel == "dashboard"
+
+    def test_audio_encoding_defaults_use_192_and_64(self, tmp_path):
+        """Sans configuration explicite, l'audio utilise 192 kbps/canal et des paliers de 64."""
+        from core.config import AppConfig
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.dict(os.environ, {}, clear=False):
+                cfg = AppConfig()
+
+        assert cfg.audio_default_bitrate_per_channel_kbps == 192
+        assert cfg.audio_bitrate_step_per_channel_kbps == 64
+
+    def test_audio_encoding_ini_overrides_defaults(self, tmp_path):
+        """config.ini peut surcharger le bitrate/canal et le palier de combobox audio."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text(
+            "[audio_encoding]\n"
+            "default_bitrate_per_channel_kbps = 160\n"
+            "bitrate_step_per_channel_kbps = 48\n",
+            encoding="utf-8",
+        )
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.audio_default_bitrate_per_channel_kbps == 160
+        assert cfg.audio_bitrate_step_per_channel_kbps == 48
+
 
 class TestAppConfigWindowsToolAutodetect:
     """Tests de détection et persistance auto des outils Windows dans config.ini."""

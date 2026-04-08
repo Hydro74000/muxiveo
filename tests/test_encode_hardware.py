@@ -17,6 +17,10 @@ def _completed(*, returncode: int = 0, stdout: str = "", stderr: str = "") -> Ma
     return proc
 
 
+# Désactive le fallback système dans tous les tests (pas d'AppImage dans les tests).
+_no_system_ff = patch.object(HardwareEncoderDetector, "_find_system_ffmpeg", return_value=None)
+
+
 class TestHardwareEncoderDetector:
 
     def test_detect_windows_nvenc_and_amf_with_real_ffmpeg_probes(self):
@@ -39,10 +43,12 @@ class TestHardwareEncoderDetector:
                 return _completed(returncode=0)
             raise AssertionError(f"Commande inattendue: {cmd}")
 
-        with patch("core.workflows.encode.hardware.subprocess.run", side_effect=fake_run):
-            detected = HardwareEncoderDetector().detect("ffmpeg.exe")
+        with patch("core.workflows.encode.hardware.subprocess.run", side_effect=fake_run), \
+             _no_system_ff:
+            detected, used_ff = HardwareEncoderDetector().detect("ffmpeg.exe")
 
         assert detected == {"hevc_nvenc", "h264_amf"}
+        assert used_ff == "ffmpeg.exe"
         assert all(cmd[0] != "nvidia-smi" for cmd in calls)
 
     def test_detect_linux_nvenc_keeps_nvidia_shortcut_for_distrobox(self):
@@ -61,10 +67,12 @@ class TestHardwareEncoderDetector:
 
         with patch("core.workflows.encode.hardware.subprocess.run", side_effect=fake_run), \
              patch("core.workflows.encode.hardware.sys.platform", "linux"), \
-             patch.object(HardwareEncoderDetector, "_nvidia_ok", return_value=True):
-            detected = HardwareEncoderDetector().detect("ffmpeg")
+             patch.object(HardwareEncoderDetector, "_nvidia_ok", return_value=True), \
+             _no_system_ff:
+            detected, used_ff = HardwareEncoderDetector().detect("ffmpeg")
 
         assert detected == {"hevc_nvenc"}
+        assert used_ff == "ffmpeg"
         assert calls == [["ffmpeg", "-hide_banner", "-encoders"]]
 
     def test_detect_linux_nvenc_falls_back_to_ffmpeg_probe_when_shortcut_is_unavailable(self):
@@ -82,10 +90,12 @@ class TestHardwareEncoderDetector:
 
         with patch("core.workflows.encode.hardware.subprocess.run", side_effect=fake_run), \
              patch("core.workflows.encode.hardware.sys.platform", "linux"), \
-             patch.object(HardwareEncoderDetector, "_nvidia_ok", return_value=False):
-            detected = HardwareEncoderDetector().detect("ffmpeg")
+             patch.object(HardwareEncoderDetector, "_nvidia_ok", return_value=False), \
+             _no_system_ff:
+            detected, used_ff = HardwareEncoderDetector().detect("ffmpeg")
 
         assert detected == {"h264_nvenc"}
+        assert used_ff == "ffmpeg"
         assert any("h264_nvenc" in cmd for cmd in calls[1:])
 
     def test_detect_keeps_vaapi_specific_probe_on_linux(self):
@@ -103,10 +113,12 @@ class TestHardwareEncoderDetector:
             return _completed(returncode=0)
 
         with patch("core.workflows.encode.hardware.subprocess.run", side_effect=fake_run), \
-             patch.object(HardwareEncoderDetector, "_vaapi_device", return_value="/dev/dri/renderD128"):
-            detected = HardwareEncoderDetector().detect("ffmpeg")
+             patch.object(HardwareEncoderDetector, "_vaapi_device", return_value="/dev/dri/renderD128"), \
+             _no_system_ff:
+            detected, used_ff = HardwareEncoderDetector().detect("ffmpeg")
 
         assert detected == {"hevc_vaapi"}
+        assert used_ff == "ffmpeg"
         assert len(probe_cmds) == 1
         cmd = probe_cmds[0]
         assert "-vaapi_device" in cmd
@@ -132,8 +144,9 @@ class TestHardwareEncoderDetector:
             return _completed(returncode=0)
 
         with patch("core.workflows.encode.hardware.subprocess.run", side_effect=fake_run), \
-             patch.object(HardwareEncoderDetector, "_vaapi_device", return_value=None):
-            detected = HardwareEncoderDetector().detect("ffmpeg")
+             patch.object(HardwareEncoderDetector, "_vaapi_device", return_value=None), \
+             _no_system_ff:
+            detected, used_ff = HardwareEncoderDetector().detect("ffmpeg")
 
         assert detected == {"h264_qsv"}
         assert all("hevc_vaapi" not in cmd for cmd in probe_cmds)
@@ -148,8 +161,9 @@ class TestHardwareEncoderDetector:
                 return _completed(stdout=encoders)
             return _completed(returncode=1)
 
-        with patch("core.workflows.encode.hardware.subprocess.run", side_effect=fake_run):
-            detected = HardwareEncoderDetector().detect("ffmpeg")
+        with patch("core.workflows.encode.hardware.subprocess.run", side_effect=fake_run), \
+             _no_system_ff:
+            detected, _ff = HardwareEncoderDetector().detect("ffmpeg")
 
         assert detected == set()
 
@@ -158,7 +172,62 @@ class TestHardwareEncoderDetector:
         with patch(
             "core.workflows.encode.hardware.subprocess.run",
             return_value=_completed(stdout="V....D libx265           libx265 H.265 / HEVC\n"),
-        ):
-            detected = HardwareEncoderDetector().detect("ffmpeg")
+        ), _no_system_ff:
+            detected, _ff = HardwareEncoderDetector().detect("ffmpeg")
 
         assert detected == set()
+
+    def test_detect_falls_back_to_system_ffmpeg_when_bundled_has_no_hw_codecs(self):
+        """
+        AppImage : si le ffmpeg embarqué n'a pas de codec HW, le ffmpeg système
+        doit être utilisé pour la détection et le chemin retourné doit être celui
+        du système.
+        """
+        bundled_output = "V....D libx265           libx265 H.265 / HEVC\n"
+        system_output  = "V....D h264_nvenc        NVIDIA NVENC H.264 encoder\n"
+
+        def fake_run(cmd, **_kwargs):
+            if cmd[0] == "/usr/bin/ffmpeg" and "-encoders" in cmd:
+                return _completed(stdout=bundled_output)
+            if cmd[0] == "/system/bin/ffmpeg" and "-encoders" in cmd:
+                return _completed(stdout=system_output)
+            if "h264_nvenc" in cmd:
+                return _completed(returncode=0)
+            raise AssertionError(f"Commande inattendue: {cmd}")
+
+        with patch("core.workflows.encode.hardware.subprocess.run", side_effect=fake_run), \
+             patch.object(HardwareEncoderDetector, "_find_system_ffmpeg",
+                          return_value="/system/bin/ffmpeg"), \
+             patch.object(HardwareEncoderDetector, "_nvidia_ok", return_value=True):
+            detected, used_ff = HardwareEncoderDetector().detect("/usr/bin/ffmpeg")
+
+        assert detected == {"h264_nvenc"}
+        assert used_ff == "/system/bin/ffmpeg"
+
+    def test_detect_and_detect_software_reuse_encoders_cache(self):
+        """
+        Sur une même instance, la sortie `ffmpeg -encoders` doit être réutilisée
+        entre detect() et detect_software() pour éviter un subprocess redondant.
+        """
+        encoders = """
+        V....D hevc_nvenc           NVIDIA NVENC hevc encoder
+        V....D libx265              libx265 H.265 / HEVC
+        """
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(list(cmd))
+            if cmd == ["ffmpeg", "-hide_banner", "-encoders"]:
+                return _completed(stdout=encoders)
+            raise AssertionError(f"Commande inattendue: {cmd}")
+
+        with patch("core.workflows.encode.hardware.subprocess.run", side_effect=fake_run), \
+             patch.object(HardwareEncoderDetector, "_nvidia_ok", return_value=True), \
+             _no_system_ff:
+            detector = HardwareEncoderDetector()
+            detected, _ff = detector.detect("ffmpeg")
+            software = detector.detect_software("ffmpeg")
+
+        assert detected == {"hevc_nvenc"}
+        assert software == {"libx265"}
+        assert calls.count(["ffmpeg", "-hide_banner", "-encoders"]) == 1

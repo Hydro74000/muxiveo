@@ -11,6 +11,7 @@ Public:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QDragEnterEvent, QDropEvent
@@ -30,14 +31,213 @@ from ui.panels.encode_panel.theme import (
     _C, _combo_style, _input_style, _primary_button, _secondary_button, _separator,
 )
 
+if TYPE_CHECKING:
+    from core.config import AppConfig
+
 
 # =============================================================================
 # Helpers
 # =============================================================================
 
+_AUDIO_DEFAULT_KBPS_PER_CHANNEL = 192
+_AUDIO_MIN_KBPS_PER_CHANNEL = 96
+_AUDIO_MAX_KBPS_PER_CHANNEL = 256
+_AUDIO_BITRATE_STEP_KBPS = 64
+
+
 def _has_atmos(track: AudioTrack) -> bool:
     """True si la piste est TrueHD avec couche Atmos (utilisé pour extract_truehd_core)."""
     return track.codec.lower() == "truehd" and track.atmos_flag
+
+
+def _channel_count(track: AudioTrack) -> int:
+    """Retourne le nombre de canaux de la piste, avec fallback raisonnable."""
+    if track.channels and track.channels > 0:
+        return track.channels
+    layout = (track.channel_layout or "").lower()
+    if "7.1" in layout:
+        return 8
+    if "5.1" in layout:
+        return 6
+    if "stereo" in layout:
+        return 2
+    if "mono" in layout:
+        return 1
+    return 2
+
+
+def _default_per_channel_kbps(config: "AppConfig | None") -> int:
+    value = getattr(config, "audio_default_bitrate_per_channel_kbps", _AUDIO_DEFAULT_KBPS_PER_CHANNEL)
+    try:
+        return int(value) if int(value) > 0 else _AUDIO_DEFAULT_KBPS_PER_CHANNEL
+    except (TypeError, ValueError):
+        return _AUDIO_DEFAULT_KBPS_PER_CHANNEL
+
+
+def _bitrate_step_per_channel_kbps(config: "AppConfig | None") -> int:
+    value = getattr(config, "audio_bitrate_step_per_channel_kbps", _AUDIO_BITRATE_STEP_KBPS)
+    try:
+        return int(value) if int(value) > 0 else _AUDIO_BITRATE_STEP_KBPS
+    except (TypeError, ValueError):
+        return _AUDIO_BITRATE_STEP_KBPS
+
+
+def _default_lossy_bitrate_kbps(track: AudioTrack, config: "AppConfig | None" = None) -> int:
+    """Débit par défaut pour les codecs lossy : valeur par canal x nombre de canaux."""
+    return _default_per_channel_kbps(config) * _channel_count(track)
+
+
+def _raw_source_bitrate_kbps(track: AudioTrack) -> int | None:
+    """Débit source exact en kbps, ou None s'il n'est pas connu."""
+    if track.bit_rate and track.bit_rate > 0:
+        return max(1, round(track.bit_rate / 1000))
+    return None
+
+
+def _default_lossy_selected_bitrate_kbps(track: AudioTrack, config: "AppConfig | None" = None) -> int:
+    """Valeur préselectionnée pour les codecs lossy, bornée par le bitrate source si plus faible."""
+    default_bitrate = _default_lossy_bitrate_kbps(track, config)
+    source_bitrate = _raw_source_bitrate_kbps(track)
+    if source_bitrate is not None:
+        return min(default_bitrate, source_bitrate)
+    return default_bitrate
+
+
+def _source_bitrate_kbps(track: AudioTrack, config: "AppConfig | None" = None) -> int:
+    """Débit source en kbps, ou fallback sur le débit par défaut."""
+    source_bitrate = _raw_source_bitrate_kbps(track)
+    if source_bitrate is not None:
+        return source_bitrate
+    return _default_lossy_bitrate_kbps(track, config)
+
+
+def _lossy_combo_bitrate_choices(track: AudioTrack, config: "AppConfig | None" = None) -> list[int]:
+    """Plage de débits pour AAC / AC3 / EAC3 : 96 à 256 kbps par canal."""
+    channels = _channel_count(track)
+    minimum = _AUDIO_MIN_KBPS_PER_CHANNEL * channels
+    maximum = _AUDIO_MAX_KBPS_PER_CHANNEL * channels
+    step = _bitrate_step_per_channel_kbps(config) * channels
+    choices = list(range(minimum, maximum + 1, step))
+    if not choices:
+        return [minimum, maximum] if minimum != maximum else [minimum]
+    if choices[-1] != maximum:
+        choices.append(maximum)
+    return choices
+
+
+def _closest_choice(value: int, choices: list[int]) -> int:
+    """Retourne l'option la plus proche dans une liste de choix."""
+    if not choices:
+        return value
+    return min(choices, key=lambda choice: abs(choice - value))
+
+
+def _choices_with_selected(selected: int, choices: list[int]) -> list[int]:
+    """Ajoute la valeur sélectionnée à la liste si elle n'est pas déjà proposée."""
+    if selected <= 0 or selected in choices:
+        return choices
+    return sorted([*choices, selected])
+
+
+class _AudioBitrateEditor(QWidget):
+    """Éditeur de débit qui change de contrôle selon le codec choisi."""
+
+    value_changed = Signal()
+
+    def __init__(
+        self,
+        track: AudioTrack,
+        config: "AppConfig | None" = None,
+        codec: str = "copy",
+        bitrate_kbps: int | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._track = track
+        self._config = config
+        self._codec = codec
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self._combo = QComboBox()
+        self._combo.setStyleSheet(_combo_style())
+        self._combo.setFixedWidth(84)
+        self._combo.hide()
+        self._combo.currentIndexChanged.connect(lambda _=0: self.value_changed.emit())
+        layout.addWidget(self._combo)
+
+        self._edit = QLineEdit()
+        self._edit.setStyleSheet(_input_style())
+        self._edit.setFixedWidth(84)
+        self._edit.textChanged.connect(lambda _="": self.value_changed.emit())
+        layout.addWidget(self._edit)
+
+        self.set_codec(codec, bitrate_kbps)
+
+    def set_track(self, track: AudioTrack) -> None:
+        self._track = track
+        self.set_codec(self._codec, None)
+
+    def set_codec(self, codec: str, bitrate_kbps: int | None = None) -> None:
+        self._codec = codec
+
+        if codec in {"aac", "ac3", "eac3"}:
+            selected = bitrate_kbps if bitrate_kbps is not None else _default_lossy_selected_bitrate_kbps(self._track, self._config)
+            source_bitrate = _raw_source_bitrate_kbps(self._track)
+            choices = _choices_with_selected(
+                selected,
+                _lossy_combo_bitrate_choices(self._track, self._config),
+            )
+            if source_bitrate is not None:
+                choices = _choices_with_selected(source_bitrate, choices)
+            selected = _closest_choice(selected, choices)
+            self._combo.blockSignals(True)
+            self._combo.clear()
+            for index, choice in enumerate(choices):
+                self._combo.addItem(str(choice), choice)
+                if source_bitrate is not None and choice == source_bitrate:
+                    font = self._combo.font()
+                    font.setBold(True)
+                    self._combo.setItemData(index, font, Qt.ItemDataRole.FontRole)
+            idx = next((i for i in range(self._combo.count()) if self._combo.itemData(i) == selected), 0)
+            self._combo.setCurrentIndex(idx)
+            self._combo.blockSignals(False)
+            self._combo.setEnabled(True)
+            self._combo.show()
+            self._edit.hide()
+            return
+
+        if codec == "flac":
+            value = bitrate_kbps if bitrate_kbps is not None else _source_bitrate_kbps(self._track, self._config)
+            self._edit.setText(str(value))
+            self._edit.setEnabled(True)
+            self._edit.show()
+            self._combo.hide()
+            return
+
+        value = bitrate_kbps if bitrate_kbps is not None else _default_lossy_bitrate_kbps(self._track, self._config)
+        self._edit.setText(str(value))
+        self._edit.setEnabled(codec != "copy")
+        self._edit.show()
+        self._combo.hide()
+
+    def value(self) -> int:
+        if self._codec in {"aac", "ac3", "eac3"}:
+            data = self._combo.currentData()
+            if isinstance(data, int):
+                return data
+            try:
+                return int(self._combo.currentText())
+            except ValueError:
+                return _default_lossy_bitrate_kbps(self._track, self._config)
+        try:
+            return int(self._edit.text())
+        except ValueError:
+            if self._codec == "flac":
+                return _source_bitrate_kbps(self._track, self._config)
+            return _default_lossy_bitrate_kbps(self._track, self._config)
 
 
 # =============================================================================
@@ -148,10 +348,12 @@ class _AudioSourceDialog(QDialog):
     def __init__(
         self,
         tracks: list[tuple],   # (track, color) ou (track, color, source_path)
+        config: "AppConfig | None" = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._tracks = tracks
+        self._config = config
         self._result_track:       AudioTrack | None = None
         self._result_color:       str = "#ffffff"
         self._result_source_path = None   # Path | None
@@ -244,10 +446,8 @@ class _AudioSourceDialog(QDialog):
         br_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;")
         br_lbl.setFixedWidth(70)
         br_row.addWidget(br_lbl)
-        self._bitrate_edit = QLineEdit("384")
-        self._bitrate_edit.setStyleSheet(_input_style())
+        self._bitrate_edit = _AudioBitrateEditor(self._tracks[0][0], self._config, "copy")
         self._bitrate_edit.setFixedWidth(90)
-        self._bitrate_edit.setEnabled(False)   # "copy" par défaut
         br_row.addWidget(self._bitrate_edit)
         br_kbps = QLabel("kbps")
         br_kbps.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;")
@@ -269,11 +469,20 @@ class _AudioSourceDialog(QDialog):
         btn_row.addSpacing(8)
         btn_row.addWidget(add_btn)
         layout.addLayout(btn_row)
+        self._track_list.currentItemChanged.connect(self._on_track_changed)
         apply_translations(self)
 
     def _on_codec_changed(self, _idx: int = 0) -> None:
         codec = self._codec_combo.currentData()
-        self._bitrate_edit.setEnabled(codec not in ("copy", "flac"))
+        previous_codec = getattr(self._bitrate_edit, "_codec", "copy")
+        preferred = None if codec == "flac" or previous_codec == "copy" else self._bitrate_edit.value()
+        self._bitrate_edit.set_codec(codec or "copy", preferred)
+
+    def _on_track_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
+        if current is None:
+            return
+        data = current.data(Qt.ItemDataRole.UserRole)
+        self._bitrate_edit.set_track(data[0])
 
     def _on_accept(self) -> None:
         item = self._track_list.currentItem()
@@ -298,10 +507,7 @@ class _AudioSourceDialog(QDialog):
         return self._codec_combo.currentData() or "copy"
 
     def selected_bitrate(self) -> int:
-        try:
-            return int(self._bitrate_edit.text())
-        except ValueError:
-            return 384
+        return self._bitrate_edit.value()
 
 
 # =============================================================================
@@ -314,7 +520,7 @@ class _AudioTable(QTableWidget):
     Chaque ligne dispose d'un bouton de suppression, désactivé si c'est la
     dernière entrée pour cette piste source.
 
-    Colonnes : src  |  #  |  Format  |  Nom  |  Lang  |  Encodage  |  Débit  |  Del
+    Colonnes : src  |  #  |  Format  |  Bitrate src  |  Lang  |  Nom  |  Encodage  |  Débit  |  Del
     """
 
     # Émis quand l'utilisateur modifie lang ou titre : (stream_index, source_path, lang, title)
@@ -323,15 +529,17 @@ class _AudioTable(QTableWidget):
     COL_SOURCE  = 0
     COL_IDX     = 1
     COL_FORMAT  = 2
-    COL_LANG    = 3
-    COL_TITLE   = 4
-    COL_CODEC   = 5
-    COL_BITRATE = 6
-    COL_DEL     = 7
-    HEADERS = ["", "#", "Format", "Lang", "Nom", "Encodage", "Débit", ""]
+    COL_SRC_BR  = 3
+    COL_LANG    = 4
+    COL_TITLE   = 5
+    COL_CODEC   = 6
+    COL_BITRATE = 7
+    COL_DEL     = 8
+    HEADERS = ["", "#", "Format", "Bitrate src", "Lang", "Nom", "Encodage", "Débit", ""]
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, config: "AppConfig | None" = None, parent: QWidget | None = None) -> None:
         super().__init__(0, len(self.HEADERS), parent)
+        self._config = config
         self._row_data: list[dict] = []   # {combo, bitrate, has_atmos, track, color, source_path, del_btn}
         self._changed_cb = None
         self._prev_lang: dict[int, str] = {}
@@ -353,6 +561,7 @@ class _AudioTable(QTableWidget):
         hh.setSectionResizeMode(self.COL_SOURCE,  QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(self.COL_IDX,     QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(self.COL_FORMAT,  QHeaderView.ResizeMode.Fixed)
+        hh.setSectionResizeMode(self.COL_SRC_BR,  QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(self.COL_LANG,    QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(self.COL_TITLE,   QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(self.COL_CODEC,   QHeaderView.ResizeMode.Fixed)
@@ -361,9 +570,10 @@ class _AudioTable(QTableWidget):
         self.setColumnWidth(self.COL_SOURCE,  20)
         self.setColumnWidth(self.COL_IDX,     32)
         self.setColumnWidth(self.COL_FORMAT, 170)
+        self.setColumnWidth(self.COL_SRC_BR, 86)
         self.setColumnWidth(self.COL_LANG,    56)
         self.setColumnWidth(self.COL_CODEC,  210)
-        self.setColumnWidth(self.COL_BITRATE, 80)
+        self.setColumnWidth(self.COL_BITRATE, 96)
         self.setColumnWidth(self.COL_DEL,     36)
         self.setStyleSheet(f"""
             QTableWidget{{background:{_C.BG_CARD};color:{_C.TEXT_PRI};
@@ -387,16 +597,13 @@ class _AudioTable(QTableWidget):
         self,
         tracks: list[tuple],   # list[tuple[AudioTrack, str]] ou [AudioTrack, str, Path]
         default_codec: str = "copy",
-        default_bitrate: int = 384,
+        default_bitrate: int | None = None,
     ) -> None:
         previous_settings: dict[tuple[object, int], list[tuple[str, int]]] = {}
         for data in self._row_data:
             key = (data.get("source_path"), data["track"].index)
             codec = data["combo"].currentData() or default_codec
-            try:
-                bitrate = int(data["bitrate"].text())
-            except ValueError:
-                bitrate = default_bitrate
+            bitrate = data["bitrate"].value()
             previous_settings.setdefault(key, []).append((codec, bitrate))
 
         self.blockSignals(True)
@@ -418,7 +625,7 @@ class _AudioTable(QTableWidget):
         self._adjust_height()
 
     def add_custom_row(
-        self, track: AudioTrack, color: str, codec: str = "copy", bitrate: int = 384,
+        self, track: AudioTrack, color: str, codec: str = "copy", bitrate: int | None = None,
         source_path=None,   # Path | None
     ) -> None:
         self._append_row(track, color, codec, bitrate, source_path)
@@ -431,15 +638,14 @@ class _AudioTable(QTableWidget):
         result: list[AudioTrackSettings] = []
         for d in self._row_data:
             codec = d["combo"].currentData() or "copy"
-            try:
-                bitrate = int(d["bitrate"].text())
-            except ValueError:
-                bitrate = 384
+            bitrate = d["bitrate"].value()
             result.append(AudioTrackSettings(
                 stream_index=d["track"].index,
                 codec=codec,
                 bitrate_kbps=bitrate,
-                extract_truehd_core=d["has_atmos"] and codec != "copy",
+                extract_truehd_core=d["has_atmos"] and codec == "copy",
+                input_channels=d["track"].channels,
+                input_channel_layout=d["track"].channel_layout,
                 source_path=d.get("source_path"),
             ))
         return result
@@ -458,7 +664,7 @@ class _AudioTable(QTableWidget):
         self.setFixedHeight(visible * self._ROW_H + header_h + 4)
 
     def _append_row(
-        self, track: AudioTrack, color: str, codec: str, bitrate: int,
+        self, track: AudioTrack, color: str, codec: str, bitrate: int | None,
         source_path=None,   # Path | None
     ) -> None:
         row = self.rowCount()
@@ -489,6 +695,8 @@ class _AudioTable(QTableWidget):
 
         self.setItem(row, self.COL_IDX,    _item(str(track.index)))
         self.setItem(row, self.COL_FORMAT, _item("  ".join(fmt_parts)))
+        source_bitrate = _raw_source_bitrate_kbps(track)
+        self.setItem(row, self.COL_SRC_BR, _item(str(source_bitrate) if source_bitrate is not None else "—"))
         self.setItem(row, self.COL_TITLE,  _item_rw(track.title or ""))
         self._prev_lang[row] = track.language or ""
         self.setItem(row, self.COL_LANG,   _item_rw(track.language or ""))
@@ -501,17 +709,15 @@ class _AudioTable(QTableWidget):
         combo.setCurrentIndex(sel_idx)
         combo.setStyleSheet(_combo_style())
         combo.currentIndexChanged.connect(self._make_codec_handler(combo))
-        if self._changed_cb:
-            combo.currentIndexChanged.connect(lambda _: self._changed_cb())
+        callback = self._changed_cb
+        if callback is not None:
+            combo.currentIndexChanged.connect(callback)
         self.setCellWidget(row, self.COL_CODEC, combo)
 
         # Débit
-        bitrate_edit = QLineEdit(str(bitrate))
-        bitrate_edit.setStyleSheet(_input_style())
-        bitrate_edit.setFixedWidth(72)
-        bitrate_edit.setEnabled(codec not in ("copy", "flac"))
+        bitrate_edit = _AudioBitrateEditor(track, self._config, codec, bitrate)
         if self._changed_cb:
-            bitrate_edit.textChanged.connect(lambda _: self._changed_cb())
+            bitrate_edit.value_changed.connect(self._changed_cb)
         self.setCellWidget(row, self.COL_BITRATE, bitrate_edit)
 
         # Bouton suppression
@@ -544,6 +750,13 @@ class _AudioTable(QTableWidget):
             "source_path": source_path,
             "del_btn":     del_btn,
         })
+
+    def refresh_runtime_settings(self) -> None:
+        for data in self._row_data:
+            combo = data["combo"]
+            bitrate_edit = data["bitrate"]
+            codec = combo.currentData() or "copy"
+            bitrate_edit.set_codec(codec, bitrate_edit.value())
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         row = item.row()
@@ -578,7 +791,9 @@ class _AudioTable(QTableWidget):
             for d in self._row_data:
                 if d["combo"] is combo:
                     codec = combo.currentData()
-                    d["bitrate"].setEnabled(codec not in ("copy", "flac"))
+                    previous_codec = getattr(d["bitrate"], "_codec", "copy")
+                    preferred = None if codec == "flac" or previous_codec == "copy" else d["bitrate"].value()
+                    d["bitrate"].set_codec(codec or "copy", preferred)
                     break
         return _handler
 

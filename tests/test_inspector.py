@@ -739,3 +739,130 @@ class TestInspect:
 
         assert info.frame_count is None     # mediainfo absent → None
         assert isinstance(info, FileInfo)   # pas d'exception levée
+
+    def _audio_only_info(self, *, fmt: str, language: str, title: str = "") -> FileInfo:
+        return FileInfo(
+            path=self.path,
+            format=fmt,
+            duration_s=None,
+            size_bytes=None,
+            bit_rate=None,
+            audio_tracks=[
+                AudioTrack(
+                    index=1,
+                    codec="aac",
+                    codec_long="AAC",
+                    channels=2,
+                    channel_layout="stereo",
+                    sample_rate=48000,
+                    bit_rate=192000,
+                    language=language,
+                    title=title,
+                )
+            ],
+        )
+
+    def test_inspect_regionalizes_short_ietf_from_mkvmerge(self):
+        """
+        MKV + language_ietf court (en) -> variante régionale par défaut (en-US).
+        """
+        info = self._audio_only_info(fmt="matroska,webm", language="eng")
+
+        with (
+            patch.object(self.insp, "_run_ffprobe", return_value={}),
+            patch.object(self.insp, "_parse_ffprobe", return_value=info),
+            patch.object(self.insp, "get_frame_count", return_value=None),
+            patch.object(self.insp, "_get_mkvmerge_track_data", return_value=(0, {1: "en"})),
+        ):
+            out = self.insp.inspect(self.path)
+
+        assert out.audio_tracks[0].language == "en-US"
+
+    def test_inspect_regionalizes_short_ietf_with_title_hint(self):
+        """
+        RFC 5646 court (fr) + titre indicatif -> variante régionale inférée.
+        """
+        info = self._audio_only_info(
+            fmt="mov,mp4,m4a,3gp,3g2,mj2",
+            language="fr",
+            title="Français (Canadien)",
+        )
+
+        with (
+            patch.object(self.insp, "_run_ffprobe", return_value={}),
+            patch.object(self.insp, "_parse_ffprobe", return_value=info),
+            patch.object(self.insp, "get_frame_count", return_value=None),
+        ):
+            out = self.insp.inspect(self.path)
+
+        assert out.audio_tracks[0].language == "fr-CA"
+
+    def test_inspect_defaults_eng_to_en_us_when_region_missing(self):
+        """
+        ISO 639-2 'eng' sans précision régionale -> en-US par défaut.
+        """
+        info = self._audio_only_info(
+            fmt="mov,mp4,m4a,3gp,3g2,mj2",
+            language="eng",
+        )
+
+        with (
+            patch.object(self.insp, "_run_ffprobe", return_value={}),
+            patch.object(self.insp, "_parse_ffprobe", return_value=info),
+            patch.object(self.insp, "get_frame_count", return_value=None),
+        ):
+            out = self.insp.inspect(self.path)
+
+        assert out.audio_tracks[0].language == "en-US"
+
+    def test_inspect_keeps_already_regional_tag(self):
+        """
+        Un tag déjà régional issu de mkvmerge est conservé tel quel.
+        """
+        info = self._audio_only_info(fmt="matroska,webm", language="eng")
+
+        with (
+            patch.object(self.insp, "_run_ffprobe", return_value={}),
+            patch.object(self.insp, "_parse_ffprobe", return_value=info),
+            patch.object(self.insp, "get_frame_count", return_value=None),
+            patch.object(self.insp, "_get_mkvmerge_track_data", return_value=(0, {1: "en-GB"})),
+        ):
+            out = self.insp.inspect(self.path)
+
+        assert out.audio_tracks[0].language == "en-GB"
+
+    def test_inspect_maps_und_to_none(self):
+        """
+        'und' reste traité comme indéfini (None dans le modèle interne).
+        """
+        info = self._audio_only_info(
+            fmt="mov,mp4,m4a,3gp,3g2,mj2",
+            language="und",
+        )
+
+        with (
+            patch.object(self.insp, "_run_ffprobe", return_value={}),
+            patch.object(self.insp, "_parse_ffprobe", return_value=info),
+            patch.object(self.insp, "get_frame_count", return_value=None),
+        ):
+            out = self.insp.inspect(self.path)
+
+        assert out.audio_tracks[0].language is None
+
+    def test_inspect_canonicalizes_case_for_known_ietf(self):
+        """
+        Les balises connues sont normalisées avec la casse canonique.
+        """
+        info = self._audio_only_info(
+            fmt="mov,mp4,m4a,3gp,3g2,mj2",
+            language="EN-us",
+        )
+
+        with (
+            patch.object(self.insp, "_run_ffprobe", return_value={}),
+            patch.object(self.insp, "_parse_ffprobe", return_value=info),
+            patch.object(self.insp, "get_frame_count", return_value=None),
+        ):
+            out = self.insp.inspect(self.path)
+
+        assert out.audio_tracks[0].language == "en-US"

@@ -318,11 +318,18 @@ class RemuxWorkflow(QObject):
         mkvmerge_bin: str = "mkvmerge",
         mkvpropedit_bin: str = "mkvpropedit",
         parent: QObject | None = None,
+        *,
+        writing_application: str = "",
     ) -> None:
         super().__init__(parent)
         self._mkvmerge = mkvmerge_bin
         self._mkvpropedit = mkvpropedit_bin
         self._runner = ToolRunner(max_workers=1, parent=self)
+        self._writing_application = writing_application.strip()
+
+    def set_writing_application(self, writing_application: str) -> None:
+        """Met à jour la valeur du tag Multiplexing Application."""
+        self._writing_application = writing_application.strip()
 
     # ------------------------------------------------------------------
     # Construction de la commande
@@ -568,6 +575,10 @@ class RemuxWorkflow(QObject):
             "</Tags>\n"
         )
 
+        if not self._mkvpropedit:
+            self.log_message.emit("WARN", "mkvpropedit non configuré — balises non appliquées.")
+            return
+
         tmp_path: Path | None = None
         try:
             with tempfile.NamedTemporaryFile(
@@ -577,12 +588,12 @@ class RemuxWorkflow(QObject):
                 tmp_path = Path(f.name)
 
             cmd = [self._mkvpropedit, str(output), "--tags", f"all:{tmp_path}"]
-            self.log_message.emit("INFO", "$ " + " ".join(cmd))
+            self.log_message.emit("INFO", "$ " + " ".join(str(c) for c in cmd))
             r = subprocess.run(
                 cmd, capture_output=True, check=False, timeout=60, **subprocess_text_kwargs()
             )
             if r.returncode != 0:
-                self.log_message.emit("WARN", f"mkvpropedit (balises) : {r.stderr.strip()}")
+                self.log_message.emit("WARN", f"mkvpropedit (balises) : {(r.stderr or '').strip()}")
         except FileNotFoundError:
             self.log_message.emit("WARN", "mkvpropedit introuvable — balises non appliquées.")
         finally:
@@ -594,18 +605,24 @@ class RemuxWorkflow(QObject):
 
     def _set_writing_app_inplace(self, output: Path) -> None:
         """Écrit le tag Multiplexing Application dans les infos de segment via mkvpropedit."""
+        if not self._mkvpropedit:
+            self.log_message.emit("WARN", "mkvpropedit non configuré — writing-app non appliqué.")
+            return
+        if not self._writing_application:
+            self.log_message.emit("WARN", "Writing-app non configuré — balise non appliquée.")
+            return
         cmd = [
             self._mkvpropedit, str(output),
             "--edit", "info",
-            "--set", "muxing-application=MediaRecode v1.0 by Hydro74000 - VibeCode Proof of Concept",
+            "--set", f"muxing-application={self._writing_application}",
         ]
         try:
-            self.log_message.emit("INFO", "$ " + " ".join(cmd))
+            self.log_message.emit("INFO", "$ " + " ".join(str(c) for c in cmd))
             r = subprocess.run(
                 cmd, capture_output=True, check=False, timeout=30, **subprocess_text_kwargs()
             )
             if r.returncode != 0:
-                self.log_message.emit("WARN", f"mkvpropedit (writing-app) : {r.stderr.strip()}")
+                self.log_message.emit("WARN", f"mkvpropedit (writing-app) : {(r.stderr or '').strip()}")
         except FileNotFoundError:
             self.log_message.emit("WARN", "mkvpropedit introuvable — writing-app non appliqué.")
 

@@ -22,29 +22,7 @@ import re
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QWidget
-
-
-# =============================================================================
-# Palette (thème sombre cohérent avec le reste de l'app)
-# =============================================================================
-
-class _C:
-    BG_DEEP    = "#0d0f14"
-    BG_PANEL   = "#141720"
-    BG_CARD    = "#1a1e2a"
-    BG_HOVER   = "#1f2435"
-    BG_ACTIVE  = "#232840"
-    BORDER     = "#252a3a"
-    BORDER_LT  = "#2e3450"
-    TEXT_PRI   = "#e8ecf4"
-    TEXT_SEC   = "#7a85a0"
-    TEXT_DIM   = "#3d4560"
-    ACCENT     = "#4f6ef7"
-    ACCENT_DIM = "#2a3a8a"
-    OK         = "#5dcc8a"
-    WARN       = "#f5c842"
-    ERROR      = "#f55a5a"
-    INFO       = "#7ab3f5"
+from ui.design_system import colors as _C
 
 
 # =============================================================================
