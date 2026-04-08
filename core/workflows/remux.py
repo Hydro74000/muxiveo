@@ -389,8 +389,9 @@ class RemuxWorkflow(QObject):
             and self._mkvmerge_major_version >= 98
         )
 
-        # --- Titre du segment de sortie (toujours appliqué, même vide) ---
-        cmd.extend(["--title", config.file_title])
+        # --- Titre du segment de sortie (omis si vide) ---
+        if config.file_title:
+            cmd.extend(["--title", config.file_title])
 
         # --- Chapitres personnalisés (avant les sources, option globale) ---
         if config.chapter_overrides is not None:

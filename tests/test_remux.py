@@ -1687,8 +1687,8 @@ class TestAttachmentPanelTmdb:
 
 class TestBuildCommandFileTitle:
     """
-    Vérifie que --title est toujours émis dans build_command, avec la valeur
-    exacte fournie dans RemuxConfig.file_title (chaîne vide incluse).
+    Vérifie que --title est émis dans build_command uniquement si file_title
+    est non vide.
     """
 
     def setup_method(self):
@@ -1718,11 +1718,9 @@ class TestBuildCommandFileTitle:
         assert cmd[idx + 1] == "Mon Film"
 
     def test_title_empty_string(self):
-        """file_title='' → --title '' (vide, pour effacer un titre existant)."""
+        """file_title='' → --title omis (mkvmerge conserve le titre source)."""
         cmd = self._cmd(self._simple_cfg(""))
-        assert "--title" in cmd
-        idx = cmd.index("--title")
-        assert cmd[idx + 1] == ""
+        assert "--title" not in cmd
 
     def test_title_before_source_file(self):
         """--title doit précéder le chemin du fichier source dans la commande."""
@@ -1730,12 +1728,17 @@ class TestBuildCommandFileTitle:
         assert cmd.index("--title") < cmd.index("/a.mkv")
 
     def test_title_after_output(self):
-        """--title apparaît après -o OUTPUT, avant les sources."""
+        """--title apparaît après -o OUTPUT, avant les sources (quand non vide)."""
         cmd = self._cmd(self._simple_cfg("Film"))
         o_idx = cmd.index("-o")
         t_idx = cmd.index("--title")
         src_idx = cmd.index("/a.mkv")
         assert o_idx < t_idx < src_idx
+
+    def test_title_absent_when_empty(self):
+        """--title absent si file_title vide, quel que soit le contenu source."""
+        cmd = self._cmd(self._simple_cfg(""))
+        assert "--title" not in cmd
 
 
 # ===========================================================================
