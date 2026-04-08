@@ -2,12 +2,18 @@
 core/media_info_fetcher.py — Récupération de métadonnées film/série via l'API TMDB v3.
 
 Aucune dépendance externe (urllib uniquement).
-Nécessite une clé API TMDB gratuite : https://www.themoviedb.org/settings/api
+Authentification TMDB via :
+    - clé API v3
+    - ou token Bearer v4
 """
 from __future__ import annotations
 
 import json
+import logging
+import mimetypes
+import os
 import re
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -128,6 +134,9 @@ class MediaDetails:
     season:     str = ""   # numéro de saison (séries uniquement)
     episode:    str = ""   # numéro d'épisode (séries uniquement)
     episode_title: str = ""  # titre de l'épisode (séries uniquement)
+    cover_bytes: bytes = b""  # image de cover récupérée depuis TMDB si disponible
+    cover_mimetype: str = ""
+    cover_filename: str = ""
 
     def _season_episode_code(self) -> str:
         """
@@ -253,6 +262,24 @@ _BASE    = "https://api.themoviedb.org/3"
 _URL_MV  = "https://www.themoviedb.org/movie/{id}"
 _URL_TV  = "https://www.themoviedb.org/tv/{id}"
 _URL_IMD = "https://www.imdb.com/title/{imdb_id}/"
+_TMDB_DEBUG_ENV = "MEDIARECODE_TMDB_DEBUG"
+_TMDB_LOGGER = logging.getLogger("mediarecode.tmdb")
+_TMDB_BEARER_TOKEN_ENV = "MEDIARECODE_TMDB_BEARER_TOKEN"
+_TMDB_DEFAULT_BEARER_TOKEN = (
+    "eyJhbGciOiJIUzI1NiJ9."
+    "eyJhdWQiOiI3MWYxZWFlYTU3MmVlNmNhNTg0OTRmNzMxMjg5ODhhZiIs"
+    "Im5iZiI6MTc3NTU3OTA1NS4yOTc5OTk5LCJzdWIiOiI2OWQ1MmZhZjMyZGYxMmRkOTZmOGE2NDYiLCJzY29wZXMiOlsiYXBpX3JlYWQiXSwidmVyc2lvbiI6MX0."
+    "-Uv04JF4wgu7NPJKWXnPY6OuXn4sWxcurBzeszGfnos"
+)
+
+
+def default_tmdb_bearer_token() -> str:
+    """
+    Retourne le token Bearer TMDB:
+    1) variable d'environnement MEDIARECODE_TMDB_BEARER_TOKEN
+    2) token par défaut embarqué
+    """
+    return os.environ.get(_TMDB_BEARER_TOKEN_ENV, "").strip() or _TMDB_DEFAULT_BEARER_TOKEN
 
 
 class TmdbFetcher:
@@ -260,39 +287,74 @@ class TmdbFetcher:
     Client léger pour l'API TMDB v3 (urllib stdlib, aucune dépendance externe).
 
     Paramètres :
-        api_key  — clé API TMDB v3 (32 hex).
+        api_key      — clé API TMDB v3 (optionnelle si bearer_token est fourni).
+        bearer_token — token Bearer TMDB v4 (optionnel si api_key est fourni).
         language — locale BCP-47 utilisée pour les titres et synopsis
                    (ex. 'fr-FR', 'en-US').
     """
 
-    def __init__(self, api_key: str, language: str = "en-US") -> None:
-        if not api_key or not api_key.strip():
-            raise TmdbError("Clé API TMDB manquante.")
-        self._key  = api_key.strip()
+    def __init__(
+        self,
+        api_key: str = "",
+        *,
+        language: str = "en-US",
+        bearer_token: str = "",
+    ) -> None:
+        self._key = api_key.strip()
+        self._bearer_token = bearer_token.strip()
+        if not self._key and not self._bearer_token:
+            raise TmdbError("Authentification TMDB manquante (clé API ou token Bearer).")
         self._lang = language or "en-US"
+        self._image_config_cache: dict | None = None
+
+    def _debug_enabled(self) -> bool:
+        raw = os.environ.get(_TMDB_DEBUG_ENV, "")
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+    def _debug_log(self, message: str, **fields: object) -> None:
+        if not self._debug_enabled():
+            return
+        parts = [message]
+        for key, value in fields.items():
+            parts.append(f"{key}={value!r}")
+        line = " | ".join(parts)
+        if _TMDB_LOGGER.hasHandlers():
+            _TMDB_LOGGER.debug(line)
+            return
+        print(f"[TMDB DEBUG] {line}", file=sys.stderr)
 
     # ------------------------------------------------------------------
     # Requête HTTP interne
     # ------------------------------------------------------------------
 
     def _get(self, endpoint: str, extra: dict | None = None) -> dict:
-        params: dict = {"api_key": self._key, "language": self._lang}
+        params: dict[str, str] = {"language": self._lang}
+        if self._key:
+            params["api_key"] = self._key
         if extra:
             params.update(extra)
-        url = f"{_BASE}{endpoint}?{urllib.parse.urlencode(params)}"
+        query = urllib.parse.urlencode(params)
+        url = f"{_BASE}{endpoint}?{query}" if query else f"{_BASE}{endpoint}"
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "Mediarecode/1.1",
+        }
+        if self._bearer_token:
+            headers["Authorization"] = f"Bearer {self._bearer_token}"
         req = urllib.request.Request(
             url,
-            headers={
-                "Accept":     "application/json",
-                "User-Agent": "Mediarecode/1.1",
-            },
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(req, timeout=12) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             if exc.code == 401:
-                raise TmdbError("Clé API TMDB invalide ou expirée (401).") from exc
+                if self._key and not self._bearer_token:
+                    raise TmdbError("Clé API TMDB invalide ou expirée (401).") from exc
+                if self._bearer_token and not self._key:
+                    raise TmdbError("Token Bearer TMDB invalide ou expiré (401).") from exc
+                raise TmdbError("Authentification TMDB invalide ou expirée (401).") from exc
             if exc.code == 404:
                 raise TmdbError(f"Ressource introuvable sur TMDB (404) : {endpoint}") from exc
             raise TmdbError(f"Erreur HTTP {exc.code} lors de la requête TMDB.") from exc
@@ -300,6 +362,108 @@ class TmdbFetcher:
             raise TmdbError(f"Impossible de contacter TMDB : {exc.reason}") from exc
         except (json.JSONDecodeError, KeyError) as exc:
             raise TmdbError(f"Réponse TMDB invalide : {exc}") from exc
+
+    def _get_binary(self, url: str) -> tuple[bytes, str]:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "image/*,*/*;q=0.8",
+                "User-Agent": "Mediarecode/1.1",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                content_type = resp.headers.get("Content-Type", "").split(";", 1)[0].strip()
+                return resp.read(), content_type
+        except urllib.error.HTTPError as exc:
+            raise TmdbError(f"Erreur HTTP {exc.code} lors du téléchargement TMDB.") from exc
+        except urllib.error.URLError as exc:
+            raise TmdbError(f"Impossible de télécharger l'image TMDB : {exc.reason}") from exc
+
+    def _image_configuration(self) -> dict:
+        if self._image_config_cache is None:
+            self._image_config_cache = self._get("/configuration")
+        return self._image_config_cache
+
+    def _build_image_url(self, file_path: str, *, image_kind: str = "poster") -> str:
+        clean_path = (file_path or "").strip()
+        if not clean_path:
+            return ""
+
+        secure_base_url = "https://image.tmdb.org/t/p/"
+        sizes: list[str] = ["original"]
+        try:
+            config = self._image_configuration()
+            images = config.get("images", {}) if isinstance(config, dict) else {}
+            secure_base_url = (
+                str(images.get("secure_base_url") or images.get("base_url") or secure_base_url).strip()
+            )
+            size_key = "backdrop_sizes" if image_kind == "backdrop" else "poster_sizes"
+            raw_sizes = images.get(size_key, [])
+            if isinstance(raw_sizes, list) and raw_sizes:
+                sizes = [str(size).strip() for size in raw_sizes if str(size).strip()]
+        except TmdbError:
+            pass
+
+        preferred_order = ("w780", "w500", "original")
+        chosen = next((size for size in preferred_order if size in sizes), sizes[-1] if sizes else "original")
+        return f"{secure_base_url}{chosen}{clean_path}"
+
+    def _cover_filename(self, file_path: str, mimetype: str = "") -> str:
+        suffix = Path(file_path).suffix.lower()
+        if suffix in {".jpg", ".jpeg"}:
+            return "cover.jpg"
+        if suffix:
+            return f"cover{suffix}"
+        guessed = mimetypes.guess_extension(mimetype or "") or ".jpg"
+        if guessed == ".jpe":
+            guessed = ".jpg"
+        return f"cover{guessed}"
+
+    def _language_parts(self, language: str | None = None) -> tuple[str, str]:
+        """
+        Découpe une locale TMDB en (langue, région), ex. "fr-FR" -> ("fr", "FR").
+        """
+        raw = (language or self._lang or "").strip()
+        if not raw:
+            return "", ""
+        parts = raw.split("-", 1)
+        lang = parts[0].lower()
+        region = parts[1].upper() if len(parts) > 1 else ""
+        return lang, region
+
+    def _pick_translation_data(self, payload: dict, *, language: str | None = None) -> tuple[str, str]:
+        """
+        Extrait (name, overview) depuis une réponse `/translations`.
+
+        Stratégie :
+        1. correspondance exacte langue+région (ex. fr-FR)
+        2. première correspondance sur la langue seule (ex. fr-*)
+        """
+        lang, region = self._language_parts(language)
+        if not lang:
+            return "", ""
+
+        fallback_name = ""
+        fallback_overview = ""
+        for item in payload.get("translations", []):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("iso_639_1", "")).lower() != lang:
+                continue
+            data = item.get("data")
+            if not isinstance(data, dict):
+                continue
+            name = str(data.get("name") or "").strip()
+            overview = str(data.get("overview") or "").strip()
+            item_region = str(item.get("iso_3166_1", "")).upper()
+            if region and item_region == region:
+                return name, overview
+            if not fallback_name and name:
+                fallback_name = name
+            if not fallback_overview and overview:
+                fallback_overview = overview
+        return fallback_name, fallback_overview
 
     # ------------------------------------------------------------------
     # Recherche
@@ -437,14 +601,102 @@ class TmdbFetcher:
                 episode_no = 0
 
             if season_no > 0 and episode_no > 0:
+                ep_endpoint = f"/tv/{result.tmdb_id}/season/{season_no}/episode/{episode_no}"
+                overview_source = "series"
+                episode_title_source = "series"
+                attempts: list[str] = []
                 try:
-                    ep_data = self._get(f"/tv/{result.tmdb_id}/season/{season_no}/episode/{episode_no}")
+                    ep_data = self._get(ep_endpoint)
+                    attempts.append(f"episode_detail[{self._lang}]")
                     ep_overview = (ep_data.get("overview") or "").strip()
+                    episode_title = (ep_data.get("name") or "").strip()
+                    if ep_overview:
+                        overview_source = f"episode_detail:{self._lang}"
+                    if episode_title:
+                        episode_title_source = f"episode_detail:{self._lang}"
+
+                    # L'endpoint détail d'épisode peut parfois être moins
+                    # complet que les traductions explicites disponibles.
+                    # On consulte donc `/translations` pour la locale active
+                    # avant de tomber sur le synopsis global de la série.
+                    if not ep_overview or not episode_title:
+                        try:
+                            tr_data = self._get(f"{ep_endpoint}/translations")
+                            attempts.append(f"episode_translations[{self._lang}]")
+                        except TmdbError:
+                            tr_data = {}
+                        tr_title, tr_overview = self._pick_translation_data(tr_data)
+                        if not ep_overview and tr_overview:
+                            ep_overview = tr_overview
+                            overview_source = f"episode_translations:{self._lang}"
+                        if not episode_title and tr_title:
+                            episode_title = tr_title
+                            episode_title_source = f"episode_translations:{self._lang}"
+
+                    # Certaines locales TMDB ne renseignent pas encore les
+                    # fiches d'épisodes. On retente en anglais pour récupérer
+                    # un synopsis/titre plus précis plutôt que de retomber
+                    # directement sur le synopsis global de la série.
+                    if self._lang.lower() != "en-us" and (not ep_overview or not episode_title):
+                        try:
+                            fallback_ep_data = self._get(ep_endpoint, {"language": "en-US"})
+                            attempts.append("episode_detail[en-US]")
+                        except TmdbError:
+                            fallback_ep_data = {}
+                        if not ep_overview:
+                            fallback_overview = (fallback_ep_data.get("overview") or "").strip()
+                            if fallback_overview:
+                                ep_overview = fallback_overview
+                                overview_source = "episode_detail:en-US"
+                        if not episode_title:
+                            fallback_title = (fallback_ep_data.get("name") or "").strip()
+                            if fallback_title:
+                                episode_title = fallback_title
+                                episode_title_source = "episode_detail:en-US"
+                        if not ep_overview or not episode_title:
+                            try:
+                                fallback_tr_data = self._get(
+                                    f"{ep_endpoint}/translations",
+                                    {"language": "en-US"},
+                                )
+                                attempts.append("episode_translations[en-US]")
+                            except TmdbError:
+                                fallback_tr_data = {}
+                            tr_title, tr_overview = self._pick_translation_data(
+                                fallback_tr_data,
+                                language="en-US",
+                            )
+                            if not ep_overview and tr_overview:
+                                ep_overview = tr_overview
+                                overview_source = "episode_translations:en-US"
+                            if not episode_title and tr_title:
+                                episode_title = tr_title
+                                episode_title_source = "episode_translations:en-US"
+
                     if ep_overview:
                         synopsis = ep_overview
-                    episode_title = (ep_data.get("name") or "").strip()
+                    self._debug_log(
+                        "TV episode metadata resolved",
+                        tmdb_id=result.tmdb_id,
+                        language=self._lang,
+                        season=season_no,
+                        episode=episode_no,
+                        overview_source=overview_source,
+                        episode_title_source=episode_title_source,
+                        synopsis_found=bool(ep_overview),
+                        episode_title_found=bool(episode_title),
+                        attempts=" -> ".join(attempts),
+                    )
                 except TmdbError:
                     # Fallback silencieux vers le synopsis global de la série.
+                    self._debug_log(
+                        "TV episode metadata fetch failed; keeping series overview",
+                        tmdb_id=result.tmdb_id,
+                        language=self._lang,
+                        season=season_no,
+                        episode=episode_no,
+                        endpoint=ep_endpoint,
+                    )
                     pass
 
         # Identifiants externes (IMDb)
@@ -465,6 +717,24 @@ class TmdbFetcher:
         if isinstance(col, dict):
             collection = col.get("name", "")
 
+        cover_bytes = b""
+        cover_mimetype = ""
+        cover_filename = ""
+        poster_path = str(data.get("poster_path") or "").strip()
+        backdrop_path = str(data.get("backdrop_path") or "").strip()
+        cover_path = poster_path or backdrop_path
+        cover_kind = "poster" if poster_path else "backdrop"
+        if cover_path:
+            try:
+                cover_url = self._build_image_url(cover_path, image_kind=cover_kind)
+                if cover_url:
+                    cover_bytes, cover_mimetype = self._get_binary(cover_url)
+                    cover_filename = self._cover_filename(cover_path, cover_mimetype)
+            except TmdbError:
+                cover_bytes = b""
+                cover_mimetype = ""
+                cover_filename = ""
+
         out_season = season if result.kind == "tv" else ""
         out_episode = episode if result.kind == "tv" else ""
 
@@ -482,4 +752,7 @@ class TmdbFetcher:
             season     = out_season,
             episode    = out_episode,
             episode_title=episode_title,
+            cover_bytes=cover_bytes,
+            cover_mimetype=cover_mimetype,
+            cover_filename=cover_filename,
         )

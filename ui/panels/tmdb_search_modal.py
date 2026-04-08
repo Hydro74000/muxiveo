@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QMessageBox,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -30,7 +29,12 @@ from PySide6.QtWidgets import (
 )
 
 from core.i18n import apply_translations, translate_text
-from core.media_info_fetcher import MediaDetails, MediaSearchResult, TmdbFetcher
+from core.media_info_fetcher import (
+    MediaDetails,
+    MediaSearchResult,
+    TmdbFetcher,
+    default_tmdb_bearer_token,
+)
 from ui.design_system import colors as _C
 
 _SEASON_EPISODE_RE = (
@@ -368,23 +372,10 @@ class TmdbSearchModal(QDialog):
         from core.media_info_fetcher import TmdbError, iso639_2_to_tmdb_lang
 
         key = self._config.tmdb_api_key.strip()
-        if not key:
-            msg = QMessageBox(self)
-            msg.setWindowTitle(translate_text("Clé API TMDB manquante"))
-            msg.setIcon(QMessageBox.Icon.Warning)
-            msg.setText(
-                translate_text(
-                    "Aucune clé API TMDB n'est configurée.\n\n"
-                    "Rendez-vous dans Paramètres → Métadonnées pour renseigner\n"
-                    "votre clé API TMDB v3 (gratuite sur themoviedb.org)."
-                )
-            )
-            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-            msg.exec()
-            return None
+        bearer_token = self._config.tmdb_bearer_token.strip() or default_tmdb_bearer_token()
         lang = iso639_2_to_tmdb_lang(self._config.language)
         try:
-            return TmdbFetcher(api_key=key, language=lang)
+            return TmdbFetcher(api_key=key, language=lang, bearer_token=bearer_token)
         except TmdbError as exc:
             msg = translate_text(str(exc))
             self._status_lbl.setText(translate_text("Erreur : {message}", message=msg))
