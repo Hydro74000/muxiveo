@@ -54,7 +54,7 @@ from core.version import APP_VERSION_LABEL, WRITING_APPLICATION_TAG
 from core.workflows.encode import EncodeError
 from core.workflows.remux import RemuxError
 from ui.panels.encode_panel import EncodePanel
-from ui.panels.encode_panel.theme import _FPS_RE, _TIME_RE, _fmt_eta
+from ui.panels.encode_panel.theme import _FPS_RE, _fmt_eta, ffmpeg_progress_seconds
 from ui.panels.merge_dovi_panel import MergeDoviPanel
 from ui.panels.remux_panel import RemuxPanel
 from ui.panels.settings_panel import SettingsPanel
@@ -91,6 +91,41 @@ _LEVEL_LABELS: dict[LogLevel, str] = {
     LogLevel.WARN:  " WARN ",
     LogLevel.ERROR: " ERR  ",
 }
+
+_ENCODE_STAGE_PREFIXES: tuple[str, ...] = (
+    "Extraction HEVC source",
+    "Extraction RPU Dolby Vision",
+    "Extraction métadonnées HDR10+",
+    "Encodage vidéo",
+    "Injection métadonnées HDR10+",
+    "Injection RPU Dolby Vision",
+    "Reconstitution finale",
+    "Injection balises MKV",
+    "Écriture balises MKV",
+)
+
+_ENCODE_PROGRESS_NOISE_PREFIXES: tuple[str, ...] = (
+    "frame=",
+    "fps=",
+    "stream_",
+    "bitrate=",
+    "total_size=",
+    "out_time=",
+    "out_time_ms=",
+    "out_time_us=",
+    "dup_frames=",
+    "drop_frames=",
+    "speed=",
+    "progress=",
+)
+
+
+def _is_encode_stage_message(line: str) -> bool:
+    return any(line.startswith(prefix) for prefix in _ENCODE_STAGE_PREFIXES)
+
+
+def _is_encode_progress_noise(line: str) -> bool:
+    return any(line.startswith(prefix) for prefix in _ENCODE_PROGRESS_NOISE_PREFIXES)
 
 # ---------------------------------------------------------------------------
 # LogPanel
@@ -896,6 +931,7 @@ class MainWindow(QMainWindow):
         self._signals: TaskSignals | None = None
         self._op_start: float = 0.0
         self._op_mode: str = ""   # "remux" ou "encode"
+        self._op_encode_fps: float | None = None
         self._setup_window()
         self._build_ui()
         self._apply_startup_panel()
@@ -1227,6 +1263,8 @@ class MainWindow(QMainWindow):
         self._signals  = signals
         self._run_btn.setEnabled(False)
         self._cancel_btn.setVisible(True)
+        self._op_encode_fps = None
+        self._prog_bar.setRange(0, 100)
         self._prog_bar.setValue(0)
         self._prog_lbl.setText("")
         self._prog_widget.setVisible(True)
@@ -1421,17 +1459,27 @@ class MainWindow(QMainWindow):
         else:
             if self._NOISE_RE.search(line):
                 return
-            m = _TIME_RE.search(line)
-            if m:
-                elapsed_video = (
-                    int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
-                )
+            if line.startswith("$ "):
+                self._op_encode_fps = None
+                self.log_requested.emit("INFO", line)
+                return
+            fps_m = _FPS_RE.search(line)
+            if fps_m:
+                try:
+                    self._op_encode_fps = float(fps_m.group(1))
+                except ValueError:
+                    self._op_encode_fps = None
+            elapsed_video = ffmpeg_progress_seconds(line)
+            if elapsed_video is not None:
                 dur = self._encode_panel.get_duration_s()
                 if dur and dur > 0:
                     pct = min(99, int(elapsed_video / dur * 100))
                     self._prog_bar.setValue(pct)
-                    fps_m = _FPS_RE.search(line)
-                    fps_str = f"{float(fps_m.group(1)):.1f} fps" if fps_m else ""
+                    fps_str = (
+                        f"{self._op_encode_fps:.1f} fps"
+                        if self._op_encode_fps is not None and self._op_encode_fps > 0
+                        else ""
+                    )
                     elapsed_wall = time.monotonic() - self._op_start
                     if elapsed_wall > 0 and elapsed_video > 0:
                         speed = elapsed_video / elapsed_wall
@@ -1442,6 +1490,11 @@ class MainWindow(QMainWindow):
                     parts = [f"{pct}%", fps_str, eta_str]
                     self._prog_lbl.setText("  ·  ".join(p for p in parts if p))
                 return
+            if _is_encode_progress_noise(line):
+                return
+            if _is_encode_stage_message(line):
+                self._op_encode_fps = None
+                self._prog_lbl.setText(line)
             self.log_requested.emit("INFO", line)
 
     def _on_cancel_op(self) -> None:
@@ -1461,6 +1514,7 @@ class MainWindow(QMainWindow):
         self._run_btn.setEnabled(True)
         self._cancel_btn.setVisible(False)
         self._prog_widget.setVisible(False)
+        self._prog_bar.setRange(0, 100)
         self._prog_lbl.setText("")
         self._status_lbl.setText(translate_text("Annulé."))
         self.log_requested.emit("WARN", "Opération annulée.")
@@ -1470,6 +1524,7 @@ class MainWindow(QMainWindow):
         self._signals = None
         self._run_btn.setEnabled(True)
         self._cancel_btn.setVisible(False)
+        self._prog_bar.setRange(0, 100)
         if success:
             self._prog_bar.setValue(100)
             self._prog_lbl.setText(translate_text("100%  ·  terminé"))

@@ -178,15 +178,15 @@ def _make_workflow(enabled=True, threshold=15, ffmpeg_threads=None) -> EncodeWor
 
 class TestFfmpegThreads:
 
-    def test_default_threads_use_cpu_count_times_1_5_rounded_up(self):
+    def test_default_threads_use_cpu_count_times_0_75_rounded_up(self):
         with patch("core.workflows.encode.workflow.os.cpu_count", return_value=8):
             wf = _make_workflow()
-        assert wf._ffmpeg_threads == 12
+        assert wf._ffmpeg_threads == 6
 
     def test_negative_threads_fallback_to_default(self):
         with patch("core.workflows.encode.workflow.os.cpu_count", return_value=4):
             wf = _make_workflow(ffmpeg_threads=-3)
-        assert wf._ffmpeg_threads == 6
+        assert wf._ffmpeg_threads == 3
 
     def test_single_pass_build_includes_threads(self, tmp_path):
         src = tmp_path / "source.mkv"
@@ -206,6 +206,47 @@ class TestFfmpegThreads:
 
         assert cmds[0][cmds[0].index("-threads") + 1] == "14"
         assert cmds[1][cmds[1].index("-threads") + 1] == "14"
+
+
+class TestFfmpegProgressArgs:
+
+    def test_single_pass_build_includes_machine_progress_flags(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.touch()
+        wf = _make_workflow()
+
+        cmd = wf.build_command_single(_make_config(src, tmp_path / "out.mkv"))
+
+        assert "-progress" in cmd
+        assert cmd[cmd.index("-progress") + 1] == "pipe:1"
+        assert "-nostats" in cmd
+        assert cmd.index("-nostats") < cmd.index("-i")
+
+    def test_two_pass_build_uses_machine_progress_and_platform_null_sink(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.touch()
+        wf = _make_workflow()
+        video = _make_video_settings(quality_mode=QualityMode.SIZE)
+
+        cmds = wf.build_command(_make_config(src, tmp_path / "out.mkv", video=video, duration_s=3600.0))
+
+        for cmd in cmds:
+            assert "-progress" in cmd
+            assert cmd[cmd.index("-progress") + 1] == "pipe:1"
+            assert "-nostats" in cmd
+        assert cmds[0][-1] == os.devnull
+
+    def test_video_only_build_includes_machine_progress_flags(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.touch()
+        wf = _make_workflow()
+        output_hevc = tmp_path / "enc.hevc"
+
+        cmd = wf._build_video_only_cmd(_make_config(src, tmp_path / "out.mkv"), output_hevc)
+
+        assert "-progress" in cmd
+        assert cmd[cmd.index("-progress") + 1] == "pipe:1"
+        assert "-nostats" in cmd
 
 # ===========================================================================
 # _total_ram_bytes — cross-platform

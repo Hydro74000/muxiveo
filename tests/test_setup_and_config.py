@@ -181,8 +181,8 @@ class TestAppConfigRamBuffer:
         assert cfg.audio_default_bitrate_per_channel_kbps == 160
         assert cfg.audio_bitrate_step_per_channel_kbps == 48
 
-    def test_ffmpeg_threads_default_uses_cpu_count_times_1_5(self, tmp_path):
-        """Sans valeur explicite, ffmpeg.threads vaut cores × 1,5 arrondi au supérieur."""
+    def test_ffmpeg_threads_default_uses_cpu_count_times_0_75(self, tmp_path):
+        """Sans valeur explicite, ffmpeg.threads vaut cores × 0,75 arrondi au supérieur."""
         from core.config import AppConfig
 
         with patch("core.config.QSettings") as mock_qs, \
@@ -194,7 +194,7 @@ class TestAppConfigRamBuffer:
                  patch.dict(os.environ, {}, clear=False):
                 cfg = AppConfig()
 
-        assert cfg.ffmpeg_threads == 12
+        assert cfg.ffmpeg_threads == 6
 
     def test_ffmpeg_threads_ini_overrides_default(self, tmp_path):
         """config.ini [ffmpeg] threads surcharge le défaut calculé."""
@@ -231,7 +231,7 @@ class TestAppConfigRamBuffer:
                  patch.object(cfg_mod, "_INI_PATH", ini_path):
                 cfg = AppConfig()
 
-        assert cfg.ffmpeg_threads == 6
+        assert cfg.ffmpeg_threads == 3
 
 
 class TestAppConfigWindowsToolAutodetect:

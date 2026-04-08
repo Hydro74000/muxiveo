@@ -13,6 +13,7 @@ Public:
     _checkbox_style — stylesheet string for QCheckBox
     _TIME_RE        — compiled regex matching ffmpeg time= output
     _FPS_RE         — compiled regex matching ffmpeg fps= output
+    ffmpeg_progress_seconds — extracts elapsed media time from ffmpeg progress output
     _fmt_eta        — formats remaining seconds as human-readable string
 """
 
@@ -113,6 +114,39 @@ def _checkbox_style() -> str:
 
 _TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
 _FPS_RE  = re.compile(r"\bfps=\s*([\d.]+)")
+_OUT_TIME_RE = re.compile(r"\bout_time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+_OUT_TIME_TICKS_RE = re.compile(r"\bout_time_(?:ms|us)=(\d+)")
+
+
+def _hms_to_seconds(match: re.Match[str]) -> float:
+    return int(match.group(1)) * 3600 + int(match.group(2)) * 60 + float(match.group(3))
+
+
+def ffmpeg_progress_seconds(line: str) -> float | None:
+    """
+    Retourne le temps média écoulé pour une ligne de progression FFmpeg.
+
+    Gère à la fois :
+      - les stats texte historiques (`time=...`)
+      - la sortie machine de `-progress pipe:1` (`out_time=...`)
+      - le fallback numérique `out_time_ms` / `out_time_us`
+
+    Note : malgré son nom, `out_time_ms` est souvent exprimé en microsecondes
+    par FFmpeg ; on traite donc ces compteurs comme des microsecondes.
+    """
+    match = _TIME_RE.search(line)
+    if match:
+        return _hms_to_seconds(match)
+
+    match = _OUT_TIME_RE.search(line)
+    if match:
+        return _hms_to_seconds(match)
+
+    match = _OUT_TIME_TICKS_RE.search(line)
+    if match:
+        return int(match.group(1)) / 1_000_000.0
+
+    return None
 
 
 def _fmt_eta(seconds: float) -> str:
