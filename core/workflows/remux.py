@@ -115,19 +115,27 @@ class TrackEntry:
     def type_label(self) -> str:
         """Lettre courte pour l'affichage dans le tableau."""
         match self.track_type:
-            case "video":    return "V"
-            case "audio":    return "A"
-            case "subtitle": return "S"
-            case _:          return "?"
+            case "video":
+                return "V"
+            case "audio":
+                return "A"
+            case "subtitle":
+                return "S"
+            case _:
+                return "?"
 
     @property
     def type_long(self) -> str:
         """Libellé long du type de piste."""
         match self.track_type:
-            case "video":    return "Vidéo"
-            case "audio":    return "Audio"
-            case "subtitle": return "Sous-titre"
-            case _:          return self.track_type
+            case "video":
+                return "Vidéo"
+            case "audio":
+                return "Audio"
+            case "subtitle":
+                return "Sous-titre"
+            case _:
+                return self.track_type
 
 
 # =============================================================================
@@ -328,12 +336,25 @@ class RemuxWorkflow(QObject):
         parent: QObject | None = None,
         *,
         writing_application: str = "",
+        mkvmerge_major_version: int | None = None,
     ) -> None:
         super().__init__(parent)
         self._mkvmerge = mkvmerge_bin
         self._mkvpropedit = mkvpropedit_bin
         self._runner = ToolRunner(max_workers=1, parent=self)
         self._writing_application = writing_application.strip()
+        self._mkvmerge_major_version = mkvmerge_major_version
+
+    def set_mkvmerge_bin(self, mkvmerge_bin: str) -> None:
+        """Met à jour le binaire mkvmerge utilisé par le workflow."""
+        self._mkvmerge = mkvmerge_bin
+
+    def set_mkvpropedit_bin(self, mkvpropedit_bin: str) -> None:
+        """Met à jour le binaire mkvpropedit utilisé par le workflow."""
+        self._mkvpropedit = mkvpropedit_bin
+
+    def set_mkvmerge_major_version(self, major: int | None) -> None:
+        self._mkvmerge_major_version = major
 
     def set_writing_application(self, writing_application: str) -> None:
         """Met à jour la valeur du tag Multiplexing Application."""
@@ -367,9 +388,18 @@ class RemuxWorkflow(QObject):
                         un placeholder.
         """
         cmd: list[str] = [self._mkvmerge, "-o", _cli_path(config.output)]
+        allow_language_ietf = (
+            self._mkvmerge_major_version is not None
+            and self._mkvmerge_major_version < 98
+        )
+        use_ietf_in_language_flag = (
+            self._mkvmerge_major_version is not None
+            and self._mkvmerge_major_version >= 98
+        )
 
-        # --- Titre du segment de sortie (toujours appliqué, même vide) ---
-        cmd.extend(["--title", config.file_title])
+        # --- Titre du segment de sortie (omis si vide) ---
+        if config.file_title:
+            cmd.extend(["--title", config.file_title])
 
         # --- Chapitres personnalisés (avant les sources, option globale) ---
         if config.chapter_overrides is not None:
@@ -454,25 +484,54 @@ class RemuxWorkflow(QObject):
                     cmd.extend(["--attachments", ids])
                 # sinon : tous sélectionnés → mkvmerge les copie par défaut
 
-            # --- Métadonnées de pistes (seulement si modifiées) ---
+            # --- Métadonnées de pistes ---
             for t in src.tracks:
                 if t.mkv_tid not in enabled_tids:
                     continue
                 if t.title != t.orig_title:
                     cmd.extend(["--track-name", f"{t.mkv_tid}:{t.title}"])
-                lang     = (t.language      or "").strip()
+                lang      = (t.language      or "").strip()
                 orig_lang = (t.orig_language or "").strip()
-                if lang != orig_lang:
-                    # Langue modifiée ou vidée → émettre --language-ietf
-                    emit_lang = lang if lang else "und"
-                    cmd.extend(["--language", f"{t.mkv_tid}:{LangTags.to_iso639_2(emit_lang)}"])
-                    cmd.extend(["--language-ietf", f"{t.mkv_tid}:{emit_lang}"])
-                    if emit_metadata_logs:
-                        self.log_message.emit(
-                            "INFO",
-                            f"Lang set for track {t.mkv_tid} to {emit_lang} "
-                            f"(ISO639-2: {LangTags.to_iso639_2(emit_lang)}) in workflow",
-                        )
+                lang_changed = lang != orig_lang
+
+                # --language est toujours émis pour garantir que la forme
+                # IETF régionale (v98+) ou ISO 639-2 (v97-) est écrite dans
+                # le fichier de sortie, même si la langue n'a pas été modifiée
+                # par l'utilisateur (l'inspecteur peut avoir régionalisé
+                # silencieusement "en" → "en-US" sans que orig_language change).
+                emit_lang = lang if lang else "und"
+                canonical_lang = LangTags.normalize(emit_lang) or emit_lang
+                regional_lang = (
+                    LangTags.regionalize_track_language(canonical_lang, t.title)
+                    or canonical_lang
+                )
+                iso639_2 = LangTags.to_iso639_2(canonical_lang) or "und"
+
+                language_value = iso639_2
+                if use_ietf_in_language_flag:
+                    if canonical_lang.lower() == "und":
+                        language_value = "und"
+                    elif LangTags.is_valid(canonical_lang):
+                        language_value = regional_lang
+                cmd.extend(["--language", f"{t.mkv_tid}:{language_value}"])
+
+                # --language-ietf : uniquement pour mkvmerge < 98,
+                # langue explicitement modifiée, valide et non "und".
+                emit_ietf = (
+                    allow_language_ietf
+                    and lang_changed
+                    and bool(lang)
+                    and canonical_lang.lower() != "und"
+                    and LangTags.is_valid(canonical_lang)
+                )
+                if emit_ietf:
+                    cmd.extend(["--language-ietf", f"{t.mkv_tid}:{regional_lang}"])
+                if emit_metadata_logs:
+                    self.log_message.emit(
+                        "INFO",
+                        f"Lang set for track {t.mkv_tid} to {language_value} "
+                        f"(ISO639-2: {iso639_2}) in workflow",
+                    )
                 # Flags MKV
                 if t.flag_enabled != t.orig_flag_enabled:
                     cmd.extend(["--track-enabled-flag",  f"{t.mkv_tid}:{'1' if t.flag_enabled else '0'}"])

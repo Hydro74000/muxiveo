@@ -2333,6 +2333,18 @@ class TestApplyTrackMetaEdits:
         assert "language=eng" in cmd
         assert "language-ietf=eng" in cmd
 
+    def test_und_input_sets_undefined_language(self, tmp_path):
+        """und applique explicitement la langue indéfinie sur la piste."""
+        from core.workflows.encode.models import TrackMetaEdit
+        output = tmp_path / "out.mkv"
+        output.touch()
+        edit = TrackMetaEdit(track_order=2, language="und")
+
+        cmd = self._run_edits([edit], output)
+
+        assert "language=und" in cmd
+        assert "language-ietf=und" in cmd
+
     # ── title seul (pas de langue) ───────────────────────────────────────────
 
     def test_title_only_no_language_set(self, tmp_path):

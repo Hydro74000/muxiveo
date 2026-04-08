@@ -2418,6 +2418,7 @@ class RemuxPanel(QWidget):
             mkvmerge_bin=config.tool_mkvmerge,
             mkvpropedit_bin=config.tool_mkvpropedit,
             writing_application=writing_application,
+            mkvmerge_major_version=config.tool_major_version("mkvmerge"),
         )
         self._executor = ThreadPoolExecutor(max_workers=2)
 
@@ -3003,6 +3004,15 @@ class RemuxPanel(QWidget):
     def collect_config(self) -> "RemuxConfig | None":
         """Retourne la configuration de remuxage courante, ou None si incomplète."""
         return self._current_config()
+
+    def refresh_runtime_settings(self) -> None:
+        """Recharge les binaires/runtime issus de la configuration courante."""
+        self._workflow.set_mkvmerge_bin(self._config.tool_mkvmerge)
+        self._workflow.set_mkvpropedit_bin(self._config.tool_mkvpropedit)
+        self._workflow.set_mkvmerge_major_version(
+            self._config.tool_major_version("mkvmerge")
+        )
+        self._rebuild_preview()
 
     def update_audio_track_meta(self, stream_index: int, source_path, lang: str, title: str) -> None:
         """Met à jour lang/titre d'une piste audio depuis l'EncodePanel (sync bidirectionnelle)."""
