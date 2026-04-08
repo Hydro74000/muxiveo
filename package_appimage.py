@@ -37,6 +37,7 @@ Options :
     --allinc             Embarque tous les outils externes dans l'AppImage
     --skip-pyinstaller   Réutilise le bundle PyInstaller existant dans dist/
     --arch ARCH          Architecture cible AppImage : x86_64 (défaut) ou aarch64
+    --version TAG        Suffixe de version pour le fichier final (défaut: APP_VERSION)
     --dest PATH          Copie le fichier final vers un chemin personnalisé (dossier ou fichier)
     --windows            Build installateur Windows via Wine (cross-compilation)
 """
@@ -48,8 +49,10 @@ import importlib.util
 import json
 import os
 import platform
+import re
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tarfile
@@ -59,13 +62,14 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+from core.version import APP_VERSION
+
 ROOT = Path(__file__).parent
 DIST_DIR = ROOT / "dist"
 BUILD_DIR = ROOT / "build"
 APPDIR = ROOT / "Mediarecode.AppDir"
 APP_NAME = "mediarecode"
 APP_DISPLAY_NAME = "Mediarecode"
-APP_VERSION = "1.0.0"
 
 # Préfixe Wine dédié au build Windows (isolé du préfixe utilisateur ~/.wine)
 WINE_PREFIX = ROOT / ".wine_build"
@@ -92,39 +96,67 @@ def run(cmd: list[str | Path], **kwargs) -> None:
     subprocess.run([str(c) for c in cmd], check=True, **kwargs)
 
 
-def _resolve_dest_file(dest: str | None, default_output: Path) -> Path:
+def _normalize_version_tag(version_tag: str | None) -> str:
+    """
+    Normalise un tag de version pour un nom de fichier.
+    - fallback: APP_VERSION
+    - espaces -> '-'
+    - caractères autorisés: [A-Za-z0-9._-]
+    """
+    raw = (version_tag or "").strip() or APP_VERSION
+    raw = re.sub(r"\s+", "-", raw)
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "", raw)
+    return cleaned or APP_VERSION
+
+
+def _versioned_output_path(path: Path, version_tag: str | None) -> Path:
+    """
+    Retourne un path suffixé par '-<version>' avant l'extension.
+    Exemple: file.AppImage -> file-1.2.3.AppImage
+    """
+    tag = _normalize_version_tag(version_tag)
+    stem = path.stem if path.suffix else path.name
+    if stem.endswith(f"-{tag}"):
+        return path
+    if path.suffix:
+        return path.with_name(f"{path.stem}-{tag}{path.suffix}")
+    return path.with_name(f"{path.name}-{tag}")
+
+
+def _resolve_dest_file(dest: str | None, default_output: Path, version_tag: str | None = None) -> Path:
     """
     Résout le chemin de destination du fichier final.
-    - dest absent: conserve default_output
+    - dest absent: utilise default_output suffixé avec -<version>
     - dest dossier (existant, trailing slash, ou sans extension): utilise le nom auto
     - dest fichier: utilise ce nom
     """
+    versioned_default = _versioned_output_path(default_output, version_tag)
     if not dest:
-        return default_output
+        return versioned_default
 
     raw = dest.strip()
     if not raw:
-        return default_output
+        return versioned_default
 
     target = Path(raw).expanduser()
     if not target.is_absolute():
         target = (Path.cwd() / target).resolve()
 
     if target.exists() and target.is_dir():
-        return target / default_output.name
+        return _versioned_output_path(target / default_output.name, version_tag)
 
     if raw.endswith(("/", "\\")):
-        return target / default_output.name
+        return _versioned_output_path(target / default_output.name, version_tag)
 
     if target.suffix == "":
-        return target / default_output.name
+        return _versioned_output_path(target / default_output.name, version_tag)
 
-    return target
+    return _versioned_output_path(target, version_tag)
 
 
-def _copy_final_file_if_requested(src: Path, dest: str | None) -> Path:
+def _copy_final_file_if_requested(src: Path, dest: str | None, version_tag: str | None = None) -> Path:
     """Copie le fichier final vers --dest si fourni, sinon retourne src inchangé."""
-    target = _resolve_dest_file(dest, src)
+    target = _resolve_dest_file(dest, src, version_tag)
 
     src_resolved = src.resolve()
     target_resolved = target.resolve(strict=False)
@@ -132,6 +164,11 @@ def _copy_final_file_if_requested(src: Path, dest: str | None) -> Path:
         return src
 
     target.parent.mkdir(parents=True, exist_ok=True)
+    if not (dest or "").strip():
+        src.replace(target)
+        ok(f"Fichier final : {target}")
+        return target
+
     shutil.copy2(src, target)
     ok(f"Copie finale : {target}")
     return target
@@ -304,6 +341,74 @@ def build_onedir() -> Path:
 # ---------------------------------------------------------------------------
 # Étape 2 — AppDir
 # ---------------------------------------------------------------------------
+
+def _convert_ico_to_png(src_ico: Path, dest_png: Path) -> bool:
+    """Convertit un ICO en PNG via les plugins image Qt."""
+    best_png = _extract_best_png_from_ico(src_ico)
+    if best_png is not None:
+        dest_png.parent.mkdir(parents=True, exist_ok=True)
+        dest_png.write_bytes(best_png)
+        return True
+
+    try:
+        from PySide6.QtGui import QImage
+    except Exception:
+        return False
+
+    image = QImage(str(src_ico))
+    if image.isNull():
+        return False
+
+    dest_png.parent.mkdir(parents=True, exist_ok=True)
+    return bool(image.save(str(dest_png), "PNG"))
+
+
+def _extract_best_png_from_ico(src_ico: Path) -> bytes | None:
+    """
+    Retourne le plus grand PNG embarqué dans un ICO quand il existe.
+
+    Sans ça, Qt charge souvent le premier frame (16x16) au lieu du 256x256.
+    """
+    data = src_ico.read_bytes()
+    if len(data) < 6:
+        return None
+
+    reserved, icon_type, count = struct.unpack_from("<HHH", data, 0)
+    if reserved != 0 or icon_type != 1 or count <= 0:
+        return None
+
+    best_payload: bytes | None = None
+    best_area = -1
+    for index in range(count):
+        offset = 6 + index * 16
+        if offset + 16 > len(data):
+            break
+        width, height, _colors, _reserved, _planes, _bpp, size, image_offset = struct.unpack_from(
+            "<BBBBHHII",
+            data,
+            offset,
+        )
+        width = 256 if width == 0 else width
+        height = 256 if height == 0 else height
+        if image_offset + size > len(data):
+            continue
+        payload = data[image_offset:image_offset + size]
+        if not payload.startswith(b"\x89PNG\r\n\x1a\n"):
+            continue
+        area = width * height
+        if area > best_area:
+            best_area = area
+            best_payload = payload
+
+    return best_payload
+
+
+def _symlink_diricon(appdir: Path, icon_name: str) -> None:
+    """Met à jour .DirIcon pour l'AppDir."""
+    diricon = appdir / ".DirIcon"
+    if diricon.exists() or diricon.is_symlink():
+        diricon.unlink()
+    diricon.symlink_to(icon_name)
 
 _DESKTOP = textwrap.dedent("""\
     [Desktop Entry]
@@ -669,9 +774,17 @@ def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64") -
     desktop.write_text(_DESKTOP)
     ok(".desktop créé")
 
-    # Icône — cherche d'abord un PNG/SVG dans le projet
+    # Icône — embarque icon.ico si présent et l'utilise en priorité pour
+    # générer le PNG attendu par l'AppDir.
+    project_icon_ico = ROOT / "icon.ico"
+    if project_icon_ico.exists():
+        shutil.copy(project_icon_ico, appdir / f"{APP_NAME}.ico")
+        ok(f"Icône ICO copiée : {project_icon_ico.name}")
+
+    # Icône — cherche d'abord un PNG/SVG/ICO dans le projet
     icon_src: Path | None = None
     for candidate in [
+        ROOT / "icon.ico",
         ROOT / "icon.png",
         ROOT / f"{APP_NAME}.png",
         ROOT / "assets" / "icon.png",
@@ -681,15 +794,25 @@ def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64") -
             icon_src = candidate
             break
 
-    if icon_src:
+    if icon_src and icon_src.suffix.lower() == ".ico":
+        dest_icon = appdir / f"{APP_NAME}.png"
+        if _convert_ico_to_png(icon_src, dest_icon):
+            _symlink_diricon(appdir, dest_icon.name)
+            ok(f"Icône convertie depuis {icon_src.name}")
+        else:
+            svg_path = appdir / f"{APP_NAME}.svg"
+            svg_path.write_text(_ICON_SVG)
+            _symlink_diricon(appdir, svg_path.name)
+            info("Conversion icon.ico impossible — icône SVG de secours utilisée")
+    elif icon_src:
         dest_icon = appdir / f"{APP_NAME}{icon_src.suffix}"
         shutil.copy(icon_src, dest_icon)
-        (appdir / ".DirIcon").symlink_to(dest_icon.name)
+        _symlink_diricon(appdir, dest_icon.name)
         ok(f"Icône copiée : {icon_src.name}")
     else:
         svg_path = appdir / f"{APP_NAME}.svg"
         svg_path.write_text(_ICON_SVG)
-        (appdir / ".DirIcon").symlink_to(svg_path.name)
+        _symlink_diricon(appdir, svg_path.name)
         info("Icône SVG de secours utilisée (ajoutez icon.png 256×256 à la racine du projet)")
 
     ok(f"AppDir prêt : {appdir}")
@@ -734,11 +857,17 @@ def get_appimagetool(arch: str) -> Path:
 # Étape 4 — AppImage finale
 # ---------------------------------------------------------------------------
 
-def build_appimage(appimagetool: Path, appdir: Path, arch: str, allinc: bool = False) -> Path:
+def build_appimage(
+    appimagetool: Path,
+    appdir: Path,
+    arch: str,
+    allinc: bool = False,
+    version_tag: str | None = None,
+) -> Path:
     step("Création de l'AppImage")
 
     suffix = "_allinc" if allinc else ""
-    output = ROOT / f"{APP_DISPLAY_NAME}-{arch}{suffix}.AppImage"
+    output = _versioned_output_path(ROOT / f"{APP_DISPLAY_NAME}-{arch}{suffix}.AppImage", version_tag)
     if output.exists():
         output.unlink()
 
@@ -796,6 +925,15 @@ def parse_args() -> argparse.Namespace:
             "Si le nom de fichier est omis, le nom auto-généré est conservé."
         ),
     )
+    p.add_argument(
+        "--version",
+        metavar="TAG",
+        default=APP_VERSION,
+        help=(
+            "Tag version à suffixer dans le nom du fichier final "
+            f"(défaut: {APP_VERSION})."
+        ),
+    )
     return p.parse_args()
 
 
@@ -807,6 +945,7 @@ def main() -> None:
     args = parse_args()
     arch = args.arch
     allinc = args.allinc
+    version_tag = args.version
 
     print(_c("1;34", """
 ╔══════════════════════════════════════════╗
@@ -830,8 +969,14 @@ def main() -> None:
 
     appdir = build_appdir(bundle_dir, allinc=allinc, arch=arch)
     appimagetool = get_appimagetool(arch)
-    appimage_path = build_appimage(appimagetool, appdir, arch, allinc=allinc)
-    final_appimage = _copy_final_file_if_requested(appimage_path, args.dest)
+    appimage_path = build_appimage(
+        appimagetool,
+        appdir,
+        arch,
+        allinc=allinc,
+        version_tag=version_tag,
+    )
+    final_appimage = _copy_final_file_if_requested(appimage_path, args.dest, version_tag=version_tag)
 
     print(_c("1;32", """
 ╔══════════════════════════════════════════╗
