@@ -1,6 +1,41 @@
 from __future__ import annotations
 
-from core.media_info_fetcher import MediaDetails, MediaSearchResult, TmdbError, TmdbFetcher
+from pathlib import Path
+
+from core.media_info_fetcher import (
+    MediaDetails,
+    MediaSearchResult,
+    TmdbError,
+    TmdbFetcher,
+    clean_filename_for_search,
+    clean_text_for_search,
+    extract_year_from_filename,
+    extract_year_from_text,
+    normalize_tmdb_search_query,
+)
+
+
+def test_clean_text_for_search_strips_year_and_episode_suffixes_from_title():
+    assert clean_text_for_search("Daredevil: Born Again - S02E01 - The Northern Star") == (
+        "Daredevil: Born Again"
+    )
+    assert clean_text_for_search("The.Last.of.Us.01x02.2023.1080p.WEB-DL") == "The Last of Us"
+
+
+def test_normalize_tmdb_search_query_extracts_clean_query_and_year():
+    assert normalize_tmdb_search_query("Inception (2010)") == ("Inception", "2010")
+    assert normalize_tmdb_search_query("The Last of Us - S01E01 - When You're Lost in the Darkness (2023)") == (
+        "The Last of Us",
+        "2023",
+    )
+
+
+def test_filename_helpers_delegate_to_text_cleaning():
+    path = Path("Daredevil.Born.Again.S02E01.Le.Northern.Star.2025.2160p.WEB-DL.mkv")
+
+    assert clean_filename_for_search(path) == "Daredevil Born Again"
+    assert extract_year_from_filename(path) == "2025"
+    assert extract_year_from_text("Daredevil: Born Again (2025)") == "2025"
 
 
 def test_get_details_tv_prefers_episode_overview_when_available(monkeypatch):

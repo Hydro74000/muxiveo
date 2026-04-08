@@ -49,8 +49,77 @@ _GROUP_TAG_RE = re.compile(r"\s+-\s*\S+\s*$")
 # Année à 4 chiffres (1900–2099)
 _YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
 
-# Indicateur de saison/épisode : S01E01, S01, E01…
-_SEASON_EP_RE = re.compile(r"\bS\d{1,2}(?:E\d{1,4})?\b", re.IGNORECASE)
+# Indicateur de saison/épisode : S01E01, S01, 01x01…
+_SEASON_EP_RE = re.compile(
+    r"(?<!\d)(?:S\d{1,2}(?:[\s._-]*E\d{1,4})?|\d{1,2}\s*[xX]\s*\d{1,4})(?!\d)",
+    re.IGNORECASE,
+)
+
+_BRACKETS_RE = re.compile(r"[\[\](){}]")
+
+
+def clean_text_for_search(text: str) -> str:
+    """
+    Nettoie un texte libre pour une recherche TMDB.
+
+    Utile quand la recherche est basée sur un Title déjà enrichi :
+        - "Film (2024)"                 -> "Film"
+        - "Série - S01E02 - Episode"    -> "Série"
+        - "Serie.01x02.1080p.WEB-DL"    -> "Serie"
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+
+    title = re.sub(r"[._\-]", " ", raw)
+
+    cut_positions: list[int] = []
+
+    year_match = _YEAR_RE.search(title)
+    if year_match:
+        cut_positions.append(year_match.start())
+
+    season_match = _SEASON_EP_RE.search(title)
+    if season_match:
+        cut_positions.append(season_match.start())
+
+    if cut_positions:
+        title = title[: min(cut_positions)]
+
+    title = _RELEASE_TOKENS.sub(" ", title)
+    title = _GROUP_TAG_RE.sub("", title)
+    title = _BRACKETS_RE.sub(" ", title)
+    title = title.strip(" -_:.")
+
+    return " ".join(title.split())
+
+
+def extract_year_from_text(text: str) -> str:
+    """
+    Extrait l'année (4 chiffres, 1900–2099) depuis un texte libre.
+    Retourne '' si aucune année n'est détectée.
+    """
+    normalized = re.sub(r"[._\-]", " ", (text or "").strip())
+    m = _YEAR_RE.search(normalized)
+    return m.group() if m else ""
+
+
+def normalize_tmdb_search_query(text: str) -> tuple[str, str]:
+    """
+    Retourne (query, year) nettoyés pour une recherche TMDB.
+
+    Si le nettoyage vide complètement la requête, on retombe sur le texte
+    d'origine afin d'éviter une recherche vide ou trop agressive.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return "", ""
+
+    query = clean_text_for_search(raw)
+    year = extract_year_from_text(raw)
+    if not query:
+        return raw, ""
+    return query, year
 
 
 def clean_filename_for_search(path: Path) -> str:
@@ -65,30 +134,7 @@ def clean_filename_for_search(path: Path) -> str:
         5. Suppression du tag de groupe résiduel en fin de chaîne.
         6. Normalisation des espaces.
     """
-    stem = path.stem
-
-    # Séparateurs (., _, -) → espaces
-    # Note : le tiret peut faire partie d'un titre (ex. "Spider-Man"),
-    # mais TMDB retrouve la bonne entrée même sans le tiret.
-    title = re.sub(r"[._\-]", " ", stem)
-
-    # Tronquer avant l'année si détectée
-    m = _YEAR_RE.search(title)
-    if m:
-        title = title[: m.start()]
-
-    # Tronquer avant l'indicateur SxxExx si détecté (séries)
-    m2 = _SEASON_EP_RE.search(title)
-    if m2:
-        title = title[: m2.start()]
-
-    # Supprimer les mots-clés de release résiduels
-    title = _RELEASE_TOKENS.sub(" ", title)
-
-    # Supprimer un éventuel tag de groupe résiduel
-    title = _GROUP_TAG_RE.sub("", title)
-
-    return " ".join(title.split())
+    return clean_text_for_search(path.stem)
 
 
 def extract_year_from_filename(path: Path) -> str:
@@ -96,9 +142,7 @@ def extract_year_from_filename(path: Path) -> str:
     Extrait l'année (4 chiffres, 1900–2099) depuis un nom de fichier.
     Retourne '' si aucune année n'est détectée.
     """
-    title = re.sub(r"[._\-]", " ", path.stem)
-    m = _YEAR_RE.search(title)
-    return m.group() if m else ""
+    return extract_year_from_text(path.stem)
 
 
 # =============================================================================
