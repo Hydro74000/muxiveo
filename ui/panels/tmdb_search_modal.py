@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QPainter, QPixmap
@@ -34,8 +35,12 @@ from core.media_info_fetcher import (
     MediaSearchResult,
     TmdbFetcher,
     default_tmdb_bearer_token,
+    normalize_tmdb_search_query,
 )
 from ui.design_system import colors as _C
+
+if TYPE_CHECKING:
+    from core.config import AppConfig
 
 _SEASON_EPISODE_RE = (
     re.compile(
@@ -133,7 +138,7 @@ class TmdbSearchModal(QDialog):
 
     def __init__(
         self,
-        config: "AppConfig",
+        config: AppConfig,
         suggested_title: str = "",
         suggested_season: int = 0,
         suggested_episode: int = 0,
@@ -193,6 +198,8 @@ class TmdbSearchModal(QDialog):
         self._kind_combo.addItems(["Tout", "Films", "Séries"])
         if effective_season > 0 and effective_episode > 0:
             self._kind_combo.setCurrentIndex(2)
+        else:
+            self._kind_combo.setCurrentIndex(0)
         self._kind_combo.setFixedWidth(90)
         self._kind_combo.setStyleSheet(f"""
             QComboBox {{
@@ -398,12 +405,7 @@ class TmdbSearchModal(QDialog):
         if fetcher is None:
             return
 
-        m_year = re.search(r"\b(19|20)\d{2}\b", raw_query)
-        year = m_year.group() if m_year else ""
-        query = (raw_query[:m_year.start()] + raw_query[m_year.end():]).strip() if m_year else raw_query
-        if not query:
-            query = raw_query
-            year = ""
+        query, year = normalize_tmdb_search_query(raw_query)
 
         self._ok_btn.setEnabled(False)
         self._results_list.clear()

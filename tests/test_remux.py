@@ -116,6 +116,7 @@ from __future__ import annotations
 import colorsys
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from PySide6.QtCore import Qt
@@ -136,7 +137,7 @@ from core.workflows.remux import (
 from ui.panels.remux_panel import (
     SourceFile, _FILE_BAR_H, _FILE_PH_H, _FILE_ROW_H,
     _AttachmentItemWidget, _AttachmentPanel, _FileListWidget, _TrackTable,
-    _pick_file_color,
+    _normalize_tmdb_manual_title_suggestion, _pick_file_color,
 )
 from ui.panels.tmdb_search_modal import extract_season_episode
 
@@ -267,6 +268,15 @@ def _workflow() -> RemuxWorkflow:
 )
 def test_extract_season_episode_supported_patterns(text: str, expected):
     assert extract_season_episode(text) == expected
+
+
+def test_normalize_tmdb_manual_title_suggestion_cleans_release_noise():
+    raw = "Fallout.S01E01.The.End.2160p.UHD.BluRay.HDR10.10Bit.AC-3.TrueHD7.1Atmos"
+    assert _normalize_tmdb_manual_title_suggestion(raw) == "Fallout"
+
+
+def test_normalize_tmdb_manual_title_suggestion_keeps_year():
+    assert _normalize_tmdb_manual_title_suggestion("Inception (2010)") == "Inception 2010"
 
 
 # ===========================================================================
@@ -907,6 +917,23 @@ class TestValidate:
         )
         errors = self.wf.validate(cfg)
         assert any("inexistant" in e or "sortie" in e.lower() for e in errors)
+
+    def test_output_dir_not_writable(self, tmp_path):
+        f = tmp_path / "film.mkv"
+        f.touch()
+        tracks = [_track(0, "video", file_id="id0")]
+        src = _source(f, 0, tracks)
+        cfg = RemuxConfig(
+            sources=[src],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0)],
+        )
+        with patch(
+            "core.workflows.remux.tempfile.NamedTemporaryFile",
+            side_effect=OSError("blocked"),
+        ):
+            errors = self.wf.validate(cfg)
+        assert any("inscriptible" in e.lower() for e in errors)
 
     def test_empty_track_order_error(self, tmp_path):
         f = tmp_path / "film.mkv"
@@ -1857,7 +1884,7 @@ class TestRemuxWorkflowChapterOverrides:
         """--chapters doit apparaître avant le chemin de source."""
         entries = [ChapterEntry(0.0, "Intro")]
         cmd = self._cmd(self._cfg(entries))
-        assert cmd.index("--chapters") < cmd.index(str(Path("/a.mkv")))
+        assert cmd.index("--chapters") < cmd.index(Path("/a.mkv").as_posix())
 
     def test_write_chapter_xml_creates_file(self, tmp_path):
         """_write_chapter_xml crée un fichier XML avec le contenu attendu."""
@@ -1881,4 +1908,4 @@ class TestRemuxWorkflowChapterOverrides:
         cmd = RemuxWorkflow(mkvmerge_bin="mkvmerge").build_command(cfg, chapters_file=xml_file)
         assert "--chapters" in cmd
         idx = cmd.index("--chapters")
-        assert cmd[idx + 1] == str(xml_file)
+        assert cmd[idx + 1] == xml_file.as_posix()

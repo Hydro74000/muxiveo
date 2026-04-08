@@ -52,6 +52,20 @@ _EXT_BY_MIME: dict[str, str] = {
 
 _VAAPI_CODECS = {"hevc_vaapi", "h264_vaapi"}
 
+
+def _default_ffmpeg_thread_count() -> int:
+    """Default FFmpeg thread count: logical CPU count × 0.75, rounded up."""
+    cpu_count = os.cpu_count() or 1
+    return max(1, (cpu_count * 3 + 3) // 4)
+
+
+def _normalize_ffmpeg_thread_count(value: int | None) -> int:
+    """Return a safe FFmpeg thread count, preserving 0 as ffmpeg auto mode."""
+    if value is None or value < 0:
+        return _default_ffmpeg_thread_count()
+    return value
+
+
 def _mime_for(path: Path) -> str:
     return _MIME_BY_EXT.get(path.suffix.lower(), "application/octet-stream")
 
@@ -83,6 +97,7 @@ class EncodeWorkflow(QObject):
         mkvpropedit_bin:           str  = "mkvpropedit",
         ram_buffer_enabled:        bool = True,
         ram_buffer_threshold_pct:  int  = 15,
+        ffmpeg_threads:            int | None = None,
         parent: QObject | None         = None,
         *,
         writing_application:       str  = "",
@@ -99,6 +114,7 @@ class EncodeWorkflow(QObject):
         self._runner = ToolRunner(max_workers=1, parent=self)
         self._ram_buffer_enabled       = ram_buffer_enabled
         self._ram_buffer_threshold_pct = max(0, min(ram_buffer_threshold_pct, 90))
+        self._ffmpeg_threads = _normalize_ffmpeg_thread_count(ffmpeg_threads)
         self._writing_application = writing_application.strip()
 
     def set_ffmpeg(self, ffmpeg_bin: str) -> None:
@@ -108,6 +124,24 @@ class EncodeWorkflow(QObject):
     def set_writing_application(self, writing_application: str) -> None:
         """Met à jour la valeur du tag Multiplexing Application."""
         self._writing_application = writing_application.strip()
+
+    def set_ffmpeg_threads(self, ffmpeg_threads: int | None) -> None:
+        """Met à jour le nombre de threads passé à FFmpeg via `-threads`."""
+        self._ffmpeg_threads = _normalize_ffmpeg_thread_count(ffmpeg_threads)
+
+    def _ffmpeg_thread_args(self) -> list[str]:
+        return ["-threads", str(self._ffmpeg_threads)]
+
+    @staticmethod
+    def _ffmpeg_progress_args() -> list[str]:
+        """
+        Force une progression machine stable pour l'UI.
+
+        Les stats texte classiques (`time=...`) dépendent du build FFmpeg et du
+        codec utilisé. `-progress pipe:1` garantit une sortie structurée
+        (`out_time=...`) que l'UI peut parser de façon fiable.
+        """
+        return ["-progress", "pipe:1", "-nostats"]
 
     # ------------------------------------------------------------------
     # Construction de la commande
@@ -144,6 +178,7 @@ class EncodeWorkflow(QObject):
         source_idx: dict[Path, int] = {p: i for i, p in enumerate(all_sources)}
 
         cmd: list[str] = [self._ffmpeg, "-hide_banner", "-y"]
+        cmd.extend(self._ffmpeg_progress_args())
         cmd.extend(self._hardware_input_args(config.video))
         for src in all_sources:
             cmd.extend(["-i", str(src)])
@@ -152,6 +187,7 @@ class EncodeWorkflow(QObject):
         if vf:
             cmd.extend(["-vf", vf])
 
+        cmd.extend(self._ffmpeg_thread_args())
         cmd.extend(["-map", "0:v:0"])
         cmd.extend(self._video_codec_args(config.video, config.video.bitrate_kbps))
 
@@ -219,16 +255,18 @@ class EncodeWorkflow(QObject):
 
         def _base() -> list[str]:
             c = [self._ffmpeg, "-hide_banner", "-y"]
+            c.extend(self._ffmpeg_progress_args())
             c.extend(self._hardware_input_args(config.video))
             for src in all_sources:
                 c.extend(["-i", str(src)])
             if vf:
                 c.extend(["-vf", vf])
+            c.extend(self._ffmpeg_thread_args())
             c.extend(["-map", "0:v:0"])
             c.extend(self._video_codec_args_bitrate(config.video, bitrate))
             return c
 
-        pass1 = _base() + ["-pass", "1", "-an", "-f", "null", "/dev/null"]
+        pass1 = _base() + ["-pass", "1", "-an", "-f", "null", os.devnull]
 
         pass2 = _base() + ["-pass", "2"]
         if config.video.codec == "copy":
@@ -472,11 +510,13 @@ class EncodeWorkflow(QObject):
         flux HEVC injectable, sans passer par un MKV intermédiaire.
         """
         cmd = [self._ffmpeg, "-hide_banner", "-y"]
+        cmd.extend(self._ffmpeg_progress_args())
         cmd.extend(self._hardware_input_args(config.video))
         cmd.extend(["-i", str(config.source)])
         vf = self._build_encoder_vf(config.video)
         if vf:
             cmd.extend(["-vf", vf])
+        cmd.extend(self._ffmpeg_thread_args())
         cmd.extend(["-map", "0:v:0"])
         cmd.extend(self._video_codec_args(config.video, config.video.bitrate_kbps))
         if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
@@ -496,15 +536,17 @@ class EncodeWorkflow(QObject):
 
         def _base() -> list[str]:
             c = [self._ffmpeg, "-hide_banner", "-y"]
+            c.extend(self._ffmpeg_progress_args())
             c.extend(self._hardware_input_args(config.video))
             c.extend(["-i", str(config.source)])
             if vf:
                 c.extend(["-vf", vf])
+            c.extend(self._ffmpeg_thread_args())
             c.extend(["-map", "0:v:0"])
             c.extend(self._video_codec_args_bitrate(config.video, bitrate))
             return c
 
-        pass1 = _base() + ["-pass", "1", "-an", "-f", "null", "/dev/null"]
+        pass1 = _base() + ["-pass", "1", "-an", "-f", "null", os.devnull]
         pass2 = _base() + ["-pass", "2"]
         if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
             pass2.extend(self._hdr_meta_args(config.video))
@@ -679,8 +721,14 @@ class EncodeWorkflow(QObject):
         errors: list[str] = []
         if not config.source.is_file():
             errors.append(f"Fichier source introuvable : {config.source}")
-        if not config.output.parent.exists():
-            errors.append(f"Dossier de sortie inexistant : {config.output.parent}")
+        output_dir = config.output.parent
+        if not output_dir.exists():
+            errors.append(f"Dossier de sortie inexistant : {output_dir}")
+        elif not self._is_dir_writable(output_dir):
+            errors.append(
+                "Dossier de sortie non inscriptible : "
+                f"{output_dir} (vérifiez les protections Windows sur les dossiers Bibliothèques)."
+            )
         if config.source == config.output:
             errors.append("Le fichier de sortie doit être différent du fichier source.")
         if config.video.quality_mode == QualityMode.SIZE and not (config.duration_s or 0) > 0:
@@ -697,6 +745,26 @@ class EncodeWorkflow(QObject):
             if config.video.max_cll and not re.match(r"^\d+,\d+$", config.video.max_cll.strip()):
                 errors.append("Format MaxCLL invalide. Attendu : MaxCLL,MaxFALL  ex. 1000,400")
         return errors
+
+    @staticmethod
+    def _is_dir_writable(path: Path) -> bool:
+        """
+        Vérifie qu'un fichier temporaire peut être créé dans ``path``.
+
+        Sous Windows, certains dossiers protégés (Documents/Vidéos, etc.) peuvent
+        exister mais refuser la création de nouveaux fichiers.
+        """
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=path,
+                prefix="mrecode_write_probe_",
+                delete=True,
+            ):
+                pass
+            return True
+        except OSError:
+            return False
 
     # ------------------------------------------------------------------
     # Exécution
@@ -910,6 +978,7 @@ class EncodeWorkflow(QObject):
             "-hide_banner", "-y",
             "-i", str(source),
             "-map", f"0:{stream_idx}",
+            *self._ffmpeg_thread_args(),
             "-c", "copy",
             "-frames:v", "1",
             str(dest),
@@ -1324,8 +1393,11 @@ class EncodeWorkflow(QObject):
                 signals.progress.emit("Extraction HEVC source…")
                 _run([
                     self._ffmpeg, "-hide_banner", "-y",
+                    *self._ffmpeg_progress_args(),
                     "-i", str(config.source),
-                    "-map", "0:v:0", "-c:v", "copy", "-f", "hevc", str(src_hevc),
+                    "-map", "0:v:0",
+                    *self._ffmpeg_thread_args(),
+                    "-c:v", "copy", "-f", "hevc", str(src_hevc),
                 ])
                 _check()
 
@@ -1428,10 +1500,12 @@ class EncodeWorkflow(QObject):
                     return 2 + extra_sources.index(src_path)
 
                 recon_cmd = [self._ffmpeg, "-hide_banner", "-y",
+                             *self._ffmpeg_progress_args(),
                              "-i", str(current_hevc),
                              "-i", str(config.source)]
                 for sp in extra_sources:
                     recon_cmd.extend(["-i", str(sp)])
+                recon_cmd.extend(self._ffmpeg_thread_args())
                 recon_cmd.extend(["-map", "0:v:0", "-c:v", "copy"])
 
                 for i, a in enumerate(config.audio_tracks):

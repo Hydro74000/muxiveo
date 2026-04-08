@@ -45,7 +45,13 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
-from core.media_info_fetcher import MediaDetails, clean_filename_for_search, extract_year_from_filename
+from core.media_info_fetcher import (
+    MediaDetails,
+    clean_filename_for_search,
+    clean_text_for_search,
+    extract_year_from_filename,
+    extract_year_from_text,
+)
 from core.i18n import apply_translations, translate_text
 from core.inspector import (
     STANDARD_MKV_TAGS,
@@ -107,6 +113,28 @@ def _parse_timecode(tc: str) -> float | None:
 def _format_timecode(seconds: float) -> str:
     """Formate un nombre de secondes en HH:MM:SS.mmm (délègue à core.inspector)."""
     return fmt_timecode_display(seconds)
+
+
+def _normalize_tmdb_manual_title_suggestion(title: str) -> str:
+    """
+    Nettoie un titre saisi manuellement pour la suggestion TMDB.
+
+    - Supprime les segments release (résolution, codec, tags SxxExx…)
+    - Conserve l'année si elle était présente dans la saisie d'origine
+    - Retombe sur le texte brut si le nettoyage devient trop agressif
+    """
+    raw = (title or "").strip()
+    if not raw:
+        return ""
+
+    cleaned = clean_text_for_search(raw)
+    if not cleaned:
+        return raw
+
+    year = extract_year_from_text(raw)
+    if year and not re.search(r"\b" + re.escape(year) + r"\b", cleaned):
+        cleaned = f"{cleaned} {year}"
+    return cleaned.strip()
 
 
 # =============================================================================
@@ -2801,7 +2829,11 @@ class RemuxPanel(QWidget):
         - sinon revient sur la valeur dérivée du fichier source.
         """
         manual_title = self._file_title_edit.text().strip()
-        suggested = manual_title or self._default_tmdb_suggested_title()
+        suggested = (
+            _normalize_tmdb_manual_title_suggestion(manual_title)
+            if manual_title
+            else self._default_tmdb_suggested_title()
+        )
         parsed = extract_season_episode(manual_title) if manual_title else None
         season, episode = parsed if parsed is not None else self._default_tmdb_season_episode()
         self._attachment_panel.set_suggested_title(suggested, season=season, episode=episode)

@@ -43,7 +43,7 @@ Le script `setup.py` installe automatiquement :
 | Notes plateforme | Debian/Ubuntu via `apt`, Fedora/RHEL via `dnf`, macOS via Homebrew, Windows via `winget` + binaires locaux |
 
 > `setup.py` renseigne `config.ini` avec les chemins détectés.  
-> Emplacement de `config.ini` : Linux/macOS `~/.config/mediarecode/config.ini` (XDG), Windows dev `./config.ini`, Windows packagé `config.ini` à côté de l'exécutable.
+> Emplacement de `config.ini` : Linux/macOS `~/.config/mediarecode/config.ini` (XDG), Windows dev `./config.ini`, Windows packagé `%APPDATA%\mediarecode\config.ini`.
 
 | Plateforme | Commande | Détails |
 |------------|----------|---------|
@@ -70,6 +70,39 @@ python3 main.py
 ```
 
 Sous Windows, utilisez `py main.py`.
+
+## Windows
+
+### Windows Security / Controlled Folder Access
+
+Sous Windows, les bibliothèques utilisateur comme **Videos**, **Documents**, **Pictures** et dossiers similaires peuvent être protégées par **Windows Security** via **Controlled Folder Access**.
+
+Quand cette protection est active, Mediarecode peut être empêché d'écrire directement dans ces dossiers, même si :
+
+- le dossier existe ;
+- vous pouvez y accéder manuellement depuis l'Explorateur ;
+- le chemin affiché dans l'application est correct.
+
+Symptômes fréquents :
+
+- popup **Sécurité Windows** indiquant que `mediarecode.exe` ou un outil comme `ffmpeg.exe` a été bloqué ;
+- erreur `No such file or directory` lors d'un export vers `Videos` ou `Documents` ;
+- succès de l'export vers un autre dossier non protégé, comme `Desktop` ou `%TEMP%`.
+
+Au premier setup Windows, Mediarecode peut proposer d'ajouter ses exécutables à l'allowlist de Windows Security afin de pouvoir enregistrer directement dans ces bibliothèques protégées. Cette exception concerne l'application elle-même et, selon les cas, les outils d'écriture qu'elle utilise (`ffmpeg`, `mkvmerge`, `mkvpropedit`).
+
+Sans cette exception, les exports directs vers **Videos**, **Documents**, **Pictures**, etc. peuvent rester bloqués.
+
+Si vous refusez l'exception ou si vous devez la configurer manuellement :
+
+1. Ouvrez **Sécurité Windows**.
+2. Allez dans **Protection contre les virus et menaces**.
+3. Ouvrez **Protection contre les ransomwares** puis **Gérer la protection contre les ransomwares**.
+4. Entrez dans **Autoriser une application via l'accès contrôlé aux dossiers**.
+5. Ajoutez `mediarecode.exe`.
+6. Si nécessaire, ajoutez aussi `ffmpeg.exe`, `mkvmerge.exe` et `mkvpropedit.exe`.
+
+Après ajout à l'allowlist, redémarrez Mediarecode avant de retester un export vers `Videos` ou `Documents`.
 
 ## Distribution
 
@@ -192,7 +225,7 @@ Les tags de langue saisis (pistes audio, sous-titres) sont normalisés automatiq
 
 L'application résout ses paramètres dans cet ordre :
 
-1. `config.ini` (Linux/macOS : `~/.config/mediarecode/config.ini` ; Windows dev : racine du projet ; Windows packagé : dossier de l'exécutable)
+1. `config.ini` (Linux/macOS : `~/.config/mediarecode/config.ini` ; Windows dev : racine du projet ; Windows packagé : `%APPDATA%\mediarecode\config.ini`)
 2. les valeurs persistées par l'interface (`QSettings`)
 3. les valeurs par défaut internes
 

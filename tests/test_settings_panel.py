@@ -116,3 +116,26 @@ def test_settings_panel_writes_audio_encoding_values_to_ini(tmp_path, qt_app):
         assert "bitrate_step_per_channel_kbps = 48" in ini_text
         assert cfg.audio_default_bitrate_per_channel_kbps == 160
         assert cfg.audio_bitrate_step_per_channel_kbps == 48
+
+
+def test_settings_panel_writes_ffmpeg_threads_to_ini(tmp_path, qt_app):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[ffmpeg]\nthreads = 12\n", encoding="utf-8")
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path):
+        mock_qs.return_value = _mock_qsettings()
+        cfg = AppConfig()
+
+        panel = SettingsPanel(cfg)
+        spin = panel.widget_for("ffmpeg", "threads")
+        spin.setValue(18)
+        panel._on_save_clicked()
+
+        assert "threads = 18" in ini_path.read_text(encoding="utf-8")
+        assert cfg.ffmpeg_threads == 18
