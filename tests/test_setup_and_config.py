@@ -261,6 +261,83 @@ class TestAppConfigWindowsToolAutodetect:
         assert ini_path.read_text(encoding="utf-8").count("ffmpeg =") == 1
 
 
+class TestWindowsControlledFolderAccessSetup:
+    """Tests de la proposition d'allowlist Windows Security (Controlled Folder Access)."""
+
+    def test_windows_cfa_candidate_apps_include_bundle_and_writer_tools(self, tmp_path):
+        import setup as setup_mod
+
+        bundle_dir = tmp_path / "bundle"
+        bundle_dir.mkdir()
+        app_exe = bundle_dir / "mediarecode.exe"
+        app_exe.write_text("", encoding="utf-8")
+
+        ffmpeg = tmp_path / "ffmpeg.exe"
+        mkvmerge = tmp_path / "mkvmerge.exe"
+        mkvpropedit = tmp_path / "mkvpropedit.exe"
+        for exe in (ffmpeg, mkvmerge, mkvpropedit):
+            exe.write_text("", encoding="utf-8")
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text(
+            "[tools]\n"
+            f"ffmpeg = {ffmpeg}\n"
+            f"mkvmerge = {mkvmerge}\n"
+            f"mkvpropedit = {mkvpropedit}\n",
+            encoding="utf-8",
+        )
+
+        with patch.object(setup_mod, "OS", "Windows"), \
+             patch.object(setup_mod, "_config_ini_path", return_value=ini_path), \
+             patch.object(setup_mod.sys, "executable", str(app_exe)), \
+             patch.object(setup_mod.sys, "frozen", True, create=True):
+            paths = setup_mod._windows_cfa_candidate_apps(tmp_path)
+
+        assert paths == [app_exe, ffmpeg, mkvmerge, mkvpropedit]
+
+    def test_offer_windows_cfa_setup_skips_when_disabled(self, tmp_path):
+        import setup as setup_mod
+
+        with patch.object(setup_mod, "OS", "Windows"), \
+             patch.object(setup_mod, "_windows_controlled_folder_access_state", return_value=0), \
+             patch.object(setup_mod, "_windows_cfa_candidate_apps") as mock_candidates, \
+             patch.object(setup_mod, "_windows_apply_controlled_folder_access_allowlist") as mock_apply:
+            setup_mod.offer_windows_controlled_folder_access_setup(tmp_path, dry_run=False)
+
+        mock_candidates.assert_not_called()
+        mock_apply.assert_not_called()
+
+    def test_offer_windows_cfa_setup_prompts_and_applies(self, tmp_path):
+        import setup as setup_mod
+
+        ffmpeg = tmp_path / "ffmpeg.exe"
+        ffmpeg.write_text("", encoding="utf-8")
+
+        with patch.object(setup_mod, "OS", "Windows"), \
+             patch.object(setup_mod, "_windows_controlled_folder_access_state", return_value=1), \
+             patch.object(setup_mod, "_windows_cfa_candidate_apps", return_value=[ffmpeg]), \
+             patch.object(setup_mod, "_windows_yes_no", return_value=True) as mock_prompt, \
+             patch.object(
+                 setup_mod,
+                 "_windows_apply_controlled_folder_access_allowlist",
+                 return_value={
+                     "status": "updated",
+                     "added": [str(ffmpeg)],
+                     "skipped": [],
+                     "message": "",
+                 },
+             ) as mock_apply:
+            setup_mod.offer_windows_controlled_folder_access_setup(tmp_path, dry_run=False)
+
+        mock_prompt.assert_called_once()
+        mock_apply.assert_called_once_with([ffmpeg])
+        prompt_text = mock_prompt.call_args.args[0]
+        assert "Videos" in prompt_text
+        assert "Documents" in prompt_text
+        assert "Without this exception" in prompt_text
+        assert "ffmpeg" in prompt_text
+
+
 def test_setup_initializes_ui_language_in_config_ini(tmp_path):
     """setup.py initialise ui.language depuis la langue système quand la clé est absente."""
     import setup as setup_mod

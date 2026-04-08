@@ -116,6 +116,7 @@ from __future__ import annotations
 import colorsys
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from PySide6.QtCore import Qt
@@ -907,6 +908,23 @@ class TestValidate:
         )
         errors = self.wf.validate(cfg)
         assert any("inexistant" in e or "sortie" in e.lower() for e in errors)
+
+    def test_output_dir_not_writable(self, tmp_path):
+        f = tmp_path / "film.mkv"
+        f.touch()
+        tracks = [_track(0, "video", file_id="id0")]
+        src = _source(f, 0, tracks)
+        cfg = RemuxConfig(
+            sources=[src],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0)],
+        )
+        with patch(
+            "core.workflows.remux.tempfile.NamedTemporaryFile",
+            side_effect=OSError("blocked"),
+        ):
+            errors = self.wf.validate(cfg)
+        assert any("inscriptible" in e.lower() for e in errors)
 
     def test_empty_track_order_error(self, tmp_path):
         f = tmp_path / "film.mkv"

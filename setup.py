@@ -25,6 +25,7 @@ Options:
 from __future__ import annotations
 
 import argparse
+import ctypes
 import configparser
 import json
 import locale
@@ -48,17 +49,84 @@ from core.lang_tags import Rfc5646LanguageTags
 # Terminal colours (no external deps)
 # ---------------------------------------------------------------------------
 
-_USE_COLOR = sys.stdout.isatty() and platform.system() != "Windows"
+def _ensure_text_stream(name: str, mode: str) -> None:
+    """Provide a valid stdio stream when running without a console."""
+    if getattr(sys, name, None) is None:
+        setattr(sys, name, open(os.devnull, mode, encoding="utf-8"))
+
+
+def _stream_isatty(stream: object) -> bool:
+    isatty = getattr(stream, "isatty", None)
+    if not callable(isatty):
+        return False
+    try:
+        return bool(isatty())
+    except OSError:
+        return False
+
+
+_ensure_text_stream("stdout", "w")
+_ensure_text_stream("stderr", "w")
+
+
+def _can_stream_encode(stream: object, text: str) -> bool:
+    encoding = getattr(stream, "encoding", None)
+    if not encoding:
+        return False
+    try:
+        text.encode(encoding)
+        return True
+    except Exception:
+        return False
+
+
+def _configure_stdio_for_windows() -> None:
+    """
+    Configure stdout/stderr on Windows so console output never crashes on
+    Unicode glyphs. If UTF-8 reconfigure is unavailable, fallback to
+    `errors=replace`.
+    """
+    if platform.system() != "Windows":
+        return
+
+    probe = "✔→⚠✘▸─"
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        if stream is None:
+            continue
+        if _can_stream_encode(stream, probe):
+            continue
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            try:
+                reconfigure(errors="replace")
+            except Exception:
+                pass
+
+
+_configure_stdio_for_windows()
+_USE_COLOR = _stream_isatty(sys.stdout) and platform.system() != "Windows"
+_UI_UNICODE = _can_stream_encode(sys.stdout, "✔→⚠✘▸─")
+_UI_OK = "✔" if _UI_UNICODE else "OK"
+_UI_INFO = "→" if _UI_UNICODE else "->"
+_UI_WARN = "⚠" if _UI_UNICODE else "!"
+_UI_ERR = "✘" if _UI_UNICODE else "X"
+_UI_STEP = "▸" if _UI_UNICODE else ">"
+_UI_BAR = "─" if _UI_UNICODE else "-"
 
 def _c(code: str, text: str) -> str:
     return f"\033[{code}m{text}\033[0m" if _USE_COLOR else text
 
-def ok(msg: str)     -> None: print(_c("32", f"  ✔  {msg}"))
-def info(msg: str)   -> None: print(_c("36", f"  →  {msg}"))
-def warn(msg: str)   -> None: print(_c("33", f"  ⚠  {msg}"))
-def error(msg: str)  -> None: print(_c("31", f"  ✘  {msg}"), file=sys.stderr)
-def title(msg: str)  -> None: print(_c("1;34", f"\n{'─'*60}\n  {msg}\n{'─'*60}"))
-def step(msg: str)   -> None: print(_c("1;37", f"\n  ▸ {msg}"))
+def ok(msg: str)     -> None: print(_c("32", f"  {_UI_OK}  {msg}"))
+def info(msg: str)   -> None: print(_c("36", f"  {_UI_INFO}  {msg}"))
+def warn(msg: str)   -> None: print(_c("33", f"  {_UI_WARN}  {msg}"))
+def error(msg: str)  -> None: print(_c("31", f"  {_UI_ERR}  {msg}"), file=sys.stderr)
+def title(msg: str)  -> None: print(_c("1;34", f"\n{_UI_BAR*60}\n  {msg}\n{_UI_BAR*60}"))
+def step(msg: str)   -> None: print(_c("1;37", f"\n  {_UI_STEP} {msg}"))
 
 # ---------------------------------------------------------------------------
 # OS detection
@@ -102,6 +170,12 @@ WINDOWS_CONFIG_TOOL_ORDER: tuple[str, ...] = (
     "dovi_tool",
     "hdr10plus_tool",
     "eac3to",
+)
+
+WINDOWS_CFA_WRITER_TOOLS: tuple[str, ...] = (
+    "ffmpeg",
+    "mkvmerge",
+    "mkvpropedit",
 )
 
 def detect_linux_distro() -> str:
@@ -330,7 +404,71 @@ def _default_prefix() -> Path:
     return Path("/usr/local")
 
 
+def _windows_config_dir() -> Path:
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return Path(appdata) / "mediarecode"
+    return Path.home() / "AppData" / "Roaming" / "mediarecode"
+
+
+def _is_windows_frozen() -> bool:
+    return OS == "Windows" and bool(getattr(sys, "frozen", False))
+
+
+def _windows_frozen_runtime_dir() -> Path | None:
+    """
+    Return the frozen runtime directory containing python extension modules/DLLs.
+    Supports onedir (`_internal`) and onefile (`_MEIPASS`) layouts.
+    """
+    if not _is_windows_frozen():
+        return None
+
+    candidates: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(str(meipass)))
+
+    exe_dir = Path(sys.executable).resolve().parent
+    candidates.append(exe_dir / "_internal")
+    candidates.append(exe_dir)
+
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def verify_windows_frozen_python_runtime() -> None:
+    """
+    Ensure critical Python runtime pieces are present in frozen Windows bundles.
+    We explicitly check `_ctypes.pyd` + `libffi-*.dll`.
+    """
+    runtime_dir = _windows_frozen_runtime_dir()
+    if runtime_dir is None:
+        return
+
+    required_patterns: dict[str, str] = {
+        "_ctypes.pyd": "_ctypes.pyd",
+        "libffi": "libffi-*.dll",
+    }
+    missing: list[str] = []
+    for label, pattern in required_patterns.items():
+        if not any(runtime_dir.glob(pattern)):
+            missing.append(f"{label} ({pattern})")
+
+    if missing:
+        raise RuntimeError(
+            "Bundle Python Windows incomplet (runtime manquant): "
+            + ", ".join(missing)
+            + ". Rebuild requis."
+        )
+
+    ok(f"Frozen Python runtime OK ({runtime_dir})")
+
+
 def _config_ini_path() -> Path:
+    if OS == "Windows" and getattr(sys, "frozen", False):
+        return _windows_config_dir() / "config.ini"
     return Path(__file__).parent / "config.ini"
 
 
@@ -447,6 +585,7 @@ def _update_ini_tools_section(
     if dry_run:
         return
 
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
@@ -526,6 +665,7 @@ def initialize_config_ini_language(
         ok(f"[dry-run] config.ini UI language would be set to {detected}")
         return
 
+    ini_path.parent.mkdir(parents=True, exist_ok=True)
     ini_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
     ok(f"config.ini UI language set to {detected}")
 
@@ -906,7 +1046,16 @@ def _github_latest_release(repo: str) -> dict:
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read().decode())
-    except urllib.error.URLError as e:
+    except Exception as e:
+        if OS == "Windows":
+            try:
+                payload = _windows_fetch_text(url)
+                return json.loads(payload)
+            except Exception as fallback_error:
+                raise RuntimeError(
+                    f"Cannot reach GitHub API for {repo}: {e} "
+                    f"(Windows fallback failed: {fallback_error})"
+                ) from fallback_error
         raise RuntimeError(f"Cannot reach GitHub API for {repo}: {e}") from e
 
 def _download_file(url: str, dest: Path) -> None:
@@ -925,8 +1074,468 @@ def _download_file(url: str, dest: Path) -> None:
                     pct = downloaded * 100 // total
                     print(f"\r    {pct:3d}%  {downloaded//1024} KB / {total//1024} KB  ", end="", flush=True)
             print()
-    except urllib.error.URLError as e:
+    except Exception as e:
+        if OS == "Windows":
+            try:
+                _windows_download_file(url, dest)
+                return
+            except Exception as fallback_error:
+                raise RuntimeError(
+                    f"Download failed: {url}\n  {e}\n  "
+                    f"Windows fallback failed: {fallback_error}"
+                ) from fallback_error
         raise RuntimeError(f"Download failed: {url}\n  {e}") from e
+
+
+def _windows_powershell() -> Optional[str]:
+    """Return powershell executable path when available."""
+    return shutil.which("powershell") or shutil.which("pwsh")
+
+
+def _powershell_single_quote(value: str) -> str:
+    """Return a PowerShell single-quoted literal."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _windows_is_admin() -> bool:
+    """Return True when the current Windows process already runs elevated."""
+    if OS != "Windows":
+        return False
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _windows_message_box(text: str, title_text: str, flags: int) -> int:
+    """Display a native Windows message box."""
+    try:
+        return int(ctypes.windll.user32.MessageBoxW(None, text, title_text, flags))
+    except Exception:
+        return 0
+
+
+def _windows_yes_no(text: str, title_text: str, default_no: bool = True) -> bool:
+    """Ask a Yes/No question using a native Windows dialog when possible."""
+    if OS == "Windows":
+        MB_YESNO = 0x00000004
+        MB_ICONQUESTION = 0x00000020
+        MB_DEFBUTTON2 = 0x00000100
+        flags = MB_YESNO | MB_ICONQUESTION
+        if default_no:
+            flags |= MB_DEFBUTTON2
+        return _windows_message_box(text, title_text, flags) == 6  # IDYES
+
+    try:
+        answer = input(f"{text} [{'y/N' if default_no else 'Y/n'}] ").strip().lower()
+    except (EOFError, RuntimeError):
+        return False
+    if not answer:
+        return not default_no
+    return answer in {"y", "yes", "o", "oui"}
+
+
+def _windows_controlled_folder_access_state() -> int | None:
+    """
+    Return the current Controlled Folder Access mode, or None if unavailable.
+
+    Common values:
+      0 = disabled
+      1 = enabled (blocking)
+      2 = audit mode
+    """
+    ps = _windows_powershell()
+    if not ps:
+        return None
+
+    script = "$p=Get-MpPreference; [int]$p.EnableControlledFolderAccess"
+    result = subprocess.run(
+        [ps, "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+
+    for line in reversed((result.stdout or "").splitlines()):
+        value = line.strip()
+        if value.lstrip("-").isdigit():
+            return int(value)
+    return None
+
+
+def _windows_cfa_candidate_apps(prefix: Path) -> list[Path]:
+    """
+    Return the executables that should be allowlisted for protected folders.
+
+    The actual output writes are performed by ffmpeg/mkvmerge/mkvpropedit, so
+    those executables matter more than the launcher itself.
+    """
+    candidates: list[Path] = []
+
+    if getattr(sys, "frozen", False):
+        app_exe = Path(sys.executable)
+        if app_exe.is_file() and app_exe.suffix.lower() == ".exe":
+            candidates.append(app_exe)
+
+    ini_values = _existing_ini_tool_values(_config_ini_path())
+    for tool_name in WINDOWS_CFA_WRITER_TOOLS:
+        raw = ini_values.get(tool_name.lower(), "")
+        if not raw:
+            raw = _detect_windows_tool_path(tool_name, prefix) or ""
+        if not raw:
+            continue
+        path = Path(raw)
+        if path.is_file():
+            candidates.append(path)
+
+    return _dedupe_paths(candidates)
+
+
+def _windows_apply_controlled_folder_access_allowlist(
+    targets: list[Path],
+) -> dict[str, object]:
+    """
+    Add missing executables to the Controlled Folder Access allowlist.
+
+    The helper script runs elevated when needed and writes a JSON result file so
+    Python can report what happened after the UAC prompt closes.
+    """
+    ps = _windows_powershell()
+    if not ps:
+        raise RuntimeError("PowerShell introuvable sur Windows")
+
+    targets = [p for p in _dedupe_paths(targets) if p.is_file()]
+    if not targets:
+        return {"status": "no_targets", "added": [], "skipped": []}
+
+    script = r"""
+param(
+  [Parameter(Mandatory = $true)]
+  [string]$ResultPath,
+
+  [Parameter(Mandatory = $true)]
+  [string]$TargetsPath
+)
+
+$ErrorActionPreference = 'Stop'
+
+$result = [ordered]@{
+  status  = 'unknown'
+  added   = @()
+  skipped = @()
+  missing = @()
+  message = ''
+}
+
+try {
+  $pref  = Get-MpPreference
+  $state = [int]$pref.EnableControlledFolderAccess
+  if ($state -eq 0) {
+    $result.status = 'disabled'
+  }
+  else {
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $targets = @()
+    foreach ($raw in @((Get-Content -LiteralPath $TargetsPath -Raw | ConvertFrom-Json))) {
+      if (-not $raw) { continue }
+      try {
+        $full = [System.IO.Path]::GetFullPath($raw)
+      }
+      catch {
+        continue
+      }
+      if ((Test-Path -LiteralPath $full -PathType Leaf) -and $seen.Add($full)) {
+        $targets += $full
+      }
+    }
+
+    $current = @($pref.ControlledFolderAccessAllowedApplications)
+    foreach ($target in $targets) {
+      $already = $false
+      foreach ($entry in $current) {
+        if (-not $entry) { continue }
+        try {
+          $entryFull = [System.IO.Path]::GetFullPath($entry)
+        }
+        catch {
+          $entryFull = $entry
+        }
+        if ($entryFull.Equals($target, [System.StringComparison]::OrdinalIgnoreCase)) {
+          $already = $true
+          break
+        }
+      }
+
+      if ($already) {
+        $result.skipped += $target
+        continue
+      }
+
+      Add-MpPreference -ControlledFolderAccessAllowedApplications $target
+      $result.added += $target
+    }
+
+    if ($result.added.Count -gt 0) {
+      $result.status = 'updated'
+      $result.message = 'Applications ajoutées à l''allowlist.'
+    }
+    else {
+      $result.status = 'already_allowed'
+      $result.message = 'Applications déjà présentes dans l''allowlist.'
+    }
+  }
+}
+catch {
+  $result.status = 'error'
+  $result.message = $_.Exception.Message
+}
+
+$result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $ResultPath -Encoding UTF8
+if ($result.status -eq 'error') { exit 1 }
+exit 0
+"""
+
+    with tempfile.TemporaryDirectory(prefix="mediarecode_cfa_") as tmp_dir:
+        tmp = Path(tmp_dir)
+        script_path = tmp / "controlled_folder_access.ps1"
+        result_path = tmp / "controlled_folder_access_result.json"
+        targets_path = tmp / "controlled_folder_access_targets.json"
+        script_path.write_text(script.strip() + "\n", encoding="utf-8")
+        targets_path.write_text(
+            json.dumps([str(path) for path in targets], ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        cmd = [
+            ps,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script_path),
+            "-ResultPath",
+            str(result_path),
+            "-TargetsPath",
+            str(targets_path),
+        ]
+        if _windows_is_admin():
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        else:
+            launcher = (
+                f"$proc = Start-Process -FilePath {_powershell_single_quote(ps)} "
+                "-ArgumentList @("
+                "'-NoProfile',"
+                "'-ExecutionPolicy','Bypass',"
+                f"'-File',{_powershell_single_quote(str(script_path))},"
+                f"'-ResultPath',{_powershell_single_quote(str(result_path))},"
+                f"'-TargetsPath',{_powershell_single_quote(str(targets_path))}"
+                ") "
+                "-Verb RunAs -Wait -PassThru; "
+                "exit $proc.ExitCode"
+            )
+            result = subprocess.run(
+                [ps, "-NoProfile", "-NonInteractive", "-Command", launcher],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        payload: dict[str, object]
+        if result_path.exists():
+            payload = json.loads(result_path.read_text(encoding="utf-8-sig"))
+        else:
+            stderr = (result.stderr or "").strip()
+            payload = {
+                "status": "cancelled" if result.returncode != 0 else "unknown",
+                "added": [],
+                "skipped": [],
+                "message": stderr or (
+                    "Windows Security n'a pas renvoyé de résultat exploitable. "
+                    "L'élévation a peut-être échoué après validation ou le script "
+                    "élevé n'a pas pu s'exécuter correctement."
+                ),
+            }
+
+        if result.returncode != 0 and payload.get("status") not in {"error", "cancelled"}:
+            payload["status"] = "error"
+            payload["message"] = payload.get("message") or f"PowerShell exited with {result.returncode}"
+        return payload
+
+
+def offer_windows_controlled_folder_access_setup(
+    prefix: Path,
+    dry_run: bool,
+    force: bool = False,
+) -> dict[str, object]:
+    """
+    Offer to allowlist Mediarecode writer tools in Windows Security.
+
+    This is intentionally opt-in because it modifies the Defender allowlist.
+    """
+    if OS != "Windows":
+        return {"status": "unsupported", "added": [], "skipped": [], "message": ""}
+
+    title("Step 4b — Windows Security (Controlled Folder Access)")
+
+    state = _windows_controlled_folder_access_state()
+    if state is None:
+        warn("Unable to query Controlled Folder Access state from Windows Security")
+        return {"status": "unavailable", "added": [], "skipped": [], "message": ""}
+    if state == 0:
+        ok("Controlled Folder Access disabled — no allowlist change needed")
+        return {"status": "disabled", "added": [], "skipped": [], "message": ""}
+    if state == 2:
+        info("Controlled Folder Access is in audit mode")
+    else:
+        info("Controlled Folder Access is enabled")
+
+    targets = _windows_cfa_candidate_apps(prefix)
+    if not targets:
+        warn("No Windows writer executable found to propose for the allowlist")
+        return {"status": "no_targets", "added": [], "skipped": [], "message": ""}
+
+    for target in targets:
+        info(f"Allowlist candidate: {target}")
+
+    if dry_run:
+        ok("[dry-run] Controlled Folder Access prompt would be shown if needed")
+        return {"status": "dry_run", "added": [], "skipped": [], "message": ""}
+
+    if not force:
+        message = (
+            "Windows Security Controlled Folder Access is active.\n\n"
+            "Mediarecode can ask Windows Security to allow its executables "
+            "to write into the protected user libraries such as Videos, "
+            "Documents, Pictures, and similar folders.\n\n"
+            "Without this exception, saving directly into those folders "
+            "may be blocked by Windows, even if the folders exist.\n\n"
+            "This allowlist can include Mediarecode itself and the writer tools "
+            "it uses, such as ffmpeg, mkvmerge, and mkvpropedit.\n\n"
+            "An administrator approval prompt may appear.\n\n"
+            "Add missing applications now?"
+        )
+        if not _windows_yes_no(message, "Mediarecode setup", default_no=True):
+            info("Controlled Folder Access allowlist step skipped by user")
+            return {"status": "skipped", "added": [], "skipped": [], "message": ""}
+
+    result = _windows_apply_controlled_folder_access_allowlist(targets)
+    status = str(result.get("status") or "unknown")
+    added = [str(item) for item in result.get("added", [])]
+    skipped = [str(item) for item in result.get("skipped", [])]
+    message = str(result.get("message") or "").strip()
+
+    if status == "updated":
+        ok("Controlled Folder Access allowlist updated")
+        for item in added:
+            info(f"Allowed: {item}")
+        if skipped:
+            info(f"Already allowed: {len(skipped)} application(s)")
+        return result
+    if status == "already_allowed":
+        ok("Controlled Folder Access allowlist already up to date")
+        return result
+    if status == "disabled":
+        ok("Controlled Folder Access disabled — no allowlist change needed")
+        return result
+    if status == "cancelled":
+        warn("Controlled Folder Access update cancelled or refused")
+        if message:
+            warn(message)
+        warn(
+            "Without the Windows Security exception, direct saves to protected "
+            "libraries such as Videos or Documents may remain blocked."
+        )
+        return result
+
+    warn("Controlled Folder Access allowlist update failed")
+    if message:
+        warn(message)
+    return result
+
+
+def _windows_fetch_text(url: str) -> str:
+    """Fetch URL text payload on Windows without relying on urllib+ssl."""
+    ps = _windows_powershell()
+    if ps:
+        script = (
+            "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; "
+            "$ProgressPreference='SilentlyContinue'; "
+            "$h=@{'User-Agent'='mediarecode-setup/1.0'}; "
+            "(Invoke-WebRequest -Uri $env:MR_URL -Headers $h -UseBasicParsing).Content"
+        )
+        env = os.environ.copy()
+        env["MR_URL"] = url
+        result = subprocess.run(
+            [ps, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        if result.returncode == 0:
+            return result.stdout
+        stderr = (result.stderr or "").strip()
+        raise RuntimeError(stderr or f"PowerShell exited with {result.returncode}")
+
+    curl = shutil.which("curl.exe") or shutil.which("curl")
+    if not curl:
+        raise RuntimeError("No PowerShell/curl fallback available on Windows")
+    result = subprocess.run(
+        [curl, "-fsSL", "-H", "User-Agent: mediarecode-setup/1.0", url],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise RuntimeError(stderr or f"curl exited with {result.returncode}")
+    return result.stdout
+
+
+def _windows_download_file(url: str, dest: Path) -> None:
+    """Download URL to file on Windows without relying on urllib+ssl."""
+    ps = _windows_powershell()
+    if ps:
+        script = (
+            "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; "
+            "$ProgressPreference='SilentlyContinue'; "
+            "$h=@{'User-Agent'='mediarecode-setup/1.0'}; "
+            "Invoke-WebRequest -Uri $env:MR_URL -Headers $h -OutFile $env:MR_DEST -UseBasicParsing"
+        )
+        env = os.environ.copy()
+        env["MR_URL"] = url
+        env["MR_DEST"] = str(dest)
+        result = subprocess.run(
+            [ps, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        if result.returncode == 0:
+            return
+        stderr = (result.stderr or "").strip()
+        raise RuntimeError(stderr or f"PowerShell exited with {result.returncode}")
+
+    curl = shutil.which("curl.exe") or shutil.which("curl")
+    if not curl:
+        raise RuntimeError("No PowerShell/curl fallback available on Windows")
+    result = subprocess.run(
+        [curl, "-fL", "-H", "User-Agent: mediarecode-setup/1.0", "-o", str(dest), url],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise RuntimeError(stderr or f"curl exited with {result.returncode}")
 
 def _find_asset(release: dict, suffix: str) -> Optional[str]:
     """Return the browser_download_url of the first asset whose name ends with suffix."""
@@ -1163,6 +1772,13 @@ def main() -> None:
     if dry_run:
         warn("DRY-RUN mode — no changes will be made")
 
+    if OS == "Windows":
+        try:
+            verify_windows_frozen_python_runtime()
+        except Exception as e:
+            error(f"Windows Python runtime check failed: {e}")
+            sys.exit(1)
+
     # ── Platform-specific ─────────────────────────────────────────────────
     if OS == "Linux":
         distro = detect_linux_distro()
@@ -1246,6 +1862,13 @@ def main() -> None:
 
         title("Final tool verification")
         check_tools_presence(prefix)
+
+        try:
+            offer_windows_controlled_folder_access_setup(
+                prefix, dry_run, force=force
+            )
+        except Exception as e:
+            error(f"Windows Security allowlist setup failed: {e}")
 
     else:
         warn(f"Unknown platform '{OS}' — skipping system package installation")

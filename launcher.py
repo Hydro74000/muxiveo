@@ -4,7 +4,7 @@ launcher.py — Point d'entrée packagé de Mediarecode.
 
 Vérifie la présence de config.ini dans le dossier de configuration utilisateur :
   Linux / macOS  → $XDG_CONFIG_HOME/mediarecode/config.ini  (défaut : ~/.config/…)
-  Windows frozen → dossier contenant l'exécutable
+  Windows frozen → %APPDATA%\\mediarecode\\config.ini
   Windows dev    → racine du projet
 
 Si absent → lance le setup système, puis démarre l'application Qt.
@@ -13,8 +13,19 @@ Si absent → lance le setup système, puis démarre l'application Qt.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
+
+
+def _ensure_text_stream(name: str, mode: str) -> None:
+    """Provide stdout/stderr when frozen without a console window."""
+    if getattr(sys, name, None) is None:
+        setattr(sys, name, open(os.devnull, mode, encoding="utf-8"))
+
+
+_ensure_text_stream("stdout", "w")
+_ensure_text_stream("stderr", "w")
 
 
 # ---------------------------------------------------------------------------
@@ -32,19 +43,44 @@ def _is_allinc() -> bool:
     return (Path(sys.executable).parent / "_ALLINC").exists()
 
 
+def _windows_config_dir() -> Path:
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return Path(appdata) / "mediarecode"
+    return Path.home() / "AppData" / "Roaming" / "mediarecode"
+
+
 def _get_config_path() -> Path:
     """
     Retourne le chemin de config.ini selon la plateforme :
     - Linux / macOS  → ~/.config/mediarecode/config.ini  (XDG)
-    - Windows frozen → dossier contenant l'exécutable
+    - Windows frozen → %APPDATA%\\mediarecode\\config.ini
     - Windows dev    → racine du projet
     """
     if sys.platform != "win32":
         xdg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
         return xdg / "mediarecode" / "config.ini"
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent / "config.ini"
+        return _windows_config_dir() / "config.ini"
     return Path(__file__).parent / "config.ini"
+
+
+def _restart_current_app() -> bool:
+    """
+    Restart the current launcher as a fresh process.
+
+    This is required after updating Windows Controlled Folder Access allowlists:
+    the newly allowed executable only gains write access on its next start.
+    """
+    try:
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable]
+        else:
+            cmd = [sys.executable, str(Path(__file__).resolve())]
+        subprocess.Popen(cmd)
+        return True
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +124,12 @@ def _run_first_time_setup(install_dir: Path) -> int:
     prefix = _setup._default_prefix()
     dry_run = False
     force = False
+    cfa_result: dict[str, object] = {"status": "not_run"}
+
+    try:
+        install_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
 
     try:
         if allinc:
@@ -123,6 +165,9 @@ def _run_first_time_setup(install_dir: Path) -> int:
                 _setup.install_github_tools(prefix, dry_run, force=force)
                 _setup.autofill_windows_config_ini(prefix, dry_run, force=force)
                 _setup.check_tools_presence(prefix)
+                cfa_result = _setup.offer_windows_controlled_folder_access_setup(
+                    prefix, dry_run, force=force
+                )
 
             else:
                 print(f"  Plateforme inconnue '{_os}' — setup système ignoré.", file=sys.stderr)
@@ -140,7 +185,7 @@ def _run_first_time_setup(install_dir: Path) -> int:
         print(f"\n  ERREUR pendant le setup : {exc}", file=sys.stderr)
         try:
             answer = input("\n  Continuer quand même ? [o/N] ").strip().lower()
-        except EOFError:
+        except (EOFError, RuntimeError):
             answer = ""
         if answer not in ("o", "oui", "y", "yes"):
             return 1
@@ -161,6 +206,20 @@ def _run_first_time_setup(install_dir: Path) -> int:
             # Dossier en lecture seule (AppImage dans /opt, /usr …) — non bloquant
             pass
 
+    if _os == "Windows" and str(cfa_result.get("status") or "") == "updated":
+        print(
+            "\n  Windows Security a été mis à jour."
+            "\n  Redémarrage de Mediarecode pour appliquer l'autorisation...\n"
+        )
+        if _restart_current_app():
+            return 0
+        print(
+            "  Impossible de relancer automatiquement l'application."
+            "\n  Fermez cette fenêtre puis relancez Mediarecode manuellement.\n",
+            file=sys.stderr,
+        )
+        return 1
+
     print("\n  Setup terminé. Démarrage de l'application...\n")
     return 0
 
@@ -177,7 +236,7 @@ def main() -> int:
         if rc != 0:
             try:
                 input("Appuyez sur Entrée pour quitter...")
-            except EOFError:
+            except (EOFError, RuntimeError):
                 pass
             return rc
 

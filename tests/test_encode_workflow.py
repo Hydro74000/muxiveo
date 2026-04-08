@@ -216,6 +216,12 @@ class TestTotalRamBytes:
              patch.object(EncodeWorkflow, "_win_mem_status", return_value=fake_stat):
             assert EncodeWorkflow._total_ram_bytes() == 17_179_869_184
 
+    def test_windows_returns_zero_if_ctypes_unavailable(self):
+        """Windows : fallback à 0 si ctypes/_ctypes est indisponible."""
+        with patch("sys.platform", "win32"), \
+             patch.object(EncodeWorkflow, "_win_mem_status", side_effect=ImportError):
+            assert EncodeWorkflow._total_ram_bytes() == 0
+
     def test_unknown_platform_returns_zero(self):
         with patch("sys.platform", "freebsd"):
             assert EncodeWorkflow._total_ram_bytes() == 0
@@ -263,6 +269,11 @@ class TestAvailableRamBytes:
         with patch("sys.platform", "win32"), \
              patch.object(EncodeWorkflow, "_win_mem_status", return_value=fake_stat):
             assert EncodeWorkflow._available_ram_bytes() == 8_589_934_592
+
+    def test_windows_available_returns_zero_if_ctypes_unavailable(self):
+        with patch("sys.platform", "win32"), \
+             patch.object(EncodeWorkflow, "_win_mem_status", side_effect=ImportError):
+            assert EncodeWorkflow._available_ram_bytes() == 0
 
     def test_unknown_platform_returns_zero(self):
         with patch("sys.platform", "freebsd"):
@@ -939,6 +950,16 @@ class TestValidate:
         src = tmp_path / "src.mkv"; src.touch()
         errors = self.wf.validate(_make_config(src, src))
         assert len(errors) >= 1
+
+    def test_output_dir_not_writable(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        config = _make_config(src, tmp_path / "out.mkv")
+        with patch(
+            "core.workflows.encode.workflow.tempfile.NamedTemporaryFile",
+            side_effect=OSError("blocked"),
+        ):
+            errors = self.wf.validate(config)
+        assert any("inscriptible" in e.lower() for e in errors)
 
     def test_size_mode_without_duration(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()

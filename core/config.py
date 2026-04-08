@@ -27,13 +27,21 @@ from core.lang_tags import Rfc5646LanguageTags
 # Chemin du fichier config.ini
 # ---------------------------------------------------------------------------
 
-# config.ini est placé à côté de l'exécutable / de l'AppImage, ou à la
-# racine du projet en mode développement.
+# Linux/macOS : config.ini dans le dossier XDG user (~/.config/mediarecode).
+# Windows frozen : config.ini dans %APPDATA%\\mediarecode.
+# Windows dev : config.ini à la racine du projet.
+def _windows_config_dir() -> Path:
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return Path(appdata) / "mediarecode"
+    return Path.home() / "AppData" / "Roaming" / "mediarecode"
+
+
 def _resolve_ini_path() -> Path:
     """
     Résout le chemin de config.ini selon la plateforme et le contexte :
     - Linux / macOS  → ~/.config/mediarecode/config.ini  (XDG, dev ET frozen)
-    - Windows frozen → dossier contenant l'exécutable
+    - Windows frozen → %APPDATA%\\mediarecode\\config.ini
     - Windows dev    → racine du projet (parent de core/)
 
     Sur Linux/macOS, on utilise toujours le chemin XDG — y compris en mode
@@ -44,7 +52,7 @@ def _resolve_ini_path() -> Path:
         return xdg / "mediarecode" / "config.ini"
     # Windows
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent / "config.ini"
+        return _windows_config_dir() / "config.ini"
     return Path(__file__).parent.parent / "config.ini"
 
 _INI_PATH = _resolve_ini_path()
@@ -183,6 +191,7 @@ def _update_ini_tools_section(path: Path, tool_values: dict[str, str]) -> None:
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     lines = text.splitlines()
     lines = _upsert_ini_section(lines, "tools", tool_values, replace_blank_only=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
@@ -194,12 +203,21 @@ def write_ini_settings(section_values: dict[str, dict[str, str]]) -> None:
     for section, values in section_values.items():
         lines = _upsert_ini_section(lines, section, values)
 
+    _INI_PATH.parent.mkdir(parents=True, exist_ok=True)
     _INI_PATH.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
 def _windows_repo_tool_dirs() -> list[Path]:
-    repo_dir = _INI_PATH.parent
-    return [repo_dir / "tools", repo_dir / "tools" / "bin"]
+    base_dirs = [_INI_PATH.parent]
+    if getattr(sys, "frozen", False):
+        base_dirs.append(Path(sys.executable).parent)
+    else:
+        base_dirs.append(Path(__file__).parent.parent)
+
+    dirs: list[Path] = []
+    for base_dir in _dedupe_paths(base_dirs):
+        dirs.extend([base_dir / "tools", base_dir / "tools" / "bin"])
+    return _dedupe_paths(dirs)
 
 
 def _windows_program_files_dirs() -> list[Path]:
@@ -478,9 +496,11 @@ class AppConfig:
     """
     Configuration centralisée de l'application.
 
-    Les propriétés sont persistées via QSettings (INI) dans le dossier
-    app data. config.ini a priorité sur les valeurs sauvegardées,
-    elles-mêmes prioritaires sur les défauts.
+    Les propriétés sont persistées via INI :
+    - Windows : QSettings pointe directement vers config.ini
+    - Linux/macOS : QSettings user-scope INI
+    config.ini a priorité sur les valeurs sauvegardées, elles-mêmes
+    prioritaires sur les défauts.
 
     Une clé présente mais vide dans config.ini revient explicitement au défaut
     documenté au lieu de retomber sur une ancienne valeur QSettings.
@@ -490,12 +510,16 @@ class AppConfig:
     _SETTINGS_APP = "Mediarecode"
 
     def __init__(self) -> None:
-        self._settings = QSettings(
-            QSettings.Format.IniFormat,
-            QSettings.Scope.UserScope,
-            self._SETTINGS_ORG,
-            self._SETTINGS_APP,
-        )
+        if _is_windows():
+            _INI_PATH.parent.mkdir(parents=True, exist_ok=True)
+            self._settings = QSettings(str(_INI_PATH), QSettings.Format.IniFormat)
+        else:
+            self._settings = QSettings(
+                QSettings.Format.IniFormat,
+                QSettings.Scope.UserScope,
+                self._SETTINGS_ORG,
+                self._SETTINGS_APP,
+            )
         self._ini = _load_ini()
         self._detected_ini_tools: dict[str, str] = {}
         self._load()

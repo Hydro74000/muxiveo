@@ -37,12 +37,14 @@ Options :
     --allinc             Embarque tous les outils externes dans l'AppImage
     --skip-pyinstaller   Réutilise le bundle PyInstaller existant dans dist/
     --arch ARCH          Architecture cible AppImage : x86_64 (défaut) ou aarch64
+    --dest PATH          Copie le fichier final vers un chemin personnalisé (dossier ou fichier)
     --windows            Build installateur Windows via Wine (cross-compilation)
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import platform
@@ -90,6 +92,51 @@ def run(cmd: list[str | Path], **kwargs) -> None:
     subprocess.run([str(c) for c in cmd], check=True, **kwargs)
 
 
+def _resolve_dest_file(dest: str | None, default_output: Path) -> Path:
+    """
+    Résout le chemin de destination du fichier final.
+    - dest absent: conserve default_output
+    - dest dossier (existant, trailing slash, ou sans extension): utilise le nom auto
+    - dest fichier: utilise ce nom
+    """
+    if not dest:
+        return default_output
+
+    raw = dest.strip()
+    if not raw:
+        return default_output
+
+    target = Path(raw).expanduser()
+    if not target.is_absolute():
+        target = (Path.cwd() / target).resolve()
+
+    if target.exists() and target.is_dir():
+        return target / default_output.name
+
+    if raw.endswith(("/", "\\")):
+        return target / default_output.name
+
+    if target.suffix == "":
+        return target / default_output.name
+
+    return target
+
+
+def _copy_final_file_if_requested(src: Path, dest: str | None) -> Path:
+    """Copie le fichier final vers --dest si fourni, sinon retourne src inchangé."""
+    target = _resolve_dest_file(dest, src)
+
+    src_resolved = src.resolve()
+    target_resolved = target.resolve(strict=False)
+    if src_resolved == target_resolved:
+        return src
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, target)
+    ok(f"Copie finale : {target}")
+    return target
+
+
 # ---------------------------------------------------------------------------
 # Étape 0 — Dépendances du script lui-même
 # ---------------------------------------------------------------------------
@@ -133,19 +180,13 @@ def ensure_build_deps() -> None:
     # ── Dépendances Python ────────────────────────────────────────────────
     missing_py: list[str] = []
 
-    try:
-        import PyInstaller  # noqa: F401
-    except ImportError:
+    if importlib.util.find_spec("PyInstaller") is None:
         missing_py.append("pyinstaller")
 
-    try:
-        import PySide6  # noqa: F401
-    except ImportError:
+    if importlib.util.find_spec("PySide6") is None:
         missing_py.append("PySide6>=6.6.0")
 
-    try:
-        import pymediainfo  # noqa: F401
-    except ImportError:
+    if importlib.util.find_spec("pymediainfo") is None:
         missing_py.append("pymediainfo>=6.1.0")
 
     if missing_py:
@@ -747,6 +788,14 @@ def parse_args() -> argparse.Namespace:
         choices=list(_APPIMAGETOOL_URLS),
         help="Architecture cible (défaut : machine courante)",
     )
+    p.add_argument(
+        "--dest",
+        metavar="PATH",
+        help=(
+            "Chemin de copie du fichier final (dossier ou nom de fichier). "
+            "Si le nom de fichier est omis, le nom auto-généré est conservé."
+        ),
+    )
     return p.parse_args()
 
 
@@ -782,15 +831,16 @@ def main() -> None:
     appdir = build_appdir(bundle_dir, allinc=allinc, arch=arch)
     appimagetool = get_appimagetool(arch)
     appimage_path = build_appimage(appimagetool, appdir, arch, allinc=allinc)
+    final_appimage = _copy_final_file_if_requested(appimage_path, args.dest)
 
     print(_c("1;32", """
 ╔══════════════════════════════════════════╗
 ║  Build terminé avec succès !             ║
 ╚══════════════════════════════════════════╝"""))
-    print(f"\n  AppImage : {appimage_path}")
+    print(f"\n  AppImage : {final_appimage}")
     info("Lancez l'application avec :")
-    print(f"\n    chmod +x {appimage_path.name}")
-    print(f"    ./{appimage_path.name}\n")
+    print(f"\n    chmod +x \"{final_appimage}\"")
+    print(f"    \"{final_appimage}\"\n")
     if allinc:
         info("Mode all-inclusive : au 1er lancement, seule la configuration")
         info("est initialisée (~/.config/mediarecode/config.ini).")
