@@ -144,7 +144,7 @@ def test_verify_wine_pyside6_runtime_raises_with_missing_dlls(tmp_path):
 
     assert "PySide6.QtCore" in text
     assert "icuuc.dll" in text
-    assert "Absentes du package PySide6 installé" in text
+    assert "Absentes du package PySide6" in text
 
 
 def test_sync_windows_icu_dlls_copies_versioned_files_and_aliases(tmp_path):
@@ -165,6 +165,61 @@ def test_sync_windows_icu_dlls_copies_versioned_files_and_aliases(tmp_path):
     assert "icuin.dll" in copied_names
     assert "icudt.dll" in copied_names
     assert (target / "icuuc.dll").read_text(encoding="utf-8") == "icuuc"
+
+
+def test_select_windows_icu_runtime_dlls_accepts_icu_dll_data_provider(tmp_path):
+    root = tmp_path / "icu"
+    root.mkdir()
+    (root / "icuuc.dll").write_text("", encoding="utf-8")
+    (root / "icuin.dll").write_text("", encoding="utf-8")
+    (root / "icu.dll").write_text("", encoding="utf-8")
+
+    selected = package_mod._select_windows_icu_runtime_dlls([root])
+    names = {path.name.lower() for path in selected}
+
+    assert "icuuc.dll" in names
+    assert "icuin.dll" in names
+    assert "icu.dll" in names
+
+
+def test_verify_windows_runtime_bundle_accepts_icu_dll_data_runtime(tmp_path):
+    bundle = tmp_path / "bundle"
+    internal = bundle / "_internal"
+    internal.mkdir(parents=True)
+
+    for filename in (
+        "_ctypes.pyd",
+        "_ssl.pyd",
+        "libffi-8.dll",
+        "libssl-3.dll",
+        "libcrypto-3.dll",
+        "icuuc.dll",
+        "icuin.dll",
+        "icu.dll",
+    ):
+        (internal / filename).write_text("", encoding="utf-8")
+
+    package_mod._verify_windows_runtime_bundle(bundle)
+
+
+def test_add_windows_icu_to_pyinstaller_native_falls_back_to_system_runtime():
+    cmd: list[str] = []
+    system_dlls = [
+        Path(r"C:\Windows\System32\icuuc.dll"),
+        Path(r"C:\Windows\System32\icuin.dll"),
+        Path(r"C:\Windows\System32\icu.dll"),
+    ]
+
+    with patch.object(package_mod, "_select_windows_icu_runtime_dlls", side_effect=[[], system_dlls]), \
+         patch.object(package_mod, "_native_windows_system_icu_search_dirs", return_value=[Path(r"C:\Windows\System32")]), \
+         patch.object(package_mod, "_warn") as mock_warn:
+        package_mod._add_windows_icu_to_pyinstaller_native(cmd)
+
+    expected: list[str] = []
+    for dll in system_dlls:
+        expected.extend(["--add-binary", f"{dll};."])
+    assert cmd == expected
+    mock_warn.assert_not_called()
 
 
 def test_convert_ico_to_png_uses_largest_embedded_png_frame(tmp_path):

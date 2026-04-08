@@ -783,15 +783,21 @@ def _add_windows_icu_to_pyinstaller_native(cmd: list[str]) -> None:
         pyside_dirs.append(Path(_pyside6.__file__).resolve().parent)
     pyside_dirs.append(Path(sys.executable).resolve().parent)
 
-    dlls = _find_windows_icu_dlls(pyside_dirs)
+    dlls = _select_windows_icu_runtime_dlls(pyside_dirs)
+    source = "PySide6/Python"
     if not dlls:
-        _warn("DLLs ICU introuvables près de PySide6 ; le bundle Qt peut dépendre du système.")
+        dlls = _select_windows_icu_runtime_dlls(_native_windows_system_icu_search_dirs())
+        source = "Windows system runtime"
+    if not dlls:
+        _warn(
+            "DLLs ICU introuvables pres de PySide6 et dans le runtime Windows ; "
+            "le bundle Qt peut dependre du systeme."
+        )
         return
 
     for dll in dlls:
         cmd += ["--add-binary", f"{dll};."]
-    _ok("Support ICU Windows ajouté au bundle PyInstaller")
-
+    _ok(f"Support ICU Windows ajoute au bundle PyInstaller ({source})")
 
 def _add_windows_ssl_to_pyinstaller_wine(cmd: list[str], wine_env: dict[str, str]) -> None:
     """Add SSL-related imports/binaries to a Wine (Windows target) PyInstaller command."""
@@ -893,7 +899,6 @@ def _verify_windows_runtime_bundle(bundle_dir: Path) -> None:
         "libcrypto": "libcrypto-*.dll",
         "icuuc": "icuuc*.dll",
         "icuin": "icuin*.dll",
-        "icudt": "icudt*.dll",
     }
     missing: list[str] = []
     for label, pattern in required_patterns.items():
@@ -902,6 +907,8 @@ def _verify_windows_runtime_bundle(bundle_dir: Path) -> None:
 
     if any(internal.glob("_sqlite3.pyd")) and not any(internal.glob("sqlite3.dll")):
         missing.append("sqlite runtime (sqlite3.dll)")
+    if not any(internal.glob("icudt*.dll")) and not any(internal.glob("icu.dll")):
+        missing.append("icu data runtime (icudt*.dll or icu.dll)")
 
     if missing:
         raise RuntimeError(f"Bundle Windows incomplet, runtime manquant: {', '.join(missing)}")
@@ -1391,6 +1398,57 @@ def _windows_icu_cache_dir() -> Path:
     return ROOT / "build" / "tools" / "icu" / f"win-x64-{_WIN_ICU_NUGET_VERSION}"
 
 
+def _native_windows_system_icu_search_dirs() -> list[Path]:
+    """Likely Windows OS directories containing system ICU runtime DLLs."""
+    win_dir = Path(os.environ.get("WINDIR", r"C:\Windows"))
+    candidates = [
+        win_dir / "System32",
+        win_dir / "SysWOW64",
+    ]
+    return [path for path in candidates if path.is_dir()]
+
+
+def _wine_system_icu_search_dirs() -> list[Path]:
+    """Likely Wine directories containing system ICU runtime DLLs."""
+    return [
+        _WINE_PREFIX / "drive_c" / "windows" / "system32",
+        _WINE_PREFIX / "drive_c" / "windows" / "SysWOW64",
+    ]
+
+
+def _select_windows_icu_runtime_dlls(search_dirs: Iterable[Path]) -> list[Path]:
+    """
+    Select a Qt-compatible ICU runtime set from given directories.
+
+    Required:
+      - icuuc.dll
+      - icuin.dll
+      - either icudt.dll or icu.dll (data/runtime provider)
+    """
+    wanted_order = ("icuuc.dll", "icuin.dll", "icudt.dll", "icu.dll")
+    selected: dict[str, Path] = {}
+    for directory in search_dirs:
+        if not directory.is_dir():
+            continue
+        for filename in wanted_order:
+            candidate = directory / filename
+            if not candidate.is_file() or filename in selected:
+                continue
+            selected[filename] = candidate.resolve()
+
+    has_core = "icuuc.dll" in selected and "icuin.dll" in selected
+    has_data = "icudt.dll" in selected or "icu.dll" in selected
+    if not (has_core and has_data):
+        return []
+
+    ordered = ["icuuc.dll", "icuin.dll"]
+    if "icudt.dll" in selected:
+        ordered.append("icudt.dll")
+    if "icu.dll" in selected:
+        ordered.append("icu.dll")
+    return [selected[name] for name in ordered]
+
+
 def _extract_windows_icu_alias_name(filename: str) -> str | None:
     match = re.fullmatch(r"(icu(?:uc|in|dt))\d+\.dll", filename, flags=re.IGNORECASE)
     if not match:
@@ -1447,6 +1505,16 @@ def _sync_windows_icu_dlls(target_dir: Path, source_dlls: Iterable[Path]) -> lis
     """
     Copy ICU DLLs into `target_dir` and create alias names without suffixes.
     """
+    return _sync_windows_icu_dlls_with_alias_option(target_dir, source_dlls, create_aliases=True)
+
+
+def _sync_windows_icu_dlls_with_alias_option(
+    target_dir: Path,
+    source_dlls: Iterable[Path],
+    *,
+    create_aliases: bool,
+) -> list[Path]:
+    """Copy ICU DLLs into `target_dir` with optional suffix-less aliases."""
     target_dir.mkdir(parents=True, exist_ok=True)
     copied: list[Path] = []
     for src in source_dlls:
@@ -1454,14 +1522,14 @@ def _sync_windows_icu_dlls(target_dir: Path, source_dlls: Iterable[Path]) -> lis
         shutil.copy2(src, dest)
         copied.append(dest)
 
-        alias_name = _extract_windows_icu_alias_name(src.name)
-        if alias_name:
-            alias_dest = target_dir / alias_name
-            shutil.copy2(src, alias_dest)
-            copied.append(alias_dest)
+        if create_aliases:
+            alias_name = _extract_windows_icu_alias_name(src.name)
+            if alias_name:
+                alias_dest = target_dir / alias_name
+                shutil.copy2(src, alias_dest)
+                copied.append(alias_dest)
 
     return _dedupe_paths(copied)
-
 
 def _find_windows_icu_dlls(search_dirs: Iterable[Path]) -> list[Path]:
     matches: list[Path] = []
@@ -1480,36 +1548,71 @@ def _ensure_wine_qt_icu_runtime() -> list[Path]:
     """
     Ensure Qt ICU DLLs are present in the Wine Python environment.
 
-    We copy both versioned DLLs and suffix-less aliases next to PySide6's Qt
-    libraries so `Qt6Core.dll` can be imported during the cross-build.
+    Prefer unsuffixed ICU DLLs from Wine's Windows runtime (`system32`), which
+    match Qt's expected exports (`icuuc.dll`, `icuin.dll`, ...). NuGet ICU is
+    only used as a fallback.
     """
     pyside_dir = _wine_pyside6_dir()
     if not pyside_dir.is_dir():
         raise RuntimeError(f"PySide6 introuvable dans Wine: {pyside_dir}")
 
-    existing = _find_windows_icu_dlls([pyside_dir, _WIN_PY_EXE.parent])
-    required = {"icuuc.dll", "icuin.dll", "icudt.dll"}
-    existing_names = {path.name.lower() for path in existing}
-    if required.issubset(existing_names):
-        _ok("DLLs ICU déjà présentes dans le runtime Wine")
+    existing = _select_windows_icu_runtime_dlls([pyside_dir, _WIN_PY_EXE.parent])
+    if existing:
+        _ok("DLLs ICU deja presentes dans le runtime Wine")
         return existing
 
+    system_runtime = _select_windows_icu_runtime_dlls(_wine_system_icu_search_dirs())
+    if system_runtime:
+        installed = _sync_windows_icu_dlls_with_alias_option(
+            pyside_dir,
+            system_runtime,
+            create_aliases=False,
+        )
+        # Duplicate into the Python root as a fallback search location for loader quirks.
+        installed.extend(
+            _sync_windows_icu_dlls_with_alias_option(
+                _WIN_PY_EXE.parent,
+                system_runtime,
+                create_aliases=False,
+            )
+        )
+        installed = _dedupe_paths(installed)
+        verified = _select_windows_icu_runtime_dlls([pyside_dir, _WIN_PY_EXE.parent])
+        if verified:
+            _ok("DLLs ICU Windows copiees depuis le runtime systeme Wine")
+            return verified
+
+    # Fallback: NuGet (versioned ICU DLL names). Keep original filenames only;
+    # we intentionally avoid creating suffix-less aliases here to prevent
+    # export mismatches ("specified procedure could not be found").
     source_dlls = _ensure_windows_icu_runtime_cache()
-    installed = _sync_windows_icu_dlls(pyside_dir, source_dlls)
+    installed = _sync_windows_icu_dlls_with_alias_option(
+        pyside_dir,
+        source_dlls,
+        create_aliases=False,
+    )
     # Duplicate into the Python root as a fallback search location for loader quirks.
-    installed.extend(_sync_windows_icu_dlls(_WIN_PY_EXE.parent, source_dlls))
+    installed.extend(
+        _sync_windows_icu_dlls_with_alias_option(
+            _WIN_PY_EXE.parent,
+            source_dlls,
+            create_aliases=False,
+        )
+    )
     installed = _dedupe_paths(installed)
 
-    installed_names = {path.name.lower() for path in installed}
-    if not required.issubset(installed_names):
-        raise RuntimeError(
-            "Injection ICU incomplète dans Wine: "
-            f"attendu {', '.join(sorted(required))}, obtenu {', '.join(sorted(installed_names))}"
-        )
+    verified = _select_windows_icu_runtime_dlls([pyside_dir, _WIN_PY_EXE.parent])
+    if verified:
+        _ok("DLLs ICU Windows copiees depuis NuGet")
+        return verified
 
-    _ok("DLLs ICU Windows copiées dans le préfixe Wine")
-    return installed
-
+    installed_names = sorted({path.name.lower() for path in installed})
+    raise RuntimeError(
+        "Runtime ICU incompatible dans Wine. "
+        "Qt attend des DLLs non suffixees (icuuc.dll/icuin.dll + icudt.dll ou icu.dll), "
+        f"mais les DLLs disponibles sont: {', '.join(installed_names)}. "
+        "Use a newer Wine runtime (system ICU) or provide compatible ICU DLLs."
+    )
 
 def _extract_missing_wine_dlls(log_text: str) -> list[str]:
     """Extract missing DLL names from Wine loader diagnostics."""
@@ -1528,14 +1631,19 @@ def _extract_missing_wine_dlls(log_text: str) -> list[str]:
 
 def _verify_wine_pyside6_runtime() -> None:
     """
-    Ensure `from PySide6 import QtCore` works inside the Wine Python runtime.
+    Ensure `from PySide6 import QtCore, QtWidgets` works in the Wine runtime.
 
-    PyInstaller's Qt hooks import QtCore in an isolated child process. If that
-    import is broken, the build may continue with incomplete Qt collection and
+    PyInstaller Qt hooks import Qt modules in isolated child processes. If these
+    imports are broken, the build may continue with incomplete Qt collection and
     produce a broken Windows bundle.
     """
     result = subprocess.run(
-        ["wine", str(_WIN_PY_EXE), "-c", "from PySide6 import QtCore; print(QtCore.__file__)"],
+        [
+            "wine",
+            str(_WIN_PY_EXE),
+            "-c",
+            "from PySide6 import QtCore, QtWidgets; print(QtCore.__file__); print(QtWidgets.__file__)",
+        ],
         env=_wine_env("err+all"),
         check=False,
         capture_output=True,
@@ -1545,12 +1653,12 @@ def _verify_wine_pyside6_runtime() -> None:
     stderr = (result.stderr or "").strip()
     combined = "\n".join(part for part in (stdout, stderr) if part)
     if result.returncode == 0:
-        location = stdout.splitlines()[-1] if stdout else "QtCore"
-        _ok(f"PySide6/QtCore import OK dans Wine : {location}")
+        location = stdout.splitlines()[-1] if stdout else "QtCore/QtWidgets"
+        _ok(f"PySide6/QtCore+QtWidgets import OK dans Wine : {location}")
         return
 
     missing_dlls = _extract_missing_wine_dlls(combined)
-    missing_bits = f" DLLs manquantes signalées: {', '.join(missing_dlls)}." if missing_dlls else ""
+    missing_bits = f" DLLs manquantes signalees: {', '.join(missing_dlls)}." if missing_dlls else ""
 
     pyside_dir = _wine_pyside6_dir()
     package_missing: list[str] = []
@@ -1558,19 +1666,34 @@ def _verify_wine_pyside6_runtime() -> None:
         if not (pyside_dir / dll_name).exists():
             package_missing.append(dll_name)
     package_bits = (
-        f" Absentes du package PySide6 installé: {', '.join(package_missing)}."
+        f" Absentes du package PySide6 installe: {', '.join(package_missing)}."
         if package_missing else ""
+    )
+    icu_files = _find_windows_icu_dlls([pyside_dir, _WIN_PY_EXE.parent])
+    icu_names = {path.name.lower() for path in icu_files}
+    has_versioned_icu = any(
+        re.fullmatch(r"icu(?:uc|in|dt)\d+\.dll", name, flags=re.IGNORECASE)
+        for name in icu_names
+    )
+    procedure_not_found = (
+        "specified procedure could not be found" in combined.lower()
+        or "procedure specifiee est introuvable" in combined.lower()
     )
 
     hint = ""
     if any(name.lower().startswith("icu") for name in missing_dlls):
         hint = (
-            " Le wheel PySide6 installé dans Wine semble incomplet pour cette "
+            " Le wheel PySide6 installe dans Wine semble incomplet pour cette "
             "version/environnement. Essayez une autre version via "
-            "MEDIARECODE_WINE_PYSIDE6_VERSION ou vérifiez le contenu du wheel."
+            "MEDIARECODE_WINE_PYSIDE6_VERSION ou verifiez le contenu du wheel."
+        )
+    elif procedure_not_found and has_versioned_icu:
+        hint = (
+            " ICU semble incompatible (DLLs versionnees detectees). "
+            "Qt attend des exports non suffixes dans icuuc.dll/icuin.dll."
         )
     elif missing_dlls:
-        hint = " Vérifiez le runtime Visual C++ et les DLLs Qt dans le préfixe Wine."
+        hint = " Verifiez le runtime Visual C++ et les DLLs Qt dans le prefixe Wine."
 
     excerpt = ""
     lines = [line.strip() for line in combined.splitlines() if line.strip()]
@@ -1578,13 +1701,12 @@ def _verify_wine_pyside6_runtime() -> None:
         excerpt = " Sortie Wine: " + " | ".join(lines[:6])
 
     raise RuntimeError(
-        "Import PySide6.QtCore impossible dans le Python Wine après installation."
+        "Import PySide6.QtCore/QtWidgets impossible dans le Python Wine apres installation."
         + missing_bits
         + package_bits
         + hint
         + excerpt
     )
-
 
 def _setup_wine_vcruntime() -> None:
     """
