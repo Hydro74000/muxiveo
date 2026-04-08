@@ -1237,21 +1237,23 @@ class EncodeWorkflow(QObject):
         cmd: list[str] = [mkvpropedit_bin, str(output)]
         for edit in edits:
             cmd.extend(["--edit", f"track:@{edit.track_order}"])
-            if edit.language:
-                iso639_2 = LangTags.to_iso639_2(edit.language)
+            language = (edit.language or "").strip()
+            if language:
+                language = LangTags.normalize(language) or language
+                iso639_2 = LangTags.to_iso639_2(language)
                 if iso639_2 is not None:
                     cmd.extend(["--set", f"language={iso639_2}"])
                 else:
                     self.log_message.emit(
                         "WARN",
-                        f"Langue {edit.language!r} non convertible en ISO639-2 "
+                        f"Langue {language!r} non convertible en ISO639-2 "
                         f"pour la piste {edit.track_order} ; balise IETF seule appliquée.",
                     )
-                cmd.extend(["--set", f"language-ietf={edit.language}"])
+                cmd.extend(["--set", f"language-ietf={language}"])
                 iso_display = iso639_2 or "n/a"
                 self.log_message.emit(
                     "INFO",
-                    f"Lang set for track {edit.track_order} to {edit.language} "
+                    f"Lang set for track {edit.track_order} to {language} "
                     f"(ISO639-2: {iso_display}) in workflow",
                 )
             if edit.title is not None:
