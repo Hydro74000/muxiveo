@@ -45,40 +45,7 @@ from core.inspector import (
     AudioTrack, ChapterInfo, FileInfo, FileInspector,
     HDRType, InspectionError, SubtitleTrack, VideoTrack,
 )
-
-
-# =============================================================================
-# Palette de couleurs (cohérente avec main_window.py)
-# =============================================================================
-
-class _C:
-    BG_DEEP    = "#0d0f14"
-    BG_PANEL   = "#141720"
-    BG_CARD    = "#1a1e2a"
-    BG_HOVER   = "#1f2435"
-    BG_ACTIVE  = "#232840"
-
-    BORDER     = "#252a3a"
-    BORDER_LT  = "#2e3450"
-
-    TEXT_PRI   = "#e8ecf4"
-    TEXT_SEC   = "#7a85a0"
-    TEXT_DIM   = "#3d4560"
-
-    ACCENT     = "#4f6ef7"
-    ACCENT_DIM = "#2a3a8a"
-
-    OK         = "#5dcc8a"
-    WARN       = "#f5c842"
-    ERROR      = "#f55a5a"
-    INFO       = "#7ab3f5"
-
-    # HDR badges
-    HDR_NONE   = "#3d4560"
-    HDR_HDR10  = "#1a4060"
-    HDR_HDR10P = "#1a3a60"
-    HDR_DOVI   = "#3a1a60"
-    HDR_BOTH   = "#3a1060"
+from ui.design_system import colors as _C
 
 
 # =============================================================================

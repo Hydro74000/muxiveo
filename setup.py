@@ -468,11 +468,16 @@ def _system_language_code() -> str:
     return "eng"
 
 
-def initialize_config_ini_language(dry_run: bool, force: bool = False) -> None:
+def initialize_config_ini_language(
+    dry_run: bool,
+    force: bool = False,
+    ini_path: Path | None = None,
+) -> None:
     """Initialise la langue UI dans config.ini depuis la locale système."""
     title("Step 5 — config.ini UI language")
 
-    ini_path = _config_ini_path()
+    if ini_path is None:
+        ini_path = _config_ini_path()
     detected = _system_language_code()
     info(f"Detected UI language: {detected}")
 
@@ -1106,7 +1111,8 @@ def check_tools_presence(prefix: Path | None = None) -> None:
 
 def parse_args() -> argparse.Namespace:
     default_prefix = str(_default_prefix())
-    description = __doc__.replace(
+    module_doc = __doc__ or ""
+    description = module_doc.replace(
         "See platform-specific command shown by --help output.",
         f"{PYTHON_CMD} setup.py [--no-github] [--prefix PATH] [--dry-run] [--force]",
     )

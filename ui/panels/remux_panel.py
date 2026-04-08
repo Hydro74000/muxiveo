@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
+from core.media_info_fetcher import MediaDetails, clean_filename_for_search, extract_year_from_filename
 from core.i18n import apply_translations, translate_text
 from core.inspector import (
     STANDARD_MKV_TAGS,
@@ -57,6 +58,8 @@ from core.workflows.remux import (
     RemuxConfig, RemuxWorkflow, SourceInput,
     TrackEntry, tracks_from_file_info,
 )
+from ui.design_system import colors as _C
+from ui.panels.tmdb_search_modal import TmdbSearchModal, extract_season_episode
 from ui.panels.track_edit_dialog import TrackEditDialog
 
 
@@ -128,40 +131,6 @@ class SourceFile:
     info:   FileInfo | None = None
     tracks: list[TrackEntry] = field(default_factory=list)
 
-
-
-# =============================================================================
-# Palette de couleurs (cohérente avec le thème sombre de l'application)
-# =============================================================================
-
-class _C:
-    BG_DEEP    = "#0d0f14"
-    BG_PANEL   = "#141720"
-    BG_CARD    = "#1a1e2a"
-    BG_HOVER   = "#1f2435"
-    BG_ACTIVE  = "#232840"
-
-    BORDER     = "#252a3a"
-    BORDER_LT  = "#2e3450"
-
-    TEXT_PRI   = "#e8ecf4"
-    TEXT_SEC   = "#7a85a0"
-    TEXT_DIM   = "#3d4560"
-
-    ACCENT     = "#4f6ef7"
-    ACCENT_DIM = "#2a3a8a"
-
-    OK         = "#5dcc8a"
-    WARN       = "#f5c842"
-    ERROR      = "#f55a5a"
-    INFO       = "#7ab3f5"
-
-    # Couleurs de types de piste
-    TRACK_VIDEO       = "#7ab3f5"   # bleu
-    TRACK_AUDIO       = "#ce93d8"   # violet
-    TRACK_SUBTITLE    = "#5dcc8a"   # vert
-    TRACK_ATTACHMENT  = "#f5c842"   # jaune ambre
-    TRACK_TAGS        = "#f5a030"   # orange
 
 
 # =============================================================================
@@ -248,13 +217,14 @@ def _separator() -> QFrame:
     return sep
 
 
-def _pencil_icon(color: str = _C.TEXT_SEC, size: int = 14) -> QIcon:
+def _pencil_icon(color: str | None = None, size: int = 14) -> QIcon:
     """
     Icône crayon rendue depuis un SVG inline via QSvgRenderer.
 
     Utilise le tracé Feather Icons (pencil) — un contour simple, sans remplissage,
     adapté à un thème sombre.
     """
+    color = color or _C.TEXT_SEC
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
         f' fill="none" stroke="{color}" stroke-width="2.2"'
@@ -1220,7 +1190,7 @@ class _TagEditDialog(QDialog):
         name_combo = QComboBox()
         name_combo.setEditable(True)
         name_combo.setFixedWidth(160)
-        sorted_tags = sorted(STANDARD_MKV_TAGS - {"TITLE"})
+        sorted_tags = sorted((STANDARD_MKV_TAGS | {"COMMENTS"}) - {"TITLE"})
         name_combo.addItems(sorted_tags)
         name_combo.setCurrentText("")
         name_combo.setStyleSheet(f"""
@@ -1445,12 +1415,29 @@ class _AttachmentPanel(QFrame):
     """
 
     changed = Signal()
+    tmdb_details_selected = Signal(object)  # MediaDetails
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, config: "AppConfig", parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._config  = config
         self._items: list[_AttachmentItemWidget] = []
         self._panel_tag_overrides: dict[str, str] | None = None  # None = utiliser tags source
+        self._suggested_title: str = ""
+        self._suggested_season: int = 0
+        self._suggested_episode: int = 0
+        self._auto_tmdb_cover_path: Path | None = None
         self._build_ui()
+
+    def set_suggested_title(self, title: str, season: int = 0, episode: int = 0) -> None:
+        """
+        Mémorise les suggestions de recherche TMDB.
+
+        title : texte pré-rempli dans la recherche.
+        season/episode : pré-remplissage optionnel des champs de série.
+        """
+        self._suggested_title = title
+        self._suggested_season = season if season > 0 else 0
+        self._suggested_episode = episode if episode > 0 else 0
 
     # ------------------------------------------------------------------
     # Construction
@@ -1494,6 +1481,27 @@ class _AttachmentPanel(QFrame):
         """)
         h_lay.addWidget(title_lbl)
         h_lay.addStretch()
+
+        self._imdb_btn = QPushButton("IMDb / TMDB")
+        self._imdb_btn.setFixedHeight(22)
+        self._imdb_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._imdb_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {_C.ACCENT};
+                border: 1px solid {_C.ACCENT_DIM};
+                border-radius: 4px;
+                font-size: 10px;
+                font-weight: 600;
+                padding: 0 10px;
+            }}
+            QPushButton:hover {{
+                background: {_C.ACCENT_DIM};
+                color: #ffffff;
+            }}
+        """)
+        self._imdb_btn.clicked.connect(self._open_media_search)
+        h_lay.addWidget(self._imdb_btn)
 
         self._edit_tags_btn = QPushButton("Éditer les tags")
         self._edit_tags_btn.setFixedHeight(22)
@@ -1573,6 +1581,8 @@ class _AttachmentPanel(QFrame):
             self._add_item(_AttachmentItemWidget(
                 file_id=file_id, source_color=source_color, att=att,
             ))
+        if self._auto_tmdb_cover_path is not None and self._has_existing_cover_attachment():
+            self._clear_auto_tmdb_cover_item()
 
     def add_source_tags(self, file_id: str, source_color: str, tags: dict[str, str]) -> None:
         """Ajoute la ligne de balises d'un fichier source (si tags non vide)."""
@@ -1597,6 +1607,7 @@ class _AttachmentPanel(QFrame):
 
     def clear_all(self) -> None:
         """Vide complètement le panneau, y compris les ajouts manuels."""
+        self._remove_auto_tmdb_cover_file()
         for item in self._items[:]:
             self._items_layout.removeWidget(item)
             item.deleteLater()
@@ -1670,6 +1681,8 @@ class _AttachmentPanel(QFrame):
     def _on_remove_item(self, item: _AttachmentItemWidget) -> None:
         self._items.remove(item)
         self._items_layout.removeWidget(item)
+        if item.manual_path is not None and self._auto_tmdb_cover_path == item.manual_path:
+            self._remove_auto_tmdb_cover_file()
         item.deleteLater()
         self._update_state()
         self.changed.emit()
@@ -1682,6 +1695,130 @@ class _AttachmentPanel(QFrame):
                 for k, v in item.tags.items():
                     merged.setdefault(k, v)
         return merged
+
+    def _tmdb_comment_value(self) -> str:
+        return translate_text("Informations media récupérée depuis TMDB.")
+
+    def _remove_auto_tmdb_cover_file(self) -> None:
+        path = self._auto_tmdb_cover_path
+        self._auto_tmdb_cover_path = None
+        if path is None:
+            return
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            pass
+        parent = path.parent
+        try:
+            if parent.exists():
+                parent.rmdir()
+        except OSError:
+            pass
+
+    def _clear_auto_tmdb_cover_item(self) -> None:
+        path = self._auto_tmdb_cover_path
+        if path is None:
+            return
+        removed = False
+        for item in self._items[:]:
+            if item.is_manual and item.manual_path == path:
+                self._items.remove(item)
+                self._items_layout.removeWidget(item)
+                item.deleteLater()
+                removed = True
+                break
+        self._remove_auto_tmdb_cover_file()
+        if removed:
+            self._update_state()
+
+    def _item_has_cover(self, item: _AttachmentItemWidget) -> bool:
+        if not item.enabled:
+            return False
+        if item.is_tag:
+            return False
+        if item.is_manual:
+            if item.manual_path is None or item.manual_path == self._auto_tmdb_cover_path:
+                return False
+            return item.manual_path.stem.lower() == "cover"
+        if item.att is None:
+            return False
+        if item.att.is_attached_pic:
+            return True
+        return Path(item.att.filename).stem.lower() == "cover"
+
+    def _has_existing_cover_attachment(self) -> bool:
+        return any(self._item_has_cover(item) for item in self._items)
+
+    def _install_tmdb_cover(self, details: MediaDetails) -> None:
+        self._clear_auto_tmdb_cover_item()
+        if self._has_existing_cover_attachment():
+            return
+        if not details.cover_bytes:
+            return
+
+        filename = (details.cover_filename or "cover.jpg").strip() or "cover.jpg"
+        cover_dir = self._config.ensure_work_dir() / "tmdb_covers" / uuid.uuid4().hex
+        cover_dir.mkdir(parents=True, exist_ok=True)
+        cover_path = cover_dir / filename
+        cover_path.write_bytes(details.cover_bytes)
+        self._auto_tmdb_cover_path = cover_path
+        self._add_item(_AttachmentItemWidget(
+            file_id="",
+            is_manual=True,
+            manual_path=cover_path,
+        ))
+
+    def _apply_tmdb_details(self, details: MediaDetails, *, open_editor: bool = True) -> None:
+        self.tmdb_details_selected.emit(details)
+
+        new_tags = details.to_mkv_tags()
+        new_tags["COMMENTS"] = self._tmdb_comment_value()
+        current = (
+            self._panel_tag_overrides
+            if self._panel_tag_overrides is not None
+            else self._merged_source_tags()
+        )
+        # Les données TMDB prennent la priorité sur les balises sources
+        merged = {**current, **new_tags}
+        self._panel_tag_overrides = merged
+        self._install_tmdb_cover(details)
+
+        if open_editor:
+            # Ouvrir le dialogue d'édition pour relecture/corrections
+            edit_dlg = _TagEditDialog(merged, parent=self)
+            if edit_dlg.exec() == QDialog.DialogCode.Accepted:
+                self._panel_tag_overrides = edit_dlg.result_tags()
+
+        n = len(self._panel_tag_overrides or {})
+        label = translate_text("Tags édités ({count})", count=n) if n else translate_text("Tags supprimés")
+        self._edit_tags_btn.setText(label)
+        self._edit_tags_btn.setEnabled(True)
+        self.changed.emit()
+
+    def _open_media_search(self) -> None:
+        """
+        Ouvre la modale de recherche TMDB et injecte les métadonnées en balises MKV.
+
+        Le titre suggéré est celui mémorisé par set_suggested_title() ; il peut être
+        issu du champ Titre saisi manuellement ou du nom de fichier nettoyé.
+        Les balises récupérées sont fusionnées avec les balises existantes
+        (les données TMDB ont la priorité), puis ouvertes dans le dialogue
+        d'édition pour une révision éventuelle avant confirmation.
+        """
+        dlg = TmdbSearchModal(
+            self._config,
+            suggested_title=self._suggested_title,
+            suggested_season=self._suggested_season,
+            suggested_episode=self._suggested_episode,
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        details = dlg.fetched_details
+        if details is None:
+            return
+        self._apply_tmdb_details(details)
 
     def _open_global_tag_dialog(self) -> None:
         """Ouvre le dialogue d'édition global des balises (toutes sources fusionnées)."""
@@ -1698,13 +1835,17 @@ class _AttachmentPanel(QFrame):
 
     def _update_state(self) -> None:
         has = bool(self._items)
-        has_tags = any(i.is_tag for i in self._items)
+        has_tags = any(i.is_tag for i in self._items) or self._panel_tag_overrides is not None
         self._placeholder.setVisible(not has)
         self._items_widget.setVisible(has)
         self._edit_tags_btn.setEnabled(has_tags)
         if not has_tags:
             self._panel_tag_overrides = None
             self._edit_tags_btn.setText(translate_text("Éditer les tags"))
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        self._remove_auto_tmdb_cover_file()
+        super().closeEvent(event)
 
     def _browse_add(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -2236,12 +2377,19 @@ class RemuxPanel(QWidget):
     audio_tracks_changed = Signal(object)   # list[tuple[AudioTrack, str, Path]]
     ready_changed        = Signal(bool)     # True quand des fichiers sont prêts
 
-    def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        parent: QWidget | None = None,
+        *,
+        writing_application: str = "",
+    ) -> None:
         super().__init__(parent)
         self._config   = config
         self._workflow = RemuxWorkflow(
             mkvmerge_bin=config.tool_mkvmerge,
             mkvpropedit_bin=config.tool_mkvpropedit,
+            writing_application=writing_application,
         )
         self._executor = ThreadPoolExecutor(max_workers=2)
 
@@ -2392,14 +2540,17 @@ class RemuxPanel(QWidget):
         self._file_title_edit.setPlaceholderText("Titre du conteneur MKV (balise Title)")
         self._file_title_edit.setStyleSheet(self._input_style())
         self._file_title_edit.textChanged.connect(self._rebuild_preview)
+        self._file_title_edit.textChanged.connect(self._sync_tmdb_suggested_title)
         title_card_layout.addWidget(self._file_title_edit)
 
         content_layout.addWidget(title_card)
 
         # --- Pièces jointes & Balises ---
-        self._attachment_panel = _AttachmentPanel()
+        self._attachment_panel = _AttachmentPanel(self._config)
         self._attachment_panel.changed.connect(self._rebuild_preview)
+        self._attachment_panel.tmdb_details_selected.connect(self._on_tmdb_details_selected)
         content_layout.addWidget(self._attachment_panel)
+        self._sync_tmdb_suggested_title()
 
         content_layout.addWidget(_separator())
 
@@ -2488,6 +2639,10 @@ class RemuxPanel(QWidget):
             self.log_message.emit("INFO", translate_text("Inspection de {name}…", name=path.name))
             self._executor.submit(self._inspect_file, sf.id, path)
 
+        # Alimente immédiatement la suggestion TMDB depuis le nom de fichier
+        # si aucun titre n'est saisi.
+        self._sync_tmdb_suggested_title()
+
     def _inspect_file(self, file_id: str, path: Path) -> None:
         """Thread worker : inspecte un fichier et émet un signal thread-safe."""
         try:
@@ -2548,6 +2703,7 @@ class RemuxPanel(QWidget):
             if not self._file_title_edit.text().strip():
                 self._file_title_edit.setText(info.title)
 
+        self._sync_tmdb_suggested_title()
         self.ready_changed.emit(self._has_ready_files())
         self._rebuild_preview()
         self._emit_signals()
@@ -2578,6 +2734,7 @@ class RemuxPanel(QWidget):
         else:
             self._reset_empty_state()
 
+        self._sync_tmdb_suggested_title()
         self.ready_changed.emit(self._has_ready_files())
         self._rebuild_preview()
         self._emit_signals()
@@ -2594,6 +2751,70 @@ class RemuxPanel(QWidget):
     def _has_ready_files(self) -> bool:
         """Retourne True si au moins un fichier a été inspecté avec succès."""
         return any(sf.info is not None for sf in self._source_files)
+
+    def _default_tmdb_suggested_title(self) -> str:
+        """
+        Calcule un titre suggéré TMDB à partir de la première source.
+
+        Toujours basé sur le nom de fichier nettoyé (+ année si présente).
+        Cela garantit qu'après suppression du champ "Titre", on retombe
+        sur un comportement identique à "titre jamais saisi".
+        """
+        if not self._source_files:
+            return ""
+
+        first = self._source_files[0]
+        suggested = clean_filename_for_search(first.path)
+
+        year = extract_year_from_filename(first.path)
+        if year and suggested and not re.search(r"\b" + re.escape(year) + r"\b", suggested):
+            suggested = f"{suggested} {year}"
+        return suggested.strip()
+
+    def _default_tmdb_season_episode(self) -> tuple[int, int]:
+        """
+        Déduit (saison, épisode) depuis les données du premier fichier source.
+
+        Priorité :
+        1) titre du conteneur détecté (si disponible)
+        2) nom de fichier (stem)
+        """
+        if not self._source_files:
+            return 0, 0
+
+        first = self._source_files[0]
+        candidates: list[str] = []
+        if first.info and first.info.title:
+            candidates.append(first.info.title)
+        candidates.append(first.path.stem)
+
+        for text in candidates:
+            match = extract_season_episode(text)
+            if match is not None:
+                return match
+        return 0, 0
+
+    def _sync_tmdb_suggested_title(self, _text: str = "") -> None:
+        """
+        Synchronise le titre suggéré TMDB :
+        - utilise le titre saisi dans l'input si non vide ;
+        - sinon revient sur la valeur dérivée du fichier source.
+        """
+        manual_title = self._file_title_edit.text().strip()
+        suggested = manual_title or self._default_tmdb_suggested_title()
+        parsed = extract_season_episode(manual_title) if manual_title else None
+        season, episode = parsed if parsed is not None else self._default_tmdb_season_episode()
+        self._attachment_panel.set_suggested_title(suggested, season=season, episode=episode)
+
+    def _on_tmdb_details_selected(self, details: object) -> None:
+        """
+        Applique le titre conteneur depuis TMDB en remplaçant le titre actuel.
+        """
+        if not isinstance(details, MediaDetails):
+            return
+        title = details.formatted_container_title().strip()
+        if title:
+            self._file_title_edit.setText(title)
 
     # ------------------------------------------------------------------
     # Aperçu de la commande
@@ -2815,6 +3036,7 @@ class RemuxPanel(QWidget):
         self._filter_btn.setChecked(False)
         self._file_title_edit.clear()
         self._output_edit.clear()
+        self._sync_tmdb_suggested_title()
 
     def _resolve_base_chapters(self) -> "list[ChapterEntry]":
         """

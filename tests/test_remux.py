@@ -122,18 +122,23 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
+from core.config import AppConfig
+from core.i18n import current_language, set_current_language
 from core.inspector import (
-    AudioTrack, ChapterEntry, ChapterInfo, FileInfo, HDRType, SubtitleTrack, VideoTrack,
+    AttachmentInfo, AudioTrack, ChapterEntry, ChapterInfo, FileInfo, HDRType, SubtitleTrack, VideoTrack,
     build_chapter_xml,
 )
+from core.media_info_fetcher import MediaDetails
 from core.workflows.remux import (
     RemuxConfig, RemuxError, RemuxWorkflow, SourceInput,
     TrackEntry, tracks_from_file_info,
 )
 from ui.panels.remux_panel import (
     SourceFile, _FILE_BAR_H, _FILE_PH_H, _FILE_ROW_H,
-    _AttachmentItemWidget, _FileListWidget, _TrackTable, _pick_file_color,
+    _AttachmentItemWidget, _AttachmentPanel, _FileListWidget, _TrackTable,
+    _pick_file_color,
 )
+from ui.panels.tmdb_search_modal import extract_season_episode
 
 
 # ===========================================================================
@@ -239,6 +244,29 @@ def _source(
 def _workflow() -> RemuxWorkflow:
     """RemuxWorkflow instancié avec un binaire factice (tests sans exécution)."""
     return RemuxWorkflow(mkvmerge_bin="mkvmerge")
+
+
+# ===========================================================================
+# Helpers TMDB (saison/épisode)
+# ===========================================================================
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("s01 e01", (1, 1)),
+        (".s01.e01.", (1, 1)),
+        (".s01e01.", (1, 1)),
+        (".s1e1.", (1, 1)),
+        (".01x01.", (1, 1)),
+        (
+            "Daredevil.Born.Again.S02E01.Le.Northern.Star.2160p.DSNP.WEB.DV.HDR.MULTi.AD.VFF.DDP.5.1.ATMOS.H265-HYDROMUX-MRecode",
+            (2, 1),
+        ),
+        ("Movie.Without.Episode.Tag", None),
+    ],
+)
+def test_extract_season_episode_supported_patterns(text: str, expected):
+    assert extract_season_episode(text) == expected
 
 
 # ===========================================================================
@@ -1461,6 +1489,96 @@ class TestAttachmentItemWidgetDefaultChecked:
         assert w.enabled is True
         assert w.tag_count == 3
         w.close()
+
+
+class TestAttachmentPanelTmdb:
+
+    def test_apply_tmdb_details_adds_i18n_comments_and_cover(self, qt_app, tmp_path):
+        prev_lang = current_language()
+        panel = None
+        try:
+            set_current_language("eng")
+            cfg = AppConfig()
+            cfg.work_dir = tmp_path
+            panel = _AttachmentPanel(cfg)
+
+            details = MediaDetails(
+                title="My Show",
+                synopsis="Episode overview",
+                cover_bytes=b"jpeg-bytes",
+                cover_mimetype="image/jpeg",
+                cover_filename="cover.jpg",
+            )
+            panel._apply_tmdb_details(details, open_editor=False)
+
+            tags = panel.get_global_tag_overrides()
+            assert tags is not None
+            assert tags["COMMENTS"] == "Media information retrieved from TMDB."
+
+            extras = panel.get_extra_attachments()
+            assert len(extras) == 1
+            assert extras[0].name == "cover.jpg"
+            assert extras[0].read_bytes() == b"jpeg-bytes"
+        finally:
+            if panel is not None:
+                panel.close()
+            set_current_language(prev_lang)
+
+    def test_apply_tmdb_details_skips_cover_when_source_cover_already_exists(self, qt_app, tmp_path):
+        cfg = AppConfig()
+        cfg.work_dir = tmp_path
+        panel = _AttachmentPanel(cfg)
+        panel.add_source_attachments(
+            "fid",
+            "#ffffff",
+            [AttachmentInfo(
+                index=5,
+                local_index=0,
+                filename="cover.jpg",
+                mimetype="image/jpeg",
+                is_attached_pic=True,
+            )],
+        )
+
+        details = MediaDetails(
+            title="My Show",
+            cover_bytes=b"jpeg-bytes",
+            cover_mimetype="image/jpeg",
+            cover_filename="cover.jpg",
+        )
+        panel._apply_tmdb_details(details, open_editor=False)
+
+        assert panel.get_extra_attachments() == []
+        panel.close()
+
+    def test_source_cover_added_later_replaces_auto_tmdb_cover(self, qt_app, tmp_path):
+        cfg = AppConfig()
+        cfg.work_dir = tmp_path
+        panel = _AttachmentPanel(cfg)
+
+        details = MediaDetails(
+            title="My Show",
+            cover_bytes=b"jpeg-bytes",
+            cover_mimetype="image/jpeg",
+            cover_filename="cover.jpg",
+        )
+        panel._apply_tmdb_details(details, open_editor=False)
+        assert len(panel.get_extra_attachments()) == 1
+
+        panel.add_source_attachments(
+            "fid",
+            "#ffffff",
+            [AttachmentInfo(
+                index=5,
+                local_index=0,
+                filename="cover.jpg",
+                mimetype="image/jpeg",
+                is_attached_pic=True,
+            )],
+        )
+
+        assert panel.get_extra_attachments() == []
+        panel.close()
 
 
 # ===========================================================================

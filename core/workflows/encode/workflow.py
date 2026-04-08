@@ -8,6 +8,7 @@ Public:
 from __future__ import annotations
 
 import ctypes
+import json
 import os
 import re
 import shutil
@@ -16,6 +17,7 @@ import sys
 import tempfile
 from xml.sax.saxutils import escape as _xml_escape
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
@@ -37,6 +39,15 @@ _MIME_BY_EXT: dict[str, str] = {
     ".webp": "image/webp",
     ".tif":  "image/tiff",
     ".tiff": "image/tiff",
+}
+
+_EXT_BY_MIME: dict[str, str] = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+    "image/webp": ".webp",
+    "image/tiff": ".tiff",
 }
 
 _VAAPI_CODECS = {"hevc_vaapi", "h264_vaapi"}
@@ -73,6 +84,8 @@ class EncodeWorkflow(QObject):
         ram_buffer_enabled:        bool = True,
         ram_buffer_threshold_pct:  int  = 15,
         parent: QObject | None         = None,
+        *,
+        writing_application:       str  = "",
     ) -> None:
         super().__init__(parent)
         self._ffmpeg = ffmpeg_bin
@@ -86,6 +99,15 @@ class EncodeWorkflow(QObject):
         self._runner = ToolRunner(max_workers=1, parent=self)
         self._ram_buffer_enabled       = ram_buffer_enabled
         self._ram_buffer_threshold_pct = max(0, min(ram_buffer_threshold_pct, 90))
+        self._writing_application = writing_application.strip()
+
+    def set_ffmpeg(self, ffmpeg_bin: str) -> None:
+        """Met à jour le binaire ffmpeg utilisé pour l'encodage (ex: ffmpeg système pour HW)."""
+        self._ffmpeg = ffmpeg_bin
+
+    def set_writing_application(self, writing_application: str) -> None:
+        """Met à jour la valeur du tag Multiplexing Application."""
+        self._writing_application = writing_application.strip()
 
     # ------------------------------------------------------------------
     # Construction de la commande
@@ -400,21 +422,44 @@ class EncodeWorkflow(QObject):
 
     def _audio_codec_args(self, out_idx: int, a: AudioTrackSettings) -> list[str]:
         args: list[str] = []
-        # BSF TrueHD core extraction (supprime la couche Atmos)
-        if a.extract_truehd_core:
-            args.extend([f"-bsf:a:{out_idx}", "truehd_core"])
+        needs_downmix_51 = self._needs_ac3_51_downmix(a)
         match a.codec:
             case "copy":
                 args.extend([f"-c:a:{out_idx}", "copy"])
+                # truehd_core est un bitstream filter de passthrough.
+                # Sur une piste réencodée, ffmpeg l'applique à la sortie encodée
+                # (ex. eac3) et échoue car le codec n'est plus TrueHD.
+                if a.extract_truehd_core:
+                    args.extend([f"-bsf:a:{out_idx}", "truehd_core"])
             case "aac":
                 args.extend([f"-c:a:{out_idx}", "aac", f"-b:a:{out_idx}", f"{a.bitrate_kbps}k"])
+            case "ac3":
+                args.extend([f"-c:a:{out_idx}", "ac3", f"-b:a:{out_idx}", f"{a.bitrate_kbps}k"])
             case "eac3":
                 args.extend([f"-c:a:{out_idx}", "eac3", f"-b:a:{out_idx}", f"{a.bitrate_kbps}k"])
             case "flac":
                 args.extend([f"-c:a:{out_idx}", "flac"])
             case _:
                 args.extend([f"-c:a:{out_idx}", a.codec])
+        if needs_downmix_51:
+            args.extend([f"-ac:a:{out_idx}", "6", f"-channel_layout:a:{out_idx}", "5.1"])
         return args
+
+    @staticmethod
+    def _needs_ac3_51_downmix(a: AudioTrackSettings) -> bool:
+        """
+        Retourne True si la piste source doit être ramenée en 5.1 pour AC-3/E-AC-3.
+
+        Règle métier :
+          - si codec cible ∈ {ac3, eac3}
+          - et source 7.1 (8 canaux ou layout contenant "7.1")
+        """
+        if a.codec not in {"ac3", "eac3"}:
+            return False
+        if (a.input_channels or 0) >= 8:
+            return True
+        layout = (a.input_channel_layout or "").lower()
+        return "7.1" in layout
 
     # ------------------------------------------------------------------
     # Commandes spécialisées pour _run_with_metadata_inject
@@ -670,8 +715,10 @@ class EncodeWorkflow(QObject):
 
         self.log_message.emit("INFO", f"Encodage → {config.output.name}")
 
-        if config.copy_dv or config.copy_hdr10plus:
-            if config.video.codec == "copy":
+        prepared_config, cleanup_dir = self._prepare_attachment_config(config)
+
+        if prepared_config.copy_dv or prepared_config.copy_hdr10plus:
+            if prepared_config.video.codec == "copy":
                 # Codec COPY : les NAL units DoVi/HDR10+ sont déjà dans le bitstream source.
                 # Extraction + réinjection inutiles sans réencodage — remux direct avec passthrough.
                 self.log_message.emit(
@@ -680,25 +727,206 @@ class EncodeWorkflow(QObject):
                     "métadonnées préservées par passthrough ffmpeg.",
                 )
             else:
-                return self._run_with_metadata_inject(config)
+                signals = self._run_with_metadata_inject(prepared_config)
+                self._bind_temp_cleanup(signals, cleanup_dir)
+                return signals
 
-        cwd = config.work_dir or config.source.parent
-        if config.work_dir:
-            config.work_dir.mkdir(parents=True, exist_ok=True)
+        cwd = prepared_config.work_dir or prepared_config.source.parent
+        if prepared_config.work_dir:
+            prepared_config.work_dir.mkdir(parents=True, exist_ok=True)
 
-        has_tags        = bool(config.tag_sources) or config.tag_overrides is not None
-        has_meta_edits  = bool(config.track_meta_edits)
+        has_tags        = bool(prepared_config.tag_sources) or prepared_config.tag_overrides is not None
+        has_meta_edits  = bool(prepared_config.track_meta_edits)
         needs_postproc  = has_tags or has_meta_edits
 
-        if config.video.quality_mode == QualityMode.SIZE:
-            cmds = self._build_two_pass(config)
-            post = (lambda s: self._postproc(config, s)) if needs_postproc else None
-            return self._run_two_pass(cmds, cwd=cwd, post_fn=post)
+        if prepared_config.video.quality_mode == QualityMode.SIZE:
+            cmds = self._build_two_pass(prepared_config)
+            post = (lambda s: self._postproc(prepared_config, s)) if needs_postproc else None
+            signals = self._run_two_pass(cmds, cwd=cwd, post_fn=post)
+            self._bind_temp_cleanup(signals, cleanup_dir)
+            return signals
 
-        cmd = self._build_single_pass(config)
+        cmd = self._build_single_pass(prepared_config)
         if needs_postproc:
-            return self._run_single_with_postproc(cmd, config, cwd)
-        return self._runner.run(cmd, cwd=cwd, label="ffmpeg")
+            signals = self._run_single_with_postproc(cmd, prepared_config, cwd)
+            self._bind_temp_cleanup(signals, cleanup_dir)
+            return signals
+        signals = self._runner.run(cmd, cwd=cwd, label="ffmpeg")
+        self._bind_temp_cleanup(signals, cleanup_dir)
+        return signals
+
+    def _bind_temp_cleanup(self, signals: TaskSignals, cleanup_dir: Path | None) -> None:
+        """Supprime un dossier temporaire quand le workflow se termine."""
+        if cleanup_dir is None:
+            return
+
+        done = {"cleaned": False}
+
+        def _cleanup(*_args) -> None:
+            if done["cleaned"]:
+                return
+            done["cleaned"] = True
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+        signals.finished.connect(_cleanup)
+        signals.failed.connect(_cleanup)
+        signals.cancelled.connect(_cleanup)
+
+    def _prepare_attachment_config(
+        self,
+        config: EncodeConfig,
+    ) -> tuple[EncodeConfig, Path | None]:
+        """
+        Convertit les ``attached_pic`` sélectionnés en fichiers joints temporaires.
+
+        FFmpeg expose fréquemment un ``cover.jpg`` MKV comme stream vidéo MJPEG
+        avec ``disposition.attached_pic=1``. Si on le remappe via ``-map``,
+        la sortie perd ce flag et l'image devient une vraie piste vidéo.
+        Pour conserver le comportement "attachment", on extrait d'abord l'image
+        vers un fichier temporaire puis on la ré-attache avec ``-attach``.
+        """
+        if not config.attachment_streams:
+            return config, None
+
+        tmp_dir = Path(tempfile.mkdtemp(prefix="enc_attachments_"))
+        direct_streams: list = []
+        extracted_files: list[Path] = []
+        created_any = False
+
+        try:
+            for selection in config.attachment_streams:
+                src_path, stream_idx = selection[:2]
+                meta = self._describe_attachment_stream(src_path, stream_idx)
+                if not meta["is_attached_pic"]:
+                    direct_streams.append(selection)
+                    continue
+
+                created_any = True
+                filename = self._attachment_filename(meta, stream_idx)
+                dest = self._unique_attachment_path(tmp_dir, filename)
+                self._extract_attached_pic(src_path, stream_idx, dest)
+                extracted_files.append(dest)
+
+            if not created_any:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                return config, None
+
+            prepared = replace(
+                config,
+                attachment_streams=direct_streams,
+                extra_attachments=[*extracted_files, *config.extra_attachments],
+            )
+            return prepared, tmp_dir
+        except Exception:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
+
+    def _describe_attachment_stream(self, source: Path, stream_idx: int) -> dict[str, object]:
+        """Retourne les métadonnées ffprobe minimales d'un stream potentiellement attachment."""
+        ffprobe_bin = "ffprobe"
+        ffmpeg_path = Path(self._ffmpeg)
+        name = ffmpeg_path.name.lower()
+        if name in {"ffmpeg", "ffmpeg.exe"}:
+            ffprobe_bin = str(ffmpeg_path.with_name("ffprobe" + ffmpeg_path.suffix))
+
+        cmd = [
+            ffprobe_bin,
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_streams",
+            str(source),
+        ]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                check=False,
+                timeout=30,
+                **subprocess_text_kwargs(),
+            )
+        except FileNotFoundError:
+            return {
+                "is_attached_pic": False,
+                "filename": f"attachment_{stream_idx}.bin",
+                "mimetype": "application/octet-stream",
+            }
+
+        if result.returncode != 0:
+            return {
+                "is_attached_pic": False,
+                "filename": f"attachment_{stream_idx}.bin",
+                "mimetype": "application/octet-stream",
+            }
+
+        try:
+            payload = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+
+        for stream in payload.get("streams", []):
+            if int(stream.get("index", -1)) != int(stream_idx):
+                continue
+            tags = stream.get("tags", {}) or {}
+            disposition = stream.get("disposition", {}) or {}
+            return {
+                "is_attached_pic": bool(disposition.get("attached_pic", 0)),
+                "filename": tags.get("filename") or f"attachment_{stream_idx}.bin",
+                "mimetype": tags.get("mimetype") or "application/octet-stream",
+            }
+
+        return {
+            "is_attached_pic": False,
+            "filename": f"attachment_{stream_idx}.bin",
+            "mimetype": "application/octet-stream",
+        }
+
+    def _attachment_filename(self, meta: dict[str, object], stream_idx: int) -> str:
+        """Construit un nom de fichier exploitable pour un attachment extrait."""
+        raw_name = str(meta.get("filename") or "").strip()
+        name = Path(raw_name).name if raw_name else f"attachment_{stream_idx}"
+        if Path(name).suffix:
+            return name
+        mime = str(meta.get("mimetype") or "").lower()
+        suffix = _EXT_BY_MIME.get(mime, ".bin")
+        return f"{name}{suffix}"
+
+    def _unique_attachment_path(self, tmp_dir: Path, filename: str) -> Path:
+        """Retourne un chemin unique dans ``tmp_dir`` pour éviter les collisions de nom."""
+        candidate = tmp_dir / filename
+        if not candidate.exists():
+            return candidate
+        stem = candidate.stem
+        suffix = candidate.suffix
+        for idx in range(1, 1000):
+            alt = tmp_dir / f"{stem}_{idx}{suffix}"
+            if not alt.exists():
+                return alt
+        return tmp_dir / f"{stem}_{os.getpid()}{suffix}"
+
+    def _extract_attached_pic(self, source: Path, stream_idx: int, dest: Path) -> None:
+        """Extrait un ``attached_pic`` vers un vrai fichier image."""
+        cmd = [
+            self._ffmpeg,
+            "-hide_banner", "-y",
+            "-i", str(source),
+            "-map", f"0:{stream_idx}",
+            "-c", "copy",
+            "-frames:v", "1",
+            str(dest),
+        ]
+        self.log_message.emit("INFO", "$ " + " ".join(cmd))
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            check=False,
+            timeout=60,
+            **subprocess_text_kwargs(),
+        )
+        if result.returncode != 0 or not dest.exists():
+            stderr = (result.stderr or "").strip()
+            raise EncodeError(
+                f"Extraction attachment échouée pour le stream {stream_idx} de {source.name}: {stderr}"
+            )
 
     def _run_two_pass(
         self,
@@ -807,11 +1035,14 @@ class EncodeWorkflow(QObject):
 
     def _set_writing_app_inplace(self, output: Path) -> None:
         """Écrit le tag Multiplexing Application dans les infos de segment via mkvpropedit."""
+        if not self._writing_application:
+            self.log_message.emit("WARN", "Writing-app non configuré — balise non appliquée.")
+            return
         mkvpropedit_bin = self._bins["mkvpropedit"]
         cmd = [
             mkvpropedit_bin, str(output),
             "--edit", "info",
-            "--set", "muxing-application=MediaRecode v1.0 by Hydro74000 - VibeCode Proof of Concept",
+            "--set", f"muxing-application={self._writing_application}",
         ]
         try:
             self.log_message.emit("INFO", "$ " + " ".join(cmd))
@@ -938,9 +1169,22 @@ class EncodeWorkflow(QObject):
         for edit in edits:
             cmd.extend(["--edit", f"track:@{edit.track_order}"])
             if edit.language:
-                cmd.extend(["--set", f"language={LangTags.to_iso639_2(edit.language)}"])
+                iso639_2 = LangTags.to_iso639_2(edit.language)
+                if iso639_2 is not None:
+                    cmd.extend(["--set", f"language={iso639_2}"])
+                else:
+                    self.log_message.emit(
+                        "WARN",
+                        f"Langue {edit.language!r} non convertible en ISO639-2 "
+                        f"pour la piste {edit.track_order} ; balise IETF seule appliquée.",
+                    )
                 cmd.extend(["--set", f"language-ietf={edit.language}"])
-                self.log_message.emit("INFO", "Lang set for track " + str(edit.track_order) + " to " + edit.language + " (ISO639-2: " + LangTags.to_iso639_2(edit.language) + ") in workflow")
+                iso_display = iso639_2 or "n/a"
+                self.log_message.emit(
+                    "INFO",
+                    f"Lang set for track {edit.track_order} to {edit.language} "
+                    f"(ISO639-2: {iso_display}) in workflow",
+                )
             if edit.title is not None:
                 cmd.extend(["--set", f"name={edit.title}"])
         try:

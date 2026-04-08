@@ -104,7 +104,8 @@ class SettingsPanel(QWidget):
         layout.addWidget(subtitle)
         layout.addWidget(_separator())
 
-        groups = sorted(INI_FIELD_GROUPS, key=lambda group: 0 if group["section"] == "ui" else 1)
+        _section_order = {"ui": 0, "metadata": 1, "paths": 2}
+        groups = sorted(INI_FIELD_GROUPS, key=lambda group: _section_order.get(group["section"], 3))
         for group in groups:
             layout.addWidget(_section_label(group["title"].upper()))
             layout.addWidget(self._build_group_card(group))
@@ -113,7 +114,7 @@ class SettingsPanel(QWidget):
         actions.setSpacing(12)
         reload_btn = _secondary_button("Recharger depuis config.ini")
         reload_btn.clicked.connect(self._on_reload_clicked)
-        save_btn = _primary_button("Enregistrer dans config.ini")
+        save_btn = _primary_button("Sauvegarder toute la configuration")
         save_btn.clicked.connect(self._on_save_clicked)
 
         self._status_label = QLabel("")
@@ -130,15 +131,29 @@ class SettingsPanel(QWidget):
         root.addWidget(scroll, stretch=1)
 
     def _build_group_card(self, group: dict[str, Any]) -> QWidget:
+        section = group["section"]
+        section_title = group["title"]
         card = _card()
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(14)
 
         for index, field in enumerate(group["fields"]):
-            layout.addWidget(self._build_field_widget(group["section"], field))
+            layout.addWidget(self._build_field_widget(section, field))
             if index < len(group["fields"]) - 1:
                 layout.addWidget(_separator())
+
+        layout.addWidget(_separator())
+        save_row = QHBoxLayout()
+        save_row.setContentsMargins(0, 0, 0, 0)
+        save_row.setSpacing(8)
+        save_row.addStretch()
+        save_btn = _secondary_button("Enregistrer")
+        save_btn.clicked.connect(
+            lambda _=False, sec=section, title=section_title: self._on_save_section(sec, title)
+        )
+        save_row.addWidget(save_btn)
+        layout.addLayout(save_row)
 
         return card
 
@@ -265,6 +280,18 @@ class SettingsPanel(QWidget):
                 values[section][field["key"]] = self._field_value(section, field)
         return values
 
+    def _collect_section_values(self, section: str) -> dict[str, dict[str, str]]:
+        for group in INI_FIELD_GROUPS:
+            if group["section"] != section:
+                continue
+            return {
+                section: {
+                    field["key"]: self._field_value(section, field)
+                    for field in group["fields"]
+                }
+            }
+        return {section: {}}
+
     def _browse_for_field(self, section: str, field: dict[str, Any]) -> None:
         widget = self._field_widgets[(section, field["key"])]
         if not isinstance(widget, QLineEdit):
@@ -295,6 +322,19 @@ class SettingsPanel(QWidget):
             self._status_label.setText(
                 translate_text(
                     "Configuration enregistrée dans config.ini. Certains changements peuvent nécessiter de rouvrir les panneaux ou l'application."
+                )
+            )
+        self.settings_saved.emit()
+
+    def _on_save_section(self, section: str, section_title: str) -> None:
+        write_ini_settings(self._collect_section_values(section))
+        self._config.reload()
+        self._config.save()
+        if self._status_label is not None:
+            self._status_label.setText(
+                translate_text(
+                    "Section « {title} » enregistrée dans config.ini.",
+                    title=section_title,
                 )
             )
         self.settings_saved.emit()

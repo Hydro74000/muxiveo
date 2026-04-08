@@ -1,16 +1,17 @@
 # 🎬 Mediarecode
 
-Custom GUI de [mkvtoolnix](https://github.com/nmaier/mkvtoolnix) qui ajoute des options d'encodage video et audio.
+FULL Vibecoded App for Proof of Concept - no human code, only human prompts and eyes.
 
+Custom GUI de [mkvtoolnix](https://github.com/nmaier/mkvtoolnix) qui ajoute des options d'encodage video et audio :
 Interface graphique pour préparer des fichiers vidéo, remuxer sans perte, réencoder avec `ffmpeg`, et fusionner des métadonnées Dolby Vision / HDR10+.
 
-Cette documentation correspond à **Mediarecode v1.1**.
+Cette documentation correspond à **Mediarecode v1.2**.
 
 ## Vue rapide
 
 | Outil | Usage | Qualité |
 |-------|-------|---------|
-| **Conteneur & Encodage** | sélectionner les pistes, les réordonner, éditer langue/titre/flags, gérer titre/tags/chapitres/pièces jointes, puis copier ou réencoder | copie = sans perte, encodage = avec recompression |
+| **Conteneur & Encodage** | sélectionner les pistes, les réordonner, éditer langue/titre/flags, gérer titre/tags/chapitres/pièces jointes, enrichir les tags via TMDB/IMDb, puis copier ou réencoder | copie = sans perte, encodage = avec recompression |
 | **Fusion DoVi / HDR10+** | injecter les métadonnées HDR d'un fichier source dans le flux vidéo HEVC d'un autre fichier | sans perte |
 
 > Les panneaux **Remuxage** et **Encodage** forment un seul workflow. Le panneau Remuxage prépare le conteneur ; le panneau Encodage décide comment traiter la vidéo et l'audio.
@@ -41,14 +42,15 @@ Le script `setup.py` installe automatiquement :
 | Outils GitHub | `dovi_tool`, `hdr10plus_tool` |
 | Notes plateforme | Debian/Ubuntu via `apt`, Fedora/RHEL via `dnf`, macOS via Homebrew, Windows via `winget` + binaires locaux |
 
-> Sous Windows, `setup.py` renseigne aussi `config.ini` avec les chemins détectés. Sur toutes les plateformes, vous pouvez garder cette configuration auto ou définir vos propres chemins d'outils dans `config.ini`.
+> `setup.py` renseigne `config.ini` avec les chemins détectés.  
+> Emplacement de `config.ini` : Linux/macOS `~/.config/mediarecode/config.ini` (XDG), Windows dev `./config.ini`, Windows packagé `config.ini` à côté de l'exécutable.
 
 | Plateforme | Commande | Détails |
 |------------|----------|---------|
 | Linux Debian / Ubuntu | `python3 setup.py` | installe `ffmpeg`, `mkvtoolnix`, `mediainfo` via `apt`, puis `dovi_tool` et `hdr10plus_tool` depuis GitHub |
 | Linux Fedora / RHEL | `python3 setup.py` | active RPM Fusion si nécessaire, installe `ffmpeg`, `mkvtoolnix`, `mediainfo` via `dnf`, puis les outils GitHub |
 | macOS | `python3 setup.py` | installe `ffmpeg`, `mkvtoolnix`, `mediainfo` via Homebrew, puis `dovi_tool` et `hdr10plus_tool` |
-| Windows | `py setup.py` | installe `ffmpeg`, `mkvtoolnix` et `mediainfo` via `winget`, place `dovi_tool` et `hdr10plus_tool` dans `mediarecode\\tools`, puis renseigne `config.ini` avec les chemins détectés |
+| Windows | `py setup.py` | installe `ffmpeg`, `mkvtoolnix` et `mediainfo` via `winget`, place `dovi_tool` et `hdr10plus_tool` dans `mediarecode\tools`, puis renseigne `config.ini` avec les chemins détectés |
 
 Options utiles du script :
 
@@ -69,6 +71,27 @@ python3 main.py
 
 Sous Windows, utilisez `py main.py`.
 
+## Distribution
+
+L'application peut également être distribuée sous forme de binaire autonome via `package.py`.
+
+| Cible | Commande | Artefact produit |
+|-------|----------|-----------------|
+| AppImage Linux | `python3 package.py` | `dist/Mediarecode-x86_64.AppImage` |
+| Binaire Windows (natif) | `py package.py` | `dist/mediarecode/mediarecode.exe` |
+| Installateur Windows (natif + NSIS) | `py package.py --nsis` | `dist/Mediarecode-Setup.exe` |
+| Installateur Windows cross (depuis Linux) | `python3 package.py --windows` | `dist/Mediarecode-Setup.exe` via Wine + NSIS |
+
+Options utiles de `package.py` :
+
+| Option | Effet |
+|--------|-------|
+| `--onefile` | binaire monolithique (lent au démarrage, ignoré pour AppImage) |
+| `--exe` | force le packaging `.exe` sur Linux (PyInstaller natif, sans AppImage) |
+| `--windows` | cross-compile un installateur Windows depuis Linux via Wine + NSIS |
+| `--skip-wine` | réutilise `dist/mediarecode-win/` existant (saute l'étape Wine/PyInstaller) |
+| `--clean` | nettoie tous les artefacts de build (`build/`, `dist/`, `.wine_build/`, `*.AppImage`…) |
+
 ## Interface et usage
 
 ### Tableau de bord
@@ -80,7 +103,7 @@ Le tableau de bord affiche :
 - les encodeurs logiciels vus par `ffmpeg -encoders`
 - les encodeurs matériels réellement testés au runtime (`NVENC`, `AMF`, `VAAPI`, `QSV`)
 
-> Les encodeurs matériels ne sont pas marqués disponibles simplement parce qu'ils apparaissent dans `ffmpeg`. L'application lance un probe réel pour confirmer qu'ils fonctionnent.
+> Les encodeurs matériels ne sont pas marqués disponibles simplement parce qu'ils apparaissent dans `ffmpeg`. L'application lance un probe réel pour confirmer qu'ils fonctionnent. Les probes sont exécutés en parallèle pour minimiser le délai au démarrage.
 
 ### Conteneur & Encodage
 
@@ -91,6 +114,10 @@ Le workflow unifié permet de :
 - activer, exclure et réordonner les pistes
 - éditer langue, titre et flags de chaque piste
 - définir le titre du conteneur, les balises globales, les chapitres et les pièces jointes
+- ouvrir une fenêtre de recherche **TMDB** depuis le panneau balises pour rechercher film/série (préremplissage auto depuis titre/nom de fichier)
+- détecter automatiquement les motifs de série (`SxxExx`, `x`) pour préremplir saison/épisode et positionner la recherche sur **Séries** si pertinent
+- injecter les métadonnées TMDB dans les tags MKV (`DATE_RELEASED`, `GENRE`, `DIRECTOR`, `CAST`, `SUBTITLE`, `SYNOPSIS`, `COUNTRY`, `URL`, `DESCRIPTION`, `COLLECTION`, `SEASON`, `EPISODE`)
+- remplacer automatiquement le **titre du conteneur** par le titre formaté TMDB lors de la validation (film : `Titre (Année)`, série : `Titre - SxxExx - Titre épisode`)
 - choisir pour chaque piste audio un mode `copy`, `aac`, `eac3` ou `flac`
 - choisir pour la vidéo `copy`, `libx265`, `libx264`, `libsvtav1`, `NVENC`, `AMF`, `VAAPI` ou `QSV`
 
@@ -128,13 +155,44 @@ Profils Dolby Vision proposés :
 | **Profile 8.1** | normalise l'injection en profil 8.1, recommandé pour les remux UHD |
 | **Mode 0** | conserve le profil source sans réécriture |
 
+### Paramètres
+
+Le panneau **Paramètres** est un éditeur complet de `config.ini` intégré à l'interface. Il regroupe :
+
+- **Interface** : thème (`dark` / `light`), langue, nombre maximal de lignes de log, panneau affiché au démarrage
+- **Chemins** : dossier de travail, dossier de sortie, dossier app data
+- **Outils externes** : chemins explicites pour chaque outil (`ffmpeg`, `mkvmerge`, `dovi_tool`, etc.)
+- **Encodage** : profil DoVi, compat-id, buffer RAM
+- **Métadonnées** : auth TMDB via clé API v3 (`tmdb_api_key`) ou token Bearer v4 (`tmdb_bearer_token`)
+
+Les changements sont appliqués section par section ou en une seule fois via le bouton **Sauvegarder toute la configuration**. Un rechargement depuis `config.ini` est possible sans redémarrer l'application.
+
+## Thèmes
+
+L'application supporte deux thèmes visuels, sélectionnables dans le panneau Paramètres :
+
+| Thème | Description |
+|-------|-------------|
+| `dark` (défaut) | fond sombre, accents bleus |
+| `light` | fond clair, contrastes adaptés |
+
+Le changement de thème est appliqué immédiatement sans redémarrage.
+
+## Localisation
+
+L'interface est traduite en **français** et **anglais**. La langue active est détectée automatiquement depuis la locale système au premier lancement, puis peut être modifiée dans le panneau Paramètres.
+
+Les textes de l'application sont centralisés dans `locales.json`.
+
+Les tags de langue saisis (pistes audio, sous-titres) sont normalisés automatiquement vers le format RFC 5646 / ISO 639-2 : une saisie comme `fr`, `french` ou `French` est convertie en `fra`.
+
 ## Configuration
 
 ### Priorité des réglages
 
 L'application résout ses paramètres dans cet ordre :
 
-1. `config.ini` à la racine du projet
+1. `config.ini` (Linux/macOS : `~/.config/mediarecode/config.ini` ; Windows dev : racine du projet ; Windows packagé : dossier de l'exécutable)
 2. les valeurs persistées par l'interface (`QSettings`)
 3. les valeurs par défaut internes
 
@@ -144,8 +202,13 @@ Sous Windows, `setup.py` et le démarrage de l'application peuvent auto-détecte
 
 | Paramètre | Défaut | Description |
 |-----------|--------|-------------|
-| `work_dir` | `/tmp/mediarecode_work` sur Linux/macOS, `%TEMP%\\mediarecode_work` sur Windows | dossier des fichiers temporaires |
+| `work_dir` | `/tmp/mediarecode_work` sur Linux/macOS, `%TEMP%\mediarecode_work` sur Windows | dossier des fichiers temporaires |
 | `output_dir` | dossier Vidéos de l'OS | dossier de sortie par défaut |
+| `theme` | `dark` | thème visuel (`dark` ou `light`) |
+| `language` | auto-détecté | langue de l'interface (`fra` ou `eng`) |
+| `startup_panel` | `dashboard` | panneau ouvert au démarrage (`dashboard`, `container`, `encoding`, `dovi`, `settings`) |
+| `tmdb_api_key` | vide | clé API TMDB v3 utilisée par la recherche IMDb/TMDB |
+| `tmdb_bearer_token` | vide | token Bearer TMDB v4 (utilisé si `tmdb_api_key` est vide, ou via `MEDIARECODE_TMDB_BEARER_TOKEN`) |
 | `ram_buffer_enabled` | `true` | autorise l'usage de `/dev/shm` pour les HEVC intermédiaires si disponible |
 | `ram_buffer_threshold_pct` | `15` | pourcentage minimal de RAM libre à conserver pour activer ce buffer |
 
@@ -169,6 +232,15 @@ output_dir = /mnt/nas/videos
 ffmpeg = /opt/ffmpeg/bin/ffmpeg
 mkvpropedit = /usr/bin/mkvpropedit
 dovi_tool = /usr/local/bin/dovi_tool
+
+[ui]
+theme = light
+language = eng
+startup_panel = container
+
+[metadata]
+tmdb_api_key = <VOTRE_CLE_API_TMDB_V3>
+tmdb_bearer_token = <VOTRE_TOKEN_BEARER_TMDB_V4>
 ```
 
 ## Workflows
@@ -282,4 +354,4 @@ flowchart TD
 
 ---
 
-*Mediarecode v1.1*
+*Mediarecode v1.2*

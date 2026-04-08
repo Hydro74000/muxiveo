@@ -224,12 +224,15 @@ class AttachmentInfo:
     filename    : nom du fichier tel que stocké dans le MKV.
     mimetype    : type MIME (ex. "image/jpeg", "application/x-truetype-font").
     size_bytes  : taille en octets (None si non disponible via ffprobe).
+    is_attached_pic : True si la pièce jointe provient d'un stream vidéo
+                  marqué ``disposition.attached_pic=1``.
     """
     index:       int
     local_index: int
     filename:    str
     mimetype:    str
     size_bytes:  int | None = None
+    is_attached_pic: bool = False
 
 
 @dataclass
@@ -365,17 +368,17 @@ class FileInspector:
                         track.language = lang if lang != "und" else None
             except Exception:
                 pass  # mkvmerge absent ou erreur non bloquante
-        else:
-            # Pour les formats non-MKV (MP4, TS…), ffprobe renvoie de l'ISO 639-2.
-            # On convertit en IETF BCP 47 pour garder un format homogène.
-            for track in (*info.video_tracks, *info.audio_tracks, *info.subtitle_tracks):
-                if not track.language:
-                    continue
-                converted = Rfc5646LanguageTags.from_iso639_2(track.language)
-                if converted and converted != "und":
-                    track.language = converted
-                elif converted == "und" or not converted:
-                    track.language = None
+
+        # Passe de normalisation finale : homogénéise tous les tags langue en IETF
+        # régional lorsque possible, pour les entrées ISO 639-2 (xxx) et RFC 5646
+        # courtes (xx). Les indices de région dans le titre restent prioritaires.
+        for track in (*info.video_tracks, *info.audio_tracks, *info.subtitle_tracks):
+            lang = (track.language or "").strip()
+            if not lang:
+                continue
+            title = getattr(track, "title", None) or ""
+            normalized = Rfc5646LanguageTags.regionalize_track_language(lang, title)
+            track.language = normalized if normalized and normalized != "und" else None
 
         # HDR du flux vidéo principal — réutilise le raw déjà parsé (évite 2e appel ffprobe)
         if info.primary_video:
@@ -662,6 +665,7 @@ class FileInspector:
             filename    = tags.get("filename", "attachment"),
             mimetype    = tags.get("mimetype", "application/octet-stream"),
             size_bytes  = _int_or_none(s.get("size")),
+            is_attached_pic = bool(s.get("disposition", {}).get("attached_pic", 0)),
         )
 
     def _get_mkvmerge_track_data(

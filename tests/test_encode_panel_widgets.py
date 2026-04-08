@@ -7,12 +7,15 @@ Plan de couverture :
         - COL_TITLE a le flag ItemIsEditable
         - COL_LANG a le flag ItemIsEditable
         - COL_FORMAT n'a pas le flag ItemIsEditable (non-régression)
+        - COL_SRC_BR n'a pas le flag ItemIsEditable (non-régression)
         - COL_IDX n'a pas le flag ItemIsEditable (non-régression)
         - COL_SOURCE n'a pas le flag ItemIsEditable (non-régression)
 
     _AudioTable — valeurs initiales :
         - Titre initial depuis AudioTrack.title
         - Langue initiale depuis AudioTrack.language
+        - Bitrate source initial depuis AudioTrack.bit_rate
+        - Bitrate source affiche un fallback visuel si AudioTrack.bit_rate est absent
         - Titre vide si AudioTrack.title est None
         - Langue vide si AudioTrack.language est None
 
@@ -32,8 +35,13 @@ Plan de couverture :
         - COL_LANG a le flag ItemIsEditable sur la nouvelle ligne
         - track_meta_changed émis sur modification après add_custom_row
 
+    _AudioTable — persistance des réglages audio :
+        - Le codec est conservé après reload avec ordre inversé
+        - Le débit est conservé après reload avec ordre inversé
+        - current_audio_settings expose bien codec, bitrate et flags TrueHD
+
 Exécution :
-    pytest tests/test_encode_panel_widgets.py -v
+    python -m pytest tests/test_encode_panel_widgets.py -v
 """
 
 from __future__ import annotations
@@ -42,7 +50,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit
 
 from core.inspector import AudioTrack
 from ui.panels.encode_panel.widgets import _AudioTable
@@ -55,15 +63,19 @@ from ui.panels.encode_panel.widgets import _AudioTable
 def _at(
     index: int = 1,
     codec: str = "eac3",
+    codec_long: str | None = None,
     channels: int = 6,
+    bit_rate: int | None = 640_000,
     language: str | None = "fra",
     title: str | None = "Piste principale",
+    raw: dict | None = None,
 ) -> AudioTrack:
     return AudioTrack(
-        index=index, codec=codec, codec_long=codec,
+        index=index, codec=codec, codec_long=codec_long or codec,
         channels=channels, channel_layout=None,
-        sample_rate=48000, bit_rate=640_000,
+        sample_rate=48000, bit_rate=bit_rate,
         language=language, title=title,
+        raw=raw or {},
     )
 
 
@@ -83,6 +95,41 @@ def _load_one(table: _AudioTable, track: AudioTrack | None = None, path: Path = 
     """Charge une seule piste dans la table."""
     at = track or _at()
     table.load_tracks([(at, _COLOR, path)])
+
+
+def _codec_combo(table: _AudioTable, row: int) -> QComboBox:
+    combo = table.cellWidget(row, _AudioTable.COL_CODEC)
+    assert isinstance(combo, QComboBox)
+    return combo
+
+
+def _bitrate_editor(table: _AudioTable, row: int):
+    editor = table.cellWidget(row, _AudioTable.COL_BITRATE)
+    assert editor is not None
+    return editor
+
+
+def _set_codec(table: _AudioTable, row: int, codec_id: str) -> None:
+    combo = _codec_combo(table, row)
+    idx = next(i for i in range(combo.count()) if combo.itemData(i) == codec_id)
+    combo.setCurrentIndex(idx)
+
+
+def _set_bitrate(table: _AudioTable, row: int, value: int) -> None:
+    editor = _bitrate_editor(table, row)
+    if getattr(editor, "_combo").isHidden():
+        line_edit = getattr(editor, "_edit")
+        assert isinstance(line_edit, QLineEdit)
+        line_edit.setText(str(value))
+        return
+    combo = getattr(editor, "_combo")
+    assert isinstance(combo, QComboBox)
+    idx = next(i for i in range(combo.count()) if combo.itemData(i) == value)
+    combo.setCurrentIndex(idx)
+
+
+def _bitrate_value(table: _AudioTable, row: int) -> int:
+    return _bitrate_editor(table, row).value()
 
 
 # ===========================================================================
@@ -107,6 +154,13 @@ class TestAudioTableEditableFlags:
         """COL_FORMAT est lecture seule (non-régression)."""
         _load_one(table)
         item = table.item(0, _AudioTable.COL_FORMAT)
+        assert item is not None
+        assert not (item.flags() & Qt.ItemFlag.ItemIsEditable)
+
+    def test_source_bitrate_cell_not_editable(self, table):
+        """COL_SRC_BR est lecture seule (non-régression)."""
+        _load_one(table)
+        item = table.item(0, _AudioTable.COL_SRC_BR)
         assert item is not None
         assert not (item.flags() & Qt.ItemFlag.ItemIsEditable)
 
@@ -140,6 +194,16 @@ class TestAudioTableInitialValues:
         _load_one(table, _at(language="jpn"))
         item = table.item(0, _AudioTable.COL_LANG)
         assert item.text() == "jpn"
+
+    def test_source_bitrate_populated_from_track(self, table):
+        _load_one(table, _at())
+        item = table.item(0, _AudioTable.COL_SRC_BR)
+        assert item.text() == "640"
+
+    def test_source_bitrate_uses_visual_fallback_when_missing(self, table):
+        _load_one(table, _at(raw={}, title="Sans bitrate", bit_rate=None))
+        item = table.item(0, _AudioTable.COL_SRC_BR)
+        assert item.text() == "—"
 
     def test_title_empty_when_track_title_is_none(self, table):
         _load_one(table, _at(title=None))
@@ -280,28 +344,45 @@ class TestAudioTableAddCustomRow:
 
 class TestAudioTableReloadPreservesSettings:
 
-    @staticmethod
-    def _set_codec(table: _AudioTable, row: int, codec_id: str) -> None:
-        combo = table.cellWidget(row, _AudioTable.COL_CODEC)
-        assert combo is not None
-        idx = next(i for i in range(combo.count()) if combo.itemData(i) == codec_id)
-        combo.setCurrentIndex(idx)
-
     def test_load_tracks_preserves_codec_and_bitrate_when_order_changes(self, table):
         at1 = _at(index=1, title="VF")
         at2 = _at(index=2, title="VO")
         table.load_tracks([(at1, _COLOR, _PATH_A), (at2, _COLOR, _PATH_B)])
 
-        self._set_codec(table, 0, "aac")
-        table.cellWidget(0, _AudioTable.COL_BITRATE).setText("256")
-        self._set_codec(table, 1, "eac3")
-        table.cellWidget(1, _AudioTable.COL_BITRATE).setText("640")
+        _set_codec(table, 0, "aac")
+        _set_bitrate(table, 0, 960)
+        _set_codec(table, 1, "eac3")
+        _set_bitrate(table, 1, 960)
 
         table.load_tracks([(at2, _COLOR, _PATH_B), (at1, _COLOR, _PATH_A)])
 
         assert table.item(0, _AudioTable.COL_IDX).text() == "2"
         assert table.item(1, _AudioTable.COL_IDX).text() == "1"
-        assert table.cellWidget(0, _AudioTable.COL_CODEC).currentData() == "eac3"
-        assert table.cellWidget(0, _AudioTable.COL_BITRATE).text() == "640"
-        assert table.cellWidget(1, _AudioTable.COL_CODEC).currentData() == "aac"
-        assert table.cellWidget(1, _AudioTable.COL_BITRATE).text() == "256"
+        assert _codec_combo(table, 0).currentData() == "eac3"
+        assert _bitrate_value(table, 0) == 960
+        assert _codec_combo(table, 1).currentData() == "aac"
+        assert _bitrate_value(table, 1) == 960
+
+
+class TestAudioTableCurrentAudioSettings:
+
+    def test_truehd_atmos_copy_enables_truehd_core_extraction(self, table):
+        track = _at(codec="truehd", codec_long="TrueHD Atmos", title="VO Atmos")
+        _load_one(table, track)
+
+        settings = table.current_audio_settings()
+
+        assert len(settings) == 1
+        assert settings[0].codec == "copy"
+        assert settings[0].extract_truehd_core is True
+
+    def test_truehd_atmos_transcode_disables_truehd_core_extraction(self, table):
+        track = _at(codec="truehd", codec_long="TrueHD Atmos", title="VO Atmos")
+        _load_one(table, track)
+        _set_codec(table, 0, "eac3")
+
+        settings = table.current_audio_settings()
+
+        assert len(settings) == 1
+        assert settings[0].codec == "eac3"
+        assert settings[0].extract_truehd_core is False

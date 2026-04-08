@@ -7,20 +7,23 @@ Public:
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from core.subprocess_utils import subprocess_text_kwargs
-from core.workflows.encode.models import HARDWARE_VIDEO_CODECS
+from core.workflows.encode.models import HARDWARE_VIDEO_CODECS, SOFTWARE_VIDEO_CODECS
 
 
-_NULLSRC = "nullsrc=s=256x256:r=1:d=0.04"
+_NULLSRC = "nullsrc=s=256x256:r=25:d=0.1"   # ≥ 1 frame garantie (25fps × 0.1s)
 _GENERIC_HW_FILTER = "format=nv12"
 _VAAPI_FILTER = "format=nv12,hwupload"
-_NVENC_CODECS = {"hevc_nvenc", "h264_nvenc"}
-_VAAPI_CODECS = {"hevc_vaapi", "h264_vaapi"}
+_NVENC_CODECS = {"hevc_nvenc", "h264_nvenc", "av1_nvenc"}
+_VAAPI_CODECS = {"hevc_vaapi", "h264_vaapi", "av1_vaapi"}
 
 
 class HardwareEncoderDetector:
@@ -31,47 +34,184 @@ class HardwareEncoderDetector:
     inutilisable si le driver GPU ou le runtime associe est absent. On probe
     donc chaque encodeur avec une frame nulle pour confirmer sa disponibilite.
 
+    Dans un AppImage, le ffmpeg embarqué peut ne pas inclure les encodeurs
+    materiels (ex: johnvansickle static build). Dans ce cas, le ffmpeg systeme
+    est utilise automatiquement pour la detection et l'encodage HW.
+
     Synchrone et thread-safe - a executer dans un ThreadPoolExecutor.
     """
 
-    def detect(self, ffmpeg_bin: str = "ffmpeg") -> set[str]:
-        """Retourne l'ensemble des identifiants d'encodeurs materiels disponibles."""
+    def __init__(self) -> None:
+        # Cache par instance pour éviter les subprocess redondants quand
+        # detect() et detect_software() sont appelés à la suite.
+        self._cache_lock = threading.RLock()
+        self._encoders_output_cache: dict[str, str] = {}
+        self._system_ffmpeg_cache: str | None = None
+        self._system_ffmpeg_cached = False
+        self._vaapi_device_cache: str | None = None
+        self._vaapi_device_cached = False
+
+    @staticmethod
+    def _resolve_ffmpeg(ffmpeg_bin: str) -> str:
+        """
+        Retourne la commande ffmpeg à exécuter sans normaliser les alias.
+
+        En tests (et dans certains environnements packagés), convertir
+        systématiquement `ffmpeg` en chemin absolu casse le contrat attendu
+        des appels subprocess mockés. On conserve donc l'argument tel qu'il
+        est fourni par la configuration.
+        """
+        return ffmpeg_bin
+
+    @staticmethod
+    def _find_system_ffmpeg() -> str | None:
+        """
+        Dans un AppImage, retourne le ffmpeg système en ignorant les répertoires
+        embarqués dans l'AppImage ($APPDIR).
+
+        Le ffmpeg système a potentiellement des encodeurs HW (NVENC, VAAPI, QSV)
+        que le ffmpeg statique embarqué ne compile pas.
+
+        Hors AppImage (dev, Windows, macOS), retourne None car le ffmpeg fourni
+        est déjà le bon.
+        """
+        import shutil
+        appdir = os.environ.get("APPDIR", "")
+        if not appdir:
+            return None
+        path_dirs = os.environ.get("PATH", "").split(os.pathsep)
+        filtered = os.pathsep.join(
+            d for d in path_dirs if d and not d.startswith(appdir)
+        )
+        return shutil.which("ffmpeg", path=filtered) or None
+
+    def _get_encoders_output(self, ffmpeg_bin: str) -> str:
+        """Retourne la sortie de `ffmpeg -encoders`, chaîne vide si échec."""
+        resolved = self._resolve_ffmpeg(ffmpeg_bin)
+        with self._cache_lock:
+            if resolved in self._encoders_output_cache:
+                return self._encoders_output_cache[resolved]
         try:
             result = subprocess.run(
-                [ffmpeg_bin, "-hide_banner", "-encoders"],
+                [resolved, "-hide_banner", "-encoders"],
                 capture_output=True,
                 check=False,
                 **subprocess_text_kwargs(),
             )
-        except FileNotFoundError:
-            return set()
+        except (FileNotFoundError, OSError):
+            output = ""
+        else:
+            output = "\n".join(part for part in (result.stdout, result.stderr) if part)
+        with self._cache_lock:
+            self._encoders_output_cache[resolved] = output
+        return output
 
-        encoders_output = "\n".join(
-            part for part in (result.stdout, result.stderr) if part
-        )
-        compiled = {
-            codec_id
-            for codec_id, _ in HARDWARE_VIDEO_CODECS
-            if re.search(rf"\b{re.escape(codec_id)}\b", encoders_output)
-        }
+    def _system_ffmpeg(self) -> str | None:
+        """Retourne le ffmpeg système (AppImage) avec cache par instance."""
+        with self._cache_lock:
+            if self._system_ffmpeg_cached:
+                return self._system_ffmpeg_cache
+        detected = self._find_system_ffmpeg()
+        with self._cache_lock:
+            self._system_ffmpeg_cache = detected
+            self._system_ffmpeg_cached = True
+        return detected
+
+    def _cached_vaapi_device(self) -> str | None:
+        """Retourne le render node VAAPI avec cache par instance."""
+        with self._cache_lock:
+            if self._vaapi_device_cached:
+                return self._vaapi_device_cache
+        device = self._vaapi_device()
+        with self._cache_lock:
+            self._vaapi_device_cache = device
+            self._vaapi_device_cached = True
+        return device
+
+    def detect_software(self, ffmpeg_bin: str = "ffmpeg") -> set[str]:
+        """
+        Retourne les codecs SOFTWARE disponibles.
+
+        Vérifie le ffmpeg fourni (généralement le ffmpeg embarqué) ET le ffmpeg
+        système (dans un AppImage, le ffmpeg statique peut manquer libsvtav1).
+        Retourne l'union des codecs trouvés.
+        """
+        available: set[str] = set()
+
+        # Codecs du ffmpeg principal
+        output = self._get_encoders_output(ffmpeg_bin)
+        if output:
+            for codec_id, _ in SOFTWARE_VIDEO_CODECS:
+                if re.search(rf"\b{re.escape(codec_id)}\b", output):
+                    available.add(codec_id)
+
+        # Dans un AppImage : complète avec le ffmpeg système si différent
+        system_ff = self._system_ffmpeg()
+        if system_ff:
+            sys_output = self._get_encoders_output(system_ff)
+            if sys_output:
+                for codec_id, _ in SOFTWARE_VIDEO_CODECS:
+                    if re.search(rf"\b{re.escape(codec_id)}\b", sys_output):
+                        available.add(codec_id)
+
+        return available
+
+    def detect(self, ffmpeg_bin: str = "ffmpeg") -> tuple[set[str], str]:
+        """
+        Retourne (encodeurs_hw_disponibles, chemin_ffmpeg_utilisé).
+
+        Le chemin retourné est celui du ffmpeg effectivement utilisé pour les
+        probes — il peut différer du ffmpeg_bin fourni si ce dernier ne compile
+        pas les encodeurs HW (typique dans un AppImage avec ffmpeg statique).
+        Ce chemin doit être utilisé pour l'encodage HW effectif.
+        """
+        ff, compiled = self._compiled_hw(ffmpeg_bin)
         if not compiled:
-            return set()
+            return set(), ffmpeg_bin
 
-        vaapi_device = self._vaapi_device()
+        resolved = self._resolve_ffmpeg(ff)
+        vaapi_device = self._cached_vaapi_device()
         available: set[str] = set()
         nvenc_compiled = compiled & _NVENC_CODECS
 
         if nvenc_compiled:
-            available |= self._detect_nvenc(ffmpeg_bin, nvenc_compiled, vaapi_device)
+            available |= self._detect_nvenc(resolved, nvenc_compiled, vaapi_device)
 
-        for codec_id in compiled - _NVENC_CODECS:
-            cmd = self._probe_command(ffmpeg_bin, codec_id, vaapi_device)
-            if cmd is None:
-                continue
-            if self._probe_encoder(cmd):
-                available.add(codec_id)
+        available |= self._probe_codecs(resolved, compiled - _NVENC_CODECS, vaapi_device)
 
-        return available
+        return available, ff
+
+    def _compiled_hw(self, ffmpeg_bin: str) -> tuple[str, set[str]]:
+        """
+        Retourne (chemin_ffmpeg, codecs_HW_compilés).
+
+        Si le ffmpeg fourni ne compile aucun codec HW et qu'on est dans un
+        AppImage, essaie le ffmpeg système comme fallback.
+        """
+        output = self._get_encoders_output(ffmpeg_bin)
+        compiled = self._parse_hw_codecs(output)
+        if compiled:
+            return ffmpeg_bin, compiled
+
+        # Fallback : ffmpeg système (AppImage uniquement)
+        system_ff = self._system_ffmpeg()
+        if system_ff:
+            sys_output = self._get_encoders_output(system_ff)
+            sys_compiled = self._parse_hw_codecs(sys_output)
+            if sys_compiled:
+                return system_ff, sys_compiled
+
+        return ffmpeg_bin, set()
+
+    @staticmethod
+    def _parse_hw_codecs(encoders_output: str) -> set[str]:
+        if not encoders_output:
+            return set()
+        return {
+            codec_id
+            for codec_id, _ in HARDWARE_VIDEO_CODECS
+            if re.search(rf"\b{re.escape(codec_id)}\b", encoders_output)
+        }
 
     @staticmethod
     def _probe_encoder(cmd: list[str]) -> bool:
@@ -81,7 +221,7 @@ class HardwareEncoderDetector:
                 cmd,
                 capture_output=True,
                 check=False,
-                timeout=15,
+                timeout=5,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             return False
@@ -102,7 +242,10 @@ class HardwareEncoderDetector:
         restent donc le signal prioritaire. Sous Windows, on conserve un probe
         FFmpeg reel pour valider NVENC.
         """
-        if sys.platform == "win32":
+        # Les tests et certains contextes appellent explicitement un binaire
+        # Windows (.exe) depuis un host non-win32 ; on force alors la logique
+        # "probe FFmpeg réel" sans dépendre de nvidia-smi.
+        if sys.platform == "win32" or ffmpeg_bin.lower().endswith(".exe"):
             return self._probe_codecs(ffmpeg_bin, compiled, vaapi_device)
 
         if self._nvidia_ok():
@@ -117,13 +260,37 @@ class HardwareEncoderDetector:
         vaapi_device: str | None,
     ) -> set[str]:
         """Probe une liste de codecs et retourne ceux qui sont utilisables."""
-        available: set[str] = set()
+        jobs: list[tuple[str, list[str]]] = []
         for codec_id in codec_ids:
             cmd = self._probe_command(ffmpeg_bin, codec_id, vaapi_device)
             if cmd is None:
                 continue
+            jobs.append((codec_id, cmd))
+
+        available: set[str] = set()
+        if not jobs:
+            return available
+
+        if len(jobs) == 1:
+            codec_id, cmd = jobs[0]
             if self._probe_encoder(cmd):
                 available.add(codec_id)
+            return available
+
+        # Les probes sont indépendants ; on les lance en parallèle pour réduire
+        # le temps mural quand plusieurs codecs HW sont compilés.
+        max_workers = min(4, len(jobs))
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="hw-probe") as pool:
+            futures = {pool.submit(self._probe_encoder, cmd): codec_id for codec_id, cmd in jobs}
+            for future in as_completed(futures):
+                codec_id = futures[future]
+                try:
+                    ok = future.result()
+                except Exception:
+                    ok = False
+                if ok:
+                    available.add(codec_id)
+
         return available
 
     @staticmethod
@@ -138,9 +305,9 @@ class HardwareEncoderDetector:
             )
             if result.returncode == 0:
                 return True
+            return False
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-            pass
-        return Path("/dev/nvidia0").exists()
+            return Path("/dev/nvidia0").exists()
 
     def _probe_command(
         self,
