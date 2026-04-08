@@ -25,11 +25,13 @@ Options:
 from __future__ import annotations
 
 import argparse
+import ctypes
 import configparser
 import json
 import locale
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -48,17 +50,84 @@ from core.lang_tags import Rfc5646LanguageTags
 # Terminal colours (no external deps)
 # ---------------------------------------------------------------------------
 
-_USE_COLOR = sys.stdout.isatty() and platform.system() != "Windows"
+def _ensure_text_stream(name: str, mode: str) -> None:
+    """Provide a valid stdio stream when running without a console."""
+    if getattr(sys, name, None) is None:
+        setattr(sys, name, open(os.devnull, mode, encoding="utf-8"))
+
+
+def _stream_isatty(stream: object) -> bool:
+    isatty = getattr(stream, "isatty", None)
+    if not callable(isatty):
+        return False
+    try:
+        return bool(isatty())
+    except OSError:
+        return False
+
+
+_ensure_text_stream("stdout", "w")
+_ensure_text_stream("stderr", "w")
+
+
+def _can_stream_encode(stream: object, text: str) -> bool:
+    encoding = getattr(stream, "encoding", None)
+    if not encoding:
+        return False
+    try:
+        text.encode(encoding)
+        return True
+    except Exception:
+        return False
+
+
+def _configure_stdio_for_windows() -> None:
+    """
+    Configure stdout/stderr on Windows so console output never crashes on
+    Unicode glyphs. If UTF-8 reconfigure is unavailable, fallback to
+    `errors=replace`.
+    """
+    if platform.system() != "Windows":
+        return
+
+    probe = "✔→⚠✘▸─"
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        if stream is None:
+            continue
+        if _can_stream_encode(stream, probe):
+            continue
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            try:
+                reconfigure(errors="replace")
+            except Exception:
+                pass
+
+
+_configure_stdio_for_windows()
+_USE_COLOR = _stream_isatty(sys.stdout) and platform.system() != "Windows"
+_UI_UNICODE = _can_stream_encode(sys.stdout, "✔→⚠✘▸─")
+_UI_OK = "✔" if _UI_UNICODE else "OK"
+_UI_INFO = "→" if _UI_UNICODE else "->"
+_UI_WARN = "⚠" if _UI_UNICODE else "!"
+_UI_ERR = "✘" if _UI_UNICODE else "X"
+_UI_STEP = "▸" if _UI_UNICODE else ">"
+_UI_BAR = "─" if _UI_UNICODE else "-"
 
 def _c(code: str, text: str) -> str:
     return f"\033[{code}m{text}\033[0m" if _USE_COLOR else text
 
-def ok(msg: str)     -> None: print(_c("32", f"  ✔  {msg}"))
-def info(msg: str)   -> None: print(_c("36", f"  →  {msg}"))
-def warn(msg: str)   -> None: print(_c("33", f"  ⚠  {msg}"))
-def error(msg: str)  -> None: print(_c("31", f"  ✘  {msg}"), file=sys.stderr)
-def title(msg: str)  -> None: print(_c("1;34", f"\n{'─'*60}\n  {msg}\n{'─'*60}"))
-def step(msg: str)   -> None: print(_c("1;37", f"\n  ▸ {msg}"))
+def ok(msg: str)     -> None: print(_c("32", f"  {_UI_OK}  {msg}"))
+def info(msg: str)   -> None: print(_c("36", f"  {_UI_INFO}  {msg}"))
+def warn(msg: str)   -> None: print(_c("33", f"  {_UI_WARN}  {msg}"))
+def error(msg: str)  -> None: print(_c("31", f"  {_UI_ERR}  {msg}"), file=sys.stderr)
+def title(msg: str)  -> None: print(_c("1;34", f"\n{_UI_BAR*60}\n  {msg}\n{_UI_BAR*60}"))
+def step(msg: str)   -> None: print(_c("1;37", f"\n  {_UI_STEP} {msg}"))
 
 # ---------------------------------------------------------------------------
 # OS detection
@@ -84,10 +153,10 @@ WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
 WINDOWS_WINGET_PATTERNS: dict[str, tuple[str, ...]] = {
     "ffmpeg": ("Gyan.FFmpeg*",),
     "ffprobe": ("Gyan.FFmpeg*",),
-    "mkvmerge": ("MKVToolNix.MKVToolNix*",),
-    "mkvextract": ("MKVToolNix.MKVToolNix*",),
-    "mkvinfo": ("MKVToolNix.MKVToolNix*",),
-    "mkvpropedit": ("MKVToolNix.MKVToolNix*",),
+    "mkvmerge": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
+    "mkvextract": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
+    "mkvinfo": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
+    "mkvpropedit": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
     "mediainfo": ("MediaArea.MediaInfo_*",),
 }
 
@@ -102,6 +171,12 @@ WINDOWS_CONFIG_TOOL_ORDER: tuple[str, ...] = (
     "dovi_tool",
     "hdr10plus_tool",
     "eac3to",
+)
+
+WINDOWS_CFA_WRITER_TOOLS: tuple[str, ...] = (
+    "ffmpeg",
+    "mkvmerge",
+    "mkvpropedit",
 )
 
 def detect_linux_distro() -> str:
@@ -148,8 +223,9 @@ SYSTEM_TOOLS: dict[str, dict] = {
         "apt":    "libegl1-mesa",
         "dnf":    "mesa-libEGL",
         "brew":   "xquartz",
-        "winget": "Microsoft.DirectX",
+        "winget": "",
         "desc":   "OpenGL libraries",
+        "path_check": False,
     },
     "ffmpeg": {
         "apt":    "ffmpeg",
@@ -170,28 +246,28 @@ SYSTEM_TOOLS: dict[str, dict] = {
         "apt":    "mkvtoolnix",
         "dnf":    "mkvtoolnix",
         "brew":   "mkvtoolnix",
-        "winget": "MKVToolNix.MKVToolNix",
+        "winget": "MoritzBunkus.MKVToolNix",
         "desc":   "MKV container muxer",
     },
     "mkvextract": {
         "apt":    "mkvtoolnix",
         "dnf":    "mkvtoolnix",
         "brew":   "mkvtoolnix",
-        "winget": "MKVToolNix.MKVToolNix",
+        "winget": "MoritzBunkus.MKVToolNix",
         "desc":   "MKV track extractor (ships with mkvtoolnix)",
     },
     "mkvinfo": {
         "apt":    "mkvtoolnix",
         "dnf":    "mkvtoolnix",
         "brew":   "mkvtoolnix",
-        "winget": "MKVToolNix.MKVToolNix",
+        "winget": "MoritzBunkus.MKVToolNix",
         "desc":   "MKV info tool (ships with mkvtoolnix)",
     },
     "mkvpropedit": {
         "apt":    "mkvtoolnix",
         "dnf":    "mkvtoolnix",
         "brew":   "mkvtoolnix",
-        "winget": "MKVToolNix.MKVToolNix",
+        "winget": "MoritzBunkus.MKVToolNix",
         "desc":   "MKV metadata editor (ships with mkvtoolnix)",
     },
     "mediainfo": {
@@ -262,6 +338,40 @@ MANUAL_TOOLS: dict[str, dict] = {
 # Command runner
 # ---------------------------------------------------------------------------
 
+def _windows_no_window_subprocess_kwargs() -> dict[str, object]:
+    """Return subprocess kwargs that hide console windows on Windows."""
+    if OS != "Windows":
+        return {}
+    # If a console is already visible (first-launch setup), keep child process
+    # output in that same console.
+    try:
+        if bool(ctypes.windll.kernel32.GetConsoleWindow()):
+            return {}
+    except Exception:
+        pass
+
+    if not getattr(sys, "frozen", False):
+        # CLI execution from a terminal should keep standard behavior.
+        return {}
+
+    kwargs: dict[str, object] = {}
+
+    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if create_no_window:
+        kwargs["creationflags"] = create_no_window
+
+    startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo_cls is not None:
+        startupinfo = startupinfo_cls()
+        startf_use_showwindow = getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+        if startf_use_showwindow:
+            startupinfo.dwFlags |= startf_use_showwindow
+        startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+        kwargs["startupinfo"] = startupinfo
+
+    return kwargs
+
+
 def run(cmd: list[str], dry_run: bool = False, check: bool = True,
         capture: bool = False) -> Optional[subprocess.CompletedProcess]:
     """Run a shell command, optionally printing only (dry_run)."""
@@ -274,6 +384,7 @@ def run(cmd: list[str], dry_run: bool = False, check: bool = True,
         capture_output=capture,
         text=True,
         check=False,
+        **_windows_no_window_subprocess_kwargs(),
     )
     if check and result.returncode != 0:
         stderr = getattr(result, "stderr", "")
@@ -330,8 +441,76 @@ def _default_prefix() -> Path:
     return Path("/usr/local")
 
 
+def _windows_config_dir() -> Path:
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return Path(appdata) / "mediarecode"
+    return Path.home() / "AppData" / "Roaming" / "mediarecode"
+
+
+def _is_windows_frozen() -> bool:
+    return OS == "Windows" and bool(getattr(sys, "frozen", False))
+
+
+def _windows_frozen_runtime_dir() -> Path | None:
+    """
+    Return the frozen runtime directory containing python extension modules/DLLs.
+    Supports onedir (`_internal`) and onefile (`_MEIPASS`) layouts.
+    """
+    if not _is_windows_frozen():
+        return None
+
+    candidates: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(str(meipass)))
+
+    exe_dir = Path(sys.executable).resolve().parent
+    candidates.append(exe_dir / "_internal")
+    candidates.append(exe_dir)
+
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def verify_windows_frozen_python_runtime() -> None:
+    """
+    Ensure critical Python runtime pieces are present in frozen Windows bundles.
+    We explicitly check `_ctypes.pyd` + `libffi-*.dll`.
+    """
+    runtime_dir = _windows_frozen_runtime_dir()
+    if runtime_dir is None:
+        return
+
+    required_patterns: dict[str, str] = {
+        "_ctypes.pyd": "_ctypes.pyd",
+        "libffi": "libffi-*.dll",
+    }
+    missing: list[str] = []
+    for label, pattern in required_patterns.items():
+        if not any(runtime_dir.glob(pattern)):
+            missing.append(f"{label} ({pattern})")
+
+    if missing:
+        raise RuntimeError(
+            "Bundle Python Windows incomplet (runtime manquant): "
+            + ", ".join(missing)
+            + ". Rebuild requis."
+        )
+
+    ok(f"Frozen Python runtime OK ({runtime_dir})")
+
+
 def _config_ini_path() -> Path:
-    return Path(__file__).parent / "config.ini"
+    """Return the config.ini path used by the application on the current OS."""
+    if OS == "Windows":
+        if getattr(sys, "frozen", False):
+            return _windows_config_dir() / "config.ini"
+        return Path(__file__).parent / "config.ini"
+    xdg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return xdg / "mediarecode" / "config.ini"
 
 
 def _dedupe_paths(paths: list[Path]) -> list[Path]:
@@ -389,6 +568,44 @@ def _section_bounds(lines: list[str], section: str) -> tuple[int, int]:
     return start, end
 
 
+def _normalize_windows_backslashes(value: str) -> str:
+    """Collapse repeated Windows path separators while preserving UNC prefixes."""
+    text = str(value)
+    if OS != "Windows" or "\\" not in text:
+        return text
+
+    leading = len(text) - len(text.lstrip("\\"))
+    body = text[leading:]
+    body = re.sub(r"\\{2,}", r"\\", body)
+
+    if leading >= 2:
+        prefix = "\\\\"
+    elif leading == 1:
+        prefix = "\\"
+    else:
+        prefix = ""
+    return prefix + body
+
+
+def _sanitize_windows_tools_lines(lines: list[str]) -> list[str]:
+    if OS != "Windows":
+        return lines
+
+    start, end = _tools_section_bounds(lines)
+    if start == -1:
+        return lines
+
+    for index in range(start + 1, end):
+        stripped = lines[index].strip()
+        if not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
+            continue
+        lhs, rhs = stripped.split("=", 1)
+        normalized = _normalize_windows_backslashes(rhs.strip())
+        if normalized != rhs.strip():
+            lines[index] = f"{lhs.strip()} = {normalized}"
+    return lines
+
+
 def _update_ini_tools_section(
     path: Path,
     tool_values: dict[str, str],
@@ -403,7 +620,7 @@ def _update_ini_tools_section(
     prune_keys = {key.lower() for key in (prune_keys or set())}
 
     text = path.read_text(encoding="utf-8") if path.exists() else ""
-    lines = text.splitlines()
+    lines = _sanitize_windows_tools_lines(text.splitlines())
     start, end = _tools_section_bounds(lines)
 
     if start == -1:
@@ -426,6 +643,7 @@ def _update_ini_tools_section(
 
     insert_at = end
     for key, value in tool_values.items():
+        rendered = _normalize_windows_backslashes(value)
         updated = False
         for index in range(start + 1, end):
             stripped = lines[index].strip()
@@ -435,18 +653,21 @@ def _update_ini_tools_section(
             if lhs.strip().lower() != key.lower():
                 continue
             if not rhs.strip() or key.lower() in replace_keys:
-                lines[index] = f"{key} = {value}"
+                lines[index] = f"{key} = {rendered}"
             updated = True
             break
 
         if not updated:
-            lines.insert(insert_at, f"{key} = {value}")
+            lines.insert(insert_at, f"{key} = {rendered}")
             insert_at += 1
             end += 1
+
+    lines = _sanitize_windows_tools_lines(lines)
 
     if dry_run:
         return
 
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
@@ -468,18 +689,195 @@ def _system_language_code() -> str:
     return "eng"
 
 
+def _available_ui_languages() -> list[tuple[str, str]]:
+    """
+    Return the list of UI languages available in locales.json as
+    (iso639-2 code, display name) pairs, sorted by display name.
+    """
+    iso_names: dict[str, str] = {
+        "eng": "English",
+        "fra": "Français",
+        "deu": "Deutsch",
+        "spa": "Español",
+        "ita": "Italiano",
+        "por": "Português",
+        "nld": "Nederlands",
+        "pol": "Polski",
+        "rus": "Русский",
+        "jpn": "日本語",
+        "zho": "中文",
+        "kor": "한국어",
+        "ara": "العربية",
+    }
+    try:
+        locales_path = Path(__file__).parent / "locales.json"
+        data: dict = json.loads(locales_path.read_text(encoding="utf-8"))
+        codes: set[str] = set()
+        for values in data.values():
+            if isinstance(values, dict):
+                codes.update(str(key).lower() for key in values)
+        if codes:
+            items = [(code, iso_names.get(code, code)) for code in sorted(codes)]
+            return sorted(items, key=lambda item: item[1].lower())
+    except Exception:
+        pass
+    return [("eng", "English"), ("fra", "Français")]
+
+
+def _ask_language_dialog_qt_in_process(languages: list[tuple[str, str]]) -> str | None:
+    """Show the language dialog in-process and return the selected code."""
+    try:
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import (
+            QApplication,
+            QComboBox,
+            QDialog,
+            QDialogButtonBox,
+            QLabel,
+            QVBoxLayout,
+        )
+    except Exception:
+        return None
+
+    _app = QApplication.instance() or QApplication(sys.argv[:1])
+    dlg = QDialog()
+    dlg.setWindowTitle("Mediarecode - Interface Language")
+    dlg.setWindowFlags(dlg.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+    dlg.setMinimumWidth(380)
+    layout = QVBoxLayout(dlg)
+    layout.setContentsMargins(16, 16, 16, 16)
+    layout.setSpacing(10)
+    label = QLabel("Select the interface language / Choisissez la langue:")
+    label.setWordWrap(True)
+    layout.addWidget(label)
+    combo = QComboBox()
+    for code, name in languages:
+        combo.addItem(name, code)
+    layout.addWidget(combo)
+    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+    buttons.accepted.connect(dlg.accept)
+    layout.addWidget(buttons)
+    if dlg.exec() == QDialog.DialogCode.Accepted:
+        selected = combo.currentData()
+        if isinstance(selected, str):
+            return selected.strip().lower()
+    return None
+
+
+def _python_executable_for_qt_subprocess() -> str | None:
+    """Return a Python interpreter suitable for `python -c` subprocess calls."""
+    candidates = [getattr(sys, "executable", ""), getattr(sys, "_base_executable", "")]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        name = Path(candidate).name.lower()
+        if name.startswith("python") or name in {"py", "py.exe"}:
+            return candidate
+
+    for command in ("python3", "python", "py"):
+        found = shutil.which(command)
+        if found:
+            return found
+    return None
+
+
+def _ask_language_dialog(languages: list[tuple[str, str]]) -> str | None:
+    """Show a language picker and return the chosen ISO 639-2 code."""
+    if not languages:
+        return None
+
+    valid_codes = {code for code, _ in languages}
+
+    if getattr(sys, "frozen", False):
+        # In PyInstaller bundles, sys.executable is mediarecode.exe, not python.exe.
+        code = _ask_language_dialog_qt_in_process(languages)
+        if code in valid_codes:
+            return code
+    else:
+        qt_script = """\
+import sys, json
+from PySide6.QtWidgets import (
+    QApplication, QDialog, QVBoxLayout, QLabel, QComboBox, QDialogButtonBox,
+)
+from PySide6.QtCore import Qt
+
+languages = json.loads(sys.argv[1])
+app = QApplication.instance() or QApplication(sys.argv[:1])
+dlg = QDialog()
+dlg.setWindowTitle("Mediarecode - Interface Language")
+dlg.setWindowFlags(dlg.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+dlg.setMinimumWidth(380)
+layout = QVBoxLayout(dlg)
+layout.setContentsMargins(16, 16, 16, 16)
+layout.setSpacing(10)
+label = QLabel("Select the interface language / Choisissez la langue:")
+label.setWordWrap(True)
+layout.addWidget(label)
+combo = QComboBox()
+for code, name in languages:
+    combo.addItem(name, code)
+layout.addWidget(combo)
+buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+buttons.accepted.connect(dlg.accept)
+layout.addWidget(buttons)
+if dlg.exec() == QDialog.DialogCode.Accepted:
+    print(combo.currentData(), end="")
+"""
+        python_exe = _python_executable_for_qt_subprocess()
+        if python_exe:
+            try:
+                result = subprocess.run(
+                    [python_exe, "-c", qt_script, json.dumps(languages)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=120,
+                    **_windows_no_window_subprocess_kwargs(),
+                )
+                if result.returncode == 0:
+                    code = result.stdout.strip().lower()
+                    if code in valid_codes:
+                        return code
+            except Exception:
+                pass
+
+    if not _stream_isatty(sys.stdin) or not _stream_isatty(sys.stdout):
+        return None
+
+    bar = _UI_BAR * 40
+    print(f"\n  {bar}")
+    print("  Select interface language / Choisissez la langue :")
+    for index, (code, name) in enumerate(languages, 1):
+        print(f"    {index:2d}. {name}  ({code})")
+    print(f"  {bar}")
+    try:
+        raw = input(f"  Choice [1-{len(languages)}] (Enter = auto-detect): ").strip()
+    except (EOFError, RuntimeError):
+        return None
+    if not raw:
+        return None
+    if raw.isdigit():
+        selected_index = int(raw) - 1
+        if 0 <= selected_index < len(languages):
+            return languages[selected_index][0]
+    return None
+
+
 def initialize_config_ini_language(
     dry_run: bool,
     force: bool = False,
     ini_path: Path | None = None,
 ) -> None:
-    """Initialise la langue UI dans config.ini depuis la locale système."""
+    """
+    Initialise la langue UI dans config.ini.
+
+    - Windows : popup de sélection de langue.
+    - Linux / macOS : détection automatique depuis la locale système.
+    """
     title("Step 5 — config.ini UI language")
 
     if ini_path is None:
         ini_path = _config_ini_path()
-    detected = _system_language_code()
-    info(f"Detected UI language: {detected}")
 
     parser = configparser.ConfigParser(
         inline_comment_prefixes=("#",),
@@ -495,6 +893,17 @@ def initialize_config_ini_language(
     if existing and not force:
         ok(f"config.ini already defines ui.language = {existing}")
         return
+
+    chosen: str | None = None
+    if not dry_run and OS == "Windows":
+        chosen = _ask_language_dialog(_available_ui_languages())
+        if chosen:
+            info(f"Language selected by user: {chosen}")
+        else:
+            info("Language dialog cancelled or unavailable — falling back to system detection")
+
+    detected = chosen or _system_language_code()
+    info(f"UI language: {detected}")
 
     text = ini_path.read_text(encoding="utf-8") if ini_path.exists() else ""
     lines = text.splitlines()
@@ -526,6 +935,7 @@ def initialize_config_ini_language(
         ok(f"[dry-run] config.ini UI language would be set to {detected}")
         return
 
+    ini_path.parent.mkdir(parents=True, exist_ok=True)
     ini_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
     ok(f"config.ini UI language set to {detected}")
 
@@ -609,6 +1019,48 @@ def _detect_windows_tool_path(tool_name: str, prefix: Path) -> str | None:
         return resolved
 
     for candidate in _windows_default_tool_candidates(tool_name, prefix):
+        if candidate.is_file():
+            return str(candidate)
+
+    return None
+
+
+def _non_windows_tool_candidates(tool_name: str, prefix: Path | None = None) -> list[Path]:
+    candidates: list[Path] = []
+    if prefix is not None:
+        candidates.extend([prefix / "bin" / tool_name, prefix / tool_name])
+
+    repo_root = Path(__file__).parent
+    candidates.extend(
+        [
+            repo_root / "tools" / tool_name,
+            repo_root / "tools" / "bin" / tool_name,
+            Path.home() / ".local" / "bin" / tool_name,
+            Path("/usr/local/bin") / tool_name,
+            Path("/usr/bin") / tool_name,
+        ]
+    )
+    if OS == "Darwin":
+        candidates.extend(
+            [
+                Path("/opt/homebrew/bin") / tool_name,
+                Path("/opt/local/bin") / tool_name,
+            ]
+        )
+
+    return _dedupe_paths(candidates)
+
+
+def _detect_non_windows_tool_path(tool_name: str, prefix: Path | None = None) -> str | None:
+    resolved = shutil.which(tool_name)
+    if resolved:
+        return resolved
+
+    ini_value = _existing_ini_tool_values(_config_ini_path()).get(tool_name.lower(), "")
+    if ini_value and Path(ini_value).is_file():
+        return ini_value
+
+    for candidate in _non_windows_tool_candidates(tool_name, prefix):
         if candidate.is_file():
             return str(candidate)
 
@@ -906,7 +1358,16 @@ def _github_latest_release(repo: str) -> dict:
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read().decode())
-    except urllib.error.URLError as e:
+    except Exception as e:
+        if OS == "Windows":
+            try:
+                payload = _windows_fetch_text(url)
+                return json.loads(payload)
+            except Exception as fallback_error:
+                raise RuntimeError(
+                    f"Cannot reach GitHub API for {repo}: {e} "
+                    f"(Windows fallback failed: {fallback_error})"
+                ) from fallback_error
         raise RuntimeError(f"Cannot reach GitHub API for {repo}: {e}") from e
 
 def _download_file(url: str, dest: Path) -> None:
@@ -925,8 +1386,475 @@ def _download_file(url: str, dest: Path) -> None:
                     pct = downloaded * 100 // total
                     print(f"\r    {pct:3d}%  {downloaded//1024} KB / {total//1024} KB  ", end="", flush=True)
             print()
-    except urllib.error.URLError as e:
+    except Exception as e:
+        if OS == "Windows":
+            try:
+                _windows_download_file(url, dest)
+                return
+            except Exception as fallback_error:
+                raise RuntimeError(
+                    f"Download failed: {url}\n  {e}\n  "
+                    f"Windows fallback failed: {fallback_error}"
+                ) from fallback_error
         raise RuntimeError(f"Download failed: {url}\n  {e}") from e
+
+
+def _windows_powershell() -> Optional[str]:
+    """Return powershell executable path when available."""
+    return shutil.which("powershell") or shutil.which("pwsh")
+
+
+def _powershell_single_quote(value: str) -> str:
+    """Return a PowerShell single-quoted literal."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _windows_is_admin() -> bool:
+    """Return True when the current Windows process already runs elevated."""
+    if OS != "Windows":
+        return False
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _windows_message_box(text: str, title_text: str, flags: int) -> int:
+    """Display a native Windows message box."""
+    try:
+        return int(ctypes.windll.user32.MessageBoxW(None, text, title_text, flags))
+    except Exception:
+        return 0
+
+
+def _windows_yes_no(text: str, title_text: str, default_no: bool = True) -> bool:
+    """Ask a Yes/No question using a native Windows dialog when possible."""
+    if OS == "Windows":
+        MB_YESNO = 0x00000004
+        MB_ICONQUESTION = 0x00000020
+        MB_DEFBUTTON2 = 0x00000100
+        flags = MB_YESNO | MB_ICONQUESTION
+        if default_no:
+            flags |= MB_DEFBUTTON2
+        return _windows_message_box(text, title_text, flags) == 6  # IDYES
+
+    try:
+        answer = input(f"{text} [{'y/N' if default_no else 'Y/n'}] ").strip().lower()
+    except (EOFError, RuntimeError):
+        return False
+    if not answer:
+        return not default_no
+    return answer in {"y", "yes", "o", "oui"}
+
+
+def _windows_controlled_folder_access_state() -> int | None:
+    """
+    Return the current Controlled Folder Access mode, or None if unavailable.
+
+    Common values:
+      0 = disabled
+      1 = enabled (blocking)
+      2 = audit mode
+    """
+    ps = _windows_powershell()
+    if not ps:
+        return None
+
+    script = "$p=Get-MpPreference; [int]$p.EnableControlledFolderAccess"
+    result = subprocess.run(
+        [ps, "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True,
+        text=True,
+        check=False,
+        **_windows_no_window_subprocess_kwargs(),
+    )
+    if result.returncode != 0:
+        return None
+
+    for line in reversed((result.stdout or "").splitlines()):
+        value = line.strip()
+        if value.lstrip("-").isdigit():
+            return int(value)
+    return None
+
+
+def _windows_cfa_candidate_apps(prefix: Path) -> list[Path]:
+    """
+    Return the executables that should be allowlisted for protected folders.
+
+    The actual output writes are performed by ffmpeg/mkvmerge/mkvpropedit, so
+    those executables matter more than the launcher itself.
+    """
+    candidates: list[Path] = []
+
+    if getattr(sys, "frozen", False):
+        app_exe = Path(sys.executable)
+        if app_exe.is_file() and app_exe.suffix.lower() == ".exe":
+            candidates.append(app_exe)
+
+    ini_values = _existing_ini_tool_values(_config_ini_path())
+    for tool_name in WINDOWS_CFA_WRITER_TOOLS:
+        raw = ini_values.get(tool_name.lower(), "")
+        if not raw:
+            raw = _detect_windows_tool_path(tool_name, prefix) or ""
+        if not raw:
+            continue
+        path = Path(raw)
+        if path.is_file():
+            candidates.append(path)
+
+    return _dedupe_paths(candidates)
+
+
+def _windows_apply_controlled_folder_access_allowlist(
+    targets: list[Path],
+) -> dict[str, object]:
+    """
+    Add missing executables to the Controlled Folder Access allowlist.
+
+    The helper script runs elevated when needed and writes a JSON result file so
+    Python can report what happened after the UAC prompt closes.
+    """
+    ps = _windows_powershell()
+    if not ps:
+        raise RuntimeError("PowerShell introuvable sur Windows")
+
+    targets = [p for p in _dedupe_paths(targets) if p.is_file()]
+    if not targets:
+        return {"status": "no_targets", "added": [], "skipped": []}
+
+    script = r"""
+param(
+  [Parameter(Mandatory = $true)]
+  [string]$ResultPath,
+
+  [Parameter(Mandatory = $true)]
+  [string]$TargetsPath
+)
+
+$ErrorActionPreference = 'Stop'
+
+$result = [ordered]@{
+  status  = 'unknown'
+  added   = @()
+  skipped = @()
+  missing = @()
+  message = ''
+}
+
+try {
+  $pref  = Get-MpPreference
+  $state = [int]$pref.EnableControlledFolderAccess
+  if ($state -eq 0) {
+    $result.status = 'disabled'
+  }
+  else {
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $targets = @()
+    foreach ($raw in @((Get-Content -LiteralPath $TargetsPath -Raw | ConvertFrom-Json))) {
+      if (-not $raw) { continue }
+      try {
+        $full = [System.IO.Path]::GetFullPath($raw)
+      }
+      catch {
+        continue
+      }
+      if ((Test-Path -LiteralPath $full -PathType Leaf) -and $seen.Add($full)) {
+        $targets += $full
+      }
+    }
+
+    $current = @($pref.ControlledFolderAccessAllowedApplications)
+    foreach ($target in $targets) {
+      $already = $false
+      foreach ($entry in $current) {
+        if (-not $entry) { continue }
+        try {
+          $entryFull = [System.IO.Path]::GetFullPath($entry)
+        }
+        catch {
+          $entryFull = $entry
+        }
+        if ($entryFull.Equals($target, [System.StringComparison]::OrdinalIgnoreCase)) {
+          $already = $true
+          break
+        }
+      }
+
+      if ($already) {
+        $result.skipped += $target
+        continue
+      }
+
+      Add-MpPreference -ControlledFolderAccessAllowedApplications $target
+      $result.added += $target
+    }
+
+    if ($result.added.Count -gt 0) {
+      $result.status = 'updated'
+      $result.message = 'Applications ajoutées à l''allowlist.'
+    }
+    else {
+      $result.status = 'already_allowed'
+      $result.message = 'Applications déjà présentes dans l''allowlist.'
+    }
+  }
+}
+catch {
+  $result.status = 'error'
+  $result.message = $_.Exception.Message
+}
+
+$result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $ResultPath -Encoding UTF8
+if ($result.status -eq 'error') { exit 1 }
+exit 0
+"""
+
+    with tempfile.TemporaryDirectory(prefix="mediarecode_cfa_") as tmp_dir:
+        tmp = Path(tmp_dir)
+        script_path = tmp / "controlled_folder_access.ps1"
+        result_path = tmp / "controlled_folder_access_result.json"
+        targets_path = tmp / "controlled_folder_access_targets.json"
+        script_path.write_text(script.strip() + "\n", encoding="utf-8")
+        targets_path.write_text(
+            json.dumps([str(path) for path in targets], ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        cmd = [
+            ps,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script_path),
+            "-ResultPath",
+            str(result_path),
+            "-TargetsPath",
+            str(targets_path),
+        ]
+        if _windows_is_admin():
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                **_windows_no_window_subprocess_kwargs(),
+            )
+        else:
+            launcher = (
+                f"$proc = Start-Process -FilePath {_powershell_single_quote(ps)} "
+                "-ArgumentList @("
+                "'-NoProfile',"
+                "'-ExecutionPolicy','Bypass',"
+                f"'-File',{_powershell_single_quote(str(script_path))},"
+                f"'-ResultPath',{_powershell_single_quote(str(result_path))},"
+                f"'-TargetsPath',{_powershell_single_quote(str(targets_path))}"
+                ") "
+                "-Verb RunAs -Wait -PassThru; "
+                "exit $proc.ExitCode"
+            )
+            result = subprocess.run(
+                [ps, "-NoProfile", "-NonInteractive", "-Command", launcher],
+                capture_output=True,
+                text=True,
+                check=False,
+                **_windows_no_window_subprocess_kwargs(),
+            )
+
+        payload: dict[str, object]
+        if result_path.exists():
+            payload = json.loads(result_path.read_text(encoding="utf-8-sig"))
+        else:
+            stderr = (result.stderr or "").strip()
+            payload = {
+                "status": "cancelled" if result.returncode != 0 else "unknown",
+                "added": [],
+                "skipped": [],
+                "message": stderr or (
+                    "Windows Security n'a pas renvoyé de résultat exploitable. "
+                    "L'élévation a peut-être échoué après validation ou le script "
+                    "élevé n'a pas pu s'exécuter correctement."
+                ),
+            }
+
+        if result.returncode != 0 and payload.get("status") not in {"error", "cancelled"}:
+            payload["status"] = "error"
+            payload["message"] = payload.get("message") or f"PowerShell exited with {result.returncode}"
+        return payload
+
+
+def offer_windows_controlled_folder_access_setup(
+    prefix: Path,
+    dry_run: bool,
+    force: bool = False,
+) -> dict[str, object]:
+    """
+    Offer to allowlist Mediarecode writer tools in Windows Security.
+
+    This is intentionally opt-in because it modifies the Defender allowlist.
+    """
+    if OS != "Windows":
+        return {"status": "unsupported", "added": [], "skipped": [], "message": ""}
+
+    title("Step 4b — Windows Security (Controlled Folder Access)")
+
+    state = _windows_controlled_folder_access_state()
+    if state is None:
+        warn("Unable to query Controlled Folder Access state from Windows Security")
+        return {"status": "unavailable", "added": [], "skipped": [], "message": ""}
+    if state == 0:
+        ok("Controlled Folder Access disabled — no allowlist change needed")
+        return {"status": "disabled", "added": [], "skipped": [], "message": ""}
+    if state == 2:
+        info("Controlled Folder Access is in audit mode")
+    else:
+        info("Controlled Folder Access is enabled")
+
+    targets = _windows_cfa_candidate_apps(prefix)
+    if not targets:
+        warn("No Windows writer executable found to propose for the allowlist")
+        return {"status": "no_targets", "added": [], "skipped": [], "message": ""}
+
+    for target in targets:
+        info(f"Allowlist candidate: {target}")
+
+    if dry_run:
+        ok("[dry-run] Controlled Folder Access prompt would be shown if needed")
+        return {"status": "dry_run", "added": [], "skipped": [], "message": ""}
+
+    if not force:
+        message = (
+            "Windows Security Controlled Folder Access is active.\n\n"
+            "Mediarecode can ask Windows Security to allow its executables "
+            "to write into the protected user libraries such as Videos, "
+            "Documents, Pictures, and similar folders.\n\n"
+            "Without this exception, saving directly into those folders "
+            "may be blocked by Windows, even if the folders exist.\n\n"
+            "This allowlist can include Mediarecode itself and the writer tools "
+            "it uses, such as ffmpeg, mkvmerge, and mkvpropedit.\n\n"
+            "An administrator approval prompt may appear.\n\n"
+            "Add missing applications now?"
+        )
+        if not _windows_yes_no(message, "Mediarecode setup", default_no=True):
+            info("Controlled Folder Access allowlist step skipped by user")
+            return {"status": "skipped", "added": [], "skipped": [], "message": ""}
+
+    result = _windows_apply_controlled_folder_access_allowlist(targets)
+    status = str(result.get("status") or "unknown")
+    added = [str(item) for item in result.get("added", [])]
+    skipped = [str(item) for item in result.get("skipped", [])]
+    message = str(result.get("message") or "").strip()
+
+    if status == "updated":
+        ok("Controlled Folder Access allowlist updated")
+        for item in added:
+            info(f"Allowed: {item}")
+        if skipped:
+            info(f"Already allowed: {len(skipped)} application(s)")
+        return result
+    if status == "already_allowed":
+        ok("Controlled Folder Access allowlist already up to date")
+        return result
+    if status == "disabled":
+        ok("Controlled Folder Access disabled — no allowlist change needed")
+        return result
+    if status == "cancelled":
+        warn("Controlled Folder Access update cancelled or refused")
+        if message:
+            warn(message)
+        warn(
+            "Without the Windows Security exception, direct saves to protected "
+            "libraries such as Videos or Documents may remain blocked."
+        )
+        return result
+
+    warn("Controlled Folder Access allowlist update failed")
+    if message:
+        warn(message)
+    return result
+
+
+def _windows_fetch_text(url: str) -> str:
+    """Fetch URL text payload on Windows without relying on urllib+ssl."""
+    ps = _windows_powershell()
+    if ps:
+        script = (
+            "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; "
+            "$ProgressPreference='SilentlyContinue'; "
+            "$h=@{'User-Agent'='mediarecode-setup/1.0'}; "
+            "(Invoke-WebRequest -Uri $env:MR_URL -Headers $h -UseBasicParsing).Content"
+        )
+        env = os.environ.copy()
+        env["MR_URL"] = url
+        result = subprocess.run(
+            [ps, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            **_windows_no_window_subprocess_kwargs(),
+        )
+        if result.returncode == 0:
+            return result.stdout
+        stderr = (result.stderr or "").strip()
+        raise RuntimeError(stderr or f"PowerShell exited with {result.returncode}")
+
+    curl = shutil.which("curl.exe") or shutil.which("curl")
+    if not curl:
+        raise RuntimeError("No PowerShell/curl fallback available on Windows")
+    result = subprocess.run(
+        [curl, "-fsSL", "-H", "User-Agent: mediarecode-setup/1.0", url],
+        capture_output=True,
+        text=True,
+        check=False,
+        **_windows_no_window_subprocess_kwargs(),
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise RuntimeError(stderr or f"curl exited with {result.returncode}")
+    return result.stdout
+
+
+def _windows_download_file(url: str, dest: Path) -> None:
+    """Download URL to file on Windows without relying on urllib+ssl."""
+    ps = _windows_powershell()
+    if ps:
+        script = (
+            "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; "
+            "$ProgressPreference='SilentlyContinue'; "
+            "$h=@{'User-Agent'='mediarecode-setup/1.0'}; "
+            "Invoke-WebRequest -Uri $env:MR_URL -Headers $h -OutFile $env:MR_DEST -UseBasicParsing"
+        )
+        env = os.environ.copy()
+        env["MR_URL"] = url
+        env["MR_DEST"] = str(dest)
+        result = subprocess.run(
+            [ps, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            **_windows_no_window_subprocess_kwargs(),
+        )
+        if result.returncode == 0:
+            return
+        stderr = (result.stderr or "").strip()
+        raise RuntimeError(stderr or f"PowerShell exited with {result.returncode}")
+
+    curl = shutil.which("curl.exe") or shutil.which("curl")
+    if not curl:
+        raise RuntimeError("No PowerShell/curl fallback available on Windows")
+    result = subprocess.run(
+        [curl, "-fL", "-H", "User-Agent: mediarecode-setup/1.0", "-o", str(dest), url],
+        capture_output=True,
+        text=True,
+        check=False,
+        **_windows_no_window_subprocess_kwargs(),
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise RuntimeError(stderr or f"curl exited with {result.returncode}")
 
 def _find_asset(release: dict, suffix: str) -> Optional[str]:
     """Return the browser_download_url of the first asset whose name ends with suffix."""
@@ -981,12 +1909,24 @@ def install_github_tools(prefix: Path, dry_run: bool, force: bool = False) -> No
     # On Windows we install to a user-writable directory (no sudo needed).
     use_sudo = OS != "Windows"
     sudo = sudo_prefix(dry_run) if use_sudo else []
+    ini_path = _config_ini_path()
 
     path_reminder_shown = False
+    detected_tool_paths: dict[str, str] = {}
 
     for exe, meta in GITHUB_TOOLS.items():
-        if not force and shutil.which(exe):
-            ok(f"{exe} already present ({shutil.which(exe)})")
+        binary_name = meta["binary_name"].get(OS, meta["binary_name"].get("Linux"))
+        dest = bin_dir / binary_name
+
+        if not force and dest.is_file():
+            ok(f"{exe} already present ({dest})")
+            detected_tool_paths[exe] = str(dest)
+            continue
+
+        existing = shutil.which(exe)
+        if not force and existing:
+            ok(f"{exe} already present ({existing})")
+            detected_tool_paths[exe] = existing
             continue
 
         pattern_key = (OS, arch)
@@ -998,13 +1938,13 @@ def install_github_tools(prefix: Path, dry_run: bool, force: bool = False) -> No
             )
             continue
 
-        binary_name = meta["binary_name"].get(OS, meta["binary_name"].get("Linux"))
         step(f"Installing {exe}  ({meta['desc']})")
         info(f"Fetching latest release from github.com/{meta['repo']}")
 
         if dry_run:
-            info(f"[dry-run] Would download and install {exe} to {bin_dir / binary_name}")
-            ok(f"{exe} installed → {bin_dir / binary_name}")
+            info(f"[dry-run] Would download and install {exe} to {dest}")
+            detected_tool_paths[exe] = str(dest)
+            ok(f"{exe} installed → {dest}")
             continue
 
         release = _github_latest_release(meta["repo"])
@@ -1026,16 +1966,17 @@ def install_github_tools(prefix: Path, dry_run: bool, force: bool = False) -> No
             _download_file(download_url, archive_path)
             extracted = _extract_binary(archive_path, binary_name, pattern["fmt"], tmp_path)
 
-            dest = bin_dir / binary_name
             info(f"Installing to {dest}")
 
             if use_sudo and not is_root():
+                run(sudo + ["mkdir", "-p", str(bin_dir)])
                 run(sudo + ["install", "-m", "755", str(extracted), str(dest)])
             else:
                 bin_dir.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(extracted, dest)
                 dest.chmod(dest.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
+        detected_tool_paths[exe] = str(dest)
         ok(f"{exe} installed → {dest}")
 
         # Remind Windows users to add the directory to PATH once
@@ -1046,6 +1987,13 @@ def install_github_tools(prefix: Path, dry_run: bool, force: bool = False) -> No
                 f"    {bin_dir}\n"
                 f"  (Settings → System → About → Advanced system settings → Environment Variables)"
             )
+
+    if detected_tool_paths:
+        _update_ini_tools_section(ini_path, detected_tool_paths, dry_run=dry_run)
+        if dry_run:
+            ok(f"[dry-run] config.ini would be updated at {ini_path}")
+        else:
+            ok(f"config.ini updated: {ini_path}")
 
 # ---------------------------------------------------------------------------
 # Tool presence check (fallback / final verification)
@@ -1063,15 +2011,19 @@ def check_tools_presence(prefix: Path | None = None) -> None:
             continue
         seen.add(exe)
 
+        meta = SYSTEM_TOOLS.get(exe, GITHUB_TOOLS.get(exe, {}))
+        if meta.get("path_check", True) is False:
+            continue
+
         path = shutil.which(exe)
         if not path and OS == "Windows" and prefix is not None and exe in WINDOWS_TOOL_FILENAMES:
             path = _detect_windows_tool_path(exe, prefix)
+        if not path and OS != "Windows":
+            path = _detect_non_windows_tool_path(exe, prefix)
         if path:
             ok(f"{exe:20s}  →  {path}")
         else:
-            desc = (
-                SYSTEM_TOOLS.get(exe, GITHUB_TOOLS.get(exe, {})).get("desc", "")
-            )
+            desc = meta.get("desc", "")
             missing.append((exe, desc))
 
     if missing:
@@ -1163,6 +2115,13 @@ def main() -> None:
     if dry_run:
         warn("DRY-RUN mode — no changes will be made")
 
+    if OS == "Windows":
+        try:
+            verify_windows_frozen_python_runtime()
+        except Exception as e:
+            error(f"Windows Python runtime check failed: {e}")
+            sys.exit(1)
+
     # ── Platform-specific ─────────────────────────────────────────────────
     if OS == "Linux":
         distro = detect_linux_distro()
@@ -1246,6 +2205,13 @@ def main() -> None:
 
         title("Final tool verification")
         check_tools_presence(prefix)
+
+        try:
+            offer_windows_controlled_folder_access_setup(
+                prefix, dry_run, force=force
+            )
+        except Exception as e:
+            error(f"Windows Security allowlist setup failed: {e}")
 
     else:
         warn(f"Unknown platform '{OS}' — skipping system package installation")

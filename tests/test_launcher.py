@@ -1,0 +1,78 @@
+from __future__ import annotations
+
+import sys
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import launcher
+
+
+class TestLauncherWindowsControlledFolderAccess:
+    def test_restart_current_app_uses_sys_executable_when_frozen(self):
+        with patch.object(launcher.sys, "executable", r"C:\Apps\Mediarecode\mediarecode.exe"), \
+             patch.object(launcher.sys, "frozen", True, create=True), \
+             patch("launcher.subprocess.Popen") as mock_popen:
+            assert launcher._restart_current_app() is True
+
+        mock_popen.assert_called_once_with(
+            [r"C:\Apps\Mediarecode\mediarecode.exe"]
+        )
+
+    def test_first_time_setup_shows_popup_after_cfa_update(self, tmp_path):
+        fake_setup = SimpleNamespace(
+            _default_prefix=lambda: tmp_path / "tools",
+            install_winget=MagicMock(),
+            install_github_tools=MagicMock(),
+            autofill_windows_config_ini=MagicMock(),
+            check_tools_presence=MagicMock(),
+            offer_windows_controlled_folder_access_setup=MagicMock(
+                return_value={"status": "updated", "added": [], "skipped": [], "message": ""}
+            ),
+            initialize_config_ini_language=MagicMock(),
+            install_python_packages=MagicMock(),
+        )
+
+        with patch("platform.system", return_value="Windows"), \
+             patch.object(launcher, "_is_allinc", return_value=False), \
+             patch.object(launcher, "_windows_ensure_admin", return_value=False), \
+             patch.dict(sys.modules, {"setup": fake_setup}), \
+             patch.object(launcher, "_windows_open_setup_console", return_value=("token", False)) as mock_open_console, \
+             patch.object(launcher, "_windows_close_setup_console") as mock_close_console, \
+             patch.object(launcher, "_windows_show_restart_required_popup") as mock_popup:
+            rc = launcher._run_first_time_setup(tmp_path)
+
+        assert rc == launcher.SETUP_RC_HANDOFF
+        mock_popup.assert_called_once_with()
+        mock_open_console.assert_called_once_with()
+        mock_close_console.assert_called_once_with(("token", False))
+
+    def test_first_time_setup_shows_error_popup_on_windows_exception(self, tmp_path):
+        fake_setup = SimpleNamespace(
+            _default_prefix=lambda: tmp_path / "tools",
+            initialize_config_ini_language=MagicMock(side_effect=RuntimeError("boom")),
+        )
+
+        with patch("platform.system", return_value="Windows"), \
+             patch.object(launcher, "_is_allinc", return_value=True), \
+             patch.dict(sys.modules, {"setup": fake_setup}), \
+             patch.object(launcher, "_windows_open_setup_console", return_value=("token", False)) as mock_open_console, \
+             patch.object(launcher, "_windows_close_setup_console") as mock_close_console, \
+             patch.object(launcher, "_windows_show_setup_error_popup") as mock_popup:
+            rc = launcher._run_first_time_setup(tmp_path)
+
+        assert rc == launcher.SETUP_RC_ERROR
+        mock_popup.assert_called_once_with("boom")
+        mock_open_console.assert_called_once_with()
+        mock_close_console.assert_called_once_with(("token", False))
+
+    def test_main_does_not_launch_qt_when_setup_handoffs(self, tmp_path):
+        config_path = tmp_path / "config.ini"
+        fake_main = SimpleNamespace(main=MagicMock(return_value=42))
+
+        with patch.object(launcher, "_get_config_path", return_value=config_path), \
+             patch.object(launcher, "_run_first_time_setup", return_value=launcher.SETUP_RC_HANDOFF), \
+             patch.dict(sys.modules, {"main": fake_main}):
+            rc = launcher.main()
+
+        assert rc == launcher.SETUP_RC_OK
+        fake_main.main.assert_not_called()

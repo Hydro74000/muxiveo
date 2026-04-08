@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from PySide6.QtCore import QObject, Signal
-from core.subprocess_utils import decode_subprocess_output
+from core.subprocess_utils import decode_subprocess_output, subprocess_windows_no_window_kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -411,6 +411,7 @@ class ToolRunner(QObject):
             cwd=str(cwd) if cwd else None,
             env=proc_env,
             # shell=True JAMAIS
+            **subprocess_windows_no_window_kwargs(),
         ) as proc:
             if signals is not None:
                 signals._register_proc(proc)

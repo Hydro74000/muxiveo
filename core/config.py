@@ -13,6 +13,7 @@ import configparser
 import json
 import locale
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -27,13 +28,21 @@ from core.lang_tags import Rfc5646LanguageTags
 # Chemin du fichier config.ini
 # ---------------------------------------------------------------------------
 
-# config.ini est placé à côté de l'exécutable / de l'AppImage, ou à la
-# racine du projet en mode développement.
+# Linux/macOS : config.ini dans le dossier XDG user (~/.config/mediarecode).
+# Windows frozen : config.ini dans %APPDATA%\\mediarecode.
+# Windows dev : config.ini à la racine du projet.
+def _windows_config_dir() -> Path:
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return Path(appdata) / "mediarecode"
+    return Path.home() / "AppData" / "Roaming" / "mediarecode"
+
+
 def _resolve_ini_path() -> Path:
     """
     Résout le chemin de config.ini selon la plateforme et le contexte :
     - Linux / macOS  → ~/.config/mediarecode/config.ini  (XDG, dev ET frozen)
-    - Windows frozen → dossier contenant l'exécutable
+    - Windows frozen → %APPDATA%\\mediarecode\\config.ini
     - Windows dev    → racine du projet (parent de core/)
 
     Sur Linux/macOS, on utilise toujours le chemin XDG — y compris en mode
@@ -44,7 +53,7 @@ def _resolve_ini_path() -> Path:
         return xdg / "mediarecode" / "config.ini"
     # Windows
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent / "config.ini"
+        return _windows_config_dir() / "config.ini"
     return Path(__file__).parent.parent / "config.ini"
 
 _INI_PATH = _resolve_ini_path()
@@ -66,10 +75,10 @@ _WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
 _WINDOWS_WINGET_PATTERNS: dict[str, tuple[str, ...]] = {
     "ffmpeg": ("Gyan.FFmpeg*",),
     "ffprobe": ("Gyan.FFmpeg*",),
-    "mkvmerge": ("MKVToolNix.MKVToolNix*",),
-    "mkvextract": ("MKVToolNix.MKVToolNix*",),
-    "mkvinfo": ("MKVToolNix.MKVToolNix*",),
-    "mkvpropedit": ("MKVToolNix.MKVToolNix*",),
+    "mkvmerge": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
+    "mkvextract": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
+    "mkvinfo": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
+    "mkvpropedit": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
     "mediainfo": ("MediaArea.MediaInfo_*",),
 }
 
@@ -81,12 +90,32 @@ def _load_ini() -> configparser.ConfigParser:
         default_section="DEFAULT",
     )
     if _INI_PATH.exists():
+        _sanitize_windows_ini_file(_INI_PATH)
         parser.read(_INI_PATH, encoding="utf-8")
     return parser
 
 
 def _is_windows() -> bool:
     return sys.platform == "win32"
+
+
+def _default_ffmpeg_thread_count() -> int:
+    """
+    Default FFmpeg thread count: logical CPU count × 0.75, rounded up.
+
+    Examples:
+        4 cores -> 3 threads
+        8 cores -> 6 threads
+    """
+    cpu_count = os.cpu_count() or 1
+    return max(1, (cpu_count * 3 + 3) // 4)
+
+
+def _normalize_ffmpeg_thread_count(value: int | None) -> int:
+    """Return a safe FFmpeg thread count, preserving 0 as ffmpeg auto mode."""
+    if value is None or value < 0:
+        return _default_ffmpeg_thread_count()
+    return value
 
 
 def _appimage_tools_dir() -> Path | None:
@@ -136,6 +165,64 @@ def _section_bounds(lines: list[str], section: str) -> tuple[int, int]:
     return start, end
 
 
+def _normalize_windows_backslashes(value: str) -> str:
+    """Collapse repeated Windows path separators while preserving UNC prefixes."""
+    text = str(value)
+    if not _is_windows() or "\\" not in text:
+        return text
+
+    leading = len(text) - len(text.lstrip("\\"))
+    body = text[leading:]
+    body = re.sub(r"\\{2,}", r"\\", body)
+
+    if leading >= 2:
+        prefix = "\\\\"
+    elif leading == 1:
+        prefix = "\\"
+    else:
+        prefix = ""
+    return prefix + body
+
+
+def _normalize_ini_value(section: str, value: str) -> str:
+    if _is_windows() and section.lower() in {"paths", "tools"}:
+        return _normalize_windows_backslashes(value)
+    return value
+
+
+def _sanitize_windows_ini_lines(lines: list[str]) -> list[str]:
+    if not _is_windows():
+        return lines
+
+    current_section = ""
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current_section = stripped[1:-1].strip().lower()
+            continue
+        if current_section not in {"paths", "tools"}:
+            continue
+        if not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
+            continue
+        lhs, rhs = stripped.split("=", 1)
+        normalized = _normalize_ini_value(current_section, rhs.strip())
+        if normalized != rhs.strip():
+            lines[index] = f"{lhs.strip()} = {normalized}"
+    return lines
+
+
+def _sanitize_windows_ini_file(path: Path) -> None:
+    if not _is_windows() or not path.exists():
+        return
+
+    original = path.read_text(encoding="utf-8")
+    lines = original.splitlines()
+    sanitized_lines = _sanitize_windows_ini_lines(lines.copy())
+    sanitized = "\n".join(sanitized_lines).rstrip() + "\n"
+    if sanitized != original:
+        path.write_text(sanitized, encoding="utf-8")
+
+
 def _upsert_ini_section(
     lines: list[str],
     section: str,
@@ -154,6 +241,7 @@ def _upsert_ini_section(
 
     insert_at = end
     for key, value in values.items():
+        rendered = _normalize_ini_value(section, value)
         updated = False
         for index in range(start + 1, end):
             stripped = lines[index].strip()
@@ -163,16 +251,16 @@ def _upsert_ini_section(
             if lhs.strip().lower() != key.lower():
                 continue
             if (not replace_blank_only) or (not rhs.strip()):
-                lines[index] = f"{key} = {value}"
+                lines[index] = f"{key} = {rendered}"
             updated = True
             break
 
         if not updated:
-            lines.insert(insert_at, f"{key} = {value}")
+            lines.insert(insert_at, f"{key} = {rendered}")
             insert_at += 1
             end += 1
 
-    return lines
+    return _sanitize_windows_ini_lines(lines)
 
 
 def _update_ini_tools_section(path: Path, tool_values: dict[str, str]) -> None:
@@ -183,6 +271,7 @@ def _update_ini_tools_section(path: Path, tool_values: dict[str, str]) -> None:
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     lines = text.splitlines()
     lines = _upsert_ini_section(lines, "tools", tool_values, replace_blank_only=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
@@ -194,12 +283,21 @@ def write_ini_settings(section_values: dict[str, dict[str, str]]) -> None:
     for section, values in section_values.items():
         lines = _upsert_ini_section(lines, section, values)
 
+    _INI_PATH.parent.mkdir(parents=True, exist_ok=True)
     _INI_PATH.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
 def _windows_repo_tool_dirs() -> list[Path]:
-    repo_dir = _INI_PATH.parent
-    return [repo_dir / "tools", repo_dir / "tools" / "bin"]
+    base_dirs = [_INI_PATH.parent]
+    if getattr(sys, "frozen", False):
+        base_dirs.append(Path(sys.executable).parent)
+    else:
+        base_dirs.append(Path(__file__).parent.parent)
+
+    dirs: list[Path] = []
+    for base_dir in _dedupe_paths(base_dirs):
+        dirs.extend([base_dir / "tools", base_dir / "tools" / "bin"])
+    return _dedupe_paths(dirs)
 
 
 def _windows_program_files_dirs() -> list[Path]:
@@ -274,6 +372,25 @@ def _detect_windows_tool_path(tool_name: str, current_value: str) -> str:
             return str(candidate)
 
     return current_value
+
+
+def _non_windows_tool_candidates(tool_name: str) -> list[Path]:
+    repo_root = Path(__file__).parent.parent
+    candidates = [
+        repo_root / "tools" / tool_name,
+        repo_root / "tools" / "bin" / tool_name,
+        Path.home() / ".local" / "bin" / tool_name,
+        Path("/usr/local/bin") / tool_name,
+        Path("/usr/bin") / tool_name,
+    ]
+    if sys.platform == "darwin":
+        candidates.extend(
+            [
+                Path("/opt/homebrew/bin") / tool_name,
+                Path("/opt/local/bin") / tool_name,
+            ]
+        )
+    return _dedupe_paths(candidates)
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +544,19 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         ),
     },
     {
+        "section": "ffmpeg",
+        "title": "FFmpeg",
+        "fields": (
+            {
+                "key": "threads",
+                "attr": "ffmpeg_threads",
+                "kind": "int",
+                "label": "Nombre de threads FFmpeg",
+                "description": "Nombre de threads passé à FFmpeg via -threads. 0 laisse FFmpeg choisir automatiquement. La valeur par défaut est calculée à partir du nombre de coeurs × 1,5.",
+            },
+        ),
+    },
+    {
         "section": "hdr",
         "title": "HDR",
         "fields": (
@@ -478,9 +608,11 @@ class AppConfig:
     """
     Configuration centralisée de l'application.
 
-    Les propriétés sont persistées via QSettings (INI) dans le dossier
-    app data. config.ini a priorité sur les valeurs sauvegardées,
-    elles-mêmes prioritaires sur les défauts.
+    Les propriétés sont persistées via INI :
+    - Windows : QSettings pointe directement vers config.ini
+    - Linux/macOS : QSettings user-scope INI
+    config.ini a priorité sur les valeurs sauvegardées, elles-mêmes
+    prioritaires sur les défauts.
 
     Une clé présente mais vide dans config.ini revient explicitement au défaut
     documenté au lieu de retomber sur une ancienne valeur QSettings.
@@ -490,12 +622,16 @@ class AppConfig:
     _SETTINGS_APP = "Mediarecode"
 
     def __init__(self) -> None:
-        self._settings = QSettings(
-            QSettings.Format.IniFormat,
-            QSettings.Scope.UserScope,
-            self._SETTINGS_ORG,
-            self._SETTINGS_APP,
-        )
+        if _is_windows():
+            _INI_PATH.parent.mkdir(parents=True, exist_ok=True)
+            self._settings = QSettings(str(_INI_PATH), QSettings.Format.IniFormat)
+        else:
+            self._settings = QSettings(
+                QSettings.Format.IniFormat,
+                QSettings.Scope.UserScope,
+                self._SETTINGS_ORG,
+                self._SETTINGS_APP,
+            )
         self._ini = _load_ini()
         self._detected_ini_tools: dict[str, str] = {}
         self._load()
@@ -568,6 +704,12 @@ class AppConfig:
 
         # Priorité 3a : Linux / macOS — appel direct, résolution par le PATH à l'exécution
         if not _is_windows():
+            resolved = shutil.which(default)
+            if resolved:
+                return resolved
+            for candidate in _non_windows_tool_candidates(ini_key):
+                if candidate.is_file():
+                    return str(candidate)
             return default
 
         # Priorité 3b : Windows — autodetect étendu + persistance dans QSettings
@@ -597,6 +739,10 @@ class AppConfig:
         self.tool_dovi_tool = self._resolve_tool_value("dovi_tool", "tools/dovi_tool", "dovi_tool")
         self.tool_hdr10plus = self._resolve_tool_value("hdr10plus_tool", "tools/hdr10plus_tool", "hdr10plus_tool")
         self.tool_eac3to = self._resolve_tool_value("eac3to", "tools/eac3to", "eac3to")
+
+        self.ffmpeg_threads = _normalize_ffmpeg_thread_count(
+            self._resolve_int("ffmpeg", "threads", "ffmpeg/threads", _default_ffmpeg_thread_count())
+        )
 
         self.dovi_profile = self._resolve_text("hdr", "dovi_profile", "hdr/dovi_profile", "8")
         self.dovi_compat_id = self._resolve_text("hdr", "dovi_compat_id", "hdr/dovi_compat_id", "1")
@@ -663,6 +809,8 @@ class AppConfig:
         s.setValue("tools/hdr10plus_tool", self.tool_hdr10plus)
         s.setValue("tools/eac3to", self.tool_eac3to)
 
+        s.setValue("ffmpeg/threads", self.ffmpeg_threads)
+
         s.setValue("hdr/dovi_profile", self.dovi_profile)
         s.setValue("hdr/dovi_compat_id", self.dovi_compat_id)
 
@@ -680,6 +828,7 @@ class AppConfig:
         s.setValue("metadata/tmdb_api_key", self.tmdb_api_key)
         s.setValue("metadata/tmdb_bearer_token", self.tmdb_bearer_token)
         s.sync()
+        _sanitize_windows_ini_file(_INI_PATH)
 
     def save_to_ini(self) -> None:
         write_ini_settings(self.to_ini_sections())
@@ -687,6 +836,7 @@ class AppConfig:
     def save_geometry(self, geometry: bytes) -> None:
         self._settings.setValue("ui/geometry", geometry)
         self._settings.sync()
+        _sanitize_windows_ini_file(_INI_PATH)
 
     # ------------------------------------------------------------------
     # Utilitaires
@@ -755,6 +905,9 @@ class AppConfig:
                 "dovi_tool": self.tool_dovi_tool,
                 "hdr10plus_tool": self.tool_hdr10plus,
                 "eac3to": self.tool_eac3to,
+            },
+            "ffmpeg": {
+                "threads": self.ffmpeg_threads,
             },
             "hdr": {
                 "dovi_profile": self.dovi_profile,

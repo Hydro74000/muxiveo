@@ -162,14 +162,91 @@ def _make_config(source: Path, output: Path, **kw) -> EncodeConfig:
     return EncodeConfig(**defaults)
 
 
-def _make_workflow(enabled=True, threshold=15) -> EncodeWorkflow:
+def _make_workflow(enabled=True, threshold=15, ffmpeg_threads=None) -> EncodeWorkflow:
     return EncodeWorkflow(
         ffmpeg_bin="ffmpeg", dovi_tool_bin="dovi_tool",
         hdr10plus_bin="hdr10plus_tool", mkvmerge_bin="mkvmerge",
         ram_buffer_enabled=enabled,
         ram_buffer_threshold_pct=threshold,
+        ffmpeg_threads=ffmpeg_threads,
     )
 
+
+# ===========================================================================
+# FFmpeg threads
+# ===========================================================================
+
+class TestFfmpegThreads:
+
+    def test_default_threads_use_cpu_count_times_0_75_rounded_up(self):
+        with patch("core.workflows.encode.workflow.os.cpu_count", return_value=8):
+            wf = _make_workflow()
+        assert wf._ffmpeg_threads == 6
+
+    def test_negative_threads_fallback_to_default(self):
+        with patch("core.workflows.encode.workflow.os.cpu_count", return_value=4):
+            wf = _make_workflow(ffmpeg_threads=-3)
+        assert wf._ffmpeg_threads == 3
+
+    def test_single_pass_build_includes_threads(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.touch()
+        wf = _make_workflow(ffmpeg_threads=10)
+        cmd = wf.build_command_single(_make_config(src, tmp_path / "out.mkv"))
+
+        assert "-threads" in cmd
+        assert cmd[cmd.index("-threads") + 1] == "10"
+
+    def test_two_pass_build_includes_threads_on_both_passes(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.touch()
+        video = _make_video_settings(quality_mode=QualityMode.SIZE)
+        wf = _make_workflow(ffmpeg_threads=14)
+        cmds = wf.build_command(_make_config(src, tmp_path / "out.mkv", video=video))
+
+        assert cmds[0][cmds[0].index("-threads") + 1] == "14"
+        assert cmds[1][cmds[1].index("-threads") + 1] == "14"
+
+
+class TestFfmpegProgressArgs:
+
+    def test_single_pass_build_includes_machine_progress_flags(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.touch()
+        wf = _make_workflow()
+
+        cmd = wf.build_command_single(_make_config(src, tmp_path / "out.mkv"))
+
+        assert "-progress" in cmd
+        assert cmd[cmd.index("-progress") + 1] == "pipe:1"
+        assert "-nostats" in cmd
+        assert cmd.index("-nostats") < cmd.index("-i")
+
+    def test_two_pass_build_uses_machine_progress_and_platform_null_sink(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.touch()
+        wf = _make_workflow()
+        video = _make_video_settings(quality_mode=QualityMode.SIZE)
+
+        cmds = wf.build_command(_make_config(src, tmp_path / "out.mkv", video=video, duration_s=3600.0))
+
+        for cmd in cmds:
+            assert "-progress" in cmd
+            assert cmd[cmd.index("-progress") + 1] == "pipe:1"
+            assert "-nostats" in cmd
+        assert cmds[0][-1] == os.devnull
+
+    def test_video_only_build_includes_machine_progress_flags(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.touch()
+        wf = _make_workflow()
+        output_hevc = tmp_path / "enc.hevc"
+
+        cmd = wf._build_video_only_cmd(_make_config(src, tmp_path / "out.mkv"), output_hevc)
+
+        assert "-progress" in cmd
+        assert cmd[cmd.index("-progress") + 1] == "pipe:1"
+        assert "-nostats" in cmd
 
 # ===========================================================================
 # _total_ram_bytes — cross-platform
@@ -215,6 +292,12 @@ class TestTotalRamBytes:
         with patch("sys.platform", "win32"), \
              patch.object(EncodeWorkflow, "_win_mem_status", return_value=fake_stat):
             assert EncodeWorkflow._total_ram_bytes() == 17_179_869_184
+
+    def test_windows_returns_zero_if_ctypes_unavailable(self):
+        """Windows : fallback à 0 si ctypes/_ctypes est indisponible."""
+        with patch("sys.platform", "win32"), \
+             patch.object(EncodeWorkflow, "_win_mem_status", side_effect=ImportError):
+            assert EncodeWorkflow._total_ram_bytes() == 0
 
     def test_unknown_platform_returns_zero(self):
         with patch("sys.platform", "freebsd"):
@@ -263,6 +346,11 @@ class TestAvailableRamBytes:
         with patch("sys.platform", "win32"), \
              patch.object(EncodeWorkflow, "_win_mem_status", return_value=fake_stat):
             assert EncodeWorkflow._available_ram_bytes() == 8_589_934_592
+
+    def test_windows_available_returns_zero_if_ctypes_unavailable(self):
+        with patch("sys.platform", "win32"), \
+             patch.object(EncodeWorkflow, "_win_mem_status", side_effect=ImportError):
+            assert EncodeWorkflow._available_ram_bytes() == 0
 
     def test_unknown_platform_returns_zero(self):
         with patch("sys.platform", "freebsd"):
@@ -939,6 +1027,16 @@ class TestValidate:
         src = tmp_path / "src.mkv"; src.touch()
         errors = self.wf.validate(_make_config(src, src))
         assert len(errors) >= 1
+
+    def test_output_dir_not_writable(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        config = _make_config(src, tmp_path / "out.mkv")
+        with patch(
+            "core.workflows.encode.workflow.tempfile.NamedTemporaryFile",
+            side_effect=OSError("blocked"),
+        ):
+            errors = self.wf.validate(config)
+        assert any("inscriptible" in e.lower() for e in errors)
 
     def test_size_mode_without_duration(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()
@@ -2025,7 +2123,7 @@ class TestEncodeExtraAttachments:
     # ── reconstitution finale (_run_with_metadata_inject) ────────────────────
 
     def _run_inject_with_extras(
-        self, tmp_path: Path, extras: list[Path]
+        self, tmp_path: Path, extras: list[Path], ffmpeg_threads: int | None = None
     ) -> list[list[str]]:
         """Lance _run_with_metadata_inject (libx265 + copy_dv) avec extra_attachments."""
         src = tmp_path / "source.mkv"
@@ -2038,7 +2136,7 @@ class TestEncodeExtraAttachments:
             work_dir=tmp_path / "work",
             extra_attachments=extras,
         )
-        wf = _make_workflow(enabled=False)
+        wf = _make_workflow(enabled=False, ffmpeg_threads=ffmpeg_threads)
         cmds_run: list[list[str]] = []
 
         def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
@@ -2071,6 +2169,11 @@ class TestEncodeExtraAttachments:
         cmds = self._run_inject_with_extras(tmp_path, extras)
         recon = self._get_recon_cmd(cmds)
         assert "-attach" in recon
+
+    def test_inject_reconstruction_includes_threads(self, tmp_path):
+        cmds = self._run_inject_with_extras(tmp_path, [], ffmpeg_threads=9)
+        recon = self._get_recon_cmd(cmds)
+        assert recon[recon.index("-threads") + 1] == "9"
 
     def test_inject_cover_filename(self, tmp_path):
         """filename=cover dans la reconstitution finale pour cover.*."""
