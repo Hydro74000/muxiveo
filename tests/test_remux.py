@@ -647,7 +647,8 @@ class TestBuildCommand:
         idx = cmd.index("--language")
         assert cmd[idx + 1] == "1:eng"
 
-    def test_language_not_emitted_when_unchanged(self):
+    def test_language_always_emitted_even_when_unchanged(self):
+        """--language est toujours émis pour garantir la forme régionale en sortie."""
         t = _track(1, "audio", file_id="id0", language="fr", orig_language="fr")
         src = _source(Path("/a.mkv"), 0, [t])
         cfg = RemuxConfig(
@@ -655,7 +656,24 @@ class TestBuildCommand:
             track_order=[(0, 1)],
         )
         cmd = self._cmd(cfg)
-        assert "--language" not in cmd
+        assert "--language" in cmd
+        idx = cmd.index("--language")
+        assert cmd[idx + 1] == "1:fra"
+
+    def test_language_en_US_emitted_when_regionalized_unchanged(self):
+        """Cas réel : inspecteur régionalise 'en' → 'en-US' dans les deux champs,
+        --language doit quand même être émis avec la valeur régionale (v98+)."""
+        t = _track(1, "audio", file_id="id0", language="en-US", orig_language="en-US")
+        src = _source(Path("/a.mkv"), 0, [t])
+        cfg = RemuxConfig(
+            sources=[src], output=Path("/out.mkv"),
+            track_order=[(0, 1)],
+        )
+        wf = RemuxWorkflow(mkvmerge_bin="mkvmerge", mkvmerge_major_version=98)
+        cmd = wf.build_command(cfg)
+        assert "--language" in cmd
+        idx = cmd.index("--language")
+        assert cmd[idx + 1] == "1:en-US"
 
     def test_language_cleared_emits_und(self):
         t = _track(1, "audio", file_id="id0", language="", orig_language="fr")
