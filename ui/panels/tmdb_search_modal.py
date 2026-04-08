@@ -34,6 +34,7 @@ from core.media_info_fetcher import (
     MediaSearchResult,
     TmdbFetcher,
     default_tmdb_bearer_token,
+    normalize_tmdb_search_query,
 )
 from ui.design_system import colors as _C
 
@@ -398,12 +399,7 @@ class TmdbSearchModal(QDialog):
         if fetcher is None:
             return
 
-        m_year = re.search(r"\b(19|20)\d{2}\b", raw_query)
-        year = m_year.group() if m_year else ""
-        query = (raw_query[:m_year.start()] + raw_query[m_year.end():]).strip() if m_year else raw_query
-        if not query:
-            query = raw_query
-            year = ""
+        query, year = normalize_tmdb_search_query(raw_query)
 
         self._ok_btn.setEnabled(False)
         self._results_list.clear()
