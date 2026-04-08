@@ -33,6 +33,14 @@ from core.runner import TaskCancelledError, TaskSignals, ToolRunner
 from core.subprocess_utils import subprocess_text_kwargs
 
 
+def _cli_path(path: Path) -> str:
+    """
+    Normalise les chemins CLI avec des slashs pour garder des commandes stables
+    entre Linux/macOS/Windows. mkvmerge et mkvpropedit les acceptent.
+    """
+    return path.as_posix()
+
+
 # =============================================================================
 # Modèle de piste
 # =============================================================================
@@ -358,7 +366,7 @@ class RemuxWorkflow(QObject):
                         pour l'aperçu (preview_command) il vaut None et on affiche
                         un placeholder.
         """
-        cmd: list[str] = [self._mkvmerge, "-o", str(config.output)]
+        cmd: list[str] = [self._mkvmerge, "-o", _cli_path(config.output)]
 
         # --- Titre du segment de sortie (toujours appliqué, même vide) ---
         cmd.extend(["--title", config.file_title])
@@ -366,7 +374,7 @@ class RemuxWorkflow(QObject):
         # --- Chapitres personnalisés (avant les sources, option globale) ---
         if config.chapter_overrides is not None:
             if chapters_file is not None:
-                cmd.extend(["--chapters", str(chapters_file)])
+                cmd.extend(["--chapters", _cli_path(chapters_file)])
             else:
                 cmd.extend(["--chapters", "<chapitres.xml>"])
 
@@ -384,7 +392,7 @@ class RemuxWorkflow(QObject):
             # Fichiers nommés "cover.*" → forcer l'attachment-name à "cover"
             if att_path.stem.lower() == "cover":
                 cmd.extend(["--attachment-name", "cover"])
-            cmd.extend(["--attach-file", str(att_path)])
+            cmd.extend(["--attach-file", _cli_path(att_path)])
 
         for src in config.sources:
             fi = src.file_index
@@ -481,7 +489,7 @@ class RemuxWorkflow(QObject):
                 if t.flag_commentary != t.orig_flag_commentary:
                     cmd.extend(["--commentary-flag",      f"{t.mkv_tid}:{'1' if t.flag_commentary else '0'}"])
 
-            cmd.append(str(src.path))
+            cmd.append(_cli_path(src.path))
 
         return cmd
 
@@ -613,7 +621,7 @@ class RemuxWorkflow(QObject):
                 f.write(xml_content)
                 tmp_path = Path(f.name)
 
-            cmd = [self._mkvpropedit, str(output), "--tags", f"all:{tmp_path}"]
+            cmd = [self._mkvpropedit, _cli_path(output), "--tags", f"all:{_cli_path(tmp_path)}"]
             self.log_message.emit("INFO", "$ " + " ".join(str(c) for c in cmd))
             r = subprocess.run(
                 cmd, capture_output=True, check=False, timeout=60, **subprocess_text_kwargs()
@@ -638,7 +646,7 @@ class RemuxWorkflow(QObject):
             self.log_message.emit("WARN", "Writing-app non configuré — balise non appliquée.")
             return
         cmd = [
-            self._mkvpropedit, str(output),
+            self._mkvpropedit, _cli_path(output),
             "--edit", "info",
             "--set", f"muxing-application={self._writing_application}",
         ]

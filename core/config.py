@@ -74,10 +74,10 @@ _WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
 _WINDOWS_WINGET_PATTERNS: dict[str, tuple[str, ...]] = {
     "ffmpeg": ("Gyan.FFmpeg*",),
     "ffprobe": ("Gyan.FFmpeg*",),
-    "mkvmerge": ("MKVToolNix.MKVToolNix*",),
-    "mkvextract": ("MKVToolNix.MKVToolNix*",),
-    "mkvinfo": ("MKVToolNix.MKVToolNix*",),
-    "mkvpropedit": ("MKVToolNix.MKVToolNix*",),
+    "mkvmerge": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
+    "mkvextract": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
+    "mkvinfo": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
+    "mkvpropedit": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
     "mediainfo": ("MediaArea.MediaInfo_*",),
 }
 
@@ -95,6 +95,25 @@ def _load_ini() -> configparser.ConfigParser:
 
 def _is_windows() -> bool:
     return sys.platform == "win32"
+
+
+def _default_ffmpeg_thread_count() -> int:
+    """
+    Default FFmpeg thread count: logical CPU count × 1.5, rounded up.
+
+    Examples:
+        4 cores -> 6 threads
+        8 cores -> 12 threads
+    """
+    cpu_count = os.cpu_count() or 1
+    return max(1, cpu_count + ((cpu_count + 1) // 2))
+
+
+def _normalize_ffmpeg_thread_count(value: int | None) -> int:
+    """Return a safe FFmpeg thread count, preserving 0 as ffmpeg auto mode."""
+    if value is None or value < 0:
+        return _default_ffmpeg_thread_count()
+    return value
 
 
 def _appimage_tools_dir() -> Path | None:
@@ -294,6 +313,25 @@ def _detect_windows_tool_path(tool_name: str, current_value: str) -> str:
     return current_value
 
 
+def _non_windows_tool_candidates(tool_name: str) -> list[Path]:
+    repo_root = Path(__file__).parent.parent
+    candidates = [
+        repo_root / "tools" / tool_name,
+        repo_root / "tools" / "bin" / tool_name,
+        Path.home() / ".local" / "bin" / tool_name,
+        Path("/usr/local/bin") / tool_name,
+        Path("/usr/bin") / tool_name,
+    ]
+    if sys.platform == "darwin":
+        candidates.extend(
+            [
+                Path("/opt/homebrew/bin") / tool_name,
+                Path("/opt/local/bin") / tool_name,
+            ]
+        )
+    return _dedupe_paths(candidates)
+
+
 # ---------------------------------------------------------------------------
 # Chemins applicatifs
 # ---------------------------------------------------------------------------
@@ -445,6 +483,19 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         ),
     },
     {
+        "section": "ffmpeg",
+        "title": "FFmpeg",
+        "fields": (
+            {
+                "key": "threads",
+                "attr": "ffmpeg_threads",
+                "kind": "int",
+                "label": "Nombre de threads FFmpeg",
+                "description": "Nombre de threads passé à FFmpeg via -threads. 0 laisse FFmpeg choisir automatiquement. La valeur par défaut est calculée à partir du nombre de coeurs × 1,5.",
+            },
+        ),
+    },
+    {
         "section": "hdr",
         "title": "HDR",
         "fields": (
@@ -592,6 +643,12 @@ class AppConfig:
 
         # Priorité 3a : Linux / macOS — appel direct, résolution par le PATH à l'exécution
         if not _is_windows():
+            resolved = shutil.which(default)
+            if resolved:
+                return resolved
+            for candidate in _non_windows_tool_candidates(ini_key):
+                if candidate.is_file():
+                    return str(candidate)
             return default
 
         # Priorité 3b : Windows — autodetect étendu + persistance dans QSettings
@@ -621,6 +678,10 @@ class AppConfig:
         self.tool_dovi_tool = self._resolve_tool_value("dovi_tool", "tools/dovi_tool", "dovi_tool")
         self.tool_hdr10plus = self._resolve_tool_value("hdr10plus_tool", "tools/hdr10plus_tool", "hdr10plus_tool")
         self.tool_eac3to = self._resolve_tool_value("eac3to", "tools/eac3to", "eac3to")
+
+        self.ffmpeg_threads = _normalize_ffmpeg_thread_count(
+            self._resolve_int("ffmpeg", "threads", "ffmpeg/threads", _default_ffmpeg_thread_count())
+        )
 
         self.dovi_profile = self._resolve_text("hdr", "dovi_profile", "hdr/dovi_profile", "8")
         self.dovi_compat_id = self._resolve_text("hdr", "dovi_compat_id", "hdr/dovi_compat_id", "1")
@@ -686,6 +747,8 @@ class AppConfig:
         s.setValue("tools/dovi_tool", self.tool_dovi_tool)
         s.setValue("tools/hdr10plus_tool", self.tool_hdr10plus)
         s.setValue("tools/eac3to", self.tool_eac3to)
+
+        s.setValue("ffmpeg/threads", self.ffmpeg_threads)
 
         s.setValue("hdr/dovi_profile", self.dovi_profile)
         s.setValue("hdr/dovi_compat_id", self.dovi_compat_id)
@@ -779,6 +842,9 @@ class AppConfig:
                 "dovi_tool": self.tool_dovi_tool,
                 "hdr10plus_tool": self.tool_hdr10plus,
                 "eac3to": self.tool_eac3to,
+            },
+            "ffmpeg": {
+                "threads": self.ffmpeg_threads,
             },
             "hdr": {
                 "dovi_profile": self.dovi_profile,

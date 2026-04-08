@@ -222,6 +222,7 @@ class TestHardwareEncoderDetector:
             raise AssertionError(f"Commande inattendue: {cmd}")
 
         with patch("core.workflows.encode.hardware.subprocess.run", side_effect=fake_run), \
+             patch("core.workflows.encode.hardware.sys.platform", "linux"), \
              patch.object(HardwareEncoderDetector, "_nvidia_ok", return_value=True), \
              _no_system_ff:
             detector = HardwareEncoderDetector()

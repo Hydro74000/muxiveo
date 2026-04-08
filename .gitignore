@@ -102,4 +102,4 @@ python-*.exe
 # ---------------------------------------------------------------------------
 config.ini
 config.ini
-.claude/settings.json
+.claude/

@@ -5,6 +5,7 @@ tests/test_setup_and_config.py — Tests unitaires pour setup.py et core/config.
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -180,6 +181,58 @@ class TestAppConfigRamBuffer:
         assert cfg.audio_default_bitrate_per_channel_kbps == 160
         assert cfg.audio_bitrate_step_per_channel_kbps == 48
 
+    def test_ffmpeg_threads_default_uses_cpu_count_times_1_5(self, tmp_path):
+        """Sans valeur explicite, ffmpeg.threads vaut cores × 1,5 arrondi au supérieur."""
+        from core.config import AppConfig
+
+        with patch("core.config.QSettings") as mock_qs, \
+             patch("core.config.os.cpu_count", return_value=8):
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.dict(os.environ, {}, clear=False):
+                cfg = AppConfig()
+
+        assert cfg.ffmpeg_threads == 12
+
+    def test_ffmpeg_threads_ini_overrides_default(self, tmp_path):
+        """config.ini [ffmpeg] threads surcharge le défaut calculé."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[ffmpeg]\nthreads = 20\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.ffmpeg_threads == 20
+
+    def test_ffmpeg_threads_negative_ini_value_falls_back_to_default(self, tmp_path):
+        """Une valeur négative revient au défaut calculé au lieu d'être passée telle quelle."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[ffmpeg]\nthreads = -5\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs, \
+             patch("core.config.os.cpu_count", return_value=4):
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.ffmpeg_threads == 6
+
 
 class TestAppConfigWindowsToolAutodetect:
     """Tests de détection et persistance auto des outils Windows dans config.ini."""
@@ -259,6 +312,30 @@ class TestAppConfigWindowsToolAutodetect:
 
         assert cfg.tool_ffmpeg == explicit
         assert ini_path.read_text(encoding="utf-8").count("ffmpeg =") == 1
+
+
+def test_app_config_non_windows_detects_tool_from_absolute_candidates(tmp_path):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[tools]\n", encoding="utf-8")
+    candidate = tmp_path / "usr-local" / "bin" / "dovi_tool"
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_text("", encoding="utf-8")
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config.sys.platform", "linux"), \
+         patch("core.config.shutil.which", return_value=None), \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path), \
+         patch.object(cfg_mod, "_non_windows_tool_candidates", return_value=[candidate]):
+        inst = MagicMock()
+        inst.value.side_effect = lambda key, default=None: default
+        mock_qs.return_value = inst
+        cfg = AppConfig()
+
+    assert cfg.tool_dovi_tool == str(candidate)
 
 
 class TestWindowsControlledFolderAccessSetup:
@@ -346,7 +423,201 @@ def test_setup_initializes_ui_language_in_config_ini(tmp_path):
     ini_path.write_text("[ui]\n", encoding="utf-8")
 
     with patch.object(setup_mod, "_config_ini_path", return_value=ini_path), \
-         patch.object(setup_mod, "_system_language_code", return_value="fra"):
+         patch.object(setup_mod, "_system_language_code", return_value="fra"), \
+         patch.object(setup_mod, "_ask_language_dialog", return_value=None):
         setup_mod.initialize_config_ini_language(dry_run=False, force=False)
 
     assert "language = fra" in ini_path.read_text(encoding="utf-8")
+
+
+def test_setup_language_dialog_uses_in_process_qt_when_frozen():
+    import setup as setup_mod
+
+    languages = [("eng", "English"), ("fra", "Français")]
+    with patch.object(setup_mod.sys, "frozen", True, create=True), \
+         patch.object(setup_mod, "_ask_language_dialog_qt_in_process", return_value="fra") as mock_in_process, \
+         patch.object(setup_mod.subprocess, "run") as mock_run:
+        selected = setup_mod._ask_language_dialog(languages)
+
+    assert selected == "fra"
+    mock_in_process.assert_called_once_with(languages)
+    mock_run.assert_not_called()
+
+
+def test_setup_language_dialog_ignores_non_windows_popup(tmp_path):
+    import setup as setup_mod
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[ui]\n", encoding="utf-8")
+
+    with patch.object(setup_mod, "OS", "Linux"), \
+         patch.object(setup_mod, "_config_ini_path", return_value=ini_path), \
+         patch.object(setup_mod, "_system_language_code", return_value="eng"), \
+         patch.object(setup_mod, "_ask_language_dialog") as mock_dialog:
+        setup_mod.initialize_config_ini_language(dry_run=False, force=False)
+
+    mock_dialog.assert_not_called()
+    assert "language = eng" in ini_path.read_text(encoding="utf-8")
+
+
+def test_setup_language_dialog_skips_when_language_already_defined_on_windows(tmp_path):
+    import setup as setup_mod
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[ui]\nlanguage = fra\n", encoding="utf-8")
+
+    with patch.object(setup_mod, "OS", "Windows"), \
+         patch.object(setup_mod, "_config_ini_path", return_value=ini_path), \
+         patch.object(setup_mod, "_ask_language_dialog") as mock_dialog, \
+         patch.object(setup_mod, "_system_language_code") as mock_detect:
+        setup_mod.initialize_config_ini_language(dry_run=False, force=False)
+
+    mock_dialog.assert_not_called()
+    mock_detect.assert_not_called()
+    assert "language = fra" in ini_path.read_text(encoding="utf-8")
+
+
+def test_setup_windows_no_window_kwargs_disabled_when_console_is_visible():
+    import setup as setup_mod
+
+    fake_windll = SimpleNamespace(kernel32=SimpleNamespace(GetConsoleWindow=lambda: 1))
+    with patch.object(setup_mod, "OS", "Windows"), \
+         patch.object(setup_mod.sys, "frozen", True, create=True), \
+         patch.object(setup_mod.ctypes, "windll", fake_windll):
+        kwargs = setup_mod._windows_no_window_subprocess_kwargs()
+
+    assert kwargs == {}
+
+
+def test_setup_windows_no_window_kwargs_disabled_in_cli_mode():
+    import setup as setup_mod
+
+    fake_windll = SimpleNamespace(kernel32=SimpleNamespace(GetConsoleWindow=lambda: 0))
+    with patch.object(setup_mod, "OS", "Windows"), \
+         patch.object(setup_mod.sys, "frozen", False, create=True), \
+         patch.object(setup_mod.ctypes, "windll", fake_windll):
+        kwargs = setup_mod._windows_no_window_subprocess_kwargs()
+
+    assert kwargs == {}
+
+
+def test_setup_config_ini_path_uses_xdg_on_non_windows(tmp_path):
+    import setup as setup_mod
+
+    xdg_dir = tmp_path / "xdg"
+    with patch.object(setup_mod, "OS", "Linux"), \
+         patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg_dir)}, clear=False):
+        path = setup_mod._config_ini_path()
+
+    assert path == xdg_dir / "mediarecode" / "config.ini"
+
+
+def test_setup_detect_non_windows_tool_path_reads_ini_value(tmp_path):
+    import setup as setup_mod
+
+    tool_path = tmp_path / "custom" / "dovi_tool"
+    tool_path.parent.mkdir(parents=True, exist_ok=True)
+    tool_path.write_text("", encoding="utf-8")
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text(f"[tools]\ndovi_tool = {tool_path}\n", encoding="utf-8")
+
+    with patch.object(setup_mod, "OS", "Linux"), \
+         patch.object(setup_mod, "_config_ini_path", return_value=ini_path), \
+         patch.object(setup_mod.shutil, "which", return_value=None):
+        resolved = setup_mod._detect_non_windows_tool_path("dovi_tool", tmp_path / "prefix")
+
+    assert resolved == str(tool_path)
+
+
+def test_setup_detect_non_windows_tool_path_uses_prefix_bin(tmp_path):
+    import setup as setup_mod
+
+    prefix = tmp_path / "prefix"
+    tool_path = prefix / "bin" / "hdr10plus_tool"
+    tool_path.parent.mkdir(parents=True, exist_ok=True)
+    tool_path.write_text("", encoding="utf-8")
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[tools]\n", encoding="utf-8")
+
+    with patch.object(setup_mod, "OS", "Linux"), \
+         patch.object(setup_mod, "_config_ini_path", return_value=ini_path), \
+         patch.object(setup_mod.shutil, "which", return_value=None):
+        resolved = setup_mod._detect_non_windows_tool_path("hdr10plus_tool", prefix)
+
+    assert resolved == str(tool_path)
+
+
+def test_setup_install_github_tools_updates_non_windows_config_ini(tmp_path):
+    import setup as setup_mod
+
+    prefix = tmp_path / "prefix"
+    ini_path = tmp_path / "config.ini"
+    fake_tools = {
+        "dovi_tool": {
+            "repo": "quietvoid/dovi_tool",
+            "desc": "Dolby Vision RPU extraction and injection",
+            "binary_name": {"Linux": "dovi_tool"},
+            "asset_patterns": {("Linux", "x86_64"): {"suffix": ".tar.gz", "fmt": "tar.gz"}},
+        }
+    }
+
+    def fake_extract(_archive_path, binary_name, _fmt, dest_dir):
+        extracted = dest_dir / binary_name
+        extracted.write_text("", encoding="utf-8")
+        return extracted
+
+    with patch.object(setup_mod, "OS", "Linux"), \
+         patch.object(setup_mod, "GITHUB_TOOLS", fake_tools), \
+         patch.object(setup_mod, "_arch_key", return_value="x86_64"), \
+         patch.object(setup_mod.shutil, "which", return_value=None), \
+         patch.object(setup_mod, "is_root", return_value=True), \
+         patch.object(setup_mod, "_github_latest_release", return_value={"tag_name": "v1.0.0"}), \
+         patch.object(setup_mod, "_find_asset", return_value="https://example.invalid/dovi_tool.tar.gz"), \
+         patch.object(setup_mod, "_download_file"), \
+         patch.object(setup_mod, "_extract_binary", side_effect=fake_extract), \
+         patch.object(setup_mod, "_config_ini_path", return_value=ini_path), \
+         patch.object(setup_mod, "_update_ini_tools_section") as mock_update:
+        setup_mod.install_github_tools(prefix, dry_run=False, force=False)
+
+    mock_update.assert_called_once_with(
+        ini_path,
+        {"dovi_tool": str(prefix / "bin" / "dovi_tool")},
+        dry_run=False,
+    )
+
+
+def test_setup_install_github_tools_creates_prefix_bin_with_sudo(tmp_path):
+    import setup as setup_mod
+
+    prefix = tmp_path / "prefix"
+    fake_tools = {
+        "dovi_tool": {
+            "repo": "quietvoid/dovi_tool",
+            "desc": "Dolby Vision RPU extraction and injection",
+            "binary_name": {"Linux": "dovi_tool"},
+            "asset_patterns": {("Linux", "x86_64"): {"suffix": ".tar.gz", "fmt": "tar.gz"}},
+        }
+    }
+
+    def fake_extract(_archive_path, binary_name, _fmt, dest_dir):
+        extracted = dest_dir / binary_name
+        extracted.write_text("", encoding="utf-8")
+        return extracted
+
+    with patch.object(setup_mod, "OS", "Linux"), \
+         patch.object(setup_mod, "GITHUB_TOOLS", fake_tools), \
+         patch.object(setup_mod, "_arch_key", return_value="x86_64"), \
+         patch.object(setup_mod.shutil, "which", return_value=None), \
+         patch.object(setup_mod, "is_root", return_value=False), \
+         patch.object(setup_mod, "sudo_prefix", return_value=["sudo"]), \
+         patch.object(setup_mod, "_github_latest_release", return_value={"tag_name": "v1.0.0"}), \
+         patch.object(setup_mod, "_find_asset", return_value="https://example.invalid/dovi_tool.tar.gz"), \
+         patch.object(setup_mod, "_download_file"), \
+         patch.object(setup_mod, "_extract_binary", side_effect=fake_extract), \
+         patch.object(setup_mod, "_config_ini_path", return_value=tmp_path / "config.ini"), \
+         patch.object(setup_mod, "_update_ini_tools_section"), \
+         patch.object(setup_mod, "run") as mock_run:
+        setup_mod.install_github_tools(prefix, dry_run=False, force=False)
+
+    commands = [call.args[0] for call in mock_run.call_args_list]
+    assert ["sudo", "mkdir", "-p", str(prefix / "bin")] in commands
