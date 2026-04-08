@@ -15,13 +15,16 @@ import locale
 import os
 import re
 import shutil
+import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QSettings, QStandardPaths
 
 from core.lang_tags import Rfc5646LanguageTags
+from core.subprocess_utils import subprocess_text_kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +396,86 @@ def _non_windows_tool_candidates(tool_name: str) -> list[Path]:
     return _dedupe_paths(candidates)
 
 
+@dataclass(frozen=True)
+class ToolVersionInfo:
+    """Version détectée d'un outil externe."""
+
+    text: str | None = None
+    major: int | None = None
+
+
+class ToolVersionRegistry:
+    """
+    Registre lazy des versions d'outils externes.
+
+    Les versions sont résolues à la demande via `<tool> --version` puis
+    mémorisées en cache.
+    """
+
+    def __init__(self, commands: dict[str, str]) -> None:
+        self._commands = commands
+        self._cache: dict[str, ToolVersionInfo] = {}
+
+    @staticmethod
+    def _extract_major(version_text: str) -> int | None:
+        # Exemples ciblés:
+        # - "mkvmerge v98.0 ('Chonks')"
+        # - "ffmpeg version 8.1 ..."
+        # - "MediaInfo Command line, MediaInfoLib - v24.12"
+        patterns = (
+            r"\bv(\d+)\.",
+            r"\bversion\s+(\d+)\.",
+            r"\b(\d+)\.(\d+)",
+        )
+        for pattern in patterns:
+            m = re.search(pattern, version_text, flags=re.IGNORECASE)
+            if m:
+                try:
+                    return int(m.group(1))
+                except ValueError:
+                    return None
+        return None
+
+    def _probe(self, command: str) -> ToolVersionInfo:
+        try:
+            result = subprocess.run(
+                [command, "--version"],
+                capture_output=True,
+                check=False,
+                timeout=5,
+                **subprocess_text_kwargs(),
+            )
+        except Exception:
+            return ToolVersionInfo()
+
+        text = (result.stdout or "").strip() or (result.stderr or "").strip()
+        if not text:
+            return ToolVersionInfo()
+
+        first_line = text.splitlines()[0].strip()
+        return ToolVersionInfo(
+            text=first_line or None,
+            major=self._extract_major(first_line),
+        )
+
+    def get(self, name: str) -> ToolVersionInfo:
+        if name in self._cache:
+            return self._cache[name]
+        command = self._commands.get(name, name)
+        info = self._probe(command)
+        self._cache[name] = info
+        return info
+
+    def major(self, name: str) -> int | None:
+        return self.get(name).major
+
+    def text(self, name: str) -> str | None:
+        return self.get(name).text
+
+    def snapshot(self) -> dict[str, ToolVersionInfo]:
+        return {name: self.get(name) for name in self._commands}
+
+
 # ---------------------------------------------------------------------------
 # Chemins applicatifs
 # ---------------------------------------------------------------------------
@@ -634,6 +717,7 @@ class AppConfig:
             )
         self._ini = _load_ini()
         self._detected_ini_tools: dict[str, str] = {}
+        self._tool_versions = ToolVersionRegistry({})
         self._load()
         self._persist_detected_windows_tools()
 
@@ -739,6 +823,7 @@ class AppConfig:
         self.tool_dovi_tool = self._resolve_tool_value("dovi_tool", "tools/dovi_tool", "dovi_tool")
         self.tool_hdr10plus = self._resolve_tool_value("hdr10plus_tool", "tools/hdr10plus_tool", "hdr10plus_tool")
         self.tool_eac3to = self._resolve_tool_value("eac3to", "tools/eac3to", "eac3to")
+        self._tool_versions = ToolVersionRegistry(self.tool_commands())
 
         self.ffmpeg_threads = _normalize_ffmpeg_thread_count(
             self._resolve_int("ffmpeg", "threads", "ffmpeg/threads", _default_ffmpeg_thread_count())
@@ -842,14 +927,9 @@ class AppConfig:
     # Utilitaires
     # ------------------------------------------------------------------
 
-    def tool_path(self, name: str) -> Path | None:
-        attr = f"tool_{name.replace('-', '_')}"
-        value: str = getattr(self, attr, name)
-        found = shutil.which(value)
-        return Path(found) if found else None
-
-    def all_tools_available(self) -> dict[str, bool]:
-        tools = {
+    def tool_commands(self) -> dict[str, str]:
+        """Retourne la map normalisée {tool_name: commande configurée}."""
+        return {
             "ffmpeg": self.tool_ffmpeg,
             "ffprobe": self.tool_ffprobe,
             "mkvmerge": self.tool_mkvmerge,
@@ -861,7 +941,31 @@ class AppConfig:
             "hdr10plus_tool": self.tool_hdr10plus,
             "eac3to": self.tool_eac3to,
         }
-        return {name: shutil.which(cmd) is not None for name, cmd in tools.items()}
+
+    def refresh_tool_versions(self) -> None:
+        """Réinitialise le registre de versions des outils."""
+        self._tool_versions = ToolVersionRegistry(self.tool_commands())
+
+    def tool_version_info(self, name: str) -> ToolVersionInfo:
+        """Retourne les infos de version d'un outil."""
+        return self._tool_versions.get(name)
+
+    def tool_version_text(self, name: str) -> str | None:
+        """Retourne la première ligne de version d'un outil."""
+        return self._tool_versions.text(name)
+
+    def tool_major_version(self, name: str) -> int | None:
+        """Retourne la version majeure d'un outil."""
+        return self._tool_versions.major(name)
+
+    def tool_path(self, name: str) -> Path | None:
+        attr = f"tool_{name.replace('-', '_')}"
+        value: str = getattr(self, attr, name)
+        found = shutil.which(value)
+        return Path(found) if found else None
+
+    def all_tools_available(self) -> dict[str, bool]:
+        return {name: shutil.which(cmd) is not None for name, cmd in self.tool_commands().items()}
 
     def ensure_work_dir(self) -> Path:
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -905,6 +1009,13 @@ class AppConfig:
                 "dovi_tool": self.tool_dovi_tool,
                 "hdr10plus_tool": self.tool_hdr10plus,
                 "eac3to": self.tool_eac3to,
+            },
+            "tool_versions": {
+                name: {
+                    "text": info.text,
+                    "major": info.major,
+                }
+                for name, info in self._tool_versions.snapshot().items()
             },
             "ffmpeg": {
                 "threads": self.ffmpeg_threads,

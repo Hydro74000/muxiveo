@@ -328,12 +328,25 @@ class RemuxWorkflow(QObject):
         parent: QObject | None = None,
         *,
         writing_application: str = "",
+        mkvmerge_major_version: int | None = None,
     ) -> None:
         super().__init__(parent)
         self._mkvmerge = mkvmerge_bin
         self._mkvpropedit = mkvpropedit_bin
         self._runner = ToolRunner(max_workers=1, parent=self)
         self._writing_application = writing_application.strip()
+        self._mkvmerge_major_version = mkvmerge_major_version
+
+    def set_mkvmerge_bin(self, mkvmerge_bin: str) -> None:
+        """Met à jour le binaire mkvmerge utilisé par le workflow."""
+        self._mkvmerge = mkvmerge_bin
+
+    def set_mkvpropedit_bin(self, mkvpropedit_bin: str) -> None:
+        """Met à jour le binaire mkvpropedit utilisé par le workflow."""
+        self._mkvpropedit = mkvpropedit_bin
+
+    def set_mkvmerge_major_version(self, major: int | None) -> None:
+        self._mkvmerge_major_version = major
 
     def set_writing_application(self, writing_application: str) -> None:
         """Met à jour la valeur du tag Multiplexing Application."""
@@ -367,6 +380,14 @@ class RemuxWorkflow(QObject):
                         un placeholder.
         """
         cmd: list[str] = [self._mkvmerge, "-o", _cli_path(config.output)]
+        allow_language_ietf = (
+            self._mkvmerge_major_version is not None
+            and self._mkvmerge_major_version < 98
+        )
+        use_ietf_in_language_flag = (
+            self._mkvmerge_major_version is not None
+            and self._mkvmerge_major_version >= 98
+        )
 
         # --- Titre du segment de sortie (toujours appliqué, même vide) ---
         cmd.extend(["--title", config.file_title])
@@ -463,15 +484,37 @@ class RemuxWorkflow(QObject):
                 lang     = (t.language      or "").strip()
                 orig_lang = (t.orig_language or "").strip()
                 if lang != orig_lang:
-                    # Langue modifiée ou vidée → émettre --language-ietf
+                    # Langue modifiée ou vidée → émettre toujours --language.
+                    # --language-ietf est émis uniquement pour mkvmerge < 98
+                    # et pour une langue RFC5646 valide non vide / non "und".
                     emit_lang = lang if lang else "und"
-                    cmd.extend(["--language", f"{t.mkv_tid}:{LangTags.to_iso639_2(emit_lang)}"])
-                    cmd.extend(["--language-ietf", f"{t.mkv_tid}:{emit_lang}"])
+                    canonical_lang = LangTags.normalize(emit_lang) or emit_lang
+                    regional_lang = (
+                        LangTags.regionalize_track_language(canonical_lang, t.title)
+                        or canonical_lang
+                    )
+                    iso639_2 = LangTags.to_iso639_2(canonical_lang) or "und"
+
+                    language_value = iso639_2
+                    if use_ietf_in_language_flag:
+                        if canonical_lang.lower() == "und":
+                            language_value = "und"
+                        elif LangTags.is_valid(canonical_lang):
+                            language_value = regional_lang
+                    cmd.extend(["--language", f"{t.mkv_tid}:{language_value}"])
+                    emit_ietf = (
+                        allow_language_ietf
+                        and bool(lang)
+                        and canonical_lang.lower() != "und"
+                        and LangTags.is_valid(canonical_lang)
+                    )
+                    if emit_ietf:
+                        cmd.extend(["--language-ietf", f"{t.mkv_tid}:{regional_lang}"])
                     if emit_metadata_logs:
                         self.log_message.emit(
                             "INFO",
-                            f"Lang set for track {t.mkv_tid} to {emit_lang} "
-                            f"(ISO639-2: {LangTags.to_iso639_2(emit_lang)}) in workflow",
+                            f"Lang set for track {t.mkv_tid} to {language_value} "
+                            f"(ISO639-2: {iso639_2}) in workflow",
                         )
                 # Flags MKV
                 if t.flag_enabled != t.orig_flag_enabled:

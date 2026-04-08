@@ -338,6 +338,119 @@ def test_app_config_non_windows_detects_tool_from_absolute_candidates(tmp_path):
     assert cfg.tool_dovi_tool == str(candidate)
 
 
+class TestToolVersionRegistry:
+    """Tests unitaires du registre de versions d'outils externes."""
+
+    def test_extract_major_supports_mkvmerge_style(self):
+        from core.config import ToolVersionRegistry
+
+        assert ToolVersionRegistry._extract_major("mkvmerge v98.0 ('Chonks') 64-bit") == 98
+
+    def test_extract_major_supports_ffmpeg_style(self):
+        from core.config import ToolVersionRegistry
+
+        assert ToolVersionRegistry._extract_major("ffmpeg version 8.1-full_build-www.gyan.dev") == 8
+
+    def test_probe_returns_empty_info_on_failure(self):
+        from core.config import ToolVersionRegistry
+
+        reg = ToolVersionRegistry({"mkvmerge": "mkvmerge"})
+        with patch("core.config.subprocess.run", side_effect=FileNotFoundError):
+            info = reg.get("mkvmerge")
+
+        assert info.text is None
+        assert info.major is None
+
+    def test_get_uses_cache(self):
+        from core.config import ToolVersionRegistry
+
+        reg = ToolVersionRegistry({"mkvmerge": "mkvmerge"})
+        with patch("core.config.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout="mkvmerge v98.0 ('Chonks')\n",
+                stderr="",
+                returncode=0,
+            )
+            first = reg.get("mkvmerge")
+            second = reg.get("mkvmerge")
+
+        assert first.major == 98
+        assert second.major == 98
+        assert mock_run.call_count == 1
+
+
+class TestAppConfigToolVersionPropagation:
+    """Tests de propagation des versions d'outils via AppConfig."""
+
+    def _mock_qsettings(self):
+        inst = MagicMock()
+        inst.value.side_effect = lambda key, default=None: default
+        return inst
+
+    def test_tool_major_version_and_text_are_available(self, tmp_path):
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[tools]\n", encoding="utf-8")
+
+        def _fake_run(cmd, **_kwargs):
+            exe_name = Path(str(cmd[0])).name.lower()
+            if exe_name in {"mkvmerge", "mkvmerge.exe"}:
+                return MagicMock(
+                    stdout="mkvmerge v98.0 ('Chonks')\n",
+                    stderr="",
+                    returncode=0,
+                )
+            return MagicMock(stdout="", stderr="", returncode=1)
+
+        with patch("core.config.QSettings") as mock_qs, \
+             patch("core.config.sys.platform", "linux"), \
+             patch("core.config.shutil.which", return_value=None), \
+             patch("core.config.subprocess.run", side_effect=_fake_run) as mock_run, \
+             patch("core.config._app_data_dir", return_value=tmp_path), \
+             patch.object(cfg_mod, "_INI_PATH", ini_path), \
+             patch.object(cfg_mod, "_non_windows_tool_candidates", return_value=[]):
+            mock_qs.return_value = self._mock_qsettings()
+            cfg = AppConfig()
+            assert cfg.tool_major_version("mkvmerge") == 98
+            assert cfg.tool_version_text("mkvmerge") == "mkvmerge v98.0 ('Chonks')"
+            called_cmds = [call.args[0] for call in mock_run.call_args_list]
+            assert any(args[-1] == "--version" for args in called_cmds)
+
+    def test_refresh_tool_versions_reloads_updated_command_map(self, tmp_path):
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[tools]\n", encoding="utf-8")
+
+        def _fake_run(cmd, **_kwargs):
+            exe = cmd[0]
+            outputs = {
+                "mkvmerge": "mkvmerge v97.0 ('Glass')",
+                "custom-mkvmerge": "mkvmerge v98.1 ('Chonks')",
+            }
+            text = outputs.get(exe, "")
+            return MagicMock(stdout=f"{text}\n" if text else "", stderr="", returncode=0 if text else 1)
+
+        with patch("core.config.QSettings") as mock_qs, \
+             patch("core.config.sys.platform", "linux"), \
+             patch("core.config.shutil.which", return_value=None), \
+             patch("core.config.subprocess.run", side_effect=_fake_run), \
+             patch("core.config._app_data_dir", return_value=tmp_path), \
+             patch.object(cfg_mod, "_INI_PATH", ini_path), \
+             patch.object(cfg_mod, "_non_windows_tool_candidates", return_value=[]):
+            mock_qs.return_value = self._mock_qsettings()
+            cfg = AppConfig()
+            first_major = cfg.tool_major_version("mkvmerge")
+            cfg.tool_mkvmerge = "custom-mkvmerge"
+            cfg.refresh_tool_versions()
+            second_major = cfg.tool_major_version("mkvmerge")
+
+        assert first_major == 97
+        assert second_major == 98
+
 class TestWindowsControlledFolderAccessSetup:
     """Tests de la proposition d'allowlist Windows Security (Controlled Folder Access)."""
 

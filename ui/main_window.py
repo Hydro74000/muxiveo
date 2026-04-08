@@ -1345,8 +1345,13 @@ class MainWindow(QMainWindow):
 
         def _make_edit(track_order: int, t: TrackEntry) -> "TrackMetaEdit | None":
             """Retourne un TrackMetaEdit si la piste a une langue ou un titre à écrire."""
-            lang  = t.language or ""
-            title = t.title    or ""
+            lang = (t.language or "").strip()
+            orig_lang = (t.orig_language or "").strip()
+            title = (t.title or "").strip()
+            # Une langue vidée explicitement doit rester une instruction explicite
+            # dans le workflow encode (mkvpropedit), via "und".
+            if not lang and orig_lang and lang != orig_lang:
+                lang = "und"
             if not lang and not title:
                 return None
             return TrackMetaEdit(
@@ -1546,6 +1551,7 @@ class MainWindow(QMainWindow):
         DesignSystem.apply_to_application(app)
         self._log_panel._max_lines = self._config.log_max_lines
         self._encode_panel.refresh_runtime_settings()
+        self._remux_panel.refresh_runtime_settings()
         self._apply_locale()
         if new_theme != previous_theme:
             self.log_requested.emit(
