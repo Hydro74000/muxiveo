@@ -1123,6 +1123,10 @@
     "fra": "Ce produit utilise l'API TMDB mais n'est ni approuvé\nni certifié par TMDB.",
     "eng": "This product uses the TMDB API but is not\nendorsed or certified by TMDB."
   },
+  "Informations media récupérée depuis TMDB.": {
+    "fra": "Informations media récupérée depuis TMDB.",
+    "eng": "Media information retrieved from TMDB."
+  },
   "Insérer les balises": {
     "fra": "Insérer les balises",
     "eng": "Insert tags"
@@ -1155,9 +1159,21 @@
     "fra": "Clé API TMDB manquante.",
     "eng": "Missing TMDB API key."
   },
+  "Authentification TMDB manquante (clé API ou token Bearer).": {
+    "fra": "Authentification TMDB manquante (clé API ou token Bearer).",
+    "eng": "Missing TMDB authentication (API key or Bearer token)."
+  },
   "Clé API TMDB invalide ou expirée (401).": {
     "fra": "Clé API TMDB invalide ou expirée (401).",
     "eng": "Invalid or expired TMDB API key (401)."
+  },
+  "Token Bearer TMDB invalide ou expiré (401).": {
+    "fra": "Token Bearer TMDB invalide ou expiré (401).",
+    "eng": "Invalid or expired TMDB Bearer token (401)."
+  },
+  "Authentification TMDB invalide ou expirée (401).": {
+    "fra": "Authentification TMDB invalide ou expirée (401).",
+    "eng": "Invalid or expired TMDB authentication (401)."
   },
   "Ressource introuvable sur TMDB (404) : {endpoint}": {
     "fra": "Ressource introuvable sur TMDB (404) : {endpoint}",

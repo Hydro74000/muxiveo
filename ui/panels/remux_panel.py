@@ -1190,7 +1190,7 @@ class _TagEditDialog(QDialog):
         name_combo = QComboBox()
         name_combo.setEditable(True)
         name_combo.setFixedWidth(160)
-        sorted_tags = sorted(STANDARD_MKV_TAGS - {"TITLE"})
+        sorted_tags = sorted((STANDARD_MKV_TAGS | {"COMMENTS"}) - {"TITLE"})
         name_combo.addItems(sorted_tags)
         name_combo.setCurrentText("")
         name_combo.setStyleSheet(f"""
@@ -1425,6 +1425,7 @@ class _AttachmentPanel(QFrame):
         self._suggested_title: str = ""
         self._suggested_season: int = 0
         self._suggested_episode: int = 0
+        self._auto_tmdb_cover_path: Path | None = None
         self._build_ui()
 
     def set_suggested_title(self, title: str, season: int = 0, episode: int = 0) -> None:
@@ -1580,6 +1581,8 @@ class _AttachmentPanel(QFrame):
             self._add_item(_AttachmentItemWidget(
                 file_id=file_id, source_color=source_color, att=att,
             ))
+        if self._auto_tmdb_cover_path is not None and self._has_existing_cover_attachment():
+            self._clear_auto_tmdb_cover_item()
 
     def add_source_tags(self, file_id: str, source_color: str, tags: dict[str, str]) -> None:
         """Ajoute la ligne de balises d'un fichier source (si tags non vide)."""
@@ -1604,6 +1607,7 @@ class _AttachmentPanel(QFrame):
 
     def clear_all(self) -> None:
         """Vide complètement le panneau, y compris les ajouts manuels."""
+        self._remove_auto_tmdb_cover_file()
         for item in self._items[:]:
             self._items_layout.removeWidget(item)
             item.deleteLater()
@@ -1677,6 +1681,8 @@ class _AttachmentPanel(QFrame):
     def _on_remove_item(self, item: _AttachmentItemWidget) -> None:
         self._items.remove(item)
         self._items_layout.removeWidget(item)
+        if item.manual_path is not None and self._auto_tmdb_cover_path == item.manual_path:
+            self._remove_auto_tmdb_cover_file()
         item.deleteLater()
         self._update_state()
         self.changed.emit()
@@ -1689,6 +1695,106 @@ class _AttachmentPanel(QFrame):
                 for k, v in item.tags.items():
                     merged.setdefault(k, v)
         return merged
+
+    def _tmdb_comment_value(self) -> str:
+        return translate_text("Informations media récupérée depuis TMDB.")
+
+    def _remove_auto_tmdb_cover_file(self) -> None:
+        path = self._auto_tmdb_cover_path
+        self._auto_tmdb_cover_path = None
+        if path is None:
+            return
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            pass
+        parent = path.parent
+        try:
+            if parent.exists():
+                parent.rmdir()
+        except OSError:
+            pass
+
+    def _clear_auto_tmdb_cover_item(self) -> None:
+        path = self._auto_tmdb_cover_path
+        if path is None:
+            return
+        removed = False
+        for item in self._items[:]:
+            if item.is_manual and item.manual_path == path:
+                self._items.remove(item)
+                self._items_layout.removeWidget(item)
+                item.deleteLater()
+                removed = True
+                break
+        self._remove_auto_tmdb_cover_file()
+        if removed:
+            self._update_state()
+
+    def _item_has_cover(self, item: _AttachmentItemWidget) -> bool:
+        if not item.enabled:
+            return False
+        if item.is_tag:
+            return False
+        if item.is_manual:
+            if item.manual_path is None or item.manual_path == self._auto_tmdb_cover_path:
+                return False
+            return item.manual_path.stem.lower() == "cover"
+        if item.att is None:
+            return False
+        if item.att.is_attached_pic:
+            return True
+        return Path(item.att.filename).stem.lower() == "cover"
+
+    def _has_existing_cover_attachment(self) -> bool:
+        return any(self._item_has_cover(item) for item in self._items)
+
+    def _install_tmdb_cover(self, details: MediaDetails) -> None:
+        self._clear_auto_tmdb_cover_item()
+        if self._has_existing_cover_attachment():
+            return
+        if not details.cover_bytes:
+            return
+
+        filename = (details.cover_filename or "cover.jpg").strip() or "cover.jpg"
+        cover_dir = self._config.ensure_work_dir() / "tmdb_covers" / uuid.uuid4().hex
+        cover_dir.mkdir(parents=True, exist_ok=True)
+        cover_path = cover_dir / filename
+        cover_path.write_bytes(details.cover_bytes)
+        self._auto_tmdb_cover_path = cover_path
+        self._add_item(_AttachmentItemWidget(
+            file_id="",
+            is_manual=True,
+            manual_path=cover_path,
+        ))
+
+    def _apply_tmdb_details(self, details: MediaDetails, *, open_editor: bool = True) -> None:
+        self.tmdb_details_selected.emit(details)
+
+        new_tags = details.to_mkv_tags()
+        new_tags["COMMENTS"] = self._tmdb_comment_value()
+        current = (
+            self._panel_tag_overrides
+            if self._panel_tag_overrides is not None
+            else self._merged_source_tags()
+        )
+        # Les données TMDB prennent la priorité sur les balises sources
+        merged = {**current, **new_tags}
+        self._panel_tag_overrides = merged
+        self._install_tmdb_cover(details)
+
+        if open_editor:
+            # Ouvrir le dialogue d'édition pour relecture/corrections
+            edit_dlg = _TagEditDialog(merged, parent=self)
+            if edit_dlg.exec() == QDialog.DialogCode.Accepted:
+                self._panel_tag_overrides = edit_dlg.result_tags()
+
+        n = len(self._panel_tag_overrides or {})
+        label = translate_text("Tags édités ({count})", count=n) if n else translate_text("Tags supprimés")
+        self._edit_tags_btn.setText(label)
+        self._edit_tags_btn.setEnabled(True)
+        self.changed.emit()
 
     def _open_media_search(self) -> None:
         """
@@ -1712,28 +1818,7 @@ class _AttachmentPanel(QFrame):
         details = dlg.fetched_details
         if details is None:
             return
-        self.tmdb_details_selected.emit(details)
-
-        new_tags = details.to_mkv_tags()
-        current  = (
-            self._panel_tag_overrides
-            if self._panel_tag_overrides is not None
-            else self._merged_source_tags()
-        )
-        # Les données TMDB prennent la priorité sur les balises sources
-        merged = {**current, **new_tags}
-        self._panel_tag_overrides = merged
-
-        # Ouvrir le dialogue d'édition pour relecture/corrections
-        edit_dlg = _TagEditDialog(merged, parent=self)
-        if edit_dlg.exec() == QDialog.DialogCode.Accepted:
-            self._panel_tag_overrides = edit_dlg.result_tags()
-
-        n = len(self._panel_tag_overrides)
-        label = translate_text("Tags édités ({count})", count=n) if n else translate_text("Tags supprimés")
-        self._edit_tags_btn.setText(label)
-        self._edit_tags_btn.setEnabled(True)
-        self.changed.emit()
+        self._apply_tmdb_details(details)
 
     def _open_global_tag_dialog(self) -> None:
         """Ouvre le dialogue d'édition global des balises (toutes sources fusionnées)."""
@@ -1750,13 +1835,17 @@ class _AttachmentPanel(QFrame):
 
     def _update_state(self) -> None:
         has = bool(self._items)
-        has_tags = any(i.is_tag for i in self._items)
+        has_tags = any(i.is_tag for i in self._items) or self._panel_tag_overrides is not None
         self._placeholder.setVisible(not has)
         self._items_widget.setVisible(has)
         self._edit_tags_btn.setEnabled(has_tags)
         if not has_tags:
             self._panel_tag_overrides = None
             self._edit_tags_btn.setText(translate_text("Éditer les tags"))
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        self._remove_auto_tmdb_cover_file()
+        super().closeEvent(event)
 
     def _browse_add(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(

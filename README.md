@@ -163,7 +163,7 @@ Le panneau **Paramètres** est un éditeur complet de `config.ini` intégré à 
 - **Chemins** : dossier de travail, dossier de sortie, dossier app data
 - **Outils externes** : chemins explicites pour chaque outil (`ffmpeg`, `mkvmerge`, `dovi_tool`, etc.)
 - **Encodage** : profil DoVi, compat-id, buffer RAM
-- **Métadonnées** : clé API TMDB v3 (`tmdb_api_key`)
+- **Métadonnées** : auth TMDB via clé API v3 (`tmdb_api_key`) ou token Bearer v4 (`tmdb_bearer_token`)
 
 Les changements sont appliqués section par section ou en une seule fois via le bouton **Sauvegarder toute la configuration**. Un rechargement depuis `config.ini` est possible sans redémarrer l'application.
 
@@ -208,6 +208,7 @@ Sous Windows, `setup.py` et le démarrage de l'application peuvent auto-détecte
 | `language` | auto-détecté | langue de l'interface (`fra` ou `eng`) |
 | `startup_panel` | `dashboard` | panneau ouvert au démarrage (`dashboard`, `container`, `encoding`, `dovi`, `settings`) |
 | `tmdb_api_key` | vide | clé API TMDB v3 utilisée par la recherche IMDb/TMDB |
+| `tmdb_bearer_token` | vide | token Bearer TMDB v4 (utilisé si `tmdb_api_key` est vide, ou via `MEDIARECODE_TMDB_BEARER_TOKEN`) |
 | `ram_buffer_enabled` | `true` | autorise l'usage de `/dev/shm` pour les HEVC intermédiaires si disponible |
 | `ram_buffer_threshold_pct` | `15` | pourcentage minimal de RAM libre à conserver pour activer ce buffer |
 
@@ -239,6 +240,7 @@ startup_panel = container
 
 [metadata]
 tmdb_api_key = <VOTRE_CLE_API_TMDB_V3>
+tmdb_bearer_token = <VOTRE_TOKEN_BEARER_TMDB_V4>
 ```
 
 ## Workflows

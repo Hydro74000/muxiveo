@@ -457,6 +457,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         "title": "Métadonnées",
         "fields": (
             {"key": "tmdb_api_key", "attr": "tmdb_api_key", "kind": "text", "label": "Clé API TMDB", "description": "Clé API TMDB v3 (gratuite sur https://www.themoviedb.org/settings/api)."},
+            {"key": "tmdb_bearer_token", "attr": "tmdb_bearer_token", "kind": "text", "label": "Token Bearer TMDB", "description": "Token v4 TMDB optionnel. Utilisé si la clé API est vide. Peut aussi être défini via MEDIARECODE_TMDB_BEARER_TOKEN."},
         ),
     },
 )
@@ -627,6 +628,12 @@ class AppConfig:
         self.window_geometry: bytes | None = self._settings.value("ui/geometry", None)
 
         self.tmdb_api_key = self._resolve_text("metadata", "tmdb_api_key", "metadata/tmdb_api_key", "")
+        self.tmdb_bearer_token = self._resolve_text(
+            "metadata",
+            "tmdb_bearer_token",
+            "metadata/tmdb_bearer_token",
+            "",
+        )
 
     def reload(self) -> None:
         self._ini = _load_ini()
@@ -671,6 +678,7 @@ class AppConfig:
         s.setValue("ui/startup_panel", self.startup_panel)
 
         s.setValue("metadata/tmdb_api_key", self.tmdb_api_key)
+        s.setValue("metadata/tmdb_bearer_token", self.tmdb_bearer_token)
         s.sync()
 
     def save_to_ini(self) -> None:
@@ -768,6 +776,7 @@ class AppConfig:
             },
             "metadata": {
                 "tmdb_api_key": self.tmdb_api_key,
+                "tmdb_bearer_token": self.tmdb_bearer_token,
             },
         }
 
