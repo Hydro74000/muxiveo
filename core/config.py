@@ -13,6 +13,7 @@ import configparser
 import json
 import locale
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -89,6 +90,7 @@ def _load_ini() -> configparser.ConfigParser:
         default_section="DEFAULT",
     )
     if _INI_PATH.exists():
+        _sanitize_windows_ini_file(_INI_PATH)
         parser.read(_INI_PATH, encoding="utf-8")
     return parser
 
@@ -163,6 +165,64 @@ def _section_bounds(lines: list[str], section: str) -> tuple[int, int]:
     return start, end
 
 
+def _normalize_windows_backslashes(value: str) -> str:
+    """Collapse repeated Windows path separators while preserving UNC prefixes."""
+    text = str(value)
+    if not _is_windows() or "\\" not in text:
+        return text
+
+    leading = len(text) - len(text.lstrip("\\"))
+    body = text[leading:]
+    body = re.sub(r"\\{2,}", r"\\", body)
+
+    if leading >= 2:
+        prefix = "\\\\"
+    elif leading == 1:
+        prefix = "\\"
+    else:
+        prefix = ""
+    return prefix + body
+
+
+def _normalize_ini_value(section: str, value: str) -> str:
+    if _is_windows() and section.lower() in {"paths", "tools"}:
+        return _normalize_windows_backslashes(value)
+    return value
+
+
+def _sanitize_windows_ini_lines(lines: list[str]) -> list[str]:
+    if not _is_windows():
+        return lines
+
+    current_section = ""
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current_section = stripped[1:-1].strip().lower()
+            continue
+        if current_section not in {"paths", "tools"}:
+            continue
+        if not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
+            continue
+        lhs, rhs = stripped.split("=", 1)
+        normalized = _normalize_ini_value(current_section, rhs.strip())
+        if normalized != rhs.strip():
+            lines[index] = f"{lhs.strip()} = {normalized}"
+    return lines
+
+
+def _sanitize_windows_ini_file(path: Path) -> None:
+    if not _is_windows() or not path.exists():
+        return
+
+    original = path.read_text(encoding="utf-8")
+    lines = original.splitlines()
+    sanitized_lines = _sanitize_windows_ini_lines(lines.copy())
+    sanitized = "\n".join(sanitized_lines).rstrip() + "\n"
+    if sanitized != original:
+        path.write_text(sanitized, encoding="utf-8")
+
+
 def _upsert_ini_section(
     lines: list[str],
     section: str,
@@ -181,6 +241,7 @@ def _upsert_ini_section(
 
     insert_at = end
     for key, value in values.items():
+        rendered = _normalize_ini_value(section, value)
         updated = False
         for index in range(start + 1, end):
             stripped = lines[index].strip()
@@ -190,16 +251,16 @@ def _upsert_ini_section(
             if lhs.strip().lower() != key.lower():
                 continue
             if (not replace_blank_only) or (not rhs.strip()):
-                lines[index] = f"{key} = {value}"
+                lines[index] = f"{key} = {rendered}"
             updated = True
             break
 
         if not updated:
-            lines.insert(insert_at, f"{key} = {value}")
+            lines.insert(insert_at, f"{key} = {rendered}")
             insert_at += 1
             end += 1
 
-    return lines
+    return _sanitize_windows_ini_lines(lines)
 
 
 def _update_ini_tools_section(path: Path, tool_values: dict[str, str]) -> None:
@@ -767,6 +828,7 @@ class AppConfig:
         s.setValue("metadata/tmdb_api_key", self.tmdb_api_key)
         s.setValue("metadata/tmdb_bearer_token", self.tmdb_bearer_token)
         s.sync()
+        _sanitize_windows_ini_file(_INI_PATH)
 
     def save_to_ini(self) -> None:
         write_ini_settings(self.to_ini_sections())
@@ -774,6 +836,7 @@ class AppConfig:
     def save_geometry(self, geometry: bytes) -> None:
         self._settings.setValue("ui/geometry", geometry)
         self._settings.sync()
+        _sanitize_windows_ini_file(_INI_PATH)
 
     # ------------------------------------------------------------------
     # Utilitaires

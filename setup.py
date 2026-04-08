@@ -31,6 +31,7 @@ import json
 import locale
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -567,6 +568,44 @@ def _section_bounds(lines: list[str], section: str) -> tuple[int, int]:
     return start, end
 
 
+def _normalize_windows_backslashes(value: str) -> str:
+    """Collapse repeated Windows path separators while preserving UNC prefixes."""
+    text = str(value)
+    if OS != "Windows" or "\\" not in text:
+        return text
+
+    leading = len(text) - len(text.lstrip("\\"))
+    body = text[leading:]
+    body = re.sub(r"\\{2,}", r"\\", body)
+
+    if leading >= 2:
+        prefix = "\\\\"
+    elif leading == 1:
+        prefix = "\\"
+    else:
+        prefix = ""
+    return prefix + body
+
+
+def _sanitize_windows_tools_lines(lines: list[str]) -> list[str]:
+    if OS != "Windows":
+        return lines
+
+    start, end = _tools_section_bounds(lines)
+    if start == -1:
+        return lines
+
+    for index in range(start + 1, end):
+        stripped = lines[index].strip()
+        if not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
+            continue
+        lhs, rhs = stripped.split("=", 1)
+        normalized = _normalize_windows_backslashes(rhs.strip())
+        if normalized != rhs.strip():
+            lines[index] = f"{lhs.strip()} = {normalized}"
+    return lines
+
+
 def _update_ini_tools_section(
     path: Path,
     tool_values: dict[str, str],
@@ -581,7 +620,7 @@ def _update_ini_tools_section(
     prune_keys = {key.lower() for key in (prune_keys or set())}
 
     text = path.read_text(encoding="utf-8") if path.exists() else ""
-    lines = text.splitlines()
+    lines = _sanitize_windows_tools_lines(text.splitlines())
     start, end = _tools_section_bounds(lines)
 
     if start == -1:
@@ -604,6 +643,7 @@ def _update_ini_tools_section(
 
     insert_at = end
     for key, value in tool_values.items():
+        rendered = _normalize_windows_backslashes(value)
         updated = False
         for index in range(start + 1, end):
             stripped = lines[index].strip()
@@ -613,14 +653,16 @@ def _update_ini_tools_section(
             if lhs.strip().lower() != key.lower():
                 continue
             if not rhs.strip() or key.lower() in replace_keys:
-                lines[index] = f"{key} = {value}"
+                lines[index] = f"{key} = {rendered}"
             updated = True
             break
 
         if not updated:
-            lines.insert(insert_at, f"{key} = {value}")
+            lines.insert(insert_at, f"{key} = {rendered}")
             insert_at += 1
             end += 1
+
+    lines = _sanitize_windows_tools_lines(lines)
 
     if dry_run:
         return
