@@ -31,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Callable, TYPE_CHECKING
+from typing import Callable, TYPE_CHECKING, cast
 
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import (
@@ -50,6 +50,7 @@ from core.config import AppConfig
 from core.i18n import apply_translations, set_current_language, translate_text
 from core.runner import TaskSignals
 from core.subprocess_utils import subprocess_text_kwargs
+from core.version import APP_VERSION_LABEL, WRITING_APPLICATION_TAG
 from core.workflows.encode import EncodeError
 from core.workflows.remux import RemuxError
 from ui.panels.encode_panel import EncodePanel
@@ -61,7 +62,7 @@ from ui.design_system import DesignSystem, colors as _Colors
 
 if TYPE_CHECKING:
     from core.workflows.encode.models import EncodeConfig
-    from core.workflows.remux import RemuxConfig
+    from core.workflows.remux import RemuxConfig, TrackEntry
 
 
 # ---------------------------------------------------------------------------
@@ -90,11 +91,6 @@ _LEVEL_LABELS: dict[LogLevel, str] = {
     LogLevel.WARN:  " WARN ",
     LogLevel.ERROR: " ERR  ",
 }
-
-MEDIARECODE_WRITING_APPLICATION = (
-    "MediaRecode v1.2 - https://github.com/Hydro74000/mediarecode/"
-)
-
 
 # ---------------------------------------------------------------------------
 # LogPanel
@@ -841,7 +837,7 @@ class _Sidebar(QWidget):
         layout.addStretch()
 
         # Version
-        version_lbl = QLabel("v1.1")
+        version_lbl = QLabel(APP_VERSION_LABEL)
         version_lbl.setContentsMargins(16, 0, 0, 12)
         version_lbl.setStyleSheet(f"""
             color: {_Colors.TEXT_DIM};
@@ -883,7 +879,7 @@ class MainWindow(QMainWindow):
     """
 
     log_requested = Signal(str, str)
-    WRITING_APPLICATION = MEDIARECODE_WRITING_APPLICATION
+    WRITING_APPLICATION = WRITING_APPLICATION_TAG
     _PAGE_INDEX_BY_PANEL_KEY = {
         "dashboard": 0,
         "dovi": 1,
@@ -1266,12 +1262,12 @@ class MainWindow(QMainWindow):
         """
         from core.workflows.encode.models import EncodeConfig, TrackMetaEdit
 
-        sub_tracks:         list = []
-        attachment_streams: list = []   # list[tuple[Path, int]]  — (source, ffprobe_stream_index)
-        tag_sources:        list = []
+        sub_tracks: list[tuple[Path, int]] = []
+        attachment_streams: list[tuple[Path, int]] = []   # (source, ffprobe_stream_index)
+        tag_sources: list[Path] = []
 
         source_by_index = {src.file_index: src for src in remux_cfg.sources}
-        remux_track_map: dict[tuple, object] = {}
+        remux_track_map: dict[tuple[Path, int], TrackEntry] = {}
 
         for src in remux_cfg.sources:
             for track in src.tracks:
@@ -1281,7 +1277,7 @@ class MainWindow(QMainWindow):
             if src.copy_tags:
                 tag_sources.append(src.path)
 
-        ordered_tracks: list[tuple[Path, object]] = []
+        ordered_tracks: list[tuple[Path, TrackEntry]] = []
         for file_index, mkv_tid in remux_cfg.track_order:
             src = source_by_index.get(file_index)
             if src is None:
@@ -1294,7 +1290,7 @@ class MainWindow(QMainWindow):
         sub_tracks = [
             (src_path, track.mkv_tid)
             for src_path, track in ordered_tracks
-            if getattr(track, "track_type", None) == "subtitle"
+            if track.track_type == "subtitle"
         ]
 
         # tag_overrides depuis RemuxConfig (balises éditées dans l'UI)
@@ -1309,7 +1305,7 @@ class MainWindow(QMainWindow):
         #   @1 = vidéo  |  @2…@N+1 = audio  |  @N+2… = sous-titres
         track_meta_edits: list[TrackMetaEdit] = []
 
-        def _make_edit(track_order: int, t) -> "TrackMetaEdit | None":
+        def _make_edit(track_order: int, t: TrackEntry) -> "TrackMetaEdit | None":
             """Retourne un TrackMetaEdit si la piste a une langue ou un titre à écrire."""
             lang  = t.language or ""
             title = t.title    or ""
@@ -1321,14 +1317,13 @@ class MainWindow(QMainWindow):
                 title       = title if title else None,
             )
 
-        def _find_track(src_path, stream_index, track_type):
+        def _find_track(src_path: Path, stream_index: int, track_type: str) -> TrackEntry | None:
             t = remux_track_map.get((src_path, stream_index))
             if t is not None:
                 return t
             # Fichier source unique : cherche uniquement par stream_index + type
             for entry in remux_track_map.values():
-                if getattr(entry, "mkv_tid", None) == stream_index and \
-                   getattr(entry, "track_type", None) == track_type:
+                if entry.mkv_tid == stream_index and entry.track_type == track_type:
                     return entry
             return None
 
@@ -1337,12 +1332,12 @@ class MainWindow(QMainWindow):
         if video_entry is None:
             # La vidéo peut être sur n'importe quel stream_index ; garde le premier ordre remux.
             for _src_path, entry in ordered_tracks:
-                if getattr(entry, "track_type", None) == "video":
+                if entry.track_type == "video":
                     video_entry = entry
                     break
         if video_entry is None:
             for entry in remux_track_map.values():
-                if getattr(entry, "track_type", None) == "video":
+                if entry.track_type == "video":
                     video_entry = entry
                     break
         if video_entry is not None:
@@ -1492,7 +1487,8 @@ class MainWindow(QMainWindow):
         previous_theme = DesignSystem.current_theme()
         self._config.reload()
         new_theme = DesignSystem.set_theme(self._config.theme)
-        DesignSystem.apply_to_application(QApplication.instance())
+        app = cast(QApplication | None, QApplication.instance())
+        DesignSystem.apply_to_application(app)
         self._log_panel._max_lines = self._config.log_max_lines
         self._encode_panel.refresh_runtime_settings()
         self._apply_locale()

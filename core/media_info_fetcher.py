@@ -20,6 +20,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.version import APP_USER_AGENT
+
 
 # =============================================================================
 # Nettoyage du nom de fichier
@@ -337,7 +339,7 @@ class TmdbFetcher:
         url = f"{_BASE}{endpoint}?{query}" if query else f"{_BASE}{endpoint}"
         headers = {
             "Accept": "application/json",
-            "User-Agent": "Mediarecode/1.1",
+            "User-Agent": APP_USER_AGENT,
         }
         if self._bearer_token:
             headers["Authorization"] = f"Bearer {self._bearer_token}"
@@ -368,7 +370,7 @@ class TmdbFetcher:
             url,
             headers={
                 "Accept": "image/*,*/*;q=0.8",
-                "User-Agent": "Mediarecode/1.1",
+                "User-Agent": APP_USER_AGENT,
             },
         )
         try:

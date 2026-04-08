@@ -19,6 +19,7 @@ from PySide6.QtGui import QFont
 
 from core.config import AppConfig
 from core.i18n import set_current_language
+from core.version import APP_VERSION
 from ui.design_system import DesignSystem
 
 
@@ -28,7 +29,7 @@ def main() -> int:
 
     app = QApplication(sys.argv)
     app.setApplicationName("Mediarecode")
-    app.setApplicationVersion("0.1.0")
+    app.setApplicationVersion(APP_VERSION)
     app.setOrganizationName("mediarecode")
 
     # Police par défaut propre
