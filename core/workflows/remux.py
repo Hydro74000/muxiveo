@@ -528,13 +528,39 @@ class RemuxWorkflow(QObject):
             if src.path == config.output:
                 errors.append(f"Le fichier de sortie doit être différent de la source : {src.path.name}")
 
-        if not config.output.parent.exists():
-            errors.append(f"Dossier de sortie inexistant : {config.output.parent}")
+        output_dir = config.output.parent
+        if not output_dir.exists():
+            errors.append(f"Dossier de sortie inexistant : {output_dir}")
+        elif not self._is_dir_writable(output_dir):
+            errors.append(
+                "Dossier de sortie non inscriptible : "
+                f"{output_dir} (vérifiez les protections Windows sur les dossiers Bibliothèques)."
+            )
 
         if not config.track_order:
             errors.append("Aucune piste sélectionnée.")
 
         return errors
+
+    @staticmethod
+    def _is_dir_writable(path: Path) -> bool:
+        """
+        Vérifie qu'un fichier temporaire peut être créé dans ``path``.
+
+        Sous Windows, certains dossiers protégés (Documents/Vidéos, etc.) peuvent
+        exister mais refuser la création de nouveaux fichiers.
+        """
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=path,
+                prefix="mrecode_write_probe_",
+                delete=True,
+            ):
+                pass
+            return True
+        except OSError:
+            return False
 
     # ------------------------------------------------------------------
     # Exécution

@@ -679,8 +679,14 @@ class EncodeWorkflow(QObject):
         errors: list[str] = []
         if not config.source.is_file():
             errors.append(f"Fichier source introuvable : {config.source}")
-        if not config.output.parent.exists():
-            errors.append(f"Dossier de sortie inexistant : {config.output.parent}")
+        output_dir = config.output.parent
+        if not output_dir.exists():
+            errors.append(f"Dossier de sortie inexistant : {output_dir}")
+        elif not self._is_dir_writable(output_dir):
+            errors.append(
+                "Dossier de sortie non inscriptible : "
+                f"{output_dir} (vérifiez les protections Windows sur les dossiers Bibliothèques)."
+            )
         if config.source == config.output:
             errors.append("Le fichier de sortie doit être différent du fichier source.")
         if config.video.quality_mode == QualityMode.SIZE and not (config.duration_s or 0) > 0:
@@ -697,6 +703,26 @@ class EncodeWorkflow(QObject):
             if config.video.max_cll and not re.match(r"^\d+,\d+$", config.video.max_cll.strip()):
                 errors.append("Format MaxCLL invalide. Attendu : MaxCLL,MaxFALL  ex. 1000,400")
         return errors
+
+    @staticmethod
+    def _is_dir_writable(path: Path) -> bool:
+        """
+        Vérifie qu'un fichier temporaire peut être créé dans ``path``.
+
+        Sous Windows, certains dossiers protégés (Documents/Vidéos, etc.) peuvent
+        exister mais refuser la création de nouveaux fichiers.
+        """
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=path,
+                prefix="mrecode_write_probe_",
+                delete=True,
+            ):
+                pass
+            return True
+        except OSError:
+            return False
 
     # ------------------------------------------------------------------
     # Exécution
