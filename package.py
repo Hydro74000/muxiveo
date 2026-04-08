@@ -30,6 +30,7 @@ Options :
   --exe         Force le packaging .exe même sur Linux (PyInstaller natif, pas d'AppImage)
   --windows     Cross-compile un installateur Windows depuis Linux via Wine + NSIS
   --skip-wine   Réutilise dist/mediarecode-win/ existant (skip étape Wine/PyInstaller)
+  --version TAG Suffixe de version pour le fichier final (défaut: APP_VERSION)
   --dest PATH   Copie le fichier final vers un chemin personnalisé (dossier ou fichier)
   --clean       Nettoie tous les artefacts de build (build/, dist/, .wine_build/, *.AppImage…). Utilise sudo si nécessaire. Quitte sans builder.
 """
@@ -50,6 +51,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Iterable
 
@@ -65,6 +67,16 @@ _WIN_PY_VER   = "3.11.9"
 _WIN_PY_URL   = f"https://www.python.org/ftp/python/{_WIN_PY_VER}/python-{_WIN_PY_VER}-amd64.exe"
 # Chemin de python.exe à l'intérieur du préfixe Wine
 _WIN_PY_EXE   = _WINE_PREFIX / "drive_c" / "Python311" / "python.exe"
+# Version PySide6 figée pour le build cross Wine.
+# Un override ponctuel reste possible via l'environnement si besoin de tester
+# une autre release sans modifier le dépôt.
+_WIN_PYSIDE6_VER = os.environ.get("MEDIARECODE_WINE_PYSIDE6_VERSION", "6.10.2").strip() or "6.10.2"
+# Runtime ICU Windows utilisé pour satisfaire les dépendances Qt sous Wine.
+_WIN_ICU_NUGET_VERSION = os.environ.get("MEDIARECODE_WINE_ICU_VERSION", "72.1.0.3").strip() or "72.1.0.3"
+_WIN_ICU_NUGET_URL = (
+    "https://www.nuget.org/api/v2/package/"
+    f"Microsoft.ICU.ICU4C.Runtime.win-x64/{_WIN_ICU_NUGET_VERSION}"
+)
 # Bundle PyInstaller Windows (dans dist/)
 _WIN_BUNDLE   = ROOT / "mediarecode-win"   # hors de dist/ (owned by nfsnobody)
 
@@ -214,39 +226,67 @@ def _run(cmd: list[str], check: bool = True, **kwargs) -> subprocess.CompletedPr
     return subprocess.run(cmd, check=check, **kwargs)
 
 
-def _resolve_dest_file(dest: str | None, default_output: Path) -> Path:
+def _normalize_version_tag(version_tag: str | None) -> str:
+    """
+    Normalise un tag de version pour un nom de fichier.
+    - fallback: APP_VERSION
+    - espaces -> '-'
+    - caractères autorisés: [A-Za-z0-9._-]
+    """
+    raw = (version_tag or "").strip() or APP_VERSION
+    raw = re.sub(r"\s+", "-", raw)
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "", raw)
+    return cleaned or APP_VERSION
+
+
+def _versioned_output_path(path: Path, version_tag: str | None) -> Path:
+    """
+    Retourne un path suffixé par '-<version>' avant l'extension.
+    Exemple: file.AppImage -> file-1.2.3.AppImage
+    """
+    tag = _normalize_version_tag(version_tag)
+    stem = path.stem if path.suffix else path.name
+    if stem.endswith(f"-{tag}"):
+        return path
+    if path.suffix:
+        return path.with_name(f"{path.stem}-{tag}{path.suffix}")
+    return path.with_name(f"{path.name}-{tag}")
+
+
+def _resolve_dest_file(dest: str | None, default_output: Path, version_tag: str | None = None) -> Path:
     """
     Résout le chemin de destination du fichier final.
-    - dest absent: conserve default_output
+    - dest absent: utilise default_output suffixé avec -<version>
     - dest dossier (existant, trailing slash, ou sans extension): utilise le nom auto
     - dest fichier: utilise ce nom
     """
+    versioned_default = _versioned_output_path(default_output, version_tag)
     if not dest:
-        return default_output
+        return versioned_default
 
     raw = dest.strip()
     if not raw:
-        return default_output
+        return versioned_default
 
     target = Path(raw).expanduser()
     if not target.is_absolute():
         target = (Path.cwd() / target).resolve()
 
     if target.exists() and target.is_dir():
-        return target / default_output.name
+        return _versioned_output_path(target / default_output.name, version_tag)
 
     if raw.endswith(("/", "\\")):
-        return target / default_output.name
+        return _versioned_output_path(target / default_output.name, version_tag)
 
     if target.suffix == "":
-        return target / default_output.name
+        return _versioned_output_path(target / default_output.name, version_tag)
 
-    return target
+    return _versioned_output_path(target, version_tag)
 
 
-def _copy_final_file_if_requested(src: Path, dest: str | None) -> Path:
+def _copy_final_file_if_requested(src: Path, dest: str | None, version_tag: str | None = None) -> Path:
     """Copie le fichier final vers --dest si fourni, sinon retourne src inchangé."""
-    target = _resolve_dest_file(dest, src)
+    target = _resolve_dest_file(dest, src, version_tag)
 
     src_resolved = src.resolve()
     target_resolved = target.resolve(strict=False)
@@ -254,6 +294,11 @@ def _copy_final_file_if_requested(src: Path, dest: str | None) -> Path:
         return src
 
     target.parent.mkdir(parents=True, exist_ok=True)
+    if not (dest or "").strip():
+        src.replace(target)
+        _ok(f"Fichier final : {target}")
+        return target
+
     shutil.copy2(src, target)
     _ok(f"Copie finale : {target}")
     return target
@@ -727,6 +772,27 @@ def _add_windows_sqlite_to_pyinstaller_native(cmd: list[str]) -> None:
     _ok("Support sqlite3 Windows ajouté au bundle PyInstaller")
 
 
+def _add_windows_icu_to_pyinstaller_native(cmd: list[str]) -> None:
+    """Add ICU runtime DLLs to a native Windows PyInstaller command when found."""
+    pyside_dirs: list[Path] = []
+    try:
+        import PySide6 as _pyside6
+    except Exception:
+        pyside_dirs = []
+    else:
+        pyside_dirs.append(Path(_pyside6.__file__).resolve().parent)
+    pyside_dirs.append(Path(sys.executable).resolve().parent)
+
+    dlls = _find_windows_icu_dlls(pyside_dirs)
+    if not dlls:
+        _warn("DLLs ICU introuvables près de PySide6 ; le bundle Qt peut dépendre du système.")
+        return
+
+    for dll in dlls:
+        cmd += ["--add-binary", f"{dll};."]
+    _ok("Support ICU Windows ajouté au bundle PyInstaller")
+
+
 def _add_windows_ssl_to_pyinstaller_wine(cmd: list[str], wine_env: dict[str, str]) -> None:
     """Add SSL-related imports/binaries to a Wine (Windows target) PyInstaller command."""
     cmd.extend(_windows_ssl_hidden_import_args())
@@ -793,6 +859,23 @@ def _add_windows_sqlite_to_pyinstaller_wine(cmd: list[str], wine_env: dict[str, 
     _ok("Support sqlite3 Windows ajouté au bundle PyInstaller (Wine)")
 
 
+def _add_windows_icu_to_pyinstaller_wine(cmd: list[str], wine_env: dict[str, str]) -> None:
+    """Add ICU runtime DLLs to a Wine (Windows target) PyInstaller command."""
+    dlls = _find_windows_icu_dlls([_wine_pyside6_dir(), _WIN_PY_EXE.parent])
+    if not dlls:
+        _warn("DLLs ICU introuvables dans le Python Wine ; le bundle Qt risque d'être incomplet.")
+        return
+
+    for dll in dlls:
+        win_dll = subprocess.check_output(
+            ["winepath", "-w", str(dll)],
+            env=wine_env,
+            text=True,
+        ).strip()
+        cmd += ["--add-binary", f"{win_dll};."]
+    _ok("Support ICU Windows ajouté au bundle PyInstaller (Wine)")
+
+
 def _verify_windows_runtime_bundle(bundle_dir: Path) -> None:
     """
     Validate presence of critical runtime binaries in a Windows onedir bundle.
@@ -808,6 +891,9 @@ def _verify_windows_runtime_bundle(bundle_dir: Path) -> None:
         "libffi": "libffi-*.dll",
         "libssl": "libssl-*.dll",
         "libcrypto": "libcrypto-*.dll",
+        "icuuc": "icuuc*.dll",
+        "icuin": "icuin*.dll",
+        "icudt": "icudt*.dll",
     }
     missing: list[str] = []
     for label, pattern in required_patterns.items():
@@ -874,6 +960,7 @@ def _build_pyinstaller(onefile: bool) -> Path:
         _add_windows_ctypes_to_pyinstaller_native(cmd)
         _add_windows_sqlite_to_pyinstaller_native(cmd)
         _add_windows_ssl_to_pyinstaller_native(cmd)
+        _add_windows_icu_to_pyinstaller_native(cmd)
         cmd += ["--version-file", str(_write_windows_version_file())]
 
     # Icône Windows
@@ -958,7 +1045,17 @@ def _build_appdir() -> Path:
     _ok(".desktop créé")
 
     # Icône
-    _write_linux_app_icon_png(appdir / "Mediarecode.png")
+    icon_png = appdir / "Mediarecode.png"
+    _write_linux_app_icon_png(icon_png)
+    diricon = appdir / ".DirIcon"
+    if diricon.exists() or diricon.is_symlink():
+        diricon.unlink()
+    diricon.symlink_to(icon_png.name)
+
+    linux_icon_ico = _resolve_windows_icon_ico()
+    if linux_icon_ico is not None:
+        shutil.copy2(linux_icon_ico, appdir / "Mediarecode.ico")
+        _ok(f"Icône ICO copiée : {linux_icon_ico.name}")
 
     return appdir
 
@@ -985,8 +1082,56 @@ def _write_minimal_png(dest: Path) -> None:
     dest.write_bytes(png_bytes)
 
 
+def _extract_best_png_from_ico(src_ico: Path) -> bytes | None:
+    """
+    Return the largest embedded PNG payload from an ICO file when available.
+
+    Many modern ICO files are multi-resolution containers whose entries are
+    already PNG-compressed. Extracting the biggest PNG avoids Qt loading the
+    first tiny frame (often 16x16), which causes blurry AppImage icons.
+    """
+    data = src_ico.read_bytes()
+    if len(data) < 6:
+        return None
+
+    reserved, icon_type, count = struct.unpack_from("<HHH", data, 0)
+    if reserved != 0 or icon_type != 1 or count <= 0:
+        return None
+
+    best_payload: bytes | None = None
+    best_area = -1
+    for index in range(count):
+        offset = 6 + index * 16
+        if offset + 16 > len(data):
+            break
+        width, height, _colors, _reserved, _planes, _bpp, size, image_offset = struct.unpack_from(
+            "<BBBBHHII",
+            data,
+            offset,
+        )
+        width = 256 if width == 0 else width
+        height = 256 if height == 0 else height
+        if image_offset + size > len(data):
+            continue
+        payload = data[image_offset:image_offset + size]
+        if not payload.startswith(b"\x89PNG\r\n\x1a\n"):
+            continue
+        area = width * height
+        if area > best_area:
+            best_area = area
+            best_payload = payload
+
+    return best_payload
+
+
 def _convert_ico_to_png(src_ico: Path, dest_png: Path) -> bool:
     """Convert an ICO file to PNG using Qt image plugins."""
+    best_png = _extract_best_png_from_ico(src_ico)
+    if best_png is not None:
+        dest_png.parent.mkdir(parents=True, exist_ok=True)
+        dest_png.write_bytes(best_png)
+        return True
+
     try:
         qtgui = importlib.import_module("PySide6.QtGui")
         QImage = qtgui.QImage
@@ -1075,13 +1220,13 @@ def _ensure_appimagetool() -> Path:
     return tool_path
 
 
-def _build_appimage(appdir: Path) -> Path:
+def _build_appimage(appdir: Path, version_tag: str | None = None) -> Path:
     """Invoque appimagetool pour produire le .AppImage final."""
     _title("Étape 3 — appimagetool")
 
     appimagetool = _ensure_appimagetool()
     arch = platform.machine()   # x86_64 | aarch64
-    output = ROOT / "dist" / f"Mediarecode-{arch}.AppImage"
+    output = _versioned_output_path(ROOT / "dist" / f"Mediarecode-{arch}.AppImage", version_tag)
 
     env = os.environ.copy()
     env["ARCH"] = arch
@@ -1097,13 +1242,19 @@ def _build_appimage(appdir: Path) -> Path:
 # Build Windows cross (Wine + PyInstaller + NSIS) — Linux uniquement
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _wine(*args: str, check: bool = True, **kwargs) -> subprocess.CompletedProcess:
-    """Lance une commande via Wine avec le préfixe isolé."""
+def _wine_env(debug: str = "-all") -> dict[str, str]:
+    """Return a Wine environment for the isolated prefix."""
     env = os.environ.copy()
     env["WINEPREFIX"] = str(_WINE_PREFIX)
-    env["WINEDEBUG"]  = "-all"          # supprime le bruit de Wine en console
+    env["WINEDEBUG"]  = debug
     env.pop("DISPLAY", None)            # headless : évite les popups Wine
     env["WINEDLLOVERRIDES"] = "mscoree,mshtml="
+    return env
+
+
+def _wine(*args: str, check: bool = True, **kwargs) -> subprocess.CompletedProcess:
+    """Lance une commande via Wine avec le préfixe isolé."""
+    env = _wine_env("-all")             # supprime le bruit de Wine en console
     return _run(["wine", *args], env=env, check=check, **kwargs)
 
 
@@ -1236,6 +1387,205 @@ def _wine_pip(*packages: str) -> None:
     _wine(str(_WIN_PY_EXE), "-m", "pip", "install", "--upgrade", *packages)
 
 
+def _windows_icu_cache_dir() -> Path:
+    return ROOT / "build" / "tools" / "icu" / f"win-x64-{_WIN_ICU_NUGET_VERSION}"
+
+
+def _extract_windows_icu_alias_name(filename: str) -> str | None:
+    match = re.fullmatch(r"(icu(?:uc|in|dt))\d+\.dll", filename, flags=re.IGNORECASE)
+    if not match:
+        return None
+    return f"{match.group(1).lower()}.dll"
+
+
+def _ensure_windows_icu_runtime_cache() -> list[Path]:
+    """
+    Download and extract ICU runtime DLLs for Windows from NuGet.
+
+    The Microsoft ICU runtime package ships versioned DLL names
+    (`icuuc72.dll`, `icuin72.dll`, `icudt72.dll`). We keep both the original
+    files and later create suffix-less aliases next to Qt when needed because
+    some Qt builds import `icuuc.dll` directly.
+    """
+    cache_dir = _windows_icu_cache_dir()
+    extracted = sorted(cache_dir.glob("icu*.dll"))
+    if extracted:
+        return extracted
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    nupkg = cache_dir / "icu-runtime.nupkg"
+    if not nupkg.exists():
+        _info(f"Téléchargement ICU Windows {_WIN_ICU_NUGET_VERSION} depuis NuGet…")
+        urllib.request.urlretrieve(_WIN_ICU_NUGET_URL, nupkg)
+
+    extracted_any = False
+    with zipfile.ZipFile(nupkg) as archive:
+        for member in archive.namelist():
+            normalized = member.replace("\\", "/")
+            if not normalized.startswith("runtimes/win-x64/native/"):
+                continue
+            if not normalized.lower().endswith(".dll"):
+                continue
+            target = cache_dir / Path(normalized).name
+            with archive.open(member) as src, target.open("wb") as dst:
+                shutil.copyfileobj(src, dst)
+            extracted_any = True
+
+    if not extracted_any:
+        raise RuntimeError(
+            "Le package ICU Windows téléchargé ne contient aucune DLL exploitable."
+        )
+
+    dlls = sorted(cache_dir.glob("icu*.dll"))
+    if not dlls:
+        raise RuntimeError("Extraction ICU Windows vide après téléchargement.")
+    _ok(f"Runtime ICU Windows prêt : {cache_dir}")
+    return dlls
+
+
+def _sync_windows_icu_dlls(target_dir: Path, source_dlls: Iterable[Path]) -> list[Path]:
+    """
+    Copy ICU DLLs into `target_dir` and create alias names without suffixes.
+    """
+    target_dir.mkdir(parents=True, exist_ok=True)
+    copied: list[Path] = []
+    for src in source_dlls:
+        dest = target_dir / src.name
+        shutil.copy2(src, dest)
+        copied.append(dest)
+
+        alias_name = _extract_windows_icu_alias_name(src.name)
+        if alias_name:
+            alias_dest = target_dir / alias_name
+            shutil.copy2(src, alias_dest)
+            copied.append(alias_dest)
+
+    return _dedupe_paths(copied)
+
+
+def _find_windows_icu_dlls(search_dirs: Iterable[Path]) -> list[Path]:
+    matches: list[Path] = []
+    for directory in search_dirs:
+        if not directory.is_dir():
+            continue
+        matches.extend(sorted(directory.glob("icu*.dll")))
+    return _dedupe_paths(matches)
+
+
+def _wine_pyside6_dir() -> Path:
+    return _WIN_PY_EXE.parent / "Lib" / "site-packages" / "PySide6"
+
+
+def _ensure_wine_qt_icu_runtime() -> list[Path]:
+    """
+    Ensure Qt ICU DLLs are present in the Wine Python environment.
+
+    We copy both versioned DLLs and suffix-less aliases next to PySide6's Qt
+    libraries so `Qt6Core.dll` can be imported during the cross-build.
+    """
+    pyside_dir = _wine_pyside6_dir()
+    if not pyside_dir.is_dir():
+        raise RuntimeError(f"PySide6 introuvable dans Wine: {pyside_dir}")
+
+    existing = _find_windows_icu_dlls([pyside_dir, _WIN_PY_EXE.parent])
+    required = {"icuuc.dll", "icuin.dll", "icudt.dll"}
+    existing_names = {path.name.lower() for path in existing}
+    if required.issubset(existing_names):
+        _ok("DLLs ICU déjà présentes dans le runtime Wine")
+        return existing
+
+    source_dlls = _ensure_windows_icu_runtime_cache()
+    installed = _sync_windows_icu_dlls(pyside_dir, source_dlls)
+    # Duplicate into the Python root as a fallback search location for loader quirks.
+    installed.extend(_sync_windows_icu_dlls(_WIN_PY_EXE.parent, source_dlls))
+    installed = _dedupe_paths(installed)
+
+    installed_names = {path.name.lower() for path in installed}
+    if not required.issubset(installed_names):
+        raise RuntimeError(
+            "Injection ICU incomplète dans Wine: "
+            f"attendu {', '.join(sorted(required))}, obtenu {', '.join(sorted(installed_names))}"
+        )
+
+    _ok("DLLs ICU Windows copiées dans le préfixe Wine")
+    return installed
+
+
+def _extract_missing_wine_dlls(log_text: str) -> list[str]:
+    """Extract missing DLL names from Wine loader diagnostics."""
+    matches = re.findall(r"Library\s+([^\s]+\.dll)\s+\(.*?not found", log_text, flags=re.IGNORECASE)
+    seen: set[str] = set()
+    dlls: list[str] = []
+    for raw in matches:
+        name = Path(raw).name
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        dlls.append(name)
+    return dlls
+
+
+def _verify_wine_pyside6_runtime() -> None:
+    """
+    Ensure `from PySide6 import QtCore` works inside the Wine Python runtime.
+
+    PyInstaller's Qt hooks import QtCore in an isolated child process. If that
+    import is broken, the build may continue with incomplete Qt collection and
+    produce a broken Windows bundle.
+    """
+    result = subprocess.run(
+        ["wine", str(_WIN_PY_EXE), "-c", "from PySide6 import QtCore; print(QtCore.__file__)"],
+        env=_wine_env("err+all"),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    combined = "\n".join(part for part in (stdout, stderr) if part)
+    if result.returncode == 0:
+        location = stdout.splitlines()[-1] if stdout else "QtCore"
+        _ok(f"PySide6/QtCore import OK dans Wine : {location}")
+        return
+
+    missing_dlls = _extract_missing_wine_dlls(combined)
+    missing_bits = f" DLLs manquantes signalées: {', '.join(missing_dlls)}." if missing_dlls else ""
+
+    pyside_dir = _wine_pyside6_dir()
+    package_missing: list[str] = []
+    for dll_name in missing_dlls:
+        if not (pyside_dir / dll_name).exists():
+            package_missing.append(dll_name)
+    package_bits = (
+        f" Absentes du package PySide6 installé: {', '.join(package_missing)}."
+        if package_missing else ""
+    )
+
+    hint = ""
+    if any(name.lower().startswith("icu") for name in missing_dlls):
+        hint = (
+            " Le wheel PySide6 installé dans Wine semble incomplet pour cette "
+            "version/environnement. Essayez une autre version via "
+            "MEDIARECODE_WINE_PYSIDE6_VERSION ou vérifiez le contenu du wheel."
+        )
+    elif missing_dlls:
+        hint = " Vérifiez le runtime Visual C++ et les DLLs Qt dans le préfixe Wine."
+
+    excerpt = ""
+    lines = [line.strip() for line in combined.splitlines() if line.strip()]
+    if lines:
+        excerpt = " Sortie Wine: " + " | ".join(lines[:6])
+
+    raise RuntimeError(
+        "Import PySide6.QtCore impossible dans le Python Wine après installation."
+        + missing_bits
+        + package_bits
+        + hint
+        + excerpt
+    )
+
+
 def _setup_wine_vcruntime() -> None:
     """
     Installe le runtime Visual C++ 2019 dans le préfixe Wine via winetricks.
@@ -1276,8 +1626,10 @@ def _setup_wine_vcruntime() -> None:
 
 def _ensure_wine_deps() -> None:
     """Installe PyInstaller + dépendances Python dans le préfixe Wine."""
-    _info("Installation des dépendances Python dans Wine…")
-    _wine_pip("pyinstaller", "PySide6>=6.6.0", "pymediainfo>=6.1.0")
+    _info(f"Installation des dépendances Python dans Wine (PySide6=={_WIN_PYSIDE6_VER})…")
+    _wine_pip("pyinstaller", f"PySide6=={_WIN_PYSIDE6_VER}", "pymediainfo>=6.1.0")
+    _ensure_wine_qt_icu_runtime()
+    _verify_wine_pyside6_runtime()
     _ok("Dépendances Python Windows installées")
 
 
@@ -1328,6 +1680,7 @@ def _build_pyinstaller_wine() -> Path:
     _add_windows_ctypes_to_pyinstaller_wine(cmd, wine_env)
     _add_windows_sqlite_to_pyinstaller_wine(cmd, wine_env)
     _add_windows_ssl_to_pyinstaller_wine(cmd, wine_env)
+    _add_windows_icu_to_pyinstaller_wine(cmd, wine_env)
     win_ver = subprocess.check_output(
         ["winepath", "-w", str(_write_windows_version_file())],
         env=wine_env,
@@ -1473,11 +1826,11 @@ def _nsis_bundle_glob(bundle_dir: Path) -> str:
     return bundle_dir.as_posix().rstrip("/\\") + "/*"
 
 
-def _build_nsis_installer(bundle_dir: Path) -> Path:
+def _build_nsis_installer(bundle_dir: Path, version_tag: str | None = None) -> Path:
     """Génère le script NSIS et invoque makensis pour produire l'installateur."""
     _title("Étape NSIS — Installateur Windows")
 
-    output = ROOT / "Mediarecode-Setup.exe"   # hors de dist/ (owned by nfsnobody)
+    output = _versioned_output_path(ROOT / "Mediarecode-Setup.exe", version_tag)
     nsi    = ROOT / "mediarecode.nsi"
     win_icon = _resolve_windows_icon_ico()
     icon_block = ""
@@ -1514,7 +1867,7 @@ def _build_nsis_installer(bundle_dir: Path) -> Path:
     return output
 
 
-def build_windows(skip_wine: bool, dest: str | None = None) -> None:
+def build_windows(skip_wine: bool, dest: str | None = None, version_tag: str | None = None) -> None:
     """Orchestre le build Windows cross depuis Linux."""
     _title("Build Windows (Wine + PyInstaller + NSIS)")
 
@@ -1530,8 +1883,8 @@ def build_windows(skip_wine: bool, dest: str | None = None) -> None:
         _ensure_wine_deps()
         bundle_dir = _build_pyinstaller_wine()
 
-    installer = _build_nsis_installer(bundle_dir)
-    final_installer = _copy_final_file_if_requested(installer, dest)
+    installer = _build_nsis_installer(bundle_dir, version_tag=version_tag)
+    final_installer = _copy_final_file_if_requested(installer, dest, version_tag=version_tag)
 
     _title("Résultat")
     _ok(f"Installateur Windows : {final_installer}")
@@ -1547,7 +1900,13 @@ def build_windows(skip_wine: bool, dest: str | None = None) -> None:
 # Orchestration
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build(onefile: bool, exe_only: bool, clean: bool = False, dest: str | None = None) -> None:
+def build(
+    onefile: bool,
+    exe_only: bool,
+    clean: bool = False,
+    dest: str | None = None,
+    version_tag: str | None = None,
+) -> None:
     _ensure_pyinstaller()
 
     if clean:
@@ -1560,8 +1919,8 @@ def build(onefile: bool, exe_only: bool, clean: bool = False, dest: str | None =
             _warn("--onefile ignoré pour AppImage (onedir requis pour construire le AppDir)")
         _build_pyinstaller(onefile=False)
         appdir = _build_appdir()
-        appimage = _build_appimage(appdir)
-        final_appimage = _copy_final_file_if_requested(appimage, dest)
+        appimage = _build_appimage(appdir, version_tag=version_tag)
+        final_appimage = _copy_final_file_if_requested(appimage, dest, version_tag=version_tag)
 
         _title("Résultat")
         _ok(f"AppImage : {final_appimage}")
@@ -1574,7 +1933,7 @@ def build(onefile: bool, exe_only: bool, clean: bool = False, dest: str | None =
     else:
         # ── Cible .exe (Windows ou --exe explicite) ───────────────────────────
         exe = _build_pyinstaller(onefile=onefile)
-        final_exe = _copy_final_file_if_requested(exe, dest)
+        final_exe = _copy_final_file_if_requested(exe, dest, version_tag=version_tag)
 
         _title("Résultat")
         if onefile or dest:
@@ -1648,6 +2007,15 @@ def _parse_args() -> argparse.Namespace:
             "Si le nom de fichier est omis, le nom auto-généré est conservé."
         ),
     )
+    p.add_argument(
+        "--version",
+        metavar="TAG",
+        default=APP_VERSION,
+        help=(
+            "Tag version à suffixer dans le nom du fichier final "
+            f"(défaut: {APP_VERSION})."
+        ),
+    )
     return p.parse_args()
 
 
@@ -1673,8 +2041,8 @@ if __name__ == "__main__":
             bundle_dir = onefile_dir
         else:
             bundle_dir = exe_path.parent  # dist/mediarecode/
-        installer = _build_nsis_installer(bundle_dir)
-        final_file = _copy_final_file_if_requested(installer, args.dest)
+        installer = _build_nsis_installer(bundle_dir, version_tag=args.version)
+        final_file = _copy_final_file_if_requested(installer, args.dest, version_tag=args.version)
         _title("Résultat")
         _ok(f"Installateur : {final_file}")
     elif args.allinc:
@@ -1686,13 +2054,21 @@ if __name__ == "__main__":
         argv = [sys.executable, str(script), "--allinc"]
         if args.dest:
             argv += ["--dest", args.dest]
+        if args.version:
+            argv += ["--version", args.version]
         os.execv(sys.executable, argv)
     elif args.windows:
         # Cross-compilation Windows depuis Linux via Wine + NSIS
         if OS != "Linux":
             print("--windows est uniquement supporté depuis Linux.", file=sys.stderr)
             sys.exit(1)
-        build_windows(skip_wine=args.skip_wine, dest=args.dest)
+        build_windows(skip_wine=args.skip_wine, dest=args.dest, version_tag=args.version)
     else:
         # Comportement par défaut : AppImage Linux (ou --exe pour PyInstaller natif)
-        build(onefile=args.onefile, exe_only=args.exe, clean=False, dest=args.dest)
+        build(
+            onefile=args.onefile,
+            exe_only=args.exe,
+            clean=False,
+            dest=args.dest,
+            version_tag=args.version,
+        )
