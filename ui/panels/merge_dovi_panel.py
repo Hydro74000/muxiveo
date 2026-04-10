@@ -25,7 +25,7 @@ from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFrame,
-    QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QHBoxLayout, QLabel, QLayout, QLineEdit, QPushButton,
     QScrollArea, QVBoxLayout, QWidget,
 )
 
@@ -836,6 +836,7 @@ class MergeDoviPanel(QWidget):
         content_layout.setContentsMargins(24, 24, 24, 24)
         content_layout.setSpacing(16)
         content_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        content_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
 
         # Titre
         title = QLabel("Injection DoVi RPU + HDR10+")
