@@ -25,6 +25,12 @@ from PySide6.QtCore import QSettings, QStandardPaths
 
 from core.lang_tags import Rfc5646LanguageTags
 from core.subprocess_utils import subprocess_text_kwargs
+from core.workdir import (
+    clear_work_dir as clear_work_dir_contents,
+    prepare_process_work_dir,
+    work_dir_entries as list_work_dir_entries,
+    work_dir_has_entries,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -548,7 +554,6 @@ UI_STARTUP_PANEL_CHOICES: tuple[tuple[str, str], ...] = (
 
 REMUX_BACKEND_CHOICES: tuple[tuple[str, str], ...] = (
     ("ffmpeg", "FFmpeg (par défaut)"),
-    ("mkvmerge", "MKVToolNix / mkvmerge"),
 )
 
 
@@ -578,7 +583,7 @@ def _normalize_remux_backend(value: str | None) -> str:
     if not value:
         return "ffmpeg"
     raw = value.strip().lower()
-    if raw in {"ffmpeg", "mkvmerge"}:
+    if raw == "ffmpeg":
         return raw
     return "ffmpeg"
 
@@ -662,7 +667,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
                 "attr": "remux_backend",
                 "kind": "choice",
                 "label": "Backend de remux",
-                "description": "Moteur utilisé pour le remuxage conteneur. FFmpeg est le défaut ; mkvmerge reste disponible en option.",
+                "description": "Moteur utilisé pour le remuxage conteneur. FFmpeg est le backend nominal.",
                 "options": REMUX_BACKEND_CHOICES,
             },
         ),
@@ -1002,6 +1007,39 @@ class AppConfig:
     def ensure_work_dir(self) -> Path:
         self.work_dir.mkdir(parents=True, exist_ok=True)
         return self.work_dir
+
+    def work_dir_entries(self) -> list[Path]:
+        """Retourne les entrées présentes dans le work_dir."""
+        return list_work_dir_entries(self.ensure_work_dir())
+
+    def work_dir_has_leftovers(self) -> bool:
+        """True si le work_dir contient des éléments non nettoyés."""
+        return work_dir_has_entries(self.ensure_work_dir())
+
+    def clear_work_dir(self) -> Path:
+        """Vide le contenu du work_dir (sans supprimer le dossier racine)."""
+        root = self.ensure_work_dir()
+        clear_work_dir_contents(root)
+        return root
+
+    def prepare_process_work_dir(
+        self,
+        output_path: Path,
+        *,
+        process_name: str | None = None,
+    ) -> Path:
+        """
+        Prépare un dossier process dédié sous work_dir.
+
+        Le nom du dossier est dérivé du nom du fichier de sortie.
+        Si le dossier existe déjà, il est vidé avant usage.
+        """
+        return prepare_process_work_dir(
+            self.ensure_work_dir(),
+            output_path=output_path,
+            process_name=process_name,
+            fallback_name="job",
+        )
 
     def ensure_output_dir(self) -> Path:
         self.output_dir.mkdir(parents=True, exist_ok=True)

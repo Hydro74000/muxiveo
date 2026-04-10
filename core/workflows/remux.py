@@ -22,13 +22,14 @@ from __future__ import annotations
 import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 from core.lang_tags import Rfc5646LanguageTags as LangTags
 from core.inspector import AttachmentInfo, ChapterEntry, FileInfo, HDRType, build_chapter_xml
 from core.runner import TaskCancelledError, TaskSignals, ToolRunner
+from core.workdir import prepare_process_work_dir, relocate_tmdb_covers_to_process_dir
 
 
 def _cli_path(path: Path) -> str:
@@ -653,11 +654,13 @@ class RemuxWorkflow(QObject):
     # Exécution
     # ------------------------------------------------------------------
 
-    def _write_chapter_xml(self, entries: list) -> Path:
+    def _write_chapter_xml(self, entries: list, *, out_dir: Path | None = None) -> Path:
         """Écrit un XML Matroska Chapters dans un fichier temporaire et retourne son chemin."""
         xml_content = build_chapter_xml(entries)
+        target_dir = out_dir or Path(tempfile.gettempdir())
+        target_dir.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".xml", delete=False, encoding="utf-8"
+            mode="w", suffix=".xml", delete=False, encoding="utf-8", dir=str(target_dir)
         ) as f:
             f.write(xml_content)
             return Path(f.name)
@@ -686,6 +689,7 @@ class RemuxWorkflow(QObject):
         output: Path,
         metadata: dict[str, str],
         *,
+        temp_dir: Path | None = None,
         cwd: Path | None,
         signals: TaskSignals,
     ) -> None:
@@ -694,12 +698,14 @@ class RemuxWorkflow(QObject):
             return
 
         tmp_path: Path | None = None
+        target_dir = temp_dir or output.parent
+        target_dir.mkdir(parents=True, exist_ok=True)
         try:
             with tempfile.NamedTemporaryFile(
                 mode="wb",
                 suffix=output.suffix or ".mkv",
                 delete=False,
-                dir=str(output.parent),
+                dir=str(target_dir),
                 prefix=f"{output.stem}.postmeta.",
             ) as f:
                 tmp_path = Path(f.name)
@@ -750,9 +756,19 @@ class RemuxWorkflow(QObject):
             raise RemuxError("\n".join(errors))
 
         self.log_message.emit("INFO", f"Remuxage → {config.output.name}")
-        cwd = config.work_dir or config.sources[0].path.parent
-        if config.work_dir:
-            config.work_dir.mkdir(parents=True, exist_ok=True)
+        work_root = config.work_dir or Path(tempfile.gettempdir())
+        process_work_dir = prepare_process_work_dir(
+            work_root,
+            output_path=config.output,
+            fallback_name="remux_job",
+        )
+        relocated_attachments = relocate_tmdb_covers_to_process_dir(
+            [Path(p) for p in config.extra_attachments],
+            work_root=work_root,
+            process_dir=process_work_dir,
+        )
+        run_config = replace(config, extra_attachments=relocated_attachments)
+        cwd = process_work_dir
 
         signals = TaskSignals()
         executor = ThreadPoolExecutor(max_workers=1)
@@ -760,10 +776,13 @@ class RemuxWorkflow(QObject):
         def _task() -> None:
             chapters_file: Path | None = None
             try:
-                if config.chapter_overrides is not None:
-                    chapters_file = self._write_chapter_xml(config.chapter_overrides)
+                if run_config.chapter_overrides is not None:
+                    chapters_file = self._write_chapter_xml(
+                        run_config.chapter_overrides,
+                        out_dir=process_work_dir,
+                    )
                 cmd = self.build_command(
-                    config,
+                    run_config,
                     chapters_file=chapters_file,
                     emit_metadata_logs=True,
                 )
@@ -772,11 +791,12 @@ class RemuxWorkflow(QObject):
                     progress_cb=lambda line: signals.progress.emit(line),
                     signals=signals,
                 )
-                metadata = self._resolved_postproc_metadata(config)
+                metadata = self._resolved_postproc_metadata(run_config)
                 if metadata:
                     self._apply_metadata_inplace(
-                        config.output,
+                        run_config.output,
                         metadata,
+                        temp_dir=process_work_dir,
                         cwd=cwd,
                         signals=signals,
                     )

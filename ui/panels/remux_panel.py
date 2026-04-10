@@ -1738,12 +1738,19 @@ class _AttachmentPanel(QFrame):
                 path.unlink()
         except OSError:
             pass
-        parent = path.parent
-        try:
-            if parent.exists():
-                parent.rmdir()
-        except OSError:
-            pass
+        tmdb_root = self._config.ensure_work_dir() / "tmdb_covers"
+        current = path.parent
+        while current.exists():
+            try:
+                current.rmdir()
+            except OSError:
+                break
+            if current == tmdb_root:
+                break
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
 
     def _clear_auto_tmdb_cover_item(self) -> None:
         path = self._auto_tmdb_cover_path
@@ -2442,15 +2449,6 @@ class RemuxPanel(QWidget):
         apply_translations(self)
 
     def _make_workflow(self) -> RemuxWorkflow | FfmpegRemuxWorkflow:
-        backend = getattr(self._config, "remux_backend", "ffmpeg")
-        if backend == "mkvmerge":
-            return RemuxWorkflow(
-                mkvmerge_bin=self._config.tool_mkvmerge,
-                ffmpeg_bin=self._config.tool_ffmpeg,
-                ffmpeg_threads=self._config.ffmpeg_threads,
-                writing_application=self._writing_application,
-                mkvmerge_major_version=self._config.tool_major_version("mkvmerge"),
-            )
         return FfmpegRemuxWorkflow(
             ffmpeg_bin=self._config.tool_ffmpeg,
             ffprobe_bin=self._config.tool_ffprobe,
@@ -3030,19 +3028,8 @@ class RemuxPanel(QWidget):
 
     def refresh_runtime_settings(self) -> None:
         """Recharge les binaires/runtime issus de la configuration courante."""
-        backend = getattr(self._config, "remux_backend", "ffmpeg")
-        active_is_mkvmerge = isinstance(self._workflow, RemuxWorkflow)
-        want_mkvmerge = backend == "mkvmerge"
-
-        if active_is_mkvmerge != want_mkvmerge:
+        if not isinstance(self._workflow, FfmpegRemuxWorkflow):
             self._recreate_workflow()
-        elif isinstance(self._workflow, RemuxWorkflow):
-            self._workflow.set_mkvmerge_bin(self._config.tool_mkvmerge)
-            self._workflow.set_ffmpeg_bin(self._config.tool_ffmpeg)
-            self._workflow.set_ffmpeg_threads(self._config.ffmpeg_threads)
-            self._workflow.set_mkvmerge_major_version(
-                self._config.tool_major_version("mkvmerge")
-            )
         else:
             self._workflow.set_ffmpeg_bin(self._config.tool_ffmpeg)
             self._workflow.set_ffprobe_bin(self._config.tool_ffprobe)

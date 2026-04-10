@@ -141,7 +141,7 @@ def test_settings_panel_writes_ffmpeg_threads_to_ini(tmp_path, qt_app):
         assert cfg.ffmpeg_threads == 18
 
 
-def test_settings_panel_writes_remux_backend_to_ini(tmp_path, qt_app):
+def test_settings_panel_exposes_ffmpeg_only_for_remux_backend(tmp_path, qt_app):
     import core.config as cfg_mod
     from core.config import AppConfig
     from ui.panels.settings_panel import SettingsPanel
@@ -157,10 +157,10 @@ def test_settings_panel_writes_remux_backend_to_ini(tmp_path, qt_app):
 
         panel = SettingsPanel(cfg)
         combo = panel.widget_for("remux", "backend")
-        index = combo.findData("mkvmerge")
-        assert index >= 0
-        combo.setCurrentIndex(index)
+        assert combo.count() == 1
+        assert combo.currentData() == "ffmpeg"
+        assert combo.findData("mkvmerge") == -1
         panel._on_save_clicked()
 
-        assert "backend = mkvmerge" in ini_path.read_text(encoding="utf-8")
-        assert cfg.remux_backend == "mkvmerge"
+        assert "backend = ffmpeg" in ini_path.read_text(encoding="utf-8")
+        assert cfg.remux_backend == "ffmpeg"

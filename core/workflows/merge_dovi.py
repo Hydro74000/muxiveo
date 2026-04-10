@@ -39,6 +39,7 @@ from typing import Callable
 
 from PySide6.QtCore import QObject, Signal
 from core.subprocess_utils import subprocess_text_kwargs
+from core.workdir import prepare_process_work_dir
 
 
 # =============================================================================
@@ -264,7 +265,13 @@ class MergeDoviWorkflow(QObject):
         """Lance le workflow dans un thread secondaire."""
         self._cancelled = False
         basename = output_basename or f"{film1.stem}_DOVI_HDR10PLUS"
-        paths    = _WorkflowPaths.from_config(work_dir, output_dir, film1, basename)
+        output_path = output_dir / f"{basename}.mkv"
+        process_work_dir = prepare_process_work_dir(
+            work_dir,
+            output_path=output_path,
+            fallback_name="dovi_job",
+        )
+        paths = _WorkflowPaths.from_config(process_work_dir, output_dir, film1, basename)
 
         outer = ThreadPoolExecutor(max_workers=1)
         outer.submit(self._run, film1, film2, paths, dovi_profile)
