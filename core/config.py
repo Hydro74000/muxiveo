@@ -546,6 +546,11 @@ UI_STARTUP_PANEL_CHOICES: tuple[tuple[str, str], ...] = (
     ("settings", "Paramètres"),
 )
 
+REMUX_BACKEND_CHOICES: tuple[tuple[str, str], ...] = (
+    ("ffmpeg", "FFmpeg (par défaut)"),
+    ("mkvmerge", "MKVToolNix / mkvmerge"),
+)
+
 
 def _normalize_startup_panel(value: str | None) -> str:
     if not value:
@@ -567,6 +572,15 @@ def _normalize_startup_panel(value: str | None) -> str:
         "paramètres": "settings",
     }
     return aliases.get(raw, "dashboard")
+
+
+def _normalize_remux_backend(value: str | None) -> str:
+    if not value:
+        return "ffmpeg"
+    raw = value.strip().lower()
+    if raw in {"ffmpeg", "mkvmerge"}:
+        return raw
+    return "ffmpeg"
 
 
 INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
@@ -636,6 +650,20 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
                 "kind": "int",
                 "label": "Nombre de threads FFmpeg",
                 "description": "Nombre de threads passé à FFmpeg via -threads. 0 laisse FFmpeg choisir automatiquement. La valeur par défaut est calculée à partir du nombre de coeurs × 1,5.",
+            },
+        ),
+    },
+    {
+        "section": "remux",
+        "title": "Remux",
+        "fields": (
+            {
+                "key": "backend",
+                "attr": "remux_backend",
+                "kind": "choice",
+                "label": "Backend de remux",
+                "description": "Moteur utilisé pour le remuxage conteneur. FFmpeg est le défaut ; mkvmerge reste disponible en option.",
+                "options": REMUX_BACKEND_CHOICES,
             },
         ),
     },
@@ -828,6 +856,9 @@ class AppConfig:
         self.ffmpeg_threads = _normalize_ffmpeg_thread_count(
             self._resolve_int("ffmpeg", "threads", "ffmpeg/threads", _default_ffmpeg_thread_count())
         )
+        self.remux_backend = _normalize_remux_backend(
+            self._resolve_text("remux", "backend", "remux/backend", "ffmpeg")
+        )
 
         self.dovi_profile = self._resolve_text("hdr", "dovi_profile", "hdr/dovi_profile", "8")
         self.dovi_compat_id = self._resolve_text("hdr", "dovi_compat_id", "hdr/dovi_compat_id", "1")
@@ -895,6 +926,7 @@ class AppConfig:
         s.setValue("tools/eac3to", self.tool_eac3to)
 
         s.setValue("ffmpeg/threads", self.ffmpeg_threads)
+        s.setValue("remux/backend", self.remux_backend)
 
         s.setValue("hdr/dovi_profile", self.dovi_profile)
         s.setValue("hdr/dovi_compat_id", self.dovi_compat_id)
@@ -1019,6 +1051,9 @@ class AppConfig:
             },
             "ffmpeg": {
                 "threads": self.ffmpeg_threads,
+            },
+            "remux": {
+                "backend": self.remux_backend,
             },
             "hdr": {
                 "dovi_profile": self.dovi_profile,

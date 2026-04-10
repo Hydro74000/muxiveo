@@ -12,33 +12,44 @@ Classes publiques :
 Conventions :
     - Jamais shell=True
     - pathlib.Path pour tous les chemins
-    - mkvmerge uniquement (pas de ffmpeg)
+    - mkvmerge pour le remux principal, ffmpeg pour les post-métadonnées
     - Signaux Qt thread-safe (QueuedConnection) pour la communication vers l'UI
     - Hypothèse : les index ffprobe correspondent aux TID mkvmerge pour les MKV
 """
 
 from __future__ import annotations
 
-import subprocess
+import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from xml.sax.saxutils import escape as _xml_escape
 
 from PySide6.QtCore import QObject, Signal
 from core.lang_tags import Rfc5646LanguageTags as LangTags
 from core.inspector import AttachmentInfo, ChapterEntry, FileInfo, HDRType, build_chapter_xml
 from core.runner import TaskCancelledError, TaskSignals, ToolRunner
-from core.subprocess_utils import subprocess_text_kwargs
 
 
 def _cli_path(path: Path) -> str:
     """
     Normalise les chemins CLI avec des slashs pour garder des commandes stables
-    entre Linux/macOS/Windows. mkvmerge et mkvpropedit les acceptent.
+    entre Linux/macOS/Windows. mkvmerge et ffmpeg les acceptent.
     """
     return path.as_posix()
+
+
+def _default_ffmpeg_thread_count() -> int:
+    """Default FFmpeg thread count: logical CPU count × 0.75, rounded up."""
+    cpu_count = os.cpu_count() or 1
+    return max(1, (cpu_count * 3 + 3) // 4)
+
+
+def _normalize_ffmpeg_thread_count(value: int | None) -> int:
+    """Return a safe FFmpeg thread count, preserving 0 as ffmpeg auto mode."""
+    if value is None or value < 0:
+        return _default_ffmpeg_thread_count()
+    return value
 
 
 # =============================================================================
@@ -188,7 +199,7 @@ class RemuxConfig:
     extra_attachments:   list          = field(default_factory=list)  # list[Path]
     work_dir:            Path | None   = None
     file_title:          str           = ""      # balise Title du segment de sortie
-    #: Balises MKV globales à écrire dans le fichier de sortie via mkvpropedit.
+    #: Balises MKV globales à écrire dans le fichier de sortie via post-traitement FFmpeg.
     #: None  → comportement par défaut (mkvmerge copie les balises des sources).
     #: dict  → supprime les balises des sources (--no-global-tags) et écrit ce dict.
     #: {}    → supprime toutes les balises (--no-global-tags, rien n'est écrit).
@@ -332,7 +343,8 @@ class RemuxWorkflow(QObject):
     def __init__(
         self,
         mkvmerge_bin: str = "mkvmerge",
-        mkvpropedit_bin: str = "mkvpropedit",
+        ffmpeg_bin: str = "ffmpeg",
+        ffmpeg_threads: int | None = None,
         parent: QObject | None = None,
         *,
         writing_application: str = "",
@@ -340,7 +352,8 @@ class RemuxWorkflow(QObject):
     ) -> None:
         super().__init__(parent)
         self._mkvmerge = mkvmerge_bin
-        self._mkvpropedit = mkvpropedit_bin
+        self._ffmpeg = ffmpeg_bin
+        self._ffmpeg_threads = _normalize_ffmpeg_thread_count(ffmpeg_threads)
         self._runner = ToolRunner(max_workers=1, parent=self)
         self._writing_application = writing_application.strip()
         self._mkvmerge_major_version = mkvmerge_major_version
@@ -349,9 +362,13 @@ class RemuxWorkflow(QObject):
         """Met à jour le binaire mkvmerge utilisé par le workflow."""
         self._mkvmerge = mkvmerge_bin
 
-    def set_mkvpropedit_bin(self, mkvpropedit_bin: str) -> None:
-        """Met à jour le binaire mkvpropedit utilisé par le workflow."""
-        self._mkvpropedit = mkvpropedit_bin
+    def set_ffmpeg_bin(self, ffmpeg_bin: str) -> None:
+        """Met à jour le binaire ffmpeg utilisé pour les post-traitements metadata."""
+        self._ffmpeg = ffmpeg_bin
+
+    def set_ffmpeg_threads(self, ffmpeg_threads: int | None) -> None:
+        """Met à jour le nombre de threads passé à FFmpeg via `-threads`."""
+        self._ffmpeg_threads = _normalize_ffmpeg_thread_count(ffmpeg_threads)
 
     def set_mkvmerge_major_version(self, major: int | None) -> None:
         self._mkvmerge_major_version = major
@@ -359,6 +376,9 @@ class RemuxWorkflow(QObject):
     def set_writing_application(self, writing_application: str) -> None:
         """Met à jour la valeur du tag Multiplexing Application."""
         self._writing_application = writing_application.strip()
+
+    def _ffmpeg_thread_args(self) -> list[str]:
+        return ["-threads", str(self._ffmpeg_threads)]
 
     # ------------------------------------------------------------------
     # Construction de la commande
@@ -465,7 +485,7 @@ class RemuxWorkflow(QObject):
 
             # --- Balises globales ---
             # Si tag_overrides est défini : on supprime les balises de cette source
-            # (elles seront remplacées via mkvpropedit après le remuxage).
+            # (elles seront remplacées via post-traitement FFmpeg après le remuxage).
             # Si copy_tags=False et pas d'overrides : suppression explicite.
             if config.tag_overrides is not None or not src.copy_tags:
                 cmd.append("--no-global-tags")
@@ -642,87 +662,86 @@ class RemuxWorkflow(QObject):
             f.write(xml_content)
             return Path(f.name)
 
-    def _apply_tags_inplace(self, output: Path, tags: dict[str, str]) -> None:
+    def _resolved_postproc_metadata(self, config: RemuxConfig) -> dict[str, str]:
         """
-        Écrit les balises MKV globales depuis un dict via mkvpropedit (in-place).
+        Construit les métadonnées globales à appliquer en post-traitement.
 
-        Construit un fichier XML Matroska Tags temporaire et l'applique avec
-        ``mkvpropedit --tags all:<xmlfile>``. Supprime le fichier temp après usage.
+        tag_overrides reste prioritaire : les tags sources ont déjà été supprimés
+        dans la commande mkvmerge via --no-global-tags.
         """
-        if not tags:
-            return
+        metadata: dict[str, str] = {}
+        if config.tag_overrides:
+            for key, value in config.tag_overrides.items():
+                key_s = str(key).strip()
+                value_s = str(value).strip()
+                if not key_s or not value_s:
+                    continue
+                metadata[key_s] = value_s
+        if self._writing_application:
+            metadata["muxing_application"] = self._writing_application
+        return metadata
 
-        simples = "\n".join(
-            f"    <Simple><Name>{_xml_escape(k)}</Name>"
-            f"<String>{_xml_escape(v)}</String></Simple>"
-            for k, v in tags.items()
-            if v.strip()
-        )
-        xml_content = (
-            '<?xml version="1.0" encoding="UTF-8"?>\n'
-            "<Tags>\n"
-            "  <Tag>\n"
-            "    <Targets />\n"
-            f"{simples}\n"
-            "  </Tag>\n"
-            "</Tags>\n"
-        )
-
-        if not self._mkvpropedit:
-            self.log_message.emit("WARN", "mkvpropedit non configuré — balises non appliquées.")
+    def _apply_metadata_inplace(
+        self,
+        output: Path,
+        metadata: dict[str, str],
+        *,
+        cwd: Path | None,
+        signals: TaskSignals,
+    ) -> None:
+        """Applique des métadonnées globales en remux copy FFmpeg atomique."""
+        if not metadata:
             return
 
         tmp_path: Path | None = None
         try:
             with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".xml", delete=False, encoding="utf-8"
+                mode="wb",
+                suffix=output.suffix or ".mkv",
+                delete=False,
+                dir=str(output.parent),
+                prefix=f"{output.stem}.postmeta.",
             ) as f:
-                f.write(xml_content)
                 tmp_path = Path(f.name)
 
-            cmd = [self._mkvpropedit, _cli_path(output), "--tags", f"all:{_cli_path(tmp_path)}"]
+            cmd: list[str] = [
+                self._ffmpeg,
+                "-hide_banner",
+                "-y",
+                *self._ffmpeg_thread_args(),
+                "-i", _cli_path(output),
+                "-map", "0",
+                "-c", "copy",
+                "-default_mode", "passthrough",
+                "-map_metadata", "0",
+                "-map_chapters", "0",
+            ]
+            for key, value in metadata.items():
+                cmd.extend(["-metadata", f"{key}={value}"])
+            cmd.append(_cli_path(tmp_path))
+
             self.log_message.emit("INFO", "$ " + " ".join(str(c) for c in cmd))
-            r = subprocess.run(
-                cmd, capture_output=True, check=False, timeout=60, **subprocess_text_kwargs()
+            self._runner._run_cmd(
+                cmd,
+                cwd=cwd,
+                label="ffmpeg-postmeta",
+                progress_cb=lambda line: signals.progress.emit(line),
+                signals=signals,
             )
-            if r.returncode != 0:
-                self.log_message.emit("WARN", f"mkvpropedit (balises) : {(r.stderr or '').strip()}")
-        except FileNotFoundError:
-            self.log_message.emit("WARN", "mkvpropedit introuvable — balises non appliquées.")
+
+            tmp_path.replace(output)
         finally:
             if tmp_path is not None:
                 try:
-                    tmp_path.unlink()
+                    if tmp_path.exists():
+                        tmp_path.unlink()
                 except Exception:
                     pass
-
-    def _set_writing_app_inplace(self, output: Path) -> None:
-        """Écrit le tag Multiplexing Application dans les infos de segment via mkvpropedit."""
-        if not self._mkvpropedit:
-            self.log_message.emit("WARN", "mkvpropedit non configuré — writing-app non appliqué.")
-            return
-        if not self._writing_application:
-            self.log_message.emit("WARN", "Writing-app non configuré — balise non appliquée.")
-            return
-        cmd = [
-            self._mkvpropedit, _cli_path(output),
-            "--edit", "info",
-            "--set", f"muxing-application={self._writing_application}",
-        ]
-        try:
-            self.log_message.emit("INFO", "$ " + " ".join(str(c) for c in cmd))
-            r = subprocess.run(
-                cmd, capture_output=True, check=False, timeout=30, **subprocess_text_kwargs()
-            )
-            if r.returncode != 0:
-                self.log_message.emit("WARN", f"mkvpropedit (writing-app) : {(r.stderr or '').strip()}")
-        except FileNotFoundError:
-            self.log_message.emit("WARN", "mkvpropedit introuvable — writing-app non appliqué.")
 
     def run(self, config: RemuxConfig) -> TaskSignals:
         """
         Lance le remuxage dans un thread secondaire via ToolRunner,
-        puis applique le tag Writing Application via mkvpropedit.
+        puis applique les métadonnées globales post-remux via FFmpeg.
 
         Les signaux du TaskSignals retourné permettent de suivre la progression.
         """
@@ -753,9 +772,14 @@ class RemuxWorkflow(QObject):
                     progress_cb=lambda line: signals.progress.emit(line),
                     signals=signals,
                 )
-                if config.tag_overrides:
-                    self._apply_tags_inplace(config.output, config.tag_overrides)
-                self._set_writing_app_inplace(config.output)
+                metadata = self._resolved_postproc_metadata(config)
+                if metadata:
+                    self._apply_metadata_inplace(
+                        config.output,
+                        metadata,
+                        cwd=cwd,
+                        signals=signals,
+                    )
                 signals.finished.emit(output)
             except TaskCancelledError:
                 signals.cancelled.emit()

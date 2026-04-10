@@ -436,3 +436,45 @@ class TestTrackMetaEditsOrdering:
             (2, "Sous B", "eng"),
             (3, "Sous A", "fra"),
         ]
+
+    def test_track_flags_are_propagated_to_track_meta_edits(self, tmp_path, qt_app):
+        src = tmp_path / "src.mkv"
+        src.touch()
+        out = tmp_path / "out.mkv"
+
+        audio = TrackEntry(
+            mkv_tid=1,
+            track_type="audio",
+            codec="EAC3",
+            display_info="",
+            language="fra",
+            title="VF",
+            orig_language="fra",
+            orig_title="VF",
+            flag_default=True,
+            flag_forced=False,
+            flag_hearing_impaired=True,
+            flag_visual_impaired=False,
+            flag_original=False,
+            flag_commentary=True,
+            orig_flag_default=False,
+            orig_flag_forced=False,
+            orig_flag_hearing_impaired=False,
+            orig_flag_visual_impaired=False,
+            orig_flag_original=False,
+            orig_flag_commentary=False,
+        )
+
+        enc = _encode_cfg(
+            src,
+            out,
+            audio_tracks=[AudioTrackSettings(stream_index=1, source_path=src)],
+        )
+        rmx = _remux_cfg(src, out, tracks=[_track(0, "video"), audio])
+
+        result = _merge(None, enc, rmx)
+        edit = next(e for e in result.track_meta_edits if e.track_order == 2)
+
+        assert edit.flag_default is True
+        assert edit.flag_hearing_impaired is True
+        assert edit.flag_commentary is True

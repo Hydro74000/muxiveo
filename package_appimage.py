@@ -70,6 +70,9 @@ BUILD_DIR = ROOT / "build"
 APPDIR = ROOT / "Mediarecode.AppDir"
 APP_NAME = "mediarecode"
 APP_DISPLAY_NAME = "Mediarecode"
+_APPIMAGE_UPDATE_OWNER = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_OWNER", "Hydro74000").strip() or "Hydro74000"
+_APPIMAGE_UPDATE_REPO = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_REPO", "mediarecode").strip() or "mediarecode"
+_APPIMAGE_UPDATE_RELEASE = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_RELEASE", "latest").strip() or "latest"
 
 # Préfixe Wine dédié au build Windows (isolé du préfixe utilisateur ~/.wine)
 WINE_PREFIX = ROOT / ".wine_build"
@@ -360,7 +363,7 @@ def _convert_ico_to_png(src_ico: Path, dest_png: Path) -> bool:
         return False
 
     dest_png.parent.mkdir(parents=True, exist_ok=True)
-    return bool(image.save(str(dest_png), "PNG"))
+    return bool(image.save(str(dest_png), b"PNG"))
 
 
 def _extract_best_png_from_ico(src_ico: Path) -> bytes | None:
@@ -873,6 +876,9 @@ def build_appimage(
 
     env = os.environ.copy()
     env["ARCH"] = arch
+    update_information = _appimage_update_information(arch, allinc=allinc)
+    env["UPDATE_INFORMATION"] = update_information
+    info(f"UPDATE_INFORMATION: {update_information}")
     # appimagetool est lui-même une AppImage : sans FUSE (distrobox, CI…)
     # il faut lui demander de s'extraire dans un dossier tmp plutôt que
     # de se monter via FUSE.
@@ -886,6 +892,22 @@ def build_appimage(
     output.chmod(output.stat().st_mode | stat.S_IEXEC)
     ok(f"AppImage créée : {output.name}")
     return output
+
+
+def _appimage_update_information(arch: str, allinc: bool = False) -> str:
+    """
+    Chaîne UPDATE_INFORMATION AppImage pour GitHub Releases.
+    Format: gh-releases-zsync|OWNER|REPO|RELEASE|FILENAME.zsync
+    """
+    suffix = "_allinc" if allinc else ""
+    filename_pattern = f"{APP_DISPLAY_NAME}-{arch}{suffix}-*.AppImage.zsync"
+    return (
+        "gh-releases-zsync|"
+        f"{_APPIMAGE_UPDATE_OWNER}|"
+        f"{_APPIMAGE_UPDATE_REPO}|"
+        f"{_APPIMAGE_UPDATE_RELEASE}|"
+        f"{filename_pattern}"
+    )
 
 
 # ---------------------------------------------------------------------------

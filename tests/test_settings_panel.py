@@ -139,3 +139,28 @@ def test_settings_panel_writes_ffmpeg_threads_to_ini(tmp_path, qt_app):
 
         assert "threads = 18" in ini_path.read_text(encoding="utf-8")
         assert cfg.ffmpeg_threads == 18
+
+
+def test_settings_panel_writes_remux_backend_to_ini(tmp_path, qt_app):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[remux]\nbackend = ffmpeg\n", encoding="utf-8")
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path):
+        mock_qs.return_value = _mock_qsettings()
+        cfg = AppConfig()
+
+        panel = SettingsPanel(cfg)
+        combo = panel.widget_for("remux", "backend")
+        index = combo.findData("mkvmerge")
+        assert index >= 0
+        combo.setCurrentIndex(index)
+        panel._on_save_clicked()
+
+        assert "backend = mkvmerge" in ini_path.read_text(encoding="utf-8")
+        assert cfg.remux_backend == "mkvmerge"

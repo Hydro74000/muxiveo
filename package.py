@@ -79,6 +79,9 @@ _WIN_ICU_NUGET_URL = (
 )
 # Bundle PyInstaller Windows (dans dist/)
 _WIN_BUNDLE   = ROOT / "mediarecode-win"   # hors de dist/ (owned by nfsnobody)
+_APPIMAGE_UPDATE_OWNER = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_OWNER", "Hydro74000").strip() or "Hydro74000"
+_APPIMAGE_UPDATE_REPO = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_REPO", "mediarecode").strip() or "mediarecode"
+_APPIMAGE_UPDATE_RELEASE = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_RELEASE", "latest").strip() or "latest"
 
 # ── Modules Python exclus du bundle ──────────────────────────────────────────
 
@@ -1152,7 +1155,7 @@ def _convert_ico_to_png(src_ico: Path, dest_png: Path) -> bool:
         return False
 
     dest_png.parent.mkdir(parents=True, exist_ok=True)
-    if not image.save(str(dest_png), "PNG"):
+    if not image.save(str(dest_png), b"PNG"):
         _warn(f"Unable to write PNG icon: {dest_png.name}")
         return False
     return True
@@ -1237,12 +1240,27 @@ def _build_appimage(appdir: Path, version_tag: str | None = None) -> Path:
 
     env = os.environ.copy()
     env["ARCH"] = arch
+    update_information = _appimage_update_information(arch)
+    env["UPDATE_INFORMATION"] = update_information
+    _info(f"UPDATE_INFORMATION : {update_information}")
 
     _run([str(appimagetool), str(appdir), str(output)], env=env)
 
     output.chmod(output.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     _ok(f"AppImage produit : {output}")
     return output
+
+
+def _appimage_update_information(arch: str) -> str:
+    """Chaîne UPDATE_INFORMATION AppImage au format GitHub Releases."""
+    filename_pattern = f"{APP_NAME}-{arch}-*.AppImage.zsync"
+    return (
+        "gh-releases-zsync|"
+        f"{_APPIMAGE_UPDATE_OWNER}|"
+        f"{_APPIMAGE_UPDATE_REPO}|"
+        f"{_APPIMAGE_UPDATE_RELEASE}|"
+        f"{filename_pattern}"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
