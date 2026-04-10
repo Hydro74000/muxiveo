@@ -696,6 +696,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "log_max_lines", "attr": "log_max_lines", "kind": "int", "label": "Nombre max de lignes de log", "description": "Nombre maximum de lignes conservées dans le panneau de log."},
             {"key": "theme", "attr": "theme", "kind": "choice", "label": "Thème", "description": "Thème principal pour l'interface. Le changement de thème nécessite de redémarrer l'application.", "options": (("dark", "Sombre"), ("light", "Clair"))},
             {"key": "startup_panel", "attr": "startup_panel", "kind": "choice", "label": "Panneau à afficher au démarrage", "description": "Panneau chargé en premier au lancement de l'application.", "options": UI_STARTUP_PANEL_CHOICES},
+            {"key": "startup_menu_compact", "attr": "startup_menu_compact", "kind": "bool", "label": "Démarrer avec le menu en mode Compact", "description": "Si activé, le menu latéral est réduit en mode icônes au lancement."},
         ),
     },
     {
@@ -892,6 +893,9 @@ class AppConfig:
         self.startup_panel = _normalize_startup_panel(
             self._resolve_text("ui", "startup_panel", "ui/startup_panel", "dashboard")
         )
+        self.startup_menu_compact = self._resolve_bool(
+            "ui", "startup_menu_compact", "ui/startup_menu_compact", False
+        )
         self.window_geometry: bytes | None = self._settings.value("ui/geometry", None)
 
         self.tmdb_api_key = self._resolve_text("metadata", "tmdb_api_key", "metadata/tmdb_api_key", "")
@@ -946,6 +950,10 @@ class AppConfig:
         s.setValue("ui/log_max_lines", self.log_max_lines)
         s.setValue("ui/theme", self.theme)
         s.setValue("ui/startup_panel", self.startup_panel)
+        s.setValue(
+            "ui/startup_menu_compact",
+            "true" if self.startup_menu_compact else "false",
+        )
 
         s.setValue("metadata/tmdb_api_key", self.tmdb_api_key)
         s.setValue("metadata/tmdb_bearer_token", self.tmdb_bearer_token)
@@ -1110,6 +1118,7 @@ class AppConfig:
                 "log_max_lines": self.log_max_lines,
                 "theme": self.theme,
                 "startup_panel": self.startup_panel,
+                "startup_menu_compact": self.startup_menu_compact,
             },
             "metadata": {
                 "tmdb_api_key": self.tmdb_api_key,
