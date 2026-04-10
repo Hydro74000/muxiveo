@@ -142,6 +142,38 @@ class TestAppConfigRamBuffer:
 
         assert cfg.startup_panel == "dashboard"
 
+    def test_default_remux_backend_is_ffmpeg(self, tmp_path):
+        """Sans clé explicite, le backend remux par défaut est FFmpeg."""
+        from core.config import AppConfig
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.dict(os.environ, {}, clear=False):
+                cfg = AppConfig()
+
+        assert cfg.remux_backend == "ffmpeg"
+
+    def test_remux_backend_ini_accepts_mkvmerge(self, tmp_path):
+        """config.ini [remux] backend=mkvmerge force le backend MKVToolNix."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[remux]\nbackend = mkvmerge\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.remux_backend == "mkvmerge"
+
     def test_audio_encoding_defaults_use_192_and_64(self, tmp_path):
         """Sans configuration explicite, l'audio utilise 192 kbps/canal et des paliers de 64."""
         from core.config import AppConfig
@@ -596,7 +628,7 @@ def test_setup_windows_no_window_kwargs_disabled_when_console_is_visible():
     fake_windll = SimpleNamespace(kernel32=SimpleNamespace(GetConsoleWindow=lambda: 1))
     with patch.object(setup_mod, "OS", "Windows"), \
          patch.object(setup_mod.sys, "frozen", True, create=True), \
-         patch.object(setup_mod.ctypes, "windll", fake_windll):
+         patch.object(setup_mod.ctypes, "windll", fake_windll, create=True):
         kwargs = setup_mod._windows_no_window_subprocess_kwargs()
 
     assert kwargs == {}
@@ -608,7 +640,7 @@ def test_setup_windows_no_window_kwargs_disabled_in_cli_mode():
     fake_windll = SimpleNamespace(kernel32=SimpleNamespace(GetConsoleWindow=lambda: 0))
     with patch.object(setup_mod, "OS", "Windows"), \
          patch.object(setup_mod.sys, "frozen", False, create=True), \
-         patch.object(setup_mod.ctypes, "windll", fake_windll):
+         patch.object(setup_mod.ctypes, "windll", fake_windll, create=True):
         kwargs = setup_mod._windows_no_window_subprocess_kwargs()
 
     assert kwargs == {}

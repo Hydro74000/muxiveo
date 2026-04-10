@@ -64,6 +64,7 @@ from core.workflows.remux import (
     RemuxConfig, RemuxWorkflow, SourceInput,
     TrackEntry, tracks_from_file_info,
 )
+from core.workflows.remux_ffmpeg import FfmpegRemuxWorkflow
 from ui.design_system import colors as _C
 from ui.panels.tmdb_search_modal import TmdbSearchModal, extract_season_episode
 from ui.panels.track_edit_dialog import TrackEditDialog
@@ -2414,12 +2415,8 @@ class RemuxPanel(QWidget):
     ) -> None:
         super().__init__(parent)
         self._config   = config
-        self._workflow = RemuxWorkflow(
-            mkvmerge_bin=config.tool_mkvmerge,
-            mkvpropedit_bin=config.tool_mkvpropedit,
-            writing_application=writing_application,
-            mkvmerge_major_version=config.tool_major_version("mkvmerge"),
-        )
+        self._writing_application = writing_application
+        self._workflow: RemuxWorkflow | FfmpegRemuxWorkflow = self._make_workflow()
         self._executor = ThreadPoolExecutor(max_workers=2)
 
         # Liste ordonnée des SourceFile chargés
@@ -2443,6 +2440,33 @@ class RemuxPanel(QWidget):
 
         self._build_ui()
         apply_translations(self)
+
+    def _make_workflow(self) -> RemuxWorkflow | FfmpegRemuxWorkflow:
+        backend = getattr(self._config, "remux_backend", "ffmpeg")
+        if backend == "mkvmerge":
+            return RemuxWorkflow(
+                mkvmerge_bin=self._config.tool_mkvmerge,
+                ffmpeg_bin=self._config.tool_ffmpeg,
+                ffmpeg_threads=self._config.ffmpeg_threads,
+                writing_application=self._writing_application,
+                mkvmerge_major_version=self._config.tool_major_version("mkvmerge"),
+            )
+        return FfmpegRemuxWorkflow(
+            ffmpeg_bin=self._config.tool_ffmpeg,
+            ffprobe_bin=self._config.tool_ffprobe,
+            ffmpeg_threads=self._config.ffmpeg_threads,
+            writing_application=self._writing_application,
+        )
+
+    def _recreate_workflow(self) -> None:
+        try:
+            self._workflow.log_message.disconnect(self.log_message)
+        except Exception:
+            pass
+        self._workflow = self._make_workflow()
+        self._workflow.log_message.connect(
+            self.log_message, Qt.ConnectionType.QueuedConnection
+        )
 
     # ------------------------------------------------------------------
     # Construction de l'interface
@@ -2678,7 +2702,6 @@ class RemuxPanel(QWidget):
             inspector = FileInspector(
                 ffprobe_bin=self._config.tool_ffprobe,
                 mediainfo_bin=self._config.tool_mediainfo,
-                mkvmerge_bin=self._config.tool_mkvmerge,
             )
             info = inspector.inspect(path)
             self._inspection_done.emit(file_id, info)
@@ -3007,11 +3030,24 @@ class RemuxPanel(QWidget):
 
     def refresh_runtime_settings(self) -> None:
         """Recharge les binaires/runtime issus de la configuration courante."""
-        self._workflow.set_mkvmerge_bin(self._config.tool_mkvmerge)
-        self._workflow.set_mkvpropedit_bin(self._config.tool_mkvpropedit)
-        self._workflow.set_mkvmerge_major_version(
-            self._config.tool_major_version("mkvmerge")
-        )
+        backend = getattr(self._config, "remux_backend", "ffmpeg")
+        active_is_mkvmerge = isinstance(self._workflow, RemuxWorkflow)
+        want_mkvmerge = backend == "mkvmerge"
+
+        if active_is_mkvmerge != want_mkvmerge:
+            self._recreate_workflow()
+        elif isinstance(self._workflow, RemuxWorkflow):
+            self._workflow.set_mkvmerge_bin(self._config.tool_mkvmerge)
+            self._workflow.set_ffmpeg_bin(self._config.tool_ffmpeg)
+            self._workflow.set_ffmpeg_threads(self._config.ffmpeg_threads)
+            self._workflow.set_mkvmerge_major_version(
+                self._config.tool_major_version("mkvmerge")
+            )
+        else:
+            self._workflow.set_ffmpeg_bin(self._config.tool_ffmpeg)
+            self._workflow.set_ffprobe_bin(self._config.tool_ffprobe)
+            self._workflow.set_ffmpeg_threads(self._config.ffmpeg_threads)
+
         self._rebuild_preview()
 
     def update_audio_track_meta(self, stream_index: int, source_path, lang: str, title: str) -> None:

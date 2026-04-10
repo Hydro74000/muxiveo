@@ -1335,29 +1335,51 @@ class MainWindow(QMainWindow):
         # Prioritaire sur tag_sources : si présent, on ignore tag_sources pour l'encode.
         tag_overrides = remux_cfg.tag_overrides
 
-        # --- Métadonnées de pistes (langue + titre) via mkvpropedit post-encodage ---
-        # ffmpeg ne préserve pas les métadonnées de pistes (langue, titre).
-        # On les réécrit systématiquement pour toutes les pistes ayant des métadonnées.
+        # --- Métadonnées de pistes (langue + titre + dispositions) via FFmpeg ---
+        # ffmpeg peut perdre des infos de piste (langue, titre, flags) selon le
+        # type d'opération (ex: réencodage audio). On réécrit explicitement.
         #
         # Ordre des pistes dans le fichier de sortie ffmpeg :
         #   @1 = vidéo  |  @2…@N+1 = audio  |  @N+2… = sous-titres
         track_meta_edits: list[TrackMetaEdit] = []
 
         def _make_edit(track_order: int, t: TrackEntry) -> "TrackMetaEdit | None":
-            """Retourne un TrackMetaEdit si la piste a une langue ou un titre à écrire."""
+            """Retourne un TrackMetaEdit si la piste a des infos à appliquer."""
             lang = (t.language or "").strip()
             orig_lang = (t.orig_language or "").strip()
             title = (t.title or "").strip()
             # Une langue vidée explicitement doit rester une instruction explicite
-            # dans le workflow encode (mkvpropedit), via "und".
+            # dans le workflow encode (FFmpeg), via "und".
             if not lang and orig_lang and lang != orig_lang:
                 lang = "und"
-            if not lang and not title:
+            has_flag_state = any((
+                t.flag_default,
+                t.flag_forced,
+                t.flag_hearing_impaired,
+                t.flag_visual_impaired,
+                t.flag_original,
+                t.flag_commentary,
+            ))
+            has_flag_change = any((
+                t.flag_default != t.orig_flag_default,
+                t.flag_forced != t.orig_flag_forced,
+                t.flag_hearing_impaired != t.orig_flag_hearing_impaired,
+                t.flag_visual_impaired != t.orig_flag_visual_impaired,
+                t.flag_original != t.orig_flag_original,
+                t.flag_commentary != t.orig_flag_commentary,
+            ))
+            if not lang and not title and not has_flag_state and not has_flag_change:
                 return None
             return TrackMetaEdit(
                 track_order = track_order,
                 language    = lang,
                 title       = title if title else None,
+                flag_default          = t.flag_default,
+                flag_forced           = t.flag_forced,
+                flag_hearing_impaired = t.flag_hearing_impaired,
+                flag_visual_impaired  = t.flag_visual_impaired,
+                flag_original         = t.flag_original,
+                flag_commentary       = t.flag_commentary,
             )
 
         def _find_track(src_path: Path, stream_index: int, track_type: str) -> TrackEntry | None:

@@ -15,7 +15,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from xml.sax.saxutils import escape as _xml_escape
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -24,6 +23,7 @@ from PySide6.QtCore import QObject, Signal
 from core.lang_tags import Rfc5646LanguageTags as LangTags
 from core.runner import TaskCancelledError, TaskSignals, ToolRunner
 from core.subprocess_utils import subprocess_text_kwargs
+from core.workflows.remux_ffmpeg import FfmpegRemuxWorkflow
 from core.workflows.encode.models import (
     EncodeConfig, EncodeError, QualityMode,
     VideoEncodeSettings, AudioTrackSettings,
@@ -92,9 +92,6 @@ class EncodeWorkflow(QObject):
         ffmpeg_bin:                str  = "ffmpeg",
         dovi_tool_bin:             str  = "dovi_tool",
         hdr10plus_bin:             str  = "hdr10plus_tool",
-        mkvmerge_bin:              str  = "mkvmerge",
-        mkvextract_bin:            str  = "mkvextract",
-        mkvpropedit_bin:           str  = "mkvpropedit",
         ram_buffer_enabled:        bool = True,
         ram_buffer_threshold_pct:  int  = 15,
         ffmpeg_threads:            int | None = None,
@@ -107,23 +104,29 @@ class EncodeWorkflow(QObject):
         self._bins: dict[str, str] = {
             "dovi_tool":      dovi_tool_bin,
             "hdr10plus_tool": hdr10plus_bin,
-            "mkvmerge":       mkvmerge_bin,
-            "mkvextract":     mkvextract_bin,
-            "mkvpropedit":    mkvpropedit_bin,
         }
         self._runner = ToolRunner(max_workers=1, parent=self)
         self._ram_buffer_enabled       = ram_buffer_enabled
         self._ram_buffer_threshold_pct = max(0, min(ram_buffer_threshold_pct, 90))
         self._ffmpeg_threads = _normalize_ffmpeg_thread_count(ffmpeg_threads)
         self._writing_application = writing_application.strip()
+        self._postproc_helper = FfmpegRemuxWorkflow(
+            ffmpeg_bin=ffmpeg_bin,
+            ffprobe_bin=self._ffprobe_bin_from_ffmpeg(ffmpeg_bin),
+            parent=self,
+            writing_application=writing_application,
+        )
 
     def set_ffmpeg(self, ffmpeg_bin: str) -> None:
         """Met à jour le binaire ffmpeg utilisé pour l'encodage (ex: ffmpeg système pour HW)."""
         self._ffmpeg = ffmpeg_bin
+        self._postproc_helper.set_ffmpeg_bin(ffmpeg_bin)
+        self._postproc_helper.set_ffprobe_bin(self._ffprobe_bin_from_ffmpeg(ffmpeg_bin))
 
     def set_writing_application(self, writing_application: str) -> None:
         """Met à jour la valeur du tag Multiplexing Application."""
         self._writing_application = writing_application.strip()
+        self._postproc_helper.set_writing_application(self._writing_application)
 
     def set_ffmpeg_threads(self, ffmpeg_threads: int | None) -> None:
         """Met à jour le nombre de threads passé à FFmpeg via `-threads`."""
@@ -143,6 +146,128 @@ class EncodeWorkflow(QObject):
         """
         return ["-progress", "pipe:1", "-nostats"]
 
+    @staticmethod
+    def _ffprobe_bin_from_ffmpeg(ffmpeg_bin: str) -> str:
+        ffmpeg_path = Path(ffmpeg_bin)
+        name = ffmpeg_path.name.lower()
+        if name in {"ffmpeg", "ffmpeg.exe"}:
+            return str(ffmpeg_path.with_name("ffprobe" + ffmpeg_path.suffix))
+        return "ffprobe"
+
+    @staticmethod
+    def _is_video_passthrough(config: EncodeConfig) -> bool:
+        return config.video.codec == "copy"
+
+    @classmethod
+    def _uses_two_pass(cls, config: EncodeConfig) -> bool:
+        return not cls._is_video_passthrough(config) and config.video.quality_mode == QualityMode.SIZE
+
+    @staticmethod
+    def _wants_dynamic_hdr_copy(config: EncodeConfig) -> bool:
+        return config.copy_dv or config.copy_hdr10plus
+
+    @classmethod
+    def _needs_metadata_inject(cls, config: EncodeConfig) -> bool:
+        return cls._wants_dynamic_hdr_copy(config) and not cls._is_video_passthrough(config)
+
+    def _detect_source_dynamic_hdr_presence(self, source: Path) -> tuple[bool, bool] | None:
+        """
+        Retourne (has_dv, has_hdr10plus) pour la source vidéo principale.
+
+        None = détection impossible (ffprobe absent/erreur JSON), auquel cas on
+        conserve le comportement demandé par l'utilisateur sans optimisation.
+        """
+        ffprobe_bin = self._ffprobe_bin_from_ffmpeg(self._ffmpeg)
+        cmd = [
+            ffprobe_bin,
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_streams",
+            str(source),
+        ]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                check=False,
+                timeout=20,
+                **subprocess_text_kwargs(),
+            )
+        except FileNotFoundError:
+            return None
+
+        if result.returncode != 0:
+            return None
+
+        try:
+            payload = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            return None
+
+        has_dv = False
+        has_hdr10plus = False
+        for stream in payload.get("streams", []):
+            if stream.get("codec_type") != "video":
+                continue
+            side_data = stream.get("side_data_list") or []
+            if any(sd.get("side_data_type") == "DOVI configuration record" for sd in side_data):
+                has_dv = True
+            if any(
+                sd.get("side_data_type") == "HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"
+                for sd in side_data
+            ):
+                has_hdr10plus = True
+            if has_dv and has_hdr10plus:
+                break
+        return has_dv, has_hdr10plus
+
+    def _normalize_dynamic_hdr_config(self, config: EncodeConfig) -> EncodeConfig:
+        """
+        Nettoie les demandes de copie DoVi/HDR10+ avant le routage principal.
+
+        - Si rien n'est demandé : retourne la config telle quelle.
+        - Si la source ne contient pas un format demandé : désactive uniquement ce format.
+        - Si la détection échoue : conserve la demande telle quelle.
+        """
+        if not self._wants_dynamic_hdr_copy(config):
+            return config
+
+        detected = self._detect_source_dynamic_hdr_presence(config.source)
+        if detected is None:
+            self.log_message.emit(
+                "WARN",
+                "Détection DoVi/HDR10+ impossible sur la source — workflow demandé conservé.",
+            )
+            return config
+
+        has_dv, has_hdr10plus = detected
+        copy_dv = config.copy_dv and has_dv
+        copy_hdr10plus = config.copy_hdr10plus and has_hdr10plus
+
+        if config.copy_dv and not copy_dv:
+            self.log_message.emit(
+                "WARN",
+                "Copy DoVi demandé mais aucune donnée DoVi détectée — option ignorée.",
+            )
+        if config.copy_hdr10plus and not copy_hdr10plus:
+            self.log_message.emit(
+                "WARN",
+                "Copy HDR10+ demandé mais aucune donnée HDR10+ détectée — option ignorée.",
+            )
+
+        normalized = replace(
+            config,
+            copy_dv=copy_dv,
+            copy_hdr10plus=copy_hdr10plus,
+        )
+
+        if not self._wants_dynamic_hdr_copy(normalized) and self._is_video_passthrough(config):
+            self.log_message.emit(
+                "INFO",
+                "Aucun DoVi/HDR10+ utile à recopier — passthrough vidéo direct.",
+            )
+        return normalized
+
     # ------------------------------------------------------------------
     # Construction de la commande
     # ------------------------------------------------------------------
@@ -151,19 +276,32 @@ class EncodeWorkflow(QObject):
         """
         Retourne une commande (list[str]) ou deux commandes pour la double passe (list[list[str]]).
         """
-        if config.video.quality_mode == QualityMode.SIZE:
-            return self._build_two_pass(config)
-        return self._build_single_pass(config)
+        return self._build_direct_output_commands(config)
 
     def build_command_single(self, config: EncodeConfig) -> list[str]:
         """Toujours une seule commande — pour l'aperçu UI."""
-        if config.video.quality_mode == QualityMode.SIZE:
-            return self._build_two_pass(config)[1]   # passe 2
-        return self._build_single_pass(config)
+        commands = self._build_direct_output_commands(config)
+        return commands[1] if self._uses_two_pass(config) else commands
 
-    def _build_single_pass(self, config: EncodeConfig) -> list[str]:
-        # ── Collecte des sources d'entrée ────────────────────────────────────
-        # L'ordre détermine les indices -i : source principale = 0, extras = 1+
+    def _build_direct_output_commands(
+        self,
+        config: EncodeConfig,
+        *,
+        chapter_materialize_dir: Path | None = None,
+    ) -> list[str] | list[list[str]]:
+        if self._uses_two_pass(config):
+            return self._build_two_pass(
+                config,
+                chapter_materialize_dir=chapter_materialize_dir,
+            )
+        return self._build_single_pass(
+            config,
+            chapter_materialize_dir=chapter_materialize_dir,
+        )
+
+    @staticmethod
+    def _collect_all_sources(config: EncodeConfig) -> list[Path]:
+        """Retourne les sources uniques (source principale puis extras)."""
         all_sources: list[Path] = [config.source]
         for a in config.audio_tracks:
             sp = a.source_path or config.source
@@ -175,48 +313,46 @@ class EncodeWorkflow(QObject):
         for src_path, _idx in config.attachment_streams:
             if src_path not in all_sources:
                 all_sources.append(src_path)
-        source_idx: dict[Path, int] = {p: i for i, p in enumerate(all_sources)}
+        return all_sources
 
-        cmd: list[str] = [self._ffmpeg, "-hide_banner", "-y"]
-        cmd.extend(self._ffmpeg_progress_args())
-        cmd.extend(self._hardware_input_args(config.video))
-        for src in all_sources:
-            cmd.extend(["-i", str(src)])
+    @staticmethod
+    def _source_input_index_map(sources: list[Path], *, start_index: int = 0) -> dict[Path, int]:
+        """Construit un mapping source -> index d'input ffmpeg."""
+        return {src: start_index + i for i, src in enumerate(sources)}
 
-        vf = self._build_encoder_vf(config.video)
-        if vf:
-            cmd.extend(["-vf", vf])
-
-        cmd.extend(self._ffmpeg_thread_args())
-        cmd.extend(["-map", "0:v:0"])
-        cmd.extend(self._video_codec_args(config.video, config.video.bitrate_kbps))
-
-        # Passthrough métadonnées container et stream vidéo (codec COPY uniquement).
-        if config.video.codec == "copy":
-            cmd.extend(["-map_metadata", "0", "-map_metadata:s:v:0", "0:s:v:0"])
-
-        if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
-            cmd.extend(self._hdr_meta_args(config.video))
-
+    def _append_stream_maps_and_attachments(
+        self,
+        cmd: list[str],
+        config: EncodeConfig,
+        *,
+        source_idx: dict[Path, int],
+        subtitle_copy_input_indices: list[int],
+    ) -> None:
+        """Ajoute mapping audio/sous-titres/attachments et pièces jointes externes."""
         for i, a in enumerate(config.audio_tracks):
-            inp = source_idx.get(a.source_path or config.source, 0)
+            inp = source_idx.get(a.source_path or config.source)
+            if inp is None:
+                inp = source_idx.get(config.source, 0)
             cmd.extend(["-map", f"{inp}:{a.stream_index}"])
             cmd.extend(self._audio_codec_args(i, a))
 
-        # Sous-titres : soit liste explicite (multi-sources), soit map générique source 0
         if config.subtitle_tracks:
             for src_path, stream_idx in config.subtitle_tracks:
-                inp = source_idx.get(src_path, 0)
+                inp = source_idx.get(src_path)
+                if inp is None:
+                    continue
                 cmd.extend(["-map", f"{inp}:{stream_idx}"])
             cmd.extend(["-c:s", "copy"])
         elif config.copy_subtitles:
-            for inp_i in range(len(all_sources)):
+            for inp_i in subtitle_copy_input_indices:
                 cmd.extend(["-map", f"{inp_i}:s?"])
             cmd.extend(["-c:s", "copy"])
 
         if config.attachment_streams:
             for src_path, stream_idx in config.attachment_streams:
-                inp = source_idx.get(src_path, 0)
+                inp = source_idx.get(src_path)
+                if inp is None:
+                    continue
                 cmd.extend(["-map", f"{inp}:{stream_idx}"])
             cmd.extend(["-c:t", "copy"])
 
@@ -228,30 +364,185 @@ class EncodeWorkflow(QObject):
             cmd.extend([f"-metadata:s:t:{att_idx}", f"mimetype={_mime_for(att_path)}"])
             cmd.extend([f"-metadata:s:t:{att_idx}", f"filename={att_name}"])
 
-        if config.keep_chapters:
-            cmd.extend(["-map_chapters", "0"])
+    def _prepare_container_metadata_inputs(
+        self,
+        cmd: list[str],
+        config: EncodeConfig,
+        *,
+        source_idx: dict[Path, int],
+        next_input_index: int,
+        chapter_materialize_dir: Path | None = None,
+        chapter_probe_source: Path | None = None,
+    ) -> tuple[int, int | None, int | None]:
+        """Ajoute les inputs nécessaires aux metadata (chapitres/tags) et retourne leurs index."""
+        chapter_input_index: int | None = None
+        if config.chapter_overrides:
+            if chapter_materialize_dir is not None:
+                duration_s = self._postproc_helper._probe_duration_seconds(
+                    chapter_probe_source or config.source
+                )
+                chapter_file = self._postproc_helper._write_ffmetadata_chapters(
+                    entries=config.chapter_overrides,
+                    out_dir=chapter_materialize_dir,
+                    duration_s=duration_s,
+                )
+                chapter_ref = str(chapter_file)
+            else:
+                chapter_ref = "<chapitres.ffmetadata>"
+            chapter_input_index = next_input_index
+            next_input_index += 1
+            cmd.extend(["-i", chapter_ref])
 
-        cmd.extend(["-metadata", f"title={config.file_title}"])
+        tag_input_index: int | None = None
+        if config.tag_overrides is None and config.tag_sources:
+            tag_source = Path(config.tag_sources[-1])
+            mapped_idx = source_idx.get(tag_source)
+            if mapped_idx is not None:
+                tag_input_index = mapped_idx
+            else:
+                tag_input_index = next_input_index
+                next_input_index += 1
+                cmd.extend(["-i", str(tag_source)])
+        return next_input_index, chapter_input_index, tag_input_index
+
+    def _append_container_metadata_args(
+        self,
+        cmd: list[str],
+        config: EncodeConfig,
+        *,
+        default_metadata_input_index: int,
+        default_chapter_input_index: int,
+        chapter_input_index: int | None,
+        tag_input_index: int | None,
+        include_copy_video_stream_passthrough: bool = False,
+    ) -> None:
+        """Ajoute les options metadata/chapitres/tags/muxing_app/track-meta en une passe."""
+        metadata_map = self._container_metadata_map_value(
+            config,
+            default_metadata_input_index=default_metadata_input_index,
+            tag_input_index=tag_input_index,
+            include_copy_video_stream_passthrough=include_copy_video_stream_passthrough,
+        )
+        if metadata_map is not None:
+            cmd.extend(["-map_metadata", metadata_map])
+            if include_copy_video_stream_passthrough and self._is_video_passthrough(config):
+                cmd.extend([
+                    "-map_metadata:s:v:0",
+                    f"{default_metadata_input_index}:s:v:0",
+                ])
+
+        cmd.extend([
+            "-map_chapters",
+            self._container_chapter_map_value(
+                config,
+                default_chapter_input_index=default_chapter_input_index,
+                chapter_input_index=chapter_input_index,
+            ),
+        ])
+
+        for key, value in self._resolve_global_tags(config).items():
+            cmd.extend(["-metadata", f"{key}={value}"])
+        cmd.extend(self._build_track_meta_args(config))
+
+    def _container_metadata_map_value(
+        self,
+        config: EncodeConfig,
+        *,
+        default_metadata_input_index: int,
+        tag_input_index: int | None,
+        include_copy_video_stream_passthrough: bool,
+    ) -> str | None:
+        if config.tag_overrides is not None:
+            return "-1"
+        if tag_input_index is not None:
+            return str(tag_input_index)
+        if include_copy_video_stream_passthrough and self._is_video_passthrough(config):
+            return str(default_metadata_input_index)
+        if (
+            config.chapter_overrides is not None
+            or bool(config.track_meta_edits)
+            or bool(self._writing_application)
+        ):
+            return str(default_metadata_input_index)
+        return None
+
+    @staticmethod
+    def _container_chapter_map_value(
+        config: EncodeConfig,
+        *,
+        default_chapter_input_index: int,
+        chapter_input_index: int | None,
+    ) -> str:
+        if config.chapter_overrides is not None:
+            if config.chapter_overrides and chapter_input_index is not None:
+                return str(chapter_input_index)
+            return "-1"
+        return str(default_chapter_input_index) if config.keep_chapters else "-1"
+
+    def _build_single_pass(
+        self,
+        config: EncodeConfig,
+        *,
+        chapter_materialize_dir: Path | None = None,
+    ) -> list[str]:
+        all_sources = self._collect_all_sources(config)
+        source_idx = self._source_input_index_map(all_sources)
+
+        cmd: list[str] = [self._ffmpeg, "-hide_banner", "-y"]
+        cmd.extend(self._ffmpeg_progress_args())
+        cmd.extend(self._hardware_input_args(config.video))
+        for src in all_sources:
+            cmd.extend(["-i", str(src)])
+        _, chapter_input_index, tag_input_index = self._prepare_container_metadata_inputs(
+            cmd,
+            config,
+            source_idx=source_idx,
+            next_input_index=len(all_sources),
+            chapter_materialize_dir=chapter_materialize_dir,
+            chapter_probe_source=config.source,
+        )
+
+        vf = self._build_encoder_vf(config.video)
+        if vf:
+            cmd.extend(["-vf", vf])
+
+        cmd.extend(self._ffmpeg_thread_args())
+        cmd.extend(["-map", "0:v:0"])
+        cmd.extend(self._video_codec_args(config.video, config.video.bitrate_kbps))
+
+        if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
+            cmd.extend(self._hdr_meta_args(config.video))
+
+        self._append_stream_maps_and_attachments(
+            cmd,
+            config,
+            source_idx=source_idx,
+            subtitle_copy_input_indices=list(range(len(all_sources))),
+        )
+
+        self._append_container_metadata_args(
+            cmd,
+            config,
+            default_metadata_input_index=0,
+            default_chapter_input_index=0,
+            chapter_input_index=chapter_input_index,
+            tag_input_index=tag_input_index,
+            include_copy_video_stream_passthrough=True,
+        )
         cmd.append(str(config.output))
         return cmd
 
-    def _build_two_pass(self, config: EncodeConfig) -> list[list[str]]:
+    def _build_two_pass(
+        self,
+        config: EncodeConfig,
+        *,
+        chapter_materialize_dir: Path | None = None,
+    ) -> list[list[str]]:
         bitrate = self._size_to_bitrate_kbps(config)
         vf = self._build_encoder_vf(config.video)
 
-        # Sources d'entrée (multi-sources pour audio, sous-titres, attachements)
-        all_sources: list[Path] = [config.source]
-        for a in config.audio_tracks:
-            sp = a.source_path or config.source
-            if sp not in all_sources:
-                all_sources.append(sp)
-        for src_path, _idx in config.subtitle_tracks:
-            if src_path not in all_sources:
-                all_sources.append(src_path)
-        for src_path, _idx in config.attachment_streams:
-            if src_path not in all_sources:
-                all_sources.append(src_path)
-        source_idx: dict[Path, int] = {p: i for i, p in enumerate(all_sources)}
+        all_sources = self._collect_all_sources(config)
+        source_idx = self._source_input_index_map(all_sources)
 
         def _base() -> list[str]:
             c = [self._ffmpeg, "-hide_banner", "-y"]
@@ -269,40 +560,32 @@ class EncodeWorkflow(QObject):
         pass1 = _base() + ["-pass", "1", "-an", "-f", "null", os.devnull]
 
         pass2 = _base() + ["-pass", "2"]
-        if config.video.codec == "copy":
-            pass2.extend(["-map_metadata", "0", "-map_metadata:s:v:0", "0:s:v:0"])
+        _, chapter_input_index, tag_input_index = self._prepare_container_metadata_inputs(
+            pass2,
+            config,
+            source_idx=source_idx,
+            next_input_index=len(all_sources),
+            chapter_materialize_dir=chapter_materialize_dir,
+            chapter_probe_source=config.source,
+        )
         if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
             pass2.extend(self._hdr_meta_args(config.video))
-        for i, a in enumerate(config.audio_tracks):
-            inp = source_idx.get(a.source_path or config.source, 0)
-            pass2.extend(["-map", f"{inp}:{a.stream_index}"])
-            pass2.extend(self._audio_codec_args(i, a))
-        if config.subtitle_tracks:
-            for src_path, stream_idx in config.subtitle_tracks:
-                inp = source_idx.get(src_path, 0)
-                pass2.extend(["-map", f"{inp}:{stream_idx}"])
-            pass2.extend(["-c:s", "copy"])
-        elif config.copy_subtitles:
-            for inp_i in range(len(all_sources)):
-                pass2.extend(["-map", f"{inp_i}:s?"])
-            pass2.extend(["-c:s", "copy"])
-        if config.attachment_streams:
-            for src_path, stream_idx in config.attachment_streams:
-                inp = source_idx.get(src_path, 0)
-                pass2.extend(["-map", f"{inp}:{stream_idx}"])
-            pass2.extend(["-c:t", "copy"])
+        self._append_stream_maps_and_attachments(
+            pass2,
+            config,
+            source_idx=source_idx,
+            subtitle_copy_input_indices=list(range(len(all_sources))),
+        )
 
-        existing_att = len(config.attachment_streams)
-        for i, att_path in enumerate(config.extra_attachments):
-            att_idx = existing_att + i
-            att_name = "cover" if att_path.stem.lower() == "cover" else att_path.name
-            pass2.extend(["-attach", str(att_path)])
-            pass2.extend([f"-metadata:s:t:{att_idx}", f"mimetype={_mime_for(att_path)}"])
-            pass2.extend([f"-metadata:s:t:{att_idx}", f"filename={att_name}"])
-
-        if config.keep_chapters:
-            pass2.extend(["-map_chapters", "0"])
-        pass2.extend(["-metadata", f"title={config.file_title}"])
+        self._append_container_metadata_args(
+            pass2,
+            config,
+            default_metadata_input_index=0,
+            default_chapter_input_index=0,
+            chapter_input_index=chapter_input_index,
+            tag_input_index=tag_input_index,
+            include_copy_video_stream_passthrough=True,
+        )
         pass2.append(str(config.output))
 
         return [pass1, pass2]
@@ -699,8 +982,11 @@ class EncodeWorkflow(QObject):
         cmd = self.build_command_single(config)
         if not cmd:
             return ""
-        prefix = "# Mode taille cible : passe 1 omise de cet aperçu\n" \
-                 if config.video.quality_mode == QualityMode.SIZE else ""
+        prefix = (
+            "# Mode taille cible : passe 1 omise de cet aperçu\n"
+            if self._uses_two_pass(config)
+            else ""
+        )
         lines = [cmd[0]]
         i = 1
         while i < len(cmd):
@@ -731,7 +1017,7 @@ class EncodeWorkflow(QObject):
             )
         if config.source == config.output:
             errors.append("Le fichier de sortie doit être différent du fichier source.")
-        if config.video.quality_mode == QualityMode.SIZE and not (config.duration_s or 0) > 0:
+        if self._uses_two_pass(config) and not (config.duration_s or 0) > 0:
             errors.append("Durée du fichier source inconnue — mode taille cible impossible.")
         if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
             if config.video.master_display and not re.match(
@@ -784,48 +1070,72 @@ class EncodeWorkflow(QObject):
         self.log_message.emit("INFO", f"Encodage → {config.output.name}")
 
         prepared_config, cleanup_dir = self._prepare_attachment_config(config)
+        cleanup_paths: list[Path] = []
+        if cleanup_dir is not None:
+            cleanup_paths.append(cleanup_dir)
 
-        if prepared_config.copy_dv or prepared_config.copy_hdr10plus:
-            if prepared_config.video.codec == "copy":
-                # Codec COPY : les NAL units DoVi/HDR10+ sont déjà dans le bitstream source.
-                # Extraction + réinjection inutiles sans réencodage — remux direct avec passthrough.
-                self.log_message.emit(
-                    "INFO",
-                    "Codec COPY : injection DoVi/HDR10+ ignorée — "
-                    "métadonnées préservées par passthrough ffmpeg.",
-                )
-            else:
-                signals = self._run_with_metadata_inject(prepared_config)
-                self._bind_temp_cleanup(signals, cleanup_dir)
-                return signals
+        prepared_config = self._normalize_dynamic_hdr_config(prepared_config)
 
-        cwd = prepared_config.work_dir or prepared_config.source.parent
-        if prepared_config.work_dir:
-            prepared_config.work_dir.mkdir(parents=True, exist_ok=True)
+        if self._wants_dynamic_hdr_copy(prepared_config) and self._is_video_passthrough(prepared_config):
+            # Codec COPY : les NAL units DoVi/HDR10+ sont déjà dans le bitstream source.
+            # Extraction + réinjection inutiles sans réencodage — remux direct avec passthrough.
+            self.log_message.emit(
+                "INFO",
+                "Codec COPY : injection DoVi/HDR10+ ignorée — "
+                "métadonnées préservées par passthrough ffmpeg.",
+            )
 
-        has_tags        = bool(prepared_config.tag_sources) or prepared_config.tag_overrides is not None
-        has_meta_edits  = bool(prepared_config.track_meta_edits)
-        needs_postproc  = has_tags or has_meta_edits
+        needs_inject = self._needs_metadata_inject(prepared_config)
+        if needs_inject:
+            self.log_message.emit(
+                "INFO",
+                "Injection DoVi/HDR10+: pipeline fichier (pas de pipe direct outillage).",
+            )
+            self._ensure_inject_storage_available(prepared_config)
 
-        if prepared_config.video.quality_mode == QualityMode.SIZE:
-            cmds = self._build_two_pass(prepared_config)
-            post = (lambda s: self._postproc(prepared_config, s)) if needs_postproc else None
-            signals = self._run_two_pass(cmds, cwd=cwd, post_fn=post)
-            self._bind_temp_cleanup(signals, cleanup_dir)
-            return signals
-
-        cmd = self._build_single_pass(prepared_config)
-        if needs_postproc:
-            signals = self._run_single_with_postproc(cmd, prepared_config, cwd)
-            self._bind_temp_cleanup(signals, cleanup_dir)
-            return signals
-        signals = self._runner.run(cmd, cwd=cwd, label="ffmpeg")
-        self._bind_temp_cleanup(signals, cleanup_dir)
+        signals = (
+            self._run_with_metadata_inject(prepared_config)
+            if needs_inject
+            else self._run_direct_output(prepared_config, cleanup_paths)
+        )
+        self._bind_temp_cleanup(signals, cleanup_paths)
         return signals
 
-    def _bind_temp_cleanup(self, signals: TaskSignals, cleanup_dir: Path | None) -> None:
-        """Supprime un dossier temporaire quand le workflow se termine."""
-        if cleanup_dir is None:
+    def _run_direct_output(
+        self,
+        config: EncodeConfig,
+        cleanup_paths: list[Path],
+    ) -> TaskSignals:
+        cwd = config.work_dir or config.source.parent
+        if config.work_dir:
+            config.work_dir.mkdir(parents=True, exist_ok=True)
+
+        chapter_dir: Path | None = None
+        if config.chapter_overrides:
+            chapter_dir = Path(
+                tempfile.mkdtemp(
+                    prefix="enc_chapters_",
+                    dir=str(config.output.parent),
+                )
+            )
+            cleanup_paths.append(chapter_dir)
+
+        if self._uses_two_pass(config):
+            cmds = self._build_direct_output_commands(
+                config,
+                chapter_materialize_dir=chapter_dir,
+            )
+            return self._run_two_pass(cmds, cwd=cwd)
+
+        cmd = self._build_direct_output_commands(
+            config,
+            chapter_materialize_dir=chapter_dir,
+        )
+        return self._runner.run(cmd, cwd=cwd, label="ffmpeg")
+
+    def _bind_temp_cleanup(self, signals: TaskSignals, cleanup_paths: list[Path]) -> None:
+        """Supprime les fichiers/dossiers temporaires quand le workflow se termine."""
+        if not cleanup_paths:
             return
 
         done = {"cleaned": False}
@@ -834,11 +1144,164 @@ class EncodeWorkflow(QObject):
             if done["cleaned"]:
                 return
             done["cleaned"] = True
-            shutil.rmtree(cleanup_dir, ignore_errors=True)
+            for path in cleanup_paths:
+                try:
+                    if path.is_dir():
+                        shutil.rmtree(path, ignore_errors=True)
+                    else:
+                        path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
         signals.finished.connect(_cleanup)
         signals.failed.connect(_cleanup)
         signals.cancelled.connect(_cleanup)
+
+    @staticmethod
+    def _format_bytes(value: int) -> str:
+        size = float(max(0, value))
+        units = ("B", "KiB", "MiB", "GiB", "TiB")
+        idx = 0
+        while size >= 1024.0 and idx < len(units) - 1:
+            size /= 1024.0
+            idx += 1
+        return f"{size:.1f} {units[idx]}"
+
+    def _estimate_duration_seconds(self, config: EncodeConfig) -> float:
+        if (config.duration_s or 0.0) > 0:
+            return float(config.duration_s)
+        probed = self._postproc_helper._probe_duration_seconds(config.source)
+        if (probed or 0.0) > 0:
+            return float(probed)
+        return 3600.0
+
+    def _estimate_inject_video_bytes(
+        self,
+        config: EncodeConfig,
+        *,
+        duration_s: float,
+        source_size: int,
+    ) -> int:
+        if config.video.quality_mode == QualityMode.SIZE:
+            video_kbps = self._size_to_bitrate_kbps(config)
+            return int((video_kbps * 1000 / 8) * duration_s)
+        if config.video.quality_mode == QualityMode.BITRATE:
+            video_kbps = max(1, int(config.video.bitrate_kbps or 1))
+            return int((video_kbps * 1000 / 8) * duration_s)
+        # CRF : pas de débit cible explicite ; base conservative sur la taille source.
+        return max(source_size, int(source_size * 3 / 4))
+
+    def _estimate_inject_storage_requirements(self, config: EncodeConfig) -> tuple[int, int]:
+        """
+        Retourne (work_required_bytes, output_required_bytes) pour le chemin injection.
+
+        work_required_bytes : pic d'espace requis pour les temporaires du workflow
+                              d'injection (HEVC + sidecars) sur le FS de travail.
+        output_required_bytes : espace requis pour produire le MKV final sur le FS
+                                de sortie.
+        """
+        source_size = max(0, config.source.stat().st_size if config.source.exists() else 0)
+        duration_s = self._estimate_duration_seconds(config)
+        video_bytes = max(
+            128 * 1024 * 1024,
+            self._estimate_inject_video_bytes(
+                config,
+                duration_s=duration_s,
+                source_size=source_size,
+            ),
+        )
+
+        sidecars = 32 * 1024 * 1024
+        if config.copy_dv:
+            sidecars += 64 * 1024 * 1024
+        if config.copy_hdr10plus:
+            sidecars += 64 * 1024 * 1024
+        if config.chapter_overrides:
+            sidecars += 16 * 1024 * 1024
+
+        work_required = (2 * video_bytes) + sidecars
+
+        encoded_audio_bytes = 0
+        for audio in config.audio_tracks:
+            if audio.codec == "copy":
+                continue
+            if audio.codec == "flac":
+                kbps = max(1000, int(audio.bitrate_kbps or 0))
+            else:
+                kbps = max(32, int(audio.bitrate_kbps or 0))
+            encoded_audio_bytes += int((kbps * 1000 / 8) * duration_s)
+
+        extra_attachments_bytes = sum(
+            max(0, Path(p).stat().st_size)
+            for p in config.extra_attachments
+            if Path(p).exists()
+        )
+        output_required = max(
+            source_size,
+            video_bytes + encoded_audio_bytes + extra_attachments_bytes,
+        ) + (64 * 1024 * 1024)
+        return work_required, output_required
+
+    def _ensure_inject_storage_available(self, config: EncodeConfig) -> None:
+        """
+        Vérifie l'espace libre avant le chemin d'injection DV/HDR10+.
+
+        On fait une estimation conservative :
+          - temporaires d'injection (HEVC + sidecars) sur le volume de travail,
+          - fichier final sur le volume de sortie.
+        """
+        work_required, output_required = self._estimate_inject_storage_requirements(config)
+
+        work_root = config.work_dir or Path(tempfile.gettempdir())
+        work_root.mkdir(parents=True, exist_ok=True)
+        output_root = config.output.parent
+        output_root.mkdir(parents=True, exist_ok=True)
+
+        work_free = shutil.disk_usage(work_root).free
+        output_free = shutil.disk_usage(output_root).free
+
+        self.log_message.emit(
+            "INFO",
+            "Estimation espace injection: "
+            f"temp≈{self._format_bytes(work_required)} sur {work_root} ; "
+            f"sortie≈{self._format_bytes(output_required)} sur {output_root}.",
+        )
+
+        if self._ram_buffer_enabled and EncodeWorkflow._ram_buffer_dir() is not None:
+            self.log_message.emit(
+                "INFO",
+                "Buffer RAM actif: estimation disque conservative (fallback disque).",
+            )
+
+        same_fs = False
+        try:
+            same_fs = os.stat(work_root).st_dev == os.stat(output_root).st_dev
+        except OSError:
+            same_fs = False
+
+        if same_fs:
+            required = work_required + output_required
+            free = min(work_free, output_free)
+            if free < required:
+                raise EncodeError(
+                    "Espace disque insuffisant pour l'injection DoVi/HDR10+ "
+                    f"(requis≈{self._format_bytes(required)}, libre≈{self._format_bytes(free)} "
+                    f"sur {output_root})."
+                )
+            return
+
+        if work_free < work_required:
+            raise EncodeError(
+                "Espace disque insuffisant pour les temporaires d'injection "
+                f"(requis≈{self._format_bytes(work_required)}, "
+                f"libre≈{self._format_bytes(work_free)} sur {work_root})."
+            )
+        if output_free < output_required:
+            raise EncodeError(
+                "Espace disque insuffisant pour le fichier de sortie "
+                f"(requis≈{self._format_bytes(output_required)}, "
+                f"libre≈{self._format_bytes(output_free)} sur {output_root})."
+            )
 
     def _prepare_attachment_config(
         self,
@@ -891,11 +1354,7 @@ class EncodeWorkflow(QObject):
 
     def _describe_attachment_stream(self, source: Path, stream_idx: int) -> dict[str, object]:
         """Retourne les métadonnées ffprobe minimales d'un stream potentiellement attachment."""
-        ffprobe_bin = "ffprobe"
-        ffmpeg_path = Path(self._ffmpeg)
-        name = ffmpeg_path.name.lower()
-        if name in {"ffmpeg", "ffmpeg.exe"}:
-            ffprobe_bin = str(ffmpeg_path.with_name("ffprobe" + ffmpeg_path.suffix))
+        ffprobe_bin = self._ffprobe_bin_from_ffmpeg(self._ffmpeg)
 
         cmd = [
             ffprobe_bin,
@@ -1002,12 +1461,8 @@ class EncodeWorkflow(QObject):
         cmds: list[list[str]],
         cwd: Path | None,
         signals: TaskSignals | None = None,
-        post_fn=None,   # Callable[[TaskSignals], None] | None
     ) -> TaskSignals:
-        """Exécute deux commandes ffmpeg séquentiellement, retourne un TaskSignals commun.
-
-        post_fn : si fourni, appelé après la passe 2 avant signals.finished (ex. injection tags).
-        """
+        """Exécute deux commandes ffmpeg séquentiellement, retourne un TaskSignals commun."""
         if signals is None:
             signals = TaskSignals()
         executor = ThreadPoolExecutor(max_workers=1)
@@ -1026,8 +1481,6 @@ class EncodeWorkflow(QObject):
                     progress_cb=lambda line: signals.progress.emit(line),
                     signals=signals,
                 )
-                if post_fn is not None:
-                    post_fn(signals)
                 signals.finished.emit(output)
             except TaskCancelledError:
                 signals.cancelled.emit()
@@ -1039,272 +1492,128 @@ class EncodeWorkflow(QObject):
         executor.submit(_task)
         return signals
 
-    def _inject_tags_inplace(
-        self,
-        output: Path,
-        tag_sources: list,
-        signals: "TaskSignals | None" = None,
-    ) -> None:
-        """
-        Injecte les balises MKV (<Tags>) depuis les sources vers output.mkv, sans fichier
-        vidéo intermédiaire.
+    def _resolve_global_tags(self, config: EncodeConfig) -> dict[str, str]:
+        tags: dict[str, str] = {}
 
-        Processus :
-          1. mkvextract <source> tags  → XML vers stdout (quelques Ko)
-          2. Écriture dans un NamedTemporaryFile XML (supprimé immédiatement après)
-          3. mkvpropedit <output> --tags all:<xml>  → modification in-place
-
-        Les balises de sources multiples sont injectées séquentiellement ;
-        chaque appel remplace les balises existantes (dernier appel gagne).
-        """
-        if not tag_sources:
-            return
-
-        mkvextract_bin  = self._bins["mkvextract"]
-        mkvpropedit_bin = self._bins["mkvpropedit"]
-
-        if signals:
-            signals.progress.emit("Injection balises MKV…")
-
-        for src in tag_sources:
-            # ── Extraction XML depuis la source ─────────────────────────────
-            result = subprocess.run(
-                [mkvextract_bin, str(src), "tags"],
-                capture_output=True, timeout=30, **subprocess_text_kwargs(),
-            )
-            tags_xml = result.stdout.strip()
-            if not tags_xml or result.returncode != 0:
-                self.log_message.emit(
-                    "WARN",
-                    f"Aucune balise dans {Path(src).name} "
-                    f"(mkvextract code={result.returncode})",
-                )
-                continue
-
-            # ── Fichier XML temporaire (quelques Ko, supprimé immédiatement) ─
-            with tempfile.NamedTemporaryFile(
-                suffix=".xml", mode="w", encoding="utf-8",
-                delete=False, prefix="mkv_tags_",
-            ) as f:
-                f.write(tags_xml)
-                xml_path = Path(f.name)
-
-            try:
-                tags_cmd = [mkvpropedit_bin, str(output), "--tags", f"all:{xml_path}"]
-                self.log_message.emit("INFO", "$ " + " ".join(tags_cmd))
-                r = subprocess.run(tags_cmd, capture_output=True, timeout=60, **subprocess_text_kwargs())
-                if r.returncode != 0:
-                    self.log_message.emit("WARN", f"mkvpropedit: {r.stderr.strip()}")
-                else:
-                    self.log_message.emit(
-                        "INFO", f"Balises MKV injectées depuis {Path(src).name}"
-                    )
-            finally:
-                xml_path.unlink(missing_ok=True)
-
-    def _set_writing_app_inplace(self, output: Path) -> None:
-        """Écrit le tag Multiplexing Application dans les infos de segment via mkvpropedit."""
-        if not self._writing_application:
-            self.log_message.emit("WARN", "Writing-app non configuré — balise non appliquée.")
-            return
-        mkvpropedit_bin = self._bins["mkvpropedit"]
-        cmd = [
-            mkvpropedit_bin, str(output),
-            "--edit", "info",
-            "--set", f"muxing-application={self._writing_application}",
-        ]
-        try:
-            self.log_message.emit("INFO", "$ " + " ".join(cmd))
-            r = subprocess.run(
-                cmd, capture_output=True, check=False, timeout=30, **subprocess_text_kwargs()
-            )
-            if r.returncode != 0:
-                self.log_message.emit("WARN", f"mkvpropedit (writing-app) : {r.stderr.strip()}")
-        except FileNotFoundError:
-            self.log_message.emit("WARN", "mkvpropedit introuvable — writing-app non appliqué.")
-
-    def _apply_tags_dict_inplace(
-        self,
-        output: Path,
-        tags: dict,
-        signals: "TaskSignals | None" = None,
-    ) -> None:
-        """
-        Écrit les balises MKV globales depuis un dict via mkvpropedit (in-place).
-
-        Construit un fichier XML Matroska Tags temporaire et l'applique avec
-        ``mkvpropedit --tags all:<xmlfile>``. Supprime le fichier temp après usage.
-        """
-        mkvpropedit_bin = self._bins["mkvpropedit"]
-
-        if signals:
-            signals.progress.emit("Écriture balises MKV…")
-
-        simples = "\n".join(
-            f"    <Simple><Name>{_xml_escape(str(k))}</Name>"
-            f"<String>{_xml_escape(str(v))}</String></Simple>"
-            for k, v in tags.items()
-            if str(v).strip()
-        )
-        xml_content = (
-            '<?xml version="1.0" encoding="UTF-8"?>\n'
-            "<Tags>\n"
-            "  <Tag>\n"
-            "    <Targets />\n"
-            f"{simples}\n"
-            "  </Tag>\n"
-            "</Tags>\n"
-        )
-
-        tmp_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".xml", delete=False, encoding="utf-8"
-            ) as f:
-                f.write(xml_content)
-                tmp_path = Path(f.name)
-
-            cmd = [mkvpropedit_bin, str(output), "--tags", f"all:{tmp_path}"]
-            self.log_message.emit("INFO", "$ " + " ".join(cmd))
-            r = subprocess.run(
-                cmd, capture_output=True, check=False, timeout=60, **subprocess_text_kwargs()
-            )
-            if r.returncode != 0:
-                self.log_message.emit("WARN", f"mkvpropedit (balises) : {r.stderr.strip()}")
-        except FileNotFoundError:
-            self.log_message.emit("WARN", "mkvpropedit introuvable — balises non appliquées.")
-        finally:
-            if tmp_path is not None:
-                try:
-                    tmp_path.unlink()
-                except Exception:
-                    pass
-
-    def _postproc(self, config: EncodeConfig, signals: "TaskSignals | None" = None) -> None:
-        """Post-traitements in-place : chapitres + balises MKV + métadonnées pistes + writing-app."""
-        if config.chapter_overrides is not None:
-            self._apply_chapters_inplace(config.output, config.chapter_overrides)
         if config.tag_overrides is not None:
-            # tag_overrides prioritaire : écriture directe sans extraction source
-            self._apply_tags_dict_inplace(config.output, config.tag_overrides, signals)
-        else:
-            self._inject_tags_inplace(config.output, config.tag_sources, signals)
-        self._apply_track_meta_edits_inplace(config.output, config.track_meta_edits)
-        self._set_writing_app_inplace(config.output)
+            for key, value in config.tag_overrides.items():
+                key_s = str(key).strip()
+                value_s = str(value).strip()
+                if not key_s or not value_s:
+                    continue
+                tags[key_s] = value_s
 
-    def _apply_chapters_inplace(self, output: Path, chapters: list) -> None:
-        """
-        Écrit les chapitres personnalisés dans le fichier de sortie via
-        ``mkvpropedit --chapters <xml>``.
-        """
-        if not chapters:
-            return
-        from core.inspector import build_chapter_xml
-        xml_content = build_chapter_xml(chapters)
-        tmp_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".xml", delete=False, encoding="utf-8"
-            ) as f:
-                f.write(xml_content)
-                tmp_path = Path(f.name)
-            cmd = [self._bins["mkvpropedit"], str(output), "--chapters", str(tmp_path)]
-            self.log_message.emit("INFO", "$ " + " ".join(cmd))
-            r = subprocess.run(
-                cmd, capture_output=True, check=False, timeout=60, **subprocess_text_kwargs()
-            )
-            if r.returncode != 0:
-                self.log_message.emit("WARN", f"mkvpropedit (chapitres) : {r.stderr.strip()}")
-        except FileNotFoundError:
-            self.log_message.emit("WARN", "mkvpropedit introuvable — chapitres non appliqués.")
-        finally:
-            if tmp_path is not None:
-                try:
-                    tmp_path.unlink()
-                except Exception:
-                    pass
+        tags["title"] = config.file_title
+        if self._writing_application:
+            # Segment info Matroska : MuxingApp.
+            tags["muxing_application"] = self._writing_application
+        return tags
 
-    def _apply_track_meta_edits_inplace(self, output: Path, edits: list) -> None:
-        """
-        Applique les éditions de langue/titre de pistes via mkvpropedit.
+    @staticmethod
+    def _track_spec_for_track_order(track_order: int, audio_count: int) -> tuple[str, int] | None:
+        if track_order <= 0:
+            return None
+        if track_order == 1:
+            return ("v", 0)
 
-        Chaque TrackMetaEdit.track_order est le numéro 1-based de la piste dans
-        le fichier de sortie (sélecteur ``@N`` de mkvpropedit).
-        """
-        if not edits:
-            return
-        mkvpropedit_bin = self._bins["mkvpropedit"]
-        cmd: list[str] = [mkvpropedit_bin, str(output)]
-        for edit in edits:
-            cmd.extend(["--edit", f"track:@{edit.track_order}"])
+        first_audio = 2
+        last_audio = first_audio + max(0, audio_count) - 1
+        if first_audio <= track_order <= last_audio:
+            return ("a", track_order - first_audio)
+
+        first_sub = last_audio + 1
+        if track_order >= first_sub:
+            return ("s", track_order - first_sub)
+        return None
+
+    @staticmethod
+    def _normalized_track_language_value(language: str, title: str | None = None) -> str | None:
+        raw = (language or "").strip()
+        if not raw:
+            return None
+        canonical = LangTags.normalize(raw) or raw
+        regional = LangTags.regionalize_track_language(canonical, title) or canonical
+        if regional.lower() == "und":
+            return "und"
+        if LangTags.is_valid(regional):
+            return regional
+        if LangTags.is_valid(canonical):
+            return canonical
+        return "und"
+
+    @staticmethod
+    def _disposition_value_from_edit(edit) -> str | None:
+        values = (
+            edit.flag_default,
+            edit.flag_forced,
+            edit.flag_hearing_impaired,
+            edit.flag_visual_impaired,
+            edit.flag_original,
+            edit.flag_commentary,
+        )
+        if all(v is None for v in values):
+            return None
+        # Évite les états partiels : la disposition ffmpeg remplace l'ensemble.
+        if any(v is None for v in values):
+            return None
+
+        flags: list[str] = []
+        if edit.flag_default:
+            flags.append("default")
+        if edit.flag_forced:
+            flags.append("forced")
+        if edit.flag_hearing_impaired:
+            flags.append("hearing_impaired")
+        if edit.flag_visual_impaired:
+            flags.append("visual_impaired")
+        if edit.flag_original:
+            flags.append("original")
+        if edit.flag_commentary:
+            flags.append("comment")
+        return "+".join(flags) if flags else "0"
+
+    def _build_track_meta_args(self, config: EncodeConfig) -> list[str]:
+        args: list[str] = []
+        if not config.track_meta_edits:
+            return args
+
+        audio_count = len(config.audio_tracks)
+        for edit in config.track_meta_edits:
+            spec = self._track_spec_for_track_order(int(edit.track_order), audio_count)
+            if spec is None:
+                self.log_message.emit("WARN", f"Piste invalide en édition metadata: @{edit.track_order}")
+                continue
+            stream_type, out_idx = spec
+            stream_spec = f"-metadata:s:{stream_type}:{out_idx}"
+            disposition_spec = f"-disposition:{stream_type}:{out_idx}"
+
             language = (edit.language or "").strip()
             if language:
-                language = LangTags.normalize(language) or language
-                iso639_2 = LangTags.to_iso639_2(language)
-                if iso639_2 is not None:
-                    cmd.extend(["--set", f"language={iso639_2}"])
-                else:
-                    self.log_message.emit(
-                        "WARN",
-                        f"Langue {language!r} non convertible en ISO639-2 "
-                        f"pour la piste {edit.track_order} ; balise IETF seule appliquée.",
-                    )
-                cmd.extend(["--set", f"language-ietf={language}"])
-                iso_display = iso639_2 or "n/a"
-                self.log_message.emit(
-                    "INFO",
-                    f"Lang set for track {edit.track_order} to {language} "
-                    f"(ISO639-2: {iso_display}) in workflow",
-                )
+                lang_value = self._normalized_track_language_value(language, edit.title)
+                if lang_value:
+                    # Écrit la langue utile en BCP-47 et purge l'ancien champ IETF
+                    # pour éviter les doublons ISO+IETF incohérents.
+                    args.extend([stream_spec, f"language={lang_value}"])
+                    args.extend([stream_spec, "language-ietf="])
+
             if edit.title is not None:
-                cmd.extend(["--set", f"name={edit.title}"])
-        try:
-            self.log_message.emit("INFO", "$ " + " ".join(cmd))
-            r = subprocess.run(
-                cmd, capture_output=True, check=False, timeout=30, **subprocess_text_kwargs()
-            )
-            if r.returncode != 0:
-                self.log_message.emit("WARN", f"mkvpropedit (métadonnées) : {r.stderr.strip()}")
-        except FileNotFoundError:
-            self.log_message.emit("WARN", "mkvpropedit introuvable — métadonnées de pistes non appliquées.")
+                args.extend([stream_spec, f"title={edit.title}"])
 
-    def _run_single_with_postproc(
-        self, cmd: list[str], config: EncodeConfig, cwd: Path
-    ) -> TaskSignals:
-        """
-        Exécute une passe ffmpeg unique puis les post-traitements (balises + métadonnées pistes).
-        """
-        signals = TaskSignals()
-        executor = ThreadPoolExecutor(max_workers=1)
-
-        def _task() -> None:
-            try:
-                output = self._runner._run_cmd(
-                    cmd, cwd=cwd, label="ffmpeg", signals=signals,
-                    progress_cb=lambda line: signals.progress.emit(line),
-                )
-                self._postproc(config, signals)
-                signals.finished.emit(output)
-            except TaskCancelledError:
-                signals.cancelled.emit()
-            except Exception as exc:
-                signals.failed.emit(str(exc), exc)
-            finally:
-                executor.shutdown(wait=False)
-
-        executor.submit(_task)
-        return signals
+            disposition = self._disposition_value_from_edit(edit)
+            if disposition is not None:
+                args.extend([disposition_spec, disposition])
+        return args
 
     def _run_with_metadata_inject(self, config: EncodeConfig) -> TaskSignals:
         """
-        Workflow d'encodage avec injection DV RPU / HDR10+ en post-traitement.
+        Workflow d'encodage avec injection DV RPU / HDR10+ en une seule passe de sortie.
         Appelé uniquement quand copy_dv ou copy_hdr10plus est actif ET codec ≠ copy.
 
         Gestion des fichiers de travail :
           • Pas de encoded.mkv : la vidéo est encodée directement en HEVC brut (enc.hevc).
-          • L'audio copy est pris directement depuis la source via mkvmerge — aucun
-            traitement. Un fichier audio_subs.mkv n'est créé que si un réencodage audio
-            ou une extraction TrueHD core (BSF) est nécessaire.
+          • Pas de src.hevc : les extractions RPU/HDR10+ lisent directement la source.
+          • L'audio copy est pris directement depuis la source via FFmpeg — aucun
+            traitement intermédiaire.
           • La source n'est jamais modifiée.
           • Chaque HEVC intermédiaire est alloué via _shm_path() : en RAM (/dev/shm)
             si RAM libre > seuil, sinon sur disque.
@@ -1317,21 +1626,20 @@ class EncodeWorkflow(QObject):
           dovi_tool préserve tous les types de NAL.
 
         Étapes :
-          1. Extraction HEVC source brut → src.hevc (RAM ou disque)
-          2. Extraction RPU DoVi (dovi_tool extract-rpu) si copy_dv
-          3. Extraction HDR10+ (hdr10plus_tool extract) si copy_hdr10plus
-          4. Suppression immédiate de src.hevc
-          5. Encodage vidéo seule → enc.hevc (HEVC brut, sans container)
+          1. Extraction RPU DoVi (dovi_tool extract-rpu) si copy_dv
+          2. Extraction HDR10+ (hdr10plus_tool extract) si copy_hdr10plus
+          3. Encodage vidéo seule → enc.hevc (HEVC brut, sans container)
              Mode SIZE : deux passes (analyse + encodage direct en .hevc)
-          6. Injection HDR10+ si applicable → nouveau current_hevc, ancien supprimé
-          7. Injection RPU DV si applicable → nouveau current_hevc, ancien supprimé
-          8. Reconstitution finale via ffmpeg (une seule commande, depuis la source) :
+          4. Injection HDR10+ si applicable → nouveau current_hevc, ancien supprimé
+          5. Injection RPU DV si applicable → nouveau current_hevc, ancien supprimé
+          6. Reconstitution finale via ffmpeg (une seule commande, depuis la source) :
              ffmpeg -i current_hevc -i source
                -map 0:v:0 -c:v copy            (vidéo injectée)
                -map 1:stream_idx [codec args]   (audio depuis source, copy ou réencodage)
                -map 1:s? -c:s copy              (subs depuis source)
+               -map_metadata/-map_chapters/...  (tags/chapitres/track-meta/muxing app)
                output.mkv
-             Pas de mkvmerge, pas de fichier audio intermédiaire.
+             Pas de dépendance MKVToolNix, pas de fichier audio intermédiaire.
              La source n'est jamais modifiée.
         """
         signals = TaskSignals()
@@ -1388,48 +1696,30 @@ class EncodeWorkflow(QObject):
                     pass   # chemin disque, pas dans ext_files
 
             try:
-                # ── 1. HEVC source brut ──────────────────────────────────
-                # Taille estimée = taille du fichier source (approximation conservative)
                 src_size_est = config.source.stat().st_size
-                src_hevc = _alloc("src.hevc", src_size_est)
-                signals.progress.emit("Extraction HEVC source…")
-                _run([
-                    self._ffmpeg, "-hide_banner", "-y",
-                    *self._ffmpeg_progress_args(),
-                    "-i", str(config.source),
-                    "-map", "0:v:0",
-                    *self._ffmpeg_thread_args(),
-                    "-c:v", "copy", "-f", "hevc", str(src_hevc),
-                ])
-                _check()
-
-                # ── 2. RPU Dolby Vision ──────────────────────────────────
+                # ── 1. RPU Dolby Vision ──────────────────────────────────
                 rpu_bin = tmp / "rpu.bin"
                 if config.copy_dv:
                     signals.progress.emit("Extraction RPU Dolby Vision…")
                     _run([
                         self._bins["dovi_tool"], "extract-rpu",
-                        "-i", str(src_hevc), "-o", str(rpu_bin),
+                        "-i", str(config.source), "-o", str(rpu_bin),
                     ])
                     _check()
 
-                # ── 3. HDR10+ ────────────────────────────────────────────
+                # ── 2. HDR10+ ────────────────────────────────────────────
                 hdr10p_json = tmp / "hdr10p.json"
                 if config.copy_hdr10plus:
                     signals.progress.emit("Extraction métadonnées HDR10+…")
                     _run([
                         self._bins["hdr10plus_tool"], "extract",
-                        str(src_hevc), "-o", str(hdr10p_json),
+                        str(config.source), "-o", str(hdr10p_json),
                     ])
                     _check()
 
-                # ── 4. Libération de src.hevc ────────────────────────────
-                # Libéré avant l'encodage pour maximiser l'espace disque/RAM.
-                _free(src_hevc)
-
-                # ── 5a. Encodage vidéo → enc.hevc brut ──────────────────
+                # ── 3. Encodage vidéo → enc.hevc brut ───────────────────
                 # Encodage direct en HEVC sans container ni audio.
-                # Élimine encoded.mkv et l'étape d'extraction HEVC redondante.
+                # Élimine encoded.mkv et garde un seul intermédiaire vidéo utile.
                 # La taille estimée = taille source (approximation conservative).
                 enc_hevc = _alloc("enc.hevc", src_size_est)
                 signals.progress.emit("Encodage vidéo…")
@@ -1445,7 +1735,7 @@ class EncodeWorkflow(QObject):
                 _check()
                 current_hevc = enc_hevc
 
-                # ── 6. Injection HDR10+ ──────────────────────────────────
+                # ── 4. Injection HDR10+ ──────────────────────────────────
                 # HDR10+ avant DV : hdr10plus_tool ne tolère pas les NAL RPU DV.
                 if config.copy_hdr10plus and hdr10p_json.exists():
                     cur_size = current_hevc.stat().st_size
@@ -1461,7 +1751,7 @@ class EncodeWorkflow(QObject):
                     current_hevc = out_hdr10p
                     _check()
 
-                # ── 7. Injection RPU DV ──────────────────────────────────
+                # ── 5. Injection RPU DV ──────────────────────────────────
                 if config.copy_dv and rpu_bin.exists():
                     cur_size = current_hevc.stat().st_size
                     out_dv = _alloc("enc_dv.hevc", cur_size)
@@ -1478,28 +1768,14 @@ class EncodeWorkflow(QObject):
                     current_hevc = out_dv
                     _check()
 
-                # ── 8. Reconstitution finale ─────────────────────────────
+                # ── 6. Reconstitution finale ─────────────────────────────
                 # ffmpeg multi-input :
                 #   input 0 = HEVC injecté, input 1 = source principale,
                 #   input 2+ = sources audio / sous-titres / attachements supplémentaires.
                 signals.progress.emit("Reconstitution finale…")
-                extra_sources: list[Path] = []
-                for a in config.audio_tracks:
-                    sp = a.source_path or config.source
-                    if sp != config.source and sp not in extra_sources:
-                        extra_sources.append(sp)
-                for src_path, _idx in config.subtitle_tracks:
-                    if src_path != config.source and src_path not in extra_sources:
-                        extra_sources.append(src_path)
-                for src_path, _idx in config.attachment_streams:
-                    if src_path != config.source and src_path not in extra_sources:
-                        extra_sources.append(src_path)
-
-                # Indice ffmpeg : 0=HEVC, 1=source, 2+=extras
-                def _inp(src_path: Path) -> int:
-                    if src_path == config.source:
-                        return 1
-                    return 2 + extra_sources.index(src_path)
+                all_sources = self._collect_all_sources(config)
+                extra_sources = all_sources[1:]
+                recon_source_idx = self._source_input_index_map(all_sources, start_index=1)
 
                 recon_cmd = [self._ffmpeg, "-hide_banner", "-y",
                              *self._ffmpeg_progress_args(),
@@ -1507,48 +1783,34 @@ class EncodeWorkflow(QObject):
                              "-i", str(config.source)]
                 for sp in extra_sources:
                     recon_cmd.extend(["-i", str(sp)])
+                _, chapter_input_index, tag_input_index = self._prepare_container_metadata_inputs(
+                    recon_cmd,
+                    config,
+                    source_idx=recon_source_idx,
+                    next_input_index=2 + len(extra_sources),
+                    chapter_materialize_dir=tmp,
+                    chapter_probe_source=config.source,
+                )
+
                 recon_cmd.extend(self._ffmpeg_thread_args())
                 recon_cmd.extend(["-map", "0:v:0", "-c:v", "copy"])
+                self._append_stream_maps_and_attachments(
+                    recon_cmd,
+                    config,
+                    source_idx=recon_source_idx,
+                    subtitle_copy_input_indices=list(range(1, 2 + len(extra_sources))),
+                )
 
-                for i, a in enumerate(config.audio_tracks):
-                    inp = _inp(a.source_path or config.source)
-                    recon_cmd.extend(["-map", f"{inp}:{a.stream_index}"])
-                    recon_cmd.extend(self._audio_codec_args(i, a))
-
-                if config.subtitle_tracks:
-                    for src_path, stream_idx in config.subtitle_tracks:
-                        inp = _inp(src_path)
-                        recon_cmd.extend(["-map", f"{inp}:{stream_idx}"])
-                    recon_cmd.extend(["-c:s", "copy"])
-                elif config.copy_subtitles:
-                    n_inputs = 2 + len(extra_sources)
-                    for inp_i in range(1, n_inputs):   # skip input 0 (HEVC brut, pas de subs)
-                        recon_cmd.extend(["-map", f"{inp_i}:s?"])
-                    recon_cmd.extend(["-c:s", "copy"])
-
-                if config.attachment_streams:
-                    for src_path, stream_idx in config.attachment_streams:
-                        inp = _inp(src_path)
-                        recon_cmd.extend(["-map", f"{inp}:{stream_idx}"])
-                    recon_cmd.extend(["-c:t", "copy"])
-
-                existing_att = len(config.attachment_streams)
-                for i, att_path in enumerate(config.extra_attachments):
-                    att_idx = existing_att + i
-                    att_name = "cover" if att_path.stem.lower() == "cover" else att_path.name
-                    recon_cmd.extend(["-attach", str(att_path)])
-                    recon_cmd.extend([f"-metadata:s:t:{att_idx}", f"mimetype={_mime_for(att_path)}"])
-                    recon_cmd.extend([f"-metadata:s:t:{att_idx}", f"filename={att_name}"])
-
-                if config.keep_chapters:
-                    recon_cmd.extend(["-map_chapters", "1"])   # chapitres depuis source
-
-                recon_cmd.extend(["-metadata", f"title={config.file_title}"])
+                self._append_container_metadata_args(
+                    recon_cmd,
+                    config,
+                    default_metadata_input_index=0,
+                    default_chapter_input_index=1,
+                    chapter_input_index=chapter_input_index,
+                    tag_input_index=tag_input_index,
+                )
                 recon_cmd.append(str(config.output))
                 _run(recon_cmd)
-
-                # ── 9. Post-traitements (balises MKV + métadonnées pistes) ────
-                self._postproc(config, signals)
 
                 signals.finished.emit(f"Encodage terminé → {config.output.name}")
 

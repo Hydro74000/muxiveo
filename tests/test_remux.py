@@ -130,6 +130,7 @@ from core.inspector import (
     build_chapter_xml,
 )
 from core.media_info_fetcher import MediaDetails
+from core.runner import TaskSignals
 from core.workflows.remux import (
     RemuxConfig, RemuxError, RemuxWorkflow, SourceInput,
     TrackEntry, tracks_from_file_info,
@@ -2003,3 +2004,66 @@ class TestRemuxWorkflowChapterOverrides:
         assert "--chapters" in cmd
         idx = cmd.index("--chapters")
         assert cmd[idx + 1] == xml_file.as_posix()
+
+
+class TestRemuxWorkflowPostMetadata:
+
+    def _cfg(self, output: Path, *, tags: dict[str, str] | None = None) -> RemuxConfig:
+        t = _track(0, "video", file_id="id0")
+        src = SourceInput(path=Path("/a.mkv"), file_index=0, tracks=[t])
+        return RemuxConfig(
+            sources=[src],
+            output=output,
+            track_order=[(0, 0)],
+            tag_overrides=tags,
+        )
+
+    def test_resolved_postproc_metadata_merges_tags_and_muxing_app(self, tmp_path):
+        output = tmp_path / "out.mkv"
+        cfg = self._cfg(output, tags={"GENRE": "Drama", "EMPTY": "   "})
+        wf = RemuxWorkflow(
+            mkvmerge_bin="mkvmerge",
+            ffmpeg_bin="ffmpeg",
+            writing_application="MediarecodeMux",
+        )
+
+        metadata = wf._resolved_postproc_metadata(cfg)
+
+        assert metadata["GENRE"] == "Drama"
+        assert metadata["muxing_application"] == "MediarecodeMux"
+        assert "EMPTY" not in metadata
+
+    def test_apply_metadata_inplace_uses_ffmpeg_not_mkvpropedit(self, tmp_path):
+        output = tmp_path / "out.mkv"
+        output.write_bytes(b"original")
+        wf = RemuxWorkflow(
+            mkvmerge_bin="mkvmerge",
+            ffmpeg_bin="ffmpeg",
+            ffmpeg_threads=7,
+        )
+        signals = TaskSignals()
+        captured: list[list[str]] = []
+
+        def _fake_run_cmd(cmd, **_kwargs):
+            captured.append(list(cmd))
+            Path(cmd[-1]).write_bytes(b"remuxed")
+            return ""
+
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run_cmd):
+            wf._apply_metadata_inplace(
+                output,
+                {"GENRE": "Drama", "muxing_application": "MediarecodeMux"},
+                cwd=tmp_path,
+                signals=signals,
+            )
+
+        assert captured, "Aucune commande FFmpeg capturée"
+        cmd = captured[0]
+        assert cmd[0] == "ffmpeg"
+        assert "mkvpropedit" not in " ".join(cmd)
+        assert "-threads" in cmd
+        assert cmd[cmd.index("-threads") + 1] == "7"
+        assert "-metadata" in cmd
+        assert "GENRE=Drama" in cmd
+        assert "muxing_application=MediarecodeMux" in cmd
+        assert output.exists()
