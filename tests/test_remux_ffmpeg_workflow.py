@@ -211,6 +211,28 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert "<chapitres.ffmetadata>" in cmd
         assert cmd[cmd.index("-map_chapters") + 1] == "1"
 
+    def test_build_command_with_tag_and_chapter_overrides_maps_metadata_from_chapter_input(self, tmp_path):
+        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        src = tmp_path / "in.mkv"
+        src.touch()
+
+        cfg = RemuxConfig(
+            sources=[SourceInput(path=src, file_index=0, tracks=[_track(0, "video")])],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0)],
+            chapter_overrides=[ChapterEntry(timecode_s=0.0, name="Intro")],
+            tag_overrides={"TMDB_ID": "42"},
+        )
+
+        cmd = wf.build_command(
+            cfg,
+            extra_inputs=[Path("<chapitres.ffmetadata>")],
+            chapter_input_index=1,
+        )
+
+        assert cmd[cmd.index("-map_metadata") + 1] == "1"
+        assert cmd[cmd.index("-map_chapters") + 1] == "1"
+
     def test_build_command_maps_source_metadata_when_copy_tags_is_enabled(self, tmp_path):
         wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src = tmp_path / "in.mkv"
@@ -344,6 +366,7 @@ class TestFfmpegRemuxWorkflowIntegration:
         assert _tag_value(probe.get("format", {}).get("tags", {}), "TMDB_ID") == "777"
         assert _tag_value(probe.get("format", {}).get("tags", {}), "SOURCE") == "pytest"
         assert len(probe.get("chapters", [])) == 2
+        assert [_tag_value(ch.get("tags", {}), "title") for ch in probe.get("chapters", [])] == ["Intro", "Main"]
 
         audio_stream = next(s for s in probe.get("streams", []) if s.get("codec_type") == "audio")
         assert _tag_value(audio_stream.get("tags", {}), "language") == "fr-FR"

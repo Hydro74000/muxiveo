@@ -135,6 +135,7 @@ from core.workflows.encode import (
     TrackMetaEdit,
     VideoEncodeSettings,
 )
+from core.inspector import ChapterEntry
 from core.runner import TaskSignals
 
 
@@ -734,6 +735,53 @@ class TestMetadataInjectFileManagement:
             _collect_signals(sigs)
 
         assert shm_calls == [], "Des fichiers /dev/shm créés malgré enabled=False"
+
+
+class TestRuntimeCleanup:
+    def test_run_two_pass_cleans_passlogs(self, tmp_path):
+        wf = _make_workflow()
+
+        def _fake_run(cmd, cwd=None, label=None, progress_cb=None, signals=None):
+            assert cwd == tmp_path
+            (tmp_path / "ffmpeg2pass-0.log").write_text("log", encoding="utf-8")
+            (tmp_path / "ffmpeg2pass-0.log.mbtree").write_text("tree", encoding="utf-8")
+            return ""
+
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+            sigs = wf._run_two_pass([["ffmpeg", "-pass", "1"], ["ffmpeg", "-pass", "2"]], cwd=tmp_path)
+            _collect_signals(sigs)
+
+        assert not (tmp_path / "ffmpeg2pass-0.log").exists()
+        assert not (tmp_path / "ffmpeg2pass-0.log.mbtree").exists()
+
+    def test_run_cleans_relocated_tmdb_covers(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 1000)
+        work_dir = tmp_path / "work"
+        tmdb_root = work_dir / "tmdb_covers"
+        tmdb_root.mkdir(parents=True)
+        cover = tmdb_root / "cover.jpg"
+        cover.write_bytes(b"jpeg")
+        out = tmp_path / "output.mkv"
+        cfg = _make_config(
+            source=src,
+            output=out,
+            video=_make_video_settings(codec="copy"),
+            extra_attachments=[cover],
+            work_dir=work_dir,
+        )
+        wf = _make_workflow()
+
+        with patch.object(wf._runner, "run") as mock_run:
+            signals = TaskSignals()
+            mock_run.return_value = signals
+            returned = wf.run(cfg)
+            attachments_dir = work_dir / "output" / "attachments"
+            assert (attachments_dir / "cover.jpg").exists()
+            returned.finished.emit("done")
+            _get_app().processEvents()
+
+        assert not attachments_dir.exists()
 
 
 # ===========================================================================
@@ -1677,6 +1725,36 @@ class TestInjectStorageChecks:
         assert not mock_inject.called
 
 
+class TestDynamicHdrDetection:
+    def test_detect_source_dynamic_hdr_presence_falls_back_to_mediainfo(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 1000)
+        wf = _make_workflow()
+
+        ffprobe_payload = json.dumps({
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "side_data_list": [],
+                }
+            ]
+        })
+
+        def _fake_subprocess_run(cmd, *args, **kwargs):
+            prog = Path(cmd[0]).name
+            if prog.startswith("ffprobe"):
+                return MagicMock(returncode=0, stdout=ffprobe_payload, stderr="")
+            if prog == "mediainfo":
+                if cmd[1] == "--Inform=Video;%HDR_Format%":
+                    return MagicMock(returncode=0, stdout="Dolby Vision", stderr="")
+                if cmd[1] == "--Inform=Video;%HDR_Format_Compatibility%":
+                    return MagicMock(returncode=0, stdout="HDR10+", stderr="")
+            raise AssertionError(f"Commande subprocess inattendue: {cmd}")
+
+        with patch("subprocess.run", side_effect=_fake_subprocess_run):
+            assert wf._detect_source_dynamic_hdr_presence(src) == (True, True)
+
+
 class TestIntegratedMetadataCommand:
     def test_tag_overrides_disable_metadata_copy(self, tmp_path):
         src = tmp_path / "source.mkv"; src.write_bytes(b"\x00")
@@ -1695,6 +1773,28 @@ class TestIntegratedMetadataCommand:
         assert cmd[idx + 1] == "-1"
         assert "GENRE=Drama" in cmd
         assert "title=Titre" in cmd
+
+    def test_chapter_overrides_with_tag_overrides_map_metadata_from_chapter_input(self, tmp_path):
+        src = tmp_path / "source.mkv"; src.write_bytes(b"\x00")
+        out = tmp_path / "output.mkv"
+        cfg = _make_config(
+            src,
+            out,
+            video=_make_video_settings(codec="copy"),
+            tag_overrides={"GENRE": "Drama"},
+            chapter_overrides=[
+                ChapterEntry(timecode_s=0.0, name="Intro"),
+                ChapterEntry(timecode_s=30.0, name="Outro"),
+            ],
+        )
+        wf = _make_workflow()
+
+        cmd = wf.build_command_single(cfg)
+
+        idx = cmd.index("-map_metadata")
+        assert cmd[idx + 1] == "1"
+        chap_idx = cmd.index("-map_chapters")
+        assert cmd[chap_idx + 1] == "1"
 
     def test_tag_sources_copy_from_last_source(self, tmp_path):
         src = tmp_path / "source.mkv"; src.write_bytes(b"\x00")
@@ -2231,6 +2331,38 @@ class TestInjectPathIntegratedPostproc:
         idx = recon.index("-map_metadata")
         assert recon[idx + 1] == "2"
 
+    def test_recon_uses_chapter_input_metadata_when_tags_are_overridden(self, tmp_path):
+        cmds = self._run_inject(
+            tmp_path,
+            tag_overrides={"GENRE": "Drama"},
+            chapter_overrides=[
+                ChapterEntry(timecode_s=0.0, name="Intro"),
+                ChapterEntry(timecode_s=30.0, name="Outro"),
+            ],
+        )
+        recon = self._get_recon_cmd(cmds)
+
+        idx = recon.index("-map_metadata")
+        assert recon[idx + 1] == "2"
+        chap_idx = recon.index("-map_chapters")
+        assert recon[chap_idx + 1] == "2"
+
+    def test_recon_wraps_injected_hevc_before_final_mux(self, tmp_path):
+        cmds = self._run_inject(tmp_path)
+        wrap_cmds = [c for c in cmds if c[0] == "ffmpeg" and str(c[-1]).endswith("enc_wrapped.mkv")]
+        assert len(wrap_cmds) == 1, f"Commande d'encapsulation introuvable. Cmds: {cmds}"
+        wrap = wrap_cmds[0]
+        assert "-f" in wrap
+        assert wrap[wrap.index("-f") + 1] == "hevc"
+        assert "-framerate" in wrap
+        assert "-bsf:v" in wrap
+        assert wrap[wrap.index("-bsf:v") + 1].startswith("setts=pts=N/(")
+
+        recon = self._get_recon_cmd(cmds)
+        first_input = recon[recon.index("-i") + 1]
+        assert first_input.endswith("enc_wrapped.mkv")
+        assert not first_input.endswith(".hevc")
+
 
 # ===========================================================================
 # extra_attachments — pièces jointes manuelles dans les commandes FFmpeg
@@ -2361,17 +2493,45 @@ class TestEncodeExtraAttachments:
         src = self._src(tmp_path)
         att_streams = [(src, 5)]   # 1 stream existant → extra débute à l'index 1
         extras = [tmp_path / "cover.jpg"]
-        cmd = self.wf.build_command_single(
-            _make_config(src, tmp_path / "out.mkv",
-                         attachment_streams=att_streams,
-                         extra_attachments=extras)
-        )
-        # Le premier attachement extra doit utiliser l'index 1, pas 0
+        with patch.object(
+            self.wf,
+            "_describe_attachment_stream",
+            return_value={
+                "is_attached_pic": False,
+                "filename": "DejaVuSans.ttf",
+                "mimetype": "application/x-truetype-font",
+            },
+        ):
+            cmd = self.wf.build_command_single(
+                _make_config(src, tmp_path / "out.mkv",
+                             attachment_streams=att_streams,
+                             extra_attachments=extras)
+            )
+        assert "filename=DejaVuSans.ttf" in cmd
         assert "-metadata:s:t:1" in cmd
-        assert "-metadata:s:t:0" not in cmd or \
-            all(cmd[i + 1].startswith("mimetype=") or cmd[i + 1].startswith("filename=")
-                is False
-                for i in [j for j, a in enumerate(cmd) if a == "-metadata:s:t:0"])
+        indices = [i for i, a in enumerate(cmd) if a == "-metadata:s:t:1"]
+        assert any(cmd[i + 1] == "filename=cover" for i in indices)
+
+    def test_single_attachment_streams_write_filename_and_mimetype(self, tmp_path):
+        src = self._src(tmp_path)
+        cfg = _make_config(
+            src,
+            tmp_path / "out.mkv",
+            attachment_streams=[(src, 5)],
+        )
+        with patch.object(
+            self.wf,
+            "_describe_attachment_stream",
+            return_value={
+                "is_attached_pic": False,
+                "filename": "DejaVuSans.ttf",
+                "mimetype": "application/x-truetype-font",
+            },
+        ):
+            cmd = self.wf.build_command_single(cfg)
+
+        assert "mimetype=application/x-truetype-font" in cmd
+        assert "filename=DejaVuSans.ttf" in cmd
 
     # ── two-pass pass2 ───────────────────────────────────────────────────────
 

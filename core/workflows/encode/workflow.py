@@ -23,6 +23,7 @@ from PySide6.QtCore import QObject, Signal
 from core.lang_tags import Rfc5646LanguageTags as LangTags
 from core.runner import TaskCancelledError, TaskSignals, ToolRunner
 from core.subprocess_utils import subprocess_text_kwargs
+from core.workdir import prepare_process_work_dir, relocate_tmdb_covers_to_process_dir
 from core.workflows.remux_ffmpeg import FfmpegRemuxWorkflow
 from core.workflows.encode.models import (
     EncodeConfig, EncodeError, QualityMode,
@@ -51,6 +52,7 @@ _EXT_BY_MIME: dict[str, str] = {
 }
 
 _VAAPI_CODECS = {"hevc_vaapi", "h264_vaapi"}
+_FALLBACK_HEVC_FRAME_RATE = "24000/1001"
 
 
 def _default_ffmpeg_thread_count() -> int:
@@ -104,6 +106,7 @@ class EncodeWorkflow(QObject):
         self._bins: dict[str, str] = {
             "dovi_tool":      dovi_tool_bin,
             "hdr10plus_tool": hdr10plus_bin,
+            "mediainfo":      "mediainfo",
         }
         self._runner = ToolRunner(max_workers=1, parent=self)
         self._ram_buffer_enabled       = ram_buffer_enabled
@@ -174,9 +177,36 @@ class EncodeWorkflow(QObject):
         """
         Retourne (has_dv, has_hdr10plus) pour la source vidéo principale.
 
-        None = détection impossible (ffprobe absent/erreur JSON), auquel cas on
-        conserve le comportement demandé par l'utilisateur sans optimisation.
+        None = détection impossible (ffprobe + mediainfo indisponibles), auquel
+        cas on conserve le comportement demandé par l'utilisateur sans
+        optimisation.
         """
+        payload = self._ffprobe_streams_payload(source)
+        has_dv = False
+        has_hdr10plus = False
+        if payload is not None:
+            for stream in payload.get("streams", []):
+                if stream.get("codec_type") != "video":
+                    continue
+                side_data = stream.get("side_data_list") or []
+                if any(sd.get("side_data_type") == "DOVI configuration record" for sd in side_data):
+                    has_dv = True
+                if any(
+                    sd.get("side_data_type") == "HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"
+                    for sd in side_data
+                ):
+                    has_hdr10plus = True
+                if has_dv and has_hdr10plus:
+                    break
+
+        mediainfo_flags = self._mediainfo_hdr_flags(source)
+        if mediainfo_flags is None:
+            return (has_dv, has_hdr10plus) if payload is not None else None
+
+        mi_dv, mi_hdr10plus = mediainfo_flags
+        return has_dv or mi_dv, has_hdr10plus or mi_hdr10plus
+
+    def _ffprobe_streams_payload(self, source: Path) -> dict[str, object] | None:
         ffprobe_bin = self._ffprobe_bin_from_ffmpeg(self._ffmpeg)
         cmd = [
             ffprobe_bin,
@@ -200,26 +230,34 @@ class EncodeWorkflow(QObject):
             return None
 
         try:
-            payload = json.loads(result.stdout or "{}")
+            return json.loads(result.stdout or "{}")
         except json.JSONDecodeError:
             return None
 
-        has_dv = False
-        has_hdr10plus = False
-        for stream in payload.get("streams", []):
-            if stream.get("codec_type") != "video":
-                continue
-            side_data = stream.get("side_data_list") or []
-            if any(sd.get("side_data_type") == "DOVI configuration record" for sd in side_data):
-                has_dv = True
-            if any(
-                sd.get("side_data_type") == "HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"
-                for sd in side_data
-            ):
-                has_hdr10plus = True
-            if has_dv and has_hdr10plus:
-                break
-        return has_dv, has_hdr10plus
+    def _mediainfo_hdr_flags(self, source: Path) -> tuple[bool, bool] | None:
+        mediainfo_bin = self._bins.get("mediainfo") or "mediainfo"
+        try:
+            hdr_format = subprocess.run(
+                [mediainfo_bin, "--Inform=Video;%HDR_Format%", str(source)],
+                capture_output=True,
+                check=False,
+                timeout=20,
+                **subprocess_text_kwargs(),
+            )
+            hdr_compat = subprocess.run(
+                [mediainfo_bin, "--Inform=Video;%HDR_Format_Compatibility%", str(source)],
+                capture_output=True,
+                check=False,
+                timeout=20,
+                **subprocess_text_kwargs(),
+            )
+        except FileNotFoundError:
+            return None
+
+        return (
+            "dolby vision" in (hdr_format.stdout or "").lower(),
+            "hdr10+" in (hdr_compat.stdout or "").lower(),
+        )
 
     def _normalize_dynamic_hdr_config(self, config: EncodeConfig) -> EncodeConfig:
         """
@@ -348,15 +386,29 @@ class EncodeWorkflow(QObject):
                 cmd.extend(["-map", f"{inp_i}:s?"])
             cmd.extend(["-c:s", "copy"])
 
+        mapped_attachment_meta: list[tuple[int, dict[str, object]]] = []
         if config.attachment_streams:
             for src_path, stream_idx in config.attachment_streams:
                 inp = source_idx.get(src_path)
                 if inp is None:
                     continue
                 cmd.extend(["-map", f"{inp}:{stream_idx}"])
-            cmd.extend(["-c:t", "copy"])
+                mapped_attachment_meta.append(
+                    (stream_idx, self._describe_attachment_stream(src_path, stream_idx))
+                )
+            if mapped_attachment_meta:
+                cmd.extend(["-c:t", "copy"])
+                for out_idx, (stream_idx, meta) in enumerate(mapped_attachment_meta):
+                    cmd.extend([
+                        f"-metadata:s:t:{out_idx}",
+                        f"mimetype={str(meta.get('mimetype') or 'application/octet-stream').strip() or 'application/octet-stream'}",
+                    ])
+                    cmd.extend([
+                        f"-metadata:s:t:{out_idx}",
+                        f"filename={self._attachment_filename(meta, stream_idx)}",
+                    ])
 
-        existing_att = len(config.attachment_streams)
+        existing_att = len(mapped_attachment_meta)
         for i, att_path in enumerate(config.extra_attachments):
             att_idx = existing_att + i
             att_name = "cover" if att_path.stem.lower() == "cover" else att_path.name
@@ -420,6 +472,7 @@ class EncodeWorkflow(QObject):
         metadata_map = self._container_metadata_map_value(
             config,
             default_metadata_input_index=default_metadata_input_index,
+            chapter_input_index=chapter_input_index,
             tag_input_index=tag_input_index,
             include_copy_video_stream_passthrough=include_copy_video_stream_passthrough,
         )
@@ -449,10 +502,13 @@ class EncodeWorkflow(QObject):
         config: EncodeConfig,
         *,
         default_metadata_input_index: int,
+        chapter_input_index: int | None,
         tag_input_index: int | None,
         include_copy_video_stream_passthrough: bool,
     ) -> str | None:
         if config.tag_overrides is not None:
+            if chapter_input_index is not None:
+                return str(chapter_input_index)
             return "-1"
         if tag_input_index is not None:
             return str(tag_input_index)
@@ -1069,10 +1125,33 @@ class EncodeWorkflow(QObject):
 
         self.log_message.emit("INFO", f"Encodage → {config.output.name}")
 
-        prepared_config, cleanup_dir = self._prepare_attachment_config(config)
+        work_root = config.work_dir or Path(tempfile.gettempdir())
+        process_work_dir = prepare_process_work_dir(
+            work_root,
+            output_path=config.output,
+            fallback_name="encode_job",
+        )
+        relocated_attachments = relocate_tmdb_covers_to_process_dir(
+            [Path(p) for p in config.extra_attachments],
+            work_root=work_root,
+            process_dir=process_work_dir,
+        )
+        prepared_config = replace(
+            config,
+            work_dir=process_work_dir,
+            extra_attachments=relocated_attachments,
+        )
+
+        prepared_config, cleanup_dir = self._prepare_attachment_config(
+            prepared_config,
+            work_dir=process_work_dir,
+        )
         cleanup_paths: list[Path] = []
         if cleanup_dir is not None:
             cleanup_paths.append(cleanup_dir)
+        relocated_attachment_dir = process_work_dir / "attachments"
+        if relocated_attachment_dir.exists():
+            cleanup_paths.append(relocated_attachment_dir)
 
         prepared_config = self._normalize_dynamic_hdr_config(prepared_config)
 
@@ -1107,15 +1186,13 @@ class EncodeWorkflow(QObject):
         cleanup_paths: list[Path],
     ) -> TaskSignals:
         cwd = config.work_dir or config.source.parent
-        if config.work_dir:
-            config.work_dir.mkdir(parents=True, exist_ok=True)
 
         chapter_dir: Path | None = None
         if config.chapter_overrides:
             chapter_dir = Path(
                 tempfile.mkdtemp(
                     prefix="enc_chapters_",
-                    dir=str(config.output.parent),
+                    dir=str(config.work_dir) if config.work_dir else None,
                 )
             )
             cleanup_paths.append(chapter_dir)
@@ -1306,6 +1383,8 @@ class EncodeWorkflow(QObject):
     def _prepare_attachment_config(
         self,
         config: EncodeConfig,
+        *,
+        work_dir: Path,
     ) -> tuple[EncodeConfig, Path | None]:
         """
         Convertit les ``attached_pic`` sélectionnés en fichiers joints temporaires.
@@ -1319,7 +1398,7 @@ class EncodeWorkflow(QObject):
         if not config.attachment_streams:
             return config, None
 
-        tmp_dir = Path(tempfile.mkdtemp(prefix="enc_attachments_"))
+        tmp_dir = Path(tempfile.mkdtemp(prefix="enc_attachments_", dir=str(work_dir)))
         direct_streams: list = []
         extracted_files: list[Path] = []
         created_any = False
@@ -1487,10 +1566,76 @@ class EncodeWorkflow(QObject):
             except Exception as exc:
                 signals.failed.emit(str(exc), exc)
             finally:
+                self._cleanup_two_pass_logs(cwd)
                 executor.shutdown(wait=False)
 
         executor.submit(_task)
         return signals
+
+    @staticmethod
+    def _cleanup_two_pass_logs(cwd: Path | None) -> None:
+        base_dir = Path(cwd) if cwd is not None else Path.cwd()
+        if not base_dir.exists():
+            return
+        for path in base_dir.glob("ffmpeg2pass-*.log*"):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _normalize_frame_rate_expr(value: object) -> str | None:
+        raw = str(value or "").strip()
+        if raw in {"", "0", "0/0", "N/A"}:
+            return None
+        if re.fullmatch(r"\d+(?:\.\d+)?", raw):
+            return raw
+        if re.fullmatch(r"\d+/\d+", raw):
+            return raw
+        return None
+
+    def _source_video_fps_expr(self, source: Path) -> str:
+        payload = self._ffprobe_streams_payload(source)
+        if payload is None:
+            return _FALLBACK_HEVC_FRAME_RATE
+        for stream in payload.get("streams", []):
+            if stream.get("codec_type") != "video":
+                continue
+            for key in ("avg_frame_rate", "r_frame_rate"):
+                fps_expr = self._normalize_frame_rate_expr(stream.get(key))
+                if fps_expr is not None:
+                    return fps_expr
+            break
+        return _FALLBACK_HEVC_FRAME_RATE
+
+    def _wrap_injected_hevc_for_reconstruction(
+        self,
+        *,
+        source: Path,
+        hevc_input: Path,
+        mkv_output: Path,
+    ) -> list[str]:
+        fps_expr = self._source_video_fps_expr(source)
+        return [
+            self._ffmpeg,
+            "-hide_banner",
+            "-y",
+            *self._ffmpeg_progress_args(),
+            "-f",
+            "hevc",
+            "-framerate",
+            fps_expr,
+            "-i",
+            str(hevc_input),
+            *self._ffmpeg_thread_args(),
+            "-map",
+            "0:v:0",
+            "-c:v",
+            "copy",
+            "-bsf:v",
+            f"setts=pts=N/({fps_expr}*TB)",
+            str(mkv_output),
+        ]
 
     def _resolve_global_tags(self, config: EncodeConfig) -> dict[str, str]:
         tags: dict[str, str] = {}
@@ -1615,11 +1760,11 @@ class EncodeWorkflow(QObject):
           • L'audio copy est pris directement depuis la source via FFmpeg — aucun
             traitement intermédiaire.
           • La source n'est jamais modifiée.
-          • Chaque HEVC intermédiaire est alloué via _shm_path() : en RAM (/dev/shm)
-            si RAM libre > seuil, sinon sur disque.
+          • Tous les HEVC intermédiaires sont écrits dans le dossier process
+            dédié au job courant (sous work_dir).
           • Chaque intermédiaire HEVC est supprimé immédiatement dès que l'étape
             suivante l'a consommé.
-          • Les fichiers /dev/shm sont explicitement supprimés dans le finally.
+          • Le dossier temporaire process est supprimé en fin de workflow.
 
         Ordre d'injection (contrainte HDR10+ avant DV) :
           HDR10+ en premier : hdr10plus_tool ne tolère pas les NAL RPU DV existants.
@@ -1646,16 +1791,15 @@ class EncodeWorkflow(QObject):
         executor = ThreadPoolExecutor(max_workers=1)
 
         def _task() -> None:
-            work = config.work_dir
-            if work:
-                work.mkdir(parents=True, exist_ok=True)
+            work = config.work_dir or Path(tempfile.gettempdir())
+            work.mkdir(parents=True, exist_ok=True)
             tmp_dir = tempfile.mkdtemp(
                 prefix="mediarecode_encode_",
-                dir=str(work) if work else None,
+                dir=str(work),
             )
             tmp = Path(tmp_dir)
-            # Fichiers alloués hors du répertoire de travail tmp (ex. /dev/shm)
-            # → nettoyage explicite dans le finally car shutil.rmtree ne les couvre pas.
+            # Conservé pour compatibilité : les intermédiaires sont désormais
+            # forcés dans tmp, donc cette liste reste vide.
             ext_files: list[Path] = []
 
             def _run(cmd: list[str]) -> str:
@@ -1671,14 +1815,10 @@ class EncodeWorkflow(QObject):
             def _alloc(name: str, ref_size: int) -> Path:
                 """
                 Alloue un chemin de travail HEVC.
-                Si le buffer RAM est actif et la RAM suffisante → répertoire RAM.
-                Sinon → tmp (disque).
-                Le chemin est enregistré dans ext_files s'il est hors de tmp.
+                Tous les intermédiaires sont forcés dans le dossier process.
                 """
-                p = self._shm_path(tmp, name, ref_size)
-                if p.parent != tmp:   # hors tmp = répertoire RAM ou autre
-                    ext_files.append(p)
-                return p
+                _ = ref_size
+                return tmp / name
 
             def _free(path: Path) -> None:
                 """
@@ -1768,9 +1908,23 @@ class EncodeWorkflow(QObject):
                     current_hevc = out_dv
                     _check()
 
-                # ── 6. Reconstitution finale ─────────────────────────────
+                # ── 6. Encapsulation FFmpeg-only du HEVC injecté ──────────
+                wrapped_video = _alloc("enc_wrapped.mkv", current_hevc.stat().st_size)
+                signals.progress.emit("Encapsulation vidéo injectée…")
+                _run(
+                    self._wrap_injected_hevc_for_reconstruction(
+                        source=config.source,
+                        hevc_input=current_hevc,
+                        mkv_output=wrapped_video,
+                    )
+                )
+                _free(current_hevc)
+                current_video_input = wrapped_video
+                _check()
+
+                # ── 7. Reconstitution finale ─────────────────────────────
                 # ffmpeg multi-input :
-                #   input 0 = HEVC injecté, input 1 = source principale,
+                #   input 0 = vidéo encapsulée et horodatée, input 1 = source principale,
                 #   input 2+ = sources audio / sous-titres / attachements supplémentaires.
                 signals.progress.emit("Reconstitution finale…")
                 all_sources = self._collect_all_sources(config)
@@ -1779,7 +1933,7 @@ class EncodeWorkflow(QObject):
 
                 recon_cmd = [self._ffmpeg, "-hide_banner", "-y",
                              *self._ffmpeg_progress_args(),
-                             "-i", str(current_hevc),
+                             "-i", str(current_video_input),
                              "-i", str(config.source)]
                 for sp in extra_sources:
                     recon_cmd.extend(["-i", str(sp)])
@@ -1820,8 +1974,7 @@ class EncodeWorkflow(QObject):
                 signals.failed.emit(str(exc), exc)
             finally:
                 executor.shutdown(wait=False)
-                # Supprimer les fichiers hors tmp (ex. /dev/shm) non couverts par rmtree.
-                # Itère sur une copie : _free() mute ext_files.
+                # Compatibilité : ext_files est vide en mode "tout dans work_dir".
                 for p in list(ext_files):
                     try:
                         p.unlink(missing_ok=True)

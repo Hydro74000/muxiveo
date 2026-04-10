@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
@@ -23,6 +24,7 @@ from core.inspector import AttachmentInfo
 from core.lang_tags import Rfc5646LanguageTags as LangTags
 from core.runner import TaskCancelledError, TaskSignals, ToolRunner
 from core.subprocess_utils import subprocess_text_kwargs
+from core.workdir import prepare_process_work_dir, relocate_tmdb_covers_to_process_dir
 from core.workflows.remux import RemuxConfig, RemuxError, TrackEntry
 
 
@@ -307,7 +309,7 @@ class FfmpegRemuxWorkflow(QObject):
             cmd.extend(["-map", f"{mt.source_input_idx}:{mt.stream_index}"])
 
         cmd.extend(["-c", "copy", "-default_mode", "passthrough"])
-        cmd.extend(["-map_metadata", self._metadata_map_value(config)])
+        cmd.extend(["-map_metadata", self._metadata_map_value(config, chapter_input_index)])
         cmd.extend(["-map_chapters", self._chapter_map_value(config, chapter_input_index)])
 
         for key, value in self._resolved_global_tags(config).items():
@@ -373,38 +375,43 @@ class FfmpegRemuxWorkflow(QObject):
             raise RemuxError("\n".join(errors))
 
         self.log_message.emit("INFO", f"Remuxage (FFmpeg) → {config.output.name}")
-        cwd = config.work_dir or config.sources[0].path.parent
-        if config.work_dir:
-            config.work_dir.mkdir(parents=True, exist_ok=True)
+        work_root = config.work_dir or Path(tempfile.gettempdir())
+        process_work_dir = prepare_process_work_dir(
+            work_root,
+            output_path=config.output,
+            fallback_name="remux_ffmpeg_job",
+        )
+        relocated_attachments = relocate_tmdb_covers_to_process_dir(
+            [Path(p) for p in config.extra_attachments],
+            work_root=work_root,
+            process_dir=process_work_dir,
+        )
+        run_config = replace(config, extra_attachments=relocated_attachments)
+        cwd = process_work_dir
 
         signals = TaskSignals()
         executor = ThreadPoolExecutor(max_workers=1)
 
         def _task() -> None:
-            tmp_dir = Path(
-                tempfile.mkdtemp(
-                    prefix="remux_ffmpeg_",
-                    dir=str(config.work_dir) if config.work_dir else None,
-                )
-            )
+            tmp_dir = process_work_dir
             chapter_meta_file: Path | None = None
             try:
-                prepared_attachments = self._materialize_attachments(config, tmp_dir, signals)
+                prepared_attachments = self._materialize_attachments(run_config, tmp_dir, signals)
 
                 extra_inputs: list[Path] = []
                 chapter_input_index: int | None = None
-                if config.chapter_overrides:
-                    duration_s = self._probe_duration_seconds(config.sources[0].path)
+                if run_config.chapter_overrides:
+                    duration_s = self._probe_duration_seconds(run_config.sources[0].path)
                     chapter_meta_file = self._write_ffmetadata_chapters(
-                        entries=config.chapter_overrides,
+                        entries=run_config.chapter_overrides,
                         out_dir=tmp_dir,
                         duration_s=duration_s,
                     )
                     extra_inputs.append(chapter_meta_file)
-                    chapter_input_index = len(config.sources)
+                    chapter_input_index = len(run_config.sources)
 
                 cmd = self.build_command(
-                    config,
+                    run_config,
                     extra_inputs=extra_inputs,
                     chapter_input_index=chapter_input_index,
                     attachments=prepared_attachments,
@@ -429,15 +436,7 @@ class FfmpegRemuxWorkflow(QObject):
                         chapter_meta_file.unlink(missing_ok=True)
                 except Exception:
                     pass
-                for p in tmp_dir.glob("*"):
-                    try:
-                        p.unlink()
-                    except Exception:
-                        pass
-                try:
-                    tmp_dir.rmdir()
-                except Exception:
-                    pass
+                shutil.rmtree(tmp_dir, ignore_errors=True)
                 executor.shutdown(wait=False)
 
         executor.submit(_task)
@@ -502,9 +501,11 @@ class FfmpegRemuxWorkflow(QObject):
         return "0" if config.keep_chapters else "-1"
 
     @staticmethod
-    def _metadata_map_value(config: RemuxConfig) -> str:
+    def _metadata_map_value(config: RemuxConfig, chapter_input_index: int | None) -> str:
         # tag_overrides explicite (y compris dict vide) => aucune recopie automatique.
         if config.tag_overrides is not None:
+            if config.chapter_overrides and chapter_input_index is not None:
+                return str(chapter_input_index)
             return "-1"
         # Sinon, reproduit la sémantique historique "copy_tags" quand disponible.
         for input_idx, src in enumerate(config.sources):
