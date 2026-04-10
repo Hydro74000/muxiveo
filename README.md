@@ -2,7 +2,6 @@
 
 FULL Vibecoded App for Proof of Concept - no human code, only human prompts and eyes.
 
-Custom GUI de [mkvtoolnix](https://github.com/nmaier/mkvtoolnix) qui ajoute des options d'encodage video et audio :
 Interface graphique pour préparer des fichiers vidéo, remuxer sans perte, réencoder avec `ffmpeg`, et fusionner des métadonnées Dolby Vision / HDR10+.
 
 Cette documentation correspond à **Mediarecode v1.2**.
@@ -38,7 +37,7 @@ Le script `setup.py` installe automatiquement :
 | Catégorie | Installé par `setup.py` |
 |-----------|-------------------------|
 | Dépendance Python | `PySide6` |
-| Outils système | `ffmpeg`, `ffprobe`, `mkvmerge`, `mkvextract`, `mkvinfo`, `mediainfo` (`mkvpropedit` reste optionnel/legacy) |
+| Outils système | `ffmpeg`, `ffprobe`, `mediainfo` (+ `mkvmerge` / `mkvextract` / `mkvinfo` pour le workflow Fusion DoVi/HDR10+) |
 | Outils GitHub | `dovi_tool`, `hdr10plus_tool` |
 | Notes plateforme | Debian/Ubuntu via `apt`, Fedora/RHEL via `dnf`, macOS via Homebrew, Windows via `winget` + binaires locaux |
 
@@ -153,13 +152,13 @@ Le workflow unifié permet de :
 - remplacer automatiquement le **titre du conteneur** par le titre formaté TMDB lors de la validation (film : `Titre (Année)`, série : `Titre - SxxExx - Titre épisode`)
 - choisir pour chaque piste audio un mode `copy`, `aac`, `eac3` ou `flac`
 - choisir pour la vidéo `copy`, `libx265`, `libx264`, `libsvtav1`, `NVENC`, `AMF`, `VAAPI` ou `QSV`
-- choisir le backend de remux dans les paramètres : `ffmpeg` (défaut) ou `mkvmerge` (option)
+- backend de remux nominal : `ffmpeg`
 
 Modes d'exécution :
 
 | Condition | Mode | Outils utilisés |
 |-----------|------|-----------------|
-| vidéo en `copy`, audio en `copy`, aucune transformation HDR | **Remuxage pur** | `ffmpeg` par défaut (langues BCP47 via tag `language`, purge `language-ietf`, chapitres, tags globaux, pièces jointes, champ `Muxing Application`), ou `mkvmerge` en option |
+| vidéo en `copy`, audio en `copy`, aucune transformation HDR | **Remuxage pur** | `ffmpeg` (langues BCP47 via tag `language`, purge `language-ietf`, chapitres, tags globaux, pièces jointes, champ `Muxing Application`) |
 | tout autre cas | **Encodage** | `ffmpeg` en passe de sortie unique (encodage/remux final + chapitres, tags, langue/titre de pistes, `Muxing Application`) |
 
 Backend remux `ffmpeg` (par défaut) :
@@ -210,8 +209,8 @@ Le panneau **Paramètres** est un éditeur complet de `config.ini` intégré à 
 
 - **Interface** : thème (`dark` / `light`), langue, nombre maximal de lignes de log, panneau affiché au démarrage
 - **Chemins** : dossier de travail, dossier de sortie, dossier app data
-- **Remux** : backend (`ffmpeg` par défaut, `mkvmerge` en option)
-- **Outils externes** : chemins explicites pour chaque outil (`ffmpeg`, `mkvmerge`, `dovi_tool`, etc.)
+- **Remux** : backend `ffmpeg` (nominal)
+- **Outils externes** : chemins explicites pour chaque outil (`ffmpeg`, `ffprobe`, `mediainfo`, `dovi_tool`, `hdr10plus_tool`, etc.)
 - **Encodage** : profil DoVi, compat-id, buffer RAM
 - **Métadonnées** : auth TMDB via clé API v3 (`tmdb_api_key`) ou token Bearer v4 (`tmdb_bearer_token`)
 
@@ -257,7 +256,7 @@ Sous Windows, `setup.py` et le démarrage de l'application peuvent auto-détecte
 | `theme` | `dark` | thème visuel (`dark` ou `light`) |
 | `language` | auto-détecté | langue de l'interface (`fra` ou `eng`) |
 | `startup_panel` | `dashboard` | panneau ouvert au démarrage (`dashboard`, `container`, `encoding`, `dovi`, `settings`) |
-| `backend` (section `[remux]`) | `ffmpeg` | backend de remux (`ffmpeg` ou `mkvmerge`) |
+| `backend` (section `[remux]`) | `ffmpeg` | backend de remux (`ffmpeg`) |
 | `tmdb_api_key` | vide | clé API TMDB v3 utilisée par la recherche IMDb/TMDB |
 | `tmdb_bearer_token` | vide | token Bearer TMDB v4 (utilisé si `tmdb_api_key` est vide, ou via `MEDIARECODE_TMDB_BEARER_TOKEN`) |
 | `ram_buffer_enabled` | `true` | autorise l'usage de `/dev/shm` pour les HEVC intermédiaires si disponible |
@@ -289,7 +288,7 @@ Limite Windows :
 Vous pouvez définir explicitement dans `config.ini` :
 
 - `ffmpeg`, `ffprobe`
-- `mkvmerge`, `mkvextract`, `mkvinfo` (`mkvpropedit` reste configurable mais n'est plus utilisé dans les workflows principaux)
+- `mkvmerge`, `mkvextract`, `mkvinfo` (utilisés par le workflow Fusion DoVi/HDR10+)
 - `mediainfo`
 - `dovi_tool`, `hdr10plus_tool`
 - `eac3to`
@@ -302,7 +301,6 @@ output_dir = /mnt/nas/videos
 
 [tools]
 ffmpeg = /opt/ffmpeg/bin/ffmpeg
-mkvmerge = /usr/bin/mkvmerge
 dovi_tool = /usr/local/bin/dovi_tool
 
 [remux]
@@ -329,11 +327,8 @@ flowchart TD
     C --> D[Options video/audio/HDR dans EncodePanel]
     D --> E{Video copy + audio copy\net aucune transformation HDR ?}
 
-    E -->|Oui| F{Backend remux}
-    F -->|ffmpeg defaut| G[FfmpegRemuxWorkflow.run]
-    F -->|mkvmerge option| H[RemuxWorkflow.run via mkvmerge]
+    E -->|Oui| G[FfmpegRemuxWorkflow.run]
     G --> Z
-    H --> Z
 
     E -->|Non| I[EncodeWorkflow.run]
     I --> Z([Sortie MKV])
@@ -393,7 +388,7 @@ Lecture rapide :
 - Les demandes `copy_hdr10plus` et `copy_dv` sont evaluees explicitement apres normalisation source.
 - Si `codec=copy`, le workflow reste en sortie directe ffmpeg, y compris pour un encodage audio seul.
 - Le 2-pass existe seulement pour `codec!=copy` avec `quality_mode=SIZE`.
-- Le chemin injection utilise un seul intermediaire video utile: `enc.hevc`, puis un remux final ffmpeg.
+- Le chemin injection utilise `enc.hevc`, puis une encapsulation intermediaire `enc_wrapped.mkv`, puis un remux final ffmpeg.
 
 ### Fusion DoVi / HDR10+
 
@@ -462,7 +457,7 @@ flowchart TD
 | `ffprobe` | analyse des flux, chapitres et métadonnées |
 | `mediainfo` | frame count et informations HDR fines |
 | `ffmpeg` | encodage, remux par défaut, copie de flux, écriture metadata/chapitres/tags en sortie directe |
-| `mkvmerge` | backend optionnel de remux pur et remux final du workflow Fusion DoVi/HDR10+ |
+| `mkvmerge` | remux final du workflow Fusion DoVi/HDR10+ |
 | `mkvextract` | extraction du flux HEVC depuis un MKV |
 | `mkvpropedit` | legacy/optionnel, non utilisé dans les workflows principaux actuels |
 | `dovi_tool` | extraction, injection et vérification Dolby Vision |
