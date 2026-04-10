@@ -709,33 +709,72 @@ class _NavButton(QWidget):
 
     clicked = Signal()
 
-    def __init__(self, label: str, icon_char: str, page_index: int, is_sub: bool = False) -> None:
+    def __init__(
+        self,
+        label: str,
+        icon_char: str,
+        page_index: int,
+        is_sub: bool = False,
+        *,
+        compact: bool = False,
+    ) -> None:
         super().__init__()
         self.page_index = page_index
         self._checked  = False
         self._is_sub   = is_sub
-        self.setFixedHeight(36 if is_sub else 40)
+        self._compact  = compact
+        self._icon_char = icon_char
+        self._full_height = 36 if is_sub else 40
+        self._compact_height = max(self._full_height * 2, 76)
+        self.setFixedHeight(self._compact_height if compact else self._full_height)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setToolTip(label)
+        self.setAccessibleName(label)
 
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(28 if is_sub else 14, 0, 14, 0)
-        lay.setSpacing(10)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        self._icon_lbl = QLabel(icon_char)
-        self._icon_lbl.setFixedWidth(20)
-        self._icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._icon_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._stack = QStackedWidget()
+        self._stack.setStyleSheet("background: transparent; border: none;")
+        root.addWidget(self._stack)
+
+        full_page = QWidget()
+        full_page.setStyleSheet("background: transparent; border: none;")
+        full_lay = QHBoxLayout(full_page)
+        full_lay.setContentsMargins(28 if is_sub else 14, 0, 14, 0)
+        full_lay.setSpacing(10)
+
+        self._full_icon_lbl = QLabel(icon_char)
+        self._full_icon_lbl.setFixedWidth(20)
+        self._full_icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._full_icon_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
         self._text_lbl = QLabel(label)
-        self._text_lbl.setAlignment(
-            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
-        )
+        self._text_lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
         self._text_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
-        lay.addWidget(self._icon_lbl)
-        lay.addWidget(self._text_lbl)
-        lay.addStretch()
+        full_lay.addWidget(self._full_icon_lbl)
+        full_lay.addWidget(self._text_lbl)
+        full_lay.addStretch()
+        self._stack.addWidget(full_page)
+
+        compact_page = QWidget()
+        compact_page.setStyleSheet("background: transparent; border: none;")
+        compact_lay = QHBoxLayout(compact_page)
+        compact_lay.setContentsMargins(0, 0, 0, 0)
+        compact_lay.setSpacing(0)
+        self._compact_icon_lbl = QLabel(icon_char)
+        self._compact_icon_lbl.setFixedWidth(64)
+        self._compact_icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._compact_icon_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        compact_lay.addStretch()
+        compact_lay.addWidget(self._compact_icon_lbl)
+        compact_lay.addStretch()
+        self._stack.addWidget(compact_page)
+
+        self._stack.setCurrentIndex(1 if self._compact else 0)
 
         self._update_style(False)
 
@@ -748,6 +787,12 @@ class _NavButton(QWidget):
     def setChecked(self, checked: bool) -> None:
         self._checked = checked
         self._update_style(checked)
+
+    def set_compact(self, compact: bool) -> None:
+        self._compact = compact
+        self._stack.setCurrentIndex(1 if compact else 0)
+        self.setFixedHeight(self._compact_height if compact else self._full_height)
+        self._update_style(self._checked)
 
     def isCheckable(self) -> bool:
         return True
@@ -778,9 +823,15 @@ class _NavButton(QWidget):
                 background: {_Colors.BG_HOVER};
             }}
         """)
-        self._icon_lbl.setStyleSheet(
+        icon_style_full = (
             f"color: {icon_c}; font-size: 14px; background: transparent; border: none;"
         )
+        compact_px = 32 if self._icon_char == "▶" else 56
+        icon_style_compact = (
+            f"color: {icon_c}; font-size: {compact_px}px; background: transparent; border: none;"
+        )
+        self._full_icon_lbl.setStyleSheet(icon_style_full)
+        self._compact_icon_lbl.setStyleSheet(icon_style_compact)
         font_size = "11px" if self._is_sub else "12px"
         self._text_lbl.setStyleSheet(
             f"color: {color}; font-size: {font_size}; font-weight: {weight};"
@@ -798,14 +849,17 @@ class _Sidebar(QWidget):
     _NAV_ITEMS = [
         ("Tableau de bord", "⌂", 0, False),
         ("Conteneur",       "⊞", 3, False),
-        ("Encodage",        "🎬", 2, True),   # sous-menu de Conteneur
+        ("Encodage",        "▶", 2, True),    # sous-menu de Conteneur
         ("DoVi / HDR10+",   "◈", 1, False),
         ("Paramètres",      "⚙", 4, False),
     ]
+    _FULL_WIDTH = 200
+    _COMPACT_WIDTH = 96
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, *, compact: bool = False) -> None:
         super().__init__(parent)
-        self.setFixedWidth(200)
+        self._compact = compact
+        self.setFixedWidth(self._COMPACT_WIDTH if compact else self._FULL_WIDTH)
         self.setStyleSheet(f"""
             QWidget {{
                 background: {_Colors.BG_SIDEBAR};
@@ -814,6 +868,7 @@ class _Sidebar(QWidget):
         """)
         self._buttons: list[_NavButton] = []
         self._build_ui()
+        self.set_compact(self._compact)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -831,12 +886,18 @@ class _Sidebar(QWidget):
             }}
         """)
         la = QHBoxLayout(logo_area)
-        la.setContentsMargins(16, 0, 16, 0)
+        la.setContentsMargins(12, 0, 8, 0)
+        la.setSpacing(8)
 
-        logo_icon = QLabel("▣")
-        logo_icon.setStyleSheet(f"color: {_Colors.ACCENT}; font-size: 18px; background: transparent; border: none;")
-        logo_text = QLabel("Mediarecode")
-        logo_text.setStyleSheet(f"""
+        self._logo_icon = QLabel("▣")
+        self._logo_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._logo_icon.setToolTip("Mediarecode")
+        self._logo_icon.setStyleSheet(
+            f"color: {_Colors.ACCENT}; font-size: 18px; background: transparent; border: none;"
+        )
+        la.addWidget(self._logo_icon)
+        self._logo_text = QLabel("Mediarecode")
+        self._logo_text.setStyleSheet(f"""
             color: {_Colors.TEXT_PRI};
             font-size: 13px;
             font-weight: 700;
@@ -844,16 +905,35 @@ class _Sidebar(QWidget):
             border: none;
             letter-spacing: 0.3px;
         """)
-        la.addWidget(logo_icon)
-        la.addSpacing(8)
-        la.addWidget(logo_text)
+        la.addWidget(self._logo_text)
         la.addStretch()
+        self._toggle_btn = QPushButton("◀")
+        self._toggle_btn.setFixedSize(22, 22)
+        self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._toggle_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {_Colors.TEXT_DIM};
+                border: 1px solid {_Colors.BORDER};
+                border-radius: 4px;
+                font-size: 11px;
+                padding: 0;
+            }}
+            QPushButton:hover {{
+                color: {_Colors.TEXT_PRI};
+                border-color: {_Colors.BORDER_LT};
+                background: {_Colors.BG_HOVER};
+            }}
+        """)
+        self._toggle_btn.clicked.connect(self.toggle_compact)
+        la.addWidget(self._toggle_btn)
         layout.addWidget(logo_area)
 
         # Navigation
-        nav_label = QLabel("NAVIGATION")
-        nav_label.setContentsMargins(16, 16, 0, 8)
-        nav_label.setStyleSheet(f"""
+        self._nav_label = QLabel("NAVIGATION")
+        self._nav_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._nav_label.setContentsMargins(16, 16, 0, 8)
+        self._nav_label.setStyleSheet(f"""
             color: {_Colors.TEXT_DIM};
             font-size: 9px;
             font-weight: 700;
@@ -861,10 +941,10 @@ class _Sidebar(QWidget):
             background: transparent;
             border: none;
         """)
-        layout.addWidget(nav_label)
+        layout.addWidget(self._nav_label)
 
         for label, icon, idx, is_sub in self._NAV_ITEMS:
-            btn = _NavButton(label, icon, idx, is_sub)
+            btn = _NavButton(label, icon, idx, is_sub, compact=self._compact)
             btn.clicked.connect(lambda b=btn: self._on_nav_click(b))
             self._buttons.append(btn)
             layout.addWidget(btn)
@@ -872,15 +952,17 @@ class _Sidebar(QWidget):
         layout.addStretch()
 
         # Version
-        version_lbl = QLabel(APP_VERSION_LABEL)
-        version_lbl.setContentsMargins(16, 0, 0, 12)
-        version_lbl.setStyleSheet(f"""
+        self._version_lbl = QLabel(APP_VERSION_LABEL)
+        self._version_lbl.setToolTip("")
+        self._version_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._version_lbl.setContentsMargins(16, 0, 0, 12)
+        self._version_lbl.setStyleSheet(f"""
             color: {_Colors.TEXT_DIM};
             font-size: 9px;
             background: transparent;
             border: none;
         """)
-        layout.addWidget(version_lbl)
+        layout.addWidget(self._version_lbl)
 
         # Sélectionner le premier bouton
         if self._buttons:
@@ -896,6 +978,35 @@ class _Sidebar(QWidget):
     def select_page(self, index: int) -> None:
         for btn in self._buttons:
             btn.setChecked(btn.page_index == index)
+
+    def is_compact(self) -> bool:
+        return self._compact
+
+    def toggle_compact(self, _checked: bool = False) -> None:
+        self.set_compact(not self._compact)
+
+    def set_compact(self, compact: bool) -> None:
+        self._compact = compact
+        self.setFixedWidth(self._COMPACT_WIDTH if compact else self._FULL_WIDTH)
+        self._logo_text.setVisible(not compact)
+        self._nav_label.setVisible(not compact)
+        for btn in self._buttons:
+            btn.set_compact(compact)
+
+        if compact:
+            self._toggle_btn.setText("▶")
+            self._toggle_btn.setToolTip("Agrandir le menu")
+            self._version_lbl.setText(APP_VERSION_LABEL.split()[-1])
+            self._version_lbl.setToolTip(APP_VERSION_LABEL)
+            self._version_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._version_lbl.setContentsMargins(0, 0, 0, 12)
+        else:
+            self._toggle_btn.setText("◀")
+            self._toggle_btn.setToolTip("Réduire le menu")
+            self._version_lbl.setText(APP_VERSION_LABEL)
+            self._version_lbl.setToolTip("")
+            self._version_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            self._version_lbl.setContentsMargins(16, 0, 0, 12)
 
 
 # ---------------------------------------------------------------------------
@@ -980,6 +1091,8 @@ class MainWindow(QMainWindow):
         vsplit = self._vsplit
         vsplit.setHandleWidth(5)
         vsplit.setChildrenCollapsible(False)
+        vsplit.setStretchFactor(0, 1)
+        vsplit.setStretchFactor(1, 0)
 
         # Partie haute : sidebar + pages + barre d'action globale
         top_widget = QWidget()
@@ -998,7 +1111,7 @@ class MainWindow(QMainWindow):
         top_layout.setSpacing(0)
 
         # Sidebar
-        self._sidebar = _Sidebar()
+        self._sidebar = _Sidebar(compact=self._config.startup_menu_compact)
         top_layout.addWidget(self._sidebar)
 
         # Stack de pages
@@ -1054,7 +1167,7 @@ class MainWindow(QMainWindow):
         vsplit.addWidget(self._log_panel)
 
         # Proportion initiale : 70% / 30%
-        vsplit.setSizes([560, 240])
+        vsplit.setSizes([620, 180])
 
         main_layout.addWidget(vsplit)
 
@@ -1102,6 +1215,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._prog_widget, stretch=1)
 
         self._status_lbl = QLabel("")
+        self._status_lbl.setMinimumWidth(0)
+        self._status_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self._status_lbl.setStyleSheet(
             f"color:{_Colors.TEXT_SEC};font-size:11px;background:transparent;"
         )
@@ -1111,7 +1226,7 @@ class MainWindow(QMainWindow):
         # Bouton principal unique
         self._run_btn = QPushButton("▶  Exécuter l'opération")
         self._run_btn.setFixedHeight(36)
-        self._run_btn.setMinimumWidth(220)
+        self._run_btn.setMinimumWidth(180)
         self._run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._run_btn.setEnabled(False)
         self._run_btn.setStyleSheet(f"""
@@ -1130,7 +1245,7 @@ class MainWindow(QMainWindow):
 
         # Bouton annulation
         self._cancel_btn = QPushButton("✕  Annuler")
-        self._cancel_btn.setFixedWidth(110)
+        self._cancel_btn.setMinimumWidth(96)
         self._cancel_btn.setFixedHeight(36)
         self._cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._cancel_btn.setStyleSheet(f"""
@@ -1552,6 +1667,7 @@ class MainWindow(QMainWindow):
         self._log_panel._max_lines = self._config.log_max_lines
         self._encode_panel.refresh_runtime_settings()
         self._remux_panel.refresh_runtime_settings()
+        self._sidebar.set_compact(self._config.startup_menu_compact)
         self._apply_locale()
         if new_theme != previous_theme:
             self.log_requested.emit(

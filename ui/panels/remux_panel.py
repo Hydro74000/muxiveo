@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QFrame,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
-    QSizePolicy, QTableWidget, QTableWidgetItem,
+    QSizePolicy, QTableWidget, QTableWidgetItem, QLayout,
     QVBoxLayout, QWidget,
 )
 
@@ -2478,6 +2478,7 @@ class RemuxPanel(QWidget):
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(28, 24, 28, 24)
         content_layout.setSpacing(20)
+        content_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
 
         # --- Titre de page ---
         title = QLabel("Manipulation Conteneur")

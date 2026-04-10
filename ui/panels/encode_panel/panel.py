@@ -16,6 +16,7 @@ from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QFrame, QHBoxLayout, QInputDialog, QLabel,
+    QLayout,
     QLineEdit, QListWidget, QListWidgetItem,
     QPlainTextEdit, QPushButton,
     QScrollArea, QSlider, QSpinBox, QStackedWidget,
@@ -128,6 +129,7 @@ class EncodePanel(QWidget):
         cl = QVBoxLayout(content)
         cl.setContentsMargins(28, 24, 28, 24)
         cl.setSpacing(20)
+        cl.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
 
         # --- Titre ---
         title = QLabel("Encodage Vidéo / Audio")
