@@ -77,10 +77,18 @@ _STREAM_SPEC_BY_TYPE: dict[str, str] = {
 class _MappedTrack:
     source_input_idx: int
     source_file_index: int
-    source_path: Path
+    source_path: Path | str
     stream_index: int
     track: TrackEntry
     out_type_index: int
+
+
+@dataclass(frozen=True)
+class _OffsetInputSpec:
+    map_key: tuple[int, int, str, int]
+    input_path: Path | str
+    input_stream_index: int
+    offset_ms: int
 
 
 @dataclass(frozen=True)
@@ -261,6 +269,12 @@ class FfmpegRemuxWorkflow(QObject):
                     "Type de piste non supporté par le backend FFmpeg : "
                     f"{track.track_type} (file_index={file_index}, stream={mkv_tid})"
                 )
+                continue
+            if track.track_type == "video" and int(track.time_shift_ms) < 0:
+                errors.append(
+                    "Décalage vidéo négatif interdit : "
+                    f"file_index={file_index}, stream={mkv_tid}, offset={track.time_shift_ms} ms"
+                )
 
         for extra in config.extra_attachments:
             if not extra.is_file():
@@ -291,6 +305,69 @@ class FfmpegRemuxWorkflow(QObject):
             return True
         except OSError:
             return False
+
+    @staticmethod
+    def _offset_seconds(offset_ms: int) -> str:
+        return f"{abs(int(offset_ms)) / 1000.0:.3f}"
+
+    def _offset_input_specs_from_mapped_tracks(
+        self,
+        mapped_tracks: list[_MappedTrack],
+    ) -> list[_OffsetInputSpec]:
+        specs: list[_OffsetInputSpec] = []
+        for mt in mapped_tracks:
+            offset_ms = int(getattr(mt.track, "time_shift_ms", 0) or 0)
+            if offset_ms == 0:
+                continue
+            if mt.track.track_type == "video" and offset_ms < 0:
+                raise RemuxError(
+                    "Décalage vidéo négatif interdit : "
+                    f"file_index={mt.source_file_index}, stream={mt.stream_index}, offset={offset_ms} ms"
+                )
+            specs.append(_OffsetInputSpec(
+                map_key=(
+                    int(mt.source_file_index),
+                    int(mt.stream_index),
+                    str(mt.track.track_type),
+                    int(mt.out_type_index),
+                ),
+                input_path=mt.source_path,
+                input_stream_index=int(mt.stream_index),
+                offset_ms=offset_ms,
+            ))
+        return specs
+
+    def _append_offset_inputs(
+        self,
+        cmd: list[str],
+        specs: list[_OffsetInputSpec],
+        *,
+        start_input_index: int,
+    ) -> tuple[int, dict[tuple[int, int, str, int], tuple[int, int]]]:
+        next_input_index = start_input_index
+        input_by_key: dict[tuple[str, int, int, str], int] = {}
+        remap: dict[tuple[int, int, str, int], tuple[int, int]] = {}
+
+        for spec in specs:
+            input_key = (
+                _cli_path(spec.input_path),
+                int(spec.input_stream_index),
+                int(spec.offset_ms),
+                str(spec.map_key[2]),
+            )
+            input_idx = input_by_key.get(input_key)
+            if input_idx is None:
+                if int(spec.offset_ms) > 0:
+                    cmd.extend(["-itsoffset", self._offset_seconds(spec.offset_ms), "-i", _cli_path(spec.input_path)])
+                else:
+                    cmd.extend(["-ss", self._offset_seconds(spec.offset_ms), "-i", _cli_path(spec.input_path)])
+                input_idx = next_input_index
+                input_by_key[input_key] = input_idx
+                next_input_index += 1
+
+            remap[spec.map_key] = (int(input_idx), int(spec.input_stream_index))
+
+        return next_input_index, remap
 
     # ------------------------------------------------------------------
     # Construction de commande
@@ -331,8 +408,27 @@ class FfmpegRemuxWorkflow(QObject):
         for p in (extra_inputs or []):
             cmd.extend(["-i", _cli_path(p)])
 
+        sync_count = len(sync_inputs or [])
+        extra_count = len(extra_inputs or [])
+        offset_specs = self._offset_input_specs_from_mapped_tracks(mapped_tracks)
+        _, offset_remap = self._append_offset_inputs(
+            cmd,
+            offset_specs,
+            start_input_index=len(config.sources) + sync_count + extra_count,
+        )
+
         for mt in mapped_tracks:
-            cmd.extend(["-map", f"{mt.source_input_idx}:{mt.stream_index}"])
+            map_key = (
+                int(mt.source_file_index),
+                int(mt.stream_index),
+                str(mt.track.track_type),
+                int(mt.out_type_index),
+            )
+            remapped = offset_remap.get(map_key)
+            if remapped is None:
+                cmd.extend(["-map", f"{mt.source_input_idx}:{mt.stream_index}"])
+            else:
+                cmd.extend(["-map", f"{remapped[0]}:{remapped[1]}"])
 
         cmd.extend(["-c", "copy", "-default_mode", "passthrough"])
         if needs_strict_interleave:
@@ -453,11 +549,19 @@ class FfmpegRemuxWorkflow(QObject):
 
                 if strict_interleave:
                     self._log_step(5, "Synchronisation timeline multi-source (live/fallback)")
+                    allow_live_sync = True
+                    if self._requires_file_sync_fallback_for_offsets(mapped_tracks):
+                        allow_live_sync = False
+                        self.log_message.emit(
+                            "INFO",
+                            "Décalage sur piste étrangère détecté : sync live désactivé, fallback fichier forcé.",
+                        )
                     mapped_tracks, sync_inputs, live_sync_session = self._prepare_mkvmerge_like_sync_inputs(
                         run_config,
                         mapped_tracks,
                         tmp_dir,
                         signals,
+                        allow_live=allow_live_sync,
                     )
                     sync_cleanup_paths = [p for p in sync_inputs if isinstance(p, Path)]
                 else:
@@ -552,8 +656,32 @@ class FfmpegRemuxWorkflow(QObject):
             for mt in mapped_tracks
         )
 
+    @staticmethod
+    def _requires_file_sync_fallback_for_offsets(mapped_tracks: list[_MappedTrack]) -> bool:
+        """
+        Le mode live (FIFO/pipe) n'est pas robuste pour les offsets piste-par-piste
+        sur des flux étrangers. On force alors un fallback fichier explicite.
+        """
+        primary_video = next((mt for mt in mapped_tracks if mt.track.track_type == "video"), None)
+        if primary_video is None:
+            return False
+
+        return any(
+            mt.track.track_type in {"audio", "subtitle"}
+            and mt.source_file_index != primary_video.source_file_index
+            and int(getattr(mt.track, "time_shift_ms", 0) or 0) != 0
+            for mt in mapped_tracks
+        )
+
     def _decide_strict_interleave_with_prescan(self, config: RemuxConfig) -> bool:
         mapped_tracks = self._resolve_mapped_tracks(config)
+        if self._requires_file_sync_fallback_for_offsets(mapped_tracks):
+            self.log_message.emit(
+                "INFO",
+                "Décalage sur piste étrangère détecté : sync timeline activé.",
+            )
+            return True
+
         base_risk = self._needs_strict_interleave(mapped_tracks)
         if not base_risk:
             return False
@@ -669,6 +797,8 @@ class FfmpegRemuxWorkflow(QObject):
         mapped_tracks: list[_MappedTrack],
         tmp_dir: Path,
         signals: TaskSignals,
+        *,
+        allow_live: bool = True,
     ) -> tuple[list[_MappedTrack], list[Path | str], LiveSyncSession | None]:
         """
         Délègue la normalisation des flux étrangers à un utilitaire dédié afin de
@@ -688,7 +818,7 @@ class FfmpegRemuxWorkflow(QObject):
             mapped_tracks=mapped_tracks,
             sources=config.sources,
             base_input_idx=len(config.sources),
-            allow_live=True,
+            allow_live=allow_live,
             cancel_cb=signals._cancel_event.is_set,
         )
         live_session = prepared_result.live_session

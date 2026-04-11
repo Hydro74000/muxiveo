@@ -33,7 +33,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING, cast
 
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, Signal, QSize, QTimer
 from PySide6.QtGui import (
     QColor, QFont, QIcon,
     QTextCharFormat, QTextCursor,
@@ -118,6 +118,7 @@ _ENCODE_PROGRESS_NOISE_PREFIXES: tuple[str, ...] = (
     "speed=",
     "progress=",
 )
+_STEP_PROGRESS_RE = re.compile(r"^STEP\s+\d+\s*-\s*(.+)$")
 
 
 def _is_encode_stage_message(line: str) -> bool:
@@ -316,10 +317,16 @@ class LogPanel(QWidget):
     def clear(self) -> None:
         self._text.clear()
 
-    def _toggle(self) -> None:
-        self._collapsed = not self._collapsed
+    def is_collapsed(self) -> bool:
+        return self._collapsed
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        self._collapsed = bool(collapsed)
         self._text.setVisible(not self._collapsed)
         self._collapse_btn.setText("▼" if self._collapsed else "▲")
+
+    def _toggle(self) -> None:
+        self.set_collapsed(not self._collapsed)
         self.collapse_toggled.emit(self._collapsed)
 
 
@@ -1043,6 +1050,12 @@ class MainWindow(QMainWindow):
         self._op_start: float = 0.0
         self._op_mode: str = ""   # "remux" ou "encode"
         self._op_encode_fps: float | None = None
+        self._prep_progress_active = False
+        self._prep_progress_value = 0
+        self._prep_progress_direction = 1
+        self._prep_progress_timer = QTimer(self)
+        self._prep_progress_timer.setInterval(120)
+        self._prep_progress_timer.timeout.connect(self._tick_prep_progress)
         self._setup_window()
         self._build_ui()
         self._apply_startup_panel()
@@ -1166,8 +1179,7 @@ class MainWindow(QMainWindow):
         self._log_panel.setMinimumHeight(32)
         vsplit.addWidget(self._log_panel)
 
-        # Proportion initiale : 70% / 30%
-        vsplit.setSizes([620, 180])
+        self._apply_startup_log_panel_state()
 
         main_layout.addWidget(vsplit)
 
@@ -1198,10 +1210,7 @@ class MainWindow(QMainWindow):
         self._prog_bar.setValue(0)
         self._prog_bar.setFixedHeight(6)
         self._prog_bar.setTextVisible(False)
-        self._prog_bar.setStyleSheet(
-            f"QProgressBar{{background:{_Colors.BG_CARD};border:none;border-radius:3px;}}"
-            f"QProgressBar::chunk{{background:{_Colors.ACCENT};border-radius:3px;}}"
-        )
+        self._prog_bar.setStyleSheet(self._progress_bar_stylesheet(_Colors.ACCENT))
         pv.addWidget(self._prog_bar)
 
         self._prog_lbl = QLabel("")
@@ -1261,6 +1270,64 @@ class MainWindow(QMainWindow):
 
         return bar
 
+    @staticmethod
+    def _progress_bar_stylesheet(chunk_color: str) -> str:
+        return (
+            f"QProgressBar{{background:{_Colors.BG_CARD};border:none;border-radius:3px;}}"
+            f"QProgressBar::chunk{{background:{chunk_color};border-radius:3px;}}"
+        )
+
+    def _start_prep_progress(self) -> None:
+        if not self._running:
+            return
+        if self._prep_progress_active:
+            return
+        self._prep_progress_active = True
+        self._prep_progress_direction = 1
+        self._prep_progress_value = max(4, min(30, self._prog_bar.value() or 0))
+        self._prog_bar.setRange(0, 100)
+        self._prog_bar.setStyleSheet(self._progress_bar_stylesheet(_Colors.WARN))
+        if self._prog_bar.value() <= 0:
+            self._prog_bar.setValue(self._prep_progress_value)
+        self._prep_progress_timer.start()
+
+    def _stop_prep_progress(self) -> None:
+        if self._prep_progress_timer.isActive():
+            self._prep_progress_timer.stop()
+        self._prep_progress_active = False
+        self._prog_bar.setStyleSheet(self._progress_bar_stylesheet(_Colors.ACCENT))
+
+    def _tick_prep_progress(self) -> None:
+        if not self._prep_progress_active:
+            return
+        value = self._prep_progress_value + self._prep_progress_direction
+        if value >= 32:
+            value = 32
+            self._prep_progress_direction = -1
+        elif value <= 6:
+            value = 6
+            self._prep_progress_direction = 1
+        self._prep_progress_value = value
+        self._prog_bar.setValue(value)
+
+    def _sync_prep_progress_from_log(self, message: str) -> None:
+        if not self._running:
+            return
+        match = _STEP_PROGRESS_RE.match(message.strip())
+        if match is None:
+            return
+        step_text = match.group(1).strip()
+        if "Exécution ffmpeg" in step_text or "Exécution du remux ffmpeg" in step_text:
+            self._stop_prep_progress()
+            return
+        self._start_prep_progress()
+        self._prog_lbl.setText(
+            translate_text(
+                "{step} - veuillez patienter",
+                step=translate_text(step_text),
+            )
+        )
+
     @classmethod
     def startup_page_index(cls, panel_key: str | None) -> int:
         if not panel_key:
@@ -1272,6 +1339,14 @@ class MainWindow(QMainWindow):
         page_index = self.startup_page_index(startup_panel)
         self._stack.setCurrentIndex(page_index)
         self._sidebar.select_page(page_index)
+
+    def _apply_startup_log_panel_state(self) -> None:
+        logs_expanded = bool(getattr(self._config, "startup_logs_expanded", False))
+        self._log_panel.set_collapsed(not logs_expanded)
+        if logs_expanded:
+            self._vsplit.setSizes([620, 180])
+            return
+        self._vsplit.setSizes([768, 32])
 
     # ------------------------------------------------------------------
     # Signaux
@@ -1380,12 +1455,17 @@ class MainWindow(QMainWindow):
         self._run_btn.setEnabled(False)
         self._cancel_btn.setVisible(True)
         self._op_encode_fps = None
+        self._prep_progress_active = False
+        if self._prep_progress_timer.isActive():
+            self._prep_progress_timer.stop()
         self._prog_bar.setRange(0, 100)
         self._prog_bar.setValue(0)
+        self._prog_bar.setStyleSheet(self._progress_bar_stylesheet(_Colors.ACCENT))
         self._prog_lbl.setText("")
         self._prog_widget.setVisible(True)
         label = translate_text("Encodage en cours…") if self._op_mode == "encode" else translate_text("Remuxage en cours…")
         self._status_lbl.setText(label)
+        self._start_prep_progress()
 
         signals.progress.connect(self._on_op_progress, Qt.ConnectionType.QueuedConnection)
         signals.finished.connect(
@@ -1414,7 +1494,7 @@ class MainWindow(QMainWindow):
         Retourne une EncodeConfig enrichie. Si le remux panel n'apporte rien,
         retourne encode_cfg inchangé (sauf keep_chapters toujours synchronisé).
         """
-        from core.workflows.encode.models import EncodeConfig, TrackMetaEdit
+        from core.workflows.encode.models import EncodeConfig, TrackMetaEdit, TrackTimeOffset
 
         sub_tracks: list[tuple[Path, int]] = []
         attachment_streams: list[tuple[Path, int]] = []   # (source, ffprobe_stream_index)
@@ -1458,6 +1538,7 @@ class MainWindow(QMainWindow):
         # Ordre des pistes dans le fichier de sortie ffmpeg :
         #   @1 = vidéo  |  @2…@N+1 = audio  |  @N+2… = sous-titres
         track_meta_edits: list[TrackMetaEdit] = []
+        track_time_offsets: list[TrackTimeOffset] = []
 
         def _make_edit(track_order: int, t: TrackEntry) -> "TrackMetaEdit | None":
             """Retourne un TrackMetaEdit si la piste a des infos à appliquer."""
@@ -1498,6 +1579,19 @@ class MainWindow(QMainWindow):
                 flag_commentary       = t.flag_commentary,
             )
 
+        def _append_track_offset(track_type: str, src_path: Path, stream_index: int, track: TrackEntry | None) -> None:
+            if track is None:
+                return
+            offset_ms = int(getattr(track, "time_shift_ms", 0) or 0)
+            if offset_ms == 0:
+                return
+            track_time_offsets.append(TrackTimeOffset(
+                track_type=track_type,
+                source_path=src_path,
+                stream_index=int(stream_index),
+                offset_ms=offset_ms,
+            ))
+
         def _find_track(src_path: Path, stream_index: int, track_type: str) -> TrackEntry | None:
             t = remux_track_map.get((src_path, stream_index))
             if t is not None:
@@ -1525,6 +1619,7 @@ class MainWindow(QMainWindow):
             edit = _make_edit(1, video_entry)
             if edit:
                 track_meta_edits.append(edit)
+            _append_track_offset("video", encode_cfg.source, 0, video_entry)
 
         # @2+ — pistes audio
         audio_offset = 2
@@ -1536,6 +1631,7 @@ class MainWindow(QMainWindow):
             edit = _make_edit(audio_offset + audio_order, t)
             if edit:
                 track_meta_edits.append(edit)
+            _append_track_offset("audio", src_path, ats.stream_index, t)
 
         # @N+2+ — pistes sous-titres
         sub_offset = audio_offset + len(encode_cfg.audio_tracks)
@@ -1547,6 +1643,7 @@ class MainWindow(QMainWindow):
             edit = _make_edit(sub_offset + sub_order, t)
             if edit:
                 track_meta_edits.append(edit)
+            _append_track_offset("subtitle", sub_path, sub_sid, t)
 
         chapter_overrides = remux_cfg.chapter_overrides
 
@@ -1554,6 +1651,7 @@ class MainWindow(QMainWindow):
         if (not sub_tracks and not attachment_streams and not tag_sources
                 and tag_overrides is None
                 and not track_meta_edits
+                and not track_time_offsets
                 and encode_cfg.keep_chapters == remux_cfg.keep_chapters
                 and remux_cfg.chapter_overrides is None):
             return encode_cfg
@@ -1571,6 +1669,7 @@ class MainWindow(QMainWindow):
             tag_sources=[] if tag_overrides is not None else tag_sources,
             tag_overrides=tag_overrides,
             track_meta_edits=track_meta_edits,
+            track_time_offsets=track_time_offsets,
             duration_s=encode_cfg.duration_s,
             copy_dv=encode_cfg.copy_dv,
             copy_hdr10plus=encode_cfg.copy_hdr10plus,
@@ -1586,6 +1685,7 @@ class MainWindow(QMainWindow):
         if self._op_mode == "remux":
             if "Progress:" in line:
                 try:
+                    self._stop_prep_progress()
                     pct = int(line.split("%")[0].split()[-1])
                     self._prog_bar.setValue(pct)
                     elapsed = time.monotonic() - self._op_start
@@ -1604,6 +1704,7 @@ class MainWindow(QMainWindow):
             if self._NOISE_RE.search(line):
                 return
             if line.startswith("$ "):
+                self._stop_prep_progress()
                 self._op_encode_fps = None
                 self.log_requested.emit("INFO", line)
                 return
@@ -1615,6 +1716,7 @@ class MainWindow(QMainWindow):
                     self._op_encode_fps = None
             elapsed_video = ffmpeg_progress_seconds(line)
             if elapsed_video is not None:
+                self._stop_prep_progress()
                 dur = self._encode_panel.get_duration_s()
                 if dur and dur > 0:
                     pct = min(99, int(elapsed_video / dur * 100))
@@ -1655,6 +1757,7 @@ class MainWindow(QMainWindow):
     def _on_op_cancelled(self) -> None:
         self._running = False
         self._signals = None
+        self._stop_prep_progress()
         self._run_btn.setEnabled(True)
         self._cancel_btn.setVisible(False)
         self._prog_widget.setVisible(False)
@@ -1666,6 +1769,7 @@ class MainWindow(QMainWindow):
     def _on_op_finished(self, success: bool, error: str = "") -> None:
         self._running = False
         self._signals = None
+        self._stop_prep_progress()
         self._run_btn.setEnabled(True)
         self._cancel_btn.setVisible(False)
         self._prog_bar.setRange(0, 100)
@@ -1722,6 +1826,7 @@ class MainWindow(QMainWindow):
 
     def _on_log_requested(self, level: str, message: str) -> None:
         """Slot connecté au signal public log_requested(str, str)."""
+        self._sync_prep_progress_from_log(message)
         try:
             lv = LogLevel(level.upper())
         except ValueError:

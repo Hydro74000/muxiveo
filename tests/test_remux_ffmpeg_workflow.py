@@ -45,6 +45,7 @@ def _track(
     language: str = "",
     title: str = "",
     codec: str = "COPY",
+    time_shift_ms: int = 0,
 ) -> TrackEntry:
     return TrackEntry(
         mkv_tid=tid,
@@ -55,6 +56,7 @@ def _track(
         title=title,
         enabled=True,
         file_id="src-0",
+        time_shift_ms=time_shift_ms,
         orig_language=language,
         orig_title=title,
     )
@@ -131,6 +133,113 @@ class TestFfmpegRemuxWorkflowBuildCommand:
 
         errors = wf.validate(cfg)
         assert any(".mkv" in e for e in errors)
+
+    def test_validate_rejects_negative_video_offset(self, tmp_path):
+        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        src = tmp_path / "in.mkv"
+        src.touch()
+        cfg = RemuxConfig(
+            sources=[SourceInput(path=src, file_index=0, tracks=[_track(0, "video", time_shift_ms=-25)])],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0)],
+        )
+
+        errors = wf.validate(cfg)
+        assert any("vidéo" in e.lower() and "négatif" in e.lower() for e in errors)
+
+    def test_build_command_positive_audio_offset_uses_itsoffset(self, tmp_path):
+        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        src = tmp_path / "in.mkv"
+        src.touch()
+        cfg = RemuxConfig(
+            sources=[SourceInput(path=src, file_index=0, tracks=[_track(0, "video"), _track(1, "audio", time_shift_ms=125)])],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0), (0, 1)],
+            keep_chapters=False,
+        )
+
+        cmd = wf.build_command(cfg)
+        assert "-itsoffset" in cmd
+        assert cmd[cmd.index("-itsoffset") + 1] == "0.125"
+        map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
+        assert "2:1" not in map_values  # un seul offset input attendu ici
+        assert "1:1" in map_values
+
+    def test_build_command_negative_subtitle_offset_uses_ss(self, tmp_path):
+        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        src = tmp_path / "in.mkv"
+        src.touch()
+        cfg = RemuxConfig(
+            sources=[SourceInput(path=src, file_index=0, tracks=[_track(0, "video"), _track(2, "subtitle", time_shift_ms=-80)])],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0), (0, 2)],
+            keep_chapters=False,
+        )
+
+        cmd = wf.build_command(cfg)
+        assert "-ss" in cmd
+        assert cmd[cmd.index("-ss") + 1] == "0.080"
+        map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
+        assert "1:2" in map_values
+
+    def test_requires_file_sync_fallback_for_offsets_detects_foreign_offset(self, tmp_path):
+        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        src_a = tmp_path / "a.mkv"
+        src_b = tmp_path / "b.mkv"
+        src_a.touch()
+        src_b.touch()
+
+        cfg = RemuxConfig(
+            sources=[
+                SourceInput(path=src_a, file_index=0, tracks=[_track(0, "video"), _track(2, "subtitle")]),
+                SourceInput(path=src_b, file_index=1, tracks=[_track(1, "audio", time_shift_ms=90)]),
+            ],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0), (1, 1), (0, 2)],
+            keep_chapters=False,
+        )
+
+        mapped = wf._resolve_mapped_tracks(cfg)
+        assert wf._requires_file_sync_fallback_for_offsets(mapped) is True
+
+    def test_requires_file_sync_fallback_for_offsets_ignores_zero_offsets(self, tmp_path):
+        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        src_a = tmp_path / "a.mkv"
+        src_b = tmp_path / "b.mkv"
+        src_a.touch()
+        src_b.touch()
+
+        cfg = RemuxConfig(
+            sources=[
+                SourceInput(path=src_a, file_index=0, tracks=[_track(0, "video"), _track(2, "subtitle")]),
+                SourceInput(path=src_b, file_index=1, tracks=[_track(1, "audio", time_shift_ms=0)]),
+            ],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0), (1, 1), (0, 2)],
+            keep_chapters=False,
+        )
+
+        mapped = wf._resolve_mapped_tracks(cfg)
+        assert wf._requires_file_sync_fallback_for_offsets(mapped) is False
+
+    def test_decide_strict_interleave_with_prescan_forces_sync_on_foreign_offset(self, tmp_path):
+        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        src_a = tmp_path / "a.mkv"
+        src_b = tmp_path / "b.mkv"
+        src_a.touch()
+        src_b.touch()
+
+        cfg = RemuxConfig(
+            sources=[
+                SourceInput(path=src_a, file_index=0, tracks=[_track(0, "video")]),
+                SourceInput(path=src_b, file_index=1, tracks=[_track(1, "audio", time_shift_ms=120)]),
+            ],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0), (1, 1)],
+            keep_chapters=False,
+        )
+
+        assert wf._decide_strict_interleave_with_prescan(cfg) is True
 
     def test_build_command_includes_muxing_application_metadata(self, tmp_path):
         wf = FfmpegRemuxWorkflow(

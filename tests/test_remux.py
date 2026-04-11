@@ -138,9 +138,12 @@ from core.workflows.remux import (
 )
 from ui.panels.remux_panel import (
     SourceFile, _FILE_BAR_H, _FILE_PH_H, _FILE_ROW_H,
-    _AttachmentItemWidget, _AttachmentPanel, _FileListWidget, _TrackTable,
+    _AttachmentItemWidget, _AttachmentPanel, _FileListWidget, _TrackInfoDelegate, _TrackTable,
+    _TRACK_INFO_OFFSET_COLOR, _TRACK_INFO_OFFSET_NEG_COLOR, _TRACK_INFO_OFFSET_POS_COLOR,
+    _TRACK_INFO_OFFSET_VALUE_ROLE,
     _normalize_tmdb_manual_title_suggestion, _pick_file_color,
 )
+from ui.panels.track_edit_dialog import TrackEditDialog
 from ui.panels.tmdb_search_modal import extract_season_episode
 
 
@@ -325,6 +328,27 @@ class TestTrackEntryProperties:
             display_info="", language="", title="",
         )
         assert t.enabled is True
+
+    def test_time_shift_value_label_empty_when_zero(self):
+        t = _track(1, track_type="audio")
+        t.time_shift_ms = 0
+        assert t.time_shift_value_label == ""
+
+    def test_time_shift_value_label_with_signed_ms(self):
+        t = _track(1, track_type="audio")
+        t.time_shift_ms = -80
+        assert t.time_shift_value_label == "-80 ms"
+
+    def test_time_shift_label_uses_delta_prefix(self):
+        t = _track(1, track_type="audio")
+        t.time_shift_ms = 125
+        assert t.time_shift_label == "Δt +125 ms"
+
+    def test_full_info_label_includes_offset_when_non_zero(self):
+        t = _track(1, track_type="audio")
+        t.display_info = "5.1"
+        t.time_shift_ms = 125
+        assert "Δt +125 ms" in t.full_info_label
 
 
 # ===========================================================================
@@ -534,6 +558,34 @@ class TestBuildCommand:
         cmd = self._cmd(cfg)
         idx = cmd.index("--track-order")
         assert cmd[idx + 1] == "0:0,0:2,0:1"
+
+    def test_sync_emitted_for_non_zero_track_offset(self):
+        v = _track(0, "video", file_id="id0")
+        a = _track(1, "audio", file_id="id0")
+        a.time_shift_ms = 125
+        src = _source(Path("/a.mkv"), 0, [v, a])
+        cfg = RemuxConfig(
+            sources=[src],
+            output=Path("/out.mkv"),
+            track_order=[(0, 0), (0, 1)],
+        )
+        cmd = self._cmd(cfg)
+
+        assert "--sync" in cmd
+        sync_args = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "--sync"]
+        assert "1:125" in sync_args
+
+    def test_sync_not_emitted_for_zero_offset(self):
+        a = _track(1, "audio", file_id="id0")
+        a.time_shift_ms = 0
+        src = _source(Path("/a.mkv"), 0, [a])
+        cfg = RemuxConfig(
+            sources=[src],
+            output=Path("/out.mkv"),
+            track_order=[(0, 1)],
+        )
+        cmd = self._cmd(cfg)
+        assert "--sync" not in cmd
 
     def test_single_source_no_subtitles_when_all_disabled(self):
         tracks = [_track(3, "subtitle", file_id="id0")]
@@ -1040,6 +1092,20 @@ class TestValidate:
         errors = self.wf.validate(cfg)
         assert any("piste" in e.lower() for e in errors)
 
+    def test_validate_rejects_negative_video_offset(self, tmp_path):
+        f = tmp_path / "film.mkv"
+        f.touch()
+        v = _track(0, "video", file_id="id0")
+        v.time_shift_ms = -40
+        src = _source(f, 0, [v])
+        cfg = RemuxConfig(
+            sources=[src],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0)],
+        )
+        errors = self.wf.validate(cfg)
+        assert any("vidéo" in e.lower() and "négatif" in e.lower() for e in errors)
+
     def test_valid_config_returns_empty_list(self, tmp_path):
         f = tmp_path / "film.mkv"
         f.touch()
@@ -1216,6 +1282,77 @@ class TestTrackTable:
         _fill_table(table, 1)
         item = table.item(0, _TrackTable.COL_CHECK)
         assert item.checkState() == Qt.CheckState.Checked
+
+    def test_info_column_stores_offset_value_role(self, table):
+        t = _track(1, "audio", file_id="fid")
+        t.time_shift_ms = 125
+        table.append_tracks(_COLOR_A, [t])
+        info_item = table.item(0, _TrackTable.COL_INFO)
+        assert info_item is not None
+        assert info_item.text().endswith("Δt +125 ms")
+        assert info_item.data(_TRACK_INFO_OFFSET_VALUE_ROLE) == "+125 ms"
+
+    def test_info_column_hides_zero_offset(self, table):
+        t = _track(1, "audio", file_id="fid")
+        t.time_shift_ms = 0
+        table.append_tracks(_COLOR_A, [t])
+        info_item = table.item(0, _TrackTable.COL_INFO)
+        assert info_item is not None
+        assert "Δt" not in info_item.text()
+        assert info_item.data(_TRACK_INFO_OFFSET_VALUE_ROLE) == ""
+
+    def test_info_column_uses_custom_delegate(self, table):
+        delegate = table.itemDelegateForColumn(_TrackTable.COL_INFO)
+        assert delegate is not None
+        assert delegate.__class__.__name__ == "_TrackInfoDelegate"
+
+    def test_offset_negative_color_constant_is_fixed_red(self):
+        assert _TRACK_INFO_OFFSET_NEG_COLOR.name().lower() == "#d92f2f"
+        assert _TRACK_INFO_OFFSET_COLOR.name().lower() == "#d92f2f"
+
+    def test_offset_positive_color_constant_is_fixed_green(self):
+        assert _TRACK_INFO_OFFSET_POS_COLOR.name().lower() == "#1f9d55"
+
+    def test_offset_delegate_color_depends_on_sign(self):
+        assert _TrackInfoDelegate._offset_color("-80 ms").name().lower() == "#d92f2f"
+        assert _TrackInfoDelegate._offset_color("+125 ms").name().lower() == "#1f9d55"
+
+
+# ===========================================================================
+# TrackEditDialog
+# ===========================================================================
+
+class TestTrackEditDialog:
+
+    def test_accept_persists_signed_offset(self, qt_app):
+        entry = _track(1, "audio", file_id="fid")
+        dlg = TrackEditDialog(entry)
+        dlg._offset_edit.setText("+125")
+        dlg.accept()
+        assert entry.time_shift_ms == 125
+        dlg.close()
+
+    def test_accept_empty_offset_normalizes_to_zero(self, qt_app):
+        entry = _track(1, "audio", file_id="fid")
+        entry.time_shift_ms = 250
+        dlg = TrackEditDialog(entry)
+        dlg._offset_edit.setText("")
+        dlg.accept()
+        assert entry.time_shift_ms == 0
+        dlg.close()
+
+    def test_accept_rejects_invalid_offset(self, qt_app):
+        entry = _track(1, "audio", file_id="fid")
+        entry.time_shift_ms = 42
+        dlg = TrackEditDialog(entry)
+        dlg._offset_edit.setText("12.5")
+
+        with patch("ui.panels.track_edit_dialog.QMessageBox.warning") as warn:
+            dlg.accept()
+
+        warn.assert_called_once()
+        assert entry.time_shift_ms == 42
+        dlg.close()
 
 
 # ===========================================================================
@@ -2143,3 +2280,30 @@ class TestRemuxWorkflowPostMetadata:
         assert "GENRE=Drama" in cmd
         assert "muxing_application=MediarecodeMux" in cmd
         assert output.exists()
+
+
+class TestRunOffsetFallback:
+
+    def test_run_falls_back_to_ffmpeg_for_negative_audio_offset(self, tmp_path):
+        src_path = tmp_path / "in.mkv"
+        src_path.touch()
+        out_path = tmp_path / "out.mkv"
+
+        v = _track(0, "video", file_id="id0")
+        a = _track(1, "audio", file_id="id0")
+        a.time_shift_ms = -80
+        src = _source(src_path, 0, [v, a])
+        cfg = RemuxConfig(
+            sources=[src],
+            output=out_path,
+            track_order=[(0, 0), (0, 1)],
+        )
+
+        wf = _workflow()
+        sentinel = TaskSignals()
+
+        with patch("core.workflows.remux_ffmpeg.FfmpegRemuxWorkflow.run", return_value=sentinel) as ff_run:
+            result = wf.run(cfg)
+
+        ff_run.assert_called_once()
+        assert result is sentinel

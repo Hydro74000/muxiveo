@@ -118,6 +118,15 @@ class AudioTrackSettings:
 
 
 @dataclass
+class TrackTimeOffset:
+    """Décalage temporel appliqué à une piste d'entrée (en millisecondes)."""
+    track_type:  str   # "video" | "audio" | "subtitle"
+    source_path: Path
+    stream_index: int
+    offset_ms:    int = 0
+
+
+@dataclass
 class TrackMetaEdit:
     """
     Édition de métadonnées d'une piste de sortie, appliquée via post-process FFmpeg.
@@ -169,6 +178,8 @@ class EncodeConfig:
     tag_overrides:    dict | None = None                    # dict[str, str] | None
     # Éditions de métadonnées de pistes (langue, titre) appliquées via FFmpeg.
     track_meta_edits: list = field(default_factory=list)    # list[TrackMetaEdit]
+    # Décalages temporels par piste (ms), appliqués directement au runtime encode.
+    track_time_offsets: list = field(default_factory=list)  # list[TrackTimeOffset]
     file_title:       str          = ""     # balise Title du segment de sortie
     duration_s:       float | None = None   # requis pour le mode taille cible
     # Passthrough métadonnées dynamiques (HEVC uniquement)

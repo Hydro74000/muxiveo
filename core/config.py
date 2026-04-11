@@ -697,6 +697,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "theme", "attr": "theme", "kind": "choice", "label": "Thème", "description": "Thème principal pour l'interface. Le changement de thème nécessite de redémarrer l'application.", "options": (("dark", "Sombre"), ("light", "Clair"))},
             {"key": "startup_panel", "attr": "startup_panel", "kind": "choice", "label": "Panneau à afficher au démarrage", "description": "Panneau chargé en premier au lancement de l'application.", "options": UI_STARTUP_PANEL_CHOICES},
             {"key": "startup_menu_compact", "attr": "startup_menu_compact", "kind": "bool", "label": "Démarrer avec le menu en mode Compact", "description": "Si activé, le menu latéral est réduit en mode icônes au lancement."},
+            {"key": "startup_logs_expanded", "attr": "startup_logs_expanded", "kind": "bool", "label": "Ouvrir les logs au démarrage de l'application", "description": "Si activé, le panneau de logs est déplié au lancement."},
         ),
     },
     {
@@ -896,6 +897,12 @@ class AppConfig:
         self.startup_menu_compact = self._resolve_bool(
             "ui", "startup_menu_compact", "ui/startup_menu_compact", False
         )
+        self.startup_logs_expanded = self._resolve_bool(
+            "ui",
+            "startup_logs_expanded",
+            "ui/startup_logs_expanded",
+            False,
+        )
         self.window_geometry: bytes | None = self._settings.value("ui/geometry", None)
 
         self.tmdb_api_key = self._resolve_text("metadata", "tmdb_api_key", "metadata/tmdb_api_key", "")
@@ -953,6 +960,10 @@ class AppConfig:
         s.setValue(
             "ui/startup_menu_compact",
             "true" if self.startup_menu_compact else "false",
+        )
+        s.setValue(
+            "ui/startup_logs_expanded",
+            "true" if self.startup_logs_expanded else "false",
         )
 
         s.setValue("metadata/tmdb_api_key", self.tmdb_api_key)
@@ -1119,6 +1130,7 @@ class AppConfig:
                 "theme": self.theme,
                 "startup_panel": self.startup_panel,
                 "startup_menu_compact": self.startup_menu_compact,
+                "startup_logs_expanded": self.startup_logs_expanded,
             },
             "metadata": {
                 "tmdb_api_key": self.tmdb_api_key,

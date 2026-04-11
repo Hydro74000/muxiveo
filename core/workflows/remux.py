@@ -81,6 +81,7 @@ class TrackEntry:
     title:        str           # titre de piste éditable
     enabled:      bool = True
     file_id:      str  = ""    # UUID du SourceFile parent (usage UI uniquement)
+    time_shift_ms: int = 0      # décalage signé appliqué à la piste (ms)
 
     orig_language: str = field(default="", repr=False)
     orig_title:    str = field(default="", repr=False)
@@ -125,8 +126,23 @@ class TrackEntry:
     @property
     def full_info_label(self) -> str:
         """Info technique + flags actifs (affichage colonne Info)."""
-        parts = [p for p in (self.display_info, self.flags_label) if p]
+        parts = [p for p in (self.display_info, self.flags_label, self.time_shift_label) if p]
         return "  ·  ".join(parts)
+
+    @property
+    def time_shift_value_label(self) -> str:
+        """Valeur courte du décalage, formatée pour l'UI (ex: +125 ms)."""
+        if self.time_shift_ms == 0:
+            return ""
+        return f"{self.time_shift_ms:+d} ms"
+
+    @property
+    def time_shift_label(self) -> str:
+        """Libellé court du décalage affiché dans la colonne Info."""
+        value = self.time_shift_value_label
+        if not value:
+            return ""
+        return f"Δt {value}"
 
     @property
     def type_label(self) -> str:
@@ -517,6 +533,8 @@ class RemuxWorkflow(QObject):
             for t in src.tracks:
                 if t.mkv_tid not in enabled_tids:
                     continue
+                if t.time_shift_ms != 0:
+                    cmd.extend(["--sync", f"{t.mkv_tid}:{int(t.time_shift_ms)}"])
                 if t.title != t.orig_title:
                     cmd.extend(["--track-name", f"{t.mkv_tid}:{t.title}"])
                 lang      = (t.language      or "").strip()
@@ -635,6 +653,21 @@ class RemuxWorkflow(QObject):
 
         if not config.track_order:
             errors.append("Aucune piste sélectionnée.")
+
+        track_map = {
+            (src.file_index, t.mkv_tid): t
+            for src in config.sources
+            for t in src.tracks
+        }
+        for file_index, mkv_tid in config.track_order:
+            track = track_map.get((file_index, mkv_tid))
+            if track is None:
+                continue
+            if track.track_type == "video" and int(track.time_shift_ms) < 0:
+                errors.append(
+                    "Décalage vidéo négatif interdit : "
+                    f"file_index={file_index}, stream={mkv_tid}, offset={track.time_shift_ms} ms"
+                )
 
         return errors
 
@@ -762,6 +795,29 @@ class RemuxWorkflow(QObject):
         errors = self.validate(config)
         if errors:
             raise RemuxError("\n".join(errors))
+
+        enabled_set: set[tuple[int, int]] = set(config.track_order)
+        needs_negative_clip_fallback = any(
+            (track.track_type in {"audio", "subtitle"}) and int(track.time_shift_ms) < 0
+            for src in config.sources
+            for track in src.tracks
+            if (src.file_index, track.mkv_tid) in enabled_set
+        )
+        if needs_negative_clip_fallback:
+            self.log_message.emit(
+                "INFO",
+                "Offsets négatifs audio/sous-titres détectés : fallback automatique vers remux FFmpeg.",
+            )
+            from core.workflows.remux_ffmpeg import FfmpegRemuxWorkflow
+
+            ffmpeg_fallback = FfmpegRemuxWorkflow(
+                ffmpeg_bin=self._ffmpeg,
+                ffprobe_bin="ffprobe",
+                ffmpeg_threads=self._ffmpeg_threads,
+                parent=self,
+                writing_application=self._writing_application,
+            )
+            return ffmpeg_fallback.run(config)
 
         self.log_message.emit("INFO", f"Remuxage → {config.output.name}")
         work_root = config.work_dir or Path(tempfile.gettempdir())
