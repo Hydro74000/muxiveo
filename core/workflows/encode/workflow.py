@@ -16,15 +16,27 @@ import subprocess
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import cast
 
 from PySide6.QtCore import QObject, Signal
 from core.lang_tags import Rfc5646LanguageTags as LangTags
 from core.runner import TaskCancelledError, TaskSignals, ToolRunner
 from core.subprocess_utils import subprocess_text_kwargs
-from core.workdir import prepare_process_work_dir, relocate_tmdb_covers_to_process_dir
+from core.workdir import (
+    download_tmdb_cover,
+    prepare_process_work_dir,
+    relocate_tmdb_covers_to_process_dir,
+    remove_path,
+)
+from core.workflows.remux import RemuxConfig, SourceInput, TrackEntry
 from core.workflows.remux_ffmpeg import FfmpegRemuxWorkflow
+from core.workflows.remux_timeline_sync import (
+    LiveSyncSession,
+    MkvmergeLikeTimelineSync,
+    TimelineSyncFallbackHelper,
+)
 from core.workflows.encode.models import (
     EncodeConfig, EncodeError, QualityMode,
     VideoEncodeSettings, AudioTrackSettings,
@@ -53,6 +65,18 @@ _EXT_BY_MIME: dict[str, str] = {
 
 _VAAPI_CODECS = {"hevc_vaapi", "h264_vaapi"}
 _FALLBACK_HEVC_FRAME_RATE = "24000/1001"
+
+
+@dataclass(frozen=True)
+class _EncodeSyncTrack:
+    track_type: str
+
+
+@dataclass(frozen=True)
+class _EncodeSyncMappedTrack:
+    source_file_index: int
+    stream_index: int
+    track: _EncodeSyncTrack
 
 
 def _default_ffmpeg_thread_count() -> int:
@@ -185,10 +209,15 @@ class EncodeWorkflow(QObject):
         has_dv = False
         has_hdr10plus = False
         if payload is not None:
-            for stream in payload.get("streams", []):
+            for stream in self._ffprobe_stream_dicts(payload):
                 if stream.get("codec_type") != "video":
                     continue
-                side_data = stream.get("side_data_list") or []
+                side_data_obj = stream.get("side_data_list")
+                side_data: list[dict[str, object]] = []
+                if isinstance(side_data_obj, list):
+                    for item in side_data_obj:
+                        if isinstance(item, dict):
+                            side_data.append(cast(dict[str, object], item))
                 if any(sd.get("side_data_type") == "DOVI configuration record" for sd in side_data):
                     has_dv = True
                 if any(
@@ -233,6 +262,17 @@ class EncodeWorkflow(QObject):
             return json.loads(result.stdout or "{}")
         except json.JSONDecodeError:
             return None
+
+    @staticmethod
+    def _ffprobe_stream_dicts(payload: dict[str, object]) -> list[dict[str, object]]:
+        streams_obj = payload.get("streams")
+        if not isinstance(streams_obj, list):
+            return []
+        out: list[dict[str, object]] = []
+        for item in streams_obj:
+            if isinstance(item, dict):
+                out.append(cast(dict[str, object], item))
+        return out
 
     def _mediainfo_hdr_flags(self, source: Path) -> tuple[bool, bool] | None:
         mediainfo_bin = self._bins.get("mediainfo") or "mediainfo"
@@ -318,8 +358,9 @@ class EncodeWorkflow(QObject):
 
     def build_command_single(self, config: EncodeConfig) -> list[str]:
         """Toujours une seule commande — pour l'aperçu UI."""
-        commands = self._build_direct_output_commands(config)
-        return commands[1] if self._uses_two_pass(config) else commands
+        if self._uses_two_pass(config):
+            return self._build_two_pass(config)[1]
+        return self._build_single_pass(config)
 
     def _build_direct_output_commands(
         self,
@@ -358,6 +399,285 @@ class EncodeWorkflow(QObject):
         """Construit un mapping source -> index d'input ffmpeg."""
         return {src: start_index + i for i, src in enumerate(sources)}
 
+    def _probe_stream_indices(self, source: Path, codec_type: str) -> list[int] | None:
+        payload = self._ffprobe_streams_payload(source)
+        if payload is None:
+            return None
+        indices: list[int] = []
+        for stream in self._ffprobe_stream_dicts(payload):
+            if stream.get("codec_type") != codec_type:
+                continue
+            idx_raw = stream.get("index")
+            if not isinstance(idx_raw, (int, str)):
+                continue
+            try:
+                indices.append(int(idx_raw))
+            except (TypeError, ValueError):
+                continue
+        return sorted(set(indices))
+
+    def _resolved_subtitle_tracks_for_encode(
+        self,
+        config: EncodeConfig,
+        all_sources: list[Path],
+    ) -> tuple[list[tuple[Path, int]], bool]:
+        """
+        Retourne la liste explicite des sous-titres à mapper et un indicateur
+        de complétude de résolution.
+
+        - subtitle_tracks explicite: résolution complète.
+        - copy_subtitles=True: tentative de résolution via ffprobe sur chaque source.
+          Si une source n'est pas sondable, on renvoie complete=False.
+        """
+        if config.subtitle_tracks:
+            deduped: list[tuple[Path, int]] = []
+            seen: set[tuple[Path, int]] = set()
+            for src_path, stream_idx in config.subtitle_tracks:
+                key = (src_path, int(stream_idx))
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append(key)
+            return deduped, True
+
+        if not config.copy_subtitles:
+            return [], True
+
+        resolved: list[tuple[Path, int]] = []
+        seen: set[tuple[Path, int]] = set()
+        for src_path in all_sources:
+            subtitle_indices = self._probe_stream_indices(src_path, "subtitle")
+            if subtitle_indices is None:
+                return [], False
+            for stream_idx in subtitle_indices:
+                key = (src_path, int(stream_idx))
+                if key in seen:
+                    continue
+                seen.add(key)
+                resolved.append(key)
+        return resolved, True
+
+    def _build_probe_remux_config(
+        self,
+        config: EncodeConfig,
+        all_sources: list[Path],
+        source_idx_local: dict[Path, int],
+        resolved_subtitle_tracks: list[tuple[Path, int]],
+    ) -> RemuxConfig:
+        """
+        Construit une config Remux minimale pour réutiliser la logique de détection
+        de risque multi-source (strict interleave + pré-scan sous-titres).
+        """
+        tracks_by_source: dict[int, list[TrackEntry]] = {i: [] for i in range(len(all_sources))}
+
+        def _push_track(src_idx: int, stream_idx: int, track_type: str) -> None:
+            bucket = tracks_by_source.setdefault(src_idx, [])
+            if any(t.mkv_tid == stream_idx and t.track_type == track_type for t in bucket):
+                return
+            bucket.append(TrackEntry(
+                mkv_tid=stream_idx,
+                track_type=track_type,
+                codec="COPY",
+                display_info="",
+                language="",
+                title="",
+            ))
+
+        # Vidéo de référence : input source principal.
+        _push_track(0, 0, "video")
+        for a in config.audio_tracks:
+            src = a.source_path or config.source
+            src_idx = source_idx_local.get(src, 0)
+            _push_track(src_idx, int(a.stream_index), "audio")
+        for src, stream_idx in resolved_subtitle_tracks:
+            src_idx = source_idx_local.get(src)
+            if src_idx is None:
+                continue
+            _push_track(src_idx, int(stream_idx), "subtitle")
+
+        sources: list[SourceInput] = []
+        track_order: list[tuple[int, int]] = []
+        for i, src in enumerate(all_sources):
+            source_tracks = tracks_by_source.get(i, [])
+            sources.append(SourceInput(path=src, file_index=i, tracks=source_tracks))
+            for t in source_tracks:
+                track_order.append((i, int(t.mkv_tid)))
+
+        return RemuxConfig(
+            sources=sources,
+            output=config.output,
+            track_order=track_order,
+            keep_chapters=config.keep_chapters,
+        )
+
+    @staticmethod
+    def _build_sync_mapped_tracks(
+        config: EncodeConfig,
+        source_idx_local: dict[Path, int],
+        resolved_subtitle_tracks: list[tuple[Path, int]],
+    ) -> list[_EncodeSyncMappedTrack]:
+        mapped: list[_EncodeSyncMappedTrack] = [
+            _EncodeSyncMappedTrack(
+                source_file_index=0,
+                stream_index=0,
+                track=_EncodeSyncTrack("video"),
+            )
+        ]
+        for a in config.audio_tracks:
+            src = a.source_path or config.source
+            src_idx = source_idx_local.get(src, 0)
+            mapped.append(_EncodeSyncMappedTrack(
+                source_file_index=src_idx,
+                stream_index=int(a.stream_index),
+                track=_EncodeSyncTrack("audio"),
+            ))
+        for src, stream_idx in resolved_subtitle_tracks:
+            src_idx = source_idx_local.get(src)
+            if src_idx is None:
+                continue
+            mapped.append(_EncodeSyncMappedTrack(
+                source_file_index=src_idx,
+                stream_index=int(stream_idx),
+                track=_EncodeSyncTrack("subtitle"),
+            ))
+        return mapped
+
+    @staticmethod
+    def _needs_strict_interleave_for_encode(
+        mapped_tracks: list[_EncodeSyncMappedTrack],
+    ) -> bool:
+        """
+        Heuristique rapide (sans pré-scan ffprobe) pour éviter de bloquer l'UI
+        au lancement:
+          - multi-source effectif,
+          - présence de sous-titres en sortie,
+          - au moins un audio provenant d'une autre source que la vidéo primaire.
+        """
+        used_sources = {mt.source_file_index for mt in mapped_tracks}
+        if len(used_sources) < 2:
+            return False
+
+        has_subtitle_output = any(mt.track.track_type == "subtitle" for mt in mapped_tracks)
+        if not has_subtitle_output:
+            return False
+
+        primary_video = next((mt for mt in mapped_tracks if mt.track.track_type == "video"), None)
+        if primary_video is None:
+            return False
+
+        return any(
+            mt.track.track_type == "audio" and mt.source_file_index != primary_video.source_file_index
+            for mt in mapped_tracks
+        )
+
+    def _prepare_multisource_sync(
+        self,
+        *,
+        config: EncodeConfig,
+        all_sources: list[Path],
+        sync_base_input_idx: int,
+        work_dir: Path,
+        signals: TaskSignals | None = None,
+        allow_live: bool = True,
+    ) -> tuple[dict[tuple[Path, int, str], tuple[int, int]], list[Path | str], LiveSyncSession | None, bool]:
+        """
+        Prépare la normalisation timeline mkvmerge-like pour les flux multi-source
+        dans le workflow encode.
+        """
+        source_idx_local = {p: i for i, p in enumerate(all_sources)}
+        if len(source_idx_local) < 2:
+            return {}, [], None, False
+
+        resolved_subtitle_tracks, subtitles_resolved = self._resolved_subtitle_tracks_for_encode(
+            config,
+            all_sources,
+        )
+        mapped_tracks = self._build_sync_mapped_tracks(
+            config,
+            source_idx_local,
+            resolved_subtitle_tracks,
+        )
+
+        strict_interleave = False
+        if subtitles_resolved:
+            strict_interleave = self._postproc_helper._decide_strict_interleave_with_prescan(
+                self._build_probe_remux_config(
+                    config,
+                    all_sources,
+                    source_idx_local,
+                    resolved_subtitle_tracks,
+                )
+            )
+        elif config.copy_subtitles:
+            # copy_subtitles sans résolution explicite des streams: on reste
+            # conservateur dès qu'il y a audio étranger multi-source.
+            strict_interleave = self._needs_strict_interleave_for_encode(mapped_tracks)
+            if strict_interleave:
+                self.log_message.emit(
+                    "WARNING",
+                    "Pré-scan sous-titres indisponible en mode copy_subtitles ; "
+                    "activation sync timeline par sécurité.",
+                )
+
+        if not strict_interleave:
+            return {}, [], None, False
+        sync_sources = [SourceInput(path=p, file_index=i, tracks=[]) for i, p in enumerate(all_sources)]
+        syncer = MkvmergeLikeTimelineSync(
+            ffmpeg_bin=self._ffmpeg,
+            ffmpeg_thread_args=self._ffmpeg_thread_args(),
+            log_cb=lambda msg: self.log_message.emit("INFO", msg),
+        )
+
+        cancel_cb = signals._cancel_event.is_set if signals is not None else None
+        ram_dir: Path | None = None
+        if self._ram_buffer_enabled:
+            ram_dir = EncodeWorkflow._ram_buffer_dir()
+
+        prepared_result = TimelineSyncFallbackHelper(
+            syncer=syncer,
+            work_dir=work_dir,
+            ram_dir=ram_dir,
+            log_cb=lambda msg: self.log_message.emit("INFO", msg),
+        ).prepare(
+            mapped_tracks=mapped_tracks,
+            sources=sync_sources,
+            base_input_idx=sync_base_input_idx,
+            allow_live=allow_live,
+            cancel_cb=cancel_cb,
+        )
+        prepared = prepared_result.prepared_inputs
+        live_session = prepared_result.live_session
+
+        sync_inputs: list[Path | str] = [item.path for item in prepared]
+        remap: dict[tuple[Path, int, str], tuple[int, int]] = {}
+        path_by_source_idx = {idx: path for path, idx in source_idx_local.items()}
+        for item in prepared:
+            src_file_idx, src_stream_idx, track_type = item.key
+            src_path = path_by_source_idx.get(src_file_idx)
+            if src_path is None:
+                continue
+            remap[(src_path, int(src_stream_idx), track_type)] = (int(item.input_idx), 0)
+
+        return remap, sync_inputs, live_session, True
+
+    @staticmethod
+    def _append_strict_interleave_mux_flags(cmd: list[str]) -> None:
+        cmd.extend(["-max_interleave_delta", "0"])
+        cmd.extend(["-max_muxing_queue_size", "9999"])
+
+    @staticmethod
+    def _append_sync_inputs(cmd: list[str], sync_inputs: list[Path | str]) -> None:
+        """
+        Ajoute les entrées synchronisées (FIFO/fichiers temporaires) en forçant
+        le demuxer Matroska pour éviter les blocages de probing sur flux live.
+        """
+        for sync_input in sync_inputs:
+            cmd.extend(["-f", "matroska", "-i", str(sync_input)])
+
+    @staticmethod
+    def _sync_cleanup_paths(sync_inputs: list[Path | str]) -> list[Path]:
+        return [p for p in sync_inputs if isinstance(p, Path)]
+
     def _append_stream_maps_and_attachments(
         self,
         cmd: list[str],
@@ -365,23 +685,43 @@ class EncodeWorkflow(QObject):
         *,
         source_idx: dict[Path, int],
         subtitle_copy_input_indices: list[int],
+        sync_remap: dict[tuple[Path, int, str], tuple[int, int]] | None = None,
+        subtitle_tracks_override: list[tuple[Path, int]] | None = None,
+        force_copy_subtitles_wildcard: bool = True,
     ) -> None:
         """Ajoute mapping audio/sous-titres/attachments et pièces jointes externes."""
+        sync_remap = sync_remap or {}
         for i, a in enumerate(config.audio_tracks):
-            inp = source_idx.get(a.source_path or config.source)
-            if inp is None:
-                inp = source_idx.get(config.source, 0)
-            cmd.extend(["-map", f"{inp}:{a.stream_index}"])
+            src_path = a.source_path or config.source
+            remapped = sync_remap.get((src_path, int(a.stream_index), "audio"))
+            if remapped is not None:
+                inp, stream_idx = remapped
+            else:
+                inp = source_idx.get(src_path)
+                if inp is None:
+                    inp = source_idx.get(config.source, 0)
+                stream_idx = int(a.stream_index)
+            cmd.extend(["-map", f"{inp}:{stream_idx}"])
             cmd.extend(self._audio_codec_args(i, a))
 
-        if config.subtitle_tracks:
-            for src_path, stream_idx in config.subtitle_tracks:
+        subtitle_tracks = (
+            subtitle_tracks_override
+            if subtitle_tracks_override is not None
+            else config.subtitle_tracks
+        )
+        if subtitle_tracks:
+            for src_path, stream_idx in subtitle_tracks:
+                remapped = sync_remap.get((src_path, int(stream_idx), "subtitle"))
+                if remapped is not None:
+                    inp, mapped_stream_idx = remapped
+                    cmd.extend(["-map", f"{inp}:{mapped_stream_idx}"])
+                    continue
                 inp = source_idx.get(src_path)
                 if inp is None:
                     continue
                 cmd.extend(["-map", f"{inp}:{stream_idx}"])
             cmd.extend(["-c:s", "copy"])
-        elif config.copy_subtitles:
+        elif config.copy_subtitles and force_copy_subtitles_wildcard:
             for inp_i in subtitle_copy_input_indices:
                 cmd.extend(["-map", f"{inp_i}:s?"])
             cmd.extend(["-c:s", "copy"])
@@ -492,6 +832,9 @@ class EncodeWorkflow(QObject):
                 chapter_input_index=chapter_input_index,
             ),
         ])
+
+        # Suppression des balises ENCODER et CREATION_TIME transportées depuis la source.
+        cmd.extend(["-metadata", "encoder=", "-metadata", "creation_time="])
 
         for key, value in self._resolve_global_tags(config).items():
             cmd.extend(["-metadata", f"{key}={value}"])
@@ -645,6 +988,160 @@ class EncodeWorkflow(QObject):
         pass2.append(str(config.output))
 
         return [pass1, pass2]
+
+    def _build_runtime_single_pass_with_sync(
+        self,
+        config: EncodeConfig,
+        *,
+        chapter_materialize_dir: Path | None = None,
+        signals: TaskSignals | None = None,
+    ) -> tuple[list[str], LiveSyncSession | None, list[Path]]:
+        all_sources = self._collect_all_sources(config)
+        source_idx = self._source_input_index_map(all_sources)
+        work_dir = config.work_dir or config.source.parent
+
+        sync_remap, sync_inputs, live_session, strict_interleave = self._prepare_multisource_sync(
+            config=config,
+            all_sources=all_sources,
+            sync_base_input_idx=len(all_sources),
+            work_dir=work_dir,
+            signals=signals,
+            allow_live=True,
+        )
+
+        cmd: list[str] = [self._ffmpeg, "-hide_banner", "-y"]
+        cmd.extend(self._ffmpeg_progress_args())
+        cmd.extend(self._hardware_input_args(config.video))
+        for src in all_sources:
+            cmd.extend(["-i", str(src)])
+        self._append_sync_inputs(cmd, sync_inputs)
+
+        _, chapter_input_index, tag_input_index = self._prepare_container_metadata_inputs(
+            cmd,
+            config,
+            source_idx=source_idx,
+            next_input_index=len(all_sources) + len(sync_inputs),
+            chapter_materialize_dir=chapter_materialize_dir,
+            chapter_probe_source=config.source,
+        )
+
+        vf = self._build_encoder_vf(config.video)
+        if vf:
+            cmd.extend(["-vf", vf])
+
+        cmd.extend(self._ffmpeg_thread_args())
+        cmd.extend(["-map", "0:v:0"])
+        cmd.extend(self._video_codec_args(config.video, config.video.bitrate_kbps))
+
+        if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
+            cmd.extend(self._hdr_meta_args(config.video))
+
+        resolved_subtitle_tracks, subtitles_resolved = self._resolved_subtitle_tracks_for_encode(
+            config,
+            all_sources,
+        )
+        self._append_stream_maps_and_attachments(
+            cmd,
+            config,
+            source_idx=source_idx,
+            subtitle_copy_input_indices=list(range(len(all_sources))),
+            sync_remap=sync_remap,
+            subtitle_tracks_override=resolved_subtitle_tracks,
+            force_copy_subtitles_wildcard=(config.copy_subtitles and not subtitles_resolved),
+        )
+
+        if strict_interleave:
+            self._append_strict_interleave_mux_flags(cmd)
+
+        self._append_container_metadata_args(
+            cmd,
+            config,
+            default_metadata_input_index=0,
+            default_chapter_input_index=0,
+            chapter_input_index=chapter_input_index,
+            tag_input_index=tag_input_index,
+            include_copy_video_stream_passthrough=True,
+        )
+        cmd.append(str(config.output))
+        return cmd, live_session, self._sync_cleanup_paths(sync_inputs)
+
+    def _build_runtime_two_pass_with_sync(
+        self,
+        config: EncodeConfig,
+        *,
+        chapter_materialize_dir: Path | None = None,
+        signals: TaskSignals | None = None,
+    ) -> tuple[list[list[str]], LiveSyncSession | None, list[Path]]:
+        bitrate = self._size_to_bitrate_kbps(config)
+        vf = self._build_encoder_vf(config.video)
+
+        all_sources = self._collect_all_sources(config)
+        source_idx = self._source_input_index_map(all_sources)
+        work_dir = config.work_dir or config.source.parent
+
+        sync_remap, sync_inputs, live_session, strict_interleave = self._prepare_multisource_sync(
+            config=config,
+            all_sources=all_sources,
+            sync_base_input_idx=len(all_sources),
+            work_dir=work_dir,
+            signals=signals,
+            allow_live=False,
+        )
+
+        def _base(include_sync_inputs: bool) -> list[str]:
+            c = [self._ffmpeg, "-hide_banner", "-y"]
+            c.extend(self._ffmpeg_progress_args())
+            c.extend(self._hardware_input_args(config.video))
+            for src in all_sources:
+                c.extend(["-i", str(src)])
+            if include_sync_inputs:
+                self._append_sync_inputs(c, sync_inputs)
+            if vf:
+                c.extend(["-vf", vf])
+            c.extend(self._ffmpeg_thread_args())
+            c.extend(["-map", "0:v:0"])
+            c.extend(self._video_codec_args_bitrate(config.video, bitrate))
+            return c
+
+        pass1 = _base(False) + ["-pass", "1", "-an", "-f", "null", os.devnull]
+        pass2 = _base(True) + ["-pass", "2"]
+
+        _, chapter_input_index, tag_input_index = self._prepare_container_metadata_inputs(
+            pass2,
+            config,
+            source_idx=source_idx,
+            next_input_index=len(all_sources) + len(sync_inputs),
+            chapter_materialize_dir=chapter_materialize_dir,
+            chapter_probe_source=config.source,
+        )
+        if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
+            pass2.extend(self._hdr_meta_args(config.video))
+        resolved_subtitle_tracks, subtitles_resolved = self._resolved_subtitle_tracks_for_encode(
+            config,
+            all_sources,
+        )
+        self._append_stream_maps_and_attachments(
+            pass2,
+            config,
+            source_idx=source_idx,
+            subtitle_copy_input_indices=list(range(len(all_sources))),
+            sync_remap=sync_remap,
+            subtitle_tracks_override=resolved_subtitle_tracks,
+            force_copy_subtitles_wildcard=(config.copy_subtitles and not subtitles_resolved),
+        )
+        if strict_interleave:
+            self._append_strict_interleave_mux_flags(pass2)
+        self._append_container_metadata_args(
+            pass2,
+            config,
+            default_metadata_input_index=0,
+            default_chapter_input_index=0,
+            chapter_input_index=chapter_input_index,
+            tag_input_index=tag_input_index,
+            include_copy_video_stream_passthrough=True,
+        )
+        pass2.append(str(config.output))
+        return [pass1, pass2], live_session, self._sync_cleanup_paths(sync_inputs)
 
     # ------------------------------------------------------------------
     # Arguments par codec
@@ -1112,6 +1609,12 @@ class EncodeWorkflow(QObject):
     # Exécution
     # ------------------------------------------------------------------
 
+    def _log_workflow_type(self, workflow_kind: str) -> None:
+        self.log_message.emit("INFO", f"WORKFLOW TYPE - {workflow_kind}")
+
+    def _log_step(self, step_index: int, step_name: str) -> None:
+        self.log_message.emit("INFO", f"STEP {step_index} - {step_name}")
+
     def run(self, config: EncodeConfig) -> TaskSignals:
         """
         Lance l'encodage dans un thread secondaire.
@@ -1123,8 +1626,11 @@ class EncodeWorkflow(QObject):
         if errors:
             raise EncodeError("\n".join(errors))
 
+        self._log_workflow_type("ENCODE")
+        self._log_step(1, "Validation configuration")
         self.log_message.emit("INFO", f"Encodage → {config.output.name}")
 
+        self._log_step(2, "Préparation workspace et attachments")
         work_root = config.work_dir or Path(tempfile.gettempdir())
         process_work_dir = prepare_process_work_dir(
             work_root,
@@ -1136,6 +1642,27 @@ class EncodeWorkflow(QObject):
             work_root=work_root,
             process_dir=process_work_dir,
         )
+
+        # Téléchargement différé de la cover TMDB (si présente)
+        if config.tmdb_cover is not None:
+            tmdb_url, tmdb_filename = config.tmdb_cover
+            try:
+                self.log_message.emit(
+                    "INFO",
+                    f"Téléchargement cover TMDB : {tmdb_filename}",
+                )
+                cover_path = download_tmdb_cover(
+                    tmdb_url,
+                    tmdb_filename,
+                    process_work_dir / "attachments",
+                )
+                relocated_attachments = [*relocated_attachments, cover_path]
+            except Exception as exc:
+                self.log_message.emit(
+                    "WARN",
+                    f"Impossible de télécharger la cover TMDB : {exc}",
+                )
+
         prepared_config = replace(
             config,
             work_dir=process_work_dir,
@@ -1152,10 +1679,12 @@ class EncodeWorkflow(QObject):
         relocated_attachment_dir = process_work_dir / "attachments"
         if relocated_attachment_dir.exists():
             cleanup_paths.append(relocated_attachment_dir)
+        cleanup_paths.append(process_work_dir)
 
-        prepared_config = self._normalize_dynamic_hdr_config(prepared_config)
-
-        if self._wants_dynamic_hdr_copy(prepared_config) and self._is_video_passthrough(prepared_config):
+        self._log_step(3, "Normalisation des options HDR dynamiques")
+        if not self._is_video_passthrough(prepared_config):
+            prepared_config = self._normalize_dynamic_hdr_config(prepared_config)
+        elif self._wants_dynamic_hdr_copy(prepared_config):
             # Codec COPY : les NAL units DoVi/HDR10+ sont déjà dans le bitstream source.
             # Extraction + réinjection inutiles sans réencodage — remux direct avec passthrough.
             self.log_message.emit(
@@ -1165,6 +1694,11 @@ class EncodeWorkflow(QObject):
             )
 
         needs_inject = self._needs_metadata_inject(prepared_config)
+        self._log_step(
+            4,
+            "Routage du workflow (sortie directe ou injection metadata)"
+            + (" -> injection" if needs_inject else " -> sortie directe"),
+        )
         if needs_inject:
             self.log_message.emit(
                 "INFO",
@@ -1185,7 +1719,17 @@ class EncodeWorkflow(QObject):
         config: EncodeConfig,
         cleanup_paths: list[Path],
     ) -> TaskSignals:
+        self._log_step(5, "Construction de la commande ffmpeg (sortie directe)")
         cwd = config.work_dir or config.source.parent
+
+        # Multi-source: le pré-scan ffprobe peut être coûteux.
+        # On déporte build+exécution dans un worker dédié pour éviter de bloquer l'UI.
+        if len(self._collect_all_sources(config)) > 1:
+            return self._run_direct_output_multisource_async(
+                config=config,
+                cleanup_paths=cleanup_paths,
+                cwd=cwd,
+            )
 
         chapter_dir: Path | None = None
         if config.chapter_overrides:
@@ -1198,17 +1742,155 @@ class EncodeWorkflow(QObject):
             cleanup_paths.append(chapter_dir)
 
         if self._uses_two_pass(config):
-            cmds = self._build_direct_output_commands(
+            self._log_step(6, "Exécution ffmpeg en 2 passes (sortie directe)")
+            cmds: list[list[str]]
+            live_sync_session: LiveSyncSession | None = None
+            sync_cleanup_paths: list[Path] = []
+            try:
+                cmds, live_sync_session, sync_cleanup_paths = self._build_runtime_two_pass_with_sync(
+                    config,
+                    chapter_materialize_dir=chapter_dir,
+                )
+                cleanup_paths.extend(sync_cleanup_paths)
+                signals = self._run_two_pass(cmds, cwd=cwd)
+            except Exception:
+                if live_sync_session is not None:
+                    live_sync_session.close()
+                raise
+            self._bind_live_sync_cleanup(signals, live_sync_session)
+            return signals
+
+        self._log_step(6, "Exécution ffmpeg en single pass (sortie directe)")
+        cmd: list[str]
+        live_sync_session = None
+        sync_cleanup_paths = []
+        try:
+            cmd, live_sync_session, sync_cleanup_paths = self._build_runtime_single_pass_with_sync(
                 config,
                 chapter_materialize_dir=chapter_dir,
             )
-            return self._run_two_pass(cmds, cwd=cwd)
+            cleanup_paths.extend(sync_cleanup_paths)
+            signals = self._runner.run(cmd, cwd=cwd, label="ffmpeg")
+        except Exception:
+            if live_sync_session is not None:
+                live_sync_session.close()
+            raise
+        self._bind_live_sync_cleanup(signals, live_sync_session)
+        return signals
 
-        cmd = self._build_direct_output_commands(
-            config,
-            chapter_materialize_dir=chapter_dir,
-        )
-        return self._runner.run(cmd, cwd=cwd, label="ffmpeg")
+    def _run_direct_output_multisource_async(
+        self,
+        *,
+        config: EncodeConfig,
+        cleanup_paths: list[Path],
+        cwd: Path,
+    ) -> TaskSignals:
+        signals = TaskSignals()
+        executor = ThreadPoolExecutor(max_workers=1)
+
+        def _task() -> None:
+            chapter_dir: Path | None = None
+            live_sync_session: LiveSyncSession | None = None
+            sync_cleanup_paths: list[Path] = []
+            is_two_pass = self._uses_two_pass(config)
+
+            try:
+                if config.chapter_overrides:
+                    chapter_dir = Path(
+                        tempfile.mkdtemp(
+                            prefix="enc_chapters_",
+                            dir=str(config.work_dir) if config.work_dir else None,
+                        )
+                    )
+                    cleanup_paths.append(chapter_dir)
+
+                if is_two_pass:
+                    self._log_step(6, "Exécution ffmpeg en 2 passes (sortie directe)")
+                    cmds, live_sync_session, sync_cleanup_paths = self._build_runtime_two_pass_with_sync(
+                        config,
+                        chapter_materialize_dir=chapter_dir,
+                        signals=signals,
+                    )
+                    cleanup_paths.extend(sync_cleanup_paths)
+                    if live_sync_session is not None:
+                        for proc in live_sync_session.processes:
+                            signals._register_proc(proc)
+
+                    self.log_message.emit("INFO", "Passe 1/2 (analyse)…")
+                    self._runner._run_cmd(
+                        cmds[0],
+                        cwd=cwd,
+                        label="ffmpeg-pass1",
+                        progress_cb=lambda line: signals.progress.emit(line),
+                        signals=signals,
+                    )
+                    self.log_message.emit("INFO", "Passe 2/2 (encodage)…")
+                    output = self._runner._run_cmd(
+                        cmds[1],
+                        cwd=cwd,
+                        label="ffmpeg-pass2",
+                        progress_cb=lambda line: signals.progress.emit(line),
+                        signals=signals,
+                    )
+                    signals.finished.emit(output)
+                else:
+                    self._log_step(6, "Exécution ffmpeg en single pass (sortie directe)")
+                    cmd, live_sync_session, sync_cleanup_paths = self._build_runtime_single_pass_with_sync(
+                        config,
+                        chapter_materialize_dir=chapter_dir,
+                        signals=signals,
+                    )
+                    cleanup_paths.extend(sync_cleanup_paths)
+                    if live_sync_session is not None:
+                        for proc in live_sync_session.processes:
+                            signals._register_proc(proc)
+                    output = self._runner._run_cmd(
+                        cmd,
+                        cwd=cwd,
+                        label="ffmpeg",
+                        progress_cb=lambda line: signals.progress.emit(line),
+                        signals=signals,
+                    )
+                    signals.finished.emit(output)
+            except TaskCancelledError:
+                signals.cancelled.emit()
+            except Exception as exc:
+                signals.failed.emit(str(exc), exc)
+            finally:
+                if live_sync_session is not None:
+                    for proc in live_sync_session.processes:
+                        signals._unregister_proc(proc)
+                    live_sync_session.close()
+                if is_two_pass:
+                    self._cleanup_two_pass_logs(cwd)
+                executor.shutdown(wait=False)
+
+        executor.submit(_task)
+        return signals
+
+    def _bind_live_sync_cleanup(
+        self,
+        signals: TaskSignals,
+        session: LiveSyncSession | None,
+    ) -> None:
+        if session is None:
+            return
+
+        done = {"closed": False}
+        for proc in session.processes:
+            signals._register_proc(proc)
+
+        def _cleanup(*_args) -> None:
+            if done["closed"]:
+                return
+            done["closed"] = True
+            for proc in session.processes:
+                signals._unregister_proc(proc)
+            session.close()
+
+        signals.finished.connect(_cleanup)
+        signals.failed.connect(_cleanup)
+        signals.cancelled.connect(_cleanup)
 
     def _bind_temp_cleanup(self, signals: TaskSignals, cleanup_paths: list[Path]) -> None:
         """Supprime les fichiers/dossiers temporaires quand le workflow se termine."""
@@ -1223,10 +1905,7 @@ class EncodeWorkflow(QObject):
             done["cleaned"] = True
             for path in cleanup_paths:
                 try:
-                    if path.is_dir():
-                        shutil.rmtree(path, ignore_errors=True)
-                    else:
-                        path.unlink(missing_ok=True)
+                    remove_path(path)
                 except OSError:
                     pass
 
@@ -1245,10 +1924,11 @@ class EncodeWorkflow(QObject):
         return f"{size:.1f} {units[idx]}"
 
     def _estimate_duration_seconds(self, config: EncodeConfig) -> float:
-        if (config.duration_s or 0.0) > 0:
-            return float(config.duration_s)
+        duration_s = config.duration_s
+        if duration_s is not None and duration_s > 0:
+            return float(duration_s)
         probed = self._postproc_helper._probe_duration_seconds(config.source)
-        if (probed or 0.0) > 0:
+        if probed is not None and probed > 0:
             return float(probed)
         return 3600.0
 
@@ -1598,7 +2278,7 @@ class EncodeWorkflow(QObject):
         payload = self._ffprobe_streams_payload(source)
         if payload is None:
             return _FALLBACK_HEVC_FRAME_RATE
-        for stream in payload.get("streams", []):
+        for stream in self._ffprobe_stream_dicts(payload):
             if stream.get("codec_type") != "video":
                 continue
             for key in ("avg_frame_rate", "r_frame_rate"):
@@ -1801,6 +2481,8 @@ class EncodeWorkflow(QObject):
             # Conservé pour compatibilité : les intermédiaires sont désormais
             # forcés dans tmp, donc cette liste reste vide.
             ext_files: list[Path] = []
+            live_sync_session: LiveSyncSession | None = None
+            sync_cleanup_paths: list[Path] = []
 
             def _run(cmd: list[str]) -> str:
                 return self._runner._run_cmd(
@@ -1838,6 +2520,7 @@ class EncodeWorkflow(QObject):
             try:
                 src_size_est = config.source.stat().st_size
                 # ── 1. RPU Dolby Vision ──────────────────────────────────
+                self._log_step(5, "Extraction des métadonnées dynamiques (DoVi/HDR10+)")
                 rpu_bin = tmp / "rpu.bin"
                 if config.copy_dv:
                     signals.progress.emit("Extraction RPU Dolby Vision…")
@@ -1861,6 +2544,7 @@ class EncodeWorkflow(QObject):
                 # Encodage direct en HEVC sans container ni audio.
                 # Élimine encoded.mkv et garde un seul intermédiaire vidéo utile.
                 # La taille estimée = taille source (approximation conservative).
+                self._log_step(6, "Encodage vidéo seule (HEVC brut)")
                 enc_hevc = _alloc("enc.hevc", src_size_est)
                 signals.progress.emit("Encodage vidéo…")
                 if config.video.quality_mode == QualityMode.SIZE:
@@ -1877,6 +2561,7 @@ class EncodeWorkflow(QObject):
 
                 # ── 4. Injection HDR10+ ──────────────────────────────────
                 # HDR10+ avant DV : hdr10plus_tool ne tolère pas les NAL RPU DV.
+                self._log_step(7, "Injection HDR10+ puis DoVi (si demandé)")
                 if config.copy_hdr10plus and hdr10p_json.exists():
                     cur_size = current_hevc.stat().st_size
                     out_hdr10p = _alloc("enc_hdr10p.hevc", cur_size)
@@ -1909,6 +2594,7 @@ class EncodeWorkflow(QObject):
                     _check()
 
                 # ── 6. Encapsulation FFmpeg-only du HEVC injecté ──────────
+                self._log_step(8, "Encapsulation timeline vidéo injectée")
                 wrapped_video = _alloc("enc_wrapped.mkv", current_hevc.stat().st_size)
                 signals.progress.emit("Encapsulation vidéo injectée…")
                 _run(
@@ -1926,10 +2612,14 @@ class EncodeWorkflow(QObject):
                 # ffmpeg multi-input :
                 #   input 0 = vidéo encapsulée et horodatée, input 1 = source principale,
                 #   input 2+ = sources audio / sous-titres / attachements supplémentaires.
+                self._log_step(9, "Reconstruction finale du conteneur MKV")
                 signals.progress.emit("Reconstitution finale…")
                 all_sources = self._collect_all_sources(config)
                 extra_sources = all_sources[1:]
                 recon_source_idx = self._source_input_index_map(all_sources, start_index=1)
+                sync_remap: dict[tuple[Path, int, str], tuple[int, int]] = {}
+                sync_inputs: list[Path | str] = []
+                strict_interleave = False
 
                 recon_cmd = [self._ffmpeg, "-hide_banner", "-y",
                              *self._ffmpeg_progress_args(),
@@ -1937,23 +2627,47 @@ class EncodeWorkflow(QObject):
                              "-i", str(config.source)]
                 for sp in extra_sources:
                     recon_cmd.extend(["-i", str(sp)])
+
+                sync_remap, sync_inputs, live_sync_session, strict_interleave = self._prepare_multisource_sync(
+                    config=config,
+                    all_sources=all_sources,
+                    sync_base_input_idx=2 + len(extra_sources),
+                    work_dir=tmp,
+                    signals=signals,
+                    allow_live=True,
+                )
+                sync_cleanup_paths = self._sync_cleanup_paths(sync_inputs)
+                self._append_sync_inputs(recon_cmd, sync_inputs)
+                if live_sync_session is not None:
+                    for proc in live_sync_session.processes:
+                        signals._register_proc(proc)
+
                 _, chapter_input_index, tag_input_index = self._prepare_container_metadata_inputs(
                     recon_cmd,
                     config,
                     source_idx=recon_source_idx,
-                    next_input_index=2 + len(extra_sources),
+                    next_input_index=2 + len(extra_sources) + len(sync_inputs),
                     chapter_materialize_dir=tmp,
                     chapter_probe_source=config.source,
                 )
 
                 recon_cmd.extend(self._ffmpeg_thread_args())
                 recon_cmd.extend(["-map", "0:v:0", "-c:v", "copy"])
+                resolved_subtitle_tracks, subtitles_resolved = self._resolved_subtitle_tracks_for_encode(
+                    config,
+                    all_sources,
+                )
                 self._append_stream_maps_and_attachments(
                     recon_cmd,
                     config,
                     source_idx=recon_source_idx,
                     subtitle_copy_input_indices=list(range(1, 2 + len(extra_sources))),
+                    sync_remap=sync_remap,
+                    subtitle_tracks_override=resolved_subtitle_tracks,
+                    force_copy_subtitles_wildcard=(config.copy_subtitles and not subtitles_resolved),
                 )
+                if strict_interleave:
+                    self._append_strict_interleave_mux_flags(recon_cmd)
 
                 self._append_container_metadata_args(
                     recon_cmd,
@@ -1974,6 +2688,15 @@ class EncodeWorkflow(QObject):
                 signals.failed.emit(str(exc), exc)
             finally:
                 executor.shutdown(wait=False)
+                if live_sync_session is not None:
+                    for proc in live_sync_session.processes:
+                        signals._unregister_proc(proc)
+                    live_sync_session.close()
+                for path in sync_cleanup_paths:
+                    try:
+                        remove_path(path)
+                    except OSError:
+                        pass
                 # Compatibilité : ext_files est vide en mode "tout dans work_dir".
                 for p in list(ext_files):
                     try:

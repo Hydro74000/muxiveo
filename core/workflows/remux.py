@@ -29,7 +29,12 @@ from PySide6.QtCore import QObject, Signal
 from core.lang_tags import Rfc5646LanguageTags as LangTags
 from core.inspector import AttachmentInfo, ChapterEntry, FileInfo, HDRType, build_chapter_xml
 from core.runner import TaskCancelledError, TaskSignals, ToolRunner
-from core.workdir import prepare_process_work_dir, relocate_tmdb_covers_to_process_dir
+from core.workdir import (
+    download_tmdb_cover,
+    prepare_process_work_dir,
+    relocate_tmdb_covers_to_process_dir,
+    remove_path,
+)
 
 
 def _cli_path(path: Path) -> str:
@@ -205,6 +210,9 @@ class RemuxConfig:
     #: dict  → supprime les balises des sources (--no-global-tags) et écrit ce dict.
     #: {}    → supprime toutes les balises (--no-global-tags, rien n'est écrit).
     tag_overrides:       dict[str, str] | None = None
+    #: Cover TMDB à télécharger juste avant le remuxage : (url, filename).
+    #: None → pas de cover TMDB en attente.
+    tmdb_cover:          tuple[str, str] | None = None
 
 
 # =============================================================================
@@ -767,10 +775,32 @@ class RemuxWorkflow(QObject):
             work_root=work_root,
             process_dir=process_work_dir,
         )
+
+        # Téléchargement différé de la cover TMDB (si présente)
+        if config.tmdb_cover is not None:
+            tmdb_url, tmdb_filename = config.tmdb_cover
+            try:
+                self.log_message.emit(
+                    "INFO",
+                    f"Téléchargement cover TMDB : {tmdb_filename}",
+                )
+                cover_path = download_tmdb_cover(
+                    tmdb_url,
+                    tmdb_filename,
+                    process_work_dir / "attachments",
+                )
+                relocated_attachments = [*relocated_attachments, cover_path]
+            except Exception as exc:
+                self.log_message.emit(
+                    "WARN",
+                    f"Impossible de télécharger la cover TMDB : {exc}",
+                )
+
         run_config = replace(config, extra_attachments=relocated_attachments)
         cwd = process_work_dir
 
         signals = TaskSignals()
+        self._bind_temp_cleanup(signals, [process_work_dir])
         executor = ThreadPoolExecutor(max_workers=1)
 
         def _task() -> None:
@@ -815,3 +845,24 @@ class RemuxWorkflow(QObject):
 
         executor.submit(_task)
         return signals
+
+    def _bind_temp_cleanup(self, signals: TaskSignals, cleanup_paths: list[Path]) -> None:
+        """Supprime les dossiers temporaires du workflow quand le traitement se termine."""
+        if not cleanup_paths:
+            return
+
+        done = {"cleaned": False}
+
+        def _cleanup(*_args) -> None:
+            if done["cleaned"]:
+                return
+            done["cleaned"] = True
+            for path in cleanup_paths:
+                try:
+                    remove_path(path)
+                except OSError:
+                    pass
+
+        signals.finished.connect(_cleanup)
+        signals.failed.connect(_cleanup)
+        signals.cancelled.connect(_cleanup)

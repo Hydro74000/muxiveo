@@ -59,6 +59,9 @@ STANDARD_MKV_TAGS: frozenset[str] = frozenset({
     "NUMBER_OF_FRAMES", "NUMBER_OF_BYTES",
 })
 
+#: Balises de la source à ne pas transporter dans les fichiers de sortie.
+_EXCLUDED_SOURCE_TAGS: frozenset[str] = frozenset({"TITLE", "ENCODER", "CREATION_TIME"})
+
 
 # =============================================================================
 # Enum HDR
@@ -539,10 +542,12 @@ class FileInspector:
 
         raw_tags = fmt.get("tags", {})
         # Normalise les clés en MAJUSCULES et exclut TITLE (déjà dans .title)
+        # ainsi que les balises techniques ENCODER et CREATION_TIME non pertinentes
+        # pour la réutilisation dans les fichiers de sortie.
         global_tags: dict[str, str] = {
             k.upper(): str(v)
             for k, v in raw_tags.items()
-            if k.upper() != "TITLE" and str(v).strip()
+            if k.upper() not in _EXCLUDED_SOURCE_TAGS and str(v).strip()
         }
 
         info = FileInfo(
@@ -709,7 +714,7 @@ class FileInspector:
             tag_count = sum(
                 1
                 for key, value in fmt_tags.items()
-                if str(value).strip() and str(key).strip().upper() != "TITLE"
+                if str(value).strip() and str(key).strip().upper() not in _EXCLUDED_SOURCE_TAGS
             )
 
             lang_map: dict[int, str] = {}

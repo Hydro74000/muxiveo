@@ -1300,6 +1300,7 @@ class MainWindow(QMainWindow):
         self._encode_panel.set_output_provider(self._remux_panel.current_output_path)
         self._encode_panel.set_file_title_provider(self._remux_panel.current_file_title)
         self._encode_panel.set_extra_attachments_provider(self._remux_panel.current_extra_attachments)
+        self._encode_panel.set_tmdb_cover_provider(self._remux_panel.current_tmdb_cover)
         self._encode_panel.set_tag_overrides_provider(self._remux_panel.current_tag_overrides)
         self._encode_panel.set_chapters_provider(self._remux_panel.current_chapter_overrides)
         # État "prêt" → bouton Exécuter
@@ -1577,6 +1578,7 @@ class MainWindow(QMainWindow):
             work_dir=encode_cfg.work_dir,
             file_title=encode_cfg.file_title,
             extra_attachments=encode_cfg.extra_attachments,
+            tmdb_cover=encode_cfg.tmdb_cover,
         )
 
     def _on_op_progress(self, line: str) -> None:

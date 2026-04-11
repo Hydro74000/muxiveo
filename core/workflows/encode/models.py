@@ -176,6 +176,9 @@ class EncodeConfig:
     copy_hdr10plus:   bool         = False  # injecter HDR10+ SEI via hdr10plus_tool
     dovi_profile:     str          = "0"    # flag -m dovi_tool : "0"=conserver, "2"=normaliser P8.1
     work_dir:         Path | None  = None   # dossier de travail (passlog, fichiers temp)
+    #: Cover TMDB à télécharger juste avant l'encodage : (url, filename).
+    #: None → pas de cover TMDB en attente.
+    tmdb_cover:       tuple[str, str] | None = None
 
 
 @dataclass

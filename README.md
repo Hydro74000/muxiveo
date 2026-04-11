@@ -149,6 +149,7 @@ Le workflow unifié permet de :
 - ouvrir une fenêtre de recherche **TMDB** depuis le panneau balises pour rechercher film/série (préremplissage auto depuis titre/nom de fichier)
 - détecter automatiquement les motifs de série (`SxxExx`, `x`) pour préremplir saison/épisode et positionner la recherche sur **Séries** si pertinent
 - injecter les métadonnées TMDB dans les tags MKV (`DATE_RELEASED`, `GENRE`, `DIRECTOR`, `CAST`, `SUBTITLE`, `SYNOPSIS`, `COUNTRY`, `URL`, `DESCRIPTION`, `COLLECTION`, `SEASON`, `EPISODE`)
+- préparer une cover TMDB en mode différé (URL + nom de fichier) ; le téléchargement réel est fait au lancement du workflow
 - remplacer automatiquement le **titre du conteneur** par le titre formaté TMDB lors de la validation (film : `Titre (Année)`, série : `Titre - SxxExx - Titre épisode`)
 - choisir pour chaque piste audio un mode `copy`, `aac`, `eac3` ou `flac`
 - choisir pour la vidéo `copy`, `libx265`, `libx264`, `libsvtav1`, `NVENC`, `AMF`, `VAAPI` ou `QSV`
@@ -168,6 +169,8 @@ Backend remux `ffmpeg` (par défaut) :
 - permet la recopie ou l'édition des chapitres
 - permet d'écrire les tags globaux choisis
 - permet de recopier les pièces jointes source sélectionnées et d'ajouter des fichiers externes (cover incluse)
+- télécharge la cover TMDB différée juste avant l'exécution (dans le dossier temporaire du process), puis nettoie ce dossier en fin de run
+- purge explicitement les balises techniques source `ENCODER` et `CREATION_TIME` avant écriture des métadonnées de sortie
 - force le champ segment **Muxing Application** avec la valeur custom de l'application (tag historique `muxing-application`) directement via FFmpeg
 
 Limites connues du backend remux `ffmpeg` :
@@ -322,73 +325,78 @@ tmdb_bearer_token = <VOTRE_TOKEN_BEARER_TMDB_V4>
 
 ```mermaid
 flowchart TD
-    A([Sources MKV / MP4]) --> B[Inspection via ffprobe]
-    B --> C[Edition conteneur dans RemuxPanel]
-    C --> D[Options video/audio/HDR dans EncodePanel]
-    D --> E{Video copy + audio copy\net aucune transformation HDR ?}
+    A["Sources MKV ou MP4"] --> B["Inspection via ffprobe"]
+    B --> C["Edition conteneur dans RemuxPanel"]
+    C --> D["Options video, audio et HDR dans EncodePanel"]
+    D --> E{"Video copy\nAudio copy\nAucune transformation HDR"}
 
-    E -->|Oui| G[FfmpegRemuxWorkflow.run]
-    G --> Z
+    E -->|Oui| R0["WORKFLOW TYPE - REMUX"]
+    R0 --> R1["Workflow remux FFmpeg"]
+    R1 --> Z["Sortie MKV"]
 
-    E -->|Non| I[EncodeWorkflow.run]
-    I --> Z([Sortie MKV])
+    E -->|Non| E0["WORKFLOW TYPE - ENCODE"]
+    E0 --> E1["Workflow encode FFmpeg"]
+    E1 --> Z
 ```
 
 ### Backend remux `ffmpeg` — Branches internes
 
 ```mermaid
 flowchart TD
-    A[RemuxConfig] --> B[validate]
-    B --> C[_resolve_mapped_tracks]
-    C --> D[Prepare attachments\n+ chapter file optionnel]
-    D --> E[ffmpeg-remux -c copy]
-    E --> F[Map tracks + metadata + chapters + attachments]
-    F --> G([Sortie MKV])
+    A["WORKFLOW TYPE - REMUX"] --> B["STEP 1 - Validation configuration"]
+    B --> C["STEP 2 - Preparation workspace et attachments"]
+    C --> D["STEP 3 - Preparation des attachments"]
+    D --> E["STEP 4 - Analyse du mapping et pre-scan ffprobe"]
+    E --> F{"Risque multi-source detecte"}
+    F -->|Oui| G["STEP 5 - Sync timeline multi-source\nFIFO, Named Pipe ou fallback"]
+    F -->|Non| H["STEP 5 - Sync timeline non requise"]
+    G --> I["STEP 6 - Gestion des chapitres"]
+    H --> I
+    I --> J["STEP 7 - Construction commande ffmpeg remux"]
+    J --> K["STEP 8 - Execution du remux ffmpeg"]
+    K --> L["Sortie MKV"]
 ```
 
 ### Encode workflow — Branches internes
 
 ```mermaid
 flowchart TD
-    A[EncodeConfig] --> B[validate]
-    B --> C[_prepare_attachment_config]
-    C --> D["_normalize_dynamic_hdr_config\nsource inspectee, copies inutiles desactivees"]
-    D --> E{copy_hdr10plus = true ?}
-    E -->|Oui| H{codec video = copy ?}
-    E -->|Non| F{copy_dv = true ?}
+    A["WORKFLOW TYPE - ENCODE"] --> B["STEP 1 - Validation configuration"]
+    B --> C["STEP 2 - Preparation workspace et attachments"]
+    C --> D["STEP 3 - Normalisation des options HDR dynamiques"]
+    D --> E["STEP 4 - Routage du workflow"]
+    E --> F{"Injection fichier\nDoVi ou HDR10+\nnecessaire"}
 
-    F -->|Oui| H
-    F -->|Non| G{codec video = copy ?}
-    G -->|Oui| G1[Sortie directe ffmpeg\nsingle pass\nvideo passthrough -c:v copy\naudio copy ou encode]
-    G -->|Non| G2{quality_mode = SIZE ?}
-    G2 -->|Oui| G3[Sortie directe ffmpeg\npass 1 puis pass 2]
-    G2 -->|Non| G4[Sortie directe ffmpeg\nsingle pass]
+    F -->|Oui| K["STEP 5 - Extraction des metadata dynamiques"]
+    K --> L["STEP 6 - Encodage video seule vers enc.hevc"]
+    L --> M["STEP 7 - Injection HDR10+ et ou DoVi"]
+    M --> N["STEP 8 - Encapsulation timeline video"]
+    N --> O["STEP 9 - Reconstruction finale MKV\nSync timeline si risque detecte"]
 
-    H -->|Oui| H1[Sortie directe ffmpeg\nsingle pass\nvideo passthrough -c:v copy\ninjection ignoree]
-    H -->|Non| I[_run_with_metadata_inject]
-    I --> I1[ffmpeg video-only encode\nenc.hevc]
-    I1 --> I2{copy_hdr10plus = true ?}
-    I2 -->|Oui| I3[hdr10plus_tool inject]
-    I2 -->|Non| I4[pas d injection HDR10+]
-    I3 --> I4
-    I4 --> I5{copy_dv = true ?}
-    I5 -->|Oui| I6[dovi_tool inject-rpu]
-    I5 -->|Non| I7[pas d injection DoVi]
-    I6 --> I7
-    I7 --> I8[ffmpeg final unique\nvideo injectee en copy\naudio subtitles metadata chapitres attachments]
+    F -->|Non| G{"Codec video = copy"}
+    G -->|Oui| H["STEP 5 - Construction commande directe\nvideo passthrough"]
+    H --> I["STEP 6 - Execution ffmpeg en single pass\nvideo copy, audio copy ou encode,\nsync timeline si risque detecte"]
 
-    G1 --> Z([Sortie MKV])
-    G3 --> Z
-    G4 --> Z
-    H1 --> Z
-    I8 --> Z
+    G -->|Non| J["STEP 5 - Construction de la commande directe"]
+    J --> P{"Quality mode = SIZE"}
+    P -->|Oui| Q["STEP 6 - Execution ffmpeg en 2 passes\nsync timeline si risque detecte"]
+    P -->|Non| R["STEP 6 - Execution ffmpeg en single pass\nsync timeline si risque detecte"]
+
+    I --> Z["Sortie MKV"]
+    Q --> Z
+    R --> Z
+    O --> Z
 ```
 
 Lecture rapide :
-- Les demandes `copy_hdr10plus` et `copy_dv` sont evaluees explicitement apres normalisation source.
-- Si `codec=copy`, le workflow reste en sortie directe ffmpeg, y compris pour un encodage audio seul.
+- Les demandes `copy_hdr10plus` et `copy_dv` sont evaluees apres normalisation source.
+- L'injection "fichier" n'est requise que si une copie DoVi ou HDR10+ reste demandee et que la video n'est pas en `copy`.
+- Si `codec=copy`, le workflow reste en sortie directe ffmpeg, y compris si l'audio est reencode.
+- Dans ce cas, une demande DoVi ou HDR10+ encore active est simplement preservee par passthrough video, sans pipeline d'injection.
 - Le 2-pass existe seulement pour `codec!=copy` avec `quality_mode=SIZE`.
-- Le chemin injection utilise `enc.hevc`, puis une encapsulation intermediaire `enc_wrapped.mkv`, puis un remux final ffmpeg.
+- Le chemin injection utilise `enc.hevc`, puis `enc_wrapped.mkv`, puis un remux final ffmpeg.
+- La sync timeline multi-source est activee uniquement en cas de risque detecte par pre-scan ffprobe des sous-titres ; sinon, le flux reste en chemin direct.
+- En mode TMDB, la cover est resolue en URL lors de la recherche puis telechargee uniquement au lancement du workflow.
 
 ### Fusion DoVi / HDR10+
 
