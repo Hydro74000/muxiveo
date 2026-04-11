@@ -32,7 +32,18 @@ from dataclasses import dataclass, field, replace as dc_replace
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtGui import (
+    QColor,
+    QBrush,
+    QDragEnterEvent,
+    QDropEvent,
+    QFont,
+    QFontMetrics,
+    QIcon,
+    QPainter,
+    QPalette,
+    QPixmap,
+)
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox,
@@ -41,6 +52,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
     QSizePolicy, QTableWidget, QTableWidgetItem, QLayout,
+    QStyle, QStyledItemDelegate, QStyleOptionViewItem,
     QVBoxLayout, QWidget,
 )
 
@@ -74,6 +86,10 @@ from ui.panels.track_edit_dialog import TrackEditDialog
 _FILE_ROW_H = 52   # hauteur d'une _FileRow
 _FILE_BAR_H = 36   # barre "Ajouter des fichiers"
 _FILE_PH_H  = 100  # hauteur du placeholder (sans fichiers)
+_TRACK_INFO_OFFSET_VALUE_ROLE = int(Qt.ItemDataRole.UserRole) + 40
+_TRACK_INFO_OFFSET_NEG_COLOR = QColor("#d92f2f")  # rouge fixe, indépendant du thème
+_TRACK_INFO_OFFSET_POS_COLOR = QColor("#1f9d55")  # vert fixe, indépendant du thème
+_TRACK_INFO_OFFSET_COLOR = _TRACK_INFO_OFFSET_NEG_COLOR  # alias compat
 
 
 def _pick_file_color(index: int) -> str:
@@ -594,6 +610,76 @@ class _FileListWidget(QFrame):
 # Tableau de pistes multi-sources (_TrackTable)
 # =============================================================================
 
+# =============================================================================
+# Délégué Info piste (valeur de décalage colorée selon le signe)
+# =============================================================================
+
+class _TrackInfoDelegate(QStyledItemDelegate):
+    """Rend la colonne Info avec la valeur de décalage colorée selon le signe."""
+
+    @staticmethod
+    def _offset_color(offset_value: str) -> QColor:
+        return (
+            _TRACK_INFO_OFFSET_NEG_COLOR
+            if str(offset_value or "").strip().startswith("-")
+            else _TRACK_INFO_OFFSET_POS_COLOR
+        )
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:  # type: ignore[override]
+        value = index.data(_TRACK_INFO_OFFSET_VALUE_ROLE)
+        offset_value = str(value).strip() if value is not None else ""
+        text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+        if not text or not offset_value or offset_value not in text:
+            super().paint(painter, option, index)
+            return
+
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.text = ""
+
+        widget = opt.widget
+        style = widget.style() if widget is not None else self.parent().style() if self.parent() else None
+        if style is None:
+            super().paint(painter, option, index)
+            return
+
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, widget)
+        text_rect = style.subElementRect(QStyle.SubElement.SE_ItemViewItemText, opt, widget)
+        if text_rect.width() <= 0 or text_rect.height() <= 0:
+            return
+
+        prefix, _, suffix = text.partition(offset_value)
+
+        fg_value = index.data(Qt.ItemDataRole.ForegroundRole)
+        if isinstance(fg_value, QBrush):
+            normal = fg_value.color()
+        elif isinstance(fg_value, QColor):
+            normal = fg_value
+        else:
+            normal = opt.palette.color(QPalette.ColorRole.Text)
+        if opt.state & QStyle.StateFlag.State_Selected:
+            normal = opt.palette.color(QPalette.ColorRole.HighlightedText)
+
+        painter.save()
+        painter.setClipRect(text_rect)
+        painter.setFont(opt.font)
+        metrics = QFontMetrics(opt.font)
+        baseline = text_rect.y() + (text_rect.height() + metrics.ascent() - metrics.descent()) // 2
+
+        x = text_rect.x()
+        painter.setPen(normal)
+        painter.drawText(x, baseline, prefix)
+        x += metrics.horizontalAdvance(prefix)
+
+        painter.setPen(self._offset_color(offset_value))
+        painter.drawText(x, baseline, offset_value)
+        x += metrics.horizontalAdvance(offset_value)
+
+        painter.setPen(normal)
+        painter.drawText(x, baseline, suffix)
+        painter.restore()
+
+
 class _TrackTable(QTableWidget):
     """
     Tableau de pistes multi-sources avec :
@@ -674,6 +760,8 @@ class _TrackTable(QTableWidget):
         self.setColumnWidth(self.COL_TYPE,   48)
         self.setColumnWidth(self.COL_LANG,   70)
         self.setColumnWidth(self.COL_EDIT,   30)
+
+        self.setItemDelegateForColumn(self.COL_INFO, _TrackInfoDelegate(self))
 
         mono = QFont("JetBrains Mono", 10)
         mono.setStyleHint(QFont.StyleHint.Monospace)
@@ -850,6 +938,7 @@ class _TrackTable(QTableWidget):
         info_item = QTableWidgetItem(entry.full_info_label)
         info_item.setFlags(self._FLAG_RO)
         info_item.setForeground(QColor(_C.TEXT_SEC))
+        info_item.setData(_TRACK_INFO_OFFSET_VALUE_ROLE, entry.time_shift_value_label)
         self.setItem(row, self.COL_INFO, info_item)
 
         # Col 6 — titre (éditable)
@@ -934,6 +1023,7 @@ class _TrackTable(QTableWidget):
                 info_item = self.item(row, self.COL_INFO)
                 if info_item:
                     info_item.setText(entry.full_info_label)
+                    info_item.setData(_TRACK_INFO_OFFSET_VALUE_ROLE, entry.time_shift_value_label)
                 self.blockSignals(False)
                 # Emit once to validate lang and trigger preview/signal refresh
                 if lang_item is not None:

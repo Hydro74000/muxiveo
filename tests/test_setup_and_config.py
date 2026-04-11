@@ -174,6 +174,38 @@ class TestAppConfigRamBuffer:
 
         assert cfg.startup_menu_compact is True
 
+    def test_default_startup_logs_expanded_is_false(self, tmp_path):
+        """Sans clé explicite, les logs démarrent repliés."""
+        from core.config import AppConfig
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.dict(os.environ, {}, clear=False):
+                cfg = AppConfig()
+
+        assert cfg.startup_logs_expanded is False
+
+    def test_ini_startup_logs_expanded_true_enables_expanded_logs(self, tmp_path):
+        """La clé startup_logs_expanded=true déplie les logs au démarrage."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[ui]\nstartup_logs_expanded = true\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.startup_logs_expanded is True
+
     def test_work_dir_leftovers_ignores_empty_tmdb_covers(self, tmp_path):
         """tmdb_covers vide (même avec sous-dossiers vides) ne déclenche pas l'alerte startup."""
         import core.config as cfg_mod

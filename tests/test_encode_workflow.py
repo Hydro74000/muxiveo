@@ -133,6 +133,7 @@ from core.workflows.encode import (
     ProfileManager,
     QualityMode,
     TrackMetaEdit,
+    TrackTimeOffset,
     VideoEncodeSettings,
 )
 from core.inspector import ChapterEntry
@@ -1124,6 +1125,18 @@ class TestValidate:
                               video=_make_video_settings(inject_hdr_meta=True,
                                                          max_cll="INVALID"))
         assert any("cll" in e.lower() for e in self.wf.validate(config))
+
+    def test_validate_rejects_negative_video_track_offset(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        config = _make_config(
+            src,
+            tmp_path / "out.mkv",
+            track_time_offsets=[
+                TrackTimeOffset(track_type="video", source_path=src, stream_index=0, offset_ms=-50)
+            ],
+        )
+        errors = self.wf.validate(config)
+        assert any("vidéo" in e.lower() and "négatif" in e.lower() for e in errors)
 
 
 # ===========================================================================
@@ -2816,6 +2829,66 @@ class TestEncodeRuntimeMultiSourceSync:
         map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
         assert "3:0" in map_values
 
+    def test_metadata_inject_reconstruction_applies_offsets_after_sync_remap(self, tmp_path):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        sync_audio = tmp_path / "sync_audio.mka"
+        src_main.write_bytes(b"\x00" * 200_000)
+        src_alt.write_bytes(b"\x00" * 100_000)
+        sync_audio.touch()
+
+        wf = _make_workflow(enabled=False)
+        cfg = _make_config(
+            source=src_main,
+            output=out,
+            video=_make_video_settings(codec="libx265"),
+            copy_dv=True,
+            work_dir=tmp_path / "work",
+            audio_tracks=[
+                AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt),
+            ],
+            subtitle_tracks=[(src_main, 3)],
+            track_time_offsets=[
+                TrackTimeOffset(track_type="audio", source_path=src_alt, stream_index=1, offset_ms=120),
+            ],
+        )
+
+        ran_cmds: list[list[str]] = []
+
+        def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
+            ran_cmds.append(list(cmd))
+            for arg in reversed(cmd):
+                s = str(arg)
+                if any(s.endswith(ext) for ext in (".hevc", ".mkv", ".bin", ".json")):
+                    p = Path(s)
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(b"\x00" * 100_000)
+                    break
+            return ""
+
+        with patch.object(
+            wf,
+            "_prepare_multisource_sync",
+            return_value=(
+                {(src_alt, 1, "audio"): (3, 0)},
+                [sync_audio],
+                None,
+                True,
+            ),
+        ):
+            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+                sigs = wf._run_with_metadata_inject(cfg)
+                _collect_signals(sigs)
+
+        recon = [c for c in ran_cmds if str(out) in [str(x) for x in c]]
+        assert len(recon) == 1
+        cmd = recon[0]
+        assert "-itsoffset" in cmd
+        assert cmd[cmd.index("-itsoffset") + 1] == "0.120"
+        map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
+        assert "4:0" in map_values
+
     def test_prepare_multisource_sync_prefers_live_on_posix(self, tmp_path, monkeypatch):
         src_main = tmp_path / "main.mkv"
         src_alt = tmp_path / "alt.mkv"
@@ -2999,6 +3072,230 @@ class TestEncodeRuntimeMultiSourceSync:
         assert "0:s?" in map_values
         assert "1:s?" in map_values
         assert "-c:s" in cmd and cmd[cmd.index("-c:s") + 1] == "copy"
+
+    def test_build_single_pass_applies_video_audio_subtitle_offsets(self, tmp_path):
+        src = tmp_path / "src.mkv"
+        out = tmp_path / "out.mkv"
+        src.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src,
+            out,
+            video=_make_video_settings(codec="libx265"),
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy", source_path=src)],
+            subtitle_tracks=[(src, 3)],
+            copy_subtitles=False,
+            track_time_offsets=[
+                TrackTimeOffset(track_type="video", source_path=src, stream_index=0, offset_ms=40),
+                TrackTimeOffset(track_type="audio", source_path=src, stream_index=1, offset_ms=125),
+                TrackTimeOffset(track_type="subtitle", source_path=src, stream_index=3, offset_ms=-80),
+            ],
+        )
+
+        cmd = wf.build_command_single(cfg)
+
+        assert "-itsoffset" in cmd
+        assert "0.040" in cmd
+        assert "0.125" in cmd
+        assert "-ss" in cmd
+        assert "0.080" in cmd
+        map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
+        assert "1:0" in map_values
+        assert "2:1" in map_values
+        assert "3:3" in map_values
+
+    def test_runtime_two_pass_applies_offsets_after_sync_remap(self, tmp_path):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        sync_audio = tmp_path / "sync_audio.mka"
+        src_main.touch()
+        src_alt.touch()
+        sync_audio.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main,
+            out,
+            video=_make_video_settings(codec="libx265", quality_mode=QualityMode.SIZE),
+            duration_s=3600.0,
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt)],
+            subtitle_tracks=[(src_main, 3)],
+            track_time_offsets=[
+                TrackTimeOffset(track_type="audio", source_path=src_alt, stream_index=1, offset_ms=150),
+            ],
+        )
+
+        with patch.object(
+            wf,
+            "_prepare_multisource_sync",
+            return_value=(
+                {(src_alt, 1, "audio"): (2, 0)},
+                [sync_audio],
+                None,
+                True,
+            ),
+        ):
+            cmds, _live, _cleanup = wf._build_runtime_two_pass_with_sync(cfg)
+
+        pass2 = cmds[1]
+        assert "-itsoffset" in pass2
+        assert pass2[pass2.index("-itsoffset") + 1] == "0.150"
+        map_values = [pass2[i + 1] for i, tok in enumerate(pass2[:-1]) if tok == "-map"]
+        assert "3:0" in map_values
+
+    def test_prepare_multisource_sync_disables_live_when_foreign_offset(self, tmp_path, monkeypatch):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        src_main.touch()
+        src_alt.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main,
+            out,
+            video=_make_video_settings(codec="copy"),
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt)],
+            subtitle_tracks=[(src_main, 3)],
+            track_time_offsets=[
+                TrackTimeOffset(track_type="audio", source_path=src_alt, stream_index=1, offset_ms=120),
+            ],
+        )
+
+        recorded_allow_live: list[bool] = []
+
+        class _FakeHelper:
+            def __init__(self, **_kwargs):
+                pass
+
+            def prepare(self, **kwargs):
+                recorded_allow_live.append(bool(kwargs.get("allow_live")))
+                return SimpleNamespace(prepared_inputs=[], live_session=None)
+
+        monkeypatch.setattr("core.workflows.encode.workflow.TimelineSyncFallbackHelper", _FakeHelper)
+        monkeypatch.setattr(wf._postproc_helper, "_decide_strict_interleave_with_prescan", lambda _cfg: True)
+
+        remap, sync_inputs, live, strict = wf._prepare_multisource_sync(
+            config=cfg,
+            all_sources=[src_main, src_alt],
+            sync_base_input_idx=2,
+            work_dir=tmp_path,
+            allow_live=True,
+        )
+
+        assert strict is True
+        assert remap == {}
+        assert sync_inputs == []
+        assert live is None
+        assert recorded_allow_live == [False]
+
+    def test_prepare_multisource_sync_forces_sync_when_foreign_offset_without_subtitle_risk(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        src_main.touch()
+        src_alt.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main,
+            out,
+            video=_make_video_settings(codec="copy"),
+            copy_subtitles=False,
+            subtitle_tracks=[],
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt)],
+            track_time_offsets=[
+                TrackTimeOffset(track_type="audio", source_path=src_alt, stream_index=1, offset_ms=120),
+            ],
+        )
+
+        recorded_allow_live: list[bool] = []
+
+        class _FakeHelper:
+            def __init__(self, **_kwargs):
+                pass
+
+            def prepare(self, **kwargs):
+                recorded_allow_live.append(bool(kwargs.get("allow_live")))
+                return SimpleNamespace(prepared_inputs=[], live_session=None)
+
+        monkeypatch.setattr("core.workflows.encode.workflow.TimelineSyncFallbackHelper", _FakeHelper)
+        monkeypatch.setattr(wf._postproc_helper, "_decide_strict_interleave_with_prescan", lambda _cfg: False)
+
+        remap, sync_inputs, live, strict = wf._prepare_multisource_sync(
+            config=cfg,
+            all_sources=[src_main, src_alt],
+            sync_base_input_idx=2,
+            work_dir=tmp_path,
+            allow_live=True,
+        )
+
+        assert strict is True
+        assert remap == {}
+        assert sync_inputs == []
+        assert live is None
+        assert recorded_allow_live == [False]
+
+    def test_prepare_multisource_sync_skips_subtitle_prescan_when_foreign_offset_forces_sync(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        src_main.touch()
+        src_alt.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main,
+            out,
+            video=_make_video_settings(codec="copy"),
+            copy_subtitles=False,
+            subtitle_tracks=[(src_main, 3)],
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt)],
+            track_time_offsets=[
+                TrackTimeOffset(track_type="audio", source_path=src_alt, stream_index=1, offset_ms=120),
+            ],
+        )
+
+        recorded_allow_live: list[bool] = []
+
+        class _FakeHelper:
+            def __init__(self, **_kwargs):
+                pass
+
+            def prepare(self, **kwargs):
+                recorded_allow_live.append(bool(kwargs.get("allow_live")))
+                return SimpleNamespace(prepared_inputs=[], live_session=None)
+
+        monkeypatch.setattr("core.workflows.encode.workflow.TimelineSyncFallbackHelper", _FakeHelper)
+        monkeypatch.setattr(
+            wf._postproc_helper,
+            "_decide_strict_interleave_with_prescan",
+            lambda _cfg: pytest.fail("subtitle prescan must be skipped when foreign offset already forces sync"),
+        )
+
+        remap, sync_inputs, live, strict = wf._prepare_multisource_sync(
+            config=cfg,
+            all_sources=[src_main, src_alt],
+            sync_base_input_idx=2,
+            work_dir=tmp_path,
+            allow_live=True,
+        )
+
+        assert strict is True
+        assert remap == {}
+        assert sync_inputs == []
+        assert live is None
+        assert recorded_allow_live == [False]
 
 
 # ===========================================================================

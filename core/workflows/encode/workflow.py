@@ -39,7 +39,7 @@ from core.workflows.remux_timeline_sync import (
 )
 from core.workflows.encode.models import (
     EncodeConfig, EncodeError, QualityMode,
-    VideoEncodeSettings, AudioTrackSettings,
+    VideoEncodeSettings, AudioTrackSettings, TrackTimeOffset,
 )
 
 
@@ -77,6 +77,14 @@ class _EncodeSyncMappedTrack:
     source_file_index: int
     stream_index: int
     track: _EncodeSyncTrack
+
+
+@dataclass(frozen=True)
+class _EncodeOffsetInputSpec:
+    map_key: tuple[Path, int, str]
+    input_path: Path | str
+    input_stream_index: int
+    offset_ms: int
 
 
 def _default_ffmpeg_thread_count() -> int:
@@ -399,6 +407,119 @@ class EncodeWorkflow(QObject):
         """Construit un mapping source -> index d'input ffmpeg."""
         return {src: start_index + i for i, src in enumerate(sources)}
 
+    @staticmethod
+    def _offset_seconds(offset_ms: int) -> str:
+        return f"{abs(int(offset_ms)) / 1000.0:.3f}"
+
+    @staticmethod
+    def _track_time_offset_lookup(config: EncodeConfig) -> dict[tuple[str, Path, int], int]:
+        lookup: dict[tuple[str, Path, int], int] = {}
+        for raw in config.track_time_offsets:
+            if not isinstance(raw, TrackTimeOffset):
+                continue
+            track_type = str(raw.track_type or "").strip().lower()
+            if track_type not in {"video", "audio", "subtitle"}:
+                continue
+            lookup[(track_type, Path(raw.source_path), int(raw.stream_index))] = int(raw.offset_ms)
+        return lookup
+
+    @staticmethod
+    def _track_offset_ms(
+        lookup: dict[tuple[str, Path, int], int],
+        *,
+        track_type: str,
+        source_path: Path,
+        stream_index: int,
+    ) -> int:
+        key = (str(track_type).strip().lower(), Path(source_path), int(stream_index))
+        if key in lookup:
+            return int(lookup[key])
+        if key[0] == "video":
+            matches = [
+                int(v)
+                for (tt, sp, _), v in lookup.items()
+                if tt == "video" and sp == key[1]
+            ]
+            if len(matches) == 1:
+                return matches[0]
+        return 0
+
+    def _build_offset_specs(
+        self,
+        config: EncodeConfig,
+        *,
+        track_mappings: list[tuple[tuple[Path, int, str], Path | str, int]],
+        offset_lookup: dict[tuple[str, Path, int], int] | None = None,
+    ) -> list[_EncodeOffsetInputSpec]:
+        lookup = offset_lookup if offset_lookup is not None else self._track_time_offset_lookup(config)
+        specs: list[_EncodeOffsetInputSpec] = []
+        for map_key, input_path, input_stream_index in track_mappings:
+            src_path, src_stream_idx, track_type = map_key
+            offset_ms = self._track_offset_ms(
+                lookup,
+                track_type=track_type,
+                source_path=src_path,
+                stream_index=src_stream_idx,
+            )
+            if offset_ms == 0:
+                continue
+            if track_type == "video" and offset_ms < 0:
+                raise EncodeError(
+                    "Décalage vidéo négatif interdit : "
+                    f"source={src_path}, stream={src_stream_idx}, offset={offset_ms} ms"
+                )
+            specs.append(_EncodeOffsetInputSpec(
+                map_key=(Path(src_path), int(src_stream_idx), str(track_type)),
+                input_path=input_path,
+                input_stream_index=int(input_stream_index),
+                offset_ms=int(offset_ms),
+            ))
+        return specs
+
+    def _append_offset_aux_inputs(
+        self,
+        cmd: list[str],
+        specs: list[_EncodeOffsetInputSpec],
+        *,
+        start_input_index: int,
+    ) -> tuple[int, dict[tuple[Path, int, str], tuple[int, int]]]:
+        next_input_index = int(start_input_index)
+        input_by_key: dict[tuple[str, int, int, str], int] = {}
+        remap: dict[tuple[Path, int, str], tuple[int, int]] = {}
+
+        for spec in specs:
+            input_key = (
+                str(spec.input_path),
+                int(spec.input_stream_index),
+                int(spec.offset_ms),
+                str(spec.map_key[2]),
+            )
+            input_idx = input_by_key.get(input_key)
+            if input_idx is None:
+                if int(spec.offset_ms) > 0:
+                    cmd.extend(["-itsoffset", self._offset_seconds(spec.offset_ms), "-i", str(spec.input_path)])
+                else:
+                    cmd.extend(["-ss", self._offset_seconds(spec.offset_ms), "-i", str(spec.input_path)])
+                input_idx = next_input_index
+                input_by_key[input_key] = input_idx
+                next_input_index += 1
+
+            remap[spec.map_key] = (int(input_idx), int(spec.input_stream_index))
+
+        return next_input_index, remap
+
+    @staticmethod
+    def _video_map_arg(
+        default_map: tuple[int, int],
+        *,
+        offset_remap: dict[tuple[Path, int, str], tuple[int, int]],
+        map_key: tuple[Path, int, str],
+    ) -> str:
+        remapped = offset_remap.get(map_key)
+        if remapped is None:
+            return f"{int(default_map[0])}:v:{int(default_map[1])}"
+        return f"{int(remapped[0])}:{int(remapped[1])}"
+
     def _probe_stream_indices(self, source: Path, codec_type: str) -> list[int] | None:
         payload = self._ffprobe_streams_payload(source)
         if payload is None:
@@ -570,6 +691,38 @@ class EncodeWorkflow(QObject):
             for mt in mapped_tracks
         )
 
+    def _requires_file_sync_fallback_for_offsets(
+        self,
+        config: EncodeConfig,
+        mapped_tracks: list[_EncodeSyncMappedTrack],
+        source_by_index: dict[int, Path],
+        *,
+        offset_lookup: dict[tuple[str, Path, int], int] | None = None,
+    ) -> bool:
+        """Forcer le fallback fichier si offsets étrangers incompatibles avec le mode live."""
+        primary_video = next((mt for mt in mapped_tracks if mt.track.track_type == "video"), None)
+        if primary_video is None:
+            return False
+
+        lookup = offset_lookup if offset_lookup is not None else self._track_time_offset_lookup(config)
+        for mt in mapped_tracks:
+            if mt.track.track_type not in {"audio", "subtitle"}:
+                continue
+            if mt.source_file_index == primary_video.source_file_index:
+                continue
+            src_path = source_by_index.get(mt.source_file_index)
+            if src_path is None:
+                continue
+            offset_ms = self._track_offset_ms(
+                lookup,
+                track_type=mt.track.track_type,
+                source_path=src_path,
+                stream_index=mt.stream_index,
+            )
+            if offset_ms != 0:
+                return True
+        return False
+
     def _prepare_multisource_sync(
         self,
         *,
@@ -587,6 +740,10 @@ class EncodeWorkflow(QObject):
         source_idx_local = {p: i for i, p in enumerate(all_sources)}
         if len(source_idx_local) < 2:
             return {}, [], None, False
+        self.log_message.emit(
+            "INFO",
+            "Analyse sync timeline multi-source : pré-scan/remap en cours…",
+        )
 
         resolved_subtitle_tracks, subtitles_resolved = self._resolved_subtitle_tracks_for_encode(
             config,
@@ -597,9 +754,27 @@ class EncodeWorkflow(QObject):
             source_idx_local,
             resolved_subtitle_tracks,
         )
+        path_by_source_idx = {idx: path for path, idx in source_idx_local.items()}
+        offset_lookup = self._track_time_offset_lookup(config)
+        offset_requires_sync = self._requires_file_sync_fallback_for_offsets(
+            config,
+            mapped_tracks,
+            path_by_source_idx,
+            offset_lookup=offset_lookup,
+        )
 
         strict_interleave = False
-        if subtitles_resolved:
+        if offset_requires_sync:
+            strict_interleave = True
+            self.log_message.emit(
+                "INFO",
+                "Décalage sur piste étrangère détecté : sync timeline activé.",
+            )
+        elif subtitles_resolved:
+            self.log_message.emit(
+                "INFO",
+                "Pré-scan ffprobe des sous-titres (décision interleave strict)…",
+            )
             strict_interleave = self._postproc_helper._decide_strict_interleave_with_prescan(
                 self._build_probe_remux_config(
                     config,
@@ -621,6 +796,15 @@ class EncodeWorkflow(QObject):
 
         if not strict_interleave:
             return {}, [], None, False
+
+        allow_live_sync = bool(allow_live)
+        if allow_live_sync and offset_requires_sync:
+            allow_live_sync = False
+            self.log_message.emit(
+                "INFO",
+                "Décalage sur piste étrangère détecté : sync live désactivé, fallback fichier forcé.",
+            )
+
         sync_sources = [SourceInput(path=p, file_index=i, tracks=[]) for i, p in enumerate(all_sources)]
         syncer = MkvmergeLikeTimelineSync(
             ffmpeg_bin=self._ffmpeg,
@@ -642,7 +826,7 @@ class EncodeWorkflow(QObject):
             mapped_tracks=mapped_tracks,
             sources=sync_sources,
             base_input_idx=sync_base_input_idx,
-            allow_live=allow_live,
+            allow_live=allow_live_sync,
             cancel_cb=cancel_cb,
         )
         prepared = prepared_result.prepared_inputs
@@ -686,14 +870,19 @@ class EncodeWorkflow(QObject):
         source_idx: dict[Path, int],
         subtitle_copy_input_indices: list[int],
         sync_remap: dict[tuple[Path, int, str], tuple[int, int]] | None = None,
+        offset_remap: dict[tuple[Path, int, str], tuple[int, int]] | None = None,
         subtitle_tracks_override: list[tuple[Path, int]] | None = None,
         force_copy_subtitles_wildcard: bool = True,
     ) -> None:
         """Ajoute mapping audio/sous-titres/attachments et pièces jointes externes."""
         sync_remap = sync_remap or {}
+        offset_remap = offset_remap or {}
         for i, a in enumerate(config.audio_tracks):
             src_path = a.source_path or config.source
-            remapped = sync_remap.get((src_path, int(a.stream_index), "audio"))
+            key = (Path(src_path), int(a.stream_index), "audio")
+            remapped = offset_remap.get(key)
+            if remapped is None:
+                remapped = sync_remap.get((src_path, int(a.stream_index), "audio"))
             if remapped is not None:
                 inp, stream_idx = remapped
             else:
@@ -711,7 +900,10 @@ class EncodeWorkflow(QObject):
         )
         if subtitle_tracks:
             for src_path, stream_idx in subtitle_tracks:
-                remapped = sync_remap.get((src_path, int(stream_idx), "subtitle"))
+                key = (Path(src_path), int(stream_idx), "subtitle")
+                remapped = offset_remap.get(key)
+                if remapped is None:
+                    remapped = sync_remap.get((src_path, int(stream_idx), "subtitle"))
                 if remapped is not None:
                     inp, mapped_stream_idx = remapped
                     cmd.extend(["-map", f"{inp}:{mapped_stream_idx}"])
@@ -833,10 +1025,17 @@ class EncodeWorkflow(QObject):
             ),
         ])
 
+        global_tags = self._resolve_global_tags(config)
+        title_value = global_tags.pop("title", None)
+        if title_value is not None:
+            cmd.extend(["-metadata", f"title={title_value}"])
+
         # Suppression des balises ENCODER et CREATION_TIME transportées depuis la source.
+        # On garde ces resets avant les autres tags pour qu'un éventuel override utilisateur
+        # puisse les redéfinir ensuite.
         cmd.extend(["-metadata", "encoder=", "-metadata", "creation_time="])
 
-        for key, value in self._resolve_global_tags(config).items():
+        for key, value in global_tags.items():
             cmd.extend(["-metadata", f"{key}={value}"])
         cmd.extend(self._build_track_meta_args(config))
 
@@ -886,13 +1085,14 @@ class EncodeWorkflow(QObject):
     ) -> list[str]:
         all_sources = self._collect_all_sources(config)
         source_idx = self._source_input_index_map(all_sources)
+        offset_lookup = self._track_time_offset_lookup(config)
 
         cmd: list[str] = [self._ffmpeg, "-hide_banner", "-y"]
         cmd.extend(self._ffmpeg_progress_args())
         cmd.extend(self._hardware_input_args(config.video))
         for src in all_sources:
             cmd.extend(["-i", str(src)])
-        _, chapter_input_index, tag_input_index = self._prepare_container_metadata_inputs(
+        next_input_index, chapter_input_index, tag_input_index = self._prepare_container_metadata_inputs(
             cmd,
             config,
             source_idx=source_idx,
@@ -906,7 +1106,49 @@ class EncodeWorkflow(QObject):
             cmd.extend(["-vf", vf])
 
         cmd.extend(self._ffmpeg_thread_args())
-        cmd.extend(["-map", "0:v:0"])
+
+        resolved_subtitle_tracks, subtitles_resolved = self._resolved_subtitle_tracks_for_encode(
+            config,
+            all_sources,
+        )
+
+        video_input_idx = source_idx.get(config.source, 0)
+        video_default_map = (video_input_idx, 0)
+        track_mappings: list[tuple[tuple[Path, int, str], Path | str, int]] = [
+            ((Path(config.source), 0, "video"), all_sources[video_input_idx], 0)
+        ]
+
+        for a in config.audio_tracks:
+            src_path = Path(a.source_path or config.source)
+            inp = source_idx.get(src_path)
+            if inp is None:
+                inp = source_idx.get(config.source, 0)
+            track_mappings.append(((src_path, int(a.stream_index), "audio"), all_sources[inp], int(a.stream_index)))
+
+        for sub_path, stream_idx in resolved_subtitle_tracks:
+            src_path = Path(sub_path)
+            inp = source_idx.get(src_path)
+            if inp is None:
+                continue
+            track_mappings.append(((src_path, int(stream_idx), "subtitle"), all_sources[inp], int(stream_idx)))
+
+        next_input_index, offset_remap = self._append_offset_aux_inputs(
+            cmd,
+            self._build_offset_specs(
+                config,
+                track_mappings=track_mappings,
+                offset_lookup=offset_lookup,
+            ),
+            start_input_index=next_input_index,
+        )
+        _ = next_input_index
+
+        video_map_key = (Path(config.source), 0, "video")
+        cmd.extend(["-map", self._video_map_arg(
+            video_default_map,
+            offset_remap=offset_remap,
+            map_key=video_map_key,
+        )])
         cmd.extend(self._video_codec_args(config.video, config.video.bitrate_kbps))
 
         if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
@@ -917,6 +1159,9 @@ class EncodeWorkflow(QObject):
             config,
             source_idx=source_idx,
             subtitle_copy_input_indices=list(range(len(all_sources))),
+            offset_remap=offset_remap,
+            subtitle_tracks_override=resolved_subtitle_tracks,
+            force_copy_subtitles_wildcard=(config.copy_subtitles and not subtitles_resolved),
         )
 
         self._append_container_metadata_args(
@@ -942,6 +1187,7 @@ class EncodeWorkflow(QObject):
 
         all_sources = self._collect_all_sources(config)
         source_idx = self._source_input_index_map(all_sources)
+        offset_lookup = self._track_time_offset_lookup(config)
 
         def _base() -> list[str]:
             c = [self._ffmpeg, "-hide_banner", "-y"]
@@ -952,14 +1198,33 @@ class EncodeWorkflow(QObject):
             if vf:
                 c.extend(["-vf", vf])
             c.extend(self._ffmpeg_thread_args())
-            c.extend(["-map", "0:v:0"])
-            c.extend(self._video_codec_args_bitrate(config.video, bitrate))
             return c
 
-        pass1 = _base() + ["-pass", "1", "-an", "-f", "null", os.devnull]
+        video_input_idx = source_idx.get(config.source, 0)
+        video_default_map = (video_input_idx, 0)
 
-        pass2 = _base() + ["-pass", "2"]
-        _, chapter_input_index, tag_input_index = self._prepare_container_metadata_inputs(
+        pass1 = _base()
+        _next1, pass1_offset_remap = self._append_offset_aux_inputs(
+            pass1,
+            self._build_offset_specs(
+                config,
+                track_mappings=[((Path(config.source), 0, "video"), all_sources[video_input_idx], 0)],
+                offset_lookup=offset_lookup,
+            ),
+            start_input_index=len(all_sources),
+        )
+        _ = _next1
+        pass1_video_map_key = (Path(config.source), 0, "video")
+        pass1.extend(["-map", self._video_map_arg(
+            video_default_map,
+            offset_remap=pass1_offset_remap,
+            map_key=pass1_video_map_key,
+        )])
+        pass1.extend(self._video_codec_args_bitrate(config.video, bitrate))
+        pass1.extend(["-pass", "1", "-an", "-f", "null", os.devnull])
+
+        pass2 = _base()
+        next_input_index, chapter_input_index, tag_input_index = self._prepare_container_metadata_inputs(
             pass2,
             config,
             source_idx=source_idx,
@@ -967,6 +1232,47 @@ class EncodeWorkflow(QObject):
             chapter_materialize_dir=chapter_materialize_dir,
             chapter_probe_source=config.source,
         )
+
+        resolved_subtitle_tracks, subtitles_resolved = self._resolved_subtitle_tracks_for_encode(
+            config,
+            all_sources,
+        )
+        track_mappings: list[tuple[tuple[Path, int, str], Path | str, int]] = [
+            ((Path(config.source), 0, "video"), all_sources[video_input_idx], 0)
+        ]
+        for a in config.audio_tracks:
+            src_path = Path(a.source_path or config.source)
+            inp = source_idx.get(src_path)
+            if inp is None:
+                inp = source_idx.get(config.source, 0)
+            track_mappings.append(((src_path, int(a.stream_index), "audio"), all_sources[inp], int(a.stream_index)))
+        for sub_path, stream_idx in resolved_subtitle_tracks:
+            src_path = Path(sub_path)
+            inp = source_idx.get(src_path)
+            if inp is None:
+                continue
+            track_mappings.append(((src_path, int(stream_idx), "subtitle"), all_sources[inp], int(stream_idx)))
+
+        next_input_index, pass2_offset_remap = self._append_offset_aux_inputs(
+            pass2,
+            self._build_offset_specs(
+                config,
+                track_mappings=track_mappings,
+                offset_lookup=offset_lookup,
+            ),
+            start_input_index=next_input_index,
+        )
+        _ = next_input_index
+
+        pass2_video_map_key = (Path(config.source), 0, "video")
+        pass2.extend(["-map", self._video_map_arg(
+            video_default_map,
+            offset_remap=pass2_offset_remap,
+            map_key=pass2_video_map_key,
+        )])
+        pass2.extend(self._video_codec_args_bitrate(config.video, bitrate))
+        pass2.extend(["-pass", "2"])
+
         if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
             pass2.extend(self._hdr_meta_args(config.video))
         self._append_stream_maps_and_attachments(
@@ -974,6 +1280,9 @@ class EncodeWorkflow(QObject):
             config,
             source_idx=source_idx,
             subtitle_copy_input_indices=list(range(len(all_sources))),
+            offset_remap=pass2_offset_remap,
+            subtitle_tracks_override=resolved_subtitle_tracks,
+            force_copy_subtitles_wildcard=(config.copy_subtitles and not subtitles_resolved),
         )
 
         self._append_container_metadata_args(
@@ -999,6 +1308,7 @@ class EncodeWorkflow(QObject):
         all_sources = self._collect_all_sources(config)
         source_idx = self._source_input_index_map(all_sources)
         work_dir = config.work_dir or config.source.parent
+        offset_lookup = self._track_time_offset_lookup(config)
 
         sync_remap, sync_inputs, live_session, strict_interleave = self._prepare_multisource_sync(
             config=config,
@@ -1016,7 +1326,7 @@ class EncodeWorkflow(QObject):
             cmd.extend(["-i", str(src)])
         self._append_sync_inputs(cmd, sync_inputs)
 
-        _, chapter_input_index, tag_input_index = self._prepare_container_metadata_inputs(
+        next_input_index, chapter_input_index, tag_input_index = self._prepare_container_metadata_inputs(
             cmd,
             config,
             source_idx=source_idx,
@@ -1030,22 +1340,84 @@ class EncodeWorkflow(QObject):
             cmd.extend(["-vf", vf])
 
         cmd.extend(self._ffmpeg_thread_args())
-        cmd.extend(["-map", "0:v:0"])
-        cmd.extend(self._video_codec_args(config.video, config.video.bitrate_kbps))
-
-        if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
-            cmd.extend(self._hdr_meta_args(config.video))
 
         resolved_subtitle_tracks, subtitles_resolved = self._resolved_subtitle_tracks_for_encode(
             config,
             all_sources,
         )
+
+        track_input_paths: list[Path | str] = [*all_sources, *sync_inputs]
+
+        def _input_path(idx: int, fallback: Path | str) -> Path | str:
+            if 0 <= idx < len(track_input_paths):
+                return track_input_paths[idx]
+            return fallback
+
+        video_default_map = sync_remap.get(
+            (config.source, 0, "video"),
+            (source_idx.get(config.source, 0), 0),
+        )
+        track_mappings: list[tuple[tuple[Path, int, str], Path | str, int]] = [
+            (
+                (Path(config.source), 0, "video"),
+                _input_path(int(video_default_map[0]), config.source),
+                int(video_default_map[1]),
+            )
+        ]
+
+        for a in config.audio_tracks:
+            src_path = Path(a.source_path or config.source)
+            remapped = sync_remap.get((src_path, int(a.stream_index), "audio"))
+            if remapped is not None:
+                inp, stream_idx = remapped
+            else:
+                inp = source_idx.get(src_path)
+                if inp is None:
+                    inp = source_idx.get(config.source, 0)
+                stream_idx = int(a.stream_index)
+            track_mappings.append(((src_path, int(a.stream_index), "audio"), _input_path(int(inp), src_path), int(stream_idx)))
+
+        for src_path_raw, stream_idx_raw in resolved_subtitle_tracks:
+            src_path = Path(src_path_raw)
+            remapped = sync_remap.get((src_path, int(stream_idx_raw), "subtitle"))
+            if remapped is not None:
+                inp, stream_idx = remapped
+            else:
+                inp = source_idx.get(src_path)
+                if inp is None:
+                    continue
+                stream_idx = int(stream_idx_raw)
+            track_mappings.append(((src_path, int(stream_idx_raw), "subtitle"), _input_path(int(inp), src_path), int(stream_idx)))
+
+        next_input_index, offset_remap = self._append_offset_aux_inputs(
+            cmd,
+            self._build_offset_specs(
+                config,
+                track_mappings=track_mappings,
+                offset_lookup=offset_lookup,
+            ),
+            start_input_index=next_input_index,
+        )
+        _ = next_input_index
+
+        video_map_key = (Path(config.source), 0, "video")
+        cmd.extend(["-map", self._video_map_arg(
+            (int(video_default_map[0]), int(video_default_map[1])),
+            offset_remap=offset_remap,
+            map_key=video_map_key,
+        )])
+        cmd.extend(self._video_codec_args(config.video, config.video.bitrate_kbps))
+
+        if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
+            cmd.extend(self._hdr_meta_args(config.video))
+
         self._append_stream_maps_and_attachments(
             cmd,
             config,
             source_idx=source_idx,
             subtitle_copy_input_indices=list(range(len(all_sources))),
             sync_remap=sync_remap,
+            offset_remap=offset_remap,
             subtitle_tracks_override=resolved_subtitle_tracks,
             force_copy_subtitles_wildcard=(config.copy_subtitles and not subtitles_resolved),
         )
@@ -1078,6 +1450,7 @@ class EncodeWorkflow(QObject):
         all_sources = self._collect_all_sources(config)
         source_idx = self._source_input_index_map(all_sources)
         work_dir = config.work_dir or config.source.parent
+        offset_lookup = self._track_time_offset_lookup(config)
 
         sync_remap, sync_inputs, live_session, strict_interleave = self._prepare_multisource_sync(
             config=config,
@@ -1099,14 +1472,32 @@ class EncodeWorkflow(QObject):
             if vf:
                 c.extend(["-vf", vf])
             c.extend(self._ffmpeg_thread_args())
-            c.extend(["-map", "0:v:0"])
-            c.extend(self._video_codec_args_bitrate(config.video, bitrate))
             return c
 
-        pass1 = _base(False) + ["-pass", "1", "-an", "-f", "null", os.devnull]
-        pass2 = _base(True) + ["-pass", "2"]
+        video_default_map = (source_idx.get(config.source, 0), 0)
 
-        _, chapter_input_index, tag_input_index = self._prepare_container_metadata_inputs(
+        pass1 = _base(False)
+        _next1, pass1_offset_remap = self._append_offset_aux_inputs(
+            pass1,
+            self._build_offset_specs(
+                config,
+                track_mappings=[((Path(config.source), 0, "video"), config.source, 0)],
+                offset_lookup=offset_lookup,
+            ),
+            start_input_index=len(all_sources),
+        )
+        _ = _next1
+        pass1_video_map_key = (Path(config.source), 0, "video")
+        pass1.extend(["-map", self._video_map_arg(
+            video_default_map,
+            offset_remap=pass1_offset_remap,
+            map_key=pass1_video_map_key,
+        )])
+        pass1.extend(self._video_codec_args_bitrate(config.video, bitrate))
+        pass1.extend(["-pass", "1", "-an", "-f", "null", os.devnull])
+
+        pass2 = _base(True)
+        next_input_index, chapter_input_index, tag_input_index = self._prepare_container_metadata_inputs(
             pass2,
             config,
             source_idx=source_idx,
@@ -1114,18 +1505,81 @@ class EncodeWorkflow(QObject):
             chapter_materialize_dir=chapter_materialize_dir,
             chapter_probe_source=config.source,
         )
-        if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
-            pass2.extend(self._hdr_meta_args(config.video))
+
         resolved_subtitle_tracks, subtitles_resolved = self._resolved_subtitle_tracks_for_encode(
             config,
             all_sources,
         )
+
+        track_input_paths: list[Path | str] = [*all_sources, *sync_inputs]
+
+        def _input_path(idx: int, fallback: Path | str) -> Path | str:
+            if 0 <= idx < len(track_input_paths):
+                return track_input_paths[idx]
+            return fallback
+
+        video_base_map = sync_remap.get((config.source, 0, "video"), video_default_map)
+        track_mappings: list[tuple[tuple[Path, int, str], Path | str, int]] = [
+            (
+                (Path(config.source), 0, "video"),
+                _input_path(int(video_base_map[0]), config.source),
+                int(video_base_map[1]),
+            )
+        ]
+
+        for a in config.audio_tracks:
+            src_path = Path(a.source_path or config.source)
+            remapped = sync_remap.get((src_path, int(a.stream_index), "audio"))
+            if remapped is not None:
+                inp, stream_idx = remapped
+            else:
+                inp = source_idx.get(src_path)
+                if inp is None:
+                    inp = source_idx.get(config.source, 0)
+                stream_idx = int(a.stream_index)
+            track_mappings.append(((src_path, int(a.stream_index), "audio"), _input_path(int(inp), src_path), int(stream_idx)))
+
+        for src_path_raw, stream_idx_raw in resolved_subtitle_tracks:
+            src_path = Path(src_path_raw)
+            remapped = sync_remap.get((src_path, int(stream_idx_raw), "subtitle"))
+            if remapped is not None:
+                inp, stream_idx = remapped
+            else:
+                inp = source_idx.get(src_path)
+                if inp is None:
+                    continue
+                stream_idx = int(stream_idx_raw)
+            track_mappings.append(((src_path, int(stream_idx_raw), "subtitle"), _input_path(int(inp), src_path), int(stream_idx)))
+
+        next_input_index, pass2_offset_remap = self._append_offset_aux_inputs(
+            pass2,
+            self._build_offset_specs(
+                config,
+                track_mappings=track_mappings,
+                offset_lookup=offset_lookup,
+            ),
+            start_input_index=next_input_index,
+        )
+        _ = next_input_index
+
+        pass2_video_map_key = (Path(config.source), 0, "video")
+        pass2.extend(["-map", self._video_map_arg(
+            (int(video_base_map[0]), int(video_base_map[1])),
+            offset_remap=pass2_offset_remap,
+            map_key=pass2_video_map_key,
+        )])
+        pass2.extend(self._video_codec_args_bitrate(config.video, bitrate))
+        pass2.extend(["-pass", "2"])
+
+        if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
+            pass2.extend(self._hdr_meta_args(config.video))
         self._append_stream_maps_and_attachments(
             pass2,
             config,
             source_idx=source_idx,
             subtitle_copy_input_indices=list(range(len(all_sources))),
             sync_remap=sync_remap,
+            offset_remap=pass2_offset_remap,
             subtitle_tracks_override=resolved_subtitle_tracks,
             force_copy_subtitles_wildcard=(config.copy_subtitles and not subtitles_resolved),
         )
@@ -1583,6 +2037,17 @@ class EncodeWorkflow(QObject):
                 )
             if config.video.max_cll and not re.match(r"^\d+,\d+$", config.video.max_cll.strip()):
                 errors.append("Format MaxCLL invalide. Attendu : MaxCLL,MaxFALL  ex. 1000,400")
+
+        for raw in config.track_time_offsets:
+            if not isinstance(raw, TrackTimeOffset):
+                continue
+            track_type = str(raw.track_type or "").strip().lower()
+            if track_type == "video" and int(raw.offset_ms) < 0:
+                errors.append(
+                    "Décalage vidéo négatif interdit : "
+                    f"source={Path(raw.source_path)}, stream={int(raw.stream_index)}, "
+                    f"offset={int(raw.offset_ms)} ms"
+                )
         return errors
 
     @staticmethod
@@ -1742,7 +2207,7 @@ class EncodeWorkflow(QObject):
             cleanup_paths.append(chapter_dir)
 
         if self._uses_two_pass(config):
-            self._log_step(6, "Exécution ffmpeg en 2 passes (sortie directe)")
+            self._log_step(6, "Préparation sync/remap + commandes ffmpeg (2 passes)")
             cmds: list[list[str]]
             live_sync_session: LiveSyncSession | None = None
             sync_cleanup_paths: list[Path] = []
@@ -1752,6 +2217,7 @@ class EncodeWorkflow(QObject):
                     chapter_materialize_dir=chapter_dir,
                 )
                 cleanup_paths.extend(sync_cleanup_paths)
+                self._log_step(7, "Exécution ffmpeg en 2 passes (sortie directe)")
                 signals = self._run_two_pass(cmds, cwd=cwd)
             except Exception:
                 if live_sync_session is not None:
@@ -1760,7 +2226,7 @@ class EncodeWorkflow(QObject):
             self._bind_live_sync_cleanup(signals, live_sync_session)
             return signals
 
-        self._log_step(6, "Exécution ffmpeg en single pass (sortie directe)")
+        self._log_step(6, "Préparation sync/remap + commande ffmpeg (single pass)")
         cmd: list[str]
         live_sync_session = None
         sync_cleanup_paths = []
@@ -1770,6 +2236,7 @@ class EncodeWorkflow(QObject):
                 chapter_materialize_dir=chapter_dir,
             )
             cleanup_paths.extend(sync_cleanup_paths)
+            self._log_step(7, "Exécution ffmpeg en single pass (sortie directe)")
             signals = self._runner.run(cmd, cwd=cwd, label="ffmpeg")
         except Exception:
             if live_sync_session is not None:
@@ -1805,7 +2272,7 @@ class EncodeWorkflow(QObject):
                     cleanup_paths.append(chapter_dir)
 
                 if is_two_pass:
-                    self._log_step(6, "Exécution ffmpeg en 2 passes (sortie directe)")
+                    self._log_step(6, "Préparation sync/remap + commandes ffmpeg (2 passes)")
                     cmds, live_sync_session, sync_cleanup_paths = self._build_runtime_two_pass_with_sync(
                         config,
                         chapter_materialize_dir=chapter_dir,
@@ -1815,6 +2282,7 @@ class EncodeWorkflow(QObject):
                     if live_sync_session is not None:
                         for proc in live_sync_session.processes:
                             signals._register_proc(proc)
+                    self._log_step(7, "Exécution ffmpeg en 2 passes (sortie directe)")
 
                     self.log_message.emit("INFO", "Passe 1/2 (analyse)…")
                     self._runner._run_cmd(
@@ -1834,7 +2302,7 @@ class EncodeWorkflow(QObject):
                     )
                     signals.finished.emit(output)
                 else:
-                    self._log_step(6, "Exécution ffmpeg en single pass (sortie directe)")
+                    self._log_step(6, "Préparation sync/remap + commande ffmpeg (single pass)")
                     cmd, live_sync_session, sync_cleanup_paths = self._build_runtime_single_pass_with_sync(
                         config,
                         chapter_materialize_dir=chapter_dir,
@@ -1844,6 +2312,7 @@ class EncodeWorkflow(QObject):
                     if live_sync_session is not None:
                         for proc in live_sync_session.processes:
                             signals._register_proc(proc)
+                    self._log_step(7, "Exécution ffmpeg en single pass (sortie directe)")
                     output = self._runner._run_cmd(
                         cmd,
                         cwd=cwd,
@@ -2642,7 +3111,7 @@ class EncodeWorkflow(QObject):
                     for proc in live_sync_session.processes:
                         signals._register_proc(proc)
 
-                _, chapter_input_index, tag_input_index = self._prepare_container_metadata_inputs(
+                next_input_index, chapter_input_index, tag_input_index = self._prepare_container_metadata_inputs(
                     recon_cmd,
                     config,
                     source_idx=recon_source_idx,
@@ -2652,17 +3121,77 @@ class EncodeWorkflow(QObject):
                 )
 
                 recon_cmd.extend(self._ffmpeg_thread_args())
-                recon_cmd.extend(["-map", "0:v:0", "-c:v", "copy"])
                 resolved_subtitle_tracks, subtitles_resolved = self._resolved_subtitle_tracks_for_encode(
                     config,
                     all_sources,
                 )
+
+                offset_lookup = self._track_time_offset_lookup(config)
+                track_input_paths: list[Path | str] = [current_video_input, *all_sources, *sync_inputs]
+
+                def _input_path(idx: int, fallback: Path | str) -> Path | str:
+                    if 0 <= idx < len(track_input_paths):
+                        return track_input_paths[idx]
+                    return fallback
+
+                video_default_map = (0, 0)
+                track_mappings: list[tuple[tuple[Path, int, str], Path | str, int]] = [
+                    ((Path(config.source), 0, "video"), _input_path(0, current_video_input), 0)
+                ]
+
+                for a in config.audio_tracks:
+                    src_path = Path(a.source_path or config.source)
+                    remapped = sync_remap.get((src_path, int(a.stream_index), "audio"))
+                    if remapped is not None:
+                        inp, stream_idx = remapped
+                    else:
+                        inp = recon_source_idx.get(src_path)
+                        if inp is None:
+                            inp = recon_source_idx.get(config.source, 1)
+                        stream_idx = int(a.stream_index)
+                    track_mappings.append(((src_path, int(a.stream_index), "audio"), _input_path(int(inp), src_path), int(stream_idx)))
+
+                for src_path_raw, stream_idx_raw in resolved_subtitle_tracks:
+                    src_path = Path(src_path_raw)
+                    remapped = sync_remap.get((src_path, int(stream_idx_raw), "subtitle"))
+                    if remapped is not None:
+                        inp, stream_idx = remapped
+                    else:
+                        inp = recon_source_idx.get(src_path)
+                        if inp is None:
+                            continue
+                        stream_idx = int(stream_idx_raw)
+                    track_mappings.append(((src_path, int(stream_idx_raw), "subtitle"), _input_path(int(inp), src_path), int(stream_idx)))
+
+                next_input_index, offset_remap = self._append_offset_aux_inputs(
+                    recon_cmd,
+                    self._build_offset_specs(
+                        config,
+                        track_mappings=track_mappings,
+                        offset_lookup=offset_lookup,
+                    ),
+                    start_input_index=next_input_index,
+                )
+                _ = next_input_index
+
+                video_map_key = (Path(config.source), 0, "video")
+                recon_cmd.extend([
+                    "-map",
+                    self._video_map_arg(
+                        video_default_map,
+                        offset_remap=offset_remap,
+                        map_key=video_map_key,
+                    ),
+                    "-c:v",
+                    "copy",
+                ])
                 self._append_stream_maps_and_attachments(
                     recon_cmd,
                     config,
                     source_idx=recon_source_idx,
                     subtitle_copy_input_indices=list(range(1, 2 + len(extra_sources))),
                     sync_remap=sync_remap,
+                    offset_remap=offset_remap,
                     subtitle_tracks_override=resolved_subtitle_tracks,
                     force_copy_subtitles_wildcard=(config.copy_subtitles and not subtitles_resolved),
                 )

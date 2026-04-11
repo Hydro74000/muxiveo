@@ -38,6 +38,7 @@ from core.workflows.encode.models import (
     EncodeError,
     EncodePreset,
     QualityMode,
+    TrackTimeOffset,
     VideoEncodeSettings,
     presets_for_codec,
 )
@@ -217,6 +218,7 @@ class TestEncodeConfig:
         assert cfg.copy_hdr10plus is False
         assert cfg.dovi_profile == "0"
         assert cfg.work_dir is None
+        assert cfg.track_time_offsets == []
 
     def test_duration_default_none(self, tmp_path):
         cfg = EncodeConfig(
@@ -226,6 +228,20 @@ class TestEncodeConfig:
             audio_tracks=[],
         )
         assert cfg.duration_s is None
+
+
+# ===========================================================================
+# TrackTimeOffset
+# ===========================================================================
+
+class TestTrackTimeOffset:
+    def test_fields(self, tmp_path):
+        src = tmp_path / "src.mkv"
+        tto = TrackTimeOffset(track_type="audio", source_path=src, stream_index=3, offset_ms=-80)
+        assert tto.track_type == "audio"
+        assert tto.source_path == src
+        assert tto.stream_index == 3
+        assert tto.offset_ms == -80
 
 
 # ===========================================================================
@@ -302,10 +318,11 @@ class TestPackageReexports:
             AUDIO_CODECS, HARDWARE_VIDEO_CODECS, SOFTWARE_VIDEO_CODECS,
             TONEMAP_ALGORITHMS, AudioTrackSettings, EncodeConfig,
             EncodeError, EncodePreset, EncodeWorkflow, HardwareEncoderDetector,
-            ProfileManager, QualityMode, VideoEncodeSettings, presets_for_codec,
+            ProfileManager, QualityMode, TrackTimeOffset, VideoEncodeSettings, presets_for_codec,
         )
         assert EncodeWorkflow is not None
         assert HardwareEncoderDetector is not None
         assert ProfileManager is not None
         assert QualityMode is not None
         assert EncodeError is not None
+        assert TrackTimeOffset is not None
