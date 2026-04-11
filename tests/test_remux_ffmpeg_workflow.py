@@ -32,8 +32,10 @@ import pytest
 from PySide6.QtCore import QCoreApplication, Qt
 
 from core.inspector import AttachmentInfo, ChapterEntry
-from core.workflows.remux import RemuxConfig, SourceInput, TrackEntry
+from core.runner import TaskSignals
+from core.workflows.remux import RemuxConfig, RemuxError, SourceInput, TrackEntry
 from core.workflows.remux_ffmpeg import FfmpegRemuxWorkflow
+from core.workflows.remux_timeline_sync import LiveSyncNotSupportedError, SyncPreparedInput
 
 
 def _track(
@@ -233,6 +235,35 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert cmd[cmd.index("-map_metadata") + 1] == "1"
         assert cmd[cmd.index("-map_chapters") + 1] == "1"
 
+    def test_build_command_forces_matroska_demuxer_for_sync_inputs(self, tmp_path):
+        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        src = tmp_path / "in.mkv"
+        sync = tmp_path / "sync_audio.mka"
+        chapters = tmp_path / "chapters.ffmetadata"
+        src.touch()
+        sync.touch()
+        chapters.touch()
+
+        cfg = RemuxConfig(
+            sources=[SourceInput(path=src, file_index=0, tracks=[_track(0, "video")])],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0)],
+            chapter_overrides=[ChapterEntry(timecode_s=0.0, name="Intro")],
+        )
+
+        cmd = wf.build_command(
+            cfg,
+            sync_inputs=[sync],
+            extra_inputs=[chapters],
+            chapter_input_index=2,
+        )
+
+        sync_idx = cmd.index(str(sync))
+        assert cmd[sync_idx - 1] == "-i"
+        assert cmd[sync_idx - 2] == "matroska"
+        assert cmd[sync_idx - 3] == "-f"
+        assert cmd[cmd.index("-map_chapters") + 1] == "2"
+
     def test_build_command_maps_source_metadata_when_copy_tags_is_enabled(self, tmp_path):
         wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src = tmp_path / "in.mkv"
@@ -272,6 +303,203 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         )
         cmd = wf.build_command(cfg)
         assert cmd[cmd.index("-map_metadata") + 1] == "-1"
+
+    def test_build_command_multi_source_with_subtitles_enables_strict_interleave(self, tmp_path):
+        """Le mux multi-source avec sous-titres a besoin d'un entrelacement strict
+        pour éviter qu'une piste audio importée soit écrite très loin de la vidéo."""
+        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        src_a = tmp_path / "a.mkv"
+        src_b = tmp_path / "b.mkv"
+        src_a.touch()
+        src_b.touch()
+
+        cfg = RemuxConfig(
+            sources=[
+                SourceInput(path=src_a, file_index=0, tracks=[_track(0, "video"), _track(2, "subtitle")]),
+                SourceInput(path=src_b, file_index=1, tracks=[_track(1, "audio")]),
+            ],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0), (1, 1), (0, 2)],
+            keep_chapters=False,
+        )
+
+        cmd = wf.build_command(cfg)
+        assert cmd[cmd.index("-max_interleave_delta") + 1] == "0"
+        assert cmd[cmd.index("-max_muxing_queue_size") + 1] == "9999"
+        assert "-fflags" not in cmd
+        assert "-copytb" not in cmd
+        assert "-avoid_negative_ts" not in cmd
+
+    def test_build_command_strict_interleave_override_false_disables_flags(self, tmp_path):
+        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        src_a = tmp_path / "a.mkv"
+        src_b = tmp_path / "b.mkv"
+        src_a.touch()
+        src_b.touch()
+
+        cfg = RemuxConfig(
+            sources=[
+                SourceInput(path=src_a, file_index=0, tracks=[_track(0, "video"), _track(2, "subtitle")]),
+                SourceInput(path=src_b, file_index=1, tracks=[_track(1, "audio")]),
+            ],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0), (1, 1), (0, 2)],
+            keep_chapters=False,
+        )
+
+        cmd = wf.build_command(cfg, strict_interleave_override=False)
+        assert "-max_muxing_queue_size" not in cmd
+        assert "-max_interleave_delta" not in cmd
+
+    def test_build_command_strict_interleave_override_true_enables_flags(self, tmp_path):
+        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        src = tmp_path / "in.mkv"
+        src.touch()
+
+        cfg = RemuxConfig(
+            sources=[SourceInput(path=src, file_index=0, tracks=[_track(0, "video")])],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0)],
+            keep_chapters=False,
+        )
+
+        cmd = wf.build_command(cfg, strict_interleave_override=True)
+        assert cmd[cmd.index("-max_interleave_delta") + 1] == "0"
+        assert cmd[cmd.index("-max_muxing_queue_size") + 1] == "9999"
+
+    def test_build_command_multi_source_without_subtitles_keeps_default_interleave(self, tmp_path):
+        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        src_a = tmp_path / "a.mkv"
+        src_b = tmp_path / "b.mkv"
+        src_a.touch()
+        src_b.touch()
+
+        cfg = RemuxConfig(
+            sources=[
+                SourceInput(path=src_a, file_index=0, tracks=[_track(0, "video")]),
+                SourceInput(path=src_b, file_index=1, tracks=[_track(1, "audio")]),
+            ],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0), (1, 1)],
+            keep_chapters=False,
+        )
+
+        cmd = wf.build_command(cfg)
+        assert "-max_muxing_queue_size" not in cmd
+        assert "-max_interleave_delta" not in cmd
+
+    def test_build_command_multi_source_with_subtitles_but_no_foreign_audio_keeps_default_interleave(self, tmp_path):
+        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        src_a = tmp_path / "a.mkv"
+        src_b = tmp_path / "b.mkv"
+        src_a.touch()
+        src_b.touch()
+
+        cfg = RemuxConfig(
+            sources=[
+                SourceInput(path=src_a, file_index=0, tracks=[_track(0, "video"), _track(1, "audio")]),
+                SourceInput(path=src_b, file_index=1, tracks=[_track(2, "subtitle")]),
+            ],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0), (0, 1), (1, 2)],
+            keep_chapters=False,
+        )
+
+        cmd = wf.build_command(cfg)
+        assert "-max_muxing_queue_size" not in cmd
+        assert "-max_interleave_delta" not in cmd
+
+    def test_prepare_sync_inputs_windows_prefers_mmap_fallback(self, tmp_path, monkeypatch):
+        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        src_a = tmp_path / "a.mkv"
+        src_b = tmp_path / "b.mkv"
+        src_a.touch()
+        src_b.touch()
+
+        cfg = RemuxConfig(
+            sources=[
+                SourceInput(path=src_a, file_index=0, tracks=[_track(0, "video"), _track(2, "subtitle")]),
+                SourceInput(path=src_b, file_index=1, tracks=[_track(1, "audio")]),
+            ],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0), (1, 1), (0, 2)],
+            keep_chapters=False,
+        )
+        mapped = wf._resolve_mapped_tracks(cfg)
+
+        class _FakeSyncer:
+            def __init__(self, **_kwargs):
+                pass
+
+            def start_live_demux_session(self, **_kwargs):
+                raise LiveSyncNotSupportedError("no live")
+
+            def prepare_from_mapped_tracks_mmap(self, **_kwargs):
+                return [SyncPreparedInput(key=(1, 1, "audio"), path=tmp_path / "mmap.mka", input_idx=2)]
+
+            def prepare_from_mapped_tracks(self, **_kwargs):
+                pytest.fail("temp fallback should not be used when mmap works")
+
+        monkeypatch.setattr("core.workflows.remux_ffmpeg.MkvmergeLikeTimelineSync", _FakeSyncer)
+        monkeypatch.setattr("core.workflows.remux_ffmpeg.os.name", "nt", raising=False)
+
+        remapped, extra_inputs, live = wf._prepare_mkvmerge_like_sync_inputs(
+            cfg,
+            mapped,
+            tmp_path,
+            TaskSignals(),
+        )
+        assert live is None
+        assert extra_inputs == [tmp_path / "mmap.mka"]
+        audio = next(mt for mt in remapped if mt.track.track_type == "audio")
+        assert audio.source_input_idx == 2
+        assert audio.stream_index == 0
+
+    def test_prepare_sync_inputs_windows_falls_back_to_temp_when_mmap_fails(self, tmp_path, monkeypatch):
+        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        src_a = tmp_path / "a.mkv"
+        src_b = tmp_path / "b.mkv"
+        src_a.touch()
+        src_b.touch()
+
+        cfg = RemuxConfig(
+            sources=[
+                SourceInput(path=src_a, file_index=0, tracks=[_track(0, "video"), _track(2, "subtitle")]),
+                SourceInput(path=src_b, file_index=1, tracks=[_track(1, "audio")]),
+            ],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0), (1, 1), (0, 2)],
+            keep_chapters=False,
+        )
+        mapped = wf._resolve_mapped_tracks(cfg)
+
+        class _FakeSyncer:
+            def __init__(self, **_kwargs):
+                pass
+
+            def start_live_demux_session(self, **_kwargs):
+                raise LiveSyncNotSupportedError("no live")
+
+            def prepare_from_mapped_tracks_mmap(self, **_kwargs):
+                raise RemuxError("mmap failed")
+
+            def prepare_from_mapped_tracks(self, **_kwargs):
+                return [SyncPreparedInput(key=(1, 1, "audio"), path=tmp_path / "temp.mka", input_idx=2)]
+
+        monkeypatch.setattr("core.workflows.remux_ffmpeg.MkvmergeLikeTimelineSync", _FakeSyncer)
+        monkeypatch.setattr("core.workflows.remux_ffmpeg.os.name", "nt", raising=False)
+
+        remapped, extra_inputs, live = wf._prepare_mkvmerge_like_sync_inputs(
+            cfg,
+            mapped,
+            tmp_path,
+            TaskSignals(),
+        )
+        assert live is None
+        assert extra_inputs == [tmp_path / "temp.mka"]
+        audio = next(mt for mt in remapped if mt.track.track_type == "audio")
+        assert audio.source_input_idx == 2
+        assert audio.stream_index == 0
 
     def test_validate_rejects_invalid_selected_attachments(self, tmp_path):
         wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")

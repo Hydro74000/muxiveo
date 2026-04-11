@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import re
 import shutil
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 
@@ -54,14 +56,19 @@ def clear_work_dir(path: Path) -> None:
     """Supprime le contenu d'un work_dir sans supprimer le dossier racine."""
     ensure_work_dir(path)
     for entry in list(path.iterdir()):
-        if entry.is_dir() and not entry.is_symlink():
-            shutil.rmtree(entry, ignore_errors=True)
-            continue
-        try:
-            entry.unlink(missing_ok=True)
-        except OSError:
-            # Peut être un lien cassé/objet non standard : fallback rmtree.
-            shutil.rmtree(entry, ignore_errors=True)
+        remove_path(entry)
+
+
+def remove_path(path: Path) -> None:
+    """Supprime un fichier ou dossier, en tolérant les cas limites de FS."""
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path, ignore_errors=True)
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        # Peut être un lien cassé/objet non standard : fallback rmtree.
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def _is_ignorable_work_dir_entry(entry: Path) -> bool:
@@ -116,6 +123,29 @@ def prepare_process_work_dir(
     else:
         process_dir.mkdir(parents=True, exist_ok=True)
     return process_dir
+
+
+def download_tmdb_cover(url: str, filename: str, target_dir: Path) -> Path:
+    """
+    Télécharge une cover depuis l'URL TMDB et la place dans target_dir.
+
+    Retourne le chemin du fichier téléchargé.
+    Lève une OSError ou urllib.error.URLError en cas d'échec réseau/disque.
+    """
+    from core.version import APP_USER_AGENT
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dest = target_dir / (filename or "cover.jpg")
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "image/*,*/*;q=0.8",
+            "User-Agent": APP_USER_AGENT,
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        dest.write_bytes(resp.read())
+    return dest
 
 
 def relocate_tmdb_covers_to_process_dir(

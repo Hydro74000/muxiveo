@@ -115,6 +115,7 @@ from __future__ import annotations
 
 import colorsys
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1612,7 +1613,11 @@ class TestAttachmentItemWidgetDefaultChecked:
 
 class TestAttachmentPanelTmdb:
 
-    def test_apply_tmdb_details_adds_i18n_comments_and_cover(self, qt_app, tmp_path):
+    def test_apply_tmdb_details_adds_i18n_comments_and_pending_cover(self, qt_app, tmp_path):
+        """
+        Depuis le téléchargement différé, la cover TMDB n'est plus sauvegardée sur
+        disque lors de _apply_tmdb_details() ; get_pending_tmdb_cover() retourne l'URL.
+        """
         prev_lang = current_language()
         panel = None
         try:
@@ -1624,8 +1629,7 @@ class TestAttachmentPanelTmdb:
             details = MediaDetails(
                 title="My Show",
                 synopsis="Episode overview",
-                cover_bytes=b"jpeg-bytes",
-                cover_mimetype="image/jpeg",
+                cover_url="https://img.tmdb.org/poster.jpg",
                 cover_filename="cover.jpg",
             )
             panel._apply_tmdb_details(details, open_editor=False)
@@ -1634,16 +1638,22 @@ class TestAttachmentPanelTmdb:
             assert tags is not None
             assert tags["COMMENTS"] == "Media information retrieved from TMDB."
 
-            extras = panel.get_extra_attachments()
-            assert len(extras) == 1
-            assert extras[0].name == "cover.jpg"
-            assert extras[0].read_bytes() == b"jpeg-bytes"
+            # La cover est en mode « en attente » : pas de fichier sur disque.
+            assert panel.get_extra_attachments() == []
+            pending = panel.get_pending_tmdb_cover()
+            assert pending is not None
+            assert pending[0] == "https://img.tmdb.org/poster.jpg"
+            assert pending[1] == "cover.jpg"
         finally:
             if panel is not None:
                 panel.close()
             set_current_language(prev_lang)
 
-    def test_apply_tmdb_details_skips_cover_when_source_cover_already_exists(self, qt_app, tmp_path):
+    def test_apply_tmdb_details_deselects_source_cover_and_installs_tmdb_cover(self, qt_app, tmp_path):
+        """
+        Quand une cover source existe déjà, la cover TMDB est tout de même
+        installée (en attente) et la cover source est décochée.
+        """
         cfg = AppConfig()
         cfg.work_dir = tmp_path
         panel = _AttachmentPanel(cfg)
@@ -1661,28 +1671,36 @@ class TestAttachmentPanelTmdb:
 
         details = MediaDetails(
             title="My Show",
-            cover_bytes=b"jpeg-bytes",
-            cover_mimetype="image/jpeg",
+            cover_url="https://img.tmdb.org/poster.jpg",
             cover_filename="cover.jpg",
         )
         panel._apply_tmdb_details(details, open_editor=False)
 
+        # La cover TMDB est en attente (cochée), la cover source est décochée.
+        pending = panel.get_pending_tmdb_cover()
+        assert pending is not None
+        assert pending[0] == "https://img.tmdb.org/poster.jpg"
+        # get_extra_attachments ne retourne pas les covers pending TMDB.
         assert panel.get_extra_attachments() == []
         panel.close()
 
-    def test_source_cover_added_later_replaces_auto_tmdb_cover(self, qt_app, tmp_path):
+    def test_source_cover_added_after_tmdb_cover_is_deselected(self, qt_app, tmp_path):
+        """
+        Quand une cover TMDB est en attente et qu'une cover source est ajoutée
+        ensuite, la cover source est automatiquement décochée.
+        La cover TMDB reste en attente.
+        """
         cfg = AppConfig()
         cfg.work_dir = tmp_path
         panel = _AttachmentPanel(cfg)
 
         details = MediaDetails(
             title="My Show",
-            cover_bytes=b"jpeg-bytes",
-            cover_mimetype="image/jpeg",
+            cover_url="https://img.tmdb.org/poster.jpg",
             cover_filename="cover.jpg",
         )
         panel._apply_tmdb_details(details, open_editor=False)
-        assert len(panel.get_extra_attachments()) == 1
+        assert panel.get_pending_tmdb_cover() is not None
 
         panel.add_source_attachments(
             "fid",
@@ -1696,8 +1714,66 @@ class TestAttachmentPanelTmdb:
             )],
         )
 
+        # La cover TMDB est toujours en attente.
+        assert panel.get_pending_tmdb_cover() is not None
+        # La cover source est décochée → get_extra_attachments vide.
         assert panel.get_extra_attachments() == []
         panel.close()
+
+    def test_clear_auto_tmdb_cover_removes_pending_item(self, qt_app, tmp_path):
+        """Après _clear_auto_tmdb_cover_item(), get_pending_tmdb_cover() retourne None."""
+        cfg = AppConfig()
+        cfg.work_dir = tmp_path
+        panel = _AttachmentPanel(cfg)
+
+        details = MediaDetails(
+            title="My Show",
+            cover_url="https://img.tmdb.org/poster.jpg",
+            cover_filename="cover.jpg",
+        )
+        panel._apply_tmdb_details(details, open_editor=False)
+        assert panel.get_pending_tmdb_cover() is not None
+
+        panel._clear_auto_tmdb_cover_item()
+
+        assert panel.get_pending_tmdb_cover() is None
+        assert panel.get_extra_attachments() == []
+        panel.close()
+
+
+class TestRemuxRunCleanup:
+
+    def test_run_cleans_process_subdir(self, qt_app, tmp_path):
+        """Le dossier process temporaire est supprimé après le remuxage."""
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"src")
+        out = tmp_path / "output.mkv"
+        work_dir = tmp_path / "work"
+
+        cfg = RemuxConfig(
+            sources=[_source(src, 0, [_track(0, "video", language="", orig_language="")])],
+            output=out,
+            track_order=[(0, 0)],
+            keep_chapters=False,
+            work_dir=work_dir,
+            tag_overrides={},
+        )
+        wf = RemuxWorkflow(mkvmerge_bin="mkvmerge")
+
+        def _fake_run_cmd(cmd, **_kwargs):
+            out.write_bytes(b"mkv")
+            return ""
+
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run_cmd):
+            wf.run(cfg)
+            process_dir = work_dir / "output"
+            cleanup_deadline = time.monotonic() + 2.0
+            while process_dir.exists() and time.monotonic() < cleanup_deadline:
+                qt_app.processEvents()
+                time.sleep(0.01)
+
+        assert out.exists()
+        assert not process_dir.exists()
 
 
 # ===========================================================================

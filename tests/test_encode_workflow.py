@@ -759,8 +759,9 @@ class TestRuntimeCleanup:
         src.write_bytes(b"\x00" * 1000)
         work_dir = tmp_path / "work"
         tmdb_root = work_dir / "tmdb_covers"
-        tmdb_root.mkdir(parents=True)
-        cover = tmdb_root / "cover.jpg"
+        guid_dir = tmdb_root / "deadbeef"
+        guid_dir.mkdir(parents=True)
+        cover = guid_dir / "cover.jpg"
         cover.write_bytes(b"jpeg")
         out = tmp_path / "output.mkv"
         cfg = _make_config(
@@ -776,12 +777,15 @@ class TestRuntimeCleanup:
             signals = TaskSignals()
             mock_run.return_value = signals
             returned = wf.run(cfg)
-            attachments_dir = work_dir / "output" / "attachments"
+            process_dir = work_dir / "output"
+            attachments_dir = process_dir / "attachments"
             assert (attachments_dir / "cover.jpg").exists()
+            assert not guid_dir.exists()
             returned.finished.emit("done")
             _get_app().processEvents()
 
         assert not attachments_dir.exists()
+        assert not process_dir.exists()
 
 
 # ===========================================================================
@@ -1556,6 +1560,24 @@ class TestRunCopyBypassesInject:
 
         assert not inject_called[0], \
             "codec=copy ne doit pas passer par _run_with_metadata_inject"
+
+    def test_copy_codec_skips_dynamic_hdr_detection(self, tmp_path):
+        """run() avec codec=copy ne doit pas lancer la détection ffprobe/mediainfo."""
+        config = self._make_copy_config(tmp_path, copy_dv=True, copy_hdr10plus=True)
+        wf = _make_workflow()
+        detection_called = {"value": False}
+
+        def _fake_detect(_source):
+            detection_called["value"] = True
+            return (True, True)
+
+        with patch.object(wf, "_detect_source_dynamic_hdr_presence", side_effect=_fake_detect), \
+             patch.object(wf._runner, "run") as mock_run:
+            mock_run.return_value = MagicMock()
+            wf.run(config)
+
+        assert detection_called["value"] is False, \
+            "La détection HDR dynamique ne doit pas être appelée en codec=copy."
 
     def test_non_copy_with_copy_dv_calls_metadata_inject(self, tmp_path):
         """run() avec codec=libx265 + copy_dv=True DOIT appeler _run_with_metadata_inject."""
@@ -2633,6 +2655,350 @@ class TestEncodeExtraAttachments:
         cmds = self._run_inject_with_extras(tmp_path, [])
         recon = self._get_recon_cmd(cmds)
         assert "-attach" not in recon
+
+
+# ===========================================================================
+# Sync timeline multi-source (encode runtime)
+# ===========================================================================
+
+class TestEncodeRuntimeMultiSourceSync:
+
+    def test_runtime_single_pass_uses_sync_remap_and_strict_flags(self, tmp_path):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        sync_audio = tmp_path / "sync_audio.mka"
+        src_main.touch()
+        src_alt.touch()
+        sync_audio.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main,
+            out,
+            video=_make_video_settings(codec="libx265"),
+            audio_tracks=[
+                AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt),
+            ],
+            subtitle_tracks=[(src_main, 3)],
+        )
+
+        with patch.object(
+            wf,
+            "_prepare_multisource_sync",
+            return_value=(
+                {(src_alt, 1, "audio"): (2, 0)},
+                [sync_audio],
+                None,
+                True,
+            ),
+        ):
+            cmd, live, cleanup = wf._build_runtime_single_pass_with_sync(cfg)
+
+        assert live is None
+        assert cleanup == [sync_audio]
+        assert str(sync_audio) in cmd
+        sync_i = cmd.index(str(sync_audio))
+        assert cmd[sync_i - 1] == "-i"
+        assert cmd[sync_i - 2] == "matroska"
+        assert cmd[sync_i - 3] == "-f"
+        assert "-max_interleave_delta" in cmd
+        assert "-max_muxing_queue_size" in cmd
+        map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
+        assert "2:0" in map_values
+
+    def test_runtime_two_pass_disables_live_and_applies_sync_to_pass2_only(self, tmp_path):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        sync_audio = tmp_path / "sync_audio.mka"
+        src_main.touch()
+        src_alt.touch()
+        sync_audio.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main,
+            out,
+            video=_make_video_settings(codec="libx265", quality_mode=QualityMode.SIZE),
+            duration_s=3600.0,
+            audio_tracks=[
+                AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt),
+            ],
+            subtitle_tracks=[(src_main, 3)],
+        )
+
+        recorded_allow_live: list[bool] = []
+
+        def _fake_prepare(**kwargs):
+            recorded_allow_live.append(bool(kwargs.get("allow_live")))
+            return (
+                {(src_alt, 1, "audio"): (2, 0)},
+                [sync_audio],
+                None,
+                True,
+            )
+
+        with patch.object(wf, "_prepare_multisource_sync", side_effect=_fake_prepare):
+            cmds, live, cleanup = wf._build_runtime_two_pass_with_sync(cfg)
+
+        assert live is None
+        assert cleanup == [sync_audio]
+        assert recorded_allow_live == [False]
+
+        pass1, pass2 = cmds
+        assert str(sync_audio) not in pass1
+        assert str(sync_audio) in pass2
+        assert "-max_interleave_delta" not in pass1
+        assert "-max_interleave_delta" in pass2
+        map_values_pass2 = [pass2[i + 1] for i, tok in enumerate(pass2[:-1]) if tok == "-map"]
+        assert "2:0" in map_values_pass2
+
+    def test_metadata_inject_reconstruction_uses_sync_inputs(self, tmp_path):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        sync_audio = tmp_path / "sync_audio.mka"
+        src_main.write_bytes(b"\x00" * 200_000)
+        src_alt.write_bytes(b"\x00" * 100_000)
+        sync_audio.touch()
+
+        wf = _make_workflow(enabled=False)
+        cfg = _make_config(
+            source=src_main,
+            output=out,
+            video=_make_video_settings(codec="libx265"),
+            copy_dv=True,
+            work_dir=tmp_path / "work",
+            audio_tracks=[
+                AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt),
+            ],
+            subtitle_tracks=[(src_main, 3)],
+        )
+
+        ran_cmds: list[list[str]] = []
+
+        def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
+            ran_cmds.append(list(cmd))
+            for arg in reversed(cmd):
+                s = str(arg)
+                if any(s.endswith(ext) for ext in (".hevc", ".mkv", ".bin", ".json")):
+                    p = Path(s)
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(b"\x00" * 100_000)
+                    break
+            return ""
+
+        with patch.object(
+            wf,
+            "_prepare_multisource_sync",
+            return_value=(
+                {(src_alt, 1, "audio"): (3, 0)},
+                [sync_audio],
+                None,
+                True,
+            ),
+        ):
+            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+                sigs = wf._run_with_metadata_inject(cfg)
+                _collect_signals(sigs)
+
+        recon = [c for c in ran_cmds if str(out) in [str(x) for x in c]]
+        assert len(recon) == 1
+        cmd = recon[0]
+        assert str(sync_audio) in cmd
+        sync_i = cmd.index(str(sync_audio))
+        assert cmd[sync_i - 1] == "-i"
+        assert cmd[sync_i - 2] == "matroska"
+        assert cmd[sync_i - 3] == "-f"
+        assert "-max_interleave_delta" in cmd
+        assert "-max_muxing_queue_size" in cmd
+        map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
+        assert "3:0" in map_values
+
+    def test_prepare_multisource_sync_prefers_live_on_posix(self, tmp_path, monkeypatch):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        sync_audio = tmp_path / "sync_audio.mka"
+        src_main.touch()
+        src_alt.touch()
+        sync_audio.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main,
+            out,
+            video=_make_video_settings(codec="copy"),
+            audio_tracks=[
+                AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt),
+            ],
+            subtitle_tracks=[(src_main, 3)],
+        )
+
+        calls = {"live": 0, "file": 0}
+
+        class _FakeSyncer:
+            def __init__(self, **_kwargs):
+                pass
+
+            def start_live_demux_session(self, **_kwargs):
+                calls["live"] += 1
+                return SimpleNamespace(inputs=[SimpleNamespace(key=(1, 1, "audio"), path=sync_audio, input_idx=2)])
+
+            def prepare_from_mapped_tracks(self, **_kwargs):
+                calls["file"] += 1
+                return [SimpleNamespace(key=(1, 1, "audio"), path=sync_audio, input_idx=2)]
+
+            def prepare_from_mapped_tracks_mmap(self, **_kwargs):
+                calls["file"] += 1
+                return [SimpleNamespace(key=(1, 1, "audio"), path=sync_audio, input_idx=2)]
+
+        monkeypatch.setattr("core.workflows.encode.workflow.MkvmergeLikeTimelineSync", _FakeSyncer)
+        monkeypatch.setattr("core.workflows.encode.workflow.os.name", "posix", raising=False)
+
+        remap, sync_inputs, live, strict = wf._prepare_multisource_sync(
+            config=cfg,
+            all_sources=[src_main, src_alt],
+            sync_base_input_idx=2,
+            work_dir=tmp_path,
+            allow_live=True,
+        )
+
+        assert calls["live"] == 1
+        assert calls["file"] == 0
+        assert live is not None
+        assert strict is True
+        assert sync_inputs == [sync_audio]
+        assert remap[(src_alt, 1, "audio")] == (2, 0)
+
+    def test_prepare_multisource_sync_fallback_prefers_ram_before_disk(self, tmp_path, monkeypatch):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        ram_dir = tmp_path / "ram"
+        ram_dir.mkdir()
+        sync_audio = ram_dir / "sync_audio.mka"
+        src_main.touch()
+        src_alt.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main,
+            out,
+            video=_make_video_settings(codec="copy"),
+            audio_tracks=[
+                AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt),
+            ],
+            subtitle_tracks=[(src_main, 3)],
+        )
+
+        calls: list[Path] = []
+
+        class _FakeSyncer:
+            def __init__(self, **_kwargs):
+                pass
+
+            def start_live_demux_session(self, **_kwargs):
+                raise RuntimeError("live unavailable")
+
+            def prepare_from_mapped_tracks_mmap(self, **_kwargs):
+                tmp_dir = Path(_kwargs["tmp_dir"])
+                calls.append(tmp_dir)
+                return [SimpleNamespace(key=(1, 1, "audio"), path=sync_audio, input_idx=2)]
+
+            def prepare_from_mapped_tracks(self, **_kwargs):
+                pytest.fail("file fallback should not be used when RAM mmap works")
+
+        monkeypatch.setattr("core.workflows.encode.workflow.MkvmergeLikeTimelineSync", _FakeSyncer)
+        monkeypatch.setattr("core.workflows.encode.workflow.os.name", "posix", raising=False)
+        monkeypatch.setattr(EncodeWorkflow, "_ram_buffer_dir", staticmethod(lambda: ram_dir))
+
+        remap, sync_inputs, live, strict = wf._prepare_multisource_sync(
+            config=cfg,
+            all_sources=[src_main, src_alt],
+            sync_base_input_idx=2,
+            work_dir=tmp_path,
+            allow_live=True,
+        )
+
+        assert calls == [ram_dir]
+        assert live is None
+        assert strict is True
+        assert sync_inputs == [sync_audio]
+        assert remap[(src_alt, 1, "audio")] == (2, 0)
+
+    def test_runtime_single_pass_copy_subtitles_uses_sync_remap_when_resolved(self, tmp_path):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        sync_sub = tmp_path / "sync_sub.mks"
+        src_main.touch()
+        src_alt.touch()
+        sync_sub.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main,
+            out,
+            video=_make_video_settings(codec="copy"),
+            copy_subtitles=True,
+            subtitle_tracks=[],
+        )
+
+        with patch.object(
+            wf,
+            "_prepare_multisource_sync",
+            return_value=(
+                {(src_alt, 4, "subtitle"): (2, 0)},
+                [sync_sub],
+                None,
+                True,
+            ),
+        ), patch.object(
+            wf,
+            "_resolved_subtitle_tracks_for_encode",
+            return_value=([(src_alt, 4)], True),
+        ):
+            cmd, _live, _cleanup = wf._build_runtime_single_pass_with_sync(cfg)
+
+        map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
+        assert "2:0" in map_values
+        assert all(":s?" not in mv for mv in map_values)
+        assert "-c:s" in cmd and cmd[cmd.index("-c:s") + 1] == "copy"
+
+    def test_runtime_single_pass_copy_subtitles_falls_back_to_wildcard_when_unresolved(self, tmp_path):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        src_main.touch()
+        src_alt.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main,
+            out,
+            video=_make_video_settings(codec="copy"),
+            copy_subtitles=True,
+            subtitle_tracks=[],
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt)],
+        )
+
+        with patch.object(
+            wf,
+            "_prepare_multisource_sync",
+            return_value=({}, [], None, False),
+        ), patch.object(
+            wf,
+            "_resolved_subtitle_tracks_for_encode",
+            return_value=([], False),
+        ):
+            cmd, _live, _cleanup = wf._build_runtime_single_pass_with_sync(cfg)
+
+        map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
+        assert "0:s?" in map_values
+        assert "1:s?" in map_values
+        assert "-c:s" in cmd and cmd[cmd.index("-c:s") + 1] == "copy"
 
 
 # ===========================================================================

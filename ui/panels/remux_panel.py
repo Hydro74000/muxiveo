@@ -1299,10 +1299,12 @@ class _AttachmentItemWidget(QWidget):
     """
     Ligne dans le panneau des pièces jointes.
 
-    Trois variantes :
-    - Attachement source (file_id, att, source_color)    → case + nom, sans ✕
-    - Balises source    (file_id, is_tag=True, tag_count) → case + "X balises", sans ✕
-    - Ajout manuel      (is_manual=True, manual_path)     → case + nom + ✕
+    Quatre variantes :
+    - Attachement source  (file_id, att, source_color)        → case + nom, sans ✕
+    - Balises source      (file_id, is_tag=True, tag_count)   → case + "X balises", sans ✕
+    - Ajout manuel        (is_manual=True, manual_path)        → case + nom + ✕
+    - Cover TMDB pending  (is_tmdb_pending=True, tmdb_cover_url, tmdb_cover_filename)
+                                                               → case + "nom — Depuis TMDB" + ✕
     """
 
     remove_clicked = Signal(object)   # self
@@ -1310,21 +1312,27 @@ class _AttachmentItemWidget(QWidget):
 
     def __init__(
         self,
-        file_id:      str,
-        source_color: str               = "",
-        att:          AttachmentInfo | None = None,
-        tags:         dict[str, str]    | None = None,   # balises MKV globales
-        is_tag:       bool              = False,
-        is_manual:    bool              = False,
-        manual_path:  Path | None       = None,
-        parent:       QWidget | None    = None,
+        file_id:            str,
+        source_color:       str                 = "",
+        att:                AttachmentInfo | None = None,
+        tags:               dict[str, str]    | None = None,   # balises MKV globales
+        is_tag:             bool              = False,
+        is_manual:          bool              = False,
+        manual_path:        Path | None       = None,
+        is_tmdb_pending:    bool              = False,   # cover TMDB non encore téléchargée
+        tmdb_cover_url:     str               = "",
+        tmdb_cover_filename: str              = "",
+        parent:             QWidget | None    = None,
     ) -> None:
         super().__init__(parent)
-        self.file_id      = file_id
-        self.att          = att
-        self.is_tag       = is_tag
-        self.is_manual    = is_manual
-        self.manual_path  = manual_path
+        self.file_id             = file_id
+        self.att                 = att
+        self.is_tag              = is_tag
+        self.is_manual           = is_manual or is_tmdb_pending
+        self.manual_path         = manual_path
+        self.is_tmdb_pending     = is_tmdb_pending
+        self.tmdb_cover_url      = tmdb_cover_url
+        self.tmdb_cover_filename = tmdb_cover_filename
         self._orig_tags:   dict[str, str] = tags or {}
         self.setFixedHeight(28)
         self._build_ui(source_color)
@@ -1386,6 +1394,10 @@ class _AttachmentItemWidget(QWidget):
             prefix = f"{n} Tag{'s' if n > 1 else ''}"
             text   = f"{prefix} : {names}" if names else prefix
             color  = _C.TRACK_TAGS
+        elif self.is_tmdb_pending:
+            fname = self.tmdb_cover_filename or "cover.jpg"
+            text  = f"{fname}  —  {translate_text('Depuis TMDB')}"
+            color = _C.ACCENT
         elif self.is_manual:
             text  = self.manual_path.name if self.manual_path else ""
             color = _C.TEXT_PRI
@@ -1394,7 +1406,9 @@ class _AttachmentItemWidget(QWidget):
             color = _C.TRACK_ATTACHMENT
 
         lbl = QLabel(text)
-        if self.is_manual and self.manual_path:
+        if self.is_tmdb_pending and self.tmdb_cover_url:
+            lbl.setToolTip(self.tmdb_cover_url)
+        elif self.is_manual and self.manual_path:
             lbl.setToolTip(str(self.manual_path))
         lbl.setStyleSheet(
             f"color: {color}; background: transparent; border: none; font-size: 11px;"
@@ -1454,7 +1468,8 @@ class _AttachmentPanel(QFrame):
         self._suggested_title: str = ""
         self._suggested_season: int = 0
         self._suggested_episode: int = 0
-        self._auto_tmdb_cover_path: Path | None = None
+        self._auto_tmdb_cover_url: str = ""        # URL de la cover TMDB en attente
+        self._auto_tmdb_cover_filename: str = ""   # nom de fichier correspondant
         self._build_ui()
 
     def set_suggested_title(self, title: str, season: int = 0, episode: int = 0) -> None:
@@ -1610,8 +1625,10 @@ class _AttachmentPanel(QFrame):
             self._add_item(_AttachmentItemWidget(
                 file_id=file_id, source_color=source_color, att=att,
             ))
-        if self._auto_tmdb_cover_path is not None and self._has_existing_cover_attachment():
-            self._clear_auto_tmdb_cover_item()
+        # Si une cover TMDB est en attente, les covers source doivent être
+        # décochées pour laisser la priorité à la cover TMDB.
+        if self._auto_tmdb_cover_url and self._has_existing_cover_attachment():
+            self._deselect_existing_cover_items()
 
     def add_source_tags(self, file_id: str, source_color: str, tags: dict[str, str]) -> None:
         """Ajoute la ligne de balises d'un fichier source (si tags non vide)."""
@@ -1636,7 +1653,7 @@ class _AttachmentPanel(QFrame):
 
     def clear_all(self) -> None:
         """Vide complètement le panneau, y compris les ajouts manuels."""
-        self._remove_auto_tmdb_cover_file()
+        self._clear_pending_tmdb_cover()
         for item in self._items[:]:
             self._items_layout.removeWidget(item)
             item.deleteLater()
@@ -1710,8 +1727,8 @@ class _AttachmentPanel(QFrame):
     def _on_remove_item(self, item: _AttachmentItemWidget) -> None:
         self._items.remove(item)
         self._items_layout.removeWidget(item)
-        if item.manual_path is not None and self._auto_tmdb_cover_path == item.manual_path:
-            self._remove_auto_tmdb_cover_file()
+        if item.is_tmdb_pending:
+            self._clear_pending_tmdb_cover()
         item.deleteLater()
         self._update_state()
         self.changed.emit()
@@ -1728,53 +1745,39 @@ class _AttachmentPanel(QFrame):
     def _tmdb_comment_value(self) -> str:
         return translate_text("Informations media récupérée depuis TMDB.")
 
-    def _remove_auto_tmdb_cover_file(self) -> None:
-        path = self._auto_tmdb_cover_path
-        self._auto_tmdb_cover_path = None
-        if path is None:
-            return
-        try:
-            if path.exists():
-                path.unlink()
-        except OSError:
-            pass
-        tmdb_root = self._config.ensure_work_dir() / "tmdb_covers"
-        current = path.parent
-        while current.exists():
-            try:
-                current.rmdir()
-            except OSError:
-                break
-            if current == tmdb_root:
-                break
-            parent = current.parent
-            if parent == current:
-                break
-            current = parent
+    def _clear_pending_tmdb_cover(self) -> None:
+        """Réinitialise l'état de la cover TMDB en attente (URL + item widget)."""
+        self._auto_tmdb_cover_url = ""
+        self._auto_tmdb_cover_filename = ""
 
     def _clear_auto_tmdb_cover_item(self) -> None:
-        path = self._auto_tmdb_cover_path
-        if path is None:
-            return
+        """Retire l'item de cover TMDB en attente du panneau (s'il existe)."""
         removed = False
         for item in self._items[:]:
-            if item.is_manual and item.manual_path == path:
+            if item.is_tmdb_pending:
                 self._items.remove(item)
                 self._items_layout.removeWidget(item)
                 item.deleteLater()
                 removed = True
                 break
-        self._remove_auto_tmdb_cover_file()
+        self._clear_pending_tmdb_cover()
         if removed:
             self._update_state()
 
     def _item_has_cover(self, item: _AttachmentItemWidget) -> bool:
+        """
+        Retourne True si l'item est une cover active (fichier source ou manuel réel).
+        Les covers TMDB en attente (is_tmdb_pending) ne comptent jamais comme
+        « cover existante » pour éviter les boucles de déselection.
+        """
         if not item.enabled:
             return False
         if item.is_tag:
             return False
+        if item.is_tmdb_pending:
+            return False
         if item.is_manual:
-            if item.manual_path is None or item.manual_path == self._auto_tmdb_cover_path:
+            if item.manual_path is None:
                 return False
             return item.manual_path.stem.lower() == "cover"
         if item.att is None:
@@ -1784,26 +1787,52 @@ class _AttachmentPanel(QFrame):
         return Path(item.att.filename).stem.lower() == "cover"
 
     def _has_existing_cover_attachment(self) -> bool:
+        """Retourne True si au moins une cover source/manuelle réelle est cochée."""
         return any(self._item_has_cover(item) for item in self._items)
 
+    def _deselect_existing_cover_items(self) -> None:
+        """
+        Décoche toutes les covers source/manuelles réelles (non TMDB pending).
+        Appelé quand une cover TMDB en attente prend la priorité.
+        """
+        for item in self._items:
+            if not item.is_tmdb_pending and self._item_has_cover(item):
+                item._cb.setChecked(False)
+
     def _install_tmdb_cover(self, details: MediaDetails) -> None:
+        """
+        Enregistre la cover TMDB en mode « téléchargement différé ».
+
+        L'URL est mémorisée ; le fichier n'est créé qu'au lancement du workflow.
+        Si des covers source sont déjà présentes, elles sont décochées.
+        """
         self._clear_auto_tmdb_cover_item()
-        if self._has_existing_cover_attachment():
-            return
-        if not details.cover_bytes:
+        if not details.cover_url:
             return
 
         filename = (details.cover_filename or "cover.jpg").strip() or "cover.jpg"
-        cover_dir = self._config.ensure_work_dir() / "tmdb_covers" / uuid.uuid4().hex
-        cover_dir.mkdir(parents=True, exist_ok=True)
-        cover_path = cover_dir / filename
-        cover_path.write_bytes(details.cover_bytes)
-        self._auto_tmdb_cover_path = cover_path
+        self._auto_tmdb_cover_url = details.cover_url
+        self._auto_tmdb_cover_filename = filename
+
+        # Décocher les covers existantes pour laisser la priorité à la cover TMDB
+        self._deselect_existing_cover_items()
+
         self._add_item(_AttachmentItemWidget(
             file_id="",
-            is_manual=True,
-            manual_path=cover_path,
+            is_tmdb_pending=True,
+            tmdb_cover_url=details.cover_url,
+            tmdb_cover_filename=filename,
         ))
+
+    def get_pending_tmdb_cover(self) -> "tuple[str, str] | None":
+        """
+        Retourne (url, filename) de la cover TMDB en attente si elle est cochée,
+        None sinon.
+        """
+        for item in self._items:
+            if item.is_tmdb_pending and item.enabled and item.tmdb_cover_url:
+                return item.tmdb_cover_url, item.tmdb_cover_filename or "cover.jpg"
+        return None
 
     def _apply_tmdb_details(self, details: MediaDetails, *, open_editor: bool = True) -> None:
         self.tmdb_details_selected.emit(details)
@@ -1880,7 +1909,7 @@ class _AttachmentPanel(QFrame):
             self._edit_tags_btn.setText(translate_text("Éditer les tags"))
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
-        self._remove_auto_tmdb_cover_file()
+        self._clear_pending_tmdb_cover()
         super().closeEvent(event)
 
     def _browse_add(self) -> None:
@@ -3017,6 +3046,7 @@ class RemuxPanel(QWidget):
             work_dir=self._config.work_dir,
             file_title=self._file_title_edit.text().strip(),
             tag_overrides=merged_tag_overrides,
+            tmdb_cover=self._attachment_panel.get_pending_tmdb_cover(),
         )
 
     # ------------------------------------------------------------------
@@ -3061,6 +3091,13 @@ class RemuxPanel(QWidget):
     def current_extra_attachments(self) -> list:
         """Retourne les pièces jointes manuelles cochées (list[Path])."""
         return self._attachment_panel.get_extra_attachments()
+
+    def current_tmdb_cover(self) -> "tuple[str, str] | None":
+        """
+        Retourne (url, filename) de la cover TMDB en attente si cochée, None sinon.
+        Utilisé par EncodePanel via provider.
+        """
+        return self._attachment_panel.get_pending_tmdb_cover()
 
     def current_tag_overrides(self) -> "dict[str, str] | None":
         """

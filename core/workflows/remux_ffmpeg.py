@@ -24,8 +24,13 @@ from core.inspector import AttachmentInfo
 from core.lang_tags import Rfc5646LanguageTags as LangTags
 from core.runner import TaskCancelledError, TaskSignals, ToolRunner
 from core.subprocess_utils import subprocess_text_kwargs
-from core.workdir import prepare_process_work_dir, relocate_tmdb_covers_to_process_dir
+from core.workdir import prepare_process_work_dir, relocate_tmdb_covers_to_process_dir, remove_path
 from core.workflows.remux import RemuxConfig, RemuxError, TrackEntry
+from core.workflows.remux_timeline_sync import (
+    LiveSyncSession,
+    MkvmergeLikeTimelineSync,
+    TimelineSyncFallbackHelper,
+)
 
 
 _MIME_BY_EXT: dict[str, str] = {
@@ -85,7 +90,12 @@ class _AttachmentSpec:
     mimetype: str
 
 
-def _cli_path(path: Path) -> str:
+def _cli_path(path: Path | str) -> str:
+    if isinstance(path, str):
+        return path
+    text = str(path)
+    if text.startswith("\\\\.\\pipe\\"):
+        return text
     return path.as_posix()
 
 
@@ -290,11 +300,23 @@ class FfmpegRemuxWorkflow(QObject):
         self,
         config: RemuxConfig,
         *,
-        extra_inputs: list[Path] | None = None,
+        sync_inputs: list[Path | str] | None = None,
+        extra_inputs: list[Path | str] | None = None,
         chapter_input_index: int | None = None,
         attachments: list[_AttachmentSpec] | None = None,
+        strict_interleave_override: bool | None = None,
+        mapped_tracks_override: list[_MappedTrack] | None = None,
     ) -> list[str]:
-        mapped_tracks = self._resolve_mapped_tracks(config)
+        mapped_tracks = (
+            mapped_tracks_override
+            if mapped_tracks_override is not None
+            else self._resolve_mapped_tracks(config)
+        )
+        needs_strict_interleave = (
+            self._needs_strict_interleave(mapped_tracks)
+            if strict_interleave_override is None
+            else strict_interleave_override
+        )
 
         cmd: list[str] = [self._ffmpeg, "-hide_banner", "-y"]
         cmd.extend(self._ffmpeg_progress_args())
@@ -302,6 +324,10 @@ class FfmpegRemuxWorkflow(QObject):
 
         for src in config.sources:
             cmd.extend(["-i", _cli_path(src.path)])
+        for p in (sync_inputs or []):
+            # Les entrées sync live (FIFO/fichiers normalisés) sont Matroska.
+            # Forcer le demuxer évite les blocages de probing sur flux live.
+            cmd.extend(["-f", "matroska", "-i", _cli_path(p)])
         for p in (extra_inputs or []):
             cmd.extend(["-i", _cli_path(p)])
 
@@ -309,8 +335,17 @@ class FfmpegRemuxWorkflow(QObject):
             cmd.extend(["-map", f"{mt.source_input_idx}:{mt.stream_index}"])
 
         cmd.extend(["-c", "copy", "-default_mode", "passthrough"])
+        if needs_strict_interleave:
+            # Multi-source + sous-titres clairsemés: sans entrelacement strict,
+            # l'audio importé d'une autre source peut être écrit très loin de la
+            # vidéo, ce qui dégrade fortement le seeking côté Plex.
+            cmd.extend(["-max_interleave_delta", "0"])
+            cmd.extend(["-max_muxing_queue_size", "9999"])
         cmd.extend(["-map_metadata", self._metadata_map_value(config, chapter_input_index)])
         cmd.extend(["-map_chapters", self._chapter_map_value(config, chapter_input_index)])
+
+        # Suppression des balises ENCODER et CREATION_TIME transportées depuis la source.
+        cmd.extend(["-metadata", "encoder=", "-metadata", "creation_time="])
 
         for key, value in self._resolved_global_tags(config).items():
             cmd.extend(["-metadata", f"{key}={value}"])
@@ -337,7 +372,7 @@ class FfmpegRemuxWorkflow(QObject):
         return cmd
 
     def preview_command(self, config: RemuxConfig) -> str:
-        extra_inputs: list[Path] = []
+        extra_inputs: list[Path | str] = []
         chapter_input_index: int | None = None
         if config.chapter_overrides:
             extra_inputs.append(Path("<chapitres.ffmetadata>"))
@@ -369,12 +404,21 @@ class FfmpegRemuxWorkflow(QObject):
     # Exécution
     # ------------------------------------------------------------------
 
+    def _log_workflow_type(self, workflow_kind: str) -> None:
+        self.log_message.emit("INFO", f"WORKFLOW TYPE - {workflow_kind}")
+
+    def _log_step(self, step_index: int, step_name: str) -> None:
+        self.log_message.emit("INFO", f"STEP {step_index} - {step_name}")
+
     def run(self, config: RemuxConfig) -> TaskSignals:
+        self._log_workflow_type("REMUX")
+        self._log_step(1, "Validation configuration")
         errors = self.validate(config)
         if errors:
             raise RemuxError("\n".join(errors))
 
         self.log_message.emit("INFO", f"Remuxage (FFmpeg) → {config.output.name}")
+        self._log_step(2, "Préparation workspace et attachments")
         work_root = config.work_dir or Path(tempfile.gettempdir())
         process_work_dir = prepare_process_work_dir(
             work_root,
@@ -395,12 +439,33 @@ class FfmpegRemuxWorkflow(QObject):
         def _task() -> None:
             tmp_dir = process_work_dir
             chapter_meta_file: Path | None = None
+            live_sync_session: LiveSyncSession | None = None
+            sync_inputs: list[Path | str] = []
+            sync_cleanup_paths: list[Path] = []
             try:
+                self._log_step(3, "Préparation des attachments (source + externes)")
                 prepared_attachments = self._materialize_attachments(run_config, tmp_dir, signals)
 
-                extra_inputs: list[Path] = []
+                extra_inputs: list[Path | str] = []
+                self._log_step(4, "Analyse du mapping pistes + pré-scan de risque")
+                mapped_tracks = self._resolve_mapped_tracks(run_config)
+                strict_interleave = self._decide_strict_interleave_with_prescan(run_config)
+
+                if strict_interleave:
+                    self._log_step(5, "Synchronisation timeline multi-source (live/fallback)")
+                    mapped_tracks, sync_inputs, live_sync_session = self._prepare_mkvmerge_like_sync_inputs(
+                        run_config,
+                        mapped_tracks,
+                        tmp_dir,
+                        signals,
+                    )
+                    sync_cleanup_paths = [p for p in sync_inputs if isinstance(p, Path)]
+                else:
+                    self._log_step(5, "Synchronisation timeline multi-source (non requise)")
+
                 chapter_input_index: int | None = None
                 if run_config.chapter_overrides:
+                    self._log_step(6, "Matérialisation des chapitres FFMetadata")
                     duration_s = self._probe_duration_seconds(run_config.sources[0].path)
                     chapter_meta_file = self._write_ffmetadata_chapters(
                         entries=run_config.chapter_overrides,
@@ -408,16 +473,23 @@ class FfmpegRemuxWorkflow(QObject):
                         duration_s=duration_s,
                     )
                     extra_inputs.append(chapter_meta_file)
-                    chapter_input_index = len(run_config.sources)
+                    chapter_input_index = len(run_config.sources) + len(sync_inputs) + len(extra_inputs) - 1
+                else:
+                    self._log_step(6, "Chapitres: copie source ou désactivé (pas d'override)")
 
+                self._log_step(7, "Construction de la commande ffmpeg remux")
                 cmd = self.build_command(
                     run_config,
+                    sync_inputs=sync_inputs,
                     extra_inputs=extra_inputs,
                     chapter_input_index=chapter_input_index,
                     attachments=prepared_attachments,
+                    strict_interleave_override=strict_interleave,
+                    mapped_tracks_override=mapped_tracks,
                 )
                 self.log_message.emit("INFO", "$ " + " ".join(str(c) for c in cmd))
 
+                self._log_step(8, "Exécution du remux ffmpeg")
                 output = self._runner._run_cmd(
                     cmd,
                     cwd=cwd,
@@ -431,11 +503,20 @@ class FfmpegRemuxWorkflow(QObject):
             except Exception as exc:
                 signals.failed.emit(str(exc), exc)
             finally:
+                if live_sync_session is not None:
+                    for proc in live_sync_session.processes:
+                        signals._unregister_proc(proc)
+                    live_sync_session.close()
                 try:
                     if chapter_meta_file is not None:
                         chapter_meta_file.unlink(missing_ok=True)
                 except Exception:
                     pass
+                for path in sync_cleanup_paths:
+                    try:
+                        remove_path(path)
+                    except OSError:
+                        pass
                 shutil.rmtree(tmp_dir, ignore_errors=True)
                 executor.shutdown(wait=False)
 
@@ -445,6 +526,196 @@ class FfmpegRemuxWorkflow(QObject):
     # ------------------------------------------------------------------
     # Helpers: mapping pistes / tags / langues / flags
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _needs_strict_interleave(mapped_tracks: list[_MappedTrack]) -> bool:
+        """
+        Détecte le pattern réellement à risque observé côté Plex:
+        - remux multi-source effectif (pas juste `len(config.sources) > 1`),
+        - sous-titres en sortie (flux clairsemés),
+        - au moins une piste audio venant d'une autre source que la vidéo de référence.
+        """
+        used_sources = {mt.source_file_index for mt in mapped_tracks}
+        if len(used_sources) < 2:
+            return False
+
+        has_subtitle_output = any(mt.track.track_type == "subtitle" for mt in mapped_tracks)
+        if not has_subtitle_output:
+            return False
+
+        primary_video = next((mt for mt in mapped_tracks if mt.track.track_type == "video"), None)
+        if primary_video is None:
+            return False
+
+        return any(
+            mt.track.track_type == "audio" and mt.source_file_index != primary_video.source_file_index
+            for mt in mapped_tracks
+        )
+
+    def _decide_strict_interleave_with_prescan(self, config: RemuxConfig) -> bool:
+        mapped_tracks = self._resolve_mapped_tracks(config)
+        base_risk = self._needs_strict_interleave(mapped_tracks)
+        if not base_risk:
+            return False
+
+        source_by_index = {src.file_index: src for src in config.sources}
+        subtitle_tracks = [
+            mt for mt in mapped_tracks
+            if mt.track.track_type == "subtitle"
+        ]
+        if not subtitle_tracks:
+            return False
+
+        sparse_hits = 0
+        scanned = 0
+
+        for mt in subtitle_tracks:
+            src = source_by_index.get(mt.source_file_index)
+            if src is None:
+                continue
+            scanned += 1
+            is_sparse = self._is_sparse_subtitle_stream(src, mt.stream_index)
+            if is_sparse is None:
+                self.log_message.emit(
+                    "WARNING",
+                    "Pré-scan sous-titres indisponible; activation du mode interleave strict par sécurité.",
+                )
+                return True
+            if is_sparse:
+                sparse_hits += 1
+
+        decision = sparse_hits > 0
+        if decision:
+            self.log_message.emit(
+                "INFO",
+                f"Pré-scan ffprobe: {sparse_hits}/{max(scanned, 1)} piste(s) sous-titres clairsemée(s) -> interleave strict activé.",
+            )
+        else:
+            self.log_message.emit(
+                "INFO",
+                "Pré-scan ffprobe: sous-titres denses -> interleave strict non activé.",
+            )
+        return decision
+
+    def _is_sparse_subtitle_stream(self, source, stream_index: int) -> bool | None:
+        subtitle_ids = sorted(t.mkv_tid for t in source.tracks if t.track_type == "subtitle")
+        if stream_index not in subtitle_ids:
+            return None
+        subtitle_ordinal = subtitle_ids.index(stream_index)
+
+        cmd = [
+            self._ffprobe,
+            "-v", "quiet",
+            "-select_streams", f"s:{subtitle_ordinal}",
+            "-show_packets",
+            "-show_entries", "packet=pts_time",
+            "-of", "csv=p=0",
+            str(source.path),
+        ]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                check=False,
+                timeout=40,
+                **subprocess_text_kwargs(),
+            )
+        except FileNotFoundError:
+            return None
+
+        if result.returncode != 0:
+            return None
+
+        pts_values: list[float] = []
+        for raw_line in (result.stdout or "").splitlines():
+            token = raw_line.strip().split(",", 1)[0].strip()
+            if not token or token == "N/A":
+                continue
+            try:
+                pts_values.append(float(token))
+            except ValueError:
+                continue
+
+        if len(pts_values) < 2:
+            return True
+
+        gaps = [
+            b - a
+            for a, b in zip(pts_values, pts_values[1:])
+            if b > a
+        ]
+        if not gaps:
+            return True
+
+        avg_gap = sum(gaps) / len(gaps)
+        sorted_gaps = sorted(gaps)
+        p95_gap = sorted_gaps[min(len(sorted_gaps) - 1, int(len(sorted_gaps) * 0.95))]
+        max_gap = sorted_gaps[-1]
+
+        span = max(1.0, pts_values[-1] - pts_values[0])
+        cue_rate = len(pts_values) / span  # cues/s
+
+        # Heuristique orientée "flux texte clairsemés" (SRT/ASS classiques).
+        return (
+            avg_gap >= 1.5
+            or p95_gap >= 4.0
+            or max_gap >= 10.0
+            or cue_rate < 0.8
+        )
+
+    def _prepare_mkvmerge_like_sync_inputs(
+        self,
+        config: RemuxConfig,
+        mapped_tracks: list[_MappedTrack],
+        tmp_dir: Path,
+        signals: TaskSignals,
+    ) -> tuple[list[_MappedTrack], list[Path | str], LiveSyncSession | None]:
+        """
+        Délègue la normalisation des flux étrangers à un utilitaire dédié afin de
+        conserver une logique testable et réutilisable hors workflow.
+        """
+        syncer = MkvmergeLikeTimelineSync(
+            ffmpeg_bin=self._ffmpeg,
+            ffmpeg_thread_args=self._ffmpeg_thread_args(),
+            log_cb=lambda msg: self.log_message.emit("INFO", msg),
+        )
+        prepared_result = TimelineSyncFallbackHelper(
+            syncer=syncer,
+            work_dir=tmp_dir,
+            ram_dir=TimelineSyncFallbackHelper.default_ram_dir(),
+            log_cb=lambda msg: self.log_message.emit("INFO", msg),
+        ).prepare(
+            mapped_tracks=mapped_tracks,
+            sources=config.sources,
+            base_input_idx=len(config.sources),
+            allow_live=True,
+            cancel_cb=signals._cancel_event.is_set,
+        )
+        live_session = prepared_result.live_session
+        prepared = prepared_result.prepared_inputs
+        if live_session is not None:
+            for proc in live_session.processes:
+                signals._register_proc(proc)
+
+        if not prepared:
+            return mapped_tracks, [], live_session
+
+        remap = {item.key: item for item in prepared}
+        remapped: list[_MappedTrack] = []
+        for mt in mapped_tracks:
+            key = (mt.source_file_index, mt.stream_index, mt.track.track_type)
+            hit = remap.get(key)
+            if hit is None:
+                remapped.append(mt)
+                continue
+            remapped.append(replace(
+                mt,
+                source_input_idx=hit.input_idx,
+                source_path=hit.path,
+                stream_index=0,
+            ))
+
+        return remapped, [item.path for item in prepared], live_session
 
     def _resolve_mapped_tracks(self, config: RemuxConfig) -> list[_MappedTrack]:
         file_index_to_input_idx = {

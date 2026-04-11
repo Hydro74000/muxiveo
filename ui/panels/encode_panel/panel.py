@@ -90,6 +90,8 @@ class EncodePanel(QWidget):
         self._file_title_provider: Callable[[], str] = lambda: ""
         # Callable fourni par MainWindow pour récupérer les pièces jointes manuelles depuis RemuxPanel.
         self._extra_attachments_provider: Callable[[], list] = lambda: []
+        # Callable fourni par MainWindow pour récupérer la cover TMDB en attente depuis RemuxPanel.
+        self._tmdb_cover_provider: "Callable[[], tuple[str, str] | None]" = lambda: None
         # Callable fourni par MainWindow pour récupérer les tag_overrides depuis RemuxPanel.
         self._tag_overrides_provider: Callable[[], "dict | None"] = lambda: None
         # Callable fourni par MainWindow pour récupérer les chapter_overrides depuis RemuxPanel.
@@ -1006,6 +1008,13 @@ class EncodePanel(QWidget):
         """
         self._extra_attachments_provider = provider
 
+    def set_tmdb_cover_provider(self, provider: "Callable[[], tuple[str, str] | None]") -> None:
+        """
+        Fournit un callable qui retourne (url, filename) de la cover TMDB en attente,
+        ou None si aucune. Appelé par MainWindow après création des panneaux.
+        """
+        self._tmdb_cover_provider = provider
+
     def set_tag_overrides_provider(self, provider: "Callable[[], dict | None]") -> None:
         """
         Fournit un callable qui retourne les balises MKV éditées (depuis RemuxPanel).
@@ -1041,6 +1050,7 @@ class EncodePanel(QWidget):
             work_dir=self._config.work_dir,
             file_title=self._file_title_provider(),
             extra_attachments=self._extra_attachments_provider(),
+            tmdb_cover=self._tmdb_cover_provider(),
             track_meta_edits=track_meta_edits,
             tag_overrides=self._tag_overrides_provider(),
             chapter_overrides=self._chapters_provider(),
