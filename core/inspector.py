@@ -777,6 +777,32 @@ def _fmt_chapter_time(seconds: float) -> str:
     return f"{h:02d}:{mn:02d}:{s:02d}.{ns:09d}"
 
 
+def build_ffmetadata_chapters(entries: "list[ChapterEntry]", global_title: str = "") -> str:
+    """
+    Génère le contenu d'un fichier ffmetadata compatible avec ``ffmpeg -i metadata.txt``.
+
+    Chaque chapitre est converti en bloc [CHAPTER] avec TIMEBASE=1/1000.
+    La fin de chaque chapitre est définie par le début du chapitre suivant,
+    ou par start_ms + 1000 ms pour le dernier.
+    """
+    lines = [";FFMETADATA1"]
+    if global_title:
+        lines.append(f"title={global_title}")
+
+    sorted_entries = sorted(entries, key=lambda x: x.timecode_s)
+    for i, entry in enumerate(sorted_entries):
+        start_ms = int(entry.timecode_s * 1000)
+        end_ms = int(sorted_entries[i + 1].timecode_s * 1000) if i + 1 < len(sorted_entries) else start_ms + 1000
+
+        lines.append("\n[CHAPTER]")
+        lines.append("TIMEBASE=1/1000")
+        lines.append(f"START={start_ms}")
+        lines.append(f"END={end_ms}")
+        lines.append(f"title={entry.name or f'Chapter {i + 1}'}")
+
+    return "\n".join(lines)
+
+
 def build_chapter_xml(entries: "list[ChapterEntry]") -> str:
     """
     Construit un fichier XML Matroska Chapters depuis une liste de ChapterEntry.

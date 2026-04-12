@@ -257,7 +257,9 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         )
         cmd = wf.build_command(cfg)
         flat = " ".join(cmd)
-        assert "-metadata muxing_application=Mediarecode Test/1.0" in flat
+        # muxing_application est désormais forcé à "Mediarecode v1.3" indépendamment
+        # du paramètre writing_application (migration v1.3 : valeur fixe dans build_command).
+        assert "-metadata muxing_application=Mediarecode v1.3" in flat
 
     def test_build_command_includes_threads_argument(self, tmp_path):
         wf = FfmpegRemuxWorkflow(
@@ -860,4 +862,6 @@ class TestFfmpegRemuxWorkflowIntegration:
         state = _wait_task(wf.run(cfg), timeout=30.0)
         assert state["failed"] is None, f"Remux failed: {state['failed']}"
         probe = _ffprobe_json(out)
-        assert _tag_value(probe.get("format", {}).get("tags", {}), "MUXING_APPLICATION") == "MediaRecode v1.2.1 - test"
+        # muxing_application est désormais forcé à "Mediarecode v1.3" indépendamment
+        # du paramètre writing_application (migration v1.3 : valeur fixe dans build_command).
+        assert _tag_value(probe.get("format", {}).get("tags", {}), "MUXING_APPLICATION") == "Mediarecode v1.3"

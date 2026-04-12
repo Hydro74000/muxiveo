@@ -380,7 +380,6 @@ class FfmpegRemuxWorkflow(QObject):
         sync_inputs: list[Path | str] | None = None,
         extra_inputs: list[Path | str] | None = None,
         chapter_input_index: int | None = None,
-        attachments: list[_AttachmentSpec] | None = None,
         strict_interleave_override: bool | None = None,
         mapped_tracks_override: list[_MappedTrack] | None = None,
     ) -> list[str]:
@@ -440,7 +439,8 @@ class FfmpegRemuxWorkflow(QObject):
         cmd.extend(["-map_metadata", self._metadata_map_value(config, chapter_input_index)])
         cmd.extend(["-map_chapters", self._chapter_map_value(config, chapter_input_index)])
 
-        # Suppression des balises ENCODER et CREATION_TIME transportées depuis la source.
+        # Identifiant de l'outil et suppression des balises techniques de la source.
+        cmd.extend(["-metadata", "muxing_application=Mediarecode v1.3"])
         cmd.extend(["-metadata", "encoder=", "-metadata", "creation_time="])
 
         for key, value in self._resolved_global_tags(config).items():
@@ -458,11 +458,26 @@ class FfmpegRemuxWorkflow(QObject):
             cmd.extend([f"-metadata:s:{stream_spec}:{out_idx}", f"title={mt.track.title or ''}"])
             cmd.extend([f"-disposition:{stream_spec}:{out_idx}", self._disposition_value(mt.track)])
 
-        final_attachments = attachments if attachments is not None else self._preview_attachments(config)
-        for idx, att in enumerate(final_attachments):
-            cmd.extend(["-attach", _cli_path(att.path)])
-            cmd.extend([f"-metadata:s:t:{idx}", f"mimetype={att.mimetype}"])
-            cmd.extend([f"-metadata:s:t:{idx}", f"filename={att.filename}"])
+        # Attachements sources (non-attached_pic) : mapping direct sans extraction disque.
+        cmd.extend(self._build_attachment_mapping(config))
+        att_t_idx = 0
+        for src in config.sources:
+            for att in sorted(src.selected_attachments, key=lambda a: a.local_index):
+                if att.is_attached_pic:
+                    continue  # extraits et attachés via extra_attachments dans run()
+                meta_name = self._attachment_names(att)[0]
+                mimetype = (att.mimetype or "").strip() or _mime_for(Path(meta_name))
+                cmd.extend([f"-metadata:s:t:{att_t_idx}", f"mimetype={mimetype}"])
+                cmd.extend([f"-metadata:s:t:{att_t_idx}", f"filename={meta_name}"])
+                att_t_idx += 1
+
+        # Attachements supplémentaires (extra_attachments + attached_pic extraits) : -attach.
+        for att_path in config.extra_attachments:
+            name = "cover" if att_path.stem.lower() == "cover" else att_path.name
+            cmd.extend(["-attach", _cli_path(att_path)])
+            cmd.extend([f"-metadata:s:t:{att_t_idx}", f"mimetype={_mime_for(att_path)}"])
+            cmd.extend([f"-metadata:s:t:{att_t_idx}", f"filename={name}"])
+            att_t_idx += 1
 
         cmd.append(_cli_path(config.output))
         return cmd
@@ -478,7 +493,6 @@ class FfmpegRemuxWorkflow(QObject):
             config,
             extra_inputs=extra_inputs,
             chapter_input_index=chapter_input_index,
-            attachments=self._preview_attachments(config),
         )
         if not parts:
             return ""
@@ -533,22 +547,27 @@ class FfmpegRemuxWorkflow(QObject):
         executor = ThreadPoolExecutor(max_workers=1)
 
         def _task() -> None:
+            nonlocal run_config  # peut être mis à jour si des attached_pic sont extraits
             tmp_dir = process_work_dir
             chapter_meta_file: Path | None = None
             live_sync_session: LiveSyncSession | None = None
             sync_inputs: list[Path | str] = []
             sync_cleanup_paths: list[Path] = []
             try:
-                self._log_step(3, "Préparation des attachments (source + externes)")
-                prepared_attachments = self._materialize_attachments(run_config, tmp_dir, signals)
-
                 extra_inputs: list[Path | str] = []
-                self._log_step(4, "Analyse du mapping pistes + pré-scan de risque")
+                self._log_step(3, "Analyse du mapping pistes + pré-scan de risque")
                 mapped_tracks = self._resolve_mapped_tracks(run_config)
                 strict_interleave = self._decide_strict_interleave_with_prescan(run_config)
 
+                # Extraction des flux attached_pic (covers) : le muxeur MKV ne peut pas
+                # les reconvertir en attachement via copy ; on extrait une frame sur disque
+                # puis on les traite comme des extra_attachments normaux.
+                extracted_pics = self._extract_attached_pics(run_config, tmp_dir, signals)
+                if extracted_pics:
+                    run_config = replace(run_config, extra_attachments=[*run_config.extra_attachments, *extracted_pics])
+
                 if strict_interleave:
-                    self._log_step(5, "Synchronisation timeline multi-source (live/fallback)")
+                    self._log_step(4, "Synchronisation timeline multi-source (live/fallback)")
                     allow_live_sync = True
                     if self._requires_file_sync_fallback_for_offsets(mapped_tracks):
                         allow_live_sync = False
@@ -565,11 +584,11 @@ class FfmpegRemuxWorkflow(QObject):
                     )
                     sync_cleanup_paths = [p for p in sync_inputs if isinstance(p, Path)]
                 else:
-                    self._log_step(5, "Synchronisation timeline multi-source (non requise)")
+                    self._log_step(4, "Synchronisation timeline multi-source (non requise)")
 
                 chapter_input_index: int | None = None
                 if run_config.chapter_overrides:
-                    self._log_step(6, "Matérialisation des chapitres FFMetadata")
+                    self._log_step(5, "Matérialisation des chapitres FFMetadata")
                     duration_s = self._probe_duration_seconds(run_config.sources[0].path)
                     chapter_meta_file = self._write_ffmetadata_chapters(
                         entries=run_config.chapter_overrides,
@@ -579,21 +598,20 @@ class FfmpegRemuxWorkflow(QObject):
                     extra_inputs.append(chapter_meta_file)
                     chapter_input_index = len(run_config.sources) + len(sync_inputs) + len(extra_inputs) - 1
                 else:
-                    self._log_step(6, "Chapitres: copie source ou désactivé (pas d'override)")
+                    self._log_step(5, "Chapitres: copie source ou désactivé (pas d'override)")
 
-                self._log_step(7, "Construction de la commande ffmpeg remux")
+                self._log_step(6, "Construction de la commande ffmpeg remux")
                 cmd = self.build_command(
                     run_config,
                     sync_inputs=sync_inputs,
                     extra_inputs=extra_inputs,
                     chapter_input_index=chapter_input_index,
-                    attachments=prepared_attachments,
                     strict_interleave_override=strict_interleave,
                     mapped_tracks_override=mapped_tracks,
                 )
                 self.log_message.emit("INFO", "$ " + " ".join(str(c) for c in cmd))
 
-                self._log_step(8, "Exécution du remux ffmpeg")
+                self._log_step(7, "Exécution du remux ffmpeg")
                 output = self._runner._run_cmd(
                     cmd,
                     cwd=cwd,
@@ -927,9 +945,6 @@ class FfmpegRemuxWorkflow(QObject):
 
         if config.file_title.strip():
             tags["title"] = config.file_title.strip()
-        if self._writing_application:
-            # Champ segment Matroska "MuxingApp" (équivalent mkvpropedit: muxing-application).
-            tags["muxing_application"] = self._writing_application
 
         return tags
 
@@ -1037,139 +1052,85 @@ class FfmpegRemuxWorkflow(QObject):
     # Helpers: attachements
     # ------------------------------------------------------------------
 
-    def _preview_attachments(self, config: RemuxConfig) -> list[_AttachmentSpec]:
-        specs: list[_AttachmentSpec] = []
+    def _build_attachment_mapping(self, config: RemuxConfig) -> list[str]:
+        """
+        Génère les arguments FFmpeg pour mapper les attachements sources directement.
 
-        for src in config.sources:
+        Utilise ``-map input_idx:stream_index -c:t copy`` pour les flux de type
+        attachment (polices, fichiers binaires). Les flux ``attached_pic`` (couvertures
+        présentées comme flux vidéo par le démuxer MKV) sont exclus car le muxeur
+        MKV n'est pas capable de les reconvertir en attachement via un simple copy ;
+        ils doivent être extraits sur disque et attachés via ``-attach``.
+        ``-map_metadata:s:t -1`` évite les erreurs de probing sur les polices.
+        """
+        args: list[str] = []
+        for input_idx, src in enumerate(config.sources):
             for att in sorted(src.selected_attachments, key=lambda a: a.local_index):
-                meta_name, _extract_name = self._attachment_names(att)
-                mimetype = (att.mimetype or "").strip() or _mime_for(Path(meta_name))
-                specs.append(_AttachmentSpec(
-                    path=Path(f"<extract:{src.path.name}:{att.index}>"),
-                    filename=meta_name,
-                    mimetype=mimetype,
-                ))
+                if att.is_attached_pic:
+                    continue
+                args.extend(["-map", f"{input_idx}:{att.index}"])
+        if args:
+            args.extend(["-c:t", "copy"])
+            args.extend(["-map_metadata:s:t", "-1"])
+        return args
 
-        for att_path in config.extra_attachments:
-            name = "cover" if att_path.stem.lower() == "cover" else att_path.name
-            specs.append(_AttachmentSpec(
-                path=att_path,
-                filename=name,
-                mimetype=_mime_for(att_path),
-            ))
-
-        return self._dedupe_attachment_filenames(specs)
-
-    def _materialize_attachments(
+    def _extract_attached_pics(
         self,
         config: RemuxConfig,
         tmp_dir: Path,
         signals: TaskSignals,
-    ) -> list[_AttachmentSpec]:
-        specs: list[_AttachmentSpec] = []
+    ) -> list[Path]:
+        """
+        Extrait les flux ``attached_pic`` (couvertures MKV) vers des fichiers temporaires.
 
+        Ces flux sont de type vidéo côté FFprobe et ne peuvent pas être copiés vers
+        un attachement MKV via un simple ``-map … -c:t copy``. On extrait une frame
+        puis on passe le fichier résultant en ``extra_attachments`` pour la commande
+        finale (traitement identique à une couverture manuelle).
+        """
+        paths: list[Path] = []
         for src in config.sources:
             for att in sorted(src.selected_attachments, key=lambda a: a.local_index):
+                if not att.is_attached_pic:
+                    continue
                 if signals._cancel_event.is_set():
                     raise TaskCancelledError()
 
-                meta_name, extract_name = self._attachment_names(att)
-                out_path = self._unique_path(tmp_dir, extract_name)
-                self._extract_attachment(src.path, att, out_path)
-                mimetype = (att.mimetype or "").strip() or _mime_for(out_path)
-                specs.append(_AttachmentSpec(
-                    path=out_path,
-                    filename=meta_name,
-                    mimetype=mimetype,
-                ))
+                raw_name = _sanitize_filename(att.filename, f"attachment_{att.index}")
+                suffix = Path(raw_name).suffix.lower()
+                if not suffix:
+                    suffix = _EXT_BY_MIME.get((att.mimetype or "").strip().lower(), ".jpg")
+                stem = Path(raw_name).stem or f"attachment_{att.index}"
+                out_path = tmp_dir / f"{stem}{suffix}"
+                counter = 1
+                while out_path.exists():
+                    out_path = tmp_dir / f"{stem}_{counter}{suffix}"
+                    counter += 1
 
-        for att_path in config.extra_attachments:
-            if signals._cancel_event.is_set():
-                raise TaskCancelledError()
-            name = "cover" if att_path.stem.lower() == "cover" else att_path.name
-            specs.append(_AttachmentSpec(
-                path=att_path,
-                filename=name,
-                mimetype=_mime_for(att_path),
-            ))
-
-        return self._dedupe_attachment_filenames(specs)
-
-    def _extract_attachment(self, source: Path, att: AttachmentInfo, destination: Path) -> None:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-
-        if att.is_attached_pic:
-            decode_then_image = [
-                self._ffmpeg,
-                "-hide_banner", "-y",
-                "-i", _cli_path(source),
-                "-map", f"0:{att.index}",
-                *self._ffmpeg_thread_args(),
-                "-frames:v", "1",
-                _cli_path(destination),
-            ]
-            try:
-                self._run_extract_cmd(decode_then_image, destination, att, source)
-            except RemuxError:
-                # Fallback conservateur : certains flux attached_pic se copient tels quels.
-                copy_mode = [
-                    self._ffmpeg,
-                    "-hide_banner", "-y",
-                    "-i", _cli_path(source),
+                cmd = [
+                    self._ffmpeg, "-hide_banner", "-y",
+                    "-i", _cli_path(src.path),
                     "-map", f"0:{att.index}",
                     *self._ffmpeg_thread_args(),
-                    "-c", "copy",
                     "-frames:v", "1",
-                    _cli_path(destination),
+                    _cli_path(out_path),
                 ]
-                self._run_extract_cmd(copy_mode, destination, att, source)
-            return
-
-        dump_cmd = [
-            self._ffmpeg,
-            "-hide_banner", "-y",
-            *self._ffmpeg_thread_args(),
-            f"-dump_attachment:{att.index}", _cli_path(destination),
-            "-i", _cli_path(source),
-            "-f", "null", "-",
-        ]
-        try:
-            self._run_extract_cmd(dump_cmd, destination, att, source)
-        except RemuxError:
-            # Fallback conservateur : certains fichiers marquent mal attached_pic.
-            fallback = [
-                self._ffmpeg,
-                "-hide_banner", "-y",
-                "-i", _cli_path(source),
-                "-map", f"0:{att.index}",
-                *self._ffmpeg_thread_args(),
-                "-c", "copy",
-                "-frames:v", "1",
-                _cli_path(destination),
-            ]
-            self._run_extract_cmd(fallback, destination, att, source)
-
-    def _run_extract_cmd(
-        self,
-        cmd: list[str],
-        destination: Path,
-        att: AttachmentInfo,
-        source: Path,
-    ) -> None:
-        self.log_message.emit("INFO", "$ " + " ".join(str(c) for c in cmd))
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            check=False,
-            timeout=120,
-            **subprocess_text_kwargs(),
-        )
-        if result.returncode != 0 or not destination.exists() or destination.stat().st_size == 0:
-            stderr = (result.stderr or "").strip()
-            raise RemuxError(
-                "Extraction attachment échouée "
-                f"(source={source.name}, stream={att.index}): {stderr}"
-            )
+                self.log_message.emit("INFO", "$ " + " ".join(str(c) for c in cmd))
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    check=False,
+                    timeout=60,
+                    **subprocess_text_kwargs(),
+                )
+                if result.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
+                    stderr = (result.stderr or "").strip()
+                    raise RemuxError(
+                        f"Extraction attached_pic échouée "
+                        f"(source={src.path.name}, stream={att.index}): {stderr}"
+                    )
+                paths.append(out_path)
+        return paths
 
     def _attachment_names(self, att: AttachmentInfo) -> tuple[str, str]:
         raw_name = _sanitize_filename(att.filename, f"attachment_{att.index}")
@@ -1184,47 +1145,4 @@ class FfmpegRemuxWorkflow(QObject):
         extract_name = f"{base_name}{source_suffix}"
         return meta_name, extract_name
 
-    @staticmethod
-    def _unique_path(directory: Path, filename: str) -> Path:
-        candidate = directory / filename
-        if not candidate.exists():
-            return candidate
-        stem = candidate.stem
-        suffix = candidate.suffix
-        for i in range(1, 10_000):
-            alt = directory / f"{stem}_{i}{suffix}"
-            if not alt.exists():
-                return alt
-        return directory / f"{stem}_x{suffix}"
 
-    @staticmethod
-    def _dedupe_attachment_filenames(specs: list[_AttachmentSpec]) -> list[_AttachmentSpec]:
-        seen: dict[str, int] = {}
-        out: list[_AttachmentSpec] = []
-
-        for spec in specs:
-            raw = spec.filename
-            key = raw.lower()
-            count = seen.get(key, 0)
-            if count == 0:
-                seen[key] = 1
-                out.append(spec)
-                continue
-
-            stem = Path(raw).stem
-            suffix = Path(raw).suffix
-            while True:
-                candidate = f"{stem}_{count}{suffix}"
-                ckey = candidate.lower()
-                count += 1
-                if ckey not in seen:
-                    seen[key] = count
-                    seen[ckey] = 1
-                    out.append(_AttachmentSpec(
-                        path=spec.path,
-                        filename=candidate,
-                        mimetype=spec.mimetype,
-                    ))
-                    break
-
-        return out
