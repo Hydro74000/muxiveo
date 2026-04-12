@@ -4,7 +4,7 @@ FULL Vibecoded App for Proof of Concept - no human code, only human prompts and 
 
 Interface graphique pour préparer des fichiers vidéo, remuxer sans perte, réencoder avec `ffmpeg`, et fusionner des métadonnées Dolby Vision / HDR10+.
 
-Cette documentation correspond à **Mediarecode v1.2**.
+Cette documentation correspond à **Mediarecode v1.3**.
 
 ## Vue rapide
 
@@ -37,7 +37,7 @@ Le script `setup.py` installe automatiquement :
 | Catégorie | Installé par `setup.py` |
 |-----------|-------------------------|
 | Dépendance Python | `PySide6` |
-| Outils système | `ffmpeg`, `ffprobe`, `mediainfo` (+ `mkvmerge` / `mkvextract` / `mkvinfo` pour le workflow Fusion DoVi/HDR10+) |
+| Outils système | `ffmpeg`, `ffprobe`, `mediainfo` (+ `mkvtoolnix` optionnel, notamment pour le script CLI legacy) |
 | Outils GitHub | `dovi_tool`, `hdr10plus_tool` |
 | Notes plateforme | Debian/Ubuntu via `apt`, Fedora/RHEL via `dnf`, macOS via Homebrew, Windows via `winget` + binaires locaux |
 
@@ -88,7 +88,7 @@ Symptômes fréquents :
 - erreur `No such file or directory` lors d'un export vers `Videos` ou `Documents` ;
 - succès de l'export vers un autre dossier non protégé, comme `Desktop` ou `%TEMP%`.
 
-Au premier setup Windows, Mediarecode peut proposer d'ajouter ses exécutables à l'allowlist de Windows Security afin de pouvoir enregistrer directement dans ces bibliothèques protégées. Cette exception concerne l'application elle-même et, selon les cas, les outils d'écriture qu'elle utilise (`ffmpeg`, `mkvmerge`).
+Au premier setup Windows, Mediarecode peut proposer d'ajouter ses exécutables à l'allowlist de Windows Security afin de pouvoir enregistrer directement dans ces bibliothèques protégées. Cette exception concerne l'application elle-même et, selon les cas, les outils d'écriture qu'elle utilise (`ffmpeg`; `mkvmerge` seulement pour usages legacy).
 
 Sans cette exception, les exports directs vers **Videos**, **Documents**, **Pictures**, etc. peuvent rester bloqués.
 
@@ -99,7 +99,7 @@ Si vous refusez l'exception ou si vous devez la configurer manuellement :
 3. Ouvrez **Protection contre les ransomwares** puis **Gérer la protection contre les ransomwares**.
 4. Entrez dans **Autoriser une application via l'accès contrôlé aux dossiers**.
 5. Ajoutez `mediarecode.exe`.
-6. Si nécessaire, ajoutez aussi `ffmpeg.exe` et `mkvmerge.exe`.
+6. Si nécessaire, ajoutez aussi `ffmpeg.exe` (et `mkvmerge.exe` uniquement si vous utilisez le script CLI legacy).
 
 Après ajout à l'allowlist, redémarrez Mediarecode avant de retester un export vers `Videos` ou `Documents`.
 
@@ -199,6 +199,8 @@ Règles importantes :
 - l'écart de frame count doit être **<= 4 images**
 - le remux final conserve l'audio et les sous-titres de Film 1
 
+Le workflow UI Fusion DoVi/HDR10+ est désormais **FFmpeg-only** pour l'extraction HEVC et le remux final (plus de dépendance MKVToolNix dans ce panneau).
+
 Profils Dolby Vision proposés :
 
 | Profil | Effet |
@@ -291,7 +293,7 @@ Limite Windows :
 Vous pouvez définir explicitement dans `config.ini` :
 
 - `ffmpeg`, `ffprobe`
-- `mkvmerge`, `mkvextract`, `mkvinfo` (utilisés par le workflow Fusion DoVi/HDR10+)
+- `mkvmerge`, `mkvextract`, `mkvinfo` (optionnels, principalement pour le script CLI legacy)
 - `mediainfo`
 - `dovi_tool`, `hdr10plus_tool`
 - `eac3to`
@@ -428,7 +430,7 @@ flowchart TD
     J -->|Non| L
     K --> L
 
-    L[mkvmerge final\n--no-video Film 1 + HEVC final\ntrack-order reconstruit] --> M[Nettoyage]
+    L[ffmpeg final\nvideo injectee + audio/subs/metadata Film 1\nmap_metadata/map_chapters] --> M[Nettoyage]
     M --> N([Sortie MKV])
 ```
 
@@ -465,8 +467,8 @@ flowchart TD
 | `ffprobe` | analyse des flux, chapitres et métadonnées |
 | `mediainfo` | frame count et informations HDR fines |
 | `ffmpeg` | encodage, remux par défaut, copie de flux, écriture metadata/chapitres/tags en sortie directe |
-| `mkvmerge` | remux final du workflow Fusion DoVi/HDR10+ |
-| `mkvextract` | extraction du flux HEVC depuis un MKV |
+| `mkvmerge` | outil optionnel pour usages legacy (script CLI historique) |
+| `mkvextract` | outil optionnel pour usages legacy (script CLI historique) |
 | `mkvpropedit` | legacy/optionnel, non utilisé dans les workflows principaux actuels |
 | `dovi_tool` | extraction, injection et vérification Dolby Vision |
 | `hdr10plus_tool` | extraction et injection HDR10+ |
