@@ -918,8 +918,8 @@ class MergeDoviPanel(QWidget):
     def _init_workflow(self) -> None:
         self._workflow = MergeDoviWorkflow(
             mediainfo_bin    = self._config.tool_mediainfo,
-            mkvextract_bin   = self._config.tool_mkvextract,
-            mkvmerge_bin     = self._config.tool_mkvmerge,
+            ffmpeg_bin       = self._config.tool_ffmpeg,
+            ffprobe_bin      = self._config.tool_ffprobe,
             dovi_tool_bin    = self._config.tool_dovi_tool,
             hdr10plus_bin    = self._config.tool_hdr10plus,
             max_workers      = 4,
