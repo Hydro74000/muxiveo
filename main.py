@@ -16,11 +16,56 @@ if str(ROOT) not in sys.path:
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
+from PySide6.QtWidgets import QMessageBox, QPushButton
 
 from core.config import AppConfig
-from core.i18n import set_current_language
+from core.i18n import set_current_language, translate_text
 from core.version import APP_VERSION
 from ui.design_system import DesignSystem
+
+
+def _prompt_work_dir_cleanup(config: AppConfig) -> None:
+    """
+    Au démarrage, demande quoi faire si le work_dir contient des restes.
+    """
+    if not config.work_dir_has_leftovers():
+        return
+
+    entries = config.work_dir_entries()
+    preview = ", ".join(p.name for p in entries[:6])
+    if len(entries) > 6:
+        preview += ", ..."
+
+    box = QMessageBox()
+    box.setIcon(QMessageBox.Icon.Warning)
+    box.setWindowTitle(translate_text("Répertoire de travail non nettoyé"))
+    box.setText(
+        translate_text(
+            "Le dossier de travail contient des fichiers ou dossiers résiduels.\n"
+            "Souhaitez-vous les conserver ou nettoyer le work_dir ?"
+        )
+    )
+    box.setInformativeText(
+        translate_text(
+            "Work dir : {path}\nContenu détecté : {preview}",
+            path=str(config.work_dir),
+            preview=preview or "-",
+        )
+    )
+
+    clean_btn: QPushButton = box.addButton(
+        translate_text("Nettoyer"),
+        QMessageBox.ButtonRole.DestructiveRole,
+    )
+    keep_btn: QPushButton = box.addButton(
+        translate_text("Conserver"),
+        QMessageBox.ButtonRole.AcceptRole,
+    )
+    box.setDefaultButton(keep_btn)
+    box.exec()
+
+    if box.clickedButton() is clean_btn:
+        config.clear_work_dir()
 
 
 def main() -> int:
@@ -45,6 +90,7 @@ def main() -> int:
     DesignSystem.set_theme(config.theme)
     DesignSystem.apply_to_application(app)
     set_current_language(config.language)
+    _prompt_work_dir_cleanup(config)
 
     # Fenêtre principale
     from ui.main_window import MainWindow

@@ -33,7 +33,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING, cast
 
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, Signal, QSize, QTimer
 from PySide6.QtGui import (
     QColor, QFont, QIcon,
     QTextCharFormat, QTextCursor,
@@ -52,7 +52,7 @@ from core.runner import TaskSignals
 from core.subprocess_utils import subprocess_text_kwargs
 from core.version import APP_VERSION_LABEL, WRITING_APPLICATION_TAG
 from core.workflows.encode import EncodeError
-from core.workflows.remux import RemuxError
+from core.workflows.remux_models import RemuxError
 from ui.panels.encode_panel import EncodePanel
 from ui.panels.encode_panel.theme import _FPS_RE, _fmt_eta, ffmpeg_progress_seconds
 from ui.panels.merge_dovi_panel import MergeDoviPanel
@@ -62,7 +62,7 @@ from ui.design_system import DesignSystem, colors as _Colors
 
 if TYPE_CHECKING:
     from core.workflows.encode.models import EncodeConfig
-    from core.workflows.remux import RemuxConfig, TrackEntry
+    from core.workflows.remux_models import RemuxConfig, TrackEntry
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +118,7 @@ _ENCODE_PROGRESS_NOISE_PREFIXES: tuple[str, ...] = (
     "speed=",
     "progress=",
 )
+_STEP_PROGRESS_RE = re.compile(r"^STEP\s+\d+\s*-\s*(.+)$")
 
 
 def _is_encode_stage_message(line: str) -> bool:
@@ -316,10 +317,16 @@ class LogPanel(QWidget):
     def clear(self) -> None:
         self._text.clear()
 
-    def _toggle(self) -> None:
-        self._collapsed = not self._collapsed
+    def is_collapsed(self) -> bool:
+        return self._collapsed
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        self._collapsed = bool(collapsed)
         self._text.setVisible(not self._collapsed)
         self._collapse_btn.setText("▼" if self._collapsed else "▲")
+
+    def _toggle(self) -> None:
+        self.set_collapsed(not self._collapsed)
         self.collapse_toggled.emit(self._collapsed)
 
 
@@ -709,33 +716,72 @@ class _NavButton(QWidget):
 
     clicked = Signal()
 
-    def __init__(self, label: str, icon_char: str, page_index: int, is_sub: bool = False) -> None:
+    def __init__(
+        self,
+        label: str,
+        icon_char: str,
+        page_index: int,
+        is_sub: bool = False,
+        *,
+        compact: bool = False,
+    ) -> None:
         super().__init__()
         self.page_index = page_index
         self._checked  = False
         self._is_sub   = is_sub
-        self.setFixedHeight(36 if is_sub else 40)
+        self._compact  = compact
+        self._icon_char = icon_char
+        self._full_height = 36 if is_sub else 40
+        self._compact_height = max(self._full_height * 2, 76)
+        self.setFixedHeight(self._compact_height if compact else self._full_height)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setToolTip(label)
+        self.setAccessibleName(label)
 
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(28 if is_sub else 14, 0, 14, 0)
-        lay.setSpacing(10)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        self._icon_lbl = QLabel(icon_char)
-        self._icon_lbl.setFixedWidth(20)
-        self._icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._icon_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._stack = QStackedWidget()
+        self._stack.setStyleSheet("background: transparent; border: none;")
+        root.addWidget(self._stack)
+
+        full_page = QWidget()
+        full_page.setStyleSheet("background: transparent; border: none;")
+        full_lay = QHBoxLayout(full_page)
+        full_lay.setContentsMargins(28 if is_sub else 14, 0, 14, 0)
+        full_lay.setSpacing(10)
+
+        self._full_icon_lbl = QLabel(icon_char)
+        self._full_icon_lbl.setFixedWidth(20)
+        self._full_icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._full_icon_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
         self._text_lbl = QLabel(label)
-        self._text_lbl.setAlignment(
-            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
-        )
+        self._text_lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
         self._text_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
-        lay.addWidget(self._icon_lbl)
-        lay.addWidget(self._text_lbl)
-        lay.addStretch()
+        full_lay.addWidget(self._full_icon_lbl)
+        full_lay.addWidget(self._text_lbl)
+        full_lay.addStretch()
+        self._stack.addWidget(full_page)
+
+        compact_page = QWidget()
+        compact_page.setStyleSheet("background: transparent; border: none;")
+        compact_lay = QHBoxLayout(compact_page)
+        compact_lay.setContentsMargins(0, 0, 0, 0)
+        compact_lay.setSpacing(0)
+        self._compact_icon_lbl = QLabel(icon_char)
+        self._compact_icon_lbl.setFixedWidth(64)
+        self._compact_icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._compact_icon_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        compact_lay.addStretch()
+        compact_lay.addWidget(self._compact_icon_lbl)
+        compact_lay.addStretch()
+        self._stack.addWidget(compact_page)
+
+        self._stack.setCurrentIndex(1 if self._compact else 0)
 
         self._update_style(False)
 
@@ -748,6 +794,12 @@ class _NavButton(QWidget):
     def setChecked(self, checked: bool) -> None:
         self._checked = checked
         self._update_style(checked)
+
+    def set_compact(self, compact: bool) -> None:
+        self._compact = compact
+        self._stack.setCurrentIndex(1 if compact else 0)
+        self.setFixedHeight(self._compact_height if compact else self._full_height)
+        self._update_style(self._checked)
 
     def isCheckable(self) -> bool:
         return True
@@ -778,9 +830,15 @@ class _NavButton(QWidget):
                 background: {_Colors.BG_HOVER};
             }}
         """)
-        self._icon_lbl.setStyleSheet(
+        icon_style_full = (
             f"color: {icon_c}; font-size: 14px; background: transparent; border: none;"
         )
+        compact_px = 32 if self._icon_char == "▶" else 56
+        icon_style_compact = (
+            f"color: {icon_c}; font-size: {compact_px}px; background: transparent; border: none;"
+        )
+        self._full_icon_lbl.setStyleSheet(icon_style_full)
+        self._compact_icon_lbl.setStyleSheet(icon_style_compact)
         font_size = "11px" if self._is_sub else "12px"
         self._text_lbl.setStyleSheet(
             f"color: {color}; font-size: {font_size}; font-weight: {weight};"
@@ -798,14 +856,17 @@ class _Sidebar(QWidget):
     _NAV_ITEMS = [
         ("Tableau de bord", "⌂", 0, False),
         ("Conteneur",       "⊞", 3, False),
-        ("Encodage",        "🎬", 2, True),   # sous-menu de Conteneur
+        ("Encodage",        "▶", 2, True),    # sous-menu de Conteneur
         ("DoVi / HDR10+",   "◈", 1, False),
         ("Paramètres",      "⚙", 4, False),
     ]
+    _FULL_WIDTH = 200
+    _COMPACT_WIDTH = 96
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, *, compact: bool = False) -> None:
         super().__init__(parent)
-        self.setFixedWidth(200)
+        self._compact = compact
+        self.setFixedWidth(self._COMPACT_WIDTH if compact else self._FULL_WIDTH)
         self.setStyleSheet(f"""
             QWidget {{
                 background: {_Colors.BG_SIDEBAR};
@@ -814,6 +875,7 @@ class _Sidebar(QWidget):
         """)
         self._buttons: list[_NavButton] = []
         self._build_ui()
+        self.set_compact(self._compact)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -831,12 +893,18 @@ class _Sidebar(QWidget):
             }}
         """)
         la = QHBoxLayout(logo_area)
-        la.setContentsMargins(16, 0, 16, 0)
+        la.setContentsMargins(12, 0, 8, 0)
+        la.setSpacing(8)
 
-        logo_icon = QLabel("▣")
-        logo_icon.setStyleSheet(f"color: {_Colors.ACCENT}; font-size: 18px; background: transparent; border: none;")
-        logo_text = QLabel("Mediarecode")
-        logo_text.setStyleSheet(f"""
+        self._logo_icon = QLabel("▣")
+        self._logo_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._logo_icon.setToolTip("Mediarecode")
+        self._logo_icon.setStyleSheet(
+            f"color: {_Colors.ACCENT}; font-size: 18px; background: transparent; border: none;"
+        )
+        la.addWidget(self._logo_icon)
+        self._logo_text = QLabel("Mediarecode")
+        self._logo_text.setStyleSheet(f"""
             color: {_Colors.TEXT_PRI};
             font-size: 13px;
             font-weight: 700;
@@ -844,16 +912,35 @@ class _Sidebar(QWidget):
             border: none;
             letter-spacing: 0.3px;
         """)
-        la.addWidget(logo_icon)
-        la.addSpacing(8)
-        la.addWidget(logo_text)
+        la.addWidget(self._logo_text)
         la.addStretch()
+        self._toggle_btn = QPushButton("◀")
+        self._toggle_btn.setFixedSize(22, 22)
+        self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._toggle_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {_Colors.TEXT_DIM};
+                border: 1px solid {_Colors.BORDER};
+                border-radius: 4px;
+                font-size: 11px;
+                padding: 0;
+            }}
+            QPushButton:hover {{
+                color: {_Colors.TEXT_PRI};
+                border-color: {_Colors.BORDER_LT};
+                background: {_Colors.BG_HOVER};
+            }}
+        """)
+        self._toggle_btn.clicked.connect(self.toggle_compact)
+        la.addWidget(self._toggle_btn)
         layout.addWidget(logo_area)
 
         # Navigation
-        nav_label = QLabel("NAVIGATION")
-        nav_label.setContentsMargins(16, 16, 0, 8)
-        nav_label.setStyleSheet(f"""
+        self._nav_label = QLabel("NAVIGATION")
+        self._nav_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._nav_label.setContentsMargins(16, 16, 0, 8)
+        self._nav_label.setStyleSheet(f"""
             color: {_Colors.TEXT_DIM};
             font-size: 9px;
             font-weight: 700;
@@ -861,10 +948,10 @@ class _Sidebar(QWidget):
             background: transparent;
             border: none;
         """)
-        layout.addWidget(nav_label)
+        layout.addWidget(self._nav_label)
 
         for label, icon, idx, is_sub in self._NAV_ITEMS:
-            btn = _NavButton(label, icon, idx, is_sub)
+            btn = _NavButton(label, icon, idx, is_sub, compact=self._compact)
             btn.clicked.connect(lambda b=btn: self._on_nav_click(b))
             self._buttons.append(btn)
             layout.addWidget(btn)
@@ -872,15 +959,17 @@ class _Sidebar(QWidget):
         layout.addStretch()
 
         # Version
-        version_lbl = QLabel(APP_VERSION_LABEL)
-        version_lbl.setContentsMargins(16, 0, 0, 12)
-        version_lbl.setStyleSheet(f"""
+        self._version_lbl = QLabel(APP_VERSION_LABEL)
+        self._version_lbl.setToolTip("")
+        self._version_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._version_lbl.setContentsMargins(16, 0, 0, 12)
+        self._version_lbl.setStyleSheet(f"""
             color: {_Colors.TEXT_DIM};
             font-size: 9px;
             background: transparent;
             border: none;
         """)
-        layout.addWidget(version_lbl)
+        layout.addWidget(self._version_lbl)
 
         # Sélectionner le premier bouton
         if self._buttons:
@@ -896,6 +985,35 @@ class _Sidebar(QWidget):
     def select_page(self, index: int) -> None:
         for btn in self._buttons:
             btn.setChecked(btn.page_index == index)
+
+    def is_compact(self) -> bool:
+        return self._compact
+
+    def toggle_compact(self, _checked: bool = False) -> None:
+        self.set_compact(not self._compact)
+
+    def set_compact(self, compact: bool) -> None:
+        self._compact = compact
+        self.setFixedWidth(self._COMPACT_WIDTH if compact else self._FULL_WIDTH)
+        self._logo_text.setVisible(not compact)
+        self._nav_label.setVisible(not compact)
+        for btn in self._buttons:
+            btn.set_compact(compact)
+
+        if compact:
+            self._toggle_btn.setText("▶")
+            self._toggle_btn.setToolTip("Agrandir le menu")
+            self._version_lbl.setText(APP_VERSION_LABEL.split()[-1])
+            self._version_lbl.setToolTip(APP_VERSION_LABEL)
+            self._version_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._version_lbl.setContentsMargins(0, 0, 0, 12)
+        else:
+            self._toggle_btn.setText("◀")
+            self._toggle_btn.setToolTip("Réduire le menu")
+            self._version_lbl.setText(APP_VERSION_LABEL)
+            self._version_lbl.setToolTip("")
+            self._version_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            self._version_lbl.setContentsMargins(16, 0, 0, 12)
 
 
 # ---------------------------------------------------------------------------
@@ -932,6 +1050,12 @@ class MainWindow(QMainWindow):
         self._op_start: float = 0.0
         self._op_mode: str = ""   # "remux" ou "encode"
         self._op_encode_fps: float | None = None
+        self._prep_progress_active = False
+        self._prep_progress_value = 0
+        self._prep_progress_direction = 1
+        self._prep_progress_timer = QTimer(self)
+        self._prep_progress_timer.setInterval(120)
+        self._prep_progress_timer.timeout.connect(self._tick_prep_progress)
         self._setup_window()
         self._build_ui()
         self._apply_startup_panel()
@@ -980,6 +1104,8 @@ class MainWindow(QMainWindow):
         vsplit = self._vsplit
         vsplit.setHandleWidth(5)
         vsplit.setChildrenCollapsible(False)
+        vsplit.setStretchFactor(0, 1)
+        vsplit.setStretchFactor(1, 0)
 
         # Partie haute : sidebar + pages + barre d'action globale
         top_widget = QWidget()
@@ -998,7 +1124,7 @@ class MainWindow(QMainWindow):
         top_layout.setSpacing(0)
 
         # Sidebar
-        self._sidebar = _Sidebar()
+        self._sidebar = _Sidebar(compact=self._config.startup_menu_compact)
         top_layout.addWidget(self._sidebar)
 
         # Stack de pages
@@ -1053,8 +1179,7 @@ class MainWindow(QMainWindow):
         self._log_panel.setMinimumHeight(32)
         vsplit.addWidget(self._log_panel)
 
-        # Proportion initiale : 70% / 30%
-        vsplit.setSizes([560, 240])
+        self._apply_startup_log_panel_state()
 
         main_layout.addWidget(vsplit)
 
@@ -1085,10 +1210,7 @@ class MainWindow(QMainWindow):
         self._prog_bar.setValue(0)
         self._prog_bar.setFixedHeight(6)
         self._prog_bar.setTextVisible(False)
-        self._prog_bar.setStyleSheet(
-            f"QProgressBar{{background:{_Colors.BG_CARD};border:none;border-radius:3px;}}"
-            f"QProgressBar::chunk{{background:{_Colors.ACCENT};border-radius:3px;}}"
-        )
+        self._prog_bar.setStyleSheet(self._progress_bar_stylesheet(_Colors.ACCENT))
         pv.addWidget(self._prog_bar)
 
         self._prog_lbl = QLabel("")
@@ -1102,6 +1224,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._prog_widget, stretch=1)
 
         self._status_lbl = QLabel("")
+        self._status_lbl.setMinimumWidth(0)
+        self._status_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self._status_lbl.setStyleSheet(
             f"color:{_Colors.TEXT_SEC};font-size:11px;background:transparent;"
         )
@@ -1111,7 +1235,7 @@ class MainWindow(QMainWindow):
         # Bouton principal unique
         self._run_btn = QPushButton("▶  Exécuter l'opération")
         self._run_btn.setFixedHeight(36)
-        self._run_btn.setMinimumWidth(220)
+        self._run_btn.setMinimumWidth(180)
         self._run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._run_btn.setEnabled(False)
         self._run_btn.setStyleSheet(f"""
@@ -1130,7 +1254,7 @@ class MainWindow(QMainWindow):
 
         # Bouton annulation
         self._cancel_btn = QPushButton("✕  Annuler")
-        self._cancel_btn.setFixedWidth(110)
+        self._cancel_btn.setMinimumWidth(96)
         self._cancel_btn.setFixedHeight(36)
         self._cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._cancel_btn.setStyleSheet(f"""
@@ -1146,6 +1270,64 @@ class MainWindow(QMainWindow):
 
         return bar
 
+    @staticmethod
+    def _progress_bar_stylesheet(chunk_color: str) -> str:
+        return (
+            f"QProgressBar{{background:{_Colors.BG_CARD};border:none;border-radius:3px;}}"
+            f"QProgressBar::chunk{{background:{chunk_color};border-radius:3px;}}"
+        )
+
+    def _start_prep_progress(self) -> None:
+        if not self._running:
+            return
+        if self._prep_progress_active:
+            return
+        self._prep_progress_active = True
+        self._prep_progress_direction = 1
+        self._prep_progress_value = max(4, min(30, self._prog_bar.value() or 0))
+        self._prog_bar.setRange(0, 100)
+        self._prog_bar.setStyleSheet(self._progress_bar_stylesheet(_Colors.WARN))
+        if self._prog_bar.value() <= 0:
+            self._prog_bar.setValue(self._prep_progress_value)
+        self._prep_progress_timer.start()
+
+    def _stop_prep_progress(self) -> None:
+        if self._prep_progress_timer.isActive():
+            self._prep_progress_timer.stop()
+        self._prep_progress_active = False
+        self._prog_bar.setStyleSheet(self._progress_bar_stylesheet(_Colors.ACCENT))
+
+    def _tick_prep_progress(self) -> None:
+        if not self._prep_progress_active:
+            return
+        value = self._prep_progress_value + self._prep_progress_direction
+        if value >= 32:
+            value = 32
+            self._prep_progress_direction = -1
+        elif value <= 6:
+            value = 6
+            self._prep_progress_direction = 1
+        self._prep_progress_value = value
+        self._prog_bar.setValue(value)
+
+    def _sync_prep_progress_from_log(self, message: str) -> None:
+        if not self._running:
+            return
+        match = _STEP_PROGRESS_RE.match(message.strip())
+        if match is None:
+            return
+        step_text = match.group(1).strip()
+        if "Exécution ffmpeg" in step_text or "Exécution du remux ffmpeg" in step_text:
+            self._stop_prep_progress()
+            return
+        self._start_prep_progress()
+        self._prog_lbl.setText(
+            translate_text(
+                "{step} - veuillez patienter",
+                step=translate_text(step_text),
+            )
+        )
+
     @classmethod
     def startup_page_index(cls, panel_key: str | None) -> int:
         if not panel_key:
@@ -1157,6 +1339,14 @@ class MainWindow(QMainWindow):
         page_index = self.startup_page_index(startup_panel)
         self._stack.setCurrentIndex(page_index)
         self._sidebar.select_page(page_index)
+
+    def _apply_startup_log_panel_state(self) -> None:
+        logs_expanded = bool(getattr(self._config, "startup_logs_expanded", False))
+        self._log_panel.set_collapsed(not logs_expanded)
+        if logs_expanded:
+            self._vsplit.setSizes([620, 180])
+            return
+        self._vsplit.setSizes([768, 32])
 
     # ------------------------------------------------------------------
     # Signaux
@@ -1185,6 +1375,7 @@ class MainWindow(QMainWindow):
         self._encode_panel.set_output_provider(self._remux_panel.current_output_path)
         self._encode_panel.set_file_title_provider(self._remux_panel.current_file_title)
         self._encode_panel.set_extra_attachments_provider(self._remux_panel.current_extra_attachments)
+        self._encode_panel.set_tmdb_cover_provider(self._remux_panel.current_tmdb_cover)
         self._encode_panel.set_tag_overrides_provider(self._remux_panel.current_tag_overrides)
         self._encode_panel.set_chapters_provider(self._remux_panel.current_chapter_overrides)
         # État "prêt" → bouton Exécuter
@@ -1264,12 +1455,17 @@ class MainWindow(QMainWindow):
         self._run_btn.setEnabled(False)
         self._cancel_btn.setVisible(True)
         self._op_encode_fps = None
+        self._prep_progress_active = False
+        if self._prep_progress_timer.isActive():
+            self._prep_progress_timer.stop()
         self._prog_bar.setRange(0, 100)
         self._prog_bar.setValue(0)
+        self._prog_bar.setStyleSheet(self._progress_bar_stylesheet(_Colors.ACCENT))
         self._prog_lbl.setText("")
         self._prog_widget.setVisible(True)
         label = translate_text("Encodage en cours…") if self._op_mode == "encode" else translate_text("Remuxage en cours…")
         self._status_lbl.setText(label)
+        self._start_prep_progress()
 
         signals.progress.connect(self._on_op_progress, Qt.ConnectionType.QueuedConnection)
         signals.finished.connect(
@@ -1298,7 +1494,7 @@ class MainWindow(QMainWindow):
         Retourne une EncodeConfig enrichie. Si le remux panel n'apporte rien,
         retourne encode_cfg inchangé (sauf keep_chapters toujours synchronisé).
         """
-        from core.workflows.encode.models import EncodeConfig, TrackMetaEdit
+        from core.workflows.encode.models import EncodeConfig, TrackMetaEdit, TrackTimeOffset
 
         sub_tracks: list[tuple[Path, int]] = []
         attachment_streams: list[tuple[Path, int]] = []   # (source, ffprobe_stream_index)
@@ -1335,30 +1531,66 @@ class MainWindow(QMainWindow):
         # Prioritaire sur tag_sources : si présent, on ignore tag_sources pour l'encode.
         tag_overrides = remux_cfg.tag_overrides
 
-        # --- Métadonnées de pistes (langue + titre) via mkvpropedit post-encodage ---
-        # ffmpeg ne préserve pas les métadonnées de pistes (langue, titre).
-        # On les réécrit systématiquement pour toutes les pistes ayant des métadonnées.
+        # --- Métadonnées de pistes (langue + titre + dispositions) via FFmpeg ---
+        # ffmpeg peut perdre des infos de piste (langue, titre, flags) selon le
+        # type d'opération (ex: réencodage audio). On réécrit explicitement.
         #
         # Ordre des pistes dans le fichier de sortie ffmpeg :
         #   @1 = vidéo  |  @2…@N+1 = audio  |  @N+2… = sous-titres
         track_meta_edits: list[TrackMetaEdit] = []
+        track_time_offsets: list[TrackTimeOffset] = []
 
         def _make_edit(track_order: int, t: TrackEntry) -> "TrackMetaEdit | None":
-            """Retourne un TrackMetaEdit si la piste a une langue ou un titre à écrire."""
+            """Retourne un TrackMetaEdit si la piste a des infos à appliquer."""
             lang = (t.language or "").strip()
             orig_lang = (t.orig_language or "").strip()
             title = (t.title or "").strip()
             # Une langue vidée explicitement doit rester une instruction explicite
-            # dans le workflow encode (mkvpropedit), via "und".
+            # dans le workflow encode (FFmpeg), via "und".
             if not lang and orig_lang and lang != orig_lang:
                 lang = "und"
-            if not lang and not title:
+            has_flag_state = any((
+                t.flag_default,
+                t.flag_forced,
+                t.flag_hearing_impaired,
+                t.flag_visual_impaired,
+                t.flag_original,
+                t.flag_commentary,
+            ))
+            has_flag_change = any((
+                t.flag_default != t.orig_flag_default,
+                t.flag_forced != t.orig_flag_forced,
+                t.flag_hearing_impaired != t.orig_flag_hearing_impaired,
+                t.flag_visual_impaired != t.orig_flag_visual_impaired,
+                t.flag_original != t.orig_flag_original,
+                t.flag_commentary != t.orig_flag_commentary,
+            ))
+            if not lang and not title and not has_flag_state and not has_flag_change:
                 return None
             return TrackMetaEdit(
                 track_order = track_order,
                 language    = lang,
                 title       = title if title else None,
+                flag_default          = t.flag_default,
+                flag_forced           = t.flag_forced,
+                flag_hearing_impaired = t.flag_hearing_impaired,
+                flag_visual_impaired  = t.flag_visual_impaired,
+                flag_original         = t.flag_original,
+                flag_commentary       = t.flag_commentary,
             )
+
+        def _append_track_offset(track_type: str, src_path: Path, stream_index: int, track: TrackEntry | None) -> None:
+            if track is None:
+                return
+            offset_ms = int(getattr(track, "time_shift_ms", 0) or 0)
+            if offset_ms == 0:
+                return
+            track_time_offsets.append(TrackTimeOffset(
+                track_type=track_type,
+                source_path=src_path,
+                stream_index=int(stream_index),
+                offset_ms=offset_ms,
+            ))
 
         def _find_track(src_path: Path, stream_index: int, track_type: str) -> TrackEntry | None:
             t = remux_track_map.get((src_path, stream_index))
@@ -1387,6 +1619,7 @@ class MainWindow(QMainWindow):
             edit = _make_edit(1, video_entry)
             if edit:
                 track_meta_edits.append(edit)
+            _append_track_offset("video", encode_cfg.source, 0, video_entry)
 
         # @2+ — pistes audio
         audio_offset = 2
@@ -1398,6 +1631,7 @@ class MainWindow(QMainWindow):
             edit = _make_edit(audio_offset + audio_order, t)
             if edit:
                 track_meta_edits.append(edit)
+            _append_track_offset("audio", src_path, ats.stream_index, t)
 
         # @N+2+ — pistes sous-titres
         sub_offset = audio_offset + len(encode_cfg.audio_tracks)
@@ -1409,6 +1643,7 @@ class MainWindow(QMainWindow):
             edit = _make_edit(sub_offset + sub_order, t)
             if edit:
                 track_meta_edits.append(edit)
+            _append_track_offset("subtitle", sub_path, sub_sid, t)
 
         chapter_overrides = remux_cfg.chapter_overrides
 
@@ -1416,6 +1651,7 @@ class MainWindow(QMainWindow):
         if (not sub_tracks and not attachment_streams and not tag_sources
                 and tag_overrides is None
                 and not track_meta_edits
+                and not track_time_offsets
                 and encode_cfg.keep_chapters == remux_cfg.keep_chapters
                 and remux_cfg.chapter_overrides is None):
             return encode_cfg
@@ -1433,6 +1669,7 @@ class MainWindow(QMainWindow):
             tag_sources=[] if tag_overrides is not None else tag_sources,
             tag_overrides=tag_overrides,
             track_meta_edits=track_meta_edits,
+            track_time_offsets=track_time_offsets,
             duration_s=encode_cfg.duration_s,
             copy_dv=encode_cfg.copy_dv,
             copy_hdr10plus=encode_cfg.copy_hdr10plus,
@@ -1440,6 +1677,7 @@ class MainWindow(QMainWindow):
             work_dir=encode_cfg.work_dir,
             file_title=encode_cfg.file_title,
             extra_attachments=encode_cfg.extra_attachments,
+            tmdb_cover=encode_cfg.tmdb_cover,
         )
 
     def _on_op_progress(self, line: str) -> None:
@@ -1447,6 +1685,7 @@ class MainWindow(QMainWindow):
         if self._op_mode == "remux":
             if "Progress:" in line:
                 try:
+                    self._stop_prep_progress()
                     pct = int(line.split("%")[0].split()[-1])
                     self._prog_bar.setValue(pct)
                     elapsed = time.monotonic() - self._op_start
@@ -1465,6 +1704,7 @@ class MainWindow(QMainWindow):
             if self._NOISE_RE.search(line):
                 return
             if line.startswith("$ "):
+                self._stop_prep_progress()
                 self._op_encode_fps = None
                 self.log_requested.emit("INFO", line)
                 return
@@ -1476,6 +1716,7 @@ class MainWindow(QMainWindow):
                     self._op_encode_fps = None
             elapsed_video = ffmpeg_progress_seconds(line)
             if elapsed_video is not None:
+                self._stop_prep_progress()
                 dur = self._encode_panel.get_duration_s()
                 if dur and dur > 0:
                     pct = min(99, int(elapsed_video / dur * 100))
@@ -1516,6 +1757,7 @@ class MainWindow(QMainWindow):
     def _on_op_cancelled(self) -> None:
         self._running = False
         self._signals = None
+        self._stop_prep_progress()
         self._run_btn.setEnabled(True)
         self._cancel_btn.setVisible(False)
         self._prog_widget.setVisible(False)
@@ -1527,6 +1769,7 @@ class MainWindow(QMainWindow):
     def _on_op_finished(self, success: bool, error: str = "") -> None:
         self._running = False
         self._signals = None
+        self._stop_prep_progress()
         self._run_btn.setEnabled(True)
         self._cancel_btn.setVisible(False)
         self._prog_bar.setRange(0, 100)
@@ -1552,6 +1795,7 @@ class MainWindow(QMainWindow):
         self._log_panel._max_lines = self._config.log_max_lines
         self._encode_panel.refresh_runtime_settings()
         self._remux_panel.refresh_runtime_settings()
+        self._sidebar.set_compact(self._config.startup_menu_compact)
         self._apply_locale()
         if new_theme != previous_theme:
             self.log_requested.emit(
@@ -1582,6 +1826,7 @@ class MainWindow(QMainWindow):
 
     def _on_log_requested(self, level: str, message: str) -> None:
         """Slot connecté au signal public log_requested(str, str)."""
+        self._sync_prep_progress_from_log(message)
         try:
             lv = LogLevel(level.upper())
         except ValueError:

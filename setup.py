@@ -163,20 +163,16 @@ WINDOWS_WINGET_PATTERNS: dict[str, tuple[str, ...]] = {
 WINDOWS_CONFIG_TOOL_ORDER: tuple[str, ...] = (
     "ffmpeg",
     "ffprobe",
-    "mkvmerge",
-    "mkvextract",
-    "mkvinfo",
-    "mkvpropedit",
     "mediainfo",
     "dovi_tool",
     "hdr10plus_tool",
     "eac3to",
 )
 
+# Outils qui écrivent dans les dossiers protégés (Windows CFA allowlist).
+# mkvmerge/mkvpropedit ne sont plus utilisés par les workflows principaux.
 WINDOWS_CFA_WRITER_TOOLS: tuple[str, ...] = (
     "ffmpeg",
-    "mkvmerge",
-    "mkvpropedit",
 )
 
 def detect_linux_distro() -> str:
@@ -202,6 +198,7 @@ def detect_linux_distro() -> str:
 
 PYTHON_PACKAGES = [
     "PySide6",
+    "pymediainfo>=6.1.0",
 ]
 
 # ---------------------------------------------------------------------------
@@ -1482,8 +1479,8 @@ def _windows_cfa_candidate_apps(prefix: Path) -> list[Path]:
     """
     Return the executables that should be allowlisted for protected folders.
 
-    The actual output writes are performed by ffmpeg/mkvmerge/mkvpropedit, so
-    those executables matter more than the launcher itself.
+    The actual output writes are performed by ffmpeg, so that executable
+    matters more than the launcher itself.
     """
     candidates: list[Path] = []
 
@@ -1732,7 +1729,7 @@ def offer_windows_controlled_folder_access_setup(
             "Without this exception, saving directly into those folders "
             "may be blocked by Windows, even if the folders exist.\n\n"
             "This allowlist can include Mediarecode itself and the writer tools "
-            "it uses, such as ffmpeg, mkvmerge, and mkvpropedit.\n\n"
+            "it uses, such as ffmpeg.\n\n"
             "An administrator approval prompt may appear.\n\n"
             "Add missing applications now?"
         )

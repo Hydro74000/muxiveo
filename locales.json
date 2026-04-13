@@ -131,6 +131,34 @@
     "fra": "Thème",
     "eng": "Theme"
   },
+  "Thème principal pour l'interface. Le changement de thème nécessite de redémarrer l'application.": {
+    "fra": "Thème principal pour l'interface. Le changement de thème nécessite de redémarrer l'application.",
+    "eng": "Primary interface theme. Restarting the application is required to fully apply the theme change."
+  },
+  "Panneau à afficher au démarrage": {
+    "fra": "Panneau à afficher au démarrage",
+    "eng": "Panel to show at startup"
+  },
+  "Panneau chargé en premier au lancement de l'application.": {
+    "fra": "Panneau chargé en premier au lancement de l'application.",
+    "eng": "Panel loaded first when the application starts."
+  },
+  "Démarrer avec le menu en mode Compact": {
+    "fra": "Démarrer avec le menu en mode Compact",
+    "eng": "Start with compact sidebar menu"
+  },
+  "Si activé, le menu latéral est réduit en mode icônes au lancement.": {
+    "fra": "Si activé, le menu latéral est réduit en mode icônes au lancement.",
+    "eng": "When enabled, the sidebar starts collapsed in icon-only mode."
+  },
+  "Ouvrir les logs au démarrage de l'application": {
+    "fra": "Ouvrir les logs au démarrage de l'application",
+    "eng": "Open logs when the application starts"
+  },
+  "Si activé, le panneau de logs est déplié au lancement.": {
+    "fra": "Si activé, le panneau de logs est déplié au lancement.",
+    "eng": "When enabled, the log panel starts expanded."
+  },
   "Thème principal de l'interface.": {
     "fra": "Thème principal de l'interface.",
     "eng": "Primary application theme."
@@ -1023,6 +1051,22 @@
     "fra": "Éditer la piste",
     "eng": "Edit track"
   },
+  "DÉCALAGE TEMPOREL (ms)": {
+    "fra": "DÉCALAGE TEMPOREL (ms)",
+    "eng": "TIME OFFSET (ms)"
+  },
+  "ex : +125, -80, 0": {
+    "fra": "ex : +125, -80, 0",
+    "eng": "e.g. +125, -80, 0"
+  },
+  "⚠  Valeur invalide — entier signé attendu": {
+    "fra": "⚠  Valeur invalide — entier signé attendu",
+    "eng": "⚠  Invalid value — signed integer expected"
+  },
+  "Décalage temporel invalide : entier signé attendu.": {
+    "fra": "Décalage temporel invalide : entier signé attendu.",
+    "eng": "Invalid time offset: signed integer expected."
+  },
   "Timecode invalide — format : HH:MM:SS ou HH:MM:SS.mmm": {
     "fra": "Timecode invalide — format : HH:MM:SS ou HH:MM:SS.mmm",
     "eng": "Invalid timecode - format: HH:MM:SS or HH:MM:SS.mmm"
@@ -1190,5 +1234,17 @@
   "Réponse TMDB invalide : {error}": {
     "fra": "Réponse TMDB invalide : {error}",
     "eng": "Invalid TMDB response: {error}"
+  },
+  "{step} - veuillez patienter": {
+    "fra": "{step} - veuillez patienter",
+    "eng": "{step} - please wait"
+  },
+  "Préparation sync/remap + commandes ffmpeg (2 passes)": {
+    "fra": "Préparation sync/remap + commandes ffmpeg (2 passes)",
+    "eng": "Sync/remap setup + ffmpeg commands (2-pass)"
+  },
+  "Préparation sync/remap + commande ffmpeg (single pass)": {
+    "fra": "Préparation sync/remap + commande ffmpeg (single pass)",
+    "eng": "Sync/remap setup + ffmpeg command (single pass)"
   }
 }

@@ -27,6 +27,7 @@ Conventions :
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -39,6 +40,9 @@ from typing import Callable
 
 from PySide6.QtCore import QObject, Signal
 from core.subprocess_utils import subprocess_text_kwargs
+from core.workdir import prepare_process_work_dir
+
+_FALLBACK_HEVC_FRAME_RATE = "24000/1001"
 
 
 # =============================================================================
@@ -144,6 +148,7 @@ class _WorkflowPaths:
     film2_hdr10plus:  Path   # Métadonnées HDR10+ extraites de Film 2
     film1_with_dovi:  Path   # Film 1 + RPU DoVi injecté
     film1_final:      Path   # Film 1 + RPU DoVi + HDR10+ (résultat final HEVC)
+    film1_wrapped_video: Path  # Encapsulation MKV de la vidéo injectée (PTS reconstruit)
     output_mkv:       Path   # Fichier de sortie final
 
     @classmethod
@@ -163,6 +168,7 @@ class _WorkflowPaths:
             film2_hdr10plus = work_dir / "film2_hdr10plus.json",
             film1_with_dovi = work_dir / "film1_with_dovi.hevc",
             film1_final     = work_dir / "film1_final.hevc",
+            film1_wrapped_video = work_dir / "film1_wrapped_video.mkv",
             output_mkv      = output_dir / f"{basename}.mkv",
         )
 
@@ -230,8 +236,8 @@ class MergeDoviWorkflow(QObject):
     def __init__(
         self,
         mediainfo_bin:    str = "mediainfo",
-        mkvextract_bin:   str = "mkvextract",
-        mkvmerge_bin:     str = "mkvmerge",
+        ffmpeg_bin:       str = "ffmpeg",
+        ffprobe_bin:      str = "ffprobe",
         dovi_tool_bin:    str = "dovi_tool",
         hdr10plus_bin:    str = "hdr10plus_tool",
         max_workers:      int = 4,
@@ -240,8 +246,8 @@ class MergeDoviWorkflow(QObject):
         super().__init__(parent)
         self._bins = {
             "mediainfo":     mediainfo_bin,
-            "mkvextract":    mkvextract_bin,
-            "mkvmerge":      mkvmerge_bin,
+            "ffmpeg":        ffmpeg_bin,
+            "ffprobe":       ffprobe_bin,
             "dovi_tool":     dovi_tool_bin,
             "hdr10plus_tool": hdr10plus_bin,
         }
@@ -264,7 +270,13 @@ class MergeDoviWorkflow(QObject):
         """Lance le workflow dans un thread secondaire."""
         self._cancelled = False
         basename = output_basename or f"{film1.stem}_DOVI_HDR10PLUS"
-        paths    = _WorkflowPaths.from_config(work_dir, output_dir, film1, basename)
+        output_path = output_dir / f"{basename}.mkv"
+        process_work_dir = prepare_process_work_dir(
+            work_dir,
+            output_path=output_path,
+            fallback_name="dovi_job",
+        )
+        paths = _WorkflowPaths.from_config(process_work_dir, output_dir, film1, basename)
 
         outer = ThreadPoolExecutor(max_workers=1)
         outer.submit(self._run, film1, film2, paths, dovi_profile)
@@ -315,10 +327,9 @@ class MergeDoviWorkflow(QObject):
                 self._step_inject_hdr10plus(paths, flags)
                 self._check_cancel()
 
-            # 6 — Vérification
-            if flags.has_dovi:
-                self._step_verify(film1, paths, flags)
-                self._check_cancel()
+            # 6 — Vérification (RPU si DoVi + cohérence framecount du flux final injecté)
+            self._step_verify(film1, paths, flags)
+            self._check_cancel()
 
             # 7 — Remuxage
             self._step_remux(film1, paths, flags)
@@ -579,40 +590,55 @@ class MergeDoviWorkflow(QObject):
         self.step_started.emit(step)
 
         final = paths.injection_chain_final(flags)
-        self.step_progress.emit(step, f"Vérification RPU frames dans {final.name}…")
-
-        try:
-            result = subprocess.run(
-                [self._bins["dovi_tool"], "info", "-i", str(final)],
-                capture_output=True, check=False, **subprocess_text_kwargs(),
-            )
-            raw = result.stdout + result.stderr
-        except Exception as exc:
-            self.step_progress.emit(step, f"dovi_tool info indisponible : {exc}")
-            raw = ""
-
-        rpu_frames: int | None = None
-        m = re.search(r"rpu frames[^\d]*(\d+)", raw, re.IGNORECASE)
-        if m:
-            rpu_frames = int(m.group(1))
-
         fc1 = self._get_framecount(film1)
+        fc_final = self._get_framecount(final)
 
-        detail = (
-            f"RPU frames : {rpu_frames if rpu_frames is not None else '?'}  |  "
-            f"Film 1 frames : {fc1 if fc1 is not None else '?'}"
-        )
-        self.step_progress.emit(step, detail)
-
-        if rpu_frames is not None and fc1 is not None:
-            diff = abs(rpu_frames - fc1)
-            if diff > 4:
+        if fc1 is not None and fc_final is not None:
+            diff_final = abs(fc_final - fc1)
+            if diff_final > 4:
                 raise WorkflowError(
                     step,
-                    f"Désalignement critique : {rpu_frames} RPU frames pour {fc1} frames vidéo.",
+                    f"Désalignement critique du flux injecté : {fc_final} frames pour {fc1} frames vidéo.",
                 )
-            if diff > 0:
-                self.step_progress.emit(step, f"Écart {diff} frames — tolérable.")
+            if diff_final > 0:
+                self.step_progress.emit(
+                    step,
+                    f"Flux injecté vs Film 1 : écart {diff_final} frames — tolérable.",
+                )
+
+        rpu_frames: int | None = None
+        if flags.has_dovi:
+            self.step_progress.emit(step, f"Vérification RPU frames dans {final.name}…")
+            try:
+                result = subprocess.run(
+                    [self._bins["dovi_tool"], "info", "-i", str(final)],
+                    capture_output=True, check=False, **subprocess_text_kwargs(),
+                )
+                raw = result.stdout + result.stderr
+            except Exception as exc:
+                self.step_progress.emit(step, f"dovi_tool info indisponible : {exc}")
+                raw = ""
+
+            m = re.search(r"rpu frames[^\d]*(\d+)", raw, re.IGNORECASE)
+            if m:
+                rpu_frames = int(m.group(1))
+
+            if rpu_frames is not None and fc1 is not None:
+                diff = abs(rpu_frames - fc1)
+                if diff > 4:
+                    raise WorkflowError(
+                        step,
+                        f"Désalignement critique : {rpu_frames} RPU frames pour {fc1} frames vidéo.",
+                    )
+                if diff > 0:
+                    self.step_progress.emit(step, f"RPU vs Film 1 : écart {diff} frames — tolérable.")
+
+        detail = (
+            f"Flux final : {fc_final if fc_final is not None else '?'}  |  "
+            f"Film 1 : {fc1 if fc1 is not None else '?'}  |  "
+            f"RPU : {rpu_frames if rpu_frames is not None else '-'}"
+        )
+        self.step_progress.emit(step, detail)
 
         duration = time.monotonic() - t0
         self.step_finished.emit(
@@ -632,36 +658,50 @@ class MergeDoviWorkflow(QObject):
         step = WorkflowStep.REMUX
         t0   = time.monotonic()
         self.step_started.emit(step)
-        self.step_progress.emit(step, "Construction du track-order…")
-
-        # Détecter le nombre de pistes dans Film 1
-        id_result = subprocess.run(
-            [self._bins["mkvmerge"], "--identify", str(film1)],
-            capture_output=True, check=False, **subprocess_text_kwargs(),
-        )
-        nb_tracks = sum(
-            1 for line in id_result.stdout.splitlines()
-            if line.startswith("Track ID")
-        )
-        if nb_tracks == 0:
-            raise WorkflowError(
-                step,
-                f"mkvmerge --identify n'a trouvé aucune piste dans Film 1 : {film1.name}\n"
-                + id_result.stderr.strip()[-300:],
-            )
-        parts       = ["1:0"] + [f"0:{i}" for i in range(1, nb_tracks)]
-        track_order = ",".join(parts)
-        self.step_progress.emit(step, f"Pistes Film 1 : {nb_tracks}  |  track-order : {track_order}")
 
         final_hevc = paths.injection_chain_final(flags)
-        self.step_progress.emit(step, f"Remuxage → {paths.output_mkv.name}…")
+        if not final_hevc.exists():
+            raise WorkflowError(step, f"Flux injecté introuvable : {final_hevc.name}")
+
+        fps_expr = self._source_video_fps_expr(film1)
+        self.step_progress.emit(
+            step,
+            f"Encapsulation vidéo injectée (FPS source: {fps_expr}) → {paths.film1_wrapped_video.name}…",
+        )
 
         self._run_cmd([
-            self._bins["mkvmerge"],
-            "-o",            str(paths.output_mkv),
-            "--no-video",    str(film1),
-                             str(final_hevc),
-            "--track-order", track_order,
+            self._bins["ffmpeg"],
+            "-hide_banner",
+            "-y",
+            "-f", "hevc",
+            "-framerate", fps_expr,
+            "-i", str(final_hevc),
+            "-map", "0:v:0",
+            "-c:v", "copy",
+            "-bsf:v", f"setts=pts=N/({fps_expr}*TB)",
+            str(paths.film1_wrapped_video),
+        ], step)
+
+        self.step_progress.emit(step, f"Reconstruction conteneur final → {paths.output_mkv.name}…")
+        self._run_cmd([
+            self._bins["ffmpeg"],
+            "-hide_banner",
+            "-y",
+            "-i", str(paths.film1_wrapped_video),
+            "-i", str(film1),
+            "-map", "0:v:0",
+            "-map", "1:a?",
+            "-map", "1:s?",
+            "-map", "1:t?",
+            "-map", "1:d?",
+            "-c:v", "copy",
+            "-c:a", "copy",
+            "-c:s", "copy",
+            "-c:t", "copy",
+            "-c:d", "copy",
+            "-map_metadata", "1",
+            "-map_chapters", "1",
+            str(paths.output_mkv),
         ], step)
 
         size_mb = paths.output_mkv.stat().st_size / (1024 ** 2)
@@ -691,6 +731,7 @@ class MergeDoviWorkflow(QObject):
             paths.film2_hdr10plus,
             paths.film1_with_dovi,
             paths.film1_final,
+            paths.film1_wrapped_video,
         ]:
             if path.exists():
                 path.unlink()
@@ -715,7 +756,17 @@ class MergeDoviWorkflow(QObject):
     ) -> str:
         emit(f"Extraction HEVC : {source.name} → {dest.name}…")
         self._run_raw([
-            self._bins["mkvextract"], str(source), "tracks", f"0:{dest}"
+            self._bins["ffmpeg"],
+            "-hide_banner",
+            "-y",
+            "-i", str(source),
+            "-map", "0:v:0",
+            "-c:v", "copy",
+            "-an",
+            "-sn",
+            "-dn",
+            "-f", "hevc",
+            str(dest),
         ])
         return f"HEVC extrait → {dest.name}"
 
@@ -831,6 +882,55 @@ class MergeDoviWorkflow(QObject):
     # Helpers mediainfo
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _normalize_frame_rate_expr(value: object) -> str | None:
+        raw = str(value or "").strip()
+        if raw in {"", "0", "0/0", "N/A"}:
+            return None
+        if re.fullmatch(r"\d+(?:\.\d+)?", raw):
+            return raw
+        if re.fullmatch(r"\d+/\d+", raw):
+            return raw
+        return None
+
+    def _source_video_fps_expr(self, source: Path) -> str:
+        cmd = [
+            self._bins["ffprobe"],
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_streams",
+            str(source),
+        ]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                check=False,
+                **subprocess_text_kwargs(),
+            )
+        except Exception:
+            return _FALLBACK_HEVC_FRAME_RATE
+        if result.returncode != 0:
+            return _FALLBACK_HEVC_FRAME_RATE
+        try:
+            payload = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            return _FALLBACK_HEVC_FRAME_RATE
+        streams = payload.get("streams")
+        if not isinstance(streams, list):
+            return _FALLBACK_HEVC_FRAME_RATE
+        for stream in streams:
+            if not isinstance(stream, dict):
+                continue
+            if stream.get("codec_type") != "video":
+                continue
+            for key in ("avg_frame_rate", "r_frame_rate"):
+                fps_expr = self._normalize_frame_rate_expr(stream.get(key))
+                if fps_expr is not None:
+                    return fps_expr
+            break
+        return _FALLBACK_HEVC_FRAME_RATE
+
     def _mediainfo(self, path: Path, inform: str) -> str:
         """Lance mediainfo --Inform et retourne la sortie brute."""
         result = subprocess.run(
@@ -852,7 +952,7 @@ class MergeDoviWorkflow(QObject):
 
     @staticmethod
     def required_tools() -> list[str]:
-        return ["mediainfo", "mkvextract", "mkvmerge", "dovi_tool", "hdr10plus_tool"]
+        return ["mediainfo", "ffmpeg", "ffprobe", "dovi_tool", "hdr10plus_tool"]
 
 
 class _CancelledError(Exception):

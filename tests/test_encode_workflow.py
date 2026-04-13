@@ -41,8 +41,8 @@ Plan de couverture :
             - _free() retire le fichier de ext_files
             - _free() silencieux si fichier déjà absent
 
-        Cleanup src.hevc :
-            - src.hevc supprimé avant l'encodage (DV seul / HDR10+ seul / les deux)
+        Pas de src.hevc :
+            - aucune extraction ffmpeg vers src.hevc n'est créée
 
         Cleanup des intermédiaires HEVC :
             - enc.hevc supprimé dans les snapshots suivant la création de enc_hdr10p.hevc
@@ -66,8 +66,7 @@ Plan de couverture :
             - codec=copy → -map_metadata avant la sortie
             - codec≠copy (libx265, libx264, nvenc, amf…) → pas de -map_metadata
         build_command two pass (SIZE) :
-            - codec=copy → pass2 contient -map_metadata 0
-            - codec=copy → pass1 ne contient PAS -map_metadata
+            - codec=copy → forcé en single-pass (pas de -pass)
             - codec≠copy → aucune passe ne contient -map_metadata
         Interaction : audio, subtitles → -map_metadata toujours présent pour copy
 
@@ -101,6 +100,7 @@ import sys
 import time
 from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, call
 import tempfile
 import os
@@ -132,8 +132,11 @@ from core.workflows.encode import (
     EncodeWorkflow,
     ProfileManager,
     QualityMode,
+    TrackMetaEdit,
+    TrackTimeOffset,
     VideoEncodeSettings,
 )
+from core.inspector import ChapterEntry
 from core.runner import TaskSignals
 
 
@@ -165,7 +168,7 @@ def _make_config(source: Path, output: Path, **kw) -> EncodeConfig:
 def _make_workflow(enabled=True, threshold=15, ffmpeg_threads=None) -> EncodeWorkflow:
     return EncodeWorkflow(
         ffmpeg_bin="ffmpeg", dovi_tool_bin="dovi_tool",
-        hdr10plus_bin="hdr10plus_tool", mkvmerge_bin="mkvmerge",
+        hdr10plus_bin="hdr10plus_tool",
         ram_buffer_enabled=enabled,
         ram_buffer_threshold_pct=threshold,
         ffmpeg_threads=ffmpeg_threads,
@@ -640,22 +643,18 @@ class TestMetadataInjectFileManagement:
                 _collect_signals(sigs)
         return snapshots
 
-    # ── cleanup src.hevc ─────────────────────────────────────────────────────
+    # ── pas de src.hevc ──────────────────────────────────────────────────────
 
     @pytest.mark.parametrize("copy_dv,copy_hdr10plus", [
         (True, False), (False, True), (True, True)
     ])
-    def test_src_hevc_deleted_before_encoding(self, tmp_path, copy_dv, copy_hdr10plus):
-        """src.hevc absent dans le snapshot qui crée enc.hevc (l'encodage vidéo)."""
+    def test_src_hevc_is_never_created(self, tmp_path, copy_dv, copy_hdr10plus):
+        """Le workflow n'alloue jamais de src.hevc intermédiaire."""
         snapshots = self._run_inject(tmp_path, copy_dv, copy_hdr10plus)
-        # enc.hevc est créé à l'étape 5a (encodage vidéo direct, sans container)
-        enc_snap_idx = next(
-            (i for i, snap in enumerate(snapshots)
-             if any(p.name == "enc.hevc" for p in snap)), None
+        assert all(
+            not any("src.hevc" in str(path) for path in snap)
+            for snap in snapshots
         )
-        assert enc_snap_idx is not None, "enc.hevc jamais créé"
-        snap = snapshots[enc_snap_idx]
-        assert not any("src.hevc" in str(p) for p in snap)
 
     # ── cleanup des intermédiaires ────────────────────────────────────────────
 
@@ -737,6 +736,57 @@ class TestMetadataInjectFileManagement:
             _collect_signals(sigs)
 
         assert shm_calls == [], "Des fichiers /dev/shm créés malgré enabled=False"
+
+
+class TestRuntimeCleanup:
+    def test_run_two_pass_cleans_passlogs(self, tmp_path):
+        wf = _make_workflow()
+
+        def _fake_run(cmd, cwd=None, label=None, progress_cb=None, signals=None):
+            assert cwd == tmp_path
+            (tmp_path / "ffmpeg2pass-0.log").write_text("log", encoding="utf-8")
+            (tmp_path / "ffmpeg2pass-0.log.mbtree").write_text("tree", encoding="utf-8")
+            return ""
+
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+            sigs = wf._run_two_pass([["ffmpeg", "-pass", "1"], ["ffmpeg", "-pass", "2"]], cwd=tmp_path)
+            _collect_signals(sigs)
+
+        assert not (tmp_path / "ffmpeg2pass-0.log").exists()
+        assert not (tmp_path / "ffmpeg2pass-0.log.mbtree").exists()
+
+    def test_run_cleans_relocated_tmdb_covers(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 1000)
+        work_dir = tmp_path / "work"
+        tmdb_root = work_dir / "tmdb_covers"
+        guid_dir = tmdb_root / "deadbeef"
+        guid_dir.mkdir(parents=True)
+        cover = guid_dir / "cover.jpg"
+        cover.write_bytes(b"jpeg")
+        out = tmp_path / "output.mkv"
+        cfg = _make_config(
+            source=src,
+            output=out,
+            video=_make_video_settings(codec="copy"),
+            extra_attachments=[cover],
+            work_dir=work_dir,
+        )
+        wf = _make_workflow()
+
+        with patch.object(wf._runner, "run") as mock_run:
+            signals = TaskSignals()
+            mock_run.return_value = signals
+            returned = wf.run(cfg)
+            process_dir = work_dir / "output"
+            attachments_dir = process_dir / "attachments"
+            assert (attachments_dir / "cover.jpg").exists()
+            assert not guid_dir.exists()
+            returned.finished.emit("done")
+            _get_app().processEvents()
+
+        assert not attachments_dir.exists()
+        assert not process_dir.exists()
 
 
 # ===========================================================================
@@ -1046,6 +1096,17 @@ class TestValidate:
         errors = self.wf.validate(config)
         assert any("durée" in e.lower() or "taille" in e.lower() for e in errors)
 
+    def test_copy_size_mode_without_duration_is_allowed(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        config = _make_config(
+            src,
+            tmp_path / "out.mkv",
+            video=_make_video_settings(codec="copy", quality_mode=QualityMode.SIZE),
+            duration_s=None,
+        )
+        errors = self.wf.validate(config)
+        assert not any("durée" in e.lower() or "taille" in e.lower() for e in errors)
+
     def test_valid_config_no_errors(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()
         assert self.wf.validate(_make_config(src, tmp_path / "out.mkv")) == []
@@ -1064,6 +1125,18 @@ class TestValidate:
                               video=_make_video_settings(inject_hdr_meta=True,
                                                          max_cll="INVALID"))
         assert any("cll" in e.lower() for e in self.wf.validate(config))
+
+    def test_validate_rejects_negative_video_track_offset(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        config = _make_config(
+            src,
+            tmp_path / "out.mkv",
+            track_time_offsets=[
+                TrackTimeOffset(track_type="video", source_path=src, stream_index=0, offset_ms=-50)
+            ],
+        )
+        errors = self.wf.validate(config)
+        assert any("vidéo" in e.lower() and "négatif" in e.lower() for e in errors)
 
 
 # ===========================================================================
@@ -1210,8 +1283,8 @@ class TestMetadataInjectCopyCodec:
     vers le chemin standard avant d'appeler cette méthode).
 
     Depuis la refactorisation copy :
-      - src.hevc est toujours supprimé avant l'encodage (plus de branche _copy_video)
-      - enc.hevc est toujours extrait depuis encoded.mkv
+      - aucune extraction source.hevc n'est créée
+      - enc.hevc est produit directement par l'étape vidéo
       - test_copy_inject_completes_and_produces_output reste valide
     """
 
@@ -1253,18 +1326,10 @@ class TestMetadataInjectCopyCodec:
 
         return cmds_run, snapshots
 
-    def test_src_hevc_deleted_before_encode_for_copy(self, tmp_path):
-        """
-        src.hevc est supprimé AVANT l'étape d'encodage vidéo (enc.hevc).
-        Plus de branche spéciale _copy_video, plus de encoded.mkv.
-        """
+    def test_no_src_hevc_temp_created_for_copy(self, tmp_path):
+        """Aucun src.hevc temporaire n'est créé dans le chemin codec=copy."""
         _, snapshots = self._run_inject_copy(tmp_path, copy_dv=True, copy_hdr10plus=False)
-        enc_snap = next(
-            (s for s in snapshots if any("enc.hevc" in n for n in s)), None
-        )
-        assert enc_snap is not None, "enc.hevc jamais créé"
-        assert not any("src.hevc" in n for n in enc_snap), \
-            f"src.hevc encore présent lors de l'encodage vidéo : {enc_snap}"
+        assert all("src.hevc" not in snap for snap in snapshots)
 
     def test_enc_hevc_created_by_direct_encode_not_extraction(self, tmp_path):
         """
@@ -1290,6 +1355,23 @@ class TestMetadataInjectCopyCodec:
         assert len(direct_encode_cmds) >= 1, \
             "enc.hevc non créé par encodage direct (-f hevc)"
 
+    def test_dv_extract_reads_source_mkv_directly(self, tmp_path):
+        """L'extraction RPU lit directement source.mkv, sans src.hevc."""
+        cmds, _ = self._run_inject_copy(tmp_path, copy_dv=True, copy_hdr10plus=False)
+        extract_cmds = [c for c in cmds if c[:2] == ["dovi_tool", "extract-rpu"]]
+        assert len(extract_cmds) == 1
+        cmd = extract_cmds[0]
+        idx = cmd.index("-i")
+        assert cmd[idx + 1].endswith("source.mkv")
+
+    def test_hdr10plus_extract_reads_source_mkv_directly(self, tmp_path):
+        """L'extraction HDR10+ lit directement source.mkv, sans src.hevc."""
+        cmds, _ = self._run_inject_copy(tmp_path, copy_dv=False, copy_hdr10plus=True)
+        extract_cmds = [c for c in cmds if c[:2] == ["hdr10plus_tool", "extract"]]
+        assert len(extract_cmds) == 1
+        cmd = extract_cmds[0]
+        assert cmd[2].endswith("source.mkv")
+
     @pytest.mark.parametrize("copy_dv,copy_hdr10plus", [
         (True, False), (False, True), (True, True)
     ])
@@ -1309,12 +1391,12 @@ class TestMetadataInjectCopyCodec:
     def test_copy_dv_injects_rpu_into_enc_hevc(self, tmp_path):
         """
         Depuis la refactorisation, dovi_tool inject-rpu opère sur enc.hevc
-        (extrait de encoded.mkv), pas sur src.hevc (qui est supprimé avant l'encodage).
+        (ou enc_hdr10p.hevc si HDR10+ a déjà été injecté).
         """
         cmds, _ = self._run_inject_copy(tmp_path, copy_dv=True, copy_hdr10plus=False)
         dv_injects = [c for c in cmds if "inject-rpu" in c]
         assert len(dv_injects) == 1
-        # Le fichier d'entrée de inject-rpu doit être enc.hevc (plus src.hevc)
+        # Le fichier d'entrée de inject-rpu doit être enc.hevc (ou enc_hdr10p.hevc)
         inj_cmd = dv_injects[0]
         i_flag = inj_cmd.index("-i")
         input_file = inj_cmd[i_flag + 1]
@@ -1396,30 +1478,20 @@ class TestCopyCodecMetadataPassthrough:
         )
         assert "-map_metadata" not in cmd
 
-    # ── two pass (mode SIZE) ──────────────────────────────────────────────────
+    # ── mode SIZE ─────────────────────────────────────────────────────────────
 
-    def test_copy_two_pass_pass2_has_map_metadata(self, tmp_path):
-        """La passe 2 contient -map_metadata 0 pour codec=copy en mode SIZE."""
+    def test_copy_size_mode_forces_single_pass_with_map_metadata(self, tmp_path):
+        """codec=copy en mode SIZE reste en single-pass (pas de 2-pass)."""
         src = tmp_path / "src.mkv"; src.touch()
         vs = _make_video_settings(codec="copy", quality_mode=QualityMode.SIZE)
-        cmds = self.wf.build_command(
+        cmd = self.wf.build_command(
             _make_config(src, tmp_path / "out.mkv", video=vs, duration_s=3600.0)
         )
-        assert isinstance(cmds[0], list), "mode SIZE doit retourner list[list[str]]"
-        pass2 = cmds[1]
-        assert "-map_metadata" in pass2
-        idx = pass2.index("-map_metadata")
-        assert pass2[idx + 1] == "0"
-
-    def test_copy_two_pass_pass1_no_map_metadata(self, tmp_path):
-        """La passe 1 ne contient PAS -map_metadata (analyse seule, pas de sortie)."""
-        src = tmp_path / "src.mkv"; src.touch()
-        vs = _make_video_settings(codec="copy", quality_mode=QualityMode.SIZE)
-        cmds = self.wf.build_command(
-            _make_config(src, tmp_path / "out.mkv", video=vs, duration_s=3600.0)
-        )
-        pass1 = cmds[0]
-        assert "-map_metadata" not in pass1
+        assert isinstance(cmd[0], str), "codec=copy doit retourner list[str] (single-pass)"
+        assert "-pass" not in cmd
+        assert "-map_metadata" in cmd
+        idx = cmd.index("-map_metadata")
+        assert cmd[idx + 1] == "0"
 
     def test_non_copy_two_pass_no_map_metadata(self, tmp_path):
         """Passe 2 sans -map_metadata pour codec de réencodage en mode SIZE."""
@@ -1502,6 +1574,24 @@ class TestRunCopyBypassesInject:
         assert not inject_called[0], \
             "codec=copy ne doit pas passer par _run_with_metadata_inject"
 
+    def test_copy_codec_skips_dynamic_hdr_detection(self, tmp_path):
+        """run() avec codec=copy ne doit pas lancer la détection ffprobe/mediainfo."""
+        config = self._make_copy_config(tmp_path, copy_dv=True, copy_hdr10plus=True)
+        wf = _make_workflow()
+        detection_called = {"value": False}
+
+        def _fake_detect(_source):
+            detection_called["value"] = True
+            return (True, True)
+
+        with patch.object(wf, "_detect_source_dynamic_hdr_presence", side_effect=_fake_detect), \
+             patch.object(wf._runner, "run") as mock_run:
+            mock_run.return_value = MagicMock()
+            wf.run(config)
+
+        assert detection_called["value"] is False, \
+            "La détection HDR dynamique ne doit pas être appelée en codec=copy."
+
     def test_non_copy_with_copy_dv_calls_metadata_inject(self, tmp_path):
         """run() avec codec=libx265 + copy_dv=True DOIT appeler _run_with_metadata_inject."""
         src = tmp_path / "source.mkv"
@@ -1518,11 +1608,38 @@ class TestRunCopyBypassesInject:
             inject_called[0] = True
             return MagicMock()
 
-        with patch.object(wf, "_run_with_metadata_inject", side_effect=_spy):
+        with patch.object(wf, "_detect_source_dynamic_hdr_presence", return_value=(True, False)), \
+             patch.object(wf, "_run_with_metadata_inject", side_effect=_spy):
             wf.run(config)
 
         assert inject_called[0], \
             "codec≠copy + copy_dv doit passer par _run_with_metadata_inject"
+
+    def test_non_copy_with_copy_dv_but_no_hdr_presence_uses_standard_runner(self, tmp_path):
+        """Si aucun DV/HDR10+ détecté, codec≠copy reste sur le chemin encode standard."""
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 1000)
+        config = _make_config(
+            source=src,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="libx265"),
+            copy_dv=True,
+        )
+        wf = _make_workflow()
+        inject_called = [False]
+
+        def _spy(_cfg):
+            inject_called[0] = True
+            return MagicMock()
+
+        with patch.object(wf, "_detect_source_dynamic_hdr_presence", return_value=(False, False)), \
+             patch.object(wf, "_run_with_metadata_inject", side_effect=_spy), \
+             patch.object(wf._runner, "run") as mock_run:
+            mock_run.return_value = MagicMock()
+            wf.run(config)
+
+        assert not inject_called[0], "Sans DV/HDR10+ source, l'injection ne doit pas être lancée."
+        assert mock_run.called, "Le chemin encode standard doit rester utilisé."
 
     @pytest.mark.parametrize("copy_dv,copy_hdr10plus", [
         (True, False), (False, True), (True, True)
@@ -1558,6 +1675,223 @@ class TestRunCopyBypassesInject:
         with patch.object(wf._runner, "run") as mock_run:
             mock_run.return_value = MagicMock()
             wf.run(config)
+
+
+class TestRunIntegratedMetadata:
+    def _base_config(self, tmp_path: Path) -> EncodeConfig:
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 1000)
+        return _make_config(
+            source=src,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="copy"),
+        )
+
+    def test_chapter_overrides_stays_on_single_pass_runner(self, tmp_path):
+        cfg = self._base_config(tmp_path)
+        cfg.chapter_overrides = []
+        wf = _make_workflow()
+
+        with patch.object(wf._runner, "run") as mock_run:
+            mock_run.return_value = MagicMock()
+            wf.run(cfg)
+
+        assert mock_run.called
+
+    def test_writing_application_stays_on_single_pass_runner(self, tmp_path):
+        cfg = self._base_config(tmp_path)
+        wf = EncodeWorkflow(
+            ffmpeg_bin="ffmpeg",
+            dovi_tool_bin="dovi_tool",
+            hdr10plus_bin="hdr10plus_tool",
+            writing_application="MediarecodeTest",
+        )
+
+        with patch.object(wf._runner, "run") as mock_run:
+            mock_run.return_value = MagicMock()
+            wf.run(cfg)
+
+        assert mock_run.called
+
+
+class TestInjectStorageChecks:
+    def _make_inject_config(self, tmp_path: Path) -> EncodeConfig:
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 200_000)
+        return _make_config(
+            source=src,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="libx265"),
+            copy_dv=True,
+            work_dir=tmp_path / "work",
+        )
+
+    def test_inject_path_checks_storage_before_launch(self, tmp_path):
+        cfg = self._make_inject_config(tmp_path)
+        wf = _make_workflow()
+        logs: list[tuple[str, str]] = []
+        wf.log_message.connect(lambda lvl, msg: logs.append((lvl, msg)))
+
+        with patch.object(wf, "_detect_source_dynamic_hdr_presence", return_value=(True, False)), \
+             patch.object(wf, "_estimate_inject_storage_requirements", return_value=(100, 200)) as mock_est, \
+             patch("core.workflows.encode.workflow.shutil.disk_usage") as mock_du, \
+             patch.object(wf, "_run_with_metadata_inject") as mock_inject:
+            mock_du.return_value = SimpleNamespace(total=10_000_000, used=1, free=9_000_000)
+            mock_inject.return_value = MagicMock()
+            wf.run(cfg)
+
+        assert mock_est.called
+        assert mock_inject.called
+        assert any("Estimation espace injection" in msg for _lvl, msg in logs), \
+            f"Log d'estimation absent. Logs: {logs}"
+
+    def test_inject_path_raises_when_storage_is_insufficient(self, tmp_path):
+        cfg = self._make_inject_config(tmp_path)
+        wf = _make_workflow()
+
+        with patch.object(wf, "_detect_source_dynamic_hdr_presence", return_value=(True, False)), \
+             patch.object(wf, "_estimate_inject_storage_requirements", return_value=(10_000, 20_000)), \
+             patch("core.workflows.encode.workflow.shutil.disk_usage") as mock_du, \
+             patch.object(wf, "_run_with_metadata_inject") as mock_inject:
+            mock_du.return_value = SimpleNamespace(total=100_000, used=99_900, free=100)
+            with pytest.raises(EncodeError, match="Espace disque insuffisant"):
+                wf.run(cfg)
+
+        assert not mock_inject.called
+
+
+class TestDynamicHdrDetection:
+    def test_detect_source_dynamic_hdr_presence_falls_back_to_mediainfo(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 1000)
+        wf = _make_workflow()
+
+        ffprobe_payload = json.dumps({
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "side_data_list": [],
+                }
+            ]
+        })
+
+        def _fake_subprocess_run(cmd, *args, **kwargs):
+            prog = Path(cmd[0]).name
+            if prog.startswith("ffprobe"):
+                return MagicMock(returncode=0, stdout=ffprobe_payload, stderr="")
+            if prog == "mediainfo":
+                if cmd[1] == "--Inform=Video;%HDR_Format%":
+                    return MagicMock(returncode=0, stdout="Dolby Vision", stderr="")
+                if cmd[1] == "--Inform=Video;%HDR_Format_Compatibility%":
+                    return MagicMock(returncode=0, stdout="HDR10+", stderr="")
+            raise AssertionError(f"Commande subprocess inattendue: {cmd}")
+
+        with patch("subprocess.run", side_effect=_fake_subprocess_run):
+            assert wf._detect_source_dynamic_hdr_presence(src) == (True, True)
+
+
+class TestIntegratedMetadataCommand:
+    def test_tag_overrides_disable_metadata_copy(self, tmp_path):
+        src = tmp_path / "source.mkv"; src.write_bytes(b"\x00")
+        out = tmp_path / "output.mkv"
+        cfg = _make_config(
+            src,
+            out,
+            video=_make_video_settings(codec="copy"),
+            tag_overrides={"GENRE": "Drama"},
+            file_title="Titre",
+        )
+        wf = _make_workflow()
+        cmd = wf.build_command_single(cfg)
+
+        idx = cmd.index("-map_metadata")
+        assert cmd[idx + 1] == "-1"
+        assert "GENRE=Drama" in cmd
+        assert "title=Titre" in cmd
+
+    def test_chapter_overrides_with_tag_overrides_map_metadata_from_chapter_input(self, tmp_path):
+        src = tmp_path / "source.mkv"; src.write_bytes(b"\x00")
+        out = tmp_path / "output.mkv"
+        cfg = _make_config(
+            src,
+            out,
+            video=_make_video_settings(codec="copy"),
+            tag_overrides={"GENRE": "Drama"},
+            chapter_overrides=[
+                ChapterEntry(timecode_s=0.0, name="Intro"),
+                ChapterEntry(timecode_s=30.0, name="Outro"),
+            ],
+        )
+        wf = _make_workflow()
+
+        cmd = wf.build_command_single(cfg)
+
+        idx = cmd.index("-map_metadata")
+        assert cmd[idx + 1] == "1"
+        chap_idx = cmd.index("-map_chapters")
+        assert cmd[chap_idx + 1] == "1"
+
+    def test_tag_sources_copy_from_last_source(self, tmp_path):
+        src = tmp_path / "source.mkv"; src.write_bytes(b"\x00")
+        tag1 = tmp_path / "tag1.mkv"; tag1.write_bytes(b"\x00")
+        tag2 = tmp_path / "tag2.mkv"; tag2.write_bytes(b"\x00")
+        out = tmp_path / "output.mkv"
+        cfg = _make_config(
+            src,
+            out,
+            video=_make_video_settings(codec="copy"),
+            tag_sources=[tag1, tag2],
+        )
+        wf = _make_workflow()
+        cmd = wf.build_command_single(cfg)
+
+        assert str(tag2) in cmd
+        idx = cmd.index("-map_metadata")
+        assert cmd[idx + 1] == "1"
+
+    def test_empty_chapter_overrides_remove_chapters(self, tmp_path):
+        src = tmp_path / "source.mkv"; src.write_bytes(b"\x00")
+        out = tmp_path / "output.mkv"
+        cfg = _make_config(
+            src,
+            out,
+            video=_make_video_settings(codec="copy"),
+            chapter_overrides=[],
+        )
+        wf = _make_workflow()
+        cmd = wf.build_command_single(cfg)
+
+        idx = cmd.index("-map_chapters")
+        assert cmd[idx + 1] == "-1"
+
+    def test_main_command_does_not_force_muxing_application_tag(self, tmp_path):
+        src = tmp_path / "source.mkv"; src.write_bytes(b"\x00")
+        out = tmp_path / "output.mkv"
+        cfg = _make_config(src, out, video=_make_video_settings(codec="copy"))
+        wf = EncodeWorkflow(
+            ffmpeg_bin="ffmpeg",
+            dovi_tool_bin="dovi_tool",
+            hdr10plus_bin="hdr10plus_tool",
+            writing_application="MediarecodeMuxApp",
+        )
+        cmd = wf.build_command_single(cfg)
+        assert not any("muxing_application=" in str(arg) for arg in cmd)
+
+    def test_main_command_includes_threads_argument(self, tmp_path):
+        src = tmp_path / "source.mkv"; src.write_bytes(b"\x00")
+        out = tmp_path / "output.mkv"
+        cfg = _make_config(
+            src,
+            out,
+            video=_make_video_settings(codec="copy"),
+            tag_overrides={},
+        )
+        wf = _make_workflow(ffmpeg_threads=11)
+
+        cmd = wf.build_command_single(cfg)
+
+        assert "-threads" in cmd
+        assert cmd[cmd.index("-threads") + 1] == "11"
 
 
 class TestSelectedAttachedPicHandling:
@@ -1947,6 +2281,160 @@ class TestEncodeFileTitleCommand:
         assert meta_idx < len(recon) - 1
 
 
+class TestInjectPathIntegratedPostproc:
+    def _run_inject(self, tmp_path: Path, **config_overrides) -> list[list[str]]:
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 200_000)
+        default_cfg = dict(
+            source=src,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="libx265"),
+            copy_dv=True,
+            work_dir=tmp_path / "work",
+            file_title="Film DV",
+        )
+        default_cfg.update(config_overrides)
+        config = _make_config(**default_cfg)
+        wf = EncodeWorkflow(
+            ffmpeg_bin="ffmpeg",
+            dovi_tool_bin="dovi_tool",
+            hdr10plus_bin="hdr10plus_tool",
+            writing_application="MediarecodeMuxApp",
+            ram_buffer_enabled=False,
+        )
+
+        cmds_run: list[list[str]] = []
+
+        def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
+            cmds_run.append(list(cmd))
+            for arg in reversed(cmd):
+                s = str(arg)
+                if any(s.endswith(ext) for ext in (".hevc", ".mkv", ".bin", ".json", ".ffmetadata")):
+                    p = Path(s)
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(b"\x00" * 100_000)
+                    break
+            return ""
+
+        with patch.object(EncodeWorkflow, "_shm_path", side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
+            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+                sigs = wf._run_with_metadata_inject(config)
+                _collect_signals(sigs)
+        return cmds_run
+
+    def _get_recon_cmd(self, cmds: list[list[str]]) -> list[str]:
+        recon = [c for c in cmds if c[0] == "ffmpeg" and "output.mkv" in " ".join(c)]
+        assert len(recon) == 1, f"Attendu une seule commande ffmpeg de sortie, obtenu {len(recon)}"
+        return recon[0]
+
+    def test_recon_applies_postproc_features_in_single_pass(self, tmp_path):
+        cfg = dict(
+            tag_overrides={"GENRE": "Drama"},
+            chapter_overrides=[],
+            track_meta_edits=[TrackMetaEdit(track_order=1, language="fr-FR", title="Main Video")],
+        )
+        cmds = self._run_inject(tmp_path, **cfg)
+        recon = self._get_recon_cmd(cmds)
+
+        assert "-map_metadata" in recon
+        assert recon[recon.index("-map_metadata") + 1] == "-1"
+        assert "-map_chapters" in recon
+        assert recon[recon.index("-map_chapters") + 1] == "-1"
+        assert "GENRE=Drama" in recon
+        assert not any("muxing_application=" in str(arg) for arg in recon)
+        assert "-metadata:s:v:0" in recon
+        assert "language=fr-FR" in recon
+        assert "language-ietf=" in recon
+        assert "title=Main Video" in recon
+
+    def test_inject_path_calls_matroska_header_patch_hook(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 200_000)
+        config = _make_config(
+            source=src,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="libx265"),
+            copy_dv=True,
+            work_dir=tmp_path / "work",
+        )
+        wf = EncodeWorkflow(
+            ffmpeg_bin="ffmpeg",
+            dovi_tool_bin="dovi_tool",
+            hdr10plus_bin="hdr10plus_tool",
+            writing_application="MediarecodeMuxApp",
+            ram_buffer_enabled=False,
+        )
+
+        def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
+            for arg in reversed(cmd):
+                s = str(arg)
+                if any(s.endswith(ext) for ext in (".hevc", ".mkv", ".bin", ".json", ".ffmetadata")):
+                    p = Path(s)
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(b"\x00" * 64_000)
+                    break
+            return ""
+
+        with patch.object(EncodeWorkflow, "_shm_path", side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
+            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+                with patch.object(wf._muxing_post_action, "apply_if_mkv") as patch_hook:
+                    sigs = wf._run_with_metadata_inject(config)
+                    _collect_signals(sigs)
+
+        assert patch_hook.called
+
+    def test_recon_maps_metadata_from_last_tag_source(self, tmp_path):
+        tag1 = tmp_path / "tag1.mkv"
+        tag2 = tmp_path / "tag2.mkv"
+        tag1.write_bytes(b"\x00")
+        tag2.write_bytes(b"\x00")
+
+        cmds = self._run_inject(
+            tmp_path,
+            tag_sources=[tag1, tag2],
+            tag_overrides=None,
+            chapter_overrides=None,
+        )
+        recon = self._get_recon_cmd(cmds)
+
+        assert str(tag2) in recon
+        assert "-map_metadata" in recon
+        idx = recon.index("-map_metadata")
+        assert recon[idx + 1] == "2"
+
+    def test_recon_uses_chapter_input_metadata_when_tags_are_overridden(self, tmp_path):
+        cmds = self._run_inject(
+            tmp_path,
+            tag_overrides={"GENRE": "Drama"},
+            chapter_overrides=[
+                ChapterEntry(timecode_s=0.0, name="Intro"),
+                ChapterEntry(timecode_s=30.0, name="Outro"),
+            ],
+        )
+        recon = self._get_recon_cmd(cmds)
+
+        idx = recon.index("-map_metadata")
+        assert recon[idx + 1] == "2"
+        chap_idx = recon.index("-map_chapters")
+        assert recon[chap_idx + 1] == "2"
+
+    def test_recon_wraps_injected_hevc_before_final_mux(self, tmp_path):
+        cmds = self._run_inject(tmp_path)
+        wrap_cmds = [c for c in cmds if c[0] == "ffmpeg" and str(c[-1]).endswith("enc_wrapped.mkv")]
+        assert len(wrap_cmds) == 1, f"Commande d'encapsulation introuvable. Cmds: {cmds}"
+        wrap = wrap_cmds[0]
+        assert "-f" in wrap
+        assert wrap[wrap.index("-f") + 1] == "hevc"
+        assert "-framerate" in wrap
+        assert "-bsf:v" in wrap
+        assert wrap[wrap.index("-bsf:v") + 1].startswith("setts=pts=N/(")
+
+        recon = self._get_recon_cmd(cmds)
+        first_input = recon[recon.index("-i") + 1]
+        assert first_input.endswith("enc_wrapped.mkv")
+        assert not first_input.endswith(".hevc")
+
+
 # ===========================================================================
 # extra_attachments — pièces jointes manuelles dans les commandes FFmpeg
 # ===========================================================================
@@ -2076,17 +2564,45 @@ class TestEncodeExtraAttachments:
         src = self._src(tmp_path)
         att_streams = [(src, 5)]   # 1 stream existant → extra débute à l'index 1
         extras = [tmp_path / "cover.jpg"]
-        cmd = self.wf.build_command_single(
-            _make_config(src, tmp_path / "out.mkv",
-                         attachment_streams=att_streams,
-                         extra_attachments=extras)
-        )
-        # Le premier attachement extra doit utiliser l'index 1, pas 0
+        with patch.object(
+            self.wf,
+            "_describe_attachment_stream",
+            return_value={
+                "is_attached_pic": False,
+                "filename": "DejaVuSans.ttf",
+                "mimetype": "application/x-truetype-font",
+            },
+        ):
+            cmd = self.wf.build_command_single(
+                _make_config(src, tmp_path / "out.mkv",
+                             attachment_streams=att_streams,
+                             extra_attachments=extras)
+            )
+        assert "filename=DejaVuSans.ttf" in cmd
         assert "-metadata:s:t:1" in cmd
-        assert "-metadata:s:t:0" not in cmd or \
-            all(cmd[i + 1].startswith("mimetype=") or cmd[i + 1].startswith("filename=")
-                is False
-                for i in [j for j, a in enumerate(cmd) if a == "-metadata:s:t:0"])
+        indices = [i for i, a in enumerate(cmd) if a == "-metadata:s:t:1"]
+        assert any(cmd[i + 1] == "filename=cover" for i in indices)
+
+    def test_single_attachment_streams_write_filename_and_mimetype(self, tmp_path):
+        src = self._src(tmp_path)
+        cfg = _make_config(
+            src,
+            tmp_path / "out.mkv",
+            attachment_streams=[(src, 5)],
+        )
+        with patch.object(
+            self.wf,
+            "_describe_attachment_stream",
+            return_value={
+                "is_attached_pic": False,
+                "filename": "DejaVuSans.ttf",
+                "mimetype": "application/x-truetype-font",
+            },
+        ):
+            cmd = self.wf.build_command_single(cfg)
+
+        assert "mimetype=application/x-truetype-font" in cmd
+        assert "filename=DejaVuSans.ttf" in cmd
 
     # ── two-pass pass2 ───────────────────────────────────────────────────────
 
@@ -2191,173 +2707,713 @@ class TestEncodeExtraAttachments:
 
 
 # ===========================================================================
-# _apply_track_meta_edits_inplace — commande mkvpropedit
+# Sync timeline multi-source (encode runtime)
 # ===========================================================================
 
-class TestApplyTrackMetaEdits:
-    """
-    Vérifie que _apply_track_meta_edits_inplace construit la commande mkvpropedit
-    correctement pour chaque TrackMetaEdit :
-      - --edit track:@N sélectionne la piste 1-based
-      - --set language=<ISO639-2> précède --set language-ietf=<IETF>
-      - --set name=<title> est émis si title est fourni
-      - langage régional (fr-FR) → ISO 639-2 = fra, IETF conservé tel quel
-    """
+class TestEncodeRuntimeMultiSourceSync:
 
+    def test_runtime_single_pass_uses_sync_remap_and_strict_flags(self, tmp_path):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        sync_audio = tmp_path / "sync_audio.mka"
+        src_main.touch()
+        src_alt.touch()
+        sync_audio.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main,
+            out,
+            video=_make_video_settings(codec="libx265"),
+            audio_tracks=[
+                AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt),
+            ],
+            subtitle_tracks=[(src_main, 3)],
+        )
+
+        with patch.object(
+            wf,
+            "_prepare_multisource_sync",
+            return_value=(
+                {(src_alt, 1, "audio"): (2, 0)},
+                [sync_audio],
+                None,
+                True,
+            ),
+        ):
+            cmd, live, cleanup = wf._build_runtime_single_pass_with_sync(cfg)
+
+        assert live is None
+        assert cleanup == [sync_audio]
+        assert str(sync_audio) in cmd
+        sync_i = cmd.index(str(sync_audio))
+        assert cmd[sync_i - 1] == "-i"
+        assert cmd[sync_i - 2] == "matroska"
+        assert cmd[sync_i - 3] == "-f"
+        assert "-max_interleave_delta" in cmd
+        assert "-max_muxing_queue_size" in cmd
+        map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
+        assert "2:0" in map_values
+
+    def test_runtime_two_pass_disables_live_and_applies_sync_to_pass2_only(self, tmp_path):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        sync_audio = tmp_path / "sync_audio.mka"
+        src_main.touch()
+        src_alt.touch()
+        sync_audio.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main,
+            out,
+            video=_make_video_settings(codec="libx265", quality_mode=QualityMode.SIZE),
+            duration_s=3600.0,
+            audio_tracks=[
+                AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt),
+            ],
+            subtitle_tracks=[(src_main, 3)],
+        )
+
+        recorded_allow_live: list[bool] = []
+
+        def _fake_prepare(**kwargs):
+            recorded_allow_live.append(bool(kwargs.get("allow_live")))
+            return (
+                {(src_alt, 1, "audio"): (2, 0)},
+                [sync_audio],
+                None,
+                True,
+            )
+
+        with patch.object(wf, "_prepare_multisource_sync", side_effect=_fake_prepare):
+            cmds, live, cleanup = wf._build_runtime_two_pass_with_sync(cfg)
+
+        assert live is None
+        assert cleanup == [sync_audio]
+        assert recorded_allow_live == [False]
+
+        pass1, pass2 = cmds
+        assert str(sync_audio) not in pass1
+        assert str(sync_audio) in pass2
+        assert "-max_interleave_delta" not in pass1
+        assert "-max_interleave_delta" in pass2
+        map_values_pass2 = [pass2[i + 1] for i, tok in enumerate(pass2[:-1]) if tok == "-map"]
+        assert "2:0" in map_values_pass2
+
+    def test_metadata_inject_reconstruction_uses_sync_inputs(self, tmp_path):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        sync_audio = tmp_path / "sync_audio.mka"
+        src_main.write_bytes(b"\x00" * 200_000)
+        src_alt.write_bytes(b"\x00" * 100_000)
+        sync_audio.touch()
+
+        wf = _make_workflow(enabled=False)
+        cfg = _make_config(
+            source=src_main,
+            output=out,
+            video=_make_video_settings(codec="libx265"),
+            copy_dv=True,
+            work_dir=tmp_path / "work",
+            audio_tracks=[
+                AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt),
+            ],
+            subtitle_tracks=[(src_main, 3)],
+        )
+
+        ran_cmds: list[list[str]] = []
+
+        def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
+            ran_cmds.append(list(cmd))
+            for arg in reversed(cmd):
+                s = str(arg)
+                if any(s.endswith(ext) for ext in (".hevc", ".mkv", ".bin", ".json")):
+                    p = Path(s)
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(b"\x00" * 100_000)
+                    break
+            return ""
+
+        with patch.object(
+            wf,
+            "_prepare_multisource_sync",
+            return_value=(
+                {(src_alt, 1, "audio"): (3, 0)},
+                [sync_audio],
+                None,
+                True,
+            ),
+        ):
+            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+                sigs = wf._run_with_metadata_inject(cfg)
+                _collect_signals(sigs)
+
+        recon = [c for c in ran_cmds if str(out) in [str(x) for x in c]]
+        assert len(recon) == 1
+        cmd = recon[0]
+        assert str(sync_audio) in cmd
+        sync_i = cmd.index(str(sync_audio))
+        assert cmd[sync_i - 1] == "-i"
+        assert cmd[sync_i - 2] == "matroska"
+        assert cmd[sync_i - 3] == "-f"
+        assert "-max_interleave_delta" in cmd
+        assert "-max_muxing_queue_size" in cmd
+        map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
+        assert "3:0" in map_values
+
+    def test_metadata_inject_reconstruction_applies_offsets_after_sync_remap(self, tmp_path):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        sync_audio = tmp_path / "sync_audio.mka"
+        src_main.write_bytes(b"\x00" * 200_000)
+        src_alt.write_bytes(b"\x00" * 100_000)
+        sync_audio.touch()
+
+        wf = _make_workflow(enabled=False)
+        cfg = _make_config(
+            source=src_main,
+            output=out,
+            video=_make_video_settings(codec="libx265"),
+            copy_dv=True,
+            work_dir=tmp_path / "work",
+            audio_tracks=[
+                AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt),
+            ],
+            subtitle_tracks=[(src_main, 3)],
+            track_time_offsets=[
+                TrackTimeOffset(track_type="audio", source_path=src_alt, stream_index=1, offset_ms=120),
+            ],
+        )
+
+        ran_cmds: list[list[str]] = []
+
+        def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
+            ran_cmds.append(list(cmd))
+            for arg in reversed(cmd):
+                s = str(arg)
+                if any(s.endswith(ext) for ext in (".hevc", ".mkv", ".bin", ".json")):
+                    p = Path(s)
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(b"\x00" * 100_000)
+                    break
+            return ""
+
+        with patch.object(
+            wf,
+            "_prepare_multisource_sync",
+            return_value=(
+                {(src_alt, 1, "audio"): (3, 0)},
+                [sync_audio],
+                None,
+                True,
+            ),
+        ):
+            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+                sigs = wf._run_with_metadata_inject(cfg)
+                _collect_signals(sigs)
+
+        recon = [c for c in ran_cmds if str(out) in [str(x) for x in c]]
+        assert len(recon) == 1
+        cmd = recon[0]
+        assert "-itsoffset" in cmd
+        assert cmd[cmd.index("-itsoffset") + 1] == "0.120"
+        map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
+        assert "4:0" in map_values
+
+    def test_prepare_multisource_sync_prefers_live_on_posix(self, tmp_path, monkeypatch):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        sync_audio = tmp_path / "sync_audio.mka"
+        src_main.touch()
+        src_alt.touch()
+        sync_audio.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main,
+            out,
+            video=_make_video_settings(codec="copy"),
+            audio_tracks=[
+                AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt),
+            ],
+            subtitle_tracks=[(src_main, 3)],
+        )
+
+        calls = {"live": 0, "file": 0}
+
+        class _FakeSyncer:
+            def __init__(self, **_kwargs):
+                pass
+
+            def start_live_demux_session(self, **_kwargs):
+                calls["live"] += 1
+                return SimpleNamespace(inputs=[SimpleNamespace(key=(1, 1, "audio"), path=sync_audio, input_idx=2)])
+
+            def prepare_from_mapped_tracks(self, **_kwargs):
+                calls["file"] += 1
+                return [SimpleNamespace(key=(1, 1, "audio"), path=sync_audio, input_idx=2)]
+
+            def prepare_from_mapped_tracks_mmap(self, **_kwargs):
+                calls["file"] += 1
+                return [SimpleNamespace(key=(1, 1, "audio"), path=sync_audio, input_idx=2)]
+
+        monkeypatch.setattr("core.workflows.encode.workflow.MkvmergeLikeTimelineSync", _FakeSyncer)
+        monkeypatch.setattr("core.workflows.encode.workflow.os.name", "posix", raising=False)
+
+        remap, sync_inputs, live, strict = wf._prepare_multisource_sync(
+            config=cfg,
+            all_sources=[src_main, src_alt],
+            sync_base_input_idx=2,
+            work_dir=tmp_path,
+            allow_live=True,
+        )
+
+        assert calls["live"] == 1
+        assert calls["file"] == 0
+        assert live is not None
+        assert strict is True
+        assert sync_inputs == [sync_audio]
+        assert remap[(src_alt, 1, "audio")] == (2, 0)
+
+    def test_prepare_multisource_sync_fallback_prefers_ram_before_disk(self, tmp_path, monkeypatch):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        ram_dir = tmp_path / "ram"
+        ram_dir.mkdir()
+        sync_audio = ram_dir / "sync_audio.mka"
+        src_main.touch()
+        src_alt.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main,
+            out,
+            video=_make_video_settings(codec="copy"),
+            audio_tracks=[
+                AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt),
+            ],
+            subtitle_tracks=[(src_main, 3)],
+        )
+
+        calls: list[Path] = []
+
+        class _FakeSyncer:
+            def __init__(self, **_kwargs):
+                pass
+
+            def start_live_demux_session(self, **_kwargs):
+                raise RuntimeError("live unavailable")
+
+            def prepare_from_mapped_tracks_mmap(self, **_kwargs):
+                tmp_dir = Path(_kwargs["tmp_dir"])
+                calls.append(tmp_dir)
+                return [SimpleNamespace(key=(1, 1, "audio"), path=sync_audio, input_idx=2)]
+
+            def prepare_from_mapped_tracks(self, **_kwargs):
+                pytest.fail("file fallback should not be used when RAM mmap works")
+
+        monkeypatch.setattr("core.workflows.encode.workflow.MkvmergeLikeTimelineSync", _FakeSyncer)
+        monkeypatch.setattr("core.workflows.encode.workflow.os.name", "posix", raising=False)
+        monkeypatch.setattr(EncodeWorkflow, "_ram_buffer_dir", staticmethod(lambda: ram_dir))
+
+        remap, sync_inputs, live, strict = wf._prepare_multisource_sync(
+            config=cfg,
+            all_sources=[src_main, src_alt],
+            sync_base_input_idx=2,
+            work_dir=tmp_path,
+            allow_live=True,
+        )
+
+        assert calls == [ram_dir]
+        assert live is None
+        assert strict is True
+        assert sync_inputs == [sync_audio]
+        assert remap[(src_alt, 1, "audio")] == (2, 0)
+
+    def test_runtime_single_pass_copy_subtitles_uses_sync_remap_when_resolved(self, tmp_path):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        sync_sub = tmp_path / "sync_sub.mks"
+        src_main.touch()
+        src_alt.touch()
+        sync_sub.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main,
+            out,
+            video=_make_video_settings(codec="copy"),
+            copy_subtitles=True,
+            subtitle_tracks=[],
+        )
+
+        with patch.object(
+            wf,
+            "_prepare_multisource_sync",
+            return_value=(
+                {(src_alt, 4, "subtitle"): (2, 0)},
+                [sync_sub],
+                None,
+                True,
+            ),
+        ), patch.object(
+            wf,
+            "_resolved_subtitle_tracks_for_encode",
+            return_value=([(src_alt, 4)], True),
+        ):
+            cmd, _live, _cleanup = wf._build_runtime_single_pass_with_sync(cfg)
+
+        map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
+        assert "2:0" in map_values
+        assert all(":s?" not in mv for mv in map_values)
+        assert "-c:s" in cmd and cmd[cmd.index("-c:s") + 1] == "copy"
+
+    def test_runtime_single_pass_copy_subtitles_falls_back_to_wildcard_when_unresolved(self, tmp_path):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        src_main.touch()
+        src_alt.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main,
+            out,
+            video=_make_video_settings(codec="copy"),
+            copy_subtitles=True,
+            subtitle_tracks=[],
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt)],
+        )
+
+        with patch.object(
+            wf,
+            "_prepare_multisource_sync",
+            return_value=({}, [], None, False),
+        ), patch.object(
+            wf,
+            "_resolved_subtitle_tracks_for_encode",
+            return_value=([], False),
+        ):
+            cmd, _live, _cleanup = wf._build_runtime_single_pass_with_sync(cfg)
+
+        map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
+        assert "0:s?" in map_values
+        assert "1:s?" in map_values
+        assert "-c:s" in cmd and cmd[cmd.index("-c:s") + 1] == "copy"
+
+    def test_build_single_pass_applies_video_audio_subtitle_offsets(self, tmp_path):
+        src = tmp_path / "src.mkv"
+        out = tmp_path / "out.mkv"
+        src.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src,
+            out,
+            video=_make_video_settings(codec="libx265"),
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy", source_path=src)],
+            subtitle_tracks=[(src, 3)],
+            copy_subtitles=False,
+            track_time_offsets=[
+                TrackTimeOffset(track_type="video", source_path=src, stream_index=0, offset_ms=40),
+                TrackTimeOffset(track_type="audio", source_path=src, stream_index=1, offset_ms=125),
+                TrackTimeOffset(track_type="subtitle", source_path=src, stream_index=3, offset_ms=-80),
+            ],
+        )
+
+        cmd = wf.build_command_single(cfg)
+
+        assert "-itsoffset" in cmd
+        assert "0.040" in cmd
+        assert "0.125" in cmd
+        assert "-ss" in cmd
+        assert "0.080" in cmd
+        map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
+        assert "1:0" in map_values
+        assert "2:1" in map_values
+        assert "3:3" in map_values
+
+    def test_runtime_two_pass_applies_offsets_after_sync_remap(self, tmp_path):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        sync_audio = tmp_path / "sync_audio.mka"
+        src_main.touch()
+        src_alt.touch()
+        sync_audio.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main,
+            out,
+            video=_make_video_settings(codec="libx265", quality_mode=QualityMode.SIZE),
+            duration_s=3600.0,
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt)],
+            subtitle_tracks=[(src_main, 3)],
+            track_time_offsets=[
+                TrackTimeOffset(track_type="audio", source_path=src_alt, stream_index=1, offset_ms=150),
+            ],
+        )
+
+        with patch.object(
+            wf,
+            "_prepare_multisource_sync",
+            return_value=(
+                {(src_alt, 1, "audio"): (2, 0)},
+                [sync_audio],
+                None,
+                True,
+            ),
+        ):
+            cmds, _live, _cleanup = wf._build_runtime_two_pass_with_sync(cfg)
+
+        pass2 = cmds[1]
+        assert "-itsoffset" in pass2
+        assert pass2[pass2.index("-itsoffset") + 1] == "0.150"
+        map_values = [pass2[i + 1] for i, tok in enumerate(pass2[:-1]) if tok == "-map"]
+        assert "3:0" in map_values
+
+    def test_prepare_multisource_sync_disables_live_when_foreign_offset(self, tmp_path, monkeypatch):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        src_main.touch()
+        src_alt.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main,
+            out,
+            video=_make_video_settings(codec="copy"),
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt)],
+            subtitle_tracks=[(src_main, 3)],
+            track_time_offsets=[
+                TrackTimeOffset(track_type="audio", source_path=src_alt, stream_index=1, offset_ms=120),
+            ],
+        )
+
+        recorded_allow_live: list[bool] = []
+
+        class _FakeHelper:
+            def __init__(self, **_kwargs):
+                pass
+
+            def prepare(self, **kwargs):
+                recorded_allow_live.append(bool(kwargs.get("allow_live")))
+                return SimpleNamespace(prepared_inputs=[], live_session=None)
+
+        monkeypatch.setattr("core.workflows.encode.workflow.TimelineSyncFallbackHelper", _FakeHelper)
+        monkeypatch.setattr(wf._postproc_helper, "_decide_strict_interleave_with_prescan", lambda _cfg: True)
+
+        remap, sync_inputs, live, strict = wf._prepare_multisource_sync(
+            config=cfg,
+            all_sources=[src_main, src_alt],
+            sync_base_input_idx=2,
+            work_dir=tmp_path,
+            allow_live=True,
+        )
+
+        assert strict is True
+        assert remap == {}
+        assert sync_inputs == []
+        assert live is None
+        assert recorded_allow_live == [False]
+
+    def test_prepare_multisource_sync_forces_sync_when_foreign_offset_without_subtitle_risk(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        src_main.touch()
+        src_alt.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main,
+            out,
+            video=_make_video_settings(codec="copy"),
+            copy_subtitles=False,
+            subtitle_tracks=[],
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt)],
+            track_time_offsets=[
+                TrackTimeOffset(track_type="audio", source_path=src_alt, stream_index=1, offset_ms=120),
+            ],
+        )
+
+        recorded_allow_live: list[bool] = []
+
+        class _FakeHelper:
+            def __init__(self, **_kwargs):
+                pass
+
+            def prepare(self, **kwargs):
+                recorded_allow_live.append(bool(kwargs.get("allow_live")))
+                return SimpleNamespace(prepared_inputs=[], live_session=None)
+
+        monkeypatch.setattr("core.workflows.encode.workflow.TimelineSyncFallbackHelper", _FakeHelper)
+        monkeypatch.setattr(wf._postproc_helper, "_decide_strict_interleave_with_prescan", lambda _cfg: False)
+
+        remap, sync_inputs, live, strict = wf._prepare_multisource_sync(
+            config=cfg,
+            all_sources=[src_main, src_alt],
+            sync_base_input_idx=2,
+            work_dir=tmp_path,
+            allow_live=True,
+        )
+
+        assert strict is True
+        assert remap == {}
+        assert sync_inputs == []
+        assert live is None
+        assert recorded_allow_live == [False]
+
+    def test_prepare_multisource_sync_skips_subtitle_prescan_when_foreign_offset_forces_sync(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        src_main.touch()
+        src_alt.touch()
+
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main,
+            out,
+            video=_make_video_settings(codec="copy"),
+            copy_subtitles=False,
+            subtitle_tracks=[(src_main, 3)],
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt)],
+            track_time_offsets=[
+                TrackTimeOffset(track_type="audio", source_path=src_alt, stream_index=1, offset_ms=120),
+            ],
+        )
+
+        recorded_allow_live: list[bool] = []
+
+        class _FakeHelper:
+            def __init__(self, **_kwargs):
+                pass
+
+            def prepare(self, **kwargs):
+                recorded_allow_live.append(bool(kwargs.get("allow_live")))
+                return SimpleNamespace(prepared_inputs=[], live_session=None)
+
+        monkeypatch.setattr("core.workflows.encode.workflow.TimelineSyncFallbackHelper", _FakeHelper)
+        monkeypatch.setattr(
+            wf._postproc_helper,
+            "_decide_strict_interleave_with_prescan",
+            lambda _cfg: pytest.fail("subtitle prescan must be skipped when foreign offset already forces sync"),
+        )
+
+        remap, sync_inputs, live, strict = wf._prepare_multisource_sync(
+            config=cfg,
+            all_sources=[src_main, src_alt],
+            sync_base_input_idx=2,
+            work_dir=tmp_path,
+            allow_live=True,
+        )
+
+        assert strict is True
+        assert remap == {}
+        assert sync_inputs == []
+        assert live is None
+        assert recorded_allow_live == [False]
+
+
+# ===========================================================================
+# _build_track_meta_args — options metadata FFmpeg
+# ===========================================================================
+
+class TestTrackMetaArgs:
     def setup_method(self):
         self.wf = _make_workflow()
 
-    def _run_edits(self, edits: list, output: Path) -> list[str]:
-        """Lance _apply_track_meta_edits_inplace et retourne la commande capturée."""
-        captured: list[list[str]] = []
-
-        def _fake_run(cmd, **_kw):
-            captured.append(list(cmd))
-            return MagicMock(returncode=0, stderr="")
-
-        with patch("subprocess.run", side_effect=_fake_run):
-            self.wf._apply_track_meta_edits_inplace(output, edits)
-
-        assert len(captured) == 1, f"Une seule commande attendue, reçu : {captured}"
-        return captured[0]
-
-    # ── fr-FR : langue régionale ──────────────────────────────────────────────
-
-    def test_fr_FR_iso_code_is_fra(self, tmp_path):
-        """fr-FR → --set language=fra (ISO 639-2/T)."""
-        from core.workflows.encode.models import TrackMetaEdit
+    def _build_args(self, tmp_path, edits: list, *, audio_count: int = 1) -> list[str]:
+        source = tmp_path / "src.mkv"
         output = tmp_path / "out.mkv"
+        source.touch()
         output.touch()
-        edit = TrackMetaEdit(track_order=1, language="fr-FR")
+        audio_tracks = [AudioTrackSettings(stream_index=i) for i in range(audio_count)]
+        config = _make_config(
+            source,
+            output,
+            audio_tracks=audio_tracks,
+            track_meta_edits=edits,
+        )
+        return self.wf._build_track_meta_args(config)
 
-        cmd = self._run_edits([edit], output)
-
-        assert "--set" in cmd
-        assert "language=fra" in cmd
-
-    def test_fr_FR_ietf_tag_preserved(self, tmp_path):
-        """fr-FR → --set language-ietf=fr-FR (balise IETF conservée intacte)."""
+    def test_fr_FR_language_tags(self, tmp_path):
         from core.workflows.encode.models import TrackMetaEdit
-        output = tmp_path / "out.mkv"
-        output.touch()
-        edit = TrackMetaEdit(track_order=1, language="fr-FR")
+        args = self._build_args(tmp_path, [TrackMetaEdit(track_order=1, language="fr-FR")], audio_count=0)
+        assert "language=fr-FR" in args
+        assert "language-ietf=" in args
+        assert args.index("language=fr-FR") < args.index("language-ietf=")
 
-        cmd = self._run_edits([edit], output)
-
-        assert "language-ietf=fr-FR" in cmd
-
-    def test_fr_FR_language_before_language_ietf(self, tmp_path):
-        """--set language=fra doit précéder --set language-ietf=fr-FR."""
+    def test_track_order_maps_video_audio_subtitle(self, tmp_path):
         from core.workflows.encode.models import TrackMetaEdit
-        output = tmp_path / "out.mkv"
-        output.touch()
-        edit = TrackMetaEdit(track_order=1, language="fr-FR")
+        edits = [
+            TrackMetaEdit(track_order=1, language="fr"),
+            TrackMetaEdit(track_order=2, language="en"),
+            TrackMetaEdit(track_order=3, language="es"),
+        ]
+        args = self._build_args(tmp_path, edits, audio_count=1)
+        assert "-metadata:s:v:0" in args
+        assert "-metadata:s:a:0" in args
+        assert "-metadata:s:s:0" in args
 
-        cmd = self._run_edits([edit], output)
-
-        idx_lang = cmd.index("language=fra")
-        idx_ietf = cmd.index("language-ietf=fr-FR")
-        assert idx_lang < idx_ietf, \
-            f"language= ({idx_lang}) doit précéder language-ietf= ({idx_ietf})"
-
-    def test_fr_FR_track_selector(self, tmp_path):
-        """--edit track:@1 est émis pour track_order=1."""
+    def test_iso639_2_and_und_inputs_are_kept(self, tmp_path):
         from core.workflows.encode.models import TrackMetaEdit
-        output = tmp_path / "out.mkv"
-        output.touch()
-        edit = TrackMetaEdit(track_order=1, language="fr-FR")
+        args = self._build_args(
+            tmp_path,
+            [
+                TrackMetaEdit(track_order=2, language="eng"),
+                TrackMetaEdit(track_order=3, language="und"),
+            ],
+            audio_count=2,
+        )
+        assert "language=en-US" in args
+        assert "language=und" in args
+        assert args.count("language-ietf=") == 2
 
-        cmd = self._run_edits([edit], output)
-
-        assert "track:@1" in cmd
-
-    # ── langue simple (fr) ───────────────────────────────────────────────────
-
-    def test_fr_iso_code_is_fra(self, tmp_path):
-        """fr (sans région) → --set language=fra."""
+    def test_title_only_sets_stream_title(self, tmp_path):
         from core.workflows.encode.models import TrackMetaEdit
-        output = tmp_path / "out.mkv"
-        output.touch()
-        edit = TrackMetaEdit(track_order=2, language="fr")
+        args = self._build_args(tmp_path, [TrackMetaEdit(track_order=1, title="Commentaires")], audio_count=0)
+        assert "title=Commentaires" in args
+        assert not any(str(a).startswith("language=") for a in args)
 
-        cmd = self._run_edits([edit], output)
-
-        assert "language=fra" in cmd
-        assert "language-ietf=fr" in cmd
-
-    def test_es_iso_code_is_spa(self, tmp_path):
-        """es → --set language=spa."""
+    def test_disposition_flags_are_emitted_when_provided(self, tmp_path):
         from core.workflows.encode.models import TrackMetaEdit
-        output = tmp_path / "out.mkv"
-        output.touch()
-        edit = TrackMetaEdit(track_order=2, language="es")
-
-        cmd = self._run_edits([edit], output)
-
-        assert "language=spa" in cmd
-        assert "language-ietf=es" in cmd
-
-    def test_no_iso_code_is_nor(self, tmp_path):
-        """no → --set language=nor."""
-        from core.workflows.encode.models import TrackMetaEdit
-        output = tmp_path / "out.mkv"
-        output.touch()
-        edit = TrackMetaEdit(track_order=2, language="no")
-
-        cmd = self._run_edits([edit], output)
-
-        assert "language=nor" in cmd
-        assert "language-ietf=no" in cmd
-
-    def test_ns_iso_code_is_nso(self, tmp_path):
-        """ns → --set language=nso."""
-        from core.workflows.encode.models import TrackMetaEdit
-        output = tmp_path / "out.mkv"
-        output.touch()
-        edit = TrackMetaEdit(track_order=2, language="ns")
-
-        cmd = self._run_edits([edit], output)
-
-        assert "language=nso" in cmd
-        assert "language-ietf=ns" in cmd
-
-    def test_iso639_2_input_is_accepted(self, tmp_path):
-        """eng déjà en ISO639-2 reste accepté sans lever d'exception."""
-        from core.workflows.encode.models import TrackMetaEdit
-        output = tmp_path / "out.mkv"
-        output.touch()
-        edit = TrackMetaEdit(track_order=2, language="eng")
-
-        cmd = self._run_edits([edit], output)
-
-        assert "language=eng" in cmd
-        assert "language-ietf=eng" in cmd
-
-    def test_und_input_sets_undefined_language(self, tmp_path):
-        """und applique explicitement la langue indéfinie sur la piste."""
-        from core.workflows.encode.models import TrackMetaEdit
-        output = tmp_path / "out.mkv"
-        output.touch()
-        edit = TrackMetaEdit(track_order=2, language="und")
-
-        cmd = self._run_edits([edit], output)
-
-        assert "language=und" in cmd
-        assert "language-ietf=und" in cmd
-
-    # ── title seul (pas de langue) ───────────────────────────────────────────
-
-    def test_title_only_no_language_set(self, tmp_path):
-        """title seul → --set name=X, aucun language= dans la commande."""
-        from core.workflows.encode.models import TrackMetaEdit
-        output = tmp_path / "out.mkv"
-        output.touch()
-        edit = TrackMetaEdit(track_order=1, language="", title="Commentaires")
-
-        cmd = self._run_edits([edit], output)
-
-        assert "name=Commentaires" in cmd
-        assert not any(a.startswith("language=") for a in cmd)
+        args = self._build_args(
+            tmp_path,
+            [
+                TrackMetaEdit(
+                    track_order=2,
+                    flag_default=False,
+                    flag_forced=True,
+                    flag_hearing_impaired=True,
+                    flag_visual_impaired=False,
+                    flag_original=False,
+                    flag_commentary=True,
+                )
+            ],
+            audio_count=2,
+        )
+        assert "-disposition:a:0" in args
+        assert "forced+hearing_impaired+comment" in args
 
     # ── merge remux extras : fr-FR transmis tel quel dans TrackMetaEdit ───────
 
@@ -2366,7 +3422,7 @@ class TestApplyTrackMetaEdits:
         _merge_remux_extras avec une piste language='fr-FR' doit produire
         un TrackMetaEdit avec language='fr-FR' (conservé tel quel).
         """
-        from core.workflows.remux import RemuxConfig, SourceInput, TrackEntry
+        from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
         from core.workflows.encode.models import EncodeConfig, VideoEncodeSettings
         from ui.main_window import MainWindow
 

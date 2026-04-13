@@ -16,6 +16,7 @@ from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QFrame, QHBoxLayout, QInputDialog, QLabel,
+    QLayout,
     QLineEdit, QListWidget, QListWidgetItem,
     QPlainTextEdit, QPushButton,
     QScrollArea, QSlider, QSpinBox, QStackedWidget,
@@ -26,7 +27,7 @@ from core.config import AppConfig
 from core.inspector import FileInfo, HDRType
 from core.i18n import apply_translations, translate_text
 from core.lang_tags import Rfc5646LanguageTags
-from core.workflows.remux import TrackEntry
+from core.workflows.remux_models import TrackEntry
 from core.runner import TaskSignals
 from core.workflows.encode import (
     AUDIO_CODECS, HARDWARE_VIDEO_CODECS, SOFTWARE_VIDEO_CODECS,
@@ -69,15 +70,13 @@ class EncodePanel(QWidget):
             ffmpeg_bin=config.tool_ffmpeg,
             dovi_tool_bin=config.tool_dovi_tool,
             hdr10plus_bin=config.tool_hdr10plus,
-            mkvmerge_bin=config.tool_mkvmerge,
-            mkvextract_bin=config.tool_mkvextract,
-            mkvpropedit_bin=config.tool_mkvpropedit,
             ram_buffer_enabled=config.ram_buffer_enabled,
             ram_buffer_threshold_pct=config.ram_buffer_threshold_pct,
             ffmpeg_threads=config.ffmpeg_threads,
             parent=self,
             writing_application=writing_application,
         )
+        self._workflow._bins["mediainfo"] = config.tool_mediainfo
         self._profiles  = ProfileManager(config.app_data_dir / "encode_profiles")
         self._executor  = ThreadPoolExecutor(max_workers=1)
         self._file_info: FileInfo | None = None
@@ -91,6 +90,8 @@ class EncodePanel(QWidget):
         self._file_title_provider: Callable[[], str] = lambda: ""
         # Callable fourni par MainWindow pour récupérer les pièces jointes manuelles depuis RemuxPanel.
         self._extra_attachments_provider: Callable[[], list] = lambda: []
+        # Callable fourni par MainWindow pour récupérer la cover TMDB en attente depuis RemuxPanel.
+        self._tmdb_cover_provider: "Callable[[], tuple[str, str] | None]" = lambda: None
         # Callable fourni par MainWindow pour récupérer les tag_overrides depuis RemuxPanel.
         self._tag_overrides_provider: Callable[[], "dict | None"] = lambda: None
         # Callable fourni par MainWindow pour récupérer les chapter_overrides depuis RemuxPanel.
@@ -128,6 +129,7 @@ class EncodePanel(QWidget):
         cl = QVBoxLayout(content)
         cl.setContentsMargins(28, 24, 28, 24)
         cl.setSpacing(20)
+        cl.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
 
         # --- Titre ---
         title = QLabel("Encodage Vidéo / Audio")
@@ -1006,6 +1008,13 @@ class EncodePanel(QWidget):
         """
         self._extra_attachments_provider = provider
 
+    def set_tmdb_cover_provider(self, provider: "Callable[[], tuple[str, str] | None]") -> None:
+        """
+        Fournit un callable qui retourne (url, filename) de la cover TMDB en attente,
+        ou None si aucune. Appelé par MainWindow après création des panneaux.
+        """
+        self._tmdb_cover_provider = provider
+
     def set_tag_overrides_provider(self, provider: "Callable[[], dict | None]") -> None:
         """
         Fournit un callable qui retourne les balises MKV éditées (depuis RemuxPanel).
@@ -1041,6 +1050,7 @@ class EncodePanel(QWidget):
             work_dir=self._config.work_dir,
             file_title=self._file_title_provider(),
             extra_attachments=self._extra_attachments_provider(),
+            tmdb_cover=self._tmdb_cover_provider(),
             track_meta_edits=track_meta_edits,
             tag_overrides=self._tag_overrides_provider(),
             chapter_overrides=self._chapters_provider(),
@@ -1077,6 +1087,7 @@ class EncodePanel(QWidget):
     def refresh_runtime_settings(self) -> None:
         self._audio_table.refresh_runtime_settings()
         self._workflow.set_ffmpeg_threads(self._config.ffmpeg_threads)
+        self._workflow._bins["mediainfo"] = self._config.tool_mediainfo
         self._rebuild_preview()
 
     def _copy_command(self) -> None:

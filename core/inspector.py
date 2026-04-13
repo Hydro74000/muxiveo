@@ -59,6 +59,9 @@ STANDARD_MKV_TAGS: frozenset[str] = frozenset({
     "NUMBER_OF_FRAMES", "NUMBER_OF_BYTES",
 })
 
+#: Balises de la source à ne pas transporter dans les fichiers de sortie.
+_EXCLUDED_SOURCE_TAGS: frozenset[str] = frozenset({"TITLE", "ENCODER", "CREATION_TIME"})
+
 
 # =============================================================================
 # Enum HDR
@@ -220,7 +223,7 @@ class AttachmentInfo:
 
     index       : index global ffprobe (utilisé pour -map dans ffmpeg).
     local_index : position 0-based parmi les attachements du fichier
-                  (mkvmerge ID = local_index + 1).
+                  (numéro d'attachement 1-based = local_index + 1).
     filename    : nom du fichier tel que stocké dans le MKV.
     mimetype    : type MIME (ex. "image/jpeg", "application/x-truetype-font").
     size_bytes  : taille en octets (None si non disponible via ffprobe).
@@ -255,7 +258,7 @@ class FileInfo:
     chapters:        ChapterInfo | None  = None
 
     frame_count:  int | None        = None   # via mediainfo
-    tag_count:    int               = 0      # nombre de balises MKV globales (via mkvmerge --identify)
+    tag_count:    int               = 0      # nombre de balises globales (via ffprobe format.tags)
     hdr_type:     HDRType           = HDRType.NONE  # du flux vidéo principal
     title:        str               = ""     # titre de segment (balise Title du conteneur)
     #: Balises MKV globales du conteneur (clés en MAJUSCULES, hors TITLE).
@@ -326,11 +329,9 @@ class FileInspector:
         self,
         ffprobe_bin:   str = "ffprobe",
         mediainfo_bin: str = "mediainfo",
-        mkvmerge_bin:  str = "mkvmerge",
     ) -> None:
         self._ffprobe   = ffprobe_bin
         self._mediainfo = mediainfo_bin
-        self._mkvmerge  = mkvmerge_bin
 
     # ------------------------------------------------------------------
     # API publique
@@ -355,19 +356,19 @@ class FileInspector:
         except Exception:
             pass  # mediainfo absent ou fichier non supporté — on continue
 
-        # Enrichissement MKV via mkvmerge --identify (tag count + language_ietf)
+        # Enrichissement MKV via ffprobe (tag count + language_ietf si présent)
         if "matroska" in info.format or "webm" in info.format:
             try:
-                tag_count, ietf_langs = self._get_mkvmerge_track_data(path)
+                tag_count, ietf_langs = self._get_mkv_track_data(path)
                 info.tag_count = tag_count
                 # Remplace les codes ISO 639-2 de ffprobe par les balises IETF
-                # de mkvmerge, qui sont plus précises (ex : "en-US", "fr-FR").
+                # quand elles sont disponibles (ex : "en-US", "fr-FR").
                 for track in (*info.video_tracks, *info.audio_tracks, *info.subtitle_tracks):
                     lang = ietf_langs.get(track.index)
                     if lang is not None:
                         track.language = lang if lang != "und" else None
             except Exception:
-                pass  # mkvmerge absent ou erreur non bloquante
+                pass  # erreur non bloquante
 
         # Passe de normalisation finale : homogénéise tous les tags langue en IETF
         # régional lorsque possible, pour les entrées ISO 639-2 (xxx) et RFC 5646
@@ -541,10 +542,12 @@ class FileInspector:
 
         raw_tags = fmt.get("tags", {})
         # Normalise les clés en MAJUSCULES et exclut TITLE (déjà dans .title)
+        # ainsi que les balises techniques ENCODER et CREATION_TIME non pertinentes
+        # pour la réutilisation dans les fichiers de sortie.
         global_tags: dict[str, str] = {
             k.upper(): str(v)
             for k, v in raw_tags.items()
-            if k.upper() != "TITLE" and str(v).strip()
+            if k.upper() not in _EXCLUDED_SOURCE_TAGS and str(v).strip()
         }
 
         info = FileInfo(
@@ -668,37 +671,59 @@ class FileInspector:
             is_attached_pic = bool(s.get("disposition", {}).get("attached_pic", 0)),
         )
 
-    def _get_mkvmerge_track_data(
+    @staticmethod
+    def _stream_tag_lookup(tags: dict[str, Any], normalized_key: str) -> str | None:
+        for key, value in tags.items():
+            key_norm = str(key).strip().lower().replace("_", "-")
+            if key_norm != normalized_key:
+                continue
+            text = str(value).strip()
+            if text:
+                return text
+        return None
+
+    def _get_mkv_track_data(
         self, path: Path
     ) -> tuple[int, dict[int, str]]:
         """
-        Appelle ``mkvmerge --identify --identification-format json`` et retourne :
+        Appelle ``ffprobe`` et retourne :
           - le nombre de balises MKV globales (int)
-          - un dict {track_id: language_ietf} pour chaque piste
+          - un dict {track_id: language_ietf|language} pour chaque piste
 
-        Retourne (0, {}) si mkvmerge est absent ou si la sortie ne peut pas
+        ``language-ietf`` est prioritaire ; ``language`` est utilisé en fallback.
+        Retourne (0, {}) si ffprobe est absent ou si la sortie ne peut pas
         être parsée.
         """
         try:
             result = subprocess.run(
                 [
-                    self._mkvmerge,
-                    "--identify", "--identification-format", "json",
+                    self._ffprobe,
+                    "-v", "quiet",
+                    "-print_format", "json",
+                    "-show_streams",
+                    "-show_format",
                     str(path),
                 ],
                 capture_output=True, check=False, timeout=15, **subprocess_text_kwargs(),
             )
-            if result.returncode not in (0, 1):   # 1 = warnings non bloquants
+            if result.returncode != 0:
                 return 0, {}
             data = json.loads(result.stdout)
+
+            fmt_tags = (data.get("format") or {}).get("tags") or {}
             tag_count = sum(
-                entry.get("num_entries", 0)
-                for entry in data.get("global_tags", [])
+                1
+                for key, value in fmt_tags.items()
+                if str(value).strip() and str(key).strip().upper() not in _EXCLUDED_SOURCE_TAGS
             )
+
             lang_map: dict[int, str] = {}
-            for track in data.get("tracks", []):
-                tid = track.get("id")
-                lang = track.get("properties", {}).get("language_ietf")
+            for track in data.get("streams", []):
+                tid = track.get("index")
+                tags = track.get("tags", {}) or {}
+                lang = self._stream_tag_lookup(tags, "language-ietf")
+                if lang is None:
+                    lang = self._stream_tag_lookup(tags, "language")
                 if tid is not None and lang:
                     lang_map[tid] = lang
             return tag_count, lang_map
@@ -742,7 +767,7 @@ def fmt_timecode_display(seconds: float) -> str:
 
 def _fmt_chapter_time(seconds: float) -> str:
     """
-    Formate un nombre de secondes en chaîne HH:MM:SS.nnnnnnnnn (format mkvmerge).
+    Formate un nombre de secondes en chaîne HH:MM:SS.nnnnnnnnn (format XML Matroska Chapters).
     """
     h  = int(seconds // 3600)
     mn = int((seconds % 3600) // 60)
@@ -752,11 +777,37 @@ def _fmt_chapter_time(seconds: float) -> str:
     return f"{h:02d}:{mn:02d}:{s:02d}.{ns:09d}"
 
 
+def build_ffmetadata_chapters(entries: "list[ChapterEntry]", global_title: str = "") -> str:
+    """
+    Génère le contenu d'un fichier ffmetadata compatible avec ``ffmpeg -i metadata.txt``.
+
+    Chaque chapitre est converti en bloc [CHAPTER] avec TIMEBASE=1/1000.
+    La fin de chaque chapitre est définie par le début du chapitre suivant,
+    ou par start_ms + 1000 ms pour le dernier.
+    """
+    lines = [";FFMETADATA1"]
+    if global_title:
+        lines.append(f"title={global_title}")
+
+    sorted_entries = sorted(entries, key=lambda x: x.timecode_s)
+    for i, entry in enumerate(sorted_entries):
+        start_ms = int(entry.timecode_s * 1000)
+        end_ms = int(sorted_entries[i + 1].timecode_s * 1000) if i + 1 < len(sorted_entries) else start_ms + 1000
+
+        lines.append("\n[CHAPTER]")
+        lines.append("TIMEBASE=1/1000")
+        lines.append(f"START={start_ms}")
+        lines.append(f"END={end_ms}")
+        lines.append(f"title={entry.name or f'Chapter {i + 1}'}")
+
+    return "\n".join(lines)
+
+
 def build_chapter_xml(entries: "list[ChapterEntry]") -> str:
     """
     Construit un fichier XML Matroska Chapters depuis une liste de ChapterEntry.
 
-    Le format est compatible avec mkvmerge (--chapters) et mkvpropedit (--chapters).
+    Le format suit le schéma XML Matroska Chapters.
     Les chapitres sont triés par timecode croissant.
     """
     from xml.sax.saxutils import escape as _xe

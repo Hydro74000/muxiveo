@@ -175,6 +175,11 @@ def test_get_details_tv_falls_back_to_english_episode_metadata_when_locale_is_em
 
 
 def test_get_details_fetches_cover_from_tmdb(monkeypatch):
+    """
+    Depuis le téléchargement différé, get_details() ne télécharge plus la cover :
+    il construit uniquement l'URL (cover_url) et le nom de fichier (cover_filename).
+    cover_bytes reste vide — le téléchargement réel est effectué au lancement du workflow.
+    """
     fetcher = TmdbFetcher(api_key="dummy")
 
     def fake_get(endpoint: str, extra: dict | None = None) -> dict:
@@ -190,16 +195,20 @@ def test_get_details_fetches_cover_from_tmdb(monkeypatch):
             }
         raise AssertionError(f"Unexpected endpoint: {endpoint} extra={extra}")
 
+    binary_called = []
+
     monkeypatch.setattr(fetcher, "_get", fake_get)
     monkeypatch.setattr(fetcher, "_build_image_url", lambda *args, **kwargs: "https://img.test/poster.jpg")
-    monkeypatch.setattr(fetcher, "_get_binary", lambda url: (b"jpeg-bytes", "image/jpeg"))
+    monkeypatch.setattr(fetcher, "_get_binary", lambda url: binary_called.append(url) or (b"jpeg-bytes", "image/jpeg"))
 
     result = MediaSearchResult(tmdb_id=300, title="Poster Film", year="2024", kind="movie")
     details = fetcher.get_details(result)
 
-    assert details.cover_bytes == b"jpeg-bytes"
-    assert details.cover_mimetype == "image/jpeg"
+    # L'URL est construite mais le binaire n'est pas téléchargé immédiatement.
+    assert details.cover_url == "https://img.test/poster.jpg"
     assert details.cover_filename == "cover.jpg"
+    assert details.cover_bytes == b""   # téléchargement différé
+    assert binary_called == []          # _get_binary ne doit pas être appelé
 
 
 def test_get_details_movie_does_not_call_episode_endpoint(monkeypatch):

@@ -26,8 +26,8 @@ from pathlib import Path
 
 import pytest
 
-from core.workflows.encode.models import AudioTrackSettings, EncodeConfig, VideoEncodeSettings
-from core.workflows.remux import RemuxConfig, SourceInput, TrackEntry
+from core.workflows.encode.models import AudioTrackSettings, EncodeConfig, TrackTimeOffset, VideoEncodeSettings
+from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
 
 # Appel unbound : _merge_remux_extras n'utilise pas self
 from ui.main_window import MainWindow
@@ -436,3 +436,117 @@ class TestTrackMetaEditsOrdering:
             (2, "Sous B", "eng"),
             (3, "Sous A", "fra"),
         ]
+
+    def test_track_flags_are_propagated_to_track_meta_edits(self, tmp_path, qt_app):
+        src = tmp_path / "src.mkv"
+        src.touch()
+        out = tmp_path / "out.mkv"
+
+        audio = TrackEntry(
+            mkv_tid=1,
+            track_type="audio",
+            codec="EAC3",
+            display_info="",
+            language="fra",
+            title="VF",
+            orig_language="fra",
+            orig_title="VF",
+            flag_default=True,
+            flag_forced=False,
+            flag_hearing_impaired=True,
+            flag_visual_impaired=False,
+            flag_original=False,
+            flag_commentary=True,
+            orig_flag_default=False,
+            orig_flag_forced=False,
+            orig_flag_hearing_impaired=False,
+            orig_flag_visual_impaired=False,
+            orig_flag_original=False,
+            orig_flag_commentary=False,
+        )
+
+        enc = _encode_cfg(
+            src,
+            out,
+            audio_tracks=[AudioTrackSettings(stream_index=1, source_path=src)],
+        )
+        rmx = _remux_cfg(src, out, tracks=[_track(0, "video"), audio])
+
+        result = _merge(None, enc, rmx)
+        edit = next(e for e in result.track_meta_edits if e.track_order == 2)
+
+        assert edit.flag_default is True
+        assert edit.flag_hearing_impaired is True
+        assert edit.flag_commentary is True
+
+
+class TestTrackTimeOffsetsPropagation:
+
+    def test_track_time_offsets_are_propagated_from_remux_tracks(self, tmp_path, qt_app):
+        src = tmp_path / "src.mkv"
+        src.touch()
+        out = tmp_path / "out.mkv"
+
+        video = TrackEntry(
+            mkv_tid=0,
+            track_type="video",
+            codec="H264",
+            display_info="",
+            language="",
+            title="",
+            orig_language="",
+            orig_title="",
+            time_shift_ms=125,
+        )
+        audio = TrackEntry(
+            mkv_tid=1,
+            track_type="audio",
+            codec="EAC3",
+            display_info="",
+            language="fra",
+            title="VF",
+            orig_language="fra",
+            orig_title="VF",
+            time_shift_ms=-80,
+        )
+
+        enc = _encode_cfg(
+            src,
+            out,
+            audio_tracks=[AudioTrackSettings(stream_index=1, source_path=src)],
+        )
+        rmx = _remux_cfg(src, out, tracks=[video, audio])
+
+        result = _merge(None, enc, rmx)
+
+        assert result is not enc
+        assert all(isinstance(t, TrackTimeOffset) for t in result.track_time_offsets)
+        assert [
+            (t.track_type, t.source_path, t.stream_index, t.offset_ms)
+            for t in result.track_time_offsets
+        ] == [
+            ("video", src, 0, 125),
+            ("audio", src, 1, -80),
+        ]
+
+    def test_zero_offsets_are_not_propagated(self, tmp_path, qt_app):
+        src = tmp_path / "src.mkv"
+        src.touch()
+        out = tmp_path / "out.mkv"
+
+        video = TrackEntry(
+            mkv_tid=0,
+            track_type="video",
+            codec="H264",
+            display_info="",
+            language="",
+            title="",
+            orig_language="",
+            orig_title="",
+            time_shift_ms=0,
+        )
+        enc = _encode_cfg(src, out)
+        rmx = _remux_cfg(src, out, tracks=[video])
+
+        result = _merge(None, enc, rmx)
+        assert result is enc

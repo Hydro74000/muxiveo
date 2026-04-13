@@ -142,6 +142,144 @@ class TestAppConfigRamBuffer:
 
         assert cfg.startup_panel == "dashboard"
 
+    def test_default_startup_menu_compact_is_false(self, tmp_path):
+        """Sans clé explicite, le menu démarre en mode étendu."""
+        from core.config import AppConfig
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.dict(os.environ, {}, clear=False):
+                cfg = AppConfig()
+
+        assert cfg.startup_menu_compact is False
+
+    def test_ini_startup_menu_compact_true_enables_compact_mode(self, tmp_path):
+        """La clé startup_menu_compact=true active le démarrage compact."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[ui]\nstartup_menu_compact = true\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.startup_menu_compact is True
+
+    def test_default_startup_logs_expanded_is_false(self, tmp_path):
+        """Sans clé explicite, les logs démarrent repliés."""
+        from core.config import AppConfig
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.dict(os.environ, {}, clear=False):
+                cfg = AppConfig()
+
+        assert cfg.startup_logs_expanded is False
+
+    def test_ini_startup_logs_expanded_true_enables_expanded_logs(self, tmp_path):
+        """La clé startup_logs_expanded=true déplie les logs au démarrage."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[ui]\nstartup_logs_expanded = true\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.startup_logs_expanded is True
+
+    def test_work_dir_leftovers_ignores_empty_tmdb_covers(self, tmp_path):
+        """tmdb_covers vide (même avec sous-dossiers vides) ne déclenche pas l'alerte startup."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        work_dir = tmp_path / "work"
+        (work_dir / "tmdb_covers" / "deadbeef").mkdir(parents=True, exist_ok=True)
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text(f"[paths]\nwork_dir = {work_dir}\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.work_dir_has_leftovers() is False
+
+    def test_work_dir_leftovers_detects_tmdb_cover_file(self, tmp_path):
+        """tmdb_covers non vide (avec fichier cover) déclenche l'alerte startup."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        work_dir = tmp_path / "work"
+        cover = work_dir / "tmdb_covers" / "deadbeef" / "cover.jpg"
+        cover.parent.mkdir(parents=True, exist_ok=True)
+        cover.write_bytes(b"cover")
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text(f"[paths]\nwork_dir = {work_dir}\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.work_dir_has_leftovers() is True
+
+    def test_default_remux_backend_is_ffmpeg(self, tmp_path):
+        """Sans clé explicite, le backend remux par défaut est FFmpeg."""
+        from core.config import AppConfig
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.dict(os.environ, {}, clear=False):
+                cfg = AppConfig()
+
+        assert cfg.remux_backend == "ffmpeg"
+
+    def test_remux_backend_ini_falls_back_to_ffmpeg_for_mkvmerge(self, tmp_path):
+        """config.ini [remux] backend=mkvmerge retombe sur FFmpeg."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[remux]\nbackend = mkvmerge\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.remux_backend == "ffmpeg"
+
     def test_audio_encoding_defaults_use_192_and_64(self, tmp_path):
         """Sans configuration explicite, l'audio utilise 192 kbps/canal et des paliers de 64."""
         from core.config import AppConfig
@@ -341,10 +479,11 @@ def test_app_config_non_windows_detects_tool_from_absolute_candidates(tmp_path):
 class TestToolVersionRegistry:
     """Tests unitaires du registre de versions d'outils externes."""
 
-    def test_extract_major_supports_mkvmerge_style(self):
+    def test_extract_major_supports_vNNN_style(self):
         from core.config import ToolVersionRegistry
 
-        assert ToolVersionRegistry._extract_major("mkvmerge v98.0 ('Chonks') 64-bit") == 98
+        # Format « tool vX.Y.Z » utilisé notamment par d'anciens outils MKV.
+        assert ToolVersionRegistry._extract_major("sometool v98.0 ('Codename') 64-bit") == 98
 
     def test_extract_major_supports_ffmpeg_style(self):
         from core.config import ToolVersionRegistry
@@ -354,9 +493,9 @@ class TestToolVersionRegistry:
     def test_probe_returns_empty_info_on_failure(self):
         from core.config import ToolVersionRegistry
 
-        reg = ToolVersionRegistry({"mkvmerge": "mkvmerge"})
+        reg = ToolVersionRegistry({"dovi_tool": "dovi_tool"})
         with patch("core.config.subprocess.run", side_effect=FileNotFoundError):
-            info = reg.get("mkvmerge")
+            info = reg.get("dovi_tool")
 
         assert info.text is None
         assert info.major is None
@@ -364,18 +503,18 @@ class TestToolVersionRegistry:
     def test_get_uses_cache(self):
         from core.config import ToolVersionRegistry
 
-        reg = ToolVersionRegistry({"mkvmerge": "mkvmerge"})
+        reg = ToolVersionRegistry({"dovi_tool": "dovi_tool"})
         with patch("core.config.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
-                stdout="mkvmerge v98.0 ('Chonks')\n",
+                stdout="dovi_tool 2.1.0\n",
                 stderr="",
                 returncode=0,
             )
-            first = reg.get("mkvmerge")
-            second = reg.get("mkvmerge")
+            first = reg.get("dovi_tool")
+            second = reg.get("dovi_tool")
 
-        assert first.major == 98
-        assert second.major == 98
+        assert first.major == 2
+        assert second.major == 2
         assert mock_run.call_count == 1
 
 
@@ -396,9 +535,9 @@ class TestAppConfigToolVersionPropagation:
 
         def _fake_run(cmd, **_kwargs):
             exe_name = Path(str(cmd[0])).name.lower()
-            if exe_name in {"mkvmerge", "mkvmerge.exe"}:
+            if exe_name in {"dovi_tool", "dovi_tool.exe"}:
                 return MagicMock(
-                    stdout="mkvmerge v98.0 ('Chonks')\n",
+                    stdout="dovi_tool 2.1.0\n",
                     stderr="",
                     returncode=0,
                 )
@@ -413,8 +552,8 @@ class TestAppConfigToolVersionPropagation:
              patch.object(cfg_mod, "_non_windows_tool_candidates", return_value=[]):
             mock_qs.return_value = self._mock_qsettings()
             cfg = AppConfig()
-            assert cfg.tool_major_version("mkvmerge") == 98
-            assert cfg.tool_version_text("mkvmerge") == "mkvmerge v98.0 ('Chonks')"
+            assert cfg.tool_major_version("dovi_tool") == 2
+            assert cfg.tool_version_text("dovi_tool") == "dovi_tool 2.1.0"
             called_cmds = [call.args[0] for call in mock_run.call_args_list]
             assert any(args[-1] == "--version" for args in called_cmds)
 
@@ -428,8 +567,8 @@ class TestAppConfigToolVersionPropagation:
         def _fake_run(cmd, **_kwargs):
             exe = cmd[0]
             outputs = {
-                "mkvmerge": "mkvmerge v97.0 ('Glass')",
-                "custom-mkvmerge": "mkvmerge v98.1 ('Chonks')",
+                "dovi_tool": "dovi_tool 2.1.0",
+                "custom-dovi": "dovi_tool 2.2.0",
             }
             text = outputs.get(exe, "")
             return MagicMock(stdout=f"{text}\n" if text else "", stderr="", returncode=0 if text else 1)
@@ -443,13 +582,13 @@ class TestAppConfigToolVersionPropagation:
              patch.object(cfg_mod, "_non_windows_tool_candidates", return_value=[]):
             mock_qs.return_value = self._mock_qsettings()
             cfg = AppConfig()
-            first_major = cfg.tool_major_version("mkvmerge")
-            cfg.tool_mkvmerge = "custom-mkvmerge"
+            first_major = cfg.tool_major_version("dovi_tool")
+            cfg.tool_dovi_tool = "custom-dovi"
             cfg.refresh_tool_versions()
-            second_major = cfg.tool_major_version("mkvmerge")
+            second_major = cfg.tool_major_version("dovi_tool")
 
-        assert first_major == 97
-        assert second_major == 98
+        assert first_major == 2
+        assert second_major == 2
 
 class TestWindowsControlledFolderAccessSetup:
     """Tests de la proposition d'allowlist Windows Security (Controlled Folder Access)."""
@@ -463,17 +602,12 @@ class TestWindowsControlledFolderAccessSetup:
         app_exe.write_text("", encoding="utf-8")
 
         ffmpeg = tmp_path / "ffmpeg.exe"
-        mkvmerge = tmp_path / "mkvmerge.exe"
-        mkvpropedit = tmp_path / "mkvpropedit.exe"
-        for exe in (ffmpeg, mkvmerge, mkvpropedit):
-            exe.write_text("", encoding="utf-8")
+        ffmpeg.write_text("", encoding="utf-8")
 
         ini_path = tmp_path / "config.ini"
         ini_path.write_text(
             "[tools]\n"
-            f"ffmpeg = {ffmpeg}\n"
-            f"mkvmerge = {mkvmerge}\n"
-            f"mkvpropedit = {mkvpropedit}\n",
+            f"ffmpeg = {ffmpeg}\n",
             encoding="utf-8",
         )
 
@@ -483,7 +617,7 @@ class TestWindowsControlledFolderAccessSetup:
              patch.object(setup_mod.sys, "frozen", True, create=True):
             paths = setup_mod._windows_cfa_candidate_apps(tmp_path)
 
-        assert paths == [app_exe, ffmpeg, mkvmerge, mkvpropedit]
+        assert paths == [app_exe, ffmpeg]
 
     def test_offer_windows_cfa_setup_skips_when_disabled(self, tmp_path):
         import setup as setup_mod
@@ -596,7 +730,7 @@ def test_setup_windows_no_window_kwargs_disabled_when_console_is_visible():
     fake_windll = SimpleNamespace(kernel32=SimpleNamespace(GetConsoleWindow=lambda: 1))
     with patch.object(setup_mod, "OS", "Windows"), \
          patch.object(setup_mod.sys, "frozen", True, create=True), \
-         patch.object(setup_mod.ctypes, "windll", fake_windll):
+         patch.object(setup_mod.ctypes, "windll", fake_windll, create=True):
         kwargs = setup_mod._windows_no_window_subprocess_kwargs()
 
     assert kwargs == {}
@@ -608,7 +742,7 @@ def test_setup_windows_no_window_kwargs_disabled_in_cli_mode():
     fake_windll = SimpleNamespace(kernel32=SimpleNamespace(GetConsoleWindow=lambda: 0))
     with patch.object(setup_mod, "OS", "Windows"), \
          patch.object(setup_mod.sys, "frozen", False, create=True), \
-         patch.object(setup_mod.ctypes, "windll", fake_windll):
+         patch.object(setup_mod.ctypes, "windll", fake_windll, create=True):
         kwargs = setup_mod._windows_no_window_subprocess_kwargs()
 
     assert kwargs == {}
