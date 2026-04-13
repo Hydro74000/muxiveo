@@ -6,6 +6,37 @@ Interface graphique pour préparer des fichiers vidéo, remuxer sans perte, rée
 
 Cette documentation correspond à **Mediarecode v1.3**.
 
+## Sommaire
+
+- [Vue rapide](#vue-rapide)
+- [Installation](#installation)
+  - [Prérequis](#prérequis)
+  - [Cloner le dépôt](#cloner-le-dépôt)
+  - [Installer les dépendances et les outils](#installer-les-dépendances-et-les-outils)
+  - [Lancer l'application](#lancer-lapplication)
+- [Windows - Version .exe uniquement](#windows---version-exe-uniquement)
+  - [Windows Security / Controlled Folder Access](#windows-security--controlled-folder-access)
+- [Distribution](#distribution)
+- [Interface et usage](#interface-et-usage)
+  - [Tableau de bord](#tableau-de-bord)
+  - [Conteneur & Encodage](#conteneur--encodage)
+  - [Fusion DoVi / HDR10+](#fusion-dovi--hdr10)
+  - [Paramètres](#paramètres)
+- [Thèmes](#thèmes)
+- [Localisation](#localisation)
+- [Configuration](#configuration)
+  - [Priorité des réglages](#priorité-des-réglages)
+  - [Paramètres principaux](#paramètres-principaux)
+  - [Buffer RAM](#buffer-ram)
+  - [Outils configurables](#outils-configurables)
+- [Workflows](#workflows)
+  - [Conteneur & Encodage — Routage global](#conteneur--encodage--routage-global)
+  - [Backend remux `ffmpeg` — Branches internes](#backend-remux-ffmpeg--branches-internes)
+  - [Encode workflow — Branches internes](#encode-workflow--branches-internes)
+  - [Fusion DoVi / HDR10+](#fusion-dovi--hdr10-1)
+  - [Détection HDR d'un fichier](#détection-hdr-dun-fichier)
+- [Outils externes](#outils-externes)
+
 ## Vue rapide
 
 | Outil | Usage | Qualité |
@@ -70,7 +101,11 @@ python3 main.py
 
 Sous Windows, utilisez `py main.py`.
 
-## Windows
+## Windows - Version .exe uniquement
+
+Cette notice ne concerne que les lancement depuis Mediarecode.exe
+
+Le lancement via python (py main.py) n'est pas concerné.
 
 ### Windows Security / Controlled Folder Access
 
@@ -107,19 +142,21 @@ Après ajout à l'allowlist, redémarrez Mediarecode avant de retester un export
 
 L'application peut également être distribuée sous forme de binaire autonome via `package.py`.
 
+Les artefacts sont toujours déposés dans `dist/releases/`.
+
 | Cible | Commande | Artefact produit |
 |-------|----------|-----------------|
-| AppImage Linux | `python3 package.py` | `dist/Mediarecode-x86_64.AppImage` |
-| Binaire Windows (natif) | `py package.py` | `dist/mediarecode/mediarecode.exe` |
-| Installateur Windows (natif + NSIS) | `py package.py --nsis` | `dist/Mediarecode-Setup.exe` |
-| Installateur Windows cross (depuis Linux) | `python3 package.py --windows` | `dist/Mediarecode-Setup.exe` via Wine + NSIS |
+| AppImage Linux | `python3 package.py --allinc` | `dist/releases/Mediarecode-x86_64.AppImage` + `dist/releases/Mediarecode-x86_64.AppImage.zsync` |
+| Installateur Windows (natif + NSIS) | `py package.py --nsis` | `dist/releases/Mediarecode-Setup.exe` |
+| Installateur Windows cross (depuis Linux) | `python3 package.py --windows` | `dist/releases/Mediarecode-Setup.exe` via Wine + NSIS |
+
+`--allinc` est requis sur Linux : il intègre toutes les dépendances dans l'AppImage et génère le fichier `.zsync` associé pour les mises à jour différentielles.
 
 Options utiles de `package.py` :
 
 | Option | Effet |
 |--------|-------|
-| `--onefile` | binaire monolithique (lent au démarrage, ignoré pour AppImage) |
-| `--exe` | force le packaging `.exe` sur Linux (PyInstaller natif, sans AppImage) |
+| `--allinc` | intègre toutes les dépendances dans l'AppImage et génère le `.zsync` (Linux) |
 | `--windows` | cross-compile un installateur Windows depuis Linux via Wine + NSIS |
 | `--skip-wine` | réutilise `dist/mediarecode-win/` existant (saute l'étape Wine/PyInstaller) |
 | `--clean` | nettoie tous les artefacts de build (`build/`, `dist/`, `.wine_build/`, `*.AppImage`…) |
