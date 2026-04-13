@@ -223,7 +223,7 @@ class AttachmentInfo:
 
     index       : index global ffprobe (utilisé pour -map dans ffmpeg).
     local_index : position 0-based parmi les attachements du fichier
-                  (mkvmerge ID = local_index + 1).
+                  (numéro d'attachement 1-based = local_index + 1).
     filename    : nom du fichier tel que stocké dans le MKV.
     mimetype    : type MIME (ex. "image/jpeg", "application/x-truetype-font").
     size_bytes  : taille en octets (None si non disponible via ffprobe).
@@ -767,7 +767,7 @@ def fmt_timecode_display(seconds: float) -> str:
 
 def _fmt_chapter_time(seconds: float) -> str:
     """
-    Formate un nombre de secondes en chaîne HH:MM:SS.nnnnnnnnn (format mkvmerge).
+    Formate un nombre de secondes en chaîne HH:MM:SS.nnnnnnnnn (format XML Matroska Chapters).
     """
     h  = int(seconds // 3600)
     mn = int((seconds % 3600) // 60)
@@ -807,7 +807,7 @@ def build_chapter_xml(entries: "list[ChapterEntry]") -> str:
     """
     Construit un fichier XML Matroska Chapters depuis une liste de ChapterEntry.
 
-    Le format est compatible avec mkvmerge (--chapters) et mkvpropedit (--chapters).
+    Le format suit le schéma XML Matroska Chapters.
     Les chapitres sont triés par timecode croissant.
     """
     from xml.sax.saxutils import escape as _xe

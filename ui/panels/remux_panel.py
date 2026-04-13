@@ -72,11 +72,10 @@ from core.inspector import (
 )
 from core.lang_tags import Rfc5646LanguageTags
 from core.runner import TaskSignals
-from core.workflows.remux import (
-    RemuxConfig, RemuxWorkflow, SourceInput,
-    TrackEntry, tracks_from_file_info,
+from core.workflows.remux import RemuxWorkflow
+from core.workflows.remux_models import (
+    RemuxConfig, SourceInput, TrackEntry, tracks_from_file_info,
 )
-from core.workflows.remux_ffmpeg import FfmpegRemuxWorkflow
 from ui.design_system import colors as _C
 from ui.panels.tmdb_search_modal import TmdbSearchModal, extract_season_episode
 from ui.panels.track_edit_dialog import TrackEditDialog
@@ -636,9 +635,10 @@ class _TrackInfoDelegate(QStyledItemDelegate):
         opt = QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
         opt.text = ""
-
         widget = opt.widget
-        style = widget.style() if widget is not None else self.parent().style() if self.parent() else None
+        get_style = lambda o: o.style() if isinstance(o, QWidget) else None
+        style = get_style(widget) or get_style(self.parent())
+        
         if style is None:
             super().paint(painter, option, index)
             return
@@ -1993,10 +1993,8 @@ class _AttachmentPanel(QFrame):
         has_tags = any(i.is_tag for i in self._items) or self._panel_tag_overrides is not None
         self._placeholder.setVisible(not has)
         self._items_widget.setVisible(has)
-        self._edit_tags_btn.setEnabled(has_tags)
-        if not has_tags:
-            self._panel_tag_overrides = None
-            self._edit_tags_btn.setText(translate_text("Éditer les tags"))
+        self._edit_tags_btn.setEnabled(True)
+        self._edit_tags_btn.setText(translate_text("Éditer les tags"))
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         self._clear_pending_tmdb_cover()
@@ -2542,7 +2540,7 @@ class RemuxPanel(QWidget):
         super().__init__(parent)
         self._config   = config
         self._writing_application = writing_application
-        self._workflow: RemuxWorkflow | FfmpegRemuxWorkflow = self._make_workflow()
+        self._workflow: RemuxWorkflow = self._make_workflow()
         self._executor = ThreadPoolExecutor(max_workers=2)
 
         # Liste ordonnée des SourceFile chargés
@@ -2567,8 +2565,8 @@ class RemuxPanel(QWidget):
         self._build_ui()
         apply_translations(self)
 
-    def _make_workflow(self) -> RemuxWorkflow | FfmpegRemuxWorkflow:
-        return FfmpegRemuxWorkflow(
+    def _make_workflow(self) -> RemuxWorkflow:
+        return RemuxWorkflow(
             ffmpeg_bin=self._config.tool_ffmpeg,
             ffprobe_bin=self._config.tool_ffprobe,
             ffmpeg_threads=self._config.ffmpeg_threads,
@@ -3149,12 +3147,9 @@ class RemuxPanel(QWidget):
 
     def refresh_runtime_settings(self) -> None:
         """Recharge les binaires/runtime issus de la configuration courante."""
-        if not isinstance(self._workflow, FfmpegRemuxWorkflow):
-            self._recreate_workflow()
-        else:
-            self._workflow.set_ffmpeg_bin(self._config.tool_ffmpeg)
-            self._workflow.set_ffprobe_bin(self._config.tool_ffprobe)
-            self._workflow.set_ffmpeg_threads(self._config.ffmpeg_threads)
+        self._workflow.set_ffmpeg_bin(self._config.tool_ffmpeg)
+        self._workflow.set_ffprobe_bin(self._config.tool_ffprobe)
+        self._workflow.set_ffmpeg_threads(self._config.ffmpeg_threads)
 
         self._rebuild_preview()
 

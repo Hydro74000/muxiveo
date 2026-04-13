@@ -40,14 +40,13 @@ from core.workflows.encode.models import (
     VideoEncodeSettings,
 )
 from core.workflows.encode.workflow import EncodeWorkflow
-from core.workflows.remux import (
+from core.workflows.remux import RemuxWorkflow
+from core.workflows.remux_models import (
     RemuxConfig,
-    RemuxWorkflow,
     SourceInput,
     TrackEntry,
     tracks_from_file_info,
 )
-from core.workflows.remux_ffmpeg import FfmpegRemuxWorkflow
 
 
 ARTIFACT_ROOT = REPO_ROOT / "build" / "integration_workflow_tests"
@@ -830,7 +829,7 @@ def run_remux_case_ffmpeg_attachments(case_id: str, sources: PreparedSources, to
     work_root = (case_root / "work").resolve()
     stale = seed_stale_file(work_root, output_path)
 
-    workflow = FfmpegRemuxWorkflow(
+    workflow = RemuxWorkflow(
         ffmpeg_bin=tools.ffmpeg,
         ffprobe_bin=tools.ffprobe,
         ffmpeg_threads=4,
@@ -875,7 +874,7 @@ def run_remux_case_ffmpeg_attachments(case_id: str, sources: PreparedSources, to
         }
         return finalize_case(
             case_id=case_id,
-            workflow_name="remux_ffmpeg",
+            workflow_name="remux",
             branch="source_attachments_preserve",
             source=sources.sdr_attach_source,
             case_root=case_root,
@@ -893,7 +892,7 @@ def run_remux_case_ffmpeg_attachments(case_id: str, sources: PreparedSources, to
     except Exception as exc:
         return finalize_case(
             case_id=case_id,
-            workflow_name="remux_ffmpeg",
+            workflow_name="remux",
             branch="source_attachments_preserve",
             source=sources.sdr_attach_source,
             case_root=case_root,
@@ -919,7 +918,7 @@ def run_remux_case_ffmpeg_override(case_id: str, sources: PreparedSources, tools
     stale = seed_stale_file(work_root, output_path)
     extra_cover = make_cover_under_tmdb_root(work_root)
 
-    workflow = FfmpegRemuxWorkflow(
+    workflow = RemuxWorkflow(
         ffmpeg_bin=tools.ffmpeg,
         ffprobe_bin=tools.ffprobe,
         ffmpeg_threads=4,
@@ -973,7 +972,7 @@ def run_remux_case_ffmpeg_override(case_id: str, sources: PreparedSources, tools
         }
         return finalize_case(
             case_id=case_id,
-            workflow_name="remux_ffmpeg",
+            workflow_name="remux",
             branch="tags_chapters_override_tmdb_cover",
             source=sources.sdr_meta_source,
             case_root=case_root,
@@ -991,7 +990,7 @@ def run_remux_case_ffmpeg_override(case_id: str, sources: PreparedSources, tools
     except Exception as exc:
         return finalize_case(
             case_id=case_id,
-            workflow_name="remux_ffmpeg",
+            workflow_name="remux",
             branch="tags_chapters_override_tmdb_cover",
             source=sources.sdr_meta_source,
             case_root=case_root,
@@ -1016,7 +1015,7 @@ def run_remux_case_ffmpeg_cleanup(case_id: str, sources: PreparedSources, tools:
     work_root = (case_root / "work").resolve()
     stale = seed_stale_file(work_root, output_path)
 
-    workflow = FfmpegRemuxWorkflow(
+    workflow = RemuxWorkflow(
         ffmpeg_bin=tools.ffmpeg,
         ffprobe_bin=tools.ffprobe,
         ffmpeg_threads=4,
@@ -1060,7 +1059,7 @@ def run_remux_case_ffmpeg_cleanup(case_id: str, sources: PreparedSources, tools:
         }
         return finalize_case(
             case_id=case_id,
-            workflow_name="remux_ffmpeg",
+            workflow_name="remux",
             branch="cleanup_delete_metadata",
             source=sources.sdr_meta_source,
             case_root=case_root,
@@ -1078,7 +1077,7 @@ def run_remux_case_ffmpeg_cleanup(case_id: str, sources: PreparedSources, tools:
     except Exception as exc:
         return finalize_case(
             case_id=case_id,
-            workflow_name="remux_ffmpeg",
+            workflow_name="remux",
             branch="cleanup_delete_metadata",
             source=sources.sdr_meta_source,
             case_root=case_root,

@@ -1,5 +1,5 @@
 """
-tests/test_remux_ffmpeg_workflow.py — Cahier de test backend remux FFmpeg.
+tests/test_remux_workflow.py — Cahier de test backend remux FFmpeg (RemuxWorkflow).
 
 Couverture visée :
 1. Construction de commande
@@ -12,7 +12,7 @@ Couverture visée :
 
 2. Exécution réelle (intégration légère)
    - génération d'un MKV de test
-   - remux complet via FfmpegRemuxWorkflow.run()
+   - remux complet via RemuxWorkflow.run()
    - vérification ffprobe des tags, chapitres, langues et attachements
 
 3. Cas sensible attachements source
@@ -35,8 +35,8 @@ from core.inspector import AttachmentInfo, ChapterEntry
 from core.runner import TaskSignals
 from core.version import APP_VERSION_LABEL
 from core.workflows.matroska_header_editor import MatroskaSegmentInfoHeaderEditor
-from core.workflows.remux import RemuxConfig, RemuxError, SourceInput, TrackEntry
-from core.workflows.remux_ffmpeg import FfmpegRemuxWorkflow
+from core.workflows.remux_models import RemuxConfig, RemuxError, SourceInput, TrackEntry
+from core.workflows.remux import RemuxWorkflow
 from core.workflows.remux_timeline_sync import LiveSyncNotSupportedError, SyncPreparedInput
 
 
@@ -138,10 +138,10 @@ def _segment_info_apps(path: Path) -> dict[str, str]:
     return out
 
 
-class TestFfmpegRemuxWorkflowBuildCommand:
+class TestRemuxWorkflowBuildCommand:
 
     def test_validate_rejects_non_mkv_output(self, tmp_path):
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src = tmp_path / "in.mkv"
         src.touch()
         cfg = RemuxConfig(
@@ -154,7 +154,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert any(".mkv" in e for e in errors)
 
     def test_validate_rejects_negative_video_offset(self, tmp_path):
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src = tmp_path / "in.mkv"
         src.touch()
         cfg = RemuxConfig(
@@ -167,7 +167,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert any("vidéo" in e.lower() and "négatif" in e.lower() for e in errors)
 
     def test_build_command_positive_audio_offset_uses_itsoffset(self, tmp_path):
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src = tmp_path / "in.mkv"
         src.touch()
         cfg = RemuxConfig(
@@ -185,7 +185,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert "1:1" in map_values
 
     def test_build_command_negative_subtitle_offset_uses_ss(self, tmp_path):
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src = tmp_path / "in.mkv"
         src.touch()
         cfg = RemuxConfig(
@@ -202,7 +202,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert "1:2" in map_values
 
     def test_requires_file_sync_fallback_for_offsets_detects_foreign_offset(self, tmp_path):
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src_a = tmp_path / "a.mkv"
         src_b = tmp_path / "b.mkv"
         src_a.touch()
@@ -222,7 +222,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert wf._requires_file_sync_fallback_for_offsets(mapped) is True
 
     def test_requires_file_sync_fallback_for_offsets_ignores_zero_offsets(self, tmp_path):
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src_a = tmp_path / "a.mkv"
         src_b = tmp_path / "b.mkv"
         src_a.touch()
@@ -242,7 +242,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert wf._requires_file_sync_fallback_for_offsets(mapped) is False
 
     def test_decide_strict_interleave_with_prescan_forces_sync_on_foreign_offset(self, tmp_path):
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src_a = tmp_path / "a.mkv"
         src_b = tmp_path / "b.mkv"
         src_a.touch()
@@ -261,7 +261,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert wf._decide_strict_interleave_with_prescan(cfg) is True
 
     def test_build_command_does_not_force_muxing_application_metadata(self, tmp_path):
-        wf = FfmpegRemuxWorkflow(
+        wf = RemuxWorkflow(
             ffmpeg_bin="ffmpeg",
             ffprobe_bin="ffprobe",
             writing_application="Mediarecode Test/1.0",
@@ -279,7 +279,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert "muxing_application=" not in flat
 
     def test_build_command_includes_threads_argument(self, tmp_path):
-        wf = FfmpegRemuxWorkflow(
+        wf = RemuxWorkflow(
             ffmpeg_bin="ffmpeg",
             ffprobe_bin="ffprobe",
             ffmpeg_threads=12,
@@ -298,7 +298,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert cmd[cmd.index("-threads") + 1] == "12"
 
     def test_build_command_emits_language_and_clears_legacy_ietf_tag(self, tmp_path):
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src = tmp_path / "in.mkv"
         src.touch()
 
@@ -320,7 +320,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert "-metadata TMDB_ID=42" in flat
 
     def test_build_command_with_chapter_overrides_maps_metadata_input(self, tmp_path):
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src = tmp_path / "in.mkv"
         src.touch()
 
@@ -342,7 +342,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert cmd[cmd.index("-map_chapters") + 1] == "1"
 
     def test_build_command_with_tag_and_chapter_overrides_maps_metadata_from_chapter_input(self, tmp_path):
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src = tmp_path / "in.mkv"
         src.touch()
 
@@ -364,7 +364,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert cmd[cmd.index("-map_chapters") + 1] == "1"
 
     def test_build_command_forces_matroska_demuxer_for_sync_inputs(self, tmp_path):
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src = tmp_path / "in.mkv"
         sync = tmp_path / "sync_audio.mka"
         chapters = tmp_path / "chapters.ffmetadata"
@@ -393,7 +393,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert cmd[cmd.index("-map_chapters") + 1] == "2"
 
     def test_build_command_maps_source_metadata_when_copy_tags_is_enabled(self, tmp_path):
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src = tmp_path / "in.mkv"
         src.touch()
 
@@ -413,7 +413,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert cmd[cmd.index("-map_metadata") + 1] == "0"
 
     def test_build_command_drops_source_metadata_when_copy_tags_is_disabled(self, tmp_path):
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src = tmp_path / "in.mkv"
         src.touch()
 
@@ -435,7 +435,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
     def test_build_command_multi_source_with_subtitles_enables_strict_interleave(self, tmp_path):
         """Le mux multi-source avec sous-titres a besoin d'un entrelacement strict
         pour éviter qu'une piste audio importée soit écrite très loin de la vidéo."""
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src_a = tmp_path / "a.mkv"
         src_b = tmp_path / "b.mkv"
         src_a.touch()
@@ -459,7 +459,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert "-avoid_negative_ts" not in cmd
 
     def test_build_command_strict_interleave_override_false_disables_flags(self, tmp_path):
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src_a = tmp_path / "a.mkv"
         src_b = tmp_path / "b.mkv"
         src_a.touch()
@@ -480,7 +480,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert "-max_interleave_delta" not in cmd
 
     def test_build_command_strict_interleave_override_true_enables_flags(self, tmp_path):
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src = tmp_path / "in.mkv"
         src.touch()
 
@@ -496,7 +496,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert cmd[cmd.index("-max_muxing_queue_size") + 1] == "9999"
 
     def test_build_command_multi_source_without_subtitles_keeps_default_interleave(self, tmp_path):
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src_a = tmp_path / "a.mkv"
         src_b = tmp_path / "b.mkv"
         src_a.touch()
@@ -517,7 +517,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert "-max_interleave_delta" not in cmd
 
     def test_build_command_multi_source_with_subtitles_but_no_foreign_audio_keeps_default_interleave(self, tmp_path):
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src_a = tmp_path / "a.mkv"
         src_b = tmp_path / "b.mkv"
         src_a.touch()
@@ -538,7 +538,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert "-max_interleave_delta" not in cmd
 
     def test_prepare_sync_inputs_windows_prefers_mmap_fallback(self, tmp_path, monkeypatch):
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src_a = tmp_path / "a.mkv"
         src_b = tmp_path / "b.mkv"
         src_a.touch()
@@ -568,8 +568,8 @@ class TestFfmpegRemuxWorkflowBuildCommand:
             def prepare_from_mapped_tracks(self, **_kwargs):
                 pytest.fail("temp fallback should not be used when mmap works")
 
-        monkeypatch.setattr("core.workflows.remux_ffmpeg.MkvmergeLikeTimelineSync", _FakeSyncer)
-        monkeypatch.setattr("core.workflows.remux_ffmpeg.os.name", "nt", raising=False)
+        monkeypatch.setattr("core.workflows.remux.MkvmergeLikeTimelineSync", _FakeSyncer)
+        monkeypatch.setattr("core.workflows.remux.os.name", "nt", raising=False)
 
         remapped, extra_inputs, live = wf._prepare_mkvmerge_like_sync_inputs(
             cfg,
@@ -584,7 +584,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert audio.stream_index == 0
 
     def test_prepare_sync_inputs_windows_falls_back_to_temp_when_mmap_fails(self, tmp_path, monkeypatch):
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src_a = tmp_path / "a.mkv"
         src_b = tmp_path / "b.mkv"
         src_a.touch()
@@ -614,8 +614,8 @@ class TestFfmpegRemuxWorkflowBuildCommand:
             def prepare_from_mapped_tracks(self, **_kwargs):
                 return [SyncPreparedInput(key=(1, 1, "audio"), path=tmp_path / "temp.mka", input_idx=2)]
 
-        monkeypatch.setattr("core.workflows.remux_ffmpeg.MkvmergeLikeTimelineSync", _FakeSyncer)
-        monkeypatch.setattr("core.workflows.remux_ffmpeg.os.name", "nt", raising=False)
+        monkeypatch.setattr("core.workflows.remux.MkvmergeLikeTimelineSync", _FakeSyncer)
+        monkeypatch.setattr("core.workflows.remux.os.name", "nt", raising=False)
 
         remapped, extra_inputs, live = wf._prepare_mkvmerge_like_sync_inputs(
             cfg,
@@ -630,7 +630,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert audio.stream_index == 0
 
     def test_validate_rejects_invalid_selected_attachments(self, tmp_path):
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src = tmp_path / "in.mkv"
         src.touch()
 
@@ -673,7 +673,7 @@ class TestMatroskaSegmentInfoPatch:
         path.write_bytes(b"\x00" * 16 + segment + b"\x00" * 16)
 
         editor = MatroskaSegmentInfoHeaderEditor()
-        result = editor.apply_muxing_app_append_with_header_rebuild(
+        result = editor.apply_muxing_app_replace_with_header_rebuild(
             path,
             app_prefix=f"Mediarecode {APP_VERSION_LABEL}",
         )
@@ -681,7 +681,7 @@ class TestMatroskaSegmentInfoPatch:
         assert result.applied is True
         assert not list(tmp_path.glob("*.hdrpatch.*"))
         apps = _segment_info_apps(path)
-        assert apps["muxing_app"] == f"Mediarecode {APP_VERSION_LABEL} / Lavf"
+        assert apps["muxing_app"] == f"Mediarecode {APP_VERSION_LABEL}"
         assert apps["writing_app"] == "Lavf"
 
     def test_patch_works_with_known_size_segment_lavf61_style(self, tmp_path):
@@ -707,14 +707,14 @@ class TestMatroskaSegmentInfoPatch:
         path.write_bytes(b"\x00" * 16 + segment + b"\x00" * 16)
 
         editor = MatroskaSegmentInfoHeaderEditor()
-        result = editor.apply_muxing_app_append_with_header_rebuild(
+        result = editor.apply_muxing_app_replace_with_header_rebuild(
             path,
             app_prefix=f"Mediarecode {APP_VERSION_LABEL}",
         )
 
         assert result.applied is True
         apps = _segment_info_apps(path)
-        assert apps["muxing_app"] == f"Mediarecode {APP_VERSION_LABEL} / Lavf61.7.100"
+        assert apps["muxing_app"] == f"Mediarecode {APP_VERSION_LABEL}"
         assert apps["writing_app"] == "Lavf61.7.100"
 
     def test_patch_failure_is_skipped_without_file_mutation(self, tmp_path):
@@ -723,7 +723,7 @@ class TestMatroskaSegmentInfoPatch:
         before = path.read_bytes()
 
         editor = MatroskaSegmentInfoHeaderEditor()
-        result = editor.apply_muxing_app_append_with_header_rebuild(
+        result = editor.apply_muxing_app_replace_with_header_rebuild(
             path,
             app_prefix=f"Mediarecode {APP_VERSION_LABEL}",
         )
@@ -737,7 +737,7 @@ class TestMatroskaSegmentInfoPatch:
     shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
     reason="ffmpeg/ffprobe requis pour les tests d'intégration",
 )
-class TestFfmpegRemuxWorkflowIntegration:
+class TestRemuxWorkflowIntegration:
 
     def _make_av_source(self, path: Path) -> None:
         subprocess.run(
@@ -773,7 +773,7 @@ class TestFfmpegRemuxWorkflowIntegration:
             check=True,
         )
 
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         tracks = [_track(0, "video"), _track(1, "audio", language="fr", title="Français")]
         cfg = RemuxConfig(
             sources=[SourceInput(path=src, file_index=0, tracks=tracks)],
@@ -868,7 +868,7 @@ class TestFfmpegRemuxWorkflowIntegration:
             ))
             local_index += 1
 
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         cfg = RemuxConfig(
             sources=[SourceInput(path=src, file_index=0, tracks=[_track(0, "video")], selected_attachments=selected)],
             output=out,
@@ -915,7 +915,7 @@ class TestFfmpegRemuxWorkflowIntegration:
             check=True,
         )
 
-        wf = FfmpegRemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         cfg = RemuxConfig(
             sources=[SourceInput(
                 path=src_tagged,
@@ -940,7 +940,7 @@ class TestFfmpegRemuxWorkflowIntegration:
         out = tmp_path / "out_muxing_app.mkv"
         self._make_av_source(src)
 
-        wf = FfmpegRemuxWorkflow(
+        wf = RemuxWorkflow(
             ffmpeg_bin="ffmpeg",
             ffprobe_bin="ffprobe",
             writing_application="MediaRecode v1.2.1 - test",
@@ -959,6 +959,6 @@ class TestFfmpegRemuxWorkflowIntegration:
 
         apps = _segment_info_apps(out)
         muxing_app = apps.get("muxing_app", "")
-        assert muxing_app.startswith(f"Mediarecode {APP_VERSION_LABEL} / ")
-        untouched_ffmpeg_value = muxing_app.split(" / ", 1)[1]
-        assert apps.get("writing_app") == untouched_ffmpeg_value
+        assert muxing_app == f"Mediarecode {APP_VERSION_LABEL}"
+        src_apps = _segment_info_apps(src)
+        assert apps.get("writing_app") == src_apps.get("writing_app")

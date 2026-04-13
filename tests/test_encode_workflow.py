@@ -2377,7 +2377,7 @@ class TestInjectPathIntegratedPostproc:
 
         with patch.object(EncodeWorkflow, "_shm_path", side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
             with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
-                with patch.object(wf, "_apply_matroska_segment_muxing_app_patch") as patch_hook:
+                with patch.object(wf._muxing_post_action, "apply_if_mkv") as patch_hook:
                     sigs = wf._run_with_metadata_inject(config)
                     _collect_signals(sigs)
 
@@ -3422,7 +3422,7 @@ class TestTrackMetaArgs:
         _merge_remux_extras avec une piste language='fr-FR' doit produire
         un TrackMetaEdit avec language='fr-FR' (conservé tel quel).
         """
-        from core.workflows.remux import RemuxConfig, SourceInput, TrackEntry
+        from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
         from core.workflows.encode.models import EncodeConfig, VideoEncodeSettings
         from ui.main_window import MainWindow
 

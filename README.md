@@ -37,7 +37,7 @@ Le script `setup.py` installe automatiquement :
 | Catégorie | Installé par `setup.py` |
 |-----------|-------------------------|
 | Dépendance Python | `PySide6` |
-| Outils système | `ffmpeg`, `ffprobe`, `mediainfo` (+ `mkvtoolnix` optionnel, notamment pour le script CLI legacy) |
+| Outils système | `ffmpeg`, `ffprobe`, `mediainfo` |
 | Outils GitHub | `dovi_tool`, `hdr10plus_tool` |
 | Notes plateforme | Debian/Ubuntu via `apt`, Fedora/RHEL via `dnf`, macOS via Homebrew, Windows via `winget` + binaires locaux |
 
@@ -46,10 +46,10 @@ Le script `setup.py` installe automatiquement :
 
 | Plateforme | Commande | Détails |
 |------------|----------|---------|
-| Linux Debian / Ubuntu | `python3 setup.py` | installe `ffmpeg`, `mkvtoolnix`, `mediainfo` via `apt`, puis `dovi_tool` et `hdr10plus_tool` depuis GitHub |
-| Linux Fedora / RHEL | `python3 setup.py` | active RPM Fusion si nécessaire, installe `ffmpeg`, `mkvtoolnix`, `mediainfo` via `dnf`, puis les outils GitHub |
-| macOS | `python3 setup.py` | installe `ffmpeg`, `mkvtoolnix`, `mediainfo` via Homebrew, puis `dovi_tool` et `hdr10plus_tool` |
-| Windows | `py setup.py` | installe `ffmpeg`, `mkvtoolnix` et `mediainfo` via `winget`, place `dovi_tool` et `hdr10plus_tool` dans `mediarecode\tools`, puis renseigne `config.ini` avec les chemins détectés |
+| Linux Debian / Ubuntu | `python3 setup.py` | installe `ffmpeg`, `mediainfo` via `apt`, puis `dovi_tool` et `hdr10plus_tool` depuis GitHub |
+| Linux Fedora / RHEL | `python3 setup.py` | active RPM Fusion si nécessaire, installe `ffmpeg`, `mediainfo` via `dnf`, puis les outils GitHub |
+| macOS | `python3 setup.py` | installe `ffmpeg`, `mediainfo` via Homebrew, puis `dovi_tool` et `hdr10plus_tool` |
+| Windows | `py setup.py` | installe `ffmpeg` et `mediainfo` via `winget`, place `dovi_tool` et `hdr10plus_tool` dans `mediarecode\tools`, puis renseigne `config.ini` avec les chemins détectés |
 
 Options utiles du script :
 
@@ -88,7 +88,7 @@ Symptômes fréquents :
 - erreur `No such file or directory` lors d'un export vers `Videos` ou `Documents` ;
 - succès de l'export vers un autre dossier non protégé, comme `Desktop` ou `%TEMP%`.
 
-Au premier setup Windows, Mediarecode peut proposer d'ajouter ses exécutables à l'allowlist de Windows Security afin de pouvoir enregistrer directement dans ces bibliothèques protégées. Cette exception concerne l'application elle-même et, selon les cas, les outils d'écriture qu'elle utilise (`ffmpeg`; `mkvmerge` seulement pour usages legacy).
+Au premier setup Windows, Mediarecode peut proposer d'ajouter ses exécutables à l'allowlist de Windows Security afin de pouvoir enregistrer directement dans ces bibliothèques protégées. Cette exception concerne l'application elle-même et `ffmpeg`, l'outil qui écrit effectivement les fichiers de sortie.
 
 Sans cette exception, les exports directs vers **Videos**, **Documents**, **Pictures**, etc. peuvent rester bloqués.
 
@@ -99,7 +99,7 @@ Si vous refusez l'exception ou si vous devez la configurer manuellement :
 3. Ouvrez **Protection contre les ransomwares** puis **Gérer la protection contre les ransomwares**.
 4. Entrez dans **Autoriser une application via l'accès contrôlé aux dossiers**.
 5. Ajoutez `mediarecode.exe`.
-6. Si nécessaire, ajoutez aussi `ffmpeg.exe` (et `mkvmerge.exe` uniquement si vous utilisez le script CLI legacy).
+6. Si nécessaire, ajoutez aussi `ffmpeg.exe`.
 
 Après ajout à l'allowlist, redémarrez Mediarecode avant de retester un export vers `Videos` ou `Documents`.
 
@@ -171,13 +171,14 @@ Backend remux `ffmpeg` (par défaut) :
 - permet de recopier les pièces jointes source sélectionnées et d'ajouter des fichiers externes (cover incluse)
 - télécharge la cover TMDB différée juste avant l'exécution (dans le dossier temporaire du process), puis nettoie ce dossier en fin de run
 - purge explicitement les balises techniques source `ENCODER` et `CREATION_TIME` avant écriture des métadonnées de sortie
-- force le champ segment **Muxing Application** avec la valeur custom de l'application (tag historique `muxing-application`) directement via FFmpeg
+- n'écrit plus le tag libre `MUXING_APPLICATION` via `-metadata`
+- applique un patch binaire post-action (sans MKVToolNix) sur le header Matroska pour écrire **MuxingApp** (`0x4D80`) à la valeur unique `Mediarecode {version}` ; **WritingApp** (`0x5741`) reste intact
 
 Limites connues du backend remux `ffmpeg` :
 
 - pas de support des structures XML avancées de tags Matroska (cibles hiérarchiques fines)
 - pas d'édition du flag Matroska `track-enabled` (non exposé par FFmpeg)
-- le champ `ENCODER`/WritingApp reste géré par FFmpeg (seul `Muxing Application` est forcé)
+- la réécriture post-action reconstruit l'EBML du header si la valeur MuxingApp est plus longue que le champ existant ; en cas d'échec, le patch est ignoré avec warning
 
 Les options HDR disponibles côté encodage sont :
 
@@ -293,7 +294,6 @@ Limite Windows :
 Vous pouvez définir explicitement dans `config.ini` :
 
 - `ffmpeg`, `ffprobe`
-- `mkvmerge`, `mkvextract`, `mkvinfo` (optionnels, principalement pour le script CLI legacy)
 - `mediainfo`
 - `dovi_tool`, `hdr10plus_tool`
 - `eac3to`
@@ -346,16 +346,16 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["WORKFLOW TYPE - REMUX"] --> B["STEP 1 - Validation configuration"]
-    B --> C["STEP 2 - Preparation workspace et attachments"]
-    C --> D["STEP 3 - Preparation des attachments"]
-    D --> E["STEP 4 - Analyse du mapping et pre-scan ffprobe"]
-    E --> F{"Risque multi-source detecte"}
-    F -->|Oui| G["STEP 5 - Sync timeline multi-source\nFIFO, Named Pipe ou fallback"]
-    F -->|Non| H["STEP 5 - Sync timeline non requise"]
-    G --> I["STEP 6 - Gestion des chapitres"]
-    H --> I
-    I --> J["STEP 7 - Construction commande ffmpeg remux"]
-    J --> K["STEP 8 - Execution du remux ffmpeg"]
+    B --> C["STEP 2 - Preparation workspace, attachments et cover TMDB"]
+    C --> D["STEP 3 - Analyse mapping pistes + pre-scan de risque\nextraction attached_pic si present"]
+    D --> E{"Risque multi-source\nstrict interleave"}
+    E -->|Oui| F["STEP 4 - Synchronisation timeline multi-source\nFIFO, Named Pipe ou fallback fichier"]
+    E -->|Non| G["STEP 4 - Synchronisation timeline non requise"]
+    F --> H["STEP 5 - Chapitres : override FFMetadata ou copie source"]
+    G --> H
+    H --> I["STEP 6 - Construction de la commande ffmpeg remux"]
+    I --> J["STEP 7 - Execution du remux ffmpeg"]
+    J --> K["STEP 8 - Post-action : Patch MuxingApp + Cleanup"]
     K --> L["Sortie MKV"]
 ```
 
@@ -369,35 +369,30 @@ flowchart TD
     D --> E["STEP 4 - Routage du workflow"]
     E --> F{"Injection fichier\nDoVi ou HDR10+\nnecessaire"}
 
-    F -->|Oui| K["STEP 5 - Extraction des metadata dynamiques"]
+    F -->|Oui| K["STEP 5 - Extraction des metadata dynamiques\nDoVi et ou HDR10+"]
     K --> L["STEP 6 - Encodage video seule vers enc.hevc"]
     L --> M["STEP 7 - Injection HDR10+ et ou DoVi"]
-    M --> N["STEP 8 - Encapsulation timeline video"]
+    M --> N["STEP 8 - Encapsulation timeline video injectee"]
     N --> O["STEP 9 - Reconstruction finale MKV\nSync timeline si risque detecte"]
 
-    F -->|Non| G{"Codec video = copy"}
-    G -->|Oui| H["STEP 5 - Construction commande directe\nvideo passthrough"]
-    H --> I["STEP 6 - Execution ffmpeg en single pass\nvideo copy, audio copy ou encode,\nsync timeline si risque detecte"]
+    F -->|Non| G["STEP 5 - Construction de la commande ffmpeg\nsortie directe"]
+    G --> H["STEP 6 - Preparation sync/remap + commande(s)"]
+    H --> P{"Quality mode = SIZE"}
+    P -->|Oui| Q["STEP 7 - Execution ffmpeg en 2 passes\nsync timeline si risque detecte"]
+    P -->|Non| R["STEP 7 - Execution ffmpeg en single pass\nsync timeline si risque detecte"]
 
-    G -->|Non| J["STEP 5 - Construction de la commande directe"]
-    J --> P{"Quality mode = SIZE"}
-    P -->|Oui| Q["STEP 6 - Execution ffmpeg en 2 passes\nsync timeline si risque detecte"]
-    P -->|Non| R["STEP 6 - Execution ffmpeg en single pass\nsync timeline si risque detecte"]
-
-    I --> Z["Sortie MKV"]
+    O --> Z["Sortie MKV"]
     Q --> Z
     R --> Z
-    O --> Z
 ```
 
 Lecture rapide :
 - Les demandes `copy_hdr10plus` et `copy_dv` sont evaluees apres normalisation source.
 - L'injection "fichier" n'est requise que si une copie DoVi ou HDR10+ reste demandee et que la video n'est pas en `copy`.
-- Si `codec=copy`, le workflow reste en sortie directe ffmpeg, y compris si l'audio est reencode.
-- Dans ce cas, une demande DoVi ou HDR10+ encore active est simplement preservee par passthrough video, sans pipeline d'injection.
-- Le 2-pass existe seulement pour `codec!=copy` avec `quality_mode=SIZE`.
-- Le chemin injection utilise `enc.hevc`, puis `enc_wrapped.mkv`, puis un remux final ffmpeg.
-- La sync timeline multi-source est activee uniquement en cas de risque detecte par pre-scan ffprobe des sous-titres ; sinon, le flux reste en chemin direct.
+- Si `codec=copy` avec injection desactivee, le workflow reste en sortie directe ffmpeg (STEP 5-7), y compris si l'audio est reencode.
+- Le 2-pass n'existe que dans le chemin direct (`quality_mode=SIZE`, `codec!=copy`).
+- Le chemin injection utilise `enc.hevc`, puis `enc_wrapped.mkv`, puis un remux final ffmpeg (STEP 5-9).
+- La sync timeline multi-source est activee uniquement en cas de risque detecte par pre-scan ffprobe ; sinon le flux reste en chemin direct.
 - En mode TMDB, la cover est resolue en URL lors de la recherche puis telechargee uniquement au lancement du workflow.
 
 ### Fusion DoVi / HDR10+
@@ -466,10 +461,7 @@ flowchart TD
 |-------|----------------|
 | `ffprobe` | analyse des flux, chapitres et métadonnées |
 | `mediainfo` | frame count et informations HDR fines |
-| `ffmpeg` | encodage, remux par défaut, copie de flux, écriture metadata/chapitres/tags en sortie directe |
-| `mkvmerge` | outil optionnel pour usages legacy (script CLI historique) |
-| `mkvextract` | outil optionnel pour usages legacy (script CLI historique) |
-| `mkvpropedit` | legacy/optionnel, non utilisé dans les workflows principaux actuels |
+| `ffmpeg` | encodage, remux, copie de flux, écriture metadata/chapitres/tags, patch binaire MuxingApp |
 | `dovi_tool` | extraction, injection et vérification Dolby Vision |
 | `hdr10plus_tool` | extraction et injection HDR10+ |
 | `nvidia-smi` | fallback de détection NVENC sous Linux |

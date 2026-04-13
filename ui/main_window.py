@@ -52,7 +52,7 @@ from core.runner import TaskSignals
 from core.subprocess_utils import subprocess_text_kwargs
 from core.version import APP_VERSION_LABEL, WRITING_APPLICATION_TAG
 from core.workflows.encode import EncodeError
-from core.workflows.remux import RemuxError
+from core.workflows.remux_models import RemuxError
 from ui.panels.encode_panel import EncodePanel
 from ui.panels.encode_panel.theme import _FPS_RE, _fmt_eta, ffmpeg_progress_seconds
 from ui.panels.merge_dovi_panel import MergeDoviPanel
@@ -62,7 +62,7 @@ from ui.design_system import DesignSystem, colors as _Colors
 
 if TYPE_CHECKING:
     from core.workflows.encode.models import EncodeConfig
-    from core.workflows.remux import RemuxConfig, TrackEntry
+    from core.workflows.remux_models import RemuxConfig, TrackEntry
 
 
 # ---------------------------------------------------------------------------
