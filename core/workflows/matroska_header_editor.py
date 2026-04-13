@@ -12,6 +12,8 @@ Key goals:
 
 from __future__ import annotations
 
+import struct
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Callable
@@ -191,6 +193,8 @@ class MatroskaSegmentInfoHeaderEditor:
             adjusted = self._try_absorb_void_delta(new_info_payload, size_delta)
             if adjusted is not None:
                 new_info_payload = adjusted
+
+        new_info_payload = self._refresh_crc32_in_payload(new_info_payload)
 
         new_info_size = self._encode_ebml_size_prefer_length(
             len(new_info_payload),
@@ -964,11 +968,45 @@ class MatroskaSegmentInfoHeaderEditor:
             if adjusted is not None:
                 new_info_payload = adjusted
 
+        new_info_payload = self._refresh_crc32_in_payload(new_info_payload)
+
         new_info_size = self._encode_ebml_size_prefer_length(
             len(new_info_payload),
             preferred_length=info.size_len,
         )
         return info.element_id + new_info_size + new_info_payload
+
+    def _refresh_crc32_in_payload(self, payload: bytes) -> bytes:
+        """Recalcule le CRC-32 EBML (ID 0xBF) s'il est présent en tête du payload.
+
+        À appeler après toute modification du contenu d'un élément conteneur
+        (Info, Tracks, etc.) pour maintenir l'intégrité structurelle. Sans CRC,
+        retourne le payload inchangé.
+
+        Le CRC-32 Matroska (spec §11.1) couvre tous les octets de l'élément
+        conteneur APRÈS le sous-élément CRC-32 lui-même, jusqu'à la fin du
+        payload. La valeur est encodée en little-endian sur 4 octets.
+        """
+        if not payload or payload[0] != 0xBF:
+            return payload
+
+        try:
+            crc_elem = self._read_ebml_element_from_bytes(payload, 0)
+        except ValueError:
+            return payload
+
+        if crc_elem.unknown_size or crc_elem.size != 4:
+            return payload
+
+        crc_data_start = crc_elem.end
+        computed = zlib.crc32(payload[crc_data_start:]) & 0xFFFFFFFF
+        new_crc_bytes = struct.pack("<I", computed)
+
+        return (
+            payload[: crc_elem.payload_offset]
+            + new_crc_bytes
+            + payload[crc_data_start:]
+        )
 
     def _try_absorb_void_delta(self, payload: bytes, delta: int) -> bytes | None:
         cursor = 0
