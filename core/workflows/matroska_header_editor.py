@@ -520,6 +520,7 @@ class MatroskaSegmentInfoHeaderEditor:
                 continue
 
             new_payload = b"".join(keep_children)
+            new_payload = self._refresh_crc32_in_payload(new_payload)
             new_size = self._encode_ebml_size_prefer_length(len(new_payload), preferred_length=e.size_len)
             new_bytes = e.element_id + new_size + new_payload
             if len(new_bytes) > old_total:
@@ -582,6 +583,7 @@ class MatroskaSegmentInfoHeaderEditor:
 
             payload = self._read_exact(fh, sh.payload_offset, sh.size)
             new_payload = payload + seek_entry
+            new_payload = self._refresh_crc32_in_payload(new_payload)
             new_size = self._encode_ebml_size_prefer_length(len(new_payload), preferred_length=sh.size_len)
             new_bytes = sh.element_id + new_size + new_payload
 
