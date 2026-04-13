@@ -24,11 +24,16 @@ from PySide6.QtCore import QObject, Signal
 from core.lang_tags import Rfc5646LanguageTags as LangTags
 from core.runner import TaskCancelledError, TaskSignals, ToolRunner
 from core.subprocess_utils import subprocess_text_kwargs
+from core.version import APP_VERSION_LABEL
 from core.workdir import (
     download_tmdb_cover,
     prepare_process_work_dir,
     relocate_tmdb_covers_to_process_dir,
     remove_path,
+)
+from core.workflows.matroska_header_editor import (
+    MatroskaSegmentInfoHeaderEditor,
+    MatroskaSegmentInfoHeaderEditorOptions,
 )
 from core.workflows.remux import RemuxConfig, SourceInput, TrackEntry
 from core.workflows.remux_ffmpeg import FfmpegRemuxWorkflow
@@ -150,6 +155,14 @@ class EncodeWorkflow(QObject):
             ffprobe_bin=self._ffprobe_bin_from_ffmpeg(ffmpeg_bin),
             parent=self,
             writing_application=writing_application,
+        )
+        self._segment_header_editor = MatroskaSegmentInfoHeaderEditor(
+            options=MatroskaSegmentInfoHeaderEditorOptions(
+                edit_muxing_app=True,
+                edit_writing_app=False,
+                rebuild_on_overflow=True,
+                fallback_mode="skip",
+            )
         )
 
     def set_ffmpeg(self, ffmpeg_bin: str) -> None:
@@ -1000,7 +1013,7 @@ class EncodeWorkflow(QObject):
         tag_input_index: int | None,
         include_copy_video_stream_passthrough: bool = False,
     ) -> None:
-        """Ajoute les options metadata/chapitres/tags/muxing_app/track-meta en une passe."""
+        """Ajoute les options metadata/chapitres/tags/track-meta en une passe."""
         metadata_map = self._container_metadata_map_value(
             config,
             default_metadata_input_index=default_metadata_input_index,
@@ -1056,11 +1069,7 @@ class EncodeWorkflow(QObject):
             return str(tag_input_index)
         if include_copy_video_stream_passthrough and self._is_video_passthrough(config):
             return str(default_metadata_input_index)
-        if (
-            config.chapter_overrides is not None
-            or bool(config.track_meta_edits)
-            or bool(self._writing_application)
-        ):
+        if config.chapter_overrides is not None or bool(config.track_meta_edits):
             return str(default_metadata_input_index)
         return None
 
@@ -2190,11 +2199,13 @@ class EncodeWorkflow(QObject):
         # Multi-source: le pré-scan ffprobe peut être coûteux.
         # On déporte build+exécution dans un worker dédié pour éviter de bloquer l'UI.
         if len(self._collect_all_sources(config)) > 1:
-            return self._run_direct_output_multisource_async(
+            signals = self._run_direct_output_multisource_async(
                 config=config,
                 cleanup_paths=cleanup_paths,
                 cwd=cwd,
             )
+            self._bind_matroska_segment_muxing_patch(signals, config.output)
+            return signals
 
         chapter_dir: Path | None = None
         if config.chapter_overrides:
@@ -2224,6 +2235,7 @@ class EncodeWorkflow(QObject):
                     live_sync_session.close()
                 raise
             self._bind_live_sync_cleanup(signals, live_sync_session)
+            self._bind_matroska_segment_muxing_patch(signals, config.output)
             return signals
 
         self._log_step(6, "Préparation sync/remap + commande ffmpeg (single pass)")
@@ -2243,6 +2255,7 @@ class EncodeWorkflow(QObject):
                 live_sync_session.close()
             raise
         self._bind_live_sync_cleanup(signals, live_sync_session)
+        self._bind_matroska_segment_muxing_patch(signals, config.output)
         return signals
 
     def _run_direct_output_multisource_async(
@@ -2381,6 +2394,39 @@ class EncodeWorkflow(QObject):
         signals.finished.connect(_cleanup)
         signals.failed.connect(_cleanup)
         signals.cancelled.connect(_cleanup)
+
+    @staticmethod
+    def _muxing_app_prefix() -> str:
+        return f"Mediarecode {APP_VERSION_LABEL}"
+
+    def _apply_matroska_segment_muxing_app_patch(self, output: Path) -> None:
+        if output.suffix.lower() != ".mkv":
+            return
+        if not output.is_file():
+            return
+
+        result = self._segment_header_editor.apply_muxing_app_append_with_header_rebuild(
+            output,
+            app_prefix=self._muxing_app_prefix(),
+        )
+        if result.applied:
+            self.log_message.emit(
+                "INFO",
+                "Segment Info Matroska patché en post-action "
+                f"(MuxingApp: '{result.muxing_app_before}' -> '{result.muxing_app_after}').",
+            )
+            return
+        if result.skipped:
+            self.log_message.emit("WARN", f"Post-action MuxingApp ignorée: {result.reason}")
+            return
+        if result.reason:
+            self.log_message.emit("INFO", f"Post-action MuxingApp: {result.reason}")
+
+    def _bind_matroska_segment_muxing_patch(self, signals: TaskSignals, output: Path) -> None:
+        def _patch_after_success(*_args) -> None:
+            self._apply_matroska_segment_muxing_app_patch(output)
+
+        signals.finished.connect(_patch_after_success)
 
     @staticmethod
     def _format_bytes(value: int) -> str:
@@ -2798,9 +2844,6 @@ class EncodeWorkflow(QObject):
                 tags[key_s] = value_s
 
         tags["title"] = config.file_title
-        if self._writing_application:
-            # Segment info Matroska : MuxingApp.
-            tags["muxing_application"] = self._writing_application
         return tags
 
     @staticmethod
@@ -2928,10 +2971,10 @@ class EncodeWorkflow(QObject):
           5. Injection RPU DV si applicable → nouveau current_hevc, ancien supprimé
           6. Reconstitution finale via ffmpeg (une seule commande, depuis la source) :
              ffmpeg -i current_hevc -i source
-               -map 0:v:0 -c:v copy            (vidéo injectée)
+               -map 0:v:0 -c:v copy             (vidéo injectée)
                -map 1:stream_idx [codec args]   (audio depuis source, copy ou réencodage)
                -map 1:s? -c:s copy              (subs depuis source)
-               -map_metadata/-map_chapters/...  (tags/chapitres/track-meta/muxing app)
+               -map_metadata/-map_chapters/...  (tags/chapitres/track-meta)
                output.mkv
              Pas de dépendance MKVToolNix, pas de fichier audio intermédiaire.
              La source n'est jamais modifiée.
@@ -3235,4 +3278,5 @@ class EncodeWorkflow(QObject):
                 shutil.rmtree(tmp_dir, ignore_errors=True)
 
         executor.submit(_task)
+        self._bind_matroska_segment_muxing_patch(signals, config.output)
         return signals

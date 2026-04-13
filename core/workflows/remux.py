@@ -29,11 +29,16 @@ from PySide6.QtCore import QObject, Signal
 from core.lang_tags import Rfc5646LanguageTags as LangTags
 from core.inspector import AttachmentInfo, ChapterEntry, FileInfo, HDRType, build_chapter_xml
 from core.runner import TaskCancelledError, TaskSignals, ToolRunner
+from core.version import APP_VERSION_LABEL
 from core.workdir import (
     download_tmdb_cover,
     prepare_process_work_dir,
     relocate_tmdb_covers_to_process_dir,
     remove_path,
+)
+from core.workflows.matroska_header_editor import (
+    MatroskaSegmentInfoHeaderEditor,
+    MatroskaSegmentInfoHeaderEditorOptions,
 )
 
 
@@ -382,6 +387,14 @@ class RemuxWorkflow(QObject):
         self._runner = ToolRunner(max_workers=1, parent=self)
         self._writing_application = writing_application.strip()
         self._mkvmerge_major_version = mkvmerge_major_version
+        self._segment_header_editor = MatroskaSegmentInfoHeaderEditor(
+            options=MatroskaSegmentInfoHeaderEditorOptions(
+                edit_muxing_app=True,
+                edit_writing_app=False,
+                rebuild_on_overflow=True,
+                fallback_mode="skip",
+            )
+        )
 
     def set_mkvmerge_bin(self, mkvmerge_bin: str) -> None:
         """Met à jour le binaire mkvmerge utilisé par le workflow."""
@@ -399,7 +412,7 @@ class RemuxWorkflow(QObject):
         self._mkvmerge_major_version = major
 
     def set_writing_application(self, writing_application: str) -> None:
-        """Met à jour la valeur du tag Multiplexing Application."""
+        """Conservé pour compatibilité API avec l'UI."""
         self._writing_application = writing_application.strip()
 
     def _ffmpeg_thread_args(self) -> list[str]:
@@ -721,8 +734,6 @@ class RemuxWorkflow(QObject):
                 if not key_s or not value_s:
                     continue
                 metadata[key_s] = value_s
-        if self._writing_application:
-            metadata["muxing_application"] = self._writing_application
         return metadata
 
     def _apply_metadata_inplace(
@@ -784,6 +795,33 @@ class RemuxWorkflow(QObject):
                         tmp_path.unlink()
                 except Exception:
                     pass
+
+    @staticmethod
+    def _muxing_app_prefix() -> str:
+        return f"Mediarecode {APP_VERSION_LABEL}"
+
+    def _apply_matroska_segment_muxing_app_patch(self, output: Path) -> None:
+        if output.suffix.lower() != ".mkv":
+            return
+        if not output.is_file():
+            return
+
+        result = self._segment_header_editor.apply_muxing_app_append_with_header_rebuild(
+            output,
+            app_prefix=self._muxing_app_prefix(),
+        )
+        if result.applied:
+            self.log_message.emit(
+                "INFO",
+                "Segment Info Matroska patché en post-action "
+                f"(MuxingApp: '{result.muxing_app_before}' -> '{result.muxing_app_after}').",
+            )
+            return
+        if result.skipped:
+            self.log_message.emit("WARN", f"Post-action MuxingApp ignorée: {result.reason}")
+            return
+        if result.reason:
+            self.log_message.emit("INFO", f"Post-action MuxingApp: {result.reason}")
 
     def run(self, config: RemuxConfig) -> TaskSignals:
         """
@@ -886,6 +924,7 @@ class RemuxWorkflow(QObject):
                         cwd=cwd,
                         signals=signals,
                     )
+                self._apply_matroska_segment_muxing_app_patch(run_config.output)
                 signals.finished.emit(output)
             except TaskCancelledError:
                 signals.cancelled.emit()

@@ -1864,7 +1864,7 @@ class TestIntegratedMetadataCommand:
         idx = cmd.index("-map_chapters")
         assert cmd[idx + 1] == "-1"
 
-    def test_writing_application_is_forced_in_main_command(self, tmp_path):
+    def test_main_command_does_not_force_muxing_application_tag(self, tmp_path):
         src = tmp_path / "source.mkv"; src.write_bytes(b"\x00")
         out = tmp_path / "output.mkv"
         cfg = _make_config(src, out, video=_make_video_settings(codec="copy"))
@@ -1875,7 +1875,7 @@ class TestIntegratedMetadataCommand:
             writing_application="MediarecodeMuxApp",
         )
         cmd = wf.build_command_single(cfg)
-        assert "muxing_application=MediarecodeMuxApp" in cmd
+        assert not any("muxing_application=" in str(arg) for arg in cmd)
 
     def test_main_command_includes_threads_argument(self, tmp_path):
         src = tmp_path / "source.mkv"; src.write_bytes(b"\x00")
@@ -2341,11 +2341,47 @@ class TestInjectPathIntegratedPostproc:
         assert "-map_chapters" in recon
         assert recon[recon.index("-map_chapters") + 1] == "-1"
         assert "GENRE=Drama" in recon
-        assert "muxing_application=MediarecodeMuxApp" in recon
+        assert not any("muxing_application=" in str(arg) for arg in recon)
         assert "-metadata:s:v:0" in recon
         assert "language=fr-FR" in recon
         assert "language-ietf=" in recon
         assert "title=Main Video" in recon
+
+    def test_inject_path_calls_matroska_header_patch_hook(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 200_000)
+        config = _make_config(
+            source=src,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="libx265"),
+            copy_dv=True,
+            work_dir=tmp_path / "work",
+        )
+        wf = EncodeWorkflow(
+            ffmpeg_bin="ffmpeg",
+            dovi_tool_bin="dovi_tool",
+            hdr10plus_bin="hdr10plus_tool",
+            writing_application="MediarecodeMuxApp",
+            ram_buffer_enabled=False,
+        )
+
+        def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
+            for arg in reversed(cmd):
+                s = str(arg)
+                if any(s.endswith(ext) for ext in (".hevc", ".mkv", ".bin", ".json", ".ffmetadata")):
+                    p = Path(s)
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(b"\x00" * 64_000)
+                    break
+            return ""
+
+        with patch.object(EncodeWorkflow, "_shm_path", side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
+            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+                with patch.object(wf, "_apply_matroska_segment_muxing_app_patch") as patch_hook:
+                    sigs = wf._run_with_metadata_inject(config)
+                    _collect_signals(sigs)
+
+        assert patch_hook.called
 
     def test_recon_maps_metadata_from_last_tag_source(self, tmp_path):
         tag1 = tmp_path / "tag1.mkv"

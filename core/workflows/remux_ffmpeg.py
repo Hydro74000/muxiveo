@@ -1,7 +1,7 @@
 """
 core/workflows/remux_ffmpeg.py — Workflow de remuxage MKV via FFmpeg.
 
-Objectif : fournir un backend sans mkvmerge pour les besoins suivants :
+Objectif : fournir un backend pour les besoins suivants :
   - langues de piste (ISO + IETF),
   - chapitres (copie ou overrides),
   - tags globaux choisis,
@@ -24,7 +24,12 @@ from core.inspector import AttachmentInfo
 from core.lang_tags import Rfc5646LanguageTags as LangTags
 from core.runner import TaskCancelledError, TaskSignals, ToolRunner
 from core.subprocess_utils import subprocess_text_kwargs
+from core.version import APP_VERSION_LABEL
 from core.workdir import prepare_process_work_dir, relocate_tmdb_covers_to_process_dir, remove_path
+from core.workflows.matroska_header_editor import (
+    MatroskaSegmentInfoHeaderEditor,
+    MatroskaSegmentInfoHeaderEditorOptions,
+)
 from core.workflows.remux import RemuxConfig, RemuxError, TrackEntry
 from core.workflows.remux_timeline_sync import (
     LiveSyncSession,
@@ -164,6 +169,14 @@ class FfmpegRemuxWorkflow(QObject):
         self._ffmpeg_threads = _normalize_ffmpeg_thread_count(ffmpeg_threads)
         self._runner = ToolRunner(max_workers=1, parent=self)
         self._writing_application = writing_application.strip()
+        self._segment_header_editor = MatroskaSegmentInfoHeaderEditor(
+            options=MatroskaSegmentInfoHeaderEditorOptions(
+                edit_muxing_app=True,
+                edit_writing_app=False,
+                rebuild_on_overflow=True,
+                fallback_mode="skip",
+            )
+        )
 
     def set_ffmpeg_bin(self, ffmpeg_bin: str) -> None:
         self._ffmpeg = ffmpeg_bin
@@ -175,6 +188,7 @@ class FfmpegRemuxWorkflow(QObject):
         self._ffmpeg_threads = _normalize_ffmpeg_thread_count(ffmpeg_threads)
 
     def set_writing_application(self, writing_application: str) -> None:
+        # Conservé pour compatibilité API avec les autres workflows/UI.
         self._writing_application = writing_application.strip()
 
     def _ffmpeg_thread_args(self) -> list[str]:
@@ -183,6 +197,31 @@ class FfmpegRemuxWorkflow(QObject):
     @staticmethod
     def _ffmpeg_progress_args() -> list[str]:
         return ["-progress", "pipe:1", "-nostats"]
+
+    @staticmethod
+    def _muxing_app_prefix() -> str:
+        return f"Mediarecode {APP_VERSION_LABEL}"
+
+    def _apply_matroska_segment_muxing_app_patch(self, output: Path) -> None:
+        if output.suffix.lower() != ".mkv":
+            return
+        if not output.is_file():
+            return
+
+        result = self._segment_header_editor.apply_muxing_app_append_with_header_rebuild(
+            output,
+            app_prefix=self._muxing_app_prefix(),
+        )
+        if result.applied:
+            return
+        if result.skipped:
+            self.log_message.emit(
+                "WARNING",
+                f"Post-action MuxingApp ignorée: {result.reason}",
+            )
+            return
+        if result.reason:
+            self.log_message.emit("INFO", f"Post-action MuxingApp: {result.reason}")
 
     # ------------------------------------------------------------------
     # Validation
@@ -439,8 +478,7 @@ class FfmpegRemuxWorkflow(QObject):
         cmd.extend(["-map_metadata", self._metadata_map_value(config, chapter_input_index)])
         cmd.extend(["-map_chapters", self._chapter_map_value(config, chapter_input_index)])
 
-        # Identifiant de l'outil et suppression des balises techniques de la source.
-        cmd.extend(["-metadata", "muxing_application=Mediarecode v1.3"])
+        # Suppression des balises techniques de la source.
         cmd.extend(["-metadata", "encoder=", "-metadata", "creation_time="])
 
         for key, value in self._resolved_global_tags(config).items():
@@ -473,10 +511,9 @@ class FfmpegRemuxWorkflow(QObject):
 
         # Attachements supplémentaires (extra_attachments + attached_pic extraits) : -attach.
         for att_path in config.extra_attachments:
-            name = "cover" if att_path.stem.lower() == "cover" else att_path.name
             cmd.extend(["-attach", _cli_path(att_path)])
             cmd.extend([f"-metadata:s:t:{att_t_idx}", f"mimetype={_mime_for(att_path)}"])
-            cmd.extend([f"-metadata:s:t:{att_t_idx}", f"filename={name}"])
+            cmd.extend([f"-metadata:s:t:{att_t_idx}", f"filename={att_path.name}"])
             att_t_idx += 1
 
         cmd.append(_cli_path(config.output))
@@ -619,6 +656,8 @@ class FfmpegRemuxWorkflow(QObject):
                     progress_cb=lambda line: signals.progress.emit(line),
                     signals=signals,
                 )
+                self._log_step(8, "Post-action: Patch & Cleanup")
+                self._apply_matroska_segment_muxing_app_patch(run_config.output)
                 signals.finished.emit(output)
             except TaskCancelledError:
                 signals.cancelled.emit()
@@ -1111,7 +1150,7 @@ class FfmpegRemuxWorkflow(QObject):
                     self._ffmpeg, "-hide_banner", "-y",
                     "-i", _cli_path(src.path),
                     "-map", f"0:{att.index}",
-                    *self._ffmpeg_thread_args(),
+                    "-threads", "1",
                     "-frames:v", "1",
                     _cli_path(out_path),
                 ]
@@ -1134,15 +1173,10 @@ class FfmpegRemuxWorkflow(QObject):
 
     def _attachment_names(self, att: AttachmentInfo) -> tuple[str, str]:
         raw_name = _sanitize_filename(att.filename, f"attachment_{att.index}")
-        source_suffix = Path(raw_name).suffix.lower()
-        if not source_suffix:
+        if not Path(raw_name).suffix:
             mime = (att.mimetype or "").strip().lower()
-            source_suffix = _EXT_BY_MIME.get(mime, ".bin")
-        base_name = Path(raw_name).stem or f"attachment_{att.index}"
+            ext = _EXT_BY_MIME.get(mime, ".bin")
+            raw_name = f"{raw_name}{ext}"
 
-        # Convention historique : cover.* devient filename="cover" dans le conteneur.
-        meta_name = "cover" if base_name.lower() == "cover" else f"{base_name}{source_suffix}"
-        extract_name = f"{base_name}{source_suffix}"
-        return meta_name, extract_name
-
-
+        # Retourne le nom avec extension pour assurer la compatibilité lecteurs
+        return raw_name, raw_name
