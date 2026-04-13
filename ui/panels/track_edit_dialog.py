@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 
 from core.i18n import apply_translations, translate_text
 from core.lang_tags import Rfc5646LanguageTags
-from core.workflows.remux import TrackEntry
+from core.workflows.remux_models import TrackEntry
 from ui.design_system import colors as _C
 
 

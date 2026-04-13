@@ -71,10 +71,6 @@ _MISSING = object()
 _WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
     "ffmpeg": ("ffmpeg.exe",),
     "ffprobe": ("ffprobe.exe",),
-    "mkvmerge": ("mkvmerge.exe",),
-    "mkvextract": ("mkvextract.exe",),
-    "mkvinfo": ("mkvinfo.exe",),
-    "mkvpropedit": ("mkvpropedit.exe",),
     "mediainfo": ("MediaInfo.exe", "mediainfo.exe"),
     "dovi_tool": ("dovi_tool.exe",),
     "hdr10plus_tool": ("hdr10plus_tool.exe",),
@@ -84,10 +80,6 @@ _WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
 _WINDOWS_WINGET_PATTERNS: dict[str, tuple[str, ...]] = {
     "ffmpeg": ("Gyan.FFmpeg*",),
     "ffprobe": ("Gyan.FFmpeg*",),
-    "mkvmerge": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
-    "mkvextract": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
-    "mkvinfo": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
-    "mkvpropedit": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
     "mediainfo": ("MediaArea.MediaInfo_*",),
 }
 
@@ -341,9 +333,6 @@ def _windows_default_tool_candidates(tool_name: str) -> list[Path]:
             for folder in ("ffmpeg", "FFmpeg"):
                 for exe_name in exe_names:
                     candidates.append(base_dir / folder / "bin" / exe_name)
-        elif tool_name in ("mkvmerge", "mkvextract", "mkvinfo", "mkvpropedit"):
-            for exe_name in exe_names:
-                candidates.append(base_dir / "MKVToolNix" / exe_name)
         elif tool_name == "mediainfo":
             for folder in ("MediaInfo", "MediaInfo CLI", "MediaInfoCLI"):
                 for exe_name in exe_names:
@@ -425,8 +414,8 @@ class ToolVersionRegistry:
     @staticmethod
     def _extract_major(version_text: str) -> int | None:
         # Exemples ciblés:
-        # - "mkvmerge v98.0 ('Chonks')"
-        # - "ffmpeg version 8.1 ..."
+        # - "sometool v98.0 ('Codename')"    ← format vX.Y
+        # - "ffmpeg version 8.1 ..."          ← format version X.Y
         # - "MediaInfo Command line, MediaInfoLib - v24.12"
         patterns = (
             r"\bv(\d+)\.",
@@ -635,10 +624,6 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         "fields": (
             {"key": "ffmpeg", "attr": "tool_ffmpeg", "kind": "tool", "label": "FFmpeg", "description": "Binaire FFmpeg utilisé pour l'encodage et certaines inspections."},
             {"key": "ffprobe", "attr": "tool_ffprobe", "kind": "tool", "label": "FFprobe", "description": "Binaire FFprobe utilisé pour l'analyse des médias."},
-            {"key": "mkvmerge", "attr": "tool_mkvmerge", "kind": "tool", "label": "mkvmerge", "description": "Binaire MKVToolNix utilisé pour le remuxage."},
-            {"key": "mkvextract", "attr": "tool_mkvextract", "kind": "tool", "label": "mkvextract", "description": "Binaire MKVToolNix utilisé pour extraire des pistes."},
-            {"key": "mkvinfo", "attr": "tool_mkvinfo", "kind": "tool", "label": "mkvinfo", "description": "Binaire MKVToolNix utilisé pour l'inspection des conteneurs."},
-            {"key": "mkvpropedit", "attr": "tool_mkvpropedit", "kind": "tool", "label": "mkvpropedit", "description": "Binaire MKVToolNix utilisé pour réécrire des métadonnées."},
             {"key": "mediainfo", "attr": "tool_mediainfo", "kind": "tool", "label": "MediaInfo", "description": "Binaire MediaInfo utilisé pour enrichir l'inspection."},
             {"key": "dovi_tool", "attr": "tool_dovi_tool", "kind": "tool", "label": "dovi_tool", "description": "Outil Dolby Vision utilisé pour les workflows DoVi."},
             {"key": "hdr10plus_tool", "attr": "tool_hdr10plus", "kind": "tool", "label": "hdr10plus_tool", "description": "Outil HDR10+ utilisé pour les workflows HDR."},
@@ -850,10 +835,6 @@ class AppConfig:
 
         self.tool_ffmpeg = self._resolve_tool_value("ffmpeg", "tools/ffmpeg", "ffmpeg")
         self.tool_ffprobe = self._resolve_tool_value("ffprobe", "tools/ffprobe", "ffprobe")
-        self.tool_mkvmerge = self._resolve_tool_value("mkvmerge", "tools/mkvmerge", "mkvmerge")
-        self.tool_mkvextract = self._resolve_tool_value("mkvextract", "tools/mkvextract", "mkvextract")
-        self.tool_mkvinfo = self._resolve_tool_value("mkvinfo", "tools/mkvinfo", "mkvinfo")
-        self.tool_mkvpropedit = self._resolve_tool_value("mkvpropedit", "tools/mkvpropedit", "mkvpropedit")
         self.tool_mediainfo = self._resolve_tool_value("mediainfo", "tools/mediainfo", "mediainfo")
         self.tool_dovi_tool = self._resolve_tool_value("dovi_tool", "tools/dovi_tool", "dovi_tool")
         self.tool_hdr10plus = self._resolve_tool_value("hdr10plus_tool", "tools/hdr10plus_tool", "hdr10plus_tool")
@@ -932,10 +913,6 @@ class AppConfig:
 
         s.setValue("tools/ffmpeg", self.tool_ffmpeg)
         s.setValue("tools/ffprobe", self.tool_ffprobe)
-        s.setValue("tools/mkvmerge", self.tool_mkvmerge)
-        s.setValue("tools/mkvextract", self.tool_mkvextract)
-        s.setValue("tools/mkvinfo", self.tool_mkvinfo)
-        s.setValue("tools/mkvpropedit", self.tool_mkvpropedit)
         s.setValue("tools/mediainfo", self.tool_mediainfo)
         s.setValue("tools/dovi_tool", self.tool_dovi_tool)
         s.setValue("tools/hdr10plus_tool", self.tool_hdr10plus)
@@ -988,10 +965,6 @@ class AppConfig:
         return {
             "ffmpeg": self.tool_ffmpeg,
             "ffprobe": self.tool_ffprobe,
-            "mkvmerge": self.tool_mkvmerge,
-            "mkvextract": self.tool_mkvextract,
-            "mkvinfo": self.tool_mkvinfo,
-            "mkvpropedit": self.tool_mkvpropedit,
             "mediainfo": self.tool_mediainfo,
             "dovi_tool": self.tool_dovi_tool,
             "hdr10plus_tool": self.tool_hdr10plus,
@@ -1090,10 +1063,6 @@ class AppConfig:
             "tools": {
                 "ffmpeg": self.tool_ffmpeg,
                 "ffprobe": self.tool_ffprobe,
-                "mkvmerge": self.tool_mkvmerge,
-                "mkvextract": self.tool_mkvextract,
-                "mkvinfo": self.tool_mkvinfo,
-                "mkvpropedit": self.tool_mkvpropedit,
                 "mediainfo": self.tool_mediainfo,
                 "dovi_tool": self.tool_dovi_tool,
                 "hdr10plus_tool": self.tool_hdr10plus,

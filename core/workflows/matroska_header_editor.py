@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Callable
 
 
 _EBML_HEADER_ID = b"\x1a\x45\xdf\xa3"
@@ -106,7 +106,7 @@ class MatroskaSegmentInfoHeaderEditor:
     # Public API
     # ------------------------------------------------------------------
 
-    def apply_muxing_app_append_with_header_rebuild(
+    def apply_muxing_app_replace_with_header_rebuild(
         self,
         path: Path,
         *,
@@ -121,13 +121,13 @@ class MatroskaSegmentInfoHeaderEditor:
             )
 
         try:
-            return self._apply_muxing_app_append_with_header_rebuild_impl(path, app_prefix=prefix)
+            return self._apply_muxing_app_replace_with_header_rebuild_impl(path, app_prefix=prefix)
         except Exception as exc:
             if self.options.fallback_mode != "skip":
                 raise
-            return self.apply_muxing_app_append_legacy_skip(path, app_prefix=prefix, cause=exc)
+            return self.apply_muxing_app_replace_legacy_skip(path, app_prefix=prefix, cause=exc)
 
-    def apply_muxing_app_append_legacy_skip(
+    def apply_muxing_app_replace_legacy_skip(
         self,
         path: Path,
         *,
@@ -202,7 +202,7 @@ class MatroskaSegmentInfoHeaderEditor:
     # Core update flow (mkvpropedit-like for Info)
     # ------------------------------------------------------------------
 
-    def _apply_muxing_app_append_with_header_rebuild_impl(
+    def _apply_muxing_app_replace_with_header_rebuild_impl(
         self,
         path: Path,
         *,
@@ -1468,3 +1468,85 @@ class MatroskaSegmentInfoHeaderEditor:
             if e.element_id == element_id and e.offset == offset:
                 return i
         return -1
+
+
+class MatroskaMuxingAppPostAction:
+    """
+    Helper de post-action workflow pour harmoniser le patch MuxingApp.
+
+    Stocke ``app_prefix`` et ``log_cb`` à l'init pour que les call-sites
+    workflow n'aient plus à les répéter.
+    """
+
+    def __init__(
+        self,
+        *,
+        editor: MatroskaSegmentInfoHeaderEditor | None = None,
+        app_prefix: str | None = None,
+        log_cb: Callable[[str, str], None] | None = None,
+    ) -> None:
+        self._editor = editor or MatroskaSegmentInfoHeaderEditor(
+            options=MatroskaSegmentInfoHeaderEditorOptions(
+                edit_muxing_app=True,
+                edit_writing_app=False,
+                rebuild_on_overflow=True,
+                fallback_mode="skip",
+            )
+        )
+        self._app_prefix = app_prefix
+        self._log_cb = log_cb
+
+    @staticmethod
+    def default_prefix(version_label: str) -> str:
+        return f"Mediarecode {version_label}"
+
+    def apply_if_mkv(
+        self,
+        output_path: Path,
+        *,
+        app_prefix: str | None = None,
+        log_cb: Callable[[str, str], None] | None = None,
+    ) -> MatroskaSegmentInfoPatchResult | None:
+        prefix = app_prefix or self._app_prefix
+        if prefix is None:
+            raise ValueError("app_prefix requis (paramètre ou valeur d'init)")
+        cb = log_cb or self._log_cb
+
+        if output_path.suffix.lower() != ".mkv":
+            return None
+        if not output_path.is_file():
+            return None
+
+        result = self._editor.apply_muxing_app_replace_with_header_rebuild(
+            output_path,
+            app_prefix=prefix,
+        )
+        if cb is not None:
+            if result.applied:
+                cb(
+                    "INFO",
+                    "Segment Info Matroska patché en post-action "
+                    f"(MuxingApp: '{result.muxing_app_before}' -> '{result.muxing_app_after}').",
+                )
+            elif result.skipped:
+                cb("WARN", f"Post-action MuxingApp ignorée: {result.reason}")
+            elif result.reason:
+                cb("INFO", f"Post-action MuxingApp: {result.reason}")
+        return result
+
+    def bind_on_success(
+        self,
+        signals,
+        output_path: Path,
+        *,
+        app_prefix: str | None = None,
+        log_cb: Callable[[str, str], None] | None = None,
+    ) -> None:
+        def _patch_after_success(*_args) -> None:
+            self.apply_if_mkv(
+                output_path,
+                app_prefix=app_prefix,
+                log_cb=log_cb,
+            )
+
+        signals.finished.connect(_patch_after_success)

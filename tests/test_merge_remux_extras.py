@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 
 from core.workflows.encode.models import AudioTrackSettings, EncodeConfig, TrackTimeOffset, VideoEncodeSettings
-from core.workflows.remux import RemuxConfig, SourceInput, TrackEntry
+from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
 
 # Appel unbound : _merge_remux_extras n'utilise pas self
 from ui.main_window import MainWindow

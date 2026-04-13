@@ -237,7 +237,7 @@ class MediaDetails:
 
     def to_mkv_tags(self) -> dict[str, str]:
         """
-        Retourne le dict {NOM_BALISE: valeur} à injecter via mkvpropedit.
+        Retourne le dict {NOM_BALISE: valeur} à écrire dans les tags MKV.
 
         - DESCRIPTION reçoit toujours l'identifiant IMDb quand il est disponible.
         - Les clés à valeur vide sont exclues.

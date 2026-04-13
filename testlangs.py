@@ -2,7 +2,8 @@ import sys
 sys.path.insert(0, '.')
 from pathlib import Path
 from core.inspector import FileInspector
-from core.workflows.remux import RemuxConfig, RemuxWorkflow, SourceInput, tracks_from_file_info
+from core.workflows.remux import RemuxWorkflow
+from core.workflows.remux_models import RemuxConfig, SourceInput, tracks_from_file_info
 
 path = Path('/home/hydromel/Vidéos/testfile.mkv')
 inspector = FileInspector()

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from core.runner import TaskCancelledError
-from core.workflows.remux import SourceInput, TrackEntry
+from core.workflows.remux_models import SourceInput, TrackEntry
 from core.workflows.remux_timeline_sync import (
     LiveSyncSession,
     MkvmergeLikeTimelineSync,

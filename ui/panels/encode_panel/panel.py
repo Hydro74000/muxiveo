@@ -27,7 +27,7 @@ from core.config import AppConfig
 from core.inspector import FileInfo, HDRType
 from core.i18n import apply_translations, translate_text
 from core.lang_tags import Rfc5646LanguageTags
-from core.workflows.remux import TrackEntry
+from core.workflows.remux_models import TrackEntry
 from core.runner import TaskSignals
 from core.workflows.encode import (
     AUDIO_CODECS, HARDWARE_VIDEO_CODECS, SOFTWARE_VIDEO_CODECS,

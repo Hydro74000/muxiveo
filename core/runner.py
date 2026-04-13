@@ -34,8 +34,6 @@ from core.subprocess_utils import decode_subprocess_output, subprocess_windows_n
 
 #: Outils requis par défaut pour le projet
 DEFAULT_TOOLS: tuple[str, ...] = (
-    "mkvextract",
-    "mkvmerge",
     "dovi_tool",
     "hdr10plus_tool",
     "ffmpeg",
@@ -52,7 +50,7 @@ class ToolChecker:
         checker.check_all()          # dict[str, bool]
         checker.missing()            # list[str]  — outils absents
         checker.available("ffmpeg")  # bool
-        checker.require(["ffmpeg", "mkvmerge"])  # lève ToolNotFoundError si manquant
+        checker.require(["ffmpeg", "dovi_tool"])  # lève ToolNotFoundError si manquant
     """
 
     def __init__(self, tools: Sequence[str] = DEFAULT_TOOLS) -> None:
@@ -213,8 +211,8 @@ class ToolRunner(QObject):
 
     Usage parallèle :
         tasks = [
-            ["mkvextract", "film1.mkv", "tracks", "0:film1.hevc"],
             ["dovi_tool", "extract-rpu", "-i", "film2.mkv", "-o", "rpu.bin"],
+            ["hdr10plus_tool", "extract", "-i", "film2.mkv", "-o", "meta.json"],
         ]
         sig = runner.run_parallel(tasks, label="extraction")
         sig.progress.connect(on_progress)
