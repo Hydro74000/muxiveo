@@ -15,7 +15,7 @@ Modes :
   1. Vérifie / installe PyInstaller + dépendances
   2. Construit un bundle --onedir avec PyInstaller (entrée : launcher.py)
   3. Assemble l'AppDir (structure AppImage standard)
-     → si --allinc : télécharge et embarque ffmpeg, mkvtoolnix, mediainfo, dovi_tool, hdr10plus_tool
+     → si --allinc : télécharge et embarque ffmpeg, mediainfo, dovi_tool, hdr10plus_tool
   4. Télécharge appimagetool si nécessaire
   5. Produit l'AppImage finale
 
@@ -478,8 +478,7 @@ _APPRUN_ALLINC = textwrap.dedent("""\
 
     # Les outils embarqués ont la priorité sur les outils système
     export PATH="${TOOLS}:${BIN}:${PATH}"
-    # TOOLS/lib contient les libs bundlées de MKVToolNix (libboost, libfmt…)
-    export LD_LIBRARY_PATH="${TOOLS}/lib:${INTERNAL}:${LD_LIBRARY_PATH:-}"
+    export LD_LIBRARY_PATH="${INTERNAL}:${LD_LIBRARY_PATH:-}"
     export QT_PLUGIN_PATH="${INTERNAL}/PySide6/Qt/plugins"
     export QML2_IMPORT_PATH="${INTERNAL}/PySide6/Qt/qml"
     export APPDIR="${HERE}"
@@ -578,62 +577,6 @@ def _dl_ffmpeg(tools_dir: Path, arch: str) -> None:
     ok("ffmpeg + ffprobe (BtbN master GPL) installés")
 
 
-def _mkvtoolnix_latest_url(arch: str) -> str:
-    """
-    Retourne l'URL de la dernière AppImage MKVToolNix en parsant le répertoire
-    de téléchargement officiel (pas d'API requise).
-    """
-    import re
-    index_url = "https://mkvtoolnix.download/appimage/"
-    req = urllib.request.Request(index_url, headers={"User-Agent": "mediarecode-builder"})
-    with urllib.request.urlopen(req) as resp:
-        html = resp.read().decode("utf-8", errors="replace")
-    # Exemple de nom : MKVToolNix_GUI-85.0-x86_64.AppImage
-    pattern = re.compile(rf'MKVToolNix_GUI-([\d.]+)-{re.escape(arch)}\.AppImage')
-    versions = pattern.findall(html)
-    if not versions:
-        raise RuntimeError(
-            f"Aucune AppImage MKVToolNix trouvée pour {arch} dans {index_url}"
-        )
-    versions.sort(key=lambda v: tuple(int(x) for x in v.split(".")), reverse=True)
-    latest = versions[0]
-    info(f"MKVToolNix version : {latest}")
-    return f"{index_url}MKVToolNix_GUI-{latest}-{arch}.AppImage"
-
-
-def _dl_mkvtoolnix(tools_dir: Path, arch: str) -> None:
-    step("Téléchargement MKVToolNix (AppImage → extraction)")
-    url = _mkvtoolnix_latest_url(arch)
-    with tempfile.TemporaryDirectory() as tmp:
-        appimage = Path(tmp) / "mkvtoolnix.AppImage"
-        _download(url, appimage)
-        _chmod_x(appimage)
-        # --appimage-extract fonctionne sans FUSE (utilise unsquashfs de squashfs-tools)
-        env = os.environ.copy()
-        env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
-        subprocess.run(
-            [str(appimage), "--appimage-extract"],
-            check=True, cwd=tmp, env=env,
-        )
-        root = Path(tmp) / "squashfs-root"
-        src_bin = root / "usr" / "bin"
-        for name in ("mkvmerge", "mkvextract", "mkvinfo", "mkvpropedit"):
-            src = src_bin / name
-            if src.exists():
-                shutil.copy2(src, tools_dir / name)
-                _chmod_x(tools_dir / name)
-        # Copie les libs bundlées (libboost, libfmt…) — sans elles les binaires
-        # refusent de démarrer avec "cannot open shared object file".
-        libs_dir = tools_dir / "lib"
-        libs_dir.mkdir(exist_ok=True)
-        src_lib = root / "usr" / "lib"
-        if src_lib.is_dir():
-            for lib in src_lib.iterdir():
-                if lib.is_file() and (lib.suffix in (".so",) or ".so." in lib.name):
-                    shutil.copy2(lib, libs_dir / lib.name)
-    ok("mkvmerge / mkvextract / mkvinfo / mkvpropedit + libs installés")
-
-
 def _mediainfo_latest_version() -> str:
     """Retourne la dernière version de mediainfo en scrapant le répertoire mediaarea.net."""
     import re
@@ -708,7 +651,6 @@ def bundle_tools(appdir: Path, arch: str) -> None:
     tools_dir.mkdir(parents=True, exist_ok=True)
 
     _dl_ffmpeg(tools_dir, arch)
-    _dl_mkvtoolnix(tools_dir, arch)
     _dl_mediainfo(tools_dir, arch)
     _dl_dovi_tool(tools_dir, arch)
     _dl_hdr10plus_tool(tools_dir, arch)
@@ -923,7 +865,7 @@ def parse_args() -> argparse.Namespace:
         "--allinc",
         action="store_true",
         help=(
-            "Embarque ffmpeg, mkvtoolnix, mediainfo, dovi_tool et hdr10plus_tool "
+            "Embarque ffmpeg, mediainfo, dovi_tool et hdr10plus_tool "
             "dans l'AppImage. Produit Mediarecode-<arch>_allinc.AppImage. "
             "Au premier lancement, seule la configuration est initialisée."
         ),
