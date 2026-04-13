@@ -33,6 +33,8 @@ from PySide6.QtCore import QCoreApplication, Qt
 
 from core.inspector import AttachmentInfo, ChapterEntry
 from core.runner import TaskSignals
+from core.version import APP_VERSION_LABEL
+from core.workflows.matroska_header_editor import MatroskaSegmentInfoHeaderEditor
 from core.workflows.remux import RemuxConfig, RemuxError, SourceInput, TrackEntry
 from core.workflows.remux_ffmpeg import FfmpegRemuxWorkflow
 from core.workflows.remux_timeline_sync import LiveSyncNotSupportedError, SyncPreparedInput
@@ -117,6 +119,23 @@ def _tag_value(tags: dict | None, key: str) -> str | None:
         if k.lower() == key.lower():
             return str(v)
     return None
+
+
+def _segment_info_apps(path: Path) -> dict[str, str]:
+    data = path.read_bytes()
+    fields = MatroskaSegmentInfoHeaderEditor().locate_info_application_fields(data)
+    out: dict[str, str] = {}
+    for field_id, label in (
+        (b"\x4d\x80", "muxing_app"),
+        (b"\x57\x41", "writing_app"),
+    ):
+        hit = fields.get(field_id)
+        if hit is None:
+            continue
+        value_offset, value_size = hit
+        raw = data[value_offset:value_offset + value_size]
+        out[label] = raw.decode("utf-8", errors="replace").rstrip(" \x00")
+    return out
 
 
 class TestFfmpegRemuxWorkflowBuildCommand:
@@ -241,7 +260,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
 
         assert wf._decide_strict_interleave_with_prescan(cfg) is True
 
-    def test_build_command_includes_muxing_application_metadata(self, tmp_path):
+    def test_build_command_does_not_force_muxing_application_metadata(self, tmp_path):
         wf = FfmpegRemuxWorkflow(
             ffmpeg_bin="ffmpeg",
             ffprobe_bin="ffprobe",
@@ -257,9 +276,7 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         )
         cmd = wf.build_command(cfg)
         flat = " ".join(cmd)
-        # muxing_application est désormais forcé à "Mediarecode v1.3" indépendamment
-        # du paramètre writing_application (migration v1.3 : valeur fixe dans build_command).
-        assert "-metadata muxing_application=Mediarecode v1.3" in flat
+        assert "muxing_application=" not in flat
 
     def test_build_command_includes_threads_argument(self, tmp_path):
         wf = FfmpegRemuxWorkflow(
@@ -640,6 +657,82 @@ class TestFfmpegRemuxWorkflowBuildCommand:
         assert any("dupliquée" in e for e in errors)
 
 
+class TestMatroskaSegmentInfoPatch:
+
+    def test_patch_rebuilds_info_and_updates_only_muxing_app(self, tmp_path):
+        old_mux = b"Lavf"
+        old_writing = b"Lavf"
+        children = (
+            b"\x4d\x80" + bytes([0x80 | len(old_mux)]) + old_mux +
+            b"\x57\x41" + bytes([0x80 | len(old_writing)]) + old_writing
+        )
+        info = b"\x15\x49\xa9\x66" + bytes([0x80 | len(children)]) + children
+        segment_payload = info + b"\xec\x81\x00"
+        segment = b"\x18\x53\x80\x67" + bytes([0x80 | len(segment_payload)]) + segment_payload
+        path = tmp_path / "mini.mkv"
+        path.write_bytes(b"\x00" * 16 + segment + b"\x00" * 16)
+
+        editor = MatroskaSegmentInfoHeaderEditor()
+        result = editor.apply_muxing_app_append_with_header_rebuild(
+            path,
+            app_prefix=f"Mediarecode {APP_VERSION_LABEL}",
+        )
+
+        assert result.applied is True
+        assert not list(tmp_path.glob("*.hdrpatch.*"))
+        apps = _segment_info_apps(path)
+        assert apps["muxing_app"] == f"Mediarecode {APP_VERSION_LABEL} / Lavf"
+        assert apps["writing_app"] == "Lavf"
+
+    def test_patch_works_with_known_size_segment_lavf61_style(self, tmp_path):
+        # Régression : Lavf 61+ écrit une taille Segment connue (non indéterminée).
+        # Le payload du Segment couvre tout le reste du fichier, donc bien au-delà
+        # de la fenêtre de scan de 8 Mo. _locate_segment ne doit pas lever
+        # "Segment Matroska introuvable" dans ce cas.
+        old_mux = b"Lavf61.7.100"
+        old_writing = b"Lavf61.7.100"
+        children = (
+            b"\x4d\x80" + bytes([0x80 | len(old_mux)]) + old_mux +
+            b"\x57\x41" + bytes([0x80 | len(old_writing)]) + old_writing
+        )
+        info = b"\x15\x49\xa9\x66" + bytes([0x80 | len(children)]) + children
+        dummy_cluster = b"\xec\x81\x00"
+        segment_payload = info + dummy_cluster
+        # Encode la taille Segment comme valeur connue (pas de bits tous à 1 = unknown).
+        segment_size = len(segment_payload)
+        # Encode en VINT 8 octets (suffisamment grand pour un vrai fichier).
+        segment_size_vint = (0x01 << 56 | segment_size).to_bytes(8, "big")
+        segment = b"\x18\x53\x80\x67" + segment_size_vint + segment_payload
+        path = tmp_path / "lavf61.mkv"
+        path.write_bytes(b"\x00" * 16 + segment + b"\x00" * 16)
+
+        editor = MatroskaSegmentInfoHeaderEditor()
+        result = editor.apply_muxing_app_append_with_header_rebuild(
+            path,
+            app_prefix=f"Mediarecode {APP_VERSION_LABEL}",
+        )
+
+        assert result.applied is True
+        apps = _segment_info_apps(path)
+        assert apps["muxing_app"] == f"Mediarecode {APP_VERSION_LABEL} / Lavf61.7.100"
+        assert apps["writing_app"] == "Lavf61.7.100"
+
+    def test_patch_failure_is_skipped_without_file_mutation(self, tmp_path):
+        path = tmp_path / "invalid.mkv"
+        path.write_bytes(b"not a matroska header")
+        before = path.read_bytes()
+
+        editor = MatroskaSegmentInfoHeaderEditor()
+        result = editor.apply_muxing_app_append_with_header_rebuild(
+            path,
+            app_prefix=f"Mediarecode {APP_VERSION_LABEL}",
+        )
+
+        assert result.applied is False
+        assert result.skipped is True
+        assert path.read_bytes() == before
+
+
 @pytest.mark.skipif(
     shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
     reason="ffmpeg/ffprobe requis pour les tests d'intégration",
@@ -862,6 +955,10 @@ class TestFfmpegRemuxWorkflowIntegration:
         state = _wait_task(wf.run(cfg), timeout=30.0)
         assert state["failed"] is None, f"Remux failed: {state['failed']}"
         probe = _ffprobe_json(out)
-        # muxing_application est désormais forcé à "Mediarecode v1.3" indépendamment
-        # du paramètre writing_application (migration v1.3 : valeur fixe dans build_command).
-        assert _tag_value(probe.get("format", {}).get("tags", {}), "MUXING_APPLICATION") == "Mediarecode v1.3"
+        assert _tag_value(probe.get("format", {}).get("tags", {}), "MUXING_APPLICATION") is None
+
+        apps = _segment_info_apps(out)
+        muxing_app = apps.get("muxing_app", "")
+        assert muxing_app.startswith(f"Mediarecode {APP_VERSION_LABEL} / ")
+        untouched_ffmpeg_value = muxing_app.split(" / ", 1)[1]
+        assert apps.get("writing_app") == untouched_ffmpeg_value

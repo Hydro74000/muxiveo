@@ -2231,7 +2231,7 @@ class TestRemuxWorkflowPostMetadata:
             tag_overrides=tags,
         )
 
-    def test_resolved_postproc_metadata_merges_tags_and_muxing_app(self, tmp_path):
+    def test_resolved_postproc_metadata_keeps_only_user_tags(self, tmp_path):
         output = tmp_path / "out.mkv"
         cfg = self._cfg(output, tags={"GENRE": "Drama", "EMPTY": "   "})
         wf = RemuxWorkflow(
@@ -2243,8 +2243,8 @@ class TestRemuxWorkflowPostMetadata:
         metadata = wf._resolved_postproc_metadata(cfg)
 
         assert metadata["GENRE"] == "Drama"
-        assert metadata["muxing_application"] == "MediarecodeMux"
         assert "EMPTY" not in metadata
+        assert "muxing_application" not in metadata
 
     def test_apply_metadata_inplace_uses_ffmpeg_not_mkvpropedit(self, tmp_path):
         output = tmp_path / "out.mkv"
@@ -2265,7 +2265,7 @@ class TestRemuxWorkflowPostMetadata:
         with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run_cmd):
             wf._apply_metadata_inplace(
                 output,
-                {"GENRE": "Drama", "muxing_application": "MediarecodeMux"},
+                {"GENRE": "Drama"},
                 cwd=tmp_path,
                 signals=signals,
             )
@@ -2278,8 +2278,36 @@ class TestRemuxWorkflowPostMetadata:
         assert cmd[cmd.index("-threads") + 1] == "7"
         assert "-metadata" in cmd
         assert "GENRE=Drama" in cmd
-        assert "muxing_application=MediarecodeMux" in cmd
+        assert not any("muxing_application=" in arg for arg in cmd)
         assert output.exists()
+
+    def test_run_invokes_matroska_header_patch_post_action(self, qt_app, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"src")
+        out = tmp_path / "output.mkv"
+        cfg = RemuxConfig(
+            sources=[_source(src, 0, [_track(0, "video", file_id="id0")])],
+            output=out,
+            track_order=[(0, 0)],
+            keep_chapters=False,
+            work_dir=tmp_path / "work",
+            tag_overrides=None,
+        )
+        wf = RemuxWorkflow(mkvmerge_bin="mkvmerge", ffmpeg_bin="ffmpeg")
+
+        def _fake_run_cmd(cmd, **_kwargs):
+            out.write_bytes(b"mkv")
+            return ""
+
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run_cmd):
+            with patch.object(wf, "_apply_matroska_segment_muxing_app_patch") as patch_hook:
+                wf.run(cfg)
+                deadline = time.monotonic() + 2.0
+                while not patch_hook.called and time.monotonic() < deadline:
+                    qt_app.processEvents()
+                    time.sleep(0.01)
+
+        assert patch_hook.called
 
 
 class TestRunOffsetFallback:
