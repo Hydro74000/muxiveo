@@ -18,18 +18,24 @@ Champs proposés selon le type de piste :
 
 from __future__ import annotations
 
+import re
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFrame, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit,
+    QMessageBox,
     QVBoxLayout, QWidget,
 )
 
 from core.i18n import apply_translations, translate_text
 from core.lang_tags import Rfc5646LanguageTags
-from core.workflows.remux import TrackEntry
+from core.workflows.remux_models import TrackEntry
 from ui.design_system import colors as _C
+
+
+_SIGNED_INT_RE = re.compile(r"^[+-]?\d+$")
 
 
 def _separator() -> QFrame:
@@ -180,8 +186,12 @@ class TrackEditDialog(QDialog):
         root.setSpacing(14)
         root.setContentsMargins(20, 20, 20, 20)
 
-        # --- En-tête : type + codec ---
-        header_lbl = QLabel(f"{self._entry.type_long}  ·  {self._entry.codec}")
+        # --- En-tête : type + codec + infos techniques ---
+        header_parts = [self._entry.type_long, self._entry.codec]
+        display_info = (self._entry.display_info or "").strip()
+        if display_info:
+            header_parts.append(display_info)
+        header_lbl = QLabel("  ·  ".join(header_parts))
         header_lbl.setStyleSheet(f"""
             color: {_C.TEXT_SEC};
             font-size: 11px;
@@ -189,6 +199,7 @@ class TrackEditDialog(QDialog):
             background: transparent;
         """)
         root.addWidget(header_lbl)
+
         root.addWidget(_separator())
 
         # --- Section Nom (cachée pour vidéo) ---
@@ -231,7 +242,6 @@ class TrackEditDialog(QDialog):
         for code, name in Rfc5646LanguageTags.items():
             self._lang_combo.addItem(f"{code}  —  {name}", code)
         lang_row.addWidget(self._lang_combo, stretch=1)
-
         root.addLayout(lang_row)
 
         self._lang_warn = QLabel("⚠  Balise non reconnue — vérifiez la valeur RFC 5646")
@@ -264,17 +274,43 @@ class TrackEditDialog(QDialog):
 
         root.addWidget(self._flags_group)
 
+        # --- Ligne basse : décalage + boutons OK/Annuler ---
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(10)
+
+        offset_lbl = QLabel("DÉCALAGE TEMPOREL (ms)")
+        offset_lbl.setStyleSheet(
+            f"color: {_C.TEXT_DIM}; font-size: 9px; font-weight: 700; "
+            f"letter-spacing: 1px; background: transparent;"
+        )
+        bottom_row.addWidget(offset_lbl)
+
+        self._offset_edit = QLineEdit()
+        self._offset_edit.setPlaceholderText("ex : +125, -80, 0")
+        self._offset_edit.setMaximumWidth(140)
+        bottom_row.addWidget(self._offset_edit)
+        bottom_row.addStretch()
+
         # --- Boutons OK / Annuler ---
         btn_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         btn_box.accepted.connect(self.accept)
         btn_box.rejected.connect(self.reject)
-        root.addWidget(btn_box)
+        bottom_row.addWidget(btn_box)
+        root.addLayout(bottom_row)
+
+        self._offset_warn = QLabel("⚠  Valeur invalide — entier signé attendu")
+        self._offset_warn.setStyleSheet(
+            f"color: {_C.WARN}; font-size: 10px; background: transparent;"
+        )
+        self._offset_warn.setVisible(False)
+        root.addWidget(self._offset_warn)
 
         # Connexions
         self._lang_combo.currentIndexChanged.connect(self._on_combo_changed)
         self._lang_edit.textChanged.connect(self._on_lang_text_changed)
+        self._offset_edit.textChanged.connect(self._on_offset_text_changed)
 
     def _configure_for_type(self, track_type: str) -> None:
         """
@@ -302,6 +338,7 @@ class TrackEditDialog(QDialog):
     def _populate(self, entry: TrackEntry) -> None:
         self._name_edit.setText(entry.title)
         self._lang_edit.setText(entry.language)
+        self._offset_edit.setText(str(int(entry.time_shift_ms)) if int(entry.time_shift_ms) != 0 else "")
         self._cb_enabled.setChecked(entry.flag_enabled)
         self._cb_default.setChecked(entry.flag_default)
         self._cb_forced.setChecked(entry.flag_forced)
@@ -310,6 +347,7 @@ class TrackEditDialog(QDialog):
         self._cb_original.setChecked(entry.flag_original)
         self._cb_commentary.setChecked(entry.flag_commentary)
         self._sync_combo_to_lang(entry.language)
+        self._update_offset_validation(self._offset_edit.text())
 
     def _sync_combo_to_lang(self, lang: str) -> None:
         """Sélectionne dans la combobox la valeur correspondant au code langue."""
@@ -335,11 +373,41 @@ class TrackEditDialog(QDialog):
         self._sync_combo_to_lang(text.strip())
         self._update_lang_validation(text.strip())
 
+    def _on_offset_text_changed(self, text: str) -> None:
+        self._update_offset_validation(text)
+
     def _update_lang_validation(self, tag: str) -> None:
         valid = Rfc5646LanguageTags.is_valid(tag)
         self._lang_warn.setVisible(bool(tag) and not valid)
         border = _C.BORDER_LT if valid else _C.WARN
         self._lang_edit.setStyleSheet(f"""
+            QLineEdit {{
+                background: {_C.BG_DEEP};
+                color: {_C.TEXT_PRI};
+                border: 1px solid {border};
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 12px;
+            }}
+        """)
+
+    @staticmethod
+    def _parse_offset_ms(text: str) -> int | None:
+        raw = text.strip()
+        if raw == "":
+            return 0
+        if not _SIGNED_INT_RE.fullmatch(raw):
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    def _update_offset_validation(self, text: str) -> None:
+        valid = self._parse_offset_ms(text) is not None
+        self._offset_warn.setVisible(bool(text.strip()) and not valid)
+        border = _C.BORDER_LT if valid else _C.WARN
+        self._offset_edit.setStyleSheet(f"""
             QLineEdit {{
                 background: {_C.BG_DEEP};
                 color: {_C.TEXT_PRI};
@@ -357,8 +425,18 @@ class TrackEditDialog(QDialog):
     def accept(self) -> None:
         e = self._entry
         tt = e.track_type
+        parsed_offset = self._parse_offset_ms(self._offset_edit.text())
+        if parsed_offset is None:
+            QMessageBox.warning(
+                self,
+                translate_text("Erreur"),
+                translate_text("Décalage temporel invalide : entier signé attendu."),
+            )
+            return
+
         # Langue : toujours appliquée
         e.language = self._lang_edit.text().strip()
+        e.time_shift_ms = int(parsed_offset)
         # Nom : audio et subtitle uniquement
         if tt != "video":
             e.title = self._name_edit.text().strip()

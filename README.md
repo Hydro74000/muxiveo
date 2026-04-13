@@ -2,10 +2,40 @@
 
 FULL Vibecoded App for Proof of Concept - no human code, only human prompts and eyes.
 
-Custom GUI de [mkvtoolnix](https://github.com/nmaier/mkvtoolnix) qui ajoute des options d'encodage video et audio :
 Interface graphique pour préparer des fichiers vidéo, remuxer sans perte, réencoder avec `ffmpeg`, et fusionner des métadonnées Dolby Vision / HDR10+.
 
-Cette documentation correspond à **Mediarecode v1.2**.
+Cette documentation correspond à **Mediarecode v1.3**.
+
+## Sommaire
+
+- [Vue rapide](#vue-rapide)
+- [Installation](#installation)
+  - [Prérequis](#prérequis)
+  - [Cloner le dépôt](#cloner-le-dépôt)
+  - [Installer les dépendances et les outils](#installer-les-dépendances-et-les-outils)
+  - [Lancer l'application](#lancer-lapplication)
+- [Windows - Version .exe uniquement](#windows---version-exe-uniquement)
+  - [Windows Security / Controlled Folder Access](#windows-security--controlled-folder-access)
+- [Distribution](#distribution)
+- [Interface et usage](#interface-et-usage)
+  - [Tableau de bord](#tableau-de-bord)
+  - [Conteneur & Encodage](#conteneur--encodage)
+  - [Fusion DoVi / HDR10+](#fusion-dovi--hdr10)
+  - [Paramètres](#paramètres)
+- [Thèmes](#thèmes)
+- [Localisation](#localisation)
+- [Configuration](#configuration)
+  - [Priorité des réglages](#priorité-des-réglages)
+  - [Paramètres principaux](#paramètres-principaux)
+  - [Buffer RAM](#buffer-ram)
+  - [Outils configurables](#outils-configurables)
+- [Workflows](#workflows)
+  - [Conteneur & Encodage — Routage global](#conteneur--encodage--routage-global)
+  - [Backend remux `ffmpeg` — Branches internes](#backend-remux-ffmpeg--branches-internes)
+  - [Encode workflow — Branches internes](#encode-workflow--branches-internes)
+  - [Fusion DoVi / HDR10+](#fusion-dovi--hdr10-1)
+  - [Détection HDR d'un fichier](#détection-hdr-dun-fichier)
+- [Outils externes](#outils-externes)
 
 ## Vue rapide
 
@@ -38,7 +68,7 @@ Le script `setup.py` installe automatiquement :
 | Catégorie | Installé par `setup.py` |
 |-----------|-------------------------|
 | Dépendance Python | `PySide6` |
-| Outils système | `ffmpeg`, `ffprobe`, `mkvmerge`, `mkvextract`, `mkvinfo`, `mkvpropedit`, `mediainfo` |
+| Outils système | `ffmpeg`, `ffprobe`, `mediainfo` |
 | Outils GitHub | `dovi_tool`, `hdr10plus_tool` |
 | Notes plateforme | Debian/Ubuntu via `apt`, Fedora/RHEL via `dnf`, macOS via Homebrew, Windows via `winget` + binaires locaux |
 
@@ -47,10 +77,10 @@ Le script `setup.py` installe automatiquement :
 
 | Plateforme | Commande | Détails |
 |------------|----------|---------|
-| Linux Debian / Ubuntu | `python3 setup.py` | installe `ffmpeg`, `mkvtoolnix`, `mediainfo` via `apt`, puis `dovi_tool` et `hdr10plus_tool` depuis GitHub |
-| Linux Fedora / RHEL | `python3 setup.py` | active RPM Fusion si nécessaire, installe `ffmpeg`, `mkvtoolnix`, `mediainfo` via `dnf`, puis les outils GitHub |
-| macOS | `python3 setup.py` | installe `ffmpeg`, `mkvtoolnix`, `mediainfo` via Homebrew, puis `dovi_tool` et `hdr10plus_tool` |
-| Windows | `py setup.py` | installe `ffmpeg`, `mkvtoolnix` et `mediainfo` via `winget`, place `dovi_tool` et `hdr10plus_tool` dans `mediarecode\tools`, puis renseigne `config.ini` avec les chemins détectés |
+| Linux Debian / Ubuntu | `python3 setup.py` | installe `ffmpeg`, `mediainfo` via `apt`, puis `dovi_tool` et `hdr10plus_tool` depuis GitHub |
+| Linux Fedora / RHEL | `python3 setup.py` | active RPM Fusion si nécessaire, installe `ffmpeg`, `mediainfo` via `dnf`, puis les outils GitHub |
+| macOS | `python3 setup.py` | installe `ffmpeg`, `mediainfo` via Homebrew, puis `dovi_tool` et `hdr10plus_tool` |
+| Windows | `py setup.py` | installe `ffmpeg` et `mediainfo` via `winget`, place `dovi_tool` et `hdr10plus_tool` dans `mediarecode\tools`, puis renseigne `config.ini` avec les chemins détectés |
 
 Options utiles du script :
 
@@ -71,7 +101,11 @@ python3 main.py
 
 Sous Windows, utilisez `py main.py`.
 
-## Windows
+## Windows - Version .exe uniquement
+
+Cette notice ne concerne que les lancement depuis Mediarecode.exe
+
+Le lancement via python (py main.py) n'est pas concerné.
 
 ### Windows Security / Controlled Folder Access
 
@@ -89,7 +123,7 @@ Symptômes fréquents :
 - erreur `No such file or directory` lors d'un export vers `Videos` ou `Documents` ;
 - succès de l'export vers un autre dossier non protégé, comme `Desktop` ou `%TEMP%`.
 
-Au premier setup Windows, Mediarecode peut proposer d'ajouter ses exécutables à l'allowlist de Windows Security afin de pouvoir enregistrer directement dans ces bibliothèques protégées. Cette exception concerne l'application elle-même et, selon les cas, les outils d'écriture qu'elle utilise (`ffmpeg`, `mkvmerge`, `mkvpropedit`).
+Au premier setup Windows, Mediarecode peut proposer d'ajouter ses exécutables à l'allowlist de Windows Security afin de pouvoir enregistrer directement dans ces bibliothèques protégées. Cette exception concerne l'application elle-même et `ffmpeg`, l'outil qui écrit effectivement les fichiers de sortie.
 
 Sans cette exception, les exports directs vers **Videos**, **Documents**, **Pictures**, etc. peuvent rester bloqués.
 
@@ -100,7 +134,7 @@ Si vous refusez l'exception ou si vous devez la configurer manuellement :
 3. Ouvrez **Protection contre les ransomwares** puis **Gérer la protection contre les ransomwares**.
 4. Entrez dans **Autoriser une application via l'accès contrôlé aux dossiers**.
 5. Ajoutez `mediarecode.exe`.
-6. Si nécessaire, ajoutez aussi `ffmpeg.exe`, `mkvmerge.exe` et `mkvpropedit.exe`.
+6. Si nécessaire, ajoutez aussi `ffmpeg.exe`.
 
 Après ajout à l'allowlist, redémarrez Mediarecode avant de retester un export vers `Videos` ou `Documents`.
 
@@ -108,19 +142,21 @@ Après ajout à l'allowlist, redémarrez Mediarecode avant de retester un export
 
 L'application peut également être distribuée sous forme de binaire autonome via `package.py`.
 
+Les artefacts sont toujours déposés dans `dist/releases/`.
+
 | Cible | Commande | Artefact produit |
 |-------|----------|-----------------|
-| AppImage Linux | `python3 package.py` | `dist/Mediarecode-x86_64.AppImage` |
-| Binaire Windows (natif) | `py package.py` | `dist/mediarecode/mediarecode.exe` |
-| Installateur Windows (natif + NSIS) | `py package.py --nsis` | `dist/Mediarecode-Setup.exe` |
-| Installateur Windows cross (depuis Linux) | `python3 package.py --windows` | `dist/Mediarecode-Setup.exe` via Wine + NSIS |
+| AppImage Linux | `python3 package.py --allinc` | `dist/releases/Mediarecode-x86_64.AppImage` + `dist/releases/Mediarecode-x86_64.AppImage.zsync` |
+| Installateur Windows (natif + NSIS) | `py package.py --nsis` | `dist/releases/Mediarecode-Setup.exe` |
+| Installateur Windows cross (depuis Linux) | `python3 package.py --windows` | `dist/releases/Mediarecode-Setup.exe` via Wine + NSIS |
+
+`--allinc` est requis sur Linux : il intègre toutes les dépendances dans l'AppImage et génère le fichier `.zsync` associé pour les mises à jour différentielles.
 
 Options utiles de `package.py` :
 
 | Option | Effet |
 |--------|-------|
-| `--onefile` | binaire monolithique (lent au démarrage, ignoré pour AppImage) |
-| `--exe` | force le packaging `.exe` sur Linux (PyInstaller natif, sans AppImage) |
+| `--allinc` | intègre toutes les dépendances dans l'AppImage et génère le `.zsync` (Linux) |
 | `--windows` | cross-compile un installateur Windows depuis Linux via Wine + NSIS |
 | `--skip-wine` | réutilise `dist/mediarecode-win/` existant (saute l'étape Wine/PyInstaller) |
 | `--clean` | nettoie tous les artefacts de build (`build/`, `dist/`, `.wine_build/`, `*.AppImage`…) |
@@ -150,16 +186,36 @@ Le workflow unifié permet de :
 - ouvrir une fenêtre de recherche **TMDB** depuis le panneau balises pour rechercher film/série (préremplissage auto depuis titre/nom de fichier)
 - détecter automatiquement les motifs de série (`SxxExx`, `x`) pour préremplir saison/épisode et positionner la recherche sur **Séries** si pertinent
 - injecter les métadonnées TMDB dans les tags MKV (`DATE_RELEASED`, `GENRE`, `DIRECTOR`, `CAST`, `SUBTITLE`, `SYNOPSIS`, `COUNTRY`, `URL`, `DESCRIPTION`, `COLLECTION`, `SEASON`, `EPISODE`)
+- préparer une cover TMDB en mode différé (URL + nom de fichier) ; le téléchargement réel est fait au lancement du workflow
 - remplacer automatiquement le **titre du conteneur** par le titre formaté TMDB lors de la validation (film : `Titre (Année)`, série : `Titre - SxxExx - Titre épisode`)
 - choisir pour chaque piste audio un mode `copy`, `aac`, `eac3` ou `flac`
 - choisir pour la vidéo `copy`, `libx265`, `libx264`, `libsvtav1`, `NVENC`, `AMF`, `VAAPI` ou `QSV`
+- backend de remux nominal : `ffmpeg`
 
 Modes d'exécution :
 
 | Condition | Mode | Outils utilisés |
 |-----------|------|-----------------|
-| vidéo en `copy`, audio en `copy`, aucune transformation HDR | **Remuxage pur** | `mkvmerge`, puis `mkvpropedit` pour les tags MKV / writing-app si nécessaire |
-| tout autre cas | **Encodage** | `ffmpeg`, puis `mkvpropedit` pour chapitres personnalisés, tags MKV et métadonnées de pistes |
+| vidéo en `copy`, audio en `copy`, aucune transformation HDR | **Remuxage pur** | `ffmpeg` (langues BCP47 via tag `language`, purge `language-ietf`, chapitres, tags globaux, pièces jointes, champ `Muxing Application`) |
+| tout autre cas | **Encodage** | `ffmpeg` en passe de sortie unique (encodage/remux final + chapitres, tags, langue/titre de pistes, `Muxing Application`) |
+
+Backend remux `ffmpeg` (par défaut) :
+
+- sortie limitée à `MKV`
+- écrit la langue de piste en BCP47 sur `language` (ex. `fr-FR`) et purge le champ legacy `language-ietf` pour éviter les doublons incohérents
+- permet la recopie ou l'édition des chapitres
+- permet d'écrire les tags globaux choisis
+- permet de recopier les pièces jointes source sélectionnées et d'ajouter des fichiers externes (cover incluse)
+- télécharge la cover TMDB différée juste avant l'exécution (dans le dossier temporaire du process), puis nettoie ce dossier en fin de run
+- purge explicitement les balises techniques source `ENCODER` et `CREATION_TIME` avant écriture des métadonnées de sortie
+- n'écrit plus le tag libre `MUXING_APPLICATION` via `-metadata`
+- applique un patch binaire post-action (sans MKVToolNix) sur le header Matroska pour écrire **MuxingApp** (`0x4D80`) à la valeur unique `Mediarecode {version}` ; **WritingApp** (`0x5741`) reste intact
+
+Limites connues du backend remux `ffmpeg` :
+
+- pas de support des structures XML avancées de tags Matroska (cibles hiérarchiques fines)
+- pas d'édition du flag Matroska `track-enabled` (non exposé par FFmpeg)
+- la réécriture post-action reconstruit l'EBML du header si la valeur MuxingApp est plus longue que le champ existant ; en cas d'échec, le patch est ignoré avec warning
 
 Les options HDR disponibles côté encodage sont :
 
@@ -181,6 +237,8 @@ Règles importantes :
 - l'écart de frame count doit être **<= 4 images**
 - le remux final conserve l'audio et les sous-titres de Film 1
 
+Le workflow UI Fusion DoVi/HDR10+ est désormais **FFmpeg-only** pour l'extraction HEVC et le remux final (plus de dépendance MKVToolNix dans ce panneau).
+
 Profils Dolby Vision proposés :
 
 | Profil | Effet |
@@ -194,7 +252,8 @@ Le panneau **Paramètres** est un éditeur complet de `config.ini` intégré à 
 
 - **Interface** : thème (`dark` / `light`), langue, nombre maximal de lignes de log, panneau affiché au démarrage
 - **Chemins** : dossier de travail, dossier de sortie, dossier app data
-- **Outils externes** : chemins explicites pour chaque outil (`ffmpeg`, `mkvmerge`, `dovi_tool`, etc.)
+- **Remux** : backend `ffmpeg` (nominal)
+- **Outils externes** : chemins explicites pour chaque outil (`ffmpeg`, `ffprobe`, `mediainfo`, `dovi_tool`, `hdr10plus_tool`, etc.)
 - **Encodage** : profil DoVi, compat-id, buffer RAM
 - **Métadonnées** : auth TMDB via clé API v3 (`tmdb_api_key`) ou token Bearer v4 (`tmdb_bearer_token`)
 
@@ -217,7 +276,7 @@ L'interface est traduite en **français** et **anglais**. La langue active est d
 
 Les textes de l'application sont centralisés dans `locales.json`.
 
-Les tags de langue saisis (pistes audio, sous-titres) sont normalisés automatiquement vers le format RFC 5646 / ISO 639-2 : une saisie comme `fr`, `french` ou `French` est convertie en `fra`.
+Les tags de langue saisis (pistes audio, sous-titres) utilisent des codes RFC 5646 / BCP47 (ex. `fr`, `fr-FR`, `en-US`). Les libellés non standards comme `French` ne sont pas acceptés.
 
 ## Configuration
 
@@ -240,17 +299,38 @@ Sous Windows, `setup.py` et le démarrage de l'application peuvent auto-détecte
 | `theme` | `dark` | thème visuel (`dark` ou `light`) |
 | `language` | auto-détecté | langue de l'interface (`fra` ou `eng`) |
 | `startup_panel` | `dashboard` | panneau ouvert au démarrage (`dashboard`, `container`, `encoding`, `dovi`, `settings`) |
+| `backend` (section `[remux]`) | `ffmpeg` | backend de remux (`ffmpeg`) |
 | `tmdb_api_key` | vide | clé API TMDB v3 utilisée par la recherche IMDb/TMDB |
 | `tmdb_bearer_token` | vide | token Bearer TMDB v4 (utilisé si `tmdb_api_key` est vide, ou via `MEDIARECODE_TMDB_BEARER_TOKEN`) |
 | `ram_buffer_enabled` | `true` | autorise l'usage de `/dev/shm` pour les HEVC intermédiaires si disponible |
 | `ram_buffer_threshold_pct` | `15` | pourcentage minimal de RAM libre à conserver pour activer ce buffer |
+
+### Buffer RAM
+
+Le workflow d'encodage peut placer les fichiers HEVC temporaires en RAM pour limiter les E/S disque.
+
+Conditions d'utilisation :
+
+- `ram_buffer_enabled = true`
+- un répertoire RAM-backed disponible et inscriptible (`/dev/shm`)
+- après allocation estimée, la RAM libre reste au-dessus du seuil `ram_buffer_threshold_pct`
+
+Comportement :
+
+- si toutes les conditions sont remplies, les intermédiaires HEVC sont écrits en RAM
+- sinon, fallback automatique vers le dossier temporaire sur disque (`work_dir` ou temporaire système)
+- la décision est réévaluée à chaque allocation
+
+Limite Windows :
+
+- l'application ne s'appuie pas sur un backend RAM standard sur Windows
+- le chemin par défaut reste donc disque pour garantir un comportement stable et compatible avec les outils externes (`ffmpeg`, `dovi_tool`, `hdr10plus_tool`) qui attendent des chemins de fichiers classiques
 
 ### Outils configurables
 
 Vous pouvez définir explicitement dans `config.ini` :
 
 - `ffmpeg`, `ffprobe`
-- `mkvmerge`, `mkvextract`, `mkvinfo`, `mkvpropedit`
 - `mediainfo`
 - `dovi_tool`, `hdr10plus_tool`
 - `eac3to`
@@ -263,8 +343,10 @@ output_dir = /mnt/nas/videos
 
 [tools]
 ffmpeg = /opt/ffmpeg/bin/ffmpeg
-mkvpropedit = /usr/bin/mkvpropedit
 dovi_tool = /usr/local/bin/dovi_tool
+
+[remux]
+backend = ffmpeg
 
 [ui]
 theme = light
@@ -278,97 +360,136 @@ tmdb_bearer_token = <VOTRE_TOKEN_BEARER_TMDB_V4>
 
 ## Workflows
 
-### Conteneur & Encodage
+### Conteneur & Encodage — Routage global
 
 ```mermaid
 flowchart TD
-    A([Sources MKV / MP4]) --> B[Inspection ffprobe + mkvmerge]
-    B --> C[RemuxPanel]
+    A["Sources MKV ou MP4"] --> B["Inspection via ffprobe"]
+    B --> C["Edition conteneur dans RemuxPanel"]
+    C --> D["Options video, audio et HDR dans EncodePanel"]
+    D --> E{"Video copy\nAudio copy\nAucune transformation HDR"}
 
-    subgraph REMUX[RemuxPanel]
-        C --> C1[Choix et ordre des pistes]
-        C --> C2[Langue, titre, flags]
-        C --> C3[Titre du conteneur]
-        C --> C4[Tags MKV et pièces jointes]
-        C --> C5[Chapitres et sortie]
-    end
+    E -->|Oui| R0["WORKFLOW TYPE - REMUX"]
+    R0 --> R1["Workflow remux FFmpeg"]
+    R1 --> Z["Sortie MKV"]
 
-    C1 --> D[EncodePanel]
-    C2 -. sync .-> D
-
-    subgraph ENCODE[EncodePanel]
-        D --> D1[Codec vidéo]
-        D --> D2[Codec audio par piste]
-        D --> D3[Qualité, preset, HDR]
-    end
-
-    D1 --> E{Tout en copy\naucun HDR ?}
-    D2 --> E
-    D3 --> E
-
-    E -->|Oui| F[mkvmerge\nordre, langues, flags, titre, chapitres, attachements]
-    F --> G[mkvpropedit\ntags MKV + writing-app si nécessaire]
-    G --> Z([Sortie MKV])
-
-    E -->|Non| H[ffmpeg\nvideo + audio + sous-titres + attachements]
-    H --> I{Copie DoVi / HDR10+ ?}
-    I -->|Non| J[mkvpropedit\nchapitres, tags, langue/titre des pistes, writing-app]
-    I -->|Oui| K[Extraction HEVC + metadata\nencodage video\ninjection HDR]
-    K --> J
-    J --> Z
+    E -->|Non| E0["WORKFLOW TYPE - ENCODE"]
+    E0 --> E1["Workflow encode FFmpeg"]
+    E1 --> Z
 ```
+
+### Backend remux `ffmpeg` — Branches internes
+
+```mermaid
+flowchart TD
+    A["WORKFLOW TYPE - REMUX"] --> B["STEP 1 - Validation configuration"]
+    B --> C["STEP 2 - Preparation workspace, attachments et cover TMDB"]
+    C --> D["STEP 3 - Analyse mapping pistes + pre-scan de risque\nextraction attached_pic si present"]
+    D --> E{"Risque multi-source\nstrict interleave"}
+    E -->|Oui| F["STEP 4 - Synchronisation timeline multi-source\nFIFO, Named Pipe ou fallback fichier"]
+    E -->|Non| G["STEP 4 - Synchronisation timeline non requise"]
+    F --> H["STEP 5 - Chapitres : override FFMetadata ou copie source"]
+    G --> H
+    H --> I["STEP 6 - Construction de la commande ffmpeg remux"]
+    I --> J["STEP 7 - Execution du remux ffmpeg"]
+    J --> K["STEP 8 - Post-action : Patch MuxingApp + Cleanup"]
+    K --> L["Sortie MKV"]
+```
+
+### Encode workflow — Branches internes
+
+```mermaid
+flowchart TD
+    A["WORKFLOW TYPE - ENCODE"] --> B["STEP 1 - Validation configuration"]
+    B --> C["STEP 2 - Preparation workspace et attachments"]
+    C --> D["STEP 3 - Normalisation des options HDR dynamiques"]
+    D --> E["STEP 4 - Routage du workflow"]
+    E --> F{"Injection fichier\nDoVi ou HDR10+\nnecessaire"}
+
+    F -->|Oui| K["STEP 5 - Extraction des metadata dynamiques\nDoVi et ou HDR10+"]
+    K --> L["STEP 6 - Encodage video seule vers enc.hevc"]
+    L --> M["STEP 7 - Injection HDR10+ et ou DoVi"]
+    M --> N["STEP 8 - Encapsulation timeline video injectee"]
+    N --> O["STEP 9 - Reconstruction finale MKV\nSync timeline si risque detecte"]
+
+    F -->|Non| G["STEP 5 - Construction de la commande ffmpeg\nsortie directe"]
+    G --> H["STEP 6 - Preparation sync/remap + commande(s)"]
+    H --> P{"Quality mode = SIZE"}
+    P -->|Oui| Q["STEP 7 - Execution ffmpeg en 2 passes\nsync timeline si risque detecte"]
+    P -->|Non| R["STEP 7 - Execution ffmpeg en single pass\nsync timeline si risque detecte"]
+
+    O --> Z["Sortie MKV"]
+    Q --> Z
+    R --> Z
+```
+
+Lecture rapide :
+- Les demandes `copy_hdr10plus` et `copy_dv` sont evaluees apres normalisation source.
+- L'injection "fichier" n'est requise que si une copie DoVi ou HDR10+ reste demandee et que la video n'est pas en `copy`.
+- Si `codec=copy` avec injection desactivee, le workflow reste en sortie directe ffmpeg (STEP 5-7), y compris si l'audio est reencode.
+- Le 2-pass n'existe que dans le chemin direct (`quality_mode=SIZE`, `codec!=copy`).
+- Le chemin injection utilise `enc.hevc`, puis `enc_wrapped.mkv`, puis un remux final ffmpeg (STEP 5-9).
+- La sync timeline multi-source est activee uniquement en cas de risque detecte par pre-scan ffprobe ; sinon le flux reste en chemin direct.
+- En mode TMDB, la cover est resolue en URL lors de la recherche puis telechargee uniquement au lancement du workflow.
 
 ### Fusion DoVi / HDR10+
 
 ```mermaid
 flowchart TD
-    A([Film 1 + Film 2]) --> B[Validation]
-    B --> C[HEVC sur les deux fichiers]
-    C --> D[HDR avance detecte dans Film 2]
-    D --> E[Comparaison frame count\ntolerance <= 4]
-    E --> F[Extractions paralleles]
+    A([Film 1 + Film 2]) --> B[Validation\nfichiers, extensions, outils,\nHEVC Film 1/2, HDR dans Film 2]
+    B --> C[Comparaison frame count\ntolerance <= 4]
+    C --> D{Film 2 = MKV\net DoVi + HDR10+ ?}
 
-    subgraph EXTRACT[Extractions]
-        F --> F1[mkvextract Film 1 vers HEVC si MKV]
-        F --> F2[dovi_tool extract-rpu]
-        F --> F3[hdr10plus_tool extract si HDR10+]
-    end
+    D -->|Oui| E1[Phase 1 parallel\nextract HEVC Film 1 si MKV\n+ extract HEVC Film 2]
+    E1 --> E2[Phase 2 parallel\nextract RPU + HDR10+\ndepuis film2.hevc]
+    D -->|Non| E3[Extraction parallel directe\nHEVC Film 1 si MKV\n+ RPU/HDR10+ depuis Film 2]
 
-    F1 --> G{DoVi present ?}
-    F2 --> G
-    F3 --> H{HDR10+ present ?}
+    E2 --> F
+    E3 --> F
 
-    G -->|Oui| G1[dovi_tool inject-rpu]
-    G -->|Non| H
-    G1 --> H
+    F{DoVi present ?}
+    F -->|Oui| G[dovi_tool inject-rpu]
+    F -->|Non| H
+    G --> H
 
-    H -->|Oui| H1[hdr10plus_tool inject]
-    H -->|Non| I
-    H1 --> I
+    H{HDR10+ present ?}
+    H -->|Oui| I[hdr10plus_tool inject]
+    H -->|Non| J
+    I --> J
 
-    I[Verification RPU si DoVi] --> J[mkvmerge final\nvideo enrichie + audio/subs de Film 1]
-    J --> K[Nettoyage]
-    K --> L([Sortie MKV])
+    J{DoVi present ?}
+    J -->|Oui| K[Verification RPU frames]
+    J -->|Non| L
+    K --> L
+
+    L[ffmpeg final\nvideo injectee + audio/subs/metadata Film 1\nmap_metadata/map_chapters] --> M[Nettoyage]
+    M --> N([Sortie MKV])
 ```
 
 ### Détection HDR d'un fichier
 
 ```mermaid
 flowchart TD
-    A([Fichier video]) --> B[ffprobe JSON]
-    B --> C{side_data HDR ?}
-    C -->|Dolby Vision| D1[Dolby Vision]
-    C -->|HDR10+| D2[HDR10+]
-    C -->|Aucun| E[Fallback mediainfo]
+    A([Fichier video]) --> B[ffprobe JSON\nstreams + format + chapitres]
+    B --> C{Conteneur Matroska/WebM ?}
+    C -->|Oui| C1[Enrichissement ffprobe MKV\nlanguage-ietf/language + tag_count]
+    C -->|Non| C2[Pas d enrichissement MKV]
+    C1 --> D[Normalisation langues IETF]
+    C2 --> D
 
-    E --> F{HDR_Format}
-    F -->|Dolby Vision| D1
-    F -->|SMPTE ST 2094| D2
-    F -->|Autre ou vide| G{Color transfer}
+    D --> E{side_data HDR ?}
+    E -->|Dolby Vision| D1[Dolby Vision]
+    E -->|HDR10+| D2[HDR10+]
+    E -->|Aucun| F[Fallback mediainfo]
 
-    G -->|smpte2084| H[HDR10]
-    G -->|arib-std-b67| I[HLG]
-    G -->|autre| J[SDR]
+    F --> G{HDR_Format}
+    G -->|Dolby Vision| D1
+    G -->|SMPTE ST 2094| D2
+    G -->|Autre ou vide| H{Color transfer}
+
+    H -->|smpte2084| I[HDR10]
+    H -->|arib-std-b67| J[HLG]
+    H -->|autre| K[SDR]
 ```
 
 ## Outils externes
@@ -377,14 +498,11 @@ flowchart TD
 |-------|----------------|
 | `ffprobe` | analyse des flux, chapitres et métadonnées |
 | `mediainfo` | frame count et informations HDR fines |
-| `ffmpeg` | encodage, copie de flux, reconstruction finale |
-| `mkvmerge` | remuxage pur et remuxage final de la fusion HDR |
-| `mkvextract` | extraction du flux HEVC depuis un MKV |
-| `mkvpropedit` | chapitres, tags MKV, langues/titres de pistes, writing-app |
+| `ffmpeg` | encodage, remux, copie de flux, écriture metadata/chapitres/tags, patch binaire MuxingApp |
 | `dovi_tool` | extraction, injection et vérification Dolby Vision |
 | `hdr10plus_tool` | extraction et injection HDR10+ |
 | `nvidia-smi` | fallback de détection NVENC sous Linux |
 
 ---
 
-*Mediarecode v1.2*
+*Mediarecode v1.3*

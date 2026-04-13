@@ -118,18 +118,34 @@ class AudioTrackSettings:
 
 
 @dataclass
+class TrackTimeOffset:
+    """Décalage temporel appliqué à une piste d'entrée (en millisecondes)."""
+    track_type:  str   # "video" | "audio" | "subtitle"
+    source_path: Path
+    stream_index: int
+    offset_ms:    int = 0
+
+
+@dataclass
 class TrackMetaEdit:
     """
-    Édition de métadonnées d'une piste de sortie, appliquée via mkvpropedit.
+    Édition de métadonnées d'une piste de sortie, appliquée via post-process FFmpeg.
 
     track_order : numéro de piste 1-based dans le fichier de sortie (sélecteur @N).
-    language    : balise IETF BCP-47 à écrire, ou "" pour ne pas toucher.
+    language    : balise IETF BCP-47 à écrire via `language=`, ou "" pour ne pas toucher.
     title       : nom de la piste à écrire, ou None pour ne pas toucher
                   (chaîne vide "" = effacer le titre existant).
+    flag_*      : flags de disposition Matroska. None = ne pas toucher.
     """
     track_order: int
     language:    str        = ""
     title:       str | None = None
+    flag_default:          bool | None = None
+    flag_forced:           bool | None = None
+    flag_hearing_impaired: bool | None = None
+    flag_visual_impaired:  bool | None = None
+    flag_original:         bool | None = None
+    flag_commentary:       bool | None = None
 
 
 @dataclass
@@ -144,7 +160,7 @@ class EncodeConfig:
     # Si non vide, remplace le copy_subtitles générique.
     subtitle_tracks:  list = field(default_factory=list)   # list[tuple[Path, int]]
     keep_chapters:    bool         = True
-    #: Chapitres personnalisés à appliquer en post-traitement via mkvpropedit.
+    #: Chapitres personnalisés à appliquer en post-traitement FFmpeg.
     #: None  → comportement keep_chapters (copie depuis la source ou rien).
     #: list  → écrase les chapitres existants avec ces entrées.
     chapter_overrides: list | None = None  # list[ChapterEntry] | None
@@ -153,15 +169,17 @@ class EncodeConfig:
     attachment_streams: list = field(default_factory=list)   # list[tuple[Path, int]]
     # Fichiers externes à attacher (ajout manuel, via -attach ffmpeg).
     extra_attachments:  list = field(default_factory=list)   # list[Path]
-    # Sources dont on copie les balises MKV (<Tags> element) via mkvpropedit post-traitement.
+    # Sources dont on copie les tags globaux via post-traitement FFmpeg.
     tag_sources:      list = field(default_factory=list)    # list[Path]
     #: Balises MKV globales à écrire directement (prioritaire sur tag_sources).
     #: None  → utiliser tag_sources si présents.
     #: dict  → écrire ces balises et ignorer tag_sources.
     #: {}    → supprimer toutes les balises existantes.
     tag_overrides:    dict | None = None                    # dict[str, str] | None
-    # Éditions de métadonnées de pistes (langue, titre) appliquées via mkvpropedit.
+    # Éditions de métadonnées de pistes (langue, titre) appliquées via FFmpeg.
     track_meta_edits: list = field(default_factory=list)    # list[TrackMetaEdit]
+    # Décalages temporels par piste (ms), appliqués directement au runtime encode.
+    track_time_offsets: list = field(default_factory=list)  # list[TrackTimeOffset]
     file_title:       str          = ""     # balise Title du segment de sortie
     duration_s:       float | None = None   # requis pour le mode taille cible
     # Passthrough métadonnées dynamiques (HEVC uniquement)
@@ -169,6 +187,9 @@ class EncodeConfig:
     copy_hdr10plus:   bool         = False  # injecter HDR10+ SEI via hdr10plus_tool
     dovi_profile:     str          = "0"    # flag -m dovi_tool : "0"=conserver, "2"=normaliser P8.1
     work_dir:         Path | None  = None   # dossier de travail (passlog, fichiers temp)
+    #: Cover TMDB à télécharger juste avant l'encodage : (url, filename).
+    #: None → pas de cover TMDB en attente.
+    tmdb_cover:       tuple[str, str] | None = None
 
 
 @dataclass

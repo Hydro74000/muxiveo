@@ -115,6 +115,7 @@ from __future__ import annotations
 
 import colorsys
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -130,15 +131,19 @@ from core.inspector import (
     build_chapter_xml,
 )
 from core.media_info_fetcher import MediaDetails
-from core.workflows.remux import (
-    RemuxConfig, RemuxError, RemuxWorkflow, SourceInput,
-    TrackEntry, tracks_from_file_info,
+from core.runner import TaskSignals
+from core.workflows.remux import RemuxWorkflow
+from core.workflows.remux_models import (
+    RemuxConfig, RemuxError, SourceInput, TrackEntry, tracks_from_file_info,
 )
 from ui.panels.remux_panel import (
     SourceFile, _FILE_BAR_H, _FILE_PH_H, _FILE_ROW_H,
-    _AttachmentItemWidget, _AttachmentPanel, _FileListWidget, _TrackTable,
+    _AttachmentItemWidget, _AttachmentPanel, _FileListWidget, _TrackInfoDelegate, _TrackTable,
+    _TRACK_INFO_OFFSET_COLOR, _TRACK_INFO_OFFSET_NEG_COLOR, _TRACK_INFO_OFFSET_POS_COLOR,
+    _TRACK_INFO_OFFSET_VALUE_ROLE,
     _normalize_tmdb_manual_title_suggestion, _pick_file_color,
 )
+from ui.panels.track_edit_dialog import TrackEditDialog
 from ui.panels.tmdb_search_modal import extract_season_episode
 
 
@@ -244,7 +249,7 @@ def _source(
 
 def _workflow() -> RemuxWorkflow:
     """RemuxWorkflow instancié avec un binaire factice (tests sans exécution)."""
-    return RemuxWorkflow(mkvmerge_bin="mkvmerge")
+    return RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
 
 
 # ===========================================================================
@@ -323,6 +328,27 @@ class TestTrackEntryProperties:
             display_info="", language="", title="",
         )
         assert t.enabled is True
+
+    def test_time_shift_value_label_empty_when_zero(self):
+        t = _track(1, track_type="audio")
+        t.time_shift_ms = 0
+        assert t.time_shift_value_label == ""
+
+    def test_time_shift_value_label_with_signed_ms(self):
+        t = _track(1, track_type="audio")
+        t.time_shift_ms = -80
+        assert t.time_shift_value_label == "-80 ms"
+
+    def test_time_shift_label_uses_delta_prefix(self):
+        t = _track(1, track_type="audio")
+        t.time_shift_ms = 125
+        assert t.time_shift_label == "Δt +125 ms"
+
+    def test_full_info_label_includes_offset_when_non_zero(self):
+        t = _track(1, track_type="audio")
+        t.display_info = "5.1"
+        t.time_shift_ms = 125
+        assert "Δt +125 ms" in t.full_info_label
 
 
 # ===========================================================================
@@ -428,535 +454,6 @@ class TestTracksFromFileInfo:
 
 
 # ===========================================================================
-# RemuxWorkflow.build_command
-# ===========================================================================
-
-class TestBuildCommand:
-
-    def setup_method(self):
-        self.wf = _workflow()
-
-    def _cmd(self, config: RemuxConfig) -> list[str]:
-        return self.wf.build_command(config)
-
-    # --- Source unique, toutes pistes activées ---
-
-    def test_single_source_output_first(self):
-        src = _source(Path("/a.mkv"), 0, [_track(0, "video", file_id="id0")])
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 0)],
-        )
-        cmd = self._cmd(cfg)
-        assert cmd[0] == "mkvmerge"
-        assert cmd[1] == "-o"
-        assert cmd[2] == "/out.mkv"
-
-    def test_single_source_no_filter_flags_when_all_enabled(self):
-        """Quand toutes les pistes d'une source sont activées, pas de flags de filtrage."""
-        tracks = [
-            _track(0, "video", file_id="id0"),
-            _track(1, "audio", file_id="id0"),
-        ]
-        src = _source(Path("/a.mkv"), 0, tracks)
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 0), (0, 1)],
-        )
-        cmd = self._cmd(cfg)
-        assert "--no-video" not in cmd
-        assert "--no-audio" not in cmd
-        assert "--video-tracks" not in cmd
-        assert "--audio-tracks" not in cmd
-
-    def test_single_source_no_video_when_all_video_disabled(self):
-        tracks = [_track(0, "video", file_id="id0"), _track(1, "audio", file_id="id0")]
-        src = _source(Path("/a.mkv"), 0, tracks)
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 1)],  # vidéo exclue
-        )
-        cmd = self._cmd(cfg)
-        assert "--no-video" in cmd
-
-    def test_single_source_video_tracks_flag_for_partial_selection(self):
-        tracks = [
-            _track(0, "video", file_id="id0"),
-            _track(2, "video", file_id="id0"),
-        ]
-        src = _source(Path("/a.mkv"), 0, tracks)
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 0)],  # seulement TID 0
-        )
-        cmd = self._cmd(cfg)
-        assert "--video-tracks" in cmd
-        idx = cmd.index("--video-tracks")
-        assert "0" in cmd[idx + 1]
-        assert "2" not in cmd[idx + 1]
-
-    def test_single_source_no_audio_when_all_audio_disabled(self):
-        tracks = [_track(0, "video", file_id="id0"), _track(1, "audio", file_id="id0")]
-        src = _source(Path("/a.mkv"), 0, tracks)
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 0)],  # audio exclue
-        )
-        cmd = self._cmd(cfg)
-        assert "--no-audio" in cmd
-
-    def test_single_source_audio_tracks_flag_for_partial_selection(self):
-        tracks = [
-            _track(1, "audio", file_id="id0"),
-            _track(2, "audio", file_id="id0"),
-        ]
-        src = _source(Path("/a.mkv"), 0, tracks)
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 1)],  # seulement TID 1
-        )
-        cmd = self._cmd(cfg)
-        assert "--audio-tracks" in cmd
-
-    def test_track_order_preserves_reordered_audio_tracks(self):
-        tracks = [
-            _track(0, "video", file_id="id0"),
-            _track(1, "audio", file_id="id0"),
-            _track(2, "audio", file_id="id0"),
-        ]
-        src = _source(Path("/a.mkv"), 0, tracks)
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 0), (0, 2), (0, 1)],
-        )
-        cmd = self._cmd(cfg)
-        idx = cmd.index("--track-order")
-        assert cmd[idx + 1] == "0:0,0:2,0:1"
-
-    def test_single_source_no_subtitles_when_all_disabled(self):
-        tracks = [_track(3, "subtitle", file_id="id0")]
-        src = _source(Path("/a.mkv"), 0, tracks)
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[],
-        )
-        cmd = self._cmd(cfg)
-        assert "--no-subtitles" in cmd
-
-    def test_subtitle_tracks_flag_for_partial_selection(self):
-        tracks = [_track(3, "subtitle", file_id="id0"), _track(4, "subtitle", file_id="id0")]
-        src = _source(Path("/a.mkv"), 0, tracks)
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 3)],
-        )
-        cmd = self._cmd(cfg)
-        assert "--subtitle-tracks" in cmd
-
-    # --- Source sans piste d'un type → pas de flag --no-xxx ---
-
-    def test_no_video_flag_not_emitted_for_audio_only_source(self):
-        """Bug-guard : une source sans vidéo ne doit pas avoir --no-video."""
-        tracks = [_track(1, "audio", file_id="id0")]
-        src = _source(Path("/audio_only.mkv"), 0, tracks)
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 1)],
-        )
-        cmd = self._cmd(cfg)
-        assert "--no-video" not in cmd
-
-    def test_no_audio_flag_not_emitted_for_video_only_source(self):
-        tracks = [_track(0, "video", file_id="id0")]
-        src = _source(Path("/video_only.mkv"), 0, tracks)
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 0)],
-        )
-        cmd = self._cmd(cfg)
-        assert "--no-audio" not in cmd
-
-    # --- Options conteneur ---
-
-    def test_no_chapters_flag(self):
-        tracks = [_track(0, "video", file_id="id0")]
-        src = _source(Path("/a.mkv"), 0, tracks)
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 0)], keep_chapters=False,
-        )
-        cmd = self._cmd(cfg)
-        assert "--no-chapters" in cmd
-
-    def test_keep_chapters_by_default(self):
-        tracks = [_track(0, "video", file_id="id0")]
-        src = _source(Path("/a.mkv"), 0, tracks)
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 0)], keep_chapters=True,
-        )
-        cmd = self._cmd(cfg)
-        assert "--no-chapters" not in cmd
-
-    def test_no_attachments_flag(self):
-        tracks = [_track(0, "video", file_id="id0")]
-        src = SourceInput(
-            path=Path("/a.mkv"), file_index=0, tracks=tracks,
-            attachment_count=2, selected_attachments=[],
-        )
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 0)],
-        )
-        cmd = self._cmd(cfg)
-        assert "--no-attachments" in cmd
-
-    # --- Métadonnées de pistes ---
-
-    def test_track_name_emitted_when_title_modified(self):
-        t = _track(1, "audio", file_id="id0", title="Français", orig_title="")
-        src = _source(Path("/a.mkv"), 0, [t])
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 1)],
-        )
-        cmd = self._cmd(cfg)
-        assert "--track-name" in cmd
-        idx = cmd.index("--track-name")
-        assert cmd[idx + 1] == "1:Français"
-
-    def test_track_name_not_emitted_when_title_unchanged(self):
-        t = _track(1, "audio", file_id="id0", title="EAC-3", orig_title="EAC-3")
-        src = _source(Path("/a.mkv"), 0, [t])
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 1)],
-        )
-        cmd = self._cmd(cfg)
-        assert "--track-name" not in cmd
-
-    def test_language_emitted_when_modified(self):
-        t = _track(1, "audio", file_id="id0", language="en", orig_language="fr")
-        src = _source(Path("/a.mkv"), 0, [t])
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 1)],
-        )
-        cmd = self._cmd(cfg)
-        assert "--language" in cmd
-        idx = cmd.index("--language")
-        assert cmd[idx + 1] == "1:eng"
-
-    def test_language_always_emitted_even_when_unchanged(self):
-        """--language est toujours émis pour garantir la forme régionale en sortie."""
-        t = _track(1, "audio", file_id="id0", language="fr", orig_language="fr")
-        src = _source(Path("/a.mkv"), 0, [t])
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 1)],
-        )
-        cmd = self._cmd(cfg)
-        assert "--language" in cmd
-        idx = cmd.index("--language")
-        assert cmd[idx + 1] == "1:fra"
-
-    def test_language_en_US_emitted_when_regionalized_unchanged(self):
-        """Cas réel : inspecteur régionalise 'en' → 'en-US' dans les deux champs,
-        --language doit quand même être émis avec la valeur régionale (v98+)."""
-        t = _track(1, "audio", file_id="id0", language="en-US", orig_language="en-US")
-        src = _source(Path("/a.mkv"), 0, [t])
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 1)],
-        )
-        wf = RemuxWorkflow(mkvmerge_bin="mkvmerge", mkvmerge_major_version=98)
-        cmd = wf.build_command(cfg)
-        assert "--language" in cmd
-        idx = cmd.index("--language")
-        assert cmd[idx + 1] == "1:en-US"
-
-    def test_language_cleared_emits_und(self):
-        t = _track(1, "audio", file_id="id0", language="", orig_language="fr")
-        src = _source(Path("/a.mkv"), 0, [t])
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 1)],
-        )
-        cmd = self._cmd(cfg)
-        assert "--language" in cmd
-        idx = cmd.index("--language")
-        assert cmd[idx + 1] == "1:und"
-
-    def test_language_ietf_not_emitted_by_default(self):
-        t = _track(1, "audio", file_id="id0", language="fr-FR", orig_language="fr")
-        src = _source(Path("/a.mkv"), 0, [t])
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 1)],
-        )
-        cmd = self._cmd(cfg)
-        assert "--language-ietf" not in cmd
-
-    def test_language_ietf_emitted_for_mkvmerge_pre98(self):
-        t = _track(1, "audio", file_id="id0", language="fr-FR", orig_language="fr")
-        src = _source(Path("/a.mkv"), 0, [t])
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 1)],
-        )
-        wf = RemuxWorkflow(mkvmerge_bin="mkvmerge", mkvmerge_major_version=97)
-        cmd = wf.build_command(cfg)
-        assert "--language-ietf" in cmd
-        idx = cmd.index("--language-ietf")
-        assert cmd[idx + 1] == "1:fr-FR"
-
-    def test_language_ietf_not_emitted_for_und_even_pre98(self):
-        t = _track(1, "audio", file_id="id0", language="und", orig_language="fr")
-        src = _source(Path("/a.mkv"), 0, [t])
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 1)],
-        )
-        wf = RemuxWorkflow(mkvmerge_bin="mkvmerge", mkvmerge_major_version=97)
-        cmd = wf.build_command(cfg)
-        assert "--language-ietf" not in cmd
-
-    def test_language_for_mkvmerge_98_uses_ietf_tag(self):
-        t = _track(1, "audio", file_id="id0", language="fr-FR", orig_language="fr")
-        src = _source(Path("/a.mkv"), 0, [t])
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 1)],
-        )
-        wf = RemuxWorkflow(mkvmerge_bin="mkvmerge", mkvmerge_major_version=98)
-        cmd = wf.build_command(cfg)
-        assert "--language" in cmd
-        idx = cmd.index("--language")
-        assert cmd[idx + 1] == "1:fr-FR"
-        assert "--language-ietf" not in cmd
-
-    def test_language_for_mkvmerge_98_regionalizes_short_ietf(self):
-        t = _track(1, "audio", file_id="id0", language="fr", orig_language="en")
-        src = _source(Path("/a.mkv"), 0, [t])
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 1)],
-        )
-        wf = RemuxWorkflow(mkvmerge_bin="mkvmerge", mkvmerge_major_version=98)
-        cmd = wf.build_command(cfg)
-        assert "--language" in cmd
-        idx = cmd.index("--language")
-        assert cmd[idx + 1] == "1:fr-FR"
-
-    def test_language_set_to_und_is_emitted(self):
-        t = _track(1, "audio", file_id="id0", language="und", orig_language="fr")
-        src = _source(Path("/a.mkv"), 0, [t])
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 1)],
-        )
-        cmd = self._cmd(cfg)
-        assert "--language" in cmd
-        idx = cmd.index("--language")
-        assert cmd[idx + 1] == "1:und"
-
-    def test_build_command_does_not_emit_language_log_by_default(self):
-        t = _track(1, "audio", file_id="id0", language="en", orig_language="fr")
-        src = _source(Path("/a.mkv"), 0, [t])
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 1)],
-        )
-        logs: list[tuple[str, str]] = []
-        self.wf.log_message.connect(lambda level, msg: logs.append((level, msg)))
-
-        cmd = self._cmd(cfg)
-
-        assert "--language" in cmd
-        assert logs == []
-
-    def test_build_command_can_emit_language_log_when_requested(self):
-        t = _track(1, "audio", file_id="id0", language="en", orig_language="fr")
-        src = _source(Path("/a.mkv"), 0, [t])
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 1)],
-        )
-        logs: list[tuple[str, str]] = []
-        self.wf.log_message.connect(lambda level, msg: logs.append((level, msg)))
-
-        self.wf.build_command(cfg, emit_metadata_logs=True)
-
-        assert len(logs) == 1
-        assert logs[0][0] == "INFO"
-        assert "Lang set for track 1 to en" in logs[0][1]
-
-    def test_metadata_not_emitted_for_disabled_tracks(self):
-        """--track-name et --language ne sont pas émis pour les pistes désactivées."""
-        t = _track(1, "audio", file_id="id0",
-                   title="Modified", orig_title="",
-                   language="en", orig_language="fr")
-        src = _source(Path("/a.mkv"), 0, [t])
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[],  # TID 1 absent → désactivé
-        )
-        cmd = self._cmd(cfg)
-        assert "--track-name" not in cmd
-        assert "--language" not in cmd
-
-    # --- Multi-source ---
-
-    def test_two_sources_track_order_format(self):
-        t0 = _track(0, "video", file_id="A")
-        t1 = _track(1, "audio", file_id="B")
-        src0 = _source(Path("/a.mkv"), 0, [t0])
-        src1 = _source(Path("/b.mkv"), 1, [t1])
-        cfg = RemuxConfig(
-            sources=[src0, src1], output=Path("/out.mkv"),
-            track_order=[(0, 0), (1, 1)],
-        )
-        cmd = self._cmd(cfg)
-        assert "--track-order" in cmd
-        idx = cmd.index("--track-order")
-        assert cmd[idx + 1] == "0:0,1:1"
-
-    def test_two_sources_both_paths_present(self):
-        t0 = _track(0, "video", file_id="A")
-        t1 = _track(1, "audio", file_id="B")
-        src0 = _source(Path("/a.mkv"), 0, [t0])
-        src1 = _source(Path("/b.mkv"), 1, [t1])
-        cfg = RemuxConfig(
-            sources=[src0, src1], output=Path("/out.mkv"),
-            track_order=[(0, 0), (1, 1)],
-        )
-        cmd = self._cmd(cfg)
-        assert "/a.mkv" in cmd
-        assert "/b.mkv" in cmd
-
-    def test_two_sources_independent_per_source_flags(self):
-        """Source 0 : video seule désactivée. Source 1 : audio seul activé."""
-        t0v = _track(0, "video", file_id="A")
-        t0a = _track(1, "audio", file_id="A")
-        t1a = _track(0, "audio", file_id="B")
-        src0 = _source(Path("/a.mkv"), 0, [t0v, t0a])
-        src1 = _source(Path("/b.mkv"), 1, [t1a])
-        # Track order : audio de a.mkv + audio de b.mkv (vidéo de a exclue)
-        cfg = RemuxConfig(
-            sources=[src0, src1], output=Path("/out.mkv"),
-            track_order=[(0, 1), (1, 0)],
-        )
-        cmd = self._cmd(cfg)
-        # Source 0 doit avoir --no-video (car TID 0 absent de track_order pour fi=0)
-        assert "--no-video" in cmd
-        # Source 1 n'a pas de vidéo, donc --no-video NE DOIT PAS être dupliqué
-        # (vérifie qu'il n'y en a qu'un seul)
-        assert cmd.count("--no-video") == 1
-
-    def test_track_order_precedes_source_paths(self):
-        """--track-order doit apparaître avant les chemins de source."""
-        t0 = _track(0, "video", file_id="A")
-        src0 = _source(Path("/a.mkv"), 0, [t0])
-        cfg = RemuxConfig(
-            sources=[src0], output=Path("/out.mkv"),
-            track_order=[(0, 0)],
-        )
-        cmd = self._cmd(cfg)
-        to_idx  = cmd.index("--track-order")
-        src_idx = cmd.index("/a.mkv")
-        assert to_idx < src_idx
-
-    def test_empty_track_order_no_track_order_flag(self):
-        tracks = [_track(0, "video", file_id="id0")]
-        src = _source(Path("/a.mkv"), 0, tracks)
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[],
-        )
-        cmd = self._cmd(cfg)
-        assert "--track-order" not in cmd
-
-    def test_source_path_appears_in_command(self):
-        tracks = [_track(0, "video", file_id="id0")]
-        src = _source(Path("/my/film.mkv"), 0, tracks)
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 0)],
-        )
-        cmd = self._cmd(cfg)
-        assert "/my/film.mkv" in cmd
-
-
-# ===========================================================================
-# RemuxWorkflow.preview_command
-# ===========================================================================
-
-class TestPreviewCommand:
-
-    def setup_method(self):
-        self.wf = _workflow()
-
-    def test_preview_has_backslash_continuation(self):
-        tracks = [_track(0, "video", file_id="id0")]
-        src = _source(Path("/a.mkv"), 0, tracks)
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 0)],
-        )
-        preview = self.wf.preview_command(cfg)
-        assert " \\\n" in preview
-
-    def test_preview_starts_with_mkvmerge(self):
-        tracks = [_track(0, "video", file_id="id0")]
-        src = _source(Path("/a.mkv"), 0, tracks)
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 0)],
-        )
-        preview = self.wf.preview_command(cfg)
-        assert preview.startswith("mkvmerge")
-
-    def test_preview_output_on_separate_line(self):
-        tracks = [_track(0, "video", file_id="id0")]
-        src = _source(Path("/a.mkv"), 0, tracks)
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 0)],
-        )
-        preview = self.wf.preview_command(cfg)
-        lines = preview.split(" \\\n")
-        assert any("-o" in line and "/out.mkv" in line for line in lines)
-
-    def test_preview_flag_with_value_on_same_line(self):
-        """--track-order et sa valeur doivent être sur la même ligne."""
-        tracks = [_track(0, "video", file_id="id0")]
-        src = _source(Path("/a.mkv"), 0, tracks)
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 0)],
-        )
-        preview = self.wf.preview_command(cfg)
-        assert any("--track-order" in line and "0:0" in line
-                   for line in preview.split(" \\\n"))
-
-
-    def test_preview_does_not_emit_language_log(self):
-        tracks = [_track(1, "audio", file_id="id0", language="en", orig_language="fr")]
-        src = _source(Path("/a.mkv"), 0, tracks)
-        cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 1)],
-        )
-        logs: list[tuple[str, str]] = []
-        self.wf.log_message.connect(lambda level, msg: logs.append((level, msg)))
-
-        preview = self.wf.preview_command(cfg)
-
-        assert "--language 1:eng" in preview
-        assert logs == []
-
-
-# ===========================================================================
 # RemuxWorkflow.validate
 # ===========================================================================
 
@@ -1037,6 +534,20 @@ class TestValidate:
         )
         errors = self.wf.validate(cfg)
         assert any("piste" in e.lower() for e in errors)
+
+    def test_validate_rejects_negative_video_offset(self, tmp_path):
+        f = tmp_path / "film.mkv"
+        f.touch()
+        v = _track(0, "video", file_id="id0")
+        v.time_shift_ms = -40
+        src = _source(f, 0, [v])
+        cfg = RemuxConfig(
+            sources=[src],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0)],
+        )
+        errors = self.wf.validate(cfg)
+        assert any("vidéo" in e.lower() and "négatif" in e.lower() for e in errors)
 
     def test_valid_config_returns_empty_list(self, tmp_path):
         f = tmp_path / "film.mkv"
@@ -1214,6 +725,77 @@ class TestTrackTable:
         _fill_table(table, 1)
         item = table.item(0, _TrackTable.COL_CHECK)
         assert item.checkState() == Qt.CheckState.Checked
+
+    def test_info_column_stores_offset_value_role(self, table):
+        t = _track(1, "audio", file_id="fid")
+        t.time_shift_ms = 125
+        table.append_tracks(_COLOR_A, [t])
+        info_item = table.item(0, _TrackTable.COL_INFO)
+        assert info_item is not None
+        assert info_item.text().endswith("Δt +125 ms")
+        assert info_item.data(_TRACK_INFO_OFFSET_VALUE_ROLE) == "+125 ms"
+
+    def test_info_column_hides_zero_offset(self, table):
+        t = _track(1, "audio", file_id="fid")
+        t.time_shift_ms = 0
+        table.append_tracks(_COLOR_A, [t])
+        info_item = table.item(0, _TrackTable.COL_INFO)
+        assert info_item is not None
+        assert "Δt" not in info_item.text()
+        assert info_item.data(_TRACK_INFO_OFFSET_VALUE_ROLE) == ""
+
+    def test_info_column_uses_custom_delegate(self, table):
+        delegate = table.itemDelegateForColumn(_TrackTable.COL_INFO)
+        assert delegate is not None
+        assert delegate.__class__.__name__ == "_TrackInfoDelegate"
+
+    def test_offset_negative_color_constant_is_fixed_red(self):
+        assert _TRACK_INFO_OFFSET_NEG_COLOR.name().lower() == "#d92f2f"
+        assert _TRACK_INFO_OFFSET_COLOR.name().lower() == "#d92f2f"
+
+    def test_offset_positive_color_constant_is_fixed_green(self):
+        assert _TRACK_INFO_OFFSET_POS_COLOR.name().lower() == "#1f9d55"
+
+    def test_offset_delegate_color_depends_on_sign(self):
+        assert _TrackInfoDelegate._offset_color("-80 ms").name().lower() == "#d92f2f"
+        assert _TrackInfoDelegate._offset_color("+125 ms").name().lower() == "#1f9d55"
+
+
+# ===========================================================================
+# TrackEditDialog
+# ===========================================================================
+
+class TestTrackEditDialog:
+
+    def test_accept_persists_signed_offset(self, qt_app):
+        entry = _track(1, "audio", file_id="fid")
+        dlg = TrackEditDialog(entry)
+        dlg._offset_edit.setText("+125")
+        dlg.accept()
+        assert entry.time_shift_ms == 125
+        dlg.close()
+
+    def test_accept_empty_offset_normalizes_to_zero(self, qt_app):
+        entry = _track(1, "audio", file_id="fid")
+        entry.time_shift_ms = 250
+        dlg = TrackEditDialog(entry)
+        dlg._offset_edit.setText("")
+        dlg.accept()
+        assert entry.time_shift_ms == 0
+        dlg.close()
+
+    def test_accept_rejects_invalid_offset(self, qt_app):
+        entry = _track(1, "audio", file_id="fid")
+        entry.time_shift_ms = 42
+        dlg = TrackEditDialog(entry)
+        dlg._offset_edit.setText("12.5")
+
+        with patch("ui.panels.track_edit_dialog.QMessageBox.warning") as warn:
+            dlg.accept()
+
+        warn.assert_called_once()
+        assert entry.time_shift_ms == 42
+        dlg.close()
 
 
 # ===========================================================================
@@ -1611,7 +1193,11 @@ class TestAttachmentItemWidgetDefaultChecked:
 
 class TestAttachmentPanelTmdb:
 
-    def test_apply_tmdb_details_adds_i18n_comments_and_cover(self, qt_app, tmp_path):
+    def test_apply_tmdb_details_adds_i18n_comments_and_pending_cover(self, qt_app, tmp_path):
+        """
+        Depuis le téléchargement différé, la cover TMDB n'est plus sauvegardée sur
+        disque lors de _apply_tmdb_details() ; get_pending_tmdb_cover() retourne l'URL.
+        """
         prev_lang = current_language()
         panel = None
         try:
@@ -1623,8 +1209,7 @@ class TestAttachmentPanelTmdb:
             details = MediaDetails(
                 title="My Show",
                 synopsis="Episode overview",
-                cover_bytes=b"jpeg-bytes",
-                cover_mimetype="image/jpeg",
+                cover_url="https://img.tmdb.org/poster.jpg",
                 cover_filename="cover.jpg",
             )
             panel._apply_tmdb_details(details, open_editor=False)
@@ -1633,16 +1218,22 @@ class TestAttachmentPanelTmdb:
             assert tags is not None
             assert tags["COMMENTS"] == "Media information retrieved from TMDB."
 
-            extras = panel.get_extra_attachments()
-            assert len(extras) == 1
-            assert extras[0].name == "cover.jpg"
-            assert extras[0].read_bytes() == b"jpeg-bytes"
+            # La cover est en mode « en attente » : pas de fichier sur disque.
+            assert panel.get_extra_attachments() == []
+            pending = panel.get_pending_tmdb_cover()
+            assert pending is not None
+            assert pending[0] == "https://img.tmdb.org/poster.jpg"
+            assert pending[1] == "cover.jpg"
         finally:
             if panel is not None:
                 panel.close()
             set_current_language(prev_lang)
 
-    def test_apply_tmdb_details_skips_cover_when_source_cover_already_exists(self, qt_app, tmp_path):
+    def test_apply_tmdb_details_deselects_source_cover_and_installs_tmdb_cover(self, qt_app, tmp_path):
+        """
+        Quand une cover source existe déjà, la cover TMDB est tout de même
+        installée (en attente) et la cover source est décochée.
+        """
         cfg = AppConfig()
         cfg.work_dir = tmp_path
         panel = _AttachmentPanel(cfg)
@@ -1660,28 +1251,36 @@ class TestAttachmentPanelTmdb:
 
         details = MediaDetails(
             title="My Show",
-            cover_bytes=b"jpeg-bytes",
-            cover_mimetype="image/jpeg",
+            cover_url="https://img.tmdb.org/poster.jpg",
             cover_filename="cover.jpg",
         )
         panel._apply_tmdb_details(details, open_editor=False)
 
+        # La cover TMDB est en attente (cochée), la cover source est décochée.
+        pending = panel.get_pending_tmdb_cover()
+        assert pending is not None
+        assert pending[0] == "https://img.tmdb.org/poster.jpg"
+        # get_extra_attachments ne retourne pas les covers pending TMDB.
         assert panel.get_extra_attachments() == []
         panel.close()
 
-    def test_source_cover_added_later_replaces_auto_tmdb_cover(self, qt_app, tmp_path):
+    def test_source_cover_added_after_tmdb_cover_is_deselected(self, qt_app, tmp_path):
+        """
+        Quand une cover TMDB est en attente et qu'une cover source est ajoutée
+        ensuite, la cover source est automatiquement décochée.
+        La cover TMDB reste en attente.
+        """
         cfg = AppConfig()
         cfg.work_dir = tmp_path
         panel = _AttachmentPanel(cfg)
 
         details = MediaDetails(
             title="My Show",
-            cover_bytes=b"jpeg-bytes",
-            cover_mimetype="image/jpeg",
+            cover_url="https://img.tmdb.org/poster.jpg",
             cover_filename="cover.jpg",
         )
         panel._apply_tmdb_details(details, open_editor=False)
-        assert len(panel.get_extra_attachments()) == 1
+        assert panel.get_pending_tmdb_cover() is not None
 
         panel.add_source_attachments(
             "fid",
@@ -1695,176 +1294,67 @@ class TestAttachmentPanelTmdb:
             )],
         )
 
+        # La cover TMDB est toujours en attente.
+        assert panel.get_pending_tmdb_cover() is not None
+        # La cover source est décochée → get_extra_attachments vide.
+        assert panel.get_extra_attachments() == []
+        panel.close()
+
+    def test_clear_auto_tmdb_cover_removes_pending_item(self, qt_app, tmp_path):
+        """Après _clear_auto_tmdb_cover_item(), get_pending_tmdb_cover() retourne None."""
+        cfg = AppConfig()
+        cfg.work_dir = tmp_path
+        panel = _AttachmentPanel(cfg)
+
+        details = MediaDetails(
+            title="My Show",
+            cover_url="https://img.tmdb.org/poster.jpg",
+            cover_filename="cover.jpg",
+        )
+        panel._apply_tmdb_details(details, open_editor=False)
+        assert panel.get_pending_tmdb_cover() is not None
+
+        panel._clear_auto_tmdb_cover_item()
+
+        assert panel.get_pending_tmdb_cover() is None
         assert panel.get_extra_attachments() == []
         panel.close()
 
 
-# ===========================================================================
-# RemuxWorkflow.build_command — balise Title du segment (file_title)
-# ===========================================================================
+class TestRemuxRunCleanup:
 
-class TestBuildCommandFileTitle:
-    """
-    Vérifie que --title est émis dans build_command uniquement si file_title
-    est non vide.
-    """
+    def test_run_cleans_process_subdir(self, qt_app, tmp_path):
+        """Le dossier process temporaire est supprimé après le remuxage."""
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"src")
+        out = tmp_path / "output.mkv"
+        work_dir = tmp_path / "work"
 
-    def setup_method(self):
-        self.wf = _workflow()
-
-    def _simple_cfg(self, title: str) -> RemuxConfig:
-        t = _track(0, "video", file_id="id0")
-        src = _source(Path("/a.mkv"), 0, [t])
-        return RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
+        cfg = RemuxConfig(
+            sources=[_source(src, 0, [_track(0, "video", language="", orig_language="")])],
+            output=out,
             track_order=[(0, 0)],
-            file_title=title,
+            keep_chapters=False,
+            work_dir=work_dir,
+            tag_overrides={},
         )
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
 
-    def _cmd(self, cfg: RemuxConfig) -> list[str]:
-        return self.wf.build_command(cfg)
+        def _fake_run_cmd(cmd, **_kwargs):
+            out.write_bytes(b"mkv")
+            return ""
 
-    def test_title_flag_present(self):
-        """--title est toujours présent dans la commande."""
-        cmd = self._cmd(self._simple_cfg("Mon Film"))
-        assert "--title" in cmd
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run_cmd):
+            wf.run(cfg)
+            process_dir = work_dir / "output"
+            cleanup_deadline = time.monotonic() + 2.0
+            while process_dir.exists() and time.monotonic() < cleanup_deadline:
+                qt_app.processEvents()
+                time.sleep(0.01)
 
-    def test_title_value_correct(self):
-        """La valeur suivant --title correspond exactement à file_title."""
-        cmd = self._cmd(self._simple_cfg("Mon Film"))
-        idx = cmd.index("--title")
-        assert cmd[idx + 1] == "Mon Film"
+        assert out.exists()
+        assert not process_dir.exists()
 
-    def test_title_empty_string(self):
-        """file_title='' → --title omis (mkvmerge conserve le titre source)."""
-        cmd = self._cmd(self._simple_cfg(""))
-        assert "--title" not in cmd
-
-    def test_title_before_source_file(self):
-        """--title doit précéder le chemin du fichier source dans la commande."""
-        cmd = self._cmd(self._simple_cfg("Film"))
-        assert cmd.index("--title") < cmd.index("/a.mkv")
-
-    def test_title_after_output(self):
-        """--title apparaît après -o OUTPUT, avant les sources (quand non vide)."""
-        cmd = self._cmd(self._simple_cfg("Film"))
-        o_idx = cmd.index("-o")
-        t_idx = cmd.index("--title")
-        src_idx = cmd.index("/a.mkv")
-        assert o_idx < t_idx < src_idx
-
-    def test_title_absent_when_empty(self):
-        """--title absent si file_title vide, quel que soit le contenu source."""
-        cmd = self._cmd(self._simple_cfg(""))
-        assert "--title" not in cmd
-
-
-# ===========================================================================
-# RemuxWorkflow.build_command — pièces jointes manuelles (extra_attachments)
-# ===========================================================================
-
-class TestBuildCommandExtraAttachments:
-    """
-    Vérifie le comportement de --attach-file dans build_command :
-      - --attach-file est émis pour chaque chemin dans extra_attachments
-      - --attach-file précède tous les chemins de fichiers source
-      - --attachment-name cover est émis pour les fichiers dont le stem est "cover"
-      - --attachment-name n'est PAS émis pour les autres fichiers
-      - Plusieurs attachements → autant de paires --attach-file
-    """
-
-    def setup_method(self):
-        self.wf = _workflow()
-
-    def _cfg(self, extras: list[Path]) -> RemuxConfig:
-        t = _track(0, "video", file_id="id0")
-        src = _source(Path("/a.mkv"), 0, [t])
-        return RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 0)],
-            extra_attachments=extras,
-        )
-
-    def _cmd(self, cfg: RemuxConfig) -> list[str]:
-        return self.wf.build_command(cfg)
-
-    def test_attach_file_present(self):
-        """--attach-file est émis pour un attachement manuel."""
-        cmd = self._cmd(self._cfg([Path("/extra/poster.jpg")]))
-        assert "--attach-file" in cmd
-
-    def test_attach_file_path_correct(self):
-        """La valeur suivant --attach-file est le chemin absolu du fichier."""
-        cmd = self._cmd(self._cfg([Path("/extra/poster.jpg")]))
-        idx = cmd.index("--attach-file")
-        assert cmd[idx + 1] == "/extra/poster.jpg"
-
-    def test_attach_file_before_source(self):
-        """--attach-file doit précéder le chemin du fichier source (option globale)."""
-        cmd = self._cmd(self._cfg([Path("/extra/poster.jpg")]))
-        assert cmd.index("--attach-file") < cmd.index("/a.mkv")
-
-    def test_multiple_attachments(self):
-        """Plusieurs attachements → autant d'occurrences de --attach-file."""
-        extras = [Path("/extra/poster.jpg"), Path("/extra/notes.txt")]
-        cmd = self._cmd(self._cfg(extras))
-        count = sum(1 for a in cmd if a == "--attach-file")
-        assert count == 2
-
-    def test_multiple_attachments_all_before_source(self):
-        """Tous les --attach-file doivent précéder le fichier source."""
-        extras = [Path("/extra/poster.jpg"), Path("/extra/notes.txt")]
-        cmd = self._cmd(self._cfg(extras))
-        src_idx = cmd.index("/a.mkv")
-        attach_indices = [i for i, a in enumerate(cmd) if a == "--attach-file"]
-        for ai in attach_indices:
-            assert ai < src_idx, f"--attach-file à l'index {ai} suit la source à {src_idx}"
-
-    def test_no_attach_file_when_empty(self):
-        """extra_attachments=[] → aucun --attach-file dans la commande."""
-        cmd = self._cmd(self._cfg([]))
-        assert "--attach-file" not in cmd
-
-    def test_cover_jpg_gets_attachment_name(self):
-        """Fichier nommé cover.jpg → --attachment-name cover émis."""
-        cmd = self._cmd(self._cfg([Path("/extra/cover.jpg")]))
-        assert "--attachment-name" in cmd
-        idx = cmd.index("--attachment-name")
-        assert cmd[idx + 1] == "cover"
-
-    def test_cover_png_gets_attachment_name(self):
-        """Fichier nommé cover.png → --attachment-name cover émis."""
-        cmd = self._cmd(self._cfg([Path("/extra/cover.png")]))
-        assert "--attachment-name" in cmd
-        idx = cmd.index("--attachment-name")
-        assert cmd[idx + 1] == "cover"
-
-    def test_cover_case_insensitive(self):
-        """Fichier nommé COVER.JPG (majuscules) → --attachment-name cover émis."""
-        cmd = self._cmd(self._cfg([Path("/extra/COVER.JPG")]))
-        assert "--attachment-name" in cmd
-        idx = cmd.index("--attachment-name")
-        assert cmd[idx + 1] == "cover"
-
-    def test_cover_attachment_name_before_attach_file(self):
-        """--attachment-name doit précéder --attach-file pour le même fichier."""
-        cmd = self._cmd(self._cfg([Path("/extra/cover.jpg")]))
-        assert cmd.index("--attachment-name") < cmd.index("--attach-file")
-
-    def test_non_cover_file_no_attachment_name(self):
-        """Fichier non nommé cover → pas de --attachment-name."""
-        cmd = self._cmd(self._cfg([Path("/extra/poster.jpg")]))
-        assert "--attachment-name" not in cmd
-
-    def test_mixed_cover_and_regular(self):
-        """Mix cover + autre : --attachment-name uniquement pour cover."""
-        extras = [Path("/extra/cover.jpg"), Path("/extra/notes.txt")]
-        cmd = self._cmd(self._cfg(extras))
-        assert "--attachment-name" in cmd
-        idx = cmd.index("--attachment-name")
-        assert cmd[idx + 1] == "cover"
-        # Un seul --attachment-name
-        assert sum(1 for a in cmd if a == "--attachment-name") == 1
 
 # ===========================================================================
 # ChapterEntry / build_chapter_xml
@@ -1924,82 +1414,53 @@ class TestBuildChapterXml:
         assert "<ChapterString></ChapterString>" in xml
 
 
-# ===========================================================================
-# RemuxWorkflow — chapter_overrides
-# ===========================================================================
+class TestRemuxWorkflowPostMetadata:
 
-class TestRemuxWorkflowChapterOverrides:
-
-    def _workflow(self) -> RemuxWorkflow:
-        return RemuxWorkflow(mkvmerge_bin="mkvmerge")
-
-    def _cfg(self, overrides: list | None) -> RemuxConfig:
+    def _cfg(self, output: Path, *, tags: dict[str, str] | None = None) -> RemuxConfig:
         t = _track(0, "video", file_id="id0")
         src = SourceInput(path=Path("/a.mkv"), file_index=0, tracks=[t])
         return RemuxConfig(
             sources=[src],
-            output=Path("/out.mkv"),
+            output=output,
             track_order=[(0, 0)],
-            chapter_overrides=overrides,
+            tag_overrides=tags,
         )
 
-    def _cmd(self, cfg: RemuxConfig) -> list[str]:
-        return RemuxWorkflow(mkvmerge_bin="mkvmerge").build_command(cfg)
+    def test_resolved_global_tags_keeps_only_user_tags(self, tmp_path):
+        output = tmp_path / "out.mkv"
+        cfg = self._cfg(output, tags={"GENRE": "Drama", "EMPTY": "   "})
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", writing_application="MediarecodeMux")
 
-    def test_no_chapters_flag_when_keep_false(self):
-        t = _track(0, "video", file_id="id0")
-        src = SourceInput(path=Path("/a.mkv"), file_index=0, tracks=[t])
+        tags = wf._resolved_global_tags(cfg)
+
+        assert tags["GENRE"] == "Drama"
+        assert "EMPTY" not in tags
+
+    def test_run_invokes_matroska_header_patch_post_action(self, qt_app, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"src")
+        out = tmp_path / "output.mkv"
         cfg = RemuxConfig(
-            sources=[src], output=Path("/out.mkv"),
-            track_order=[(0, 0)], keep_chapters=False,
+            sources=[_source(src, 0, [_track(0, "video", file_id="id0")])],
+            output=out,
+            track_order=[(0, 0)],
+            keep_chapters=False,
+            work_dir=tmp_path / "work",
+            tag_overrides=None,
         )
-        cmd = self._cmd(cfg)
-        assert "--no-chapters" in cmd
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
 
-    def test_chapter_overrides_adds_chapters_placeholder(self):
-        entries = [ChapterEntry(0.0, "Intro"), ChapterEntry(300.0, "Acte")]
-        cmd = self._cmd(self._cfg(entries))
-        assert "--chapters" in cmd
-        idx = cmd.index("--chapters")
-        assert cmd[idx + 1] == "<chapitres.xml>"
+        def _fake_run_cmd(cmd, **_kwargs):
+            out.write_bytes(b"mkv")
+            return ""
 
-    def test_chapter_overrides_suppresses_source_chapters(self):
-        """Quand chapter_overrides est défini, --no-chapters est émis pour la source."""
-        entries = [ChapterEntry(0.0, "Intro")]
-        cmd = self._cmd(self._cfg(entries))
-        assert "--no-chapters" in cmd
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run_cmd):
+            with patch.object(wf._muxing_post_action, "apply_if_mkv") as patch_hook:
+                wf.run(cfg)
+                deadline = time.monotonic() + 2.0
+                while not patch_hook.called and time.monotonic() < deadline:
+                    qt_app.processEvents()
+                    time.sleep(0.01)
 
-    def test_no_chapter_overrides_no_chapters_flag_by_default(self):
-        """Sans chapter_overrides et keep_chapters=True : pas de --no-chapters."""
-        cmd = self._cmd(self._cfg(None))
-        assert "--no-chapters" not in cmd
+        assert patch_hook.called
 
-    def test_chapters_option_before_source_path(self):
-        """--chapters doit apparaître avant le chemin de source."""
-        entries = [ChapterEntry(0.0, "Intro")]
-        cmd = self._cmd(self._cfg(entries))
-        assert cmd.index("--chapters") < cmd.index(Path("/a.mkv").as_posix())
-
-    def test_write_chapter_xml_creates_file(self, tmp_path):
-        """_write_chapter_xml crée un fichier XML avec le contenu attendu."""
-        wf = self._workflow()
-        entries = [ChapterEntry(0.0, "Intro"), ChapterEntry(60.0, "Acte")]
-        path = wf._write_chapter_xml(entries)
-        try:
-            assert path.exists()
-            content = path.read_text(encoding="utf-8")
-            assert "Intro" in content
-            assert "Acte" in content
-        finally:
-            path.unlink(missing_ok=True)
-
-    def test_build_command_with_chapters_file(self, tmp_path):
-        """Avec chapters_file, --chapters pointe vers le vrai fichier."""
-        xml_file = tmp_path / "chapters.xml"
-        xml_file.write_text("<Chapters/>")
-        entries = [ChapterEntry(0.0, "Intro")]
-        cfg = self._cfg(entries)
-        cmd = RemuxWorkflow(mkvmerge_bin="mkvmerge").build_command(cfg, chapters_file=xml_file)
-        assert "--chapters" in cmd
-        idx = cmd.index("--chapters")
-        assert cmd[idx + 1] == xml_file.as_posix()

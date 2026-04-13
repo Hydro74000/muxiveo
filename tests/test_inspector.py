@@ -762,7 +762,7 @@ class TestInspect:
             ],
         )
 
-    def test_inspect_regionalizes_short_ietf_from_mkvmerge(self):
+    def test_inspect_regionalizes_short_ietf_from_track_enrichment(self):
         """
         MKV + language_ietf court (en) -> variante régionale par défaut (en-US).
         """
@@ -772,7 +772,7 @@ class TestInspect:
             patch.object(self.insp, "_run_ffprobe", return_value={}),
             patch.object(self.insp, "_parse_ffprobe", return_value=info),
             patch.object(self.insp, "get_frame_count", return_value=None),
-            patch.object(self.insp, "_get_mkvmerge_track_data", return_value=(0, {1: "en"})),
+            patch.object(self.insp, "_get_mkv_track_data", return_value=(0, {1: "en"})),
         ):
             out = self.insp.inspect(self.path)
 
@@ -817,7 +817,7 @@ class TestInspect:
 
     def test_inspect_keeps_already_regional_tag(self):
         """
-        Un tag déjà régional issu de mkvmerge est conservé tel quel.
+        Un tag déjà régional issu de l'enrichissement piste est conservé tel quel.
         """
         info = self._audio_only_info(fmt="matroska,webm", language="eng")
 
@@ -825,7 +825,7 @@ class TestInspect:
             patch.object(self.insp, "_run_ffprobe", return_value={}),
             patch.object(self.insp, "_parse_ffprobe", return_value=info),
             patch.object(self.insp, "get_frame_count", return_value=None),
-            patch.object(self.insp, "_get_mkvmerge_track_data", return_value=(0, {1: "en-GB"})),
+            patch.object(self.insp, "_get_mkv_track_data", return_value=(0, {1: "en-GB"})),
         ):
             out = self.insp.inspect(self.path)
 
@@ -866,3 +866,35 @@ class TestInspect:
             out = self.insp.inspect(self.path)
 
         assert out.audio_tracks[0].language == "en-US"
+
+
+class TestMkvTrackDataFromFfprobe:
+
+    def test_prefers_language_ietf_and_counts_non_title_tags(self, inspector, fake_path):
+        payload = {
+            "format": {
+                "tags": {
+                    "TITLE": "Movie",
+                    "GENRE": "Action",
+                    "DATE_RELEASED": "2024",
+                }
+            },
+            "streams": [
+                {"index": 0, "tags": {"language": "eng"}},
+                {"index": 1, "tags": {"language-ietf": "fr-CA", "language": "fra"}},
+            ],
+        }
+        run_result = MagicMock(returncode=0, stdout=json.dumps(payload), stderr="")
+
+        with patch("subprocess.run", return_value=run_result):
+            tag_count, lang_map = inspector._get_mkv_track_data(fake_path)
+
+        assert tag_count == 2
+        assert lang_map == {0: "eng", 1: "fr-CA"}
+
+    def test_returns_empty_when_ffprobe_fails(self, inspector, fake_path):
+        run_result = MagicMock(returncode=1, stdout="", stderr="ffprobe error")
+        with patch("subprocess.run", return_value=run_result):
+            tag_count, lang_map = inspector._get_mkv_track_data(fake_path)
+        assert tag_count == 0
+        assert lang_map == {}

@@ -85,6 +85,52 @@ def test_settings_panel_writes_selected_startup_panel_to_ini(tmp_path, qt_app):
         assert cfg.startup_panel == "encoding"
 
 
+def test_settings_panel_writes_startup_menu_compact_to_ini(tmp_path, qt_app):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[ui]\nstartup_menu_compact = false\n", encoding="utf-8")
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path):
+        mock_qs.return_value = _mock_qsettings()
+        cfg = AppConfig()
+
+        panel = SettingsPanel(cfg)
+        checkbox = panel.widget_for("ui", "startup_menu_compact")
+        checkbox.setChecked(True)
+        panel._on_save_clicked()
+
+        assert "startup_menu_compact = true" in ini_path.read_text(encoding="utf-8")
+        assert cfg.startup_menu_compact is True
+
+
+def test_settings_panel_writes_startup_logs_expanded_to_ini(tmp_path, qt_app):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[ui]\nstartup_logs_expanded = false\n", encoding="utf-8")
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path):
+        mock_qs.return_value = _mock_qsettings()
+        cfg = AppConfig()
+
+        panel = SettingsPanel(cfg)
+        checkbox = panel.widget_for("ui", "startup_logs_expanded")
+        checkbox.setChecked(True)
+        panel._on_save_clicked()
+
+        assert "startup_logs_expanded = true" in ini_path.read_text(encoding="utf-8")
+        assert cfg.startup_logs_expanded is True
+
+
 def test_settings_panel_writes_audio_encoding_values_to_ini(tmp_path, qt_app):
     import core.config as cfg_mod
     from core.config import AppConfig
@@ -139,3 +185,28 @@ def test_settings_panel_writes_ffmpeg_threads_to_ini(tmp_path, qt_app):
 
         assert "threads = 18" in ini_path.read_text(encoding="utf-8")
         assert cfg.ffmpeg_threads == 18
+
+
+def test_settings_panel_exposes_ffmpeg_only_for_remux_backend(tmp_path, qt_app):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[remux]\nbackend = ffmpeg\n", encoding="utf-8")
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path):
+        mock_qs.return_value = _mock_qsettings()
+        cfg = AppConfig()
+
+        panel = SettingsPanel(cfg)
+        combo = panel.widget_for("remux", "backend")
+        assert combo.count() == 1
+        assert combo.currentData() == "ffmpeg"
+        assert combo.findData("mkvmerge") == -1
+        panel._on_save_clicked()
+
+        assert "backend = ffmpeg" in ini_path.read_text(encoding="utf-8")
+        assert cfg.remux_backend == "ffmpeg"

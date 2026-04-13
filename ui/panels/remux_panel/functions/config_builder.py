@@ -1,0 +1,79 @@
+"""Construction de RemuxConfig depuis l'état UI."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from core.workflows.remux_models import RemuxConfig, SourceInput
+
+if TYPE_CHECKING:
+    from ui.panels.remux_panel.panel import RemuxPanel
+
+
+def current_config(panel: "RemuxPanel") -> RemuxConfig | None:
+    if not panel._has_ready_files():
+        return None
+
+    output_str = panel._output_edit.text().strip()
+    if not output_str:
+        return None
+
+    all_tracks = panel._track_table.current_tracks()
+    if not all_tracks:
+        return None
+
+    id_to_index = {sf.id: i for i, sf in enumerate(panel._source_files)}
+
+    extras = panel._attachment_panel.get_extras_per_file()
+    merged_tag_overrides = panel._attachment_panel.get_global_tag_overrides()
+
+    sources: list[SourceInput] = []
+    for i, sf in enumerate(panel._source_files):
+        if sf.info is None:
+            continue
+        src_tracks = [t for t in all_tracks if t.file_id == sf.id]
+        if not src_tracks:
+            src_tracks = sf.tracks
+        file_extras = extras.get(sf.id, {})
+        has_tags = file_extras.get("has_tags", False)
+        sources.append(SourceInput(
+            path=sf.path,
+            file_index=i,
+            tracks=src_tracks,
+            selected_attachments=file_extras.get("selected_attachments", []),
+            attachment_count=len(sf.info.attachments) if sf.info else 0,
+            copy_tags=has_tags,
+        ))
+
+    if not sources:
+        return None
+
+    track_order = [
+        (id_to_index[t.file_id], t.mkv_tid)
+        for t in all_tracks
+        if t.enabled and t.file_id in id_to_index
+    ]
+
+    keep_ch = panel._chapter_panel.keep_chapters()
+    ch_overrides = (
+        panel._chapter_panel.get_chapters()
+        if keep_ch and panel._chapter_panel.is_modified()
+        else None
+    )
+
+    return RemuxConfig(
+        sources=sources,
+        output=Path(output_str),
+        track_order=track_order,
+        keep_chapters=keep_ch,
+        chapter_overrides=ch_overrides,
+        extra_attachments=panel._attachment_panel.get_extra_attachments(),
+        work_dir=panel._config.work_dir,
+        file_title=panel._file_title_edit.text().strip(),
+        tag_overrides=merged_tag_overrides,
+        tmdb_cover=panel._attachment_panel.get_pending_tmdb_cover(),
+    )
+
+
+__all__ = ["current_config"]

@@ -15,7 +15,7 @@ Modes :
   1. Vérifie / installe PyInstaller + dépendances
   2. Construit un bundle --onedir avec PyInstaller (entrée : launcher.py)
   3. Assemble l'AppDir (structure AppImage standard)
-     → si --allinc : télécharge et embarque ffmpeg, mkvtoolnix, mediainfo, dovi_tool, hdr10plus_tool
+     → si --allinc : télécharge et embarque ffmpeg, mediainfo, dovi_tool, hdr10plus_tool
   4. Télécharge appimagetool si nécessaire
   5. Produit l'AppImage finale
 
@@ -66,10 +66,14 @@ from core.version import APP_VERSION
 
 ROOT = Path(__file__).parent
 DIST_DIR = ROOT / "dist"
+DIST_RELEASES = ROOT / "dist" / "releases"
 BUILD_DIR = ROOT / "build"
 APPDIR = ROOT / "Mediarecode.AppDir"
 APP_NAME = "mediarecode"
 APP_DISPLAY_NAME = "Mediarecode"
+_APPIMAGE_UPDATE_OWNER = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_OWNER", "Hydro74000").strip() or "Hydro74000"
+_APPIMAGE_UPDATE_REPO = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_REPO", "mediarecode").strip() or "mediarecode"
+_APPIMAGE_UPDATE_RELEASE = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_RELEASE", "latest").strip() or "latest"
 
 # Préfixe Wine dédié au build Windows (isolé du préfixe utilisateur ~/.wine)
 WINE_PREFIX = ROOT / ".wine_build"
@@ -126,18 +130,14 @@ def _versioned_output_path(path: Path, version_tag: str | None) -> Path:
 def _resolve_dest_file(dest: str | None, default_output: Path, version_tag: str | None = None) -> Path:
     """
     Résout le chemin de destination du fichier final.
-    - dest absent: utilise default_output suffixé avec -<version>
+    - dest absent: place dans dist/releases/ (créé si besoin)
     - dest dossier (existant, trailing slash, ou sans extension): utilise le nom auto
     - dest fichier: utilise ce nom
     """
-    versioned_default = _versioned_output_path(default_output, version_tag)
-    if not dest:
-        return versioned_default
+    if not dest or not dest.strip():
+        return _versioned_output_path(DIST_RELEASES / default_output.name, version_tag)
 
     raw = dest.strip()
-    if not raw:
-        return versioned_default
-
     target = Path(raw).expanduser()
     if not target.is_absolute():
         target = (Path.cwd() / target).resolve()
@@ -155,7 +155,7 @@ def _resolve_dest_file(dest: str | None, default_output: Path, version_tag: str 
 
 
 def _copy_final_file_if_requested(src: Path, dest: str | None, version_tag: str | None = None) -> Path:
-    """Copie le fichier final vers --dest si fourni, sinon retourne src inchangé."""
+    """Déplace le fichier final vers dist/releases/ (ou --dest si fourni)."""
     target = _resolve_dest_file(dest, src, version_tag)
 
     src_resolved = src.resolve()
@@ -164,13 +164,8 @@ def _copy_final_file_if_requested(src: Path, dest: str | None, version_tag: str 
         return src
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    if not (dest or "").strip():
-        src.replace(target)
-        ok(f"Fichier final : {target}")
-        return target
-
-    shutil.copy2(src, target)
-    ok(f"Copie finale : {target}")
+    src.replace(target)
+    ok(f"Fichier final : {target}")
     return target
 
 
@@ -238,6 +233,28 @@ def ensure_build_deps() -> None:
             info("mksquashfs absent du PATH — appimagetool utilisera son mksquashfs interne.")
 
     ok("Toutes les dépendances sont présentes")
+
+
+def ensure_zsyncmake() -> Path | None:
+    """
+    Vérifie que zsyncmake est disponible.
+    Tente une installation système si absent.
+    Retourne le chemin vers l'outil, ou None si introuvable.
+    """
+    found = shutil.which("zsyncmake")
+    if found:
+        return Path(found)
+
+    info("zsyncmake introuvable — tentative d'installation de zsync…")
+    _install_system_package("zsync", fatal=False)
+
+    found = shutil.which("zsyncmake")
+    if found:
+        return Path(found)
+
+    err("zsyncmake introuvable — le fichier .zsync ne sera pas généré.")
+    err("Installez zsync manuellement : sudo dnf install zsync  (ou apt-get install zsync)")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -360,7 +377,7 @@ def _convert_ico_to_png(src_ico: Path, dest_png: Path) -> bool:
         return False
 
     dest_png.parent.mkdir(parents=True, exist_ok=True)
-    return bool(image.save(str(dest_png), "PNG"))
+    return bool(image.save(str(dest_png), b"PNG"))
 
 
 def _extract_best_png_from_ico(src_ico: Path) -> bytes | None:
@@ -475,8 +492,7 @@ _APPRUN_ALLINC = textwrap.dedent("""\
 
     # Les outils embarqués ont la priorité sur les outils système
     export PATH="${TOOLS}:${BIN}:${PATH}"
-    # TOOLS/lib contient les libs bundlées de MKVToolNix (libboost, libfmt…)
-    export LD_LIBRARY_PATH="${TOOLS}/lib:${INTERNAL}:${LD_LIBRARY_PATH:-}"
+    export LD_LIBRARY_PATH="${INTERNAL}:${LD_LIBRARY_PATH:-}"
     export QT_PLUGIN_PATH="${INTERNAL}/PySide6/Qt/plugins"
     export QML2_IMPORT_PATH="${INTERNAL}/PySide6/Qt/qml"
     export APPDIR="${HERE}"
@@ -575,62 +591,6 @@ def _dl_ffmpeg(tools_dir: Path, arch: str) -> None:
     ok("ffmpeg + ffprobe (BtbN master GPL) installés")
 
 
-def _mkvtoolnix_latest_url(arch: str) -> str:
-    """
-    Retourne l'URL de la dernière AppImage MKVToolNix en parsant le répertoire
-    de téléchargement officiel (pas d'API requise).
-    """
-    import re
-    index_url = "https://mkvtoolnix.download/appimage/"
-    req = urllib.request.Request(index_url, headers={"User-Agent": "mediarecode-builder"})
-    with urllib.request.urlopen(req) as resp:
-        html = resp.read().decode("utf-8", errors="replace")
-    # Exemple de nom : MKVToolNix_GUI-85.0-x86_64.AppImage
-    pattern = re.compile(rf'MKVToolNix_GUI-([\d.]+)-{re.escape(arch)}\.AppImage')
-    versions = pattern.findall(html)
-    if not versions:
-        raise RuntimeError(
-            f"Aucune AppImage MKVToolNix trouvée pour {arch} dans {index_url}"
-        )
-    versions.sort(key=lambda v: tuple(int(x) for x in v.split(".")), reverse=True)
-    latest = versions[0]
-    info(f"MKVToolNix version : {latest}")
-    return f"{index_url}MKVToolNix_GUI-{latest}-{arch}.AppImage"
-
-
-def _dl_mkvtoolnix(tools_dir: Path, arch: str) -> None:
-    step("Téléchargement MKVToolNix (AppImage → extraction)")
-    url = _mkvtoolnix_latest_url(arch)
-    with tempfile.TemporaryDirectory() as tmp:
-        appimage = Path(tmp) / "mkvtoolnix.AppImage"
-        _download(url, appimage)
-        _chmod_x(appimage)
-        # --appimage-extract fonctionne sans FUSE (utilise unsquashfs de squashfs-tools)
-        env = os.environ.copy()
-        env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
-        subprocess.run(
-            [str(appimage), "--appimage-extract"],
-            check=True, cwd=tmp, env=env,
-        )
-        root = Path(tmp) / "squashfs-root"
-        src_bin = root / "usr" / "bin"
-        for name in ("mkvmerge", "mkvextract", "mkvinfo", "mkvpropedit"):
-            src = src_bin / name
-            if src.exists():
-                shutil.copy2(src, tools_dir / name)
-                _chmod_x(tools_dir / name)
-        # Copie les libs bundlées (libboost, libfmt…) — sans elles les binaires
-        # refusent de démarrer avec "cannot open shared object file".
-        libs_dir = tools_dir / "lib"
-        libs_dir.mkdir(exist_ok=True)
-        src_lib = root / "usr" / "lib"
-        if src_lib.is_dir():
-            for lib in src_lib.iterdir():
-                if lib.is_file() and (lib.suffix in (".so",) or ".so." in lib.name):
-                    shutil.copy2(lib, libs_dir / lib.name)
-    ok("mkvmerge / mkvextract / mkvinfo / mkvpropedit + libs installés")
-
-
 def _mediainfo_latest_version() -> str:
     """Retourne la dernière version de mediainfo en scrapant le répertoire mediaarea.net."""
     import re
@@ -705,7 +665,6 @@ def bundle_tools(appdir: Path, arch: str) -> None:
     tools_dir.mkdir(parents=True, exist_ok=True)
 
     _dl_ffmpeg(tools_dir, arch)
-    _dl_mkvtoolnix(tools_dir, arch)
     _dl_mediainfo(tools_dir, arch)
     _dl_dovi_tool(tools_dir, arch)
     _dl_hdr10plus_tool(tools_dir, arch)
@@ -873,6 +832,9 @@ def build_appimage(
 
     env = os.environ.copy()
     env["ARCH"] = arch
+    update_information = _appimage_update_information(arch, allinc=allinc)
+    env["UPDATE_INFORMATION"] = update_information
+    info(f"UPDATE_INFORMATION: {update_information}")
     # appimagetool est lui-même une AppImage : sans FUSE (distrobox, CI…)
     # il faut lui demander de s'extraire dans un dossier tmp plutôt que
     # de se monter via FUSE.
@@ -888,6 +850,58 @@ def build_appimage(
     return output
 
 
+def _appimage_update_information(arch: str, allinc: bool = False) -> str:
+    """
+    Chaîne UPDATE_INFORMATION AppImage pour GitHub Releases.
+    Format: gh-releases-zsync|OWNER|REPO|RELEASE|FILENAME.zsync
+    """
+    suffix = "_allinc" if allinc else ""
+    filename_pattern = f"{APP_DISPLAY_NAME}-{arch}{suffix}-*.AppImage.zsync"
+    return (
+        "gh-releases-zsync|"
+        f"{_APPIMAGE_UPDATE_OWNER}|"
+        f"{_APPIMAGE_UPDATE_REPO}|"
+        f"{_APPIMAGE_UPDATE_RELEASE}|"
+        f"{filename_pattern}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Étape 5 — Fichier .zsync (mise à jour automatique AppImage)
+# ---------------------------------------------------------------------------
+
+def generate_zsync(appimage_path: Path, zsyncmake: Path) -> Path:
+    """
+    Génère le fichier .zsync à côté de l'AppImage.
+
+    Le .zsync est requis pour AppImageUpdate / appimaged.
+    Il doit être uploadé sur GitHub Releases avec l'AppImage.
+
+    L'URL embarquée dans le .zsync pointe vers l'AppImage finale
+    sur GitHub Releases (gh-releases-zsync attend ce format).
+    La valeur réelle de l'URL n'est pas critique pour zsyncmake ;
+    AppImageUpdate utilise UPDATE_INFORMATION (déjà intégrée dans l'AppImage)
+    pour résoudre le .zsync — on passe le nom de fichier uniquement.
+    """
+    step("Génération du fichier .zsync (mise à jour automatique)")
+    zsync_path = appimage_path.with_suffix(".AppImage.zsync")
+    if zsync_path.exists():
+        zsync_path.unlink()
+
+    # zsyncmake doit tourner depuis le dossier contenant l'AppImage pour que
+    # le champ Filename du .zsync ne contienne que le nom sans chemin absolu.
+    run(
+        [zsyncmake, "-C", "-u", appimage_path.name, "-o", zsync_path.name, appimage_path.name],
+        cwd=appimage_path.parent,
+    )
+
+    ok(f".zsync généré : {zsync_path.name}")
+    info("Uploadez ces deux fichiers sur GitHub Releases :")
+    info(f"  • {appimage_path.name}")
+    info(f"  • {zsync_path.name}")
+    return zsync_path
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -901,7 +915,7 @@ def parse_args() -> argparse.Namespace:
         "--allinc",
         action="store_true",
         help=(
-            "Embarque ffmpeg, mkvtoolnix, mediainfo, dovi_tool et hdr10plus_tool "
+            "Embarque ffmpeg, mediainfo, dovi_tool et hdr10plus_tool "
             "dans l'AppImage. Produit Mediarecode-<arch>_allinc.AppImage. "
             "Au premier lancement, seule la configuration est initialisée."
         ),
@@ -957,6 +971,7 @@ def main() -> None:
     info(f"Racine projet : {ROOT}")
 
     ensure_build_deps()
+    zsyncmake = ensure_zsyncmake() if allinc else None
 
     if args.skip_pyinstaller:
         bundle_dir = DIST_DIR / APP_NAME
@@ -978,17 +993,29 @@ def main() -> None:
     )
     final_appimage = _copy_final_file_if_requested(appimage_path, args.dest, version_tag=version_tag)
 
+    zsync_path: Path | None = None
+    if allinc and zsyncmake is not None:
+        zsync_path = generate_zsync(final_appimage, zsyncmake)
+
     print(_c("1;32", """
 ╔══════════════════════════════════════════╗
 ║  Build terminé avec succès !             ║
 ╚══════════════════════════════════════════╝"""))
     print(f"\n  AppImage : {final_appimage}")
+    if zsync_path:
+        print(f"  .zsync   : {zsync_path}")
     info("Lancez l'application avec :")
     print(f"\n    chmod +x \"{final_appimage}\"")
     print(f"    \"{final_appimage}\"\n")
     if allinc:
         info("Mode all-inclusive : au 1er lancement, seule la configuration")
         info("est initialisée (~/.config/mediarecode/config.ini).")
+        if zsync_path:
+            info("Pour activer les mises à jour automatiques, uploadez sur GitHub Releases :")
+            info(f"  • {final_appimage.name}")
+            info(f"  • {zsync_path.name}")
+        else:
+            info("zsyncmake absent — mises à jour automatiques désactivées (upload .zsync manquant).")
     else:
         info("Au 1er lancement, le setup s'exécute si")
         info("~/.config/mediarecode/config.ini est absent.")

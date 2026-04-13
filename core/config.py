@@ -25,6 +25,12 @@ from PySide6.QtCore import QSettings, QStandardPaths
 
 from core.lang_tags import Rfc5646LanguageTags
 from core.subprocess_utils import subprocess_text_kwargs
+from core.workdir import (
+    clear_work_dir as clear_work_dir_contents,
+    prepare_process_work_dir,
+    work_dir_entries as list_work_dir_entries,
+    work_dir_has_entries,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -65,10 +71,6 @@ _MISSING = object()
 _WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
     "ffmpeg": ("ffmpeg.exe",),
     "ffprobe": ("ffprobe.exe",),
-    "mkvmerge": ("mkvmerge.exe",),
-    "mkvextract": ("mkvextract.exe",),
-    "mkvinfo": ("mkvinfo.exe",),
-    "mkvpropedit": ("mkvpropedit.exe",),
     "mediainfo": ("MediaInfo.exe", "mediainfo.exe"),
     "dovi_tool": ("dovi_tool.exe",),
     "hdr10plus_tool": ("hdr10plus_tool.exe",),
@@ -78,10 +80,6 @@ _WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
 _WINDOWS_WINGET_PATTERNS: dict[str, tuple[str, ...]] = {
     "ffmpeg": ("Gyan.FFmpeg*",),
     "ffprobe": ("Gyan.FFmpeg*",),
-    "mkvmerge": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
-    "mkvextract": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
-    "mkvinfo": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
-    "mkvpropedit": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
     "mediainfo": ("MediaArea.MediaInfo_*",),
 }
 
@@ -335,9 +333,6 @@ def _windows_default_tool_candidates(tool_name: str) -> list[Path]:
             for folder in ("ffmpeg", "FFmpeg"):
                 for exe_name in exe_names:
                     candidates.append(base_dir / folder / "bin" / exe_name)
-        elif tool_name in ("mkvmerge", "mkvextract", "mkvinfo", "mkvpropedit"):
-            for exe_name in exe_names:
-                candidates.append(base_dir / "MKVToolNix" / exe_name)
         elif tool_name == "mediainfo":
             for folder in ("MediaInfo", "MediaInfo CLI", "MediaInfoCLI"):
                 for exe_name in exe_names:
@@ -419,8 +414,8 @@ class ToolVersionRegistry:
     @staticmethod
     def _extract_major(version_text: str) -> int | None:
         # Exemples ciblés:
-        # - "mkvmerge v98.0 ('Chonks')"
-        # - "ffmpeg version 8.1 ..."
+        # - "sometool v98.0 ('Codename')"    ← format vX.Y
+        # - "ffmpeg version 8.1 ..."          ← format version X.Y
         # - "MediaInfo Command line, MediaInfoLib - v24.12"
         patterns = (
             r"\bv(\d+)\.",
@@ -546,6 +541,10 @@ UI_STARTUP_PANEL_CHOICES: tuple[tuple[str, str], ...] = (
     ("settings", "Paramètres"),
 )
 
+REMUX_BACKEND_CHOICES: tuple[tuple[str, str], ...] = (
+    ("ffmpeg", "FFmpeg (par défaut)"),
+)
+
 
 def _normalize_startup_panel(value: str | None) -> str:
     if not value:
@@ -567,6 +566,15 @@ def _normalize_startup_panel(value: str | None) -> str:
         "paramètres": "settings",
     }
     return aliases.get(raw, "dashboard")
+
+
+def _normalize_remux_backend(value: str | None) -> str:
+    if not value:
+        return "ffmpeg"
+    raw = value.strip().lower()
+    if raw == "ffmpeg":
+        return raw
+    return "ffmpeg"
 
 
 INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
@@ -616,10 +624,6 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         "fields": (
             {"key": "ffmpeg", "attr": "tool_ffmpeg", "kind": "tool", "label": "FFmpeg", "description": "Binaire FFmpeg utilisé pour l'encodage et certaines inspections."},
             {"key": "ffprobe", "attr": "tool_ffprobe", "kind": "tool", "label": "FFprobe", "description": "Binaire FFprobe utilisé pour l'analyse des médias."},
-            {"key": "mkvmerge", "attr": "tool_mkvmerge", "kind": "tool", "label": "mkvmerge", "description": "Binaire MKVToolNix utilisé pour le remuxage."},
-            {"key": "mkvextract", "attr": "tool_mkvextract", "kind": "tool", "label": "mkvextract", "description": "Binaire MKVToolNix utilisé pour extraire des pistes."},
-            {"key": "mkvinfo", "attr": "tool_mkvinfo", "kind": "tool", "label": "mkvinfo", "description": "Binaire MKVToolNix utilisé pour l'inspection des conteneurs."},
-            {"key": "mkvpropedit", "attr": "tool_mkvpropedit", "kind": "tool", "label": "mkvpropedit", "description": "Binaire MKVToolNix utilisé pour réécrire des métadonnées."},
             {"key": "mediainfo", "attr": "tool_mediainfo", "kind": "tool", "label": "MediaInfo", "description": "Binaire MediaInfo utilisé pour enrichir l'inspection."},
             {"key": "dovi_tool", "attr": "tool_dovi_tool", "kind": "tool", "label": "dovi_tool", "description": "Outil Dolby Vision utilisé pour les workflows DoVi."},
             {"key": "hdr10plus_tool", "attr": "tool_hdr10plus", "kind": "tool", "label": "hdr10plus_tool", "description": "Outil HDR10+ utilisé pour les workflows HDR."},
@@ -636,6 +640,20 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
                 "kind": "int",
                 "label": "Nombre de threads FFmpeg",
                 "description": "Nombre de threads passé à FFmpeg via -threads. 0 laisse FFmpeg choisir automatiquement. La valeur par défaut est calculée à partir du nombre de coeurs × 1,5.",
+            },
+        ),
+    },
+    {
+        "section": "remux",
+        "title": "Remux",
+        "fields": (
+            {
+                "key": "backend",
+                "attr": "remux_backend",
+                "kind": "choice",
+                "label": "Backend de remux",
+                "description": "Moteur utilisé pour le remuxage conteneur. FFmpeg est le backend nominal.",
+                "options": REMUX_BACKEND_CHOICES,
             },
         ),
     },
@@ -663,6 +681,8 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "log_max_lines", "attr": "log_max_lines", "kind": "int", "label": "Nombre max de lignes de log", "description": "Nombre maximum de lignes conservées dans le panneau de log."},
             {"key": "theme", "attr": "theme", "kind": "choice", "label": "Thème", "description": "Thème principal pour l'interface. Le changement de thème nécessite de redémarrer l'application.", "options": (("dark", "Sombre"), ("light", "Clair"))},
             {"key": "startup_panel", "attr": "startup_panel", "kind": "choice", "label": "Panneau à afficher au démarrage", "description": "Panneau chargé en premier au lancement de l'application.", "options": UI_STARTUP_PANEL_CHOICES},
+            {"key": "startup_menu_compact", "attr": "startup_menu_compact", "kind": "bool", "label": "Démarrer avec le menu en mode Compact", "description": "Si activé, le menu latéral est réduit en mode icônes au lancement."},
+            {"key": "startup_logs_expanded", "attr": "startup_logs_expanded", "kind": "bool", "label": "Ouvrir les logs au démarrage de l'application", "description": "Si activé, le panneau de logs est déplié au lancement."},
         ),
     },
     {
@@ -815,10 +835,6 @@ class AppConfig:
 
         self.tool_ffmpeg = self._resolve_tool_value("ffmpeg", "tools/ffmpeg", "ffmpeg")
         self.tool_ffprobe = self._resolve_tool_value("ffprobe", "tools/ffprobe", "ffprobe")
-        self.tool_mkvmerge = self._resolve_tool_value("mkvmerge", "tools/mkvmerge", "mkvmerge")
-        self.tool_mkvextract = self._resolve_tool_value("mkvextract", "tools/mkvextract", "mkvextract")
-        self.tool_mkvinfo = self._resolve_tool_value("mkvinfo", "tools/mkvinfo", "mkvinfo")
-        self.tool_mkvpropedit = self._resolve_tool_value("mkvpropedit", "tools/mkvpropedit", "mkvpropedit")
         self.tool_mediainfo = self._resolve_tool_value("mediainfo", "tools/mediainfo", "mediainfo")
         self.tool_dovi_tool = self._resolve_tool_value("dovi_tool", "tools/dovi_tool", "dovi_tool")
         self.tool_hdr10plus = self._resolve_tool_value("hdr10plus_tool", "tools/hdr10plus_tool", "hdr10plus_tool")
@@ -827,6 +843,9 @@ class AppConfig:
 
         self.ffmpeg_threads = _normalize_ffmpeg_thread_count(
             self._resolve_int("ffmpeg", "threads", "ffmpeg/threads", _default_ffmpeg_thread_count())
+        )
+        self.remux_backend = _normalize_remux_backend(
+            self._resolve_text("remux", "backend", "remux/backend", "ffmpeg")
         )
 
         self.dovi_profile = self._resolve_text("hdr", "dovi_profile", "hdr/dovi_profile", "8")
@@ -855,6 +874,15 @@ class AppConfig:
         self.theme = self._resolve_text("ui", "theme", "ui/theme", "dark")
         self.startup_panel = _normalize_startup_panel(
             self._resolve_text("ui", "startup_panel", "ui/startup_panel", "dashboard")
+        )
+        self.startup_menu_compact = self._resolve_bool(
+            "ui", "startup_menu_compact", "ui/startup_menu_compact", False
+        )
+        self.startup_logs_expanded = self._resolve_bool(
+            "ui",
+            "startup_logs_expanded",
+            "ui/startup_logs_expanded",
+            False,
         )
         self.window_geometry: bytes | None = self._settings.value("ui/geometry", None)
 
@@ -885,16 +913,13 @@ class AppConfig:
 
         s.setValue("tools/ffmpeg", self.tool_ffmpeg)
         s.setValue("tools/ffprobe", self.tool_ffprobe)
-        s.setValue("tools/mkvmerge", self.tool_mkvmerge)
-        s.setValue("tools/mkvextract", self.tool_mkvextract)
-        s.setValue("tools/mkvinfo", self.tool_mkvinfo)
-        s.setValue("tools/mkvpropedit", self.tool_mkvpropedit)
         s.setValue("tools/mediainfo", self.tool_mediainfo)
         s.setValue("tools/dovi_tool", self.tool_dovi_tool)
         s.setValue("tools/hdr10plus_tool", self.tool_hdr10plus)
         s.setValue("tools/eac3to", self.tool_eac3to)
 
         s.setValue("ffmpeg/threads", self.ffmpeg_threads)
+        s.setValue("remux/backend", self.remux_backend)
 
         s.setValue("hdr/dovi_profile", self.dovi_profile)
         s.setValue("hdr/dovi_compat_id", self.dovi_compat_id)
@@ -909,6 +934,14 @@ class AppConfig:
         s.setValue("ui/log_max_lines", self.log_max_lines)
         s.setValue("ui/theme", self.theme)
         s.setValue("ui/startup_panel", self.startup_panel)
+        s.setValue(
+            "ui/startup_menu_compact",
+            "true" if self.startup_menu_compact else "false",
+        )
+        s.setValue(
+            "ui/startup_logs_expanded",
+            "true" if self.startup_logs_expanded else "false",
+        )
 
         s.setValue("metadata/tmdb_api_key", self.tmdb_api_key)
         s.setValue("metadata/tmdb_bearer_token", self.tmdb_bearer_token)
@@ -932,10 +965,6 @@ class AppConfig:
         return {
             "ffmpeg": self.tool_ffmpeg,
             "ffprobe": self.tool_ffprobe,
-            "mkvmerge": self.tool_mkvmerge,
-            "mkvextract": self.tool_mkvextract,
-            "mkvinfo": self.tool_mkvinfo,
-            "mkvpropedit": self.tool_mkvpropedit,
             "mediainfo": self.tool_mediainfo,
             "dovi_tool": self.tool_dovi_tool,
             "hdr10plus_tool": self.tool_hdr10plus,
@@ -971,6 +1000,39 @@ class AppConfig:
         self.work_dir.mkdir(parents=True, exist_ok=True)
         return self.work_dir
 
+    def work_dir_entries(self) -> list[Path]:
+        """Retourne les entrées présentes dans le work_dir."""
+        return list_work_dir_entries(self.ensure_work_dir())
+
+    def work_dir_has_leftovers(self) -> bool:
+        """True si le work_dir contient des éléments non nettoyés."""
+        return work_dir_has_entries(self.ensure_work_dir())
+
+    def clear_work_dir(self) -> Path:
+        """Vide le contenu du work_dir (sans supprimer le dossier racine)."""
+        root = self.ensure_work_dir()
+        clear_work_dir_contents(root)
+        return root
+
+    def prepare_process_work_dir(
+        self,
+        output_path: Path,
+        *,
+        process_name: str | None = None,
+    ) -> Path:
+        """
+        Prépare un dossier process dédié sous work_dir.
+
+        Le nom du dossier est dérivé du nom du fichier de sortie.
+        Si le dossier existe déjà, il est vidé avant usage.
+        """
+        return prepare_process_work_dir(
+            self.ensure_work_dir(),
+            output_path=output_path,
+            process_name=process_name,
+            fallback_name="job",
+        )
+
     def ensure_output_dir(self) -> Path:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         return self.output_dir
@@ -1001,10 +1063,6 @@ class AppConfig:
             "tools": {
                 "ffmpeg": self.tool_ffmpeg,
                 "ffprobe": self.tool_ffprobe,
-                "mkvmerge": self.tool_mkvmerge,
-                "mkvextract": self.tool_mkvextract,
-                "mkvinfo": self.tool_mkvinfo,
-                "mkvpropedit": self.tool_mkvpropedit,
                 "mediainfo": self.tool_mediainfo,
                 "dovi_tool": self.tool_dovi_tool,
                 "hdr10plus_tool": self.tool_hdr10plus,
@@ -1019,6 +1077,9 @@ class AppConfig:
             },
             "ffmpeg": {
                 "threads": self.ffmpeg_threads,
+            },
+            "remux": {
+                "backend": self.remux_backend,
             },
             "hdr": {
                 "dovi_profile": self.dovi_profile,
@@ -1037,6 +1098,8 @@ class AppConfig:
                 "log_max_lines": self.log_max_lines,
                 "theme": self.theme,
                 "startup_panel": self.startup_panel,
+                "startup_menu_compact": self.startup_menu_compact,
+                "startup_logs_expanded": self.startup_logs_expanded,
             },
             "metadata": {
                 "tmdb_api_key": self.tmdb_api_key,

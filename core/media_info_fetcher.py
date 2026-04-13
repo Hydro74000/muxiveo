@@ -180,7 +180,8 @@ class MediaDetails:
     season:     str = ""   # numéro de saison (séries uniquement)
     episode:    str = ""   # numéro d'épisode (séries uniquement)
     episode_title: str = ""  # titre de l'épisode (séries uniquement)
-    cover_bytes: bytes = b""  # image de cover récupérée depuis TMDB si disponible
+    cover_url: str = ""      # URL TMDB de la cover (téléchargement différé au lancement du workflow)
+    cover_bytes: bytes = b""  # réservé — n'est plus rempli par get_details() (téléchargement différé)
     cover_mimetype: str = ""
     cover_filename: str = ""
 
@@ -236,7 +237,7 @@ class MediaDetails:
 
     def to_mkv_tags(self) -> dict[str, str]:
         """
-        Retourne le dict {NOM_BALISE: valeur} à injecter via mkvpropedit.
+        Retourne le dict {NOM_BALISE: valeur} à écrire dans les tags MKV.
 
         - DESCRIPTION reçoit toujours l'identifiant IMDb quand il est disponible.
         - Les clés à valeur vide sont exclues.
@@ -763,23 +764,22 @@ class TmdbFetcher:
         if isinstance(col, dict):
             collection = col.get("name", "")
 
-        cover_bytes = b""
-        cover_mimetype = ""
+        # Téléchargement différé : on construit uniquement l'URL de la cover,
+        # le téléchargement réel est effectué au lancement du workflow.
+        cover_url = ""
         cover_filename = ""
         poster_path = str(data.get("poster_path") or "").strip()
         backdrop_path = str(data.get("backdrop_path") or "").strip()
-        cover_path = poster_path or backdrop_path
+        cover_path_str = poster_path or backdrop_path
         cover_kind = "poster" if poster_path else "backdrop"
-        if cover_path:
+        if cover_path_str:
             try:
-                cover_url = self._build_image_url(cover_path, image_kind=cover_kind)
-                if cover_url:
-                    cover_bytes, cover_mimetype = self._get_binary(cover_url)
-                    cover_filename = self._cover_filename(cover_path, cover_mimetype)
+                built_url = self._build_image_url(cover_path_str, image_kind=cover_kind)
+                if built_url:
+                    cover_url = built_url
+                    cover_filename = self._cover_filename(cover_path_str)
             except TmdbError:
-                cover_bytes = b""
-                cover_mimetype = ""
-                cover_filename = ""
+                pass
 
         out_season = season if result.kind == "tv" else ""
         out_episode = episode if result.kind == "tv" else ""
@@ -798,7 +798,6 @@ class TmdbFetcher:
             season     = out_season,
             episode    = out_episode,
             episode_title=episode_title,
-            cover_bytes=cover_bytes,
-            cover_mimetype=cover_mimetype,
+            cover_url  = cover_url,
             cover_filename=cover_filename,
         )

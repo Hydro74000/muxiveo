@@ -325,3 +325,84 @@ def test_package_appimage_versioned_output_path_uses_app_version_by_default():
             None,
         )
     assert output.name == "Mediarecode-x86_64_allinc-8.8.8.AppImage"
+
+
+def test_package_update_information_uses_github_release_pattern():
+    with patch.object(package_mod, "_APPIMAGE_UPDATE_OWNER", "Hydro74000"), \
+         patch.object(package_mod, "_APPIMAGE_UPDATE_REPO", "mediarecode"), \
+         patch.object(package_mod, "_APPIMAGE_UPDATE_RELEASE", "latest"):
+        assert package_mod._appimage_update_information("x86_64") == (
+            "gh-releases-zsync|Hydro74000|mediarecode|latest|Mediarecode-x86_64-*.AppImage.zsync"
+        )
+
+
+def test_package_appimage_update_information_uses_github_release_pattern_for_allinc():
+    with patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_OWNER", "Hydro74000"), \
+         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_REPO", "mediarecode"), \
+         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_RELEASE", "latest"):
+        assert package_appimage_mod._appimage_update_information("x86_64", allinc=True) == (
+            "gh-releases-zsync|Hydro74000|mediarecode|latest|Mediarecode-x86_64_allinc-*.AppImage.zsync"
+        )
+
+
+def test_package_build_appimage_sets_update_information_env(tmp_path):
+    appdir = tmp_path / "Mediarecode.AppDir"
+    appdir.mkdir(parents=True, exist_ok=True)
+    appimagetool = tmp_path / "appimagetool"
+    appimagetool.write_text("", encoding="utf-8")
+    captured_env: dict[str, str] = {}
+
+    def fake_run(cmd, env=None, **kwargs):
+        if env:
+            captured_env.update(env)
+        output = Path(cmd[-1])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("", encoding="utf-8")
+        return subprocess.CompletedProcess(args=cmd, returncode=0)
+
+    with patch.object(package_mod, "ROOT", tmp_path), \
+         patch.object(package_mod.platform, "machine", return_value="x86_64"), \
+         patch.object(package_mod, "_ensure_appimagetool", return_value=appimagetool), \
+         patch.object(package_mod, "_run", side_effect=fake_run), \
+         patch.object(package_mod, "_APPIMAGE_UPDATE_OWNER", "Hydro74000"), \
+         patch.object(package_mod, "_APPIMAGE_UPDATE_REPO", "mediarecode"), \
+         patch.object(package_mod, "_APPIMAGE_UPDATE_RELEASE", "latest"):
+        package_mod._build_appimage(appdir, version_tag="1.2.3")
+
+    assert captured_env["UPDATE_INFORMATION"] == (
+        "gh-releases-zsync|Hydro74000|mediarecode|latest|Mediarecode-x86_64-*.AppImage.zsync"
+    )
+
+
+def test_package_appimage_build_appimage_sets_update_information_env(tmp_path):
+    appdir = tmp_path / "Mediarecode.AppDir"
+    appdir.mkdir(parents=True, exist_ok=True)
+    appimagetool = tmp_path / "appimagetool"
+    appimagetool.write_text("", encoding="utf-8")
+    captured_env: dict[str, str] = {}
+
+    def fake_run(cmd, **kwargs):
+        env = kwargs.get("env")
+        if env:
+            captured_env.update(env)
+        output = Path(cmd[-1])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("", encoding="utf-8")
+        return subprocess.CompletedProcess(args=cmd, returncode=0)
+
+    with patch.object(package_appimage_mod, "ROOT", tmp_path), \
+         patch.object(package_appimage_mod, "run", side_effect=fake_run), \
+         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_OWNER", "Hydro74000"), \
+         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_REPO", "mediarecode"), \
+         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_RELEASE", "latest"):
+        package_appimage_mod.build_appimage(
+            appimagetool=appimagetool,
+            appdir=appdir,
+            arch="x86_64",
+            allinc=True,
+            version_tag="1.2.3",
+        )
+
+    assert captured_env["UPDATE_INFORMATION"] == (
+        "gh-releases-zsync|Hydro74000|mediarecode|latest|Mediarecode-x86_64_allinc-*.AppImage.zsync"
+    )
