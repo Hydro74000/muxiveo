@@ -38,6 +38,7 @@ Options :
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import importlib
 import importlib.util
 import os
@@ -867,6 +868,74 @@ def _add_windows_sqlite_to_pyinstaller_wine(cmd: list[str], wine_env: dict[str, 
         cmd += ["--add-binary", f"{win_dll};."]
     _ok("Support sqlite3 Windows ajouté au bundle PyInstaller (Wine)")
 
+def _ensure_windows_icu_runtime(wine_env: dict[str, str]) -> list[Path]:
+    """
+    Vérifie la présence des DLL ICU dans le préfixe Wine.
+    Si absentes : télécharge le package NuGet Microsoft.ICU.ICU4C.Runtime.win-x64
+    et extrait les DLL nécessaires.
+    Retourne la liste des DLL ICU trouvées.
+    """
+    icu_dir = _WINE_PREFIX / "drive_c" / "icu"
+    icu_dir.mkdir(parents=True, exist_ok=True)
+
+    expected = ["icudt*.dll", "icuin*.dll", "icuuc*.dll"]
+    found: list[Path] = []
+
+    # Recherche existante
+    for pattern in expected:
+        found.extend(icu_dir.glob(pattern))
+
+    if len(found) >= 3:
+        _ok(f"ICU Windows déjà présentes ({len(found)} DLL)")
+        return found
+
+    _warn("DLL ICU absentes — téléchargement du runtime ICU Windows…")
+
+    # Téléchargement du package NuGet
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".nupkg")
+    tmp.close()
+    urllib.request.urlretrieve(_WIN_ICU_NUGET_URL, tmp.name)
+    _ok(f"Package ICU téléchargé {tmp.name}")
+
+    #Extraction
+    with zipfile.ZipFile(tmp.name, "r") as z:
+        entries = z.namelist()
+        extracted_any = False
+        for member in entries:
+            normalized = member.replace("\\", "/")
+            lname = normalized.lower()
+            if not lname.endswith(".dll"):
+                continue
+
+            # compare sur le basename (ex: icudt72.dll) pour que "icudt*.dll" matche
+            base = Path(normalized).name.lower()
+
+            # expected doit contenir des motifs comme "icudt*.dll", "icuin*.dll", "icuuc*.dll"
+            if not any(fnmatch.fnmatch(base, pat) for pat in expected):
+                _info(f"SKIP DLL (no expected match): {member}")
+                continue
+
+            target = icu_dir / base
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with z.open(member) as src, target.open("wb") as dst:
+                shutil.copyfileobj(src, dst)
+            found.append(target)
+            extracted_any = True
+            _ok(f"Extracted ICU DLL: {target.name}")
+
+        if not extracted_any:
+            _warn("Aucune DLL extraite du package NuGet. Aperçu des 40 premières entrées :")
+            for i, name in enumerate(entries[:40], 1):
+                _info(f"  {i:02d}: {name}")
+            raise RuntimeError("Impossible d'extraire toutes les DLL ICU du package NuGet")
+    _ok(f"ICU Windows extraites dans {icu_dir.relative_to(ROOT)}")
+    os.unlink(tmp.name)
+
+    if len(found) < 3:
+        raise RuntimeError("Impossible d'extraire toutes les DLL ICU du package NuGet")
+
+    _ok(f"ICU Windows extraites ({len(found)} DLL)")
+    return found
 
 def _add_windows_icu_to_pyinstaller_wine(cmd: list[str], wine_env: dict[str, str]) -> None:
     """Add ICU runtime DLLs to a Wine (Windows target) PyInstaller command."""
@@ -1507,6 +1576,41 @@ def _ensure_windows_icu_runtime_cache() -> list[Path]:
                 shutil.copyfileobj(src, dst)
             extracted_any = True
 
+    # --- AJOUT : création des alias ICU non suffixés ---
+    alias_map: dict[str, Path | None] = {
+        "icuuc": None,
+        "icuin": None,
+        "icudt": None,
+        "icu": None,
+    }
+
+    for p in cache_dir.iterdir():
+        name = p.name.lower()
+        if name.startswith("icuuc"):
+            alias_map["icuuc"] = p
+        elif name.startswith("icuin"):
+            alias_map["icuin"] = p
+        elif name.startswith("icudt"):
+            alias_map["icudt"] = p
+        elif name == "icu.dll":
+            alias_map["icu"] = p
+
+
+    # créer les alias
+    for plain, src in (
+        ("icuuc.dll", alias_map["icuuc"]),
+        ("icuin.dll", alias_map["icuin"]),
+        ("icudt.dll", alias_map["icudt"] or alias_map["icu"]),
+        ("icu.dll", alias_map["icu"] or alias_map["icudt"]),
+    ):
+        if src is None:
+            continue
+        dst = cache_dir / plain
+        if not dst.exists():
+            shutil.copy2(src, dst)
+            _ok(f"ICU alias créé : {dst.name} -> {src.name}")
+
+
     if not extracted_any:
         raise RuntimeError(
             "Le package ICU Windows téléchargé ne contient aucune DLL exploitable."
@@ -1819,6 +1923,7 @@ def _build_pyinstaller_wine() -> Path:
     ]
     _add_windows_ctypes_to_pyinstaller_wine(cmd, wine_env)
     _add_windows_sqlite_to_pyinstaller_wine(cmd, wine_env)
+    _ensure_windows_icu_runtime(wine_env)
     _add_windows_ssl_to_pyinstaller_wine(cmd, wine_env)
     _add_windows_icu_to_pyinstaller_wine(cmd, wine_env)
     win_ver = subprocess.check_output(
