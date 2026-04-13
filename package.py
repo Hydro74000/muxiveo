@@ -59,6 +59,7 @@ from typing import Iterable
 from core.version import APP_NAME, APP_VERSION
 
 ROOT = Path(__file__).parent
+DIST_RELEASES = ROOT / "dist" / "releases"
 OS   = platform.system()
 
 # Préfixe Wine isolé (dans le projet, ignoré par .gitignore)
@@ -260,18 +261,14 @@ def _versioned_output_path(path: Path, version_tag: str | None) -> Path:
 def _resolve_dest_file(dest: str | None, default_output: Path, version_tag: str | None = None) -> Path:
     """
     Résout le chemin de destination du fichier final.
-    - dest absent: utilise default_output suffixé avec -<version>
+    - dest absent: place dans dist/releases/ (créé si besoin)
     - dest dossier (existant, trailing slash, ou sans extension): utilise le nom auto
     - dest fichier: utilise ce nom
     """
-    versioned_default = _versioned_output_path(default_output, version_tag)
-    if not dest:
-        return versioned_default
+    if not dest or not dest.strip():
+        return _versioned_output_path(DIST_RELEASES / default_output.name, version_tag)
 
     raw = dest.strip()
-    if not raw:
-        return versioned_default
-
     target = Path(raw).expanduser()
     if not target.is_absolute():
         target = (Path.cwd() / target).resolve()
@@ -289,7 +286,7 @@ def _resolve_dest_file(dest: str | None, default_output: Path, version_tag: str 
 
 
 def _copy_final_file_if_requested(src: Path, dest: str | None, version_tag: str | None = None) -> Path:
-    """Copie le fichier final vers --dest si fourni, sinon retourne src inchangé."""
+    """Déplace le fichier final vers dist/releases/ (ou --dest si fourni)."""
     target = _resolve_dest_file(dest, src, version_tag)
 
     src_resolved = src.resolve()
@@ -298,13 +295,8 @@ def _copy_final_file_if_requested(src: Path, dest: str | None, version_tag: str 
         return src
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    if not (dest or "").strip():
-        src.replace(target)
-        _ok(f"Fichier final : {target}")
-        return target
-
-    shutil.copy2(src, target)
-    _ok(f"Copie finale : {target}")
+    src.replace(target)
+    _ok(f"Fichier final : {target}")
     return target
 
 

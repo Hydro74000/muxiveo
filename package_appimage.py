@@ -66,6 +66,7 @@ from core.version import APP_VERSION
 
 ROOT = Path(__file__).parent
 DIST_DIR = ROOT / "dist"
+DIST_RELEASES = ROOT / "dist" / "releases"
 BUILD_DIR = ROOT / "build"
 APPDIR = ROOT / "Mediarecode.AppDir"
 APP_NAME = "mediarecode"
@@ -129,18 +130,14 @@ def _versioned_output_path(path: Path, version_tag: str | None) -> Path:
 def _resolve_dest_file(dest: str | None, default_output: Path, version_tag: str | None = None) -> Path:
     """
     Résout le chemin de destination du fichier final.
-    - dest absent: utilise default_output suffixé avec -<version>
+    - dest absent: place dans dist/releases/ (créé si besoin)
     - dest dossier (existant, trailing slash, ou sans extension): utilise le nom auto
     - dest fichier: utilise ce nom
     """
-    versioned_default = _versioned_output_path(default_output, version_tag)
-    if not dest:
-        return versioned_default
+    if not dest or not dest.strip():
+        return _versioned_output_path(DIST_RELEASES / default_output.name, version_tag)
 
     raw = dest.strip()
-    if not raw:
-        return versioned_default
-
     target = Path(raw).expanduser()
     if not target.is_absolute():
         target = (Path.cwd() / target).resolve()
@@ -158,7 +155,7 @@ def _resolve_dest_file(dest: str | None, default_output: Path, version_tag: str 
 
 
 def _copy_final_file_if_requested(src: Path, dest: str | None, version_tag: str | None = None) -> Path:
-    """Copie le fichier final vers --dest si fourni, sinon retourne src inchangé."""
+    """Déplace le fichier final vers dist/releases/ (ou --dest si fourni)."""
     target = _resolve_dest_file(dest, src, version_tag)
 
     src_resolved = src.resolve()
@@ -167,13 +164,8 @@ def _copy_final_file_if_requested(src: Path, dest: str | None, version_tag: str 
         return src
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    if not (dest or "").strip():
-        src.replace(target)
-        ok(f"Fichier final : {target}")
-        return target
-
-    shutil.copy2(src, target)
-    ok(f"Copie finale : {target}")
+    src.replace(target)
+    ok(f"Fichier final : {target}")
     return target
 
 
@@ -241,6 +233,28 @@ def ensure_build_deps() -> None:
             info("mksquashfs absent du PATH — appimagetool utilisera son mksquashfs interne.")
 
     ok("Toutes les dépendances sont présentes")
+
+
+def ensure_zsyncmake() -> Path | None:
+    """
+    Vérifie que zsyncmake est disponible.
+    Tente une installation système si absent.
+    Retourne le chemin vers l'outil, ou None si introuvable.
+    """
+    found = shutil.which("zsyncmake")
+    if found:
+        return Path(found)
+
+    info("zsyncmake introuvable — tentative d'installation de zsync…")
+    _install_system_package("zsync", fatal=False)
+
+    found = shutil.which("zsyncmake")
+    if found:
+        return Path(found)
+
+    err("zsyncmake introuvable — le fichier .zsync ne sera pas généré.")
+    err("Installez zsync manuellement : sudo dnf install zsync  (ou apt-get install zsync)")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -853,6 +867,42 @@ def _appimage_update_information(arch: str, allinc: bool = False) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Étape 5 — Fichier .zsync (mise à jour automatique AppImage)
+# ---------------------------------------------------------------------------
+
+def generate_zsync(appimage_path: Path, zsyncmake: Path) -> Path:
+    """
+    Génère le fichier .zsync à côté de l'AppImage.
+
+    Le .zsync est requis pour AppImageUpdate / appimaged.
+    Il doit être uploadé sur GitHub Releases avec l'AppImage.
+
+    L'URL embarquée dans le .zsync pointe vers l'AppImage finale
+    sur GitHub Releases (gh-releases-zsync attend ce format).
+    La valeur réelle de l'URL n'est pas critique pour zsyncmake ;
+    AppImageUpdate utilise UPDATE_INFORMATION (déjà intégrée dans l'AppImage)
+    pour résoudre le .zsync — on passe le nom de fichier uniquement.
+    """
+    step("Génération du fichier .zsync (mise à jour automatique)")
+    zsync_path = appimage_path.with_suffix(".AppImage.zsync")
+    if zsync_path.exists():
+        zsync_path.unlink()
+
+    # zsyncmake doit tourner depuis le dossier contenant l'AppImage pour que
+    # le champ Filename du .zsync ne contienne que le nom sans chemin absolu.
+    run(
+        [zsyncmake, "-C", "-u", appimage_path.name, "-o", zsync_path.name, appimage_path.name],
+        cwd=appimage_path.parent,
+    )
+
+    ok(f".zsync généré : {zsync_path.name}")
+    info("Uploadez ces deux fichiers sur GitHub Releases :")
+    info(f"  • {appimage_path.name}")
+    info(f"  • {zsync_path.name}")
+    return zsync_path
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -921,6 +971,7 @@ def main() -> None:
     info(f"Racine projet : {ROOT}")
 
     ensure_build_deps()
+    zsyncmake = ensure_zsyncmake() if allinc else None
 
     if args.skip_pyinstaller:
         bundle_dir = DIST_DIR / APP_NAME
@@ -942,17 +993,29 @@ def main() -> None:
     )
     final_appimage = _copy_final_file_if_requested(appimage_path, args.dest, version_tag=version_tag)
 
+    zsync_path: Path | None = None
+    if allinc and zsyncmake is not None:
+        zsync_path = generate_zsync(final_appimage, zsyncmake)
+
     print(_c("1;32", """
 ╔══════════════════════════════════════════╗
 ║  Build terminé avec succès !             ║
 ╚══════════════════════════════════════════╝"""))
     print(f"\n  AppImage : {final_appimage}")
+    if zsync_path:
+        print(f"  .zsync   : {zsync_path}")
     info("Lancez l'application avec :")
     print(f"\n    chmod +x \"{final_appimage}\"")
     print(f"    \"{final_appimage}\"\n")
     if allinc:
         info("Mode all-inclusive : au 1er lancement, seule la configuration")
         info("est initialisée (~/.config/mediarecode/config.ini).")
+        if zsync_path:
+            info("Pour activer les mises à jour automatiques, uploadez sur GitHub Releases :")
+            info(f"  • {final_appimage.name}")
+            info(f"  • {zsync_path.name}")
+        else:
+            info("zsyncmake absent — mises à jour automatiques désactivées (upload .zsync manquant).")
     else:
         info("Au 1er lancement, le setup s'exécute si")
         info("~/.config/mediarecode/config.ini est absent.")
