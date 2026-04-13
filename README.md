@@ -505,4 +505,4 @@ flowchart TD
 
 ---
 
-*Mediarecode v1.2*
+*Mediarecode v1.3*
