@@ -4,7 +4,7 @@ FULL Vibecoded App for Proof of Concept - no human code, only human prompts and 
 
 Interface graphique pour préparer des fichiers vidéo, remuxer sans perte, réencoder avec `ffmpeg`, et fusionner des métadonnées Dolby Vision / HDR10+.
 
-Cette documentation correspond à **Mediarecode v1.3**.
+Cette documentation correspond à **Mediarecode v1.3.1**.
 
 ## Sommaire
 
@@ -178,7 +178,7 @@ Le tableau de bord affiche :
 
 Le workflow unifié permet de :
 
-- ajouter une ou plusieurs sources MKV / MP4
+- ajouter une ou plusieurs sources MKV / MP4 / SRT
 - inspecter vidéo, audio, sous-titres, chapitres, pièces jointes et tags MKV
 - activer, exclure et réordonner les pistes
 - éditer langue, titre et flags de chaque piste
@@ -198,6 +198,8 @@ Modes d'exécution :
 |-----------|------|-----------------|
 | vidéo en `copy`, audio en `copy`, aucune transformation HDR | **Remuxage pur** | `ffmpeg` (langues BCP47 via tag `language`, purge `language-ietf`, chapitres, tags globaux, pièces jointes, champ `Muxing Application`) |
 | tout autre cas | **Encodage** | `ffmpeg` en passe de sortie unique (encodage/remux final + chapitres, tags, langue/titre de pistes, `Muxing Application`) |
+
+Les fichiers **SRT** peuvent être ajoutés comme sources séparées de sous-titres. Ils sont détectés automatiquement et intégrés dans le remux final avec le format correct (`srt`).
 
 Backend remux `ffmpeg` (par défaut) :
 
@@ -364,7 +366,7 @@ tmdb_bearer_token = <VOTRE_TOKEN_BEARER_TMDB_V4>
 
 ```mermaid
 flowchart TD
-    A["Sources MKV ou MP4"] --> B["Inspection via ffprobe"]
+    A["Sources MKV, MP4 ou SRT"] --> B["Inspection via ffprobe"]
     B --> C["Edition conteneur dans RemuxPanel"]
     C --> D["Options video, audio et HDR dans EncodePanel"]
     D --> E{"Video copy\nAudio copy\nAucune transformation HDR"}
