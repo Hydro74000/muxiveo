@@ -35,10 +35,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install FFmpeg
+      - name: Install System Dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg libegl1 libgl1 libglib2.0-0
           ffmpeg -version
           ffprobe -version
 

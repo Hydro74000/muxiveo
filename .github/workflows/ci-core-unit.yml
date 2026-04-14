@@ -50,6 +50,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libegl1 libgl1 libglib2.0-0
+
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
