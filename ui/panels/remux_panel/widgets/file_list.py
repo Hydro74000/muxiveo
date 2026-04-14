@@ -124,7 +124,7 @@ class _FileRow(QWidget):
         """)
 
 
-_ACCEPTED_EXT = {".mkv", ".mp4", ".m4v", ".mov"}
+_ACCEPTED_EXT = {".mkv", ".mp4", ".m4v", ".mov", ".srt"}
 
 
 class _FileListWidget(QFrame):
@@ -178,7 +178,7 @@ class _FileListWidget(QFrame):
         ph_icon.setStyleSheet(f"font-size: 28px; color: {_C.TEXT_DIM}; background: transparent; border: none;")
         ph_lay.addWidget(ph_icon)
 
-        ph_text = QLabel("Déposer des fichiers MKV / MP4 ici")
+        ph_text = QLabel("Déposer des fichiers vidéo / sous-titres ici")
         ph_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ph_text.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: 12px; font-weight: 500; background: transparent; border: none;")
         ph_lay.addWidget(ph_text)
@@ -263,9 +263,9 @@ class _FileListWidget(QFrame):
     def _browse(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
             self,
-            translate_text("Sélectionner des fichiers vidéo"),
+            translate_text("Sélectionner des fichiers source"),
             "",
-            translate_text("Fichiers vidéo (*.mkv *.mp4 *.m4v *.mov);;Tous les fichiers (*)"),
+            translate_text("Fichiers source (*.mkv *.mp4 *.m4v *.mov *.srt);;Tous les fichiers (*)"),
         )
         if paths:
             self.add_requested.emit(paths)

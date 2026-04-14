@@ -201,6 +201,30 @@ class TestRemuxWorkflowBuildCommand:
         map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
         assert "1:2" in map_values
 
+    def test_build_command_external_srt_subtitle_is_mapped_and_offset_applied(self, tmp_path):
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        src_video = tmp_path / "in.mkv"
+        src_sub = tmp_path / "subtitles.srt"
+        src_video.touch()
+        src_sub.write_text("1\n00:00:01,000 --> 00:00:02,000\nBonjour\n", encoding="utf-8")
+
+        cfg = RemuxConfig(
+            sources=[
+                SourceInput(path=src_video, file_index=0, tracks=[_track(0, "video")]),
+                SourceInput(path=src_sub, file_index=1, tracks=[_track(0, "subtitle", codec="SUBRIP", time_shift_ms=250)]),
+            ],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0), (1, 0)],
+            keep_chapters=False,
+        )
+
+        cmd = wf.build_command(cfg)
+        assert "-itsoffset" in cmd
+        assert cmd[cmd.index("-itsoffset") + 1] == "0.250"
+        map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
+        assert "0:0" in map_values
+        assert "2:0" in map_values
+
     def test_requires_file_sync_fallback_for_offsets_detects_foreign_offset(self, tmp_path):
         wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src_a = tmp_path / "a.mkv"
@@ -578,7 +602,7 @@ class TestRemuxWorkflowBuildCommand:
             TaskSignals(),
         )
         assert live is None
-        assert extra_inputs == [tmp_path / "mmap.mka"]
+        assert [item.path for item in extra_inputs] == [tmp_path / "mmap.mka"]
         audio = next(mt for mt in remapped if mt.track.track_type == "audio")
         assert audio.source_input_idx == 2
         assert audio.stream_index == 0
@@ -624,7 +648,7 @@ class TestRemuxWorkflowBuildCommand:
             TaskSignals(),
         )
         assert live is None
-        assert extra_inputs == [tmp_path / "temp.mka"]
+        assert [item.path for item in extra_inputs] == [tmp_path / "temp.mka"]
         audio = next(mt for mt in remapped if mt.track.track_type == "audio")
         assert audio.source_input_idx == 2
         assert audio.stream_index == 0

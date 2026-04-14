@@ -153,7 +153,7 @@ class RemuxPanel(QWidget):
             background: transparent;
             letter-spacing: -0.3px;
         """)
-        subtitle = QLabel("Remuxage, fusion et sélection de pistes — sans réencodage")
+        subtitle = QLabel("Remuxage, fusion et sélection de pistes (vidéo/audio/sous-titres externes) — sans réencodage")
         subtitle.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: 12px; background: transparent;")
         content_layout.addWidget(title)
         content_layout.addWidget(subtitle)
