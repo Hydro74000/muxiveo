@@ -159,29 +159,47 @@ class TimelineSyncFallbackHelper:
     ) -> TimelineSyncPrepareResult:
         """
         Stratégie hybride :
-        - Pistes audio étrangères → live FIFO (NUT, streamable).
-        - Pistes subtitle étrangères → fallback fichier (NUT ne supporte pas les sous-titres texte).
-        Les deux groupes sont combinés en respectant l'ordre d'apparition original.
+        - Audio étranger  → live FIFO NUT (streamable, pas de seek arrière).
+        - Subtitle étranger → toujours fallback fichier (NUT ne supporte pas SRT/ASS).
+        Les deux groupes sont combinés en respectant l'ordre d'apparition dans mapped_tracks.
         """
-        all_keys = MkvmergeLikeTimelineSync._collect_foreign_targets(
-            mapped_tracks=mapped_tracks,
-            source_by_index={src.file_index: src for src in sources},
-            cancel_cb=cancel_cb,
+        # Identifier les pistes étrangères (hors source vidéo primaire)
+        source_by_index = {src.file_index: src for src in sources}
+        foreign_keys: set[tuple[int, int, str]] = set(
+            MkvmergeLikeTimelineSync._collect_foreign_targets(
+                mapped_tracks=mapped_tracks,
+                source_by_index=source_by_index,
+                cancel_cb=cancel_cb,
+            )
         )
-        if not all_keys:
-            return TimelineSyncPrepareResult(prepared_inputs=[], live_session=None)
 
-        audio_tracks = [mt for mt in mapped_tracks if mt.track.track_type == "audio"
-                        and any(k == (mt.source_file_index, mt.stream_index, mt.track.track_type) for k in all_keys)]
-        subtitle_tracks = [mt for mt in mapped_tracks if mt.track.track_type == "subtitle"
-                           and any(k == (mt.source_file_index, mt.stream_index, mt.track.track_type) for k in all_keys)]
+        # Quand on ne peut pas identifier de pistes étrangères (pas de vidéo primaire,
+        # ou sources vides) → déléguer tout au syncer sans filtrer par type.
+        if not foreign_keys:
+            return self._prepare_unified(
+                mapped_tracks=mapped_tracks,
+                sources=sources,
+                base_input_idx=base_input_idx,
+                allow_live=allow_live,
+                cancel_cb=cancel_cb,
+            )
+
+        audio_tracks = [
+            mt for mt in mapped_tracks
+            if mt.track.track_type == "audio"
+            and (mt.source_file_index, mt.stream_index, mt.track.track_type) in foreign_keys
+        ]
+        subtitle_tracks = [
+            mt for mt in mapped_tracks
+            if mt.track.track_type == "subtitle"
+            and (mt.source_file_index, mt.stream_index, mt.track.track_type) in foreign_keys
+        ]
 
         live_session: LiveSyncSession | None = None
         live_prepared: list[SyncPreparedInput] = []
-        file_prepared: list[SyncPreparedInput] = []
 
-        # Live FIFO pour l'audio (NUT supporte audio)
-        if allow_live and audio_tracks:
+        # Audio étranger : live FIFO NUT si autorisé
+        if allow_live:
             try:
                 live_session = self._syncer.start_live_demux_session(
                     mapped_tracks=audio_tracks,
@@ -194,36 +212,59 @@ class TimelineSyncFallbackHelper:
             except TaskCancelledError:
                 raise
             except Exception as exc:
-                self._log(f"Sync live audio indisponible ({exc}); fallback fichier pour l'audio.")
+                self._log(f"Sync live audio indisponible ({exc}); fallback RAM puis disque.")
 
-        # Fallback fichier pour les sous-titres (et audio si live a échoué)
-        file_tracks = subtitle_tracks + (audio_tracks if not live_prepared else [])
-        if file_tracks:
-            file_base_idx = base_input_idx + len(live_prepared)
+        # Subtitle étranger : toujours fallback fichier (NUT ne supporte pas SRT/ASS)
+        # Audio étranger aussi en fallback si le live a échoué
+        fallback_tracks: list[MappedTrackLike] = (
+            ([] if live_prepared else list(audio_tracks)) + list(subtitle_tracks)
+        )
+        file_prepared: list[SyncPreparedInput] = []
+        if fallback_tracks:
             file_prepared = self._prepare_fallback(
-                mapped_tracks=file_tracks,
+                mapped_tracks=fallback_tracks,
                 sources=sources,
-                base_input_idx=file_base_idx,
+                base_input_idx=base_input_idx + len(live_prepared),
                 cancel_cb=cancel_cb,
             )
 
-        # Recombiner dans l'ordre original des all_keys
-        by_key: dict[tuple[int, int, str], SyncPreparedInput] = {
-            item.key: item for item in live_prepared + file_prepared
-        }
-        # Réindexer pour garantir des input_idx consécutifs à partir de base_input_idx
-        combined: list[SyncPreparedInput] = []
-        for i, key in enumerate(all_keys):
-            item = by_key.get(key)
-            if item is not None:
-                combined.append(SyncPreparedInput(
-                    key=item.key,
-                    path=item.path,
-                    input_idx=base_input_idx + i,
-                    container_format=item.container_format,
-                ))
+        prepared = live_prepared + file_prepared
+        return TimelineSyncPrepareResult(prepared_inputs=prepared, live_session=live_session)
 
-        return TimelineSyncPrepareResult(prepared_inputs=combined, live_session=live_session)
+    def _prepare_unified(
+        self,
+        *,
+        mapped_tracks: Sequence[MappedTrackLike],
+        sources: Sequence[SourceInput],
+        base_input_idx: int,
+        allow_live: bool,
+        cancel_cb: Callable[[], bool] | None,
+    ) -> TimelineSyncPrepareResult:
+        """Délégation sans filtrage par type — utilisé quand sources est vide."""
+        live_session: LiveSyncSession | None = None
+        prepared: list[SyncPreparedInput] = []
+        if allow_live:
+            try:
+                live_session = self._syncer.start_live_demux_session(
+                    mapped_tracks=mapped_tracks,
+                    sources=sources,
+                    tmp_dir=self._work_dir,
+                    base_input_idx=base_input_idx,
+                    cancel_cb=cancel_cb,
+                )
+                prepared = live_session.inputs
+            except TaskCancelledError:
+                raise
+            except Exception as exc:
+                self._log(f"Sync live indisponible ({exc}); fallback RAM puis disque.")
+        if not prepared:
+            prepared = self._prepare_fallback(
+                mapped_tracks=mapped_tracks,
+                sources=sources,
+                base_input_idx=base_input_idx,
+                cancel_cb=cancel_cb,
+            )
+        return TimelineSyncPrepareResult(prepared_inputs=prepared, live_session=live_session)
 
     def _prepare_fallback(
         self,
