@@ -328,13 +328,18 @@ def test_fallback_helper_prefers_ram_before_disk(tmp_path):
         def prepare_from_mapped_tracks(self, **_kwargs):
             pytest.fail("file fallback should not run when RAM mmap works")
 
+    src = tmp_path / "src.mkv"
+    src.touch()
+    mapped = [_MappedTrackFake(source_file_index=1, stream_index=1, track=_track(1, "audio"))]
+    sources = [_source(src, 1, [_track(1, "audio")])]
+
     result = TimelineSyncFallbackHelper(
         syncer=_FakeSyncer(),
         work_dir=work_dir,
         ram_dir=ram_dir,
     ).prepare(
-        mapped_tracks=[],
-        sources=[],
+        mapped_tracks=mapped,
+        sources=sources,
         base_input_idx=2,
         allow_live=True,
     )

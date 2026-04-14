@@ -153,7 +153,7 @@ class RemuxPanel(QWidget):
             background: transparent;
             letter-spacing: -0.3px;
         """)
-        subtitle = QLabel("Remuxage, fusion et sélection de pistes — sans réencodage")
+        subtitle = QLabel("Remuxage, fusion et sélection de pistes (vidéo/audio/sous-titres externes) — sans réencodage")
         subtitle.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: 12px; background: transparent;")
         content_layout.addWidget(title)
         content_layout.addWidget(subtitle)
@@ -415,6 +415,13 @@ class RemuxPanel(QWidget):
 
     def is_ready(self) -> bool:
         return self._has_ready_files()
+
+    def get_duration_s(self) -> float | None:
+        """Durée de la première source (pour le calcul de progression dans MainWindow)."""
+        for sf in self._source_files:
+            if sf.info and sf.info.duration_s:
+                return sf.info.duration_s
+        return None
 
     def run_operation(self, config: RemuxConfig) -> TaskSignals:
         return self._workflow.run(config)

@@ -143,6 +143,7 @@ from ui.panels.remux_panel import (
     _TRACK_INFO_OFFSET_VALUE_ROLE,
     _normalize_tmdb_manual_title_suggestion, _pick_file_color,
 )
+from ui.panels.remux_panel.widgets.file_list import _ACCEPTED_EXT
 from ui.panels.track_edit_dialog import TrackEditDialog
 from ui.panels.tmdb_search_modal import extract_season_episode
 
@@ -1095,6 +1096,9 @@ class TestFileListWidgetSize:
         file_list.remove_file(sf.id)
         assert file_list.file_count() == 0
 
+    def test_accepts_external_srt_sources(self, file_list):
+        assert ".srt" in _ACCEPTED_EXT
+
 
 # ===========================================================================
 # _TrackTable.update_audio_meta (synchronisation depuis EncodePanel)
@@ -1463,4 +1467,3 @@ class TestRemuxWorkflowPostMetadata:
                     time.sleep(0.01)
 
         assert patch_hook.called
-

@@ -48,6 +48,7 @@ from core.workflows.remux_models import (
 from core.workflows.remux_timeline_sync import (
     LiveSyncSession,
     MkvmergeLikeTimelineSync,
+    SyncPreparedInput,
     TimelineSyncFallbackHelper,
 )
 
@@ -405,6 +406,7 @@ class RemuxWorkflow(QObject):
         config: RemuxConfig,
         *,
         sync_inputs: list[Path | str] | None = None,
+        sync_input_formats: list[str] | None = None,
         extra_inputs: list[Path | str] | None = None,
         chapter_input_index: int | None = None,
         strict_interleave_override: bool | None = None,
@@ -427,8 +429,9 @@ class RemuxWorkflow(QObject):
 
         for src in config.sources:
             cmd.extend(["-i", _cli_path(src.path)])
-        for p in (sync_inputs or []):
-            cmd.extend(["-f", "matroska", "-i", _cli_path(p)])
+        for i, p in enumerate(sync_inputs or []):
+            fmt = (sync_input_formats or [])[i] if sync_input_formats and i < len(sync_input_formats) else "matroska"
+            cmd.extend(["-f", fmt, "-i", _cli_path(p)])
         for p in (extra_inputs or []):
             cmd.extend(["-i", _cli_path(p)])
 
@@ -588,7 +591,7 @@ class RemuxWorkflow(QObject):
             tmp_dir = process_work_dir
             chapter_meta_file: Path | None = None
             live_sync_session: LiveSyncSession | None = None
-            sync_inputs: list[Path | str] = []
+            sync_prepared: list[SyncPreparedInput] = []
             sync_cleanup_paths: list[Path] = []
             try:
                 extra_inputs: list[Path | str] = []
@@ -609,16 +612,19 @@ class RemuxWorkflow(QObject):
                             "INFO",
                             "D\u00e9calage sur piste \u00e9trang\u00e8re d\u00e9tect\u00e9 : sync live d\u00e9sactiv\u00e9, fallback fichier forc\u00e9.",
                         )
-                    mapped_tracks, sync_inputs, live_sync_session = self._prepare_mkvmerge_like_sync_inputs(
+                    mapped_tracks, sync_prepared, live_sync_session = self._prepare_mkvmerge_like_sync_inputs(
                         run_config,
                         mapped_tracks,
                         tmp_dir,
                         signals,
                         allow_live=allow_live_sync,
                     )
-                    sync_cleanup_paths = [p for p in sync_inputs if isinstance(p, Path)]
+                    sync_cleanup_paths = [p for p in (item.path for item in sync_prepared) if isinstance(p, Path)]
                 else:
                     self._log_step(4, "Synchronisation timeline multi-source (non requise)")
+
+                sync_inputs: list[Path | str] = [item.path for item in sync_prepared]
+                sync_input_formats: list[str] = [item.container_format for item in sync_prepared]
 
                 chapter_input_index: int | None = None
                 if run_config.chapter_overrides:
@@ -638,6 +644,7 @@ class RemuxWorkflow(QObject):
                 cmd = self.build_command(
                     run_config,
                     sync_inputs=sync_inputs,
+                    sync_input_formats=sync_input_formats,
                     extra_inputs=extra_inputs,
                     chapter_input_index=chapter_input_index,
                     strict_interleave_override=strict_interleave,
@@ -708,17 +715,15 @@ class RemuxWorkflow(QObject):
     @staticmethod
     def _needs_strict_interleave(mapped_tracks: list[_MappedTrack]) -> bool:
         """
-        D\u00e9tecte le pattern r\u00e9ellement \u00e0 risque observ\u00e9 c\u00f4t\u00e9 Plex:
+        Déclenche l'interleave strict si :
         - remux multi-source effectif,
-        - sous-titres en sortie (flux clairsem\u00e9s),
-        - au moins une piste audio venant d'une autre source que la vid\u00e9o de r\u00e9f\u00e9rence.
+        - sous-titres en sortie (flux clairsemés),
+        - au moins une piste audio ou sous-titre venant d'une source étrangère.
         """
-        used_sources = {mt.source_file_index for mt in mapped_tracks}
-        if len(used_sources) < 2:
+        if len({mt.source_file_index for mt in mapped_tracks}) < 2:
             return False
 
-        has_subtitle_output = any(mt.track.track_type == "subtitle" for mt in mapped_tracks)
-        if not has_subtitle_output:
+        if not any(mt.track.track_type == "subtitle" for mt in mapped_tracks):
             return False
 
         primary_video = next((mt for mt in mapped_tracks if mt.track.track_type == "video"), None)
@@ -726,7 +731,8 @@ class RemuxWorkflow(QObject):
             return False
 
         return any(
-            mt.track.track_type == "audio" and mt.source_file_index != primary_video.source_file_index
+            mt.track.track_type in {"audio", "subtitle"}
+            and mt.source_file_index != primary_video.source_file_index
             for mt in mapped_tracks
         )
 
@@ -760,109 +766,13 @@ class RemuxWorkflow(QObject):
         if not base_risk:
             return False
 
-        source_by_index = {src.file_index: src for src in config.sources}
-        subtitle_tracks = [
-            mt for mt in mapped_tracks
-            if mt.track.track_type == "subtitle"
-        ]
-        if not subtitle_tracks:
-            return False
-
-        sparse_hits = 0
-        scanned = 0
-
-        for mt in subtitle_tracks:
-            src = source_by_index.get(mt.source_file_index)
-            if src is None:
-                continue
-            scanned += 1
-            is_sparse = self._is_sparse_subtitle_stream(src, mt.stream_index)
-            if is_sparse is None:
-                self.log_message.emit(
-                    "WARNING",
-                    "Pr\u00e9-scan sous-titres indisponible; activation du mode interleave strict par s\u00e9curit\u00e9.",
-                )
-                return True
-            if is_sparse:
-                sparse_hits += 1
-
-        decision = sparse_hits > 0
-        if decision:
-            self.log_message.emit(
-                "INFO",
-                f"Pr\u00e9-scan ffprobe: {sparse_hits}/{max(scanned, 1)} piste(s) sous-titres clairsem\u00e9e(s) -> interleave strict activ\u00e9.",
-            )
-        else:
-            self.log_message.emit(
-                "INFO",
-                "Pr\u00e9-scan ffprobe: sous-titres denses -> interleave strict non activ\u00e9.",
-            )
-        return decision
-
-    def _is_sparse_subtitle_stream(self, source, stream_index: int) -> bool | None:
-        subtitle_ids = sorted(t.mkv_tid for t in source.tracks if t.track_type == "subtitle")
-        if stream_index not in subtitle_ids:
-            return None
-        subtitle_ordinal = subtitle_ids.index(stream_index)
-
-        cmd = [
-            self._ffprobe,
-            "-v", "quiet",
-            "-select_streams", f"s:{subtitle_ordinal}",
-            "-show_packets",
-            "-show_entries", "packet=pts_time",
-            "-of", "csv=p=0",
-            str(source.path),
-        ]
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                check=False,
-                timeout=40,
-                **subprocess_text_kwargs(),
-            )
-        except FileNotFoundError:
-            return None
-
-        if result.returncode != 0:
-            return None
-
-        pts_values: list[float] = []
-        for raw_line in (result.stdout or "").splitlines():
-            token = raw_line.strip().split(",", 1)[0].strip()
-            if not token or token == "N/A":
-                continue
-            try:
-                pts_values.append(float(token))
-            except ValueError:
-                continue
-
-        if len(pts_values) < 2:
-            return True
-
-        gaps = [
-            b - a
-            for a, b in zip(pts_values, pts_values[1:])
-            if b > a
-        ]
-        if not gaps:
-            return True
-
-        avg_gap = sum(gaps) / len(gaps)
-        sorted_gaps = sorted(gaps)
-        p95_gap = sorted_gaps[min(len(sorted_gaps) - 1, int(len(sorted_gaps) * 0.95))]
-        max_gap = sorted_gaps[-1]
-
-        span = max(1.0, pts_values[-1] - pts_values[0])
-        cue_rate = len(pts_values) / span
-
-        return (
-            avg_gap >= 1.5
-            or p95_gap >= 4.0
-            or max_gap >= 10.0
-            or cue_rate < 0.8
+        # Piste audio étrangère détectée + sous-titres en sortie → sync obligatoire,
+        # pas besoin de prescan ffprobe (coûteux sur gros fichiers).
+        self.log_message.emit(
+            "INFO",
+            "Piste audio \u00e9trang\u00e8re + sous-titres d\u00e9tect\u00e9s : interleave strict activ\u00e9.",
         )
+        return True
 
     def _prepare_mkvmerge_like_sync_inputs(
         self,
@@ -872,7 +782,7 @@ class RemuxWorkflow(QObject):
         signals: TaskSignals,
         *,
         allow_live: bool = True,
-    ) -> tuple[list[_MappedTrack], list[Path | str], LiveSyncSession | None]:
+    ) -> tuple[list[_MappedTrack], list[SyncPreparedInput], LiveSyncSession | None]:
         """
         D\u00e9l\u00e8gue la normalisation des flux \u00e9trangers \u00e0 un utilitaire d\u00e9di\u00e9 afin de
         conserver une logique testable et r\u00e9utilisable hors workflow.
@@ -918,7 +828,7 @@ class RemuxWorkflow(QObject):
                 stream_index=0,
             ))
 
-        return remapped, [item.path for item in prepared], live_session
+        return remapped, prepared, live_session
 
     def _resolve_mapped_tracks(self, config: RemuxConfig) -> list[_MappedTrack]:
         file_index_to_input_idx = {

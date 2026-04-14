@@ -863,12 +863,13 @@ class TestExtFilesCleanupOnFailure:
         def _fast_fail(cmd, signals=None, cwd=None, progress_cb=None):
             raise RuntimeError("Fast fail")
 
+        result: list = []
+        # Les connexions doivent être établies avant le lancement du thread
+        # pour ne pas manquer un signal émis avant processEvents().
         with patch.object(EncodeWorkflow, "_shm_path",
                           side_effect=lambda t, n, _: t / n), \
              patch.object(wf._runner, "_run_cmd", side_effect=_fast_fail):
             sigs = wf._run_with_metadata_inject(config)
-            # Si le finally lève une exception, failed sera émis mais le test ne plantera pas
-            result: list = []
             sigs.failed.connect(lambda msg, _: result.append(msg),
                                 Qt.ConnectionType.QueuedConnection)
             sigs.finished.connect(lambda _: result.append("ok"),

@@ -1683,23 +1683,30 @@ class MainWindow(QMainWindow):
     def _on_op_progress(self, line: str) -> None:
         """Gère la progression selon le mode (remux ou encode)."""
         if self._op_mode == "remux":
-            if "Progress:" in line:
-                try:
-                    self._stop_prep_progress()
-                    pct = int(line.split("%")[0].split()[-1])
+            if line.startswith("$ "):
+                self._stop_prep_progress()
+                self.log_requested.emit("INFO", line)
+                return
+            elapsed_video = ffmpeg_progress_seconds(line)
+            if elapsed_video is not None:
+                self._stop_prep_progress()
+                dur = self._remux_panel.get_duration_s()
+                if dur and dur > 0:
+                    pct = min(99, int(elapsed_video / dur * 100))
                     self._prog_bar.setValue(pct)
-                    elapsed = time.monotonic() - self._op_start
-                    if pct > 0 and elapsed > 0:
-                        eta_s = elapsed * (100 - pct) / pct
+                    elapsed_wall = time.monotonic() - self._op_start
+                    if elapsed_wall > 0 and elapsed_video > 0:
+                        speed = elapsed_video / elapsed_wall
+                        eta_s = (dur - elapsed_video) / speed
                         eta_str = f"ETA {_fmt_eta(eta_s)}"
                     else:
                         eta_str = ""
                     parts = [f"{pct}%", eta_str]
                     self._prog_lbl.setText("  ·  ".join(p for p in parts if p))
-                except (ValueError, IndexError):
-                    pass
-            else:
-                self.log_requested.emit("INFO", line)
+                return
+            if _is_encode_progress_noise(line):
+                return
+            self.log_requested.emit("INFO", line)
         else:
             if self._NOISE_RE.search(line):
                 return
