@@ -12,27 +12,90 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QFont, QColor
 
-# --- LOGIQUE DE NETTOYAGE ---
-TRASH_WORDS = [r'\bmulti\b', r'\bfrench\b', r'\bvff\b', r'\bvfq\b', r'\bvfi\b', r'\bhdr\b', r'\btruefrench\b']
+# --- LOGIQUE DE NETTOYAGE ET PARSING ---
+TRASH_WORDS = [r'\bmulti\b', r'\bfrench\b', r'\bvff\b', r'\bvfq\b', r'\bvfi\b', r'\bhdr\b', r'\btruefrench\b', r'\bfastsub\b', r'\bvostfr\b']
 
-def clean_movie_name(filename):
+def clean_title(raw_title):
+    if not raw_title: return ""
+    t = raw_title
+    
+    # Suppression des tags entre crochets/accolades
+    t = re.sub(r'\{.*?\}', '', t)
+    t = re.sub(r'\[.*?\]', '', t)
+    
+    # Séparation si une année est collée au titre
+    m_year = re.search(r'(.*?)(\b(19|20)\d{2}\b)', t, re.IGNORECASE)
+    if m_year:
+        potential = m_year.group(1).strip()
+        if potential.replace('.', '').replace('-', '') != "":
+            t = potential
+
+    # Nettoyage des résolutions, codecs et mots poubelles
+    t = re.split(r'\b(1080p|2160p|720p|bluray|web|vff|multi|vfi|french|dts|x264|x265|hdr|dv|hevc|uhd)\b', t, flags=re.IGNORECASE)[0]
+    t = t.replace('.', ' ').replace('-', ' ').replace('_', ' ')
+    
+    for word in TRASH_WORDS:
+        t = re.sub(word, '', t, flags=re.IGNORECASE)
+        
+    return re.sub(r'\s+', ' ', t).strip().title()
+
+def parse_media_file(filepath):
+    filename = os.path.basename(filepath)
     name = os.path.splitext(filename)[0]
+
     if "sample" in name.lower() or (len(name) > 30 and " " not in name and "." not in name):
         return None
-    name = re.sub(r'\{.*?\}', '', name)
-    match = re.search(r'(.*?)(\b(19|20)\d{2}\b)', name, re.IGNORECASE)
-    if match:
-        potential_title = match.group(1).strip()
-        if not potential_title or potential_title.replace('.', '').replace('-', '') == "":
-            after_year = name[match.end():]
-            potential_title = re.split(r'\b(1080p|2160p|720p|bluray|web|vff|multi)\b', after_year, flags=re.IGNORECASE)[0]
+
+    # Motifs de détection de séries (Ordre de priorité important)
+    series_patterns = [
+        r'(?P<show>.*?)[ \.\-_]*[Ss](?P<season>\d+)[ \.\-_]*[Ee](?P<ep>\d+)',              # S01E01, S01.E01
+        r'(?P<show>.*?)[ \.\-_]*(?<!\d)(?P<season>\d+)[xX](?P<ep>\d+)(?!\d)',               # 1x01
+        r'(?P<show>.*?)[ \.\-_]*[Ss]aison\s*(?P<season>\d+).*?[Ee]pisode\s*(?P<ep>\d+)',    # Saison 1 Episode 2
+        r'(?P<show>.*?)[ \.\-_]*[Ss](?P<season>\d+)-(?P<ep>\d+)',                           # S06-01
+    ]
+
+    is_series = False
+    season_num = 0
+    ep_num = 0
+    show_title = ""
+
+    # 1. Analyse par nom de fichier
+    for pattern in series_patterns:
+        match = re.search(pattern, name, re.IGNORECASE)
+        if match:
+            is_series = True
+            show_title = match.group('show')
+            season_num = int(match.group('season'))
+            ep_num = int(match.group('ep'))
+            break
+
+    # 2. Analyse par structure de dossier (Fallback)
+    if not is_series:
+        parent_dir = os.path.basename(os.path.dirname(filepath))
+        match_season_dir = re.search(r'^(?:[Ss]eason|[Ss]aison|[Ss])\s*(\d+)$', parent_dir, re.IGNORECASE)
+        if match_season_dir:
+            is_series = True
+            season_num = int(match_season_dir.group(1))
+            # On tente de trouver le numéro d'épisode dans le fichier
+            match_ep = re.search(r'(?:[Ee]pisode|[Ee]|^\s*|-|_)\s*(\d{1,3})\b', name, re.IGNORECASE)
+            ep_num = int(match_ep.group(1)) if match_ep else 0
+            show_title = os.path.basename(os.path.dirname(os.path.dirname(filepath)))
+
+    if is_series:
+        clean_show = clean_title(show_title)
+        # Si le nom de la série est introuvable via la regex, on prend le dossier parent
+        if not clean_show or len(clean_show) < 2:
+            clean_show = clean_title(os.path.basename(os.path.dirname(filepath)))
+            if re.search(r'(?:[Ss]eason|[Ss]aison|[Ss])\s*\d+', clean_show, re.IGNORECASE):
+                clean_show = clean_title(os.path.basename(os.path.dirname(os.path.dirname(filepath))))
+
+        if not clean_show: clean_show = "Série Inconnue"
+        return {"type": "S", "show": clean_show, "season": season_num, "episode": ep_num, "path": filepath}
     else:
-        potential_title = re.split(r'\b(1080p|2160p|720p|bluray|multi|vff|vfi|french|dts|x264|x265)\b', name, flags=re.IGNORECASE)[0]
-    
-    clean_name = potential_title.replace('.', ' ').replace('-', ' ').replace('_', ' ')
-    for word in TRASH_WORDS:
-        clean_name = re.sub(word, '', clean_name, flags=re.IGNORECASE)
-    return re.sub(r'\s+', ' ', clean_name).strip().title()
+        clean_movie = clean_title(name)
+        if clean_movie:
+            return {"type": "F", "title": clean_movie, "path": filepath}
+        return None
 
 def get_file_size(path):
     try:
@@ -52,7 +115,7 @@ TARGET_KEYS = {
 
 # --- THREADS ASYNCHRONES ---
 class ScannerThread(QThread):
-    file_found = Signal(str, str) # Émet le film dès qu'il est trouvé
+    file_found = Signal(dict) # Émet un dictionnaire structuré F ou S
     finished = Signal()
     
     def __init__(self, directory):
@@ -63,9 +126,10 @@ class ScannerThread(QThread):
         for root, _, files in os.walk(self.directory):
             for f in files:
                 if f.lower().endswith(('.mkv', '.mp4', '.avi', '.mov')):
-                    title = clean_movie_name(f)
-                    if title:
-                        self.file_found.emit(title, os.path.join(root, f))
+                    filepath = os.path.join(root, f)
+                    meta = parse_media_file(filepath)
+                    if meta:
+                        self.file_found.emit(meta)
         self.finished.emit()
 
 class MediaInfoThread(QThread):
@@ -84,7 +148,6 @@ class MediaInfoThread(QThread):
         for line in lines:
             line = line.strip()
             if not line: continue
-            # Détection des titres de sections
             if ":" not in line or (line.split(':', 1)[0].strip() in ["General", "Video", "Audio", "Text"]):
                 if current_sec and current_data: 
                     sections_data.append({"title": current_sec, "data": current_data})
@@ -105,7 +168,6 @@ class MediaInfoThread(QThread):
         nfo_path = base + ".nfo"
         mediainfo_nfo_path = base + "_mediainfo.nfo"
 
-        # Priorité : .nfo puis _mediainfo.nfo (si bien formé)
         for candidate, label in [(nfo_path, "📄 Fichier NFO"), (mediainfo_nfo_path, "📄 _mediainfo.nfo")]:
             if os.path.exists(candidate):
                 try:
@@ -115,20 +177,15 @@ class MediaInfoThread(QThread):
                             data[0]["data"]["_Source"] = label
                             self.info_ready.emit(data)
                             return
-                except:
-                    pass
+                except: pass
 
-        # Backup MediaInfo
         try:
             res = subprocess.run(['mediainfo', self.filepath], capture_output=True, text=True, encoding='utf-8')
             if res.stdout:
-                # Si .nfo existe mais mal formé → écrire dans _mediainfo.nfo, sinon dans .nfo
                 target = mediainfo_nfo_path if os.path.exists(nfo_path) else nfo_path
                 try:
-                    with open(target, 'w', encoding='utf-8') as f:
-                        f.write(res.stdout)
-                except OSError:
-                    pass
+                    with open(target, 'w', encoding='utf-8') as f: f.write(res.stdout)
+                except OSError: pass
             data = self.parse_content(res.stdout)
             if data: data[0]["data"]["_Source"] = "⚙️ MediaInfo Engine"
             self.info_ready.emit(data)
@@ -139,15 +196,12 @@ class MediaInfoThread(QThread):
 class InfoCard(QFrame):
     def __init__(self, title, data_dict):
         super().__init__()
-        color = "#7aa2f7" # Bleu Général
-        if "Video" in title: color = "#bb9af7" # Violet
-        elif "Audio" in title: color = "#9ece6a" # Vert
-        elif "Text" in title: color = "#e0af68" # Orange
+        color = "#7aa2f7" 
+        if "Video" in title: color = "#bb9af7" 
+        elif "Audio" in title: color = "#9ece6a" 
+        elif "Text" in title: color = "#e0af68" 
 
-        self.setStyleSheet("""
-            QFrame { background-color: #24283b; border-radius: 8px; border: 1px solid #414868; margin-bottom: 12px; }
-            QLabel { border: none; }
-        """)
+        self.setStyleSheet(f"QFrame {{ background-color: #24283b; border-radius: 8px; border: 1px solid #414868; margin-bottom: 12px; }} QLabel {{ border: none; }}")
         
         layout = QVBoxLayout(self)
         layout.setContentsMargins(15, 15, 15, 15)
@@ -163,28 +217,30 @@ class InfoCard(QFrame):
         for k, v in data_dict.items():
             lbl_key = QLabel(k)
             lbl_key.setStyleSheet("color: #565f89; font-weight: bold; font-size: 11px;")
-            
             lbl_val = QLabel(v)
             lbl_val.setStyleSheet("color: #c0caf5; font-size: 11px; font-weight: 600;")
             lbl_val.setWordWrap(True)
-            
             form.addRow(lbl_key, lbl_val)
             
         layout.addLayout(form)
 
 class MediaManager(QMainWindow):
+    COL = {"type": 0, "nom": 1, "taille": 2, "action": 3}
+
     def __init__(self):
         super().__init__()
-        self.tree_items = {} 
+        self.tree_items = {}
         self.full_data = defaultdict(list)
         self.scanned_count = 0
+        self._current_path = None
+        self._threads = []
         
         self.setWindowTitle("Media Manager")
         self.resize(1400, 900)
         self.apply_styles()
         self.init_ui()
         
-        self.target_dir = QFileDialog.getExistingDirectory(self, "Choisir le dossier de films")
+        self.target_dir = QFileDialog.getExistingDirectory(self, "Choisir le dossier de films/séries")
         if self.target_dir:
             self.start_scan()
         else:
@@ -193,37 +249,20 @@ class MediaManager(QMainWindow):
     def apply_styles(self):
         self.setStyleSheet("""
             QMainWindow, QWidget { background-color: #1a1b26; color: #c0caf5; font-family: 'Segoe UI', 'Inter', sans-serif; }
-            
             QTreeWidget { background-color: #1f2335; border: 1px solid #292e42; border-radius: 8px; outline: none; }
             QTreeWidget::item { height: 38px; border-bottom: 1px solid #24283b; }
             QTreeWidget::item:selected { background-color: #3d59a1; color: #ffffff; border-radius: 4px; }
-            
             QHeaderView::section { background-color: #1f2335; color: #7aa2f7; padding: 10px; border: none; font-weight: bold; font-size: 11px; text-transform: uppercase; }
             QHeaderView::section:hover { background-color: #252a3a; color: #c0caf5; }
             QHeaderView::section:pressed { background-color: #2d3250; color: #bb9af7; }
-            
             QLineEdit { background-color: #24283b; border: 1px solid #414868; border-radius: 6px; padding: 10px; color: #c0caf5; font-size: 13px; }
             QLineEdit:focus { border: 1px solid #7aa2f7; }
-            
-            QPushButton#btn_delete { 
-                background-color: #f7768e; color: #1a1b26; border-radius: 4px; 
-                font-size: 10px; font-weight: bold; height: 22px; max-width: 80px; 
-            }
+            QPushButton#btn_delete { background-color: #f7768e; color: #1a1b26; border-radius: 4px; font-size: 10px; font-weight: bold; height: 22px; max-width: 80px; }
             QPushButton#btn_delete:hover { background-color: #ff9eaf; }
-            
             QPushButton#btn_refresh { background-color: #24283b; border: 1px solid #414868; color: #7aa2f7; border-radius: 6px; padding: 8px 15px; font-weight: bold;}
             QPushButton#btn_refresh:hover { background-color: #414868; }
-            
-            QPushButton#btn_browse { 
-                background-color: #24283b; 
-                border: 1px solid #bb9af7; 
-                color: #bb9af7; 
-                border-radius: 6px; 
-                padding: 8px 15px; 
-                font-weight: bold;
-                }
+            QPushButton#btn_browse { background-color: #24283b; border: 1px solid #bb9af7; color: #bb9af7; border-radius: 6px; padding: 8px 15px; font-weight: bold;}
             QPushButton#btn_browse:hover { background-color: #bb9af7; color: #1a1b26; }
-            
             QScrollArea { border: none; background-color: transparent; }
             QScrollBar:vertical { background: #1a1b26; width: 12px; margin: 0px; }
             QScrollBar::handle:vertical { background: #414868; border-radius: 6px; min-height: 20px; }
@@ -232,56 +271,50 @@ class MediaManager(QMainWindow):
     def init_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
-        
-        # LE LAYOUT PRINCIPAL
         layout = QVBoxLayout(central)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(15)
 
-        # 1. HEADER (Top Bar)
         top = QHBoxLayout()
         title = QLabel("MEDIA MANAGER")
         title.setStyleSheet("font-weight: 950; font-size: 24px; color: #bb9af7; letter-spacing: -1px;")
         
         self.search = QLineEdit()
-        self.search.setPlaceholderText("🔍 Rechercher un film en direct...")
+        self.search.setPlaceholderText("Rechercher un film ou une série...")
         self.search.setFixedWidth(400)
         self.search.textChanged.connect(self.filter_tree)
 
-        self.btn_refresh = QPushButton("🔄 Actualiser")
+        self.btn_refresh = QPushButton("Actualiser")
         self.btn_refresh.setObjectName("btn_refresh")
         self.btn_refresh.clicked.connect(self.start_scan)
 
-        self.btn_browse = QPushButton("Ouvrir un autre📂 Dossier")
-        self.btn_browse.setObjectName("btn_browse") # Pour le style
+        self.btn_browse = QPushButton("Browse...")
+        self.btn_browse.setObjectName("btn_browse")
         self.btn_browse.clicked.connect(self.change_directory)
         
         top.addWidget(title)
-        top.addStretch() # Pousse la barre de recherche à droite
+        top.addStretch()
         top.addWidget(self.search)
         top.addWidget(self.btn_refresh)
         top.addWidget(self.btn_browse)
         layout.addLayout(top)
 
-        # 2. STATUS
         self.lbl_status = QLabel("Prêt")
         self.lbl_status.setStyleSheet("color: #9ece6a; font-weight: bold; font-size: 12px;")
         layout.addWidget(self.lbl_status)
 
-        # 3. SPLITTER (Le cœur du problème réglé ici)
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding) # IMPORTANT
+        splitter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
-        #Panneau Gauche : Arbre
         self.tree = QTreeWidget()
         self.tree.setSortingEnabled(False)
-        self.tree.setHeaderLabels(["Nom / Fichier", "Taille", "Action"])
-        self.tree.setColumnWidth(0, 550)
-        self.tree.setColumnWidth(1, 100)
-        self.tree.setColumnWidth(2, 50)
+        self.tree.setHeaderLabels(["Type", "Nom / Fichier", "Taille", "Action"])
+        self.tree.setColumnWidth(self.COL["type"],   55)
+        self.tree.setColumnWidth(self.COL["nom"],   500)
+        self.tree.setColumnWidth(self.COL["taille"], 100)
+        self.tree.setColumnWidth(self.COL["action"],  50)
         self.tree.itemSelectionChanged.connect(self.load_info)
 
-        # Configurer le header APRÈS setHeaderLabels et setSortingEnabled
         header = self.tree.header()
         header.setSectionsClickable(True)
         header.setSortIndicatorShown(True)
@@ -291,14 +324,12 @@ class MediaManager(QMainWindow):
         self._sort_asc = False
         splitter.addWidget(self.tree)
 
-        # Panneau Droit : Détails avec ScrollArea
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.details_container = QWidget()
         self.details_layout = QVBoxLayout(self.details_container)
         self.details_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         
-        # Message par défaut
         self.placeholder = QLabel("Sélectionnez un fichier pour voir les détails")
         self.placeholder.setStyleSheet("color: #565f89; font-style: italic; font-size: 14px;")
         self.placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -307,52 +338,50 @@ class MediaManager(QMainWindow):
         self.scroll.setWidget(self.details_container)
         splitter.addWidget(self.scroll)
 
-        # Proportions horizontales
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
-        
-        # AJOUT DU SPLITTER AU LAYOUT AVEC STRETCH=1 (C'est ça qui empêche l'écrasement !)
         layout.addWidget(splitter, 1)
 
     def handle_header_click(self, index):
-        if index not in (0, 1):
-            return
-        if self._sort_col == index:
-            self._sort_asc = not self._sort_asc
-        else:
-            self._sort_asc = False
+        C = self.COL
+        sortable = {C["type"], C["nom"], C["taille"]}
+        if index not in sortable: return
+        if self._sort_col == index: self._sort_asc = not self._sort_asc
+        else: self._sort_asc = False
         self._sort_col = index
 
         order = Qt.SortOrder.AscendingOrder if self._sort_asc else Qt.SortOrder.DescendingOrder
         direction = "▲ Croissant" if self._sort_asc else "▼ Décroissant"
-        col_name = "Nom / Fichier" if index == 0 else "Taille"
+        col_name = {C["type"]: "Type", C["nom"]: "Nom / Fichier", C["taille"]: "Taille"}[index]
         self.lbl_status.setText(f"🔃 Tri par {col_name} {direction}…")
 
         self.tree.header().setSortIndicator(index, order)
         self._update_header_style(index)
 
-        if index == 0:
-            self.sort_tree()
-        elif index == 1:
-            self.sort_by_size()
+        if index == C["type"]: self.sort_by_type()
+        elif index == C["nom"]: self.sort_tree()
+        elif index == C["taille"]: self.sort_by_size()
 
     def _update_header_style(self, active_col):
+        C = self.COL
         arrow = " ▲" if self._sort_asc else " ▼"
-        labels = ["Nom / Fichier", "Taille", "Action"]
-        for col, label in enumerate(labels):
+        labels = {C["type"]: "Type", C["nom"]: "Nom / Fichier", C["taille"]: "Taille", C["action"]: "Action"}
+        for col, label in labels.items():
             self.tree.headerItem().setText(col, label + (arrow if col == active_col else ""))
 
-        # :first = col 0, :middle = col 1 (entre first et last), :last = col 2
-        # "middle" n'existe pas en Qt CSS — on utilise :!first:!last
         base = "QHeaderView::section { background-color: #1f2335; color: #7aa2f7; padding: 10px; border: none; font-weight: bold; font-size: 11px; }"
         active = "color: #bb9af7; background-color: #1d1f33; border-bottom: 2px solid #bb9af7;"
-        if active_col == 0:
-            extra = f"QHeaderView::section:first {{ {active} }}"
-        elif active_col == 1:
-            extra = f"QHeaderView::section:middle {{ {active} }}"
-        else:
-            extra = ""
+        nth = {C["type"]: "first", C["nom"]: "nth-child(2)", C["taille"]: "nth-child(3)"}
+        extra = f"QHeaderView::section:{nth[active_col]} {{ {active} }}" if active_col in nth else ""
         self.tree.header().setStyleSheet(base + extra)
+
+    def restore_buttons(self, item):
+        path = item.data(self.COL["type"], Qt.ItemDataRole.UserRole)
+        if isinstance(path, str) and path.lower().endswith(('.mkv', '.mp4', '.avi')):
+            self.create_del_btn(item, path)
+        else:
+            for i in range(item.childCount()):
+                self.restore_buttons(item.child(i))
 
     def create_del_btn(self, item, path):
         btn = QPushButton("Supprimer")
@@ -363,27 +392,71 @@ class MediaManager(QMainWindow):
         l.setContentsMargins(0,0,10,0)
         l.setAlignment(Qt.AlignmentFlag.AlignRight)
         l.addWidget(btn)
-        self.tree.setItemWidget(item, 2, c)
+        self.tree.setItemWidget(item, self.COL["action"], c)
         
-    def sort_by_size(self):
+    def sort_by_type(self):
         self.tree.setUpdatesEnabled(False)
-
         items = []
         while self.tree.topLevelItemCount() > 0:
             items.append(self.tree.takeTopLevelItem(0))
 
-        sign = 1 if self._sort_asc else -1
-        items.sort(key=lambda item: sign * (item.data(1, Qt.ItemDataRole.UserRole) or 0))
+        # F avant S si ascendant, S avant F si descendant
+        C = self.COL
+        items.sort(key=lambda x: (x.text(C["type"]), x.text(C["nom"]).lower()), reverse=not self._sort_asc)
 
         for parent in items:
             self.tree.addTopLevelItem(parent)
-            for i in range(parent.childCount()):
-                child = parent.child(i)
-                path = child.data(0, Qt.ItemDataRole.UserRole)
-                self.create_del_btn(child, path)
+            self.restore_buttons(parent)
 
         self.tree.setUpdatesEnabled(True)
-        self.lbl_status.setText("⚖️ Trié par taille (Plus gros en haut)")
+        self.lbl_status.setText("🔠 Trié par type (F / S)")
+
+    def sort_by_size(self):
+        self.tree.setUpdatesEnabled(False)
+        items = []
+        while self.tree.topLevelItemCount() > 0:
+            items.append(self.tree.takeTopLevelItem(0))
+
+        C = self.COL
+        sign = 1 if self._sort_asc else -1
+        items.sort(key=lambda item: sign * (item.data(C["taille"], Qt.ItemDataRole.UserRole) or 0))
+
+        for parent in items:
+            self.tree.addTopLevelItem(parent)
+            self.restore_buttons(parent)
+
+        self.tree.setUpdatesEnabled(True)
+        self.lbl_status.setText("⚖️ Trié par taille")
+
+    def sort_tree(self):
+        self.tree.setUpdatesEnabled(False)
+        items = []
+        while self.tree.topLevelItemCount() > 0:
+            items.append(self.tree.takeTopLevelItem(0))
+
+        # 1. Sous-tri croissant saisons et épisodes par numéro
+        C = self.COL
+        def sort_children_by_num(node):
+            children = [node.takeChild(0) for _ in range(node.childCount())]
+            children.sort(key=lambda x: int(m.group()) if (m := re.search(r'\d+', x.text(C["nom"]))) else 0)
+            for child in children:
+                node.addChild(child)
+
+        for parent in items:
+            sort_children_by_num(parent)          # saisons
+            for i in range(parent.childCount()):
+                sort_children_by_num(parent.child(i))  # épisodes
+
+        # 2. Tri du niveau parent (Doublons en premier, puis alphabétique)
+        items.sort(key=lambda x: x.text(C["nom"]).lower(), reverse=not self._sort_asc)
+        items.sort(key=lambda x: (x.data(C["action"], Qt.ItemDataRole.UserRole) or 0), reverse=True)
+        
+        for parent in items:
+            self.tree.addTopLevelItem(parent)
+            self.restore_buttons(parent)
+        
+        self.tree.setUpdatesEnabled(True)
+        self.lbl_status.setText(f"✅ Tri terminé : {len(items)} titres/séries organisés.")
 
     def start_scan(self):
         self.tree.clear()
@@ -392,91 +465,140 @@ class MediaManager(QMainWindow):
         self.scanned_count = 0
         
         self.lbl_status.setText(f"⏳ Analyse du dossier en cours... ({self.target_dir})")
-        
         self.scanner = ScannerThread(self.target_dir)
-        self.scanner.file_found.connect(self.add_to_ui) # Connexion pour le temps réel
+        self.scanner.file_found.connect(self.add_to_ui)
         self.scanner.finished.connect(self.on_scan_finished)
         self.scanner.start()
 
     def on_scan_finished(self):
-        self.lbl_status.setText(f"✅ Analyse terminée : {len(self.full_data)} titres en mémoire.")
-        # Tri initial sur col 0, desc (doublons en premier)
-        self._sort_col = 0
+        self.lbl_status.setText(f"✅ Analyse terminée : {self.tree.topLevelItemCount()} éléments racines en mémoire.")
+        self._sort_col = self.COL["nom"]
         self._sort_asc = False
-        self.tree.header().setSortIndicator(0, Qt.SortOrder.DescendingOrder)
-        self._update_header_style(0)
+        self.tree.header().setSortIndicator(self.COL["nom"], Qt.SortOrder.DescendingOrder)
+        self._update_header_style(self.COL["nom"])
         self.sort_tree()
 
-    def sort_tree(self):
-        """ Trie la liste par doublons puis titre, et restaure les boutons supprimer """
-        self.tree.setUpdatesEnabled(False)
-
-        items = []
-        while self.tree.topLevelItemCount() > 0:
-            items.append(self.tree.takeTopLevelItem(0))
-
-        def get_sort_key(item):
-            text = item.text(0)
-            match = re.search(r'\((\d+)\)$', text)
-            count = int(match.group(1)) if match else 0
-            title = text.rsplit(' (', 1)[0].lower()
-            return (-count, title)
-
-        items.sort(key=get_sort_key, reverse=self._sort_asc)
-        
-        # 3. Ré-insertion et restauration CRUCIALE des boutons
-        for parent in items:
-            self.tree.addTopLevelItem(parent)
-            for i in range(parent.childCount()):
-                child = parent.child(i)
-                # RÉCUPÉRATION DU CHEMIN : On extrait le chemin sauvegardé dans l'item
-                path = child.data(0, Qt.ItemDataRole.UserRole)
-                
-                # RE-CRÉATION DU BOUTON : On repasse le bon chemin au bouton
-                self.create_del_btn(child, path)
-        
-        self.tree.setUpdatesEnabled(True)
-        self.lbl_status.setText(f"✅ Tri terminé : {len(items)} titres organisés.")
-
-    def add_to_ui(self, title, path):
-        # 1. Mise à jour de la mémoire interne
-        self.full_data[title].append(path)
-        count = len(self.full_data[title])
+    def add_to_ui(self, meta):
+        path = meta["path"]
+        total_bytes = os.path.getsize(path) if os.path.exists(path) else 0
         self.scanned_count += 1
-
-        total_bytes = sum(os.path.getsize(p) for p in self.full_data[title] if os.path.exists(p))
-        size_str = self.format_size(total_bytes)
-
-        # Update du status text en direct
-        if self.scanned_count % 5 == 0:
+        
+        if self.scanned_count % 10 == 0:
             self.lbl_status.setText(f"⏳ Analyse en cours... ({self.scanned_count} fichiers trouvés)")
 
-        # 2. Ajout dans l'arbre (Parent)
-        if title not in self.tree_items:
-            parent = QTreeWidgetItem(self.tree, [f"{title} ({count})", size_str, ""])
-            parent.setFont(0, QFont("Segoe UI", 11, QFont.Weight.Bold))
-            # Stocker les bytes bruts pour un tri fiable
-            parent.setData(1, Qt.ItemDataRole.UserRole, total_bytes)
-            self.tree_items[title] = parent
+        C = self.COL
+        if meta["type"] == "F":
+            title = meta["title"]
+            key_f = f"F|{title}"
 
-            current_search = self.search.text().lower()
-            if current_search and current_search not in title.lower():
-                parent.setHidden(True)
-        else:
-            parent = self.tree_items[title]
-            parent.setText(0, f"{title} ({count})")
-            parent.setText(1, size_str)
-            parent.setData(1, Qt.ItemDataRole.UserRole, total_bytes)
+            self.full_data[key_f].append(path)
+            count = len(self.full_data[key_f])
+
+            if key_f not in self.tree_items:
+                parent = QTreeWidgetItem(self.tree, ["F", f"{title} ({count})", self.format_size(total_bytes), ""])
+                parent.setForeground(C["type"], QColor("#9ece6a"))
+                parent.setTextAlignment(C["type"], Qt.AlignmentFlag.AlignCenter)
+                parent.setFont(C["nom"], QFont("Segoe UI", 11, QFont.Weight.Bold))
+                parent.setData(C["taille"], Qt.ItemDataRole.UserRole, total_bytes)
+                parent.setData(C["action"], Qt.ItemDataRole.UserRole, count - 1)
+                parent.setData(C["type"], Qt.ItemDataRole.UserRole, key_f)
+                self.tree_items[key_f] = parent
+
+                current_search = self.search.text().lower()
+                if current_search and current_search not in title.lower():
+                    parent.setHidden(True)
+            else:
+                parent = self.tree_items[key_f]
+                parent.setText(C["nom"], f"{title} ({count})")
+                new_size = parent.data(C["taille"], Qt.ItemDataRole.UserRole) + total_bytes
+                parent.setData(C["taille"], Qt.ItemDataRole.UserRole, new_size)
+                parent.setText(C["taille"], self.format_size(new_size))
+                parent.setData(C["action"], Qt.ItemDataRole.UserRole, count - 1)
+                if count > 1: parent.setForeground(C["nom"], QColor("#e0af68"))
+
+            child = QTreeWidgetItem(parent, ["", os.path.basename(path), get_file_size(path), ""])
+            child.setData(C["type"], Qt.ItemDataRole.UserRole, path)
+            child.setData(C["taille"], Qt.ItemDataRole.UserRole, total_bytes)
+            self.create_del_btn(child, path)
+
+        elif meta["type"] == "S":
+            show = meta["show"]
+            season = meta["season"]
+            ep = meta["episode"]
+
+            key_s = f"S|{show}"
+            key_season = f"S|{show}|{season}"
+            key_ep = f"S|{show}|{season}|{ep}"
+
+            self.full_data[key_ep].append(path)
+            count = len(self.full_data[key_ep])
+
+            # 1. SHOW
+            if key_s not in self.tree_items:
+                n_show = QTreeWidgetItem(self.tree, ["S", show, "0 B", ""])
+                n_show.setForeground(C["type"], QColor("#e0af68"))
+                n_show.setTextAlignment(C["type"], Qt.AlignmentFlag.AlignCenter)
+                n_show.setFont(C["nom"], QFont("Segoe UI", 11, QFont.Weight.Bold))
+                n_show.setForeground(C["nom"], QColor("#bb9af7"))
+                n_show.setData(C["taille"], Qt.ItemDataRole.UserRole, 0)
+                n_show.setData(C["action"], Qt.ItemDataRole.UserRole, 0)
+                n_show.setData(C["type"], Qt.ItemDataRole.UserRole, key_s)
+                self.tree_items[key_s] = n_show
+
+                current_search = self.search.text().lower()
+                if current_search and current_search not in show.lower():
+                    n_show.setHidden(True)
+            else:
+                n_show = self.tree_items[key_s]
+
+            s_size = n_show.data(C["taille"], Qt.ItemDataRole.UserRole) + total_bytes
+            n_show.setData(C["taille"], Qt.ItemDataRole.UserRole, s_size)
+            n_show.setText(C["taille"], self.format_size(s_size))
             if count > 1:
-                parent.setForeground(0, QColor("#e0af68"))
+                n_show.setData(C["action"], Qt.ItemDataRole.UserRole, n_show.data(C["action"], Qt.ItemDataRole.UserRole) + 1)
 
-        # 3. Ajout du fichier (Enfant)
-        # On garde get_file_size(path) pour la ligne individuelle
-        child = QTreeWidgetItem(parent, [os.path.basename(path), get_file_size(path), ""])
-        child.setData(0, Qt.ItemDataRole.UserRole, path)
-        
-        # 4. Bouton Supprimer (Pense à utiliser ton create_del_btn ici aussi si tu l'as centralisé)
-        self.create_del_btn(child, path)
+            # 2. SEASON
+            if key_season not in self.tree_items:
+                n_season = QTreeWidgetItem(n_show, ["", f"Saison {season:02d} (0 épisode)", "0 B", ""])
+                n_season.setFont(C["nom"], QFont("Segoe UI", 10, QFont.Weight.Bold))
+                n_season.setForeground(C["nom"], QColor("#7aa2f7"))
+                n_season.setData(C["taille"], Qt.ItemDataRole.UserRole, 0)
+                n_season.setData(C["type"], Qt.ItemDataRole.UserRole, key_season)
+                self.tree_items[key_season] = n_season
+            else:
+                n_season = self.tree_items[key_season]
+
+            seas_size = n_season.data(C["taille"], Qt.ItemDataRole.UserRole) + total_bytes
+            n_season.setData(C["taille"], Qt.ItemDataRole.UserRole, seas_size)
+            n_season.setText(C["taille"], self.format_size(seas_size))
+
+            nb_saisons = n_show.childCount()
+            n_show.setText(C["nom"], f"{show} ({nb_saisons} {'saison' if nb_saisons <= 1 else 'saisons'})")
+
+            # 3. EPISODE
+            if key_ep not in self.tree_items:
+                n_ep = QTreeWidgetItem(n_season, ["", f"Épisode {ep:02d} ({count})", "0 B", ""])
+                n_ep.setFont(C["nom"], QFont("Segoe UI", 10))
+                n_ep.setData(C["taille"], Qt.ItemDataRole.UserRole, 0)
+                n_ep.setData(C["type"], Qt.ItemDataRole.UserRole, key_ep)
+                self.tree_items[key_ep] = n_ep
+            else:
+                n_ep = self.tree_items[key_ep]
+                n_ep.setText(C["nom"], f"Épisode {ep:02d} ({count})")
+                if count > 1: n_ep.setForeground(C["nom"], QColor("#e0af68"))
+
+            nb_eps = n_season.childCount()
+            n_season.setText(C["nom"], f"Saison {season:02d} ({nb_eps} {'épisode' if nb_eps <= 1 else 'épisodes'})")
+
+            ep_size = n_ep.data(C["taille"], Qt.ItemDataRole.UserRole) + total_bytes
+            n_ep.setData(C["taille"], Qt.ItemDataRole.UserRole, ep_size)
+            n_ep.setText(C["taille"], self.format_size(ep_size))
+
+            # 4. FILE
+            child = QTreeWidgetItem(n_ep, ["", os.path.basename(path), get_file_size(path), ""])
+            child.setData(C["type"], Qt.ItemDataRole.UserRole, path)
+            child.setData(C["taille"], Qt.ItemDataRole.UserRole, total_bytes)
+            self.create_del_btn(child, path)
 
     def format_size(self, size_bytes):
         if size_bytes == 0: return "0 B"
@@ -489,33 +611,43 @@ class MediaManager(QMainWindow):
         new_path = QFileDialog.getExistingDirectory(self, "Sélectionner un nouveau répertoire")
         if new_path and new_path != self.target_dir:
             self.target_dir = new_path
-            self.start_scan() # Relance proprement le scan avec le nouveau chemin
+            self.start_scan()
             
     def filter_tree(self, text):
         query = text.lower()
         for i in range(self.tree.topLevelItemCount()):
             parent = self.tree.topLevelItem(i)
-            should_show = query in parent.text(0).lower()
+            should_show = query in parent.text(self.COL["nom"]).lower()
             parent.setHidden(not should_show)
 
     def load_info(self):
         sel = self.tree.selectedItems()
-        if not sel or not sel[0].data(0, Qt.ItemDataRole.UserRole): return
-        path = sel[0].data(0, Qt.ItemDataRole.UserRole)
-        
-        # Nettoyage du layout droit
+        if not sel or not sel[0].data(self.COL["type"], Qt.ItemDataRole.UserRole): return
+
+        path = sel[0].data(self.COL["type"], Qt.ItemDataRole.UserRole)
+        if not isinstance(path, str) or not path.lower().endswith(('.mkv', '.mp4', '.avi')): return
+
+        self._current_path = path
+
         while self.details_layout.count():
             w = self.details_layout.takeAt(0).widget()
             if w: w.deleteLater()
-            
+
         loader = QLabel("⚡ Extraction des métadonnées MediaInfo...")
         loader.setStyleSheet("color: #7aa2f7; font-weight: bold; font-size: 12px; margin-top: 20px;")
         loader.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.details_layout.addWidget(loader)
-        
-        self.media_t = MediaInfoThread(path)
-        self.media_t.info_ready.connect(self.draw_info)
-        self.media_t.start()
+
+        t = MediaInfoThread(path)
+        t.info_ready.connect(lambda sections, p=path: self._on_info_ready(sections, p))
+        t.finished.connect(lambda thread=t: self._threads.remove(thread))
+        self._threads.append(t)
+        t.start()
+
+    def _on_info_ready(self, sections, path):
+        if path != self._current_path:
+            return
+        self.draw_info(sections)
 
     def draw_info(self, sections):
         while self.details_layout.count(): 
@@ -531,7 +663,7 @@ class MediaManager(QMainWindow):
             if sec["data"]: 
                 self.details_layout.addWidget(InfoCard(sec["title"], sec["data"]))
                 
-        self.details_layout.addStretch() # Pousse joliment les cartes vers le haut
+        self.details_layout.addStretch()
 
     def confirm_delete(self, path, item):
         msg = QMessageBox(self)
@@ -540,36 +672,77 @@ class MediaManager(QMainWindow):
         msg.setIcon(QMessageBox.Icon.Warning)
         msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         msg.setDefaultButton(QMessageBox.StandardButton.No)
-        
         msg.setStyleSheet("QLabel{color: #c0caf5; min-width: 400px;} QPushButton{width: 80px;}")
 
         if msg.exec() == QMessageBox.StandardButton.Yes:
+            
+            C = self.COL
+            file_size_deleted = item.data(C["taille"], Qt.ItemDataRole.UserRole) or 0
+            ep_or_movie_node = item.parent()
+            data_key = ep_or_movie_node.data(C["type"], Qt.ItemDataRole.UserRole)
+
             try:
                 os.remove(path)
             except FileNotFoundError:
-                pass  # Fichier déjà supprimé, on continue le nettoyage UI
+                pass  
             except Exception as e:
                 QMessageBox.critical(self, "Erreur", f"Erreur de suppression :\n{e}")
                 return
 
-            parent = item.parent()
-            title = parent.text(0).rsplit(' (', 1)[0]
-            if path in self.full_data[title]:
-                self.full_data[title].remove(path)
-            parent.removeChild(item)
+            if data_key in self.full_data and path in self.full_data[data_key]:
+                self.full_data[data_key].remove(path)
 
-            new_count = len(self.full_data[title])
-            if new_count == 0:
-                self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(parent))
-                del self.tree_items[title]
+            season_node = ep_or_movie_node.parent() if ep_or_movie_node.parent() else None
+            show_node = season_node.parent() if season_node else None
+
+            # Retirer visuellement le fichier
+            ep_or_movie_node.removeChild(item)
+
+            # Mise à jour des tailles en remontant l'arbre
+            def reduce_size_upwards(node, amount):
+                while node:
+                    cur = node.data(C["taille"], Qt.ItemDataRole.UserRole) or 0
+                    new_val = max(0, cur - amount)
+                    node.setData(C["taille"], Qt.ItemDataRole.UserRole, new_val)
+                    node.setText(C["taille"], self.format_size(new_val))
+                    node = node.parent()
+
+            reduce_size_upwards(ep_or_movie_node, file_size_deleted)
+
+            # Nettoyage des noeuds vides
+            if ep_or_movie_node.childCount() == 0:
+                if season_node: # Logique Série
+                    season_node.removeChild(ep_or_movie_node)
+                    if data_key in self.tree_items: del self.tree_items[data_key]
+                    
+                    if season_node.childCount() == 0:
+                        show_node.removeChild(season_node)
+                        season_key = season_node.data(C["type"], Qt.ItemDataRole.UserRole)
+                        if season_key in self.tree_items: del self.tree_items[season_key]
+
+                        if show_node.childCount() == 0:
+                            self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(show_node))
+                            show_key = show_node.data(C["type"], Qt.ItemDataRole.UserRole)
+                            if show_key in self.tree_items: del self.tree_items[show_key]
+                else: # Logique Film
+                    self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(ep_or_movie_node))
+                    if data_key in self.tree_items: del self.tree_items[data_key]
             else:
-                parent.setText(0, f"{title} ({new_count})")
-                new_bytes = sum(os.path.getsize(p) for p in self.full_data[title] if os.path.exists(p))
-                parent.setText(1, self.format_size(new_bytes))
-                parent.setData(1, Qt.ItemDataRole.UserRole, new_bytes)
-                if new_count == 1:
-                    parent.setForeground(0, QColor("#c0caf5"))
+                # Mise à jour du texte si le noeud survit
+                new_count = len(self.full_data[data_key])
+                if season_node: # Épisode
+                    ep_num = data_key.split('|')[-1]
+                    ep_or_movie_node.setText(C["nom"], f"Épisode {int(ep_num):02d} ({new_count})")
+                    if new_count == 1: ep_or_movie_node.setForeground(C["nom"], QColor("#c0caf5"))
+                    if show_node:
+                        show_node.setData(C["action"], Qt.ItemDataRole.UserRole, max(0, show_node.data(C["action"], Qt.ItemDataRole.UserRole) - 1))
+                else: # Film
+                    title = data_key.split('|')[1]
+                    ep_or_movie_node.setText(C["nom"], f"{title} ({new_count})")
+                    if new_count == 1: ep_or_movie_node.setForeground(C["nom"], QColor("#c0caf5"))
+                    ep_or_movie_node.setData(C["action"], Qt.ItemDataRole.UserRole, new_count - 1)
 
+            # Réinitialiser le panneau de droite
             while self.details_layout.count():
                 w = self.details_layout.takeAt(0).widget()
                 if w: w.deleteLater()
