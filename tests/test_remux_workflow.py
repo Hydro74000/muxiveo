@@ -386,7 +386,7 @@ class TestRemuxWorkflowBuildCommand:
             chapter_input_index=2,
         )
 
-        sync_idx = cmd.index(str(sync))
+        sync_idx = cmd.index(sync.as_posix())
         assert cmd[sync_idx - 1] == "-i"
         assert cmd[sync_idx - 2] == "matroska"
         assert cmd[sync_idx - 3] == "-f"
