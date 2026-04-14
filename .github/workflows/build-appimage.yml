@@ -83,5 +83,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="v${{ steps.version.outputs.VERSION }}"
+          gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes ""
           gh release upload "$TAG" "${{ steps.files.outputs.APPIMAGE }}" --clobber
           gh release upload "$TAG" "${{ steps.files.outputs.ZSYNC }}" --clobber
