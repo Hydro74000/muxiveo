@@ -540,7 +540,7 @@ class TestRemuxWorkflowBuildCommand:
         assert "-max_muxing_queue_size" not in cmd
         assert "-max_interleave_delta" not in cmd
 
-    def test_build_command_multi_source_with_subtitles_but_no_foreign_audio_keeps_default_interleave(self, tmp_path):
+    def test_build_command_multi_source_with_foreign_subtitle_enables_strict_interleave(self, tmp_path):
         wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src_a = tmp_path / "a.mkv"
         src_b = tmp_path / "b.mkv"
@@ -558,8 +558,8 @@ class TestRemuxWorkflowBuildCommand:
         )
 
         cmd = wf.build_command(cfg)
-        assert "-max_muxing_queue_size" not in cmd
-        assert "-max_interleave_delta" not in cmd
+        assert cmd[cmd.index("-max_interleave_delta") + 1] == "0"
+        assert cmd[cmd.index("-max_muxing_queue_size") + 1] == "9999"
 
     def test_prepare_sync_inputs_windows_prefers_mmap_fallback(self, tmp_path, monkeypatch):
         wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")

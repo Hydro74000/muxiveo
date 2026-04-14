@@ -715,17 +715,15 @@ class RemuxWorkflow(QObject):
     @staticmethod
     def _needs_strict_interleave(mapped_tracks: list[_MappedTrack]) -> bool:
         """
-        D\u00e9tecte le pattern r\u00e9ellement \u00e0 risque observ\u00e9 c\u00f4t\u00e9 Plex:
+        Déclenche l'interleave strict si :
         - remux multi-source effectif,
-        - sous-titres en sortie (flux clairsem\u00e9s),
-        - au moins une piste audio venant d'une autre source que la vid\u00e9o de r\u00e9f\u00e9rence.
+        - sous-titres en sortie (flux clairsemés),
+        - au moins une piste audio ou sous-titre venant d'une source étrangère.
         """
-        used_sources = {mt.source_file_index for mt in mapped_tracks}
-        if len(used_sources) < 2:
+        if len({mt.source_file_index for mt in mapped_tracks}) < 2:
             return False
 
-        has_subtitle_output = any(mt.track.track_type == "subtitle" for mt in mapped_tracks)
-        if not has_subtitle_output:
+        if not any(mt.track.track_type == "subtitle" for mt in mapped_tracks):
             return False
 
         primary_video = next((mt for mt in mapped_tracks if mt.track.track_type == "video"), None)
@@ -733,7 +731,8 @@ class RemuxWorkflow(QObject):
             return False
 
         return any(
-            mt.track.track_type == "audio" and mt.source_file_index != primary_video.source_file_index
+            mt.track.track_type in {"audio", "subtitle"}
+            and mt.source_file_index != primary_video.source_file_index
             for mt in mapped_tracks
         )
 
@@ -767,109 +766,13 @@ class RemuxWorkflow(QObject):
         if not base_risk:
             return False
 
-        source_by_index = {src.file_index: src for src in config.sources}
-        subtitle_tracks = [
-            mt for mt in mapped_tracks
-            if mt.track.track_type == "subtitle"
-        ]
-        if not subtitle_tracks:
-            return False
-
-        sparse_hits = 0
-        scanned = 0
-
-        for mt in subtitle_tracks:
-            src = source_by_index.get(mt.source_file_index)
-            if src is None:
-                continue
-            scanned += 1
-            is_sparse = self._is_sparse_subtitle_stream(src, mt.stream_index)
-            if is_sparse is None:
-                self.log_message.emit(
-                    "WARNING",
-                    "Pr\u00e9-scan sous-titres indisponible; activation du mode interleave strict par s\u00e9curit\u00e9.",
-                )
-                return True
-            if is_sparse:
-                sparse_hits += 1
-
-        decision = sparse_hits > 0
-        if decision:
-            self.log_message.emit(
-                "INFO",
-                f"Pr\u00e9-scan ffprobe: {sparse_hits}/{max(scanned, 1)} piste(s) sous-titres clairsem\u00e9e(s) -> interleave strict activ\u00e9.",
-            )
-        else:
-            self.log_message.emit(
-                "INFO",
-                "Pr\u00e9-scan ffprobe: sous-titres denses -> interleave strict non activ\u00e9.",
-            )
-        return decision
-
-    def _is_sparse_subtitle_stream(self, source, stream_index: int) -> bool | None:
-        subtitle_ids = sorted(t.mkv_tid for t in source.tracks if t.track_type == "subtitle")
-        if stream_index not in subtitle_ids:
-            return None
-        subtitle_ordinal = subtitle_ids.index(stream_index)
-
-        cmd = [
-            self._ffprobe,
-            "-v", "quiet",
-            "-select_streams", f"s:{subtitle_ordinal}",
-            "-show_packets",
-            "-show_entries", "packet=pts_time",
-            "-of", "csv=p=0",
-            str(source.path),
-        ]
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                check=False,
-                timeout=40,
-                **subprocess_text_kwargs(),
-            )
-        except FileNotFoundError:
-            return None
-
-        if result.returncode != 0:
-            return None
-
-        pts_values: list[float] = []
-        for raw_line in (result.stdout or "").splitlines():
-            token = raw_line.strip().split(",", 1)[0].strip()
-            if not token or token == "N/A":
-                continue
-            try:
-                pts_values.append(float(token))
-            except ValueError:
-                continue
-
-        if len(pts_values) < 2:
-            return True
-
-        gaps = [
-            b - a
-            for a, b in zip(pts_values, pts_values[1:])
-            if b > a
-        ]
-        if not gaps:
-            return True
-
-        avg_gap = sum(gaps) / len(gaps)
-        sorted_gaps = sorted(gaps)
-        p95_gap = sorted_gaps[min(len(sorted_gaps) - 1, int(len(sorted_gaps) * 0.95))]
-        max_gap = sorted_gaps[-1]
-
-        span = max(1.0, pts_values[-1] - pts_values[0])
-        cue_rate = len(pts_values) / span
-
-        return (
-            avg_gap >= 1.5
-            or p95_gap >= 4.0
-            or max_gap >= 10.0
-            or cue_rate < 0.8
+        # Piste audio étrangère détectée + sous-titres en sortie → sync obligatoire,
+        # pas besoin de prescan ffprobe (coûteux sur gros fichiers).
+        self.log_message.emit(
+            "INFO",
+            "Piste audio \u00e9trang\u00e8re + sous-titres d\u00e9tect\u00e9s : interleave strict activ\u00e9.",
         )
+        return True
 
     def _prepare_mkvmerge_like_sync_inputs(
         self,
