@@ -416,6 +416,13 @@ class RemuxPanel(QWidget):
     def is_ready(self) -> bool:
         return self._has_ready_files()
 
+    def get_duration_s(self) -> float | None:
+        """Durée de la première source (pour le calcul de progression dans MainWindow)."""
+        for sf in self._source_files:
+            if sf.info and sf.info.duration_s:
+                return sf.info.duration_s
+        return None
+
     def run_operation(self, config: RemuxConfig) -> TaskSignals:
         return self._workflow.run(config)
 
