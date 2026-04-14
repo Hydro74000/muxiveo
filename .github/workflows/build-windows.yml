@@ -68,8 +68,11 @@ jobs:
           if-no-files-found: error
 
       - name: Attach to GitHub Release
-        if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/releases/Mediarecode-Setup-${{ steps.version.outputs.VERSION }}.exe
-          fail_on_unmatched_files: true
+        if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && github.event.inputs.version != '')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ steps.version.outputs.VERSION }}"
+          FILE="dist/releases/Mediarecode-Setup-${{ steps.version.outputs.VERSION }}.exe"
+          gh release upload "$TAG" "$FILE" --clobber
+        shell: bash
