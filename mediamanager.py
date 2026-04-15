@@ -97,12 +97,13 @@ def parse_media_file(filepath):
             return {"type": "F", "title": clean_movie, "path": filepath}
         return None
 
-def get_file_size(path):
+def get_file_size(path) -> str:
     try:
         size_bytes = os.path.getsize(path)
         for unit in ['B', 'Ko', 'Mo', 'Go', 'To']:
             if size_bytes < 1024: return f"{size_bytes:.2f} {unit}"
             size_bytes /= 1024
+        return f"{size_bytes:.2f} To"
     except: return "N/A"
 
 # --- LISTE DES CLÉS MEDIAINFO À CONSERVER ---
@@ -324,19 +325,19 @@ class MediaManager(QMainWindow):
         self._sort_asc = False
         splitter.addWidget(self.tree)
 
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
         self.details_container = QWidget()
         self.details_layout = QVBoxLayout(self.details_container)
         self.details_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        
+
         self.placeholder = QLabel("Sélectionnez un fichier pour voir les détails")
         self.placeholder.setStyleSheet("color: #565f89; font-style: italic; font-size: 14px;")
         self.placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.details_layout.addWidget(self.placeholder)
-        
-        self.scroll.setWidget(self.details_container)
-        splitter.addWidget(self.scroll)
+
+        self.scroll_area.setWidget(self.details_container)
+        splitter.addWidget(self.scroll_area)
 
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
@@ -382,6 +383,13 @@ class MediaManager(QMainWindow):
         else:
             for i in range(item.childCount()):
                 self.restore_buttons(item.child(i))
+
+    def _make_file_item(self, parent: QTreeWidgetItem, path: str, total_bytes: int) -> QTreeWidgetItem:
+        child = QTreeWidgetItem(parent, ["", os.path.basename(path), get_file_size(path), ""])
+        child.setData(self.COL["type"], Qt.ItemDataRole.UserRole, path)
+        child.setData(self.COL["taille"], Qt.ItemDataRole.UserRole, total_bytes)
+        self.create_del_btn(child, path)
+        return child
 
     def create_del_btn(self, item, path):
         btn = QPushButton("Supprimer")
@@ -516,10 +524,8 @@ class MediaManager(QMainWindow):
                 parent.setData(C["action"], Qt.ItemDataRole.UserRole, count - 1)
                 if count > 1: parent.setForeground(C["nom"], QColor("#e0af68"))
 
-            child = QTreeWidgetItem(parent, ["", os.path.basename(path), get_file_size(path), ""])
-            child.setData(C["type"], Qt.ItemDataRole.UserRole, path)
-            child.setData(C["taille"], Qt.ItemDataRole.UserRole, total_bytes)
-            self.create_del_btn(child, path)
+            assert isinstance(parent, QTreeWidgetItem)
+            self._make_file_item(parent, path, total_bytes)
 
         elif meta["type"] == "S":
             show = meta["show"]
@@ -595,10 +601,8 @@ class MediaManager(QMainWindow):
             n_ep.setText(C["taille"], self.format_size(ep_size))
 
             # 4. FILE
-            child = QTreeWidgetItem(n_ep, ["", os.path.basename(path), get_file_size(path), ""])
-            child.setData(C["type"], Qt.ItemDataRole.UserRole, path)
-            child.setData(C["taille"], Qt.ItemDataRole.UserRole, total_bytes)
-            self.create_del_btn(child, path)
+            assert isinstance(n_ep, QTreeWidgetItem)
+            self._make_file_item(n_ep, path, total_bytes)
 
     def format_size(self, size_bytes):
         if size_bytes == 0: return "0 B"
@@ -617,6 +621,8 @@ class MediaManager(QMainWindow):
         query = text.lower()
         for i in range(self.tree.topLevelItemCount()):
             parent = self.tree.topLevelItem(i)
+            if parent is None:
+                continue
             should_show = query in parent.text(self.COL["nom"]).lower()
             parent.setHidden(not should_show)
 
@@ -630,8 +636,10 @@ class MediaManager(QMainWindow):
         self._current_path = path
 
         while self.details_layout.count():
-            w = self.details_layout.takeAt(0).widget()
-            if w: w.deleteLater()
+            item = self.details_layout.takeAt(0)
+            if item:
+                w = item.widget()
+                if w: w.deleteLater()
 
         loader = QLabel("⚡ Extraction des métadonnées MediaInfo...")
         loader.setStyleSheet("color: #7aa2f7; font-weight: bold; font-size: 12px; margin-top: 20px;")
@@ -650,9 +658,11 @@ class MediaManager(QMainWindow):
         self.draw_info(sections)
 
     def draw_info(self, sections):
-        while self.details_layout.count(): 
-            w = self.details_layout.takeAt(0).widget()
-            if w: w.deleteLater()
+        while self.details_layout.count():
+            item = self.details_layout.takeAt(0)
+            if item:
+                w = item.widget()
+                if w: w.deleteLater()
             
         if not sections:
             err = QLabel("Aucune donnée MediaInfo trouvée.")
@@ -679,6 +689,8 @@ class MediaManager(QMainWindow):
             C = self.COL
             file_size_deleted = item.data(C["taille"], Qt.ItemDataRole.UserRole) or 0
             ep_or_movie_node = item.parent()
+            if ep_or_movie_node is None:
+                return
             data_key = ep_or_movie_node.data(C["type"], Qt.ItemDataRole.UserRole)
 
             try:
@@ -715,7 +727,7 @@ class MediaManager(QMainWindow):
                     season_node.removeChild(ep_or_movie_node)
                     if data_key in self.tree_items: del self.tree_items[data_key]
                     
-                    if season_node.childCount() == 0:
+                    if season_node.childCount() == 0 and show_node is not None:
                         show_node.removeChild(season_node)
                         season_key = season_node.data(C["type"], Qt.ItemDataRole.UserRole)
                         if season_key in self.tree_items: del self.tree_items[season_key]
@@ -744,8 +756,10 @@ class MediaManager(QMainWindow):
 
             # Réinitialiser le panneau de droite
             while self.details_layout.count():
-                w = self.details_layout.takeAt(0).widget()
-                if w: w.deleteLater()
+                item = self.details_layout.takeAt(0)
+                if item:
+                    w = item.widget()
+                    if w: w.deleteLater()
             self.details_layout.addWidget(self.placeholder)
 
 if __name__ == "__main__":
