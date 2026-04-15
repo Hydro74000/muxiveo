@@ -17,6 +17,7 @@ Conventions :
 from __future__ import annotations
 
 import json
+from typing import Callable
 import os
 import shutil
 import subprocess
@@ -157,6 +158,29 @@ def _normalize_ffmpeg_thread_count(value: int | None) -> int:
 
 
 # =============================================================================
+# NFO helper
+# =============================================================================
+
+def write_mediainfo_nfo(
+    output_path: Path,
+    log_cb: Callable[[str, str], None],
+    mediainfo_bin: str = "mediainfo",
+) -> None:
+    """Génère un fichier .nfo (même nom que le MKV) avec la sortie brute de mediainfo."""
+    nfo_path = output_path.with_suffix(".nfo")
+    try:
+        result = subprocess.run(
+            [mediainfo_bin, _cli_path(output_path)],
+            capture_output=True,
+            **subprocess_text_kwargs(),
+        )
+        nfo_path.write_text(result.stdout, encoding="utf-8")
+        log_cb("OK", f"NFO généré : {nfo_path.name}")
+    except Exception as exc:
+        log_cb("WARN", f"Impossible de générer le NFO : {exc}")
+
+
+# =============================================================================
 # Workflow
 # =============================================================================
 
@@ -181,11 +205,15 @@ class RemuxWorkflow(QObject):
         parent: QObject | None = None,
         *,
         writing_application: str = "",
+        generate_nfo: bool = True,
+        mediainfo_bin: str = "mediainfo",
     ) -> None:
         super().__init__(parent)
         self._ffmpeg = ffmpeg_bin
         self._ffprobe = ffprobe_bin
         self._ffmpeg_threads = _normalize_ffmpeg_thread_count(ffmpeg_threads)
+        self._generate_nfo = generate_nfo
+        self._mediainfo_bin = mediainfo_bin
         self._runner = ToolRunner(max_workers=1, parent=self)
         self._writing_application = writing_application.strip()
         self._muxing_post_action = MatroskaMuxingAppPostAction(
@@ -204,6 +232,12 @@ class RemuxWorkflow(QObject):
 
     def set_writing_application(self, writing_application: str) -> None:
         self._writing_application = writing_application.strip()
+
+    def set_generate_nfo(self, generate_nfo: bool) -> None:
+        self._generate_nfo = generate_nfo
+
+    def set_mediainfo_bin(self, mediainfo_bin: str) -> None:
+        self._mediainfo_bin = mediainfo_bin
 
     def _ffmpeg_thread_args(self) -> list[str]:
         return ["-threads", str(self._ffmpeg_threads)]
@@ -662,6 +696,7 @@ class RemuxWorkflow(QObject):
                 )
                 self._log_step(8, "Post-action: Patch & Cleanup")
                 self._muxing_post_action.apply_if_mkv(run_config.output)
+                self._write_nfo(run_config.output)
                 signals.finished.emit(output)
             except TaskCancelledError:
                 signals.cancelled.emit()
@@ -686,6 +721,10 @@ class RemuxWorkflow(QObject):
 
         executor.submit(_task)
         return signals
+
+    def _write_nfo(self, output_path: Path) -> None:
+        if self._generate_nfo:
+            write_mediainfo_nfo(output_path, log_cb=self.log_message.emit, mediainfo_bin=self._mediainfo_bin)
 
     def _bind_temp_cleanup(self, signals: TaskSignals, cleanup_paths: list[Path]) -> None:
         """Supprime les dossiers temporaires du workflow quand le traitement se termine."""

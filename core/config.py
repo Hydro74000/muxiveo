@@ -541,11 +541,6 @@ UI_STARTUP_PANEL_CHOICES: tuple[tuple[str, str], ...] = (
     ("settings", "Paramètres"),
 )
 
-REMUX_BACKEND_CHOICES: tuple[tuple[str, str], ...] = (
-    ("ffmpeg", "FFmpeg (par défaut)"),
-)
-
-
 def _normalize_startup_panel(value: str | None) -> str:
     if not value:
         return "dashboard"
@@ -567,14 +562,6 @@ def _normalize_startup_panel(value: str | None) -> str:
     }
     return aliases.get(raw, "dashboard")
 
-
-def _normalize_remux_backend(value: str | None) -> str:
-    if not value:
-        return "ffmpeg"
-    raw = value.strip().lower()
-    if raw == "ffmpeg":
-        return raw
-    return "ffmpeg"
 
 
 INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
@@ -644,20 +631,6 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         ),
     },
     {
-        "section": "remux",
-        "title": "Remux",
-        "fields": (
-            {
-                "key": "backend",
-                "attr": "remux_backend",
-                "kind": "choice",
-                "label": "Backend de remux",
-                "description": "Moteur utilisé pour le remuxage conteneur. FFmpeg est le backend nominal.",
-                "options": REMUX_BACKEND_CHOICES,
-            },
-        ),
-    },
-    {
         "section": "hdr",
         "title": "HDR",
         "fields": (
@@ -691,6 +664,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         "fields": (
             {"key": "tmdb_api_key", "attr": "tmdb_api_key", "kind": "text", "label": "Clé API TMDB", "description": "Clé API TMDB v3 (gratuite sur https://www.themoviedb.org/settings/api)."},
             {"key": "tmdb_bearer_token", "attr": "tmdb_bearer_token", "kind": "text", "label": "Token Bearer TMDB", "description": "Token v4 TMDB optionnel. Utilisé si la clé API est vide. Peut aussi être défini via MEDIARECODE_TMDB_BEARER_TOKEN."},
+            {"key": "generate_nfo", "attr": "generate_nfo", "kind": "bool", "label": "Générer un fichier .nfo après remux/encodage", "description": "Crée automatiquement un fichier .nfo (même nom que le MKV) contenant la sortie brute de mediainfo après chaque workflow réussi."},
         ),
     },
 )
@@ -844,10 +818,6 @@ class AppConfig:
         self.ffmpeg_threads = _normalize_ffmpeg_thread_count(
             self._resolve_int("ffmpeg", "threads", "ffmpeg/threads", _default_ffmpeg_thread_count())
         )
-        self.remux_backend = _normalize_remux_backend(
-            self._resolve_text("remux", "backend", "remux/backend", "ffmpeg")
-        )
-
         self.dovi_profile = self._resolve_text("hdr", "dovi_profile", "hdr/dovi_profile", "8")
         self.dovi_compat_id = self._resolve_text("hdr", "dovi_compat_id", "hdr/dovi_compat_id", "1")
 
@@ -893,6 +863,7 @@ class AppConfig:
             "metadata/tmdb_bearer_token",
             "",
         )
+        self.generate_nfo = self._resolve_bool("metadata", "generate_nfo", "metadata/generate_nfo", True)
 
     def reload(self) -> None:
         self._ini = _load_ini()
@@ -919,7 +890,6 @@ class AppConfig:
         s.setValue("tools/eac3to", self.tool_eac3to)
 
         s.setValue("ffmpeg/threads", self.ffmpeg_threads)
-        s.setValue("remux/backend", self.remux_backend)
 
         s.setValue("hdr/dovi_profile", self.dovi_profile)
         s.setValue("hdr/dovi_compat_id", self.dovi_compat_id)
@@ -945,6 +915,7 @@ class AppConfig:
 
         s.setValue("metadata/tmdb_api_key", self.tmdb_api_key)
         s.setValue("metadata/tmdb_bearer_token", self.tmdb_bearer_token)
+        s.setValue("metadata/generate_nfo", "true" if self.generate_nfo else "false")
         s.sync()
         _sanitize_windows_ini_file(_INI_PATH)
 
@@ -1078,9 +1049,6 @@ class AppConfig:
             "ffmpeg": {
                 "threads": self.ffmpeg_threads,
             },
-            "remux": {
-                "backend": self.remux_backend,
-            },
             "hdr": {
                 "dovi_profile": self.dovi_profile,
                 "dovi_compat_id": self.dovi_compat_id,
@@ -1104,6 +1072,7 @@ class AppConfig:
             "metadata": {
                 "tmdb_api_key": self.tmdb_api_key,
                 "tmdb_bearer_token": self.tmdb_bearer_token,
+                "generate_nfo": self.generate_nfo,
             },
         }
 

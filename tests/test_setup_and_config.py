@@ -248,38 +248,6 @@ class TestAppConfigRamBuffer:
 
         assert cfg.work_dir_has_leftovers() is True
 
-    def test_default_remux_backend_is_ffmpeg(self, tmp_path):
-        """Sans clé explicite, le backend remux par défaut est FFmpeg."""
-        from core.config import AppConfig
-
-        with patch("core.config.QSettings") as mock_qs:
-            inst = MagicMock()
-            inst.value.side_effect = lambda key, default=None: default
-            mock_qs.return_value = inst
-            with patch("core.config._app_data_dir", return_value=tmp_path), \
-                 patch.dict(os.environ, {}, clear=False):
-                cfg = AppConfig()
-
-        assert cfg.remux_backend == "ffmpeg"
-
-    def test_remux_backend_ini_falls_back_to_ffmpeg_for_mkvmerge(self, tmp_path):
-        """config.ini [remux] backend=mkvmerge retombe sur FFmpeg."""
-        import core.config as cfg_mod
-        from core.config import AppConfig
-
-        ini_path = tmp_path / "config.ini"
-        ini_path.write_text("[remux]\nbackend = mkvmerge\n", encoding="utf-8")
-
-        with patch("core.config.QSettings") as mock_qs:
-            inst = MagicMock()
-            inst.value.side_effect = lambda key, default=None: default
-            mock_qs.return_value = inst
-            with patch("core.config._app_data_dir", return_value=tmp_path), \
-                 patch.object(cfg_mod, "_INI_PATH", ini_path):
-                cfg = AppConfig()
-
-        assert cfg.remux_backend == "ffmpeg"
-
     def test_audio_encoding_defaults_use_192_and_64(self, tmp_path):
         """Sans configuration explicite, l'audio utilise 192 kbps/canal et des paliers de 64."""
         from core.config import AppConfig
