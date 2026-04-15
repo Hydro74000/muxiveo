@@ -32,7 +32,7 @@ from core.workdir import (
     remove_path,
 )
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
-from core.workflows.remux import RemuxWorkflow
+from core.workflows.remux import RemuxWorkflow, write_mediainfo_nfo
 from core.workflows.remux_timeline_sync import (
     LiveSyncSession,
     MkvmergeLikeTimelineSync,
@@ -127,20 +127,23 @@ class EncodeWorkflow(QObject):
         ffmpeg_bin:                str  = "ffmpeg",
         dovi_tool_bin:             str  = "dovi_tool",
         hdr10plus_bin:             str  = "hdr10plus_tool",
+        mediainfo_bin:             str  = "mediainfo",
         ram_buffer_enabled:        bool = True,
         ram_buffer_threshold_pct:  int  = 15,
         ffmpeg_threads:            int | None = None,
         parent: QObject | None         = None,
         *,
         writing_application:       str  = "",
+        generate_nfo:              bool = True,
     ) -> None:
         super().__init__(parent)
         self._ffmpeg = ffmpeg_bin
         self._bins: dict[str, str] = {
             "dovi_tool":      dovi_tool_bin,
             "hdr10plus_tool": hdr10plus_bin,
-            "mediainfo":      "mediainfo",
+            "mediainfo":      mediainfo_bin,
         }
+        self._generate_nfo = generate_nfo
         self._runner = ToolRunner(max_workers=1, parent=self)
         self._ram_buffer_enabled       = ram_buffer_enabled
         self._ram_buffer_threshold_pct = max(0, min(ram_buffer_threshold_pct, 90))
@@ -151,6 +154,8 @@ class EncodeWorkflow(QObject):
             ffprobe_bin=self._ffprobe_bin_from_ffmpeg(ffmpeg_bin),
             parent=self,
             writing_application=writing_application,
+            generate_nfo=False,  # NFO géré directement par EncodeWorkflow via _bind_nfo_write
+            mediainfo_bin=mediainfo_bin,
         )
         from core.workflows.matroska_header_editor import MatroskaMuxingAppPostAction
         self._muxing_post_action = MatroskaMuxingAppPostAction(
@@ -172,6 +177,12 @@ class EncodeWorkflow(QObject):
     def set_ffmpeg_threads(self, ffmpeg_threads: int | None) -> None:
         """Met à jour le nombre de threads passé à FFmpeg via `-threads`."""
         self._ffmpeg_threads = _normalize_ffmpeg_thread_count(ffmpeg_threads)
+
+    def set_mediainfo_bin(self, mediainfo_bin: str) -> None:
+        self._bins["mediainfo"] = mediainfo_bin
+
+    def set_generate_nfo(self, generate_nfo: bool) -> None:
+        self._generate_nfo = generate_nfo
 
     def _ffmpeg_thread_args(self) -> list[str]:
         return ["-threads", str(self._ffmpeg_threads)]
@@ -2198,6 +2209,7 @@ class EncodeWorkflow(QObject):
                 cwd=cwd,
             )
             self._bind_matroska_segment_muxing_patch(signals, config.output)
+            self._bind_nfo_write(signals, config.output)
             return signals
 
         chapter_dir: Path | None = None
@@ -2229,6 +2241,7 @@ class EncodeWorkflow(QObject):
                 raise
             self._bind_live_sync_cleanup(signals, live_sync_session)
             self._bind_matroska_segment_muxing_patch(signals, config.output)
+            self._bind_nfo_write(signals, config.output)
             return signals
 
         self._log_step(6, "Préparation sync/remap + commande ffmpeg (single pass)")
@@ -2249,6 +2262,7 @@ class EncodeWorkflow(QObject):
             raise
         self._bind_live_sync_cleanup(signals, live_sync_session)
         self._bind_matroska_segment_muxing_patch(signals, config.output)
+        self._bind_nfo_write(signals, config.output)
         return signals
 
     def _run_direct_output_multisource_async(
@@ -2390,6 +2404,17 @@ class EncodeWorkflow(QObject):
 
     def _bind_matroska_segment_muxing_patch(self, signals: TaskSignals, output: Path) -> None:
         self._muxing_post_action.bind_on_success(signals, output)
+
+    def _bind_nfo_write(self, signals: TaskSignals, output: Path) -> None:
+        if not self._generate_nfo:
+            return
+        mediainfo_bin = self._bins.get("mediainfo") or "mediainfo"
+        log_cb = self.log_message.emit
+
+        def _write(*_args) -> None:
+            write_mediainfo_nfo(output, log_cb=log_cb, mediainfo_bin=mediainfo_bin)
+
+        signals.finished.connect(_write)
 
     @staticmethod
     def _format_bytes(value: int) -> str:
@@ -3242,4 +3267,5 @@ class EncodeWorkflow(QObject):
 
         executor.submit(_task)
         self._bind_matroska_segment_muxing_patch(signals, config.output)
+        self._bind_nfo_write(signals, config.output)
         return signals

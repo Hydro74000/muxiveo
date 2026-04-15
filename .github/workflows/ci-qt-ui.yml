@@ -18,6 +18,7 @@ on:
       - "tests/test_main_window_startup_panel.py"
       - "tests/test_dashboard_page.py"
       - "tests/test_settings_panel.py"
+      - "tests/test_nfo_generation.py"
       - "tests/test_i18n.py"
       - "tests/test_encode_audio_bitrate_ui.py"
       - "tests/test_encode_panel_widgets.py"
@@ -41,6 +42,7 @@ on:
       - "tests/test_main_window_startup_panel.py"
       - "tests/test_dashboard_page.py"
       - "tests/test_settings_panel.py"
+      - "tests/test_nfo_generation.py"
       - "tests/test_i18n.py"
       - "tests/test_encode_audio_bitrate_ui.py"
       - "tests/test_encode_panel_widgets.py"
@@ -91,6 +93,7 @@ jobs:
             tests/test_main_window_startup_panel.py \
             tests/test_dashboard_page.py \
             tests/test_settings_panel.py \
+            tests/test_nfo_generation.py \
             tests/test_i18n.py \
             tests/test_encode_audio_bitrate_ui.py \
             tests/test_encode_panel_widgets.py \
