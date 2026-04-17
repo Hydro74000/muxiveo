@@ -85,11 +85,30 @@ jobs:
             param([string]$PathCandidate)
             if ([string]::IsNullOrWhiteSpace($PathCandidate)) { return $false }
             if (-not (Test-Path $PathCandidate)) { return $false }
+            $tmp = [System.IO.Path]::GetTempFileName()
+            $proc = $null
             try {
-              $output = & $PathCandidate --Version 2>&1 | Out-String
+              $proc = Start-Process `
+                -FilePath $PathCandidate `
+                -ArgumentList '--Version' `
+                -NoNewWindow `
+                -PassThru `
+                -RedirectStandardOutput $tmp `
+                -RedirectStandardError $tmp
+              if (-not $proc.WaitForExit(5000)) {
+                $proc.Kill()
+                return $false
+              }
+              $output = Get-Content -LiteralPath $tmp -Raw -ErrorAction SilentlyContinue
             }
             catch {
               return $false
+            }
+            finally {
+              if ($proc -and -not $proc.HasExited) {
+                try { $proc.Kill() } catch { }
+              }
+              Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue
             }
             return $output -match 'MediaInfoLib'
           }
@@ -98,7 +117,6 @@ jobs:
           if ($env:RUNNER_OS -eq 'Windows') {
             $candidates.Add('C:\\ProgramData\\chocolatey\\bin\\mediainfo.exe')
             $candidates.Add('C:\\Program Files\\MediaInfo\\CLI\\mediainfo.exe')
-            $candidates.Add('C:\\Program Files\\MediaInfo\\mediainfo.exe')
           }
 
           $cmd = Get-Command mediainfo -ErrorAction SilentlyContinue
