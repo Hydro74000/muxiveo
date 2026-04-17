@@ -87,9 +87,7 @@ class MediaInfoEngine(_core.MediaInfoEngine):
             created_local = datetime.fromtimestamp(stat.st_mtime)
             general.fields["File_Modified_Date"] = created_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
             general.fields["File_Modified_Date_Local"] = created_local.strftime("%Y-%m-%d %H:%M:%S")
-            if self._emit_created_dates():
-                general.fields["File_Created_Date"] = created_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
-                general.fields["File_Created_Date_Local"] = created_local.strftime("%Y-%m-%d %H:%M:%S")
+            self._apply_creation_dates_from_birth(general, path)
 
         text = self._build_subrip_text_track(subrip_stats)
         return _core.MediaReport(source=source, tracks=[general, text])
@@ -382,6 +380,24 @@ class MediaInfoEngine(_core.MediaInfoEngine):
             return None
         return sec * 1000 + int(round(nsec / 1_000_000.0))
 
+    def _apply_creation_dates_from_birth(self, track: _core.MediaTrack, path: Path) -> None:
+        if not self._emit_created_dates():
+            return
+        birth_ms: int | None = None
+        try:
+            if os.name == "nt":
+                birth_ms = int(round(path.stat().st_ctime * 1000.0))
+            else:
+                birth_ms = self._file_birth_unix_ms(path)
+        except OSError:
+            return
+        if birth_ms is None or birth_ms <= 0:
+            return
+        dt_utc = datetime.fromtimestamp(birth_ms / 1000.0, tz=timezone.utc)
+        dt_local = dt_utc.astimezone()
+        track.fields["File_Created_Date"] = dt_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+        track.fields["File_Created_Date_Local"] = dt_local.strftime("%Y-%m-%d %H:%M:%S")
+
     def _build_native_container_report(self, source: str, parsed: dict[str, object]) -> _core.MediaReport | None:
         container = str(parsed.get("container", ""))
         parsed_obj = parsed.get("parsed")
@@ -418,6 +434,8 @@ class MediaInfoEngine(_core.MediaInfoEngine):
         if source_path.exists():
             fmt["size"] = str(source_path.stat().st_size)
         general = self._build_general_track(source, fmt, [])
+        if source_path.exists():
+            self._apply_creation_dates_from_birth(general, source_path)
         if container == "unknown":
             general.fields["Format"] = source_path.suffix.lower().lstrip(".").upper() if source_path.suffix else "Unknown"
         return _core.MediaReport(source=source, tracks=[general])
@@ -488,6 +506,7 @@ class MediaInfoEngine(_core.MediaInfoEngine):
             streams.append(s)
 
         general = self._build_general_track(source, fmt, streams)
+        self._apply_creation_dates_from_birth(general, Path(source).expanduser())
         if parsed.atom_layout:
             if parsed.atom_layout.header_size is not None:
                 general.fields["HeaderSize"] = str(parsed.atom_layout.header_size)
