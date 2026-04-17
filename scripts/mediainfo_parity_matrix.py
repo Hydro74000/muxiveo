@@ -75,7 +75,7 @@ def _frozen_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
 
 def _parse_arg_set(raw: Any) -> list[str]:
     if isinstance(raw, str):
-        return shlex.split(raw)
+        return shlex.split(raw, posix=(os.name != "nt"))
     if isinstance(raw, list):
         return [str(x) for x in raw]
     raise ValueError(f"Invalid arg set: {raw!r}")
@@ -400,7 +400,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Manifest not found: {manifest_path}", file=sys.stderr)
         return 2
 
-    native_cmd_prefix = shlex.split(str(ns.native_cmd))
+    native_cmd_prefix = shlex.split(str(ns.native_cmd), posix=(os.name != "nt"))
     oracle_bin = _resolve_oracle_bin(str(ns.oracle_bin))
     report = run_parity(
         manifest_path=manifest_path,
