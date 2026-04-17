@@ -119,7 +119,10 @@ Status: `IN_PROGRESS`
         - résolution oracle via `MEDIAINFO_ORACLE_BIN` explicite,
         - compat Linux `MINFO_EMIT_FILE_CREATED_DATE=0`,
         - résolution oracle Windows durcie (candidats CLI + validation `--Version` avec timeout).
-    - run en cours: `#24580023155` (branche `levelup`) pour valider la fermeture finale du lane Windows.
+    - `#24580023155`: échec lane Windows au step `Resolve oracle binary path` (`null-valued expression` sur `.Trim()`).
+    - correctif appliqué:
+      - workflow parity: résolution oracle Windows réécrite en PowerShell pur (sans `python -c`), candidats `Chocolatey/Program Files/where/Get-Command`, validation `--Version` avant export `MEDIAINFO_ORACLE_BIN`.
+    - prochain run remote attendu: fermeture du lane Windows + `aggregate-reports` vert.
 
 ### Step 5 — Couverture complète MediaInfo v26.01
 Status: `IN_PROGRESS`
