@@ -78,19 +78,19 @@ jobs:
           function Resolve-OracleCandidate {
             $candidates = New-Object System.Collections.Generic.List[string]
             foreach ($candidate in @(
-              'C:\\ProgramData\\chocolatey\\bin\\mediainfo.exe',
-              'C:\\ProgramData\\chocolatey\\bin\\mediainfo-cli.exe',
-              'C:\\Program Files\\MediaInfo\\CLI\\mediainfo.exe'
+              'C:\ProgramData\chocolatey\bin\mediainfo.exe',
+              'C:\ProgramData\chocolatey\bin\mediainfo-cli.exe',
+              'C:\Program Files\MediaInfo\CLI\mediainfo.exe'
             )) {
               if (-not [string]::IsNullOrWhiteSpace($candidate)) {
                 $candidates.Add($candidate)
               }
             }
             foreach ($root in @(
-              'C:\\ProgramData\\chocolatey\\lib\\mediainfo\\tools',
-              'C:\\ProgramData\\chocolatey\\lib\\mediainfo',
-              'C:\\ProgramData\\chocolatey\\lib\\mediainfo-cli\\tools',
-              'C:\\ProgramData\\chocolatey\\lib\\mediainfo-cli'
+              'C:\ProgramData\chocolatey\lib\mediainfo\tools',
+              'C:\ProgramData\chocolatey\lib\mediainfo',
+              'C:\ProgramData\chocolatey\lib\mediainfo-cli\tools',
+              'C:\ProgramData\chocolatey\lib\mediainfo-cli'
             )) {
               if (Test-Path $root) {
                 Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue |
@@ -215,14 +215,14 @@ jobs:
 
           $candidates = New-Object System.Collections.Generic.List[string]
           if ($env:RUNNER_OS -eq 'Windows') {
-            $candidates.Add('C:\\ProgramData\\chocolatey\\bin\\mediainfo.exe')
-            $candidates.Add('C:\\ProgramData\\chocolatey\\bin\\mediainfo-cli.exe')
-            $candidates.Add('C:\\Program Files\\MediaInfo\\CLI\\mediainfo.exe')
+            $candidates.Add('C:\ProgramData\chocolatey\bin\mediainfo.exe')
+            $candidates.Add('C:\ProgramData\chocolatey\bin\mediainfo-cli.exe')
+            $candidates.Add('C:\Program Files\MediaInfo\CLI\mediainfo.exe')
             foreach ($root in @(
-              'C:\\ProgramData\\chocolatey\\lib\\mediainfo\\tools',
-              'C:\\ProgramData\\chocolatey\\lib\\mediainfo',
-              'C:\\ProgramData\\chocolatey\\lib\\mediainfo-cli\\tools',
-              'C:\\ProgramData\\chocolatey\\lib\\mediainfo-cli'
+              'C:\ProgramData\chocolatey\lib\mediainfo\tools',
+              'C:\ProgramData\chocolatey\lib\mediainfo',
+              'C:\ProgramData\chocolatey\lib\mediainfo-cli\tools',
+              'C:\ProgramData\chocolatey\lib\mediainfo-cli'
             )) {
               if (Test-Path $root) {
                 Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue |

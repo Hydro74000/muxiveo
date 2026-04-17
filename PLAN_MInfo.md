@@ -151,6 +151,9 @@ Status: `IN_PROGRESS`
         - fallback téléchargement officiel `MediaInfo_CLI_26.01_Windows_x64.zip` si besoin,
         - export anticipé `MEDIAINFO_ORACLE_BIN` dans `GITHUB_ENV`.
       - step de résolution Windows conserve un short-circuit sur `MEDIAINFO_ORACLE_BIN` valide.
+    - `#24581068423`: KO Windows persistant; diagnostic log: chemins Windows hardcodés avec doubles `\\` (littéraux invalides en PowerShell), `MEDIAINFO_ORACLE_BIN` exporté invalide.
+    - correctif appliqué (9e passe):
+      - normalisation de tous les chemins Windows hardcodés en backslash simple (`C:\...`).
     - run remote suivant requis pour valider Linux + Windows + `aggregate-reports`.
 
 ### Step 5 — Couverture complète MediaInfo v26.01
