@@ -167,7 +167,13 @@ Status: `IN_PROGRESS`
     - diagnostic résiduel (`#24581616915`): 3 écarts Windows restants (`real_hevc_eac3_sub`) limités à un décalage `+1ms` (`.159` vs `.160`).
     - correctif appliqué (12e passe):
       - suppression des arrondis ms (`round`) sur timestamps fichier au profit du tronquage `int(...)` aligné oracle.
-    - run remote suivant requis pour valider Linux + Windows + `aggregate-reports`.
+    - validation remote finale:
+      - run `#24581776172` (branche `levelup`) `SUCCESS`:
+        - `parity (ubuntu-latest)`: `SUCCESS`
+        - `parity (windows-latest)`: `SUCCESS`
+        - `parity (macos-latest)`: `SUCCESS`
+        - `aggregate-reports`: `SUCCESS` (`mediainfo-parity-reports-all-os` publié)
+      - scores validés sur la matrice: strict/extended/expanded verts sur les 3 OS.
 
 ### Step 5 — Couverture complète MediaInfo v26.01
 Status: `IN_PROGRESS`
@@ -308,6 +314,7 @@ Status: `IN_PROGRESS`
   - extended: `44/44`
   - expanded: `96/96`
 - Écarts restants sur corpus courant Linux: `0`.
+- Écarts restants sur matrice CI multi-OS (strict/extended/expanded): `0`.
 - Exécution réelle Windows/macOS encore dépendante du run CI remote.
 - Couverture v26.01 complète non atteinte hors corpus sprint.
 
