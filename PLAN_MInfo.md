@@ -110,6 +110,16 @@ Status: `IN_PROGRESS`
     - validation locale post-correctifs:
       - `no_external_guard`: OK
       - parité: strict `39/39`, extended `44/44`, expanded `96/96`
+  - mise à jour 2026-04-17 (runs remote successifs):
+    - `#24579151773`: Linux `OK`, macOS `OK`, Windows bloqué (`tool_not_found` puis dérive oracle/path), `aggregate-reports` KO.
+    - correctifs appliqués et pushés:
+      - normalisation EOL corpus Windows: `.gitattributes` (`mediarecode_corpus_real/*.srt text eol=lf`).
+      - `scripts/mediainfo_parity_matrix.py`: `shlex.split(..., posix=(os.name != "nt"))` pour Windows.
+      - workflow parity:
+        - résolution oracle via `MEDIAINFO_ORACLE_BIN` explicite,
+        - compat Linux `MINFO_EMIT_FILE_CREATED_DATE=0`,
+        - résolution oracle Windows durcie (candidats CLI + validation `--Version` avec timeout).
+    - run en cours: `#24580023155` (branche `levelup`) pour valider la fermeture finale du lane Windows.
 
 ### Step 5 — Couverture complète MediaInfo v26.01
 Status: `IN_PROGRESS`
@@ -252,7 +262,7 @@ Status: `IN_PROGRESS`
 - Couverture v26.01 complète non atteinte hors corpus sprint.
 
 ## Prochaines étapes prévues
-1. Re-push des correctifs CI et relance de la matrice multi-OS; vérifier `aggregate-reports` + artifact `mediainfo-parity-reports-all-os`.
+1. Finaliser le lane Windows (`#24580023155`) et obtenir `aggregate-reports` vert avec `mediainfo-parity-reports-all-os`.
 2. Rendre ce gate strictement obligatoire côté policy GitHub (required checks/release policy).
 3. Rejouer la matrice (`strict/extended/expanded`) à chaque sous-jalon d’extraction modulaire.
 4. Poursuivre la couverture v26.01 hors corpus sprint (formats/cas limites supplémentaires).
