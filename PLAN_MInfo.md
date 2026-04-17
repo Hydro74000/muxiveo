@@ -130,6 +130,10 @@ Status: `IN_PROGRESS`
     - correctif appliqué (3e passe):
       - fallback `Get-Command` élargi (`Path/Source/Definition`).
       - ajout chemins standards Linux/macOS (`/usr/bin`, `/usr/local/bin`, `/opt/homebrew/bin`).
+    - correctif appliqué (4e passe):
+      - split du step oracle:
+        - Windows: résolution PowerShell avec timeout/kill.
+        - Linux/macOS: résolution shell native `command -v mediainfo` + validation `--Version`.
     - run remote suivant requis pour valider Linux + Windows + `aggregate-reports`.
 
 ### Step 5 — Couverture complète MediaInfo v26.01
