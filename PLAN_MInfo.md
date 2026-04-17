@@ -158,6 +158,12 @@ Status: `IN_PROGRESS`
     - correctif appliqué (10e passe):
       - suppression de la re-détection Windows redondante.
       - step `Resolve oracle binary path (Windows)` réduit à un check simple de `MEDIAINFO_ORACLE_BIN` (fourni par l’install).
+    - `#24581332108`: résolution oracle Windows OK, mais parité stricte Windows à `30/39` (9 mismatches).
+    - diagnostic:
+      - écarts concentrés sur `File_Created_Date*` / `File_Modified_Date*` (millisecondes absentes côté natif) et dérivés `PBCore2` (`instantiationDate` + annotations).
+    - correctif appliqué (11e passe):
+      - moteur natif: dates fichier avec millisecondes sur Windows (`General` + `SubRip` + création date container via `st_ctime`).
+      - `PBCore` (`utc_file_date_iso`) accepte et propage les timestamps `...SSS UTC` -> `...SSS Z`.
     - run remote suivant requis pour valider Linux + Windows + `aggregate-reports`.
 
 ### Step 5 — Couverture complète MediaInfo v26.01
@@ -233,6 +239,8 @@ Status: `IN_PROGRESS`
     - `py_compile`: OK
     - `no_external_guard`: OK
     - gate parité: OK (`real 39/39`, `extended 44/44`, `expanded 96/96`)
+  - tranche dates Windows:
+    - formatage dates fichier harmonisé (ms) sans régression Linux locale.
     - oracle utilisé: `/var/home/hydromel/dev/MediaInfo/MediaInfo_CLI_CPP/MediaInfo/Project/GNU/CLI/mediainfo`
 - Mise à jour 2026-04-17 (tranche modèle + extraction commune):
   - `api/model.py` enrichi avec vues de rendu (`ReportView`, `ReportTrackView`, `to_report_view`).

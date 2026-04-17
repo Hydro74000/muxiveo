@@ -83,10 +83,14 @@ class MediaInfoEngine(_core.MediaInfoEngine):
 
         if path.exists():
             stat = path.stat()
-            created_utc = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
-            created_local = datetime.fromtimestamp(stat.st_mtime)
-            general.fields["File_Modified_Date"] = created_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
-            general.fields["File_Modified_Date_Local"] = created_local.strftime("%Y-%m-%d %H:%M:%S")
+            mtime_ms = (
+                int(round(stat.st_mtime_ns / 1_000_000.0))
+                if hasattr(stat, "st_mtime_ns")
+                else int(round(stat.st_mtime * 1000.0))
+            )
+            mod_utc, mod_local = self._format_file_dates_from_ms(mtime_ms)
+            general.fields["File_Modified_Date"] = mod_utc
+            general.fields["File_Modified_Date_Local"] = mod_local
             self._apply_creation_dates_from_birth(general, path)
 
         text = self._build_subrip_text_track(subrip_stats)
@@ -100,6 +104,21 @@ class MediaInfoEngine(_core.MediaInfoEngine):
         if forced in {"1", "true", "yes", "on"}:
             return True
         return not sys.platform.startswith("darwin")
+
+    @staticmethod
+    def _format_file_dates_from_ms(epoch_ms: int) -> tuple[str, str]:
+        dt_utc = datetime.fromtimestamp(epoch_ms / 1000.0, tz=timezone.utc)
+        dt_local = dt_utc.astimezone()
+        if os.name == "nt":
+            ms_suffix = f".{epoch_ms % 1000:03d}"
+            return (
+                dt_utc.strftime("%Y-%m-%d %H:%M:%S") + ms_suffix + " UTC",
+                dt_local.strftime("%Y-%m-%d %H:%M:%S") + ms_suffix,
+            )
+        return (
+            dt_utc.strftime("%Y-%m-%d %H:%M:%S UTC"),
+            dt_local.strftime("%Y-%m-%d %H:%M:%S"),
+        )
 
     @staticmethod
     def _is_existing_local_file(source_path: Path) -> bool:
@@ -398,10 +417,9 @@ class MediaInfoEngine(_core.MediaInfoEngine):
             return
         if birth_ms is None or birth_ms <= 0:
             return
-        dt_utc = datetime.fromtimestamp(birth_ms / 1000.0, tz=timezone.utc)
-        dt_local = dt_utc.astimezone()
-        track.fields["File_Created_Date"] = dt_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
-        track.fields["File_Created_Date_Local"] = dt_local.strftime("%Y-%m-%d %H:%M:%S")
+        created_utc, created_local = self._format_file_dates_from_ms(birth_ms)
+        track.fields["File_Created_Date"] = created_utc
+        track.fields["File_Created_Date_Local"] = created_local
 
     def _build_native_container_report(self, source: str, parsed: dict[str, object]) -> _core.MediaReport | None:
         container = str(parsed.get("container", ""))
@@ -747,18 +765,11 @@ class MediaInfoEngine(_core.MediaInfoEngine):
         if not any(t.kind == "Text" for t in parsed.tracks):
             general.fields.pop("TextCount", None)
         if parsed.date_utc_unix_ms is not None:
-            dt_utc = datetime.fromtimestamp(parsed.date_utc_unix_ms / 1000.0, tz=timezone.utc)
-            dt_local = dt_utc.astimezone()
             if self._emit_created_dates():
-                general.fields["File_Created_Date"] = dt_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
-                general.fields["File_Created_Date_Local"] = dt_local.strftime("%Y-%m-%d %H:%M:%S")
-        birth_ms = self._file_birth_unix_ms(Path(source).expanduser())
-        if birth_ms is not None:
-            dt_utc = datetime.fromtimestamp(birth_ms / 1000.0, tz=timezone.utc)
-            dt_local = dt_utc.astimezone()
-            if self._emit_created_dates():
-                general.fields["File_Created_Date"] = dt_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
-                general.fields["File_Created_Date_Local"] = dt_local.strftime("%Y-%m-%d %H:%M:%S")
+                created_utc, created_local = self._format_file_dates_from_ms(parsed.date_utc_unix_ms)
+                general.fields["File_Created_Date"] = created_utc
+                general.fields["File_Created_Date_Local"] = created_local
+        self._apply_creation_dates_from_birth(general, Path(source).expanduser())
         if parsed.has_level1_crc32:
             general.fields["extra.ErrorDetectionType"] = "Per level 1"
         if parsed.chapters:

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
 import struct
 import time
@@ -1010,10 +1011,20 @@ class MediaInfoEngine:
             p = Path(source).expanduser()
             if p.exists():
                 stat = p.stat()
-                created_utc = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
-                created_local = datetime.fromtimestamp(stat.st_mtime)
-                fields["File_Modified_Date"] = created_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
-                fields["File_Modified_Date_Local"] = created_local.strftime("%Y-%m-%d %H:%M:%S")
+                mtime_ms = (
+                    int(round(stat.st_mtime_ns / 1_000_000.0))
+                    if hasattr(stat, "st_mtime_ns")
+                    else int(round(stat.st_mtime * 1000.0))
+                )
+                created_utc = datetime.fromtimestamp(mtime_ms / 1000.0, tz=timezone.utc)
+                created_local = datetime.fromtimestamp(mtime_ms / 1000.0)
+                if os.name == "nt":
+                    ms_suffix = f".{mtime_ms % 1000:03d}"
+                    fields["File_Modified_Date"] = created_utc.strftime("%Y-%m-%d %H:%M:%S") + ms_suffix + " UTC"
+                    fields["File_Modified_Date_Local"] = created_local.strftime("%Y-%m-%d %H:%M:%S") + ms_suffix
+                else:
+                    fields["File_Modified_Date"] = created_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+                    fields["File_Modified_Date_Local"] = created_local.strftime("%Y-%m-%d %H:%M:%S")
         return MediaTrack(kind="General", fields=fields)
 
     def _apply_subrip_general_track(self, general: MediaTrack, stats: "SubripStats") -> None:
@@ -2780,11 +2791,16 @@ def _utc_file_date_iso(value: str) -> str:
     raw = _string(value).strip()
     if not raw:
         return ""
-    try:
-        dt = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S UTC")
-        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-    except ValueError:
-        return raw
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f UTC", "%Y-%m-%d %H:%M:%S UTC"):
+        try:
+            dt = datetime.strptime(raw, fmt)
+            if "%f" in fmt:
+                ms = int(dt.microsecond / 1000)
+                return dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{ms:03d}Z"
+            return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            continue
+    return raw
 
 
 def _mime_for_extension(ext: str) -> str:
