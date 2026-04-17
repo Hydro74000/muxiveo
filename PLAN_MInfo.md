@@ -154,6 +154,10 @@ Status: `IN_PROGRESS`
     - `#24581068423`: KO Windows persistant; diagnostic log: chemins Windows hardcodés avec doubles `\\` (littéraux invalides en PowerShell), `MEDIAINFO_ORACLE_BIN` exporté invalide.
     - correctif appliqué (9e passe):
       - normalisation de tous les chemins Windows hardcodés en backslash simple (`C:\...`).
+    - `#24581204016`: KO Windows persistant; install résout oracle, mais la re-détection dédiée Windows échoue ensuite.
+    - correctif appliqué (10e passe):
+      - suppression de la re-détection Windows redondante.
+      - step `Resolve oracle binary path (Windows)` réduit à un check simple de `MEDIAINFO_ORACLE_BIN` (fourni par l’install).
     - run remote suivant requis pour valider Linux + Windows + `aggregate-reports`.
 
 ### Step 5 — Couverture complète MediaInfo v26.01
