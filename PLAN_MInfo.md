@@ -138,6 +138,9 @@ Status: `IN_PROGRESS`
     - correctif appliqué (5e passe):
       - discovery récursive des binaires sous `C:\\ProgramData\\chocolatey\\lib\\mediainfo\\tools`.
       - log explicite des candidats testés en cas d’échec.
+    - `#24580805412`: Windows KO persistant, candidats visibles mais aucun binaire CLI valide (`MediaInfo.exe` GUI détecté).
+    - correctif appliqué (6e passe):
+      - install Windows basculée vers `choco install mediainfo-cli` (package CLI dédié) au lieu de `mediainfo`.
     - run remote suivant requis pour valider Linux + Windows + `aggregate-reports`.
 
 ### Step 5 — Couverture complète MediaInfo v26.01

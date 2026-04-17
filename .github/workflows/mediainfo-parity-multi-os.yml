@@ -57,7 +57,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          choco install mediainfo -y --no-progress
+          choco install mediainfo-cli -y --no-progress
           "$env:ChocolateyInstall\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           if (Test-Path 'C:\Program Files\MediaInfo') {
             'C:\Program Files\MediaInfo' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
