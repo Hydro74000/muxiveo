@@ -81,25 +81,50 @@ jobs:
       - name: Resolve oracle binary path
         shell: pwsh
         run: |
-          if ($env:RUNNER_OS -eq 'Windows') {
-            $candidates = @(
-              'C:\ProgramData\chocolatey\bin\mediainfo.exe',
-              'C:\Program Files\MediaInfo\CLI\mediainfo.exe',
-              'C:\Program Files\MediaInfo\mediainfo.exe'
-            )
-            $mi = $null
-            foreach ($candidate in $candidates) {
-              if (Test-Path $candidate) {
-                $mi = $candidate
-                break
-              }
-            }
-            if (-not $mi) {
-              $mi = (Get-Command mediainfo.exe -ErrorAction Stop).Source
-            }
-          } else {
-            $mi = (Get-Command mediainfo -ErrorAction Stop).Source
+          $code = @'
+import platform
+import shutil
+import subprocess
+import sys
+
+candidates = []
+if platform.system() == "Windows":
+    candidates.extend([
+        r"C:\\ProgramData\\chocolatey\\bin\\mediainfo.exe",
+        r"C:\\Program Files\\MediaInfo\\CLI\\mediainfo.exe",
+        r"C:\\Program Files\\MediaInfo\\mediainfo.exe",
+    ])
+    candidates.append(shutil.which("mediainfo.exe"))
+    candidates.append(shutil.which("mediainfo"))
+else:
+    candidates.append(shutil.which("mediainfo"))
+
+seen = set()
+for candidate in candidates:
+    if not candidate or candidate in seen:
+        continue
+    seen.add(candidate)
+    try:
+        proc = subprocess.run(
+            [candidate, "--Version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        continue
+    if "MediaInfoLib" in (proc.stdout or ""):
+        print(candidate)
+        sys.exit(0)
+sys.exit(1)
+'@
+          $mi = (python -c $code).Trim()
+          if (-not $mi) {
+            throw "Unable to resolve a working MediaInfo CLI oracle binary"
           }
+          Write-Host "Resolved oracle: $mi"
           "MEDIAINFO_ORACLE_BIN=$mi" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Linux parity compatibility toggles
