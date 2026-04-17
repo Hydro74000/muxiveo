@@ -94,6 +94,11 @@ class MediaInfoEngine(_core.MediaInfoEngine):
 
     @staticmethod
     def _emit_created_dates() -> bool:
+        forced = os.environ.get("MINFO_EMIT_FILE_CREATED_DATE", "").strip().lower()
+        if forced in {"0", "false", "no", "off"}:
+            return False
+        if forced in {"1", "true", "yes", "on"}:
+            return True
         return not sys.platform.startswith("darwin")
 
     @staticmethod

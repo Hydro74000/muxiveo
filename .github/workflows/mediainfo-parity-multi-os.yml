@@ -78,6 +78,18 @@ jobs:
           python --version
           mediainfo --Version
 
+      - name: Resolve oracle binary path
+        shell: pwsh
+        run: |
+          $mi = (Get-Command mediainfo -ErrorAction Stop).Source
+          "MEDIAINFO_ORACLE_BIN=$mi" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Linux parity compatibility toggles
+        if: runner.os == 'Linux'
+        shell: pwsh
+        run: |
+          "MINFO_EMIT_FILE_CREATED_DATE=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Verify corpus manifest
         shell: pwsh
         run: |
@@ -91,17 +103,17 @@ jobs:
       - name: Parity strict (real)
         shell: pwsh
         run: |
-          python scripts/mediainfo_parity_matrix.py --oracle-bin mediainfo --manifest scripts/mediainfo_parity_manifest.real.json --report scripts/mediainfo_parity_report.real.json
+          python scripts/mediainfo_parity_matrix.py --oracle-bin "$env:MEDIAINFO_ORACLE_BIN" --manifest scripts/mediainfo_parity_manifest.real.json --report scripts/mediainfo_parity_report.real.json
 
       - name: Parity extended (real + subrip)
         shell: pwsh
         run: |
-          python scripts/mediainfo_parity_matrix.py --oracle-bin mediainfo --manifest scripts/mediainfo_parity_manifest.extended.json --report scripts/mediainfo_parity_report.extended.json
+          python scripts/mediainfo_parity_matrix.py --oracle-bin "$env:MEDIAINFO_ORACLE_BIN" --manifest scripts/mediainfo_parity_manifest.extended.json --report scripts/mediainfo_parity_report.extended.json
 
       - name: Parity expanded (multitrack/tags/chapters/vfr/hdr)
         shell: pwsh
         run: |
-          python scripts/mediainfo_parity_matrix.py --oracle-bin mediainfo --manifest scripts/mediainfo_parity_manifest.expanded.json --report scripts/mediainfo_parity_report.expanded.json
+          python scripts/mediainfo_parity_matrix.py --oracle-bin "$env:MEDIAINFO_ORACLE_BIN" --manifest scripts/mediainfo_parity_manifest.expanded.json --report scripts/mediainfo_parity_report.expanded.json
 
       - name: Parity gate (no failed/no skipped)
         shell: pwsh
