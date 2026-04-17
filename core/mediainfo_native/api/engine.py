@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -84,13 +85,18 @@ class MediaInfoEngine(_core.MediaInfoEngine):
             stat = path.stat()
             created_utc = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
             created_local = datetime.fromtimestamp(stat.st_mtime)
-            general.fields["File_Created_Date"] = created_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
-            general.fields["File_Created_Date_Local"] = created_local.strftime("%Y-%m-%d %H:%M:%S")
             general.fields["File_Modified_Date"] = created_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
             general.fields["File_Modified_Date_Local"] = created_local.strftime("%Y-%m-%d %H:%M:%S")
+            if self._emit_created_dates():
+                general.fields["File_Created_Date"] = created_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+                general.fields["File_Created_Date_Local"] = created_local.strftime("%Y-%m-%d %H:%M:%S")
 
         text = self._build_subrip_text_track(subrip_stats)
         return _core.MediaReport(source=source, tracks=[general, text])
+
+    @staticmethod
+    def _emit_created_dates() -> bool:
+        return not sys.platform.startswith("darwin")
 
     @staticmethod
     def _is_existing_local_file(source_path: Path) -> bool:
@@ -719,14 +725,16 @@ class MediaInfoEngine(_core.MediaInfoEngine):
         if parsed.date_utc_unix_ms is not None:
             dt_utc = datetime.fromtimestamp(parsed.date_utc_unix_ms / 1000.0, tz=timezone.utc)
             dt_local = dt_utc.astimezone()
-            general.fields["File_Created_Date"] = dt_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
-            general.fields["File_Created_Date_Local"] = dt_local.strftime("%Y-%m-%d %H:%M:%S")
+            if self._emit_created_dates():
+                general.fields["File_Created_Date"] = dt_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+                general.fields["File_Created_Date_Local"] = dt_local.strftime("%Y-%m-%d %H:%M:%S")
         birth_ms = self._file_birth_unix_ms(Path(source).expanduser())
         if birth_ms is not None:
             dt_utc = datetime.fromtimestamp(birth_ms / 1000.0, tz=timezone.utc)
             dt_local = dt_utc.astimezone()
-            general.fields["File_Created_Date"] = dt_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
-            general.fields["File_Created_Date_Local"] = dt_local.strftime("%Y-%m-%d %H:%M:%S")
+            if self._emit_created_dates():
+                general.fields["File_Created_Date"] = dt_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+                general.fields["File_Created_Date_Local"] = dt_local.strftime("%Y-%m-%d %H:%M:%S")
         if parsed.has_level1_crc32:
             general.fields["extra.ErrorDetectionType"] = "Per level 1"
         if parsed.chapters:

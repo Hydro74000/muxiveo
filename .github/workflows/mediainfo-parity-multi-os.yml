@@ -47,6 +47,9 @@ jobs:
       - name: Install tools (Linux)
         if: runner.os == 'Linux'
         run: |
+          sudo apt-get install -y wget ca-certificates
+          wget -q https://mediaarea.net/repo/deb/repo-mediaarea_1.0-26_all.deb
+          sudo dpkg -i repo-mediaarea_1.0-26_all.deb
           sudo apt-get update -qq
           sudo apt-get install -y mediainfo
 
@@ -55,6 +58,13 @@ jobs:
         shell: pwsh
         run: |
           choco install mediainfo -y --no-progress
+          "$env:ChocolateyInstall\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          if (Test-Path 'C:\Program Files\MediaInfo') {
+            'C:\Program Files\MediaInfo' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
+          if (Test-Path 'C:\Program Files\MediaInfo\CLI') {
+            'C:\Program Files\MediaInfo\CLI' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
 
       - name: Install tools (macOS)
         if: runner.os == 'macOS'

@@ -96,6 +96,20 @@ Status: `IN_PROGRESS`
   - exécuter effectivement la matrice Windows/macOS sur CI remote et vérifier l’artifact consolidé `mediainfo-parity-reports-all-os`.
   - activer l’obligation de succès de ce gate dans les branch protection / release policy GitHub.
   - blocage courant (2026-04-17): `gh workflow run mediainfo-parity-multi-os.yml --ref levelup` renvoie `404 workflow not found on default branch` tant que le workflow/parity scripts ne sont pas publiés côté remote.
+  - mise à jour 2026-04-17 (run remote réel #24578692465, branch `levelup`):
+    - workflow publié/pushé, exécution multi-OS déclenchée via `push`.
+    - état run: `failure` (Linux+macOS mismatch strict, Windows tool path, aggregate fail).
+    - causes observées:
+      - Linux: oracle système Ubuntu = `MediaInfoLib v24.01` (drift vs baseline v26.01) => mismatches massifs.
+      - Windows: `mediainfo` non trouvé après install choco (PATH runner).
+      - macOS: 9 mismatches strict liés aux champs `File_Created_Date*` présents côté natif mais absents oracle.
+    - correctifs appliqués:
+      - workflow Linux: ajout repo MediaArea (`repo-mediaarea_1.0-26_all.deb`) avant `apt install mediainfo`.
+      - workflow Windows: ajout des chemins `Chocolatey/bin`, `C:\\Program Files\\MediaInfo`, `...\\CLI` au `GITHUB_PATH`.
+      - moteur natif: émission conditionnelle de `File_Created_Date*` désactivée sur macOS.
+    - validation locale post-correctifs:
+      - `no_external_guard`: OK
+      - parité: strict `39/39`, extended `44/44`, expanded `96/96`
 
 ### Step 5 — Couverture complète MediaInfo v26.01
 Status: `IN_PROGRESS`
@@ -238,8 +252,7 @@ Status: `IN_PROGRESS`
 - Couverture v26.01 complète non atteinte hors corpus sprint.
 
 ## Prochaines étapes prévues
-1. Publier sur remote la pile parité (`workflow + scripts + manifests + corpus`) pour lever le `404` de dispatch.
-2. Activer la validation effective multi-OS (Windows/macOS) et archiver les rapports CI.
-3. Rendre ce gate strictement obligatoire côté policy GitHub (required checks/release policy).
-4. Rejouer la matrice (`strict/extended/expanded`) à chaque sous-jalon d’extraction modulaire.
-5. Poursuivre la couverture v26.01 hors corpus sprint (formats/cas limites supplémentaires).
+1. Re-push des correctifs CI et relance de la matrice multi-OS; vérifier `aggregate-reports` + artifact `mediainfo-parity-reports-all-os`.
+2. Rendre ce gate strictement obligatoire côté policy GitHub (required checks/release policy).
+3. Rejouer la matrice (`strict/extended/expanded`) à chaque sous-jalon d’extraction modulaire.
+4. Poursuivre la couverture v26.01 hors corpus sprint (formats/cas limites supplémentaires).

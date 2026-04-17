@@ -8,6 +8,7 @@ import html
 import json
 import re
 import struct
+import sys
 import time
 import xml.etree.ElementTree as ET
 import xml.dom.minidom as minidom
@@ -1012,8 +1013,9 @@ class MediaInfoEngine:
                 stat = p.stat()
                 created_utc = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
                 created_local = datetime.fromtimestamp(stat.st_mtime)
-                fields["File_Created_Date"] = created_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
-                fields["File_Created_Date_Local"] = created_local.strftime("%Y-%m-%d %H:%M:%S")
+                if not sys.platform.startswith("darwin"):
+                    fields["File_Created_Date"] = created_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+                    fields["File_Created_Date_Local"] = created_local.strftime("%Y-%m-%d %H:%M:%S")
                 fields["File_Modified_Date"] = created_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
                 fields["File_Modified_Date_Local"] = created_local.strftime("%Y-%m-%d %H:%M:%S")
         return MediaTrack(kind="General", fields=fields)
