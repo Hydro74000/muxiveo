@@ -122,7 +122,7 @@ Status: `IN_PROGRESS`
     - `#24580023155`: échec lane Windows au step `Resolve oracle binary path` (`null-valued expression` sur `.Trim()`).
     - correctif appliqué:
       - workflow parity: résolution oracle Windows réécrite en PowerShell pur (sans `python -c`), candidats `Chocolatey/Program Files/where/Get-Command`, validation `--Version` avant export `MEDIAINFO_ORACLE_BIN`.
-    - prochain run remote attendu: fermeture du lane Windows + `aggregate-reports` vert.
+    - run relancé: `#24580283567` (branche `levelup`) pour valider la fermeture du lane Windows + `aggregate-reports`.
 
 ### Step 5 — Couverture complète MediaInfo v26.01
 Status: `IN_PROGRESS`
