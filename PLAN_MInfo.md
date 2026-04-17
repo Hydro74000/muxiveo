@@ -164,6 +164,9 @@ Status: `IN_PROGRESS`
     - correctif appliqué (11e passe):
       - moteur natif: dates fichier avec millisecondes sur Windows (`General` + `SubRip` + création date container via `st_ctime`).
       - `PBCore` (`utc_file_date_iso`) accepte et propage les timestamps `...SSS UTC` -> `...SSS Z`.
+    - diagnostic résiduel (`#24581616915`): 3 écarts Windows restants (`real_hevc_eac3_sub`) limités à un décalage `+1ms` (`.159` vs `.160`).
+    - correctif appliqué (12e passe):
+      - suppression des arrondis ms (`round`) sur timestamps fichier au profit du tronquage `int(...)` aligné oracle.
     - run remote suivant requis pour valider Linux + Windows + `aggregate-reports`.
 
 ### Step 5 — Couverture complète MediaInfo v26.01

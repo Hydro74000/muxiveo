@@ -1012,9 +1012,9 @@ class MediaInfoEngine:
             if p.exists():
                 stat = p.stat()
                 mtime_ms = (
-                    int(round(stat.st_mtime_ns / 1_000_000.0))
+                    int(stat.st_mtime_ns / 1_000_000)
                     if hasattr(stat, "st_mtime_ns")
-                    else int(round(stat.st_mtime * 1000.0))
+                    else int(stat.st_mtime * 1000.0)
                 )
                 created_utc = datetime.fromtimestamp(mtime_ms / 1000.0, tz=timezone.utc)
                 created_local = datetime.fromtimestamp(mtime_ms / 1000.0)

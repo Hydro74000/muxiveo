@@ -84,9 +84,9 @@ class MediaInfoEngine(_core.MediaInfoEngine):
         if path.exists():
             stat = path.stat()
             mtime_ms = (
-                int(round(stat.st_mtime_ns / 1_000_000.0))
+                int(stat.st_mtime_ns / 1_000_000)
                 if hasattr(stat, "st_mtime_ns")
-                else int(round(stat.st_mtime * 1000.0))
+                else int(stat.st_mtime * 1000.0)
             )
             mod_utc, mod_local = self._format_file_dates_from_ms(mtime_ms)
             general.fields["File_Modified_Date"] = mod_utc
@@ -410,7 +410,7 @@ class MediaInfoEngine(_core.MediaInfoEngine):
         birth_ms: int | None = None
         try:
             if os.name == "nt":
-                birth_ms = int(round(path.stat().st_ctime * 1000.0))
+                birth_ms = int(path.stat().st_ctime * 1000.0)
             else:
                 birth_ms = self._file_birth_unix_ms(path)
         except OSError:
