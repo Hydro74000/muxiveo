@@ -1,0 +1,44 @@
+{
+  "defaults": {
+    "arg_sets": [
+      ["--Output=Text"],
+      ["--Output=JSON"],
+      ["--Output=XML"],
+      ["--Output=EBUCore_1.8_ps"],
+      ["--Output=EBUCore_1.8_ps_JSON"],
+      ["--Output=PBCore2"],
+      ["--Output=MPEG-7_Strict"],
+      ["--Output=MPEG-7_Relaxed"],
+      ["--Output=MPEG-7_Extended"],
+      ["--Inform=Video;%FrameCount%|%FrameRate%|%HDR_Format%|%HDR_Format_Compatibility%"],
+      ["--Language=raw", "--Output=Text"],
+      ["--inform_version=1", "--Output=Text"],
+      ["--inform_timestamp=1", "--Output=Text"]
+    ]
+  },
+  "cases": [
+    {
+      "name": "real_h264_aac",
+      "path": "../mediarecode_corpus_real/sample_h264_aac.mp4"
+    },
+    {
+      "name": "real_hevc_eac3_sub",
+      "path": "../mediarecode_corpus_real/sample_hevc_eac3_sub.mkv"
+    },
+    {
+      "name": "real_vp9_opus",
+      "path": "../mediarecode_corpus_real/sample_vp9_opus.webm"
+    },
+    {
+      "name": "real_subrip",
+      "path": "../mediarecode_corpus_real/sample_sub.srt",
+      "arg_sets": [
+        ["--Output=Text"],
+        ["--Output=JSON"],
+        ["--Output=XML"],
+        ["--Language=raw", "--Output=Text"],
+        ["--Inform=Text;%Format%|%CodecID%|%Duration%"]
+      ]
+    }
+  ]
+}

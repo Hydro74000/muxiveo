@@ -6,6 +6,5 @@
 # Interface graphique
 PySide6>=6.6.0
  
-# Inspection médias (alternative Python à mediainfo CLI)
-pymediainfo>=6.1.0
+# Moteur MediaInfo natif intégré (sans dépendance mediainfo/libmediainfo)
  

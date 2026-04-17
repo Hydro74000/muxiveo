@@ -1,0 +1,138 @@
+name: MediaInfo Native Parity Multi-OS
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "core/mediainfo_native/**"
+      - "scripts/mediainfo_parity_matrix.py"
+      - "scripts/verify_mediainfo_corpus.py"
+      - "scripts/mediainfo_parity_manifest*.json"
+      - "scripts/mediainfo_corpus_manifest*.json"
+      - "mediarecode_corpus_real/**"
+      - ".github/workflows/mediainfo-parity-multi-os.yml"
+  push:
+    branches:
+      - main
+      - master
+      - levelup
+    paths:
+      - "core/mediainfo_native/**"
+      - "scripts/mediainfo_parity_matrix.py"
+      - "scripts/verify_mediainfo_corpus.py"
+      - "scripts/mediainfo_parity_manifest*.json"
+      - "scripts/mediainfo_corpus_manifest*.json"
+      - "mediarecode_corpus_real/**"
+      - ".github/workflows/mediainfo-parity-multi-os.yml"
+
+jobs:
+  parity:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y mediainfo
+
+      - name: Install tools (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install mediainfo -y --no-progress
+
+      - name: Install tools (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew update
+          brew install mediainfo
+
+      - name: Tool versions
+        shell: pwsh
+        run: |
+          python --version
+          mediainfo --Version
+
+      - name: Verify corpus manifest
+        shell: pwsh
+        run: |
+          python scripts/verify_mediainfo_corpus.py --manifest scripts/mediainfo_corpus_manifest.real.json --root mediarecode_corpus_real
+
+      - name: Guard no external runtime dependency
+        shell: pwsh
+        run: |
+          python -m core.mediainfo_native.validation.no_external_guard
+
+      - name: Parity strict (real)
+        shell: pwsh
+        run: |
+          python scripts/mediainfo_parity_matrix.py --oracle-bin mediainfo --manifest scripts/mediainfo_parity_manifest.real.json --report scripts/mediainfo_parity_report.real.json
+
+      - name: Parity extended (real + subrip)
+        shell: pwsh
+        run: |
+          python scripts/mediainfo_parity_matrix.py --oracle-bin mediainfo --manifest scripts/mediainfo_parity_manifest.extended.json --report scripts/mediainfo_parity_report.extended.json
+
+      - name: Parity expanded (multitrack/tags/chapters/vfr/hdr)
+        shell: pwsh
+        run: |
+          python scripts/mediainfo_parity_matrix.py --oracle-bin mediainfo --manifest scripts/mediainfo_parity_manifest.expanded.json --report scripts/mediainfo_parity_report.expanded.json
+
+      - name: Parity gate (no failed/no skipped)
+        shell: pwsh
+        run: |
+          python scripts/mediainfo_parity_gate.py `
+            --report scripts/mediainfo_parity_report.real.json `
+            --report scripts/mediainfo_parity_report.extended.json `
+            --report scripts/mediainfo_parity_report.expanded.json
+
+      - name: Upload parity reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mediainfo-parity-reports-${{ runner.os }}
+          path: |
+            scripts/mediainfo_parity_report.real.json
+            scripts/mediainfo_parity_report.extended.json
+            scripts/mediainfo_parity_report.expanded.json
+          if-no-files-found: warn
+
+  aggregate-reports:
+    needs: parity
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Download all parity artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: mediainfo-parity-reports-*
+          path: parity-artifacts
+
+      - name: Validate downloaded reports
+        run: |
+          set -euo pipefail
+          count=$(find parity-artifacts -type f -name 'mediainfo_parity_report.*.json' | wc -l)
+          echo "Downloaded report files: $count"
+          test "$count" -ge 9
+
+      - name: Upload combined parity reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: mediainfo-parity-reports-all-os
+          path: parity-artifacts
+          if-no-files-found: error

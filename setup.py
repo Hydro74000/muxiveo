@@ -163,7 +163,6 @@ WINDOWS_WINGET_PATTERNS: dict[str, tuple[str, ...]] = {
 WINDOWS_CONFIG_TOOL_ORDER: tuple[str, ...] = (
     "ffmpeg",
     "ffprobe",
-    "mediainfo",
     "dovi_tool",
     "hdr10plus_tool",
     "eac3to",
@@ -198,7 +197,6 @@ def detect_linux_distro() -> str:
 
 PYTHON_PACKAGES = [
     "PySide6",
-    "pymediainfo>=6.1.0",
 ]
 
 # ---------------------------------------------------------------------------
@@ -266,13 +264,6 @@ SYSTEM_TOOLS: dict[str, dict] = {
         "brew":   "mkvtoolnix",
         "winget": "MoritzBunkus.MKVToolNix",
         "desc":   "MKV metadata editor (ships with mkvtoolnix)",
-    },
-    "mediainfo": {
-        "apt":    "mediainfo",
-        "dnf":    "mediainfo",
-        "brew":   "mediainfo",
-        "winget": "MediaArea.MediaInfo",
-        "desc":   "Media metadata tool",
     },
 }
 
@@ -956,32 +947,13 @@ def _windows_program_files_dirs() -> list[Path]:
     return _dedupe_paths(dirs)
 
 
-def _is_windows_mediainfo_cli_path(path: str) -> bool:
-    raw = (path or "").strip()
-    if not raw:
-        return False
-
-    lower = raw.lower()
-    if lower in ("mediainfo", "mediainfo.exe"):
-        return True
-    if lower == "mediaarea.mediainfo":
-        return True
-    if "mediaarea.mediainfo.cli" in lower:
-        return True
-    if "\\mediainfo cli\\" in lower or "\\mediainfocli\\" in lower:
-        return True
-    return False
-
-
 def _windows_default_tool_candidates(tool_name: str, prefix: Path) -> list[Path]:
     exe_names = WINDOWS_TOOL_FILENAMES.get(tool_name, (f"{tool_name}.exe",))
     candidates: list[Path] = []
 
-    include_prefix_dirs = tool_name != "mediainfo"
-    if include_prefix_dirs:
-        for directory in (prefix, prefix / "bin", Path(__file__).parent / "tools", Path(__file__).parent / "tools" / "bin"):
-            for exe_name in exe_names:
-                candidates.append(directory / exe_name)
+    for directory in (prefix, prefix / "bin", Path(__file__).parent / "tools", Path(__file__).parent / "tools" / "bin"):
+        for exe_name in exe_names:
+            candidates.append(directory / exe_name)
 
     winget_root = _windows_winget_root()
     if winget_root.exists():
@@ -1097,13 +1069,8 @@ def autofill_windows_config_ini(prefix: Path, dry_run: bool, force: bool = False
                 detected[tool_name] = resolved
             continue
 
-        existing_value = existing_values.get(tool_name.lower(), "")
-        if existing_value:
-            if tool_name != "mediainfo":
-                continue
-            if _is_windows_mediainfo_cli_path(existing_value):
-                continue
-            replace_keys.add(tool_name)
+        if existing_values.get(tool_name.lower(), ""):
+            continue
         resolved = _detect_windows_tool_path(tool_name, prefix)
         if resolved:
             detected[tool_name] = resolved
@@ -2035,7 +2002,6 @@ def check_tools_presence(prefix: Path | None = None) -> None:
             "mkvextract":     "https://mkvtoolnix.download/  (ships with mkvtoolnix)",
             "mkvinfo":        "https://mkvtoolnix.download/  (ships with mkvtoolnix)",
             "mkvpropedit":    "https://mkvtoolnix.download/  (ships with mkvtoolnix)",
-            "mediainfo":      "https://mediaarea.net/en/MediaInfo/Download",
             "dovi_tool":      "https://github.com/quietvoid/dovi_tool/releases",
             "hdr10plus_tool": "https://github.com/quietvoid/hdr10plus_tool/releases",
         }
@@ -2141,7 +2107,7 @@ def main() -> None:
         else:
             warn(
                 "Unrecognised Linux distribution — cannot auto-install system packages.\n"
-                "   Install manually: ffmpeg  mkvtoolnix  mediainfo"
+                "   Install manually: ffmpeg  mkvtoolnix"
             )
 
         if not args.no_github:

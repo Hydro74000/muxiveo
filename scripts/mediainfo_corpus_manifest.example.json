@@ -1,0 +1,21 @@
+{
+  "version": "1",
+  "description": "External corpus manifest for MediaInfo parity validation",
+  "files": [
+    {
+      "id": "sample_1",
+      "relative_path": "sample_1.mkv",
+      "sha256": "REPLACE_WITH_SHA256",
+      "size_bytes": 0,
+      "source_url": "https://example.invalid/sample_1.mkv"
+    },
+    {
+      "id": "sample_2",
+      "relative_path": "sample_2.mp4",
+      "sha256": "REPLACE_WITH_SHA256",
+      "size_bytes": 0,
+      "source_url": "https://example.invalid/sample_2.mp4"
+    }
+  ]
+}
+

@@ -1,0 +1,29 @@
+{
+  "defaults": {
+    "arg_sets": [
+      [
+        "--Output=Text"
+      ],
+      [
+        "--Output=JSON"
+      ],
+      [
+        "--Output=XML"
+      ],
+      [
+        "--Inform=Video;%Format%|%FrameRate%|%FrameCount%|%HDR_Format%|%HDR_Format_Compatibility%"
+      ]
+    ]
+  },
+  "cases": [
+    {
+      "name": "sample_1",
+      "path": "../samples/sample_1.mkv"
+    },
+    {
+      "name": "sample_2",
+      "path": "../samples/sample_2.mp4"
+    }
+  ]
+}
+

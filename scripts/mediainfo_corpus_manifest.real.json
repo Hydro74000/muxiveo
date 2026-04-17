@@ -1,0 +1,62 @@
+{
+  "version": "1",
+  "description": "Local real-media corpus for MediaInfo parity validation",
+  "files": [
+    {
+      "id": "sample_h264_aac",
+      "relative_path": "sample_h264_aac.mp4",
+      "sha256": "81d48e95725435395b3b039896b8adaee7b1489cbfb4b50fdbb995018d496427",
+      "size_bytes": 44478,
+      "source_url": "generated-local-ffmpeg"
+    },
+    {
+      "id": "sample_hevc_eac3_sub",
+      "relative_path": "sample_hevc_eac3_sub.mkv",
+      "sha256": "188627d29dace8ac790cb30396c44cc06c5ebf1ea5ad394349a9b807005b75b8",
+      "size_bytes": 134847,
+      "source_url": "generated-local-ffmpeg"
+    },
+    {
+      "id": "sample_vp9_opus",
+      "relative_path": "sample_vp9_opus.webm",
+      "sha256": "838b6779dbc40da018a6ae37ccc6186602bb22391a62755e54842bf01bddae88",
+      "size_bytes": 51147,
+      "source_url": "generated-local-ffmpeg"
+    },
+    {
+      "id": "sample_subrip",
+      "relative_path": "sample_sub.srt",
+      "sha256": "3ce0f339126ca18a9294c51d4ec86783d02493e6bb7851dc04ac3a6f81c05c3c",
+      "size_bytes": 111,
+      "source_url": "generated-local-ffmpeg"
+    },
+    {
+      "id": "sample_multitrack_tags_chapters",
+      "relative_path": "sample_multitrack_tags_chapters.mkv",
+      "sha256": "2b4abc5591235809c5da4d58269bf844b187d45b740a4f4e94f1d06358d3d082",
+      "size_bytes": 2176842,
+      "source_url": "generated-local-ffmpeg"
+    },
+    {
+      "id": "sample_vfr_h264",
+      "relative_path": "sample_vfr_h264.mkv",
+      "sha256": "48f8a3fe26dbd37a3e4d4e4fc7ffab30c305e82b6247c37a8157667624b5a8f4",
+      "size_bytes": 340970,
+      "source_url": "generated-local-ffmpeg"
+    },
+    {
+      "id": "sample_hdr10_hevc",
+      "relative_path": "sample_hdr10_hevc.mkv",
+      "sha256": "a6366a1030bb7f642cfa7cde86aaf55c51c0615841b76241184c5b6355bfd319",
+      "size_bytes": 982737,
+      "source_url": "generated-local-ffmpeg"
+    },
+    {
+      "id": "sample_hlg_hevc",
+      "relative_path": "sample_hlg_hevc.mkv",
+      "sha256": "e399e2db4f7d51d2b2084df4afc6bfbd0ef37ce64b5ca4340b3a501eb735dda9",
+      "size_bytes": 982475,
+      "source_url": "generated-local-ffmpeg"
+    }
+  ]
+}
