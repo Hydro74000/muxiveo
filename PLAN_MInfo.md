@@ -141,6 +141,10 @@ Status: `IN_PROGRESS`
     - `#24580805412`: Windows KO persistant, candidats visibles mais aucun binaire CLI valide (`MediaInfo.exe` GUI détecté).
     - correctif appliqué (6e passe):
       - install Windows basculée vers `choco install mediainfo-cli` (package CLI dédié) au lieu de `mediainfo`.
+    - `#24580929622`: Windows KO persistant au step oracle (résolution toujours négative).
+    - correctif appliqué (7e passe):
+      - résolution Windows élargie aux noms `mediainfo`, `MediaInfo`, `mediainfo-cli` (`Get-Command` + `where.exe`).
+      - scan récursif étendu vers `C:\\ProgramData\\chocolatey\\lib\\mediainfo-cli\\tools`.
     - run remote suivant requis pour valider Linux + Windows + `aggregate-reports`.
 
 ### Step 5 — Couverture complète MediaInfo v26.01

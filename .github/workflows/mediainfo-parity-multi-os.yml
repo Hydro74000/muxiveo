@@ -117,10 +117,13 @@ jobs:
           $candidates = New-Object System.Collections.Generic.List[string]
           if ($env:RUNNER_OS -eq 'Windows') {
             $candidates.Add('C:\\ProgramData\\chocolatey\\bin\\mediainfo.exe')
+            $candidates.Add('C:\\ProgramData\\chocolatey\\bin\\mediainfo-cli.exe')
             $candidates.Add('C:\\Program Files\\MediaInfo\\CLI\\mediainfo.exe')
             foreach ($root in @(
               'C:\\ProgramData\\chocolatey\\lib\\mediainfo\\tools',
-              'C:\\ProgramData\\chocolatey\\lib\\mediainfo'
+              'C:\\ProgramData\\chocolatey\\lib\\mediainfo',
+              'C:\\ProgramData\\chocolatey\\lib\\mediainfo-cli\\tools',
+              'C:\\ProgramData\\chocolatey\\lib\\mediainfo-cli'
             )) {
               if (Test-Path $root) {
                 Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue |
@@ -130,21 +133,25 @@ jobs:
             }
           }
 
-          $cmd = Get-Command mediainfo -ErrorAction SilentlyContinue
-          if ($cmd) {
-            foreach ($cmdPath in @($cmd.Path, $cmd.Source, $cmd.Definition)) {
-              if (-not [string]::IsNullOrWhiteSpace($cmdPath)) {
-                $candidates.Add($cmdPath)
+          foreach ($commandName in @('mediainfo', 'MediaInfo', 'mediainfo-cli')) {
+            $cmd = Get-Command $commandName -ErrorAction SilentlyContinue
+            if ($cmd) {
+              foreach ($cmdPath in @($cmd.Path, $cmd.Source, $cmd.Definition)) {
+                if (-not [string]::IsNullOrWhiteSpace($cmdPath)) {
+                  $candidates.Add($cmdPath)
+                }
               }
             }
           }
 
           if ($env:RUNNER_OS -eq 'Windows') {
-            $whereOut = where.exe mediainfo 2>$null
-            if ($LASTEXITCODE -eq 0 -and $whereOut) {
-              foreach ($line in $whereOut) {
-                if (-not [string]::IsNullOrWhiteSpace($line)) {
-                  $candidates.Add($line)
+            foreach ($whereName in @('mediainfo', 'MediaInfo', 'mediainfo-cli')) {
+              $whereOut = where.exe $whereName 2>$null
+              if ($LASTEXITCODE -eq 0 -and $whereOut) {
+                foreach ($line in $whereOut) {
+                  if (-not [string]::IsNullOrWhiteSpace($line)) {
+                    $candidates.Add($line)
+                  }
                 }
               }
             }
