@@ -81,7 +81,26 @@ jobs:
       - name: Resolve oracle binary path
         shell: pwsh
         run: |
-          $mi = (Get-Command mediainfo -ErrorAction Stop).Source
+          if ($env:RUNNER_OS -eq 'Windows') {
+            $candidates = @(
+              'C:\ProgramData\chocolatey\bin\mediainfo.exe',
+              'C:\Program Files\MediaInfo\CLI\mediainfo.exe',
+              'C:\Program Files\MediaInfo\mediainfo.exe'
+            )
+            $mi = $null
+            foreach ($candidate in $candidates) {
+              if (Test-Path $candidate) {
+                $mi = $candidate
+                break
+              }
+            }
+            if (-not $mi) {
+              $mi = (Get-Command mediainfo.exe -ErrorAction Stop).Source
+            }
+          } else {
+            $mi = (Get-Command mediainfo -ErrorAction Stop).Source
+          }
+          & $mi --Version | Out-Host
           "MEDIAINFO_ORACLE_BIN=$mi" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Linux parity compatibility toggles
