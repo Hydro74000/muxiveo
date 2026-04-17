@@ -57,6 +57,73 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          function Test-OraclePath {
+            param([string]$PathCandidate)
+            if ([string]::IsNullOrWhiteSpace($PathCandidate)) { return $false }
+            if (-not (Test-Path $PathCandidate)) { return $false }
+            try {
+              $output = & $PathCandidate --Version 2>&1 | Out-String
+            }
+            catch {
+              return $false
+            }
+            return $output -match 'MediaInfoLib'
+          }
+
+          if (-not [string]::IsNullOrWhiteSpace($env:MEDIAINFO_ORACLE_BIN) -and (Test-OraclePath -PathCandidate $env:MEDIAINFO_ORACLE_BIN)) {
+            Write-Host "Resolved oracle (pre-set): $env:MEDIAINFO_ORACLE_BIN"
+            exit 0
+          }
+
+          function Resolve-OracleCandidate {
+            $candidates = New-Object System.Collections.Generic.List[string]
+            foreach ($candidate in @(
+              'C:\\ProgramData\\chocolatey\\bin\\mediainfo.exe',
+              'C:\\ProgramData\\chocolatey\\bin\\mediainfo-cli.exe',
+              'C:\\Program Files\\MediaInfo\\CLI\\mediainfo.exe'
+            )) {
+              if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+                $candidates.Add($candidate)
+              }
+            }
+            foreach ($root in @(
+              'C:\\ProgramData\\chocolatey\\lib\\mediainfo\\tools',
+              'C:\\ProgramData\\chocolatey\\lib\\mediainfo',
+              'C:\\ProgramData\\chocolatey\\lib\\mediainfo-cli\\tools',
+              'C:\\ProgramData\\chocolatey\\lib\\mediainfo-cli'
+            )) {
+              if (Test-Path $root) {
+                Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Name -match '(?i)mediainfo.*\\.exe$|^MediaInfo\\.exe$' } |
+                  ForEach-Object { $candidates.Add($_.FullName) }
+              }
+            }
+            foreach ($name in @('mediainfo', 'MediaInfo', 'mediainfo-cli')) {
+              $cmd = Get-Command $name -ErrorAction SilentlyContinue
+              if ($cmd) {
+                foreach ($pathCandidate in @($cmd.Path, $cmd.Source, $cmd.Definition)) {
+                  if (-not [string]::IsNullOrWhiteSpace($pathCandidate)) {
+                    $candidates.Add($pathCandidate)
+                  }
+                }
+              }
+              $whereOut = where.exe $name 2>$null
+              if ($LASTEXITCODE -eq 0 -and $whereOut) {
+                foreach ($line in $whereOut) {
+                  if (-not [string]::IsNullOrWhiteSpace($line)) {
+                    $candidates.Add($line)
+                  }
+                }
+              }
+            }
+            foreach ($candidate in ($candidates | Select-Object -Unique)) {
+              if (Test-OraclePath -PathCandidate $candidate) {
+                return $candidate
+              }
+            }
+            return $null
+          }
+
           choco install mediainfo-cli -y --no-progress
           "$env:ChocolateyInstall\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           if (Test-Path 'C:\Program Files\MediaInfo') {
@@ -65,6 +132,33 @@ jobs:
           if (Test-Path 'C:\Program Files\MediaInfo\CLI') {
             'C:\Program Files\MediaInfo\CLI' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           }
+
+          $resolved = Resolve-OracleCandidate
+          if ([string]::IsNullOrWhiteSpace($resolved)) {
+            $version = '26.01'
+            $zipPath = Join-Path $env:RUNNER_TEMP "MediaInfo_CLI_${version}_Windows_x64.zip"
+            $extractDir = Join-Path $env:RUNNER_TEMP "mediainfo_cli_${version}"
+            $url = "https://mediaarea.net/download/binary/mediainfo/${version}/MediaInfo_CLI_${version}_Windows_x64.zip"
+            Invoke-WebRequest -Uri $url -OutFile $zipPath
+            if (Test-Path $extractDir) {
+              Remove-Item -Recurse -Force $extractDir
+            }
+            Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+            Get-ChildItem -Path $extractDir -Recurse -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '(?i)mediainfo.*\\.exe$|^MediaInfo\\.exe$' } |
+              ForEach-Object {
+                if ([string]::IsNullOrWhiteSpace($resolved) -and (Test-OraclePath -PathCandidate $_.FullName)) {
+                  $resolved = $_.FullName
+                }
+              }
+          }
+
+          if ([string]::IsNullOrWhiteSpace($resolved)) {
+            throw 'Unable to resolve MediaInfo CLI oracle after chocolatey install + official zip fallback'
+          }
+          (Split-Path -Parent $resolved) | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "MEDIAINFO_ORACLE_BIN=$resolved" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Resolved oracle in Windows install step: $resolved"
 
       - name: Install tools (macOS)
         if: runner.os == 'macOS'
@@ -76,7 +170,12 @@ jobs:
         shell: pwsh
         run: |
           python --version
-          mediainfo --Version
+          if ($env:MEDIAINFO_ORACLE_BIN) {
+            & $env:MEDIAINFO_ORACLE_BIN --Version
+          }
+          else {
+            mediainfo --Version
+          }
 
       - name: Resolve oracle binary path (Windows)
         if: runner.os == 'Windows'

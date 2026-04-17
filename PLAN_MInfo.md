@@ -145,6 +145,12 @@ Status: `IN_PROGRESS`
     - correctif appliqué (7e passe):
       - résolution Windows élargie aux noms `mediainfo`, `MediaInfo`, `mediainfo-cli` (`Get-Command` + `where.exe`).
       - scan récursif étendu vers `C:\\ProgramData\\chocolatey\\lib\\mediainfo-cli\\tools`.
+    - correctif appliqué (8e passe):
+      - résolution oracle Windows déplacée dès l’étape install:
+        - tentative choco + discovery multi-chemins,
+        - fallback téléchargement officiel `MediaInfo_CLI_26.01_Windows_x64.zip` si besoin,
+        - export anticipé `MEDIAINFO_ORACLE_BIN` dans `GITHUB_ENV`.
+      - step de résolution Windows conserve un short-circuit sur `MEDIAINFO_ORACLE_BIN` valide.
     - run remote suivant requis pour valider Linux + Windows + `aggregate-reports`.
 
 ### Step 5 — Couverture complète MediaInfo v26.01
