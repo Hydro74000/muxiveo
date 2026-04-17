@@ -118,6 +118,16 @@ jobs:
           if ($env:RUNNER_OS -eq 'Windows') {
             $candidates.Add('C:\\ProgramData\\chocolatey\\bin\\mediainfo.exe')
             $candidates.Add('C:\\Program Files\\MediaInfo\\CLI\\mediainfo.exe')
+            foreach ($root in @(
+              'C:\\ProgramData\\chocolatey\\lib\\mediainfo\\tools',
+              'C:\\ProgramData\\chocolatey\\lib\\mediainfo'
+            )) {
+              if (Test-Path $root) {
+                Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Name -match '(?i)mediainfo.*\\.exe$|^MediaInfo\\.exe$' } |
+                  ForEach-Object { $candidates.Add($_.FullName) }
+              }
+            }
           }
 
           $cmd = Get-Command mediainfo -ErrorAction SilentlyContinue
@@ -149,6 +159,10 @@ jobs:
           }
 
           if ([string]::IsNullOrWhiteSpace($resolved)) {
+            Write-Host "Oracle candidates tested:"
+            foreach ($candidate in ($candidates | Select-Object -Unique)) {
+              Write-Host " - $candidate"
+            }
             throw "Unable to resolve a working MediaInfo CLI oracle binary"
           }
 

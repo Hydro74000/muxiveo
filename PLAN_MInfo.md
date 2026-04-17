@@ -134,6 +134,10 @@ Status: `IN_PROGRESS`
       - split du step oracle:
         - Windows: résolution PowerShell avec timeout/kill.
         - Linux/macOS: résolution shell native `command -v mediainfo` + validation `--Version`.
+    - `#24580664819`: Linux/macOS OK, Windows KO (oracle non résolu malgré install choco).
+    - correctif appliqué (5e passe):
+      - discovery récursive des binaires sous `C:\\ProgramData\\chocolatey\\lib\\mediainfo\\tools`.
+      - log explicite des candidats testés en cas d’échec.
     - run remote suivant requis pour valider Linux + Windows + `aggregate-reports`.
 
 ### Step 5 — Couverture complète MediaInfo v26.01
