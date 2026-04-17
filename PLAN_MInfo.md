@@ -126,7 +126,11 @@ Status: `IN_PROGRESS`
     - correctif appliqué (2e passe):
       - test oracle PowerShell avec timeout dur (5s) + kill process.
       - suppression du candidat GUI (`C:\\Program Files\\MediaInfo\\mediainfo.exe`) pour éviter blocage.
-    - run remote suivant requis pour valider la fermeture du lane Windows + `aggregate-reports`.
+    - `#24580547088`: échec rapide Ubuntu au step `Resolve oracle binary path` (candidat `Get-Command` non résolu).
+    - correctif appliqué (3e passe):
+      - fallback `Get-Command` élargi (`Path/Source/Definition`).
+      - ajout chemins standards Linux/macOS (`/usr/bin`, `/usr/local/bin`, `/opt/homebrew/bin`).
+    - run remote suivant requis pour valider Linux + Windows + `aggregate-reports`.
 
 ### Step 5 — Couverture complète MediaInfo v26.01
 Status: `IN_PROGRESS`

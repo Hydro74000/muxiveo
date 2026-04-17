@@ -120,8 +120,12 @@ jobs:
           }
 
           $cmd = Get-Command mediainfo -ErrorAction SilentlyContinue
-          if ($cmd -and $cmd.Source) {
-            $candidates.Add($cmd.Source)
+          if ($cmd) {
+            foreach ($cmdPath in @($cmd.Path, $cmd.Source, $cmd.Definition)) {
+              if (-not [string]::IsNullOrWhiteSpace($cmdPath)) {
+                $candidates.Add($cmdPath)
+              }
+            }
           }
 
           if ($env:RUNNER_OS -eq 'Windows') {
@@ -133,6 +137,14 @@ jobs:
                 }
               }
             }
+          }
+          elseif ($env:RUNNER_OS -eq 'Linux') {
+            $candidates.Add('/usr/bin/mediainfo')
+            $candidates.Add('/usr/local/bin/mediainfo')
+          }
+          elseif ($env:RUNNER_OS -eq 'macOS') {
+            $candidates.Add('/opt/homebrew/bin/mediainfo')
+            $candidates.Add('/usr/local/bin/mediainfo')
           }
 
           $resolved = $null
