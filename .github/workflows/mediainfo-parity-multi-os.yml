@@ -82,44 +82,44 @@ jobs:
         shell: pwsh
         run: |
           $code = @'
-import platform
-import shutil
-import subprocess
-import sys
+          import platform
+          import shutil
+          import subprocess
+          import sys
 
-candidates = []
-if platform.system() == "Windows":
-    candidates.extend([
-        r"C:\\ProgramData\\chocolatey\\bin\\mediainfo.exe",
-        r"C:\\Program Files\\MediaInfo\\CLI\\mediainfo.exe",
-        r"C:\\Program Files\\MediaInfo\\mediainfo.exe",
-    ])
-    candidates.append(shutil.which("mediainfo.exe"))
-    candidates.append(shutil.which("mediainfo"))
-else:
-    candidates.append(shutil.which("mediainfo"))
+          candidates = []
+          if platform.system() == "Windows":
+              candidates.extend([
+                  r"C:\\ProgramData\\chocolatey\\bin\\mediainfo.exe",
+                  r"C:\\Program Files\\MediaInfo\\CLI\\mediainfo.exe",
+                  r"C:\\Program Files\\MediaInfo\\mediainfo.exe",
+              ])
+              candidates.append(shutil.which("mediainfo.exe"))
+              candidates.append(shutil.which("mediainfo"))
+          else:
+              candidates.append(shutil.which("mediainfo"))
 
-seen = set()
-for candidate in candidates:
-    if not candidate or candidate in seen:
-        continue
-    seen.add(candidate)
-    try:
-        proc = subprocess.run(
-            [candidate, "--Version"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except Exception:
-        continue
-    if "MediaInfoLib" in (proc.stdout or ""):
-        print(candidate)
-        sys.exit(0)
-sys.exit(1)
-'@
+          seen = set()
+          for candidate in candidates:
+              if not candidate or candidate in seen:
+                  continue
+              seen.add(candidate)
+              try:
+                  proc = subprocess.run(
+                      [candidate, "--Version"],
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.STDOUT,
+                      text=True,
+                      timeout=5,
+                      check=False,
+                  )
+              except Exception:
+                  continue
+              if "MediaInfoLib" in (proc.stdout or ""):
+                  print(candidate)
+                  sys.exit(0)
+          sys.exit(1)
+          '@
           $mi = (python -c $code).Trim()
           if (-not $mi) {
             throw "Unable to resolve a working MediaInfo CLI oracle binary"
