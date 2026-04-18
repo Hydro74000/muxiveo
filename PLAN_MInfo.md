@@ -312,6 +312,13 @@ Status: `IN_PROGRESS`
     - `py_compile`: OK
     - `no_external_guard`: OK
     - gate parité: OK (`real 39/39`, `extended 44/44`, `expanded 96/96`)
+- Mise à jour 2026-04-18 (tranche constantes codec):
+  - extraction du mapping labels codec vers `renderers/codec_labels.py`.
+  - `native_engine_core.py` délègue désormais `_codec_label()` au module dédié.
+  - validation locale:
+    - `py_compile`: OK
+    - `no_external_guard`: OK
+    - gate parité: OK (`real 39/39`, `extended 44/44`, `expanded 96/96`)
 - Reste à faire:
   - maintenir la parité verte pendant l’extraction modulaire (tests à chaque sous-jalon).
 

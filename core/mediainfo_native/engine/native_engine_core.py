@@ -36,6 +36,7 @@ from ..renderers.inform import render_inform as _render_inform_module
 from ..renderers.ebucore import render_ebucore as _render_ebucore_module
 from ..renderers.pbcore import render_pbcore as _render_pbcore_module
 from ..renderers.mpeg7 import render_mpeg7 as _render_mpeg7_module
+from ..renderers.codec_labels import codec_label as _codec_label_module
 from ..renderers.specialized_common import duration_iso8601_from_ms as _duration_iso8601_from_ms_module
 from ..renderers.specialized_common import public_fields as _public_fields_module
 from ..io.file_dates import epoch_ms_from_stat_mtime as _epoch_ms_from_stat_mtime
@@ -43,28 +44,6 @@ from ..io.file_dates import format_file_dates_from_ms as _format_file_dates_from
 
 VERSION_TEXT = "MediaInfoLib - v26.01"
 CLI_VERSION_TEXT = f"MediaInfo Command line, {VERSION_TEXT}"
-
-_CODEC_MAP: dict[str, str] = {
-    "hevc": "HEVC",
-    "h265": "HEVC",
-    "h264": "AVC",
-    "avc": "AVC",
-    "av1": "AV1",
-    "mpeg2video": "MPEG Video",
-    "mpeg4": "MPEG-4 Visual",
-    "vp9": "VP9",
-    "vp8": "VP8",
-    "truehd": "TrueHD",
-    "eac3": "E-AC-3",
-    "ac3": "AC-3",
-    "aac": "AAC",
-    "flac": "FLAC",
-    "dts": "DTS",
-    "opus": "Opus",
-    "subrip": "SubRip",
-    "ass": "ASS",
-    "hdmv_pgs_subtitle": "PGS",
-}
 
 _STREAM_KIND_ORDER: tuple[str, ...] = ("General", "Video", "Audio", "Text", "Other", "Image", "Menu")
 
@@ -1934,7 +1913,7 @@ def _duration_human(ms: int | None) -> str:
 def _codec_label(codec_name: str | None) -> str:
     if not codec_name:
         return ""
-    return _CODEC_MAP.get(codec_name.lower(), codec_name.upper())
+    return _codec_label_module(codec_name)
 
 
 def _string(value: Any) -> str:
