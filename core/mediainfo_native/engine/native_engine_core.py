@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import html
 import json
-import os
 import re
 import struct
 import time
@@ -39,6 +38,8 @@ from ..renderers.pbcore import render_pbcore as _render_pbcore_module
 from ..renderers.mpeg7 import render_mpeg7 as _render_mpeg7_module
 from ..renderers.specialized_common import duration_iso8601_from_ms as _duration_iso8601_from_ms_module
 from ..renderers.specialized_common import public_fields as _public_fields_module
+from ..io.file_dates import epoch_ms_from_stat_mtime as _epoch_ms_from_stat_mtime
+from ..io.file_dates import format_file_dates_from_ms as _format_file_dates_from_ms
 
 VERSION_TEXT = "MediaInfoLib - v26.01"
 CLI_VERSION_TEXT = f"MediaInfo Command line, {VERSION_TEXT}"
@@ -1011,20 +1012,10 @@ class MediaInfoEngine:
             p = Path(source).expanduser()
             if p.exists():
                 stat = p.stat()
-                mtime_ms = (
-                    int(stat.st_mtime_ns / 1_000_000)
-                    if hasattr(stat, "st_mtime_ns")
-                    else int(stat.st_mtime * 1000.0)
-                )
-                created_utc = datetime.fromtimestamp(mtime_ms / 1000.0, tz=timezone.utc)
-                created_local = datetime.fromtimestamp(mtime_ms / 1000.0)
-                if os.name == "nt":
-                    ms_suffix = f".{mtime_ms % 1000:03d}"
-                    fields["File_Modified_Date"] = created_utc.strftime("%Y-%m-%d %H:%M:%S") + ms_suffix + " UTC"
-                    fields["File_Modified_Date_Local"] = created_local.strftime("%Y-%m-%d %H:%M:%S") + ms_suffix
-                else:
-                    fields["File_Modified_Date"] = created_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
-                    fields["File_Modified_Date_Local"] = created_local.strftime("%Y-%m-%d %H:%M:%S")
+                mtime_ms = _epoch_ms_from_stat_mtime(stat)
+                mod_utc, mod_local = _format_file_dates_from_ms(mtime_ms)
+                fields["File_Modified_Date"] = mod_utc
+                fields["File_Modified_Date_Local"] = mod_local
         return MediaTrack(kind="General", fields=fields)
 
     def _apply_subrip_general_track(self, general: MediaTrack, stats: "SubripStats") -> None:

@@ -71,7 +71,7 @@ Status: `DONE (phase 1)`
   - `mediainfo` reste uniquement un outil oracle dev/CI configuré manuellement.
 
 ### Step 4 — Harnais parité + corpus
-Status: `IN_PROGRESS`
+Status: `DONE (CI multi-OS verte)`
 - Livré:
   - `scripts/mediainfo_parity_matrix.py` (comparaison bit-à-bit oracle vs natif, environnement figé, rapports JSON)
   - `scripts/mediainfo_parity_gate.py` (gate CI: fail si `failed>0`, `skipped>0`, ou rapport vide)
@@ -93,7 +93,6 @@ Status: `IN_PROGRESS`
   - extended: `44/44`
   - expanded: `96/96`
 - Reste à faire:
-  - exécuter effectivement la matrice Windows/macOS sur CI remote et vérifier l’artifact consolidé `mediainfo-parity-reports-all-os`.
   - activer l’obligation de succès de ce gate dans les branch protection / release policy GitHub.
   - blocage courant (2026-04-17): `gh workflow run mediainfo-parity-multi-os.yml --ref levelup` renvoie `404 workflow not found on default branch` tant que le workflow/parity scripts ne sont pas publiés côté remote.
   - mise à jour 2026-04-17 (run remote réel #24578692465, branch `levelup`):
@@ -188,7 +187,6 @@ Status: `IN_PROGRESS`
   - expanded: `96/96`
 - Non terminé:
   - couverture au-delà du corpus sprint pour tendre vers v26.01 complet.
-  - exécution parité effective multi-OS (Windows/macOS) et gate CI release.
 
 ## Step 6+ — Réécriture native pure (post-pivot)
 
@@ -305,6 +303,15 @@ Status: `IN_PROGRESS`
     - `py_compile`: OK
     - `no_external_guard`: OK
     - gate parité: OK (`real 39/39`, `extended 44/44`, `expanded 96/96`)
+- Mise à jour 2026-04-18 (tranche IO dates partagées):
+  - extraction de la logique date fichier vers `io/file_dates.py`:
+    - `epoch_ms_from_stat_mtime()`
+    - `format_file_dates_from_ms()`
+  - `api/engine.py` et `engine/native_engine_core.py` rebranchés sur ce module (suppression duplication locale).
+  - validation locale:
+    - `py_compile`: OK
+    - `no_external_guard`: OK
+    - gate parité: OK (`real 39/39`, `extended 44/44`, `expanded 96/96`)
 - Reste à faire:
   - maintenir la parité verte pendant l’extraction modulaire (tests à chaque sous-jalon).
 
@@ -315,11 +322,10 @@ Status: `IN_PROGRESS`
   - expanded: `96/96`
 - Écarts restants sur corpus courant Linux: `0`.
 - Écarts restants sur matrice CI multi-OS (strict/extended/expanded): `0`.
-- Exécution réelle Windows/macOS encore dépendante du run CI remote.
 - Couverture v26.01 complète non atteinte hors corpus sprint.
 
 ## Prochaines étapes prévues
-1. Finaliser le lane Windows (`#24580023155`) et obtenir `aggregate-reports` vert avec `mediainfo-parity-reports-all-os`.
-2. Rendre ce gate strictement obligatoire côté policy GitHub (required checks/release policy).
+1. Rendre le gate parity multi-OS strictement obligatoire côté policy GitHub (required checks/release policy).
+2. Continuer Step 6.1: extraire les constantes de schéma/rendering restantes du monolithe `engine/native_engine_core.py`.
 3. Rejouer la matrice (`strict/extended/expanded`) à chaque sous-jalon d’extraction modulaire.
 4. Poursuivre la couverture v26.01 hors corpus sprint (formats/cas limites supplémentaires).

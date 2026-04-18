@@ -12,6 +12,7 @@ from typing import Any
 from .errors import MediaInfoNativeError
 from .model import MediaDocument, from_report
 from ..engine import native_engine_core as _core
+from ..io.file_dates import epoch_ms_from_stat_mtime, format_file_dates_from_ms
 from ..parsers.container.matroska import MatroskaParseResult, MatroskaTrackInfo
 from ..parsers.container.mp4 import Mp4ParseResult, Mp4TrackInfo
 from ..parsers.probe_dispatcher import detect_container, parse_container
@@ -83,12 +84,8 @@ class MediaInfoEngine(_core.MediaInfoEngine):
 
         if path.exists():
             stat = path.stat()
-            mtime_ms = (
-                int(stat.st_mtime_ns / 1_000_000)
-                if hasattr(stat, "st_mtime_ns")
-                else int(stat.st_mtime * 1000.0)
-            )
-            mod_utc, mod_local = self._format_file_dates_from_ms(mtime_ms)
+            mtime_ms = epoch_ms_from_stat_mtime(stat)
+            mod_utc, mod_local = format_file_dates_from_ms(mtime_ms)
             general.fields["File_Modified_Date"] = mod_utc
             general.fields["File_Modified_Date_Local"] = mod_local
             self._apply_creation_dates_from_birth(general, path)
@@ -104,21 +101,6 @@ class MediaInfoEngine(_core.MediaInfoEngine):
         if forced in {"1", "true", "yes", "on"}:
             return True
         return not sys.platform.startswith("darwin")
-
-    @staticmethod
-    def _format_file_dates_from_ms(epoch_ms: int) -> tuple[str, str]:
-        dt_utc = datetime.fromtimestamp(epoch_ms / 1000.0, tz=timezone.utc)
-        dt_local = dt_utc.astimezone()
-        if os.name == "nt":
-            ms_suffix = f".{epoch_ms % 1000:03d}"
-            return (
-                dt_utc.strftime("%Y-%m-%d %H:%M:%S") + ms_suffix + " UTC",
-                dt_local.strftime("%Y-%m-%d %H:%M:%S") + ms_suffix,
-            )
-        return (
-            dt_utc.strftime("%Y-%m-%d %H:%M:%S UTC"),
-            dt_local.strftime("%Y-%m-%d %H:%M:%S"),
-        )
 
     @staticmethod
     def _is_existing_local_file(source_path: Path) -> bool:
@@ -417,7 +399,7 @@ class MediaInfoEngine(_core.MediaInfoEngine):
             return
         if birth_ms is None or birth_ms <= 0:
             return
-        created_utc, created_local = self._format_file_dates_from_ms(birth_ms)
+        created_utc, created_local = format_file_dates_from_ms(birth_ms)
         track.fields["File_Created_Date"] = created_utc
         track.fields["File_Created_Date_Local"] = created_local
 
@@ -766,7 +748,7 @@ class MediaInfoEngine(_core.MediaInfoEngine):
             general.fields.pop("TextCount", None)
         if parsed.date_utc_unix_ms is not None:
             if self._emit_created_dates():
-                created_utc, created_local = self._format_file_dates_from_ms(parsed.date_utc_unix_ms)
+                created_utc, created_local = format_file_dates_from_ms(parsed.date_utc_unix_ms)
                 general.fields["File_Created_Date"] = created_utc
                 general.fields["File_Created_Date_Local"] = created_local
         self._apply_creation_dates_from_birth(general, Path(source).expanduser())
