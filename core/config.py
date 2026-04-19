@@ -13,6 +13,7 @@ import configparser
 import json
 import locale
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -119,6 +120,13 @@ def _normalize_ffmpeg_thread_count(value: int | None) -> int:
     return value
 
 
+def _normalize_ui_scale_percent(value: int | None) -> int:
+    """Clamp UI scale percentage to a safe interactive range."""
+    if value is None:
+        return 100
+    return max(50, min(200, int(value)))
+
+
 def _appimage_tools_dir() -> Path | None:
     """
     Dans un AppImage all-inclusive, retourne le chemin absolu de usr/bin/tools/.
@@ -222,6 +230,75 @@ def _sanitize_windows_ini_file(path: Path) -> None:
     sanitized = "\n".join(sanitized_lines).rstrip() + "\n"
     if sanitized != original:
         path.write_text(sanitized, encoding="utf-8")
+
+
+def rerun_application_setup() -> None:
+    """
+    Relance la logique de setup depuis l'application déjà ouverte.
+
+    Réutilise le même flux que le premier lancement pour réinstaller les
+    dépendances/outils externes et re-générer config.ini si besoin.
+    """
+    import setup as setup_mod  # noqa: PLC0415
+
+    os_name = platform.system()
+    prefix = setup_mod._default_prefix()
+    dry_run = False
+    force = False
+
+    if os_name == "Linux":
+        distro = setup_mod.detect_linux_distro()
+        if distro == "debian":
+            setup_mod.install_apt(dry_run, force=force)
+        elif distro == "fedora":
+            setup_mod.install_dnf(dry_run, force=force)
+        setup_mod.install_github_tools(prefix, dry_run, force=force)
+        setup_mod.check_tools_presence()
+    elif os_name == "Darwin":
+        setup_mod.install_brew(dry_run, force=force)
+        setup_mod.install_github_tools(prefix, dry_run, force=force)
+        setup_mod.check_tools_presence()
+    elif os_name == "Windows":
+        setup_mod.install_winget(dry_run, force=force)
+        setup_mod.install_github_tools(prefix, dry_run, force=force)
+        setup_mod.autofill_windows_config_ini(prefix, dry_run, force=force)
+        setup_mod.check_tools_presence(prefix)
+        setup_mod.offer_windows_controlled_folder_access_setup(prefix, dry_run, force=force)
+
+    setup_mod.initialize_config_ini_language(dry_run, force=force, ini_path=_INI_PATH)
+
+    if not getattr(sys, "frozen", False):
+        setup_mod.install_python_packages(dry_run, force=force)
+
+
+def restart_application() -> bool:
+    """
+    Redémarre l'application courante.
+
+    Préfère le helper du launcher s'il est disponible pour conserver le
+    comportement frozen/dev déjà existant.
+    """
+    try:
+        import launcher as launcher_mod  # noqa: PLC0415
+    except Exception:
+        launcher_mod = None
+
+    restart_fn = getattr(launcher_mod, "_restart_current_app", None) if launcher_mod else None
+    if callable(restart_fn):
+        try:
+            return bool(restart_fn())
+        except Exception:
+            return False
+
+    try:
+        if getattr(sys, "frozen", False):
+            subprocess.Popen([sys.executable])
+        else:
+            launcher_path = Path(__file__).parent.parent / "launcher.py"
+            subprocess.Popen([sys.executable, str(launcher_path)])
+        return True
+    except Exception:
+        return False
 
 
 def _upsert_ini_section(
@@ -653,6 +730,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "language", "attr": "language", "kind": "language", "label": "Langue de l'interface", "description": "Langue utilisée pour l'UI et les messages internes."},
             {"key": "log_max_lines", "attr": "log_max_lines", "kind": "int", "label": "Nombre max de lignes de log", "description": "Nombre maximum de lignes conservées dans le panneau de log."},
             {"key": "theme", "attr": "theme", "kind": "choice", "label": "Thème", "description": "Thème principal pour l'interface. Le changement de thème nécessite de redémarrer l'application.", "options": (("dark", "Sombre"), ("light", "Clair"))},
+            {"key": "ui_scale_percent", "attr": "ui_scale_percent", "kind": "int", "label": "Échelle de l'interface (%)", "description": "Facteur d'échelle appliqué à l'interface. Le changement est appliqué immédiatement autant que possible, mais un redémarrage peut être recommandé pour uniformiser tout l'affichage.", "min": 50, "max": 200},
             {"key": "startup_panel", "attr": "startup_panel", "kind": "choice", "label": "Panneau à afficher au démarrage", "description": "Panneau chargé en premier au lancement de l'application.", "options": UI_STARTUP_PANEL_CHOICES},
             {"key": "startup_menu_compact", "attr": "startup_menu_compact", "kind": "bool", "label": "Démarrer avec le menu en mode Compact", "description": "Si activé, le menu latéral est réduit en mode icônes au lancement."},
             {"key": "startup_logs_expanded", "attr": "startup_logs_expanded", "kind": "bool", "label": "Ouvrir les logs au démarrage de l'application", "description": "Si activé, le panneau de logs est déplié au lancement."},
@@ -744,7 +822,11 @@ class AppConfig:
         if ini_value is not _MISSING:
             return default if ini_value == "" else int(str(ini_value))
         value = self._settings.value(settings_key, default)
-        return int(value if value not in (None, "") else default)
+        if value in (None, ""):
+            return default
+        if isinstance(value, int):
+            return value
+        return int(str(value))
 
     def _resolve_bool(self, section: str, key: str, settings_key: str, default: bool) -> bool:
         def _as_bool(raw: str) -> bool:
@@ -842,6 +924,9 @@ class AppConfig:
         )
         self.log_max_lines = self._resolve_int("ui", "log_max_lines", "ui/log_max_lines", 2000)
         self.theme = self._resolve_text("ui", "theme", "ui/theme", "dark")
+        self.ui_scale_percent = _normalize_ui_scale_percent(
+            self._resolve_int("ui", "ui_scale_percent", "ui/ui_scale_percent", 100)
+        )
         self.startup_panel = _normalize_startup_panel(
             self._resolve_text("ui", "startup_panel", "ui/startup_panel", "dashboard")
         )
@@ -854,7 +939,8 @@ class AppConfig:
             "ui/startup_logs_expanded",
             False,
         )
-        self.window_geometry: bytes | None = self._settings.value("ui/geometry", None)
+        geometry_value = self._settings.value("ui/geometry", None)
+        self.window_geometry: bytes | None = geometry_value if isinstance(geometry_value, bytes) else None
 
         self.tmdb_api_key = self._resolve_text("metadata", "tmdb_api_key", "metadata/tmdb_api_key", "")
         self.tmdb_bearer_token = self._resolve_text(
@@ -903,6 +989,7 @@ class AppConfig:
         s.setValue("ui/language", self.language)
         s.setValue("ui/log_max_lines", self.log_max_lines)
         s.setValue("ui/theme", self.theme)
+        s.setValue("ui/ui_scale_percent", self.ui_scale_percent)
         s.setValue("ui/startup_panel", self.startup_panel)
         s.setValue(
             "ui/startup_menu_compact",
@@ -945,6 +1032,15 @@ class AppConfig:
     def refresh_tool_versions(self) -> None:
         """Réinitialise le registre de versions des outils."""
         self._tool_versions = ToolVersionRegistry(self.tool_commands())
+
+    def rerun_setup(self) -> None:
+        """Relance setup.py et recharge ensuite la configuration."""
+        rerun_application_setup()
+        self.reload()
+
+    def restart_application(self) -> bool:
+        """Redémarre l'application courante."""
+        return restart_application()
 
     def tool_version_info(self, name: str) -> ToolVersionInfo:
         """Retourne les infos de version d'un outil."""
@@ -1065,6 +1161,7 @@ class AppConfig:
                 "language": self.language,
                 "log_max_lines": self.log_max_lines,
                 "theme": self.theme,
+                "ui_scale_percent": self.ui_scale_percent,
                 "startup_panel": self.startup_panel,
                 "startup_menu_compact": self.startup_menu_compact,
                 "startup_logs_expanded": self.startup_logs_expanded,

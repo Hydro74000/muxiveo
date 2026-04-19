@@ -17,10 +17,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.file_types import ACCEPTED_EXTENSIONS, build_qt_filter
 from core.i18n import translate_text
 from core.inspector import FileInfo
 from ui.panels.remux_panel.models import _FILE_BAR_H, _FILE_PH_H, _FILE_ROW_H, SourceFile
 from ui.panels.remux_panel.theme import _C
+from ui.design_system import font_px as _font_px, scale as _scale
 
 
 class _FileRow(QWidget):
@@ -29,7 +31,7 @@ class _FileRow(QWidget):
     def __init__(self, file_id: str, path: Path, color: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._file_id = file_id
-        self.setFixedHeight(_FILE_ROW_H)
+        self.setFixedHeight(_scale(_FILE_ROW_H))
         self._build_ui(path, color)
 
     def _build_ui(self, path: Path, color: str) -> None:
@@ -41,23 +43,23 @@ class _FileRow(QWidget):
         """)
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(12, 8, 8, 8)
-        lay.setSpacing(10)
+        lay.setContentsMargins(_scale(12), _scale(8), _scale(8), _scale(8))
+        lay.setSpacing(_scale(10))
 
         color_square = QLabel()
-        color_square.setFixedSize(12, 12)
+        color_square.setFixedSize(_scale(12), _scale(12))
         color_square.setStyleSheet(
-            f"background: {color}; border-radius: 3px; border: none;"
+            f"background: {color}; border-radius: {_scale(3)}px; border: none;"
         )
         lay.addWidget(color_square)
 
         text_col = QVBoxLayout()
-        text_col.setSpacing(2)
+        text_col.setSpacing(_scale(2))
 
         self._name_lbl = QLabel(path.name)
         self._name_lbl.setStyleSheet(f"""
             color: {_C.TEXT_PRI};
-            font-size: 12px;
+            font-size: {_font_px(12)}px;
             font-weight: 600;
             background: transparent;
             border: none;
@@ -66,7 +68,7 @@ class _FileRow(QWidget):
         self._info_lbl = QLabel("Inspection en cours…")
         self._info_lbl.setStyleSheet(f"""
             color: {_C.TEXT_DIM};
-            font-size: 10px;
+            font-size: {_font_px(10)}px;
             font-family: 'JetBrains Mono', monospace;
             background: transparent;
             border: none;
@@ -77,7 +79,7 @@ class _FileRow(QWidget):
         lay.addLayout(text_col, stretch=1)
 
         remove_btn = QPushButton("✕")
-        remove_btn.setFixedSize(22, 22)
+        remove_btn.setFixedSize(_scale(22), _scale(22))
         remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         remove_btn.setToolTip("Retirer ce fichier")
         remove_btn.setStyleSheet(f"""
@@ -85,8 +87,8 @@ class _FileRow(QWidget):
                 background: transparent;
                 color: {_C.TEXT_DIM};
                 border: 1px solid {_C.BORDER};
-                border-radius: 4px;
-                font-size: 10px;
+                border-radius: {_scale(4)}px;
+                font-size: {_font_px(10)}px;
                 font-weight: 700;
             }}
             QPushButton:hover {{
@@ -108,7 +110,7 @@ class _FileRow(QWidget):
         self._info_lbl.setText("   ·   ".join(p for p in parts if p and p != "?"))
         self._info_lbl.setStyleSheet(f"""
             color: {_C.TEXT_SEC};
-            font-size: 10px;
+            font-size: {_font_px(10)}px;
             font-family: 'JetBrains Mono', monospace;
             background: transparent;
             border: none;
@@ -118,13 +120,13 @@ class _FileRow(QWidget):
         self._info_lbl.setText(translate_text("Erreur : {message}", message=message))
         self._info_lbl.setStyleSheet(f"""
             color: {_C.ERROR};
-            font-size: 10px;
+            font-size: {_font_px(10)}px;
             background: transparent;
             border: none;
         """)
 
 
-_ACCEPTED_EXT = {".mkv", ".mp4", ".m4v", ".mov", ".srt"}
+_ACCEPTED_EXT = ACCEPTED_EXTENSIONS
 
 
 class _FileListWidget(QFrame):
@@ -142,7 +144,7 @@ class _FileListWidget(QFrame):
             QFrame {{
                 background: {_C.BG_CARD};
                 border: 1px dashed {_C.BORDER_LT};
-                border-radius: 8px;
+                border-radius: {_scale(8)}px;
             }}
         """)
 
@@ -171,21 +173,27 @@ class _FileListWidget(QFrame):
         self._placeholder.setStyleSheet("background: transparent;")
         ph_lay = QVBoxLayout(self._placeholder)
         ph_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ph_lay.setSpacing(6)
+        ph_lay.setSpacing(_scale(6))
 
         ph_icon = QLabel("⊞")
         ph_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ph_icon.setStyleSheet(f"font-size: 28px; color: {_C.TEXT_DIM}; background: transparent; border: none;")
+        ph_icon.setStyleSheet(
+            f"font-size: {_font_px(28)}px; color: {_C.TEXT_DIM}; background: transparent; border: none;"
+        )
         ph_lay.addWidget(ph_icon)
 
         ph_text = QLabel("Déposer des fichiers vidéo / sous-titres ici")
         ph_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ph_text.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: 12px; font-weight: 500; background: transparent; border: none;")
+        ph_text.setStyleSheet(
+            f"color: {_C.TEXT_SEC}; font-size: {_font_px(12)}px; font-weight: 500; background: transparent; border: none;"
+        )
         ph_lay.addWidget(ph_text)
 
         ph_sub = QLabel("ou cliquer sur « Ajouter des fichiers »")
         ph_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ph_sub.setStyleSheet(f"color: {_C.TEXT_DIM}; font-size: 10px; background: transparent; border: none;")
+        ph_sub.setStyleSheet(
+            f"color: {_C.TEXT_DIM}; font-size: {_font_px(10)}px; background: transparent; border: none;"
+        )
         ph_lay.addWidget(ph_sub)
 
         root.addWidget(self._placeholder, stretch=1)
@@ -195,13 +203,13 @@ class _FileListWidget(QFrame):
             QWidget {{
                 background: {_C.BG_DEEP};
                 border-top: 1px solid {_C.BORDER};
-                border-bottom-left-radius: 8px;
-                border-bottom-right-radius: 8px;
+                border-bottom-left-radius: {_scale(8)}px;
+                border-bottom-right-radius: {_scale(8)}px;
             }}
         """)
-        add_bar.setFixedHeight(36)
+        add_bar.setFixedHeight(_scale(36))
         add_bar_lay = QHBoxLayout(add_bar)
-        add_bar_lay.setContentsMargins(12, 0, 12, 0)
+        add_bar_lay.setContentsMargins(_scale(12), 0, _scale(12), 0)
         add_bar_lay.setSpacing(0)
 
         add_btn = QPushButton("+ Ajouter des fichiers…")
@@ -211,7 +219,7 @@ class _FileListWidget(QFrame):
                 background: transparent;
                 color: {_C.ACCENT};
                 border: none;
-                font-size: 11px;
+                font-size: {_font_px(11)}px;
                 font-weight: 600;
             }}
             QPushButton:hover {{ color: #8090ff; }}
@@ -257,7 +265,7 @@ class _FileListWidget(QFrame):
         self._scroll.setVisible(has_files)
         self._placeholder.setVisible(not has_files)
         n = len(self._rows)
-        h = (_FILE_ROW_H * n + _FILE_BAR_H) if has_files else (_FILE_PH_H + _FILE_BAR_H)
+        h = (_scale(_FILE_ROW_H) * n + _scale(_FILE_BAR_H)) if has_files else (_scale(_FILE_PH_H) + _scale(_FILE_BAR_H))
         self.setFixedHeight(h)
 
     def _browse(self) -> None:
@@ -265,7 +273,7 @@ class _FileListWidget(QFrame):
             self,
             translate_text("Sélectionner des fichiers source"),
             "",
-            translate_text("Fichiers source (*.mkv *.mp4 *.m4v *.mov *.srt);;Tous les fichiers (*)"),
+            build_qt_filter(),
         )
         if paths:
             self.add_requested.emit(paths)

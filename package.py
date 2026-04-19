@@ -4,7 +4,7 @@ package.py — Script de packaging de Mediarecode.
 
 Cibles :
   Linux (défaut) → AppImage  (Mediarecode-x86_64.AppImage dans dist/)
-  Windows natif  → .exe      (dist/mediarecode/mediarecode.exe)
+  Windows natif  → .exe / .msix
   Windows cross  → Mediarecode-Setup.exe via Wine + NSIS (--windows)
 
 Workflow Linux :
@@ -14,7 +14,8 @@ Workflow Linux :
 
 Workflow Windows natif (exécuté sur Windows) :
   1. PyInstaller --onedir  → dist/mediarecode/
-  2. (optionnel) NSIS       → Mediarecode-Setup.exe  (nécessite --nsis)
+  2. (optionnel) MSIX       → Mediarecode.msix       (nécessite --msix)
+  3. (optionnel) NSIS       → Mediarecode-Setup.exe  (nécessite --nsis)
 
 Workflow Windows cross (depuis Linux avec --windows) :
   1. Installe Wine + préfixe dédié si absent
@@ -29,6 +30,7 @@ Options :
   --onefile     Produit un binaire monolithique (lent au démarrage, ignoré pour AppImage)
   --exe         Force le packaging .exe même sur Linux (PyInstaller natif, pas d'AppImage)
   --windows     Cross-compile un installateur Windows depuis Linux via Wine + NSIS
+  --msix        Produit un package MSIX signé sur Windows natif
   --skip-wine   Réutilise dist/mediarecode-win/ existant (skip étape Wine/PyInstaller)
   --version TAG Suffixe de version pour le fichier final (défaut: APP_VERSION)
   --dest PATH   Copie le fichier final vers un chemin personnalisé (dossier ou fichier)
@@ -41,6 +43,7 @@ import argparse
 import fnmatch
 import importlib
 import importlib.util
+import json
 import os
 import platform
 import re
@@ -84,6 +87,16 @@ _WIN_BUNDLE   = ROOT / "mediarecode-win"   # hors de dist/ (owned by nfsnobody)
 _APPIMAGE_UPDATE_OWNER = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_OWNER", "Hydro74000").strip() or "Hydro74000"
 _APPIMAGE_UPDATE_REPO = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_REPO", "mediarecode").strip() or "mediarecode"
 _APPIMAGE_UPDATE_RELEASE = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_RELEASE", "latest").strip() or "latest"
+_MSIX_IDENTITY = os.environ.get("MEDIARECODE_MSIX_IDENTITY", "Hydro74000.Mediarecode").strip() or "Hydro74000.Mediarecode"
+_MSIX_PUBLISHER = os.environ.get("MEDIARECODE_MSIX_PUBLISHER", "CN=Hydro74000").strip() or "CN=Hydro74000"
+_MSIX_PUBLISHER_DISPLAY_NAME = os.environ.get("MEDIARECODE_MSIX_PUBLISHER_DISPLAY_NAME", "Hydro74000").strip() or "Hydro74000"
+_MSIX_DESCRIPTION = os.environ.get("MEDIARECODE_MSIX_DESCRIPTION", "Mediarecode video workflow").strip() or "Mediarecode video workflow"
+_MSIX_CERT_PFX = os.environ.get("MEDIARECODE_MSIX_CERT_PFX", "").strip()
+_MSIX_CERT_PASSWORD = os.environ.get("MEDIARECODE_MSIX_CERT_PASSWORD", "").strip()
+_MSIX_TIMESTAMP_URL = os.environ.get("MEDIARECODE_MSIX_TIMESTAMP_URL", "http://timestamp.digicert.com").strip() or "http://timestamp.digicert.com"
+_MSIX_STORE_CONFIG = os.environ.get("MEDIARECODE_MSIX_STORE_CONFIG", "").strip()
+_WINDOWS_SDK_WINGET_ID = os.environ.get("MEDIARECODE_WINDOWS_SDK_WINGET_ID", "Microsoft.WindowsSDK").strip() or "Microsoft.WindowsSDK"
+_WINDOWS_SDK_INSTALLER = os.environ.get("MEDIARECODE_WINDOWS_SDK_INSTALLER", "").strip()
 
 # ── Modules Python exclus du bundle ──────────────────────────────────────────
 
@@ -256,6 +269,46 @@ def _versioned_output_path(path: Path, version_tag: str | None) -> Path:
     if path.suffix:
         return path.with_name(f"{path.stem}-{tag}{path.suffix}")
     return path.with_name(f"{path.name}-{tag}")
+
+
+def _default_msix_store_config_path() -> Path:
+    return ROOT / "packaging" / "msix_store.json"
+
+
+def _load_msix_store_metadata(config_path: Path | None = None) -> dict[str, str]:
+    """
+    Charge les métadonnées Store/MSIX depuis un JSON optionnel.
+
+    Priorité:
+    1. valeurs intégrées/environnement
+    2. chemin explicite
+    3. `packaging/msix_store.json`
+    """
+    metadata = {
+        "identity": _MSIX_IDENTITY,
+        "publisher": _MSIX_PUBLISHER,
+        "publisher_display_name": _MSIX_PUBLISHER_DISPLAY_NAME,
+        "description": _MSIX_DESCRIPTION,
+        "display_name": APP_NAME,
+    }
+
+    candidate = config_path
+    if candidate is None and _MSIX_STORE_CONFIG:
+        candidate = Path(_MSIX_STORE_CONFIG)
+    if candidate is None:
+        candidate = _default_msix_store_config_path()
+    if not candidate.exists():
+        return metadata
+
+    payload = json.loads(candidate.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Configuration MSIX invalide : {candidate}")
+
+    for key in metadata:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            metadata[key] = value.strip()
+    return metadata
 
 
 def _resolve_dest_file(dest: str | None, default_output: Path, version_tag: str | None = None) -> Path:
@@ -1368,6 +1421,8 @@ _NSIS_COMMON_DIRS: list[Path] = [
     Path(r"C:\Program Files\NSIS"),
 ]
 
+_WINDOWS_KITS_BIN_ROOT = Path(r"C:\Program Files (x86)\Windows Kits\10\bin")
+
 
 def _find_makensis() -> str | None:
     """
@@ -1420,6 +1475,323 @@ def _ensure_makensis() -> None:
         print("  makensis toujours introuvable après installation.", file=sys.stderr)
         sys.exit(1)
     _ok("makensis installé")
+
+
+def _install_windows_sdk_tools_if_missing() -> None:
+    """
+    Best-effort install of Windows SDK tools required for MSIX packaging.
+
+    Preferred path is a repo/CI-provided installer via MEDIARECODE_WINDOWS_SDK_INSTALLER.
+    As a fallback, tries winget with MEDIARECODE_WINDOWS_SDK_WINGET_ID.
+    """
+    if OS != "Windows":
+        return
+    if _find_windows_sdk_tool("makeappx.exe") and _find_windows_sdk_tool("signtool.exe"):
+        return
+
+    if _WINDOWS_SDK_INSTALLER:
+        installer_value = _WINDOWS_SDK_INSTALLER
+        installer_path = Path(installer_value)
+        if re.match(r"^https?://", installer_value, flags=re.IGNORECASE):
+            installer_path = Path(tempfile.gettempdir()) / "mediarecode-winsdksetup.exe"
+            _info(f"Téléchargement du Windows SDK depuis {installer_value}…")
+            urllib.request.urlretrieve(installer_value, installer_path)
+        _info("Installation du Windows SDK (makeappx/signtool)…")
+        _run([str(installer_path), "/quiet", "/norestart"], check=False)
+
+    elif shutil.which("winget"):
+        _info(f"Windows SDK introuvable — tentative via winget ({_WINDOWS_SDK_WINGET_ID})…")
+        _run(
+            [
+                "winget",
+                "install",
+                "--id",
+                _WINDOWS_SDK_WINGET_ID,
+                "-e",
+                "--silent",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+            ],
+            check=False,
+        )
+
+    if _find_windows_sdk_tool("makeappx.exe") and _find_windows_sdk_tool("signtool.exe"):
+        _ok("Windows SDK installé")
+
+
+def _find_windows_sdk_tool(tool_name: str) -> str | None:
+    """
+    Cherche un outil du Windows SDK (ex: makeappx.exe, signtool.exe).
+    """
+    found = shutil.which(tool_name)
+    if found:
+        return found
+
+    if OS != "Windows" or not _WINDOWS_KITS_BIN_ROOT.is_dir():
+        return None
+
+    version_dirs = sorted(
+        (path for path in _WINDOWS_KITS_BIN_ROOT.iterdir() if path.is_dir()),
+        key=lambda path: path.name,
+        reverse=True,
+    )
+    for version_dir in version_dirs:
+        candidate = version_dir / "x64" / tool_name
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def _ensure_windows_sdk_tool(tool_name: str) -> str:
+    _install_windows_sdk_tools_if_missing()
+    tool = _find_windows_sdk_tool(tool_name)
+    if tool:
+        _ok(f"{tool_name} trouvé")
+        return tool
+    print(
+        f"  {tool_name} introuvable. Installez le Windows SDK / App Installer tools sur le runner Windows.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def _msix_processor_architecture() -> str:
+    machine = platform.machine().lower()
+    if machine in {"amd64", "x86_64"}:
+        return "x64"
+    if machine in {"arm64", "aarch64"}:
+        return "arm64"
+    if machine in {"x86", "i386", "i686"}:
+        return "x86"
+    return "x64"
+
+
+def _msix_vfs_root_dir() -> str:
+    arch = _msix_processor_architecture()
+    if arch == "x86":
+        return "ProgramFilesX86"
+    if arch == "arm64":
+        return "ProgramFilesArm64"
+    return "ProgramFilesX64"
+
+
+def _msix_version(version_tag: str | None) -> str:
+    version_source = version_tag if version_tag and re.search(r"\d", version_tag) else APP_VERSION
+    return ".".join(str(part) for part in _windows_version_tuple(version_source))
+
+
+def _msix_assets_dir() -> Path:
+    return ROOT / "build" / "msix" / "Assets"
+
+
+def _prepare_msix_base_png(dest_png: Path) -> Path:
+    if ICON_ICO.exists() and _convert_ico_to_png(ICON_ICO, dest_png):
+        return dest_png
+    if ICON_PNG.exists():
+        dest_png.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ICON_PNG, dest_png)
+        return dest_png
+    _write_minimal_png(dest_png)
+    return dest_png
+
+
+def _write_msix_resized_png(src_png: Path, dest_png: Path, size: tuple[int, int]) -> None:
+    try:
+        qtcore = importlib.import_module("PySide6.QtCore")
+        qtgui = importlib.import_module("PySide6.QtGui")
+        Qt = qtcore.Qt
+        QImage = qtgui.QImage
+    except Exception:
+        shutil.copy2(src_png, dest_png)
+        return
+
+    image = QImage(str(src_png))
+    if image.isNull():
+        shutil.copy2(src_png, dest_png)
+        return
+
+    scaled = image.scaled(
+        size[0],
+        size[1],
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    canvas = QImage(size[0], size[1], QImage.Format.Format_ARGB32)
+    canvas.fill(0)
+    painter = qtgui.QPainter(canvas)
+    x = max((size[0] - scaled.width()) // 2, 0)
+    y = max((size[1] - scaled.height()) // 2, 0)
+    painter.drawImage(x, y, scaled)
+    painter.end()
+    dest_png.parent.mkdir(parents=True, exist_ok=True)
+    if not canvas.save(str(dest_png), b"PNG"):
+        shutil.copy2(src_png, dest_png)
+
+
+def _build_msix_assets(assets_dir: Path) -> None:
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    base_png = _prepare_msix_base_png(assets_dir / "_base.png")
+    required_assets = {
+        "StoreLogo.png": (50, 50),
+        "Square44x44Logo.png": (44, 44),
+        "Square150x150Logo.png": (150, 150),
+        "Square310x310Logo.png": (310, 310),
+        "Wide310x150Logo.png": (310, 150),
+        "SplashScreen.png": (620, 300),
+    }
+    for filename, size in required_assets.items():
+        _write_msix_resized_png(base_png, assets_dir / filename, size)
+    base_png.unlink(missing_ok=True)
+
+
+def _msix_manifest_content(
+    version_tag: str | None,
+    executable: str,
+    metadata: dict[str, str] | None = None,
+) -> str:
+    package_version = _msix_version(version_tag)
+    processor_arch = _msix_processor_architecture()
+    meta = metadata or _load_msix_store_metadata()
+    return f"""<?xml version="1.0" encoding="utf-8"?>
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
+  IgnorableNamespaces="uap rescap desktop6">
+  <Identity
+    Name="{meta['identity']}"
+    Publisher="{meta['publisher']}"
+    Version="{package_version}"
+    ProcessorArchitecture="{processor_arch}" />
+  <Properties>
+    <DisplayName>{meta['display_name']}</DisplayName>
+    <PublisherDisplayName>{meta['publisher_display_name']}</PublisherDisplayName>
+    <Description>{meta['description']}</Description>
+    <Logo>Assets\\StoreLogo.png</Logo>
+  </Properties>
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+  <Applications>
+    <Application Id="Mediarecode" Executable="{executable}" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="{meta['display_name']}"
+        Description="{meta['description']}"
+        BackgroundColor="transparent"
+        Square44x44Logo="Assets\\Square44x44Logo.png"
+        Square150x150Logo="Assets\\Square150x150Logo.png">
+        <uap:DefaultTile
+          Square310x310Logo="Assets\\Square310x310Logo.png"
+          Wide310x150Logo="Assets\\Wide310x150Logo.png" />
+        <uap:SplashScreen Image="Assets\\SplashScreen.png" />
+      </uap:VisualElements>
+      <Extensions>
+        <desktop6:Extension Category="windows.fullTrustProcess" Executable="{executable}" />
+      </Extensions>
+    </Application>
+  </Applications>
+</Package>
+"""
+
+
+def _stage_msix_layout(
+    bundle_dir: Path,
+    version_tag: str | None,
+    metadata: dict[str, str] | None = None,
+) -> Path:
+    layout_dir = ROOT / "build" / "msix" / "layout"
+    if layout_dir.exists():
+        shutil.rmtree(layout_dir)
+    layout_dir.mkdir(parents=True)
+
+    assets_dir = layout_dir / "Assets"
+    _build_msix_assets(assets_dir)
+
+    vfs_root = layout_dir / "VFS" / _msix_vfs_root_dir() / APP_NAME
+    shutil.copytree(bundle_dir, vfs_root)
+
+    executable = f"VFS\\{_msix_vfs_root_dir()}\\{APP_NAME}\\mediarecode.exe"
+    manifest_path = layout_dir / "AppxManifest.xml"
+    manifest_path.write_text(
+        _msix_manifest_content(version_tag, executable, metadata=metadata),
+        encoding="utf-8",
+    )
+    _ok(f"Layout MSIX prêt : {layout_dir}")
+    return layout_dir
+
+
+def _sign_msix_package(msix_path: Path) -> None:
+    if not _MSIX_CERT_PFX:
+        _warn("MEDIARECODE_MSIX_CERT_PFX absent — package MSIX non signé.")
+        return
+    if not _MSIX_CERT_PASSWORD:
+        raise RuntimeError("MEDIARECODE_MSIX_CERT_PASSWORD absent — signature MSIX impossible.")
+
+    signtool = _ensure_windows_sdk_tool("signtool.exe")
+    _run(
+        [
+            signtool,
+            "sign",
+            "/fd",
+            "SHA256",
+            "/f",
+            _MSIX_CERT_PFX,
+            "/p",
+            _MSIX_CERT_PASSWORD,
+            "/tr",
+            _MSIX_TIMESTAMP_URL,
+            "/td",
+            "SHA256",
+            str(msix_path),
+        ]
+    )
+    _ok(f"MSIX signé : {msix_path.name}")
+
+
+def _build_msix_package(
+    bundle_dir: Path,
+    version_tag: str | None = None,
+    metadata: dict[str, str] | None = None,
+) -> Path:
+    _title("Étape MSIX — Package Windows")
+    if OS != "Windows":
+        raise RuntimeError("Le build MSIX nécessite Windows natif.")
+
+    layout_dir = _stage_msix_layout(bundle_dir, version_tag, metadata=metadata)
+    makeappx = _ensure_windows_sdk_tool("makeappx.exe")
+    output = _versioned_output_path(ROOT / f"{APP_NAME}.msix", version_tag)
+    if output.exists():
+        output.unlink()
+
+    _run([makeappx, "pack", "/d", str(layout_dir), "/p", str(output), "/o"])
+    _sign_msix_package(output)
+    _ok(f"Package MSIX : {output}")
+    return output
+
+
+def _build_msixupload(msix_path: Path, version_tag: str | None = None) -> Path:
+    """
+    Génère un conteneur `.msixupload` pour Partner Center à partir du `.msix`.
+    """
+    upload_path = _versioned_output_path(
+        msix_path.with_suffix(".msixupload"),
+        version_tag,
+    )
+    if upload_path.exists():
+        upload_path.unlink()
+
+    with zipfile.ZipFile(upload_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.write(msix_path, arcname=msix_path.name)
+
+    _ok(f"Package Store upload : {upload_path}")
+    return upload_path
 
 
 def _setup_wine_python() -> None:
@@ -2213,6 +2585,31 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--msix",
+        action="store_true",
+        help=(
+            "Génère un package MSIX sur Windows natif. "
+            "Utilise makeappx.exe et signe le package si MEDIARECODE_MSIX_CERT_PFX "
+            "et MEDIARECODE_MSIX_CERT_PASSWORD sont définis."
+        ),
+    )
+    p.add_argument(
+        "--msixupload",
+        action="store_true",
+        help=(
+            "Génère un fichier .msixupload pour soumission Partner Center "
+            "à partir du package MSIX Windows natif."
+        ),
+    )
+    p.add_argument(
+        "--store-config",
+        metavar="PATH",
+        help=(
+            "Chemin vers un JSON de métadonnées Store/MSIX "
+            "(identity, publisher, publisher_display_name, description, display_name)."
+        ),
+    )
+    p.add_argument(
         "--skip-wine",
         action="store_true",
         help="Réutilise mediarecode-win/ existant (skip Wine + PyInstaller)",
@@ -2264,24 +2661,37 @@ if __name__ == "__main__":
         sys.exit(0)
 
     if OS == "Windows":
-        # Sur Windows natif : PyInstaller puis NSIS automatiquement
+        # Sur Windows natif : PyInstaller puis format demandé
         _ensure_pyinstaller()
-        _ensure_makensis()
         exe_path = _build_pyinstaller(onefile=args.onefile)
-        # onedir → exe_path = dist/mediarecode/mediarecode.exe
-        #          NSIS doit recevoir dist/mediarecode/ (le dossier bundle)
-        # onefile → un seul exe dans dist/ : on crée un sous-dossier propre
         if args.onefile:
             onefile_dir = ROOT / "dist" / "mediarecode-onefile"
             onefile_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(exe_path, onefile_dir / exe_path.name)
             bundle_dir = onefile_dir
         else:
-            bundle_dir = exe_path.parent  # dist/mediarecode/
-        installer = _build_nsis_installer(bundle_dir, version_tag=args.version)
-        final_file = _copy_final_file_if_requested(installer, args.dest, version_tag=args.version)
-        _title("Résultat")
-        _ok(f"Installateur : {final_file}")
+            bundle_dir = exe_path.parent
+
+        store_metadata = _load_msix_store_metadata(Path(args.store_config) if args.store_config else None)
+
+        if args.msix or args.msixupload:
+            package_path = _build_msix_package(
+                bundle_dir,
+                version_tag=args.version,
+                metadata=store_metadata,
+            )
+            final_artifact = package_path
+            if args.msixupload:
+                final_artifact = _build_msixupload(package_path, version_tag=args.version)
+            final_file = _copy_final_file_if_requested(final_artifact, args.dest, version_tag=args.version)
+            _title("Résultat")
+            _ok(f"Artefact Windows Store : {final_file}")
+        else:
+            _ensure_makensis()
+            installer = _build_nsis_installer(bundle_dir, version_tag=args.version)
+            final_file = _copy_final_file_if_requested(installer, args.dest, version_tag=args.version)
+            _title("Résultat")
+            _ok(f"Installateur : {final_file}")
     elif args.allinc:
         # Délègue à package_appimage.py --allinc
         script = ROOT / "package_appimage.py"

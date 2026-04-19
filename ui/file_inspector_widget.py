@@ -40,12 +40,13 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
+from core.file_types import build_qt_filter, is_accepted
 from core.i18n import apply_translations, translate_text
 from core.inspector import (
     AudioTrack, ChapterInfo, FileInfo, FileInspector,
     HDRType, InspectionError, SubtitleTrack, VideoTrack,
 )
-from ui.design_system import colors as _C
+from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
 
 
 # =============================================================================
@@ -145,7 +146,7 @@ def _make_table_view(model: _TrackTableModel) -> QTableView:
     view.setFrameShape(QFrame.Shape.NoFrame)
     view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
-    mono = QFont("JetBrains Mono", 10)
+    mono = QFont("JetBrains Mono", _font_px(10))
     mono.setStyleHint(QFont.StyleHint.Monospace)
     view.setFont(mono)
 
@@ -164,30 +165,30 @@ def _make_table_view(model: _TrackTableModel) -> QTableView:
             color: {_C.TEXT_SEC};
             border: none;
             border-bottom: 1px solid {_C.BORDER};
-            padding: 6px 10px;
-            font-size: 10px;
+            padding: {_scale(6)}px {_scale(10)}px;
+            font-size: {_font_px(10)}px;
             font-weight: 600;
-            letter-spacing: 0.5px;
+            letter-spacing: {_scale(1)}px;
         }}
         QScrollBar:vertical {{
             background: {_C.BG_DEEP};
-            width: 6px;
+            width: {_scale(6)}px;
             border: none;
         }}
         QScrollBar::handle:vertical {{
             background: {_C.BORDER_LT};
-            border-radius: 3px;
-            min-height: 20px;
+            border-radius: {_scale(3)}px;
+            min-height: {_scale(20)}px;
         }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
         QScrollBar:horizontal {{
             background: {_C.BG_DEEP};
-            height: 6px;
+            height: {_scale(6)}px;
             border: none;
         }}
         QScrollBar::handle:horizontal {{
             background: {_C.BORDER_LT};
-            border-radius: 3px;
+            border-radius: {_scale(3)}px;
         }}
         QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
     """)
@@ -312,40 +313,44 @@ class _FileDropZone(QWidget):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        self.setFixedHeight(96)
+        self.setFixedHeight(_scale(96))
         self.setStyleSheet(f"""
             QWidget {{
                 background: {_C.BG_CARD};
                 border: 1px dashed {_C.BORDER_LT};
-                border-radius: 8px;
+                border-radius: {_scale(8)}px;
             }}
         """)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(24, 0, 24, 0)
-        layout.setSpacing(16)
+        layout.setContentsMargins(_scale(24), 0, _scale(24), 0)
+        layout.setSpacing(_scale(16))
 
         icon = QLabel("⬇")
-        icon.setStyleSheet(f"font-size: 22px; color: {_C.TEXT_DIM}; border: none; background: transparent;")
+        icon.setStyleSheet(
+            f"font-size: {_font_px(22)}px; color: {_C.TEXT_DIM}; border: none; background: transparent;"
+        )
         layout.addWidget(icon)
 
         text = QLabel("Déposer un fichier MKV / MP4 ici")
-        text.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: 13px; border: none; background: transparent;")
+        text.setStyleSheet(
+            f"color: {_C.TEXT_SEC}; font-size: {_font_px(13)}px; border: none; background: transparent;"
+        )
         layout.addWidget(text)
 
         layout.addStretch()
 
         btn = QPushButton("Parcourir…")
-        btn.setFixedHeight(30)
+        btn.setFixedHeight(_scale(30))
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(f"""
             QPushButton {{
                 background: {_C.BG_ACTIVE};
                 color: {_C.TEXT_SEC};
                 border: 1px solid {_C.BORDER_LT};
-                border-radius: 5px;
-                font-size: 12px;
-                padding: 0 14px;
+                border-radius: {_scale(5)}px;
+                font-size: {_font_px(12)}px;
+                padding: 0 {_scale(14)}px;
             }}
             QPushButton:hover {{
                 background: {_C.ACCENT_DIM};
@@ -361,7 +366,7 @@ class _FileDropZone(QWidget):
             self,
             translate_text("Ouvrir un fichier vidéo"),
             "",
-            translate_text("Fichiers vidéo (*.mkv *.mp4 *.m4v *.mov *.m2ts *.ts);;Tous les fichiers (*)"),
+            build_qt_filter(video_only=True),
         )
         if path:
             self.file_selected.emit(path)
@@ -371,15 +376,13 @@ class _FileDropZone(QWidget):
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
             urls = event.mimeData().urls()
-            if urls and Path(urls[0].toLocalFile()).suffix.lower() in (
-                ".mkv", ".mp4", ".m4v", ".mov", ".m2ts", ".ts"
-            ):
+            if urls and is_accepted(urls[0].toLocalFile(), video_only=True):
                 event.acceptProposedAction()
                 self.setStyleSheet(f"""
                     QWidget {{
                         background: {_C.BG_HOVER};
-                        border: 1px dashed {_C.ACCENT};
-                        border-radius: 8px;
+                border: 1px dashed {_C.ACCENT};
+                        border-radius: {_scale(8)}px;
                     }}
                 """)
                 return
@@ -390,7 +393,7 @@ class _FileDropZone(QWidget):
             QWidget {{
                 background: {_C.BG_CARD};
                 border: 1px dashed {_C.BORDER_LT};
-                border-radius: 8px;
+                border-radius: {_scale(8)}px;
             }}
         """)
 
@@ -410,17 +413,17 @@ class _FileSummaryBar(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFixedHeight(44)
+        self.setFixedHeight(_scale(44))
         self.setStyleSheet(f"""
             QWidget {{
                 background: {_C.BG_PANEL};
                 border: 1px solid {_C.BORDER};
-                border-radius: 6px;
+                border-radius: {_scale(6)}px;
             }}
         """)
         self._layout = QHBoxLayout(self)
-        self._layout.setContentsMargins(16, 0, 16, 0)
-        self._layout.setSpacing(24)
+        self._layout.setContentsMargins(_scale(16), 0, _scale(16), 0)
+        self._layout.setSpacing(_scale(24))
         self._cells: dict[str, QLabel] = {}
         self._build_cells()
 
@@ -431,14 +434,14 @@ class _FileSummaryBar(QWidget):
             pair.setStyleSheet("background: transparent; border: none;")
             pl = QHBoxLayout(pair)
             pl.setContentsMargins(0, 0, 0, 0)
-            pl.setSpacing(6)
+            pl.setSpacing(_scale(6))
 
             lbl_key = QLabel(key)
             lbl_key.setStyleSheet(f"""
                 color: {_C.TEXT_DIM};
-                font-size: 10px;
+                font-size: {_font_px(10)}px;
                 font-weight: 700;
-                letter-spacing: 1px;
+                letter-spacing: {_scale(1)}px;
                 background: transparent;
                 border: none;
             """)
@@ -447,7 +450,7 @@ class _FileSummaryBar(QWidget):
             lbl_val = QLabel("—")
             lbl_val.setStyleSheet(f"""
                 color: {_C.TEXT_SEC};
-                font-size: 11px;
+                font-size: {_font_px(11)}px;
                 background: transparent;
                 border: none;
             """)
@@ -475,7 +478,7 @@ class _FileSummaryBar(QWidget):
             HDRType.DOLBY_VISION_HDR10PLUS: _C.ACCENT,
         }.get(info.hdr_type, _C.TEXT_SEC)
         self._cells["HDR"].setStyleSheet(
-            f"color: {hdr_color}; font-size: 11px; font-weight: 600;"
+            f"color: {hdr_color}; font-size: {_font_px(11)}px; font-weight: 600;"
             f"background: transparent; border: none;"
         )
 
@@ -483,7 +486,7 @@ class _FileSummaryBar(QWidget):
         for lbl in self._cells.values():
             lbl.setText("—")
             lbl.setStyleSheet(
-                f"color: {_C.TEXT_SEC}; font-size: 11px; background: transparent; border: none;"
+                f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px; background: transparent; border: none;"
             )
 
 
@@ -503,7 +506,7 @@ class _ChapterView(QWidget):
 
         self._empty = QLabel("Aucun chapitre détecté")
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._empty.setStyleSheet(f"color: {_C.TEXT_DIM}; font-size: 12px;")
+        self._empty.setStyleSheet(f"color: {_C.TEXT_DIM}; font-size: {_font_px(12)}px;")
         layout.addWidget(self._empty)
 
     def update_data(self, info: ChapterInfo | None) -> None:
@@ -563,8 +566,8 @@ class FileInspectorWidget(QWidget):
         top = QWidget()
         top.setStyleSheet(f"background: {_C.BG_DEEP};")
         top_layout = QVBoxLayout(top)
-        top_layout.setContentsMargins(16, 16, 16, 12)
-        top_layout.setSpacing(10)
+        top_layout.setContentsMargins(_scale(16), _scale(16), _scale(16), _scale(12))
+        top_layout.setSpacing(_scale(10))
 
         self._drop_zone = _FileDropZone()
         top_layout.addWidget(self._drop_zone)
@@ -575,7 +578,7 @@ class FileInspectorWidget(QWidget):
         # Label de statut (chargement / erreur)
         self._status = QLabel("")
         self._status.setStyleSheet(
-            f"color: {_C.TEXT_DIM}; font-size: 11px; padding: 0 4px;"
+            f"color: {_C.TEXT_DIM}; font-size: {_font_px(11)}px; padding: 0 {_scale(4)}px;"
         )
         self._status.setVisible(False)
         top_layout.addWidget(self._status)
@@ -586,7 +589,7 @@ class FileInspectorWidget(QWidget):
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setStyleSheet(f"color: {_C.BORDER}; background: {_C.BORDER};")
-        sep.setFixedHeight(1)
+        sep.setFixedHeight(_scale(1))
         root.addWidget(sep)
 
         # Onglets pistes
@@ -601,8 +604,8 @@ class FileInspectorWidget(QWidget):
                 color: {_C.TEXT_SEC};
                 border: none;
                 border-bottom: 2px solid transparent;
-                padding: 8px 20px;
-                font-size: 12px;
+                padding: {_scale(8)}px {_scale(20)}px;
+                font-size: {_font_px(12)}px;
             }}
             QTabBar::tab:selected {{
                 color: {_C.TEXT_PRI};
@@ -726,7 +729,7 @@ class FileInspectorWidget(QWidget):
     def _set_status(self, msg: str, color: str) -> None:
         self._status.setText(msg)
         self._status.setStyleSheet(
-            f"color: {color}; font-size: 11px; padding: 0 4px;"
+            f"color: {color}; font-size: {_font_px(11)}px; padding: 0 {_scale(4)}px;"
         )
         self._status.setVisible(True)
 

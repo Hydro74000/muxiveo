@@ -109,6 +109,7 @@ class DesignSystem:
 
     _theme: str = "dark"
     _colors: ThemeMap = _THEMES["dark"]
+    _ui_scale_percent: int = 100
 
     @classmethod
     def normalize_theme(cls, value: str | None) -> str:
@@ -126,6 +127,36 @@ class DesignSystem:
     @classmethod
     def current_theme(cls) -> str:
         return cls._theme
+
+    @classmethod
+    def set_ui_scale(cls, percent: int | None) -> int:
+        value = 100 if percent is None else int(percent)
+        cls._ui_scale_percent = max(50, min(200, value))
+        return cls._ui_scale_percent
+
+    @classmethod
+    def current_ui_scale(cls) -> int:
+        return cls._ui_scale_percent
+
+    @classmethod
+    def scale_factor(cls) -> float:
+        return cls._ui_scale_percent / 100.0
+
+    @classmethod
+    def scale(cls, px: int | float) -> int:
+        return max(1, int(round(float(px) * cls.scale_factor())))
+
+    @classmethod
+    def font_px(cls, px: int | float) -> int:
+        return max(1, int(round(float(px) * cls.scale_factor())))
+
+    @classmethod
+    def size(cls, width: int | float, height: int | float) -> tuple[int, int]:
+        return cls.scale(width), cls.scale(height)
+
+    @classmethod
+    def spacing(cls, px: int | float) -> int:
+        return cls.scale(px)
 
     @classmethod
     def color(cls, name: str) -> str:
@@ -164,3 +195,26 @@ class _ColorProxy:
 
 colors = _ColorProxy()
 
+
+def set_ui_scale(percent: int | None) -> int:
+    return DesignSystem.set_ui_scale(percent)
+
+
+def current_ui_scale() -> int:
+    return DesignSystem.current_ui_scale()
+
+
+def scale(px: int | float) -> int:
+    return DesignSystem.scale(px)
+
+
+def font_px(px: int | float) -> int:
+    return DesignSystem.font_px(px)
+
+
+def size(width: int | float, height: int | float) -> tuple[int, int]:
+    return DesignSystem.size(width, height)
+
+
+def spacing(px: int | float) -> int:
+    return DesignSystem.spacing(px)

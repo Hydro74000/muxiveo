@@ -52,6 +52,8 @@ def test_extract_hevc_uses_ffmpeg_command(tmp_path: Path) -> None:
         "0:v:0",
         "-c:v",
         "copy",
+        "-bsf:v",
+        "hevc_mp4toannexb",
         "-an",
         "-sn",
         "-dn",

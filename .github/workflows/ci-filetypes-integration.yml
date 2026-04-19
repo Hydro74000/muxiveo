@@ -1,0 +1,102 @@
+name: Filetypes Integration Tests
+
+# Vérifie la bonne intégration des types de fichiers source étendus
+# (MKV/MP4/MOV/TS/M2TS/WebM/FLV/VOB/…) dans les workflows Mediarecode.
+#
+# - Unit : core/file_types.py, core/subtitle_codec.py
+# - Intégration ffmpeg : remux multi-conteneurs → MKV
+# - Intégration ffmpeg : conversion automatique mov_text → srt
+# - Validation merge_dovi : extensions acceptées + présence du BSF annexB
+#
+# Déclenchable manuellement (workflow_dispatch) et automatiquement sur PR/push
+# touchant les modules concernés.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "core/file_types.py"
+      - "core/subtitle_codec.py"
+      - "core/workflows/remux.py"
+      - "core/workflows/merge_dovi.py"
+      - "core/workflows/encode/workflow.py"
+      - "tests/test_file_types.py"
+      - "tests/test_subtitle_codec.py"
+      - "tests/integration/**"
+      - ".github/workflows/ci-filetypes-integration.yml"
+  push:
+    branches:
+      - main
+      - master
+      - devel-stable
+    paths:
+      - "core/file_types.py"
+      - "core/subtitle_codec.py"
+      - "core/workflows/remux.py"
+      - "core/workflows/merge_dovi.py"
+      - "core/workflows/encode/workflow.py"
+      - "tests/test_file_types.py"
+      - "tests/test_subtitle_codec.py"
+      - "tests/integration/**"
+
+jobs:
+  filetypes-unit:
+    name: Unit — file_types + subtitle_codec
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install System Dependencies (Qt headless)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libegl1 libgl1 libglib2.0-0
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest PySide6
+
+      - name: Run Unit Tests
+        run: |
+          pytest tests/test_file_types.py tests/test_subtitle_codec.py -v
+
+  filetypes-integration:
+    name: Integration — ffmpeg remux + subtitle conversion
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg libegl1 libgl1 libglib2.0-0
+          ffmpeg -version
+          ffprobe -version
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pytest-qt PySide6 pymediainfo
+
+      - name: Run Integration Tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_QUICK_BACKEND: software
+        run: |
+          pytest tests/integration/ -v

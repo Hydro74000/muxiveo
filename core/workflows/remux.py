@@ -31,6 +31,7 @@ from core.inspector import AttachmentInfo
 from core.lang_tags import Rfc5646LanguageTags as LangTags
 from core.runner import TaskCancelledError, TaskSignals, ToolRunner
 from core.subprocess_utils import subprocess_text_kwargs
+from core.subtitle_codec import plan_subtitle_codec
 from core.version import APP_VERSION_LABEL
 from core.workdir import (
     download_tmdb_cover,
@@ -492,6 +493,18 @@ class RemuxWorkflow(QObject):
                 cmd.extend(["-map", f"{remapped[0]}:{remapped[1]}"])
 
         cmd.extend(["-c", "copy", "-default_mode", "passthrough"])
+
+        # Sortie MKV : certains codecs de sous-titres (mov_text, eia_608, …)
+        # ne sont pas copyables en Matroska → conversion vers srt par piste.
+        for mt in mapped_tracks:
+            if mt.track.track_type != "subtitle":
+                continue
+            try:
+                codec_arg, _ = plan_subtitle_codec(mt.track.codec)
+            except ValueError as exc:
+                raise RemuxError(str(exc)) from exc
+            if codec_arg != "copy":
+                cmd.extend([f"-c:s:{mt.out_type_index}", codec_arg])
         if needs_strict_interleave:
             cmd.extend(["-max_interleave_delta", "0"])
             cmd.extend(["-max_muxing_queue_size", "9999"])

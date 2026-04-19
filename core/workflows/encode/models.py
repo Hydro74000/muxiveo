@@ -67,6 +67,12 @@ X264_PRESETS   = X265_PRESETS
 SVTAV1_PRESETS = [str(i) for i in range(13)]   # 0 = qualité max, 12 = vitesse max
 NVENC_PRESETS  = ["p1", "p2", "p3", "p4", "p5", "p6", "p7",
                   "slow", "medium", "fast", "hp", "hq"]
+# VAAPI compression_level : 0 = meilleure qualité, 7 = plus rapide
+VAAPI_PRESETS  = [str(i) for i in range(8)]
+# QSV preset : noms équivalents aux x264 presets
+QSV_PRESETS    = ["veryslow", "slower", "slow", "medium", "fast", "faster", "veryfast"]
+# AMF quality : balanced est un bon compromis
+AMF_PRESETS    = ["quality", "balanced", "speed"]
 
 TONEMAP_ALGORITHMS = ["hable", "mobius", "reinhard", "gamma", "linear", "clip"]
 
@@ -75,10 +81,14 @@ def presets_for_codec(codec: str) -> list[str]:
     """Retourne la liste de presets appropriée pour le codec donné."""
     if codec == "libsvtav1":
         return SVTAV1_PRESETS
-    if codec in ("hevc_nvenc", "h264_nvenc"):
+    if codec in ("hevc_nvenc", "h264_nvenc", "av1_nvenc"):
         return NVENC_PRESETS
-    if codec in ("hevc_amf", "hevc_qsv", "h264_amf", "h264_qsv"):
-        return []   # pas de preset standardisé
+    if codec in ("hevc_vaapi", "h264_vaapi", "av1_vaapi"):
+        return VAAPI_PRESETS
+    if codec in ("hevc_qsv", "h264_qsv", "av1_qsv"):
+        return QSV_PRESETS
+    if codec in ("hevc_amf", "h264_amf", "av1_amf"):
+        return AMF_PRESETS
     return X265_PRESETS   # libx265, libx264
 
 

@@ -832,7 +832,11 @@ def build_appimage(
 
     env = os.environ.copy()
     env["ARCH"] = arch
-    update_information = _appimage_update_information(arch, allinc=allinc)
+    update_information = _appimage_update_information(
+        arch,
+        allinc=allinc,
+        version_tag=version_tag,
+    )
     env["UPDATE_INFORMATION"] = update_information
     info(f"UPDATE_INFORMATION: {update_information}")
     # appimagetool est lui-même une AppImage : sans FUSE (distrobox, CI…)
@@ -850,19 +854,33 @@ def build_appimage(
     return output
 
 
-def _appimage_update_information(arch: str, allinc: bool = False) -> str:
+def _appimage_update_information(
+    arch: str,
+    allinc: bool = False,
+    version_tag: str | None = None,
+) -> str:
     """
     Chaîne UPDATE_INFORMATION AppImage pour GitHub Releases.
     Format: gh-releases-zsync|OWNER|REPO|RELEASE|FILENAME.zsync
+
+    En mode "reuse" (tag de version `latest` ou `latest-*`), on embarque
+    directement la release cible et le nom exact du .zsync pour éviter toute
+    configuration manuelle dans Gear Lever.
     """
     suffix = "_allinc" if allinc else ""
-    filename_pattern = f"{APP_DISPLAY_NAME}-{arch}{suffix}-*.AppImage.zsync"
+    normalized_tag = _normalize_version_tag(version_tag)
+    reuse_channel = normalized_tag == "latest" or normalized_tag.startswith("latest-")
+    release = normalized_tag if reuse_channel and _APPIMAGE_UPDATE_RELEASE == "latest" else _APPIMAGE_UPDATE_RELEASE
+    if reuse_channel:
+        filename = f"{APP_DISPLAY_NAME}-{arch}{suffix}-{normalized_tag}.AppImage.zsync"
+    else:
+        filename = f"{APP_DISPLAY_NAME}-{arch}{suffix}-*.AppImage.zsync"
     return (
         "gh-releases-zsync|"
         f"{_APPIMAGE_UPDATE_OWNER}|"
         f"{_APPIMAGE_UPDATE_REPO}|"
-        f"{_APPIMAGE_UPDATE_RELEASE}|"
-        f"{filename_pattern}"
+        f"{release}|"
+        f"{filename}"
     )
 
 

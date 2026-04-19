@@ -130,6 +130,7 @@ from core.inspector import (
     AttachmentInfo, AudioTrack, ChapterEntry, ChapterInfo, FileInfo, HDRType, SubtitleTrack, VideoTrack,
     build_chapter_xml,
 )
+from core.matroska_attachment_extractor import extract_matroska_attachment_bytes
 from core.media_info_fetcher import MediaDetails
 from core.runner import TaskSignals
 from core.workflows.remux import RemuxWorkflow
@@ -137,12 +138,13 @@ from core.workflows.remux_models import (
     RemuxConfig, RemuxError, SourceInput, TrackEntry, tracks_from_file_info,
 )
 from ui.panels.remux_panel import (
-    SourceFile, _FILE_BAR_H, _FILE_PH_H, _FILE_ROW_H,
+    RemuxPanel, SourceFile, _FILE_BAR_H, _FILE_PH_H, _FILE_ROW_H,
     _AttachmentItemWidget, _AttachmentPanel, _FileListWidget, _TrackInfoDelegate, _TrackTable,
     _TRACK_INFO_OFFSET_COLOR, _TRACK_INFO_OFFSET_NEG_COLOR, _TRACK_INFO_OFFSET_POS_COLOR,
     _TRACK_INFO_OFFSET_VALUE_ROLE,
     _normalize_tmdb_manual_title_suggestion, _pick_file_color,
 )
+from ui.panels.remux_panel.widgets.attachments import _AttachmentNameButton, _pretty_text_attachment_content
 from ui.panels.remux_panel.widgets.file_list import _ACCEPTED_EXT
 from ui.panels.track_edit_dialog import TrackEditDialog
 from ui.panels.tmdb_search_modal import extract_season_episode
@@ -218,6 +220,36 @@ def _file_info(
         audio_tracks=audios or [],
         subtitle_tracks=subs or [],
     )
+
+
+def _encode_ebml_size(value: int) -> bytes:
+    for length in range(1, 9):
+        max_known = (1 << (7 * length)) - 2
+        if value <= max_known:
+            raw = value.to_bytes(length, "big")
+            marker = 1 << (8 - length)
+            return bytes([raw[0] | marker]) + raw[1:]
+    raise ValueError("Valeur EBML trop grande")
+
+
+def _ebml_element(element_id: bytes, payload: bytes) -> bytes:
+    return element_id + _encode_ebml_size(len(payload)) + payload
+
+
+def _make_mkv_with_attachments(
+    path: Path,
+    attachments: list[tuple[str, bytes]],
+) -> None:
+    attached_files = []
+    for name, data in attachments:
+        attached_payload = b"".join([
+            _ebml_element(b"\x46\x6e", name.encode("utf-8")),
+            _ebml_element(b"\x46\x60", b"application/octet-stream"),
+            _ebml_element(b"\x46\x5c", data),
+        ])
+        attached_files.append(_ebml_element(b"\x61\xa7", attached_payload))
+    segment_payload = _ebml_element(b"\x19\x41\xa4\x69", b"".join(attached_files))
+    path.write_bytes(_ebml_element(b"\x18\x53\x80\x67", segment_payload))
 
 
 def _track(
@@ -1194,6 +1226,108 @@ class TestAttachmentItemWidgetDefaultChecked:
         assert w.tag_count == 3
         w.close()
 
+    def test_manual_image_attachment_is_interactive(self, qt_app, tmp_path):
+        image = tmp_path / "cover.jpg"
+        image.write_bytes(b"\xff\xd8\xff\xd9")
+
+        w = _AttachmentItemWidget(file_id="", is_manual=True, manual_path=image)
+
+        assert w._supports_image_interaction() is True
+        assert isinstance(w._name_widget, _AttachmentNameButton)
+        w.close()
+
+    def test_manual_text_attachment_is_interactive(self, qt_app, tmp_path):
+        text_path = tmp_path / "info.xml"
+        text_path.write_text("<root><title>Demo</title></root>", encoding="utf-8")
+
+        w = _AttachmentItemWidget(file_id="", is_manual=True, manual_path=text_path)
+
+        assert w._supports_text_interaction() is True
+        assert isinstance(w._name_widget, _AttachmentNameButton)
+        w.close()
+
+    def test_source_attachment_without_local_path_is_not_interactive(self, qt_app):
+        w = _AttachmentItemWidget(
+            file_id="fid",
+            att=AttachmentInfo(
+                index=3,
+                local_index=0,
+                filename="cover.jpg",
+                mimetype="image/jpeg",
+                is_attached_pic=True,
+            ),
+        )
+
+        assert w._supports_interaction() is False
+        assert not isinstance(w._name_widget, _AttachmentNameButton)
+        w.close()
+
+    def test_source_attachment_with_loader_is_interactive_and_cached(self, qt_app):
+        payload = b"embedded-cover"
+        calls = {"count": 0}
+
+        def _loader(file_id: str, att: AttachmentInfo) -> bytes | None:
+            calls["count"] += 1
+            assert file_id == "fid"
+            assert att.local_index == 0
+            return payload
+
+        w = _AttachmentItemWidget(
+            file_id="fid",
+            att=AttachmentInfo(
+                index=3,
+                local_index=0,
+                filename="cover.jpg",
+                mimetype="image/jpeg",
+                is_attached_pic=False,
+            ),
+            embedded_attachment_loader=_loader,
+        )
+
+        assert w._supports_image_interaction() is True
+        assert isinstance(w._name_widget, _AttachmentNameButton)
+        assert w._load_embedded_attachment_bytes() == payload
+        assert w._load_embedded_attachment_bytes() == payload
+        assert calls["count"] == 1
+        w.close()
+
+
+class TestAttachmentPreviewFormatting:
+
+    def test_pretty_text_attachment_content_formats_xml(self, tmp_path):
+        xml_path = tmp_path / "info.xml"
+        xml_path.write_text("<root><title>Demo</title></root>", encoding="utf-8")
+
+        content = _pretty_text_attachment_content(xml_path)
+
+        assert "<root>" in content
+        assert "  <title>Demo</title>" in content
+
+    def test_pretty_text_attachment_content_keeps_plain_text(self, tmp_path):
+        txt_path = tmp_path / "notes.txt"
+        txt_path.write_text("line 1\nline 2", encoding="utf-8")
+
+        content = _pretty_text_attachment_content(txt_path)
+
+        assert content == "line 1\nline 2"
+
+
+class TestMatroskaAttachmentExtractor:
+
+    def test_extract_matroska_attachment_bytes_returns_expected_payload(self, tmp_path):
+        src = tmp_path / "sample.mkv"
+        _make_mkv_with_attachments(
+            src,
+            [
+                ("cover.jpg", b"image-bytes"),
+                ("info.xml", b"<root><demo>ok</demo></root>"),
+            ],
+        )
+
+        payload = extract_matroska_attachment_bytes(src, 1)
+
+        assert payload == b"<root><demo>ok</demo></root>"
+
 
 class TestAttachmentPanelTmdb:
 
@@ -1322,6 +1456,94 @@ class TestAttachmentPanelTmdb:
 
         assert panel.get_pending_tmdb_cover() is None
         assert panel.get_extra_attachments() == []
+        panel.close()
+
+
+class TestAttachmentPanelManualPaths:
+
+    def test_add_manual_paths_deduplicates(self, qt_app, tmp_path):
+        cfg = AppConfig()
+        panel = _AttachmentPanel(cfg)
+        sample = tmp_path / "poster.jpg"
+        sample.write_bytes(b"x")
+
+        panel.add_manual_paths([str(sample), str(sample)])
+
+        extras = panel.get_extra_attachments()
+        assert extras == [sample]
+        panel.close()
+
+
+class TestRemuxPanelGlobalDropRouting:
+
+    def test_route_dropped_paths_sends_media_to_sources_and_others_to_attachments(self, qt_app, tmp_path):
+        cfg = AppConfig()
+        panel = RemuxPanel(cfg)
+        src = tmp_path / "movie.mkv"
+        att = tmp_path / "poster.jpg"
+        src.write_bytes(b"src")
+        att.write_bytes(b"att")
+
+        with patch.object(panel, "_on_add_files") as mock_add_sources, \
+             patch.object(panel._attachment_panel, "add_manual_paths") as mock_add_attachments:
+            panel._route_dropped_paths([str(src), str(att)])
+
+        mock_add_sources.assert_called_once_with([str(src)])
+        mock_add_attachments.assert_called_once_with([str(att)])
+        panel.close()
+
+    def test_route_dropped_folder_keeps_only_sources_and_jpg_attachments(self, qt_app, tmp_path):
+        cfg = AppConfig()
+        panel = RemuxPanel(cfg)
+        folder = tmp_path / "drop_folder"
+        folder.mkdir()
+        src = folder / "movie.mkv"
+        cover = folder / "cover.jpg"
+        ignored = folder / "notes.txt"
+        nested = folder / "nested"
+        nested.mkdir()
+        nested_src = nested / "bonus.mp4"
+        nested_cover = nested / "poster.JPG"
+        nested_ignored = nested / "cover.png"
+        src.write_bytes(b"src")
+        cover.write_bytes(b"jpg")
+        ignored.write_text("ignore")
+        nested_src.write_bytes(b"nested")
+        nested_cover.write_bytes(b"jpg")
+        nested_ignored.write_bytes(b"png")
+
+        with patch.object(panel, "_on_add_files") as mock_add_sources, \
+             patch.object(panel._attachment_panel, "add_manual_paths") as mock_add_attachments:
+            panel._route_dropped_paths([str(folder)])
+
+        mock_add_sources.assert_called_once_with([str(src), str(nested_src)])
+        mock_add_attachments.assert_called_once_with([str(cover), str(nested_cover)])
+        panel.close()
+
+    def test_route_dropped_multiple_folders_merges_and_deduplicates_paths(self, qt_app, tmp_path):
+        cfg = AppConfig()
+        panel = RemuxPanel(cfg)
+        folder_a = tmp_path / "folder_a"
+        folder_b = tmp_path / "folder_b"
+        folder_a.mkdir()
+        folder_b.mkdir()
+        src_a = folder_a / "episode1.mkv"
+        src_b = folder_b / "episode2.mkv"
+        cover_a = folder_a / "cover.jpg"
+        cover_b = folder_b / "cover.jpg"
+        ignored_b = folder_b / "readme.nfo"
+        src_a.write_bytes(b"a")
+        src_b.write_bytes(b"b")
+        cover_a.write_bytes(b"jpg-a")
+        cover_b.write_bytes(b"jpg-b")
+        ignored_b.write_text("ignore")
+
+        with patch.object(panel, "_on_add_files") as mock_add_sources, \
+             patch.object(panel._attachment_panel, "add_manual_paths") as mock_add_attachments:
+            panel._route_dropped_paths([str(folder_a), str(folder_b), str(folder_a)])
+
+        mock_add_sources.assert_called_once_with([str(src_a), str(src_b)])
+        mock_add_attachments.assert_called_once_with([str(cover_a), str(cover_b)])
         panel.close()
 
 

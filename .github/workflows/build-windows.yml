@@ -1,4 +1,4 @@
-name: Build Windows installer
+name: Build Windows package
 
 on:
   push:
@@ -50,17 +50,14 @@ jobs:
       - name: Install NSIS
         shell: pwsh
         run: |
-          choco install nsis --no-progress -y
-          echo "C:\Program Files (x86)\NSIS" >> $env:GITHUB_PATH
+          winget install --id NSIS.NSIS -e --silent --accept-source-agreements --accept-package-agreements
 
-      - name: Build PyInstaller + NSIS installer
+      - name: Build PyInstaller + NSIS package
         shell: pwsh
         run: |
-          # Sur Windows, package.py détecte OS==Windows et enchaîne
-          # PyInstaller → NSIS automatiquement
-          python package.py --version "${{ steps.version.outputs.VERSION }}"
+          python package.py --nsis --version "${{ steps.version.outputs.VERSION }}"
 
-      - name: Upload installer artifact
+      - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: Mediarecode-Setup-${{ steps.version.outputs.VERSION }}

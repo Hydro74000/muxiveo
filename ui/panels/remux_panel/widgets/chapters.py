@@ -26,6 +26,7 @@ from core.i18n import apply_translations, translate_text
 from core.inspector import ChapterEntry
 from ui.panels.remux_panel.models import _format_timecode, _parse_timecode
 from ui.panels.remux_panel.theme import _C
+from ui.design_system import font_px as _font_px, scale as _scale
 
 class _AddChapterDialog(QDialog):
     """
@@ -39,11 +40,11 @@ class _AddChapterDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Ajouter un chapitre")
-        self.setMinimumWidth(380)
+        self.setMinimumWidth(_scale(380))
         self.setStyleSheet(f"""
             QDialog {{ background: {_C.BG_DEEP}; color: {_C.TEXT_PRI}; }}
             QLabel  {{ color: {_C.TEXT_SEC}; background: transparent; border: none;
-                       font-size: 11px; }}
+                       font-size: {_font_px(11)}px; }}
         """)
         self._tc_edit:   QLineEdit | None = None
         self._name_edit: QLineEdit | None = None
@@ -52,18 +53,18 @@ class _AddChapterDialog(QDialog):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 16, 16, 14)
-        root.setSpacing(10)
+        root.setContentsMargins(_scale(16), _scale(16), _scale(16), _scale(14))
+        root.setSpacing(_scale(10))
 
         field_style = f"""
             QLineEdit {{
                 background: {_C.BG_CARD};
                 color: {_C.TEXT_PRI};
                 border: 1px solid {_C.BORDER};
-                border-radius: 4px;
-                font-size: 12px;
+                border-radius: {_scale(4)}px;
+                font-size: {_font_px(12)}px;
                 font-family: 'JetBrains Mono', monospace;
-                padding: 5px 8px;
+                padding: {_scale(5)}px {_scale(8)}px;
             }}
             QLineEdit:focus {{ border-color: {_C.ACCENT}; }}
         """
@@ -84,7 +85,7 @@ class _AddChapterDialog(QDialog):
 
         self._err_lbl = QLabel("")
         self._err_lbl.setStyleSheet(
-            f"color: {_C.ERROR}; background: transparent; border: none; font-size: 10px;"
+            f"color: {_C.ERROR}; background: transparent; border: none; font-size: {_font_px(10)}px;"
         )
         self._err_lbl.setVisible(False)
         root.addWidget(self._err_lbl)
@@ -102,9 +103,9 @@ class _AddChapterDialog(QDialog):
                 background: {_C.BG_PANEL};
                 color: {_C.TEXT_PRI};
                 border: 1px solid {_C.BORDER_LT};
-                border-radius: 4px;
-                font-size: 11px;
-                padding: 4px 16px;
+                border-radius: {_scale(4)}px;
+                font-size: {_font_px(11)}px;
+                padding: {_scale(4)}px {_scale(16)}px;
             }}
             QPushButton:hover {{ background: {_C.BG_CARD}; }}
         """)
@@ -172,7 +173,7 @@ class _ChapterPanel(QFrame):
             QFrame {{
                 background: {_C.BG_CARD};
                 border: 1px solid {_C.BORDER};
-                border-radius: 6px;
+                border-radius: {_scale(6)}px;
             }}
         """)
         root = QVBoxLayout(self)
@@ -185,21 +186,21 @@ class _ChapterPanel(QFrame):
             QWidget {{
                 background: {_C.BG_PANEL};
                 border-bottom: 1px solid {_C.BORDER};
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
+                border-top-left-radius: {_scale(6)}px;
+                border-top-right-radius: {_scale(6)}px;
             }}
         """)
-        header.setFixedHeight(32)
+        header.setFixedHeight(_scale(32))
         h_lay = QHBoxLayout(header)
-        h_lay.setContentsMargins(12, 0, 8, 0)
-        h_lay.setSpacing(8)
+        h_lay.setContentsMargins(_scale(12), 0, _scale(8), 0)
+        h_lay.setSpacing(_scale(8))
 
         title_lbl = QLabel("CHAPITRES")
         title_lbl.setStyleSheet(f"""
             color: {_C.TEXT_DIM};
-            font-size: 9px;
+            font-size: {_font_px(9)}px;
             font-weight: 700;
-            letter-spacing: 2px;
+            letter-spacing: {_scale(2)}px;
             background: transparent;
             border: none;
         """)
@@ -207,17 +208,17 @@ class _ChapterPanel(QFrame):
         h_lay.addStretch()
 
         self._add_btn = QPushButton("+ Ajouter un chapitre")
-        self._add_btn.setFixedHeight(22)
+        self._add_btn.setFixedHeight(_scale(22))
         self._add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._add_btn.setStyleSheet(f"""
             QPushButton {{
                 background: transparent;
                 color: {_C.ACCENT};
                 border: 1px solid {_C.ACCENT_DIM};
-                border-radius: 4px;
-                font-size: 10px;
+                border-radius: {_scale(4)}px;
+                font-size: {_font_px(10)}px;
                 font-weight: 600;
-                padding: 0 10px;
+                padding: 0 {_scale(10)}px;
             }}
             QPushButton:hover {{ background: {_C.ACCENT_DIM}; color: #ffffff; }}
             QPushButton:disabled {{
@@ -237,23 +238,23 @@ class _ChapterPanel(QFrame):
                 border-bottom: 1px solid {_C.BORDER};
             }}
         """)
-        cb_row.setFixedHeight(36)
+        cb_row.setFixedHeight(_scale(36))
         cb_lay = QHBoxLayout(cb_row)
-        cb_lay.setContentsMargins(12, 0, 12, 0)
+        cb_lay.setContentsMargins(_scale(12), 0, _scale(12), 0)
 
         self._keep_cb = QCheckBox("Conserver les chapitres")
         self._keep_cb.setChecked(True)
         self._keep_cb.setStyleSheet(f"""
             QCheckBox {{
                 color: {_C.TEXT_SEC};
-                font-size: 12px;
-                spacing: 8px;
+                font-size: {_font_px(12)}px;
+                spacing: {_scale(8)}px;
                 background: transparent;
             }}
             QCheckBox::indicator {{
-                width: 14px;
-                height: 14px;
-                border-radius: 3px;
+                width: {_scale(14)}px;
+                height: {_scale(14)}px;
+                border-radius: {_scale(3)}px;
                 border: 1px solid {_C.BORDER_LT};
                 background: {_C.BG_DEEP};
             }}
@@ -287,10 +288,10 @@ class _ChapterPanel(QFrame):
         hh.setSectionResizeMode(self.COL_TC,   QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(self.COL_NAME, QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(self.COL_DEL,  QHeaderView.ResizeMode.Fixed)
-        self._table.setColumnWidth(self.COL_TC,  110)
-        self._table.setColumnWidth(self.COL_DEL,  30)
+        self._table.setColumnWidth(self.COL_TC, _scale(110))
+        self._table.setColumnWidth(self.COL_DEL, _scale(30))
 
-        mono = QFont("JetBrains Mono", 10)
+        mono = QFont("JetBrains Mono", _font_px(10))
         mono.setStyleHint(QFont.StyleHint.Monospace)
         self._table.setFont(mono)
 
@@ -300,12 +301,12 @@ class _ChapterPanel(QFrame):
                 alternate-background-color: {_C.BG_DEEP};
                 color: {_C.TEXT_PRI};
                 border: none;
-                border-bottom-left-radius: 6px;
-                border-bottom-right-radius: 6px;
+                border-bottom-left-radius: {_scale(6)}px;
+                border-bottom-right-radius: {_scale(6)}px;
                 gridline-color: transparent;
             }}
             QTableWidget::item {{
-                padding: 4px 6px;
+                padding: {_scale(4)}px {_scale(6)}px;
                 border: none;
             }}
             QTableWidget::item:selected {{
@@ -315,12 +316,12 @@ class _ChapterPanel(QFrame):
             QHeaderView::section {{
                 background: {_C.BG_PANEL};
                 color: {_C.TEXT_DIM};
-                font-size: 9px;
+                font-size: {_font_px(9)}px;
                 font-weight: 700;
-                letter-spacing: 1px;
+                letter-spacing: {_scale(1)}px;
                 border: none;
                 border-bottom: 1px solid {_C.BORDER};
-                padding: 4px 6px;
+                padding: {_scale(4)}px {_scale(6)}px;
             }}
         """)
         self._table.itemChanged.connect(self._on_item_changed)
@@ -328,9 +329,9 @@ class _ChapterPanel(QFrame):
 
         self._placeholder = QLabel("Aucun chapitre dans les fichiers sources")
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._placeholder.setContentsMargins(0, 14, 0, 14)
+        self._placeholder.setContentsMargins(0, _scale(14), 0, _scale(14))
         self._placeholder.setStyleSheet(
-            f"color: {_C.TEXT_DIM}; font-size: 11px; background: transparent; border: none;"
+            f"color: {_C.TEXT_DIM}; font-size: {_font_px(11)}px; background: transparent; border: none;"
         )
         root.addWidget(self._placeholder)
 
@@ -405,7 +406,7 @@ class _ChapterPanel(QFrame):
 
         # Bouton suppression
         del_btn = QPushButton("✕")
-        del_btn.setFixedSize(22, 22)
+        del_btn.setFixedSize(_scale(22), _scale(22))
         del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         del_btn.setToolTip("Supprimer ce chapitre")
         del_btn.setStyleSheet(f"""
@@ -413,8 +414,8 @@ class _ChapterPanel(QFrame):
                 background: transparent;
                 color: {_C.TEXT_DIM};
                 border: 1px solid {_C.BORDER};
-                border-radius: 4px;
-                font-size: 10px;
+                border-radius: {_scale(4)}px;
+                font-size: {_font_px(10)}px;
                 font-weight: 700;
             }}
             QPushButton:hover {{
@@ -425,7 +426,7 @@ class _ChapterPanel(QFrame):
         """)
         del_btn.clicked.connect(lambda _=None, r=row: self._delete_row(r))
         self._table.setCellWidget(row, self.COL_DEL, del_btn)
-        self._table.setRowHeight(row, self._ROW_H)
+        self._table.setRowHeight(row, _scale(self._ROW_H))
 
     def _delete_row(self, row: int) -> None:
         """Supprime le chapitre à la ligne row (en tenant compte du décalage après rebuild)."""
@@ -446,7 +447,7 @@ class _ChapterPanel(QFrame):
             header_h = self._table.horizontalHeader().height()
             max_vis = 10
             vis = min(n, max_vis)
-            self._table.setFixedHeight(vis * self._ROW_H + header_h + 4)
+            self._table.setFixedHeight(vis * _scale(self._ROW_H) + header_h + _scale(4))
 
     def _refresh_ui_state(self) -> None:
         """Met à jour l'état actif/inactif des contrôles."""

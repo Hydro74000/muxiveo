@@ -4,7 +4,7 @@ FULL Vibecoded App for Proof of Concept - no human code, only human prompts and 
 
 Interface graphique pour préparer des fichiers vidéo, remuxer sans perte, réencoder avec `ffmpeg`, et fusionner des métadonnées Dolby Vision / HDR10+.
 
-Cette documentation correspond à **Mediarecode v1.3.1**.
+Cette documentation correspond à **Mediarecode v1.4.0**.
 
 ## Sommaire
 
@@ -45,6 +45,8 @@ Cette documentation correspond à **Mediarecode v1.3.1**.
 | **Fusion DoVi / HDR10+** | injecter les métadonnées HDR d'un fichier source dans le flux vidéo HEVC d'un autre fichier | sans perte |
 
 > Les panneaux **Remuxage** et **Encodage** forment un seul workflow. Le panneau Remuxage prépare le conteneur ; le panneau Encodage décide comment traiter la vidéo et l'audio.
+
+**Drag-and-drop global** : n'importe quel fichier média peut être déposé directement sur la fenêtre principale, quelle que soit la page active. Les formats sources supportés sont centralisés dans `core/file_types.py` (MKV, MP4, MOV, M4V, AVI, TS, M2TS, WEBM, HEVC brut, SRT, etc.).
 
 ## Installation
 
@@ -147,16 +149,38 @@ Les artefacts sont toujours déposés dans `dist/releases/`.
 | Cible | Commande | Artefact produit |
 |-------|----------|-----------------|
 | AppImage Linux | `python3 package.py --allinc` | `dist/releases/Mediarecode-x86_64.AppImage` + `dist/releases/Mediarecode-x86_64.AppImage.zsync` |
-| Installateur Windows (natif + NSIS) | `py package.py --nsis` | `dist/releases/Mediarecode-Setup.exe` |
+| Package Windows (natif + MSIX) | `py package.py --msix` | `dist/releases/Mediarecode.msix` |
+| Soumission Microsoft Store | `py package.py --msix --msixupload --store-config packaging/msix_store.json` | `dist/releases/Mediarecode.msixupload` |
 | Installateur Windows cross (depuis Linux) | `python3 package.py --windows` | `dist/releases/Mediarecode-Setup.exe` via Wine + NSIS |
 
 `--allinc` est requis sur Linux : il intègre toutes les dépendances dans l'AppImage et génère le fichier `.zsync` associé pour les mises à jour différentielles.
+
+Le workflow GitHub Windows de release publie désormais l’installateur **NSIS** (`.exe`) dans les releases GitHub.
+
+Le workflow `Build Windows Store upload` est séparé, manuel, et ne publie rien dans les releases. Il sert uniquement à produire un **`.msixupload`** pour Partner Center.
+
+Pour une vraie soumission Microsoft Store, il faut renseigner l’identité exacte réservée dans Partner Center :
+
+- copier `packaging/msix_store.example.json` vers `packaging/msix_store.json`
+- remplacer `identity` et `publisher` par les valeurs de la page **Product identity** dans Partner Center
+- sur GitHub Actions, exposer ces mêmes valeurs via `WINDOWS_MSIX_IDENTITY`, `WINDOWS_MSIX_PUBLISHER`, `WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME` et `WINDOWS_MSIX_DESCRIPTION`
+
+Le dépôt peut générer l’artefact de soumission, mais il ne peut pas inventer à ta place les valeurs Partner Center ni les captures/listings Store.
+
+Important : le workflow Store upload reste distinct du workflow release. Les releases GitHub ne contiennent donc plus de MSIX.
+
+Si `makeappx.exe` ou `signtool.exe` sont absents, le build Windows tente d’installer le SDK requis avant de packager. Un override explicite reste possible via `MEDIARECODE_WINDOWS_SDK_INSTALLER` ou `MEDIARECODE_WINDOWS_SDK_WINGET_ID`.
+
+Sous Windows packagé, le lancement de l’application rejoue automatiquement `setup.py` au premier démarrage après installation ou mise à jour, afin de réinstaller les dépendances externes manquantes et de régénérer les chemins dans `config.ini`.
 
 Options utiles de `package.py` :
 
 | Option | Effet |
 |--------|-------|
 | `--allinc` | intègre toutes les dépendances dans l'AppImage et génère le `.zsync` (Linux) |
+| `--msix` | produit un package MSIX sur Windows natif, signé si les variables `MEDIARECODE_MSIX_*` sont définies |
+| `--msixupload` | génère un `.msixupload` pour Partner Center à partir du package MSIX |
+| `--store-config PATH` | charge les métadonnées Store/MSIX depuis un JSON dédié |
 | `--windows` | cross-compile un installateur Windows depuis Linux via Wine + NSIS |
 | `--skip-wine` | réutilise `dist/mediarecode-win/` existant (saute l'étape Wine/PyInstaller) |
 | `--clean` | nettoie tous les artefacts de build (`build/`, `dist/`, `.wine_build/`, `*.AppImage`…) |
@@ -189,7 +213,10 @@ Le workflow unifié permet de :
 - préparer une cover TMDB en mode différé (URL + nom de fichier) ; le téléchargement réel est fait au lancement du workflow
 - remplacer automatiquement le **titre du conteneur** par le titre formaté TMDB lors de la validation (film : `Titre (Année)`, série : `Titre - SxxExx - Titre épisode`)
 - choisir pour chaque piste audio un mode `copy`, `aac`, `eac3` ou `flac`
-- choisir pour la vidéo `copy`, `libx265`, `libx264`, `libsvtav1`, `NVENC`, `AMF`, `VAAPI` ou `QSV`
+- choisir pour la vidéo `copy`, `libx265`, `libx264`, `libsvtav1`, `NVENC`, `AMF`, `VAAPI` ou `QSV` — avec support complet **HEVC**, **H.264** et **AV1** sur chaque famille matérielle
+- presets dédiés par famille matérielle : `NVENC_PRESETS` (p1-p7 + slow/medium/fast/hp/hq), `VAAPI_PRESETS` (compression_level 0-7), `QSV_PRESETS` (veryslow → veryfast), `AMF_PRESETS` (quality/balanced/speed)
+- **offload matériel complet** : décodage GPU activé automatiquement quand un encodeur matériel compatible est sélectionné (`cuda` pour NVENC, `qsv` pour QSV, `vaapi` pour VAAPI, `d3d11va` pour AMF Windows) — le CPU n'est plus sollicité pour le décodage en chemin pur hardware
+- configuration VAAPI optimisée : `rc_mode CQP/VBR` selon le mode qualité, `compression_level` exposé via preset, `async_depth 4` pour maximiser le pipeline GPU
 - backend de remux nominal : `ffmpeg`
 
 Modes d'exécution :
@@ -224,6 +251,13 @@ Les options HDR disponibles côté encodage sont :
 - injection de métadonnées HDR10 statiques
 - tone mapping HDR vers SDR
 - copie DoVi / HDR10+ depuis la source avec workflow multi-étapes
+
+Ergonomie du panneau :
+
+- aperçu **cover** cliquable avec modale zoom plein écran (cover TMDB, cover Matroska extraite via `core/matroska_attachment_extractor.py`, pièces jointes image)
+- **barre de progression à rattrapage exact** : tant que `ffmpeg -progress` n'émet pas encore `out_time`, la progression est estimée via `frame=` et le nombre total d'images du fichier source ; dès que `out_time` devient disponible, la valeur exacte prend le relais
+- **suppression de source accélérée** via suivi incrémental (pas de rescan global à chaque retrait)
+- covers TMDB cliquables dans les résultats de recherche (aperçu grand format avant validation)
 
 ### Fusion DoVi / HDR10+
 

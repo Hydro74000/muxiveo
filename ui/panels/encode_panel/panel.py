@@ -775,7 +775,7 @@ class EncodePanel(QWidget):
             return
 
         codec = self._codec_combo.currentData() or "libx265"
-        is_hevc = codec in ("libx265", "hevc_nvenc", "hevc_amf", "hevc_qsv", "copy")
+        is_hevc = codec in ("libx265", "hevc_nvenc", "hevc_amf", "hevc_qsv", "hevc_vaapi", "copy")
         hdr = self._file_info.hdr_type
 
         has_dv       = hdr in (HDRType.DOLBY_VISION, HDRType.DOLBY_VISION_HDR10PLUS)
@@ -936,6 +936,16 @@ class EncodePanel(QWidget):
     def get_duration_s(self) -> "float | None":
         """Durée de la source sélectionnée (pour le calcul de progression dans MainWindow)."""
         return self._duration_s
+
+    def get_total_frames(self) -> "int | None":
+        """Nombre total de frames de la source (fallback progression quand out_time=N/A)."""
+        info = self._file_info
+        if info is None:
+            return None
+        frames = getattr(info, "frame_count", None)
+        if isinstance(frames, int) and frames > 0:
+            return frames
+        return None
 
     def run_operation(self, config: "EncodeConfig") -> "TaskSignals":
         """Lance l'encodage et retourne les signaux de progression."""

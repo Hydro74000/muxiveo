@@ -40,9 +40,42 @@ from typing import Callable
 
 from PySide6.QtCore import QObject, Signal
 from core.subprocess_utils import subprocess_text_kwargs
+from core.subtitle_codec import plan_subtitle_codec
 from core.workdir import prepare_process_work_dir
 
 _FALLBACK_HEVC_FRAME_RATE = "24000/1001"
+
+#: Extensions de streams HEVC bruts — pas besoin d'extraction ffmpeg.
+_RAW_HEVC_EXTENSIONS: frozenset[str] = frozenset({
+    ".hevc", ".h265", ".265", ".x265",
+})
+
+#: Extensions de conteneurs acceptés en entrée merge_dovi.
+#: dovi_tool et hdr10plus_tool ne gèrent nativement que MKV + stream HEVC brut ;
+#: pour tout autre conteneur (MP4/MOV/TS/M2TS/VOB/...), on extrait d'abord en
+#: HEVC annexB via ffmpeg avec le BSF hevc_mp4toannexb (obligatoire pour MP4).
+_MERGE_DOVI_CONTAINERS: frozenset[str] = frozenset({
+    ".mkv", ".mk3d", ".mks",
+    ".mp4", ".m4v",
+    ".mov",
+    ".ts", ".m2ts", ".mts",
+    ".mpg", ".mpeg", ".m2v", ".mpv", ".evo", ".evob", ".vob",
+    ".avi",
+    ".webm",
+    ".flv", ".f4v",
+})
+
+_MERGE_DOVI_ACCEPTED: frozenset[str] = _MERGE_DOVI_CONTAINERS | _RAW_HEVC_EXTENSIONS
+
+
+def _is_raw_hevc(path: Path) -> bool:
+    """Teste si le fichier est un stream HEVC brut (annexB)."""
+    return path.suffix.lower() in _RAW_HEVC_EXTENSIONS
+
+
+def _needs_hevc_extraction(path: Path) -> bool:
+    """Teste si le fichier doit être extrait en HEVC annexB avant manipulation."""
+    return not _is_raw_hevc(path)
 
 
 # =============================================================================
@@ -176,10 +209,10 @@ class _WorkflowPaths:
     def film1_hevc_input(self) -> Path:
         """
         Chemin HEVC en entrée des outils d'injection.
-        Si Film 1 est MKV  → film1_hevc (extrait durant l'étape EXTRACT_PARALLEL).
-        Si Film 1 est HEVC → film1 directement (pas d'extraction nécessaire).
+        Si Film 1 est un conteneur (MKV/MP4/TS/…) → film1_hevc extrait en annexB.
+        Si Film 1 est un stream HEVC brut           → film1 directement.
         """
-        return self.film1_hevc if self.film1.suffix.lower() == ".mkv" else self.film1
+        return self.film1 if _is_raw_hevc(self.film1) else self.film1_hevc
 
     def injection_chain_final(self, flags: HDRFlags) -> Path:
         """Fichier HEVC final à muxer selon les opérations effectuées."""
@@ -364,12 +397,15 @@ class MergeDoviWorkflow(QObject):
                 raise WorkflowError(step, f"{label} introuvable : {path}")
             self.step_progress.emit(step, f"{label} trouvé : {path.name}")
 
-        # Extensions supportées
+        # Extensions supportées : conteneurs vidéo (MKV/MP4/MOV/TS/M2TS/…) + HEVC brut.
+        # Les conteneurs non-MKV seront extraits en HEVC annexB via ffmpeg
+        # (BSF hevc_mp4toannexb appliqué automatiquement) avant passage aux
+        # outils dovi_tool / hdr10plus_tool qui ne gèrent que MKV + HEVC brut.
         for label, path in [("Film 1", film1), ("Film 2", film2)]:
-            if path.suffix.lower() not in (".mkv", ".hevc"):
+            if path.suffix.lower() not in _MERGE_DOVI_ACCEPTED:
                 raise WorkflowError(
                     step,
-                    f"{label} : format non supporté '{path.suffix}' (accepté : .mkv, .hevc)",
+                    f"{label} : format non supporté '{path.suffix}'.",
                 )
 
         # Outils disponibles
@@ -444,7 +480,8 @@ class MergeDoviWorkflow(QObject):
         t0   = time.monotonic()
         self.step_started.emit(step)
 
-        film1_is_mkv = film1.suffix.lower() == ".mkv"
+        film1_needs_extract = _needs_hevc_extraction(film1)
+        film2_needs_extract = _needs_hevc_extraction(film2)
         film2_is_mkv = film2.suffix.lower() == ".mkv"
         both_needed  = flags.has_dovi and flags.has_hdr10plus
 
@@ -453,20 +490,29 @@ class MergeDoviWorkflow(QObject):
         def _emit(msg: str) -> None:
             self.step_progress.emit(step, msg)
 
-        if both_needed and film2_is_mkv:
-            # ── Cas 2 : Phase 1 (film1.hevc + film2.hevc) puis Phase 2 (RPU + HDR10+) ──
+        # dovi_tool et hdr10plus_tool acceptent nativement MKV + HEVC brut.
+        # Pour tout autre conteneur (MP4/MOV/TS/M2TS/VOB/…), il faut d'abord
+        # extraire en HEVC annexB via ffmpeg (avec hevc_mp4toannexb).
+        film2_metadata_input_is_extracted = film2_needs_extract and not film2_is_mkv
+
+        if (both_needed and film2_is_mkv) or film2_metadata_input_is_extracted:
+            # ── Cas 2 : Phase 1 (extractions HEVC) puis Phase 2 (RPU + HDR10+) ──
+            # Déclenché quand :
+            #   - film2 est un MKV avec DoVi+HDR10+ (I/O contention sur même MKV)
+            #   - film2 n'est ni MKV ni HEVC brut → extraction annexB requise
             phase1: dict[str, Callable] = {}
-            if film1_is_mkv:
+            if film1_needs_extract:
                 phase1["HEVC Film 1"] = lambda: self._extract_hevc(film1, paths.film1_hevc, _emit)
-            phase1["HEVC Film 2"] = lambda: self._extract_hevc(film2, paths.film2_hevc, _emit)
+            if film2_needs_extract:
+                phase1["HEVC Film 2"] = lambda: self._extract_hevc(film2, paths.film2_hevc, _emit)
 
-            _emit(f"Phase 1 — extraction HEVC ({', '.join(phase1)})…")
-            self._run_pool(phase1, errors)
+            if phase1:
+                _emit(f"Phase 1 — extraction HEVC ({', '.join(phase1)})…")
+                self._run_pool(phase1, errors)
+                if errors:
+                    raise WorkflowError(step, "Phase 1 échouée :\n" + "\n".join(errors))
 
-            if errors:
-                raise WorkflowError(step, "Phase 1 échouée :\n" + "\n".join(errors))
-
-            source2 = paths.film2_hevc
+            source2 = paths.film2_hevc if film2_needs_extract else film2
             phase2: dict[str, Callable] = {}
             if flags.has_dovi:
                 phase2["RPU DoVi"] = lambda: self._extract_rpu(source2, paths.film2_rpu, _emit)
@@ -477,10 +523,10 @@ class MergeDoviWorkflow(QObject):
             self._run_pool(phase2, errors)
 
         else:
-            # ── Cas 1 : tout en parallèle ──
+            # ── Cas 1 : tout en parallèle (film2 = MKV mono-métadonnée ou HEVC brut) ──
             source2 = film2
             tasks: dict[str, Callable] = {}
-            if film1_is_mkv:
+            if film1_needs_extract:
                 tasks["HEVC Film 1"] = lambda: self._extract_hevc(film1, paths.film1_hevc, _emit)
             if flags.has_dovi:
                 tasks["RPU DoVi"] = lambda: self._extract_rpu(source2, paths.film2_rpu, _emit)
@@ -683,6 +729,9 @@ class MergeDoviWorkflow(QObject):
         ], step)
 
         self.step_progress.emit(step, f"Reconstruction conteneur final → {paths.output_mkv.name}…")
+        # Route les subtitle streams de film1 : copy si MKV l'accepte, srt
+        # sinon (mov_text, eia_608, …). Indispensable quand film1 est un MP4.
+        subs_codec_args = self._subtitle_codec_args_for(film1)
         self._run_cmd([
             self._bins["ffmpeg"],
             "-hide_banner",
@@ -696,7 +745,7 @@ class MergeDoviWorkflow(QObject):
             "-map", "1:d?",
             "-c:v", "copy",
             "-c:a", "copy",
-            "-c:s", "copy",
+            *subs_codec_args,
             "-c:t", "copy",
             "-c:d", "copy",
             "-map_metadata", "1",
@@ -755,6 +804,10 @@ class MergeDoviWorkflow(QObject):
         self, source: Path, dest: Path, emit: Callable[[str], None]
     ) -> str:
         emit(f"Extraction HEVC : {source.name} → {dest.name}…")
+        # hevc_mp4toannexb est OBLIGATOIRE pour MP4/MOV/TS/M2TS : convertit
+        # le HEVC length-prefixed en annexB (start codes) consommable par
+        # dovi_tool et hdr10plus_tool. Inoffensif pour MKV (start codes déjà
+        # présents → BSF no-op).
         self._run_raw([
             self._bins["ffmpeg"],
             "-hide_banner",
@@ -762,6 +815,7 @@ class MergeDoviWorkflow(QObject):
             "-i", str(source),
             "-map", "0:v:0",
             "-c:v", "copy",
+            "-bsf:v", "hevc_mp4toannexb",
             "-an",
             "-sn",
             "-dn",
@@ -930,6 +984,57 @@ class MergeDoviWorkflow(QObject):
                     return fps_expr
             break
         return _FALLBACK_HEVC_FRAME_RATE
+
+    def _subtitle_codec_args_for(self, source: Path) -> list[str]:
+        """Args ``-c:s …`` pour le muxage MKV final selon les subs du source.
+
+        Route chaque piste : copy quand MKV l'accepte, srt sinon (mov_text,
+        eia_608, …). Si aucune sub ou probing impossible → ``-c:s copy``.
+        """
+        cmd = [
+            self._bins["ffprobe"],
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_streams",
+            "-select_streams", "s",
+            str(source),
+        ]
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, check=False,
+                **subprocess_text_kwargs(),
+            )
+        except Exception:
+            return ["-c:s", "copy"]
+        if result.returncode != 0:
+            return ["-c:s", "copy"]
+        try:
+            payload = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            return ["-c:s", "copy"]
+
+        streams = payload.get("streams") or []
+        per_index: list[str] = []
+        any_convert = False
+        # Les streams renvoyés par -select_streams s sont ordonnés selon
+        # leur apparition dans le fichier : c'est l'ordre que ffmpeg utilisera
+        # pour -map 1:s? (out index 0, 1, 2, …).
+        for out_idx, stream in enumerate(streams):
+            if not isinstance(stream, dict):
+                continue
+            codec = str(stream.get("codec_name", "") or "")
+            try:
+                codec_arg, _ = plan_subtitle_codec(codec)
+            except ValueError:
+                # Codec non supporté : on force srt, ffmpeg refusera s'il ne
+                # sait pas convertir et l'utilisateur verra l'erreur.
+                codec_arg = "srt"
+            if codec_arg != "copy":
+                any_convert = True
+                per_index.extend([f"-c:s:{out_idx}", codec_arg])
+        if not any_convert:
+            return ["-c:s", "copy"]
+        return ["-c:s", "copy", *per_index]
 
     def _mediainfo(self, path: Path, inform: str) -> str:
         """Lance mediainfo --Inform et retourne la sortie brute."""

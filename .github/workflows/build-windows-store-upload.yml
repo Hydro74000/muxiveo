@@ -1,0 +1,96 @@
+name: Build Windows Store upload
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag (ex: 1.3.1)"
+        required: false
+        default: ""
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install PySide6>=6.6.0 pymediainfo>=6.1.0 pyinstaller
+
+      - name: Determine version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.event.inputs.version }}" -ne "") {
+            $ver = "${{ github.event.inputs.version }}"
+          } else {
+            $ver = python -c "from core.version import APP_VERSION; print(APP_VERSION)"
+          }
+          echo "VERSION=$ver" >> $env:GITHUB_OUTPUT
+          echo "Version: $ver"
+
+      - name: Export Store metadata
+        shell: pwsh
+        env:
+          WINDOWS_MSIX_IDENTITY: ${{ vars.WINDOWS_MSIX_IDENTITY }}
+          WINDOWS_MSIX_PUBLISHER: ${{ secrets.WINDOWS_MSIX_PUBLISHER }}
+          WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME }}
+          WINDOWS_MSIX_DESCRIPTION: ${{ vars.WINDOWS_MSIX_DESCRIPTION }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_IDENTITY)) {
+            throw "Missing repository variable WINDOWS_MSIX_IDENTITY"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_PUBLISHER)) {
+            throw "Missing secret WINDOWS_MSIX_PUBLISHER"
+          }
+          "MEDIARECODE_MSIX_IDENTITY=$env:WINDOWS_MSIX_IDENTITY" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MEDIARECODE_MSIX_PUBLISHER=$env:WINDOWS_MSIX_PUBLISHER" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME)) {
+            "MEDIARECODE_MSIX_PUBLISHER_DISPLAY_NAME=$env:WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_DESCRIPTION)) {
+            "MEDIARECODE_MSIX_DESCRIPTION=$env:WINDOWS_MSIX_DESCRIPTION" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+
+      - name: Discover Windows SDK tools
+        shell: pwsh
+        run: |
+          $kitsRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+          if (-not (Test-Path $kitsRoot)) {
+            Write-Host "Windows SDK bin root not present yet: $kitsRoot"
+            exit 0
+          }
+          $sdkDir = Get-ChildItem $kitsRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $sdkDir) {
+            Write-Host "Windows SDK version directory not found under $kitsRoot"
+            exit 0
+          }
+          $toolDir = Join-Path $sdkDir.FullName 'x64'
+          if ((Test-Path (Join-Path $toolDir 'makeappx.exe')) -and (Test-Path (Join-Path $toolDir 'signtool.exe'))) {
+            $toolDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          } else {
+            Write-Host "Windows SDK tools not found yet in $toolDir; package.py will attempt installation if needed."
+          }
+
+      - name: Build PyInstaller + MSIX Store upload package
+        shell: pwsh
+        run: |
+          python package.py --msix --msixupload --version "${{ steps.version.outputs.VERSION }}"
+
+      - name: Upload MSIX Store upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mediarecode-MSIXUpload-${{ steps.version.outputs.VERSION }}
+          path: dist/releases/Mediarecode-${{ steps.version.outputs.VERSION }}.msixupload
+          if-no-files-found: error

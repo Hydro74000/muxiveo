@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import struct
 import zlib
@@ -318,6 +319,100 @@ def test_package_versioned_output_path_uses_app_version_by_default():
     assert output.name == "Mediarecode-x86_64-9.9.9.AppImage"
 
 
+def test_msix_manifest_contains_full_trust_metadata():
+    with patch.object(package_mod, "_MSIX_IDENTITY", "Hydro74000.Mediarecode"), \
+         patch.object(package_mod, "_MSIX_PUBLISHER", "CN=Hydro74000"), \
+         patch.object(package_mod, "_MSIX_PUBLISHER_DISPLAY_NAME", "Hydro74000"), \
+         patch.object(package_mod, "_MSIX_DESCRIPTION", "Mediarecode video workflow"), \
+         patch.object(package_mod, "_msix_processor_architecture", return_value="x64"):
+        manifest = package_mod._msix_manifest_content(
+            "1.3.2",
+            r"VFS\ProgramFilesX64\Mediarecode\mediarecode.exe",
+        )
+
+    assert 'Name="Hydro74000.Mediarecode"' in manifest
+    assert 'Publisher="CN=Hydro74000"' in manifest
+    assert 'Version="1.3.2.0"' in manifest
+    assert 'ProcessorArchitecture="x64"' in manifest
+    assert 'EntryPoint="Windows.FullTrustApplication"' in manifest
+    assert '<rescap:Capability Name="runFullTrust" />' in manifest
+    assert r'Executable="VFS\ProgramFilesX64\Mediarecode\mediarecode.exe"' in manifest
+
+
+def test_load_msix_store_metadata_prefers_config_file(tmp_path):
+    config_path = tmp_path / "msix_store.json"
+    config_path.write_text(
+        json.dumps({
+            "identity": "Contoso.Mediarecode",
+            "publisher": "CN=Contoso",
+            "publisher_display_name": "Contoso",
+            "description": "Store build",
+            "display_name": "Mediarecode Store",
+        }),
+        encoding="utf-8",
+    )
+
+    with patch.object(package_mod, "_MSIX_IDENTITY", "Fallback.Identity"), \
+         patch.object(package_mod, "_MSIX_PUBLISHER", "CN=Fallback"), \
+         patch.object(package_mod, "_MSIX_PUBLISHER_DISPLAY_NAME", "Fallback"), \
+         patch.object(package_mod, "_MSIX_DESCRIPTION", "Fallback description"):
+        metadata = package_mod._load_msix_store_metadata(config_path)
+
+    assert metadata == {
+        "identity": "Contoso.Mediarecode",
+        "publisher": "CN=Contoso",
+        "publisher_display_name": "Contoso",
+        "description": "Store build",
+        "display_name": "Mediarecode Store",
+    }
+
+
+def test_build_msixupload_wraps_msix_for_partner_center(tmp_path):
+    msix_path = tmp_path / "Mediarecode-1.3.2.msix"
+    msix_path.write_text("msix", encoding="utf-8")
+
+    upload_path = package_mod._build_msixupload(msix_path, version_tag="1.3.2")
+
+    assert upload_path.name == "Mediarecode-1.3.2.msixupload"
+    with package_mod.zipfile.ZipFile(upload_path) as archive:
+        assert archive.namelist() == ["Mediarecode-1.3.2.msix"]
+        assert archive.read("Mediarecode-1.3.2.msix") == b"msix"
+
+
+def test_build_msix_package_invokes_makeappx_and_signing(tmp_path):
+    bundle_dir = tmp_path / "dist" / "mediarecode"
+    bundle_dir.mkdir(parents=True)
+    layout_dir = tmp_path / "layout"
+    layout_dir.mkdir()
+    output_path = tmp_path / "Mediarecode-1.3.2.msix"
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append([str(part) for part in cmd])
+        output_path.write_text("msix", encoding="utf-8")
+        return subprocess.CompletedProcess(args=cmd, returncode=0)
+
+    with patch.object(package_mod, "OS", "Windows"), \
+         patch.object(package_mod, "ROOT", tmp_path), \
+         patch.object(package_mod, "_stage_msix_layout", return_value=layout_dir), \
+         patch.object(package_mod, "_ensure_windows_sdk_tool", return_value="C:\\sdk\\makeappx.exe"), \
+         patch.object(package_mod, "_sign_msix_package") as mock_sign, \
+         patch.object(package_mod, "_run", side_effect=fake_run):
+        result = package_mod._build_msix_package(bundle_dir, version_tag="1.3.2")
+
+    assert result == output_path
+    assert commands == [[
+        "C:\\sdk\\makeappx.exe",
+        "pack",
+        "/d",
+        str(layout_dir),
+        "/p",
+        str(output_path),
+        "/o",
+    ]]
+    mock_sign.assert_called_once_with(output_path)
+
+
 def test_package_appimage_versioned_output_path_uses_app_version_by_default():
     with patch.object(package_appimage_mod, "APP_VERSION", "8.8.8"):
         output = package_appimage_mod._versioned_output_path(
@@ -342,6 +437,34 @@ def test_package_appimage_update_information_uses_github_release_pattern_for_all
          patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_RELEASE", "latest"):
         assert package_appimage_mod._appimage_update_information("x86_64", allinc=True) == (
             "gh-releases-zsync|Hydro74000|mediarecode|latest|Mediarecode-x86_64_allinc-*.AppImage.zsync"
+        )
+
+
+def test_package_appimage_update_information_supports_latest_unstable_channel():
+    with patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_OWNER", "Hydro74000"), \
+         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_REPO", "mediarecode"), \
+         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_RELEASE", "latest-unstable"):
+        assert package_appimage_mod._appimage_update_information(
+            "x86_64",
+            allinc=True,
+            version_tag="latest-unstable",
+        ) == (
+            "gh-releases-zsync|Hydro74000|mediarecode|latest-unstable|"
+            "Mediarecode-x86_64_allinc-latest-unstable.AppImage.zsync"
+        )
+
+
+def test_package_appimage_update_information_auto_reuses_latest_channel_from_version_tag():
+    with patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_OWNER", "Hydro74000"), \
+         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_REPO", "mediarecode"), \
+         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_RELEASE", "latest"):
+        assert package_appimage_mod._appimage_update_information(
+            "x86_64",
+            allinc=True,
+            version_tag="latest-unstable",
+        ) == (
+            "gh-releases-zsync|Hydro74000|mediarecode|latest-unstable|"
+            "Mediarecode-x86_64_allinc-latest-unstable.AppImage.zsync"
         )
 
 
@@ -405,4 +528,39 @@ def test_package_appimage_build_appimage_sets_update_information_env(tmp_path):
 
     assert captured_env["UPDATE_INFORMATION"] == (
         "gh-releases-zsync|Hydro74000|mediarecode|latest|Mediarecode-x86_64_allinc-*.AppImage.zsync"
+    )
+
+
+def test_package_appimage_build_appimage_sets_reuse_update_information_env(tmp_path):
+    appdir = tmp_path / "Mediarecode.AppDir"
+    appdir.mkdir(parents=True, exist_ok=True)
+    appimagetool = tmp_path / "appimagetool"
+    appimagetool.write_text("", encoding="utf-8")
+    captured_env: dict[str, str] = {}
+
+    def fake_run(cmd, **kwargs):
+        env = kwargs.get("env")
+        if env:
+            captured_env.update(env)
+        output = Path(cmd[-1])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("", encoding="utf-8")
+        return subprocess.CompletedProcess(args=cmd, returncode=0)
+
+    with patch.object(package_appimage_mod, "ROOT", tmp_path), \
+         patch.object(package_appimage_mod, "run", side_effect=fake_run), \
+         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_OWNER", "Hydro74000"), \
+         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_REPO", "mediarecode"), \
+         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_RELEASE", "latest"):
+        package_appimage_mod.build_appimage(
+            appimagetool=appimagetool,
+            appdir=appdir,
+            arch="x86_64",
+            allinc=True,
+            version_tag="latest-unstable",
+        )
+
+    assert captured_env["UPDATE_INFORMATION"] == (
+        "gh-releases-zsync|Hydro74000|mediarecode|latest-unstable|"
+        "Mediarecode-x86_64_allinc-latest-unstable.AppImage.zsync"
     )

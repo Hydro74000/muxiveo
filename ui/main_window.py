@@ -3,23 +3,34 @@ ui/main_window.py — Fenêtre principale de Mediarecode.
 
 Architecture :
     ┌────────────────────────────────────────────────────────────┐
-    │  MainWindow (QMainWindow)                                  │
-    │  ┌──────────┬─────────────────────────────────────────┐   │
-    │  │ Sidebar  │  QStackedWidget (pages)                 │   │
-    │  │ (NavBar) │  ─ DashboardPage       (index 0)        │   │
-    │  │          │  ─ MergeDoviPanel      (index 1) ✓      │   │
-    │  │          │  ─ AudioConvPage       (index 2) TODO   │   │
-    │  │          │  ─ RemuxPanel          (index 3) ✓      │   │
-    │  │          │  ─ SettingsPage        (index 4) TODO   │   │
-    │  └──────────┴─────────────────────────────────────────┘   │
-    │  ┌──────────────────────────────────────────────────────┐  │
-    │  │  LogPanel (niveaux colorés INFO / OK / WARN / ERROR) │  │
-    │  └──────────────────────────────────────────────────────┘  │
+    │  MainWindow (QMainWindow)                               │
+    │  ┌──────────┬────────────────────────────────────────┐  │
+    │  │ Sidebar  │  QScrollArea                           │  │
+    │  │          │   └─ QStackedWidget (pages)            │  │
+    │  │          │      ─ DashboardPage      (index 0)    │  │
+    │  │          │      ─ MergeDoviPanel     (index 1)    │  │
+    │  │          │      ─ EncodePanel        (index 2)    │  │
+    │  │          │      ─ RemuxPanel         (index 3)    │  │
+    │  │          │      ─ SettingsPanel      (index 4)    │  │
+    │  └──────────┴────────────────────────────────────────┘  │
+    │  ┌────────────────────────────────────────────────────┐  │
+    │  │ Action bar globale : état, progression, exécuter, │  │
+    │  │ annuler                                            │  │
+    │  └────────────────────────────────────────────────────┘  │
+    │  ┌────────────────────────────────────────────────────┐  │
+    │  │ LogPanel global (INFO / OK / WARN / ERROR)        │  │
+    │  └────────────────────────────────────────────────────┘  │
     └────────────────────────────────────────────────────────────┘
 
-Signals exposés :
+Liaisons principales :
+    - la sidebar pilote l'index du QStackedWidget
+    - MergeDoviPanel / EncodePanel / RemuxPanel poussent leurs logs vers LogPanel
+    - RemuxPanel partage ses pistes et métadonnées de sortie avec EncodePanel
+    - SettingsPanel notifie MainWindow quand la configuration est sauvegardée
+
+Signal exposé :
     MainWindow.log_requested(level: str, message: str)
-        → peut être connecté depuis n'importe quel worker/module
+        → point d'entrée global pour envoyer un log vers l'interface
 """
 
 from __future__ import annotations
@@ -54,11 +65,11 @@ from core.version import APP_VERSION_LABEL, WRITING_APPLICATION_TAG
 from core.workflows.encode import EncodeError
 from core.workflows.remux_models import RemuxError
 from ui.panels.encode_panel import EncodePanel
-from ui.panels.encode_panel.theme import _FPS_RE, _fmt_eta, ffmpeg_progress_seconds
+from ui.panels.encode_panel.theme import _FPS_RE, _FRAME_RE, _fmt_eta, ffmpeg_progress_seconds
 from ui.panels.merge_dovi_panel import MergeDoviPanel
 from ui.panels.remux_panel import RemuxPanel
 from ui.panels.settings_panel import SettingsPanel
-from ui.design_system import DesignSystem, colors as _Colors
+from ui.design_system import DesignSystem, colors as _Colors, font_px as _font_px, scale as _scale
 
 if TYPE_CHECKING:
     from core.workflows.encode.models import EncodeConfig
@@ -167,7 +178,7 @@ class LogPanel(QWidget):
 
         # En-tête cliquable
         header = _LogHeader()
-        header.setFixedHeight(32)
+        header.setFixedHeight(_scale(32))
         header.setCursor(Qt.CursorShape.PointingHandCursor)
         header.setStyleSheet(f"""
             _LogHeader {{
@@ -177,16 +188,16 @@ class LogPanel(QWidget):
             }}
         """)
         h_layout = QHBoxLayout(header)
-        h_layout.setContentsMargins(12, 0, 8, 0)
-        h_layout.setSpacing(8)
+        h_layout.setContentsMargins(_scale(12), 0, _scale(8), 0)
+        h_layout.setSpacing(_scale(8))
 
         title = QLabel("LOGS")
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         title.setStyleSheet(f"""
             color: {_Colors.TEXT_DIM};
-            font-size: 10px;
+            font-size: {_font_px(10)}px;
             font-weight: 700;
-            letter-spacing: 2px;
+            letter-spacing: {_scale(2)}px;
             background: transparent;
             border: none;
         """)
@@ -195,7 +206,7 @@ class LogPanel(QWidget):
 
         # Bouton collapse (▲/▼)
         self._collapse_btn = QPushButton("▲")
-        self._collapse_btn.setFixedSize(20, 20)
+        self._collapse_btn.setFixedSize(_scale(20), _scale(20))
         self._collapse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._collapse_btn.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._collapse_btn.setStyleSheet(f"""
@@ -203,7 +214,7 @@ class LogPanel(QWidget):
                 background: transparent;
                 color: {_Colors.TEXT_DIM};
                 border: none;
-                font-size: 10px;
+                font-size: {_font_px(10)}px;
                 padding: 0;
             }}
         """)
@@ -211,7 +222,7 @@ class LogPanel(QWidget):
 
         # Bouton clear
         clear_btn = QPushButton("Effacer")
-        clear_btn.setFixedHeight(20)
+        clear_btn.setFixedHeight(_scale(20))
         clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         clear_btn.setStyleSheet(f"""
             QPushButton {{
@@ -219,8 +230,8 @@ class LogPanel(QWidget):
                 color: {_Colors.TEXT_DIM};
                 border: 1px solid {_Colors.BORDER};
                 border-radius: 3px;
-                font-size: 10px;
-                padding: 0 8px;
+                font-size: {_font_px(10)}px;
+                padding: 0 {_scale(8)}px;
             }}
             QPushButton:hover {{
                 color: {_Colors.TEXT_SEC};
@@ -239,7 +250,7 @@ class LogPanel(QWidget):
         self._text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
-        mono = QFont("JetBrains Mono", 9)
+        mono = QFont("JetBrains Mono", _font_px(9))
         mono.setStyleHint(QFont.StyleHint.Monospace)
         self._text.setFont(mono)
         self._text.setStyleSheet(f"""
@@ -247,18 +258,18 @@ class LogPanel(QWidget):
                 background: {_Colors.LOG_BG};
                 color: {_Colors.TEXT_PRI};
                 border: none;
-                padding: 8px 12px;
+                padding: {_scale(8)}px {_scale(12)}px;
                 selection-background-color: {_Colors.ACCENT_DIM};
             }}
             QScrollBar:vertical {{
                 background: {_Colors.BG_DEEP};
-                width: 8px;
+                width: {_scale(8)}px;
                 border: none;
             }}
             QScrollBar::handle:vertical {{
                 background: {_Colors.BORDER_LT};
-                border-radius: 4px;
-                min-height: 20px;
+                border-radius: {_scale(4)}px;
+                min-height: {_scale(20)}px;
             }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
                 height: 0;
@@ -340,29 +351,29 @@ class _PlaceholderPage(QWidget):
         self.setStyleSheet(f"background: {_Colors.BG_DEEP};")
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.setSpacing(16)
+        layout.setSpacing(_scale(16))
 
         icon_lbl = QLabel(icon)
         icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon_lbl.setStyleSheet(f"font-size: 48px; color: {_Colors.TEXT_DIM}; background: transparent;")
+        icon_lbl.setStyleSheet(f"font-size: {_font_px(48)}px; color: {_Colors.TEXT_DIM}; background: transparent;")
         layout.addWidget(icon_lbl)
 
         title_lbl = QLabel(title)
         title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title_lbl.setStyleSheet(f"""
-            font-size: 18px;
+            font-size: {_font_px(18)}px;
             font-weight: 700;
             color: {_Colors.TEXT_PRI};
             background: transparent;
-            letter-spacing: 0.5px;
+            letter-spacing: {_scale(1)}px;
         """)
         layout.addWidget(title_lbl)
 
         desc_lbl = QLabel(description)
         desc_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         desc_lbl.setWordWrap(True)
-        desc_lbl.setMaximumWidth(400)
-        desc_lbl.setStyleSheet(f"color: {_Colors.TEXT_SEC}; font-size: 12px; background: transparent;")
+        desc_lbl.setMaximumWidth(_scale(400))
+        desc_lbl.setStyleSheet(f"color: {_Colors.TEXT_SEC}; font-size: {_font_px(12)}px; background: transparent;")
         layout.addWidget(desc_lbl)
 
 
@@ -401,23 +412,23 @@ class DashboardPage(QWidget):
     def _build_ui(self) -> None:
         self.setStyleSheet(f"background: {_Colors.BG_DEEP};")
         root = QVBoxLayout(self)
-        root.setContentsMargins(32, 32, 32, 32)
-        root.setSpacing(24)
+        root.setContentsMargins(_scale(32), _scale(32), _scale(32), _scale(32))
+        root.setSpacing(_scale(24))
         root.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         # Titre
         title = QLabel("Mediarecode")
         title.setStyleSheet(f"""
-            font-size: 26px;
+            font-size: {_font_px(26)}px;
             font-weight: 800;
             color: {_Colors.TEXT_PRI};
             background: transparent;
-            letter-spacing: -0.5px;
+            letter-spacing: -{_scale(1)}px;
         """)
         root.addWidget(title)
 
         subtitle = QLabel("Manipulation, encodage et injection de métadonnées HDR")
-        subtitle.setStyleSheet(f"color: {_Colors.TEXT_SEC}; font-size: 13px; background: transparent;")
+        subtitle.setStyleSheet(f"color: {_Colors.TEXT_SEC}; font-size: {_font_px(13)}px; background: transparent;")
         root.addWidget(subtitle)
 
         # Séparateur
@@ -429,10 +440,10 @@ class DashboardPage(QWidget):
         # Statut des outils
         status_title = QLabel("Outils disponibles")
         status_title.setStyleSheet(f"""
-            font-size: 11px;
+            font-size: {_font_px(11)}px;
             font-weight: 700;
             color: {_Colors.TEXT_DIM};
-            letter-spacing: 1.5px;
+            letter-spacing: {_scale(2)}px;
             background: transparent;
         """)
         root.addWidget(status_title)
@@ -441,7 +452,7 @@ class DashboardPage(QWidget):
         tools_grid.setStyleSheet("background: transparent;")
         grid_layout = QHBoxLayout(tools_grid)
         grid_layout.setContentsMargins(0, 0, 0, 0)
-        grid_layout.setSpacing(8)
+        grid_layout.setSpacing(_scale(8))
         grid_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
         availability = self._config.all_tools_available()
@@ -453,18 +464,18 @@ class DashboardPage(QWidget):
 
         # Vérification manuelle
         check_btn = QPushButton("↻  Vérifier les outils")
-        check_btn.setFixedWidth(200)
-        check_btn.setFixedHeight(34)
+        check_btn.setFixedWidth(_scale(200))
+        check_btn.setFixedHeight(_scale(34))
         check_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         check_btn.setStyleSheet(f"""
             QPushButton {{
                 background: {_Colors.BG_CARD};
                 color: {_Colors.TEXT_SEC};
                 border: 1px solid {_Colors.BORDER};
-                border-radius: 6px;
-                font-size: 12px;
+                border-radius: {_scale(6)}px;
+                font-size: {_font_px(12)}px;
                 font-weight: 600;
-                padding: 0 16px;
+                padding: 0 {_scale(16)}px;
             }}
             QPushButton:hover {{
                 background: {_Colors.BG_HOVER};
@@ -485,10 +496,10 @@ class DashboardPage(QWidget):
         # Infos de chemins
         paths_title = QLabel("Chemins configurés")
         paths_title.setStyleSheet(f"""
-            font-size: 11px;
+            font-size: {_font_px(11)}px;
             font-weight: 700;
             color: {_Colors.TEXT_DIM};
-            letter-spacing: 1.5px;
+            letter-spacing: {_scale(2)}px;
             background: transparent;
         """)
         root.addWidget(paths_title)
@@ -502,16 +513,18 @@ class DashboardPage(QWidget):
             row.setStyleSheet("background: transparent;")
             rl = QHBoxLayout(row)
             rl.setContentsMargins(0, 0, 0, 0)
-            rl.setSpacing(12)
+            rl.setSpacing(_scale(12))
 
             key_lbl = QLabel(label)
-            key_lbl.setFixedWidth(110)
-            key_lbl.setStyleSheet(f"color: {_Colors.TEXT_SEC}; font-size: 11px; background: transparent;")
+            key_lbl.setFixedWidth(_scale(110))
+            key_lbl.setStyleSheet(
+                f"color: {_Colors.TEXT_SEC}; font-size: {_font_px(11)}px; background: transparent;"
+            )
 
             val_lbl = QLabel(str(value))
             val_lbl.setStyleSheet(f"""
                 color: {_Colors.TEXT_DIM};
-                font-size: 11px;
+                font-size: {_font_px(11)}px;
                 font-family: 'JetBrains Mono', monospace;
                 background: transparent;
             """)
@@ -531,10 +544,10 @@ class DashboardPage(QWidget):
                 background: {bg};
                 color: {color};
                 border: 1px solid {border};
-                border-radius: 4px;
-                font-size: 11px;
+                border-radius: {_scale(4)}px;
+                font-size: {_font_px(11)}px;
                 font-family: 'JetBrains Mono', monospace;
-                padding: 3px 8px;
+                padding: {_scale(3)}px {_scale(8)}px;
             }}
         """)
         return lbl
@@ -560,8 +573,8 @@ class DashboardPage(QWidget):
 
         section_title = QLabel("ENCODEURS DISPONIBLES")
         section_title.setStyleSheet(f"""
-            font-size: 11px; font-weight: 700;
-            color: {_Colors.TEXT_DIM}; letter-spacing: 1.5px; background: transparent;
+            font-size: {_font_px(11)}px; font-weight: 700;
+            color: {_Colors.TEXT_DIM}; letter-spacing: {_scale(2)}px; background: transparent;
         """)
         root.addWidget(section_title)
 
@@ -570,10 +583,12 @@ class DashboardPage(QWidget):
             row.setStyleSheet("background: transparent;")
             rl = QHBoxLayout(row)
             rl.setContentsMargins(0, 0, 0, 0)
-            rl.setSpacing(8)
+            rl.setSpacing(_scale(8))
             lbl = QLabel(sub_label)
-            lbl.setFixedWidth(130)
-            lbl.setStyleSheet(f"color:{_Colors.TEXT_SEC};font-size:11px;background:transparent;")
+            lbl.setFixedWidth(_scale(130))
+            lbl.setStyleSheet(
+                f"color:{_Colors.TEXT_SEC};font-size:{_font_px(11)}px;background:transparent;"
+            )
             rl.addWidget(lbl)
             return row, rl
 
@@ -648,9 +663,9 @@ class DashboardPage(QWidget):
         badge.setStyleSheet(f"""
             QLabel {{
                 background: {bg}; color: {color};
-                border: 1px solid {border}; border-radius: 4px;
-                font-size: 11px; font-family: 'JetBrains Mono', monospace;
-                padding: 3px 8px;
+                border: 1px solid {border}; border-radius: {_scale(4)}px;
+                font-size: {_font_px(11)}px; font-family: 'JetBrains Mono', monospace;
+                padding: {_scale(3)}px {_scale(8)}px;
             }}
         """)
 
@@ -731,8 +746,8 @@ class _NavButton(QWidget):
         self._is_sub   = is_sub
         self._compact  = compact
         self._icon_char = icon_char
-        self._full_height = 36 if is_sub else 40
-        self._compact_height = max(self._full_height * 2, 76)
+        self._full_height = _scale(36 if is_sub else 40)
+        self._compact_height = max(self._full_height * 2, _scale(76))
         self.setFixedHeight(self._compact_height if compact else self._full_height)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -750,11 +765,11 @@ class _NavButton(QWidget):
         full_page = QWidget()
         full_page.setStyleSheet("background: transparent; border: none;")
         full_lay = QHBoxLayout(full_page)
-        full_lay.setContentsMargins(28 if is_sub else 14, 0, 14, 0)
-        full_lay.setSpacing(10)
+        full_lay.setContentsMargins(_scale(28 if is_sub else 14), 0, _scale(14), 0)
+        full_lay.setSpacing(_scale(10))
 
         self._full_icon_lbl = QLabel(icon_char)
-        self._full_icon_lbl.setFixedWidth(20)
+        self._full_icon_lbl.setFixedWidth(_scale(20))
         self._full_icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._full_icon_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
@@ -773,7 +788,7 @@ class _NavButton(QWidget):
         compact_lay.setContentsMargins(0, 0, 0, 0)
         compact_lay.setSpacing(0)
         self._compact_icon_lbl = QLabel(icon_char)
-        self._compact_icon_lbl.setFixedWidth(64)
+        self._compact_icon_lbl.setFixedWidth(_scale(64))
         self._compact_icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._compact_icon_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         compact_lay.addStretch()
@@ -809,13 +824,13 @@ class _NavButton(QWidget):
             bg     = _Colors.BG_ACTIVE
             color  = _Colors.TEXT_PRI
             icon_c = _Colors.ACCENT
-            border = f"border-left: 2px solid {_Colors.ACCENT};"
+            border = f"border-left: {_scale(2)}px solid {_Colors.ACCENT};"
             weight = "600"
         else:
             bg     = "transparent"
             color  = _Colors.TEXT_SEC
             icon_c = _Colors.TEXT_DIM
-            border = "border-left: 2px solid transparent;"
+            border = f"border-left: {_scale(2)}px solid transparent;"
             weight = "400"
 
         self.setStyleSheet(f"""
@@ -831,15 +846,15 @@ class _NavButton(QWidget):
             }}
         """)
         icon_style_full = (
-            f"color: {icon_c}; font-size: 14px; background: transparent; border: none;"
+            f"color: {icon_c}; font-size: {_font_px(14)}px; background: transparent; border: none;"
         )
-        compact_px = 32 if self._icon_char == "▶" else 56
+        compact_px = _font_px(32 if self._icon_char == "▶" else 56)
         icon_style_compact = (
             f"color: {icon_c}; font-size: {compact_px}px; background: transparent; border: none;"
         )
         self._full_icon_lbl.setStyleSheet(icon_style_full)
         self._compact_icon_lbl.setStyleSheet(icon_style_compact)
-        font_size = "11px" if self._is_sub else "12px"
+        font_size = f"{_font_px(11 if self._is_sub else 12)}px"
         self._text_lbl.setStyleSheet(
             f"color: {color}; font-size: {font_size}; font-weight: {weight};"
             f" background: transparent; border: none;"
@@ -866,7 +881,7 @@ class _Sidebar(QWidget):
     def __init__(self, parent: QWidget | None = None, *, compact: bool = False) -> None:
         super().__init__(parent)
         self._compact = compact
-        self.setFixedWidth(self._COMPACT_WIDTH if compact else self._FULL_WIDTH)
+        self.setFixedWidth(_scale(self._COMPACT_WIDTH if compact else self._FULL_WIDTH))
         self.setStyleSheet(f"""
             QWidget {{
                 background: {_Colors.BG_SIDEBAR};
@@ -884,7 +899,7 @@ class _Sidebar(QWidget):
 
         # Logo / App name
         logo_area = QWidget()
-        logo_area.setFixedHeight(56)
+        logo_area.setFixedHeight(_scale(56))
         logo_area.setStyleSheet(f"""
             QWidget {{
                 background: {_Colors.BG_SIDEBAR};
@@ -893,29 +908,29 @@ class _Sidebar(QWidget):
             }}
         """)
         la = QHBoxLayout(logo_area)
-        la.setContentsMargins(12, 0, 8, 0)
-        la.setSpacing(8)
+        la.setContentsMargins(_scale(12), 0, _scale(8), 0)
+        la.setSpacing(_scale(8))
 
         self._logo_icon = QLabel("▣")
         self._logo_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._logo_icon.setToolTip("Mediarecode")
         self._logo_icon.setStyleSheet(
-            f"color: {_Colors.ACCENT}; font-size: 18px; background: transparent; border: none;"
+            f"color: {_Colors.ACCENT}; font-size: {_font_px(18)}px; background: transparent; border: none;"
         )
         la.addWidget(self._logo_icon)
         self._logo_text = QLabel("Mediarecode")
         self._logo_text.setStyleSheet(f"""
             color: {_Colors.TEXT_PRI};
-            font-size: 13px;
+            font-size: {_font_px(13)}px;
             font-weight: 700;
             background: transparent;
             border: none;
-            letter-spacing: 0.3px;
+            letter-spacing: {_scale(1)}px;
         """)
         la.addWidget(self._logo_text)
         la.addStretch()
         self._toggle_btn = QPushButton("◀")
-        self._toggle_btn.setFixedSize(22, 22)
+        self._toggle_btn.setFixedSize(_scale(22), _scale(22))
         self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._toggle_btn.setStyleSheet(f"""
             QPushButton {{
@@ -923,7 +938,7 @@ class _Sidebar(QWidget):
                 color: {_Colors.TEXT_DIM};
                 border: 1px solid {_Colors.BORDER};
                 border-radius: 4px;
-                font-size: 11px;
+                font-size: {_font_px(11)}px;
                 padding: 0;
             }}
             QPushButton:hover {{
@@ -939,12 +954,12 @@ class _Sidebar(QWidget):
         # Navigation
         self._nav_label = QLabel("NAVIGATION")
         self._nav_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self._nav_label.setContentsMargins(16, 16, 0, 8)
+        self._nav_label.setContentsMargins(_scale(16), _scale(16), 0, _scale(8))
         self._nav_label.setStyleSheet(f"""
             color: {_Colors.TEXT_DIM};
-            font-size: 9px;
+            font-size: {_font_px(9)}px;
             font-weight: 700;
-            letter-spacing: 2px;
+            letter-spacing: {_scale(2)}px;
             background: transparent;
             border: none;
         """)
@@ -962,10 +977,10 @@ class _Sidebar(QWidget):
         self._version_lbl = QLabel(APP_VERSION_LABEL)
         self._version_lbl.setToolTip("")
         self._version_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self._version_lbl.setContentsMargins(16, 0, 0, 12)
+        self._version_lbl.setContentsMargins(_scale(16), 0, 0, _scale(12))
         self._version_lbl.setStyleSheet(f"""
             color: {_Colors.TEXT_DIM};
-            font-size: 9px;
+            font-size: {_font_px(9)}px;
             background: transparent;
             border: none;
         """)
@@ -994,7 +1009,7 @@ class _Sidebar(QWidget):
 
     def set_compact(self, compact: bool) -> None:
         self._compact = compact
-        self.setFixedWidth(self._COMPACT_WIDTH if compact else self._FULL_WIDTH)
+        self.setFixedWidth(_scale(self._COMPACT_WIDTH if compact else self._FULL_WIDTH))
         self._logo_text.setVisible(not compact)
         self._nav_label.setVisible(not compact)
         for btn in self._buttons:
@@ -1006,14 +1021,14 @@ class _Sidebar(QWidget):
             self._version_lbl.setText(APP_VERSION_LABEL.split()[-1])
             self._version_lbl.setToolTip(APP_VERSION_LABEL)
             self._version_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._version_lbl.setContentsMargins(0, 0, 0, 12)
+            self._version_lbl.setContentsMargins(0, 0, 0, _scale(12))
         else:
             self._toggle_btn.setText("◀")
             self._toggle_btn.setToolTip("Réduire le menu")
             self._version_lbl.setText(APP_VERSION_LABEL)
             self._version_lbl.setToolTip("")
             self._version_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            self._version_lbl.setContentsMargins(16, 0, 0, 12)
+            self._version_lbl.setContentsMargins(_scale(16), 0, 0, _scale(12))
 
 
 # ---------------------------------------------------------------------------
@@ -1050,6 +1065,7 @@ class MainWindow(QMainWindow):
         self._op_start: float = 0.0
         self._op_mode: str = ""   # "remux" ou "encode"
         self._op_encode_fps: float | None = None
+        self._op_encode_frame: int | None = None
         self._prep_progress_active = False
         self._prep_progress_value = 0
         self._prep_progress_direction = 1
@@ -1176,7 +1192,7 @@ class MainWindow(QMainWindow):
 
         # Partie basse : log panel
         self._log_panel = LogPanel(max_lines=self._config.log_max_lines)
-        self._log_panel.setMinimumHeight(32)
+        self._log_panel.setMinimumHeight(_scale(32))
         vsplit.addWidget(self._log_panel)
 
         self._apply_startup_log_panel_state()
@@ -1195,27 +1211,27 @@ class MainWindow(QMainWindow):
             f"border-top:1px solid {_Colors.BORDER};}}"
         )
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(28, 10, 28, 10)
-        layout.setSpacing(12)
+        layout.setContentsMargins(_scale(28), _scale(10), _scale(28), _scale(10))
+        layout.setSpacing(_scale(12))
 
         # Zone progress (barre fine + légende)
         self._prog_widget = QWidget()
         self._prog_widget.setStyleSheet("background:transparent;")
         pv = QVBoxLayout(self._prog_widget)
-        pv.setContentsMargins(0, 4, 0, 4)
-        pv.setSpacing(4)
+        pv.setContentsMargins(0, _scale(4), 0, _scale(4))
+        pv.setSpacing(_scale(4))
 
         self._prog_bar = QProgressBar()
         self._prog_bar.setRange(0, 100)
         self._prog_bar.setValue(0)
-        self._prog_bar.setFixedHeight(6)
+        self._prog_bar.setFixedHeight(_scale(6))
         self._prog_bar.setTextVisible(False)
         self._prog_bar.setStyleSheet(self._progress_bar_stylesheet(_Colors.ACCENT))
         pv.addWidget(self._prog_bar)
 
         self._prog_lbl = QLabel("")
         self._prog_lbl.setStyleSheet(
-            f"color:{_Colors.TEXT_DIM};font-size:10px;"
+            f"color:{_Colors.TEXT_DIM};font-size:{_font_px(10)}px;"
             f"font-family:'JetBrains Mono',monospace;background:transparent;"
         )
         pv.addWidget(self._prog_lbl)
@@ -1227,22 +1243,22 @@ class MainWindow(QMainWindow):
         self._status_lbl.setMinimumWidth(0)
         self._status_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self._status_lbl.setStyleSheet(
-            f"color:{_Colors.TEXT_SEC};font-size:11px;background:transparent;"
+            f"color:{_Colors.TEXT_SEC};font-size:{_font_px(11)}px;background:transparent;"
         )
         layout.addWidget(self._status_lbl)
-        layout.addSpacing(4)
+        layout.addSpacing(_scale(4))
 
         # Bouton principal unique
         self._run_btn = QPushButton("▶  Exécuter l'opération")
-        self._run_btn.setFixedHeight(36)
-        self._run_btn.setMinimumWidth(180)
+        self._run_btn.setFixedHeight(_scale(36))
+        self._run_btn.setMinimumWidth(_scale(180))
         self._run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._run_btn.setEnabled(False)
         self._run_btn.setStyleSheet(f"""
             QPushButton{{
                 background:{_Colors.ACCENT};color:#ffffff;
                 border:none;border-radius:6px;
-                font-size:12px;font-weight:700;padding:0 20px;
+                font-size:{_font_px(12)}px;font-weight:700;padding:0 {_scale(20)}px;
             }}
             QPushButton:hover{{background:#6070f8;}}
             QPushButton:pressed{{background:{_Colors.ACCENT_DIM};}}
@@ -1254,13 +1270,13 @@ class MainWindow(QMainWindow):
 
         # Bouton annulation
         self._cancel_btn = QPushButton("✕  Annuler")
-        self._cancel_btn.setMinimumWidth(96)
-        self._cancel_btn.setFixedHeight(36)
+        self._cancel_btn.setMinimumWidth(_scale(96))
+        self._cancel_btn.setFixedHeight(_scale(36))
         self._cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._cancel_btn.setStyleSheet(f"""
             QPushButton{{background:{_Colors.BG_CARD};color:#f5c842;
                 border:1px solid #f5c842;border-radius:6px;
-                font-size:12px;font-weight:600;padding:0 14px;}}
+                font-size:{_font_px(12)}px;font-weight:600;padding:0 {_scale(14)}px;}}
             QPushButton:hover{{background:#2a2010;border-color:#f0b030;color:#f0b030;}}
             QPushButton:pressed{{background:#1a1608;}}
         """)
@@ -1273,8 +1289,8 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _progress_bar_stylesheet(chunk_color: str) -> str:
         return (
-            f"QProgressBar{{background:{_Colors.BG_CARD};border:none;border-radius:3px;}}"
-            f"QProgressBar::chunk{{background:{chunk_color};border-radius:3px;}}"
+            f"QProgressBar{{background:{_Colors.BG_CARD};border:none;border-radius:{_scale(3)}px;}}"
+            f"QProgressBar::chunk{{background:{chunk_color};border-radius:{_scale(3)}px;}}"
         )
 
     def _start_prep_progress(self) -> None:
@@ -1455,6 +1471,7 @@ class MainWindow(QMainWindow):
         self._run_btn.setEnabled(False)
         self._cancel_btn.setVisible(True)
         self._op_encode_fps = None
+        self._op_encode_frame = None
         self._prep_progress_active = False
         if self._prep_progress_timer.isActive():
             self._prep_progress_timer.stop()
@@ -1713,6 +1730,7 @@ class MainWindow(QMainWindow):
             if line.startswith("$ "):
                 self._stop_prep_progress()
                 self._op_encode_fps = None
+                self._op_encode_frame = None
                 self.log_requested.emit("INFO", line)
                 return
             fps_m = _FPS_RE.search(line)
@@ -1721,6 +1739,12 @@ class MainWindow(QMainWindow):
                     self._op_encode_fps = float(fps_m.group(1))
                 except ValueError:
                     self._op_encode_fps = None
+            frame_m = _FRAME_RE.search(line)
+            if frame_m:
+                try:
+                    self._op_encode_frame = int(frame_m.group(1))
+                except ValueError:
+                    self._op_encode_frame = None
             elapsed_video = ffmpeg_progress_seconds(line)
             if elapsed_video is not None:
                 self._stop_prep_progress()
@@ -1743,10 +1767,39 @@ class MainWindow(QMainWindow):
                     parts = [f"{pct}%", fps_str, eta_str]
                     self._prog_lbl.setText("  ·  ".join(p for p in parts if p))
                 return
+            if frame_m is not None and self._op_encode_frame is not None:
+                total_frames = self._encode_panel.get_total_frames()
+                if total_frames and total_frames > 0:
+                    self._stop_prep_progress()
+                    pct = min(99, int(self._op_encode_frame / total_frames * 100))
+                    self._prog_bar.setValue(pct)
+                    fps_str = (
+                        f"{self._op_encode_fps:.1f} fps"
+                        if self._op_encode_fps is not None and self._op_encode_fps > 0
+                        else ""
+                    )
+                    elapsed_wall = time.monotonic() - self._op_start
+                    if (
+                        elapsed_wall > 0
+                        and self._op_encode_frame > 0
+                        and total_frames > self._op_encode_frame
+                    ):
+                        frame_speed = self._op_encode_frame / elapsed_wall
+                        if frame_speed > 0:
+                            eta_s = (total_frames - self._op_encode_frame) / frame_speed
+                            eta_str = f"ETA {_fmt_eta(eta_s)}"
+                        else:
+                            eta_str = ""
+                    else:
+                        eta_str = ""
+                    parts = [f"{pct}%", fps_str, eta_str]
+                    self._prog_lbl.setText("  ·  ".join(p for p in parts if p))
+                return
             if _is_encode_progress_noise(line):
                 return
             if _is_encode_stage_message(line):
                 self._op_encode_fps = None
+                self._op_encode_frame = None
                 self._prog_lbl.setText(line)
             self.log_requested.emit("INFO", line)
 
@@ -1795,9 +1848,15 @@ class MainWindow(QMainWindow):
 
     def _on_settings_saved(self) -> None:
         previous_theme = DesignSystem.current_theme()
+        previous_scale = DesignSystem.current_ui_scale()
         self._config.reload()
         new_theme = DesignSystem.set_theme(self._config.theme)
+        new_scale = DesignSystem.set_ui_scale(self._config.ui_scale_percent)
         app = cast(QApplication | None, QApplication.instance())
+        if app is not None:
+            current_font = app.font()
+            current_font.setPointSizeF(max(8.0, 10.0 * DesignSystem.scale_factor()))
+            app.setFont(current_font)
         DesignSystem.apply_to_application(app)
         self._log_panel._max_lines = self._config.log_max_lines
         self._encode_panel.refresh_runtime_settings()
@@ -1809,7 +1868,43 @@ class MainWindow(QMainWindow):
                 "INFO",
                 "Nouveau thème chargé. Un redémarrage de l'application est recommandé pour recolorer tous les panneaux ouverts.",
             )
+        if new_scale != previous_scale:
+            self.log_requested.emit(
+                "INFO",
+                translate_text(
+                    "Nouvelle échelle d'interface chargée ({percent}%). Un redémarrage de l'application est recommandé pour homogénéiser tous les panneaux.",
+                    percent=new_scale,
+                ),
+            )
+            self._prompt_restart_for_scale_change(new_scale)
         self.log_requested.emit("OK", "Configuration appliquée depuis config.ini.")
+
+    def _prompt_restart_for_scale_change(self, percent: int) -> None:
+        reply = QMessageBox.question(
+            self,
+            translate_text("Redémarrage recommandé"),
+            translate_text(
+                "La nouvelle échelle d'interface ({percent}%) est chargée.\nRedémarrer l'application maintenant ?",
+                percent=percent,
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        restarted = self._config.restart_application()
+        if not restarted:
+            QMessageBox.warning(
+                self,
+                translate_text("Erreur"),
+                translate_text("Impossible de redémarrer automatiquement l'application."),
+            )
+            return
+
+        app = cast(QApplication | None, QApplication.instance())
+        if app is not None:
+            app.quit()
 
     # ------------------------------------------------------------------
     # Collapse du panneau de logs

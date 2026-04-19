@@ -7,7 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -17,7 +17,9 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QLayout,
+    QMessageBox,
     QScrollArea,
+    QSlider,
     QSizePolicy,
     QSpinBox,
     QVBoxLayout,
@@ -38,15 +40,39 @@ from ui.panels.encode_panel.theme import (
     _section_label,
     _separator,
 )
+from ui.design_system import font_px as _font_px, scale as _scale
 
 
 def _spin_style() -> str:
     return (
         f"QSpinBox{{background:{_C.BG_CARD};color:{_C.TEXT_PRI};"
-        f"border:1px solid {_C.BORDER};border-radius:5px;padding:4px 10px;font-size:11px;}}"
+        f"border:1px solid {_C.BORDER};border-radius:{_scale(5)}px;"
+        f"padding:{_scale(4)}px {_scale(10)}px;font-size:{_font_px(11)}px;}}"
         f"QSpinBox:focus{{border-color:{_C.ACCENT};}}"
-        f"QSpinBox::up-button,QSpinBox::down-button{{width:18px;border:none;background:{_C.BG_HOVER};}}"
+        f"QSpinBox::up-button,QSpinBox::down-button{{width:{_scale(18)}px;border:none;background:{_C.BG_HOVER};}}"
     )
+
+
+def _slider_style() -> str:
+    handle = _scale(16)
+    groove_h = _scale(6)
+    radius = _scale(3)
+    margin = _scale(6)
+    return (
+        f"QSlider::groove:horizontal{{background:{_C.BG_CARD};height:{groove_h}px;"
+        f"border:1px solid {_C.BORDER};border-radius:{radius}px;}}"
+        f"QSlider::sub-page:horizontal{{background:{_C.ACCENT};border-radius:{radius}px;}}"
+        f"QSlider::add-page:horizontal{{background:{_C.BG_ACTIVE};border-radius:{radius}px;}}"
+        f"QSlider::handle:horizontal{{background:{_C.TEXT_PRI};width:{handle}px;height:{handle}px;"
+        f"margin:-{margin}px 0;border-radius:{_scale(8)}px;border:1px solid {_C.BORDER_LT};}}"
+        f"QSlider::handle:horizontal:hover{{border-color:{_C.ACCENT};}}"
+    )
+
+
+def _snap_slider_value(value: int, minimum: int, maximum: int, step: int) -> int:
+    clamped = max(minimum, min(maximum, value))
+    snapped = minimum + round((clamped - minimum) / step) * step
+    return max(minimum, min(maximum, snapped))
 
 
 class SettingsPanel(QWidget):
@@ -56,6 +82,7 @@ class SettingsPanel(QWidget):
         super().__init__(parent)
         self._config = config
         self._field_widgets: dict[tuple[str, str], QWidget] = {}
+        self._slider_value_labels: dict[tuple[str, str], QLabel] = {}
         self._status_label: QLabel | None = None
         self._build_ui()
         self._load_from_config()
@@ -75,8 +102,8 @@ class SettingsPanel(QWidget):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet(
             f"QScrollArea{{background:{_C.BG_DEEP};border:none;}}"
-            f"QScrollBar:vertical{{background:{_C.BG_DEEP};width:6px;border:none;}}"
-            f"QScrollBar::handle:vertical{{background:{_C.BORDER_LT};border-radius:3px;min-height:24px;}}"
+            f"QScrollBar:vertical{{background:{_C.BG_DEEP};width:{_scale(6)}px;border:none;}}"
+            f"QScrollBar::handle:vertical{{background:{_C.BORDER_LT};border-radius:{_scale(3)}px;min-height:{_scale(24)}px;}}"
             f"QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{{height:0;}}"
         )
 
@@ -84,14 +111,14 @@ class SettingsPanel(QWidget):
         content.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         content.setStyleSheet(f"background:{_C.BG_DEEP};")
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(28, 24, 28, 24)
-        layout.setSpacing(20)
+        layout.setContentsMargins(_scale(28), _scale(24), _scale(28), _scale(24))
+        layout.setSpacing(_scale(20))
         layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
 
         title = QLabel("Réglages")
         title.setStyleSheet(
-            f"font-size:20px;font-weight:800;color:{_C.TEXT_PRI};"
-            f"background:transparent;letter-spacing:-0.3px;"
+            f"font-size:{_font_px(20)}px;font-weight:800;color:{_C.TEXT_PRI};"
+            f"background:transparent;letter-spacing:-{_scale(1)}px;"
         )
         subtitle = QLabel(
             "Modifiez toutes les valeurs persistées dans config.ini. "
@@ -99,7 +126,7 @@ class SettingsPanel(QWidget):
             "par l'application ; un redémarrage reste conseillé pour repartir sur un état propre."
         )
         subtitle.setWordWrap(True)
-        subtitle.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:12px;background:transparent;")
+        subtitle.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:{_font_px(12)}px;background:transparent;")
         layout.addWidget(title)
         layout.addWidget(subtitle)
         layout.addWidget(_separator())
@@ -111,19 +138,22 @@ class SettingsPanel(QWidget):
             layout.addWidget(self._build_group_card(group))
 
         actions = QHBoxLayout()
-        actions.setSpacing(12)
+        actions.setSpacing(_scale(12))
         reload_btn = _secondary_button("Recharger depuis config.ini")
         reload_btn.clicked.connect(self._on_reload_clicked)
+        rerun_setup_btn = _secondary_button("Relancer le setup")
+        rerun_setup_btn.clicked.connect(self._on_rerun_setup_clicked)
         save_btn = _primary_button("Sauvegarder toute la configuration")
         save_btn.clicked.connect(self._on_save_clicked)
 
         self._status_label = QLabel("")
         self._status_label.setWordWrap(True)
         self._status_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self._status_label.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        self._status_label.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:{_font_px(11)}px;background:transparent;")
 
         actions.addWidget(self._status_label, stretch=1)
         actions.addWidget(reload_btn)
+        actions.addWidget(rerun_setup_btn)
         actions.addWidget(save_btn)
         layout.addLayout(actions)
 
@@ -135,8 +165,8 @@ class SettingsPanel(QWidget):
         section_title = group["title"]
         card = _card()
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(14)
+        layout.setContentsMargins(_scale(16), _scale(16), _scale(16), _scale(16))
+        layout.setSpacing(_scale(14))
 
         for index, field in enumerate(group["fields"]):
             layout.addWidget(self._build_field_widget(section, field))
@@ -146,7 +176,7 @@ class SettingsPanel(QWidget):
         layout.addWidget(_separator())
         save_row = QHBoxLayout()
         save_row.setContentsMargins(0, 0, 0, 0)
-        save_row.setSpacing(8)
+        save_row.setSpacing(_scale(8))
         save_row.addStretch()
         save_btn = _secondary_button("Enregistrer")
         save_btn.clicked.connect(
@@ -161,7 +191,7 @@ class SettingsPanel(QWidget):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(_scale(8))
 
         kind = field["kind"]
         if kind == "bool":
@@ -172,12 +202,14 @@ class SettingsPanel(QWidget):
             self._field_widgets[(section, field["key"])] = checkbox
         else:
             label = QLabel(field["label"])
-            label.setStyleSheet(f"color:{_C.TEXT_PRI};font-size:12px;font-weight:600;background:transparent;")
+            label.setStyleSheet(
+                f"color:{_C.TEXT_PRI};font-size:{_font_px(12)}px;font-weight:600;background:transparent;"
+            )
             layout.addWidget(label)
 
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(8)
+            row.setSpacing(_scale(8))
             widget = self._make_editor(section, field)
             row.addWidget(widget, stretch=1)
             if kind in {"directory", "tool"}:
@@ -188,7 +220,7 @@ class SettingsPanel(QWidget):
 
         desc = QLabel(field["description"])
         desc.setWordWrap(True)
-        desc.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        desc.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:{_font_px(11)}px;background:transparent;")
         layout.addWidget(desc)
         return container
 
@@ -204,9 +236,49 @@ class SettingsPanel(QWidget):
             return edit
 
         if kind == "int":
+            if field["key"] == "ui_scale_percent":
+                slider_wrap = QWidget()
+                slider_layout = QHBoxLayout(slider_wrap)
+                slider_layout.setContentsMargins(0, 0, 0, 0)
+                slider_layout.setSpacing(_scale(10))
+
+                slider = QSlider(Qt.Orientation.Horizontal)
+                slider.setObjectName(f"{section}.{field['key']}")
+                slider_min = int(field.get("min", 0))
+                slider_max = int(field.get("max", 1_000_000))
+                slider_step = 10
+                slider.setRange(slider_min, slider_max)
+                slider.setSingleStep(slider_step)
+                slider.setPageStep(slider_step)
+                slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+                slider.setTickInterval(slider_step)
+                slider.setStyleSheet(_slider_style())
+                slider_layout.addWidget(slider, stretch=1)
+
+                value_label = QLabel("")
+                value_label.setMinimumWidth(_scale(52))
+                value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                value_label.setStyleSheet(
+                    f"color:{_C.TEXT_SEC};font-size:{_font_px(11)}px;font-family:'JetBrains Mono',monospace;background:transparent;"
+                )
+                def _sync_slider(value: int, *, s=slider, lbl=value_label, minimum=slider_min, maximum=slider_max, step=slider_step) -> None:
+                    snapped = _snap_slider_value(value, minimum, maximum, step)
+                    if snapped != value:
+                        s.blockSignals(True)
+                        s.setValue(snapped)
+                        s.blockSignals(False)
+                    lbl.setText(f"{snapped}%")
+
+                slider.valueChanged.connect(_sync_slider)
+                slider_layout.addWidget(value_label)
+
+                self._field_widgets[key] = slider
+                self._slider_value_labels[key] = value_label
+                return slider_wrap
+
             spin = QSpinBox()
             spin.setObjectName(f"{section}.{field['key']}")
-            spin.setRange(0, 1_000_000)
+            spin.setRange(int(field.get("min", 0)), int(field.get("max", 1_000_000)))
             spin.setStyleSheet(_spin_style())
             self._field_widgets[key] = spin
             return spin
@@ -237,6 +309,8 @@ class SettingsPanel(QWidget):
             return widget.text().strip()
         if isinstance(widget, QCheckBox):
             return "true" if widget.isChecked() else "false"
+        if isinstance(widget, QSlider):
+            return str(widget.value())
         if isinstance(widget, QSpinBox):
             return str(widget.value())
         if isinstance(widget, QComboBox):
@@ -255,6 +329,8 @@ class SettingsPanel(QWidget):
                     widget.setText(str(value))
                 elif isinstance(widget, QCheckBox):
                     widget.setChecked(bool(value))
+                elif isinstance(widget, QSlider):
+                    widget.setValue(int(value))
                 elif isinstance(widget, QSpinBox):
                     widget.setValue(int(value))
                 elif isinstance(widget, QComboBox):
@@ -338,3 +414,42 @@ class SettingsPanel(QWidget):
                 )
             )
         self.settings_saved.emit()
+
+    def _on_rerun_setup_clicked(self) -> None:
+        try:
+            self._config.rerun_setup()
+        except Exception as exc:
+            if self._status_label is not None:
+                self._status_label.setText(
+                    translate_text("Erreur pendant la relance du setup : {exc}", exc=exc)
+                )
+            QMessageBox.warning(
+                self,
+                translate_text("Erreur"),
+                translate_text("Impossible de relancer le setup : {exc}", exc=exc),
+            )
+            return
+
+        if self._status_label is not None:
+            self._status_label.setText(
+                translate_text(
+                    "Setup relancé avec succès. Un redémarrage de l'application est recommandé."
+                )
+            )
+        self.settings_saved.emit()
+
+        reply = QMessageBox.question(
+            self,
+            translate_text("Redémarrage recommandé"),
+            translate_text("Le setup est terminé. Redémarrer l'application maintenant ?"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            restarted = self._config.restart_application()
+            if not restarted:
+                QMessageBox.warning(
+                    self,
+                    translate_text("Erreur"),
+                    translate_text("Impossible de redémarrer automatiquement l'application."),
+                )

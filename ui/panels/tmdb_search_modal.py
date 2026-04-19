@@ -37,7 +37,7 @@ from core.media_info_fetcher import (
     default_tmdb_bearer_token,
     normalize_tmdb_search_query,
 )
-from ui.design_system import colors as _C
+from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
 
 if TYPE_CHECKING:
     from core.config import AppConfig
@@ -150,15 +150,15 @@ class TmdbSearchModal(QDialog):
         self._worker: _TmdbSearchWorker | None = None
 
         self.setWindowTitle("Recherche film / série — IMDb / TMDB")
-        self.setMinimumSize(560, 560)
+        self.setMinimumSize(_scale(560), _scale(560))
         self.setModal(True)
         self.setStyleSheet(f"""
             QDialog  {{ background: {_C.BG_DEEP}; color: {_C.TEXT_PRI}; }}
-            QLabel   {{ color: {_C.TEXT_PRI}; background: transparent; border: none; font-size: 11px; }}
-            QGroupBox {{ color: {_C.TEXT_DIM}; border: 1px solid {_C.BORDER}; border-radius: 4px;
-                         font-size: 9px; font-weight: 700; letter-spacing: 1px;
-                         margin-top: 8px; padding-top: 6px; }}
-            QGroupBox::title {{ subcontrol-origin: margin; left: 8px; }}
+            QLabel   {{ color: {_C.TEXT_PRI}; background: transparent; border: none; font-size: {_font_px(11)}px; }}
+            QGroupBox {{ color: {_C.TEXT_DIM}; border: 1px solid {_C.BORDER}; border-radius: {_scale(4)}px;
+                         font-size: {_font_px(9)}px; font-weight: 700; letter-spacing: {_scale(1)}px;
+                         margin-top: {_scale(8)}px; padding-top: {_scale(6)}px; }}
+            QGroupBox::title {{ subcontrol-origin: margin; left: {_scale(8)}px; }}
         """)
         self._build_ui(suggested_title, suggested_season, suggested_episode)
         apply_translations(self)
@@ -178,14 +178,14 @@ class TmdbSearchModal(QDialog):
         )
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(14, 14, 14, 14)
-        root.setSpacing(10)
+        root.setContentsMargins(_scale(14), _scale(14), _scale(14), _scale(14))
+        root.setSpacing(_scale(10))
 
         search_row = QWidget()
         search_row.setStyleSheet("background: transparent;")
         search_h = QHBoxLayout(search_row)
         search_h.setContentsMargins(0, 0, 0, 0)
-        search_h.setSpacing(6)
+        search_h.setSpacing(_scale(6))
 
         self._search_edit = QLineEdit()
         self._search_edit.setPlaceholderText("Titre du film ou de la série…")
@@ -200,12 +200,12 @@ class TmdbSearchModal(QDialog):
             self._kind_combo.setCurrentIndex(2)
         else:
             self._kind_combo.setCurrentIndex(0)
-        self._kind_combo.setFixedWidth(90)
+        self._kind_combo.setFixedWidth(_scale(90))
         self._kind_combo.setStyleSheet(f"""
             QComboBox {{
                 background: {_C.BG_PANEL}; color: {_C.TEXT_PRI};
-                border: 1px solid {_C.BORDER}; border-radius: 4px;
-                font-size: 11px; padding: 2px 6px;
+                border: 1px solid {_C.BORDER}; border-radius: {_scale(4)}px;
+                font-size: {_font_px(11)}px; padding: {_scale(2)}px {_scale(6)}px;
             }}
             QComboBox::drop-down {{ border: none; }}
             QComboBox QAbstractItemView {{
@@ -216,13 +216,13 @@ class TmdbSearchModal(QDialog):
         search_h.addWidget(self._kind_combo)
 
         self._search_btn = QPushButton("Rechercher")
-        self._search_btn.setFixedHeight(28)
+        self._search_btn.setFixedHeight(_scale(28))
         self._search_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._search_btn.setStyleSheet(f"""
             QPushButton {{
                 background: {_C.ACCENT}; color: #fff;
-                border: none; border-radius: 4px;
-                font-size: 11px; font-weight: 600; padding: 0 14px;
+                border: none; border-radius: {_scale(4)}px;
+                font-size: {_font_px(11)}px; font-weight: 600; padding: 0 {_scale(14)}px;
             }}
             QPushButton:hover {{ background: #6070f8; }}
             QPushButton:disabled {{ background: {_C.BG_PANEL}; color: {_C.TEXT_DIM}; }}
@@ -232,14 +232,14 @@ class TmdbSearchModal(QDialog):
         root.addWidget(search_row)
 
         self._results_list = QListWidget()
-        self._results_list.setMinimumHeight(200)
+        self._results_list.setMinimumHeight(_scale(200))
         self._results_list.setStyleSheet(f"""
             QListWidget {{
                 background: {_C.BG_CARD}; color: {_C.TEXT_PRI};
-                border: 1px solid {_C.BORDER}; border-radius: 4px;
-                font-size: 11px;
+                border: 1px solid {_C.BORDER}; border-radius: {_scale(4)}px;
+                font-size: {_font_px(11)}px;
             }}
-            QListWidget::item {{ padding: 6px 10px; border-bottom: 1px solid {_C.BORDER}; }}
+            QListWidget::item {{ padding: {_scale(6)}px {_scale(10)}px; border-bottom: 1px solid {_C.BORDER}; }}
             QListWidget::item:selected {{
                 background: {_C.ACCENT_DIM}; color: #fff;
             }}
@@ -251,11 +251,11 @@ class TmdbSearchModal(QDialog):
 
         self._overview_lbl = QLabel()
         self._overview_lbl.setWordWrap(True)
-        self._overview_lbl.setMaximumHeight(60)
+        self._overview_lbl.setMaximumHeight(_scale(60))
         self._overview_lbl.setStyleSheet(
-            f"color: {_C.TEXT_DIM}; font-size: 10px; font-style: italic; "
+            f"color: {_C.TEXT_DIM}; font-size: {_font_px(10)}px; font-style: italic; "
             f"background: {_C.BG_CARD}; border: 1px solid {_C.BORDER}; "
-            "border-radius: 4px; padding: 4px 8px;"
+            f"border-radius: {_scale(4)}px; padding: {_scale(4)}px {_scale(8)}px;"
         )
         self._overview_lbl.setVisible(False)
         root.addWidget(self._overview_lbl)
@@ -264,18 +264,18 @@ class TmdbSearchModal(QDialog):
         self._series_row.setStyleSheet("background: transparent;")
         series_h = QHBoxLayout(self._series_row)
         series_h.setContentsMargins(0, 0, 0, 0)
-        series_h.setSpacing(12)
+        series_h.setSpacing(_scale(12))
 
         def _spin_label(text: str) -> QLabel:
             lbl = QLabel(text)
-            lbl.setStyleSheet(f"color: {_C.TEXT_DIM}; font-size: 10px; font-weight: 600;")
+            lbl.setStyleSheet(f"color: {_C.TEXT_DIM}; font-size: {_font_px(10)}px; font-weight: 600;")
             return lbl
 
         series_h.addWidget(_spin_label("Saison :"))
         self._season_spin = QSpinBox()
         self._season_spin.setRange(0, 99)
         self._season_spin.setSpecialValueText("—")
-        self._season_spin.setFixedWidth(60)
+        self._season_spin.setFixedWidth(_scale(60))
         self._season_spin.setStyleSheet(self._spin_style())
         if effective_season > 0:
             self._season_spin.setValue(min(effective_season, 99))
@@ -285,7 +285,7 @@ class TmdbSearchModal(QDialog):
         self._episode_spin = QSpinBox()
         self._episode_spin.setRange(0, 9999)
         self._episode_spin.setSpecialValueText("—")
-        self._episode_spin.setFixedWidth(72)
+        self._episode_spin.setFixedWidth(_scale(72))
         self._episode_spin.setStyleSheet(self._spin_style())
         if effective_episode > 0:
             self._episode_spin.setValue(min(effective_episode, 9999))
@@ -296,22 +296,22 @@ class TmdbSearchModal(QDialog):
         root.addWidget(self._series_row)
 
         self._status_lbl = QLabel("")
-        self._status_lbl.setStyleSheet(f"color: {_C.TEXT_DIM}; font-size: 10px;")
+        self._status_lbl.setStyleSheet(f"color: {_C.TEXT_DIM}; font-size: {_font_px(10)}px;")
         root.addWidget(self._status_lbl)
 
         bottom_row = QWidget()
         bottom_row.setStyleSheet("background: transparent;")
         bottom_h = QHBoxLayout(bottom_row)
         bottom_h.setContentsMargins(0, 0, 0, 0)
-        bottom_h.setSpacing(8)
+        bottom_h.setSpacing(_scale(8))
 
         _logo_path = Path(__file__).parent.parent / "assets" / "tmdb_logo.svg"
         logo_lbl = QLabel()
-        logo_lbl.setFixedSize(80, 34)
+        logo_lbl.setFixedSize(_scale(80), _scale(34))
         logo_lbl.setToolTip("This product uses the TMDB API")
         if _logo_path.exists():
             renderer = QSvgRenderer(str(_logo_path))
-            pix = QPixmap(80, 34)
+            pix = QPixmap(_scale(80), _scale(34))
             pix.fill(Qt.GlobalColor.transparent)
             painter = QPainter(pix)
             renderer.render(painter)
@@ -324,7 +324,7 @@ class TmdbSearchModal(QDialog):
             "endorsed or certified by TMDB."
         )
         tos_lbl.setStyleSheet(
-            f"color: {_C.TEXT_DIM}; font-size: 9px; background: transparent;"
+            f"color: {_C.TEXT_DIM}; font-size: {_font_px(9)}px; background: transparent;"
         )
         bottom_h.addWidget(tos_lbl)
         bottom_h.addStretch()
@@ -343,8 +343,8 @@ class TmdbSearchModal(QDialog):
         btns.setStyleSheet(f"""
             QPushButton {{
                 background: {_C.BG_PANEL}; color: {_C.TEXT_PRI};
-                border: 1px solid {_C.BORDER_LT}; border-radius: 4px;
-                font-size: 11px; padding: 4px 16px;
+                border: 1px solid {_C.BORDER_LT}; border-radius: {_scale(4)}px;
+                font-size: {_font_px(11)}px; padding: {_scale(4)}px {_scale(16)}px;
             }}
             QPushButton:hover {{ background: {_C.BG_CARD}; }}
             QPushButton:disabled {{ color: {_C.TEXT_DIM}; border-color: {_C.BORDER}; }}
@@ -358,16 +358,16 @@ class TmdbSearchModal(QDialog):
     def _line_style(self) -> str:
         return (
             f"QLineEdit {{ background: {_C.BG_PANEL}; color: {_C.TEXT_PRI}; "
-            f"border: 1px solid {_C.BORDER}; border-radius: 4px; "
-            "font-size: 11px; padding: 4px 8px; } "
+            f"border: 1px solid {_C.BORDER}; border-radius: {_scale(4)}px; "
+            f"font-size: {_font_px(11)}px; padding: {_scale(4)}px {_scale(8)}px; }} "
             f"QLineEdit:focus {{ border-color: {_C.ACCENT}; }}"
         )
 
     def _spin_style(self) -> str:
         return (
             f"QSpinBox {{ background: {_C.BG_PANEL}; color: {_C.TEXT_PRI}; "
-            f"border: 1px solid {_C.BORDER}; border-radius: 4px; "
-            "font-size: 11px; padding: 2px 4px; } "
+            f"border: 1px solid {_C.BORDER}; border-radius: {_scale(4)}px; "
+            f"font-size: {_font_px(11)}px; padding: {_scale(2)}px {_scale(4)}px; }} "
             f"QSpinBox:focus {{ border-color: {_C.ACCENT}; }}"
         )
 
