@@ -3,23 +3,34 @@ ui/main_window.py — Fenêtre principale de Mediarecode.
 
 Architecture :
     ┌────────────────────────────────────────────────────────────┐
-    │  MainWindow (QMainWindow)                                  │
-    │  ┌──────────┬─────────────────────────────────────────┐   │
-    │  │ Sidebar  │  QStackedWidget (pages)                 │   │
-    │  │ (NavBar) │  ─ DashboardPage       (index 0)        │   │
-    │  │          │  ─ MergeDoviPanel      (index 1) ✓      │   │
-    │  │          │  ─ AudioConvPage       (index 2) TODO   │   │
-    │  │          │  ─ RemuxPanel          (index 3) ✓      │   │
-    │  │          │  ─ SettingsPage        (index 4) TODO   │   │
-    │  └──────────┴─────────────────────────────────────────┘   │
-    │  ┌──────────────────────────────────────────────────────┐  │
-    │  │  LogPanel (niveaux colorés INFO / OK / WARN / ERROR) │  │
-    │  └──────────────────────────────────────────────────────┘  │
+    │  MainWindow (QMainWindow)                               │
+    │  ┌──────────┬────────────────────────────────────────┐  │
+    │  │ Sidebar  │  QScrollArea                           │  │
+    │  │          │   └─ QStackedWidget (pages)            │  │
+    │  │          │      ─ DashboardPage      (index 0)    │  │
+    │  │          │      ─ MergeDoviPanel     (index 1)    │  │
+    │  │          │      ─ EncodePanel        (index 2)    │  │
+    │  │          │      ─ RemuxPanel         (index 3)    │  │
+    │  │          │      ─ SettingsPanel      (index 4)    │  │
+    │  └──────────┴────────────────────────────────────────┘  │
+    │  ┌────────────────────────────────────────────────────┐  │
+    │  │ Action bar globale : état, progression, exécuter, │  │
+    │  │ annuler                                            │  │
+    │  └────────────────────────────────────────────────────┘  │
+    │  ┌────────────────────────────────────────────────────┐  │
+    │  │ LogPanel global (INFO / OK / WARN / ERROR)        │  │
+    │  └────────────────────────────────────────────────────┘  │
     └────────────────────────────────────────────────────────────┘
 
-Signals exposés :
+Liaisons principales :
+    - la sidebar pilote l'index du QStackedWidget
+    - MergeDoviPanel / EncodePanel / RemuxPanel poussent leurs logs vers LogPanel
+    - RemuxPanel partage ses pistes et métadonnées de sortie avec EncodePanel
+    - SettingsPanel notifie MainWindow quand la configuration est sauvegardée
+
+Signal exposé :
     MainWindow.log_requested(level: str, message: str)
-        → peut être connecté depuis n'importe quel worker/module
+        → point d'entrée global pour envoyer un log vers l'interface
 """
 
 from __future__ import annotations

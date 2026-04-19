@@ -417,15 +417,16 @@ class ToolRunner(QObject):
                 lines: list[str] = []
                 assert proc.stdout is not None
 
-                buf = b""
+                buf: bytes = b""
                 while chunk := proc.stdout.read(256):
                     # Annulation : le processus a été tué par cancel(), read() retourne b""
                     # ou on le tue ici si le signal arrive entre deux lectures.
                     if signals is not None and signals._cancel_event.is_set():
                         proc.kill()
                         raise TaskCancelledError()
+                    chunk_bytes = chunk if isinstance(chunk, bytes) else chunk.encode("utf-8", errors="replace")
                     # Normalise \r\n et \r solitaire en \n pour un split uniforme
-                    buf += chunk.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+                    buf += chunk_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
                     *complete, buf = buf.split(b"\n")
                     for raw in complete:
                         stripped = decode_subprocess_output(raw).rstrip()

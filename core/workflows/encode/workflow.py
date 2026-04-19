@@ -291,7 +291,8 @@ class EncodeWorkflow(QObject):
         per_index: list[str] = []
         any_convert = False
         for out_idx, (src_path, stream_idx) in enumerate(subtitle_tracks):
-            codec = self._subtitle_codec_of(Path(src_path), int(stream_idx))
+            source_path = Path(str(src_path))
+            codec = self._subtitle_codec_of(source_path, int(stream_idx))
             codec_arg, _ = plan_subtitle_codec(codec)
             if codec_arg != "copy":
                 any_convert = True

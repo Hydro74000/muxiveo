@@ -814,7 +814,11 @@ class AppConfig:
         if ini_value is not _MISSING:
             return default if ini_value == "" else int(str(ini_value))
         value = self._settings.value(settings_key, default)
-        return int(value if value not in (None, "") else default)
+        if value in (None, ""):
+            return default
+        if isinstance(value, int):
+            return value
+        return int(str(value))
 
     def _resolve_bool(self, section: str, key: str, settings_key: str, default: bool) -> bool:
         def _as_bool(raw: str) -> bool:
@@ -924,7 +928,8 @@ class AppConfig:
             "ui/startup_logs_expanded",
             False,
         )
-        self.window_geometry: bytes | None = self._settings.value("ui/geometry", None)
+        geometry_value = self._settings.value("ui/geometry", None)
+        self.window_geometry: bytes | None = geometry_value if isinstance(geometry_value, bytes) else None
 
         self.tmdb_api_key = self._resolve_text("metadata", "tmdb_api_key", "metadata/tmdb_api_key", "")
         self.tmdb_bearer_token = self._resolve_text(
