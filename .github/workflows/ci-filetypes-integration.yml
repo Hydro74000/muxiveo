@@ -28,6 +28,7 @@ on:
     branches:
       - main
       - master
+      - devel-stable
     paths:
       - "core/file_types.py"
       - "core/subtitle_codec.py"
