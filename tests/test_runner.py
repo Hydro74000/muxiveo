@@ -42,7 +42,10 @@ from pathlib import Path
 import pytest
 
 # --- PySide6 peut nécessiter un QCoreApplication pour les signaux ---
-# On l'initialise une seule fois au niveau module.
+# On réutilise la QApplication de conftest quand elle est présente ; sinon
+# on crée une QCoreApplication minimale (cas où les deps Qt graphiques
+# manquent sur le runner). Jamais de QCoreApplication "nue" si une
+# QApplication existe déjà → évite de casser les tests widgets qui suivent.
 from PySide6.QtCore import QCoreApplication, Qt
 
 _app: QCoreApplication | None = None
@@ -50,8 +53,17 @@ _app: QCoreApplication | None = None
 
 def _get_app() -> QCoreApplication:
     global _app
-    if _app is None:
-        _app = QCoreApplication.instance() or QCoreApplication(sys.argv)
+    if _app is not None:
+        return _app
+    existing = QCoreApplication.instance()
+    if existing is not None:
+        _app = existing
+        return _app
+    try:
+        from PySide6.QtWidgets import QApplication
+        _app = QApplication(sys.argv)
+    except Exception:
+        _app = QCoreApplication(sys.argv)
     return _app
 
 
