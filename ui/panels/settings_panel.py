@@ -39,14 +39,16 @@ from ui.panels.encode_panel.theme import (
     _section_label,
     _separator,
 )
+from ui.design_system import font_px as _font_px, scale as _scale
 
 
 def _spin_style() -> str:
     return (
         f"QSpinBox{{background:{_C.BG_CARD};color:{_C.TEXT_PRI};"
-        f"border:1px solid {_C.BORDER};border-radius:5px;padding:4px 10px;font-size:11px;}}"
+        f"border:1px solid {_C.BORDER};border-radius:{_scale(5)}px;"
+        f"padding:{_scale(4)}px {_scale(10)}px;font-size:{_font_px(11)}px;}}"
         f"QSpinBox:focus{{border-color:{_C.ACCENT};}}"
-        f"QSpinBox::up-button,QSpinBox::down-button{{width:18px;border:none;background:{_C.BG_HOVER};}}"
+        f"QSpinBox::up-button,QSpinBox::down-button{{width:{_scale(18)}px;border:none;background:{_C.BG_HOVER};}}"
     )
 
 
@@ -76,8 +78,8 @@ class SettingsPanel(QWidget):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet(
             f"QScrollArea{{background:{_C.BG_DEEP};border:none;}}"
-            f"QScrollBar:vertical{{background:{_C.BG_DEEP};width:6px;border:none;}}"
-            f"QScrollBar::handle:vertical{{background:{_C.BORDER_LT};border-radius:3px;min-height:24px;}}"
+            f"QScrollBar:vertical{{background:{_C.BG_DEEP};width:{_scale(6)}px;border:none;}}"
+            f"QScrollBar::handle:vertical{{background:{_C.BORDER_LT};border-radius:{_scale(3)}px;min-height:{_scale(24)}px;}}"
             f"QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{{height:0;}}"
         )
 
@@ -85,14 +87,14 @@ class SettingsPanel(QWidget):
         content.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         content.setStyleSheet(f"background:{_C.BG_DEEP};")
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(28, 24, 28, 24)
-        layout.setSpacing(20)
+        layout.setContentsMargins(_scale(28), _scale(24), _scale(28), _scale(24))
+        layout.setSpacing(_scale(20))
         layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
 
         title = QLabel("Réglages")
         title.setStyleSheet(
-            f"font-size:20px;font-weight:800;color:{_C.TEXT_PRI};"
-            f"background:transparent;letter-spacing:-0.3px;"
+            f"font-size:{_font_px(20)}px;font-weight:800;color:{_C.TEXT_PRI};"
+            f"background:transparent;letter-spacing:-{_scale(1)}px;"
         )
         subtitle = QLabel(
             "Modifiez toutes les valeurs persistées dans config.ini. "
@@ -100,7 +102,7 @@ class SettingsPanel(QWidget):
             "par l'application ; un redémarrage reste conseillé pour repartir sur un état propre."
         )
         subtitle.setWordWrap(True)
-        subtitle.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:12px;background:transparent;")
+        subtitle.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:{_font_px(12)}px;background:transparent;")
         layout.addWidget(title)
         layout.addWidget(subtitle)
         layout.addWidget(_separator())
@@ -112,7 +114,7 @@ class SettingsPanel(QWidget):
             layout.addWidget(self._build_group_card(group))
 
         actions = QHBoxLayout()
-        actions.setSpacing(12)
+        actions.setSpacing(_scale(12))
         reload_btn = _secondary_button("Recharger depuis config.ini")
         reload_btn.clicked.connect(self._on_reload_clicked)
         rerun_setup_btn = _secondary_button("Relancer le setup")
@@ -123,7 +125,7 @@ class SettingsPanel(QWidget):
         self._status_label = QLabel("")
         self._status_label.setWordWrap(True)
         self._status_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self._status_label.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        self._status_label.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:{_font_px(11)}px;background:transparent;")
 
         actions.addWidget(self._status_label, stretch=1)
         actions.addWidget(reload_btn)
@@ -139,8 +141,8 @@ class SettingsPanel(QWidget):
         section_title = group["title"]
         card = _card()
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(14)
+        layout.setContentsMargins(_scale(16), _scale(16), _scale(16), _scale(16))
+        layout.setSpacing(_scale(14))
 
         for index, field in enumerate(group["fields"]):
             layout.addWidget(self._build_field_widget(section, field))
@@ -150,7 +152,7 @@ class SettingsPanel(QWidget):
         layout.addWidget(_separator())
         save_row = QHBoxLayout()
         save_row.setContentsMargins(0, 0, 0, 0)
-        save_row.setSpacing(8)
+        save_row.setSpacing(_scale(8))
         save_row.addStretch()
         save_btn = _secondary_button("Enregistrer")
         save_btn.clicked.connect(
@@ -165,7 +167,7 @@ class SettingsPanel(QWidget):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(_scale(8))
 
         kind = field["kind"]
         if kind == "bool":
@@ -176,12 +178,14 @@ class SettingsPanel(QWidget):
             self._field_widgets[(section, field["key"])] = checkbox
         else:
             label = QLabel(field["label"])
-            label.setStyleSheet(f"color:{_C.TEXT_PRI};font-size:12px;font-weight:600;background:transparent;")
+            label.setStyleSheet(
+                f"color:{_C.TEXT_PRI};font-size:{_font_px(12)}px;font-weight:600;background:transparent;"
+            )
             layout.addWidget(label)
 
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(8)
+            row.setSpacing(_scale(8))
             widget = self._make_editor(section, field)
             row.addWidget(widget, stretch=1)
             if kind in {"directory", "tool"}:
@@ -192,7 +196,7 @@ class SettingsPanel(QWidget):
 
         desc = QLabel(field["description"])
         desc.setWordWrap(True)
-        desc.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        desc.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:{_font_px(11)}px;background:transparent;")
         layout.addWidget(desc)
         return container
 
@@ -210,7 +214,7 @@ class SettingsPanel(QWidget):
         if kind == "int":
             spin = QSpinBox()
             spin.setObjectName(f"{section}.{field['key']}")
-            spin.setRange(0, 1_000_000)
+            spin.setRange(int(field.get("min", 0)), int(field.get("max", 1_000_000)))
             spin.setStyleSheet(_spin_style())
             self._field_widgets[key] = spin
             return spin

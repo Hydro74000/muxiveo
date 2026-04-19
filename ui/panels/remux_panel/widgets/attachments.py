@@ -27,6 +27,7 @@ from core.inspector import AttachmentInfo, STANDARD_MKV_TAGS
 from core.media_info_fetcher import MediaDetails
 from ui.panels.remux_panel.theme import _C
 from ui.panels.tmdb_search_modal import TmdbSearchModal
+from ui.design_system import font_px as _font_px, scale as _scale
 
 class _TagEditDialog(QDialog):
     """
@@ -39,11 +40,11 @@ class _TagEditDialog(QDialog):
     def __init__(self, tags: dict[str, str], parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Éditer les balises")
-        self.setMinimumWidth(580)
-        self.setMinimumHeight(320)
+        self.setMinimumWidth(_scale(580))
+        self.setMinimumHeight(_scale(320))
         self.setStyleSheet(f"""
             QDialog {{ background: {_C.BG_DEEP}; color: {_C.TEXT_PRI}; }}
-            QLabel  {{ color: {_C.TEXT_PRI}; background: transparent; border: none; font-size: 11px; }}
+            QLabel  {{ color: {_C.TEXT_PRI}; background: transparent; border: none; font-size: {_font_px(11)}px; }}
         """)
         # Liste mutable (name_widget, value_edit, row_widget)
         self._rows: list[tuple[QComboBox | QLabel, QLineEdit, QWidget]] = []
@@ -56,21 +57,21 @@ class _TagEditDialog(QDialog):
 
     def _build_ui(self, tags: dict[str, str]) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(14, 14, 14, 14)
-        root.setSpacing(8)
+        root.setContentsMargins(_scale(14), _scale(14), _scale(14), _scale(14))
+        root.setSpacing(_scale(8))
 
         # Scroll pour les lignes de tags
         self._rows_widget = QWidget()
         self._rows_widget.setStyleSheet("background: transparent;")
         self._rows_layout = QVBoxLayout(self._rows_widget)
         self._rows_layout.setContentsMargins(0, 0, 0, 0)
-        self._rows_layout.setSpacing(4)
+        self._rows_layout.setSpacing(_scale(4))
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet(
-            f"QScrollArea {{ background: {_C.BG_CARD}; border: 1px solid {_C.BORDER}; border-radius: 4px; }}"
+            f"QScrollArea {{ background: {_C.BG_CARD}; border: 1px solid {_C.BORDER}; border-radius: {_scale(4)}px; }}"
         )
         scroll.setWidget(self._rows_widget)
         root.addWidget(scroll, stretch=1)
@@ -81,17 +82,17 @@ class _TagEditDialog(QDialog):
 
         # Bouton Ajouter
         add_btn = QPushButton("+ Ajouter un tag")
-        add_btn.setFixedHeight(26)
+        add_btn.setFixedHeight(_scale(26))
         add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         add_btn.setStyleSheet(f"""
             QPushButton {{
                 background: transparent;
                 color: {_C.ACCENT};
                 border: 1px solid {_C.ACCENT_DIM};
-                border-radius: 4px;
-                font-size: 10px;
+                border-radius: {_scale(4)}px;
+                font-size: {_font_px(10)}px;
                 font-weight: 600;
-                padding: 0 12px;
+                padding: 0 {_scale(12)}px;
             }}
             QPushButton:hover {{ background: {_C.ACCENT_DIM}; color: #fff; }}
         """)
@@ -109,9 +110,9 @@ class _TagEditDialog(QDialog):
                 background: {_C.BG_PANEL};
                 color: {_C.TEXT_PRI};
                 border: 1px solid {_C.BORDER_LT};
-                border-radius: 4px;
-                font-size: 11px;
-                padding: 4px 16px;
+                border-radius: {_scale(4)}px;
+                font-size: {_font_px(11)}px;
+                padding: {_scale(4)}px {_scale(16)}px;
             }}
             QPushButton:hover {{ background: {_C.BG_CARD}; }}
         """)
@@ -120,7 +121,7 @@ class _TagEditDialog(QDialog):
     def _row_stylesheet(self) -> str:
         return (
             f"QLineEdit {{ background: {_C.BG_DEEP}; color: {_C.TEXT_PRI}; "
-            f"border: 1px solid {_C.BORDER}; border-radius: 3px; font-size: 11px; padding: 2px 6px; }}"
+            f"border: 1px solid {_C.BORDER}; border-radius: {_scale(3)}px; font-size: {_font_px(11)}px; padding: {_scale(2)}px {_scale(6)}px; }}"
             f"QLineEdit:focus {{ border-color: {_C.ACCENT}; }}"
         )
 
@@ -129,13 +130,13 @@ class _TagEditDialog(QDialog):
         row = QWidget()
         row.setStyleSheet("background: transparent;")
         h = QHBoxLayout(row)
-        h.setContentsMargins(4, 2, 4, 2)
-        h.setSpacing(8)
+        h.setContentsMargins(_scale(4), _scale(2), _scale(4), _scale(2))
+        h.setSpacing(_scale(8))
 
         name_lbl = QLabel(name)
-        name_lbl.setFixedWidth(160)
+        name_lbl.setFixedWidth(_scale(160))
         name_lbl.setStyleSheet(
-            f"color: {_C.TEXT_DIM}; font-size: 10px; font-weight: 600; "
+            f"color: {_C.TEXT_DIM}; font-size: {_font_px(10)}px; font-weight: 600; "
             "background: transparent; border: none;"
         )
         h.addWidget(name_lbl)
@@ -155,12 +156,12 @@ class _TagEditDialog(QDialog):
         row = QWidget()
         row.setStyleSheet("background: transparent;")
         h = QHBoxLayout(row)
-        h.setContentsMargins(4, 2, 4, 2)
-        h.setSpacing(8)
+        h.setContentsMargins(_scale(4), _scale(2), _scale(4), _scale(2))
+        h.setSpacing(_scale(8))
 
         name_combo = QComboBox()
         name_combo.setEditable(True)
-        name_combo.setFixedWidth(160)
+        name_combo.setFixedWidth(_scale(160))
         sorted_tags = sorted((STANDARD_MKV_TAGS | {"COMMENTS"}) - {"TITLE"})
         name_combo.addItems(sorted_tags)
         name_combo.setCurrentText("")
@@ -169,9 +170,9 @@ class _TagEditDialog(QDialog):
                 background: {_C.BG_DEEP};
                 color: {_C.TEXT_PRI};
                 border: 1px solid {_C.BORDER};
-                border-radius: 3px;
-                font-size: 11px;
-                padding: 2px 6px;
+                border-radius: {_scale(3)}px;
+                font-size: {_font_px(11)}px;
+                padding: {_scale(2)}px {_scale(6)}px;
             }}
             QComboBox:focus {{ border-color: {_C.ACCENT}; }}
             QComboBox QAbstractItemView {{
@@ -197,13 +198,13 @@ class _TagEditDialog(QDialog):
         self, row: QWidget, name_w: QWidget, val_edit: QLineEdit
     ) -> QPushButton:
         btn = QPushButton("✕")
-        btn.setFixedSize(20, 20)
+        btn.setFixedSize(_scale(20), _scale(20))
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(f"""
             QPushButton {{
                 background: transparent; color: {_C.TEXT_DIM};
-                border: 1px solid {_C.BORDER}; border-radius: 3px;
-                font-size: 9px; font-weight: 700;
+                border: 1px solid {_C.BORDER}; border-radius: {_scale(3)}px;
+                font-size: {_font_px(9)}px; font-weight: 700;
             }}
             QPushButton:hover {{ color: {_C.ERROR}; border-color: {_C.ERROR}; background: #1f0e0e; }}
         """)
@@ -276,7 +277,7 @@ class _AttachmentItemWidget(QWidget):
         self.tmdb_cover_url      = tmdb_cover_url
         self.tmdb_cover_filename = tmdb_cover_filename
         self._orig_tags:   dict[str, str] = tags or {}
-        self.setFixedHeight(28)
+        self.setFixedHeight(_scale(28))
         self._build_ui(source_color)
 
     @property
@@ -293,21 +294,21 @@ class _AttachmentItemWidget(QWidget):
 
     def _build_ui(self, source_color: str) -> None:
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(12, 0, 8, 0)
-        lay.setSpacing(6)
+        lay.setContentsMargins(_scale(12), 0, _scale(8), 0)
+        lay.setSpacing(_scale(6))
 
         # Carré coloré source
         if source_color and not self.is_manual:
             sq = QLabel("█")
-            sq.setFixedWidth(14)
+            sq.setFixedWidth(_scale(14))
             sq.setAlignment(Qt.AlignmentFlag.AlignCenter)
             sq.setStyleSheet(
-                f"color: {source_color}; background: transparent; border: none; font-size: 11px;"
+                f"color: {source_color}; background: transparent; border: none; font-size: {_font_px(11)}px;"
             )
             lay.addWidget(sq)
         else:
             sp = QWidget()
-            sp.setFixedWidth(14)
+            sp.setFixedWidth(_scale(14))
             lay.addWidget(sp)
 
         # Case à cocher
@@ -315,9 +316,9 @@ class _AttachmentItemWidget(QWidget):
         self._cb.setChecked(True)
         self._cb.setStyleSheet(f"""
             QCheckBox::indicator {{
-                width: 13px;
-                height: 13px;
-                border-radius: 3px;
+                width: {_scale(13)}px;
+                height: {_scale(13)}px;
+                border-radius: {_scale(3)}px;
                 border: 1px solid {_C.BORDER_LT};
                 background: {_C.BG_DEEP};
             }}
@@ -353,14 +354,14 @@ class _AttachmentItemWidget(QWidget):
         elif self.is_manual and self.manual_path:
             lbl.setToolTip(str(self.manual_path))
         lbl.setStyleSheet(
-            f"color: {color}; background: transparent; border: none; font-size: 11px;"
+            f"color: {color}; background: transparent; border: none; font-size: {_font_px(11)}px;"
         )
         lay.addWidget(lbl, stretch=1)
 
         # Bouton ✕ (uniquement pour les ajouts manuels)
         if self.is_manual:
             rm_btn = QPushButton("✕")
-            rm_btn.setFixedSize(18, 18)
+            rm_btn.setFixedSize(_scale(18), _scale(18))
             rm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             rm_btn.setToolTip("Retirer cet attachement")
             rm_btn.setStyleSheet(f"""
@@ -368,8 +369,8 @@ class _AttachmentItemWidget(QWidget):
                     background: transparent;
                     color: {_C.TEXT_DIM};
                     border: 1px solid {_C.BORDER};
-                    border-radius: 3px;
-                    font-size: 9px;
+                    border-radius: {_scale(3)}px;
+                    font-size: {_font_px(9)}px;
                     font-weight: 700;
                 }}
                 QPushButton:hover {{
@@ -382,7 +383,7 @@ class _AttachmentItemWidget(QWidget):
             lay.addWidget(rm_btn)
         elif not self.is_tag:
             sp2 = QWidget()
-            sp2.setFixedWidth(18)
+            sp2.setFixedWidth(_scale(18))
             lay.addWidget(sp2)
 
 
@@ -434,7 +435,7 @@ class _AttachmentPanel(QFrame):
             QFrame {{
                 background: {_C.BG_CARD};
                 border: 1px solid {_C.BORDER};
-                border-radius: 6px;
+                border-radius: {_scale(6)}px;
             }}
         """)
         root = QVBoxLayout(self)
@@ -447,21 +448,21 @@ class _AttachmentPanel(QFrame):
             QWidget {{
                 background: {_C.BG_PANEL};
                 border-bottom: 1px solid {_C.BORDER};
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
+                border-top-left-radius: {_scale(6)}px;
+                border-top-right-radius: {_scale(6)}px;
             }}
         """)
-        header.setFixedHeight(32)
+        header.setFixedHeight(_scale(32))
         h_lay = QHBoxLayout(header)
-        h_lay.setContentsMargins(12, 0, 8, 0)
-        h_lay.setSpacing(8)
+        h_lay.setContentsMargins(_scale(12), 0, _scale(8), 0)
+        h_lay.setSpacing(_scale(8))
 
         title_lbl = QLabel("PIÈCES JOINTES  &  BALISES")
         title_lbl.setStyleSheet(f"""
             color: {_C.TEXT_DIM};
-            font-size: 9px;
+            font-size: {_font_px(9)}px;
             font-weight: 700;
-            letter-spacing: 2px;
+            letter-spacing: {_scale(2)}px;
             background: transparent;
             border: none;
         """)
@@ -469,17 +470,17 @@ class _AttachmentPanel(QFrame):
         h_lay.addStretch()
 
         self._imdb_btn = QPushButton("IMDb / TMDB")
-        self._imdb_btn.setFixedHeight(22)
+        self._imdb_btn.setFixedHeight(_scale(22))
         self._imdb_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._imdb_btn.setStyleSheet(f"""
             QPushButton {{
                 background: transparent;
                 color: {_C.ACCENT};
                 border: 1px solid {_C.ACCENT_DIM};
-                border-radius: 4px;
-                font-size: 10px;
+                border-radius: {_scale(4)}px;
+                font-size: {_font_px(10)}px;
                 font-weight: 600;
-                padding: 0 10px;
+                padding: 0 {_scale(10)}px;
             }}
             QPushButton:hover {{
                 background: {_C.ACCENT_DIM};
@@ -490,7 +491,7 @@ class _AttachmentPanel(QFrame):
         h_lay.addWidget(self._imdb_btn)
 
         self._edit_tags_btn = QPushButton("Éditer les tags")
-        self._edit_tags_btn.setFixedHeight(22)
+        self._edit_tags_btn.setFixedHeight(_scale(22))
         self._edit_tags_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._edit_tags_btn.setEnabled(False)
         self._edit_tags_btn.setStyleSheet(f"""
@@ -498,10 +499,10 @@ class _AttachmentPanel(QFrame):
                 background: transparent;
                 color: {_C.TRACK_TAGS};
                 border: 1px solid {_C.TRACK_TAGS};
-                border-radius: 4px;
-                font-size: 10px;
+                border-radius: {_scale(4)}px;
+                font-size: {_font_px(10)}px;
                 font-weight: 600;
-                padding: 0 10px;
+                padding: 0 {_scale(10)}px;
             }}
             QPushButton:hover {{
                 background: rgba(245,160,48,0.15);
@@ -515,17 +516,17 @@ class _AttachmentPanel(QFrame):
         h_lay.addWidget(self._edit_tags_btn)
 
         add_btn = QPushButton("+ Ajouter…")
-        add_btn.setFixedHeight(22)
+        add_btn.setFixedHeight(_scale(22))
         add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         add_btn.setStyleSheet(f"""
             QPushButton {{
                 background: transparent;
                 color: {_C.ACCENT};
                 border: 1px solid {_C.ACCENT_DIM};
-                border-radius: 4px;
-                font-size: 10px;
+                border-radius: {_scale(4)}px;
+                font-size: {_font_px(10)}px;
                 font-weight: 600;
-                padding: 0 10px;
+                padding: 0 {_scale(10)}px;
             }}
             QPushButton:hover {{
                 background: {_C.ACCENT_DIM};
@@ -539,9 +540,9 @@ class _AttachmentPanel(QFrame):
         # Placeholder
         self._placeholder = QLabel("Aucune pièce jointe ni balise dans les fichiers sources")
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._placeholder.setContentsMargins(0, 16, 0, 16)
+        self._placeholder.setContentsMargins(0, _scale(16), 0, _scale(16))
         self._placeholder.setStyleSheet(
-            f"color: {_C.TEXT_DIM}; font-size: 11px; background: transparent; border: none;"
+            f"color: {_C.TEXT_DIM}; font-size: {_font_px(11)}px; background: transparent; border: none;"
         )
         root.addWidget(self._placeholder)
 
@@ -549,7 +550,7 @@ class _AttachmentPanel(QFrame):
         self._items_widget = QWidget()
         self._items_widget.setStyleSheet("background: transparent;")
         self._items_layout = QVBoxLayout(self._items_widget)
-        self._items_layout.setContentsMargins(0, 4, 0, 4)
+        self._items_layout.setContentsMargins(0, _scale(4), 0, _scale(4))
         self._items_layout.setSpacing(0)
         root.addWidget(self._items_widget)
 

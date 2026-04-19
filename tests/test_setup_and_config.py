@@ -227,6 +227,69 @@ class TestAppConfigRamBuffer:
 
         assert cfg.startup_logs_expanded is False
 
+    def test_default_ui_scale_percent_is_100(self, tmp_path):
+        """Sans clé explicite, l'échelle UI vaut 100%."""
+        from core.config import AppConfig
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.dict(os.environ, {}, clear=False):
+                cfg = AppConfig()
+
+        assert cfg.ui_scale_percent == 100
+
+    @pytest.mark.parametrize(
+        ("raw_value", "expected"),
+        [
+            ("50", 75),
+            ("75", 75),
+            ("125", 125),
+            ("180", 150),
+        ],
+    )
+    def test_ui_scale_percent_is_clamped_from_ini(self, tmp_path, raw_value, expected):
+        """L'échelle UI reste bornée entre 75 et 150."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text(f"[ui]\nui_scale_percent = {raw_value}\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.ui_scale_percent == expected
+
+    def test_ui_scale_percent_save_and_reload_roundtrip(self, tmp_path):
+        """La valeur sauvegardée en config est bien rechargée."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[ui]\nui_scale_percent = 100\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+                cfg.ui_scale_percent = 130
+                cfg.save_to_ini()
+                cfg.reload()
+
+        assert cfg.ui_scale_percent == 130
+        assert "ui_scale_percent = 130" in ini_path.read_text(encoding="utf-8")
+
     def test_ini_startup_logs_expanded_true_enables_expanded_logs(self, tmp_path):
         """La clé startup_logs_expanded=true déplie les logs au démarrage."""
         import core.config as cfg_mod

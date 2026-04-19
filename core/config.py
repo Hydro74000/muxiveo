@@ -120,6 +120,13 @@ def _normalize_ffmpeg_thread_count(value: int | None) -> int:
     return value
 
 
+def _normalize_ui_scale_percent(value: int | None) -> int:
+    """Clamp UI scale percentage to a safe interactive range."""
+    if value is None:
+        return 100
+    return max(75, min(150, int(value)))
+
+
 def _appimage_tools_dir() -> Path | None:
     """
     Dans un AppImage all-inclusive, retourne le chemin absolu de usr/bin/tools/.
@@ -723,6 +730,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "language", "attr": "language", "kind": "language", "label": "Langue de l'interface", "description": "Langue utilisée pour l'UI et les messages internes."},
             {"key": "log_max_lines", "attr": "log_max_lines", "kind": "int", "label": "Nombre max de lignes de log", "description": "Nombre maximum de lignes conservées dans le panneau de log."},
             {"key": "theme", "attr": "theme", "kind": "choice", "label": "Thème", "description": "Thème principal pour l'interface. Le changement de thème nécessite de redémarrer l'application.", "options": (("dark", "Sombre"), ("light", "Clair"))},
+            {"key": "ui_scale_percent", "attr": "ui_scale_percent", "kind": "int", "label": "Échelle de l'interface (%)", "description": "Facteur d'échelle appliqué à l'interface. Le changement est appliqué immédiatement autant que possible, mais un redémarrage peut être recommandé pour uniformiser tout l'affichage.", "min": 75, "max": 150},
             {"key": "startup_panel", "attr": "startup_panel", "kind": "choice", "label": "Panneau à afficher au démarrage", "description": "Panneau chargé en premier au lancement de l'application.", "options": UI_STARTUP_PANEL_CHOICES},
             {"key": "startup_menu_compact", "attr": "startup_menu_compact", "kind": "bool", "label": "Démarrer avec le menu en mode Compact", "description": "Si activé, le menu latéral est réduit en mode icônes au lancement."},
             {"key": "startup_logs_expanded", "attr": "startup_logs_expanded", "kind": "bool", "label": "Ouvrir les logs au démarrage de l'application", "description": "Si activé, le panneau de logs est déplié au lancement."},
@@ -916,6 +924,9 @@ class AppConfig:
         )
         self.log_max_lines = self._resolve_int("ui", "log_max_lines", "ui/log_max_lines", 2000)
         self.theme = self._resolve_text("ui", "theme", "ui/theme", "dark")
+        self.ui_scale_percent = _normalize_ui_scale_percent(
+            self._resolve_int("ui", "ui_scale_percent", "ui/ui_scale_percent", 100)
+        )
         self.startup_panel = _normalize_startup_panel(
             self._resolve_text("ui", "startup_panel", "ui/startup_panel", "dashboard")
         )
@@ -978,6 +989,7 @@ class AppConfig:
         s.setValue("ui/language", self.language)
         s.setValue("ui/log_max_lines", self.log_max_lines)
         s.setValue("ui/theme", self.theme)
+        s.setValue("ui/ui_scale_percent", self.ui_scale_percent)
         s.setValue("ui/startup_panel", self.startup_panel)
         s.setValue(
             "ui/startup_menu_compact",
@@ -1149,6 +1161,7 @@ class AppConfig:
                 "language": self.language,
                 "log_max_lines": self.log_max_lines,
                 "theme": self.theme,
+                "ui_scale_percent": self.ui_scale_percent,
                 "startup_panel": self.startup_panel,
                 "startup_menu_compact": self.startup_menu_compact,
                 "startup_logs_expanded": self.startup_logs_expanded,

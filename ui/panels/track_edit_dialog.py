@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 from core.i18n import apply_translations, translate_text
 from core.lang_tags import Rfc5646LanguageTags
 from core.workflows.remux_models import TrackEntry
-from ui.design_system import colors as _C
+from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
 
 
 _SIGNED_INT_RE = re.compile(r"^[+-]?\d+$")
@@ -41,7 +41,7 @@ _SIGNED_INT_RE = re.compile(r"^[+-]?\d+$")
 def _separator() -> QFrame:
     sep = QFrame()
     sep.setFrameShape(QFrame.Shape.HLine)
-    sep.setFixedHeight(1)
+    sep.setFixedHeight(_scale(1))
     sep.setStyleSheet(f"background: {_C.BORDER}; border: none;")
     return sep
 
@@ -77,7 +77,7 @@ class TrackEditDialog(QDialog):
         )
         self.setWindowTitle(f"{title} — {entry.type_long}  ·  {entry.codec}")
         self.setModal(True)
-        self.setMinimumWidth(440)
+        self.setMinimumWidth(_scale(440))
         self.setStyleSheet(f"""
             QDialog {{
                 background: {_C.BG_PANEL};
@@ -90,9 +90,9 @@ class TrackEditDialog(QDialog):
                 background: {_C.BG_DEEP};
                 color: {_C.TEXT_PRI};
                 border: 1px solid {_C.BORDER_LT};
-                border-radius: 4px;
-                padding: 4px 8px;
-                font-size: 12px;
+                border-radius: {_scale(4)}px;
+                padding: {_scale(4)}px {_scale(8)}px;
+                font-size: {_font_px(12)}px;
             }}
             QLineEdit:focus {{
                 border-color: {_C.ACCENT};
@@ -101,13 +101,13 @@ class TrackEditDialog(QDialog):
                 background: {_C.BG_DEEP};
                 color: {_C.TEXT_PRI};
                 border: 1px solid {_C.BORDER_LT};
-                border-radius: 4px;
-                padding: 4px 8px;
-                font-size: 12px;
+                border-radius: {_scale(4)}px;
+                padding: {_scale(4)}px {_scale(8)}px;
+                font-size: {_font_px(12)}px;
             }}
             QComboBox::drop-down {{
                 border: none;
-                padding-right: 6px;
+                padding-right: {_scale(6)}px;
             }}
             QComboBox QAbstractItemView {{
                 background: {_C.BG_CARD};
@@ -117,30 +117,30 @@ class TrackEditDialog(QDialog):
             }}
             QGroupBox {{
                 color: {_C.TEXT_DIM};
-                font-size: 9px;
+                font-size: {_font_px(9)}px;
                 font-weight: 700;
-                letter-spacing: 2px;
+                letter-spacing: {_scale(2)}px;
                 border: 1px solid {_C.BORDER};
-                border-radius: 6px;
-                margin-top: 10px;
-                padding-top: 8px;
+                border-radius: {_scale(6)}px;
+                margin-top: {_scale(10)}px;
+                padding-top: {_scale(8)}px;
             }}
             QGroupBox::title {{
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
-                left: 10px;
-                padding: 0 4px;
+                left: {_scale(10)}px;
+                padding: 0 {_scale(4)}px;
                 background: {_C.BG_PANEL};
             }}
             QCheckBox {{
                 color: {_C.TEXT_PRI};
-                font-size: 12px;
-                spacing: 8px;
+                font-size: {_font_px(12)}px;
+                spacing: {_scale(8)}px;
             }}
             QCheckBox::indicator {{
-                width: 14px;
-                height: 14px;
-                border-radius: 3px;
+                width: {_scale(14)}px;
+                height: {_scale(14)}px;
+                border-radius: {_scale(3)}px;
                 border: 1px solid {_C.BORDER_LT};
                 background: {_C.BG_DEEP};
             }}
@@ -152,11 +152,11 @@ class TrackEditDialog(QDialog):
                 background: {_C.BG_CARD};
                 color: {_C.TEXT_SEC};
                 border: 1px solid {_C.BORDER};
-                border-radius: 5px;
-                font-size: 11px;
+                border-radius: {_scale(5)}px;
+                font-size: {_font_px(11)}px;
                 font-weight: 600;
-                padding: 5px 18px;
-                min-width: 70px;
+                padding: {_scale(5)}px {_scale(18)}px;
+                min-width: {_scale(70)}px;
             }}
             QDialogButtonBox QPushButton:hover {{
                 background: {_C.BG_HOVER};
@@ -183,8 +183,8 @@ class TrackEditDialog(QDialog):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setSpacing(14)
-        root.setContentsMargins(20, 20, 20, 20)
+        root.setSpacing(_scale(14))
+        root.setContentsMargins(_scale(20), _scale(20), _scale(20), _scale(20))
 
         # --- En-tête : type + codec + infos techniques ---
         header_parts = [self._entry.type_long, self._entry.codec]
@@ -194,7 +194,7 @@ class TrackEditDialog(QDialog):
         header_lbl = QLabel("  ·  ".join(header_parts))
         header_lbl.setStyleSheet(f"""
             color: {_C.TEXT_SEC};
-            font-size: 11px;
+            font-size: {_font_px(11)}px;
             font-family: 'JetBrains Mono', monospace;
             background: transparent;
         """)
@@ -206,12 +206,12 @@ class TrackEditDialog(QDialog):
         self._name_widget = QWidget()
         name_lay = QVBoxLayout(self._name_widget)
         name_lay.setContentsMargins(0, 0, 0, 0)
-        name_lay.setSpacing(4)
+        name_lay.setSpacing(_scale(4))
 
         name_lbl = QLabel("NOM DE LA PISTE")
         name_lbl.setStyleSheet(
-            f"color: {_C.TEXT_DIM}; font-size: 9px; font-weight: 700; "
-            f"letter-spacing: 2px; background: transparent;"
+            f"color: {_C.TEXT_DIM}; font-size: {_font_px(9)}px; font-weight: 700; "
+            f"letter-spacing: {_scale(2)}px; background: transparent;"
         )
         name_lay.addWidget(name_lbl)
 
@@ -223,17 +223,17 @@ class TrackEditDialog(QDialog):
         # --- Section Langue (toujours visible) ---
         lang_lbl = QLabel("LANGUE  (RFC 5646)")
         lang_lbl.setStyleSheet(
-            f"color: {_C.TEXT_DIM}; font-size: 9px; font-weight: 700; "
-            f"letter-spacing: 2px; background: transparent;"
+            f"color: {_C.TEXT_DIM}; font-size: {_font_px(9)}px; font-weight: 700; "
+            f"letter-spacing: {_scale(2)}px; background: transparent;"
         )
         root.addWidget(lang_lbl)
 
         lang_row = QHBoxLayout()
-        lang_row.setSpacing(8)
+        lang_row.setSpacing(_scale(8))
 
         self._lang_edit = QLineEdit()
         self._lang_edit.setPlaceholderText("ex : fr, en, ja, und…")
-        self._lang_edit.setMaximumWidth(120)
+        self._lang_edit.setMaximumWidth(_scale(120))
         lang_row.addWidget(self._lang_edit)
 
         self._lang_combo = QComboBox()
@@ -246,7 +246,7 @@ class TrackEditDialog(QDialog):
 
         self._lang_warn = QLabel("⚠  Balise non reconnue — vérifiez la valeur RFC 5646")
         self._lang_warn.setStyleSheet(
-            f"color: {_C.WARN}; font-size: 10px; background: transparent;"
+            f"color: {_C.WARN}; font-size: {_font_px(10)}px; background: transparent;"
         )
         self._lang_warn.setVisible(False)
         root.addWidget(self._lang_warn)
@@ -254,8 +254,8 @@ class TrackEditDialog(QDialog):
         # --- Section Flags (cachée pour vidéo) ---
         self._flags_group = QGroupBox("FLAGS")
         flags_lay = QVBoxLayout(self._flags_group)
-        flags_lay.setSpacing(6)
-        flags_lay.setContentsMargins(12, 8, 12, 10)
+        flags_lay.setSpacing(_scale(6))
+        flags_lay.setContentsMargins(_scale(12), _scale(8), _scale(12), _scale(10))
 
         self._cb_enabled    = QCheckBox("Piste activée")
         self._cb_default    = QCheckBox("Piste par défaut")
@@ -276,18 +276,18 @@ class TrackEditDialog(QDialog):
 
         # --- Ligne basse : décalage + boutons OK/Annuler ---
         bottom_row = QHBoxLayout()
-        bottom_row.setSpacing(10)
+        bottom_row.setSpacing(_scale(10))
 
         offset_lbl = QLabel("DÉCALAGE TEMPOREL (ms)")
         offset_lbl.setStyleSheet(
-            f"color: {_C.TEXT_DIM}; font-size: 9px; font-weight: 700; "
-            f"letter-spacing: 1px; background: transparent;"
+            f"color: {_C.TEXT_DIM}; font-size: {_font_px(9)}px; font-weight: 700; "
+            f"letter-spacing: {_scale(1)}px; background: transparent;"
         )
         bottom_row.addWidget(offset_lbl)
 
         self._offset_edit = QLineEdit()
         self._offset_edit.setPlaceholderText("ex : +125, -80, 0")
-        self._offset_edit.setMaximumWidth(140)
+        self._offset_edit.setMaximumWidth(_scale(140))
         bottom_row.addWidget(self._offset_edit)
         bottom_row.addStretch()
 
@@ -302,7 +302,7 @@ class TrackEditDialog(QDialog):
 
         self._offset_warn = QLabel("⚠  Valeur invalide — entier signé attendu")
         self._offset_warn.setStyleSheet(
-            f"color: {_C.WARN}; font-size: 10px; background: transparent;"
+            f"color: {_C.WARN}; font-size: {_font_px(10)}px; background: transparent;"
         )
         self._offset_warn.setVisible(False)
         root.addWidget(self._offset_warn)
@@ -385,9 +385,9 @@ class TrackEditDialog(QDialog):
                 background: {_C.BG_DEEP};
                 color: {_C.TEXT_PRI};
                 border: 1px solid {border};
-                border-radius: 4px;
-                padding: 4px 8px;
-                font-size: 12px;
+                border-radius: {_scale(4)}px;
+                padding: {_scale(4)}px {_scale(8)}px;
+                font-size: {_font_px(12)}px;
             }}
         """)
 
@@ -412,9 +412,9 @@ class TrackEditDialog(QDialog):
                 background: {_C.BG_DEEP};
                 color: {_C.TEXT_PRI};
                 border: 1px solid {border};
-                border-radius: 4px;
-                padding: 4px 8px;
-                font-size: 12px;
+                border-radius: {_scale(4)}px;
+                padding: {_scale(4)}px {_scale(8)}px;
+                font-size: {_font_px(12)}px;
             }}
         """)
 

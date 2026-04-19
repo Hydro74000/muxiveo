@@ -83,11 +83,13 @@ def main() -> int:
     # Police par défaut propre
     default_font = QFont("Segoe UI", 10) if sys.platform == "win32" else QFont("SF Pro Text", 10)
     default_font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
-    app.setFont(default_font)
 
     # Chargement de la configuration globale
     config = AppConfig()
     DesignSystem.set_theme(config.theme)
+    DesignSystem.set_ui_scale(config.ui_scale_percent)
+    default_font.setPointSizeF(max(8.0, 10.0 * DesignSystem.scale_factor()))
+    app.setFont(default_font)
     DesignSystem.apply_to_application(app)
     set_current_language(config.language)
     _prompt_work_dir_cleanup(config)

@@ -133,6 +133,29 @@ def test_settings_panel_writes_startup_logs_expanded_to_ini(tmp_path, qt_app):
         assert cfg.startup_logs_expanded is True
 
 
+def test_settings_panel_writes_ui_scale_percent_to_ini(tmp_path, qt_app):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[ui]\nui_scale_percent = 100\n", encoding="utf-8")
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path):
+        mock_qs.return_value = _mock_qsettings()
+        cfg = AppConfig()
+
+        panel = SettingsPanel(cfg)
+        spin = panel.widget_for("ui", "ui_scale_percent")
+        spin.setValue(125)
+        panel._on_save_clicked()
+
+        assert "ui_scale_percent = 125" in ini_path.read_text(encoding="utf-8")
+        assert cfg.ui_scale_percent == 125
+
+
 def test_settings_panel_writes_audio_encoding_values_to_ini(tmp_path, qt_app):
     import core.config as cfg_mod
     from core.config import AppConfig

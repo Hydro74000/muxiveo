@@ -39,6 +39,7 @@ from ui.panels.remux_panel.theme import (
     _section_label,
     _separator,
 )
+from ui.design_system import font_px as _font_px, scale as _scale
 from ui.panels.remux_panel.widgets.attachments import _AttachmentPanel
 from ui.panels.remux_panel.widgets.chapters import _ChapterPanel
 from ui.panels.remux_panel.widgets.file_list import _FileListWidget
@@ -129,13 +130,13 @@ class RemuxPanel(QWidget):
             QScrollArea {{ background: {_C.BG_DEEP}; border: none; }}
             QScrollBar:vertical {{
                 background: {_C.BG_DEEP};
-                width: 6px;
+                width: {_scale(6)}px;
                 border: none;
             }}
             QScrollBar::handle:vertical {{
                 background: {_C.BORDER_LT};
-                border-radius: 3px;
-                min-height: 24px;
+                border-radius: {_scale(3)}px;
+                min-height: {_scale(24)}px;
             }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
         """)
@@ -143,20 +144,20 @@ class RemuxPanel(QWidget):
         content = QWidget()
         content.setStyleSheet(f"background: {_C.BG_DEEP};")
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(28, 24, 28, 24)
-        content_layout.setSpacing(20)
+        content_layout.setContentsMargins(_scale(28), _scale(24), _scale(28), _scale(24))
+        content_layout.setSpacing(_scale(20))
         content_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
 
         title = QLabel("Manipulation Conteneur")
         title.setStyleSheet(f"""
-            font-size: 20px;
+            font-size: {_font_px(20)}px;
             font-weight: 800;
             color: {_C.TEXT_PRI};
             background: transparent;
-            letter-spacing: -0.3px;
+            letter-spacing: -{_scale(1)}px;
         """)
         subtitle = QLabel("Remuxage, fusion et sélection de pistes (vidéo/audio/sous-titres externes) — sans réencodage")
-        subtitle.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: 12px; background: transparent;")
+        subtitle.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(12)}px; background: transparent;")
         content_layout.addWidget(title)
         content_layout.addWidget(subtitle)
         content_layout.addWidget(_separator())
@@ -170,7 +171,7 @@ class RemuxPanel(QWidget):
         content_layout.addWidget(_separator())
 
         track_header = QHBoxLayout()
-        track_header.setSpacing(8)
+        track_header.setSpacing(_scale(8))
         track_header.addWidget(_section_label("PISTES"))
         track_header.addStretch()
 
@@ -183,17 +184,17 @@ class RemuxPanel(QWidget):
 
         self._filter_btn = QPushButton("Sélectionnées seulement")
         self._filter_btn.setCheckable(True)
-        self._filter_btn.setFixedHeight(28)
+        self._filter_btn.setFixedHeight(_scale(28))
         self._filter_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._filter_btn.setStyleSheet(f"""
             QPushButton {{
                 background: {_C.BG_CARD};
                 color: {_C.TEXT_SEC};
                 border: 1px solid {_C.BORDER};
-                border-radius: 5px;
-                font-size: 11px;
+                border-radius: {_scale(5)}px;
+                font-size: {_font_px(11)}px;
                 font-weight: 500;
-                padding: 0 12px;
+                padding: 0 {_scale(12)}px;
             }}
             QPushButton:hover {{
                 background: {_C.BG_HOVER};
@@ -213,7 +214,7 @@ class RemuxPanel(QWidget):
         content_layout.addLayout(track_header)
 
         hint = QLabel("Glisser-déposer les lignes pour réordonner · Double-clic pour éditer Langue / Titre")
-        hint.setStyleSheet(f"color: {_C.TEXT_DIM}; font-size: 10px; background: transparent;")
+        hint.setStyleSheet(f"color: {_C.TEXT_DIM}; font-size: {_font_px(10)}px; background: transparent;")
         content_layout.addWidget(hint)
 
         self._track_table = _TrackTable()
@@ -225,8 +226,8 @@ class RemuxPanel(QWidget):
 
         title_card = _card()
         title_card_layout = QVBoxLayout(title_card)
-        title_card_layout.setContentsMargins(16, 10, 16, 10)
-        title_card_layout.setSpacing(6)
+        title_card_layout.setContentsMargins(_scale(16), _scale(10), _scale(16), _scale(10))
+        title_card_layout.setSpacing(_scale(6))
         title_card_layout.addWidget(_section_label("TITRE DU FICHIER"))
 
         self._file_title_edit = QLineEdit()
@@ -254,7 +255,7 @@ class RemuxPanel(QWidget):
 
         content_layout.addWidget(_section_label("FICHIER DE SORTIE"))
         out_row = QHBoxLayout()
-        out_row.setSpacing(8)
+        out_row.setSpacing(_scale(8))
 
         self._output_edit = QLineEdit()
         self._output_edit.setPlaceholderText("/chemin/vers/sortie.mkv")
@@ -279,8 +280,8 @@ class RemuxPanel(QWidget):
 
         self._cmd_preview = QPlainTextEdit()
         self._cmd_preview.setReadOnly(True)
-        self._cmd_preview.setFixedHeight(120)
-        mono = QFont("JetBrains Mono", 9)
+        self._cmd_preview.setFixedHeight(_scale(120))
+        mono = QFont("JetBrains Mono", _font_px(9))
         mono.setStyleHint(QFont.StyleHint.Monospace)
         self._cmd_preview.setFont(mono)
         self._cmd_preview.setStyleSheet(f"""
@@ -288,8 +289,8 @@ class RemuxPanel(QWidget):
                 background: {_C.BG_DEEP};
                 color: {_C.TEXT_SEC};
                 border: 1px solid {_C.BORDER};
-                border-radius: 6px;
-                padding: 8px 12px;
+                border-radius: {_scale(6)}px;
+                padding: {_scale(8)}px {_scale(12)}px;
             }}
         """)
         self._cmd_preview.setPlaceholderText(

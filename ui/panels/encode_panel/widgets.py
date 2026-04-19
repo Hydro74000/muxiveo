@@ -31,6 +31,7 @@ from core.workflows.encode.models import AUDIO_CODECS, AudioTrackSettings
 from ui.panels.encode_panel.theme import (
     _C, _combo_style, _input_style, _primary_button, _secondary_button, _separator,
 )
+from ui.design_system import font_px as _font_px, scale as _scale
 
 if TYPE_CHECKING:
     from core.config import AppConfig
@@ -164,14 +165,14 @@ class _AudioBitrateEditor(QWidget):
 
         self._combo = QComboBox()
         self._combo.setStyleSheet(_combo_style())
-        self._combo.setFixedWidth(84)
+        self._combo.setFixedWidth(_scale(84))
         self._combo.hide()
         self._combo.currentIndexChanged.connect(lambda _=0: self.value_changed.emit())
         layout.addWidget(self._combo)
 
         self._edit = QLineEdit()
         self._edit.setStyleSheet(_input_style())
-        self._edit.setFixedWidth(84)
+        self._edit.setFixedWidth(_scale(84))
         self._edit.textChanged.connect(lambda _="": self.value_changed.emit())
         layout.addWidget(self._edit)
 
@@ -257,24 +258,24 @@ class _FileZone(QFrame):
 
     def _build_ui(self) -> None:
         self.setStyleSheet(f"QFrame{{background:{_C.BG_CARD};"
-                           f"border:1px dashed {_C.BORDER_LT};border-radius:8px;}}")
-        self.setMinimumHeight(72)
+                           f"border:1px dashed {_C.BORDER_LT};border-radius:{_scale(8)}px;}}")
+        self.setMinimumHeight(_scale(72))
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(12)
+        layout.setContentsMargins(_scale(16), _scale(12), _scale(16), _scale(12))
+        layout.setSpacing(_scale(12))
 
         self._icon = QLabel("⊞")
-        self._icon.setStyleSheet(f"font-size:24px;color:{_C.TEXT_DIM};"
+        self._icon.setStyleSheet(f"font-size:{_font_px(24)}px;color:{_C.TEXT_DIM};"
                                  f"background:transparent;border:none;")
         layout.addWidget(self._icon)
 
         text_col = QVBoxLayout()
-        text_col.setSpacing(3)
+        text_col.setSpacing(_scale(3))
         self._main_lbl = QLabel("Déposer un fichier vidéo ici")
-        self._main_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:12px;"
+        self._main_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:{_font_px(12)}px;"
                                      f"font-weight:500;background:transparent;border:none;")
         self._info_lbl = QLabel("")
-        self._info_lbl.setStyleSheet(f"color:{_C.TEXT_DIM};font-size:10px;"
+        self._info_lbl.setStyleSheet(f"color:{_C.TEXT_DIM};font-size:{_font_px(10)}px;"
                                      f"font-family:'JetBrains Mono',monospace;"
                                      f"background:transparent;border:none;")
         text_col.addWidget(self._main_lbl)
@@ -287,7 +288,7 @@ class _FileZone(QFrame):
 
     def set_file_info(self, info: FileInfo) -> None:
         self._main_lbl.setText(info.path.name)
-        self._main_lbl.setStyleSheet(f"color:{_C.TEXT_PRI};font-size:12px;"
+        self._main_lbl.setStyleSheet(f"color:{_C.TEXT_PRI};font-size:{_font_px(12)}px;"
                                      f"font-weight:600;background:transparent;border:none;")
         parts = [info.size_human, info.duration_human, info.format]
         if info.primary_video:
@@ -296,15 +297,15 @@ class _FileZone(QFrame):
                 parts.append(info.hdr_type.label())
         self._info_lbl.setText("   ".join(p for p in parts if p != "?"))
         self.setStyleSheet(f"QFrame{{background:{_C.BG_CARD};"
-                           f"border:1px solid {_C.BORDER_LT};border-radius:8px;}}")
+                           f"border:1px solid {_C.BORDER_LT};border-radius:{_scale(8)}px;}}")
 
     def reset(self) -> None:
         self._main_lbl.setText(translate_text("Déposer un fichier vidéo ici"))
-        self._main_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:12px;"
+        self._main_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:{_font_px(12)}px;"
                                      f"font-weight:500;background:transparent;border:none;")
         self._info_lbl.setText("")
         self.setStyleSheet(f"QFrame{{background:{_C.BG_CARD};"
-                           f"border:1px dashed {_C.BORDER_LT};border-radius:8px;}}")
+                           f"border:1px dashed {_C.BORDER_LT};border-radius:{_scale(8)}px;}}")
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
@@ -363,27 +364,27 @@ class _AudioSourceDialog(QDialog):
     def _setup_ui(self) -> None:
         self.setWindowTitle("Ajouter une piste audio")
         self.setModal(True)
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(_scale(500))
         self.setStyleSheet(
             f"QDialog{{background:{_C.BG_PANEL};}}"
             f"QLabel{{background:transparent;color:{_C.TEXT_PRI};}}"
         )
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(16)
+        layout.setContentsMargins(_scale(24), _scale(20), _scale(24), _scale(20))
+        layout.setSpacing(_scale(16))
 
         # Titre
         title = QLabel("Sélectionner la piste source")
         title.setStyleSheet(
-            f"font-size:14px;font-weight:700;color:{_C.TEXT_PRI};"
+            f"font-size:{_font_px(14)}px;font-weight:700;color:{_C.TEXT_PRI};"
         )
         layout.addWidget(title)
 
         sub = QLabel(
             "La piste sera ajoutée en tant qu'encodage supplémentaire de la source choisie."
         )
-        sub.setStyleSheet(f"font-size:11px;color:{_C.TEXT_SEC};")
+        sub.setStyleSheet(f"font-size:{_font_px(11)}px;color:{_C.TEXT_SEC};")
         sub.setWordWrap(True)
         layout.addWidget(sub)
 
@@ -391,9 +392,9 @@ class _AudioSourceDialog(QDialog):
         self._track_list = QListWidget()
         self._track_list.setStyleSheet(
             f"QListWidget{{background:{_C.BG_CARD};border:1px solid {_C.BORDER};"
-            f"border-radius:6px;color:{_C.TEXT_PRI};font-size:11px;"
+            f"border-radius:{_scale(6)}px;color:{_C.TEXT_PRI};font-size:{_font_px(11)}px;"
             f"font-family:'JetBrains Mono',monospace;}}"
-            f"QListWidget::item{{padding:10px 12px;"
+            f"QListWidget::item{{padding:{_scale(10)}px {_scale(12)}px;"
             f"border-bottom:1px solid {_C.BORDER};}}"
             f"QListWidget::item:selected{{background:{_C.ACCENT_DIM};}}"
             f"QListWidget::item:hover{{background:{_C.BG_HOVER};}}"
@@ -418,22 +419,22 @@ class _AudioSourceDialog(QDialog):
         if self._track_list.count():
             self._track_list.setCurrentRow(0)
         n = min(self._track_list.count(), 6)
-        self._track_list.setFixedHeight(n * 40 + 4)
+        self._track_list.setFixedHeight(n * _scale(40) + _scale(4))
         layout.addWidget(self._track_list)
 
         layout.addWidget(_separator())
 
         # Encodage + débit
         enc_row = QHBoxLayout()
-        enc_row.setSpacing(12)
+        enc_row.setSpacing(_scale(12))
         enc_lbl = QLabel("Encodage")
-        enc_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;")
-        enc_lbl.setFixedWidth(70)
+        enc_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:{_font_px(11)}px;")
+        enc_lbl.setFixedWidth(_scale(70))
         enc_row.addWidget(enc_lbl)
 
         self._codec_combo = QComboBox()
         self._codec_combo.setStyleSheet(_combo_style())
-        self._codec_combo.setMinimumWidth(200)
+        self._codec_combo.setMinimumWidth(_scale(200))
         for codec_id, codec_label in AUDIO_CODECS:
             self._codec_combo.addItem(codec_label, codec_id)
         self._codec_combo.currentIndexChanged.connect(self._on_codec_changed)
@@ -442,21 +443,21 @@ class _AudioSourceDialog(QDialog):
         layout.addLayout(enc_row)
 
         br_row = QHBoxLayout()
-        br_row.setSpacing(12)
+        br_row.setSpacing(_scale(12))
         br_lbl = QLabel("Débit cible")
-        br_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;")
-        br_lbl.setFixedWidth(70)
+        br_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:{_font_px(11)}px;")
+        br_lbl.setFixedWidth(_scale(70))
         br_row.addWidget(br_lbl)
         self._bitrate_edit = _AudioBitrateEditor(self._tracks[0][0], self._config, "copy")
-        self._bitrate_edit.setFixedWidth(90)
+        self._bitrate_edit.setFixedWidth(_scale(90))
         br_row.addWidget(self._bitrate_edit)
         br_kbps = QLabel("kbps")
-        br_kbps.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;")
+        br_kbps.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:{_font_px(11)}px;")
         br_row.addWidget(br_kbps)
         br_row.addStretch()
         layout.addLayout(br_row)
 
-        layout.addSpacing(4)
+        layout.addSpacing(_scale(4))
 
         # Boutons
         btn_row = QHBoxLayout()

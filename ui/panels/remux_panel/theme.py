@@ -7,16 +7,16 @@ from PySide6.QtGui import QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QWidget
 
-from ui.design_system import colors as _C
+from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
 
 
 def _section_label(text: str) -> QLabel:
     lbl = QLabel(text)
     lbl.setStyleSheet(f"""
         color: {_C.TEXT_DIM};
-        font-size: 9px;
+        font-size: {_font_px(9)}px;
         font-weight: 700;
-        letter-spacing: 2px;
+        letter-spacing: {_scale(2)}px;
         background: transparent;
     """)
     return lbl
@@ -37,16 +37,16 @@ def _card(parent: QWidget | None = None) -> QWidget:
 def _primary_button(text: str) -> QPushButton:
     btn = QPushButton(text)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.setFixedHeight(36)
+    btn.setFixedHeight(_scale(36))
     btn.setStyleSheet(f"""
         QPushButton {{
             background: {_C.ACCENT};
             color: #ffffff;
             border: none;
             border-radius: 6px;
-            font-size: 12px;
+            font-size: {_font_px(12)}px;
             font-weight: 700;
-            padding: 0 20px;
+            padding: 0 {_scale(20)}px;
         }}
         QPushButton:hover  {{ background: #6070f0; }}
         QPushButton:pressed {{ background: #3a52c0; }}
@@ -61,16 +61,16 @@ def _primary_button(text: str) -> QPushButton:
 def _secondary_button(text: str) -> QPushButton:
     btn = QPushButton(text)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.setFixedHeight(28)
+    btn.setFixedHeight(_scale(28))
     btn.setStyleSheet(f"""
         QPushButton {{
             background: {_C.BG_CARD};
             color: {_C.TEXT_SEC};
             border: 1px solid {_C.BORDER};
             border-radius: 5px;
-            font-size: 11px;
+            font-size: {_font_px(11)}px;
             font-weight: 500;
-            padding: 0 12px;
+            padding: 0 {_scale(12)}px;
         }}
         QPushButton:hover {{
             background: {_C.BG_HOVER};
@@ -85,7 +85,7 @@ def _secondary_button(text: str) -> QPushButton:
 def _separator() -> QFrame:
     sep = QFrame()
     sep.setFrameShape(QFrame.Shape.HLine)
-    sep.setFixedHeight(1)
+    sep.setFixedHeight(_scale(1))
     sep.setStyleSheet(f"background: {_C.BORDER}; border: none;")
     return sep
 
@@ -97,9 +97,9 @@ def _input_style() -> str:
             color: {_C.TEXT_PRI};
             border: 1px solid {_C.BORDER};
             border-radius: 5px;
-            font-size: 12px;
+            font-size: {_font_px(12)}px;
             font-family: 'JetBrains Mono', monospace;
-            padding: 6px 10px;
+            padding: {_scale(6)}px {_scale(10)}px;
         }}
         QLineEdit:focus {{
             border-color: {_C.ACCENT};
@@ -114,13 +114,13 @@ def _checkbox_style() -> str:
     return f"""
         QCheckBox {{
             color: {_C.TEXT_SEC};
-            font-size: 12px;
-            spacing: 8px;
+            font-size: {_font_px(12)}px;
+            spacing: {_scale(8)}px;
             background: transparent;
         }}
         QCheckBox::indicator {{
-            width: 14px;
-            height: 14px;
+            width: {_scale(14)}px;
+            height: {_scale(14)}px;
             border-radius: 3px;
             border: 1px solid {_C.BORDER_LT};
             background: {_C.BG_DEEP};
@@ -143,7 +143,8 @@ def _pencil_icon(color: str | None = None, size: int = 14) -> QIcon:
         '</svg>'
     )
     renderer = QSvgRenderer(svg.encode())
-    pix = QPixmap(size, size)
+    icon_size = _scale(size)
+    pix = QPixmap(icon_size, icon_size)
     pix.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pix)
     renderer.render(painter)

@@ -37,7 +37,7 @@ from core.workflows.merge_dovi import (
     DoviProfile, FrameCountResult,
     MergeDoviWorkflow, StepResult, WorkflowStep,
 )
-from ui.design_system import colors as _C
+from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
 
 
 # =============================================================================
@@ -48,9 +48,9 @@ def _section_label(text: str) -> QLabel:
     lbl = QLabel(text)
     lbl.setStyleSheet(f"""
         color: {_C.TEXT_DIM};
-        font-size: 9px;
+        font-size: {_font_px(9)}px;
         font-weight: 700;
-        letter-spacing: 2px;
+        letter-spacing: {_scale(2)}px;
         background: transparent;
     """)
     return lbl
@@ -62,7 +62,7 @@ def _card(parent: QWidget | None = None) -> QWidget:
         QWidget {{
             background: {_C.BG_CARD};
             border: 1px solid {_C.BORDER};
-            border-radius: 6px;
+            border-radius: {_scale(6)}px;
         }}
     """)
     return w
@@ -71,16 +71,16 @@ def _card(parent: QWidget | None = None) -> QWidget:
 def _primary_button(text: str) -> QPushButton:
     btn = QPushButton(text)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.setFixedHeight(36)
+    btn.setFixedHeight(_scale(36))
     btn.setStyleSheet(f"""
         QPushButton {{
             background: {_C.ACCENT};
             color: #ffffff;
             border: none;
-            border-radius: 6px;
-            font-size: 13px;
+            border-radius: {_scale(6)}px;
+            font-size: {_font_px(13)}px;
             font-weight: 700;
-            padding: 0 24px;
+            padding: 0 {_scale(24)}px;
         }}
         QPushButton:hover {{
             background: #6070f8;
@@ -99,17 +99,17 @@ def _primary_button(text: str) -> QPushButton:
 def _secondary_button(text: str, fixed_width: int | None = None) -> QPushButton:
     btn = QPushButton(text)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.setFixedHeight(30)
+    btn.setFixedHeight(_scale(30))
     if fixed_width:
-        btn.setFixedWidth(fixed_width)
+        btn.setFixedWidth(_scale(fixed_width))
     btn.setStyleSheet(f"""
         QPushButton {{
             background: {_C.BG_ACTIVE};
             color: {_C.TEXT_SEC};
             border: 1px solid {_C.BORDER_LT};
-            border-radius: 5px;
-            font-size: 11px;
-            padding: 0 12px;
+            border-radius: {_scale(5)}px;
+            font-size: {_font_px(11)}px;
+            padding: 0 {_scale(12)}px;
         }}
         QPushButton:hover {{
             background: {_C.BG_HOVER};
@@ -133,9 +133,9 @@ def _path_input() -> QLineEdit:
             background: {_C.BG_DEEP};
             color: {_C.TEXT_SEC};
             border: 1px solid {_C.BORDER};
-            border-radius: 4px;
-            padding: 4px 8px;
-            font-size: 11px;
+            border-radius: {_scale(4)}px;
+            padding: {_scale(4)}px {_scale(8)}px;
+            font-size: {_font_px(11)}px;
             font-family: 'JetBrains Mono', monospace;
         }}
         QLineEdit:focus {{
@@ -171,7 +171,7 @@ class _FilePairSection(QWidget):
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(_scale(8))
 
         layout.addWidget(_section_label("FICHIERS SOURCE"))
 
@@ -194,18 +194,20 @@ class _FilePairSection(QWidget):
         card = _card()
         card.setAcceptDrops(True)
         cl  = QVBoxLayout(card)
-        cl.setContentsMargins(14, 10, 14, 10)
-        cl.setSpacing(6)
+        cl.setContentsMargins(_scale(14), _scale(10), _scale(14), _scale(10))
+        cl.setSpacing(_scale(6))
 
         lbl = QLabel(label)
-        lbl.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: 12px; background: transparent; border: none;")
+        lbl.setStyleSheet(
+            f"color: {_C.TEXT_SEC}; font-size: {_font_px(12)}px; background: transparent; border: none;"
+        )
         cl.addWidget(lbl)
 
         row = QWidget()
         row.setStyleSheet("background: transparent; border: none;")
         rl  = QHBoxLayout(row)
         rl.setContentsMargins(0, 0, 0, 0)
-        rl.setSpacing(8)
+        rl.setSpacing(_scale(8))
 
         path_le = _path_input()
         rl.addWidget(path_le, stretch=1)
@@ -218,7 +220,7 @@ class _FilePairSection(QWidget):
         badge = QLabel("")
         badge.setStyleSheet(f"""
             color: {_C.TEXT_DIM};
-            font-size: 10px;
+            font-size: {_font_px(10)}px;
             font-family: 'JetBrains Mono', monospace;
             background: transparent;
             border: none;
@@ -236,7 +238,7 @@ class _FilePairSection(QWidget):
             badge.setText(f"{p.suffix.upper()[1:]}  ·  {size_mb:.1f} Mo")
             badge.setStyleSheet(f"""
                 color: {_C.TEXT_SEC};
-                font-size: 10px;
+                font-size: {_font_px(10)}px;
                 font-family: 'JetBrains Mono', monospace;
                 background: transparent;
                 border: none;
@@ -823,10 +825,10 @@ class MergeDoviPanel(QWidget):
         scroll.setStyleSheet(f"""
             QScrollArea {{ background: {_C.BG_DEEP}; border: none; }}
             QScrollBar:vertical {{
-                background: {_C.BG_DEEP}; width: 6px; border: none;
+                background: {_C.BG_DEEP}; width: {_scale(6)}px; border: none;
             }}
             QScrollBar::handle:vertical {{
-                background: {_C.BORDER_LT}; border-radius: 3px; min-height: 20px;
+                background: {_C.BORDER_LT}; border-radius: {_scale(3)}px; min-height: {_scale(20)}px;
             }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
         """)
@@ -834,19 +836,19 @@ class MergeDoviPanel(QWidget):
         content = QWidget()
         content.setStyleSheet(f"background: {_C.BG_DEEP};")
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(24, 24, 24, 24)
-        content_layout.setSpacing(16)
+        content_layout.setContentsMargins(_scale(24), _scale(24), _scale(24), _scale(24))
+        content_layout.setSpacing(_scale(16))
         content_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         content_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
 
         # Titre
         title = QLabel("Injection DoVi RPU + HDR10+")
         title.setStyleSheet(f"""
-            font-size: 22px;
+            font-size: {_font_px(22)}px;
             font-weight: 800;
             color: {_C.TEXT_PRI};
             background: transparent;
-            letter-spacing: -0.3px;
+            letter-spacing: -{_scale(1)}px;
         """)
         content_layout.addWidget(title)
 
@@ -854,7 +856,7 @@ class MergeDoviPanel(QWidget):
             "Transfère les métadonnées Dolby Vision et/ou HDR10+ "
             "de Film 2 (source) vers Film 1 (cible)."
         )
-        subtitle.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: 12px; background: transparent;")
+        subtitle.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(12)}px; background: transparent;")
         content_layout.addWidget(subtitle)
 
         # Séparateur
@@ -887,7 +889,7 @@ class MergeDoviPanel(QWidget):
         btn_row.setStyleSheet("background: transparent;")
         bl = QHBoxLayout(btn_row)
         bl.setContentsMargins(0, 0, 0, 0)
-        bl.setSpacing(10)
+        bl.setSpacing(_scale(10))
 
         self._run_btn    = _primary_button("▶  Lancer le workflow")
         self._cancel_btn = _secondary_button("⏹  Annuler")
