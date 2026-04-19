@@ -153,15 +153,19 @@ Les artefacts sont toujours déposés dans `dist/releases/`.
 
 `--allinc` est requis sur Linux : il intègre toutes les dépendances dans l'AppImage et génère le fichier `.zsync` associé pour les mises à jour différentielles.
 
-Le workflow GitHub Windows publie désormais un package **MSIX** et un **`.msixupload`**. La signature CI est optionnelle pour l’artefact Store upload, mais un package sideload signé nécessite un certificat PFX injecté via les secrets `WINDOWS_MSIX_CERT_BASE64`, `WINDOWS_MSIX_CERT_PASSWORD` et un publisher compatible via `WINDOWS_MSIX_PUBLISHER`.
+Le workflow GitHub Windows de release publie désormais un package **MSIX** signé. S’il n’y a pas de certificat PFX configuré, il génère un certificat auto-signé en CI et joint aussi le certificat public `.cer` pour faciliter l’installation du package publié dans les releases.
+
+Le workflow `Build Windows Store upload` est séparé, manuel, et ne publie rien dans les releases. Il sert uniquement à produire un **`.msixupload`** pour Partner Center.
 
 Pour une vraie soumission Microsoft Store, il faut renseigner l’identité exacte réservée dans Partner Center :
 
 - copier `packaging/msix_store.example.json` vers `packaging/msix_store.json`
 - remplacer `identity` et `publisher` par les valeurs de la page **Product identity** dans Partner Center
-- optionnel : sur GitHub Actions, exposer ces mêmes valeurs via `WINDOWS_MSIX_IDENTITY`, `WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME` et `WINDOWS_MSIX_DESCRIPTION`
+- sur GitHub Actions, exposer ces mêmes valeurs via `WINDOWS_MSIX_IDENTITY`, `WINDOWS_MSIX_PUBLISHER`, `WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME` et `WINDOWS_MSIX_DESCRIPTION`
 
 Le dépôt peut générer l’artefact de soumission, mais il ne peut pas inventer à ta place les valeurs Partner Center ni les captures/listings Store.
+
+Important : le certificat auto-signé du workflow release convient pour publier un MSIX dans GitHub Releases, mais il n’est pas destiné à une soumission Microsoft Store.
 
 Si `makeappx.exe` ou `signtool.exe` sont absents, le build Windows tente d’installer le SDK requis avant de packager. Un override explicite reste possible via `MEDIARECODE_WINDOWS_SDK_INSTALLER` ou `MEDIARECODE_WINDOWS_SDK_WINGET_ID`.
 

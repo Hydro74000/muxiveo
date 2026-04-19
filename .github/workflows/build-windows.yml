@@ -94,31 +94,60 @@ jobs:
           WINDOWS_MSIX_CERT_BASE64: ${{ secrets.WINDOWS_MSIX_CERT_BASE64 }}
           WINDOWS_MSIX_CERT_PASSWORD: ${{ secrets.WINDOWS_MSIX_CERT_PASSWORD }}
           WINDOWS_MSIX_PUBLISHER: ${{ secrets.WINDOWS_MSIX_PUBLISHER }}
-          WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME: ${{ secrets.WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME }}
+          WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME }}
         run: |
+          $publisher = $env:WINDOWS_MSIX_PUBLISHER
+          if ([string]::IsNullOrWhiteSpace($publisher)) {
+            $publisher = "CN=Hydro74000"
+          }
+          "MEDIARECODE_MSIX_PUBLISHER=$publisher" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME)) {
+            "MEDIARECODE_MSIX_PUBLISHER_DISPLAY_NAME=$env:WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_CERT_BASE64)) {
-            Write-Host "No MSIX signing certificate configured. Building unsigned Store upload artifact."
+            Write-Host "No MSIX signing certificate configured. Generating a self-signed release certificate."
+            $cert = New-SelfSignedCertificate `
+              -Type CodeSigningCert `
+              -Subject $publisher `
+              -CertStoreLocation "Cert:\CurrentUser\My" `
+              -NotAfter (Get-Date).AddYears(5) `
+              -KeyExportPolicy Exportable `
+              -HashAlgorithm SHA256
+            $passwordPlain = [Guid]::NewGuid().ToString("N") + "!" + [Guid]::NewGuid().ToString("N")
+            $password = ConvertTo-SecureString -String $passwordPlain -Force -AsPlainText
+            $certPath = Join-Path $env:RUNNER_TEMP 'mediarecode-msix-signing.pfx'
+            $cerPath = Join-Path $env:RUNNER_TEMP 'mediarecode-msix-signing.cer'
+            Export-PfxCertificate -Cert "Cert:\CurrentUser\My\$($cert.Thumbprint)" -FilePath $certPath -Password $password | Out-Null
+            Export-Certificate -Cert "Cert:\CurrentUser\My\$($cert.Thumbprint)" -FilePath $cerPath | Out-Null
+            "MEDIARECODE_MSIX_CERT_PFX=$certPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "MEDIARECODE_MSIX_CERT_PASSWORD=$passwordPlain" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "MEDIARECODE_MSIX_CERT_CER=$cerPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             exit 0
           }
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_CERT_PASSWORD)) {
             throw "Missing secret WINDOWS_MSIX_CERT_PASSWORD"
           }
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_PUBLISHER)) {
-            throw "Missing secret WINDOWS_MSIX_PUBLISHER"
-          }
           $certPath = Join-Path $env:RUNNER_TEMP 'mediarecode-msix-signing.pfx'
+          $cerPath = Join-Path $env:RUNNER_TEMP 'mediarecode-msix-signing.cer'
           [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:WINDOWS_MSIX_CERT_BASE64))
+          try {
+            $pfxPassword = ConvertTo-SecureString -String $env:WINDOWS_MSIX_CERT_PASSWORD -Force -AsPlainText
+            $imported = Import-PfxCertificate -FilePath $certPath -Password $pfxPassword -CertStoreLocation "Cert:\CurrentUser\My"
+            if ($imported) {
+              Export-Certificate -Cert "Cert:\CurrentUser\My\$($imported.Thumbprint)" -FilePath $cerPath | Out-Null
+              "MEDIARECODE_MSIX_CERT_CER=$cerPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+          } catch {
+            Write-Host "Unable to export public certificate from provided PFX: $($_.Exception.Message)"
+          }
           "MEDIARECODE_MSIX_CERT_PFX=$certPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "MEDIARECODE_MSIX_CERT_PASSWORD=$env:WINDOWS_MSIX_CERT_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "MEDIARECODE_MSIX_PUBLISHER=$env:WINDOWS_MSIX_PUBLISHER" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME)) {
-            "MEDIARECODE_MSIX_PUBLISHER_DISPLAY_NAME=$env:WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          }
 
       - name: Build PyInstaller + MSIX package
         shell: pwsh
         run: |
-          python package.py --msix --msixupload --version "${{ steps.version.outputs.VERSION }}"
+          python package.py --msix --version "${{ steps.version.outputs.VERSION }}"
 
       - name: Upload MSIX artifact
         uses: actions/upload-artifact@v4
@@ -127,11 +156,12 @@ jobs:
           path: dist/releases/Mediarecode-${{ steps.version.outputs.VERSION }}.msix
           if-no-files-found: error
 
-      - name: Upload MSIX Store upload artifact
+      - name: Upload MSIX public certificate
+        if: env.MEDIARECODE_MSIX_CERT_CER != ''
         uses: actions/upload-artifact@v4
         with:
-          name: Mediarecode-MSIXUpload-${{ steps.version.outputs.VERSION }}
-          path: dist/releases/Mediarecode-${{ steps.version.outputs.VERSION }}.msixupload
+          name: Mediarecode-MSIX-Certificate-${{ steps.version.outputs.VERSION }}
+          path: ${{ env.MEDIARECODE_MSIX_CERT_CER }}
           if-no-files-found: error
 
       - name: Attach to GitHub Release
@@ -141,8 +171,10 @@ jobs:
         run: |
           TAG="v${{ steps.version.outputs.VERSION }}"
           FILE="dist/releases/Mediarecode-${{ steps.version.outputs.VERSION }}.msix"
-          STORE_FILE="dist/releases/Mediarecode-${{ steps.version.outputs.VERSION }}.msixupload"
+          CERT_FILE="${MEDIARECODE_MSIX_CERT_CER:-}"
           gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes ""
           gh release upload "$TAG" "$FILE" --clobber
-          gh release upload "$TAG" "$STORE_FILE" --clobber
+          if [ -n "$CERT_FILE" ] && [ -f "$CERT_FILE" ]; then
+            gh release upload "$TAG" "$CERT_FILE#Mediarecode-MSIX-Certificate-${{ steps.version.outputs.VERSION }}.cer" --clobber
+          fi
         shell: bash
