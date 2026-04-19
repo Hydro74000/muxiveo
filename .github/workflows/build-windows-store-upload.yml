@@ -91,9 +91,17 @@ jobs:
         run: |
           python package.py --msix --msixupload --version "${{ steps.version.outputs.VERSION }}"
 
-      - name: Upload MSIX Store upload artifact
+      - name: Collect x64 MSIX artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/releases | Out-Null
+          Copy-Item "Mediarecode-${{ steps.version.outputs.VERSION }}.msix" "dist/releases/Mediarecode-${{ steps.version.outputs.VERSION }}.msix" -Force
+
+      - name: Upload x64 MSIX artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Mediarecode-MSIXUpload-${{ steps.version.outputs.VERSION }}
-          path: dist/releases/Mediarecode-${{ steps.version.outputs.VERSION }}.msixupload
+          name: Mediarecode-MSIX-x64-${{ steps.version.outputs.VERSION }}
+          path: |
+            dist/releases/Mediarecode-${{ steps.version.outputs.VERSION }}.msix
+            dist/releases/Mediarecode-${{ steps.version.outputs.VERSION }}.msixupload
           if-no-files-found: error
