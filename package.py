@@ -1624,7 +1624,7 @@ def _write_msix_resized_png(src_png: Path, dest_png: Path, size: tuple[int, int]
     painter.drawImage(x, y, scaled)
     painter.end()
     dest_png.parent.mkdir(parents=True, exist_ok=True)
-    if not canvas.save(str(dest_png), b"PNG"):
+    if not canvas.save(str(dest_png), "PNG"):
         shutil.copy2(src_png, dest_png)
 
 
