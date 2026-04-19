@@ -147,16 +147,23 @@ Les artefacts sont toujours déposés dans `dist/releases/`.
 | Cible | Commande | Artefact produit |
 |-------|----------|-----------------|
 | AppImage Linux | `python3 package.py --allinc` | `dist/releases/Mediarecode-x86_64.AppImage` + `dist/releases/Mediarecode-x86_64.AppImage.zsync` |
-| Installateur Windows (natif + NSIS) | `py package.py --nsis` | `dist/releases/Mediarecode-Setup.exe` |
+| Package Windows (natif + MSIX) | `py package.py --msix` | `dist/releases/Mediarecode.msix` |
 | Installateur Windows cross (depuis Linux) | `python3 package.py --windows` | `dist/releases/Mediarecode-Setup.exe` via Wine + NSIS |
 
 `--allinc` est requis sur Linux : il intègre toutes les dépendances dans l'AppImage et génère le fichier `.zsync` associé pour les mises à jour différentielles.
+
+Le workflow GitHub Windows publie désormais un package **MSIX** signé. La signature CI nécessite un certificat PFX injecté via les secrets `WINDOWS_MSIX_CERT_BASE64`, `WINDOWS_MSIX_CERT_PASSWORD` et un publisher compatible via `WINDOWS_MSIX_PUBLISHER`.
+
+Si `makeappx.exe` ou `signtool.exe` sont absents, le build Windows tente d’installer le SDK requis avant de packager. Un override explicite reste possible via `MEDIARECODE_WINDOWS_SDK_INSTALLER` ou `MEDIARECODE_WINDOWS_SDK_WINGET_ID`.
+
+Sous Windows packagé, le lancement de l’application rejoue automatiquement `setup.py` au premier démarrage après installation ou mise à jour, afin de réinstaller les dépendances externes manquantes et de régénérer les chemins dans `config.ini`.
 
 Options utiles de `package.py` :
 
 | Option | Effet |
 |--------|-------|
 | `--allinc` | intègre toutes les dépendances dans l'AppImage et génère le `.zsync` (Linux) |
+| `--msix` | produit un package MSIX sur Windows natif, signé si les variables `MEDIARECODE_MSIX_*` sont définies |
 | `--windows` | cross-compile un installateur Windows depuis Linux via Wine + NSIS |
 | `--skip-wine` | réutilise `dist/mediarecode-win/` existant (saute l'étape Wine/PyInstaller) |
 | `--clean` | nettoie tous les artefacts de build (`build/`, `dist/`, `.wine_build/`, `*.AppImage`…) |

@@ -76,3 +76,33 @@ class TestLauncherWindowsControlledFolderAccess:
 
         assert rc == launcher.SETUP_RC_OK
         fake_main.main.assert_not_called()
+
+    def test_needs_windows_post_install_setup_when_marker_missing(self, tmp_path):
+        marker = tmp_path / "setup.version"
+        with patch.object(launcher.sys, "platform", "win32"), \
+             patch.object(launcher.sys, "frozen", True, create=True), \
+             patch.object(launcher, "_windows_setup_version_marker_path", return_value=marker):
+            assert launcher._needs_windows_post_install_setup() is True
+
+    def test_needs_windows_post_install_setup_when_marker_matches_version(self, tmp_path):
+        marker = tmp_path / "setup.version"
+        marker.write_text(launcher.APP_VERSION, encoding="utf-8")
+        with patch.object(launcher.sys, "platform", "win32"), \
+             patch.object(launcher.sys, "frozen", True, create=True), \
+             patch.object(launcher, "_windows_setup_version_marker_path", return_value=marker):
+            assert launcher._needs_windows_post_install_setup() is False
+
+    def test_main_runs_setup_after_windows_install_version_change(self, tmp_path):
+        config_path = tmp_path / "config.ini"
+        config_path.write_text("", encoding="utf-8")
+        fake_main = SimpleNamespace(main=MagicMock(return_value=42))
+
+        with patch.object(launcher, "_get_config_path", return_value=config_path), \
+             patch.object(launcher, "_needs_windows_post_install_setup", return_value=True), \
+             patch.object(launcher, "_run_first_time_setup", return_value=launcher.SETUP_RC_OK) as mock_setup, \
+             patch.dict(sys.modules, {"main": fake_main}):
+            rc = launcher.main()
+
+        assert rc == 42
+        mock_setup.assert_called_once_with(config_path.parent)
+        fake_main.main.assert_called_once_with()

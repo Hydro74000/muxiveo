@@ -318,6 +318,60 @@ def test_package_versioned_output_path_uses_app_version_by_default():
     assert output.name == "Mediarecode-x86_64-9.9.9.AppImage"
 
 
+def test_msix_manifest_contains_full_trust_metadata():
+    with patch.object(package_mod, "_MSIX_IDENTITY", "Hydro74000.Mediarecode"), \
+         patch.object(package_mod, "_MSIX_PUBLISHER", "CN=Hydro74000"), \
+         patch.object(package_mod, "_MSIX_PUBLISHER_DISPLAY_NAME", "Hydro74000"), \
+         patch.object(package_mod, "_MSIX_DESCRIPTION", "Mediarecode video workflow"), \
+         patch.object(package_mod, "_msix_processor_architecture", return_value="x64"):
+        manifest = package_mod._msix_manifest_content(
+            "1.3.2",
+            r"VFS\ProgramFilesX64\Mediarecode\mediarecode.exe",
+        )
+
+    assert 'Name="Hydro74000.Mediarecode"' in manifest
+    assert 'Publisher="CN=Hydro74000"' in manifest
+    assert 'Version="1.3.2.0"' in manifest
+    assert 'ProcessorArchitecture="x64"' in manifest
+    assert 'EntryPoint="Windows.FullTrustApplication"' in manifest
+    assert '<rescap:Capability Name="runFullTrust" />' in manifest
+    assert r'Executable="VFS\ProgramFilesX64\Mediarecode\mediarecode.exe"' in manifest
+
+
+def test_build_msix_package_invokes_makeappx_and_signing(tmp_path):
+    bundle_dir = tmp_path / "dist" / "mediarecode"
+    bundle_dir.mkdir(parents=True)
+    layout_dir = tmp_path / "layout"
+    layout_dir.mkdir()
+    output_path = tmp_path / "Mediarecode-1.3.2.msix"
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append([str(part) for part in cmd])
+        output_path.write_text("msix", encoding="utf-8")
+        return subprocess.CompletedProcess(args=cmd, returncode=0)
+
+    with patch.object(package_mod, "OS", "Windows"), \
+         patch.object(package_mod, "ROOT", tmp_path), \
+         patch.object(package_mod, "_stage_msix_layout", return_value=layout_dir), \
+         patch.object(package_mod, "_ensure_windows_sdk_tool", return_value="C:\\sdk\\makeappx.exe"), \
+         patch.object(package_mod, "_sign_msix_package") as mock_sign, \
+         patch.object(package_mod, "_run", side_effect=fake_run):
+        result = package_mod._build_msix_package(bundle_dir, version_tag="1.3.2")
+
+    assert result == output_path
+    assert commands == [[
+        "C:\\sdk\\makeappx.exe",
+        "pack",
+        "/d",
+        str(layout_dir),
+        "/p",
+        str(output_path),
+        "/o",
+    ]]
+    mock_sign.assert_called_once_with(output_path)
+
+
 def test_package_appimage_versioned_output_path_uses_app_version_by_default():
     with patch.object(package_appimage_mod, "APP_VERSION", "8.8.8"):
         output = package_appimage_mod._versioned_output_path(

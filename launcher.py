@@ -18,6 +18,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:
+    from core.version import APP_VERSION
+except Exception:
+    APP_VERSION = "0.0.0"
+
 
 def _ensure_text_stream(name: str, mode: str) -> None:
     """Provide stdout/stderr when frozen without a console window."""
@@ -96,6 +101,26 @@ def _get_config_path() -> Path:
     if getattr(sys, "frozen", False):
         return _windows_config_dir() / "config.ini"
     return Path(__file__).parent / "config.ini"
+
+
+def _windows_setup_version_marker_path() -> Path:
+    return _windows_config_dir() / "setup.version"
+
+
+def _needs_windows_post_install_setup() -> bool:
+    """
+    Sous Windows packagé, relance le setup au premier lancement après
+    installation / mise à jour pour réinstaller et re-détecter les dépendances.
+    """
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return False
+
+    marker = _windows_setup_version_marker_path()
+    try:
+        recorded = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        return True
+    return recorded != APP_VERSION
 
 
 def _windows_is_admin() -> bool:
@@ -391,6 +416,14 @@ def _run_first_time_setup(install_dir: Path) -> int:
             # Dossier en lecture seule (AppImage dans /opt, /usr â€¦) â€” non bloquant
             pass
 
+    if _os == "Windows":
+        setup_version_marker = _windows_setup_version_marker_path()
+        try:
+            setup_version_marker.parent.mkdir(parents=True, exist_ok=True)
+            setup_version_marker.write_text(APP_VERSION, encoding="utf-8")
+        except OSError:
+            pass
+
     if _os == "Windows" and str(cfa_result.get("status") or "") == "updated":
         print(
             "\n  Windows Security a été mise Ã  jour."
@@ -446,7 +479,7 @@ def main() -> int:
 
     config_path = _get_config_path()
 
-    if not config_path.exists():
+    if not config_path.exists() or _needs_windows_post_install_setup():
         rc = _run_first_time_setup(config_path.parent)
         if rc == SETUP_RC_HANDOFF:
             return SETUP_RC_OK
