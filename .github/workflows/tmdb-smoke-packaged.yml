@@ -76,7 +76,16 @@ jobs:
             exit 1
           fi
           chmod +x "$APPIMAGE"
-          echo "PACKAGED_BIN=$APPIMAGE"        >> "$GITHUB_ENV"
+          # Les runners GitHub n'ont pas FUSE → on extrait l'AppImage et on
+          # exécute l'AppRun depuis le squashfs extrait (squashfs-root/).
+          "$APPIMAGE" --appimage-extract >/dev/null
+          APPRUN="$PWD/squashfs-root/AppRun"
+          if [ ! -x "$APPRUN" ]; then
+            echo "AppRun introuvable après extraction" >&2
+            ls -la squashfs-root | head -20
+            exit 1
+          fi
+          echo "PACKAGED_BIN=$APPRUN"            >> "$GITHUB_ENV"
           echo "PACKAGED_ARGS=--tmdb-smoke-test" >> "$GITHUB_ENV"
 
       - name: Build Windows .exe
