@@ -65,7 +65,7 @@ from core.version import APP_VERSION_LABEL, WRITING_APPLICATION_TAG
 from core.workflows.encode import EncodeError
 from core.workflows.remux_models import RemuxError
 from ui.panels.encode_panel import EncodePanel
-from ui.panels.encode_panel.theme import _FPS_RE, _fmt_eta, ffmpeg_progress_seconds
+from ui.panels.encode_panel.theme import _FPS_RE, _FRAME_RE, _fmt_eta, ffmpeg_progress_seconds
 from ui.panels.merge_dovi_panel import MergeDoviPanel
 from ui.panels.remux_panel import RemuxPanel
 from ui.panels.settings_panel import SettingsPanel
@@ -1065,6 +1065,7 @@ class MainWindow(QMainWindow):
         self._op_start: float = 0.0
         self._op_mode: str = ""   # "remux" ou "encode"
         self._op_encode_fps: float | None = None
+        self._op_encode_frame: int | None = None
         self._prep_progress_active = False
         self._prep_progress_value = 0
         self._prep_progress_direction = 1
@@ -1470,6 +1471,7 @@ class MainWindow(QMainWindow):
         self._run_btn.setEnabled(False)
         self._cancel_btn.setVisible(True)
         self._op_encode_fps = None
+        self._op_encode_frame = None
         self._prep_progress_active = False
         if self._prep_progress_timer.isActive():
             self._prep_progress_timer.stop()
@@ -1728,6 +1730,7 @@ class MainWindow(QMainWindow):
             if line.startswith("$ "):
                 self._stop_prep_progress()
                 self._op_encode_fps = None
+                self._op_encode_frame = None
                 self.log_requested.emit("INFO", line)
                 return
             fps_m = _FPS_RE.search(line)
@@ -1736,6 +1739,12 @@ class MainWindow(QMainWindow):
                     self._op_encode_fps = float(fps_m.group(1))
                 except ValueError:
                     self._op_encode_fps = None
+            frame_m = _FRAME_RE.search(line)
+            if frame_m:
+                try:
+                    self._op_encode_frame = int(frame_m.group(1))
+                except ValueError:
+                    self._op_encode_frame = None
             elapsed_video = ffmpeg_progress_seconds(line)
             if elapsed_video is not None:
                 self._stop_prep_progress()
@@ -1758,10 +1767,39 @@ class MainWindow(QMainWindow):
                     parts = [f"{pct}%", fps_str, eta_str]
                     self._prog_lbl.setText("  ·  ".join(p for p in parts if p))
                 return
+            if frame_m is not None and self._op_encode_frame is not None:
+                total_frames = self._encode_panel.get_total_frames()
+                if total_frames and total_frames > 0:
+                    self._stop_prep_progress()
+                    pct = min(99, int(self._op_encode_frame / total_frames * 100))
+                    self._prog_bar.setValue(pct)
+                    fps_str = (
+                        f"{self._op_encode_fps:.1f} fps"
+                        if self._op_encode_fps is not None and self._op_encode_fps > 0
+                        else ""
+                    )
+                    elapsed_wall = time.monotonic() - self._op_start
+                    if (
+                        elapsed_wall > 0
+                        and self._op_encode_frame > 0
+                        and total_frames > self._op_encode_frame
+                    ):
+                        frame_speed = self._op_encode_frame / elapsed_wall
+                        if frame_speed > 0:
+                            eta_s = (total_frames - self._op_encode_frame) / frame_speed
+                            eta_str = f"ETA {_fmt_eta(eta_s)}"
+                        else:
+                            eta_str = ""
+                    else:
+                        eta_str = ""
+                    parts = [f"{pct}%", fps_str, eta_str]
+                    self._prog_lbl.setText("  ·  ".join(p for p in parts if p))
+                return
             if _is_encode_progress_noise(line):
                 return
             if _is_encode_stage_message(line):
                 self._op_encode_fps = None
+                self._op_encode_frame = None
                 self._prog_lbl.setText(line)
             self.log_requested.emit("INFO", line)
 

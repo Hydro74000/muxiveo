@@ -5,8 +5,8 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtGui import QDropEvent, QFont
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -23,8 +23,10 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
+from core.file_types import is_accepted
 from core.i18n import apply_translations, translate_text
-from core.inspector import ChapterEntry, FileInfo
+from core.matroska_attachment_extractor import extract_matroska_attachment_bytes
+from core.inspector import AttachmentInfo, ChapterEntry, FileInfo
 from core.runner import TaskSignals
 from core.workflows.remux import RemuxWorkflow
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
@@ -74,6 +76,7 @@ class RemuxPanel(QWidget):
         writing_application: str = "",
     ) -> None:
         super().__init__(parent)
+        self.setAcceptDrops(True)
         self._config = config
         self._writing_application = writing_application
         self._workflow: RemuxWorkflow = self._make_workflow()
@@ -240,6 +243,9 @@ class RemuxPanel(QWidget):
         content_layout.addWidget(title_card)
 
         self._attachment_panel = _AttachmentPanel(self._config)
+        self._attachment_panel.set_embedded_attachment_loader(
+            self._extract_embedded_attachment_bytes
+        )
         self._attachment_panel.changed.connect(self._rebuild_preview)
         self._attachment_panel.tmdb_details_selected.connect(self._on_tmdb_details_selected)
         content_layout.addWidget(self._attachment_panel)
@@ -301,12 +307,121 @@ class RemuxPanel(QWidget):
         content_layout.addStretch()
         scroll.setWidget(content)
         root.addWidget(scroll, stretch=1)
+        self._install_global_drop_targets(scroll, content)
 
     def _on_add_files(self, paths: list[str]) -> None:
         inspection.on_add_files(self, paths)
 
+    def _install_global_drop_targets(self, scroll: QScrollArea, content: QWidget) -> None:
+        for target in (self, scroll, scroll.viewport(), content):
+            target.setAcceptDrops(True)
+            target.installEventFilter(self)
+
+    def _collect_folder_drop_paths(self, folder: Path) -> tuple[list[str], list[str]]:
+        """
+        Parcourt récursivement un dossier dropé.
+
+        Seuls les types reconnus par file_types vont en sources.
+        Seuls les .jpg sont retenus comme pièces jointes (cover).
+        """
+        source_paths: list[str] = []
+        attachment_paths: list[str] = []
+
+        for child in sorted(folder.rglob("*")):
+            if not child.is_file():
+                continue
+            child_str = str(child)
+            if is_accepted(child_str):
+                source_paths.append(child_str)
+            elif child.suffix.lower() == ".jpg":
+                attachment_paths.append(child_str)
+
+        return source_paths, attachment_paths
+
+    def _route_dropped_paths(self, paths: list[str]) -> None:
+        source_paths: list[str] = []
+        attachment_paths: list[str] = []
+        seen_sources: set[str] = set()
+        seen_attachments: set[str] = set()
+
+        for path_str in paths:
+            path = Path(path_str)
+            if path.is_dir():
+                folder_sources, folder_attachments = self._collect_folder_drop_paths(path)
+                for folder_source in folder_sources:
+                    if folder_source not in seen_sources:
+                        source_paths.append(folder_source)
+                        seen_sources.add(folder_source)
+                for folder_attachment in folder_attachments:
+                    if folder_attachment not in seen_attachments:
+                        attachment_paths.append(folder_attachment)
+                        seen_attachments.add(folder_attachment)
+                continue
+
+            if not path.is_file():
+                continue
+
+            normalized_path = str(path)
+            if is_accepted(normalized_path):
+                if normalized_path not in seen_sources:
+                    source_paths.append(normalized_path)
+                    seen_sources.add(normalized_path)
+            elif normalized_path not in seen_attachments:
+                attachment_paths.append(normalized_path)
+                seen_attachments.add(normalized_path)
+
+        if source_paths:
+            self._on_add_files(source_paths)
+        if attachment_paths:
+            self._attachment_panel.add_manual_paths(attachment_paths)
+            self.log_message.emit(
+                "INFO",
+                translate_text(
+                    "{count} fichier(s) ajouté(s) comme pièce(s) jointe(s).",
+                    count=len(attachment_paths),
+                ),
+            )
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        event_type = event.type()
+        if event_type in (QEvent.Type.DragEnter, QEvent.Type.DragMove, QEvent.Type.Drop):
+            mime = getattr(event, "mimeData", lambda: None)()
+            urls = mime.urls() if mime is not None and mime.hasUrls() else []
+            local_paths = [
+                url.toLocalFile()
+                for url in urls
+                if url.isLocalFile() and Path(url.toLocalFile()).exists()
+            ]
+            if not local_paths:
+                return super().eventFilter(watched, event)
+
+            if event_type == QEvent.Type.Drop:
+                self._route_dropped_paths(local_paths)
+            if isinstance(event, QDropEvent):
+                event.acceptProposedAction()
+            return True
+
+        return super().eventFilter(watched, event)
+
     def _inspect_file(self, file_id: str, path: Path) -> None:
         inspection.inspect_file(self, file_id, path)
+
+    def _extract_embedded_attachment_bytes(
+        self,
+        file_id: str,
+        attachment: AttachmentInfo,
+    ) -> bytes | None:
+        source = self._find_source(file_id)
+        if source is None:
+            raise RuntimeError(
+                translate_text("Source introuvable pour cet attachement embarqué.")
+            )
+        try:
+            return extract_matroska_attachment_bytes(source.path, attachment.local_index)
+        except Exception as exc:
+            raise RuntimeError(
+                translate_text("Impossible d'extraire cet attachement embarqué depuis la source.")
+            ) from exc
 
     def _apply_inspection(self, file_id: str, info: FileInfo) -> None:
         inspection.apply_inspection(self, file_id, info)

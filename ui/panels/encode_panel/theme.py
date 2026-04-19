@@ -116,6 +116,7 @@ _TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
 _FPS_RE  = re.compile(r"\bfps=\s*([\d.]+)")
 _OUT_TIME_RE = re.compile(r"\bout_time=(\d+):(\d+):(\d+(?:\.\d+)?)")
 _OUT_TIME_TICKS_RE = re.compile(r"\bout_time_(?:ms|us)=(\d+)")
+_FRAME_RE = re.compile(r"\bframe=\s*(\d+)")
 
 
 def _hms_to_seconds(match: re.Match[str]) -> float:

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable, Sequence
+from xml.dom import minidom
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPoint, QSize, Qt, Signal
+from PySide6.QtGui import QCursor, QFont, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -15,6 +18,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -238,6 +243,402 @@ class _TagEditDialog(QDialog):
 
 # =============================================================================
 
+_IMAGE_ATTACHMENT_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+_TEXT_ATTACHMENT_EXTENSIONS = {".txt", ".xml", ".nfo"}
+
+_TMDB_COVER_CACHE: dict[str, bytes] = {}
+
+
+def _fetch_tmdb_cover_bytes(url: str) -> bytes | None:
+    """Télécharge (et met en cache) les octets d'une cover TMDB depuis son URL."""
+    if not url:
+        return None
+    cached = _TMDB_COVER_CACHE.get(url)
+    if cached is not None:
+        return cached
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(url, headers={"User-Agent": "mediarecode"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = resp.read()
+    except (urllib.error.URLError, OSError):
+        return None
+    if not data:
+        return None
+    _TMDB_COVER_CACHE[url] = data
+    return data
+
+
+def _resolved_manual_attachment_path(path: Path | None) -> Path | None:
+    if path is None:
+        return None
+    try:
+        return path if path.is_file() else None
+    except OSError:
+        return None
+
+
+def _is_image_attachment_path(path: Path | None) -> bool:
+    if path is None:
+        return False
+    suffix = path.suffix.lower()
+    if suffix in _IMAGE_ATTACHMENT_EXTENSIONS:
+        return True
+    return path.stem.lower() == "cover" and suffix in _IMAGE_ATTACHMENT_EXTENSIONS
+
+
+def _is_text_attachment_path(path: Path | None) -> bool:
+    if path is None:
+        return False
+    return path.suffix.lower() in _TEXT_ATTACHMENT_EXTENSIONS
+
+
+def _is_image_attachment_name(name: str, *, is_attached_pic: bool = False) -> bool:
+    if is_attached_pic:
+        return True
+    path = Path(name)
+    suffix = path.suffix.lower()
+    if suffix in _IMAGE_ATTACHMENT_EXTENSIONS:
+        return True
+    return path.stem.lower() == "cover" and suffix in _IMAGE_ATTACHMENT_EXTENSIONS
+
+
+def _is_text_attachment_name(name: str) -> bool:
+    return Path(name).suffix.lower() in _TEXT_ATTACHMENT_EXTENSIONS
+
+
+def _scaled_pixmap(pixmap: QPixmap, bounds: QSize) -> QPixmap:
+    if pixmap.isNull():
+        return pixmap
+    if pixmap.width() <= bounds.width() and pixmap.height() <= bounds.height():
+        return pixmap
+    return pixmap.scaled(
+        bounds,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+
+
+def _pretty_text_attachment_content(path: Path) -> str:
+    raw = path.read_text(encoding="utf-8", errors="replace")
+    if path.suffix.lower() not in {".xml", ".nfo"}:
+        return raw
+    try:
+        formatted = minidom.parseString(raw.encode("utf-8")).toprettyxml(indent="  ")
+    except Exception:
+        return raw
+    return "\n".join(line for line in formatted.splitlines() if line.strip())
+
+
+def _pretty_text_attachment_bytes(data: bytes, filename: str) -> str:
+    raw = data.decode("utf-8", errors="replace")
+    if Path(filename).suffix.lower() not in {".xml", ".nfo"}:
+        return raw
+    try:
+        formatted = minidom.parseString(raw.encode("utf-8")).toprettyxml(indent="  ")
+    except Exception:
+        return raw
+    return "\n".join(line for line in formatted.splitlines() if line.strip())
+
+
+class _AttachmentNameButton(QPushButton):
+    hover_moved = Signal(QPoint)
+    hover_left = Signal()
+
+    def __init__(self, text: str, color: str, parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self.setFlat(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMouseTracking(True)
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {color};
+                border: none;
+                padding: 0;
+                text-align: left;
+                font-size: {_font_px(11)}px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                color: {_C.ACCENT};
+                text-decoration: underline;
+            }}
+            QPushButton:pressed {{
+                color: {_C.ACCENT};
+            }}
+        """)
+
+    def enterEvent(self, event) -> None:  # type: ignore[override]
+        self.hover_moved.emit(QCursor.pos())
+        super().enterEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
+        self.hover_moved.emit(event.globalPosition().toPoint())
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event) -> None:  # type: ignore[override]
+        self.hover_left.emit()
+        super().leaveEvent(event)
+
+
+class _ImageHoverPreview(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent, Qt.WindowType.ToolTip)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setStyleSheet(f"""
+            QWidget {{
+                background: {_C.BG_PANEL};
+                border: 1px solid {_C.BORDER_LT};
+                border-radius: {_scale(6)}px;
+            }}
+            QLabel {{
+                background: transparent;
+                border: none;
+            }}
+        """)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(_scale(8), _scale(8), _scale(8), _scale(8))
+        self._label = QLabel()
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._label)
+
+    def show_pixmap(self, pixmap: QPixmap, global_pos: QPoint) -> None:
+        if pixmap.isNull():
+            self.hide()
+            return
+        bounds = QSize(320, 200) if pixmap.width() >= pixmap.height() else QSize(200, 320)
+        scaled = _scaled_pixmap(pixmap, bounds)
+        self._label.setPixmap(scaled)
+        self._label.resize(scaled.size())
+        self.adjustSize()
+        self.move(global_pos + QPoint(_scale(18), _scale(22)))
+        self.show()
+        self.raise_()
+
+
+class _ClickableImageLabel(QLabel):
+    """QLabel qui émet un signal au clic gauche."""
+    clicked = Signal()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
+class _ImageAttachmentDialog(QDialog):
+    """
+    Modale d'aperçu d'image.
+
+    - Dimensions de la modale ajustées à l'image (plafonnée à 720p de hauteur/1280 de largeur).
+    - Si l'image source est ≥ 720p : clic sur l'image bascule entre dézoom 720p et zoom 100%,
+      le curseur devient une loupe sur l'image.
+    - Si l'image source est < 720p : affichage 100% taille d'origine, pas de zoom possible.
+    """
+
+    _FIT_BOUNDS = QSize(1280, 720)
+
+    def __init__(
+        self,
+        display_name: str,
+        *,
+        path: Path | None = None,
+        image_bytes: bytes | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._path = path
+        self._pixmap = QPixmap()
+        if image_bytes is not None:
+            self._pixmap.loadFromData(image_bytes)
+        elif path is not None:
+            self._pixmap = QPixmap(str(path))
+        self.setWindowTitle(display_name)
+        self.setStyleSheet(f"""
+            QDialog {{
+                background: {_C.BG_DEEP};
+                color: {_C.TEXT_PRI};
+            }}
+            QLabel {{
+                background: transparent;
+                border: none;
+            }}
+        """)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(_scale(14), _scale(14), _scale(14), _scale(14))
+        root.setSpacing(_scale(10))
+
+        title = QLabel(display_name)
+        title.setStyleSheet(
+            f"color: {_C.TEXT_PRI}; font-size: {_font_px(13)}px; font-weight: 700;"
+        )
+        root.addWidget(title)
+
+        # Image source ≥ 720p → zoom disponible (clic bascule 100% / dézoom 720p).
+        self._zoom_available = (
+            not self._pixmap.isNull()
+            and (self._pixmap.width() > self._FIT_BOUNDS.width()
+                 or self._pixmap.height() > self._FIT_BOUNDS.height())
+        )
+        self._zoomed = False  # état courant : False = dézoom 720p, True = 100%
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(False)
+        self._scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setStyleSheet(
+            f"QScrollArea {{ background: {_C.BG_CARD}; border: 1px solid {_C.BORDER}; border-radius: {_scale(6)}px; }}"
+        )
+        self._image_label = _ClickableImageLabel()
+        self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._image_label.setStyleSheet("background: transparent;")
+        if self._zoom_available:
+            self._image_label.setCursor(Qt.CursorShape.WhatsThisCursor)
+            self._image_label.clicked.connect(self._toggle_zoom)
+        self._scroll.setWidget(self._image_label)
+        root.addWidget(self._scroll, stretch=1)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btns.rejected.connect(self.reject)
+        btns.accepted.connect(self.accept)
+        btns.setStyleSheet(f"""
+            QPushButton {{
+                background: {_C.BG_PANEL};
+                color: {_C.TEXT_PRI};
+                border: 1px solid {_C.BORDER_LT};
+                border-radius: {_scale(4)}px;
+                font-size: {_font_px(11)}px;
+                padding: {_scale(4)}px {_scale(14)}px;
+            }}
+            QPushButton:hover {{
+                background: {_C.BG_CARD};
+            }}
+        """)
+        root.addWidget(btns)
+
+        self._refresh_pixmap()
+        self._resize_to_current_pixmap()
+
+    def _displayed_pixmap(self) -> QPixmap:
+        if self._pixmap.isNull():
+            return self._pixmap
+        if not self._zoom_available or not self._zoomed:
+            return _scaled_pixmap(self._pixmap, self._FIT_BOUNDS)
+        return self._pixmap
+
+    def _refresh_pixmap(self) -> None:
+        if self._pixmap.isNull():
+            self._image_label.setText(translate_text("Image introuvable ou illisible."))
+            self._image_label.setPixmap(QPixmap())
+            return
+        pixmap = self._displayed_pixmap()
+        self._image_label.setPixmap(pixmap)
+        self._image_label.resize(pixmap.size())
+
+    def _resize_to_current_pixmap(self) -> None:
+        """Ajuste la taille du dialogue aux dimensions de l'image affichée."""
+        pixmap = self._displayed_pixmap()
+        if pixmap.isNull():
+            self.resize(_scale(640), _scale(360))
+            return
+        layout = self.layout()
+        if layout is not None:
+            margins = layout.contentsMargins()
+            extra_w = margins.left() + margins.right() + _scale(4)
+            extra_h = margins.top() + margins.bottom() + _scale(70)  # titre + boutons
+        else:
+            extra_w = _scale(4)
+            extra_h = _scale(70)
+        self.resize(pixmap.width() + extra_w, pixmap.height() + extra_h)
+
+    def _toggle_zoom(self) -> None:
+        if not self._zoom_available:
+            return
+        self._zoomed = not self._zoomed
+        self._refresh_pixmap()
+
+
+class _TextAttachmentDialog(QDialog):
+    def __init__(
+        self,
+        display_name: str,
+        *,
+        path: Path | None = None,
+        text_bytes: bytes | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(display_name)
+        self.resize(_scale(920), _scale(640))
+        self.setStyleSheet(f"""
+            QDialog {{
+                background: {_C.BG_DEEP};
+                color: {_C.TEXT_PRI};
+            }}
+            QLabel {{
+                background: transparent;
+                border: none;
+                color: {_C.TEXT_PRI};
+            }}
+            QPlainTextEdit {{
+                background: {_C.BG_CARD};
+                color: {_C.TEXT_PRI};
+                border: 1px solid {_C.BORDER};
+                border-radius: {_scale(6)}px;
+                font-size: {_font_px(11)}px;
+                padding: {_scale(10)}px;
+            }}
+        """)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(_scale(14), _scale(14), _scale(14), _scale(14))
+        root.setSpacing(_scale(10))
+
+        title = QLabel(display_name)
+        title.setStyleSheet(
+            f"color: {_C.TEXT_PRI}; font-size: {_font_px(13)}px; font-weight: 700;"
+        )
+        root.addWidget(title)
+
+        self._editor = QPlainTextEdit()
+        self._editor.setReadOnly(True)
+        self._editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        font = QFont("monospace")
+        font.setStyleHint(QFont.StyleHint.Monospace)
+        font.setPointSizeF(max(9.0, float(_font_px(10))))
+        self._editor.setFont(font)
+        if text_bytes is not None:
+            self._editor.setPlainText(_pretty_text_attachment_bytes(text_bytes, display_name))
+        elif path is not None:
+            self._editor.setPlainText(_pretty_text_attachment_content(path))
+        else:
+            self._editor.setPlainText("")
+        root.addWidget(self._editor, stretch=1)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btns.rejected.connect(self.reject)
+        btns.accepted.connect(self.accept)
+        btns.setStyleSheet(f"""
+            QPushButton {{
+                background: {_C.BG_PANEL};
+                color: {_C.TEXT_PRI};
+                border: 1px solid {_C.BORDER_LT};
+                border-radius: {_scale(4)}px;
+                font-size: {_font_px(11)}px;
+                padding: {_scale(4)}px {_scale(14)}px;
+            }}
+            QPushButton:hover {{
+                background: {_C.BG_CARD};
+            }}
+        """)
+        root.addWidget(btns)
+
+
+# =============================================================================
+
 class _AttachmentItemWidget(QWidget):
     """
     Ligne dans le panneau des pièces jointes.
@@ -265,6 +666,7 @@ class _AttachmentItemWidget(QWidget):
         is_tmdb_pending:    bool              = False,   # cover TMDB non encore téléchargée
         tmdb_cover_url:     str               = "",
         tmdb_cover_filename: str              = "",
+        embedded_attachment_loader: Callable[[str, AttachmentInfo], bytes | None] | None = None,
         parent:             QWidget | None    = None,
     ) -> None:
         super().__init__(parent)
@@ -276,7 +678,12 @@ class _AttachmentItemWidget(QWidget):
         self.is_tmdb_pending     = is_tmdb_pending
         self.tmdb_cover_url      = tmdb_cover_url
         self.tmdb_cover_filename = tmdb_cover_filename
+        self._embedded_attachment_loader = embedded_attachment_loader
         self._orig_tags:   dict[str, str] = tags or {}
+        self._hover_preview: _ImageHoverPreview | None = None
+        self._name_widget: QWidget | None = None
+        self._embedded_attachment_bytes: bytes | None = None
+        self._embedded_attachment_bytes_loaded = False
         self.setFixedHeight(_scale(28))
         self._build_ui(source_color)
 
@@ -291,6 +698,33 @@ class _AttachmentItemWidget(QWidget):
     @property
     def enabled(self) -> bool:
         return self._cb.isChecked()
+
+    def _local_attachment_path(self) -> Path | None:
+        return _resolved_manual_attachment_path(self.manual_path if self.is_manual else None)
+
+    def _supports_image_interaction(self) -> bool:
+        local_path = self._local_attachment_path()
+        if _is_image_attachment_path(local_path):
+            return True
+        if self.is_tmdb_pending and self.tmdb_cover_url:
+            return True
+        if self.att is None or self._embedded_attachment_loader is None:
+            return False
+        return _is_image_attachment_name(
+            self.att.filename,
+            is_attached_pic=self.att.is_attached_pic,
+        )
+
+    def _supports_text_interaction(self) -> bool:
+        local_path = self._local_attachment_path()
+        if _is_text_attachment_path(local_path):
+            return True
+        if self.att is None or self._embedded_attachment_loader is None:
+            return False
+        return _is_text_attachment_name(self.att.filename)
+
+    def _supports_interaction(self) -> bool:
+        return self._supports_image_interaction() or self._supports_text_interaction()
 
     def _build_ui(self, source_color: str) -> None:
         lay = QHBoxLayout(self)
@@ -353,10 +787,22 @@ class _AttachmentItemWidget(QWidget):
             lbl.setToolTip(self.tmdb_cover_url)
         elif self.is_manual and self.manual_path:
             lbl.setToolTip(str(self.manual_path))
-        lbl.setStyleSheet(
-            f"color: {color}; background: transparent; border: none; font-size: {_font_px(11)}px;"
-        )
-        lay.addWidget(lbl, stretch=1)
+        if self._supports_interaction():
+            name_btn = _AttachmentNameButton(text, color, self)
+            if self.is_manual and self.manual_path:
+                name_btn.setToolTip(str(self.manual_path))
+            name_btn.clicked.connect(self._open_attachment_viewer)
+            if self._supports_image_interaction():
+                name_btn.hover_moved.connect(self._show_hover_preview)
+                name_btn.hover_left.connect(self._hide_hover_preview)
+            self._name_widget = name_btn
+            lay.addWidget(name_btn, stretch=1)
+        else:
+            lbl.setStyleSheet(
+                f"color: {color}; background: transparent; border: none; font-size: {_font_px(11)}px;"
+            )
+            self._name_widget = lbl
+            lay.addWidget(lbl, stretch=1)
 
         # Bouton ✕ (uniquement pour les ajouts manuels)
         if self.is_manual:
@@ -386,6 +832,111 @@ class _AttachmentItemWidget(QWidget):
             sp2.setFixedWidth(_scale(18))
             lay.addWidget(sp2)
 
+    def _show_hover_preview(self, global_pos: QPoint) -> None:
+        if not self._supports_image_interaction():
+            return
+        pixmap = self._image_pixmap()
+        if pixmap is None or pixmap.isNull():
+            self._hide_hover_preview()
+            return
+        if self._hover_preview is None:
+            self._hover_preview = _ImageHoverPreview(self.window())
+        self._hover_preview.show_pixmap(pixmap, global_pos)
+
+    def _hide_hover_preview(self) -> None:
+        if self._hover_preview is not None:
+            self._hover_preview.hide()
+
+    def _open_attachment_viewer(self) -> None:
+        self._hide_hover_preview()
+        path = self._local_attachment_path()
+        if self._supports_image_interaction():
+            image_bytes = None if path is not None else self._load_embedded_attachment_bytes()
+            if path is None and image_bytes is None:
+                return
+            _ImageAttachmentDialog(
+                self._display_name(),
+                path=path,
+                image_bytes=image_bytes,
+                parent=self,
+            ).exec()
+            return
+        if self._supports_text_interaction():
+            text_bytes = None if path is not None else self._load_embedded_attachment_bytes()
+            if path is None and text_bytes is None:
+                return
+            _TextAttachmentDialog(
+                self._display_name(),
+                path=path,
+                text_bytes=text_bytes,
+                parent=self,
+            ).exec()
+            return
+        QMessageBox.information(
+            self,
+            translate_text("Attachement"),
+            translate_text("Aucun aperçu n'est disponible pour ce type de fichier."),
+        )
+
+    def _display_name(self) -> str:
+        if self.is_manual and self.manual_path is not None:
+            return self.manual_path.name
+        if self.att is not None and self.att.filename:
+            return self.att.filename
+        return self.tmdb_cover_filename or ""
+
+    def _load_embedded_attachment_bytes(self) -> bytes | None:
+        if self._embedded_attachment_bytes_loaded:
+            return self._embedded_attachment_bytes
+        self._embedded_attachment_bytes_loaded = True
+        if self.is_tmdb_pending and self.tmdb_cover_url:
+            self._embedded_attachment_bytes = _fetch_tmdb_cover_bytes(self.tmdb_cover_url)
+            if self._embedded_attachment_bytes is None:
+                QMessageBox.warning(
+                    self,
+                    translate_text("Attachement"),
+                    translate_text("Impossible de télécharger la cover TMDB."),
+                )
+            return self._embedded_attachment_bytes
+        if self.att is None or self._embedded_attachment_loader is None:
+            return None
+        try:
+            self._embedded_attachment_bytes = self._embedded_attachment_loader(
+                self.file_id,
+                self.att,
+            )
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                translate_text("Attachement"),
+                translate_text("Impossible d'ouvrir cet attachement embarqué : {exc}", exc=exc),
+            )
+            self._embedded_attachment_bytes = None
+            return None
+        if self._embedded_attachment_bytes is None:
+            QMessageBox.warning(
+                self,
+                translate_text("Attachement"),
+                translate_text("Impossible d'extraire l'attachement embarqué."),
+            )
+        return self._embedded_attachment_bytes
+
+    def _image_pixmap(self) -> QPixmap | None:
+        path = self._local_attachment_path()
+        if path is not None:
+            pixmap = QPixmap(str(path))
+            return None if pixmap.isNull() else pixmap
+        image_bytes = self._load_embedded_attachment_bytes()
+        if image_bytes is None:
+            return None
+        pixmap = QPixmap()
+        pixmap.loadFromData(image_bytes)
+        return None if pixmap.isNull() else pixmap
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        self._hide_hover_preview()
+        super().closeEvent(event)
+
 
 class _AttachmentPanel(QFrame):
     """
@@ -407,6 +958,7 @@ class _AttachmentPanel(QFrame):
         super().__init__(parent)
         self._config  = config
         self._items: list[_AttachmentItemWidget] = []
+        self._source_attachment_loader: Callable[[str, AttachmentInfo], bytes | None] | None = None
         self._panel_tag_overrides: dict[str, str] | None = None  # None = utiliser tags source
         self._suggested_title: str = ""
         self._suggested_season: int = 0
@@ -560,13 +1112,22 @@ class _AttachmentPanel(QFrame):
     # API publique
     # ------------------------------------------------------------------
 
+    def set_embedded_attachment_loader(
+        self,
+        loader: Callable[[str, AttachmentInfo], bytes | None] | None,
+    ) -> None:
+        self._source_attachment_loader = loader
+
     def add_source_attachments(
         self, file_id: str, source_color: str, attachments: list[AttachmentInfo]
     ) -> None:
         """Ajoute les attachements d'un fichier source."""
         for att in attachments:
             self._add_item(_AttachmentItemWidget(
-                file_id=file_id, source_color=source_color, att=att,
+                file_id=file_id,
+                source_color=source_color,
+                att=att,
+                embedded_attachment_loader=self._source_attachment_loader,
             ))
         # Si une cover TMDB est en attente, les covers source doivent être
         # décochées pour laisser la priorité à la cover TMDB.
@@ -655,6 +1216,26 @@ class _AttachmentPanel(QFrame):
             for item in self._items
             if item.is_manual and item.enabled and item.manual_path is not None
         ]
+
+    def add_manual_paths(self, paths: Sequence[str | Path]) -> None:
+        """Ajoute des pièces jointes manuelles depuis une liste de chemins."""
+        added = False
+        existing_manual_paths = {
+            item.manual_path
+            for item in self._items
+            if item.is_manual and item.manual_path is not None
+        }
+        for raw_path in paths:
+            path = Path(raw_path)
+            if path in existing_manual_paths:
+                continue
+            self._add_item(_AttachmentItemWidget(
+                file_id="", is_manual=True, manual_path=path,
+            ))
+            existing_manual_paths.add(path)
+            added = True
+        if added:
+            self.changed.emit()
 
     # ------------------------------------------------------------------
     # Interne
@@ -860,12 +1441,6 @@ class _AttachmentPanel(QFrame):
             "",
             translate_text("Tous les fichiers (*)"),
         )
-        for path_str in paths:
-            path = Path(path_str)
-            self._add_item(_AttachmentItemWidget(
-                file_id="", is_manual=True, manual_path=path,
-            ))
-        if paths:
-            self.changed.emit()
+        self.add_manual_paths(paths)
 
 __all__ = ["_AttachmentItemWidget", "_AttachmentPanel", "_TagEditDialog"]

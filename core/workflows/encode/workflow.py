@@ -65,7 +65,7 @@ _EXT_BY_MIME: dict[str, str] = {
     "image/tiff": ".tiff",
 }
 
-_VAAPI_CODECS = {"hevc_vaapi", "h264_vaapi"}
+_VAAPI_CODECS = {"hevc_vaapi", "h264_vaapi", "av1_vaapi"}
 _FALLBACK_HEVC_FRAME_RATE = "24000/1001"
 
 
@@ -144,6 +144,13 @@ class EncodeWorkflow(QObject):
             "hdr10plus_tool": hdr10plus_bin,
             "mediainfo":      mediainfo_bin,
         }
+        # Cache mémoire : évite de ré-exécuter ffprobe/mediainfo à chaque
+        # reconstruction d'aperçu (preview_command peut être appelé des dizaines
+        # de fois pour le même fichier lors de changements UI).
+        # Clé : (abs_path, mtime_ns, size). Invalide automatiquement si le
+        # fichier a été modifié.
+        self._ffprobe_payload_cache: dict[tuple[str, int, int], dict[str, object] | None] = {}
+        self._mediainfo_hdr_cache: dict[tuple[str, int, int], tuple[bool, bool] | None] = {}
         self._generate_nfo = generate_nfo
         self._runner = ToolRunner(max_workers=1, parent=self)
         self._ram_buffer_enabled       = ram_buffer_enabled
@@ -302,6 +309,10 @@ class EncodeWorkflow(QObject):
         return ["-c:s", "copy", *per_index]
 
     def _ffprobe_streams_payload(self, source: Path) -> dict[str, object] | None:
+        cache_key = self._source_cache_key(source)
+        if cache_key is not None and cache_key in self._ffprobe_payload_cache:
+            return self._ffprobe_payload_cache[cache_key]
+
         ffprobe_bin = self._ffprobe_bin_from_ffmpeg(self._ffmpeg)
         cmd = [
             ffprobe_bin,
@@ -319,15 +330,31 @@ class EncodeWorkflow(QObject):
                 **subprocess_text_kwargs(),
             )
         except FileNotFoundError:
-            return None
+            payload = None
+        else:
+            if result.returncode != 0:
+                payload = None
+            else:
+                try:
+                    payload = json.loads(result.stdout or "{}")
+                except json.JSONDecodeError:
+                    payload = None
 
-        if result.returncode != 0:
-            return None
+        if cache_key is not None:
+            self._ffprobe_payload_cache[cache_key] = payload
+        return payload
 
+    @staticmethod
+    def _source_cache_key(source: Path) -> tuple[str, int, int] | None:
+        """Clé de cache fondée sur (chemin absolu, mtime_ns, taille).
+
+        Retourne None si le fichier n'existe pas encore (pas de cache possible).
+        """
         try:
-            return json.loads(result.stdout or "{}")
-        except json.JSONDecodeError:
+            st = source.stat()
+        except OSError:
             return None
+        return (str(source), st.st_mtime_ns, st.st_size)
 
     @staticmethod
     def _ffprobe_stream_dicts(payload: dict[str, object]) -> list[dict[str, object]]:
@@ -341,6 +368,10 @@ class EncodeWorkflow(QObject):
         return out
 
     def _mediainfo_hdr_flags(self, source: Path) -> tuple[bool, bool] | None:
+        cache_key = self._source_cache_key(source)
+        if cache_key is not None and cache_key in self._mediainfo_hdr_cache:
+            return self._mediainfo_hdr_cache[cache_key]
+
         mediainfo_bin = self._bins.get("mediainfo") or "mediainfo"
         try:
             hdr_format = subprocess.run(
@@ -358,12 +389,16 @@ class EncodeWorkflow(QObject):
                 **subprocess_text_kwargs(),
             )
         except FileNotFoundError:
-            return None
+            result: tuple[bool, bool] | None = None
+        else:
+            result = (
+                "dolby vision" in (hdr_format.stdout or "").lower(),
+                "hdr10+" in (hdr_compat.stdout or "").lower(),
+            )
 
-        return (
-            "dolby vision" in (hdr_format.stdout or "").lower(),
-            "hdr10+" in (hdr_compat.stdout or "").lower(),
-        )
+        if cache_key is not None:
+            self._mediainfo_hdr_cache[cache_key] = result
+        return result
 
     def _normalize_dynamic_hdr_config(self, config: EncodeConfig) -> EncodeConfig:
         """
@@ -1690,15 +1725,52 @@ class EncodeWorkflow(QObject):
             case "hevc_nvenc":
                 return ["-c:v", "hevc_nvenc", "-rc:v", "vbr", "-cq:v", str(v.crf), "-preset:v", v.preset]
             case "hevc_amf":
-                return ["-c:v", "hevc_amf", "-rc", "cqp", "-qp_p", str(v.crf), "-qp_i", str(v.crf)]
+                args = ["-c:v", "hevc_amf", "-rc", "cqp", "-qp_p", str(v.crf), "-qp_i", str(v.crf)]
+                if v.preset:
+                    args.extend(["-quality", v.preset])
+                return args
             case "hevc_qsv":
-                return ["-c:v", "hevc_qsv", "-global_quality", str(v.crf), "-look_ahead", "1"]
+                args = ["-c:v", "hevc_qsv", "-global_quality", str(v.crf),
+                        "-look_ahead", "1", "-async_depth", "4"]
+                if v.preset:
+                    args.extend(["-preset", v.preset])
+                return args
+            case "hevc_vaapi":
+                return ["-c:v", "hevc_vaapi", "-rc_mode", "CQP", "-qp", str(v.crf),
+                        "-compression_level", (v.preset or "4"),
+                        "-async_depth", "4"]
             case "h264_nvenc":
                 return ["-c:v", "h264_nvenc", "-rc:v", "vbr", "-cq:v", str(v.crf), "-preset:v", v.preset]
             case "h264_amf":
-                return ["-c:v", "h264_amf", "-rc", "cqp", "-qp_p", str(v.crf), "-qp_i", str(v.crf)]
+                args = ["-c:v", "h264_amf", "-rc", "cqp", "-qp_p", str(v.crf), "-qp_i", str(v.crf)]
+                if v.preset:
+                    args.extend(["-quality", v.preset])
+                return args
             case "h264_qsv":
-                return ["-c:v", "h264_qsv", "-global_quality", str(v.crf)]
+                args = ["-c:v", "h264_qsv", "-global_quality", str(v.crf), "-async_depth", "4"]
+                if v.preset:
+                    args.extend(["-preset", v.preset])
+                return args
+            case "h264_vaapi":
+                return ["-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", str(v.crf),
+                        "-compression_level", (v.preset or "4"),
+                        "-async_depth", "4"]
+            case "av1_nvenc":
+                return ["-c:v", "av1_nvenc", "-rc:v", "vbr", "-cq:v", str(v.crf), "-preset:v", v.preset]
+            case "av1_amf":
+                args = ["-c:v", "av1_amf", "-rc", "cqp", "-qp_p", str(v.crf), "-qp_i", str(v.crf)]
+                if v.preset:
+                    args.extend(["-quality", v.preset])
+                return args
+            case "av1_qsv":
+                args = ["-c:v", "av1_qsv", "-global_quality", str(v.crf), "-async_depth", "4"]
+                if v.preset:
+                    args.extend(["-preset", v.preset])
+                return args
+            case "av1_vaapi":
+                return ["-c:v", "av1_vaapi", "-rc_mode", "CQP", "-qp", str(v.crf),
+                        "-compression_level", (v.preset or "4"),
+                        "-async_depth", "4"]
             case _:
                 return ["-c:v", v.codec, "-crf", str(v.crf)]
 
@@ -1719,9 +1791,51 @@ class EncodeWorkflow(QObject):
             case "hevc_nvenc":
                 return ["-c:v", "hevc_nvenc", "-b:v", f"{bitrate_kbps}k", "-preset:v", v.preset]
             case "hevc_amf":
-                return ["-c:v", "hevc_amf", "-b:v", f"{bitrate_kbps}k"]
+                args = ["-c:v", "hevc_amf", "-b:v", f"{bitrate_kbps}k"]
+                if v.preset:
+                    args.extend(["-quality", v.preset])
+                return args
             case "hevc_qsv":
-                return ["-c:v", "hevc_qsv", "-b:v", f"{bitrate_kbps}k"]
+                args = ["-c:v", "hevc_qsv", "-b:v", f"{bitrate_kbps}k", "-async_depth", "4"]
+                if v.preset:
+                    args.extend(["-preset", v.preset])
+                return args
+            case "hevc_vaapi":
+                return ["-c:v", "hevc_vaapi", "-rc_mode", "VBR", "-b:v", f"{bitrate_kbps}k",
+                        "-compression_level", (v.preset or "4"),
+                        "-async_depth", "4"]
+            case "h264_nvenc":
+                return ["-c:v", "h264_nvenc", "-b:v", f"{bitrate_kbps}k", "-preset:v", v.preset]
+            case "h264_amf":
+                args = ["-c:v", "h264_amf", "-b:v", f"{bitrate_kbps}k"]
+                if v.preset:
+                    args.extend(["-quality", v.preset])
+                return args
+            case "h264_qsv":
+                args = ["-c:v", "h264_qsv", "-b:v", f"{bitrate_kbps}k", "-async_depth", "4"]
+                if v.preset:
+                    args.extend(["-preset", v.preset])
+                return args
+            case "h264_vaapi":
+                return ["-c:v", "h264_vaapi", "-rc_mode", "VBR", "-b:v", f"{bitrate_kbps}k",
+                        "-compression_level", (v.preset or "4"),
+                        "-async_depth", "4"]
+            case "av1_nvenc":
+                return ["-c:v", "av1_nvenc", "-b:v", f"{bitrate_kbps}k", "-preset:v", v.preset]
+            case "av1_amf":
+                args = ["-c:v", "av1_amf", "-b:v", f"{bitrate_kbps}k"]
+                if v.preset:
+                    args.extend(["-quality", v.preset])
+                return args
+            case "av1_qsv":
+                args = ["-c:v", "av1_qsv", "-b:v", f"{bitrate_kbps}k", "-async_depth", "4"]
+                if v.preset:
+                    args.extend(["-preset", v.preset])
+                return args
+            case "av1_vaapi":
+                return ["-c:v", "av1_vaapi", "-rc_mode", "VBR", "-b:v", f"{bitrate_kbps}k",
+                        "-compression_level", (v.preset or "4"),
+                        "-async_depth", "4"]
             case _:
                 return ["-c:v", v.codec, "-b:v", f"{bitrate_kbps}k"]
 
@@ -1743,22 +1857,69 @@ class EncodeWorkflow(QObject):
         """
         Retourne la chaîne de filtres finale adaptée au codec de sortie.
 
-        Les encodeurs VAAPI ont besoin d'un upload explicite vers le device
-        matériel. On ajoute donc `format=nv12,hwupload` uniquement pour les
-        réencodages `_vaapi`, en conservant les autres filtres inchangés.
+        Encodeurs VAAPI :
+          - Sans tone-mapping : décodage déjà fait en VAAPI (frames sur GPU),
+            pas besoin de `hwupload` — l'encodeur `*_vaapi` consomme la
+            surface directement.
+          - Avec tone-mapping : zscale/tonemap tournent en CPU et produisent
+            des frames nv12 CPU, il faut alors remonter sur GPU via
+            `format=nv12,hwupload`.
         """
         vf = self._build_vf(v)
         if v.codec not in _VAAPI_CODECS:
             return vf
-        vaapi_upload = "format=nv12,hwupload"
-        return f"{vf},{vaapi_upload}" if vf else vaapi_upload
+        if v.tonemap_to_sdr:
+            vaapi_upload = "format=nv12,hwupload"
+            return f"{vf},{vaapi_upload}" if vf else vaapi_upload
+        return vf
 
     def _hardware_input_args(self, v: VideoEncodeSettings) -> list[str]:
-        """Flags ffmpeg requis avant les entrées pour certains encodeurs matériels."""
-        if v.codec not in _VAAPI_CODECS:
-            return []
-        vaapi_device = self._vaapi_device()
-        return ["-vaapi_device", vaapi_device] if vaapi_device else []
+        """Flags ffmpeg requis avant les entrées pour certains encodeurs matériels.
+
+        - `-vaapi_device` : option globale pour les encodeurs `_vaapi`.
+        - `-hwaccel` : option d'entrée appliquée au prochain `-i` uniquement
+          (la source vidéo principale est toujours le premier input). Permet
+          de décoder en GPU et d'envoyer les frames directement à l'encodeur
+          sans passer par le CPU.
+        - Tone-mapping HDR→SDR : utilise le pipeline zscale CPU, donc on
+          désactive l'option `hwaccel_output_format` (le décodage hardware
+          reste possible mais ffmpeg fait un download automatique).
+        """
+        args: list[str] = []
+        tonemap = bool(v.tonemap_to_sdr)
+
+        if v.codec in _VAAPI_CODECS:
+            vaapi_device = self._vaapi_device()
+            if vaapi_device:
+                args.extend(["-vaapi_device", vaapi_device])
+                if not tonemap:
+                    args.extend([
+                        "-hwaccel", "vaapi",
+                        "-hwaccel_output_format", "vaapi",
+                    ])
+            return args
+
+        if tonemap:
+            return args
+
+        if v.codec in {"hevc_nvenc", "h264_nvenc", "av1_nvenc"}:
+            args.extend([
+                "-hwaccel", "cuda",
+                "-hwaccel_output_format", "cuda",
+            ])
+        elif v.codec in {"hevc_qsv", "h264_qsv", "av1_qsv"}:
+            args.extend([
+                "-hwaccel", "qsv",
+                "-hwaccel_output_format", "qsv",
+            ])
+        elif v.codec in {"hevc_amf", "h264_amf", "av1_amf"}:
+            if sys.platform == "win32":
+                args.extend([
+                    "-hwaccel", "d3d11va",
+                    "-hwaccel_output_format", "d3d11",
+                ])
+
+        return args
 
     @staticmethod
     def _vaapi_device() -> str | None:

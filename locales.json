@@ -1274,5 +1274,41 @@
   "Impossible de redémarrer automatiquement l'application.": {
     "fra": "Impossible de redémarrer automatiquement l'application.",
     "eng": "Unable to restart the application automatically."
+  },
+  "Taille réelle": {
+    "fra": "Taille réelle",
+    "eng": "Actual size"
+  },
+  "Ajuster à 720p": {
+    "fra": "Ajuster à 720p",
+    "eng": "Fit to 720p"
+  },
+  "Image introuvable ou illisible.": {
+    "fra": "Image introuvable ou illisible.",
+    "eng": "Image not found or unreadable."
+  },
+  "Attachement": {
+    "fra": "Attachement",
+    "eng": "Attachment"
+  },
+  "Aucun aperçu n'est disponible pour ce type de fichier.": {
+    "fra": "Aucun aperçu n'est disponible pour ce type de fichier.",
+    "eng": "No preview is available for this file type."
+  },
+  "Impossible d'ouvrir cet attachement embarqué : {exc}": {
+    "fra": "Impossible d'ouvrir cet attachement embarqué : {exc}",
+    "eng": "Unable to open this embedded attachment: {exc}"
+  },
+  "Impossible d'extraire l'attachement embarqué.": {
+    "fra": "Impossible d'extraire l'attachement embarqué.",
+    "eng": "Unable to extract the embedded attachment."
+  },
+  "Source introuvable pour cet attachement embarqué.": {
+    "fra": "Source introuvable pour cet attachement embarqué.",
+    "eng": "Source file not found for this embedded attachment."
+  },
+  "Impossible d'extraire cet attachement embarqué depuis la source.": {
+    "fra": "Impossible d'extraire cet attachement embarqué depuis la source.",
+    "eng": "Unable to extract this embedded attachment from the source."
   }
 }
