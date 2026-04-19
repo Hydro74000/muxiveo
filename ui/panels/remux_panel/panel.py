@@ -102,6 +102,8 @@ class RemuxPanel(QWidget):
             ffprobe_bin=self._config.tool_ffprobe,
             ffmpeg_threads=self._config.ffmpeg_threads,
             writing_application=self._writing_application,
+            generate_nfo=self._config.generate_nfo,
+            mediainfo_bin=self._config.tool_mediainfo,
         )
 
     def _recreate_workflow(self) -> None:
@@ -367,6 +369,8 @@ class RemuxPanel(QWidget):
         self._workflow.set_ffmpeg_bin(self._config.tool_ffmpeg)
         self._workflow.set_ffprobe_bin(self._config.tool_ffprobe)
         self._workflow.set_ffmpeg_threads(self._config.ffmpeg_threads)
+        self._workflow.set_generate_nfo(self._config.generate_nfo)
+        self._workflow.set_mediainfo_bin(self._config.tool_mediainfo)
         self._rebuild_preview()
 
     def update_audio_track_meta(self, stream_index: int, source_path, lang: str, title: str) -> None:

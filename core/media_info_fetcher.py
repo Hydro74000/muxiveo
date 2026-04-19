@@ -13,6 +13,7 @@ import logging
 import mimetypes
 import os
 import re
+import ssl
 import sys
 import urllib.error
 import urllib.parse
@@ -312,6 +313,33 @@ _URL_IMD = "https://www.imdb.com/title/{imdb_id}/"
 _TMDB_DEBUG_ENV = "MEDIARECODE_TMDB_DEBUG"
 _TMDB_LOGGER = logging.getLogger("mediarecode.tmdb")
 _TMDB_BEARER_TOKEN_ENV = "MEDIARECODE_TMDB_BEARER_TOKEN"
+_TMDB_INSECURE_SSL_ENV = "MEDIARECODE_TMDB_INSECURE_SSL"
+
+
+def _tmdb_insecure_ssl_enabled() -> bool:
+    raw = os.environ.get(_TMDB_INSECURE_SSL_ENV, "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _unverified_ssl_context() -> ssl.SSLContext:
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+def _is_ssl_error(exc: BaseException) -> bool:
+    cur: BaseException | None = exc
+    while cur is not None:
+        if isinstance(cur, ssl.SSLError):
+            return True
+        reason = getattr(cur, "reason", None)
+        if isinstance(reason, ssl.SSLError):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 _TMDB_DEFAULT_BEARER_TOKEN = (
     "eyJhbGciOiJIUzI1NiJ9."
     "eyJhdWQiOiI3MWYxZWFlYTU3MmVlNmNhNTg0OTRmNzMxMjg5ODhhZiIs"
@@ -374,6 +402,22 @@ class TmdbFetcher:
     # Requête HTTP interne
     # ------------------------------------------------------------------
 
+    def _urlopen_with_ssl_fallback(self, req: urllib.request.Request, timeout: int):
+        """
+        urlopen avec fallback automatique en SSL non-vérifié si la vérification
+        échoue (pratique quand le bundle CA du frozen ne matche pas l'hôte).
+        Forçable via MEDIARECODE_TMDB_INSECURE_SSL=1.
+        """
+        if _tmdb_insecure_ssl_enabled():
+            return urllib.request.urlopen(req, timeout=timeout, context=_unverified_ssl_context())
+        try:
+            return urllib.request.urlopen(req, timeout=timeout)
+        except urllib.error.URLError as exc:
+            if not _is_ssl_error(exc):
+                raise
+            self._debug_log("SSL verification failed; retrying insecure", url=req.full_url)
+            return urllib.request.urlopen(req, timeout=timeout, context=_unverified_ssl_context())
+
     def _get(self, endpoint: str, extra: dict | None = None) -> dict:
         params: dict[str, str] = {"language": self._lang}
         if self._key:
@@ -388,12 +432,9 @@ class TmdbFetcher:
         }
         if self._bearer_token:
             headers["Authorization"] = f"Bearer {self._bearer_token}"
-        req = urllib.request.Request(
-            url,
-            headers=headers,
-        )
+        req = urllib.request.Request(url, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=12) as resp:
+            with self._urlopen_with_ssl_fallback(req, timeout=12) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             if exc.code == 401:
@@ -419,7 +460,7 @@ class TmdbFetcher:
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
+            with self._urlopen_with_ssl_fallback(req, timeout=20) as resp:
                 content_type = resp.headers.get("Content-Type", "").split(";", 1)[0].strip()
                 return resp.read(), content_type
         except urllib.error.HTTPError as exc:

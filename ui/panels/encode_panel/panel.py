@@ -70,13 +70,14 @@ class EncodePanel(QWidget):
             ffmpeg_bin=config.tool_ffmpeg,
             dovi_tool_bin=config.tool_dovi_tool,
             hdr10plus_bin=config.tool_hdr10plus,
+            mediainfo_bin=config.tool_mediainfo,
             ram_buffer_enabled=config.ram_buffer_enabled,
             ram_buffer_threshold_pct=config.ram_buffer_threshold_pct,
             ffmpeg_threads=config.ffmpeg_threads,
             parent=self,
             writing_application=writing_application,
+            generate_nfo=config.generate_nfo,
         )
-        self._workflow._bins["mediainfo"] = config.tool_mediainfo
         self._profiles  = ProfileManager(config.app_data_dir / "encode_profiles")
         self._executor  = ThreadPoolExecutor(max_workers=1)
         self._file_info: FileInfo | None = None
@@ -1087,7 +1088,8 @@ class EncodePanel(QWidget):
     def refresh_runtime_settings(self) -> None:
         self._audio_table.refresh_runtime_settings()
         self._workflow.set_ffmpeg_threads(self._config.ffmpeg_threads)
-        self._workflow._bins["mediainfo"] = self._config.tool_mediainfo
+        self._workflow.set_mediainfo_bin(self._config.tool_mediainfo)
+        self._workflow.set_generate_nfo(self._config.generate_nfo)
         self._rebuild_preview()
 
     def _copy_command(self) -> None:
