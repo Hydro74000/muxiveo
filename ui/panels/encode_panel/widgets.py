@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from core.file_types import VIDEO_CONTAINER_EXTENSIONS, build_qt_filter
 from core.inspector import AudioTrack, FileInfo
 from core.i18n import apply_translations, translate_text
 from core.lang_tags import Rfc5646LanguageTags
@@ -246,7 +247,7 @@ class _AudioBitrateEditor(QWidget):
 
 class _FileZone(QFrame):
     file_selected = Signal(str)
-    _ACCEPTED = {".mkv", ".mp4", ".m4v", ".mov", ".ts", ".m2ts"}
+    _ACCEPTED = VIDEO_CONTAINER_EXTENSIONS
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -327,7 +328,7 @@ class _FileZone(QFrame):
             self,
             translate_text("Sélectionner un fichier vidéo"),
             "",
-            translate_text("Vidéos (*.mkv *.mp4 *.m4v *.mov *.ts *.m2ts);;Tous (*)"),
+            build_qt_filter(video_only=True),
         )
         if path:
             self.file_selected.emit(path)

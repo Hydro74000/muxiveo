@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.file_types import ACCEPTED_EXTENSIONS, build_qt_filter
 from core.i18n import translate_text
 from core.inspector import FileInfo
 from ui.panels.remux_panel.models import _FILE_BAR_H, _FILE_PH_H, _FILE_ROW_H, SourceFile
@@ -124,7 +125,7 @@ class _FileRow(QWidget):
         """)
 
 
-_ACCEPTED_EXT = {".mkv", ".mp4", ".m4v", ".mov", ".srt"}
+_ACCEPTED_EXT = ACCEPTED_EXTENSIONS
 
 
 class _FileListWidget(QFrame):
@@ -265,7 +266,7 @@ class _FileListWidget(QFrame):
             self,
             translate_text("Sélectionner des fichiers source"),
             "",
-            translate_text("Fichiers source (*.mkv *.mp4 *.m4v *.mov *.srt);;Tous les fichiers (*)"),
+            build_qt_filter(),
         )
         if paths:
             self.add_requested.emit(paths)

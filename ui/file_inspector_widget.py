@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
+from core.file_types import build_qt_filter, is_accepted
 from core.i18n import apply_translations, translate_text
 from core.inspector import (
     AudioTrack, ChapterInfo, FileInfo, FileInspector,
@@ -361,7 +362,7 @@ class _FileDropZone(QWidget):
             self,
             translate_text("Ouvrir un fichier vidéo"),
             "",
-            translate_text("Fichiers vidéo (*.mkv *.mp4 *.m4v *.mov *.m2ts *.ts);;Tous les fichiers (*)"),
+            build_qt_filter(video_only=True),
         )
         if path:
             self.file_selected.emit(path)
@@ -371,9 +372,7 @@ class _FileDropZone(QWidget):
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
             urls = event.mimeData().urls()
-            if urls and Path(urls[0].toLocalFile()).suffix.lower() in (
-                ".mkv", ".mp4", ".m4v", ".mov", ".m2ts", ".ts"
-            ):
+            if urls and is_accepted(urls[0].toLocalFile(), video_only=True):
                 event.acceptProposedAction()
                 self.setStyleSheet(f"""
                     QWidget {{

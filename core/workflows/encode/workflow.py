@@ -24,6 +24,7 @@ from PySide6.QtCore import QObject, Signal
 from core.lang_tags import Rfc5646LanguageTags as LangTags
 from core.runner import TaskCancelledError, TaskSignals, ToolRunner
 from core.subprocess_utils import subprocess_text_kwargs
+from core.subtitle_codec import plan_subtitle_codec
 from core.version import APP_VERSION_LABEL
 from core.workdir import (
     download_tmdb_cover,
@@ -259,6 +260,45 @@ class EncodeWorkflow(QObject):
 
         mi_dv, mi_hdr10plus = mediainfo_flags
         return has_dv or mi_dv, has_hdr10plus or mi_hdr10plus
+
+    def _subtitle_codec_of(self, source: Path, stream_index: int) -> str:
+        """Retourne le codec (ffprobe ``codec_name``) du stream ``stream_index``.
+
+        Retourne chaîne vide si non résolvable : le routage fera un fallback copy.
+        """
+        payload = self._ffprobe_streams_payload(Path(source))
+        if not payload:
+            return ""
+        for stream in self._ffprobe_stream_dicts(payload):
+            raw_idx = stream.get("index", -1)
+            try:
+                idx_val = int(raw_idx)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                continue
+            if idx_val == int(stream_index):
+                return str(stream.get("codec_name", "") or "")
+        return ""
+
+    def _subtitle_codec_args(
+        self, subtitle_tracks: list[tuple[object, int]]
+    ) -> list[str]:
+        """Construit les args ``-c:s:N`` par piste selon son codec source.
+
+        Si toutes les pistes passent en copy → retourne ``["-c:s", "copy"]``.
+        Sinon : ``-c:s copy`` par défaut + ``-c:s:N srt`` pour chaque piste à
+        convertir. Ordre de ``subtitle_tracks`` = ordre de sortie.
+        """
+        per_index: list[str] = []
+        any_convert = False
+        for out_idx, (src_path, stream_idx) in enumerate(subtitle_tracks):
+            codec = self._subtitle_codec_of(Path(src_path), int(stream_idx))
+            codec_arg, _ = plan_subtitle_codec(codec)
+            if codec_arg != "copy":
+                any_convert = True
+                per_index.extend([f"-c:s:{out_idx}", codec_arg])
+        if not any_convert:
+            return ["-c:s", "copy"]
+        return ["-c:s", "copy", *per_index]
 
     def _ffprobe_streams_payload(self, source: Path) -> dict[str, object] | None:
         ffprobe_bin = self._ffprobe_bin_from_ffmpeg(self._ffmpeg)
@@ -929,10 +969,17 @@ class EncodeWorkflow(QObject):
                 if inp is None:
                     continue
                 cmd.extend(["-map", f"{inp}:{stream_idx}"])
-            cmd.extend(["-c:s", "copy"])
+            # Routage par piste : copy quand MKV l'accepte, sinon conversion srt.
+            cmd.extend(self._subtitle_codec_args([
+                (t[0], int(t[1])) for t in subtitle_tracks
+            ]))
         elif config.copy_subtitles and force_copy_subtitles_wildcard:
             for inp_i in subtitle_copy_input_indices:
                 cmd.extend(["-map", f"{inp_i}:s?"])
+            # Wildcard : on ne connaît pas les codecs à l'avance, copy par
+            # défaut ; ffmpeg échouera sur mov_text / eia_608. Pour les cas
+            # connus d'échec, l'utilisateur doit sélectionner explicitement
+            # les pistes via subtitle_tracks.
             cmd.extend(["-c:s", "copy"])
 
         mapped_attachment_meta: list[tuple[int, dict[str, object]]] = []

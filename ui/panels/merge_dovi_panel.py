@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
+from core.file_types import build_qt_filter, is_accepted
 from core.i18n import apply_translations, translate_text
 from core.subprocess_utils import subprocess_text_kwargs
 from core.workflows.merge_dovi import (
@@ -247,7 +248,7 @@ class _FilePairSection(QWidget):
                 self,
                 translate_text(dialog_title),
                 "",
-                translate_text("Fichiers vidéo (*.mkv *.hevc);;Tous les fichiers (*)"),
+                build_qt_filter(video_only=True),
             )
             if path:
                 on_path_selected(path)
@@ -258,7 +259,7 @@ class _FilePairSection(QWidget):
         def dragEnterEvent(event) -> None:  # type: ignore[override]
             if event.mimeData().hasUrls():
                 url = event.mimeData().urls()[0]
-                if Path(url.toLocalFile()).suffix.lower() in (".mkv", ".hevc"):
+                if is_accepted(url.toLocalFile(), video_only=True):
                     event.acceptProposedAction()
                     card.setStyleSheet(f"""
                         QWidget {{
