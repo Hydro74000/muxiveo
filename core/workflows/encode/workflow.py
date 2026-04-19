@@ -1018,12 +1018,18 @@ class EncodeWorkflow(QObject):
         include_copy_video_stream_passthrough: bool = False,
     ) -> None:
         """Ajoute les options metadata/chapitres/tags/track-meta en une passe."""
+        chapter_map = self._container_chapter_map_value(
+            config,
+            default_chapter_input_index=default_chapter_input_index,
+            chapter_input_index=chapter_input_index,
+        )
         metadata_map = self._container_metadata_map_value(
             config,
             default_metadata_input_index=default_metadata_input_index,
             chapter_input_index=chapter_input_index,
             tag_input_index=tag_input_index,
             include_copy_video_stream_passthrough=include_copy_video_stream_passthrough,
+            chapter_map=chapter_map,
         )
         if metadata_map is not None:
             cmd.extend(["-map_metadata", metadata_map])
@@ -1033,14 +1039,7 @@ class EncodeWorkflow(QObject):
                     f"{default_metadata_input_index}:s:v:0",
                 ])
 
-        cmd.extend([
-            "-map_chapters",
-            self._container_chapter_map_value(
-                config,
-                default_chapter_input_index=default_chapter_input_index,
-                chapter_input_index=chapter_input_index,
-            ),
-        ])
+        cmd.extend(["-map_chapters", chapter_map])
 
         global_tags = self._resolve_global_tags(config)
         title_value = global_tags.pop("title", None)
@@ -1064,10 +1063,13 @@ class EncodeWorkflow(QObject):
         chapter_input_index: int | None,
         tag_input_index: int | None,
         include_copy_video_stream_passthrough: bool,
+        chapter_map: str | None = None,
     ) -> str | None:
         if config.tag_overrides is not None:
             if chapter_input_index is not None:
                 return str(chapter_input_index)
+            if chapter_map is not None and chapter_map not in ("-1", ""):
+                return chapter_map
             return "-1"
         if tag_input_index is not None:
             return str(tag_input_index)

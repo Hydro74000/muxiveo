@@ -495,8 +495,9 @@ class RemuxWorkflow(QObject):
         if needs_strict_interleave:
             cmd.extend(["-max_interleave_delta", "0"])
             cmd.extend(["-max_muxing_queue_size", "9999"])
-        cmd.extend(["-map_metadata", self._metadata_map_value(config, chapter_input_index)])
-        cmd.extend(["-map_chapters", self._chapter_map_value(config, chapter_input_index)])
+        chapter_map = self._chapter_map_value(config, chapter_input_index)
+        cmd.extend(["-map_metadata", self._metadata_map_value(config, chapter_input_index, chapter_map)])
+        cmd.extend(["-map_chapters", chapter_map])
 
         cmd.extend(["-metadata", "encoder=", "-metadata", "creation_time="])
 
@@ -924,14 +925,25 @@ class RemuxWorkflow(QObject):
         return "0" if config.keep_chapters else "-1"
 
     @staticmethod
-    def _metadata_map_value(config: RemuxConfig, chapter_input_index: int | None) -> str:
+    def _metadata_map_value(
+        config: RemuxConfig,
+        chapter_input_index: int | None,
+        chapter_map: str | None = None,
+    ) -> str:
         if config.tag_overrides is not None:
             if config.chapter_overrides and chapter_input_index is not None:
                 return str(chapter_input_index)
+            if chapter_map is not None and chapter_map not in ("-1", ""):
+                return chapter_map
             return "-1"
         for input_idx, src in enumerate(config.sources):
             if src.copy_tags:
                 return str(input_idx)
+        # Sans copy_tags explicite : aligner -map_metadata sur la source des chapitres
+        # pour que FFmpeg préserve les titres de chapitres (les tags globaux parasites
+        # sont neutralisés par les -metadata key= ajoutés par l'appelant).
+        if chapter_map is not None and chapter_map not in ("-1", ""):
+            return chapter_map
         return "-1"
 
     def _resolved_global_tags(self, config: RemuxConfig) -> dict[str, str]:

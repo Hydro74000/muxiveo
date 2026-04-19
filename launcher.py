@@ -28,6 +28,34 @@ def _ensure_text_stream(name: str, mode: str) -> None:
 _ensure_text_stream("stdout", "w")
 _ensure_text_stream("stderr", "w")
 
+
+def _ensure_ssl_ca_bundle() -> None:
+    """
+    En mode frozen (PyInstaller/AppImage), l'OpenSSL embarqué référence
+    des chemins CA de la machine de build qui n'existent pas sur la machine
+    cible → toutes les requêtes HTTPS (TMDB, GitHub…) échouent avec
+    CERTIFICATE_VERIFY_FAILED. On force SSL_CERT_FILE sur le bundle certifi
+    embarqué si aucun CA valide n'est visible.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    if os.environ.get("SSL_CERT_FILE") or os.environ.get("REQUESTS_CA_BUNDLE"):
+        return
+    try:
+        import certifi  # embarqué par PyInstaller
+    except Exception:
+        return
+    try:
+        ca_path = certifi.where()
+    except Exception:
+        return
+    if ca_path and os.path.exists(ca_path):
+        os.environ["SSL_CERT_FILE"] = ca_path
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", ca_path)
+
+
+_ensure_ssl_ca_bundle()
+
 SETUP_RC_OK = 0
 SETUP_RC_ERROR = 1
 SETUP_RC_HANDOFF = 2
@@ -381,7 +409,41 @@ def _run_first_time_setup(install_dir: Path) -> int:
 # Point d'entrée
 # ---------------------------------------------------------------------------
 
+def _run_tmdb_smoke_test() -> int:
+    """
+    Smoke-test TMDB dans le binaire packagé : effectue une vraie requête réseau
+    et retourne 0 si ≥ 1 résultat reçu, 1 sinon. Utilisé par la CI pour valider
+    la chaîne SSL (certifi CA bundle + fallback non-vérifié) en mode frozen
+    sur Linux / Windows / macOS.
+    """
+    import traceback
+
+    try:
+        sys.stdout.write(f"[tmdb-smoke] frozen={bool(getattr(sys, 'frozen', False))}\n")
+        sys.stdout.write(f"[tmdb-smoke] SSL_CERT_FILE={os.environ.get('SSL_CERT_FILE', '')!r}\n")
+        sys.stdout.flush()
+        from core.media_info_fetcher import TmdbFetcher, default_tmdb_bearer_token
+        token = default_tmdb_bearer_token()
+        if not token:
+            sys.stderr.write("[tmdb-smoke] aucun token Bearer disponible\n")
+            return 1
+        fetcher = TmdbFetcher(bearer_token=token)
+        results = fetcher.search("Inception", kind="movie", year="2010")
+        sys.stdout.write(f"[tmdb-smoke] {len(results)} résultat(s)\n")
+        for r in results[:3]:
+            sys.stdout.write(f"  - tmdb_id={r.tmdb_id} title={r.title!r}\n")
+        sys.stdout.flush()
+        return 0 if results else 1
+    except Exception as exc:
+        sys.stderr.write(f"[tmdb-smoke] ÉCHEC: {exc!r}\n")
+        traceback.print_exc()
+        return 1
+
+
 def main() -> int:
+    if "--tmdb-smoke-test" in sys.argv:
+        return _run_tmdb_smoke_test()
+
     config_path = _get_config_path()
 
     if not config_path.exists():
