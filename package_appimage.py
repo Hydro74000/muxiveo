@@ -845,7 +845,13 @@ def build_appimage(
     env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
 
     run(
-        [appimagetool, "--no-appstream", str(appdir), str(output)],
+        [
+            appimagetool,
+            "--no-appstream",
+            "-u", update_information,
+            str(appdir),
+            str(output),
+        ],
         env=env,
     )
 
