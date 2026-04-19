@@ -60,7 +60,10 @@ jobs:
             "MEDIARECODE_MSIX_PUBLISHER_DISPLAY_NAME=$env:WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           }
           if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_DESCRIPTION)) {
-            "MEDIARECODE_MSIX_DESCRIPTION=$env:WINDOWS_MSIX_DESCRIPTION" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            $delim = "EOF_$([guid]::NewGuid().ToString('N'))"
+            "MEDIARECODE_MSIX_DESCRIPTION<<$delim" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            $env:WINDOWS_MSIX_DESCRIPTION | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            $delim | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           }
 
       - name: Discover Windows SDK tools
