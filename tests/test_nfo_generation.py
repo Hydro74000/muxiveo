@@ -141,7 +141,7 @@ class TestAppConfigGenerateNfo:
 
 class TestSettingsPanelGenerateNfo:
 
-    def test_checkbox_exists_and_defaults_checked(self, tmp_path):
+    def test_checkbox_exists_and_defaults_checked(self, qt_app, tmp_path):
         """Le panneau expose une checkbox generate_nfo cochée par défaut."""
         from core.config import AppConfig
         from ui.panels.settings_panel import SettingsPanel
@@ -151,7 +151,7 @@ class TestSettingsPanelGenerateNfo:
         cb = panel.widget_for("metadata", "generate_nfo")
         assert cb.isChecked() is True
 
-    def test_checkbox_reflects_false_from_config(self, tmp_path):
+    def test_checkbox_reflects_false_from_config(self, qt_app, tmp_path):
         """La checkbox est décochée si generate_nfo=false dans l'INI."""
         from ui.panels.settings_panel import SettingsPanel
 
@@ -160,7 +160,7 @@ class TestSettingsPanelGenerateNfo:
         cb = panel.widget_for("metadata", "generate_nfo")
         assert cb.isChecked() is False
 
-    def test_save_writes_false_to_ini(self, tmp_path):
+    def test_save_writes_false_to_ini(self, qt_app, tmp_path):
         """Décocher la checkbox et sauvegarder écrit generate_nfo = false dans l'INI."""
         import core.config as cfg_mod
         from core.config import AppConfig
@@ -183,7 +183,7 @@ class TestSettingsPanelGenerateNfo:
         assert "generate_nfo = false" in ini_path.read_text(encoding="utf-8")
         assert cfg.generate_nfo is False
 
-    def test_save_writes_true_to_ini(self, tmp_path):
+    def test_save_writes_true_to_ini(self, qt_app, tmp_path):
         """Cocher la checkbox et sauvegarder écrit generate_nfo = true dans l'INI."""
         import core.config as cfg_mod
         from core.config import AppConfig

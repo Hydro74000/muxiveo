@@ -1806,7 +1806,11 @@ class TestIntegratedMetadataCommand:
         cmd = wf.build_command_single(cfg)
 
         idx = cmd.index("-map_metadata")
-        assert cmd[idx + 1] == "-1"
+        # Avec tag_overrides, les tags sources sont ignorés mais les chapitres
+        # restent préservés via chapter_map (fallback = input 0). On vérifie
+        # que la source des tags globaux == source des chapitres.
+        chap_idx = cmd.index("-map_chapters")
+        assert cmd[idx + 1] == cmd[chap_idx + 1]
         assert "GENRE=Drama" in cmd
         assert "title=Titre" in cmd
 
