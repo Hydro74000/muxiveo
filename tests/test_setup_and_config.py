@@ -5,6 +5,7 @@ tests/test_setup_and_config.py — Tests unitaires pour setup.py et core/config.
 from __future__ import annotations
 
 import os
+import sys
 from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -16,6 +17,38 @@ import pytest
 def _qt_app(qt_app):
     """Assure qu'une QApplication existe pour les accès Qt/QSettings."""
     return qt_app
+
+
+def test_rerun_application_setup_windows_calls_setup_sequence(tmp_path):
+    import core.config as cfg_mod
+
+    fake_setup = SimpleNamespace(
+        _default_prefix=lambda: tmp_path / "tools",
+        install_winget=MagicMock(),
+        install_github_tools=MagicMock(),
+        autofill_windows_config_ini=MagicMock(),
+        check_tools_presence=MagicMock(),
+        offer_windows_controlled_folder_access_setup=MagicMock(),
+        initialize_config_ini_language=MagicMock(),
+        install_python_packages=MagicMock(),
+    )
+    ini_path = tmp_path / "config.ini"
+
+    with patch("platform.system", return_value="Windows"), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path), \
+         patch.object(cfg_mod.sys, "frozen", True, create=True), \
+         patch.dict(sys.modules, {"setup": fake_setup}):
+        cfg_mod.rerun_application_setup()
+
+    fake_setup.install_winget.assert_called_once_with(False, force=False)
+    fake_setup.install_github_tools.assert_called_once_with(tmp_path / "tools", False, force=False)
+    fake_setup.autofill_windows_config_ini.assert_called_once_with(tmp_path / "tools", False, force=False)
+    fake_setup.check_tools_presence.assert_called_once_with(tmp_path / "tools")
+    fake_setup.offer_windows_controlled_folder_access_setup.assert_called_once_with(
+        tmp_path / "tools", False, force=False
+    )
+    fake_setup.initialize_config_ini_language.assert_called_once_with(False, force=False, ini_path=ini_path)
+    fake_setup.install_python_packages.assert_not_called()
 
 
 class TestAppConfigRamBuffer:
@@ -112,13 +145,16 @@ class TestAppConfigRamBuffer:
 
     def test_default_startup_panel_is_dashboard(self, tmp_path):
         """Sans clé explicite, le panneau de démarrage est le dashboard."""
+        import core.config as cfg_mod
         from core.config import AppConfig
 
+        ini_path = tmp_path / "config.ini"
         with patch("core.config.QSettings") as mock_qs:
             inst = MagicMock()
             inst.value.side_effect = lambda key, default=None: default
             mock_qs.return_value = inst
             with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path), \
                  patch.dict(os.environ, {}, clear=False):
                 cfg = AppConfig()
 
@@ -144,13 +180,16 @@ class TestAppConfigRamBuffer:
 
     def test_default_startup_menu_compact_is_false(self, tmp_path):
         """Sans clé explicite, le menu démarre en mode étendu."""
+        import core.config as cfg_mod
         from core.config import AppConfig
 
+        ini_path = tmp_path / "config.ini"
         with patch("core.config.QSettings") as mock_qs:
             inst = MagicMock()
             inst.value.side_effect = lambda key, default=None: default
             mock_qs.return_value = inst
             with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path), \
                  patch.dict(os.environ, {}, clear=False):
                 cfg = AppConfig()
 

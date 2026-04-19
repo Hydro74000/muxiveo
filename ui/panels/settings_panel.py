@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QLayout,
+    QMessageBox,
     QScrollArea,
     QSizePolicy,
     QSpinBox,
@@ -114,6 +115,8 @@ class SettingsPanel(QWidget):
         actions.setSpacing(12)
         reload_btn = _secondary_button("Recharger depuis config.ini")
         reload_btn.clicked.connect(self._on_reload_clicked)
+        rerun_setup_btn = _secondary_button("Relancer le setup")
+        rerun_setup_btn.clicked.connect(self._on_rerun_setup_clicked)
         save_btn = _primary_button("Sauvegarder toute la configuration")
         save_btn.clicked.connect(self._on_save_clicked)
 
@@ -124,6 +127,7 @@ class SettingsPanel(QWidget):
 
         actions.addWidget(self._status_label, stretch=1)
         actions.addWidget(reload_btn)
+        actions.addWidget(rerun_setup_btn)
         actions.addWidget(save_btn)
         layout.addLayout(actions)
 
@@ -338,3 +342,42 @@ class SettingsPanel(QWidget):
                 )
             )
         self.settings_saved.emit()
+
+    def _on_rerun_setup_clicked(self) -> None:
+        try:
+            self._config.rerun_setup()
+        except Exception as exc:
+            if self._status_label is not None:
+                self._status_label.setText(
+                    translate_text("Erreur pendant la relance du setup : {exc}", exc=exc)
+                )
+            QMessageBox.warning(
+                self,
+                translate_text("Erreur"),
+                translate_text("Impossible de relancer le setup : {exc}", exc=exc),
+            )
+            return
+
+        if self._status_label is not None:
+            self._status_label.setText(
+                translate_text(
+                    "Setup relancé avec succès. Un redémarrage de l'application est recommandé."
+                )
+            )
+        self.settings_saved.emit()
+
+        reply = QMessageBox.question(
+            self,
+            translate_text("Redémarrage recommandé"),
+            translate_text("Le setup est terminé. Redémarrer l'application maintenant ?"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            restarted = self._config.restart_application()
+            if not restarted:
+                QMessageBox.warning(
+                    self,
+                    translate_text("Erreur"),
+                    translate_text("Impossible de redémarrer automatiquement l'application."),
+                )

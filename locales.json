@@ -1246,5 +1246,33 @@
   "Préparation sync/remap + commande ffmpeg (single pass)": {
     "fra": "Préparation sync/remap + commande ffmpeg (single pass)",
     "eng": "Sync/remap setup + ffmpeg command (single pass)"
+  },
+  "Relancer le setup": {
+    "fra": "Relancer le setup",
+    "eng": "Rerun setup"
+  },
+  "Erreur pendant la relance du setup : {exc}": {
+    "fra": "Erreur pendant la relance du setup : {exc}",
+    "eng": "Error while rerunning setup: {exc}"
+  },
+  "Impossible de relancer le setup : {exc}": {
+    "fra": "Impossible de relancer le setup : {exc}",
+    "eng": "Unable to rerun setup: {exc}"
+  },
+  "Setup relancé avec succès. Un redémarrage de l'application est recommandé.": {
+    "fra": "Setup relancé avec succès. Un redémarrage de l'application est recommandé.",
+    "eng": "Setup rerun successfully. Restarting the application is recommended."
+  },
+  "Redémarrage recommandé": {
+    "fra": "Redémarrage recommandé",
+    "eng": "Restart recommended"
+  },
+  "Le setup est terminé. Redémarrer l'application maintenant ?": {
+    "fra": "Le setup est terminé. Redémarrer l'application maintenant ?",
+    "eng": "Setup is complete. Restart the application now?"
+  },
+  "Impossible de redémarrer automatiquement l'application.": {
+    "fra": "Impossible de redémarrer automatiquement l'application.",
+    "eng": "Unable to restart the application automatically."
   }
 }

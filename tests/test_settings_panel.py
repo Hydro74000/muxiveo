@@ -7,6 +7,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from core.i18n import translate_text
+
 
 def _mock_qsettings():
     inst = MagicMock()
@@ -187,3 +189,52 @@ def test_settings_panel_writes_ffmpeg_threads_to_ini(tmp_path, qt_app):
         assert cfg.ffmpeg_threads == 18
 
 
+def test_settings_panel_rerun_setup_restarts_app_on_confirmation(tmp_path, qt_app):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+    from PySide6.QtWidgets import QMessageBox
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[ui]\nlanguage = eng\n", encoding="utf-8")
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path):
+        mock_qs.return_value = _mock_qsettings()
+        cfg = AppConfig()
+
+    panel = SettingsPanel(cfg)
+    with patch.object(cfg, "rerun_setup") as mock_rerun, \
+         patch.object(cfg, "restart_application", return_value=True) as mock_restart, \
+         patch("ui.panels.settings_panel.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+        panel._on_rerun_setup_clicked()
+
+    mock_rerun.assert_called_once_with()
+    mock_restart.assert_called_once_with()
+    assert panel._status_label.text() == translate_text(
+        "Setup relancé avec succès. Un redémarrage de l'application est recommandé."
+    )
+
+
+def test_settings_panel_rerun_setup_shows_error_message(tmp_path, qt_app):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[ui]\nlanguage = eng\n", encoding="utf-8")
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path):
+        mock_qs.return_value = _mock_qsettings()
+        cfg = AppConfig()
+
+    panel = SettingsPanel(cfg)
+    with patch.object(cfg, "rerun_setup", side_effect=RuntimeError("boom")), \
+         patch("ui.panels.settings_panel.QMessageBox.warning") as mock_warning:
+        panel._on_rerun_setup_clicked()
+
+    mock_warning.assert_called_once()
+    assert "boom" in panel._status_label.text()

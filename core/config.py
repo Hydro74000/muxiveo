@@ -13,6 +13,7 @@ import configparser
 import json
 import locale
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -222,6 +223,75 @@ def _sanitize_windows_ini_file(path: Path) -> None:
     sanitized = "\n".join(sanitized_lines).rstrip() + "\n"
     if sanitized != original:
         path.write_text(sanitized, encoding="utf-8")
+
+
+def rerun_application_setup() -> None:
+    """
+    Relance la logique de setup depuis l'application déjà ouverte.
+
+    Réutilise le même flux que le premier lancement pour réinstaller les
+    dépendances/outils externes et re-générer config.ini si besoin.
+    """
+    import setup as setup_mod  # noqa: PLC0415
+
+    os_name = platform.system()
+    prefix = setup_mod._default_prefix()
+    dry_run = False
+    force = False
+
+    if os_name == "Linux":
+        distro = setup_mod.detect_linux_distro()
+        if distro == "debian":
+            setup_mod.install_apt(dry_run, force=force)
+        elif distro == "fedora":
+            setup_mod.install_dnf(dry_run, force=force)
+        setup_mod.install_github_tools(prefix, dry_run, force=force)
+        setup_mod.check_tools_presence()
+    elif os_name == "Darwin":
+        setup_mod.install_brew(dry_run, force=force)
+        setup_mod.install_github_tools(prefix, dry_run, force=force)
+        setup_mod.check_tools_presence()
+    elif os_name == "Windows":
+        setup_mod.install_winget(dry_run, force=force)
+        setup_mod.install_github_tools(prefix, dry_run, force=force)
+        setup_mod.autofill_windows_config_ini(prefix, dry_run, force=force)
+        setup_mod.check_tools_presence(prefix)
+        setup_mod.offer_windows_controlled_folder_access_setup(prefix, dry_run, force=force)
+
+    setup_mod.initialize_config_ini_language(dry_run, force=force, ini_path=_INI_PATH)
+
+    if not getattr(sys, "frozen", False):
+        setup_mod.install_python_packages(dry_run, force=force)
+
+
+def restart_application() -> bool:
+    """
+    Redémarre l'application courante.
+
+    Préfère le helper du launcher s'il est disponible pour conserver le
+    comportement frozen/dev déjà existant.
+    """
+    try:
+        import launcher as launcher_mod  # noqa: PLC0415
+    except Exception:
+        launcher_mod = None
+
+    restart_fn = getattr(launcher_mod, "_restart_current_app", None) if launcher_mod else None
+    if callable(restart_fn):
+        try:
+            return bool(restart_fn())
+        except Exception:
+            return False
+
+    try:
+        if getattr(sys, "frozen", False):
+            subprocess.Popen([sys.executable])
+        else:
+            launcher_path = Path(__file__).parent.parent / "launcher.py"
+            subprocess.Popen([sys.executable, str(launcher_path)])
+        return True
+    except Exception:
+        return False
 
 
 def _upsert_ini_section(
@@ -945,6 +1015,15 @@ class AppConfig:
     def refresh_tool_versions(self) -> None:
         """Réinitialise le registre de versions des outils."""
         self._tool_versions = ToolVersionRegistry(self.tool_commands())
+
+    def rerun_setup(self) -> None:
+        """Relance setup.py et recharge ensuite la configuration."""
+        rerun_application_setup()
+        self.reload()
+
+    def restart_application(self) -> bool:
+        """Redémarre l'application courante."""
+        return restart_application()
 
     def tool_version_info(self, name: str) -> ToolVersionInfo:
         """Retourne les infos de version d'un outil."""
