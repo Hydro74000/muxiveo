@@ -1651,7 +1651,9 @@ def _msix_manifest_content(
 ) -> str:
     package_version = _msix_version(version_tag)
     processor_arch = _msix_processor_architecture()
-    meta = metadata or _load_msix_store_metadata()
+    raw_meta = metadata or _load_msix_store_metadata()
+    from xml.sax.saxutils import escape as _xml_escape
+    meta = {k: _xml_escape(str(v), {'"': "&quot;", "'": "&apos;"}) for k, v in raw_meta.items()}
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
