@@ -1770,7 +1770,21 @@ def _build_msix_package(
     if output.exists():
         output.unlink()
 
-    _run([makeappx, "pack", "/d", str(layout_dir), "/p", str(output), "/o"])
+    pack_result = subprocess.run(
+        [makeappx, "pack", "/v", "/d", str(layout_dir), "/p", str(output), "/o"],
+        capture_output=True,
+        text=True,
+    )
+    if pack_result.stdout:
+        print(pack_result.stdout)
+    if pack_result.stderr:
+        print(pack_result.stderr, file=sys.stderr)
+    if pack_result.returncode != 0:
+        manifest_path = layout_dir / "AppxManifest.xml"
+        if manifest_path.exists():
+            _warn("Contenu AppxManifest.xml :")
+            print(manifest_path.read_text(encoding="utf-8"), file=sys.stderr)
+        raise subprocess.CalledProcessError(pack_result.returncode, pack_result.args)
     _sign_msix_package(output)
     _ok(f"Package MSIX : {output}")
     return output
