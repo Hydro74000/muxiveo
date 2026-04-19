@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import struct
 import zlib
@@ -336,6 +337,46 @@ def test_msix_manifest_contains_full_trust_metadata():
     assert 'EntryPoint="Windows.FullTrustApplication"' in manifest
     assert '<rescap:Capability Name="runFullTrust" />' in manifest
     assert r'Executable="VFS\ProgramFilesX64\Mediarecode\mediarecode.exe"' in manifest
+
+
+def test_load_msix_store_metadata_prefers_config_file(tmp_path):
+    config_path = tmp_path / "msix_store.json"
+    config_path.write_text(
+        json.dumps({
+            "identity": "Contoso.Mediarecode",
+            "publisher": "CN=Contoso",
+            "publisher_display_name": "Contoso",
+            "description": "Store build",
+            "display_name": "Mediarecode Store",
+        }),
+        encoding="utf-8",
+    )
+
+    with patch.object(package_mod, "_MSIX_IDENTITY", "Fallback.Identity"), \
+         patch.object(package_mod, "_MSIX_PUBLISHER", "CN=Fallback"), \
+         patch.object(package_mod, "_MSIX_PUBLISHER_DISPLAY_NAME", "Fallback"), \
+         patch.object(package_mod, "_MSIX_DESCRIPTION", "Fallback description"):
+        metadata = package_mod._load_msix_store_metadata(config_path)
+
+    assert metadata == {
+        "identity": "Contoso.Mediarecode",
+        "publisher": "CN=Contoso",
+        "publisher_display_name": "Contoso",
+        "description": "Store build",
+        "display_name": "Mediarecode Store",
+    }
+
+
+def test_build_msixupload_wraps_msix_for_partner_center(tmp_path):
+    msix_path = tmp_path / "Mediarecode-1.3.2.msix"
+    msix_path.write_text("msix", encoding="utf-8")
+
+    upload_path = package_mod._build_msixupload(msix_path, version_tag="1.3.2")
+
+    assert upload_path.name == "Mediarecode-1.3.2.msixupload"
+    with package_mod.zipfile.ZipFile(upload_path) as archive:
+        assert archive.namelist() == ["Mediarecode-1.3.2.msix"]
+        assert archive.read("Mediarecode-1.3.2.msix") == b"msix"
 
 
 def test_build_msix_package_invokes_makeappx_and_signing(tmp_path):

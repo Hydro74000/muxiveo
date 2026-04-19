@@ -43,6 +43,7 @@ import argparse
 import fnmatch
 import importlib
 import importlib.util
+import json
 import os
 import platform
 import re
@@ -93,6 +94,7 @@ _MSIX_DESCRIPTION = os.environ.get("MEDIARECODE_MSIX_DESCRIPTION", "Mediarecode 
 _MSIX_CERT_PFX = os.environ.get("MEDIARECODE_MSIX_CERT_PFX", "").strip()
 _MSIX_CERT_PASSWORD = os.environ.get("MEDIARECODE_MSIX_CERT_PASSWORD", "").strip()
 _MSIX_TIMESTAMP_URL = os.environ.get("MEDIARECODE_MSIX_TIMESTAMP_URL", "http://timestamp.digicert.com").strip() or "http://timestamp.digicert.com"
+_MSIX_STORE_CONFIG = os.environ.get("MEDIARECODE_MSIX_STORE_CONFIG", "").strip()
 _WINDOWS_SDK_WINGET_ID = os.environ.get("MEDIARECODE_WINDOWS_SDK_WINGET_ID", "Microsoft.WindowsSDK").strip() or "Microsoft.WindowsSDK"
 _WINDOWS_SDK_INSTALLER = os.environ.get("MEDIARECODE_WINDOWS_SDK_INSTALLER", "").strip()
 
@@ -267,6 +269,46 @@ def _versioned_output_path(path: Path, version_tag: str | None) -> Path:
     if path.suffix:
         return path.with_name(f"{path.stem}-{tag}{path.suffix}")
     return path.with_name(f"{path.name}-{tag}")
+
+
+def _default_msix_store_config_path() -> Path:
+    return ROOT / "packaging" / "msix_store.json"
+
+
+def _load_msix_store_metadata(config_path: Path | None = None) -> dict[str, str]:
+    """
+    Charge les métadonnées Store/MSIX depuis un JSON optionnel.
+
+    Priorité:
+    1. valeurs intégrées/environnement
+    2. chemin explicite
+    3. `packaging/msix_store.json`
+    """
+    metadata = {
+        "identity": _MSIX_IDENTITY,
+        "publisher": _MSIX_PUBLISHER,
+        "publisher_display_name": _MSIX_PUBLISHER_DISPLAY_NAME,
+        "description": _MSIX_DESCRIPTION,
+        "display_name": APP_NAME,
+    }
+
+    candidate = config_path
+    if candidate is None and _MSIX_STORE_CONFIG:
+        candidate = Path(_MSIX_STORE_CONFIG)
+    if candidate is None:
+        candidate = _default_msix_store_config_path()
+    if not candidate.exists():
+        return metadata
+
+    payload = json.loads(candidate.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Configuration MSIX invalide : {candidate}")
+
+    for key in metadata:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            metadata[key] = value.strip()
+    return metadata
 
 
 def _resolve_dest_file(dest: str | None, default_output: Path, version_tag: str | None = None) -> Path:
@@ -1602,9 +1644,14 @@ def _build_msix_assets(assets_dir: Path) -> None:
     base_png.unlink(missing_ok=True)
 
 
-def _msix_manifest_content(version_tag: str | None, executable: str) -> str:
+def _msix_manifest_content(
+    version_tag: str | None,
+    executable: str,
+    metadata: dict[str, str] | None = None,
+) -> str:
     package_version = _msix_version(version_tag)
     processor_arch = _msix_processor_architecture()
+    meta = metadata or _load_msix_store_metadata()
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
@@ -1613,14 +1660,14 @@ def _msix_manifest_content(version_tag: str | None, executable: str) -> str:
   xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
   IgnorableNamespaces="uap rescap desktop6">
   <Identity
-    Name="{_MSIX_IDENTITY}"
-    Publisher="{_MSIX_PUBLISHER}"
+    Name="{meta['identity']}"
+    Publisher="{meta['publisher']}"
     Version="{package_version}"
     ProcessorArchitecture="{processor_arch}" />
   <Properties>
-    <DisplayName>{APP_NAME}</DisplayName>
-    <PublisherDisplayName>{_MSIX_PUBLISHER_DISPLAY_NAME}</PublisherDisplayName>
-    <Description>{_MSIX_DESCRIPTION}</Description>
+    <DisplayName>{meta['display_name']}</DisplayName>
+    <PublisherDisplayName>{meta['publisher_display_name']}</PublisherDisplayName>
+    <Description>{meta['description']}</Description>
     <Logo>Assets\\StoreLogo.png</Logo>
   </Properties>
   <Resources>
@@ -1635,8 +1682,8 @@ def _msix_manifest_content(version_tag: str | None, executable: str) -> str:
   <Applications>
     <Application Id="Mediarecode" Executable="{executable}" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
-        DisplayName="{APP_NAME}"
-        Description="{_MSIX_DESCRIPTION}"
+        DisplayName="{meta['display_name']}"
+        Description="{meta['description']}"
         BackgroundColor="transparent"
         Square44x44Logo="Assets\\Square44x44Logo.png"
         Square150x150Logo="Assets\\Square150x150Logo.png">
@@ -1654,7 +1701,11 @@ def _msix_manifest_content(version_tag: str | None, executable: str) -> str:
 """
 
 
-def _stage_msix_layout(bundle_dir: Path, version_tag: str | None) -> Path:
+def _stage_msix_layout(
+    bundle_dir: Path,
+    version_tag: str | None,
+    metadata: dict[str, str] | None = None,
+) -> Path:
     layout_dir = ROOT / "build" / "msix" / "layout"
     if layout_dir.exists():
         shutil.rmtree(layout_dir)
@@ -1668,7 +1719,10 @@ def _stage_msix_layout(bundle_dir: Path, version_tag: str | None) -> Path:
 
     executable = f"VFS\\{_msix_vfs_root_dir()}\\{APP_NAME}\\mediarecode.exe"
     manifest_path = layout_dir / "AppxManifest.xml"
-    manifest_path.write_text(_msix_manifest_content(version_tag, executable), encoding="utf-8")
+    manifest_path.write_text(
+        _msix_manifest_content(version_tag, executable, metadata=metadata),
+        encoding="utf-8",
+    )
     _ok(f"Layout MSIX prêt : {layout_dir}")
     return layout_dir
 
@@ -1701,12 +1755,16 @@ def _sign_msix_package(msix_path: Path) -> None:
     _ok(f"MSIX signé : {msix_path.name}")
 
 
-def _build_msix_package(bundle_dir: Path, version_tag: str | None = None) -> Path:
+def _build_msix_package(
+    bundle_dir: Path,
+    version_tag: str | None = None,
+    metadata: dict[str, str] | None = None,
+) -> Path:
     _title("Étape MSIX — Package Windows")
     if OS != "Windows":
         raise RuntimeError("Le build MSIX nécessite Windows natif.")
 
-    layout_dir = _stage_msix_layout(bundle_dir, version_tag)
+    layout_dir = _stage_msix_layout(bundle_dir, version_tag, metadata=metadata)
     makeappx = _ensure_windows_sdk_tool("makeappx.exe")
     output = _versioned_output_path(ROOT / f"{APP_NAME}.msix", version_tag)
     if output.exists():
@@ -1716,6 +1774,24 @@ def _build_msix_package(bundle_dir: Path, version_tag: str | None = None) -> Pat
     _sign_msix_package(output)
     _ok(f"Package MSIX : {output}")
     return output
+
+
+def _build_msixupload(msix_path: Path, version_tag: str | None = None) -> Path:
+    """
+    Génère un conteneur `.msixupload` pour Partner Center à partir du `.msix`.
+    """
+    upload_path = _versioned_output_path(
+        msix_path.with_suffix(".msixupload"),
+        version_tag,
+    )
+    if upload_path.exists():
+        upload_path.unlink()
+
+    with zipfile.ZipFile(upload_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.write(msix_path, arcname=msix_path.name)
+
+    _ok(f"Package Store upload : {upload_path}")
+    return upload_path
 
 
 def _setup_wine_python() -> None:
@@ -2518,6 +2594,22 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--msixupload",
+        action="store_true",
+        help=(
+            "Génère un fichier .msixupload pour soumission Partner Center "
+            "à partir du package MSIX Windows natif."
+        ),
+    )
+    p.add_argument(
+        "--store-config",
+        metavar="PATH",
+        help=(
+            "Chemin vers un JSON de métadonnées Store/MSIX "
+            "(identity, publisher, publisher_display_name, description, display_name)."
+        ),
+    )
+    p.add_argument(
         "--skip-wine",
         action="store_true",
         help="Réutilise mediarecode-win/ existant (skip Wine + PyInstaller)",
@@ -2580,11 +2672,20 @@ if __name__ == "__main__":
         else:
             bundle_dir = exe_path.parent
 
-        if args.msix:
-            package_path = _build_msix_package(bundle_dir, version_tag=args.version)
-            final_file = _copy_final_file_if_requested(package_path, args.dest, version_tag=args.version)
+        store_metadata = _load_msix_store_metadata(Path(args.store_config) if args.store_config else None)
+
+        if args.msix or args.msixupload:
+            package_path = _build_msix_package(
+                bundle_dir,
+                version_tag=args.version,
+                metadata=store_metadata,
+            )
+            final_artifact = package_path
+            if args.msixupload:
+                final_artifact = _build_msixupload(package_path, version_tag=args.version)
+            final_file = _copy_final_file_if_requested(final_artifact, args.dest, version_tag=args.version)
             _title("Résultat")
-            _ok(f"Package MSIX : {final_file}")
+            _ok(f"Artefact Windows Store : {final_file}")
         else:
             _ensure_makensis()
             installer = _build_nsis_installer(bundle_dir, version_tag=args.version)

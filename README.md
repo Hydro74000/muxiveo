@@ -148,11 +148,20 @@ Les artefacts sont toujours déposés dans `dist/releases/`.
 |-------|----------|-----------------|
 | AppImage Linux | `python3 package.py --allinc` | `dist/releases/Mediarecode-x86_64.AppImage` + `dist/releases/Mediarecode-x86_64.AppImage.zsync` |
 | Package Windows (natif + MSIX) | `py package.py --msix` | `dist/releases/Mediarecode.msix` |
+| Soumission Microsoft Store | `py package.py --msix --msixupload --store-config packaging/msix_store.json` | `dist/releases/Mediarecode.msixupload` |
 | Installateur Windows cross (depuis Linux) | `python3 package.py --windows` | `dist/releases/Mediarecode-Setup.exe` via Wine + NSIS |
 
 `--allinc` est requis sur Linux : il intègre toutes les dépendances dans l'AppImage et génère le fichier `.zsync` associé pour les mises à jour différentielles.
 
-Le workflow GitHub Windows publie désormais un package **MSIX** signé. La signature CI nécessite un certificat PFX injecté via les secrets `WINDOWS_MSIX_CERT_BASE64`, `WINDOWS_MSIX_CERT_PASSWORD` et un publisher compatible via `WINDOWS_MSIX_PUBLISHER`.
+Le workflow GitHub Windows publie désormais un package **MSIX** et un **`.msixupload`**. La signature CI est optionnelle pour l’artefact Store upload, mais un package sideload signé nécessite un certificat PFX injecté via les secrets `WINDOWS_MSIX_CERT_BASE64`, `WINDOWS_MSIX_CERT_PASSWORD` et un publisher compatible via `WINDOWS_MSIX_PUBLISHER`.
+
+Pour une vraie soumission Microsoft Store, il faut renseigner l’identité exacte réservée dans Partner Center :
+
+- copier `packaging/msix_store.example.json` vers `packaging/msix_store.json`
+- remplacer `identity` et `publisher` par les valeurs de la page **Product identity** dans Partner Center
+- optionnel : sur GitHub Actions, exposer ces mêmes valeurs via `WINDOWS_MSIX_IDENTITY`, `WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME` et `WINDOWS_MSIX_DESCRIPTION`
+
+Le dépôt peut générer l’artefact de soumission, mais il ne peut pas inventer à ta place les valeurs Partner Center ni les captures/listings Store.
 
 Si `makeappx.exe` ou `signtool.exe` sont absents, le build Windows tente d’installer le SDK requis avant de packager. Un override explicite reste possible via `MEDIARECODE_WINDOWS_SDK_INSTALLER` ou `MEDIARECODE_WINDOWS_SDK_WINGET_ID`.
 
@@ -164,6 +173,8 @@ Options utiles de `package.py` :
 |--------|-------|
 | `--allinc` | intègre toutes les dépendances dans l'AppImage et génère le `.zsync` (Linux) |
 | `--msix` | produit un package MSIX sur Windows natif, signé si les variables `MEDIARECODE_MSIX_*` sont définies |
+| `--msixupload` | génère un `.msixupload` pour Partner Center à partir du package MSIX |
+| `--store-config PATH` | charge les métadonnées Store/MSIX depuis un JSON dédié |
 | `--windows` | cross-compile un installateur Windows depuis Linux via Wine + NSIS |
 | `--skip-wine` | réutilise `dist/mediarecode-win/` existant (saute l'étape Wine/PyInstaller) |
 | `--clean` | nettoie tous les artefacts de build (`build/`, `dist/`, `.wine_build/`, `*.AppImage`…) |

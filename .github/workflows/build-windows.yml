@@ -47,6 +47,27 @@ jobs:
           echo "VERSION=$ver" >> $env:GITHUB_OUTPUT
           echo "Version: $ver"
 
+      - name: Export Store metadata
+        shell: pwsh
+        env:
+          WINDOWS_MSIX_IDENTITY: ${{ vars.WINDOWS_MSIX_IDENTITY }}
+          WINDOWS_MSIX_PUBLISHER: ${{ secrets.WINDOWS_MSIX_PUBLISHER }}
+          WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME }}
+          WINDOWS_MSIX_DESCRIPTION: ${{ vars.WINDOWS_MSIX_DESCRIPTION }}
+        run: |
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_IDENTITY)) {
+            "MEDIARECODE_MSIX_IDENTITY=$env:WINDOWS_MSIX_IDENTITY" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_PUBLISHER)) {
+            "MEDIARECODE_MSIX_PUBLISHER=$env:WINDOWS_MSIX_PUBLISHER" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME)) {
+            "MEDIARECODE_MSIX_PUBLISHER_DISPLAY_NAME=$env:WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_DESCRIPTION)) {
+            "MEDIARECODE_MSIX_DESCRIPTION=$env:WINDOWS_MSIX_DESCRIPTION" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+
       - name: Discover Windows SDK tools
         shell: pwsh
         run: |
@@ -76,7 +97,8 @@ jobs:
           WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME: ${{ secrets.WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_CERT_BASE64)) {
-            throw "Missing secret WINDOWS_MSIX_CERT_BASE64"
+            Write-Host "No MSIX signing certificate configured. Building unsigned Store upload artifact."
+            exit 0
           }
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_CERT_PASSWORD)) {
             throw "Missing secret WINDOWS_MSIX_CERT_PASSWORD"
@@ -96,13 +118,20 @@ jobs:
       - name: Build PyInstaller + MSIX package
         shell: pwsh
         run: |
-          python package.py --msix --version "${{ steps.version.outputs.VERSION }}"
+          python package.py --msix --msixupload --version "${{ steps.version.outputs.VERSION }}"
 
       - name: Upload MSIX artifact
         uses: actions/upload-artifact@v4
         with:
           name: Mediarecode-MSIX-${{ steps.version.outputs.VERSION }}
           path: dist/releases/Mediarecode-${{ steps.version.outputs.VERSION }}.msix
+          if-no-files-found: error
+
+      - name: Upload MSIX Store upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mediarecode-MSIXUpload-${{ steps.version.outputs.VERSION }}
+          path: dist/releases/Mediarecode-${{ steps.version.outputs.VERSION }}.msixupload
           if-no-files-found: error
 
       - name: Attach to GitHub Release
@@ -112,6 +141,8 @@ jobs:
         run: |
           TAG="v${{ steps.version.outputs.VERSION }}"
           FILE="dist/releases/Mediarecode-${{ steps.version.outputs.VERSION }}.msix"
+          STORE_FILE="dist/releases/Mediarecode-${{ steps.version.outputs.VERSION }}.msixupload"
           gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes ""
           gh release upload "$TAG" "$FILE" --clobber
+          gh release upload "$TAG" "$STORE_FILE" --clobber
         shell: bash
