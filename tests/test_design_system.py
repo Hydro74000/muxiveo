@@ -27,6 +27,6 @@ def test_design_system_scale_helpers_follow_ui_scale():
 
 
 def test_design_system_scale_is_clamped():
-    assert DesignSystem.set_ui_scale(10) == 75
-    assert DesignSystem.set_ui_scale(500) == 150
-    assert DesignSystem.current_ui_scale() == 150
+    assert DesignSystem.set_ui_scale(10) == 50
+    assert DesignSystem.set_ui_scale(500) == 200
+    assert DesignSystem.current_ui_scale() == 200

@@ -229,13 +229,16 @@ class TestAppConfigRamBuffer:
 
     def test_default_ui_scale_percent_is_100(self, tmp_path):
         """Sans clé explicite, l'échelle UI vaut 100%."""
+        import core.config as cfg_mod
         from core.config import AppConfig
 
+        ini_path = tmp_path / "config.ini"
         with patch("core.config.QSettings") as mock_qs:
             inst = MagicMock()
             inst.value.side_effect = lambda key, default=None: default
             mock_qs.return_value = inst
             with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path), \
                  patch.dict(os.environ, {}, clear=False):
                 cfg = AppConfig()
 
@@ -244,14 +247,14 @@ class TestAppConfigRamBuffer:
     @pytest.mark.parametrize(
         ("raw_value", "expected"),
         [
-            ("50", 75),
-            ("75", 75),
+            ("25", 50),
+            ("50", 50),
             ("125", 125),
-            ("180", 150),
+            ("220", 200),
         ],
     )
     def test_ui_scale_percent_is_clamped_from_ini(self, tmp_path, raw_value, expected):
-        """L'échelle UI reste bornée entre 75 et 150."""
+        """L'échelle UI reste bornée entre 50 et 200."""
         import core.config as cfg_mod
         from core.config import AppConfig
 

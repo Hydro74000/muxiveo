@@ -152,8 +152,8 @@ def test_settings_panel_writes_ui_scale_percent_to_ini(tmp_path, qt_app):
         spin.setValue(125)
         panel._on_save_clicked()
 
-        assert "ui_scale_percent = 125" in ini_path.read_text(encoding="utf-8")
-        assert cfg.ui_scale_percent == 125
+        assert "ui_scale_percent = 130" in ini_path.read_text(encoding="utf-8")
+        assert cfg.ui_scale_percent == 130
 
 
 def test_settings_panel_writes_audio_encoding_values_to_ini(tmp_path, qt_app):

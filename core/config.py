@@ -124,7 +124,7 @@ def _normalize_ui_scale_percent(value: int | None) -> int:
     """Clamp UI scale percentage to a safe interactive range."""
     if value is None:
         return 100
-    return max(75, min(150, int(value)))
+    return max(50, min(200, int(value)))
 
 
 def _appimage_tools_dir() -> Path | None:
@@ -730,7 +730,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "language", "attr": "language", "kind": "language", "label": "Langue de l'interface", "description": "Langue utilisée pour l'UI et les messages internes."},
             {"key": "log_max_lines", "attr": "log_max_lines", "kind": "int", "label": "Nombre max de lignes de log", "description": "Nombre maximum de lignes conservées dans le panneau de log."},
             {"key": "theme", "attr": "theme", "kind": "choice", "label": "Thème", "description": "Thème principal pour l'interface. Le changement de thème nécessite de redémarrer l'application.", "options": (("dark", "Sombre"), ("light", "Clair"))},
-            {"key": "ui_scale_percent", "attr": "ui_scale_percent", "kind": "int", "label": "Échelle de l'interface (%)", "description": "Facteur d'échelle appliqué à l'interface. Le changement est appliqué immédiatement autant que possible, mais un redémarrage peut être recommandé pour uniformiser tout l'affichage.", "min": 75, "max": 150},
+            {"key": "ui_scale_percent", "attr": "ui_scale_percent", "kind": "int", "label": "Échelle de l'interface (%)", "description": "Facteur d'échelle appliqué à l'interface. Le changement est appliqué immédiatement autant que possible, mais un redémarrage peut être recommandé pour uniformiser tout l'affichage.", "min": 50, "max": 200},
             {"key": "startup_panel", "attr": "startup_panel", "kind": "choice", "label": "Panneau à afficher au démarrage", "description": "Panneau chargé en premier au lancement de l'application.", "options": UI_STARTUP_PANEL_CHOICES},
             {"key": "startup_menu_compact", "attr": "startup_menu_compact", "kind": "bool", "label": "Démarrer avec le menu en mode Compact", "description": "Si activé, le menu latéral est réduit en mode icônes au lancement."},
             {"key": "startup_logs_expanded", "attr": "startup_logs_expanded", "kind": "bool", "label": "Ouvrir les logs au démarrage de l'application", "description": "Si activé, le panneau de logs est déplié au lancement."},

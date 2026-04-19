@@ -40,7 +40,7 @@ def _reset_ui_scale():
     DesignSystem.set_ui_scale(previous)
 
 
-@pytest.mark.parametrize("percent", [75, 100, 125, 150])
+@pytest.mark.parametrize("percent", [50, 100, 150, 200])
 def test_sidebar_scales_width_with_ui_scale(qt_app, percent):
     from ui.main_window import _Sidebar
 
@@ -51,7 +51,7 @@ def test_sidebar_scales_width_with_ui_scale(qt_app, percent):
     assert sidebar._toggle_btn.width() > 0
 
 
-@pytest.mark.parametrize("percent", [75, 100, 125, 150])
+@pytest.mark.parametrize("percent", [50, 100, 150, 200])
 def test_log_panel_builds_at_multiple_scales(qt_app, percent):
     from ui.main_window import LogPanel
 
@@ -62,7 +62,7 @@ def test_log_panel_builds_at_multiple_scales(qt_app, percent):
     assert panel._text.font().pointSize() > 0
 
 
-@pytest.mark.parametrize("percent", [75, 100, 125, 150])
+@pytest.mark.parametrize("percent", [50, 100, 150, 200])
 def test_dashboard_page_builds_at_multiple_scales(tmp_path, qt_app, percent):
     from ui.main_window import DashboardPage, LogLevel
 
@@ -74,7 +74,7 @@ def test_dashboard_page_builds_at_multiple_scales(tmp_path, qt_app, percent):
     assert page.minimumWidth() >= 0
 
 
-@pytest.mark.parametrize("percent", [75, 100, 125, 150])
+@pytest.mark.parametrize("percent", [50, 100, 150, 200])
 def test_file_inspector_widget_builds_at_multiple_scales(tmp_path, qt_app, percent):
     from ui.file_inspector_widget import FileInspectorWidget
 
@@ -87,7 +87,7 @@ def test_file_inspector_widget_builds_at_multiple_scales(tmp_path, qt_app, perce
     assert widget._tabs.count() == 4
 
 
-@pytest.mark.parametrize("percent", [75, 100, 125, 150])
+@pytest.mark.parametrize("percent", [50, 100, 150, 200])
 def test_remux_panel_builds_at_multiple_scales(tmp_path, qt_app, percent):
     from ui.panels.remux_panel import RemuxPanel
 
@@ -100,7 +100,7 @@ def test_remux_panel_builds_at_multiple_scales(tmp_path, qt_app, percent):
     panel.close()
 
 
-@pytest.mark.parametrize("percent", [75, 100, 125, 150])
+@pytest.mark.parametrize("percent", [50, 100, 150, 200])
 def test_merge_dovi_panel_builds_at_multiple_scales(tmp_path, qt_app, percent):
     from ui.panels.merge_dovi_panel import MergeDoviPanel
 
@@ -113,7 +113,7 @@ def test_merge_dovi_panel_builds_at_multiple_scales(tmp_path, qt_app, percent):
     panel.close()
 
 
-@pytest.mark.parametrize("percent", [75, 100, 125, 150])
+@pytest.mark.parametrize("percent", [50, 100, 150, 200])
 def test_encode_file_zone_builds_at_multiple_scales(qt_app, percent):
     from ui.panels.encode_panel.widgets import _FileZone
 
@@ -124,7 +124,7 @@ def test_encode_file_zone_builds_at_multiple_scales(qt_app, percent):
     assert widget._icon is not None
 
 
-@pytest.mark.parametrize("percent", [75, 100, 125, 150])
+@pytest.mark.parametrize("percent", [50, 100, 150, 200])
 def test_chapter_panel_builds_at_multiple_scales(qt_app, percent):
     from ui.panels.remux_panel.widgets.chapters import _ChapterPanel
 
@@ -135,7 +135,7 @@ def test_chapter_panel_builds_at_multiple_scales(qt_app, percent):
     assert panel._keep_cb is not None
 
 
-@pytest.mark.parametrize("percent", [75, 100, 125, 150])
+@pytest.mark.parametrize("percent", [50, 100, 150, 200])
 def test_attachment_panel_builds_at_multiple_scales(tmp_path, qt_app, percent):
     from ui.panels.remux_panel.widgets.attachments import _AttachmentPanel
 
@@ -147,7 +147,7 @@ def test_attachment_panel_builds_at_multiple_scales(tmp_path, qt_app, percent):
     assert panel._imdb_btn.height() == DesignSystem.scale(22)
 
 
-@pytest.mark.parametrize("percent", [75, 100, 125, 150])
+@pytest.mark.parametrize("percent", [50, 100, 150, 200])
 def test_tmdb_modal_builds_at_multiple_scales(tmp_path, qt_app, percent):
     from ui.panels.tmdb_search_modal import TmdbSearchModal
 
@@ -160,7 +160,7 @@ def test_tmdb_modal_builds_at_multiple_scales(tmp_path, qt_app, percent):
     modal.close()
 
 
-@pytest.mark.parametrize("percent", [75, 100, 125, 150])
+@pytest.mark.parametrize("percent", [50, 100, 150, 200])
 def test_track_edit_dialog_builds_at_multiple_scales(qt_app, percent):
     from ui.panels.track_edit_dialog import TrackEditDialog
 

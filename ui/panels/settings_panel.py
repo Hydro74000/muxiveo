@@ -7,7 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QLayout,
     QMessageBox,
     QScrollArea,
+    QSlider,
     QSizePolicy,
     QSpinBox,
     QVBoxLayout,
@@ -52,6 +53,28 @@ def _spin_style() -> str:
     )
 
 
+def _slider_style() -> str:
+    handle = _scale(16)
+    groove_h = _scale(6)
+    radius = _scale(3)
+    margin = _scale(6)
+    return (
+        f"QSlider::groove:horizontal{{background:{_C.BG_CARD};height:{groove_h}px;"
+        f"border:1px solid {_C.BORDER};border-radius:{radius}px;}}"
+        f"QSlider::sub-page:horizontal{{background:{_C.ACCENT};border-radius:{radius}px;}}"
+        f"QSlider::add-page:horizontal{{background:{_C.BG_ACTIVE};border-radius:{radius}px;}}"
+        f"QSlider::handle:horizontal{{background:{_C.TEXT_PRI};width:{handle}px;height:{handle}px;"
+        f"margin:-{margin}px 0;border-radius:{_scale(8)}px;border:1px solid {_C.BORDER_LT};}}"
+        f"QSlider::handle:horizontal:hover{{border-color:{_C.ACCENT};}}"
+    )
+
+
+def _snap_slider_value(value: int, minimum: int, maximum: int, step: int) -> int:
+    clamped = max(minimum, min(maximum, value))
+    snapped = minimum + round((clamped - minimum) / step) * step
+    return max(minimum, min(maximum, snapped))
+
+
 class SettingsPanel(QWidget):
     settings_saved = Signal()
 
@@ -59,6 +82,7 @@ class SettingsPanel(QWidget):
         super().__init__(parent)
         self._config = config
         self._field_widgets: dict[tuple[str, str], QWidget] = {}
+        self._slider_value_labels: dict[tuple[str, str], QLabel] = {}
         self._status_label: QLabel | None = None
         self._build_ui()
         self._load_from_config()
@@ -212,6 +236,46 @@ class SettingsPanel(QWidget):
             return edit
 
         if kind == "int":
+            if field["key"] == "ui_scale_percent":
+                slider_wrap = QWidget()
+                slider_layout = QHBoxLayout(slider_wrap)
+                slider_layout.setContentsMargins(0, 0, 0, 0)
+                slider_layout.setSpacing(_scale(10))
+
+                slider = QSlider(Qt.Orientation.Horizontal)
+                slider.setObjectName(f"{section}.{field['key']}")
+                slider_min = int(field.get("min", 0))
+                slider_max = int(field.get("max", 1_000_000))
+                slider_step = 10
+                slider.setRange(slider_min, slider_max)
+                slider.setSingleStep(slider_step)
+                slider.setPageStep(slider_step)
+                slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+                slider.setTickInterval(slider_step)
+                slider.setStyleSheet(_slider_style())
+                slider_layout.addWidget(slider, stretch=1)
+
+                value_label = QLabel("")
+                value_label.setMinimumWidth(_scale(52))
+                value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                value_label.setStyleSheet(
+                    f"color:{_C.TEXT_SEC};font-size:{_font_px(11)}px;font-family:'JetBrains Mono',monospace;background:transparent;"
+                )
+                def _sync_slider(value: int, *, s=slider, lbl=value_label, minimum=slider_min, maximum=slider_max, step=slider_step) -> None:
+                    snapped = _snap_slider_value(value, minimum, maximum, step)
+                    if snapped != value:
+                        s.blockSignals(True)
+                        s.setValue(snapped)
+                        s.blockSignals(False)
+                    lbl.setText(f"{snapped}%")
+
+                slider.valueChanged.connect(_sync_slider)
+                slider_layout.addWidget(value_label)
+
+                self._field_widgets[key] = slider
+                self._slider_value_labels[key] = value_label
+                return slider_wrap
+
             spin = QSpinBox()
             spin.setObjectName(f"{section}.{field['key']}")
             spin.setRange(int(field.get("min", 0)), int(field.get("max", 1_000_000)))
@@ -245,6 +309,8 @@ class SettingsPanel(QWidget):
             return widget.text().strip()
         if isinstance(widget, QCheckBox):
             return "true" if widget.isChecked() else "false"
+        if isinstance(widget, QSlider):
+            return str(widget.value())
         if isinstance(widget, QSpinBox):
             return str(widget.value())
         if isinstance(widget, QComboBox):
@@ -263,6 +329,8 @@ class SettingsPanel(QWidget):
                     widget.setText(str(value))
                 elif isinstance(widget, QCheckBox):
                     widget.setChecked(bool(value))
+                elif isinstance(widget, QSlider):
+                    widget.setValue(int(value))
                 elif isinstance(widget, QSpinBox):
                     widget.setValue(int(value))
                 elif isinstance(widget, QComboBox):

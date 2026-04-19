@@ -131,7 +131,7 @@ class DesignSystem:
     @classmethod
     def set_ui_scale(cls, percent: int | None) -> int:
         value = 100 if percent is None else int(percent)
-        cls._ui_scale_percent = max(75, min(150, value))
+        cls._ui_scale_percent = max(50, min(200, value))
         return cls._ui_scale_percent
 
     @classmethod

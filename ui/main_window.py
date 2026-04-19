@@ -1838,7 +1838,35 @@ class MainWindow(QMainWindow):
                     percent=new_scale,
                 ),
             )
+            self._prompt_restart_for_scale_change(new_scale)
         self.log_requested.emit("OK", "Configuration appliquée depuis config.ini.")
+
+    def _prompt_restart_for_scale_change(self, percent: int) -> None:
+        reply = QMessageBox.question(
+            self,
+            translate_text("Redémarrage recommandé"),
+            translate_text(
+                "La nouvelle échelle d'interface ({percent}%) est chargée.\nRedémarrer l'application maintenant ?",
+                percent=percent,
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        restarted = self._config.restart_application()
+        if not restarted:
+            QMessageBox.warning(
+                self,
+                translate_text("Erreur"),
+                translate_text("Impossible de redémarrer automatiquement l'application."),
+            )
+            return
+
+        app = cast(QApplication | None, QApplication.instance())
+        if app is not None:
+            app.quit()
 
     # ------------------------------------------------------------------
     # Collapse du panneau de logs
