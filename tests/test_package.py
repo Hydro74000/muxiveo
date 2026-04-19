@@ -337,6 +337,9 @@ def test_msix_manifest_contains_full_trust_metadata():
     assert 'EntryPoint="Windows.FullTrustApplication"' in manifest
     assert '<rescap:Capability Name="runFullTrust" />' in manifest
     assert r'Executable="VFS\ProgramFilesX64\Mediarecode\mediarecode.exe"' in manifest
+    assert 'xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"' in manifest
+    assert '<desktop:Extension Category="windows.fullTrustProcess"' in manifest
+    assert "<desktop:FullTrustProcess />" in manifest
 
 
 def test_load_msix_store_metadata_prefers_config_file(tmp_path):

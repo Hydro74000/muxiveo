@@ -1658,9 +1658,9 @@ def _msix_manifest_content(
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
-  IgnorableNamespaces="uap rescap desktop6">
+  IgnorableNamespaces="uap desktop rescap">
   <Identity
     Name="{meta['identity']}"
     Publisher="{meta['publisher']}"
@@ -1695,7 +1695,9 @@ def _msix_manifest_content(
         <uap:SplashScreen Image="Assets\\SplashScreen.png" />
       </uap:VisualElements>
       <Extensions>
-        <desktop6:Extension Category="windows.fullTrustProcess" Executable="{executable}" />
+        <desktop:Extension Category="windows.fullTrustProcess" Executable="{executable}">
+          <desktop:FullTrustProcess />
+        </desktop:Extension>
       </Extensions>
     </Application>
   </Applications>
