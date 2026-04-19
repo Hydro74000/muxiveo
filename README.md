@@ -153,7 +153,7 @@ Les artefacts sont toujours déposés dans `dist/releases/`.
 
 `--allinc` est requis sur Linux : il intègre toutes les dépendances dans l'AppImage et génère le fichier `.zsync` associé pour les mises à jour différentielles.
 
-Le workflow GitHub Windows de release publie désormais un package **MSIX** signé. S’il n’y a pas de certificat PFX configuré, il génère un certificat auto-signé en CI et joint aussi le certificat public `.cer` pour faciliter l’installation du package publié dans les releases.
+Le workflow GitHub Windows de release publie désormais l’installateur **NSIS** (`.exe`) dans les releases GitHub.
 
 Le workflow `Build Windows Store upload` est séparé, manuel, et ne publie rien dans les releases. Il sert uniquement à produire un **`.msixupload`** pour Partner Center.
 
@@ -165,7 +165,7 @@ Pour une vraie soumission Microsoft Store, il faut renseigner l’identité exac
 
 Le dépôt peut générer l’artefact de soumission, mais il ne peut pas inventer à ta place les valeurs Partner Center ni les captures/listings Store.
 
-Important : le certificat auto-signé du workflow release convient pour publier un MSIX dans GitHub Releases, mais il n’est pas destiné à une soumission Microsoft Store.
+Important : le workflow Store upload reste distinct du workflow release. Les releases GitHub ne contiennent donc plus de MSIX.
 
 Si `makeappx.exe` ou `signtool.exe` sont absents, le build Windows tente d’installer le SDK requis avant de packager. Un override explicite reste possible via `MEDIARECODE_WINDOWS_SDK_INSTALLER` ou `MEDIARECODE_WINDOWS_SDK_WINGET_ID`.
 

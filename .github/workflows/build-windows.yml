@@ -47,121 +47,21 @@ jobs:
           echo "VERSION=$ver" >> $env:GITHUB_OUTPUT
           echo "Version: $ver"
 
-      - name: Export Store metadata
-        shell: pwsh
-        env:
-          WINDOWS_MSIX_IDENTITY: ${{ vars.WINDOWS_MSIX_IDENTITY }}
-          WINDOWS_MSIX_PUBLISHER: ${{ secrets.WINDOWS_MSIX_PUBLISHER }}
-          WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME }}
-          WINDOWS_MSIX_DESCRIPTION: ${{ vars.WINDOWS_MSIX_DESCRIPTION }}
-        run: |
-          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_IDENTITY)) {
-            "MEDIARECODE_MSIX_IDENTITY=$env:WINDOWS_MSIX_IDENTITY" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          }
-          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_PUBLISHER)) {
-            "MEDIARECODE_MSIX_PUBLISHER=$env:WINDOWS_MSIX_PUBLISHER" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          }
-          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME)) {
-            "MEDIARECODE_MSIX_PUBLISHER_DISPLAY_NAME=$env:WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          }
-          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_DESCRIPTION)) {
-            "MEDIARECODE_MSIX_DESCRIPTION=$env:WINDOWS_MSIX_DESCRIPTION" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          }
-
-      - name: Discover Windows SDK tools
+      - name: Install NSIS
         shell: pwsh
         run: |
-          $kitsRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
-          if (-not (Test-Path $kitsRoot)) {
-            Write-Host "Windows SDK bin root not present yet: $kitsRoot"
-            exit 0
-          }
-          $sdkDir = Get-ChildItem $kitsRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
-          if (-not $sdkDir) {
-            Write-Host "Windows SDK version directory not found under $kitsRoot"
-            exit 0
-          }
-          $toolDir = Join-Path $sdkDir.FullName 'x64'
-          if ((Test-Path (Join-Path $toolDir 'makeappx.exe')) -and (Test-Path (Join-Path $toolDir 'signtool.exe'))) {
-            $toolDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          } else {
-            Write-Host "Windows SDK tools not found yet in $toolDir; package.py will attempt installation if needed."
-          }
+          winget install --id NSIS.NSIS -e --silent --accept-source-agreements --accept-package-agreements
 
-      - name: Prepare MSIX signing certificate
-        shell: pwsh
-        env:
-          WINDOWS_MSIX_CERT_BASE64: ${{ secrets.WINDOWS_MSIX_CERT_BASE64 }}
-          WINDOWS_MSIX_CERT_PASSWORD: ${{ secrets.WINDOWS_MSIX_CERT_PASSWORD }}
-          WINDOWS_MSIX_PUBLISHER: ${{ secrets.WINDOWS_MSIX_PUBLISHER }}
-          WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME }}
-        run: |
-          $publisher = $env:WINDOWS_MSIX_PUBLISHER
-          if ([string]::IsNullOrWhiteSpace($publisher)) {
-            $publisher = "CN=Hydro74000"
-          }
-          "MEDIARECODE_MSIX_PUBLISHER=$publisher" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME)) {
-            "MEDIARECODE_MSIX_PUBLISHER_DISPLAY_NAME=$env:WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          }
-
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_CERT_BASE64)) {
-            Write-Host "No MSIX signing certificate configured. Generating a self-signed release certificate."
-            $cert = New-SelfSignedCertificate `
-              -Type CodeSigningCert `
-              -Subject $publisher `
-              -CertStoreLocation "Cert:\CurrentUser\My" `
-              -NotAfter (Get-Date).AddYears(5) `
-              -KeyExportPolicy Exportable `
-              -HashAlgorithm SHA256
-            $passwordPlain = [Guid]::NewGuid().ToString("N") + "!" + [Guid]::NewGuid().ToString("N")
-            $password = ConvertTo-SecureString -String $passwordPlain -Force -AsPlainText
-            $certPath = Join-Path $env:RUNNER_TEMP 'mediarecode-msix-signing.pfx'
-            $cerPath = Join-Path $env:RUNNER_TEMP 'mediarecode-msix-signing.cer'
-            Export-PfxCertificate -Cert "Cert:\CurrentUser\My\$($cert.Thumbprint)" -FilePath $certPath -Password $password | Out-Null
-            Export-Certificate -Cert "Cert:\CurrentUser\My\$($cert.Thumbprint)" -FilePath $cerPath | Out-Null
-            "MEDIARECODE_MSIX_CERT_PFX=$certPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            "MEDIARECODE_MSIX_CERT_PASSWORD=$passwordPlain" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            "MEDIARECODE_MSIX_CERT_CER=$cerPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            exit 0
-          }
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_CERT_PASSWORD)) {
-            throw "Missing secret WINDOWS_MSIX_CERT_PASSWORD"
-          }
-          $certPath = Join-Path $env:RUNNER_TEMP 'mediarecode-msix-signing.pfx'
-          $cerPath = Join-Path $env:RUNNER_TEMP 'mediarecode-msix-signing.cer'
-          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:WINDOWS_MSIX_CERT_BASE64))
-          try {
-            $pfxPassword = ConvertTo-SecureString -String $env:WINDOWS_MSIX_CERT_PASSWORD -Force -AsPlainText
-            $imported = Import-PfxCertificate -FilePath $certPath -Password $pfxPassword -CertStoreLocation "Cert:\CurrentUser\My"
-            if ($imported) {
-              Export-Certificate -Cert "Cert:\CurrentUser\My\$($imported.Thumbprint)" -FilePath $cerPath | Out-Null
-              "MEDIARECODE_MSIX_CERT_CER=$cerPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            }
-          } catch {
-            Write-Host "Unable to export public certificate from provided PFX: $($_.Exception.Message)"
-          }
-          "MEDIARECODE_MSIX_CERT_PFX=$certPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "MEDIARECODE_MSIX_CERT_PASSWORD=$env:WINDOWS_MSIX_CERT_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Build PyInstaller + MSIX package
+      - name: Build PyInstaller + NSIS package
         shell: pwsh
         run: |
-          python package.py --msix --version "${{ steps.version.outputs.VERSION }}"
+          python package.py --nsis --version "${{ steps.version.outputs.VERSION }}"
 
-      - name: Upload MSIX artifact
+      - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Mediarecode-MSIX-${{ steps.version.outputs.VERSION }}
-          path: dist/releases/Mediarecode-${{ steps.version.outputs.VERSION }}.msix
-          if-no-files-found: error
-
-      - name: Upload MSIX public certificate
-        if: env.MEDIARECODE_MSIX_CERT_CER != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: Mediarecode-MSIX-Certificate-${{ steps.version.outputs.VERSION }}
-          path: ${{ env.MEDIARECODE_MSIX_CERT_CER }}
+          name: Mediarecode-Setup-${{ steps.version.outputs.VERSION }}
+          path: dist/releases/Mediarecode-Setup-${{ steps.version.outputs.VERSION }}.exe
           if-no-files-found: error
 
       - name: Attach to GitHub Release
@@ -170,11 +70,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="v${{ steps.version.outputs.VERSION }}"
-          FILE="dist/releases/Mediarecode-${{ steps.version.outputs.VERSION }}.msix"
-          CERT_FILE="${MEDIARECODE_MSIX_CERT_CER:-}"
+          FILE="dist/releases/Mediarecode-Setup-${{ steps.version.outputs.VERSION }}.exe"
           gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes ""
           gh release upload "$TAG" "$FILE" --clobber
-          if [ -n "$CERT_FILE" ] && [ -f "$CERT_FILE" ]; then
-            gh release upload "$TAG" "$CERT_FILE#Mediarecode-MSIX-Certificate-${{ steps.version.outputs.VERSION }}.cer" --clobber
-          fi
         shell: bash
