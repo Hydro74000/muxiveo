@@ -95,5 +95,8 @@ jobs:
           python -m pip install pytest pytest-qt PySide6 pymediainfo
 
       - name: Run Integration Tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_QUICK_BACKEND: software
         run: |
           pytest tests/integration/ -v
