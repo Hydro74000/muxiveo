@@ -429,11 +429,60 @@ def _arch_key() -> str:
         "Install dovi_tool and hdr10plus_tool manually."
     )
 
+def _is_msix_install() -> bool:
+    """
+    True si l'application tourne depuis un package MSIX installé
+    (dossier Program Files\\WindowsApps, lecture seule).
+    """
+    if OS != "Windows":
+        return False
+    try:
+        exe = Path(sys.executable).resolve()
+    except Exception:
+        return False
+    lower = str(exe).lower()
+    return "\\windowsapps\\" in lower or "/windowsapps/" in lower
+
+
+def _exe_dir_is_readonly() -> bool:
+    """
+    True si le dossier contenant l'exécutable n'est pas writable
+    (cas typique : installation admin dans Program Files).
+    """
+    if OS != "Windows":
+        return False
+    try:
+        exe_dir = Path(sys.executable).resolve().parent
+    except Exception:
+        return False
+    try:
+        probe = exe_dir / ".mediarecode_write_probe"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return False
+    except Exception:
+        return True
+
+
+def _windows_user_tools_dir() -> Path:
+    """
+    Dossier d'installation des outils binaires côté utilisateur.
+    Sous MSIX, %LOCALAPPDATA%\\Mediarecode\\tools est la seule
+    localisation writable sans élévation.
+    """
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+    return base / "Mediarecode" / "tools"
+
+
 def _default_prefix() -> Path:
     """Return a sensible default install prefix for the current OS."""
     if OS == "Windows":
-        # On Windows: GitHub binaries go to the 'tools' subfolder of the
-        # mediarecode package directory (next to this setup.py file).
+        # Sous MSIX, Program Files\\WindowsApps est read-only pour l'utilisateur
+        # → on installe dans %LOCALAPPDATA%\\Mediarecode\\tools.
+        # En dev / installeur classique : tools/ à côté de setup.py.
+        if _is_msix_install() or _exe_dir_is_readonly():
+            return _windows_user_tools_dir()
         return Path(__file__).parent / "tools"
     return Path("/usr/local")
 
@@ -979,7 +1028,15 @@ def _windows_default_tool_candidates(tool_name: str, prefix: Path) -> list[Path]
 
     include_prefix_dirs = tool_name != "mediainfo"
     if include_prefix_dirs:
-        for directory in (prefix, prefix / "bin", Path(__file__).parent / "tools", Path(__file__).parent / "tools" / "bin"):
+        user_tools = _windows_user_tools_dir()
+        for directory in (
+            prefix,
+            prefix / "bin",
+            user_tools,
+            user_tools / "bin",
+            Path(__file__).parent / "tools",
+            Path(__file__).parent / "tools" / "bin",
+        ):
             for exe_name in exe_names:
                 candidates.append(directory / exe_name)
 
@@ -1976,8 +2033,12 @@ def install_github_tools(prefix: Path, dry_run: bool, force: bool = False) -> No
         detected_tool_paths[exe] = str(dest)
         ok(f"{exe} installed → {dest}")
 
-        # Remind Windows users to add the directory to PATH once
-        if OS == "Windows" and not path_reminder_shown:
+        # Remind Windows users to add the directory to PATH once.
+        # Non requis quand on installe dans le dossier utilisateur (%LOCALAPPDATA%)
+        # car config.ini reçoit les chemins absolus détectés.
+        user_tools = _windows_user_tools_dir()
+        installs_to_user_dir = bin_dir == user_tools or bin_dir == (user_tools / "bin")
+        if OS == "Windows" and not path_reminder_shown and not installs_to_user_dir:
             path_reminder_shown = True
             warn(
                 f"Add the following directory to your PATH so Windows can find these tools:\n"

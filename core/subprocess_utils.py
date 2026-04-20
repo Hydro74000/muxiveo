@@ -21,12 +21,16 @@ def subprocess_windows_no_window_kwargs() -> dict[str, Any]:
     """
     Return subprocess kwargs that prevent a console window from flashing on Windows.
 
+    Inclut aussi stdin=DEVNULL pour éviter WinError 50 quand l'application
+    tourne sous MSIX / en mode GUI sans console : Python tenterait sinon de
+    dupliquer le handle stdin du parent (virtualisé, non supporté).
+
     Safe to pass to both subprocess.run() and subprocess.Popen().
     """
     if sys.platform != "win32":
         return {}
 
-    kwargs: dict[str, Any] = {}
+    kwargs: dict[str, Any] = {"stdin": subprocess.DEVNULL}
 
     create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     if create_no_window:

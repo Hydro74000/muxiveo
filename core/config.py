@@ -365,6 +365,17 @@ def write_ini_settings(section_values: dict[str, dict[str, str]]) -> None:
     _INI_PATH.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
+def _windows_user_tools_dir() -> Path:
+    """
+    Dossier d'installation des outils binaires côté utilisateur
+    (%LOCALAPPDATA%\\Mediarecode\\tools). Utilisé quand l'exécutable
+    est installé en lecture seule (MSIX, Program Files).
+    """
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+    return base / "Mediarecode" / "tools"
+
+
 def _windows_repo_tool_dirs() -> list[Path]:
     base_dirs = [_INI_PATH.parent]
     if getattr(sys, "frozen", False):
@@ -375,6 +386,9 @@ def _windows_repo_tool_dirs() -> list[Path]:
     dirs: list[Path] = []
     for base_dir in _dedupe_paths(base_dirs):
         dirs.extend([base_dir / "tools", base_dir / "tools" / "bin"])
+
+    user_tools = _windows_user_tools_dir()
+    dirs.extend([user_tools, user_tools / "bin"])
     return _dedupe_paths(dirs)
 
 
