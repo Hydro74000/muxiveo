@@ -825,8 +825,9 @@ class TestRemuxWorkflowIntegration:
         assert [_tag_value(ch.get("tags", {}), "title") for ch in probe.get("chapters", [])] == ["Intro", "Main"]
 
         audio_stream = next(s for s in probe.get("streams", []) if s.get("codec_type") == "audio")
-        assert _tag_value(audio_stream.get("tags", {}), "language") == "fr-FR"
-        assert _tag_value(audio_stream.get("tags", {}), "language-ietf") is None
+        # Post-action langues : Language normalisé en ISO 639-2/B, BCP-47 préservé
+        # dans LanguageBCP47 (non remonté par ffprobe, vérifié via EBML ailleurs).
+        assert _tag_value(audio_stream.get("tags", {}), "language") == "fre"
 
         attached_cover = next(
             s for s in probe.get("streams", [])

@@ -202,6 +202,52 @@ class MatroskaSegmentInfoHeaderEditor:
         return info.element_id + new_info_size + new_info_payload
 
     # ------------------------------------------------------------------
+    # Generic level-1 element replacement (public helper)
+    # ------------------------------------------------------------------
+
+    def replace_level1_element(
+        self,
+        path: Path,
+        *,
+        element_id: bytes,
+        new_element_bytes: bytes,
+    ) -> int:
+        """Remplace in-place un élément level-1 par `new_element_bytes`.
+
+        Toutes les instances existantes de `element_id` sont supprimées,
+        l'élément fourni est écrit (de préférence dans un Void, sinon en fin
+        de fichier), les SeekHead sont mis à jour, les Void fusionnés.
+
+        Retourne le delta d'octets sur la taille du fichier.
+        """
+        if not path.is_file():
+            raise ValueError(f"Fichier introuvable: {path}")
+        parsed = self._read_ebml_element_from_bytes(new_element_bytes, 0)
+        if parsed.element_id != element_id:
+            raise ValueError("ID du nouvel élément incohérent avec element_id.")
+
+        with path.open("r+b") as fh:
+            state = self._analyze_file(fh, parse_fast=self.options.parse_fast)
+            before_size = state.file_size
+
+            self._fix_unknown_size_for_last_level1_element(fh, state)
+            self._overwrite_all_instances(fh, state, element_id)
+            self._merge_void_elements(fh, state)
+            new_idx = self._write_level1_element(fh, state, new_element_bytes, strategy_anywhere=True)
+            new_offset = state.data[new_idx].offset
+            self._remove_from_meta_seeks(fh, state, element_id)
+            self._merge_void_elements(fh, state)
+            new_idx = self._find_entry_index(state, element_id, new_offset)
+            if new_idx < 0:
+                raise ValueError("Élément level-1 introuvable après écriture/fusion.")
+            self._add_to_meta_seek(fh, state, new_idx)
+            self._merge_void_elements(fh, state)
+
+            fh.flush()
+            after_size = fh.seek(0, 2)
+            return after_size - before_size
+
+    # ------------------------------------------------------------------
     # Core update flow for Info
     # ------------------------------------------------------------------
 

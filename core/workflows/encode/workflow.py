@@ -166,8 +166,12 @@ class EncodeWorkflow(QObject):
             mediainfo_bin=mediainfo_bin,
         )
         from core.workflows.matroska_header_editor import MatroskaMuxingAppPostAction
+        from core.workflows.matroska_language_editor import MatroskaLanguagePostAction
         self._muxing_post_action = MatroskaMuxingAppPostAction(
             app_prefix=MatroskaMuxingAppPostAction.default_prefix(APP_VERSION_LABEL),
+            log_cb=self.log_message.emit,
+        )
+        self._language_post_action = MatroskaLanguagePostAction(
             log_cb=self.log_message.emit,
         )
 
@@ -2615,6 +2619,7 @@ class EncodeWorkflow(QObject):
 
     def _bind_matroska_segment_muxing_patch(self, signals: TaskSignals, output: Path) -> None:
         self._muxing_post_action.bind_on_success(signals, output)
+        self._language_post_action.bind_on_success(signals, output)
 
     def _bind_nfo_write(self, signals: TaskSignals, output: Path) -> None:
         if not self._generate_nfo:

@@ -40,6 +40,7 @@ from core.workdir import (
     remove_path,
 )
 from core.workflows.matroska_header_editor import MatroskaMuxingAppPostAction
+from core.workflows.matroska_language_editor import MatroskaLanguagePostAction
 from core.workflows.remux_models import (
     RemuxConfig,
     RemuxError,
@@ -219,6 +220,9 @@ class RemuxWorkflow(QObject):
         self._writing_application = writing_application.strip()
         self._muxing_post_action = MatroskaMuxingAppPostAction(
             app_prefix=MatroskaMuxingAppPostAction.default_prefix(APP_VERSION_LABEL),
+            log_cb=self.log_message.emit,
+        )
+        self._language_post_action = MatroskaLanguagePostAction(
             log_cb=self.log_message.emit,
         )
 
@@ -710,6 +714,7 @@ class RemuxWorkflow(QObject):
                 )
                 self._log_step(8, "Post-action: Patch & Cleanup")
                 self._muxing_post_action.apply_if_mkv(run_config.output)
+                self._language_post_action.apply_if_mkv(run_config.output)
                 self._write_nfo(run_config.output)
                 signals.finished.emit(output)
             except TaskCancelledError:
