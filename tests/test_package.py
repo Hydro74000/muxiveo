@@ -342,6 +342,20 @@ def test_msix_manifest_contains_full_trust_metadata():
     assert "<desktop:FullTrustProcess />" in manifest
 
 
+def test_msix_manifest_forces_revision_zero():
+    with patch.object(package_mod, "_MSIX_IDENTITY", "Hydro74000.Mediarecode"), \
+         patch.object(package_mod, "_MSIX_PUBLISHER", "CN=Hydro74000"), \
+         patch.object(package_mod, "_MSIX_PUBLISHER_DISPLAY_NAME", "Hydro74000"), \
+         patch.object(package_mod, "_MSIX_DESCRIPTION", "Mediarecode video workflow"), \
+         patch.object(package_mod, "_msix_processor_architecture", return_value="x64"):
+        manifest = package_mod._msix_manifest_content(
+            "1.4.0.1",
+            r"VFS\ProgramFilesX64\Mediarecode\mediarecode.exe",
+        )
+
+    assert 'Version="1.4.0.0"' in manifest
+
+
 def test_load_msix_store_metadata_prefers_config_file(tmp_path):
     config_path = tmp_path / "msix_store.json"
     config_path.write_text(

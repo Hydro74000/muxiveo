@@ -84,6 +84,10 @@ _WIN_ICU_NUGET_URL = (
 )
 # Bundle PyInstaller Windows (dans dist/)
 _WIN_BUNDLE   = ROOT / "mediarecode-win"   # hors de dist/ (owned by nfsnobody)
+# Bundle macOS
+_MACOS_BUNDLE_NAME = "Mediarecode.app"
+_MACOS_BUNDLE_ID = os.environ.get("MEDIARECODE_MACOS_BUNDLE_ID", "com.hydro74000.mediarecode").strip() or "com.hydro74000.mediarecode"
+_MACOS_MIN_VERSION = os.environ.get("MEDIARECODE_MACOS_MIN_VERSION", "11.0").strip() or "11.0"
 _APPIMAGE_UPDATE_OWNER = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_OWNER", "Hydro74000").strip() or "Hydro74000"
 _APPIMAGE_UPDATE_REPO = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_REPO", "mediarecode").strip() or "mediarecode"
 _APPIMAGE_UPDATE_RELEASE = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_RELEASE", "latest").strip() or "latest"
@@ -1035,7 +1039,7 @@ def _verify_windows_runtime_bundle(bundle_dir: Path) -> None:
 
 def _pyinstaller_frontend_flag(target_os: str) -> str:
     """Return the right PyInstaller UI mode for the target platform."""
-    return "--windowed" if target_os == "Windows" else "--console"
+    return "--windowed" if target_os in ("Windows", "Darwin") else "--console"
 
 
 def _build_pyinstaller(onefile: bool) -> Path:
@@ -1105,6 +1109,9 @@ def _build_pyinstaller(onefile: bool) -> Path:
     if onefile:
         exe_name = "mediarecode.exe" if OS == "Windows" else "mediarecode"
         exe_path = ROOT / "dist" / exe_name
+    elif OS == "Darwin":
+        # --windowed sur macOS produit dist/mediarecode.app/Contents/MacOS/mediarecode
+        exe_path = ROOT / "dist" / "mediarecode.app" / "Contents" / "MacOS" / "mediarecode"
     else:
         exe_name = "mediarecode.exe" if OS == "Windows" else "mediarecode"
         exe_path = ROOT / "dist" / "mediarecode" / exe_name
@@ -1577,7 +1584,9 @@ def _msix_vfs_root_dir() -> str:
 
 def _msix_version(version_tag: str | None) -> str:
     version_source = version_tag if version_tag and re.search(r"\d", version_tag) else APP_VERSION
-    return ".".join(str(part) for part in _windows_version_tuple(version_source))
+    major, minor, build, _revision = _windows_version_tuple(version_source)
+    # Le Partner Center refuse toute révision MSIX différente de 0.
+    return f"{major}.{minor}.{build}.0"
 
 
 def _msix_assets_dir() -> Path:
@@ -2494,6 +2503,178 @@ def _build_nsis_installer(bundle_dir: Path, version_tag: str | None = None) -> P
     return output
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# macOS (.app + .dmg)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_MACOS_ICNS_SIZES = (16, 32, 64, 128, 256, 512, 1024)
+
+
+def _build_icns_from_png(src_png: Path, dest_icns: Path) -> Path | None:
+    """Construit un .icns depuis icon.png via iconutil (natif macOS).
+
+    Retourne None si iconutil absent (Linux/Windows) ou PIL/PySide6 indisponible.
+    """
+    if shutil.which("iconutil") is None:
+        _warn("iconutil absent — .icns non généré (build hors macOS ?)")
+        return None
+    if not src_png.exists():
+        _warn(f"icon.png absent : {src_png} — .icns non généré")
+        return None
+
+    try:
+        from PIL import Image  # type: ignore[import-not-found]
+    except ImportError:
+        try:
+            from PySide6.QtGui import QImage  # type: ignore[import-not-found]
+            qt_backend = True
+        except ImportError:
+            _warn("Ni PIL ni PySide6.QtGui disponibles — .icns non généré")
+            return None
+        else:
+            qt_backend = True
+    else:
+        qt_backend = False
+
+    iconset = dest_icns.with_suffix(".iconset")
+    if iconset.exists():
+        shutil.rmtree(iconset)
+    iconset.mkdir(parents=True)
+
+    # iconutil attend une structure `{size}x{size}.png` + variantes `@2x`.
+    for size in _MACOS_ICNS_SIZES:
+        for scale in (1, 2):
+            px = size * scale
+            if px > 1024:
+                continue
+            suffix = "" if scale == 1 else "@2x"
+            out = iconset / f"icon_{size}x{size}{suffix}.png"
+            if qt_backend:
+                img = QImage(str(src_png))
+                scaled = img.scaled(
+                    px, px,
+                    aspectRatioMode=1,  # Qt.AspectRatioMode.KeepAspectRatio
+                    transformMode=1,    # Qt.TransformationMode.SmoothTransformation
+                )
+                scaled.save(str(out), "PNG")
+            else:
+                img = Image.open(src_png).convert("RGBA")
+                img.resize((px, px), Image.LANCZOS).save(out, "PNG")
+
+    dest_icns.parent.mkdir(parents=True, exist_ok=True)
+    _run(["iconutil", "-c", "icns", str(iconset), "-o", str(dest_icns)])
+    shutil.rmtree(iconset, ignore_errors=True)
+    _ok(f"Icône macOS : {dest_icns.name}")
+    return dest_icns
+
+
+def _patch_macos_info_plist(app_path: Path, version_tag: str | None) -> None:
+    """Met à jour CFBundle* et LSMinimumSystemVersion dans Info.plist."""
+    plist_path = app_path / "Contents" / "Info.plist"
+    if not plist_path.exists():
+        _warn(f"Info.plist absent : {plist_path}")
+        return
+
+    import plistlib
+    with plist_path.open("rb") as f:
+        plist = plistlib.load(f)
+
+    version = _normalize_version_tag(version_tag)
+    plist["CFBundleIdentifier"] = _MACOS_BUNDLE_ID
+    plist["CFBundleName"] = APP_NAME
+    plist["CFBundleDisplayName"] = APP_NAME
+    plist["CFBundleShortVersionString"] = version
+    plist["CFBundleVersion"] = version
+    plist["LSMinimumSystemVersion"] = _MACOS_MIN_VERSION
+    plist["NSHighResolutionCapable"] = True
+    # Évite le mode "Document-Based App" qui ouvre une fenêtre "Ouvrir un fichier…" au lancement
+    plist["LSUIElement"] = False
+
+    with plist_path.open("wb") as f:
+        plistlib.dump(plist, f)
+    _ok(f"Info.plist mis à jour (version {version}, min macOS {_MACOS_MIN_VERSION})")
+
+
+def _build_macos_dmg(app_path: Path, version_tag: str | None) -> Path:
+    """Crée un .dmg compressé depuis Mediarecode.app."""
+    _title("Étape 3 — DMG")
+    if shutil.which("hdiutil") is None:
+        raise RuntimeError("hdiutil introuvable (requiert macOS)")
+
+    version = _normalize_version_tag(version_tag)
+    dist = ROOT / "dist"
+    dmg_path = dist / f"Mediarecode-{version}.dmg"
+    if dmg_path.exists():
+        dmg_path.unlink()
+
+    # Staging dir : l'app + un alias vers /Applications pour drag-n-drop
+    staging = dist / "dmg_staging"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    shutil.copytree(app_path, staging / app_path.name, symlinks=True)
+    try:
+        (staging / "Applications").symlink_to("/Applications")
+    except OSError:
+        pass
+
+    _run([
+        "hdiutil", "create",
+        "-volname", APP_NAME,
+        "-srcfolder", str(staging),
+        "-ov",
+        "-format", "UDZO",
+        str(dmg_path),
+    ])
+    shutil.rmtree(staging, ignore_errors=True)
+
+    if not dmg_path.exists():
+        raise FileNotFoundError(f"hdiutil n'a pas produit : {dmg_path}")
+    _ok(f"DMG : {dmg_path.name}")
+    return dmg_path
+
+
+def build_macos(dmg: bool, dest: str | None = None, version_tag: str | None = None) -> None:
+    """Orchestre le build macOS natif : PyInstaller → .app → (optionnel) .dmg."""
+    _title("Build macOS (PyInstaller → .app)")
+
+    # Génère .icns avant PyInstaller pour qu'il l'embarque
+    icns_path = ROOT / "build" / "icon.icns"
+    _build_icns_from_png(ICON_PNG, icns_path)
+
+    exe_path = _build_pyinstaller(onefile=False)
+    # exe_path = dist/mediarecode.app/Contents/MacOS/mediarecode
+    app_built = exe_path.parent.parent.parent  # dist/mediarecode.app
+
+    # Rename to Mediarecode.app (Finder-friendly)
+    app_final = ROOT / "dist" / _MACOS_BUNDLE_NAME
+    if app_final.exists():
+        shutil.rmtree(app_final)
+    app_built.rename(app_final)
+
+    # Copy icns into bundle if PyInstaller didn't embed it
+    if icns_path.exists():
+        resources = app_final / "Contents" / "Resources"
+        resources.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(icns_path, resources / "icon.icns")
+
+    _patch_macos_info_plist(app_final, version_tag=version_tag)
+
+    if dmg:
+        dmg_path = _build_macos_dmg(app_final, version_tag=version_tag)
+        final = _copy_final_file_if_requested(dmg_path, dest, version_tag=version_tag)
+        _title("Résultat")
+        _ok(f"DMG macOS : {final}")
+    else:
+        _title("Résultat")
+        _ok(f"App bundle : {app_final}")
+        print(f"""
+  Distribution :
+    Copier {app_final.name} dans /Applications.
+    Au premier lancement : clic-droit → Ouvrir (app non-signée).
+""")
+
+
 def build_windows(skip_wine: bool, dest: str | None = None, version_tag: str | None = None) -> None:
     """Orchestre le build Windows cross depuis Linux."""
     _title("Build Windows (Wine + PyInstaller + NSIS)")
@@ -2647,6 +2828,14 @@ def _parse_args() -> argparse.Namespace:
         help="Délègue à package_appimage.py --allinc (AppImage avec tous les outils embarqués).",
     )
     p.add_argument(
+        "--dmg",
+        action="store_true",
+        help=(
+            "Sur macOS natif : génère un .dmg distribuable depuis le .app. "
+            "Sans ce flag, seul le bundle .app est produit dans dist/."
+        ),
+    )
+    p.add_argument(
         "--clean",
         action="store_true",
         help="Nettoie tous les artefacts de build (build/, dist/, .wine_build/, *.AppImage…). Utilise sudo si nécessaire. Quitte sans builder.",
@@ -2728,6 +2917,9 @@ if __name__ == "__main__":
             print("--windows est uniquement supporté depuis Linux.", file=sys.stderr)
             sys.exit(1)
         build_windows(skip_wine=args.skip_wine, dest=args.dest, version_tag=args.version)
+    elif OS == "Darwin":
+        _ensure_pyinstaller()
+        build_macos(dmg=args.dmg, dest=args.dest, version_tag=args.version)
     else:
         # Comportement par défaut : AppImage Linux (ou --exe pour PyInstaller natif)
         build(
