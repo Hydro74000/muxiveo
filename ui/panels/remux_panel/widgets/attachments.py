@@ -256,12 +256,34 @@ def _fetch_tmdb_cover_bytes(url: str) -> bytes | None:
     cached = _TMDB_COVER_CACHE.get(url)
     if cached is not None:
         return cached
+    import ssl
     import urllib.error
     import urllib.request
 
-    req = urllib.request.Request(url, headers={"User-Agent": "mediarecode"})
+    from core.version import APP_USER_AGENT
+
+    req = urllib.request.Request(url, headers={"User-Agent": APP_USER_AGENT, "Accept": "image/*,*/*;q=0.8"})
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        try:
+            resp_cm = urllib.request.urlopen(req, timeout=10)
+        except urllib.error.URLError as exc:
+            cur: BaseException | None = exc
+            is_ssl = False
+            while cur is not None:
+                if isinstance(cur, ssl.SSLError):
+                    is_ssl = True
+                    break
+                if isinstance(getattr(cur, "reason", None), ssl.SSLError):
+                    is_ssl = True
+                    break
+                cur = cur.__cause__ or cur.__context__
+            if not is_ssl:
+                return None
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            resp_cm = urllib.request.urlopen(req, timeout=10, context=ctx)
+        with resp_cm as resp:
             data = resp.read()
     except (urllib.error.URLError, OSError):
         return None
