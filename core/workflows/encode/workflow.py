@@ -36,7 +36,7 @@ from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
 from core.workflows.remux import RemuxWorkflow, write_mediainfo_nfo
 from core.workflows.remux_timeline_sync import (
     LiveSyncSession,
-    MkvmergeLikeTimelineSync,
+    FfmpegTimelineSync,
     TimelineSyncFallbackHelper,
 )
 from core.workflows.encode.models import (
@@ -827,7 +827,7 @@ class EncodeWorkflow(QObject):
         allow_live: bool = True,
     ) -> tuple[dict[tuple[Path, int, str], tuple[int, int]], list[Path | str], LiveSyncSession | None, bool]:
         """
-        Prépare la normalisation timeline mkvmerge-like pour les flux multi-source
+        Prépare la normalisation timeline pour les flux multi-source
         dans le workflow encode.
         """
         source_idx_local = {p: i for i, p in enumerate(all_sources)}
@@ -899,7 +899,7 @@ class EncodeWorkflow(QObject):
             )
 
         sync_sources = [SourceInput(path=p, file_index=i, tracks=[]) for i, p in enumerate(all_sources)]
-        syncer = MkvmergeLikeTimelineSync(
+        syncer = FfmpegTimelineSync(
             ffmpeg_bin=self._ffmpeg,
             ffmpeg_thread_args=self._ffmpeg_thread_args(),
             log_cb=lambda msg: self.log_message.emit("INFO", msg),
@@ -3175,8 +3175,7 @@ class EncodeWorkflow(QObject):
                -map 1:s? -c:s copy              (subs depuis source)
                -map_metadata/-map_chapters/...  (tags/chapitres/track-meta)
                output.mkv
-             Pas de dépendance MKVToolNix, pas de fichier audio intermédiaire.
-             La source n'est jamais modifiée.
+             Pas de fichier audio intermédiaire. La source n'est jamais modifiée.
         """
         signals = TaskSignals()
         executor = ThreadPoolExecutor(max_workers=1)

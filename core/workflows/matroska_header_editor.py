@@ -1,8 +1,7 @@
 """
 core/workflows/matroska_header_editor.py
 
-Matroska Segment Info editor (MuxingApp) with in-place binary patching strategy
-inspired by mkvpropedit/kax_analyzer.
+Matroska Segment Info editor (MuxingApp) with in-place binary patching strategy.
 
 Key goals:
 - no temp output file / no full-file copy fallback
@@ -38,7 +37,7 @@ class MatroskaSegmentInfoHeaderEditorOptions:
     info_id: bytes = _INFO_ID
     muxing_app_id: bytes = b"\x4d\x80"
     writing_app_id: bytes = b"\x57\x41"
-    # Kept for API compatibility. Parsing is now file-wide (mkvpropedit-like).
+    # Kept for API compatibility. Parsing is now file-wide.
     header_scan_bytes: int = 8 * 1024 * 1024
     edit_muxing_app: bool = True
     edit_writing_app: bool = False
@@ -203,7 +202,7 @@ class MatroskaSegmentInfoHeaderEditor:
         return info.element_id + new_info_size + new_info_payload
 
     # ------------------------------------------------------------------
-    # Core update flow (mkvpropedit-like for Info)
+    # Core update flow for Info
     # ------------------------------------------------------------------
 
     def _apply_muxing_app_replace_with_header_rebuild_impl(
@@ -250,7 +249,7 @@ class MatroskaSegmentInfoHeaderEditor:
 
             before_size = state.file_size
 
-            # mkvpropedit-like sequence for one level-1 element (Info).
+            # Sequence for one level-1 element (Info).
             self._fix_unknown_size_for_last_level1_element(fh, state)
             self._overwrite_all_instances(fh, state, self.options.info_id)
             self._merge_void_elements(fh, state)
@@ -283,7 +282,7 @@ class MatroskaSegmentInfoHeaderEditor:
             )
 
     # ------------------------------------------------------------------
-    # Analyzer (kax_analyzer-like, fast + meta seek recursion)
+    # Analyzer (fast + meta seek recursion)
     # ------------------------------------------------------------------
 
     def _analyze_file(self, fh: BinaryIO, *, parse_fast: bool) -> _AnalyzerState:
@@ -621,7 +620,7 @@ class MatroskaSegmentInfoHeaderEditor:
                 break
             if e.element_id != _VOID_ID:
                 continue
-            # Same guard as mkvpropedit: avoid "+1 byte" residual hole.
+            # Guard: avoid "+1 byte" residual hole.
             slot_span = self._element_span(e)
             if slot_span != needed and slot_span < needed + 2:
                 continue
@@ -749,7 +748,7 @@ class MatroskaSegmentInfoHeaderEditor:
             return False
 
         if void_size == 1:
-            # mkvpropedit-like handling for 1-byte gap.
+            # Handling for 1-byte gap.
             if nxt.id_len <= 0 or nxt.size_len <= 0:
                 nxt = self._read_ebml_element_from_file(fh, nxt.offset, self._file_size(fh))
                 state.data[data_idx + 1] = nxt

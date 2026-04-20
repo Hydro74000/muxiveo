@@ -10,7 +10,7 @@ from core.runner import TaskCancelledError
 from core.workflows.remux_models import SourceInput, TrackEntry
 from core.workflows.remux_timeline_sync import (
     LiveSyncSession,
-    MkvmergeLikeTimelineSync,
+    FfmpegTimelineSync,
     TimelineSyncFallbackHelper,
 )
 
@@ -63,7 +63,7 @@ def test_prepare_from_mapped_tracks_extracts_only_foreign_audio_subtitle(tmp_pat
         calls.append((source, stream_index, destination))
         destination.write_bytes(b"sync")
 
-    syncer = MkvmergeLikeTimelineSync(ffmpeg_bin="ffmpeg")
+    syncer = FfmpegTimelineSync(ffmpeg_bin="ffmpeg")
     monkeypatch.setattr(syncer, "_extract_stream", _fake_extract)
 
     prepared = syncer.prepare_from_mapped_tracks(
@@ -95,7 +95,7 @@ def test_prepare_from_mapped_tracks_honors_cancel_callback(tmp_path, monkeypatch
         _source(src1, 1, [_track(2, "audio")]),
     ]
 
-    syncer = MkvmergeLikeTimelineSync(ffmpeg_bin="ffmpeg")
+    syncer = FfmpegTimelineSync(ffmpeg_bin="ffmpeg")
     monkeypatch.setattr(syncer, "_extract_stream", lambda **_: pytest.fail("must not extract when canceled"))
 
     with pytest.raises(TaskCancelledError):
@@ -127,7 +127,7 @@ def test_start_live_demux_session_uses_fifos_and_no_extract(tmp_path, monkeypatc
         _source(src1, 1, [_track(2, "audio"), _track(3, "subtitle")]),
     ]
 
-    syncer = MkvmergeLikeTimelineSync(ffmpeg_bin="ffmpeg")
+    syncer = FfmpegTimelineSync(ffmpeg_bin="ffmpeg")
     popen_cmds: list[list[str]] = []
 
     monkeypatch.setattr(syncer, "_extract_stream", lambda **_: pytest.fail("must not extract in live mode"))
@@ -191,7 +191,7 @@ def test_extract_stream_keeps_audio_rebase_flags(tmp_path, monkeypatch):
 
     monkeypatch.setattr("core.workflows.remux_timeline_sync.subprocess.run", _fake_run)
 
-    syncer = MkvmergeLikeTimelineSync(ffmpeg_bin="ffmpeg")
+    syncer = FfmpegTimelineSync(ffmpeg_bin="ffmpeg")
     syncer._extract_stream(source=src, stream_index=2, destination=destination)
 
     assert "-start_at_zero" in captured_cmd
@@ -215,7 +215,7 @@ def test_extract_stream_preserves_subtitle_timestamps(tmp_path, monkeypatch):
 
     monkeypatch.setattr("core.workflows.remux_timeline_sync.subprocess.run", _fake_run)
 
-    syncer = MkvmergeLikeTimelineSync(ffmpeg_bin="ffmpeg")
+    syncer = FfmpegTimelineSync(ffmpeg_bin="ffmpeg")
     syncer._extract_stream(source=src, stream_index=3, destination=destination)
 
     assert "-start_at_zero" not in captured_cmd
@@ -223,7 +223,7 @@ def test_extract_stream_preserves_subtitle_timestamps(tmp_path, monkeypatch):
 
 
 def test_start_live_demux_session_routes_to_windows_backend(tmp_path, monkeypatch):
-    syncer = MkvmergeLikeTimelineSync(ffmpeg_bin="ffmpeg")
+    syncer = FfmpegTimelineSync(ffmpeg_bin="ffmpeg")
     called = {"ok": False}
 
     def _fake_windows(**_kwargs):
@@ -264,7 +264,7 @@ def test_prepare_from_mapped_tracks_mmap_uses_mmap_extractor(tmp_path, monkeypat
         calls.append((source, stream_index, destination))
         destination.write_bytes(b"mmap-sync")
 
-    syncer = MkvmergeLikeTimelineSync(ffmpeg_bin="ffmpeg")
+    syncer = FfmpegTimelineSync(ffmpeg_bin="ffmpeg")
     monkeypatch.setattr(syncer, "_extract_stream_via_mmap", _fake_extract_mmap)
 
     prepared = syncer.prepare_from_mapped_tracks_mmap(

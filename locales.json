@@ -47,22 +47,6 @@
     "fra": "Binaire FFprobe utilisé pour l'analyse des médias.",
     "eng": "FFprobe binary used for media analysis."
   },
-  "Binaire MKVToolNix utilisé pour le remuxage.": {
-    "fra": "Binaire MKVToolNix utilisé pour le remuxage.",
-    "eng": "MKVToolNix binary used for remuxing."
-  },
-  "Binaire MKVToolNix utilisé pour extraire des pistes.": {
-    "fra": "Binaire MKVToolNix utilisé pour extraire des pistes.",
-    "eng": "MKVToolNix binary used to extract tracks."
-  },
-  "Binaire MKVToolNix utilisé pour l'inspection des conteneurs.": {
-    "fra": "Binaire MKVToolNix utilisé pour l'inspection des conteneurs.",
-    "eng": "MKVToolNix binary used to inspect containers."
-  },
-  "Binaire MKVToolNix utilisé pour réécrire des métadonnées.": {
-    "fra": "Binaire MKVToolNix utilisé pour réécrire des métadonnées.",
-    "eng": "MKVToolNix binary used to rewrite metadata."
-  },
   "Binaire MediaInfo utilisé pour enrichir l'inspection.": {
     "fra": "Binaire MediaInfo utilisé pour enrichir l'inspection.",
     "eng": "MediaInfo binary used to enrich inspection data."

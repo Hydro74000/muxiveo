@@ -176,7 +176,7 @@ class TestExceptions:
         assert "hdr10plus_tool" in str(err)
 
     def test_command_error_attributes(self):
-        cmd = ["mkvextract", "film.mkv"]
+        cmd = ["ffmpeg", "-i", "film.mkv"]
         err = CommandError(cmd=cmd, returncode=1, stderr="erreur fatale")
         assert err.cmd == cmd
         assert err.returncode == 1

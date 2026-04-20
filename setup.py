@@ -140,10 +140,6 @@ PYTHON_CMD = "py" if OS == "Windows" else "python3"
 WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
     "ffmpeg": ("ffmpeg.exe",),
     "ffprobe": ("ffprobe.exe",),
-    "mkvmerge": ("mkvmerge.exe",),
-    "mkvextract": ("mkvextract.exe",),
-    "mkvinfo": ("mkvinfo.exe",),
-    "mkvpropedit": ("mkvpropedit.exe",),
     "mediainfo": ("MediaInfo.exe", "mediainfo.exe"),
     "dovi_tool": ("dovi_tool.exe",),
     "hdr10plus_tool": ("hdr10plus_tool.exe",),
@@ -153,10 +149,6 @@ WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
 WINDOWS_WINGET_PATTERNS: dict[str, tuple[str, ...]] = {
     "ffmpeg": ("Gyan.FFmpeg*",),
     "ffprobe": ("Gyan.FFmpeg*",),
-    "mkvmerge": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
-    "mkvextract": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
-    "mkvinfo": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
-    "mkvpropedit": ("MoritzBunkus.MKVToolNix*", "MKVToolNix.MKVToolNix*"),
     "mediainfo": ("MediaArea.MediaInfo_*",),
 }
 
@@ -170,7 +162,6 @@ WINDOWS_CONFIG_TOOL_ORDER: tuple[str, ...] = (
 )
 
 # Outils qui écrivent dans les dossiers protégés (Windows CFA allowlist).
-# mkvmerge/mkvpropedit ne sont plus utilisés par les workflows principaux.
 WINDOWS_CFA_WRITER_TOOLS: tuple[str, ...] = (
     "ffmpeg",
 )
@@ -238,34 +229,6 @@ SYSTEM_TOOLS: dict[str, dict] = {
         "brew":   "ffmpeg",
         "winget": "Gyan.FFmpeg",
         "desc":   "Media file analyser (ships with ffmpeg)",
-    },
-    "mkvmerge": {
-        "apt":    "mkvtoolnix",
-        "dnf":    "mkvtoolnix",
-        "brew":   "mkvtoolnix",
-        "winget": "MoritzBunkus.MKVToolNix",
-        "desc":   "MKV container muxer",
-    },
-    "mkvextract": {
-        "apt":    "mkvtoolnix",
-        "dnf":    "mkvtoolnix",
-        "brew":   "mkvtoolnix",
-        "winget": "MoritzBunkus.MKVToolNix",
-        "desc":   "MKV track extractor (ships with mkvtoolnix)",
-    },
-    "mkvinfo": {
-        "apt":    "mkvtoolnix",
-        "dnf":    "mkvtoolnix",
-        "brew":   "mkvtoolnix",
-        "winget": "MoritzBunkus.MKVToolNix",
-        "desc":   "MKV info tool (ships with mkvtoolnix)",
-    },
-    "mkvpropedit": {
-        "apt":    "mkvtoolnix",
-        "dnf":    "mkvtoolnix",
-        "brew":   "mkvtoolnix",
-        "winget": "MoritzBunkus.MKVToolNix",
-        "desc":   "MKV metadata editor (ships with mkvtoolnix)",
     },
     "mediainfo": {
         "apt":    "mediainfo",
@@ -1053,9 +1016,6 @@ def _windows_default_tool_candidates(tool_name: str, prefix: Path) -> list[Path]
             for folder in ("ffmpeg", "FFmpeg"):
                 for exe_name in exe_names:
                     candidates.append(base_dir / folder / "bin" / exe_name)
-        elif tool_name in ("mkvmerge", "mkvextract", "mkvinfo", "mkvpropedit"):
-            for exe_name in exe_names:
-                candidates.append(base_dir / "MKVToolNix" / exe_name)
         elif tool_name == "mediainfo":
             for folder in ("MediaInfo", "MediaInfo CLI", "MediaInfoCLI"):
                 for exe_name in exe_names:
@@ -2092,10 +2052,6 @@ def check_tools_presence(prefix: Path | None = None) -> None:
         install_hints = {
             "ffmpeg":         "https://ffmpeg.org/download.html",
             "ffprobe":        "https://ffmpeg.org/download.html  (ships with ffmpeg)",
-            "mkvmerge":       "https://mkvtoolnix.download/",
-            "mkvextract":     "https://mkvtoolnix.download/  (ships with mkvtoolnix)",
-            "mkvinfo":        "https://mkvtoolnix.download/  (ships with mkvtoolnix)",
-            "mkvpropedit":    "https://mkvtoolnix.download/  (ships with mkvtoolnix)",
             "mediainfo":      "https://mediaarea.net/en/MediaInfo/Download",
             "dovi_tool":      "https://github.com/quietvoid/dovi_tool/releases",
             "hdr10plus_tool": "https://github.com/quietvoid/hdr10plus_tool/releases",
@@ -2202,7 +2158,7 @@ def main() -> None:
         else:
             warn(
                 "Unrecognised Linux distribution — cannot auto-install system packages.\n"
-                "   Install manually: ffmpeg  mkvtoolnix  mediainfo"
+                "   Install manually: ffmpeg  mediainfo"
             )
 
         if not args.no_github:

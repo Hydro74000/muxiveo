@@ -2968,7 +2968,7 @@ class TestEncodeRuntimeMultiSourceSync:
                 calls["file"] += 1
                 return [SimpleNamespace(key=(1, 1, "audio"), path=sync_audio, input_idx=2)]
 
-        monkeypatch.setattr("core.workflows.encode.workflow.MkvmergeLikeTimelineSync", _FakeSyncer)
+        monkeypatch.setattr("core.workflows.encode.workflow.FfmpegTimelineSync", _FakeSyncer)
         monkeypatch.setattr("core.workflows.encode.workflow.os.name", "posix", raising=False)
 
         remap, sync_inputs, live, strict = wf._prepare_multisource_sync(
@@ -3024,7 +3024,7 @@ class TestEncodeRuntimeMultiSourceSync:
             def prepare_from_mapped_tracks(self, **_kwargs):
                 pytest.fail("file fallback should not be used when RAM mmap works")
 
-        monkeypatch.setattr("core.workflows.encode.workflow.MkvmergeLikeTimelineSync", _FakeSyncer)
+        monkeypatch.setattr("core.workflows.encode.workflow.FfmpegTimelineSync", _FakeSyncer)
         monkeypatch.setattr("core.workflows.encode.workflow.os.name", "posix", raising=False)
         monkeypatch.setattr(EncodeWorkflow, "_ram_buffer_dir", staticmethod(lambda: ram_dir))
 

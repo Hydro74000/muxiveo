@@ -1,7 +1,7 @@
 """Tests unitaires de core/file_types — filtrage des extensions source.
 
 Couverture :
-- ACCEPTED_EXTENSIONS contient les formats mkvtoolnix (MP4/M2TS/VOB/DTS/AAC/…)
+- ACCEPTED_EXTENSIONS contient les formats supportés (MP4/M2TS/VOB/DTS/AAC/…)
 - VIDEO_CONTAINER_EXTENSIONS exclut les pistes audio pures
 - build_qt_filter() produit une chaîne Qt valide avec tous les groupes
 - is_accepted() route correctement selon video_only
@@ -22,7 +22,7 @@ from core.file_types import (
 
 
 # ---------------------------------------------------------------------------
-# Matrice d'extensions à accepter en entrée (issues de mkvtoolnix)
+# Matrice d'extensions à accepter en entrée
 # ---------------------------------------------------------------------------
 
 _EXPECTED_ACCEPTED = [
@@ -71,7 +71,7 @@ _EXPECTED_ACCEPTED = [
 
 @pytest.mark.parametrize("ext", _EXPECTED_ACCEPTED)
 def test_extension_accepted(ext: str) -> None:
-    """Toutes les extensions mkvtoolnix sont acceptées en entrée globale."""
+    """Toutes les extensions supportées sont acceptées en entrée globale."""
     assert ext in ACCEPTED_EXTENSIONS, f"Extension manquante : {ext}"
 
 
@@ -83,8 +83,8 @@ def test_accepted_extensions_lowercase_dotted() -> None:
 
 
 def test_accepted_extensions_count() -> None:
-    """Un volume raisonnable d'extensions (sanity check mkvtoolnix)."""
-    # mkvtoolnix déclare ~80 extensions uniques
+    """Un volume raisonnable d'extensions (sanity check)."""
+    # Environ 80 extensions uniques supportées
     assert len(ACCEPTED_EXTENSIONS) >= 70
 
 
