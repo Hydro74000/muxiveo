@@ -28,9 +28,12 @@ import pytest
 from core.workflows.encode.models import (
     AUDIO_CODECS,
     HARDWARE_VIDEO_CODECS,
+    AMF_PRESETS,
     NVENC_PRESETS,
+    QSV_PRESETS,
     SOFTWARE_VIDEO_CODECS,
     SVTAV1_PRESETS,
+    VAAPI_PRESETS,
     TONEMAP_ALGORITHMS,
     X265_PRESETS,
     AudioTrackSettings,
@@ -136,9 +139,17 @@ class TestPresetsForCodec:
     def test_nvenc_h264_returns_nvenc_presets(self):
         assert presets_for_codec("h264_nvenc") == NVENC_PRESETS
 
-    def test_amf_qsv_return_empty(self):
-        for codec in ("hevc_amf", "hevc_qsv", "h264_amf", "h264_qsv"):
-            assert presets_for_codec(codec) == []
+    def test_amf_returns_amf_presets(self):
+        for codec in ("hevc_amf", "h264_amf", "av1_amf"):
+            assert presets_for_codec(codec) == AMF_PRESETS
+
+    def test_qsv_returns_qsv_presets(self):
+        for codec in ("hevc_qsv", "h264_qsv", "av1_qsv"):
+            assert presets_for_codec(codec) == QSV_PRESETS
+
+    def test_vaapi_returns_vaapi_presets(self):
+        for codec in ("hevc_vaapi", "h264_vaapi", "av1_vaapi"):
+            assert presets_for_codec(codec) == VAAPI_PRESETS
 
     def test_unknown_codec_returns_x265_presets(self):
         assert presets_for_codec("unknown_codec") == X265_PRESETS
