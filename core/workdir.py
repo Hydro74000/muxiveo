@@ -6,9 +6,33 @@ from __future__ import annotations
 
 import re
 import shutil
+import ssl
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+
+def _urlopen_image(req: urllib.request.Request, timeout: int = 30):
+    """urlopen avec fallback SSL non-vérifié si la vérification échoue."""
+    try:
+        return urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.URLError as exc:
+        cur: BaseException | None = exc
+        is_ssl = False
+        while cur is not None:
+            if isinstance(cur, ssl.SSLError):
+                is_ssl = True
+                break
+            if isinstance(getattr(cur, "reason", None), ssl.SSLError):
+                is_ssl = True
+                break
+            cur = cur.__cause__ or cur.__context__
+        if not is_ssl:
+            raise
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return urllib.request.urlopen(req, timeout=timeout, context=ctx)
 
 
 _PROCESS_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -143,7 +167,7 @@ def download_tmdb_cover(url: str, filename: str, target_dir: Path) -> Path:
             "User-Agent": APP_USER_AGENT,
         },
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with _urlopen_image(req, timeout=30) as resp:
         dest.write_bytes(resp.read())
     return dest
 

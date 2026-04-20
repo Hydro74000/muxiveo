@@ -1055,9 +1055,10 @@ def _build_pyinstaller(onefile: bool) -> Path:
         else:
             _warn(f"Donnée absente, ignorée : {src}")
 
+    app_name = "Mediarecode" if OS == "Darwin" else "mediarecode"
     cmd: list[str] = [
         sys.executable, "-m", "PyInstaller",
-        "--name", "mediarecode",
+        "--name", app_name,
         _pyinstaller_frontend_flag(OS),
         "--noconfirm",
         "--clean",
@@ -1110,8 +1111,8 @@ def _build_pyinstaller(onefile: bool) -> Path:
         exe_name = "mediarecode.exe" if OS == "Windows" else "mediarecode"
         exe_path = ROOT / "dist" / exe_name
     elif OS == "Darwin":
-        # --windowed sur macOS produit dist/mediarecode.app/Contents/MacOS/mediarecode
-        exe_path = ROOT / "dist" / "mediarecode.app" / "Contents" / "MacOS" / "mediarecode"
+        # --windowed + --name Mediarecode produit dist/Mediarecode.app/Contents/MacOS/Mediarecode
+        exe_path = ROOT / "dist" / "Mediarecode.app" / "Contents" / "MacOS" / "Mediarecode"
     else:
         exe_name = "mediarecode.exe" if OS == "Windows" else "mediarecode"
         exe_path = ROOT / "dist" / "mediarecode" / exe_name
@@ -2643,14 +2644,8 @@ def build_macos(dmg: bool, dest: str | None = None, version_tag: str | None = No
     _build_icns_from_png(ICON_PNG, icns_path)
 
     exe_path = _build_pyinstaller(onefile=False)
-    # exe_path = dist/mediarecode.app/Contents/MacOS/mediarecode
-    app_built = exe_path.parent.parent.parent  # dist/mediarecode.app
-
-    # Rename to Mediarecode.app (Finder-friendly)
-    app_final = ROOT / "dist" / _MACOS_BUNDLE_NAME
-    if app_final.exists():
-        shutil.rmtree(app_final)
-    app_built.rename(app_final)
+    # PyInstaller --name Mediarecode --windowed produit dist/Mediarecode.app
+    app_final = exe_path.parent.parent.parent  # dist/Mediarecode.app
 
     # Copy icns into bundle if PyInstaller didn't embed it
     if icns_path.exists():
