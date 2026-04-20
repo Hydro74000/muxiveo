@@ -393,20 +393,21 @@ def test_build_msix_package_invokes_makeappx_and_signing(tmp_path):
     def fake_run(cmd, **kwargs):
         commands.append([str(part) for part in cmd])
         output_path.write_text("msix", encoding="utf-8")
-        return subprocess.CompletedProcess(args=cmd, returncode=0)
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
     with patch.object(package_mod, "OS", "Windows"), \
          patch.object(package_mod, "ROOT", tmp_path), \
          patch.object(package_mod, "_stage_msix_layout", return_value=layout_dir), \
          patch.object(package_mod, "_ensure_windows_sdk_tool", return_value="C:\\sdk\\makeappx.exe"), \
          patch.object(package_mod, "_sign_msix_package") as mock_sign, \
-         patch.object(package_mod, "_run", side_effect=fake_run):
+         patch.object(package_mod.subprocess, "run", side_effect=fake_run):
         result = package_mod._build_msix_package(bundle_dir, version_tag="1.3.2")
 
     assert result == output_path
     assert commands == [[
         "C:\\sdk\\makeappx.exe",
         "pack",
+        "/v",
         "/d",
         str(layout_dir),
         "/p",
