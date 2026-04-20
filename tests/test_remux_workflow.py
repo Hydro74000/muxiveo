@@ -592,10 +592,10 @@ class TestRemuxWorkflowBuildCommand:
             def prepare_from_mapped_tracks(self, **_kwargs):
                 pytest.fail("temp fallback should not be used when mmap works")
 
-        monkeypatch.setattr("core.workflows.remux.MkvmergeLikeTimelineSync", _FakeSyncer)
+        monkeypatch.setattr("core.workflows.remux.FfmpegTimelineSync", _FakeSyncer)
         monkeypatch.setattr("core.workflows.remux.os.name", "nt", raising=False)
 
-        remapped, extra_inputs, live = wf._prepare_mkvmerge_like_sync_inputs(
+        remapped, extra_inputs, live = wf._prepare_timeline_sync_inputs(
             cfg,
             mapped,
             tmp_path,
@@ -638,10 +638,10 @@ class TestRemuxWorkflowBuildCommand:
             def prepare_from_mapped_tracks(self, **_kwargs):
                 return [SyncPreparedInput(key=(1, 1, "audio"), path=tmp_path / "temp.mka", input_idx=2)]
 
-        monkeypatch.setattr("core.workflows.remux.MkvmergeLikeTimelineSync", _FakeSyncer)
+        monkeypatch.setattr("core.workflows.remux.FfmpegTimelineSync", _FakeSyncer)
         monkeypatch.setattr("core.workflows.remux.os.name", "nt", raising=False)
 
-        remapped, extra_inputs, live = wf._prepare_mkvmerge_like_sync_inputs(
+        remapped, extra_inputs, live = wf._prepare_timeline_sync_inputs(
             cfg,
             mapped,
             tmp_path,

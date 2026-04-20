@@ -1012,7 +1012,7 @@ class TestBuildCommand:
         assert map_values[:3] == ["0:v:0", "1:7", "0:4"]
         assert "-c:s" in cmd and cmd[cmd.index("-c:s") + 1] == "copy"
 
-    def test_vaapi_single_pass_adds_device_and_hwupload_only_for_vaapi_codec(self, tmp_path):
+    def test_vaapi_single_pass_adds_device_and_hwaccel_without_vf(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()
         with patch.object(EncodeWorkflow, "_vaapi_device", return_value="/dev/dri/renderD128"):
             cmd = self.wf.build_command_single(
@@ -1023,10 +1023,24 @@ class TestBuildCommand:
         assert "-vaapi_device" in cmd
         assert cmd[cmd.index("-vaapi_device") + 1] == "/dev/dri/renderD128"
         assert cmd.index("-vaapi_device") < cmd.index("-i")
-        assert "-vf" in cmd
-        assert cmd[cmd.index("-vf") + 1] == "format=nv12,hwupload"
+        assert "-hwaccel" in cmd and cmd[cmd.index("-hwaccel") + 1] == "vaapi"
+        assert "-hwaccel_output_format" in cmd
+        assert cmd[cmd.index("-hwaccel_output_format") + 1] == "vaapi"
+        assert "-vf" not in cmd
 
-    def test_vaapi_two_pass_adds_device_and_hwupload_on_both_passes(self, tmp_path):
+    def test_vaapi_tonemap_adds_hwupload_vf(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        with patch.object(EncodeWorkflow, "_vaapi_device", return_value="/dev/dri/renderD128"):
+            cmd = self.wf.build_command_single(
+                _make_config(src, tmp_path / "out.mkv",
+                             video=_make_video_settings(codec="hevc_vaapi", tonemap_to_sdr=True))
+            )
+
+        assert "-vaapi_device" in cmd
+        assert "-vf" in cmd
+        assert cmd[cmd.index("-vf") + 1].endswith("format=nv12,hwupload")
+
+    def test_vaapi_two_pass_adds_device_on_both_passes(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()
         with patch.object(EncodeWorkflow, "_vaapi_device", return_value="/dev/dri/renderD128"):
             cmds = self.wf.build_command(
@@ -1041,8 +1055,8 @@ class TestBuildCommand:
         for pass_cmd in cmds:
             assert "-vaapi_device" in pass_cmd
             assert pass_cmd[pass_cmd.index("-vaapi_device") + 1] == "/dev/dri/renderD128"
-            assert "-vf" in pass_cmd
-            assert pass_cmd[pass_cmd.index("-vf") + 1] == "format=nv12,hwupload"
+            assert "-hwaccel" in pass_cmd and pass_cmd[pass_cmd.index("-hwaccel") + 1] == "vaapi"
+            assert "-vf" not in pass_cmd
 
     def test_non_vaapi_codec_does_not_receive_vaapi_args(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()
@@ -2968,7 +2982,7 @@ class TestEncodeRuntimeMultiSourceSync:
                 calls["file"] += 1
                 return [SimpleNamespace(key=(1, 1, "audio"), path=sync_audio, input_idx=2)]
 
-        monkeypatch.setattr("core.workflows.encode.workflow.MkvmergeLikeTimelineSync", _FakeSyncer)
+        monkeypatch.setattr("core.workflows.encode.workflow.FfmpegTimelineSync", _FakeSyncer)
         monkeypatch.setattr("core.workflows.encode.workflow.os.name", "posix", raising=False)
 
         remap, sync_inputs, live, strict = wf._prepare_multisource_sync(
@@ -3024,7 +3038,7 @@ class TestEncodeRuntimeMultiSourceSync:
             def prepare_from_mapped_tracks(self, **_kwargs):
                 pytest.fail("file fallback should not be used when RAM mmap works")
 
-        monkeypatch.setattr("core.workflows.encode.workflow.MkvmergeLikeTimelineSync", _FakeSyncer)
+        monkeypatch.setattr("core.workflows.encode.workflow.FfmpegTimelineSync", _FakeSyncer)
         monkeypatch.setattr("core.workflows.encode.workflow.os.name", "posix", raising=False)
         monkeypatch.setattr(EncodeWorkflow, "_ram_buffer_dir", staticmethod(lambda: ram_dir))
 

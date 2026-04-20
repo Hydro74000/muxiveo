@@ -1,8 +1,7 @@
 """
 core/workflows/merge_dovi.py — Workflow d'injection DoVi RPU + HDR10+.
 
-Extrait la logique métier de merge_dovi_hdr10plus.py et l'adapte pour
-être piloté depuis l'interface Qt via ToolRunner.
+Logique métier pilotée depuis l'interface Qt via ToolRunner.
 
 Classes publiques :
     FrameCountResult   — résultat de la comparaison des frame counts
@@ -243,9 +242,8 @@ class MergeDoviWorkflow(QObject):
     """
     Orchestrateur du workflow d'injection DoVi RPU + HDR10+.
 
-    Encapsule la logique de merge_dovi_hdr10plus.py en un QObject émettant
-    des signaux Qt pour chaque étape. Toutes les opérations lourdes s'exécutent
-    dans des threads secondaires via ThreadPoolExecutor.
+    QObject émettant des signaux Qt pour chaque étape. Toutes les opérations
+    lourdes s'exécutent dans des threads secondaires via ThreadPoolExecutor.
 
     Usage :
         wf = MergeDoviWorkflow(config)

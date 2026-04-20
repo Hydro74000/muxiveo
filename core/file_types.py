@@ -1,7 +1,6 @@
 """Types de fichiers supportés en entrée.
 
-Liste adaptée de mkvtoolnix (common/file_types.cpp) pour couvrir tous les
-formats sources manipulables par mkvmerge/ffmpeg : conteneurs vidéo,
+Couvre les formats sources manipulables par FFmpeg : conteneurs vidéo,
 streams élémentaires, pistes audio, sous-titres, playlists Blu-ray.
 """
 
@@ -89,7 +88,7 @@ VIDEO_CONTAINER_EXTENSIONS: frozenset[str] = frozenset({
 
 
 def build_qt_filter(video_only: bool = False) -> str:
-    """Construit la chaîne de filtre QFileDialog à la manière de mkvtoolnix GUI.
+    """Construit la chaîne de filtre QFileDialog.
 
     Format : "All supported media files (*.mkv *.mp4 ...);;All files (*);;Type1 (*.ext1 ...);;..."
     """

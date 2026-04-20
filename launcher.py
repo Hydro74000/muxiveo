@@ -357,7 +357,7 @@ def _run_first_time_setup(install_dir: Path) -> int:
                 else:
                     print(
                         "  Distribution non reconnue â€” installez manuellement :\n"
-                        "    ffmpeg  mkvtoolnix  mediainfo",
+                        "    ffmpeg  mediainfo",
                         file=sys.stderr,
                     )
                 _setup.install_github_tools(prefix, dry_run, force=force)

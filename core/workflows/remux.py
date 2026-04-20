@@ -49,7 +49,7 @@ from core.workflows.remux_models import (
 )
 from core.workflows.remux_timeline_sync import (
     LiveSyncSession,
-    MkvmergeLikeTimelineSync,
+    FfmpegTimelineSync,
     SyncPreparedInput,
     TimelineSyncFallbackHelper,
 )
@@ -660,7 +660,7 @@ class RemuxWorkflow(QObject):
                             "INFO",
                             "D\u00e9calage sur piste \u00e9trang\u00e8re d\u00e9tect\u00e9 : sync live d\u00e9sactiv\u00e9, fallback fichier forc\u00e9.",
                         )
-                    mapped_tracks, sync_prepared, live_sync_session = self._prepare_mkvmerge_like_sync_inputs(
+                    mapped_tracks, sync_prepared, live_sync_session = self._prepare_timeline_sync_inputs(
                         run_config,
                         mapped_tracks,
                         tmp_dir,
@@ -827,7 +827,7 @@ class RemuxWorkflow(QObject):
         )
         return True
 
-    def _prepare_mkvmerge_like_sync_inputs(
+    def _prepare_timeline_sync_inputs(
         self,
         config: RemuxConfig,
         mapped_tracks: list[_MappedTrack],
@@ -840,7 +840,7 @@ class RemuxWorkflow(QObject):
         D\u00e9l\u00e8gue la normalisation des flux \u00e9trangers \u00e0 un utilitaire d\u00e9di\u00e9 afin de
         conserver une logique testable et r\u00e9utilisable hors workflow.
         """
-        syncer = MkvmergeLikeTimelineSync(
+        syncer = FfmpegTimelineSync(
             ffmpeg_bin=self._ffmpeg,
             ffmpeg_thread_args=self._ffmpeg_thread_args(),
             log_cb=lambda msg: self.log_message.emit("INFO", msg),

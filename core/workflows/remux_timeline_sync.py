@@ -1,6 +1,6 @@
 """
 core/workflows/remux_timeline_sync.py — utilitaire de synchronisation timeline
-"mkvmerge-like" pour le remux FFmpeg multi-source.
+pour le remux FFmpeg multi-source.
 
 But:
     - isoler les flux audio/sous-titres "étrangers" (hors source vidéo primaire),
@@ -121,7 +121,7 @@ class TimelineSyncFallbackHelper:
     def __init__(
         self,
         *,
-        syncer: "MkvmergeLikeTimelineSync",
+        syncer: "FfmpegTimelineSync",
         work_dir: Path,
         ram_dir: Path | None = None,
         log_cb: Callable[[str], None] | None = None,
@@ -166,7 +166,7 @@ class TimelineSyncFallbackHelper:
         # Identifier les pistes étrangères (hors source vidéo primaire)
         source_by_index = {src.file_index: src for src in sources}
         foreign_keys: set[tuple[int, int, str]] = set(
-            MkvmergeLikeTimelineSync._collect_foreign_targets(
+            FfmpegTimelineSync._collect_foreign_targets(
                 mapped_tracks=mapped_tracks,
                 source_by_index=source_by_index,
                 cancel_cb=cancel_cb,
@@ -322,7 +322,7 @@ class TimelineSyncFallbackHelper:
         return []
 
 
-class MkvmergeLikeTimelineSync:
+class FfmpegTimelineSync:
     """
     Prépare des entrées normalisées pour les flux multi-source à risque.
     """
@@ -376,7 +376,7 @@ class MkvmergeLikeTimelineSync:
 
         if prepared:
             self._log(
-                "Timeline sync (mode mkvmerge-like): "
+                "Timeline sync (multi-source):"
                 f"{len(prepared)} flux normalisé(s) avant remux final."
             )
 
@@ -561,7 +561,7 @@ class MkvmergeLikeTimelineSync:
             raise
 
         self._log(
-            "Timeline sync live (mkvmerge-like): "
+            "Timeline sync live (multi-source):"
             f"{len(inputs)} FIFO(s) actives pour le remux final."
         )
         return LiveSyncSession(
@@ -750,7 +750,7 @@ class MkvmergeLikeTimelineSync:
             raise
 
         self._log(
-            "Timeline sync live (mkvmerge-like): "
+            "Timeline sync live (multi-source):"
             f"{len(inputs)} named pipe(s) actives pour le remux final."
         )
         return LiveSyncSession(

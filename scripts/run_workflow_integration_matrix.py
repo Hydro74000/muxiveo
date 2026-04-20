@@ -1095,43 +1095,6 @@ def run_remux_case_ffmpeg_cleanup(case_id: str, sources: PreparedSources, tools:
         )
 
 
-def mkvmerge_workflow(_tools: ToolPaths) -> RemuxWorkflow:
-    raise RuntimeError("backend mkvmerge désactivé par politique outil")
-
-
-def run_remux_case_mkvmerge_attachments(case_id: str, sources: PreparedSources, tools: ToolPaths) -> dict[str, Any]:
-    _ = tools
-    return skipped_case_result(
-        case_id=case_id,
-        workflow_name="remux_mkvmerge",
-        branch="source_attachments_preserve",
-        source=sources.sdr_attach_source,
-        reason="backend mkvmerge désactivé par politique outil",
-    )
-
-
-def run_remux_case_mkvmerge_override(case_id: str, sources: PreparedSources, tools: ToolPaths) -> dict[str, Any]:
-    _ = tools
-    return skipped_case_result(
-        case_id=case_id,
-        workflow_name="remux_mkvmerge",
-        branch="tags_chapters_override_tmdb_cover",
-        source=sources.sdr_meta_source,
-        reason="backend mkvmerge désactivé par politique outil",
-    )
-
-
-def run_remux_case_mkvmerge_cleanup(case_id: str, sources: PreparedSources, tools: ToolPaths) -> dict[str, Any]:
-    _ = tools
-    return skipped_case_result(
-        case_id=case_id,
-        workflow_name="remux_mkvmerge",
-        branch="cleanup_delete_metadata",
-        source=sources.sdr_meta_source,
-        reason="backend mkvmerge désactivé par politique outil",
-    )
-
-
 def run_encode_case_copy_attachments(case_id: str, sources: PreparedSources, tools: ToolPaths) -> dict[str, Any]:
     case_root = RUNS_ROOT / case_id
     case_root.mkdir(parents=True, exist_ok=True)
