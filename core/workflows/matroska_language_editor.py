@@ -37,8 +37,9 @@ _LANGUAGE_ID = b"\x22\xb5\x9c"
 _LANGUAGE_BCP47_ID = b"\x22\xb5\x9d"
 
 
-# Préférence /B (bibliographique) — conforme à ce que mkvmerge/ffmpeg
-# écrivent historiquement (fre/ger/dut/...).
+# Table /T → /B (bibliographique) : le champ ``Language`` Matroska utilise
+# historiquement la forme /B (``fre``, ``ger``, ``dut``…). On obtient d'abord
+# le /T via ``Rfc5646LanguageTags.to_iso639_2`` puis on convertit ici.
 _ISO639_2_T_TO_B: dict[str, str] = {
     "sqi": "alb", "hye": "arm", "eus": "baq", "zho": "chi",
     "ces": "cze", "nld": "dut", "fra": "fre", "kat": "geo",
@@ -46,6 +47,53 @@ _ISO639_2_T_TO_B: dict[str, str] = {
     "msa": "may", "fas": "per", "ron": "rum", "slk": "slo",
     "cym": "wel",
 }
+
+
+def _canonicalize_bcp47(tag: str) -> str:
+    """Normalise un tag BCP-47 à la forme canonique (RFC 5646 §2.1.1).
+
+    Règles appliquées :
+    - sous-tag primaire (langue) en minuscules,
+    - région 2 lettres ou 3 chiffres en MAJUSCULES,
+    - script 4 lettres en Title-case (Latn, Hans, …),
+    - variants / extensions en minuscules,
+    - ``x-`` (private-use) en minuscules.
+
+    Cette fonction est volontairement simple : on ne reconstruit pas le
+    registre IANA. Si le tag est invalide on le renvoie tel quel — le code
+    appelant est responsable de la validation préalable.
+    """
+    parts = [p for p in tag.strip().split("-") if p]
+    if not parts:
+        return tag
+
+    out: list[str] = []
+    seen_primary = False
+    private_use = False
+    for i, part in enumerate(parts):
+        if private_use:
+            out.append(part.lower())
+            continue
+        if part.lower() == "x":
+            out.append("x")
+            private_use = True
+            continue
+        if not seen_primary:
+            out.append(part.lower())
+            seen_primary = True
+            continue
+        # Subséquents : détection par longueur/forme.
+        if len(part) == 4 and part.isalpha():
+            out.append(part[0].upper() + part[1:].lower())  # Script
+        elif len(part) == 2 and part.isalpha():
+            out.append(part.upper())  # Region alpha-2
+        elif len(part) == 3 and part.isdigit():
+            out.append(part)  # Region numérique UN M.49
+        elif len(part) == 3 and part.isalpha():
+            out.append(part.lower())  # extlang
+        else:
+            out.append(part.lower())  # variant/extension
+    return "-".join(out)
 
 
 @dataclass(frozen=True)
@@ -290,29 +338,32 @@ class MatroskaLanguageEditor:
         old_lang: str | None,
         old_bcp: str | None,
     ) -> tuple[str | None, str | None]:
-        """Détermine les valeurs cibles BCP-47 et ISO 639-2/B.
+        """Détermine les valeurs cibles BCP-47 (normalisée) et ISO 639-2/B.
 
-        Priorité de source BCP-47 :
-        1. ``LanguageBCP47`` existant s'il est valide,
-        2. ``Language`` s'il ressemble à un BCP-47 (`xx-XX`, ou `xx` non-ISO3).
+        Règles :
+        - la source BCP-47 est ``LanguageBCP47`` si présent, sinon ``Language``
+          s'il ressemble à un BCP-47 (contient ``-`` ou est 2 lettres),
+        - le tag est canonicalisé (lang lower, region UPPER, script Title),
+        - le code ISO 639-2 cible est la forme /B (bibliographique).
+
+        Retourne ``(None, None)`` si aucune source BCP-47 n'est identifiable ;
+        dans ce cas on laisse le fichier intact plutôt que de forcer ``und``.
         """
         source_bcp = None
         if old_bcp:
             source_bcp = old_bcp
-        elif old_lang:
-            if "-" in old_lang or len(old_lang) == 2:
-                source_bcp = old_lang
+        elif old_lang and ("-" in old_lang or len(old_lang) == 2):
+            source_bcp = old_lang
 
         if source_bcp is None:
-            # Rien à faire si Language est déjà un ISO 639-2 3-lettres valide
-            # et pas de BCP47 à compléter — on laisse le fichier en l'état.
             return None, None
 
-        iso_t = LangTags.to_iso639_2(source_bcp)
+        normalized = _canonicalize_bcp47(source_bcp)
+        iso_t = LangTags.to_iso639_2(normalized)
         if iso_t is None:
             return None, None
         iso_b = _ISO639_2_T_TO_B.get(iso_t, iso_t)
-        return source_bcp, iso_b
+        return normalized, iso_b
 
     # ------------------------------------------------------------------
     # Helpers
