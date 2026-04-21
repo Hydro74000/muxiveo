@@ -4,7 +4,7 @@ FULL Vibecoded App for Proof of Concept - no human code, only human prompts and 
 
 Interface graphique pour préparer des fichiers vidéo, remuxer sans perte, réencoder avec `ffmpeg`, et fusionner des métadonnées Dolby Vision / HDR10+.
 
-Cette documentation correspond à **Mediarecode v1.4.0**.
+Cette documentation correspond à **Mediarecode v1.4.x**.
 
 ## Sommaire
 
@@ -149,6 +149,7 @@ Les artefacts sont toujours déposés dans `dist/releases/`.
 | Cible | Commande | Artefact produit |
 |-------|----------|-----------------|
 | AppImage Linux | `python3 package.py --allinc` | `dist/releases/Mediarecode-x86_64.AppImage` + `dist/releases/Mediarecode-x86_64.AppImage.zsync` |
+| Package macOS natif | `python3 package.py --dmg` | `Mediarecode.app` + `dist/releases/Mediarecode-<version>.dmg` |
 | Package Windows (natif + MSIX) | `py package.py --msix` | `dist/releases/Mediarecode.msix` |
 | Soumission Microsoft Store | `py package.py --msix --msixupload --store-config packaging/msix_store.json` | `dist/releases/Mediarecode.msixupload` |
 | Installateur Windows cross (depuis Linux) | `python3 package.py --windows` | `dist/releases/Mediarecode-Setup.exe` via Wine + NSIS |
@@ -178,6 +179,7 @@ Options utiles de `package.py` :
 | Option | Effet |
 |--------|-------|
 | `--allinc` | intègre toutes les dépendances dans l'AppImage et génère le `.zsync` (Linux) |
+| `--dmg` | sur macOS natif, produit un `.dmg` distribuable depuis `Mediarecode.app` |
 | `--msix` | produit un package MSIX sur Windows natif, signé si les variables `MEDIARECODE_MSIX_*` sont définies |
 | `--msixupload` | génère un `.msixupload` pour Partner Center à partir du package MSIX |
 | `--store-config PATH` | charge les métadonnées Store/MSIX depuis un JSON dédié |
@@ -206,6 +208,10 @@ Le workflow unifié permet de :
 - inspecter vidéo, audio, sous-titres, chapitres, pièces jointes et tags MKV
 - activer, exclure et réordonner les pistes
 - éditer langue, titre et flags de chaque piste
+- créer des variantes audio indépendantes depuis l'onglet Encodage, sans modifier la piste d'origine
+- réordonner ou supprimer ces variantes sans perdre leur lien avec le workflow
+- visualiser dans le panel remux le codec et le bitrate cibles lorsqu'une piste audio sera réencodée
+- extraire une piste de sous-titre depuis le menu contextuel du tableau des pistes
 - définir le titre du conteneur, les balises globales, les chapitres et les pièces jointes
 - ouvrir une fenêtre de recherche **TMDB** depuis le panneau balises pour rechercher film/série (préremplissage auto depuis titre/nom de fichier)
 - détecter automatiquement les motifs de série (`SxxExx`, `x`) pour préremplir saison/épisode et positionner la recherche sur **Séries** si pertinent
@@ -232,9 +238,11 @@ Backend remux `ffmpeg` (par défaut) :
 
 - sortie limitée à `MKV`
 - écrit la langue de piste en BCP47 sur `language` (ex. `fr-FR`) et purge le champ legacy `language-ietf` pour éviter les doublons incohérents
+- corrige au besoin les tags de langue Matroska en post-action, sans repasser par MKVToolNix
 - permet la recopie ou l'édition des chapitres
 - permet d'écrire les tags globaux choisis
 - permet de recopier les pièces jointes source sélectionnées et d'ajouter des fichiers externes (cover incluse)
+- peut générer un fichier `.nfo` MediaInfo à côté du MKV final après un remux ou un encodage réussi
 - télécharge la cover TMDB différée juste avant l'exécution (dans le dossier temporaire du process), puis nettoie ce dossier en fin de run
 - purge explicitement les balises techniques source `ENCODER` et `CREATION_TIME` avant écriture des métadonnées de sortie
 - n'écrit plus le tag libre `MUXING_APPLICATION` via `-metadata`
@@ -291,7 +299,7 @@ Le panneau **Paramètres** est un éditeur complet de `config.ini` intégré à 
 - **Remux** : backend `ffmpeg` (nominal)
 - **Outils externes** : chemins explicites pour chaque outil (`ffmpeg`, `ffprobe`, `mediainfo`, `dovi_tool`, `hdr10plus_tool`, etc.)
 - **Encodage** : profil DoVi, compat-id, buffer RAM
-- **Métadonnées** : auth TMDB via clé API v3 (`tmdb_api_key`) ou token Bearer v4 (`tmdb_bearer_token`)
+- **Métadonnées** : auth TMDB via clé API v3 (`tmdb_api_key`) ou token Bearer v4 (`tmdb_bearer_token`), génération optionnelle de `.nfo` (`generate_nfo`)
 
 Les changements sont appliqués section par section ou en une seule fois via le bouton **Sauvegarder toute la configuration**. Un rechargement depuis `config.ini` est possible sans redémarrer l'application.
 
@@ -338,6 +346,7 @@ Sous Windows, `setup.py` et le démarrage de l'application peuvent auto-détecte
 | `backend` (section `[remux]`) | `ffmpeg` | backend de remux (`ffmpeg`) |
 | `tmdb_api_key` | vide | clé API TMDB v3 utilisée par la recherche IMDb/TMDB |
 | `tmdb_bearer_token` | vide | token Bearer TMDB v4 (utilisé si `tmdb_api_key` est vide, ou via `MEDIARECODE_TMDB_BEARER_TOKEN`) |
+| `generate_nfo` | `true` | génère un fichier `.nfo` MediaInfo à côté du MKV final après workflow réussi |
 | `ram_buffer_enabled` | `true` | autorise l'usage de `/dev/shm` pour les HEVC intermédiaires si disponible |
 | `ram_buffer_threshold_pct` | `15` | pourcentage minimal de RAM libre à conserver pour activer ce buffer |
 
@@ -392,6 +401,7 @@ startup_panel = container
 [metadata]
 tmdb_api_key = <VOTRE_CLE_API_TMDB_V3>
 tmdb_bearer_token = <VOTRE_TOKEN_BEARER_TMDB_V4>
+generate_nfo = true
 ```
 
 ## Workflows
@@ -534,11 +544,11 @@ flowchart TD
 |-------|----------------|
 | `ffprobe` | analyse des flux, chapitres et métadonnées |
 | `mediainfo` | frame count et informations HDR fines |
-| `ffmpeg` | encodage, remux, copie de flux, écriture metadata/chapitres/tags, patch binaire MuxingApp |
+| `ffmpeg` | encodage, remux, copie de flux, extraction de sous-titres, écriture metadata/chapitres/tags, patch binaire MuxingApp |
 | `dovi_tool` | extraction, injection et vérification Dolby Vision |
 | `hdr10plus_tool` | extraction et injection HDR10+ |
 | `nvidia-smi` | fallback de détection NVENC sous Linux |
 
 ---
 
-*Mediarecode v1.3*
+*Mediarecode v1.4.x*
