@@ -233,8 +233,10 @@ class TestWriteMediainfoNfo:
         log_cb.assert_called_once_with("OK", "NFO généré : film.nfo")
 
         args = mock_run.call_args[0][0]
+        kwargs = mock_run.call_args[1] if mock_run.call_args[1] else mock_run.call_args.kwargs
         assert args[0] == "mediainfo"
-        assert str(mkv) in " ".join(args)
+        assert args[1] == mkv.name
+        assert kwargs.get("cwd") == mkv.parent
 
     def test_uses_custom_mediainfo_bin(self, tmp_path):
         """mediainfo_bin personnalisé est passé à subprocess.run."""

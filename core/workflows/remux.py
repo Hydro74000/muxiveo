@@ -172,8 +172,9 @@ def write_mediainfo_nfo(
     nfo_path = output_path.with_suffix(".nfo")
     try:
         result = subprocess.run(
-            [mediainfo_bin, _cli_path(output_path)],
+            [mediainfo_bin, output_path.name],
             capture_output=True,
+            cwd=output_path.parent,
             **subprocess_text_kwargs(),
         )
         nfo_path.write_text(result.stdout, encoding="utf-8")
