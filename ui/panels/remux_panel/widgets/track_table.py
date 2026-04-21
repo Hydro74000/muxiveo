@@ -7,6 +7,7 @@ from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainter, QPalett
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
+    QMenu,
     QMessageBox,
     QPushButton,
     QStyle,
@@ -96,6 +97,7 @@ class _TrackInfoDelegate(QStyledItemDelegate):
 
 class _TrackTable(QTableWidget):
     order_changed = Signal()
+    extract_requested = Signal(object)  # TrackEntry
 
     _TYPE_ORDER: dict[str, int] = {"video": 0, "audio": 1, "subtitle": 2}
     _MAX_VISIBLE_ROWS = 15
@@ -126,6 +128,8 @@ class _TrackTable(QTableWidget):
         self._setup_ui()
         self._adjust_height()
         self.itemChanged.connect(self._on_item_changed)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._on_context_menu)
 
     def _setup_ui(self) -> None:
         self.setHorizontalHeaderLabels(self._HEADERS)
@@ -427,6 +431,23 @@ class _TrackTable(QTableWidget):
                     translate_text("Erreur : code langue non reconnu"),
                 ),
             )
+
+    def _on_context_menu(self, pos) -> None:
+        index = self.indexAt(pos)
+        if not index.isValid():
+            return
+        chk = self.item(index.row(), self.COL_CHECK)
+        if chk is None:
+            return
+        entry = chk.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(entry, TrackEntry) or entry.track_type != "subtitle":
+            return
+
+        menu = QMenu(self)
+        action = menu.addAction(translate_text("Extraire…"))
+        chosen = menu.exec(self.viewport().mapToGlobal(pos))
+        if chosen is action:
+            self.extract_requested.emit(entry)
 
     def _find_row_for_entry(self, entry: TrackEntry) -> int | None:
         for row in range(self.rowCount()):

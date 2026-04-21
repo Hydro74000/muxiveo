@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLayout,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
@@ -23,11 +24,12 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
+from core.extractor import TrackExtractor
 from core.file_types import is_accepted
 from core.i18n import apply_translations, translate_text
 from core.matroska_attachment_extractor import extract_matroska_attachment_bytes
 from core.inspector import AttachmentInfo, ChapterEntry, FileInfo
-from core.runner import TaskSignals
+from core.runner import TaskSignals, ToolRunner
 from core.workflows.remux import RemuxWorkflow
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
 from ui.panels.remux_panel.functions import chapters as chapter_functions
@@ -223,6 +225,7 @@ class RemuxPanel(QWidget):
         self._track_table = _TrackTable()
         self._track_table.itemChanged.connect(self._on_table_changed)
         self._track_table.order_changed.connect(self._rebuild_preview)
+        self._track_table.extract_requested.connect(self._on_extract_track)
         content_layout.addWidget(self._track_table)
 
         content_layout.addWidget(_separator())
@@ -564,6 +567,73 @@ class RemuxPanel(QWidget):
         )
         if path:
             self._output_edit.setText(path)
+
+    def _on_extract_track(self, entry: TrackEntry) -> None:
+        source = self._find_source(entry.file_id)
+        if source is None or source.info is None:
+            self.log_message.emit("WARN", translate_text("Source introuvable pour cette piste."))
+            return
+
+        codec = (entry.codec or "").lower()
+        try:
+            plan = TrackExtractor.plan_subtitle(codec)
+        except ValueError as exc:
+            QMessageBox.warning(
+                self,
+                translate_text("Extraction impossible"),
+                str(exc),
+            )
+            return
+
+        default_name = TrackExtractor.default_output_name(
+            source.path.stem, entry.language, entry.mkv_tid, plan.extension,
+        )
+        default_path = source.path.parent / default_name
+        out_str, _ = QFileDialog.getSaveFileName(
+            self,
+            translate_text("Extraire le sous-titre"),
+            str(default_path),
+            plan.file_filter,
+        )
+        if not out_str:
+            return
+
+        out_path = Path(out_str)
+        cmd = TrackExtractor.build_subtitle_command(
+            self._config.tool_ffmpeg,
+            source.path,
+            entry.mkv_tid,
+            codec,
+            out_path,
+        )
+
+        self.log_message.emit(
+            "INFO",
+            translate_text(
+                "Extraction du sous-titre #{idx} ({codec}) vers {name}…",
+                idx=entry.mkv_tid, codec=plan.format_label, name=out_path.name,
+            ),
+        )
+
+        runner = ToolRunner()
+        self._extract_runner = runner  # conserve la référence pendant l'exécution
+        signals = runner.run(cmd, label=f"extract-sub-{entry.mkv_tid}")
+        signals.progress.connect(
+            lambda line: self.log_message.emit("INFO", line),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        signals.finished.connect(
+            lambda _=None, p=out_path: self.log_message.emit(
+                "OK", translate_text("Sous-titre extrait : {path}", path=str(p)),
+            ),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        signals.failed.connect(
+            lambda msg, _exc: self.log_message.emit(
+                "ERROR", translate_text("Extraction échouée : {msg}", msg=msg),
+            ),
+            Qt.ConnectionType.QueuedConnection,
+        )
 
     def _copy_command(self) -> None:
         from PySide6.QtWidgets import QApplication
