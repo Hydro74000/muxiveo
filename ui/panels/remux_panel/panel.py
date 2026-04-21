@@ -320,6 +320,13 @@ class RemuxPanel(QWidget):
     def _on_add_files(self, paths: list[str]) -> None:
         inspection.on_add_files(self, paths)
 
+    def add_sources(self, paths: list[str | Path]) -> None:
+        """Ajoute des fichiers source depuis l'extérieur du panneau."""
+        normalized = [str(Path(path)) for path in paths if str(path).strip()]
+        if not normalized:
+            return
+        self._on_add_files(normalized)
+
     def _install_global_drop_targets(self, scroll: QScrollArea, content: QWidget) -> None:
         for target in (self, scroll, scroll.viewport(), content):
             target.setAcceptDrops(True)

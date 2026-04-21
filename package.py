@@ -59,6 +59,7 @@ import zipfile
 from pathlib import Path
 from typing import Iterable
 
+from core.file_types import ACCEPTED_EXTENSIONS, build_desktop_mime_type_string
 from core.version import APP_NAME, APP_VERSION
 
 ROOT = Path(__file__).parent
@@ -1135,11 +1136,25 @@ _DESKTOP_ENTRY = """\
 [Desktop Entry]
 Name=Mediarecode
 Comment=MKV/MP4 workflow — DoVi, HDR10+, encoding
-Exec=mediarecode
+Exec=mediarecode %F
 Icon=Mediarecode
 Type=Application
 Categories=AudioVideo;Video;
+MimeType={mime_types}
+Terminal=false
 """
+
+
+def _windows_supported_types_block() -> str:
+    """Génère les clés NSIS de support 'Open with...' pour Windows."""
+    lines = [
+        '  WriteRegStr HKLM "Software\\\\Classes\\\\Applications\\\\mediarecode.exe\\\\shell\\\\open\\\\command" "" \'\"$INSTDIR\\\\${EXE_NAME}\" \"%1\"\'',
+    ]
+    for ext in sorted(ACCEPTED_EXTENSIONS):
+        lines.append(
+            f'  WriteRegStr HKLM "Software\\\\Classes\\\\Applications\\\\mediarecode.exe\\\\SupportedTypes" "{ext}" ""'
+        )
+    return "\n".join(lines)
 
 _APPRUN = """\
 #!/bin/bash
@@ -1173,7 +1188,7 @@ def _build_appdir() -> Path:
 
     # Fichier .desktop
     desktop = appdir / "Mediarecode.desktop"
-    desktop.write_text(_DESKTOP_ENTRY)
+    desktop.write_text(_DESKTOP_ENTRY.format(mime_types=build_desktop_mime_type_string()))
     _ok(".desktop créé")
 
     # Icône
@@ -1664,6 +1679,10 @@ def _msix_manifest_content(
     raw_meta = metadata or _load_msix_store_metadata()
     from xml.sax.saxutils import escape as _xml_escape
     meta = {k: _xml_escape(str(v), {'"': "&quot;", "'": "&apos;"}) for k, v in raw_meta.items()}
+    supported_file_types = "\n".join(
+        f"          <uap:FileType>{ext}</uap:FileType>"
+        for ext in sorted(ACCEPTED_EXTENSIONS)
+    )
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
@@ -1708,6 +1727,15 @@ def _msix_manifest_content(
         <desktop:Extension Category="windows.fullTrustProcess" Executable="{executable}">
           <desktop:FullTrustProcess />
         </desktop:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="Mediarecode">
+            <uap:DisplayName>{meta['display_name']}</uap:DisplayName>
+            <uap:InfoTip>{meta['description']}</uap:InfoTip>
+            <uap:SupportedFileTypes>
+{supported_file_types}
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
       </Extensions>
     </Application>
   </Applications>
@@ -2410,6 +2438,8 @@ Section "Application" SEC_MAIN
   ; Raccourci Bureau
   CreateShortcut "$DESKTOP\\Mediarecode.lnk" "$INSTDIR\\${{EXE_NAME}}" "" "$INSTDIR\\${{EXE_NAME}}" 0
 
+{association_block}
+
   ; Clés désinstalleur — registre 64 bits (évite la redirection WoW64)
   SetRegView 64
   WriteRegStr   HKLM "${{UNINSTALL_KEY}}" "DisplayName"      "${{APP_NAME}}"
@@ -2441,6 +2471,9 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\\Mediarecode\\Mediarecode.lnk"
   RMDir  "$SMPROGRAMS\\Mediarecode"
   Delete "$DESKTOP\\Mediarecode.lnk"
+
+  ; Suppression des associations "Open with..."
+  DeleteRegKey HKLM "Software\\Classes\\Applications\\mediarecode.exe"
 
   ; Suppression des clés registre 64 bits
   SetRegView 64
@@ -2484,6 +2517,7 @@ def _build_nsis_installer(bundle_dir: Path, version_tag: str | None = None) -> P
             app_version=APP_VERSION,
             outfile=str(output),
             bundle_dir_pattern=bundle_dir_pattern,
+            association_block=_windows_supported_types_block(),
             icon_block=icon_block,
         ),
         encoding="utf-8",
@@ -2590,6 +2624,14 @@ def _patch_macos_info_plist(app_path: Path, version_tag: str | None) -> None:
     plist["NSHighResolutionCapable"] = True
     # Évite le mode "Document-Based App" qui ouvre une fenêtre "Ouvrir un fichier…" au lancement
     plist["LSUIElement"] = False
+    plist["CFBundleDocumentTypes"] = [
+        {
+            "CFBundleTypeName": "Mediarecode Media Files",
+            "CFBundleTypeRole": "Viewer",
+            "LSHandlerRank": "Alternate",
+            "CFBundleTypeExtensions": sorted(ext.lstrip(".") for ext in ACCEPTED_EXTENSIONS),
+        }
+    ]
 
     with plist_path.open("wb") as f:
         plistlib.dump(plist, f)

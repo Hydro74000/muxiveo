@@ -62,6 +62,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+from core.file_types import build_desktop_mime_type_string
 from core.version import APP_VERSION
 
 ROOT = Path(__file__).parent
@@ -431,10 +432,11 @@ _DESKTOP = textwrap.dedent("""\
     [Desktop Entry]
     Name=Mediarecode
     Comment=MKV/MP4 Workflow — DoVi · HDR10+ · Remux · Encode
-    Exec=mediarecode
+    Exec=mediarecode %F
     Icon=mediarecode
     Type=Application
     Categories=AudioVideo;Video;
+    MimeType={mime_types}
     Terminal=false
 """)
 
@@ -730,7 +732,7 @@ def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64") -
 
     # .desktop
     desktop = appdir / f"{APP_NAME}.desktop"
-    desktop.write_text(_DESKTOP)
+    desktop.write_text(_DESKTOP.format(mime_types=build_desktop_mime_type_string()))
     ok(".desktop créé")
 
     # Icône — embarque icon.ico si présent et l'utilise en priorité pour

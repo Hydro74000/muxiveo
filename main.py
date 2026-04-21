@@ -14,7 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QMessageBox, QPushButton
 
@@ -68,7 +68,20 @@ def _prompt_work_dir_cleanup(config: AppConfig) -> None:
         config.clear_work_dir()
 
 
+def _startup_paths_from_argv(argv: list[str]) -> list[Path]:
+    """Extrait les chemins de fichiers existants passés au lancement."""
+    paths: list[Path] = []
+    for raw in argv[1:]:
+        if not raw or raw.startswith("-"):
+            continue
+        path = Path(raw).expanduser()
+        if path.exists():
+            paths.append(path)
+    return paths
+
+
 def main() -> int:
+    startup_paths = _startup_paths_from_argv(sys.argv)
     app_instance = QApplication.instance()
     if not isinstance(app_instance, QApplication):
         # High-DPI : activé par défaut sous Qt 6, mais on force le scaling exact
@@ -97,6 +110,8 @@ def main() -> int:
     # Fenêtre principale
     from ui.main_window import MainWindow
     window = MainWindow(config)
+    if startup_paths:
+        QTimer.singleShot(0, lambda: window.open_startup_paths(startup_paths))
     window.show()
 
     return app.exec()

@@ -59,6 +59,24 @@ def test_pyinstaller_frontend_flag_keeps_console_on_linux():
     assert package_mod._pyinstaller_frontend_flag("Linux") == "--console"
 
 
+def test_desktop_entries_advertise_file_open_support():
+    rendered = package_mod._DESKTOP_ENTRY.format(mime_types="video/x-matroska;audio/x-matroska;")
+    assert "Exec=mediarecode %F" in rendered
+    assert "MimeType=video/x-matroska;audio/x-matroska;" in rendered
+    assert "Terminal=false" in rendered
+    rendered_appimage = package_appimage_mod._DESKTOP.format(mime_types="video/x-matroska;")
+    assert "Exec=mediarecode %F" in rendered_appimage
+    assert "MimeType=video/x-matroska;" in rendered_appimage
+
+
+def test_windows_supported_types_block_registers_open_with_entries():
+    with patch.object(package_mod, "ACCEPTED_EXTENSIONS", frozenset({".mkv", ".srt"})):
+        block = package_mod._windows_supported_types_block()
+    assert 'Applications\\\\mediarecode.exe\\\\shell\\\\open\\\\command' in block
+    assert '.mkv' in block
+    assert '.srt' in block
+
+
 def test_nsis_bundle_glob_uses_posix_separator_on_linux():
     with patch.object(package_mod, "OS", "Linux"):
         assert package_mod._nsis_bundle_glob(Path("/tmp/mediarecode-win")) == "/tmp/mediarecode-win/*"
@@ -340,6 +358,10 @@ def test_msix_manifest_contains_full_trust_metadata():
     assert 'xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"' in manifest
     assert '<desktop:Extension Category="windows.fullTrustProcess"' in manifest
     assert "<desktop:FullTrustProcess />" in manifest
+    assert '<uap:Extension Category="windows.fileTypeAssociation">' in manifest
+    assert '<uap:FileTypeAssociation Name="Mediarecode">' in manifest
+    assert '<uap:FileType>.mkv</uap:FileType>' in manifest
+    assert '<uap:FileType>.srt</uap:FileType>' in manifest
 
 
 def test_msix_manifest_forces_revision_zero():
@@ -382,6 +404,31 @@ def test_load_msix_store_metadata_prefers_config_file(tmp_path):
         "description": "Store build",
         "display_name": "Mediarecode Store",
     }
+
+
+def test_stage_msix_layout_embeds_file_associations_and_bundle(tmp_path):
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    (bundle_dir / "mediarecode.exe").write_text("", encoding="utf-8")
+
+    metadata = {
+        "identity": "Contoso.Mediarecode",
+        "publisher": "CN=Contoso",
+        "publisher_display_name": "Contoso",
+        "description": "Store build",
+        "display_name": "Mediarecode Store",
+    }
+
+    with patch.object(package_mod, "ROOT", tmp_path), \
+         patch.object(package_mod, "APP_NAME", "Mediarecode"), \
+         patch.object(package_mod, "_msix_processor_architecture", return_value="x64"), \
+         patch.object(package_mod, "_load_msix_store_metadata", return_value=metadata):
+        layout_dir = package_mod._stage_msix_layout(bundle_dir, "1.3.2", metadata=metadata)
+
+    manifest = (layout_dir / "AppxManifest.xml").read_text(encoding="utf-8")
+    assert '<uap:Extension Category="windows.fileTypeAssociation">' in manifest
+    assert '<uap:FileType>.mkv</uap:FileType>' in manifest
+    assert (layout_dir / "VFS" / "ProgramFilesX64" / "Mediarecode" / "mediarecode.exe").exists()
 
 
 def test_build_msixupload_wraps_msix_for_partner_center(tmp_path):

@@ -1364,6 +1364,23 @@ class MainWindow(QMainWindow):
             return
         self._vsplit.setSizes([768, 32])
 
+    def open_startup_paths(self, paths: list[Path | str]) -> None:
+        """Charge automatiquement des fichiers transmis au lancement de l'app."""
+        normalized = []
+        for raw in paths:
+            path = Path(raw)
+            if not path.exists():
+                continue
+            normalized.append(path)
+
+        if not normalized:
+            return
+
+        container_index = self._PAGE_INDEX_BY_PANEL_KEY["container"]
+        self._stack.setCurrentIndex(container_index)
+        self._sidebar.select_page(container_index)
+        self._remux_panel.add_sources(normalized)
+
     # ------------------------------------------------------------------
     # Signaux
     # ------------------------------------------------------------------

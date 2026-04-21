@@ -4,6 +4,7 @@ tests/test_main_window_startup_panel.py — Mapping startup panel -> index stack
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from pathlib import Path
 
 from PySide6.QtWidgets import QMessageBox
 
@@ -62,3 +63,22 @@ def test_scale_change_prompt_shows_warning_when_restart_fails(qt_app) -> None:
 
     fake_window._config.restart_application.assert_called_once_with()
     mock_warning.assert_called_once()
+
+
+def test_open_startup_paths_routes_files_to_container_page(tmp_path, qt_app) -> None:
+    media_path = tmp_path / "movie.mkv"
+    media_path.write_text("", encoding="utf-8")
+    fake_window = SimpleNamespace(
+        _PAGE_INDEX_BY_PANEL_KEY=MainWindow._PAGE_INDEX_BY_PANEL_KEY,
+        _stack=SimpleNamespace(setCurrentIndex=MagicMock()),
+        _sidebar=SimpleNamespace(select_page=MagicMock()),
+        _remux_panel=SimpleNamespace(add_sources=MagicMock()),
+    )
+
+    MainWindow.open_startup_paths(fake_window, [media_path, Path(tmp_path / "missing.mp4")])
+
+    fake_window._stack.setCurrentIndex.assert_called_once_with(3)
+    fake_window._sidebar.select_page.assert_called_once_with(3)
+    fake_window._remux_panel.add_sources.assert_called_once()
+    routed_paths = fake_window._remux_panel.add_sources.call_args.args[0]
+    assert routed_paths == [media_path]

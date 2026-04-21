@@ -87,6 +87,55 @@ VIDEO_CONTAINER_EXTENSIONS: frozenset[str] = frozenset({
 })
 
 
+# MIME types déclarés dans les intégrations desktop/app bundle.
+# L'objectif n'est pas l'exhaustivité parfaite, mais une liste pratique
+# suffisamment large pour que Mediarecode apparaisse dans les dialogues
+# "Ouvrir avec..." des fichiers média usuels.
+DESKTOP_MIME_TYPES: tuple[str, ...] = (
+    "audio/aac",
+    "audio/flac",
+    "audio/mp4",
+    "audio/ogg",
+    "audio/opus",
+    "audio/vnd.dts",
+    "audio/vnd.dts.hd",
+    "audio/x-m4a",
+    "audio/x-matroska",
+    "audio/x-ms-wma",
+    "audio/x-wav",
+    "audio/x-wavpack",
+    "application/x-subrip",
+    "application/x-matroska",
+    "application/x-mpegURL",
+    "application/x-ssa",
+    "application/x-ass",
+    "text/plain",
+    "text/vtt",
+    "text/x-ass",
+    "text/x-ssa",
+    "video/mp4",
+    "video/mpeg",
+    "video/quicktime",
+    "video/webm",
+    "video/x-flv",
+    "video/x-matroska",
+    "video/x-msvideo",
+    "video/x-ms-wmv",
+    "video/x-m2ts",
+    "video/x-matroska",
+    "video/x-mpeg",
+    "video/x-h264",
+    "video/x-h265",
+    "video/x-av1",
+    "video/x-vc1",
+)
+
+
+def build_desktop_mime_type_string() -> str:
+    """Construit la valeur MimeType= d'un fichier .desktop."""
+    return ";".join(dict.fromkeys(DESKTOP_MIME_TYPES)) + ";"
+
+
 def build_qt_filter(video_only: bool = False) -> str:
     """Construit la chaîne de filtre QFileDialog.
 

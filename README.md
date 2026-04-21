@@ -48,6 +48,8 @@ Cette documentation correspond à **Mediarecode v1.4.1**.
 
 **Drag-and-drop global** : n'importe quel fichier média peut être déposé directement sur la fenêtre principale, quelle que soit la page active. Les formats sources supportés sont centralisés dans `core/file_types.py` (MKV, MP4, MOV, M4V, AVI, TS, M2TS, WEBM, HEVC brut, SRT, etc.).
 
+**Ouverture système** : l'application se déclare comme candidate dans les menus "Ouvrir avec..." sur Linux (AppImage), Windows (.exe) et macOS (.app), sans devenir l'application par défaut. Quand elle est lancée avec un fichier, celui-ci est chargé automatiquement comme source.
+
 ## Installation
 
 ### Prérequis
