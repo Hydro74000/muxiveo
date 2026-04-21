@@ -98,10 +98,17 @@ Plan de couverture :
 
     _TrackTable.update_audio_meta :
         - Met à jour language et title dans la cellule et dans l'objet TrackEntry
+        - Met à jour codec et bitrate affichés quand l'encode panel prévoit un réencodage
         - N'émet pas de signal itemChanged (blockSignals)
         - Cible uniquement la ligne correspondant à (file_id, mkv_tid)
+        - Cible la piste NEW par entry_id sans modifier la source
         - Laisse les autres lignes intactes
         - Sans effet si (file_id, mkv_tid) introuvable
+
+    RemuxPanel — pistes NEW issues de l'encode panel :
+        - Si la piste source est désélectionnée, la piste NEW reste disponible
+        - Si la piste NEW est supprimée, elle quitte le panel remux et le workflow
+        - Les éditions de nom restent indépendantes entre source et piste NEW
 
     _AttachmentItemWidget — balises cochées par défaut :
         - is_tag=False → case cochée
@@ -135,7 +142,7 @@ from core.media_info_fetcher import MediaDetails
 from core.runner import TaskSignals
 from core.workflows.remux import RemuxWorkflow
 from core.workflows.remux_models import (
-    RemuxConfig, RemuxError, SourceInput, TrackEntry, tracks_from_file_info,
+    RemuxConfig, RemuxError, SourceInput, TrackEntry, clone_track_entry, tracks_from_file_info,
 )
 from ui.panels.remux_panel import (
     RemuxPanel, SourceFile, _FILE_BAR_H, _FILE_PH_H, _FILE_ROW_H,
@@ -362,6 +369,11 @@ class TestTrackEntryProperties:
         )
         assert t.enabled is True
 
+    def test_original_codec_and_display_info_default_to_initial_values(self):
+        t = _track(1, track_type="audio", codec="EAC3")
+        assert t.orig_codec == "EAC3"
+        assert t.orig_display_info == "5.1  48 kHz"
+
     def test_time_shift_value_label_empty_when_zero(self):
         t = _track(1, track_type="audio")
         t.time_shift_ms = 0
@@ -382,6 +394,11 @@ class TestTrackEntryProperties:
         t.display_info = "5.1"
         t.time_shift_ms = 125
         assert "Δt +125 ms" in t.full_info_label
+
+    def test_full_info_label_prefixes_new_for_cloned_track(self):
+        t = clone_track_entry(_track(1, track_type="audio"))
+        assert t.is_new is True
+        assert t.full_info_label.startswith("NEW")
 
 
 # ===========================================================================
@@ -1204,6 +1221,101 @@ class TestTrackTableUpdateAudioMeta:
         table.update_audio_meta("fid", 99, "jpn", "X")
         result = table.current_tracks()
         assert result[0].language == "fra"
+
+    def test_entry_id_targets_cloned_track_without_touching_source(self, table):
+        source = _track(1, "audio", file_id="fid", language="fra", title="Source")
+        clone = clone_track_entry(source)
+        table.append_tracks(_COLOR_A, [source, clone])
+
+        table.update_audio_meta("fid", 1, "jpn", "Clone", entry_id=clone.entry_id)
+
+        result = table.current_tracks()
+        original = next(t for t in result if t.entry_id == source.entry_id)
+        updated = next(t for t in result if t.entry_id == clone.entry_id)
+        assert original.language == "fra"
+        assert original.title == "Source"
+        assert updated.language == "jpn"
+        assert updated.title == "Clone"
+
+    def test_update_audio_encoding_updates_codec_and_info_cells(self, table):
+        track = _track(1, "audio", file_id="fid", codec="EAC3")
+        table.append_tracks(_COLOR_A, [track])
+
+        changed = table.update_audio_encoding(track.entry_id, "AAC", "5.1  384 kbps")
+
+        assert changed is True
+        assert table.item(0, _TrackTable.COL_CODEC).text() == "AAC"
+        assert table.item(0, _TrackTable.COL_INFO).text() == "5.1  384 kbps"
+        assert track.codec == "AAC"
+        assert track.display_info == "5.1  384 kbps"
+
+
+# ===========================================================================
+# RemuxPanel — pistes NEW synchronisées avec EncodePanel
+# ===========================================================================
+
+class TestRemuxPanelNewAudioTracks:
+
+    @staticmethod
+    def _panel_with_audio_tracks(
+        qt_app,
+        tmp_path,
+        tracks: list[TrackEntry],
+    ) -> RemuxPanel:
+        cfg = AppConfig()
+        panel = RemuxPanel(cfg)
+        src = tmp_path / "source.mkv"
+        src.touch()
+        info = _file_info(path=src, audios=[_audio(index=1, title="Source")])
+        sf = SourceFile(id="fid", path=src, color=_COLOR_A, info=info, tracks=tracks)
+        panel._source_files = [sf]
+        panel._source_colors = {"fid": _COLOR_A}
+        panel._source_names = {"fid": "source.mkv"}
+        panel._track_table.append_tracks(_COLOR_A, tracks)
+        panel._output_edit.setText(str(tmp_path / "out.mkv"))
+        return panel
+
+    @staticmethod
+    def _row_for_entry(panel: RemuxPanel, entry: TrackEntry) -> int:
+        for row in range(panel._track_table.rowCount()):
+            item = panel._track_table.item(row, _TrackTable.COL_CHECK)
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) is entry:
+                return row
+        raise AssertionError(f"entry not found: {entry.entry_id}")
+
+    def test_new_track_remains_available_when_source_track_is_unselected(self, qt_app, tmp_path):
+        source = _track(1, "audio", file_id="fid", language="fra", title="Source")
+        new_track = clone_track_entry(source)
+        new_track.title = "Clone"
+        panel = self._panel_with_audio_tracks(qt_app, tmp_path, [source, new_track])
+        emitted: list = []
+        panel.audio_tracks_changed.connect(lambda tracks: emitted.append(tracks))
+
+        source_row = self._row_for_entry(panel, source)
+        panel._track_table.item(source_row, _TrackTable.COL_CHECK).setCheckState(Qt.CheckState.Unchecked)
+        panel._emit_audio_tracks()
+
+        assert emitted
+        entries = [item[3] for item in emitted[-1]]
+        assert entries == [new_track]
+        panel.close()
+
+    def test_removed_new_track_leaves_remux_and_workflow_config(self, qt_app, tmp_path):
+        source = _track(1, "audio", file_id="fid", language="fra", title="Source")
+        new_track = clone_track_entry(source)
+        panel = self._panel_with_audio_tracks(qt_app, tmp_path, [source, new_track])
+
+        panel.remove_audio_track_variant(new_track.entry_id)
+        config = panel.collect_config()
+
+        assert all(track.entry_id != new_track.entry_id for track in panel._source_files[0].tracks)
+        assert all(
+            item[2] != new_track.entry_id
+            for item in (config.track_order if config is not None else [])
+            if len(item) > 2
+        )
+        assert panel._track_table.has_entry_id(new_track.entry_id) is False
+        panel.close()
 
 
 # ===========================================================================

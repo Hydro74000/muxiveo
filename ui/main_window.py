@@ -1388,6 +1388,9 @@ class MainWindow(QMainWindow):
         self._remux_panel.video_tracks_changed.connect(self._encode_panel.set_video_tracks)
         self._remux_panel.audio_tracks_changed.connect(self._encode_panel.set_audio_tracks)
         self._encode_panel.audio_track_meta_changed.connect(self._remux_panel.update_audio_track_meta)
+        self._encode_panel.audio_track_encoding_changed.connect(self._remux_panel.update_audio_track_encoding)
+        self._encode_panel.audio_track_add_requested.connect(self._remux_panel.add_audio_track_variant)
+        self._encode_panel.audio_track_remove_requested.connect(self._remux_panel.remove_audio_track_variant)
         self._encode_panel.set_output_provider(self._remux_panel.current_output_path)
         self._encode_panel.set_file_title_provider(self._remux_panel.current_file_title)
         self._encode_panel.set_extra_attachments_provider(self._remux_panel.current_extra_attachments)
@@ -1519,21 +1522,26 @@ class MainWindow(QMainWindow):
 
         source_by_index = {src.file_index: src for src in remux_cfg.sources}
         remux_track_map: dict[tuple[Path, int], TrackEntry] = {}
+        remux_track_map_by_id: dict[str, TrackEntry] = {}
 
         for src in remux_cfg.sources:
             for track in src.tracks:
                 remux_track_map[(src.path, track.mkv_tid)] = track
+                remux_track_map_by_id[track.entry_id] = track
             for att in src.selected_attachments:
                 attachment_streams.append((src.path, att.index))
             if src.copy_tags:
                 tag_sources.append(src.path)
 
         ordered_tracks: list[tuple[Path, TrackEntry]] = []
-        for file_index, mkv_tid in remux_cfg.track_order:
+        for item in remux_cfg.track_order:
+            file_index = int(item[0])
+            mkv_tid = int(item[1])
+            entry_id = str(item[2]).strip() if len(item) > 2 else ""
             src = source_by_index.get(file_index)
             if src is None:
                 continue
-            track = remux_track_map.get((src.path, mkv_tid))
+            track = remux_track_map_by_id.get(entry_id) if entry_id else remux_track_map.get((src.path, mkv_tid))
             if track is None:
                 continue
             ordered_tracks.append((src.path, track))
@@ -1642,7 +1650,10 @@ class MainWindow(QMainWindow):
         audio_offset = 2
         for audio_order, ats in enumerate(encode_cfg.audio_tracks):
             src_path = ats.source_path or encode_cfg.source
-            t = _find_track(src_path, ats.stream_index, "audio")
+            if ats.remux_entry_id:
+                t = remux_track_map_by_id.get(ats.remux_entry_id)
+            else:
+                t = _find_track(src_path, ats.stream_index, "audio")
             if t is None:
                 continue
             edit = _make_edit(audio_offset + audio_order, t)

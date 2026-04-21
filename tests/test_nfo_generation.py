@@ -235,8 +235,8 @@ class TestWriteMediainfoNfo:
         args = mock_run.call_args[0][0]
         kwargs = mock_run.call_args[1] if mock_run.call_args[1] else mock_run.call_args.kwargs
         assert args[0] == "mediainfo"
-        assert args[1] == mkv.name
-        assert kwargs.get("cwd") == mkv.parent
+        assert args[1] == str(mkv.resolve())
+        assert "cwd" not in kwargs
 
     def test_uses_custom_mediainfo_bin(self, tmp_path):
         """mediainfo_bin personnalisé est passé à subprocess.run."""
@@ -266,6 +266,27 @@ class TestWriteMediainfoNfo:
         with patch("core.workflows.remux.subprocess.run", return_value=fake_result):
             write_mediainfo_nfo(mkv, log_cb=MagicMock())
 
+        assert (subdir / "film.nfo").exists()
+
+    def test_mediainfo_receives_absolute_output_path(self, tmp_path, monkeypatch):
+        """Le chemin passé à mediainfo ne dépend pas du cwd ni d'un affichage relatif."""
+        from core.workflows.remux import write_mediainfo_nfo
+
+        subdir = tmp_path / "output"
+        subdir.mkdir()
+        mkv = subdir / "film.mkv"
+        mkv.touch()
+        fake_result = MagicMock()
+        fake_result.stdout = "data"
+
+        monkeypatch.chdir(tmp_path)
+        with patch("core.workflows.remux.subprocess.run", return_value=fake_result) as mock_run:
+            write_mediainfo_nfo(Path("output") / "film.mkv", log_cb=MagicMock())
+
+        args = mock_run.call_args[0][0]
+        kwargs = mock_run.call_args.kwargs
+        assert args[1] == str(mkv.resolve())
+        assert "cwd" not in kwargs
         assert (subdir / "film.nfo").exists()
 
     def test_exception_logs_warn_and_does_not_raise(self, tmp_path):

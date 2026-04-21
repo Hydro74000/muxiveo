@@ -50,7 +50,7 @@ def current_config(panel: "RemuxPanel") -> RemuxConfig | None:
         return None
 
     track_order = [
-        (id_to_index[t.file_id], t.mkv_tid)
+        (id_to_index[t.file_id], t.mkv_tid, t.entry_id)
         for t in all_tracks
         if t.enabled and t.file_id in id_to_index
     ]

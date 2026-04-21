@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from uuid import uuid4
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont
@@ -54,7 +55,10 @@ class EncodePanel(QWidget):
 
     log_message              = Signal(str, str)
     ready_changed            = Signal(bool)     # émis quand la source vidéo change
-    audio_track_meta_changed = Signal(int, object, str, str)  # (stream_index, source_path, lang, title)
+    audio_track_meta_changed = Signal(int, object, str, str, object)  # (stream_index, source_path, lang, title, entry_id)
+    audio_track_encoding_changed = Signal(object, str, int)  # (entry_id, codec, bitrate_kbps)
+    audio_track_add_requested = Signal(object, str, str, int)  # (template TrackEntry, entry_id, codec, bitrate_kbps)
+    audio_track_remove_requested = Signal(object)  # (entry_id)
     _hw_detected             = Signal(object, object, object)   # (hw: set[str], sw: set[str], hw_ffmpeg: str)
 
     def __init__(
@@ -82,7 +86,7 @@ class EncodePanel(QWidget):
         self._executor  = ThreadPoolExecutor(max_workers=1)
         self._file_info: FileInfo | None = None
         self._video_tracks: list[tuple[FileInfo, TrackEntry, str]] = []
-        self._audio_tracks_data: list[tuple] = []   # list[tuple[AudioTrack, str, Path]] pour le popup
+        self._audio_tracks_data: list[tuple] = []   # list[tuple[AudioTrack, str, Path, TrackEntry]]
         self._duration_s: float | None = None
         self._hw_encoders: set[str] = set()
         # Callable fourni par MainWindow pour récupérer le chemin de sortie depuis RemuxPanel.
@@ -162,6 +166,8 @@ class EncodePanel(QWidget):
         self._audio_table = _AudioTable(self._config)
         self._audio_table.set_changed_callback(self._rebuild_preview)
         self._audio_table.track_meta_changed.connect(self.audio_track_meta_changed)
+        self._audio_table.track_encoding_changed.connect(self.audio_track_encoding_changed)
+        self._audio_table.track_removed.connect(self.audio_track_remove_requested)
         cl.addWidget(self._audio_table)
 
         add_track_row = QHBoxLayout()
@@ -342,10 +348,10 @@ class EncodePanel(QWidget):
 
     def set_audio_tracks(self, tracks: list[tuple]) -> None:
         """Met à jour les pistes audio depuis les pistes activées dans l'onglet Conteneur.
-        tracks : list[tuple[AudioTrack, str, Path]] — (piste, couleur, chemin_source)
+        tracks : list[tuple[AudioTrack, str, Path, TrackEntry]]
         """
         self._audio_tracks_data = tracks
-        self._add_audio_btn.setEnabled(bool(tracks))
+        self._add_audio_btn.setEnabled(any(self._is_original_audio_source(t) for t in tracks))
 
         default_codec   = "copy"
         default_bitrate = None
@@ -358,6 +364,7 @@ class EncodePanel(QWidget):
                     break
 
         self._audio_table.load_tracks(tracks, default_codec, default_bitrate)
+        self._audio_table.emit_encoding_plans()
         self._rebuild_preview()
 
     # ------------------------------------------------------------------
@@ -1069,20 +1076,32 @@ class EncodePanel(QWidget):
 
     def _on_add_audio_track(self) -> None:
         """Ouvre le popup de sélection pour ajouter une piste audio custom."""
-        if not self._audio_tracks_data:
+        source_tracks = [t for t in self._audio_tracks_data if self._is_original_audio_source(t)]
+        if not source_tracks:
             return
-        dlg = _AudioSourceDialog(self._audio_tracks_data, config=self._config, parent=self)
+        dlg = _AudioSourceDialog(source_tracks, config=self._config, parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         track = dlg.selected_track()
         if track is None:
             return
+        template_entry = dlg.selected_track_entry()
+        if template_entry is None:
+            return
+        new_entry_id = uuid4().hex
         self._audio_table.add_custom_row(
             track,
             dlg.selected_color(),
             dlg.selected_codec(),
             dlg.selected_bitrate(),
             dlg.selected_source_path(),
+            track_entry_id=new_entry_id,
+        )
+        self.audio_track_add_requested.emit(
+            template_entry,
+            new_entry_id,
+            dlg.selected_codec(),
+            dlg.selected_bitrate(),
         )
         self.log_message.emit(
             "INFO",
@@ -1094,6 +1113,11 @@ class EncodePanel(QWidget):
                 target=dlg.selected_codec(),
             ),
         )
+
+    @staticmethod
+    def _is_original_audio_source(track_tuple: tuple) -> bool:
+        entry = track_tuple[3] if len(track_tuple) > 3 else None
+        return not bool(getattr(entry, "is_new", False))
 
     def refresh_runtime_settings(self) -> None:
         self._audio_table.refresh_runtime_settings()

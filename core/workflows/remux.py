@@ -169,12 +169,14 @@ def write_mediainfo_nfo(
     mediainfo_bin: str = "mediainfo",
 ) -> None:
     """Génère un fichier .nfo (même nom que le MKV) avec la sortie brute de mediainfo."""
+    output_path = Path(output_path).expanduser()
+    if not output_path.is_absolute():
+        output_path = output_path.resolve()
     nfo_path = output_path.with_suffix(".nfo")
     try:
         result = subprocess.run(
-            [mediainfo_bin, output_path.name],
+            [mediainfo_bin, str(output_path)],
             capture_output=True,
-            cwd=output_path.parent,
             **subprocess_text_kwargs(),
         )
         nfo_path.write_text(result.stdout, encoding="utf-8")
@@ -314,18 +316,27 @@ class RemuxWorkflow(QObject):
         if not config.track_order:
             errors.append("Aucune piste sélectionnée.")
 
-        track_map = {
-            (src.file_index, t.mkv_tid): t
+        track_map_by_id = {
+            (src.file_index, t.entry_id): t
             for src in config.sources
             for t in src.tracks
         }
+        track_map_by_pair: dict[tuple[int, int], list[TrackEntry]] = {}
+        for src in config.sources:
+            for track in src.tracks:
+                track_map_by_pair.setdefault((src.file_index, track.mkv_tid), []).append(track)
         valid_file_indexes = {src.file_index for src in config.sources}
 
-        for file_index, mkv_tid in config.track_order:
+        for order_item in config.track_order:
+            file_index, mkv_tid, entry_id = self._track_order_parts(order_item)
             if file_index not in valid_file_indexes:
                 errors.append(f"track_order référence une source inconnue : file_index={file_index}")
                 continue
-            track = track_map.get((file_index, mkv_tid))
+            track = (
+                track_map_by_id.get((file_index, entry_id))
+                if entry_id
+                else next(iter(track_map_by_pair.get((file_index, mkv_tid), [])), None)
+            )
             if track is None:
                 errors.append(
                     "track_order référence une piste introuvable : "
@@ -895,21 +906,32 @@ class RemuxWorkflow(QObject):
             for i, src in enumerate(config.sources)
         }
 
-        track_map = {
-            (src.file_index, t.mkv_tid): (src.path, t)
+        track_map_by_id = {
+            (src.file_index, t.entry_id): (src.path, t)
             for src in config.sources
             for t in src.tracks
         }
+        track_map_by_pair: dict[tuple[int, int], list[tuple[Path, TrackEntry]]] = {}
+        for src in config.sources:
+            for track in src.tracks:
+                track_map_by_pair.setdefault((src.file_index, track.mkv_tid), []).append(
+                    (src.path, track)
+                )
 
         type_counters: dict[str, int] = {"video": 0, "audio": 0, "subtitle": 0}
         mapped: list[_MappedTrack] = []
 
-        for file_index, mkv_tid in config.track_order:
+        for order_item in config.track_order:
+            file_index, mkv_tid, entry_id = self._track_order_parts(order_item)
             input_idx = file_index_to_input_idx.get(file_index)
             if input_idx is None:
                 raise RemuxError(f"Source inconnue dans track_order : file_index={file_index}")
 
-            found = track_map.get((file_index, mkv_tid))
+            found = (
+                track_map_by_id.get((file_index, entry_id))
+                if entry_id
+                else next(iter(track_map_by_pair.get((file_index, mkv_tid), [])), None)
+            )
             if found is None:
                 raise RemuxError(
                     "Piste introuvable dans track_order : "
@@ -934,6 +956,15 @@ class RemuxWorkflow(QObject):
             ))
 
         return mapped
+
+    @staticmethod
+    def _track_order_parts(
+        item: tuple[int, int] | tuple[int, int, str],
+    ) -> tuple[int, int, str | None]:
+        if len(item) >= 3:
+            file_index, mkv_tid, entry_id = item[0], item[1], str(item[2] or "").strip()
+            return int(file_index), int(mkv_tid), entry_id or None
+        return int(item[0]), int(item[1]), None
 
     @staticmethod
     def _chapter_map_value(config: RemuxConfig, chapter_input_index: int | None) -> str:

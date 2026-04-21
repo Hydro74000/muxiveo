@@ -11,8 +11,9 @@ Classes publiques :
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from uuid import uuid4
 
 from core.inspector import AttachmentInfo, FileInfo, HDRType
 
@@ -41,9 +42,14 @@ class TrackEntry:
     enabled:      bool = True
     file_id:      str  = ""    # UUID du SourceFile parent (usage UI uniquement)
     time_shift_ms: int = 0      # décalage signé appliqué à la piste (ms)
+    entry_id:      str = field(default_factory=lambda: uuid4().hex)
+    source_entry_id: str = field(default="", repr=False)
+    is_new:        bool = field(default=False, repr=False)
 
     orig_language: str = field(default="", repr=False)
     orig_title:    str = field(default="", repr=False)
+    orig_codec:    str = field(default="", repr=False)
+    orig_display_info: str = field(default="", repr=False)
 
     # Flags MKV éditables (transmis à FFmpeg si modifiés)
     flag_enabled:          bool = field(default=True,  repr=False)  # --track-enabled-flag
@@ -61,6 +67,12 @@ class TrackEntry:
     orig_flag_visual_impaired:  bool = field(default=False, repr=False)
     orig_flag_original:         bool = field(default=False, repr=False)
     orig_flag_commentary:       bool = field(default=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if not self.orig_codec:
+            self.orig_codec = self.codec
+        if not self.orig_display_info:
+            self.orig_display_info = self.display_info
 
     @property
     def flags_label(self) -> str:
@@ -85,7 +97,16 @@ class TrackEntry:
     @property
     def full_info_label(self) -> str:
         """Info technique + flags actifs (affichage colonne Info)."""
-        parts = [p for p in (self.display_info, self.flags_label, self.time_shift_label) if p]
+        parts = [
+            p
+            for p in (
+                "NEW" if self.is_new else "",
+                self.display_info,
+                self.flags_label,
+                self.time_shift_label,
+            )
+            if p
+        ]
         return "  ·  ".join(parts)
 
     @property
@@ -164,14 +185,16 @@ class RemuxConfig:
     Configuration complète d'un remuxage multi-source.
 
     sources           : liste ordonnée des fichiers source (chacun avec ses pistes).
-    track_order       : liste de (file_index, mkv_tid) dans l'ordre désiré en sortie.
+    track_order       : liste de (file_index, mkv_tid[, entry_id]) dans l'ordre désiré
+                        en sortie. ``entry_id`` permet de distinguer deux lignes UI
+                        basées sur la même piste source.
                         Seules les pistes présentes dans track_order sont incluses.
     extra_attachments : fichiers externes à attacher en plus (--attach-file).
     """
 
     sources:             list[SourceInput]
     output:              Path
-    track_order:         list[tuple[int, int]]   # (file_index, mkv_tid) ordonnés
+    track_order:         list[tuple[int, int] | tuple[int, int, str]]
     keep_chapters:       bool          = True
     #: None  → FFmpeg recopie les chapitres des sources (comportement par défaut).
     #: list  → un fichier ffmetadata temporaire est généré depuis ces entrées ;
@@ -300,3 +323,27 @@ def tracks_from_file_info(info: FileInfo, file_id: str = "") -> list[TrackEntry]
         ))
 
     return entries
+
+
+def clone_track_entry(
+    entry: TrackEntry,
+    *,
+    entry_id: str | None = None,
+) -> TrackEntry:
+    """Clone une piste pour en faire une entrée UI indépendante."""
+    source_entry_id = entry.source_entry_id or entry.entry_id
+    return replace(
+        entry,
+        entry_id=entry_id or uuid4().hex,
+        source_entry_id=source_entry_id,
+        is_new=True,
+        orig_language=entry.language,
+        orig_title=entry.title,
+        orig_flag_enabled=entry.flag_enabled,
+        orig_flag_default=entry.flag_default,
+        orig_flag_forced=entry.flag_forced,
+        orig_flag_hearing_impaired=entry.flag_hearing_impaired,
+        orig_flag_visual_impaired=entry.flag_visual_impaired,
+        orig_flag_original=entry.flag_original,
+        orig_flag_commentary=entry.flag_commentary,
+    )

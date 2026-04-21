@@ -102,6 +102,7 @@ class _TrackTable(QTableWidget):
     _TYPE_ORDER: dict[str, int] = {"video": 0, "audio": 1, "subtitle": 2}
     _MAX_VISIBLE_ROWS = 15
     _ROW_H_DEFAULT = 28
+    _NEW_TRACK_COLOR = QColor(_C.ERROR)
 
     COL_SOURCE = 0
     COL_CHECK = 1
@@ -214,12 +215,24 @@ class _TrackTable(QTableWidget):
     def append_tracks(self, source_color: str, tracks: list[TrackEntry]) -> None:
         self.blockSignals(True)
         for entry in tracks:
+            if self.has_entry_id(entry.entry_id):
+                continue
             order = {"video": 0, "audio": 1, "subtitle": 2}.get(entry.track_type, 2)
             pos = self._find_insert_position(order)
             self.insertRow(pos)
             self._fill_row(pos, entry, source_color)
         self.blockSignals(False)
         self._adjust_height()
+
+    def has_entry_id(self, entry_id: str) -> bool:
+        for row in range(self.rowCount()):
+            item = self.item(row, self.COL_CHECK)
+            if item is None:
+                continue
+            entry = item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(entry, TrackEntry) and entry.entry_id == entry_id:
+                return True
+        return False
 
     @staticmethod
     def _row_type_order(data) -> int:
@@ -260,6 +273,25 @@ class _TrackTable(QTableWidget):
         self.blockSignals(False)
         self._rebuild_prev_lang()
         self._adjust_height()
+
+    def remove_track_by_entry_id(self, entry_id: str) -> bool:
+        if not entry_id:
+            return False
+        self.blockSignals(True)
+        try:
+            for row in range(self.rowCount() - 1, -1, -1):
+                item = self.item(row, self.COL_CHECK)
+                if item is None:
+                    continue
+                entry = item.data(Qt.ItemDataRole.UserRole)
+                if isinstance(entry, TrackEntry) and entry.entry_id == entry_id:
+                    self.removeRow(row)
+                    return True
+        finally:
+            self.blockSignals(False)
+            self._rebuild_prev_lang()
+            self._adjust_height()
+        return False
 
     def clear_all(self) -> None:
         self.setRowCount(0)
@@ -325,6 +357,9 @@ class _TrackTable(QTableWidget):
         title_item.setFlags(self._FLAG_RW)
         self.setItem(row, self.COL_TITLE, title_item)
 
+        if entry.is_new:
+            self._apply_new_track_style(row)
+
         edit_btn = QPushButton()
         from PySide6.QtCore import QSize
 
@@ -350,6 +385,16 @@ class _TrackTable(QTableWidget):
         """)
         edit_btn.clicked.connect(lambda _=None, e=entry: self._open_edit_dialog(e))
         self.setCellWidget(row, self.COL_EDIT, edit_btn)
+
+    def _apply_new_track_style(self, row: int) -> None:
+        for col in (self.COL_CODEC, self.COL_LANG, self.COL_TITLE, self.COL_INFO):
+            item = self.item(row, col)
+            if item is None:
+                continue
+            item.setForeground(self._NEW_TRACK_COLOR)
+            font = item.font()
+            font.setBold(True)
+            item.setFont(font)
 
     def current_tracks(self) -> list[TrackEntry]:
         tracks: list[TrackEntry] = []
@@ -391,7 +436,15 @@ class _TrackTable(QTableWidget):
                 if lang_item is not None:
                     self.itemChanged.emit(lang_item)
 
-    def update_audio_meta(self, file_id: str, mkv_tid: int, lang: str, title: str) -> None:
+    def update_audio_meta(
+        self,
+        file_id: str,
+        mkv_tid: int,
+        lang: str,
+        title: str,
+        *,
+        entry_id: str | None = None,
+    ) -> None:
         self.blockSignals(True)
         try:
             for row in range(self.rowCount()):
@@ -400,6 +453,11 @@ class _TrackTable(QTableWidget):
                     continue
                 entry = item0.data(Qt.ItemDataRole.UserRole)
                 if not isinstance(entry, TrackEntry):
+                    continue
+                if entry_id:
+                    if entry.entry_id != entry_id:
+                        continue
+                elif entry.file_id != file_id or entry.mkv_tid != mkv_tid:
                     continue
                 if entry.file_id == file_id and entry.mkv_tid == mkv_tid:
                     lang_item = self.item(row, self.COL_LANG)
@@ -414,6 +472,40 @@ class _TrackTable(QTableWidget):
                     break
         finally:
             self.blockSignals(False)
+
+    def update_audio_encoding(
+        self,
+        entry_id: str,
+        codec: str,
+        display_info: str,
+    ) -> bool:
+        if not entry_id:
+            return False
+        self.blockSignals(True)
+        try:
+            for row in range(self.rowCount()):
+                item0 = self.item(row, self.COL_CHECK)
+                if item0 is None:
+                    continue
+                entry = item0.data(Qt.ItemDataRole.UserRole)
+                if not isinstance(entry, TrackEntry) or entry.entry_id != entry_id:
+                    continue
+
+                entry.codec = codec
+                entry.display_info = display_info
+                codec_item = self.item(row, self.COL_CODEC)
+                if codec_item:
+                    codec_item.setText(codec)
+                info_item = self.item(row, self.COL_INFO)
+                if info_item:
+                    info_item.setText(entry.full_info_label)
+                    info_item.setData(_TRACK_INFO_OFFSET_VALUE_ROLE, entry.time_shift_value_label)
+                if entry.is_new:
+                    self._apply_new_track_style(row)
+                return True
+        finally:
+            self.blockSignals(False)
+        return False
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         if item.column() != self.COL_LANG:

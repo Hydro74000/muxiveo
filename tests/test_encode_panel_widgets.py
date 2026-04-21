@@ -34,6 +34,16 @@ Plan de couverture :
         - COL_TITLE a le flag ItemIsEditable sur la nouvelle ligne
         - COL_LANG a le flag ItemIsEditable sur la nouvelle ligne
         - track_meta_changed émis sur modification après add_custom_row
+        - suppression d'une ligne NEW possible même si la source n'est plus listée
+        - suppression d'une ligne source ne demande pas sa suppression au RemuxPanel
+
+    _AudioTable — plan d'encodage remonté au RemuxPanel :
+        - changement de codec émet track_encoding_changed(entry_id, codec, bitrate)
+        - changement de bitrate émet track_encoding_changed(entry_id, codec, bitrate)
+
+    EncodePanel — sources de nouvelles pistes :
+        - seules les pistes d'origine peuvent servir de source à add_custom_row
+        - une piste NEW reste éditable/supprimable mais n'active pas le bouton Ajouter
 
     _AudioTable — persistance des réglages audio :
         - Le codec est conservé après reload avec ordre inversé
@@ -50,9 +60,12 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit
+from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QLineEdit
 
+from core.config import AppConfig
 from core.inspector import AudioTrack
+from core.workflows.remux_models import TrackEntry, clone_track_entry
+from ui.panels.encode_panel.panel import EncodePanel
 from ui.panels.encode_panel.widgets import _AudioTable
 
 
@@ -130,6 +143,18 @@ def _set_bitrate(table: _AudioTable, row: int, value: int) -> None:
 
 def _bitrate_value(table: _AudioTable, row: int) -> int:
     return _bitrate_editor(table, row).value()
+
+
+def _remux_entry(entry_id: str = "entry-a") -> TrackEntry:
+    return TrackEntry(
+        mkv_tid=1,
+        track_type="audio",
+        codec="EAC3",
+        display_info="5.1  640 kbps",
+        language="fra",
+        title="",
+        entry_id=entry_id,
+    )
 
 
 # ===========================================================================
@@ -249,7 +274,7 @@ class TestAudioTableTrackMetaChanged:
         emitted: list = []
         table.track_meta_changed.connect(lambda *a: emitted.append(a))
         table.item(0, _AudioTable.COL_TITLE).setText("X")
-        stream_index, _, _, _ = emitted[0]
+        stream_index, _, _, _, _ = emitted[0]
         assert stream_index == 7
 
     def test_signal_carries_correct_source_path(self, table):
@@ -257,7 +282,7 @@ class TestAudioTableTrackMetaChanged:
         emitted: list = []
         table.track_meta_changed.connect(lambda *a: emitted.append(a))
         table.item(0, _AudioTable.COL_TITLE).setText("X")
-        _, source_path, _, _ = emitted[0]
+        _, source_path, _, _, _ = emitted[0]
         assert source_path == _PATH_B
 
     def test_signal_carries_current_lang_when_title_changes(self, table):
@@ -265,7 +290,7 @@ class TestAudioTableTrackMetaChanged:
         emitted: list = []
         table.track_meta_changed.connect(lambda *a: emitted.append(a))
         table.item(0, _AudioTable.COL_TITLE).setText("Modifié")
-        _, _, lang, title = emitted[0]
+        _, _, lang, title, _ = emitted[0]
         assert lang == "fra"
         assert title == "Modifié"
 
@@ -274,7 +299,7 @@ class TestAudioTableTrackMetaChanged:
         emitted: list = []
         table.track_meta_changed.connect(lambda *a: emitted.append(a))
         table.item(0, _AudioTable.COL_LANG).setText("ja")
-        _, _, lang, title = emitted[0]
+        _, _, lang, title, _ = emitted[0]
         assert lang == "ja"
         assert title == "Mon titre"
 
@@ -300,7 +325,7 @@ class TestAudioTableTrackMetaChanged:
         table.item(1, _AudioTable.COL_TITLE).setText("Modifié")
 
         assert len(emitted) == 1
-        stream_index, _, _, _ = emitted[0]
+        stream_index, _, _, _, _ = emitted[0]
         assert stream_index == at1.index
 
     def test_load_tracks_resets_then_no_signal(self, table):
@@ -386,3 +411,101 @@ class TestAudioTableCurrentAudioSettings:
         assert len(settings) == 1
         assert settings[0].codec == "eac3"
         assert settings[0].extract_truehd_core is False
+
+
+class TestAudioTableTrackEncodingChanged:
+
+    def test_codec_change_emits_track_encoding_plan(self, table):
+        entry = _remux_entry("entry-codec")
+        table.load_tracks([(_at(index=1), _COLOR, _PATH_A, entry)])
+        emitted: list = []
+        table.track_encoding_changed.connect(lambda *a: emitted.append(a))
+
+        _set_codec(table, 0, "aac")
+
+        assert emitted
+        assert emitted[-1][0] == "entry-codec"
+        assert emitted[-1][1] == "aac"
+
+    def test_bitrate_change_emits_track_encoding_plan(self, table):
+        entry = _remux_entry("entry-bitrate")
+        table.load_tracks([(_at(index=1), _COLOR, _PATH_A, entry)])
+        _set_codec(table, 0, "eac3")
+        emitted: list = []
+        table.track_encoding_changed.connect(lambda *a: emitted.append(a))
+
+        _set_bitrate(table, 0, 960)
+
+        assert emitted
+        assert emitted[-1] == ("entry-bitrate", "eac3", 960)
+
+
+class TestAudioTableTrackRemoval:
+
+    def test_new_track_can_be_deleted_when_source_is_not_present(self, table):
+        source_entry = _remux_entry("source-entry")
+        new_entry = clone_track_entry(source_entry, entry_id="new-entry")
+        table.load_tracks([(_at(index=1), _COLOR, _PATH_A, new_entry)])
+        emitted: list = []
+        table.track_removed.connect(lambda entry_id: emitted.append(entry_id))
+
+        assert table._can_delete(0) is True
+        table._delete_row(0)
+
+        assert emitted == ["new-entry"]
+        assert table.rowCount() == 0
+
+    def test_deleting_source_row_does_not_request_remux_removal(self, table):
+        source_entry = _remux_entry("source-entry")
+        new_entry = clone_track_entry(source_entry, entry_id="new-entry")
+        track = _at(index=1)
+        table.load_tracks([
+            (track, _COLOR, _PATH_A, source_entry),
+            (track, _COLOR, _PATH_A, new_entry),
+        ])
+        emitted: list = []
+        table.track_removed.connect(lambda entry_id: emitted.append(entry_id))
+
+        assert table._can_delete(0) is True
+        table._delete_row(0)
+
+        assert emitted == []
+        assert table.rowCount() == 1
+
+
+class TestEncodePanelNewTrackSources:
+
+    def test_new_track_does_not_enable_add_button_when_it_is_the_only_audio(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        source_entry = _remux_entry("source-entry")
+        new_entry = clone_track_entry(source_entry, entry_id="new-entry")
+
+        panel.set_audio_tracks([(_at(index=1), _COLOR, _PATH_A, new_entry)])
+
+        assert panel._add_audio_btn.isEnabled() is False
+        panel.close()
+
+    def test_add_dialog_receives_only_original_tracks(self, qt_app, monkeypatch):
+        panel = EncodePanel(AppConfig())
+        source_entry = _remux_entry("source-entry")
+        new_entry = clone_track_entry(source_entry, entry_id="new-entry")
+        original = (_at(index=1, title="Original"), _COLOR, _PATH_A, source_entry)
+        new_track = (_at(index=1, title="New"), _COLOR, _PATH_A, new_entry)
+        panel.set_audio_tracks([original, new_track])
+        captured: dict[str, list] = {}
+
+        class FakeDialog:
+            DialogCode = QDialog.DialogCode
+
+            def __init__(self, tracks, *args, **kwargs):
+                captured["tracks"] = tracks
+
+            def exec(self):
+                return QDialog.DialogCode.Rejected
+
+        monkeypatch.setattr("ui.panels.encode_panel.panel._AudioSourceDialog", FakeDialog)
+
+        panel._on_add_audio_track()
+
+        assert captured["tracks"] == [original]
+        panel.close()

@@ -57,11 +57,14 @@ def emit_audio_tracks(panel: "RemuxPanel") -> None:
         if audio_data is None:
             continue
         audio_track, color, source_path = audio_data
-        audio_tuples.append((
-            dc_replace(audio_track, language=entry.language, title=entry.title),
-            color,
-            source_path,
-        ))
+        audio_tuples.append(
+            (
+                dc_replace(audio_track, language=entry.language, title=entry.title),
+                color,
+                source_path,
+                entry,
+            )
+        )
 
     panel.audio_tracks_changed.emit(audio_tuples)
 

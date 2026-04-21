@@ -28,6 +28,7 @@ from core.inspector import AudioTrack, FileInfo
 from core.i18n import apply_translations, translate_text
 from core.lang_tags import Rfc5646LanguageTags
 from core.workflows.encode.models import AUDIO_CODECS, AudioTrackSettings
+from core.workflows.remux_models import TrackEntry
 from ui.panels.encode_panel.theme import (
     _C, _combo_style, _input_style, _primary_button, _secondary_button, _separator,
 )
@@ -344,7 +345,8 @@ class _AudioSourceDialog(QDialog):
     Fenêtre popup pour ajouter une piste audio custom.
     Permet de choisir la piste source, l'encodage et le débit cible.
 
-    tracks : list[tuple[AudioTrack, str]] ou list[tuple[AudioTrack, str, Path]]
+    tracks : pistes d'origine uniquement, sous forme
+             list[tuple[AudioTrack, str]] ou list[tuple[AudioTrack, str, Path, TrackEntry]]
     """
 
     def __init__(
@@ -359,6 +361,7 @@ class _AudioSourceDialog(QDialog):
         self._result_track:       AudioTrack | None = None
         self._result_color:       str = "#ffffff"
         self._result_source_path = None   # Path | None
+        self._result_track_entry: TrackEntry | None = None
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -402,6 +405,7 @@ class _AudioSourceDialog(QDialog):
         for entry in self._tracks:
             track, color = entry[0], entry[1]
             source_path = entry[2] if len(entry) > 2 else None
+            track_entry = entry[3] if len(entry) > 3 else None
             ch = track.channels_label
             lang = track.language or "—"
             title_part = f"  {track.title}" if track.title else ""
@@ -414,7 +418,7 @@ class _AudioSourceDialog(QDialog):
             text = f"█  #{track.index}  {track.codec.upper()} {ch}{fmt_tag}  [{lang}]{title_part}"
             item = QListWidgetItem(text)
             item.setForeground(QBrush(QColor(color)))
-            item.setData(Qt.ItemDataRole.UserRole, (track, color, source_path))
+            item.setData(Qt.ItemDataRole.UserRole, (track, color, source_path, track_entry))
             self._track_list.addItem(item)
         if self._track_list.count():
             self._track_list.setCurrentRow(0)
@@ -494,10 +498,14 @@ class _AudioSourceDialog(QDialog):
         self._result_track       = data[0]
         self._result_color       = data[1]
         self._result_source_path = data[2] if len(data) > 2 else None
+        self._result_track_entry = data[3] if len(data) > 3 and isinstance(data[3], TrackEntry) else None
         self.accept()
 
     def selected_track(self) -> AudioTrack | None:
         return self._result_track
+
+    def selected_track_entry(self) -> TrackEntry | None:
+        return self._result_track_entry
 
     def selected_color(self) -> str:
         return self._result_color
@@ -525,8 +533,11 @@ class _AudioTable(QTableWidget):
     Colonnes : src  |  #  |  Format  |  Bitrate src  |  Lang  |  Nom  |  Encodage  |  Débit  |  Del
     """
 
-    # Émis quand l'utilisateur modifie lang ou titre : (stream_index, source_path, lang, title)
-    track_meta_changed = Signal(int, object, str, str)
+    # Émis quand l'utilisateur modifie lang ou titre :
+    # (stream_index, source_path, lang, title, track_entry_id)
+    track_meta_changed = Signal(int, object, str, str, object)
+    track_encoding_changed = Signal(object, str, int)
+    track_removed = Signal(object)
 
     COL_SOURCE  = 0
     COL_IDX     = 1
@@ -597,13 +608,13 @@ class _AudioTable(QTableWidget):
 
     def load_tracks(
         self,
-        tracks: list[tuple],   # list[tuple[AudioTrack, str]] ou [AudioTrack, str, Path]
+        tracks: list[tuple],   # list[tuple[AudioTrack, str]] ou [AudioTrack, str, Path, TrackEntry]
         default_codec: str = "copy",
         default_bitrate: int | None = None,
     ) -> None:
-        previous_settings: dict[tuple[object, int], list[tuple[str, int]]] = {}
+        previous_settings: dict[object, list[tuple[str, int]]] = {}
         for data in self._row_data:
-            key = (data.get("source_path"), data["track"].index)
+            key = data.get("track_entry_id") or (data.get("source_path"), data["track"].index)
             codec = data["combo"].currentData() or default_codec
             bitrate = data["bitrate"].value()
             previous_settings.setdefault(key, []).append((codec, bitrate))
@@ -615,13 +626,24 @@ class _AudioTable(QTableWidget):
         for entry in tracks:
             track, color = entry[0], entry[1]
             source_path = entry[2] if len(entry) > 2 else None
-            key = (source_path, track.index)
+            track_entry = entry[3] if len(entry) > 3 else None
+            track_entry_id = track_entry.entry_id if isinstance(track_entry, TrackEntry) else None
+            is_new = bool(getattr(track_entry, "is_new", False))
+            key = track_entry_id or (source_path, track.index)
             codec = default_codec
             bitrate = default_bitrate
             saved_settings = previous_settings.get(key)
             if saved_settings:
                 codec, bitrate = saved_settings.pop(0)
-            self._append_row(track, color, codec, bitrate, source_path)
+            self._append_row(
+                track,
+                color,
+                codec,
+                bitrate,
+                source_path,
+                track_entry_id=track_entry_id,
+                is_new=is_new,
+            )
         self.blockSignals(False)
         self._refresh_delete_buttons()
         self._adjust_height()
@@ -629,8 +651,17 @@ class _AudioTable(QTableWidget):
     def add_custom_row(
         self, track: AudioTrack, color: str, codec: str = "copy", bitrate: int | None = None,
         source_path=None,   # Path | None
+        track_entry_id: str | None = None,
     ) -> None:
-        self._append_row(track, color, codec, bitrate, source_path)
+        self._append_row(
+            track,
+            color,
+            codec,
+            bitrate,
+            source_path,
+            track_entry_id=track_entry_id,
+            is_new=bool(track_entry_id),
+        )
         self._refresh_delete_buttons()
         self._adjust_height()
         if self._changed_cb:
@@ -649,6 +680,7 @@ class _AudioTable(QTableWidget):
                 input_channels=d["track"].channels,
                 input_channel_layout=d["track"].channel_layout,
                 source_path=d.get("source_path"),
+                remux_entry_id=d.get("track_entry_id"),
             ))
         return result
 
@@ -668,6 +700,9 @@ class _AudioTable(QTableWidget):
     def _append_row(
         self, track: AudioTrack, color: str, codec: str, bitrate: int | None,
         source_path=None,   # Path | None
+        *,
+        track_entry_id: str | None = None,
+        is_new: bool = False,
     ) -> None:
         row = self.rowCount()
         self.insertRow(row)
@@ -720,6 +755,9 @@ class _AudioTable(QTableWidget):
         bitrate_edit = _AudioBitrateEditor(track, self._config, codec, bitrate)
         if self._changed_cb:
             bitrate_edit.value_changed.connect(self._changed_cb)
+        bitrate_edit.value_changed.connect(
+            lambda editor=bitrate_edit: self._emit_encoding_changed_for_bitrate_editor(editor)
+        )
         self.setCellWidget(row, self.COL_BITRATE, bitrate_edit)
 
         # Bouton suppression
@@ -750,6 +788,8 @@ class _AudioTable(QTableWidget):
             "track":       track,
             "color":       color,
             "source_path": source_path,
+            "track_entry_id": track_entry_id,
+            "is_new":     is_new,
             "del_btn":     del_btn,
         })
 
@@ -784,7 +824,13 @@ class _AudioTable(QTableWidget):
         title_item = self.item(row, self.COL_TITLE)
         lang  = lang_item.text()  if lang_item  else ""
         title = title_item.text() if title_item else ""
-        self.track_meta_changed.emit(d["track"].index, d.get("source_path"), lang, title)
+        self.track_meta_changed.emit(
+            d["track"].index,
+            d.get("source_path"),
+            lang,
+            title,
+            d.get("track_entry_id"),
+        )
         if self._changed_cb:
             self._changed_cb()
 
@@ -796,8 +842,26 @@ class _AudioTable(QTableWidget):
                     previous_codec = getattr(d["bitrate"], "_codec", "copy")
                     preferred = None if codec == "flac" or previous_codec == "copy" else d["bitrate"].value()
                     d["bitrate"].set_codec(codec or "copy", preferred)
+                    self._emit_encoding_changed(d)
                     break
         return _handler
+
+    def _emit_encoding_changed_for_bitrate_editor(self, editor: _AudioBitrateEditor) -> None:
+        for data in self._row_data:
+            if data["bitrate"] is editor:
+                self._emit_encoding_changed(data)
+                return
+
+    def _emit_encoding_changed(self, data: dict) -> None:
+        track_entry_id = data.get("track_entry_id")
+        if not track_entry_id:
+            return
+        codec = data["combo"].currentData() or "copy"
+        self.track_encoding_changed.emit(track_entry_id, codec, int(data["bitrate"].value()))
+
+    def emit_encoding_plans(self) -> None:
+        for data in self._row_data:
+            self._emit_encoding_changed(data)
 
     def _make_delete_handler(self, del_btn: QPushButton):
         def _handler() -> None:
@@ -810,16 +874,30 @@ class _AudioTable(QTableWidget):
     def _delete_row(self, row: int) -> None:
         if not self._can_delete(row):
             return
+        track_entry_id = self._row_data[row].get("track_entry_id")
+        is_new = bool(self._row_data[row].get("is_new"))
         self.removeRow(row)
         self._row_data.pop(row)
         self._refresh_delete_buttons()
         self._adjust_height()
+        if is_new and track_entry_id:
+            self.track_removed.emit(track_entry_id)
         if self._changed_cb:
             self._changed_cb()
 
     def _can_delete(self, row: int) -> bool:
+        if bool(self._row_data[row].get("is_new")):
+            return True
         track_idx = self._row_data[row]["track"].index
-        return sum(1 for d in self._row_data if d["track"].index == track_idx) > 1
+        source_path = self._row_data[row].get("source_path")
+        return (
+            sum(
+                1
+                for d in self._row_data
+                if d["track"].index == track_idx and d.get("source_path") == source_path
+            )
+            > 1
+        )
 
     def _refresh_delete_buttons(self) -> None:
         for row, d in enumerate(self._row_data):

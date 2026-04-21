@@ -31,7 +31,12 @@ from core.matroska_attachment_extractor import extract_matroska_attachment_bytes
 from core.inspector import AttachmentInfo, ChapterEntry, FileInfo
 from core.runner import TaskSignals, ToolRunner
 from core.workflows.remux import RemuxWorkflow
-from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
+from core.workflows.remux_models import (
+    RemuxConfig,
+    SourceInput,
+    TrackEntry,
+    clone_track_entry,
+)
 from ui.panels.remux_panel.functions import chapters as chapter_functions
 from ui.panels.remux_panel.functions import config_builder, inspection, signals, tmdb
 from ui.panels.remux_panel.models import SourceFile
@@ -492,15 +497,137 @@ class RemuxPanel(QWidget):
         self._workflow.set_mediainfo_bin(self._config.tool_mediainfo)
         self._rebuild_preview()
 
-    def update_audio_track_meta(self, stream_index: int, source_path, lang: str, title: str) -> None:
+    def update_audio_track_meta(
+        self,
+        stream_index: int,
+        source_path,
+        lang: str,
+        title: str,
+        entry_id,
+    ) -> None:
         file_id = next(
             (sf.id for sf in self._source_files if sf.info and sf.info.path == source_path),
             None,
         )
         if file_id is None:
             return
-        self._track_table.update_audio_meta(file_id, stream_index, lang, title)
+        self._track_table.update_audio_meta(
+            file_id,
+            stream_index,
+            lang,
+            title,
+            entry_id=str(entry_id or "").strip() or None,
+        )
         self._rebuild_preview()
+
+    @staticmethod
+    def _audio_encode_codec_label(codec: str) -> str:
+        normalized = (codec or "copy").strip().lower()
+        return {
+            "aac": "AAC",
+            "ac3": "AC3",
+            "eac3": "EAC3",
+            "flac": "FLAC",
+        }.get(normalized, normalized.upper() if normalized else "COPY")
+
+    @staticmethod
+    def _audio_encode_display_info(source_display_info: str, codec: str, bitrate_kbps: int) -> str:
+        normalized = (codec or "copy").strip().lower()
+        if normalized == "copy":
+            return source_display_info
+        parts: list[str] = []
+        for raw_part in str(source_display_info or "").replace("·", "  ").split("  "):
+            part = raw_part.strip()
+            if not part or "kbps" in part.lower():
+                continue
+            parts.append(part)
+        if bitrate_kbps > 0:
+            parts.append(f"{int(bitrate_kbps)} kbps")
+        return "  ".join(parts)
+
+    def _source_track_for_variant(self, entry: TrackEntry) -> TrackEntry:
+        source = self._find_source(entry.file_id)
+        if source is None:
+            return entry
+        source_entry_id = entry.source_entry_id or entry.entry_id
+        return next((track for track in source.tracks if track.entry_id == source_entry_id), entry)
+
+    def _apply_audio_encoding_to_entry(
+        self,
+        entry: TrackEntry,
+        codec: str,
+        bitrate_kbps: int,
+    ) -> None:
+        source_entry = self._source_track_for_variant(entry)
+        normalized = (codec or "copy").strip().lower()
+        if normalized == "copy":
+            entry.codec = source_entry.orig_codec or source_entry.codec
+            entry.display_info = source_entry.orig_display_info or source_entry.display_info
+            return
+        entry.codec = self._audio_encode_codec_label(normalized)
+        entry.display_info = self._audio_encode_display_info(
+            source_entry.orig_display_info or source_entry.display_info,
+            normalized,
+            bitrate_kbps,
+        )
+
+    def add_audio_track_variant(
+        self,
+        template_entry: TrackEntry,
+        entry_id: str = "",
+        codec: str = "copy",
+        bitrate_kbps: int = 0,
+    ) -> None:
+        if template_entry.track_type != "audio":
+            return
+        if self._track_table.has_entry_id(entry_id or template_entry.entry_id):
+            return
+
+        source = self._find_source(template_entry.file_id)
+        if source is None or source.info is None:
+            self.log_message.emit("WARN", translate_text("Source introuvable pour cette piste."))
+            return
+
+        new_entry = clone_track_entry(template_entry, entry_id=entry_id or None)
+        self._apply_audio_encoding_to_entry(new_entry, codec, bitrate_kbps)
+        source.tracks.append(new_entry)
+        source_color = self._source_colors.get(template_entry.file_id, _C.BORDER)
+        self._track_table.append_tracks(source_color, [new_entry])
+        self._track_table.refresh_filter()
+        self._rebuild_preview()
+        self._emit_audio_tracks()
+
+    def remove_audio_track_variant(self, entry_id) -> None:
+        entry_id_str = str(entry_id or "").strip()
+        if not entry_id_str:
+            return
+        for source in self._source_files:
+            source.tracks = [track for track in source.tracks if track.entry_id != entry_id_str]
+        if self._track_table.remove_track_by_entry_id(entry_id_str):
+            self._track_table.refresh_filter()
+            self._rebuild_preview()
+            self._emit_audio_tracks()
+
+    def update_audio_track_encoding(self, entry_id, codec: str, bitrate_kbps: int) -> None:
+        entry_id_str = str(entry_id or "").strip()
+        if not entry_id_str:
+            return
+        for source in self._source_files:
+            for entry in source.tracks:
+                if entry.entry_id != entry_id_str or entry.track_type != "audio":
+                    continue
+                previous = (entry.codec, entry.display_info)
+                self._apply_audio_encoding_to_entry(entry, codec, bitrate_kbps)
+                if (entry.codec, entry.display_info) == previous:
+                    return
+                if self._track_table.update_audio_encoding(
+                    entry.entry_id,
+                    entry.codec,
+                    entry.display_info,
+                ):
+                    self._rebuild_preview()
+                    self._emit_audio_tracks()
+                return
 
     def current_output_path(self) -> Path | None:
         text = self._output_edit.text().strip()
