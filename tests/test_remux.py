@@ -109,6 +109,7 @@ Plan de couverture :
         - Si la piste source est désélectionnée, la piste NEW reste disponible
         - Si la piste NEW est supprimée, elle quitte le panel remux et le workflow
         - Les éditions de nom restent indépendantes entre source et piste NEW
+        - Un changement d'ordre réémet les pistes audio vers EncodePanel avec les entry_id
 
     _AttachmentItemWidget — balises cochées par défaut :
         - is_tag=False → case cochée
@@ -1315,6 +1316,22 @@ class TestRemuxPanelNewAudioTracks:
             if len(item) > 2
         )
         assert panel._track_table.has_entry_id(new_track.entry_id) is False
+        panel.close()
+
+    def test_track_order_change_reemits_audio_tracks_with_entry_ids(self, qt_app, tmp_path):
+        source = _track(1, "audio", file_id="fid", language="fra", title="Source")
+        new_track = clone_track_entry(source)
+        panel = self._panel_with_audio_tracks(qt_app, tmp_path, [source, new_track])
+        emitted: list = []
+        panel.audio_tracks_changed.connect(lambda tracks: emitted.append(tracks))
+
+        panel._track_table.order_changed.emit()
+
+        assert emitted
+        assert [item[3].entry_id for item in emitted[-1]] == [
+            source.entry_id,
+            new_track.entry_id,
+        ]
         panel.close()
 
 

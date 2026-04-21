@@ -1650,8 +1650,8 @@ class MainWindow(QMainWindow):
         audio_offset = 2
         for audio_order, ats in enumerate(encode_cfg.audio_tracks):
             src_path = ats.source_path or encode_cfg.source
-            if ats.remux_entry_id:
-                t = remux_track_map_by_id.get(ats.remux_entry_id)
+            if ats.track_entry_id:
+                t = remux_track_map_by_id.get(ats.track_entry_id)
             else:
                 t = _find_track(src_path, ats.stream_index, "audio")
             if t is None:

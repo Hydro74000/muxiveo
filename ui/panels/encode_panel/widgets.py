@@ -680,7 +680,7 @@ class _AudioTable(QTableWidget):
                 input_channels=d["track"].channels,
                 input_channel_layout=d["track"].channel_layout,
                 source_path=d.get("source_path"),
-                remux_entry_id=d.get("track_entry_id"),
+                track_entry_id=d.get("track_entry_id"),
             ))
         return result
 

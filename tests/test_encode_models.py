@@ -210,6 +210,10 @@ class TestAudioTrackSettings:
         assert a.codec == "aac"
         assert a.bitrate_kbps == 192
 
+    def test_track_entry_id_is_canonical_guid(self):
+        a = AudioTrackSettings(stream_index=1, track_entry_id="track-guid")
+        assert a.track_entry_id == "track-guid"
+
 
 # ===========================================================================
 # EncodeConfig

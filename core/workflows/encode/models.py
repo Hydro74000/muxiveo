@@ -125,7 +125,7 @@ class AudioTrackSettings:
     input_channels:      int | None = None   # nb de canaux de la piste source (ffprobe)
     input_channel_layout: str | None = None  # layout source (ex: "7.1", "5.1(side)")
     source_path:         Path | None = None  # None = même fichier que la vidéo (config.source)
-    remux_entry_id:      str | None = None   # identifiant de la ligne source dans RemuxPanel
+    track_entry_id:      str | None = None   # GUID de l'objet TrackEntry synchronisé entre panels
 
 
 @dataclass

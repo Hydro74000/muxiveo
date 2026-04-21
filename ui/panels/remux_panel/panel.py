@@ -229,7 +229,7 @@ class RemuxPanel(QWidget):
 
         self._track_table = _TrackTable()
         self._track_table.itemChanged.connect(self._on_table_changed)
-        self._track_table.order_changed.connect(self._rebuild_preview)
+        self._track_table.order_changed.connect(self._on_track_order_changed)
         self._track_table.extract_requested.connect(self._on_extract_track)
         content_layout.addWidget(self._track_table)
 
@@ -473,6 +473,10 @@ class RemuxPanel(QWidget):
         self._track_table.refresh_filter()
         self._rebuild_preview()
         self._emit_audio_tracks()
+
+    def _on_track_order_changed(self) -> None:
+        self._rebuild_preview()
+        self._emit_signals()
 
     def _emit_signals(self) -> None:
         signals.emit_signals(self)
