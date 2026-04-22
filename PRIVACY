@@ -1,0 +1,81 @@
+Privacy Policy - MediaRecode
+Derniere mise a jour : 22 avril 2026
+
+Projet : MediaRecode
+
+Depot : https://github.com/Hydro74000/mediarecode
+
+Contact : hydrojonsbo@aotr.fr
+
+1. Resume
+MediaRecode est une application desktop open source de traitement media. Elle fonctionne principalement localement sur l'ordinateur de l'utilisateur. L'application ne cree pas de compte utilisateur, n'exige pas de connexion a un service MediaRecode, ne contient pas de telemetrie applicative documentee et n'envoie pas automatiquement vos fichiers video, audio ou sous-titres vers un serveur MediaRecode.
+
+2. Champ d'application
+Cette politique concerne l'application MediaRecode, ses workflows locaux, ses fichiers de configuration, ses interactions optionnelles avec des services tiers et les outils externes qu'elle orchestre. Elle ne remplace pas les politiques de confidentialite de votre systeme d'exploitation, de votre hebergeur de fichiers, de GitHub, de TMDB ou des gestionnaires de paquets utilises pendant l'installation.
+
+3. Donnees que l'application peut traiter localement
+Selon votre usage, MediaRecode peut lire ou generer localement les categories de donnees suivantes :
+
+Chemins de fichiers et dossiers selectionnes dans l'interface.
+Fichiers media sources : video, audio, sous-titres, chapitres, pieces jointes et tags conteneur.
+Metadonnees techniques extraites par ffprobe ou MediaInfo : codecs, duree, bitrate, resolution, frame rate, langues, HDR, frame count, chapitres et informations de conteneur.
+Metadonnees editoriales que vous choisissez d'ecrire : titre, langues, titres de pistes, flags, tags globaux, synopsis, casting, genre, dates, URL, identifiants TMDB ou IMDb.
+Fichiers temporaires de workflow : flux HEVC intermediaires, metadata Dolby Vision/HDR10+, covers telechargees, fichiers de synchronisation timeline, logs de progression.
+Fichiers de sortie generes : MKV final, fichiers `.nfo` optionnels et autres artefacts explicitement demandes par l'utilisateur.
+
+4. Donnees de configuration
+MediaRecode persiste ses reglages localement, notamment via `config.ini` et les reglages d'interface. Les emplacements documentes sont :
+
+Linux/macOS : `~/.config/mediarecode/config.ini`.
+Windows en developpement : `./config.ini`.
+Windows package : `%APPDATA%\mediarecode\config.ini`.
+
+Ces reglages peuvent inclure les dossiers de travail et de sortie, le theme, la langue, le panneau de demarrage, les chemins d'outils externes, les preferences d'encodage, les options de buffer RAM, la generation de `.nfo`, ainsi que les identifiants TMDB que vous configurez.
+
+5. Cle API TMDB et token Bearer
+La recherche TMDB/IMDb est optionnelle. Si vous configurez une cle API TMDB v3 ou un token Bearer TMDB v4, ces informations sont utilisees par l'application pour contacter TMDB et recuperer des metadonnees film/serie ou des covers. Le token Bearer peut aussi etre fourni via la variable d'environnement `MEDIARECODE_TMDB_BEARER_TOKEN`.
+
+MediaRecode n'heberge pas vos cles TMDB sur un serveur MediaRecode. Ces identifiants restent dans votre configuration locale ou votre environnement, sous votre controle. Les requetes TMDB sont soumises aux conditions et a la politique de confidentialite de TMDB.
+
+6. Communications reseau optionnelles
+MediaRecode peut initier des communications reseau dans les cas suivants :
+
+Appels a l'API TMDB lorsque vous utilisez la recherche de metadonnees ou le telechargement de covers.
+Acces a GitHub pendant `setup.py` pour recuperer les releases de `dovi_tool` et `hdr10plus_tool`, sauf option `--no-github`.
+Acces aux gestionnaires de paquets du systeme pendant l'installation des dependances : apt, dnf, Homebrew ou winget selon la plateforme.
+Acces eventuel aux releases GitHub lorsque vous telechargez manuellement un package MediaRecode.
+
+Ces communications peuvent exposer a ces services tiers des donnees techniques usuelles telles que l'adresse IP, l'user-agent, l'heure de requete et les ressources demandees. MediaRecode ne controle pas les journaux ou pratiques de ces services tiers.
+
+7. Outils externes executes localement
+L'application orchestre des outils locaux tels que `ffmpeg`, `ffprobe`, `mediainfo`, `dovi_tool`, `hdr10plus_tool`, `nvidia-smi` et, optionnellement, `eac3to`. Ces outils peuvent lire les fichiers que vous selectionnez et ecrire des fichiers temporaires ou de sortie dans les dossiers configures. Leur execution se fait sur votre machine.
+
+8. Fichiers temporaires et retention
+Les workflows peuvent creer des fichiers temporaires dans le dossier de travail configure, dans le dossier temporaire du systeme ou dans `/dev/shm` lorsque le buffer RAM est active et disponible. MediaRecode nettoie les dossiers temporaires de process en fin de workflow quand cela est possible. Les fichiers de sortie, fichiers `.nfo`, configurations locales et logs conserves par l'interface restent sur votre machine jusqu'a suppression par vous ou par votre systeme.
+
+9. Logs
+L'application peut afficher et conserver temporairement des lignes de log dans son interface, avec une limite configurable. Les logs peuvent contenir des chemins de fichiers, noms de fichiers, et messages d'outils externes. Evitez de partager publiquement des logs sans verifier qu'ils ne contiennent pas de chemins ou titres que vous jugez sensibles.
+
+10. Absence de compte, publicite et vente de donnees
+MediaRecode ne fournit pas de systeme de compte utilisateur propre au projet. L'application ne vend pas de donnees personnelles et n'integre pas de publicite comportementale documentee.
+
+11. Base legale et controle utilisateur
+Le traitement effectue par l'application est declenche par vos actions explicites : selectionner des fichiers, lancer une inspection, configurer TMDB, executer un remux, lancer un encodage ou generer un fichier de sortie. Vous gardez le controle des fichiers fournis, des dossiers de travail, de la configuration et des services tiers actives.
+
+12. Securite
+MediaRecode traite des fichiers locaux et execute des outils externes. Il est recommande de telecharger l'application depuis le depot officiel, de maintenir votre systeme et vos outils media a jour, de proteger votre fichier de configuration s'il contient une cle TMDB, et de n'ouvrir que des fichiers provenant de sources que vous jugez fiables.
+
+13. Transferts internationaux
+Lorsque vous utilisez TMDB, GitHub ou des gestionnaires de paquets, des donnees techniques peuvent etre traitees par des services situes dans d'autres pays. Ces transferts dependent des services tiers concernes et de leurs propres politiques.
+
+14. Mineurs
+MediaRecode est un outil de traitement media generaliste. Il n'est pas concu pour collecter sciemment des donnees personnelles d'enfants.
+
+15. Vos droits et demandes
+La plupart des donnees traitees par MediaRecode sont stockees localement sur votre machine. Vous pouvez les consulter, modifier ou supprimer via votre systeme de fichiers, les reglages de l'application ou la suppression des dossiers de configuration et de travail. Pour toute question concernant le projet, contactez : hydrojonsbo@aotr.fr.
+
+16. Modifications
+Cette politique peut etre mise a jour lorsque les fonctionnalites de MediaRecode evoluent, notamment si de nouvelles integrations reseau, nouveaux workflows ou nouveaux modes de distribution sont ajoutes.
+
+17. Mentions TMDB
+MediaRecode peut utiliser l'API TMDB lorsque l'utilisateur configure l'acces correspondant. Ce produit utilise l'API TMDB mais n'est ni approuve ni certifie par TMDB.
