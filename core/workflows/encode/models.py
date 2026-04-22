@@ -214,6 +214,9 @@ def presets_for_codec(codec: str) -> list[str]:
 @dataclass
 class VideoEncodeSettings:
     """Paramètres d'encodage vidéo."""
+    stream_index:     int          = 0      # index global ffprobe de la piste vidéo source
+    source_path:      Path | None  = None   # None = même fichier que EncodeConfig.source
+    track_entry_id:   str | None   = None   # GUID TrackEntry synchronisé avec RemuxPanel
     codec:            str          = "libx265"
     quality_mode:     QualityMode  = QualityMode.CRF
     crf:              int          = 18

@@ -235,6 +235,32 @@ class EncodeWorkflow(QObject):
     def _needs_metadata_inject(cls, config: EncodeConfig) -> bool:
         return cls._wants_dynamic_hdr_copy(config) and not cls._is_video_passthrough(config)
 
+    @staticmethod
+    def _video_source_path(config: EncodeConfig) -> Path:
+        return Path(config.video.source_path or config.source)
+
+    @staticmethod
+    def _video_stream_index(config: EncodeConfig) -> int:
+        return int(getattr(config.video, "stream_index", 0) or 0)
+
+    @classmethod
+    def _video_map_key(cls, config: EncodeConfig) -> tuple[Path, int, str]:
+        return (cls._video_source_path(config), cls._video_stream_index(config), "video")
+
+    @classmethod
+    def _video_track_mapping(
+        cls,
+        config: EncodeConfig,
+        input_path: Path | str,
+        mapped_stream_index: int | None = None,
+    ) -> tuple[tuple[Path, int, str], Path | str, int]:
+        stream_index = cls._video_stream_index(config)
+        return (
+            cls._video_map_key(config),
+            input_path,
+            stream_index if mapped_stream_index is None else int(mapped_stream_index),
+        )
+
     def _detect_source_dynamic_hdr_presence(self, source: Path) -> tuple[bool, bool] | None:
         """
         Retourne (has_dv, has_hdr10plus) pour la source vidéo principale.
@@ -416,7 +442,7 @@ class EncodeWorkflow(QObject):
         if not self._wants_dynamic_hdr_copy(config):
             return config
 
-        detected = self._detect_source_dynamic_hdr_presence(config.source)
+        detected = self._detect_source_dynamic_hdr_presence(self._video_source_path(config))
         if detected is None:
             self.log_message.emit(
                 "WARN",
@@ -488,6 +514,9 @@ class EncodeWorkflow(QObject):
     def _collect_all_sources(config: EncodeConfig) -> list[Path]:
         """Retourne les sources uniques (source principale puis extras)."""
         all_sources: list[Path] = [config.source]
+        video_source = EncodeWorkflow._video_source_path(config)
+        if video_source not in all_sources:
+            all_sources.append(video_source)
         for a in config.audio_tracks:
             sp = a.source_path or config.source
             if sp not in all_sources:
@@ -615,7 +644,10 @@ class EncodeWorkflow(QObject):
     ) -> str:
         remapped = offset_remap.get(map_key)
         if remapped is None:
-            return f"{int(default_map[0])}:v:{int(default_map[1])}"
+            stream_index = int(default_map[1])
+            if stream_index == 0:
+                return f"{int(default_map[0])}:v:0"
+            return f"{int(default_map[0])}:{stream_index}"
         return f"{int(remapped[0])}:{int(remapped[1])}"
 
     def _probe_stream_indices(self, source: Path, codec_type: str) -> list[int] | None:
@@ -1215,10 +1247,12 @@ class EncodeWorkflow(QObject):
             all_sources,
         )
 
-        video_input_idx = source_idx.get(config.source, 0)
-        video_default_map = (video_input_idx, 0)
+        video_source = self._video_source_path(config)
+        video_stream = self._video_stream_index(config)
+        video_input_idx = source_idx.get(video_source, source_idx.get(config.source, 0))
+        video_default_map = (video_input_idx, video_stream)
         track_mappings: list[tuple[tuple[Path, int, str], Path | str, int]] = [
-            ((Path(config.source), 0, "video"), all_sources[video_input_idx], 0)
+            self._video_track_mapping(config, all_sources[video_input_idx])
         ]
 
         for a in config.audio_tracks:
@@ -1246,7 +1280,7 @@ class EncodeWorkflow(QObject):
         )
         _ = next_input_index
 
-        video_map_key = (Path(config.source), 0, "video")
+        video_map_key = self._video_map_key(config)
         cmd.extend(["-map", self._video_map_arg(
             video_default_map,
             offset_remap=offset_remap,
@@ -1303,21 +1337,23 @@ class EncodeWorkflow(QObject):
             c.extend(self._ffmpeg_thread_args())
             return c
 
-        video_input_idx = source_idx.get(config.source, 0)
-        video_default_map = (video_input_idx, 0)
+        video_source = self._video_source_path(config)
+        video_stream = self._video_stream_index(config)
+        video_input_idx = source_idx.get(video_source, source_idx.get(config.source, 0))
+        video_default_map = (video_input_idx, video_stream)
 
         pass1 = _base()
         _next1, pass1_offset_remap = self._append_offset_aux_inputs(
             pass1,
             self._build_offset_specs(
                 config,
-                track_mappings=[((Path(config.source), 0, "video"), all_sources[video_input_idx], 0)],
+                track_mappings=[self._video_track_mapping(config, all_sources[video_input_idx])],
                 offset_lookup=offset_lookup,
             ),
             start_input_index=len(all_sources),
         )
         _ = _next1
-        pass1_video_map_key = (Path(config.source), 0, "video")
+        pass1_video_map_key = self._video_map_key(config)
         pass1.extend(["-map", self._video_map_arg(
             video_default_map,
             offset_remap=pass1_offset_remap,
@@ -1341,7 +1377,7 @@ class EncodeWorkflow(QObject):
             all_sources,
         )
         track_mappings: list[tuple[tuple[Path, int, str], Path | str, int]] = [
-            ((Path(config.source), 0, "video"), all_sources[video_input_idx], 0)
+            self._video_track_mapping(config, all_sources[video_input_idx])
         ]
         for a in config.audio_tracks:
             src_path = Path(a.source_path or config.source)
@@ -1367,7 +1403,7 @@ class EncodeWorkflow(QObject):
         )
         _ = next_input_index
 
-        pass2_video_map_key = (Path(config.source), 0, "video")
+        pass2_video_map_key = self._video_map_key(config)
         pass2.extend(["-map", self._video_map_arg(
             video_default_map,
             offset_remap=pass2_offset_remap,
@@ -1456,14 +1492,17 @@ class EncodeWorkflow(QObject):
                 return track_input_paths[idx]
             return fallback
 
+        video_key = self._video_map_key(config)
+        video_source = self._video_source_path(config)
+        video_stream = self._video_stream_index(config)
         video_default_map = sync_remap.get(
-            (config.source, 0, "video"),
-            (source_idx.get(config.source, 0), 0),
+            video_key,
+            (source_idx.get(video_source, source_idx.get(config.source, 0)), video_stream),
         )
         track_mappings: list[tuple[tuple[Path, int, str], Path | str, int]] = [
             (
-                (Path(config.source), 0, "video"),
-                _input_path(int(video_default_map[0]), config.source),
+                video_key,
+                _input_path(int(video_default_map[0]), video_source),
                 int(video_default_map[1]),
             )
         ]
@@ -1503,7 +1542,7 @@ class EncodeWorkflow(QObject):
         )
         _ = next_input_index
 
-        video_map_key = (Path(config.source), 0, "video")
+        video_map_key = video_key
         cmd.extend(["-map", self._video_map_arg(
             (int(video_default_map[0]), int(video_default_map[1])),
             offset_remap=offset_remap,
@@ -1577,20 +1616,26 @@ class EncodeWorkflow(QObject):
             c.extend(self._ffmpeg_thread_args())
             return c
 
-        video_default_map = (source_idx.get(config.source, 0), 0)
+        video_key = self._video_map_key(config)
+        video_source = self._video_source_path(config)
+        video_stream = self._video_stream_index(config)
+        video_default_map = (
+            source_idx.get(video_source, source_idx.get(config.source, 0)),
+            video_stream,
+        )
 
         pass1 = _base(False)
         _next1, pass1_offset_remap = self._append_offset_aux_inputs(
             pass1,
             self._build_offset_specs(
                 config,
-                track_mappings=[((Path(config.source), 0, "video"), config.source, 0)],
+                track_mappings=[self._video_track_mapping(config, video_source)],
                 offset_lookup=offset_lookup,
             ),
             start_input_index=len(all_sources),
         )
         _ = _next1
-        pass1_video_map_key = (Path(config.source), 0, "video")
+        pass1_video_map_key = video_key
         pass1.extend(["-map", self._video_map_arg(
             video_default_map,
             offset_remap=pass1_offset_remap,
@@ -1621,11 +1666,11 @@ class EncodeWorkflow(QObject):
                 return track_input_paths[idx]
             return fallback
 
-        video_base_map = sync_remap.get((config.source, 0, "video"), video_default_map)
+        video_base_map = sync_remap.get(video_key, video_default_map)
         track_mappings: list[tuple[tuple[Path, int, str], Path | str, int]] = [
             (
-                (Path(config.source), 0, "video"),
-                _input_path(int(video_base_map[0]), config.source),
+                video_key,
+                _input_path(int(video_base_map[0]), video_source),
                 int(video_base_map[1]),
             )
         ]
@@ -1665,7 +1710,7 @@ class EncodeWorkflow(QObject):
         )
         _ = next_input_index
 
-        pass2_video_map_key = (Path(config.source), 0, "video")
+        pass2_video_map_key = video_key
         pass2.extend(["-map", self._video_map_arg(
             (int(video_base_map[0]), int(video_base_map[1])),
             offset_remap=pass2_offset_remap,
@@ -2038,12 +2083,12 @@ class EncodeWorkflow(QObject):
         cmd = [self._ffmpeg, "-hide_banner", "-y"]
         cmd.extend(self._ffmpeg_progress_args())
         cmd.extend(self._hardware_input_args(config.video))
-        cmd.extend(["-i", str(config.source)])
+        cmd.extend(["-i", str(self._video_source_path(config))])
         vf = self._build_encoder_vf(config.video)
         if vf:
             cmd.extend(["-vf", vf])
         cmd.extend(self._ffmpeg_thread_args())
-        cmd.extend(["-map", "0:v:0"])
+        cmd.extend(["-map", f"0:{self._video_stream_index(config)}"])
         cmd.extend(self._video_codec_args(config.video, config.video.bitrate_kbps))
         if config.video.inject_hdr_meta and not config.video.tonemap_to_sdr:
             cmd.extend(self._hdr_meta_args(config.video))
@@ -2064,11 +2109,11 @@ class EncodeWorkflow(QObject):
             c = [self._ffmpeg, "-hide_banner", "-y"]
             c.extend(self._ffmpeg_progress_args())
             c.extend(self._hardware_input_args(config.video))
-            c.extend(["-i", str(config.source)])
+            c.extend(["-i", str(self._video_source_path(config))])
             if vf:
                 c.extend(["-vf", vf])
             c.extend(self._ffmpeg_thread_args())
-            c.extend(["-map", "0:v:0"])
+            c.extend(["-map", f"0:{self._video_stream_index(config)}"])
             c.extend(self._video_codec_args_bitrate(config.video, bitrate))
             return c
 
@@ -2322,38 +2367,113 @@ class EncodeWorkflow(QObject):
     def _log_step(self, step_index: int, step_name: str) -> None:
         self.log_message.emit("INFO", f"STEP {step_index} - {step_name}")
 
-    def run(self, config: EncodeConfig) -> TaskSignals:
+    def run(self, config: EncodeConfig, *, validate: bool = True) -> TaskSignals:
         """
         Lance l'encodage dans un thread secondaire.
 
         Le mode taille cible exécute deux passes séquentiellement
         dans le même thread et retourne un unique TaskSignals.
         """
-        errors = self.validate(config)
-        if errors:
-            raise EncodeError("\n".join(errors))
+        if not validate:
+            return self._run_async_preparation(config)
+
+        return self._run_with_preparation(config, validate=True)
+
+    def _run_async_preparation(self, config: EncodeConfig) -> TaskSignals:
+        """
+        Démarre la préparation encode hors thread UI.
+
+        MainWindow valide déjà la configuration avant d'appeler le panneau encode.
+        Cette variante retourne donc immédiatement un TaskSignals extérieur, puis
+        relaie le TaskSignals réel créé après préparation workspace/attachments.
+        """
+        signals = TaskSignals()
+        executor = ThreadPoolExecutor(max_workers=1)
+        active_inner: dict[str, TaskSignals | None] = {"signals": None}
+        original_cancel = signals.cancel
+
+        def _cancel() -> None:
+            original_cancel()
+            inner = active_inner.get("signals")
+            if inner is not None and inner is not signals:
+                inner.cancel()
+
+        signals.cancel = _cancel  # type: ignore[method-assign]
+
+        def _task() -> None:
+            try:
+                if signals._cancel_event.is_set():
+                    raise TaskCancelledError()
+
+                inner = self._run_with_preparation(
+                    config,
+                    validate=False,
+                    prep_signals=signals,
+                )
+                active_inner["signals"] = inner
+
+                if inner is not signals:
+                    inner.progress.connect(signals.progress.emit)
+                    inner.finished.connect(signals.finished.emit)
+                    inner.failed.connect(signals.failed.emit)
+                    inner.cancelled.connect(signals.cancelled.emit)
+
+                if signals._cancel_event.is_set() and inner is not signals:
+                    inner.cancel()
+            except TaskCancelledError:
+                signals.cancelled.emit()
+            except Exception as exc:
+                signals.failed.emit(str(exc), exc)
+            finally:
+                executor.shutdown(wait=False)
+
+        executor.submit(_task)
+        return signals
+
+    @staticmethod
+    def _check_cancelled(signals: TaskSignals | None) -> None:
+        if signals is not None and signals._cancel_event.is_set():
+            raise TaskCancelledError()
+
+    def _run_with_preparation(
+        self,
+        config: EncodeConfig,
+        *,
+        validate: bool,
+        prep_signals: TaskSignals | None = None,
+    ) -> TaskSignals:
+        self._check_cancelled(prep_signals)
+        if validate:
+            errors = self.validate(config)
+            if errors:
+                raise EncodeError("\n".join(errors))
+        self._check_cancelled(prep_signals)
 
         self._log_workflow_type("ENCODE")
         self._log_step(1, "Validation configuration")
         self.log_message.emit("INFO", f"Encodage → {config.output.name}")
 
         self._log_step(2, "Préparation workspace et attachments")
+        self._check_cancelled(prep_signals)
         work_root = config.work_dir or Path(tempfile.gettempdir())
         process_work_dir = prepare_process_work_dir(
             work_root,
             output_path=config.output,
             fallback_name="encode_job",
         )
+        self._check_cancelled(prep_signals)
         relocated_attachments = relocate_tmdb_covers_to_process_dir(
             [Path(p) for p in config.extra_attachments],
             work_root=work_root,
             process_dir=process_work_dir,
         )
+        self._check_cancelled(prep_signals)
 
         # Téléchargement différé de la cover TMDB (si présente)
         if config.tmdb_cover is not None:
             tmdb_url, tmdb_filename = config.tmdb_cover
             try:
+                self._check_cancelled(prep_signals)
                 self.log_message.emit(
                     "INFO",
                     f"Téléchargement cover TMDB : {tmdb_filename}",
@@ -2369,6 +2489,7 @@ class EncodeWorkflow(QObject):
                     "WARN",
                     f"Impossible de télécharger la cover TMDB : {exc}",
                 )
+        self._check_cancelled(prep_signals)
 
         prepared_config = replace(
             config,
@@ -2379,7 +2500,9 @@ class EncodeWorkflow(QObject):
         prepared_config, cleanup_dir = self._prepare_attachment_config(
             prepared_config,
             work_dir=process_work_dir,
+            signals=prep_signals,
         )
+        self._check_cancelled(prep_signals)
         cleanup_paths: list[Path] = []
         if cleanup_dir is not None:
             cleanup_paths.append(cleanup_dir)
@@ -2389,6 +2512,7 @@ class EncodeWorkflow(QObject):
         cleanup_paths.append(process_work_dir)
 
         self._log_step(3, "Normalisation des options HDR dynamiques")
+        self._check_cancelled(prep_signals)
         if not self._is_video_passthrough(prepared_config):
             prepared_config = self._normalize_dynamic_hdr_config(prepared_config)
         elif self._wants_dynamic_hdr_copy(prepared_config):
@@ -2400,23 +2524,26 @@ class EncodeWorkflow(QObject):
                 "métadonnées préservées par passthrough ffmpeg.",
             )
 
+        self._check_cancelled(prep_signals)
         needs_inject = self._needs_metadata_inject(prepared_config)
         self._log_step(
             4,
             "Routage du workflow (sortie directe ou injection metadata)"
             + (" -> injection" if needs_inject else " -> sortie directe"),
         )
+        self._check_cancelled(prep_signals)
         if needs_inject:
             self.log_message.emit(
                 "INFO",
                 "Injection DoVi/HDR10+: pipeline fichier (pas de pipe direct outillage).",
             )
             self._ensure_inject_storage_available(prepared_config)
+        self._check_cancelled(prep_signals)
 
         signals = (
             self._run_with_metadata_inject(prepared_config)
             if needs_inject
-            else self._run_direct_output(prepared_config, cleanup_paths)
+            else self._run_direct_output(prepared_config, cleanup_paths, prep_signals=prep_signals)
         )
         self._bind_temp_cleanup(signals, cleanup_paths)
         return signals
@@ -2425,7 +2552,10 @@ class EncodeWorkflow(QObject):
         self,
         config: EncodeConfig,
         cleanup_paths: list[Path],
+        *,
+        prep_signals: TaskSignals | None = None,
     ) -> TaskSignals:
+        self._check_cancelled(prep_signals)
         self._log_step(5, "Construction de la commande ffmpeg (sortie directe)")
         cwd = config.work_dir or config.source.parent
 
@@ -2436,6 +2566,7 @@ class EncodeWorkflow(QObject):
                 config=config,
                 cleanup_paths=cleanup_paths,
                 cwd=cwd,
+                prep_signals=prep_signals,
             )
             self._bind_matroska_segment_muxing_patch(signals, config.output)
             self._bind_nfo_write(signals, config.output)
@@ -2451,6 +2582,7 @@ class EncodeWorkflow(QObject):
             )
             cleanup_paths.append(chapter_dir)
 
+        self._check_cancelled(prep_signals)
         if self._uses_two_pass(config):
             self._log_step(6, "Préparation sync/remap + commandes ffmpeg (2 passes)")
             cmds: list[list[str]]
@@ -2460,10 +2592,12 @@ class EncodeWorkflow(QObject):
                 cmds, live_sync_session, sync_cleanup_paths = self._build_runtime_two_pass_with_sync(
                     config,
                     chapter_materialize_dir=chapter_dir,
+                    signals=prep_signals,
                 )
                 cleanup_paths.extend(sync_cleanup_paths)
+                self._check_cancelled(prep_signals)
                 self._log_step(7, "Exécution ffmpeg en 2 passes (sortie directe)")
-                signals = self._run_two_pass(cmds, cwd=cwd)
+                signals = self._run_two_pass(cmds, cwd=cwd, signals=prep_signals)
             except Exception:
                 if live_sync_session is not None:
                     live_sync_session.close()
@@ -2481,10 +2615,23 @@ class EncodeWorkflow(QObject):
             cmd, live_sync_session, sync_cleanup_paths = self._build_runtime_single_pass_with_sync(
                 config,
                 chapter_materialize_dir=chapter_dir,
+                signals=prep_signals,
             )
             cleanup_paths.extend(sync_cleanup_paths)
+            self._check_cancelled(prep_signals)
             self._log_step(7, "Exécution ffmpeg en single pass (sortie directe)")
-            signals = self._runner.run(cmd, cwd=cwd, label="ffmpeg")
+            if prep_signals is not None:
+                output = self._runner._run_cmd(
+                    cmd,
+                    cwd=cwd,
+                    label="ffmpeg",
+                    progress_cb=lambda line: prep_signals.progress.emit(line),
+                    signals=prep_signals,
+                )
+                prep_signals.finished.emit(output)
+                signals = prep_signals
+            else:
+                signals = self._runner.run(cmd, cwd=cwd, label="ffmpeg")
         except Exception:
             if live_sync_session is not None:
                 live_sync_session.close()
@@ -2500,8 +2647,9 @@ class EncodeWorkflow(QObject):
         config: EncodeConfig,
         cleanup_paths: list[Path],
         cwd: Path,
+        prep_signals: TaskSignals | None = None,
     ) -> TaskSignals:
-        signals = TaskSignals()
+        signals = prep_signals or TaskSignals()
         executor = ThreadPoolExecutor(max_workers=1)
 
         def _task() -> None:
@@ -2511,6 +2659,7 @@ class EncodeWorkflow(QObject):
             is_two_pass = self._uses_two_pass(config)
 
             try:
+                self._check_cancelled(signals)
                 if config.chapter_overrides:
                     chapter_dir = Path(
                         tempfile.mkdtemp(
@@ -2531,6 +2680,7 @@ class EncodeWorkflow(QObject):
                     if live_sync_session is not None:
                         for proc in live_sync_session.processes:
                             signals._register_proc(proc)
+                    self._check_cancelled(signals)
                     self._log_step(7, "Exécution ffmpeg en 2 passes (sortie directe)")
 
                     self.log_message.emit("INFO", "Passe 1/2 (analyse)…")
@@ -2541,6 +2691,7 @@ class EncodeWorkflow(QObject):
                         progress_cb=lambda line: signals.progress.emit(line),
                         signals=signals,
                     )
+                    self._check_cancelled(signals)
                     self.log_message.emit("INFO", "Passe 2/2 (encodage)…")
                     output = self._runner._run_cmd(
                         cmds[1],
@@ -2561,6 +2712,7 @@ class EncodeWorkflow(QObject):
                     if live_sync_session is not None:
                         for proc in live_sync_session.processes:
                             signals._register_proc(proc)
+                    self._check_cancelled(signals)
                     self._log_step(7, "Exécution ffmpeg en single pass (sortie directe)")
                     output = self._runner._run_cmd(
                         cmd,
@@ -2804,6 +2956,7 @@ class EncodeWorkflow(QObject):
         config: EncodeConfig,
         *,
         work_dir: Path,
+        signals: TaskSignals | None = None,
     ) -> tuple[EncodeConfig, Path | None]:
         """
         Convertit les ``attached_pic`` sélectionnés en fichiers joints temporaires.
@@ -2824,8 +2977,10 @@ class EncodeWorkflow(QObject):
 
         try:
             for selection in config.attachment_streams:
+                self._check_cancelled(signals)
                 src_path, stream_idx = selection[:2]
                 meta = self._describe_attachment_stream(src_path, stream_idx)
+                self._check_cancelled(signals)
                 if not meta["is_attached_pic"]:
                     direct_streams.append(selection)
                     continue
@@ -2833,7 +2988,8 @@ class EncodeWorkflow(QObject):
                 created_any = True
                 filename = self._attachment_filename(meta, stream_idx)
                 dest = self._unique_attachment_path(tmp_dir, filename)
-                self._extract_attached_pic(src_path, stream_idx, dest)
+                self._extract_attached_pic(src_path, stream_idx, dest, signals=signals)
+                self._check_cancelled(signals)
                 extracted_files.append(dest)
 
             if not created_any:
@@ -2928,8 +3084,16 @@ class EncodeWorkflow(QObject):
                 return alt
         return tmp_dir / f"{stem}_{os.getpid()}{suffix}"
 
-    def _extract_attached_pic(self, source: Path, stream_idx: int, dest: Path) -> None:
+    def _extract_attached_pic(
+        self,
+        source: Path,
+        stream_idx: int,
+        dest: Path,
+        *,
+        signals: TaskSignals | None = None,
+    ) -> None:
         """Extrait un ``attached_pic`` vers un vrai fichier image."""
+        self._check_cancelled(signals)
         cmd = [
             self._ffmpeg,
             "-hide_banner", "-y",
@@ -2941,17 +3105,25 @@ class EncodeWorkflow(QObject):
             str(dest),
         ]
         self.log_message.emit("INFO", "$ " + " ".join(cmd))
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            check=False,
-            timeout=60,
-            **subprocess_text_kwargs(),
-        )
-        if result.returncode != 0 or not dest.exists():
-            stderr = (result.stderr or "").strip()
+        try:
+            self._runner._run_cmd(
+                cmd,
+                label="extract-attached-pic",
+                signals=signals,
+            )
+        except TaskCancelledError:
+            dest.unlink(missing_ok=True)
+            raise
+        except Exception as exc:
+            dest.unlink(missing_ok=True)
+            stderr = str(exc).strip()
             raise EncodeError(
                 f"Extraction attachment échouée pour le stream {stream_idx} de {source.name}: {stderr}"
+            ) from exc
+        self._check_cancelled(signals)
+        if not dest.exists():
+            raise EncodeError(
+                f"Extraction attachment échouée pour le stream {stream_idx} de {source.name}: fichier absent"
             )
 
     def _run_two_pass(
@@ -3261,7 +3433,7 @@ class EncodeWorkflow(QObject):
                     signals.progress.emit("Extraction RPU Dolby Vision…")
                     _run([
                         self._bins["dovi_tool"], "extract-rpu",
-                        "-i", str(config.source), "-o", str(rpu_bin),
+                        "-i", str(self._video_source_path(config)), "-o", str(rpu_bin),
                     ])
                     _check()
 
@@ -3271,7 +3443,7 @@ class EncodeWorkflow(QObject):
                     signals.progress.emit("Extraction métadonnées HDR10+…")
                     _run([
                         self._bins["hdr10plus_tool"], "extract",
-                        str(config.source), "-o", str(hdr10p_json),
+                        str(self._video_source_path(config)), "-o", str(hdr10p_json),
                     ])
                     _check()
 
@@ -3400,9 +3572,10 @@ class EncodeWorkflow(QObject):
                         return track_input_paths[idx]
                     return fallback
 
+                video_key = self._video_map_key(config)
                 video_default_map = (0, 0)
                 track_mappings: list[tuple[tuple[Path, int, str], Path | str, int]] = [
-                    ((Path(config.source), 0, "video"), _input_path(0, current_video_input), 0)
+                    (video_key, _input_path(0, current_video_input), 0)
                 ]
 
                 for a in config.audio_tracks:
@@ -3440,7 +3613,7 @@ class EncodeWorkflow(QObject):
                 )
                 _ = next_input_index
 
-                video_map_key = (Path(config.source), 0, "video")
+                video_map_key = video_key
                 recon_cmd.extend([
                     "-map",
                     self._video_map_arg(

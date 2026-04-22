@@ -1335,6 +1335,57 @@ class TestRemuxPanelNewAudioTracks:
         panel.close()
 
 
+class TestRemuxPanelVideoTrackSignals:
+
+    @staticmethod
+    def _panel_with_video_tracks(
+        qt_app,
+        tmp_path,
+        tracks: list[TrackEntry],
+    ) -> RemuxPanel:
+        cfg = AppConfig()
+        panel = RemuxPanel(cfg)
+        src = tmp_path / "source.mkv"
+        src.touch()
+        info = _file_info(
+            path=src,
+            videos=[
+                _video(index=0, width=1920, height=1080),
+                _video(index=1, width=3840, height=2160, hdr_type=HDRType.DOLBY_VISION),
+            ],
+        )
+        sf = SourceFile(id="fid", path=src, color=_COLOR_A, info=info, tracks=tracks)
+        panel._source_files = [sf]
+        panel._source_colors = {"fid": _COLOR_A}
+        panel._source_names = {"fid": "source.mkv"}
+        panel._track_table.append_tracks(_COLOR_A, tracks)
+        panel._output_edit.setText(str(tmp_path / "out.mkv"))
+        return panel
+
+    @staticmethod
+    def _row_for_entry(panel: RemuxPanel, entry: TrackEntry) -> int:
+        for row in range(panel._track_table.rowCount()):
+            item = panel._track_table.item(row, _TrackTable.COL_CHECK)
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) is entry:
+                return row
+        raise AssertionError(f"entry not found: {entry.entry_id}")
+
+    def test_table_checkbox_change_reemits_video_tracks(self, qt_app, tmp_path):
+        video_a = _track(0, "video", file_id="fid", codec="HEVC")
+        video_b = _track(1, "video", file_id="fid", codec="HEVC")
+        panel = self._panel_with_video_tracks(qt_app, tmp_path, [video_a, video_b])
+        emitted: list = []
+        panel.video_tracks_changed.connect(lambda tracks: emitted.append(tracks))
+
+        row = self._row_for_entry(panel, video_b)
+        panel._track_table.item(row, _TrackTable.COL_CHECK).setCheckState(Qt.CheckState.Unchecked)
+        panel._on_table_changed()
+
+        assert emitted
+        assert [entry.entry_id for _info, entry, _color in emitted[-1]] == [video_a.entry_id]
+        panel.close()
+
+
 # ===========================================================================
 # _AttachmentItemWidget — case cochée par défaut (tags et attachements)
 # ===========================================================================

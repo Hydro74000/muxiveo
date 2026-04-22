@@ -97,6 +97,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import time
 from contextlib import ExitStack
 from pathlib import Path
@@ -859,8 +860,10 @@ class TestExtFilesCleanupOnFailure:
         config = _make_config(source=src, output=tmp_path / "out.mkv",
                               copy_dv=True, work_dir=tmp_path / "work")
         wf = _make_workflow(enabled=True)
+        connected = threading.Event()
 
         def _fast_fail(cmd, signals=None, cwd=None, progress_cb=None):
+            connected.wait(timeout=1.0)
             raise RuntimeError("Fast fail")
 
         result: list = []
@@ -874,6 +877,7 @@ class TestExtFilesCleanupOnFailure:
                                 Qt.ConnectionType.QueuedConnection)
             sigs.finished.connect(lambda _: result.append("ok"),
                                   Qt.ConnectionType.QueuedConnection)
+            connected.set()
             _collect_signals(sigs)
         # Le workflow se termine proprement (pas de crash dans le finally)
         assert len(result) == 1
@@ -1031,6 +1035,33 @@ class TestBuildCommand:
         map_values = [cmd[i + 1] for i, arg in enumerate(cmd[:-1]) if arg == "-map"]
         assert map_values[:3] == ["0:v:0", "1:7", "0:4"]
         assert "-c:s" in cmd and cmd[cmd.index("-c:s") + 1] == "copy"
+
+    def test_video_track_mapping_uses_selected_stream_index(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        cmd = self.wf.build_command(_make_config(
+            src,
+            tmp_path / "out.mkv",
+            video=_make_video_settings(codec="copy", stream_index=4, source_path=src),
+        ))
+
+        map_values = [cmd[i + 1] for i, arg in enumerate(cmd[:-1]) if arg == "-map"]
+        assert map_values[0] == "0:4"
+
+    def test_video_track_mapping_uses_selected_source(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        alt = tmp_path / "alt.mkv"; alt.touch()
+        cmd = self.wf.build_command(_make_config(
+            src,
+            tmp_path / "out.mkv",
+            video=_make_video_settings(codec="copy", stream_index=3, source_path=alt),
+        ))
+
+        first_input = cmd.index("-i")
+        second_input = cmd.index("-i", first_input + 1)
+        map_values = [cmd[i + 1] for i, arg in enumerate(cmd[:-1]) if arg == "-map"]
+        assert cmd[first_input + 1] == str(src)
+        assert cmd[second_input + 1] == str(alt)
+        assert map_values[0] == "1:3"
 
     def test_vaapi_single_pass_adds_device_and_hwaccel_without_vf(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()
@@ -1711,6 +1742,78 @@ class TestRunCopyBypassesInject:
             mock_run.return_value = MagicMock()
             wf.run(config)
 
+    def test_validate_false_returns_before_preparation_finishes(self, tmp_path):
+        """Le chemin UI encode ne bloque pas pendant la préparation workflow."""
+        config = self._make_copy_config(tmp_path)
+        wf = _make_workflow()
+        release = threading.Event()
+        inner = TaskSignals()
+
+        def _slow_preparation(_cfg, *, validate):
+            assert validate is False
+            release.wait(timeout=0.25)
+            return inner
+
+        with patch.object(wf, "_run_with_preparation", side_effect=_slow_preparation):
+            started = time.monotonic()
+            outer = wf.run(config, validate=False)
+            elapsed = time.monotonic() - started
+            release.set()
+
+        assert outer is not inner
+        assert elapsed < 0.10
+
+    def test_cancel_during_async_preparation_prevents_ffmpeg_launch(self, tmp_path):
+        """Annuler pendant la jauge de préparation ne doit pas lancer ffmpeg ensuite."""
+        config = self._make_copy_config(tmp_path)
+        wf = _make_workflow()
+        entered = threading.Event()
+        release = threading.Event()
+        launched: list[list[str]] = []
+        cancelled: list[bool] = []
+
+        def _slow_prepare(config_arg, *, validate, prep_signals=None):
+            entered.set()
+            release.wait(timeout=1.0)
+            wf._check_cancelled(prep_signals)
+            launched.append(["ffmpeg"])
+            return TaskSignals()
+
+        with patch.object(wf, "_run_with_preparation", side_effect=_slow_prepare):
+            outer = wf.run(config, validate=False)
+            outer.cancelled.connect(lambda: cancelled.append(True), Qt.ConnectionType.QueuedConnection)
+            assert entered.wait(timeout=1.0)
+            outer.cancel()
+            release.set()
+            _collect_signals(outer)
+
+        assert launched == []
+        assert cancelled == [True]
+
+    def test_async_preparation_does_not_self_connect_outer_signals(self, tmp_path):
+        """Si la préparation utilise déjà le signal extérieur, ne pas le relayer à lui-même."""
+        config = self._make_copy_config(tmp_path)
+        wf = _make_workflow()
+        prepared = threading.Event()
+        progress_messages: list[str] = []
+        failures: list[str] = []
+
+        def _prepare_with_outer_signal(_cfg, *, validate, prep_signals=None):
+            assert prep_signals is not None
+            prepared.set()
+            prep_signals.progress.emit("prep-progress")
+            return prep_signals
+
+        with patch.object(wf, "_run_with_preparation", side_effect=_prepare_with_outer_signal):
+            outer = wf.run(config, validate=False)
+            outer.progress.connect(lambda msg: progress_messages.append(msg), Qt.ConnectionType.QueuedConnection)
+            outer.failed.connect(lambda msg, _exc: failures.append(msg), Qt.ConnectionType.QueuedConnection)
+            assert prepared.wait(timeout=1.0)
+            _get_app().processEvents()
+
+        assert progress_messages in ([], ["prep-progress"])
+        assert failures == []
+
 
 class TestRunIntegratedMetadata:
     def _base_config(self, tmp_path: Path) -> EncodeConfig:
@@ -1973,7 +2076,16 @@ class TestSelectedAttachedPicHandling:
                 return MagicMock(returncode=0, stdout="", stderr="")
             raise AssertionError(f"Commande subprocess inattendue: {cmd}")
 
+        original_run_cmd = wf._runner._run_cmd
+
+        def _fake_run_cmd(cmd, *args, **kwargs):
+            if "-map" in cmd and "0:9" in cmd:
+                Path(cmd[-1]).write_bytes(b"jpeg-data")
+                return ""
+            return original_run_cmd(cmd, *args, **kwargs)
+
         with patch("subprocess.run", side_effect=_fake_subprocess_run), \
+             patch.object(wf._runner, "_run_cmd", side_effect=_fake_run_cmd), \
              patch.object(wf._runner, "run") as mock_run:
             signals = TaskSignals()
             mock_run.side_effect = lambda cmd, **_kw: captured.append(list(cmd)) or signals
