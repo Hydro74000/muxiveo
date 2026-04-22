@@ -348,3 +348,18 @@ class TestAudioSourceDialogAdaptiveBitrates:
         dialog._codec_combo.setCurrentIndex(eac3_idx)
         assert dialog._bitrate_edit.value() == 1344
         dialog.close()
+
+    def test_dialog_codec_switch_uses_selected_track_for_default_calculation(self, qt_app):
+        stereo = _at(index=1, channels=2, channel_layout="stereo", bit_rate=192_000, title="Stereo")
+        surround = _at(index=2, channels=6, channel_layout="5.1", bit_rate=640_000, title="Surround")
+        dialog = _AudioSourceDialog(
+            [(stereo, _COLOR, _PATH_A), (surround, _COLOR, _PATH_A)],
+            config=_Cfg(aac=96, eac3=224),
+        )
+
+        dialog._track_list.setCurrentRow(1)
+        eac3_idx = next(i for i in range(dialog._codec_combo.count()) if dialog._codec_combo.itemData(i) == "eac3")
+        dialog._codec_combo.setCurrentIndex(eac3_idx)
+
+        assert dialog._bitrate_edit.value() == 1344
+        dialog.close()

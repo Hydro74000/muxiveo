@@ -530,8 +530,9 @@ class _AudioSourceDialog(QDialog):
     def _on_codec_changed(self, _idx: int = 0) -> None:
         codec = self._codec_combo.currentData()
         previous_codec = getattr(self._bitrate_edit, "_codec", "copy")
+        active_track = getattr(self._bitrate_edit, "_track", self._tracks[0][0])
         preferred = _preferred_bitrate_for_codec_switch(
-            self._tracks[0][0],
+            active_track,
             self._config,
             codec or "copy",
             previous_codec,
