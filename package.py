@@ -1728,7 +1728,7 @@ def _msix_manifest_content(
           <desktop:FullTrustProcess />
         </desktop:Extension>
         <uap:Extension Category="windows.fileTypeAssociation">
-          <uap:FileTypeAssociation Name="Mediarecode">
+          <uap:FileTypeAssociation Name="mediarecode">
             <uap:DisplayName>{meta['display_name']}</uap:DisplayName>
             <uap:InfoTip>{meta['description']}</uap:InfoTip>
             <uap:SupportedFileTypes>
