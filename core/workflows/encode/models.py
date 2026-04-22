@@ -61,6 +61,121 @@ AUDIO_CODECS: list[tuple[str, str]] = [
     ("flac",  "FLAC (sans perte)"),
 ]
 
+AC3_STANDARD_BITRATES_KBPS: list[int] = [
+    32, 40, 48, 56, 64, 80, 96, 112,
+    128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640,
+]
+AUDIO_BITRATES_PER_CHANNEL_KBPS: list[int] = AC3_STANDARD_BITRATES_KBPS.copy()
+DEFAULT_AUDIO_KBPS_PER_CHANNEL = 96
+AAC_MAX_BITS_PER_CHANNEL_FRAME = 6144
+AAC_FRAME_SAMPLES = 1024
+EAC3_MAX_BITRATE_KBPS = 6144
+EAC3_MAX_KBPS_PER_CHANNEL = EAC3_MAX_BITRATE_KBPS // 6
+_DEFAULT_AUDIO_SAMPLE_RATE_HZ = 48_000
+
+
+def audio_output_channel_count(codec: str, channels: int | None, channel_layout: str | None = None) -> int:
+    """Nombre de canaux de sortie utilisé pour les calculs de débit."""
+    count = channels if channels and channels > 0 else 0
+    layout = (channel_layout or "").lower()
+    if count <= 0:
+        if "7.1" in layout:
+            count = 8
+        elif "5.1" in layout:
+            count = 6
+        elif "stereo" in layout:
+            count = 2
+        elif "mono" in layout:
+            count = 1
+        else:
+            count = 2
+    if codec in {"ac3", "eac3"} and count > 6:
+        return 6
+    return count
+
+
+def audio_codec_max_bitrate_kbps(
+    codec: str,
+    channels: int | None = None,
+    sample_rate: int | None = None,
+    channel_layout: str | None = None,
+) -> int:
+    """Plafond par piste après calcul par canal quand le codec l'exige."""
+    output_channels = audio_output_channel_count(codec, channels, channel_layout)
+    if codec == "ac3":
+        return AC3_STANDARD_BITRATES_KBPS[-1]
+    if codec == "eac3":
+        return min(EAC3_MAX_BITRATE_KBPS, EAC3_MAX_KBPS_PER_CHANNEL * output_channels)
+    if codec == "aac":
+        rate = sample_rate if sample_rate and sample_rate > 0 else _DEFAULT_AUDIO_SAMPLE_RATE_HZ
+        per_channel = int(rate * AAC_MAX_BITS_PER_CHANNEL_FRAME / AAC_FRAME_SAMPLES / 1000)
+        return max(1, per_channel * output_channels)
+    return max(1, output_channels)
+
+
+def audio_bitrate_choices_kbps(
+    codec: str,
+    channels: int | None = None,
+    sample_rate: int | None = None,
+    channel_layout: str | None = None,
+) -> list[int]:
+    """Liste de débits proposée par piste pour un codec et un nombre de canaux."""
+    if codec == "ac3":
+        return AC3_STANDARD_BITRATES_KBPS.copy()
+
+    output_channels = audio_output_channel_count(codec, channels, channel_layout)
+    maximum = audio_codec_max_bitrate_kbps(codec, channels, sample_rate, channel_layout)
+    choices = [
+        per_channel * output_channels
+        for per_channel in AUDIO_BITRATES_PER_CHANNEL_KBPS
+        if per_channel * output_channels <= maximum
+    ]
+    if not choices:
+        choices = [maximum]
+    elif choices[-1] != maximum:
+        choices.append(maximum)
+    return sorted(set(choices))
+
+
+def default_audio_bitrate_kbps(
+    codec: str,
+    channels: int | None = None,
+    sample_rate: int | None = None,
+    channel_layout: str | None = None,
+    kbps_per_channel: int | None = None,
+) -> int:
+    """Débit par défaut par canal (AAC/EAC-3 : configurable, autres : 96 kbps), arrondi au choix valide."""
+    output_channels = audio_output_channel_count(codec, channels, channel_layout)
+    per_channel = kbps_per_channel if kbps_per_channel is not None else DEFAULT_AUDIO_KBPS_PER_CHANNEL
+    target = per_channel * output_channels
+    return normalize_audio_bitrate_kbps(codec, target, channels, sample_rate, channel_layout)
+
+
+def normalize_audio_bitrate_kbps(
+    codec: str,
+    bitrate_kbps: int | None,
+    channels: int | None = None,
+    sample_rate: int | None = None,
+    channel_layout: str | None = None,
+) -> int:
+    """Normalise un débit pour éviter les valeurs impossibles envoyées à FFmpeg."""
+    try:
+        bitrate = int(bitrate_kbps or 0)
+    except (TypeError, ValueError):
+        bitrate = 0
+    if codec == "ac3":
+        if bitrate <= AC3_STANDARD_BITRATES_KBPS[0]:
+            return AC3_STANDARD_BITRATES_KBPS[0]
+        if bitrate >= AC3_STANDARD_BITRATES_KBPS[-1]:
+            return AC3_STANDARD_BITRATES_KBPS[-1]
+        return min(AC3_STANDARD_BITRATES_KBPS, key=lambda choice: abs(choice - bitrate))
+    choices = audio_bitrate_choices_kbps(codec, channels, sample_rate, channel_layout)
+    if bitrate <= choices[0]:
+        return choices[0]
+    if bitrate >= choices[-1]:
+        return choices[-1]
+    return min(choices, key=lambda choice: abs(choice - bitrate))
+
 X265_PRESETS   = ["ultrafast", "superfast", "veryfast", "faster", "fast",
                   "medium", "slow", "slower", "veryslow", "placebo"]
 X264_PRESETS   = X265_PRESETS

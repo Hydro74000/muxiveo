@@ -939,6 +939,26 @@ class TestBuildCommand:
         assert "-c:a:0" in cmd and cmd[cmd.index("-c:a:0") + 1] == "ac3"
         assert "-b:a:0" in cmd and "448k" in cmd
 
+    def test_audio_ac3_off_grid_bitrate_is_normalized(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        track = AudioTrackSettings(stream_index=1, codec="ac3", bitrate_kbps=444)
+        cmd = self.wf.build_command(_make_config(src, tmp_path / "out.mkv",
+                                                 audio_tracks=[track]))
+        assert "-b:a:0" in cmd and "448k" in cmd
+
+    def test_audio_eac3_bitrate_is_clamped_by_output_channels(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        track = AudioTrackSettings(
+            stream_index=1,
+            codec="eac3",
+            bitrate_kbps=4096,
+            input_channels=2,
+            input_channel_layout="stereo",
+        )
+        cmd = self.wf.build_command(_make_config(src, tmp_path / "out.mkv",
+                                                 audio_tracks=[track]))
+        assert "-b:a:0" in cmd and "2048k" in cmd
+
     def test_audio_eac3_7_1_forces_5_1_downmix(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()
         track = AudioTrackSettings(

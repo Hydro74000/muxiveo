@@ -156,7 +156,7 @@ def test_settings_panel_writes_ui_scale_percent_to_ini(tmp_path, qt_app):
         assert cfg.ui_scale_percent == 130
 
 
-def test_settings_panel_writes_audio_encoding_values_to_ini(tmp_path, qt_app):
+def test_settings_panel_does_not_expose_legacy_audio_encoding_settings(tmp_path, qt_app):
     import core.config as cfg_mod
     from core.config import AppConfig
     from ui.panels.settings_panel import SettingsPanel
@@ -176,17 +176,15 @@ def test_settings_panel_writes_audio_encoding_values_to_ini(tmp_path, qt_app):
         cfg = AppConfig()
 
         panel = SettingsPanel(cfg)
-        default_spin = panel.widget_for("audio_encoding", "default_bitrate_per_channel_kbps")
-        step_spin = panel.widget_for("audio_encoding", "bitrate_step_per_channel_kbps")
-        default_spin.setValue(160)
-        step_spin.setValue(48)
+        assert ("audio_encoding", "default_bitrate_per_channel_kbps") not in panel._field_widgets
+        assert ("audio_encoding", "bitrate_step_per_channel_kbps") not in panel._field_widgets
         panel._on_save_clicked()
 
         ini_text = ini_path.read_text(encoding="utf-8")
-        assert "default_bitrate_per_channel_kbps = 160" in ini_text
-        assert "bitrate_step_per_channel_kbps = 48" in ini_text
-        assert cfg.audio_default_bitrate_per_channel_kbps == 160
-        assert cfg.audio_bitrate_step_per_channel_kbps == 48
+        assert "default_bitrate_per_channel_kbps" not in ini_text
+        assert "bitrate_step_per_channel_kbps" not in ini_text
+        assert not hasattr(cfg, "audio_default_bitrate_per_channel_kbps")
+        assert not hasattr(cfg, "audio_bitrate_step_per_channel_kbps")
 
 
 def test_settings_panel_writes_ffmpeg_threads_to_ini(tmp_path, qt_app):

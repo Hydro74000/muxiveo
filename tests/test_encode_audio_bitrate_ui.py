@@ -4,12 +4,12 @@ tests/test_encode_audio_bitrate_ui.py — Plan de test de l'encodage audio côt�
 Plan de couverture :
 
     _AudioTable — valeurs par défaut adaptatives :
-        - AC-3 utilise une combobox bornée de 96 à 256 kbps par canal
-        - AAC utilise une combobox bornée de 96 à 256 kbps par canal
-        - EAC-3 utilise une combobox bornée de 96 à 256 kbps par canal
-        - Si le bitrate source est inférieur au défaut lossy, la valeur préselectionnée reprend le bitrate source
+        - AC-3 utilise la table de bitrates standard Dolby et plafonne à 640 kbps
+        - AAC utilise une combobox fixe basée sur la table AC-3 multipliée par les canaux
+        - EAC-3 utilise une combobox fixe basée sur la table AC-3 multipliée par les canaux
+        - Si le bitrate source est inférieur au défaut lossy, la valeur préselectionnée est arrondie sans dépasser la source
         - FLAC conserve un champ libre prérempli avec le bitrate source
-        - FLAC retombe sur 192 kbps par canal si le bitrate source est absent
+        - FLAC retombe sur 96 kbps par canal si le bitrate source est absent
 
     _AudioTable — restitution de configuration :
         - La valeur choisie dans la combobox AAC/AC-3/EAC-3 est propagée dans current_audio_settings
@@ -37,6 +37,12 @@ from ui.panels.encode_panel.widgets import _AudioSourceDialog, _AudioTable
 
 _PATH_A = Path("/tmp/source_a.mkv")
 _COLOR = "#4f6ef7"
+
+
+class _Cfg:
+    def __init__(self, *, aac: int = 96, eac3: int = 96) -> None:
+        self.aac_bitrate_per_channel_kbps = aac
+        self.eac3_bitrate_per_channel_kbps = eac3
 
 
 def _at(
@@ -96,7 +102,7 @@ def _combo_font_is_bold(editor, value: int) -> bool:
 
 class TestAudioTableAdaptiveBitrates:
 
-    def test_ac3_uses_combobox_with_channel_scaled_range(self, qt_app):
+    def test_ac3_uses_combobox_with_standard_dolby_range(self, qt_app):
         table = _AudioTable()
         table.load_tracks([(_at(channels=6), _COLOR, _PATH_A)], default_codec="ac3")
 
@@ -104,11 +110,41 @@ class TestAudioTableAdaptiveBitrates:
 
         assert getattr(editor, "_combo").isHidden() is False
         assert getattr(editor, "_edit").isHidden() is True
-        assert _combo_values(editor)[0] == 576
-        assert _combo_values(editor)[-1] == 1536
+        assert _combo_values(editor)[0] == 32
+        assert _combo_values(editor)[-1] == 640
         assert 640 in _combo_values(editor)
         assert _combo_font_is_bold(editor, 640) is True
-        assert editor.value() == 640
+        assert editor.value() == 576
+        table.close()
+
+    def test_ac3_off_grid_source_bitrate_snaps_to_standard_value(self, qt_app):
+        table = _AudioTable()
+        table.load_tracks([(_at(channels=6, bit_rate=444_000), _COLOR, _PATH_A)], default_codec="ac3")
+
+        editor = _bitrate_editor(table, 0)
+
+        assert 444 not in _combo_values(editor)
+        assert editor.value() == 384
+        table.close()
+
+    def test_ac3_mono_default_uses_source_channel_count(self, qt_app):
+        table = _AudioTable()
+        table.load_tracks([(_at(channels=1, channel_layout="mono"), _COLOR, _PATH_A)], default_codec="ac3")
+
+        assert _bitrate_editor(table, 0).value() == 96
+        table.close()
+
+    def test_copy_mode_shows_source_bitrate_in_disabled_field(self, qt_app):
+        table = _AudioTable()
+        table.load_tracks([(_at(channels=6, bit_rate=640_000), _COLOR, _PATH_A)], default_codec="copy")
+
+        editor = _bitrate_editor(table, 0)
+        line_edit = getattr(editor, "_edit")
+
+        assert getattr(editor, "_combo").isHidden() is True
+        assert line_edit.isHidden() is False
+        assert line_edit.isEnabled() is False
+        assert line_edit.text() == "640"
         table.close()
 
     def test_aac_uses_combobox_with_channel_scaled_range(self, qt_app):
@@ -119,23 +155,69 @@ class TestAudioTableAdaptiveBitrates:
 
         assert getattr(editor, "_combo").isHidden() is False
         assert getattr(editor, "_edit").isHidden() is True
-        assert _combo_values(editor)[0] == 576
-        assert _combo_values(editor)[-1] == 1536
-        assert 640 in _combo_values(editor)
-        assert _combo_font_is_bold(editor, 640) is True
-        assert editor.value() == 640
+        assert _combo_values(editor)[0] == 192
+        assert _combo_values(editor)[-1] == 1728
+        assert 640 not in _combo_values(editor)
+        assert editor.value() == 576
         table.close()
 
-    def test_eac3_uses_combobox_with_7_1_range(self, qt_app):
+    def test_eac3_uses_combobox_with_7_1_downmix_range(self, qt_app):
         table = _AudioTable()
         table.load_tracks([(_at(channels=8, channel_layout="7.1"), _COLOR, _PATH_A)], default_codec="eac3")
 
         editor = _bitrate_editor(table, 0)
 
-        assert _combo_values(editor)[0] == 640
+        assert _combo_values(editor)[0] == 192
+        assert _combo_values(editor)[-1] == 6144
+        assert 640 not in _combo_values(editor)
+        assert editor.value() == 576
+        table.close()
+
+    def test_eac3_stereo_range_uses_two_channel_output_limit(self, qt_app):
+        table = _AudioTable()
+        table.load_tracks([(_at(channels=2, channel_layout="stereo"), _COLOR, _PATH_A)], default_codec="eac3")
+
+        editor = _bitrate_editor(table, 0)
+
+        assert _combo_values(editor)[0] == 64
         assert _combo_values(editor)[-1] == 2048
-        assert _combo_font_is_bold(editor, 640) is True
-        assert editor.value() == 640
+        assert editor.value() == 192
+        table.close()
+
+    def test_codec_switch_uses_configured_aac_default_per_channel(self, qt_app):
+        table = _AudioTable(config=_Cfg(aac=160, eac3=96))
+        table.load_tracks([(_at(channels=6, bit_rate=2_000_000), _COLOR, _PATH_A)], default_codec="copy")
+
+        _set_codec(table, 0, "aac")
+
+        assert _bitrate_editor(table, 0).value() == 960
+        table.close()
+
+    def test_codec_switch_from_copy_ignores_source_floor_for_configured_aac_default(self, qt_app):
+        table = _AudioTable(config=_Cfg(aac=160, eac3=96))
+        table.load_tracks([(_at(channels=6, bit_rate=640_000), _COLOR, _PATH_A)], default_codec="copy")
+
+        _set_codec(table, 0, "aac")
+
+        assert _bitrate_editor(table, 0).value() == 960
+        table.close()
+
+    def test_codec_switch_uses_configured_eac3_default_per_channel(self, qt_app):
+        table = _AudioTable(config=_Cfg(aac=96, eac3=224))
+        table.load_tracks([(_at(channels=6, bit_rate=2_000_000), _COLOR, _PATH_A)], default_codec="copy")
+
+        _set_codec(table, 0, "eac3")
+
+        assert _bitrate_editor(table, 0).value() == 1344
+        table.close()
+
+    def test_codec_switch_from_copy_ignores_source_floor_for_configured_eac3_default(self, qt_app):
+        table = _AudioTable(config=_Cfg(aac=96, eac3=224))
+        table.load_tracks([(_at(channels=6, bit_rate=640_000), _COLOR, _PATH_A)], default_codec="copy")
+
+        _set_codec(table, 0, "eac3")
+
+        assert _bitrate_editor(table, 0).value() == 1344
         table.close()
 
     def test_flac_prefills_free_field_with_source_bitrate(self, qt_app):
@@ -152,41 +234,33 @@ class TestAudioTableAdaptiveBitrates:
         assert editor.value() == 1537
         table.close()
 
-    def test_flac_without_source_bitrate_falls_back_to_192_kbps_per_channel(self, qt_app):
+    def test_flac_without_source_bitrate_falls_back_to_96_kbps_per_channel(self, qt_app):
         table = _AudioTable()
         table.load_tracks([(_at(codec="flac", channels=2, bit_rate=None), _COLOR, _PATH_A)], default_codec="flac")
 
-        assert _bitrate_editor(table, 0).value() == 384
+        assert _bitrate_editor(table, 0).value() == 192
         table.close()
 
     def test_lossy_defaults_to_source_bitrate_when_source_is_lower(self, qt_app):
         table = _AudioTable()
-        table.load_tracks([(_at(channels=2, channel_layout="stereo", bit_rate=256_000), _COLOR, _PATH_A)], default_codec="aac")
+        table.load_tracks([(_at(channels=2, channel_layout="stereo", bit_rate=160_000), _COLOR, _PATH_A)], default_codec="aac")
 
         editor = _bitrate_editor(table, 0)
 
-        assert 256 in _combo_values(editor)
-        assert _combo_font_is_bold(editor, 256) is True
-        assert editor.value() == 256
+        assert 160 in _combo_values(editor)
+        assert _combo_font_is_bold(editor, 160) is True
+        assert editor.value() == 160
         table.close()
 
-    def test_lossy_combo_proposes_source_bitrate_even_if_above_default_and_off_grid(self, qt_app):
+    def test_lossy_source_bitrate_below_default_is_rounded_down_to_fixed_choice(self, qt_app):
         table = _AudioTable()
-        table.load_tracks([(_at(channels=2, channel_layout="stereo", bit_rate=444_000), _COLOR, _PATH_A)], default_codec="aac")
+        table.load_tracks([(_at(channels=2, channel_layout="stereo", bit_rate=150_000), _COLOR, _PATH_A)], default_codec="aac")
 
         editor = _bitrate_editor(table, 0)
         values = _combo_values(editor)
 
-        assert 384 in values
-        assert 444 in values
-        assert _combo_font_is_bold(editor, 444) is True
-        assert editor.value() == 384
-
-        combo = getattr(editor, "_combo")
-        idx = next(i for i in range(combo.count()) if combo.itemData(i) == 444)
-        combo.setCurrentIndex(idx)
-
-        assert editor.value() == 444
+        assert 150 not in values
+        assert editor.value() == 128
         table.close()
 
     def test_current_audio_settings_propagates_selected_eac3_bitrate_and_input_channels(self, qt_app):
@@ -234,18 +308,17 @@ class TestAudioSourceDialogAdaptiveBitrates:
         codec_idx = next(i for i in range(dialog._codec_combo.count()) if dialog._codec_combo.itemData(i) == "aac")
         dialog._codec_combo.setCurrentIndex(codec_idx)
 
-        assert _combo_values(dialog._bitrate_edit)[0] == 192
-        assert _combo_values(dialog._bitrate_edit)[-1] == 512
+        assert _combo_values(dialog._bitrate_edit)[0] == 64
+        assert _combo_values(dialog._bitrate_edit)[-1] == 576
         assert _combo_font_is_bold(dialog._bitrate_edit, 192) is True
         assert dialog._bitrate_edit.value() == 192
 
         dialog._track_list.setCurrentRow(1)
 
-        assert _combo_values(dialog._bitrate_edit)[0] == 576
-        assert _combo_values(dialog._bitrate_edit)[-1] == 1536
-        assert 640 in _combo_values(dialog._bitrate_edit)
-        assert _combo_font_is_bold(dialog._bitrate_edit, 640) is True
-        assert dialog._bitrate_edit.value() == 640
+        assert _combo_values(dialog._bitrate_edit)[0] == 192
+        assert _combo_values(dialog._bitrate_edit)[-1] == 1728
+        assert 640 not in _combo_values(dialog._bitrate_edit)
+        assert dialog._bitrate_edit.value() == 576
         dialog.close()
 
     def test_dialog_flac_prefills_selected_track_source_bitrate(self, qt_app):
@@ -259,4 +332,19 @@ class TestAudioSourceDialogAdaptiveBitrates:
         assert isinstance(line_edit, QLineEdit)
         assert line_edit.text() == "888"
         assert dialog.selected_bitrate() == 888
+        dialog.close()
+
+    def test_dialog_codec_switch_from_copy_uses_configured_defaults(self, qt_app):
+        surround = _at(index=1, channels=6, channel_layout="5.1", bit_rate=640_000, title="Surround")
+        dialog = _AudioSourceDialog([(surround, _COLOR, _PATH_A)], config=_Cfg(aac=160, eac3=224))
+
+        aac_idx = next(i for i in range(dialog._codec_combo.count()) if dialog._codec_combo.itemData(i) == "aac")
+        dialog._codec_combo.setCurrentIndex(aac_idx)
+        assert dialog._bitrate_edit.value() == 960
+
+        copy_idx = next(i for i in range(dialog._codec_combo.count()) if dialog._codec_combo.itemData(i) == "copy")
+        dialog._codec_combo.setCurrentIndex(copy_idx)
+        eac3_idx = next(i for i in range(dialog._codec_combo.count()) if dialog._codec_combo.itemData(i) == "eac3")
+        dialog._codec_combo.setCurrentIndex(eac3_idx)
+        assert dialog._bitrate_edit.value() == 1344
         dialog.close()

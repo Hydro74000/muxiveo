@@ -42,6 +42,7 @@ from core.workflows.remux_timeline_sync import (
 from core.workflows.encode.models import (
     EncodeConfig, EncodeError, QualityMode,
     VideoEncodeSettings, AudioTrackSettings, TrackTimeOffset,
+    normalize_audio_bitrate_kbps,
 )
 
 
@@ -714,7 +715,7 @@ class EncodeWorkflow(QObject):
             _push_track(src_idx, int(stream_idx), "subtitle")
 
         sources: list[SourceInput] = []
-        track_order: list[tuple[int, int]] = []
+        track_order: list[tuple[int, int] | tuple[int, int, str]] = []
         for i, src in enumerate(all_sources):
             source_tracks = tracks_by_source.get(i, [])
             sources.append(SourceInput(path=src, file_index=i, tracks=source_tracks))
@@ -1979,6 +1980,13 @@ class EncodeWorkflow(QObject):
     def _audio_codec_args(self, out_idx: int, a: AudioTrackSettings) -> list[str]:
         args: list[str] = []
         needs_downmix_51 = self._needs_ac3_51_downmix(a)
+        bitrate_kbps = normalize_audio_bitrate_kbps(
+            a.codec,
+            a.bitrate_kbps,
+            a.input_channels,
+            None,
+            a.input_channel_layout,
+        )
         match a.codec:
             case "copy":
                 args.extend([f"-c:a:{out_idx}", "copy"])
@@ -1988,11 +1996,11 @@ class EncodeWorkflow(QObject):
                 if a.extract_truehd_core:
                     args.extend([f"-bsf:a:{out_idx}", "truehd_core"])
             case "aac":
-                args.extend([f"-c:a:{out_idx}", "aac", f"-b:a:{out_idx}", f"{a.bitrate_kbps}k"])
+                args.extend([f"-c:a:{out_idx}", "aac", f"-b:a:{out_idx}", f"{bitrate_kbps}k"])
             case "ac3":
-                args.extend([f"-c:a:{out_idx}", "ac3", f"-b:a:{out_idx}", f"{a.bitrate_kbps}k"])
+                args.extend([f"-c:a:{out_idx}", "ac3", f"-b:a:{out_idx}", f"{bitrate_kbps}k"])
             case "eac3":
-                args.extend([f"-c:a:{out_idx}", "eac3", f"-b:a:{out_idx}", f"{a.bitrate_kbps}k"])
+                args.extend([f"-c:a:{out_idx}", "eac3", f"-b:a:{out_idx}", f"{bitrate_kbps}k"])
             case "flac":
                 args.extend([f"-c:a:{out_idx}", "flac"])
             case _:
@@ -2075,7 +2083,13 @@ class EncodeWorkflow(QObject):
         duration = config.duration_s or 3600.0
         total_bits = config.video.target_size_mb * 8 * 1024 * 1024
         audio_bps = sum(
-            a.bitrate_kbps * 1000
+            normalize_audio_bitrate_kbps(
+                a.codec,
+                a.bitrate_kbps,
+                a.input_channels,
+                None,
+                a.input_channel_layout,
+            ) * 1000
             for a in config.audio_tracks
             if a.codec not in ("copy", "flac")
         )
@@ -2704,7 +2718,13 @@ class EncodeWorkflow(QObject):
             if audio.codec == "flac":
                 kbps = max(1000, int(audio.bitrate_kbps or 0))
             else:
-                kbps = max(32, int(audio.bitrate_kbps or 0))
+                kbps = normalize_audio_bitrate_kbps(
+                    audio.codec,
+                    audio.bitrate_kbps,
+                    audio.input_channels,
+                    None,
+                    audio.input_channel_layout,
+                )
             encoded_audio_bytes += int((kbps * 1000 / 8) * duration_s)
 
         extra_attachments_bytes = sum(

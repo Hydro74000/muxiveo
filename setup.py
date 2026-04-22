@@ -42,7 +42,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from core.lang_tags import Rfc5646LanguageTags
 
@@ -298,14 +298,14 @@ MANUAL_TOOLS: dict[str, dict] = {
 # Command runner
 # ---------------------------------------------------------------------------
 
-def _windows_no_window_subprocess_kwargs() -> dict[str, object]:
+def _windows_no_window_subprocess_kwargs() -> dict[str, Any]:
     """Return subprocess kwargs that hide console windows on Windows."""
     if OS != "Windows":
         return {}
     # If a console is already visible (first-launch setup), keep child process
     # output in that same console.
     try:
-        if bool(ctypes.windll.kernel32.GetConsoleWindow()):
+        if bool(ctypes.windll.kernel32.GetConsoleWindow()):  # type: ignore[attr-defined]
             return {}
     except Exception:
         pass
@@ -314,7 +314,7 @@ def _windows_no_window_subprocess_kwargs() -> dict[str, object]:
         # CLI execution from a terminal should keep standard behavior.
         return {}
 
-    kwargs: dict[str, object] = {}
+    kwargs: dict[str, Any] = {}
 
     create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     if create_no_window:
@@ -1428,7 +1428,7 @@ def _windows_is_admin() -> bool:
     if OS != "Windows":
         return False
     try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())  # type: ignore[attr-defined]
     except Exception:
         return False
 
@@ -1436,7 +1436,7 @@ def _windows_is_admin() -> bool:
 def _windows_message_box(text: str, title_text: str, flags: int) -> int:
     """Display a native Windows message box."""
     try:
-        return int(ctypes.windll.user32.MessageBoxW(None, text, title_text, flags))
+        return int(ctypes.windll.user32.MessageBoxW(None, text, title_text, flags))  # type: ignore[attr-defined]
     except Exception:
         return 0
 
@@ -1522,7 +1522,7 @@ def _windows_cfa_candidate_apps(prefix: Path) -> list[Path]:
 
 def _windows_apply_controlled_folder_access_allowlist(
     targets: list[Path],
-) -> dict[str, object]:
+) -> dict[str, Any]:
     """
     Add missing executables to the Controlled Folder Access allowlist.
 
