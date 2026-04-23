@@ -16,6 +16,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from core.subprocess_utils import subprocess_text_kwargs, subprocess_windows_no_window_kwargs
+from core.workflows.encode.hw_devices import (
+    select_linux_hwaccel_device,
+    select_windows_hwaccel_device,
+)
 from core.workflows.encode.models import HARDWARE_VIDEO_CODECS, SOFTWARE_VIDEO_CODECS
 
 
@@ -24,6 +28,8 @@ _GENERIC_HW_FILTER = "format=nv12"
 _VAAPI_FILTER = "format=nv12,hwupload"
 _NVENC_CODECS = {"hevc_nvenc", "h264_nvenc", "av1_nvenc"}
 _VAAPI_CODECS = {"hevc_vaapi", "h264_vaapi", "av1_vaapi"}
+_QSV_CODECS = {"hevc_qsv", "h264_qsv", "av1_qsv"}
+_AMF_CODECS = {"hevc_amf", "h264_amf", "av1_amf"}
 
 
 class HardwareEncoderDetector:
@@ -50,6 +56,7 @@ class HardwareEncoderDetector:
         self._system_ffmpeg_cached = False
         self._vaapi_device_cache: str | None = None
         self._vaapi_device_cached = False
+        self._qsv_device_cache: dict[str, str | None] = {}
 
     @staticmethod
     def _resolve_ffmpeg(ffmpeg_bin: str) -> str:
@@ -128,6 +135,17 @@ class HardwareEncoderDetector:
             self._vaapi_device_cached = True
         return device
 
+    def _cached_qsv_device(self, ffmpeg_bin: str) -> str | None:
+        """Retourne le device QSV avec cache par instance et binaire ffmpeg."""
+        resolved = self._resolve_ffmpeg(ffmpeg_bin)
+        with self._cache_lock:
+            if resolved in self._qsv_device_cache:
+                return self._qsv_device_cache[resolved]
+        device = self._qsv_device(ffmpeg_bin)
+        with self._cache_lock:
+            self._qsv_device_cache[resolved] = device
+        return device
+
     def detect_software(self, ffmpeg_bin: str = "ffmpeg") -> set[str]:
         """
         Retourne les codecs SOFTWARE disponibles.
@@ -170,14 +188,13 @@ class HardwareEncoderDetector:
             return set(), ffmpeg_bin
 
         resolved = self._resolve_ffmpeg(ff)
-        vaapi_device = self._cached_vaapi_device()
         available: set[str] = set()
         nvenc_compiled = compiled & _NVENC_CODECS
 
         if nvenc_compiled:
-            available |= self._detect_nvenc(resolved, nvenc_compiled, vaapi_device)
+            available |= self._detect_nvenc(resolved, nvenc_compiled)
 
-        available |= self._probe_codecs(resolved, compiled - _NVENC_CODECS, vaapi_device)
+        available |= self._probe_codecs(resolved, compiled - _NVENC_CODECS)
 
         return available, ff
 
@@ -232,7 +249,6 @@ class HardwareEncoderDetector:
         self,
         ffmpeg_bin: str,
         compiled: set[str],
-        vaapi_device: str | None,
     ) -> set[str]:
         """
         Garde la logique historique Linux/macOS pour NVIDIA.
@@ -247,23 +263,22 @@ class HardwareEncoderDetector:
         # Windows (.exe) depuis un host non-win32 ; on force alors la logique
         # "probe FFmpeg réel" sans dépendre de nvidia-smi.
         if sys.platform == "win32" or ffmpeg_bin.lower().endswith(".exe"):
-            return self._probe_codecs(ffmpeg_bin, compiled, vaapi_device)
+            return self._probe_codecs(ffmpeg_bin, compiled)
 
         if self._nvidia_ok():
             return set(compiled)
 
-        return self._probe_codecs(ffmpeg_bin, compiled, vaapi_device)
+        return self._probe_codecs(ffmpeg_bin, compiled)
 
     def _probe_codecs(
         self,
         ffmpeg_bin: str,
         codec_ids: set[str],
-        vaapi_device: str | None,
     ) -> set[str]:
         """Probe une liste de codecs et retourne ceux qui sont utilisables."""
         jobs: list[tuple[str, list[str]]] = []
         for codec_id in codec_ids:
-            cmd = self._probe_command(ffmpeg_bin, codec_id, vaapi_device)
+            cmd = self._probe_command(ffmpeg_bin, codec_id)
             if cmd is None:
                 continue
             jobs.append((codec_id, cmd))
@@ -315,7 +330,6 @@ class HardwareEncoderDetector:
         self,
         ffmpeg_bin: str,
         codec_id: str,
-        vaapi_device: str | None,
     ) -> list[str] | None:
         """
         Construit la commande de probe adaptee a la famille d'encodeur.
@@ -331,6 +345,7 @@ class HardwareEncoderDetector:
         ]
 
         if codec_id in _VAAPI_CODECS:
+            vaapi_device = self._cached_vaapi_device()
             if vaapi_device is None:
                 return None
             return [
@@ -340,6 +355,50 @@ class HardwareEncoderDetector:
                 "-vf", _VAAPI_FILTER,
                 "-frames:v", "1",
                 "-c:v", codec_id,
+                "-f", "null", "-",
+            ]
+
+        if codec_id in _QSV_CODECS:
+            qsv_device = self._cached_qsv_device(ffmpeg_bin)
+            if qsv_device is None:
+                return None
+            return [
+                *base_cmd,
+                "-qsv_device", qsv_device,
+                "-f", "lavfi", "-i", _NULLSRC,
+                "-vf", _GENERIC_HW_FILTER,
+                "-frames:v", "1",
+                "-c:v", codec_id,
+                "-f", "null", "-",
+            ]
+
+        if codec_id in _AMF_CODECS and self._is_windows_runtime(ffmpeg_bin):
+            amf_device = self._amf_device(ffmpeg_bin, codec_id)
+            if amf_device is None:
+                return None
+            device_name = f"mre_amf_probe{amf_device}"
+            return [
+                *base_cmd,
+                "-init_hw_device", f"d3d11va={device_name}:{amf_device}",
+                "-filter_hw_device", device_name,
+                "-f", "lavfi", "-i", _NULLSRC,
+                "-vf", _VAAPI_FILTER,
+                "-frames:v", "1",
+                "-c:v", codec_id,
+                "-f", "null", "-",
+            ]
+
+        if codec_id in _NVENC_CODECS and self._is_windows_runtime(ffmpeg_bin):
+            nvenc_device = self._nvenc_device(ffmpeg_bin, codec_id)
+            if nvenc_device is None:
+                return None
+            return [
+                *base_cmd,
+                "-f", "lavfi", "-i", _NULLSRC,
+                "-vf", _GENERIC_HW_FILTER,
+                "-frames:v", "1",
+                "-c:v", codec_id,
+                "-gpu", nvenc_device,
                 "-f", "null", "-",
             ]
 
@@ -353,10 +412,25 @@ class HardwareEncoderDetector:
         ]
 
     @staticmethod
-    def _vaapi_device() -> str | None:
-        """Retourne le chemin du premier device VAAPI disponible, ou None."""
-        for i in range(8):
-            node = Path(f"/dev/dri/renderD{128 + i}")
-            if node.exists():
-                return str(node)
-        return None
+    def _is_windows_runtime(ffmpeg_bin: str) -> bool:
+        return sys.platform == "win32" or ffmpeg_bin.lower().endswith(".exe")
+
+    def _vaapi_device(self) -> str | None:
+        """Retourne le render node Linux ciblé pour VAAPI, ou None."""
+        return select_linux_hwaccel_device("hevc_vaapi")
+
+    def _qsv_device(self, ffmpeg_bin: str, codec_id: str = "hevc_qsv") -> str | None:
+        """Retourne le device QSV ciblé selon l'OS, ou None."""
+        if self._is_windows_runtime(ffmpeg_bin):
+            return select_windows_hwaccel_device(codec_id, ffmpeg_bin=self._resolve_ffmpeg(ffmpeg_bin))
+        return select_linux_hwaccel_device("hevc_qsv")
+
+    def _amf_device(self, ffmpeg_bin: str, codec_id: str = "hevc_amf") -> str | None:
+        if not self._is_windows_runtime(ffmpeg_bin):
+            return None
+        return select_windows_hwaccel_device(codec_id, ffmpeg_bin=self._resolve_ffmpeg(ffmpeg_bin))
+
+    def _nvenc_device(self, ffmpeg_bin: str, codec_id: str = "hevc_nvenc") -> str | None:
+        if not self._is_windows_runtime(ffmpeg_bin):
+            return None
+        return select_windows_hwaccel_device(codec_id, ffmpeg_bin=self._resolve_ffmpeg(ffmpeg_bin))

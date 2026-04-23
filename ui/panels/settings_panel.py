@@ -424,6 +424,24 @@ class SettingsPanel(QWidget):
             }
         return {section: {}}
 
+    def _validate_values(self, values: dict[str, dict[str, str]]) -> bool:
+        ui_values = values.get("ui", {})
+        verbose_enabled = str(ui_values.get("verbose_file_logging", "false")).strip().lower() == "true"
+        verbose_dir = str(ui_values.get("verbose_log_dir", "")).strip()
+        if verbose_enabled and not verbose_dir:
+            message = translate_text(
+                "Le dossier des logs verbose doit être renseigné quand l'option est activée."
+            )
+            if self._status_label is not None:
+                self._status_label.setText(message)
+            QMessageBox.warning(
+                self,
+                translate_text("Réglage invalide"),
+                message,
+            )
+            return False
+        return True
+
     def _browse_for_field(self, section: str, field: dict[str, Any]) -> None:
         widget = self._field_widgets[(section, field["key"])]
         if not isinstance(widget, QLineEdit):
@@ -447,7 +465,10 @@ class SettingsPanel(QWidget):
             self._status_label.setText(translate_text("Configuration rechargée depuis config.ini."))
 
     def _on_save_clicked(self) -> None:
-        write_ini_settings(self._collect_values())
+        values = self._collect_values()
+        if not self._validate_values(values):
+            return
+        write_ini_settings(values)
         self._config.reload()
         self._config.save()
         if self._status_label is not None:
@@ -459,7 +480,10 @@ class SettingsPanel(QWidget):
         self.settings_saved.emit()
 
     def _on_save_section(self, section: str, section_title: str) -> None:
-        write_ini_settings(self._collect_section_values(section))
+        values = self._collect_section_values(section)
+        if not self._validate_values(values):
+            return
+        write_ini_settings(values)
         self._config.reload()
         self._config.save()
         if self._status_label is not None:

@@ -34,7 +34,9 @@ def emit_video_tracks(panel: "RemuxPanel") -> None:
         if file_info is None:
             continue
         color = panel._source_colors.get(entry.file_id, _C.BORDER)
-        video_tuples.append((file_info, entry, color))
+        # EncodePanel reçoit une copie dédiée pour éviter tout couplage objet
+        # entre pistes ou avec l'état interne du tableau remux.
+        video_tuples.append((file_info, dc_replace(entry), color))
 
     panel.video_tracks_changed.emit(video_tuples)
 

@@ -12,6 +12,7 @@ on:
       - "tests/test_media_info_fetcher.py"
       - "tests/test_encode_models.py"
       - "tests/test_encode_progress.py"
+      - "tests/test_encode_hw_devices.py"
       - "tests/test_encode_hardware.py"
       - "tests/test_setup_and_config.py"
       - "tests/test_subprocess_utils.py"
@@ -31,6 +32,7 @@ on:
       - "tests/test_media_info_fetcher.py"
       - "tests/test_encode_models.py"
       - "tests/test_encode_progress.py"
+      - "tests/test_encode_hw_devices.py"
       - "tests/test_encode_hardware.py"
       - "tests/test_setup_and_config.py"
       - "tests/test_subprocess_utils.py"
@@ -78,6 +80,7 @@ jobs:
             tests/test_media_info_fetcher.py \
             tests/test_encode_models.py \
             tests/test_encode_progress.py \
+            tests/test_encode_hw_devices.py \
             tests/test_encode_hardware.py \
             tests/test_setup_and_config.py \
             tests/test_subprocess_utils.py \

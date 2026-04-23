@@ -1,0 +1,59 @@
+name: Windows Encode Tests
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "core/workflows/encode/**"
+      - "tests/test_encode_hw_devices.py"
+      - "tests/test_encode_hardware.py"
+      - "tests/test_encode_workflow.py"
+      - "tests/conftest.py"
+      - "scripts/windows_pytest_bootstrap.py"
+      - ".github/workflows/windows-encode-tests.yml"
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "core/workflows/encode/**"
+      - "tests/test_encode_hw_devices.py"
+      - "tests/test_encode_hardware.py"
+      - "tests/test_encode_workflow.py"
+      - "tests/conftest.py"
+      - "scripts/windows_pytest_bootstrap.py"
+      - ".github/workflows/windows-encode-tests.yml"
+
+jobs:
+  encode-targeted:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Test Dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+          winget install --id Gyan.FFmpeg -e --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
+          $ffPath = (Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Gyan.FFmpeg*" -Directory | Select-Object -First 1).FullName
+          $binDir = (Get-ChildItem -Path $ffPath -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1).DirectoryName
+          echo "$binDir" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          & "$binDir\ffmpeg.exe" -version
+          & "$binDir\ffprobe.exe" -version
+
+      - name: Run Targeted Encode Tests
+        shell: pwsh
+        run: |
+          python scripts/windows_pytest_bootstrap.py `
+            tests/test_encode_hw_devices.py `
+            tests/test_encode_hardware.py `
+            tests/test_encode_workflow.py

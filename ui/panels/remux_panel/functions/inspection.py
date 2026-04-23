@@ -53,6 +53,7 @@ def inspect_file(panel: "RemuxPanel", file_id: str, path: Path) -> None:
         inspector = FileInspector(
             ffprobe_bin=panel._config.tool_ffprobe,
             mediainfo_bin=panel._config.tool_mediainfo,
+            verbose_output=lambda line: panel.tool_output.emit("inspector", line),
         )
         info = inspector.inspect(path)
         panel._inspection_done.emit(file_id, info)

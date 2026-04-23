@@ -108,6 +108,7 @@ import os
 
 import pytest
 from PySide6.QtCore import QCoreApplication, Qt
+import core.workflows.encode.workflow as encode_workflow_mod
 
 _app: QCoreApplication | None = None
 
@@ -166,13 +167,19 @@ def _make_config(source: Path, output: Path, **kw) -> EncodeConfig:
     return EncodeConfig(**defaults)
 
 
-def _make_workflow(enabled=True, threshold=15, ffmpeg_threads=None) -> EncodeWorkflow:
+def _make_workflow(
+    enabled=True,
+    threshold=15,
+    ffmpeg_threads=None,
+    max_parallel_video_encodes=1,
+) -> EncodeWorkflow:
     return EncodeWorkflow(
         ffmpeg_bin="ffmpeg", dovi_tool_bin="dovi_tool",
         hdr10plus_bin="hdr10plus_tool",
         ram_buffer_enabled=enabled,
         ram_buffer_threshold_pct=threshold,
         ffmpeg_threads=ffmpeg_threads,
+        max_parallel_video_encodes=max_parallel_video_encodes,
     )
 
 
@@ -210,6 +217,143 @@ class TestFfmpegThreads:
 
         assert cmds[0][cmds[0].index("-threads") + 1] == "14"
         assert cmds[1][cmds[1].index("-threads") + 1] == "14"
+
+
+class TestMaxParallelVideoEncodes:
+
+    def test_default_is_one(self):
+        wf = _make_workflow()
+        assert wf._max_parallel_video_encodes == 1
+
+    def test_setter_normalizes_to_minimum_one(self):
+        wf = _make_workflow()
+        wf.set_max_parallel_video_encodes(4)
+        assert wf._max_parallel_video_encodes == 4
+        wf.set_max_parallel_video_encodes(0)
+        assert wf._max_parallel_video_encodes == 1
+
+
+class TestVideoTrackPreparationOrchestrator:
+
+    def test_ram_guard_serializes_disjoint_resources_when_budget_is_tight(self):
+        available_ram = [10]
+        first_started = threading.Event()
+        second_started = threading.Event()
+        release_first = threading.Event()
+        active = 0
+        max_active = 0
+        gate = threading.Lock()
+        results: list[tuple[int, dict[str, object], list[Path]]] = []
+
+        def _task(order: int):
+            def _run():
+                nonlocal active, max_active
+                with gate:
+                    active += 1
+                    max_active = max(max_active, active)
+                try:
+                    if order == 0:
+                        first_started.set()
+                        available_ram[0] = 5
+                        assert release_first.wait(1.0)
+                        available_ram[0] = 10
+                    else:
+                        second_started.set()
+                    return {"path": Path(f"/tmp/video_{order}.mkv")}, []
+                finally:
+                    with gate:
+                        active -= 1
+            return _run
+
+        orchestrator = encode_workflow_mod._VideoTrackPreparationOrchestrator(
+            max_parallel=2,
+            cancel_cb=lambda: None,
+            min_available_ram_bytes=4,
+            available_ram_cb=lambda: available_ram[0],
+        )
+        tasks = [
+            encode_workflow_mod._VideoTrackPrepTask(
+                order=0,
+                resource_key="cpu",
+                estimated_ram_bytes=3,
+                run=_task(0),
+            ),
+            encode_workflow_mod._VideoTrackPrepTask(
+                order=1,
+                resource_key="gpu:nvenc",
+                estimated_ram_bytes=3,
+                run=_task(1),
+            ),
+        ]
+
+        worker = threading.Thread(target=lambda: results.extend(orchestrator.execute(tasks)))
+        worker.start()
+        assert first_started.wait(1.0)
+        time.sleep(0.1)
+        assert not second_started.is_set()
+        release_first.set()
+        worker.join(1.0)
+
+        assert not worker.is_alive()
+        assert second_started.is_set()
+        assert max_active == 1
+        assert [order for order, _prepared, _cleanup in sorted(results)] == [0, 1]
+
+    def test_ram_guard_allows_overlap_when_budget_is_sufficient(self):
+        available_ram = [20]
+        both_started = threading.Event()
+        release_tasks = threading.Event()
+        active = 0
+        max_active = 0
+        gate = threading.Lock()
+        results: list[tuple[int, dict[str, object], list[Path]]] = []
+
+        def _task(order: int):
+            def _run():
+                nonlocal active, max_active
+                with gate:
+                    active += 1
+                    max_active = max(max_active, active)
+                    if active >= 2:
+                        both_started.set()
+                try:
+                    assert release_tasks.wait(1.0)
+                    return {"path": Path(f"/tmp/video_{order}.mkv")}, []
+                finally:
+                    with gate:
+                        active -= 1
+            return _run
+
+        orchestrator = encode_workflow_mod._VideoTrackPreparationOrchestrator(
+            max_parallel=2,
+            cancel_cb=lambda: None,
+            min_available_ram_bytes=4,
+            available_ram_cb=lambda: available_ram[0],
+        )
+        tasks = [
+            encode_workflow_mod._VideoTrackPrepTask(
+                order=0,
+                resource_key="cpu",
+                estimated_ram_bytes=3,
+                run=_task(0),
+            ),
+            encode_workflow_mod._VideoTrackPrepTask(
+                order=1,
+                resource_key="gpu:nvenc",
+                estimated_ram_bytes=3,
+                run=_task(1),
+            ),
+        ]
+
+        worker = threading.Thread(target=lambda: results.extend(orchestrator.execute(tasks)))
+        worker.start()
+        assert both_started.wait(1.0)
+        release_tasks.set()
+        worker.join(1.0)
+
+        assert not worker.is_alive()
+        assert max_active >= 2
+        assert [order for order, _prepared, _cleanup in sorted(results)] == [0, 1]
 
 
 class TestFfmpegProgressArgs:
@@ -251,6 +395,55 @@ class TestFfmpegProgressArgs:
         assert "-progress" in cmd
         assert cmd[cmd.index("-progress") + 1] == "pipe:1"
         assert "-nostats" in cmd
+
+
+class TestTwoPassPerTrackPasslogfile:
+
+    def test_multi_video_track_two_pass_uses_track_specific_passlogfile(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.touch()
+        out = tmp_path / "video_1.mkv"
+        passlog_prefix = tmp_path / "ffmpeg2pass-video_1"
+        wf = _make_workflow()
+        video = _make_video_settings(codec="libx265", quality_mode=QualityMode.SIZE)
+        cfg = _make_config(src, tmp_path / "out.mkv", video=video, duration_s=3600.0)
+
+        cmds = wf._build_multi_video_track_encode_commands(
+            cfg,
+            video,
+            src,
+            out,
+            passlog_prefix=passlog_prefix,
+        )
+
+        assert len(cmds) == 2
+        assert "-passlogfile" in cmds[0]
+        assert cmds[0][cmds[0].index("-passlogfile") + 1] == str(passlog_prefix)
+        assert "-passlogfile" in cmds[1]
+        assert cmds[1][cmds[1].index("-passlogfile") + 1] == str(passlog_prefix)
+
+    def test_video_only_two_pass_for_track_uses_track_specific_passlogfile(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.touch()
+        out = tmp_path / "video_1.hevc"
+        passlog_prefix = tmp_path / "ffmpeg2pass-video_1"
+        wf = _make_workflow()
+        video = _make_video_settings(codec="libx265", quality_mode=QualityMode.SIZE)
+        cfg = _make_config(src, tmp_path / "out.mkv", video=video, duration_s=3600.0)
+
+        cmds = wf._build_video_only_two_pass_for_track(
+            cfg,
+            video,
+            src,
+            out,
+            passlog_prefix=passlog_prefix,
+        )
+
+        assert len(cmds) == 2
+        assert "-passlogfile" in cmds[0]
+        assert cmds[0][cmds[0].index("-passlogfile") + 1] == str(passlog_prefix)
+        assert "-passlogfile" in cmds[1]
+        assert cmds[1][cmds[1].index("-passlogfile") + 1] == str(passlog_prefix)
 
 # ===========================================================================
 # _total_ram_bytes — cross-platform
@@ -1109,6 +1302,152 @@ class TestBuildCommand:
             assert "-hwaccel" in pass_cmd and pass_cmd[pass_cmd.index("-hwaccel") + 1] == "vaapi"
             assert "-vf" not in pass_cmd
 
+    def test_h264_vaapi_force_8bit_disables_hw_surface_decode_and_adds_upload(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        with patch.object(EncodeWorkflow, "_vaapi_device", return_value="/dev/dri/renderD128"):
+            cmd = self.wf.build_command_single(
+                _make_config(
+                    src,
+                    tmp_path / "out.mkv",
+                    video=_make_video_settings(codec="h264_vaapi", force_8bit=True),
+                )
+            )
+
+        assert "-vaapi_device" in cmd
+        assert "-hwaccel_output_format" not in cmd
+        assert "-vf" in cmd
+        assert cmd[cmd.index("-vf") + 1].endswith("format=nv12,hwupload")
+        assert "-pix_fmt" in cmd
+        assert cmd[cmd.index("-pix_fmt") + 1] == "nv12"
+
+    def test_h264_nvenc_force_8bit_disables_hw_decode_and_sets_nv12(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        cmd = self.wf.build_command_single(
+            _make_config(
+                src,
+                tmp_path / "out.mkv",
+                video=_make_video_settings(codec="h264_nvenc", force_8bit=True),
+            )
+        )
+
+        assert "-hwaccel_output_format" not in cmd
+        assert "-pix_fmt" in cmd
+        assert cmd[cmd.index("-pix_fmt") + 1] == "nv12"
+
+    def test_qsv_single_pass_adds_explicit_device_on_linux(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        with patch.object(EncodeWorkflow, "_qsv_device", return_value="/dev/dri/renderD129"):
+            cmd = self.wf.build_command_single(
+                _make_config(
+                    src,
+                    tmp_path / "out.mkv",
+                    video=_make_video_settings(codec="hevc_qsv"),
+                )
+            )
+
+        assert "-qsv_device" in cmd
+        assert cmd[cmd.index("-qsv_device") + 1] == "/dev/dri/renderD129"
+        assert cmd.index("-qsv_device") < cmd.index("-i")
+        assert "-hwaccel" in cmd and cmd[cmd.index("-hwaccel") + 1] == "qsv"
+        assert "-hwaccel_output_format" in cmd
+        assert cmd[cmd.index("-hwaccel_output_format") + 1] == "qsv"
+
+    def test_qsv_without_resolved_device_keeps_legacy_hwaccel_flags(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        with patch.object(EncodeWorkflow, "_qsv_device", return_value=None):
+            cmd = self.wf.build_command_single(
+                _make_config(
+                    src,
+                    tmp_path / "out.mkv",
+                    video=_make_video_settings(codec="h264_qsv"),
+                )
+            )
+
+        assert "-qsv_device" not in cmd
+        assert "-hwaccel" in cmd and cmd[cmd.index("-hwaccel") + 1] == "qsv"
+
+    def test_qsv_windows_single_pass_adds_explicit_adapter_index(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        with patch("core.workflows.encode.workflow.sys.platform", "win32"), \
+             patch.object(EncodeWorkflow, "_qsv_device", return_value="1"):
+            cmd = self.wf.build_command_single(
+                _make_config(
+                    src,
+                    tmp_path / "out.mkv",
+                    video=_make_video_settings(codec="hevc_qsv"),
+                )
+            )
+
+        assert "-qsv_device" in cmd
+        assert cmd[cmd.index("-qsv_device") + 1] == "1"
+        assert "-hwaccel" in cmd and cmd[cmd.index("-hwaccel") + 1] == "qsv"
+
+    def test_amf_windows_single_pass_adds_named_d3d11_device(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        with patch("core.workflows.encode.workflow.sys.platform", "win32"), \
+             patch.object(EncodeWorkflow, "_amf_device", return_value="2"):
+            cmd = self.wf.build_command_single(
+                _make_config(
+                    src,
+                    tmp_path / "out.mkv",
+                    video=_make_video_settings(codec="h264_amf"),
+                )
+            )
+
+        assert "-init_hw_device" in cmd
+        assert cmd[cmd.index("-init_hw_device") + 1] == "d3d11va=mre_amf:2"
+        assert "-filter_hw_device" in cmd
+        assert cmd[cmd.index("-filter_hw_device") + 1] == "mre_amf"
+        assert "-hwaccel_device" in cmd
+        assert cmd[cmd.index("-hwaccel_device") + 1] == "mre_amf"
+
+    def test_amf_windows_tonemap_adds_hwupload_to_selected_device(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        with patch("core.workflows.encode.workflow.sys.platform", "win32"), \
+             patch.object(EncodeWorkflow, "_amf_device", return_value="2"):
+            cmd = self.wf.build_command_single(
+                _make_config(
+                    src,
+                    tmp_path / "out.mkv",
+                    video=_make_video_settings(codec="hevc_amf", tonemap_to_sdr=True),
+                )
+            )
+
+        assert "-init_hw_device" in cmd
+        assert "-vf" in cmd
+        assert cmd[cmd.index("-vf") + 1].endswith("format=nv12,hwupload")
+        assert "-hwaccel_output_format" not in cmd
+
+    def test_nvenc_windows_single_pass_adds_explicit_gpu_index(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        with patch("core.workflows.encode.workflow.sys.platform", "win32"), \
+             patch.object(EncodeWorkflow, "_nvenc_device", return_value="1"):
+            cmd = self.wf.build_command_single(
+                _make_config(
+                    src,
+                    tmp_path / "out.mkv",
+                    video=_make_video_settings(codec="h264_nvenc"),
+                )
+            )
+
+        assert "-hwaccel_device" in cmd
+        assert cmd[cmd.index("-hwaccel_device") + 1] == "1"
+        assert "-gpu" in cmd
+        assert cmd[cmd.index("-gpu") + 1] == "1"
+
+    def test_libx264_force_8bit_sets_yuv420p(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        cmd = self.wf.build_command_single(
+            _make_config(
+                src,
+                tmp_path / "out.mkv",
+                video=_make_video_settings(codec="libx264", force_8bit=True),
+            )
+        )
+
+        assert "-pix_fmt" in cmd
+        assert cmd[cmd.index("-pix_fmt") + 1] == "yuv420p"
+
     def test_non_vaapi_codec_does_not_receive_vaapi_args(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()
         with patch.object(EncodeWorkflow, "_vaapi_device", return_value="/dev/dri/renderD128"):
@@ -1628,7 +1967,7 @@ class TestRunCopyBypassesInject:
 
         original = wf._run_with_metadata_inject
 
-        def _spy(cfg):
+        def _spy(cfg, **_kwargs):
             inject_called[0] = True
             return original(cfg)
 
@@ -1670,7 +2009,7 @@ class TestRunCopyBypassesInject:
         wf = _make_workflow()
         inject_called = [False]
 
-        def _spy(cfg):
+        def _spy(cfg, **_kwargs):
             inject_called[0] = True
             return MagicMock()
 
@@ -1694,7 +2033,7 @@ class TestRunCopyBypassesInject:
         wf = _make_workflow()
         inject_called = [False]
 
-        def _spy(_cfg):
+        def _spy(_cfg, **_kwargs):
             inject_called[0] = True
             return MagicMock()
 
@@ -1925,6 +2264,26 @@ class TestDynamicHdrDetection:
             raise AssertionError(f"Commande subprocess inattendue: {cmd}")
 
         with patch("subprocess.run", side_effect=_fake_subprocess_run):
+            assert wf._detect_source_dynamic_hdr_presence(src) == (True, True)
+
+    def test_detect_source_dynamic_hdr_presence_falls_back_to_ffprobe_frames(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 1000)
+        wf = _make_workflow()
+
+        with patch.object(
+            wf,
+            "_ffprobe_streams_payload",
+            return_value={"streams": [{"codec_type": "video", "side_data_list": []}]},
+        ), patch.object(
+            wf,
+            "_mediainfo_hdr_flags",
+            return_value=None,
+        ), patch.object(
+            wf,
+            "_ffprobe_frame_dynamic_hdr_flags",
+            return_value=(True, True),
+        ):
             assert wf._detect_source_dynamic_hdr_presence(src) == (True, True)
 
 
@@ -3331,6 +3690,464 @@ class TestEncodeRuntimeMultiSourceSync:
         assert pass2[pass2.index("-itsoffset") + 1] == "0.150"
         map_values = [pass2[i + 1] for i, tok in enumerate(pass2[:-1]) if tok == "-map"]
         assert "3:0" in map_values
+
+    def test_run_multi_video_pipeline_applies_audio_and_subtitle_offsets(self, tmp_path):
+        src = tmp_path / "src.mkv"
+        out = tmp_path / "out.mkv"
+        src.touch()
+
+        video_a = _make_video_settings(codec="copy", source_path=src, stream_index=0)
+        video_b = _make_video_settings(codec="copy", source_path=src, stream_index=1)
+        cfg = _make_config(
+            src,
+            out,
+            video=video_a,
+            video_tracks=[video_a, video_b],
+            audio_tracks=[AudioTrackSettings(stream_index=2, codec="copy", source_path=src)],
+            subtitle_tracks=[(src, 3)],
+            copy_subtitles=False,
+            track_time_offsets=[
+                TrackTimeOffset(track_type="audio", source_path=src, stream_index=2, offset_ms=120),
+                TrackTimeOffset(track_type="subtitle", source_path=src, stream_index=3, offset_ms=-80),
+            ],
+        )
+
+        wf = _make_workflow()
+        captured: list[list[str]] = []
+
+        def _fake_run_cmd(cmd, **_kwargs):
+            captured.append(list(cmd))
+            return "ok"
+
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run_cmd), patch.object(
+            wf,
+            "_prepare_multisource_sync",
+            return_value=({}, [], None, False),
+        ):
+            wf._run_multi_video_pipeline(cfg, cleanup_paths=[], prep_signals=TaskSignals())
+
+        final_cmd = captured[-1]
+        assert "-itsoffset" in final_cmd
+        assert final_cmd[final_cmd.index("-itsoffset") + 1] == "0.120"
+        assert "-ss" in final_cmd
+        assert final_cmd[final_cmd.index("-ss") + 1] == "0.080"
+        map_values = [final_cmd[i + 1] for i, tok in enumerate(final_cmd[:-1]) if tok == "-map"]
+        assert "3:2" in map_values
+        assert "4:3" in map_values
+
+    def test_run_multi_video_pipeline_keeps_video_offsets_stream_specific(self, tmp_path):
+        src = tmp_path / "src.mkv"
+        out = tmp_path / "out.mkv"
+        src.touch()
+
+        video_a = _make_video_settings(codec="copy", source_path=src, stream_index=0)
+        video_b = _make_video_settings(codec="copy", source_path=src, stream_index=1)
+        cfg = _make_config(
+            src,
+            out,
+            video=video_a,
+            video_tracks=[video_a, video_b],
+            audio_tracks=[],
+            subtitle_tracks=[],
+            copy_subtitles=False,
+            track_time_offsets=[
+                TrackTimeOffset(track_type="video", source_path=src, stream_index=1, offset_ms=1000),
+            ],
+        )
+
+        wf = _make_workflow()
+        captured: list[list[str]] = []
+
+        def _fake_run_cmd(cmd, **_kwargs):
+            captured.append(list(cmd))
+            return "ok"
+
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run_cmd), patch.object(
+            wf,
+            "_prepare_multisource_sync",
+            return_value=({}, [], None, False),
+        ):
+            wf._run_multi_video_pipeline(cfg, cleanup_paths=[], prep_signals=TaskSignals())
+
+        final_cmd = captured[-1]
+        assert final_cmd.count("-itsoffset") == 1
+        assert final_cmd[final_cmd.index("-itsoffset") + 1] == "1.000"
+        map_values = [final_cmd[i + 1] for i, tok in enumerate(final_cmd[:-1]) if tok == "-map"]
+        assert "0:0" in map_values
+        assert "1:1" in map_values
+
+    def test_run_with_preparation_multi_video_binds_post_actions(self, tmp_path):
+        src = tmp_path / "src.mkv"
+        out = tmp_path / "out.mkv"
+        src.touch()
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+
+        video_a = _make_video_settings(codec="copy", source_path=src, stream_index=0)
+        video_b = _make_video_settings(codec="copy", source_path=src, stream_index=1)
+        cfg = _make_config(
+            src,
+            out,
+            video=video_a,
+            video_tracks=[video_a, video_b],
+            audio_tracks=[],
+            copy_subtitles=False,
+        )
+
+        wf = _make_workflow()
+        prep_signals = TaskSignals()
+        inner_signals = TaskSignals()
+        logs: list[tuple[str, str]] = []
+        wf.log_message.connect(lambda level, message: logs.append((str(level), str(message))))
+
+        with patch(
+            "core.workflows.encode.workflow.prepare_process_work_dir",
+            return_value=work_dir,
+        ), patch(
+            "core.workflows.encode.workflow.relocate_tmdb_covers_to_process_dir",
+            return_value=[],
+        ), patch.object(
+            wf,
+            "_prepare_attachment_config",
+            return_value=(cfg, None),
+        ), patch.object(
+            wf,
+            "_run_multi_video_pipeline",
+            return_value=inner_signals,
+        ) as run_multi, patch.object(
+            wf,
+            "_bind_temp_cleanup",
+        ) as bind_cleanup, patch.object(
+            wf,
+            "_bind_matroska_segment_muxing_patch",
+        ) as bind_mux, patch.object(
+            wf,
+            "_bind_nfo_write",
+        ) as bind_nfo:
+            result = wf._run_with_preparation(cfg, validate=False, prep_signals=prep_signals)
+
+        assert result is inner_signals
+        run_multi.assert_called_once()
+        assert bind_cleanup.call_count == 2
+        bind_cleanup.assert_any_call(prep_signals, [work_dir])
+        bind_cleanup.assert_any_call(inner_signals, [work_dir])
+        assert bind_mux.call_count == 2
+        bind_mux.assert_any_call(prep_signals, out)
+        bind_mux.assert_any_call(inner_signals, out)
+        assert bind_nfo.call_count == 2
+        bind_nfo.assert_any_call(prep_signals, out)
+        bind_nfo.assert_any_call(inner_signals, out)
+        assert any(
+            level == "INFO"
+            and message == "STEP 4 - Routage du workflow (pipeline multi-pistes vidéo)"
+            for level, message in logs
+        )
+
+    def test_run_with_preparation_prebinds_hooks_before_sync_multi_video_pipeline(self, tmp_path):
+        src = tmp_path / "src.mkv"
+        out = tmp_path / "out.mkv"
+        src.touch()
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+
+        video_a = _make_video_settings(codec="copy", source_path=src, stream_index=0)
+        video_b = _make_video_settings(codec="copy", source_path=src, stream_index=1)
+        cfg = _make_config(
+            src,
+            out,
+            video=video_a,
+            video_tracks=[video_a, video_b],
+            audio_tracks=[],
+            copy_subtitles=False,
+        )
+
+        wf = _make_workflow()
+        prep_signals = TaskSignals()
+        call_order: list[str] = []
+
+        def _fake_bind_cleanup(signals, _paths):
+            assert signals is prep_signals
+            call_order.append("bind_cleanup")
+
+        def _fake_bind_mux(signals, _out):
+            assert signals is prep_signals
+            call_order.append("bind_mux")
+
+        def _fake_bind_nfo(signals, _out):
+            assert signals is prep_signals
+            call_order.append("bind_nfo")
+
+        def _fake_run_multi(_cfg, _cleanup_paths, *, prep_signals=None):
+            assert prep_signals is prep_signals_ref
+            call_order.append("run_multi")
+            assert call_order[:3] == ["bind_cleanup", "bind_mux", "bind_nfo"]
+            prep_signals.finished.emit("done")
+            return prep_signals
+
+        prep_signals_ref = prep_signals
+
+        with patch(
+            "core.workflows.encode.workflow.prepare_process_work_dir",
+            return_value=work_dir,
+        ), patch(
+            "core.workflows.encode.workflow.relocate_tmdb_covers_to_process_dir",
+            return_value=[],
+        ), patch.object(
+            wf,
+            "_prepare_attachment_config",
+            return_value=(cfg, None),
+        ), patch.object(
+            wf,
+            "_run_multi_video_pipeline",
+            side_effect=_fake_run_multi,
+        ), patch.object(
+            wf,
+            "_bind_temp_cleanup",
+            side_effect=_fake_bind_cleanup,
+        ), patch.object(
+            wf,
+            "_bind_matroska_segment_muxing_patch",
+            side_effect=_fake_bind_mux,
+        ), patch.object(
+            wf,
+            "_bind_nfo_write",
+            side_effect=_fake_bind_nfo,
+        ):
+            result = wf._run_with_preparation(cfg, validate=False, prep_signals=prep_signals)
+
+        assert result is prep_signals
+        assert call_order[:4] == ["bind_cleanup", "bind_mux", "bind_nfo", "run_multi"]
+
+    def test_run_with_preparation_prebinds_hooks_before_sync_direct_output(self, tmp_path):
+        src = tmp_path / "src.mkv"
+        out = tmp_path / "out.mkv"
+        src.touch()
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+
+        video = _make_video_settings(codec="libx265", source_path=src, stream_index=0)
+        cfg = _make_config(
+            src,
+            out,
+            video=video,
+            video_tracks=[video],
+            audio_tracks=[],
+            copy_subtitles=False,
+        )
+
+        wf = _make_workflow()
+        prep_signals = TaskSignals()
+        call_order: list[str] = []
+
+        def _fake_bind_cleanup(signals, _paths):
+            assert signals is prep_signals
+            call_order.append("bind_cleanup")
+
+        def _fake_bind_mux(signals, _out):
+            assert signals is prep_signals
+            call_order.append("bind_mux")
+
+        def _fake_bind_nfo(signals, _out):
+            assert signals is prep_signals
+            call_order.append("bind_nfo")
+
+        def _fake_run_direct(_cfg, _cleanup_paths, *, prep_signals=None):
+            assert prep_signals is prep_signals_ref
+            call_order.append("run_direct")
+            assert call_order[:3] == ["bind_cleanup", "bind_mux", "bind_nfo"]
+            prep_signals.finished.emit("done")
+            return prep_signals
+
+        prep_signals_ref = prep_signals
+
+        with patch(
+            "core.workflows.encode.workflow.prepare_process_work_dir",
+            return_value=work_dir,
+        ), patch(
+            "core.workflows.encode.workflow.relocate_tmdb_covers_to_process_dir",
+            return_value=[],
+        ), patch.object(
+            wf,
+            "_prepare_attachment_config",
+            return_value=(cfg, None),
+        ), patch.object(
+            wf,
+            "_run_direct_output",
+            side_effect=_fake_run_direct,
+        ), patch.object(
+            wf,
+            "_bind_temp_cleanup",
+            side_effect=_fake_bind_cleanup,
+        ), patch.object(
+            wf,
+            "_bind_matroska_segment_muxing_patch",
+            side_effect=_fake_bind_mux,
+        ), patch.object(
+            wf,
+            "_bind_nfo_write",
+            side_effect=_fake_bind_nfo,
+        ):
+            result = wf._run_with_preparation(cfg, validate=False, prep_signals=prep_signals)
+
+        assert result is prep_signals
+        assert call_order[:4] == ["bind_cleanup", "bind_mux", "bind_nfo", "run_direct"]
+
+    def test_run_multi_video_pipeline_serializes_same_resource(self, tmp_path):
+        src = tmp_path / "src.mkv"
+        out = tmp_path / "out.mkv"
+        src.touch()
+
+        video_a = _make_video_settings(codec="libx264", source_path=src, stream_index=0)
+        video_b = _make_video_settings(codec="libx265", source_path=src, stream_index=1)
+        cfg = _make_config(
+            src,
+            out,
+            video=video_a,
+            video_tracks=[video_a, video_b],
+            audio_tracks=[],
+            subtitle_tracks=[],
+            copy_subtitles=False,
+        )
+
+        wf = _make_workflow(max_parallel_video_encodes=2)
+        active = 0
+        max_active = 0
+        gate = threading.Lock()
+
+        def _fake_run_cmd(_cmd, **kwargs):
+            nonlocal active, max_active
+            label = str(kwargs.get("label", ""))
+            if label.startswith("ffmpeg-video-"):
+                with gate:
+                    active += 1
+                    max_active = max(max_active, active)
+                time.sleep(0.06)
+                with gate:
+                    active -= 1
+            return "ok"
+
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run_cmd), patch.object(
+            wf,
+            "_prepare_multisource_sync",
+            return_value=({}, [], None, False),
+        ):
+            wf._run_multi_video_pipeline(cfg, cleanup_paths=[], prep_signals=TaskSignals())
+
+        assert max_active == 1
+
+    def test_run_multi_video_pipeline_parallelizes_disjoint_resources(self, tmp_path):
+        src = tmp_path / "src.mkv"
+        out = tmp_path / "out.mkv"
+        src.touch()
+
+        video_a = _make_video_settings(codec="libx264", source_path=src, stream_index=0)
+        video_b = _make_video_settings(codec="h264_nvenc", source_path=src, stream_index=1)
+        cfg = _make_config(
+            src,
+            out,
+            video=video_a,
+            video_tracks=[video_a, video_b],
+            audio_tracks=[],
+            subtitle_tracks=[],
+            copy_subtitles=False,
+        )
+
+        wf = _make_workflow(max_parallel_video_encodes=2)
+        active = 0
+        max_active = 0
+        gate = threading.Lock()
+
+        def _fake_run_cmd(_cmd, **kwargs):
+            nonlocal active, max_active
+            label = str(kwargs.get("label", ""))
+            if label.startswith("ffmpeg-video-"):
+                with gate:
+                    active += 1
+                    max_active = max(max_active, active)
+                time.sleep(0.06)
+                with gate:
+                    active -= 1
+            return "ok"
+
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run_cmd), patch.object(
+            wf,
+            "_prepare_multisource_sync",
+            return_value=({}, [], None, False),
+        ):
+            wf._run_multi_video_pipeline(cfg, cleanup_paths=[], prep_signals=TaskSignals())
+
+        assert max_active >= 2
+
+    def test_run_multi_video_pipeline_scales_threads_for_disjoint_resources(self, tmp_path):
+        src = tmp_path / "src.mkv"
+        out = tmp_path / "out.mkv"
+        src.touch()
+
+        video_a = _make_video_settings(codec="libx264", source_path=src, stream_index=0)
+        video_b = _make_video_settings(codec="h264_nvenc", source_path=src, stream_index=1)
+        cfg = _make_config(
+            src,
+            out,
+            video=video_a,
+            video_tracks=[video_a, video_b],
+            audio_tracks=[],
+            subtitle_tracks=[],
+            copy_subtitles=False,
+        )
+
+        wf = _make_workflow(ffmpeg_threads=12, max_parallel_video_encodes=2)
+        commands_by_label: dict[str, list[str]] = {}
+
+        def _fake_run_cmd(cmd, **kwargs):
+            label = str(kwargs.get("label", ""))
+            commands_by_label[label] = list(cmd)
+            return "ok"
+
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run_cmd), patch.object(
+            wf,
+            "_prepare_multisource_sync",
+            return_value=({}, [], None, False),
+        ):
+            wf._run_multi_video_pipeline(cfg, cleanup_paths=[], prep_signals=TaskSignals())
+
+        assert commands_by_label["ffmpeg-video-1"][commands_by_label["ffmpeg-video-1"].index("-threads") + 1] == "6"
+        assert commands_by_label["ffmpeg-video-2"][commands_by_label["ffmpeg-video-2"].index("-threads") + 1] == "6"
+        assert commands_by_label["ffmpeg-multi-video"][commands_by_label["ffmpeg-multi-video"].index("-threads") + 1] == "12"
+
+    def test_run_multi_video_pipeline_keeps_full_threads_for_serialized_resource(self, tmp_path):
+        src = tmp_path / "src.mkv"
+        out = tmp_path / "out.mkv"
+        src.touch()
+
+        video_a = _make_video_settings(codec="libx264", source_path=src, stream_index=0)
+        video_b = _make_video_settings(codec="libx265", source_path=src, stream_index=1)
+        cfg = _make_config(
+            src,
+            out,
+            video=video_a,
+            video_tracks=[video_a, video_b],
+            audio_tracks=[],
+            subtitle_tracks=[],
+            copy_subtitles=False,
+        )
+
+        wf = _make_workflow(ffmpeg_threads=12, max_parallel_video_encodes=2)
+        commands_by_label: dict[str, list[str]] = {}
+
+        def _fake_run_cmd(cmd, **kwargs):
+            label = str(kwargs.get("label", ""))
+            commands_by_label[label] = list(cmd)
+            return "ok"
+
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run_cmd), patch.object(
+            wf,
+            "_prepare_multisource_sync",
+            return_value=({}, [], None, False),
+        ):
+            wf._run_multi_video_pipeline(cfg, cleanup_paths=[], prep_signals=TaskSignals())
+
+        assert commands_by_label["ffmpeg-video-1"][commands_by_label["ffmpeg-video-1"].index("-threads") + 1] == "12"
+        assert commands_by_label["ffmpeg-video-2"][commands_by_label["ffmpeg-video-2"].index("-threads") + 1] == "12"
 
     def test_prepare_multisource_sync_disables_live_when_foreign_offset(self, tmp_path, monkeypatch):
         src_main = tmp_path / "main.mkv"

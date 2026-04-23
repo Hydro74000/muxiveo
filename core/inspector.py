@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
@@ -329,9 +331,44 @@ class FileInspector:
         self,
         ffprobe_bin:   str = "ffprobe",
         mediainfo_bin: str = "mediainfo",
+        verbose_output: Callable[[str], None] | None = None,
     ) -> None:
         self._ffprobe   = ffprobe_bin
         self._mediainfo = mediainfo_bin
+        self._verbose_output = verbose_output
+
+    def _emit_verbose(self, line: str) -> None:
+        callback = self._verbose_output
+        if callback is None:
+            return
+        rendered = str(line).rstrip()
+        if not rendered:
+            return
+        try:
+            callback(rendered)
+        except Exception:
+            pass
+
+    def _emit_command(self, cmd: list[str]) -> None:
+        self._emit_verbose(f"$ {shlex.join([str(part) for part in cmd])}")
+
+    def _emit_process_result(
+        self,
+        tool_name: str,
+        result: subprocess.CompletedProcess[str],
+        *,
+        preview_stdout: bool = False,
+    ) -> None:
+        stdout = str(result.stdout or "")
+        stderr = str(result.stderr or "")
+        self._emit_verbose(
+            f"{tool_name} rc={result.returncode} stdout={len(stdout.encode('utf-8'))}o stderr={len(stderr.encode('utf-8'))}o"
+        )
+        if preview_stdout:
+            for line in stdout.strip().splitlines()[:3]:
+                self._emit_verbose(f"{tool_name} stdout: {line[:400]}")
+        for line in stderr.strip().splitlines()[-3:]:
+            self._emit_verbose(f"{tool_name} stderr: {line[:400]}")
 
     # ------------------------------------------------------------------
     # API publique
@@ -344,7 +381,9 @@ class FileInspector:
         Lève :
             InspectionError : si le fichier est illisible ou si ffprobe échoue.
         """
+        self._emit_verbose(f"Inspection démarrée : {path}")
         if not path.is_file():
+            self._emit_verbose(f"Inspection impossible : fichier introuvable ({path})")
             raise InspectionError(path, "fichier introuvable")
 
         raw = self._run_ffprobe(path)
@@ -386,6 +425,15 @@ class FileInspector:
             info.hdr_type = self._detect_hdr_from_raw(path, raw)
             info.primary_video.hdr_type = info.hdr_type
 
+        chapter_count = info.chapters.count if info.chapters is not None else 0
+        hdr_label = info.hdr_type.label() if info.primary_video else "Aucune piste vidéo"
+        frame_count = info.frame_count if info.frame_count is not None else "?"
+        self._emit_verbose(
+            "Inspection terminée : "
+            f"{path.name} V={len(info.video_tracks)} A={len(info.audio_tracks)} "
+            f"S={len(info.subtitle_tracks)} PJ={len(info.attachments)} "
+            f"Chap={chapter_count} HDR={hdr_label} Frames={frame_count}"
+        )
         return info
 
     def get_frame_count(self, path: Path) -> int | None:
@@ -395,18 +443,22 @@ class FileInspector:
         Retourne None si mediainfo est absent ou si la valeur est illisible.
         """
         try:
+            cmd = [self._mediainfo, "--Inform=Video;%FrameCount%", str(path)]
+            self._emit_command(cmd)
             result = subprocess.run(
-                [self._mediainfo, "--Inform=Video;%FrameCount%", str(path)],
+                cmd,
                 capture_output=True,
                 check=False,
                 **subprocess_text_kwargs(),
                 # shell=True JAMAIS
             )
+            self._emit_process_result("mediainfo", result, preview_stdout=True)
             raw = result.stdout.strip()
             if re.fullmatch(r"\d+", raw):
+                self._emit_verbose(f"mediainfo frame_count={raw}")
                 return int(raw)
         except FileNotFoundError:
-            pass  # mediainfo absent
+            self._emit_verbose("mediainfo introuvable dans PATH (frame count ignoré).")
         return None
 
     def detect_hdr_type(self, path: Path) -> HDRType:
@@ -434,13 +486,18 @@ class FileInspector:
 
         Utilisé en interne par inspect() pour éviter un second appel ffprobe.
         """
-        video_streams = [s for s in raw.get("streams", []) if s.get("codec_type") == "video"]
+        video_streams = [
+            s for s in raw.get("streams", [])
+            if s.get("codec_type") == "video"
+            and not bool((s.get("disposition") or {}).get("attached_pic", 0))
+        ]
         if not video_streams:
             return HDRType.NONE
 
         vs = video_streams[0]
-        transfer   = vs.get("color_transfer", "")
-        side_data  = vs.get("side_data_list", [])
+        transfer = str(vs.get("color_transfer", "") or "")
+        side_data_obj = vs.get("side_data_list")
+        side_data = side_data_obj if isinstance(side_data_obj, list) else []
 
         has_pq           = transfer in ("smpte2084", "smpte2084le")
         has_hlg          = transfer == "arib-std-b67"
@@ -449,11 +506,36 @@ class FileInspector:
         has_dovi         = any(sd.get("side_data_type") == "DOVI configuration record" for sd in side_data)
         has_hdr10plus    = any(sd.get("side_data_type") == "HDR Dynamic Metadata SMPTE2094-40 (HDR10+)" for sd in side_data)
 
-        # Fallback mediainfo pour DoVi et HDR10+ (ffprobe peut manquer certains streams)
+        # Certains fichiers reportent les side-data dynamiques sur un autre flux
+        # vidéo que le premier (ou pas de façon stable selon ffprobe build).
+        if not has_dovi or not has_hdr10plus:
+            for stream in video_streams[1:]:
+                other_side_obj = stream.get("side_data_list")
+                other_side_data = other_side_obj if isinstance(other_side_obj, list) else []
+                if not has_dovi and any(sd.get("side_data_type") == "DOVI configuration record" for sd in other_side_data):
+                    has_dovi = True
+                if not has_hdr10plus and any(
+                    sd.get("side_data_type") == "HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"
+                    for sd in other_side_data
+                ):
+                    has_hdr10plus = True
+                if has_dovi and has_hdr10plus:
+                    break
+
+        # Fallback mediainfo pour DoVi/HDR10+ (très rapide quand disponible).
         if not has_dovi or not has_hdr10plus:
             mi_dovi, mi_hdr10plus = self._mediainfo_hdr_flags(path)
             has_dovi      = has_dovi      or mi_dovi
             has_hdr10plus = has_hdr10plus or mi_hdr10plus
+
+        # Fallback ffprobe frame-level : certains muxers gardent les métadonnées
+        # dynamiques uniquement au niveau frame/SEI, absentes de -show_streams.
+        if not has_dovi or not has_hdr10plus:
+            frame_flags = self._ffprobe_frame_dynamic_hdr_flags(path)
+            if frame_flags is not None:
+                frame_dovi, frame_hdr10plus = frame_flags
+                has_dovi      = has_dovi      or frame_dovi
+                has_hdr10plus = has_hdr10plus or frame_hdr10plus
 
         # Priorité décroissante
         if has_dovi and has_hdr10plus:
@@ -485,6 +567,7 @@ class FileInspector:
             "-show_chapters",
             str(path),
         ]
+        self._emit_command(cmd)
         try:
             result = subprocess.run(
                 cmd,
@@ -494,16 +577,100 @@ class FileInspector:
                 # shell=True JAMAIS
             )
         except FileNotFoundError:
+            self._emit_verbose("ffprobe introuvable dans PATH.")
             raise InspectionError(path, "ffprobe introuvable dans PATH")
+
+        self._emit_process_result("ffprobe", result)
 
         if result.returncode != 0:
             stderr = result.stderr.strip()[-500:]
             raise InspectionError(path, f"ffprobe a échoué (code {result.returncode}) : {stderr}")
 
         try:
-            return json.loads(result.stdout)
+            payload = json.loads(result.stdout)
         except json.JSONDecodeError as exc:
             raise InspectionError(path, f"Sortie ffprobe non parseable : {exc}")
+        stream_count = len(payload.get("streams") or [])
+        chapter_count = len(payload.get("chapters") or [])
+        format_name = str((payload.get("format") or {}).get("format_name") or "?")
+        self._emit_verbose(
+            f"ffprobe JSON parsé : format={format_name} streams={stream_count} chapters={chapter_count}"
+        )
+        return payload
+
+    def _ffprobe_frame_dynamic_hdr_flags(
+        self,
+        path: Path,
+        *,
+        max_frames: int = 240,
+    ) -> tuple[bool, bool] | None:
+        """
+        Retourne (has_dovi, has_hdr10plus) via ffprobe frame-level.
+
+        Utilisé en fallback quand `-show_streams` ne remonte pas les side-data
+        dynamiques (cas fréquent sur certains remux DV/HDR10+).
+        """
+        cmd = [
+            self._ffprobe,
+            "-v", "quiet",
+            "-print_format", "json",
+            "-select_streams", "v:0",
+            "-read_intervals", f"%+#{max(1, int(max_frames))}",
+            "-show_frames",
+            "-show_entries", "frame_side_data=side_data_type",
+            str(path),
+        ]
+        self._emit_command(cmd)
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                check=False,
+                timeout=30,
+                **subprocess_text_kwargs(),
+            )
+        except FileNotFoundError:
+            self._emit_verbose("ffprobe introuvable pour le probe HDR frame-level.")
+            return None
+        self._emit_process_result("ffprobe", result)
+        if result.returncode != 0:
+            return None
+        try:
+            payload = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            return None
+
+        frames_obj = payload.get("frames")
+        if not isinstance(frames_obj, list):
+            return False, False
+
+        has_dovi = False
+        has_hdr10plus = False
+        for frame in frames_obj:
+            if not isinstance(frame, dict):
+                continue
+            side_data_obj = frame.get("side_data_list")
+            if not isinstance(side_data_obj, list):
+                continue
+            for side_data in side_data_obj:
+                if not isinstance(side_data, dict):
+                    continue
+                side_type = str(side_data.get("side_data_type", "") or "")
+                side_type_lower = side_type.lower()
+                if ("dolby vision" in side_type_lower) or (side_type == "DOVI configuration record"):
+                    has_dovi = True
+                if (
+                    "hdr dynamic metadata smpte2094-40" in side_type_lower
+                    or "hdr10+" in side_type_lower
+                    or "smpte st 2094" in side_type_lower
+                    or "smpte2094" in side_type_lower
+                ):
+                    has_hdr10plus = True
+                if has_dovi and has_hdr10plus:
+                    self._emit_verbose("ffprobe frame HDR : dovi=True hdr10plus=True")
+                    return True, True
+        self._emit_verbose(f"ffprobe frame HDR : dovi={has_dovi} hdr10plus={has_hdr10plus}")
+        return has_dovi, has_hdr10plus
 
     def _mediainfo_hdr_flags(self, path: Path) -> tuple[bool, bool]:
         """
@@ -513,23 +680,35 @@ class FileInspector:
         Retourne (False, False) si mediainfo est absent.
         """
         try:
-            # Dolby Vision : champ HDR_Format contient "Dolby Vision"
-            r_dovi = subprocess.run(
-                [self._mediainfo, "--Inform=Video;%HDR_Format%", str(path)],
+            # HDR_Format + HDR_Format_Compatibility : selon les sources, HDR10+
+            # peut être présent dans l'un ou l'autre.
+            cmd_hdr_format = [self._mediainfo, "--Inform=Video;%HDR_Format%", str(path)]
+            cmd_hdr10p = [self._mediainfo, "--Inform=Video;%HDR_Format_Compatibility%", str(path)]
+            self._emit_command(cmd_hdr_format)
+            r_hdr_format = subprocess.run(
+                cmd_hdr_format,
                 capture_output=True, check=False, **subprocess_text_kwargs(),
             )
-            has_dovi = "dolby vision" in r_dovi.stdout.lower()
-
-            # HDR10+ : champ HDR_Format_Compatibility contient "HDR10+"
+            self._emit_process_result("mediainfo", r_hdr_format, preview_stdout=True)
+            self._emit_command(cmd_hdr10p)
             r_hdr10p = subprocess.run(
-                [self._mediainfo, "--Inform=Video;%HDR_Format_Compatibility%", str(path)],
+                cmd_hdr10p,
                 capture_output=True, check=False, **subprocess_text_kwargs(),
             )
-            has_hdr10plus = "hdr10+" in r_hdr10p.stdout.lower()
+            self._emit_process_result("mediainfo", r_hdr10p, preview_stdout=True)
+            hdr_text = f"{r_hdr_format.stdout or ''}\n{r_hdr10p.stdout or ''}".lower()
+            has_dovi = "dolby vision" in hdr_text
+            has_hdr10plus = (
+                "hdr10+" in hdr_text
+                or "smpte st 2094" in hdr_text
+                or "smpte2094" in hdr_text
+            )
+            self._emit_verbose(f"mediainfo HDR : dovi={has_dovi} hdr10plus={has_hdr10plus}")
 
             return has_dovi, has_hdr10plus
 
         except FileNotFoundError:
+            self._emit_verbose("mediainfo introuvable dans PATH (détection HDR enrichie ignorée).")
             return False, False
 
     # ------------------------------------------------------------------
@@ -695,17 +874,20 @@ class FileInspector:
         être parsée.
         """
         try:
+            cmd = [
+                self._ffprobe,
+                "-v", "quiet",
+                "-print_format", "json",
+                "-show_streams",
+                "-show_format",
+                str(path),
+            ]
+            self._emit_command(cmd)
             result = subprocess.run(
-                [
-                    self._ffprobe,
-                    "-v", "quiet",
-                    "-print_format", "json",
-                    "-show_streams",
-                    "-show_format",
-                    str(path),
-                ],
+                cmd,
                 capture_output=True, check=False, timeout=15, **subprocess_text_kwargs(),
             )
+            self._emit_process_result("ffprobe", result)
             if result.returncode != 0:
                 return 0, {}
             data = json.loads(result.stdout)
@@ -726,8 +908,10 @@ class FileInspector:
                     lang = self._stream_tag_lookup(tags, "language")
                 if tid is not None and lang:
                     lang_map[tid] = lang
+            self._emit_verbose(f"ffprobe MKV tags : tag_count={tag_count} langues={len(lang_map)}")
             return tag_count, lang_map
         except (FileNotFoundError, json.JSONDecodeError, Exception):
+            self._emit_verbose("ffprobe MKV tags indisponible.")
             return 0, {}
 
 

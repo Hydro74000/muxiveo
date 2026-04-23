@@ -51,11 +51,14 @@ def _encode_cfg(
     extra_attachments: list | None = None,
     keep_chapters: bool = True,
     audio_tracks: list | None = None,
+    video_tracks: list | None = None,
 ) -> EncodeConfig:
+    videos = video_tracks or [_video_settings()]
     return EncodeConfig(
         source=src,
         output=output,
-        video=_video_settings(),
+        video=videos[0],
+        video_tracks=videos,
         audio_tracks=audio_tracks or [],
         keep_chapters=keep_chapters,
         file_title=file_title,
@@ -273,6 +276,43 @@ class TestLanguageClearPropagation:
 
         assert [(edit.track_order, edit.language, edit.title) for edit in result.track_meta_edits] == [
             (1, "und", None),
+        ]
+
+    def test_multiple_video_tracks_are_ordered_before_audio_tracks(self, tmp_path, qt_app):
+        src = tmp_path / "src.mkv"
+        src.touch()
+        out = tmp_path / "out.mkv"
+
+        video_a = TrackEntry(
+            mkv_tid=0, track_type="video", codec="H264", display_info="",
+            language="fra", title="Vidéo A", orig_language="", orig_title="",
+        )
+        video_b = TrackEntry(
+            mkv_tid=1, track_type="video", codec="HEVC", display_info="",
+            language="eng", title="Vidéo B", orig_language="", orig_title="",
+        )
+        audio = TrackEntry(
+            mkv_tid=2, track_type="audio", codec="EAC3", display_info="",
+            language="jpn", title="Audio", orig_language="", orig_title="",
+        )
+
+        enc = _encode_cfg(
+            src,
+            out,
+            video_tracks=[
+                VideoEncodeSettings(stream_index=0, source_path=src, track_entry_id=video_a.entry_id),
+                VideoEncodeSettings(stream_index=1, source_path=src, track_entry_id=video_b.entry_id),
+            ],
+            audio_tracks=[AudioTrackSettings(stream_index=2, source_path=src)],
+        )
+        rmx = _remux_cfg(src, out, tracks=[video_a, video_b, audio])
+
+        result = _merge(None, enc, rmx)
+
+        assert [(edit.track_order, edit.title, edit.language) for edit in result.track_meta_edits] == [
+            (1, "Vidéo A", "fra"),
+            (2, "Vidéo B", "eng"),
+            (3, "Audio", "jpn"),
         ]
 
 

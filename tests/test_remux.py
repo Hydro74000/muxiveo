@@ -125,7 +125,8 @@ import colorsys
 import sys
 import time
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 from PySide6.QtCore import Qt
@@ -152,6 +153,7 @@ from ui.panels.remux_panel import (
     _TRACK_INFO_OFFSET_VALUE_ROLE,
     _normalize_tmdb_manual_title_suggestion, _pick_file_color,
 )
+from ui.panels.remux_panel.functions import inspection as inspection_functions
 from ui.panels.remux_panel.widgets.attachments import _AttachmentNameButton, _pretty_text_attachment_content
 from ui.panels.remux_panel.widgets.file_list import _ACCEPTED_EXT
 from ui.panels.track_edit_dialog import TrackEditDialog
@@ -1250,6 +1252,120 @@ class TestTrackTableUpdateAudioMeta:
         assert track.codec == "AAC"
         assert track.display_info == "5.1  384 kbps"
 
+    def test_update_video_encoding_plan_updates_codec_cell_and_state(self, table):
+        track = _track(0, "video", file_id="fid", codec="HEVC")
+        table.append_tracks(_COLOR_A, [track])
+
+        changed = table.update_video_encoding_plans({
+            track.entry_id: "libx265",
+        })
+
+        assert changed is True
+        assert table.item(0, _TrackTable.COL_CODEC).text() == "HEVC"
+        assert track.encode_plan_codec == "libx265"
+        assert track.encode_plan_modified is True
+
+    def test_update_video_encoding_plan_is_per_track(self, table):
+        first = _track(0, "video", file_id="fid", codec="HEVC")
+        second = _track(1, "video", file_id="fid", codec="H264")
+        table.append_tracks(_COLOR_A, [first, second])
+
+        changed = table.update_video_encoding_plans({
+            first.entry_id: "libx265",
+            second.entry_id: "copy",
+        })
+
+        assert changed is True
+        assert table.item(0, _TrackTable.COL_CODEC).text() == "HEVC"
+        assert table.item(1, _TrackTable.COL_CODEC).text() == "H264"
+        assert first.encode_plan_codec == "libx265"
+        assert second.encode_plan_codec == "copy"
+
+    def test_update_video_encoding_plan_clear_missing_resets_codec_cell_and_state(self, table):
+        track = _track(0, "video", file_id="fid", codec="HEVC")
+        table.append_tracks(_COLOR_A, [track])
+        table.update_video_encoding_plans({
+            track.entry_id: "copy",
+        })
+
+        changed = table.update_video_encoding_plans({}, clear_missing=True)
+
+        assert changed is True
+        assert table.item(0, _TrackTable.COL_CODEC).text() == "HEVC"
+        assert track.encode_plan_codec == ""
+        assert track.encode_plan_summary == ""
+        assert track.encode_plan_hdr_badges == ()
+        assert track.encode_plan_modified is False
+
+    def test_video_codec_cell_stays_normal_when_copy_untouched(self, table):
+        track = _track(0, "video", file_id="fid", codec="HEVC")
+        table.append_tracks(_COLOR_A, [track])
+
+        codec_item = table.item(0, _TrackTable.COL_CODEC)
+        assert codec_item is not None
+        assert codec_item.foreground().color().name().lower() != table._VIDEO_ENCODE_COLOR.name().lower()
+        assert codec_item.font().bold() is False
+
+    def test_video_row_turns_blue_and_bold_when_encode_codec_is_set(self, table):
+        track = _track(0, "video", file_id="fid", codec="HEVC")
+        table.append_tracks(_COLOR_A, [track])
+
+        table.update_video_encoding_plans({track.entry_id: "libx265"})
+
+        for col in (
+            _TrackTable.COL_TYPE,
+            _TrackTable.COL_LANG,
+            _TrackTable.COL_TITLE,
+            _TrackTable.COL_INFO,
+        ):
+            item = table.item(0, col)
+            assert item is not None
+            assert item.foreground().color().name().lower() == table._VIDEO_ENCODE_COLOR.name().lower()
+            assert item.font().bold() is True
+        codec_item = table.item(0, _TrackTable.COL_CODEC)
+        assert codec_item is not None
+        assert codec_item.foreground().color().name().lower() == table._VIDEO_ENCODE_CODEC_COLOR.name().lower()
+        assert codec_item.font().bold() is True
+
+    def test_video_row_rolls_back_when_codec_returns_to_copy(self, table):
+        track = _track(0, "video", file_id="fid", codec="HEVC")
+        table.append_tracks(_COLOR_A, [track])
+        table.update_video_encoding_plans({track.entry_id: "libx265"})
+
+        table.update_video_encoding_plans({track.entry_id: "copy"})
+
+        codec_item = table.item(0, _TrackTable.COL_CODEC)
+        assert codec_item is not None
+        assert codec_item.text() == "HEVC"
+        assert codec_item.foreground().color().name().lower() != table._VIDEO_ENCODE_COLOR.name().lower()
+        assert codec_item.font().bold() is False
+
+    def test_remux_panel_update_video_track_encoding_empty_list_clears_state(self, qt_app, tmp_path):
+        panel = RemuxPanel(AppConfig())
+        src = tmp_path / "source.mkv"
+        src.touch()
+
+        video = _track(0, "video", file_id="fid", codec="HEVC")
+        video.encode_plan_codec = "libx265"
+        video.encode_plan_modified = True
+
+        info = _file_info(path=src, videos=[_video(index=0)])
+        source = SourceFile(id="fid", path=src, color=_COLOR_A, info=info, tracks=[video])
+        panel._source_files = [source]
+        panel._source_colors = {"fid": _COLOR_A}
+        panel._source_names = {"fid": "source.mkv"}
+        panel._track_table.append_tracks(_COLOR_A, [video])
+
+        with patch.object(panel, "_rebuild_preview"), patch.object(panel, "_emit_video_tracks"):
+            panel.update_video_track_encoding([])
+
+        assert video.encode_plan_codec == ""
+        assert video.encode_plan_summary == ""
+        assert video.encode_plan_hdr_badges == ()
+        assert video.encode_plan_modified is False
+        assert panel._track_table.item(0, _TrackTable.COL_CODEC).text() == "HEVC"
+        panel.close()
+
 
 # ===========================================================================
 # RemuxPanel — pistes NEW synchronisées avec EncodePanel
@@ -1384,6 +1500,58 @@ class TestRemuxPanelVideoTrackSignals:
         assert emitted
         assert [entry.entry_id for _info, entry, _color in emitted[-1]] == [video_a.entry_id]
         panel.close()
+
+    def test_reemitted_video_tracks_are_detached_objects(self, qt_app, tmp_path):
+        video = _track(0, "video", file_id="fid", codec="HEVC")
+        panel = self._panel_with_video_tracks(qt_app, tmp_path, [video])
+        emitted: list = []
+        panel.video_tracks_changed.connect(lambda tracks: emitted.append(tracks))
+
+        panel._emit_video_tracks()
+
+        assert emitted
+        emitted_entry = emitted[-1][0][1]
+        assert emitted_entry is not video
+        emitted_entry.encode_plan_codec = "libx264"
+        assert video.encode_plan_codec == ""
+        panel.close()
+
+
+def test_inspect_file_routes_verbose_inspector_output_to_panel_signal(tmp_path):
+    path = tmp_path / "movie.mkv"
+    path.touch()
+    info = FileInfo(path=path, format="matroska,webm", duration_s=None, size_bytes=None, bit_rate=None)
+    verbose_lines: list[tuple[str, str]] = []
+
+    panel = SimpleNamespace(
+        _config=SimpleNamespace(tool_ffprobe="ffprobe", tool_mediainfo="mediainfo"),
+        tool_output=SimpleNamespace(emit=lambda label, line: verbose_lines.append((str(label), str(line)))),
+        _inspection_done=SimpleNamespace(emit=MagicMock()),
+        _inspection_error=SimpleNamespace(emit=MagicMock()),
+        log_message=SimpleNamespace(emit=MagicMock()),
+    )
+
+    callback_holder: dict[str, object] = {}
+    inspector_instance = MagicMock()
+
+    def fake_ctor(*args, **kwargs):
+        callback_holder["verbose_output"] = kwargs["verbose_output"]
+        return inspector_instance
+
+    def fake_inspect(_path):
+        callback = callback_holder["verbose_output"]
+        assert callable(callback)
+        callback("Inspection démarrée : /tmp/movie.mkv")
+        return info
+
+    inspector_instance.inspect.side_effect = fake_inspect
+
+    with patch.object(inspection_functions, "FileInspector", side_effect=fake_ctor):
+        inspection_functions.inspect_file(panel, "fid-1", path)
+
+    assert verbose_lines == [("inspector", "Inspection démarrée : /tmp/movie.mkv")]
+    panel._inspection_done.emit.assert_called_once_with("fid-1", info)
+    panel._inspection_error.emit.assert_not_called()
 
 
 # ===========================================================================

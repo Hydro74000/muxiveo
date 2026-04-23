@@ -42,6 +42,7 @@ from core.workflows.encode.models import (
     EncodePreset,
     QualityMode,
     TrackTimeOffset,
+    VideoTrackEncodePlan,
     VideoEncodeSettings,
     presets_for_codec,
 )
@@ -169,9 +170,13 @@ class TestVideoEncodeSettings:
         assert vs.target_size_mb == 4000
         assert vs.preset == "slow"
         assert vs.extra_params == ""
+        assert vs.force_8bit is False
         assert vs.inject_hdr_meta is False
         assert vs.master_display == ""
         assert vs.max_cll == ""
+        assert vs.copy_dv is False
+        assert vs.copy_hdr10plus is False
+        assert vs.dovi_profile == "0"
         assert vs.tonemap_to_sdr is False
         assert vs.tonemap_algorithm == "hable"
 
@@ -228,6 +233,7 @@ class TestEncodeConfig:
         cfg = EncodeConfig(source=src, output=out, video=vs, audio_tracks=[])
         assert cfg.source == src
         assert cfg.output == out
+        assert cfg.video_tracks == [vs]
         assert cfg.copy_subtitles is True
         assert cfg.copy_dv is False
         assert cfg.copy_hdr10plus is False
@@ -244,6 +250,20 @@ class TestEncodeConfig:
         )
         assert cfg.duration_s is None
 
+    def test_video_tracks_can_define_primary_legacy_flags(self, tmp_path):
+        first = VideoEncodeSettings(codec="libx265", copy_dv=True, dovi_profile="2")
+        second = VideoEncodeSettings(codec="copy", copy_hdr10plus=True)
+        cfg = EncodeConfig(
+            source=tmp_path / "s.mkv",
+            output=tmp_path / "o.mkv",
+            video_tracks=[first, second],
+            audio_tracks=[],
+        )
+        assert cfg.video is first
+        assert cfg.copy_dv is True
+        assert cfg.copy_hdr10plus is False
+        assert cfg.dovi_profile == "2"
+
 
 # ===========================================================================
 # TrackTimeOffset
@@ -257,6 +277,16 @@ class TestTrackTimeOffset:
         assert tto.source_path == src
         assert tto.stream_index == 3
         assert tto.offset_ms == -80
+
+
+class TestVideoTrackEncodePlan:
+    def test_defaults(self):
+        plan = VideoTrackEncodePlan(track_entry_id="video-1", codec_summary="Copy")
+        assert plan.track_entry_id == "video-1"
+        assert plan.codec_summary == "Copy"
+        assert plan.target_codec == "copy"
+        assert plan.hdr_badges == ()
+        assert plan.is_modified is False
 
 
 # ===========================================================================

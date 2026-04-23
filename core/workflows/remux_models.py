@@ -50,6 +50,10 @@ class TrackEntry:
     orig_title:    str = field(default="", repr=False)
     orig_codec:    str = field(default="", repr=False)
     orig_display_info: str = field(default="", repr=False)
+    encode_plan_codec: str = field(default="", repr=False)
+    encode_plan_summary: str = field(default="", repr=False)
+    encode_plan_hdr_badges: tuple[str, ...] = field(default_factory=tuple, repr=False)
+    encode_plan_modified: bool = field(default=False, repr=False)
 
     # Flags MKV éditables (transmis à FFmpeg si modifiés)
     flag_enabled:          bool = field(default=True,  repr=False)  # --track-enabled-flag

@@ -608,6 +608,18 @@ class TestDetectHDRType:
         with self._patch_ffprobe(raw), self._patch_mi(hdr10plus=True):
             assert self.insp.detect_hdr_type(self.path) == HDRType.HDR10PLUS
 
+    def test_hdr10plus_via_ffprobe_frame_fallback(self):
+        raw = _make_ffprobe_output(video_streams=[_video_stream(
+            color_transfer="smpte2084",
+            side_data_list=[{"side_data_type": "DOVI configuration record"}],
+        )])
+        with self._patch_ffprobe(raw), self._patch_mi(), patch.object(
+            self.insp,
+            "_ffprobe_frame_dynamic_hdr_flags",
+            return_value=(True, True),
+        ):
+            assert self.insp.detect_hdr_type(self.path) == HDRType.DOLBY_VISION_HDR10PLUS
+
     def test_hlg_detected_as_hdr10(self):
         raw = _make_ffprobe_output(video_streams=[_video_stream(
             color_transfer="arib-std-b67",
@@ -615,6 +627,43 @@ class TestDetectHDRType:
         )])
         with self._patch_ffprobe(raw), self._patch_mi():
             assert self.insp.detect_hdr_type(self.path) == HDRType.HDR10
+
+    def test_attached_pic_is_ignored_for_hdr_detection(self):
+        raw = _make_ffprobe_output(video_streams=[
+            _video_stream(
+                index=0,
+                codec_name="mjpeg",
+                color_transfer="bt709",
+                side_data_list=[],
+                disposition={"attached_pic": 1},
+            ),
+            _video_stream(
+                index=1,
+                color_transfer="smpte2084",
+                side_data_list=[
+                    {"side_data_type": "DOVI configuration record"},
+                    {"side_data_type": "HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"},
+                ],
+            ),
+        ])
+        with self._patch_ffprobe(raw), self._patch_mi():
+            assert self.insp.detect_hdr_type(self.path) == HDRType.DOLBY_VISION_HDR10PLUS
+
+    def test_dynamic_hdr_can_be_detected_from_secondary_video_stream(self):
+        raw = _make_ffprobe_output(video_streams=[
+            _video_stream(
+                index=0,
+                color_transfer="smpte2084",
+                side_data_list=[{"side_data_type": "Mastering display metadata"}],
+            ),
+            _video_stream(
+                index=1,
+                color_transfer="smpte2084",
+                side_data_list=[{"side_data_type": "HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"}],
+            ),
+        ])
+        with self._patch_ffprobe(raw), self._patch_mi():
+            assert self.insp.detect_hdr_type(self.path) == HDRType.HDR10PLUS
 
     def test_no_video_stream_returns_none(self):
         raw = _make_ffprobe_output(video_streams=[])
@@ -670,6 +719,27 @@ class TestRunFFprobe:
         with patch("subprocess.run", return_value=result):
             out = self.insp._run_ffprobe(self.path)
         assert out == payload
+
+    def test_emits_verbose_lines_for_ffprobe_probe(self, fake_path):
+        verbose_lines: list[str] = []
+        inspector = FileInspector(
+            ffprobe_bin="ffprobe",
+            mediainfo_bin="mediainfo",
+            verbose_output=verbose_lines.append,
+        )
+        payload = {"streams": [], "format": {}, "chapters": []}
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = json.dumps(payload)
+        result.stderr = ""
+
+        with patch("subprocess.run", return_value=result):
+            out = inspector._run_ffprobe(fake_path)
+
+        assert out == payload
+        assert any(line.startswith("$ ffprobe ") for line in verbose_lines)
+        assert any("ffprobe rc=0" in line for line in verbose_lines)
+        assert any("ffprobe JSON parsé" in line for line in verbose_lines)
 
 
 # ===========================================================================
@@ -739,6 +809,62 @@ class TestInspect:
 
         assert info.frame_count is None     # mediainfo absent → None
         assert isinstance(info, FileInfo)   # pas d'exception levée
+
+    def test_inspect_emits_verbose_start_and_summary(self):
+        verbose_lines: list[str] = []
+        inspector = FileInspector(
+            ffprobe_bin="ffprobe",
+            mediainfo_bin="mediainfo",
+            verbose_output=verbose_lines.append,
+        )
+        info = FileInfo(
+            path=self.path,
+            format="matroska,webm",
+            duration_s=None,
+            size_bytes=None,
+            bit_rate=None,
+            video_tracks=[
+                VideoTrack(
+                    index=0,
+                    codec="hevc",
+                    codec_long="H.265",
+                    width=1920,
+                    height=1080,
+                    frame_rate="24000/1001",
+                    bit_depth=10,
+                    color_space="yuv420p10le",
+                    color_primaries="bt2020",
+                    color_transfer="smpte2084",
+                    color_matrix="bt2020nc",
+                )
+            ],
+            audio_tracks=[
+                AudioTrack(
+                    index=1,
+                    codec="eac3",
+                    codec_long="E-AC-3",
+                    channels=6,
+                    channel_layout="5.1",
+                    sample_rate=48000,
+                    bit_rate=640000,
+                    language="fra",
+                    title="VF",
+                )
+            ],
+        )
+
+        with (
+            patch.object(inspector, "_run_ffprobe", return_value={}),
+            patch.object(inspector, "_parse_ffprobe", return_value=info),
+            patch.object(inspector, "get_frame_count", return_value=1200),
+            patch.object(inspector, "_get_mkv_track_data", return_value=(0, {})),
+            patch.object(inspector, "_detect_hdr_from_raw", return_value=HDRType.HDR10),
+        ):
+            out = inspector.inspect(self.path)
+
+        assert out.frame_count == 1200
+        assert any("Inspection démarrée" in line for line in verbose_lines)
+        assert any("Inspection terminée" in line and "HDR=HDR10" in line for line in verbose_lines)
 
     def _audio_only_info(self, *, fmt: str, language: str, title: str = "") -> FileInfo:
         return FileInfo(

@@ -154,3 +154,55 @@ def test_encode_transcode_uses_selected_video_stream(tmp_path: Path) -> None:
     assert state["failed"] is None, f"Encode failed: {state['failed']}"
     assert out.exists() and out.stat().st_size > 0
     assert _video_dims(out) == [(128, 96)]
+
+
+def test_encode_multi_video_keeps_copy_and_transcoded_tracks(tmp_path: Path) -> None:
+    """La sortie multi-vidéo garde l'ordre remux avec copy + réencodage."""
+    src = tmp_path / "multi-mixed.mkv"
+    make_multi_video_mkv(
+        src,
+        videos=[
+            (64, 48, "red"),
+            (128, 96, "blue"),
+        ],
+    )
+
+    out = tmp_path / "multi-mixed-out.mkv"
+    cfg = EncodeConfig(
+        source=src,
+        output=out,
+        video=VideoEncodeSettings(
+            codec="copy",
+            source_path=src,
+            stream_index=0,
+            track_entry_id="video-first",
+        ),
+        video_tracks=[
+            VideoEncodeSettings(
+                codec="copy",
+                source_path=src,
+                stream_index=0,
+                track_entry_id="video-first",
+            ),
+            VideoEncodeSettings(
+                codec="libx264",
+                quality_mode=QualityMode.CRF,
+                crf=35,
+                preset="ultrafast",
+                source_path=src,
+                stream_index=1,
+                track_entry_id="video-second",
+            ),
+        ],
+        audio_tracks=[],
+        copy_subtitles=False,
+        keep_chapters=False,
+        duration_s=1.0,
+    )
+
+    wf = _workflow()
+    state = wait_task(wf.run(cfg), timeout=120.0)
+
+    assert state["failed"] is None, f"Encode failed: {state['failed']}"
+    assert out.exists() and out.stat().st_size > 0
+    assert _video_dims(out) == [(64, 48), (128, 96)]

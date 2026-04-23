@@ -133,6 +133,98 @@ def test_settings_panel_writes_startup_logs_expanded_to_ini(tmp_path, qt_app):
         assert cfg.startup_logs_expanded is True
 
 
+def test_settings_panel_writes_verbose_file_logging_to_ini(tmp_path, qt_app):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[ui]\nverbose_file_logging = false\n", encoding="utf-8")
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path):
+        mock_qs.return_value = _mock_qsettings()
+        cfg = AppConfig()
+
+        panel = SettingsPanel(cfg)
+        checkbox = panel.widget_for("ui", "verbose_file_logging")
+        checkbox.setChecked(True)
+        panel._on_save_clicked()
+
+        assert "verbose_file_logging = true" in ini_path.read_text(encoding="utf-8")
+        assert cfg.verbose_file_logging is True
+
+
+def test_settings_panel_prefills_verbose_log_dir_full_path(tmp_path, qt_app):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("", encoding="utf-8")
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path):
+        mock_qs.return_value = _mock_qsettings()
+        cfg = AppConfig()
+        panel = SettingsPanel(cfg)
+
+        edit = panel.widget_for("ui", "verbose_log_dir")
+        assert edit.text() == str(tmp_path / "logs")
+
+
+def test_settings_panel_writes_verbose_log_dir_to_ini(tmp_path, qt_app):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+
+    ini_path = tmp_path / "config.ini"
+    target = tmp_path / "custom_logs"
+    ini_path.write_text("[ui]\nverbose_log_dir = /tmp/old_logs\n", encoding="utf-8")
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path):
+        mock_qs.return_value = _mock_qsettings()
+        cfg = AppConfig()
+
+        panel = SettingsPanel(cfg)
+        edit = panel.widget_for("ui", "verbose_log_dir")
+        edit.setText(str(target))
+        panel._on_save_clicked()
+
+        assert f"verbose_log_dir = {target}" in ini_path.read_text(encoding="utf-8")
+        assert cfg.verbose_log_dir == target
+
+
+def test_settings_panel_rejects_empty_verbose_log_dir_when_logging_enabled(tmp_path, qt_app):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[ui]\nverbose_file_logging = true\nverbose_log_dir = /tmp/logs\n", encoding="utf-8")
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path):
+        mock_qs.return_value = _mock_qsettings()
+        cfg = AppConfig()
+
+        panel = SettingsPanel(cfg)
+        checkbox = panel.widget_for("ui", "verbose_file_logging")
+        checkbox.setChecked(True)
+        edit = panel.widget_for("ui", "verbose_log_dir")
+        edit.setText("")
+        with patch("ui.panels.settings_panel.QMessageBox.warning") as warn:
+            panel._on_save_clicked()
+
+        warn.assert_called_once()
+        assert "verbose_log_dir = /tmp/logs" in ini_path.read_text(encoding="utf-8")
+
+
 def test_settings_panel_writes_ui_scale_percent_to_ini(tmp_path, qt_app):
     import core.config as cfg_mod
     from core.config import AppConfig
@@ -208,6 +300,29 @@ def test_settings_panel_writes_ffmpeg_threads_to_ini(tmp_path, qt_app):
 
         assert "threads = 18" in ini_path.read_text(encoding="utf-8")
         assert cfg.ffmpeg_threads == 18
+
+
+def test_settings_panel_writes_max_parallel_video_encodes_to_ini(tmp_path, qt_app):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[encoding]\nmax_parallel_video_encodes = 1\n", encoding="utf-8")
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path):
+        mock_qs.return_value = _mock_qsettings()
+        cfg = AppConfig()
+
+        panel = SettingsPanel(cfg)
+        spin = panel.widget_for("encoding", "max_parallel_video_encodes")
+        spin.setValue(3)
+        panel._on_save_clicked()
+
+        assert "max_parallel_video_encodes = 3" in ini_path.read_text(encoding="utf-8")
+        assert cfg.max_parallel_video_encodes == 3
 
 
 def test_settings_panel_rerun_setup_restarts_app_on_confirmation(tmp_path, qt_app):

@@ -92,10 +92,10 @@ _MACOS_MIN_VERSION = os.environ.get("MEDIARECODE_MACOS_MIN_VERSION", "11.0").str
 _APPIMAGE_UPDATE_OWNER = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_OWNER", "Hydro74000").strip() or "Hydro74000"
 _APPIMAGE_UPDATE_REPO = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_REPO", "mediarecode").strip() or "mediarecode"
 _APPIMAGE_UPDATE_RELEASE = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_RELEASE", "latest").strip() or "latest"
-_MSIX_IDENTITY = os.environ.get("MEDIARECODE_MSIX_IDENTITY", "Hydro74000.Mediarecode").strip() or "Hydro74000.Mediarecode"
-_MSIX_PUBLISHER = os.environ.get("MEDIARECODE_MSIX_PUBLISHER", "CN=Hydro74000").strip() or "CN=Hydro74000"
-_MSIX_PUBLISHER_DISPLAY_NAME = os.environ.get("MEDIARECODE_MSIX_PUBLISHER_DISPLAY_NAME", "Hydro74000").strip() or "Hydro74000"
-_MSIX_DESCRIPTION = os.environ.get("MEDIARECODE_MSIX_DESCRIPTION", "Mediarecode video workflow").strip() or "Mediarecode video workflow"
+_MSIX_IDENTITY = os.environ.get("MEDIARECODE_MSIX_IDENTITY", "AOTR.Mediarecode").strip() or "AOTR.Mediarecode"
+_MSIX_PUBLISHER = os.environ.get("MEDIARECODE_MSIX_PUBLISHER", "CN=AOTR").strip() or "CN=AOTR"
+_MSIX_PUBLISHER_DISPLAY_NAME = os.environ.get("MEDIARECODE_MSIX_PUBLISHER_DISPLAY_NAME", "AOTR").strip() or "AOTR"
+_MSIX_DESCRIPTION = os.environ.get("MEDIARECODE_MSIX_DESCRIPTION", "AOTR Mediarecode is an independent video workflow tool. This software is not affiliated with, authorized, or endorsed by Nero AG or any other media software providers.").strip() or "AOTR Mediarecode is an independent video workflow tool. This software is not affiliated with, authorized, or endorsed by Nero AG or any other media software providers."
 _MSIX_CERT_PFX = os.environ.get("MEDIARECODE_MSIX_CERT_PFX", "").strip()
 _MSIX_CERT_PASSWORD = os.environ.get("MEDIARECODE_MSIX_CERT_PASSWORD", "").strip()
 _MSIX_TIMESTAMP_URL = os.environ.get("MEDIARECODE_MSIX_TIMESTAMP_URL", "http://timestamp.digicert.com").strip() or "http://timestamp.digicert.com"

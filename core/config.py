@@ -134,6 +134,13 @@ def _normalize_ffmpeg_thread_count(value: int | None) -> int:
     return value
 
 
+def _normalize_max_parallel_video_encodes(value: int | None) -> int:
+    """Retourne un niveau de parallélisme vidéo valide (>= 1)."""
+    if value is None:
+        return 1
+    return max(1, int(value))
+
+
 def _normalize_ui_scale_percent(value: int | None) -> int:
     """Clamp UI scale percentage to a safe interactive range."""
     if value is None:
@@ -626,6 +633,10 @@ def _default_output_dir() -> Path:
     return Path(raw) if raw else Path.home() / "Videos"
 
 
+def _default_verbose_log_dir() -> Path:
+    return _app_data_dir() / "logs"
+
+
 def _default_language_code() -> str:
     candidates: list[str | None] = [
         os.environ.get("LC_ALL"),
@@ -750,6 +761,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         "fields": (
             {"key": "ram_buffer_enabled", "attr": "ram_buffer_enabled", "kind": "bool", "label": "Buffer RAM activé", "description": "Active le buffer RAM pour les fichiers HEVC intermédiaires quand le seuil le permet."},
             {"key": "ram_buffer_threshold_pct", "attr": "ram_buffer_threshold_pct", "kind": "int", "label": "Seuil buffer RAM (%)", "description": "Pourcentage minimal de RAM libre à conserver."},
+            {"key": "max_parallel_video_encodes", "attr": "max_parallel_video_encodes", "kind": "int", "label": "Encodages vidéo parallèles max", "description": "Nombre maximal de pistes vidéo encodées simultanément dans le pipeline multi-pistes. 1 = séquentiel (défaut)."},
         ),
     },
     {
@@ -758,6 +770,8 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         "fields": (
             {"key": "language", "attr": "language", "kind": "language", "label": "Langue de l'interface", "description": "Langue utilisée pour l'UI et les messages internes."},
             {"key": "log_max_lines", "attr": "log_max_lines", "kind": "int", "label": "Nombre max de lignes de log", "description": "Nombre maximum de lignes conservées dans le panneau de log."},
+            {"key": "verbose_file_logging", "attr": "verbose_file_logging", "kind": "bool", "label": "Écrire aussi les logs dans un fichier verbose", "description": "Si activé, tous les logs applicatifs sont aussi écrits dans un fichier texte sous app_data/logs/."},
+            {"key": "verbose_log_dir", "attr": "verbose_log_dir", "kind": "directory", "label": "Dossier des logs verbose", "description": "Dossier où écrire les logs verbose. Prérempli par défaut avec le chemin complet actuel."},
             {"key": "theme", "attr": "theme", "kind": "choice", "label": "Thème", "description": "Thème principal pour l'interface. Le changement de thème nécessite de redémarrer l'application.", "options": (("dark", "Sombre"), ("light", "Clair"))},
             {"key": "ui_scale_percent", "attr": "ui_scale_percent", "kind": "int", "label": "Échelle de l'interface (%)", "description": "Facteur d'échelle appliqué à l'interface. Le changement est appliqué immédiatement autant que possible, mais un redémarrage peut être recommandé pour uniformiser tout l'affichage.", "min": 50, "max": 200},
             {"key": "startup_panel", "attr": "startup_panel", "kind": "choice", "label": "Panneau à afficher au démarrage", "description": "Panneau chargé en premier au lancement de l'application.", "options": UI_STARTUP_PANEL_CHOICES},
@@ -956,6 +970,9 @@ class AppConfig:
 
         self.ram_buffer_enabled = self._resolve_bool("encoding", "ram_buffer_enabled", "encoding/ram_buffer_enabled", True)
         self.ram_buffer_threshold_pct = self._resolve_int("encoding", "ram_buffer_threshold_pct", "encoding/ram_buffer_threshold_pct", 15)
+        self.max_parallel_video_encodes = _normalize_max_parallel_video_encodes(
+            self._resolve_int("encoding", "max_parallel_video_encodes", "encoding/max_parallel_video_encodes", 1)
+        )
 
         self.aac_bitrate_per_channel_kbps = self._resolve_int(
             "audio_encoding", "aac_bitrate_per_channel_kbps",
@@ -972,6 +989,12 @@ class AppConfig:
             self._resolve_text("ui", "language", "ui/language", _default_language_code())
         )
         self.log_max_lines = self._resolve_int("ui", "log_max_lines", "ui/log_max_lines", 2000)
+        self.verbose_file_logging = self._resolve_bool(
+            "ui", "verbose_file_logging", "ui/verbose_file_logging", False
+        )
+        self.verbose_log_dir = self._resolve_path(
+            "ui", "verbose_log_dir", "ui/verbose_log_dir", _default_verbose_log_dir()
+        )
         self.theme = self._resolve_text("ui", "theme", "ui/theme", "dark")
         self.ui_scale_percent = _normalize_ui_scale_percent(
             self._resolve_int("ui", "ui_scale_percent", "ui/ui_scale_percent", 100)
@@ -1031,12 +1054,18 @@ class AppConfig:
 
         s.setValue("encoding/ram_buffer_enabled", "true" if self.ram_buffer_enabled else "false")
         s.setValue("encoding/ram_buffer_threshold_pct", self.ram_buffer_threshold_pct)
+        s.setValue("encoding/max_parallel_video_encodes", self.max_parallel_video_encodes)
 
         s.setValue("audio_encoding/aac_bitrate_per_channel_kbps", self.aac_bitrate_per_channel_kbps)
         s.setValue("audio_encoding/eac3_bitrate_per_channel_kbps", self.eac3_bitrate_per_channel_kbps)
 
         s.setValue("ui/language", self.language)
         s.setValue("ui/log_max_lines", self.log_max_lines)
+        s.setValue(
+            "ui/verbose_file_logging",
+            "true" if self.verbose_file_logging else "false",
+        )
+        s.setValue("ui/verbose_log_dir", str(self.verbose_log_dir))
         s.setValue("ui/theme", self.theme)
         s.setValue("ui/ui_scale_percent", self.ui_scale_percent)
         s.setValue("ui/startup_panel", self.startup_panel)
@@ -1201,10 +1230,13 @@ class AppConfig:
             "encoding": {
                 "ram_buffer_enabled": self.ram_buffer_enabled,
                 "ram_buffer_threshold_pct": self.ram_buffer_threshold_pct,
+                "max_parallel_video_encodes": self.max_parallel_video_encodes,
             },
             "ui": {
                 "language": self.language,
                 "log_max_lines": self.log_max_lines,
+                "verbose_file_logging": self.verbose_file_logging,
+                "verbose_log_dir": str(self.verbose_log_dir),
                 "theme": self.theme,
                 "ui_scale_percent": self.ui_scale_percent,
                 "startup_panel": self.startup_panel,

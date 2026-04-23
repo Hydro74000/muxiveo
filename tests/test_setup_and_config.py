@@ -105,6 +105,56 @@ class TestAppConfigRamBuffer:
 
         assert cfg.ram_buffer_threshold_pct == 25
 
+    def test_default_max_parallel_video_encodes_is_one(self, tmp_path):
+        """Valeur par défaut: max_parallel_video_encodes=1 (séquentiel)."""
+        from core.config import AppConfig
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.dict(os.environ, {}, clear=False):
+                cfg = AppConfig()
+
+        assert cfg.max_parallel_video_encodes == 1
+
+    def test_ini_sets_max_parallel_video_encodes(self, tmp_path):
+        """config.ini max_parallel_video_encodes=3 est bien lu."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[encoding]\nmax_parallel_video_encodes = 3\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.max_parallel_video_encodes == 3
+
+    def test_ini_invalid_max_parallel_video_encodes_falls_back_to_one(self, tmp_path):
+        """Une valeur <=0 est normalisée à 1."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[encoding]\nmax_parallel_video_encodes = 0\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.max_parallel_video_encodes == 1
+
     def test_explicit_blank_ini_uses_default_instead_of_qsettings(self, tmp_path):
         """Une clé présente mais vide revient au défaut documenté, pas à QSettings."""
         import core.config as cfg_mod
@@ -227,6 +277,20 @@ class TestAppConfigRamBuffer:
 
         assert cfg.startup_logs_expanded is False
 
+    def test_default_verbose_file_logging_is_false(self, tmp_path):
+        """Sans clé explicite, le log verbose fichier est désactivé."""
+        from core.config import AppConfig
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.dict(os.environ, {}, clear=False):
+                cfg = AppConfig()
+
+        assert cfg.verbose_file_logging is False
+
     def test_default_ui_scale_percent_is_100(self, tmp_path):
         """Sans clé explicite, l'échelle UI vaut 100%."""
         import core.config as cfg_mod
@@ -310,6 +374,57 @@ class TestAppConfigRamBuffer:
                 cfg = AppConfig()
 
         assert cfg.startup_logs_expanded is True
+
+    def test_ini_verbose_file_logging_true_enables_file_logging(self, tmp_path):
+        """La clé verbose_file_logging=true active l'écriture des logs dans un fichier."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[ui]\nverbose_file_logging = true\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.verbose_file_logging is True
+
+    def test_default_verbose_log_dir_uses_full_current_path(self, tmp_path):
+        """Le dossier verbose est prérempli avec le chemin complet par défaut."""
+        from core.config import AppConfig
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.dict(os.environ, {}, clear=False):
+                cfg = AppConfig()
+
+        assert cfg.verbose_log_dir == tmp_path / "logs"
+
+    def test_ini_verbose_log_dir_is_loaded(self, tmp_path):
+        """La clé verbose_log_dir est lue depuis config.ini."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        target = tmp_path / "chosen_logs"
+        ini_path.write_text(f"[ui]\nverbose_log_dir = {target}\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.verbose_log_dir == target
 
     def test_work_dir_leftovers_ignores_empty_tmdb_covers(self, tmp_path):
         """tmdb_covers vide (même avec sous-dossiers vides) ne déclenche pas l'alerte startup."""

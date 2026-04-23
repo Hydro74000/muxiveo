@@ -8,6 +8,8 @@ on:
   pull_request:
     paths:
       - "core/workflows/encode/**"
+      - "tests/test_encode_hw_devices.py"
+      - "tests/test_encode_hardware.py"
       - "tests/test_encode_workflow.py"
       - "tests/conftest.py"
       - ".github/workflows/ci-encode-integration.yml"
@@ -17,6 +19,8 @@ on:
       - master
     paths:
       - "core/workflows/encode/**"
+      - "tests/test_encode_hw_devices.py"
+      - "tests/test_encode_hardware.py"
       - "tests/test_encode_workflow.py"
       - "tests/conftest.py"
       - ".github/workflows/ci-encode-integration.yml"
@@ -49,4 +53,8 @@ jobs:
 
       - name: Run Encode Integration Tests
         run: |
-          pytest tests/test_encode_workflow.py -v
+          pytest \
+            tests/test_encode_hw_devices.py \
+            tests/test_encode_hardware.py \
+            tests/test_encode_workflow.py \
+            -v

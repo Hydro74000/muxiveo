@@ -224,10 +224,17 @@ class VideoEncodeSettings:
     target_size_mb:   int          = 4000
     preset:           str          = "slow"
     extra_params:     str          = ""    # x265-params / svtav1-params passthrough
+    # Précheck UI: forcer une sortie 8-bit pour les encodeurs H.264
+    # quand la source est > 8-bit (appliqué piste par piste).
+    force_8bit:       bool         = False
     # HDR statique
     inject_hdr_meta:  bool         = False
     master_display:   str          = ""   # ex. "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(40000000,50)"
     max_cll:          str          = ""   # ex. "1000,400"
+    # HDR dynamique
+    copy_dv:          bool         = False
+    copy_hdr10plus:   bool         = False
+    dovi_profile:     str          = "0"
     # Tone mapping
     tonemap_to_sdr:   bool         = False
     tonemap_algorithm: str         = "hable"
@@ -277,13 +284,24 @@ class TrackMetaEdit:
     flag_commentary:       bool | None = None
 
 
+@dataclass(frozen=True)
+class VideoTrackEncodePlan:
+    """Résumé UI d'un plan d'encodage vidéo pour une piste remux."""
+    track_entry_id: str
+    codec_summary: str
+    target_codec: str = "copy"
+    hdr_badges: tuple[str, ...] = ()
+    is_modified: bool = False
+
+
 @dataclass
 class EncodeConfig:
     """Configuration complète d'un encodage."""
     source:           Path
     output:           Path
-    video:            VideoEncodeSettings
-    audio_tracks:     list[AudioTrackSettings]
+    video:            VideoEncodeSettings | None = None
+    video_tracks:     list[VideoEncodeSettings] = field(default_factory=list)
+    audio_tracks:     list[AudioTrackSettings] = field(default_factory=list)
     copy_subtitles:   bool         = True
     # Pistes de sous-titres multi-sources : (chemin_source, stream_index_ffprobe)
     # Si non vide, remplace le copy_subtitles générique.
@@ -312,13 +330,35 @@ class EncodeConfig:
     file_title:       str          = ""     # balise Title du segment de sortie
     duration_s:       float | None = None   # requis pour le mode taille cible
     # Passthrough métadonnées dynamiques (HEVC uniquement)
-    copy_dv:          bool         = False  # injecter RPU Dolby Vision via dovi_tool
-    copy_hdr10plus:   bool         = False  # injecter HDR10+ SEI via hdr10plus_tool
-    dovi_profile:     str          = "0"    # flag -m dovi_tool : "0"=conserver, "2"=normaliser P8.1
+    copy_dv:          bool         = False  # compat legacy : miroir de la vidéo primaire
+    copy_hdr10plus:   bool         = False  # compat legacy : miroir de la vidéo primaire
+    dovi_profile:     str          = "0"    # compat legacy : miroir de la vidéo primaire
     work_dir:         Path | None  = None   # dossier de travail (passlog, fichiers temp)
     #: Cover TMDB à télécharger juste avant l'encodage : (url, filename).
     #: None → pas de cover TMDB en attente.
     tmdb_cover:       tuple[str, str] | None = None
+
+    def __post_init__(self) -> None:
+        if not self.video_tracks and self.video is not None:
+            primary = self.video
+            if not primary.copy_dv and self.copy_dv:
+                primary.copy_dv = self.copy_dv
+            if not primary.copy_hdr10plus and self.copy_hdr10plus:
+                primary.copy_hdr10plus = self.copy_hdr10plus
+            if primary.dovi_profile == "0" and self.dovi_profile != "0":
+                primary.dovi_profile = self.dovi_profile
+            self.video_tracks = [primary]
+        elif self.video_tracks and self.video is None:
+            self.video = self.video_tracks[0]
+
+        if self.video is None:
+            raise ValueError("EncodeConfig nécessite au moins une piste vidéo.")
+
+        # La première piste reste l'accesseur de compatibilité pour l'ancien code.
+        self.video = self.video_tracks[0]
+        self.copy_dv = bool(self.video.copy_dv)
+        self.copy_hdr10plus = bool(self.video.copy_hdr10plus)
+        self.dovi_profile = str(self.video.dovi_profile or "0")
 
 
 @dataclass
