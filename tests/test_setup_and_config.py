@@ -353,23 +353,8 @@ class TestAppConfigRamBuffer:
 
         assert cfg.work_dir_has_leftovers() is True
 
-    def test_audio_encoding_defaults_use_192_and_64(self, tmp_path):
-        """Sans configuration explicite, l'audio utilise 192 kbps/canal et des paliers de 64."""
-        from core.config import AppConfig
-
-        with patch("core.config.QSettings") as mock_qs:
-            inst = MagicMock()
-            inst.value.side_effect = lambda key, default=None: default
-            mock_qs.return_value = inst
-            with patch("core.config._app_data_dir", return_value=tmp_path), \
-                 patch.dict(os.environ, {}, clear=False):
-                cfg = AppConfig()
-
-        assert cfg.audio_default_bitrate_per_channel_kbps == 192
-        assert cfg.audio_bitrate_step_per_channel_kbps == 64
-
-    def test_audio_encoding_ini_overrides_defaults(self, tmp_path):
-        """config.ini peut surcharger le bitrate/canal et le palier de combobox audio."""
+    def test_audio_encoding_ini_values_are_ignored(self, tmp_path):
+        """Les anciens réglages audio ne sont plus pris en charge par AppConfig."""
         import core.config as cfg_mod
         from core.config import AppConfig
 
@@ -389,8 +374,8 @@ class TestAppConfigRamBuffer:
                  patch.object(cfg_mod, "_INI_PATH", ini_path):
                 cfg = AppConfig()
 
-        assert cfg.audio_default_bitrate_per_channel_kbps == 160
-        assert cfg.audio_bitrate_step_per_channel_kbps == 48
+        assert not hasattr(cfg, "audio_default_bitrate_per_channel_kbps")
+        assert not hasattr(cfg, "audio_bitrate_step_per_channel_kbps")
 
     def test_ffmpeg_threads_default_uses_cpu_count_times_0_75(self, tmp_path):
         """Sans valeur explicite, ffmpeg.threads vaut cores × 0,75 arrondi au supérieur."""

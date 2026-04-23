@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.config import AppConfig, INI_FIELD_GROUPS, write_ini_settings
+from core.config import AppConfig, AUDIO_BITRATE_STEPS, INI_FIELD_GROUPS, write_ini_settings
 from core.i18n import apply_translations, available_languages, translate_text
 from core.lang_tags import Rfc5646LanguageTags
 from ui.panels.encode_panel.theme import (
@@ -131,8 +131,8 @@ class SettingsPanel(QWidget):
         layout.addWidget(subtitle)
         layout.addWidget(_separator())
 
-        _section_order = {"ui": 0, "metadata": 1, "paths": 2}
-        groups = sorted(INI_FIELD_GROUPS, key=lambda group: _section_order.get(group["section"], 3))
+        _section_order = {"ui": 0, "audio_encoding": 1, "metadata": 2, "paths": 3}
+        groups = sorted(INI_FIELD_GROUPS, key=lambda group: _section_order.get(group["section"], 4))
         for group in groups:
             layout.addWidget(_section_label(group["title"].upper()))
             layout.addWidget(self._build_group_card(group))
@@ -256,6 +256,7 @@ class SettingsPanel(QWidget):
                 slider_layout.addWidget(slider, stretch=1)
 
                 value_label = QLabel("")
+                value_label.setProperty("_i18n_skip", True)
                 value_label.setMinimumWidth(_scale(52))
                 value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 value_label.setStyleSheet(
@@ -279,6 +280,8 @@ class SettingsPanel(QWidget):
             spin = QSpinBox()
             spin.setObjectName(f"{section}.{field['key']}")
             spin.setRange(int(field.get("min", 0)), int(field.get("max", 1_000_000)))
+            if "single_step" in field:
+                spin.setSingleStep(int(field["single_step"]))
             spin.setStyleSheet(_spin_style())
             self._field_widgets[key] = spin
             return spin
@@ -301,6 +304,47 @@ class SettingsPanel(QWidget):
             self._field_widgets[key] = combo
             return combo
 
+        if kind == "stepped_slider":
+            steps: list[int] = list(field.get("steps", AUDIO_BITRATE_STEPS))
+            slider_wrap = QWidget()
+            slider_layout = QHBoxLayout(slider_wrap)
+            slider_layout.setContentsMargins(0, 0, 0, 0)
+            slider_layout.setSpacing(_scale(10))
+
+            slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setObjectName(f"{section}.{field['key']}")
+            slider.setRange(0, len(steps) - 1)
+            slider.setSingleStep(1)
+            slider.setPageStep(1)
+            slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+            slider.setTickInterval(1)
+            slider.setStyleSheet(_slider_style())
+            slider.setProperty("steps", steps)
+            slider_layout.addWidget(slider, stretch=1)
+
+            value_label = QLabel("")
+            value_label.setProperty("_i18n_skip", True)
+            value_label.setMinimumWidth(_scale(70))
+            value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            value_label.setStyleSheet(
+                f"color:{_C.TEXT_SEC};font-size:{_font_px(11)}px;font-family:'JetBrains Mono',monospace;background:transparent;"
+            )
+
+            def _sync_stepped(idx: int, *, s=slider, lbl=value_label, st=steps) -> None:
+                clamped = max(0, min(idx, len(st) - 1))
+                if clamped != idx:
+                    s.blockSignals(True)
+                    s.setValue(clamped)
+                    s.blockSignals(False)
+                lbl.setText(f"{st[clamped]} kbps")
+
+            slider.valueChanged.connect(_sync_stepped)
+            slider_layout.addWidget(value_label)
+
+            self._field_widgets[key] = slider
+            self._slider_value_labels[key] = value_label
+            return slider_wrap
+
         raise ValueError(f"Unsupported settings field kind: {kind}")
 
     def _field_value(self, section: str, field: dict[str, Any]) -> str:
@@ -310,6 +354,10 @@ class SettingsPanel(QWidget):
         if isinstance(widget, QCheckBox):
             return "true" if widget.isChecked() else "false"
         if isinstance(widget, QSlider):
+            steps = widget.property("steps")
+            if steps:
+                idx = max(0, min(widget.value(), len(steps) - 1))
+                return str(steps[idx])
             return str(widget.value())
         if isinstance(widget, QSpinBox):
             return str(widget.value())
@@ -330,7 +378,15 @@ class SettingsPanel(QWidget):
                 elif isinstance(widget, QCheckBox):
                     widget.setChecked(bool(value))
                 elif isinstance(widget, QSlider):
-                    widget.setValue(int(value))
+                    steps = widget.property("steps")
+                    if steps:
+                        try:
+                            idx = steps.index(int(value))
+                        except ValueError:
+                            idx = min(range(len(steps)), key=lambda i: abs(steps[i] - int(value)))
+                        widget.setValue(idx)
+                    else:
+                        widget.setValue(int(value))
                 elif isinstance(widget, QSpinBox):
                     widget.setValue(int(value))
                 elif isinstance(widget, QComboBox):

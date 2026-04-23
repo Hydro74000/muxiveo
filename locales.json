@@ -19,6 +19,10 @@
     "fra": "ENCODAGE",
     "eng": "ENCODING"
   },
+  "ENCODAGE AUDIO": {
+    "fra": "ENCODAGE AUDIO",
+    "eng": "AUDIO ENCODING"
+  },
   "INTERFACE": {
     "fra": "INTERFACE",
     "eng": "INTERFACE"
@@ -194,6 +198,26 @@
   "Encodage": {
     "fra": "Encodage",
     "eng": "Encoding"
+  },
+  "Encodage audio": {
+    "fra": "Encodage audio",
+    "eng": "Audio encoding"
+  },
+  "Débit AAC par canal (kbps)": {
+    "fra": "Débit AAC par canal (kbps)",
+    "eng": "AAC bitrate per channel (kbps)"
+  },
+  "Débit EAC-3 par canal (kbps)": {
+    "fra": "Débit EAC-3 par canal (kbps)",
+    "eng": "EAC-3 bitrate per channel (kbps)"
+  },
+  "Débit par canal utilisé pour le calcul du débit AAC par défaut. Débit total = cette valeur × nombre de canaux. Défaut : 96 kbps.": {
+    "fra": "Débit par canal utilisé pour le calcul du débit AAC par défaut. Débit total = cette valeur × nombre de canaux. Défaut : 96 kbps.",
+    "eng": "Per-channel bitrate used to compute the default AAC bitrate. Total bitrate = this value × channel count. Default: 96 kbps."
+  },
+  "Débit par canal utilisé pour le calcul du débit EAC-3 par défaut. Débit total = cette valeur × nombre de canaux. Défaut : 96 kbps.": {
+    "fra": "Débit par canal utilisé pour le calcul du débit EAC-3 par défaut. Débit total = cette valeur × nombre de canaux. Défaut : 96 kbps.",
+    "eng": "Per-channel bitrate used to compute the default EAC-3 bitrate. Total bitrate = this value × channel count. Default: 96 kbps."
   },
   "DoVi / HDR10+": {
     "fra": "DoVi / HDR10+",

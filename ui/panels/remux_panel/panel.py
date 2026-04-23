@@ -479,7 +479,7 @@ class RemuxPanel(QWidget):
     def _on_table_changed(self, _item: QTableWidgetItem | None = None) -> None:
         self._track_table.refresh_filter()
         self._rebuild_preview()
-        self._emit_audio_tracks()
+        self._emit_signals()
 
     def _on_track_order_changed(self) -> None:
         self._rebuild_preview()

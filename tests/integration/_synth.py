@@ -70,6 +70,38 @@ def make_mkv_with_srt(path: Path, duration: float = 1.0) -> None:
     ])
 
 
+def make_multi_video_mkv(
+    path: Path,
+    *,
+    videos: list[tuple[int, int, str]] | None = None,
+    duration: float = 0.6,
+) -> None:
+    """Crée un MKV avec plusieurs pistes vidéo distinguables par résolution.
+
+    ``videos`` contient des tuples ``(width, height, color)``. Les index ffprobe
+    Matroska restent stables : première vidéo = 0, deuxième vidéo = 1, etc.
+    """
+    specs = videos or [(64, 48, "red"), (96, 72, "blue")]
+    args: list[str] = []
+    maps: list[str] = []
+    for input_idx, (width, height, color) in enumerate(specs):
+        args.extend([
+            "-f", "lavfi",
+            "-i", f"color=c={color}:s={width}x{height}:r=5:d={duration}",
+        ])
+        maps.extend(["-map", f"{input_idx}:v:0"])
+    _run_ffmpeg([
+        *args,
+        *maps,
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-preset", "ultrafast",
+        "-crf", "35",
+        "-y",
+        str(path),
+    ])
+
+
 def make_mp4_with_mov_text(path: Path, duration: float = 1.0) -> None:
     """MP4 contenant video + audio + une piste mov_text.
 

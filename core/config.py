@@ -84,6 +84,20 @@ _WINDOWS_WINGET_PATTERNS: dict[str, tuple[str, ...]] = {
     "mediainfo": ("MediaArea.MediaInfo_*",),
 }
 
+_DEFAULT_AUDIO_BITRATE_PER_CHANNEL_KBPS = 96
+
+AUDIO_BITRATE_STEPS: list[int] = [
+    32, 40, 48, 56, 64, 80, 96, 112,
+    128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640,
+]
+
+_REMOVED_INI_KEYS: dict[str, set[str]] = {
+    "audio_encoding": {
+        "default_bitrate_per_channel_kbps",
+        "bitrate_step_per_channel_kbps",
+    },
+}
+
 
 def _load_ini() -> configparser.ConfigParser:
     """Charge config.ini s'il existe, retourne un parser vide sinon."""
@@ -341,6 +355,26 @@ def _upsert_ini_section(
     return _sanitize_windows_ini_lines(lines)
 
 
+def _remove_ini_keys(lines: list[str], removed: dict[str, set[str]]) -> list[str]:
+    updated = lines
+    for section, keys in removed.items():
+        start, end = _section_bounds(updated, section)
+        if start == -1:
+            continue
+        lowered_keys = {key.lower() for key in keys}
+        kept_lines: list[str] = []
+        for line in updated[start + 1:end]:
+            stripped = line.strip()
+            if stripped and not stripped.startswith(("#", ";")) and "=" in stripped:
+                lhs, _rhs = stripped.split("=", 1)
+                if lhs.strip().lower() in lowered_keys:
+                    continue
+            kept_lines.append(line)
+        updated = updated[:start + 1] + kept_lines + updated[end:]
+    return _sanitize_windows_ini_lines(updated)
+
+
+
 def _update_ini_tools_section(path: Path, tool_values: dict[str, str]) -> None:
     """Ajoute les chemins détectés dans [tools] sans écraser une valeur explicite."""
     if not tool_values:
@@ -360,6 +394,7 @@ def write_ini_settings(section_values: dict[str, dict[str, str]]) -> None:
 
     for section, values in section_values.items():
         lines = _upsert_ini_section(lines, section, values)
+    lines = _remove_ini_keys(lines, _REMOVED_INI_KEYS)
 
     _INI_PATH.parent.mkdir(parents=True, exist_ok=True)
     _INI_PATH.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
@@ -677,26 +712,6 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         ),
     },
     {
-        "section": "audio_encoding",
-        "title": "Encodage audio",
-        "fields": (
-            {
-                "key": "default_bitrate_per_channel_kbps",
-                "attr": "audio_default_bitrate_per_channel_kbps",
-                "kind": "int",
-                "label": "Bitrate par canal par défaut (kbps)",
-                "description": "Valeur utilisée pour les encodages audio lossy hors FLAC. Exemple : 192 donne 1152 kbps pour une piste 5.1.",
-            },
-            {
-                "key": "bitrate_step_per_channel_kbps",
-                "attr": "audio_bitrate_step_per_channel_kbps",
-                "kind": "int",
-                "label": "Palier par canal de la combobox (kbps)",
-                "description": "Incrément utilisé pour les choix AAC / EAC-3 dans le panneau d'encodage. La valeur par défaut passe a 64 kbps par canal.",
-            },
-        ),
-    },
-    {
         "section": "tools",
         "title": "Outils externes",
         "fields": (
@@ -748,6 +763,28 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "startup_panel", "attr": "startup_panel", "kind": "choice", "label": "Panneau à afficher au démarrage", "description": "Panneau chargé en premier au lancement de l'application.", "options": UI_STARTUP_PANEL_CHOICES},
             {"key": "startup_menu_compact", "attr": "startup_menu_compact", "kind": "bool", "label": "Démarrer avec le menu en mode Compact", "description": "Si activé, le menu latéral est réduit en mode icônes au lancement."},
             {"key": "startup_logs_expanded", "attr": "startup_logs_expanded", "kind": "bool", "label": "Ouvrir les logs au démarrage de l'application", "description": "Si activé, le panneau de logs est déplié au lancement."},
+        ),
+    },
+    {
+        "section": "audio_encoding",
+        "title": "Encodage audio",
+        "fields": (
+            {
+                "key": "aac_bitrate_per_channel_kbps",
+                "attr": "aac_bitrate_per_channel_kbps",
+                "kind": "stepped_slider",
+                "steps": AUDIO_BITRATE_STEPS,
+                "label": "Débit AAC par canal (kbps)",
+                "description": f"Débit par canal utilisé pour le calcul du débit AAC par défaut. Débit total = cette valeur × nombre de canaux. Défaut : {_DEFAULT_AUDIO_BITRATE_PER_CHANNEL_KBPS} kbps.",
+            },
+            {
+                "key": "eac3_bitrate_per_channel_kbps",
+                "attr": "eac3_bitrate_per_channel_kbps",
+                "kind": "stepped_slider",
+                "steps": AUDIO_BITRATE_STEPS,
+                "label": "Débit EAC-3 par canal (kbps)",
+                "description": f"Débit par canal utilisé pour le calcul du débit EAC-3 par défaut. Débit total = cette valeur × nombre de canaux. Défaut : {_DEFAULT_AUDIO_BITRATE_PER_CHANNEL_KBPS} kbps.",
+            },
         ),
     },
     {
@@ -917,21 +954,19 @@ class AppConfig:
         self.dovi_profile = self._resolve_text("hdr", "dovi_profile", "hdr/dovi_profile", "8")
         self.dovi_compat_id = self._resolve_text("hdr", "dovi_compat_id", "hdr/dovi_compat_id", "1")
 
-        self.audio_default_bitrate_per_channel_kbps = self._resolve_int(
-            "audio_encoding",
-            "default_bitrate_per_channel_kbps",
-            "audio_encoding/default_bitrate_per_channel_kbps",
-            192,
-        )
-        self.audio_bitrate_step_per_channel_kbps = self._resolve_int(
-            "audio_encoding",
-            "bitrate_step_per_channel_kbps",
-            "audio_encoding/bitrate_step_per_channel_kbps",
-            64,
-        )
-
         self.ram_buffer_enabled = self._resolve_bool("encoding", "ram_buffer_enabled", "encoding/ram_buffer_enabled", True)
         self.ram_buffer_threshold_pct = self._resolve_int("encoding", "ram_buffer_threshold_pct", "encoding/ram_buffer_threshold_pct", 15)
+
+        self.aac_bitrate_per_channel_kbps = self._resolve_int(
+            "audio_encoding", "aac_bitrate_per_channel_kbps",
+            "audio_encoding/aac_bitrate_per_channel_kbps",
+            _DEFAULT_AUDIO_BITRATE_PER_CHANNEL_KBPS,
+        )
+        self.eac3_bitrate_per_channel_kbps = self._resolve_int(
+            "audio_encoding", "eac3_bitrate_per_channel_kbps",
+            "audio_encoding/eac3_bitrate_per_channel_kbps",
+            _DEFAULT_AUDIO_BITRATE_PER_CHANNEL_KBPS,
+        )
 
         self.language = _normalize_language_code(
             self._resolve_text("ui", "language", "ui/language", _default_language_code())
@@ -994,11 +1029,11 @@ class AppConfig:
         s.setValue("hdr/dovi_profile", self.dovi_profile)
         s.setValue("hdr/dovi_compat_id", self.dovi_compat_id)
 
-        s.setValue("audio_encoding/default_bitrate_per_channel_kbps", self.audio_default_bitrate_per_channel_kbps)
-        s.setValue("audio_encoding/bitrate_step_per_channel_kbps", self.audio_bitrate_step_per_channel_kbps)
-
         s.setValue("encoding/ram_buffer_enabled", "true" if self.ram_buffer_enabled else "false")
         s.setValue("encoding/ram_buffer_threshold_pct", self.ram_buffer_threshold_pct)
+
+        s.setValue("audio_encoding/aac_bitrate_per_channel_kbps", self.aac_bitrate_per_channel_kbps)
+        s.setValue("audio_encoding/eac3_bitrate_per_channel_kbps", self.eac3_bitrate_per_channel_kbps)
 
         s.setValue("ui/language", self.language)
         s.setValue("ui/log_max_lines", self.log_max_lines)
@@ -1162,10 +1197,6 @@ class AppConfig:
             "hdr": {
                 "dovi_profile": self.dovi_profile,
                 "dovi_compat_id": self.dovi_compat_id,
-            },
-            "audio_encoding": {
-                "default_bitrate_per_channel_kbps": self.audio_default_bitrate_per_channel_kbps,
-                "bitrate_step_per_channel_kbps": self.audio_bitrate_step_per_channel_kbps,
             },
             "encoding": {
                 "ram_buffer_enabled": self.ram_buffer_enabled,

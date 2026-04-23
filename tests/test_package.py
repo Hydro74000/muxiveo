@@ -359,7 +359,7 @@ def test_msix_manifest_contains_full_trust_metadata():
     assert '<desktop:Extension Category="windows.fullTrustProcess"' in manifest
     assert "<desktop:FullTrustProcess />" in manifest
     assert '<uap:Extension Category="windows.fileTypeAssociation">' in manifest
-    assert '<uap:FileTypeAssociation Name="Mediarecode">' in manifest
+    assert '<uap:FileTypeAssociation Name="mediarecode">' in manifest
     assert '<uap:FileType>.mkv</uap:FileType>' in manifest
     assert '<uap:FileType>.srt</uap:FileType>' in manifest
 

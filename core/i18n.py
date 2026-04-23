@@ -200,6 +200,8 @@ def _translate_widget_property(
     setter_name: str,
     property_name: str,
 ) -> None:
+    if widget.property("_i18n_skip"):
+        return
     getter = getattr(widget, getter_name, None)
     setter = getattr(widget, setter_name, None)
     if getter is None or setter is None:

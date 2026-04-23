@@ -57,13 +57,14 @@ Exécution :
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QLineEdit
 
 from core.config import AppConfig
-from core.inspector import AudioTrack
+from core.inspector import AudioTrack, FileInfo, HDRType, VideoTrack
 from core.workflows.remux_models import TrackEntry, clone_track_entry
 from ui.panels.encode_panel.panel import EncodePanel
 from ui.panels.encode_panel.widgets import _AudioTable
@@ -154,6 +155,47 @@ def _remux_entry(entry_id: str = "entry-a") -> TrackEntry:
         language="fra",
         title="",
         entry_id=entry_id,
+    )
+
+
+def _video_track(index: int, hdr_type: HDRType = HDRType.NONE) -> VideoTrack:
+    return VideoTrack(
+        index=index,
+        codec="hevc",
+        codec_long="hevc",
+        width=3840,
+        height=2160,
+        frame_rate="23.976",
+        bit_depth=10,
+        color_space=None,
+        color_primaries=None,
+        color_transfer=None,
+        color_matrix=None,
+        hdr_type=hdr_type,
+        raw={},
+    )
+
+
+def _file_info(path: Path, videos: list[VideoTrack], hdr_type: HDRType = HDRType.NONE) -> FileInfo:
+    return FileInfo(
+        path=path,
+        format="matroska",
+        duration_s=7200.0,
+        size_bytes=20_000_000_000,
+        bit_rate=22_000_000,
+        video_tracks=videos,
+        hdr_type=hdr_type,
+    )
+
+
+def _video_entry(mkv_tid: int = 0) -> TrackEntry:
+    return TrackEntry(
+        mkv_tid=mkv_tid,
+        track_type="video",
+        codec="HEVC",
+        display_info="3840x2160",
+        language="",
+        title="",
     )
 
 
@@ -508,4 +550,179 @@ class TestEncodePanelNewTrackSources:
         panel._on_add_audio_track()
 
         assert captured["tracks"] == [original]
+        panel.close()
+
+
+class TestEncodePanelDynamicHdrDefaults:
+
+    def test_selected_video_track_drives_dolby_vision_default(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        first_source = _file_info(_PATH_A, [_video_track(0, HDRType.NONE)])
+        second_source = _file_info(
+            _PATH_B,
+            [_video_track(0, HDRType.DOLBY_VISION)],
+            hdr_type=HDRType.NONE,
+        )
+        panel._file_info = first_source
+
+        panel.set_video_tracks([(second_source, _video_entry(0), _COLOR)])
+
+        assert panel._copy_dv_cb.isEnabled() is True
+        assert panel._copy_dv_cb.isChecked() is True
+        assert panel._copy_hdr10plus_cb.isChecked() is False
+        panel.close()
+
+    def test_selected_track_hdr10plus_is_used_even_when_container_hdr_is_sdr(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        info = _file_info(
+            _PATH_A,
+            [
+                _video_track(0, HDRType.NONE),
+                _video_track(3, HDRType.DOLBY_VISION_HDR10PLUS),
+            ],
+            hdr_type=HDRType.NONE,
+        )
+
+        panel.set_video_tracks([(info, _video_entry(3), _COLOR)])
+
+        assert panel._copy_dv_cb.isChecked() is True
+        assert panel._copy_hdr10plus_cb.isChecked() is True
+        panel.close()
+
+    def test_dynamic_hdr_settings_are_independent_per_video_entry(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        info = _file_info(
+            _PATH_A,
+            [
+                _video_track(0, HDRType.DOLBY_VISION),
+                _video_track(1, HDRType.NONE),
+            ],
+        )
+        dovi_entry = _video_entry(0)
+        dovi_entry.entry_id = "video-dv"
+        sdr_entry = _video_entry(1)
+        sdr_entry.entry_id = "video-sdr"
+
+        panel.set_video_tracks([
+            (info, dovi_entry, _COLOR),
+            (info, sdr_entry, _COLOR),
+        ])
+        assert panel._copy_dv_cb.isChecked() is True
+
+        panel._video_list.setCurrentRow(1)
+        assert panel._copy_dv_cb.isChecked() is False
+        assert panel._copy_dv_cb.isEnabled() is False
+
+        panel._video_list.setCurrentRow(0)
+        assert panel._copy_dv_cb.isChecked() is True
+        panel.close()
+
+    def test_manual_dynamic_hdr_choice_is_kept_per_video_entry(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        info = _file_info(
+            _PATH_A,
+            [
+                _video_track(0, HDRType.DOLBY_VISION),
+                _video_track(1, HDRType.DOLBY_VISION),
+            ],
+        )
+        first_entry = _video_entry(0)
+        first_entry.entry_id = "video-dv-1"
+        second_entry = _video_entry(1)
+        second_entry.entry_id = "video-dv-2"
+
+        panel.set_video_tracks([
+            (info, first_entry, _COLOR),
+            (info, second_entry, _COLOR),
+        ])
+        panel._copy_dv_cb.setChecked(False)
+
+        panel._video_list.setCurrentRow(1)
+        assert panel._copy_dv_cb.isChecked() is True
+
+        panel._video_list.setCurrentRow(0)
+        assert panel._copy_dv_cb.isChecked() is False
+        panel.close()
+
+    def test_removed_video_entry_is_removed_from_encode_panel(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        info = _file_info(
+            _PATH_A,
+            [
+                _video_track(0, HDRType.DOLBY_VISION),
+                _video_track(1, HDRType.NONE),
+            ],
+        )
+        kept_entry = _video_entry(0)
+        kept_entry.entry_id = "video-kept"
+        removed_entry = _video_entry(1)
+        removed_entry.entry_id = "video-removed"
+
+        panel.set_video_tracks([
+            (info, kept_entry, _COLOR),
+            (info, removed_entry, _COLOR),
+        ])
+        assert panel._video_list.count() == 2
+
+        panel.set_video_tracks([(info, kept_entry, _COLOR)])
+
+        assert panel._video_list.count() == 1
+        assert panel._current_video_entry_id == "video-kept"
+        assert "video-removed" not in panel._video_settings_by_entry_id
+        panel.close()
+
+    def test_current_video_settings_carries_selected_track_identity(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        info = _file_info(
+            _PATH_B,
+            [
+                _video_track(0, HDRType.NONE),
+                _video_track(4, HDRType.DOLBY_VISION),
+            ],
+        )
+        entry = _video_entry(4)
+        entry.entry_id = "video-selected"
+
+        panel.set_video_tracks([(info, entry, _COLOR)])
+        settings = panel._current_video_settings()
+
+        assert settings.source_path == _PATH_B
+        assert settings.stream_index == 4
+        assert settings.track_entry_id == "video-selected"
+        panel.close()
+
+    def test_dynamic_hdr_flags_do_not_force_encode_when_video_is_copy(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        config = SimpleNamespace(
+            video=SimpleNamespace(
+                codec="copy",
+                inject_hdr_meta=False,
+                tonemap_to_sdr=False,
+            ),
+            audio_tracks=[],
+            copy_dv=True,
+            copy_hdr10plus=True,
+        )
+
+        assert panel.is_pure_copy(config) is True
+        panel.close()
+
+
+class TestEncodePanelRunOperation:
+
+    def test_run_operation_skips_duplicate_workflow_validation(self, qt_app, monkeypatch):
+        panel = EncodePanel(AppConfig())
+        config = object()
+        captured: dict[str, object] = {}
+        expected_signals = object()
+
+        def fake_run(cfg, *, validate=True):
+            captured["config"] = cfg
+            captured["validate"] = validate
+            return expected_signals
+
+        monkeypatch.setattr(panel._workflow, "run", fake_run)
+
+        assert panel.run_operation(config) is expected_signals
+        assert captured == {"config": config, "validate": False}
         panel.close()

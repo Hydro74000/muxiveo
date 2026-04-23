@@ -27,7 +27,14 @@ from core.file_types import VIDEO_CONTAINER_EXTENSIONS, build_qt_filter
 from core.inspector import AudioTrack, FileInfo
 from core.i18n import apply_translations, translate_text
 from core.lang_tags import Rfc5646LanguageTags
-from core.workflows.encode.models import AUDIO_CODECS, AudioTrackSettings
+from core.workflows.encode.models import (
+    AUDIO_CODECS,
+    DEFAULT_AUDIO_KBPS_PER_CHANNEL,
+    audio_bitrate_choices_kbps,
+    default_audio_bitrate_kbps,
+    normalize_audio_bitrate_kbps,
+    AudioTrackSettings,
+)
 from core.workflows.remux_models import TrackEntry
 from ui.panels.encode_panel.theme import (
     _C, _combo_style, _input_style, _primary_button, _secondary_button, _separator,
@@ -41,12 +48,6 @@ if TYPE_CHECKING:
 # =============================================================================
 # Helpers
 # =============================================================================
-
-_AUDIO_DEFAULT_KBPS_PER_CHANNEL = 192
-_AUDIO_MIN_KBPS_PER_CHANNEL = 96
-_AUDIO_MAX_KBPS_PER_CHANNEL = 256
-_AUDIO_BITRATE_STEP_KBPS = 64
-
 
 def _has_atmos(track: AudioTrack) -> bool:
     """True si la piste est TrueHD avec couche Atmos (utilisé pour extract_truehd_core)."""
@@ -69,25 +70,50 @@ def _channel_count(track: AudioTrack) -> int:
     return 2
 
 
-def _default_per_channel_kbps(config: "AppConfig | None") -> int:
-    value = getattr(config, "audio_default_bitrate_per_channel_kbps", _AUDIO_DEFAULT_KBPS_PER_CHANNEL)
-    try:
-        return int(value) if int(value) > 0 else _AUDIO_DEFAULT_KBPS_PER_CHANNEL
-    except (TypeError, ValueError):
-        return _AUDIO_DEFAULT_KBPS_PER_CHANNEL
+def _sample_rate_hz(track: AudioTrack) -> int | None:
+    if track.sample_rate and track.sample_rate > 0:
+        return track.sample_rate
+    return None
 
 
-def _bitrate_step_per_channel_kbps(config: "AppConfig | None") -> int:
-    value = getattr(config, "audio_bitrate_step_per_channel_kbps", _AUDIO_BITRATE_STEP_KBPS)
-    try:
-        return int(value) if int(value) > 0 else _AUDIO_BITRATE_STEP_KBPS
-    except (TypeError, ValueError):
-        return _AUDIO_BITRATE_STEP_KBPS
+def _clamp_codec_bitrate_kbps(codec: str, track: AudioTrack, bitrate_kbps: int, config: "AppConfig | None" = None) -> int:
+    """Borne un débit selon le codec cible."""
+    return normalize_audio_bitrate_kbps(
+        codec,
+        bitrate_kbps,
+        _channel_count(track),
+        _sample_rate_hz(track),
+        track.channel_layout,
+    )
 
 
-def _default_lossy_bitrate_kbps(track: AudioTrack, config: "AppConfig | None" = None) -> int:
-    """Débit par défaut pour les codecs lossy : valeur par canal x nombre de canaux."""
-    return _default_per_channel_kbps(config) * _channel_count(track)
+def _default_lossy_bitrate_kbps(track: AudioTrack, config: "AppConfig | None" = None, codec: str = "aac") -> int:
+    """Débit par défaut pour les codecs lossy, par canal configurable pour AAC et EAC-3."""
+    kbps_per_channel: int | None = None
+
+    def _safe_per_channel(value: object) -> int:
+        try:
+            parsed = int(value)  # type: ignore[arg-type]
+            return parsed if parsed > 0 else DEFAULT_AUDIO_KBPS_PER_CHANNEL
+        except (TypeError, ValueError):
+            return DEFAULT_AUDIO_KBPS_PER_CHANNEL
+
+    if config is not None:
+        if codec == "aac":
+            kbps_per_channel = _safe_per_channel(
+                getattr(config, "aac_bitrate_per_channel_kbps", DEFAULT_AUDIO_KBPS_PER_CHANNEL)
+            )
+        elif codec == "eac3":
+            kbps_per_channel = _safe_per_channel(
+                getattr(config, "eac3_bitrate_per_channel_kbps", DEFAULT_AUDIO_KBPS_PER_CHANNEL)
+            )
+    return default_audio_bitrate_kbps(
+        codec,
+        _channel_count(track),
+        _sample_rate_hz(track),
+        track.channel_layout,
+        kbps_per_channel,
+    )
 
 
 def _raw_source_bitrate_kbps(track: AudioTrack) -> int | None:
@@ -97,12 +123,12 @@ def _raw_source_bitrate_kbps(track: AudioTrack) -> int | None:
     return None
 
 
-def _default_lossy_selected_bitrate_kbps(track: AudioTrack, config: "AppConfig | None" = None) -> int:
+def _default_lossy_selected_bitrate_kbps(track: AudioTrack, config: "AppConfig | None" = None, codec: str = "aac") -> int:
     """Valeur préselectionnée pour les codecs lossy, bornée par le bitrate source si plus faible."""
-    default_bitrate = _default_lossy_bitrate_kbps(track, config)
+    default_bitrate = _default_lossy_bitrate_kbps(track, config, codec)
     source_bitrate = _raw_source_bitrate_kbps(track)
-    if source_bitrate is not None:
-        return min(default_bitrate, source_bitrate)
+    if source_bitrate is not None and source_bitrate < default_bitrate:
+        return _rounded_choice_not_above_source(codec, track, source_bitrate)
     return default_bitrate
 
 
@@ -114,18 +140,41 @@ def _source_bitrate_kbps(track: AudioTrack, config: "AppConfig | None" = None) -
     return _default_lossy_bitrate_kbps(track, config)
 
 
-def _lossy_combo_bitrate_choices(track: AudioTrack, config: "AppConfig | None" = None) -> list[int]:
-    """Plage de débits pour AAC / AC3 / EAC3 : 96 à 256 kbps par canal."""
-    channels = _channel_count(track)
-    minimum = _AUDIO_MIN_KBPS_PER_CHANNEL * channels
-    maximum = _AUDIO_MAX_KBPS_PER_CHANNEL * channels
-    step = _bitrate_step_per_channel_kbps(config) * channels
-    choices = list(range(minimum, maximum + 1, step))
+def _lossy_combo_bitrate_choices(track: AudioTrack, config: "AppConfig | None" = None, codec: str = "aac") -> list[int]:
+    """Plage de débits adaptée au codec cible."""
+    _ = config
+    return audio_bitrate_choices_kbps(
+        codec,
+        _channel_count(track),
+        _sample_rate_hz(track),
+        track.channel_layout,
+    )
+
+
+def _rounded_choice_not_above_source(codec: str, track: AudioTrack, bitrate_kbps: int) -> int:
+    """Retourne le meilleur choix fixe sans dépasser le bitrate source."""
+    choices = _lossy_combo_bitrate_choices(track, None, codec)
     if not choices:
-        return [minimum, maximum] if minimum != maximum else [minimum]
-    if choices[-1] != maximum:
-        choices.append(maximum)
-    return choices
+        return bitrate_kbps
+    eligible = [choice for choice in choices if choice <= bitrate_kbps]
+    return eligible[-1] if eligible else choices[0]
+
+
+def _preferred_bitrate_for_codec_switch(
+    track: AudioTrack,
+    config: "AppConfig | None",
+    new_codec: str,
+    previous_codec: str,
+    current_value: int,
+) -> int | None:
+    """Bitrate préféré lors d'un changement de codec depuis l'UI."""
+    if new_codec == previous_codec:
+        return current_value
+    if new_codec in {"aac", "ac3", "eac3"}:
+        return _default_lossy_bitrate_kbps(track, config, new_codec)
+    if new_codec in {"copy", "flac"}:
+        return None
+    return current_value
 
 
 def _closest_choice(value: int, choices: list[int]) -> int:
@@ -187,14 +236,13 @@ class _AudioBitrateEditor(QWidget):
         self._codec = codec
 
         if codec in {"aac", "ac3", "eac3"}:
-            selected = bitrate_kbps if bitrate_kbps is not None else _default_lossy_selected_bitrate_kbps(self._track, self._config)
+            selected = bitrate_kbps if bitrate_kbps is not None else _default_lossy_selected_bitrate_kbps(self._track, self._config, codec)
+            selected = _clamp_codec_bitrate_kbps(codec, self._track, selected, self._config)
             source_bitrate = _raw_source_bitrate_kbps(self._track)
             choices = _choices_with_selected(
                 selected,
-                _lossy_combo_bitrate_choices(self._track, self._config),
+                _lossy_combo_bitrate_choices(self._track, self._config, codec),
             )
-            if source_bitrate is not None:
-                choices = _choices_with_selected(source_bitrate, choices)
             selected = _closest_choice(selected, choices)
             self._combo.blockSignals(True)
             self._combo.clear()
@@ -220,7 +268,8 @@ class _AudioBitrateEditor(QWidget):
             self._combo.hide()
             return
 
-        value = bitrate_kbps if bitrate_kbps is not None else _default_lossy_bitrate_kbps(self._track, self._config)
+        # En mode copy, afficher la référence source plutôt qu'un défaut AAC implicite.
+        value = bitrate_kbps if bitrate_kbps is not None else _source_bitrate_kbps(self._track, self._config)
         self._edit.setText(str(value))
         self._edit.setEnabled(codec != "copy")
         self._edit.show()
@@ -234,7 +283,7 @@ class _AudioBitrateEditor(QWidget):
             try:
                 return int(self._combo.currentText())
             except ValueError:
-                return _default_lossy_bitrate_kbps(self._track, self._config)
+                return _default_lossy_bitrate_kbps(self._track, self._config, self._codec)
         try:
             return int(self._edit.text())
         except ValueError:
@@ -481,7 +530,14 @@ class _AudioSourceDialog(QDialog):
     def _on_codec_changed(self, _idx: int = 0) -> None:
         codec = self._codec_combo.currentData()
         previous_codec = getattr(self._bitrate_edit, "_codec", "copy")
-        preferred = None if codec == "flac" or previous_codec == "copy" else self._bitrate_edit.value()
+        active_track = getattr(self._bitrate_edit, "_track", self._tracks[0][0])
+        preferred = _preferred_bitrate_for_codec_switch(
+            active_track,
+            self._config,
+            codec or "copy",
+            previous_codec,
+            self._bitrate_edit.value(),
+        )
         self._bitrate_edit.set_codec(codec or "copy", preferred)
 
     def _on_track_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
@@ -840,7 +896,13 @@ class _AudioTable(QTableWidget):
                 if d["combo"] is combo:
                     codec = combo.currentData()
                     previous_codec = getattr(d["bitrate"], "_codec", "copy")
-                    preferred = None if codec == "flac" or previous_codec == "copy" else d["bitrate"].value()
+                    preferred = _preferred_bitrate_for_codec_switch(
+                        d["track"],
+                        self._config,
+                        codec or "copy",
+                        previous_codec,
+                        d["bitrate"].value(),
+                    )
                     d["bitrate"].set_codec(codec or "copy", preferred)
                     self._emit_encoding_changed(d)
                     break
