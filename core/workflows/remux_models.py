@@ -258,7 +258,7 @@ def tracks_from_file_info(info: FileInfo, file_id: str = "") -> list[TrackEntry]
     for v in info.video_tracks:
         parts: list[str] = [v.resolution]
         if v.hdr_type != HDRType.NONE:
-            parts.append(v.hdr_type.label())
+            parts.append(v.hdr_label)
         if v.frame_rate:
             fr = v.frame_rate
             if "/" in fr:

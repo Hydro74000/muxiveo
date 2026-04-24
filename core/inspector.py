@@ -112,6 +112,8 @@ class VideoTrack:
     color_transfer:  str | None   # "smpte2084" (PQ), "arib-std-b67" (HLG)
     color_matrix:    str | None   # "bt2020nc"
     hdr_type:        HDRType      = HDRType.NONE
+    dovi_profile:    int | None   = None   # ex: 8 pour P8.x
+    dovi_compat_id:  int | None   = None   # 0=P8.0, 1=P8.1
     language:        str | None   = None
     title:           str | None   = None
     duration_s:      float | None = None
@@ -127,6 +129,44 @@ class VideoTrack:
     @property
     def is_hdr(self) -> bool:
         return self.hdr_type != HDRType.NONE
+
+    @property
+    def hdr_label(self) -> str:
+        """Label d'affichage enrichi : profil DoVi + HDR10 fallback si disponibles."""
+        if self.hdr_type == HDRType.NONE:
+            return "SDR"
+
+        parts: list[str] = []
+
+        if self.hdr_type in (HDRType.DOLBY_VISION, HDRType.DOLBY_VISION_HDR10PLUS):
+            dv = "Dolby Vision"
+            if self.dovi_profile is not None:
+                compat = self.dovi_compat_id
+                if compat is not None:
+                    dv += f" P{self.dovi_profile}.{compat}"
+                else:
+                    dv += f" P{self.dovi_profile}"
+            parts.append(dv)
+
+        if self.hdr_type == HDRType.DOLBY_VISION_HDR10PLUS:
+            parts.append("HDR10+")
+        elif self.hdr_type == HDRType.HDR10PLUS:
+            parts.append("HDR10+")
+        elif self.hdr_type == HDRType.HDR10:
+            parts.append("HDR10")
+        elif self.hdr_type == HDRType.DOLBY_VISION:
+            if self._dovi_has_hdr10_fallback():
+                parts.append("HDR10")
+
+        return " + ".join(parts) if parts else self.hdr_type.label()
+
+    def _dovi_has_hdr10_fallback(self) -> bool:
+        """True si le profil DoVi embarque un fallback HDR10 (P8.x avec compat_id >= 1)."""
+        return (
+            self.dovi_profile == 8
+            and self.dovi_compat_id is not None
+            and self.dovi_compat_id >= 1
+        )
 
 
 @dataclass
@@ -791,6 +831,15 @@ class FileInspector:
         if frame_rate in ("0/0", "0", None):
             frame_rate = None
 
+        # Profil DoVi depuis le side_data DOVI configuration record
+        dovi_profile: int | None = None
+        dovi_compat_id: int | None = None
+        for sd in s.get("side_data_list") or []:
+            if sd.get("side_data_type") == "DOVI configuration record":
+                dovi_profile = _int_or_none(sd.get("dv_profile"))
+                dovi_compat_id = _int_or_none(sd.get("dv_bl_signal_compatibility_id"))
+                break
+
         return VideoTrack(
             index           = s.get("index", 0),
             codec           = s.get("codec_name", "?"),
@@ -803,6 +852,8 @@ class FileInspector:
             color_primaries = s.get("color_primaries"),
             color_transfer  = s.get("color_transfer"),
             color_matrix    = s.get("color_space"),
+            dovi_profile    = dovi_profile,
+            dovi_compat_id  = dovi_compat_id,
             language        = tags.get("language"),
             title           = tags.get("title"),
             duration_s      = _float_or_none(s.get("duration")),

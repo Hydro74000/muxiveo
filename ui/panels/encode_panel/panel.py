@@ -369,12 +369,15 @@ class EncodePanel(QWidget):
             self._save_current_video_state()
             if self._video_apply_all:
                 self._propagate_current_video_state_to_all(force_current=False)
-        hdr = selected_video.hdr_type if selected_video is not None else info.hdr_type
+        hdr_lbl = (
+            selected_video.hdr_label if selected_video is not None
+            else (info.primary_video.hdr_label if info.primary_video else info.hdr_type.label())
+        )
         self.log_message.emit(
             "OK",
             f"{info.path.name} — "
             f"{len(info.video_tracks)}V  {len(info.audio_tracks)}A  "
-            f"{len(info.subtitle_tracks)}S  {hdr.label()}",
+            f"{len(info.subtitle_tracks)}S  {hdr_lbl}",
         )
         self._rebuild_preview()
 
@@ -1222,7 +1225,7 @@ class EncodePanel(QWidget):
         plan = self._video_plan_from_state(
             entry_id=self._video_entry_id(track),
             state=state,
-            source_hdr=self._hdr_type_for_entry(info, track),
+            source_video=self._video_track_for_entry(info, track),
         )
         badges: list[str] = []
         target_codec = str(plan.target_codec or "copy").strip().lower()
@@ -1403,8 +1406,9 @@ class EncodePanel(QWidget):
         self,
         state: dict[str, object],
         *,
-        source_hdr: HDRType,
+        source_video: VideoTrack | None,
     ) -> tuple[str, ...]:
+        source_hdr = source_video.hdr_type if source_video is not None else HDRType.NONE
         target_codec = self._video_state_target_codec(state)
         copy_dv, copy_hdr10plus = self._effective_dynamic_hdr_flags(
             state,
@@ -1431,8 +1435,10 @@ class EncodePanel(QWidget):
         if source_hdr == HDRType.HDR10:
             return ("HDR",)
         if source_hdr == HDRType.HDR10PLUS:
-            return ("HDR", "10+")
+            return ("10+",)
         if source_hdr == HDRType.DOLBY_VISION:
+            if source_video is not None and source_video._dovi_has_hdr10_fallback():
+                return ("DV", "HDR")
             return ("DV",)
         if source_hdr == HDRType.DOLBY_VISION_HDR10PLUS:
             return ("DV", "10+")
@@ -1443,8 +1449,9 @@ class EncodePanel(QWidget):
         *,
         entry_id: str,
         state: dict[str, object],
-        source_hdr: HDRType,
+        source_video: VideoTrack | None,
     ) -> VideoTrackEncodePlan:
+        source_hdr = source_video.hdr_type if source_video is not None else HDRType.NONE
         codec = str(state.get("codec") or "copy")
         target_codec = str(codec or "copy").strip().lower()
         copy_dv, copy_hdr10plus = self._effective_dynamic_hdr_flags(
@@ -1477,7 +1484,7 @@ class EncodePanel(QWidget):
             track_entry_id=entry_id,
             codec_summary=summary,
             target_codec=codec,
-            hdr_badges=self._video_hdr_badges_from_state(state, source_hdr=source_hdr),
+            hdr_badges=self._video_hdr_badges_from_state(state, source_video=source_video),
             is_modified=is_modified,
         )
 
@@ -1516,7 +1523,7 @@ class EncodePanel(QWidget):
                 self._video_plan_from_state(
                     entry_id=entry_id,
                     state=state,
-                    source_hdr=self._hdr_type_for_entry(info, track),
+                    source_video=self._video_track_for_entry(info, track),
                 )
             )
         self._video_force_8bit_by_entry_id = next_force_8bit

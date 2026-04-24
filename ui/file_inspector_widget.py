@@ -228,7 +228,7 @@ def _video_rows(tracks: list[VideoTrack]) -> list[list[str]]:
             f"{t.bit_depth} bit" if t.bit_depth else "—",
             t.color_space or "—",
             t.color_transfer or "—",
-            t.hdr_type.label(),
+            t.hdr_label,
             t.language or "—",
             t.title or "—",
         ])
@@ -466,7 +466,9 @@ class _FileSummaryBar(QWidget):
         self._cells["Taille"].setText(info.size_human)
         self._cells["Durée"].setText(info.duration_human)
         self._cells["Format"].setText(info.format.split(",")[0].upper())
-        self._cells["HDR"].setText(info.hdr_type.label())
+        primary = info.primary_video
+        hdr_display = primary.hdr_label if primary is not None else info.hdr_type.label()
+        self._cells["HDR"].setText(hdr_display)
         self._cells["Frames"].setText(str(info.frame_count) if info.frame_count else "—")
 
         # Coloriser le badge HDR
