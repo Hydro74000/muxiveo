@@ -27,7 +27,6 @@ from core.workflows.common.metadata import (
     normalize_track_language_from_track,
     resolve_global_tags,
 )
-from core.workflows.common.remux_postprocess import RemuxPostprocessService
 from core.workflows.common.timeline_sync import (
     append_strict_interleave_mux_flags,
     append_sync_inputs,
@@ -69,7 +68,6 @@ __all__ = [
     "normalize_track_language",
     "normalize_track_language_from_track",
     "probe_media_duration_seconds",
-    "RemuxPostprocessService",
     "resolve_global_tags",
     "sanitize_filename",
     "sync_cleanup_paths",
