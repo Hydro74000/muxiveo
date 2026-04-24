@@ -486,9 +486,10 @@ class TestEncodeWorkflowNfo:
         wf = EncodeWorkflow(mediainfo_bin="/custom/mi")
         assert wf._bins["mediainfo"] == "/custom/mi"
 
-    def test_postproc_helper_has_generate_nfo_false(self):
-        """Le RemuxWorkflow interne (_postproc_helper) a toujours generate_nfo=False."""
+    def test_encode_uses_dedicated_postprocess_service(self):
+        """EncodeWorkflow n'embarque plus un RemuxWorkflow interne pour le post-traitement."""
+        from core.workflows.common.remux_postprocess import RemuxPostprocessService
         from core.workflows.encode.workflow import EncodeWorkflow
 
         wf = EncodeWorkflow(generate_nfo=True)
-        assert wf._postproc_helper._generate_nfo is False
+        assert isinstance(wf._postprocess_service, RemuxPostprocessService)

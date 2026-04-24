@@ -4,8 +4,8 @@ core/version.py — Métadonnées applicatives centralisées.
 
 from __future__ import annotations
 
-APP_NAME = "AOTR Mediarecode"
-APP_VERSION = "1.4.2"
+APP_NAME = "Mediarecode"
+APP_VERSION = "2.0.0"
 APP_VERSION_LABEL = f"v{APP_VERSION}"
 APP_USER_AGENT = f"{APP_NAME}/{APP_VERSION}"
 WRITING_APPLICATION_TAG = (

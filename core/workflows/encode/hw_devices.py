@@ -12,12 +12,12 @@ from pathlib import Path
 from typing import Iterable
 
 from core.subprocess_utils import subprocess_windows_no_window_kwargs
-
-
-_VAAPI_CODECS = {"hevc_vaapi", "h264_vaapi", "av1_vaapi"}
-_QSV_CODECS = {"hevc_qsv", "h264_qsv", "av1_qsv"}
-_NVENC_CODECS = {"hevc_nvenc", "h264_nvenc", "av1_nvenc"}
-_AMF_CODECS = {"hevc_amf", "h264_amf", "av1_amf"}
+from core.workflows.encode.catalog import (
+    AMF_VIDEO_CODECS as _AMF_CODECS,
+    NVENC_VIDEO_CODECS as _NVENC_CODECS,
+    QSV_VIDEO_CODECS as _QSV_CODECS,
+    VAAPI_VIDEO_CODECS as _VAAPI_CODECS,
+)
 
 _AMD_VENDOR_IDS = {"0x1002"}
 _INTEL_VENDOR_IDS = {"0x8086"}

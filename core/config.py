@@ -26,6 +26,11 @@ from PySide6.QtCore import QSettings, QStandardPaths
 
 from core.lang_tags import Rfc5646LanguageTags
 from core.subprocess_utils import subprocess_text_kwargs
+from core.workflows.common.ffmpeg_runtime import (
+    default_ffmpeg_thread_count as _default_ffmpeg_thread_count,
+    normalize_ffmpeg_thread_count as _normalize_ffmpeg_thread_count,
+    normalize_max_parallel_video_encodes as _normalize_max_parallel_video_encodes,
+)
 from core.workdir import (
     clear_work_dir as clear_work_dir_contents,
     prepare_process_work_dir,
@@ -113,32 +118,6 @@ def _load_ini() -> configparser.ConfigParser:
 
 def _is_windows() -> bool:
     return sys.platform == "win32"
-
-
-def _default_ffmpeg_thread_count() -> int:
-    """
-    Default FFmpeg thread count: logical CPU count × 0.75, rounded up.
-
-    Examples:
-        4 cores -> 3 threads
-        8 cores -> 6 threads
-    """
-    cpu_count = os.cpu_count() or 1
-    return max(1, (cpu_count * 3 + 3) // 4)
-
-
-def _normalize_ffmpeg_thread_count(value: int | None) -> int:
-    """Return a safe FFmpeg thread count, preserving 0 as ffmpeg auto mode."""
-    if value is None or value < 0:
-        return _default_ffmpeg_thread_count()
-    return value
-
-
-def _normalize_max_parallel_video_encodes(value: int | None) -> int:
-    """Retourne un niveau de parallélisme vidéo valide (>= 1)."""
-    if value is None:
-        return 1
-    return max(1, int(value))
 
 
 def _normalize_ui_scale_percent(value: int | None) -> int:

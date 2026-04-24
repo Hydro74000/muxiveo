@@ -19,6 +19,14 @@ def _qt_app(qt_app):
     return qt_app
 
 
+@pytest.fixture(autouse=True)
+def _isolate_ini_path(tmp_path, monkeypatch):
+    """Évite toute pollution par un config.ini utilisateur réel."""
+    import core.config as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "_INI_PATH", tmp_path / "config.ini")
+
+
 def test_rerun_application_setup_windows_calls_setup_sequence(tmp_path):
     import core.config as cfg_mod
 

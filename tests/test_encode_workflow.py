@@ -3877,8 +3877,9 @@ class TestEncodeRuntimeMultiSourceSync:
             assert signals is prep_signals
             call_order.append("bind_nfo")
 
-        def _fake_run_multi(_cfg, _cleanup_paths, *, prep_signals=None):
+        def _fake_run_multi(_cfg, _cleanup_paths, *, prep_signals=None, plan=None):
             assert prep_signals is prep_signals_ref
+            assert plan is not None
             call_order.append("run_multi")
             assert call_order[:3] == ["bind_cleanup", "bind_mux", "bind_nfo"]
             prep_signals.finished.emit("done")
@@ -3951,8 +3952,9 @@ class TestEncodeRuntimeMultiSourceSync:
             assert signals is prep_signals
             call_order.append("bind_nfo")
 
-        def _fake_run_direct(_cfg, _cleanup_paths, *, prep_signals=None):
+        def _fake_run_direct(_cfg, _cleanup_paths, *, prep_signals=None, plan=None):
             assert prep_signals is prep_signals_ref
+            assert plan is not None
             call_order.append("run_direct")
             assert call_order[:3] == ["bind_cleanup", "bind_mux", "bind_nfo"]
             prep_signals.finished.emit("done")
@@ -4179,7 +4181,7 @@ class TestEncodeRuntimeMultiSourceSync:
                 return SimpleNamespace(prepared_inputs=[], live_session=None)
 
         monkeypatch.setattr("core.workflows.encode.workflow.TimelineSyncFallbackHelper", _FakeHelper)
-        monkeypatch.setattr(wf._postproc_helper, "_decide_strict_interleave_with_prescan", lambda _cfg: True)
+        monkeypatch.setattr(wf._postprocess_service, "decide_strict_interleave_with_prescan", lambda _cfg, *, log_cb: True)
 
         remap, sync_inputs, live, strict = wf._prepare_multisource_sync(
             config=cfg,
@@ -4230,7 +4232,7 @@ class TestEncodeRuntimeMultiSourceSync:
                 return SimpleNamespace(prepared_inputs=[], live_session=None)
 
         monkeypatch.setattr("core.workflows.encode.workflow.TimelineSyncFallbackHelper", _FakeHelper)
-        monkeypatch.setattr(wf._postproc_helper, "_decide_strict_interleave_with_prescan", lambda _cfg: False)
+        monkeypatch.setattr(wf._postprocess_service, "decide_strict_interleave_with_prescan", lambda _cfg, *, log_cb: False)
 
         remap, sync_inputs, live, strict = wf._prepare_multisource_sync(
             config=cfg,
@@ -4282,9 +4284,9 @@ class TestEncodeRuntimeMultiSourceSync:
 
         monkeypatch.setattr("core.workflows.encode.workflow.TimelineSyncFallbackHelper", _FakeHelper)
         monkeypatch.setattr(
-            wf._postproc_helper,
-            "_decide_strict_interleave_with_prescan",
-            lambda _cfg: pytest.fail("subtitle prescan must be skipped when foreign offset already forces sync"),
+            wf._postprocess_service,
+            "decide_strict_interleave_with_prescan",
+            lambda _cfg, *, log_cb: pytest.fail("subtitle prescan must be skipped when foreign offset already forces sync"),
         )
 
         remap, sync_inputs, live, strict = wf._prepare_multisource_sync(

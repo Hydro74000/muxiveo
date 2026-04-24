@@ -18,6 +18,22 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from core.workflows.encode.catalog import (
+    AMF_PRESETS,
+    AUDIO_CODECS,
+    HARDWARE_VIDEO_CODECS,
+    NVENC_PRESETS,
+    QSV_PRESETS,
+    SOFTWARE_VIDEO_CODECS,
+    SVTAV1_PRESETS,
+    TONEMAP_ALGORITHMS,
+    VAAPI_PRESETS,
+    X264_PRESETS,
+    X265_PRESETS,
+    presets_for_codec,
+)
+from core.workflows.common.track_types import TrackMetaEdit, TrackMetaPatch, TrackTimeOffset, TrackOffset
+
 
 # =============================================================================
 # Enums et constantes
@@ -30,36 +46,6 @@ class QualityMode(str, Enum):
 
     def label(self) -> str:
         return {"crf": "CRF", "bitrate": "Débit (kbps)", "size": "Taille cible (Mo)"}[self.value]
-
-
-SOFTWARE_VIDEO_CODECS: list[tuple[str, str]] = [
-    ("libx265",   "x265 — HEVC (logiciel)"),
-    ("libx264",   "x264 — H.264 (logiciel)"),
-    ("libsvtav1", "SVT-AV1 (logiciel)"),
-]
-
-HARDWARE_VIDEO_CODECS: list[tuple[str, str]] = [
-    ("hevc_nvenc",  "NVENC — HEVC (NVIDIA)"),
-    ("hevc_amf",    "AMF — HEVC (AMD-WIN)"),
-    ("hevc_vaapi",  "VAAPI — HEVC (AMD)"),
-    ("hevc_qsv",    "QSV — HEVC (Intel)"),
-    ("h264_nvenc",  "NVENC — H.264 (NVIDIA)"),
-    ("h264_amf",    "AMF — H.264 (AMD-WIN)"),
-    ("h264_vaapi",  "VAAPI — H.264 (AMD)"),
-    ("h264_qsv",    "QSV — H.264 (Intel)"),
-    ("av1_nvenc",   "NVENC — AV1 (NVIDIA RTX 40+)"),
-    ("av1_amf",     "AMF — AV1 (AMD RX 7000+)"),
-    ("av1_vaapi",   "VAAPI — AV1 (AMD/Intel)"),
-    ("av1_qsv",     "QSV — AV1 (Intel Arc/12e gen+)"),
-]
-
-AUDIO_CODECS: list[tuple[str, str]] = [
-    ("copy",  "Copie (sans réencodage)"),
-    ("aac",   "AAC"),
-    ("ac3",   "AC-3 (Dolby Digital)"),
-    ("eac3",  "EAC-3 (Dolby Digital+)"),
-    ("flac",  "FLAC (sans perte)"),
-]
 
 AC3_STANDARD_BITRATES_KBPS: list[int] = [
     32, 40, 48, 56, 64, 80, 96, 112,
@@ -176,37 +162,6 @@ def normalize_audio_bitrate_kbps(
         return choices[-1]
     return min(choices, key=lambda choice: abs(choice - bitrate))
 
-X265_PRESETS   = ["ultrafast", "superfast", "veryfast", "faster", "fast",
-                  "medium", "slow", "slower", "veryslow", "placebo"]
-X264_PRESETS   = X265_PRESETS
-SVTAV1_PRESETS = [str(i) for i in range(13)]   # 0 = qualité max, 12 = vitesse max
-NVENC_PRESETS  = ["p1", "p2", "p3", "p4", "p5", "p6", "p7",
-                  "slow", "medium", "fast", "hp", "hq"]
-# VAAPI compression_level : 0 = meilleure qualité, 7 = plus rapide
-VAAPI_PRESETS  = [str(i) for i in range(8)]
-# QSV preset : noms équivalents aux x264 presets
-QSV_PRESETS    = ["veryslow", "slower", "slow", "medium", "fast", "faster", "veryfast"]
-# AMF quality : balanced est un bon compromis
-AMF_PRESETS    = ["quality", "balanced", "speed"]
-
-TONEMAP_ALGORITHMS = ["hable", "mobius", "reinhard", "gamma", "linear", "clip"]
-
-
-def presets_for_codec(codec: str) -> list[str]:
-    """Retourne la liste de presets appropriée pour le codec donné."""
-    if codec == "libsvtav1":
-        return SVTAV1_PRESETS
-    if codec in ("hevc_nvenc", "h264_nvenc", "av1_nvenc"):
-        return NVENC_PRESETS
-    if codec in ("hevc_vaapi", "h264_vaapi", "av1_vaapi"):
-        return VAAPI_PRESETS
-    if codec in ("hevc_qsv", "h264_qsv", "av1_qsv"):
-        return QSV_PRESETS
-    if codec in ("hevc_amf", "h264_amf", "av1_amf"):
-        return AMF_PRESETS
-    return X265_PRESETS   # libx265, libx264
-
-
 # =============================================================================
 # Dataclasses
 # =============================================================================
@@ -251,37 +206,6 @@ class AudioTrackSettings:
     input_channel_layout: str | None = None  # layout source (ex: "7.1", "5.1(side)")
     source_path:         Path | None = None  # None = même fichier que la vidéo (config.source)
     track_entry_id:      str | None = None   # GUID de l'objet TrackEntry synchronisé entre panels
-
-
-@dataclass
-class TrackTimeOffset:
-    """Décalage temporel appliqué à une piste d'entrée (en millisecondes)."""
-    track_type:  str   # "video" | "audio" | "subtitle"
-    source_path: Path
-    stream_index: int
-    offset_ms:    int = 0
-
-
-@dataclass
-class TrackMetaEdit:
-    """
-    Édition de métadonnées d'une piste de sortie, appliquée via post-process FFmpeg.
-
-    track_order : numéro de piste 1-based dans le fichier de sortie (sélecteur @N).
-    language    : balise IETF BCP-47 à écrire via `language=`, ou "" pour ne pas toucher.
-    title       : nom de la piste à écrire, ou None pour ne pas toucher
-                  (chaîne vide "" = effacer le titre existant).
-    flag_*      : flags de disposition Matroska. None = ne pas toucher.
-    """
-    track_order: int
-    language:    str        = ""
-    title:       str | None = None
-    flag_default:          bool | None = None
-    flag_forced:           bool | None = None
-    flag_hearing_impaired: bool | None = None
-    flag_visual_impaired:  bool | None = None
-    flag_original:         bool | None = None
-    flag_commentary:       bool | None = None
 
 
 @dataclass(frozen=True)

@@ -143,6 +143,7 @@ from core.matroska_attachment_extractor import extract_matroska_attachment_bytes
 from core.media_info_fetcher import MediaDetails
 from core.runner import TaskSignals
 from core.workflows.remux import RemuxWorkflow
+from core.workflows.remux_mapping import resolved_global_tags
 from core.workflows.remux_models import (
     RemuxConfig, RemuxError, SourceInput, TrackEntry, clone_track_entry, tracks_from_file_info,
 )
@@ -2003,9 +2004,7 @@ class TestRemuxWorkflowPostMetadata:
     def test_resolved_global_tags_keeps_only_user_tags(self, tmp_path):
         output = tmp_path / "out.mkv"
         cfg = self._cfg(output, tags={"GENRE": "Drama", "EMPTY": "   "})
-        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", writing_application="MediarecodeMux")
-
-        tags = wf._resolved_global_tags(cfg)
+        tags = resolved_global_tags(cfg)
 
         assert tags["GENRE"] == "Drama"
         assert "EMPTY" not in tags

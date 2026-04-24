@@ -16,20 +16,23 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from core.subprocess_utils import subprocess_text_kwargs, subprocess_windows_no_window_kwargs
+from core.workflows.encode.catalog import (
+    AMF_VIDEO_CODECS as _AMF_CODECS,
+    HARDWARE_VIDEO_CODECS,
+    NVENC_VIDEO_CODECS as _NVENC_CODECS,
+    QSV_VIDEO_CODECS as _QSV_CODECS,
+    SOFTWARE_VIDEO_CODECS,
+    VAAPI_VIDEO_CODECS as _VAAPI_CODECS,
+)
 from core.workflows.encode.hw_devices import (
     select_linux_hwaccel_device,
     select_windows_hwaccel_device,
 )
-from core.workflows.encode.models import HARDWARE_VIDEO_CODECS, SOFTWARE_VIDEO_CODECS
 
 
 _NULLSRC = "nullsrc=s=256x256:r=25:d=0.1"   # ≥ 1 frame garantie (25fps × 0.1s)
 _GENERIC_HW_FILTER = "format=nv12"
 _VAAPI_FILTER = "format=nv12,hwupload"
-_NVENC_CODECS = {"hevc_nvenc", "h264_nvenc", "av1_nvenc"}
-_VAAPI_CODECS = {"hevc_vaapi", "h264_vaapi", "av1_vaapi"}
-_QSV_CODECS = {"hevc_qsv", "h264_qsv", "av1_qsv"}
-_AMF_CODECS = {"hevc_amf", "h264_amf", "av1_amf"}
 
 
 class HardwareEncoderDetector:

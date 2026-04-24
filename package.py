@@ -102,6 +102,12 @@ _MSIX_TIMESTAMP_URL = os.environ.get("MEDIARECODE_MSIX_TIMESTAMP_URL", "http://t
 _MSIX_STORE_CONFIG = os.environ.get("MEDIARECODE_MSIX_STORE_CONFIG", "").strip()
 _WINDOWS_SDK_WINGET_ID = os.environ.get("MEDIARECODE_WINDOWS_SDK_WINGET_ID", "Microsoft.WindowsSDK").strip() or "Microsoft.WindowsSDK"
 _WINDOWS_SDK_INSTALLER = os.environ.get("MEDIARECODE_WINDOWS_SDK_INSTALLER", "").strip()
+# Exception MSIX : nom technique distinct du branding/artefacts classiques.
+_MSIX_PACKAGE_NAME = re.sub(
+    r"\s+",
+    "",
+    os.environ.get("MEDIARECODE_MSIX_PACKAGE_NAME", "AOTRMediarecode").strip(),
+) or "AOTRMediarecode"
 
 # ── Modules Python exclus du bundle ──────────────────────────────────────────
 
@@ -1756,10 +1762,10 @@ def _stage_msix_layout(
     assets_dir = layout_dir / "Assets"
     _build_msix_assets(assets_dir)
 
-    vfs_root = layout_dir / "VFS" / _msix_vfs_root_dir() / APP_NAME
+    vfs_root = layout_dir / "VFS" / _msix_vfs_root_dir() / _MSIX_PACKAGE_NAME
     shutil.copytree(bundle_dir, vfs_root)
 
-    executable = f"VFS\\{_msix_vfs_root_dir()}\\{APP_NAME}\\mediarecode.exe"
+    executable = f"VFS\\{_msix_vfs_root_dir()}\\{_MSIX_PACKAGE_NAME}\\mediarecode.exe"
     manifest_path = layout_dir / "AppxManifest.xml"
     manifest_path.write_text(
         _msix_manifest_content(version_tag, executable, metadata=metadata),
@@ -1808,7 +1814,7 @@ def _build_msix_package(
 
     layout_dir = _stage_msix_layout(bundle_dir, version_tag, metadata=metadata)
     makeappx = _ensure_windows_sdk_tool("makeappx.exe")
-    output = _versioned_output_path(ROOT / f"{APP_NAME}.msix", version_tag)
+    output = _versioned_output_path(ROOT / f"{_MSIX_PACKAGE_NAME}.msix", version_tag)
     if output.exists():
         output.unlink()
 

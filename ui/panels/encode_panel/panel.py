@@ -35,6 +35,13 @@ from core.workflows.encode import (
     EncodePreset, EncodeWorkflow, HardwareEncoderDetector,
     ProfileManager, QualityMode, VideoEncodeSettings, VideoTrackEncodePlan, presets_for_codec,
 )
+from core.workflows.encode.catalog import (
+    VIDEO_ENCODER_BADGES,
+    VIDEO_HDR_BADGE_ORDER,
+    encoder_badge,
+    is_h264_video_codec,
+    supports_dynamic_hdr,
+)
 from ui.panels.encode_panel.theme import (
     _C, _card, _checkbox_style, _combo_style,
     _input_style, _primary_button, _secondary_button,
@@ -60,39 +67,8 @@ class EncodePanel(QWidget):
     audio_track_remove_requested = Signal(object)  # (entry_id)
     video_tracks_encoding_changed = Signal(object)
     _hw_detected             = Signal(object, object, object)   # (hw: set[str], sw: set[str], hw_ffmpeg: str)
-    _VIDEO_ENCODER_BADGES: dict[str, str] = {
-        "libx265": "x265",
-        "libx264": "x264",
-        "libsvtav1": "SVT-AV1",
-        "hevc_nvenc": "NVENC",
-        "h264_nvenc": "NVENC",
-        "av1_nvenc": "NVENC",
-        "hevc_amf": "AMF",
-        "h264_amf": "AMF",
-        "av1_amf": "AMF",
-        "hevc_qsv": "QSV",
-        "h264_qsv": "QSV",
-        "av1_qsv": "QSV",
-        "hevc_vaapi": "VAAPI",
-        "h264_vaapi": "VAAPI",
-        "av1_vaapi": "VAAPI",
-    }
-    _VIDEO_HDR_BADGE_ORDER: tuple[str, ...] = ("HDR", "DV", "10+", "SDR")
-    _H264_CODECS: frozenset[str] = frozenset({
-        "libx264",
-        "h264_nvenc",
-        "h264_amf",
-        "h264_qsv",
-        "h264_vaapi",
-    })
-    _DYNAMIC_HDR_CODECS: frozenset[str] = frozenset({
-        "copy",
-        "libx265",
-        "hevc_nvenc",
-        "hevc_amf",
-        "hevc_qsv",
-        "hevc_vaapi",
-    })
+    _VIDEO_ENCODER_BADGES = VIDEO_ENCODER_BADGES
+    _VIDEO_HDR_BADGE_ORDER = VIDEO_HDR_BADGE_ORDER
 
     def __init__(
         self,
@@ -1125,11 +1101,11 @@ class EncodePanel(QWidget):
 
     @classmethod
     def _is_h264_codec(cls, codec: str) -> bool:
-        return str(codec or "").strip().lower() in cls._H264_CODECS
+        return is_h264_video_codec(codec)
 
     @classmethod
     def _is_dynamic_hdr_codec(cls, codec: str) -> bool:
-        return str(codec or "").strip().lower() in cls._DYNAMIC_HDR_CODECS
+        return supports_dynamic_hdr(codec)
 
     @staticmethod
     def _source_has_dv(source_hdr: HDRType) -> bool:
@@ -1251,8 +1227,7 @@ class EncodePanel(QWidget):
         badges: list[str] = []
         target_codec = str(plan.target_codec or "copy").strip().lower()
         if target_codec != "copy":
-            badge = self._VIDEO_ENCODER_BADGES.get(target_codec, target_codec.upper())
-            badges.append(badge)
+            badges.append(encoder_badge(target_codec))
         if self._video_force_8bit_for_codec(info, track, target_codec):
             badges.append("8-bit")
         badges.extend(self._sorted_video_hdr_badges(plan.hdr_badges))
