@@ -4,7 +4,7 @@ FULL Vibecoded App for Proof of Concept - no human code, only human prompts and 
 
 Interface graphique pour préparer des fichiers vidéo, remuxer sans perte, réencoder avec `ffmpeg`, et fusionner des métadonnées Dolby Vision / HDR10+.
 
-Cette documentation correspond à **Mediarecode v1.4.1**.
+Cette documentation correspond à **Mediarecode v2.0.0**.
 
 ## Sommaire
 
@@ -199,6 +199,7 @@ Le tableau de bord affiche :
 - les dossiers configurés (travail, sortie, app data)
 - les encodeurs logiciels vus par `ffmpeg -encoders`
 - les encodeurs matériels réellement testés au runtime (`NVENC`, `AMF`, `VAAPI`, `QSV`)
+- les plans d'encodage et badges utiles pour visualiser plus clairement les traitements prepares
 
 > Les encodeurs matériels ne sont pas marqués disponibles simplement parce qu'ils apparaissent dans `ffmpeg`. L'application lance un probe réel pour confirmer qu'ils fonctionnent. Les probes sont exécutés en parallèle pour minimiser le délai au démarrage.
 
@@ -221,10 +222,12 @@ Le workflow unifié permet de :
 - préparer une cover TMDB en mode différé (URL + nom de fichier) ; le téléchargement réel est fait au lancement du workflow
 - remplacer automatiquement le **titre du conteneur** par le titre formaté TMDB lors de la validation (film : `Titre (Année)`, série : `Titre - SxxExx - Titre épisode`)
 - choisir pour chaque piste audio un mode `copy`, `aac`, `eac3` ou `flac`
+- definir plusieurs traitements video lorsqu'un projet demande une preparation multi-pistes plus fine
 - choisir pour la vidéo `copy`, `libx265`, `libx264`, `libsvtav1`, `NVENC`, `AMF`, `VAAPI` ou `QSV` — avec support complet **HEVC**, **H.264** et **AV1** sur chaque famille matérielle
 - presets dédiés par famille matérielle : `NVENC_PRESETS` (p1-p7 + slow/medium/fast/hp/hq), `VAAPI_PRESETS` (compression_level 0-7), `QSV_PRESETS` (veryslow → veryfast), `AMF_PRESETS` (quality/balanced/speed)
 - **offload matériel complet** : décodage GPU activé automatiquement quand un encodeur matériel compatible est sélectionné (`cuda` pour NVENC, `qsv` pour QSV, `vaapi` pour VAAPI, `d3d11va` pour AMF Windows) — le CPU n'est plus sollicité pour le décodage en chemin pur hardware
 - configuration VAAPI optimisée : `rc_mode CQP/VBR` selon le mode qualité, `compression_level` exposé via preset, `async_depth 4` pour maximiser le pipeline GPU
+- precheck `force-8bit` pour les cibles **H.264** afin d'eviter certains chemins incompatibles
 - backend de remux nominal : `ffmpeg`
 
 Modes d'exécution :
@@ -266,6 +269,7 @@ Ergonomie du panneau :
 
 - aperçu **cover** cliquable avec modale zoom plein écran (cover TMDB, cover Matroska extraite via `core/matroska_attachment_extractor.py`, pièces jointes image)
 - **barre de progression à rattrapage exact** : tant que `ffmpeg -progress` n'émet pas encore `out_time`, la progression est estimée via `frame=` et le nombre total d'images du fichier source ; dès que `out_time` devient disponible, la valeur exacte prend le relais
+- progression "la plus lente" pour les preparations video multi-pistes, avec suivi plus detaille par traitement disponible
 - **suppression de source accélérée** via suivi incrémental (pas de rescan global à chaque retrait)
 - covers TMDB cliquables dans les résultats de recherche (aperçu grand format avant validation)
 
@@ -301,6 +305,7 @@ Le panneau **Paramètres** est un éditeur complet de `config.ini` intégré à 
 - **Remux** : backend `ffmpeg` (nominal)
 - **Outils externes** : chemins explicites pour chaque outil (`ffmpeg`, `ffprobe`, `mediainfo`, `dovi_tool`, `hdr10plus_tool`, etc.)
 - **Encodage** : profil DoVi, compat-id, buffer RAM
+- **Logs** : niveau de verbosite, journal fichier, rotation et capture des sorties outils dans les options
 - **Métadonnées** : auth TMDB via clé API v3 (`tmdb_api_key`) ou token Bearer v4 (`tmdb_bearer_token`), génération optionnelle de `.nfo` (`generate_nfo`)
 
 Les changements sont appliqués section par section ou en une seule fois via le bouton **Sauvegarder toute la configuration**. Un rechargement depuis `config.ini` est possible sans redémarrer l'application.
@@ -553,4 +558,4 @@ flowchart TD
 
 ---
 
-*Mediarecode v1.4.1*
+*Mediarecode v2.0.0*
