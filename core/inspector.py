@@ -441,16 +441,34 @@ class FileInspector:
         raw = self._run_ffprobe(path)
         info = self._parse_ffprobe(path, raw)
 
-        # Enrichissement via mediainfo (non bloquant si absent)
-        try:
-            info.frame_count = self.get_frame_count(path)
-        except Exception:
-            pass  # mediainfo absent ou fichier non supporté — on continue
+        # ── Enrichissement mediainfo (un seul appel JSON couvrant frame_count,
+        #    HDR_Format, HDR_Format_Compatibility, profil DoVi). Remplace les
+        #    3 appels --Inform séparés et accélère la phase HDR.
+        mi_data = self._run_mediainfo_json(path)
+        mi_video = self._mediainfo_video_track(mi_data) if mi_data else None
 
-        # Enrichissement MKV via ffprobe (tag count + language_ietf si présent)
+        # Frame count (issu de mediainfo JSON quand disponible, sinon fallback
+        # legacy --Inform=FrameCount pour rester compatible avec très vieux mediainfo).
+        if mi_video is not None:
+            fc = mi_video.get("FrameCount")
+            if isinstance(fc, str) and fc.isdigit():
+                info.frame_count = int(fc)
+        if info.frame_count is None:
+            try:
+                info.frame_count = self.get_frame_count(path)
+            except Exception:
+                pass
+
+        # Enrichit le profil DoVi depuis mediainfo si ffprobe ne l'a pas fourni
+        # (certains builds ffprobe ne remontent pas DOVI configuration record).
+        if info.primary_video and mi_video is not None:
+            self._merge_dovi_from_mediainfo(info.primary_video, mi_video)
+
+        # Enrichissement MKV : tag count + language_ietf depuis le raw ffprobe
+        # déjà parsé (évite un second appel à ffprobe).
         if "matroska" in info.format or "webm" in info.format:
             try:
-                tag_count, ietf_langs = self._get_mkv_track_data(path)
+                tag_count, ietf_langs = self._extract_mkv_track_data_from_raw(raw)
                 info.tag_count = tag_count
                 # Remplace les codes ISO 639-2 de ffprobe par les balises IETF
                 # quand elles sont disponibles (ex : "en-US", "fr-FR").
@@ -472,9 +490,9 @@ class FileInspector:
             normalized = Rfc5646LanguageTags.regionalize_track_language(lang, title)
             track.language = normalized if normalized and normalized != "und" else None
 
-        # HDR du flux vidéo principal — réutilise le raw déjà parsé (évite 2e appel ffprobe)
+        # HDR du flux vidéo principal — réutilise raw ffprobe ET mi_video.
         if info.primary_video:
-            info.hdr_type = self._detect_hdr_from_raw(path, raw)
+            info.hdr_type = self._detect_hdr_from_raw(path, raw, mi_video=mi_video)
             info.primary_video.hdr_type = info.hdr_type
 
         chapter_count = info.chapters.count if info.chapters is not None else 0
@@ -532,11 +550,19 @@ class FileInspector:
             return HDRType.NONE
         return self._detect_hdr_from_raw(path, raw)
 
-    def _detect_hdr_from_raw(self, path: Path, raw: dict[str, Any]) -> HDRType:
+    def _detect_hdr_from_raw(
+        self,
+        path: Path,
+        raw: dict[str, Any],
+        *,
+        mi_video: dict[str, Any] | None = None,
+    ) -> HDRType:
         """
         Détecte le type HDR depuis un dict ffprobe déjà parsé.
 
         Utilisé en interne par inspect() pour éviter un second appel ffprobe.
+        Si ``mi_video`` (track Video du JSON mediainfo) est fourni, il sert de
+        source HDR enrichie et évite tout sous-appel mediainfo additionnel.
         """
         video_streams = [
             s for s in raw.get("streams", [])
@@ -575,14 +601,21 @@ class FileInspector:
                     break
 
         # Fallback mediainfo pour DoVi/HDR10+ (très rapide quand disponible).
+        # mediainfo lit les SEI/NAL units : si présent et qu'il a répondu, on
+        # lui fait confiance et on évite le coûteux probe frame-level (~3-6 s).
+        mediainfo_responded = False
         if not has_dovi or not has_hdr10plus:
-            mi_dovi, mi_hdr10plus = self._mediainfo_hdr_flags(path)
+            if mi_video is not None:
+                # Source unifiée mediainfo JSON (1 seul appel déjà effectué).
+                mi_dovi, mi_hdr10plus, mediainfo_responded = self._hdr_flags_from_mi_video(mi_video)
+            else:
+                mi_dovi, mi_hdr10plus, mediainfo_responded = self._mediainfo_hdr_flags(path)
             has_dovi      = has_dovi      or mi_dovi
             has_hdr10plus = has_hdr10plus or mi_hdr10plus
 
-        # Fallback ffprobe frame-level : certains muxers gardent les métadonnées
-        # dynamiques uniquement au niveau frame/SEI, absentes de -show_streams.
-        if not has_dovi or not has_hdr10plus:
+        # Fallback ffprobe frame-level : uniquement quand mediainfo est absent
+        # ou n'a rien retourné. Sinon le coût (240 frames) ne se justifie pas.
+        if (not has_dovi or not has_hdr10plus) and not mediainfo_responded:
             frame_flags = self._ffprobe_frame_dynamic_hdr_flags(path)
             if frame_flags is not None:
                 frame_dovi, frame_hdr10plus = frame_flags
@@ -726,44 +759,150 @@ class FileInspector:
         self._emit_verbose(f"ffprobe frame HDR : dovi={has_dovi} hdr10plus={has_hdr10plus}")
         return has_dovi, has_hdr10plus
 
-    def _mediainfo_hdr_flags(self, path: Path) -> tuple[bool, bool]:
+    def _mediainfo_hdr_flags(self, path: Path) -> tuple[bool, bool, bool]:
         """
-        Retourne (has_dovi, has_hdr10plus) via mediainfo.
+        Retourne ``(has_dovi, has_hdr10plus, mediainfo_responded)`` via mediainfo.
 
-        Utilise deux appels --Inform ciblés pour minimiser la latence.
-        Retourne (False, False) si mediainfo est absent.
+        ``mediainfo_responded`` est True si mediainfo a renvoyé du texte non vide
+        pour ``HDR_Format`` ou ``HDR_Format_Compatibility``. Cela permet à
+        l'appelant de savoir si mediainfo a vraiment statué (et donc d'éviter
+        un probe frame-level ffprobe coûteux quand la réponse est négative).
+
+        Combine les deux requêtes en un seul appel mediainfo via un séparateur
+        ``|`` pour minimiser la latence.
         """
         try:
-            # HDR_Format + HDR_Format_Compatibility : selon les sources, HDR10+
-            # peut être présent dans l'un ou l'autre.
-            cmd_hdr_format = [self._mediainfo, "--Inform=Video;%HDR_Format%", str(path)]
-            cmd_hdr10p = [self._mediainfo, "--Inform=Video;%HDR_Format_Compatibility%", str(path)]
-            self._emit_command(cmd_hdr_format)
-            r_hdr_format = subprocess.run(
-                cmd_hdr_format,
+            # Un seul appel mediainfo : HDR_Format et HDR_Format_Compatibility
+            # concaténés avec un séparateur. Selon les sources, HDR10+ peut
+            # apparaître dans l'un ou l'autre.
+            cmd = [
+                self._mediainfo,
+                "--Inform=Video;%HDR_Format%|%HDR_Format_Compatibility%",
+                str(path),
+            ]
+            self._emit_command(cmd)
+            r = subprocess.run(
+                cmd,
                 capture_output=True, check=False, **subprocess_text_kwargs(),
             )
-            self._emit_process_result("mediainfo", r_hdr_format, preview_stdout=True)
-            self._emit_command(cmd_hdr10p)
-            r_hdr10p = subprocess.run(
-                cmd_hdr10p,
-                capture_output=True, check=False, **subprocess_text_kwargs(),
-            )
-            self._emit_process_result("mediainfo", r_hdr10p, preview_stdout=True)
-            hdr_text = f"{r_hdr_format.stdout or ''}\n{r_hdr10p.stdout or ''}".lower()
+            self._emit_process_result("mediainfo", r, preview_stdout=True)
+            stdout = (r.stdout or "").strip()
+            mediainfo_responded = bool(stdout.replace("|", "").strip())
+            hdr_text = stdout.lower()
             has_dovi = "dolby vision" in hdr_text
             has_hdr10plus = (
                 "hdr10+" in hdr_text
                 or "smpte st 2094" in hdr_text
                 or "smpte2094" in hdr_text
             )
-            self._emit_verbose(f"mediainfo HDR : dovi={has_dovi} hdr10plus={has_hdr10plus}")
-
-            return has_dovi, has_hdr10plus
+            self._emit_verbose(
+                f"mediainfo HDR : dovi={has_dovi} hdr10plus={has_hdr10plus} "
+                f"responded={mediainfo_responded}"
+            )
+            return has_dovi, has_hdr10plus, mediainfo_responded
 
         except FileNotFoundError:
             self._emit_verbose("mediainfo introuvable dans PATH (détection HDR enrichie ignorée).")
-            return False, False
+            return False, False, False
+
+    # ------------------------------------------------------------------
+    # mediainfo JSON (source unifiée pour HDR, frame_count, profil DoVi)
+    # ------------------------------------------------------------------
+
+    def _run_mediainfo_json(self, path: Path) -> dict[str, Any] | None:
+        """
+        Lance ``mediainfo --Output=JSON`` une seule fois et retourne le dict parsé.
+
+        Retourne ``None`` si mediainfo est absent, en échec ou si la sortie
+        n'est pas du JSON valide. Cet appel unique remplace les 3 ``--Inform``
+        ciblés (FrameCount, HDR_Format, HDR_Format_Compatibility) et expose en
+        prime tous les champs HDR riches (mastering display, MaxCLL/FALL,
+        compatibility profile DoVi, etc.).
+        """
+        cmd = [self._mediainfo, "--Output=JSON", str(path)]
+        self._emit_command(cmd)
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True, check=False, **subprocess_text_kwargs(),
+            )
+        except FileNotFoundError:
+            self._emit_verbose("mediainfo introuvable dans PATH (JSON ignoré).")
+            return None
+        self._emit_process_result("mediainfo", result)
+        if result.returncode != 0:
+            return None
+        try:
+            return json.loads(result.stdout or "{}")
+        except json.JSONDecodeError as exc:
+            self._emit_verbose(f"mediainfo JSON invalide : {exc}")
+            return None
+
+    @staticmethod
+    def _mediainfo_video_track(mi_data: dict[str, Any]) -> dict[str, Any] | None:
+        """Retourne le 1er track ``@type=Video`` du JSON mediainfo, ou None."""
+        media = mi_data.get("media") or {}
+        for track in media.get("track") or []:
+            if isinstance(track, dict) and track.get("@type") == "Video":
+                return track
+        return None
+
+    @staticmethod
+    def _hdr_flags_from_mi_video(mi_video: dict[str, Any]) -> tuple[bool, bool, bool]:
+        """
+        Retourne ``(has_dovi, has_hdr10plus, mediainfo_responded)`` à partir de
+        la track Video mediainfo. Pure : aucun sous-process, idéal pour éviter
+        de relancer mediainfo quand on a déjà le JSON complet.
+        """
+        hdr_format = str(mi_video.get("HDR_Format") or "")
+        hdr_compat = str(mi_video.get("HDR_Format_Compatibility") or "")
+        hdr_text = f"{hdr_format}\n{hdr_compat}".lower()
+        responded = bool(hdr_format.strip() or hdr_compat.strip())
+        has_dovi = "dolby vision" in hdr_text
+        has_hdr10plus = (
+            "hdr10+" in hdr_text
+            or "smpte st 2094" in hdr_text
+            or "smpte2094" in hdr_text
+        )
+        return has_dovi, has_hdr10plus, responded
+
+    @staticmethod
+    def _merge_dovi_from_mediainfo(
+        video: VideoTrack, mi_video: dict[str, Any]
+    ) -> None:
+        """
+        Complète ``video.dovi_profile`` / ``dovi_compat_id`` depuis mediainfo.
+
+        Mappage :
+          - ``HDR_Format_Profile`` ``dvheNN`` ou ``dvavNN`` → profile NN.
+          - ``HDR_Format_Compatibility`` (côté droit du ``/`` après le profil) :
+              "HDR10" → compat_id 1
+              "SDR"   → compat_id 2
+              "HLG"   → compat_id 4
+              sinon   → 0 (P8.0, fallback DoVi-only).
+
+        N'écrase pas une valeur déjà présente côté ffprobe (qui reste plus
+        précise quand ``DOVI configuration record`` est exposé).
+        """
+        if video.dovi_profile is None:
+            hfp = str(mi_video.get("HDR_Format_Profile") or "")
+            # "dvhe.08 / " → 8 ; "dvav.05 / " → 5
+            m = re.search(r"dv(?:he|av)\.?(\d+)", hfp.lower())
+            if m:
+                video.dovi_profile = int(m.group(1))
+
+        if video.dovi_compat_id is None and video.dovi_profile is not None:
+            compat = str(mi_video.get("HDR_Format_Compatibility") or "").lower()
+            # Pour les DoVi, la chaîne contient "HDR10" / "SDR" / "HLG"
+            # (parfois avec "Profile B" derrière, qu'on ignore).
+            if "hdr10" in compat:
+                video.dovi_compat_id = 1
+            elif "sdr" in compat:
+                video.dovi_compat_id = 2
+            elif "hlg" in compat:
+                video.dovi_compat_id = 4
+            else:
+                video.dovi_compat_id = 0
 
     # ------------------------------------------------------------------
     # Parsing ffprobe
@@ -926,58 +1065,36 @@ class FileInspector:
                 return text
         return None
 
-    def _get_mkv_track_data(
-        self, path: Path
+    def _extract_mkv_track_data_from_raw(
+        self, raw: dict[str, Any]
     ) -> tuple[int, dict[int, str]]:
         """
-        Appelle ``ffprobe`` et retourne :
+        Extrait depuis le ``raw`` ffprobe déjà parsé :
           - le nombre de balises MKV globales (int)
-          - un dict {track_id: language_ietf|language} pour chaque piste
+          - un dict ``{track_id: language_ietf|language}`` pour chaque piste
 
-        ``language-ietf`` est prioritaire ; ``language`` est utilisé en fallback.
-        Retourne (0, {}) si ffprobe est absent ou si la sortie ne peut pas
-        être parsée.
+        ``language-ietf`` est prioritaire, ``language`` en fallback.
+        Évite un second appel ffprobe (les données sont déjà dans le JSON
+        retourné par ``_run_ffprobe``).
         """
-        try:
-            cmd = [
-                self._ffprobe,
-                "-v", "quiet",
-                "-print_format", "json",
-                "-show_streams",
-                "-show_format",
-                str(path),
-            ]
-            self._emit_command(cmd)
-            result = subprocess.run(
-                cmd,
-                capture_output=True, check=False, timeout=15, **subprocess_text_kwargs(),
-            )
-            self._emit_process_result("ffprobe", result)
-            if result.returncode != 0:
-                return 0, {}
-            data = json.loads(result.stdout)
+        fmt_tags = (raw.get("format") or {}).get("tags") or {}
+        tag_count = sum(
+            1
+            for key, value in fmt_tags.items()
+            if str(value).strip() and str(key).strip().upper() not in _EXCLUDED_SOURCE_TAGS
+        )
 
-            fmt_tags = (data.get("format") or {}).get("tags") or {}
-            tag_count = sum(
-                1
-                for key, value in fmt_tags.items()
-                if str(value).strip() and str(key).strip().upper() not in _EXCLUDED_SOURCE_TAGS
-            )
-
-            lang_map: dict[int, str] = {}
-            for track in data.get("streams", []):
-                tid = track.get("index")
-                tags = track.get("tags", {}) or {}
-                lang = self._stream_tag_lookup(tags, "language-ietf")
-                if lang is None:
-                    lang = self._stream_tag_lookup(tags, "language")
-                if tid is not None and lang:
-                    lang_map[tid] = lang
-            self._emit_verbose(f"ffprobe MKV tags : tag_count={tag_count} langues={len(lang_map)}")
-            return tag_count, lang_map
-        except (FileNotFoundError, json.JSONDecodeError, Exception):
-            self._emit_verbose("ffprobe MKV tags indisponible.")
-            return 0, {}
+        lang_map: dict[int, str] = {}
+        for track in raw.get("streams", []):
+            tid = track.get("index")
+            tags = track.get("tags", {}) or {}
+            lang = self._stream_tag_lookup(tags, "language-ietf")
+            if lang is None:
+                lang = self._stream_tag_lookup(tags, "language")
+            if tid is not None and lang:
+                lang_map[tid] = lang
+        self._emit_verbose(f"MKV tags depuis raw : tag_count={tag_count} langues={len(lang_map)}")
+        return tag_count, lang_map
 
 
 # =============================================================================

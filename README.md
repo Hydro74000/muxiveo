@@ -34,7 +34,7 @@ Cette documentation correspond à **Mediarecode v2.0.0**.
   - [Backend remux `ffmpeg` — Branches internes](#backend-remux-ffmpeg--branches-internes)
   - [Encode workflow — Branches internes](#encode-workflow--branches-internes)
   - [Fusion DoVi / HDR10+](#fusion-dovi--hdr10-1)
-  - [Détection HDR d'un fichier](#détection-hdr-dun-fichier)
+  - [Inspection d'un fichier (ffprobe + mediainfo)](#inspection-dun-fichier-ffprobe--mediainfo)
 - [Outils externes](#outils-externes)
 
 ## Vue rapide
@@ -519,30 +519,50 @@ flowchart TD
     M --> N([Sortie MKV])
 ```
 
-### Détection HDR d'un fichier
+### Inspection d'un fichier (ffprobe + mediainfo)
 
 ```mermaid
 flowchart TD
-    A([Fichier video]) --> B[ffprobe JSON\nstreams + format + chapitres]
-    B --> C{Conteneur Matroska/WebM ?}
-    C -->|Oui| C1[Enrichissement ffprobe MKV\nlanguage-ietf/language + tag_count]
-    C -->|Non| C2[Pas d enrichissement MKV]
-    C1 --> D[Normalisation langues IETF]
-    C2 --> D
+    A([Path fichier]) --> B{Fichier present ?}
+    B -->|Non| X[InspectionError\nfichier introuvable]
+    B -->|Oui| C[_run_ffprobe\nshow_streams/show_format/show_chapters]
 
-    D --> E{side_data HDR ?}
-    E -->|Dolby Vision| D1[Dolby Vision]
-    E -->|HDR10+| D2[HDR10+]
-    E -->|Aucun| F[Fallback mediainfo]
+    C --> D{ffprobe OK et JSON valide ?}
+    D -->|Non| X2[InspectionError\nffprobe echec ou JSON invalide]
+    D -->|Oui| E[_parse_ffprobe vers FileInfo\npistes V/A/S, attachments, chapitres,\nformat, duree, tags globaux]
 
-    F --> G{HDR_Format}
-    G -->|Dolby Vision| D1
-    G -->|SMPTE ST 2094| D2
-    G -->|Autre ou vide| H{Color transfer}
+    E --> F[_run_mediainfo_json\nsource unifiee frame_count + HDR + DoVi]
+    F --> G{Track Video mediainfo disponible ?}
+    G -->|Oui| H[FrameCount depuis JSON si numerique]
+    G -->|Non| I
+    H --> I{frame_count renseigne ?}
+    I -->|Non| I1[get_frame_count fallback\nmediainfo --Inform]
+    I -->|Oui| J
+    I1 --> J
 
-    H -->|smpte2084| I[HDR10]
-    H -->|arib-std-b67| J[HLG]
-    H -->|autre| K[SDR]
+    J --> K{Primary video + mi_video ?}
+    K -->|Oui| K1[_merge_dovi_from_mediainfo\nsi profil compat manquant]
+    K -->|Non| L
+    K1 --> L
+
+    L --> M{Conteneur Matroska/WebM ?}
+    M -->|Oui| M1[_extract_mkv_track_data_from_raw\ntag_count + language-ietf/language]
+    M -->|Non| N
+    M1 --> N[Normalisation langues IETF\nregionalize_track_language]
+    N --> O{Primary video presente ?}
+    O -->|Non| S[Resume inspection + return FileInfo]
+    O -->|Oui| P[_detect_hdr_from_raw\nraw ffprobe + mi_video optionnel]
+
+    P --> P1{side_data DoVi HDR10+\nsur v0 ou autres flux video ?}
+    P1 -->|Partiel ou absent| P2[Fallback mediainfo HDR\nmi_video ou _mediainfo_hdr_flags]
+    P1 -->|Suffisant| P4
+    P2 --> P3{mediainfo a vraiment repondu ?}
+    P3 -->|Non| P5[Fallback ffprobe frame-level\nshow_frames max 240]
+    P3 -->|Oui| P4
+    P5 --> P4
+    P4 --> P6[Priorite HDR\nDoVi+HDR10+ > DoVi > HDR10+ > HDR10 > HLG > SDR]
+    P6 --> R[Maj info.hdr_type\net primary_video.hdr_type]
+    R --> S
 ```
 
 ## Outils externes

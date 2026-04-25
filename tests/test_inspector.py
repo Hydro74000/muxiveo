@@ -535,9 +535,9 @@ class TestDetectHDRType:
         """Patch _run_ffprobe pour retourner le dict donné."""
         return patch.object(self.insp, "_run_ffprobe", return_value=raw)
 
-    def _patch_mi(self, dovi: bool = False, hdr10plus: bool = False):
+    def _patch_mi(self, dovi: bool = False, hdr10plus: bool = False, responded: bool = True):
         return patch.object(
-            self.insp, "_mediainfo_hdr_flags", return_value=(dovi, hdr10plus)
+            self.insp, "_mediainfo_hdr_flags", return_value=(dovi, hdr10plus, responded)
         )
 
     def test_sdr_returns_none(self):
@@ -610,16 +610,32 @@ class TestDetectHDRType:
             assert self.insp.detect_hdr_type(self.path) == HDRType.HDR10PLUS
 
     def test_hdr10plus_via_ffprobe_frame_fallback(self):
+        # mediainfo absent / silencieux : seul cas où le frame-level fallback
+        # se déclenche encore (économie de 3-6 s sur les fichiers HDR10/DV).
         raw = _make_ffprobe_output(video_streams=[_video_stream(
             color_transfer="smpte2084",
             side_data_list=[{"side_data_type": "DOVI configuration record"}],
         )])
-        with self._patch_ffprobe(raw), self._patch_mi(), patch.object(
+        with self._patch_ffprobe(raw), self._patch_mi(responded=False), patch.object(
             self.insp,
             "_ffprobe_frame_dynamic_hdr_flags",
             return_value=(True, True),
         ):
             assert self.insp.detect_hdr_type(self.path) == HDRType.DOLBY_VISION_HDR10PLUS
+
+    def test_frame_fallback_skipped_when_mediainfo_responded(self):
+        # Même cas que ci-dessus mais mediainfo a répondu (négatif pour HDR10+)
+        # → le frame-level NE doit PAS être appelé même si on garde un mock.
+        raw = _make_ffprobe_output(video_streams=[_video_stream(
+            color_transfer="smpte2084",
+            side_data_list=[{"side_data_type": "DOVI configuration record"}],
+        )])
+        frame_mock = MagicMock(return_value=(True, True))
+        with self._patch_ffprobe(raw), self._patch_mi(responded=True), patch.object(
+            self.insp, "_ffprobe_frame_dynamic_hdr_flags", frame_mock,
+        ):
+            assert self.insp.detect_hdr_type(self.path) == HDRType.DOLBY_VISION
+            frame_mock.assert_not_called()
 
     def test_hlg_detected_as_hlg(self):
         raw = _make_ffprobe_output(video_streams=[_video_stream(
@@ -858,7 +874,7 @@ class TestInspect:
             patch.object(inspector, "_run_ffprobe", return_value={}),
             patch.object(inspector, "_parse_ffprobe", return_value=info),
             patch.object(inspector, "get_frame_count", return_value=1200),
-            patch.object(inspector, "_get_mkv_track_data", return_value=(0, {})),
+            patch.object(inspector, "_extract_mkv_track_data_from_raw", return_value=(0, {})),
             patch.object(inspector, "_detect_hdr_from_raw", return_value=HDRType.HDR10),
         ):
             out = inspector.inspect(self.path)
@@ -899,7 +915,7 @@ class TestInspect:
             patch.object(self.insp, "_run_ffprobe", return_value={}),
             patch.object(self.insp, "_parse_ffprobe", return_value=info),
             patch.object(self.insp, "get_frame_count", return_value=None),
-            patch.object(self.insp, "_get_mkv_track_data", return_value=(0, {1: "en"})),
+            patch.object(self.insp, "_extract_mkv_track_data_from_raw", return_value=(0, {1: "en"})),
         ):
             out = self.insp.inspect(self.path)
 
@@ -952,7 +968,7 @@ class TestInspect:
             patch.object(self.insp, "_run_ffprobe", return_value={}),
             patch.object(self.insp, "_parse_ffprobe", return_value=info),
             patch.object(self.insp, "get_frame_count", return_value=None),
-            patch.object(self.insp, "_get_mkv_track_data", return_value=(0, {1: "en-GB"})),
+            patch.object(self.insp, "_extract_mkv_track_data_from_raw", return_value=(0, {1: "en-GB"})),
         ):
             out = self.insp.inspect(self.path)
 
@@ -998,7 +1014,9 @@ class TestInspect:
 class TestMkvTrackDataFromFfprobe:
 
     def test_prefers_language_ietf_and_counts_non_title_tags(self, inspector, fake_path):
-        payload = {
+        # La méthode opère désormais sur le ``raw`` ffprobe déjà parsé
+        # (zéro appel subprocess). Reproduit le contenu attendu directement.
+        raw = {
             "format": {
                 "tags": {
                     "TITLE": "Movie",
@@ -1011,17 +1029,13 @@ class TestMkvTrackDataFromFfprobe:
                 {"index": 1, "tags": {"language-ietf": "fr-CA", "language": "fra"}},
             ],
         }
-        run_result = MagicMock(returncode=0, stdout=json.dumps(payload), stderr="")
 
-        with patch("subprocess.run", return_value=run_result):
-            tag_count, lang_map = inspector._get_mkv_track_data(fake_path)
+        tag_count, lang_map = inspector._extract_mkv_track_data_from_raw(raw)
 
         assert tag_count == 2
         assert lang_map == {0: "eng", 1: "fr-CA"}
 
-    def test_returns_empty_when_ffprobe_fails(self, inspector, fake_path):
-        run_result = MagicMock(returncode=1, stdout="", stderr="ffprobe error")
-        with patch("subprocess.run", return_value=run_result):
-            tag_count, lang_map = inspector._get_mkv_track_data(fake_path)
+    def test_returns_empty_when_raw_is_empty(self, inspector, fake_path):
+        tag_count, lang_map = inspector._extract_mkv_track_data_from_raw({})
         assert tag_count == 0
         assert lang_map == {}
