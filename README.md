@@ -420,7 +420,7 @@ flowchart TD
     A["Sources MKV, MP4 ou SRT"] --> B["Inspection via ffprobe"]
     B --> C["Edition conteneur dans RemuxPanel"]
     C --> D["Options video, audio et HDR dans EncodePanel"]
-    D --> E{"Video copy\nAudio copy\nAucune transformation HDR"}
+    D --> E{"Video copy<br/>Audio copy<br/>Aucune transformation HDR"}
 
     E -->|Oui| R0["WORKFLOW TYPE - REMUX"]
     R0 --> R1["Workflow remux FFmpeg"]
@@ -437,9 +437,9 @@ flowchart TD
 flowchart TD
     A["WORKFLOW TYPE - REMUX"] --> B["STEP 1 - Validation configuration"]
     B --> C["STEP 2 - Preparation workspace, attachments et cover TMDB"]
-    C --> D["STEP 3 - Analyse mapping pistes + pre-scan de risque\nextraction attached_pic si present"]
-    D --> E{"Risque multi-source\nstrict interleave"}
-    E -->|Oui| F["STEP 4 - Synchronisation timeline multi-source\nFIFO, Named Pipe ou fallback fichier"]
+    C --> D["STEP 3 - Analyse mapping pistes + pre-scan de risque<br/>extraction attached_pic si present"]
+    D --> E{"Risque multi-source<br/>strict interleave"}
+    E -->|Oui| F["STEP 4 - Synchronisation timeline multi-source<br/>FIFO, Named Pipe ou fallback fichier"]
     E -->|Non| G["STEP 4 - Synchronisation timeline non requise"]
     F --> H["STEP 5 - Chapitres : override FFMetadata ou copie source"]
     G --> H
@@ -457,19 +457,19 @@ flowchart TD
     B --> C["STEP 2 - Preparation workspace et attachments"]
     C --> D["STEP 3 - Normalisation des options HDR dynamiques"]
     D --> E["STEP 4 - Routage du workflow"]
-    E --> F{"Injection fichier\nDoVi ou HDR10+\nnecessaire"}
+    E --> F{"Injection fichier<br/>DoVi ou HDR10+<br/>necessaire"}
 
-    F -->|Oui| K["STEP 5 - Extraction des metadata dynamiques\nDoVi et ou HDR10+"]
+    F -->|Oui| K["STEP 5 - Extraction des metadata dynamiques<br/>DoVi et ou HDR10+"]
     K --> L["STEP 6 - Encodage video seule vers enc.hevc"]
     L --> M["STEP 7 - Injection HDR10+ et ou DoVi"]
     M --> N["STEP 8 - Encapsulation timeline video injectee"]
-    N --> O["STEP 9 - Reconstruction finale MKV\nSync timeline si risque detecte"]
+    N --> O["STEP 9 - Reconstruction finale MKV<br/>Sync timeline si risque detecte"]
 
-    F -->|Non| G["STEP 5 - Construction de la commande ffmpeg\nsortie directe"]
+    F -->|Non| G["STEP 5 - Construction de la commande ffmpeg<br/>sortie directe"]
     G --> H["STEP 6 - Preparation sync/remap + commande(s)"]
     H --> P{"Quality mode = SIZE"}
-    P -->|Oui| Q["STEP 7 - Execution ffmpeg en 2 passes\nsync timeline si risque detecte"]
-    P -->|Non| R["STEP 7 - Execution ffmpeg en single pass\nsync timeline si risque detecte"]
+    P -->|Oui| Q["STEP 7 - Execution ffmpeg en 2 passes<br/>sync timeline si risque detecte"]
+    P -->|Non| R["STEP 7 - Execution ffmpeg en single pass<br/>sync timeline si risque detecte"]
 
     O --> Z["Sortie MKV"]
     Q --> Z
@@ -489,13 +489,13 @@ Lecture rapide :
 
 ```mermaid
 flowchart TD
-    A([Film 1 + Film 2]) --> B[Validation\nfichiers, extensions, outils,\nHEVC Film 1/2, HDR dans Film 2]
-    B --> C[Comparaison frame count\ntolerance <= 4]
-    C --> D{Film 2 = MKV\net DoVi + HDR10+ ?}
+    A([Film 1 + Film 2]) --> B[Validation<br/>fichiers, extensions, outils,<br/>HEVC Film 1/2, HDR dans Film 2]
+    B --> C[Comparaison frame count<br/>tolerance <= 4]
+    C --> D{Film 2 = MKV<br/>et DoVi + HDR10+ ?}
 
-    D -->|Oui| E1[Phase 1 parallel\nextract HEVC Film 1 si MKV\n+ extract HEVC Film 2]
-    E1 --> E2[Phase 2 parallel\nextract RPU + HDR10+\ndepuis film2.hevc]
-    D -->|Non| E3[Extraction parallel directe\nHEVC Film 1 si MKV\n+ RPU/HDR10+ depuis Film 2]
+    D -->|Oui| E1[Phase 1 parallel<br/>extract HEVC Film 1 si MKV<br/>+ extract HEVC Film 2]
+    E1 --> E2[Phase 2 parallel<br/>extract RPU + HDR10+<br/>depuis film2.hevc]
+    D -->|Non| E3[Extraction parallel directe<br/>HEVC Film 1 si MKV<br/>+ RPU/HDR10+ depuis Film 2]
 
     E2 --> F
     E3 --> F
@@ -515,7 +515,7 @@ flowchart TD
     J -->|Non| L
     K --> L
 
-    L[ffmpeg final\nvideo injectee + audio/subs/metadata Film 1\nmap_metadata/map_chapters] --> M[Nettoyage]
+    L[ffmpeg final<br/>video injectee + audio/subs/metadata Film 1<br/>map_metadata/map_chapters] --> M[Nettoyage]
     M --> N([Sortie MKV])
 ```
 
@@ -523,47 +523,45 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A([Path fichier]) --> B{Fichier present ?}
-    B -->|Non| X[InspectionError\nfichier introuvable]
-    B -->|Oui| C[_run_ffprobe\nshow_streams/show_format/show_chapters]
+    A([Fichier a inspecter]) --> B{Fichier accessible ?}
+    B -->|Non| X[Arret avec erreur]
+    B -->|Oui| C[Analyse de base avec ffprobe]
 
-    C --> D{ffprobe OK et JSON valide ?}
-    D -->|Non| X2[InspectionError\nffprobe echec ou JSON invalide]
-    D -->|Oui| E[_parse_ffprobe vers FileInfo\npistes V/A/S, attachments, chapitres,\nformat, duree, tags globaux]
+    C --> D{Analyse exploitable ?}
+    D -->|Non| Y[Arret avec erreur]
+    D -->|Oui| E[Creation de la fiche media<br/>en une seule lecture ffprobe<br/>pistes chapitres attachments<br/>infos globales et tags]
 
-    E --> F[_run_mediainfo_json\nsource unifiee frame_count + HDR + DoVi]
-    F --> G{Track Video mediainfo disponible ?}
-    G -->|Oui| H[FrameCount depuis JSON si numerique]
-    G -->|Non| I
-    H --> I{frame_count renseigne ?}
-    I -->|Non| I1[get_frame_count fallback\nmediainfo --Inform]
-    I -->|Oui| J
-    I1 --> J
+    E --> F[Tentative d enrichissement mediainfo<br/>en une seule lecture<br/>frame count et details HDR DoVi]
+    F --> H{Frame count encore absent ?}
+    H -->|Oui| H1[Nouvelle tentative simple<br/>via mediainfo]
+    H -->|Non| I
+    H1 --> I
 
-    J --> K{Primary video + mi_video ?}
-    K -->|Oui| K1[_merge_dovi_from_mediainfo\nsi profil compat manquant]
-    K -->|Non| L
-    K1 --> L
+    I --> J{Fichier Matroska ou WebM ?}
+    J -->|Oui| J1[Enrichissement MKV<br/>langues detaillees language-ietf<br/>et comptage des tags]
+    J -->|Non| K
+    J1 --> K[Normalisation des langues<br/>pour obtenir des valeurs coherentes]
 
-    L --> M{Conteneur Matroska/WebM ?}
-    M -->|Oui| M1[_extract_mkv_track_data_from_raw\ntag_count + language-ietf/language]
-    M -->|Non| N
-    M1 --> N[Normalisation langues IETF\nregionalize_track_language]
-    N --> O{Primary video presente ?}
-    O -->|Non| S[Resume inspection + return FileInfo]
-    O -->|Oui| P[_detect_hdr_from_raw\nraw ffprobe + mi_video optionnel]
+    K --> L{Video principale presente ?}
+    L -->|Non| Z[Fiche finale retournee]
+    L -->|Oui| M[Detection HDR]
 
-    P --> P1{side_data DoVi HDR10+\nsur v0 ou autres flux video ?}
-    P1 -->|Partiel ou absent| P2[Fallback mediainfo HDR\nmi_video ou _mediainfo_hdr_flags]
-    P1 -->|Suffisant| P4
-    P2 --> P3{mediainfo a vraiment repondu ?}
-    P3 -->|Non| P5[Fallback ffprobe frame-level\nshow_frames max 240]
-    P3 -->|Oui| P4
-    P5 --> P4
-    P4 --> P6[Priorite HDR\nDoVi+HDR10+ > DoVi > HDR10+ > HDR10 > HLG > SDR]
-    P6 --> R[Maj info.hdr_type\net primary_video.hdr_type]
-    R --> S
+    M --> N{Metadonnees HDR visibles<br/>directement dans ffprobe ?}
+    N -->|Oui| Q[Determination du type HDR]
+    N -->|Non ou incomplet| O[Essai d enrichissement HDR<br/>avec mediainfo]
+    O --> P{Reponse suffisante ?}
+    P -->|Oui| Q
+    P -->|Non| R[Dernier recours<br/>analyse plus fine par images]
+    R --> Q
+
+    Q --> S[Classement final<br/>Dolby Vision + HDR10+<br/>Dolby Vision<br/>HDR10+<br/>HDR10<br/>HLG<br/>SDR]
+    S --> T[Mise a jour de la video principale]
+    T --> Z[Fiche finale retournee<br/>prete pour affichage et workflows]
 ```
+
+| Fiche media produite par l inspection |
+|---|
+| **Identite generale** : chemin du fichier, format du conteneur, duree totale, taille, debit global, titre du conteneur, tags globaux utiles.<br><br>**Pistes video** : index, codec, resolution, framerate, profondeur de couleur, infos colorimetriques, type HDR detecte, details Dolby Vision si disponibles, langue, titre, duree, debit.<br><br>**Pistes audio** : index, codec, nombre de canaux, layout `stereo/5.1/7.1`, frequence d echantillonnage, debit, langue, titre, duree, indicateurs utiles comme Atmos ou DTS:X quand ils peuvent etre deduits.<br><br>**Pistes de sous-titres** : index, codec, langue, titre, drapeaux `forced` et `default`.<br><br>**Chapitres** : liste des chapitres avec position temporelle et nom.<br><br>**Attachments** : cover, polices et autres ressources embarquees avec nom, type MIME, taille si disponible, et indication `attached_pic` pour les images de couverture integrees comme flux video.<br><br>**Enrichissement MKV/WebM** : comptage des tags globaux, recuperation prioritaire des langues detaillees `language-ietf` quand elles existent, avec repli sur `language` sinon.<br><br>**Normalisation finale** : harmonisation des langues vers une forme plus coherente et exploitable dans l interface et les workflows suivants.<br><br>**Enrichissement optionnel via mediainfo** : frame count si disponible, confirmation ou enrichissement des metadonnees HDR, et details Dolby Vision supplementaires quand `ffprobe` ne les expose pas assez. |
 
 ## Outils externes
 
