@@ -64,7 +64,8 @@ def test_log_panel_builds_at_multiple_scales(qt_app, percent):
 
 @pytest.mark.parametrize("percent", [50, 100, 150, 200])
 def test_dashboard_page_builds_at_multiple_scales(tmp_path, qt_app, percent):
-    from ui.main_window import DashboardPage, LogLevel
+    from core.logging import LogLevel
+    from ui.main_window import DashboardPage
 
     DesignSystem.set_ui_scale(percent)
     cfg = _build_config(tmp_path)

@@ -138,13 +138,13 @@ def test_settings_panel_writes_startup_logs_expanded_to_ini(tmp_path, qt_app):
         assert cfg.startup_logs_expanded is True
 
 
-def test_settings_panel_writes_verbose_file_logging_to_ini(tmp_path, qt_app):
+def test_settings_panel_writes_enable_file_logging_to_ini(tmp_path, qt_app):
     import core.config as cfg_mod
     from core.config import AppConfig
     from ui.panels.settings_panel import SettingsPanel
 
     ini_path = tmp_path / "config.ini"
-    ini_path.write_text("[ui]\nverbose_file_logging = false\n", encoding="utf-8")
+    ini_path.write_text("[ui]\nenable_file_logging = false\n", encoding="utf-8")
 
     with patch("core.config.QSettings") as mock_qs, \
          patch("core.config._app_data_dir", return_value=tmp_path), \
@@ -153,12 +153,88 @@ def test_settings_panel_writes_verbose_file_logging_to_ini(tmp_path, qt_app):
         cfg = AppConfig()
 
         panel = SettingsPanel(cfg)
-        checkbox = _field_widget(panel, "ui", "verbose_file_logging")
+        checkbox = _field_widget(panel, "ui", "enable_file_logging")
         checkbox.setChecked(True)
         panel._on_save_clicked()
 
-        assert "verbose_file_logging = true" in ini_path.read_text(encoding="utf-8")
-        assert cfg.verbose_file_logging is True
+        assert "enable_file_logging = true" in ini_path.read_text(encoding="utf-8")
+        assert cfg.enable_file_logging is True
+
+
+def test_settings_panel_writes_file_logging_level_to_ini(tmp_path, qt_app):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[ui]\nfile_logging_level = standard\n", encoding="utf-8")
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path):
+        mock_qs.return_value = _mock_qsettings()
+        cfg = AppConfig()
+
+        panel = SettingsPanel(cfg)
+        combo = _field_widget(panel, "ui", "file_logging_level")
+        index = combo.findData("verbose")
+        assert index >= 0
+        combo.setCurrentIndex(index)
+        panel._on_save_clicked()
+
+        assert "file_logging_level = verbose" in ini_path.read_text(encoding="utf-8")
+        assert cfg.file_logging_level == "verbose"
+
+
+def test_settings_panel_disables_file_logging_level_when_file_logging_is_off(tmp_path, qt_app):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[ui]\nenable_file_logging = false\nfile_logging_level = verbose\n", encoding="utf-8")
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path):
+        mock_qs.return_value = _mock_qsettings()
+        cfg = AppConfig()
+
+        panel = SettingsPanel(cfg)
+        checkbox = _field_widget(panel, "ui", "enable_file_logging")
+        combo = _field_widget(panel, "ui", "file_logging_level")
+        assert combo.isEnabled() is False
+
+        checkbox.setChecked(True)
+        assert combo.isEnabled() is True
+
+
+def test_settings_panel_reload_resyncs_file_logging_level_state(tmp_path, qt_app):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[ui]\nenable_file_logging = true\nfile_logging_level = verbose\n", encoding="utf-8")
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path):
+        mock_qs.return_value = _mock_qsettings()
+        cfg = AppConfig()
+
+        panel = SettingsPanel(cfg)
+        checkbox = _field_widget(panel, "ui", "enable_file_logging")
+        combo = _field_widget(panel, "ui", "file_logging_level")
+
+        assert checkbox.isChecked() is True
+        assert combo.isEnabled() is True
+
+        ini_path.write_text("[ui]\nenable_file_logging = false\nfile_logging_level = verbose\n", encoding="utf-8")
+        panel._on_reload_clicked()
+
+        assert checkbox.isChecked() is False
+        assert combo.isEnabled() is False
 
 
 def test_settings_panel_prefills_verbose_log_dir_full_path(tmp_path, qt_app):
@@ -210,7 +286,7 @@ def test_settings_panel_rejects_empty_verbose_log_dir_when_logging_enabled(tmp_p
     from ui.panels.settings_panel import SettingsPanel
 
     ini_path = tmp_path / "config.ini"
-    ini_path.write_text("[ui]\nverbose_file_logging = true\nverbose_log_dir = /tmp/logs\n", encoding="utf-8")
+    ini_path.write_text("[ui]\nenable_file_logging = true\nverbose_log_dir = /tmp/logs\n", encoding="utf-8")
 
     with patch("core.config.QSettings") as mock_qs, \
          patch("core.config._app_data_dir", return_value=tmp_path), \
@@ -219,7 +295,7 @@ def test_settings_panel_rejects_empty_verbose_log_dir_when_logging_enabled(tmp_p
         cfg = AppConfig()
 
         panel = SettingsPanel(cfg)
-        checkbox = _field_widget(panel, "ui", "verbose_file_logging")
+        checkbox = _field_widget(panel, "ui", "enable_file_logging")
         checkbox.setChecked(True)
         edit = _field_widget(panel, "ui", "verbose_log_dir")
         edit.setText("")

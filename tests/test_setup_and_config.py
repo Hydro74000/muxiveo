@@ -59,6 +59,23 @@ def test_rerun_application_setup_windows_calls_setup_sequence(tmp_path):
     fake_setup.install_python_packages.assert_not_called()
 
 
+def test_write_ini_settings_keeps_legacy_ui_key_when_ui_section_is_not_saved(tmp_path, monkeypatch):
+    import core.config as cfg_mod
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text(
+        "[ui]\nverbose_file_logging = true\n\n[tools]\nffmpeg = ffmpeg\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cfg_mod, "_INI_PATH", ini_path)
+
+    cfg_mod.write_ini_settings({"tools": {"ffmpeg": "ffmpeg-custom"}})
+
+    content = ini_path.read_text(encoding="utf-8")
+    assert "verbose_file_logging = true" in content
+    assert "ffmpeg = ffmpeg-custom" in content
+
+
 class TestAppConfigRamBuffer:
     """Tests des clés INI ram_buffer_enabled / ram_buffer_threshold_pct."""
 
@@ -285,8 +302,8 @@ class TestAppConfigRamBuffer:
 
         assert cfg.startup_logs_expanded is False
 
-    def test_default_verbose_file_logging_is_false(self, tmp_path):
-        """Sans clé explicite, le log verbose fichier est désactivé."""
+    def test_default_enable_file_logging_is_false(self, tmp_path):
+        """Sans clé explicite, le logging fichier est désactivé."""
         from core.config import AppConfig
 
         with patch("core.config.QSettings") as mock_qs:
@@ -297,7 +314,7 @@ class TestAppConfigRamBuffer:
                  patch.dict(os.environ, {}, clear=False):
                 cfg = AppConfig()
 
-        assert cfg.verbose_file_logging is False
+        assert cfg.enable_file_logging is False
 
     def test_default_ui_scale_percent_is_100(self, tmp_path):
         """Sans clé explicite, l'échelle UI vaut 100%."""
@@ -343,6 +360,40 @@ class TestAppConfigRamBuffer:
 
         assert cfg.ui_scale_percent == expected
 
+    def test_ui_scale_percent_invalid_ini_value_falls_back_to_default(self, tmp_path):
+        """Une valeur INI non numérique revient à la valeur par défaut."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[ui]\nui_scale_percent = not_a_number\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.ui_scale_percent == 100
+
+    def test_ui_scale_percent_invalid_qsettings_value_falls_back_to_default(self, tmp_path):
+        """Une valeur QSettings non numérique revient à la valeur par défaut."""
+        from core.config import AppConfig
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = (
+                lambda key, default=None: "not_a_number" if key == "ui/ui_scale_percent" else default
+            )
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.dict(os.environ, {}, clear=False):
+                cfg = AppConfig()
+
+        assert cfg.ui_scale_percent == 100
+
     def test_ui_scale_percent_save_and_reload_roundtrip(self, tmp_path):
         """La valeur sauvegardée en config est bien rechargée."""
         import core.config as cfg_mod
@@ -383,8 +434,26 @@ class TestAppConfigRamBuffer:
 
         assert cfg.startup_logs_expanded is True
 
-    def test_ini_verbose_file_logging_true_enables_file_logging(self, tmp_path):
-        """La clé verbose_file_logging=true active l'écriture des logs dans un fichier."""
+    def test_ini_enable_file_logging_true_enables_file_logging(self, tmp_path):
+        """La clé enable_file_logging=true active l'écriture des logs dans un fichier."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[ui]\nenable_file_logging = true\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.enable_file_logging is True
+
+    def test_legacy_ini_verbose_file_logging_true_maps_to_enable_file_logging(self, tmp_path):
+        """Compat: verbose_file_logging=true (legacy) active encore le logging fichier."""
         import core.config as cfg_mod
         from core.config import AppConfig
 
@@ -399,7 +468,63 @@ class TestAppConfigRamBuffer:
                  patch.object(cfg_mod, "_INI_PATH", ini_path):
                 cfg = AppConfig()
 
-        assert cfg.verbose_file_logging is True
+        assert cfg.enable_file_logging is True
+        assert cfg.file_logging_level == "verbose"
+
+    def test_legacy_ini_verbose_file_logging_survives_non_ui_partial_save(self, tmp_path):
+        """Une sauvegarde partielle hors UI ne doit pas casser la compat legacy."""
+        import core.config as cfg_mod
+        from core.config import AppConfig, write_ini_settings
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text(
+            "[ui]\nverbose_file_logging = true\n\n[tools]\nffmpeg = ffmpeg\n",
+            encoding="utf-8",
+        )
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                write_ini_settings({"tools": {"ffmpeg": "ffmpeg-custom"}})
+                cfg = AppConfig()
+
+        assert cfg.enable_file_logging is True
+        assert cfg.file_logging_level == "verbose"
+
+    def test_default_file_logging_level_is_standard(self, tmp_path):
+        """Sans clé explicite, le niveau de logging fichier est standard."""
+        from core.config import AppConfig
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.dict(os.environ, {}, clear=False):
+                cfg = AppConfig()
+
+        assert cfg.file_logging_level == "standard"
+
+    def test_ini_file_logging_level_is_loaded(self, tmp_path):
+        """La clé file_logging_level est lue depuis config.ini."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[ui]\nfile_logging_level = verbose\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.file_logging_level == "verbose"
 
     def test_default_verbose_log_dir_uses_full_current_path(self, tmp_path):
         """Le dossier verbose est prérempli avec le chemin complet par défaut."""

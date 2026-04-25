@@ -41,7 +41,6 @@ import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from enum import Enum
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING, cast
 
@@ -60,6 +59,7 @@ from PySide6.QtWidgets import (
 
 from core.config import AppConfig
 from core.i18n import apply_translations, set_current_language, translate_text
+from core.logging import LogLevel, VerboseFileLogger, parse_log_level
 from core.runner import TaskSignals
 from core.subprocess_utils import subprocess_text_kwargs
 from core.version import APP_VERSION_LABEL, WRITING_APPLICATION_TAG
@@ -80,12 +80,6 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Niveaux de log
 # ---------------------------------------------------------------------------
-
-class LogLevel(str, Enum):
-    INFO  = "INFO"
-    OK    = "OK"
-    WARN  = "WARN"
-    ERROR = "ERROR"
 
 
 def _level_color(level: LogLevel) -> str:
@@ -133,9 +127,6 @@ _ENCODE_PROGRESS_NOISE_PREFIXES: tuple[str, ...] = (
 _STEP_PROGRESS_RE = re.compile(r"^STEP\s+\d+\s*-\s*(.+)$")
 _ENCODE_INTERNAL_PROGRESS_PREFIX = "__MRE_PROGRESS__ "
 _MULTI_ENCODE_LABEL_RE = re.compile(r"^ffmpeg-video-(\d+)(?:-pass(\d+))?$")
-_VERBOSE_LOG_MAX_BYTES = 50 * 1024 * 1024
-_VERBOSE_LOG_MAX_FILES = 3
-_VERBOSE_LOG_FILE_RE = re.compile(r"^mediarecode-verbose-(\d{8}-\d{6})-(\d+)\.log$")
 
 
 def _is_encode_stage_message(line: str) -> bool:
@@ -183,30 +174,51 @@ def _state_float(state: dict[str, object], key: str, default: float = 0.0) -> fl
     return default
 
 
-def _latest_verbose_log_file(logs_dir: Path) -> tuple[str, int, Path] | None:
-    latest: tuple[float, str, int, Path] | None = None
-    for path in logs_dir.glob("mediarecode-verbose-*.log"):
-        match = _VERBOSE_LOG_FILE_RE.match(path.name)
-        if match is None:
-            continue
-        stamp = match.group(1)
-        try:
-            index = int(match.group(2))
-        except ValueError:
-            continue
-        if index < 1 or index > _VERBOSE_LOG_MAX_FILES:
-            continue
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            continue
-        candidate = (mtime, stamp, index, path)
-        if latest is None or candidate > latest:
-            latest = candidate
-    if latest is None:
-        return None
-    _, stamp, index, path = latest
-    return stamp, index, path
+def _config_file_logging_enabled(config: object) -> bool:
+    if hasattr(config, "enable_file_logging"):
+        return bool(getattr(config, "enable_file_logging", False))
+    return bool(getattr(config, "verbose_file_logging", False))
+
+
+def _config_file_logging_level(config: object) -> str:
+    if hasattr(config, "file_logging_level"):
+        raw = str(getattr(config, "file_logging_level", "")).strip().lower()
+        if raw in {"standard", "verbose"}:
+            return raw
+        return "standard"
+    return "verbose" if bool(getattr(config, "verbose_file_logging", False)) else "standard"
+
+
+def _config_file_logging_is_verbose(config: object) -> bool:
+    return _config_file_logging_enabled(config) and _config_file_logging_level(config) == "verbose"
+
+
+def _ensure_verbose_file_logger(window: object) -> VerboseFileLogger:
+    logger = getattr(window, "_verbose_file_logger", None)
+    if isinstance(logger, VerboseFileLogger):
+        logger.configure(
+            app_data_dir=Path(getattr(window, "_config").app_data_dir),
+            verbose_log_dir=getattr(getattr(window, "_config"), "verbose_log_dir", None),
+            enabled=_config_file_logging_enabled(getattr(window, "_config")),
+        )
+        return logger
+
+    def _on_write_error() -> None:
+        log_panel = getattr(window, "_log_panel", None)
+        if log_panel is not None:
+            log_panel.log(
+                "Impossible d'écrire le fichier de logging.",
+                LogLevel.WARN,
+            )
+
+    logger = VerboseFileLogger(
+        app_data_dir=Path(getattr(window, "_config").app_data_dir),
+        verbose_log_dir=getattr(getattr(window, "_config"), "verbose_log_dir", None),
+        enabled=_config_file_logging_enabled(getattr(window, "_config")),
+        on_write_error=_on_write_error,
+    )
+    setattr(window, "_verbose_file_logger", logger)
+    return logger
 
 
 def _multi_encode_remaining_seconds(state: dict[str, object], now: float) -> float | None:
@@ -1194,11 +1206,15 @@ class MainWindow(QMainWindow):
         self._op_encode_multi_reselect_timer = QTimer(self)
         self._op_encode_multi_reselect_timer.setInterval(60_000)
         self._op_encode_multi_reselect_timer.timeout.connect(self._reevaluate_multi_encode_progress)
-        self._verbose_log_file_path: Path | None = None
-        self._verbose_log_session_stamp: str | None = None
-        self._verbose_log_file_index = 1
-        self._verbose_log_session_bootstrapped = False
-        self._verbose_log_file_error_reported = False
+        self._verbose_file_logger = VerboseFileLogger(
+            app_data_dir=Path(self._config.app_data_dir),
+            verbose_log_dir=getattr(self._config, "verbose_log_dir", None),
+            enabled=_config_file_logging_enabled(self._config),
+            on_write_error=lambda: self._log_panel.log(
+                "Impossible d'écrire le fichier de logging.",
+                LogLevel.WARN,
+            ),
+        )
         self._prep_progress_active = False
         self._prep_progress_value = 0
         self._prep_progress_direction = 1
@@ -2005,18 +2021,12 @@ class MainWindow(QMainWindow):
     def _on_settings_saved(self) -> None:
         previous_theme = DesignSystem.current_theme()
         previous_scale = DesignSystem.current_ui_scale()
-        previous_verbose_file_logging = bool(self._config.verbose_file_logging)
-        previous_verbose_log_dir = str(getattr(self._config, "verbose_log_dir", "") or "")
+        previous_file_logging_enabled = _config_file_logging_enabled(self._config)
+        previous_file_logging_level = _config_file_logging_level(self._config)
         self._config.reload()
         new_theme = DesignSystem.set_theme(self._config.theme)
         new_scale = DesignSystem.set_ui_scale(self._config.ui_scale_percent)
-        new_verbose_log_dir = str(getattr(self._config, "verbose_log_dir", "") or "")
-        if new_verbose_log_dir != previous_verbose_log_dir:
-            self._verbose_log_file_path = None
-            self._verbose_log_session_stamp = None
-            self._verbose_log_file_index = 1
-            self._verbose_log_session_bootstrapped = False
-            self._verbose_log_file_error_reported = False
+        _ensure_verbose_file_logger(self)
         app = cast(QApplication | None, QApplication.instance())
         if app is not None:
             current_font = app.font()
@@ -2042,16 +2052,27 @@ class MainWindow(QMainWindow):
                 ),
             )
             self._prompt_restart_for_scale_change(new_scale)
-        if self._config.verbose_file_logging and not previous_verbose_file_logging:
+        new_file_logging_enabled = _config_file_logging_enabled(self._config)
+        new_file_logging_level = _config_file_logging_level(self._config)
+        if new_file_logging_enabled and not previous_file_logging_enabled:
             self.log_requested.emit(
                 "INFO",
                 translate_text(
-                    "Log verbose fichier activé : {path}",
+                    "Logging fichier activé ({level}) : {path}",
+                    level=translate_text("Verbose" if new_file_logging_level == "verbose" else "Standard"),
                     path=str(self._verbose_log_session_path()),
                 ),
             )
-        elif previous_verbose_file_logging and not self._config.verbose_file_logging:
-            self.log_requested.emit("INFO", "Log verbose fichier désactivé.")
+        elif previous_file_logging_enabled and not new_file_logging_enabled:
+            self.log_requested.emit("INFO", "Logging fichier désactivé.")
+        elif new_file_logging_enabled and previous_file_logging_level != new_file_logging_level:
+            self.log_requested.emit(
+                "INFO",
+                translate_text(
+                    "Niveau de logging fichier : {level}",
+                    level=translate_text("Verbose" if new_file_logging_level == "verbose" else "Standard"),
+                ),
+            )
         self.log_requested.emit("OK", "Configuration appliquée depuis config.ini.")
 
     def _prompt_restart_for_scale_change(self, percent: int) -> None:
@@ -2098,70 +2119,16 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _verbose_log_part_path(self, index: int) -> Path:
-        configured_dir = getattr(self._config, "verbose_log_dir", None)
-        logs_dir = Path(configured_dir) if configured_dir else (self._config.app_data_dir / "logs")
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        if self._verbose_log_session_stamp is None:
-            self._verbose_log_session_stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        safe_index = max(1, min(_VERBOSE_LOG_MAX_FILES, int(index)))
-        return logs_dir / f"mediarecode-verbose-{self._verbose_log_session_stamp}-{safe_index:02d}.log"
+        return _ensure_verbose_file_logger(self).part_path(index)
 
     def _verbose_log_session_path(self) -> Path:
-        if self._verbose_log_file_path is None:
-            if not bool(getattr(self, "_verbose_log_session_bootstrapped", False)):
-                self._verbose_log_session_bootstrapped = True
-                if self._verbose_log_session_stamp is None:
-                    configured_dir = getattr(self._config, "verbose_log_dir", None)
-                    logs_dir = Path(configured_dir) if configured_dir else (self._config.app_data_dir / "logs")
-                    logs_dir.mkdir(parents=True, exist_ok=True)
-                    latest = _latest_verbose_log_file(logs_dir)
-                    if latest is not None:
-                        stamp, index, path = latest
-                        self._verbose_log_session_stamp = stamp
-                        self._verbose_log_file_index = index
-                        self._verbose_log_file_path = path
-            if self._verbose_log_file_path is None:
-                self._verbose_log_file_path = self._verbose_log_part_path(self._verbose_log_file_index)
-        return self._verbose_log_file_path
+        return _ensure_verbose_file_logger(self).session_path()
 
     def _prepare_verbose_log_target(self, incoming_bytes: int) -> Path:
-        path = self._verbose_log_session_path()
-        if path.exists():
-            try:
-                current_size = path.stat().st_size
-            except OSError:
-                current_size = 0
-            if current_size + max(0, incoming_bytes) > _VERBOSE_LOG_MAX_BYTES:
-                next_index = self._verbose_log_file_index + 1
-                if next_index > _VERBOSE_LOG_MAX_FILES:
-                    next_index = 1
-                self._verbose_log_file_index = next_index
-                path = self._verbose_log_part_path(self._verbose_log_file_index)
-                self._verbose_log_file_path = path
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-        return path
+        return _ensure_verbose_file_logger(self).prepare_target(incoming_bytes)
 
     def _append_verbose_log_file(self, message: str, level: LogLevel) -> None:
-        if not bool(getattr(self._config, "verbose_file_logging", False)):
-            return
-
-        rendered = translate_text(message)
-        line = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} [{level.value}] {rendered}\n"
-        encoded = line.encode("utf-8")
-        path = self._prepare_verbose_log_target(len(encoded))
-        try:
-            with path.open("a", encoding="utf-8") as handle:
-                handle.write(line)
-        except OSError:
-            if not self._verbose_log_file_error_reported:
-                self._verbose_log_file_error_reported = True
-                self._log_panel.log(
-                    "Impossible d'écrire le fichier de log verbose.",
-                    LogLevel.WARN,
-                )
+        _ensure_verbose_file_logger(self).append_application_message(message, level)
 
     def _append_verbose_tool_output(
         self,
@@ -2169,30 +2136,10 @@ class MainWindow(QMainWindow):
         *,
         label: str | None = None,
     ) -> None:
-        if not bool(getattr(self._config, "verbose_file_logging", False)):
-            return
-
-        rendered = str(line).rstrip()
-        if not rendered:
-            return
-
-        prefix = f"[{label}] " if label else ""
-        entry = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} [TOOL] {prefix}{rendered}\n"
-        encoded = entry.encode("utf-8")
-        path = self._prepare_verbose_log_target(len(encoded))
-        try:
-            with path.open("a", encoding="utf-8") as handle:
-                handle.write(entry)
-        except OSError:
-            if not self._verbose_log_file_error_reported:
-                self._verbose_log_file_error_reported = True
-                self._log_panel.log(
-                    "Impossible d'écrire le fichier de log verbose.",
-                    LogLevel.WARN,
-                )
+        _ensure_verbose_file_logger(self).append_tool_output(line, label=label)
 
     def _capture_verbose_progress_line(self, line: str) -> None:
-        if not bool(getattr(self._config, "verbose_file_logging", False)):
+        if not _config_file_logging_is_verbose(self._config):
             return
 
         payload = _parse_encode_internal_progress(line)
@@ -2241,13 +2188,12 @@ class MainWindow(QMainWindow):
     def _on_log_requested(self, level: str, message: str) -> None:
         """Slot connecté au signal public log_requested(str, str)."""
         self._sync_prep_progress_from_log(message)
-        try:
-            lv = LogLevel(level.upper())
-        except ValueError:
-            lv = LogLevel.INFO
+        lv = parse_log_level(level)
         self._emit_log_entry(message, lv)
 
     def _on_tool_output_requested(self, label: str, line: str) -> None:
+        if not _config_file_logging_is_verbose(self._config):
+            return
         tool_label = str(label).strip() or None
         self._append_verbose_tool_output(line, label=tool_label)
 
@@ -2284,10 +2230,12 @@ class MainWindow(QMainWindow):
             )
         else:
             self.log_ok("Tous les outils externes sont disponibles.")
-        if self._config.verbose_file_logging:
+        if _config_file_logging_enabled(self._config):
+            logging_level = _config_file_logging_level(self._config)
             self.log_info(
                 translate_text(
-                    "Log verbose fichier activé : {path}",
+                    "Logging fichier activé ({level}) : {path}",
+                    level=translate_text("Verbose" if logging_level == "verbose" else "Standard"),
                     path=str(self._verbose_log_session_path()),
                 )
             )

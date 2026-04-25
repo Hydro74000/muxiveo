@@ -127,7 +127,8 @@ def test_handle_encode_internal_progress_updates_longest_remaining_bar_and_legen
 def test_capture_verbose_progress_line_records_wrapped_tool_output(tmp_path) -> None:
     dummy = SimpleNamespace()
     dummy._config = SimpleNamespace(
-        verbose_file_logging=True,
+        enable_file_logging=True,
+        file_logging_level="verbose",
         app_data_dir=tmp_path,
         verbose_log_dir=tmp_path / "chosen_logs",
     )
@@ -162,7 +163,8 @@ def test_capture_verbose_progress_line_records_wrapped_tool_output(tmp_path) -> 
 def test_capture_verbose_progress_line_records_remux_ffmpeg_progress(tmp_path) -> None:
     dummy = SimpleNamespace()
     dummy._config = SimpleNamespace(
-        verbose_file_logging=True,
+        enable_file_logging=True,
+        file_logging_level="verbose",
         app_data_dir=tmp_path,
         verbose_log_dir=tmp_path / "chosen_logs",
     )
@@ -191,7 +193,8 @@ def test_capture_verbose_progress_line_records_remux_ffmpeg_progress(tmp_path) -
 def test_on_tool_output_requested_records_inspector_verbose_lines(tmp_path) -> None:
     dummy = SimpleNamespace()
     dummy._config = SimpleNamespace(
-        verbose_file_logging=True,
+        enable_file_logging=True,
+        file_logging_level="verbose",
         app_data_dir=tmp_path,
         verbose_log_dir=tmp_path / "chosen_logs",
     )
@@ -213,3 +216,31 @@ def test_on_tool_output_requested_records_inspector_verbose_lines(tmp_path) -> N
     assert len(log_files) == 1
     content = log_files[0].read_text(encoding="utf-8")
     assert "[TOOL] [inspector] Inspection démarrée : /tmp/movie.mkv" in content
+
+
+def test_standard_file_logging_skips_verbose_tool_lines(tmp_path) -> None:
+    dummy = SimpleNamespace()
+    dummy._config = SimpleNamespace(
+        enable_file_logging=True,
+        file_logging_level="standard",
+        app_data_dir=tmp_path,
+        verbose_log_dir=tmp_path / "chosen_logs",
+    )
+    dummy._op_mode = "encode"
+    dummy._log_panel = SimpleNamespace(log=MagicMock())
+    dummy._NOISE_RE = MainWindow._NOISE_RE
+    dummy._encode_panel = SimpleNamespace(get_total_frames=lambda: None)
+
+    dummy._append_verbose_tool_output = MethodType(MainWindow._append_verbose_tool_output, dummy)
+    dummy._capture_verbose_progress_line = MethodType(MainWindow._capture_verbose_progress_line, dummy)
+    dummy._on_tool_output_requested = MethodType(MainWindow._on_tool_output_requested, dummy)
+
+    wrapped = _ENCODE_INTERNAL_PROGRESS_PREFIX + json.dumps(
+        {"kind": "encode_ffmpeg", "label": "ffmpeg-video-1", "event": "line", "line": "out_time=00:00:05.000000"},
+        ensure_ascii=False,
+    )
+    dummy._capture_verbose_progress_line(wrapped)
+    dummy._on_tool_output_requested("inspector", "Inspection démarrée : /tmp/movie.mkv")
+
+    log_files = sorted((tmp_path / "chosen_logs").glob("mediarecode-verbose-*.log"))
+    assert not log_files

@@ -86,6 +86,7 @@ class SettingsPanel(QWidget):
         self._status_label: QLabel | None = None
         self._build_ui()
         self._load_from_config()
+        self._sync_file_logging_level_state()
         apply_translations(self)
 
     def widget_for(self, section: str, key: str) -> QWidget:
@@ -198,6 +199,8 @@ class SettingsPanel(QWidget):
             checkbox = QCheckBox(field["label"])
             checkbox.setObjectName(f"{section}.{field['key']}")
             checkbox.setStyleSheet(_checkbox_style())
+            if section == "ui" and field["key"] == "enable_file_logging":
+                checkbox.toggled.connect(self._sync_file_logging_level_state)
             layout.addWidget(checkbox)
             self._field_widgets[(section, field["key"])] = checkbox
         else:
@@ -366,6 +369,13 @@ class SettingsPanel(QWidget):
             return str(data if data is not None else widget.currentText())
         raise TypeError(f"Unsupported widget type: {type(widget)!r}")
 
+    def _sync_file_logging_level_state(self) -> None:
+        checkbox = self._field_widgets.get(("ui", "enable_file_logging"))
+        combo = self._field_widgets.get(("ui", "file_logging_level"))
+        if not isinstance(checkbox, QCheckBox) or not isinstance(combo, QComboBox):
+            return
+        combo.setEnabled(checkbox.isChecked())
+
     def _load_from_config(self) -> None:
         for group in INI_FIELD_GROUPS:
             section = group["section"]
@@ -400,6 +410,7 @@ class SettingsPanel(QWidget):
                     if index >= 0:
                         widget.setCurrentIndex(index)
 
+        self._sync_file_logging_level_state()
         if self._status_label is not None:
             self._status_label.clear()
 
@@ -426,11 +437,11 @@ class SettingsPanel(QWidget):
 
     def _validate_values(self, values: dict[str, dict[str, str]]) -> bool:
         ui_values = values.get("ui", {})
-        verbose_enabled = str(ui_values.get("verbose_file_logging", "false")).strip().lower() == "true"
+        verbose_enabled = str(ui_values.get("enable_file_logging", "false")).strip().lower() == "true"
         verbose_dir = str(ui_values.get("verbose_log_dir", "")).strip()
         if verbose_enabled and not verbose_dir:
             message = translate_text(
-                "Le dossier des logs verbose doit être renseigné quand l'option est activée."
+                "Le dossier des logs fichier doit être renseigné quand l'option est activée."
             )
             if self._status_label is not None:
                 self._status_label.setText(message)

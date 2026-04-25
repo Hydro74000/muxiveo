@@ -9,7 +9,6 @@ Authentification TMDB via :
 from __future__ import annotations
 
 import json
-import logging
 import mimetypes
 import os
 import re
@@ -21,6 +20,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.logging import get_logger
 from core.version import APP_USER_AGENT
 
 
@@ -311,7 +311,7 @@ _URL_MV  = "https://www.themoviedb.org/movie/{id}"
 _URL_TV  = "https://www.themoviedb.org/tv/{id}"
 _URL_IMD = "https://www.imdb.com/title/{imdb_id}/"
 _TMDB_DEBUG_ENV = "MEDIARECODE_TMDB_DEBUG"
-_TMDB_LOGGER = logging.getLogger("mediarecode.tmdb")
+_TMDB_LOGGER = get_logger("mediarecode.tmdb")
 _TMDB_BEARER_TOKEN_ENV = "MEDIARECODE_TMDB_BEARER_TOKEN"
 _TMDB_INSECURE_SSL_ENV = "MEDIARECODE_TMDB_INSECURE_SSL"
 

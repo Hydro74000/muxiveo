@@ -5,6 +5,8 @@ on:
   pull_request:
     paths:
       - "core/**"
+      - "main.py"
+      - "locales.json"
       - "tests/test_inspector.py"
       - "tests/test_runner.py"
       - "tests/test_merge_dovi_workflow.py"
@@ -25,6 +27,8 @@ on:
       - master
     paths:
       - "core/**"
+      - "main.py"
+      - "locales.json"
       - "tests/test_inspector.py"
       - "tests/test_runner.py"
       - "tests/test_merge_dovi_workflow.py"
