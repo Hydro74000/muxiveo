@@ -135,6 +135,7 @@ _ENCODE_INTERNAL_PROGRESS_PREFIX = "__MRE_PROGRESS__ "
 _MULTI_ENCODE_LABEL_RE = re.compile(r"^ffmpeg-video-(\d+)(?:-pass(\d+))?$")
 _VERBOSE_LOG_MAX_BYTES = 50 * 1024 * 1024
 _VERBOSE_LOG_MAX_FILES = 3
+_VERBOSE_LOG_FILE_RE = re.compile(r"^mediarecode-verbose-(\d{8}-\d{6})-(\d+)\.log$")
 
 
 def _is_encode_stage_message(line: str) -> bool:
@@ -180,6 +181,32 @@ def _state_float(state: dict[str, object], key: str, default: float = 0.0) -> fl
         except ValueError:
             return default
     return default
+
+
+def _latest_verbose_log_file(logs_dir: Path) -> tuple[str, int, Path] | None:
+    latest: tuple[float, str, int, Path] | None = None
+    for path in logs_dir.glob("mediarecode-verbose-*.log"):
+        match = _VERBOSE_LOG_FILE_RE.match(path.name)
+        if match is None:
+            continue
+        stamp = match.group(1)
+        try:
+            index = int(match.group(2))
+        except ValueError:
+            continue
+        if index < 1 or index > _VERBOSE_LOG_MAX_FILES:
+            continue
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        candidate = (mtime, stamp, index, path)
+        if latest is None or candidate > latest:
+            latest = candidate
+    if latest is None:
+        return None
+    _, stamp, index, path = latest
+    return stamp, index, path
 
 
 def _multi_encode_remaining_seconds(state: dict[str, object], now: float) -> float | None:
@@ -1170,6 +1197,7 @@ class MainWindow(QMainWindow):
         self._verbose_log_file_path: Path | None = None
         self._verbose_log_session_stamp: str | None = None
         self._verbose_log_file_index = 1
+        self._verbose_log_session_bootstrapped = False
         self._verbose_log_file_error_reported = False
         self._prep_progress_active = False
         self._prep_progress_value = 0
@@ -1978,9 +2006,17 @@ class MainWindow(QMainWindow):
         previous_theme = DesignSystem.current_theme()
         previous_scale = DesignSystem.current_ui_scale()
         previous_verbose_file_logging = bool(self._config.verbose_file_logging)
+        previous_verbose_log_dir = str(getattr(self._config, "verbose_log_dir", "") or "")
         self._config.reload()
         new_theme = DesignSystem.set_theme(self._config.theme)
         new_scale = DesignSystem.set_ui_scale(self._config.ui_scale_percent)
+        new_verbose_log_dir = str(getattr(self._config, "verbose_log_dir", "") or "")
+        if new_verbose_log_dir != previous_verbose_log_dir:
+            self._verbose_log_file_path = None
+            self._verbose_log_session_stamp = None
+            self._verbose_log_file_index = 1
+            self._verbose_log_session_bootstrapped = False
+            self._verbose_log_file_error_reported = False
         app = cast(QApplication | None, QApplication.instance())
         if app is not None:
             current_font = app.font()
@@ -2072,7 +2108,20 @@ class MainWindow(QMainWindow):
 
     def _verbose_log_session_path(self) -> Path:
         if self._verbose_log_file_path is None:
-            self._verbose_log_file_path = self._verbose_log_part_path(self._verbose_log_file_index)
+            if not bool(getattr(self, "_verbose_log_session_bootstrapped", False)):
+                self._verbose_log_session_bootstrapped = True
+                if self._verbose_log_session_stamp is None:
+                    configured_dir = getattr(self._config, "verbose_log_dir", None)
+                    logs_dir = Path(configured_dir) if configured_dir else (self._config.app_data_dir / "logs")
+                    logs_dir.mkdir(parents=True, exist_ok=True)
+                    latest = _latest_verbose_log_file(logs_dir)
+                    if latest is not None:
+                        stamp, index, path = latest
+                        self._verbose_log_session_stamp = stamp
+                        self._verbose_log_file_index = index
+                        self._verbose_log_file_path = path
+            if self._verbose_log_file_path is None:
+                self._verbose_log_file_path = self._verbose_log_part_path(self._verbose_log_file_index)
         return self._verbose_log_file_path
 
     def _prepare_verbose_log_target(self, incoming_bytes: int) -> Path:

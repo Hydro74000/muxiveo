@@ -2,6 +2,7 @@
 tests/test_main_window_startup_panel.py — Mapping startup panel -> index stack.
 """
 
+import os
 from types import MethodType
 from types import SimpleNamespace
 from typing import Any, cast
@@ -174,3 +175,41 @@ def test_verbose_log_rotation_rolls_and_caps_at_three_files(tmp_path) -> None:
     assert "D" * 20 in (tmp_path / "chosen_logs" / "mediarecode-verbose-20260423-181000-01.log").read_text(encoding="utf-8")
     assert "B" * 20 in (tmp_path / "chosen_logs" / "mediarecode-verbose-20260423-181000-02.log").read_text(encoding="utf-8")
     assert "C" * 20 in (tmp_path / "chosen_logs" / "mediarecode-verbose-20260423-181000-03.log").read_text(encoding="utf-8")
+
+
+def test_verbose_log_rotation_resumes_last_existing_file_and_continues_roll(tmp_path) -> None:
+    logs_dir = tmp_path / "chosen_logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    old_path = logs_dir / "mediarecode-verbose-20260420-080000-03.log"
+    resumed_path = logs_dir / "mediarecode-verbose-20260423-181000-02.log"
+    old_path.write_text("legacy\n", encoding="utf-8")
+    resumed_path.write_text("X" * 95, encoding="utf-8")
+    os.utime(old_path, (100.0, 100.0))
+    os.utime(resumed_path, (200.0, 200.0))
+
+    fake_window = SimpleNamespace(
+        _config=SimpleNamespace(
+            verbose_file_logging=True,
+            app_data_dir=tmp_path,
+            verbose_log_dir=logs_dir,
+        ),
+        _log_panel=SimpleNamespace(log=MagicMock()),
+        _verbose_log_file_path=None,
+        _verbose_log_session_stamp=None,
+        _verbose_log_file_index=1,
+        _verbose_log_file_error_reported=False,
+    )
+    fake_window._verbose_log_part_path = MethodType(MainWindow._verbose_log_part_path, fake_window)
+    fake_window._verbose_log_session_path = MethodType(MainWindow._verbose_log_session_path, fake_window)
+    fake_window._prepare_verbose_log_target = MethodType(MainWindow._prepare_verbose_log_target, fake_window)
+    fake_window._append_verbose_log_file = MethodType(MainWindow._append_verbose_log_file, fake_window)
+
+    with patch("ui.main_window._VERBOSE_LOG_MAX_BYTES", 100):
+        fake_window._append_verbose_log_file("Suite", LogLevel.INFO)
+
+    rotated_path = logs_dir / "mediarecode-verbose-20260423-181000-03.log"
+    assert fake_window._verbose_log_session_stamp == "20260423-181000"
+    assert fake_window._verbose_log_file_index == 3
+    assert rotated_path.exists()
+    assert "[INFO] Suite" in rotated_path.read_text(encoding="utf-8")
+    assert "[INFO] Suite" not in resumed_path.read_text(encoding="utf-8")
