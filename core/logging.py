@@ -17,8 +17,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable
 
-from core.i18n import translate_text
-
 
 class LogLevel(str, Enum):
     INFO = "INFO"
@@ -180,6 +178,9 @@ class VerboseFileLogger:
     def append_application_message(self, message: str, level: LogLevel) -> None:
         if not self._enabled:
             return
+        # Keep stdlib logging importable in headless paths such as CLI smoke tests.
+        from core.i18n import translate_text
+
         rendered = translate_text(message)
         line = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} [{level.value}] {rendered}\n"
         self._append_raw_line(line)

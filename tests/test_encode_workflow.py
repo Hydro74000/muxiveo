@@ -3453,7 +3453,7 @@ class TestEncodeRuntimeMultiSourceSync:
         map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
         assert "4:0" in map_values
 
-    def test_prepare_multisource_sync_prefers_live_on_posix(self, tmp_path, monkeypatch):
+    def test_prepare_multisource_sync_prefers_live_when_available(self, tmp_path, monkeypatch):
         src_main = tmp_path / "main.mkv"
         src_alt = tmp_path / "alt.mkv"
         out = tmp_path / "out.mkv"
@@ -3491,8 +3491,9 @@ class TestEncodeRuntimeMultiSourceSync:
                 calls["file"] += 1
                 return [SimpleNamespace(key=(1, 1, "audio"), path=sync_audio, input_idx=2)]
 
+        # The syncer is fully stubbed here; patching os.name would leak into pathlib
+        # on Windows if the assertion fails, which breaks pytest error reporting.
         monkeypatch.setattr("core.workflows.encode.workflow.FfmpegTimelineSync", _FakeSyncer)
-        monkeypatch.setattr("core.workflows.encode.workflow.os.name", "posix", raising=False)
 
         remap, sync_inputs, live, strict = wf._prepare_multisource_sync(
             config=cfg,
@@ -3548,7 +3549,6 @@ class TestEncodeRuntimeMultiSourceSync:
                 pytest.fail("file fallback should not be used when RAM mmap works")
 
         monkeypatch.setattr("core.workflows.encode.workflow.FfmpegTimelineSync", _FakeSyncer)
-        monkeypatch.setattr("core.workflows.encode.workflow.os.name", "posix", raising=False)
         monkeypatch.setattr(EncodeWorkflow, "_ram_buffer_dir", staticmethod(lambda: ram_dir))
 
         remap, sync_inputs, live, strict = wf._prepare_multisource_sync(
@@ -4410,9 +4410,9 @@ class TestTrackMetaArgs:
         _merge_remux_extras avec une piste language='fr-FR' doit produire
         un TrackMetaEdit avec language='fr-FR' (conservé tel quel).
         """
+        from core.workflows.encode.remux_bridge import merge_remux_into_encode_config
         from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
         from core.workflows.encode.models import EncodeConfig, VideoEncodeSettings
-        from ui.main_window import MainWindow
 
         src = tmp_path / "src.mkv"
         src.touch()
@@ -4437,7 +4437,7 @@ class TestTrackMetaArgs:
             audio_tracks=[],
         )
 
-        result = MainWindow._merge_remux_extras(cast(Any, object()), enc, rmx)
+        result = merge_remux_into_encode_config(enc, rmx)
 
         assert result.track_meta_edits, "Aucun TrackMetaEdit généré"
         edit = result.track_meta_edits[0]
