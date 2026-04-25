@@ -211,7 +211,7 @@ def test_prepare_container_metadata_inputs_materializes_chapters_and_extra_tag_i
         tag_sources=[tag],
     )
     cmd: list[str] = []
-    calls: dict[str, object] = {}
+    expected_chapter_file = tmp_path / "chapters_1_123.ffmeta"
 
     planned = prepare_container_metadata_inputs(
         cmd,
@@ -220,16 +220,13 @@ def test_prepare_container_metadata_inputs_materializes_chapters_and_extra_tag_i
         next_input_index=1,
         chapter_materialize_dir=tmp_path,
         probe_duration_seconds=lambda path: 123.0 if path == src else None,
-        write_ffmetadata_chapters=lambda entries, out_dir, duration_s: calls.setdefault(
-            "chapter_file",
-            out_dir / f"chapters_{len(entries)}_{int(duration_s or 0)}.ffmeta",
-        ),
+        write_ffmetadata_chapters=lambda entries, out_dir, duration_s: out_dir / f"chapters_{len(entries)}_{int(duration_s or 0)}.ffmeta",
     )
 
     assert planned.chapter_input_index == 1
     assert planned.tag_input_index == 2
     assert planned.next_input_index == 3
-    assert cmd == ["-i", str(calls["chapter_file"]), "-i", str(tag)]
+    assert cmd == ["-i", str(expected_chapter_file), "-i", str(tag)]
 
 
 def test_materialize_container_metadata_inputs_returns_args_and_indices(tmp_path):

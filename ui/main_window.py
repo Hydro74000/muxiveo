@@ -170,8 +170,20 @@ def _parse_multi_encode_label(label: str) -> tuple[int, int | None, int] | None:
     return order, pass_index, 2
 
 
+def _state_float(state: dict[str, object], key: str, default: float = 0.0) -> float:
+    value = state.get(key, default)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return default
+    return default
+
+
 def _multi_encode_remaining_seconds(state: dict[str, object], now: float) -> float | None:
-    started_at = float(state.get("started_at") or 0.0)
+    started_at = _state_float(state, "started_at", 0.0)
     elapsed_wall = max(0.0, now - started_at)
     if elapsed_wall <= 0:
         return None
@@ -213,7 +225,7 @@ def _select_multi_encode_label(
             (
                 known_remaining,
                 float(remaining_s if remaining_s is not None else -1.0),
-                float(state.get("last_update") or 0.0),
+                _state_float(state, "last_update", 0.0),
                 1 if label == active_label else 0,
                 label,
             )
@@ -1669,7 +1681,18 @@ class MainWindow(QMainWindow):
         *,
         now: float,
     ) -> tuple[list[str], int | None]:
-        order = int(state.get("order") or 0)
+        order_raw = state.get("order")
+        if isinstance(order_raw, int):
+            order = order_raw
+        elif isinstance(order_raw, float):
+            order = int(order_raw)
+        elif isinstance(order_raw, str):
+            try:
+                order = int(order_raw.strip())
+            except ValueError:
+                order = 0
+        else:
+            order = 0
         total_tracks = max(self._op_encode_multi_targets) if self._op_encode_multi_targets else 0
         track_label = (
             translate_text("Piste vidéo {current}/{total}", current=order, total=total_tracks)
@@ -1679,7 +1702,18 @@ class MainWindow(QMainWindow):
         parts = [track_label]
 
         pass_index = state.get("pass_index")
-        pass_count = int(state.get("pass_count") or 1)
+        pass_count_raw = state.get("pass_count")
+        if isinstance(pass_count_raw, int):
+            pass_count = pass_count_raw
+        elif isinstance(pass_count_raw, float):
+            pass_count = int(pass_count_raw)
+        elif isinstance(pass_count_raw, str):
+            try:
+                pass_count = int(pass_count_raw.strip())
+            except ValueError:
+                pass_count = 1
+        else:
+            pass_count = 1
         if isinstance(pass_index, int) and pass_count > 1:
             parts.append(
                 translate_text("passe {current}/{total}", current=pass_index, total=pass_count)
@@ -2183,7 +2217,7 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(self._config.window_geometry)
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
-        self._config.save_geometry(self.saveGeometry().data())
+        self._config.save_geometry(bytes(self.saveGeometry().data()))
         self._config.save()
         super().closeEvent(event)
 

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
+from core.inspector import AttachmentInfo
 from core.runner import TaskSignals
 from core.workflows.remux_attachments import attachment_names, build_attachment_mapping
 from core.workflows.remux_command import build_remux_command, preview_remux_command
@@ -131,7 +133,7 @@ class TestRemuxSyncModule:
         ]
         logs: list[tuple[str, str]] = []
         result = decide_strict_interleave_with_prescan(
-            cfg,
+            cast(Any, cfg),
             resolve_mapped_tracks=lambda _cfg: mapped,
             log_cb=lambda level, msg: logs.append((level, msg)),
         )
@@ -152,7 +154,13 @@ class TestRemuxAttachmentsModule:
     def test_build_attachment_mapping_and_attachment_names(self, tmp_path):
         src = tmp_path / "in.mkv"
         src.touch()
-        attachment = SimpleNamespace(index=5, local_index=0, filename="cover", mimetype="image/jpeg", is_attached_pic=False)
+        attachment = AttachmentInfo(
+            index=5,
+            local_index=0,
+            filename="cover",
+            mimetype="image/jpeg",
+            is_attached_pic=False,
+        )
         cfg = RemuxConfig(
             sources=[SourceInput(path=src, file_index=0, tracks=[_track(0, "video")], selected_attachments=[attachment])],
             output=tmp_path / "out.mkv",

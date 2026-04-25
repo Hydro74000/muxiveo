@@ -5,6 +5,7 @@ tests/test_dashboard_page.py - Regressions non-UI pour DashboardPage.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 from ui.main_window import DashboardPage
@@ -40,7 +41,7 @@ def test_dashboard_hw_detection_uses_configured_ffmpeg_path():
     )
 
     with patch("core.workflows.encode.hardware.HardwareEncoderDetector.detect", return_value={"hevc_nvenc"}) as mock_detect:
-        DashboardPage._run_hw_detection(fake_page)
+        DashboardPage._run_hw_detection(cast(Any, fake_page))
 
     mock_detect.assert_called_once_with(custom_ffmpeg)
     assert emitted == [{"hevc_nvenc"}]

@@ -19,7 +19,11 @@ from core.workflows.encode.runtime_helpers import (
 from core.workflows.remux_timeline_sync import LiveSyncSession
 
 
-PreparedVideoInput = dict[str, object]
+@dataclass(frozen=True)
+class PreparedVideoInput:
+    input_args: list[str]
+    path: Path | str
+    map_arg: str
 
 
 @dataclass(frozen=True)
@@ -174,11 +178,11 @@ class MultiVideoPipelineRunner:
                 f"ffmpeg-wrap-video-{index}",
             )
             local_cleanup.append(wrapped)
-            return {
-                "input_args": [],
-                "path": wrapped,
-                "map_arg": f"{order}:v:0",
-            }, local_cleanup
+            return PreparedVideoInput(
+                input_args=[],
+                path=wrapped,
+                map_arg=f"{order}:v:0",
+            ), local_cleanup
 
         output_path = work_dir / f"video_{index}.mkv"
         passlog_prefix = (
@@ -207,11 +211,11 @@ class MultiVideoPipelineRunner:
             if passlog_prefix is not None:
                 cb.cleanup_two_pass_logs_for_prefix(passlog_prefix)
         local_cleanup.append(output_path)
-        return {
-            "input_args": [],
-            "path": output_path,
-            "map_arg": f"{order}:v:0",
-        }, local_cleanup
+        return PreparedVideoInput(
+            input_args=[],
+            path=output_path,
+            map_arg=f"{order}:v:0",
+        ), local_cleanup
 
     def run(
         self,
@@ -297,11 +301,11 @@ class MultiVideoPipelineRunner:
                 for spec in track_specs:
                     if spec.video.codec == "copy":
                         order = spec.order
-                        prepared_inputs[order] = {
-                            "input_args": cb.offset_input_args(spec.offset_ms),
-                            "path": spec.source,
-                            "map_arg": f"{order}:{spec.stream_index}",
-                        }
+                        prepared_inputs[order] = PreparedVideoInput(
+                            input_args=cb.offset_input_args(spec.offset_ms),
+                            path=spec.source,
+                            map_arg=f"{order}:{spec.stream_index}",
+                        )
                         continue
                     transcode_specs.append(spec)
 
@@ -357,7 +361,8 @@ class MultiVideoPipelineRunner:
                             order=spec.order,
                             resource_key=cb.video_encode_resource_key(spec.video),
                             estimated_ram_bytes=cb.video_prep_estimated_ram_bytes(spec),
-                            run=(
+                            run=cast(
+                                Callable[[], tuple[dict[str, object], list[Path]]],
                                 lambda spec=spec: self.prepare_multi_video_track(
                                     config=config,
                                     spec=spec,
@@ -366,38 +371,42 @@ class MultiVideoPipelineRunner:
                                     thread_count=prep_thread_count,
                                     signals=signals,
                                     run_cmd=lambda cmd, label: _run(cmd, label=label),
-                                )
+                            ),
                             ),
                         )
                         for spec in transcode_specs
                     ]
 
                     for order, prepared, local_cleanup in orchestrator.execute(tasks):
-                        prepared_inputs[order] = prepared
+                        prepared_inputs[order] = cast(PreparedVideoInput, prepared)
                         cleanup_paths.extend(local_cleanup)
 
                 if any(spec is None for spec in prepared_inputs):
                     raise EncodeError("Préparation vidéo incomplète: au moins une piste n'a pas été préparée.")
-                prepared_inputs = [cast(PreparedVideoInput, spec) for spec in prepared_inputs]
+                prepared_inputs_ready: list[PreparedVideoInput] = [
+                    cast(PreparedVideoInput, spec)
+                    for spec in prepared_inputs
+                    if spec is not None
+                ]
 
                 cb.log_step(5, "Reconstruction finale multi-pistes vidéo")
                 all_sources = list(encode_plan.all_sources)
-                source_idx = cb.source_input_index_map(all_sources, len(prepared_inputs))
+                source_idx = cb.source_input_index_map(all_sources, len(prepared_inputs_ready))
                 sync_remap: dict[tuple[Path, int, str], tuple[int, int]] = {}
                 sync_inputs: list[Path | str] = []
                 strict_interleave = False
 
                 final_cmd: list[str] = [cb.ffmpeg_bin, "-hide_banner", "-y"]
                 final_cmd.extend(cb.ffmpeg_progress_args())
-                for spec in prepared_inputs:
-                    final_cmd.extend([*cast(list[str], spec.get("input_args", [])), "-i", str(spec["path"])])
+                for spec in prepared_inputs_ready:
+                    final_cmd.extend([*spec.input_args, "-i", str(spec.path)])
                 for src in all_sources:
                     final_cmd.extend(["-i", str(src)])
 
                 sync_remap, sync_inputs, live_sync_session, strict_interleave = cb.prepare_multisource_sync(
                     config=config,
                     all_sources=all_sources,
-                    sync_base_input_idx=len(prepared_inputs) + len(all_sources),
+                    sync_base_input_idx=len(prepared_inputs_ready) + len(all_sources),
                     work_dir=work_dir,
                     signals=signals,
                     allow_live=True,
@@ -413,7 +422,7 @@ class MultiVideoPipelineRunner:
                     final_cmd,
                     config,
                     source_idx=source_idx,
-                    next_input_index=len(prepared_inputs) + len(all_sources) + len(sync_inputs),
+                    next_input_index=len(prepared_inputs_ready) + len(all_sources) + len(sync_inputs),
                     plan=encode_plan,
                     chapter_materialize_dir=chapter_dir,
                     chapter_probe_source=config.source,
@@ -425,7 +434,7 @@ class MultiVideoPipelineRunner:
                     encode_plan,
                     source_idx=source_idx,
                     track_input_paths=build_track_input_paths(
-                        leading_inputs=[cast(Path | str, spec["path"]) for spec in prepared_inputs],
+                        leading_inputs=[spec.path for spec in prepared_inputs_ready],
                         all_sources=all_sources,
                         sync_inputs=sync_inputs,
                     ),
@@ -444,8 +453,8 @@ class MultiVideoPipelineRunner:
                 )
                 _ = next_input_index
 
-                for out_idx, spec in enumerate(prepared_inputs):
-                    final_cmd.extend(["-map", str(spec["map_arg"])])
+                for out_idx, spec in enumerate(prepared_inputs_ready):
+                    final_cmd.extend(["-map", str(spec.map_arg)])
                     final_cmd.extend([f"-c:v:{out_idx}", "copy"])
 
                 cb.append_stream_maps_and_attachments(
@@ -461,7 +470,7 @@ class MultiVideoPipelineRunner:
                 if strict_interleave:
                     cb.append_strict_interleave_mux_flags(final_cmd)
 
-                default_source_index = source_idx.get(config.source, len(prepared_inputs))
+                default_source_index = source_idx.get(config.source, len(prepared_inputs_ready))
                 cb.append_container_metadata_args(
                     final_cmd,
                     config,

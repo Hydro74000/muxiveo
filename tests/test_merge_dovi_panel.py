@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 
 class _DummySignal:
@@ -43,7 +44,7 @@ def test_merge_dovi_panel_inits_workflow_with_ffmpeg_bins(tmp_path, qt_app, monk
     monkeypatch.setattr(panel_mod, "MergeDoviWorkflow", _factory)
 
     cfg = _DummyConfig(tmp_path)
-    panel_mod.MergeDoviPanel(cfg)
+    panel_mod.MergeDoviPanel(cast(Any, cfg))
 
     assert captured["mediainfo_bin"] == "mi"
     assert captured["ffmpeg_bin"] == "ffm"

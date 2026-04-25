@@ -42,6 +42,7 @@ from core.workflows.common.chapters import (
 from core.workflows.common.ffmpeg_runtime import (
     cli_path as _cli_path,
     ffmpeg_progress_args,
+    ffmpeg_thread_args as _common_ffmpeg_thread_args,
     normalize_ffmpeg_thread_count as _normalize_ffmpeg_thread_count,
 )
 from core.workflows.common.timeline_sync import needs_strict_interleave as _common_needs_strict_interleave
@@ -171,7 +172,7 @@ class RemuxWorkflow(QObject):
         self._mediainfo_bin = mediainfo_bin
 
     def _ffmpeg_thread_args(self) -> list[str]:
-        return ["-threads", str(self._ffmpeg_threads)]
+        return _common_ffmpeg_thread_args(self._ffmpeg_threads)
 
     # ------------------------------------------------------------------
     # Validation

@@ -103,10 +103,13 @@ class MetadataInjectRunner:
 
             try:
                 src_size_est = config.source.stat().st_size
+                video = config.video
+                if video is None:
+                    raise ValueError("EncodeConfig.video is required for metadata injection")
 
                 cb.log_step(5, "Extraction des métadonnées dynamiques (DoVi/HDR10+)")
                 rpu_bin = tmp / "rpu.bin"
-                if config.video.copy_dv:
+                if video.copy_dv:
                     signals.progress.emit("Extraction RPU Dolby Vision…")
                     _run([
                         cb.bins["dovi_tool"], "extract-rpu",
@@ -115,7 +118,7 @@ class MetadataInjectRunner:
                     _check()
 
                 hdr10p_json = tmp / "hdr10p.json"
-                if config.video.copy_hdr10plus:
+                if video.copy_hdr10plus:
                     signals.progress.emit("Extraction métadonnées HDR10+…")
                     _run([
                         cb.bins["hdr10plus_tool"], "extract",
@@ -126,7 +129,7 @@ class MetadataInjectRunner:
                 cb.log_step(6, "Encodage vidéo seule (HEVC brut)")
                 enc_hevc = _alloc("enc.hevc", src_size_est)
                 signals.progress.emit("Encodage vidéo…")
-                if config.video.quality_mode == QualityMode.SIZE:
+                if video.quality_mode == QualityMode.SIZE:
                     v_cmds = cb.build_video_only_two_pass(config, enc_hevc)
                     cb.log_info("Passe 1/2 (analyse)…")
                     _run(v_cmds[0])
@@ -139,7 +142,7 @@ class MetadataInjectRunner:
                 current_hevc = enc_hevc
 
                 cb.log_step(7, "Injection HDR10+ puis DoVi (si demandé)")
-                if config.video.copy_hdr10plus and hdr10p_json.exists():
+                if video.copy_hdr10plus and hdr10p_json.exists():
                     cur_size = current_hevc.stat().st_size
                     out_hdr10p = _alloc("enc_hdr10p.hevc", cur_size)
                     signals.progress.emit("Injection métadonnées HDR10+…")
@@ -153,13 +156,13 @@ class MetadataInjectRunner:
                     current_hevc = out_hdr10p
                     _check()
 
-                if config.video.copy_dv and rpu_bin.exists():
+                if video.copy_dv and rpu_bin.exists():
                     cur_size = current_hevc.stat().st_size
                     out_dv = _alloc("enc_dv.hevc", cur_size)
                     signals.progress.emit("Injection RPU Dolby Vision…")
                     _run([
                         cb.bins["dovi_tool"],
-                        "-m", config.video.dovi_profile,
+                        "-m", video.dovi_profile,
                         "inject-rpu",
                         "-i", str(current_hevc),
                         "-r", str(rpu_bin),

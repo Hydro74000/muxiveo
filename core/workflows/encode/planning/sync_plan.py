@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Protocol
 
 from core.workflows.common.timeline_sync import needs_strict_interleave
 from core.workflows.encode.models import EncodeConfig
@@ -8,6 +10,16 @@ from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
 
 from .offsets import track_offset_ms
 from .plan_models import SyncAnalysisPlan, SyncMappedTrackPlan
+
+
+class _SyncMappedTrackLike(Protocol):
+    @property
+    def source_file_index(self) -> int:
+        ...
+
+    @property
+    def stream_index(self) -> int:
+        ...
 
 
 def _track_type_of(mapped_track) -> str:
@@ -104,7 +116,7 @@ def build_sync_mapped_tracks(
 
 
 def needs_strict_interleave_for_encode(
-    mapped_tracks: list[SyncMappedTrackPlan] | tuple[SyncMappedTrackPlan, ...],
+    mapped_tracks: Sequence[_SyncMappedTrackLike],
 ) -> bool:
     if len({int(track.source_file_index) for track in mapped_tracks}) < 2:
         return False
@@ -123,7 +135,7 @@ def needs_strict_interleave_for_encode(
 
 def requires_file_sync_fallback_for_offsets(
     config: EncodeConfig,
-    mapped_tracks: list[SyncMappedTrackPlan] | tuple[SyncMappedTrackPlan, ...],
+    mapped_tracks: Sequence[_SyncMappedTrackLike],
     source_by_index: dict[int, Path],
     *,
     track_offset_ms=None,

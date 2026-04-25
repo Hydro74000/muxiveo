@@ -111,7 +111,8 @@ def main() -> int:
     from ui.main_window import MainWindow
     window = MainWindow(config)
     if startup_paths:
-        QTimer.singleShot(0, lambda: window.open_startup_paths(startup_paths))
+        startup_items: list[Path | str] = list(startup_paths)
+        QTimer.singleShot(0, lambda: window.open_startup_paths(startup_items))
     window.show()
 
     return app.exec()

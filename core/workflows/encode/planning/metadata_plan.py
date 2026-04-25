@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from core.workflows.encode.models import EncodeConfig
+from core.workflows.encode.models import ChapterEntryLike, EncodeConfig
 
 from .plan_models import (
     ContainerMetadataPlan,
@@ -69,7 +69,7 @@ def materialize_container_metadata_inputs(
     chapter_materialize_dir: Path | None = None,
     chapter_probe_source: Path | None = None,
     probe_duration_seconds: Callable[[Path], float | None],
-    write_ffmetadata_chapters: Callable[[list, Path, float | None], Path],
+    write_ffmetadata_chapters: Callable[[list[ChapterEntryLike], Path, float | None], Path],
 ) -> MaterializedContainerMetadataPlan:
     metadata_plan = container_metadata_plan or build_container_metadata_plan(
         config,
@@ -80,6 +80,7 @@ def materialize_container_metadata_inputs(
     if metadata_plan.chapter_overrides_nonempty:
         if chapter_materialize_dir is not None:
             duration_s = probe_duration_seconds(chapter_probe_source or config.source)
+            assert config.chapter_overrides is not None
             chapter_file = write_ffmetadata_chapters(
                 config.chapter_overrides,
                 chapter_materialize_dir,

@@ -40,11 +40,14 @@ def estimate_inject_video_bytes(
     source_size: int,
     size_to_bitrate_kbps: Callable[[EncodeConfig], int],
 ) -> int:
-    if config.video.quality_mode == QualityMode.SIZE:
+    video = config.video
+    if video is None:
+        raise EncodeError("Configuration vidéo absente pour l'estimation d'injection")
+    if video.quality_mode == QualityMode.SIZE:
         video_kbps = size_to_bitrate_kbps(config)
         return int((video_kbps * 1000 / 8) * duration_s)
-    if config.video.quality_mode == QualityMode.BITRATE:
-        video_kbps = max(1, int(config.video.bitrate_kbps or 1))
+    if video.quality_mode == QualityMode.BITRATE:
+        video_kbps = max(1, int(video.bitrate_kbps or 1))
         return int((video_kbps * 1000 / 8) * duration_s)
     return max(source_size, int(source_size * 3 / 4))
 
@@ -73,10 +76,14 @@ def estimate_inject_storage_requirements(
         ),
     )
 
+    video = config.video
+    if video is None:
+        raise EncodeError("Configuration vidéo absente pour l'estimation de stockage")
+
     sidecars = 32 * 1024 * 1024
-    if config.video.copy_dv:
+    if video.copy_dv:
         sidecars += 64 * 1024 * 1024
-    if config.video.copy_hdr10plus:
+    if video.copy_hdr10plus:
         sidecars += 64 * 1024 * 1024
     if config.chapter_overrides:
         sidecars += 16 * 1024 * 1024

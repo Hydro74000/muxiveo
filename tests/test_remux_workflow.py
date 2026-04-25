@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from typing import cast
 
 import pytest
 from PySide6.QtCore import QCoreApplication, Qt
@@ -93,7 +94,10 @@ def _wait_task(signals, timeout: float = 20.0) -> dict[str, object]:
     }
     done = {"value": False}
 
-    signals.progress.connect(lambda msg: state["progress"].append(msg), Qt.ConnectionType.QueuedConnection)
+    signals.progress.connect(
+        lambda msg: cast(list[str], state["progress"]).append(msg),
+        Qt.ConnectionType.QueuedConnection,
+    )
     signals.finished.connect(lambda res: (state.__setitem__("finished", res), done.__setitem__("value", True)), Qt.ConnectionType.QueuedConnection)
     signals.failed.connect(lambda msg, exc: (state.__setitem__("failed", (msg, exc)), done.__setitem__("value", True)), Qt.ConnectionType.QueuedConnection)
     signals.cancelled.connect(lambda: (state.__setitem__("cancelled", True), done.__setitem__("value", True)), Qt.ConnectionType.QueuedConnection)

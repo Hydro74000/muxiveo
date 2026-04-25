@@ -17,6 +17,7 @@ import json
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Protocol
 
 from core.workflows.encode.catalog import (
     AMF_PRESETS,
@@ -33,6 +34,15 @@ from core.workflows.encode.catalog import (
     presets_for_codec,
 )
 from core.workflows.common.track_types import TrackMetaEdit, TrackMetaPatch, TrackTimeOffset, TrackOffset
+
+
+class ChapterEntryLike(Protocol):
+    timecode_s: float
+    name: str
+
+
+SubtitleTrackRef = tuple[Path, int]
+AttachmentStreamRef = tuple[Path, int]
 
 
 # =============================================================================
@@ -229,28 +239,28 @@ class EncodeConfig:
     copy_subtitles:   bool         = True
     # Pistes de sous-titres multi-sources : (chemin_source, stream_index_ffprobe)
     # Si non vide, remplace le copy_subtitles générique.
-    subtitle_tracks:  list = field(default_factory=list)   # list[tuple[Path, int]]
+    subtitle_tracks:  list[SubtitleTrackRef] = field(default_factory=list)
     keep_chapters:    bool         = True
     #: Chapitres personnalisés à appliquer en post-traitement FFmpeg.
     #: None  → comportement keep_chapters (copie depuis la source ou rien).
     #: list  → écrase les chapitres existants avec ces entrées.
-    chapter_overrides: list | None = None  # list[ChapterEntry] | None
+    chapter_overrides: list[ChapterEntryLike] | None = None
     # Flux d'attachements à copier : (chemin_source, stream_index_ffprobe)
     # Sélection individuelle — remplace l'ancien attachment_sources global.
-    attachment_streams: list = field(default_factory=list)   # list[tuple[Path, int]]
+    attachment_streams: list[AttachmentStreamRef] = field(default_factory=list)
     # Fichiers externes à attacher (ajout manuel, via -attach ffmpeg).
-    extra_attachments:  list = field(default_factory=list)   # list[Path]
+    extra_attachments:  list[Path] = field(default_factory=list)
     # Sources dont on copie les tags globaux via post-traitement FFmpeg.
-    tag_sources:      list = field(default_factory=list)    # list[Path]
+    tag_sources:      list[Path] = field(default_factory=list)
     #: Balises MKV globales à écrire directement (prioritaire sur tag_sources).
     #: None  → utiliser tag_sources si présents.
     #: dict  → écrire ces balises et ignorer tag_sources.
     #: {}    → supprimer toutes les balises existantes.
     tag_overrides:    dict | None = None                    # dict[str, str] | None
     # Éditions de métadonnées de pistes (langue, titre) appliquées via FFmpeg.
-    track_meta_edits: list = field(default_factory=list)    # list[TrackMetaEdit]
+    track_meta_edits: list[TrackMetaEdit] = field(default_factory=list)
     # Décalages temporels par piste (ms), appliqués directement au runtime encode.
-    track_time_offsets: list = field(default_factory=list)  # list[TrackTimeOffset]
+    track_time_offsets: list[TrackTimeOffset] = field(default_factory=list)
     file_title:       str          = ""     # balise Title du segment de sortie
     duration_s:       float | None = None   # requis pour le mode taille cible
     # Passthrough métadonnées dynamiques (HEVC uniquement)

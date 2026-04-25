@@ -20,6 +20,7 @@ import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any, Protocol
 
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QDesktopServices
@@ -38,6 +39,10 @@ from core.workflows.merge_dovi import (
     MergeDoviWorkflow, StepResult, WorkflowStep,
 )
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
+
+
+class _StringSignal(Protocol):
+    def emit(self, *args: Any) -> None: ...
 
 
 # =============================================================================
@@ -189,7 +194,7 @@ class _FilePairSection(QWidget):
         label: str,
         dialog_title: str,
         attr: str,
-        signal: Signal,
+        signal: _StringSignal,
     ) -> QWidget:
         card = _card()
         card.setAcceptDrops(True)
@@ -385,6 +390,8 @@ class _ConfigSection(QWidget):
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._config = config
+        self._work_input: QLineEdit
+        self._output_input: QLineEdit
         self._build_ui()
 
     def _build_ui(self) -> None:

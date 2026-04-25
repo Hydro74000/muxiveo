@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 from core.workflows.common.attachments import (
     attachment_filename_from_meta,
@@ -69,7 +70,7 @@ class TestCommonAttachments:
         assert sanitize_filename("../cover.jpg", "fallback.bin") == "cover.jpg"
 
     def test_attachment_filename_from_meta_appends_suffix_when_missing(self):
-        meta = {"filename": "cover", "mimetype": "image/jpeg"}
+        meta: dict[str, object] = {"filename": "cover", "mimetype": "image/jpeg"}
         assert attachment_filename_from_meta(meta, 3) == "cover.jpg"
 
 
@@ -105,7 +106,7 @@ class TestCommonTimelineSync:
             SimpleNamespace(source_file_index=1, track=SimpleNamespace(track_type="audio")),
             SimpleNamespace(source_file_index=0, track=SimpleNamespace(track_type="subtitle")),
         ]
-        assert needs_strict_interleave(mapped_tracks) is True
+        assert needs_strict_interleave(cast(Any, mapped_tracks)) is True
 
     def test_append_strict_interleave_mux_flags(self):
         cmd: list[str] = []

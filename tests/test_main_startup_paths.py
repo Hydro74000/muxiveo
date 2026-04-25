@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import types
 from pathlib import Path
+from typing import Callable
 from unittest.mock import MagicMock, patch
 
 import main as main_mod
@@ -60,13 +61,14 @@ def test_main_routes_startup_file_to_main_window(tmp_path) -> None:
             return getattr(fake_window, name)
 
     fake_ui_main_window = types.ModuleType("ui.main_window")
-    fake_ui_main_window.MainWindow = FakeMainWindow
+    setattr(fake_ui_main_window, "MainWindow", FakeMainWindow)
 
-    scheduled: dict[str, object] = {}
+    scheduled_delay: list[int] = []
+    scheduled_callbacks: list[Callable[[], None]] = []
 
-    def fake_single_shot(delay_ms, callback):
-        scheduled["delay_ms"] = delay_ms
-        scheduled["callback"] = callback
+    def fake_single_shot(delay_ms: int, callback: Callable[[], None]) -> None:
+        scheduled_delay.append(delay_ms)
+        scheduled_callbacks.append(callback)
 
     fake_config = types.SimpleNamespace(
         theme="dark",
@@ -96,6 +98,7 @@ def test_main_routes_startup_file_to_main_window(tmp_path) -> None:
     fake_app.setOrganizationName.assert_called_once_with("mediarecode")
     fake_app.setFont.assert_called_once()
     fake_window.show.assert_called_once_with()
-    assert scheduled["delay_ms"] == 0
-    scheduled["callback"]()
+    assert scheduled_delay == [0]
+    assert len(scheduled_callbacks) == 1
+    scheduled_callbacks[0]()
     fake_window.open_startup_paths.assert_called_once_with([startup_file])

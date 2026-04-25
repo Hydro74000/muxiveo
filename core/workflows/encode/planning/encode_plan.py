@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from core.workflows.encode.models import EncodeConfig, VideoEncodeSettings
@@ -41,7 +42,7 @@ def build_planned_video_tracks(
 def build_encode_plan(
     config: EncodeConfig,
     *,
-    probe_subtitle_indices=None,
+    probe_subtitle_indices: Callable[[Path, str], list[int] | None] | None = None,
     resolve_subtitle_tracks=None,
     resolve_global_tags,
     video_tracks,
@@ -58,6 +59,8 @@ def build_encode_plan(
         subtitle_tracks, subtitles_resolved = resolve_subtitle_tracks(config, all_sources)
         resolved_subtitles = tuple((Path(source), int(stream_index)) for source, stream_index in subtitle_tracks)
     else:
+        if probe_subtitle_indices is None:
+            raise ValueError("probe_subtitle_indices callback is required")
         resolved = resolve_subtitle_tracks_for_encode(
             config,
             all_sources,

@@ -36,3 +36,8 @@ def normalize_max_parallel_video_encodes(value: int | None) -> int:
 def ffmpeg_progress_args() -> list[str]:
     """Force a stable machine-readable ffmpeg progress output."""
     return ["-progress", "pipe:1", "-nostats"]
+
+
+def ffmpeg_thread_args(thread_count: int) -> list[str]:
+    """Formate `-threads N` (N=0 → ffmpeg auto). Le caller a déjà normalisé `thread_count`."""
+    return ["-threads", str(max(0, int(thread_count)))]

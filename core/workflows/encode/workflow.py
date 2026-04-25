@@ -7,7 +7,6 @@ Public:
 
 from __future__ import annotations
 
-import ctypes
 import json
 import os
 import re
@@ -31,7 +30,7 @@ from core.workdir import (
     relocate_tmdb_covers_to_process_dir,
     remove_path,
 )
-from core.workflows.remux_models import RemuxConfig, SourceInput
+from core.workflows.remux_models import SourceInput
 from core.workflows.remux import write_mediainfo_nfo
 from core.workflows.common.attachments import (
     extension_for_mime,
@@ -41,6 +40,7 @@ from core.workflows.common.remux_postprocess import RemuxPostprocessService
 from core.workflows.common.ffmpeg_runtime import (
     default_ffmpeg_thread_count as _default_ffmpeg_thread_count,
     ffmpeg_progress_args as _common_ffmpeg_progress_args,
+    ffmpeg_thread_args as _common_ffmpeg_thread_args,
     normalize_ffmpeg_thread_count as _normalize_ffmpeg_thread_count,
     normalize_max_parallel_video_encodes as _normalize_max_parallel_video_encodes,
 )
@@ -66,15 +66,10 @@ from core.workflows.encode.domain import (
     EncodeCodecDomainCallbacks as _EncodeCodecDomainCallbacks,
     audio_codec_args as _audio_codec_args_domain,
     build_encoder_vf as _build_encoder_vf_domain,
-    force_h264_8bit as _force_h264_8bit_domain,
-    h264_8bit_pix_fmt_args as _h264_8bit_pix_fmt_args_domain,
     hardware_input_args as _hardware_input_args_domain,
     hdr_meta_args as _hdr_meta_args_domain,
-    needs_ac3_51_downmix as _needs_ac3_51_downmix_domain,
     video_codec_args as _video_codec_args_domain,
     video_codec_args_bitrate as _video_codec_args_bitrate_domain,
-    video_codec_args_crf as _video_codec_args_crf_domain,
-    x265_params as _x265_params_domain,
 )
 from core.workflows.remux_timeline_sync import (
     LiveSyncSession,
@@ -89,6 +84,7 @@ from core.workflows.encode.runtime_helpers import (
     VideoTrackPrepTask as _VideoTrackPrepTask,
     ui_encode_progress_message as _ui_encode_progress_message,
 )
+from core.workflows.encode.runtime import ram_buffer as _ram_buffer_module
 from core.workflows.encode.runtime import (
     AttachmentPreparationService as _AttachmentPreparationService,
     AttachmentPreparationServiceCallbacks as _AttachmentPreparationServiceCallbacks,
@@ -110,6 +106,13 @@ from core.workflows.encode.runtime import (
     probe_attachment_stream as _probe_attachment_stream_runtime,
     unique_attachment_path as _unique_attachment_path_runtime,
 )
+from core.workflows.encode.runtime.command_builders import (
+    EncodeCommandBuilderCallbacks as _EncodeCommandBuilderCallbacks,
+    build_runtime_single_pass_with_sync as _build_runtime_single_pass_with_sync_runtime,
+    build_runtime_two_pass_with_sync as _build_runtime_two_pass_with_sync_runtime,
+    build_single_pass as _build_single_pass_runtime,
+    build_two_pass as _build_two_pass_runtime,
+)
 from core.workflows.encode.hw_devices import (
     select_linux_hwaccel_device,
     select_windows_hwaccel_device,
@@ -119,8 +122,6 @@ from core.workflows.encode.planning.command_plan import (
 )
 from core.workflows.encode.planning.metadata_plan import (
     append_container_metadata_args as _append_container_metadata_args_plan,
-    container_chapter_map_value as _container_chapter_map_value_plan,
-    container_metadata_map_value as _container_metadata_map_value_plan,
     materialize_container_metadata_inputs as _materialize_container_metadata_inputs_plan,
     prepare_container_metadata_inputs as _prepare_container_metadata_inputs_plan,
 )
@@ -150,11 +151,7 @@ from core.workflows.encode.planning.subtitles import (
     resolve_subtitle_tracks_for_encode as _resolve_subtitle_tracks_for_encode_plan,
 )
 from core.workflows.encode.planning.sync_plan import (
-    build_probe_remux_config as _build_probe_remux_config_plan,
     build_sync_analysis_plan as _build_sync_analysis_plan,
-    build_sync_mapped_tracks as _build_sync_mapped_tracks_plan,
-    needs_strict_interleave_for_encode as _needs_strict_interleave_for_encode_plan,
-    requires_file_sync_fallback_for_offsets as _requires_file_sync_fallback_for_offsets_plan,
 )
 from core.workflows.encode.planning.validation import (
     is_dir_writable as _is_dir_writable_plan,
@@ -162,14 +159,13 @@ from core.workflows.encode.planning.validation import (
 )
 from core.workflows.encode.models import (
     EncodeConfig, EncodeError, QualityMode,
-    VideoEncodeSettings, AudioTrackSettings, TrackTimeOffset,
+    VideoEncodeSettings,
     normalize_audio_bitrate_kbps,
 )
 from core.workflows.encode.planning.plan_models import (
     EncodePlan as _EncodePlan,
     MaterializedContainerMetadataPlan as _MaterializedContainerMetadataPlan,
     ResolvedTrackAssembly as _ResolvedTrackAssembly,
-    SyncMappedTrackPlan as _SyncMappedTrackPlan,
 )
 _FALLBACK_HEVC_FRAME_RATE = "24000/1001"
 
@@ -187,6 +183,26 @@ class EncodeWorkflow(QObject):
 
     Signaux :
         log_message(level, message)
+
+    API étendue (préfixe `_`, testable mais non publique) :
+      - Hooks d'orchestration : `_run_with_preparation`, `_run_with_metadata_inject`,
+        `_run_multi_video_pipeline`, `_run_two_pass`, `_check_cancelled`.
+      - Builders FFmpeg internes : `_build_video_only_cmd`,
+        `_build_video_only_cmd_for_track`, `_build_video_only_two_pass`,
+        `_build_video_only_two_pass_for_track`,
+        `_build_multi_video_track_encode_commands`,
+        `_build_runtime_single_pass_with_sync`,
+        `_build_runtime_two_pass_with_sync`, `_build_track_meta_args`.
+      - Sondes / décisions : `_prepare_multisource_sync`,
+        `_detect_source_dynamic_hdr_presence`, `_bind_nfo_write`.
+      - Attributs init exposés pour assertion de configuration : `_runner`,
+        `_ffmpeg_threads`, `_max_parallel_video_encodes`, `_ram_buffer_threshold_pct`,
+        `_generate_nfo`, `_postprocess_service`, `_bins`, `_mediainfo_bin`,
+        `_muxing_post_action`.
+
+    Toutes les autres méthodes `_xxx` sont des wrappers triviaux vers
+    `core/workflows/common/`, `domain/`, `planning/` ou `runtime/` ; leur
+    suppression est planifiée au Step 9 du PLAN_REFONTE.
     """
 
     log_message = Signal(str, str)
@@ -240,6 +256,18 @@ class EncodeWorkflow(QObject):
         self._language_post_action = MatroskaLanguagePostAction(
             log_cb=self.log_message.emit,
         )
+        self._signal_binding_service = _SignalBindingService(
+            _SignalBindingServiceCallbacks(
+                muxing_bind_on_success=lambda signals, output: self._muxing_post_action.bind_on_success(signals, output),
+                language_bind_on_success=lambda signals, output: self._language_post_action.bind_on_success(signals, output),
+                write_nfo=lambda output: write_mediainfo_nfo(
+                    output,
+                    log_cb=self.log_message.emit,
+                    mediainfo_bin=self._bins.get("mediainfo") or "mediainfo",
+                ),
+                remove_path=remove_path,
+            )
+        )
 
     def set_ffmpeg(self, ffmpeg_bin: str) -> None:
         """Met à jour le binaire ffmpeg utilisé pour l'encodage (ex: ffmpeg système pour HW)."""
@@ -265,8 +293,8 @@ class EncodeWorkflow(QObject):
         self._generate_nfo = generate_nfo
 
     def _ffmpeg_thread_args(self, thread_count: int | None = None) -> list[str]:
-        effective = self._ffmpeg_threads if thread_count is None else max(0, int(thread_count))
-        return ["-threads", str(effective)]
+        effective = self._ffmpeg_threads if thread_count is None else thread_count
+        return _common_ffmpeg_thread_args(effective)
 
     def _parallel_video_worker_thread_count(
         self,
@@ -864,49 +892,6 @@ class EncodeWorkflow(QObject):
     def _video_stream_from_settings(video: VideoEncodeSettings) -> int:
         return int(getattr(video, "stream_index", 0) or 0)
 
-    @staticmethod
-    def _source_input_index_map(sources: list[Path], *, start_index: int = 0) -> dict[Path, int]:
-        """Construit un mapping source -> index d'input ffmpeg."""
-        return _source_input_index_map_plan(sources, start_index=start_index)
-
-    @staticmethod
-    def _offset_seconds(offset_ms: int) -> str:
-        return _offset_seconds_plan(offset_ms)
-
-    @staticmethod
-    def _track_time_offset_lookup(config: EncodeConfig) -> dict[tuple[str, Path, int], int]:
-        return _track_time_offset_lookup_plan(config)
-
-    @staticmethod
-    def _track_offset_ms(
-        lookup: dict[tuple[str, Path, int], int],
-        *,
-        track_type: str,
-        source_path: Path,
-        stream_index: int,
-        allow_single_video_source_fallback: bool = True,
-    ) -> int:
-        return _track_offset_ms_plan(
-            lookup,
-            track_type=track_type,
-            source_path=source_path,
-            stream_index=stream_index,
-            allow_single_video_source_fallback=allow_single_video_source_fallback,
-        )
-
-    def _build_offset_specs(
-        self,
-        config: EncodeConfig,
-        *,
-        track_mappings: list[tuple[tuple[Path, int, str], Path | str, int]],
-        offset_lookup: dict[tuple[str, Path, int], int] | None = None,
-    ) -> list[_EncodeOffsetInputSpec]:
-        return _build_offset_specs_plan(
-            config,
-            track_mappings=track_mappings,
-            offset_lookup=offset_lookup,
-        )
-
     def _append_offset_aux_inputs(
         self,
         cmd: list[str],
@@ -928,9 +913,9 @@ class EncodeWorkflow(QObject):
             input_idx = input_by_key.get(input_key)
             if input_idx is None:
                 if int(spec.offset_ms) > 0:
-                    cmd.extend(["-itsoffset", self._offset_seconds(spec.offset_ms), "-i", str(spec.input_path)])
+                    cmd.extend(["-itsoffset", _offset_seconds_plan(spec.offset_ms), "-i", str(spec.input_path)])
                 else:
-                    cmd.extend(["-ss", self._offset_seconds(spec.offset_ms), "-i", str(spec.input_path)])
+                    cmd.extend(["-ss", _offset_seconds_plan(spec.offset_ms), "-i", str(spec.input_path)])
                 input_idx = next_input_index
                 input_by_key[input_key] = input_idx
                 next_input_index += 1
@@ -938,19 +923,6 @@ class EncodeWorkflow(QObject):
             remap[spec.map_key] = (int(input_idx), int(spec.input_stream_index))
 
         return next_input_index, remap
-
-    @staticmethod
-    def _video_map_arg(
-        default_map: tuple[int, int],
-        *,
-        offset_remap: dict[tuple[Path, int, str], tuple[int, int]],
-        map_key: tuple[Path, int, str],
-    ) -> str:
-        return _video_map_arg_plan(
-            default_map,
-            offset_remap=offset_remap,
-            map_key=map_key,
-        )
 
     def _probe_stream_indices(self, source: Path, codec_type: str) -> list[int] | None:
         return _probe_stream_indices_plan(
@@ -979,54 +951,6 @@ class EncodeWorkflow(QObject):
             probe_indices=self._probe_stream_indices,
         )
         return list(resolved.tracks), resolved.complete
-
-    def _build_probe_remux_config(
-        self,
-        config: EncodeConfig,
-        all_sources: list[Path],
-        source_idx_local: dict[Path, int],
-        resolved_subtitle_tracks: list[tuple[Path, int]],
-    ) -> RemuxConfig:
-        return _build_probe_remux_config_plan(
-            config,
-            all_sources,
-            source_idx_local,
-            resolved_subtitle_tracks,
-        )
-
-    @staticmethod
-    def _build_sync_mapped_tracks(
-        config: EncodeConfig,
-        source_idx_local: dict[Path, int],
-        resolved_subtitle_tracks: list[tuple[Path, int]],
-    ) -> list[_SyncMappedTrackPlan]:
-        return _build_sync_mapped_tracks_plan(
-            config,
-            source_idx_local,
-            resolved_subtitle_tracks,
-        )
-
-    @staticmethod
-    def _needs_strict_interleave_for_encode(
-        mapped_tracks: list[_SyncMappedTrackPlan],
-    ) -> bool:
-        return _needs_strict_interleave_for_encode_plan(mapped_tracks)
-
-    def _requires_file_sync_fallback_for_offsets(
-        self,
-        config: EncodeConfig,
-        mapped_tracks: list[_SyncMappedTrackPlan],
-        source_by_index: dict[int, Path],
-        *,
-        offset_lookup: dict[tuple[str, Path, int], int] | None = None,
-    ) -> bool:
-        lookup = offset_lookup if offset_lookup is not None else self._track_time_offset_lookup(config)
-        return _requires_file_sync_fallback_for_offsets_plan(
-            config,
-            mapped_tracks,
-            source_by_index,
-            offset_lookup=lookup,
-        )
 
     def _prepare_multisource_sync(
         self,
@@ -1132,52 +1056,12 @@ class EncodeWorkflow(QObject):
         return remap, sync_inputs, live_session, True
 
     @staticmethod
-    def _build_track_input_paths(
-        *,
-        leading_inputs: list[Path | str] | tuple[Path | str, ...] = (),
-        all_sources: list[Path] | tuple[Path, ...] = (),
-        sync_inputs: list[Path | str] | tuple[Path | str, ...] = (),
-    ) -> tuple[Path | str, ...]:
-        return _build_track_input_paths_plan(
-            leading_inputs=leading_inputs,
-            all_sources=all_sources,
-            sync_inputs=sync_inputs,
-        )
-
-    @staticmethod
-    def _resolve_track_assembly(
-        config: EncodeConfig,
-        plan: _EncodePlan,
-        *,
-        source_idx: dict[Path, int],
-        track_input_paths: list[Path | str] | tuple[Path | str, ...],
-        sync_remap: dict[tuple[Path, int, str], tuple[int, int]] | None = None,
-        video_default_map: tuple[int, int] | None = None,
-        video_fallback_input: Path | str | None = None,
-        include_video: bool = True,
-    ) -> _ResolvedTrackAssembly:
-        return _resolve_track_assembly_plan(
-            config,
-            plan,
-            source_idx=source_idx,
-            track_input_paths=track_input_paths,
-            sync_remap=sync_remap,
-            video_default_map=video_default_map,
-            video_fallback_input=video_fallback_input,
-            include_video=include_video,
-        )
-
-    @staticmethod
     def _append_strict_interleave_mux_flags(cmd: list[str]) -> None:
         _common_append_strict_interleave_mux_flags(cmd)
 
     @staticmethod
     def _append_sync_inputs(cmd: list[str], sync_inputs: list[Path | str]) -> None:
         _common_append_sync_inputs(cmd, sync_inputs)
-
-    @staticmethod
-    def _sync_cleanup_paths(sync_inputs: list[Path | str]) -> list[Path]:
-        return _common_sync_cleanup_paths(sync_inputs)
 
     def _append_stream_maps_and_attachments(
         self,
@@ -1209,7 +1093,7 @@ class EncodeWorkflow(QObject):
                 mapped_audio_inp_idx = source_audio_inp_idx if source_audio_inp_idx is not None else 0
                 stream_idx = int(a.stream_index)
             cmd.extend(["-map", f"{mapped_audio_inp_idx}:{stream_idx}"])
-            cmd.extend(self._audio_codec_args(i, a))
+            cmd.extend(_audio_codec_args_domain(i, a))
 
         subtitle_tracks = (
             subtitle_tracks_override
@@ -1262,7 +1146,7 @@ class EncodeWorkflow(QObject):
                     ])
                     cmd.extend([
                         f"-metadata:s:t:{out_idx}",
-                        f"filename={self._attachment_filename(meta, stream_idx)}",
+                        f"filename={_default_attachment_filename(meta, stream_idx)}",
                     ])
 
         existing_att = len(mapped_attachment_meta)
@@ -1358,37 +1242,116 @@ class EncodeWorkflow(QObject):
             container_metadata_plan=(plan.container_metadata if plan is not None else None),
         )
 
-    def _container_metadata_map_value(
+    def _resolve_track_assembly_and_offset_remap(
         self,
-        config: EncodeConfig,
         *,
-        default_metadata_input_index: int,
-        chapter_input_index: int | None,
-        tag_input_index: int | None,
-        include_copy_video_stream_passthrough: bool,
-        chapter_map: str | None = None,
-    ) -> str | None:
-        return _container_metadata_map_value_plan(
+        cmd: list[str],
+        config: EncodeConfig,
+        plan: _EncodePlan,
+        source_idx: dict[Path, int],
+        track_input_paths: tuple[Path | str, ...],
+        start_input_index: int,
+        sync_remap: dict[tuple[Path, int, str], tuple[int, int]] | None = None,
+        video_default_map: tuple[int, int] | None = None,
+        video_fallback_input: Path | str | None = None,
+    ) -> tuple[_ResolvedTrackAssembly, dict[tuple[Path, int, str], tuple[int, int]]]:
+        track_assembly = _resolve_track_assembly_plan(
             config,
-            default_metadata_input_index=default_metadata_input_index,
-            chapter_input_index=chapter_input_index,
-            tag_input_index=tag_input_index,
-            include_copy_video_stream_passthrough=include_copy_video_stream_passthrough,
-            is_video_passthrough=self._is_video_passthrough,
-            chapter_map=chapter_map,
+            plan,
+            source_idx=source_idx,
+            track_input_paths=track_input_paths,
+            sync_remap=sync_remap,
+            video_default_map=video_default_map,
+            video_fallback_input=video_fallback_input,
+        )
+        _next_input_index, offset_remap = self._append_offset_aux_inputs(
+            cmd,
+            _build_offset_specs_plan(
+                config,
+                track_mappings=list(track_assembly.track_mappings),
+                offset_lookup=dict(plan.offset_lookup),
+            ),
+            start_input_index=start_input_index,
+        )
+        _ = _next_input_index
+        return track_assembly, offset_remap
+
+    def _append_primary_video_map_and_codec(
+        self,
+        cmd: list[str],
+        *,
+        plan: _EncodePlan,
+        video_map: tuple[int, int],
+        offset_remap: dict[tuple[Path, int, str], tuple[int, int]],
+        video: VideoEncodeSettings,
+        bitrate_kbps: int | None = None,
+        include_hdr_meta: bool = True,
+    ) -> None:
+        cmd.extend(["-map", _video_map_arg_plan(
+            video_map,
+            offset_remap=offset_remap,
+            map_key=plan.video_key,
+        )])
+        self._append_video_codec_and_hdr_args(
+            cmd,
+            video,
+            bitrate_kbps=bitrate_kbps,
+            include_hdr_meta=include_hdr_meta,
         )
 
-    @staticmethod
-    def _container_chapter_map_value(
-        config: EncodeConfig,
+    def _append_common_streams_and_metadata(
+        self,
+        cmd: list[str],
         *,
-        default_chapter_input_index: int,
-        chapter_input_index: int | None,
-    ) -> str:
-        return _container_chapter_map_value_plan(
+        config: EncodeConfig,
+        source_idx: dict[Path, int],
+        all_sources_count: int,
+        plan: _EncodePlan,
+        metadata_inputs: _MaterializedContainerMetadataPlan,
+        offset_remap: dict[tuple[Path, int, str], tuple[int, int]],
+        sync_remap: dict[tuple[Path, int, str], tuple[int, int]] | None = None,
+        strict_interleave: bool = False,
+    ) -> None:
+        self._append_stream_maps_and_attachments(
+            cmd,
             config,
-            default_chapter_input_index=default_chapter_input_index,
-            chapter_input_index=chapter_input_index,
+            source_idx=source_idx,
+            subtitle_copy_input_indices=list(range(all_sources_count)),
+            sync_remap=sync_remap,
+            offset_remap=offset_remap,
+            subtitle_tracks_override=list(plan.resolved_subtitle_tracks),
+            force_copy_subtitles_wildcard=(config.copy_subtitles and not plan.subtitles_resolved),
+        )
+        if strict_interleave:
+            self._append_strict_interleave_mux_flags(cmd)
+        self._append_container_metadata_args(
+            cmd,
+            config,
+            default_metadata_input_index=0,
+            default_chapter_input_index=0,
+            chapter_input_index=metadata_inputs.chapter_input_index,
+            tag_input_index=metadata_inputs.tag_input_index,
+            include_copy_video_stream_passthrough=True,
+            plan=plan,
+        )
+
+    def _encode_command_builder_callbacks(self) -> _EncodeCommandBuilderCallbacks:
+        return _EncodeCommandBuilderCallbacks(
+            ffmpeg_bin=self._ffmpeg,
+            ffmpeg_progress_args=self._ffmpeg_progress_args,
+            ffmpeg_thread_args=self._ffmpeg_thread_args,
+            primary_video_settings=self._primary_video_settings,
+            build_encode_plan=self._build_encode_plan,
+            size_to_bitrate_kbps=self._size_to_bitrate_kbps,
+            codec_domain_callbacks=self._codec_domain_callbacks,
+            materialize_container_metadata_inputs=self._materialize_container_metadata_inputs,
+            resolve_track_assembly_and_offset_remap=self._resolve_track_assembly_and_offset_remap,
+            append_primary_video_map_and_codec=self._append_primary_video_map_and_codec,
+            append_common_streams_and_metadata=self._append_common_streams_and_metadata,
+            prepare_multisource_sync=self._prepare_multisource_sync,
+            append_sync_inputs=self._append_sync_inputs,
+            append_offset_aux_inputs=self._append_offset_aux_inputs,
+            video_track_mapping=self._video_track_mapping,
         )
 
     def _build_single_pass(
@@ -1398,83 +1361,12 @@ class EncodeWorkflow(QObject):
         chapter_materialize_dir: Path | None = None,
         plan: _EncodePlan | None = None,
     ) -> list[str]:
-        plan = plan or self._build_encode_plan(config)
-        video = self._primary_video_settings(config)
-        all_sources = list(plan.all_sources)
-        source_idx = dict(plan.source_idx)
-
-        cmd: list[str] = [self._ffmpeg, "-hide_banner", "-y"]
-        cmd.extend(self._ffmpeg_progress_args())
-        cmd.extend(self._hardware_input_args(video))
-        for src in all_sources:
-            cmd.extend(["-i", str(src)])
-        metadata_inputs = self._materialize_container_metadata_inputs(
+        return _build_single_pass_runtime(
+            self._encode_command_builder_callbacks(),
             config,
-            source_idx=source_idx,
-            next_input_index=len(all_sources),
-            plan=plan,
             chapter_materialize_dir=chapter_materialize_dir,
-            chapter_probe_source=config.source,
-        )
-        cmd.extend(metadata_inputs.input_args)
-
-        vf = self._build_encoder_vf(video)
-        if vf:
-            cmd.extend(["-vf", vf])
-
-        cmd.extend(self._ffmpeg_thread_args())
-        resolved_subtitle_tracks = list(plan.resolved_subtitle_tracks)
-        track_assembly = self._resolve_track_assembly(
-            config,
-            plan,
-            source_idx=source_idx,
-            track_input_paths=self._build_track_input_paths(all_sources=all_sources),
-        )
-
-        next_input_index, offset_remap = self._append_offset_aux_inputs(
-            cmd,
-            self._build_offset_specs(
-                config,
-                track_mappings=list(track_assembly.track_mappings),
-                offset_lookup=dict(plan.offset_lookup),
-            ),
-            start_input_index=metadata_inputs.next_input_index,
-        )
-        _ = next_input_index
-
-        video_map_key = plan.video_key
-        cmd.extend(["-map", self._video_map_arg(
-            track_assembly.video_map,
-            offset_remap=offset_remap,
-            map_key=video_map_key,
-        )])
-        cmd.extend(self._video_codec_args(video, video.bitrate_kbps))
-
-        if video.inject_hdr_meta and not video.tonemap_to_sdr:
-            cmd.extend(self._hdr_meta_args(video))
-
-        self._append_stream_maps_and_attachments(
-            cmd,
-            config,
-            source_idx=source_idx,
-            subtitle_copy_input_indices=list(range(len(all_sources))),
-            offset_remap=offset_remap,
-            subtitle_tracks_override=resolved_subtitle_tracks,
-            force_copy_subtitles_wildcard=(config.copy_subtitles and not plan.subtitles_resolved),
-        )
-
-        self._append_container_metadata_args(
-            cmd,
-            config,
-            default_metadata_input_index=0,
-            default_chapter_input_index=0,
-            chapter_input_index=metadata_inputs.chapter_input_index,
-            tag_input_index=metadata_inputs.tag_input_index,
-            include_copy_video_stream_passthrough=True,
             plan=plan,
         )
-        cmd.append(str(config.output))
-        return cmd
 
     def _build_two_pass(
         self,
@@ -1483,108 +1375,12 @@ class EncodeWorkflow(QObject):
         chapter_materialize_dir: Path | None = None,
         plan: _EncodePlan | None = None,
     ) -> list[list[str]]:
-        video = self._primary_video_settings(config)
-        bitrate = self._size_to_bitrate_kbps(config)
-        vf = self._build_encoder_vf(video)
-        plan = plan or self._build_encode_plan(config)
-        all_sources = list(plan.all_sources)
-        source_idx = dict(plan.source_idx)
-
-        def _base() -> list[str]:
-            c = [self._ffmpeg, "-hide_banner", "-y"]
-            c.extend(self._ffmpeg_progress_args())
-            c.extend(self._hardware_input_args(video))
-            for src in all_sources:
-                c.extend(["-i", str(src)])
-            if vf:
-                c.extend(["-vf", vf])
-            c.extend(self._ffmpeg_thread_args())
-            return c
-
-        pass1 = _base()
-        _next1, pass1_offset_remap = self._append_offset_aux_inputs(
-            pass1,
-            self._build_offset_specs(
-                config,
-                track_mappings=[self._video_track_mapping(config, all_sources[plan.video_input_idx])],
-                offset_lookup=dict(plan.offset_lookup),
-            ),
-            start_input_index=len(all_sources),
-        )
-        _ = _next1
-        pass1_video_map_key = plan.video_key
-        pass1.extend(["-map", self._video_map_arg(
-            plan.video_default_map,
-            offset_remap=pass1_offset_remap,
-            map_key=pass1_video_map_key,
-        )])
-        pass1.extend(self._video_codec_args_bitrate(video, bitrate))
-        pass1.extend(["-pass", "1", "-an", "-f", "null", os.devnull])
-
-        pass2 = _base()
-        metadata_inputs = self._materialize_container_metadata_inputs(
+        return _build_two_pass_runtime(
+            self._encode_command_builder_callbacks(),
             config,
-            source_idx=source_idx,
-            next_input_index=len(all_sources),
-            plan=plan,
             chapter_materialize_dir=chapter_materialize_dir,
-            chapter_probe_source=config.source,
-        )
-        pass2.extend(metadata_inputs.input_args)
-
-        resolved_subtitle_tracks = list(plan.resolved_subtitle_tracks)
-        track_assembly = self._resolve_track_assembly(
-            config,
-            plan,
-            source_idx=source_idx,
-            track_input_paths=self._build_track_input_paths(all_sources=all_sources),
-        )
-
-        next_input_index, pass2_offset_remap = self._append_offset_aux_inputs(
-            pass2,
-            self._build_offset_specs(
-                config,
-                track_mappings=list(track_assembly.track_mappings),
-                offset_lookup=dict(plan.offset_lookup),
-            ),
-            start_input_index=metadata_inputs.next_input_index,
-        )
-        _ = next_input_index
-
-        pass2_video_map_key = plan.video_key
-        pass2.extend(["-map", self._video_map_arg(
-            track_assembly.video_map,
-            offset_remap=pass2_offset_remap,
-            map_key=pass2_video_map_key,
-        )])
-        pass2.extend(self._video_codec_args_bitrate(video, bitrate))
-        pass2.extend(["-pass", "2"])
-
-        if video.inject_hdr_meta and not video.tonemap_to_sdr:
-            pass2.extend(self._hdr_meta_args(video))
-        self._append_stream_maps_and_attachments(
-            pass2,
-            config,
-            source_idx=source_idx,
-            subtitle_copy_input_indices=list(range(len(all_sources))),
-            offset_remap=pass2_offset_remap,
-            subtitle_tracks_override=resolved_subtitle_tracks,
-            force_copy_subtitles_wildcard=(config.copy_subtitles and not plan.subtitles_resolved),
-        )
-
-        self._append_container_metadata_args(
-            pass2,
-            config,
-            default_metadata_input_index=0,
-            default_chapter_input_index=0,
-            chapter_input_index=metadata_inputs.chapter_input_index,
-            tag_input_index=metadata_inputs.tag_input_index,
-            include_copy_video_stream_passthrough=True,
             plan=plan,
         )
-        pass2.append(str(config.output))
-
-        return [pass1, pass2]
 
     def _build_runtime_single_pass_with_sync(
         self,
@@ -1594,105 +1390,13 @@ class EncodeWorkflow(QObject):
         signals: TaskSignals | None = None,
         plan: _EncodePlan | None = None,
     ) -> tuple[list[str], LiveSyncSession | None, list[Path]]:
-        plan = plan or self._build_encode_plan(config)
-        video = self._primary_video_settings(config)
-        all_sources = list(plan.all_sources)
-        source_idx = dict(plan.source_idx)
-        work_dir = config.work_dir or config.source.parent
-
-        sync_remap, sync_inputs, live_session, strict_interleave = self._prepare_multisource_sync(
-            config=config,
-            all_sources=all_sources,
-            sync_base_input_idx=len(all_sources),
-            work_dir=work_dir,
-            signals=signals,
-            allow_live=True,
-            plan=plan,
-        )
-
-        cmd: list[str] = [self._ffmpeg, "-hide_banner", "-y"]
-        cmd.extend(self._ffmpeg_progress_args())
-        cmd.extend(self._hardware_input_args(video))
-        for src in all_sources:
-            cmd.extend(["-i", str(src)])
-        self._append_sync_inputs(cmd, sync_inputs)
-
-        metadata_inputs = self._materialize_container_metadata_inputs(
+        return _build_runtime_single_pass_with_sync_runtime(
+            self._encode_command_builder_callbacks(),
             config,
-            source_idx=source_idx,
-            next_input_index=len(all_sources) + len(sync_inputs),
-            plan=plan,
             chapter_materialize_dir=chapter_materialize_dir,
-            chapter_probe_source=config.source,
-        )
-        cmd.extend(metadata_inputs.input_args)
-
-        vf = self._build_encoder_vf(video)
-        if vf:
-            cmd.extend(["-vf", vf])
-
-        cmd.extend(self._ffmpeg_thread_args())
-        resolved_subtitle_tracks = list(plan.resolved_subtitle_tracks)
-        track_assembly = self._resolve_track_assembly(
-            config,
-            plan,
-            source_idx=source_idx,
-            track_input_paths=self._build_track_input_paths(
-                all_sources=all_sources,
-                sync_inputs=sync_inputs,
-            ),
-            sync_remap=sync_remap,
-            video_fallback_input=plan.video_source,
-        )
-
-        next_input_index, offset_remap = self._append_offset_aux_inputs(
-            cmd,
-            self._build_offset_specs(
-                config,
-                track_mappings=list(track_assembly.track_mappings),
-                offset_lookup=dict(plan.offset_lookup),
-            ),
-            start_input_index=metadata_inputs.next_input_index,
-        )
-        _ = next_input_index
-
-        video_map_key = plan.video_key
-        cmd.extend(["-map", self._video_map_arg(
-            track_assembly.video_map,
-            offset_remap=offset_remap,
-            map_key=video_map_key,
-        )])
-        cmd.extend(self._video_codec_args(video, video.bitrate_kbps))
-
-        if video.inject_hdr_meta and not video.tonemap_to_sdr:
-            cmd.extend(self._hdr_meta_args(video))
-
-        self._append_stream_maps_and_attachments(
-            cmd,
-            config,
-            source_idx=source_idx,
-            subtitle_copy_input_indices=list(range(len(all_sources))),
-            sync_remap=sync_remap,
-            offset_remap=offset_remap,
-            subtitle_tracks_override=resolved_subtitle_tracks,
-            force_copy_subtitles_wildcard=(config.copy_subtitles and not plan.subtitles_resolved),
-        )
-
-        if strict_interleave:
-            self._append_strict_interleave_mux_flags(cmd)
-
-        self._append_container_metadata_args(
-            cmd,
-            config,
-            default_metadata_input_index=0,
-            default_chapter_input_index=0,
-            chapter_input_index=metadata_inputs.chapter_input_index,
-            tag_input_index=metadata_inputs.tag_input_index,
-            include_copy_video_stream_passthrough=True,
+            signals=signals,
             plan=plan,
         )
-        cmd.append(str(config.output))
-        return cmd, live_session, self._sync_cleanup_paths(sync_inputs)
 
     def _build_runtime_two_pass_with_sync(
         self,
@@ -1702,131 +1406,13 @@ class EncodeWorkflow(QObject):
         signals: TaskSignals | None = None,
         plan: _EncodePlan | None = None,
     ) -> tuple[list[list[str]], LiveSyncSession | None, list[Path]]:
-        video = self._primary_video_settings(config)
-        bitrate = self._size_to_bitrate_kbps(config)
-        vf = self._build_encoder_vf(video)
-        plan = plan or self._build_encode_plan(config)
-        all_sources = list(plan.all_sources)
-        source_idx = dict(plan.source_idx)
-        work_dir = config.work_dir or config.source.parent
-
-        sync_remap, sync_inputs, live_session, strict_interleave = self._prepare_multisource_sync(
-            config=config,
-            all_sources=all_sources,
-            sync_base_input_idx=len(all_sources),
-            work_dir=work_dir,
-            signals=signals,
-            allow_live=False,
-            plan=plan,
-        )
-
-        def _base(include_sync_inputs: bool) -> list[str]:
-            c = [self._ffmpeg, "-hide_banner", "-y"]
-            c.extend(self._ffmpeg_progress_args())
-            c.extend(self._hardware_input_args(video))
-            for src in all_sources:
-                c.extend(["-i", str(src)])
-            if include_sync_inputs:
-                self._append_sync_inputs(c, sync_inputs)
-            if vf:
-                c.extend(["-vf", vf])
-            c.extend(self._ffmpeg_thread_args())
-            return c
-
-        video_key = plan.video_key
-        video_default_map = plan.video_default_map
-
-        pass1 = _base(False)
-        _next1, pass1_offset_remap = self._append_offset_aux_inputs(
-            pass1,
-            self._build_offset_specs(
-                config,
-                track_mappings=[self._video_track_mapping(config, plan.video_source)],
-                offset_lookup=dict(plan.offset_lookup),
-            ),
-            start_input_index=len(all_sources),
-        )
-        _ = _next1
-        pass1_video_map_key = video_key
-        pass1.extend(["-map", self._video_map_arg(
-            video_default_map,
-            offset_remap=pass1_offset_remap,
-            map_key=pass1_video_map_key,
-        )])
-        pass1.extend(self._video_codec_args_bitrate(video, bitrate))
-        pass1.extend(["-pass", "1", "-an", "-f", "null", os.devnull])
-
-        pass2 = _base(True)
-        metadata_inputs = self._materialize_container_metadata_inputs(
+        return _build_runtime_two_pass_with_sync_runtime(
+            self._encode_command_builder_callbacks(),
             config,
-            source_idx=source_idx,
-            next_input_index=len(all_sources) + len(sync_inputs),
-            plan=plan,
             chapter_materialize_dir=chapter_materialize_dir,
-            chapter_probe_source=config.source,
-        )
-        pass2.extend(metadata_inputs.input_args)
-
-        resolved_subtitle_tracks = list(plan.resolved_subtitle_tracks)
-        track_assembly = self._resolve_track_assembly(
-            config,
-            plan,
-            source_idx=source_idx,
-            track_input_paths=self._build_track_input_paths(
-                all_sources=all_sources,
-                sync_inputs=sync_inputs,
-            ),
-            sync_remap=sync_remap,
-            video_default_map=sync_remap.get(video_key, video_default_map),
-            video_fallback_input=plan.video_source,
-        )
-
-        next_input_index, pass2_offset_remap = self._append_offset_aux_inputs(
-            pass2,
-            self._build_offset_specs(
-                config,
-                track_mappings=list(track_assembly.track_mappings),
-                offset_lookup=dict(plan.offset_lookup),
-            ),
-            start_input_index=metadata_inputs.next_input_index,
-        )
-        _ = next_input_index
-
-        pass2_video_map_key = video_key
-        pass2.extend(["-map", self._video_map_arg(
-            track_assembly.video_map,
-            offset_remap=pass2_offset_remap,
-            map_key=pass2_video_map_key,
-        )])
-        pass2.extend(self._video_codec_args_bitrate(video, bitrate))
-        pass2.extend(["-pass", "2"])
-
-        if video.inject_hdr_meta and not video.tonemap_to_sdr:
-            pass2.extend(self._hdr_meta_args(video))
-        self._append_stream_maps_and_attachments(
-            pass2,
-            config,
-            source_idx=source_idx,
-            subtitle_copy_input_indices=list(range(len(all_sources))),
-            sync_remap=sync_remap,
-            offset_remap=pass2_offset_remap,
-            subtitle_tracks_override=resolved_subtitle_tracks,
-            force_copy_subtitles_wildcard=(config.copy_subtitles and not plan.subtitles_resolved),
-        )
-        if strict_interleave:
-            self._append_strict_interleave_mux_flags(pass2)
-        self._append_container_metadata_args(
-            pass2,
-            config,
-            default_metadata_input_index=0,
-            default_chapter_input_index=0,
-            chapter_input_index=metadata_inputs.chapter_input_index,
-            tag_input_index=metadata_inputs.tag_input_index,
-            include_copy_video_stream_passthrough=True,
+            signals=signals,
             plan=plan,
         )
-        pass2.append(str(config.output))
-        return [pass1, pass2], live_session, self._sync_cleanup_paths(sync_inputs)
 
     # ------------------------------------------------------------------
     # Arguments par codec
@@ -1841,30 +1427,9 @@ class EncodeWorkflow(QObject):
             nvenc_device=self._nvenc_device(),
         )
 
-    def _video_codec_args(self, v: VideoEncodeSettings, bitrate_kbps: int) -> list[str]:
-        return _video_codec_args_domain(v, bitrate_kbps, callbacks=self._codec_domain_callbacks())
-
     @staticmethod
     def _is_h264_codec(codec: str) -> bool:
         return is_h264_video_codec(codec)
-
-    def _force_h264_8bit(self, v: VideoEncodeSettings) -> bool:
-        return _force_h264_8bit_domain(v)
-
-    def _h264_8bit_pix_fmt_args(self, v: VideoEncodeSettings) -> list[str]:
-        return _h264_8bit_pix_fmt_args_domain(v)
-
-    def _video_codec_args_crf(self, v: VideoEncodeSettings) -> list[str]:
-        return _video_codec_args_crf_domain(v, callbacks=self._codec_domain_callbacks())
-
-    def _video_codec_args_bitrate(self, v: VideoEncodeSettings, bitrate_kbps: int) -> list[str]:
-        return _video_codec_args_bitrate_domain(v, bitrate_kbps, callbacks=self._codec_domain_callbacks())
-
-    def _build_encoder_vf(self, v: VideoEncodeSettings) -> str:
-        return _build_encoder_vf_domain(v, callbacks=self._codec_domain_callbacks())
-
-    def _hardware_input_args(self, v: VideoEncodeSettings) -> list[str]:
-        return _hardware_input_args_domain(v, callbacks=self._codec_domain_callbacks())
 
     def _nvenc_device_args(self) -> list[str]:
         if sys.platform != "win32":
@@ -1923,19 +1488,6 @@ class EncodeWorkflow(QObject):
             source_size=source_size,
         )
 
-    def _x265_params(self, v: VideoEncodeSettings) -> str:
-        return _x265_params_domain(v)
-
-    def _hdr_meta_args(self, v: VideoEncodeSettings) -> list[str]:
-        return _hdr_meta_args_domain(v)
-
-    def _audio_codec_args(self, out_idx: int, a: AudioTrackSettings) -> list[str]:
-        return _audio_codec_args_domain(out_idx, a)
-
-    @staticmethod
-    def _needs_ac3_51_downmix(a: AudioTrackSettings) -> bool:
-        return _needs_ac3_51_downmix_domain(a)
-
     # ------------------------------------------------------------------
     # Commandes spécialisées pour _run_with_metadata_inject
     # ------------------------------------------------------------------
@@ -1961,6 +1513,43 @@ class EncodeWorkflow(QObject):
             safe_token = "video"
         return work_dir / f"ffmpeg2pass-{safe_token}"
 
+    def _build_video_track_base_cmd(
+        self,
+        *,
+        video: VideoEncodeSettings,
+        source: Path,
+        stream_index: int,
+        offset_ms: int = 0,
+        thread_count: int | None = None,
+    ) -> list[str]:
+        cmd = [self._ffmpeg, "-hide_banner", "-y"]
+        cmd.extend(self._ffmpeg_progress_args())
+        cmd.extend(self._offset_input_args(offset_ms))
+        cmd.extend(_hardware_input_args_domain(video, callbacks=self._codec_domain_callbacks()))
+        cmd.extend(["-i", str(source)])
+        vf = _build_encoder_vf_domain(video, callbacks=self._codec_domain_callbacks())
+        if vf:
+            cmd.extend(["-vf", vf])
+        cmd.extend(self._ffmpeg_thread_args(thread_count))
+        cmd.extend(["-map", f"0:{int(stream_index)}"])
+        return cmd
+
+    def _append_video_codec_and_hdr_args(
+        self,
+        cmd: list[str],
+        video: VideoEncodeSettings,
+        *,
+        bitrate_kbps: int | None = None,
+        include_hdr_meta: bool = True,
+    ) -> None:
+        callbacks = self._codec_domain_callbacks()
+        if bitrate_kbps is None:
+            cmd.extend(_video_codec_args_domain(video, video.bitrate_kbps, callbacks=callbacks))
+        else:
+            cmd.extend(_video_codec_args_bitrate_domain(video, bitrate_kbps, callbacks=callbacks))
+        if include_hdr_meta and video.inject_hdr_meta and not video.tonemap_to_sdr:
+            cmd.extend(_hdr_meta_args_domain(video))
+
     def _build_multi_video_track_encode_commands(
         self,
         config: EncodeConfig,
@@ -1973,66 +1562,57 @@ class EncodeWorkflow(QObject):
         thread_count: int | None = None,
         for_preview: bool = False,
     ) -> list[list[str]]:
-        vf = self._build_encoder_vf(video)
-
-        def _base() -> list[str]:
-            cmd = [self._ffmpeg, "-hide_banner", "-y"]
-            cmd.extend(self._ffmpeg_progress_args())
-            cmd.extend(self._offset_input_args(offset_ms))
-            cmd.extend(self._hardware_input_args(video))
-            cmd.extend(["-i", str(source)])
-            if vf:
-                cmd.extend(["-vf", vf])
-            cmd.extend(self._ffmpeg_thread_args(thread_count))
-            cmd.extend(["-map", f"0:{self._video_stream_from_settings(video)}"])
-            return cmd
+        _ = for_preview
+        stream_index = self._video_stream_from_settings(video)
 
         if video.quality_mode == QualityMode.SIZE:
             bitrate = self._size_to_bitrate_kbps_for_video(config, video)
-            pass1 = _base()
-            pass1.extend(self._video_codec_args_bitrate(video, bitrate))
+            pass1 = self._build_video_track_base_cmd(
+                video=video,
+                source=source,
+                stream_index=stream_index,
+                offset_ms=offset_ms,
+                thread_count=thread_count,
+            )
+            self._append_video_codec_and_hdr_args(pass1, video, bitrate_kbps=bitrate, include_hdr_meta=False)
             if passlog_prefix is not None:
                 pass1.extend(["-passlogfile", str(passlog_prefix)])
             pass1.extend(["-pass", "1", "-an", "-sn", "-dn", "-f", "null", os.devnull])
 
-            pass2 = _base()
-            pass2.extend(self._video_codec_args_bitrate(video, bitrate))
+            pass2 = self._build_video_track_base_cmd(
+                video=video,
+                source=source,
+                stream_index=stream_index,
+                offset_ms=offset_ms,
+                thread_count=thread_count,
+            )
+            self._append_video_codec_and_hdr_args(pass2, video, bitrate_kbps=bitrate)
             if passlog_prefix is not None:
                 pass2.extend(["-passlogfile", str(passlog_prefix)])
             pass2.extend(["-pass", "2"])
-            if video.inject_hdr_meta and not video.tonemap_to_sdr:
-                pass2.extend(self._hdr_meta_args(video))
             pass2.extend(["-an", "-sn", "-dn", str(output_path)])
             return [pass1, pass2]
 
-        cmd = _base()
-        cmd.extend(self._video_codec_args(video, video.bitrate_kbps))
-        if video.inject_hdr_meta and not video.tonemap_to_sdr:
-            cmd.extend(self._hdr_meta_args(video))
+        cmd = self._build_video_track_base_cmd(
+            video=video,
+            source=source,
+            stream_index=stream_index,
+            offset_ms=offset_ms,
+            thread_count=thread_count,
+        )
+        self._append_video_codec_and_hdr_args(cmd, video)
         cmd.extend(["-an", "-sn", "-dn", str(output_path)])
         return [cmd]
 
     def _build_video_only_cmd(self, config: EncodeConfig, output_hevc: Path) -> list[str]:
-        """
-        ffmpeg : vidéo seule, sortie HEVC brut (-f hevc, sans container).
-        Pas d'audio ni de subs. Utilisé pour encoder directement vers un
-        flux HEVC injectable, sans passer par un MKV intermédiaire.
-        """
+        """Construit la commande ffmpeg vidéo-seule vers un flux HEVC brut."""
         video = self._primary_video_settings(config)
-        cmd = [self._ffmpeg, "-hide_banner", "-y"]
-        cmd.extend(self._ffmpeg_progress_args())
-        cmd.extend(self._hardware_input_args(video))
-        cmd.extend(["-i", str(self._video_source_path(config))])
-        vf = self._build_encoder_vf(video)
-        if vf:
-            cmd.extend(["-vf", vf])
-        cmd.extend(self._ffmpeg_thread_args())
-        cmd.extend(["-map", f"0:{self._video_stream_index(config)}"])
-        cmd.extend(self._video_codec_args(video, video.bitrate_kbps))
-        if video.inject_hdr_meta and not video.tonemap_to_sdr:
-            cmd.extend(self._hdr_meta_args(video))
-        cmd.extend(["-an", "-f", "hevc", str(output_hevc)])
-        return cmd
+        return self._build_video_only_cmd_for_track(
+            config,
+            video,
+            self._video_source_path(config),
+            output_hevc,
+        )
 
     def _build_video_only_cmd_for_track(
         self,
@@ -2044,51 +1624,29 @@ class EncodeWorkflow(QObject):
         offset_ms: int = 0,
         thread_count: int | None = None,
     ) -> list[str]:
-        cmd = [self._ffmpeg, "-hide_banner", "-y"]
-        cmd.extend(self._ffmpeg_progress_args())
-        cmd.extend(self._offset_input_args(offset_ms))
-        cmd.extend(self._hardware_input_args(video))
-        cmd.extend(["-i", str(source)])
-        vf = self._build_encoder_vf(video)
-        if vf:
-            cmd.extend(["-vf", vf])
-        cmd.extend(self._ffmpeg_thread_args(thread_count))
-        cmd.extend(["-map", f"0:{self._video_stream_from_settings(video)}"])
-        cmd.extend(self._video_codec_args(video, video.bitrate_kbps))
-        if video.inject_hdr_meta and not video.tonemap_to_sdr:
-            cmd.extend(self._hdr_meta_args(video))
+        cmd = self._build_video_track_base_cmd(
+            video=video,
+            source=source,
+            stream_index=self._video_stream_from_settings(video),
+            offset_ms=offset_ms,
+            thread_count=thread_count,
+        )
+        self._append_video_codec_and_hdr_args(cmd, video)
         cmd.extend(["-an", "-f", "hevc", str(output_hevc)])
         return cmd
 
     def _build_video_only_two_pass(
         self, config: EncodeConfig, output_hevc: Path
     ) -> list[list[str]]:
-        """
-        Deux passes ffmpeg : vidéo seule, sortie HEVC brut.
-        Utilisé en mode SIZE pour l'étape vidéo de _run_with_metadata_inject.
-        """
+        """Construit les 2 passes ffmpeg vidéo-seule vers un flux HEVC brut."""
         video = self._primary_video_settings(config)
-        bitrate = self._size_to_bitrate_kbps(config)
-        vf = self._build_encoder_vf(video)
-
-        def _base() -> list[str]:
-            c = [self._ffmpeg, "-hide_banner", "-y"]
-            c.extend(self._ffmpeg_progress_args())
-            c.extend(self._hardware_input_args(video))
-            c.extend(["-i", str(self._video_source_path(config))])
-            if vf:
-                c.extend(["-vf", vf])
-            c.extend(self._ffmpeg_thread_args())
-            c.extend(["-map", f"0:{self._video_stream_index(config)}"])
-            c.extend(self._video_codec_args_bitrate(video, bitrate))
-            return c
-
-        pass1 = _base() + ["-pass", "1", "-an", "-f", "null", os.devnull]
-        pass2 = _base() + ["-pass", "2"]
-        if video.inject_hdr_meta and not video.tonemap_to_sdr:
-            pass2.extend(self._hdr_meta_args(video))
-        pass2.extend(["-an", "-f", "hevc", str(output_hevc)])
-        return [pass1, pass2]
+        return self._build_video_only_two_pass_for_track(
+            config,
+            video,
+            self._video_source_path(config),
+            output_hevc,
+            bitrate_kbps=self._size_to_bitrate_kbps(config),
+        )
 
     def _build_video_only_two_pass_for_track(
         self,
@@ -2100,33 +1658,32 @@ class EncodeWorkflow(QObject):
         offset_ms: int = 0,
         passlog_prefix: Path | None = None,
         thread_count: int | None = None,
+        bitrate_kbps: int | None = None,
     ) -> list[list[str]]:
-        bitrate = self._size_to_bitrate_kbps_for_video(config, video)
-        vf = self._build_encoder_vf(video)
-
-        def _base() -> list[str]:
-            c = [self._ffmpeg, "-hide_banner", "-y"]
-            c.extend(self._ffmpeg_progress_args())
-            c.extend(self._offset_input_args(offset_ms))
-            c.extend(self._hardware_input_args(video))
-            c.extend(["-i", str(source)])
-            if vf:
-                c.extend(["-vf", vf])
-            c.extend(self._ffmpeg_thread_args(thread_count))
-            c.extend(["-map", f"0:{self._video_stream_from_settings(video)}"])
-            c.extend(self._video_codec_args_bitrate(video, bitrate))
-            return c
-
-        pass1 = _base()
+        bitrate = bitrate_kbps if bitrate_kbps is not None else self._size_to_bitrate_kbps_for_video(config, video)
+        stream_index = self._video_stream_from_settings(video)
+        pass1 = self._build_video_track_base_cmd(
+            video=video,
+            source=source,
+            stream_index=stream_index,
+            offset_ms=offset_ms,
+            thread_count=thread_count,
+        )
+        self._append_video_codec_and_hdr_args(pass1, video, bitrate_kbps=bitrate, include_hdr_meta=False)
         if passlog_prefix is not None:
             pass1.extend(["-passlogfile", str(passlog_prefix)])
         pass1.extend(["-pass", "1", "-an", "-f", "null", os.devnull])
-        pass2 = _base()
+        pass2 = self._build_video_track_base_cmd(
+            video=video,
+            source=source,
+            stream_index=stream_index,
+            offset_ms=offset_ms,
+            thread_count=thread_count,
+        )
+        self._append_video_codec_and_hdr_args(pass2, video, bitrate_kbps=bitrate)
         if passlog_prefix is not None:
             pass2.extend(["-passlogfile", str(passlog_prefix)])
         pass2.extend(["-pass", "2"])
-        if video.inject_hdr_meta and not video.tonemap_to_sdr:
-            pass2.extend(self._hdr_meta_args(video))
         pass2.extend(["-an", "-f", "hevc", str(output_hevc)])
         return [pass1, pass2]
 
@@ -2152,128 +1709,20 @@ class EncodeWorkflow(QObject):
     # Helpers RAM / buffer — cross-platform (Linux · macOS · Windows)
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _total_ram_bytes() -> int:
-        """
-        Retourne la RAM physique totale en octets.
-        Linux : /proc/meminfo · macOS : sysctl hw.memsize · Windows : ctypes GlobalMemoryStatusEx.
-        Retourne 0 si la valeur ne peut pas être lue.
-        """
-        try:
-            if sys.platform == "linux":
-                text = Path("/proc/meminfo").read_text(encoding="ascii")
-                m = re.search(r"MemTotal:\s+(\d+)\s+kB", text)
-                return int(m.group(1)) * 1024 if m else 0
-            if sys.platform == "darwin":
-                r = subprocess.run(
-                    ["sysctl", "-n", "hw.memsize"],
-                    capture_output=True, check=False, timeout=5, **subprocess_text_kwargs(),
-                )
-                v = r.stdout.strip()
-                return int(v) if r.returncode == 0 and v.isdigit() else 0
-            if sys.platform == "win32":
-                return EncodeWorkflow._win_mem_status().ullTotalPhys
-        except Exception:
-            pass
-        return 0
-
-    @staticmethod
-    def _available_ram_bytes() -> int:
-        """
-        Retourne la RAM disponible en octets (MemAvailable sur Linux, équivalent sur macOS/Windows).
-        Retourne 0 si non déterminable.
-        """
-        try:
-            if sys.platform == "linux":
-                text = Path("/proc/meminfo").read_text(encoding="ascii")
-                m = re.search(r"MemAvailable:\s+(\d+)\s+kB", text)
-                return int(m.group(1)) * 1024 if m else 0
-            if sys.platform == "darwin":
-                return EncodeWorkflow._macos_available_ram()
-            if sys.platform == "win32":
-                return EncodeWorkflow._win_mem_status().ullAvailPhys
-        except Exception:
-            pass
-        return 0
-
-    @staticmethod
-    def _macos_available_ram() -> int:
-        """RAM disponible sur macOS via vm_stat (free + inactive + speculative + purgeable)."""
-        r = subprocess.run(
-            ["vm_stat"], capture_output=True, check=False, timeout=5, **subprocess_text_kwargs()
-        )
-        if r.returncode != 0:
-            return 0
-        page_m = re.search(r"page size of (\d+) bytes", r.stdout)
-        page = int(page_m.group(1)) if page_m else 4096
-        pages = 0
-        for field in ("Pages free", "Pages inactive", "Pages speculative", "Pages purgeable"):
-            m = re.search(rf"{re.escape(field)}:\s*(\d+)", r.stdout)
-            if m:
-                pages += int(m.group(1))
-        return pages * page
-
-    @staticmethod
-    def _win_mem_status():
-        """Retourne une structure MEMORYSTATUSEX remplie (Windows uniquement)."""
-        class _MEMSTATEX(ctypes.Structure):
-            _fields_ = [
-                ("dwLength",                ctypes.c_ulong),
-                ("dwMemoryLoad",            ctypes.c_ulong),
-                ("ullTotalPhys",            ctypes.c_ulonglong),
-                ("ullAvailPhys",            ctypes.c_ulonglong),
-                ("ullTotalPageFile",        ctypes.c_ulonglong),
-                ("ullAvailPageFile",        ctypes.c_ulonglong),
-                ("ullTotalVirtual",         ctypes.c_ulonglong),
-                ("ullAvailVirtual",         ctypes.c_ulonglong),
-                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-            ]
-        stat = _MEMSTATEX()
-        stat.dwLength = ctypes.sizeof(stat)
-        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))  # type: ignore[attr-defined]
-        return stat
-
-    @staticmethod
-    def _ram_buffer_dir() -> Path | None:
-        """
-        Retourne le répertoire RAM-backed disponible sur cette plateforme, ou None.
-
-        · Linux  : /dev/shm (tmpfs kernel, taille = RAM physique)
-        · macOS  : /dev/shm (POSIX shm namespace, writable sur macOS ≥ 10.15)
-        · Windows: aucun équivalent standard → None (buffer sur disque uniquement)
-        """
-        if sys.platform in ("linux", "darwin"):
-            shm = Path("/dev/shm")
-            if shm.is_dir() and os.access(shm, os.W_OK):
-                return shm
-        return None
+    _total_ram_bytes      = staticmethod(_ram_buffer_module.total_ram_bytes)
+    _available_ram_bytes  = staticmethod(_ram_buffer_module.available_ram_bytes)
+    _macos_available_ram  = staticmethod(_ram_buffer_module.macos_available_ram)
+    _ram_buffer_dir       = staticmethod(_ram_buffer_module.ram_buffer_dir)
 
     def _shm_path(self, tmp: Path, name: str, file_size: int) -> Path:
-        """
-        Retourne un chemin dans le répertoire RAM si les conditions sont réunies,
-        sinon un chemin dans tmp (disque).
-
-        Conditions (toutes requises) :
-          1. ram_buffer_enabled = True (configuration)
-          2. Un répertoire RAM existe sur cette plateforme (_ram_buffer_dir())
-          3. RAM disponible après chargement ≥ threshold_pct % de la RAM totale
-             formule : available_before - file_size ≥ total_ram × threshold_pct / 100
-
-        La décision est réévaluée à chaque appel (RAM dynamique).
-        """
-        if not self._ram_buffer_enabled:
-            return tmp / name
-        ram_dir = EncodeWorkflow._ram_buffer_dir()
-        if ram_dir is None:
-            return tmp / name
-        total     = EncodeWorkflow._total_ram_bytes()
-        available = EncodeWorkflow._available_ram_bytes()
-        if total <= 0 or available <= 0:
-            return tmp / name
-        min_free_after = int(total * self._ram_buffer_threshold_pct / 100)
-        if available - file_size >= min_free_after:
-            return ram_dir / name
-        return tmp / name
+        """Wrapper de `runtime.ram_buffer.shm_path` lié à la config de l'instance."""
+        return _ram_buffer_module.shm_path(
+            tmp,
+            name,
+            file_size,
+            enabled=self._ram_buffer_enabled,
+            threshold_pct=self._ram_buffer_threshold_pct,
+        )
 
     # ------------------------------------------------------------------
     # Aperçu lisible
@@ -2310,18 +1759,8 @@ class EncodeWorkflow(QObject):
         return _validate_encode_config_plan(
             config,
             planned_video_tracks=plan.video_tracks,
-            dir_writable=self._is_dir_writable,
+            dir_writable=_is_dir_writable_plan,
         )
-
-    @staticmethod
-    def _is_dir_writable(path: Path) -> bool:
-        """
-        Vérifie qu'un fichier temporaire peut être créé dans ``path``.
-
-        Sous Windows, certains dossiers protégés (Documents/Vidéos, etc.) peuvent
-        exister mais refuser la création de nouveaux fichiers.
-        """
-        return _is_dir_writable_plan(path)
 
     # ------------------------------------------------------------------
     # Exécution
@@ -2668,25 +2107,25 @@ class EncodeWorkflow(QObject):
                 video_tracks=self._video_tracks,
                 video_source_from_settings=self._video_source_from_settings,
                 video_stream_from_settings=self._video_stream_from_settings,
-                track_offset_ms=self._track_offset_ms,
+                track_offset_ms=lambda lookup, **kwargs: _track_offset_ms_plan(lookup, **kwargs),
                 offset_input_args=self._offset_input_args,
                 parallel_video_worker_thread_count=self._parallel_video_worker_thread_count,
                 video_encode_resource_key=self._video_encode_resource_key,
                 parallel_video_min_available_ram_bytes=self._parallel_video_min_available_ram_bytes,
                 video_prep_estimated_ram_bytes=self._video_prep_estimated_ram_bytes,
-                format_bytes=self._format_bytes,
+                format_bytes=_format_bytes_runtime,
                 available_ram_bytes=EncodeWorkflow._available_ram_bytes,
-                source_input_index_map=lambda sources, start_index: self._source_input_index_map(
+                source_input_index_map=lambda sources, start_index: _source_input_index_map_plan(
                     sources,
                     start_index=start_index,
                 ),
                 prepare_multisource_sync=self._prepare_multisource_sync,
-                sync_cleanup_paths=self._sync_cleanup_paths,
+                sync_cleanup_paths=_common_sync_cleanup_paths,
                 append_sync_inputs=self._append_sync_inputs,
                 prepare_container_metadata_inputs=self._prepare_container_metadata_inputs,
                 ffmpeg_thread_args=self._ffmpeg_thread_args,
                 append_offset_aux_inputs=self._append_offset_aux_inputs,
-                build_offset_specs=self._build_offset_specs,
+                build_offset_specs=lambda config, **kwargs: _build_offset_specs_plan(config, **kwargs),
                 append_stream_maps_and_attachments=self._append_stream_maps_and_attachments,
                 append_strict_interleave_mux_flags=self._append_strict_interleave_mux_flags,
                 append_container_metadata_args=self._append_container_metadata_args,
@@ -2720,63 +2159,19 @@ class EncodeWorkflow(QObject):
         signals: TaskSignals,
         session: LiveSyncSession | None,
     ) -> None:
-        _SignalBindingService(
-            _SignalBindingServiceCallbacks(
-                muxing_bind_on_success=lambda signals, output: self._muxing_post_action.bind_on_success(signals, output),
-                language_bind_on_success=lambda signals, output: self._language_post_action.bind_on_success(signals, output),
-                write_nfo=lambda output: write_mediainfo_nfo(
-                    output,
-                    log_cb=self.log_message.emit,
-                    mediainfo_bin=self._bins.get("mediainfo") or "mediainfo",
-                ),
-                remove_path=remove_path,
-            )
-        ).bind_live_sync_cleanup(signals, session)
+        self._signal_binding_service.bind_live_sync_cleanup(signals, session)
 
     def _bind_temp_cleanup(self, signals: TaskSignals, cleanup_paths: list[Path]) -> None:
         """Supprime les fichiers/dossiers temporaires quand le workflow se termine."""
-        _SignalBindingService(
-            _SignalBindingServiceCallbacks(
-                muxing_bind_on_success=lambda signals, output: self._muxing_post_action.bind_on_success(signals, output),
-                language_bind_on_success=lambda signals, output: self._language_post_action.bind_on_success(signals, output),
-                write_nfo=lambda output: write_mediainfo_nfo(
-                    output,
-                    log_cb=self.log_message.emit,
-                    mediainfo_bin=self._bins.get("mediainfo") or "mediainfo",
-                ),
-                remove_path=remove_path,
-            )
-        ).bind_temp_cleanup(signals, cleanup_paths)
+        self._signal_binding_service.bind_temp_cleanup(signals, cleanup_paths)
 
     def _bind_matroska_segment_muxing_patch(self, signals: TaskSignals, output: Path) -> None:
-        _SignalBindingService(
-            _SignalBindingServiceCallbacks(
-                muxing_bind_on_success=lambda signals, output: self._muxing_post_action.bind_on_success(signals, output),
-                language_bind_on_success=lambda signals, output: self._language_post_action.bind_on_success(signals, output),
-                write_nfo=lambda output: write_mediainfo_nfo(
-                    output,
-                    log_cb=self.log_message.emit,
-                    mediainfo_bin=self._bins.get("mediainfo") or "mediainfo",
-                ),
-                remove_path=remove_path,
-            )
-        ).bind_matroska_segment_muxing_patch(signals, output)
+        self._signal_binding_service.bind_matroska_segment_muxing_patch(signals, output)
 
     def _bind_nfo_write(self, signals: TaskSignals, output: Path) -> None:
         if not self._generate_nfo:
             return
-        _SignalBindingService(
-            _SignalBindingServiceCallbacks(
-                muxing_bind_on_success=lambda signals, output: self._muxing_post_action.bind_on_success(signals, output),
-                language_bind_on_success=lambda signals, output: self._language_post_action.bind_on_success(signals, output),
-                write_nfo=lambda output: write_mediainfo_nfo(
-                    output,
-                    log_cb=self.log_message.emit,
-                    mediainfo_bin=self._bins.get("mediainfo") or "mediainfo",
-                ),
-                remove_path=remove_path,
-            )
-        ).bind_nfo_write(signals, output)
+        self._signal_binding_service.bind_nfo_write(signals, output)
 
     def _bind_output_hooks(
         self,
@@ -2794,10 +2189,6 @@ class EncodeWorkflow(QObject):
             self._bind_matroska_segment_muxing_patch(signals, output)
         if include_nfo and self._generate_nfo:
             self._bind_nfo_write(signals, output)
-
-    @staticmethod
-    def _format_bytes(value: int) -> str:
-        return _format_bytes_runtime(value)
 
     def _estimate_duration_seconds(self, config: EncodeConfig) -> float:
         return _estimate_duration_seconds_runtime(
@@ -2836,7 +2227,7 @@ class EncodeWorkflow(QObject):
             disk_usage=shutil.disk_usage,
             stat=os.stat,
             temp_dir=tempfile.gettempdir,
-            format_bytes_fn=self._format_bytes,
+            format_bytes_fn=_format_bytes_runtime,
         )
 
     def _prepare_attachment_config(
@@ -2850,8 +2241,8 @@ class EncodeWorkflow(QObject):
             _AttachmentPreparationServiceCallbacks(
                 check_cancelled=self._check_cancelled,
                 describe_attachment_stream=self._describe_attachment_stream,
-                attachment_filename=self._attachment_filename,
-                unique_attachment_path=self._unique_attachment_path,
+                attachment_filename=_default_attachment_filename,
+                unique_attachment_path=_unique_attachment_path_runtime,
                 extract_attached_pic=lambda source, stream_idx, dest, task_signals: self._extract_attached_pic(
                     source,
                     stream_idx,
@@ -2873,14 +2264,6 @@ class EncodeWorkflow(QObject):
             subprocess_run=subprocess.run,
             text_kwargs_factory=subprocess_text_kwargs,
         )
-
-    def _attachment_filename(self, meta: dict[str, object], stream_idx: int) -> str:
-        """Construit un nom de fichier exploitable pour un attachment extrait."""
-        return _default_attachment_filename(meta, stream_idx)
-
-    def _unique_attachment_path(self, tmp_dir: Path, filename: str) -> Path:
-        """Retourne un chemin unique dans ``tmp_dir`` pour éviter les collisions de nom."""
-        return _unique_attachment_path_runtime(tmp_dir, filename)
 
     def _extract_attached_pic(
         self,
@@ -3061,7 +2444,7 @@ class EncodeWorkflow(QObject):
 
         plan = plan or self._build_encode_plan(config)
         all_sources = list(plan.all_sources)
-        source_idx = self._source_input_index_map(all_sources, start_index=len(video_inputs))
+        source_idx = _source_input_index_map_plan(all_sources, start_index=len(video_inputs))
         for src in all_sources:
             cmd.extend(["-i", str(src)])
 
@@ -3189,17 +2572,17 @@ class EncodeWorkflow(QObject):
                 build_video_only_cmd=self._build_video_only_cmd,
                 wrap_injected_hevc_for_reconstruction=self._wrap_injected_hevc_for_reconstruction,
                 build_encode_plan=self._build_encode_plan,
-                source_input_index_map=lambda sources: self._source_input_index_map(sources, start_index=1),
+                source_input_index_map=lambda sources: _source_input_index_map_plan(sources, start_index=1),
                 prepare_multisource_sync=self._prepare_multisource_sync,
-                sync_cleanup_paths=self._sync_cleanup_paths,
+                sync_cleanup_paths=_common_sync_cleanup_paths,
                 append_sync_inputs=self._append_sync_inputs,
                 prepare_container_metadata_inputs=self._prepare_container_metadata_inputs,
                 ffmpeg_thread_args=self._ffmpeg_thread_args,
                 ffmpeg_progress_args=self._ffmpeg_progress_args,
                 video_map_key=self._video_map_key,
                 append_offset_aux_inputs=self._append_offset_aux_inputs,
-                build_offset_specs=self._build_offset_specs,
-                video_map_arg=self._video_map_arg,
+                build_offset_specs=lambda config, **kwargs: _build_offset_specs_plan(config, **kwargs),
+                video_map_arg=_video_map_arg_plan,
                 append_stream_maps_and_attachments=self._append_stream_maps_and_attachments,
                 append_strict_interleave_mux_flags=self._append_strict_interleave_mux_flags,
                 append_container_metadata_args=self._append_container_metadata_args,

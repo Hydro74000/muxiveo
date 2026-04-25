@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import (
-    Qt, Signal, QAbstractTableModel, QModelIndex, QObject,
+    Qt, Signal, QAbstractTableModel, QModelIndex, QPersistentModelIndex, QObject,
 )
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont
 from PySide6.QtWidgets import (
@@ -72,13 +72,23 @@ class _TrackTableModel(QAbstractTableModel):
 
     # --- Interface QAbstractTableModel ---
 
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+    def rowCount(
+        self,
+        parent: QModelIndex | QPersistentModelIndex = QModelIndex(),
+    ) -> int:
         return len(self._rows)
 
-    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
+    def columnCount(
+        self,
+        parent: QModelIndex | QPersistentModelIndex = QModelIndex(),
+    ) -> int:
         return len(self._headers)
 
-    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+    def data(
+        self,
+        index: QModelIndex | QPersistentModelIndex,
+        role: int = Qt.ItemDataRole.DisplayRole,
+    ) -> Any:
         if not index.isValid():
             return None
 

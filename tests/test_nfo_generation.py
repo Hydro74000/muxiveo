@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -148,7 +149,7 @@ class TestSettingsPanelGenerateNfo:
 
         cfg, _ = _make_config(tmp_path)
         panel = SettingsPanel(cfg)
-        cb = panel.widget_for("metadata", "generate_nfo")
+        cb = cast(Any, panel.widget_for("metadata", "generate_nfo"))
         assert cb.isChecked() is True
 
     def test_checkbox_reflects_false_from_config(self, qt_app, tmp_path):
@@ -157,7 +158,7 @@ class TestSettingsPanelGenerateNfo:
 
         cfg, _ = _make_config(tmp_path, "[metadata]\ngenerate_nfo = false\n")
         panel = SettingsPanel(cfg)
-        cb = panel.widget_for("metadata", "generate_nfo")
+        cb = cast(Any, panel.widget_for("metadata", "generate_nfo"))
         assert cb.isChecked() is False
 
     def test_save_writes_false_to_ini(self, qt_app, tmp_path):
@@ -176,7 +177,7 @@ class TestSettingsPanelGenerateNfo:
             cfg = AppConfig()
 
             panel = SettingsPanel(cfg)
-            cb = panel.widget_for("metadata", "generate_nfo")
+            cb = cast(Any, panel.widget_for("metadata", "generate_nfo"))
             cb.setChecked(False)
             panel._on_save_clicked()
 
@@ -199,7 +200,7 @@ class TestSettingsPanelGenerateNfo:
             cfg = AppConfig()
 
             panel = SettingsPanel(cfg)
-            cb = panel.widget_for("metadata", "generate_nfo")
+            cb = cast(Any, panel.widget_for("metadata", "generate_nfo"))
             cb.setChecked(True)
             panel._on_save_clicked()
 
@@ -410,6 +411,7 @@ class TestEncodeWorkflowNfo:
             wf._bind_nfo_write(signals, output)
             signals.finished.emit("done")
             app = QCoreApplication.instance()
+            assert app is not None
             deadline = time.monotonic() + 1.0
             while time.monotonic() < deadline:
                 app.processEvents()
@@ -433,6 +435,7 @@ class TestEncodeWorkflowNfo:
             wf._bind_nfo_write(signals, output)
             signals.finished.emit("done")
             app = QCoreApplication.instance()
+            assert app is not None
             deadline = time.monotonic() + 3.0
             while not called and time.monotonic() < deadline:
                 app.processEvents()
@@ -457,6 +460,7 @@ class TestEncodeWorkflowNfo:
             wf._bind_nfo_write(signals, output)
             signals.finished.emit("done")
             app = QCoreApplication.instance()
+            assert app is not None
             deadline = time.monotonic() + 3.0
             while not captured and time.monotonic() < deadline:
                 app.processEvents()

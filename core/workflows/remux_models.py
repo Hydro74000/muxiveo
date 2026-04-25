@@ -11,6 +11,7 @@ Classes publiques :
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from uuid import uuid4
@@ -198,7 +199,7 @@ class RemuxConfig:
 
     sources:             list[SourceInput]
     output:              Path
-    track_order:         list[tuple[int, int] | tuple[int, int, str]]
+    track_order:         Sequence[tuple[int, int] | tuple[int, int, str]]
     keep_chapters:       bool          = True
     #: None  → FFmpeg recopie les chapitres des sources (comportement par défaut).
     #: list  → un fichier ffmetadata temporaire est généré depuis ces entrées ;

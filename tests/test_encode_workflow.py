@@ -105,10 +105,13 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, call
 import tempfile
 import os
+from typing import Any, cast
 
 import pytest
 from PySide6.QtCore import QCoreApplication, Qt
 import core.workflows.encode.workflow as encode_workflow_mod
+from core.workflows.encode.runtime import ram_buffer as _ram_buffer_mod
+from core.workflows.encode.domain.codecs import hdr_meta_args as _hdr_meta_args
 
 _app: QCoreApplication | None = None
 
@@ -154,7 +157,7 @@ def _make_video_settings(**kw) -> VideoEncodeSettings:
         max_cll="", tonemap_to_sdr=False, tonemap_algorithm="hable",
     )
     defaults.update(kw)
-    return VideoEncodeSettings(**defaults)
+    return VideoEncodeSettings(**cast(Any, defaults))
 
 
 def _make_config(source: Path, output: Path, **kw) -> EncodeConfig:
@@ -164,7 +167,12 @@ def _make_config(source: Path, output: Path, **kw) -> EncodeConfig:
         copy_dv=False, copy_hdr10plus=False, dovi_profile="0", work_dir=None,
     )
     defaults.update(kw)
-    return EncodeConfig(**defaults)
+    return EncodeConfig(**cast(Any, defaults))
+
+
+def _as_single_command(cmd: list[str] | list[list[str]]) -> list[str]:
+    assert cmd and isinstance(cmd[0], str)
+    return cast(list[str], cmd)
 
 
 def _make_workflow(
@@ -259,7 +267,9 @@ class TestVideoTrackPreparationOrchestrator:
                         available_ram[0] = 10
                     else:
                         second_started.set()
-                    return {"path": Path(f"/tmp/video_{order}.mkv")}, []
+                    prepared: dict[str, object] = {"path": Path(f"/tmp/video_{order}.mkv")}
+                    cleanup: list[Path] = []
+                    return prepared, cleanup
                 finally:
                     with gate:
                         active -= 1
@@ -318,7 +328,9 @@ class TestVideoTrackPreparationOrchestrator:
                         both_started.set()
                 try:
                     assert release_tasks.wait(1.0)
-                    return {"path": Path(f"/tmp/video_{order}.mkv")}, []
+                    prepared: dict[str, object] = {"path": Path(f"/tmp/video_{order}.mkv")}
+                    cleanup: list[Path] = []
+                    return prepared, cleanup
                 finally:
                     with gate:
                         active -= 1
@@ -456,49 +468,49 @@ class TestTotalRamBytes:
         fake = "MemTotal:       16384000 kB\nMemFree: 4096000 kB\n"
         with patch("sys.platform", "linux"), \
              patch.object(Path, "read_text", return_value=fake):
-            assert EncodeWorkflow._total_ram_bytes() == 16_384_000 * 1024
+            assert _ram_buffer_mod.total_ram_bytes() == 16_384_000 * 1024
 
     def test_linux_returns_zero_if_memtotal_absent(self):
         fake = "MemFree: 4096000 kB\n"
         with patch("sys.platform", "linux"), \
              patch.object(Path, "read_text", return_value=fake):
-            assert EncodeWorkflow._total_ram_bytes() == 0
+            assert _ram_buffer_mod.total_ram_bytes() == 0
 
     def test_linux_returns_zero_on_ioerror(self):
         with patch("sys.platform", "linux"), \
              patch.object(Path, "read_text", side_effect=OSError):
-            assert EncodeWorkflow._total_ram_bytes() == 0
+            assert _ram_buffer_mod.total_ram_bytes() == 0
 
     def test_macos_parses_sysctl(self):
         """macOS : sysctl hw.memsize retourne RAM totale en octets."""
         with patch("sys.platform", "darwin"), \
              patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="17179869184\n")
-            assert EncodeWorkflow._total_ram_bytes() == 17_179_869_184
+            assert _ram_buffer_mod.total_ram_bytes() == 17_179_869_184
 
     def test_macos_returns_zero_on_sysctl_failure(self):
         with patch("sys.platform", "darwin"), \
              patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="")
-            assert EncodeWorkflow._total_ram_bytes() == 0
+            assert _ram_buffer_mod.total_ram_bytes() == 0
 
     def test_windows_uses_ctypes(self):
         """Windows : lit ullTotalPhys via GlobalMemoryStatusEx."""
         fake_stat = MagicMock()
         fake_stat.ullTotalPhys = 17_179_869_184
         with patch("sys.platform", "win32"), \
-             patch.object(EncodeWorkflow, "_win_mem_status", return_value=fake_stat):
-            assert EncodeWorkflow._total_ram_bytes() == 17_179_869_184
+             patch.object(_ram_buffer_mod, "_win_mem_status", return_value=fake_stat):
+            assert _ram_buffer_mod.total_ram_bytes() == 17_179_869_184
 
     def test_windows_returns_zero_if_ctypes_unavailable(self):
         """Windows : fallback à 0 si ctypes/_ctypes est indisponible."""
         with patch("sys.platform", "win32"), \
-             patch.object(EncodeWorkflow, "_win_mem_status", side_effect=ImportError):
-            assert EncodeWorkflow._total_ram_bytes() == 0
+             patch.object(_ram_buffer_mod, "_win_mem_status", side_effect=ImportError):
+            assert _ram_buffer_mod.total_ram_bytes() == 0
 
     def test_unknown_platform_returns_zero(self):
         with patch("sys.platform", "freebsd"):
-            assert EncodeWorkflow._total_ram_bytes() == 0
+            assert _ram_buffer_mod.total_ram_bytes() == 0
 
 
 # ===========================================================================
@@ -512,46 +524,46 @@ class TestAvailableRamBytes:
         fake = "MemTotal: 16384000 kB\nMemAvailable: 8192000 kB\n"
         with patch("sys.platform", "linux"), \
              patch.object(Path, "read_text", return_value=fake):
-            assert EncodeWorkflow._available_ram_bytes() == 8_192_000 * 1024
+            assert _ram_buffer_mod.available_ram_bytes() == 8_192_000 * 1024
 
     def test_linux_returns_zero_when_memavailable_absent(self):
         fake = "MemTotal: 16384000 kB\nMemFree: 4096000 kB\n"
         with patch("sys.platform", "linux"), \
              patch.object(Path, "read_text", return_value=fake):
-            assert EncodeWorkflow._available_ram_bytes() == 0
+            assert _ram_buffer_mod.available_ram_bytes() == 0
 
     def test_linux_returns_zero_on_ioerror(self):
         with patch("sys.platform", "linux"), \
              patch.object(Path, "read_text", side_effect=OSError):
-            assert EncodeWorkflow._available_ram_bytes() == 0
+            assert _ram_buffer_mod.available_ram_bytes() == 0
 
     def test_linux_parses_large_values(self):
         fake = "MemAvailable:   67108864 kB\n"
         with patch("sys.platform", "linux"), \
              patch.object(Path, "read_text", return_value=fake):
-            assert EncodeWorkflow._available_ram_bytes() == 67_108_864 * 1024
+            assert _ram_buffer_mod.available_ram_bytes() == 67_108_864 * 1024
 
     def test_macos_delegates_to_macos_available_ram(self):
         """macOS : délègue à _macos_available_ram."""
         with patch("sys.platform", "darwin"), \
-             patch.object(EncodeWorkflow, "_macos_available_ram", return_value=4_000_000_000):
-            assert EncodeWorkflow._available_ram_bytes() == 4_000_000_000
+             patch.object(_ram_buffer_mod, "macos_available_ram", return_value=4_000_000_000):
+            assert _ram_buffer_mod.available_ram_bytes() == 4_000_000_000
 
     def test_windows_reads_ullavailphys(self):
         fake_stat = MagicMock()
         fake_stat.ullAvailPhys = 8_589_934_592
         with patch("sys.platform", "win32"), \
-             patch.object(EncodeWorkflow, "_win_mem_status", return_value=fake_stat):
-            assert EncodeWorkflow._available_ram_bytes() == 8_589_934_592
+             patch.object(_ram_buffer_mod, "_win_mem_status", return_value=fake_stat):
+            assert _ram_buffer_mod.available_ram_bytes() == 8_589_934_592
 
     def test_windows_available_returns_zero_if_ctypes_unavailable(self):
         with patch("sys.platform", "win32"), \
-             patch.object(EncodeWorkflow, "_win_mem_status", side_effect=ImportError):
-            assert EncodeWorkflow._available_ram_bytes() == 0
+             patch.object(_ram_buffer_mod, "_win_mem_status", side_effect=ImportError):
+            assert _ram_buffer_mod.available_ram_bytes() == 0
 
     def test_unknown_platform_returns_zero(self):
         with patch("sys.platform", "freebsd"):
-            assert EncodeWorkflow._available_ram_bytes() == 0
+            assert _ram_buffer_mod.available_ram_bytes() == 0
 
 
 # ===========================================================================
@@ -575,14 +587,14 @@ class TestMacosAvailableRam:
         """Additionne free+inactive+speculative+purgeable avec la bonne taille de page."""
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout=self._VM_STAT_SAMPLE)
-            result = EncodeWorkflow._macos_available_ram()
+            result = _ram_buffer_mod.macos_available_ram()
         expected = (1234 + 2000 + 500 + 300) * 16384
         assert result == expected
 
     def test_returns_zero_on_subprocess_failure(self):
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="")
-            assert EncodeWorkflow._macos_available_ram() == 0
+            assert _ram_buffer_mod.macos_available_ram() == 0
 
     def test_uses_default_page_size_4096_when_not_parseable(self):
         """Taille de page par défaut = 4096 si non parseable."""
@@ -594,7 +606,7 @@ class TestMacosAvailableRam:
         )
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout=vm_stat_no_pagesize)
-            result = EncodeWorkflow._macos_available_ram()
+            result = _ram_buffer_mod.macos_available_ram()
         assert result == (1000 + 500 + 200 + 100) * 4096
 
 
@@ -608,33 +620,33 @@ class TestRamBufferDir:
         with patch("sys.platform", "linux"), \
              patch.object(Path, "is_dir", return_value=True), \
              patch("os.access", return_value=True):
-            assert EncodeWorkflow._ram_buffer_dir() == Path("/dev/shm")
+            assert _ram_buffer_mod.ram_buffer_dir() == Path("/dev/shm")
 
     def test_linux_returns_none_when_shm_not_dir(self):
         with patch("sys.platform", "linux"), \
              patch.object(Path, "is_dir", return_value=False):
-            assert EncodeWorkflow._ram_buffer_dir() is None
+            assert _ram_buffer_mod.ram_buffer_dir() is None
 
     def test_linux_returns_none_when_shm_not_writable(self):
         with patch("sys.platform", "linux"), \
              patch.object(Path, "is_dir", return_value=True), \
              patch("os.access", return_value=False):
-            assert EncodeWorkflow._ram_buffer_dir() is None
+            assert _ram_buffer_mod.ram_buffer_dir() is None
 
     def test_macos_returns_dev_shm_when_available(self):
         with patch("sys.platform", "darwin"), \
              patch.object(Path, "is_dir", return_value=True), \
              patch("os.access", return_value=True):
-            assert EncodeWorkflow._ram_buffer_dir() == Path("/dev/shm")
+            assert _ram_buffer_mod.ram_buffer_dir() == Path("/dev/shm")
 
     def test_windows_always_returns_none(self):
         """Windows n'a pas de répertoire RAM standard."""
         with patch("sys.platform", "win32"):
-            assert EncodeWorkflow._ram_buffer_dir() is None
+            assert _ram_buffer_mod.ram_buffer_dir() is None
 
     def test_unknown_platform_returns_none(self):
         with patch("sys.platform", "freebsd11"):
-            assert EncodeWorkflow._ram_buffer_dir() is None
+            assert _ram_buffer_mod.ram_buffer_dir() is None
 
 
 # ===========================================================================
@@ -652,9 +664,9 @@ class TestShmPath:
 
     def _patch_ram(self, available: int, total: int) -> ExitStack:
         stack = ExitStack()
-        stack.enter_context(patch.object(EncodeWorkflow, "_available_ram_bytes", return_value=available))
-        stack.enter_context(patch.object(EncodeWorkflow, "_total_ram_bytes",     return_value=total))
-        stack.enter_context(patch.object(EncodeWorkflow, "_ram_buffer_dir",      return_value=Path("/dev/shm")))
+        stack.enter_context(patch.object(_ram_buffer_mod, "available_ram_bytes", return_value=available))
+        stack.enter_context(patch.object(_ram_buffer_mod, "total_ram_bytes",     return_value=total))
+        stack.enter_context(patch.object(_ram_buffer_mod, "ram_buffer_dir",      return_value=Path("/dev/shm")))
         return stack
 
     # ── formule correcte ─────────────────────────────────────────────────────
@@ -724,9 +736,9 @@ class TestShmPath:
     def test_no_ram_dir_returns_disk(self, tmp_path):
         """Pas de répertoire RAM (Windows) → disque même avec RAM suffisante."""
         wf = self._wf()
-        with patch.object(EncodeWorkflow, "_ram_buffer_dir", return_value=None), \
-             patch.object(EncodeWorkflow, "_available_ram_bytes", return_value=10 * 2**30), \
-             patch.object(EncodeWorkflow, "_total_ram_bytes",     return_value=10 * 2**30):
+        with patch.object(_ram_buffer_mod, "ram_buffer_dir", return_value=None), \
+             patch.object(_ram_buffer_mod, "available_ram_bytes", return_value=10 * 2**30), \
+             patch.object(_ram_buffer_mod, "total_ram_bytes",     return_value=10 * 2**30):
             result = wf._shm_path(tmp_path, "test.hevc", 1_000_000)
         assert result == tmp_path / "test.hevc"
 
@@ -735,18 +747,18 @@ class TestShmPath:
     def test_zero_total_returns_disk(self, tmp_path):
         """total=0 → impossible d'évaluer le seuil → disque."""
         wf = self._wf()
-        with patch.object(EncodeWorkflow, "_ram_buffer_dir", return_value=Path("/dev/shm")), \
-             patch.object(EncodeWorkflow, "_available_ram_bytes", return_value=8 * 2**30), \
-             patch.object(EncodeWorkflow, "_total_ram_bytes",     return_value=0):
+        with patch.object(_ram_buffer_mod, "ram_buffer_dir", return_value=Path("/dev/shm")), \
+             patch.object(_ram_buffer_mod, "available_ram_bytes", return_value=8 * 2**30), \
+             patch.object(_ram_buffer_mod, "total_ram_bytes",     return_value=0):
             result = wf._shm_path(tmp_path, "test.hevc", 1_000_000)
         assert result == tmp_path / "test.hevc"
 
     def test_zero_available_returns_disk(self, tmp_path):
         """available=0 → disque."""
         wf = self._wf()
-        with patch.object(EncodeWorkflow, "_ram_buffer_dir", return_value=Path("/dev/shm")), \
-             patch.object(EncodeWorkflow, "_available_ram_bytes", return_value=0), \
-             patch.object(EncodeWorkflow, "_total_ram_bytes",     return_value=10 * 2**30):
+        with patch.object(_ram_buffer_mod, "ram_buffer_dir", return_value=Path("/dev/shm")), \
+             patch.object(_ram_buffer_mod, "available_ram_bytes", return_value=0), \
+             patch.object(_ram_buffer_mod, "total_ram_bytes",     return_value=10 * 2**30):
             result = wf._shm_path(tmp_path, "test.hevc", 1_000_000)
         assert result == tmp_path / "test.hevc"
 
@@ -1104,7 +1116,7 @@ class TestBuildCommand:
     def test_single_pass_contains_source_and_output(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()
         out = tmp_path / "out.mkv"
-        cmd = self.wf.build_command(_make_config(src, out))
+        cmd = _as_single_command(self.wf.build_command(_make_config(src, out)))
         cmd_str = " ".join(cmd)
         assert str(src) in cmd_str and str(out) in cmd_str
 
@@ -1131,8 +1143,9 @@ class TestBuildCommand:
     def test_audio_ac3_has_bitrate(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()
         track = AudioTrackSettings(stream_index=1, codec="ac3", bitrate_kbps=448)
-        cmd = self.wf.build_command(_make_config(src, tmp_path / "out.mkv",
-                                                 audio_tracks=[track]))
+        cmd = _as_single_command(
+            self.wf.build_command(_make_config(src, tmp_path / "out.mkv", audio_tracks=[track]))
+        )
         assert "-c:a:0" in cmd and cmd[cmd.index("-c:a:0") + 1] == "ac3"
         assert "-b:a:0" in cmd and "448k" in cmd
 
@@ -1165,7 +1178,9 @@ class TestBuildCommand:
             input_channels=8,
             input_channel_layout="7.1",
         )
-        cmd = self.wf.build_command(_make_config(src, tmp_path / "out.mkv", audio_tracks=[track]))
+        cmd = _as_single_command(
+            self.wf.build_command(_make_config(src, tmp_path / "out.mkv", audio_tracks=[track]))
+        )
         assert "-ac:a:0" in cmd and cmd[cmd.index("-ac:a:0") + 1] == "6"
         assert "-channel_layout:a:0" in cmd and cmd[cmd.index("-channel_layout:a:0") + 1] == "5.1"
 
@@ -1186,16 +1201,18 @@ class TestBuildCommand:
         src = tmp_path / "src.mkv"; src.touch()
         track = AudioTrackSettings(stream_index=2, codec="copy",
                                    bitrate_kbps=384, extract_truehd_core=True)
-        cmd = self.wf.build_command(_make_config(src, tmp_path / "out.mkv",
-                                                 audio_tracks=[track]))
+        cmd = _as_single_command(
+            self.wf.build_command(_make_config(src, tmp_path / "out.mkv", audio_tracks=[track]))
+        )
         assert "truehd_core" in " ".join(cmd)
 
     def test_truehd_core_bsf_ignored_for_transcoded_audio(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()
         track = AudioTrackSettings(stream_index=2, codec="eac3",
                                    bitrate_kbps=640, extract_truehd_core=True)
-        cmd = self.wf.build_command(_make_config(src, tmp_path / "out.mkv",
-                                                 audio_tracks=[track]))
+        cmd = _as_single_command(
+            self.wf.build_command(_make_config(src, tmp_path / "out.mkv", audio_tracks=[track]))
+        )
         assert "truehd_core" not in cmd
         assert "-bsf:a:0" not in cmd
         assert "-c:a:0" in cmd and cmd[cmd.index("-c:a:0") + 1] == "eac3"
@@ -1207,7 +1224,7 @@ class TestBuildCommand:
             AudioTrackSettings(stream_index=5, codec="aac", bitrate_kbps=192, source_path=alt),
             AudioTrackSettings(stream_index=1, codec="copy", source_path=src),
         ]
-        cmd = self.wf.build_command(_make_config(src, tmp_path / "out.mkv", audio_tracks=tracks))
+        cmd = _as_single_command(self.wf.build_command(_make_config(src, tmp_path / "out.mkv", audio_tracks=tracks)))
 
         map_values = [cmd[i + 1] for i, arg in enumerate(cmd[:-1]) if arg == "-map"]
         assert map_values[:3] == ["0:v:0", "1:5", "0:1"]
@@ -1218,12 +1235,12 @@ class TestBuildCommand:
     def test_subtitle_track_order_follows_config_across_sources(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()
         alt = tmp_path / "alt.mkv"; alt.touch()
-        cmd = self.wf.build_command(_make_config(
+        cmd = _as_single_command(self.wf.build_command(_make_config(
             src,
             tmp_path / "out.mkv",
             copy_subtitles=False,
             subtitle_tracks=[(alt, 7), (src, 4)],
-        ))
+        )))
 
         map_values = [cmd[i + 1] for i, arg in enumerate(cmd[:-1]) if arg == "-map"]
         assert map_values[:3] == ["0:v:0", "1:7", "0:4"]
@@ -1231,11 +1248,11 @@ class TestBuildCommand:
 
     def test_video_track_mapping_uses_selected_stream_index(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()
-        cmd = self.wf.build_command(_make_config(
+        cmd = _as_single_command(self.wf.build_command(_make_config(
             src,
             tmp_path / "out.mkv",
             video=_make_video_settings(codec="copy", stream_index=4, source_path=src),
-        ))
+        )))
 
         map_values = [cmd[i + 1] for i, arg in enumerate(cmd[:-1]) if arg == "-map"]
         assert map_values[0] == "0:4"
@@ -1243,11 +1260,11 @@ class TestBuildCommand:
     def test_video_track_mapping_uses_selected_source(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()
         alt = tmp_path / "alt.mkv"; alt.touch()
-        cmd = self.wf.build_command(_make_config(
+        cmd = _as_single_command(self.wf.build_command(_make_config(
             src,
             tmp_path / "out.mkv",
             video=_make_video_settings(codec="copy", stream_index=3, source_path=alt),
-        ))
+        )))
 
         first_input = cmd.index("-i")
         second_input = cmd.index("-i", first_input + 1)
@@ -1597,7 +1614,7 @@ class TestHdrMetaArgs:
 
     def test_libx265_color_flags_only_no_standalone_master_display(self):
         """libx265 : couleur seulement — master_display/max_cll via -x265-params."""
-        args = self.wf._hdr_meta_args(self._vs("libx265"))
+        args = _hdr_meta_args(self._vs("libx265"))
         assert "-color_primaries" in args
         assert "-master_display" not in args
         assert "-max_cll" not in args
@@ -1630,7 +1647,7 @@ class TestHdrMetaArgs:
 
     def test_hevc_nvenc_adds_master_display_and_max_cll(self):
         """hevc_nvenc : -master_display et -max_cll ajoutés comme options encoder."""
-        args = self.wf._hdr_meta_args(self._vs("hevc_nvenc"))
+        args = _hdr_meta_args(self._vs("hevc_nvenc"))
         assert "-color_primaries" in args
         assert "-master_display" in args
         assert "-max_cll" in args
@@ -1641,39 +1658,39 @@ class TestHdrMetaArgs:
         """hevc_nvenc : pas de -master_display si master_display vide."""
         vs = _make_video_settings(codec="hevc_nvenc", inject_hdr_meta=True,
                                    master_display="", max_cll="")
-        args = self.wf._hdr_meta_args(vs)
+        args = _hdr_meta_args(vs)
         assert "-master_display" not in args
         assert "-max_cll" not in args
         assert "-color_primaries" in args
 
     def test_hevc_amf_color_flags_only(self):
         """hevc_amf : couleur seulement, pas de master_display/max_cll."""
-        args = self.wf._hdr_meta_args(self._vs("hevc_amf"))
+        args = _hdr_meta_args(self._vs("hevc_amf"))
         assert "-color_primaries" in args
         assert "-master_display" not in args
         assert "-max_cll" not in args
 
     def test_hevc_qsv_color_flags_only(self):
         """hevc_qsv : couleur seulement."""
-        args = self.wf._hdr_meta_args(self._vs("hevc_qsv"))
+        args = _hdr_meta_args(self._vs("hevc_qsv"))
         assert "-color_primaries" in args
         assert "-master_display" not in args
 
     def test_libsvtav1_color_flags_only(self):
         """libsvtav1 : couleur seulement, pas de master_display/max_cll."""
-        args = self.wf._hdr_meta_args(self._vs("libsvtav1"))
+        args = _hdr_meta_args(self._vs("libsvtav1"))
         assert "-color_primaries" in args
         assert "-master_display" not in args
 
     def test_copy_no_color_flags(self):
         """copy : aucun flag de couleur — pas pertinent pour un stream copié."""
-        args = self.wf._hdr_meta_args(self._vs("copy"))
+        args = _hdr_meta_args(self._vs("copy"))
         assert args == []
 
     def test_h264_codecs_no_flags(self):
         """h264_* et libx264 : aucun flag HDR — H.264 est SDR."""
         for codec in ("libx264", "h264_nvenc", "h264_amf", "h264_qsv"):
-            args = self.wf._hdr_meta_args(self._vs(codec))
+            args = _hdr_meta_args(self._vs(codec))
             assert args == [], f"{codec} devrait retourner [] mais retourne {args}"
 
 
@@ -1889,8 +1906,8 @@ class TestCopyCodecMetadataPassthrough:
         """codec=copy en mode SIZE reste en single-pass (pas de 2-pass)."""
         src = tmp_path / "src.mkv"; src.touch()
         vs = _make_video_settings(codec="copy", quality_mode=QualityMode.SIZE)
-        cmd = self.wf.build_command(
-            _make_config(src, tmp_path / "out.mkv", video=vs, duration_s=3600.0)
+        cmd = _as_single_command(
+            self.wf.build_command(_make_config(src, tmp_path / "out.mkv", video=vs, duration_s=3600.0))
         )
         assert isinstance(cmd[0], str), "codec=copy doit retourner list[str] (single-pass)"
         assert "-pass" not in cmd
@@ -2804,7 +2821,7 @@ class TestInjectPathIntegratedPostproc:
             file_title="Film DV",
         )
         default_cfg.update(config_overrides)
-        config = _make_config(**default_cfg)
+        config = _make_config(**cast(Any, default_cfg))
         wf = EncodeWorkflow(
             ffmpeg_bin="ffmpeg",
             dovi_tool_bin="dovi_tool",
@@ -2987,7 +3004,8 @@ class TestEncodeExtraAttachments:
             _make_config(src, tmp_path / "out.mkv", video=vs,
                          duration_s=3600.0, extra_attachments=extras)
         )
-        return cmds[1]   # pass2
+        assert cmds and isinstance(cmds[0], list)
+        return cast(list[list[str]], cmds)[1]   # pass2
 
     # ── single pass — présence et valeurs ────────────────────────────────────
 
@@ -3882,8 +3900,8 @@ class TestEncodeRuntimeMultiSourceSync:
             assert plan is not None
             call_order.append("run_multi")
             assert call_order[:3] == ["bind_cleanup", "bind_mux", "bind_nfo"]
-            prep_signals.finished.emit("done")
-            return prep_signals
+            prep_signals_ref.finished.emit("done")
+            return prep_signals_ref
 
         prep_signals_ref = prep_signals
 
@@ -3957,8 +3975,8 @@ class TestEncodeRuntimeMultiSourceSync:
             assert plan is not None
             call_order.append("run_direct")
             assert call_order[:3] == ["bind_cleanup", "bind_mux", "bind_nfo"]
-            prep_signals.finished.emit("done")
-            return prep_signals
+            prep_signals_ref.finished.emit("done")
+            return prep_signals_ref
 
         prep_signals_ref = prep_signals
 
@@ -4419,7 +4437,7 @@ class TestTrackMetaArgs:
             audio_tracks=[],
         )
 
-        result = MainWindow._merge_remux_extras(None, enc, rmx)
+        result = MainWindow._merge_remux_extras(cast(Any, object()), enc, rmx)
 
         assert result.track_meta_edits, "Aucun TrackMetaEdit généré"
         edit = result.track_meta_edits[0]

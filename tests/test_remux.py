@@ -126,6 +126,7 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1364,7 +1365,9 @@ class TestTrackTableUpdateAudioMeta:
         assert video.encode_plan_summary == ""
         assert video.encode_plan_hdr_badges == ()
         assert video.encode_plan_modified is False
-        assert panel._track_table.item(0, _TrackTable.COL_CODEC).text() == "HEVC"
+        codec_item = panel._track_table.item(0, _TrackTable.COL_CODEC)
+        assert codec_item is not None
+        assert codec_item.text() == "HEVC"
         panel.close()
 
 
@@ -1410,7 +1413,9 @@ class TestRemuxPanelNewAudioTracks:
         panel.audio_tracks_changed.connect(lambda tracks: emitted.append(tracks))
 
         source_row = self._row_for_entry(panel, source)
-        panel._track_table.item(source_row, _TrackTable.COL_CHECK).setCheckState(Qt.CheckState.Unchecked)
+        source_item = panel._track_table.item(source_row, _TrackTable.COL_CHECK)
+        assert source_item is not None
+        source_item.setCheckState(Qt.CheckState.Unchecked)
         panel._emit_audio_tracks()
 
         assert emitted
@@ -1495,7 +1500,9 @@ class TestRemuxPanelVideoTrackSignals:
         panel.video_tracks_changed.connect(lambda tracks: emitted.append(tracks))
 
         row = self._row_for_entry(panel, video_b)
-        panel._track_table.item(row, _TrackTable.COL_CHECK).setCheckState(Qt.CheckState.Unchecked)
+        row_item = panel._track_table.item(row, _TrackTable.COL_CHECK)
+        assert row_item is not None
+        row_item.setCheckState(Qt.CheckState.Unchecked)
         panel._on_table_changed()
 
         assert emitted
@@ -1548,7 +1555,7 @@ def test_inspect_file_routes_verbose_inspector_output_to_panel_signal(tmp_path):
     inspector_instance.inspect.side_effect = fake_inspect
 
     with patch.object(inspection_functions, "FileInspector", side_effect=fake_ctor):
-        inspection_functions.inspect_file(panel, "fid-1", path)
+        inspection_functions.inspect_file(cast(Any, panel), "fid-1", path)
 
     assert verbose_lines == [("inspector", "Inspection démarrée : /tmp/movie.mkv")]
     panel._inspection_done.emit.assert_called_once_with("fid-1", info)

@@ -424,7 +424,11 @@ class ToolRunner(QObject):
                     if signals is not None and signals._cancel_event.is_set():
                         proc.kill()
                         raise TaskCancelledError()
-                    chunk_bytes = chunk if isinstance(chunk, bytes) else chunk.encode("utf-8", errors="replace")
+                    chunk_bytes: bytes
+                    if isinstance(chunk, str):
+                        chunk_bytes = chunk.encode("utf-8", errors="replace")
+                    else:
+                        chunk_bytes = bytes(chunk)
                     # Normalise \r\n et \r solitaire en \n pour un split uniforme
                     buf += chunk_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
                     *complete, buf = buf.split(b"\n")

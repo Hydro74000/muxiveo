@@ -4,6 +4,7 @@ tests/test_main_window_startup_panel.py — Mapping startup panel -> index stack
 
 from types import MethodType
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 from pathlib import Path
 
@@ -43,11 +44,12 @@ def test_scale_change_prompt_can_restart_application(qt_app) -> None:
     fake_window = SimpleNamespace(
         _config=SimpleNamespace(restart_application=MagicMock(return_value=True)),
     )
+    window = cast(Any, fake_window)
     fake_app = SimpleNamespace(quit=MagicMock())
 
     with patch("ui.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), \
          patch("ui.main_window.QApplication.instance", return_value=fake_app):
-        MainWindow._prompt_restart_for_scale_change(fake_window, 125)
+        MainWindow._prompt_restart_for_scale_change(window, 125)
 
     fake_window._config.restart_application.assert_called_once_with()
     fake_app.quit.assert_called_once_with()
@@ -57,10 +59,11 @@ def test_scale_change_prompt_shows_warning_when_restart_fails(qt_app) -> None:
     fake_window = SimpleNamespace(
         _config=SimpleNamespace(restart_application=MagicMock(return_value=False)),
     )
+    window = cast(Any, fake_window)
 
     with patch("ui.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), \
          patch("ui.main_window.QMessageBox.warning") as mock_warning:
-        MainWindow._prompt_restart_for_scale_change(fake_window, 150)
+        MainWindow._prompt_restart_for_scale_change(window, 150)
 
     fake_window._config.restart_application.assert_called_once_with()
     mock_warning.assert_called_once()
@@ -75,8 +78,9 @@ def test_open_startup_paths_routes_files_to_container_page(tmp_path, qt_app) -> 
         _sidebar=SimpleNamespace(select_page=MagicMock()),
         _remux_panel=SimpleNamespace(add_sources=MagicMock()),
     )
+    window = cast(Any, fake_window)
 
-    MainWindow.open_startup_paths(fake_window, [media_path, Path(tmp_path / "missing.mp4")])
+    MainWindow.open_startup_paths(window, [media_path, Path(tmp_path / "missing.mp4")])
 
     fake_window._stack.setCurrentIndex.assert_called_once_with(3)
     fake_window._sidebar.select_page.assert_called_once_with(3)

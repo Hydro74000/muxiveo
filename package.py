@@ -57,7 +57,7 @@ import time
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from core.file_types import ACCEPTED_EXTENSIONS, build_desktop_mime_type_string
 from core.version import APP_NAME, APP_VERSION
@@ -1998,8 +1998,8 @@ def _ensure_windows_icu_runtime_cache() -> list[Path]:
             if not normalized.lower().endswith(".dll"):
                 continue
             target = cache_dir / Path(normalized).name
-            with archive.open(member) as src, target.open("wb") as dst:
-                shutil.copyfileobj(src, dst)
+            with archive.open(member) as src_f, target.open("wb") as dst_f:
+                shutil.copyfileobj(src_f, dst_f)
             extracted_any = True
 
     # --- AJOUT : création des alias ICU non suffixés ---
@@ -2023,18 +2023,18 @@ def _ensure_windows_icu_runtime_cache() -> list[Path]:
 
 
     # créer les alias
-    for plain, src in (
+    for plain, src_dll in (
         ("icuuc.dll", alias_map["icuuc"]),
         ("icuin.dll", alias_map["icuin"]),
         ("icudt.dll", alias_map["icudt"] or alias_map["icu"]),
         ("icu.dll", alias_map["icu"] or alias_map["icudt"]),
     ):
-        if src is None:
+        if src_dll is None:
             continue
         dst = cache_dir / plain
         if not dst.exists():
-            shutil.copy2(src, dst)
-            _ok(f"ICU alias créé : {dst.name} -> {src.name}")
+            shutil.copy2(src_dll, dst)
+            _ok(f"ICU alias créé : {dst.name} -> {src_dll.name}")
 
 
     if not extracted_any:
@@ -2563,19 +2563,24 @@ def _build_icns_from_png(src_png: Path, dest_icns: Path) -> Path | None:
         _warn(f"icon.png absent : {src_png} — .icns non généré")
         return None
 
+    pil_image: Any | None = None
+    qimage_cls: Any | None = None
+    qt_namespace: Any | None = None
+    use_qt_backend = False
+
     try:
-        from PIL import Image  # type: ignore[import-not-found]
+        from PIL import Image as _PILImage  # type: ignore[import-not-found]
+        pil_image = _PILImage
     except ImportError:
         try:
-            from PySide6.QtGui import QImage  # type: ignore[import-not-found]
-            qt_backend = True
+            from PySide6.QtCore import Qt as _Qt  # type: ignore[import-not-found]
+            from PySide6.QtGui import QImage as _QImage  # type: ignore[import-not-found]
+            qt_namespace = _Qt
+            qimage_cls = _QImage
+            use_qt_backend = True
         except ImportError:
             _warn("Ni PIL ni PySide6.QtGui disponibles — .icns non généré")
             return None
-        else:
-            qt_backend = True
-    else:
-        qt_backend = False
 
     iconset = dest_icns.with_suffix(".iconset")
     if iconset.exists():
@@ -2590,17 +2595,22 @@ def _build_icns_from_png(src_png: Path, dest_icns: Path) -> Path | None:
                 continue
             suffix = "" if scale == 1 else "@2x"
             out = iconset / f"icon_{size}x{size}{suffix}.png"
-            if qt_backend:
-                img = QImage(str(src_png))
-                scaled = img.scaled(
-                    px, px,
-                    aspectRatioMode=1,  # Qt.AspectRatioMode.KeepAspectRatio
-                    transformMode=1,    # Qt.TransformationMode.SmoothTransformation
+            if use_qt_backend:
+                assert qimage_cls is not None and qt_namespace is not None
+                qimg: Any = qimage_cls(str(src_png))
+                scaled = qimg.scaled(
+                    px,
+                    px,
+                    qt_namespace.AspectRatioMode.KeepAspectRatio,
+                    qt_namespace.TransformationMode.SmoothTransformation,
                 )
                 scaled.save(str(out), "PNG")
             else:
-                img = Image.open(src_png).convert("RGBA")
-                img.resize((px, px), Image.LANCZOS).save(out, "PNG")
+                assert pil_image is not None
+                pil_img: Any = pil_image.open(src_png).convert("RGBA")
+                resampling = getattr(pil_image, "Resampling", None)
+                lanczos = resampling.LANCZOS if resampling is not None else getattr(pil_image, "LANCZOS", 1)
+                pil_img.resize((px, px), lanczos).save(out, "PNG")
 
     dest_icns.parent.mkdir(parents=True, exist_ok=True)
     _run(["iconutil", "-c", "icns", str(iconset), "-o", str(dest_icns)])

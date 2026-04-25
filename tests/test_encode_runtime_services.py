@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -66,8 +67,8 @@ def test_ensure_inject_storage_available_raises_on_same_fs_shortfall(tmp_path):
             log_info=logs.append,
             ram_buffer_enabled=False,
             ram_buffer_dir=lambda: None,
-            disk_usage=lambda _path: SimpleNamespace(total=100_000, used=90_000, free=25_000),
-            stat=lambda _path: SimpleNamespace(st_dev=42),
+            disk_usage=cast(Any, lambda _path: SimpleNamespace(total=100_000, used=90_000, free=25_000)),
+            stat=cast(Any, lambda _path: SimpleNamespace(st_dev=42)),
             temp_dir=lambda: str(tmp_path / "tmp"),
         )
 
@@ -87,6 +88,10 @@ def test_attachment_preparation_service_extracts_only_attached_pics(tmp_path):
         extra_attachments=[font],
     )
 
+    def _extract_attached_pic(source: Path, stream_idx: int, dest: Path, _signals: Any) -> None:
+        extracted.append((source, stream_idx, dest))
+        dest.write_bytes(b"img")
+
     service = AttachmentPreparationService(
         AttachmentPreparationServiceCallbacks(
             check_cancelled=lambda _signals: None,
@@ -97,10 +102,7 @@ def test_attachment_preparation_service_extracts_only_attached_pics(tmp_path):
             ),
             attachment_filename=lambda meta, _stream_idx: str(meta["filename"]),
             unique_attachment_path=lambda tmp_dir, filename: tmp_dir / filename,
-            extract_attached_pic=lambda source, stream_idx, dest, _signals: (
-                extracted.append((source, stream_idx, dest)),
-                dest.write_bytes(b"img"),
-            ),
+            extract_attached_pic=_extract_attached_pic,
         )
     )
 

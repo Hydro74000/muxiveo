@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -230,7 +231,7 @@ class TestVideoTrack:
             color_matrix="bt2020nc",
         )
         defaults.update(kwargs)
-        return VideoTrack(**defaults)
+        return VideoTrack(**cast(Any, defaults))
 
     def test_resolution(self):
         t = self._make(width=1920, height=1080)
@@ -267,7 +268,7 @@ class TestAudioTrack:
             language="eng", title="Atmos",
         )
         defaults.update(kwargs)
-        return AudioTrack(**defaults)
+        return AudioTrack(**cast(Any, defaults))
 
     def test_channels_label_from_layout(self):
         t = self._make(channel_layout="7.1")
@@ -309,7 +310,7 @@ class TestFileInfo:
             bit_rate=11943000,
         )
         defaults.update(kwargs)
-        return FileInfo(**defaults)
+        return FileInfo(**cast(Any, defaults))
 
     def test_size_human_go(self):
         info = self._make(size_bytes=10 * (1 << 30))

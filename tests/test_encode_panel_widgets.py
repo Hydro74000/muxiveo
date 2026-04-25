@@ -56,8 +56,10 @@ Exécution :
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from PySide6.QtCore import Qt
@@ -99,7 +101,7 @@ _COLOR  = "#4f6ef7"
 
 
 @pytest.fixture
-def table(qt_app) -> _AudioTable:
+def table(qt_app) -> Generator[_AudioTable, None, None]:
     t = _AudioTable()
     yield t
     t.close()
@@ -120,7 +122,7 @@ def _codec_combo(table: _AudioTable, row: int) -> QComboBox:
 def _bitrate_editor(table: _AudioTable, row: int):
     editor = table.cellWidget(row, _AudioTable.COL_BITRATE)
     assert editor is not None
-    return editor
+    return cast(Any, editor)
 
 
 def _set_codec(table: _AudioTable, row: int, codec_id: str) -> None:
@@ -984,7 +986,7 @@ class TestEncodePanelDynamicHdrDefaults:
             copy_hdr10plus=True,
         )
 
-        assert panel.is_pure_copy(config) is True
+        assert panel.is_pure_copy(cast(Any, config)) is True
         panel.close()
 
     def test_is_pure_copy_is_false_if_any_video_track_requires_encode(self, qt_app):
@@ -998,7 +1000,7 @@ class TestEncodePanelDynamicHdrDefaults:
             audio_tracks=[SimpleNamespace(codec="copy")],
         )
 
-        assert panel.is_pure_copy(config) is False
+        assert panel.is_pure_copy(cast(Any, config)) is False
         panel.close()
 
     def test_collect_config_keeps_all_video_tracks_after_addition_in_per_track_mode(self, qt_app):
@@ -1048,6 +1050,6 @@ class TestEncodePanelRunOperation:
 
         monkeypatch.setattr(panel._workflow, "run", fake_run)
 
-        assert panel.run_operation(config) is expected_signals
+        assert panel.run_operation(cast(Any, config)) is expected_signals
         assert captured == {"config": config, "validate": False}
         panel.close()

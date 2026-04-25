@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Protocol
 
 
 class TrackType(str, Enum):
@@ -47,3 +48,19 @@ class TrackMetaPatch:
 
 TrackTimeOffset = TrackOffset
 TrackMetaEdit = TrackMetaPatch
+
+
+class TrackTypeCarrier(Protocol):
+    @property
+    def track_type(self) -> str:
+        ...
+
+
+class TimelineMappedTrack(Protocol):
+    @property
+    def source_file_index(self) -> int:
+        ...
+
+    @property
+    def track(self) -> TrackTypeCarrier:
+        ...

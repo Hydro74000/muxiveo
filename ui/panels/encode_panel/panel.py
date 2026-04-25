@@ -1554,7 +1554,7 @@ class EncodePanel(QWidget):
             self._set_combo_data(self._codec_combo, state.get("codec"))
             self._set_combo_data(self._mode_combo, state.get("quality_mode"))
             self._set_combo_data(self._preset_combo, state.get("preset"))
-            self._crf_spin.setValue(int(state.get("crf") or self._crf_spin.value()))
+            self._crf_spin.setValue(self._state_int(state, "crf", self._crf_spin.value()))
             self._bitrate_edit.setText(str(state.get("bitrate_kbps") or "5000"))
             self._size_edit.setText(str(state.get("target_size_mb") or "4000"))
             self._extra_params.setText(str(state.get("extra_params") or ""))
@@ -1646,14 +1646,8 @@ class EncodePanel(QWidget):
         mode = state.get("quality_mode") or QualityMode.CRF
         if not isinstance(mode, QualityMode):
             mode = QualityMode(str(mode))
-        try:
-            bitrate = int(state.get("bitrate_kbps") or 5000)
-        except (TypeError, ValueError):
-            bitrate = 5000
-        try:
-            size = int(state.get("target_size_mb") or 4000)
-        except (TypeError, ValueError):
-            size = 4000
+        bitrate = self._state_int(state, "bitrate_kbps", 5000)
+        size = self._state_int(state, "target_size_mb", 4000)
         codec = str(state.get("codec") or "libx265")
         source_hdr = self._hdr_type_for_entry(file_info, track)
         copy_dv, copy_hdr10plus = self._effective_dynamic_hdr_flags(
@@ -1667,7 +1661,7 @@ class EncodePanel(QWidget):
             track_entry_id=self._video_entry_id(track),
             codec=codec,
             quality_mode=mode,
-            crf=int(state.get("crf") or 18),
+            crf=self._state_int(state, "crf", 18),
             bitrate_kbps=bitrate,
             target_size_mb=size,
             preset=str(state.get("preset") or "slow"),
@@ -1682,6 +1676,22 @@ class EncodePanel(QWidget):
             tonemap_to_sdr=bool(state.get("tonemap_to_sdr")),
             tonemap_algorithm=str(state.get("tonemap_algorithm") or "hable"),
         )
+
+    @staticmethod
+    def _state_int(state: dict[str, object], key: str, default: int) -> int:
+        value = state.get(key, default)
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            try:
+                return int(value.strip())
+            except ValueError:
+                return default
+        return default
 
     def _current_video_settings_list(self) -> list[VideoEncodeSettings]:
         self._save_current_video_state()

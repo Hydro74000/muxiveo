@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Callable
 
 from core.subtitle_codec import plan_subtitle_codec
 from core.workflows.common.attachments import mime_for_path
+from core.workflows.common.track_types import TimelineMappedTrack
 from core.workflows.common.metadata import STREAM_SPEC_BY_TRACK_TYPE as STREAM_SPEC_BY_TYPE
 from core.workflows.remux_attachments import attachment_names, build_attachment_mapping
 from core.workflows.remux_mapping import (
@@ -35,7 +37,7 @@ def build_remux_command(
     strict_interleave_override: bool | None = None,
     mapped_tracks_override: list[MappedTrack] | None = None,
     resolve_mapped_tracks_fn: Callable[[RemuxConfig], list[MappedTrack]] = resolve_mapped_tracks,
-    needs_strict_interleave_fn: Callable[[list[MappedTrack]], bool] | None = None,
+    needs_strict_interleave_fn: Callable[[Sequence[TimelineMappedTrack]], bool] | None = None,
 ) -> list[str]:
     mapped_tracks = mapped_tracks_override if mapped_tracks_override is not None else resolve_mapped_tracks_fn(config)
     needs_strict_interleave_impl = needs_strict_interleave_fn or (lambda tracks: False)
