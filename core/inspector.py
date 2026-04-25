@@ -74,9 +74,10 @@ class HDRType(Enum):
     Type de métadonnées HDR détecté dans le flux vidéo principal.
 
     Ordre de priorité (du plus riche au plus pauvre) :
-        DOLBY_VISION_HDR10PLUS > DOLBY_VISION > HDR10PLUS > HDR10 > NONE
+        DOLBY_VISION_HDR10PLUS > DOLBY_VISION > HDR10PLUS > HDR10 > HLG > NONE
     """
     NONE                  = auto()
+    HLG                   = auto()
     HDR10                 = auto()
     HDR10PLUS             = auto()
     DOLBY_VISION          = auto()
@@ -86,6 +87,7 @@ class HDRType(Enum):
         """Libellé court pour l'affichage dans l'UI."""
         return {
             HDRType.NONE:                   "SDR",
+            HDRType.HLG:                    "HLG",
             HDRType.HDR10:                  "HDR10",
             HDRType.HDR10PLUS:              "HDR10+",
             HDRType.DOLBY_VISION:           "Dolby Vision",
@@ -132,7 +134,15 @@ class VideoTrack:
 
     @property
     def hdr_label(self) -> str:
-        """Label d'affichage enrichi : profil DoVi + HDR10 fallback si disponibles."""
+        """
+        Label d'affichage enrichi : profil DoVi + couche de compatibilité.
+
+        Mappage compat_id pour DoVi Profile 8 :
+            P8.0 → DoVi only (pas de fallback)
+            P8.1 → HDR10
+            P8.2 → SDR (BT.709)
+            P8.4 → HLG
+        """
         if self.hdr_type == HDRType.NONE:
             return "SDR"
 
@@ -154,19 +164,21 @@ class VideoTrack:
             parts.append("HDR10+")
         elif self.hdr_type == HDRType.HDR10:
             parts.append("HDR10")
+        elif self.hdr_type == HDRType.HLG:
+            parts.append("HLG")
         elif self.hdr_type == HDRType.DOLBY_VISION:
-            if self._dovi_has_hdr10_fallback():
-                parts.append("HDR10")
+            compat_label = self.dovi_compat_label
+            if compat_label:
+                parts.append(compat_label)
 
         return " + ".join(parts) if parts else self.hdr_type.label()
 
-    def _dovi_has_hdr10_fallback(self) -> bool:
-        """True si le profil DoVi embarque un fallback HDR10 (P8.x avec compat_id >= 1)."""
-        return (
-            self.dovi_profile == 8
-            and self.dovi_compat_id is not None
-            and self.dovi_compat_id >= 1
-        )
+    @property
+    def dovi_compat_label(self) -> str | None:
+        """Label de la couche de compatibilité DoVi P8.x selon compat_id (None pour P8.0)."""
+        if self.dovi_profile != 8 or self.dovi_compat_id is None:
+            return None
+        return {1: "HDR10", 2: "SDR", 4: "HLG"}.get(self.dovi_compat_id)
 
 
 @dataclass
@@ -586,9 +598,11 @@ class FileInspector:
             return HDRType.HDR10PLUS
         if has_pq and (has_master_disp or has_cll):
             return HDRType.HDR10
-        if has_pq or has_hlg:
-            # PQ/HLG sans métadonnées statiques : HDR10 incomplet mais présent
+        if has_pq:
+            # PQ sans métadonnées statiques : HDR10 incomplet mais présent
             return HDRType.HDR10
+        if has_hlg:
+            return HDRType.HLG
 
         return HDRType.NONE
 

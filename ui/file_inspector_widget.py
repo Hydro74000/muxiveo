@@ -474,6 +474,7 @@ class _FileSummaryBar(QWidget):
         # Coloriser le badge HDR
         hdr_color = {
             HDRType.NONE:                   _C.TEXT_DIM,
+            HDRType.HLG:                    "#7ed957",
             HDRType.HDR10:                  _C.INFO,
             HDRType.HDR10PLUS:              "#4fc3f7",
             HDRType.DOLBY_VISION:           "#ce93d8",

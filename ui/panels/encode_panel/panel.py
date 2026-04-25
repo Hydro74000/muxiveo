@@ -1436,9 +1436,15 @@ class EncodePanel(QWidget):
             return ("HDR",)
         if source_hdr == HDRType.HDR10PLUS:
             return ("10+",)
+        if source_hdr == HDRType.HLG:
+            return ("HLG",)
         if source_hdr == HDRType.DOLBY_VISION:
-            if source_video is not None and source_video._dovi_has_hdr10_fallback():
+            compat_label = source_video.dovi_compat_label if source_video is not None else None
+            if compat_label == "HDR10":
                 return ("DV", "HDR")
+            if compat_label == "HLG":
+                return ("DV", "HLG")
+            # P8.0 (compat_id=0) ou P8.2 (SDR) → pas de badge fallback HDR
             return ("DV",)
         if source_hdr == HDRType.DOLBY_VISION_HDR10PLUS:
             return ("DV", "10+")

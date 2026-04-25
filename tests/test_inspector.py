@@ -620,13 +620,13 @@ class TestDetectHDRType:
         ):
             assert self.insp.detect_hdr_type(self.path) == HDRType.DOLBY_VISION_HDR10PLUS
 
-    def test_hlg_detected_as_hdr10(self):
+    def test_hlg_detected_as_hlg(self):
         raw = _make_ffprobe_output(video_streams=[_video_stream(
             color_transfer="arib-std-b67",
             side_data_list=[],
         )])
         with self._patch_ffprobe(raw), self._patch_mi():
-            assert self.insp.detect_hdr_type(self.path) == HDRType.HDR10
+            assert self.insp.detect_hdr_type(self.path) == HDRType.HLG
 
     def test_attached_pic_is_ignored_for_hdr_detection(self):
         raw = _make_ffprobe_output(video_streams=[

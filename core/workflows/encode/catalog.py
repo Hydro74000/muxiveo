@@ -71,7 +71,7 @@ VIDEO_ENCODER_BADGES: dict[str, str] = {
     "h264_vaapi": "VAAPI",
     "av1_vaapi": "VAAPI",
 }
-VIDEO_HDR_BADGE_ORDER: tuple[str, ...] = ("HDR", "DV", "10+", "SDR")
+VIDEO_HDR_BADGE_ORDER: tuple[str, ...] = ("HDR", "HLG", "DV", "10+", "SDR")
 
 
 class VideoCodecFamily(str, Enum):
