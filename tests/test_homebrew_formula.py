@@ -55,7 +55,13 @@ def test_render_homebrew_formula_contains_platform_blocks(tmp_path):
     assert 'def install_macos_link' in text
     assert 'def cleanup_shortcuts' in text
     assert "f\"Exec={opt_bin / 'mediarecode'} %F" in text
-    assert 'icon_path = opt_share / "icons" / "hicolor" / "256x256" / "apps" / "mediarecode.png"' in text
+    assert "f\"TryExec={opt_bin / 'mediarecode'}" in text
+    assert 'Icon=mediarecode' in text
+    assert 'user_icon = data_home / "icons" / "hicolor" / "256x256" / "apps" / "mediarecode.png"' in text
+    assert 'desktop-file-validate' in text
+    assert 'gtk-update-icon-cache' in text
+    assert 'xdg-desktop-menu' in text
+    assert '~/.local/state/mediarecode/setup_brew.log' in text
     assert 'bin.install_symlink libexec/"mediarecode-uninstall-shortcuts"' in text
     assert 'mediarecode-uninstall-shortcuts' in text
     assert 'brew postinstall mediarecode' in text
@@ -66,3 +72,4 @@ def test_render_homebrew_formula_contains_platform_blocks(tmp_path):
     assert 'bin.install_symlink libexec/"mediarecode"' in text
     assert 'resource "dovi_tool" do' in text
     assert 'resource "hdr10plus_tool" do' in text
+    assert 'setup_brew.py" post-install --platform linux' in text
