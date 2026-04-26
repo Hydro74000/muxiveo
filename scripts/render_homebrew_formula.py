@@ -124,6 +124,13 @@ class Mediarecode < Formula
     EOS
   end
 
+  def refresh_linux_desktop_database
+    desktop_dir = Pathname.new(File.expand_path("~/.local/share/applications"))
+    system "update-desktop-database", desktop_dir.to_s if which("update-desktop-database")
+    system "kbuildsycoca6" if which("kbuildsycoca6")
+    system "kbuildsycoca5" if which("kbuildsycoca5")
+  end
+
   def install_linux_icon
     icon_dir = share/"icons/hicolor/256x256/apps"
     icon_dir.mkpath
@@ -168,7 +175,6 @@ class Mediarecode < Formula
 
       chmod 0755, libexec/"tools/dovi_tool"
       chmod 0755, libexec/"tools/hdr10plus_tool"
-      install_macos_app_link
 
       (libexec/"mediarecode").write <<~EOS
         #!/bin/bash
@@ -198,7 +204,6 @@ CFG
       chmod 0755, libexec/"Mediarecode.AppImage"
       install_uninstall_shortcuts_script
       install_linux_icon
-      install_linux_desktop_entry
 
       (libexec/"mediarecode").write <<~EOS
         #!/bin/bash
@@ -239,9 +244,20 @@ DESKTOP
     end
   end
 
+  def post_install
+    if OS.mac?
+      install_macos_app_link
+    else
+      install_linux_desktop_entry
+      refresh_linux_desktop_database
+    end
+  end
+
   def caveats
     <<~EOS
       User session shortcuts are installed outside the Homebrew prefix.
+      If the desktop shortcut does not appear immediately on Linux, run:
+        brew postinstall mediarecode
       Before `brew uninstall mediarecode`, run:
         mediarecode-uninstall-shortcuts
     EOS
