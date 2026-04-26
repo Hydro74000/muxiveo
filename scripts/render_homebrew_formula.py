@@ -9,6 +9,7 @@ import argparse
 import base64
 import struct
 import sys
+import textwrap
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -19,6 +20,7 @@ from core.file_types import build_desktop_mime_type_string
 
 
 _DESKTOP_MIME_TYPES = build_desktop_mime_type_string()
+_SETUP_BREW_TEMPLATE = (ROOT / "setup_brew.py").read_text(encoding="utf-8")
 
 
 def _extract_largest_png_from_ico(path: Path) -> bytes:
@@ -63,6 +65,13 @@ _LINUX_ICON_PNG_BASE64 = base64.b64encode(
 ).decode("ascii")
 
 
+def _render_setup_brew_script() -> str:
+    script = _SETUP_BREW_TEMPLATE
+    script = script.replace("__MEDIARECODE_ICON_PNG_BASE64__", _LINUX_ICON_PNG_BASE64)
+    script = script.replace("__MEDIARECODE_DESKTOP_MIME_TYPES__", _DESKTOP_MIME_TYPES)
+    return script
+
+
 def render_formula(
     *,
     version: str,
@@ -76,9 +85,8 @@ def render_formula(
     hdr10plus_tool_macos_sha256: str,
     homepage: str = "https://github.com/Hydro74000/mediarecode",
 ) -> str:
-    return f"""require "base64"
-
-class Mediarecode < Formula
+    setup_brew_script = textwrap.indent(_render_setup_brew_script().rstrip(), "      ")
+    return f"""class Mediarecode < Formula
   desc "GUI video workflow tool for remuxing, encoding, Dolby Vision and HDR10+"
   homepage "{homepage}"
   version "{version}"
@@ -107,62 +115,40 @@ class Mediarecode < Formula
     end
   end
 
-  def install_linux_desktop_entry
-    desktop_dir = Pathname.new(File.expand_path("~/.local/share/applications"))
-    desktop_dir.mkpath
-    (desktop_dir/"mediarecode.desktop").write <<~EOS
-      [Desktop Entry]
-      Name=Mediarecode
-      Comment=MKV/MP4 workflow - DoVi, HDR10+, encoding
-      Exec=#{{opt_bin}}/mediarecode %F
-      Icon=#{{opt_share}}/icons/hicolor/256x256/apps/mediarecode.png
-      Type=Application
-      Categories=AudioVideo;Video;
-      MimeType={_DESKTOP_MIME_TYPES}
-      Terminal=false
-      StartupNotify=true
-    EOS
-  end
-
-  def refresh_linux_desktop_database
-    desktop_dir = Pathname.new(File.expand_path("~/.local/share/applications"))
-    system "update-desktop-database", desktop_dir.to_s if which("update-desktop-database")
-    system "kbuildsycoca6" if which("kbuildsycoca6")
-    system "kbuildsycoca5" if which("kbuildsycoca5")
-  end
-
-  def install_linux_icon
-    icon_dir = share/"icons/hicolor/256x256/apps"
-    icon_dir.mkpath
-    (icon_dir/"mediarecode.png").binwrite(Base64.decode64("{_LINUX_ICON_PNG_BASE64}"))
-  end
-
-  def install_macos_app_link
-    apps_dir = Pathname.new(File.expand_path("~/Applications"))
-    apps_dir.mkpath
-    app_link = apps_dir/"Mediarecode.app"
-    return if app_link.exist?
-
-    app_link.make_symlink(opt_prefix/"Mediarecode.app")
-  rescue StandardError
-    nil
+  def install_setup_brew_helper
+    (libexec/"setup_brew.py").write <<~PY
+{setup_brew_script}
+    PY
+    chmod 0755, libexec/"setup_brew.py"
   end
 
   def install_uninstall_shortcuts_script
     (libexec/"mediarecode-uninstall-shortcuts").write <<~EOS
       #!/bin/bash
       set -euo pipefail
-      rm -f "${{XDG_DATA_HOME:-$HOME/.local/share}}/applications/mediarecode.desktop"
-      rm -f "$HOME/Applications/Mediarecode.app"
+      PYTHON_BIN="$(command -v python3 || command -v python || true)"
+      if [ -z "${{PYTHON_BIN}}" ]; then
+        echo "python3 is required to clean Mediarecode shortcuts" >&2
+        exit 1
+      fi
+      exec "${{PYTHON_BIN}}" "#{{opt_libexec}}/setup_brew.py" cleanup
     EOS
     chmod 0755, libexec/"mediarecode-uninstall-shortcuts"
     bin.install_symlink libexec/"mediarecode-uninstall-shortcuts"
+  end
+
+  def run_setup_brew(*args)
+    python = which("python3") || which("python")
+    odie "python3 is required for Mediarecode Homebrew integration" if python.nil?
+
+    system python, libexec/"setup_brew.py", *args.map(&:to_s)
   end
 
   def install
     if OS.mac?
       prefix.install "Mediarecode.app"
       (libexec/"tools").mkpath
+      install_setup_brew_helper
       install_uninstall_shortcuts_script
 
       resource("dovi_tool").stage do
@@ -181,18 +167,12 @@ class Mediarecode < Formula
         set -euo pipefail
         CONFIG_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/mediarecode"
         CONFIG_FILE="${{CONFIG_DIR}}/config.ini"
-        APPS_DIR="${{HOME}}/Applications"
-        APP_LINK="${{APPS_DIR}}/Mediarecode.app"
         mkdir -p "${{CONFIG_DIR}}"
-        mkdir -p "${{APPS_DIR}}"
         if [ ! -f "${{CONFIG_FILE}}" ]; then
           cat > "${{CONFIG_FILE}}" <<'CFG'
 # Mediarecode - configuration locale
 # Fichier cree par le wrapper Homebrew pour eviter le setup interactif.
 CFG
-        fi
-        if [ ! -e "${{APP_LINK}}" ]; then
-          ln -s "#{{opt_prefix}}/Mediarecode.app" "${{APP_LINK}}" 2>/dev/null || true
         fi
         export PATH="#{{opt_libexec}}/tools:#{{HOMEBREW_PREFIX}}/bin:$PATH"
         exec "#{{opt_prefix}}/Mediarecode.app/Contents/MacOS/Mediarecode" "$@"
@@ -202,37 +182,20 @@ CFG
     else
       libexec.install Dir["*.AppImage"].first => "Mediarecode.AppImage"
       chmod 0755, libexec/"Mediarecode.AppImage"
+      install_setup_brew_helper
       install_uninstall_shortcuts_script
-      install_linux_icon
 
       (libexec/"mediarecode").write <<~EOS
         #!/bin/bash
         set -euo pipefail
         CONFIG_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/mediarecode"
         CONFIG_FILE="${{CONFIG_DIR}}/config.ini"
-        DESKTOP_DIR="${{XDG_DATA_HOME:-$HOME/.local/share}}/applications"
-        DESKTOP_FILE="${{DESKTOP_DIR}}/mediarecode.desktop"
         mkdir -p "${{CONFIG_DIR}}"
-        mkdir -p "${{DESKTOP_DIR}}"
         if [ ! -f "${{CONFIG_FILE}}" ]; then
           cat > "${{CONFIG_FILE}}" <<'CFG'
 # Mediarecode - configuration locale
 # Fichier cree par le wrapper Homebrew.
 CFG
-        fi
-        if [ ! -f "${{DESKTOP_FILE}}" ]; then
-          cat > "${{DESKTOP_FILE}}" <<'DESKTOP'
-[Desktop Entry]
-Name=Mediarecode
-Comment=MKV/MP4 workflow - DoVi, HDR10+, encoding
-Exec=#{{opt_bin}}/mediarecode %F
-Icon=#{{opt_share}}/icons/hicolor/256x256/apps/mediarecode.png
-Type=Application
-Categories=AudioVideo;Video;
-MimeType={_DESKTOP_MIME_TYPES}
-Terminal=false
-StartupNotify=true
-DESKTOP
         fi
         if [ ! -e /dev/fuse ]; then
           export APPIMAGE_EXTRACT_AND_RUN=1
@@ -246,10 +209,9 @@ DESKTOP
 
   def post_install
     if OS.mac?
-      install_macos_app_link
+      run_setup_brew("post-install", "--platform", "macos", "--opt-bin", opt_bin, "--opt-share", opt_share, "--opt-prefix", opt_prefix)
     else
-      install_linux_desktop_entry
-      refresh_linux_desktop_database
+      run_setup_brew("post-install", "--platform", "linux", "--opt-bin", opt_bin, "--opt-share", opt_share, "--opt-prefix", opt_prefix)
     end
   end
 
@@ -270,7 +232,6 @@ DESKTOP
     else
       assert_predicate libexec/"Mediarecode.AppImage", :exist?
       assert_predicate bin/"mediarecode", :exist?
-      assert_predicate share/"icons/hicolor/256x256/apps/mediarecode.png", :exist?
     end
   end
 end
