@@ -58,6 +58,21 @@ Cette documentation correspond à **Mediarecode v2.0.0**.
 
 `setup.py` installe ensuite **tous les autres prérequis** pour **Windows**, **Linux Fedora / RHEL**, **Linux Debian / Ubuntu** et **macOS**, y compris **PySide6** et les outils externes nécessaires.
 
+### Installation avec binaires (recommandée)
+
+Depuis les releases, récupérer le binaire associé à votre OS.
+
+AppImage Linux : un gestionnaire type Gear Lever est recommandé pour maintenir les applications à jour. 
+L'appimage AllInc inclue toutes les dépendances.
+
+| Cible | Binaire | 
+|-------|----------|
+| AppImage Linux | Mediarecode-x86_64_allinc-<version>.AppImage` + `dist/releases/Mediarecode-x86_64_allinc-<version>.AppImage.zsync` |
+| Package macOS natif | `Mediarecode-<version>.dmg` |
+| Installateur Windows | `dist/releases/Mediarecode-Setup-<version>.exe` |
+| Release Homebrew Linux/macOS (preview)| `brew tap Hydro74000/mediarecode && brew install mediarecode` |
+
+
 ### Cloner le dépôt
 
 ```bash
