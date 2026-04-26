@@ -49,7 +49,7 @@ def current_config(panel: "RemuxPanel") -> RemuxConfig | None:
     if not sources:
         return None
 
-    track_order = [
+    track_order: list[tuple[int, int] | tuple[int, int, str]] = [
         (id_to_index[t.file_id], t.mkv_tid, t.entry_id)
         for t in all_tracks
         if t.enabled and t.file_id in id_to_index

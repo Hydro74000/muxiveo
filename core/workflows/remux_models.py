@@ -11,6 +11,7 @@ Classes publiques :
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from uuid import uuid4
@@ -50,6 +51,10 @@ class TrackEntry:
     orig_title:    str = field(default="", repr=False)
     orig_codec:    str = field(default="", repr=False)
     orig_display_info: str = field(default="", repr=False)
+    encode_plan_codec: str = field(default="", repr=False)
+    encode_plan_summary: str = field(default="", repr=False)
+    encode_plan_hdr_badges: tuple[str, ...] = field(default_factory=tuple, repr=False)
+    encode_plan_modified: bool = field(default=False, repr=False)
 
     # Flags MKV éditables (transmis à FFmpeg si modifiés)
     flag_enabled:          bool = field(default=True,  repr=False)  # --track-enabled-flag
@@ -194,7 +199,7 @@ class RemuxConfig:
 
     sources:             list[SourceInput]
     output:              Path
-    track_order:         list[tuple[int, int] | tuple[int, int, str]]
+    track_order:         Sequence[tuple[int, int] | tuple[int, int, str]]
     keep_chapters:       bool          = True
     #: None  → FFmpeg recopie les chapitres des sources (comportement par défaut).
     #: list  → un fichier ffmetadata temporaire est généré depuis ces entrées ;
@@ -254,7 +259,7 @@ def tracks_from_file_info(info: FileInfo, file_id: str = "") -> list[TrackEntry]
     for v in info.video_tracks:
         parts: list[str] = [v.resolution]
         if v.hdr_type != HDRType.NONE:
-            parts.append(v.hdr_type.label())
+            parts.append(v.hdr_label)
         if v.frame_rate:
             fr = v.frame_rate
             if "/" in fr:

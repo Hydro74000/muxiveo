@@ -56,8 +56,10 @@ Exécution :
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from PySide6.QtCore import Qt
@@ -99,7 +101,7 @@ _COLOR  = "#4f6ef7"
 
 
 @pytest.fixture
-def table(qt_app) -> _AudioTable:
+def table(qt_app) -> Generator[_AudioTable, None, None]:
     t = _AudioTable()
     yield t
     t.close()
@@ -120,7 +122,7 @@ def _codec_combo(table: _AudioTable, row: int) -> QComboBox:
 def _bitrate_editor(table: _AudioTable, row: int):
     editor = table.cellWidget(row, _AudioTable.COL_BITRATE)
     assert editor is not None
-    return editor
+    return cast(Any, editor)
 
 
 def _set_codec(table: _AudioTable, row: int, codec_id: str) -> None:
@@ -158,7 +160,7 @@ def _remux_entry(entry_id: str = "entry-a") -> TrackEntry:
     )
 
 
-def _video_track(index: int, hdr_type: HDRType = HDRType.NONE) -> VideoTrack:
+def _video_track(index: int, hdr_type: HDRType = HDRType.NONE, bit_depth: int = 10) -> VideoTrack:
     return VideoTrack(
         index=index,
         codec="hevc",
@@ -166,7 +168,7 @@ def _video_track(index: int, hdr_type: HDRType = HDRType.NONE) -> VideoTrack:
         width=3840,
         height=2160,
         frame_rate="23.976",
-        bit_depth=10,
+        bit_depth=bit_depth,
         color_space=None,
         color_primaries=None,
         color_transfer=None,
@@ -589,7 +591,7 @@ class TestEncodePanelDynamicHdrDefaults:
         assert panel._copy_hdr10plus_cb.isChecked() is True
         panel.close()
 
-    def test_dynamic_hdr_settings_are_independent_per_video_entry(self, qt_app):
+    def test_apply_all_video_settings_is_disabled_by_default(self, qt_app):
         panel = EncodePanel(AppConfig())
         info = _file_info(
             _PATH_A,
@@ -607,6 +609,7 @@ class TestEncodePanelDynamicHdrDefaults:
             (info, dovi_entry, _COLOR),
             (info, sdr_entry, _COLOR),
         ])
+        assert panel._apply_all_video_cb.isChecked() is False
         assert panel._copy_dv_cb.isChecked() is True
 
         panel._video_list.setCurrentRow(1)
@@ -617,7 +620,285 @@ class TestEncodePanelDynamicHdrDefaults:
         assert panel._copy_dv_cb.isChecked() is True
         panel.close()
 
-    def test_manual_dynamic_hdr_choice_is_kept_per_video_entry(self, qt_app):
+    def test_video_row_shows_encoder_badge_and_bold_only_when_not_copy(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-encoder-badge"
+        panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0)]), entry, _COLOR)])
+
+        row_item = panel._video_list.item(0)
+        assert row_item is not None
+        assert "Enc:" not in row_item.text()
+        assert "[x265]" not in row_item.text()
+        assert row_item.font().bold() is False
+
+        idx_x265 = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "libx265"
+        )
+        panel._codec_combo.setCurrentIndex(idx_x265)
+        row_item = panel._video_list.item(0)
+        assert row_item is not None
+        assert "[x265]" in row_item.text()
+        assert "Enc:" not in row_item.text()
+        assert row_item.font().bold() is True
+
+        idx_copy = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "copy"
+        )
+        panel._codec_combo.setCurrentIndex(idx_copy)
+        row_item = panel._video_list.item(0)
+        assert row_item is not None
+        assert "[x265]" not in row_item.text()
+        assert row_item.font().bold() is False
+        panel.close()
+
+    def test_video_row_shows_dv_and_hdr10plus_badges_from_track(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-with-hdr-badges"
+        info = _file_info(_PATH_A, [_video_track(0, HDRType.DOLBY_VISION_HDR10PLUS)])
+
+        panel.set_video_tracks([(info, entry, _COLOR)])
+
+        row_item = panel._video_list.item(0)
+        assert row_item is not None
+        text = row_item.text().lower()
+        assert "[dv]" in text
+        assert "[10+]" in text
+        assert "enc:" not in text
+        panel.close()
+
+    def test_video_row_dv_badge_is_isolated_per_track_on_initial_load(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        dv_entry = _video_entry(0)
+        dv_entry.entry_id = "video-dv"
+        sdr_entry = _video_entry(0)
+        sdr_entry.entry_id = "video-sdr"
+        dv_info = _file_info(_PATH_A, [_video_track(0, HDRType.DOLBY_VISION)])
+        sdr_info = _file_info(_PATH_B, [_video_track(0, HDRType.NONE)])
+
+        panel.set_video_tracks([
+            (dv_info, dv_entry, _COLOR),
+            (sdr_info, sdr_entry, _COLOR),
+        ])
+
+        first = panel._video_list.item(0)
+        second = panel._video_list.item(1)
+        assert first is not None
+        assert second is not None
+        assert "[dv]" in first.text().lower()
+        assert "[dv]" not in second.text().lower()
+        panel.close()
+
+    def test_video_row_h264_codec_removes_dv_badge_for_dv_source(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-dv-h264"
+        info = _file_info(_PATH_A, [_video_track(0, HDRType.DOLBY_VISION)])
+        panel.set_video_tracks([(info, entry, _COLOR)])
+
+        idx_x264 = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "libx264"
+        )
+        panel._codec_combo.setCurrentIndex(idx_x264)
+        row_item = panel._video_list.item(0)
+        assert row_item is not None
+        text = row_item.text().lower()
+        assert "[dv]" not in text
+        assert "[10+]" not in text
+        panel.close()
+
+    def test_collect_config_keeps_dynamic_hdr_flags_scoped_per_track(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+        dv_entry = _video_entry(0)
+        dv_entry.entry_id = "video-dv"
+        sdr_entry = _video_entry(0)
+        sdr_entry.entry_id = "video-sdr"
+        dv_info = _file_info(_PATH_A, [_video_track(0, HDRType.DOLBY_VISION)])
+        sdr_info = _file_info(_PATH_B, [_video_track(0, HDRType.NONE)])
+        panel.set_video_tracks([
+            (dv_info, dv_entry, _COLOR),
+            (sdr_info, sdr_entry, _COLOR),
+        ])
+
+        cfg = panel.collect_config()
+        assert cfg is not None
+        by_entry = {str(track.track_entry_id): track for track in cfg.video_tracks}
+        assert by_entry["video-dv"].copy_dv is True
+        assert by_entry["video-sdr"].copy_dv is False
+        panel.close()
+
+    def test_new_video_track_does_not_inherit_previous_track_settings_when_apply_all_disabled(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+        first_entry = _video_entry(0)
+        first_entry.entry_id = "video-first"
+        second_entry = _video_entry(1)
+        second_entry.entry_id = "video-second"
+        info = _file_info(
+            _PATH_A,
+            [
+                _video_track(0, HDRType.NONE),
+                _video_track(1, HDRType.NONE),
+            ],
+        )
+
+        panel.set_video_tracks([(info, first_entry, _COLOR)])
+        panel._apply_all_video_cb.setChecked(False)
+        idx_x265 = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "libx265"
+        )
+        panel._codec_combo.setCurrentIndex(idx_x265)
+
+        panel.set_video_tracks([
+            (info, first_entry, _COLOR),
+            (info, second_entry, _COLOR),
+        ])
+
+        cfg = panel.collect_config()
+        assert cfg is not None
+        by_entry = {str(video.track_entry_id): video for video in cfg.video_tracks}
+        assert by_entry["video-first"].codec == "libx265"
+        assert by_entry["video-second"].codec == "copy"
+        panel.close()
+
+    def test_new_video_track_inherits_settings_only_when_apply_all_and_non_copy(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+        first_entry = _video_entry(0)
+        first_entry.entry_id = "video-first"
+        second_entry = _video_entry(1)
+        second_entry.entry_id = "video-second"
+        info = _file_info(
+            _PATH_A,
+            [
+                _video_track(0, HDRType.NONE),
+                _video_track(1, HDRType.NONE),
+            ],
+        )
+
+        panel.set_video_tracks([(info, first_entry, _COLOR)])
+        panel._apply_all_video_cb.setChecked(True)
+        idx_x265 = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "libx265"
+        )
+        panel._codec_combo.setCurrentIndex(idx_x265)
+
+        panel.set_video_tracks([
+            (info, first_entry, _COLOR),
+            (info, second_entry, _COLOR),
+        ])
+
+        cfg = panel.collect_config()
+        assert cfg is not None
+        by_entry = {str(video.track_entry_id): video for video in cfg.video_tracks}
+        assert by_entry["video-first"].codec == "libx265"
+        assert by_entry["video-second"].codec == "libx265"
+        panel.close()
+
+    def test_video_row_shows_sdr_badge_when_tonemap_enabled(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-tonemap"
+        info = _file_info(_PATH_A, [_video_track(0, HDRType.HDR10)])
+        panel.set_video_tracks([(info, entry, _COLOR)])
+
+        panel._tonemap_cb.setChecked(True)
+        row_item = panel._video_list.item(0)
+        assert row_item is not None
+        text = row_item.text().lower()
+        assert "[sdr]" in text
+        assert "[dv]" not in text
+        assert "[10+]" not in text
+        panel.close()
+
+    def test_video_row_shows_hdr_badge_when_metadata_injection_enabled(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-hdr-injection"
+        info = _file_info(_PATH_A, [_video_track(0, HDRType.NONE)])
+        panel.set_video_tracks([(info, entry, _COLOR)])
+
+        panel._inject_hdr_cb.setChecked(True)
+        row_item = panel._video_list.item(0)
+        assert row_item is not None
+        text = row_item.text().lower()
+        assert "[hdr]" in text
+        panel.close()
+
+    def test_h264_precheck_forces_8bit_and_logs_switch(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-h264-8bit"
+        info = _file_info(_PATH_A, [_video_track(0, HDRType.NONE, bit_depth=10)])
+        logs: list[tuple[str, str]] = []
+        panel.log_message.connect(lambda lvl, msg: logs.append((str(lvl), str(msg))))
+        panel.set_video_tracks([(info, entry, _COLOR)])
+
+        idx_x264 = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "libx264"
+        )
+        panel._codec_combo.setCurrentIndex(idx_x264)
+
+        row_item = panel._video_list.item(0)
+        assert row_item is not None
+        assert "[8-bit]" in row_item.text()
+        settings = panel._current_video_settings()
+        assert settings.force_8bit is True
+        assert any("bascule auto en 8-bit" in message for _lvl, message in logs)
+
+        idx_x265 = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "libx265"
+        )
+        panel._codec_combo.setCurrentIndex(idx_x265)
+        settings = panel._current_video_settings()
+        assert settings.force_8bit is False
+        assert any("retour au mode source" in message for _lvl, message in logs)
+        panel.close()
+
+    def test_h264_8bit_switch_is_per_track_only(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+        first_entry = _video_entry(0)
+        first_entry.entry_id = "video-10bit"
+        second_entry = _video_entry(1)
+        second_entry.entry_id = "video-8bit"
+        info = _file_info(
+            _PATH_A,
+            [
+                _video_track(0, HDRType.NONE, bit_depth=10),
+                _video_track(1, HDRType.NONE, bit_depth=8),
+            ],
+        )
+
+        panel.set_video_tracks([(info, first_entry, _COLOR), (info, second_entry, _COLOR)])
+        panel._apply_all_video_cb.setChecked(False)
+
+        idx_x264 = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "libx264"
+        )
+        panel._video_list.setCurrentRow(0)
+        panel._codec_combo.setCurrentIndex(idx_x264)
+        panel._video_list.setCurrentRow(1)
+        panel._codec_combo.setCurrentIndex(idx_x264)
+
+        cfg = panel.collect_config()
+        assert cfg is not None
+        by_entry = {str(video.track_entry_id): video for video in cfg.video_tracks}
+        assert by_entry["video-10bit"].force_8bit is True
+        assert by_entry["video-8bit"].force_8bit is False
+        panel.close()
+
+    def test_dynamic_hdr_settings_are_independent_per_video_entry_when_apply_all_is_disabled(self, qt_app):
         panel = EncodePanel(AppConfig())
         info = _file_info(
             _PATH_A,
@@ -635,6 +916,7 @@ class TestEncodePanelDynamicHdrDefaults:
             (info, first_entry, _COLOR),
             (info, second_entry, _COLOR),
         ])
+        panel._apply_all_video_cb.setChecked(False)
         panel._copy_dv_cb.setChecked(False)
 
         panel._video_list.setCurrentRow(1)
@@ -704,7 +986,52 @@ class TestEncodePanelDynamicHdrDefaults:
             copy_hdr10plus=True,
         )
 
-        assert panel.is_pure_copy(config) is True
+        assert panel.is_pure_copy(cast(Any, config)) is True
+        panel.close()
+
+    def test_is_pure_copy_is_false_if_any_video_track_requires_encode(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        config = SimpleNamespace(
+            video=SimpleNamespace(codec="copy", inject_hdr_meta=False, tonemap_to_sdr=False),
+            video_tracks=[
+                SimpleNamespace(codec="copy", inject_hdr_meta=False, tonemap_to_sdr=False),
+                SimpleNamespace(codec="libx265", inject_hdr_meta=False, tonemap_to_sdr=False),
+            ],
+            audio_tracks=[SimpleNamespace(codec="copy")],
+        )
+
+        assert panel.is_pure_copy(cast(Any, config)) is False
+        panel.close()
+
+    def test_collect_config_keeps_all_video_tracks_after_addition_in_per_track_mode(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+
+        info = _file_info(
+            _PATH_A,
+            [
+                _video_track(0, HDRType.NONE),
+                _video_track(1, HDRType.NONE),
+            ],
+        )
+        first_entry = _video_entry(0)
+        first_entry.entry_id = "video-first"
+        second_entry = _video_entry(1)
+        second_entry.entry_id = "video-second"
+
+        panel.set_video_tracks([(info, first_entry, _COLOR)])
+        panel._apply_all_video_cb.setChecked(False)
+        panel.set_video_tracks([
+            (info, first_entry, _COLOR),
+            (info, second_entry, _COLOR),
+        ])
+
+        cfg = panel.collect_config()
+        assert cfg is not None
+        assert [video.track_entry_id for video in cfg.video_tracks] == [
+            "video-first",
+            "video-second",
+        ]
         panel.close()
 
 
@@ -723,6 +1050,6 @@ class TestEncodePanelRunOperation:
 
         monkeypatch.setattr(panel._workflow, "run", fake_run)
 
-        assert panel.run_operation(config) is expected_signals
+        assert panel.run_operation(cast(Any, config)) is expected_signals
         assert captured == {"config": config, "validate": False}
         panel.close()

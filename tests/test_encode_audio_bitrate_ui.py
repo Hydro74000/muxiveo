@@ -27,6 +27,7 @@ Exécution :
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QComboBox, QLineEdit
@@ -71,7 +72,7 @@ def _at(
 def _bitrate_editor(table: _AudioTable, row: int):
     editor = table.cellWidget(row, _AudioTable.COL_BITRATE)
     assert editor is not None
-    return editor
+    return cast(Any, editor)
 
 
 def _codec_combo(table: _AudioTable, row: int) -> QComboBox:
@@ -185,7 +186,7 @@ class TestAudioTableAdaptiveBitrates:
         table.close()
 
     def test_codec_switch_uses_configured_aac_default_per_channel(self, qt_app):
-        table = _AudioTable(config=_Cfg(aac=160, eac3=96))
+        table = _AudioTable(config=cast(Any, _Cfg(aac=160, eac3=96)))
         table.load_tracks([(_at(channels=6, bit_rate=2_000_000), _COLOR, _PATH_A)], default_codec="copy")
 
         _set_codec(table, 0, "aac")
@@ -194,7 +195,7 @@ class TestAudioTableAdaptiveBitrates:
         table.close()
 
     def test_codec_switch_from_copy_ignores_source_floor_for_configured_aac_default(self, qt_app):
-        table = _AudioTable(config=_Cfg(aac=160, eac3=96))
+        table = _AudioTable(config=cast(Any, _Cfg(aac=160, eac3=96)))
         table.load_tracks([(_at(channels=6, bit_rate=640_000), _COLOR, _PATH_A)], default_codec="copy")
 
         _set_codec(table, 0, "aac")
@@ -203,7 +204,7 @@ class TestAudioTableAdaptiveBitrates:
         table.close()
 
     def test_codec_switch_uses_configured_eac3_default_per_channel(self, qt_app):
-        table = _AudioTable(config=_Cfg(aac=96, eac3=224))
+        table = _AudioTable(config=cast(Any, _Cfg(aac=96, eac3=224)))
         table.load_tracks([(_at(channels=6, bit_rate=2_000_000), _COLOR, _PATH_A)], default_codec="copy")
 
         _set_codec(table, 0, "eac3")
@@ -212,7 +213,7 @@ class TestAudioTableAdaptiveBitrates:
         table.close()
 
     def test_codec_switch_from_copy_ignores_source_floor_for_configured_eac3_default(self, qt_app):
-        table = _AudioTable(config=_Cfg(aac=96, eac3=224))
+        table = _AudioTable(config=cast(Any, _Cfg(aac=96, eac3=224)))
         table.load_tracks([(_at(channels=6, bit_rate=640_000), _COLOR, _PATH_A)], default_codec="copy")
 
         _set_codec(table, 0, "eac3")
@@ -336,7 +337,7 @@ class TestAudioSourceDialogAdaptiveBitrates:
 
     def test_dialog_codec_switch_from_copy_uses_configured_defaults(self, qt_app):
         surround = _at(index=1, channels=6, channel_layout="5.1", bit_rate=640_000, title="Surround")
-        dialog = _AudioSourceDialog([(surround, _COLOR, _PATH_A)], config=_Cfg(aac=160, eac3=224))
+        dialog = _AudioSourceDialog([(surround, _COLOR, _PATH_A)], config=cast(Any, _Cfg(aac=160, eac3=224)))
 
         aac_idx = next(i for i in range(dialog._codec_combo.count()) if dialog._codec_combo.itemData(i) == "aac")
         dialog._codec_combo.setCurrentIndex(aac_idx)
@@ -354,7 +355,7 @@ class TestAudioSourceDialogAdaptiveBitrates:
         surround = _at(index=2, channels=6, channel_layout="5.1", bit_rate=640_000, title="Surround")
         dialog = _AudioSourceDialog(
             [(stereo, _COLOR, _PATH_A), (surround, _COLOR, _PATH_A)],
-            config=_Cfg(aac=96, eac3=224),
+            config=cast(Any, _Cfg(aac=96, eac3=224)),
         )
 
         dialog._track_list.setCurrentRow(1)

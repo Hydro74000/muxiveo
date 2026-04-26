@@ -26,6 +26,11 @@ from PySide6.QtCore import QSettings, QStandardPaths
 
 from core.lang_tags import Rfc5646LanguageTags
 from core.subprocess_utils import subprocess_text_kwargs
+from core.workflows.common.ffmpeg_runtime import (
+    default_ffmpeg_thread_count as _default_ffmpeg_thread_count,
+    normalize_ffmpeg_thread_count as _normalize_ffmpeg_thread_count,
+    normalize_max_parallel_video_encodes as _normalize_max_parallel_video_encodes,
+)
 from core.workdir import (
     clear_work_dir as clear_work_dir_contents,
     prepare_process_work_dir,
@@ -96,6 +101,9 @@ _REMOVED_INI_KEYS: dict[str, set[str]] = {
         "default_bitrate_per_channel_kbps",
         "bitrate_step_per_channel_kbps",
     },
+    "ui": {
+        "verbose_file_logging",
+    },
 }
 
 
@@ -113,25 +121,6 @@ def _load_ini() -> configparser.ConfigParser:
 
 def _is_windows() -> bool:
     return sys.platform == "win32"
-
-
-def _default_ffmpeg_thread_count() -> int:
-    """
-    Default FFmpeg thread count: logical CPU count × 0.75, rounded up.
-
-    Examples:
-        4 cores -> 3 threads
-        8 cores -> 6 threads
-    """
-    cpu_count = os.cpu_count() or 1
-    return max(1, (cpu_count * 3 + 3) // 4)
-
-
-def _normalize_ffmpeg_thread_count(value: int | None) -> int:
-    """Return a safe FFmpeg thread count, preserving 0 as ffmpeg auto mode."""
-    if value is None or value < 0:
-        return _default_ffmpeg_thread_count()
-    return value
 
 
 def _normalize_ui_scale_percent(value: int | None) -> int:
@@ -394,7 +383,13 @@ def write_ini_settings(section_values: dict[str, dict[str, str]]) -> None:
 
     for section, values in section_values.items():
         lines = _upsert_ini_section(lines, section, values)
-    lines = _remove_ini_keys(lines, _REMOVED_INI_KEYS)
+    removed_keys = {
+        section: _REMOVED_INI_KEYS[section]
+        for section in section_values
+        if section in _REMOVED_INI_KEYS
+    }
+    if removed_keys:
+        lines = _remove_ini_keys(lines, removed_keys)
 
     _INI_PATH.parent.mkdir(parents=True, exist_ok=True)
     _INI_PATH.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
@@ -626,6 +621,10 @@ def _default_output_dir() -> Path:
     return Path(raw) if raw else Path.home() / "Videos"
 
 
+def _default_verbose_log_dir() -> Path:
+    return _app_data_dir() / "logs"
+
+
 def _default_language_code() -> str:
     candidates: list[str | None] = [
         os.environ.get("LC_ALL"),
@@ -689,6 +688,13 @@ def _normalize_startup_panel(value: str | None) -> str:
     return aliases.get(raw, "dashboard")
 
 
+def _normalize_file_logging_level(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"standard", "verbose"}:
+        return raw
+    return "standard"
+
+
 
 INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
     {
@@ -750,6 +756,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         "fields": (
             {"key": "ram_buffer_enabled", "attr": "ram_buffer_enabled", "kind": "bool", "label": "Buffer RAM activé", "description": "Active le buffer RAM pour les fichiers HEVC intermédiaires quand le seuil le permet."},
             {"key": "ram_buffer_threshold_pct", "attr": "ram_buffer_threshold_pct", "kind": "int", "label": "Seuil buffer RAM (%)", "description": "Pourcentage minimal de RAM libre à conserver."},
+            {"key": "max_parallel_video_encodes", "attr": "max_parallel_video_encodes", "kind": "int", "label": "Encodages vidéo parallèles max", "description": "Nombre maximal de pistes vidéo encodées simultanément dans le pipeline multi-pistes. 1 = séquentiel (défaut)."},
         ),
     },
     {
@@ -763,6 +770,9 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "startup_panel", "attr": "startup_panel", "kind": "choice", "label": "Panneau à afficher au démarrage", "description": "Panneau chargé en premier au lancement de l'application.", "options": UI_STARTUP_PANEL_CHOICES},
             {"key": "startup_menu_compact", "attr": "startup_menu_compact", "kind": "bool", "label": "Démarrer avec le menu en mode Compact", "description": "Si activé, le menu latéral est réduit en mode icônes au lancement."},
             {"key": "startup_logs_expanded", "attr": "startup_logs_expanded", "kind": "bool", "label": "Ouvrir les logs au démarrage de l'application", "description": "Si activé, le panneau de logs est déplié au lancement."},
+            {"key": "enable_file_logging", "attr": "enable_file_logging", "kind": "bool", "label": "Activer le logging fichier", "description": "Si activé, les logs applicatifs sont aussi écrits dans un fichier texte sous app_data/logs/."},
+            {"key": "file_logging_level", "attr": "file_logging_level", "kind": "choice", "label": "Niveau de logging fichier", "description": "Standard écrit le flux visible dans la fenêtre. Verbose ajoute les sorties techniques détaillées des outils.", "options": (("standard", "Standard"), ("verbose", "Verbose"))},
+            {"key": "verbose_log_dir", "attr": "verbose_log_dir", "kind": "directory", "label": "Dossier des logs fichier", "description": "Dossier où écrire les logs fichier. Prérempli par défaut avec le chemin complet actuel."},
         ),
     },
     {
@@ -869,15 +879,25 @@ class AppConfig:
         return Path(self._resolve_text(section, key, settings_key, str(default)))
 
     def _resolve_int(self, section: str, key: str, settings_key: str, default: int) -> int:
+        def _parse_int(raw: object) -> int | None:
+            try:
+                return int(str(raw).strip())
+            except (TypeError, ValueError):
+                return None
+
         ini_value = self._ini_lookup(section, key)
         if ini_value is not _MISSING:
-            return default if ini_value == "" else int(str(ini_value))
+            if ini_value == "":
+                return default
+            parsed_ini = _parse_int(ini_value)
+            return parsed_ini if parsed_ini is not None else default
         value = self._settings.value(settings_key, default)
         if value in (None, ""):
             return default
         if isinstance(value, int):
             return value
-        return int(str(value))
+        parsed_settings = _parse_int(value)
+        return parsed_settings if parsed_settings is not None else default
 
     def _resolve_bool(self, section: str, key: str, settings_key: str, default: bool) -> bool:
         def _as_bool(raw: str) -> bool:
@@ -956,6 +976,9 @@ class AppConfig:
 
         self.ram_buffer_enabled = self._resolve_bool("encoding", "ram_buffer_enabled", "encoding/ram_buffer_enabled", True)
         self.ram_buffer_threshold_pct = self._resolve_int("encoding", "ram_buffer_threshold_pct", "encoding/ram_buffer_threshold_pct", 15)
+        self.max_parallel_video_encodes = _normalize_max_parallel_video_encodes(
+            self._resolve_int("encoding", "max_parallel_video_encodes", "encoding/max_parallel_video_encodes", 1)
+        )
 
         self.aac_bitrate_per_channel_kbps = self._resolve_int(
             "audio_encoding", "aac_bitrate_per_channel_kbps",
@@ -972,6 +995,34 @@ class AppConfig:
             self._resolve_text("ui", "language", "ui/language", _default_language_code())
         )
         self.log_max_lines = self._resolve_int("ui", "log_max_lines", "ui/log_max_lines", 2000)
+        legacy_verbose_file_logging = self._resolve_bool(
+            "ui", "verbose_file_logging", "ui/verbose_file_logging", False
+        )
+        enable_file_logging_ini = self._ini_lookup("ui", "enable_file_logging")
+        if enable_file_logging_ini is _MISSING and self._ini_lookup("ui", "verbose_file_logging") is not _MISSING:
+            self.enable_file_logging = legacy_verbose_file_logging
+        else:
+            self.enable_file_logging = self._resolve_bool(
+                "ui", "enable_file_logging", "ui/enable_file_logging", legacy_verbose_file_logging
+            )
+        file_logging_level_ini = self._ini_lookup("ui", "file_logging_level")
+        default_file_logging_level = "verbose" if legacy_verbose_file_logging else "standard"
+        if file_logging_level_ini is _MISSING and self._ini_lookup("ui", "verbose_file_logging") is not _MISSING:
+            self.file_logging_level = default_file_logging_level
+        else:
+            self.file_logging_level = _normalize_file_logging_level(
+                self._resolve_text(
+                    "ui",
+                    "file_logging_level",
+                    "ui/file_logging_level",
+                    default_file_logging_level,
+                )
+            )
+        # Compat: ancien nom conservé pour les usages résiduels internes/tests.
+        self.verbose_file_logging = self.enable_file_logging
+        self.verbose_log_dir = self._resolve_path(
+            "ui", "verbose_log_dir", "ui/verbose_log_dir", _default_verbose_log_dir()
+        )
         self.theme = self._resolve_text("ui", "theme", "ui/theme", "dark")
         self.ui_scale_percent = _normalize_ui_scale_percent(
             self._resolve_int("ui", "ui_scale_percent", "ui/ui_scale_percent", 100)
@@ -1031,12 +1082,19 @@ class AppConfig:
 
         s.setValue("encoding/ram_buffer_enabled", "true" if self.ram_buffer_enabled else "false")
         s.setValue("encoding/ram_buffer_threshold_pct", self.ram_buffer_threshold_pct)
+        s.setValue("encoding/max_parallel_video_encodes", self.max_parallel_video_encodes)
 
         s.setValue("audio_encoding/aac_bitrate_per_channel_kbps", self.aac_bitrate_per_channel_kbps)
         s.setValue("audio_encoding/eac3_bitrate_per_channel_kbps", self.eac3_bitrate_per_channel_kbps)
 
         s.setValue("ui/language", self.language)
         s.setValue("ui/log_max_lines", self.log_max_lines)
+        s.setValue(
+            "ui/enable_file_logging",
+            "true" if self.enable_file_logging else "false",
+        )
+        s.setValue("ui/file_logging_level", self.file_logging_level)
+        s.setValue("ui/verbose_log_dir", str(self.verbose_log_dir))
         s.setValue("ui/theme", self.theme)
         s.setValue("ui/ui_scale_percent", self.ui_scale_percent)
         s.setValue("ui/startup_panel", self.startup_panel)
@@ -1201,10 +1259,14 @@ class AppConfig:
             "encoding": {
                 "ram_buffer_enabled": self.ram_buffer_enabled,
                 "ram_buffer_threshold_pct": self.ram_buffer_threshold_pct,
+                "max_parallel_video_encodes": self.max_parallel_video_encodes,
             },
             "ui": {
                 "language": self.language,
                 "log_max_lines": self.log_max_lines,
+                "enable_file_logging": self.enable_file_logging,
+                "file_logging_level": self.file_logging_level,
+                "verbose_log_dir": str(self.verbose_log_dir),
                 "theme": self.theme,
                 "ui_scale_percent": self.ui_scale_percent,
                 "startup_panel": self.startup_panel,

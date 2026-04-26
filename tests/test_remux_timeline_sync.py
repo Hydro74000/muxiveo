@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -11,6 +12,7 @@ from core.workflows.remux_models import SourceInput, TrackEntry
 from core.workflows.remux_timeline_sync import (
     LiveSyncSession,
     FfmpegTimelineSync,
+    SyncPreparedInput,
     TimelineSyncFallbackHelper,
 )
 
@@ -75,8 +77,8 @@ def test_prepare_from_mapped_tracks_extracts_only_foreign_audio_subtitle(tmp_pat
 
     assert len(prepared) == 2
     assert [p.input_idx for p in prepared] == [2, 3]
-    assert prepared[0].path.suffix == ".mka"
-    assert prepared[1].path.suffix == ".mks"
+    assert Path(prepared[0].path).suffix == ".mka"
+    assert Path(prepared[1].path).suffix == ".mks"
     assert len(calls) == 2
 
 
@@ -163,8 +165,8 @@ def test_start_live_demux_session_uses_fifos_and_no_extract(tmp_path, monkeypatc
     assert len(session.inputs) == 2
     assert session.inputs[0].input_idx == 2
     assert session.inputs[1].input_idx == 3
-    assert session.inputs[0].path.suffix == ".mka"
-    assert session.inputs[1].path.suffix == ".mks"
+    assert Path(session.inputs[0].path).suffix == ".mka"
+    assert Path(session.inputs[1].path).suffix == ".mks"
     assert popen_cmds, "Aucune commande ffmpeg live capturée"
     assert "-y" in popen_cmds[0]
     assert "-start_at_zero" in popen_cmds[0]
@@ -276,14 +278,14 @@ def test_prepare_from_mapped_tracks_mmap_uses_mmap_extractor(tmp_path, monkeypat
 
     assert len(prepared) == 1
     assert prepared[0].input_idx == 2
-    assert prepared[0].path.suffix == ".mka"
+    assert Path(prepared[0].path).suffix == ".mka"
     assert len(calls) == 1
 
 
 def test_fallback_helper_prefers_live_when_available(tmp_path):
     sync_path = tmp_path / "sync_live.mka"
     sync_path.touch()
-    expected = [type("P", (), {"key": (1, 1, "audio"), "path": sync_path, "input_idx": 2})()]
+    expected = [SyncPreparedInput(key=(1, 1, "audio"), path=sync_path, input_idx=2)]
 
     class _FakeSyncer:
         def start_live_demux_session(self, **_kwargs):
@@ -296,7 +298,7 @@ def test_fallback_helper_prefers_live_when_available(tmp_path):
             pytest.fail("file fallback should not run when live is available")
 
     result = TimelineSyncFallbackHelper(
-        syncer=_FakeSyncer(),
+        syncer=cast(Any, _FakeSyncer()),
         work_dir=tmp_path,
         ram_dir=tmp_path / "ram",
     ).prepare(
@@ -323,7 +325,7 @@ def test_fallback_helper_prefers_ram_before_disk(tmp_path):
 
         def prepare_from_mapped_tracks_mmap(self, **kwargs):
             calls.append(Path(kwargs["tmp_dir"]))
-            return [type("P", (), {"key": (1, 1, "audio"), "path": ram_dir / "sync_ram.mka", "input_idx": 2})()]
+            return [SyncPreparedInput(key=(1, 1, "audio"), path=ram_dir / "sync_ram.mka", input_idx=2)]
 
         def prepare_from_mapped_tracks(self, **_kwargs):
             pytest.fail("file fallback should not run when RAM mmap works")
@@ -334,7 +336,7 @@ def test_fallback_helper_prefers_ram_before_disk(tmp_path):
     sources = [_source(src, 1, [_track(1, "audio")])]
 
     result = TimelineSyncFallbackHelper(
-        syncer=_FakeSyncer(),
+        syncer=cast(Any, _FakeSyncer()),
         work_dir=work_dir,
         ram_dir=ram_dir,
     ).prepare(

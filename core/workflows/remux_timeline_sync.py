@@ -22,16 +22,8 @@ from typing import Callable, Protocol, Sequence
 
 from core.runner import TaskCancelledError
 from core.subprocess_utils import subprocess_text_kwargs
+from core.workflows.common.ffmpeg_runtime import cli_path as _cli_path
 from core.workflows.remux_models import RemuxError, SourceInput
-
-
-def _cli_path(path: Path | str) -> str:
-    if isinstance(path, str):
-        return path
-    text = str(path)
-    if text.startswith("\\\\.\\pipe\\"):
-        return text
-    return path.as_posix()
 
 
 class _TrackLike(Protocol):

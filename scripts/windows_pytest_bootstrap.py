@@ -5,6 +5,7 @@ import os
 import sys
 import types
 from pathlib import Path
+from typing import Any, cast
 
 
 class _BoundSignal:
@@ -71,9 +72,9 @@ def _install_fake_pyside6() -> None:
     if "PySide6" in sys.modules:
         return
 
-    pkg = types.ModuleType("PySide6")
-    qtcore = types.ModuleType("PySide6.QtCore")
-    qtwidgets = types.ModuleType("PySide6.QtWidgets")
+    pkg = cast(Any, types.ModuleType("PySide6"))
+    qtcore = cast(Any, types.ModuleType("PySide6.QtCore"))
+    qtwidgets = cast(Any, types.ModuleType("PySide6.QtWidgets"))
 
     qtcore.QObject = _QObject
     qtcore.Signal = _SignalDescriptor

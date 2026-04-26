@@ -51,6 +51,71 @@ class TestHardwareEncoderDetector:
         assert used_ff == "ffmpeg.exe"
         assert all(cmd[0] != "nvidia-smi" for cmd in calls)
 
+    def test_detect_windows_qsv_uses_explicit_adapter_index(self):
+        encoders = "V....D hevc_qsv             Intel Quick Sync Video\n"
+        probe_cmds: list[list[str]] = []
+
+        def fake_run(cmd, **_kwargs):
+            if cmd == ["ffmpeg.exe", "-hide_banner", "-encoders"]:
+                return _completed(stdout=encoders)
+            probe_cmds.append(list(cmd))
+            return _completed(returncode=0)
+
+        with patch("core.workflows.encode.hardware.subprocess.run", side_effect=fake_run), \
+             patch.object(HardwareEncoderDetector, "_qsv_device", return_value="1"), \
+             _no_system_ff:
+            detected, used_ff = HardwareEncoderDetector().detect("ffmpeg.exe")
+
+        assert detected == {"hevc_qsv"}
+        assert used_ff == "ffmpeg.exe"
+        assert len(probe_cmds) == 1
+        cmd = probe_cmds[0]
+        assert "-qsv_device" in cmd
+        assert cmd[cmd.index("-qsv_device") + 1] == "1"
+
+    def test_detect_windows_amf_uses_explicit_d3d11_adapter(self):
+        encoders = "V....D h264_amf             AMD AMF H.264 Encoder\n"
+        probe_cmds: list[list[str]] = []
+
+        def fake_run(cmd, **_kwargs):
+            if cmd == ["ffmpeg.exe", "-hide_banner", "-encoders"]:
+                return _completed(stdout=encoders)
+            probe_cmds.append(list(cmd))
+            return _completed(returncode=0)
+
+        with patch("core.workflows.encode.hardware.subprocess.run", side_effect=fake_run), \
+             patch.object(HardwareEncoderDetector, "_amf_device", return_value="2"), \
+             _no_system_ff:
+            detected, used_ff = HardwareEncoderDetector().detect("ffmpeg.exe")
+
+        assert detected == {"h264_amf"}
+        assert used_ff == "ffmpeg.exe"
+        cmd = probe_cmds[0]
+        assert "-init_hw_device" in cmd
+        assert cmd[cmd.index("-init_hw_device") + 1] == "d3d11va=mre_amf_probe2:2"
+        assert "-filter_hw_device" in cmd
+
+    def test_detect_windows_nvenc_uses_explicit_gpu_index(self):
+        encoders = "V....D h264_nvenc           NVIDIA NVENC H.264 encoder\n"
+        probe_cmds: list[list[str]] = []
+
+        def fake_run(cmd, **_kwargs):
+            if cmd == ["ffmpeg.exe", "-hide_banner", "-encoders"]:
+                return _completed(stdout=encoders)
+            probe_cmds.append(list(cmd))
+            return _completed(returncode=0)
+
+        with patch("core.workflows.encode.hardware.subprocess.run", side_effect=fake_run), \
+             patch.object(HardwareEncoderDetector, "_nvenc_device", return_value="1"), \
+             _no_system_ff:
+            detected, used_ff = HardwareEncoderDetector().detect("ffmpeg.exe")
+
+        assert detected == {"h264_nvenc"}
+        assert used_ff == "ffmpeg.exe"
+        cmd = probe_cmds[0]
+        assert "-gpu" in cmd
+        assert cmd[cmd.index("-gpu") + 1] == "1"
+
     def test_detect_linux_nvenc_keeps_nvidia_shortcut_for_distrobox(self):
         """
         Linux : si le signal NVIDIA bas niveau est present, on garde la logique
@@ -145,12 +210,55 @@ class TestHardwareEncoderDetector:
 
         with patch("core.workflows.encode.hardware.subprocess.run", side_effect=fake_run), \
              patch.object(HardwareEncoderDetector, "_vaapi_device", return_value=None), \
+             patch.object(HardwareEncoderDetector, "_qsv_device", return_value="/dev/dri/renderD129"), \
              _no_system_ff:
             detected, used_ff = HardwareEncoderDetector().detect("ffmpeg")
 
         assert detected == {"h264_qsv"}
         assert all("hevc_vaapi" not in cmd for cmd in probe_cmds)
         assert any("h264_qsv" in cmd for cmd in probe_cmds)
+
+    def test_detect_keeps_qsv_specific_probe_on_linux(self):
+        """
+        Linux multi-GPU : QSV doit cibler explicitement le render node Intel
+        pour éviter le choix implicite du mauvais device.
+        """
+        encoders = "V....D hevc_qsv             H.265 / HEVC (Intel Quick Sync Video acceleration)\n"
+        probe_cmds: list[list[str]] = []
+
+        def fake_run(cmd, **_kwargs):
+            if cmd == ["ffmpeg", "-hide_banner", "-encoders"]:
+                return _completed(stdout=encoders)
+            probe_cmds.append(list(cmd))
+            return _completed(returncode=0)
+
+        with patch("core.workflows.encode.hardware.subprocess.run", side_effect=fake_run), \
+             patch.object(HardwareEncoderDetector, "_qsv_device", return_value="/dev/dri/renderD129"), \
+             _no_system_ff:
+            detected, used_ff = HardwareEncoderDetector().detect("ffmpeg")
+
+        assert detected == {"hevc_qsv"}
+        assert used_ff == "ffmpeg"
+        assert len(probe_cmds) == 1
+        cmd = probe_cmds[0]
+        assert "-qsv_device" in cmd
+        assert cmd[cmd.index("-qsv_device") + 1] == "/dev/dri/renderD129"
+
+    def test_detect_skips_qsv_when_device_missing(self):
+        """Sans render node Intel resolu, QSV ne doit pas etre annonce."""
+        encoders = "V....D h264_qsv             H.264 / AVC (Intel Quick Sync Video acceleration)\n"
+
+        def fake_run(cmd, **_kwargs):
+            if cmd == ["ffmpeg", "-hide_banner", "-encoders"]:
+                return _completed(stdout=encoders)
+            raise AssertionError(f"Commande inattendue: {cmd}")
+
+        with patch("core.workflows.encode.hardware.subprocess.run", side_effect=fake_run), \
+             patch.object(HardwareEncoderDetector, "_qsv_device", return_value=None), \
+             _no_system_ff:
+            detected, _ff = HardwareEncoderDetector().detect("ffmpeg")
+
+        assert detected == set()
 
     def test_failed_probe_does_not_mark_codec_as_available(self):
         """Un codec compile mais non utilisable ne doit pas etre expose a l'UI."""

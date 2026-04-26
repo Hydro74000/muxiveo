@@ -57,7 +57,7 @@ import time
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from core.file_types import ACCEPTED_EXTENSIONS, build_desktop_mime_type_string
 from core.version import APP_NAME, APP_VERSION
@@ -92,16 +92,22 @@ _MACOS_MIN_VERSION = os.environ.get("MEDIARECODE_MACOS_MIN_VERSION", "11.0").str
 _APPIMAGE_UPDATE_OWNER = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_OWNER", "Hydro74000").strip() or "Hydro74000"
 _APPIMAGE_UPDATE_REPO = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_REPO", "mediarecode").strip() or "mediarecode"
 _APPIMAGE_UPDATE_RELEASE = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_RELEASE", "latest").strip() or "latest"
-_MSIX_IDENTITY = os.environ.get("MEDIARECODE_MSIX_IDENTITY", "Hydro74000.Mediarecode").strip() or "Hydro74000.Mediarecode"
-_MSIX_PUBLISHER = os.environ.get("MEDIARECODE_MSIX_PUBLISHER", "CN=Hydro74000").strip() or "CN=Hydro74000"
-_MSIX_PUBLISHER_DISPLAY_NAME = os.environ.get("MEDIARECODE_MSIX_PUBLISHER_DISPLAY_NAME", "Hydro74000").strip() or "Hydro74000"
-_MSIX_DESCRIPTION = os.environ.get("MEDIARECODE_MSIX_DESCRIPTION", "Mediarecode video workflow").strip() or "Mediarecode video workflow"
+_MSIX_IDENTITY = os.environ.get("MEDIARECODE_MSIX_IDENTITY", "AOTR.Mediarecode").strip() or "AOTR.Mediarecode"
+_MSIX_PUBLISHER = os.environ.get("MEDIARECODE_MSIX_PUBLISHER", "CN=AOTR").strip() or "CN=AOTR"
+_MSIX_PUBLISHER_DISPLAY_NAME = os.environ.get("MEDIARECODE_MSIX_PUBLISHER_DISPLAY_NAME", "AOTR").strip() or "AOTR"
+_MSIX_DESCRIPTION = os.environ.get("MEDIARECODE_MSIX_DESCRIPTION", "AOTR Mediarecode is an independent video workflow tool. This software is not affiliated with, authorized, or endorsed by Nero AG or any other media software providers.").strip() or "AOTR Mediarecode is an independent video workflow tool. This software is not affiliated with, authorized, or endorsed by Nero AG or any other media software providers."
 _MSIX_CERT_PFX = os.environ.get("MEDIARECODE_MSIX_CERT_PFX", "").strip()
 _MSIX_CERT_PASSWORD = os.environ.get("MEDIARECODE_MSIX_CERT_PASSWORD", "").strip()
 _MSIX_TIMESTAMP_URL = os.environ.get("MEDIARECODE_MSIX_TIMESTAMP_URL", "http://timestamp.digicert.com").strip() or "http://timestamp.digicert.com"
 _MSIX_STORE_CONFIG = os.environ.get("MEDIARECODE_MSIX_STORE_CONFIG", "").strip()
 _WINDOWS_SDK_WINGET_ID = os.environ.get("MEDIARECODE_WINDOWS_SDK_WINGET_ID", "Microsoft.WindowsSDK").strip() or "Microsoft.WindowsSDK"
 _WINDOWS_SDK_INSTALLER = os.environ.get("MEDIARECODE_WINDOWS_SDK_INSTALLER", "").strip()
+# Exception MSIX : nom technique distinct du branding/artefacts classiques.
+_MSIX_PACKAGE_NAME = re.sub(
+    r"\s+",
+    "",
+    os.environ.get("MEDIARECODE_MSIX_PACKAGE_NAME", "AOTRMediarecode").strip(),
+) or "AOTRMediarecode"
 
 # ── Modules Python exclus du bundle ──────────────────────────────────────────
 
@@ -1756,10 +1762,10 @@ def _stage_msix_layout(
     assets_dir = layout_dir / "Assets"
     _build_msix_assets(assets_dir)
 
-    vfs_root = layout_dir / "VFS" / _msix_vfs_root_dir() / APP_NAME
+    vfs_root = layout_dir / "VFS" / _msix_vfs_root_dir() / _MSIX_PACKAGE_NAME
     shutil.copytree(bundle_dir, vfs_root)
 
-    executable = f"VFS\\{_msix_vfs_root_dir()}\\{APP_NAME}\\mediarecode.exe"
+    executable = f"VFS\\{_msix_vfs_root_dir()}\\{_MSIX_PACKAGE_NAME}\\mediarecode.exe"
     manifest_path = layout_dir / "AppxManifest.xml"
     manifest_path.write_text(
         _msix_manifest_content(version_tag, executable, metadata=metadata),
@@ -1808,7 +1814,7 @@ def _build_msix_package(
 
     layout_dir = _stage_msix_layout(bundle_dir, version_tag, metadata=metadata)
     makeappx = _ensure_windows_sdk_tool("makeappx.exe")
-    output = _versioned_output_path(ROOT / f"{APP_NAME}.msix", version_tag)
+    output = _versioned_output_path(ROOT / f"{_MSIX_PACKAGE_NAME}.msix", version_tag)
     if output.exists():
         output.unlink()
 
@@ -1992,8 +1998,8 @@ def _ensure_windows_icu_runtime_cache() -> list[Path]:
             if not normalized.lower().endswith(".dll"):
                 continue
             target = cache_dir / Path(normalized).name
-            with archive.open(member) as src, target.open("wb") as dst:
-                shutil.copyfileobj(src, dst)
+            with archive.open(member) as src_f, target.open("wb") as dst_f:
+                shutil.copyfileobj(src_f, dst_f)
             extracted_any = True
 
     # --- AJOUT : création des alias ICU non suffixés ---
@@ -2017,18 +2023,18 @@ def _ensure_windows_icu_runtime_cache() -> list[Path]:
 
 
     # créer les alias
-    for plain, src in (
+    for plain, src_dll in (
         ("icuuc.dll", alias_map["icuuc"]),
         ("icuin.dll", alias_map["icuin"]),
         ("icudt.dll", alias_map["icudt"] or alias_map["icu"]),
         ("icu.dll", alias_map["icu"] or alias_map["icudt"]),
     ):
-        if src is None:
+        if src_dll is None:
             continue
         dst = cache_dir / plain
         if not dst.exists():
-            shutil.copy2(src, dst)
-            _ok(f"ICU alias créé : {dst.name} -> {src.name}")
+            shutil.copy2(src_dll, dst)
+            _ok(f"ICU alias créé : {dst.name} -> {src_dll.name}")
 
 
     if not extracted_any:
@@ -2557,19 +2563,24 @@ def _build_icns_from_png(src_png: Path, dest_icns: Path) -> Path | None:
         _warn(f"icon.png absent : {src_png} — .icns non généré")
         return None
 
+    pil_image: Any | None = None
+    qimage_cls: Any | None = None
+    qt_namespace: Any | None = None
+    use_qt_backend = False
+
     try:
-        from PIL import Image  # type: ignore[import-not-found]
+        from PIL import Image as _PILImage  # type: ignore[import-not-found]
+        pil_image = _PILImage
     except ImportError:
         try:
-            from PySide6.QtGui import QImage  # type: ignore[import-not-found]
-            qt_backend = True
+            from PySide6.QtCore import Qt as _Qt  # type: ignore[import-not-found]
+            from PySide6.QtGui import QImage as _QImage  # type: ignore[import-not-found]
+            qt_namespace = _Qt
+            qimage_cls = _QImage
+            use_qt_backend = True
         except ImportError:
             _warn("Ni PIL ni PySide6.QtGui disponibles — .icns non généré")
             return None
-        else:
-            qt_backend = True
-    else:
-        qt_backend = False
 
     iconset = dest_icns.with_suffix(".iconset")
     if iconset.exists():
@@ -2584,17 +2595,22 @@ def _build_icns_from_png(src_png: Path, dest_icns: Path) -> Path | None:
                 continue
             suffix = "" if scale == 1 else "@2x"
             out = iconset / f"icon_{size}x{size}{suffix}.png"
-            if qt_backend:
-                img = QImage(str(src_png))
-                scaled = img.scaled(
-                    px, px,
-                    aspectRatioMode=1,  # Qt.AspectRatioMode.KeepAspectRatio
-                    transformMode=1,    # Qt.TransformationMode.SmoothTransformation
+            if use_qt_backend:
+                assert qimage_cls is not None and qt_namespace is not None
+                qimg: Any = qimage_cls(str(src_png))
+                scaled = qimg.scaled(
+                    px,
+                    px,
+                    qt_namespace.AspectRatioMode.KeepAspectRatio,
+                    qt_namespace.TransformationMode.SmoothTransformation,
                 )
                 scaled.save(str(out), "PNG")
             else:
-                img = Image.open(src_png).convert("RGBA")
-                img.resize((px, px), Image.LANCZOS).save(out, "PNG")
+                assert pil_image is not None
+                pil_img: Any = pil_image.open(src_png).convert("RGBA")
+                resampling = getattr(pil_image, "Resampling", None)
+                lanczos = resampling.LANCZOS if resampling is not None else getattr(pil_image, "LANCZOS", 1)
+                pil_img.resize((px, px), lanczos).save(out, "PNG")
 
     dest_icns.parent.mkdir(parents=True, exist_ok=True)
     _run(["iconutil", "-c", "icns", str(iconset), "-o", str(dest_icns)])

@@ -29,7 +29,6 @@ from ui.panels.remux_panel.models import (
 from ui.panels.remux_panel.theme import _C, _pencil_icon
 from ui.panels.track_edit_dialog import TrackEditDialog
 
-
 class _TrackInfoDelegate(QStyledItemDelegate):
     @staticmethod
     def _offset_color(offset_value: str) -> QColor:
@@ -94,7 +93,6 @@ class _TrackInfoDelegate(QStyledItemDelegate):
         painter.drawText(x, baseline, suffix)
         painter.restore()
 
-
 class _TrackTable(QTableWidget):
     order_changed = Signal()
     extract_requested = Signal(object)  # TrackEntry
@@ -103,6 +101,25 @@ class _TrackTable(QTableWidget):
     _MAX_VISIBLE_ROWS = 15
     _ROW_H_DEFAULT = 28
     _NEW_TRACK_COLOR = QColor(_C.ERROR)
+    _VIDEO_ENCODE_COLOR = QColor(_C.ACCENT)
+    _VIDEO_ENCODE_CODEC_COLOR = QColor(_C.ERROR)
+    _VIDEO_CODEC_SHORT_LABELS: dict[str, str] = {
+        "libx265": "HEVC",
+        "hevc_nvenc": "HEVC",
+        "hevc_amf": "HEVC",
+        "hevc_qsv": "HEVC",
+        "hevc_vaapi": "HEVC",
+        "libx264": "H264",
+        "h264_nvenc": "H264",
+        "h264_amf": "H264",
+        "h264_qsv": "H264",
+        "h264_vaapi": "H264",
+        "libsvtav1": "AV1",
+        "av1_nvenc": "AV1",
+        "av1_amf": "AV1",
+        "av1_qsv": "AV1",
+        "av1_vaapi": "AV1",
+    }
 
     COL_SOURCE = 0
     COL_CHECK = 1
@@ -359,6 +376,7 @@ class _TrackTable(QTableWidget):
 
         if entry.is_new:
             self._apply_new_track_style(row)
+        self._apply_video_encode_style(row, entry)
 
         edit_btn = QPushButton()
         from PySide6.QtCore import QSize
@@ -395,6 +413,48 @@ class _TrackTable(QTableWidget):
             font = item.font()
             font.setBold(True)
             item.setFont(font)
+
+    def _apply_video_encode_style(self, row: int, entry: TrackEntry) -> None:
+        codec_item = self.item(row, self.COL_CODEC)
+        if entry.track_type != "video":
+            if codec_item is not None:
+                codec_item.setText(entry.codec)
+            return
+
+        override_codec = str(entry.encode_plan_codec or "").strip().lower()
+        has_encode_override = bool(override_codec and override_codec != "copy")
+        display_codec = entry.orig_codec or entry.codec
+        if has_encode_override:
+            display_codec = self._VIDEO_CODEC_SHORT_LABELS.get(
+                override_codec,
+                override_codec.upper(),
+            )
+        if codec_item is not None:
+            codec_item.setText(display_codec)
+
+        highlight = has_encode_override
+        color = self._VIDEO_ENCODE_COLOR if highlight else None
+        columns = (self.COL_TYPE, self.COL_CODEC, self.COL_LANG, self.COL_TITLE, self.COL_INFO)
+        for col in columns:
+            item = self.item(row, col)
+            if item is None:
+                continue
+            font = item.font()
+            font.setBold(highlight)
+            item.setFont(font)
+            if color is None:
+                if col == self.COL_TYPE:
+                    item.setForeground(QColor(_C.TRACK_VIDEO))
+                elif col == self.COL_INFO:
+                    item.setForeground(QColor(_C.TEXT_SEC))
+                else:
+                    item.setForeground(QColor(_C.TEXT_PRI))
+            else:
+                # Ligne encodée mise en avant en bleu, mais codec explicite en rouge.
+                if col == self.COL_CODEC:
+                    item.setForeground(self._VIDEO_ENCODE_CODEC_COLOR)
+                else:
+                    item.setForeground(color)
 
     def current_tracks(self) -> list[TrackEntry]:
         tracks: list[TrackEntry] = []
@@ -506,6 +566,38 @@ class _TrackTable(QTableWidget):
         finally:
             self.blockSignals(False)
         return False
+
+    def update_video_encoding_plans(
+        self,
+        plans: dict[str, str],
+        *,
+        clear_missing: bool = False,
+    ) -> bool:
+        changed = False
+        self.blockSignals(True)
+        try:
+            for row in range(self.rowCount()):
+                item0 = self.item(row, self.COL_CHECK)
+                if item0 is None:
+                    continue
+                entry = item0.data(Qt.ItemDataRole.UserRole)
+                if not isinstance(entry, TrackEntry) or entry.track_type != "video":
+                    continue
+                target_codec = str(plans.get(entry.entry_id, "") or "").strip().lower()
+                if not target_codec and not clear_missing:
+                    continue
+                modified = bool(target_codec and target_codec != "copy")
+                if entry.encode_plan_codec == target_codec and entry.encode_plan_modified == modified:
+                    continue
+                entry.encode_plan_codec = target_codec
+                entry.encode_plan_summary = ""
+                entry.encode_plan_hdr_badges = ()
+                entry.encode_plan_modified = modified
+                self._apply_video_encode_style(row, entry)
+                changed = True
+        finally:
+            self.blockSignals(False)
+        return changed
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         if item.column() != self.COL_LANG:

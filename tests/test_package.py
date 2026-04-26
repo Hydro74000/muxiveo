@@ -421,6 +421,7 @@ def test_stage_msix_layout_embeds_file_associations_and_bundle(tmp_path):
 
     with patch.object(package_mod, "ROOT", tmp_path), \
          patch.object(package_mod, "APP_NAME", "Mediarecode"), \
+         patch.object(package_mod, "_MSIX_PACKAGE_NAME", "AOTRMediarecode"), \
          patch.object(package_mod, "_msix_processor_architecture", return_value="x64"), \
          patch.object(package_mod, "_load_msix_store_metadata", return_value=metadata):
         layout_dir = package_mod._stage_msix_layout(bundle_dir, "1.3.2", metadata=metadata)
@@ -428,7 +429,7 @@ def test_stage_msix_layout_embeds_file_associations_and_bundle(tmp_path):
     manifest = (layout_dir / "AppxManifest.xml").read_text(encoding="utf-8")
     assert '<uap:Extension Category="windows.fileTypeAssociation">' in manifest
     assert '<uap:FileType>.mkv</uap:FileType>' in manifest
-    assert (layout_dir / "VFS" / "ProgramFilesX64" / "Mediarecode" / "mediarecode.exe").exists()
+    assert (layout_dir / "VFS" / "ProgramFilesX64" / "AOTRMediarecode" / "mediarecode.exe").exists()
 
 
 def test_build_msixupload_wraps_msix_for_partner_center(tmp_path):
@@ -448,7 +449,7 @@ def test_build_msix_package_invokes_makeappx_and_signing(tmp_path):
     bundle_dir.mkdir(parents=True)
     layout_dir = tmp_path / "layout"
     layout_dir.mkdir()
-    output_path = tmp_path / "Mediarecode-1.3.2.msix"
+    output_path = tmp_path / "AOTRMediarecode-1.3.2.msix"
     commands: list[list[str]] = []
 
     def fake_run(cmd, **kwargs):
@@ -458,6 +459,7 @@ def test_build_msix_package_invokes_makeappx_and_signing(tmp_path):
 
     with patch.object(package_mod, "OS", "Windows"), \
          patch.object(package_mod, "ROOT", tmp_path), \
+         patch.object(package_mod, "_MSIX_PACKAGE_NAME", "AOTRMediarecode"), \
          patch.object(package_mod, "_stage_msix_layout", return_value=layout_dir), \
          patch.object(package_mod, "_ensure_windows_sdk_tool", return_value="C:\\sdk\\makeappx.exe"), \
          patch.object(package_mod, "_sign_msix_package") as mock_sign, \

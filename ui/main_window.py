@@ -35,12 +35,12 @@ Signal exposé :
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from enum import Enum
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING, cast
 
@@ -59,6 +59,7 @@ from PySide6.QtWidgets import (
 
 from core.config import AppConfig
 from core.i18n import apply_translations, set_current_language, translate_text
+from core.logging import LogLevel, VerboseFileLogger, parse_log_level
 from core.runner import TaskSignals
 from core.subprocess_utils import subprocess_text_kwargs
 from core.version import APP_VERSION_LABEL, WRITING_APPLICATION_TAG
@@ -79,12 +80,6 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Niveaux de log
 # ---------------------------------------------------------------------------
-
-class LogLevel(str, Enum):
-    INFO  = "INFO"
-    OK    = "OK"
-    WARN  = "WARN"
-    ERROR = "ERROR"
 
 
 def _level_color(level: LogLevel) -> str:
@@ -130,6 +125,8 @@ _ENCODE_PROGRESS_NOISE_PREFIXES: tuple[str, ...] = (
     "progress=",
 )
 _STEP_PROGRESS_RE = re.compile(r"^STEP\s+\d+\s*-\s*(.+)$")
+_ENCODE_INTERNAL_PROGRESS_PREFIX = "__MRE_PROGRESS__ "
+_MULTI_ENCODE_LABEL_RE = re.compile(r"^ffmpeg-video-(\d+)(?:-pass(\d+))?$")
 
 
 def _is_encode_stage_message(line: str) -> bool:
@@ -138,6 +135,142 @@ def _is_encode_stage_message(line: str) -> bool:
 
 def _is_encode_progress_noise(line: str) -> bool:
     return any(line.startswith(prefix) for prefix in _ENCODE_PROGRESS_NOISE_PREFIXES)
+
+
+def _parse_encode_internal_progress(line: str) -> dict[str, object] | None:
+    if not line.startswith(_ENCODE_INTERNAL_PROGRESS_PREFIX):
+        return None
+    payload = line[len(_ENCODE_INTERNAL_PROGRESS_PREFIX):].strip()
+    if not payload:
+        return None
+    try:
+        obj = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _parse_multi_encode_label(label: str) -> tuple[int, int | None, int] | None:
+    match = _MULTI_ENCODE_LABEL_RE.match(str(label).strip())
+    if match is None:
+        return None
+    order = int(match.group(1))
+    pass_index_raw = match.group(2)
+    if pass_index_raw is None:
+        return order, None, 1
+    pass_index = int(pass_index_raw)
+    return order, pass_index, 2
+
+
+def _state_float(state: dict[str, object], key: str, default: float = 0.0) -> float:
+    value = state.get(key, default)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return default
+    return default
+
+
+def _config_file_logging_enabled(config: object) -> bool:
+    if hasattr(config, "enable_file_logging"):
+        return bool(getattr(config, "enable_file_logging", False))
+    return bool(getattr(config, "verbose_file_logging", False))
+
+
+def _config_file_logging_level(config: object) -> str:
+    if hasattr(config, "file_logging_level"):
+        raw = str(getattr(config, "file_logging_level", "")).strip().lower()
+        if raw in {"standard", "verbose"}:
+            return raw
+        return "standard"
+    return "verbose" if bool(getattr(config, "verbose_file_logging", False)) else "standard"
+
+
+def _config_file_logging_is_verbose(config: object) -> bool:
+    return _config_file_logging_enabled(config) and _config_file_logging_level(config) == "verbose"
+
+
+def _ensure_verbose_file_logger(window: object) -> VerboseFileLogger:
+    logger = getattr(window, "_verbose_file_logger", None)
+    if isinstance(logger, VerboseFileLogger):
+        logger.configure(
+            app_data_dir=Path(getattr(window, "_config").app_data_dir),
+            verbose_log_dir=getattr(getattr(window, "_config"), "verbose_log_dir", None),
+            enabled=_config_file_logging_enabled(getattr(window, "_config")),
+        )
+        return logger
+
+    def _on_write_error() -> None:
+        log_panel = getattr(window, "_log_panel", None)
+        if log_panel is not None:
+            log_panel.log(
+                "Impossible d'écrire le fichier de logging.",
+                LogLevel.WARN,
+            )
+
+    logger = VerboseFileLogger(
+        app_data_dir=Path(getattr(window, "_config").app_data_dir),
+        verbose_log_dir=getattr(getattr(window, "_config"), "verbose_log_dir", None),
+        enabled=_config_file_logging_enabled(getattr(window, "_config")),
+        on_write_error=_on_write_error,
+    )
+    setattr(window, "_verbose_file_logger", logger)
+    return logger
+
+
+def _multi_encode_remaining_seconds(state: dict[str, object], now: float) -> float | None:
+    started_at = _state_float(state, "started_at", 0.0)
+    elapsed_wall = max(0.0, now - started_at)
+    if elapsed_wall <= 0:
+        return None
+
+    duration_s = state.get("duration_s")
+    elapsed_video = state.get("elapsed_video")
+    if isinstance(duration_s, (int, float)) and duration_s > 0 and isinstance(elapsed_video, (int, float)) and elapsed_video > 0:
+        speed = float(elapsed_video) / elapsed_wall
+        if speed > 0:
+            return max(0.0, float(duration_s) - float(elapsed_video)) / speed
+
+    total_frames = state.get("total_frames")
+    frame = state.get("frame")
+    if isinstance(total_frames, int) and total_frames > 0 and isinstance(frame, int) and frame > 0 and total_frames > frame:
+        frame_speed = frame / elapsed_wall
+        if frame_speed > 0:
+            return (total_frames - frame) / frame_speed
+    return None
+
+
+def _select_multi_encode_label(
+    states: dict[str, dict[str, object]],
+    active_label: str | None,
+    now: float,
+) -> str | None:
+    candidates = [
+        (label, state)
+        for label, state in states.items()
+        if not bool(state.get("done", False))
+    ]
+    if not candidates:
+        return None
+
+    scored: list[tuple[int, float, float, int, str]] = []
+    for label, state in candidates:
+        remaining_s = _multi_encode_remaining_seconds(state, now)
+        known_remaining = 1 if remaining_s is not None else 0
+        scored.append(
+            (
+                known_remaining,
+                float(remaining_s if remaining_s is not None else -1.0),
+                _state_float(state, "last_update", 0.0),
+                1 if label == active_label else 0,
+                label,
+            )
+        )
+    scored.sort(reverse=True)
+    return scored[0][4]
 
 # ---------------------------------------------------------------------------
 # LogPanel
@@ -1064,8 +1197,24 @@ class MainWindow(QMainWindow):
         self._signals: TaskSignals | None = None
         self._op_start: float = 0.0
         self._op_mode: str = ""   # "remux" ou "encode"
+        self._op_encode_config: EncodeConfig | None = None
         self._op_encode_fps: float | None = None
         self._op_encode_frame: int | None = None
+        self._op_encode_multi_targets: dict[int, dict[str, object]] = {}
+        self._op_encode_multi_state: dict[str, dict[str, object]] = {}
+        self._op_encode_multi_active_label: str | None = None
+        self._op_encode_multi_reselect_timer = QTimer(self)
+        self._op_encode_multi_reselect_timer.setInterval(60_000)
+        self._op_encode_multi_reselect_timer.timeout.connect(self._reevaluate_multi_encode_progress)
+        self._verbose_file_logger = VerboseFileLogger(
+            app_data_dir=Path(self._config.app_data_dir),
+            verbose_log_dir=getattr(self._config, "verbose_log_dir", None),
+            enabled=_config_file_logging_enabled(self._config),
+            on_write_error=lambda: self._log_panel.log(
+                "Impossible d'écrire le fichier de logging.",
+                LogLevel.WARN,
+            ),
+        )
         self._prep_progress_active = False
         self._prep_progress_value = 0
         self._prep_progress_direction = 1
@@ -1401,9 +1550,13 @@ class MainWindow(QMainWindow):
         self._remux_panel.log_message.connect(
             self.log_requested, Qt.ConnectionType.QueuedConnection
         )
+        self._remux_panel.tool_output.connect(
+            self._on_tool_output_requested, Qt.ConnectionType.QueuedConnection
+        )
         # RemuxPanel → EncodePanel : pistes partagées + chemin de sortie commun
         self._remux_panel.video_tracks_changed.connect(self._encode_panel.set_video_tracks)
         self._remux_panel.audio_tracks_changed.connect(self._encode_panel.set_audio_tracks)
+        self._encode_panel.video_tracks_encoding_changed.connect(self._remux_panel.update_video_track_encoding)
         self._encode_panel.audio_track_meta_changed.connect(self._remux_panel.update_audio_track_meta)
         self._encode_panel.audio_track_encoding_changed.connect(self._remux_panel.update_audio_track_encoding)
         self._encode_panel.audio_track_add_requested.connect(self._remux_panel.add_audio_track_variant)
@@ -1459,6 +1612,7 @@ class MainWindow(QMainWindow):
                     self.log_requested.emit("ERROR", e)
                 return
             self._op_mode = "encode"
+            self._op_encode_config = encode_cfg
             self.log_requested.emit("INFO", f"Encodage → {encode_cfg.output.name}")
             try:
                 signals = self._encode_panel.run_operation(encode_cfg)
@@ -1467,6 +1621,7 @@ class MainWindow(QMainWindow):
                 return
 
         elif remux_cfg is not None:
+            self._op_encode_config = None
             errors = self._remux_panel.validate_config(remux_cfg)
             if errors:
                 for e in errors:
@@ -1492,6 +1647,9 @@ class MainWindow(QMainWindow):
         self._cancel_btn.setVisible(True)
         self._op_encode_fps = None
         self._op_encode_frame = None
+        self._reset_multi_encode_progress_tracking()
+        if self._op_mode == "encode" and self._op_encode_config is not None:
+            self._op_encode_multi_targets = self._encode_panel.get_video_progress_targets(self._op_encode_config)
         self._prep_progress_active = False
         if self._prep_progress_timer.isActive():
             self._prep_progress_timer.stop()
@@ -1520,213 +1678,193 @@ class MainWindow(QMainWindow):
         encode_cfg: "EncodeConfig",
         remux_cfg: "RemuxConfig",
     ) -> "EncodeConfig":
-        """
-        Enrichit l'encode config avec les informations du remux panel :
-          - sous-titres multi-sources (subtitle_tracks)
-          - attachements MKV (attachment_sources)
-          - balises MKV (tag_sources)
-          - chapitres (keep_chapters)
-          - éditions langue/titre de pistes (track_meta_edits)
+        from core.workflows.encode.remux_bridge import merge_remux_into_encode_config
 
-        Retourne une EncodeConfig enrichie. Si le remux panel n'apporte rien,
-        retourne encode_cfg inchangé (sauf keep_chapters toujours synchronisé).
-        """
-        from core.workflows.encode.models import EncodeConfig, TrackMetaEdit, TrackTimeOffset
+        return merge_remux_into_encode_config(encode_cfg, remux_cfg)
 
-        sub_tracks: list[tuple[Path, int]] = []
-        attachment_streams: list[tuple[Path, int]] = []   # (source, ffprobe_stream_index)
-        tag_sources: list[Path] = []
+    def _reset_multi_encode_progress_tracking(self) -> None:
+        if self._op_encode_multi_reselect_timer.isActive():
+            self._op_encode_multi_reselect_timer.stop()
+        self._op_encode_multi_targets = {}
+        self._op_encode_multi_state = {}
+        self._op_encode_multi_active_label = None
 
-        source_by_index = {src.file_index: src for src in remux_cfg.sources}
-        remux_track_map: dict[tuple[Path, int], TrackEntry] = {}
-        remux_track_map_by_id: dict[str, TrackEntry] = {}
+    def _ensure_multi_encode_state(self, label: str) -> dict[str, object]:
+        state = self._op_encode_multi_state.get(label)
+        if state is not None:
+            return state
 
-        for src in remux_cfg.sources:
-            for track in src.tracks:
-                remux_track_map[(src.path, track.mkv_tid)] = track
-                remux_track_map_by_id[track.entry_id] = track
-            for att in src.selected_attachments:
-                attachment_streams.append((src.path, att.index))
-            if src.copy_tags:
-                tag_sources.append(src.path)
+        parsed = _parse_multi_encode_label(label)
+        order = 0
+        pass_index: int | None = None
+        pass_count = 1
+        if parsed is not None:
+            order, pass_index, pass_count = parsed
+        target = self._op_encode_multi_targets.get(order, {})
+        state = {
+            "label": label,
+            "order": order,
+            "pass_index": pass_index,
+            "pass_count": pass_count,
+            "duration_s": target.get("duration_s"),
+            "total_frames": target.get("total_frames"),
+            "source_name": target.get("source_name"),
+            "started_at": time.monotonic(),
+            "last_update": 0.0,
+            "fps": None,
+            "frame": None,
+            "elapsed_video": None,
+            "done": False,
+        }
+        self._op_encode_multi_state[label] = state
+        return state
 
-        ordered_tracks: list[tuple[Path, TrackEntry]] = []
-        for item in remux_cfg.track_order:
-            file_index = int(item[0])
-            mkv_tid = int(item[1])
-            entry_id = str(item[2]).strip() if len(item) > 2 else ""
-            src = source_by_index.get(file_index)
-            if src is None:
-                continue
-            track = remux_track_map_by_id.get(entry_id) if entry_id else remux_track_map.get((src.path, mkv_tid))
-            if track is None:
-                continue
-            ordered_tracks.append((src.path, track))
+    def _multi_encode_progress_parts(
+        self,
+        state: dict[str, object],
+        *,
+        now: float,
+    ) -> tuple[list[str], int | None]:
+        order_raw = state.get("order")
+        if isinstance(order_raw, int):
+            order = order_raw
+        elif isinstance(order_raw, float):
+            order = int(order_raw)
+        elif isinstance(order_raw, str):
+            try:
+                order = int(order_raw.strip())
+            except ValueError:
+                order = 0
+        else:
+            order = 0
+        total_tracks = max(self._op_encode_multi_targets) if self._op_encode_multi_targets else 0
+        track_label = (
+            translate_text("Piste vidéo {current}/{total}", current=order, total=total_tracks)
+            if order > 0 and total_tracks > 1
+            else translate_text("Piste vidéo")
+        )
+        parts = [track_label]
 
-        sub_tracks = [
-            (src_path, track.mkv_tid)
-            for src_path, track in ordered_tracks
-            if track.track_type == "subtitle"
-        ]
-
-        # tag_overrides depuis RemuxConfig (balises éditées dans l'UI)
-        # Prioritaire sur tag_sources : si présent, on ignore tag_sources pour l'encode.
-        tag_overrides = remux_cfg.tag_overrides
-
-        # --- Métadonnées de pistes (langue + titre + dispositions) via FFmpeg ---
-        # ffmpeg peut perdre des infos de piste (langue, titre, flags) selon le
-        # type d'opération (ex: réencodage audio). On réécrit explicitement.
-        #
-        # Ordre des pistes dans le fichier de sortie ffmpeg :
-        #   @1 = vidéo  |  @2…@N+1 = audio  |  @N+2… = sous-titres
-        track_meta_edits: list[TrackMetaEdit] = []
-        track_time_offsets: list[TrackTimeOffset] = []
-
-        def _make_edit(track_order: int, t: TrackEntry) -> "TrackMetaEdit | None":
-            """Retourne un TrackMetaEdit si la piste a des infos à appliquer."""
-            lang = (t.language or "").strip()
-            orig_lang = (t.orig_language or "").strip()
-            title = (t.title or "").strip()
-            # Une langue vidée explicitement doit rester une instruction explicite
-            # dans le workflow encode (FFmpeg), via "und".
-            if not lang and orig_lang and lang != orig_lang:
-                lang = "und"
-            has_flag_state = any((
-                t.flag_default,
-                t.flag_forced,
-                t.flag_hearing_impaired,
-                t.flag_visual_impaired,
-                t.flag_original,
-                t.flag_commentary,
-            ))
-            has_flag_change = any((
-                t.flag_default != t.orig_flag_default,
-                t.flag_forced != t.orig_flag_forced,
-                t.flag_hearing_impaired != t.orig_flag_hearing_impaired,
-                t.flag_visual_impaired != t.orig_flag_visual_impaired,
-                t.flag_original != t.orig_flag_original,
-                t.flag_commentary != t.orig_flag_commentary,
-            ))
-            if not lang and not title and not has_flag_state and not has_flag_change:
-                return None
-            return TrackMetaEdit(
-                track_order = track_order,
-                language    = lang,
-                title       = title if title else None,
-                flag_default          = t.flag_default,
-                flag_forced           = t.flag_forced,
-                flag_hearing_impaired = t.flag_hearing_impaired,
-                flag_visual_impaired  = t.flag_visual_impaired,
-                flag_original         = t.flag_original,
-                flag_commentary       = t.flag_commentary,
+        pass_index = state.get("pass_index")
+        pass_count_raw = state.get("pass_count")
+        if isinstance(pass_count_raw, int):
+            pass_count = pass_count_raw
+        elif isinstance(pass_count_raw, float):
+            pass_count = int(pass_count_raw)
+        elif isinstance(pass_count_raw, str):
+            try:
+                pass_count = int(pass_count_raw.strip())
+            except ValueError:
+                pass_count = 1
+        else:
+            pass_count = 1
+        if isinstance(pass_index, int) and pass_count > 1:
+            parts.append(
+                translate_text("passe {current}/{total}", current=pass_index, total=pass_count)
             )
 
-        def _append_track_offset(track_type: str, src_path: Path, stream_index: int, track: TrackEntry | None) -> None:
-            if track is None:
-                return
-            offset_ms = int(getattr(track, "time_shift_ms", 0) or 0)
-            if offset_ms == 0:
-                return
-            track_time_offsets.append(TrackTimeOffset(
-                track_type=track_type,
-                source_path=src_path,
-                stream_index=int(stream_index),
-                offset_ms=offset_ms,
-            ))
+        fps_value = state.get("fps")
+        pct: int | None = None
+        duration_s = state.get("duration_s")
+        elapsed_video = state.get("elapsed_video")
+        if isinstance(duration_s, (int, float)) and duration_s > 0 and isinstance(elapsed_video, (int, float)):
+            pct = min(99, int(float(elapsed_video) / float(duration_s) * 100))
+        else:
+            total_frames = state.get("total_frames")
+            frame = state.get("frame")
+            if isinstance(total_frames, int) and total_frames > 0 and isinstance(frame, int):
+                pct = min(99, int(frame / total_frames * 100))
 
-        def _find_track(src_path: Path, stream_index: int, track_type: str) -> TrackEntry | None:
-            t = remux_track_map.get((src_path, stream_index))
-            if t is not None:
-                return t
-            # Fichier source unique : cherche uniquement par stream_index + type
-            for entry in remux_track_map.values():
-                if entry.mkv_tid == stream_index and entry.track_type == track_type:
-                    return entry
-            return None
+        if pct is not None:
+            parts.append(f"{pct}%")
+        if isinstance(fps_value, (int, float)) and fps_value > 0:
+            parts.append(f"{float(fps_value):.1f} fps")
 
-        # @1 — piste vidéo (toujours depuis encode_cfg.source)
-        video_entry = _find_track(encode_cfg.source, 0, "video")
-        if video_entry is None:
-            # La vidéo peut être sur n'importe quel stream_index ; garde le premier ordre remux.
-            for _src_path, entry in ordered_tracks:
-                if entry.track_type == "video":
-                    video_entry = entry
-                    break
-        if video_entry is None:
-            for entry in remux_track_map.values():
-                if entry.track_type == "video":
-                    video_entry = entry
-                    break
-        if video_entry is not None:
-            edit = _make_edit(1, video_entry)
-            if edit:
-                track_meta_edits.append(edit)
-            _append_track_offset("video", encode_cfg.source, 0, video_entry)
+        remaining_s = _multi_encode_remaining_seconds(state, now)
+        if remaining_s is not None:
+            parts.append(f"ETA {_fmt_eta(remaining_s)}")
+        return parts, pct
 
-        # @2+ — pistes audio
-        audio_offset = 2
-        for audio_order, ats in enumerate(encode_cfg.audio_tracks):
-            src_path = ats.source_path or encode_cfg.source
-            if ats.track_entry_id:
-                t = remux_track_map_by_id.get(ats.track_entry_id)
-            else:
-                t = _find_track(src_path, ats.stream_index, "audio")
-            if t is None:
-                continue
-            edit = _make_edit(audio_offset + audio_order, t)
-            if edit:
-                track_meta_edits.append(edit)
-            _append_track_offset("audio", src_path, ats.stream_index, t)
-
-        # @N+2+ — pistes sous-titres
-        sub_offset = audio_offset + len(encode_cfg.audio_tracks)
-        used_sub_tracks = sub_tracks or encode_cfg.subtitle_tracks
-        for sub_order, (sub_path, sub_sid) in enumerate(used_sub_tracks):
-            t = remux_track_map.get((sub_path, sub_sid))
-            if t is None:
-                continue
-            edit = _make_edit(sub_offset + sub_order, t)
-            if edit:
-                track_meta_edits.append(edit)
-            _append_track_offset("subtitle", sub_path, sub_sid, t)
-
-        chapter_overrides = remux_cfg.chapter_overrides
-
-        # Rien à fusionner et keep_chapters / chapter_overrides identiques → pas de reconstruction
-        if (not sub_tracks and not attachment_streams and not tag_sources
-                and tag_overrides is None
-                and not track_meta_edits
-                and not track_time_offsets
-                and encode_cfg.keep_chapters == remux_cfg.keep_chapters
-                and remux_cfg.chapter_overrides is None):
-            return encode_cfg
-
-        return EncodeConfig(
-            source=encode_cfg.source,
-            output=encode_cfg.output,
-            video=encode_cfg.video,
-            audio_tracks=encode_cfg.audio_tracks,
-            copy_subtitles=encode_cfg.copy_subtitles if not sub_tracks else False,
-            subtitle_tracks=sub_tracks or encode_cfg.subtitle_tracks,
-            keep_chapters=remux_cfg.keep_chapters,
-            chapter_overrides=chapter_overrides,
-            attachment_streams=attachment_streams,
-            tag_sources=[] if tag_overrides is not None else tag_sources,
-            tag_overrides=tag_overrides,
-            track_meta_edits=track_meta_edits,
-            track_time_offsets=track_time_offsets,
-            duration_s=encode_cfg.duration_s,
-            copy_dv=encode_cfg.copy_dv,
-            copy_hdr10plus=encode_cfg.copy_hdr10plus,
-            dovi_profile=encode_cfg.dovi_profile,
-            work_dir=encode_cfg.work_dir,
-            file_title=encode_cfg.file_title,
-            extra_attachments=encode_cfg.extra_attachments,
-            tmdb_cover=encode_cfg.tmdb_cover,
+    def _reevaluate_multi_encode_progress(self) -> None:
+        if not self._running or self._op_mode != "encode" or not self._op_encode_multi_state:
+            return
+        now = time.monotonic()
+        active_label = _select_multi_encode_label(
+            self._op_encode_multi_state,
+            self._op_encode_multi_active_label,
+            now,
         )
+        if active_label is None:
+            self._op_encode_multi_active_label = None
+            return
+
+        self._op_encode_multi_active_label = active_label
+        state = self._op_encode_multi_state.get(active_label)
+        if state is None:
+            return
+
+        parts, pct = self._multi_encode_progress_parts(state, now=now)
+        if pct is not None:
+            self._stop_prep_progress()
+            self._prog_bar.setValue(pct)
+        self._prog_lbl.setText("  ·  ".join(p for p in parts if p))
+        if len(self._op_encode_multi_state) > 1 and not self._op_encode_multi_reselect_timer.isActive():
+            self._op_encode_multi_reselect_timer.start()
+
+    def _handle_encode_internal_progress(self, line: str) -> bool:
+        payload = _parse_encode_internal_progress(line)
+        if payload is None:
+            return False
+        if str(payload.get("kind") or "") != "encode_ffmpeg":
+            return False
+
+        label = str(payload.get("label") or "").strip()
+        if not label.startswith("ffmpeg-video-"):
+            return True
+
+        event = str(payload.get("event") or "").strip().lower()
+        raw_line = str(payload.get("line") or "")
+        state = self._ensure_multi_encode_state(label)
+
+        if event == "done":
+            state["done"] = True
+            state["last_update"] = time.monotonic()
+            self._reevaluate_multi_encode_progress()
+            return True
+
+        if raw_line.startswith("$ "):
+            self.log_requested.emit("INFO", raw_line)
+            return True
+
+        fps_m = _FPS_RE.search(raw_line)
+        if fps_m:
+            try:
+                state["fps"] = float(fps_m.group(1))
+            except ValueError:
+                state["fps"] = None
+        frame_m = _FRAME_RE.search(raw_line)
+        if frame_m:
+            try:
+                state["frame"] = int(frame_m.group(1))
+            except ValueError:
+                state["frame"] = None
+        elapsed_video = ffmpeg_progress_seconds(raw_line)
+        if elapsed_video is not None:
+            state["elapsed_video"] = elapsed_video
+        state["last_update"] = time.monotonic()
+        self._reevaluate_multi_encode_progress()
+
+        if _is_encode_progress_noise(raw_line):
+            return True
+        if _is_encode_stage_message(raw_line):
+            self._prog_lbl.setText(raw_line)
+            return True
+        self.log_requested.emit("INFO", raw_line)
+        return True
 
     def _on_op_progress(self, line: str) -> None:
         """Gère la progression selon le mode (remux ou encode)."""
+        self._capture_verbose_progress_line(line)
         if self._op_mode == "remux":
             if line.startswith("$ "):
                 self._stop_prep_progress()
@@ -1753,6 +1891,8 @@ class MainWindow(QMainWindow):
                 return
             self.log_requested.emit("INFO", line)
         else:
+            if self._handle_encode_internal_progress(line):
+                return
             if self._NOISE_RE.search(line):
                 return
             if line.startswith("$ "):
@@ -1845,6 +1985,8 @@ class MainWindow(QMainWindow):
     def _on_op_cancelled(self) -> None:
         self._running = False
         self._signals = None
+        self._op_encode_config = None
+        self._reset_multi_encode_progress_tracking()
         self._stop_prep_progress()
         self._run_btn.setEnabled(True)
         self._cancel_btn.setVisible(False)
@@ -1857,6 +1999,8 @@ class MainWindow(QMainWindow):
     def _on_op_finished(self, success: bool, error: str = "") -> None:
         self._running = False
         self._signals = None
+        self._op_encode_config = None
+        self._reset_multi_encode_progress_tracking()
         self._stop_prep_progress()
         self._run_btn.setEnabled(True)
         self._cancel_btn.setVisible(False)
@@ -1877,9 +2021,12 @@ class MainWindow(QMainWindow):
     def _on_settings_saved(self) -> None:
         previous_theme = DesignSystem.current_theme()
         previous_scale = DesignSystem.current_ui_scale()
+        previous_file_logging_enabled = _config_file_logging_enabled(self._config)
+        previous_file_logging_level = _config_file_logging_level(self._config)
         self._config.reload()
         new_theme = DesignSystem.set_theme(self._config.theme)
         new_scale = DesignSystem.set_ui_scale(self._config.ui_scale_percent)
+        _ensure_verbose_file_logger(self)
         app = cast(QApplication | None, QApplication.instance())
         if app is not None:
             current_font = app.font()
@@ -1905,6 +2052,27 @@ class MainWindow(QMainWindow):
                 ),
             )
             self._prompt_restart_for_scale_change(new_scale)
+        new_file_logging_enabled = _config_file_logging_enabled(self._config)
+        new_file_logging_level = _config_file_logging_level(self._config)
+        if new_file_logging_enabled and not previous_file_logging_enabled:
+            self.log_requested.emit(
+                "INFO",
+                translate_text(
+                    "Logging fichier activé ({level}) : {path}",
+                    level=translate_text("Verbose" if new_file_logging_level == "verbose" else "Standard"),
+                    path=str(self._verbose_log_session_path()),
+                ),
+            )
+        elif previous_file_logging_enabled and not new_file_logging_enabled:
+            self.log_requested.emit("INFO", "Logging fichier désactivé.")
+        elif new_file_logging_enabled and previous_file_logging_level != new_file_logging_level:
+            self.log_requested.emit(
+                "INFO",
+                translate_text(
+                    "Niveau de logging fichier : {level}",
+                    level=translate_text("Verbose" if new_file_logging_level == "verbose" else "Standard"),
+                ),
+            )
         self.log_requested.emit("OK", "Configuration appliquée depuis config.ini.")
 
     def _prompt_restart_for_scale_change(self, percent: int) -> None:
@@ -1950,24 +2118,90 @@ class MainWindow(QMainWindow):
     # Logging
     # ------------------------------------------------------------------
 
+    def _verbose_log_part_path(self, index: int) -> Path:
+        return _ensure_verbose_file_logger(self).part_path(index)
+
+    def _verbose_log_session_path(self) -> Path:
+        return _ensure_verbose_file_logger(self).session_path()
+
+    def _prepare_verbose_log_target(self, incoming_bytes: int) -> Path:
+        return _ensure_verbose_file_logger(self).prepare_target(incoming_bytes)
+
+    def _append_verbose_log_file(self, message: str, level: LogLevel) -> None:
+        _ensure_verbose_file_logger(self).append_application_message(message, level)
+
+    def _append_verbose_tool_output(
+        self,
+        line: str,
+        *,
+        label: str | None = None,
+    ) -> None:
+        _ensure_verbose_file_logger(self).append_tool_output(line, label=label)
+
+    def _capture_verbose_progress_line(self, line: str) -> None:
+        if not _config_file_logging_is_verbose(self._config):
+            return
+
+        payload = _parse_encode_internal_progress(line)
+        if payload is not None and str(payload.get("kind") or "") == "encode_ffmpeg":
+            label = str(payload.get("label") or "").strip() or None
+            event = str(payload.get("event") or "").strip().lower()
+            raw_line = str(payload.get("line") or "")
+            if event == "done":
+                self._append_verbose_tool_output("done", label=label)
+                return
+            if raw_line and not raw_line.startswith("$ "):
+                if _is_encode_progress_noise(raw_line) or _is_encode_stage_message(raw_line):
+                    self._append_verbose_tool_output(raw_line, label=label)
+            return
+
+        if line.startswith("$ "):
+            return
+
+        if self._op_mode == "remux":
+            if ffmpeg_progress_seconds(line) is not None or _is_encode_progress_noise(line):
+                self._append_verbose_tool_output(line)
+            return
+
+        if self._NOISE_RE.search(line):
+            self._append_verbose_tool_output(line)
+            return
+        if ffmpeg_progress_seconds(line) is not None:
+            self._append_verbose_tool_output(line)
+            return
+        if _FRAME_RE.search(line):
+            total_frames = self._encode_panel.get_total_frames()
+            if total_frames and total_frames > 0:
+                self._append_verbose_tool_output(line)
+                return
+        if _is_encode_progress_noise(line):
+            self._append_verbose_tool_output(line)
+
+    def _emit_log_entry(self, message: str, level: LogLevel) -> None:
+        self._append_verbose_log_file(message, level)
+        self._log_panel.log(message, level)
+
     def _log_from_page(self, message: str, level: LogLevel) -> None:
         """Callback passé aux pages pour poster des logs."""
-        self._log_panel.log(message, level)
+        self._emit_log_entry(message, level)
 
     def _on_log_requested(self, level: str, message: str) -> None:
         """Slot connecté au signal public log_requested(str, str)."""
         self._sync_prep_progress_from_log(message)
-        try:
-            lv = LogLevel(level.upper())
-        except ValueError:
-            lv = LogLevel.INFO
-        self._log_panel.log(message, lv)
+        lv = parse_log_level(level)
+        self._emit_log_entry(message, lv)
+
+    def _on_tool_output_requested(self, label: str, line: str) -> None:
+        if not _config_file_logging_is_verbose(self._config):
+            return
+        tool_label = str(label).strip() or None
+        self._append_verbose_tool_output(line, label=tool_label)
 
     # Raccourcis directs
-    def log_info(self, msg: str)  -> None: self._log_panel.info(msg)
-    def log_ok(self, msg: str)    -> None: self._log_panel.ok(msg)
-    def log_warn(self, msg: str)  -> None: self._log_panel.warn(msg)
-    def log_error(self, msg: str) -> None: self._log_panel.error(msg)
+    def log_info(self, msg: str)  -> None: self._emit_log_entry(msg, LogLevel.INFO)
+    def log_ok(self, msg: str)    -> None: self._emit_log_entry(msg, LogLevel.OK)
+    def log_warn(self, msg: str)  -> None: self._emit_log_entry(msg, LogLevel.WARN)
+    def log_error(self, msg: str) -> None: self._emit_log_entry(msg, LogLevel.ERROR)
 
     # ------------------------------------------------------------------
     # Géométrie
@@ -1978,7 +2212,7 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(self._config.window_geometry)
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
-        self._config.save_geometry(self.saveGeometry().data())
+        self._config.save_geometry(bytes(self.saveGeometry().data()))
         self._config.save()
         super().closeEvent(event)
 
@@ -1987,18 +2221,27 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _post_init_log(self) -> None:
-        self._log_panel.info("Mediarecode démarré.")
+        self.log_info("Mediarecode démarré.")
         availability = self._config.all_tools_available()
         missing = [n for n, ok in availability.items() if not ok]
         if missing:
-            self._log_panel.warn(
+            self.log_warn(
                 f"Outils manquants dans PATH : {', '.join(missing)}"
             )
         else:
-            self._log_panel.ok("Tous les outils externes sont disponibles.")
-        self._log_panel.info(
+            self.log_ok("Tous les outils externes sont disponibles.")
+        if _config_file_logging_enabled(self._config):
+            logging_level = _config_file_logging_level(self._config)
+            self.log_info(
+                translate_text(
+                    "Logging fichier activé ({level}) : {path}",
+                    level=translate_text("Verbose" if logging_level == "verbose" else "Standard"),
+                    path=str(self._verbose_log_session_path()),
+                )
+            )
+        self.log_info(
             f"Dossier de travail : {self._config.work_dir}"
         )
-        self._log_panel.info(
+        self.log_info(
             f"Dossier de sortie  : {self._config.output_dir}"
         )

@@ -27,14 +27,20 @@ from PySide6.QtWidgets import (
 from core.config import AppConfig
 from core.inspector import FileInfo, HDRType, VideoTrack
 from core.i18n import apply_translations, translate_text
-from core.lang_tags import Rfc5646LanguageTags
 from core.workflows.remux_models import TrackEntry
 from core.runner import TaskSignals
 from core.workflows.encode import (
     AUDIO_CODECS, HARDWARE_VIDEO_CODECS, SOFTWARE_VIDEO_CODECS,
     TONEMAP_ALGORITHMS, AudioTrackSettings, EncodeConfig,
     EncodePreset, EncodeWorkflow, HardwareEncoderDetector,
-    ProfileManager, QualityMode, TrackMetaEdit, VideoEncodeSettings, presets_for_codec,
+    ProfileManager, QualityMode, VideoEncodeSettings, VideoTrackEncodePlan, presets_for_codec,
+)
+from core.workflows.encode.catalog import (
+    VIDEO_ENCODER_BADGES,
+    VIDEO_HDR_BADGE_ORDER,
+    encoder_badge,
+    is_h264_video_codec,
+    supports_dynamic_hdr,
 )
 from ui.panels.encode_panel.theme import (
     _C, _card, _checkbox_style, _combo_style,
@@ -59,7 +65,10 @@ class EncodePanel(QWidget):
     audio_track_encoding_changed = Signal(object, str, int)  # (entry_id, codec, bitrate_kbps)
     audio_track_add_requested = Signal(object, str, str, int)  # (template TrackEntry, entry_id, codec, bitrate_kbps)
     audio_track_remove_requested = Signal(object)  # (entry_id)
+    video_tracks_encoding_changed = Signal(object)
     _hw_detected             = Signal(object, object, object)   # (hw: set[str], sw: set[str], hw_ffmpeg: str)
+    _VIDEO_ENCODER_BADGES = VIDEO_ENCODER_BADGES
+    _VIDEO_HDR_BADGE_ORDER = VIDEO_HDR_BADGE_ORDER
 
     def __init__(
         self,
@@ -78,6 +87,7 @@ class EncodePanel(QWidget):
             ram_buffer_enabled=config.ram_buffer_enabled,
             ram_buffer_threshold_pct=config.ram_buffer_threshold_pct,
             ffmpeg_threads=config.ffmpeg_threads,
+            max_parallel_video_encodes=config.max_parallel_video_encodes,
             parent=self,
             writing_application=writing_application,
             generate_nfo=config.generate_nfo,
@@ -87,8 +97,10 @@ class EncodePanel(QWidget):
         self._file_info: FileInfo | None = None
         self._video_tracks: list[tuple[FileInfo, TrackEntry, str]] = []
         self._video_settings_by_entry_id: dict[str, dict[str, object]] = {}
+        self._video_force_8bit_by_entry_id: dict[str, bool] = {}
         self._current_video_entry_id: str | None = None
         self._loading_video_settings = False
+        self._video_apply_all = False
         self._audio_tracks_data: list[tuple] = []   # list[tuple[AudioTrack, str, Path, TrackEntry]]
         self._duration_s: float | None = None
         self._hw_encoders: set[str] = set()
@@ -250,28 +262,6 @@ class EncodePanel(QWidget):
 
         self._video_list.setVisible(False)
         self._video_placeholder.setVisible(True)
-
-        # --- Langue de la piste vidéo de sortie ---
-        lang_row = QHBoxLayout()
-        lang_row.setContentsMargins(12, 8, 12, 8)
-        lang_row.setSpacing(8)
-        lang_lbl = QLabel("Langue")
-        lang_lbl.setStyleSheet(
-            f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;min-width:52px;"
-        )
-        self._video_lang_edit = QLineEdit()
-        self._video_lang_edit.setPlaceholderText("ex : fr, en, und…")
-        self._video_lang_edit.setFixedWidth(110)
-        self._video_lang_edit.setStyleSheet(_input_style())
-        self._video_lang_edit.setToolTip(
-            "Balise langue RFC 5646 appliquée à la piste vidéo du fichier encodé"
-        )
-        self._video_lang_edit.textChanged.connect(self._on_video_lang_changed)
-        lang_row.addWidget(lang_lbl)
-        lang_row.addWidget(self._video_lang_edit)
-        lang_row.addStretch()
-        cl.addLayout(lang_row)
-
         return card
 
     # ------------------------------------------------------------------
@@ -292,10 +282,9 @@ class EncodePanel(QWidget):
             self._file_info = None
             self.ready_changed.emit(False)
             self._video_list.blockSignals(False)
-            self._video_lang_edit.blockSignals(True)
-            self._video_lang_edit.clear()
-            self._video_lang_edit.blockSignals(False)
             self._current_video_entry_id = None
+            self._video_force_8bit_by_entry_id.clear()
+            self.video_tracks_encoding_changed.emit([])
             self._rebuild_preview()
             return
 
@@ -303,22 +292,23 @@ class EncodePanel(QWidget):
         self._video_list.setVisible(True)
 
         for file_info, track, color in tracks:
-            hdr = self._hdr_type_for_entry(file_info, track).label()
-            hdr_part = (
-                f"  {hdr}"
-                if hdr not in ("SDR", "?") and hdr not in track.display_info
-                else ""
-            )
-            text = f"█  {file_info.path.name}    {track.codec.upper()}  {track.display_info}{hdr_part}"
+            state = self._video_settings_by_entry_id.get(self._video_entry_id(track))
+            text = self._video_source_row_text(file_info, track, state=state)
             item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, (file_info, track))
             item.setForeground(QBrush(QColor(color)))
+            self._apply_video_source_item_style(item, state)
             self._video_list.addItem(item)
 
         active_ids = {self._video_entry_id(track) for _info, track, _color in tracks}
         self._video_settings_by_entry_id = {
             entry_id: settings
             for entry_id, settings in self._video_settings_by_entry_id.items()
+            if entry_id in active_ids
+        }
+        self._video_force_8bit_by_entry_id = {
+            entry_id: forced
+            for entry_id, forced in self._video_force_8bit_by_entry_id.items()
             if entry_id in active_ids
         }
         target_row = 0
@@ -332,6 +322,7 @@ class EncodePanel(QWidget):
         self._video_list.blockSignals(False)
         self._adjust_video_list_height()
         self._on_video_row_changed(target_row)
+        self._ensure_video_states_for_active_tracks()
 
     def _adjust_video_list_height(self) -> None:
         """Ajuste la hauteur de la liste vidéo pour afficher exactement n lignes."""
@@ -347,9 +338,6 @@ class EncodePanel(QWidget):
         self._save_current_video_state()
         file_info, track, _color = self._video_tracks[row]
         self._current_video_entry_id = self._video_entry_id(track)
-        self._video_lang_edit.blockSignals(True)
-        self._video_lang_edit.setText(track.language or "")
-        self._video_lang_edit.blockSignals(False)
         self._apply_file_info(file_info, track)
 
     def _apply_file_info(self, info: FileInfo, track: TrackEntry | None = None) -> None:
@@ -379,12 +367,17 @@ class EncodePanel(QWidget):
         else:
             self._update_passthrough_controls(auto_check=True)
             self._save_current_video_state()
-        hdr = selected_video.hdr_type if selected_video is not None else info.hdr_type
+            if self._video_apply_all:
+                self._propagate_current_video_state_to_all(force_current=False)
+        hdr_lbl = (
+            selected_video.hdr_label if selected_video is not None
+            else (info.primary_video.hdr_label if info.primary_video else info.hdr_type.label())
+        )
         self.log_message.emit(
             "OK",
             f"{info.path.name} — "
             f"{len(info.video_tracks)}V  {len(info.audio_tracks)}A  "
-            f"{len(info.subtitle_tracks)}S  {hdr.label()}",
+            f"{len(info.subtitle_tracks)}S  {hdr_lbl}",
         )
         self._rebuild_preview()
 
@@ -431,6 +424,11 @@ class EncodePanel(QWidget):
         self._populate_codec_combo()
         self._codec_combo.currentIndexChanged.connect(self._on_codec_changed)
         r1.addWidget(self._codec_combo)
+        self._apply_all_video_cb = QCheckBox("Appliquer à toutes les pistes")
+        self._apply_all_video_cb.setChecked(False)
+        self._apply_all_video_cb.setStyleSheet(_checkbox_style())
+        self._apply_all_video_cb.toggled.connect(self._on_apply_all_video_toggled)
+        r1.addWidget(self._apply_all_video_cb)
         r1.addStretch()
         cl.addLayout(r1)
 
@@ -699,8 +697,14 @@ class EncodePanel(QWidget):
 
     def _prefill_hdr_meta(self, raw: dict) -> None:
         """Extrait master_display et max_cll depuis le side_data_list ffprobe."""
-        self._master_display.clear()
-        self._max_cll.clear()
+        master_display, max_cll = self._extract_hdr_meta_fields(raw)
+        self._master_display.setText(master_display)
+        self._max_cll.setText(max_cll)
+
+    @staticmethod
+    def _extract_hdr_meta_fields(raw: dict) -> tuple[str, str]:
+        master_display = ""
+        max_cll = ""
 
         def _rat(v) -> float:
             """Parse un rationnel ffprobe '35400/50000' ou un float direct."""
@@ -727,16 +731,17 @@ class EncodePanel(QWidget):
                           f"R({c(rx)},{c(ry)})"
                           f"WP({c(wx)},{c(wy)})"
                           f"L({l(lmax)},{l(lmin)})")
-                    self._master_display.setText(md)
+                    master_display = md
                 except Exception:
                     pass
             elif sd.get("side_data_type") == "Content light level metadata":
                 try:
-                    maxcll  = int(sd.get("max_content", 0))
-                    maxfall = int(sd.get("max_average", 0))
-                    self._max_cll.setText(f"{maxcll},{maxfall}")
+                    max_content = int(sd.get("max_content", 0))
+                    max_average = int(sd.get("max_average", 0))
+                    max_cll = f"{max_content},{max_average}"
                 except Exception:
                     pass
+        return master_display, max_cll
 
     # ------------------------------------------------------------------
     # Détection encodeurs matériels
@@ -813,6 +818,14 @@ class EncodePanel(QWidget):
         self._update_passthrough_controls()
         self._rebuild_preview()
 
+    def _on_apply_all_video_toggled(self, checked: bool) -> None:
+        self._video_apply_all = bool(checked)
+        if checked:
+            self._propagate_current_video_state_to_all()
+        else:
+            self._save_current_video_state()
+        self._rebuild_preview()
+
     def _on_dv_toggle(self, _state: int) -> None:
         self._dovi_profile_widget.setVisible(self._copy_dv_cb.isChecked())
         self._rebuild_preview()
@@ -845,9 +858,9 @@ class EncodePanel(QWidget):
             has_static_hdr = bool(self._master_display.text().strip())
             self._inject_hdr_cb.setChecked(has_static_hdr)
 
-        if not dv_ok:
+        if not dv_ok and not self._video_apply_all:
             self._copy_dv_cb.setChecked(False)
-        if not hdr10plus_ok:
+        if not hdr10plus_ok and not self._video_apply_all:
             self._copy_hdr10plus_cb.setChecked(False)
 
     def _on_mode_changed(self, _idx: int = 0) -> None:
@@ -868,16 +881,6 @@ class EncodePanel(QWidget):
         self._tonemap_algo_widget.setVisible(visible)
         if visible:
             self._inject_hdr_cb.setChecked(False)
-        self._rebuild_preview()
-
-    def _on_video_lang_changed(self, text: str) -> None:
-        """Corrige silencieusement la casse du code langue vidéo, puis rafraîchit l'aperçu."""
-        canonical = Rfc5646LanguageTags.normalize(text.strip())
-        if canonical is not None and canonical != text.strip():
-            self._video_lang_edit.blockSignals(True)
-            self._video_lang_edit.setText(canonical)
-            self._video_lang_edit.blockSignals(False)
-        self._save_current_video_state()
         self._rebuild_preview()
 
     # ------------------------------------------------------------------
@@ -1002,6 +1005,64 @@ class EncodePanel(QWidget):
             return frames
         return None
 
+    def get_video_progress_targets(self, config: "EncodeConfig") -> dict[int, dict[str, object]]:
+        """
+        Retourne les métriques de progression par piste vidéo routée.
+
+        Clé : index 1-based de la piste dans `config.video_tracks`.
+        Valeurs : `duration_s`, `total_frames`, `source_name`.
+        """
+        targets: dict[int, dict[str, object]] = {}
+        video_tracks = self._routing_video_tracks(config)
+        if not video_tracks:
+            return targets
+
+        entry_map: dict[str, tuple[FileInfo, TrackEntry]] = {}
+        source_map: dict[tuple[Path, int], tuple[FileInfo, TrackEntry]] = {}
+        for info, track, _color in self._video_tracks:
+            entry_map[self._video_entry_id(track)] = (info, track)
+            source_map[(Path(info.path), int(track.mkv_tid))] = (info, track)
+
+        for index, video in enumerate(video_tracks, start=1):
+            info: FileInfo | None = None
+            track: TrackEntry | None = None
+            entry_id = str(getattr(video, "track_entry_id", "") or "").strip()
+            source_path = Path(getattr(video, "source_path", None) or config.source)
+            stream_index = int(getattr(video, "stream_index", 0) or 0)
+
+            if entry_id:
+                resolved = entry_map.get(entry_id)
+                if resolved is not None:
+                    info, track = resolved
+            if info is None:
+                resolved = source_map.get((source_path, stream_index))
+                if resolved is not None:
+                    info, track = resolved
+            if info is None and self._file_info is not None and Path(self._file_info.path) == source_path:
+                info = self._file_info
+
+            duration_s: float | None = None
+            total_frames: int | None = None
+            if info is not None:
+                resolved_track = self._video_track_for_entry(info, track)
+                duration_s = (
+                    getattr(resolved_track, "duration_s", None)
+                    or getattr(info, "duration_s", None)
+                    or config.duration_s
+                )
+                frames_obj = getattr(info, "frame_count", None)
+                if isinstance(frames_obj, int) and frames_obj > 0:
+                    total_frames = frames_obj
+            else:
+                duration_s = config.duration_s
+
+            targets[index] = {
+                "duration_s": duration_s if isinstance(duration_s, (int, float)) and duration_s > 0 else None,
+                "total_frames": total_frames,
+                "source_name": source_path.name,
+            }
+        return targets
+
     def run_operation(self, config: "EncodeConfig") -> "TaskSignals":
         """Lance l'encodage et retourne les signaux de progression."""
         # MainWindow valide juste avant l'appel ; éviter un second passage I/O
@@ -1014,12 +1075,20 @@ class EncodePanel(QWidget):
 
     def is_pure_copy(self, config: "EncodeConfig") -> bool:
         """True si tout est en copie et qu'aucune transformation vidéo n'est demandée."""
-        v = config.video
+        video_tracks = self._routing_video_tracks(config)
+        if not video_tracks:
+            return False
         return (
-            v.codec == "copy"
-            and all(a.codec == "copy" for a in config.audio_tracks)
-            and not v.inject_hdr_meta
-            and not v.tonemap_to_sdr
+            all(
+                str(getattr(video, "codec", "") or "").strip().lower() == "copy"
+                and not bool(getattr(video, "inject_hdr_meta", False))
+                and not bool(getattr(video, "tonemap_to_sdr", False))
+                for video in video_tracks
+            )
+            and all(
+                str(getattr(audio, "codec", "") or "").strip().lower() == "copy"
+                for audio in getattr(config, "audio_tracks", []) or []
+            )
         )
 
     # ------------------------------------------------------------------
@@ -1032,6 +1101,174 @@ class EncodePanel(QWidget):
         if track.source_entry_id:
             return track.source_entry_id
         return f"{track.file_id}:{track.track_type}:{track.mkv_tid}"
+
+    @classmethod
+    def _is_h264_codec(cls, codec: str) -> bool:
+        return is_h264_video_codec(codec)
+
+    @classmethod
+    def _is_dynamic_hdr_codec(cls, codec: str) -> bool:
+        return supports_dynamic_hdr(codec)
+
+    @staticmethod
+    def _source_has_dv(source_hdr: HDRType) -> bool:
+        return source_hdr in (HDRType.DOLBY_VISION, HDRType.DOLBY_VISION_HDR10PLUS)
+
+    @staticmethod
+    def _source_has_hdr10plus(source_hdr: HDRType) -> bool:
+        return source_hdr in (HDRType.HDR10PLUS, HDRType.DOLBY_VISION_HDR10PLUS)
+
+    def _effective_dynamic_hdr_flags(
+        self,
+        state: dict[str, object],
+        *,
+        source_hdr: HDRType,
+        target_codec: str | None = None,
+    ) -> tuple[bool, bool]:
+        codec = (
+            str(target_codec or "").strip().lower()
+            if target_codec is not None
+            else self._video_state_target_codec(state)
+        )
+        supports_dynamic_hdr = self._is_dynamic_hdr_codec(codec)
+        copy_dv = bool(state.get("copy_dv")) and supports_dynamic_hdr and self._source_has_dv(source_hdr)
+        copy_hdr10plus = bool(state.get("copy_hdr10plus")) and supports_dynamic_hdr and self._source_has_hdr10plus(source_hdr)
+        return copy_dv, copy_hdr10plus
+
+    def _normalized_video_state_for_track(
+        self,
+        *,
+        info: FileInfo,
+        track: TrackEntry,
+        state: dict[str, object],
+    ) -> dict[str, object]:
+        normalized = self._copy_video_state(state)
+        source_hdr = self._hdr_type_for_entry(info, track)
+        target_codec = self._video_state_target_codec(normalized)
+        copy_dv, copy_hdr10plus = self._effective_dynamic_hdr_flags(
+            normalized,
+            source_hdr=source_hdr,
+            target_codec=target_codec,
+        )
+        normalized["copy_dv"] = copy_dv
+        normalized["copy_hdr10plus"] = copy_hdr10plus
+        return normalized
+
+    def _default_video_state_for_track(
+        self,
+        *,
+        info: FileInfo,
+        track: TrackEntry,
+    ) -> dict[str, object]:
+        source_hdr = self._hdr_type_for_entry(info, track)
+        source_video = self._video_track_for_entry(info, track)
+        raw = source_video.raw if source_video is not None else {}
+        master_display, max_cll = self._extract_hdr_meta_fields(raw)
+        state: dict[str, object] = {
+            "codec": "copy",
+            "quality_mode": QualityMode.CRF,
+            "preset": "slow",
+            "crf": 18,
+            "bitrate_kbps": "5000",
+            "target_size_mb": "4000",
+            "extra_params": "",
+            "inject_hdr_meta": False,
+            "master_display": master_display,
+            "max_cll": max_cll,
+            "copy_dv": self._source_has_dv(source_hdr),
+            "copy_hdr10plus": self._source_has_hdr10plus(source_hdr),
+            "dovi_profile": "0",
+            "tonemap_to_sdr": False,
+            "tonemap_algorithm": "hable",
+        }
+        return self._normalized_video_state_for_track(
+            info=info,
+            track=track,
+            state=state,
+        )
+
+    def _should_propagate_global_state(self, state: dict[str, object] | None) -> bool:
+        if not self._video_apply_all or state is None:
+            return False
+        return self._video_state_target_codec(state) != "copy"
+
+    def _video_source_bit_depth(self, info: FileInfo, track: TrackEntry) -> int:
+        video_track = self._video_track_for_entry(info, track)
+        if video_track is None:
+            return 8
+        try:
+            bit_depth = int(getattr(video_track, "bit_depth", 8) or 8)
+        except (TypeError, ValueError):
+            bit_depth = 8
+        return bit_depth if bit_depth > 0 else 8
+
+    def _video_force_8bit_for_codec(
+        self,
+        info: FileInfo,
+        track: TrackEntry,
+        codec: str,
+    ) -> bool:
+        return self._is_h264_codec(codec) and self._video_source_bit_depth(info, track) > 8
+
+    def _video_source_row_text(
+        self,
+        info: FileInfo,
+        track: TrackEntry,
+        *,
+        state: dict[str, object] | None,
+    ) -> str:
+        source_codec = (track.orig_codec or track.codec).upper()
+        text = f"█  {info.path.name}    {source_codec}  {track.display_info}"
+        if state is None:
+            return text
+
+        plan = self._video_plan_from_state(
+            entry_id=self._video_entry_id(track),
+            state=state,
+            source_video=self._video_track_for_entry(info, track),
+        )
+        badges: list[str] = []
+        target_codec = str(plan.target_codec or "copy").strip().lower()
+        if target_codec != "copy":
+            badges.append(encoder_badge(target_codec))
+        if self._video_force_8bit_for_codec(info, track, target_codec):
+            badges.append("8-bit")
+        badges.extend(self._sorted_video_hdr_badges(plan.hdr_badges))
+        if badges:
+            text += "    " + " ".join(f"[{badge}]" for badge in badges)
+        return text
+
+    def _sorted_video_hdr_badges(self, badges: tuple[str, ...]) -> list[str]:
+        order = {badge: idx for idx, badge in enumerate(self._VIDEO_HDR_BADGE_ORDER)}
+        unique = list(dict.fromkeys(str(badge or "").strip().upper() for badge in badges if str(badge or "").strip()))
+        return sorted(unique, key=lambda badge: (order.get(badge, len(order)), badge))
+
+    def _refresh_video_source_rows(self) -> None:
+        if not hasattr(self, "_video_list"):
+            return
+        for row, (file_info, track, _color) in enumerate(self._video_tracks):
+            item = self._video_list.item(row)
+            if item is None:
+                continue
+            entry_id = self._video_entry_id(track)
+            state = self._video_settings_by_entry_id.get(entry_id)
+            item.setText(self._video_source_row_text(file_info, track, state=state))
+            self._apply_video_source_item_style(item, state)
+
+    @staticmethod
+    def _video_state_target_codec(state: dict[str, object] | None) -> str:
+        if state is None:
+            return "copy"
+        return str(state.get("codec") or "copy").strip().lower()
+
+    def _apply_video_source_item_style(
+        self,
+        item: QListWidgetItem,
+        state: dict[str, object] | None,
+    ) -> None:
+        font = item.font()
+        font.setBold(self._video_state_target_codec(state) != "copy")
+        item.setFont(font)
 
     def _video_track_for_entry(
         self,
@@ -1067,12 +1304,55 @@ class EncodePanel(QWidget):
                 combo.setCurrentIndex(idx)
                 return
 
-    def _save_current_video_state(self) -> None:
-        if self._loading_video_settings or self._current_video_entry_id is None:
+    def _active_video_entry_ids(self) -> list[str]:
+        return [self._video_entry_id(track) for _info, track, _color in self._video_tracks]
+
+    @staticmethod
+    def _routing_video_tracks(config: object) -> list[object]:
+        tracks = list(getattr(config, "video_tracks", []) or [])
+        if tracks:
+            return tracks
+        primary = getattr(config, "video", None)
+        return [primary] if primary is not None else []
+
+    def _ensure_video_states_for_active_tracks(self) -> None:
+        """Garantit un état UI pour chaque piste vidéo active du remux."""
+        missing_tracks = [
+            (info, track)
+            for info, track, _color in self._video_tracks
+            if self._video_entry_id(track) not in self._video_settings_by_entry_id
+        ]
+        if not missing_tracks:
             return
-        if not hasattr(self, "_codec_combo") or not hasattr(self, "_copy_dv_cb"):
+
+        template_state = (
+            self._video_settings_by_entry_id.get(self._current_video_entry_id)
+            if self._current_video_entry_id is not None
+            else None
+        )
+        if template_state is None and self._video_settings_by_entry_id:
+            template_state = next(iter(self._video_settings_by_entry_id.values()))
+        if template_state is None and hasattr(self, "_codec_combo") and hasattr(self, "_copy_dv_cb"):
+            template_state = self._current_video_state()
+        if template_state is None:
             return
-        self._video_settings_by_entry_id[self._current_video_entry_id] = {
+
+        propagate_global = self._should_propagate_global_state(template_state)
+        for info, track in missing_tracks:
+            entry_id = self._video_entry_id(track)
+            if propagate_global:
+                state = self._normalized_video_state_for_track(
+                    info=info,
+                    track=track,
+                    state=template_state,
+                )
+            else:
+                state = self._default_video_state_for_track(info=info, track=track)
+            self._video_settings_by_entry_id[entry_id] = state
+        self._emit_video_encoding_plans()
+
+    def _current_video_state(self) -> dict[str, object]:
+        return {
             "codec": self._combo_data(self._codec_combo),
             "quality_mode": self._combo_data(self._mode_combo),
             "preset": self._combo_data(self._preset_combo),
@@ -1088,8 +1368,185 @@ class EncodePanel(QWidget):
             "dovi_profile": self._combo_data(self._dovi_profile_combo),
             "tonemap_to_sdr": self._tonemap_cb.isChecked(),
             "tonemap_algorithm": self._combo_data(self._tonemap_algo),
-            "language": self._video_lang_edit.text(),
         }
+
+    def _copy_video_state(self, state: dict[str, object]) -> dict[str, object]:
+        return dict(state)
+
+    def _propagate_current_video_state_to_all(self, *, force_current: bool = True) -> None:
+        if not self._video_tracks:
+            return
+        if force_current:
+            self._save_current_video_state()
+        source_id = self._current_video_entry_id or self._active_video_entry_ids()[0]
+        state = self._video_settings_by_entry_id.get(source_id)
+        if state is None:
+            state = self._current_video_state()
+        for entry_id in self._active_video_entry_ids():
+            self._video_settings_by_entry_id[entry_id] = self._copy_video_state(state)
+        self._emit_video_encoding_plans()
+
+    @staticmethod
+    def _quality_value_summary(mode: QualityMode, state: dict[str, object]) -> str:
+        if mode == QualityMode.CRF:
+            return str(state.get("crf") or 18)
+        if mode == QualityMode.BITRATE:
+            return f"{state.get('bitrate_kbps') or '5000'} kbps"
+        return f"{state.get('target_size_mb') or '4000'} Mo"
+
+    @staticmethod
+    def _summary_mode_label(mode: QualityMode) -> str:
+        return {
+            QualityMode.CRF: "CRF",
+            QualityMode.BITRATE: "Débit",
+            QualityMode.SIZE: "Taille",
+        }.get(mode, "CRF")
+
+    def _video_hdr_badges_from_state(
+        self,
+        state: dict[str, object],
+        *,
+        source_video: VideoTrack | None,
+    ) -> tuple[str, ...]:
+        source_hdr = source_video.hdr_type if source_video is not None else HDRType.NONE
+        target_codec = self._video_state_target_codec(state)
+        copy_dv, copy_hdr10plus = self._effective_dynamic_hdr_flags(
+            state,
+            source_hdr=source_hdr,
+            target_codec=target_codec,
+        )
+        if bool(state.get("tonemap_to_sdr")):
+            return ("SDR",)
+
+        badges: list[str] = []
+        if bool(state.get("inject_hdr_meta")):
+            badges.append("HDR")
+        if copy_dv:
+            badges.append("DV")
+        if copy_hdr10plus:
+            badges.append("10+")
+
+        if badges:
+            return tuple(badges)
+
+        if target_codec != "copy":
+            return ()
+
+        if source_hdr == HDRType.HDR10:
+            return ("HDR",)
+        if source_hdr == HDRType.HDR10PLUS:
+            return ("10+",)
+        if source_hdr == HDRType.HLG:
+            return ("HLG",)
+        if source_hdr == HDRType.DOLBY_VISION:
+            compat_label = source_video.dovi_compat_label if source_video is not None else None
+            if compat_label == "HDR10":
+                return ("DV", "HDR")
+            if compat_label == "HLG":
+                return ("DV", "HLG")
+            # P8.0 (compat_id=0) ou P8.2 (SDR) → pas de badge fallback HDR
+            return ("DV",)
+        if source_hdr == HDRType.DOLBY_VISION_HDR10PLUS:
+            return ("DV", "10+")
+        return ()
+
+    def _video_plan_from_state(
+        self,
+        *,
+        entry_id: str,
+        state: dict[str, object],
+        source_video: VideoTrack | None,
+    ) -> VideoTrackEncodePlan:
+        source_hdr = source_video.hdr_type if source_video is not None else HDRType.NONE
+        codec = str(state.get("codec") or "copy")
+        target_codec = str(codec or "copy").strip().lower()
+        copy_dv, copy_hdr10plus = self._effective_dynamic_hdr_flags(
+            state,
+            source_hdr=source_hdr,
+            target_codec=target_codec,
+        )
+        mode = state.get("quality_mode") or QualityMode.CRF
+        if not isinstance(mode, QualityMode):
+            mode = QualityMode(str(mode))
+        if codec == "copy":
+            summary = "Copy"
+        else:
+            summary = " - ".join([
+                codec,
+                str(state.get("preset") or "slow"),
+                self._summary_mode_label(mode),
+                f"({self._quality_value_summary(mode, state)})",
+            ])
+
+        is_modified = bool(
+            codec != "copy"
+            or bool(state.get("inject_hdr_meta"))
+            or bool(state.get("tonemap_to_sdr"))
+            or bool(state.get("extra_params"))
+            or (codec != "copy" and copy_dv)
+            or (codec != "copy" and copy_hdr10plus)
+        )
+        return VideoTrackEncodePlan(
+            track_entry_id=entry_id,
+            codec_summary=summary,
+            target_codec=codec,
+            hdr_badges=self._video_hdr_badges_from_state(state, source_video=source_video),
+            is_modified=is_modified,
+        )
+
+    def _emit_video_encoding_plans(self) -> None:
+        plans: list[VideoTrackEncodePlan] = []
+        next_force_8bit: dict[str, bool] = {}
+        for index, (info, track, _color) in enumerate(self._video_tracks, start=1):
+            entry_id = self._video_entry_id(track)
+            state = self._video_settings_by_entry_id.get(entry_id)
+            if state is None:
+                continue
+            target_codec = self._video_state_target_codec(state)
+            force_8bit = self._video_force_8bit_for_codec(info, track, target_codec)
+            previous_force_8bit = self._video_force_8bit_by_entry_id.get(entry_id)
+            if force_8bit != previous_force_8bit:
+                if force_8bit:
+                    self.log_message.emit(
+                        "WARN",
+                        translate_text(
+                            "Précheck piste vidéo #{index} : source {depth}-bit + codec {codec} → bascule auto en 8-bit.",
+                            index=index,
+                            depth=self._video_source_bit_depth(info, track),
+                            codec=target_codec.upper(),
+                        ),
+                    )
+                elif previous_force_8bit:
+                    self.log_message.emit(
+                        "INFO",
+                        translate_text(
+                            "Précheck piste vidéo #{index} : retour au mode source (8-bit auto désactivé).",
+                            index=index,
+                        ),
+                    )
+            next_force_8bit[entry_id] = force_8bit
+            plans.append(
+                self._video_plan_from_state(
+                    entry_id=entry_id,
+                    state=state,
+                    source_video=self._video_track_for_entry(info, track),
+                )
+            )
+        self._video_force_8bit_by_entry_id = next_force_8bit
+        self._refresh_video_source_rows()
+        self.video_tracks_encoding_changed.emit(plans)
+
+    def _save_current_video_state(self) -> None:
+        if self._loading_video_settings or self._current_video_entry_id is None:
+            return
+        if not hasattr(self, "_codec_combo") or not hasattr(self, "_copy_dv_cb"):
+            return
+        state = self._current_video_state()
+        self._video_settings_by_entry_id[self._current_video_entry_id] = state
+        if self._video_apply_all:
+            for entry_id in self._active_video_entry_ids():
+                self._video_settings_by_entry_id[entry_id] = self._copy_video_state(state)
+        self._emit_video_encoding_plans()
 
     def _apply_video_state(self, state: dict[str, object]) -> None:
         self._loading_video_settings = True
@@ -1097,7 +1554,7 @@ class EncodePanel(QWidget):
             self._set_combo_data(self._codec_combo, state.get("codec"))
             self._set_combo_data(self._mode_combo, state.get("quality_mode"))
             self._set_combo_data(self._preset_combo, state.get("preset"))
-            self._crf_spin.setValue(int(state.get("crf") or self._crf_spin.value()))
+            self._crf_spin.setValue(self._state_int(state, "crf", self._crf_spin.value()))
             self._bitrate_edit.setText(str(state.get("bitrate_kbps") or "5000"))
             self._size_edit.setText(str(state.get("target_size_mb") or "4000"))
             self._extra_params.setText(str(state.get("extra_params") or ""))
@@ -1109,9 +1566,6 @@ class EncodePanel(QWidget):
             self._set_combo_data(self._dovi_profile_combo, state.get("dovi_profile"))
             self._tonemap_cb.setChecked(bool(state.get("tonemap_to_sdr")))
             self._set_combo_data(self._tonemap_algo, state.get("tonemap_algorithm"))
-            self._video_lang_edit.blockSignals(True)
-            self._video_lang_edit.setText(str(state.get("language") or ""))
-            self._video_lang_edit.blockSignals(False)
         finally:
             self._loading_video_settings = False
 
@@ -1124,12 +1578,16 @@ class EncodePanel(QWidget):
         video_source = self._file_info.path if self._file_info is not None else None
         stream_index = 0
         track_entry_id = self._current_video_entry_id
+        selected_file_info: FileInfo | None = None
+        selected_track: TrackEntry | None = None
         row = self._video_list.currentRow() if hasattr(self, "_video_list") else -1
         if 0 <= row < len(self._video_tracks):
             file_info, track, _color = self._video_tracks[row]
             video_source = file_info.path
             stream_index = int(track.mkv_tid)
             track_entry_id = self._video_entry_id(track)
+            selected_file_info = file_info
+            selected_track = track
         codec = self._codec_combo.currentData() or "libx265"
         mode  = self._mode_combo.currentData() or QualityMode.CRF
         preset = self._preset_combo.currentData() or "slow"
@@ -1141,6 +1599,21 @@ class EncodePanel(QWidget):
             size = int(self._size_edit.text())
         except ValueError:
             size = 4000
+        force_8bit = bool(
+            selected_file_info is not None
+            and selected_track is not None
+            and self._video_force_8bit_for_codec(selected_file_info, selected_track, str(codec))
+        )
+        source_hdr = (
+            self._hdr_type_for_entry(selected_file_info, selected_track)
+            if selected_file_info is not None and selected_track is not None
+            else HDRType.NONE
+        )
+        copy_dv, copy_hdr10plus = self._effective_dynamic_hdr_flags(
+            self._current_video_state(),
+            source_hdr=source_hdr,
+            target_codec=str(codec),
+        )
         return VideoEncodeSettings(
             stream_index=stream_index,
             source_path=video_source,
@@ -1152,12 +1625,114 @@ class EncodePanel(QWidget):
             target_size_mb=size,
             preset=preset,
             extra_params=self._extra_params.text().strip(),
+            force_8bit=force_8bit,
             inject_hdr_meta=self._inject_hdr_cb.isChecked(),
             master_display=self._master_display.text().strip(),
             max_cll=self._max_cll.text().strip(),
+            copy_dv=copy_dv,
+            copy_hdr10plus=copy_hdr10plus,
+            dovi_profile=self._dovi_profile_combo.currentData() or "0",
             tonemap_to_sdr=self._tonemap_cb.isChecked(),
             tonemap_algorithm=self._tonemap_algo.currentData() or "hable",
         )
+
+    def _video_settings_from_state(
+        self,
+        *,
+        file_info: FileInfo,
+        track: TrackEntry,
+        state: dict[str, object],
+    ) -> VideoEncodeSettings:
+        mode = state.get("quality_mode") or QualityMode.CRF
+        if not isinstance(mode, QualityMode):
+            mode = QualityMode(str(mode))
+        bitrate = self._state_int(state, "bitrate_kbps", 5000)
+        size = self._state_int(state, "target_size_mb", 4000)
+        codec = str(state.get("codec") or "libx265")
+        source_hdr = self._hdr_type_for_entry(file_info, track)
+        copy_dv, copy_hdr10plus = self._effective_dynamic_hdr_flags(
+            state,
+            source_hdr=source_hdr,
+            target_codec=codec,
+        )
+        return VideoEncodeSettings(
+            stream_index=int(track.mkv_tid),
+            source_path=file_info.path,
+            track_entry_id=self._video_entry_id(track),
+            codec=codec,
+            quality_mode=mode,
+            crf=self._state_int(state, "crf", 18),
+            bitrate_kbps=bitrate,
+            target_size_mb=size,
+            preset=str(state.get("preset") or "slow"),
+            extra_params=str(state.get("extra_params") or "").strip(),
+            force_8bit=self._video_force_8bit_for_codec(file_info, track, codec),
+            inject_hdr_meta=bool(state.get("inject_hdr_meta")),
+            master_display=str(state.get("master_display") or "").strip(),
+            max_cll=str(state.get("max_cll") or "").strip(),
+            copy_dv=copy_dv,
+            copy_hdr10plus=copy_hdr10plus,
+            dovi_profile=str(state.get("dovi_profile") or "0"),
+            tonemap_to_sdr=bool(state.get("tonemap_to_sdr")),
+            tonemap_algorithm=str(state.get("tonemap_algorithm") or "hable"),
+        )
+
+    @staticmethod
+    def _state_int(state: dict[str, object], key: str, default: int) -> int:
+        value = state.get(key, default)
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            try:
+                return int(value.strip())
+            except ValueError:
+                return default
+        return default
+
+    def _current_video_settings_list(self) -> list[VideoEncodeSettings]:
+        self._save_current_video_state()
+        settings: list[VideoEncodeSettings] = []
+        template_state = (
+            self._video_settings_by_entry_id.get(self._current_video_entry_id)
+            if self._current_video_entry_id is not None
+            else None
+        )
+        if template_state is None and self._video_settings_by_entry_id:
+            template_state = next(iter(self._video_settings_by_entry_id.values()))
+        if template_state is None and hasattr(self, "_codec_combo") and hasattr(self, "_copy_dv_cb"):
+            template_state = self._current_video_state()
+
+        for file_info, track, _color in self._video_tracks:
+            entry_id = self._video_entry_id(track)
+            state = self._video_settings_by_entry_id.get(entry_id)
+            if state is None:
+                if entry_id == self._current_video_entry_id:
+                    settings.append(self._current_video_settings())
+                    continue
+                if self._should_propagate_global_state(template_state):
+                    state = self._normalized_video_state_for_track(
+                        info=file_info,
+                        track=track,
+                        state=template_state or {},
+                    )
+                else:
+                    state = self._default_video_state_for_track(
+                        info=file_info,
+                        track=track,
+                    )
+                self._video_settings_by_entry_id[entry_id] = self._copy_video_state(state)
+            settings.append(
+                self._video_settings_from_state(
+                    file_info=file_info,
+                    track=track,
+                    state=state,
+                )
+            )
+        return settings
 
     def set_output_provider(self, provider: Callable[[], "Path | None"]) -> None:
         """
@@ -1207,23 +1782,25 @@ class EncodePanel(QWidget):
         output = self._output_provider()
         if output is None:
             return None
-        video_lang = self._video_lang_edit.text().strip()
-        track_meta_edits = [TrackMetaEdit(track_order=1, language=video_lang)] if video_lang else []
+        video_tracks = self._current_video_settings_list()
+        if not video_tracks:
+            return None
+        primary_source = video_tracks[0].source_path or self._file_info.path
         return EncodeConfig(
-            source=self._file_info.path,
+            source=primary_source,
             output=output,
-            video=self._current_video_settings(),
+            video=video_tracks[0],
+            video_tracks=video_tracks,
             audio_tracks=self._audio_table.current_audio_settings(),
             copy_subtitles=True,
             duration_s=self._duration_s,
-            copy_dv=self._copy_dv_cb.isChecked(),
-            copy_hdr10plus=self._copy_hdr10plus_cb.isChecked(),
-            dovi_profile=self._dovi_profile_combo.currentData() or "0",
+            copy_dv=video_tracks[0].copy_dv,
+            copy_hdr10plus=video_tracks[0].copy_hdr10plus,
+            dovi_profile=video_tracks[0].dovi_profile,
             work_dir=self._config.work_dir,
             file_title=self._file_title_provider(),
             extra_attachments=self._extra_attachments_provider(),
             tmdb_cover=self._tmdb_cover_provider(),
-            track_meta_edits=track_meta_edits,
             tag_overrides=self._tag_overrides_provider(),
             chapter_overrides=self._chapters_provider(),
         )
@@ -1276,6 +1853,7 @@ class EncodePanel(QWidget):
     def refresh_runtime_settings(self) -> None:
         self._audio_table.refresh_runtime_settings()
         self._workflow.set_ffmpeg_threads(self._config.ffmpeg_threads)
+        self._workflow.set_max_parallel_video_encodes(self._config.max_parallel_video_encodes)
         self._workflow.set_mediainfo_bin(self._config.tool_mediainfo)
         self._workflow.set_generate_nfo(self._config.generate_nfo)
         self._rebuild_preview()

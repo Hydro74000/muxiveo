@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -8,6 +9,17 @@ import launcher
 
 
 class TestLauncherWindowsControlledFolderAccess:
+    def test_core_logging_import_stays_headless_without_i18n(self):
+        previous_logging = sys.modules.pop("core.logging", None)
+        try:
+            with patch.dict(sys.modules, {"core.i18n": None}):
+                module = importlib.import_module("core.logging")
+                assert module.get_logger("mediarecode.tmdb").name == "mediarecode.tmdb"
+        finally:
+            sys.modules.pop("core.logging", None)
+            if previous_logging is not None:
+                sys.modules["core.logging"] = previous_logging
+
     def test_restart_current_app_uses_sys_executable_when_frozen(self):
         with patch.object(launcher.sys, "executable", r"C:\Apps\Mediarecode\mediarecode.exe"), \
              patch.object(launcher.sys, "frozen", True, create=True), \

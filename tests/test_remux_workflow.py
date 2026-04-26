@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from typing import cast
 
 import pytest
 from PySide6.QtCore import QCoreApplication, Qt
@@ -35,9 +36,21 @@ from core.inspector import AttachmentInfo, ChapterEntry
 from core.runner import TaskSignals
 from core.version import APP_VERSION_LABEL
 from core.workflows.matroska_header_editor import MatroskaSegmentInfoHeaderEditor
+from core.workflows.remux_mapping import (
+    requires_file_sync_fallback_for_offsets,
+    resolve_mapped_tracks,
+)
 from core.workflows.remux_models import RemuxConfig, RemuxError, SourceInput, TrackEntry
 from core.workflows.remux import RemuxWorkflow
-from core.workflows.remux_timeline_sync import LiveSyncNotSupportedError, SyncPreparedInput
+from core.workflows.remux_sync import (
+    decide_strict_interleave_with_prescan,
+    prepare_timeline_sync_inputs,
+)
+from core.workflows.remux_timeline_sync import (
+    LiveSyncNotSupportedError,
+    SyncPreparedInput,
+    TimelineSyncFallbackHelper,
+)
 
 
 def _track(
@@ -81,7 +94,10 @@ def _wait_task(signals, timeout: float = 20.0) -> dict[str, object]:
     }
     done = {"value": False}
 
-    signals.progress.connect(lambda msg: state["progress"].append(msg), Qt.ConnectionType.QueuedConnection)
+    signals.progress.connect(
+        lambda msg: cast(list[str], state["progress"]).append(msg),
+        Qt.ConnectionType.QueuedConnection,
+    )
     signals.finished.connect(lambda res: (state.__setitem__("finished", res), done.__setitem__("value", True)), Qt.ConnectionType.QueuedConnection)
     signals.failed.connect(lambda msg, exc: (state.__setitem__("failed", (msg, exc)), done.__setitem__("value", True)), Qt.ConnectionType.QueuedConnection)
     signals.cancelled.connect(lambda: (state.__setitem__("cancelled", True), done.__setitem__("value", True)), Qt.ConnectionType.QueuedConnection)
@@ -242,8 +258,8 @@ class TestRemuxWorkflowBuildCommand:
             keep_chapters=False,
         )
 
-        mapped = wf._resolve_mapped_tracks(cfg)
-        assert wf._requires_file_sync_fallback_for_offsets(mapped) is True
+        mapped = resolve_mapped_tracks(cfg)
+        assert requires_file_sync_fallback_for_offsets(mapped) is True
 
     def test_requires_file_sync_fallback_for_offsets_ignores_zero_offsets(self, tmp_path):
         wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
@@ -262,8 +278,8 @@ class TestRemuxWorkflowBuildCommand:
             keep_chapters=False,
         )
 
-        mapped = wf._resolve_mapped_tracks(cfg)
-        assert wf._requires_file_sync_fallback_for_offsets(mapped) is False
+        mapped = resolve_mapped_tracks(cfg)
+        assert requires_file_sync_fallback_for_offsets(mapped) is False
 
     def test_decide_strict_interleave_with_prescan_forces_sync_on_foreign_offset(self, tmp_path):
         wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
@@ -282,7 +298,11 @@ class TestRemuxWorkflowBuildCommand:
             keep_chapters=False,
         )
 
-        assert wf._decide_strict_interleave_with_prescan(cfg) is True
+        assert decide_strict_interleave_with_prescan(
+            cfg,
+            resolve_mapped_tracks=resolve_mapped_tracks,
+            log_cb=lambda *_args: None,
+        ) is True
 
     def test_build_command_does_not_force_muxing_application_metadata(self, tmp_path):
         wf = RemuxWorkflow(
@@ -577,7 +597,7 @@ class TestRemuxWorkflowBuildCommand:
             track_order=[(0, 0), (1, 1), (0, 2)],
             keep_chapters=False,
         )
-        mapped = wf._resolve_mapped_tracks(cfg)
+        mapped = resolve_mapped_tracks(cfg)
 
         class _FakeSyncer:
             def __init__(self, **_kwargs):
@@ -592,14 +612,19 @@ class TestRemuxWorkflowBuildCommand:
             def prepare_from_mapped_tracks(self, **_kwargs):
                 pytest.fail("temp fallback should not be used when mmap works")
 
-        monkeypatch.setattr("core.workflows.remux.FfmpegTimelineSync", _FakeSyncer)
-        monkeypatch.setattr("core.workflows.remux.os.name", "nt", raising=False)
+        monkeypatch.setattr("core.workflows.remux_timeline_sync.os.name", "nt", raising=False)
 
-        remapped, extra_inputs, live = wf._prepare_timeline_sync_inputs(
+        remapped, extra_inputs, live = prepare_timeline_sync_inputs(
             cfg,
             mapped,
             tmp_path,
             TaskSignals(),
+            allow_live=True,
+            ffmpeg_bin="ffmpeg",
+            ffmpeg_thread_args=wf._ffmpeg_thread_args(),
+            log_cb=lambda *_args: None,
+            syncer_factory=_FakeSyncer,
+            fallback_helper_factory=TimelineSyncFallbackHelper,
         )
         assert live is None
         assert [item.path for item in extra_inputs] == [tmp_path / "mmap.mka"]
@@ -623,7 +648,7 @@ class TestRemuxWorkflowBuildCommand:
             track_order=[(0, 0), (1, 1), (0, 2)],
             keep_chapters=False,
         )
-        mapped = wf._resolve_mapped_tracks(cfg)
+        mapped = resolve_mapped_tracks(cfg)
 
         class _FakeSyncer:
             def __init__(self, **_kwargs):
@@ -638,14 +663,19 @@ class TestRemuxWorkflowBuildCommand:
             def prepare_from_mapped_tracks(self, **_kwargs):
                 return [SyncPreparedInput(key=(1, 1, "audio"), path=tmp_path / "temp.mka", input_idx=2)]
 
-        monkeypatch.setattr("core.workflows.remux.FfmpegTimelineSync", _FakeSyncer)
-        monkeypatch.setattr("core.workflows.remux.os.name", "nt", raising=False)
+        monkeypatch.setattr("core.workflows.remux_timeline_sync.os.name", "nt", raising=False)
 
-        remapped, extra_inputs, live = wf._prepare_timeline_sync_inputs(
+        remapped, extra_inputs, live = prepare_timeline_sync_inputs(
             cfg,
             mapped,
             tmp_path,
             TaskSignals(),
+            allow_live=True,
+            ffmpeg_bin="ffmpeg",
+            ffmpeg_thread_args=wf._ffmpeg_thread_args(),
+            log_cb=lambda *_args: None,
+            syncer_factory=_FakeSyncer,
+            fallback_helper_factory=TimelineSyncFallbackHelper,
         )
         assert live is None
         assert [item.path for item in extra_inputs] == [tmp_path / "temp.mka"]

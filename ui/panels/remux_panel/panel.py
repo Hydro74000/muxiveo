@@ -61,12 +61,14 @@ class RemuxPanel(QWidget):
 
     Signaux :
         log_message(level: str, message: str)
+        tool_output(label: str, line: str)
         video_tracks_changed(list)  — pistes vidéo activées (FileInfo, TrackEntry, couleur)
         audio_tracks_changed(list)  — pistes audio activées (AudioTrack, couleur, Path source)
         ready_changed(bool)         — True quand au moins un fichier est inspecté
     """
 
     log_message = Signal(str, str)
+    tool_output = Signal(str, str)
 
     _inspection_done = Signal(str, object)
     _inspection_error = Signal(str, str)
@@ -639,6 +641,41 @@ class RemuxPanel(QWidget):
                     self._rebuild_preview()
                     self._emit_audio_tracks()
                 return
+
+    def update_video_track_encoding(self, plans) -> None:
+        plan_map: dict[str, str] = {}
+        for plan in plans or []:
+            entry_id = str(getattr(plan, "track_entry_id", "") or "").strip()
+            if not entry_id:
+                continue
+            target_codec = str(getattr(plan, "target_codec", "") or "").strip().lower()
+            if not target_codec:
+                summary = str(getattr(plan, "codec_summary", "") or "").strip()
+                if summary.lower() == "copy":
+                    target_codec = "copy"
+                else:
+                    target_codec = summary.split(" - ", 1)[0].strip().lower()
+            plan_map[entry_id] = target_codec
+
+        table_changed = self._track_table.update_video_encoding_plans(plan_map, clear_missing=True)
+        model_changed = False
+        for source in self._source_files:
+            for entry in source.tracks:
+                if entry.track_type != "video":
+                    continue
+                target_codec = plan_map.get(entry.entry_id, "")
+                modified = bool(target_codec and target_codec != "copy")
+                if entry.encode_plan_codec == target_codec and entry.encode_plan_modified == modified:
+                    continue
+                entry.encode_plan_codec = target_codec
+                entry.encode_plan_summary = ""
+                entry.encode_plan_hdr_badges = ()
+                entry.encode_plan_modified = modified
+                model_changed = True
+
+        if table_changed or model_changed:
+            self._rebuild_preview()
+            self._emit_video_tracks()
 
     def current_output_path(self) -> Path | None:
         text = self._output_edit.text().strip()

@@ -115,6 +115,58 @@
     "fra": "Nombre maximum de lignes conservées dans le panneau de log.",
     "eng": "Maximum number of lines kept in the log panel."
   },
+  "Activer le logging fichier": {
+    "fra": "Activer le logging fichier",
+    "eng": "Enable file logging"
+  },
+  "Si activé, les logs applicatifs sont aussi écrits dans un fichier texte sous app_data/logs/.": {
+    "fra": "Si activé, les logs applicatifs sont aussi écrits dans un fichier texte sous app_data/logs/.",
+    "eng": "When enabled, application logs are also written to a text file under app_data/logs/."
+  },
+  "Niveau de logging fichier": {
+    "fra": "Niveau de logging fichier",
+    "eng": "File logging level"
+  },
+  "Standard écrit le flux visible dans la fenêtre. Verbose ajoute les sorties techniques détaillées des outils.": {
+    "fra": "Standard écrit le flux visible dans la fenêtre. Verbose ajoute les sorties techniques détaillées des outils.",
+    "eng": "Standard writes the output visible in the window. Verbose also adds detailed technical tool output."
+  },
+  "Dossier des logs fichier": {
+    "fra": "Dossier des logs fichier",
+    "eng": "File logs directory"
+  },
+  "Dossier où écrire les logs fichier. Prérempli par défaut avec le chemin complet actuel.": {
+    "fra": "Dossier où écrire les logs fichier. Prérempli par défaut avec le chemin complet actuel.",
+    "eng": "Directory where file logs are written. Pre-filled by default with the full current path."
+  },
+  "Standard": {
+    "fra": "Standard",
+    "eng": "Standard"
+  },
+  "Verbose": {
+    "fra": "Verbose",
+    "eng": "Verbose"
+  },
+  "Le dossier des logs fichier doit être renseigné quand l'option est activée.": {
+    "fra": "Le dossier des logs fichier doit être renseigné quand l'option est activée.",
+    "eng": "The file logs directory must be set when this option is enabled."
+  },
+  "Impossible d'écrire le fichier de logging.": {
+    "fra": "Impossible d'écrire le fichier de logging.",
+    "eng": "Unable to write the logging file."
+  },
+  "Logging fichier activé ({level}) : {path}": {
+    "fra": "Logging fichier activé ({level}) : {path}",
+    "eng": "File logging enabled ({level}): {path}"
+  },
+  "Logging fichier désactivé.": {
+    "fra": "Logging fichier désactivé.",
+    "eng": "File logging disabled."
+  },
+  "Niveau de logging fichier : {level}": {
+    "fra": "Niveau de logging fichier : {level}",
+    "eng": "File logging level: {level}"
+  },
   "Thème": {
     "fra": "Thème",
     "eng": "Theme"

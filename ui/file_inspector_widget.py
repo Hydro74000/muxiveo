@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import (
-    Qt, Signal, QAbstractTableModel, QModelIndex, QObject,
+    Qt, Signal, QAbstractTableModel, QModelIndex, QPersistentModelIndex, QObject,
 )
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont
 from PySide6.QtWidgets import (
@@ -72,13 +72,23 @@ class _TrackTableModel(QAbstractTableModel):
 
     # --- Interface QAbstractTableModel ---
 
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+    def rowCount(
+        self,
+        parent: QModelIndex | QPersistentModelIndex = QModelIndex(),
+    ) -> int:
         return len(self._rows)
 
-    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
+    def columnCount(
+        self,
+        parent: QModelIndex | QPersistentModelIndex = QModelIndex(),
+    ) -> int:
         return len(self._headers)
 
-    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+    def data(
+        self,
+        index: QModelIndex | QPersistentModelIndex,
+        role: int = Qt.ItemDataRole.DisplayRole,
+    ) -> Any:
         if not index.isValid():
             return None
 
@@ -228,7 +238,7 @@ def _video_rows(tracks: list[VideoTrack]) -> list[list[str]]:
             f"{t.bit_depth} bit" if t.bit_depth else "—",
             t.color_space or "—",
             t.color_transfer or "—",
-            t.hdr_type.label(),
+            t.hdr_label,
             t.language or "—",
             t.title or "—",
         ])
@@ -466,12 +476,15 @@ class _FileSummaryBar(QWidget):
         self._cells["Taille"].setText(info.size_human)
         self._cells["Durée"].setText(info.duration_human)
         self._cells["Format"].setText(info.format.split(",")[0].upper())
-        self._cells["HDR"].setText(info.hdr_type.label())
+        primary = info.primary_video
+        hdr_display = primary.hdr_label if primary is not None else info.hdr_type.label()
+        self._cells["HDR"].setText(hdr_display)
         self._cells["Frames"].setText(str(info.frame_count) if info.frame_count else "—")
 
         # Coloriser le badge HDR
         hdr_color = {
             HDRType.NONE:                   _C.TEXT_DIM,
+            HDRType.HLG:                    "#7ed957",
             HDRType.HDR10:                  _C.INFO,
             HDRType.HDR10PLUS:              "#4fc3f7",
             HDRType.DOLBY_VISION:           "#ce93d8",

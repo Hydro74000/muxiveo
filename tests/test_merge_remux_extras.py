@@ -23,6 +23,7 @@ Plan de couverture :
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -32,7 +33,9 @@ from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
 # Appel unbound : _merge_remux_extras n'utilise pas self
 from ui.main_window import MainWindow
 
-_merge = MainWindow._merge_remux_extras
+
+def _merge(encode_cfg: EncodeConfig, remux_cfg: RemuxConfig) -> EncodeConfig:
+    return MainWindow._merge_remux_extras(cast(Any, object()), encode_cfg, remux_cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -51,11 +54,14 @@ def _encode_cfg(
     extra_attachments: list | None = None,
     keep_chapters: bool = True,
     audio_tracks: list | None = None,
+    video_tracks: list | None = None,
 ) -> EncodeConfig:
+    videos = video_tracks or [_video_settings()]
     return EncodeConfig(
         source=src,
         output=output,
-        video=_video_settings(),
+        video=videos[0],
+        video_tracks=videos,
         audio_tracks=audio_tracks or [],
         keep_chapters=keep_chapters,
         file_title=file_title,
@@ -122,7 +128,7 @@ class TestFileTitlePreservedOnMerge:
         enc = _encode_cfg(src, out, file_title="Mon Film Test")
         rmx = _remux_cfg(src, out, tracks=[_track(0, "video"), sub_track])
 
-        result = _merge(None, enc, rmx)
+        result = _merge(enc, rmx)
 
         assert result.file_title == "Mon Film Test", \
             f"file_title perdu après fusion sous-titres : {result.file_title!r}"
@@ -136,7 +142,7 @@ class TestFileTitlePreservedOnMerge:
         enc = _encode_cfg(src, out, file_title="Film Chapitres", keep_chapters=True)
         rmx = _remux_cfg(src, out, keep_chapters=False)
 
-        result = _merge(None, enc, rmx)
+        result = _merge(enc, rmx)
 
         assert result.file_title == "Film Chapitres", \
             f"file_title perdu suite à changement keep_chapters : {result.file_title!r}"
@@ -150,7 +156,7 @@ class TestFileTitlePreservedOnMerge:
         enc = _encode_cfg(src, out, file_title="Film Tags")
         rmx = _remux_cfg(src, out, copy_tags=True)
 
-        result = _merge(None, enc, rmx)
+        result = _merge(enc, rmx)
 
         assert result.file_title == "Film Tags", \
             f"file_title perdu avec tag_sources : {result.file_title!r}"
@@ -164,7 +170,7 @@ class TestFileTitlePreservedOnMerge:
         enc = _encode_cfg(src, out, file_title="")
         rmx = _remux_cfg(src, out, copy_tags=True)
 
-        result = _merge(None, enc, rmx)
+        result = _merge(enc, rmx)
 
         assert result.file_title == ""
 
@@ -189,7 +195,7 @@ class TestExtraAttachmentsPreservedOnMerge:
         enc = _encode_cfg(src, out, extra_attachments=[cover], keep_chapters=True)
         rmx = _remux_cfg(src, out, keep_chapters=False)
 
-        result = _merge(None, enc, rmx)
+        result = _merge(enc, rmx)
 
         assert result.extra_attachments == [cover], \
             f"extra_attachments perdus : {result.extra_attachments!r}"
@@ -205,7 +211,7 @@ class TestExtraAttachmentsPreservedOnMerge:
         enc = _encode_cfg(src, out, extra_attachments=[cover])
         rmx = _remux_cfg(src, out, copy_tags=True)
 
-        result = _merge(None, enc, rmx)
+        result = _merge(enc, rmx)
 
         assert result.extra_attachments == [cover], \
             f"extra_attachments perdus avec tag_sources : {result.extra_attachments!r}"
@@ -236,7 +242,7 @@ class TestNoMergeReturnsOriginal:
         enc = _encode_cfg(src, out, file_title="Film", keep_chapters=True)
         rmx = _remux_cfg(src, out, keep_chapters=True, tracks=[bare_track])
 
-        result = _merge(None, enc, rmx)
+        result = _merge(enc, rmx)
 
         assert result is enc, "Devrait retourner l'objet original sans reconstruction"
 
@@ -269,10 +275,47 @@ class TestLanguageClearPropagation:
         enc = _encode_cfg(src, out)
         rmx = _remux_cfg(src, out, tracks=[cleared_video])
 
-        result = _merge(None, enc, rmx)
+        result = _merge(enc, rmx)
 
         assert [(edit.track_order, edit.language, edit.title) for edit in result.track_meta_edits] == [
             (1, "und", None),
+        ]
+
+    def test_multiple_video_tracks_are_ordered_before_audio_tracks(self, tmp_path, qt_app):
+        src = tmp_path / "src.mkv"
+        src.touch()
+        out = tmp_path / "out.mkv"
+
+        video_a = TrackEntry(
+            mkv_tid=0, track_type="video", codec="H264", display_info="",
+            language="fra", title="Vidéo A", orig_language="", orig_title="",
+        )
+        video_b = TrackEntry(
+            mkv_tid=1, track_type="video", codec="HEVC", display_info="",
+            language="eng", title="Vidéo B", orig_language="", orig_title="",
+        )
+        audio = TrackEntry(
+            mkv_tid=2, track_type="audio", codec="EAC3", display_info="",
+            language="jpn", title="Audio", orig_language="", orig_title="",
+        )
+
+        enc = _encode_cfg(
+            src,
+            out,
+            video_tracks=[
+                VideoEncodeSettings(stream_index=0, source_path=src, track_entry_id=video_a.entry_id),
+                VideoEncodeSettings(stream_index=1, source_path=src, track_entry_id=video_b.entry_id),
+            ],
+            audio_tracks=[AudioTrackSettings(stream_index=2, source_path=src)],
+        )
+        rmx = _remux_cfg(src, out, tracks=[video_a, video_b, audio])
+
+        result = _merge(enc, rmx)
+
+        assert [(edit.track_order, edit.title, edit.language) for edit in result.track_meta_edits] == [
+            (1, "Vidéo A", "fra"),
+            (2, "Vidéo B", "eng"),
+            (3, "Audio", "jpn"),
         ]
 
 
@@ -314,7 +357,7 @@ class TestTagOverridesPropagated:
         enc = _encode_cfg(src, out, file_title="Film")
         rmx = self._remux_with_tag_overrides(src, out, tags)
 
-        result = _merge(None, enc, rmx)
+        result = _merge(enc, rmx)
 
         assert result.tag_overrides == tags, \
             f"tag_overrides non propagé : {result.tag_overrides!r}"
@@ -328,7 +371,7 @@ class TestTagOverridesPropagated:
         enc = _encode_cfg(src, out)
         rmx = self._remux_with_tag_overrides(src, out, {"EPISODE": "3"})
 
-        result = _merge(None, enc, rmx)
+        result = _merge(enc, rmx)
 
         assert result.tag_sources == [], \
             f"tag_sources devrait être vide quand tag_overrides présent : {result.tag_sources!r}"
@@ -342,7 +385,7 @@ class TestTagOverridesPropagated:
         enc = _encode_cfg(src, out)
         rmx = self._remux_with_tag_overrides(src, out, {})
 
-        result = _merge(None, enc, rmx)
+        result = _merge(enc, rmx)
 
         assert result.tag_overrides == {}, \
             f"tag_overrides={{}} non propagé : {result.tag_overrides!r}"
@@ -357,7 +400,7 @@ class TestTagOverridesPropagated:
         # RemuxConfig sans tag_overrides mais copy_tags=True
         rmx = _remux_cfg(src, out, copy_tags=True)
 
-        result = _merge(None, enc, rmx)
+        result = _merge(enc, rmx)
 
         assert result.tag_sources == [src], \
             f"tag_sources attendu [{src}], obtenu : {result.tag_sources!r}"
@@ -395,7 +438,7 @@ class TestTrackMetaEditsOrdering:
         )
         rmx = _remux_cfg(src, out, tracks=[video, audio_2, audio_1])
 
-        result = _merge(None, enc, rmx)
+        result = _merge(enc, rmx)
 
         assert [(edit.track_order, edit.title, edit.language) for edit in result.track_meta_edits] == [
             (2, "VO", "eng"),
@@ -429,7 +472,7 @@ class TestTrackMetaEditsOrdering:
             keep_chapters=True,
         )
 
-        result = _merge(None, enc, rmx)
+        result = _merge(enc, rmx)
 
         assert result.subtitle_tracks == [(src_b, 7), (src_a, 4)]
         assert [(edit.track_order, edit.title, edit.language) for edit in result.track_meta_edits] == [
@@ -472,7 +515,7 @@ class TestTrackMetaEditsOrdering:
         )
         rmx = _remux_cfg(src, out, tracks=[_track(0, "video"), audio])
 
-        result = _merge(None, enc, rmx)
+        result = _merge(enc, rmx)
         edit = next(e for e in result.track_meta_edits if e.track_order == 2)
 
         assert edit.flag_default is True
@@ -517,7 +560,7 @@ class TestTrackTimeOffsetsPropagation:
         )
         rmx = _remux_cfg(src, out, tracks=[video, audio])
 
-        result = _merge(None, enc, rmx)
+        result = _merge(enc, rmx)
 
         assert result is not enc
         assert all(isinstance(t, TrackTimeOffset) for t in result.track_time_offsets)
@@ -548,5 +591,5 @@ class TestTrackTimeOffsetsPropagation:
         enc = _encode_cfg(src, out)
         rmx = _remux_cfg(src, out, tracks=[video])
 
-        result = _merge(None, enc, rmx)
+        result = _merge(enc, rmx)
         assert result is enc

@@ -105,8 +105,9 @@ class _FileRow(QWidget):
         parts = [info.size_human, info.duration_human, info.format]
         if info.primary_video:
             parts.append(info.primary_video.resolution)
-            if info.primary_video.hdr_type.label() != "SDR":
-                parts.append(info.primary_video.hdr_type.label())
+            hdr_lbl = info.primary_video.hdr_label
+            if hdr_lbl != "SDR":
+                parts.append(hdr_lbl)
         self._info_lbl.setText("   ·   ".join(p for p in parts if p and p != "?"))
         self._info_lbl.setStyleSheet(f"""
             color: {_C.TEXT_SEC};

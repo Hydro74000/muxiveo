@@ -8,6 +8,8 @@ on:
   pull_request:
     paths:
       - "ui/**"
+      - "main.py"
+      - "locales.json"
       - "core/i18n.py"
       - "core/config.py"
       - "core/runner.py"
@@ -32,6 +34,8 @@ on:
       - master
     paths:
       - "ui/**"
+      - "main.py"
+      - "locales.json"
       - "core/i18n.py"
       - "core/config.py"
       - "core/runner.py"
