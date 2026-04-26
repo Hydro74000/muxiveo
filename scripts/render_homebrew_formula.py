@@ -6,6 +6,8 @@ Render the Homebrew formula used to publish Mediarecode for Linux and macOS.
 from __future__ import annotations
 
 import argparse
+import base64
+import struct
 import sys
 from pathlib import Path
 
@@ -17,6 +19,48 @@ from core.file_types import build_desktop_mime_type_string
 
 
 _DESKTOP_MIME_TYPES = build_desktop_mime_type_string()
+
+
+def _extract_largest_png_from_ico(path: Path) -> bytes:
+    data = path.read_bytes()
+    if len(data) < 6:
+        raise ValueError(f"Invalid ICO file: {path}")
+
+    _reserved, icon_type, count = struct.unpack_from("<HHH", data, 0)
+    if icon_type != 1 or count <= 0:
+        raise ValueError(f"Unsupported ICO file: {path}")
+
+    best_payload: bytes | None = None
+    best_area = -1
+    for index in range(count):
+        offset = 6 + index * 16
+        if offset + 16 > len(data):
+            break
+        width, height, _colors, _reserved, _planes, _bpp, size, image_offset = struct.unpack_from(
+            "<BBBBHHII",
+            data,
+            offset,
+        )
+        width = 256 if width == 0 else width
+        height = 256 if height == 0 else height
+        if image_offset + size > len(data):
+            continue
+        payload = data[image_offset:image_offset + size]
+        if not payload.startswith(b"\x89PNG\r\n\x1a\n"):
+            continue
+        area = width * height
+        if area > best_area:
+            best_area = area
+            best_payload = payload
+
+    if best_payload is None:
+        raise ValueError(f"No embedded PNG frame found in {path}")
+    return best_payload
+
+
+_LINUX_ICON_PNG_BASE64 = base64.b64encode(
+    _extract_largest_png_from_ico(ROOT / "icon.ico")
+).decode("ascii")
 
 
 def render_formula(
@@ -32,7 +76,9 @@ def render_formula(
     hdr10plus_tool_macos_sha256: str,
     homepage: str = "https://github.com/Hydro74000/mediarecode",
 ) -> str:
-    return f"""class Mediarecode < Formula
+    return f"""require "base64"
+
+class Mediarecode < Formula
   desc "GUI video workflow tool for remuxing, encoding, Dolby Vision and HDR10+"
   homepage "{homepage}"
   version "{version}"
@@ -69,13 +115,19 @@ def render_formula(
       Name=Mediarecode
       Comment=MKV/MP4 workflow - DoVi, HDR10+, encoding
       Exec=#{{opt_bin}}/mediarecode %F
-      Icon=video-x-generic
+      Icon=#{{opt_share}}/icons/hicolor/256x256/apps/mediarecode.png
       Type=Application
       Categories=AudioVideo;Video;
       MimeType={_DESKTOP_MIME_TYPES}
       Terminal=false
       StartupNotify=true
     EOS
+  end
+
+  def install_linux_icon
+    icon_dir = share/"icons/hicolor/256x256/apps"
+    icon_dir.mkpath
+    (icon_dir/"mediarecode.png").binwrite(Base64.decode64("{_LINUX_ICON_PNG_BASE64}"))
   end
 
   def install_macos_app_link
@@ -89,10 +141,22 @@ def render_formula(
     nil
   end
 
+  def install_uninstall_shortcuts_script
+    (libexec/"mediarecode-uninstall-shortcuts").write <<~EOS
+      #!/bin/bash
+      set -euo pipefail
+      rm -f "${{XDG_DATA_HOME:-$HOME/.local/share}}/applications/mediarecode.desktop"
+      rm -f "$HOME/Applications/Mediarecode.app"
+    EOS
+    chmod 0755, libexec/"mediarecode-uninstall-shortcuts"
+    bin.install_symlink libexec/"mediarecode-uninstall-shortcuts"
+  end
+
   def install
     if OS.mac?
       prefix.install "Mediarecode.app"
       (libexec/"tools").mkpath
+      install_uninstall_shortcuts_script
 
       resource("dovi_tool").stage do
         libexec.install Dir["**/dovi_tool"].first => "tools/dovi_tool"
@@ -132,6 +196,8 @@ CFG
     else
       libexec.install Dir["*.AppImage"].first => "Mediarecode.AppImage"
       chmod 0755, libexec/"Mediarecode.AppImage"
+      install_uninstall_shortcuts_script
+      install_linux_icon
       install_linux_desktop_entry
 
       (libexec/"mediarecode").write <<~EOS
@@ -155,7 +221,7 @@ CFG
 Name=Mediarecode
 Comment=MKV/MP4 workflow - DoVi, HDR10+, encoding
 Exec=#{{opt_bin}}/mediarecode %F
-Icon=video-x-generic
+Icon=#{{opt_share}}/icons/hicolor/256x256/apps/mediarecode.png
 Type=Application
 Categories=AudioVideo;Video;
 MimeType={_DESKTOP_MIME_TYPES}
@@ -173,6 +239,14 @@ DESKTOP
     end
   end
 
+  def caveats
+    <<~EOS
+      User session shortcuts are installed outside the Homebrew prefix.
+      Before `brew uninstall mediarecode`, run:
+        mediarecode-uninstall-shortcuts
+    EOS
+  end
+
   test do
     if OS.mac?
       assert_predicate prefix/"Mediarecode.app", :exist?
@@ -180,6 +254,7 @@ DESKTOP
     else
       assert_predicate libexec/"Mediarecode.AppImage", :exist?
       assert_predicate bin/"mediarecode", :exist?
+      assert_predicate share/"icons/hicolor/256x256/apps/mediarecode.png", :exist?
     end
   end
 end

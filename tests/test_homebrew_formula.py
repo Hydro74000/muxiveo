@@ -43,9 +43,15 @@ def test_render_homebrew_formula_contains_platform_blocks(tmp_path):
     assert 'depends_on "ffmpeg"' in text
     assert 'depends_on "mediainfo"' in text
     assert 'def install_linux_desktop_entry' in text
+    assert 'def install_linux_icon' in text
     assert 'def install_macos_app_link' in text
+    assert 'def install_uninstall_shortcuts_script' in text
     assert 'Exec=#{opt_bin}/mediarecode %F' in text
+    assert 'Icon=#{opt_share}/icons/hicolor/256x256/apps/mediarecode.png' in text
     assert 'app_link.make_symlink(opt_prefix/"Mediarecode.app")' in text
+    assert 'bin.install_symlink libexec/"mediarecode-uninstall-shortcuts"' in text
+    assert 'mediarecode-uninstall-shortcuts' in text
+    assert 'Base64.decode64(' in text
     assert 'libexec.install Dir["*.AppImage"].first => "Mediarecode.AppImage"' in text
     assert 'prefix.install "Mediarecode.app"' in text
     assert '(libexec/"mediarecode").write <<~EOS' in text
