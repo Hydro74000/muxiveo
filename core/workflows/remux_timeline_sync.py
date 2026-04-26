@@ -26,6 +26,18 @@ from core.workflows.common.ffmpeg_runtime import cli_path as _cli_path
 from core.workflows.remux_models import RemuxError, SourceInput
 
 
+def _make_safe_close_fd(fd: int) -> Callable[[], None]:
+    """Crée une callback fermant un FD POSIX, sans capturer 'self'."""
+    def _close() -> None:
+        try:
+            os.close(fd)
+        except (OSError, ValueError):
+            pass
+    return _close
+
+
+
+
 class _TrackLike(Protocol):
     @property
     def track_type(self) -> str:
@@ -530,6 +542,7 @@ class FfmpegTimelineSync:
                 self._log("$ " + " ".join(str(c) for c in cmd))
                 proc = subprocess.Popen(
                     cmd,
+                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
@@ -545,10 +558,7 @@ class FfmpegTimelineSync:
                 inputs=inputs,
                 processes=processes,
                 fifo_paths=fifo_paths,
-                _cleanup_callbacks=[
-                    lambda fd=fd: os.close(fd)
-                    for fd in keepalive_fds
-                ],
+                _cleanup_callbacks=[_make_safe_close_fd(fd) for fd in keepalive_fds],
             ).close()
             raise
 
@@ -560,10 +570,7 @@ class FfmpegTimelineSync:
             inputs=inputs,
             processes=processes,
             fifo_paths=fifo_paths,
-            _cleanup_callbacks=[
-                lambda fd=fd: os.close(fd)
-                for fd in keepalive_fds
-            ],
+            _cleanup_callbacks=[_make_safe_close_fd(fd) for fd in keepalive_fds],
         )
 
     def _start_windows_named_pipe_session(
@@ -624,6 +631,12 @@ class FfmpegTimelineSync:
             except Exception:
                 pass
 
+        def _make_safe_close_handle(handle):
+            """Crée une callback fermant un handle, sans capturer 'self'."""
+            def _close() -> None:
+                _close_handle(handle)
+            return _close
+
         inputs: list[SyncPreparedInput] = []
         processes: list[subprocess.Popen] = []
         threads: list[threading.Thread] = []
@@ -664,6 +677,7 @@ class FfmpegTimelineSync:
                 self._log("$ " + " ".join(str(c) for c in cmd))
                 proc = subprocess.Popen(
                     cmd,
+                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     bufsize=0,
@@ -736,7 +750,7 @@ class FfmpegTimelineSync:
                 processes=processes,
                 named_pipe_paths=pipe_paths,
                 _threads=threads,
-                _cleanup_callbacks=[lambda h=h: _close_handle(h) for h in handles],
+                _cleanup_callbacks=[_make_safe_close_handle(h) for h in handles],
             )
             session.close()
             raise
@@ -865,10 +879,27 @@ class FfmpegTimelineSync:
 
         proc = subprocess.Popen(
             cmd,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             bufsize=0,
         )
+
+        # Drain stderr en parallèle : sinon ffmpeg bloque dès que le tampon
+        # OS de stderr (~64KB) est plein quand stdout est lourdement consommé.
+        stderr_chunks: list[bytes] = []
+
+        def _drain_stderr() -> None:
+            if proc.stderr is None:
+                return
+            try:
+                for chunk in iter(lambda: proc.stderr.read(8192), b""):
+                    stderr_chunks.append(chunk)
+            except Exception:
+                pass
+
+        stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+        stderr_thread.start()
 
         initial_size = 8 * 1024 * 1024
         max_chunk = 64 * 1024
@@ -905,10 +936,20 @@ class FfmpegTimelineSync:
                 mm.close()
                 fh.truncate(written)
         finally:
-            if proc.poll() is None:
+            try:
                 proc.wait(timeout=1200)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            stderr_thread.join(timeout=5)
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
 
-        stderr = (proc.stderr.read() if proc.stderr else b"").decode("utf-8", errors="replace").strip()
+        stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace").strip()
         if proc.returncode != 0 or written == 0 or not destination.exists():
             raise RemuxError(
                 "Normalisation timeline mmap échouée "

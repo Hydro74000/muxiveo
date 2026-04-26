@@ -21,16 +21,17 @@ def subprocess_windows_no_window_kwargs() -> dict[str, Any]:
     """
     Return subprocess kwargs that prevent a console window from flashing on Windows.
 
-    Inclut aussi stdin=DEVNULL pour éviter WinError 50 quand l'application
-    tourne sous MSIX / en mode GUI sans console : Python tenterait sinon de
-    dupliquer le handle stdin du parent (virtualisé, non supporté).
+    Inclut systématiquement stdin=DEVNULL : sous Linux, ffmpeg/dovi_tool/etc.
+    héritent sinon du tty parent et peuvent altérer ses flags termios (echo
+    désactivé, mode raw) — ce qui casse le terminal après fermeture de l'app.
+    Sous Windows, évite aussi WinError 50 en mode GUI sans console.
 
     Safe to pass to both subprocess.run() and subprocess.Popen().
     """
-    if sys.platform != "win32":
-        return {}
-
     kwargs: dict[str, Any] = {"stdin": subprocess.DEVNULL}
+
+    if sys.platform != "win32":
+        return kwargs
 
     create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     if create_no_window:
@@ -55,11 +56,13 @@ def subprocess_text_kwargs() -> dict[str, Any]:
     Sous Windows, on force l'UTF-8 ; ailleurs, on conserve le comportement
     standard de Python pour limiter le périmètre du changement.
     """
+    # stdin=DEVNULL est inclus systématiquement (cf. subprocess_windows_no_window_kwargs)
+    # pour empêcher les outils externes d'altérer le tty parent.
     kwargs: dict[str, Any] = {"text": True}
+    kwargs.update(subprocess_windows_no_window_kwargs())
     if sys.platform == "win32":
         kwargs["encoding"] = _TOOL_TEXT_ENCODING
         kwargs["errors"] = _TOOL_TEXT_ERRORS
-        kwargs.update(subprocess_windows_no_window_kwargs())
     return kwargs
 
 

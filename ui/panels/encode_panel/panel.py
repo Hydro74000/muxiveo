@@ -1863,3 +1863,7 @@ class EncodePanel(QWidget):
         text = self._cmd_preview.toPlainText()
         if text:
             QApplication.clipboard().setText(text)
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        self._executor.shutdown(wait=True)
+        super().closeEvent(event)

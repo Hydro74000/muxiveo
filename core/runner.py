@@ -280,10 +280,11 @@ class ToolRunner(QObject):
                 signals.cancelled.emit()
             except Exception as exc:
                 signals.failed.emit(str(exc), exc)
-            finally:
-                executor.shutdown(wait=False)
 
         executor.submit(_task)
+        # shutdown(wait=False) ferme l'executor au retour du _task ; le thread
+        # est libéré proprement sans bloquer l'appelant.
+        executor.shutdown(wait=False)
         return signals
 
     # ------------------------------------------------------------------
@@ -324,8 +325,8 @@ class ToolRunner(QObject):
 
             # Cas liste vide : rien à exécuter, succès immédiat
             if not tasks:
-                signals.finished.emit("0 tâche(s) terminée(s) en 0.0s")
                 executor.shutdown(wait=False)
+                signals.finished.emit("0 tâche(s) terminée(s) en 0.0s")
                 return
 
             future_to_label: dict[Future[str], str] = {}
@@ -356,7 +357,8 @@ class ToolRunner(QObject):
                 except Exception as exc:
                     errors.append(f"[{lbl}] {exc}")
 
-            executor.shutdown(wait=False)
+            # Tous les futurs sont consommés : libère les threads workers.
+            executor.shutdown(wait=True)
             elapsed = time.monotonic() - t_start
 
             if cancelled:
@@ -452,6 +454,11 @@ class ToolRunner(QObject):
                 if signals is not None and signals._cancel_event.is_set():
                     raise TaskCancelledError()
 
+                # Borne la sortie retournée : ffmpeg peut produire >100K lignes
+                # de progress sur un encodage long. On garde les dernières.
+                _MAX_OUTPUT_LINES = 10000
+                if len(lines) > _MAX_OUTPUT_LINES:
+                    lines = lines[-_MAX_OUTPUT_LINES:]
                 output = "\n".join(lines)
 
                 if proc.returncode != 0:

@@ -415,7 +415,8 @@ class TmdbSearchModal(QDialog):
         self._set_busy(True)
 
         if self._worker and self._worker.isRunning():
-            self._worker.terminate()
+            self._worker.quit()
+            self._worker.wait()
 
         self._worker = _TmdbSearchWorker(fetcher, query=query, year=year, kind=self._kind_param())
         self._worker.results_ready.connect(self._on_results, Qt.ConnectionType.QueuedConnection)
@@ -471,7 +472,8 @@ class TmdbSearchModal(QDialog):
         self._set_busy(True)
 
         if self._worker and self._worker.isRunning():
-            self._worker.terminate()
+            self._worker.quit()
+            self._worker.wait()
 
         self._worker = _TmdbSearchWorker(fetcher, result=r, season=season, episode=episode)
         self._worker.details_ready.connect(self._on_details, Qt.ConnectionType.QueuedConnection)
@@ -486,3 +488,9 @@ class TmdbSearchModal(QDialog):
         self._set_busy(False)
         self._ok_btn.setEnabled(self._results_list.currentRow() >= 0)
         self._status_lbl.setText(f"⚠ {translate_text(msg)}")
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        if self._worker and self._worker.isRunning():
+            self._worker.quit()
+            self._worker.wait()
+        super().closeEvent(event)

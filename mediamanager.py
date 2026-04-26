@@ -181,7 +181,7 @@ class MediaInfoThread(QThread):
                 except: pass
 
         try:
-            res = subprocess.run(['mediainfo', self.filepath], capture_output=True, text=True, encoding='utf-8')
+            res = subprocess.run(['mediainfo', self.filepath], capture_output=True, text=True, encoding='utf-8', stdin=subprocess.DEVNULL)
             if res.stdout:
                 target = mediainfo_nfo_path if os.path.exists(nfo_path) else nfo_path
                 try:

@@ -498,8 +498,6 @@ class MultiVideoPipelineRunner:
                         remove_path(path)
                     except OSError:
                         pass
-                if executor is not None:
-                    executor.shutdown(wait=False)
 
         if prep_signals is not None:
             _run_pipeline()
@@ -507,4 +505,5 @@ class MultiVideoPipelineRunner:
 
         assert executor is not None
         executor.submit(_run_pipeline)
+        executor.shutdown(wait=False)
         return signals

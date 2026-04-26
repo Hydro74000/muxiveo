@@ -294,11 +294,20 @@ def restart_application() -> bool:
             return False
 
     try:
+        # start_new_session détache le nouveau process du tty/groupe parent :
+        # évite que sa fermeture entraîne le process courant ou l'inverse.
+        popen_kwargs: dict[str, object] = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if sys.platform != "win32":
+            popen_kwargs["start_new_session"] = True
         if getattr(sys, "frozen", False):
-            subprocess.Popen([sys.executable])
+            subprocess.Popen([sys.executable], **popen_kwargs)
         else:
             launcher_path = Path(__file__).parent.parent / "launcher.py"
-            subprocess.Popen([sys.executable, str(launcher_path)])
+            subprocess.Popen([sys.executable, str(launcher_path)], **popen_kwargs)
         return True
     except Exception:
         return False
