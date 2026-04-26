@@ -44,5 +44,7 @@ def test_render_homebrew_formula_contains_platform_blocks(tmp_path):
     assert 'depends_on "mediainfo"' in text
     assert 'libexec.install Dir["*.AppImage"].first => "Mediarecode.AppImage"' in text
     assert 'prefix.install "Mediarecode.app"' in text
+    assert '(libexec/"mediarecode").write <<~EOS' in text
+    assert 'bin.install_symlink libexec/"mediarecode"' in text
     assert 'resource "dovi_tool" do' in text
     assert 'resource "hdr10plus_tool" do' in text

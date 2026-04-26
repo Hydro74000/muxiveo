@@ -67,7 +67,7 @@ def render_formula(
       chmod 0755, libexec/"tools/dovi_tool"
       chmod 0755, libexec/"tools/hdr10plus_tool"
 
-      (bin/"mediarecode").write <<~EOS
+      (libexec/"mediarecode").write <<~EOS
         #!/bin/bash
         set -euo pipefail
         CONFIG_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/mediarecode"
@@ -82,12 +82,13 @@ CFG
         export PATH="#{{opt_libexec}}/tools:#{{HOMEBREW_PREFIX}}/bin:$PATH"
         exec "#{{opt_prefix}}/Mediarecode.app/Contents/MacOS/Mediarecode" "$@"
       EOS
-      chmod 0755, bin/"mediarecode"
+      chmod 0755, libexec/"mediarecode"
+      bin.install_symlink libexec/"mediarecode"
     else
       libexec.install Dir["*.AppImage"].first => "Mediarecode.AppImage"
       chmod 0755, libexec/"Mediarecode.AppImage"
 
-      (bin/"mediarecode").write <<~EOS
+      (libexec/"mediarecode").write <<~EOS
         #!/bin/bash
         set -euo pipefail
         CONFIG_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/mediarecode"
@@ -104,7 +105,8 @@ CFG
         fi
         exec "#{{opt_libexec}}/Mediarecode.AppImage" "$@"
       EOS
-      chmod 0755, bin/"mediarecode"
+      chmod 0755, libexec/"mediarecode"
+      bin.install_symlink libexec/"mediarecode"
     end
   end
 
