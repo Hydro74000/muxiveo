@@ -12,6 +12,7 @@ Si absent â†’ lance le setup systÃ¨me, puis démarre l'application Qt.
 
 from __future__ import annotations
 
+import atexit
 import ctypes
 import os
 import subprocess
@@ -24,14 +25,28 @@ except Exception:
     APP_VERSION = "0.0.0"
 
 
+_DEVNULL_STREAMS: list = []
+
+
 def _ensure_text_stream(name: str, mode: str) -> None:
     """Provide stdout/stderr when frozen without a console window."""
     if getattr(sys, name, None) is None:
-        setattr(sys, name, open(os.devnull, mode, encoding="utf-8"))
+        fh = open(os.devnull, mode, encoding="utf-8")
+        _DEVNULL_STREAMS.append(fh)
+        setattr(sys, name, fh)
+
+
+def _close_devnull_streams() -> None:
+    for fh in _DEVNULL_STREAMS:
+        try:
+            fh.close()
+        except Exception:
+            pass
 
 
 _ensure_text_stream("stdout", "w")
 _ensure_text_stream("stderr", "w")
+atexit.register(_close_devnull_streams)
 
 
 def _ensure_ssl_ca_bundle() -> None:

@@ -500,9 +500,9 @@ class RemuxWorkflow(QObject):
                         remove_path(path)
                     except OSError:
                         pass
-                executor.shutdown(wait=False)
 
         executor.submit(_task)
+        executor.shutdown(wait=False)
         return signals
 
     def _write_nfo(self, output_path: Path) -> None:

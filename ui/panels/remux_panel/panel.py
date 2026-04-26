@@ -818,7 +818,7 @@ class RemuxPanel(QWidget):
             QApplication.clipboard().setText(text)
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
-        self._executor.shutdown(wait=False)
+        self._executor.shutdown(wait=True)
         super().closeEvent(event)
 
 

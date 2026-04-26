@@ -445,13 +445,16 @@ class LogPanel(QWidget):
         self._text.setTextCursor(cursor)
         self._text.ensureCursorVisible()
 
-        # Limite du nombre de lignes
+        # Limite du nombre de lignes (suppression batch en début de document)
         doc = self._text.document()
-        while doc.blockCount() > self._max_lines:
-            cur = QTextCursor(doc.begin())
-            cur.select(QTextCursor.SelectionType.BlockUnderCursor)
-            cur.removeSelectedText()
-            cur.deleteChar()
+        excess = doc.blockCount() - self._max_lines
+        if excess > 0:
+            cur = QTextCursor(doc)
+            cur.movePosition(QTextCursor.MoveOperation.Start)
+            for _ in range(excess):
+                cur.select(QTextCursor.SelectionType.BlockUnderCursor)
+                cur.removeSelectedText()
+                cur.deleteChar()
 
     def info(self, message: str)  -> None: self.log(message, LogLevel.INFO)
     def ok(self, message: str)    -> None: self.log(message, LogLevel.OK)
@@ -2214,6 +2217,18 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # type: ignore[override]
         self._config.save_geometry(bytes(self.saveGeometry().data()))
         self._config.save()
+        # Arrête proprement tous les ThreadPoolExecutor des pages enfants :
+        # sinon des threads survivent à app.exec() et peuvent retenir des
+        # FDs/processus, ce qui empêche l'OS de restaurer les flags du tty
+        # parent (terminal sans echo après fermeture).
+        for attr in ("_dashboard", "_encode_panel", "_remux_panel", "_dovi_panel"):
+            page = getattr(self, attr, None)
+            executor = getattr(page, "_executor", None) if page is not None else None
+            if executor is not None:
+                try:
+                    executor.shutdown(wait=True)
+                except Exception:
+                    pass
         super().closeEvent(event)
 
     # ------------------------------------------------------------------

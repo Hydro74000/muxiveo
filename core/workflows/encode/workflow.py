@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
@@ -170,6 +171,21 @@ from core.workflows.encode.planning.plan_models import (
 _FALLBACK_HEVC_FRAME_RATE = "24000/1001"
 
 
+class _LRUCache(OrderedDict):
+    """Dict borné FIFO : évict le plus ancien quand maxsize est atteint."""
+
+    def __init__(self, maxsize: int = 256) -> None:
+        super().__init__()
+        self._maxsize = maxsize
+
+    def __setitem__(self, key, value) -> None:  # type: ignore[override]
+        if key in self:
+            self.move_to_end(key)
+        super().__setitem__(key, value)
+        while len(self) > self._maxsize:
+            self.popitem(last=False)
+
+
 class EncodeWorkflow(QObject):
     """
     Construit et exécute un encodage ffmpeg.
@@ -234,9 +250,9 @@ class EncodeWorkflow(QObject):
         # de fois pour le même fichier lors de changements UI).
         # Clé : (abs_path, mtime_ns, size). Invalide automatiquement si le
         # fichier a été modifié.
-        self._ffprobe_payload_cache: dict[tuple[str, int, int], dict[str, object] | None] = {}
-        self._ffprobe_frame_hdr_cache: dict[tuple[str, int, int], tuple[bool, bool] | None] = {}
-        self._mediainfo_hdr_cache: dict[tuple[str, int, int], tuple[bool, bool] | None] = {}
+        self._ffprobe_payload_cache: _LRUCache = _LRUCache(maxsize=256)
+        self._ffprobe_frame_hdr_cache: _LRUCache = _LRUCache(maxsize=256)
+        self._mediainfo_hdr_cache: _LRUCache = _LRUCache(maxsize=256)
         self._generate_nfo = generate_nfo
         self._runner = ToolRunner(max_workers=1, parent=self)
         self._ram_buffer_enabled       = ram_buffer_enabled
@@ -1829,10 +1845,9 @@ class EncodeWorkflow(QObject):
                 signals.cancelled.emit()
             except Exception as exc:
                 signals.failed.emit(str(exc), exc)
-            finally:
-                executor.shutdown(wait=False)
 
         executor.submit(_task)
+        executor.shutdown(wait=False)
         return signals
 
     @staticmethod
@@ -2321,9 +2336,9 @@ class EncodeWorkflow(QObject):
                 signals.failed.emit(str(exc), exc)
             finally:
                 self._cleanup_two_pass_logs(cwd)
-                executor.shutdown(wait=False)
 
         executor.submit(_task)
+        executor.shutdown(wait=False)
         return signals
 
     @staticmethod

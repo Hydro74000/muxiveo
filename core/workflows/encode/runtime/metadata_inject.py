@@ -305,8 +305,6 @@ class MetadataInjectRunner:
             except Exception as exc:
                 signals.failed.emit(str(exc), exc)
             finally:
-                if executor is not None:
-                    executor.shutdown(wait=False)
                 if live_sync_session is not None:
                     for proc in live_sync_session.processes:
                         signals._unregister_proc(proc)
@@ -328,6 +326,7 @@ class MetadataInjectRunner:
             cb.bind_nfo_write(signals, config.output)
             assert executor is not None
             executor.submit(_task)
+            executor.shutdown(wait=False)
         else:
             _task()
         return signals

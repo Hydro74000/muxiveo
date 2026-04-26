@@ -227,7 +227,7 @@ class DirectOutputRunner:
                     live_sync_session.close()
                 if is_two_pass:
                     cb.cleanup_two_pass_logs(cwd)
-                executor.shutdown(wait=False)
 
         executor.submit(_task)
+        executor.shutdown(wait=False)
         return signals
