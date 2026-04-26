@@ -200,6 +200,10 @@ CFG
         if [ ! -e /dev/fuse ]; then
           export APPIMAGE_EXTRACT_AND_RUN=1
         fi
+        PYTHON_BIN="$(command -v python3 || command -v python || true)"
+        if [ -n "${{PYTHON_BIN}}" ]; then
+          "${{PYTHON_BIN}}" "#{{opt_libexec}}/setup_brew.py" post-install --platform linux --opt-bin "#{{opt_bin}}" --opt-share "#{{opt_share}}" --opt-prefix "#{{opt_prefix}}" >/dev/null 2>&1 || true
+        fi
         exec "#{{opt_libexec}}/Mediarecode.AppImage" "$@"
       EOS
       chmod 0755, libexec/"mediarecode"
@@ -220,6 +224,8 @@ CFG
       User session shortcuts are installed outside the Homebrew prefix.
       If the desktop shortcut does not appear immediately on Linux, run:
         brew postinstall mediarecode
+      Diagnostic log:
+        ~/.local/state/mediarecode/setup_brew.log
       Before `brew uninstall mediarecode`, run:
         mediarecode-uninstall-shortcuts
     EOS

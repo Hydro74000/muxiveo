@@ -22,6 +22,23 @@ from pathlib import Path
 
 ICON_PNG_BASE64 = "__MEDIARECODE_ICON_PNG_BASE64__"
 DESKTOP_MIME_TYPES = "__MEDIARECODE_DESKTOP_MIME_TYPES__"
+APP_NAME = "mediarecode"
+
+
+def _state_log_path() -> Path:
+    state_home = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    return state_home / APP_NAME / "setup_brew.log"
+
+
+def _log(message: str) -> None:
+    log_path = _state_log_path()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(f"{message}\n")
+
+
+def _user_data_home() -> Path:
+    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
 
 
 def _write_text(path: Path, content: str) -> None:
@@ -34,19 +51,21 @@ def _write_binary(path: Path, payload: bytes) -> None:
     path.write_bytes(payload)
 
 
-def _linux_desktop_file(opt_bin: Path, opt_share: Path) -> str:
-    icon_path = opt_share / "icons" / "hicolor" / "256x256" / "apps" / "mediarecode.png"
+def _linux_desktop_file(opt_bin: Path) -> str:
     return (
         "[Desktop Entry]\n"
         "Name=Mediarecode\n"
         "Comment=MKV/MP4 workflow - DoVi, HDR10+, encoding\n"
         f"Exec={opt_bin / 'mediarecode'} %F\n"
-        f"Icon={icon_path}\n"
+        f"TryExec={opt_bin / 'mediarecode'}\n"
+        "Icon=mediarecode\n"
         "Type=Application\n"
         "Categories=AudioVideo;Video;\n"
         f"MimeType={DESKTOP_MIME_TYPES}\n"
+        "Keywords=video;encode;remux;hdr;dolby vision;dovi;media;\n"
         "Terminal=false\n"
         "StartupNotify=true\n"
+        "StartupWMClass=Mediarecode\n"
     )
 
 
@@ -56,18 +75,48 @@ def install_linux_shortcut(opt_bin: Path, opt_share: Path) -> None:
     icon_bytes = base64.b64decode(ICON_PNG_BASE64)
     _write_binary(icon_path, icon_bytes)
 
-    data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    desktop_file = data_home / "applications" / "mediarecode.desktop"
-    _write_text(desktop_file, _linux_desktop_file(opt_bin, opt_share))
+    data_home = _user_data_home()
+    user_icon = data_home / "icons" / "hicolor" / "256x256" / "apps" / "mediarecode.png"
+    _write_binary(user_icon, icon_bytes)
 
-    for command in ("update-desktop-database", "kbuildsycoca6", "kbuildsycoca5"):
+    desktop_file = data_home / "applications" / "mediarecode.desktop"
+    _write_text(desktop_file, _linux_desktop_file(opt_bin))
+    _log(f"desktop-file={desktop_file}")
+    _log(f"user-icon={user_icon}")
+    _log(f"prefix-icon={icon_path}")
+
+    validator = shutil.which("desktop-file-validate")
+    if validator:
+        result = subprocess.run([validator, str(desktop_file)], check=False, capture_output=True, text=True)
+        _log(f"desktop-file-validate rc={result.returncode}")
+        if result.stdout:
+            _log(result.stdout.strip())
+        if result.stderr:
+            _log(result.stderr.strip())
+
+    for command in (
+        "update-desktop-database",
+        "gtk-update-icon-cache",
+        "xdg-desktop-menu",
+        "kbuildsycoca6",
+        "kbuildsycoca5",
+    ):
         executable = shutil.which(command)
         if not executable:
             continue
         args = [executable]
         if command == "update-desktop-database":
             args.append(str(desktop_file.parent))
-        subprocess.run(args, check=False)
+        elif command == "gtk-update-icon-cache":
+            args.extend(["-q", "-t", str((data_home / "icons" / "hicolor"))])
+        elif command == "xdg-desktop-menu":
+            args.append("forceupdate")
+        result = subprocess.run(args, check=False, capture_output=True, text=True)
+        _log(f"{command} rc={result.returncode}")
+        if result.stdout:
+            _log(result.stdout.strip())
+        if result.stderr:
+            _log(result.stderr.strip())
 
 
 def install_macos_link(opt_prefix: Path) -> None:
@@ -84,10 +133,12 @@ def install_macos_link(opt_prefix: Path) -> None:
 
 
 def cleanup_shortcuts() -> None:
-    data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    data_home = _user_data_home()
     desktop_file = data_home / "applications" / "mediarecode.desktop"
+    user_icon = data_home / "icons" / "hicolor" / "256x256" / "apps" / "mediarecode.png"
     app_link = Path.home() / "Applications" / "Mediarecode.app"
-    for path in (desktop_file, app_link):
+    log_path = _state_log_path()
+    for path in (desktop_file, user_icon, app_link, log_path):
         try:
             path.unlink()
         except FileNotFoundError:
