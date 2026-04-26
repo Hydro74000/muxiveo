@@ -17,6 +17,8 @@ import base64
 import os
 import shutil
 import subprocess
+import tempfile
+import traceback
 from pathlib import Path
 
 
@@ -35,6 +37,21 @@ def _log(message: str) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(f"{message}\n")
+
+
+def _safe_log(message: str) -> None:
+    try:
+        _log(message)
+        return
+    except OSError:
+        pass
+
+    fallback = Path(tempfile.gettempdir()) / f"{APP_NAME}-setup_brew.log"
+    try:
+        with fallback.open("a", encoding="utf-8") as handle:
+            handle.write(f"{message}\n")
+    except OSError:
+        pass
 
 
 def _user_data_home() -> Path:
@@ -162,19 +179,23 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    args = parse_args()
-    if args.command == "cleanup":
-        cleanup_shortcuts()
-        return 0
+    try:
+        args = parse_args()
+        if args.command == "cleanup":
+            cleanup_shortcuts()
+            return 0
 
-    opt_bin = Path(args.opt_bin)
-    opt_share = Path(args.opt_share)
-    opt_prefix = Path(args.opt_prefix)
+        opt_bin = Path(args.opt_bin)
+        opt_share = Path(args.opt_share)
+        opt_prefix = Path(args.opt_prefix)
 
-    if args.platform == "linux":
-        install_linux_shortcut(opt_bin, opt_share)
-    else:
-        install_macos_link(opt_prefix)
+        if args.platform == "linux":
+            install_linux_shortcut(opt_bin, opt_share)
+        else:
+            install_macos_link(opt_prefix)
+    except Exception as exc:
+        _safe_log(f"fatal-error={exc!r}")
+        _safe_log(traceback.format_exc().rstrip())
     return 0
 
 
