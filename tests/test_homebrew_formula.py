@@ -42,6 +42,10 @@ def test_render_homebrew_formula_contains_platform_blocks(tmp_path):
     assert 'on_macos do' in text
     assert 'depends_on "ffmpeg"' in text
     assert 'depends_on "mediainfo"' in text
+    assert 'def install_linux_desktop_entry' in text
+    assert 'def install_macos_app_link' in text
+    assert 'Exec=#{opt_bin}/mediarecode %F' in text
+    assert 'app_link.make_symlink(opt_prefix/"Mediarecode.app")' in text
     assert 'libexec.install Dir["*.AppImage"].first => "Mediarecode.AppImage"' in text
     assert 'prefix.install "Mediarecode.app"' in text
     assert '(libexec/"mediarecode").write <<~EOS' in text
