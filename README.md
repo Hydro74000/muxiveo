@@ -105,6 +105,17 @@ python3 main.py
 
 Sous Windows, utilisez `py main.py`.
 
+### Installation via Homebrew
+
+Une distribution Homebrew est prévue pour Linux et macOS via le tap `Hydro74000/mediarecode`.
+
+```bash
+brew tap Hydro74000/mediarecode
+brew install mediarecode
+```
+
+Sur Linux, la formule installe l’AppImage all-inclusive. Sur macOS, elle installe `Mediarecode.app`, déclare `ffmpeg` et `mediainfo` comme dépendances Homebrew, et embarque `dovi_tool` / `hdr10plus_tool`.
+
 ## Windows - Version .exe uniquement
 
 Cette notice ne concerne que les lancement depuis Mediarecode.exe
@@ -152,6 +163,7 @@ Les artefacts sont toujours déposés dans `dist/releases/`.
 |-------|----------|-----------------|
 | AppImage Linux | `python3 package.py --allinc` | `dist/releases/Mediarecode-x86_64.AppImage` + `dist/releases/Mediarecode-x86_64.AppImage.zsync` |
 | Package macOS natif | `python3 package.py --dmg` | `Mediarecode.app` + `dist/releases/Mediarecode-<version>.dmg` |
+| Release Homebrew Linux/macOS | workflow `Release Homebrew packages` | AppImage Linux all-inclusive + archive macOS + `mediarecode.rb` |
 | Package Windows (natif + MSIX) | `py package.py --msix` | `dist/releases/Mediarecode.msix` |
 | Soumission Microsoft Store | `py package.py --msix --msixupload --store-config packaging/msix_store.json` | `dist/releases/Mediarecode.msixupload` |
 | Installateur Windows cross (depuis Linux) | `python3 package.py --windows` | `dist/releases/Mediarecode-Setup.exe` via Wine + NSIS |

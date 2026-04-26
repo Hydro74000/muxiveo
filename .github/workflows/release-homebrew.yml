@@ -1,0 +1,247 @@
+name: Release Homebrew packages
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag (ex: 2.0.0)"
+        required: false
+        default: ""
+
+env:
+  PYTHON_VERSION: "3.11"
+  HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || format('{0}/homebrew-mediarecode', github.repository_owner) }}
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VER="${{ github.event.inputs.version }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            VER="${{ github.ref_name }}"
+            VER="${VER#v}"
+          else
+            VER=$(python -c "from core.version import APP_VERSION; print(APP_VERSION)")
+          fi
+          echo "value=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Install Linux packaging dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y squashfs-tools zsync
+          python -m pip install --upgrade pip
+          pip install "PySide6>=6.6.0" "pymediainfo>=6.1.0" pyinstaller
+
+      - name: Build Linux all-inclusive AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          python package_appimage.py --allinc --version "${{ steps.version.outputs.value }}"
+
+      - name: Collect Linux artifacts
+        shell: bash
+        run: |
+          mkdir -p release-assets/linux
+          cp dist/releases/Mediarecode-x86_64_allinc-*.AppImage release-assets/linux/
+          cp dist/releases/Mediarecode-x86_64_allinc-*.AppImage.zsync release-assets/linux/
+          ls -la release-assets/linux
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: homebrew-linux-assets
+          path: release-assets/linux/*
+          if-no-files-found: error
+
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VER="${{ github.event.inputs.version }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            VER="${{ github.ref_name }}"
+            VER="${VER#v}"
+          else
+            VER=$(python -c "from core.version import APP_VERSION; print(APP_VERSION)")
+          fi
+          echo "value=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Install macOS packaging dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "PySide6>=6.6.0" "pymediainfo>=6.1.0" pyinstaller pillow
+
+      - name: Build macOS app bundle
+        run: |
+          python package.py --version "${{ steps.version.outputs.value }}"
+
+      - name: Archive macOS app for Homebrew
+        shell: bash
+        run: |
+          mkdir -p dist/releases release-assets/macos
+          ARCHIVE="Mediarecode-${{ steps.version.outputs.value }}-homebrew-macos.tar.gz"
+          tar -C dist -czf "release-assets/macos/${ARCHIVE}" Mediarecode.app
+          ls -la release-assets/macos
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: homebrew-macos-assets
+          path: release-assets/macos/*
+          if-no-files-found: error
+
+  publish-homebrew:
+    runs-on: ubuntu-latest
+    needs:
+      - build-linux
+      - build-macos
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VER="${{ github.event.inputs.version }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            VER="${{ github.ref_name }}"
+            VER="${VER#v}"
+          else
+            VER=$(python -c "from core.version import APP_VERSION; print(APP_VERSION)")
+          fi
+          echo "value=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: homebrew-linux-assets
+          path: release-assets/linux
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: homebrew-macos-assets
+          path: release-assets/macos
+
+      - name: Resolve external macOS tool assets
+        id: tools
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DOVI_JSON=$(python scripts/github_release_asset.py --repo quietvoid/dovi_tool --pattern universal-macOS.zip --sha256)
+          HDR_JSON=$(python scripts/github_release_asset.py --repo quietvoid/hdr10plus_tool --pattern universal-macOS.zip --sha256)
+          echo "dovi_json=$DOVI_JSON" >> "$GITHUB_OUTPUT"
+          echo "hdr_json=$HDR_JSON" >> "$GITHUB_OUTPUT"
+
+      - name: Generate Homebrew formula
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.value }}
+          DOVI_JSON: ${{ steps.tools.outputs.dovi_json }}
+          HDR_JSON: ${{ steps.tools.outputs.hdr_json }}
+        run: |
+          mkdir -p release-assets/formula
+          LINUX_FILE=$(basename "$(find release-assets/linux -maxdepth 1 -type f -name '*.AppImage' | head -1)")
+          MACOS_FILE=$(basename "$(find release-assets/macos -maxdepth 1 -type f -name '*.tar.gz' | head -1)")
+          LINUX_SHA=$(sha256sum "release-assets/linux/${LINUX_FILE}" | awk '{print $1}')
+          MACOS_SHA=$(sha256sum "release-assets/macos/${MACOS_FILE}" | awk '{print $1}')
+          DOVI_URL=$(python -c 'import json, os; print(json.loads(os.environ["DOVI_JSON"])["url"])')
+          DOVI_SHA=$(python -c 'import json, os; print(json.loads(os.environ["DOVI_JSON"])["sha256"])')
+          HDR_URL=$(python -c 'import json, os; print(json.loads(os.environ["HDR_JSON"])["url"])')
+          HDR_SHA=$(python -c 'import json, os; print(json.loads(os.environ["HDR_JSON"])["sha256"])')
+          python scripts/render_homebrew_formula.py \
+            --version "$VERSION" \
+            --linux-url "https://github.com/${REPO}/releases/download/v${VERSION}/${LINUX_FILE}" \
+            --linux-sha256 "$LINUX_SHA" \
+            --macos-url "https://github.com/${REPO}/releases/download/v${VERSION}/${MACOS_FILE}" \
+            --macos-sha256 "$MACOS_SHA" \
+            --dovi-tool-macos-url "$DOVI_URL" \
+            --dovi-tool-macos-sha256 "$DOVI_SHA" \
+            --hdr10plus-tool-macos-url "$HDR_URL" \
+            --hdr10plus-tool-macos-sha256 "$HDR_SHA" \
+            --homepage "https://github.com/${REPO}" \
+            --output release-assets/formula/mediarecode.rb
+
+      - name: Upload formula artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: homebrew-formula
+          path: release-assets/formula/mediarecode.rb
+          if-no-files-found: error
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes ""
+          gh release upload "$TAG" release-assets/linux/* --clobber
+          gh release upload "$TAG" release-assets/macos/* --clobber
+          gh release upload "$TAG" release-assets/formula/mediarecode.rb --clobber
+
+      - name: Publish formula to tap repository
+        if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+        env:
+          TAP_REPO: ${{ env.HOMEBREW_TAP_REPO }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        shell: bash
+        run: |
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPO}.git" homebrew-tap
+          mkdir -p homebrew-tap/Formula
+          cp release-assets/formula/mediarecode.rb homebrew-tap/Formula/mediarecode.rb
+          cd homebrew-tap
+          if [ -z "$(git status --porcelain Formula/mediarecode.rb)" ]; then
+            echo "Formula unchanged"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/mediarecode.rb
+          git commit -m "mediarecode ${{ steps.version.outputs.value }}"
+          git push
