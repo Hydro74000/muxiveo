@@ -62,6 +62,10 @@ def test_render_homebrew_formula_contains_platform_blocks(tmp_path):
     assert 'gtk-update-icon-cache' in text
     assert 'xdg-desktop-menu' in text
     assert '~/.local/state/mediarecode/setup_brew.log' in text
+    assert 'import tempfile' in text
+    assert 'import traceback' in text
+    assert 'def _safe_log(message: str) -> None:' in text
+    assert 'fatal-error={exc!r}' in text
     assert 'bin.install_symlink libexec/"mediarecode-uninstall-shortcuts"' in text
     assert 'mediarecode-uninstall-shortcuts' in text
     assert 'brew postinstall mediarecode' in text
