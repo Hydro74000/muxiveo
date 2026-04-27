@@ -808,6 +808,10 @@ class MergeDoviPanel(QWidget):
     """
 
     log_message = Signal(str, str)   # (level, message)
+    # Pilote la barre de progression globale (MainWindow) :
+    #   state ∈ {"started", "step", "finished", "failed", "cancelled"}
+    #   label = libellé court à afficher (étape en cours, message d'état…)
+    op_state_changed = Signal(str, str)
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -965,6 +969,10 @@ class MergeDoviPanel(QWidget):
                 film2=film2.name,
             ),
         )
+        self.op_state_changed.emit(
+            "started",
+            translate_text("Injection DoVi/HDR10+ en cours…"),
+        )
 
         assert self._workflow is not None
         self._workflow.start(
@@ -995,6 +1003,7 @@ class MergeDoviPanel(QWidget):
         self._step_progress.set_running(step)
         step_label = translate_text(_STEP_LABELS[step])
         self.log_message.emit("INFO", translate_text("[{step}] Démarrage…", step=step_label))
+        self.op_state_changed.emit("step", step_label)
 
     def _on_step_progress(self, step: WorkflowStep, message: str) -> None:
         step_label = translate_text(_STEP_LABELS[step])
@@ -1031,6 +1040,7 @@ class MergeDoviPanel(QWidget):
         self._error_section.hide_error()
         self._set_idle_state()
         self.log_message.emit("OK", translate_text("Fichier de sortie : {path}", path=output_path))
+        self.op_state_changed.emit("finished", translate_text("Terminé."))
 
     def _on_workflow_failed(self, step: WorkflowStep, message: str) -> None:
         lowered = message.lower()
@@ -1038,6 +1048,7 @@ class MergeDoviPanel(QWidget):
         if cancelled:
             self._error_section.hide_error()
             self.log_message.emit("WARN", translate_text("Workflow annulé par l'utilisateur."))
+            self.op_state_changed.emit("cancelled", translate_text("Annulé."))
         else:
             step_label = translate_text(_STEP_LABELS[step])
             local_message = translate_text(message)
@@ -1051,6 +1062,7 @@ class MergeDoviPanel(QWidget):
                     message=local_message,
                 ),
             )
+            self.op_state_changed.emit("failed", translate_text("Échec."))
         self._set_idle_state()
 
     # ------------------------------------------------------------------

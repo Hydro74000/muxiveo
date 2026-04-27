@@ -1648,7 +1648,13 @@ class EncodeWorkflow(QObject):
             thread_count=thread_count,
         )
         self._append_video_codec_and_hdr_args(cmd, video)
-        cmd.extend(["-an", "-f", "hevc", str(output_hevc)])
+        # `passthrough` : 1 frame source ↔ 1 frame sortie (aucun dup/drop),
+        # timestamps préservés. Compatible CFR ET VFR — c'est le seul mode
+        # qui garde l'alignement frame-à-frame requis pour la ré-injection
+        # RPU DoVi / HDR10+ (chaque NAL est indexé sur la frame source).
+        # `cfr` forcerait des dup/drop pour atteindre un framerate constant
+        # → désalignerait. `vfr` peut dropper des frames "dupliquées" → idem.
+        cmd.extend(["-fps_mode", "passthrough", "-an", "-f", "hevc", str(output_hevc)])
         return cmd
 
     def _build_video_only_two_pass(
@@ -1688,7 +1694,9 @@ class EncodeWorkflow(QObject):
         self._append_video_codec_and_hdr_args(pass1, video, bitrate_kbps=bitrate, include_hdr_meta=False)
         if passlog_prefix is not None:
             pass1.extend(["-passlogfile", str(passlog_prefix)])
-        pass1.extend(["-pass", "1", "-an", "-f", "null", os.devnull])
+        # `passthrough` (cf _build_video_only_cmd_for_track) : alignement
+        # frame-à-frame, compatible VFR.
+        pass1.extend(["-fps_mode", "passthrough", "-pass", "1", "-an", "-f", "null", os.devnull])
         pass2 = self._build_video_track_base_cmd(
             video=video,
             source=source,
@@ -1699,7 +1707,7 @@ class EncodeWorkflow(QObject):
         self._append_video_codec_and_hdr_args(pass2, video, bitrate_kbps=bitrate)
         if passlog_prefix is not None:
             pass2.extend(["-passlogfile", str(passlog_prefix)])
-        pass2.extend(["-pass", "2"])
+        pass2.extend(["-fps_mode", "passthrough", "-pass", "2"])
         pass2.extend(["-an", "-f", "hevc", str(output_hevc)])
         return [pass1, pass2]
 
@@ -2388,6 +2396,67 @@ class EncodeWorkflow(QObject):
             break
         return _FALLBACK_HEVC_FRAME_RATE
 
+    def _source_video_dimensions(self, source: Path) -> tuple[int, int]:
+        """Renvoie ``(width, height)`` de la 1ère piste vidéo, ou (0, 0)."""
+        payload = self._ffprobe_streams_payload(source)
+        if payload is None:
+            return (0, 0)
+        for stream in self._ffprobe_stream_dicts(payload):
+            if stream.get("codec_type") != "video":
+                continue
+            try:
+                w = int(stream.get("width") or 0)
+                h = int(stream.get("height") or 0)
+            except (TypeError, ValueError):
+                return (0, 0)
+            return (w, h)
+        return (0, 0)
+
+    def _source_is_vfr(self, source: Path, *, tolerance: float = 0.01) -> bool:
+        """
+        Détecte si la source vidéo est en framerate variable.
+
+        Heuristique : comparer ``r_frame_rate`` (framerate déclaré, max
+        théorique) et ``avg_frame_rate`` (mesuré sur la durée totale). En CFR
+        strict, les deux sont identiques au pgcd près. En VFR, ``avg_frame_rate``
+        est inférieur à ``r_frame_rate`` parce que des intervalles plus longs
+        que 1/r_frame_rate apparaissent.
+
+        Tolérance par défaut : 1 % d'écart, pour absorber les imprécisions
+        d'arrondi du muxer source.
+        """
+        payload = self._ffprobe_streams_payload(source)
+        if payload is None:
+            return False
+        for stream in self._ffprobe_stream_dicts(payload):
+            if stream.get("codec_type") != "video":
+                continue
+            r = self._fps_expr_to_float(stream.get("r_frame_rate"))
+            a = self._fps_expr_to_float(stream.get("avg_frame_rate"))
+            if r is None or a is None or r <= 0 or a <= 0:
+                return False
+            return abs(r - a) / r > tolerance
+        return False
+
+    @staticmethod
+    def _fps_expr_to_float(value: object) -> float | None:
+        raw = str(value or "").strip()
+        if raw in {"", "0", "0/0", "N/A"}:
+            return None
+        if "/" in raw:
+            try:
+                num_s, den_s = raw.split("/", 1)
+                num, den = float(num_s), float(den_s)
+                if den == 0:
+                    return None
+                return num / den
+            except ValueError:
+                return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+
     def _wrap_injected_hevc_for_reconstruction(
         self,
         *,
@@ -2395,6 +2464,21 @@ class EncodeWorkflow(QObject):
         hevc_input: Path,
         mkv_output: Path,
     ) -> list[str]:
+        """
+        Encapsulation HEVC brut → MKV.
+
+        Pour les sources CFR (cas courant remux UHD/WEB-DL), on génère des
+        PTS uniformes au framerate source. ``ffmpeg setts`` fait le boulot
+        en pure CLI.
+
+        Pour les sources VFR, on **ne passe pas par ffmpeg** : on utilise
+        le muxer Matroska natif Python qui réutilise les timestamps de la
+        source d'origine, frame par frame. Voir
+        ``core.workflows.matroska_native_muxer.NativeMatroskaMuxer``.
+        L'appelant (metadata_inject.py) détecte le mode VFR via
+        :meth:`_source_is_vfr` et invoque le muxer natif au lieu d'exécuter
+        cette commande.
+        """
         fps_expr = self._source_video_fps_expr(source)
         return [
             self._ffmpeg,
@@ -2586,6 +2670,8 @@ class EncodeWorkflow(QObject):
                 build_video_only_two_pass=self._build_video_only_two_pass,
                 build_video_only_cmd=self._build_video_only_cmd,
                 wrap_injected_hevc_for_reconstruction=self._wrap_injected_hevc_for_reconstruction,
+                source_is_vfr=self._source_is_vfr,
+                source_video_dimensions=self._source_video_dimensions,
                 build_encode_plan=self._build_encode_plan,
                 source_input_index_map=lambda sources: _source_input_index_map_plan(sources, start_index=1),
                 prepare_multisource_sync=self._prepare_multisource_sync,

@@ -100,15 +100,33 @@ _LEVEL_LABELS: dict[LogLevel, str] = {
 
 _ENCODE_STAGE_PREFIXES: tuple[str, ...] = (
     "Extraction HEVC source",
+    "Extraction HEVC annexB",
     "Extraction RPU Dolby Vision",
     "Extraction métadonnées HDR10+",
     "Encodage vidéo",
     "Injection métadonnées HDR10+",
     "Injection RPU Dolby Vision",
+    "Encapsulation vidéo injectée",
     "Reconstitution finale",
     "Injection balises MKV",
     "Écriture balises MKV",
 )
+
+# Étapes pilotées par des outils sans progression ffmpeg parsable
+# (dovi_tool, hdr10plus_tool, patch EBML…). Pendant ces étapes, on
+# anime la barre en mode indéterminé pour montrer que ça travaille.
+_ENCODE_INDETERMINATE_STAGE_PREFIXES: tuple[str, ...] = (
+    "Extraction RPU Dolby Vision",
+    "Extraction métadonnées HDR10+",
+    "Injection métadonnées HDR10+",
+    "Injection RPU Dolby Vision",
+    "Injection balises MKV",
+    "Écriture balises MKV",
+)
+
+
+def _is_encode_indeterminate_stage(line: str) -> bool:
+    return any(line.startswith(prefix) for prefix in _ENCODE_INDETERMINATE_STAGE_PREFIXES)
 
 _ENCODE_PROGRESS_NOISE_PREFIXES: tuple[str, ...] = (
     "frame=",
@@ -303,6 +321,14 @@ class LogPanel(QWidget):
         self._max_lines = max_lines
         self._collapsed = False
         self._build_ui()
+        # Buffer batching : ffmpeg/nvenc peut émettre 200+ lignes/s. Insérer
+        # chaque ligne dans le QTextEdit bloque l'event loop. On accumule et
+        # on flushe via QTimer pour garder l'UI réactive.
+        self._pending: list[tuple[str, LogLevel, str]] = []
+        self._flush_timer = QTimer(self)
+        self._flush_timer.setSingleShot(True)
+        self._flush_timer.setInterval(50)
+        self._flush_timer.timeout.connect(self._flush_pending)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -416,45 +442,56 @@ class LogPanel(QWidget):
     # ------------------------------------------------------------------
 
     def log(self, message: str, level: LogLevel = LogLevel.INFO) -> None:
-        """Ajoute une ligne de log avec horodatage et niveau coloré."""
+        """Met une ligne de log en file, flush via QTimer pour ne pas bloquer l'UI."""
+        ts = datetime.now().strftime("%H:%M:%S")
+        self._pending.append((ts, level, translate_text(message)))
+        if not self._flush_timer.isActive():
+            self._flush_timer.start()
+
+    def _flush_pending(self) -> None:
+        if not self._pending:
+            return
+        batch = self._pending
+        self._pending = []
+
         cursor = self._text.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
 
-        message = translate_text(message)
+        ts_fmt = QTextCharFormat()
+        ts_fmt.setForeground(QColor(_Colors.LOG_TS))
+        label_fmt = QTextCharFormat()
+        label_fmt.setFontWeight(QFont.Weight.Bold)
+        msg_fmt = QTextCharFormat()
+        msg_fmt.setFontWeight(QFont.Weight.Normal)
 
-        ts = datetime.now().strftime("%H:%M:%S")
-        color = _level_color(level)
-        label = _LEVEL_LABELS[level]
+        # setUpdatesEnabled(False) évite des repaint intermédiaires sur le batch.
+        self._text.setUpdatesEnabled(False)
+        try:
+            for ts, level, message in batch:
+                color = _level_color(level)
+                label = _LEVEL_LABELS[level]
+                cursor.insertText(f"{ts}  ", ts_fmt)
+                label_fmt.setForeground(QColor(color))
+                cursor.insertText(label, label_fmt)
+                msg_fmt.setForeground(
+                    QColor(color if level != LogLevel.INFO else _Colors.TEXT_PRI)
+                )
+                cursor.insertText(f"  {message}\n", msg_fmt)
 
-        # Timestamp
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor(_Colors.LOG_TS))
-        cursor.insertText(f"{ts}  ", fmt)
+            self._text.setTextCursor(cursor)
 
-        # Badge niveau
-        fmt.setForeground(QColor(color))
-        fmt.setFontWeight(QFont.Weight.Bold)
-        cursor.insertText(label, fmt)
-
-        # Message
-        fmt.setFontWeight(QFont.Weight.Normal)
-        fmt.setForeground(QColor(color if level != LogLevel.INFO else _Colors.TEXT_PRI))
-        cursor.insertText(f"  {message}\n", fmt)
-
-        # Défilement automatique vers le bas
-        self._text.setTextCursor(cursor)
+            doc = self._text.document()
+            excess = doc.blockCount() - self._max_lines
+            if excess > 0:
+                cur = QTextCursor(doc)
+                cur.movePosition(QTextCursor.MoveOperation.Start)
+                for _ in range(excess):
+                    cur.select(QTextCursor.SelectionType.BlockUnderCursor)
+                    cur.removeSelectedText()
+                    cur.deleteChar()
+        finally:
+            self._text.setUpdatesEnabled(True)
         self._text.ensureCursorVisible()
-
-        # Limite du nombre de lignes (suppression batch en début de document)
-        doc = self._text.document()
-        excess = doc.blockCount() - self._max_lines
-        if excess > 0:
-            cur = QTextCursor(doc)
-            cur.movePosition(QTextCursor.MoveOperation.Start)
-            for _ in range(excess):
-                cur.select(QTextCursor.SelectionType.BlockUnderCursor)
-                cur.removeSelectedText()
-                cur.deleteChar()
 
     def info(self, message: str)  -> None: self.log(message, LogLevel.INFO)
     def ok(self, message: str)    -> None: self.log(message, LogLevel.OK)
@@ -462,6 +499,8 @@ class LogPanel(QWidget):
     def error(self, message: str) -> None: self.log(message, LogLevel.ERROR)
 
     def clear(self) -> None:
+        self._pending.clear()
+        self._flush_timer.stop()
         self._text.clear()
 
     def is_collapsed(self) -> bool:
@@ -1545,6 +1584,11 @@ class MainWindow(QMainWindow):
         self._dovi_panel.log_message.connect(
             self.log_requested, Qt.ConnectionType.QueuedConnection
         )
+        # MergeDoviPanel → bandeau de progression global (barre indéterminée jaune
+        # + libellé d'étape, faute de progression chiffrée native sur ce workflow)
+        self._dovi_panel.op_state_changed.connect(
+            self._on_dovi_op_state, Qt.ConnectionType.QueuedConnection
+        )
         # EncodePanel → LogPanel global
         self._encode_panel.log_message.connect(
             self.log_requested, Qt.ConnectionType.QueuedConnection
@@ -1860,6 +1904,10 @@ class MainWindow(QMainWindow):
         if _is_encode_progress_noise(raw_line):
             return True
         if _is_encode_stage_message(raw_line):
+            if _is_encode_indeterminate_stage(raw_line):
+                self._start_prep_progress()
+            else:
+                self._stop_prep_progress()
             self._prog_lbl.setText(raw_line)
             return True
         self.log_requested.emit("INFO", raw_line)
@@ -1971,6 +2019,10 @@ class MainWindow(QMainWindow):
             if _is_encode_stage_message(line):
                 self._op_encode_fps = None
                 self._op_encode_frame = None
+                if _is_encode_indeterminate_stage(line):
+                    self._start_prep_progress()
+                else:
+                    self._stop_prep_progress()
                 self._prog_lbl.setText(line)
             self.log_requested.emit("INFO", line)
 
@@ -1984,6 +2036,44 @@ class MainWindow(QMainWindow):
         )
         if reply == QMessageBox.StandardButton.Yes and self._signals is not None:
             self._signals.cancel()
+
+    def _on_dovi_op_state(self, state: str, label: str) -> None:
+        """
+        Pilote le bandeau de progression global pour le workflow MergeDovi.
+
+        Comme dovi_tool/hdr10plus_tool n'émettent pas de pourcentage exploitable
+        (et pas du tout sous Windows faute de pty), on affiche une barre jaune
+        indéterminée pendant toute l'opération, avec le libellé de l'étape en
+        cours.
+        """
+        if state == "started":
+            self._running = True
+            self._op_start = time.monotonic()
+            self._op_mode = "merge_dovi"
+            self._prog_widget.setVisible(True)
+            self._prog_bar.setRange(0, 100)
+            self._prog_bar.setValue(0)
+            self._prog_lbl.setText(label)
+            self._status_lbl.setText(label)
+            self._start_prep_progress()
+        elif state == "step":
+            self._prog_lbl.setText(label)
+        elif state == "finished":
+            self._stop_prep_progress()
+            self._prog_bar.setRange(0, 100)
+            self._prog_bar.setValue(100)
+            self._prog_lbl.setText(translate_text("100%  ·  terminé"))
+            self._status_lbl.setText(label)
+            self._running = False
+            self._op_mode = ""
+        elif state in ("failed", "cancelled"):
+            self._stop_prep_progress()
+            self._prog_widget.setVisible(False)
+            self._prog_bar.setRange(0, 100)
+            self._prog_lbl.setText("")
+            self._status_lbl.setText(label)
+            self._running = False
+            self._op_mode = ""
 
     def _on_op_cancelled(self) -> None:
         self._running = False
@@ -2229,6 +2319,12 @@ class MainWindow(QMainWindow):
                     executor.shutdown(wait=True)
                 except Exception:
                     pass
+        verbose_logger = getattr(self, "_verbose_file_logger", None)
+        if verbose_logger is not None:
+            try:
+                verbose_logger.close()
+            except Exception:
+                pass
         super().closeEvent(event)
 
     # ------------------------------------------------------------------

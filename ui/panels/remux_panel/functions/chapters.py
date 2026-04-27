@@ -14,8 +14,18 @@ def on_chapters_changed(panel: "RemuxPanel") -> None:
 
 
 def update_chapters_from_sources(panel: "RemuxPanel") -> None:
-    base = panel._resolve_base_chapters()
-    panel._chapter_panel.reset_chapters(base)
+    # Pousse au panneau la liste des sources porteuses de chapitres pour
+    # alimenter le sélecteur (combo box). Le widget gère lui-même :
+    #   - le repositionnement automatique sur l'ancienne source si elle existe
+    #     toujours après ajout/suppression ;
+    #   - la préservation des chapitres édités manuellement (is_modified()) ;
+    #   - le grisage du combo quand <=1 source porteuse.
+    available: list[tuple[int, str, list]] = []
+    for i, sf in enumerate(panel._source_files):
+        if sf.info and sf.info.chapters and sf.info.chapters.entries:
+            label = f"Source {i + 1} — {sf.path.name}"
+            available.append((i, label, list(sf.info.chapters.entries)))
+    panel._chapter_panel.set_available_sources(available)
 
 
 def reset_empty_state(panel: "RemuxPanel") -> None:

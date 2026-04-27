@@ -100,16 +100,33 @@ class MultiVideoPipelineRunner:
             rpu_bin = work_dir / f"video_{index}.rpu.bin"
             hdr10p_json = work_dir / f"video_{index}.hdr10plus.json"
             current_hevc = work_dir / f"video_{index}.enc.hevc"
+            # dovi_tool / hdr10plus_tool n'acceptent que MKV ou HEVC annexB :
+            # pré-extraction obligatoire pour MP4/MOV/TS/... (BSF hevc_mp4toannexb).
+            _RAW_HEVC_EXT = {".hevc", ".h265", ".265", ".x265"}
+            src_ext = source.suffix.lower()
+            if src_ext not in _RAW_HEVC_EXT and src_ext != ".mkv":
+                annexb_src = work_dir / f"video_{index}.source.hevc"
+                run_cmd([
+                    cb.ffmpeg_bin, "-nostdin", "-y",
+                    "-i", str(source),
+                    "-map", "0:v:0", "-c", "copy",
+                    "-bsf:v", "hevc_mp4toannexb",
+                    "-f", "hevc", str(annexb_src),
+                ], f"annexb-extract-{index}")
+                local_cleanup.append(annexb_src)
+                meta_input = annexb_src
+            else:
+                meta_input = source
             if video.copy_dv:
                 run_cmd([
                     cb.bins["dovi_tool"], "extract-rpu",
-                    "-i", str(source), "-o", str(rpu_bin),
+                    "-i", str(meta_input), "-o", str(rpu_bin),
                 ], f"dovi-extract-{index}")
                 local_cleanup.append(rpu_bin)
             if video.copy_hdr10plus:
                 run_cmd([
                     cb.bins["hdr10plus_tool"], "extract",
-                    str(source), "-o", str(hdr10p_json),
+                    str(meta_input), "-o", str(hdr10p_json),
                 ], f"hdr10plus-extract-{index}")
                 local_cleanup.append(hdr10p_json)
 

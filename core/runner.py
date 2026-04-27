@@ -16,8 +16,11 @@ Conventions :
 
 from __future__ import annotations
 
+import os
+import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -26,6 +29,17 @@ from typing import Callable, Sequence
 
 from PySide6.QtCore import QObject, Signal
 from core.subprocess_utils import decode_subprocess_output, subprocess_windows_no_window_kwargs
+
+
+# Outils dont la barre de progression n'est émise que si stdout est un TTY.
+# Sur ces binaires on alloue un pty pour récupérer la progression en temps réel.
+_PTY_PROGRESS_TOOLS: frozenset[str] = frozenset({"dovi_tool", "hdr10plus_tool"})
+
+# Pourcentage à l'intérieur d'une ligne de progression (ex : "Extracting RPU... 73%")
+_PERCENT_RE = re.compile(r"(\d{1,3})\s*%")
+# Séquences ANSI courantes (effacement de ligne, couleur) à supprimer pour
+# garder un log lisible.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 
 # ---------------------------------------------------------------------------
@@ -395,13 +409,29 @@ class ToolRunner(QObject):
         Chaque ligne de sortie est transmise à progress_cb si fourni.
         Lève CommandError si le code de retour est non nul.
         Lève TaskCancelledError si signals.cancel() est appelé pendant l'exécution.
-        """
-        import os
 
+        Pour `dovi_tool` et `hdr10plus_tool` sous Linux/macOS, la commande est
+        exécutée sous pty pour que les outils émettent leur barre de progression
+        (sinon ils se mettent en mode silencieux quand stdout n'est pas un TTY).
+        Les lignes contenant un pourcentage (`XX%`) sont alors dédoublonnées :
+        seul le changement de pourcentage est transmis au callback.
+        """
         proc_env = {**os.environ, **(env or {})} if env else None
 
         if progress_cb:
             progress_cb("$ " + " ".join(cmd))
+
+        binary = Path(cmd[0]).name
+        use_pty = sys.platform != "win32" and binary in _PTY_PROGRESS_TOOLS
+
+        if use_pty:
+            return self._run_cmd_pty(
+                cmd,
+                cwd=cwd,
+                env=proc_env,
+                progress_cb=progress_cb,
+                signals=signals,
+            )
 
         with subprocess.Popen(
             cmd,
@@ -472,3 +502,113 @@ class ToolRunner(QObject):
             finally:
                 if signals is not None:
                     signals._unregister_proc(proc)
+
+    # ------------------------------------------------------------------
+    # Variante pty pour outils à barre de progression (dovi_tool, hdr10plus_tool)
+    # ------------------------------------------------------------------
+
+    def _run_cmd_pty(
+        self,
+        cmd: list[str],
+        *,
+        cwd: Path | None,
+        env: dict[str, str] | None,
+        progress_cb: Callable[[str], None] | None,
+        signals: TaskSignals | None,
+    ) -> str:
+        """
+        Exécute la commande sous un pseudo-terminal pour récupérer la
+        progression des outils qui ne l'émettent qu'en TTY (dovi_tool,
+        hdr10plus_tool).
+
+        Le buffer est splitté sur \r ET \n (les barres rafraîchissent via \r).
+        Les lignes contenant un pourcentage sont émises uniquement au
+        changement de valeur, pour éviter de saturer le LogPanel.
+        """
+        import pty
+
+        master_fd, slave_fd = pty.openpty()
+        proc = subprocess.Popen(
+            cmd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            stdin=subprocess.DEVNULL,
+            cwd=str(cwd) if cwd else None,
+            env=env,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+
+        if signals is not None:
+            signals._register_proc(proc)
+
+        lines: list[str] = []
+        last_pct: int = -1
+        buffer = ""
+        try:
+            while True:
+                if signals is not None and signals._cancel_event.is_set():
+                    proc.kill()
+                    raise TaskCancelledError()
+                try:
+                    data = os.read(master_fd, 1024)
+                except OSError:
+                    break
+                if not data:
+                    break
+
+                buffer += data.decode("utf-8", errors="replace")
+                if "\r" not in buffer and "\n" not in buffer:
+                    continue
+
+                parts = re.split(r"[\r\n]+", buffer)
+                buffer = parts[-1]
+                for raw in parts[:-1]:
+                    line = _ANSI_RE.sub("", raw).strip()
+                    if not line:
+                        continue
+                    lines.append(line)
+
+                    m = _PERCENT_RE.search(line)
+                    if m:
+                        try:
+                            pct = int(m.group(1))
+                        except ValueError:
+                            pct = -1
+                        if pct == last_pct:
+                            continue
+                        last_pct = pct
+                    if progress_cb:
+                        progress_cb(line)
+
+            # Tampon résiduel (le pty se ferme rarement sans \n final)
+            if buffer.strip():
+                line = _ANSI_RE.sub("", buffer).strip()
+                lines.append(line)
+                if progress_cb:
+                    progress_cb(line)
+
+            proc.wait()
+
+            if signals is not None and signals._cancel_event.is_set():
+                raise TaskCancelledError()
+
+            _MAX_OUTPUT_LINES = 10000
+            if len(lines) > _MAX_OUTPUT_LINES:
+                lines = lines[-_MAX_OUTPUT_LINES:]
+            output = "\n".join(lines)
+
+            if proc.returncode != 0:
+                raise CommandError(
+                    cmd=cmd,
+                    returncode=proc.returncode,
+                    stderr=output[-2000:],
+                )
+            return output
+        finally:
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
+            if signals is not None:
+                signals._unregister_proc(proc)
