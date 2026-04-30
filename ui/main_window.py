@@ -60,13 +60,19 @@ from PySide6.QtWidgets import (
 from core.config import AppConfig
 from core.i18n import apply_translations, set_current_language, translate_text
 from core.logging import LogLevel, VerboseFileLogger, parse_log_level
-from core.runner import TaskSignals
+from core.runner import TaskSignals, _PCT_SENTINEL
 from core.subprocess_utils import subprocess_text_kwargs
 from core.version import APP_VERSION_LABEL, WRITING_APPLICATION_TAG
 from core.workflows.encode import EncodeError
 from core.workflows.remux_models import RemuxError
 from ui.panels.encode_panel import EncodePanel
-from ui.panels.encode_panel.theme import _FPS_RE, _FRAME_RE, _fmt_eta, ffmpeg_progress_seconds
+from ui.panels.encode_panel.theme import (
+    _FPS_RE,
+    _FRAME_RE,
+    EtaTracker,
+    _fmt_eta,
+    ffmpeg_progress_seconds,
+)
 from ui.panels.merge_dovi_panel import MergeDoviPanel
 from ui.panels.remux_panel import RemuxPanel
 from ui.panels.settings_panel import SettingsPanel
@@ -103,6 +109,9 @@ _ENCODE_STAGE_PREFIXES: tuple[str, ...] = (
     "Extraction HEVC annexB",
     "Extraction RPU Dolby Vision",
     "Extraction métadonnées HDR10+",
+    "Conversion P5 → P8",
+    "Conversion P7 FEL → P8.1",
+    "Conversion P7 MEL → P8.1",
     "Encodage vidéo",
     "Injection métadonnées HDR10+",
     "Injection RPU Dolby Vision",
@@ -118,6 +127,9 @@ _ENCODE_STAGE_PREFIXES: tuple[str, ...] = (
 _ENCODE_INDETERMINATE_STAGE_PREFIXES: tuple[str, ...] = (
     "Extraction RPU Dolby Vision",
     "Extraction métadonnées HDR10+",
+    "Conversion P5 → P8",
+    "Conversion P7 FEL → P8.1",
+    "Conversion P7 MEL → P8.1",
     "Injection métadonnées HDR10+",
     "Injection RPU Dolby Vision",
     "Injection balises MKV",
@@ -142,6 +154,60 @@ _ENCODE_PROGRESS_NOISE_PREFIXES: tuple[str, ...] = (
     "speed=",
     "progress=",
 )
+
+# Lignes informatives bruyantes ffmpeg (banner, listing streams, chapitres,
+# metadata side-data) qu'on n'affiche PAS dans le LogPanel UI mais qu'on
+# laisse passer au verbose file logger via _capture_verbose_progress_line.
+# Sans ce filtre, charger un MKV avec 45 sous-titres pollue l'UI de
+# centaines de lignes "Stream #0:N(xxx): Subtitle: ..." à chaque appel
+# ffmpeg (extract annexB, encode, remux final, etc.).
+_FFMPEG_INFO_PREFIXES: tuple[str, ...] = (
+    "ffmpeg version ",
+    "  built with ",
+    "  configuration: ",
+    "  libavutil",
+    "  libavcodec",
+    "  libavformat",
+    "  libavdevice",
+    "  libavfilter",
+    "  libswscale",
+    "  libswresample",
+    "  libpostproc",
+    "Input #",
+    "Output #",
+    "Stream mapping:",
+    "Press [q] to stop",
+    "  Stream #",
+    "  Duration:",
+    "  Metadata:",
+    "  Chapters:",
+    "    Chapter #",
+    "    Stream #",
+    "    Metadata:",
+    "      Metadata:",
+    "      Side data:",
+    "        ",
+    "      title           :",
+    "      encoder         :",
+    "      creation_time   :",
+    "      Source          :",
+    "[matroska,",
+    "[mov,",
+    "[mp4 @",
+    "[hevc @",
+    "[h264 @",
+    "Consider increasing the value for the 'analyzeduration'",
+)
+
+
+def _is_ffmpeg_info_noise(line: str) -> bool:
+    """Vrai pour les lignes ffmpeg purement informatives (banner, streams,
+    metadata side-data) qu'on ne veut pas afficher dans le LogPanel UI.
+
+    Ne filtre PAS les warnings/errors réels (lignes ne matchant aucun préfixe
+    sont laissées passer au LogPanel pour visibilité utilisateur).
+    """
+    return any(line.startswith(prefix) for prefix in _FFMPEG_INFO_PREFIXES)
 _STEP_PROGRESS_RE = re.compile(r"^STEP\s+\d+\s*-\s*(.+)$")
 _ENCODE_INTERNAL_PROGRESS_PREFIX = "__MRE_PROGRESS__ "
 _MULTI_ENCODE_LABEL_RE = re.compile(r"^ffmpeg-video-(\d+)(?:-pass(\d+))?$")
@@ -240,24 +306,42 @@ def _ensure_verbose_file_logger(window: object) -> VerboseFileLogger:
 
 
 def _multi_encode_remaining_seconds(state: dict[str, object], now: float) -> float | None:
-    started_at = _state_float(state, "started_at", 0.0)
-    elapsed_wall = max(0.0, now - started_at)
-    if elapsed_wall <= 0:
-        return None
+    """
+    ETA d'un encode multi-stream basé sur la vitesse lissée (EWMA), pas sur
+    la moyenne depuis le début. Évite l'ETA gonflé pendant l'init de ffmpeg.
+    """
+    tracker = state.get("eta_tracker")
+    if not isinstance(tracker, EtaTracker):
+        tracker = EtaTracker(warmup_progress=1.0)
+        state["eta_tracker"] = tracker
 
     duration_s = state.get("duration_s")
     elapsed_video = state.get("elapsed_video")
-    if isinstance(duration_s, (int, float)) and duration_s > 0 and isinstance(elapsed_video, (int, float)) and elapsed_video > 0:
-        speed = float(elapsed_video) / elapsed_wall
-        if speed > 0:
-            return max(0.0, float(duration_s) - float(elapsed_video)) / speed
+    if (
+        isinstance(duration_s, (int, float))
+        and duration_s > 0
+        and isinstance(elapsed_video, (int, float))
+        and elapsed_video >= 0
+    ):
+        tracker.update(float(elapsed_video), now)
+        return tracker.eta(float(duration_s), float(elapsed_video))
 
     total_frames = state.get("total_frames")
     frame = state.get("frame")
-    if isinstance(total_frames, int) and total_frames > 0 and isinstance(frame, int) and frame > 0 and total_frames > frame:
-        frame_speed = frame / elapsed_wall
-        if frame_speed > 0:
-            return (total_frames - frame) / frame_speed
+    fps_value = state.get("fps")
+    if (
+        isinstance(total_frames, int)
+        and total_frames > 0
+        and isinstance(frame, int)
+        and frame > 0
+        and total_frames > frame
+    ):
+        # Si ffmpeg a déjà fourni un fps, on l'utilise tel quel — c'est le
+        # même chiffre que l'utilisateur voit dans le label, donc cohérent.
+        if isinstance(fps_value, (int, float)) and fps_value > 0:
+            return tracker.eta_from_speed(float(total_frames), float(frame), float(fps_value))
+        tracker.update(float(frame), now)
+        return tracker.eta(float(total_frames), float(frame))
     return None
 
 
@@ -1239,9 +1323,21 @@ class MainWindow(QMainWindow):
         self._signals: TaskSignals | None = None
         self._op_start: float = 0.0
         self._op_mode: str = ""   # "remux" ou "encode"
+        # Trace one-shot du banner ffmpeg : on logge la version la 1re fois
+        # vue dans la session (en INFO standard), les suivantes restent
+        # silencieuses côté UI (mais visibles dans le verbose file).
+        self._ffmpeg_version_logged: bool = False
         self._op_encode_config: EncodeConfig | None = None
         self._op_encode_fps: float | None = None
         self._op_encode_frame: int | None = None
+        # Trackers ETA lissés (EWMA) pour les barres single-stream (remux et
+        # encode). Le multi-encode utilise un tracker par label dans le state.
+        self._eta_tracker_video = EtaTracker(warmup_progress=1.0)
+        self._eta_tracker_frame = EtaTracker(warmup_progress=24.0)
+        # Légende de l'étape en cours (« Encodage vidéo… », « Injection RPU
+        # Dolby Vision… »…). Mise à jour quand un message d'étape arrive et
+        # préfixée aux métriques ffmpeg sur la barre de progression.
+        self._op_stage_label: str = ""
         self._op_encode_multi_targets: dict[int, dict[str, object]] = {}
         self._op_encode_multi_state: dict[str, dict[str, object]] = {}
         self._op_encode_multi_active_label: str | None = None
@@ -1484,6 +1580,18 @@ class MainWindow(QMainWindow):
             f"QProgressBar::chunk{{background:{chunk_color};border-radius:{_scale(3)}px;}}"
         )
 
+    def _format_progress_label(self, *parts: str) -> str:
+        """Concatène la légende d'étape et les métriques (pct/fps/ETA).
+
+        Sans cette concaténation, la barre n'affiche que les métriques
+        chiffrées et l'utilisateur perd la trace de l'étape en cours
+        (extraction, conversion DV, encode, injection RPU…).
+        """
+        merged = [p for p in parts if p]
+        if self._op_stage_label:
+            return f"{self._op_stage_label}  ·  " + "  ·  ".join(merged) if merged else self._op_stage_label
+        return "  ·  ".join(merged)
+
     def _start_prep_progress(self) -> None:
         if not self._running:
             return
@@ -1589,6 +1697,11 @@ class MainWindow(QMainWindow):
         self._dovi_panel.op_state_changed.connect(
             self._on_dovi_op_state, Qt.ConnectionType.QueuedConnection
         )
+        # Pourcentage des outils dovi_tool / hdr10plus_tool → barre globale.
+        # Reset implicite à 0 émis par le panel à chaque step_started.
+        self._dovi_panel.op_progress_pct.connect(
+            self._on_dovi_op_progress_pct, Qt.ConnectionType.QueuedConnection
+        )
         # EncodePanel → LogPanel global
         self._encode_panel.log_message.connect(
             self.log_requested, Qt.ConnectionType.QueuedConnection
@@ -1637,6 +1750,11 @@ class MainWindow(QMainWindow):
     def _on_run(self) -> None:
         if self._running:
             return
+
+        # Reset au démarrage : on veut voir la version ffmpeg de cette
+        # exécution (utile en diag), puis silence pour les invocations
+        # internes suivantes.
+        self._ffmpeg_version_logged = False
 
         remux_cfg  = self._remux_panel.collect_config()
         encode_cfg = self._encode_panel.collect_config()
@@ -1694,6 +1812,9 @@ class MainWindow(QMainWindow):
         self._cancel_btn.setVisible(True)
         self._op_encode_fps = None
         self._op_encode_frame = None
+        self._eta_tracker_video.reset()
+        self._eta_tracker_frame.reset()
+        self._op_stage_label = ""
         self._reset_multi_encode_progress_tracking()
         if self._op_mode == "encode" and self._op_encode_config is not None:
             self._op_encode_multi_targets = self._encode_panel.get_video_progress_targets(self._op_encode_config)
@@ -1854,7 +1975,7 @@ class MainWindow(QMainWindow):
         if pct is not None:
             self._stop_prep_progress()
             self._prog_bar.setValue(pct)
-        self._prog_lbl.setText("  ·  ".join(p for p in parts if p))
+        self._prog_lbl.setText(self._format_progress_label(*parts))
         if len(self._op_encode_multi_state) > 1 and not self._op_encode_multi_reselect_timer.isActive():
             self._op_encode_multi_reselect_timer.start()
 
@@ -1903,11 +2024,14 @@ class MainWindow(QMainWindow):
 
         if _is_encode_progress_noise(raw_line):
             return True
+        if _is_ffmpeg_info_noise(raw_line):
+            return True
         if _is_encode_stage_message(raw_line):
             if _is_encode_indeterminate_stage(raw_line):
                 self._start_prep_progress()
             else:
                 self._stop_prep_progress()
+            self._op_stage_label = raw_line.strip()
             self._prog_lbl.setText(raw_line)
             return True
         self.log_requested.emit("INFO", raw_line)
@@ -1916,6 +2040,18 @@ class MainWindow(QMainWindow):
     def _on_op_progress(self, line: str) -> None:
         """Gère la progression selon le mode (remux ou encode)."""
         self._capture_verbose_progress_line(line)
+        # Banner/listing ffmpeg : ne pas pourrir l'UI mais loguer la version
+        # la 1re fois pour traçabilité standard. Le verbose file a déjà la
+        # ligne complète via _capture_verbose_progress_line ci-dessus.
+        if line.startswith("ffmpeg version "):
+            if not self._ffmpeg_version_logged:
+                self._ffmpeg_version_logged = True
+                # Extraire "ffmpeg version 7.1.3" jusqu'au premier "Copyright".
+                short = line.split(" Copyright", 1)[0].strip()
+                self.log_requested.emit("INFO", short)
+            return
+        if _is_ffmpeg_info_noise(line):
+            return
         if self._op_mode == "remux":
             if line.startswith("$ "):
                 self._stop_prep_progress()
@@ -1928,15 +2064,11 @@ class MainWindow(QMainWindow):
                 if dur and dur > 0:
                     pct = min(99, int(elapsed_video / dur * 100))
                     self._prog_bar.setValue(pct)
-                    elapsed_wall = time.monotonic() - self._op_start
-                    if elapsed_wall > 0 and elapsed_video > 0:
-                        speed = elapsed_video / elapsed_wall
-                        eta_s = (dur - elapsed_video) / speed
-                        eta_str = f"ETA {_fmt_eta(eta_s)}"
-                    else:
-                        eta_str = ""
+                    self._eta_tracker_video.update(elapsed_video, time.monotonic())
+                    eta_s = self._eta_tracker_video.eta(dur, elapsed_video)
+                    eta_str = f"ETA {_fmt_eta(eta_s)}" if eta_s is not None else ""
                     parts = [f"{pct}%", eta_str]
-                    self._prog_lbl.setText("  ·  ".join(p for p in parts if p))
+                    self._prog_lbl.setText(self._format_progress_label(*parts))
                 return
             if _is_encode_progress_noise(line):
                 return
@@ -1944,12 +2076,25 @@ class MainWindow(QMainWindow):
         else:
             if self._handle_encode_internal_progress(line):
                 return
+            if line.startswith(_PCT_SENTINEL):
+                # Progression chiffrée des outils dovi_tool / hdr10plus_tool
+                # (lecture pty). Bascule la barre globale en mode déterminé.
+                try:
+                    pct = int(line[len(_PCT_SENTINEL):].strip())
+                except ValueError:
+                    return
+                self._stop_prep_progress()
+                self._prog_bar.setRange(0, 100)
+                self._prog_bar.setValue(max(0, min(100, pct)))
+                return
             if self._NOISE_RE.search(line):
                 return
             if line.startswith("$ "):
                 self._stop_prep_progress()
                 self._op_encode_fps = None
                 self._op_encode_frame = None
+                self._eta_tracker_video.reset()
+                self._eta_tracker_frame.reset()
                 self.log_requested.emit("INFO", line)
                 return
             fps_m = _FPS_RE.search(line)
@@ -1976,15 +2121,11 @@ class MainWindow(QMainWindow):
                         if self._op_encode_fps is not None and self._op_encode_fps > 0
                         else ""
                     )
-                    elapsed_wall = time.monotonic() - self._op_start
-                    if elapsed_wall > 0 and elapsed_video > 0:
-                        speed = elapsed_video / elapsed_wall
-                        eta_s = (dur - elapsed_video) / speed
-                        eta_str = f"ETA {_fmt_eta(eta_s)}"
-                    else:
-                        eta_str = ""
+                    self._eta_tracker_video.update(elapsed_video, time.monotonic())
+                    eta_s = self._eta_tracker_video.eta(dur, elapsed_video)
+                    eta_str = f"ETA {_fmt_eta(eta_s)}" if eta_s is not None else ""
                     parts = [f"{pct}%", fps_str, eta_str]
-                    self._prog_lbl.setText("  ·  ".join(p for p in parts if p))
+                    self._prog_lbl.setText(self._format_progress_label(*parts))
                 return
             if frame_m is not None and self._op_encode_frame is not None:
                 total_frames = self._encode_panel.get_total_frames()
@@ -1997,22 +2138,32 @@ class MainWindow(QMainWindow):
                         if self._op_encode_fps is not None and self._op_encode_fps > 0
                         else ""
                     )
-                    elapsed_wall = time.monotonic() - self._op_start
+                    eta_s: float | None = None
+                    # Si ffmpeg a rapporté un fps instantané, l'utiliser
+                    # directement : c'est déjà la moyenne glissante côté ffmpeg
+                    # et c'est ce que l'utilisateur voit comme "fps". L'ETA
+                    # affiché reste cohérent avec le débit affiché.
                     if (
-                        elapsed_wall > 0
-                        and self._op_encode_frame > 0
+                        self._op_encode_fps is not None
+                        and self._op_encode_fps > 0
                         and total_frames > self._op_encode_frame
                     ):
-                        frame_speed = self._op_encode_frame / elapsed_wall
-                        if frame_speed > 0:
-                            eta_s = (total_frames - self._op_encode_frame) / frame_speed
-                            eta_str = f"ETA {_fmt_eta(eta_s)}"
-                        else:
-                            eta_str = ""
+                        eta_s = self._eta_tracker_frame.eta_from_speed(
+                            float(total_frames),
+                            float(self._op_encode_frame),
+                            float(self._op_encode_fps),
+                        )
                     else:
-                        eta_str = ""
+                        # Fallback : EWMA sur la vitesse instantanée mesurée.
+                        self._eta_tracker_frame.update(
+                            float(self._op_encode_frame), time.monotonic()
+                        )
+                        eta_s = self._eta_tracker_frame.eta(
+                            float(total_frames), float(self._op_encode_frame)
+                        )
+                    eta_str = f"ETA {_fmt_eta(eta_s)}" if eta_s is not None else ""
                     parts = [f"{pct}%", fps_str, eta_str]
-                    self._prog_lbl.setText("  ·  ".join(p for p in parts if p))
+                    self._prog_lbl.setText(self._format_progress_label(*parts))
                 return
             if _is_encode_progress_noise(line):
                 return
@@ -2023,6 +2174,7 @@ class MainWindow(QMainWindow):
                     self._start_prep_progress()
                 else:
                     self._stop_prep_progress()
+                self._op_stage_label = line.strip()
                 self._prog_lbl.setText(line)
             self.log_requested.emit("INFO", line)
 
@@ -2050,6 +2202,7 @@ class MainWindow(QMainWindow):
             self._running = True
             self._op_start = time.monotonic()
             self._op_mode = "merge_dovi"
+            self._dovi_step_label = label
             self._prog_widget.setVisible(True)
             self._prog_bar.setRange(0, 100)
             self._prog_bar.setValue(0)
@@ -2058,6 +2211,12 @@ class MainWindow(QMainWindow):
             self._start_prep_progress()
         elif state == "step":
             self._prog_lbl.setText(label)
+            self._dovi_step_label = label
+            # Nouvelle étape : repart en prep jaune indéterminée. Si l'outil
+            # émet un % (dovi_tool / hdr10plus_tool), la barre bascule en
+            # chiffré via _on_dovi_op_progress_pct.
+            self._prog_bar.setValue(0)
+            self._start_prep_progress()
         elif state == "finished":
             self._stop_prep_progress()
             self._prog_bar.setRange(0, 100)
@@ -2074,6 +2233,22 @@ class MainWindow(QMainWindow):
             self._status_lbl.setText(label)
             self._running = False
             self._op_mode = ""
+
+    def _on_dovi_op_progress_pct(self, pct: int) -> None:
+        """
+        Pourcentage chiffré reporté par dovi_tool / hdr10plus_tool pendant le
+        workflow MergeDovi. Bascule la barre globale de la prep jaune
+        indéterminée vers une progression chiffrée bleue.
+        """
+        if self._op_mode != "merge_dovi":
+            return
+        self._stop_prep_progress()
+        self._prog_bar.setRange(0, 100)
+        clamped = max(0, min(100, pct))
+        self._prog_bar.setValue(clamped)
+        step_label = getattr(self, "_dovi_step_label", "") or ""
+        prefix = f"{step_label}  ·  " if step_label else ""
+        self._prog_lbl.setText(f"{prefix}{clamped}%")
 
     def _on_op_cancelled(self) -> None:
         self._running = False

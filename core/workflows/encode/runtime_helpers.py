@@ -14,7 +14,9 @@ from core.workflows.encode.catalog import (
     NVENC_VIDEO_CODECS,
     QSV_VIDEO_CODECS,
     VAAPI_VIDEO_CODECS,
+    needs_static_hdr_bitstream_patch_codec,
 )
+from core.workflows.encode.domain.codecs import ENABLE_EXPERIMENTAL_NVENC_STATIC_HDR_PATCH
 from core.workflows.encode.models import QualityMode, VideoEncodeSettings
 _UI_ENCODE_PROGRESS_PREFIX = "__MRE_PROGRESS__ "
 
@@ -104,7 +106,17 @@ class VideoPreparationResourcePolicy:
 
         if video.quality_mode == QualityMode.SIZE:
             base += 128 * mib
-        if video.copy_dv or video.copy_hdr10plus:
+        if (
+            video.copy_dv
+            or video.copy_hdr10plus
+            or (
+                ENABLE_EXPERIMENTAL_NVENC_STATIC_HDR_PATCH
+                and
+                bool(video.inject_hdr_meta or video.copy_dv or video.copy_hdr10plus)
+                and bool(video.master_display or video.max_cll)
+                and needs_static_hdr_bitstream_patch_codec(video.codec)
+            )
+        ):
             base += 256 * mib
 
         source_component = 0
@@ -173,8 +185,13 @@ class VideoTrackPreparationOrchestrator:
                     self._reserved_ram_bytes += task.estimated_ram_bytes
                     return task.estimated_ram_bytes
 
-                if self._reserved_ram_bytes == 0 and available > self._min_available_ram_bytes:
-                    claim = max(1, available - self._min_available_ram_bytes)
+                relaxed_required = self._reserved_ram_bytes + task.estimated_ram_bytes
+                if available >= relaxed_required:
+                    self._reserved_ram_bytes += task.estimated_ram_bytes
+                    return task.estimated_ram_bytes
+
+                if self._reserved_ram_bytes == 0 and available > 0:
+                    claim = max(1, min(task.estimated_ram_bytes, available))
                     self._reserved_ram_bytes += claim
                     return claim
 

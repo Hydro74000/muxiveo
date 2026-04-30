@@ -944,6 +944,203 @@ class TestMetadataInjectFileManagement:
         assert shm_calls == [], "Des fichiers /dev/shm créés malgré enabled=False"
 
 
+class TestMetadataInjectDoviProfileRouting:
+
+    @staticmethod
+    def _run_inject(tmp_path: Path, *, dovi_profile: str) -> list[list[str]]:
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 200_000)
+        config = _make_config(
+            source=src,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="libx265"),
+            copy_dv=True,
+            dovi_profile=dovi_profile,
+            work_dir=tmp_path / "work",
+        )
+        wf = _make_workflow(enabled=False)
+        cmds_run: list[list[str]] = []
+
+        def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
+            cmds_run.append(list(cmd))
+            for arg in reversed(cmd):
+                s = str(arg)
+                if any(s.endswith(ext) for ext in (".hevc", ".mkv", ".bin", ".json", ".ffmetadata")):
+                    p = Path(s)
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(b"\x00" * 100_000)
+                    break
+            return ""
+
+        with patch.object(EncodeWorkflow, "_shm_path", side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
+            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+                sigs = wf._run_with_metadata_inject(config)
+                _collect_signals(sigs)
+        return cmds_run
+
+    def test_p7_source_auto_converts_even_when_user_profile_is_0(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 200_000)
+        config = _make_config(
+            source=src,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="libx265"),
+            copy_dv=True,
+            dovi_profile="0",
+            work_dir=tmp_path / "work",
+        )
+        wf = _make_workflow(enabled=False)
+        cmds_run: list[list[str]] = []
+        mi_p7_fel = {
+            "HDR_Format": "Dolby Vision, Version 1.0, dvhe.07.06, BL+EL+RPU",
+            "HDR_Format_Profile": "dvhe.07 / 06",
+            "HDR_Format_Settings": "BL+EL+RPU",
+        }
+
+        def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
+            cmds_run.append(list(cmd))
+            for arg in reversed(cmd):
+                s = str(arg)
+                if any(s.endswith(ext) for ext in (".hevc", ".mkv", ".bin", ".json", ".ffmetadata")):
+                    p = Path(s)
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(b"\x00" * 100_000)
+                    break
+            return ""
+
+        with patch.object(EncodeWorkflow, "_shm_path", side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
+            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+                with patch(
+                    "core.workflows.encode.runtime.metadata_inject._load_mediainfo_video",
+                    return_value=mi_p7_fel,
+                ):
+                    sigs = wf._run_with_metadata_inject(config)
+                    _collect_signals(sigs)
+
+        convert_cmds = [
+            cmd for cmd in cmds_run
+            if len(cmd) >= 4 and cmd[:4] == ["dovi_tool", "-m", "2", "convert"]
+        ]
+        assert len(convert_cmds) == 1
+        assert "--discard" in convert_cmds[0]
+
+        extract_cmds = [cmd for cmd in cmds_run if cmd[:2] == ["dovi_tool", "extract-rpu"]]
+        assert len(extract_cmds) == 1
+        assert extract_cmds[0][extract_cmds[0].index("-i") + 1].endswith("source_p8.hevc")
+
+        inject_cmds = [cmd for cmd in cmds_run if "inject-rpu" in cmd]
+        assert len(inject_cmds) == 1
+        assert inject_cmds[0][:3] == ["dovi_tool", "-m", "2"]
+
+    def test_normalize_p8_1_converts_p7_source_before_extract_and_encode(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 200_000)
+        config = _make_config(
+            source=src,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="libx265"),
+            copy_dv=True,
+            dovi_profile="2",
+            work_dir=tmp_path / "work",
+        )
+        wf = _make_workflow(enabled=False)
+        cmds_run: list[list[str]] = []
+        mi_p7_fel = {
+            "HDR_Format": "Dolby Vision, Version 1.0, dvhe.07.06, BL+EL+RPU",
+            "HDR_Format_Profile": "dvhe.07 / 06",
+            "HDR_Format_Settings": "BL+EL+RPU",
+        }
+
+        def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
+            cmds_run.append(list(cmd))
+            for arg in reversed(cmd):
+                s = str(arg)
+                if any(s.endswith(ext) for ext in (".hevc", ".mkv", ".bin", ".json", ".ffmetadata")):
+                    p = Path(s)
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(b"\x00" * 100_000)
+                    break
+            return ""
+
+        with patch.object(EncodeWorkflow, "_shm_path", side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
+            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+                with patch(
+                    "core.workflows.encode.runtime.metadata_inject._load_mediainfo_video",
+                    return_value=mi_p7_fel,
+                ):
+                    sigs = wf._run_with_metadata_inject(config)
+                    _collect_signals(sigs)
+
+        convert_cmds = [
+            cmd for cmd in cmds_run
+            if len(cmd) >= 4 and cmd[:4] == ["dovi_tool", "-m", "2", "convert"]
+        ]
+        assert len(convert_cmds) == 1
+        assert "--discard" in convert_cmds[0]
+
+        extract_cmds = [cmd for cmd in cmds_run if cmd[:2] == ["dovi_tool", "extract-rpu"]]
+        assert len(extract_cmds) == 1
+        assert extract_cmds[0][extract_cmds[0].index("-i") + 1].endswith("source_p8.hevc")
+
+        inject_cmds = [cmd for cmd in cmds_run if "inject-rpu" in cmd]
+        assert len(inject_cmds) == 1
+        assert inject_cmds[0][:3] == ["dovi_tool", "-m", "2"]
+
+    def test_dynamic_hdr_copy_reinjects_static_hdr_even_on_libx265(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 200_000)
+        config = _make_config(
+            source=src,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(
+                codec="libx265",
+                master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)",
+                max_cll="1000,400",
+            ),
+            copy_dv=True,
+            work_dir=tmp_path / "work",
+        )
+        wf = _make_workflow(enabled=False)
+        calls: list[tuple[Path, Path, str, str]] = []
+
+        def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
+            for arg in reversed(cmd):
+                s = str(arg)
+                if any(s.endswith(ext) for ext in (".hevc", ".mkv", ".bin", ".json", ".ffmetadata")):
+                    p = Path(s)
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(b"\x00" * 100_000)
+                    break
+            return ""
+
+        def _fake_static_patch(src_path, dst_path, *, master_display, max_cll):
+            calls.append((src_path, dst_path, master_display, max_cll))
+            dst_path.write_bytes(b"patched")
+            from core.workflows.hevc_static_hdr_metadata import StaticHdrSeiInjectionResult
+            return StaticHdrSeiInjectionResult(
+                access_units=10,
+                targeted_access_units=2,
+                injected_access_units=2,
+                preserved_access_units=0,
+            )
+
+        with patch.object(EncodeWorkflow, "_shm_path", side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
+            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+                with patch(
+                    "core.workflows.encode.runtime.metadata_inject.inject_static_hdr_sei_file",
+                    side_effect=_fake_static_patch,
+                ):
+                    sigs = wf._run_with_metadata_inject(config)
+                    _collect_signals(sigs)
+
+        assert len(calls) == 1
+        src_path, dst_path, master_display, max_cll = calls[0]
+        assert src_path.name == "enc_dv.hevc"
+        assert dst_path.name == "enc_hdr_static.hevc"
+        assert master_display == config.video.master_display
+        assert max_cll == config.video.max_cll
+
+
 class TestRuntimeCleanup:
     def test_run_two_pass_cleans_passlogs(self, tmp_path):
         wf = _make_workflow()
@@ -1645,17 +1842,15 @@ class TestHdrMetaArgs:
         assert "master-display=" in params
         assert "max-cll=" in params
 
-    def test_hevc_nvenc_adds_master_display_and_max_cll(self):
-        """hevc_nvenc : -master_display et -max_cll ajoutés comme options encoder."""
+    def test_hevc_nvenc_color_flags_only(self):
+        """hevc_nvenc : couleur/VUI seulement, pas de faux flags master_display/max_cll."""
         args = _hdr_meta_args(self._vs("hevc_nvenc"))
         assert "-color_primaries" in args
-        assert "-master_display" in args
-        assert "-max_cll" in args
-        md_idx = args.index("-master_display")
-        assert "G(8500" in args[md_idx + 1]
+        assert "-master_display" not in args
+        assert "-max_cll" not in args
 
     def test_hevc_nvenc_no_master_display_when_empty(self):
-        """hevc_nvenc : pas de -master_display si master_display vide."""
+        """hevc_nvenc : meme avec des champs vides, on garde seulement les flags couleur."""
         vs = _make_video_settings(codec="hevc_nvenc", inject_hdr_meta=True,
                                    master_display="", max_cll="")
         args = _hdr_meta_args(vs)
@@ -1692,6 +1887,45 @@ class TestHdrMetaArgs:
         for codec in ("libx264", "h264_nvenc", "h264_amf", "h264_qsv"):
             args = _hdr_meta_args(self._vs(codec))
             assert args == [], f"{codec} devrait retourner [] mais retourne {args}"
+
+
+class TestNvencSafePreset:
+    def test_hevc_nvenc_safe_preset_is_dormant_but_maps_to_valid_native_preset(self, tmp_path):
+        src = tmp_path / "s.mkv"
+        src.touch()
+        wf = _make_workflow()
+        vs = _make_video_settings(codec="hevc_nvenc", preset="safe", force_10bit=True)
+        cmd = wf.build_command_single(_make_config(src, tmp_path / "o.mkv", video=vs))
+
+        assert "-preset:v" in cmd
+        assert cmd[cmd.index("-preset:v") + 1] == "p5"
+        assert "-b_ref_mode" not in cmd
+        assert "-nonref_p" not in cmd
+        assert "-rc-lookahead" not in cmd
+        assert "-spatial-aq" not in cmd
+        assert "-temporal-aq" not in cmd
+        assert "-strict_gop" not in cmd
+        assert "-g" not in cmd
+        assert "-forced-idr" not in cmd
+
+    def test_hevc_nvenc_safe_preset_keeps_user_extra_params(self, tmp_path):
+        src = tmp_path / "s.mkv"
+        src.touch()
+        wf = _make_workflow()
+        vs = _make_video_settings(
+            codec="hevc_nvenc",
+            preset="safe",
+            force_10bit=True,
+            extra_params="-rc-lookahead 20 -spatial-aq 1",
+        )
+        cmd = wf.build_command_single(_make_config(src, tmp_path / "o.mkv", video=vs))
+
+        rc_positions = [i for i, token in enumerate(cmd) if token == "-rc-lookahead"]
+        assert len(rc_positions) == 1
+        assert cmd[rc_positions[0] + 1] == "20"
+        aq_positions = [i for i, token in enumerate(cmd) if token == "-spatial-aq"]
+        assert len(aq_positions) == 1
+        assert cmd[aq_positions[0] + 1] == "1"
 
 
 # ===========================================================================
@@ -2062,6 +2296,78 @@ class TestRunCopyBypassesInject:
 
         assert not inject_called[0], "Sans DV/HDR10+ source, l'injection ne doit pas être lancée."
         assert mock_run.called, "Le chemin encode standard doit rester utilisé."
+
+    def test_hevc_nvenc_with_explicit_hdr10_stays_on_standard_path_when_patch_is_disabled(self, tmp_path):
+        """Le patch HDR10 statique NVENC est conservé mais désactivé dans le workflow actif."""
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 1000)
+        config = _make_config(
+            source=src,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(
+                codec="hevc_nvenc",
+                inject_hdr_meta=True,
+                master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)",
+                max_cll="1000,400",
+            ),
+        )
+        wf = _make_workflow()
+
+        with patch.object(wf, "_run_with_metadata_inject", return_value=MagicMock()) as inject_mock, \
+             patch.object(wf._runner, "run") as mock_run:
+            mock_run.return_value = MagicMock()
+            wf.run(config)
+
+        assert not inject_mock.called, "Le fallback bitstream HDR10 NVENC ne doit plus être actif."
+        assert mock_run.called, "Le chemin encode standard doit rester utilisé."
+
+    def test_libx265_with_explicit_hdr10_stays_on_native_codec_path(self, tmp_path):
+        """libx265 injecte le HDR statique nativement via x265-params."""
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 1000)
+        config = _make_config(
+            source=src,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(
+                codec="libx265",
+                inject_hdr_meta=True,
+                master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)",
+                max_cll="1000,400",
+            ),
+        )
+        wf = _make_workflow()
+
+        with patch.object(wf, "_run_with_metadata_inject", return_value=MagicMock()) as inject_mock, \
+             patch.object(wf._runner, "run") as mock_run:
+            mock_run.return_value = MagicMock()
+            wf.run(config)
+
+        assert not inject_mock.called, "libx265 ne doit pas passer par le fallback bitstream."
+        assert mock_run.called, "libx265 doit rester sur le chemin encode standard."
+
+    def test_hevc_vaapi_with_explicit_hdr10_stays_on_native_codec_path(self, tmp_path):
+        """hevc_vaapi garde sa voie native via -sei +hdr."""
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 1000)
+        config = _make_config(
+            source=src,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(
+                codec="hevc_vaapi",
+                inject_hdr_meta=True,
+                master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)",
+                max_cll="1000,400",
+            ),
+        )
+        wf = _make_workflow()
+
+        with patch.object(wf, "_run_with_metadata_inject", return_value=MagicMock()) as inject_mock, \
+             patch.object(wf._runner, "run") as mock_run:
+            mock_run.return_value = MagicMock()
+            wf.run(config)
+
+        assert not inject_mock.called, "hevc_vaapi ne doit pas passer par le fallback bitstream."
+        assert mock_run.called, "hevc_vaapi doit rester sur le chemin encode standard."
 
     @pytest.mark.parametrize("copy_dv,copy_hdr10plus", [
         (True, False), (False, True), (True, True)

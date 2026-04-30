@@ -832,6 +832,42 @@ class TestEncodePanelDynamicHdrDefaults:
         assert "[hdr]" in text
         panel.close()
 
+    def test_qsv_locks_manual_hdr_metadata_fields(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        panel._hw_encoders = {"hevc_qsv"}
+        panel._populate_codec_combo()
+        entry = _video_entry(0)
+        entry.entry_id = "video-qsv-hdr-lock"
+        info = _file_info(_PATH_A, [_video_track(0, HDRType.HDR10)])
+        panel.set_video_tracks([(info, entry, _COLOR)])
+
+        idx_qsv = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "hevc_qsv"
+        )
+        panel._codec_combo.setCurrentIndex(idx_qsv)
+
+        assert panel._master_display.isReadOnly() is True
+        assert panel._max_cll.isReadOnly() is True
+        panel.close()
+
+    def test_x265_keeps_manual_hdr_metadata_fields_editable(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-x265-hdr-edit"
+        info = _file_info(_PATH_A, [_video_track(0, HDRType.HDR10)])
+        panel.set_video_tracks([(info, entry, _COLOR)])
+
+        idx_x265 = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "libx265"
+        )
+        panel._codec_combo.setCurrentIndex(idx_x265)
+
+        assert panel._master_display.isReadOnly() is False
+        assert panel._max_cll.isReadOnly() is False
+        panel.close()
+
     def test_h264_precheck_forces_8bit_and_logs_switch(self, qt_app):
         panel = EncodePanel(AppConfig())
         entry = _video_entry(0)

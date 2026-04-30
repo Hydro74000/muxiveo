@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -178,22 +179,41 @@ Subprofile: FEL
 
 class TestDetectFromDoviTool:
     def test_subprocess_called_with_correct_args(self, tmp_path):
+        # ``dovi_tool info`` n'accepte qu'un fichier RPU binaire : pour un
+        # MKV/HEVC source, on enchaîne extract-rpu (qui crée rpu.bin) puis
+        # info -i rpu.bin --summary.
         src = tmp_path / "src.mkv"
         src.touch()
         detector = DoviProfileDetector(dovi_tool_bin="/usr/bin/dovi_tool")
-        with patch("core.dovi_profile_detector.subprocess.run") as run:
-            run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0,
-                stdout="Profile: 8.1\nDV Level: 6\ncompatibility id: 1\n",
-                stderr="",
-            )
+        rpu_bytes = b"FAKE"
+
+        def fake_run(cmd, *args, **kwargs):
+            if "extract-rpu" in cmd:
+                # Simule la création du fichier RPU.
+                out_idx = cmd.index("-o") + 1
+                Path(cmd[out_idx]).write_bytes(rpu_bytes)
+                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+            if "info" in cmd:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0,
+                    stdout="Profile: 8.1\nDV Level: 6\ncompatibility id: 1\n",
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        with patch("core.dovi_profile_detector.subprocess.run", side_effect=fake_run) as run:
             result = detector.detect_from_dovi_tool(src)
-        run.assert_called_once()
-        called_cmd = run.call_args[0][0]
-        assert called_cmd[0] == "/usr/bin/dovi_tool"
-        assert called_cmd[1] == "info"
-        assert "-i" in called_cmd
-        assert str(src) in called_cmd
+
+        # Au moins 2 appels : extract-rpu puis info.
+        assert run.call_count >= 2
+        cmds = [c.args[0] for c in run.call_args_list]
+        extract_cmd = next(c for c in cmds if "extract-rpu" in c)
+        info_cmd = next(c for c in cmds if "info" in c and "extract-rpu" not in c)
+        assert extract_cmd[0] == "/usr/bin/dovi_tool"
+        assert "-i" in extract_cmd and str(src) in extract_cmd
+        assert info_cmd[0] == "/usr/bin/dovi_tool"
+        assert "info" in info_cmd
+        assert "--summary" in info_cmd
         assert result.sub_profile == DoviSubProfile.P8_1
 
     def test_returns_unknown_when_dovi_tool_missing(self, tmp_path):

@@ -8,9 +8,14 @@ from typing import Callable, cast
 
 from core.runner import TaskCancelledError, TaskSignals
 from core.workdir import remove_path
+from core.workflows.encode.domain import (
+    needs_static_hdr_bitstream_patch,
+    should_reinject_static_hdr_metadata,
+)
 from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode, VideoEncodeSettings
 from core.workflows.encode.planning.plan_models import EncodePlan
 from core.workflows.encode.planning.track_assembly import build_track_input_paths, resolve_track_assembly
+from core.workflows.hevc_static_hdr_metadata import inject_static_hdr_sei_file
 from core.workflows.encode.runtime_helpers import (
     VideoTrackPreparationOrchestrator,
     VideoTrackPrepSpec,
@@ -96,7 +101,7 @@ class MultiVideoPipelineRunner:
         cb.check_cancelled(signals)
         cb.log_info(f"Préparation vidéo {index}/{total_tracks}…")
 
-        if video.copy_dv or video.copy_hdr10plus:
+        if video.copy_dv or video.copy_hdr10plus or needs_static_hdr_bitstream_patch(video):
             rpu_bin = work_dir / f"video_{index}.rpu.bin"
             hdr10p_json = work_dir / f"video_{index}.hdr10plus.json"
             current_hevc = work_dir / f"video_{index}.enc.hevc"
@@ -184,6 +189,29 @@ class MultiVideoPipelineRunner:
                 ], f"dovi-inject-{index}")
                 local_cleanup.append(dovi_out)
                 current_hevc = dovi_out
+
+            if should_reinject_static_hdr_metadata(video):
+                static_hdr_out = work_dir / f"video_{index}.hdr_static.hevc"
+                cb.log_info(f"Piste video {index}: injection metadonnees HDR statiques…")
+                static_hdr_result = inject_static_hdr_sei_file(
+                    current_hevc,
+                    static_hdr_out,
+                    master_display=video.master_display,
+                    max_cll=video.max_cll,
+                )
+                if static_hdr_result.applied:
+                    try:
+                        current_hevc.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    local_cleanup.append(static_hdr_out)
+                    current_hevc = static_hdr_out
+                    cb.log_info(
+                        f"Piste video {index}: SEI HDR statiques injectes sur "
+                        f"{static_hdr_result.injected_access_units} access unit(s)."
+                    )
+                else:
+                    static_hdr_out.unlink(missing_ok=True)
 
             wrapped = work_dir / f"video_{index}.wrapped.mkv"
             run_cmd(

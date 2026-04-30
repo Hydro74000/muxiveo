@@ -37,9 +37,48 @@ _PTY_PROGRESS_TOOLS: frozenset[str] = frozenset({"dovi_tool", "hdr10plus_tool"})
 
 # Pourcentage à l'intérieur d'une ligne de progression (ex : "Extracting RPU... 73%")
 _PERCENT_RE = re.compile(r"(\d{1,3})\s*%")
+# Sentinel transmis via progress_cb quand aucun progress_pct_cb n'est câblé,
+# pour que le UI alimente la barre globale chiffrée.
+_PCT_SENTINEL = "__MRE_PCT__ "
 # Séquences ANSI courantes (effacement de ligne, couleur) à supprimer pour
 # garder un log lisible.
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+# Lignes de bruit ffmpeg à dédoublonner : le décodeur HEVC émet ces messages
+# par centaines pour chaque NAL unit DoVi/HDR10+ (NAL types 62/63 = SEI privés)
+# alors que ce sont des unités attendues. On affiche un warning unique puis on
+# masque les suivantes — y compris en mode verbose.
+_NOISE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\[hevc @ 0x[0-9a-f]+\]\s*Skipping NAL unit \d+"),
+    re.compile(r"Last message repeated \d+ times"),
+)
+
+
+def _is_noise_line(line: str) -> bool:
+    return any(p.search(line) for p in _NOISE_PATTERNS)
+
+
+def _wrap_noise_filter(cb: Callable[[str], None]) -> Callable[[str], None]:
+    """
+    Enveloppe un progress_cb pour dédoublonner les lignes de bruit ffmpeg.
+
+    À la première occurrence d'une ligne bruyante, on émet un warning compact
+    indiquant que ces messages seront masqués. Les suivantes sont silencieusement
+    supprimées.
+    """
+    state = {"warned": False, "skipped": 0}
+
+    def wrapped(line: str) -> None:
+        if _is_noise_line(line):
+            if not state["warned"]:
+                state["warned"] = True
+                cb("⚠ ffmpeg: NAL units non standard détectés (DoVi/HDR10+ SEI) — messages suivants masqués")
+            else:
+                state["skipped"] += 1
+            return
+        cb(line)
+
+    return wrapped
 
 
 # ---------------------------------------------------------------------------
@@ -165,10 +204,11 @@ class TaskSignals(QObject):
             signals.progress.connect(slot, Qt.ConnectionType.QueuedConnection)
     """
 
-    progress  = Signal(str)
-    finished  = Signal(str)
-    failed    = Signal(str, object)   # (message_court, exception)
-    cancelled = Signal()
+    progress     = Signal(str)
+    progress_pct = Signal(int)         # 0..100 — barre de progression chiffrée
+    finished     = Signal(str)
+    failed       = Signal(str, object) # (message_court, exception)
+    cancelled    = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -287,6 +327,7 @@ class ToolRunner(QObject):
                         signals.progress.emit(line)
                         or (on_progress(line) if on_progress else None)
                     ),
+                    progress_pct_cb=lambda pct: signals.progress_pct.emit(pct),
                     signals=signals,
                 )
                 signals.finished.emit(output)
@@ -401,6 +442,7 @@ class ToolRunner(QObject):
         env: dict[str, str] | None = None,
         label: str = "",
         progress_cb: Callable[[str], None] | None = None,
+        progress_pct_cb: Callable[[int], None] | None = None,
         signals: TaskSignals | None = None,
     ) -> str:
         """
@@ -421,6 +463,10 @@ class ToolRunner(QObject):
         if progress_cb:
             progress_cb("$ " + " ".join(cmd))
 
+        # Filtre les lignes de bruit (NAL unit skips, "Last message repeated N times").
+        # Le premier match émet un warning unique, les suivants sont supprimés.
+        progress_cb = _wrap_noise_filter(progress_cb) if progress_cb else None
+
         binary = Path(cmd[0]).name
         use_pty = sys.platform != "win32" and binary in _PTY_PROGRESS_TOOLS
 
@@ -430,6 +476,7 @@ class ToolRunner(QObject):
                 cwd=cwd,
                 env=proc_env,
                 progress_cb=progress_cb,
+                progress_pct_cb=progress_pct_cb,
                 signals=signals,
             )
 
@@ -514,6 +561,7 @@ class ToolRunner(QObject):
         cwd: Path | None,
         env: dict[str, str] | None,
         progress_cb: Callable[[str], None] | None,
+        progress_pct_cb: Callable[[int], None] | None,
         signals: TaskSignals | None,
     ) -> str:
         """
@@ -522,19 +570,34 @@ class ToolRunner(QObject):
         hdr10plus_tool).
 
         Le buffer est splitté sur \r ET \n (les barres rafraîchissent via \r).
-        Les lignes contenant un pourcentage sont émises uniquement au
-        changement de valeur, pour éviter de saturer le LogPanel.
+        Les lignes contenant un pourcentage ne sont PAS transmises au
+        progress_cb (log) ; elles alimentent progress_pct_cb (barre chiffrée)
+        uniquement au changement de valeur.
         """
+        import fcntl
         import pty
+        import struct
+        import termios
 
         master_fd, slave_fd = pty.openpty()
+        # Taille de terminal : `indicatif` (dovi_tool / hdr10plus_tool) refuse
+        # d'afficher la barre si winsize est nulle.
+        try:
+            fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 120, 0, 0))
+        except OSError:
+            pass
+        # `indicatif` désactive aussi la barre quand TERM=dumb (lancement via
+        # .desktop / distrobox-export / .app Finder) ou TERM absent.
+        proc_env = dict(env) if env is not None else os.environ.copy()
+        if proc_env.get("TERM", "dumb") in ("", "dumb"):
+            proc_env["TERM"] = "xterm-256color"
         proc = subprocess.Popen(
             cmd,
             stdout=slave_fd,
             stderr=slave_fd,
             stdin=subprocess.DEVNULL,
             cwd=str(cwd) if cwd else None,
-            env=env,
+            env=proc_env,
             close_fds=True,
         )
         os.close(slave_fd)
@@ -575,9 +638,16 @@ class ToolRunner(QObject):
                             pct = int(m.group(1))
                         except ValueError:
                             pct = -1
-                        if pct == last_pct:
-                            continue
-                        last_pct = pct
+                        if 0 <= pct <= 100 and pct != last_pct:
+                            last_pct = pct
+                            if progress_pct_cb:
+                                progress_pct_cb(pct)
+                            elif progress_cb:
+                                # Pas de canal pct dédié → sentinel reconnu par
+                                # le UI pour piloter la barre globale chiffrée.
+                                progress_cb(f"{_PCT_SENTINEL}{pct}")
+                        # Lignes de progression : pas de log (évite la saturation)
+                        continue
                     if progress_cb:
                         progress_cb(line)
 
@@ -585,7 +655,7 @@ class ToolRunner(QObject):
             if buffer.strip():
                 line = _ANSI_RE.sub("", buffer).strip()
                 lines.append(line)
-                if progress_cb:
+                if not _PERCENT_RE.search(line) and progress_cb:
                     progress_cb(line)
 
             proc.wait()

@@ -41,6 +41,9 @@ X265_PRESETS = [
 X264_PRESETS = X265_PRESETS
 SVTAV1_PRESETS = [str(i) for i in range(13)]
 NVENC_PRESETS = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "slow", "medium", "fast", "hp", "hq"]
+# The experimental logical preset "safe" stays implemented in code for traceability
+# but is no longer exposed in the normal NVENC workflow/UI.
+HEVC_NVENC_PRESETS = [*NVENC_PRESETS]
 VAAPI_PRESETS = [str(i) for i in range(8)]
 QSV_PRESETS = ["veryslow", "slower", "slow", "medium", "fast", "faster", "veryfast"]
 AMF_PRESETS = ["quality", "balanced", "speed"]
@@ -52,6 +55,9 @@ AMF_VIDEO_CODECS: frozenset[str] = frozenset({"hevc_amf", "h264_amf", "av1_amf"}
 QSV_VIDEO_CODECS: frozenset[str] = frozenset({"hevc_qsv", "h264_qsv", "av1_qsv"})
 VAAPI_VIDEO_CODECS: frozenset[str] = frozenset({"hevc_vaapi", "h264_vaapi", "av1_vaapi"})
 H264_VIDEO_CODECS: frozenset[str] = frozenset({"libx264", "h264_nvenc", "h264_amf", "h264_qsv", "h264_vaapi"})
+CQ_CAPABLE_VIDEO_CODECS: frozenset[str] = (
+    NVENC_VIDEO_CODECS | AMF_VIDEO_CODECS | QSV_VIDEO_CODECS | VAAPI_VIDEO_CODECS
+)
 DYNAMIC_HDR_VIDEO_CODECS: frozenset[str] = frozenset({"copy", "libx265", "hevc_nvenc", "hevc_amf", "hevc_qsv", "hevc_vaapi"})
 
 VIDEO_ENCODER_BADGES: dict[str, str] = {
@@ -83,6 +89,14 @@ class VideoCodecFamily(str, Enum):
     OTHER = "other"
 
 
+class StaticHdrMetadataMode(str, Enum):
+    NONE = "none"
+    X265_PARAMS = "x265_params"
+    FRAME_SIDE_DATA = "frame_side_data"
+    VAAPI_SEI = "vaapi_sei"
+    BITSTREAM_PATCH = "bitstream_patch"
+
+
 @dataclass(frozen=True)
 class VideoCodecSpec:
     codec_id: str
@@ -93,6 +107,7 @@ class VideoCodecSpec:
     supports_dynamic_hdr: bool = False
     is_h264: bool = False
     supports_force_8bit: bool = False
+    supports_10bit: bool = False
 
     @property
     def is_hardware(self) -> bool:
@@ -117,6 +132,7 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         presets=tuple(X265_PRESETS),
         encoder_badge="x265",
         supports_dynamic_hdr=True,
+        supports_10bit=True,
     ),
     "libx264": VideoCodecSpec(
         codec_id="libx264",
@@ -126,6 +142,7 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         encoder_badge="x264",
         is_h264=True,
         supports_force_8bit=True,
+        supports_10bit=True,
     ),
     "libsvtav1": VideoCodecSpec(
         codec_id="libsvtav1",
@@ -133,14 +150,16 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         family=VideoCodecFamily.SOFTWARE,
         presets=tuple(SVTAV1_PRESETS),
         encoder_badge="SVT-AV1",
+        supports_10bit=True,
     ),
     "hevc_nvenc": VideoCodecSpec(
         codec_id="hevc_nvenc",
         label="NVENC — HEVC (NVIDIA)",
         family=VideoCodecFamily.NVENC,
-        presets=tuple(NVENC_PRESETS),
+        presets=tuple(HEVC_NVENC_PRESETS),
         encoder_badge="NVENC",
         supports_dynamic_hdr=True,
+        supports_10bit=True,
     ),
     "hevc_amf": VideoCodecSpec(
         codec_id="hevc_amf",
@@ -149,6 +168,7 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         presets=tuple(AMF_PRESETS),
         encoder_badge="AMF",
         supports_dynamic_hdr=True,
+        supports_10bit=True,
     ),
     "hevc_vaapi": VideoCodecSpec(
         codec_id="hevc_vaapi",
@@ -157,6 +177,7 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         presets=tuple(VAAPI_PRESETS),
         encoder_badge="VAAPI",
         supports_dynamic_hdr=True,
+        supports_10bit=True,
     ),
     "hevc_qsv": VideoCodecSpec(
         codec_id="hevc_qsv",
@@ -165,6 +186,7 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         presets=tuple(QSV_PRESETS),
         encoder_badge="QSV",
         supports_dynamic_hdr=True,
+        supports_10bit=True,
     ),
     "h264_nvenc": VideoCodecSpec(
         codec_id="h264_nvenc",
@@ -208,6 +230,7 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         family=VideoCodecFamily.NVENC,
         presets=tuple(NVENC_PRESETS),
         encoder_badge="NVENC",
+        supports_10bit=True,
     ),
     "av1_amf": VideoCodecSpec(
         codec_id="av1_amf",
@@ -215,6 +238,7 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         family=VideoCodecFamily.AMF,
         presets=tuple(AMF_PRESETS),
         encoder_badge="AMF",
+        supports_10bit=True,
     ),
     "av1_vaapi": VideoCodecSpec(
         codec_id="av1_vaapi",
@@ -222,6 +246,7 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         family=VideoCodecFamily.VAAPI,
         presets=tuple(VAAPI_PRESETS),
         encoder_badge="VAAPI",
+        supports_10bit=True,
     ),
     "av1_qsv": VideoCodecSpec(
         codec_id="av1_qsv",
@@ -229,6 +254,7 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         family=VideoCodecFamily.QSV,
         presets=tuple(QSV_PRESETS),
         encoder_badge="QSV",
+        supports_10bit=True,
     ),
 }
 
@@ -254,6 +280,19 @@ AUDIO_CODEC_SPECS: dict[str, AudioCodecSpec] = {
         supports_bitrate=False,
     ),
 }
+
+STATIC_HDR_METADATA_MODE_BY_CODEC: dict[str, StaticHdrMetadataMode] = {
+    "libx265": StaticHdrMetadataMode.X265_PARAMS,
+    "hevc_vaapi": StaticHdrMetadataMode.VAAPI_SEI,
+    "hevc_amf": StaticHdrMetadataMode.FRAME_SIDE_DATA,
+    "hevc_qsv": StaticHdrMetadataMode.FRAME_SIDE_DATA,
+    "hevc_nvenc": StaticHdrMetadataMode.BITSTREAM_PATCH,
+}
+
+MANUAL_STATIC_HDR_METADATA_CODECS: frozenset[str] = frozenset({
+    "libx265",
+    "hevc_nvenc",
+})
 
 
 def presets_for_codec(codec: str) -> list[str]:
@@ -310,8 +349,28 @@ def supports_force_8bit(codec: str) -> bool:
     return bool(spec is not None and spec.supports_force_8bit)
 
 
+def supports_10bit(codec: str) -> bool:
+    spec = video_codec_spec(codec)
+    return bool(spec is not None and spec.supports_10bit)
+
+
+def static_hdr_metadata_mode(codec: str) -> StaticHdrMetadataMode:
+    normalized = str(codec or "").strip().lower()
+    return STATIC_HDR_METADATA_MODE_BY_CODEC.get(normalized, StaticHdrMetadataMode.NONE)
+
+
+def needs_static_hdr_bitstream_patch_codec(codec: str) -> bool:
+    return static_hdr_metadata_mode(codec) is StaticHdrMetadataMode.BITSTREAM_PATCH
+
+
+def supports_manual_static_hdr_metadata(codec: str) -> bool:
+    normalized = str(codec or "").strip().lower()
+    return normalized in MANUAL_STATIC_HDR_METADATA_CODECS
+
+
 __all__ = [
     "VideoCodecFamily",
+    "StaticHdrMetadataMode",
     "VideoCodecSpec",
     "AudioCodecSpec",
     "SOFTWARE_VIDEO_CODECS",
@@ -321,6 +380,7 @@ __all__ = [
     "X264_PRESETS",
     "SVTAV1_PRESETS",
     "NVENC_PRESETS",
+    "HEVC_NVENC_PRESETS",
     "VAAPI_PRESETS",
     "QSV_PRESETS",
     "AMF_PRESETS",
@@ -330,12 +390,15 @@ __all__ = [
     "QSV_VIDEO_CODECS",
     "VAAPI_VIDEO_CODECS",
     "H264_VIDEO_CODECS",
+    "CQ_CAPABLE_VIDEO_CODECS",
     "DYNAMIC_HDR_VIDEO_CODECS",
     "VIDEO_ENCODER_BADGES",
     "VIDEO_HDR_BADGE_ORDER",
     "VIDEO_CODEC_SPECS",
     "VIDEO_CODEC_FAMILY_MAP",
     "AUDIO_CODEC_SPECS",
+    "STATIC_HDR_METADATA_MODE_BY_CODEC",
+    "MANUAL_STATIC_HDR_METADATA_CODECS",
     "presets_for_codec",
     "is_h264_video_codec",
     "supports_dynamic_hdr",
@@ -345,4 +408,8 @@ __all__ = [
     "video_codec_family",
     "is_hardware_video_codec",
     "supports_force_8bit",
+    "supports_10bit",
+    "static_hdr_metadata_mode",
+    "needs_static_hdr_bitstream_patch_codec",
+    "supports_manual_static_hdr_metadata",
 ]

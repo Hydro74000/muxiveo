@@ -43,30 +43,39 @@ class _FakeTimer:
 
 
 def test_select_multi_encode_label_prefers_longest_remaining_and_reswitches() -> None:
-    now = 100.0
-    states = {
-        "ffmpeg-video-1": {
-            "started_at": 0.0,
-            "duration_s": 600.0,
-            "elapsed_video": 300.0,
-            "done": False,
-            "last_update": 90.0,
-        },
-        "ffmpeg-video-2": {
-            "started_at": 0.0,
-            "duration_s": 600.0,
-            "elapsed_video": 100.0,
-            "done": False,
-            "last_update": 95.0,
-        },
+    # Stream 1 : 300s média en 100s wall (3.0x), reste 300s média → 100s wall.
+    state_1 = {
+        "started_at": 0.0,
+        "duration_s": 600.0,
+        "done": False,
+        "last_update": 90.0,
+    }
+    # Stream 2 : 100s média en 100s wall (1.0x), reste 500s média → 500s wall.
+    state_2 = {
+        "started_at": 0.0,
+        "duration_s": 600.0,
+        "done": False,
+        "last_update": 95.0,
     }
 
-    assert _multi_encode_remaining_seconds(states["ffmpeg-video-1"], now) == 100.0
-    assert _multi_encode_remaining_seconds(states["ffmpeg-video-2"], now) == 500.0
-    assert _select_multi_encode_label(states, "ffmpeg-video-1", now) == "ffmpeg-video-2"
+    # Deux échantillons par tracker pour amorcer l'EWMA (delta requis >= 0.5s).
+    state_1["elapsed_video"] = 30.0
+    _multi_encode_remaining_seconds(state_1, 10.0)
+    state_1["elapsed_video"] = 300.0
+    state_2["elapsed_video"] = 10.0
+    _multi_encode_remaining_seconds(state_2, 10.0)
+    state_2["elapsed_video"] = 100.0
 
-    states["ffmpeg-video-2"]["done"] = True
-    assert _select_multi_encode_label(states, "ffmpeg-video-2", now) == "ffmpeg-video-1"
+    eta_1 = _multi_encode_remaining_seconds(state_1, 100.0)
+    eta_2 = _multi_encode_remaining_seconds(state_2, 100.0)
+    assert eta_1 is not None and abs(eta_1 - 100.0) < 1e-6
+    assert eta_2 is not None and abs(eta_2 - 500.0) < 1e-6
+
+    states = {"ffmpeg-video-1": state_1, "ffmpeg-video-2": state_2}
+    assert _select_multi_encode_label(states, "ffmpeg-video-1", 100.0) == "ffmpeg-video-2"
+
+    state_2["done"] = True
+    assert _select_multi_encode_label(states, "ffmpeg-video-2", 100.0) == "ffmpeg-video-1"
 
 
 def test_handle_encode_internal_progress_updates_longest_remaining_bar_and_legend() -> None:
@@ -85,10 +94,12 @@ def test_handle_encode_internal_progress_updates_longest_remaining_bar_and_legen
     dummy.log_requested = SimpleNamespace(emit=MagicMock())
     dummy._stop_prep_progress = MagicMock()
 
+    dummy._op_stage_label = ""
     dummy._ensure_multi_encode_state = MethodType(MainWindow._ensure_multi_encode_state, dummy)
     dummy._multi_encode_progress_parts = MethodType(MainWindow._multi_encode_progress_parts, dummy)
     dummy._reevaluate_multi_encode_progress = MethodType(MainWindow._reevaluate_multi_encode_progress, dummy)
     dummy._handle_encode_internal_progress = MethodType(MainWindow._handle_encode_internal_progress, dummy)
+    dummy._format_progress_label = MethodType(MainWindow._format_progress_label, dummy)
 
     line_track_1 = _ENCODE_INTERNAL_PROGRESS_PREFIX + json.dumps(
         {"kind": "encode_ffmpeg", "label": "ffmpeg-video-1", "event": "line", "line": "out_time=00:05:00.000000"},

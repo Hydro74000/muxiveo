@@ -512,14 +512,17 @@ class _ConfigSection(QWidget):
 # =============================================================================
 
 _STEP_LABELS: dict[WorkflowStep, str] = {
-    WorkflowStep.VALIDATION:       "Validation",
-    WorkflowStep.FRAME_COUNT:      "Frame count",
-    WorkflowStep.EXTRACT_PARALLEL: "Extractions",
-    WorkflowStep.INJECT_DOVI:      "Injection DoVi",
-    WorkflowStep.INJECT_HDR10PLUS: "Injection HDR10+",
-    WorkflowStep.VERIFY:           "Vérification",
-    WorkflowStep.REMUX:            "Remuxage",
-    WorkflowStep.CLEANUP:          "Nettoyage",
+    WorkflowStep.VALIDATION:        "Validation",
+    WorkflowStep.DETECT_DOVI:       "Détection profil DV",
+    WorkflowStep.FRAME_COUNT:       "Frame count",
+    WorkflowStep.EXTRACT_PARALLEL:  "Extractions",
+    WorkflowStep.CONVERT_DOVI:      "Conversion P7/P5 → P8.1",
+    WorkflowStep.INJECT_DOVI:       "Injection DoVi",
+    WorkflowStep.INJECT_HDR10PLUS:  "Injection HDR10+",
+    WorkflowStep.INJECT_STATIC_HDR: "Injection HDR10 statique",
+    WorkflowStep.VERIFY:            "Vérification",
+    WorkflowStep.REMUX:             "Remuxage",
+    WorkflowStep.CLEANUP:           "Nettoyage",
 }
 
 _STEP_ORDER = list(WorkflowStep)
@@ -812,6 +815,8 @@ class MergeDoviPanel(QWidget):
     #   state ∈ {"started", "step", "finished", "failed", "cancelled"}
     #   label = libellé court à afficher (étape en cours, message d'état…)
     op_state_changed = Signal(str, str)
+    # Pourcentage 0..100 pour la barre globale (revient à 0 à chaque step).
+    op_progress_pct = Signal(int)
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -941,6 +946,7 @@ class MergeDoviPanel(QWidget):
         wf = self._workflow
         wf.step_started.connect(self._on_step_started,   Qt.ConnectionType.QueuedConnection)
         wf.step_progress.connect(self._on_step_progress, Qt.ConnectionType.QueuedConnection)
+        wf.step_progress_pct.connect(self._on_step_progress_pct, Qt.ConnectionType.QueuedConnection)
         wf.step_finished.connect(self._on_step_finished, Qt.ConnectionType.QueuedConnection)
         wf.workflow_finished.connect(self._on_workflow_finished, Qt.ConnectionType.QueuedConnection)
         wf.workflow_failed.connect(self._on_workflow_failed,     Qt.ConnectionType.QueuedConnection)
@@ -1004,6 +1010,12 @@ class MergeDoviPanel(QWidget):
         step_label = translate_text(_STEP_LABELS[step])
         self.log_message.emit("INFO", translate_text("[{step}] Démarrage…", step=step_label))
         self.op_state_changed.emit("step", step_label)
+
+    def _on_step_progress_pct(self, _step: WorkflowStep, pct: int) -> None:
+        # Lignes XX% des outils (dovi_tool / hdr10plus_tool) → barre globale.
+        # Seules les étapes dovi_tool/hdr10plus_tool atteignent ce slot ; les
+        # autres restent sur la prep jaune indéterminée.
+        self.op_progress_pct.emit(pct)
 
     def _on_step_progress(self, step: WorkflowStep, message: str) -> None:
         step_label = translate_text(_STEP_LABELS[step])

@@ -46,6 +46,7 @@ from core.workflows.encode.models import (
     VideoEncodeSettings,
     presets_for_codec,
 )
+from core.workflows.encode.catalog import HEVC_NVENC_PRESETS
 
 
 # ===========================================================================
@@ -55,20 +56,23 @@ from core.workflows.encode.models import (
 class TestQualityMode:
     def test_values(self):
         assert QualityMode.CRF.value == "crf"
+        assert QualityMode.CQ.value == "cq"
         assert QualityMode.BITRATE.value == "bitrate"
         assert QualityMode.SIZE.value == "size"
 
     def test_labels(self):
         assert "CRF" in QualityMode.CRF.label()
+        assert "CQ" in QualityMode.CQ.label()
         assert "kbps" in QualityMode.BITRATE.label()
         assert "Mo" in QualityMode.SIZE.label()
 
     def test_str_enum_comparison(self):
         assert QualityMode.CRF == "crf"
         assert QualityMode("bitrate") is QualityMode.BITRATE
+        assert QualityMode("cq") is QualityMode.CQ
 
     def test_all_values_covered(self):
-        assert len(list(QualityMode)) == 3
+        assert len(list(QualityMode)) == 4
 
 
 # ===========================================================================
@@ -135,7 +139,8 @@ class TestPresetsForCodec:
         assert result == SVTAV1_PRESETS
 
     def test_nvenc_hevc_returns_nvenc_presets(self):
-        assert presets_for_codec("hevc_nvenc") == NVENC_PRESETS
+        assert presets_for_codec("hevc_nvenc") == HEVC_NVENC_PRESETS
+        assert "safe" not in presets_for_codec("hevc_nvenc")
 
     def test_nvenc_h264_returns_nvenc_presets(self):
         assert presets_for_codec("h264_nvenc") == NVENC_PRESETS

@@ -14,6 +14,7 @@ class _FakeWorkflow:
         self.kwargs = kwargs
         self.step_started = _DummySignal()
         self.step_progress = _DummySignal()
+        self.step_progress_pct = _DummySignal()
         self.step_finished = _DummySignal()
         self.workflow_finished = _DummySignal()
         self.workflow_failed = _DummySignal()

@@ -194,27 +194,77 @@ class DoviProfileDetector:
 
     def detect_from_dovi_tool(self, source: Path) -> DoviDetectionResult:
         """
-        Lance ``dovi_tool info -i <source>`` et parse la sortie.
-
-        Pour les conteneurs MKV, dovi_tool sait lire directement (depuis
-        v2.0). Pour MP4 et autres, l'appelant doit fournir un HEVC annexB
-        pré-extrait.
+        Lance ``dovi_tool info -i <RPU>`` après extraction du RPU et parse
+        la sortie. ``dovi_tool info`` n'accepte qu'un fichier RPU binaire :
+        pour un MKV/MP4/HEVC, on extrait d'abord le RPU via
+        ``dovi_tool extract-rpu`` (qui sait lire MKV directement et HEVC
+        annexB ; pour MP4 on passe par un pipe ffmpeg + bsf hevc_mp4toannexb).
         """
+        import tempfile
+
+        ext = source.suffix.lower()
+        rpu_dir = Path(tempfile.mkdtemp(prefix="dovi_detect_"))
+        rpu_bin = rpu_dir / "rpu.bin"
         try:
-            result = subprocess.run(
-                [self._dovi_tool, "info", "-i", str(source)],
-                capture_output=True,
-                check=False,
-                **subprocess_text_kwargs(),
-            )
+            if ext in {".mkv", ".hevc", ".h265", ".265", ".x265"}:
+                extract = subprocess.run(
+                    [self._dovi_tool, "extract-rpu", "-i", str(source), "-o", str(rpu_bin)],
+                    capture_output=True, check=False, **subprocess_text_kwargs(),
+                )
+                if extract.returncode != 0 or not rpu_bin.exists():
+                    return DoviDetectionResult(
+                        sub_profile=DoviSubProfile.UNKNOWN,
+                        profile=None, level=None, bl_signal_compat_id=None,
+                        raw_source="none",
+                    )
+            else:
+                # MP4/MOV/TS : pipe ffmpeg → dovi_tool extract-rpu via stdin.
+                ff = subprocess.Popen(
+                    ["ffmpeg", "-nostdin", "-loglevel", "error", "-i", str(source),
+                     "-map", "0:v:0", "-c", "copy", "-bsf:v", "hevc_mp4toannexb",
+                     "-f", "hevc", "-"],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                )
+                dt = subprocess.run(
+                    [self._dovi_tool, "extract-rpu", "-", "-o", str(rpu_bin)],
+                    stdin=ff.stdout, capture_output=True, check=False,
+                    **subprocess_text_kwargs(),
+                )
+                if ff.stdout is not None:
+                    ff.stdout.close()
+                ff.wait()
+                if dt.returncode != 0 or not rpu_bin.exists():
+                    return DoviDetectionResult(
+                        sub_profile=DoviSubProfile.UNKNOWN,
+                        profile=None, level=None, bl_signal_compat_id=None,
+                        raw_source="none",
+                    )
+
+            try:
+                result = subprocess.run(
+                    [self._dovi_tool, "info", "-i", str(rpu_bin), "--summary"],
+                    capture_output=True, check=False, **subprocess_text_kwargs(),
+                )
+            except (FileNotFoundError, OSError):
+                return DoviDetectionResult(
+                    sub_profile=DoviSubProfile.UNKNOWN,
+                    profile=None, level=None, bl_signal_compat_id=None,
+                    raw_source="none",
+                )
+            text = (result.stdout or "") + (result.stderr or "")
+            return self.parse_dovi_tool_output(text)
         except (FileNotFoundError, OSError):
             return DoviDetectionResult(
                 sub_profile=DoviSubProfile.UNKNOWN,
                 profile=None, level=None, bl_signal_compat_id=None,
                 raw_source="none",
             )
-        text = (result.stdout or "") + (result.stderr or "")
-        return self.parse_dovi_tool_output(text)
+        finally:
+            try:
+                rpu_bin.unlink(missing_ok=True)
+                rpu_dir.rmdir()
+            except OSError:
+                pass
 
     def parse_dovi_tool_output(self, text: str) -> DoviDetectionResult:
         """Parse une sortie texte ``dovi_tool info`` (testable sans subprocess)."""
@@ -298,7 +348,8 @@ class DoviProfileDetector:
             # remux UHD Blu-ray standards, P7.6 + EL est en pratique
             # quasi-toujours FEL. On classe FEL par défaut faute de mieux —
             # le frame count guard ratrappera un éventuel désalignement.
-            return DoviSubProfile.P7_FEL if has_enhancement_layer else DoviSubProfile.P7_FEL
+            _ = has_enhancement_layer
+            return DoviSubProfile.P7_FEL
         if profile == 8:
             if compat_id == 1:
                 return DoviSubProfile.P8_1

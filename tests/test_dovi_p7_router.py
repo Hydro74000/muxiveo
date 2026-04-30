@@ -51,7 +51,7 @@ class TestDoviP7RouterAnalyze:
     def test_p7_fel_triggers_conversion_with_mode_2(self, tmp_path):
         router = DoviP7Router()
         decision = router.analyze(
-            source=tmp_path / "src.mkv",
+            source=tmp_path / "src.hevc",
             mi_video=_mi_p7_fel(),
             fallback_to_dovi_tool=False,
         )
@@ -63,7 +63,7 @@ class TestDoviP7RouterAnalyze:
     def test_p8_1_skips_conversion(self, tmp_path):
         router = DoviP7Router()
         decision = router.analyze(
-            source=tmp_path / "src.mkv",
+            source=tmp_path / "src.hevc",
             mi_video=_mi_p8_1(),
             fallback_to_dovi_tool=False,
         )
@@ -74,7 +74,7 @@ class TestDoviP7RouterAnalyze:
     def test_p5_triggers_conversion_with_mode_3(self, tmp_path):
         router = DoviP7Router()
         decision = router.analyze(
-            source=tmp_path / "src.mkv",
+            source=tmp_path / "src.hevc",
             mi_video=_mi_p5(),
             fallback_to_dovi_tool=False,
         )
@@ -85,7 +85,7 @@ class TestDoviP7RouterAnalyze:
     def test_hdr10_only_skips_conversion(self, tmp_path):
         router = DoviP7Router()
         decision = router.analyze(
-            source=tmp_path / "src.mkv",
+            source=tmp_path / "src.hevc",
             mi_video=_mi_hdr10_only(),
             fallback_to_dovi_tool=False,
         )
@@ -95,7 +95,7 @@ class TestDoviP7RouterAnalyze:
     def test_no_mediainfo_unknown_no_fallback(self, tmp_path):
         router = DoviP7Router()
         decision = router.analyze(
-            source=tmp_path / "src.mkv",
+            source=tmp_path / "src.hevc",
             mi_video=None,
             fallback_to_dovi_tool=False,
         )
@@ -122,7 +122,7 @@ class TestDoviP7RouterExecuteConversion:
             return ""
 
         out_path = router.execute_conversion(
-            source=tmp_path / "src.mkv",
+            source=tmp_path / "src.hevc",
             output_dir=tmp_path,
             run_cmd=_fake_run,
             dovi_tool_bin="/usr/bin/dovi_tool",
@@ -133,7 +133,7 @@ class TestDoviP7RouterExecuteConversion:
         assert len(captured) == 1
         cmd = captured[0]
         assert cmd[:5] == ["/usr/bin/dovi_tool", "-m", "2", "convert", "--discard"]
-        assert "-i" in cmd and str(tmp_path / "src.mkv") in cmd
+        assert "-i" in cmd and str(tmp_path / "src.hevc") in cmd
         assert "-o" in cmd and str(out_path) in cmd
 
     def test_p7_mel_also_uses_discard(self, tmp_path):
@@ -147,7 +147,7 @@ class TestDoviP7RouterExecuteConversion:
         captured: list[list[str]] = []
 
         router.execute_conversion(
-            source=tmp_path / "src.mkv",
+            source=tmp_path / "src.hevc",
             output_dir=tmp_path,
             run_cmd=lambda cmd: captured.append(list(cmd)),
             dovi_tool_bin="dovi_tool",
@@ -167,7 +167,7 @@ class TestDoviP7RouterExecuteConversion:
         )
         captured: list[list[str]] = []
         router.execute_conversion(
-            source=tmp_path / "src.mkv",
+            source=tmp_path / "src.hevc",
             output_dir=tmp_path,
             run_cmd=lambda cmd: captured.append(list(cmd)),
             dovi_tool_bin="dovi_tool",
@@ -187,7 +187,7 @@ class TestDoviP7RouterExecuteConversion:
         )
         with pytest.raises(ValueError, match="conversion_needed=False"):
             router.execute_conversion(
-                source=tmp_path / "src.mkv",
+                source=tmp_path / "src.hevc",
                 output_dir=tmp_path,
                 run_cmd=lambda cmd: None,
                 dovi_tool_bin="dovi_tool",
@@ -204,7 +204,7 @@ class TestDoviP7RouterExecuteConversion:
         )
         with pytest.raises(ValueError, match="convert_mode"):
             router.execute_conversion(
-                source=tmp_path / "src.mkv",
+                source=tmp_path / "src.hevc",
                 output_dir=tmp_path,
                 run_cmd=lambda cmd: None,
                 dovi_tool_bin="dovi_tool",

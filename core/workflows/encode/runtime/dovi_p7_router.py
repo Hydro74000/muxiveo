@@ -136,6 +136,11 @@ class DoviP7Router:
         produit. ``run_cmd`` est l'helper d'exécution du pipeline (qui
         gère la cancellation, le logging et les signaux Qt).
 
+        ``source`` doit être un HEVC annexB (``.hevc``/``.h265``/``.265``).
+        ``dovi_tool convert`` ne lit pas les conteneurs MKV/MP4 :
+        l'appelant est responsable de l'extraction annexB préalable
+        (voir ``metadata_inject._ensure_hevc_annexb``).
+
         Le HEVC produit est nommé ``source_p8.hevc`` dans ``output_dir``.
         """
         if not decision.conversion_needed:
@@ -144,6 +149,11 @@ class DoviP7Router:
             )
         if decision.convert_mode is None:
             raise ValueError("convert_mode manquant dans la décision.")
+        if source.suffix.lower() not in {".hevc", ".h265", ".265", ".x265"}:
+            raise ValueError(
+                "execute_conversion() exige un HEVC annexB en entrée "
+                f"(reçu : {source.suffix})."
+            )
 
         out_path = output_dir / "source_p8.hevc"
         cmd = [

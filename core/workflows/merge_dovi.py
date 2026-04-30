@@ -27,9 +27,11 @@ Conventions :
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -38,9 +40,23 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QObject, Signal
+from core.dovi_profile_detector import DoviProfileDetector, DoviSubProfile
 from core.subprocess_utils import subprocess_text_kwargs
 from core.subtitle_codec import plan_subtitle_codec
 from core.workdir import prepare_process_work_dir
+from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router, P7RoutingDecision
+from core.workflows.encode.runtime.frame_count_guard import (
+    FrameCountAuditError,
+    FrameCountGuard,
+)
+from core.workflows.hevc_static_hdr_metadata import inject_static_hdr_sei_file
+
+# Outils dont la barre de progression XX% n'est émise qu'en TTY.
+_PTY_PROGRESS_TOOLS: frozenset[str] = frozenset({"dovi_tool", "hdr10plus_tool"})
+# Pourcentage à l'intérieur d'une ligne de progression (ex : "Extracting RPU... 73%")
+_PERCENT_RE = re.compile(r"(\d{1,3})\s*%")
+# Séquences ANSI à supprimer pour garder un log lisible.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 _FALLBACK_HEVC_FRAME_RATE = "24000/1001"
 
@@ -77,6 +93,76 @@ def _needs_hevc_extraction(path: Path) -> bool:
     return not _is_raw_hevc(path)
 
 
+# Mapping des primaires colorimétriques mediainfo → coordonnées CIE 1931 en
+# unités 0.00002 (échelle utilisée par master_display côté x265/HEVC SEI 137).
+# Format SEI : G(x,y)B(x,y)R(x,y)WP(x,y) avec L(max_lum, min_lum) en 0.0001 cd/m².
+_PRIMARIES_DISPLAYS: dict[str, tuple[tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int]]] = {
+    # BT.2020 / Rec.2020 — primaires standards UHD HDR
+    "bt.2020": ((8500, 39850), (6550, 2300), (35400, 14600), (15635, 16450)),
+    "rec.2020": ((8500, 39850), (6550, 2300), (35400, 14600), (15635, 16450)),
+    # Display P3 — souvent utilisé sur masters Apple/Disney
+    "display p3": ((13250, 34500), (7500, 3000), (34000, 16000), (15635, 16450)),
+    "p3": ((13250, 34500), (7500, 3000), (34000, 16000), (15635, 16450)),
+}
+
+_MASTERING_LUM_RE = re.compile(
+    r"min:\s*([\d.]+)\s*cd/m\^?2.*?max:\s*([\d.]+)\s*cd/m\^?2",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _format_master_display_from_mediainfo(track: dict) -> str:
+    """Construit le ``master_display`` x265 depuis un track Video mediainfo.
+
+    mediainfo expose ``MasteringDisplay_ColorPrimaries`` (ex "BT.2020") et
+    ``MasteringDisplay_Luminance`` (ex "min: 0.0050 cd/m^2, max: 1000 cd/m^2").
+    Renvoie "" si les deux ne sont pas extractibles."""
+    primaries_raw = str(track.get("MasteringDisplay_ColorPrimaries") or "").strip().lower()
+    lum_raw = str(track.get("MasteringDisplay_Luminance") or "").strip()
+    if not primaries_raw or not lum_raw:
+        return ""
+
+    coords = None
+    for key, value in _PRIMARIES_DISPLAYS.items():
+        if key in primaries_raw:
+            coords = value
+            break
+    if coords is None:
+        return ""
+
+    m = _MASTERING_LUM_RE.search(lum_raw)
+    if not m:
+        return ""
+    try:
+        lmin = int(round(float(m.group(1)) * 10000))
+        lmax = int(round(float(m.group(2)) * 10000))
+    except ValueError:
+        return ""
+
+    g, b, r, wp = coords
+    return (
+        f"G({g[0]},{g[1]})"
+        f"B({b[0]},{b[1]})"
+        f"R({r[0]},{r[1]})"
+        f"WP({wp[0]},{wp[1]})"
+        f"L({lmax},{lmin})"
+    )
+
+
+def _format_max_cll_from_mediainfo(track: dict) -> str:
+    """Construit ``"MaxCLL,MaxFALL"`` depuis ``MaxCLL`` / ``MaxFALL`` mediainfo
+    (formats : "1000 cd/m2" ou "1000"). Renvoie "" si manquant."""
+    raw_cll = str(track.get("MaxCLL") or "").strip()
+    raw_fall = str(track.get("MaxFALL") or "").strip()
+    if not raw_cll or not raw_fall:
+        return ""
+    m_cll = re.search(r"(\d+)", raw_cll)
+    m_fall = re.search(r"(\d+)", raw_fall)
+    if not m_cll or not m_fall:
+        return ""
+    return f"{m_cll.group(1)},{m_fall.group(1)}"
+
+
 # =============================================================================
 # Types de données
 # =============================================================================
@@ -101,11 +187,14 @@ class DoviProfile(Enum):
 class WorkflowStep(Enum):
     """Étapes du workflow dans l'ordre d'exécution."""
     VALIDATION        = auto()   # Vérifications préliminaires
+    DETECT_DOVI       = auto()   # Détection du sous-profil DoVi de Film 2 (P5/P7/P8.x)
     FRAME_COUNT       = auto()   # Comparaison des frame counts
     EXTRACT_PARALLEL  = auto()   # Extractions parallèles (HEVC + RPU + HDR10+)
+    CONVERT_DOVI      = auto()   # Conversion P7/P5 → P8.1 si nécessaire
     INJECT_DOVI       = auto()   # Injection RPU DoVi
     INJECT_HDR10PLUS  = auto()   # Injection HDR10+
-    VERIFY            = auto()   # Vérification intégrité RPU frames
+    INJECT_STATIC_HDR = auto()   # Injection SEI HDR10 statiques (master_display / max_cll)
+    VERIFY            = auto()   # Vérification intégrité RPU frames + alignement frame count
     REMUX             = auto()   # Remuxage final MKV
     CLEANUP           = auto()   # Nettoyage des fichiers intermédiaires
 
@@ -156,6 +245,26 @@ class HDRFlags:
 
 
 @dataclass
+class StaticHdrMetadata:
+    """SEI HDR10 statiques (Mastering Display + Content Light Level).
+
+    Lus via mediainfo. ``master_display`` est au format x265
+    ``G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)`` ; ``max_cll`` au format
+    ``"MaxCLL,MaxFALL"``. Une chaîne vide signifie « non disponible ».
+    """
+    master_display: str = ""
+    max_cll: str = ""
+
+    @property
+    def has_any(self) -> bool:
+        return bool(self.master_display or self.max_cll)
+
+    @property
+    def is_complete(self) -> bool:
+        return bool(self.master_display and self.max_cll)
+
+
+@dataclass
 class StepResult:
     """Résultat d'une étape du workflow."""
     step:     WorkflowStep
@@ -176,10 +285,12 @@ class _WorkflowPaths:
     film1:            Path   # Chemin original Film 1 (MKV ou HEVC brut)
     film1_hevc:       Path   # HEVC extrait de Film 1 (uniquement si Film 1 est MKV)
     film2_hevc:       Path   # HEVC temporaire Film 2 (cas 2 : double extraction)
+    film2_hevc_p8:    Path   # HEVC Film 2 converti P7/P5 → P8.1 (sert de source RPU)
     film2_rpu:        Path   # RPU DoVi extrait de Film 2
     film2_hdr10plus:  Path   # Métadonnées HDR10+ extraites de Film 2
     film1_with_dovi:  Path   # Film 1 + RPU DoVi injecté
     film1_final:      Path   # Film 1 + RPU DoVi + HDR10+ (résultat final HEVC)
+    film1_with_static_hdr: Path  # Film 1 final + SEI HDR10 statiques injectés
     film1_wrapped_video: Path  # Encapsulation MKV de la vidéo injectée (PTS reconstruit)
     output_mkv:       Path   # Fichier de sortie final
 
@@ -196,10 +307,12 @@ class _WorkflowPaths:
             film1           = film1,
             film1_hevc      = work_dir / "film1.hevc",
             film2_hevc      = work_dir / "film2.hevc",
+            film2_hevc_p8   = work_dir / "film2_p8.hevc",
             film2_rpu       = work_dir / "film2_rpu.bin",
             film2_hdr10plus = work_dir / "film2_hdr10plus.json",
             film1_with_dovi = work_dir / "film1_with_dovi.hevc",
             film1_final     = work_dir / "film1_final.hevc",
+            film1_with_static_hdr = work_dir / "film1_with_static_hdr.hevc",
             film1_wrapped_video = work_dir / "film1_wrapped_video.mkv",
             output_mkv      = output_dir / f"{basename}.mkv",
         )
@@ -213,8 +326,12 @@ class _WorkflowPaths:
         """
         return self.film1 if _is_raw_hevc(self.film1) else self.film1_hevc
 
-    def injection_chain_final(self, flags: HDRFlags) -> Path:
+    def injection_chain_final(
+        self, flags: HDRFlags, *, static_hdr_applied: bool = False,
+    ) -> Path:
         """Fichier HEVC final à muxer selon les opérations effectuées."""
+        if static_hdr_applied:
+            return self.film1_with_static_hdr
         if flags.has_dovi and flags.has_hdr10plus:
             return self.film1_final
         if flags.has_dovi:
@@ -260,6 +377,7 @@ class MergeDoviWorkflow(QObject):
     # --- Signaux ---
     step_started    = Signal(object)          # WorkflowStep
     step_progress   = Signal(object, str)     # WorkflowStep, message
+    step_progress_pct = Signal(object, int)   # WorkflowStep, pourcentage 0..100
     step_finished   = Signal(object, object)  # WorkflowStep, StepResult
     workflow_finished = Signal(str)           # chemin du fichier de sortie
     workflow_failed   = Signal(object, str)   # WorkflowStep, message d'erreur
@@ -336,37 +454,75 @@ class MergeDoviWorkflow(QObject):
             paths.work_dir.mkdir(parents=True, exist_ok=True)
             paths.output_mkv.parent.mkdir(parents=True, exist_ok=True)
 
-            # 1 — Validation
-            flags = self._step_validate(film1, film2)
+            # 1 — Validation (HEVC, transfert PQ, outils, HDR Film 2)
+            flags, static_hdr_film1, static_hdr_film2 = self._step_validate(
+                film1, film2,
+            )
             self._check_cancel()
 
-            # 2 — Frame count (non bloquant si écart ≤ 4)
+            # 2 — Détection sous-profil DV de Film 2 (P5/P7 FEL/MEL/P8.x)
+            routing = self._step_detect_dovi(film2, flags)
+            self._check_cancel()
+
+            # 2-bis — Auto-bump du profil cible : si conversion P7/P5 imposée
+            # et l'utilisateur a choisi P8_0 (untouched), forcer P8_1 — sinon
+            # le RPU réinjecté reste tagué P7, ce qui rend le fichier illisible
+            # côté Plex/TV malgré la conversion en amont.
+            effective_profile = profile
+            if (
+                routing is not None
+                and routing.conversion_needed
+                and profile == DoviProfile.P8_0
+            ):
+                effective_profile = DoviProfile.P8_1
+                self.step_progress.emit(
+                    WorkflowStep.DETECT_DOVI,
+                    f"Profil cible auto-bumpé P8.0 → P8.1 "
+                    f"(source {routing.sub_profile.label} convertie).",
+                )
+
+            # 3 — Frame count (non bloquant si écart ≤ 4)
             self._step_framecount(film1, film2)
             self._check_cancel()
 
-            # 3 — Extractions parallèles
-            self._step_extract(film1, film2, paths, flags)
+            # 4 — Extractions parallèles HEVC (Film 1 et Film 2 si nécessaire)
+            self._step_extract_hevc(film1, film2, paths, flags, routing)
             self._check_cancel()
 
-            # 4 — Injection DoVi
-            if flags.has_dovi:
-                self._step_inject_dovi(paths, flags, profile)
+            # 5 — Conversion P7/P5 → P8.1 si Film 2 le demande, AVANT extract-rpu
+            if routing is not None and routing.conversion_needed:
+                self._step_convert_dovi(film2, paths, routing)
                 self._check_cancel()
 
-            # 5 — Injection HDR10+
+            # 6 — Extraction métadonnées DV/HDR10+ depuis la source appropriée
+            self._step_extract_metadata(film2, paths, flags, routing)
+            self._check_cancel()
+
+            # 7 — Injection DoVi
+            if flags.has_dovi:
+                self._step_inject_dovi(paths, flags, effective_profile)
+                self._check_cancel()
+
+            # 8 — Injection HDR10+
             if flags.has_hdr10plus:
                 self._step_inject_hdr10plus(paths, flags)
                 self._check_cancel()
 
-            # 6 — Vérification (RPU si DoVi + cohérence framecount du flux final injecté)
-            self._step_verify(film1, paths, flags)
+            # 9 — Injection SEI HDR10 statiques si Film 1 ne les a pas
+            static_applied = self._step_inject_static_hdr(
+                paths, flags, static_hdr_film1, static_hdr_film2,
+            )
             self._check_cancel()
 
-            # 7 — Remuxage
-            self._step_remux(film1, paths, flags)
+            # 10 — Vérification frame count strict (FrameCountGuard)
+            self._step_verify(film1, paths, flags, static_hdr_applied=static_applied)
             self._check_cancel()
 
-            # 8 — Nettoyage
+            # 11 — Remuxage
+            self._step_remux(film1, paths, flags, static_hdr_applied=static_applied)
+            self._check_cancel()
+
+            # 12 — Nettoyage
             self._step_cleanup(paths)
 
             self.workflow_finished.emit(str(paths.output_mkv))
@@ -384,7 +540,9 @@ class MergeDoviWorkflow(QObject):
     # Étape 1 — Validation préliminaire
     # ------------------------------------------------------------------
 
-    def _step_validate(self, film1: Path, film2: Path) -> HDRFlags:
+    def _step_validate(
+        self, film1: Path, film2: Path,
+    ) -> tuple[HDRFlags, StaticHdrMetadata, StaticHdrMetadata]:
         step = WorkflowStep.VALIDATION
         t0   = time.monotonic()
         self.step_started.emit(step)
@@ -419,22 +577,100 @@ class MergeDoviWorkflow(QObject):
                 raise WorkflowError(step, f"{label} ne contient pas de flux HEVC ({codec})")
             self.step_progress.emit(step, f"{label} — flux HEVC confirmé.")
 
-        # Détection HDR dans Film 2
+        # Validation transfert PQ sur Film 1 : injecter un RPU DV ou HDR10+ sur
+        # un BL BT.709/SDR produit un fichier visuellement cassé. mediainfo
+        # expose `transfer_characteristics` (PQ = "PQ" ou "SMPTE ST 2084").
+        transfer1 = self._mediainfo(film1, "Video;%transfer_characteristics%").strip().lower()
+        if transfer1 and not any(
+            k in transfer1 for k in ("pq", "2084", "smpte st 2084", "hlg", "arib")
+        ):
+            raise WorkflowError(
+                step,
+                f"Film 1 n'est pas en transfert HDR (PQ/HLG) : '{transfer1}'. "
+                "Injecter un RPU DoVi ou HDR10+ sur un BL SDR produit "
+                "un fichier visuellement cassé.",
+            )
+        if transfer1:
+            self.step_progress.emit(step, f"Film 1 — transfert HDR confirmé ({transfer1}).")
+
+        # Détection HDR dans Film 2 — match strict pour éviter les faux
+        # positifs sur "SMPTE ST 2094-10" (DV legacy) qui ne sont PAS HDR10+.
         hdr_raw = self._mediainfo(film2, "Video;%HDR_Format%").strip()
-        flags   = HDRFlags(
-            has_dovi      = "dolby vision" in hdr_raw.lower(),
-            has_hdr10plus = "smpte st 2094" in hdr_raw.lower(),
+        hdr_lower = hdr_raw.lower()
+        flags = HDRFlags(
+            has_dovi      = "dolby vision" in hdr_lower,
+            has_hdr10plus = "smpte st 2094 app 4" in hdr_lower,
         )
         if not flags.has_dovi and not flags.has_hdr10plus:
             raise WorkflowError(step, "Film 2 ne contient ni Dolby Vision ni HDR10+.")
         self.step_progress.emit(step, f"HDR détecté dans Film 2 : {flags.label}")
 
+        # Lecture des SEI HDR10 statiques (Mastering Display + MaxCLL/MaxFALL)
+        # sur les deux films. Si Film 1 n'en a pas mais Film 2 oui, on
+        # complétera plus tard via inject_static_hdr_sei_file.
+        static_film1 = self._read_static_hdr_metadata(film1)
+        static_film2 = self._read_static_hdr_metadata(film2)
+        if static_film1.is_complete:
+            self.step_progress.emit(step, "Film 1 — SEI HDR10 statiques présents.")
+        elif static_film2.has_any:
+            self.step_progress.emit(
+                step,
+                "Film 1 — SEI HDR10 statiques manquants ; "
+                "fallback vers Film 2 lors de l'injection.",
+            )
+        else:
+            self.step_progress.emit(
+                step,
+                "[WARN] Aucune métadonnée HDR10 statique disponible "
+                "dans Film 1 ni Film 2 — la sortie ne sera pas conforme HDR10.",
+            )
+
         duration = time.monotonic() - t0
         self.step_finished.emit(step, StepResult(step, True, flags.label, duration))
-        return flags
+        return flags, static_film1, static_film2
 
     # ------------------------------------------------------------------
-    # Étape 2 — Comparaison frame counts
+    # Étape 2 — Détection sous-profil DoVi de Film 2
+    # ------------------------------------------------------------------
+
+    def _step_detect_dovi(
+        self, film2: Path, flags: HDRFlags,
+    ) -> P7RoutingDecision | None:
+        """
+        Détecte le sous-profil DV (P5/P7 FEL/MEL/P8.x) de Film 2 et décide
+        si une conversion P7/P5 → P8.1 est nécessaire avant l'extraction RPU.
+
+        Retourne None si Film 2 n'a pas de DoVi (HDR10+ pur).
+        """
+        step = WorkflowStep.DETECT_DOVI
+        t0   = time.monotonic()
+        self.step_started.emit(step)
+
+        if not flags.has_dovi:
+            self.step_progress.emit(step, "Film 2 sans Dolby Vision — étape ignorée.")
+            duration = time.monotonic() - t0
+            self.step_finished.emit(
+                step, StepResult(step, True, "Pas de DV à router", duration),
+            )
+            return None
+
+        detector = DoviProfileDetector(dovi_tool_bin=self._bins["dovi_tool"])
+        router = DoviP7Router(detector=detector)
+        mi_video = self._load_mediainfo_video(film2)
+        decision = router.analyze(
+            source=film2, mi_video=mi_video, fallback_to_dovi_tool=True,
+        )
+        self.step_progress.emit(step, decision.reason)
+
+        duration = time.monotonic() - t0
+        self.step_finished.emit(
+            step,
+            StepResult(step, True, decision.sub_profile.label, duration),
+        )
+        return decision
+
+    # ------------------------------------------------------------------
+    # Étape 3 — Comparaison frame counts
     # ------------------------------------------------------------------
 
     def _step_framecount(self, film1: Path, film2: Path) -> FrameCountResult:
@@ -467,80 +703,172 @@ class MergeDoviWorkflow(QObject):
     # Étape 3 — Extractions parallèles
     # ------------------------------------------------------------------
 
-    def _step_extract(
+    def _step_extract_hevc(
         self,
         film1: Path,
         film2: Path,
         paths: _WorkflowPaths,
         flags: HDRFlags,
+        routing: P7RoutingDecision | None,
     ) -> None:
+        """Extrait les flux HEVC annexB requis avant la conversion / extraction
+        des métadonnées. Film 1 est extrait s'il n'est pas déjà raw HEVC.
+        Film 2 est extrait s'il faut le convertir P7/P5 → P8.1 (dovi_tool
+        convert n'accepte que du HEVC annexB) ou si son conteneur n'est pas
+        géré nativement par dovi_tool/hdr10plus_tool (MP4/MOV/TS/…)."""
         step = WorkflowStep.EXTRACT_PARALLEL
         t0   = time.monotonic()
         self.step_started.emit(step)
 
         film1_needs_extract = _needs_hevc_extraction(film1)
-        film2_needs_extract = _needs_hevc_extraction(film2)
         film2_is_mkv = film2.suffix.lower() == ".mkv"
-        both_needed  = flags.has_dovi and flags.has_hdr10plus
+        film2_is_raw = _is_raw_hevc(film2)
+        needs_conversion = bool(routing and routing.conversion_needed)
+        # Film 2 doit être extrait en annexB si :
+        #   - on doit le convertir (dovi_tool convert exige annexB) ; ou
+        #   - son conteneur n'est ni MKV ni raw HEVC (extract-rpu/hdr10plus
+        #     n'acceptent pas MP4/MOV/TS).
+        film2_needs_extract = (
+            needs_conversion and not film2_is_raw
+        ) or (not film2_is_mkv and not film2_is_raw)
 
         errors: list[str] = []
 
         def _emit(msg: str) -> None:
             self.step_progress.emit(step, msg)
 
-        # dovi_tool et hdr10plus_tool acceptent nativement MKV + HEVC brut.
-        # Pour tout autre conteneur (MP4/MOV/TS/M2TS/VOB/…), il faut d'abord
-        # extraire en HEVC annexB via ffmpeg (avec hevc_mp4toannexb).
-        film2_metadata_input_is_extracted = film2_needs_extract and not film2_is_mkv
+        tasks: dict[str, Callable] = {}
+        if film1_needs_extract:
+            tasks["HEVC Film 1"] = lambda: self._extract_hevc(film1, paths.film1_hevc, _emit)
+        if film2_needs_extract:
+            tasks["HEVC Film 2"] = lambda: self._extract_hevc(film2, paths.film2_hevc, _emit)
 
-        if (both_needed and film2_is_mkv) or film2_metadata_input_is_extracted:
-            # ── Cas 2 : Phase 1 (extractions HEVC) puis Phase 2 (RPU + HDR10+) ──
-            # Déclenché quand :
-            #   - film2 est un MKV avec DoVi+HDR10+ (I/O contention sur même MKV)
-            #   - film2 n'est ni MKV ni HEVC brut → extraction annexB requise
-            phase1: dict[str, Callable] = {}
-            if film1_needs_extract:
-                phase1["HEVC Film 1"] = lambda: self._extract_hevc(film1, paths.film1_hevc, _emit)
-            if film2_needs_extract:
-                phase1["HEVC Film 2"] = lambda: self._extract_hevc(film2, paths.film2_hevc, _emit)
-
-            if phase1:
-                _emit(f"Phase 1 — extraction HEVC ({', '.join(phase1)})…")
-                self._run_pool(phase1, errors)
-                if errors:
-                    raise WorkflowError(step, "Phase 1 échouée :\n" + "\n".join(errors))
-
-            source2 = paths.film2_hevc if film2_needs_extract else film2
-            phase2: dict[str, Callable] = {}
-            if flags.has_dovi:
-                phase2["RPU DoVi"] = lambda: self._extract_rpu(source2, paths.film2_rpu, _emit)
-            if flags.has_hdr10plus:
-                phase2["HDR10+"]   = lambda: self._extract_hdr10plus(source2, paths.film2_hdr10plus, _emit)
-
-            _emit(f"Phase 2 — extraction métadonnées ({', '.join(phase2)})…")
-            self._run_pool(phase2, errors)
-
-        else:
-            # ── Cas 1 : tout en parallèle (film2 = MKV mono-métadonnée ou HEVC brut) ──
-            source2 = film2
-            tasks: dict[str, Callable] = {}
-            if film1_needs_extract:
-                tasks["HEVC Film 1"] = lambda: self._extract_hevc(film1, paths.film1_hevc, _emit)
-            if flags.has_dovi:
-                tasks["RPU DoVi"] = lambda: self._extract_rpu(source2, paths.film2_rpu, _emit)
-            if flags.has_hdr10plus:
-                tasks["HDR10+"]   = lambda: self._extract_hdr10plus(source2, paths.film2_hdr10plus, _emit)
-
-            _emit(f"Extraction parallèle ({', '.join(tasks)})…")
+        if tasks:
+            _emit(f"Extraction HEVC parallèle ({', '.join(tasks)})…")
             self._run_pool(tasks, errors)
-
-        if errors:
-            raise WorkflowError(step, "Extraction échouée :\n" + "\n".join(errors))
+            if errors:
+                raise WorkflowError(step, "Extraction HEVC échouée :\n" + "\n".join(errors))
+        else:
+            _emit("Aucune extraction HEVC requise.")
 
         duration = time.monotonic() - t0
         self.step_finished.emit(
             step,
-            StepResult(step, True, "Extractions terminées", duration),
+            StepResult(step, True, "Extraction HEVC terminée", duration),
+        )
+
+    def _film2_metadata_source(
+        self,
+        film2: Path,
+        paths: _WorkflowPaths,
+        routing: P7RoutingDecision | None,
+    ) -> Path:
+        """Source utilisée pour `extract-rpu` et `hdr10plus_tool extract`.
+
+        Priorité :
+          1. HEVC P8.1 converti (si routing.conversion_needed) ;
+          2. HEVC annexB extrait (si Film 2 n'est ni MKV ni raw HEVC) ;
+          3. Film 2 d'origine (MKV ou raw HEVC).
+        """
+        if routing is not None and routing.conversion_needed and paths.film2_hevc_p8.exists():
+            return paths.film2_hevc_p8
+        if paths.film2_hevc.exists():
+            return paths.film2_hevc
+        return film2
+
+    def _step_extract_metadata(
+        self,
+        film2: Path,
+        paths: _WorkflowPaths,
+        flags: HDRFlags,
+        routing: P7RoutingDecision | None,
+    ) -> None:
+        """Extrait RPU DoVi et JSON HDR10+ depuis la bonne source (P8.1
+        converti si nécessaire). Lancé après l'éventuelle conversion P7/P5."""
+        step = WorkflowStep.EXTRACT_PARALLEL
+        t0   = time.monotonic()
+
+        source2 = self._film2_metadata_source(film2, paths, routing)
+        errors: list[str] = []
+
+        def _emit(msg: str) -> None:
+            self.step_progress.emit(step, msg)
+
+        tasks: dict[str, Callable] = {}
+        if flags.has_dovi:
+            tasks["RPU DoVi"] = lambda: self._extract_rpu(source2, paths.film2_rpu, _emit)
+        if flags.has_hdr10plus:
+            tasks["HDR10+"] = lambda: self._extract_hdr10plus(source2, paths.film2_hdr10plus, _emit)
+
+        if not tasks:
+            return
+
+        _emit(f"Extraction métadonnées depuis {source2.name} ({', '.join(tasks)})…")
+        self._run_pool(tasks, errors)
+        if errors:
+            raise WorkflowError(step, "Extraction métadonnées échouée :\n" + "\n".join(errors))
+
+        duration = time.monotonic() - t0
+        self.step_finished.emit(
+            step,
+            StepResult(step, True, "Métadonnées HDR extraites", duration),
+        )
+
+    # ------------------------------------------------------------------
+    # Étape 5 — Conversion P7/P5 → P8.1 (avant extract-rpu)
+    # ------------------------------------------------------------------
+
+    def _step_convert_dovi(
+        self,
+        film2: Path,
+        paths: _WorkflowPaths,
+        routing: P7RoutingDecision,
+    ) -> None:
+        """Convertit Film 2 P7 (FEL/MEL) ou P5 vers P8.1 mono-layer via
+        ``dovi_tool convert``. Le HEVC P8.1 résultant servira de source pour
+        extract-rpu et hdr10plus_tool extract dans l'étape suivante."""
+        step = WorkflowStep.CONVERT_DOVI
+        t0   = time.monotonic()
+        self.step_started.emit(step)
+
+        # Source pour la conversion : HEVC annexB obligatoire (dovi_tool
+        # convert ne lit pas MKV/MP4). Film 2 brut HEVC ou film2_hevc extrait.
+        source = paths.film2_hevc if paths.film2_hevc.exists() else film2
+        if not _is_raw_hevc(source):
+            raise WorkflowError(
+                step,
+                f"Conversion DV impossible : source non-HEVC annexB ({source.name}). "
+                "Vérifiez l'étape d'extraction HEVC.",
+            )
+
+        self.step_progress.emit(
+            step,
+            f"Conversion {routing.sub_profile.label} → P8.1 "
+            f"(dovi_tool -m {routing.convert_mode} convert)…",
+        )
+
+        cmd = [
+            self._bins["dovi_tool"],
+            "-m", routing.convert_mode or "2",
+            "convert",
+        ]
+        if routing.sub_profile in {DoviSubProfile.P7_FEL, DoviSubProfile.P7_MEL}:
+            cmd.append("--discard")
+        cmd.extend(["-i", str(source), "-o", str(paths.film2_hevc_p8)])
+        self._run_cmd(cmd, step)
+
+        # L'extrait annexB intermédiaire a fini son rôle (consommé par convert).
+        if paths.film2_hevc.exists():
+            paths.film2_hevc.unlink(missing_ok=True)
+
+        duration = time.monotonic() - t0
+        self.step_finished.emit(
+            step,
+            StepResult(
+                step, True,
+                f"Conversion {routing.sub_profile.label} → P8.1 réussie",
+                duration,
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -620,7 +948,111 @@ class MergeDoviWorkflow(QObject):
         )
 
     # ------------------------------------------------------------------
-    # Étape 6 — Vérification intégrité RPU
+    # Étape 6 — Injection SEI HDR10 statiques (master_display + max_cll)
+    # ------------------------------------------------------------------
+
+    def _step_inject_static_hdr(
+        self,
+        paths: _WorkflowPaths,
+        flags: HDRFlags,
+        static_film1: StaticHdrMetadata,
+        static_film2: StaticHdrMetadata,
+    ) -> bool:
+        """Injecte les SEI HDR10 statiques (Mastering Display 137 + CLL 144)
+        dans le flux final si Film 1 ne les a pas. Priorité d'origine :
+        Film 1 (déjà présents → no-op géré par inject_static_hdr_sei_file)
+        sinon Film 2 (fallback). Retourne True si l'injection a produit un
+        nouveau fichier ``film1_with_static_hdr.hevc`` à muxer."""
+        step = WorkflowStep.INJECT_STATIC_HDR
+        t0   = time.monotonic()
+        self.step_started.emit(step)
+
+        # Si Film 1 a déjà ses SEI statiques complets, on ne touche à rien
+        # (dovi_tool inject-rpu et hdr10plus_tool inject les préservent).
+        if static_film1.is_complete:
+            self.step_progress.emit(
+                step, "Film 1 a déjà ses SEI HDR10 statiques — aucune injection.",
+            )
+            duration = time.monotonic() - t0
+            self.step_finished.emit(
+                step, StepResult(step, True, "SEI HDR10 préservés", duration),
+            )
+            return False
+
+        # Source des valeurs : Film 2 si dispo, sinon Film 1 partiel.
+        chosen = static_film2 if static_film2.has_any else static_film1
+        if not chosen.has_any:
+            self.step_progress.emit(
+                step,
+                "[WARN] Aucune métadonnée HDR10 statique disponible — étape ignorée.",
+            )
+            duration = time.monotonic() - t0
+            self.step_finished.emit(
+                step, StepResult(step, True, "Pas de SEI à injecter", duration),
+            )
+            return False
+
+        # Source HEVC à patcher = sortie de la chaîne d'injection RPU/HDR10+.
+        source_hevc = paths.injection_chain_final(flags, static_hdr_applied=False)
+        if not source_hevc.exists():
+            raise WorkflowError(
+                step,
+                f"Source HEVC introuvable pour patch SEI statiques : {source_hevc.name}",
+            )
+
+        self.step_progress.emit(
+            step,
+            f"Injection SEI HDR10 statiques (master_display="
+            f"{'oui' if chosen.master_display else 'non'}, "
+            f"max_cll={'oui' if chosen.max_cll else 'non'}, "
+            f"source : Film {'2' if chosen is static_film2 else '1'})…",
+        )
+
+        try:
+            result = inject_static_hdr_sei_file(
+                source_hevc,
+                paths.film1_with_static_hdr,
+                master_display=chosen.master_display,
+                max_cll=chosen.max_cll,
+            )
+        except ValueError as exc:
+            # Format invalide → on log et on continue sans injection.
+            self.step_progress.emit(
+                step, f"[WARN] Injection SEI ignorée ({exc}).",
+            )
+            duration = time.monotonic() - t0
+            self.step_finished.emit(
+                step, StepResult(step, True, "SEI invalides — ignoré", duration),
+            )
+            return False
+
+        if result.applied:
+            self.step_progress.emit(
+                step,
+                f"SEI HDR10 statiques injectés sur "
+                f"{result.injected_access_units} access unit(s).",
+            )
+        else:
+            # inject_static_hdr_sei_file a fait shutil.copyfile (pas d'AU
+            # ciblé). On nettoie le doublon et on retourne False.
+            paths.film1_with_static_hdr.unlink(missing_ok=True)
+            self.step_progress.emit(
+                step, "SEI HDR10 déjà présents dans le flux — aucune modification.",
+            )
+
+        duration = time.monotonic() - t0
+        self.step_finished.emit(
+            step,
+            StepResult(
+                step, True,
+                f"SEI HDR10 statiques : {'injectés' if result.applied else 'préservés'}",
+                duration,
+            ),
+        )
+        return result.applied
+
+    # ------------------------------------------------------------------
+    # Étape 7 — Vérification alignement frame count (FrameCountGuard)
     # ------------------------------------------------------------------
 
     def _step_verify(
@@ -628,59 +1060,52 @@ class MergeDoviWorkflow(QObject):
         film1: Path,
         paths: _WorkflowPaths,
         flags: HDRFlags,
+        *,
+        static_hdr_applied: bool = False,
     ) -> None:
+        """Audit final via FrameCountGuard : compare frame counts du flux
+        final HEVC, du RPU et du JSON HDR10+ vs Film 1. Politique stricte :
+        encoded == film1 obligatoire ; RPU/HDR10+ tolérance ≤ 4 frames."""
         step = WorkflowStep.VERIFY
         t0   = time.monotonic()
         self.step_started.emit(step)
 
-        final = paths.injection_chain_final(flags)
-        fc1 = self._get_framecount(film1)
-        fc_final = self._get_framecount(final)
+        final = paths.injection_chain_final(flags, static_hdr_applied=static_hdr_applied)
+        if not final.exists():
+            raise WorkflowError(step, f"Flux injecté introuvable : {final.name}")
 
-        if fc1 is not None and fc_final is not None:
-            diff_final = abs(fc_final - fc1)
-            if diff_final > 4:
-                raise WorkflowError(
-                    step,
-                    f"Désalignement critique du flux injecté : {fc_final} frames pour {fc1} frames vidéo.",
-                )
-            if diff_final > 0:
-                self.step_progress.emit(
-                    step,
-                    f"Flux injecté vs Film 1 : écart {diff_final} frames — tolérable.",
-                )
+        guard = FrameCountGuard(
+            mediainfo_bin=self._bins["mediainfo"],
+            ffprobe_bin=self._bins["ffprobe"],
+            dovi_tool_bin=self._bins["dovi_tool"],
+        )
+        audit = guard.audit(
+            source=film1,
+            encoded=final,
+            rpu_bin=paths.film2_rpu if (flags.has_dovi and paths.film2_rpu.exists()) else None,
+            hdr10p_json=paths.film2_hdr10plus if (
+                flags.has_hdr10plus and paths.film2_hdr10plus.exists()
+            ) else None,
+        )
 
-        rpu_frames: int | None = None
-        if flags.has_dovi:
-            self.step_progress.emit(step, f"Vérification RPU frames dans {final.name}…")
-            try:
-                result = subprocess.run(
-                    [self._bins["dovi_tool"], "info", "-i", str(final)],
-                    capture_output=True, check=False, **subprocess_text_kwargs(),
-                )
-                raw = result.stdout + result.stderr
-            except Exception as exc:
-                self.step_progress.emit(step, f"dovi_tool info indisponible : {exc}")
-                raw = ""
-
-            m = re.search(r"rpu frames[^\d]*(\d+)", raw, re.IGNORECASE)
-            if m:
-                rpu_frames = int(m.group(1))
-
-            if rpu_frames is not None and fc1 is not None:
-                diff = abs(rpu_frames - fc1)
-                if diff > 4:
-                    raise WorkflowError(
-                        step,
-                        f"Désalignement critique : {rpu_frames} RPU frames pour {fc1} frames vidéo.",
-                    )
-                if diff > 0:
-                    self.step_progress.emit(step, f"RPU vs Film 1 : écart {diff} frames — tolérable.")
+        try:
+            guard.enforce(
+                audit,
+                rpu_bin=paths.film2_rpu if (flags.has_dovi and paths.film2_rpu.exists()) else None,
+                hdr10p_json=paths.film2_hdr10plus if (
+                    flags.has_hdr10plus and paths.film2_hdr10plus.exists()
+                ) else None,
+                on_warn=lambda msg: self.step_progress.emit(step, f"[WARN] {msg}"),
+                on_info=lambda msg: self.step_progress.emit(step, msg),
+            )
+        except FrameCountAuditError as exc:
+            raise WorkflowError(step, f"Audit frame count : {exc}") from exc
 
         detail = (
-            f"Flux final : {fc_final if fc_final is not None else '?'}  |  "
-            f"Film 1 : {fc1 if fc1 is not None else '?'}  |  "
-            f"RPU : {rpu_frames if rpu_frames is not None else '-'}"
+            f"Source : {audit.source if audit.source is not None else '?'}  |  "
+            f"Final : {audit.encoded if audit.encoded is not None else '?'}  |  "
+            f"RPU : {audit.rpu if audit.rpu is not None else '-'}  |  "
+            f"HDR10+ : {audit.hdr10p if audit.hdr10p is not None else '-'}"
         )
         self.step_progress.emit(step, detail)
 
@@ -698,12 +1123,14 @@ class MergeDoviWorkflow(QObject):
         film1: Path,
         paths: _WorkflowPaths,
         flags: HDRFlags,
+        *,
+        static_hdr_applied: bool = False,
     ) -> None:
         step = WorkflowStep.REMUX
         t0   = time.monotonic()
         self.step_started.emit(step)
 
-        final_hevc = paths.injection_chain_final(flags)
+        final_hevc = paths.injection_chain_final(flags, static_hdr_applied=static_hdr_applied)
         if not final_hevc.exists():
             raise WorkflowError(step, f"Flux injecté introuvable : {final_hevc.name}")
 
@@ -774,10 +1201,12 @@ class MergeDoviWorkflow(QObject):
         for path in [
             paths.film1_hevc,
             paths.film2_hevc,
+            paths.film2_hevc_p8,
             paths.film2_rpu,
             paths.film2_hdr10plus,
             paths.film1_with_dovi,
             paths.film1_final,
+            paths.film1_with_static_hdr,
             paths.film1_wrapped_video,
         ]:
             if path.exists():
@@ -829,7 +1258,7 @@ class MergeDoviWorkflow(QObject):
         self._run_raw([
             self._bins["dovi_tool"], "extract-rpu",
             "-i", str(source), "-o", str(dest),
-        ])
+        ], step=WorkflowStep.EXTRACT_PARALLEL)
         return f"RPU extrait → {dest.name}"
 
     def _extract_hdr10plus(
@@ -839,7 +1268,7 @@ class MergeDoviWorkflow(QObject):
         self._run_raw([
             self._bins["hdr10plus_tool"], "extract",
             str(source), "-o", str(dest),
-        ])
+        ], step=WorkflowStep.EXTRACT_PARALLEL)
         return f"HDR10+ extrait → {dest.name}"
 
     # ------------------------------------------------------------------
@@ -883,8 +1312,17 @@ class MergeDoviWorkflow(QObject):
         """
         Lance une commande, émet des lignes de progression, lève WorkflowError
         si le code de retour est non nul.
+
+        Pour `dovi_tool` / `hdr10plus_tool` sous Linux/macOS, la commande est
+        exécutée sous pty pour que l'outil émette sa barre de progression.
+        Les lignes XX% alimentent `step_progress_pct` (barre globale) et NE
+        sont PAS émises en `step_progress` (le LogPanel reste lisible).
         """
+        binary = Path(cmd[0]).name
+        use_pty = sys.platform != "win32" and binary in _PTY_PROGRESS_TOOLS
         try:
+            if use_pty:
+                return self._run_cmd_pty(cmd, step)
             with subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -912,11 +1350,112 @@ class MergeDoviWorkflow(QObject):
         except FileNotFoundError:
             raise WorkflowError(step, f"Outil introuvable : {cmd[0]}")
 
-    def _run_raw(self, cmd: list[str]) -> str:
+    def _run_cmd_pty(self, cmd: list[str], step: WorkflowStep) -> str:
         """
-        Lance une commande dans un worker (pas de signal Qt possible depuis
-        un thread pool arbitraire). Lève RuntimeError si échec.
+        Variante pty pour dovi_tool / hdr10plus_tool (Linux/macOS).
+
+        Lignes XX% → `step_progress_pct.emit(step, pct)` au changement.
+        Autres lignes → `step_progress.emit(step, line)` comme d'habitude.
         """
+        import fcntl
+        import pty
+        import struct
+        import termios
+
+        master_fd, slave_fd = pty.openpty()
+        # Taille de terminal nécessaire pour que `indicatif` (dovi_tool /
+        # hdr10plus_tool) accepte d'afficher la barre de progression.
+        try:
+            fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 120, 0, 0))
+        except OSError:
+            pass
+        # `indicatif` désactive la barre quand TERM=dumb (cas via .desktop /
+        # distrobox-export) ou non défini. Forcer un TERM réel.
+        env = os.environ.copy()
+        if env.get("TERM", "dumb") in ("", "dumb"):
+            env["TERM"] = "xterm-256color"
+        proc = subprocess.Popen(
+            cmd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            stdin=subprocess.DEVNULL,
+            close_fds=True,
+            env=env,
+        )
+        os.close(slave_fd)
+
+        lines: list[str] = []
+        last_pct: int = -1
+        buffer = ""
+        try:
+            while True:
+                try:
+                    data = os.read(master_fd, 1024)
+                except OSError:
+                    break
+                if not data:
+                    break
+
+                buffer += data.decode("utf-8", errors="replace")
+                if "\r" not in buffer and "\n" not in buffer:
+                    continue
+
+                parts = re.split(r"[\r\n]+", buffer)
+                buffer = parts[-1]
+                for raw in parts[:-1]:
+                    line = _ANSI_RE.sub("", raw).strip()
+                    if not line:
+                        continue
+                    lines.append(line)
+
+                    m = _PERCENT_RE.search(line)
+                    if m:
+                        try:
+                            pct = int(m.group(1))
+                        except ValueError:
+                            pct = -1
+                        if 0 <= pct <= 100 and pct != last_pct:
+                            last_pct = pct
+                            self.step_progress_pct.emit(step, pct)
+                        # Lignes de progression : pas de log
+                        continue
+                    self.step_progress.emit(step, line)
+
+            if buffer.strip():
+                line = _ANSI_RE.sub("", buffer).strip()
+                lines.append(line)
+                if not _PERCENT_RE.search(line):
+                    self.step_progress.emit(step, line)
+
+            proc.wait()
+            output = "\n".join(lines)
+            if proc.returncode != 0:
+                raise WorkflowError(
+                    step,
+                    f"Commande échouée (code {proc.returncode}) : {' '.join(cmd[:2])}\n"
+                    + output[-1000:],
+                )
+            return output
+        finally:
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
+
+    def _run_raw(self, cmd: list[str], step: WorkflowStep | None = None) -> str:
+        """
+        Lance une commande dans un worker. Si `step` est fourni et le binaire
+        est dovi_tool/hdr10plus_tool sous Linux/macOS, exécute sous pty pour
+        capturer le pourcentage de progression (alimente `step_progress_pct`).
+        """
+        binary = Path(cmd[0]).name
+        if (
+            step is not None
+            and sys.platform != "win32"
+            and binary in _PTY_PROGRESS_TOOLS
+        ):
+            return self._run_cmd_pty(cmd, step)
+
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -1048,6 +1587,43 @@ class MergeDoviWorkflow(QObject):
         if re.fullmatch(r"\d+", raw):
             return int(raw)
         return None
+
+    def _load_mediainfo_video(self, path: Path) -> dict | None:
+        """Charge le track Video du JSON mediainfo (None si indisponible)."""
+        try:
+            result = subprocess.run(
+                [self._bins["mediainfo"], "--Output=JSON", str(path)],
+                capture_output=True, check=False, **subprocess_text_kwargs(),
+            )
+        except (FileNotFoundError, OSError):
+            return None
+        if result.returncode != 0:
+            return None
+        try:
+            data = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            return None
+        media = data.get("media") or {}
+        for track in media.get("track") or []:
+            if isinstance(track, dict) and track.get("@type") == "Video":
+                return track
+        return None
+
+    def _read_static_hdr_metadata(self, path: Path) -> StaticHdrMetadata:
+        """Lit MasteringDisplay + MaxCLL/MaxFALL via mediainfo et reformate
+        en chaînes attendues par ``inject_static_hdr_sei_file`` :
+          - master_display : ``G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)``
+          - max_cll        : ``"MaxCLL,MaxFALL"``
+
+        Toute partie absente / non parsable → chaîne vide (no-op côté
+        injection)."""
+        track = self._load_mediainfo_video(path)
+        if track is None:
+            return StaticHdrMetadata()
+        return StaticHdrMetadata(
+            master_display=_format_master_display_from_mediainfo(track),
+            max_cll=_format_max_cll_from_mediainfo(track),
+        )
 
     # ------------------------------------------------------------------
     # Utilitaire statique

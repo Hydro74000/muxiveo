@@ -130,9 +130,7 @@ def ensure_inject_storage_available(
     temp_dir: Callable[[], str] = tempfile.gettempdir,
     format_bytes_fn: Callable[[int], str] = format_bytes,
 ) -> None:
-    """
-    Vérifie l'espace libre avant le chemin d'injection DV/HDR10+.
-    """
+    """Vérifie l'espace libre avant le chemin d'injection metadata vidéo."""
     work_required, output_required = estimate_requirements(config)
 
     work_root = config.work_dir or Path(temp_dir())
@@ -163,7 +161,7 @@ def ensure_inject_storage_available(
         free = min(work_free, output_free)
         if free < required:
             raise EncodeError(
-                "Espace disque insuffisant pour l'injection DoVi/HDR10+ "
+                "Espace disque insuffisant pour l'injection metadata vidéo "
                 f"(requis≈{format_bytes_fn(required)}, libre≈{format_bytes_fn(free)} "
                 f"sur {output_root})."
             )
@@ -171,7 +169,7 @@ def ensure_inject_storage_available(
 
     if work_free < work_required:
         raise EncodeError(
-            "Espace disque insuffisant pour les temporaires d'injection "
+            "Espace disque insuffisant pour les temporaires d'injection metadata "
             f"(requis≈{format_bytes_fn(work_required)}, "
             f"libre≈{format_bytes_fn(work_free)} sur {work_root})."
         )
