@@ -40,14 +40,14 @@ from core.workflows.encode import (
     ProfileManager, QualityMode, VideoEncodeSettings, VideoTrackEncodePlan, presets_for_codec,
 )
 from core.workflows.encode.catalog import (
-    CQ_CAPABLE_VIDEO_CODECS,
     VIDEO_ENCODER_BADGES,
     VIDEO_HDR_BADGE_ORDER,
     encoder_badge,
     is_h264_video_codec,
-    supports_manual_static_hdr_metadata,
     supports_10bit,
-    supports_dynamic_hdr,
+)
+from core.workflows.encode.backends import (
+    backend_capabilities_for_codec,
 )
 from ui.panels.encode_panel.theme import (
     _C, _card, _checkbox_style, _combo_style,
@@ -99,6 +99,7 @@ class EncodePanel(QWidget):
             parent=self,
             writing_application=writing_application,
             generate_nfo=config.generate_nfo,
+            nvencc_bin=getattr(config, "tool_nvencc", None) or None,
         )
         self._profiles  = ProfileManager(config.app_data_dir / "encode_profiles")
         self._executor  = ThreadPoolExecutor(max_workers=1)
@@ -972,7 +973,8 @@ class EncodePanel(QWidget):
     def _detect_hw_encoders(self) -> None:
         detector = HardwareEncoderDetector()
         ffmpeg = self._config.tool_ffmpeg
-        hw, hw_ffmpeg = detector.detect(ffmpeg)
+        nvencc = getattr(self._config, "tool_nvencc", None) or None
+        hw, hw_ffmpeg = detector.detect(ffmpeg, nvencc_bin=nvencc)
         sw = detector.detect_software(ffmpeg)
         # hw_ffmpeg peut être le ffmpeg système si le ffmpeg embarqué manque de HW codecs.
         # On l'envoie avec le signal pour que le workflow l'utilise lors de l'encodage HW.
@@ -1053,7 +1055,7 @@ class EncodePanel(QWidget):
         if not hasattr(self, "_master_display") or not hasattr(self, "_max_cll"):
             return
         codec_id = str(codec or "").strip().lower()
-        editable = supports_manual_static_hdr_metadata(codec_id)
+        editable = self._backend_capabilities(codec_id).supports_manual_static_hdr
         if not editable:
             prev = (
                 self._video_settings_by_entry_id.get(self._current_video_entry_id)
@@ -1125,10 +1127,8 @@ class EncodePanel(QWidget):
         où il a un équivalent natif (-cq:v / cqp / global_quality).
         """
         previous = self._mode_combo.currentData() if self._mode_combo.count() else QualityMode.CRF
-        modes: list[QualityMode] = [QualityMode.CRF]
-        if codec in CQ_CAPABLE_VIDEO_CODECS:
-            modes.append(QualityMode.CQ)
-        modes.extend([QualityMode.BITRATE, QualityMode.SIZE])
+        caps = self._backend_capabilities(codec)
+        modes = list(caps.quality_modes)
 
         self._mode_combo.blockSignals(True)
         self._mode_combo.clear()
@@ -1163,14 +1163,14 @@ class EncodePanel(QWidget):
             return
 
         codec = self._codec_combo.currentData() or "libx265"
-        is_hevc = codec in ("libx265", "hevc_nvenc", "hevc_amf", "hevc_qsv", "hevc_vaapi", "copy")
+        supports_hdr_passthrough = self._backend_capabilities(codec).supports_dynamic_hdr
         hdr = self._selected_video_hdr_type()
 
         has_dv       = hdr in (HDRType.DOLBY_VISION, HDRType.DOLBY_VISION_HDR10PLUS)
         has_hdr10plus = hdr in (HDRType.HDR10PLUS, HDRType.DOLBY_VISION_HDR10PLUS)
 
-        dv_ok       = has_dv and is_hevc
-        hdr10plus_ok = has_hdr10plus and is_hevc
+        dv_ok       = has_dv and supports_hdr_passthrough
+        hdr10plus_ok = has_hdr10plus and supports_hdr_passthrough
 
         self._copy_dv_cb.setEnabled(dv_ok)
         self._copy_hdr10plus_cb.setEnabled(hdr10plus_ok)
@@ -1231,8 +1231,7 @@ class EncodePanel(QWidget):
             self._update_passthrough_controls(auto_check=False)
             hdr = self._selected_video_hdr_type()
             codec = self._codec_combo.currentData() or "libx265"
-            is_hevc = codec in ("libx265", "hevc_nvenc", "hevc_amf", "hevc_qsv", "hevc_vaapi", "copy")
-            if is_hevc:
+            if self._backend_capabilities(codec).supports_dynamic_hdr:
                 if hdr in (HDRType.DOLBY_VISION, HDRType.DOLBY_VISION_HDR10PLUS):
                     self._copy_dv_cb.setChecked(True)
                 if hdr in (HDRType.HDR10PLUS, HDRType.DOLBY_VISION_HDR10PLUS):
@@ -1509,6 +1508,10 @@ class EncodePanel(QWidget):
         """Retourne la liste des erreurs de validation (vide = OK)."""
         return self._workflow.validate(config)
 
+    def parse_progress_line(self, config: "EncodeConfig", line: str):
+        """Normalise une ligne de progression via le backend actif."""
+        return self._workflow.parse_progress(config, line)
+
     def is_pure_copy(self, config: "EncodeConfig") -> bool:
         """True si tout est en copie et qu'aucune transformation vidéo n'est demandée."""
         video_tracks = self._routing_video_tracks(config)
@@ -1544,7 +1547,11 @@ class EncodePanel(QWidget):
 
     @classmethod
     def _is_dynamic_hdr_codec(cls, codec: str) -> bool:
-        return supports_dynamic_hdr(codec)
+        return cls._backend_capabilities(codec).supports_dynamic_hdr
+
+    @staticmethod
+    def _backend_capabilities(codec: str):
+        return backend_capabilities_for_codec(codec)
 
     @staticmethod
     def _effective_static_hdr_fields(
@@ -1556,7 +1563,7 @@ class EncodePanel(QWidget):
         current_cll = str(state.get("max_cll") or "").strip()
         default_md = str(state.get("default_master_display") or "").strip()
         default_cll = str(state.get("default_max_cll") or "").strip()
-        if supports_manual_static_hdr_metadata(codec):
+        if backend_capabilities_for_codec(codec).supports_manual_static_hdr:
             return current_md or default_md, current_cll or default_cll
         return default_md, default_cll
 

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from ui.main_window import (
     MainWindow,
     _ENCODE_INTERNAL_PROGRESS_PREFIX,
+    _is_encode_stage_message,
     _multi_encode_remaining_seconds,
     _select_multi_encode_label,
 )
@@ -135,6 +136,11 @@ def test_handle_encode_internal_progress_updates_longest_remaining_bar_and_legen
     assert "Piste vidéo 1/2" in dummy._prog_lbl.text
 
 
+def test_nvencc_stage_is_recognized_as_encode_stage_message() -> None:
+    assert _is_encode_stage_message("Encodage NVEncC")
+    assert _is_encode_stage_message("Encodage NVEncC 42%")
+
+
 def test_capture_verbose_progress_line_records_wrapped_tool_output(tmp_path) -> None:
     dummy = SimpleNamespace()
     dummy._config = SimpleNamespace(
@@ -199,6 +205,38 @@ def test_capture_verbose_progress_line_records_remux_ffmpeg_progress(tmp_path) -
     assert len(log_files) == 1
     content = log_files[0].read_text(encoding="utf-8")
     assert "[TOOL] out_time=00:00:10.000000" in content
+
+
+def test_capture_verbose_progress_line_records_all_nvencc_lines(tmp_path) -> None:
+    dummy = SimpleNamespace()
+    dummy._config = SimpleNamespace(
+        enable_file_logging=True,
+        file_logging_level="verbose",
+        app_data_dir=tmp_path,
+        verbose_log_dir=tmp_path / "chosen_logs",
+    )
+    dummy._op_mode = "encode"
+    dummy._op_encode_config = SimpleNamespace(video=SimpleNamespace(codec="nvencc_hevc"))
+    dummy._log_panel = SimpleNamespace(log=MagicMock())
+    dummy._verbose_log_file_path = None
+    dummy._verbose_log_session_stamp = None
+    dummy._verbose_log_file_index = 1
+    dummy._verbose_log_file_error_reported = False
+    dummy._NOISE_RE = MainWindow._NOISE_RE
+    dummy._encode_panel = SimpleNamespace(get_total_frames=lambda: None)
+
+    dummy._verbose_log_part_path = MethodType(MainWindow._verbose_log_part_path, dummy)
+    dummy._verbose_log_session_path = MethodType(MainWindow._verbose_log_session_path, dummy)
+    dummy._prepare_verbose_log_target = MethodType(MainWindow._prepare_verbose_log_target, dummy)
+    dummy._append_verbose_tool_output = MethodType(MainWindow._append_verbose_tool_output, dummy)
+    dummy._capture_verbose_progress_line = MethodType(MainWindow._capture_verbose_progress_line, dummy)
+
+    dummy._capture_verbose_progress_line("encoded 191733 frames, 191.29 fps, 9310.24 kbps, 8875.45 MB")
+
+    log_files = sorted((tmp_path / "chosen_logs").glob("mediarecode-verbose-*.log"))
+    assert len(log_files) == 1
+    content = log_files[0].read_text(encoding="utf-8")
+    assert "[TOOL] encoded 191733 frames, 191.29 fps, 9310.24 kbps, 8875.45 MB" in content
 
 
 def test_on_tool_output_requested_records_inspector_verbose_lines(tmp_path) -> None:

@@ -63,6 +63,7 @@ from core.logging import LogLevel, VerboseFileLogger, parse_log_level
 from core.runner import TaskSignals, _PCT_SENTINEL
 from core.subprocess_utils import subprocess_text_kwargs
 from core.version import APP_VERSION_LABEL, WRITING_APPLICATION_TAG
+from core.workflows.encode.backends import backend_id_for_codec
 from core.workflows.encode import EncodeError
 from core.workflows.remux_models import RemuxError
 from ui.panels.encode_panel import EncodePanel
@@ -113,6 +114,7 @@ _ENCODE_STAGE_PREFIXES: tuple[str, ...] = (
     "Conversion P7 FEL → P8.1",
     "Conversion P7 MEL → P8.1",
     "Encodage vidéo",
+    "Encodage NVEncC",
     "Injection métadonnées HDR10+",
     "Injection RPU Dolby Vision",
     "Encapsulation vidéo injectée",
@@ -219,6 +221,13 @@ def _is_encode_stage_message(line: str) -> bool:
 
 def _is_encode_progress_noise(line: str) -> bool:
     return any(line.startswith(prefix) for prefix in _ENCODE_PROGRESS_NOISE_PREFIXES)
+
+
+def _fmt_progress_percent(percent: float | int) -> str:
+    value = float(percent)
+    if abs(value - round(value)) < 0.05:
+        return f"{int(round(value))}%"
+    return f"{value:.1f}%"
 
 
 def _parse_encode_internal_progress(line: str) -> dict[str, object] | None:
@@ -651,6 +660,13 @@ class DashboardPage(QWidget):
         ("h264_nvenc", "NVENC·H264"), ("h264_amf", "AMF·H264"), ("h264_vaapi", "VAAPI·H264"), ("h264_qsv", "QSV·H264"),
         ("av1_nvenc",  "NVENC·AV1"),  ("av1_amf",  "AMF·AV1"),  ("av1_vaapi",  "VAAPI·AV1"),  ("av1_qsv",  "QSV·AV1"),
     ]
+    # Encodeurs NVEncC (rigaya) — wrapper standalone NVIDIA. Affichés sur une
+    # ligne distincte pour bien indiquer qu'ils utilisent un binaire séparé.
+    _HW_VIDEO_NVENCC: list[tuple[str, str]] = [
+        ("nvencc_hevc", "NVEncC·HEVC"),
+        ("nvencc_h264", "NVEncC·H264"),
+        ("nvencc_av1",  "NVEncC·AV1"),
+    ]
     _SW_VIDEO: list[tuple[str, str]] = [
         ("libx265", "x265"), ("libx264", "x264"), ("libsvtav1", "SVT-AV1"),
     ]
@@ -877,6 +893,15 @@ class DashboardPage(QWidget):
         rl.addStretch()
         root.addWidget(row)
 
+        # Vidéo matériel — ligne 3 : NVEncC (rigaya)
+        row, rl = _row("  ↳ NVEncC")
+        for codec_id, label in self._HW_VIDEO_NVENCC:
+            badge = self._make_encoder_badge(label, "pending")
+            self._hw_badges[codec_id] = (badge, label)
+            rl.addWidget(badge)
+        rl.addStretch()
+        root.addWidget(row)
+
         # Audio
         row, rl = _row("Audio")
         for codec_id, label in self._AUDIO:
@@ -943,7 +968,8 @@ class DashboardPage(QWidget):
         from core.workflows.encode import HardwareEncoderDetector
         detector = HardwareEncoderDetector()
         ffmpeg = self._config.tool_ffmpeg
-        result = detector.detect(ffmpeg)
+        nvencc = getattr(self._config, "tool_nvencc", None) or None
+        result = detector.detect(ffmpeg, nvencc_bin=nvencc)
         # Compatibilité : certains tests/mocks retournent encore un set simple.
         if isinstance(result, tuple):
             available = result[0]
@@ -969,7 +995,7 @@ class DashboardPage(QWidget):
             if available:
                 self._log(f"{name} — trouvé", LogLevel.OK)
             else:
-                self._log(f"{name} — introuvable dans PATH", LogLevel.WARN)
+                self._log(f"{name} — introuvable", LogLevel.WARN)
                 all_ok = False
         if all_ok:
             self._log("Tous les outils sont disponibles.", LogLevel.OK)
@@ -2097,6 +2123,72 @@ class MainWindow(QMainWindow):
                 self._eta_tracker_frame.reset()
                 self.log_requested.emit("INFO", line)
                 return
+            progress_event = (
+                self._encode_panel.parse_progress_line(self._op_encode_config, line)
+                if self._op_encode_config is not None
+                else None
+            )
+            if progress_event is not None:
+                if progress_event.fps is not None:
+                    self._op_encode_fps = progress_event.fps
+                if progress_event.frame is not None:
+                    self._op_encode_frame = progress_event.frame
+
+                pct_value: int | None = None
+                pct_label = ""
+                if progress_event.percent is not None:
+                    pct_value = max(0, min(99, int(progress_event.percent)))
+                    pct_label = _fmt_progress_percent(progress_event.percent)
+                elif progress_event.elapsed_seconds is not None:
+                    dur = self._encode_panel.get_duration_s()
+                    if dur and dur > 0:
+                        pct_value = min(99, int(progress_event.elapsed_seconds / dur * 100))
+                        pct_label = f"{pct_value}%"
+                elif progress_event.frame is not None:
+                    total_frames = self._encode_panel.get_total_frames()
+                    if total_frames and total_frames > 0:
+                        pct_value = min(99, int(progress_event.frame / total_frames * 100))
+                        pct_label = f"{pct_value}%"
+
+                if pct_value is not None:
+                    self._stop_prep_progress()
+                    self._prog_bar.setValue(pct_value)
+
+                fps_str = (
+                    f"{progress_event.fps:.1f} fps"
+                    if progress_event.fps is not None and progress_event.fps > 0
+                    else ""
+                )
+                eta_s = progress_event.eta_seconds
+                if (
+                    eta_s is None
+                    and progress_event.elapsed_seconds is not None
+                ):
+                    dur = self._encode_panel.get_duration_s()
+                    if dur and dur > 0:
+                        self._eta_tracker_video.update(progress_event.elapsed_seconds, time.monotonic())
+                        eta_s = self._eta_tracker_video.eta(dur, progress_event.elapsed_seconds)
+                if (
+                    eta_s is None
+                    and progress_event.frame is not None
+                ):
+                    total_frames = self._encode_panel.get_total_frames()
+                    if total_frames and total_frames > 0:
+                        if progress_event.fps is not None and progress_event.fps > 0 and total_frames > progress_event.frame:
+                            eta_s = self._eta_tracker_frame.eta_from_speed(
+                                float(total_frames),
+                                float(progress_event.frame),
+                                float(progress_event.fps),
+                            )
+                        else:
+                            self._eta_tracker_frame.update(float(progress_event.frame), time.monotonic())
+                            eta_s = self._eta_tracker_frame.eta(float(total_frames), float(progress_event.frame))
+                eta_str = f"ETA {_fmt_eta(eta_s)}" if eta_s is not None else ""
+                if pct_label or fps_str or eta_str:
+                    self._prog_lbl.setText(self._format_progress_label(pct_label, fps_str, eta_str))
+                if progress_event.should_log:
+                    self.log_requested.emit("INFO", progress_event.raw_line)
+                return
             fps_m = _FPS_RE.search(line)
             if fps_m:
                 try:
@@ -2431,6 +2523,13 @@ class MainWindow(QMainWindow):
                 self._append_verbose_tool_output(line)
             return
 
+        encode_cfg = getattr(self, "_op_encode_config", None)
+        encode_codec = str(getattr(getattr(encode_cfg, "video", None), "codec", "") or "").strip().lower()
+        if encode_codec and backend_id_for_codec(encode_codec) == "nvencc":
+            if line and not line.startswith("$ ") and not line.startswith(_PCT_SENTINEL):
+                self._append_verbose_tool_output(line)
+            return
+
         if self._NOISE_RE.search(line):
             self._append_verbose_tool_output(line)
             return
@@ -2512,7 +2611,7 @@ class MainWindow(QMainWindow):
         missing = [n for n, ok in availability.items() if not ok]
         if missing:
             self.log_warn(
-                f"Outils manquants dans PATH : {', '.join(missing)}"
+                f"Outils manquants : {', '.join(missing)}"
             )
         else:
             self.log_ok("Tous les outils externes sont disponibles.")

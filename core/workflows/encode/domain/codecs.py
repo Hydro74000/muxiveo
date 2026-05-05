@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from core.workflows.encode.catalog import (
     AMF_VIDEO_CODECS,
     NVENC_VIDEO_CODECS,
+    NVENCC_VIDEO_CODECS,
     QSV_VIDEO_CODECS,
     VAAPI_VIDEO_CODECS,
     is_h264_video_codec,
@@ -167,6 +168,12 @@ def should_reinject_static_hdr_metadata(video: VideoEncodeSettings) -> bool:
 
 
 def video_codec_args(video: VideoEncodeSettings, bitrate_kbps: int, *, callbacks: EncodeCodecDomainCallbacks) -> list[str]:
+    # NVEncC est un binaire externe (pas un encodeur ffmpeg) : la construction
+    # de la commande passe par core/workflows/encode/runtime/nvencc.py. Côté
+    # ffmpeg-only, on retourne une liste vide pour que le caller (workflow.py)
+    # ait détecté NVEncC en amont et basculé sur le pipeline 3-process.
+    if video.codec in NVENCC_VIDEO_CODECS:
+        return []
     if video.quality_mode == QualityMode.CRF:
         return video_codec_args_crf(video, callbacks=callbacks)
     if video.quality_mode == QualityMode.CQ:

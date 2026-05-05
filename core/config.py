@@ -81,6 +81,7 @@ _WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
     "dovi_tool": ("dovi_tool.exe",),
     "hdr10plus_tool": ("hdr10plus_tool.exe",),
     "eac3to": ("eac3to.exe",),
+    "nvencc": ("NVEncC64.exe", "NVEncC.exe"),
 }
 
 _WINDOWS_WINGET_PATTERNS: dict[str, tuple[str, ...]] = {
@@ -117,6 +118,28 @@ def _load_ini() -> configparser.ConfigParser:
         _sanitize_windows_ini_file(_INI_PATH)
         parser.read(_INI_PATH, encoding="utf-8")
     return parser
+
+
+def _command_exists(command: str | os.PathLike[str] | None) -> bool:
+    """True si la commande configurée est résoluble ou pointe vers un fichier."""
+    if command in (None, ""):
+        return False
+    value = os.fspath(command)
+    if shutil.which(value) is not None:
+        return True
+    return Path(value).is_file()
+
+
+def _command_path(command: str | os.PathLike[str] | None) -> Path | None:
+    """Retourne le chemin résolu d'une commande, y compris si elle est absolue."""
+    if command in (None, ""):
+        return None
+    value = os.fspath(command)
+    found = shutil.which(value)
+    if found:
+        return Path(found)
+    candidate = Path(value)
+    return candidate if candidate.is_file() else None
 
 
 def _is_windows() -> bool:
@@ -736,6 +759,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "dovi_tool", "attr": "tool_dovi_tool", "kind": "tool", "label": "dovi_tool", "description": "Outil Dolby Vision utilisé pour les workflows DoVi."},
             {"key": "hdr10plus_tool", "attr": "tool_hdr10plus", "kind": "tool", "label": "hdr10plus_tool", "description": "Outil HDR10+ utilisé pour les workflows HDR."},
             {"key": "eac3to", "attr": "tool_eac3to", "kind": "tool", "label": "eac3to", "description": "Option facultative sous Windows pour la conversion audio avancée."},
+            {"key": "nvencc", "attr": "tool_nvencc", "kind": "tool", "label": "NVEncC", "description": "Wrapper NVIDIA NVENC standalone (rigaya) — encodage avancé. Détecté uniquement si un GPU NVIDIA est présent."},
         ),
     },
     {
@@ -942,7 +966,14 @@ class AppConfig:
         if ini_value is not _MISSING and ini_value != "":
             return str(ini_value)
 
-        # Priorité 3a : Linux / macOS — appel direct, résolution par le PATH à l'exécution
+        # Priorité 3a : valeur persistée par l'UI.
+        raw = self._settings.value(settings_key, None)
+        if raw not in (None, ""):
+            current_value = str(raw)
+            if current_value != default or _command_path(current_value) is not None:
+                return current_value
+
+        # Priorité 3b : Linux / macOS — appel direct, résolution par le PATH à l'exécution
         if not _is_windows():
             resolved = shutil.which(default)
             if resolved:
@@ -952,9 +983,8 @@ class AppConfig:
                     return str(candidate)
             return default
 
-        # Priorité 3b : Windows — autodetect étendu + persistance dans QSettings
-        raw = self._settings.value(settings_key, default)
-        current_value = str(raw if raw not in (None, "") else default)
+        # Priorité 3c : Windows — autodetect étendu + persistance dans QSettings
+        current_value = default
         resolved = _detect_windows_tool_path(ini_key, current_value)
         if Path(resolved).is_file():
             self._detected_ini_tools.setdefault(ini_key, resolved)
@@ -975,6 +1005,21 @@ class AppConfig:
         self.tool_dovi_tool = self._resolve_tool_value("dovi_tool", "tools/dovi_tool", "dovi_tool")
         self.tool_hdr10plus = self._resolve_tool_value("hdr10plus_tool", "tools/hdr10plus_tool", "hdr10plus_tool")
         self.tool_eac3to = self._resolve_tool_value("eac3to", "tools/eac3to", "eac3to")
+        # NVEncC: nom du binaire varie selon plateforme et packaging :
+        #   • Windows : NVEncC64.exe (rigaya release .7z)
+        #   • Linux .deb (Debian/Ubuntu) : NVEncC (PascalCase, /usr/bin/NVEncC)
+        #   • Linux .rpm (Fedora/RHEL) : nvencc (minuscules, /usr/bin/nvencc)
+        # Pas de support macOS — sera résolu en None silencieusement si introuvable.
+        if _is_windows():
+            self.tool_nvencc = self._resolve_tool_value("nvencc", "tools/nvencc", "NVEncC64.exe")
+        else:
+            # Essai PascalCase d'abord (.deb), puis minuscules (.rpm).
+            resolved = self._resolve_tool_value("nvencc", "tools/nvencc", "NVEncC")
+            if shutil.which(resolved) is None and not Path(resolved).is_file():
+                fallback = shutil.which("nvencc")
+                if fallback:
+                    resolved = fallback
+            self.tool_nvencc = resolved
         self._tool_versions = ToolVersionRegistry(self.tool_commands())
 
         self.ffmpeg_threads = _normalize_ffmpeg_thread_count(
@@ -1173,11 +1218,10 @@ class AppConfig:
     def tool_path(self, name: str) -> Path | None:
         attr = f"tool_{name.replace('-', '_')}"
         value: str = getattr(self, attr, name)
-        found = shutil.which(value)
-        return Path(found) if found else None
+        return _command_path(value)
 
     def all_tools_available(self) -> dict[str, bool]:
-        return {name: shutil.which(cmd) is not None for name, cmd in self.tool_commands().items()}
+        return {name: _command_exists(cmd) for name, cmd in self.tool_commands().items()}
 
     def ensure_work_dir(self) -> Path:
         self.work_dir.mkdir(parents=True, exist_ok=True)

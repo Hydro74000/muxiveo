@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QTabBar, QTabWidget, QToolTip, QVBoxLayout, QWidget,
 )
 
+from core.workflows.encode.backends import backend_id_for_codec
 from core.i18n import apply_translations, translate_text
 from ui.design_system import colors as _C
 from ui.styles import (
@@ -92,6 +93,49 @@ class CodecSchema:
     codec: str
     style: str   # "ffmpeg_flags" (NVENC/AMF/QSV/libx264) | "x265_params" | "svtav1_params"
     groups: tuple[ParamGroup, ...]
+
+
+_NVENCC_IGNORED_PARSE_KEYS: frozenset[str] = frozenset({
+    "master-display",
+    "max-cll",
+    "dhdr10-info",
+    "dolby-vision-profile",
+    "dolby-vision-rpu",
+    "colormatrix",
+    "colorprim",
+    "transfer",
+    "chromaloc",
+    "vpp-colorspace",
+    "vpp-libplacebo-tonemapping",
+    "vpp-libplacebo-tonemapping-lut",
+})
+
+_NVENCC_QP_TRIPLET_KEYS: frozenset[str] = frozenset({
+    "cqp",
+    "qp-init",
+    "qp-min",
+    "qp-max",
+})
+
+_NVENCC_SPLIT_ENC = (
+    ("disable", "disable"),
+    ("auto", "auto"),
+    ("auto_forced", "auto_forced"),
+    ("forced_2", "forced_2"),
+    ("forced_3", "forced_3"),
+    ("forced_4", "forced_4"),
+)
+
+def _normalize_nvencc_text_value(key: str, raw: Any) -> str | None:
+    """Canonise certains champs texte NVEncC saisis via le dialog."""
+    text = str(raw).strip()
+    if not text:
+        return None
+    if key in _NVENCC_QP_TRIPLET_KEYS and text.isdigit():
+        return f"{text}:{text}:{text}"
+    if key == "parallel" and text.lower() == "all":
+        return "auto"
+    return text
 
 
 # -------- NVENC (HEVC) -------------------------------------------------------
@@ -601,6 +645,92 @@ _QSV_AV1 = CodecSchema(
 
 # -------- VAAPI (HEVC) -------------------------------------------------------
 
+_VAAPI_RC_MODE = (
+    ("auto", "auto (driver)"),
+    ("CQP", "CQP"),
+    ("CBR", "CBR"),
+    ("VBR", "VBR"),
+    ("ICQ", "ICQ"),
+    ("QVBR", "QVBR"),
+    ("AVBR", "AVBR"),
+)
+
+_VAAPI_COMMON_GOP_PARAMS = (
+    ParamSpec("g", "GOP size", "int", default=240, minimum=1, maximum=600,
+              tooltip="Distance maximale entre keyframes (I-frames).\n"
+                      "Ce paramètre pilote le GOP standard ffmpeg (-g), en plus des IDR open-GOP."),
+    ParamSpec("bf", "B-frames", "int", default=3, minimum=0, maximum=16,
+              tooltip="Nombre maximum de B-frames consécutives autorisées par le wrapper VAAPI.\n"
+                      "Plus de B-frames améliore souvent la compression, au prix de latence et de compatibilité."),
+    ParamSpec("idr_interval", "IDR interval (frames)", "int",
+              default=0, minimum=0, maximum=600,
+              tooltip="Distance entre IDR (Instantaneous Decoder Refresh).\n"
+                      "0 = laisse le driver décider. Une IDR vide complètement le buffer de référence."),
+    ParamSpec("b_depth", "B-frame ref depth", "int", default=1, minimum=1, maximum=4,
+              tooltip="Profondeur de la pyramide de références B-frames.\n"
+                      "1 = B-frames non-référencées. 2-4 = hiérarchique si supporté par le driver."),
+)
+
+_VAAPI_COMMON_RATE_CONTROL_PARAMS = (
+    ParamSpec("rc_mode", "Rate control mode", "enum", default="auto", options=_VAAPI_RC_MODE,
+              tooltip="Mode de contrôle de débit VAAPI.\n"
+                      "• auto : laisse le driver choisir.\n"
+                      "• CQP : quantizer fixe.\n"
+                      "• CBR/VBR : débit piloté.\n"
+                      "• ICQ/QVBR/AVBR : modes qualité avancés, support driver variable."),
+    ParamSpec("async_depth", "Async depth", "int", default=2, minimum=1, maximum=64,
+              tooltip="Parallélisme interne VAAPI. Augmenter peut améliorer le débit d'encodage sur un flux unique,\n"
+                      "mais exige plus de surfaces et ajoute de la latence."),
+    ParamSpec("compression_level", "Compression level", "int", default=4, minimum=0, maximum=7,
+              tooltip="Compromis vitesse/qualité du wrapper VAAPI.\n"
+                      "Valeur plus haute = plus rapide, mais qualité/compression légèrement inférieures."),
+    ParamSpec("b", "Bitrate cible", "text", default="",
+              tooltip="Bitrate ffmpeg standard (-b). Accepte les suffixes ffmpeg, ex: 18M ou 18000k.\n"
+                      "Peut volontairement surcharger le mode SIZE du workflow."),
+    ParamSpec("maxrate", "Max bitrate", "text", default="",
+              tooltip="Plafond ffmpeg standard (-maxrate). Accepte les suffixes ffmpeg, ex: 24M."),
+    ParamSpec("bufsize", "Buffer size", "text", default="",
+              tooltip="Taille du buffer VBV ffmpeg (-bufsize). Accepte les suffixes ffmpeg, ex: 36M."),
+    ParamSpec("rc_init_occupancy", "RC init occupancy", "text", default="",
+              tooltip="Occupation initiale du buffer VBV (-rc_init_occupancy).\n"
+                      "Accepte les suffixes ffmpeg, ex: 18M."),
+    ParamSpec("qp", "QP", "int", default=22, minimum=0, maximum=52,
+              tooltip="Quantizer constant pour les modes CQP.\n"
+                      "Sur HEVC/H.264 VAAPI, ce champ correspond au QP des P-frames."),
+    ParamSpec("q", "Global quality", "int", default=23, minimum=0, maximum=255,
+              tooltip="Option ffmpeg standard (-q / -global_quality).\n"
+                      "Plus la valeur est élevée, plus la qualité baisse et la taille diminue."),
+    ParamSpec("qmin", "QP min", "int", default=0, minimum=0, maximum=255,
+              tooltip="Bornage inférieur du quantizer autorisé."),
+    ParamSpec("qmax", "QP max", "int", default=51, minimum=0, maximum=255,
+              tooltip="Bornage supérieur du quantizer autorisé."),
+    ParamSpec("i_qfactor", "I qfactor", "float", default=-0.8, minimum=-20.0, maximum=20.0, step=0.1,
+              tooltip="Facteur relatif appliqué aux I-frames par rapport aux P-frames.\n"
+                      "Valeurs négatives favorisent davantage les I-frames."),
+    ParamSpec("i_qoffset", "I qoffset", "float", default=0.0, minimum=-20.0, maximum=20.0, step=0.1,
+              tooltip="Offset ajouté au quantizer des I-frames."),
+    ParamSpec("b_qfactor", "B qfactor", "float", default=1.25, minimum=-20.0, maximum=20.0, step=0.1,
+              tooltip="Facteur relatif appliqué aux B-frames par rapport aux P-frames."),
+    ParamSpec("b_qoffset", "B qoffset", "float", default=1.25, minimum=-20.0, maximum=20.0, step=0.1,
+              tooltip="Offset ajouté au quantizer des B-frames."),
+    ParamSpec("blbrc", "Block-level BRC", "bool",
+              tooltip="Bitrate Control au niveau bloc plutôt que frame.\n"
+                      "Régule plus finement le débit intra-frame. Invalide en mode CQP."),
+    ParamSpec("max_frame_size", "Max frame size (bytes)", "int",
+              default=0, minimum=0, maximum=100_000_000,
+              tooltip="Taille maximale d'une frame compressée en bytes.\n"
+                      "0 = pas de limite. Utile pour streaming avec contraintes de buffer."),
+    ParamSpec("slices", "Slices", "int", default=0, minimum=0, maximum=256,
+              tooltip="Nombre de slices de sortie demandé au wrapper ffmpeg.\n"
+                      "0 = laisse l'encodeur choisir."),
+)
+
+_VAAPI_COMMON_PLATFORM_PARAMS = (
+    ParamSpec("low_power", "Low-power encoding", "bool",
+              tooltip="Active le moteur basse consommation quand la plateforme en propose un.\n"
+                      "Peut réduire le set de fonctionnalités disponibles."),
+)
+
 _VAAPI_HEVC_LEVEL = tuple((v, v) for v in
                           ("auto", "1", "2", "2.1", "3", "3.1", "4", "4.1",
                            "5", "5.1", "5.2", "6", "6.1", "6.2"))
@@ -613,28 +743,8 @@ _VAAPI_HEVC = CodecSchema(
     codec="hevc_vaapi",
     style="ffmpeg_flags",
     groups=(
-        ParamGroup("GOP / B-frames", (
-            ParamSpec("idr_interval", "IDR interval (frames)", "int",
-                      default=0, minimum=0, maximum=600,
-                      tooltip="Distance entre IDR (Instantaneous Decoder Refresh).\n"
-                              "0 = laisse le driver décider (typiquement = GOP size).\n"
-                              "Une IDR vide complètement le buffer de référence — meilleur seek."),
-            ParamSpec("b_depth", "B-frame ref depth", "int", default=1, minimum=1, maximum=4,
-                      tooltip="Profondeur de la pyramide de références B-frames.\n"
-                              "1 = B-frames non-référencées. 2-4 = pyramide hiérarchique (qualité ↑).\n"
-                              "Support hardware variable selon le driver/iGPU."),
-        )),
-        ParamGroup("Rate control", (
-            ParamSpec("blbrc", "Block-level BRC", "bool",
-                      tooltip="Bitrate Control au niveau bloc plutôt que frame.\n"
-                              "Régule plus finement le débit dans la frame, qualité légèrement améliorée. "
-                              "Disponible sur Skylake+ pour HEVC."),
-            ParamSpec("max_frame_size", "Max frame size (bytes)", "int",
-                      default=0, minimum=0, maximum=100_000_000,
-                      tooltip="Taille maximale d'une frame compressée en bytes.\n"
-                              "0 = pas de limite. Utile pour streaming HLS/DASH avec contraintes "
-                              "de buffer ou bitrate de pic."),
-        )),
+        ParamGroup("GOP / B-frames", _VAAPI_COMMON_GOP_PARAMS),
+        ParamGroup("Rate control", _VAAPI_COMMON_RATE_CONTROL_PARAMS),
         ParamGroup("Profil / Level", (
             ParamSpec("profile", "Profile", "enum", default="main10", options=_VAAPI_HEVC_PROFILE,
                       tooltip="• main : 8-bit 4:2:0 — compatibilité universelle.\n"
@@ -663,10 +773,7 @@ _VAAPI_HEVC = CodecSchema(
                       tooltip="Découpage en tuiles HEVC pour parallélisation décodage.\n"
                               "Format : 'colsxrows' (ex: 2x1, 4x2). Vide = pas de tuiles.\n"
                               "Utile pour 4K+ : améliore les performances du décodeur côté lecture."),
-            ParamSpec("low_power", "Low-power encoding", "bool",
-                      tooltip="Active le moteur VDENC (basse consommation, dispo sur Intel iGPU).\n"
-                              "Plus rapide et moins gourmand mais qualité légèrement inférieure au "
-                              "pipeline complet PAK."),
+            *_VAAPI_COMMON_PLATFORM_PARAMS,
         )),
         ParamGroup("Avancé / libre", (
             ParamSpec("__free__", "Flags libres", "text", default="",
@@ -693,25 +800,9 @@ _VAAPI_H264 = CodecSchema(
     codec="h264_vaapi",
     style="ffmpeg_flags",
     groups=(
-        ParamGroup("GOP / B-frames", (
-            ParamSpec("idr_interval", "IDR interval (frames)", "int",
-                      default=0, minimum=0, maximum=600,
-                      tooltip="Distance entre IDR (Instantaneous Decoder Refresh).\n"
-                              "0 = laisse le driver décider (= GOP size typiquement).\n"
-                              "IDR = keyframe qui vide le buffer de référence (meilleur seek)."),
-            ParamSpec("b_depth", "B-frame ref depth", "int", default=1, minimum=1, maximum=4,
-                      tooltip="Profondeur de la pyramide B-frames.\n"
-                              "1 = B-frames non-référencées. 2-4 = hiérarchique (qualité ↑).\n"
-                              "Support hardware variable."),
-        )),
+        ParamGroup("GOP / B-frames", _VAAPI_COMMON_GOP_PARAMS),
         ParamGroup("Rate control", (
-            ParamSpec("blbrc", "Block-level BRC", "bool",
-                      tooltip="Bitrate Control au niveau macrobloc plutôt que frame.\n"
-                              "Régule plus finement le débit dans la frame, qualité légèrement améliorée."),
-            ParamSpec("max_frame_size", "Max frame size (bytes)", "int",
-                      default=0, minimum=0, maximum=100_000_000,
-                      tooltip="Taille maximale d'une frame compressée en bytes.\n"
-                              "0 = pas de limite. Utile pour streaming avec contraintes de buffer."),
+            *_VAAPI_COMMON_RATE_CONTROL_PARAMS,
             ParamSpec("quality", "Quality (speed/quality)", "int",
                       default=-1, minimum=-1, maximum=8,
                       tooltip="Compromis vitesse/qualité du moteur d'encodage.\n"
@@ -749,9 +840,7 @@ _VAAPI_H264 = CodecSchema(
                               "Recommandé pour streaming MPEG-TS/RTP. Inutile pour MKV/MP4."),
         )),
         ParamGroup("Plateforme", (
-            ParamSpec("low_power", "Low-power encoding", "bool",
-                      tooltip="Active le moteur VDENC (basse consommation, Intel iGPU).\n"
-                              "Plus rapide et moins gourmand, qualité légèrement inférieure."),
+            *_VAAPI_COMMON_PLATFORM_PARAMS,
         )),
         ParamGroup("Avancé / libre", (
             ParamSpec("__free__", "Flags libres", "text", default="",
@@ -771,25 +860,9 @@ _VAAPI_AV1 = CodecSchema(
     codec="av1_vaapi",
     style="ffmpeg_flags",
     groups=(
-        ParamGroup("GOP / B-frames", (
-            ParamSpec("idr_interval", "IDR interval (frames)", "int",
-                      default=0, minimum=0, maximum=600,
-                      tooltip="Distance entre keyframes IDR.\n"
-                              "0 = laisse le driver décider. AV1 supporte des GOP très longs grâce à "
-                              "sa robustesse aux artefacts."),
-            ParamSpec("b_depth", "B-frame ref depth", "int", default=1, minimum=1, maximum=4,
-                      tooltip="Profondeur de la pyramide B-frames.\n"
-                              "AV1 utilise plutôt des frames ALTREF (prédiction temporelle) — gain "
-                              "limité des B-frames classiques."),
-        )),
-        ParamGroup("Rate control", (
-            ParamSpec("blbrc", "Block-level BRC", "bool",
-                      tooltip="Bitrate Control au niveau bloc plutôt que frame.\n"
-                              "Régule plus finement le débit dans la frame."),
-            ParamSpec("max_frame_size", "Max frame size (bytes)", "int",
-                      default=0, minimum=0, maximum=100_000_000,
-                      tooltip="Taille maximale d'une frame compressée en bytes.\n"
-                              "0 = pas de limite."),
+        ParamGroup("GOP / B-frames", _VAAPI_COMMON_GOP_PARAMS),
+        ParamGroup("Rate control", tuple(
+            spec for spec in _VAAPI_COMMON_RATE_CONTROL_PARAMS if spec.key != "qp"
         )),
         ParamGroup("Profil / Level", (
             ParamSpec("profile", "Profile", "enum", default="main", options=_VAAPI_AV1_PROFILE,
@@ -815,9 +888,7 @@ _VAAPI_AV1 = CodecSchema(
                               "Permet de découper le bitstream pour transport segmenté. 1 = défaut."),
         )),
         ParamGroup("Plateforme", (
-            ParamSpec("low_power", "Low-power encoding", "bool",
-                      tooltip="Active le moteur VDENC. Pour AV1 sur Intel Arc, "
-                              "low_power=1 est souvent le seul mode disponible."),
+            *_VAAPI_COMMON_PLATFORM_PARAMS,
         )),
         ParamGroup("Avancé / libre", (
             ParamSpec("__free__", "Flags libres", "text", default="",
@@ -1164,9 +1235,636 @@ _LIBX264 = CodecSchema(
     ),
 )
 
+# =============================================================================
+# NVEncC (rigaya) — wrapper standalone NVIDIA NVENC
+# =============================================================================
+# Style de sérialisation: ``nvencc_flags`` (long-form ``--key value`` au lieu
+# du ``-key value`` ffmpeg). Les booléens utilisent :
+#   - bool_repr=(None, "")            → flag seul si activé (ex: ``--aq``)
+#   - bool_repr=("--no-X", "--X")     → variantes paire ON/OFF (ex: ``--deblock`` / ``--no-deblock``)
+# Les paramètres VPP ``--vpp-*`` sont saisis en mode ``text`` (chaîne composée
+# ``param=val,param=val``) car leur ergonomie mérite une UI custom future.
+
+# -------- Constantes communes ------------------------------------------------
+
+_NVENCC_PRESETS = (("default", "default"), ("performance", "performance"),
+                   ("quality", "quality"),
+                   ("P1", "P1"), ("P2", "P2"), ("P3", "P3"), ("P4", "P4 (défaut)"),
+                   ("P5", "P5"), ("P6", "P6"), ("P7", "P7"))
+_NVENCC_TUNES = (("hq", "hq — high quality"), ("uhq", "uhq — ultra high quality"),
+                 ("lowlatency", "lowlatency"), ("ultralowlatency", "ultralowlatency"),
+                 ("lossless", "lossless"))
+_NVENCC_MULTIPASS = (("none", "none (1 passe)"),
+                     ("2pass-quarter", "2pass-quarter (quart de résolution)"),
+                     ("2pass-full", "2pass-full (pleine résolution)"))
+_NVENCC_BREF = (("auto", "auto"), ("disabled", "disabled"),
+                ("each", "each"), ("middle", "middle"))
+_NVENCC_MV_PRECISION = (("auto", "auto"), ("Q-pel", "Q-pel"),
+                        ("half-pel", "half-pel"), ("full-pel", "full-pel"))
+_NVENCC_OUTPUT_DEPTH = (("8", "8-bit"), ("10", "10-bit"))
+_NVENCC_OUTPUT_CSP = (("yuv420", "yuv420"), ("yuv422", "yuv422"),
+                      ("yuv444", "yuv444"), ("rgb", "rgb"), ("yuva420", "yuva420"))
+_NVENCC_COLORMATRIX = tuple((v, v) for v in (
+    "undef", "auto", "bt709", "smpte170m", "bt470bg", "smpte240m",
+    "YCgCo", "fcc", "GBR", "bt2020nc", "bt2020c"))
+_NVENCC_COLORPRIM = tuple((v, v) for v in (
+    "undef", "auto", "bt709", "smpte170m", "bt470m", "bt470bg",
+    "smpte240m", "film", "bt2020"))
+_NVENCC_TRANSFER = tuple((v, v) for v in (
+    "undef", "auto", "bt709", "smpte170m", "bt470m", "bt470bg", "smpte240m",
+    "linear", "log100", "log316", "iec61966-2-4", "bt1361e", "iec61966-2-1",
+    "bt2020-10", "bt2020-12", "smpte2084", "smpte428", "arib-std-b67"))
+_NVENCC_COLORRANGE = (("limited", "limited"), ("full", "full"), ("auto", "auto"))
+_NVENCC_VIDEOFORMAT = tuple((v, v) for v in
+                            ("undef", "ntsc", "component", "pal", "secam", "mac"))
+_NVENCC_DOLBY_VISION_PROFILE = tuple((v, v) for v in (
+    "unset", "copy", "5.0", "8.1", "8.2", "8.4", "10.0", "10.1", "10.2", "10.4"))
+_NVENCC_VPP_DEINTERLACE = (("none", "none"), ("normal", "normal"),
+                           ("adaptive", "adaptive"), ("bob", "bob"))
+_NVENCC_VPP_RESIZE = tuple((v, v) for v in (
+    "lanczos", "spline16", "spline36", "spline64", "nearest", "bilinear"))
+_NVENCC_VPP_ROTATE = (("90", "90°"), ("180", "180°"), ("270", "270°"))
+_NVENCC_CUDA_SCHEDULE = (("auto", "auto"), ("spin", "spin"),
+                         ("yield", "yield"), ("blocking", "blocking"))
+
+# Niveaux par codec
+_NVENCC_LEVEL_HEVC = tuple((v, v) for v in (
+    "auto", "1", "2", "2.1", "3", "3.1", "4", "4.1", "5", "5.1", "5.2",
+    "6", "6.1", "6.2"))
+_NVENCC_LEVEL_H264 = tuple((v, v) for v in (
+    "auto", "1", "1b", "1.1", "1.2", "1.3", "2", "2.1", "2.2",
+    "3", "3.1", "3.2", "4", "4.1", "4.2", "5", "5.1", "5.2"))
+_NVENCC_LEVEL_AV1 = tuple((v, v) for v in (
+    "auto", "2", "2.1", "3", "3.1", "4", "4.1",
+    "5", "5.1", "5.2", "5.3", "6", "6.1"))
+
+# Profiles par codec
+_NVENCC_PROFILE_HEVC = (("auto", "auto"), ("main", "main"),
+                        ("main10", "main10 (10-bit)"), ("main444", "main444"))
+_NVENCC_PROFILE_H264 = (("auto", "auto"), ("baseline", "baseline"), ("main", "main"),
+                        ("high", "high"), ("high10", "high10"), ("high422", "high422"),
+                        ("high444", "high444"))
+_NVENCC_PROFILE_AV1 = (("auto", "auto"), ("main", "main"), ("high", "high"))
+
+
+# -------- Helpers : groupes communs ------------------------------------------
+# Beaucoup de groupes (Rate Control, GOP, AQ&Tune, HDR, VPP-*, Device, Quality
+# metrics, Free) sont identiques entre les 3 codecs. On les construit via
+# helpers pour éviter la duplication.
+
+def _nvencc_group_rate_control() -> ParamGroup:
+    return ParamGroup("Rate control", (
+        # Modes RC mutuellement exclusifs : l'utilisateur choisit l'un d'eux.
+        ParamSpec("cqp", "CQP (constant QP, I:P:B)", "text", default="20:23:25",
+                  tooltip="Mode CQP — qualité constante. Format ``I:P:B`` ou ``X`` (auto-expansé en ``X:X:X``).\n"
+                          "Référence absolue de qualité, pas de cible bitrate.\n"
+                          "Typique remux UHD : 18:20:22 (très haute qualité)."),
+        ParamSpec("vbr", "VBR (kbps)", "int", minimum=0, maximum=400000, suffix=" kbps",
+                  tooltip="Mode VBR — bitrate moyen cible (kbps).\n"
+                          "Combinaison usuelle : --vbr <bitrate> + --max-bitrate (1.5-2×) + --vbv-bufsize."),
+        ParamSpec("vbrhq", "VBR-HQ (kbps)", "int", minimum=0, maximum=400000, suffix=" kbps",
+                  tooltip="VBR haute qualité (NVEncC). Bitrate moyen cible avec moteur RC plus précis."),
+        ParamSpec("cbr", "CBR (kbps)", "int", minimum=0, maximum=400000, suffix=" kbps",
+                  tooltip="Mode CBR — bitrate constant. Utile pour streaming live et HW décodeurs limités."),
+        ParamSpec("cbrhq", "CBR-HQ (kbps)", "int", minimum=0, maximum=400000, suffix=" kbps",
+                  tooltip="CBR haute qualité avec moteur RC NVEncC plus précis."),
+        ParamSpec("qvbr", "QVBR (qualité 0-51)", "float", minimum=0.0, maximum=51.0,
+                  default=24.0, step=0.5,
+                  tooltip="QVBR — quality-defined VBR (mode défaut NVEncC).\n"
+                          "0 = auto, 1 = qualité maximale, 51 = qualité minimale.\n"
+                          "Typique 22-26 pour HEVC HQ."),
+        ParamSpec("vbr-quality", "VBR quality (0-51)", "float", minimum=0.0, maximum=51.0,
+                  default=24.0, step=0.5,
+                  tooltip="Cible qualité VBR (associée à --vbr ou --vbrhq)."),
+        ParamSpec("max-bitrate", "Max bitrate (kbps)", "int", minimum=0, maximum=400000,
+                  suffix=" kbps",
+                  tooltip="Plafond instantané du débit. Typique 1.5-2× le bitrate moyen pour absorber les pics."),
+        ParamSpec("vbv-bufsize", "VBV buffer (kbps)", "int", minimum=0, maximum=800000,
+                  suffix=" kbps",
+                  tooltip="Taille du buffer VBV. Typiquement 2× max-bitrate.\n"
+                          "Plus grand = plus de souplesse pour les pics, latence de décodage accrue."),
+        ParamSpec("multipass", "Multipass", "enum", default="none", options=_NVENCC_MULTIPASS,
+                  tooltip="Encodage multi-passes pour mieux distribuer le bitrate.\n"
+                          "• 2pass-full : qualité maximale (~30% plus lent). Requiert Turing+."),
+        ParamSpec("lossless", "Lossless", "bool", bool_repr=(None, ""),
+                  tooltip="Encodage sans perte (taille de fichier énorme).\n"
+                          "Réservé à l'archivage / mastering ; incompatible avec la majorité des modes RC."),
+        ParamSpec("qp-init", "QP init (I:P:B)", "text", default="20:23:25",
+                  tooltip="QP initial des frames I/P/B en mode CQP.\n"
+                          "Format ``I:P:B`` ou ``X`` (auto-expansé en ``X:X:X``)."),
+        ParamSpec("qp-min", "QP min (I:P:B)", "text", default="0:0:0",
+                  tooltip="Plancher QP.\n"
+                          "Format ``I:P:B`` ou ``X`` (auto-expansé en ``X:X:X``)."),
+        ParamSpec("qp-max", "QP max (I:P:B)", "text", default="51:51:51",
+                  tooltip="Plafond QP.\n"
+                          "Format ``I:P:B`` ou ``X`` (auto-expansé en ``X:X:X``)."),
+        ParamSpec("chroma-qp-offset", "Chroma QP offset", "int", default=0,
+                  minimum=-12, maximum=12,
+                  tooltip="Décalage QP appliqué aux plans chroma vs luma.\n"
+                          "Négatif = chroma plus précis (utile pour préserver les couleurs saturées)."),
+        ParamSpec("dynamic-rc", "Dynamic RC", "text",
+                  tooltip="Change le mode RC sur des plages de frames spécifiques.\n"
+                          "Format avancé : ``<start>:<end>,param=val[,...]`` (cf. doc NVEncC)."),
+    ))
+
+
+def _nvencc_group_frame_gop(*, with_multiref: bool) -> ParamGroup:
+    """Frame structure / GOP. ``with_multiref`` désactive l-list pour AV1."""
+    params: list[ParamSpec] = [
+        ParamSpec("bframes", "B-frames", "int", default=3, minimum=0, maximum=16,
+                  tooltip="Nombre maximum de B-frames consécutives.\n"
+                          "HEVC : jusqu'à 8. AV1 : jusqu'à 7. H.264 : jusqu'à 4."),
+        ParamSpec("bref-mode", "B-ref mode", "enum", default="auto", options=_NVENCC_BREF,
+                  tooltip="Permet aux B-frames de servir de référence.\n"
+                          "• middle : seule la B du milieu est référence — meilleur compromis qualité.\n"
+                          "Requiert Turing+."),
+        ParamSpec("ref", "Reference frames", "int", default=3, minimum=1, maximum=16,
+                  tooltip="Nombre de frames de référence pour la prédiction inter-image.\n"
+                          "Plus = meilleure qualité scènes complexes, encodage plus lent."),
+    ]
+    if with_multiref:
+        params.extend([
+            ParamSpec("multiref-l0", "MultiRef L0", "int", minimum=0, maximum=7,
+                      tooltip="Nombre max de frames de référence dans la liste L0 (HEVC/H.264 only)."),
+            ParamSpec("multiref-l1", "MultiRef L1", "int", minimum=0, maximum=7,
+                      tooltip="Nombre max de frames de référence dans la liste L1 (HEVC/H.264 only)."),
+        ])
+    params.extend([
+        ParamSpec("gop-len", "GOP length", "int", default=250, minimum=1, maximum=600,
+                  tooltip="Distance maximale entre keyframes.\n"
+                          "Typique : 10× framerate. 250 pour 25fps, 240 pour 24p."),
+        ParamSpec("strict-gop", "Strict GOP", "bool", bool_repr=(None, ""),
+                  tooltip="Force une structure GOP strictement régulière.\n"
+                          "Désactive la détection de scenecut. Utile pour ABR streaming."),
+        ParamSpec("no-i-adapt", "Disable adaptive I-frame", "bool", bool_repr=(None, ""),
+                  tooltip="Désactive l'insertion adaptative de keyframes sur scenecut."),
+        ParamSpec("no-b-adapt", "Disable adaptive B-frame", "bool", bool_repr=(None, ""),
+                  tooltip="Désactive l'insertion adaptative de B-frames."),
+        ParamSpec("lookahead", "Lookahead (frames)", "int", default=16, minimum=0, maximum=32,
+                  tooltip="Frames analysées en avance pour optimiser placement B-frames et QP.\n"
+                          "16-32 = bon compromis. 0 désactive (perte qualité notable)."),
+        ParamSpec("lookahead-level", "Lookahead level", "int", default=0, minimum=0, maximum=3,
+                  tooltip="Profondeur d'analyse du lookahead.\n"
+                          "0 = standard. 3 = analyse plus poussée (plus lent)."),
+        ParamSpec("weightp", "Weighted P", "bool", bool_repr=(None, ""),
+                  tooltip="Prédiction pondérée — améliore compression sur fondus, transitions de luminosité.\n"
+                          "Requiert Pascal+."),
+        ParamSpec("nonrefp", "Non-ref P", "bool", bool_repr=(None, ""),
+                  tooltip="Active automatiquement les P-frames non-référencées.\n"
+                          "Économise du bitrate au prix d'une légère perte qualité."),
+        ParamSpec("unidirectb", "Uni-directional B", "bool", bool_repr=(None, ""),
+                  tooltip="Force des B-frames uni-directionnelles (référence seule en avant)."),
+        ParamSpec("mv-precision", "MV precision", "enum", default="auto",
+                  options=_NVENCC_MV_PRECISION,
+                  tooltip="Précision des vecteurs de mouvement.\n"
+                          "Q-pel = quart de pixel (qualité), full-pel = pixel entier (rapide)."),
+    ])
+    return ParamGroup("Frame structure / GOP", tuple(params))
+
+
+def _nvencc_group_aq_tune() -> ParamGroup:
+    return ParamGroup("Adaptive Quant. & Tune", (
+        ParamSpec("preset", "Preset", "enum", default="P4", options=_NVENCC_PRESETS,
+                  tooltip="Preset NVEncC.\n"
+                          "• default/performance/quality : presets historiques.\n"
+                          "• P1 (rapide) → P7 (qualité max). P4 = défaut équilibré.\n"
+                          "Note : ``--preset`` est aussi positionnel (-u) ; ce flag long-form fonctionne."),
+        ParamSpec("tune", "Tune", "enum", default="hq", options=_NVENCC_TUNES,
+                  tooltip="Profil d'usage de l'encodeur.\n"
+                          "• hq/uhq : qualité maximale (offline) — recommandé.\n"
+                          "• lowlatency/ultralowlatency : streaming.\n"
+                          "• lossless : sans perte."),
+        ParamSpec("aq", "Spatial AQ", "bool", bool_repr=(None, ""),
+                  tooltip="Adaptive Quantization spatial : alloue plus de bits aux zones lisses où "
+                          "la compression est visible (ciels, peau).\n"
+                          "Améliore notablement la qualité perçue. Recommandé toujours actif."),
+        ParamSpec("aq-temporal", "Temporal AQ", "bool", bool_repr=(None, ""),
+                  tooltip="AQ temporel : propage la qualité dans le temps en privilégiant les frames "
+                          "qui servent de référence.\n"
+                          "Requiert Turing+. Gain ~5-10%."),
+        ParamSpec("aq-strength", "AQ strength", "int", default=0, minimum=0, maximum=15,
+                  tooltip="Intensité de l'AQ (1-15, 0=auto).\n"
+                          "8 = défaut équilibré. 12+ peut introduire du flou sur détails fins."),
+    ))
+
+
+def _nvencc_group_hdr() -> ParamGroup:
+    """Couleurs + HDR statique/dynamique + Dolby Vision (HEVC/AV1 only)."""
+    return ParamGroup("HDR / Color", (
+        ParamSpec("colorrange", "Color range", "enum", default="auto",
+                  options=_NVENCC_COLORRANGE,
+                  tooltip="• limited : 16-235 (broadcast standard).\n"
+                          "• full : 0-255 (PC, certains streams)."),
+        ParamSpec("videoformat", "Video format", "enum", default="undef",
+                  options=_NVENCC_VIDEOFORMAT,
+                  tooltip="Format source pour le signaling SEI."),
+        ParamSpec("atc-sei", "ATC SEI", "text",
+                  tooltip="Alternative transfer characteristics SEI (HEVC) — int ou nom de transfer."),
+        ParamSpec("dolby-vision-rpu-prm", "DoVi RPU params", "text", default="crop=true",
+                  tooltip="Paramètres RPU DoVi. Ex : ``crop=true`` pour préserver le crop L5 actif."),
+    ))
+
+
+def _nvencc_group_sei() -> ParamGroup:
+    return ParamGroup("SEI / Framing", (
+        ParamSpec("aud", "Insert AUD", "bool", bool_repr=(None, ""),
+                  tooltip="Insert Access Unit Delimiter (HEVC/H.264).\n"
+                          "Requis pour certains players Blu-ray et muxers TS."),
+        ParamSpec("repeat-headers", "Repeat headers", "bool", bool_repr=(None, ""),
+                  tooltip="Output VPS/SPS/PPS pour chaque IDR.\n"
+                          "Requis pour streaming/seek arbitraire."),
+        ParamSpec("pic-struct", "Pic struct SEI", "bool", bool_repr=(None, ""),
+                  tooltip="Insert Picture Timing SEI."),
+        ParamSpec("temporal-layers", "Temporal layers", "int", minimum=0, maximum=4,
+                  tooltip="Nombre de couches temporelles (hierarchical coding).\n"
+                          "0 = désactivé. Utile pour streaming adaptatif."),
+    ))
+
+
+def _nvencc_group_vpp_resize() -> ParamGroup:
+    return ParamGroup("VPP — Resize / Géométrie", (
+        ParamSpec("vpp-resize", "Resize algo", "enum", default="lanczos",
+                  options=_NVENCC_VPP_RESIZE,
+                  tooltip="Algorithme de redimensionnement.\n"
+                          "• lanczos : qualité haute, défaut recommandé.\n"
+                          "• spline36/64 : alternatives haute qualité.\n"
+                          "• bilinear/nearest : rapide, qualité moindre.\n"
+                          "Combiner avec --output-res pour cibler une résolution."),
+        ParamSpec("vpp-rotate", "Rotation", "enum", default="90",
+                  options=_NVENCC_VPP_ROTATE,
+                  tooltip="Rotation de la vidéo (90/180/270°). Géré GPU."),
+        ParamSpec("vpp-transform", "Transform", "text",
+                  tooltip="Flip/transpose. Format : ``flip_x=true,flip_y=false,transpose=false``."),
+        ParamSpec("vpp-pad", "Pad (L,T,R,B)", "text",
+                  tooltip="Ajoute des bandes noires. Format : ``<L>,<T>,<R>,<B>`` en pixels."),
+        ParamSpec("crop", "Crop (L,T,R,B)", "text",
+                  tooltip="Découpe en pixels.\n"
+                          "Format : ``<L>,<T>,<R>,<B>`` (pixels à retirer de chaque bord).\n"
+                          "Ex: ``0,140,0,140`` pour retirer 140px haut/bas (passage 16:9 → 2.40)."),
+    ))
+
+
+def _nvencc_group_vpp_deinterlace() -> ParamGroup:
+    return ParamGroup("VPP — Deinterlace / Frame ops", (
+        ParamSpec("vpp-deinterlace", "Deinterlace", "enum", default="none",
+                  options=_NVENCC_VPP_DEINTERLACE,
+                  tooltip="Désentrelacement basique. Pour la qualité maximale, utiliser --vpp-nnedi ou --vpp-yadif."),
+        ParamSpec("vpp-afs", "AFS (auto field shift)", "text",
+                  tooltip="Auto Field Shift — désentrelaceur avancé pour sources NTSC/film telecine.\n"
+                          "Format : ``preset=24fps,...``. Convertit télécine → 24p natif."),
+        ParamSpec("vpp-yadif", "Yadif", "text",
+                  tooltip="Désentrelaceur classique. Format : ``mode=auto`` (auto/tff/bff/bob/bob_tff/bob_bff)."),
+        ParamSpec("vpp-nnedi", "NNEDI (neural net)", "text",
+                  tooltip="Désentrelaceur neuronal — qualité maximale.\n"
+                          "Format : ``nns=64,quality=slow,field=auto``. nns ∈ {16,32,64,128,256}."),
+        ParamSpec("vpp-decomb", "Decomb", "text",
+                  tooltip="Désentrelacement adaptatif. Format : ``full=true,threshold=10,blend=false``."),
+        ParamSpec("vpp-decimate", "Decimate", "text",
+                  tooltip="Drop des frames dupliquées (cadence fixe). Format : ``cycle=5,drop=1``."),
+        ParamSpec("vpp-mpdecimate", "MP Decimate", "text",
+                  tooltip="Drop des duplicats consécutifs (VFR). Format : ``hi=768,lo=320,frac=0.33``."),
+        ParamSpec("vpp-select-every", "Select every", "text",
+                  tooltip="Garde 1 frame sur N. Format : ``<N>,offset=0``. Ex: ``3,offset=1``."),
+        ParamSpec("vpp-rff", "RFF flag", "bool", bool_repr=(None, ""),
+                  tooltip="Honore le flag Repeat Field Flag du stream source."),
+    ))
+
+
+def _nvencc_group_vpp_denoise() -> ParamGroup:
+    return ParamGroup("VPP — Denoise", (
+        ParamSpec("vpp-knn", "KNN denoise", "text",
+                  tooltip="K-nearest neighbors denoising — rapide, GPU.\n"
+                          "Format : ``radius=4,strength=0.08,lerp=0.2``. strength ∈ [0,1]."),
+        ParamSpec("vpp-pmd", "PMD denoise", "text",
+                  tooltip="Piecewise Directional Motion denoiser.\n"
+                          "Format : ``apply_count=2,strength=100,threshold=100``."),
+        ParamSpec("vpp-nlmeans", "NLMeans denoise", "text",
+                  tooltip="Non-local means — qualité haute, lent.\n"
+                          "Format : ``h=0.05,patch=5,research=11``."),
+        ParamSpec("vpp-denoise-dct", "DCT denoise", "text",
+                  tooltip="Denoising DCT-based.\n"
+                          "Format : ``sigma=4,block_size=8,quality=high``."),
+        ParamSpec("vpp-fft3d", "FFT 3D denoise", "text",
+                  tooltip="FFT 3D denoiser — qualité très haute, temporel.\n"
+                          "Format : ``sigma=4,block_size=32,prev_frames=2,next_frames=2``."),
+        ParamSpec("vpp-gauss", "Gaussian blur", "int", default=0, minimum=0, maximum=100,
+                  tooltip="Flou gaussien (0-100). À utiliser avec parcimonie (perte de détail)."),
+        ParamSpec("vpp-smooth", "Smooth", "text",
+                  tooltip="Smoothing filter. Format : ``quality=3,strength=4``."),
+        ParamSpec("vpp-convolution3d", "Convolution3D", "text",
+                  tooltip="Convolution 3D denoiser. Format : ``matrix=standard,fast=true,ythresh=3``."),
+        ParamSpec("vpp-nvvfx-denoise", "NVVFX denoise", "text",
+                  tooltip="NVIDIA MAXINE webcam denoising. Format : ``strength=1.0`` (0..1).\n"
+                          "Requiert SDK NVVFX installé."),
+        ParamSpec("vpp-nvvfx-artifact-reduction", "NVVFX artifact reduction", "bool",
+                  bool_repr=(None, ""),
+                  tooltip="Réduction d'artefacts via NVVFX (sources lossy basse qualité)."),
+    ))
+
+
+def _nvencc_group_vpp_sharpen() -> ParamGroup:
+    return ParamGroup("VPP — Sharpen / Enhance", (
+        ParamSpec("vpp-unsharp", "Unsharp mask", "text",
+                  tooltip="Masque de netteté.\n"
+                          "Format : ``radius=3,weight=0.5,threshold=0.05``."),
+        ParamSpec("vpp-edgelevel", "Edge level", "text",
+                  tooltip="Renforcement des contours.\n"
+                          "Format : ``strength=5,threshold=20,black=0,white=0``."),
+        ParamSpec("vpp-warpsharp", "Warp sharp", "text",
+                  tooltip="Warp-based sharpening (préserve les bords). Format avancé, voir doc NVEncC."),
+        ParamSpec("vpp-msharpen", "M Sharpen", "text",
+                  tooltip="Motion-aware sharpening. Format : ``threshold=15,strength=85``."),
+    ))
+
+
+def _nvencc_group_vpp_color() -> ParamGroup:
+    return ParamGroup("VPP — Color / Tonemap", (
+        ParamSpec("vpp-tweak", "Color tweak", "text",
+                  tooltip="Réglages basiques.\n"
+                          "Format : ``brightness=0.0,contrast=1.0,saturation=1.0,hue=0.0,gamma=1.0``."),
+        ParamSpec("vpp-curves", "Color curves", "text",
+                  tooltip="Courbes tonales par canal. Format avancé, voir doc NVEncC."),
+        ParamSpec("vpp-deband", "Deband", "text",
+                  tooltip="Suppression du banding (gradients postérisés).\n"
+                          "Format : ``range=15,threshold=15,dither=true``."),
+        ParamSpec("vpp-libplacebo-deband", "libplacebo deband", "text",
+                  tooltip="Debanding libplacebo (qualité supérieure)."),
+    ))
+
+
+def _nvencc_group_vpp_logo_overlay() -> ParamGroup:
+    return ParamGroup("VPP — Logo / Overlay / Subs", (
+        ParamSpec("vpp-delogo", "Delogo", "text",
+                  tooltip="Suppression de logo.\n"
+                          "Format : ``<logofile.lgd>,select=0,depth=0,pos=0:0`` (fichier .lgd requis)."),
+        ParamSpec("vpp-overlay", "Overlay", "text",
+                  tooltip="Incrustation image/vidéo.\n"
+                          "Format : ``file=<path>,x=0,y=0,alpha=1.0``."),
+        ParamSpec("vpp-subburn", "Sub burn", "text",
+                  tooltip="Burn-in des sous-titres dans l'image.\n"
+                          "Format : ``track=1`` (track interne) ou ``filename=<srt/ass>``."),
+    ))
+
+
+def _nvencc_group_vpp_advanced() -> ParamGroup:
+    return ParamGroup("VPP — Avancé / NVIDIA", (
+        ParamSpec("vpp-libplacebo-shader", "libplacebo shader", "text",
+                  tooltip="Custom GLSL shader via libplacebo (chemin .glsl)."),
+        ParamSpec("vpp-fruc", "FRUC (frame rate up-conv)", "text",
+                  tooltip="Frame Rate Up-Conversion (NVIDIA Optical Flow).\n"
+                          "Format : ``mode=0`` (modes 0..N selon GPU). Ex: 30→60 fps."),
+        ParamSpec("vpp-ngx-truehdr", "NGX TrueHDR (SDR→HDR)", "bool", bool_repr=(None, ""),
+                  tooltip="NVIDIA NGX TrueHDR — convertit SDR en HDR par IA.\n"
+                          "Requiert RTX 20xx+ et SDK NGX."),
+        ParamSpec("vpp-perf-monitor", "Perf monitor", "bool", bool_repr=(None, ""),
+                  tooltip="Affiche les métriques de performance des filtres VPP."),
+        ParamSpec("vpp-nvvfx-model-dir", "NVVFX model dir", "text",
+                  tooltip="Chemin vers les modèles NVVFX (SDK NVIDIA MAXINE)."),
+    ))
+
+
+def _nvencc_group_device() -> ParamGroup:
+    return ParamGroup("Device / CUDA", (
+        ParamSpec("device", "GPU device", "int", default=0, minimum=0, maximum=8,
+                  tooltip="ID du GPU à utiliser (0 = premier). Cf. NVEncC --check-device."),
+        ParamSpec("cuda-schedule", "CUDA schedule", "enum", default="auto",
+                  options=_NVENCC_CUDA_SCHEDULE,
+                  tooltip="Mode de scheduling CUDA.\n"
+                          "• auto : laisse le driver choisir.\n"
+                          "• spin : actif (latence basse, CPU élevé).\n"
+                          "• yield/blocking : économe en CPU."),
+        ParamSpec("cuda-stream", "CUDA streams", "int", minimum=1, maximum=8,
+                  tooltip="Nombre de streams CUDA pour parallélisme intra-GPU."),
+        ParamSpec("cuda-mt", "CUDA multi-thread", "int", default=0, minimum=0, maximum=1,
+                  tooltip="Multi-threading CUDA. 0 = off, 1 = on."),
+        ParamSpec("disable-nvml", "Disable NVML", "bool", bool_repr=(None, ""),
+                  tooltip="Désactive NVIDIA Management Library (workaround driver bugs)."),
+        ParamSpec("parallel", "Parallel", "text",
+                  tooltip="Encodage parallèle de plusieurs segments.\n"
+                          "Valeurs : ``auto`` ou un entier.\n"
+                          "``all`` est un ancien alias accepté puis canonisé en ``auto``."),
+        ParamSpec("split-enc", "Split enc", "enum", default="disable",
+                  options=_NVENCC_SPLIT_ENC,
+                  tooltip="Frame-split encoding NVENC.\n"
+                          "Valeurs : ``disable``, ``auto``, ``auto_forced``, ``forced_2``, "
+                          "``forced_3``, ``forced_4``.\n"
+                          "À utiliser à la place de ``parallel`` ; les deux modes sont exclusifs."),
+        ParamSpec("lowlatency", "Low latency", "bool", bool_repr=(None, ""),
+                  tooltip="Mode faible latence pour streaming live."),
+        ParamSpec("max-procfps", "Max process FPS", "int", minimum=0, maximum=240,
+                  tooltip="Plafond de vitesse de traitement (frames/sec). 0 = illimité."),
+        ParamSpec("fallback-bitdepth", "Fallback bitdepth", "bool", bool_repr=(None, ""),
+                  tooltip="Fallback automatique si le GPU ne supporte pas la profondeur demandée."),
+    ))
+
+
+def _nvencc_group_quality_metrics() -> ParamGroup:
+    return ParamGroup("Quality metrics", (
+        ParamSpec("ssim", "SSIM", "bool", bool_repr=(None, ""),
+                  tooltip="Calcule SSIM en fin d'encodage. Pour benchmark."),
+        ParamSpec("psnr", "PSNR", "bool", bool_repr=(None, ""),
+                  tooltip="Calcule PSNR en fin d'encodage. Pour benchmark."),
+        ParamSpec("vmaf", "VMAF", "text",
+                  tooltip="Calcule VMAF.\n"
+                          "Format : ``model=vmaf_v0.6.1,threads=4,subsample=1,phone_model=false``."),
+    ))
+
+
+def _nvencc_group_free() -> ParamGroup:
+    return ParamGroup("Avancé / libre", (
+        ParamSpec("__free__", "Flags libres (ajoutés tel quel)", "text", default="",
+                  tooltip="Tokens NVEncC additionnels concaténés en fin de commande.\n"
+                          "Ex: ``--option-file <path>``, ``--input-option key=val``, "
+                          "``--mux-option opt:val``, ``--avsync vfr``, etc."),
+    ))
+
+
+# -------- Schémas codec ------------------------------------------------------
+
+def _nvencc_group_codec_output(*, profile_options, level_options,
+                               with_tier: bool) -> ParamGroup:
+    params: list[ParamSpec] = [
+        ParamSpec("profile", "Profile", "enum",
+                  default=profile_options[0][0], options=profile_options,
+                  tooltip="Profil du codec — détermine les outils autorisés et la "
+                          "compatibilité décodeurs."),
+    ]
+    if with_tier:
+        params.append(
+            ParamSpec("tier", "Tier", "enum", default="main",
+                      options=(("main", "main"), ("high", "high")),
+                      tooltip="Tier HEVC.\n"
+                              "• main : bitrate plafonné selon le level (consumer).\n"
+                              "• high : bitrate étendu — requis pour UHD HDR haut bitrate."))
+    params.extend([
+        ParamSpec("level", "Level", "enum", default="auto", options=level_options,
+                  tooltip="Level du codec — limite résolution/framerate/bitrate.\n"
+                          "auto = déduit du contenu. 5.1 = 4K@60p (HEVC) / 4K@30p (H.264)."),
+        ParamSpec("output-depth", "Output depth", "enum", default="8",
+                  options=_NVENCC_OUTPUT_DEPTH,
+                  tooltip="Profondeur de bit de sortie. 10 = obligatoire pour HDR."),
+        ParamSpec("output-csp", "Output color space", "enum", default="yuv420",
+                  options=_NVENCC_OUTPUT_CSP,
+                  tooltip="Espace couleur de sortie. yuv420 = standard ; yuv444/rgb = pro."),
+        ParamSpec("output-res", "Output resolution", "text",
+                  tooltip="Résolution de sortie.\n"
+                          "Format : ``WxH`` (ex: ``1920x1080``) ou ``0x-2`` (préserve aspect ratio)."),
+        ParamSpec("sar", "SAR (W:H)", "text",
+                  tooltip="Sample Aspect Ratio. Ex: ``1:1`` (square), ``40:33`` (PAL anamorphique)."),
+        ParamSpec("dar", "DAR (W:H)", "text",
+                  tooltip="Display Aspect Ratio. Ex: ``16:9``, ``2.40:1``."),
+    ])
+    return ParamGroup("Codec / Profile / Output", tuple(params))
+
+
+def _nvencc_group_hevc_specific() -> ParamGroup:
+    return ParamGroup("HEVC-specific", (
+        ParamSpec("cu-min", "CU min size", "enum", default="8",
+                  options=(("8", "8"), ("16", "16"), ("32", "32")),
+                  tooltip="Taille minimale des Coding Units HEVC.\n"
+                          "Plus petit = meilleure adaptation aux détails fins, encodage plus lent."),
+        ParamSpec("cu-max", "CU max size", "enum", default="32",
+                  options=(("8", "8"), ("16", "16"), ("32", "32")),
+                  tooltip="Taille maximale des Coding Units HEVC."),
+        ParamSpec("tf-level", "Temporal filter level", "enum", default="0",
+                  options=(("0", "off"), ("4", "level 4")),
+                  tooltip="Filtrage temporel HEVC. 0 = off, 4 = activé."),
+        ParamSpec("alpha-bitrate-ratio", "Alpha bitrate ratio", "int", minimum=0, maximum=100,
+                  tooltip="Ratio bitrate alpha/luma. 0 = auto (alpha channel only)."),
+        ParamSpec("alpha-channel-mode", "Alpha mode", "enum", default="straight",
+                  options=(("straight", "straight"), ("premultiplied", "premultiplied")),
+                  tooltip="Mode du canal alpha (alpha channel only)."),
+    ))
+
+
+def _nvencc_group_h264_specific() -> ParamGroup:
+    return ParamGroup("H.264-specific", (
+        ParamSpec("direct", "Direct mode", "enum", default="auto",
+                  options=(("auto", "auto"), ("disabled", "disabled"),
+                           ("spatial", "spatial"), ("temporal", "temporal")),
+                  tooltip="Mode direct des B-frames. auto = recommandé."),
+        ParamSpec("adapt-transform", "Adaptive transform", "bool",
+                  bool_repr=("--no-adapt-transform", "--adapt-transform"),
+                  tooltip="Transform 8x8 adaptatif (default ON).\n"
+                          "Décocher pour compatibilité décodeurs anciens."),
+        ParamSpec("hierarchial-p", "Hierarchical P", "bool", bool_repr=(None, ""),
+                  tooltip="Active la structure hiérarchique des P-frames."),
+        ParamSpec("hierarchial-b", "Hierarchical B", "bool", bool_repr=(None, ""),
+                  tooltip="Active la structure hiérarchique des B-frames."),
+        ParamSpec("cabac", "CABAC entropy", "bool", bool_repr=(None, ""),
+                  tooltip="Active le codage entropique CABAC (default ON, plus efficace que CAVLC)."),
+        ParamSpec("cavlc", "CAVLC entropy", "bool", bool_repr=(None, ""),
+                  tooltip="Force CAVLC (compat décodeurs très anciens, qualité réduite)."),
+        ParamSpec("bluray", "Blu-ray compat", "bool", bool_repr=(None, ""),
+                  tooltip="Force le respect des contraintes Blu-ray."),
+        ParamSpec("deblock", "Deblock filter", "bool",
+                  bool_repr=("--no-deblock", "--deblock"),
+                  tooltip="Filtre de déblocking (default ON).\n"
+                          "Désactiver dégrade la qualité visuelle, à utiliser avec parcimonie."),
+    ))
+
+
+def _nvencc_group_av1_specific() -> ParamGroup:
+    return ParamGroup("AV1-specific", (
+        ParamSpec("part-size-min", "Partition size min", "enum", default="0",
+                  options=(("0", "auto"), ("4", "4"), ("8", "8"),
+                           ("16", "16"), ("32", "32"), ("64", "64")),
+                  tooltip="Taille minimale des partitions AV1."),
+        ParamSpec("part-size-max", "Partition size max", "enum", default="0",
+                  options=(("0", "auto"), ("4", "4"), ("8", "8"),
+                           ("16", "16"), ("32", "32"), ("64", "64")),
+                  tooltip="Taille maximale des partitions AV1."),
+        ParamSpec("tile-columns", "Tile columns", "enum", default="0",
+                  options=(("0", "auto"), ("1", "1"), ("2", "2"), ("4", "4"),
+                           ("8", "8"), ("16", "16"), ("32", "32"), ("64", "64")),
+                  tooltip="Nombre de colonnes de tiles (parallélisme décodage)."),
+        ParamSpec("tile-rows", "Tile rows", "enum", default="0",
+                  options=(("0", "auto"), ("1", "1"), ("2", "2"), ("4", "4"),
+                           ("8", "8"), ("16", "16"), ("32", "32"), ("64", "64")),
+                  tooltip="Nombre de lignes de tiles."),
+        ParamSpec("refs-forward", "Refs forward", "int", default=0, minimum=0, maximum=4,
+                  tooltip="Nombre max de références forward (0 = auto)."),
+        ParamSpec("refs-backward", "Refs backward", "int", default=0, minimum=0, maximum=3,
+                  tooltip="Nombre max de références backward (0 = auto)."),
+        ParamSpec("bitstream-padding", "Bitstream padding", "bool", bool_repr=(None, ""),
+                  tooltip="Active le padding bitstream pour CBR strict."),
+    ))
+
+
+def _nvencc_schema(codec: str, *, codec_group: ParamGroup,
+                   specific_group: ParamGroup,
+                   include_hdr: bool,
+                   with_multiref: bool) -> CodecSchema:
+    """Construit un CodecSchema NVEncC complet à partir des groupes communs.
+
+    H.264 a `include_hdr=False` (HDR non pertinent) et `with_multiref=True`.
+    AV1 a `with_multiref=False` (multiref-l0/l1 spécifiques HEVC/H.264).
+    """
+    groups: list[ParamGroup] = [
+        codec_group,
+        _nvencc_group_rate_control(),
+        _nvencc_group_frame_gop(with_multiref=with_multiref),
+        _nvencc_group_aq_tune(),
+        specific_group,
+    ]
+    if include_hdr:
+        groups.append(_nvencc_group_hdr())
+    groups.extend([
+        _nvencc_group_sei(),
+        _nvencc_group_vpp_resize(),
+        _nvencc_group_vpp_deinterlace(),
+        _nvencc_group_vpp_denoise(),
+        _nvencc_group_vpp_sharpen(),
+        _nvencc_group_vpp_color(),
+        _nvencc_group_vpp_logo_overlay(),
+        _nvencc_group_vpp_advanced(),
+        _nvencc_group_device(),
+        _nvencc_group_quality_metrics(),
+        _nvencc_group_free(),
+    ])
+    return CodecSchema(codec=codec, style="nvencc_flags", groups=tuple(groups))
+
+
+_NVENCC_HEVC = _nvencc_schema(
+    "nvencc_hevc",
+    codec_group=_nvencc_group_codec_output(
+        profile_options=_NVENCC_PROFILE_HEVC,
+        level_options=_NVENCC_LEVEL_HEVC,
+        with_tier=True,
+    ),
+    specific_group=_nvencc_group_hevc_specific(),
+    include_hdr=True,
+    with_multiref=True,
+)
+
+_NVENCC_H264 = _nvencc_schema(
+    "nvencc_h264",
+    codec_group=_nvencc_group_codec_output(
+        profile_options=_NVENCC_PROFILE_H264,
+        level_options=_NVENCC_LEVEL_H264,
+        with_tier=False,
+    ),
+    specific_group=_nvencc_group_h264_specific(),
+    include_hdr=False,
+    with_multiref=True,
+)
+
+_NVENCC_AV1 = _nvencc_schema(
+    "nvencc_av1",
+    codec_group=_nvencc_group_codec_output(
+        profile_options=_NVENCC_PROFILE_AV1,
+        level_options=_NVENCC_LEVEL_AV1,
+        with_tier=False,
+    ),
+    specific_group=_nvencc_group_av1_specific(),
+    include_hdr=True,
+    with_multiref=False,
+)
+
+
 # -------- Catalogue ----------------------------------------------------------
 
-_SCHEMAS: dict[str, CodecSchema] = {
+_FFMPEG_SCHEMAS: dict[str, CodecSchema] = {
     "hevc_nvenc": _NVENC_HEVC,
     "h264_nvenc": _NVENC_H264,
     "av1_nvenc": _NVENC_AV1,
@@ -1184,9 +1882,18 @@ _SCHEMAS: dict[str, CodecSchema] = {
     "libx264": _LIBX264,
 }
 
+_NVENCC_SCHEMAS: dict[str, CodecSchema] = {
+    "nvencc_hevc": _NVENCC_HEVC,
+    "nvencc_h264": _NVENCC_H264,
+    "nvencc_av1": _NVENCC_AV1,
+}
+
 
 def schema_for(codec: str) -> CodecSchema | None:
-    return _SCHEMAS.get(codec)
+    normalized = str(codec or "").strip().lower()
+    if backend_id_for_codec(normalized) == "nvencc":
+        return _NVENCC_SCHEMAS.get(normalized)
+    return _FFMPEG_SCHEMAS.get(normalized)
 
 
 # =============================================================================
@@ -1239,6 +1946,44 @@ def _serialize(schema: CodecSchema, values: dict[str, tuple[bool, Any]]) -> str:
                     parts.append(f"{spec.key}={val}")
         return ":".join(p for p in parts if p)
 
+    if schema.style == "nvencc_flags":
+        # NVEncC : long-form "--key value" + variantes booléennes.
+        # bool_repr=(None, "")   → flag seul si activé (ex: --aq, --lossless)
+        # bool_repr=("--no-X","--X") → ON/OFF explicites
+        tokens_n: list[str] = []
+        free_n: list[str] = []
+        for group in schema.groups:
+            for spec in group.params:
+                if spec.key == "__free__":
+                    enabled, raw = values.get(spec.key, (False, ""))
+                    if enabled and str(raw).strip():
+                        free_n.append(str(raw).strip())
+                    continue
+                enabled, raw = values.get(spec.key, (False, None))
+                if not enabled:
+                    continue
+                if spec.kind == "bool":
+                    on_v, off_v = spec.bool_repr[1], spec.bool_repr[0]
+                    # Variante "--X" / "--no-X" : émettre la chaîne brute selon raw.
+                    if on_v and on_v.startswith("--") and off_v and off_v.startswith("--"):
+                        tokens_n.append(on_v if raw else off_v)
+                        continue
+                    # Flag seul si activé (on_v="" ou None).
+                    if raw:
+                        tokens_n.append(f"--{spec.key}")
+                    continue
+                val = _serialize_value(spec, raw)
+                if spec.kind == "text":
+                    val = _normalize_nvencc_text_value(spec.key, val)
+                if val is None:
+                    continue
+                tokens_n.append(f"--{spec.key}")
+                tokens_n.append(val)
+        out_n = " ".join(tokens_n)
+        if free_n:
+            out_n = (out_n + " " + " ".join(free_n)).strip()
+        return out_n
+
     # ffmpeg_flags style — tokens "-key value" séparés par espaces
     tokens: list[str] = []
     for group in schema.groups:
@@ -1269,6 +2014,18 @@ def _serialize(schema: CodecSchema, values: dict[str, tuple[bool, Any]]) -> str:
     return out
 
 
+def _spec_by_key(schema: CodecSchema) -> dict[str, ParamSpec]:
+    return {spec.key: spec for group in schema.groups for spec in group.params}
+
+
+def _looks_like_number(token: str) -> bool:
+    try:
+        float(str(token).strip())
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def _parse_existing(schema: CodecSchema, current: str) -> dict[str, tuple[bool, Any]]:
     """Pré-remplit les widgets en parsant la valeur existante.
 
@@ -1279,7 +2036,8 @@ def _parse_existing(schema: CodecSchema, current: str) -> dict[str, tuple[bool, 
     if not current.strip():
         return values
 
-    spec_keys = {s.key for grp in schema.groups for s in grp.params}
+    spec_map = _spec_by_key(schema)
+    spec_keys = set(spec_map)
 
     if schema.style in ("x265_params", "svtav1_params"):
         leftovers: list[str] = []
@@ -1303,6 +2061,78 @@ def _parse_existing(schema: CodecSchema, current: str) -> dict[str, tuple[bool, 
             values["__free__"] = (True, ":".join(leftovers))
         return values
 
+    if schema.style == "nvencc_flags":
+        # Parse une commande NVEncC long-form "--key [value]". Reconnaît :
+        #   • --no-key                   → bool OFF (si la spec a bool_repr ("--no-X","--X"))
+        #   • --key (seul, prochain token = "--…" ou EOF) → flag seul, bool ON
+        #   • --key value                → spec.kind in {int,float,enum,text} OU bool ON
+        try:
+            tokens = shlex.split(current)
+        except ValueError:
+            tokens = current.split()
+        # Map les variantes --no-X → la spec d'origine (X)
+        bool_pairs: dict[str, ParamSpec] = {}
+        for grp in schema.groups:
+            for sp in grp.params:
+                if sp.kind == "bool" and sp.bool_repr[0] and sp.bool_repr[0].startswith("--"):
+                    bool_pairs[sp.bool_repr[0]] = sp
+                    bool_pairs[sp.bool_repr[1]] = sp
+        leftovers = []
+        i = 0
+        ignored_keys = _NVENCC_IGNORED_PARSE_KEYS if schema.codec.startswith("nvencc_") else frozenset()
+        while i < len(tokens):
+            tok = tokens[i]
+            if not tok.startswith("--"):
+                leftovers.append(tok)
+                i += 1
+                continue
+            # Variantes --no-X / --X explicites : on les détecte AVANT la résolution de clé.
+            if tok in bool_pairs:
+                sp = bool_pairs[tok]
+                values[sp.key] = (True, tok == sp.bool_repr[1])
+                i += 1
+                continue
+            if "=" in tok[2:]:
+                key, inline_value = tok[2:].split("=", 1)
+            else:
+                key, inline_value = tok[2:], None
+            if key in ignored_keys:
+                next_is_value = (inline_value is None and i + 1 < len(tokens) and not tokens[i + 1].startswith("--"))
+                i += 2 if next_is_value else 1
+                continue
+            if key in spec_keys:
+                # Spec connue : décider si on consomme un argument suivant.
+                next_is_value = (
+                    inline_value is None
+                    and i + 1 < len(tokens)
+                    and not tokens[i + 1].startswith("--")
+                )
+                # Trouver la spec pour connaître son kind.
+                spec_obj = spec_map.get(key)
+                if spec_obj is not None and spec_obj.kind == "bool":
+                    # bool flag seul (--aq, --lossless) — pas de valeur attendue.
+                    values[key] = (True, True)
+                    i += 1
+                    continue
+                if inline_value is not None:
+                    values[key] = (True, inline_value)
+                    i += 1
+                    continue
+                if next_is_value:
+                    values[key] = (True, tokens[i + 1])
+                    i += 2
+                    continue
+                # Spec attendant une valeur mais aucune fournie → on coche quand même.
+                values[key] = (True, True)
+                i += 1
+                continue
+            # Inconnu : pousser dans free.
+            leftovers.append(tok)
+            i += 1
+        if leftovers:
+            values["__free__"] = (True, " ".join(leftovers))
+        return values
+
     # ffmpeg_flags
     try:
         tokens = shlex.split(current)
@@ -1318,11 +2148,22 @@ def _parse_existing(schema: CodecSchema, current: str) -> dict[str, tuple[bool, 
             continue
         if tok.startswith("-"):
             key = tok[1:]
-            if key in spec_keys and i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
-                values[key] = (True, tokens[i + 1])
-                i += 2
-                continue
             if key in spec_keys:
+                spec_obj = spec_map.get(key)
+                next_tok = tokens[i + 1] if i + 1 < len(tokens) else None
+                if spec_obj is not None and spec_obj.kind == "bool":
+                    values[key] = (True, True)
+                    i += 1
+                    continue
+                if next_tok is not None:
+                    if not next_tok.startswith("-"):
+                        values[key] = (True, next_tok)
+                        i += 2
+                        continue
+                    if spec_obj is not None and spec_obj.kind in ("int", "float") and _looks_like_number(next_tok):
+                        values[key] = (True, next_tok)
+                        i += 2
+                        continue
                 values[key] = (True, True)
                 i += 1
                 continue
@@ -1610,6 +2451,7 @@ class ExtraParamsDialog(QDialog):
                     self._build_group_page(group, initial_values),
                     translate_text(group.title),
                 )
+            self._setup_nvencc_parallel_split_enc_logic()
 
             outer.addWidget(tabs, 1)
 
@@ -1704,6 +2546,55 @@ class ExtraParamsDialog(QDialog):
             w.toggled.connect(self._refresh_preview)
         elif isinstance(w, QLineEdit):
             w.textChanged.connect(self._refresh_preview)
+
+    def _setup_nvencc_parallel_split_enc_logic(self) -> None:
+        if self._schema is None or not self._schema.codec.startswith("nvencc_"):
+            return
+        parallel_row = self._rows.get("parallel")
+        split_row = self._rows.get("split-enc")
+        if parallel_row is None or split_row is None:
+            return
+
+        if isinstance(parallel_row._value_widget, QLineEdit):
+            parallel_row._value_widget.textChanged.connect(self._on_nvencc_parallel_changed)
+        parallel_row._enabled_cb.toggled.connect(self._on_nvencc_parallel_changed)
+
+        if isinstance(split_row._value_widget, QComboBox):
+            split_row._value_widget.currentIndexChanged.connect(self._on_nvencc_split_enc_changed)
+        split_row._enabled_cb.toggled.connect(self._on_nvencc_split_enc_changed)
+
+        if self._nvencc_split_enc_effective():
+            parallel_row._enabled_cb.setChecked(False)
+
+    def _nvencc_parallel_effective(self) -> bool:
+        row = self._rows.get("parallel")
+        if row is None or not row._enabled_cb.isChecked():
+            return False
+        if isinstance(row._value_widget, QLineEdit):
+            return bool(row._value_widget.text().strip())
+        return False
+
+    def _nvencc_split_enc_effective(self) -> bool:
+        row = self._rows.get("split-enc")
+        if row is None or not row._enabled_cb.isChecked():
+            return False
+        if isinstance(row._value_widget, QComboBox):
+            return str(row._value_widget.currentData() or "disable") != "disable"
+        return False
+
+    def _on_nvencc_parallel_changed(self, *_args) -> None:
+        if not self._nvencc_parallel_effective():
+            return
+        split_row = self._rows.get("split-enc")
+        if split_row is not None and split_row._enabled_cb.isChecked():
+            split_row._enabled_cb.setChecked(False)
+
+    def _on_nvencc_split_enc_changed(self, *_args) -> None:
+        if not self._nvencc_split_enc_effective():
+            return
+        parallel_row = self._rows.get("parallel")
+        if parallel_row is not None and parallel_row._enabled_cb.isChecked():
+            parallel_row._enabled_cb.setChecked(False)
 
     def _collect(self) -> str:
         if self._schema is None:

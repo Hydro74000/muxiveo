@@ -6,10 +6,10 @@ from pathlib import Path
 from typing import Callable
 
 from core.workflows.common.track_types import TrackTimeOffset
+from core.workflows.encode.catalog import supports_dynamic_hdr
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
 from core.workflows.encode.planning.plan_models import PlannedVideoTrack
 
-_DYNAMIC_HDR_ALLOWED_CODECS = {"copy", "libx265", "hevc_nvenc", "hevc_amf", "hevc_qsv", "hevc_vaapi"}
 _MASTER_DISPLAY_RE = re.compile(r"^G\(\d+,\d+\)B\(\d+,\d+\)R\(\d+,\d+\)WP\(\d+,\d+\)L\(\d+,\d+\)$")
 _MAX_CLL_RE = re.compile(r"^\d+,\d+$")
 
@@ -65,13 +65,13 @@ def validate_encode_config(
         source = video.source
         if not source.is_file():
             errors.append(f"Piste vidéo #{index} — source introuvable : {source}")
-        if video.codec == "copy" and (video.inject_hdr_meta or video.tonemap_to_sdr):
+        if video.codec == "copy" and video.tonemap_to_sdr:
             errors.append(
-                f"Piste vidéo #{index} — codec copy incompatible avec HDR statique ou tone-mapping."
+                f"Piste vidéo #{index} — codec copy incompatible avec le tone-mapping."
             )
-        if (video.copy_dv or video.copy_hdr10plus) and video.codec not in _DYNAMIC_HDR_ALLOWED_CODECS:
+        if (video.copy_dv or video.copy_hdr10plus) and not supports_dynamic_hdr(video.codec):
             errors.append(
-                f"Piste vidéo #{index} — DoVi/HDR10+ exige une sortie HEVC ou copy."
+                f"Piste vidéo #{index} — DoVi/HDR10+ exige un codec compatible."
             )
 
     output_dir = config.output.parent

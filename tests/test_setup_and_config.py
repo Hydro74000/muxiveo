@@ -782,6 +782,50 @@ def test_app_config_non_windows_detects_tool_from_absolute_candidates(tmp_path):
     assert cfg.tool_dovi_tool == str(candidate)
 
 
+def test_app_config_non_windows_uses_qsettings_tool_path(tmp_path):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[tools]\n", encoding="utf-8")
+    mediainfo = tmp_path / "bin" / "mediainfo-custom"
+    mediainfo.parent.mkdir(parents=True, exist_ok=True)
+    mediainfo.write_text("", encoding="utf-8")
+
+    inst = MagicMock()
+    inst.value.side_effect = lambda key, default=None: str(mediainfo) if key == "tools/mediainfo" else default
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config.sys.platform", "linux"), \
+         patch("core.config.shutil.which", return_value=None), \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path), \
+         patch.object(cfg_mod, "_non_windows_tool_candidates", return_value=[]):
+        mock_qs.return_value = inst
+        cfg = AppConfig()
+
+    assert cfg.tool_mediainfo == str(mediainfo)
+
+
+def test_app_config_all_tools_available_accepts_configured_absolute_path(tmp_path):
+    from core.config import AppConfig
+
+    mediainfo = tmp_path / "mediainfo-custom"
+    mediainfo.write_text("", encoding="utf-8")
+    cfg = object.__new__(AppConfig)
+    cfg.tool_ffmpeg = "missing-ffmpeg"
+    cfg.tool_ffprobe = "missing-ffprobe"
+    cfg.tool_mediainfo = str(mediainfo)
+    cfg.tool_dovi_tool = "missing-dovi"
+    cfg.tool_hdr10plus = "missing-hdr10plus"
+    cfg.tool_eac3to = "missing-eac3to"
+
+    with patch("core.config.shutil.which", return_value=None):
+        availability = cfg.all_tools_available()
+
+    assert availability["mediainfo"] is True
+
+
 class TestToolVersionRegistry:
     """Tests unitaires du registre de versions d'outils externes."""
 

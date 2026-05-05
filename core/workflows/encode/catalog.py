@@ -24,6 +24,9 @@ HARDWARE_VIDEO_CODECS: list[tuple[str, str]] = [
     ("av1_amf", "AMF — AV1 (AMD RX 7000+)"),
     ("av1_vaapi", "VAAPI — AV1 (AMD/Intel)"),
     ("av1_qsv", "QSV — AV1 (Intel Arc/12e gen+)"),
+    ("nvencc_hevc", "NVEncC — HEVC (NVIDIA, rigaya)"),
+    ("nvencc_h264", "NVEncC — H.264 (NVIDIA, rigaya)"),
+    ("nvencc_av1", "NVEncC — AV1 (NVIDIA RTX 40+, rigaya)"),
 ]
 
 AUDIO_CODECS: list[tuple[str, str]] = [
@@ -47,6 +50,8 @@ HEVC_NVENC_PRESETS = [*NVENC_PRESETS]
 VAAPI_PRESETS = [str(i) for i in range(8)]
 QSV_PRESETS = ["veryslow", "slower", "slow", "medium", "fast", "faster", "veryfast"]
 AMF_PRESETS = ["quality", "balanced", "speed"]
+NVENCC_PRESETS = ["default", "performance", "quality",
+                  "P1", "P2", "P3", "P4", "P5", "P6", "P7"]
 
 TONEMAP_ALGORITHMS = ["hable", "mobius", "reinhard", "gamma", "linear", "clip"]
 
@@ -54,11 +59,17 @@ NVENC_VIDEO_CODECS: frozenset[str] = frozenset({"hevc_nvenc", "h264_nvenc", "av1
 AMF_VIDEO_CODECS: frozenset[str] = frozenset({"hevc_amf", "h264_amf", "av1_amf"})
 QSV_VIDEO_CODECS: frozenset[str] = frozenset({"hevc_qsv", "h264_qsv", "av1_qsv"})
 VAAPI_VIDEO_CODECS: frozenset[str] = frozenset({"hevc_vaapi", "h264_vaapi", "av1_vaapi"})
-H264_VIDEO_CODECS: frozenset[str] = frozenset({"libx264", "h264_nvenc", "h264_amf", "h264_qsv", "h264_vaapi"})
+NVENCC_VIDEO_CODECS: frozenset[str] = frozenset({"nvencc_hevc", "nvencc_h264", "nvencc_av1"})
+H264_VIDEO_CODECS: frozenset[str] = frozenset({
+    "libx264", "h264_nvenc", "h264_amf", "h264_qsv", "h264_vaapi", "nvencc_h264",
+})
 CQ_CAPABLE_VIDEO_CODECS: frozenset[str] = (
-    NVENC_VIDEO_CODECS | AMF_VIDEO_CODECS | QSV_VIDEO_CODECS | VAAPI_VIDEO_CODECS
+    NVENC_VIDEO_CODECS | AMF_VIDEO_CODECS | QSV_VIDEO_CODECS | VAAPI_VIDEO_CODECS | NVENCC_VIDEO_CODECS
 )
-DYNAMIC_HDR_VIDEO_CODECS: frozenset[str] = frozenset({"copy", "libx265", "hevc_nvenc", "hevc_amf", "hevc_qsv", "hevc_vaapi"})
+DYNAMIC_HDR_VIDEO_CODECS: frozenset[str] = frozenset({
+    "copy", "libx265", "hevc_nvenc", "hevc_amf", "hevc_qsv", "hevc_vaapi",
+    "nvencc_hevc", "nvencc_av1",
+})
 
 VIDEO_ENCODER_BADGES: dict[str, str] = {
     "libx265": "x265",
@@ -76,6 +87,9 @@ VIDEO_ENCODER_BADGES: dict[str, str] = {
     "hevc_vaapi": "VAAPI",
     "h264_vaapi": "VAAPI",
     "av1_vaapi": "VAAPI",
+    "nvencc_hevc": "NVEncC",
+    "nvencc_h264": "NVEncC",
+    "nvencc_av1": "NVEncC",
 }
 VIDEO_HDR_BADGE_ORDER: tuple[str, ...] = ("HDR", "HLG", "DV", "10+", "SDR")
 
@@ -86,11 +100,13 @@ class VideoCodecFamily(str, Enum):
     AMF = "amf"
     QSV = "qsv"
     VAAPI = "vaapi"
+    NVENCC = "nvencc"
     OTHER = "other"
 
 
 class StaticHdrMetadataMode(str, Enum):
     NONE = "none"
+    NATIVE = "native"
     X265_PARAMS = "x265_params"
     FRAME_SIDE_DATA = "frame_side_data"
     VAAPI_SEI = "vaapi_sei"
@@ -256,6 +272,34 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         encoder_badge="QSV",
         supports_10bit=True,
     ),
+    "nvencc_hevc": VideoCodecSpec(
+        codec_id="nvencc_hevc",
+        label="NVEncC — HEVC (NVIDIA, rigaya)",
+        family=VideoCodecFamily.NVENCC,
+        presets=tuple(NVENCC_PRESETS),
+        encoder_badge="NVEncC",
+        supports_dynamic_hdr=True,
+        supports_10bit=True,
+    ),
+    "nvencc_h264": VideoCodecSpec(
+        codec_id="nvencc_h264",
+        label="NVEncC — H.264 (NVIDIA, rigaya)",
+        family=VideoCodecFamily.NVENCC,
+        presets=tuple(NVENCC_PRESETS),
+        encoder_badge="NVEncC",
+        is_h264=True,
+        supports_force_8bit=True,
+        supports_10bit=True,
+    ),
+    "nvencc_av1": VideoCodecSpec(
+        codec_id="nvencc_av1",
+        label="NVEncC — AV1 (NVIDIA RTX 40+, rigaya)",
+        family=VideoCodecFamily.NVENCC,
+        presets=tuple(NVENCC_PRESETS),
+        encoder_badge="NVEncC",
+        supports_dynamic_hdr=True,
+        supports_10bit=True,
+    ),
 }
 
 VIDEO_CODEC_FAMILY_MAP: dict[str, VideoCodecFamily] = {
@@ -287,11 +331,15 @@ STATIC_HDR_METADATA_MODE_BY_CODEC: dict[str, StaticHdrMetadataMode] = {
     "hevc_amf": StaticHdrMetadataMode.FRAME_SIDE_DATA,
     "hevc_qsv": StaticHdrMetadataMode.FRAME_SIDE_DATA,
     "hevc_nvenc": StaticHdrMetadataMode.BITSTREAM_PATCH,
+    "nvencc_hevc": StaticHdrMetadataMode.NATIVE,
+    "nvencc_av1": StaticHdrMetadataMode.NATIVE,
 }
 
 MANUAL_STATIC_HDR_METADATA_CODECS: frozenset[str] = frozenset({
     "libx265",
     "hevc_nvenc",
+    "nvencc_hevc",
+    "nvencc_av1",
 })
 
 
@@ -384,11 +432,13 @@ __all__ = [
     "VAAPI_PRESETS",
     "QSV_PRESETS",
     "AMF_PRESETS",
+    "NVENCC_PRESETS",
     "TONEMAP_ALGORITHMS",
     "NVENC_VIDEO_CODECS",
     "AMF_VIDEO_CODECS",
     "QSV_VIDEO_CODECS",
     "VAAPI_VIDEO_CODECS",
+    "NVENCC_VIDEO_CODECS",
     "H264_VIDEO_CODECS",
     "CQ_CAPABLE_VIDEO_CODECS",
     "DYNAMIC_HDR_VIDEO_CODECS",

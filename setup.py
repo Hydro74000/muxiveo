@@ -283,6 +283,26 @@ GITHUB_TOOLS: dict[str, dict] = {
             ("Windows", "arm64"):  {"suffix": "aarch64-pc-windows-msvc.zip",       "fmt": "zip"},
         },
     },
+    "nvencc": {
+        "repo": "rigaya/NVEnc",
+        "desc": "NVEncC — wrapper standalone NVIDIA NVENC (rigaya)",
+        # Conditionnel : ne s'installe que si NVENC est détecté sur la machine
+        # (driver NVIDIA présent). Vérifié via _check_nvenc_available() avant download.
+        "gate": "nvenc_available",
+        # Plateformes supportées (macOS exclu, rigaya ne fournit pas de build).
+        "platforms": ["Linux", "Windows"],
+        "binary_name": {
+            "Linux":   "nvencc",         # /usr/bin/nvencc (dnf) ou /usr/bin/NVEncC (apt)
+            "Windows": "NVEncC64.exe",
+        },
+        "asset_patterns": {
+            # Linux : .deb (Debian/Ubuntu) puis fallback .rpm (Fedora/RHEL).
+            ("Linux",   "x86_64"): {"suffix": "_amd64.deb",       "fmt": "deb",
+                                    "alt_suffix": ".x86_64.rpm",  "alt_fmt": "rpm"},
+            # Windows : archive 7z. Nécessite py7zr (déclaré ci-dessous).
+            ("Windows", "x86_64"): {"suffix": "_x64.7z",          "fmt": "7z"},
+        },
+    },
 }
 
 # Tools with no automated install path (optional)
@@ -1248,10 +1268,6 @@ def _ensure_rpmfusion(dry_run: bool, sudo: list[str]) -> None:
 
 def install_dnf(dry_run: bool, force: bool = False) -> None:
     title("Step 2 — System packages (dnf / Fedora·RHEL)")
-    sudo = sudo_prefix(dry_run)
-
-    if force or not shutil.which("ffmpeg"):
-        _ensure_rpmfusion(dry_run, sudo)
 
     already_seen: set[str] = set()
     to_install: list[str] = []
@@ -1270,6 +1286,14 @@ def install_dnf(dry_run: bool, force: bool = False) -> None:
         return
 
     pkgs = sorted(set(to_install))
+    if _is_atomic_distro():
+        _warn_atomic_install_skip("System packages", pkgs)
+        return
+
+    sudo = sudo_prefix(dry_run)
+    if force or "ffmpeg" in to_install:
+        _ensure_rpmfusion(dry_run, sudo)
+
     step(f"Installing: {' '.join(pkgs)}")
     run(sudo + ["dnf", "install", "-y"] + pkgs, dry_run=dry_run)
     ok("System packages installed")
@@ -1878,7 +1902,7 @@ def _find_asset(release: dict, suffix: str) -> Optional[str]:
     return None
 
 def _extract_binary(archive_path: Path, binary_name: str, fmt: str, dest_dir: Path) -> Path:
-    """Extract binary_name from archive (tar.gz or zip) into dest_dir."""
+    """Extract binary_name from archive (tar.gz / zip / deb / rpm / 7z) into dest_dir."""
     if fmt == "tar.gz":
         with tarfile.open(archive_path, "r:gz") as tar:
             member = next(
@@ -1901,12 +1925,228 @@ def _extract_binary(archive_path: Path, binary_name: str, fmt: str, dest_dir: Pa
             data = zf.read(entry)
             out = dest_dir / binary_name
             out.write_bytes(data)
+    elif fmt == "deb":
+        _extract_deb_binary(archive_path, binary_name, dest_dir)
+    elif fmt == "rpm":
+        _extract_rpm_binary(archive_path, binary_name, dest_dir)
+    elif fmt == "7z":
+        _extract_7z_binary(archive_path, binary_name, dest_dir)
     else:
         raise RuntimeError(f"Unknown archive format: {fmt}")
 
     extracted = dest_dir / binary_name
     extracted.chmod(extracted.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     return extracted
+
+
+def _extract_deb_binary(archive_path: Path, binary_name: str, dest_dir: Path) -> None:
+    """Extrait ``binary_name`` d'un paquet Debian (.deb).
+
+    Préfère ``dpkg-deb -x`` quand disponible (gère les variantes de format),
+    sinon fallback ``ar x`` + extraction du data.tar.* via tarfile.
+    """
+    extract_dir = dest_dir / "_deb_extracted"
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    dpkg_deb = shutil.which("dpkg-deb")
+    if dpkg_deb:
+        subprocess.run(
+            [dpkg_deb, "-x", str(archive_path), str(extract_dir)],
+            check=True,
+        )
+    else:
+        # Fallback : ar x archive.deb → debian-binary, control.tar.*, data.tar.*
+        # On extrait juste le data.tar.* puis on l'untare.
+        ar = shutil.which("ar")
+        if not ar:
+            raise RuntimeError(
+                "Neither 'dpkg-deb' nor 'ar' available — cannot extract .deb. "
+                "Install 'dpkg' (Debian) or 'binutils' (others)."
+            )
+        cwd_backup = os.getcwd()
+        try:
+            os.chdir(extract_dir)
+            subprocess.run([ar, "x", str(archive_path)], check=True)
+            data_tarball = next(
+                (p for p in extract_dir.glob("data.tar.*")), None,
+            )
+            if not data_tarball:
+                raise RuntimeError("No data.tar.* found inside .deb archive")
+            with tarfile.open(data_tarball, "r:*") as tar:
+                tar.extractall(path=extract_dir)
+        finally:
+            os.chdir(cwd_backup)
+    # Localise binary_name dans l'arborescence extraite (typiquement usr/bin/).
+    candidates = list(extract_dir.rglob(binary_name))
+    if not candidates:
+        # Tolérant à la casse (NVEncC vs nvencc).
+        candidates = [p for p in extract_dir.rglob("*")
+                      if p.is_file() and p.name.lower() == binary_name.lower()]
+    if not candidates:
+        raise RuntimeError(f"Binary '{binary_name}' not found inside .deb archive")
+    shutil.copy2(candidates[0], dest_dir / binary_name)
+
+
+def _extract_rpm_binary(archive_path: Path, binary_name: str, dest_dir: Path) -> None:
+    """Extrait ``binary_name`` d'un paquet RPM via ``rpm2cpio | cpio -idm``."""
+    extract_dir = dest_dir / "_rpm_extracted"
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    rpm2cpio = shutil.which("rpm2cpio")
+    cpio = shutil.which("cpio")
+    if not rpm2cpio or not cpio:
+        raise RuntimeError(
+            "rpm2cpio and cpio required to extract .rpm without dnf/rpm install. "
+            "Install 'rpm' (Fedora) or 'rpm2cpio' (Debian/Ubuntu)."
+        )
+    cwd_backup = os.getcwd()
+    try:
+        os.chdir(extract_dir)
+        with open(archive_path, "rb") as fp:
+            r = subprocess.Popen([rpm2cpio], stdin=fp, stdout=subprocess.PIPE)
+            c = subprocess.Popen([cpio, "-idm", "--quiet"], stdin=r.stdout)
+            if r.stdout:
+                r.stdout.close()
+            c.communicate()
+            r.wait()
+            if r.returncode != 0 or c.returncode != 0:
+                raise RuntimeError("rpm2cpio | cpio extraction failed")
+    finally:
+        os.chdir(cwd_backup)
+    candidates = list(extract_dir.rglob(binary_name))
+    if not candidates:
+        candidates = [p for p in extract_dir.rglob("*")
+                      if p.is_file() and p.name.lower() == binary_name.lower()]
+    if not candidates:
+        raise RuntimeError(f"Binary '{binary_name}' not found inside .rpm archive")
+    shutil.copy2(candidates[0], dest_dir / binary_name)
+
+
+def _extract_7z_binary(archive_path: Path, binary_name: str, dest_dir: Path) -> None:
+    """Extrait ``binary_name`` d'une archive .7z via ``py7zr`` (Python pur)."""
+    try:
+        import py7zr  # type: ignore[import-untyped]
+    except ImportError as exc:
+        raise RuntimeError(
+            "py7zr required to extract .7z archives. "
+            "Install via 'pip install py7zr' (auto-installé par setup.py si requirements.txt à jour)."
+        ) from exc
+    extract_dir = dest_dir / "_7z_extracted"
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    with py7zr.SevenZipFile(archive_path, mode="r") as z:
+        z.extractall(path=extract_dir)
+    candidates = list(extract_dir.rglob(binary_name))
+    if not candidates:
+        candidates = [p for p in extract_dir.rglob("*")
+                      if p.is_file() and p.name.lower() == binary_name.lower()]
+    if not candidates:
+        raise RuntimeError(f"Binary '{binary_name}' not found inside .7z archive")
+    shutil.copy2(candidates[0], dest_dir / binary_name)
+
+
+def _is_atomic_distro() -> bool:
+    """Détecte une distro atomique/immuable (Silverblue, Kinoite, Bazzite, etc.).
+
+    Sur ces systèmes, ``dnf install`` est désactivé au profit de ``rpm-ostree`` —
+    qui exige un reboot pour appliquer les changements. Au lieu d'installer,
+    on guide l'utilisateur vers distrobox ou l'AppImage allinc.
+    """
+    if Path("/run/ostree-booted").exists():
+        return True
+    if shutil.which("rpm-ostree"):
+        # Vérification supplémentaire : rpm-ostree status réussit-il ?
+        try:
+            r = subprocess.run(
+                ["rpm-ostree", "status"], capture_output=True,
+                check=False, timeout=5,
+            )
+            if r.returncode == 0:
+                return True
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            pass
+    return False
+
+
+def _warn_atomic_install_skip(subject: str, packages: list[str] | None = None) -> None:
+    """Explique pourquoi setup.py skip les installs système sur distro atomique."""
+    pkg_hint = ""
+    if packages:
+        pkg_hint = f"\n  → Paquets concernés : {' '.join(packages)}"
+    warn(
+        f"{subject}: distribution atomique détectée (rpm-ostree). "
+        f"L'installation automatique sur le système de base n'est pas prise en charge par setup.py."
+        f"{pkg_hint}\n"
+        f"  → Recommandé : lancer setup.py dans une distrobox Fedora/Ubuntu :\n"
+        f"      distrobox enter <box> -- python3 setup.py\n"
+        f"    ou utiliser l'AppImage allinc.\n"
+        f"  → Alternative manuelle : layer les paquets avec rpm-ostree puis redémarrer."
+    )
+
+
+def _try_native_pkg_install(
+    archive_path: Path, exe: str, fmt: str, *, dry_run: bool,
+) -> bool:
+    """Tente l'installation native via apt (.deb) ou dnf (.rpm).
+
+    L'avantage : le package manager résout les dépendances runtime
+    (libcuda, libavformat, libavcodec, …) que l'extraction binaire ignorerait.
+
+    Sur les distros atomiques (Silverblue/Kinoite/Bazzite), `dnf install` n'est
+    pas applicable au système de base — on retourne False pour que le caller
+    skip avec un guidage utilisateur (distrobox ou AppImage allinc).
+
+    Retourne True en cas de succès, False sinon (caller fera l'extraction pure).
+    """
+    if _is_atomic_distro():
+        _warn_atomic_install_skip(exe)
+        return False
+
+    sudo = sudo_prefix(dry_run) if not is_root() else []
+    if fmt == "deb":
+        apt = shutil.which("apt") or shutil.which("apt-get")
+        if not apt:
+            return False
+        info(f"Installing {exe} via apt (native deps included)")
+        if dry_run:
+            info(f"[dry-run] Would run: apt install -y {archive_path}")
+            return True
+        rc = subprocess.run(
+            sudo + [apt, "install", "-y", str(archive_path)],
+            check=False,
+        ).returncode
+        return rc == 0
+    if fmt == "rpm":
+        dnf = shutil.which("dnf") or shutil.which("yum")
+        if not dnf:
+            return False
+        info(f"Installing {exe} via dnf (native deps included)")
+        if dry_run:
+            info(f"[dry-run] Would run: dnf install -y {archive_path}")
+            return True
+        rc = subprocess.run(
+            sudo + [dnf, "install", "-y", str(archive_path)],
+            check=False,
+        ).returncode
+        return rc == 0
+    return False
+
+
+def _check_nvenc_available() -> bool:
+    """Détection lightweight du GPU NVIDIA pour gate l'install NVEncC.
+
+    Retourne True si nvidia-smi répond ou /dev/nvidia0 existe (Linux).
+    Sur Windows, on ne peut pas tester via /dev — on regarde nvidia-smi seul.
+    """
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "-L"],
+            capture_output=True, check=False, timeout=5,
+        )
+        if result.returncode == 0 and (result.stdout or b"").strip():
+            return True
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+    if OS == "Linux":
+        return Path("/dev/nvidia0").exists()
+    return False
 
 def install_github_tools(prefix: Path, dry_run: bool, force: bool = False) -> None:
     title("Step 3 — GitHub binary tools (dovi_tool, hdr10plus_tool)")
@@ -1929,6 +2169,18 @@ def install_github_tools(prefix: Path, dry_run: bool, force: bool = False) -> No
     detected_tool_paths: dict[str, str] = {}
 
     for exe, meta in GITHUB_TOOLS.items():
+        # Skip silencieux si la plateforme n'est pas dans la liste blanche du tool.
+        platforms = meta.get("platforms")
+        if platforms and OS not in platforms:
+            info(f"{exe} not supported on {OS} — skipping.")
+            continue
+
+        # Gate optionnel (ex: nvencc requiert un GPU NVIDIA détecté).
+        gate = meta.get("gate")
+        if gate == "nvenc_available" and not _check_nvenc_available():
+            info(f"{exe}: NVENC not detected on this machine — skipping.")
+            continue
+
         binary_name = meta["binary_name"].get(OS, meta["binary_name"].get("Linux"))
         dest = bin_dir / binary_name
 
@@ -1937,7 +2189,9 @@ def install_github_tools(prefix: Path, dry_run: bool, force: bool = False) -> No
             detected_tool_paths[exe] = str(dest)
             continue
 
-        existing = shutil.which(exe)
+        # Recherche tolérante à la casse : .rpm Fedora installe `nvencc` (minuscules)
+        # alors que .deb Debian installe `NVEncC` (PascalCase). On accepte les deux.
+        existing = shutil.which(exe) or shutil.which(exe.lower()) or shutil.which(exe.capitalize())
         if not force and existing:
             ok(f"{exe} already present ({existing})")
             detected_tool_paths[exe] = existing
@@ -1965,7 +2219,14 @@ def install_github_tools(prefix: Path, dry_run: bool, force: bool = False) -> No
         tag = release.get("tag_name", "?")
         info(f"Latest release: {tag}")
 
+        # Sélection asset : suffix principal puis alt_suffix (ex: .deb → .rpm).
         download_url = _find_asset(release, pattern["suffix"])
+        chosen_fmt = pattern["fmt"]
+        if not download_url and pattern.get("alt_suffix"):
+            download_url = _find_asset(release, pattern["alt_suffix"])
+            if download_url:
+                chosen_fmt = pattern.get("alt_fmt", chosen_fmt)
+                info(f"Using alternate asset format ({chosen_fmt})")
         if not download_url:
             available = [a["name"] for a in release.get("assets", [])]
             raise RuntimeError(
@@ -1976,9 +2237,32 @@ def install_github_tools(prefix: Path, dry_run: bool, force: bool = False) -> No
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            archive_path = tmp_path / f"{exe}_archive"
+            archive_path = tmp_path / f"{exe}_archive.{chosen_fmt}"
             _download_file(download_url, archive_path)
-            extracted = _extract_binary(archive_path, binary_name, pattern["fmt"], tmp_path)
+
+            # Tentative d'installation native via package manager (Linux .deb/.rpm) :
+            # gère automatiquement les dépendances (libcuda, libavformat, etc.).
+            installed_natively = False
+            if OS == "Linux" and chosen_fmt in ("deb", "rpm"):
+                installed_natively = _try_native_pkg_install(
+                    archive_path, exe, chosen_fmt, dry_run=dry_run,
+                )
+                if installed_natively:
+                    # Le pkg manager a installé le binaire — on récupère son chemin.
+                    found = shutil.which(binary_name) or shutil.which(binary_name.lower()) \
+                            or shutil.which(binary_name.capitalize())
+                    if found:
+                        detected_tool_paths[exe] = found
+                        ok(f"{exe} installed natively → {found}")
+                        continue
+                    warn(f"{exe}: native install reported success but binary not found on PATH.")
+
+            # Fallback : extraction binaire pure (pas de gestion des deps libs).
+            try:
+                extracted = _extract_binary(archive_path, binary_name, chosen_fmt, tmp_path)
+            except RuntimeError as exc:
+                warn(f"{exe}: extraction failed ({exc}). Skipping.")
+                continue
 
             info(f"Installing to {dest}")
 

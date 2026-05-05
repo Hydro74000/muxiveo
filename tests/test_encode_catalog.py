@@ -68,6 +68,48 @@ class TestVideoCodecSpecs:
         assert supports_manual_static_hdr_metadata("hevc_qsv") is False
         assert supports_manual_static_hdr_metadata("hevc_vaapi") is False
 
+    def test_nvencc_codecs_are_registered(self):
+        from core.workflows.encode.catalog import (
+            CQ_CAPABLE_VIDEO_CODECS,
+            DYNAMIC_HDR_VIDEO_CODECS,
+            H264_VIDEO_CODECS,
+            HARDWARE_VIDEO_CODECS,
+            NVENCC_VIDEO_CODECS,
+            VIDEO_ENCODER_BADGES,
+        )
+
+        assert NVENCC_VIDEO_CODECS == frozenset({
+            "nvencc_hevc", "nvencc_h264", "nvencc_av1",
+        })
+        ids_in_catalog = {cid for cid, _ in HARDWARE_VIDEO_CODECS}
+        assert NVENCC_VIDEO_CODECS <= ids_in_catalog
+        for codec in NVENCC_VIDEO_CODECS:
+            assert VIDEO_ENCODER_BADGES[codec] == "NVEncC"
+            assert codec in CQ_CAPABLE_VIDEO_CODECS
+        assert "nvencc_h264" in H264_VIDEO_CODECS
+        assert "nvencc_hevc" in DYNAMIC_HDR_VIDEO_CODECS
+        assert "nvencc_av1" in DYNAMIC_HDR_VIDEO_CODECS
+        # H.264 ne porte pas de HDR, on s'assure qu'il n'a pas glissé dedans.
+        assert "nvencc_h264" not in DYNAMIC_HDR_VIDEO_CODECS
+
+    def test_nvencc_specs_expose_family_and_capabilities(self):
+        spec_hevc = video_codec_spec("nvencc_hevc")
+        assert spec_hevc is not None
+        assert spec_hevc.family is VideoCodecFamily.NVENCC
+        assert spec_hevc.is_hardware is True
+        assert spec_hevc.supports_dynamic_hdr is True
+        assert spec_hevc.supports_10bit is True
+
+        spec_h264 = video_codec_spec("nvencc_h264")
+        assert spec_h264 is not None
+        assert spec_h264.is_h264 is True
+        assert spec_h264.supports_force_8bit is True
+
+        spec_av1 = video_codec_spec("nvencc_av1")
+        assert spec_av1 is not None
+        assert spec_av1.supports_dynamic_hdr is True
+        assert spec_av1.is_h264 is False
+
 
 class TestAudioCodecSpecs:
     def test_copy_audio_spec_is_passthrough(self):

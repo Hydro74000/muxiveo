@@ -94,6 +94,20 @@ DEFAULT_TOOLS: tuple[str, ...] = (
 )
 
 
+def _command_exists(command: str) -> bool:
+    if shutil.which(command) is not None:
+        return True
+    return Path(command).is_file()
+
+
+def _command_path(command: str) -> Path | None:
+    found = shutil.which(command)
+    if found:
+        return Path(found)
+    candidate = Path(command)
+    return candidate if candidate.is_file() else None
+
+
 class ToolChecker:
     """
     Vérifie la disponibilité des outils externes dans le PATH.
@@ -118,13 +132,12 @@ class ToolChecker:
         return {tool: self.available(tool) for tool in self._tools}
 
     def available(self, tool: str) -> bool:
-        """Retourne True si l'outil est trouvable dans le PATH."""
-        return shutil.which(tool) is not None
+        """Retourne True si l'outil est trouvable dans le PATH ou par chemin."""
+        return _command_exists(tool)
 
     def path_of(self, tool: str) -> Path | None:
         """Retourne le Path absolu de l'outil, ou None s'il est absent."""
-        found = shutil.which(tool)
-        return Path(found) if found else None
+        return _command_path(tool)
 
     def missing(self) -> list[str]:
         """Retourne la liste des outils absents du PATH."""

@@ -28,6 +28,10 @@ from core.workflows.encode.hw_devices import (
     select_linux_hwaccel_device,
     select_windows_hwaccel_device,
 )
+from core.workflows.encode.runtime.nvencc import (
+    NVENCC_VIDEO_CODECS as _NVENCC_CODECS,
+    detect_nvencc_available,
+)
 
 
 _NULLSRC = "nullsrc=s=256x256:r=25:d=0.1"   # ≥ 1 frame garantie (25fps × 0.1s)
@@ -177,7 +181,12 @@ class HardwareEncoderDetector:
 
         return available
 
-    def detect(self, ffmpeg_bin: str = "ffmpeg") -> tuple[set[str], str]:
+    def detect(
+        self,
+        ffmpeg_bin: str = "ffmpeg",
+        *,
+        nvencc_bin: str | None = None,
+    ) -> tuple[set[str], str]:
         """
         Retourne (encodeurs_hw_disponibles, chemin_ffmpeg_utilisé).
 
@@ -185,6 +194,10 @@ class HardwareEncoderDetector:
         probes — il peut différer du ffmpeg_bin fourni si ce dernier ne compile
         pas les encodeurs HW (typique dans un AppImage avec ffmpeg statique).
         Ce chemin doit être utilisé pour l'encodage HW effectif.
+
+        Si ``nvencc_bin`` est fourni *et* que NVENC ffmpeg est disponible, on
+        ajoute les codecs NVEncC supportés par le GPU (parsing
+        ``NVEncC --check-features``). NVEncC n'est jamais exposé sans NVENC.
         """
         ff, compiled = self._compiled_hw(ffmpeg_bin)
         if not compiled:
@@ -193,11 +206,17 @@ class HardwareEncoderDetector:
         resolved = self._resolve_ffmpeg(ff)
         available: set[str] = set()
         nvenc_compiled = compiled & _NVENC_CODECS
+        nvenc_available: set[str] = set()
 
         if nvenc_compiled:
-            available |= self._detect_nvenc(resolved, nvenc_compiled)
+            nvenc_available = self._detect_nvenc(resolved, nvenc_compiled)
+            available |= nvenc_available
 
         available |= self._probe_codecs(resolved, compiled - _NVENC_CODECS)
+
+        if nvencc_bin and nvenc_available:
+            _, nvencc_codecs = detect_nvencc_available(nvencc_bin)
+            available |= nvencc_codecs & _NVENCC_CODECS
 
         return available, ff
 

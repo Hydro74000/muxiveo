@@ -1726,9 +1726,34 @@ class TestValidate:
         errors = self.wf.validate(config)
         assert not any("durée" in e.lower() or "taille" in e.lower() for e in errors)
 
+    def test_copy_with_source_hdr_passthrough_is_allowed(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        config = _make_config(
+            src,
+            tmp_path / "out.mkv",
+            video=_make_video_settings(
+                codec="copy",
+                inject_hdr_meta=True,
+                master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)",
+                max_cll="1000,400",
+            ),
+        )
+        errors = self.wf.validate(config)
+        assert not any("codec copy incompatible" in e.lower() for e in errors)
+
     def test_valid_config_no_errors(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()
         assert self.wf.validate(_make_config(src, tmp_path / "out.mkv")) == []
+
+    def test_copy_with_tonemap_is_rejected(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        config = _make_config(
+            src,
+            tmp_path / "out.mkv",
+            video=_make_video_settings(codec="copy", tonemap_to_sdr=True),
+        )
+        errors = self.wf.validate(config)
+        assert any("tone-mapping" in e.lower() for e in errors)
 
     def test_invalid_master_display(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()
@@ -4749,3 +4774,502 @@ class TestTrackMetaArgs:
         edit = result.track_meta_edits[0]
         assert edit.language == "fr-FR", \
             f"Langue dans TrackMetaEdit : attendu 'fr-FR', obtenu {edit.language!r}"
+
+
+class TestNvenccRuntimeRouting:
+
+    def _make_workflow(self) -> EncodeWorkflow:
+        return EncodeWorkflow(
+            ffmpeg_bin="ffmpeg",
+            dovi_tool_bin="dovi_tool",
+            hdr10plus_bin="hdr10plus_tool",
+            mediainfo_bin="mediainfo",
+            nvencc_bin="/usr/bin/NVEncC",
+        )
+
+    def _make_config(self, tmp_path: Path, **video_overrides: Any) -> EncodeConfig:
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 1000)
+        return EncodeConfig(
+            source=src,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="nvencc_hevc", **video_overrides),
+            audio_tracks=[],
+            copy_subtitles=False,
+            duration_s=120.0,
+        )
+
+    def test_run_routes_nvencc_dynamic_hdr_to_nvencc_direct_output(self, tmp_path):
+        cfg = self._make_config(tmp_path, copy_dv=True)
+        wf = self._make_workflow()
+
+        with patch.object(wf, "_detect_source_dynamic_hdr_presence", return_value=(True, False)), \
+             patch.object(wf, "_run_with_metadata_inject", side_effect=AssertionError("metadata inject ne doit pas être appelé")), \
+             patch.object(wf, "_run_nvencc_direct_output", return_value=TaskSignals()) as nvencc_mock:
+            wf.run(cfg)
+
+        assert nvencc_mock.called, "Le chemin runtime NVEncC doit être utilisé pour copy_dv."
+
+    def test_run_nvencc_direct_output_builds_encode_and_ffmpeg_remux(self, tmp_path):
+        cfg = self._make_config(
+            tmp_path,
+            inject_hdr_meta=True,
+            master_display="G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)",
+            max_cll="1000,400",
+            extra_params="--aq --aq-strength 12",
+        )
+        wf = self._make_workflow()
+        cleanup_paths: list[Path] = []
+        captured: dict[str, list[str]] = {}
+        remux_calls: list[tuple[list[str], str | None]] = []
+
+        def _capture_run_cmd(cmd, *, cwd, label, progress_cb=None, signals=None):
+            _ = cwd
+            _ = progress_cb
+            _ = signals
+            remux_calls.append((list(cmd), label))
+            if label == "nvencc":
+                captured["encode"] = list(cmd)
+            return "remux-ok"
+
+        with patch.object(wf, "_prepare_nvencc_dynamic_hdr_assets", side_effect=AssertionError("plus d'extraction HDR externe attendue")), \
+             patch.object(wf._runner, "_run_cmd", side_effect=_capture_run_cmd):
+            wf._run_nvencc_direct_output(
+                cfg,
+                cleanup_paths,
+                prep_signals=TaskSignals(),
+            )
+
+        encode_cmd = captured["encode"]
+        assert encode_cmd[0] == "/usr/bin/NVEncC"
+        assert encode_cmd[encode_cmd.index("-i") + 1] == str(cfg.source)
+        assert encode_cmd[encode_cmd.index("--video-streamid") + 1] == "0"
+        assert "--master-display" in encode_cmd
+        assert "--max-cll" in encode_cmd
+        assert "--aq" in encode_cmd
+        assert "--aq-strength" in encode_cmd
+        assert "12" in encode_cmd
+
+        assert remux_calls, "Le remux final ffmpeg doit être lancé."
+        remux_cmd, label = remux_calls[-1]
+        assert label == "ffmpeg-remux"
+        assert remux_cmd[0] == "ffmpeg"
+        assert remux_cmd[remux_cmd.index("-i") + 1].endswith("nvencc.mkv")
+        assert str(cfg.source) in remux_cmd
+        assert "0:v:0" in remux_cmd
+        assert "-c:v" in remux_cmd
+        assert remux_cmd[remux_cmd.index("-c:v") + 1] == "copy"
+
+    def test_run_nvencc_direct_output_applies_video_offset_on_remux_input(self, tmp_path):
+        cfg = self._make_config(tmp_path)
+        cfg.track_time_offsets = [TrackTimeOffset(
+            source_path=cfg.source,
+            stream_index=0,
+            track_type="video",
+            offset_ms=1500,
+        )]
+        wf = self._make_workflow()
+        cleanup_paths: list[Path] = []
+        remux_cmds: list[list[str]] = []
+
+        def _capture_run_cmd(cmd, *, cwd, label, progress_cb=None, signals=None):
+            _ = cwd
+            _ = progress_cb
+            _ = signals
+            if label == "ffmpeg-remux":
+                remux_cmds.append(list(cmd))
+            return "ok"
+
+        with patch.object(wf._runner, "_run_cmd", side_effect=_capture_run_cmd):
+            wf._run_nvencc_direct_output(
+                cfg,
+                cleanup_paths,
+                prep_signals=TaskSignals(),
+            )
+
+        assert remux_cmds, "Le remux final doit être lancé."
+        remux_cmd = remux_cmds[-1]
+        assert "-itsoffset" in remux_cmd
+        assert remux_cmd[remux_cmd.index("-itsoffset") + 1] == "1.500"
+
+    def test_build_runtime_nvencc_remux_cmd_uses_sync_input_for_foreign_audio(self, tmp_path):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        encoded = tmp_path / "nvencc.mkv"
+        sync_audio = tmp_path / "sync_audio.mka"
+        src_main.touch()
+        src_alt.touch()
+        encoded.touch()
+        sync_audio.touch()
+
+        wf = self._make_workflow()
+        cfg = EncodeConfig(
+            source=src_main,
+            output=out,
+            video=_make_video_settings(codec="nvencc_hevc"),
+            audio_tracks=[
+                AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt),
+            ],
+            copy_subtitles=False,
+            duration_s=120.0,
+        )
+
+        with patch.object(
+            wf,
+            "_prepare_multisource_sync",
+            return_value=(
+                {(src_alt, 1, "audio"): (3, 0)},
+                [sync_audio],
+                None,
+                True,
+            ),
+        ):
+            remux_cmd, live, cleanup = wf._build_runtime_nvencc_remux_cmd(cfg, encoded)
+
+        assert live is None
+        assert cleanup == [sync_audio]
+        assert str(sync_audio) in remux_cmd
+        map_values = [remux_cmd[i + 1] for i, tok in enumerate(remux_cmd[:-1]) if tok == "-map"]
+        assert "3:0" in map_values
+        assert "4:0" not in map_values
+
+    def test_build_runtime_nvencc_remux_cmd_applies_offsets_after_sync_remap(self, tmp_path):
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        out = tmp_path / "out.mkv"
+        encoded = tmp_path / "nvencc.mkv"
+        sync_audio = tmp_path / "sync_audio.mka"
+        src_main.touch()
+        src_alt.touch()
+        encoded.touch()
+        sync_audio.touch()
+
+        wf = self._make_workflow()
+        cfg = EncodeConfig(
+            source=src_main,
+            output=out,
+            video=_make_video_settings(codec="nvencc_hevc"),
+            audio_tracks=[
+                AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt),
+            ],
+            copy_subtitles=False,
+            duration_s=120.0,
+            track_time_offsets=[
+                TrackTimeOffset(
+                    track_type="audio",
+                    source_path=src_alt,
+                    stream_index=1,
+                    offset_ms=120,
+                ),
+            ],
+        )
+
+        with patch.object(
+            wf,
+            "_prepare_multisource_sync",
+            return_value=(
+                {(src_alt, 1, "audio"): (3, 0)},
+                [sync_audio],
+                None,
+                True,
+            ),
+        ):
+            remux_cmd, live, cleanup = wf._build_runtime_nvencc_remux_cmd(cfg, encoded)
+
+        assert live is None
+        assert cleanup == [sync_audio]
+        assert "-itsoffset" in remux_cmd
+        assert remux_cmd[remux_cmd.index("-itsoffset") + 1] == "0.120"
+        map_values = [remux_cmd[i + 1] for i, tok in enumerate(remux_cmd[:-1]) if tok == "-map"]
+        assert "4:0" in map_values
+
+    def test_run_nvencc_direct_output_uses_native_dynamic_hdr_copy_from_source(self, tmp_path):
+        cfg = self._make_config(
+            tmp_path,
+            copy_dv=True,
+            copy_hdr10plus=True,
+            master_display="UI_MD",
+            max_cll="1111,222",
+        )
+        wf = self._make_workflow()
+        cleanup_paths: list[Path] = []
+        captured_encode_cmds: list[list[str]] = []
+
+        def _capture_run_cmd(cmd, *, cwd, label, progress_cb=None, signals=None):
+            _ = cwd
+            _ = progress_cb
+            _ = signals
+            if label == "nvencc":
+                captured_encode_cmds.append(list(cmd))
+            return "ok"
+
+        with patch.object(
+            wf,
+            "_prepare_nvencc_dynamic_hdr_assets",
+            side_effect=AssertionError("le chemin natif NVEncC ne doit plus préparer d'assets HDR externes"),
+        ), patch.object(wf._runner, "_run_cmd", side_effect=_capture_run_cmd):
+            wf._run_nvencc_direct_output(
+                cfg,
+                cleanup_paths,
+                prep_signals=TaskSignals(),
+            )
+
+        assert captured_encode_cmds, "La commande NVEncC runtime doit être lancée."
+        runtime_cmd = captured_encode_cmds[-1]
+        assert runtime_cmd[runtime_cmd.index("-i") + 1] == str(cfg.source)
+        assert runtime_cmd[runtime_cmd.index("--video-streamid") + 1] == "0"
+        assert runtime_cmd[runtime_cmd.index("--dhdr10-info") + 1] == "copy"
+        assert runtime_cmd[runtime_cmd.index("--dolby-vision-rpu") + 1] == "copy"
+        assert runtime_cmd[runtime_cmd.index("--dolby-vision-profile") + 1] == "8.1"
+        assert runtime_cmd[runtime_cmd.index("--master-display") + 1] == "UI_MD"
+        assert runtime_cmd[runtime_cmd.index("--max-cll") + 1] == "1111,222"
+        joined = " ".join(runtime_cmd)
+        assert "hdr10p.json" not in joined
+        assert "rpu.bin" not in joined
+
+    def test_run_nvencc_direct_output_forces_avsw_for_raw_dynamic_hdr_input(self, tmp_path):
+        src = tmp_path / "source.hevc"
+        src.touch()
+        cfg = EncodeConfig(
+            source=src,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="nvencc_hevc", copy_dv=True),
+            audio_tracks=[],
+            copy_subtitles=False,
+            duration_s=120.0,
+        )
+        wf = self._make_workflow()
+        cleanup_paths: list[Path] = []
+        captured_encode_cmds: list[list[str]] = []
+
+        def _capture_run_cmd(cmd, *, cwd, label, progress_cb=None, signals=None):
+            _ = cwd
+            _ = progress_cb
+            _ = signals
+            if label == "nvencc":
+                captured_encode_cmds.append(list(cmd))
+            return "ok"
+
+        with patch.object(wf._runner, "_run_cmd", side_effect=_capture_run_cmd):
+            wf._run_nvencc_direct_output(
+                cfg,
+                cleanup_paths,
+                prep_signals=TaskSignals(),
+            )
+
+        assert captured_encode_cmds, "La commande NVEncC runtime doit être lancée."
+        runtime_cmd = captured_encode_cmds[-1]
+        assert runtime_cmd[runtime_cmd.index("-i") + 1] == str(src)
+        assert "--avsw" in runtime_cmd
+        assert "--avhw" not in runtime_cmd
+        assert runtime_cmd[runtime_cmd.index("--dolby-vision-rpu") + 1] == "copy"
+        assert runtime_cmd[runtime_cmd.index("--dolby-vision-profile") + 1] == "8.1"
+        assert "--avsync" not in runtime_cmd
+        assert "--fps" not in runtime_cmd
+
+    def test_build_command_single_rebases_raw_override_to_original_container_for_dynamic_hdr_copy(self, tmp_path):
+        container = tmp_path / "source.mkv"
+        raw = tmp_path / "source.hevc"
+        container.touch()
+        raw.touch()
+        wf = self._make_workflow()
+        cfg = EncodeConfig(
+            source=container,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="nvencc_hevc", copy_dv=True, source_path=raw),
+            audio_tracks=[],
+            copy_subtitles=False,
+            duration_s=120.0,
+        )
+
+        preview_cmd = wf.build_command_single(cfg)
+
+        assert preview_cmd[preview_cmd.index("-i") + 1] == str(container)
+        assert "--avsw" not in preview_cmd
+        assert "--fps" not in preview_cmd
+        assert preview_cmd[preview_cmd.index("--dolby-vision-rpu") + 1] == "copy"
+        assert preview_cmd[preview_cmd.index("--dolby-vision-profile") + 1] == "8.1"
+
+    def test_run_nvencc_direct_output_pushes_avsync_vfr_for_container_input(self, tmp_path):
+        cfg = self._make_config(tmp_path)
+        wf = self._make_workflow()
+        cleanup_paths: list[Path] = []
+        captured_encode_cmds: list[list[str]] = []
+
+        def _capture_run_cmd(cmd, *, cwd, label, progress_cb=None, signals=None):
+            _ = cwd
+            _ = progress_cb
+            _ = signals
+            if label == "nvencc":
+                captured_encode_cmds.append(list(cmd))
+            return "ok"
+
+        with patch.object(wf, "_source_is_vfr", return_value=True), \
+             patch.object(wf._runner, "_run_cmd", side_effect=_capture_run_cmd):
+            wf._run_nvencc_direct_output(
+                cfg,
+                cleanup_paths,
+                prep_signals=TaskSignals(),
+            )
+
+        assert captured_encode_cmds, "La commande NVEncC runtime doit être lancée."
+        runtime_cmd = captured_encode_cmds[-1]
+        assert runtime_cmd[runtime_cmd.index("-i") + 1] == str(cfg.source)
+        assert "--avsync" in runtime_cmd
+        assert runtime_cmd[runtime_cmd.index("--avsync") + 1] == "vfr"
+        assert "--fps" not in runtime_cmd
+
+    def test_run_nvencc_direct_output_skips_post_encode_dovi_processing(self, tmp_path):
+        cfg = self._make_config(tmp_path, copy_dv=True)
+        wf = self._make_workflow()
+        cleanup_paths: list[Path] = []
+        cmds_by_label: dict[str, list[list[str]]] = {}
+
+        def _capture_run_cmd(cmd, *, cwd, label, progress_cb=None, signals=None):
+            _ = cwd
+            _ = progress_cb
+            _ = signals
+            cmds_by_label.setdefault(label, []).append(list(cmd))
+            return "ok"
+
+        with patch.object(wf._runner, "_run_cmd", side_effect=_capture_run_cmd):
+            wf._run_nvencc_direct_output(
+                cfg,
+                cleanup_paths,
+                prep_signals=TaskSignals(),
+            )
+
+        assert "nvencc" in cmds_by_label
+        assert "ffmpeg-remux" in cmds_by_label
+        assert "dovi_tool-patch-rpu" not in cmds_by_label
+        assert "ffmpeg-nvencc-patch-rpu-annexb" not in cmds_by_label
+
+    def test_runtime_and_preview_share_same_extra_param_sanitation(self, tmp_path):
+        cfg = self._make_config(
+            tmp_path,
+            copy_dv=True,
+            tonemap_to_sdr=True,
+            tonemap_algorithm="linear",
+            extra_params=(
+                "--dolby-vision-profile 5.0 "
+                "--dolby-vision-rpu old.bin "
+                "--dolby-vision-rpu-prm crop=false "
+                "--vpp-colorspace matrix=bt709:bt709,hdr2sdr=hable "
+                "--vpp-libplacebo-tonemapping src_csp=hdr10,dst_csp=sdr,tonemapping_function=clip "
+                "--aq --qp-init 18 --crop 0,140,0,140"
+            ),
+        )
+        wf = self._make_workflow()
+        cleanup_paths: list[Path] = []
+        captured_encode_cmds: list[list[str]] = []
+
+        preview_cmd = wf.build_command_single(cfg)
+
+        def _capture_run_cmd(cmd, *, cwd, label, progress_cb=None, signals=None):
+            _ = cwd
+            _ = progress_cb
+            _ = signals
+            if label == "nvencc":
+                captured_encode_cmds.append(list(cmd))
+            return "ok"
+
+        with patch.object(wf._runner, "_run_cmd", side_effect=_capture_run_cmd):
+            wf._run_nvencc_direct_output(
+                cfg,
+                cleanup_paths,
+                prep_signals=TaskSignals(),
+            )
+
+        assert captured_encode_cmds, "Le runtime doit lancer la commande NVEncC."
+        runtime_cmd = captured_encode_cmds[-1]
+        assert preview_cmd[-2] == runtime_cmd[-2] == "-o"
+        assert preview_cmd[-1].endswith("nvencc.mkv")
+        assert runtime_cmd[-1].endswith("nvencc.mkv")
+        assert preview_cmd[preview_cmd.index("--dolby-vision-profile") + 1] == "8.1"
+        assert preview_cmd[preview_cmd.index("--dolby-vision-rpu") + 1] == "copy"
+        assert preview_cmd[preview_cmd.index("--dolby-vision-rpu-prm") + 1] == "crop=true"
+        assert runtime_cmd[runtime_cmd.index("-i") + 1] == str(cfg.source)
+        assert runtime_cmd[runtime_cmd.index("--dolby-vision-profile") + 1] == "8.1"
+        assert runtime_cmd[runtime_cmd.index("--dolby-vision-rpu") + 1] == "copy"
+        assert runtime_cmd[runtime_cmd.index("--dolby-vision-rpu-prm") + 1] == "crop=true"
+        assert runtime_cmd[runtime_cmd.index("--qp-init") + 1] == "18:18:18"
+        assert "--aq" in runtime_cmd
+        assert "--vpp-libplacebo-tonemapping" in runtime_cmd
+        assert "tonemapping_function=linear" in runtime_cmd[runtime_cmd.index("--vpp-libplacebo-tonemapping") + 1]
+        assert "old.bin" not in " ".join(runtime_cmd)
+
+    def test_build_command_single_pushes_source_fps_for_raw_nvencc_input(self, tmp_path):
+        src = tmp_path / "source.hevc"
+        src.touch()
+        wf = self._make_workflow()
+        cfg = EncodeConfig(
+            source=src,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="nvencc_hevc"),
+            audio_tracks=[],
+            copy_subtitles=False,
+            duration_s=120.0,
+        )
+
+        with patch.object(wf, "_source_video_fps_expr", return_value="24000/1001"):
+            preview_cmd = wf.build_command_single(cfg)
+
+        assert preview_cmd[preview_cmd.index("-i") + 1] == str(src)
+        assert "--fps" in preview_cmd
+        assert preview_cmd[preview_cmd.index("--fps") + 1] == "24000/1001"
+
+    def test_build_command_single_forces_avsw_for_raw_dynamic_hdr_input(self, tmp_path):
+        src = tmp_path / "source.hevc"
+        src.touch()
+        wf = self._make_workflow()
+        cfg = EncodeConfig(
+            source=src,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="nvencc_hevc", copy_dv=True),
+            audio_tracks=[],
+            copy_subtitles=False,
+            duration_s=120.0,
+        )
+
+        preview_cmd = wf.build_command_single(cfg)
+
+        assert preview_cmd[preview_cmd.index("-i") + 1] == str(src)
+        assert "--avsw" in preview_cmd
+        assert "--fps" not in preview_cmd
+        assert preview_cmd[preview_cmd.index("--dolby-vision-rpu") + 1] == "copy"
+        assert preview_cmd[preview_cmd.index("--dolby-vision-profile") + 1] == "8.1"
+
+    def test_build_command_single_pushes_avsync_vfr_for_container_input(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.touch()
+        wf = self._make_workflow()
+        cfg = EncodeConfig(
+            source=src,
+            output=tmp_path / "output.mkv",
+            video=_make_video_settings(codec="nvencc_hevc"),
+            audio_tracks=[],
+            copy_subtitles=False,
+            duration_s=120.0,
+        )
+
+        with patch.object(wf, "_source_is_vfr", return_value=True):
+            preview_cmd = wf.build_command_single(cfg)
+
+        assert preview_cmd[preview_cmd.index("-i") + 1] == str(src)
+        assert "--avsync" in preview_cmd
+        assert preview_cmd[preview_cmd.index("--avsync") + 1] == "vfr"
+        assert "--fps" not in preview_cmd
+
+    def test_source_is_vfr_uses_mediainfo_fallback_when_ffprobe_is_inconclusive(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.touch()
+        wf = self._make_workflow()
+
+        with patch.object(wf, "_ffprobe_streams_payload", return_value=None), \
+             patch.object(wf, "_load_mediainfo_video_track", return_value={"FrameRate_Mode": "VFR"}):
+            assert wf._source_is_vfr(src) is True
+
+        with patch.object(wf, "_ffprobe_streams_payload", return_value=None), \
+             patch.object(wf, "_load_mediainfo_video_track", return_value={"FrameRate_Mode": "CFR"}):
+            assert wf._source_is_vfr(src) is False

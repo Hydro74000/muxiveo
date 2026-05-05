@@ -868,6 +868,69 @@ class TestEncodePanelDynamicHdrDefaults:
         assert panel._max_cll.isReadOnly() is False
         panel.close()
 
+    def test_nvencc_hevc_keeps_manual_hdr_metadata_fields_editable(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        panel._hw_encoders = {"nvencc_hevc"}
+        panel._populate_codec_combo()
+        entry = _video_entry(0)
+        entry.entry_id = "video-nvencc-hevc-hdr-edit"
+        info = _file_info(_PATH_A, [_video_track(0, HDRType.HDR10)])
+        panel.set_video_tracks([(info, entry, _COLOR)])
+
+        idx_nvencc = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "nvencc_hevc"
+        )
+        panel._codec_combo.setCurrentIndex(idx_nvencc)
+
+        assert panel._master_display.isReadOnly() is False
+        assert panel._max_cll.isReadOnly() is False
+        panel.close()
+
+    def test_nvencc_h264_disables_dynamic_hdr_and_hides_size_mode(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        panel._hw_encoders = {"nvencc_h264"}
+        panel._populate_codec_combo()
+        entry = _video_entry(0)
+        entry.entry_id = "video-nvencc-h264-dv"
+        info = _file_info(_PATH_A, [_video_track(0, HDRType.DOLBY_VISION_HDR10PLUS)])
+        panel.set_video_tracks([(info, entry, _COLOR)])
+
+        idx_nvencc = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "nvencc_h264"
+        )
+        panel._codec_combo.setCurrentIndex(idx_nvencc)
+
+        mode_values = [panel._mode_combo.itemData(i) for i in range(panel._mode_combo.count())]
+        assert panel._copy_dv_cb.isEnabled() is False
+        assert panel._copy_hdr10plus_cb.isEnabled() is False
+        assert panel._copy_dv_cb.isChecked() is False
+        assert panel._copy_hdr10plus_cb.isChecked() is False
+        assert all(mode != "size" and getattr(mode, "value", None) != "size" for mode in mode_values)
+        panel.close()
+
+    def test_nvencc_av1_enables_dynamic_hdr_passthrough(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        panel._hw_encoders = {"nvencc_av1"}
+        panel._populate_codec_combo()
+        entry = _video_entry(0)
+        entry.entry_id = "video-nvencc-av1-dv"
+        info = _file_info(_PATH_A, [_video_track(0, HDRType.DOLBY_VISION_HDR10PLUS)])
+        panel.set_video_tracks([(info, entry, _COLOR)])
+
+        idx_nvencc = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "nvencc_av1"
+        )
+        panel._codec_combo.setCurrentIndex(idx_nvencc)
+
+        assert panel._copy_dv_cb.isEnabled() is True
+        assert panel._copy_hdr10plus_cb.isEnabled() is True
+        assert panel._copy_dv_cb.isChecked() is True
+        assert panel._copy_hdr10plus_cb.isChecked() is True
+        panel.close()
+
     def test_h264_precheck_forces_8bit_and_logs_switch(self, qt_app):
         panel = EncodePanel(AppConfig())
         entry = _video_entry(0)
