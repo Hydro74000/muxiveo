@@ -1,0 +1,35 @@
+{
+  "jobs": [
+    {
+      "sources": [
+        {
+          "path": "Series.S01E01.source.mkv",
+          "attachments": "all",
+          "copy_tags": true
+        }
+      ],
+      "output": "Series.S01E01.remux.mkv",
+      "tmdb": {
+        "query": "Series",
+        "season": "1",
+        "episode": "1"
+      }
+    },
+    {
+      "sources": [
+        {
+          "path": "Series.S01E02.source.mkv",
+          "attachments": "all",
+          "copy_tags": true
+        }
+      ],
+      "output": "Series.S01E02.remux.mkv",
+      "tmdb": {
+        "query": "Series",
+        "season": "1",
+        "episode": "2"
+      }
+    }
+  ]
+}
+
