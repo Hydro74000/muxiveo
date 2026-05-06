@@ -8,6 +8,9 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtGui import QDropEvent, QFont
 from PySide6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -31,6 +34,7 @@ from core.matroska_attachment_extractor import extract_matroska_attachment_bytes
 from core.inspector import AttachmentInfo, ChapterEntry, FileInfo
 from core.runner import TaskSignals, ToolRunner
 from core.workflows.remux import RemuxWorkflow
+from core.workflows.audio_sync import AudioSyncTrack, AudioSyncWorkflow
 from core.workflows.remux_models import (
     RemuxConfig,
     SourceInput,
@@ -55,6 +59,52 @@ from ui.panels.remux_panel.widgets.file_list import _FileListWidget
 from ui.panels.remux_panel.widgets.track_table import _TrackTable
 
 
+class _AudioSyncReferenceDialog(QDialog):
+    def __init__(
+        self,
+        choices: list[tuple[str, TrackEntry]],
+        *,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(translate_text("Source de référence"))
+        self.setModal(True)
+        self._combo = QComboBox()
+        for label, entry in choices:
+            self._combo.addItem(label, entry)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(_scale(18), _scale(16), _scale(18), _scale(16))
+        root.setSpacing(_scale(12))
+        self.setStyleSheet(f"""
+            QDialog {{ background: {_C.BG_DEEP}; color: {_C.TEXT_PRI}; }}
+            QLabel {{ color: {_C.TEXT_SEC}; background: transparent; }}
+            QComboBox {{
+                background: {_C.BG_CARD};
+                color: {_C.TEXT_PRI};
+                border: 1px solid {_C.BORDER};
+                border-radius: 5px;
+                padding: {_scale(6)}px {_scale(8)}px;
+                min-width: {_scale(420)}px;
+            }}
+        """)
+
+        label = QLabel(translate_text("Choisir la source audio qui servira de référence."))
+        root.addWidget(label)
+        root.addWidget(self._combo)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        root.addWidget(buttons)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+    def selected_entry(self) -> TrackEntry | None:
+        data = self._combo.currentData()
+        return data if isinstance(data, TrackEntry) else None
+
+
 class RemuxPanel(QWidget):
     """
     Panneau de remuxage MKV/MP4 — support multi-sources.
@@ -72,6 +122,8 @@ class RemuxPanel(QWidget):
 
     _inspection_done = Signal(str, object)
     _inspection_error = Signal(str, str)
+    _audio_sync_done = Signal(str, str, int, float)
+    _audio_sync_error = Signal(str, str)
 
     video_tracks_changed = Signal(object)
     audio_tracks_changed = Signal(object)
@@ -104,6 +156,12 @@ class RemuxPanel(QWidget):
         )
         self._inspection_error.connect(
             self._on_inspection_error, Qt.ConnectionType.QueuedConnection
+        )
+        self._audio_sync_done.connect(
+            self._on_audio_sync_done, Qt.ConnectionType.QueuedConnection
+        )
+        self._audio_sync_error.connect(
+            self._on_audio_sync_error, Qt.ConnectionType.QueuedConnection
         )
 
         self._build_ui()
@@ -233,6 +291,7 @@ class RemuxPanel(QWidget):
         self._track_table.itemChanged.connect(self._on_table_changed)
         self._track_table.order_changed.connect(self._on_track_order_changed)
         self._track_table.extract_requested.connect(self._on_extract_track)
+        self._track_table.audio_sync_requested.connect(self._on_audio_sync_requested)
         content_layout.addWidget(self._track_table)
 
         content_layout.addWidget(_separator())
@@ -479,11 +538,13 @@ class RemuxPanel(QWidget):
             self._cmd_preview.setPlainText("(erreur de construction de la commande)")
 
     def _on_table_changed(self, _item: QTableWidgetItem | None = None) -> None:
+        self._refresh_audio_sync_buttons()
         self._track_table.refresh_filter()
         self._rebuild_preview()
         self._emit_signals()
 
     def _on_track_order_changed(self) -> None:
+        self._refresh_audio_sync_buttons()
         self._rebuild_preview()
         self._emit_signals()
 
@@ -606,6 +667,7 @@ class RemuxPanel(QWidget):
         source.tracks.append(new_entry)
         source_color = self._source_colors.get(template_entry.file_id, _C.BORDER)
         self._track_table.append_tracks(source_color, [new_entry])
+        self._refresh_audio_sync_buttons()
         self._track_table.refresh_filter()
         self._rebuild_preview()
         self._emit_audio_tracks()
@@ -617,6 +679,7 @@ class RemuxPanel(QWidget):
         for source in self._source_files:
             source.tracks = [track for track in source.tracks if track.entry_id != entry_id_str]
         if self._track_table.remove_track_by_entry_id(entry_id_str):
+            self._refresh_audio_sync_buttons()
             self._track_table.refresh_filter()
             self._rebuild_preview()
             self._emit_audio_tracks()
@@ -641,6 +704,133 @@ class RemuxPanel(QWidget):
                     self._rebuild_preview()
                     self._emit_audio_tracks()
                 return
+
+    def _audio_entries_by_source(self) -> dict[str, list[TrackEntry]]:
+        by_source: dict[str, list[TrackEntry]] = {}
+        for entry in self._track_table.current_tracks():
+            if entry.track_type != "audio":
+                continue
+            by_source.setdefault(entry.file_id, []).append(entry)
+        return by_source
+
+    def _refresh_audio_sync_buttons(self) -> None:
+        by_source = self._audio_entries_by_source()
+        self._track_table.set_audio_sync_available(len(by_source) >= 2)
+
+    @staticmethod
+    def _looks_5_1_or_more(entry: TrackEntry) -> bool:
+        info = (entry.display_info or "").lower()
+        return "5.1" in info or "7.1" in info or "6 ch" in info or "8 ch" in info
+
+    def _audio_sync_reference_choices(self, target: TrackEntry) -> list[tuple[str, TrackEntry]]:
+        choices: list[tuple[str, TrackEntry]] = []
+        seen_sources: set[str] = set()
+        for sf in self._source_files:
+            if sf.id == target.file_id or sf.id in seen_sources:
+                continue
+            candidates = [
+                entry for entry in self._track_table.current_tracks()
+                if entry.file_id == sf.id
+                and entry.track_type == "audio"
+                and self._looks_5_1_or_more(entry)
+            ]
+            if not candidates:
+                continue
+            ref = candidates[0]
+            title = f" - {ref.title}" if ref.title else ""
+            choices.append((f"{sf.path.name} | #{ref.mkv_tid} {ref.codec} {ref.display_info}{title}", ref))
+            seen_sources.add(sf.id)
+        return choices
+
+    def _audio_sync_track(self, entry: TrackEntry) -> AudioSyncTrack | None:
+        source = self._find_source(entry.file_id)
+        if source is None:
+            return None
+        return AudioSyncTrack(source_path=source.path, stream_index=int(entry.mkv_tid))
+
+    def _on_audio_sync_requested(self, entry: TrackEntry) -> None:
+        if entry.track_type != "audio":
+            return
+        if not self._looks_5_1_or_more(entry):
+            self.log_message.emit("ERROR", "impossible d'utiliser la synchronisation améliorée")
+            return
+
+        choices = self._audio_sync_reference_choices(entry)
+        if not choices:
+            self.log_message.emit("ERROR", "impossible d'utiliser la synchronisation améliorée")
+            return
+
+        dialog = _AudioSyncReferenceDialog(choices, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        reference_entry = dialog.selected_entry()
+        if reference_entry is None:
+            return
+
+        reference = self._audio_sync_track(reference_entry)
+        target = self._audio_sync_track(entry)
+        if reference is None or target is None:
+            self.log_message.emit("ERROR", "impossible d'utiliser la synchronisation améliorée")
+            return
+
+        self.log_message.emit(
+            "INFO",
+            translate_text(
+                "Synchronisation audio améliorée : piste #{target} vs référence #{reference}…",
+                target=entry.mkv_tid,
+                reference=reference_entry.mkv_tid,
+            ),
+        )
+
+        target_entry_id = entry.entry_id
+        reference_entry_id = reference_entry.entry_id
+
+        def _task() -> None:
+            try:
+                workflow = AudioSyncWorkflow(
+                    ffmpeg_bin=self._config.tool_ffmpeg,
+                    ffprobe_bin=self._config.tool_ffprobe,
+                    log_cb=self.log_message.emit,
+                )
+                result = workflow.detect_offset(reference, target)
+                self._audio_sync_done.emit(
+                    target_entry_id,
+                    reference_entry_id,
+                    result.offset_ms,
+                    result.confidence,
+                )
+            except Exception as exc:
+                self._audio_sync_error.emit(target_entry_id, str(exc))
+
+        self._executor.submit(_task)
+
+    def _on_audio_sync_done(
+        self,
+        entry_id: str,
+        reference_entry_id: str,
+        offset_ms: int,
+        confidence: float,
+    ) -> None:
+        if reference_entry_id and reference_entry_id != entry_id:
+            self._track_table.update_time_shift(reference_entry_id, 0)
+        if self._track_table.update_time_shift(entry_id, offset_ms):
+            offset_label = f"{int(offset_ms):+d}"
+            confidence_label = f"{float(confidence):.2f}"
+            self.log_message.emit(
+                "OK",
+                translate_text(
+                    "Synchronisation audio améliorée appliquée : {offset} ms (confiance {confidence}).",
+                    offset=offset_label,
+                    confidence=confidence_label,
+                ),
+            )
+            self._rebuild_preview()
+            self._emit_audio_tracks()
+
+    def _on_audio_sync_error(self, _entry_id: str, detail: str) -> None:
+        self.log_message.emit("ERROR", "impossible d'utiliser la synchronisation améliorée")
+        if detail:
+            self.log_message.emit("ERROR", detail)
 
     def update_video_track_encoding(self, plans) -> None:
         plan_map: dict[str, str] = {}
@@ -729,6 +919,7 @@ class RemuxPanel(QWidget):
 
     def _set_all_tracks(self, enabled: bool) -> None:
         self._track_table.set_all_enabled(enabled)
+        self._refresh_audio_sync_buttons()
         self._track_table.refresh_filter()
         self._rebuild_preview()
 

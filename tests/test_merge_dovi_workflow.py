@@ -6,9 +6,11 @@ import pytest
 
 from core.workflows.merge_dovi import (
     DoviProfile,
+    FrameCountResult,
     HDRFlags,
     MergeDoviWorkflow,
     StaticHdrMetadata,
+    ValidationContext,
     WorkflowError,
     WorkflowStep,
     _WorkflowPaths,
@@ -177,6 +179,197 @@ def test_verify_passes_when_frame_counts_align(
     wf._step_verify(film1, paths, flags)  # ne lève pas
 
 
+def test_validate_sdr_film1_enables_assisted_hdr10_conversion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    film1 = tmp_path / "film1_sdr.mkv"
+    film2 = tmp_path / "film2_hdr10.mkv"
+    film1.write_bytes(b"film1")
+    film2.write_bytes(b"film2")
+
+    monkeypatch.setattr("core.workflows.merge_dovi.shutil.which", lambda _cmd: "/bin/tool")
+    wf = MergeDoviWorkflow()
+
+    def _mediainfo(path: Path, query: str) -> str:
+        if query == "Video;%Format%":
+            return "HEVC"
+        if query == "Video;%HDR_Format%":
+            return ""
+        if query == "Video;%transfer_characteristics%":
+            return "BT.709" if path == film1 else "PQ"
+        return ""
+
+    wf._mediainfo = _mediainfo  # type: ignore[method-assign]
+    wf._read_static_hdr_metadata = lambda path: (  # type: ignore[method-assign]
+        StaticHdrMetadata()
+        if path == film1
+        else StaticHdrMetadata(
+            master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,50)",
+            max_cll="1000,400",
+        )
+    )
+
+    result = wf._step_validate(film1, film2, DoviProfile.DISABLED)
+
+    assert result.film1_needs_sdr_to_hdr10 is True
+    assert result.flags.has_hdr10plus is False
+    assert result.film2_has_hdr10_reference is True
+
+
+def test_validate_hdr10_film1_keeps_hdr10plus_injection_without_conversion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    film1 = tmp_path / "film1_hdr10.mkv"
+    film2 = tmp_path / "film2_hdr10plus.mkv"
+    film1.write_bytes(b"film1")
+    film2.write_bytes(b"film2")
+
+    monkeypatch.setattr("core.workflows.merge_dovi.shutil.which", lambda _cmd: "/bin/tool")
+    wf = MergeDoviWorkflow()
+
+    def _mediainfo(path: Path, query: str) -> str:
+        if query == "Video;%Format%":
+            return "HEVC"
+        if query == "Video;%HDR_Format%":
+            return "SMPTE ST 2094 App 4" if path == film2 else "HDR10"
+        if query == "Video;%transfer_characteristics%":
+            return "PQ"
+        return ""
+
+    wf._mediainfo = _mediainfo  # type: ignore[method-assign]
+    wf._read_static_hdr_metadata = lambda _path: StaticHdrMetadata(  # type: ignore[method-assign]
+        master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,50)",
+        max_cll="1000,400",
+    )
+
+    result = wf._step_validate(film1, film2, DoviProfile.DISABLED)
+
+    assert result.film1_needs_sdr_to_hdr10 is False
+    assert result.flags.has_hdr10plus is True
+    assert result.flags.has_dovi is False
+
+
+def test_framecount_large_delta_allowed_for_sdr_conversion_only(tmp_path: Path) -> None:
+    film1 = tmp_path / "film1_sdr.mkv"
+    film2 = tmp_path / "film2_hdr10plus.mkv"
+    film1.write_bytes(b"film1")
+    film2.write_bytes(b"film2")
+
+    wf = MergeDoviWorkflow()
+    counts = {film1: 1000, film2: 1020}
+    wf._get_framecount = lambda path: counts[path]  # type: ignore[method-assign]
+
+    with pytest.raises(WorkflowError, match="Écart de 20 frames"):
+        wf._step_framecount(film1, film2)
+
+    result = wf._step_framecount(film1, film2, allow_large_delta=True)
+
+    assert result.diff == 20
+    assert result.compatible is False
+
+
+def test_run_sdr_large_frame_delta_converts_without_metadata_injection(tmp_path: Path) -> None:
+    film1 = tmp_path / "film1_sdr.mkv"
+    film2 = tmp_path / "film2_hdr10plus_dovi.mkv"
+    film1.write_bytes(b"film1")
+    film2.write_bytes(b"film2")
+    paths = _paths(tmp_path, film1)
+    static = StaticHdrMetadata(
+        master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,50)",
+        max_cll="1000,400",
+    )
+    wf = MergeDoviWorkflow()
+    calls: list[str] = []
+    remux_flags: list[HDRFlags] = []
+
+    wf._step_validate = lambda *_args: ValidationContext(  # type: ignore[method-assign]
+        flags=HDRFlags(has_dovi=True, has_hdr10plus=True),
+        static_film1=StaticHdrMetadata(),
+        static_film2=static,
+        film1_needs_sdr_to_hdr10=True,
+        film2_has_hdr10_reference=True,
+    )
+    wf._step_detect_dovi = lambda *_args: None  # type: ignore[method-assign]
+    wf._step_framecount = lambda *_args, **_kwargs: FrameCountResult(1000, 1020, 20)  # type: ignore[method-assign]
+
+    def _extract_hevc(_film1, _film2, step_paths, flags, routing) -> None:
+        calls.append("extract_hevc")
+        assert flags.has_dovi is False
+        assert flags.has_hdr10plus is False
+        assert routing is None
+        step_paths.film1_hevc.write_bytes(b"hevc")
+
+    def _convert_sdr(step_paths, _static_hdr) -> None:
+        calls.append("convert_sdr")
+        step_paths.film1_hdr10_hevc.write_bytes(b"hdr10")
+
+    def _extract_metadata(*_args) -> None:
+        calls.append("extract_metadata")
+
+    def _inject_dovi(*_args) -> None:
+        calls.append("inject_dovi")
+
+    def _inject_hdr10plus(*_args) -> None:
+        calls.append("inject_hdr10plus")
+
+    def _remux(_film1, _paths, flags, **_kwargs) -> None:
+        calls.append("remux")
+        remux_flags.append(flags)
+
+    wf._step_extract_hevc = _extract_hevc  # type: ignore[method-assign]
+    wf._step_convert_sdr_to_hdr10 = _convert_sdr  # type: ignore[method-assign]
+    wf._step_extract_metadata = _extract_metadata  # type: ignore[method-assign]
+    wf._step_inject_dovi = _inject_dovi  # type: ignore[method-assign]
+    wf._step_inject_hdr10plus = _inject_hdr10plus  # type: ignore[method-assign]
+    wf._step_inject_static_hdr = lambda *_args: False  # type: ignore[method-assign]
+    wf._step_verify = lambda *_args, **_kwargs: calls.append("verify")  # type: ignore[method-assign]
+    wf._step_remux = _remux  # type: ignore[method-assign]
+    wf._step_cleanup = lambda *_args: calls.append("cleanup")  # type: ignore[method-assign]
+
+    wf._run(film1, film2, paths, DoviProfile.P8_1)
+
+    assert "convert_sdr" in calls
+    assert "remux" in calls
+    assert "extract_metadata" not in calls
+    assert "inject_dovi" not in calls
+    assert "inject_hdr10plus" not in calls
+    assert remux_flags
+    assert remux_flags[0].has_dovi is False
+    assert remux_flags[0].has_hdr10plus is False
+
+
+def test_step_convert_sdr_to_hdr10_builds_ffmpeg_hdr10_command(tmp_path: Path) -> None:
+    film1 = tmp_path / "film1.mkv"
+    film1.write_bytes(b"film1")
+    paths = _paths(tmp_path, film1)
+    paths.film1_hevc.write_bytes(b"hevc")
+    static = StaticHdrMetadata(
+        master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,50)",
+        max_cll="1000,400",
+    )
+    wf = MergeDoviWorkflow(ffmpeg_bin="ffmpeg")
+    calls: list[list[str]] = []
+
+    def _fake_run_cmd(cmd: list[str], _step: WorkflowStep) -> str:
+        calls.append(cmd)
+        Path(cmd[-1]).write_bytes(b"hdr10")
+        return ""
+
+    wf._run_cmd = _fake_run_cmd  # type: ignore[method-assign]
+
+    wf._step_convert_sdr_to_hdr10(paths, static)
+
+    cmd = calls[0]
+    assert cmd[:3] == ["ffmpeg", "-hide_banner", "-y"]
+    assert "-vf" in cmd
+    assert "smpte2084" in cmd[cmd.index("-vf") + 1]
+    assert "-x265-params" in cmd
+    params = cmd[cmd.index("-x265-params") + 1]
+    assert "master-display=" + static.master_display in params
+    assert "max-cll=" + static.max_cll in params
+    assert cmd[-1] == str(paths.film1_hdr10_hevc)
+
+
 def test_step_inject_dovi_uses_film2_p8_when_converted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -291,6 +484,7 @@ def test_cleanup_removes_wrapped_video(tmp_path: Path) -> None:
 
     intermediates = [
         paths.film1_hevc,
+        paths.film1_hdr10_hevc,
         paths.film2_hevc,
         paths.film2_hevc_p8,
         paths.film2_rpu,

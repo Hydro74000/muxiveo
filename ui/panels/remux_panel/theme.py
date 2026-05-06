@@ -152,6 +152,28 @@ def _pencil_icon(color: str | None = None, size: int = 14) -> QIcon:
     return QIcon(pix)
 
 
+def _refresh_icon(color: str | None = None, size: int = 14) -> QIcon:
+    color = color or _C.TEXT_SEC
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
+        f' fill="none" stroke="{color}" stroke-width="2.2"'
+        ' stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M21 12a9 9 0 0 0-15.5-6.3L3 8"/>'
+        '<path d="M3 3v5h5"/>'
+        '<path d="M3 12a9 9 0 0 0 15.5 6.3L21 16"/>'
+        '<path d="M21 21v-5h-5"/>'
+        '</svg>'
+    )
+    renderer = QSvgRenderer(svg.encode())
+    icon_size = _scale(size)
+    pix = QPixmap(icon_size, icon_size)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pix)
+
+
 __all__ = [
     "_C",
     "_card",
@@ -159,6 +181,7 @@ __all__ = [
     "_input_style",
     "_pencil_icon",
     "_primary_button",
+    "_refresh_icon",
     "_secondary_button",
     "_section_label",
     "_separator",

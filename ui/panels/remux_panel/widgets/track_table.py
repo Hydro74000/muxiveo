@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtCore import QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainter, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QHBoxLayout,
     QHeaderView,
     QMenu,
     QMessageBox,
@@ -26,7 +27,7 @@ from ui.panels.remux_panel.models import (
     _TRACK_INFO_OFFSET_POS_COLOR,
     _TRACK_INFO_OFFSET_VALUE_ROLE,
 )
-from ui.panels.remux_panel.theme import _C, _pencil_icon
+from ui.panels.remux_panel.theme import _C, _pencil_icon, _refresh_icon
 from ui.panels.track_edit_dialog import TrackEditDialog
 
 class _TrackInfoDelegate(QStyledItemDelegate):
@@ -96,6 +97,7 @@ class _TrackInfoDelegate(QStyledItemDelegate):
 class _TrackTable(QTableWidget):
     order_changed = Signal()
     extract_requested = Signal(object)  # TrackEntry
+    audio_sync_requested = Signal(object)  # TrackEntry
 
     _TYPE_ORDER: dict[str, int] = {"video": 0, "audio": 1, "subtitle": 2}
     _MAX_VISIBLE_ROWS = 15
@@ -142,6 +144,7 @@ class _TrackTable(QTableWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(0, len(self._HEADERS), parent)
         self._filter_selected = False
+        self._audio_sync_available = False
         self._prev_lang: dict[int, str] = {}
         self._setup_ui()
         self._adjust_height()
@@ -181,7 +184,7 @@ class _TrackTable(QTableWidget):
         self.setColumnWidth(self.COL_CHECK, 32)
         self.setColumnWidth(self.COL_TYPE, 48)
         self.setColumnWidth(self.COL_LANG, 70)
-        self.setColumnWidth(self.COL_EDIT, 30)
+        self.setColumnWidth(self.COL_EDIT, 58)
 
         self.setItemDelegateForColumn(self.COL_INFO, _TrackInfoDelegate(self))
 
@@ -378,15 +381,11 @@ class _TrackTable(QTableWidget):
             self._apply_new_track_style(row)
         self._apply_video_encode_style(row, entry)
 
-        edit_btn = QPushButton()
-        from PySide6.QtCore import QSize
+        self._set_action_cell(row, entry)
 
-        edit_btn.setIcon(_pencil_icon(_C.TEXT_SEC, 13))
-        edit_btn.setIconSize(QSize(13, 13))
-        edit_btn.setFixedSize(22, 22)
-        edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        edit_btn.setToolTip("Éditer les métadonnées de cette piste")
-        edit_btn.setStyleSheet(f"""
+    @staticmethod
+    def _small_action_button_style() -> str:
+        return f"""
             QPushButton {{
                 background: transparent;
                 border: 1px solid {_C.BORDER};
@@ -400,9 +399,43 @@ class _TrackTable(QTableWidget):
             QPushButton:pressed {{
                 background: {_C.BG_ACTIVE};
             }}
-        """)
+        """
+
+    def _make_action_button(self, *, tooltip: str, icon) -> QPushButton:
+        btn = QPushButton()
+        btn.setIcon(icon)
+        btn.setIconSize(QSize(13, 13))
+        btn.setFixedSize(22, 22)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setToolTip(tooltip)
+        btn.setStyleSheet(self._small_action_button_style())
+        return btn
+
+    def _set_action_cell(self, row: int, entry: TrackEntry) -> None:
+        container = QWidget()
+        container.setAutoFillBackground(False)
+        container.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        container.setStyleSheet("background: transparent;")
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(3)
+        layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        if entry.track_type == "audio" and self._audio_sync_available:
+            sync_btn = self._make_action_button(
+                tooltip="Synchronisation améliorée de cette piste audio",
+                icon=_refresh_icon(_C.TEXT_SEC, 13),
+            )
+            sync_btn.clicked.connect(lambda _=None, e=entry: self.audio_sync_requested.emit(e))
+            layout.addWidget(sync_btn)
+
+        edit_btn = self._make_action_button(
+            tooltip="Éditer les métadonnées de cette piste",
+            icon=_pencil_icon(_C.TEXT_SEC, 13),
+        )
         edit_btn.clicked.connect(lambda _=None, e=entry: self._open_edit_dialog(e))
-        self.setCellWidget(row, self.COL_EDIT, edit_btn)
+        layout.addWidget(edit_btn)
+        self.setCellWidget(row, self.COL_EDIT, container)
 
     def _apply_new_track_style(self, row: int) -> None:
         for col in (self.COL_CODEC, self.COL_LANG, self.COL_TITLE, self.COL_INFO):
@@ -566,6 +599,42 @@ class _TrackTable(QTableWidget):
         finally:
             self.blockSignals(False)
         return False
+
+    def update_time_shift(self, entry_id: str, offset_ms: int) -> bool:
+        if not entry_id:
+            return False
+        self.blockSignals(True)
+        try:
+            for row in range(self.rowCount()):
+                item0 = self.item(row, self.COL_CHECK)
+                if item0 is None:
+                    continue
+                entry = item0.data(Qt.ItemDataRole.UserRole)
+                if not isinstance(entry, TrackEntry) or entry.entry_id != entry_id:
+                    continue
+
+                entry.time_shift_ms = int(offset_ms)
+                info_item = self.item(row, self.COL_INFO)
+                if info_item:
+                    info_item.setText(entry.full_info_label)
+                    info_item.setData(_TRACK_INFO_OFFSET_VALUE_ROLE, entry.time_shift_value_label)
+                return True
+        finally:
+            self.blockSignals(False)
+        return False
+
+    def set_audio_sync_available(self, available: bool) -> None:
+        available = bool(available)
+        if self._audio_sync_available == available:
+            return
+        self._audio_sync_available = available
+        for row in range(self.rowCount()):
+            item0 = self.item(row, self.COL_CHECK)
+            if item0 is None:
+                continue
+            entry = item0.data(Qt.ItemDataRole.UserRole)
+            if isinstance(entry, TrackEntry):
+                self._set_action_cell(row, entry)
 
     def update_video_encoding_plans(
         self,

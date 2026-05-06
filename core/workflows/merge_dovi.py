@@ -175,11 +175,15 @@ class DoviProfile(Enum):
     (avant la sous-commande inject-rpu).
 
     Modes :
+        DISABLED = "disabled" → n'injecte pas Dolby Vision. Le workflow peut
+                       quand même injecter HDR10+ ou convertir un Film 1 SDR
+                       vers HDR10 si Film 2 sert de référence HDR10.
         P8_1 = "2"  → normalise le RPU en Profile 8.1, supprime le mapping FEL.
                        Standard pour les remux UHD Blu-ray. Recommandé.
         P8_0 = "0"  → copie le RPU sans modification (rewrite untouched).
                        Préserve le profil source tel quel.
     """
+    DISABLED = "disabled"  # Pas d'injection Dolby Vision, HDR10+ reste possible.
     P8_1 = "2"   # -m 2 : conversion Profile 8.1 (standard remux UHD)
     P8_0 = "0"   # -m 0 : copie brute sans conversion
 
@@ -190,6 +194,7 @@ class WorkflowStep(Enum):
     DETECT_DOVI       = auto()   # Détection du sous-profil DoVi de Film 2 (P5/P7/P8.x)
     FRAME_COUNT       = auto()   # Comparaison des frame counts
     EXTRACT_PARALLEL  = auto()   # Extractions parallèles (HEVC + RPU + HDR10+)
+    SDR_TO_HDR10      = auto()   # Conversion Film 1 SDR → HDR10 assistée par Film 2
     CONVERT_DOVI      = auto()   # Conversion P7/P5 → P8.1 si nécessaire
     INJECT_DOVI       = auto()   # Injection RPU DoVi
     INJECT_HDR10PLUS  = auto()   # Injection HDR10+
@@ -264,6 +269,15 @@ class StaticHdrMetadata:
         return bool(self.master_display and self.max_cll)
 
 
+@dataclass(frozen=True)
+class ValidationContext:
+    flags: HDRFlags
+    static_film1: StaticHdrMetadata
+    static_film2: StaticHdrMetadata
+    film1_needs_sdr_to_hdr10: bool = False
+    film2_has_hdr10_reference: bool = False
+
+
 @dataclass
 class StepResult:
     """Résultat d'une étape du workflow."""
@@ -284,6 +298,7 @@ class _WorkflowPaths:
     work_dir:         Path
     film1:            Path   # Chemin original Film 1 (MKV ou HEVC brut)
     film1_hevc:       Path   # HEVC extrait de Film 1 (uniquement si Film 1 est MKV)
+    film1_hdr10_hevc: Path   # Film 1 SDR transcodé en HEVC HDR10
     film2_hevc:       Path   # HEVC temporaire Film 2 (cas 2 : double extraction)
     film2_hevc_p8:    Path   # HEVC Film 2 converti P7/P5 → P8.1 (sert de source RPU)
     film2_rpu:        Path   # RPU DoVi extrait de Film 2
@@ -306,6 +321,7 @@ class _WorkflowPaths:
             work_dir        = work_dir,
             film1           = film1,
             film1_hevc      = work_dir / "film1.hevc",
+            film1_hdr10_hevc = work_dir / "film1_hdr10.hevc",
             film2_hevc      = work_dir / "film2.hevc",
             film2_hevc_p8   = work_dir / "film2_p8.hevc",
             film2_rpu       = work_dir / "film2_rpu.bin",
@@ -324,6 +340,8 @@ class _WorkflowPaths:
         Si Film 1 est un conteneur (MKV/MP4/TS/…) → film1_hevc extrait en annexB.
         Si Film 1 est un stream HEVC brut           → film1 directement.
         """
+        if self.film1_hdr10_hevc.exists():
+            return self.film1_hdr10_hevc
         return self.film1 if _is_raw_hevc(self.film1) else self.film1_hevc
 
     def injection_chain_final(
@@ -336,7 +354,11 @@ class _WorkflowPaths:
             return self.film1_final
         if flags.has_dovi:
             return self.film1_with_dovi
-        return self.film1_final  # HDR10+ seul
+        if flags.has_hdr10plus:
+            return self.film1_final
+        if self.film1_hdr10_hevc.exists():
+            return self.film1_hdr10_hevc
+        return self.film1_hevc_input
 
 
 # =============================================================================
@@ -455,9 +477,12 @@ class MergeDoviWorkflow(QObject):
             paths.output_mkv.parent.mkdir(parents=True, exist_ok=True)
 
             # 1 — Validation (HEVC, transfert PQ, outils, HDR Film 2)
-            flags, static_hdr_film1, static_hdr_film2 = self._step_validate(
-                film1, film2,
+            validation = self._step_validate(
+                film1, film2, profile,
             )
+            flags = validation.flags
+            static_hdr_film1 = validation.static_film1
+            static_hdr_film2 = validation.static_film2
             self._check_cancel()
 
             # 2 — Détection sous-profil DV de Film 2 (P5/P7 FEL/MEL/P8.x)
@@ -481,13 +506,39 @@ class MergeDoviWorkflow(QObject):
                     f"(source {routing.sub_profile.label} convertie).",
                 )
 
-            # 3 — Frame count (non bloquant si écart ≤ 4)
-            self._step_framecount(film1, film2)
+            # 3 — Frame count. Pour Film 1 SDR, un gros écart interdit les
+            # injections temporelles RPU/HDR10+, mais n'empêche pas la
+            # conversion HDR10 statique assistée.
+            frame_counts = self._step_framecount(
+                film1,
+                film2,
+                allow_large_delta=validation.film1_needs_sdr_to_hdr10,
+            )
+            metadata_injection_allowed = not (
+                validation.film1_needs_sdr_to_hdr10
+                and frame_counts.diff is not None
+                and frame_counts.diff > 4
+            )
+            if not metadata_injection_allowed:
+                if flags.has_dovi or flags.has_hdr10plus:
+                    self.step_progress.emit(
+                        WorkflowStep.FRAME_COUNT,
+                        "Écart frame count trop important : injection DoVi/HDR10+ "
+                        "désactivée, conversion HDR10 seule.",
+                    )
+                flags = HDRFlags(has_dovi=False, has_hdr10plus=False)
+                routing = None
             self._check_cancel()
 
             # 4 — Extractions parallèles HEVC (Film 1 et Film 2 si nécessaire)
             self._step_extract_hevc(film1, film2, paths, flags, routing)
             self._check_cancel()
+
+            # 4-bis — Film 1 SDR : conversion HDR10 avant injection DV/HDR10+
+            if validation.film1_needs_sdr_to_hdr10:
+                self._step_convert_sdr_to_hdr10(paths, static_hdr_film2)
+                static_hdr_film1 = static_hdr_film2
+                self._check_cancel()
 
             # 5 — Conversion P7/P5 → P8.1 si Film 2 le demande, AVANT extract-rpu
             if routing is not None and routing.conversion_needed:
@@ -495,8 +546,9 @@ class MergeDoviWorkflow(QObject):
                 self._check_cancel()
 
             # 6 — Extraction métadonnées DV/HDR10+ depuis la source appropriée
-            self._step_extract_metadata(film2, paths, flags, routing)
-            self._check_cancel()
+            if flags.has_dovi or flags.has_hdr10plus:
+                self._step_extract_metadata(film2, paths, flags, routing)
+                self._check_cancel()
 
             # 7 — Injection DoVi
             if flags.has_dovi:
@@ -541,8 +593,11 @@ class MergeDoviWorkflow(QObject):
     # ------------------------------------------------------------------
 
     def _step_validate(
-        self, film1: Path, film2: Path,
-    ) -> tuple[HDRFlags, StaticHdrMetadata, StaticHdrMetadata]:
+        self,
+        film1: Path,
+        film2: Path,
+        profile: DoviProfile,
+    ) -> ValidationContext:
         step = WorkflowStep.VALIDATION
         t0   = time.monotonic()
         self.step_started.emit(step)
@@ -577,39 +632,60 @@ class MergeDoviWorkflow(QObject):
                 raise WorkflowError(step, f"{label} ne contient pas de flux HEVC ({codec})")
             self.step_progress.emit(step, f"{label} — flux HEVC confirmé.")
 
-        # Validation transfert PQ sur Film 1 : injecter un RPU DV ou HDR10+ sur
-        # un BL BT.709/SDR produit un fichier visuellement cassé. mediainfo
-        # expose `transfer_characteristics` (PQ = "PQ" ou "SMPTE ST 2084").
-        transfer1 = self._mediainfo(film1, "Video;%transfer_characteristics%").strip().lower()
-        if transfer1 and not any(
-            k in transfer1 for k in ("pq", "2084", "smpte st 2084", "hlg", "arib")
-        ):
-            raise WorkflowError(
-                step,
-                f"Film 1 n'est pas en transfert HDR (PQ/HLG) : '{transfer1}'. "
-                "Injecter un RPU DoVi ou HDR10+ sur un BL SDR produit "
-                "un fichier visuellement cassé.",
-            )
-        if transfer1:
-            self.step_progress.emit(step, f"Film 1 — transfert HDR confirmé ({transfer1}).")
+        static_film1 = self._read_static_hdr_metadata(film1)
+        static_film2 = self._read_static_hdr_metadata(film2)
 
         # Détection HDR dans Film 2 — match strict pour éviter les faux
         # positifs sur "SMPTE ST 2094-10" (DV legacy) qui ne sont PAS HDR10+.
         hdr_raw = self._mediainfo(film2, "Video;%HDR_Format%").strip()
         hdr_lower = hdr_raw.lower()
+        transfer2 = self._mediainfo(film2, "Video;%transfer_characteristics%").strip().lower()
+        film2_has_hdr10_reference = static_film2.is_complete or self._is_hdr_transfer(transfer2)
         flags = HDRFlags(
             has_dovi      = "dolby vision" in hdr_lower,
             has_hdr10plus = "smpte st 2094 app 4" in hdr_lower,
         )
-        if not flags.has_dovi and not flags.has_hdr10plus:
-            raise WorkflowError(step, "Film 2 ne contient ni Dolby Vision ni HDR10+.")
-        self.step_progress.emit(step, f"HDR détecté dans Film 2 : {flags.label}")
+        if profile == DoviProfile.DISABLED and flags.has_dovi:
+            flags.has_dovi = False
+            self.step_progress.emit(step, "Dolby Vision désactivé — RPU ignoré.")
+
+        # Validation transfert Film 1. Si Film 1 est SDR mais Film 2 porte des
+        # métadonnées HDR10/HDR10+, on bascule vers le workflow SDR→HDR10.
+        transfer1 = self._mediainfo(film1, "Video;%transfer_characteristics%").strip().lower()
+        film1_is_hdr = self._is_hdr_transfer(transfer1)
+        film1_needs_sdr_to_hdr10 = False
+        if transfer1 and not film1_is_hdr:
+            if film2_has_hdr10_reference:
+                film1_needs_sdr_to_hdr10 = True
+                self.step_progress.emit(
+                    step,
+                    f"Film 1 SDR détecté ({transfer1}) — conversion HDR10 assistée activée.",
+                )
+            else:
+                raise WorkflowError(
+                    step,
+                    f"Film 1 n'est pas en transfert HDR (PQ/HLG) : '{transfer1}'. "
+                    "Une conversion SDR→HDR10 nécessite une source HDR10/HDR10+.",
+                )
+        if not flags.has_dovi and not flags.has_hdr10plus and not film1_needs_sdr_to_hdr10:
+            raise WorkflowError(step, "Film 2 ne contient ni Dolby Vision ni HDR10+ utilisable.")
+        if film1_needs_sdr_to_hdr10 and not static_film2.is_complete:
+            raise WorkflowError(
+                step,
+                "Conversion SDR→HDR10 impossible : Film 2 ne fournit pas "
+                "Master Display + MaxCLL/MaxFALL complets.",
+            )
+        if flags.has_dovi or flags.has_hdr10plus:
+            self.step_progress.emit(step, f"HDR avancé détecté dans Film 2 : {flags.label}")
+        elif film1_needs_sdr_to_hdr10:
+            self.step_progress.emit(step, "Film 2 HDR10 statique utilisé comme référence.")
+        if transfer1:
+            if film1_is_hdr:
+                self.step_progress.emit(step, f"Film 1 — transfert HDR confirmé ({transfer1}).")
 
         # Lecture des SEI HDR10 statiques (Mastering Display + MaxCLL/MaxFALL)
         # sur les deux films. Si Film 1 n'en a pas mais Film 2 oui, on
         # complétera plus tard via inject_static_hdr_sei_file.
-        static_film1 = self._read_static_hdr_metadata(film1)
-        static_film2 = self._read_static_hdr_metadata(film2)
         if static_film1.is_complete:
             self.step_progress.emit(step, "Film 1 — SEI HDR10 statiques présents.")
         elif static_film2.has_any:
@@ -627,7 +703,21 @@ class MergeDoviWorkflow(QObject):
 
         duration = time.monotonic() - t0
         self.step_finished.emit(step, StepResult(step, True, flags.label, duration))
-        return flags, static_film1, static_film2
+        return ValidationContext(
+            flags=flags,
+            static_film1=static_film1,
+            static_film2=static_film2,
+            film1_needs_sdr_to_hdr10=film1_needs_sdr_to_hdr10,
+            film2_has_hdr10_reference=film2_has_hdr10_reference,
+        )
+
+    @staticmethod
+    def _is_hdr_transfer(value: str) -> bool:
+        transfer = str(value or "").lower()
+        return bool(
+            transfer
+            and any(k in transfer for k in ("pq", "2084", "smpte st 2084", "hlg", "arib"))
+        )
 
     # ------------------------------------------------------------------
     # Étape 2 — Détection sous-profil DoVi de Film 2
@@ -673,7 +763,13 @@ class MergeDoviWorkflow(QObject):
     # Étape 3 — Comparaison frame counts
     # ------------------------------------------------------------------
 
-    def _step_framecount(self, film1: Path, film2: Path) -> FrameCountResult:
+    def _step_framecount(
+        self,
+        film1: Path,
+        film2: Path,
+        *,
+        allow_large_delta: bool = False,
+    ) -> FrameCountResult:
         step = WorkflowStep.FRAME_COUNT
         t0   = time.monotonic()
         self.step_started.emit(step)
@@ -686,7 +782,13 @@ class MergeDoviWorkflow(QObject):
 
         self.step_progress.emit(step, f"Film 1 : {fc1} frames  |  Film 2 : {fc2} frames")
 
-        if diff is not None and diff > 4:
+        if diff is not None and diff > 4 and allow_large_delta:
+            self.step_progress.emit(
+                step,
+                f"[WARN] Écart de {diff} frames trop important pour injecter "
+                "DoVi/HDR10+ ; conversion HDR10 seule autorisée.",
+            )
+        elif diff is not None and diff > 4:
             raise WorkflowError(
                 step,
                 f"Écart de {diff} frames trop important — "
@@ -869,6 +971,84 @@ class MergeDoviWorkflow(QObject):
                 f"Conversion {routing.sub_profile.label} → P8.1 réussie",
                 duration,
             ),
+        )
+
+    # ------------------------------------------------------------------
+    # Étape 4-bis — Conversion Film 1 SDR → HDR10
+    # ------------------------------------------------------------------
+
+    def _step_convert_sdr_to_hdr10(
+        self,
+        paths: _WorkflowPaths,
+        static_hdr: StaticHdrMetadata,
+    ) -> None:
+        """Transcode Film 1 SDR en HEVC HDR10 10-bit/PQ avant injection.
+
+        Ce chemin ne prétend pas reconstruire l'information HDR absente ; il
+        produit une base layer HDR10 cohérente, guidée par les métadonnées
+        statiques de Film 2, afin que l'injection HDR10+/DoVi ne repose pas sur
+        un BL SDR invalide.
+        """
+        step = WorkflowStep.SDR_TO_HDR10
+        t0 = time.monotonic()
+        self.step_started.emit(step)
+
+        hevc_input = paths.film1_hevc_input
+        if not hevc_input.exists():
+            raise WorkflowError(
+                step,
+                f"Fichier HEVC source introuvable pour conversion SDR→HDR10 : {hevc_input.name}",
+            )
+        if not static_hdr.is_complete:
+            raise WorkflowError(step, "Métadonnées HDR10 de référence incomplètes.")
+
+        x265_params = (
+            f"repeat-headers=1:"
+            f"colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:"
+            f"master-display={static_hdr.master_display}:"
+            f"max-cll={static_hdr.max_cll}"
+        )
+        vf = (
+            "zscale=transfer=linear:npl=100,"
+            "format=gbrpf32le,"
+            "zscale=primaries=bt2020,"
+            "tonemap=tonemap=mobius:desat=0,"
+            "zscale=transfer=smpte2084:matrix=bt2020nc:range=tv,"
+            "format=yuv420p10le"
+        )
+
+        self.step_progress.emit(
+            step,
+            "Conversion SDR→HDR10 : HEVC Main10 BT.2020/PQ avec métadonnées Film 2…",
+        )
+        self._run_cmd([
+            self._bins["ffmpeg"],
+            "-hide_banner",
+            "-y",
+            "-f", "hevc",
+            "-i", str(hevc_input),
+            "-map", "0:v:0",
+            "-vf", vf,
+            "-c:v", "libx265",
+            "-preset", "slow",
+            "-crf", "18",
+            "-pix_fmt", "yuv420p10le",
+            "-color_primaries", "bt2020",
+            "-color_trc", "smpte2084",
+            "-colorspace", "bt2020nc",
+            "-color_range", "tv",
+            "-x265-params", x265_params,
+            "-an",
+            "-sn",
+            "-dn",
+            "-f", "hevc",
+            str(paths.film1_hdr10_hevc),
+        ], step)
+
+        duration = time.monotonic() - t0
+        self.step_finished.emit(
+            step,
+            StepResult(step, True, "Film 1 SDR converti en base HDR10", duration),
         )
 
     # ------------------------------------------------------------------
@@ -1200,6 +1380,7 @@ class MergeDoviWorkflow(QObject):
 
         for path in [
             paths.film1_hevc,
+            paths.film1_hdr10_hevc,
             paths.film2_hevc,
             paths.film2_hevc_p8,
             paths.film2_rpu,

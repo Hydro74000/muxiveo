@@ -35,6 +35,7 @@ class _DummyConfig:
 
 def test_merge_dovi_panel_inits_workflow_with_ffmpeg_bins(tmp_path, qt_app, monkeypatch):
     import ui.panels.merge_dovi_panel as panel_mod
+    from core.workflows.merge_dovi import DoviProfile
 
     captured: dict[str, object] = {}
 
@@ -45,7 +46,7 @@ def test_merge_dovi_panel_inits_workflow_with_ffmpeg_bins(tmp_path, qt_app, monk
     monkeypatch.setattr(panel_mod, "MergeDoviWorkflow", _factory)
 
     cfg = _DummyConfig(tmp_path)
-    panel_mod.MergeDoviPanel(cast(Any, cfg))
+    panel = panel_mod.MergeDoviPanel(cast(Any, cfg))
 
     assert captured["mediainfo_bin"] == "mi"
     assert captured["ffmpeg_bin"] == "ffm"
@@ -54,3 +55,8 @@ def test_merge_dovi_panel_inits_workflow_with_ffmpeg_bins(tmp_path, qt_app, monk
     assert captured["hdr10plus_bin"] == "hdr10p"
     assert "mkvextract_bin" not in captured
     assert "mkvmerge_bin" not in captured
+    assert panel._config_section.dovi_profile == DoviProfile.P8_1
+
+    combo = panel._config_section._profile_combo
+    values = [combo.itemData(i) for i in range(combo.count())]
+    assert values == [DoviProfile.DISABLED, DoviProfile.P8_1, DoviProfile.P8_0]

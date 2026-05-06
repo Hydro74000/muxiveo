@@ -419,8 +419,10 @@ class _ConfigSection(QWidget):
         r1l.addWidget(lbl_profile)
 
         self._profile_combo = QComboBox()
+        self._profile_combo.addItem("Disabled  —  ne pas injecter Dolby Vision", DoviProfile.DISABLED)
         self._profile_combo.addItem("Profile 8.1  —  -m 2, standard remux UHD (recommandé)", DoviProfile.P8_1)
         self._profile_combo.addItem("Mode 0  —  rewrite untouched, préserve le profil source",  DoviProfile.P8_0)
+        self._profile_combo.setCurrentIndex(1)
         self._profile_combo.setStyleSheet(f"""
             QComboBox {{
                 background: {_C.BG_DEEP};
@@ -516,6 +518,7 @@ _STEP_LABELS: dict[WorkflowStep, str] = {
     WorkflowStep.DETECT_DOVI:       "Détection profil DV",
     WorkflowStep.FRAME_COUNT:       "Frame count",
     WorkflowStep.EXTRACT_PARALLEL:  "Extractions",
+    WorkflowStep.SDR_TO_HDR10:      "Conversion SDR → HDR10",
     WorkflowStep.CONVERT_DOVI:      "Conversion P7/P5 → P8.1",
     WorkflowStep.INJECT_DOVI:       "Injection DoVi",
     WorkflowStep.INJECT_HDR10PLUS:  "Injection HDR10+",
