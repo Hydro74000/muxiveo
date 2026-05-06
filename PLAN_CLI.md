@@ -317,35 +317,35 @@ Chaque job est fusionné avec le template passé à `--template`.
 
 ### Phase 2 - Durcissement du contrat JSON
 
-- [ ] Ajouter une validation structurée du JSON avant inspection des sources.
-- [ ] Produire des erreurs avec chemins de champs lisibles, par exemple `rules.tracks.audio.languages[0]`.
-- [ ] Documenter tous les champs supportés dans README ou `docs/cli/README.md`.
-- [ ] Ajouter tests de champs invalides et types incorrects.
-- [ ] Stabiliser la compatibilité ascendante : `version: 1` obligatoire ou warning clair.
+- [x] Ajouter une validation structurée du JSON avant inspection des sources.
+- [x] Produire des erreurs avec chemins de champs lisibles, par exemple `rules.tracks.audio.languages[0]`.
+- [x] Documenter tous les champs supportés dans README ou `docs/cli/README.md`.
+- [x] Ajouter tests de champs invalides et types incorrects.
+- [x] Stabiliser la compatibilité ascendante : `version: 1` obligatoire pour les fichiers JSON de config/template.
 
 ### Phase 3 - Intégration runtime
 
-- [ ] Ajouter tests CLI avec médias synthétiques pour `inspect`, `preview`, `validate`.
-- [ ] Ajouter un test remux headless court si les outils externes sont disponibles.
-- [ ] Ajouter vérification que `--force` correspond bien à la politique d'écrasement effective.
-- [ ] Ajouter un mode `--dry-run` alias ou complément de `preview` si utile pour batch.
-- [ ] Ajouter résumé batch JSON Lines plus précis : job index, input, output, status.
+- [x] Ajouter tests CLI avec médias synthétiques pour `inspect`, `preview`, `validate`.
+- [x] Ajouter un test remux headless court si les outils externes sont disponibles.
+- [x] Ajouter vérification que `--force` correspond bien à la politique d'écrasement effective.
+- [x] Ajouter un mode `--dry-run` alias ou complément de `preview` si utile pour batch.
+- [x] Ajouter résumé batch JSON Lines plus précis : job index, input, output, status.
 
 ### Phase 4 - Packaging
 
-- [ ] Exposer `mediarecode-cli` dans les artefacts distribués Linux/AppImage.
-- [ ] Prévoir un binaire/entrypoint Windows, par exemple `mediarecode-cli.exe`.
-- [ ] Prévoir un entrypoint macOS accessible depuis le bundle ou le package.
-- [ ] Vérifier que le CLI ne lance jamais `QApplication` ni fenêtre GUI.
-- [ ] Documenter les commandes installées par plateforme.
+- [x] Exposer `mediarecode-cli` dans les artefacts distribués Linux/AppImage.
+- [x] Prévoir un binaire/entrypoint Windows, par exemple `mediarecode-cli.exe`.
+- [x] Prévoir un entrypoint macOS accessible depuis le bundle ou le package.
+- [x] Vérifier que le CLI ne lance jamais `QApplication` ni fenêtre GUI.
+- [x] Documenter les commandes installées par plateforme.
 
 ### Phase 5 - Rules Engine avancé
 
-- [ ] Ajouter priorités et fallback par type/langue/codec/canaux.
-- [ ] Ajouter conditions combinées `all` / `any` / `not`.
-- [ ] Ajouter limites par type, par exemple garder seulement la première audio par langue.
-- [ ] Ajouter règles de default/forced automatique après filtrage.
-- [ ] Ajouter presets nommés réutilisables dans un template.
+- [x] Ajouter priorités et fallback par type/langue/codec/canaux.
+- [x] Ajouter conditions combinées `all` / `any` / `not`.
+- [x] Ajouter limites par type, par exemple garder seulement la première audio par langue.
+- [x] Ajouter règles de default/forced automatique après filtrage.
+- [x] Ajouter presets nommés réutilisables dans un template.
 
 ## Test Plan
 

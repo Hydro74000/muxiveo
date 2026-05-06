@@ -628,12 +628,15 @@ Exemples :
 ```bash
 python3 mediarecode_cli.py remux -i source.mkv -o sortie.mkv
 python3 mediarecode_cli.py preview --config docs/cli/middle.json
+python3 mediarecode_cli.py remux --config docs/cli/middle.json --dry-run
 python3 mediarecode_cli.py batch --template docs/cli/complexe-toutes-options-template.json --batch docs/cli/complexe-toutes-options-batch.json --force
 ```
 
 Le CLI est non interactif : une sortie existante est refusee sauf `--force`. Les chemins d outils sont lus depuis `config.ini`, avec overrides `--ffmpeg`, `--ffprobe`, `--mediainfo`, `--work-dir` et `--threads`.
 
 Les templates JSON peuvent selectionner les pistes par type, langue et flags d origine, normaliser les langues BCP-47/RFC5646, renommer les pistes via patterns, ajouter/importer des chapitres, demander TMDB et traiter un batch. Trois configs d exemple sont fournies dans `docs/cli/` : simple, middle et complexe toutes options.
+
+Dans les artefacts packages, l'entree CLI route vers le même bundle que l'application : `mediarecode-cli` sur Linux/AppImage/macOS, `mediarecode-cli.exe` sur Windows, ou `mediarecode --cli ...` en fallback.
 
 ## Outils externes
 

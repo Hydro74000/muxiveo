@@ -1085,6 +1085,7 @@ def _build_pyinstaller(onefile: bool) -> Path:
         "--collect-all", "pymediainfo",
         # Modules du projet
         "--collect-submodules", "core",
+        "--collect-submodules", "cli",
         "--collect-submodules", "ui",
         "--collect-submodules", "workers",
         # Exclusions
@@ -1129,6 +1130,21 @@ def _build_pyinstaller(onefile: bool) -> Path:
 
     if OS == "Windows" and not onefile:
         _verify_windows_runtime_bundle(exe_path.parent)
+        cli_exe = exe_path.parent / "mediarecode-cli.exe"
+        shutil.copy2(exe_path, cli_exe)
+        _ok(f"Entrée CLI Windows créée : {cli_exe.name}")
+    elif OS == "Darwin":
+        cli_exe = exe_path.parent / "mediarecode-cli"
+        if cli_exe.exists() or cli_exe.is_symlink():
+            cli_exe.unlink()
+        cli_exe.symlink_to(exe_path.name)
+        _ok(f"Entrée CLI macOS créée : {cli_exe.name}")
+    elif not onefile:
+        cli_exe = exe_path.parent / "mediarecode-cli"
+        if cli_exe.exists() or cli_exe.is_symlink():
+            cli_exe.unlink()
+        cli_exe.symlink_to(exe_path.name)
+        _ok(f"Entrée CLI Linux créée : {cli_exe.name}")
 
     _ok(f"Bundle PyInstaller : {exe_path.parent if not onefile else exe_path}")
     return exe_path
@@ -1185,6 +1201,10 @@ def _build_appdir() -> Path:
     bundle_dst = appdir / "mediarecode"
     shutil.copytree(bundle_src, bundle_dst)
     _ok(f"Bundle copié → {bundle_dst}")
+    cli_link = bundle_dst / "mediarecode-cli"
+    if not cli_link.exists() and not cli_link.is_symlink():
+        cli_link.symlink_to("mediarecode")
+        _ok("Entrée CLI AppDir créée")
 
     # AppRun
     apprun = appdir / "AppRun"
@@ -2343,6 +2363,7 @@ def _build_pyinstaller_wine() -> Path:
         "--collect-data", "PySide6",
         "--collect-all", "pymediainfo",
         "--collect-submodules", "core",
+        "--collect-submodules", "cli",
         "--collect-submodules", "ui",
         "--collect-submodules", "workers",
         *[arg for mod in EXCLUDED_MODULES for arg in ("--exclude-module", mod)],
@@ -2401,6 +2422,9 @@ def _build_pyinstaller_wine() -> Path:
         if _WIN_BUNDLE.exists():
             shutil.rmtree(_WIN_BUNDLE)
         shutil.copytree(raw_bundle, _WIN_BUNDLE)
+        gui_exe = _WIN_BUNDLE / "mediarecode.exe"
+        if gui_exe.exists():
+            shutil.copy2(gui_exe, _WIN_BUNDLE / "mediarecode-cli.exe")
         _verify_windows_runtime_bundle(_WIN_BUNDLE)
     finally:
         shutil.rmtree(wine_tmpdir, ignore_errors=True)

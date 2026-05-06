@@ -118,3 +118,31 @@ class TestLauncherWindowsControlledFolderAccess:
         assert rc == 42
         mock_setup.assert_called_once_with(config_path.parent)
         fake_main.main.assert_called_once_with()
+
+    def test_main_routes_cli_name_without_setup_or_gui(self):
+        fake_cli = SimpleNamespace(main=MagicMock(return_value=17))
+        fake_main = SimpleNamespace(main=MagicMock(return_value=42))
+
+        with patch.object(launcher.sys, "argv", ["mediarecode-cli", "inspect", "file.mkv"]), \
+             patch.dict(sys.modules, {"cli.main": fake_cli, "main": fake_main}), \
+             patch.object(launcher, "_run_first_time_setup") as mock_setup:
+            rc = launcher.main()
+
+        assert rc == 17
+        fake_cli.main.assert_called_once_with(["inspect", "file.mkv"])
+        fake_main.main.assert_not_called()
+        mock_setup.assert_not_called()
+
+    def test_main_routes_explicit_cli_flag_without_setup_or_gui(self):
+        fake_cli = SimpleNamespace(main=MagicMock(return_value=19))
+        fake_main = SimpleNamespace(main=MagicMock(return_value=42))
+
+        with patch.object(launcher.sys, "argv", ["mediarecode", "--cli", "preview", "--config", "job.json"]), \
+             patch.dict(sys.modules, {"cli.main": fake_cli, "main": fake_main}), \
+             patch.object(launcher, "_run_first_time_setup") as mock_setup:
+            rc = launcher.main()
+
+        assert rc == 19
+        fake_cli.main.assert_called_once_with(["preview", "--config", "job.json"])
+        fake_main.main.assert_not_called()
+        mock_setup.assert_not_called()

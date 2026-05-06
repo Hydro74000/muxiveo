@@ -488,9 +488,29 @@ def _run_tmdb_smoke_test() -> int:
         return 1
 
 
+def _is_cli_invocation() -> bool:
+    executable_name = Path(sys.argv[0]).stem.lower()
+    if executable_name in {"mediarecode-cli", "mediarecode_cli"}:
+        return True
+    return "--cli" in sys.argv[1:]
+
+
+def _run_cli_entrypoint() -> int:
+    argv = list(sys.argv[1:])
+    try:
+        argv.remove("--cli")
+    except ValueError:
+        pass
+    from cli.main import main as _cli_main  # noqa: PLC0415
+    return _cli_main(argv)
+
+
 def main() -> int:
     if "--tmdb-smoke-test" in sys.argv:
         return _run_tmdb_smoke_test()
+
+    if _is_cli_invocation():
+        return _run_cli_entrypoint()
 
     config_path = _get_config_path()
 
