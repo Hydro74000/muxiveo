@@ -37,6 +37,9 @@ def current_config(panel: "RemuxPanel") -> RemuxConfig | None:
             src_tracks = sf.tracks
         file_extras = extras.get(sf.id, {})
         has_tags = file_extras.get("has_tags", False)
+        has_chapters = bool(
+            sf.info and sf.info.chapters and sf.info.chapters.entries
+        )
         sources.append(SourceInput(
             path=sf.path,
             file_index=i,
@@ -44,6 +47,7 @@ def current_config(panel: "RemuxPanel") -> RemuxConfig | None:
             selected_attachments=file_extras.get("selected_attachments", []),
             attachment_count=len(sf.info.attachments) if sf.info else 0,
             copy_tags=has_tags,
+            has_chapters=has_chapters,
         ))
 
     if not sources:
@@ -61,6 +65,9 @@ def current_config(panel: "RemuxPanel") -> RemuxConfig | None:
         if keep_ch and panel._chapter_panel.is_modified()
         else None
     )
+    ch_source_idx = (
+        panel._chapter_panel.selected_source_index() if keep_ch else None
+    )
 
     return RemuxConfig(
         sources=sources,
@@ -68,6 +75,7 @@ def current_config(panel: "RemuxPanel") -> RemuxConfig | None:
         track_order=track_order,
         keep_chapters=keep_ch,
         chapter_overrides=ch_overrides,
+        chapter_source_index=ch_source_idx,
         extra_attachments=panel._attachment_panel.get_extra_attachments(),
         work_dir=panel._config.work_dir,
         file_title=panel._file_title_edit.text().strip(),

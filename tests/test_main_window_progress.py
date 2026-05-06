@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from ui.main_window import (
     MainWindow,
     _ENCODE_INTERNAL_PROGRESS_PREFIX,
+    _is_encode_stage_message,
     _multi_encode_remaining_seconds,
     _select_multi_encode_label,
 )
@@ -43,30 +44,39 @@ class _FakeTimer:
 
 
 def test_select_multi_encode_label_prefers_longest_remaining_and_reswitches() -> None:
-    now = 100.0
-    states = {
-        "ffmpeg-video-1": {
-            "started_at": 0.0,
-            "duration_s": 600.0,
-            "elapsed_video": 300.0,
-            "done": False,
-            "last_update": 90.0,
-        },
-        "ffmpeg-video-2": {
-            "started_at": 0.0,
-            "duration_s": 600.0,
-            "elapsed_video": 100.0,
-            "done": False,
-            "last_update": 95.0,
-        },
+    # Stream 1 : 300s média en 100s wall (3.0x), reste 300s média → 100s wall.
+    state_1 = {
+        "started_at": 0.0,
+        "duration_s": 600.0,
+        "done": False,
+        "last_update": 90.0,
+    }
+    # Stream 2 : 100s média en 100s wall (1.0x), reste 500s média → 500s wall.
+    state_2 = {
+        "started_at": 0.0,
+        "duration_s": 600.0,
+        "done": False,
+        "last_update": 95.0,
     }
 
-    assert _multi_encode_remaining_seconds(states["ffmpeg-video-1"], now) == 100.0
-    assert _multi_encode_remaining_seconds(states["ffmpeg-video-2"], now) == 500.0
-    assert _select_multi_encode_label(states, "ffmpeg-video-1", now) == "ffmpeg-video-2"
+    # Deux échantillons par tracker pour amorcer l'EWMA (delta requis >= 0.5s).
+    state_1["elapsed_video"] = 30.0
+    _multi_encode_remaining_seconds(state_1, 10.0)
+    state_1["elapsed_video"] = 300.0
+    state_2["elapsed_video"] = 10.0
+    _multi_encode_remaining_seconds(state_2, 10.0)
+    state_2["elapsed_video"] = 100.0
 
-    states["ffmpeg-video-2"]["done"] = True
-    assert _select_multi_encode_label(states, "ffmpeg-video-2", now) == "ffmpeg-video-1"
+    eta_1 = _multi_encode_remaining_seconds(state_1, 100.0)
+    eta_2 = _multi_encode_remaining_seconds(state_2, 100.0)
+    assert eta_1 is not None and abs(eta_1 - 100.0) < 1e-6
+    assert eta_2 is not None and abs(eta_2 - 500.0) < 1e-6
+
+    states = {"ffmpeg-video-1": state_1, "ffmpeg-video-2": state_2}
+    assert _select_multi_encode_label(states, "ffmpeg-video-1", 100.0) == "ffmpeg-video-2"
+
+    state_2["done"] = True
+    assert _select_multi_encode_label(states, "ffmpeg-video-2", 100.0) == "ffmpeg-video-1"
 
 
 def test_handle_encode_internal_progress_updates_longest_remaining_bar_and_legend() -> None:
@@ -85,10 +95,12 @@ def test_handle_encode_internal_progress_updates_longest_remaining_bar_and_legen
     dummy.log_requested = SimpleNamespace(emit=MagicMock())
     dummy._stop_prep_progress = MagicMock()
 
+    dummy._op_stage_label = ""
     dummy._ensure_multi_encode_state = MethodType(MainWindow._ensure_multi_encode_state, dummy)
     dummy._multi_encode_progress_parts = MethodType(MainWindow._multi_encode_progress_parts, dummy)
     dummy._reevaluate_multi_encode_progress = MethodType(MainWindow._reevaluate_multi_encode_progress, dummy)
     dummy._handle_encode_internal_progress = MethodType(MainWindow._handle_encode_internal_progress, dummy)
+    dummy._format_progress_label = MethodType(MainWindow._format_progress_label, dummy)
 
     line_track_1 = _ENCODE_INTERNAL_PROGRESS_PREFIX + json.dumps(
         {"kind": "encode_ffmpeg", "label": "ffmpeg-video-1", "event": "line", "line": "out_time=00:05:00.000000"},
@@ -122,6 +134,11 @@ def test_handle_encode_internal_progress_updates_longest_remaining_bar_and_legen
     assert dummy._op_encode_multi_active_label == "ffmpeg-video-1"
     assert dummy._prog_bar.value == 50
     assert "Piste vidéo 1/2" in dummy._prog_lbl.text
+
+
+def test_nvencc_stage_is_recognized_as_encode_stage_message() -> None:
+    assert _is_encode_stage_message("Encodage NVEncC")
+    assert _is_encode_stage_message("Encodage NVEncC 42%")
 
 
 def test_capture_verbose_progress_line_records_wrapped_tool_output(tmp_path) -> None:
@@ -188,6 +205,38 @@ def test_capture_verbose_progress_line_records_remux_ffmpeg_progress(tmp_path) -
     assert len(log_files) == 1
     content = log_files[0].read_text(encoding="utf-8")
     assert "[TOOL] out_time=00:00:10.000000" in content
+
+
+def test_capture_verbose_progress_line_records_all_nvencc_lines(tmp_path) -> None:
+    dummy = SimpleNamespace()
+    dummy._config = SimpleNamespace(
+        enable_file_logging=True,
+        file_logging_level="verbose",
+        app_data_dir=tmp_path,
+        verbose_log_dir=tmp_path / "chosen_logs",
+    )
+    dummy._op_mode = "encode"
+    dummy._op_encode_config = SimpleNamespace(video=SimpleNamespace(codec="nvencc_hevc"))
+    dummy._log_panel = SimpleNamespace(log=MagicMock())
+    dummy._verbose_log_file_path = None
+    dummy._verbose_log_session_stamp = None
+    dummy._verbose_log_file_index = 1
+    dummy._verbose_log_file_error_reported = False
+    dummy._NOISE_RE = MainWindow._NOISE_RE
+    dummy._encode_panel = SimpleNamespace(get_total_frames=lambda: None)
+
+    dummy._verbose_log_part_path = MethodType(MainWindow._verbose_log_part_path, dummy)
+    dummy._verbose_log_session_path = MethodType(MainWindow._verbose_log_session_path, dummy)
+    dummy._prepare_verbose_log_target = MethodType(MainWindow._prepare_verbose_log_target, dummy)
+    dummy._append_verbose_tool_output = MethodType(MainWindow._append_verbose_tool_output, dummy)
+    dummy._capture_verbose_progress_line = MethodType(MainWindow._capture_verbose_progress_line, dummy)
+
+    dummy._capture_verbose_progress_line("encoded 191733 frames, 191.29 fps, 9310.24 kbps, 8875.45 MB")
+
+    log_files = sorted((tmp_path / "chosen_logs").glob("mediarecode-verbose-*.log"))
+    assert len(log_files) == 1
+    content = log_files[0].read_text(encoding="utf-8")
+    assert "[TOOL] encoded 191733 frames, 191.29 fps, 9310.24 kbps, 8875.45 MB" in content
 
 
 def test_on_tool_output_requested_records_inspector_verbose_lines(tmp_path) -> None:

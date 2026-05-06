@@ -36,12 +36,12 @@ def test_dashboard_hw_detection_uses_configured_ffmpeg_path():
     custom_ffmpeg = r"C:\Tools\ffmpeg\bin\ffmpeg.exe"
     emitted: list[set[str]] = []
     fake_page = SimpleNamespace(
-        _config=SimpleNamespace(tool_ffmpeg=custom_ffmpeg),
+        _config=SimpleNamespace(tool_ffmpeg=custom_ffmpeg, tool_nvencc=None),
         _hw_detected=SimpleNamespace(emit=emitted.append),
     )
 
     with patch("core.workflows.encode.hardware.HardwareEncoderDetector.detect", return_value={"hevc_nvenc"}) as mock_detect:
         DashboardPage._run_hw_detection(cast(Any, fake_page))
 
-    mock_detect.assert_called_once_with(custom_ffmpeg)
+    mock_detect.assert_called_once_with(custom_ffmpeg, nvencc_bin=None)
     assert emitted == [{"hevc_nvenc"}]

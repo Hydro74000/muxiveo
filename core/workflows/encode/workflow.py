@@ -10,19 +10,24 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, cast
 
 from PySide6.QtCore import QObject, Signal
 from core.runner import TaskCancelledError, TaskSignals, ToolRunner
-from core.subprocess_utils import subprocess_text_kwargs
+from core.subprocess_utils import (
+    decode_subprocess_output,
+    subprocess_text_kwargs,
+    subprocess_windows_no_window_kwargs,
+)
 from core.subtitle_codec import plan_subtitle_codec
 from core.version import APP_VERSION_LABEL
 from core.workdir import (
@@ -69,6 +74,8 @@ from core.workflows.encode.domain import (
     build_encoder_vf as _build_encoder_vf_domain,
     hardware_input_args as _hardware_input_args_domain,
     hdr_meta_args as _hdr_meta_args_domain,
+    needs_hdr_vui as _needs_hdr_vui_domain,
+    needs_static_hdr_bitstream_patch as _needs_static_hdr_bitstream_patch_domain,
     video_codec_args as _video_codec_args_domain,
     video_codec_args_bitrate as _video_codec_args_bitrate_domain,
 )
@@ -106,6 +113,22 @@ from core.workflows.encode.runtime import (
     format_bytes as _format_bytes_runtime,
     probe_attachment_stream as _probe_attachment_stream_runtime,
     unique_attachment_path as _unique_attachment_path_runtime,
+)
+from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router
+from core.workflows.encode.runtime.metadata_inject import (
+    _build_dovi_record_from_rpu as _build_dovi_record_from_rpu_runtime,
+)
+from core.workflows.encode.runtime.nvencc import (
+    build_decode_pipe_cmd as _build_decode_pipe_nvencc,
+    build_nvencc_command as _build_nvencc_command_runtime,
+    is_nvencc_codec as _is_nvencc_codec_runtime,
+    nvencc_intermediate_path as _nvencc_intermediate_path_runtime,
+    nvencc_supports_dynamic_hdr as _nvencc_supports_dynamic_hdr_runtime,
+)
+from core.workflows.encode.backends import (
+    BackendContext as _BackendContext,
+    ProgressEvent as _ProgressEvent,
+    backend_for_codec as _backend_for_codec_runtime,
 )
 from core.workflows.encode.runtime.command_builders import (
     EncodeCommandBuilderCallbacks as _EncodeCommandBuilderCallbacks,
@@ -163,12 +186,28 @@ from core.workflows.encode.models import (
     VideoEncodeSettings,
     normalize_audio_bitrate_kbps,
 )
+from core.workflows.matroska_dovi_block_addition import (
+    MatroskaDoviBlockAdditionEditor,
+)
 from core.workflows.encode.planning.plan_models import (
     EncodePlan as _EncodePlan,
     MaterializedContainerMetadataPlan as _MaterializedContainerMetadataPlan,
     ResolvedTrackAssembly as _ResolvedTrackAssembly,
 )
 _FALLBACK_HEVC_FRAME_RATE = "24000/1001"
+
+
+@dataclass(frozen=True)
+class _NvenccInputRouting:
+    input_path: Path
+    stream_index: int
+    video: VideoEncodeSettings
+    input_reader: str | None = None
+    input_fps: str | None = None
+    input_avsync: str | None = None
+    dovi_rpu_prm: str | None = None
+    rebased_to_source: bool = False
+    forced_reader: str | None = None
 
 
 class _LRUCache(OrderedDict):
@@ -237,6 +276,7 @@ class EncodeWorkflow(QObject):
         *,
         writing_application:       str  = "",
         generate_nfo:              bool = True,
+        nvencc_bin:                str | None = None,
     ) -> None:
         super().__init__(parent)
         self._ffmpeg = ffmpeg_bin
@@ -245,6 +285,10 @@ class EncodeWorkflow(QObject):
             "hdr10plus_tool": hdr10plus_bin,
             "mediainfo":      mediainfo_bin,
         }
+        # NVEncC est optionnel : None signifie "pas configuré". Stocké séparément
+        # pour permettre une vérification explicite avant d'invoquer le pipeline
+        # ffmpeg → NVEncC → ffmpeg.
+        self._nvencc_bin: str | None = nvencc_bin
         # Cache mémoire : évite de ré-exécuter ffprobe/mediainfo à chaque
         # reconstruction d'aperçu (preview_command peut être appelé des dizaines
         # de fois pour le même fichier lors de changements UI).
@@ -304,6 +348,10 @@ class EncodeWorkflow(QObject):
 
     def set_mediainfo_bin(self, mediainfo_bin: str) -> None:
         self._bins["mediainfo"] = mediainfo_bin
+
+    def set_nvencc_bin(self, nvencc_bin: str | None) -> None:
+        """Met à jour le chemin vers NVEncC (None = pipeline NVEncC indisponible)."""
+        self._nvencc_bin = nvencc_bin or None
 
     def set_generate_nfo(self, generate_nfo: bool) -> None:
         self._generate_nfo = generate_nfo
@@ -372,9 +420,20 @@ class EncodeWorkflow(QObject):
         video = EncodeWorkflow._primary_video_settings(config)
         return bool(video.copy_dv or video.copy_hdr10plus)
 
+    @staticmethod
+    def _needs_static_hdr_bitstream_patch(config: EncodeConfig) -> bool:
+        video = EncodeWorkflow._primary_video_settings(config)
+        if video.codec == "copy":
+            return False
+        return _needs_static_hdr_bitstream_patch_domain(video)
+
     @classmethod
     def _needs_metadata_inject(cls, config: EncodeConfig) -> bool:
-        return cls._wants_dynamic_hdr_copy(config) and not cls._is_video_passthrough(config)
+        if cls._is_video_passthrough(config):
+            return False
+        if _is_nvencc_codec_runtime(EncodeWorkflow._primary_video_settings(config).codec):
+            return False
+        return cls._wants_dynamic_hdr_copy(config) or cls._needs_static_hdr_bitstream_patch(config)
 
     @staticmethod
     def _video_source_path(config: EncodeConfig) -> Path:
@@ -389,6 +448,75 @@ class EncodeWorkflow(QObject):
     @classmethod
     def _video_map_key(cls, config: EncodeConfig) -> tuple[Path, int, str]:
         return (cls._video_source_path(config), cls._video_stream_index(config), "video")
+
+    @classmethod
+    def _backend_for_codec(cls, codec: str | None):
+        return _backend_for_codec_runtime(codec)
+
+    @classmethod
+    def _backend_for_config(cls, config: EncodeConfig):
+        return cls._backend_for_codec(cls._primary_video_settings(config).codec)
+
+    def _backend_context(self, *, plan: _EncodePlan | None = None) -> _BackendContext:
+        return _BackendContext(workflow=self, plan=plan)
+
+    def _nvencc_validation_errors(
+        self,
+        config: EncodeConfig,
+        *,
+        plan: _EncodePlan | None = None,
+    ) -> list[str]:
+        all_video_tracks = self._video_tracks(config)
+        videos = [video for video in all_video_tracks if video.codec != "copy"]
+        if not any(_is_nvencc_codec_runtime(video.codec) for video in videos):
+            return []
+
+        errors: list[str] = []
+        if len(all_video_tracks) != 1:
+            errors.append(
+                "NVEncC ne supporte pas le mode multi-pistes vidéo dans cette version."
+            )
+            return errors
+        if len(videos) != 1 or not _is_nvencc_codec_runtime(videos[0].codec):
+            errors.append(
+                "NVEncC ne supporte qu'une seule piste vidéo encodée dans cette version."
+            )
+            return errors
+
+        video = videos[0]
+        if not self._nvencc_bin:
+            errors.append("NVEncC est sélectionné mais le binaire n'est pas configuré.")
+        if video.quality_mode == QualityMode.SIZE:
+            errors.append("NVEncC ne supporte pas le mode taille cible (2 passes) dans cette version.")
+        if video.inject_hdr_meta and video.codec == "nvencc_h264":
+            errors.append("NVEncC H.264 ne supporte pas les métadonnées HDR statiques.")
+        if (video.copy_dv or video.copy_hdr10plus) and not _nvencc_supports_dynamic_hdr_runtime(video.codec):
+            errors.append("Le codec NVEncC sélectionné ne supporte pas DoVi/HDR10+.")
+        _ = plan
+        return errors
+
+    def _load_mediainfo_video_track(self, path: Path) -> dict | None:
+        mediainfo_bin = self._bins.get("mediainfo") or "mediainfo"
+        try:
+            result = subprocess.run(
+                [mediainfo_bin, "--Output=JSON", str(path)],
+                capture_output=True,
+                check=False,
+                **subprocess_text_kwargs(),
+            )
+        except (FileNotFoundError, OSError):
+            return None
+        if result.returncode != 0:
+            return None
+        try:
+            data = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            return None
+        media = data.get("media") or {}
+        for track in media.get("track") or []:
+            if isinstance(track, dict) and track.get("@type") == "Video":
+                return track
+        return None
 
     @classmethod
     def _video_track_mapping(
@@ -473,6 +601,28 @@ class EncodeWorkflow(QObject):
                 continue
             if idx_val == int(stream_index):
                 return str(stream.get("codec_name", "") or "")
+        return ""
+
+    def _video_codec_of(self, source: Path, stream_index: int) -> str:
+        """Retourne le codec vidéo ffprobe du flux demandé, ou chaîne vide."""
+        payload = self._ffprobe_streams_payload(Path(source))
+        if not payload:
+            return ""
+        for stream in self._ffprobe_stream_dicts(payload):
+            raw_idx = stream.get("index", -1)
+            if isinstance(raw_idx, bool):
+                continue
+            if not isinstance(raw_idx, (int, float, str, bytes, bytearray)):
+                continue
+            try:
+                idx_val = int(raw_idx)
+            except (TypeError, ValueError):
+                continue
+            if idx_val != int(stream_index):
+                continue
+            if str(stream.get("codec_type") or "") != "video":
+                continue
+            return str(stream.get("codec_name", "") or "").strip().lower()
         return ""
 
     def _subtitle_codec_args(
@@ -668,6 +818,198 @@ class EncodeWorkflow(QObject):
             self._mediainfo_hdr_cache[cache_key] = result
         return result
 
+    # Chromaticités CIE 1931 (x, y) standard pour les primaires courants
+    # exposés par mediainfo via MasteringDisplay_ColorPrimaries. Format
+    # attendu par x265/ffmpeg : G,B,R puis WP.
+    _MASTER_DISPLAY_PRIMARIES: dict[str, tuple[tuple[float, float], ...]] = {
+        "bt.2020":    ((0.170, 0.797), (0.131, 0.046), (0.708, 0.292), (0.3127, 0.3290)),
+        "display p3": ((0.265, 0.690), (0.150, 0.060), (0.680, 0.320), (0.3127, 0.3290)),
+        "p3-d65":     ((0.265, 0.690), (0.150, 0.060), (0.680, 0.320), (0.3127, 0.3290)),
+        "bt.709":     ((0.300, 0.600), (0.150, 0.060), (0.640, 0.330), (0.3127, 0.3290)),
+    }
+
+    # Defaults conservatifs UHD Blu-ray pour les cas où la source n'expose
+    # pas les valeurs (chromaticité ×50000, luminance ×10000) :
+    #   master_display BT.2020 + L(1000 nits, 0.0001 nits)
+    #   MaxCLL=1000, MaxFALL=400 (limite HDR10 typique)
+    _DEFAULT_MASTER_DISPLAY_BT2020 = (
+        "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)"
+    )
+    _DEFAULT_MASTER_DISPLAY_DCIP3 = (
+        "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)"
+    )
+    _DEFAULT_MAX_CLL = "1000,400"
+
+    def _build_master_display_for_primaries(self, primaries_label: str) -> str:
+        """
+        Fallback master_display quand mediainfo n'expose pas les chromaticités
+        mais qu'on connaît l'espace colorimétrique (VUI color_primaries du
+        bitstream). Luminance par défaut : 1000/0.0001 nits (UHD BD typique).
+        """
+        primaries = self._MASTER_DISPLAY_PRIMARIES.get(primaries_label.strip().lower())
+        if not primaries:
+            return ""
+        (gx, gy), (bx, by), (rx, ry), (wx, wy) = primaries
+        c = lambda f: int(round(f * 50000))
+        return (
+            f"G({c(gx)},{c(gy)})"
+            f"B({c(bx)},{c(by)})"
+            f"R({c(rx)},{c(ry)})"
+            f"WP({c(wx)},{c(wy)})"
+            f"L(10000000,1)"
+        )
+
+    def _color_primaries_label(self, source: Path) -> str:
+        """Lit color_primaries du flux vidéo via ffprobe — ex. 'bt2020'."""
+        ffprobe_bin = self._bins.get("ffprobe") or "ffprobe"
+        try:
+            result = subprocess.run(
+                [ffprobe_bin, "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=color_primaries",
+                 "-of", "default=nw=1:nk=1", str(source)],
+                capture_output=True, check=False, timeout=10,
+                **subprocess_text_kwargs(),
+            )
+        except (FileNotFoundError, OSError):
+            return ""
+        return (result.stdout or "").strip().lower()
+
+    def _extract_static_hdr_via_ffprobe(self, source: Path) -> tuple[str, str]:
+        """
+        Fallback alternatif quand mediainfo est absent : lit MDCV/CLL depuis
+        le SEI HEVC via ``ffprobe -show_frames``.
+
+        ffprobe expose les chromaticités au format ``num/50000`` et la
+        luminance au format ``num/10000`` — exactement les unités ffmpeg/x265,
+        donc la conversion est triviale.
+
+        Lit uniquement la 1re frame (``-read_intervals "%+#1"``) car les
+        SEI MDCV/CLL sont identiques sur toute la durée du flux (statiques).
+        """
+        ffprobe_bin = self._bins.get("ffprobe") or "ffprobe"
+        try:
+            result = subprocess.run(
+                [ffprobe_bin, "-v", "error", "-select_streams", "v:0",
+                 "-show_frames", "-read_intervals", "%+#1",
+                 "-print_format", "json", str(source)],
+                capture_output=True, check=False, timeout=20,
+                **subprocess_text_kwargs(),
+            )
+        except (FileNotFoundError, OSError):
+            return "", ""
+        if result.returncode != 0:
+            return "", ""
+        try:
+            data = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            return "", ""
+        frames = data.get("frames") or []
+        if not frames:
+            return "", ""
+        side_data_list = frames[0].get("side_data_list") or []
+
+        def _num(rat: str) -> int:
+            # ffprobe renvoie "12345/50000" — on garde le numérateur (dénominateur déjà attendu).
+            try:
+                return int(str(rat).split("/", 1)[0])
+            except (ValueError, AttributeError):
+                return 0
+
+        master_display = ""
+        max_cll = ""
+        for sd in side_data_list:
+            stype = sd.get("side_data_type") or ""
+            if stype == "Mastering display metadata":
+                gx, gy = _num(sd.get("green_x")), _num(sd.get("green_y"))
+                bx, by = _num(sd.get("blue_x")), _num(sd.get("blue_y"))
+                rx, ry = _num(sd.get("red_x")), _num(sd.get("red_y"))
+                wx, wy = _num(sd.get("white_point_x")), _num(sd.get("white_point_y"))
+                lmin = _num(sd.get("min_luminance"))
+                lmax = _num(sd.get("max_luminance"))
+                if lmax > 0 and (rx > 0 or gx > 0 or bx > 0):
+                    master_display = (
+                        f"G({gx},{gy})B({bx},{by})R({rx},{ry})"
+                        f"WP({wx},{wy})L({lmax},{lmin})"
+                    )
+            elif stype == "Content light level metadata":
+                try:
+                    mc = int(sd.get("max_content") or 0)
+                    ma = int(sd.get("max_average") or 0)
+                except (TypeError, ValueError):
+                    mc = ma = 0
+                if mc > 0:
+                    max_cll = f"{mc},{ma}"
+        return master_display, max_cll
+
+    def _extract_static_hdr_metadata(self, source: Path) -> tuple[str, str]:
+        """
+        Extrait master_display et max_cll/max_fall depuis la source via mediainfo.
+
+        Renvoie ``("", "")`` si aucune métadonnée HDR statique n'est trouvée.
+        Utilisé en fallback dans le workflow quand l'utilisateur a demandé
+        un passthrough DoVi/HDR10+ sans avoir rempli ces champs côté UI :
+        sans MDCV/CLL dans le BL HEVC, le fichier produit affiche fade
+        côté TV (cas reproduit sur LG G5 + Plex).
+        """
+        mediainfo_bin = self._bins.get("mediainfo") or "mediainfo"
+        try:
+            result = subprocess.run(
+                [mediainfo_bin, "--Output=JSON", str(source)],
+                capture_output=True,
+                check=False,
+                timeout=20,
+                **subprocess_text_kwargs(),
+            )
+        except (FileNotFoundError, OSError):
+            return "", ""
+        if result.returncode != 0:
+            return "", ""
+        try:
+            data = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            return "", ""
+        media = data.get("media") or {}
+        mi_video = next(
+            (
+                t
+                for t in (media.get("track") or [])
+                if isinstance(t, dict) and t.get("@type") == "Video"
+            ),
+            None,
+        )
+        if mi_video is None:
+            return "", ""
+
+        master_display = ""
+        primaries_label = str(mi_video.get("MasteringDisplay_ColorPrimaries") or "").strip().lower()
+        primaries = self._MASTER_DISPLAY_PRIMARIES.get(primaries_label)
+        try:
+            lmin = float(mi_video.get("MasteringDisplay_Luminance_Min") or 0)
+            lmax = float(mi_video.get("MasteringDisplay_Luminance_Max") or 0)
+        except (TypeError, ValueError):
+            lmin = lmax = 0.0
+        if primaries and lmax > 0:
+            (gx, gy), (bx, by), (rx, ry), (wx, wy) = primaries
+            c = lambda f: int(round(f * 50000))
+            l_ = lambda f: int(round(f * 10000))
+            master_display = (
+                f"G({c(gx)},{c(gy)})"
+                f"B({c(bx)},{c(by)})"
+                f"R({c(rx)},{c(ry)})"
+                f"WP({c(wx)},{c(wy)})"
+                f"L({l_(lmax)},{l_(lmin)})"
+            )
+
+        max_cll = ""
+        try:
+            max_content = int(re.sub(r"[^\d]", "", str(mi_video.get("MaxCLL") or "")) or 0)
+            max_average = int(re.sub(r"[^\d]", "", str(mi_video.get("MaxFALL") or "")) or 0)
+        except (TypeError, ValueError):
+            max_content = max_average = 0
+        if max_content > 0:
+            max_cll = f"{max_content},{max_average}"
+        return master_display, max_cll
+
     def _normalize_dynamic_hdr_config(self, config: EncodeConfig) -> EncodeConfig:
         """
         Nettoie les demandes de copie DoVi/HDR10+ avant le routage principal.
@@ -703,10 +1045,72 @@ class EncodeWorkflow(QObject):
                 "Copy HDR10+ demandé mais aucune donnée HDR10+ détectée — option ignorée.",
             )
 
+        # Fallback master_display / max_cll : sans MDCV/CLL dans le BL, un
+        # passthrough DV ou HDR10+ produit un fichier que la TV affiche en
+        # fade. 4 niveaux de fallback :
+        #   1. Champs UI utilisateur
+        #   2. mediainfo (JSON) de la source
+        #   3. ffprobe -show_frames (SEI directement) — utilisé si mediainfo
+        #      absent OU si mediainfo n'a rien sorti (bitstream malformé)
+        #   4. Defaults par espace colorimétrique (lecture VUI ffprobe) +
+        #      luminance/MaxCLL conservative (UHD BD typique)
+        auto_md, auto_cll = video.master_display, video.max_cll
+        if (copy_dv or copy_hdr10plus) and (not auto_md or not auto_cll):
+            src = self._video_source_path(config)
+            md_mi, cll_mi = self._extract_static_hdr_metadata(src)
+            if not auto_md and md_mi:
+                auto_md = md_mi
+                self.log_message.emit(
+                    "WARN",
+                    f"Master Display absent côté UI — auto-extrait via mediainfo ({md_mi}).",
+                )
+            if not auto_cll and cll_mi:
+                auto_cll = cll_mi
+                self.log_message.emit(
+                    "WARN",
+                    f"MaxCLL/MaxFALL absents côté UI — auto-extraits via mediainfo ({cll_mi}).",
+                )
+            # Niveau 3 : ffprobe (utile quand mediainfo absent OU vide).
+            if not auto_md or not auto_cll:
+                md_ff, cll_ff = self._extract_static_hdr_via_ffprobe(src)
+                if not auto_md and md_ff:
+                    auto_md = md_ff
+                    self.log_message.emit(
+                        "WARN",
+                        f"Master Display extrait via ffprobe (fallback mediainfo) : {md_ff}.",
+                    )
+                if not auto_cll and cll_ff:
+                    auto_cll = cll_ff
+                    self.log_message.emit(
+                        "WARN",
+                        f"MaxCLL/MaxFALL extraits via ffprobe (fallback mediainfo) : {cll_ff}.",
+                    )
+            # Niveau 4 : reconstruire depuis le color_primaries VUI si tout
+            # le reste a échoué. Évite un BL HEVC sans MDCV/CLL → fade côté TV.
+            if not auto_md:
+                primaries = self._color_primaries_label(src)
+                synth_md = self._build_master_display_for_primaries(primaries)
+                if synth_md:
+                    auto_md = synth_md
+                    self.log_message.emit(
+                        "WARN",
+                        f"Master Display reconstruit depuis color_primaries={primaries or '?'} "
+                        "+ luminance par défaut 1000/0.0001 nits (master UHD BD typique). "
+                        "Si la source est gradée >1000 nits, éditez le champ Master Display avant l'encode.",
+                    )
+            if not auto_cll:
+                auto_cll = self._DEFAULT_MAX_CLL
+                self.log_message.emit(
+                    "WARN",
+                    f"MaxCLL/MaxFALL non trouvés — défaut conservatif appliqué ({self._DEFAULT_MAX_CLL}).",
+                )
+
         normalized_video = replace(
             video,
             copy_dv=copy_dv,
             copy_hdr10plus=copy_hdr10plus,
+            master_display=auto_md,
+            max_cll=auto_cll,
         )
         normalized_tracks = list(config.video_tracks)
         if normalized_tracks:
@@ -758,7 +1162,62 @@ class EncodeWorkflow(QObject):
                     "WARN",
                     f"Copy HDR10+ demandé mais aucune donnée HDR10+ détectée pour la piste vidéo #{index} — option ignorée.",
                 )
-            videos.append(replace(video, copy_dv=copy_dv, copy_hdr10plus=copy_hdr10plus))
+
+            # Fallback master_display / max_cll (cf. _normalize_dynamic_hdr_single).
+            auto_md, auto_cll = video.master_display, video.max_cll
+            if (copy_dv or copy_hdr10plus) and (not auto_md or not auto_cll):
+                src = self._video_source_from_settings(config, video)
+                md_mi, cll_mi = self._extract_static_hdr_metadata(src)
+                if not auto_md and md_mi:
+                    auto_md = md_mi
+                    self.log_message.emit(
+                        "WARN",
+                        f"Piste #{index} : Master Display extrait via mediainfo.",
+                    )
+                if not auto_cll and cll_mi:
+                    auto_cll = cll_mi
+                    self.log_message.emit(
+                        "WARN",
+                        f"Piste #{index} : MaxCLL/MaxFALL extraits via mediainfo.",
+                    )
+                if not auto_md or not auto_cll:
+                    md_ff, cll_ff = self._extract_static_hdr_via_ffprobe(src)
+                    if not auto_md and md_ff:
+                        auto_md = md_ff
+                        self.log_message.emit(
+                            "WARN",
+                            f"Piste #{index} : Master Display extrait via ffprobe (fallback mediainfo).",
+                        )
+                    if not auto_cll and cll_ff:
+                        auto_cll = cll_ff
+                        self.log_message.emit(
+                            "WARN",
+                            f"Piste #{index} : MaxCLL/MaxFALL extraits via ffprobe (fallback mediainfo).",
+                        )
+                if not auto_md:
+                    primaries = self._color_primaries_label(src)
+                    synth_md = self._build_master_display_for_primaries(primaries)
+                    if synth_md:
+                        auto_md = synth_md
+                        self.log_message.emit(
+                            "WARN",
+                            f"Piste #{index} : Master Display reconstruit depuis "
+                            f"color_primaries={primaries or '?'} + luminance par défaut.",
+                        )
+                if not auto_cll:
+                    auto_cll = self._DEFAULT_MAX_CLL
+                    self.log_message.emit(
+                        "WARN",
+                        f"Piste #{index} : MaxCLL/MaxFALL non trouvés — défaut conservatif ({self._DEFAULT_MAX_CLL}).",
+                    )
+
+            videos.append(replace(
+                video,
+                copy_dv=copy_dv,
+                copy_hdr10plus=copy_hdr10plus,
+                master_display=auto_md,
+                max_cll=auto_cll,
+            ))
 
         primary = videos[0]
         return replace(
@@ -778,32 +1237,182 @@ class EncodeWorkflow(QObject):
         """
         Retourne une commande (list[str]) ou deux commandes pour la double passe (list[list[str]]).
         """
-        selection = _build_encode_command_selection_plan(
+        plan = self._build_encode_plan(config)
+        commands = self._backend_for_config(config).build_preview(
             config,
-            plan=self._build_encode_plan(config),
-            is_multi_video=self._is_multi_video,
-            uses_two_pass=self._uses_two_pass,
-            build_multi_video_preview=self._build_multi_video_command_preview,
-            build_two_pass=self._build_two_pass,
-            build_single_pass=self._build_single_pass,
+            ctx=self._backend_context(plan=plan),
         )
-        if len(selection.commands) <= 1:
-            return list(selection.preview_command)
-        return [list(cmd) for cmd in selection.commands]
+        if len(commands) <= 1:
+            return list(commands[0]) if commands else []
+        return [list(cmd) for cmd in commands]
 
     def build_command_single(self, config: EncodeConfig) -> list[str]:
-        """Toujours une seule commande — pour l'aperçu UI."""
+        """Toujours une seule commande — pour l'aperçu UI.
+
+        En mode NVEncC, l'aperçu retourne la commande d'encode native, suivie
+        au runtime d'un remux ffmpeg séparé.
+        """
+        plan = self._build_encode_plan(config)
         return list(
-            _build_encode_command_selection_plan(
+            self._backend_for_config(config).build_single_preview(
                 config,
-                plan=self._build_encode_plan(config),
-                is_multi_video=self._is_multi_video,
-                uses_two_pass=self._uses_two_pass,
-                build_multi_video_preview=self._build_multi_video_command_preview,
-                build_two_pass=self._build_two_pass,
-                build_single_pass=self._build_single_pass,
-            ).preview_command
+                ctx=self._backend_context(plan=plan),
+            )
         )
+
+    def _build_nvencc_pipeline_commands(
+        self, config: EncodeConfig,
+    ) -> list[list[str]] | None:
+        """Court-circuit NVEncC : retourne la séquence encode + remux ou None.
+
+        Conditions :
+            - une seule piste vidéo non-`copy`
+            - codec ∈ NVENCC_VIDEO_CODECS
+            - NVEncC binaire configuré
+            - pas de mode SIZE (two-pass) — non supporté par NVEncC standalone
+
+        Sinon, on retombe sur le pipeline ffmpeg standard.
+        """
+        if len(self._video_tracks(config)) != 1:
+            return None
+        videos = [v for v in (config.video_tracks or []) if v.codec != "copy"]
+        if config.video and config.video.codec != "copy" and not videos:
+            videos = [config.video]
+        if len(videos) != 1:
+            return None
+        video = videos[0]
+        if not _is_nvencc_codec_runtime(video.codec):
+            return None
+        if not self._nvencc_bin:
+            return None
+        if video.quality_mode == QualityMode.SIZE:
+            # Two-pass NVEncC standalone non géré au MVP.
+            return None
+
+        work_dir = (config.work_dir or Path(tempfile.gettempdir())).resolve()
+        work_dir.mkdir(parents=True, exist_ok=True)
+        intermediate = _nvencc_intermediate_path_runtime(work_dir, video.codec)
+        routing = self._resolve_nvencc_input_routing(config)
+        encode = _build_nvencc_command_runtime(
+            self._nvencc_bin,
+            routing.video,
+            intermediate,
+            input_path=routing.input_path,
+            stream_index=routing.stream_index,
+            input_reader=routing.input_reader,
+            input_fps=routing.input_fps,
+            input_avsync=routing.input_avsync,
+            dovi_rpu_prm=routing.dovi_rpu_prm,
+        )
+        remux = [
+            self._ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+            "-i", str(intermediate),
+            "-i", str(config.source),
+            "-map", "0:v:0",
+            "-map", "1:a?",
+            "-map", "1:s?",
+            "-map_chapters", "1",
+            "-c", "copy",
+            str(config.output),
+        ]
+        return [encode, remux]
+
+    def _build_runtime_nvencc_remux_cmd(
+        self,
+        config: EncodeConfig,
+        encoded_video: Path,
+        *,
+        video_offset_ms: int = 0,
+        chapter_materialize_dir: Path | None = None,
+        signals: TaskSignals | None = None,
+        plan: _EncodePlan | None = None,
+    ) -> tuple[list[str], LiveSyncSession | None, list[Path]]:
+        plan = plan or self._build_encode_plan(config)
+        all_sources = list(plan.all_sources)
+        source_idx_shifted = {source: index + 1 for source, index in dict(plan.source_idx).items()}
+        work_dir = config.work_dir or config.source.parent
+
+        sync_remap, sync_inputs, live_session, strict_interleave = self._prepare_multisource_sync(
+            config=config,
+            all_sources=all_sources,
+            sync_base_input_idx=1 + len(all_sources),
+            work_dir=work_dir,
+            signals=signals,
+            allow_live=True,
+            plan=plan,
+        )
+
+        cmd: list[str] = [self._ffmpeg, "-hide_banner", "-y"]
+        cmd.extend(self._ffmpeg_progress_args())
+        cmd.extend(self._offset_input_args(video_offset_ms))
+        cmd.extend(["-i", str(encoded_video)])
+        for src in all_sources:
+            cmd.extend(["-i", str(src)])
+        self._append_sync_inputs(cmd, sync_inputs)
+
+        metadata_inputs = self._materialize_container_metadata_inputs(
+            config,
+            source_idx=source_idx_shifted,
+            next_input_index=1 + len(all_sources) + len(sync_inputs),
+            plan=plan,
+            chapter_materialize_dir=chapter_materialize_dir,
+            chapter_probe_source=config.source,
+        )
+        cmd.extend(metadata_inputs.input_args)
+        cmd.extend(self._ffmpeg_thread_args(None))
+
+        track_input_paths = _build_track_input_paths_plan(
+            leading_inputs=(encoded_video,),
+            all_sources=all_sources,
+            sync_inputs=sync_inputs,
+        )
+        track_assembly = _resolve_track_assembly_plan(
+            config,
+            plan,
+            source_idx=source_idx_shifted,
+            track_input_paths=track_input_paths,
+            sync_remap=sync_remap,
+            include_video=False,
+        )
+        _next_input_index, offset_remap = self._append_offset_aux_inputs(
+            cmd,
+            _build_offset_specs_plan(
+                config,
+                track_mappings=list(track_assembly.track_mappings),
+                offset_lookup=dict(plan.offset_lookup),
+            ),
+            start_input_index=metadata_inputs.next_input_index,
+        )
+        _ = _next_input_index
+
+        cmd.extend(["-map", "0:v:0"])
+        cmd.extend(["-c:v", "copy"])
+        self._append_stream_maps_and_attachments(
+            cmd,
+            config,
+            source_idx=source_idx_shifted,
+            subtitle_copy_input_indices=[index + 1 for index in range(len(all_sources))],
+            sync_remap=sync_remap,
+            offset_remap=offset_remap,
+            subtitle_tracks_override=list(plan.resolved_subtitle_tracks),
+            force_copy_subtitles_wildcard=(config.copy_subtitles and not plan.subtitles_resolved),
+        )
+        if strict_interleave:
+            self._append_strict_interleave_mux_flags(cmd)
+
+        default_source_input_index = 1 + int(plan.video_input_idx)
+        self._append_container_metadata_args(
+            cmd,
+            config,
+            default_metadata_input_index=default_source_input_index,
+            default_chapter_input_index=default_source_input_index,
+            chapter_input_index=metadata_inputs.chapter_input_index,
+            tag_input_index=metadata_inputs.tag_input_index,
+            include_copy_video_stream_passthrough=True,
+            plan=plan,
+        )
+        cmd.append(str(config.output))
+        return cmd, live_session, _common_sync_cleanup_paths(sync_inputs)
 
     def _build_direct_output_commands(
         self,
@@ -824,6 +1433,336 @@ class EncodeWorkflow(QObject):
         if len(selection.commands) <= 1:
             return list(selection.preview_command)
         return [list(cmd) for cmd in selection.commands]
+
+    def _prepare_nvencc_dynamic_hdr_assets(
+        self,
+        config: EncodeConfig,
+        *,
+        work_dir: Path,
+        signals: TaskSignals,
+        run_cmd: Callable[[list[str], str], str],
+        cleanup_paths: list[Path] | None = None,
+    ) -> tuple[Path, int, Path | None, Path | None, bool, list[Path]]:
+        video = self._primary_video_settings(config)
+        local_cleanup_paths: list[Path] = []
+        effective_source = self._video_source_path(config)
+        effective_stream_index = self._video_stream_index(config)
+        source_is_vfr = self._source_is_vfr(effective_source)
+        converted_source: Path | None = None
+        hdr10plus_json: Path | None = None
+        dovi_rpu: Path | None = None
+        dovi_converted_to_p8 = False
+
+        def _track(path: Path) -> None:
+            local_cleanup_paths.append(path)
+            if cleanup_paths is not None:
+                cleanup_paths.append(path)
+
+        if video.copy_dv:
+            p7_router = DoviP7Router()
+            mi_video = self._load_mediainfo_video_track(effective_source)
+            decision = p7_router.analyze(
+                source=effective_source,
+                mi_video=mi_video,
+                fallback_to_dovi_tool=True,
+            )
+            self.log_message.emit("INFO", f"Routage DV : {decision.reason}")
+            if decision.conversion_needed:
+                annexb_for_convert = work_dir / "source_annexb.hevc"
+                run_cmd([
+                    self._ffmpeg, "-nostdin", "-y",
+                    "-i", str(effective_source),
+                    "-map", f"0:{int(effective_stream_index)}",
+                    "-c", "copy",
+                    "-bsf:v", "hevc_mp4toannexb",
+                    "-f", "hevc", str(annexb_for_convert),
+                ], "ffmpeg-dv-annexb")
+                _track(annexb_for_convert)
+                converted = p7_router.execute_conversion(
+                    source=annexb_for_convert,
+                    output_dir=work_dir,
+                    run_cmd=lambda cmd: run_cmd(cmd, "dovi-convert"),
+                    dovi_tool_bin=self._bins["dovi_tool"],
+                    decision=decision,
+                )
+                _track(converted)
+                converted_source = converted
+                dovi_converted_to_p8 = True
+                if not source_is_vfr:
+                    effective_source = converted
+                    effective_stream_index = 0
+
+        if not (video.copy_dv or video.copy_hdr10plus):
+            return (
+                effective_source,
+                effective_stream_index,
+                hdr10plus_json,
+                dovi_rpu,
+                dovi_converted_to_p8,
+                local_cleanup_paths,
+            )
+
+        raw_hevc_ext = {".hevc", ".h265", ".265", ".x265"}
+        meta_input = effective_source
+        if effective_source.suffix.lower() not in raw_hevc_ext and effective_source.suffix.lower() != ".mkv":
+            meta_input = work_dir / "source_meta.hevc"
+            run_cmd([
+                self._ffmpeg, "-nostdin", "-y",
+                "-i", str(effective_source),
+                "-map", f"0:{int(effective_stream_index)}",
+                "-c", "copy",
+                "-bsf:v", "hevc_mp4toannexb",
+                "-f", "hevc", str(meta_input),
+            ], "ffmpeg-hdr-annexb")
+            _track(meta_input)
+
+        if video.copy_dv and dovi_converted_to_p8 and source_is_vfr and converted_source is not None:
+            # En VFR, on garde la source conteneur comme input NVEncC pour
+            # préserver les timestamps, mais on continue d'extraire les assets
+            # DoVi/HDR10+ depuis le flux P8.1 converti.
+            meta_input = converted_source
+
+        if video.copy_dv:
+            dovi_rpu = work_dir / "rpu.bin"
+            run_cmd([
+                self._bins["dovi_tool"], "extract-rpu",
+                "-i", str(meta_input),
+                "-o", str(dovi_rpu),
+            ], "dovi_tool")
+            _track(dovi_rpu)
+
+        if video.copy_hdr10plus:
+            hdr10plus_json = work_dir / "hdr10p.json"
+            run_cmd([
+                self._bins["hdr10plus_tool"], "extract",
+                str(meta_input),
+                "-o", str(hdr10plus_json),
+            ], "hdr10plus_tool")
+            _track(hdr10plus_json)
+
+        return (
+            effective_source,
+            effective_stream_index,
+            hdr10plus_json,
+            dovi_rpu,
+            dovi_converted_to_p8,
+            local_cleanup_paths,
+        )
+
+    def _run_nvencc_pipe_commands(
+        self,
+        *,
+        decode_cmd: list[str],
+        encode_cmd: list[str],
+        cwd: Path,
+        signals: TaskSignals,
+    ) -> str:
+        def _reader(
+            stream,
+            label: str,
+            sink: list[str],
+        ) -> None:
+            if stream is None:
+                return
+            while True:
+                raw = stream.readline()
+                if not raw:
+                    break
+                line = decode_subprocess_output(raw).rstrip()
+                if not line:
+                    continue
+                sink.append(line)
+                signals.progress.emit(f"[{label}] {line}")
+
+        decode_lines: list[str] = []
+        encode_lines: list[str] = []
+
+        decode_proc = subprocess.Popen(
+            decode_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(cwd),
+            **subprocess_windows_no_window_kwargs(),
+        )
+        signals._register_proc(decode_proc)
+        try:
+            encode_proc = subprocess.Popen(
+                encode_cmd,
+                stdin=decode_proc.stdout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                cwd=str(cwd),
+                **subprocess_windows_no_window_kwargs(),
+            )
+        except Exception:
+            signals._unregister_proc(decode_proc)
+            try:
+                decode_proc.kill()
+            except OSError:
+                pass
+            raise
+        signals._register_proc(encode_proc)
+        if decode_proc.stdout is not None:
+            decode_proc.stdout.close()
+
+        decode_reader = ThreadPoolExecutor(max_workers=2)
+        decode_reader.submit(_reader, decode_proc.stderr, "ffmpeg-decode", decode_lines)
+        decode_reader.submit(_reader, encode_proc.stdout, "nvencc", encode_lines)
+        try:
+            encode_rc = encode_proc.wait()
+            decode_rc = decode_proc.wait()
+            decode_reader.shutdown(wait=True)
+            if signals._cancel_event.is_set():
+                raise TaskCancelledError()
+            if encode_rc != 0:
+                tail = "\n".join(encode_lines[-40:])
+                raise EncodeError(f"NVEncC a échoué.\n{tail}")
+            if decode_rc not in (0, -13):
+                tail = "\n".join(decode_lines[-40:])
+                raise EncodeError(f"FFmpeg decode a échoué.\n{tail}")
+            return "\n".join(encode_lines[-400:])
+        finally:
+            signals._unregister_proc(encode_proc)
+            signals._unregister_proc(decode_proc)
+
+    def _run_nvencc_direct_output(
+        self,
+        config: EncodeConfig,
+        cleanup_paths: list[Path],
+        *,
+        prep_signals: TaskSignals | None = None,
+        plan: _EncodePlan | None = None,
+    ) -> TaskSignals:
+        signals = prep_signals or TaskSignals()
+        cwd = config.work_dir or config.source.parent
+        plan = plan or self._build_encode_plan(config)
+
+        def _task() -> None:
+            chapter_dir: Path | None = None
+            live_sync_session: LiveSyncSession | None = None
+            sync_cleanup_paths: list[Path] = []
+            try:
+                self._check_cancelled(signals)
+                if config.chapter_overrides:
+                    chapter_dir = Path(
+                        tempfile.mkdtemp(
+                            prefix="enc_chapters_",
+                            dir=str(config.work_dir) if config.work_dir else None,
+                        )
+                    )
+                    cleanup_paths.append(chapter_dir)
+
+                def _run_aux(cmd: list[str], label: str) -> str:
+                    return self._runner._run_cmd(
+                        cmd,
+                        cwd=cwd,
+                        label=label,
+                        progress_cb=lambda line: signals.progress.emit(line),
+                        signals=signals,
+                    )
+
+                video = self._primary_video_settings(config)
+                self._log_step(
+                    5,
+                    "Préparation de l'encode NVEncC natif",
+                )
+                intermediate = _nvencc_intermediate_path_runtime(cwd, video.codec)
+                cleanup_paths.append(intermediate)
+                routing = self._resolve_nvencc_input_routing(config)
+                effective_source = routing.input_path
+                effective_stream_index = routing.stream_index
+                hdr10plus_json: Path | None = None
+                dovi_rpu: Path | None = None
+                runtime_video = routing.video
+
+                if (
+                    not runtime_video.inject_hdr_meta
+                    and (runtime_video.master_display or runtime_video.max_cll)
+                ):
+                    runtime_video = replace(runtime_video, inject_hdr_meta=True)
+
+                if routing.rebased_to_source:
+                    self.log_message.emit(
+                        "INFO",
+                        "NVEncC HDR dynamique : rebascule sur la source d'origine "
+                        "pour préserver les timestamps et la copie native DoVi/HDR10+.",
+                    )
+                if routing.forced_reader == "avsw":
+                    self.log_message.emit(
+                        "INFO",
+                        "NVEncC HDR dynamique : --avsw forcé pour une entrée sans "
+                        "timestamps compatibles avec le chemin copy natif.",
+                    )
+
+                video_offset_ms = _track_offset_ms_plan(
+                    dict(plan.offset_lookup),
+                    track_type="video",
+                    source_path=self._video_source_path(config),
+                    stream_index=self._video_stream_index(config),
+                )
+                encode_cmd = _build_nvencc_command_runtime(
+                    self._nvencc_bin or "",
+                    runtime_video,
+                    intermediate,
+                    input_path=effective_source,
+                    stream_index=effective_stream_index,
+                    input_reader=routing.input_reader,
+                    input_fps=routing.input_fps,
+                    input_avsync=routing.input_avsync,
+                    hdr10plus_json=hdr10plus_json,
+                    dovi_rpu=dovi_rpu,
+                    dovi_rpu_prm=routing.dovi_rpu_prm,
+                )
+                remux_cmd, live_sync_session, sync_cleanup_paths = self._build_runtime_nvencc_remux_cmd(
+                    config,
+                    intermediate,
+                    video_offset_ms=video_offset_ms,
+                    chapter_materialize_dir=chapter_dir,
+                    signals=signals,
+                    plan=plan,
+                )
+                cleanup_paths.extend(sync_cleanup_paths)
+                if live_sync_session is not None:
+                    for proc in live_sync_session.processes:
+                        signals._register_proc(proc)
+
+                self._check_cancelled(signals)
+                self._log_step(6, "Encodage NVEncC")
+                self._runner._run_cmd(
+                    encode_cmd,
+                    cwd=cwd,
+                    label="nvencc",
+                    progress_cb=lambda line: signals.progress.emit(line),
+                    signals=signals,
+                )
+                self._check_cancelled(signals)
+                self._log_step(7, "Remux final ffmpeg")
+                output = self._runner._run_cmd(
+                    remux_cmd,
+                    cwd=cwd,
+                    label="ffmpeg-remux",
+                    progress_cb=lambda line: signals.progress.emit(line),
+                    signals=signals,
+                )
+                signals.finished.emit(output)
+            except TaskCancelledError:
+                signals.cancelled.emit()
+            except Exception as exc:
+                signals.failed.emit(str(exc), exc)
+            finally:
+                if live_sync_session is not None:
+                    for proc in live_sync_session.processes:
+                        signals._unregister_proc(proc)
+                    live_sync_session.close()
+
+        if prep_signals is not None:
+            _task()
+            return signals
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        executor.submit(_task)
+        executor.shutdown(wait=False)
+        return signals
 
     def _build_encode_plan(self, config: EncodeConfig) -> _EncodePlan:
         return _build_encode_plan_data(
@@ -1563,7 +2502,7 @@ class EncodeWorkflow(QObject):
             cmd.extend(_video_codec_args_domain(video, video.bitrate_kbps, callbacks=callbacks))
         else:
             cmd.extend(_video_codec_args_bitrate_domain(video, bitrate_kbps, callbacks=callbacks))
-        if include_hdr_meta and video.inject_hdr_meta and not video.tonemap_to_sdr:
+        if include_hdr_meta and _needs_hdr_vui_domain(video):
             cmd.extend(_hdr_meta_args_domain(video))
 
     def _build_multi_video_track_encode_commands(
@@ -1648,7 +2587,13 @@ class EncodeWorkflow(QObject):
             thread_count=thread_count,
         )
         self._append_video_codec_and_hdr_args(cmd, video)
-        cmd.extend(["-an", "-f", "hevc", str(output_hevc)])
+        # `passthrough` : 1 frame source ↔ 1 frame sortie (aucun dup/drop),
+        # timestamps préservés. Compatible CFR ET VFR — c'est le seul mode
+        # qui garde l'alignement frame-à-frame requis pour la ré-injection
+        # RPU DoVi / HDR10+ (chaque NAL est indexé sur la frame source).
+        # `cfr` forcerait des dup/drop pour atteindre un framerate constant
+        # → désalignerait. `vfr` peut dropper des frames "dupliquées" → idem.
+        cmd.extend(["-fps_mode", "passthrough", "-an", "-f", "hevc", str(output_hevc)])
         return cmd
 
     def _build_video_only_two_pass(
@@ -1688,7 +2633,9 @@ class EncodeWorkflow(QObject):
         self._append_video_codec_and_hdr_args(pass1, video, bitrate_kbps=bitrate, include_hdr_meta=False)
         if passlog_prefix is not None:
             pass1.extend(["-passlogfile", str(passlog_prefix)])
-        pass1.extend(["-pass", "1", "-an", "-f", "null", os.devnull])
+        # `passthrough` (cf _build_video_only_cmd_for_track) : alignement
+        # frame-à-frame, compatible VFR.
+        pass1.extend(["-fps_mode", "passthrough", "-pass", "1", "-an", "-f", "null", os.devnull])
         pass2 = self._build_video_track_base_cmd(
             video=video,
             source=source,
@@ -1699,7 +2646,7 @@ class EncodeWorkflow(QObject):
         self._append_video_codec_and_hdr_args(pass2, video, bitrate_kbps=bitrate)
         if passlog_prefix is not None:
             pass2.extend(["-passlogfile", str(passlog_prefix)])
-        pass2.extend(["-pass", "2"])
+        pass2.extend(["-fps_mode", "passthrough", "-pass", "2"])
         pass2.extend(["-an", "-f", "hevc", str(output_hevc)])
         return [pass1, pass2]
 
@@ -1745,17 +2692,13 @@ class EncodeWorkflow(QObject):
     # ------------------------------------------------------------------
 
     def preview_command(self, config: EncodeConfig) -> str:
-        return _format_preview_selection_plan(
-            _build_encode_command_selection_plan(
-                config,
-                plan=self._build_encode_plan(config),
-                is_multi_video=self._is_multi_video,
-                uses_two_pass=self._uses_two_pass,
-                build_multi_video_preview=self._build_multi_video_command_preview,
-                build_two_pass=self._build_two_pass,
-                build_single_pass=self._build_single_pass,
-            )
+        commands = self._backend_for_config(config).build_preview(
+            config,
+            ctx=self._backend_context(plan=self._build_encode_plan(config)),
         )
+        if len(commands) <= 1:
+            return _format_preview_command_plan(commands[0]) if commands else ""
+        return _format_preview_commands_plan(commands)
 
     # ------------------------------------------------------------------
     # Validation
@@ -1772,11 +2715,26 @@ class EncodeWorkflow(QObject):
             video_stream_index=self._video_stream_index,
             video_map_key=self._video_map_key,
         )
-        return _validate_encode_config_plan(
+        errors = _validate_encode_config_plan(
             config,
             planned_video_tracks=plan.video_tracks,
             dir_writable=_is_dir_writable_plan,
         )
+        errors.extend(
+            self._backend_for_config(config).validate(
+                config,
+                plan=plan,
+                ctx=self._backend_context(plan=plan),
+            )
+        )
+        return errors
+
+    def parse_progress(
+        self,
+        config: EncodeConfig,
+        line: str,
+    ) -> _ProgressEvent | None:
+        return self._backend_for_config(config).parse_progress(line)
 
     # ------------------------------------------------------------------
     # Exécution
@@ -1984,7 +2942,11 @@ class EncodeWorkflow(QObject):
         if needs_inject:
             self.log_message.emit(
                 "INFO",
-                "Injection DoVi/HDR10+: pipeline fichier (pas de pipe direct outillage).",
+                (
+                    "Injection DoVi/HDR10+: pipeline fichier (pas de pipe direct outillage)."
+                    if self._wants_dynamic_hdr_copy(prepared_config)
+                    else "Injection HDR statique: pipeline fichier (codec sans support natif fiable)."
+                ),
             )
             self._ensure_inject_storage_available(prepared_config)
         self._check_cancelled(prep_signals)
@@ -2031,6 +2993,35 @@ class EncodeWorkflow(QObject):
         prep_signals: TaskSignals | None = None,
         plan: _EncodePlan | None = None,
     ) -> TaskSignals:
+        backend = self._backend_for_config(config)
+        if getattr(backend, "backend_id", "ffmpeg") != "ffmpeg":
+            signals = backend.run(
+                config,
+                cleanup_paths,
+                prep_signals=prep_signals,
+                ctx=self._backend_context(plan=plan or self._build_encode_plan(config)),
+            )
+            if prep_signals is None:
+                self._bind_matroska_segment_muxing_patch(signals, config.output)
+                self._bind_nfo_write(signals, config.output)
+            return signals
+
+        return self._run_ffmpeg_direct_output(
+            config,
+            cleanup_paths,
+            prep_signals=prep_signals,
+            plan=plan,
+        )
+
+    def _run_ffmpeg_direct_output(
+        self,
+        config: EncodeConfig,
+        cleanup_paths: list[Path],
+        *,
+        prep_signals: TaskSignals | None = None,
+        plan: _EncodePlan | None = None,
+    ) -> TaskSignals:
+
         cwd = config.work_dir or config.source.parent
         plan = plan or self._build_encode_plan(config)
         signals = _DirectOutputRunner(
@@ -2374,19 +3365,268 @@ class EncodeWorkflow(QObject):
             return raw
         return None
 
+    def _mediainfo_video_fps_expr(self, source: Path) -> str | None:
+        track = self._load_mediainfo_video_track(source)
+        if not isinstance(track, dict):
+            return None
+
+        num = self._normalize_frame_rate_expr(track.get("FrameRate_Num"))
+        den = self._normalize_frame_rate_expr(track.get("FrameRate_Den"))
+        if num is not None and den is not None:
+            try:
+                if float(den) != 0:
+                    return f"{int(float(num))}/{int(float(den))}"
+            except (TypeError, ValueError):
+                pass
+
+        for key in ("FrameRate_Original", "FrameRate", "FrameRate_Nominal"):
+            raw = str(track.get(key) or "").strip().replace(",", ".")
+            if not raw:
+                continue
+            fraction = re.search(r"\b(\d+/\d+)\b", raw)
+            if fraction is not None:
+                fps_expr = self._normalize_frame_rate_expr(fraction.group(1))
+                if fps_expr is not None:
+                    return fps_expr
+            decimal = re.search(r"\b(\d+(?:\.\d+)?)\b", raw)
+            if decimal is not None:
+                fps_expr = self._normalize_frame_rate_expr(decimal.group(1))
+                if fps_expr is not None:
+                    return fps_expr
+        return None
+
+    def _mediainfo_video_is_vfr(self, source: Path) -> bool | None:
+        track = self._load_mediainfo_video_track(source)
+        if not isinstance(track, dict):
+            return None
+        for key in ("FrameRate_Mode_Original", "FrameRate_Mode"):
+            raw = str(track.get(key) or "").strip().lower()
+            if not raw:
+                continue
+            if "vfr" in raw or "variable" in raw:
+                return True
+            if "cfr" in raw or "constant" in raw:
+                return False
+        return None
+
     def _source_video_fps_expr(self, source: Path) -> str:
         payload = self._ffprobe_streams_payload(source)
+        if payload is not None:
+            for stream in self._ffprobe_stream_dicts(payload):
+                if stream.get("codec_type") != "video":
+                    continue
+                for key in ("avg_frame_rate", "r_frame_rate"):
+                    fps_expr = self._normalize_frame_rate_expr(stream.get(key))
+                    if fps_expr is not None:
+                        return fps_expr
+                break
+        return self._mediainfo_video_fps_expr(source) or _FALLBACK_HEVC_FRAME_RATE
+
+    @staticmethod
+    def _nvencc_raw_input_needs_fps_hint(path: Path | str | None) -> bool:
+        if path is None:
+            return False
+        suffix = Path(path).suffix.lower()
+        return suffix in {".hevc", ".h265", ".265", ".x265", ".h264", ".264", ".avc", ".ivf"}
+
+    def _nvencc_input_fps_hint(
+        self,
+        *,
+        source_for_fps: Path,
+        input_path: Path | str | None,
+    ) -> str | None:
+        if not self._nvencc_raw_input_needs_fps_hint(input_path):
+            return None
+        fps_expr = self._source_video_fps_expr(source_for_fps)
+        return fps_expr or None
+
+    def _nvencc_input_avsync_mode(
+        self,
+        *,
+        source_for_timing: Path,
+        input_path: Path | str | None,
+    ) -> str | None:
+        if input_path is None or self._nvencc_raw_input_needs_fps_hint(input_path):
+            return None
+        if self._source_is_vfr(source_for_timing):
+            return "vfr"
+        return None
+
+    @staticmethod
+    def _nvencc_can_use_native_timestamps(path: Path | str | None) -> bool:
+        return path is not None and not EncodeWorkflow._nvencc_raw_input_needs_fps_hint(path)
+
+    @staticmethod
+    def _nvencc_crop_offsets_from_extra_params(extra_params: str) -> tuple[int, int, int, int] | None:
+        raw = (extra_params or "").strip()
+        if not raw:
+            return None
+        try:
+            tokens = shlex.split(raw)
+        except ValueError:
+            tokens = raw.split()
+
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            value: str | None = None
+            if token.startswith("--crop="):
+                value = token.split("=", 1)[1]
+                i += 1
+            elif token == "--crop":
+                value = tokens[i + 1] if i + 1 < len(tokens) else None
+                i += 2
+            else:
+                i += 1
+                continue
+            if not value:
+                return None
+            parts = [part.strip() for part in value.split(",")]
+            if len(parts) != 4:
+                return None
+            try:
+                return tuple(int(part) for part in parts)  # type: ignore[return-value]
+            except ValueError:
+                return None
+        return None
+
+    def _nvencc_dovi_rpu_prm(self, video: VideoEncodeSettings) -> str | None:
+        if not getattr(video, "copy_dv", False):
+            return None
+        crop = self._nvencc_crop_offsets_from_extra_params(video.extra_params)
+        if crop is None:
+            return None
+        if any(component != 0 for component in crop):
+            return "crop=true"
+        return None
+
+    def _resolve_nvencc_input_routing(self, config: EncodeConfig) -> _NvenccInputRouting:
+        video = self._primary_video_settings(config)
+        input_path = self._video_source_path(config)
+        stream_index = self._video_stream_index(config)
+        dynamic_hdr_copy = bool(video.copy_dv or video.copy_hdr10plus)
+        rebased_to_source = False
+        forced_reader: str | None = None
+        input_reader: str | None = None
+
+        if dynamic_hdr_copy:
+            original_source = Path(config.source)
+            if (
+                self._nvencc_raw_input_needs_fps_hint(input_path)
+                and input_path != original_source
+                and self._nvencc_can_use_native_timestamps(original_source)
+            ):
+                input_path = original_source
+                stream_index = self._video_stream_index(config)
+                rebased_to_source = True
+            elif not self._nvencc_can_use_native_timestamps(input_path):
+                input_reader = "avsw"
+                forced_reader = "avsw"
+
+            if video.copy_dv:
+                codec_name = ""
+                if self._nvencc_raw_input_needs_fps_hint(input_path):
+                    if Path(input_path).suffix.lower() in {".hevc", ".h265", ".265", ".x265"}:
+                        codec_name = "hevc"
+                    else:
+                        codec_name = "unsupported-raw"
+                else:
+                    codec_name = self._video_codec_of(Path(input_path), stream_index)
+                if codec_name not in {"", "hevc"}:
+                    raise EncodeError(
+                        "NVEncC --dolby-vision-rpu copy exige une entrée vidéo HEVC "
+                        "lisible depuis la source d'origine ou via avsw."
+                    )
+
+        routed_video = video
+        if video.copy_dv and str(video.dovi_profile or "").strip().lower() in {"", "0", "copy"}:
+            routed_video = replace(video, dovi_profile="8.1")
+
+        source_for_timing = Path(input_path)
+
+        return _NvenccInputRouting(
+            input_path=Path(input_path),
+            stream_index=int(stream_index),
+            video=routed_video,
+            input_reader=input_reader,
+            input_fps=(
+                None
+                if dynamic_hdr_copy
+                else self._nvencc_input_fps_hint(
+                    source_for_fps=source_for_timing,
+                    input_path=input_path,
+                )
+            ),
+            input_avsync=self._nvencc_input_avsync_mode(
+                source_for_timing=source_for_timing,
+                input_path=input_path,
+            ),
+            dovi_rpu_prm=self._nvencc_dovi_rpu_prm(routed_video),
+            rebased_to_source=rebased_to_source,
+            forced_reader=forced_reader,
+        )
+
+    def _source_video_dimensions(self, source: Path) -> tuple[int, int]:
+        """Renvoie ``(width, height)`` de la 1ère piste vidéo, ou (0, 0)."""
+        payload = self._ffprobe_streams_payload(source)
         if payload is None:
-            return _FALLBACK_HEVC_FRAME_RATE
+            return (0, 0)
         for stream in self._ffprobe_stream_dicts(payload):
             if stream.get("codec_type") != "video":
                 continue
-            for key in ("avg_frame_rate", "r_frame_rate"):
-                fps_expr = self._normalize_frame_rate_expr(stream.get(key))
-                if fps_expr is not None:
-                    return fps_expr
-            break
-        return _FALLBACK_HEVC_FRAME_RATE
+            try:
+                width = stream.get("width")
+                height = stream.get("height")
+                w = int(width) if isinstance(width, (int, str)) else 0
+                h = int(height) if isinstance(height, (int, str)) else 0
+            except (TypeError, ValueError):
+                return (0, 0)
+            return (w, h)
+        return (0, 0)
+
+    def _source_is_vfr(self, source: Path, *, tolerance: float = 0.01) -> bool:
+        """
+        Détecte si la source vidéo est en framerate variable.
+
+        Heuristique : comparer ``r_frame_rate`` (framerate déclaré, max
+        théorique) et ``avg_frame_rate`` (mesuré sur la durée totale). En CFR
+        strict, les deux sont identiques au pgcd près. En VFR, ``avg_frame_rate``
+        est inférieur à ``r_frame_rate`` parce que des intervalles plus longs
+        que 1/r_frame_rate apparaissent.
+
+        Tolérance par défaut : 1 % d'écart, pour absorber les imprécisions
+        d'arrondi du muxer source.
+        """
+        payload = self._ffprobe_streams_payload(source)
+        if payload is not None:
+            for stream in self._ffprobe_stream_dicts(payload):
+                if stream.get("codec_type") != "video":
+                    continue
+                r = self._fps_expr_to_float(stream.get("r_frame_rate"))
+                a = self._fps_expr_to_float(stream.get("avg_frame_rate"))
+                if r is None or a is None or r <= 0 or a <= 0:
+                    break
+                return abs(r - a) / r > tolerance
+        return bool(self._mediainfo_video_is_vfr(source))
+
+    @staticmethod
+    def _fps_expr_to_float(value: object) -> float | None:
+        raw = str(value or "").strip()
+        if raw in {"", "0", "0/0", "N/A"}:
+            return None
+        if "/" in raw:
+            try:
+                num_s, den_s = raw.split("/", 1)
+                num, den = float(num_s), float(den_s)
+                if den == 0:
+                    return None
+                return num / den
+            except ValueError:
+                return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
 
     def _wrap_injected_hevc_for_reconstruction(
         self,
@@ -2395,6 +3635,21 @@ class EncodeWorkflow(QObject):
         hevc_input: Path,
         mkv_output: Path,
     ) -> list[str]:
+        """
+        Encapsulation HEVC brut → MKV.
+
+        Pour les sources CFR (cas courant remux UHD/WEB-DL), on génère des
+        PTS uniformes au framerate source. ``ffmpeg setts`` fait le boulot
+        en pure CLI.
+
+        Pour les sources VFR, on **ne passe pas par ffmpeg** : on utilise
+        le muxer Matroska natif Python qui réutilise les timestamps de la
+        source d'origine, frame par frame. Voir
+        ``core.workflows.matroska_native_muxer.NativeMatroskaMuxer``.
+        L'appelant (metadata_inject.py) détecte le mode VFR via
+        :meth:`_source_is_vfr` et invoque le muxer natif au lieu d'exécuter
+        cette commande.
+        """
         fps_expr = self._source_video_fps_expr(source)
         return [
             self._ffmpeg,
@@ -2586,6 +3841,8 @@ class EncodeWorkflow(QObject):
                 build_video_only_two_pass=self._build_video_only_two_pass,
                 build_video_only_cmd=self._build_video_only_cmd,
                 wrap_injected_hevc_for_reconstruction=self._wrap_injected_hevc_for_reconstruction,
+                source_is_vfr=self._source_is_vfr,
+                source_video_dimensions=self._source_video_dimensions,
                 build_encode_plan=self._build_encode_plan,
                 source_input_index_map=lambda sources: _source_input_index_map_plan(sources, start_index=1),
                 prepare_multisource_sync=self._prepare_multisource_sync,

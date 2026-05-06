@@ -205,7 +205,20 @@ def chapter_map_value(config: RemuxConfig, chapter_input_index: int | None) -> s
         if config.chapter_overrides and chapter_input_index is not None:
             return str(chapter_input_index)
         return "-1"
-    return "0" if config.keep_chapters else "-1"
+    if not config.keep_chapters:
+        return "-1"
+    # 1) Sélection explicite (combo UI) si fournie et valide.
+    selected = getattr(config, "chapter_source_index", None)
+    if selected is not None and 0 <= selected < len(config.sources):
+        if getattr(config.sources[selected], "has_chapters", False):
+            return str(selected)
+    # 2) Fallback : première source qui possède réellement des chapitres.
+    #    Sinon ffmpeg pioche dans l'input 0 et perd les chapitres si elle n'en
+    #    contient pas (cas typique : MP4 vidéo + MKV remux porteur des chapitres).
+    for input_idx, source in enumerate(config.sources):
+        if getattr(source, "has_chapters", False):
+            return str(input_idx)
+    return "0"
 
 
 def metadata_map_value(
@@ -213,17 +226,23 @@ def metadata_map_value(
     chapter_input_index: int | None,
     chapter_map: str | None = None,
 ) -> str:
+    # On dérive le défaut de "métadonnées globales" du même input que celui
+    # historiquement utilisé pour les chapitres (input 0 quand keep_chapters
+    # et pas d'override) ; chapter_map peut désormais cibler un autre input
+    # quand seul celui-ci porte des chapitres, mais on ne veut pas pour
+    # autant déplacer la copie des tags globaux : on retombe alors sur "0".
+    fallback_map = "0" if config.keep_chapters else "-1"
     if config.tag_overrides is not None:
         if config.chapter_overrides and chapter_input_index is not None:
             return str(chapter_input_index)
         if chapter_map is not None and chapter_map not in ("-1", ""):
-            return chapter_map
+            return fallback_map
         return "-1"
     for input_idx, source in enumerate(config.sources):
         if source.copy_tags:
             return str(input_idx)
     if chapter_map is not None and chapter_map not in ("-1", ""):
-        return chapter_map
+        return fallback_map
     return "-1"
 
 

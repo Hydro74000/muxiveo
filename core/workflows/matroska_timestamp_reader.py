@@ -1,0 +1,137 @@
+"""
+core/workflows/matroska_timestamp_reader.py
+
+Lecteur de timestamps de présentation (PTS) d'une piste vidéo source via
+ffprobe. Utilisé par le muxer Matroska natif (``MatroskaNativeMuxer``)
+pour réinjecter les PTS source sur un HEVC ré-encodé sans dépendre de
+mkvmerge.
+
+Pour les sources VFR, c'est la seule manière d'obtenir un MKV avec des
+PTS fidèles à l'original ; pour les sources CFR, le muxer natif s'en
+sert aussi (c'est plus simple et plus robuste que de générer des PTS
+synthétiques au framerate moyen, qui peut dériver de quelques
+millisecondes sur 2 h).
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+from core.subprocess_utils import subprocess_text_kwargs
+
+
+@dataclass(frozen=True)
+class TimestampSequence:
+    """
+    Séquence ordonnée de PTS et durations en millisecondes.
+
+    ``pts_ms`` : timestamps de présentation, tels qu'ils étaient dans la
+                 source. Peuvent être non-uniformes (VFR).
+    ``durations_ms`` : durée de chaque frame, calculée à partir des deltas
+                       PTS successifs (la dernière frame réutilise la durée
+                       précédente faute de mieux).
+    """
+    pts_ms: tuple[int, ...]
+    durations_ms: tuple[int, ...]
+
+    def __len__(self) -> int:
+        return len(self.pts_ms)
+
+    @property
+    def total_duration_ms(self) -> int:
+        if not self.pts_ms:
+            return 0
+        return self.pts_ms[-1] + self.durations_ms[-1]
+
+
+class MatroskaTimestampReader:
+    """
+    Lit les PTS d'une piste vidéo via ``ffprobe -show_packets``.
+
+    Choix du flux : la 1ère piste vidéo (``-select_streams v:0``).
+    Unité interne : millisecondes (= unité Matroska standard avec
+    TimestampScale = 1_000_000 ns).
+    """
+
+    def __init__(self, *, ffprobe_bin: str = "ffprobe") -> None:
+        self._ffprobe = ffprobe_bin
+
+    def read(self, source: Path) -> TimestampSequence:
+        """
+        Renvoie la séquence des PTS de la piste vidéo de ``source``.
+
+        Lève RuntimeError si ffprobe est indisponible ou si aucun packet
+        vidéo n'a été trouvé.
+        """
+        try:
+            result = subprocess.run(
+                [
+                    self._ffprobe, "-v", "error",
+                    "-select_streams", "v:0",
+                    "-show_entries", "packet=pts_time,duration_time",
+                    "-of", "json",
+                    str(source),
+                ],
+                capture_output=True,
+                check=False,
+                **subprocess_text_kwargs(),
+            )
+        except (FileNotFoundError, OSError) as exc:
+            raise RuntimeError(f"ffprobe indisponible : {exc}") from exc
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ffprobe a échoué (rc={result.returncode}) : {result.stderr or ''}"
+            )
+
+        try:
+            payload = json.loads(result.stdout or "{}")
+        except ValueError as exc:
+            raise RuntimeError(f"Sortie ffprobe non-JSON : {exc}") from exc
+
+        packets = payload.get("packets") or []
+        if not packets:
+            raise RuntimeError("Aucun packet vidéo trouvé par ffprobe.")
+
+        pts_ms_list: list[int] = []
+        for pkt in packets:
+            raw = pkt.get("pts_time")
+            if raw is None or raw == "N/A":
+                continue
+            try:
+                pts_s = float(raw)
+            except (TypeError, ValueError):
+                continue
+            pts_ms_list.append(int(round(pts_s * 1000.0)))
+
+        if not pts_ms_list:
+            raise RuntimeError("Aucun pts_time exploitable dans les packets ffprobe.")
+
+        # Trie par PTS (ffprobe sort dans l'ordre du démuxeur, mais en B-frames
+        # PTS != DTS et l'ordre packet peut être DTS croissant). Pour un muxer
+        # qui écrit des SimpleBlocks par ordre PTS (recommandé), on trie.
+        # Note : pour un fichier complexe, l'ordre DTS est mieux côté Cluster
+        # mais Matroska tolère les deux ; on garde simple.
+        pts_ms_list.sort()
+
+        durations_ms_list: list[int] = []
+        for i in range(len(pts_ms_list) - 1):
+            durations_ms_list.append(pts_ms_list[i + 1] - pts_ms_list[i])
+        if durations_ms_list:
+            # Dernière frame : duplique la durée précédente.
+            durations_ms_list.append(durations_ms_list[-1])
+        else:
+            durations_ms_list.append(0)
+
+        return TimestampSequence(
+            pts_ms=tuple(pts_ms_list),
+            durations_ms=tuple(durations_ms_list),
+        )
+
+
+__all__ = [
+    "MatroskaTimestampReader",
+    "TimestampSequence",
+]

@@ -419,8 +419,10 @@ class _ConfigSection(QWidget):
         r1l.addWidget(lbl_profile)
 
         self._profile_combo = QComboBox()
+        self._profile_combo.addItem("Disabled  —  ne pas injecter Dolby Vision", DoviProfile.DISABLED)
         self._profile_combo.addItem("Profile 8.1  —  -m 2, standard remux UHD (recommandé)", DoviProfile.P8_1)
         self._profile_combo.addItem("Mode 0  —  rewrite untouched, préserve le profil source",  DoviProfile.P8_0)
+        self._profile_combo.setCurrentIndex(1)
         self._profile_combo.setStyleSheet(f"""
             QComboBox {{
                 background: {_C.BG_DEEP};
@@ -512,14 +514,18 @@ class _ConfigSection(QWidget):
 # =============================================================================
 
 _STEP_LABELS: dict[WorkflowStep, str] = {
-    WorkflowStep.VALIDATION:       "Validation",
-    WorkflowStep.FRAME_COUNT:      "Frame count",
-    WorkflowStep.EXTRACT_PARALLEL: "Extractions",
-    WorkflowStep.INJECT_DOVI:      "Injection DoVi",
-    WorkflowStep.INJECT_HDR10PLUS: "Injection HDR10+",
-    WorkflowStep.VERIFY:           "Vérification",
-    WorkflowStep.REMUX:            "Remuxage",
-    WorkflowStep.CLEANUP:          "Nettoyage",
+    WorkflowStep.VALIDATION:        "Validation",
+    WorkflowStep.DETECT_DOVI:       "Détection profil DV",
+    WorkflowStep.FRAME_COUNT:       "Frame count",
+    WorkflowStep.EXTRACT_PARALLEL:  "Extractions",
+    WorkflowStep.SDR_TO_HDR10:      "Conversion SDR → HDR10",
+    WorkflowStep.CONVERT_DOVI:      "Conversion P7/P5 → P8.1",
+    WorkflowStep.INJECT_DOVI:       "Injection DoVi",
+    WorkflowStep.INJECT_HDR10PLUS:  "Injection HDR10+",
+    WorkflowStep.INJECT_STATIC_HDR: "Injection HDR10 statique",
+    WorkflowStep.VERIFY:            "Vérification",
+    WorkflowStep.REMUX:             "Remuxage",
+    WorkflowStep.CLEANUP:           "Nettoyage",
 }
 
 _STEP_ORDER = list(WorkflowStep)
@@ -808,6 +814,12 @@ class MergeDoviPanel(QWidget):
     """
 
     log_message = Signal(str, str)   # (level, message)
+    # Pilote la barre de progression globale (MainWindow) :
+    #   state ∈ {"started", "step", "finished", "failed", "cancelled"}
+    #   label = libellé court à afficher (étape en cours, message d'état…)
+    op_state_changed = Signal(str, str)
+    # Pourcentage 0..100 pour la barre globale (revient à 0 à chaque step).
+    op_progress_pct = Signal(int)
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -937,6 +949,7 @@ class MergeDoviPanel(QWidget):
         wf = self._workflow
         wf.step_started.connect(self._on_step_started,   Qt.ConnectionType.QueuedConnection)
         wf.step_progress.connect(self._on_step_progress, Qt.ConnectionType.QueuedConnection)
+        wf.step_progress_pct.connect(self._on_step_progress_pct, Qt.ConnectionType.QueuedConnection)
         wf.step_finished.connect(self._on_step_finished, Qt.ConnectionType.QueuedConnection)
         wf.workflow_finished.connect(self._on_workflow_finished, Qt.ConnectionType.QueuedConnection)
         wf.workflow_failed.connect(self._on_workflow_failed,     Qt.ConnectionType.QueuedConnection)
@@ -964,6 +977,10 @@ class MergeDoviPanel(QWidget):
                 film1=film1.name,
                 film2=film2.name,
             ),
+        )
+        self.op_state_changed.emit(
+            "started",
+            translate_text("Injection DoVi/HDR10+ en cours…"),
         )
 
         assert self._workflow is not None
@@ -995,6 +1012,13 @@ class MergeDoviPanel(QWidget):
         self._step_progress.set_running(step)
         step_label = translate_text(_STEP_LABELS[step])
         self.log_message.emit("INFO", translate_text("[{step}] Démarrage…", step=step_label))
+        self.op_state_changed.emit("step", step_label)
+
+    def _on_step_progress_pct(self, _step: WorkflowStep, pct: int) -> None:
+        # Lignes XX% des outils (dovi_tool / hdr10plus_tool) → barre globale.
+        # Seules les étapes dovi_tool/hdr10plus_tool atteignent ce slot ; les
+        # autres restent sur la prep jaune indéterminée.
+        self.op_progress_pct.emit(pct)
 
     def _on_step_progress(self, step: WorkflowStep, message: str) -> None:
         step_label = translate_text(_STEP_LABELS[step])
@@ -1031,6 +1055,7 @@ class MergeDoviPanel(QWidget):
         self._error_section.hide_error()
         self._set_idle_state()
         self.log_message.emit("OK", translate_text("Fichier de sortie : {path}", path=output_path))
+        self.op_state_changed.emit("finished", translate_text("Terminé."))
 
     def _on_workflow_failed(self, step: WorkflowStep, message: str) -> None:
         lowered = message.lower()
@@ -1038,6 +1063,7 @@ class MergeDoviPanel(QWidget):
         if cancelled:
             self._error_section.hide_error()
             self.log_message.emit("WARN", translate_text("Workflow annulé par l'utilisateur."))
+            self.op_state_changed.emit("cancelled", translate_text("Annulé."))
         else:
             step_label = translate_text(_STEP_LABELS[step])
             local_message = translate_text(message)
@@ -1051,6 +1077,7 @@ class MergeDoviPanel(QWidget):
                     message=local_message,
                 ),
             )
+            self.op_state_changed.emit("failed", translate_text("Échec."))
         self._set_idle_state()
 
     # ------------------------------------------------------------------

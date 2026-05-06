@@ -77,6 +77,7 @@ def apply_inspection(panel: "RemuxPanel", file_id: str, info: FileInfo) -> None:
 
     source_color = panel._source_colors.get(file_id, _C.BORDER)
     panel._track_table.append_tracks(source_color, sf.tracks)
+    panel._refresh_audio_sync_buttons()
     panel._attachment_panel.add_source_attachments(file_id, source_color, info.attachments)
     panel._attachment_panel.add_source_tags(file_id, source_color, info.global_tags)
 
@@ -125,6 +126,7 @@ def on_remove_file(panel: "RemuxPanel", file_id: str) -> None:
     panel._source_colors.pop(file_id, None)
     panel._file_list.remove_file(file_id)
     panel._track_table.remove_tracks_by_file_id(file_id)
+    panel._refresh_audio_sync_buttons()
     panel._attachment_panel.remove_by_file_id(file_id)
 
     if panel._source_files:

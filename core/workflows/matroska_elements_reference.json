@@ -1,7 +1,7 @@
 {
   "_meta": {
     "source": "https://www.matroska.org/technical/elements.html",
-    "generated": "2026-04-13",
+    "generated": "2026-04-26",
     "description": "Référence exhaustive des éléments Matroska/EBML — sert de base d'extension pour MatroskaSegmentInfoHeaderEditor",
     "field_notes": {
       "id": "Identifiant EBML en hexadécimal (ex. 0x4D80). Encodé en VINT 1–4 octets selon la longueur.",
@@ -56,7 +56,9 @@
       "multiple": false,
       "default": null,
       "parent": null,
-      "path": ["EBML"],
+      "path": [
+        "EBML"
+      ],
       "range": null,
       "editable": null,
       "description": "En-tête EBML racine — toujours en offset 0 dans un fichier Matroska valide."
@@ -70,7 +72,10 @@
       "multiple": false,
       "default": 1,
       "parent": "EBML",
-      "path": ["EBML", "EBMLVersion"],
+      "path": [
+        "EBML",
+        "EBMLVersion"
+      ],
       "range": null,
       "editable": null,
       "description": "Version de la spec EBML utilisée lors de l'écriture."
@@ -84,7 +89,10 @@
       "multiple": false,
       "default": 1,
       "parent": "EBML",
-      "path": ["EBML", "EBMLReadVersion"],
+      "path": [
+        "EBML",
+        "EBMLReadVersion"
+      ],
       "range": null,
       "editable": null,
       "description": "Version minimale d'EBML nécessaire pour lire ce fichier."
@@ -98,7 +106,10 @@
       "multiple": false,
       "default": 4,
       "parent": "EBML",
-      "path": ["EBML", "EBMLMaxIDLength"],
+      "path": [
+        "EBML",
+        "EBMLMaxIDLength"
+      ],
       "range": "1–4",
       "editable": null,
       "description": "Longueur maximale (en octets) d'un ID EBML dans ce fichier."
@@ -112,7 +123,10 @@
       "multiple": false,
       "default": 8,
       "parent": "EBML",
-      "path": ["EBML", "EBMLMaxSizeLength"],
+      "path": [
+        "EBML",
+        "EBMLMaxSizeLength"
+      ],
       "range": "1–8",
       "editable": null,
       "description": "Longueur maximale (en octets) d'une taille VINT dans ce fichier."
@@ -126,7 +140,10 @@
       "multiple": false,
       "default": null,
       "parent": "EBML",
-      "path": ["EBML", "DocType"],
+      "path": [
+        "EBML",
+        "DocType"
+      ],
       "range": null,
       "editable": null,
       "description": "Type de document (\"matroska\" ou \"webm\")."
@@ -140,7 +157,10 @@
       "multiple": false,
       "default": 1,
       "parent": "EBML",
-      "path": ["EBML", "DocTypeVersion"],
+      "path": [
+        "EBML",
+        "DocTypeVersion"
+      ],
       "range": null,
       "editable": null,
       "description": "Version du type de document."
@@ -154,7 +174,10 @@
       "multiple": false,
       "default": 1,
       "parent": "EBML",
-      "path": ["EBML", "DocTypeReadVersion"],
+      "path": [
+        "EBML",
+        "DocTypeReadVersion"
+      ],
       "range": null,
       "editable": null,
       "description": "Version minimale du type de document pour pouvoir lire le fichier."
@@ -168,7 +191,10 @@
       "multiple": true,
       "default": null,
       "parent": "EBML",
-      "path": ["EBML", "DocTypeExtension"],
+      "path": [
+        "EBML",
+        "DocTypeExtension"
+      ],
       "range": null,
       "editable": null,
       "description": "Extension optionnelle du type de document."
@@ -182,7 +208,9 @@
       "multiple": false,
       "default": null,
       "parent": null,
-      "path": ["Segment"],
+      "path": [
+        "Segment"
+      ],
       "range": null,
       "editable": null,
       "description": "Conteneur principal du fichier Matroska — sa taille couvre tout le reste du fichier (peut être inconnue/indéterminée en streaming)."
@@ -196,7 +224,10 @@
       "multiple": true,
       "default": null,
       "parent": "Segment",
-      "path": ["Segment", "SeekHead"],
+      "path": [
+        "Segment",
+        "SeekHead"
+      ],
       "range": null,
       "editable": null,
       "description": "Index de position des éléments Level-1 — permet un accès direct sans scan séquentiel. Deux SeekHead sont possibles (un en début, un en fin)."
@@ -210,7 +241,11 @@
       "multiple": true,
       "default": null,
       "parent": "SeekHead",
-      "path": ["Segment", "SeekHead", "Seek"],
+      "path": [
+        "Segment",
+        "SeekHead",
+        "Seek"
+      ],
       "range": null,
       "editable": null,
       "description": "Entrée de seek pour un élément Level-1."
@@ -224,7 +259,12 @@
       "multiple": false,
       "default": null,
       "parent": "Seek",
-      "path": ["Segment", "SeekHead", "Seek", "SeekID"],
+      "path": [
+        "Segment",
+        "SeekHead",
+        "Seek",
+        "SeekID"
+      ],
       "range": null,
       "editable": null,
       "description": "ID EBML de l'élément ciblé."
@@ -238,7 +278,12 @@
       "multiple": false,
       "default": null,
       "parent": "Seek",
-      "path": ["Segment", "SeekHead", "Seek", "SeekPosition"],
+      "path": [
+        "Segment",
+        "SeekHead",
+        "Seek",
+        "SeekPosition"
+      ],
       "range": null,
       "editable": null,
       "description": "Position absolue dans le Segment (en octets depuis le début du payload Segment)."
@@ -252,7 +297,10 @@
       "multiple": false,
       "default": null,
       "parent": "Segment",
-      "path": ["Segment", "Info"],
+      "path": [
+        "Segment",
+        "Info"
+      ],
       "range": null,
       "editable": "candidate",
       "description": "Métadonnées globales du Segment (timing, identifiants, applications). Élément ciblé par MatroskaSegmentInfoHeaderEditor."
@@ -266,7 +314,11 @@
       "multiple": false,
       "default": null,
       "parent": "Info",
-      "path": ["Segment", "Info", "SegmentUID"],
+      "path": [
+        "Segment",
+        "Info",
+        "SegmentUID"
+      ],
       "range": "128 bits",
       "editable": null,
       "description": "Identifiant unique du Segment (UUID 128 bits)."
@@ -280,7 +332,11 @@
       "multiple": false,
       "default": null,
       "parent": "Info",
-      "path": ["Segment", "Info", "SegmentFilename"],
+      "path": [
+        "Segment",
+        "Info",
+        "SegmentFilename"
+      ],
       "range": null,
       "editable": null,
       "description": "Nom de fichier associé au Segment."
@@ -294,7 +350,11 @@
       "multiple": false,
       "default": null,
       "parent": "Info",
-      "path": ["Segment", "Info", "PrevUUID"],
+      "path": [
+        "Segment",
+        "Info",
+        "PrevUUID"
+      ],
       "range": "128 bits",
       "editable": null,
       "description": "UID du Segment précédent pour les fichiers liés."
@@ -308,7 +368,11 @@
       "multiple": false,
       "default": null,
       "parent": "Info",
-      "path": ["Segment", "Info", "PrevFilename"],
+      "path": [
+        "Segment",
+        "Info",
+        "PrevFilename"
+      ],
       "range": null,
       "editable": null,
       "description": "Nom du fichier précédent pour les fichiers liés."
@@ -322,7 +386,11 @@
       "multiple": false,
       "default": null,
       "parent": "Info",
-      "path": ["Segment", "Info", "NextUUID"],
+      "path": [
+        "Segment",
+        "Info",
+        "NextUUID"
+      ],
       "range": "128 bits",
       "editable": null,
       "description": "UID du Segment suivant pour les fichiers liés."
@@ -336,7 +404,11 @@
       "multiple": false,
       "default": null,
       "parent": "Info",
-      "path": ["Segment", "Info", "NextFilename"],
+      "path": [
+        "Segment",
+        "Info",
+        "NextFilename"
+      ],
       "range": null,
       "editable": null,
       "description": "Nom du fichier suivant pour les fichiers liés."
@@ -350,7 +422,11 @@
       "multiple": true,
       "default": null,
       "parent": "Info",
-      "path": ["Segment", "Info", "SegmentFamily"],
+      "path": [
+        "Segment",
+        "Info",
+        "SegmentFamily"
+      ],
       "range": "128 bits",
       "editable": null,
       "description": "Identifiant de famille de Segments liés."
@@ -364,7 +440,11 @@
       "multiple": true,
       "default": null,
       "parent": "Info",
-      "path": ["Segment", "Info", "ChapterTranslate"],
+      "path": [
+        "Segment",
+        "Info",
+        "ChapterTranslate"
+      ],
       "range": null,
       "editable": null,
       "description": "Correspondance de chapitres pour un codec externe (ex. DVD)."
@@ -378,7 +458,12 @@
       "multiple": false,
       "default": null,
       "parent": "ChapterTranslate",
-      "path": ["Segment", "Info", "ChapterTranslate", "ChapterTranslateID"],
+      "path": [
+        "Segment",
+        "Info",
+        "ChapterTranslate",
+        "ChapterTranslateID"
+      ],
       "range": null,
       "editable": null,
       "description": "Identifiant de Segment spécifique au codec."
@@ -392,7 +477,12 @@
       "multiple": false,
       "default": null,
       "parent": "ChapterTranslate",
-      "path": ["Segment", "Info", "ChapterTranslate", "ChapterTranslateCodec"],
+      "path": [
+        "Segment",
+        "Info",
+        "ChapterTranslate",
+        "ChapterTranslateCodec"
+      ],
       "range": "0=MatroskaScript, 1=DVD",
       "editable": null,
       "description": "Type de codec chapitre ciblé."
@@ -406,7 +496,12 @@
       "multiple": true,
       "default": null,
       "parent": "ChapterTranslate",
-      "path": ["Segment", "Info", "ChapterTranslate", "ChapterTranslateEditionUID"],
+      "path": [
+        "Segment",
+        "Info",
+        "ChapterTranslate",
+        "ChapterTranslateEditionUID"
+      ],
       "range": null,
       "editable": null,
       "description": "UID d'édition cible."
@@ -420,7 +515,11 @@
       "multiple": false,
       "default": 1000000,
       "parent": "Info",
-      "path": ["Segment", "Info", "TimestampScale"],
+      "path": [
+        "Segment",
+        "Info",
+        "TimestampScale"
+      ],
       "range": ">0",
       "editable": null,
       "description": "Unité de base des timestamps en nanosecondes (défaut : 1 ms = 1 000 000 ns)."
@@ -434,7 +533,11 @@
       "multiple": false,
       "default": null,
       "parent": "Info",
-      "path": ["Segment", "Info", "Duration"],
+      "path": [
+        "Segment",
+        "Info",
+        "Duration"
+      ],
       "range": ">0.0",
       "editable": null,
       "description": "Durée du Segment en unités de TimestampScale."
@@ -448,7 +551,11 @@
       "multiple": false,
       "default": null,
       "parent": "Info",
-      "path": ["Segment", "Info", "DateUTC"],
+      "path": [
+        "Segment",
+        "Info",
+        "DateUTC"
+      ],
       "range": null,
       "editable": "candidate",
       "description": "Date et heure de création (nanosecondes depuis 2001-01-01T00:00:00 UTC)."
@@ -462,7 +569,11 @@
       "multiple": false,
       "default": null,
       "parent": "Info",
-      "path": ["Segment", "Info", "Title"],
+      "path": [
+        "Segment",
+        "Info",
+        "Title"
+      ],
       "range": null,
       "editable": "candidate",
       "description": "Titre général du Segment (distinct des Tags — s'affiche comme titre de piste vidéo dans certains lecteurs)."
@@ -476,7 +587,11 @@
       "multiple": false,
       "default": null,
       "parent": "Info",
-      "path": ["Segment", "Info", "MuxingApp"],
+      "path": [
+        "Segment",
+        "Info",
+        "MuxingApp"
+      ],
       "range": null,
       "editable": "implemented",
       "description": "Application de muxage et version (ex. \"libmatroska-0.4.3\"). Patché par MatroskaSegmentInfoHeaderEditor : préfixe \"Mediarecode X.Y.Z / <valeur originale>\"."
@@ -490,7 +605,11 @@
       "multiple": false,
       "default": null,
       "parent": "Info",
-      "path": ["Segment", "Info", "WritingApp"],
+      "path": [
+        "Segment",
+        "Info",
+        "WritingApp"
+      ],
       "range": null,
       "editable": "implemented",
       "description": "Application d'écriture et version (ex. \"mkvmerge-0.3.3\"). Non modifié par l'éditeur actuel (option edit_writing_app=False par défaut)."
@@ -504,7 +623,10 @@
       "multiple": false,
       "default": null,
       "parent": "Segment",
-      "path": ["Segment", "Tracks"],
+      "path": [
+        "Segment",
+        "Tracks"
+      ],
       "range": null,
       "editable": null,
       "description": "Conteneur des définitions de pistes."
@@ -518,7 +640,11 @@
       "multiple": true,
       "default": null,
       "parent": "Tracks",
-      "path": ["Segment", "Tracks", "TrackEntry"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry"
+      ],
       "range": null,
       "editable": null,
       "description": "Définition d'une piste individuelle."
@@ -532,7 +658,12 @@
       "multiple": false,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "TrackNumber"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "TrackNumber"
+      ],
       "range": ">0",
       "editable": null,
       "description": "Numéro de piste utilisé dans les en-têtes de blocs."
@@ -546,7 +677,12 @@
       "multiple": false,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "TrackUID"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "TrackUID"
+      ],
       "range": ">0",
       "editable": null,
       "description": "Identifiant unique de piste (doit rester stable entre muxages)."
@@ -560,7 +696,12 @@
       "multiple": false,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "TrackType"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "TrackType"
+      ],
       "range": "1=video, 2=audio, 3=complex, 4=logo, 5=subtitles, 6=buttons, 7=control, 8=metadata",
       "editable": null,
       "description": "Type de contenu de la piste."
@@ -574,7 +715,12 @@
       "multiple": false,
       "default": 1,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "FlagEnabled"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "FlagEnabled"
+      ],
       "range": "0–1",
       "editable": null,
       "description": "Piste activée (1) ou désactivée (0) par défaut."
@@ -588,7 +734,12 @@
       "multiple": false,
       "default": 1,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "FlagDefault"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "FlagDefault"
+      ],
       "range": "0–1",
       "editable": null,
       "description": "Piste sélectionnée par défaut si aucune préférence utilisateur n'est définie."
@@ -602,7 +753,12 @@
       "multiple": false,
       "default": 0,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "FlagForced"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "FlagForced"
+      ],
       "range": "0–1",
       "editable": null,
       "description": "Piste forcée — doit être affichée même si l'utilisateur a désactivé les sous-titres."
@@ -616,7 +772,12 @@
       "multiple": false,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "FlagHearingImpaired"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "FlagHearingImpaired"
+      ],
       "range": "0–1",
       "editable": null,
       "description": "Piste adaptée aux malentendants."
@@ -630,7 +791,12 @@
       "multiple": false,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "FlagVisualImpaired"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "FlagVisualImpaired"
+      ],
       "range": "0–1",
       "editable": null,
       "description": "Piste adaptée aux malvoyants (audio-description)."
@@ -644,7 +810,12 @@
       "multiple": false,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "FlagTextDescriptions"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "FlagTextDescriptions"
+      ],
       "range": "0–1",
       "editable": null,
       "description": "Piste contenant une description textuelle de la vidéo."
@@ -658,7 +829,12 @@
       "multiple": false,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "FlagOriginal"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "FlagOriginal"
+      ],
       "range": "0–1",
       "editable": null,
       "description": "Piste en langue originale."
@@ -672,7 +848,12 @@
       "multiple": false,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "FlagCommentary"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "FlagCommentary"
+      ],
       "range": "0–1",
       "editable": null,
       "description": "Piste de commentaire (ex. commentaire du réalisateur)."
@@ -686,7 +867,12 @@
       "multiple": false,
       "default": 1,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "FlagLacing"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "FlagLacing"
+      ],
       "range": "0–1",
       "editable": null,
       "description": "Lacing de blocs autorisé (1) ou interdit (0) pour cette piste."
@@ -700,7 +886,12 @@
       "multiple": false,
       "default": 0,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "MinCache"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "MinCache"
+      ],
       "range": null,
       "editable": null,
       "description": "Nombre minimum de trames à mettre en cache pour la lecture."
@@ -714,7 +905,12 @@
       "multiple": false,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "MaxCache"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "MaxCache"
+      ],
       "range": null,
       "editable": null,
       "description": "Nombre maximum de trames à mettre en cache."
@@ -728,7 +924,12 @@
       "multiple": false,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "DefaultDuration"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "DefaultDuration"
+      ],
       "range": ">0",
       "editable": null,
       "description": "Durée par défaut d'une trame en nanosecondes."
@@ -742,7 +943,12 @@
       "multiple": false,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "DefaultDecodedFieldDuration"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "DefaultDecodedFieldDuration"
+      ],
       "range": ">0",
       "editable": null,
       "description": "Durée par défaut d'un field (entrelacé) en nanosecondes."
@@ -756,7 +962,12 @@
       "multiple": false,
       "default": 1.0,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "TrackTimestampScale"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "TrackTimestampScale"
+      ],
       "range": ">0.0",
       "editable": null,
       "description": "Multiplicateur de vitesse appliqué aux timestamps de la piste."
@@ -770,7 +981,12 @@
       "multiple": false,
       "default": 0,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "MaxBlockAdditionID"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "MaxBlockAdditionID"
+      ],
       "range": null,
       "editable": null,
       "description": "Valeur maximale de BlockAddID utilisée dans les blocs de cette piste."
@@ -784,7 +1000,12 @@
       "multiple": true,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "BlockAdditionMapping"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "BlockAdditionMapping"
+      ],
       "range": null,
       "editable": null,
       "description": "Mapping d'extension de format de trame (ex. données DoVi, HDR10+)."
@@ -798,7 +1019,13 @@
       "multiple": false,
       "default": null,
       "parent": "BlockAdditionMapping",
-      "path": ["Segment", "Tracks", "TrackEntry", "BlockAdditionMapping", "BlockAddIDValue"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "BlockAdditionMapping",
+        "BlockAddIDValue"
+      ],
       "range": ">1",
       "editable": null,
       "description": "Identifiant d'extension au niveau de la trame."
@@ -812,7 +1039,13 @@
       "multiple": false,
       "default": null,
       "parent": "BlockAdditionMapping",
-      "path": ["Segment", "Tracks", "TrackEntry", "BlockAdditionMapping", "BlockAddIDName"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "BlockAdditionMapping",
+        "BlockAddIDName"
+      ],
       "range": null,
       "editable": null,
       "description": "Nom lisible du type d'extension (ex. \"DVHE\" pour Dolby Vision)."
@@ -826,7 +1059,13 @@
       "multiple": false,
       "default": 0,
       "parent": "BlockAdditionMapping",
-      "path": ["Segment", "Tracks", "TrackEntry", "BlockAdditionMapping", "BlockAddIDType"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "BlockAdditionMapping",
+        "BlockAddIDType"
+      ],
       "range": null,
       "editable": null,
       "description": "Identifiant normalisé du type d'extension."
@@ -840,7 +1079,13 @@
       "multiple": false,
       "default": null,
       "parent": "BlockAdditionMapping",
-      "path": ["Segment", "Tracks", "TrackEntry", "BlockAdditionMapping", "BlockAddIDExtraData"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "BlockAdditionMapping",
+        "BlockAddIDExtraData"
+      ],
       "range": null,
       "editable": null,
       "description": "Données d'interprétation spécifiques à l'extension."
@@ -854,7 +1099,12 @@
       "multiple": false,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "Name"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Name"
+      ],
       "range": null,
       "editable": null,
       "description": "Nom lisible de la piste (ex. \"VF\", \"Commentary\")."
@@ -868,7 +1118,12 @@
       "multiple": false,
       "default": "eng",
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "Language"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Language"
+      ],
       "range": null,
       "editable": null,
       "description": "Code langue Matroska (ISO 639-2) — utiliser LanguageBCP47 en priorité pour Matroska v4+."
@@ -882,7 +1137,12 @@
       "multiple": false,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "LanguageBCP47"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "LanguageBCP47"
+      ],
       "range": null,
       "editable": null,
       "description": "Code langue BCP-47 (RFC 5646) — remplace Language dans Matroska v4+."
@@ -896,7 +1156,12 @@
       "multiple": false,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "CodecID"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "CodecID"
+      ],
       "range": null,
       "editable": null,
       "description": "Identifiant du codec (ex. \"V_MPEGH/ISO/HEVC\", \"A_TRUEHD\", \"S_HDMV/PGS\")."
@@ -910,7 +1175,12 @@
       "multiple": false,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "CodecPrivate"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "CodecPrivate"
+      ],
       "range": null,
       "editable": null,
       "description": "Données privées du codec (ex. HEVC Decoder Configuration Record)."
@@ -924,7 +1194,12 @@
       "multiple": false,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "CodecName"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "CodecName"
+      ],
       "range": null,
       "editable": null,
       "description": "Nom lisible du codec."
@@ -938,7 +1213,12 @@
       "multiple": false,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "AttachmentLink"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "AttachmentLink"
+      ],
       "range": ">0",
       "editable": null,
       "description": "FileUID d'une pièce jointe associée à cette piste."
@@ -952,7 +1232,12 @@
       "multiple": false,
       "default": 0,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "CodecDelay"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "CodecDelay"
+      ],
       "range": null,
       "editable": null,
       "description": "Délai intégré du codec en nanosecondes (ex. délai d'encodeur Opus)."
@@ -966,7 +1251,12 @@
       "multiple": false,
       "default": 0,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "SeekPreRoll"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "SeekPreRoll"
+      ],
       "range": null,
       "editable": null,
       "description": "Durée de pré-décodage nécessaire après un seek, en nanosecondes."
@@ -980,7 +1270,12 @@
       "multiple": true,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "TrackTranslate"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "TrackTranslate"
+      ],
       "range": null,
       "editable": null,
       "description": "Correspondance de piste pour codec externe (ex. DVD)."
@@ -994,7 +1289,12 @@
       "multiple": false,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video"
+      ],
       "range": null,
       "editable": null,
       "description": "Paramètres spécifiques à la piste vidéo."
@@ -1008,7 +1308,13 @@
       "multiple": false,
       "default": 0,
       "parent": "Video",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "FlagInterlaced"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "FlagInterlaced"
+      ],
       "range": "0=undetermined, 1=interlaced, 2=progressive",
       "editable": null,
       "description": "Mode entrelacé de la vidéo."
@@ -1022,7 +1328,13 @@
       "multiple": false,
       "default": 2,
       "parent": "Video",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "FieldOrder"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "FieldOrder"
+      ],
       "range": "0–14",
       "editable": null,
       "description": "Ordre des fields pour la vidéo entrelacée."
@@ -1036,7 +1348,13 @@
       "multiple": false,
       "default": 0,
       "parent": "Video",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "StereoMode"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "StereoMode"
+      ],
       "range": "0–14",
       "editable": null,
       "description": "Mode 3D de la vidéo stéréoscopique."
@@ -1050,7 +1368,13 @@
       "multiple": false,
       "default": 0,
       "parent": "Video",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "AlphaMode"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "AlphaMode"
+      ],
       "range": "0–1",
       "editable": null,
       "description": "Présence d'un canal alpha dans la vidéo."
@@ -1064,7 +1388,13 @@
       "multiple": false,
       "default": null,
       "parent": "Video",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "PixelWidth"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "PixelWidth"
+      ],
       "range": ">0",
       "editable": null,
       "description": "Largeur de la trame encodée en pixels."
@@ -1078,7 +1408,13 @@
       "multiple": false,
       "default": null,
       "parent": "Video",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "PixelHeight"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "PixelHeight"
+      ],
       "range": ">0",
       "editable": null,
       "description": "Hauteur de la trame encodée en pixels."
@@ -1092,7 +1428,13 @@
       "multiple": false,
       "default": 0,
       "parent": "Video",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "PixelCropBottom"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "PixelCropBottom"
+      ],
       "range": null,
       "editable": null,
       "description": "Lignes à rogner en bas de la trame."
@@ -1106,7 +1448,13 @@
       "multiple": false,
       "default": 0,
       "parent": "Video",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "PixelCropTop"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "PixelCropTop"
+      ],
       "range": null,
       "editable": null,
       "description": "Lignes à rogner en haut de la trame."
@@ -1120,7 +1468,13 @@
       "multiple": false,
       "default": 0,
       "parent": "Video",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "PixelCropLeft"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "PixelCropLeft"
+      ],
       "range": null,
       "editable": null,
       "description": "Colonnes à rogner à gauche."
@@ -1134,7 +1488,13 @@
       "multiple": false,
       "default": 0,
       "parent": "Video",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "PixelCropRight"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "PixelCropRight"
+      ],
       "range": null,
       "editable": null,
       "description": "Colonnes à rogner à droite."
@@ -1148,7 +1508,13 @@
       "multiple": false,
       "default": null,
       "parent": "Video",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "DisplayWidth"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "DisplayWidth"
+      ],
       "range": ">0",
       "editable": null,
       "description": "Largeur d'affichage (peut différer de PixelWidth — pour l'aspect ratio)."
@@ -1162,7 +1528,13 @@
       "multiple": false,
       "default": null,
       "parent": "Video",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "DisplayHeight"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "DisplayHeight"
+      ],
       "range": ">0",
       "editable": null,
       "description": "Hauteur d'affichage."
@@ -1176,7 +1548,13 @@
       "multiple": false,
       "default": 0,
       "parent": "Video",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "DisplayUnit"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "DisplayUnit"
+      ],
       "range": "0=pixels, 1=centimetres, 2=inches, 3=DisplayAspectRatio, 4=unknown",
       "editable": null,
       "description": "Unité des dimensions d'affichage."
@@ -1190,7 +1568,13 @@
       "multiple": false,
       "default": null,
       "parent": "Video",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour"
+      ],
       "range": null,
       "editable": null,
       "description": "Paramètres de format couleur (espace colorimétrique, gamme, HDR)."
@@ -1204,7 +1588,14 @@
       "multiple": false,
       "default": 2,
       "parent": "Colour",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "MatrixCoefficients"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "MatrixCoefficients"
+      ],
       "range": "ITU-T H.273",
       "editable": null,
       "description": "Coefficients de dérivation luma/chroma (ex. 9 = BT.2020 non-constant)."
@@ -1218,7 +1609,14 @@
       "multiple": false,
       "default": 0,
       "parent": "Colour",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "BitsPerChannel"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "BitsPerChannel"
+      ],
       "range": null,
       "editable": null,
       "description": "Nombre de bits par canal décodé (0 = non spécifié)."
@@ -1232,7 +1630,14 @@
       "multiple": false,
       "default": null,
       "parent": "Colour",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "ChromaSubsamplingHorz"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "ChromaSubsamplingHorz"
+      ],
       "range": null,
       "editable": null,
       "description": "Sous-échantillonnage chroma horizontal."
@@ -1246,7 +1651,14 @@
       "multiple": false,
       "default": null,
       "parent": "Colour",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "ChromaSubsamplingVert"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "ChromaSubsamplingVert"
+      ],
       "range": null,
       "editable": null,
       "description": "Sous-échantillonnage chroma vertical."
@@ -1260,7 +1672,14 @@
       "multiple": false,
       "default": 0,
       "parent": "Colour",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "ChromaSitingHorz"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "ChromaSitingHorz"
+      ],
       "range": "0=unspecified, 1=left-collocated, 2=half",
       "editable": null,
       "description": "Position horizontale du chroma."
@@ -1274,7 +1693,14 @@
       "multiple": false,
       "default": 0,
       "parent": "Colour",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "ChromaSitingVert"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "ChromaSitingVert"
+      ],
       "range": "0=unspecified, 1=top-collocated, 2=half",
       "editable": null,
       "description": "Position verticale du chroma."
@@ -1288,7 +1714,14 @@
       "multiple": false,
       "default": 0,
       "parent": "Colour",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "Range"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "Range"
+      ],
       "range": "0=unspecified, 1=broadcast (16-235), 2=full (0-255), 3=defined by MatrixCoefficients/TransferCharacteristics",
       "editable": null,
       "description": "Plage de valeurs des composantes couleur."
@@ -1302,7 +1735,14 @@
       "multiple": false,
       "default": 2,
       "parent": "Colour",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "TransferCharacteristics"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "TransferCharacteristics"
+      ],
       "range": "ITU-T H.273 (ex. 16=PQ/SMPTE ST 2084, 18=HLG)",
       "editable": null,
       "description": "Fonction de transfert OETF/EOTF (ex. 16 = PQ pour HDR10/DoVi, 18 = HLG)."
@@ -1316,7 +1756,14 @@
       "multiple": false,
       "default": 2,
       "parent": "Colour",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "Primaries"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "Primaries"
+      ],
       "range": "ITU-T H.273 (ex. 9=BT.2020)",
       "editable": null,
       "description": "Primaires de couleur (ex. 9 = BT.2020 pour UHD HDR)."
@@ -1330,7 +1777,14 @@
       "multiple": false,
       "default": null,
       "parent": "Colour",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "MaxCLL"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "MaxCLL"
+      ],
       "range": null,
       "editable": null,
       "description": "Luminosité maximale d'un pixel en cd/m² (MaxCLL — SMPTE ST 2086)."
@@ -1344,7 +1798,14 @@
       "multiple": false,
       "default": null,
       "parent": "Colour",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "MaxFALL"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "MaxFALL"
+      ],
       "range": null,
       "editable": null,
       "description": "Luminosité maximale moyenne d'une trame en cd/m² (MaxFALL — SMPTE ST 2086)."
@@ -1358,7 +1819,14 @@
       "multiple": false,
       "default": null,
       "parent": "Colour",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "MasteringMetadata"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "MasteringMetadata"
+      ],
       "range": null,
       "editable": null,
       "description": "Métadonnées de mastering HDR10 (SMPTE ST 2086)."
@@ -1372,7 +1840,15 @@
       "multiple": false,
       "default": null,
       "parent": "MasteringMetadata",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "MasteringMetadata", "PrimaryRChromaticityX"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "MasteringMetadata",
+        "PrimaryRChromaticityX"
+      ],
       "range": "0.0–1.0",
       "editable": null,
       "description": "Chromaticité X du primaire rouge."
@@ -1386,7 +1862,15 @@
       "multiple": false,
       "default": null,
       "parent": "MasteringMetadata",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "MasteringMetadata", "PrimaryRChromaticityY"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "MasteringMetadata",
+        "PrimaryRChromaticityY"
+      ],
       "range": "0.0–1.0",
       "editable": null,
       "description": "Chromaticité Y du primaire rouge."
@@ -1400,7 +1884,15 @@
       "multiple": false,
       "default": null,
       "parent": "MasteringMetadata",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "MasteringMetadata", "PrimaryGChromaticityX"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "MasteringMetadata",
+        "PrimaryGChromaticityX"
+      ],
       "range": "0.0–1.0",
       "editable": null,
       "description": "Chromaticité X du primaire vert."
@@ -1414,7 +1906,15 @@
       "multiple": false,
       "default": null,
       "parent": "MasteringMetadata",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "MasteringMetadata", "PrimaryGChromaticityY"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "MasteringMetadata",
+        "PrimaryGChromaticityY"
+      ],
       "range": "0.0–1.0",
       "editable": null,
       "description": "Chromaticité Y du primaire vert."
@@ -1428,7 +1928,15 @@
       "multiple": false,
       "default": null,
       "parent": "MasteringMetadata",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "MasteringMetadata", "PrimaryBChromaticityX"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "MasteringMetadata",
+        "PrimaryBChromaticityX"
+      ],
       "range": "0.0–1.0",
       "editable": null,
       "description": "Chromaticité X du primaire bleu."
@@ -1442,7 +1950,15 @@
       "multiple": false,
       "default": null,
       "parent": "MasteringMetadata",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "MasteringMetadata", "PrimaryBChromaticityY"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "MasteringMetadata",
+        "PrimaryBChromaticityY"
+      ],
       "range": "0.0–1.0",
       "editable": null,
       "description": "Chromaticité Y du primaire bleu."
@@ -1456,7 +1972,15 @@
       "multiple": false,
       "default": null,
       "parent": "MasteringMetadata",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "MasteringMetadata", "WhitePointChromaticityX"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "MasteringMetadata",
+        "WhitePointChromaticityX"
+      ],
       "range": "0.0–1.0",
       "editable": null,
       "description": "Chromaticité X du point blanc."
@@ -1470,7 +1994,15 @@
       "multiple": false,
       "default": null,
       "parent": "MasteringMetadata",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "MasteringMetadata", "WhitePointChromaticityY"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "MasteringMetadata",
+        "WhitePointChromaticityY"
+      ],
       "range": "0.0–1.0",
       "editable": null,
       "description": "Chromaticité Y du point blanc."
@@ -1484,7 +2016,15 @@
       "multiple": false,
       "default": null,
       "parent": "MasteringMetadata",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "MasteringMetadata", "LuminanceMax"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "MasteringMetadata",
+        "LuminanceMax"
+      ],
       "range": ">=0.0",
       "editable": null,
       "description": "Luminosité maximale du display de mastering en cd/m²."
@@ -1498,7 +2038,15 @@
       "multiple": false,
       "default": null,
       "parent": "MasteringMetadata",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Colour", "MasteringMetadata", "LuminanceMin"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Colour",
+        "MasteringMetadata",
+        "LuminanceMin"
+      ],
       "range": ">=0.0",
       "editable": null,
       "description": "Luminosité minimale du display de mastering en cd/m²."
@@ -1512,7 +2060,13 @@
       "multiple": false,
       "default": null,
       "parent": "Video",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Projection"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Projection"
+      ],
       "range": null,
       "editable": null,
       "description": "Paramètres de projection vidéo (360°, VR)."
@@ -1526,7 +2080,14 @@
       "multiple": false,
       "default": 0,
       "parent": "Projection",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Projection", "ProjectionType"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Projection",
+        "ProjectionType"
+      ],
       "range": "0=rectangular, 1=equirectangular, 2=cubemap, 3=mesh",
       "editable": null,
       "description": "Type de projection vidéo."
@@ -1540,7 +2101,14 @@
       "multiple": false,
       "default": null,
       "parent": "Projection",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Projection", "ProjectionPrivate"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Projection",
+        "ProjectionPrivate"
+      ],
       "range": null,
       "editable": null,
       "description": "Données binaires spécifiques au type de projection."
@@ -1554,7 +2122,14 @@
       "multiple": false,
       "default": 0.0,
       "parent": "Projection",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Projection", "ProjectionPoseYaw"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Projection",
+        "ProjectionPoseYaw"
+      ],
       "range": "-180.0–180.0",
       "editable": null,
       "description": "Rotation Yaw initiale en degrés."
@@ -1568,7 +2143,14 @@
       "multiple": false,
       "default": 0.0,
       "parent": "Projection",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Projection", "ProjectionPosePitch"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Projection",
+        "ProjectionPosePitch"
+      ],
       "range": "-90.0–90.0",
       "editable": null,
       "description": "Rotation Pitch initiale en degrés."
@@ -1582,7 +2164,14 @@
       "multiple": false,
       "default": 0.0,
       "parent": "Projection",
-      "path": ["Segment", "Tracks", "TrackEntry", "Video", "Projection", "ProjectionPoseRoll"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Video",
+        "Projection",
+        "ProjectionPoseRoll"
+      ],
       "range": "-180.0–180.0",
       "editable": null,
       "description": "Rotation Roll initiale en degrés."
@@ -1596,7 +2185,12 @@
       "multiple": false,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "Audio"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Audio"
+      ],
       "range": null,
       "editable": null,
       "description": "Paramètres spécifiques à la piste audio."
@@ -1610,7 +2204,13 @@
       "multiple": false,
       "default": 8000.0,
       "parent": "Audio",
-      "path": ["Segment", "Tracks", "TrackEntry", "Audio", "SamplingFrequency"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Audio",
+        "SamplingFrequency"
+      ],
       "range": ">0.0",
       "editable": null,
       "description": "Fréquence d'échantillonnage en Hz."
@@ -1624,7 +2224,13 @@
       "multiple": false,
       "default": null,
       "parent": "Audio",
-      "path": ["Segment", "Tracks", "TrackEntry", "Audio", "OutputSamplingFrequency"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Audio",
+        "OutputSamplingFrequency"
+      ],
       "range": ">0.0",
       "editable": null,
       "description": "Fréquence de sortie après décodage SBR (Spectral Band Replication)."
@@ -1638,7 +2244,13 @@
       "multiple": false,
       "default": 1,
       "parent": "Audio",
-      "path": ["Segment", "Tracks", "TrackEntry", "Audio", "Channels"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Audio",
+        "Channels"
+      ],
       "range": ">0",
       "editable": null,
       "description": "Nombre de canaux audio."
@@ -1652,7 +2264,13 @@
       "multiple": false,
       "default": null,
       "parent": "Audio",
-      "path": ["Segment", "Tracks", "TrackEntry", "Audio", "BitDepth"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Audio",
+        "BitDepth"
+      ],
       "range": ">0",
       "editable": null,
       "description": "Profondeur de bits par échantillon audio."
@@ -1666,7 +2284,13 @@
       "multiple": false,
       "default": 0,
       "parent": "Audio",
-      "path": ["Segment", "Tracks", "TrackEntry", "Audio", "Emphasis"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "Audio",
+        "Emphasis"
+      ],
       "range": "0=No emphasis, 1=CD audio, 2=reserved, 3=CCIT J.17",
       "editable": null,
       "description": "Type d'emphase audio appliquée."
@@ -1680,7 +2304,12 @@
       "multiple": false,
       "default": null,
       "parent": "TrackEntry",
-      "path": ["Segment", "Tracks", "TrackEntry", "ContentEncodings"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "ContentEncodings"
+      ],
       "range": null,
       "editable": null,
       "description": "Conteneur de paramètres de compression ou chiffrement de piste."
@@ -1694,7 +2323,13 @@
       "multiple": true,
       "default": null,
       "parent": "ContentEncodings",
-      "path": ["Segment", "Tracks", "TrackEntry", "ContentEncodings", "ContentEncoding"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "ContentEncodings",
+        "ContentEncoding"
+      ],
       "range": null,
       "editable": null,
       "description": "Un mécanisme de compression ou chiffrement."
@@ -1708,7 +2343,14 @@
       "multiple": false,
       "default": 0,
       "parent": "ContentEncoding",
-      "path": ["Segment", "Tracks", "TrackEntry", "ContentEncodings", "ContentEncoding", "ContentEncodingOrder"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "ContentEncodings",
+        "ContentEncoding",
+        "ContentEncodingOrder"
+      ],
       "range": null,
       "editable": null,
       "description": "Ordre d'application des encodages (0 = le premier appliqué)."
@@ -1722,7 +2364,14 @@
       "multiple": false,
       "default": 1,
       "parent": "ContentEncoding",
-      "path": ["Segment", "Tracks", "TrackEntry", "ContentEncodings", "ContentEncoding", "ContentEncodingScope"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "ContentEncodings",
+        "ContentEncoding",
+        "ContentEncodingScope"
+      ],
       "range": "1=frames, 2=CodecPrivate, 4=next ContentEncoding",
       "editable": null,
       "description": "Portée des données affectées par cet encodage."
@@ -1736,7 +2385,14 @@
       "multiple": false,
       "default": 0,
       "parent": "ContentEncoding",
-      "path": ["Segment", "Tracks", "TrackEntry", "ContentEncodings", "ContentEncoding", "ContentEncodingType"],
+      "path": [
+        "Segment",
+        "Tracks",
+        "TrackEntry",
+        "ContentEncodings",
+        "ContentEncoding",
+        "ContentEncodingType"
+      ],
       "range": "0=compression, 1=encryption",
       "editable": null,
       "description": "Type d'encodage (compression ou chiffrement)."
@@ -1750,7 +2406,10 @@
       "multiple": false,
       "default": null,
       "parent": "Segment",
-      "path": ["Segment", "Cues"],
+      "path": [
+        "Segment",
+        "Cues"
+      ],
       "range": null,
       "editable": null,
       "description": "Index de seek accéléré pour les Clusters — essentiel pour les fichiers sans SeekHead."
@@ -1764,7 +2423,11 @@
       "multiple": true,
       "default": null,
       "parent": "Cues",
-      "path": ["Segment", "Cues", "CuePoint"],
+      "path": [
+        "Segment",
+        "Cues",
+        "CuePoint"
+      ],
       "range": null,
       "editable": null,
       "description": "Entrée de seek pour un timestamp donné."
@@ -1778,7 +2441,12 @@
       "multiple": false,
       "default": null,
       "parent": "CuePoint",
-      "path": ["Segment", "Cues", "CuePoint", "CueTime"],
+      "path": [
+        "Segment",
+        "Cues",
+        "CuePoint",
+        "CueTime"
+      ],
       "range": null,
       "editable": null,
       "description": "Timestamp du point de seek."
@@ -1792,7 +2460,12 @@
       "multiple": true,
       "default": null,
       "parent": "CuePoint",
-      "path": ["Segment", "Cues", "CuePoint", "CueTrackPositions"],
+      "path": [
+        "Segment",
+        "Cues",
+        "CuePoint",
+        "CueTrackPositions"
+      ],
       "range": null,
       "editable": null,
       "description": "Position d'une piste à ce timestamp."
@@ -1806,7 +2479,13 @@
       "multiple": false,
       "default": null,
       "parent": "CueTrackPositions",
-      "path": ["Segment", "Cues", "CuePoint", "CueTrackPositions", "CueTrack"],
+      "path": [
+        "Segment",
+        "Cues",
+        "CuePoint",
+        "CueTrackPositions",
+        "CueTrack"
+      ],
       "range": null,
       "editable": null,
       "description": "Numéro de la piste ciblée."
@@ -1820,7 +2499,13 @@
       "multiple": false,
       "default": null,
       "parent": "CueTrackPositions",
-      "path": ["Segment", "Cues", "CuePoint", "CueTrackPositions", "CueClusterPosition"],
+      "path": [
+        "Segment",
+        "Cues",
+        "CuePoint",
+        "CueTrackPositions",
+        "CueClusterPosition"
+      ],
       "range": null,
       "editable": null,
       "description": "Position du Cluster en octets depuis le début du payload Segment."
@@ -1834,7 +2519,13 @@
       "multiple": false,
       "default": null,
       "parent": "CueTrackPositions",
-      "path": ["Segment", "Cues", "CuePoint", "CueTrackPositions", "CueRelativePosition"],
+      "path": [
+        "Segment",
+        "Cues",
+        "CuePoint",
+        "CueTrackPositions",
+        "CueRelativePosition"
+      ],
       "range": null,
       "editable": null,
       "description": "Position relative du bloc dans le Cluster."
@@ -1848,7 +2539,13 @@
       "multiple": false,
       "default": null,
       "parent": "CueTrackPositions",
-      "path": ["Segment", "Cues", "CuePoint", "CueTrackPositions", "CueDuration"],
+      "path": [
+        "Segment",
+        "Cues",
+        "CuePoint",
+        "CueTrackPositions",
+        "CueDuration"
+      ],
       "range": null,
       "editable": null,
       "description": "Durée du bloc en unités de TimestampScale."
@@ -1862,7 +2559,13 @@
       "multiple": false,
       "default": null,
       "parent": "CueTrackPositions",
-      "path": ["Segment", "Cues", "CuePoint", "CueTrackPositions", "CueBlockNumber"],
+      "path": [
+        "Segment",
+        "Cues",
+        "CuePoint",
+        "CueTrackPositions",
+        "CueBlockNumber"
+      ],
       "range": null,
       "editable": null,
       "description": "Numéro du bloc dans le Cluster."
@@ -1876,7 +2579,10 @@
       "multiple": false,
       "default": null,
       "parent": "Segment",
-      "path": ["Segment", "Attachments"],
+      "path": [
+        "Segment",
+        "Attachments"
+      ],
       "range": null,
       "editable": null,
       "description": "Conteneur de fichiers attachés (polices, covers, sous-titres DVDNAV…)."
@@ -1890,7 +2596,11 @@
       "multiple": true,
       "default": null,
       "parent": "Attachments",
-      "path": ["Segment", "Attachments", "AttachedFile"],
+      "path": [
+        "Segment",
+        "Attachments",
+        "AttachedFile"
+      ],
       "range": null,
       "editable": null,
       "description": "Un fichier attaché."
@@ -1904,7 +2614,12 @@
       "multiple": false,
       "default": null,
       "parent": "AttachedFile",
-      "path": ["Segment", "Attachments", "AttachedFile", "FileDescription"],
+      "path": [
+        "Segment",
+        "Attachments",
+        "AttachedFile",
+        "FileDescription"
+      ],
       "range": null,
       "editable": null,
       "description": "Description lisible du fichier attaché."
@@ -1918,7 +2633,12 @@
       "multiple": false,
       "default": null,
       "parent": "AttachedFile",
-      "path": ["Segment", "Attachments", "AttachedFile", "FileName"],
+      "path": [
+        "Segment",
+        "Attachments",
+        "AttachedFile",
+        "FileName"
+      ],
       "range": null,
       "editable": null,
       "description": "Nom de fichier de la pièce jointe."
@@ -1932,7 +2652,12 @@
       "multiple": false,
       "default": null,
       "parent": "AttachedFile",
-      "path": ["Segment", "Attachments", "AttachedFile", "FileMediaType"],
+      "path": [
+        "Segment",
+        "Attachments",
+        "AttachedFile",
+        "FileMediaType"
+      ],
       "range": null,
       "editable": null,
       "description": "Type MIME RFC 6838 du fichier attaché (ex. \"image/jpeg\", \"font/ttf\")."
@@ -1946,7 +2671,12 @@
       "multiple": false,
       "default": null,
       "parent": "AttachedFile",
-      "path": ["Segment", "Attachments", "AttachedFile", "FileData"],
+      "path": [
+        "Segment",
+        "Attachments",
+        "AttachedFile",
+        "FileData"
+      ],
       "range": null,
       "editable": null,
       "description": "Contenu binaire du fichier attaché."
@@ -1960,7 +2690,12 @@
       "multiple": false,
       "default": null,
       "parent": "AttachedFile",
-      "path": ["Segment", "Attachments", "AttachedFile", "FileUID"],
+      "path": [
+        "Segment",
+        "Attachments",
+        "AttachedFile",
+        "FileUID"
+      ],
       "range": ">0",
       "editable": null,
       "description": "Identifiant unique du fichier attaché (référencé par AttachmentLink)."
@@ -1974,7 +2709,12 @@
       "multiple": false,
       "default": null,
       "parent": "AttachedFile",
-      "path": ["Segment", "Attachments", "AttachedFile", "FileUsedStartTime"],
+      "path": [
+        "Segment",
+        "Attachments",
+        "AttachedFile",
+        "FileUsedStartTime"
+      ],
       "range": null,
       "editable": null,
       "description": "Timestamp de début d'utilisation (ex. police de sous-titres active à partir de ce moment)."
@@ -1988,7 +2728,12 @@
       "multiple": false,
       "default": null,
       "parent": "AttachedFile",
-      "path": ["Segment", "Attachments", "AttachedFile", "FileUsedEndTime"],
+      "path": [
+        "Segment",
+        "Attachments",
+        "AttachedFile",
+        "FileUsedEndTime"
+      ],
       "range": null,
       "editable": null,
       "description": "Timestamp de fin d'utilisation."
@@ -2002,7 +2747,10 @@
       "multiple": false,
       "default": null,
       "parent": "Segment",
-      "path": ["Segment", "Chapters"],
+      "path": [
+        "Segment",
+        "Chapters"
+      ],
       "range": null,
       "editable": null,
       "description": "Conteneur de définitions de chapitres et d'éditions."
@@ -2016,7 +2764,11 @@
       "multiple": true,
       "default": null,
       "parent": "Chapters",
-      "path": ["Segment", "Chapters", "EditionEntry"],
+      "path": [
+        "Segment",
+        "Chapters",
+        "EditionEntry"
+      ],
       "range": null,
       "editable": null,
       "description": "Une édition de chapitres (plusieurs ordres de lecture possibles)."
@@ -2030,7 +2782,12 @@
       "multiple": false,
       "default": null,
       "parent": "EditionEntry",
-      "path": ["Segment", "Chapters", "EditionEntry", "EditionUID"],
+      "path": [
+        "Segment",
+        "Chapters",
+        "EditionEntry",
+        "EditionUID"
+      ],
       "range": ">0",
       "editable": null,
       "description": "Identifiant unique de l'édition."
@@ -2044,7 +2801,12 @@
       "multiple": false,
       "default": 0,
       "parent": "EditionEntry",
-      "path": ["Segment", "Chapters", "EditionEntry", "EditionFlagHidden"],
+      "path": [
+        "Segment",
+        "Chapters",
+        "EditionEntry",
+        "EditionFlagHidden"
+      ],
       "range": "0–1",
       "editable": null,
       "description": "Edition masquée (1) ou visible (0)."
@@ -2058,7 +2820,12 @@
       "multiple": false,
       "default": 0,
       "parent": "EditionEntry",
-      "path": ["Segment", "Chapters", "EditionEntry", "EditionFlagDefault"],
+      "path": [
+        "Segment",
+        "Chapters",
+        "EditionEntry",
+        "EditionFlagDefault"
+      ],
       "range": "0–1",
       "editable": null,
       "description": "Edition par défaut (1 au maximum par Segment)."
@@ -2072,7 +2839,12 @@
       "multiple": false,
       "default": 0,
       "parent": "EditionEntry",
-      "path": ["Segment", "Chapters", "EditionEntry", "EditionFlagOrdered"],
+      "path": [
+        "Segment",
+        "Chapters",
+        "EditionEntry",
+        "EditionFlagOrdered"
+      ],
       "range": "0–1",
       "editable": null,
       "description": "Lecture ordonnée des chapitres (1 = les chapitres sont joués dans l'ordre défini)."
@@ -2086,7 +2858,12 @@
       "multiple": true,
       "default": null,
       "parent": "EditionEntry",
-      "path": ["Segment", "Chapters", "EditionEntry", "EditionDisplay"],
+      "path": [
+        "Segment",
+        "Chapters",
+        "EditionEntry",
+        "EditionDisplay"
+      ],
       "range": null,
       "editable": null,
       "description": "Nom d'affichage localisé de l'édition."
@@ -2100,7 +2877,13 @@
       "multiple": false,
       "default": null,
       "parent": "EditionDisplay",
-      "path": ["Segment", "Chapters", "EditionEntry", "EditionDisplay", "EditionString"],
+      "path": [
+        "Segment",
+        "Chapters",
+        "EditionEntry",
+        "EditionDisplay",
+        "EditionString"
+      ],
       "range": null,
       "editable": null,
       "description": "Nom de l'édition pour la langue spécifiée."
@@ -2114,7 +2897,13 @@
       "multiple": true,
       "default": null,
       "parent": "EditionDisplay",
-      "path": ["Segment", "Chapters", "EditionEntry", "EditionDisplay", "EditionLanguageIETF"],
+      "path": [
+        "Segment",
+        "Chapters",
+        "EditionEntry",
+        "EditionDisplay",
+        "EditionLanguageIETF"
+      ],
       "range": null,
       "editable": null,
       "description": "Langue BCP-47 du nom d'édition."
@@ -2128,7 +2917,12 @@
       "multiple": true,
       "default": null,
       "parent": "EditionEntry",
-      "path": ["Segment", "Chapters", "EditionEntry", "ChapterAtom"],
+      "path": [
+        "Segment",
+        "Chapters",
+        "EditionEntry",
+        "ChapterAtom"
+      ],
       "range": null,
       "editable": null,
       "description": "Définition d'un chapitre — nestable (ChapterAtom peut contenir d'autres ChapterAtom)."
@@ -2142,7 +2936,13 @@
       "multiple": false,
       "default": null,
       "parent": "ChapterAtom",
-      "path": ["Segment", "Chapters", "EditionEntry", "ChapterAtom", "ChapterUID"],
+      "path": [
+        "Segment",
+        "Chapters",
+        "EditionEntry",
+        "ChapterAtom",
+        "ChapterUID"
+      ],
       "range": ">0",
       "editable": null,
       "description": "Identifiant unique du chapitre."
@@ -2156,7 +2956,13 @@
       "multiple": false,
       "default": null,
       "parent": "ChapterAtom",
-      "path": ["Segment", "Chapters", "EditionEntry", "ChapterAtom", "ChapterStringUID"],
+      "path": [
+        "Segment",
+        "Chapters",
+        "EditionEntry",
+        "ChapterAtom",
+        "ChapterStringUID"
+      ],
       "range": null,
       "editable": null,
       "description": "UID textuel du chapitre (compatible WebVTT)."
@@ -2170,7 +2976,13 @@
       "multiple": false,
       "default": null,
       "parent": "ChapterAtom",
-      "path": ["Segment", "Chapters", "EditionEntry", "ChapterAtom", "ChapterTimeStart"],
+      "path": [
+        "Segment",
+        "Chapters",
+        "EditionEntry",
+        "ChapterAtom",
+        "ChapterTimeStart"
+      ],
       "range": null,
       "editable": null,
       "description": "Timestamp de début du chapitre en unités de TimestampScale."
@@ -2184,7 +2996,13 @@
       "multiple": false,
       "default": null,
       "parent": "ChapterAtom",
-      "path": ["Segment", "Chapters", "EditionEntry", "ChapterAtom", "ChapterTimeEnd"],
+      "path": [
+        "Segment",
+        "Chapters",
+        "EditionEntry",
+        "ChapterAtom",
+        "ChapterTimeEnd"
+      ],
       "range": null,
       "editable": null,
       "description": "Timestamp de fin du chapitre."
@@ -2198,7 +3016,13 @@
       "multiple": false,
       "default": 0,
       "parent": "ChapterAtom",
-      "path": ["Segment", "Chapters", "EditionEntry", "ChapterAtom", "ChapterFlagHidden"],
+      "path": [
+        "Segment",
+        "Chapters",
+        "EditionEntry",
+        "ChapterAtom",
+        "ChapterFlagHidden"
+      ],
       "range": "0–1",
       "editable": null,
       "description": "Chapitre masqué (1) ou visible (0)."
@@ -2212,7 +3036,13 @@
       "multiple": false,
       "default": 1,
       "parent": "ChapterAtom",
-      "path": ["Segment", "Chapters", "EditionEntry", "ChapterAtom", "ChapterFlagEnabled"],
+      "path": [
+        "Segment",
+        "Chapters",
+        "EditionEntry",
+        "ChapterAtom",
+        "ChapterFlagEnabled"
+      ],
       "range": "0–1",
       "editable": null,
       "description": "Chapitre activé (1) ou désactivé (0)."
@@ -2226,7 +3056,13 @@
       "multiple": false,
       "default": null,
       "parent": "ChapterAtom",
-      "path": ["Segment", "Chapters", "EditionEntry", "ChapterAtom", "ChapterSkipType"],
+      "path": [
+        "Segment",
+        "Chapters",
+        "EditionEntry",
+        "ChapterAtom",
+        "ChapterSkipType"
+      ],
       "range": "0=no skip, 1=opening credits, 2=end credits, 3=recap, 4=next preview, 5=preview, 6=advertisement",
       "editable": null,
       "description": "Type de séquence skipable (générique, récap…)."
@@ -2240,7 +3076,13 @@
       "multiple": true,
       "default": null,
       "parent": "ChapterAtom",
-      "path": ["Segment", "Chapters", "EditionEntry", "ChapterAtom", "ChapterDisplay"],
+      "path": [
+        "Segment",
+        "Chapters",
+        "EditionEntry",
+        "ChapterAtom",
+        "ChapterDisplay"
+      ],
       "range": null,
       "editable": null,
       "description": "Nom d'affichage localisé du chapitre."
@@ -2254,7 +3096,14 @@
       "multiple": false,
       "default": null,
       "parent": "ChapterDisplay",
-      "path": ["Segment", "Chapters", "EditionEntry", "ChapterAtom", "ChapterDisplay", "ChapString"],
+      "path": [
+        "Segment",
+        "Chapters",
+        "EditionEntry",
+        "ChapterAtom",
+        "ChapterDisplay",
+        "ChapString"
+      ],
       "range": null,
       "editable": null,
       "description": "Titre du chapitre pour la langue spécifiée."
@@ -2268,7 +3117,14 @@
       "multiple": true,
       "default": "eng",
       "parent": "ChapterDisplay",
-      "path": ["Segment", "Chapters", "EditionEntry", "ChapterAtom", "ChapterDisplay", "ChapLanguage"],
+      "path": [
+        "Segment",
+        "Chapters",
+        "EditionEntry",
+        "ChapterAtom",
+        "ChapterDisplay",
+        "ChapLanguage"
+      ],
       "range": null,
       "editable": null,
       "description": "Code langue Matroska (ISO 639-2) du titre de chapitre."
@@ -2282,7 +3138,14 @@
       "multiple": true,
       "default": null,
       "parent": "ChapterDisplay",
-      "path": ["Segment", "Chapters", "EditionEntry", "ChapterAtom", "ChapterDisplay", "ChapLanguageBCP47"],
+      "path": [
+        "Segment",
+        "Chapters",
+        "EditionEntry",
+        "ChapterAtom",
+        "ChapterDisplay",
+        "ChapLanguageBCP47"
+      ],
       "range": null,
       "editable": null,
       "description": "Code langue BCP-47 du titre de chapitre (Matroska v4+)."
@@ -2296,7 +3159,14 @@
       "multiple": true,
       "default": null,
       "parent": "ChapterDisplay",
-      "path": ["Segment", "Chapters", "EditionEntry", "ChapterAtom", "ChapterDisplay", "ChapCountry"],
+      "path": [
+        "Segment",
+        "Chapters",
+        "EditionEntry",
+        "ChapterAtom",
+        "ChapterDisplay",
+        "ChapCountry"
+      ],
       "range": null,
       "editable": null,
       "description": "Code pays Matroska associé au titre de chapitre."
@@ -2310,7 +3180,10 @@
       "multiple": true,
       "default": null,
       "parent": "Segment",
-      "path": ["Segment", "Tags"],
+      "path": [
+        "Segment",
+        "Tags"
+      ],
       "range": null,
       "editable": null,
       "description": "Conteneur de métadonnées Tag (titre de film, acteurs, TMDB_ID…). Peut apparaître plusieurs fois."
@@ -2324,7 +3197,11 @@
       "multiple": true,
       "default": null,
       "parent": "Tags",
-      "path": ["Segment", "Tags", "Tag"],
+      "path": [
+        "Segment",
+        "Tags",
+        "Tag"
+      ],
       "range": null,
       "editable": null,
       "description": "Un ensemble de tags avec leurs cibles."
@@ -2338,7 +3215,12 @@
       "multiple": false,
       "default": null,
       "parent": "Tag",
-      "path": ["Segment", "Tags", "Tag", "Targets"],
+      "path": [
+        "Segment",
+        "Tags",
+        "Tag",
+        "Targets"
+      ],
       "range": null,
       "editable": null,
       "description": "Spécification des cibles du tag (Segment entier, piste, chapitre ou pièce jointe)."
@@ -2352,7 +3234,13 @@
       "multiple": false,
       "default": 50,
       "parent": "Targets",
-      "path": ["Segment", "Tags", "Tag", "Targets", "TargetTypeValue"],
+      "path": [
+        "Segment",
+        "Tags",
+        "Tag",
+        "Targets",
+        "TargetTypeValue"
+      ],
       "range": "10=shot, 20=scene, 30=chapter, 40=part, 50=album/movie/concert, 60=edition/issue, 70=collection",
       "editable": null,
       "description": "Niveau logique de la cible (50 = film/album, valeur par défaut)."
@@ -2366,7 +3254,13 @@
       "multiple": false,
       "default": null,
       "parent": "Targets",
-      "path": ["Segment", "Tags", "Tag", "Targets", "TargetType"],
+      "path": [
+        "Segment",
+        "Tags",
+        "Tag",
+        "Targets",
+        "TargetType"
+      ],
       "range": null,
       "editable": null,
       "description": "Nom textuel du niveau de cible (ex. \"MOVIE\", \"ALBUM\")."
@@ -2380,7 +3274,13 @@
       "multiple": true,
       "default": 0,
       "parent": "Targets",
-      "path": ["Segment", "Tags", "Tag", "Targets", "TagTrackUID"],
+      "path": [
+        "Segment",
+        "Tags",
+        "Tag",
+        "Targets",
+        "TagTrackUID"
+      ],
       "range": null,
       "editable": null,
       "description": "TrackUID cible (0 = toutes les pistes)."
@@ -2394,7 +3294,13 @@
       "multiple": true,
       "default": 0,
       "parent": "Targets",
-      "path": ["Segment", "Tags", "Tag", "Targets", "TagEditionUID"],
+      "path": [
+        "Segment",
+        "Tags",
+        "Tag",
+        "Targets",
+        "TagEditionUID"
+      ],
       "range": null,
       "editable": null,
       "description": "EditionUID cible (0 = toutes les éditions)."
@@ -2408,7 +3314,13 @@
       "multiple": true,
       "default": 0,
       "parent": "Targets",
-      "path": ["Segment", "Tags", "Tag", "Targets", "TagChapterUID"],
+      "path": [
+        "Segment",
+        "Tags",
+        "Tag",
+        "Targets",
+        "TagChapterUID"
+      ],
       "range": null,
       "editable": null,
       "description": "ChapterUID cible (0 = tous les chapitres)."
@@ -2422,7 +3334,13 @@
       "multiple": true,
       "default": 0,
       "parent": "Targets",
-      "path": ["Segment", "Tags", "Tag", "Targets", "TagAttachmentUID"],
+      "path": [
+        "Segment",
+        "Tags",
+        "Tag",
+        "Targets",
+        "TagAttachmentUID"
+      ],
       "range": null,
       "editable": null,
       "description": "FileUID cible (0 = toutes les pièces jointes)."
@@ -2436,7 +3354,12 @@
       "multiple": true,
       "default": null,
       "parent": "Tag",
-      "path": ["Segment", "Tags", "Tag", "SimpleTag"],
+      "path": [
+        "Segment",
+        "Tags",
+        "Tag",
+        "SimpleTag"
+      ],
       "range": null,
       "editable": null,
       "description": "Paire nom/valeur d'un tag — nestable (SimpleTag peut contenir d'autres SimpleTag)."
@@ -2450,7 +3373,13 @@
       "multiple": false,
       "default": null,
       "parent": "SimpleTag",
-      "path": ["Segment", "Tags", "Tag", "SimpleTag", "TagName"],
+      "path": [
+        "Segment",
+        "Tags",
+        "Tag",
+        "SimpleTag",
+        "TagName"
+      ],
       "range": null,
       "editable": null,
       "description": "Nom du tag (ex. \"TITLE\", \"TMDB_ID\", \"MUXING_APPLICATION\")."
@@ -2464,7 +3393,13 @@
       "multiple": false,
       "default": "und",
       "parent": "SimpleTag",
-      "path": ["Segment", "Tags", "Tag", "SimpleTag", "TagLanguage"],
+      "path": [
+        "Segment",
+        "Tags",
+        "Tag",
+        "SimpleTag",
+        "TagLanguage"
+      ],
       "range": null,
       "editable": null,
       "description": "Code langue Matroska (ISO 639-2) de la valeur du tag."
@@ -2478,7 +3413,13 @@
       "multiple": false,
       "default": null,
       "parent": "SimpleTag",
-      "path": ["Segment", "Tags", "Tag", "SimpleTag", "TagLanguageBCP47"],
+      "path": [
+        "Segment",
+        "Tags",
+        "Tag",
+        "SimpleTag",
+        "TagLanguageBCP47"
+      ],
       "range": null,
       "editable": null,
       "description": "Code langue BCP-47 de la valeur du tag (Matroska v4+)."
@@ -2492,7 +3433,13 @@
       "multiple": false,
       "default": 1,
       "parent": "SimpleTag",
-      "path": ["Segment", "Tags", "Tag", "SimpleTag", "TagDefault"],
+      "path": [
+        "Segment",
+        "Tags",
+        "Tag",
+        "SimpleTag",
+        "TagDefault"
+      ],
       "range": "0–1",
       "editable": null,
       "description": "Tag par défaut pour sa langue (1 = valeur à présenter en priorité)."
@@ -2506,7 +3453,13 @@
       "multiple": false,
       "default": null,
       "parent": "SimpleTag",
-      "path": ["Segment", "Tags", "Tag", "SimpleTag", "TagString"],
+      "path": [
+        "Segment",
+        "Tags",
+        "Tag",
+        "SimpleTag",
+        "TagString"
+      ],
       "range": null,
       "editable": null,
       "description": "Valeur textuelle du tag (ex. \"Inception\", \"tt1375666\")."
@@ -2520,7 +3473,13 @@
       "multiple": false,
       "default": null,
       "parent": "SimpleTag",
-      "path": ["Segment", "Tags", "Tag", "SimpleTag", "TagBinary"],
+      "path": [
+        "Segment",
+        "Tags",
+        "Tag",
+        "SimpleTag",
+        "TagBinary"
+      ],
       "range": null,
       "editable": null,
       "description": "Valeur binaire du tag (ex. miniature)."
@@ -2534,10 +3493,243 @@
       "multiple": true,
       "default": null,
       "parent": "Segment",
-      "path": ["Segment", "Cluster"],
+      "path": [
+        "Segment",
+        "Cluster"
+      ],
       "range": null,
       "editable": null,
-      "description": "Conteneur de blocs médias — constitue l'essentiel de la taille d'un fichier MKV. Ne pas modifier en édition de header."
+      "description": "Conteneur de blocs médias — constitue l'essentiel de la taille d'un fichier MKV. Ne pas modifier en édition de header.",
+      "children": [
+        {
+          "name": "Timestamp",
+          "id": "0xE7",
+          "level": 2,
+          "type": "uint",
+          "mandatory": true,
+          "multiple": false,
+          "default": null,
+          "parent": "Cluster",
+          "path": [
+            "Segment",
+            "Cluster",
+            "Timestamp"
+          ],
+          "range": null,
+          "editable": null,
+          "description": "Timestamp absolu du cluster, en unités de TimestampScale (= ms par défaut). Tous les blocks du cluster ont leurs offsets relatifs à cette valeur."
+        },
+        {
+          "name": "Position",
+          "id": "0xA7",
+          "level": 2,
+          "type": "uint",
+          "mandatory": false,
+          "multiple": false,
+          "default": null,
+          "parent": "Cluster",
+          "path": [
+            "Segment",
+            "Cluster",
+            "Position"
+          ],
+          "range": null,
+          "editable": null,
+          "description": "Offset (octets) du cluster depuis le début du Segment. Optionnel, déprécié."
+        },
+        {
+          "name": "PrevSize",
+          "id": "0xAB",
+          "level": 2,
+          "type": "uint",
+          "mandatory": false,
+          "multiple": false,
+          "default": null,
+          "parent": "Cluster",
+          "path": [
+            "Segment",
+            "Cluster",
+            "PrevSize"
+          ],
+          "range": null,
+          "editable": null,
+          "description": "Taille du cluster précédent, en octets. Optionnel."
+        },
+        {
+          "name": "SimpleBlock",
+          "id": "0xA3",
+          "level": 2,
+          "type": "binary",
+          "mandatory": false,
+          "multiple": true,
+          "default": null,
+          "parent": "Cluster",
+          "path": [
+            "Segment",
+            "Cluster",
+            "SimpleBlock"
+          ],
+          "range": null,
+          "editable": null,
+          "description": "Bloc simplifié contenant les données vidéo/audio d'une ou plusieurs frames. Header 4 octets minimum : TrackNumber VINT + timestamp relatif (int16 BE) + flags (uint8). Préféré sur Block pour HEVC/AVC en muxing pur."
+        },
+        {
+          "name": "BlockGroup",
+          "id": "0xA0",
+          "level": 2,
+          "type": "master",
+          "mandatory": false,
+          "multiple": true,
+          "default": null,
+          "parent": "Cluster",
+          "path": [
+            "Segment",
+            "Cluster",
+            "BlockGroup"
+          ],
+          "range": null,
+          "editable": null,
+          "description": "Conteneur d'un Block et de ses métadonnées associées (ReferenceBlock, BlockDuration, BlockAdditions). À utiliser quand un SimpleBlock ne suffit pas (ex : block avec durée explicite ou referencing P-frame)."
+        },
+        {
+          "name": "Block",
+          "id": "0xA1",
+          "level": 3,
+          "type": "binary",
+          "mandatory": true,
+          "multiple": false,
+          "default": null,
+          "parent": "BlockGroup",
+          "path": [
+            "Segment",
+            "Cluster",
+            "BlockGroup",
+            "Block"
+          ],
+          "range": null,
+          "editable": null,
+          "description": "Bloc média. Header identique à SimpleBlock mais sans le flag keyframe (porté par BlockGroup via ReferenceBlock)."
+        },
+        {
+          "name": "BlockDuration",
+          "id": "0x9B",
+          "level": 3,
+          "type": "uint",
+          "mandatory": false,
+          "multiple": false,
+          "default": null,
+          "parent": "BlockGroup",
+          "path": [
+            "Segment",
+            "Cluster",
+            "BlockGroup",
+            "BlockDuration"
+          ],
+          "range": null,
+          "editable": null,
+          "description": "Durée du Block en unités de TimestampScale. Requis pour les pistes sans framerate constant, ex VFR."
+        },
+        {
+          "name": "ReferenceBlock",
+          "id": "0xFB",
+          "level": 3,
+          "type": "int",
+          "mandatory": false,
+          "multiple": true,
+          "default": null,
+          "parent": "BlockGroup",
+          "path": [
+            "Segment",
+            "Cluster",
+            "BlockGroup",
+            "ReferenceBlock"
+          ],
+          "range": null,
+          "editable": null,
+          "description": "Timestamp signé d'un block de référence, exprimé relativement au Block courant. Présence ⇒ ce n'est pas un keyframe."
+        },
+        {
+          "name": "BlockAdditions",
+          "id": "0x75A1",
+          "level": 3,
+          "type": "master",
+          "mandatory": false,
+          "multiple": false,
+          "default": null,
+          "parent": "BlockGroup",
+          "path": [
+            "Segment",
+            "Cluster",
+            "BlockGroup",
+            "BlockAdditions"
+          ],
+          "range": null,
+          "editable": null,
+          "description": "Conteneur de données additionnelles attachées au Block (ex : enhancement layer Dolby Vision)."
+        },
+        {
+          "name": "BlockMore",
+          "id": "0xA6",
+          "level": 4,
+          "type": "master",
+          "mandatory": true,
+          "multiple": true,
+          "default": null,
+          "parent": "BlockAdditions",
+          "path": [
+            "Segment",
+            "Cluster",
+            "BlockGroup",
+            "BlockAdditions",
+            "BlockMore"
+          ],
+          "range": null,
+          "editable": null,
+          "description": "Une donnée additionnelle. Doit contenir BlockAddID + BlockAdditional."
+        },
+        {
+          "name": "BlockAddID",
+          "id": "0xEE",
+          "level": 5,
+          "type": "uint",
+          "mandatory": true,
+          "multiple": false,
+          "default": "1",
+          "parent": "BlockMore",
+          "path": [
+            "Segment",
+            "Cluster",
+            "BlockGroup",
+            "BlockAdditions",
+            "BlockMore",
+            "BlockAddID"
+          ],
+          "range": ">= 1",
+          "editable": null,
+          "description": "ID de la donnée additionnelle, lié à BlockAddIDValue de BlockAdditionMapping (Tracks)."
+        },
+        {
+          "name": "BlockAdditional",
+          "id": "0xA5",
+          "level": 5,
+          "type": "binary",
+          "mandatory": true,
+          "multiple": false,
+          "default": null,
+          "parent": "BlockMore",
+          "path": [
+            "Segment",
+            "Cluster",
+            "BlockGroup",
+            "BlockAdditions",
+            "BlockMore",
+            "BlockAdditional"
+          ],
+          "range": null,
+          "editable": null,
+          "description": "Payload binaire de la donnée additionnelle."
+        }
+      ]
     }
   ]
 }

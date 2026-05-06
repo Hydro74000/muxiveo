@@ -96,6 +96,9 @@ class VerboseFileLogger:
         self._file_index = 1
         self._session_bootstrapped = False
         self._error_reported = False
+        self._open_handle = None
+        self._open_handle_path: Path | None = None
+        self._open_handle_size: int = 0
 
     @property
     def enabled(self) -> bool:
@@ -126,12 +129,28 @@ class VerboseFileLogger:
         if current_dir != previous_dir:
             self.reset_session()
             self._error_reported = False
+        elif not self._enabled:
+            self._close_handle()
 
     def reset_session(self) -> None:
+        self._close_handle()
         self._session_file_path = None
         self._session_stamp = None
         self._file_index = 1
         self._session_bootstrapped = False
+
+    def _close_handle(self) -> None:
+        if self._open_handle is not None:
+            try:
+                self._open_handle.close()
+            except OSError:
+                pass
+        self._open_handle = None
+        self._open_handle_path = None
+        self._open_handle_size = 0
+
+    def close(self) -> None:
+        self._close_handle()
 
     def part_path(self, index: int) -> Path:
         logs_dir = self._logs_dir()
@@ -157,22 +176,29 @@ class VerboseFileLogger:
 
     def prepare_target(self, incoming_bytes: int) -> Path:
         path = self.session_path()
-        if path.exists():
+        # Détermine la taille courante. La rotation ne se déclenche que si le
+        # fichier cible existe déjà — sinon on l'écrit tel quel (préserve le
+        # comportement historique : un fichier neuf accepte toujours sa 1re ligne).
+        current_size: int | None = None
+        if self._open_handle is not None and self._open_handle_path == path:
+            current_size = self._open_handle_size
+        elif path.exists():
             try:
                 current_size = path.stat().st_size
             except OSError:
                 current_size = 0
-            if current_size + max(0, incoming_bytes) > self._max_bytes:
-                next_index = self._file_index + 1
-                if next_index > self._max_files:
-                    next_index = 1
-                self._file_index = next_index
-                path = self.part_path(self._file_index)
-                self._session_file_path = path
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+        if current_size is not None and current_size + max(0, incoming_bytes) > self._max_bytes:
+            next_index = self._file_index + 1
+            if next_index > self._max_files:
+                next_index = 1
+            self._file_index = next_index
+            path = self.part_path(self._file_index)
+            self._session_file_path = path
+            self._close_handle()
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
         return path
 
     def append_application_message(self, message: str, level: LogLevel) -> None:
@@ -199,9 +225,20 @@ class VerboseFileLogger:
         encoded = line.encode("utf-8")
         path = self.prepare_target(len(encoded))
         try:
-            with path.open("a", encoding="utf-8") as handle:
-                handle.write(line)
+            if self._open_handle is None or self._open_handle_path != path:
+                self._close_handle()
+                # Buffering ligne (1) : flush sur newline, évite open/close par ligne
+                # tout en gardant les logs visibles en quasi temps réel.
+                self._open_handle = path.open("a", encoding="utf-8", buffering=1)
+                self._open_handle_path = path
+                try:
+                    self._open_handle_size = path.stat().st_size
+                except OSError:
+                    self._open_handle_size = 0
+            self._open_handle.write(line)
+            self._open_handle_size += len(encoded)
         except OSError:
+            self._close_handle()
             if not self._error_reported:
                 self._error_reported = True
                 if self._on_write_error is not None:

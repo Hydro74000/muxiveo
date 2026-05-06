@@ -494,7 +494,11 @@ _APPRUN_ALLINC = textwrap.dedent("""\
 
     # Les outils embarqués ont la priorité sur les outils système
     export PATH="${TOOLS}:${BIN}:${PATH}"
-    export LD_LIBRARY_PATH="${INTERNAL}:${LD_LIBRARY_PATH:-}"
+    # NVEncC : ses libs ffmpeg accompagnantes sont bundlées séparément pour
+    # ne pas écraser celles utilisées par PySide6 / l'app principale.
+    # libcuda.so.1 reste fournie par le driver NVIDIA hôte (non bundlable).
+    NVENCC_LIBS="${TOOLS}/lib_nvencc"
+    export LD_LIBRARY_PATH="${NVENCC_LIBS}:${INTERNAL}:${LD_LIBRARY_PATH:-}"
     export QT_PLUGIN_PATH="${INTERNAL}/PySide6/Qt/plugins"
     export QML2_IMPORT_PATH="${INTERNAL}/PySide6/Qt/qml"
     export APPDIR="${HERE}"
@@ -660,6 +664,72 @@ def _dl_hdr10plus_tool(tools_dir: Path, arch: str) -> None:
     ok("hdr10plus_tool installé")
 
 
+def _dl_nvencc(tools_dir: Path, arch: str) -> None:
+    """Télécharge NVEncC (rigaya) — uniquement x86_64 Linux.
+
+    Note importante : NVEncC dépend de ``libcuda.so.1`` qui est fourni par le
+    driver NVIDIA hôte (non redistribuable). L'AppImage ne bundle PAS libcuda.
+    L'utilisateur doit avoir un driver NVIDIA ≥ 452.39 sur sa machine.
+
+    On utilise le .deb plutôt que le .rpm car ``dpkg-deb -x`` est plus
+    largement disponible (binutils ``ar`` partout). Le .deb contient
+    également des libs ffmpeg statiques qu'on bundle pour résoudre les deps
+    runtime sans contaminer le système hôte.
+    """
+    if arch != "x86_64":
+        warn("NVEncC : pas de build aarch64 disponible chez rigaya — skip.")
+        return
+    step("Téléchargement NVEncC (rigaya/NVEnc)")
+    url = _gh_latest_asset("rigaya/NVEnc", "_amd64.deb")
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        archive = tmp_path / "nvencc.deb"
+        _download(url, archive)
+        # Extraction via dpkg-deb -x (présent dans la plupart des images de build).
+        dpkg_deb = shutil.which("dpkg-deb")
+        if dpkg_deb is None:
+            warn("dpkg-deb introuvable — NVEncC ignoré (installer 'dpkg' dans la build image).")
+            return
+        extract_dir = tmp_path / "nvencc_extracted"
+        extract_dir.mkdir()
+        subprocess.run([dpkg_deb, "-x", str(archive), str(extract_dir)], check=True)
+        # Copie binaire (le .deb installe sous /usr/bin/NVEncC selon la version).
+        binary_candidates = [
+            extract_dir / "usr" / "bin" / "NVEncC",
+            extract_dir / "usr" / "bin" / "nvencc",
+        ]
+        binary = next((p for p in binary_candidates if p.is_file()), None)
+        if binary is None:
+            # Recherche tolérante.
+            found = next(
+                (p for p in extract_dir.rglob("*") if p.is_file()
+                 and p.name.lower() == "nvencc"),
+                None,
+            )
+            binary = found
+        if binary is None:
+            warn("Binaire NVEncC introuvable dans le .deb — skip.")
+            return
+        shutil.copy2(binary, tools_dir / "nvencc")
+        _chmod_x(tools_dir / "nvencc")
+        # Symlink PascalCase pour compat avec la résolution Linux .deb-style.
+        try:
+            (tools_dir / "NVEncC").symlink_to("nvencc")
+        except FileExistsError:
+            pass
+        # Bundle les libs accompagnantes embarquées dans le .deb (libavcodec etc.)
+        # pour ne pas dépendre d'un ffmpeg système avec des versions différentes.
+        # libcuda reste hôte-only — non bundlable légalement.
+        bundled_libs = extract_dir / "usr" / "lib" / "x86_64-linux-gnu"
+        if bundled_libs.is_dir():
+            lib_dest = tools_dir / "lib_nvencc"
+            lib_dest.mkdir(exist_ok=True)
+            for lib in bundled_libs.glob("*.so*"):
+                shutil.copy2(lib, lib_dest / lib.name)
+            info(f"NVEncC libs bundled : {len(list(lib_dest.iterdir()))} fichier(s) .so*")
+    ok("NVEncC embarqué (driver NVIDIA hôte requis pour l'exécution)")
+
+
 def bundle_tools(appdir: Path, arch: str) -> None:
     """Télécharge tous les outils externes et les place dans usr/bin/tools/."""
     step("Téléchargement des outils externes (mode all-inclusive)")
@@ -670,6 +740,7 @@ def bundle_tools(appdir: Path, arch: str) -> None:
     _dl_mediainfo(tools_dir, arch)
     _dl_dovi_tool(tools_dir, arch)
     _dl_hdr10plus_tool(tools_dir, arch)
+    _dl_nvencc(tools_dir, arch)
 
     ok(f"Tous les outils embarqués dans {tools_dir}")
 

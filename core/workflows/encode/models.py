@@ -51,11 +51,17 @@ AttachmentStreamRef = tuple[Path, int]
 
 class QualityMode(str, Enum):
     CRF     = "crf"
+    CQ      = "cq"
     BITRATE = "bitrate"
     SIZE    = "size"
 
     def label(self) -> str:
-        return {"crf": "CRF", "bitrate": "Débit (kbps)", "size": "Taille cible (Mo)"}[self.value]
+        return {
+            "crf": "CRF",
+            "cq": "CQ (qualité HW)",
+            "bitrate": "Débit (kbps)",
+            "size": "Taille cible (Mo)",
+        }[self.value]
 
 AC3_STANDARD_BITRATES_KBPS: list[int] = [
     32, 40, 48, 56, 64, 80, 96, 112,
@@ -185,6 +191,7 @@ class VideoEncodeSettings:
     codec:            str          = "libx265"
     quality_mode:     QualityMode  = QualityMode.CRF
     crf:              int          = 18
+    cq:               int          = 26   # Quality target pour mode CQ (HW only)
     bitrate_kbps:     int          = 5000
     target_size_mb:   int          = 4000
     preset:           str          = "slow"
@@ -192,6 +199,9 @@ class VideoEncodeSettings:
     # Précheck UI: forcer une sortie 8-bit pour les encodeurs H.264
     # quand la source est > 8-bit (appliqué piste par piste).
     force_8bit:       bool         = False
+    # Sortie 10-bit explicite (profile main10/high10 + pix_fmt p010le/yuv420p10le).
+    # Mutuellement exclusif avec force_8bit (qui prend priorité).
+    force_10bit:      bool         = False
     # HDR statique
     inject_hdr_meta:  bool         = False
     master_display:   str          = ""   # ex. "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(40000000,50)"
@@ -200,6 +210,11 @@ class VideoEncodeSettings:
     copy_dv:          bool         = False
     copy_hdr10plus:   bool         = False
     dovi_profile:     str          = "0"
+    # Normalisation expérimentale du bitstream HEVC après injection
+    # HDR dynamique : retire les SEI pic_timing pour rapprocher la
+    # structure SEI des encodes fonctionnels observés.
+    # Le code existe toujours mais le hook workflow est actuellement désactivé.
+    strip_pic_timing_sei: bool     = False
     # Tone mapping
     tonemap_to_sdr:   bool         = False
     tonemap_algorithm: str         = "hable"
@@ -303,10 +318,12 @@ class EncodePreset:
     codec:                      str  = "libx265"
     quality_mode:               str  = QualityMode.CRF.value
     crf:                        int  = 18
+    cq:                         int  = 26
     bitrate_kbps:               int  = 5000
     target_size_mb:             int  = 4000
     preset:                     str  = "slow"
     extra_params:               str  = ""
+    force_10bit:                bool = False
     inject_hdr_meta:            bool = False
     master_display:             str  = ""
     max_cll:                    str  = ""
@@ -320,10 +337,12 @@ class EncodePreset:
             codec=self.codec,
             quality_mode=QualityMode(self.quality_mode),
             crf=self.crf,
+            cq=self.cq,
             bitrate_kbps=self.bitrate_kbps,
             target_size_mb=self.target_size_mb,
             preset=self.preset,
             extra_params=self.extra_params,
+            force_10bit=self.force_10bit,
             inject_hdr_meta=self.inject_hdr_meta,
             master_display=self.master_display,
             max_cll=self.max_cll,

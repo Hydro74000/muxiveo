@@ -1,18 +1,45 @@
 from __future__ import annotations
 
+import json
+import re
 import shutil
+import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from core.subprocess_utils import subprocess_text_kwargs
+
 from core.runner import TaskCancelledError, TaskSignals
 from core.workdir import remove_path
+from core.workflows.encode.domain import should_reinject_static_hdr_metadata
 from core.workflows.encode.models import EncodeConfig, QualityMode
 from core.workflows.encode.planning.track_assembly import build_track_input_paths, resolve_track_assembly
 from core.workflows.encode.planning.plan_models import EncodePlan
+from core.workflows.encode.runtime.frame_count_guard import (
+    FrameCountAuditError,
+    FrameCountGuard,
+)
+from core.workflows.hevc_static_hdr_metadata import inject_static_hdr_sei_file
+from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router
+from core.workflows.encode.runtime.hevc_sei_normalizer import (
+    strip_pic_timing_from_annexb_file,
+)
+from core.workflows.matroska_dovi_block_addition import (
+    DolbyVisionConfigRecord,
+    MatroskaDoviBlockAdditionEditor,
+)
+from core.workflows.matroska_native_muxer import MatroskaNativeMuxer
 from core.workflows.remux_timeline_sync import LiveSyncSession
+
+import dataclasses
+
+
+# Experimental NVENC-specific post-encode normalization kept in-tree for
+# reference, but disabled in the active workflow.
+ENABLE_EXPERIMENTAL_NVENC_SEI_NORMALIZATION = False
 
 
 @dataclass(frozen=True)
@@ -26,6 +53,8 @@ class MetadataInjectRunnerCallbacks:
     build_video_only_two_pass: Callable[[EncodeConfig, Path], list[list[str]]]
     build_video_only_cmd: Callable[[EncodeConfig, Path], list[str]]
     wrap_injected_hevc_for_reconstruction: Callable[..., list[str]]
+    source_is_vfr: Callable[[Path], bool]
+    source_video_dimensions: Callable[[Path], tuple[int, int]]
     build_encode_plan: Callable[[EncodeConfig], EncodePlan]
     source_input_index_map: Callable[[list[Path]], dict[Path, int]]
     prepare_multisource_sync: Callable[..., tuple[dict[tuple[Path, int, str], tuple[int, int]], list[Path | str], LiveSyncSession | None, bool]]
@@ -107,13 +136,126 @@ class MetadataInjectRunner:
                 if video is None:
                     raise ValueError("EncodeConfig.video is required for metadata injection")
 
-                cb.log_step(5, "Extraction des métadonnées dynamiques (DoVi/HDR10+)")
+                # STEP 4-bis : routage P7/P5 → P8.1 si besoin.
+                # Pour les sources DoVi P7 (FEL/MEL) ou P5, on convertit
+                # le bitstream en P8.1 mono-layer avant l'extraction RPU
+                # et l'encode. Sans ça, le BL+EL pose problème côté NVDEC
+                # et le RPU extrait n'est pas cohérent avec le BL encodé.
+                # Pour P8.x → no-op, le config reste tel quel (aucune
+                # étape supplémentaire).
+                effective_config = config
+                p7_router_decision = None
+                if video.copy_dv:
+                    p7_router = DoviP7Router()
+                    mi_video = _load_mediainfo_video(
+                        cb.bins.get("mediainfo", "mediainfo"),
+                        config.source,
+                    )
+                    p7_router_decision = p7_router.analyze(
+                        source=config.source,
+                        mi_video=mi_video,
+                        fallback_to_dovi_tool=True,
+                    )
+                    cb.log_info(
+                        f"Routage DV : {p7_router_decision.reason}"
+                    )
+                    if p7_router_decision.conversion_needed:
+                        cb.log_step(
+                            4,
+                            f"Conversion {p7_router_decision.sub_profile.label} "
+                            f"→ P8.1 (dovi_tool convert)",
+                        )
+                        # `dovi_tool convert` n'accepte que du HEVC annexB
+                        # brut. On extrait depuis le MKV/MP4 source en
+                        # intermédiaire jetable, qui sera supprimé dès la
+                        # conversion terminée pour respecter la contrainte
+                        # « max 2 fichiers vidéo en parallèle ».
+                        annexb_for_convert = tmp / "source_annexb.hevc"
+                        signals.progress.emit("Extraction HEVC annexB pour conversion DoVi…")
+                        _run([
+                            cb.ffmpeg_bin, "-nostdin", "-y",
+                            "-i", str(config.source),
+                            "-map", "0:v:0", "-c", "copy",
+                            "-bsf:v", "hevc_mp4toannexb",
+                            "-f", "hevc", str(annexb_for_convert),
+                        ])
+                        _check()
+                        signals.progress.emit(
+                            f"Conversion {p7_router_decision.sub_profile.label} → P8.1…"
+                        )
+                        converted = p7_router.execute_conversion(
+                            source=annexb_for_convert,
+                            output_dir=tmp,
+                            run_cmd=lambda c: _run(c),
+                            dovi_tool_bin=cb.bins["dovi_tool"],
+                            decision=p7_router_decision,
+                        )
+                        # Annexb extrait n'est plus utile (consommé par convert).
+                        try:
+                            annexb_for_convert.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                        ext_files.append(converted)
+                        # On clone EncodeConfig en redirigeant `source` ET
+                        # `video_tracks[*].source_path` vers le HEVC P8.1.
+                        # `_video_source_path` lit `video.source_path` en
+                        # priorité (config.source n'est utilisé qu'en
+                        # fallback) — sans rebind du source_path, le STEP 5
+                        # ré-extrait le RPU depuis la MKV P7 d'origine et
+                        # injecte un RPU P7 dans un BL P8 → DV cassé en
+                        # lecture (Plex/TV).
+                        # `config` original reste intact pour STEP 8/9
+                        # (timestamps source, audio, subs, chapitres).
+                        rebound_tracks = [
+                            dataclasses.replace(track, source_path=converted)
+                            for track in config.video_tracks
+                        ]
+                        rebound_video = (
+                            dataclasses.replace(config.video, source_path=converted)
+                            if config.video is not None
+                            else None
+                        )
+                        effective_config = dataclasses.replace(
+                            config,
+                            source=converted,
+                            video=rebound_video,
+                            video_tracks=rebound_tracks,
+                        )
+                        _check()
+
+                if video.copy_dv or video.copy_hdr10plus:
+                    cb.log_step(5, "Extraction des métadonnées dynamiques (DoVi/HDR10+)")
+                else:
+                    cb.log_step(5, "Préparation de l'injection HDR statique")
+                # dovi_tool / hdr10plus_tool n'acceptent nativement que MKV ou
+                # HEVC annexB brut. Pour MP4/MOV/TS/..., il faut extraire d'abord
+                # en HEVC annexB via ffmpeg + bsf hevc_mp4toannexb, sinon le
+                # parser HEVC panique sur le VPS.
+                _RAW_HEVC_EXT = {".hevc", ".h265", ".265", ".x265"}
+                meta_src = cb.video_source_path(effective_config)
+                meta_src_ext = meta_src.suffix.lower()
+                needs_annexb = meta_src_ext not in _RAW_HEVC_EXT and meta_src_ext != ".mkv"
+                if needs_annexb and (video.copy_dv or video.copy_hdr10plus):
+                    annexb_src = _alloc("source.hevc", src_size_est)
+                    signals.progress.emit("Extraction HEVC annexB pour outillage DoVi/HDR10+…")
+                    _run([
+                        cb.ffmpeg_bin, "-nostdin", "-y",
+                        "-i", str(meta_src),
+                        "-map", "0:v:0", "-c", "copy",
+                        "-bsf:v", "hevc_mp4toannexb",
+                        "-f", "hevc", str(annexb_src),
+                    ])
+                    _check()
+                    meta_input = annexb_src
+                else:
+                    meta_input = meta_src
+
                 rpu_bin = tmp / "rpu.bin"
                 if video.copy_dv:
                     signals.progress.emit("Extraction RPU Dolby Vision…")
                     _run([
                         cb.bins["dovi_tool"], "extract-rpu",
-                        "-i", str(cb.video_source_path(config)), "-o", str(rpu_bin),
+                        "-i", str(meta_input), "-o", str(rpu_bin),
                     ])
                     _check()
 
@@ -122,26 +264,72 @@ class MetadataInjectRunner:
                     signals.progress.emit("Extraction métadonnées HDR10+…")
                     _run([
                         cb.bins["hdr10plus_tool"], "extract",
-                        str(cb.video_source_path(config)), "-o", str(hdr10p_json),
+                        str(meta_input), "-o", str(hdr10p_json),
                     ])
                     _check()
+
+                if needs_annexb and (video.copy_dv or video.copy_hdr10plus):
+                    _free(meta_input)
 
                 cb.log_step(6, "Encodage vidéo seule (HEVC brut)")
                 enc_hevc = _alloc("enc.hevc", src_size_est)
                 signals.progress.emit("Encodage vidéo…")
                 if video.quality_mode == QualityMode.SIZE:
-                    v_cmds = cb.build_video_only_two_pass(config, enc_hevc)
+                    v_cmds = cb.build_video_only_two_pass(effective_config, enc_hevc)
                     cb.log_info("Passe 1/2 (analyse)…")
                     _run(v_cmds[0])
                     _check()
                     cb.log_info("Passe 2/2 (encodage)…")
                     _run(v_cmds[1])
                 else:
-                    _run(cb.build_video_only_cmd(config, enc_hevc))
+                    _run(cb.build_video_only_cmd(effective_config, enc_hevc))
                 _check()
                 current_hevc = enc_hevc
 
-                cb.log_step(7, "Injection HDR10+ puis DoVi (si demandé)")
+                # Audit frame count : empêche l'injection sur un stream qui
+                # aurait dérapé en frame count (NVENC drop, NVDEC dup, filtre
+                # non frame-preserving). Sans ça, l'injection RPU/HDR10+ se
+                # désaligne silencieusement et on produit un fichier où les
+                # scènes-cuts DV ne tombent plus aux bons endroits.
+                if video.copy_dv or video.copy_hdr10plus:
+                    cb.log_info("Audit alignement frame count (source/encoded/RPU/HDR10+)…")
+                    guard = FrameCountGuard(
+                        mediainfo_bin=cb.bins.get("mediainfo", "mediainfo"),
+                        ffprobe_bin=cb.bins.get("ffprobe", "ffprobe"),
+                        dovi_tool_bin=cb.bins["dovi_tool"],
+                    )
+                    audit = guard.audit(
+                        source=cb.video_source_path(effective_config),
+                        encoded=current_hevc,
+                        rpu_bin=rpu_bin if (video.copy_dv and rpu_bin.exists()) else None,
+                        hdr10p_json=hdr10p_json if (video.copy_hdr10plus and hdr10p_json.exists()) else None,
+                    )
+                    try:
+                        guard.enforce(
+                            audit,
+                            rpu_bin=rpu_bin if (video.copy_dv and rpu_bin.exists()) else None,
+                            hdr10p_json=hdr10p_json if (video.copy_hdr10plus and hdr10p_json.exists()) else None,
+                            on_warn=lambda msg: signals.progress.emit(f"[WARN] {msg}"),
+                            on_info=lambda msg: signals.progress.emit(msg),
+                        )
+                    except FrameCountAuditError as exc:
+                        raise RuntimeError(f"Audit frame count : {exc}") from exc
+                    _check()
+
+                # Si on avait converti P7/P5 → P8.1 en amont, le HEVC
+                # converti a fini son rôle (il a servi d'input à l'extract
+                # RPU/HDR10+ et à l'encode, et l'audit frame count est
+                # passé). On le supprime pour respecter la contrainte
+                # « max 2 fichiers vidéo intermédiaires en parallèle ».
+                if (
+                    p7_router_decision is not None
+                    and p7_router_decision.conversion_needed
+                    and effective_config.source != config.source
+                ):
+                    _free(effective_config.source)
+                    effective_config = config
+
+                cb.log_step(7, "Injection des métadonnées vidéo HDR")
                 if video.copy_hdr10plus and hdr10p_json.exists():
                     cur_size = current_hevc.stat().st_size
                     out_hdr10p = _alloc("enc_hdr10p.hevc", cur_size)
@@ -160,28 +348,131 @@ class MetadataInjectRunner:
                     cur_size = current_hevc.stat().st_size
                     out_dv = _alloc("enc_dv.hevc", cur_size)
                     signals.progress.emit("Injection RPU Dolby Vision…")
-                    _run([
+                    # Si une normalisation P7/P5→P8.1 a effectivement eu
+                    # lieu en amont, on force -m 2 pour que le RPU réinjecté
+                    # soit explicitement tagué P8.1. `inject-rpu` n'accepte
+                    # pas --compat-id : le mode est porté par `-m`.
+                    inject_mode = video.dovi_profile
+                    if (
+                        p7_router_decision is not None
+                        and p7_router_decision.conversion_needed
+                        and inject_mode == "0"
+                    ):
+                        inject_mode = "2"
+                    inject_cmd = [
                         cb.bins["dovi_tool"],
-                        "-m", video.dovi_profile,
+                        "-m", inject_mode,
                         "inject-rpu",
                         "-i", str(current_hevc),
                         "-r", str(rpu_bin),
                         "-o", str(out_dv),
-                    ])
+                    ]
+                    _run(inject_cmd)
                     _free(current_hevc)
                     current_hevc = out_dv
+                    _check()
+
+                if should_reinject_static_hdr_metadata(video):
+                    cur_size = current_hevc.stat().st_size
+                    out_static_hdr = _alloc("enc_hdr_static.hevc", cur_size)
+                    signals.progress.emit("Injection metadonnees HDR statiques…")
+                    static_hdr_result = inject_static_hdr_sei_file(
+                        current_hevc,
+                        out_static_hdr,
+                        master_display=video.master_display,
+                        max_cll=video.max_cll,
+                    )
+                    if static_hdr_result.applied:
+                        _free(current_hevc)
+                        current_hevc = out_static_hdr
+                        signals.progress.emit(
+                            "SEI HDR statiques injectes "
+                            f"sur {static_hdr_result.injected_access_units} access unit(s)."
+                        )
+                    else:
+                        _free(out_static_hdr)
+                    _check()
+
+                if (
+                    ENABLE_EXPERIMENTAL_NVENC_SEI_NORMALIZATION
+                    and bool(getattr(video, "strip_pic_timing_sei", False))
+                ):
+                    cur_size = current_hevc.stat().st_size
+                    out_sei_norm = _alloc("enc_sei_norm.hevc", cur_size)
+                    signals.progress.emit("Normalisation SEI HEVC (suppression pic_timing)…")
+                    cb.log_info("Normalisation expérimentale du flux HEVC : retrait des SEI pic_timing.")
+                    sei_stats = strip_pic_timing_from_annexb_file(current_hevc, out_sei_norm)
+                    if sei_stats.pic_timing_messages_removed > 0:
+                        _free(current_hevc)
+                        current_hevc = out_sei_norm
+                        signals.progress.emit(
+                            "SEI pic_timing retires : "
+                            f"{sei_stats.pic_timing_messages_removed} message(s), "
+                            f"{sei_stats.sei_nals_rewritten} NAL re-ecrit(s), "
+                            f"{sei_stats.sei_nals_dropped} NAL supprime(s)."
+                        )
+                    else:
+                        _free(out_sei_norm)
+                        signals.progress.emit("Aucun SEI pic_timing detecte dans le flux HEVC injecte.")
                     _check()
 
                 cb.log_step(8, "Encapsulation timeline vidéo injectée")
                 wrapped_video = _alloc("enc_wrapped.mkv", current_hevc.stat().st_size)
                 signals.progress.emit("Encapsulation vidéo injectée…")
-                _run(
-                    cb.wrap_injected_hevc_for_reconstruction(
-                        source=config.source,
-                        hevc_input=current_hevc,
-                        mkv_output=wrapped_video,
+                source_is_vfr = bool(cb.source_is_vfr(cb.video_source_path(config)))
+                if source_is_vfr:
+                    # Source VFR : ffmpeg en wrap CFR détruirait les
+                    # timestamps. On utilise le muxer Matroska natif qui
+                    # réutilise les PTS source frame-à-frame.
+                    cb.log_info(
+                        "Source VFR détectée → muxer Matroska natif Python."
                     )
-                )
+                    pixel_width, pixel_height = cb.source_video_dimensions(
+                        cb.video_source_path(config),
+                    )
+                    record_for_muxer = None
+                    if video.copy_dv and rpu_bin.exists():
+                        record_for_muxer = _build_dovi_record_from_rpu(
+                            rpu_bin=rpu_bin,
+                            dovi_tool_bin=cb.bins["dovi_tool"],
+                        )
+                    try:
+                        mux_result = MatroskaNativeMuxer(
+                            ffprobe_bin=cb.bins.get("ffprobe", "ffprobe"),
+                        ).mux(
+                            hevc_input=current_hevc,
+                            source_for_timestamps=cb.video_source_path(config),
+                            output=wrapped_video,
+                            pixel_width=pixel_width,
+                            pixel_height=pixel_height,
+                            dovi_record=record_for_muxer,
+                        )
+                        signals.progress.emit(
+                            f"Muxage natif : {mux_result.frames_written} frames "
+                            f"sur {mux_result.cluster_count} clusters, "
+                            f"durée {mux_result.duration_ms} ms."
+                        )
+                    except Exception as exc:
+                        # Fallback ffmpeg si le muxer natif échoue (ne devrait
+                        # pas arriver mais on garde le pipeline résilient).
+                        signals.progress.emit(
+                            f"[WARN] Muxer natif échoué ({exc}), fallback ffmpeg."
+                        )
+                        _run(
+                            cb.wrap_injected_hevc_for_reconstruction(
+                                source=config.source,
+                                hevc_input=current_hevc,
+                                mkv_output=wrapped_video,
+                            )
+                        )
+                else:
+                    _run(
+                        cb.wrap_injected_hevc_for_reconstruction(
+                            source=config.source,
+                            hevc_input=current_hevc,
+                            mkv_output=wrapped_video,
+                        )
+                    )
                 _free(current_hevc)
                 current_video_input = wrapped_video
                 _check()
@@ -298,6 +589,49 @@ class MetadataInjectRunner:
                 recon_cmd.append(str(config.output))
                 _run(recon_cmd)
 
+                # Post-mux : injection du BlockAdditionMapping DOVI au niveau
+                # conteneur. ffmpeg ne l'écrit pas quand il copie un HEVC brut
+                # (-f hevc → mkv via -c copy). Sans cette signalisation, les
+                # players (mpv gpu-next, Plex, certains TV) ne déclenchent
+                # pas le mode DV même si les NALs RPU sont dans le bytestream.
+                if video.copy_dv and rpu_bin.exists():
+                    cb.log_info("Injection signal Dolby Vision au niveau Matroska…")
+                    forced_compat_id = _resolve_dovi_compat_id(
+                        p7_router_decision=p7_router_decision,
+                        user_dovi_profile=str(video.dovi_profile or "0"),
+                    )
+                    record = _build_dovi_record_from_rpu(
+                        rpu_bin=rpu_bin,
+                        dovi_tool_bin=cb.bins["dovi_tool"],
+                        forced_compat_id=forced_compat_id,
+                    )
+                    if record is not None:
+                        try:
+                            patch_result = MatroskaDoviBlockAdditionEditor().patch(
+                                config.output, record=record,
+                            )
+                            if patch_result.applied:
+                                signals.progress.emit(
+                                    f"BlockAdditionMapping DOVI ajouté "
+                                    f"(track #{patch_result.patched_track_number}, "
+                                    f"Δ {patch_result.bytes_delta:+d} octets)."
+                                )
+                            elif patch_result.skipped:
+                                signals.progress.emit(
+                                    f"Signal DOVI Matroska non modifié : {patch_result.reason}"
+                                )
+                        except Exception as patch_exc:
+                            # On loggue mais on n'échoue pas le workflow : le
+                            # fichier reste lisible, juste sans signal DV.
+                            signals.progress.emit(
+                                f"[WARN] Patch BlockAdditionMapping DOVI échoué : {patch_exc}"
+                            )
+                    else:
+                        signals.progress.emit(
+                            "[WARN] Impossible d'extraire le profil DOVI du RPU "
+                            "pour le signal Matroska."
+                        )
+
                 signals.finished.emit(f"Encodage terminé → {config.output.name}")
 
             except TaskCancelledError:
@@ -330,3 +664,132 @@ class MetadataInjectRunner:
         else:
             _task()
         return signals
+
+
+# ----------------------------------------------------------------------------
+# Helpers de bas niveau
+# ----------------------------------------------------------------------------
+
+
+def _load_mediainfo_video(mediainfo_bin: str, path: Path) -> dict | None:
+    """Charge le track Video du JSON mediainfo, ou None si indisponible."""
+    try:
+        result = subprocess.run(
+            [mediainfo_bin, "--Output=JSON", str(path)],
+            capture_output=True, check=False,
+            **subprocess_text_kwargs(),
+        )
+    except (FileNotFoundError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return None
+    media = data.get("media") or {}
+    for track in media.get("track") or []:
+        if isinstance(track, dict) and track.get("@type") == "Video":
+            return track
+    return None
+
+
+def _build_dovi_record_from_rpu(
+    *,
+    rpu_bin: Path,
+    dovi_tool_bin: str,
+    forced_compat_id: int | None = None,
+) -> DolbyVisionConfigRecord | None:
+    """
+    Interroge ``dovi_tool info -i RPU --summary`` et construit le record DOVI
+    correspondant pour le ``BlockAdditionMapping`` Matroska.
+
+    Renvoie None si dovi_tool est indisponible ou si le summary ne contient
+    pas les champs attendus.
+
+    ``forced_compat_id`` permet d'imposer le ``bl_signal_compat_id`` quand
+    l'appelant connaît la sub-version cible (ex. P7→P8.1 via dovi_tool
+    convert -m 2). ``dovi_tool info --summary`` ne distingue PAS P8.0/P8.1
+    (la sub-version vit dans le container, pas dans le RPU) — sans override
+    on tombait toujours sur compat_id=0 → fichier signalé P8.0 → certaines
+    TV refusent le flux ou tombent en fallback HDR10 cassé.
+    """
+    try:
+        result = subprocess.run(
+            [dovi_tool_bin, "info", "-i", str(rpu_bin), "--summary"],
+            capture_output=True,
+            check=False,
+            **subprocess_text_kwargs(),
+        )
+    except (FileNotFoundError, OSError):
+        return None
+    text = (result.stdout or "") + (result.stderr or "")
+
+    profile_match = re.search(r"Profile\s*:\s*(\d+)(?:\.(\d+))?", text)
+    if not profile_match:
+        return None
+    profile = int(profile_match.group(1))
+    sub_profile = int(profile_match.group(2) or 0)
+
+    if forced_compat_id is not None:
+        compat_id = int(forced_compat_id)
+    else:
+        # bl_signal_compat_id : 1 pour P8.1 (HDR10), 0 pour P8.0, 2 pour P8.2
+        # (P8.4/HLG). On l'extrait préférentiellement de la ligne dédiée si
+        # présente (dovi_tool ≥ 2.x), sinon on déduit du sub_profile.
+        compat_match = re.search(r"compatibility\s*id\s*:\s*(\d+)", text, re.IGNORECASE)
+        if compat_match:
+            compat_id = int(compat_match.group(1))
+        elif profile == 8 and sub_profile > 0:
+            compat_id = sub_profile
+        else:
+            # Profile 8 sans sub : par défaut HDR10-compatible (P8.1).
+            # P8.0 strict est exotique et casse la lecture sur la majorité
+            # des TV/players (pas de fallback HDR10 déclaré).
+            compat_id = 1 if profile == 8 else 0
+
+    level_match = re.search(r"DV\s+Level\s*:\s*(\d+)", text, re.IGNORECASE)
+    level = int(level_match.group(1)) if level_match else 6
+
+    # En sortie de pipeline metadata_inject, on a forcément un stream
+    # mono-layer (le BL est ce que NVENC a encodé) avec RPU réinjecté.
+    return DolbyVisionConfigRecord(
+        profile=profile,
+        level=level,
+        rpu_present=True,
+        el_present=False,
+        bl_present=True,
+        bl_signal_compat_id=max(0, min(15, compat_id)),
+    )
+
+
+def _should_normalize_dovi_profile(user_dovi_profile: str) -> bool:
+    """Retourne True uniquement pour les modes demandant une normalisation P8.x."""
+    return str(user_dovi_profile or "0").strip() == "2"
+
+
+def _resolve_dovi_compat_id(
+    *,
+    p7_router_decision: object | None,
+    user_dovi_profile: str,
+) -> int | None:
+    """
+    Détermine le ``bl_signal_compat_id`` cible pour le BlockAddition Matroska.
+
+    Priorité :
+    1. Si le routeur P7 a converti via -m 2/-m 5 (P7→P8.1) → 1
+    2. Si l'utilisateur a forcé "Normaliser en P8.1" (dovi_profile=2) → 1
+    3. Sinon None → laisse ``_build_dovi_record_from_rpu`` deviner depuis
+       le summary dovi_tool (avec fallback P8.1 si profile=8).
+    """
+    if p7_router_decision is not None and getattr(p7_router_decision, "conversion_needed", False):
+        mode = str(getattr(p7_router_decision, "convert_mode", "") or "")
+        # Modes 2, 3, 5 produisent du P8.1 (HDR10-compatible).
+        # Mode 4 produit du P8.4 (HLG-compatible) → compat_id=2.
+        if mode in {"2", "3", "5"}:
+            return 1
+        if mode == "4":
+            return 2
+    if _should_normalize_dovi_profile(user_dovi_profile):
+        return 1
+    return None

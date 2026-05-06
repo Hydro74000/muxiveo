@@ -178,6 +178,10 @@ class SourceInput:
     selected_attachments:    list[AttachmentInfo]   = field(default_factory=list)
     attachment_count:        int                    = 0   # total dans le fichier source
     copy_tags:               bool                   = False
+    #: Indique que ce conteneur expose des chapitres exploitables (>0). Permet
+    #: de cibler -map_chapters sur la bonne source quand keep_chapters=True et
+    #: que la première source n'en contient pas.
+    has_chapters:            bool                   = False
 
 
 # =============================================================================
@@ -205,6 +209,10 @@ class RemuxConfig:
     #: list  → un fichier ffmetadata temporaire est généré depuis ces entrées ;
     #:         les chapitres sources sont ignorés (-map_chapters -1).
     chapter_overrides:   list | None   = None  # list[ChapterEntry] | None
+    #: Index 0-based de la source à utiliser pour `-map_chapters` quand
+    #: `keep_chapters=True` et qu'aucun override n'est défini. None → fallback
+    #: automatique sur la première source dont `has_chapters=True`.
+    chapter_source_index: int | None   = None
     extra_attachments:   list          = field(default_factory=list)  # list[Path]
     work_dir:            Path | None   = None
     file_title:          str           = ""      # balise Title du segment de sortie

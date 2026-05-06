@@ -407,6 +407,91 @@ class TestRemuxWorkflowBuildCommand:
         assert cmd[cmd.index("-map_metadata") + 1] == "1"
         assert cmd[cmd.index("-map_chapters") + 1] == "1"
 
+    def test_build_command_keeps_chapters_targets_first_source_with_chapters(self, tmp_path):
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        src_mp4 = tmp_path / "video.mp4"
+        src_mkv = tmp_path / "with_chapters.mkv"
+        src_extra = tmp_path / "audio.mkv"
+        src_mp4.touch()
+        src_mkv.touch()
+        src_extra.touch()
+
+        cfg = RemuxConfig(
+            sources=[
+                SourceInput(path=src_mp4, file_index=0, tracks=[_track(0, "video")], has_chapters=False),
+                SourceInput(path=src_mkv, file_index=1, tracks=[_track(1, "audio")], has_chapters=True),
+                SourceInput(path=src_extra, file_index=2, tracks=[_track(2, "subtitle")], has_chapters=False),
+            ],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0), (1, 1), (2, 2)],
+            keep_chapters=True,
+        )
+
+        cmd = wf.build_command(cfg)
+        assert cmd[cmd.index("-map_chapters") + 1] == "1"
+
+    def test_build_command_uses_explicit_chapter_source_index(self, tmp_path):
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        src_a = tmp_path / "a.mkv"
+        src_b = tmp_path / "b.mkv"
+        src_c = tmp_path / "c.mkv"
+        src_a.touch()
+        src_b.touch()
+        src_c.touch()
+
+        # 3 sources avec chapitres : on cible explicitement la 3e (index 2).
+        cfg = RemuxConfig(
+            sources=[
+                SourceInput(path=src_a, file_index=0, tracks=[_track(0, "video")], has_chapters=True),
+                SourceInput(path=src_b, file_index=1, tracks=[_track(1, "audio")], has_chapters=True),
+                SourceInput(path=src_c, file_index=2, tracks=[_track(2, "subtitle")], has_chapters=True),
+            ],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0), (1, 1), (2, 2)],
+            keep_chapters=True,
+            chapter_source_index=2,
+        )
+
+        cmd = wf.build_command(cfg)
+        assert cmd[cmd.index("-map_chapters") + 1] == "2"
+
+    def test_build_command_explicit_chapter_source_index_invalid_falls_back(self, tmp_path):
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        src_a = tmp_path / "a.mkv"
+        src_b = tmp_path / "b.mkv"
+        src_a.touch()
+        src_b.touch()
+
+        # chapter_source_index=0 désigne une source sans chapitres → fallback sur la 1re porteuse.
+        cfg = RemuxConfig(
+            sources=[
+                SourceInput(path=src_a, file_index=0, tracks=[_track(0, "video")], has_chapters=False),
+                SourceInput(path=src_b, file_index=1, tracks=[_track(1, "audio")], has_chapters=True),
+            ],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0), (1, 1)],
+            keep_chapters=True,
+            chapter_source_index=0,
+        )
+
+        cmd = wf.build_command(cfg)
+        assert cmd[cmd.index("-map_chapters") + 1] == "1"
+
+    def test_build_command_keeps_chapters_falls_back_to_input_zero(self, tmp_path):
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        src = tmp_path / "in.mkv"
+        src.touch()
+
+        cfg = RemuxConfig(
+            sources=[SourceInput(path=src, file_index=0, tracks=[_track(0, "video")])],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0)],
+            keep_chapters=True,
+        )
+
+        cmd = wf.build_command(cfg)
+        assert cmd[cmd.index("-map_chapters") + 1] == "0"
+
     def test_build_command_forces_matroska_demuxer_for_sync_inputs(self, tmp_path):
         wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src = tmp_path / "in.mkv"

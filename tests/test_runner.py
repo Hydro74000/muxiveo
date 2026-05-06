@@ -37,6 +37,7 @@ from __future__ import annotations
 import sys
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 
 import pytest
@@ -141,6 +142,17 @@ class TestToolChecker:
         """path_of() retourne None pour un outil absent."""
         checker = ToolChecker()
         assert checker.path_of("__absent_tool_xyz__") is None
+
+    def test_configured_absolute_path_counts_as_available(self, tmp_path):
+        """Un outil configuré par chemin complet n'a pas besoin d'être dans PATH."""
+        tool = tmp_path / "mediainfo-custom"
+        tool.write_text("", encoding="utf-8")
+        checker = ToolChecker(tools=[str(tool)])
+
+        with patch("core.runner.shutil.which", return_value=None):
+            assert checker.available(str(tool)) is True
+            assert checker.path_of(str(tool)) == tool
+            assert checker.missing() == []
 
     def test_require_passes_when_all_present(self):
         """require() ne lève rien si tous les outils sont présents."""

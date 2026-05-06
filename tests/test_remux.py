@@ -799,6 +799,17 @@ class TestTrackTable:
         assert "Δt" not in info_item.text()
         assert info_item.data(_TRACK_INFO_OFFSET_VALUE_ROLE) == ""
 
+    def test_update_time_shift_updates_info_column(self, table):
+        t = _track(1, "audio", file_id="fid")
+        table.append_tracks(_COLOR_A, [t])
+
+        assert table.update_time_shift(t.entry_id, -320) is True
+
+        info_item = table.item(0, _TrackTable.COL_INFO)
+        assert t.time_shift_ms == -320
+        assert info_item.text().endswith("Δt -320 ms")
+        assert info_item.data(_TRACK_INFO_OFFSET_VALUE_ROLE) == "-320 ms"
+
     def test_info_column_uses_custom_delegate(self, table):
         delegate = table.itemDelegateForColumn(_TrackTable.COL_INFO)
         assert delegate is not None
@@ -1368,6 +1379,37 @@ class TestTrackTableUpdateAudioMeta:
         codec_item = panel._track_table.item(0, _TrackTable.COL_CODEC)
         assert codec_item is not None
         assert codec_item.text() == "HEVC"
+        panel.close()
+
+    def test_audio_sync_done_logs_preformatted_i18n_values(self, qt_app, tmp_path):
+        panel = RemuxPanel(AppConfig())
+        track = _track(1, "audio", file_id="fid")
+        panel._track_table.append_tracks(_COLOR_A, [track])
+        emitted: list[tuple[str, str]] = []
+        panel.log_message.connect(lambda level, message: emitted.append((level, message)))
+
+        panel._on_audio_sync_done(track.entry_id, "", -320, 0.876)
+
+        assert emitted == [
+            (
+            "OK",
+            "Synchronisation audio améliorée appliquée : -320 ms (confiance 0.88).",
+            )
+        ]
+        panel.close()
+
+    def test_audio_sync_done_clears_reference_offset(self, qt_app, tmp_path):
+        panel = RemuxPanel(AppConfig())
+        target = _track(1, "audio", file_id="target")
+        reference = _track(1, "audio", file_id="reference")
+        reference.time_shift_ms = 250
+        panel._track_table.append_tracks(_COLOR_A, [target])
+        panel._track_table.append_tracks(_COLOR_B, [reference])
+
+        panel._on_audio_sync_done(target.entry_id, reference.entry_id, -320, 0.876)
+
+        assert target.time_shift_ms == -320
+        assert reference.time_shift_ms == 0
         panel.close()
 
 

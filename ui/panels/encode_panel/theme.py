@@ -21,91 +21,19 @@ from __future__ import annotations
 
 import re
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QWidget
-from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
+from ui.design_system import colors as _C
+from ui.styles import (
+    _card, _checkbox_style, _combo_style, _input_style,
+    _primary_button, _secondary_button, _section_label, _separator,
+)
 
 
-# =============================================================================
-# Helpers UI
-# =============================================================================
-
-def _section_label(text: str) -> QLabel:
-    lbl = QLabel(text)
-    lbl.setStyleSheet(f"color:{_C.TEXT_DIM};font-size:{_font_px(9)}px;font-weight:700;"
-                      f"letter-spacing:{_scale(2)}px;background:transparent;")
-    return lbl
-
-
-def _card(parent: QWidget | None = None) -> QWidget:
-    w = QWidget(parent)
-    w.setStyleSheet(f"QWidget{{background:{_C.BG_CARD};border:1px solid {_C.BORDER};"
-                    f"border-radius:6px;}}")
-    return w
-
-
-def _primary_button(text: str) -> QPushButton:
-    btn = QPushButton(text)
-    btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.setFixedHeight(_scale(36))
-    btn.setStyleSheet(f"""
-        QPushButton{{background:{_C.ACCENT};color:#fff;border:none;border-radius:6px;
-                     font-size:{_font_px(12)}px;font-weight:700;padding:0 {_scale(20)}px;}}
-        QPushButton:hover{{background:#6070f0;}}
-        QPushButton:pressed{{background:#3a52c0;}}
-        QPushButton:disabled{{background:{_C.BG_ACTIVE};color:{_C.TEXT_DIM};}}
-    """)
-    return btn
-
-
-def _secondary_button(text: str) -> QPushButton:
-    btn = QPushButton(text)
-    btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.setFixedHeight(_scale(28))
-    btn.setStyleSheet(f"""
-        QPushButton{{background:{_C.BG_CARD};color:{_C.TEXT_SEC};
-                     border:1px solid {_C.BORDER};border-radius:5px;
-                     font-size:{_font_px(11)}px;font-weight:500;padding:0 {_scale(12)}px;}}
-        QPushButton:hover{{background:{_C.BG_HOVER};color:{_C.TEXT_PRI};
-                           border-color:{_C.BORDER_LT};}}
-        QPushButton:pressed{{background:{_C.BG_ACTIVE};}}
-    """)
-    return btn
-
-
-def _separator() -> QFrame:
-    sep = QFrame()
-    sep.setFrameShape(QFrame.Shape.HLine)
-    sep.setFixedHeight(_scale(1))
-    sep.setStyleSheet(f"background:{_C.BORDER};border:none;")
-    return sep
-
-
-def _input_style() -> str:
-    return (f"QLineEdit{{background:{_C.BG_CARD};color:{_C.TEXT_PRI};"
-            f"border:1px solid {_C.BORDER};border-radius:5px;"
-            f"padding:{_scale(4)}px {_scale(10)}px;font-size:{_font_px(11)}px;}}"
-            f"QLineEdit:focus{{border-color:{_C.ACCENT};}}"
-            f"QLineEdit:disabled{{background:{_C.BG_DEEP};color:{_C.TEXT_DIM};"
-            f"border-color:{_C.BORDER};}}")
-
-
-def _combo_style() -> str:
-    return (f"QComboBox{{background:{_C.BG_CARD};color:{_C.TEXT_PRI};"
-            f"border:1px solid {_C.BORDER};border-radius:5px;"
-            f"padding:{_scale(3)}px {_scale(8)}px;font-size:{_font_px(11)}px;}}"
-            f"QComboBox:focus{{border-color:{_C.ACCENT};}}"
-            f"QComboBox QAbstractItemView{{background:{_C.BG_CARD};"
-            f"color:{_C.TEXT_PRI};selection-background-color:{_C.ACCENT_DIM};}}")
-
-
-def _checkbox_style() -> str:
-    return (f"QCheckBox{{color:{_C.TEXT_SEC};font-size:{_font_px(12)}px;background:transparent;}}"
-            f"QCheckBox::indicator{{width:{_scale(14)}px;height:{_scale(14)}px;"
-            f"border:1px solid {_C.BORDER_LT};border-radius:3px;"
-            f"background:{_C.BG_CARD};}}"
-            f"QCheckBox::indicator:checked{{background:{_C.ACCENT};"
-            f"border-color:{_C.ACCENT};}}")
+__all__ = [
+    "_C", "_card", "_checkbox_style", "_combo_style", "_input_style",
+    "_primary_button", "_secondary_button", "_section_label", "_separator",
+    "_TIME_RE", "_FPS_RE", "ffmpeg_progress_seconds", "_fmt_eta",
+    "EtaTracker",
+]
 
 
 # =============================================================================
@@ -157,3 +85,95 @@ def _fmt_eta(seconds: float) -> str:
     s = int(seconds)
     m, s = divmod(s, 60)
     return f"{m}m {s:02d}s" if m else f"{s}s"
+
+
+class EtaTracker:
+    """
+    Lisse la vitesse de progression pour produire un ETA stable.
+
+    Calcule une vitesse instantanée (delta progrès / delta wall-time) entre
+    échantillons consécutifs, puis applique une moyenne exponentielle (EWMA).
+    Cela évite l'effet "ETA énorme au début, qui chute brutalement à la fin"
+    causé par une vitesse moyenne calculée depuis le début (qui inclut
+    l'init lente de ffmpeg).
+
+    Le warmup ignore les premières mesures tant que peu de progrès média a
+    été produit — pendant ce temps, ``eta()`` retourne ``None``.
+    """
+
+    # Why: alpha=0.3 → la vitesse instantanée pèse 30 %, l'historique 70 %.
+    # Assez réactif pour suivre une vraie variation, assez lissé pour ne pas
+    # osciller à chaque ligne de ffmpeg.
+    _ALPHA = 0.3
+    # Why: en-dessous, le delta est trop court pour donner une vitesse fiable
+    # (jitter de l'I/O, ligne ffmpeg agrégée). On accumule jusqu'à ce seuil.
+    _MIN_DELTA_WALL = 0.5
+    _MIN_DELTA_PROGRESS = 0.0
+
+    def __init__(self, *, warmup_progress: float = 1.0) -> None:
+        self._warmup = float(warmup_progress)
+        self._smoothed_speed: float | None = None
+        self._last_progress: float | None = None
+        self._last_wall: float | None = None
+        self._initial_progress: float | None = None
+
+    def reset(self) -> None:
+        self._smoothed_speed = None
+        self._last_progress = None
+        self._last_wall = None
+        self._initial_progress = None
+
+    def update(self, progress: float, wall_time: float) -> None:
+        """Enregistre un nouvel échantillon (progrès média et wall-time absolu)."""
+        if progress < 0 or wall_time < 0:
+            return
+        if self._initial_progress is None:
+            self._initial_progress = progress
+            self._last_progress = progress
+            self._last_wall = wall_time
+            return
+        if self._last_progress is None or self._last_wall is None:
+            self._last_progress = progress
+            self._last_wall = wall_time
+            return
+
+        # Pendant la phase de warmup (init ffmpeg), on ne pollue pas l'EWMA
+        # avec des vitesses non représentatives. On suit juste la position
+        # pour pouvoir mesurer le delta dès la sortie de warmup.
+        if (progress - self._initial_progress) < self._warmup:
+            self._last_progress = progress
+            self._last_wall = wall_time
+            return
+
+        delta_progress = progress - self._last_progress
+        delta_wall = wall_time - self._last_wall
+        if delta_wall < self._MIN_DELTA_WALL or delta_progress <= self._MIN_DELTA_PROGRESS:
+            # Échantillon trop court : on attend, sans écraser le précédent.
+            return
+
+        instant_speed = delta_progress / delta_wall
+        if instant_speed <= 0:
+            return
+
+        if self._smoothed_speed is None:
+            self._smoothed_speed = instant_speed
+        else:
+            self._smoothed_speed = (
+                self._ALPHA * instant_speed + (1.0 - self._ALPHA) * self._smoothed_speed
+            )
+        self._last_progress = progress
+        self._last_wall = wall_time
+
+    def eta(self, total: float, current: float) -> float | None:
+        """Retourne l'ETA en secondes, ou ``None`` si indéterminé (warmup)."""
+        if total <= 0 or current < 0 or current >= total:
+            return None
+        if self._smoothed_speed is None or self._smoothed_speed <= 0:
+            return None
+        return (total - current) / self._smoothed_speed
+
+    def eta_from_speed(self, total: float, current: float, speed: float) -> float | None:
+        """ETA basé sur une vitesse externe (ex: fps ffmpeg) — sans EWMA interne."""
+        if total <= 0 or current < 0 or current >= total or speed <= 0:
+            return None
+        return (total - current) / speed

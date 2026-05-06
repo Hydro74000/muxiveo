@@ -7,6 +7,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFrame,
@@ -269,6 +270,58 @@ class _ChapterPanel(QFrame):
         cb_lay.addStretch()
         root.addWidget(cb_row)
 
+        # Sélecteur de source de chapitres (visible quand >=1 source en a)
+        src_row = QWidget()
+        src_row.setStyleSheet(f"""
+            QWidget {{
+                background: {_C.BG_CARD};
+                border-bottom: 1px solid {_C.BORDER};
+            }}
+        """)
+        src_row.setFixedHeight(_scale(36))
+        src_lay = QHBoxLayout(src_row)
+        src_lay.setContentsMargins(_scale(12), 0, _scale(12), 0)
+        src_lay.setSpacing(_scale(8))
+
+        self._src_lbl = QLabel("Source des chapitres")
+        self._src_lbl.setStyleSheet(
+            f"color: {_C.TEXT_SEC}; font-size: {_font_px(12)}px; "
+            f"background: transparent; border: none;"
+        )
+        src_lay.addWidget(self._src_lbl)
+
+        self._src_combo = QComboBox()
+        self._src_combo.setMinimumWidth(_scale(220))
+        self._src_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: {_C.BG_DEEP};
+                color: {_C.TEXT_PRI};
+                border: 1px solid {_C.BORDER_LT};
+                border-radius: {_scale(4)}px;
+                padding: {_scale(2)}px {_scale(8)}px;
+                font-size: {_font_px(11)}px;
+            }}
+            QComboBox:disabled {{
+                color: {_C.TEXT_DIM};
+                background: {_C.BG_PANEL};
+            }}
+            QComboBox QAbstractItemView {{
+                background: {_C.BG_DEEP};
+                color: {_C.TEXT_PRI};
+                selection-background-color: {_C.ACCENT_DIM};
+            }}
+        """)
+        self._src_combo.currentIndexChanged.connect(self._on_source_changed)
+        src_lay.addWidget(self._src_combo)
+        src_lay.addStretch()
+        root.addWidget(src_row)
+        self._src_row = src_row
+
+        # Liste interne des sources porteuses : [(file_index_0based, label, entries)]
+        self._available_sources: list[tuple[int, str, list[ChapterEntry]]] = []
+        self._selected_source_idx: int | None = None
+        self._suppress_source_signal: bool = False
+
         # Tableau des chapitres
         self._table = QTableWidget(0, 3)
         self._table.setHorizontalHeaderLabels(["Timecode", "Nom du chapitre", ""])
@@ -355,7 +408,117 @@ class _ChapterPanel(QFrame):
         self._keep_cb.blockSignals(True)
         self._keep_cb.setChecked(True)
         self._keep_cb.blockSignals(False)
+        self._available_sources = []
+        self._selected_source_idx = None
+        self._suppress_source_signal = True
+        self._src_combo.clear()
+        self._suppress_source_signal = False
+        self._refresh_source_combo_state()
         self.reset_chapters([])
+
+    def set_available_sources(
+        self,
+        sources: list[tuple[int, str, list[ChapterEntry]]],
+    ) -> None:
+        """
+        Met à jour la liste des sources porteuses de chapitres.
+
+        ``sources`` : liste ordonnée de tuples ``(file_index_0based, label,
+        entries)``. Reconstruit le combo en préservant la sélection courante
+        si la même source y figure encore. N'écrase **pas** les chapitres
+        édités manuellement (``is_modified()``).
+        """
+        self._available_sources = list(sources)
+        previous_idx = self._selected_source_idx
+
+        self._suppress_source_signal = True
+        self._src_combo.clear()
+        for file_idx, label, _entries in self._available_sources:
+            self._src_combo.addItem(label, userData=file_idx)
+        self._suppress_source_signal = False
+
+        if not self._available_sources:
+            self._selected_source_idx = None
+            self._refresh_source_combo_state()
+            if not self._modified:
+                self.reset_chapters([])
+            return
+
+        if previous_idx is not None and any(
+            file_idx == previous_idx for file_idx, _, _ in self._available_sources
+        ):
+            new_combo_pos = next(
+                pos for pos, (file_idx, _, _) in enumerate(self._available_sources)
+                if file_idx == previous_idx
+            )
+            self._suppress_source_signal = True
+            self._src_combo.setCurrentIndex(new_combo_pos)
+            self._suppress_source_signal = False
+            self._refresh_source_combo_state()
+            return
+
+        # Pas de sélection antérieure (ou source disparue) → on prend la première.
+        self._selected_source_idx = self._available_sources[0][0]
+        self._suppress_source_signal = True
+        self._src_combo.setCurrentIndex(0)
+        self._suppress_source_signal = False
+        self._refresh_source_combo_state()
+        if not self._modified:
+            self.reset_chapters(list(self._available_sources[0][2]))
+
+    def selected_source_index(self) -> int | None:
+        """Index 0-based de la source de chapitres sélectionnée, ou None."""
+        return self._selected_source_idx
+
+    def _refresh_source_combo_state(self) -> None:
+        # Caché si aucune source porteuse, désactivé si une seule, actif si >=2.
+        count = len(self._available_sources)
+        if count == 0:
+            self._src_row.setVisible(False)
+            return
+        self._src_row.setVisible(True)
+        enabled = count >= 2 and self._keep_cb.isChecked()
+        self._src_combo.setEnabled(enabled)
+        self._src_lbl.setEnabled(enabled)
+
+    def _on_source_changed(self, combo_index: int) -> None:
+        if self._suppress_source_signal:
+            return
+        if combo_index < 0 or combo_index >= len(self._available_sources):
+            return
+        file_idx, _label, entries = self._available_sources[combo_index]
+
+        # Confirmation si l'utilisateur a édité les chapitres manuellement
+        # avant de switcher : on ne veut pas perdre son travail silencieusement.
+        if self._modified:
+            answer = QMessageBox.question(
+                self,
+                translate_text("Remplacer les chapitres ?"),
+                translate_text(
+                    "Les chapitres ont été modifiés manuellement. Charger ceux "
+                    "de la source sélectionnée écrasera vos modifications."
+                ),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                # Revert combo selection
+                self._suppress_source_signal = True
+                target_pos = next(
+                    (
+                        pos for pos, (idx, _, _) in enumerate(self._available_sources)
+                        if idx == self._selected_source_idx
+                    ),
+                    -1,
+                )
+                if target_pos >= 0:
+                    self._src_combo.setCurrentIndex(target_pos)
+                self._suppress_source_signal = False
+                return
+
+        self._selected_source_idx = file_idx
+        self.reset_chapters(list(entries))
+        self.changed.emit()
 
     def is_modified(self) -> bool:
         return self._modified
@@ -464,6 +627,7 @@ class _ChapterPanel(QFrame):
 
     def _on_keep_changed(self) -> None:
         self._refresh_ui_state()
+        self._refresh_source_combo_state()
         self.changed.emit()
 
     def _on_add_clicked(self) -> None:
