@@ -4,7 +4,7 @@ FULL Vibecoded App for Proof of Concept - no human code, only human prompts and 
 
 Interface graphique pour préparer des fichiers vidéo, remuxer sans perte, réencoder avec `ffmpeg`, et fusionner des métadonnées Dolby Vision / HDR10+.
 
-Cette documentation correspond à **Mediarecode v2.0.0**.
+Cette documentation correspond à **Mediarecode v2.1.0**.
 
 ## Sommaire
 
@@ -603,4 +603,4 @@ flowchart TD
 
 ---
 
-*Mediarecode v2.0.0*
+*Mediarecode v2.1.0*
