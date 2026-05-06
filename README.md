@@ -2,7 +2,7 @@
 
 FULL Vibecoded App for Proof of Concept - no human code, only human prompts and eyes.
 
-Interface graphique pour préparer des fichiers vidéo, remuxer sans perte, réencoder avec `ffmpeg`, et fusionner des métadonnées Dolby Vision / HDR10+.
+Interface graphique pour préparer des fichiers vidéo, remuxer sans perte, réencoder avec `ffmpeg` (et `NVencC` en option pour NVidia), et fusionner des métadonnées Dolby Vision / HDR10+.
 
 Cette documentation correspond à **Mediarecode v2.1.0**.
 
@@ -242,6 +242,7 @@ Le workflow unifié permet de :
 - réordonner ou supprimer ces variantes sans perdre leur lien avec le workflow
 - visualiser dans le panel remux le codec et le bitrate cibles lorsqu'une piste audio sera réencodée
 - extraire une piste de sous-titre depuis le menu contextuel du tableau des pistes
+- synchroniser automatiquement une piste audio multi-source par analyse du contenu audio, avec choix d'une piste de référence et application directe du décalage calculé
 - définir le titre du conteneur, les balises globales, les chapitres et les pièces jointes
 - ouvrir une fenêtre de recherche **TMDB** depuis le panneau balises pour rechercher film/série (préremplissage auto depuis titre/nom de fichier)
 - détecter automatiquement les motifs de série (`SxxExx`, `x`) pour préremplir saison/épisode et positionner la recherche sur **Séries** si pertinent
@@ -265,6 +266,18 @@ Modes d'exécution :
 | tout autre cas | **Encodage** | `ffmpeg` en passe de sortie unique (encodage/remux final + chapitres, tags, langue/titre de pistes, `Muxing Application`) |
 
 Les fichiers **SRT** peuvent être ajoutés comme sources séparées de sous-titres. Ils sont détectés automatiquement et intégrés dans le remux final avec le format correct (`srt`).
+
+Synchronisation audio automatisée en multi-source :
+
+- disponible lorsqu'un projet contient des pistes audio issues d'au moins deux sources différentes
+- pensée pour aligner une piste audio cible sur une source de référence, par exemple VF/VO provenant d'un autre fichier, autre édition, autre plateforme ou autre remux
+- accessible depuis le bouton de synchronisation dans la ligne d'une piste audio ; Mediarecode propose alors les pistes 5.1/7.1 compatibles des autres sources comme références
+- analyse le contenu réel avec `ffmpeg` / `ffprobe`, extrait une signature depuis les canaux surround/LFE, détecte les moments clés communs entre la piste cible et les pistes de la source de référence, puis applique automatiquement l'offset signé en millisecondes
+- affiche l'offset dans la colonne Info (`Δt +125 ms`, `Δt -320 ms`, etc.) et conserve cette valeur dans la configuration de remux
+- remet la piste de référence à `0 ms` quand un offset est appliqué à la cible, afin de garder une seule piste déplacée et une timeline plus lisible
+- échoue volontairement si la piste est trop courte, si la corrélation est trop faible, ou si les canaux disponibles ne permettent pas une analyse fiable
+
+Cette synchronisation audio est un outil utilisateur pour **calculer le bon décalage entre sources**. Elle complète la synchronisation timeline interne du backend `ffmpeg`, qui intervient plus tard pendant l'exécution pour sécuriser le muxage multi-source et les offsets déjà définis.
 
 Backend remux `ffmpeg` (par défaut) :
 
