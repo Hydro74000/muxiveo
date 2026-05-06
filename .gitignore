@@ -87,6 +87,7 @@ mediarecode.spec
 Mediarecode.AppDir/
 *.AppImage
 appimagetool-*.AppImage
+*.zsync
 
 # ---------------------------------------------------------------------------
 # Windows packaging (Wine cross-build)
