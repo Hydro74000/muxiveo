@@ -15,6 +15,7 @@ from core.workflows.encode.backends.models import (
 from core.workflows.encode.backends.progress import parse_nvencc_progress
 from core.workflows.encode.catalog import CQ_CAPABLE_VIDEO_CODECS
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
+from core.workflows.encode.planning.plan_models import EncodePlan
 from core.workflows.encode.runtime.nvencc import (
     is_nvencc_codec,
     nvencc_supports_dynamic_hdr,
@@ -120,7 +121,7 @@ class NvenccEncodeBackend(EncodeBackend):
             config,
             cleanup_paths,
             prep_signals=prep_signals,
-            plan=cast(object, ctx.plan),
+            plan=cast(EncodePlan | None, ctx.plan),
         )
 
     def normalize_extra_params(self, video: VideoEncodeSettings) -> str:

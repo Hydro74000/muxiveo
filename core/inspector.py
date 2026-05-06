@@ -472,7 +472,12 @@ class FileInspector:
                 info.tag_count = tag_count
                 # Remplace les codes ISO 639-2 de ffprobe par les balises IETF
                 # quand elles sont disponibles (ex : "en-US", "fr-FR").
-                for track in (*info.video_tracks, *info.audio_tracks, *info.subtitle_tracks):
+                all_tracks: list[VideoTrack | AudioTrack | SubtitleTrack] = [
+                    *info.video_tracks,
+                    *info.audio_tracks,
+                    *info.subtitle_tracks,
+                ]
+                for track in all_tracks:
                     lang = ietf_langs.get(track.index)
                     if lang is not None:
                         track.language = lang if lang != "und" else None
@@ -482,7 +487,8 @@ class FileInspector:
         # Passe de normalisation finale : homogénéise tous les tags langue en IETF
         # régional lorsque possible, pour les entrées ISO 639-2 (xxx) et RFC 5646
         # courtes (xx). Les indices de région dans le titre restent prioritaires.
-        for track in (*info.video_tracks, *info.audio_tracks, *info.subtitle_tracks):
+        all_tracks = [*info.video_tracks, *info.audio_tracks, *info.subtitle_tracks]
+        for track in all_tracks:
             lang = (track.language or "").strip()
             if not lang:
                 continue

@@ -100,7 +100,8 @@ def _win_mem_status():
         ]
     stat = _MEMSTATEX()
     stat.dwLength = ctypes.sizeof(stat)
-    ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))  # type: ignore[attr-defined]
+    windll = getattr(ctypes, "windll")
+    windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
     return stat
 
 

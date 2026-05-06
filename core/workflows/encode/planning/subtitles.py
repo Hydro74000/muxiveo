@@ -53,15 +53,15 @@ def resolve_subtitle_tracks_for_encode(
         return ResolvedSubtitleTracks((), True)
 
     resolved: list[tuple[Path, int]] = []
-    seen: set[tuple[Path, int]] = set()
+    seen_resolved: set[tuple[Path, int]] = set()
     for source_path in all_sources:
         subtitle_indices = probe_indices(source_path, "subtitle")
         if subtitle_indices is None:
             return ResolvedSubtitleTracks((), False)
         for stream_index in subtitle_indices:
             key = (Path(source_path), int(stream_index))
-            if key in seen:
+            if key in seen_resolved:
                 continue
-            seen.add(key)
+            seen_resolved.add(key)
             resolved.append(key)
     return ResolvedSubtitleTracks(tuple(resolved), True)

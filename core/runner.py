@@ -331,15 +331,17 @@ class ToolRunner(QObject):
 
         def _task() -> None:
             try:
+                def _progress(line: str) -> None:
+                    signals.progress.emit(line)
+                    if on_progress:
+                        on_progress(line)
+
                 output = self._run_cmd(
                     cmd,
                     cwd=cwd,
                     env=env,
                     label=label or cmd[0],
-                    progress_cb=lambda line: (
-                        signals.progress.emit(line)
-                        or (on_progress(line) if on_progress else None)
-                    ),
+                    progress_cb=_progress,
                     progress_pct_cb=lambda pct: signals.progress_pct.emit(pct),
                     signals=signals,
                 )
@@ -400,15 +402,17 @@ class ToolRunner(QObject):
             future_to_label: dict[Future[str], str] = {}
             for i, cmd in enumerate(tasks):
                 task_label = f"{label}[{i}] {cmd[0]}"
+
+                def _progress(line: str, lbl: str = task_label) -> None:
+                    signals.progress.emit(f"[{lbl}] {line}")
+
                 fut = executor.submit(
                     self._run_cmd,
                     cmd,
                     cwd=cwd,
                     env=env,
                     label=task_label,
-                    progress_cb=lambda line, lbl=task_label: signals.progress.emit(
-                        f"[{lbl}] {line}"
-                    ),
+                    progress_cb=_progress,
                     signals=signals,
                 )
                 future_to_label[fut] = task_label

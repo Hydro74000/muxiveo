@@ -18,6 +18,7 @@ from core.workflows.encode.catalog import (
     supports_manual_static_hdr_metadata,
 )
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
+from core.workflows.encode.planning.plan_models import EncodePlan
 
 
 class FfmpegEncodeBackend(EncodeBackend):
@@ -87,7 +88,7 @@ class FfmpegEncodeBackend(EncodeBackend):
             config,
             cleanup_paths,
             prep_signals=prep_signals,
-            plan=cast(object, ctx.plan),
+            plan=cast(EncodePlan | None, ctx.plan),
         )
 
     def normalize_extra_params(self, video: VideoEncodeSettings) -> str:
