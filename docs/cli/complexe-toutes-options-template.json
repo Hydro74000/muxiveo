@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "rules": {
+    "normalize_languages": true,
+    "tracks": {
+      "video": {
+        "include": true,
+        "rename_pattern": "{codec} {title}"
+      },
+      "audio": {
+        "include": true,
+        "languages": ["fr-FR", "en-US", "ja-JP"],
+        "rename_pattern": "{LangName} {codec} {channels} {atmos} {tag_commentary}"
+      },
+      "subtitle": {
+        "include": true,
+        "languages": ["fr-FR", "en-US"],
+        "rename_pattern": "{LangName} {tag_forced} {tag_malentendant}"
+      }
+    }
+  },
+  "chapters": {
+    "source_index": 0,
+    "include_source": true,
+    "import": "chapters-common.ffmetadata",
+    "add": [
+      {
+        "timestamp": "00:00:00.000",
+        "chaptername": "Opening"
+      },
+      {
+        "timestamp": "00:42:00.000",
+        "chaptername": "Credits"
+      }
+    ]
+  },
+  "tmdb": {
+    "enabled": true,
+    "kind": "tv",
+    "language": "fr-FR",
+    "season": "1"
+  },
+  "extra_attachments": [
+    "cover.jpg",
+    "font.ttf"
+  ],
+  "tag_overrides": {
+    "ENCODER_SETTINGS": "mediarecode-cli template series-v1"
+  },
+  "work_dir": "/tmp/mediarecode_work"
+}
+

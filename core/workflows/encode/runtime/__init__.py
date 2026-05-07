@@ -43,14 +43,49 @@ from .attachment_preparation import (
 )
 from .bindings import SignalBindingService, SignalBindingServiceCallbacks
 from .direct_output import DirectOutputRunner, DirectOutputRunnerCallbacks
+from .dynamic_hdr import DynamicHdrConfigNormalizer, DynamicHdrNormalizerCallbacks
+from .hdr_metadata import HdrMetadataProbeService
 from .metadata_inject import MetadataInjectRunner, MetadataInjectRunnerCallbacks
 from .multi_video import MultiVideoPipelineRunner, MultiVideoPipelineRunnerCallbacks
+from .mux_assembly import (
+    EncodeFinalMuxBuilder,
+    EncodeFinalMuxBuilderCallbacks,
+    EncodeStreamMappingService,
+    EncodeStreamMappingCallbacks,
+    TrackMetadataArgsBuilder,
+    TrackMetadataArgsBuilderCallbacks,
+)
+from .multisource_sync import EncodeMultisourceSyncService, EncodeMultisourceSyncCallbacks
+from .nvencc_execution import (
+    NvenccAssetPreparationService,
+    NvenccAssetPreparationCallbacks,
+    NvenccDirectOutputRunner,
+    NvenccDirectOutputRunnerCallbacks,
+    NvenccPipeExecutor,
+    NvenccRuntimeRemuxBuilder,
+    NvenccRuntimeRemuxBuilderCallbacks,
+)
+from .nvencc_routing import (
+    NvenccInputRouter,
+    NvenccInputRouting,
+    NvenccRoutingCallbacks,
+)
+from .preparation import EncodePreparationRunner, EncodePreparationRunnerCallbacks
 from .storage_guard import (
     ensure_inject_storage_available,
     estimate_duration_seconds,
     estimate_inject_storage_requirements,
     estimate_inject_video_bytes,
     format_bytes,
+)
+from .video_preparation import (
+    TwoPassLogCleanupService,
+    TwoPassRunner,
+    TwoPassRunnerCallbacks,
+    VideoOnlyCommandBuilder,
+    VideoOnlyCommandBuilderCallbacks,
+    VideoPreparationPolicyCallbacks,
+    VideoPreparationPolicyService,
 )
 
 __all__ = [
@@ -60,10 +95,40 @@ __all__ = [
     "SignalBindingServiceCallbacks",
     "DirectOutputRunner",
     "DirectOutputRunnerCallbacks",
+    "DynamicHdrConfigNormalizer",
+    "DynamicHdrNormalizerCallbacks",
+    "HdrMetadataProbeService",
     "MetadataInjectRunner",
     "MetadataInjectRunnerCallbacks",
     "MultiVideoPipelineRunner",
     "MultiVideoPipelineRunnerCallbacks",
+    "EncodeFinalMuxBuilder",
+    "EncodeFinalMuxBuilderCallbacks",
+    "EncodeStreamMappingService",
+    "EncodeStreamMappingCallbacks",
+    "TrackMetadataArgsBuilder",
+    "TrackMetadataArgsBuilderCallbacks",
+    "EncodeMultisourceSyncService",
+    "EncodeMultisourceSyncCallbacks",
+    "NvenccAssetPreparationService",
+    "NvenccAssetPreparationCallbacks",
+    "NvenccDirectOutputRunner",
+    "NvenccDirectOutputRunnerCallbacks",
+    "NvenccPipeExecutor",
+    "NvenccRuntimeRemuxBuilder",
+    "NvenccRuntimeRemuxBuilderCallbacks",
+    "NvenccInputRouter",
+    "NvenccInputRouting",
+    "NvenccRoutingCallbacks",
+    "EncodePreparationRunner",
+    "EncodePreparationRunnerCallbacks",
+    "TwoPassLogCleanupService",
+    "TwoPassRunner",
+    "TwoPassRunnerCallbacks",
+    "VideoOnlyCommandBuilder",
+    "VideoOnlyCommandBuilderCallbacks",
+    "VideoPreparationPolicyCallbacks",
+    "VideoPreparationPolicyService",
     "default_attachment_filename",
     "ensure_inject_storage_available",
     "estimate_duration_seconds",

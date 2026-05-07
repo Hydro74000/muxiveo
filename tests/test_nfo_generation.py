@@ -239,6 +239,45 @@ class TestWriteMediainfoNfo:
         assert args[1] == str(mkv.resolve())
         assert "cwd" not in kwargs
 
+    def test_complete_name_is_cleaned_to_filename(self, tmp_path):
+        """Complete name ne conserve pas le chemin complet dans le .nfo."""
+        from core.workflows.remux import write_mediainfo_nfo
+
+        mkv = tmp_path / "film.mkv"
+        mkv.touch()
+        fake_result = MagicMock()
+        fake_result.stdout = (
+            "General\n"
+            f"Complete name                            : {mkv.resolve()}\n"
+            "Format                                   : Matroska\n"
+        )
+
+        with patch("core.workflows.remux.subprocess.run", return_value=fake_result):
+            write_mediainfo_nfo(mkv, log_cb=MagicMock())
+
+        nfo_text = (tmp_path / "film.nfo").read_text(encoding="utf-8")
+        assert "Complete name                            : film.mkv" in nfo_text
+        assert str(tmp_path) not in nfo_text
+
+    def test_complete_name_already_clean_is_preserved(self, tmp_path):
+        """Complete name déjà réduit au nom de fichier reste inchangé."""
+        from core.workflows.remux import write_mediainfo_nfo
+
+        mkv = tmp_path / "film.mkv"
+        mkv.touch()
+        fake_result = MagicMock()
+        fake_result.stdout = (
+            "General\n"
+            "Complete name                            : film.mkv\n"
+            "Format                                   : Matroska\n"
+        )
+
+        with patch("core.workflows.remux.subprocess.run", return_value=fake_result):
+            write_mediainfo_nfo(mkv, log_cb=MagicMock())
+
+        nfo_text = (tmp_path / "film.nfo").read_text(encoding="utf-8")
+        assert nfo_text == fake_result.stdout
+
     def test_uses_custom_mediainfo_bin(self, tmp_path):
         """mediainfo_bin personnalisé est passé à subprocess.run."""
         from core.workflows.remux import write_mediainfo_nfo

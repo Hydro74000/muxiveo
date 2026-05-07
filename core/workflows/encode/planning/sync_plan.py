@@ -55,13 +55,13 @@ def build_probe_remux_config(
     _push_track(0, 0, "video")
     for audio in config.audio_tracks:
         source = Path(audio.source_path or config.source)
-        src_idx = source_idx_local.get(source, 0)
-        _push_track(src_idx, int(audio.stream_index), "audio")
+        audio_src_idx = source_idx_local.get(source, 0)
+        _push_track(audio_src_idx, int(audio.stream_index), "audio")
     for source, stream_idx in resolved_subtitle_tracks:
-        src_idx = source_idx_local.get(source)
-        if src_idx is None:
+        subtitle_src_idx = source_idx_local.get(source)
+        if subtitle_src_idx is None:
             continue
-        _push_track(src_idx, int(stream_idx), "subtitle")
+        _push_track(subtitle_src_idx, int(stream_idx), "subtitle")
 
     sources: list[SourceInput] = []
     track_order: list[tuple[int, int] | tuple[int, int, str]] = []
@@ -93,21 +93,21 @@ def build_sync_mapped_tracks(
     ]
     for audio in config.audio_tracks:
         source = Path(audio.source_path or config.source)
-        src_idx = source_idx_local.get(source, 0)
+        audio_src_idx = source_idx_local.get(source, 0)
         mapped.append(
             SyncMappedTrackPlan(
-                source_file_index=src_idx,
+                source_file_index=audio_src_idx,
                 stream_index=int(audio.stream_index),
                 track_type="audio",
             )
         )
     for source, stream_idx in resolved_subtitle_tracks:
-        src_idx = source_idx_local.get(source)
-        if src_idx is None:
+        subtitle_src_idx = source_idx_local.get(source)
+        if subtitle_src_idx is None:
             continue
         mapped.append(
             SyncMappedTrackPlan(
-                source_file_index=src_idx,
+                source_file_index=subtitle_src_idx,
                 stream_index=int(stream_idx),
                 track_type="subtitle",
             )

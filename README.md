@@ -4,7 +4,7 @@ FULL Vibecoded App for Proof of Concept - no human code, only human prompts and 
 
 Interface graphique pour préparer des fichiers vidéo, remuxer sans perte, réencoder avec `ffmpeg` (et `NVencC` en option pour NVidia), et fusionner des métadonnées Dolby Vision / HDR10+.
 
-Cette documentation correspond à **Mediarecode v2.1.0**.
+Cette documentation correspond à **Mediarecode v2.2.0**.
 
 ## Sommaire
 
@@ -603,6 +603,41 @@ flowchart TD
 |---|
 | **Identite generale** : chemin du fichier, format du conteneur, duree totale, taille, debit global, titre du conteneur, tags globaux utiles.<br><br>**Pistes video** : index, codec, resolution, framerate, profondeur de couleur, infos colorimetriques, type HDR detecte, details Dolby Vision si disponibles, langue, titre, duree, debit.<br><br>**Pistes audio** : index, codec, nombre de canaux, layout `stereo/5.1/7.1`, frequence d echantillonnage, debit, langue, titre, duree, indicateurs utiles comme Atmos ou DTS:X quand ils peuvent etre deduits.<br><br>**Pistes de sous-titres** : index, codec, langue, titre, drapeaux `forced` et `default`.<br><br>**Chapitres** : liste des chapitres avec position temporelle et nom.<br><br>**Attachments** : cover, polices et autres ressources embarquees avec nom, type MIME, taille si disponible, et indication `attached_pic` pour les images de couverture integrees comme flux video.<br><br>**Enrichissement MKV/WebM** : comptage des tags globaux, recuperation prioritaire des langues detaillees `language-ietf` quand elles existent, avec repli sur `language` sinon.<br><br>**Normalisation finale** : harmonisation des langues vers une forme plus coherente et exploitable dans l interface et les workflows suivants.<br><br>**Enrichissement optionnel via mediainfo** : frame count si disponible, confirmation ou enrichissement des metadonnees HDR, et details Dolby Vision supplementaires quand `ffprobe` ne les expose pas assez. |
 
+## CLI headless
+
+La branche `devel-cli` ajoute un point d entree sans interface graphique :
+
+```bash
+python3 mediarecode_cli.py --help
+./mediarecode-cli --help
+```
+
+Sous-commandes disponibles :
+
+| Commande | Usage |
+|----------|-------|
+| `inspect` | inspecte une ou plusieurs sources et sort du JSON |
+| `inspect --config-template` | genere un template JSON de remux copiant tout |
+| `validate` | valide un job/template JSON sans executer ffmpeg |
+| `preview` | affiche la commande ffmpeg prevue |
+| `remux` | execute un remux headless |
+| `batch` | applique un template JSON a plusieurs entrees |
+
+Exemples :
+
+```bash
+python3 mediarecode_cli.py remux -i source.mkv -o sortie.mkv
+python3 mediarecode_cli.py preview --config docs/cli/middle.json
+python3 mediarecode_cli.py remux --config docs/cli/middle.json --dry-run
+python3 mediarecode_cli.py batch --template docs/cli/complexe-toutes-options-template.json --batch docs/cli/complexe-toutes-options-batch.json --force
+```
+
+Le CLI est non interactif : une sortie existante est refusee sauf `--force`. Les chemins d outils sont lus depuis `config.ini`, avec overrides `--ffmpeg`, `--ffprobe`, `--mediainfo`, `--work-dir` et `--threads`.
+
+Les templates JSON peuvent selectionner les pistes par type, langue et flags d origine, normaliser les langues BCP-47/RFC5646, renommer les pistes via patterns, ajouter/importer des chapitres, demander TMDB et traiter un batch. Trois configs d exemple sont fournies dans `docs/cli/` : simple, middle et complexe toutes options.
+
+Dans les artefacts packages, l'entree CLI route vers le même bundle que l'application : `mediarecode-cli` sur Linux/AppImage/macOS, `mediarecode-cli.exe` sur Windows, ou `mediarecode --cli ...` en fallback.
+
 ## Outils externes
 
 | Outil | Rôle principal |
@@ -616,4 +651,4 @@ flowchart TD
 
 ---
 
-*Mediarecode v2.1.0*
+*Mediarecode v2.2.0*

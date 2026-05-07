@@ -1302,14 +1302,14 @@ class _Sidebar(QWidget):
 
         if compact:
             self._toggle_btn.setText("▶")
-            self._toggle_btn.setToolTip("Agrandir le menu")
+            self._toggle_btn.setToolTip(translate_text("Agrandir le menu"))
             self._version_lbl.setText(APP_VERSION_LABEL.split()[-1])
             self._version_lbl.setToolTip(APP_VERSION_LABEL)
             self._version_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._version_lbl.setContentsMargins(0, 0, 0, _scale(12))
         else:
             self._toggle_btn.setText("◀")
-            self._toggle_btn.setToolTip("Réduire le menu")
+            self._toggle_btn.setToolTip(translate_text("Réduire le menu"))
             self._version_lbl.setText(APP_VERSION_LABEL)
             self._version_lbl.setToolTip("")
             self._version_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)

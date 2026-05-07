@@ -759,12 +759,18 @@ class FfmpegTimelineSync:
             "Timeline sync live (multi-source):"
             f"{len(inputs)} named pipe(s) actives pour le remux final."
         )
+        def _cleanup_callback(handle) -> Callable[[], None]:
+            def _cleanup() -> None:
+                _close_handle(handle)
+            return _cleanup
+
+        cleanup_callbacks = [_cleanup_callback(handle) for handle in handles]
         return LiveSyncSession(
             inputs=inputs,
             processes=processes,
             named_pipe_paths=pipe_paths,
             _threads=threads,
-            _cleanup_callbacks=[lambda h=h: _close_handle(h) for h in handles],
+            _cleanup_callbacks=cleanup_callbacks,
         )
 
     @staticmethod
@@ -888,12 +894,13 @@ class FfmpegTimelineSync:
         # Drain stderr en parallèle : sinon ffmpeg bloque dès que le tampon
         # OS de stderr (~64KB) est plein quand stdout est lourdement consommé.
         stderr_chunks: list[bytes] = []
+        proc_stderr = proc.stderr
 
         def _drain_stderr() -> None:
-            if proc.stderr is None:
+            if proc_stderr is None:
                 return
             try:
-                for chunk in iter(lambda: proc.stderr.read(8192), b""):
+                for chunk in iter(lambda: proc_stderr.read(8192), b""):
                     stderr_chunks.append(chunk)
             except Exception:
                 pass

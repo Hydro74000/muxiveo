@@ -100,15 +100,15 @@ class DirectOutputRunner:
         cb.log_step(6, "Préparation sync/remap + commande ffmpeg (single pass)")
         cmd: list[str]
         live_sync_session = None
-        sync_cleanup_paths: list[Path] = []
+        single_sync_cleanup_paths: list[Path] = []
         try:
-            cmd, live_sync_session, sync_cleanup_paths = cb.build_runtime_single_pass_with_sync(
+            cmd, live_sync_session, single_sync_cleanup_paths = cb.build_runtime_single_pass_with_sync(
                 config,
                 chapter_materialize_dir=chapter_dir,
                 signals=prep_signals,
                 plan=encode_plan,
             )
-            cleanup_paths.extend(sync_cleanup_paths)
+            cleanup_paths.extend(single_sync_cleanup_paths)
             cb.check_cancelled(prep_signals)
             cb.log_step(7, "Exécution ffmpeg en single pass (sortie directe)")
             if prep_signals is not None:

@@ -230,7 +230,7 @@ class MultiVideoPipelineRunner:
             ), local_cleanup
 
         output_path = work_dir / f"video_{index}.mkv"
-        passlog_prefix = (
+        multi_passlog_prefix = (
             cb.two_pass_log_prefix(work_dir, f"video_{index}")
             if video.quality_mode == QualityMode.SIZE
             else None
@@ -241,7 +241,7 @@ class MultiVideoPipelineRunner:
             source,
             output_path,
             offset_ms=offset_ms,
-            passlog_prefix=passlog_prefix,
+            passlog_prefix=multi_passlog_prefix,
             thread_count=thread_count,
         )
         try:
@@ -253,8 +253,8 @@ class MultiVideoPipelineRunner:
                 )
                 run_cmd(cmd, label)
         finally:
-            if passlog_prefix is not None:
-                cb.cleanup_two_pass_logs_for_prefix(passlog_prefix)
+            if multi_passlog_prefix is not None:
+                cb.cleanup_two_pass_logs_for_prefix(multi_passlog_prefix)
         local_cleanup.append(output_path)
         return PreparedVideoInput(
             input_args=[],
@@ -278,7 +278,6 @@ class MultiVideoPipelineRunner:
             work_dir = config.work_dir or config.source.parent
             encode_plan = plan or cb.build_encode_plan(config)
             chapter_dir: Path | None = None
-            prepared_inputs: list[PreparedVideoInput | None] = []
             live_sync_session: LiveSyncSession | None = None
             sync_cleanup_paths: list[Path] = []
 
@@ -319,7 +318,7 @@ class MultiVideoPipelineRunner:
                 video_tracks = cb.video_tracks(config)
                 if not video_tracks:
                     raise EncodeError("Aucune piste vidéo configurée pour le pipeline multi-pistes.")
-                prepared_inputs = [None] * len(video_tracks)
+                prepared_inputs: list[PreparedVideoInput | None] = [None] * len(video_tracks)
 
                 track_specs: list[VideoTrackPrepSpec] = []
                 for order, video in enumerate(video_tracks):
@@ -429,9 +428,9 @@ class MultiVideoPipelineRunner:
                 if any(spec is None for spec in prepared_inputs):
                     raise EncodeError("Préparation vidéo incomplète: au moins une piste n'a pas été préparée.")
                 prepared_inputs_ready: list[PreparedVideoInput] = [
-                    cast(PreparedVideoInput, spec)
-                    for spec in prepared_inputs
-                    if spec is not None
+                    cast(PreparedVideoInput, prepared_item)
+                    for prepared_item in prepared_inputs
+                    if prepared_item is not None
                 ]
 
                 cb.log_step(5, "Reconstruction finale multi-pistes vidéo")
@@ -443,8 +442,8 @@ class MultiVideoPipelineRunner:
 
                 final_cmd: list[str] = [cb.ffmpeg_bin, "-hide_banner", "-y"]
                 final_cmd.extend(cb.ffmpeg_progress_args())
-                for spec in prepared_inputs_ready:
-                    final_cmd.extend([*spec.input_args, "-i", str(spec.path)])
+                for prepared_input in prepared_inputs_ready:
+                    final_cmd.extend([*prepared_input.input_args, "-i", str(prepared_input.path)])
                 for src in all_sources:
                     final_cmd.extend(["-i", str(src)])
 
@@ -479,7 +478,7 @@ class MultiVideoPipelineRunner:
                     encode_plan,
                     source_idx=source_idx,
                     track_input_paths=build_track_input_paths(
-                        leading_inputs=[spec.path for spec in prepared_inputs_ready],
+                        leading_inputs=[prepared_input.path for prepared_input in prepared_inputs_ready],
                         all_sources=all_sources,
                         sync_inputs=sync_inputs,
                     ),
@@ -498,8 +497,8 @@ class MultiVideoPipelineRunner:
                 )
                 _ = next_input_index
 
-                for out_idx, spec in enumerate(prepared_inputs_ready):
-                    final_cmd.extend(["-map", str(spec.map_arg)])
+                for out_idx, prepared_input in enumerate(prepared_inputs_ready):
+                    final_cmd.extend(["-map", str(prepared_input.map_arg)])
                     final_cmd.extend([f"-c:v:{out_idx}", "copy"])
 
                 cb.append_stream_maps_and_attachments(

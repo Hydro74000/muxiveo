@@ -58,16 +58,19 @@ def resolve_track_assembly(
         src_path = Path(audio.source_path or config.source)
         remapped = sync_remap.get((src_path, int(audio.stream_index), "audio"))
         if remapped is not None:
-            inp, stream_idx = remapped
+            input_index, stream_idx = remapped
         else:
-            inp = source_idx.get(src_path)
-            if inp is None:
-                inp = source_idx.get(config.source, 0)
+            source_input_index = source_idx.get(src_path)
+            input_index = (
+                source_input_index
+                if source_input_index is not None
+                else source_idx.get(config.source, 0)
+            )
             stream_idx = int(audio.stream_index)
         track_mappings.append(
             (
                 (src_path, int(audio.stream_index), "audio"),
-                _input_path(int(inp), src_path),
+                _input_path(int(input_index), src_path),
                 int(stream_idx),
             )
         )
@@ -76,16 +79,17 @@ def resolve_track_assembly(
         src_path = Path(src_path_raw)
         remapped = sync_remap.get((src_path, int(stream_idx_raw), "subtitle"))
         if remapped is not None:
-            inp, stream_idx = remapped
+            subtitle_input_index, stream_idx = remapped
         else:
-            inp = source_idx.get(src_path)
-            if inp is None:
+            source_input_index = source_idx.get(src_path)
+            if source_input_index is None:
                 continue
+            subtitle_input_index = source_input_index
             stream_idx = int(stream_idx_raw)
         track_mappings.append(
             (
                 (src_path, int(stream_idx_raw), "subtitle"),
-                _input_path(int(inp), src_path),
+                _input_path(int(subtitle_input_index), src_path),
                 int(stream_idx),
             )
         )

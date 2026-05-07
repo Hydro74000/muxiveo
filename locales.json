@@ -1370,5 +1370,1533 @@
   "Impossible d'extraire cet attachement embarqué depuis la source.": {
     "fra": "Impossible d'extraire cet attachement embarqué depuis la source.",
     "eng": "Unable to extract this embedded attachment from the source."
+  },
+  "Piste vidéo {current}/{total}": {
+    "fra": "Piste vidéo {current}/{total}",
+    "eng": "Video track {current}/{total}"
+  },
+  "Piste vidéo": {
+    "fra": "Piste vidéo",
+    "eng": "Video track"
+  },
+  "La nouvelle échelle d'interface ({percent}%) est chargée.\nRedémarrer l'application maintenant ?": {
+    "fra": "La nouvelle échelle d'interface ({percent}%) est chargée.\nRedémarrer l'application maintenant ?",
+    "eng": "The new interface scale ({percent}%) has been loaded.\nRestart the application now?"
+  },
+  "passe {current}/{total}": {
+    "fra": "passe {current}/{total}",
+    "eng": "pass {current}/{total}"
+  },
+  "Nouvelle échelle d'interface chargée ({percent}%). Un redémarrage de l'application est recommandé pour homogénéiser tous les panneaux.": {
+    "fra": "Nouvelle échelle d'interface chargée ({percent}%). Un redémarrage de l'application est recommandé pour homogénéiser tous les panneaux.",
+    "eng": "New interface scale loaded ({percent}%). Restarting the application is recommended to make all panels consistent."
+  },
+  "Activer ce paramètre": {
+    "fra": "Activer ce paramètre",
+    "eng": "Enable this parameter"
+  },
+  "Paramètres avancés — {codec}": {
+    "fra": "Paramètres avancés — {codec}",
+    "eng": "Advanced parameters - {codec}"
+  },
+  "Valider": {
+    "fra": "Valider",
+    "eng": "Confirm"
+  },
+  "Activé": {
+    "fra": "Activé",
+    "eng": "Enabled"
+  },
+  "Aucun schéma défini pour <b>{codec}</b>.<br>Vous pouvez saisir les flags ffmpeg en libre ci-dessous.": {
+    "fra": "Aucun schéma défini pour <b>{codec}</b>.<br>Vous pouvez saisir les flags ffmpeg en libre ci-dessous.",
+    "eng": "No schema is defined for <b>{codec}</b>.<br>You can enter free-form ffmpeg flags below."
+  },
+  "Codec : <b>{codec}</b> · Style : <i>{style}</i>": {
+    "fra": "Codec : <b>{codec}</b> · Style : <i>{style}</i>",
+    "eng": "Codec: <b>{codec}</b> · Style: <i>{style}</i>"
+  },
+  "Aperçu de la sortie :": {
+    "fra": "Aperçu de la sortie :",
+    "eng": "Output preview:"
+  },
+  "Injection DoVi/HDR10+ en cours…": {
+    "fra": "Injection DoVi/HDR10+ en cours…",
+    "eng": "DoVi/HDR10+ injection in progress..."
+  },
+  "Réglage invalide": {
+    "fra": "Réglage invalide",
+    "eng": "Invalid setting"
+  },
+  "Section « {title} » enregistrée dans config.ini.": {
+    "fra": "Section « {title} » enregistrée dans config.ini.",
+    "eng": "Section \"{title}\" saved to config.ini."
+  },
+  "Supprimer le profil ?": {
+    "fra": "Supprimer le profil ?",
+    "eng": "Delete profile?"
+  },
+  "Supprimer définitivement le profil « {name} » ?": {
+    "fra": "Supprimer définitivement le profil « {name} » ?",
+    "eng": "Permanently delete profile \"{name}\"?"
+  },
+  "Encodeurs détectés : {items}": {
+    "fra": "Encodeurs détectés : {items}",
+    "eng": "Detected encoders: {items}"
+  },
+  "(aucun profil enregistré)": {
+    "fra": "(aucun profil enregistré)",
+    "eng": "(no saved profile)"
+  },
+  "Profil introuvable : {name}": {
+    "fra": "Profil introuvable : {name}",
+    "eng": "Profile not found: {name}"
+  },
+  "Écraser le profil ?": {
+    "fra": "Écraser le profil ?",
+    "eng": "Overwrite profile?"
+  },
+  "Un profil « {name} » existe déjà. L'écraser ?": {
+    "fra": "Un profil « {name} » existe déjà. L'écraser ?",
+    "eng": "A profile named \"{name}\" already exists. Overwrite it?"
+  },
+  "Échec sauvegarde profil : {err}": {
+    "fra": "Échec sauvegarde profil : {err}",
+    "eng": "Profile save failed: {err}"
+  },
+  "Précheck piste vidéo #{index} : source {depth}-bit + codec {codec} → bascule auto en 8-bit.": {
+    "fra": "Précheck piste vidéo #{index} : source {depth}-bit + codec {codec} → bascule auto en 8-bit.",
+    "eng": "Video track #{index} precheck: {depth}-bit source + codec {codec} -> auto-switching to 8-bit."
+  },
+  "Précheck piste vidéo #{index} : retour au mode source (8-bit auto désactivé).": {
+    "fra": "Précheck piste vidéo #{index} : retour au mode source (8-bit auto désactivé).",
+    "eng": "Video track #{index} precheck: back to source mode (auto 8-bit disabled)."
+  },
+  "Source de référence": {
+    "fra": "Source de référence",
+    "eng": "Reference source"
+  },
+  "Choisir la source audio qui servira de référence.": {
+    "fra": "Choisir la source audio qui servira de référence.",
+    "eng": "Choose the audio source to use as the reference."
+  },
+  "Synchronisation audio améliorée : piste #{target} vs référence #{reference}…": {
+    "fra": "Synchronisation audio améliorée : piste #{target} vs référence #{reference}…",
+    "eng": "Enhanced audio sync: track #{target} vs reference #{reference}..."
+  },
+  "Extraire le sous-titre": {
+    "fra": "Extraire le sous-titre",
+    "eng": "Extract subtitle"
+  },
+  "Extraction du sous-titre #{idx} ({codec}) vers {name}…": {
+    "fra": "Extraction du sous-titre #{idx} ({codec}) vers {name}…",
+    "eng": "Extracting subtitle #{idx} ({codec}) to {name}..."
+  },
+  "{count} fichier(s) ajouté(s) comme pièce(s) jointe(s).": {
+    "fra": "{count} fichier(s) ajouté(s) comme pièce(s) jointe(s).",
+    "eng": "{count} file(s) added as attachment(s)."
+  },
+  "Source introuvable pour cette piste.": {
+    "fra": "Source introuvable pour cette piste.",
+    "eng": "Source not found for this track."
+  },
+  "Synchronisation audio améliorée appliquée : {offset} ms (confiance {confidence}).": {
+    "fra": "Synchronisation audio améliorée appliquée : {offset} ms (confiance {confidence}).",
+    "eng": "Enhanced audio sync applied: {offset} ms (confidence {confidence})."
+  },
+  "Extraction impossible": {
+    "fra": "Extraction impossible",
+    "eng": "Extraction unavailable"
+  },
+  "Sous-titre extrait : {path}": {
+    "fra": "Sous-titre extrait : {path}",
+    "eng": "Subtitle extracted: {path}"
+  },
+  "Extraction échouée : {msg}": {
+    "fra": "Extraction échouée : {msg}",
+    "eng": "Extraction failed: {msg}"
+  },
+  "Impossible de télécharger la cover TMDB.": {
+    "fra": "Impossible de télécharger la cover TMDB.",
+    "eng": "Unable to download the TMDB cover."
+  },
+  "Depuis TMDB": {
+    "fra": "Depuis TMDB",
+    "eng": "From TMDB"
+  },
+  "Remplacer les chapitres ?": {
+    "fra": "Remplacer les chapitres ?",
+    "eng": "Replace chapters?"
+  },
+  "Les chapitres ont été modifiés manuellement. Charger ceux de la source sélectionnée écrasera vos modifications.": {
+    "fra": "Les chapitres ont été modifiés manuellement. Charger ceux de la source sélectionnée écrasera vos modifications.",
+    "eng": "Chapters were manually edited. Loading chapters from the selected source will overwrite your changes."
+  },
+  "Sélectionner des fichiers source": {
+    "fra": "Sélectionner des fichiers source",
+    "eng": "Select source files"
+  },
+  "Extraire…": {
+    "fra": "Extraire…",
+    "eng": "Extract..."
+  },
+  "Répertoire de travail non nettoyé": {
+    "fra": "Répertoire de travail non nettoyé",
+    "eng": "Work directory not cleaned"
+  },
+  "Le dossier de travail contient des fichiers ou dossiers résiduels.\nSouhaitez-vous les conserver ou nettoyer le work_dir ?": {
+    "fra": "Le dossier de travail contient des fichiers ou dossiers résiduels.\nSouhaitez-vous les conserver ou nettoyer le work_dir ?",
+    "eng": "The work directory contains leftover files or folders.\nDo you want to keep them or clean the work_dir?"
+  },
+  "Work dir : {path}\nContenu détecté : {preview}": {
+    "fra": "Work dir : {path}\nContenu détecté : {preview}",
+    "eng": "Work dir: {path}\nDetected content: {preview}"
+  },
+  "Nettoyer": {
+    "fra": "Nettoyer",
+    "eng": "Clean"
+  },
+  "Conserver": {
+    "fra": "Conserver",
+    "eng": "Keep"
+  },
+  "Agrandir le menu": {
+    "fra": "Agrandir le menu",
+    "eng": "Expand menu"
+  },
+  "Réduire le menu": {
+    "fra": "Réduire le menu",
+    "eng": "Collapse menu"
+  },
+  "Disabled  —  ne pas injecter Dolby Vision": {
+    "fra": "Disabled  —  ne pas injecter Dolby Vision",
+    "eng": "Disabled - do not inject Dolby Vision"
+  },
+  "Appliquer à toutes les pistes": {
+    "fra": "Appliquer à toutes les pistes",
+    "eng": "Apply to all tracks"
+  },
+  "Forcer une sortie 10-bit (profil main10/high10 + pix_fmt p010le/yuv420p10le).\nDésactivé pour le codec Copy ou les codecs sans support 10-bit.": {
+    "fra": "Forcer une sortie 10-bit (profil main10/high10 + pix_fmt p010le/yuv420p10le).\nDésactivé pour le codec Copy ou les codecs sans support 10-bit.",
+    "eng": "Force 10-bit output (main10/high10 profile + p010le/yuv420p10le pix_fmt).\nDisabled for Copy or codecs without 10-bit support."
+  },
+  "Params avancés  (x265-params / svtav1-params / flags HW)": {
+    "fra": "Params avancés  (x265-params / svtav1-params / flags HW)",
+    "eng": "Advanced params (x265-params / svtav1-params / HW flags)"
+  },
+  "ex. no-open-gop=1:hdr10=1:hdr10-opt=1  ·  -spatial-aq 1 -rc-lookahead 32": {
+    "fra": "ex. no-open-gop=1:hdr10=1:hdr10-opt=1  ·  -spatial-aq 1 -rc-lookahead 32",
+    "eng": "e.g. no-open-gop=1:hdr10=1:hdr10-opt=1  ·  -spatial-aq 1 -rc-lookahead 32"
+  },
+  "Ouvrir l'éditeur visuel de paramètres pour le codec sélectionné": {
+    "fra": "Ouvrir l'éditeur visuel de paramètres pour le codec sélectionné",
+    "eng": "Open the visual parameter editor for the selected codec"
+  },
+  "Profils d'encodage": {
+    "fra": "Profils d'encodage",
+    "eng": "Encoding profiles"
+  },
+  "Conserver le profil source (par défaut)": {
+    "fra": "Conserver le profil source (par défaut)",
+    "eng": "Keep source profile (default)"
+  },
+  "Normaliser en P8.1 (supprimer FEL·MEL)": {
+    "fra": "Normaliser en P8.1 (supprimer FEL·MEL)",
+    "eng": "Normalize to P8.1 (remove FEL/MEL)"
+  },
+  "Remuxage, fusion et sélection de pistes (vidéo/audio/sous-titres externes) — sans réencodage": {
+    "fra": "Remuxage, fusion et sélection de pistes (vidéo/audio/sous-titres externes) — sans réencodage",
+    "eng": "Remuxing, merging, and track selection (video/audio/external subtitles) - no re-encoding"
+  },
+  "IMDb / TMDB": {
+    "fra": "IMDb / TMDB",
+    "eng": "IMDb / TMDB"
+  },
+  "00:00:00.000": {
+    "fra": "00:00:00.000",
+    "eng": "00:00:00.000"
+  },
+  "Source des chapitres": {
+    "fra": "Source des chapitres",
+    "eng": "Chapter source"
+  },
+  "Déposer des fichiers vidéo / sous-titres ici": {
+    "fra": "Déposer des fichiers vidéo / sous-titres ici",
+    "eng": "Drop video / subtitle files here"
+  },
+  "Chemins": {
+    "fra": "Chemins",
+    "eng": "Paths"
+  },
+  "Outils externes": {
+    "fra": "Outils externes",
+    "eng": "External tools"
+  },
+  "FFmpeg": {
+    "fra": "FFmpeg",
+    "eng": "FFmpeg"
+  },
+  "Interface": {
+    "fra": "Interface",
+    "eng": "Interface"
+  },
+  "Métadonnées": {
+    "fra": "Métadonnées",
+    "eng": "Metadata"
+  },
+  "FFprobe": {
+    "fra": "FFprobe",
+    "eng": "FFprobe"
+  },
+  "MediaInfo": {
+    "fra": "MediaInfo",
+    "eng": "MediaInfo"
+  },
+  "dovi_tool": {
+    "fra": "dovi_tool",
+    "eng": "dovi_tool"
+  },
+  "hdr10plus_tool": {
+    "fra": "hdr10plus_tool",
+    "eng": "hdr10plus_tool"
+  },
+  "eac3to": {
+    "fra": "eac3to",
+    "eng": "eac3to"
+  },
+  "NVEncC": {
+    "fra": "NVEncC",
+    "eng": "NVEncC"
+  },
+  "Wrapper NVIDIA NVENC standalone (rigaya) — encodage avancé. Détecté uniquement si un GPU NVIDIA est présent.": {
+    "fra": "Wrapper NVIDIA NVENC standalone (rigaya) — encodage avancé. Détecté uniquement si un GPU NVIDIA est présent.",
+    "eng": "Standalone NVIDIA NVENC wrapper (rigaya) - advanced encoding. Detected only when an NVIDIA GPU is present."
+  },
+  "Nombre de threads FFmpeg": {
+    "fra": "Nombre de threads FFmpeg",
+    "eng": "FFmpeg thread count"
+  },
+  "Nombre de threads passé à FFmpeg via -threads. 0 laisse FFmpeg choisir automatiquement. La valeur par défaut est calculée à partir du nombre de coeurs × 1,5.": {
+    "fra": "Nombre de threads passé à FFmpeg via -threads. 0 laisse FFmpeg choisir automatiquement. La valeur par défaut est calculée à partir du nombre de coeurs × 1,5.",
+    "eng": "Number of threads passed to FFmpeg via -threads. 0 lets FFmpeg choose automatically. The default value is calculated from the number of cores x 1.5."
+  },
+  "Encodages vidéo parallèles max": {
+    "fra": "Encodages vidéo parallèles max",
+    "eng": "Max parallel video encodes"
+  },
+  "Nombre maximal de pistes vidéo encodées simultanément dans le pipeline multi-pistes. 1 = séquentiel (défaut).": {
+    "fra": "Nombre maximal de pistes vidéo encodées simultanément dans le pipeline multi-pistes. 1 = séquentiel (défaut).",
+    "eng": "Maximum number of video tracks encoded simultaneously in the multi-track pipeline. 1 = sequential (default)."
+  },
+  "Échelle de l'interface (%)": {
+    "fra": "Échelle de l'interface (%)",
+    "eng": "Interface scale (%)"
+  },
+  "Facteur d'échelle appliqué à l'interface. Le changement est appliqué immédiatement autant que possible, mais un redémarrage peut être recommandé pour uniformiser tout l'affichage.": {
+    "fra": "Facteur d'échelle appliqué à l'interface. Le changement est appliqué immédiatement autant que possible, mais un redémarrage peut être recommandé pour uniformiser tout l'affichage.",
+    "eng": "Scale factor applied to the interface. The change is applied immediately as much as possible, but a restart may be recommended to make the whole display consistent."
+  },
+  "Clé API TMDB": {
+    "fra": "Clé API TMDB",
+    "eng": "TMDB API key"
+  },
+  "Clé API TMDB v3 (gratuite sur https://www.themoviedb.org/settings/api).": {
+    "fra": "Clé API TMDB v3 (gratuite sur https://www.themoviedb.org/settings/api).",
+    "eng": "TMDB v3 API key (free at https://www.themoviedb.org/settings/api)."
+  },
+  "Token Bearer TMDB": {
+    "fra": "Token Bearer TMDB",
+    "eng": "TMDB bearer token"
+  },
+  "Token v4 TMDB optionnel. Utilisé si la clé API est vide. Peut aussi être défini via MEDIARECODE_TMDB_BEARER_TOKEN.": {
+    "fra": "Token v4 TMDB optionnel. Utilisé si la clé API est vide. Peut aussi être défini via MEDIARECODE_TMDB_BEARER_TOKEN.",
+    "eng": "Optional TMDB v4 token. Used if the API key is empty. Can also be set via MEDIARECODE_TMDB_BEARER_TOKEN."
+  },
+  "Générer un fichier .nfo après remux/encodage": {
+    "fra": "Générer un fichier .nfo après remux/encodage",
+    "eng": "Generate a .nfo file after remux/encode"
+  },
+  "Crée automatiquement un fichier .nfo (même nom que le MKV) contenant la sortie brute de mediainfo après chaque workflow réussi.": {
+    "fra": "Crée automatiquement un fichier .nfo (même nom que le MKV) contenant la sortie brute de mediainfo après chaque workflow réussi.",
+    "eng": "Automatically creates a .nfo file (same name as the MKV) containing the raw mediainfo output after each successful workflow."
+  },
+  "Distance maximale entre keyframes (I-frames).\nCe paramètre pilote le GOP standard ffmpeg (-g), en plus des IDR open-GOP.": {
+    "fra": "Distance maximale entre keyframes (I-frames).\nCe paramètre pilote le GOP standard ffmpeg (-g), en plus des IDR open-GOP.",
+    "eng": "Maximum distance between keyframes (I-frames).\nThis parameter controls the GOP standard ffmpeg (-g), en more of IDR open-GOP."
+  },
+  "Nombre maximum de B-frames consécutives autorisées par le wrapper VAAPI.\nPlus de B-frames améliore souvent la compression, au prix de latence et de compatibilité.": {
+    "fra": "Nombre maximum de B-frames consécutives autorisées par le wrapper VAAPI.\nPlus de B-frames améliore souvent la compression, au prix de latence et de compatibilité.",
+    "eng": "Maximum number of consecutive B-frames allowed by the VAAPI wrapper.\nMore B-frames often improve compression, at the cost of latency and compatibility."
+  },
+  "Distance entre IDR (Instantaneous Decoder Refresh).\n0 = laisse le driver décider. Une IDR vide complètement le buffer de référence.": {
+    "fra": "Distance entre IDR (Instantaneous Decoder Refresh).\n0 = laisse le driver décider. Une IDR vide complètement le buffer de référence.",
+    "eng": "Distance between IDR frames (Instantaneous Decoder Refresh).\n0 = lets the driver decide. An IDR fully clears the reference buffer."
+  },
+  "Profondeur de la pyramide de références B-frames.\n1 = B-frames non-référencées. 2-4 = hiérarchique si supporté par le driver.": {
+    "fra": "Profondeur de la pyramide de références B-frames.\n1 = B-frames non-référencées. 2-4 = hiérarchique si supporté par le driver.",
+    "eng": "B-frame reference pyramid depth.\n1 = non-reference B-frames. 2-4 = hierarchical if supported by the driver."
+  },
+  "Mode de contrôle de débit VAAPI.\n• auto : laisse le driver choisir.\n• CQP : quantizer fixe.\n• CBR/VBR : débit piloté.\n• ICQ/QVBR/AVBR : modes qualité avancés, support driver variable.": {
+    "fra": "Mode de contrôle de débit VAAPI.\n• auto : laisse le driver choisir.\n• CQP : quantizer fixe.\n• CBR/VBR : débit piloté.\n• ICQ/QVBR/AVBR : modes qualité avancés, support driver variable.",
+    "eng": "Rate-control mode VAAPI.\n• auto: lets the driver choose.\n• CQP: fixed quantizer.\n• CBR/VBR: controlled bitrate.\n• ICQ/QVBR/AVBR: advanced quality modes, driver support varies."
+  },
+  "Parallélisme interne VAAPI. Augmenter peut améliorer le débit d'encodage sur un flux unique,\nmais exige plus de surfaces et ajoute de la latence.": {
+    "fra": "Parallélisme interne VAAPI. Augmenter peut améliorer le débit d'encodage sur un flux unique,\nmais exige plus de surfaces et ajoute de la latence.",
+    "eng": "Internal parallelism VAAPI. Increasing it can improve encoding throughput on a single stream,\nbut requires more surfaces and adds latency."
+  },
+  "Compromis vitesse/qualité du wrapper VAAPI.\nValeur plus haute = plus rapide, mais qualité/compression légèrement inférieures.": {
+    "fra": "Compromis vitesse/qualité du wrapper VAAPI.\nValeur plus haute = plus rapide, mais qualité/compression légèrement inférieures.",
+    "eng": "Speed/quality trade-off of the wrapper VAAPI.\nHigher value = faster, but slightly lower quality/compression."
+  },
+  "Bitrate ffmpeg standard (-b). Accepte les suffixes ffmpeg, ex: 18M ou 18000k.\nPeut volontairement surcharger le mode SIZE du workflow.": {
+    "fra": "Bitrate ffmpeg standard (-b). Accepte les suffixes ffmpeg, ex: 18M ou 18000k.\nPeut volontairement surcharger le mode SIZE du workflow.",
+    "eng": "Standard ffmpeg bitrate (-b). Accepts ffmpeg suffixes, e.g. 18M or 18000k.\nCan intentionally override the workflow SIZE mode."
+  },
+  "Plafond ffmpeg standard (-maxrate). Accepte les suffixes ffmpeg, ex: 24M.": {
+    "fra": "Plafond ffmpeg standard (-maxrate). Accepte les suffixes ffmpeg, ex: 24M.",
+    "eng": "Standard ffmpeg bitrate ceiling (-maxrate). Accepts ffmpeg suffixes, e.g. 24M."
+  },
+  "Taille du buffer VBV ffmpeg (-bufsize). Accepte les suffixes ffmpeg, ex: 36M.": {
+    "fra": "Taille du buffer VBV ffmpeg (-bufsize). Accepte les suffixes ffmpeg, ex: 36M.",
+    "eng": "ffmpeg VBV buffer size (-bufsize). Accepts ffmpeg suffixes, e.g. 36M."
+  },
+  "Occupation initiale du buffer VBV (-rc_init_occupancy).\nAccepte les suffixes ffmpeg, ex: 18M.": {
+    "fra": "Occupation initiale du buffer VBV (-rc_init_occupancy).\nAccepte les suffixes ffmpeg, ex: 18M.",
+    "eng": "Initial VBV buffer occupancy (-rc_init_occupancy).\nAccepts ffmpeg suffixes, e.g. 18M."
+  },
+  "Quantizer constant pour les modes CQP.\nSur HEVC/H.264 VAAPI, ce champ correspond au QP des P-frames.": {
+    "fra": "Quantizer constant pour les modes CQP.\nSur HEVC/H.264 VAAPI, ce champ correspond au QP des P-frames.",
+    "eng": "Constant quantizer for CQP modes.\nFor HEVC/H.264 VAAPI, this field maps to the P-frame QP."
+  },
+  "Option ffmpeg standard (-q / -global_quality).\nPlus la valeur est élevée, plus la qualité baisse et la taille diminue.": {
+    "fra": "Option ffmpeg standard (-q / -global_quality).\nPlus la valeur est élevée, plus la qualité baisse et la taille diminue.",
+    "eng": "Option ffmpeg standard (-q / -global_quality).\nHigher values lower quality and reduce size."
+  },
+  "Bornage inférieur du quantizer autorisé.": {
+    "fra": "Bornage inférieur du quantizer autorisé.",
+    "eng": "Lower bound for the allowed quantizer."
+  },
+  "Bornage supérieur du quantizer autorisé.": {
+    "fra": "Bornage supérieur du quantizer autorisé.",
+    "eng": "Upper bound for the allowed quantizer."
+  },
+  "Facteur relatif appliqué aux I-frames par rapport aux P-frames.\nValeurs négatives favorisent davantage les I-frames.": {
+    "fra": "Facteur relatif appliqué aux I-frames par rapport aux P-frames.\nValeurs négatives favorisent davantage les I-frames.",
+    "eng": "Relative factor applied to I-frames compared with P-frames.\nNegative values favor I-frames more."
+  },
+  "Offset ajouté au quantizer des I-frames.": {
+    "fra": "Offset ajouté au quantizer des I-frames.",
+    "eng": "Offset added to the I-frame quantizer."
+  },
+  "Facteur relatif appliqué aux B-frames par rapport aux P-frames.": {
+    "fra": "Facteur relatif appliqué aux B-frames par rapport aux P-frames.",
+    "eng": "Relative factor applied to B-frames compared with P-frames."
+  },
+  "Offset ajouté au quantizer des B-frames.": {
+    "fra": "Offset ajouté au quantizer des B-frames.",
+    "eng": "Offset added to the B-frame quantizer."
+  },
+  "Bitrate Control au niveau bloc plutôt que frame.\nRégule plus finement le débit intra-frame. Invalide en mode CQP.": {
+    "fra": "Bitrate Control au niveau bloc plutôt que frame.\nRégule plus finement le débit intra-frame. Invalide en mode CQP.",
+    "eng": "Block-level bitrate control instead of frame-level control.\nRegulates intra-frame bitrate more precisely. Invalid in CQP mode."
+  },
+  "Taille maximale d'une frame compressée en bytes.\n0 = pas de limite. Utile pour streaming avec contraintes de buffer.": {
+    "fra": "Taille maximale d'une frame compressée en bytes.\n0 = pas de limite. Utile pour streaming avec contraintes de buffer.",
+    "eng": "Maximum size of a compressed frame en bytes.\n0 = no limit. Useful for streaming with buffer constraints."
+  },
+  "Nombre de slices de sortie demandé au wrapper ffmpeg.\n0 = laisse l'encodeur choisir.": {
+    "fra": "Nombre de slices de sortie demandé au wrapper ffmpeg.\n0 = laisse l'encodeur choisir.",
+    "eng": "Requested number of output slices au wrapper ffmpeg.\n0 = lets the encoder choose."
+  },
+  "Active le moteur basse consommation quand la plateforme en propose un.\nPeut réduire le set de fonctionnalités disponibles.": {
+    "fra": "Active le moteur basse consommation quand la plateforme en propose un.\nPeut réduire le set de fonctionnalités disponibles.",
+    "eng": "Enables the low-power engine quand the plateforme en propose a.\nMay reduce the available feature set."
+  },
+  "Nombre maximum de B-frames consécutives.\nHEVC : jusqu'à 8. AV1 : jusqu'à 7. H.264 : jusqu'à 4.": {
+    "fra": "Nombre maximum de B-frames consécutives.\nHEVC : jusqu'à 8. AV1 : jusqu'à 7. H.264 : jusqu'à 4.",
+    "eng": "Maximum number of consecutive B-frames.\nHEVC: up to 8. AV1: up to 7. H.264: up to 4."
+  },
+  "Permet aux B-frames de servir de référence.\n• middle : seule la B du milieu est référence — meilleur compromis qualité.\nRequiert Turing+.": {
+    "fra": "Permet aux B-frames de servir de référence.\n• middle : seule la B du milieu est référence — meilleur compromis qualité.\nRequiert Turing+.",
+    "eng": "Allows B-frames to be used as references.\n• middle: only the middle B-frame is used as a reference - best quality compromise.\nRequires Turing+."
+  },
+  "Nombre de frames de référence pour la prédiction inter-image.\nPlus = meilleure qualité scènes complexes, encodage plus lent.": {
+    "fra": "Nombre de frames de référence pour la prédiction inter-image.\nPlus = meilleure qualité scènes complexes, encodage plus lent.",
+    "eng": "Number of reference frames for inter-frame prediction.\nHigher values improve quality on complex scenes but slow down encoding."
+  },
+  "Profil du codec — détermine les outils autorisés et la compatibilité décodeurs.": {
+    "fra": "Profil du codec — détermine les outils autorisés et la compatibilité décodeurs.",
+    "eng": "Codec profile - determines the allowed tools and the decoder compatibility."
+  },
+  "Mode CQP — qualité constante. Format ``I:P:B`` ou ``X`` (auto-expansé en ``X:X:X``).\nRéférence absolue de qualité, pas de cible bitrate.\nTypique remux UHD : 18:20:22 (très haute qualité).": {
+    "fra": "Mode CQP — qualité constante. Format ``I:P:B`` ou ``X`` (auto-expansé en ``X:X:X``).\nRéférence absolue de qualité, pas de cible bitrate.\nTypique remux UHD : 18:20:22 (très haute qualité).",
+    "eng": "CQP mode - constant quality. Format ``I:P:B`` or ``X`` (auto-expanded to ``X:X:X``).\nAbsolute quality reference, with no bitrate target.\nTypical UHD remux value: 18:20:22 (very high quality)."
+  },
+  "Mode VBR — bitrate moyen cible (kbps).\nCombinaison usuelle : --vbr <bitrate> + --max-bitrate (1.5-2×) + --vbv-bufsize.": {
+    "fra": "Mode VBR — bitrate moyen cible (kbps).\nCombinaison usuelle : --vbr <bitrate> + --max-bitrate (1.5-2×) + --vbv-bufsize.",
+    "eng": "Mode VBR — bitrate moyen cible (kbps).\nCombinaison usuelle : --vbr <bitrate> + --max-bitrate (1.5-2×) + --vbv-bufsize."
+  },
+  "VBR haute qualité (NVEncC). Bitrate moyen cible avec moteur RC plus précis.": {
+    "fra": "VBR haute qualité (NVEncC). Bitrate moyen cible avec moteur RC plus précis.",
+    "eng": "High-quality VBR (NVEncC). Average target bitrate with a more accurate RC engine."
+  },
+  "Mode CBR — bitrate constant. Utile pour streaming live et HW décodeurs limités.": {
+    "fra": "Mode CBR — bitrate constant. Utile pour streaming live et HW décodeurs limités.",
+    "eng": "Mode CBR - constant bitrate. Useful for streaming live and HW limited decoders."
+  },
+  "CBR haute qualité avec moteur RC NVEncC plus précis.": {
+    "fra": "CBR haute qualité avec moteur RC NVEncC plus précis.",
+    "eng": "High-quality CBR with a more accurate NVEncC RC engine."
+  },
+  "QVBR — quality-defined VBR (mode défaut NVEncC).\n0 = auto, 1 = qualité maximale, 51 = qualité minimale.\nTypique 22-26 pour HEVC HQ.": {
+    "fra": "QVBR — quality-defined VBR (mode défaut NVEncC).\n0 = auto, 1 = qualité maximale, 51 = qualité minimale.\nTypique 22-26 pour HEVC HQ.",
+    "eng": "QVBR - quality-defined VBR (default NVEncC mode).\n0 = auto, 1 = maximum quality, 51 = minimum quality.\nTypical value: 22-26 for HEVC HQ."
+  },
+  "Cible qualité VBR (associée à --vbr ou --vbrhq).": {
+    "fra": "Cible qualité VBR (associée à --vbr ou --vbrhq).",
+    "eng": "VBR quality target, associated with --vbr or --vbrhq."
+  },
+  "Plafond instantané du débit. Typique 1.5-2× le bitrate moyen pour absorber les pics.": {
+    "fra": "Plafond instantané du débit. Typique 1.5-2× le bitrate moyen pour absorber les pics.",
+    "eng": "Instantaneous bitrate ceiling. Typical 1.5-2× the average bitrate for absorb peaks."
+  },
+  "Taille du buffer VBV. Typiquement 2× max-bitrate.\nPlus grand = plus de souplesse pour les pics, latence de décodage accrue.": {
+    "fra": "Taille du buffer VBV. Typiquement 2× max-bitrate.\nPlus grand = plus de souplesse pour les pics, latence de décodage accrue.",
+    "eng": "Buffer size VBV. Typicalment 2× max-bitrate.\nLarger = more flexibility for peaks, increased decoding latency."
+  },
+  "Encodage multi-passes pour mieux distribuer le bitrate.\n• 2pass-full : qualité maximale (~30% plus lent). Requiert Turing+.": {
+    "fra": "Encodage multi-passes pour mieux distribuer le bitrate.\n• 2pass-full : qualité maximale (~30% plus lent). Requiert Turing+.",
+    "eng": "Multi-pass encoding to distribute bitrate more effectively.\n• 2pass-full: maximum quality (~30% slower). Requires Turing+."
+  },
+  "Encodage sans perte (taille de fichier énorme).\nRéservé à l'archivage / mastering ; incompatible avec la majorité des modes RC.": {
+    "fra": "Encodage sans perte (taille de fichier énorme).\nRéservé à l'archivage / mastering ; incompatible avec la majorité des modes RC.",
+    "eng": "Lossless encoding (huge file size).\nReserved for archiving/mastering; incompatible with most RC modes."
+  },
+  "QP initial des frames I/P/B en mode CQP.\nFormat ``I:P:B`` ou ``X`` (auto-expansé en ``X:X:X``).": {
+    "fra": "QP initial des frames I/P/B en mode CQP.\nFormat ``I:P:B`` ou ``X`` (auto-expansé en ``X:X:X``).",
+    "eng": "QP initial of frames I/P/B en mode CQP.\nFormat ``I:P:B`` or ``X`` (auto-expanded en ``X:X:X``)."
+  },
+  "Plancher QP.\nFormat ``I:P:B`` ou ``X`` (auto-expansé en ``X:X:X``).": {
+    "fra": "Plancher QP.\nFormat ``I:P:B`` ou ``X`` (auto-expansé en ``X:X:X``).",
+    "eng": "QP floor.\nFormat ``I:P:B`` or ``X`` (auto-expanded en ``X:X:X``)."
+  },
+  "Plafond QP.\nFormat ``I:P:B`` ou ``X`` (auto-expansé en ``X:X:X``).": {
+    "fra": "Plafond QP.\nFormat ``I:P:B`` ou ``X`` (auto-expansé en ``X:X:X``).",
+    "eng": "QP ceiling.\nFormat ``I:P:B`` or ``X`` (auto-expanded en ``X:X:X``)."
+  },
+  "Décalage QP appliqué aux plans chroma vs luma.\nNégatif = chroma plus précis (utile pour préserver les couleurs saturées).": {
+    "fra": "Décalage QP appliqué aux plans chroma vs luma.\nNégatif = chroma plus précis (utile pour préserver les couleurs saturées).",
+    "eng": "QP offset applied to chroma planes relative to luma.\nNegative values give chroma more precision, useful for preserving saturated colors."
+  },
+  "Change le mode RC sur des plages de frames spécifiques.\nFormat avancé : ``<start>:<end>,param=val[,...]`` (cf. doc NVEncC).": {
+    "fra": "Change le mode RC sur des plages de frames spécifiques.\nFormat avancé : ``<start>:<end>,param=val[,...]`` (cf. doc NVEncC).",
+    "eng": "Changes the RC mode on of specific frame ranges.\nAdvanced format: ``<start>:<end>,param=val[,...]`` (cf. doc NVEncC)."
+  },
+  "Distance maximale entre keyframes.\nTypique : 10× framerate. 250 pour 25fps, 240 pour 24p.": {
+    "fra": "Distance maximale entre keyframes.\nTypique : 10× framerate. 250 pour 25fps, 240 pour 24p.",
+    "eng": "Maximum distance between keyframes.\nTypical value: 10x framerate. 250 for 25fps, 240 for 24p."
+  },
+  "Force une structure GOP strictement régulière.\nDésactive la détection de scenecut. Utile pour ABR streaming.": {
+    "fra": "Force une structure GOP strictement régulière.\nDésactive la détection de scenecut. Utile pour ABR streaming.",
+    "eng": "Forces a strictly regular GOP structure.\nDisables scenecut detection. Useful for ABR streaming."
+  },
+  "Désactive l'insertion adaptative de keyframes sur scenecut.": {
+    "fra": "Désactive l'insertion adaptative de keyframes sur scenecut.",
+    "eng": "Disables adaptive keyframe insertion on scenecut."
+  },
+  "Désactive l'insertion adaptative de B-frames.": {
+    "fra": "Désactive l'insertion adaptative de B-frames.",
+    "eng": "Disables adaptive B-frame insertion."
+  },
+  "Frames analysées en avance pour optimiser placement B-frames et QP.\n16-32 = bon compromis. 0 désactive (perte qualité notable).": {
+    "fra": "Frames analysées en avance pour optimiser placement B-frames et QP.\n16-32 = bon compromis. 0 désactive (perte qualité notable).",
+    "eng": "Frames analyzed ahead to optimize B-frame placement and QP.\n16-32 is a good compromise. 0 disables it, causing noticeable quality loss."
+  },
+  "Profondeur d'analyse du lookahead.\n0 = standard. 3 = analyse plus poussée (plus lent).": {
+    "fra": "Profondeur d'analyse du lookahead.\n0 = standard. 3 = analyse plus poussée (plus lent).",
+    "eng": "Analysis depth of the lookahead.\n0 = standard. 3 = deeper analysis (slower)."
+  },
+  "Prédiction pondérée — améliore compression sur fondus, transitions de luminosité.\nRequiert Pascal+.": {
+    "fra": "Prédiction pondérée — améliore compression sur fondus, transitions de luminosité.\nRequiert Pascal+.",
+    "eng": "Weighted prediction - improves compression on fades, brightness transitions.\nRequires Pascal+."
+  },
+  "Active automatiquement les P-frames non-référencées.\nÉconomise du bitrate au prix d'une légère perte qualité.": {
+    "fra": "Active automatiquement les P-frames non-référencées.\nÉconomise du bitrate au prix d'une légère perte qualité.",
+    "eng": "Automatically enables non-reference P-frames.\nSaves bitrate at the cost of a slight quality loss."
+  },
+  "Force des B-frames uni-directionnelles (référence seule en avant).": {
+    "fra": "Force des B-frames uni-directionnelles (référence seule en avant).",
+    "eng": "Forces unidirectional B-frames (forward reference only)."
+  },
+  "Précision des vecteurs de mouvement.\nQ-pel = quart de pixel (qualité), full-pel = pixel entier (rapide).": {
+    "fra": "Précision des vecteurs de mouvement.\nQ-pel = quart de pixel (qualité), full-pel = pixel entier (rapide).",
+    "eng": "Motion-vector precision.\nQ-pel = quarter pixel (quality), full-pel = full pixel (fast)."
+  },
+  "Preset NVEncC.\n• default/performance/quality : presets historiques.\n• P1 (rapide) → P7 (qualité max). P4 = défaut équilibré.\nNote : ``--preset`` est aussi positionnel (-u) ; ce flag long-form fonctionne.": {
+    "fra": "Preset NVEncC.\n• default/performance/quality : presets historiques.\n• P1 (rapide) → P7 (qualité max). P4 = défaut équilibré.\nNote : ``--preset`` est aussi positionnel (-u) ; ce flag long-form fonctionne.",
+    "eng": "Preset NVEncC.\n• default/performance/quality: legacy presets.\n• P1 (fast) -> P7 (maximum quality). P4 = default balanced.\nNote: ``--preset`` is also positional (-u) ; this long-form flag works."
+  },
+  "Profil d'usage de l'encodeur.\n• hq/uhq : qualité maximale (offline) — recommandé.\n• lowlatency/ultralowlatency : streaming.\n• lossless : sans perte.": {
+    "fra": "Profil d'usage de l'encodeur.\n• hq/uhq : qualité maximale (offline) — recommandé.\n• lowlatency/ultralowlatency : streaming.\n• lossless : sans perte.",
+    "eng": "Encoder usage profile.\n• hq/uhq: maximum quality (offline) - recommended.\n• lowlatency/ultralowlatency: streaming.\n• lossless: lossless encoding."
+  },
+  "Adaptive Quantization spatial : alloue plus de bits aux zones lisses où la compression est visible (ciels, peau).\nAméliore notablement la qualité perçue. Recommandé toujours actif.": {
+    "fra": "Adaptive Quantization spatial : alloue plus de bits aux zones lisses où la compression est visible (ciels, peau).\nAméliore notablement la qualité perçue. Recommandé toujours actif.",
+    "eng": "Spatial Adaptive Quantization: allocates more bits to smooth areas where compression is visible, such as skies and skin.\nNoticeably improves perceived quality. Recommended to keep enabled."
+  },
+  "AQ temporel : propage la qualité dans le temps en privilégiant les frames qui servent de référence.\nRequiert Turing+. Gain ~5-10%.": {
+    "fra": "AQ temporel : propage la qualité dans le temps en privilégiant les frames qui servent de référence.\nRequiert Turing+. Gain ~5-10%.",
+    "eng": "Temporal AQ: propagates quality over time by favoring frames used as references.\nRequires Turing+. Gain: ~5-10%."
+  },
+  "Intensité de l'AQ (1-15, 0=auto).\n8 = défaut équilibré. 12+ peut introduire du flou sur détails fins.": {
+    "fra": "Intensité de l'AQ (1-15, 0=auto).\n8 = défaut équilibré. 12+ peut introduire du flou sur détails fins.",
+    "eng": "AQ intensity (1-15, 0=auto).\n8 = default balanced. 12+ may introduce blur on fine details."
+  },
+  "• limited : 16-235 (broadcast standard).\n• full : 0-255 (PC, certains streams).": {
+    "fra": "• limited : 16-235 (broadcast standard).\n• full : 0-255 (PC, certains streams).",
+    "eng": "• limited : 16-235 (broadcast standard).\n• full : 0-255 (PC, certains streams)."
+  },
+  "Format source pour le signaling SEI.": {
+    "fra": "Format source pour le signaling SEI.",
+    "eng": "Source format for SEI signaling."
+  },
+  "Alternative transfer characteristics SEI (HEVC) — int ou nom de transfer.": {
+    "fra": "Alternative transfer characteristics SEI (HEVC) — int ou nom de transfer.",
+    "eng": "Alternative transfer characteristics SEI (HEVC) - integer or transfer name."
+  },
+  "Paramètres RPU DoVi. Ex : ``crop=true`` pour préserver le crop L5 actif.": {
+    "fra": "Paramètres RPU DoVi. Ex : ``crop=true`` pour préserver le crop L5 actif.",
+    "eng": "DoVi RPU parameters. Example: ``crop=true`` to preserve the active L5 crop."
+  },
+  "Insert Access Unit Delimiter (HEVC/H.264).\nRequis pour certains players Blu-ray et muxers TS.": {
+    "fra": "Insert Access Unit Delimiter (HEVC/H.264).\nRequis pour certains players Blu-ray et muxers TS.",
+    "eng": "Insert Access Unit Delimiter (HEVC/H.264).\nRequired for some Blu-ray players and TS muxers."
+  },
+  "Output VPS/SPS/PPS pour chaque IDR.\nRequis pour streaming/seek arbitraire.": {
+    "fra": "Output VPS/SPS/PPS pour chaque IDR.\nRequis pour streaming/seek arbitraire.",
+    "eng": "Outputs VPS/SPS/PPS for each IDR.\nRequired for streaming and arbitrary seeking."
+  },
+  "Insert Picture Timing SEI.": {
+    "fra": "Insert Picture Timing SEI.",
+    "eng": "Insert Picture Timing SEI."
+  },
+  "Nombre de couches temporelles (hierarchical coding).\n0 = désactivé. Utile pour streaming adaptatif.": {
+    "fra": "Nombre de couches temporelles (hierarchical coding).\n0 = désactivé. Utile pour streaming adaptatif.",
+    "eng": "Number of temporal layers (hierarchical coding).\n0 = disabled. Useful for adaptive streaming."
+  },
+  "Algorithme de redimensionnement.\n• lanczos : qualité haute, défaut recommandé.\n• spline36/64 : alternatives haute qualité.\n• bilinear/nearest : rapide, qualité moindre.\nCombiner avec --output-res pour cibler une résolution.": {
+    "fra": "Algorithme de redimensionnement.\n• lanczos : qualité haute, défaut recommandé.\n• spline36/64 : alternatives haute qualité.\n• bilinear/nearest : rapide, qualité moindre.\nCombiner avec --output-res pour cibler une résolution.",
+    "eng": "Resize algorithm.\n• lanczos: high quality, recommended default.\n• spline36/64: high-quality alternatives.\n• bilinear/nearest: fast, lower quality.\nCombine with --output-res to target a resolution."
+  },
+  "Rotation de la vidéo (90/180/270°). Géré GPU.": {
+    "fra": "Rotation de la vidéo (90/180/270°). Géré GPU.",
+    "eng": "Video rotation (90/180/270°). Handled on the GPU."
+  },
+  "Flip/transpose. Format : ``flip_x=true,flip_y=false,transpose=false``.": {
+    "fra": "Flip/transpose. Format : ``flip_x=true,flip_y=false,transpose=false``.",
+    "eng": "Flip/transpose. Format: ``flip_x=true,flip_y=false,transpose=false``."
+  },
+  "Ajoute des bandes noires. Format : ``<L>,<T>,<R>,<B>`` en pixels.": {
+    "fra": "Ajoute des bandes noires. Format : ``<L>,<T>,<R>,<B>`` en pixels.",
+    "eng": "Adds black bars. Format: ``<L>,<T>,<R>,<B>`` in pixels."
+  },
+  "Découpe en pixels.\nFormat : ``<L>,<T>,<R>,<B>`` (pixels à retirer de chaque bord).\nEx: ``0,140,0,140`` pour retirer 140px haut/bas (passage 16:9 → 2.40).": {
+    "fra": "Découpe en pixels.\nFormat : ``<L>,<T>,<R>,<B>`` (pixels à retirer de chaque bord).\nEx: ``0,140,0,140`` pour retirer 140px haut/bas (passage 16:9 → 2.40).",
+    "eng": "Crops in pixels.\nFormat: ``<L>,<T>,<R>,<B>`` (pixels to remove from each edge).\nEx: ``0,140,0,140`` for remove 140px top/bottom (conversion 16:9 -> 2.40)."
+  },
+  "Désentrelacement basique. Pour la qualité maximale, utiliser --vpp-nnedi ou --vpp-yadif.": {
+    "fra": "Désentrelacement basique. Pour la qualité maximale, utiliser --vpp-nnedi ou --vpp-yadif.",
+    "eng": "Basic deinterlacing. For the maximum quality, use --vpp-nnedi or --vpp-yadif."
+  },
+  "Auto Field Shift — désentrelaceur avancé pour sources NTSC/film telecine.\nFormat : ``preset=24fps,...``. Convertit télécine → 24p natif.": {
+    "fra": "Auto Field Shift — désentrelaceur avancé pour sources NTSC/film telecine.\nFormat : ``preset=24fps,...``. Convertit télécine → 24p natif.",
+    "eng": "Auto Field Shift - advanced deinterlacer for sources NTSC/film telecine.\nFormat: ``preset=24fps,...``. Converts telecine -> 24p native."
+  },
+  "Désentrelaceur classique. Format : ``mode=auto`` (auto/tff/bff/bob/bob_tff/bob_bff).": {
+    "fra": "Désentrelaceur classique. Format : ``mode=auto`` (auto/tff/bff/bob/bob_tff/bob_bff).",
+    "eng": "Classic deinterlacer. Format: ``mode=auto`` (auto/tff/bff/bob/bob_tff/bob_bff)."
+  },
+  "Désentrelaceur neuronal — qualité maximale.\nFormat : ``nns=64,quality=slow,field=auto``. nns ∈ {16,32,64,128,256}.": {
+    "fra": "Désentrelaceur neuronal — qualité maximale.\nFormat : ``nns=64,quality=slow,field=auto``. nns ∈ {16,32,64,128,256}.",
+    "eng": "Neural deinterlacer - maximum quality.\nFormat: ``nns=64,quality=slow,field=auto``. nns ∈ {16,32,64,128,256}."
+  },
+  "Désentrelacement adaptatif. Format : ``full=true,threshold=10,blend=false``.": {
+    "fra": "Désentrelacement adaptatif. Format : ``full=true,threshold=10,blend=false``.",
+    "eng": "Adaptive deinterlacing. Format: ``full=true,threshold=10,blend=false``."
+  },
+  "Drop des frames dupliquées (cadence fixe). Format : ``cycle=5,drop=1``.": {
+    "fra": "Drop des frames dupliquées (cadence fixe). Format : ``cycle=5,drop=1``.",
+    "eng": "Drop duplicate frames (fixed cadence). Format: ``cycle=5,drop=1``."
+  },
+  "Drop des duplicats consécutifs (VFR). Format : ``hi=768,lo=320,frac=0.33``.": {
+    "fra": "Drop des duplicats consécutifs (VFR). Format : ``hi=768,lo=320,frac=0.33``.",
+    "eng": "Drop of consecutive duplicates (VFR). Format: ``hi=768,lo=320,frac=0.33``."
+  },
+  "Garde 1 frame sur N. Format : ``<N>,offset=0``. Ex: ``3,offset=1``.": {
+    "fra": "Garde 1 frame sur N. Format : ``<N>,offset=0``. Ex: ``3,offset=1``.",
+    "eng": "Keeps 1 frame out of N. Format: ``<N>,offset=0``. Example: ``3,offset=1``."
+  },
+  "Honore le flag Repeat Field Flag du stream source.": {
+    "fra": "Honore le flag Repeat Field Flag du stream source.",
+    "eng": "Honors the Repeat Field Flag from the source stream."
+  },
+  "K-nearest neighbors denoising — rapide, GPU.\nFormat : ``radius=4,strength=0.08,lerp=0.2``. strength ∈ [0,1].": {
+    "fra": "K-nearest neighbors denoising — rapide, GPU.\nFormat : ``radius=4,strength=0.08,lerp=0.2``. strength ∈ [0,1].",
+    "eng": "K-nearest neighbors denoising — fast, GPU.\nFormat: ``radius=4,strength=0.08,lerp=0.2``. strength ∈ [0,1]."
+  },
+  "Piecewise Directional Motion denoiser.\nFormat : ``apply_count=2,strength=100,threshold=100``.": {
+    "fra": "Piecewise Directional Motion denoiser.\nFormat : ``apply_count=2,strength=100,threshold=100``.",
+    "eng": "Piecewise Directional Motion denoiser.\nFormat: ``apply_count=2,strength=100,threshold=100``."
+  },
+  "Non-local means — qualité haute, lent.\nFormat : ``h=0.05,patch=5,research=11``.": {
+    "fra": "Non-local means — qualité haute, lent.\nFormat : ``h=0.05,patch=5,research=11``.",
+    "eng": "Non-local means - high quality, slow.\nFormat: ``h=0.05,patch=5,research=11``."
+  },
+  "Denoising DCT-based.\nFormat : ``sigma=4,block_size=8,quality=high``.": {
+    "fra": "Denoising DCT-based.\nFormat : ``sigma=4,block_size=8,quality=high``.",
+    "eng": "Denoising DCT-based.\nFormat: ``sigma=4,block_size=8,quality=high``."
+  },
+  "FFT 3D denoiser — qualité très haute, temporel.\nFormat : ``sigma=4,block_size=32,prev_frames=2,next_frames=2``.": {
+    "fra": "FFT 3D denoiser — qualité très haute, temporel.\nFormat : ``sigma=4,block_size=32,prev_frames=2,next_frames=2``.",
+    "eng": "FFT 3D denoiser - very high quality, temporal.\nFormat: ``sigma=4,block_size=32,prev_frames=2,next_frames=2``."
+  },
+  "Flou gaussien (0-100). À utiliser avec parcimonie (perte de détail).": {
+    "fra": "Flou gaussien (0-100). À utiliser avec parcimonie (perte de détail).",
+    "eng": "Gaussian blur (0-100). A use with parcimonie (loss of detail)."
+  },
+  "Smoothing filter. Format : ``quality=3,strength=4``.": {
+    "fra": "Smoothing filter. Format : ``quality=3,strength=4``.",
+    "eng": "Smoothing filter. Format: ``quality=3,strength=4``."
+  },
+  "Convolution 3D denoiser. Format : ``matrix=standard,fast=true,ythresh=3``.": {
+    "fra": "Convolution 3D denoiser. Format : ``matrix=standard,fast=true,ythresh=3``.",
+    "eng": "Convolution 3D denoiser. Format: ``matrix=standard,fast=true,ythresh=3``."
+  },
+  "NVIDIA MAXINE webcam denoising. Format : ``strength=1.0`` (0..1).\nRequiert SDK NVVFX installé.": {
+    "fra": "NVIDIA MAXINE webcam denoising. Format : ``strength=1.0`` (0..1).\nRequiert SDK NVVFX installé.",
+    "eng": "NVIDIA MAXINE webcam denoising. Format: ``strength=1.0`` (0..1).\nRequires SDK NVVFX installe."
+  },
+  "Réduction d'artefacts via NVVFX (sources lossy basse qualité).": {
+    "fra": "Réduction d'artefacts via NVVFX (sources lossy basse qualité).",
+    "eng": "Artifact reduction via NVVFX (sources lossy low quality)."
+  },
+  "Masque de netteté.\nFormat : ``radius=3,weight=0.5,threshold=0.05``.": {
+    "fra": "Masque de netteté.\nFormat : ``radius=3,weight=0.5,threshold=0.05``.",
+    "eng": "Unsharp mask.\nFormat: ``radius=3,weight=0.5,threshold=0.05``."
+  },
+  "Renforcement des contours.\nFormat : ``strength=5,threshold=20,black=0,white=0``.": {
+    "fra": "Renforcement des contours.\nFormat : ``strength=5,threshold=20,black=0,white=0``.",
+    "eng": "Edge enhancement.\nFormat: ``strength=5,threshold=20,black=0,white=0``."
+  },
+  "Warp-based sharpening (préserve les bords). Format avancé, voir doc NVEncC.": {
+    "fra": "Warp-based sharpening (préserve les bords). Format avancé, voir doc NVEncC.",
+    "eng": "Warp-based sharpening (preserves edges). Advanced format; see NVEncC documentation."
+  },
+  "Motion-aware sharpening. Format : ``threshold=15,strength=85``.": {
+    "fra": "Motion-aware sharpening. Format : ``threshold=15,strength=85``.",
+    "eng": "Motion-aware sharpening. Format: ``threshold=15,strength=85``."
+  },
+  "Réglages basiques.\nFormat : ``brightness=0.0,contrast=1.0,saturation=1.0,hue=0.0,gamma=1.0``.": {
+    "fra": "Réglages basiques.\nFormat : ``brightness=0.0,contrast=1.0,saturation=1.0,hue=0.0,gamma=1.0``.",
+    "eng": "Basic adjustments.\nFormat: ``brightness=0.0,contrast=1.0,saturation=1.0,hue=0.0,gamma=1.0``."
+  },
+  "Courbes tonales par canal. Format avancé, voir doc NVEncC.": {
+    "fra": "Courbes tonales par canal. Format avancé, voir doc NVEncC.",
+    "eng": "Tone curves per channel. Advanced format, voir doc NVEncC."
+  },
+  "Suppression du banding (gradients postérisés).\nFormat : ``range=15,threshold=15,dither=true``.": {
+    "fra": "Suppression du banding (gradients postérisés).\nFormat : ``range=15,threshold=15,dither=true``.",
+    "eng": "Banding removal (posterized gradients).\nFormat: ``range=15,threshold=15,dither=true``."
+  },
+  "Debanding libplacebo (qualité supérieure).": {
+    "fra": "Debanding libplacebo (qualité supérieure).",
+    "eng": "Debanding libplacebo (higher quality)."
+  },
+  "Suppression de logo.\nFormat : ``<logofile.lgd>,select=0,depth=0,pos=0:0`` (fichier .lgd requis).": {
+    "fra": "Suppression de logo.\nFormat : ``<logofile.lgd>,select=0,depth=0,pos=0:0`` (fichier .lgd requis).",
+    "eng": "Logo removal.\nFormat: ``<logofile.lgd>,select=0,depth=0,pos=0:0`` (.lgd file required)."
+  },
+  "Incrustation image/vidéo.\nFormat : ``file=<path>,x=0,y=0,alpha=1.0``.": {
+    "fra": "Incrustation image/vidéo.\nFormat : ``file=<path>,x=0,y=0,alpha=1.0``.",
+    "eng": "Incrustation image/video.\nFormat: ``file=<path>,x=0,y=0,alpha=1.0``."
+  },
+  "Burn-in des sous-titres dans l'image.\nFormat : ``track=1`` (track interne) ou ``filename=<srt/ass>``.": {
+    "fra": "Burn-in des sous-titres dans l'image.\nFormat : ``track=1`` (track interne) ou ``filename=<srt/ass>``.",
+    "eng": "Burn subtitles into the image.\nFormat: ``track=1`` (internal track) or ``filename=<srt/ass>``."
+  },
+  "Custom GLSL shader via libplacebo (chemin .glsl).": {
+    "fra": "Custom GLSL shader via libplacebo (chemin .glsl).",
+    "eng": "Custom GLSL shader via libplacebo (path .glsl)."
+  },
+  "Frame Rate Up-Conversion (NVIDIA Optical Flow).\nFormat : ``mode=0`` (modes 0..N selon GPU). Ex: 30→60 fps.": {
+    "fra": "Frame Rate Up-Conversion (NVIDIA Optical Flow).\nFormat : ``mode=0`` (modes 0..N selon GPU). Ex: 30→60 fps.",
+    "eng": "Frame Rate Up-Conversion (NVIDIA Optical Flow).\nFormat: ``mode=0`` (modes 0..N selon GPU). Example: 30→60 fps."
+  },
+  "NVIDIA NGX TrueHDR — convertit SDR en HDR par IA.\nRequiert RTX 20xx+ et SDK NGX.": {
+    "fra": "NVIDIA NGX TrueHDR — convertit SDR en HDR par IA.\nRequiert RTX 20xx+ et SDK NGX.",
+    "eng": "NVIDIA NGX TrueHDR - converts SDR to HDR with AI.\nRequires RTX 20xx+ and the NGX SDK."
+  },
+  "Affiche les métriques de performance des filtres VPP.": {
+    "fra": "Affiche les métriques de performance des filtres VPP.",
+    "eng": "Displays metrics of performance of filtres VPP."
+  },
+  "Chemin vers les modèles NVVFX (SDK NVIDIA MAXINE).": {
+    "fra": "Chemin vers les modèles NVVFX (SDK NVIDIA MAXINE).",
+    "eng": "Path to models NVVFX (SDK NVIDIA MAXINE)."
+  },
+  "ID du GPU à utiliser (0 = premier). Cf. NVEncC --check-device.": {
+    "fra": "ID du GPU à utiliser (0 = premier). Cf. NVEncC --check-device.",
+    "eng": "ID of the GPU to use (0 = first). Cf. NVEncC --check-device."
+  },
+  "Mode de scheduling CUDA.\n• auto : laisse le driver choisir.\n• spin : actif (latence basse, CPU élevé).\n• yield/blocking : économe en CPU.": {
+    "fra": "Mode de scheduling CUDA.\n• auto : laisse le driver choisir.\n• spin : actif (latence basse, CPU élevé).\n• yield/blocking : économe en CPU.",
+    "eng": "CUDA scheduling mode.\n• auto: lets the driver choose.\n• spin: active waiting (low latency, high CPU).\n• yield/blocking: CPU-efficient."
+  },
+  "Nombre de streams CUDA pour parallélisme intra-GPU.": {
+    "fra": "Nombre de streams CUDA pour parallélisme intra-GPU.",
+    "eng": "Number of streams CUDA for parallelisme intra-GPU."
+  },
+  "Multi-threading CUDA. 0 = off, 1 = on.": {
+    "fra": "Multi-threading CUDA. 0 = off, 1 = on.",
+    "eng": "Multi-threading CUDA. 0 = off, 1 = on."
+  },
+  "Désactive NVIDIA Management Library (workaround driver bugs).": {
+    "fra": "Désactive NVIDIA Management Library (workaround driver bugs).",
+    "eng": "Disables NVIDIA Management Library (workaround driver bugs)."
+  },
+  "Encodage parallèle de plusieurs segments.\nValeurs : ``auto`` ou un entier.\n``all`` est un ancien alias accepté puis canonisé en ``auto``.": {
+    "fra": "Encodage parallèle de plusieurs segments.\nValeurs : ``auto`` ou un entier.\n``all`` est un ancien alias accepté puis canonisé en ``auto``.",
+    "eng": "Parallel encoding of multiple segments.\nValues: ``auto`` or an integer.\n``all`` is a legacy alias accepted and canonicalized to ``auto``."
+  },
+  "Frame-split encoding NVENC.\nValeurs : ``disable``, ``auto``, ``auto_forced``, ``forced_2``, ``forced_3``, ``forced_4``.\nÀ utiliser à la place de ``parallel`` ; les deux modes sont exclusifs.": {
+    "fra": "Frame-split encoding NVENC.\nValeurs : ``disable``, ``auto``, ``auto_forced``, ``forced_2``, ``forced_3``, ``forced_4``.\nÀ utiliser à la place de ``parallel`` ; les deux modes sont exclusifs.",
+    "eng": "Frame-split encoding NVENC.\nValues: ``disable``, ``auto``, ``auto_forced``, ``forced_2``, ``forced_3``, ``forced_4``.\nA use to the place of ``parallel`` ; the two modes are mutually exclusive."
+  },
+  "Mode faible latence pour streaming live.": {
+    "fra": "Mode faible latence pour streaming live.",
+    "eng": "Low-latency mode for live streaming."
+  },
+  "Plafond de vitesse de traitement (frames/sec). 0 = illimité.": {
+    "fra": "Plafond de vitesse de traitement (frames/sec). 0 = illimité.",
+    "eng": "Speed cap of traitement (frames/sec). 0 = unlimited."
+  },
+  "Fallback automatique si le GPU ne supporte pas la profondeur demandée.": {
+    "fra": "Fallback automatique si le GPU ne supporte pas la profondeur demandée.",
+    "eng": "Automatic fallback if the GPU does not support the requested bit depth."
+  },
+  "Calcule SSIM en fin d'encodage. Pour benchmark.": {
+    "fra": "Calcule SSIM en fin d'encodage. Pour benchmark.",
+    "eng": "Computes SSIM at the end of encoding. For benchmarking."
+  },
+  "Calcule PSNR en fin d'encodage. Pour benchmark.": {
+    "fra": "Calcule PSNR en fin d'encodage. Pour benchmark.",
+    "eng": "Computes PSNR at the end of encoding. For benchmarking."
+  },
+  "Calcule VMAF.\nFormat : ``model=vmaf_v0.6.1,threads=4,subsample=1,phone_model=false``.": {
+    "fra": "Calcule VMAF.\nFormat : ``model=vmaf_v0.6.1,threads=4,subsample=1,phone_model=false``.",
+    "eng": "Calcule VMAF.\nFormat: ``model=vmaf_v0.6.1,threads=4,subsample=1,phone_model=false``."
+  },
+  "Tokens NVEncC additionnels concaténés en fin de commande.\nEx: ``--option-file <path>``, ``--input-option key=val``, ``--mux-option opt:val``, ``--avsync vfr``, etc.": {
+    "fra": "Tokens NVEncC additionnels concaténés en fin de commande.\nEx: ``--option-file <path>``, ``--input-option key=val``, ``--mux-option opt:val``, ``--avsync vfr``, etc.",
+    "eng": "Tokens NVEncC additional tokens appended at the end of the command.\nEx: ``--option-file <path>``, ``--input-option key=val``, ``--mux-option opt:val``, ``--avsync vfr``, etc."
+  },
+  "Tier HEVC.\n• main : bitrate plafonné selon le level (consumer).\n• high : bitrate étendu — requis pour UHD HDR haut bitrate.": {
+    "fra": "Tier HEVC.\n• main : bitrate plafonné selon le level (consumer).\n• high : bitrate étendu — requis pour UHD HDR haut bitrate.",
+    "eng": "Tier HEVC.\n• main: bitrate plafonne selon the level (consumer).\n• high: bitrate etendu - required for UHD HDR high bitrate."
+  },
+  "Level du codec — limite résolution/framerate/bitrate.\nauto = déduit du contenu. 5.1 = 4K@60p (HEVC) / 4K@30p (H.264).": {
+    "fra": "Level du codec — limite résolution/framerate/bitrate.\nauto = déduit du contenu. 5.1 = 4K@60p (HEVC) / 4K@30p (H.264).",
+    "eng": "Codec level - limits resolution, framerate, and bitrate.\nauto = inferred from the content. 5.1 = 4K@60p (HEVC) / 4K@30p (H.264)."
+  },
+  "Profondeur de bit de sortie. 10 = obligatoire pour HDR.": {
+    "fra": "Profondeur de bit de sortie. 10 = obligatoire pour HDR.",
+    "eng": "Output bit depth. 10 is required for HDR."
+  },
+  "Espace couleur de sortie. yuv420 = standard ; yuv444/rgb = pro.": {
+    "fra": "Espace couleur de sortie. yuv420 = standard ; yuv444/rgb = pro.",
+    "eng": "Output color space. yuv420 = standard; yuv444/rgb = professional."
+  },
+  "Résolution de sortie.\nFormat : ``WxH`` (ex: ``1920x1080``) ou ``0x-2`` (préserve aspect ratio).": {
+    "fra": "Résolution de sortie.\nFormat : ``WxH`` (ex: ``1920x1080``) ou ``0x-2`` (préserve aspect ratio).",
+    "eng": "Output resolution.\nFormat: ``WxH`` (e.g. ``1920x1080``) or ``0x-2`` (preserves aspect ratio)."
+  },
+  "Sample Aspect Ratio. Ex: ``1:1`` (square), ``40:33`` (PAL anamorphique).": {
+    "fra": "Sample Aspect Ratio. Ex: ``1:1`` (square), ``40:33`` (PAL anamorphique).",
+    "eng": "Sample Aspect Ratio. Example: ``1:1`` (square), ``40:33`` (PAL anamorphique)."
+  },
+  "Display Aspect Ratio. Ex: ``16:9``, ``2.40:1``.": {
+    "fra": "Display Aspect Ratio. Ex: ``16:9``, ``2.40:1``.",
+    "eng": "Display Aspect Ratio. Example: ``16:9``, ``2.40:1``."
+  },
+  "Taille minimale des Coding Units HEVC.\nPlus petit = meilleure adaptation aux détails fins, encodage plus lent.": {
+    "fra": "Taille minimale des Coding Units HEVC.\nPlus petit = meilleure adaptation aux détails fins, encodage plus lent.",
+    "eng": "Minimum HEVC Coding Unit size.\nSmaller values adapt better to fine detail but slow down encoding."
+  },
+  "Taille maximale des Coding Units HEVC.": {
+    "fra": "Taille maximale des Coding Units HEVC.",
+    "eng": "Maximum HEVC Coding Unit size."
+  },
+  "Filtrage temporel HEVC. 0 = off, 4 = activé.": {
+    "fra": "Filtrage temporel HEVC. 0 = off, 4 = activé.",
+    "eng": "HEVC temporal filtering. 0 = off, 4 = enabled."
+  },
+  "Ratio bitrate alpha/luma. 0 = auto (alpha channel only).": {
+    "fra": "Ratio bitrate alpha/luma. 0 = auto (alpha channel only).",
+    "eng": "Ratio bitrate alpha/luma. 0 = auto (alpha channel only)."
+  },
+  "Mode du canal alpha (alpha channel only).": {
+    "fra": "Mode du canal alpha (alpha channel only).",
+    "eng": "Alpha channel mode (alpha channel only)."
+  },
+  "Mode direct des B-frames. auto = recommandé.": {
+    "fra": "Mode direct des B-frames. auto = recommandé.",
+    "eng": "Direct mode for B-frames. auto = recommended."
+  },
+  "Transform 8x8 adaptatif (default ON).\nDécocher pour compatibilité décodeurs anciens.": {
+    "fra": "Transform 8x8 adaptatif (default ON).\nDécocher pour compatibilité décodeurs anciens.",
+    "eng": "Adaptive 8x8 transform (default ON).\nUncheck for compatibility with older decoders."
+  },
+  "Active la structure hiérarchique des P-frames.": {
+    "fra": "Active la structure hiérarchique des P-frames.",
+    "eng": "Enables hierarchical P-frame structure."
+  },
+  "Active la structure hiérarchique des B-frames.": {
+    "fra": "Active la structure hiérarchique des B-frames.",
+    "eng": "Enables hierarchical B-frame structure."
+  },
+  "Active le codage entropique CABAC (default ON, plus efficace que CAVLC).": {
+    "fra": "Active le codage entropique CABAC (default ON, plus efficace que CAVLC).",
+    "eng": "Enables CABAC entropy coding (default ON, more efficient than CAVLC)."
+  },
+  "Force CAVLC (compat décodeurs très anciens, qualité réduite).": {
+    "fra": "Force CAVLC (compat décodeurs très anciens, qualité réduite).",
+    "eng": "Forces CAVLC (compatibility with very old decoders, reduced quality)."
+  },
+  "Force le respect des contraintes Blu-ray.": {
+    "fra": "Force le respect des contraintes Blu-ray.",
+    "eng": "Forces Blu-ray constraint compliance."
+  },
+  "Filtre de déblocking (default ON).\nDésactiver dégrade la qualité visuelle, à utiliser avec parcimonie.": {
+    "fra": "Filtre de déblocking (default ON).\nDésactiver dégrade la qualité visuelle, à utiliser avec parcimonie.",
+    "eng": "Deblocking filter (default ON).\nDisabling it degrades visual quality; use sparingly."
+  },
+  "Taille minimale des partitions AV1.": {
+    "fra": "Taille minimale des partitions AV1.",
+    "eng": "Minimum AV1 partition size."
+  },
+  "Taille maximale des partitions AV1.": {
+    "fra": "Taille maximale des partitions AV1.",
+    "eng": "Maximum AV1 partition size."
+  },
+  "Nombre de colonnes de tiles (parallélisme décodage).": {
+    "fra": "Nombre de colonnes de tiles (parallélisme décodage).",
+    "eng": "Number of tile columns (decode parallelism)."
+  },
+  "Nombre de lignes de tiles.": {
+    "fra": "Nombre de lignes de tiles.",
+    "eng": "Number of tile rows."
+  },
+  "Nombre max de références forward (0 = auto).": {
+    "fra": "Nombre max de références forward (0 = auto).",
+    "eng": "Maximum number of forward references (0 = auto)."
+  },
+  "Nombre max de références backward (0 = auto).": {
+    "fra": "Nombre max de références backward (0 = auto).",
+    "eng": "Maximum number of backward references (0 = auto)."
+  },
+  "Active le padding bitstream pour CBR strict.": {
+    "fra": "Active le padding bitstream pour CBR strict.",
+    "eng": "Enables bitstream padding for strict CBR."
+  },
+  "Nombre max de frames de référence dans la liste L0 (HEVC/H.264 only).": {
+    "fra": "Nombre max de frames de référence dans la liste L0 (HEVC/H.264 only).",
+    "eng": "Maximum number of reference frames in list L0 (HEVC/H.264 only)."
+  },
+  "Nombre max de frames de référence dans la liste L1 (HEVC/H.264 only).": {
+    "fra": "Nombre max de frames de référence dans la liste L1 (HEVC/H.264 only).",
+    "eng": "Maximum number of reference frames in list L1 (HEVC/H.264 only)."
+  },
+  "Profil d'usage du moteur NVENC.\n• hq : qualité maximale (encodage offline) — recommandé pour le remux.\n• ll / ull : faible latence pour le streaming, qualité moindre.\n• lossless : sans perte (taille de fichier énorme).": {
+    "fra": "Profil d'usage du moteur NVENC.\n• hq : qualité maximale (encodage offline) — recommandé pour le remux.\n• ll / ull : faible latence pour le streaming, qualité moindre.\n• lossless : sans perte (taille de fichier énorme).",
+    "eng": "NVENC engine usage profile.\n• hq: maximum quality (offline encoding) - recommended for remux work.\n• ll / ull: low latency for streaming, lower quality.\n• lossless: lossless output (huge file size)."
+  },
+  "Encodage multi-passes pour mieux répartir le débit.\n• disabled : 1 passe (plus rapide).\n• qres : 1ʳᵉ passe en quart de résolution (compromis).\n• fullres : 1ʳᵉ passe pleine résolution — qualité maximale, ~30% plus lent.\nRequiert Turing (RTX 20xx) ou plus récent.": {
+    "fra": "Encodage multi-passes pour mieux répartir le débit.\n• disabled : 1 passe (plus rapide).\n• qres : 1ʳᵉ passe en quart de résolution (compromis).\n• fullres : 1ʳᵉ passe pleine résolution — qualité maximale, ~30% plus lent.\nRequiert Turing (RTX 20xx) ou plus récent.",
+    "eng": "Multi-pass encoding to distribute bitrate more effectively.\n• disabled: 1 pass (faster).\n• qres: first pass at quarter resolution (compromise).\n• fullres: first pass at full resolution - maximum quality, ~30% slower.\nRequires Turing (RTX 20xx) or newer."
+  },
+  "Valeur QP minimale autorisée par l'encodeur.\nPlafonne la qualité maximale d'une frame (utile pour limiter le sur-coût bitrate sur des scènes simples). Laisser 0 = pas de limite basse.": {
+    "fra": "Valeur QP minimale autorisée par l'encodeur.\nPlafonne la qualité maximale d'une frame (utile pour limiter le sur-coût bitrate sur des scènes simples). Laisser 0 = pas de limite basse.",
+    "eng": "Minimum QP value allowed by the encoder.\nCaps the maximum quality of a frame, useful to limit bitrate overhead on simple scenes. Leave 0 for no lower limit."
+  },
+  "Valeur QP maximale autorisée. Plus le QP est haut, plus la qualité chute.\nRéduire à ~35-40 pour garantir un seuil de qualité minimal sur les scènes complexes.": {
+    "fra": "Valeur QP maximale autorisée. Plus le QP est haut, plus la qualité chute.\nRéduire à ~35-40 pour garantir un seuil de qualité minimal sur les scènes complexes.",
+    "eng": "Maximum allowed QP value. Higher QP means lower quality.\nLower it to ~35-40 to guarantee a minimum quality threshold on complex scenes."
+  },
+  "Nombre de frames analysées en avance pour optimiser le placement des B-frames et la décision de QP.\n32 = bon compromis. 0 désactive (perte de qualité notable).": {
+    "fra": "Nombre de frames analysées en avance pour optimiser le placement des B-frames et la décision de QP.\n32 = bon compromis. 0 désactive (perte de qualité notable).",
+    "eng": "Number of frames analyzed ahead to optimize B-frame placement and QP decisions.\n32 is a good compromise. 0 disables it, with noticeable quality loss."
+  },
+  "Plafond instantané du débit (mode VBR uniquement).\nDoit être ≥ bitrate cible. Typiquement 1.5× à 2× le bitrate moyen pour absorber les pics de complexité.": {
+    "fra": "Plafond instantané du débit (mode VBR uniquement).\nDoit être ≥ bitrate cible. Typiquement 1.5× à 2× le bitrate moyen pour absorber les pics de complexité.",
+    "eng": "Instantaneous bitrate ceiling (mode VBR uniquement).\nDoit etre ≥ bitrate cible. Typicalment 1.5× to 2× the average bitrate for absorb peaks of complexite."
+  },
+  "Taille du buffer VBV (Video Buffering Verifier).\nTypiquement 2× le maxrate. Plus grand = plus de souplesse pour les pics, mais latence de décodage accrue.": {
+    "fra": "Taille du buffer VBV (Video Buffering Verifier).\nTypiquement 2× le maxrate. Plus grand = plus de souplesse pour les pics, mais latence de décodage accrue.",
+    "eng": "Buffer size VBV (Video Buffering Verifier).\nTypicalment 2× the maxrate. Larger = more flexibility for peaks, but increased decoding latency."
+  },
+  "Adaptive Quantization spatial : alloue plus de bits aux zones lisses (ciels, peau) où la compression est visible, moins aux zones chargées.\nAméliore notablement la qualité perçue. Recommandé toujours actif.": {
+    "fra": "Adaptive Quantization spatial : alloue plus de bits aux zones lisses (ciels, peau) où la compression est visible, moins aux zones chargées.\nAméliore notablement la qualité perçue. Recommandé toujours actif.",
+    "eng": "Spatial Adaptive Quantization: allocates more bits to smooth areas such as skies and skin where compression is visible, and fewer bits to busy areas.\nNoticeably improves perceived quality. Recommended to keep enabled."
+  },
+  "Intensité de l'AQ spatial (1-15). Plus la valeur est haute, plus la redistribution de bits est agressive.\n8 = défaut équilibré. 12-15 = peut introduire du flou sur les détails fins.": {
+    "fra": "Intensité de l'AQ spatial (1-15). Plus la valeur est haute, plus la redistribution de bits est agressive.\n8 = défaut équilibré. 12-15 = peut introduire du flou sur les détails fins.",
+    "eng": "Spatial AQ intensity (1-15). Higher values redistribute bits more aggressively.\n8 is a balanced default. 12-15 can introduce blur on fine details."
+  },
+  "AQ temporel : alloue plus de bits aux frames qui servent de référence aux frames suivantes (propage la qualité dans le temps).\nRequiert Turing (RTX 20xx) ou plus récent. Gain qualité ~5-10%.": {
+    "fra": "AQ temporel : alloue plus de bits aux frames qui servent de référence aux frames suivantes (propage la qualité dans le temps).\nRequiert Turing (RTX 20xx) ou plus récent. Gain qualité ~5-10%.",
+    "eng": "Temporal AQ: allocates more bits to frames that will be used as references by following frames, propagating quality over time.\nRequires Turing (RTX 20xx) or newer. Quality gain: ~5-10%."
+  },
+  "Marque les P-frames comme non-référencées : économise du bitrate au prix d'une légère perte de qualité.\nUtile pour le streaming bas débit, déconseillé pour l'archivage.": {
+    "fra": "Marque les P-frames comme non-référencées : économise du bitrate au prix d'une légère perte de qualité.\nUtile pour le streaming bas débit, déconseillé pour l'archivage.",
+    "eng": "Marks P-frames as non-reference frames: saves bitrate at the cost of slight quality loss.\nUseful for low-bitrate streaming, not recommended for archiving."
+  },
+  "Distance maximale entre deux keyframes (I-frames).\nTypique : 10× le framerate (250 pour 25 fps, 240 pour 24p).\nPlus court = meilleur seek, plus long = compression accrue.": {
+    "fra": "Distance maximale entre deux keyframes (I-frames).\nTypique : 10× le framerate (250 pour 25 fps, 240 pour 24p).\nPlus court = meilleur seek, plus long = compression accrue.",
+    "eng": "Maximum distance between two keyframes (I-frames).\nTypical value: 10x the framerate (250 for 25 fps, 240 for 24p).\nShorter improves seeking; longer improves compression."
+  },
+  "Nombre maximum de B-frames consécutives entre deux frames de référence.\n4 = très bon pour HEVC. 0 désactive complètement (qualité réduite).": {
+    "fra": "Nombre maximum de B-frames consécutives entre deux frames de référence.\n4 = très bon pour HEVC. 0 désactive complètement (qualité réduite).",
+    "eng": "Maximum number of consecutive B-frames between two reference frames.\n4 is very good for HEVC. 0 disables them completely, reducing quality."
+  },
+  "Permet aux B-frames de servir de référence à d'autres frames.\n• disabled : B-frames non-référencées (HEVC standard).\n• each : chaque B peut être référence.\n• middle : seule la B du milieu est référence — meilleur compromis qualité.\nRequiert Turing (RTX 20xx) ou plus récent.": {
+    "fra": "Permet aux B-frames de servir de référence à d'autres frames.\n• disabled : B-frames non-référencées (HEVC standard).\n• each : chaque B peut être référence.\n• middle : seule la B du milieu est référence — meilleur compromis qualité.\nRequiert Turing (RTX 20xx) ou plus récent.",
+    "eng": "Allows B-frames to be used as references by other frames.\n• disabled: non-reference B-frames (HEVC standard).\n• each: every B-frame can be a reference.\n• middle: only the middle B-frame is a reference - best quality compromise.\nRequires Turing (RTX 20xx) or newer."
+  },
+  "Nombre de frames de référence pour la prédiction inter-image.\nPlus = meilleure qualité sur scènes complexes, mais encodage plus lent.": {
+    "fra": "Nombre de frames de référence pour la prédiction inter-image.\nPlus = meilleure qualité sur scènes complexes, mais encodage plus lent.",
+    "eng": "Number of reference frames for inter-frame prediction.\nHigher values improve quality on complex scenes, but encoding is slower."
+  },
+  "Force une structure GOP strictement régulière (keyframes à intervalles fixes).\nDésactive la détection de scenecut. Utile pour ABR streaming, déconseillé sinon.": {
+    "fra": "Force une structure GOP strictement régulière (keyframes à intervalles fixes).\nDésactive la détection de scenecut. Utile pour ABR streaming, déconseillé sinon.",
+    "eng": "Forces a strictly regular GOP structure (keyframes to intervalles fixes).\nDisables scenecut detection. Useful for ABR streaming, deconseille sinon."
+  },
+  "Empêche l'encodeur d'insérer une keyframe sur changement de scène.\nActive = GOP régulier, désactive = keyframes adaptatives (qualité ↑).": {
+    "fra": "Empêche l'encodeur d'insérer une keyframe sur changement de scène.\nActive = GOP régulier, désactive = keyframes adaptatives (qualité ↑).",
+    "eng": "Prevents the encoder from inserting a keyframe on scene changes.\nEnabled = regular GOP; disabled = adaptive keyframes (better quality)."
+  },
+  "Profil HEVC :\n• main : 8-bit 4:2:0 — compatibilité universelle.\n• main10 : 10-bit 4:2:0 — obligatoire pour HDR/DoVi.\n• rext : range extensions (4:4:4, 12-bit) — usages pro.": {
+    "fra": "Profil HEVC :\n• main : 8-bit 4:2:0 — compatibilité universelle.\n• main10 : 10-bit 4:2:0 — obligatoire pour HDR/DoVi.\n• rext : range extensions (4:4:4, 12-bit) — usages pro.",
+    "eng": "HEVC profile:\n• main: 8-bit 4:2:0 - universal compatibility.\n• main10: 10-bit 4:2:0 - required for HDR/DoVi.\n• rext: range extensions (4:4:4, 12-bit) - professional uses."
+  },
+  "Level HEVC : limite de bitrate/résolution/framerate.\n• auto : déduit automatiquement du contenu.\n• 5.1 : UHD 4K 60p (Blu-ray UHD).\n• 6.1 / 6.2 : 8K, framerates extrêmes.": {
+    "fra": "Level HEVC : limite de bitrate/résolution/framerate.\n• auto : déduit automatiquement du contenu.\n• 5.1 : UHD 4K 60p (Blu-ray UHD).\n• 6.1 / 6.2 : 8K, framerates extrêmes.",
+    "eng": "Level HEVC: limite of bitrate/resolution/framerate.\n• auto: deduit automatiquement of the contenu.\n• 5.1: UHD 4K 60p (Blu-ray UHD).\n• 6.1 / 6.2: 8K, framerates extremes."
+  },
+  "• main : bitrate plafonné selon le level (consumer).\n• high : bitrate étendu — requis pour UHD HDR haut bitrate.\nCombiner avec level 5.1 ou 6.x pour les UHD remux.": {
+    "fra": "• main : bitrate plafonné selon le level (consumer).\n• high : bitrate étendu — requis pour UHD HDR haut bitrate.\nCombiner avec level 5.1 ou 6.x pour les UHD remux.",
+    "eng": "• main: bitrate plafonne selon the level (consumer).\n• high: bitrate etendu - required for UHD HDR high bitrate.\nCombiner with level 5.1 or 6.x for the UHD remux."
+  },
+  "Active la prédiction pondérée — améliore la compression sur les scènes avec fondus, transitions de luminosité.\nRequiert Pascal (GTX 10xx) ou plus récent. Désactive certaines combinaisons B-frames sur GPUs anciens.": {
+    "fra": "Active la prédiction pondérée — améliore la compression sur les scènes avec fondus, transitions de luminosité.\nRequiert Pascal (GTX 10xx) ou plus récent. Désactive certaines combinaisons B-frames sur GPUs anciens.",
+    "eng": "Enables weighted prediction, improving compression on fades and brightness transitions.\nRequires Pascal (GTX 10xx) or newer. Disables some B-frame combinations on older GPUs."
+  },
+  "QP initial des I-frames (mode constqp uniquement).\nRéférence de qualité absolue. Typique : 18-22 pour qualité visuelle élevée.": {
+    "fra": "QP initial des I-frames (mode constqp uniquement).\nRéférence de qualité absolue. Typique : 18-22 pour qualité visuelle élevée.",
+    "eng": "Initial QP for I-frames (constqp mode only).\nAbsolute quality reference. Typical value: 18-22 for high visual quality."
+  },
+  "QP initial des P-frames (mode constqp). Typiquement init_qpI + 2-3.": {
+    "fra": "QP initial des P-frames (mode constqp). Typiquement init_qpI + 2-3.",
+    "eng": "Initial QP for P-frames (constqp mode). Typically init_qpI + 2-3."
+  },
+  "QP initial des B-frames (mode constqp). Typiquement init_qpP + 2.": {
+    "fra": "QP initial des B-frames (mode constqp). Typiquement init_qpP + 2.",
+    "eng": "Initial QP for B-frames (constqp mode). Typically init_qpP + 2."
+  },
+  "Tokens ffmpeg additionnels concaténés en fin de commande.\nEx: -bluray-compat 1 -coder cabac": {
+    "fra": "Tokens ffmpeg additionnels concaténés en fin de commande.\nEx: -bluray-compat 1 -coder cabac",
+    "eng": "Tokens ffmpeg additional tokens appended at the end of the command.\nEx: -bluray-compat 1 -coder cabac"
+  },
+  "Profil d'usage NVENC.\n• hq : qualité maximale — recommandé pour fichier offline.\n• ll / ull : streaming faible latence (qualité moindre).\n• lossless : sans perte (taille énorme).": {
+    "fra": "Profil d'usage NVENC.\n• hq : qualité maximale — recommandé pour fichier offline.\n• ll / ull : streaming faible latence (qualité moindre).\n• lossless : sans perte (taille énorme).",
+    "eng": "NVENC usage profile.\n• hq: maximum quality - recommended for offline files.\n• ll / ull: low-latency streaming (lower quality).\n• lossless: lossless output (huge size)."
+  },
+  "Encodage multi-passes pour mieux distribuer le bitrate.\nfullres = qualité maximale (~30% plus lent). Requiert Turing+.": {
+    "fra": "Encodage multi-passes pour mieux distribuer le bitrate.\nfullres = qualité maximale (~30% plus lent). Requiert Turing+.",
+    "eng": "Multi-pass encoding to distribute bitrate more effectively.\nfullres = maximum quality (~30% slower). Requires Turing+."
+  },
+  "Frames analysées en avance pour optimiser B-frames et QP.\n32 = bon compromis. 0 désactive (perte qualité notable).": {
+    "fra": "Frames analysées en avance pour optimiser B-frames et QP.\n32 = bon compromis. 0 désactive (perte qualité notable).",
+    "eng": "Frames analyzed ahead for optimiser B-frames and QP.\n32 = good compromise. 0 disables (noticeable quality loss)."
+  },
+  "Plafond instantané du débit (mode VBR).\nTypique : 1.5-2× le bitrate cible. H.264 1080p HQ : ~40 Mbps suffit.": {
+    "fra": "Plafond instantané du débit (mode VBR).\nTypique : 1.5-2× le bitrate cible. H.264 1080p HQ : ~40 Mbps suffit.",
+    "eng": "Instantaneous bitrate ceiling (mode VBR).\nTypical: 1.5-2× the bitrate cible. H.264 1080p HQ: ~40 Mbps suffit."
+  },
+  "Taille du buffer VBV. Typiquement 2× maxrate.\nPlus grand = plus de souplesse pour les pics.": {
+    "fra": "Taille du buffer VBV. Typiquement 2× maxrate.\nPlus grand = plus de souplesse pour les pics.",
+    "eng": "VBV buffer size. Typically 2x maxrate.\nLarger values provide more flexibility for bitrate peaks."
+  },
+  "AQ spatial : alloue plus de bits aux zones lisses (peau, ciels) où la compression est visible.\nRecommandé toujours actif — améliore notablement la qualité perçue.": {
+    "fra": "AQ spatial : alloue plus de bits aux zones lisses (peau, ciels) où la compression est visible.\nRecommandé toujours actif — améliore notablement la qualité perçue.",
+    "eng": "Spatial AQ: allocates more bits to smooth areas such as skin and skies where compression is visible.\nRecommended to keep enabled - noticeably improves perceived quality."
+  },
+  "Intensité de l'AQ spatial (1-15).\n8 = défaut équilibré. 12+ peut introduire du flou sur détails fins.": {
+    "fra": "Intensité de l'AQ spatial (1-15).\n8 = défaut équilibré. 12+ peut introduire du flou sur détails fins.",
+    "eng": "AQ intensity spatial (1-15).\n8 = default balanced. 12+ may introduce blur on fine details."
+  },
+  "AQ temporel : propage la qualité dans le temps en privilégiant les frames de référence.\nRequiert Turing (RTX 20xx)+. Gain qualité ~5-10%.": {
+    "fra": "AQ temporel : propage la qualité dans le temps en privilégiant les frames de référence.\nRequiert Turing (RTX 20xx)+. Gain qualité ~5-10%.",
+    "eng": "Temporal AQ: propagates quality over time by favoring reference frames.\nRequires Turing (RTX 20xx)+. Quality gain: ~5-10%."
+  },
+  "Distance maximale entre keyframes (I-frames).\nTypique : 10× framerate. Plus court = meilleur seek, plus long = compression accrue.": {
+    "fra": "Distance maximale entre keyframes (I-frames).\nTypique : 10× framerate. Plus court = meilleur seek, plus long = compression accrue.",
+    "eng": "Maximum distance between keyframes (I-frames).\nTypique : 10× framerate. Higher court = meilleur seek, plus long = compression accrue."
+  },
+  "Nombre maximum de B-frames consécutives.\nH.264 limite à 4. 3 = bon défaut. 0 = qualité réduite.": {
+    "fra": "Nombre maximum de B-frames consécutives.\nH.264 limite à 4. 3 = bon défaut. 0 = qualité réduite.",
+    "eng": "Maximum number of consecutive B-frames.\nH.264 is limited to 4. 3 is a good default. 0 reduces quality."
+  },
+  "Permet aux B-frames de servir de référence.\n• middle : seule la B du milieu est référence — meilleur compromis.\nRequiert Turing (RTX 20xx)+.": {
+    "fra": "Permet aux B-frames de servir de référence.\n• middle : seule la B du milieu est référence — meilleur compromis.\nRequiert Turing (RTX 20xx)+.",
+    "eng": "Allows B-frames to be used as references.\n• middle: only the middle B-frame is a reference - best compromise.\nRequires Turing (RTX 20xx)+."
+  },
+  "Nombre de frames de référence pour la prédiction inter-image.\nPlus = meilleure qualité sur scènes complexes, encodage plus lent.": {
+    "fra": "Nombre de frames de référence pour la prédiction inter-image.\nPlus = meilleure qualité sur scènes complexes, encodage plus lent.",
+    "eng": "Number of reference frames for inter-frame prediction.\nHigher values improve quality on complex scenes but slow down encoding."
+  },
+  "Profil H.264 :\n• baseline : plus compatible (anciens mobiles), pas de B-frames.\n• main : standard.\n• high : qualité maximale 8-bit — recommandé pour Blu-ray/streaming.\n• high444p : 4:4:4 chroma (cas pro).": {
+    "fra": "Profil H.264 :\n• baseline : plus compatible (anciens mobiles), pas de B-frames.\n• main : standard.\n• high : qualité maximale 8-bit — recommandé pour Blu-ray/streaming.\n• high444p : 4:4:4 chroma (cas pro).",
+    "eng": "H.264 profile:\n• baseline: more compatible with older mobile devices, no B-frames.\n• main: standard.\n• high: maximum 8-bit quality - recommended for Blu-ray/streaming.\n• high444p: 4:4:4 chroma (professional use)."
+  },
+  "Prédiction pondérée : améliore la compression sur fondus, transitions de luminosité.\nRequiert Pascal (GTX 10xx)+. Peut désactiver certaines combinaisons B-frames.": {
+    "fra": "Prédiction pondérée : améliore la compression sur fondus, transitions de luminosité.\nRequiert Pascal (GTX 10xx)+. Peut désactiver certaines combinaisons B-frames.",
+    "eng": "Weighted prediction: improves compression on fades and brightness transitions.\nRequires Pascal (GTX 10xx)+. May disable some B-frame combinations."
+  },
+  "Tokens ffmpeg additionnels concaténés en fin de commande.\nEx: -coder cabac -bluray-compat 1": {
+    "fra": "Tokens ffmpeg additionnels concaténés en fin de commande.\nEx: -coder cabac -bluray-compat 1",
+    "eng": "Tokens ffmpeg additional tokens appended at the end of the command.\nEx: -coder cabac -bluray-compat 1"
+  },
+  "Profil d'usage NVENC.\n• hq : qualité maximale (offline) — recommandé.\n• ll / ull : streaming faible latence.\nAV1 NVENC requiert Ada Lovelace (RTX 40xx).": {
+    "fra": "Profil d'usage NVENC.\n• hq : qualité maximale (offline) — recommandé.\n• ll / ull : streaming faible latence.\nAV1 NVENC requiert Ada Lovelace (RTX 40xx).",
+    "eng": "NVENC usage profile.\n• hq: maximum quality (offline) - recommended.\n• ll / ull: low-latency streaming.\nAV1 NVENC requires Ada Lovelace (RTX 40xx)."
+  },
+  "Encodage multi-passes pour distribution optimale du bitrate.\nfullres = qualité maximale, ~30% plus lent.": {
+    "fra": "Encodage multi-passes pour distribution optimale du bitrate.\nfullres = qualité maximale, ~30% plus lent.",
+    "eng": "Multi-pass encoding for optimal bitrate distribution.\nfullres = maximum quality, ~30% slower."
+  },
+  "Frames analysées en avance pour optimiser le placement des frames et la décision de QP.\n32 = bon compromis. 0 désactive.": {
+    "fra": "Frames analysées en avance pour optimiser le placement des frames et la décision de QP.\n32 = bon compromis. 0 désactive.",
+    "eng": "Frames analyzed ahead to optimize frame placement and QP decisions.\n32 is a good compromise. 0 disables it."
+  },
+  "Distance maximale entre keyframes.\nAV1 supporte des GOP très longs grâce à sa robustesse aux artefacts. 240 ≈ 10s à 24p.": {
+    "fra": "Distance maximale entre keyframes.\nAV1 supporte des GOP très longs grâce à sa robustesse aux artefacts. 240 ≈ 10s à 24p.",
+    "eng": "Maximum distance between keyframes.\nAV1 supports very long GOPs thanks to its artifact resilience. 240 is about 10s at 24p."
+  },
+  "Nombre de B-frames. AV1 NVENC les supporte mal — 0 = recommandé.\nAV1 utilise plutôt des frames ALTREF (prédiction temporelle avancée).": {
+    "fra": "Nombre de B-frames. AV1 NVENC les supporte mal — 0 = recommandé.\nAV1 utilise plutôt des frames ALTREF (prédiction temporelle avancée).",
+    "eng": "Number of B-frames. AV1 NVENC handles them poorly - 0 is recommended.\nAV1 usually relies on ALTREF frames instead (advanced temporal prediction)."
+  },
+  "Tokens ffmpeg additionnels.\nEx: -tile-columns 1 -tile-rows 1": {
+    "fra": "Tokens ffmpeg additionnels.\nEx: -tile-columns 1 -tile-rows 1",
+    "eng": "Tokens ffmpeg additionnels.\nExample: -tile-columns 1 -tile-rows 1"
+  },
+  "QP minimum sur les I-frames. Plafonne la qualité maximale.\nAugmenter à 22-25 pour limiter le sur-coût bitrate sur scènes simples.": {
+    "fra": "QP minimum sur les I-frames. Plafonne la qualité maximale.\nAugmenter à 22-25 pour limiter le sur-coût bitrate sur scènes simples.",
+    "eng": "Minimum QP on I-frames. Caps maximum quality.\nRaise to 22-25 to limit bitrate overhead on simple scenes."
+  },
+  "QP maximum sur les I-frames. Plafond bas de qualité.\nRéduire (~38-42) pour éviter une chute visible sur scènes complexes.": {
+    "fra": "QP maximum sur les I-frames. Plafond bas de qualité.\nRéduire (~38-42) pour éviter une chute visible sur scènes complexes.",
+    "eng": "Maximum QP on I-frames. Sets the lower quality bound.\nLower it (~38-42) to avoid visible quality drops on complex scenes."
+  },
+  "Taille maximale d'une Access Unit (frame compressée) en bytes.\n0 = pas de limite. Utile pour streaming HLS/DASH avec limite par segment.": {
+    "fra": "Taille maximale d'une Access Unit (frame compressée) en bytes.\n0 = pas de limite. Utile pour streaming HLS/DASH avec limite par segment.",
+    "eng": "Size maximale d'a Access Unit (frame compressee) en bytes.\n0 = no limit. Useful for streaming HLS/DASH with limite by segment."
+  },
+  "Nombre de GOPs entre deux IDR (Instantaneous Decoder Refresh).\n1 = chaque keyframe est IDR (compatibilité maximale, recommandé).\nPlus grand = compression accrue mais seek dégradé.": {
+    "fra": "Nombre de GOPs entre deux IDR (Instantaneous Decoder Refresh).\n1 = chaque keyframe est IDR (compatibilité maximale, recommandé).\nPlus grand = compression accrue mais seek dégradé.",
+    "eng": "Number of GOPs between two IDR frames (Instantaneous Decoder Refresh).\n1 = every keyframe is an IDR frame (maximum compatibility, recommended).\nHigher values improve compression but degrade seeking."
+  },
+  "Insertion des SPS/PPS/VPS (paramètres de séquence).\n• none : début de stream uniquement.\n• gop : à chaque GOP.\n• idr : à chaque IDR — recommandé pour streaming.": {
+    "fra": "Insertion des SPS/PPS/VPS (paramètres de séquence).\n• none : début de stream uniquement.\n• gop : à chaque GOP.\n• idr : à chaque IDR — recommandé pour streaming.",
+    "eng": "SPS/PPS/VPS insertion (sequence parameters).\n• none: beginning of stream only.\n• gop: every GOP.\n• idr: every IDR - recommended for streaming."
+  },
+  "• main : 8-bit 4:2:0.\n• main10 : 10-bit 4:2:0 — obligatoire pour HDR/DoVi.": {
+    "fra": "• main : 8-bit 4:2:0.\n• main10 : 10-bit 4:2:0 — obligatoire pour HDR/DoVi.",
+    "eng": "• main: 8-bit 4:2:0.\n• main10: 10-bit 4:2:0 - required for HDR/DoVi."
+  },
+  "Level HEVC : limite résolution/framerate/bitrate.\nauto recommandé. 5.1 = UHD 4K 60p (Blu-ray UHD).": {
+    "fra": "Level HEVC : limite résolution/framerate/bitrate.\nauto recommandé. 5.1 = UHD 4K 60p (Blu-ray UHD).",
+    "eng": "Level HEVC: limits resolution/framerate/bitrate.\nauto recommended. 5.1 = UHD 4K 60p (Blu-ray UHD)."
+  },
+  "• main : bitrate consumer.\n• high : bitrate étendu — requis pour UHD HDR haut débit.": {
+    "fra": "• main : bitrate consumer.\n• high : bitrate étendu — requis pour UHD HDR haut débit.",
+    "eng": "• main: bitrate consumer.\n• high: bitrate etendu - required for UHD HDR high bitrate."
+  },
+  "Active une analyse pré-encodage du contenu pour optimiser bitrate et placement des frames.\nAméliore notablement la qualité au prix de ~10-15% de vitesse.": {
+    "fra": "Active une analyse pré-encodage du contenu pour optimiser bitrate et placement des frames.\nAméliore notablement la qualité au prix de ~10-15% de vitesse.",
+    "eng": "Enables pre-encode content analysis to optimize bitrate and frame placement.\nNoticeably improves quality at a ~10-15% speed cost."
+  },
+  "Variance-Based Adaptive Quantization : équivalent AMF du Spatial AQ.\nAlloue plus de bits aux zones perceptuellement sensibles. Recommandé.": {
+    "fra": "Variance-Based Adaptive Quantization : équivalent AMF du Spatial AQ.\nAlloue plus de bits aux zones perceptuellement sensibles. Recommandé.",
+    "eng": "Variance-Based Adaptive Quantization: equivalent AMF of the Spatial AQ.\nAlloue more of bits to zones perceptuellement sensibles. Recommended."
+  },
+  "Force le respect du modèle HRD (Hypothetical Reference Decoder).\nGarantit que le stream est décodable en temps réel par tout décodeur conforme. Utile pour Blu-ray/diffusion.": {
+    "fra": "Force le respect du modèle HRD (Hypothetical Reference Decoder).\nGarantit que le stream est décodable en temps réel par tout décodeur conforme. Utile pour Blu-ray/diffusion.",
+    "eng": "Forces HRD (Hypothetical Reference Decoder) compliance.\nEnsures the stream can be decoded in real time by any compliant decoder. Useful for Blu-ray/broadcast."
+  },
+  "Tokens ffmpeg additionnels.\nEx: -filler_data 1 -coder cabac": {
+    "fra": "Tokens ffmpeg additionnels.\nEx: -filler_data 1 -coder cabac",
+    "eng": "Tokens ffmpeg additionnels.\nExample: -filler_data 1 -coder cabac"
+  },
+  "Profil H.264 :\n• baseline : compatibilité maximale (anciens mobiles, sans B-frames).\n• main : standard.\n• high : qualité maximale 8-bit — recommandé.": {
+    "fra": "Profil H.264 :\n• baseline : compatibilité maximale (anciens mobiles, sans B-frames).\n• main : standard.\n• high : qualité maximale 8-bit — recommandé.",
+    "eng": "H.264 profile:\n• baseline: maximum compatibility with older mobile devices, no B-frames.\n• main: standard.\n• high: maximum 8-bit quality - recommended."
+  },
+  "Analyse pré-encodage qui optimise bitrate et placement des frames.\nCoût : ~10-15% de vitesse. Gain qualité notable.": {
+    "fra": "Analyse pré-encodage qui optimise bitrate et placement des frames.\nCoût : ~10-15% de vitesse. Gain qualité notable.",
+    "eng": "Pre-encode analysis that optimizes bitrate and frame placement.\nCost: ~10-15% speed. Quality gain is noticeable."
+  },
+  "Variance-Based Adaptive Quantization (équivalent AMF du Spatial AQ).\nRecommandé toujours actif.": {
+    "fra": "Variance-Based Adaptive Quantization (équivalent AMF du Spatial AQ).\nRecommandé toujours actif.",
+    "eng": "Variance-Based Adaptive Quantization (equivalent AMF of the Spatial AQ).\nRecommended to keep enabled."
+  },
+  "Tokens ffmpeg additionnels.": {
+    "fra": "Tokens ffmpeg additionnels.",
+    "eng": "Tokens ffmpeg additionnels."
+  },
+  "Bitrate Control étendu : algorithme amélioré pour une meilleure régulation du débit, surtout en mode VBR.\nRecommandé sur Skylake+ (6e gen Intel ou plus récent).": {
+    "fra": "Bitrate Control étendu : algorithme amélioré pour une meilleure régulation du débit, surtout en mode VBR.\nRecommandé sur Skylake+ (6e gen Intel ou plus récent).",
+    "eng": "Extended Bitrate Control: improved algorithm for better bitrate regulation, especially in VBR mode.\nRecommended on Skylake+ (6th-gen Intel or newer)."
+  },
+  "Distance maximale entre keyframes.\nTypique : 10× framerate. 248 ≈ 10s à 24p.": {
+    "fra": "Distance maximale entre keyframes.\nTypique : 10× framerate. 248 ≈ 10s à 24p.",
+    "eng": "Maximum distance between keyframes.\nTypical: 10× framerate. 248 ≈ 10s to 24p."
+  },
+  "Nombre maximum de B-frames consécutives.\n3-4 = bon défaut HEVC. 0 = qualité réduite.": {
+    "fra": "Nombre maximum de B-frames consécutives.\n3-4 = bon défaut HEVC. 0 = qualité réduite.",
+    "eng": "Maximum number of consecutive B-frames.\n3-4 is a good HEVC default. 0 reduces quality."
+  },
+  "Stratégie de placement des B-frames.\n0 = nombre fixe. 1 = adaptatif (recommandé).": {
+    "fra": "Stratégie de placement des B-frames.\n0 = nombre fixe. 1 = adaptatif (recommandé).",
+    "eng": "B-frame placement strategy.\n0 = fixed count. 1 = adaptive (recommended)."
+  },
+  "Active le moteur d'encodage VDENC (basse consommation).\nPlus rapide et moins gourmand, qualité légèrement inférieure au pipeline complet PAK. Disponible sur Skylake+ pour HEVC.": {
+    "fra": "Active le moteur d'encodage VDENC (basse consommation).\nPlus rapide et moins gourmand, qualité légèrement inférieure au pipeline complet PAK. Disponible sur Skylake+ pour HEVC.",
+    "eng": "Enables the low-power VDENC encoding engine.\nFaster and lighter, with slightly lower quality than the full PAK pipeline. Available on Skylake+ for HEVC."
+  },
+  "Macroblock-level Bitrate Control : régule le débit au niveau du MB plutôt que de la frame entière.\nAméliore la régularité de qualité, coût mineur en vitesse.": {
+    "fra": "Macroblock-level Bitrate Control : régule le débit au niveau du MB plutôt que de la frame entière.\nAméliore la régularité de qualité, coût mineur en vitesse.",
+    "eng": "Macroblock-level Bitrate Control: regulates bitrate at MB level instead of the whole frame.\nImproves quality consistency with a minor speed cost."
+  },
+  "Distance maximale entre keyframes. Typique : 10× framerate.": {
+    "fra": "Distance maximale entre keyframes. Typique : 10× framerate.",
+    "eng": "Maximum distance between keyframes. Typique : 10× framerate."
+  },
+  "Nombre maximum de B-frames consécutives.\nH.264 limite à 4 typiquement. 3 = bon défaut.": {
+    "fra": "Nombre maximum de B-frames consécutives.\nH.264 limite à 4 typiquement. 3 = bon défaut.",
+    "eng": "Maximum number of consecutive B-frames.\nH.264 is typically limited to 4. 3 is a good default."
+  },
+  "Nombre de frames de référence pour la prédiction inter-image.": {
+    "fra": "Nombre de frames de référence pour la prédiction inter-image.",
+    "eng": "Number of reference frames for inter-frame prediction."
+  },
+  "Profil H.264 :\n• baseline : compatibilité maximale (sans B-frames).\n• main : standard.\n• high : qualité maximale 8-bit — recommandé.": {
+    "fra": "Profil H.264 :\n• baseline : compatibilité maximale (sans B-frames).\n• main : standard.\n• high : qualité maximale 8-bit — recommandé.",
+    "eng": "H.264 profile:\n• baseline: maximum compatibility (no B-frames).\n• main: standard.\n• high: maximum 8-bit quality - recommended."
+  },
+  "• main : 8-bit 4:2:0 — compatibilité universelle.\n• main10 : 10-bit 4:2:0 — obligatoire pour HDR/DoVi.\n• rext : range extensions (4:4:4, 12-bit) — usages pro.": {
+    "fra": "• main : 8-bit 4:2:0 — compatibilité universelle.\n• main10 : 10-bit 4:2:0 — obligatoire pour HDR/DoVi.\n• rext : range extensions (4:4:4, 12-bit) — usages pro.",
+    "eng": "• main: 8-bit 4:2:0 - universal compatibility.\n• main10: 10-bit 4:2:0 - required for HDR/DoVi.\n• rext: range extensions (4:4:4, 12-bit) - professional uses."
+  },
+  "• main : bitrate plafonné selon le level (consumer).\n• high : bitrate étendu — requis pour UHD HDR haut bitrate.": {
+    "fra": "• main : bitrate plafonné selon le level (consumer).\n• high : bitrate étendu — requis pour UHD HDR haut bitrate.",
+    "eng": "• main: bitrate plafonne selon the level (consumer).\n• high: bitrate etendu - required for UHD HDR high bitrate."
+  },
+  "Messages SEI insérés dans le bitstream :\n• hdr : mastering display + content light level (HDR10 statique).\n• a53_cc : sous-titres ATSC A/53 (CC).\nSans 'hdr', les métadonnées HDR ne seront PAS écrites.": {
+    "fra": "Messages SEI insérés dans le bitstream :\n• hdr : mastering display + content light level (HDR10 statique).\n• a53_cc : sous-titres ATSC A/53 (CC).\nSans 'hdr', les métadonnées HDR ne seront PAS écrites.",
+    "eng": "SEI messages inserted into the bitstream:\n• hdr: mastering display + content light level (static HDR10).\n• a53_cc: ATSC A/53 closed captions (CC).\nWithout 'hdr', HDR metadata will NOT be written."
+  },
+  "Access Unit Delimiter NAL : marqueur de début de frame.\nRecommandé pour streaming MPEG-TS/RTP. Inutile pour fichier MKV/MP4.": {
+    "fra": "Access Unit Delimiter NAL : marqueur de début de frame.\nRecommandé pour streaming MPEG-TS/RTP. Inutile pour fichier MKV/MP4.",
+    "eng": "Access Unit Delimiter NAL: frame-start marker.\nRecommended for MPEG-TS/RTP streaming. Unnecessary for MKV/MP4 files."
+  },
+  "Découpage en tuiles HEVC pour parallélisation décodage.\nFormat : 'colsxrows' (ex: 2x1, 4x2). Vide = pas de tuiles.\nUtile pour 4K+ : améliore les performances du décodeur côté lecture.": {
+    "fra": "Découpage en tuiles HEVC pour parallélisation décodage.\nFormat : 'colsxrows' (ex: 2x1, 4x2). Vide = pas de tuiles.\nUtile pour 4K+ : améliore les performances du décodeur côté lecture.",
+    "eng": "Decoupage en tiles HEVC for parallelisation decoding.\nFormat: 'colsxrows' (ex: 2x1, 4x2). Vide = pas of tiles.\nUseful for 4K+: improves the performances of the decoder cote lecture."
+  },
+  "Compromis vitesse/qualité du moteur d'encodage.\n-1 = défaut driver. 0 = qualité maximale (lent). 8 = très rapide.\nSpécifique H.264 VAAPI (pas dispo sur HEVC/AV1).": {
+    "fra": "Compromis vitesse/qualité du moteur d'encodage.\n-1 = défaut driver. 0 = qualité maximale (lent). 8 = très rapide.\nSpécifique H.264 VAAPI (pas dispo sur HEVC/AV1).",
+    "eng": "Encoding engine speed/quality trade-off.\n-1 = driver default. 0 = maximum quality (slow). 8 = very fast.\nSpecific to H.264 VAAPI, not available for HEVC/AV1."
+  },
+  "• cabac : Context-Adaptive Binary Arithmetic Coding — qualité maximale.\n• cavlc : variable-length coding — plus rapide à décoder, requis pour le profil baseline (anciens mobiles).": {
+    "fra": "• cabac : Context-Adaptive Binary Arithmetic Coding — qualité maximale.\n• cavlc : variable-length coding — plus rapide à décoder, requis pour le profil baseline (anciens mobiles).",
+    "eng": "• cabac: Context-Adaptive Binary Arithmetic Coding - maximum quality.\n• cavlc: variable-length coding - faster to decode, required for the baseline profile on older mobile devices."
+  },
+  "Profil H.264 :\n• constrained_baseline : compatibilité maximale (sans B-frames, cabac).\n• main : standard.\n• high : qualité maximale 8-bit — recommandé.\n• high10 : 10-bit (rare, peu de décodeurs hardware).": {
+    "fra": "Profil H.264 :\n• constrained_baseline : compatibilité maximale (sans B-frames, cabac).\n• main : standard.\n• high : qualité maximale 8-bit — recommandé.\n• high10 : 10-bit (rare, peu de décodeurs hardware).",
+    "eng": "H.264 profile:\n• constrained_baseline: maximum compatibility (no B-frames, CABAC off).\n• main: standard.\n• high: maximum 8-bit quality - recommended.\n• high10: 10-bit (rare, few hardware decoders)."
+  },
+  "Level H.264 : limite résolution/framerate/bitrate.\nauto recommandé. 4.1 = 1080p60 max. 5.1 = 4K 30p.": {
+    "fra": "Level H.264 : limite résolution/framerate/bitrate.\nauto recommandé. 4.1 = 1080p60 max. 5.1 = 4K 30p.",
+    "eng": "Level H.264: limits resolution/framerate/bitrate.\nauto recommended. 4.1 = 1080p60 max. 5.1 = 4K 30p."
+  },
+  "Messages SEI insérés dans le bitstream :\n• identifier : version de l'encodeur.\n• timing : buffering_period + pic_timing (décodage temps réel).\n• recovery_point : point de reprise après erreur.\n• a53_cc : sous-titres ATSC A/53 (CC).": {
+    "fra": "Messages SEI insérés dans le bitstream :\n• identifier : version de l'encodeur.\n• timing : buffering_period + pic_timing (décodage temps réel).\n• recovery_point : point de reprise après erreur.\n• a53_cc : sous-titres ATSC A/53 (CC).",
+    "eng": "Messages SEI inseres in the bitstream:\n• identifier: version of l'encoder.\n• timing: buffering_period + pic_timing (decoding real-time).\n• recovery_point: point of reprise apres erreur.\n• a53_cc: subtitles ATSC A/53 (CC)."
+  },
+  "Access Unit Delimiter : marqueur de début de frame.\nRecommandé pour streaming MPEG-TS/RTP. Inutile pour MKV/MP4.": {
+    "fra": "Access Unit Delimiter : marqueur de début de frame.\nRecommandé pour streaming MPEG-TS/RTP. Inutile pour MKV/MP4.",
+    "eng": "Access Unit Delimiter: frame-start marker.\nRecommended for MPEG-TS/RTP streaming. Unnecessary for MKV/MP4."
+  },
+  "Profil AV1 :\n• main : 8/10-bit 4:2:0 — usage standard.\n• high : 8/10-bit 4:4:4.\n• professional : 8/10/12-bit, tous chromas (cas pro).": {
+    "fra": "Profil AV1 :\n• main : 8/10-bit 4:2:0 — usage standard.\n• high : 8/10-bit 4:4:4.\n• professional : 8/10/12-bit, tous chromas (cas pro).",
+    "eng": "Profile AV1 :\n• main : 8/10-bit 4:2:0 — usage standard.\n• high : 8/10-bit 4:4:4.\n• professional : 8/10/12-bit, tous chromas (cas pro)."
+  },
+  "Level AV1 : limite résolution/framerate/bitrate.\nauto recommandé. 5.0 = 4K 30p, 5.1 = 4K 60p, 6.0+ = 8K.": {
+    "fra": "Level AV1 : limite résolution/framerate/bitrate.\nauto recommandé. 5.0 = 4K 30p, 5.1 = 4K 60p, 6.0+ = 8K.",
+    "eng": "Level AV1: limits resolution/framerate/bitrate.\nauto recommended. 5.0 = 4K 30p, 5.1 = 4K 60p, 6.0+ = 8K."
+  },
+  "• main : bitrate consumer.\n• high : bitrate étendu — pour mastering haut débit.": {
+    "fra": "• main : bitrate consumer.\n• high : bitrate étendu — pour mastering haut débit.",
+    "eng": "• main: bitrate consumer.\n• high: bitrate etendu - for mastering high bitrate."
+  },
+  "Découpage en tuiles AV1 pour parallélisation décodage.\nFormat : 'colsxrows' (ex: 2x2). Vide = pas de tuiles.\nRecommandé pour 4K+ : améliore les performances décodeur logiciel (dav1d notamment).": {
+    "fra": "Découpage en tuiles AV1 pour parallélisation décodage.\nFormat : 'colsxrows' (ex: 2x2). Vide = pas de tuiles.\nRecommandé pour 4K+ : améliore les performances décodeur logiciel (dav1d notamment).",
+    "eng": "Decoupage en tiles AV1 for parallelisation decoding.\nFormat: 'colsxrows' (ex: 2x2). Vide = pas of tiles.\nRecommended for 4K+: improves the performances decoder logiciel (dav1d notamment)."
+  },
+  "Nombre de groupes de tuiles par frame.\nPermet de découper le bitstream pour transport segmenté. 1 = défaut.": {
+    "fra": "Nombre de groupes de tuiles par frame.\nPermet de découper le bitstream pour transport segmenté. 1 = défaut.",
+    "eng": "Number of tile groups per frame.\nAllows splitting the bitstream for segmented transport. 1 = default."
+  },
+  "Active la signalisation HDR10 dans le bitstream (SEI mastering display + content light level).\nIndispensable pour les sources HDR10 — sans ça, le téléviseur n'active pas le mode HDR.": {
+    "fra": "Active la signalisation HDR10 dans le bitstream (SEI mastering display + content light level).\nIndispensable pour les sources HDR10 — sans ça, le téléviseur n'active pas le mode HDR.",
+    "eng": "Enables HDR10 signaling in the bitstream (SEI mastering display + content light level).\nRequired for HDR10 sources - without it, TVs will not enable HDR mode."
+  },
+  "Optimisations spécifiques HDR10 : ajuste le pipeline RD pour mieux préserver les détails dans les ombres et hautes lumières (PQ).\nRecommandé conjointement à hdr10.": {
+    "fra": "Optimisations spécifiques HDR10 : ajuste le pipeline RD pour mieux préserver les détails dans les ombres et hautes lumières (PQ).\nRecommandé conjointement à hdr10.",
+    "eng": "HDR10-specific optimizations: adjusts the RD pipeline to better preserve details in shadows and highlights (PQ).\nRecommended together with hdr10."
+  },
+  "Insère SPS/PPS/VPS à chaque keyframe plutôt qu'une seule fois en début de stream.\nRecommandé pour streaming/segments (HLS/DASH) ou cut/append. Coût bitrate négligeable.": {
+    "fra": "Insère SPS/PPS/VPS à chaque keyframe plutôt qu'une seule fois en début de stream.\nRecommandé pour streaming/segments (HLS/DASH) ou cut/append. Coût bitrate négligeable.",
+    "eng": "Inserts SPS/PPS/VPS at every keyframe instead of only once at the beginning of the stream.\nRecommended for streaming/segments (HLS/DASH) or cut/append. Negligible bitrate cost."
+  },
+  "Métadonnées SMPTE ST 2086 : primaires/blancpoint/luminance du moniteur de mastering.\nFormat : G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min) — chromaticité ×50000, luminance ×10000.\nEx BT.2020 1000 nits :\nG(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)": {
+    "fra": "Métadonnées SMPTE ST 2086 : primaires/blancpoint/luminance du moniteur de mastering.\nFormat : G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min) — chromaticité ×50000, luminance ×10000.\nEx BT.2020 1000 nits :\nG(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)",
+    "eng": "Metadata SMPTE ST 2086: primaires/blancpoint/luminance of the mastering monitor.\nFormat: G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min) - chromaticity ×50000, luminance ×10000.\nEx BT.2020 1000 nits:\nG(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)"
+  },
+  "Max Content Light Level + Max Frame-Average Light Level (cd/m²).\nFormat : 'maxCLL,maxFALL'. Typique 4K HDR10 : 1000,400.": {
+    "fra": "Max Content Light Level + Max Frame-Average Light Level (cd/m²).\nFormat : 'maxCLL,maxFALL'. Typique 4K HDR10 : 1000,400.",
+    "eng": "Max Content Light Level + Max Frame-Average Light Level (cd/m²).\nFormat: 'maxCLL,maxFALL'. Typique 4K HDR10 : 1000,400."
+  },
+  "Primaires de couleur :\n• bt709 : SDR HD (Rec.709).\n• bt2020 : UHD/HDR (Rec.2020) — obligatoire pour HDR10/DoVi.": {
+    "fra": "Primaires de couleur :\n• bt709 : SDR HD (Rec.709).\n• bt2020 : UHD/HDR (Rec.2020) — obligatoire pour HDR10/DoVi.",
+    "eng": "Color primaries:\n• bt709: SDR HD (Rec.709).\n• bt2020: UHD/HDR (Rec.2020) - required for HDR10/DoVi."
+  },
+  "Fonction de transfert :\n• bt709 : SDR (gamma 2.4).\n• smpte2084 : PQ (Perceptual Quantizer) — HDR10/DoVi.\n• arib-std-b67 : HLG (Hybrid Log-Gamma) — broadcast HDR.": {
+    "fra": "Fonction de transfert :\n• bt709 : SDR (gamma 2.4).\n• smpte2084 : PQ (Perceptual Quantizer) — HDR10/DoVi.\n• arib-std-b67 : HLG (Hybrid Log-Gamma) — broadcast HDR.",
+    "eng": "Transfer function :\n• bt709 : SDR (gamma 2.4).\n• smpte2084 : PQ (Perceptual Quantizer) — HDR10/DoVi.\n• arib-std-b67 : HLG (Hybrid Log-Gamma) — broadcast HDR."
+  },
+  "Matrice de conversion YCbCr↔RGB :\n• bt709 : HD SDR.\n• bt2020nc : non-constant luminance (UHD/HDR standard).\n• bt2020c : constant luminance (rare).": {
+    "fra": "Matrice de conversion YCbCr↔RGB :\n• bt709 : HD SDR.\n• bt2020nc : non-constant luminance (UHD/HDR standard).\n• bt2020c : constant luminance (rare).",
+    "eng": "YCbCr↔RGB conversion matrix:\n• bt709: HD SDR.\n• bt2020nc: non-constant luminance (UHD/HDR standard).\n• bt2020c: constant luminance (rare)."
+  },
+  "Algorithme d'Adaptive Quantization (allocation différentielle de bits).\n• 0 : désactivé.\n• 1 : basé sur la variance.\n• 2 : auto-variance.\n• 3 : auto-variance + bias zones sombres (recommandé).\n• 4 : ajoute la sélection adaptative de profondeur de bits.": {
+    "fra": "Algorithme d'Adaptive Quantization (allocation différentielle de bits).\n• 0 : désactivé.\n• 1 : basé sur la variance.\n• 2 : auto-variance.\n• 3 : auto-variance + bias zones sombres (recommandé).\n• 4 : ajoute la sélection adaptative de profondeur de bits.",
+    "eng": "Adaptive Quantization algorithm (differential bit allocation).\n• 0: disabled.\n• 1: variance-based.\n• 2: auto-variance.\n• 3: auto-variance + dark-scene bias (recommended).\n• 4: adds adaptive bit-depth selection."
+  },
+  "Intensité de l'AQ (0.0-3.0).\n1.0 = défaut équilibré. 1.5-2.0 = plus agressif (peut introduire du flou).": {
+    "fra": "Intensité de l'AQ (0.0-3.0).\n1.0 = défaut équilibré. 1.5-2.0 = plus agressif (peut introduire du flou).",
+    "eng": "AQ intensity (0.0-3.0).\n1.0 = default balanced. 1.5-2.0 = more agressif (may introduce blur)."
+  },
+  "Psy-RD : favorise la préservation visuelle des détails au prix d'une métrique PSNR/SSIM moindre.\n2.0 = défaut très bon pour film. 0 = désactive (utile pour benchmarking).": {
+    "fra": "Psy-RD : favorise la préservation visuelle des détails au prix d'une métrique PSNR/SSIM moindre.\n2.0 = défaut très bon pour film. 0 = désactive (utile pour benchmarking).",
+    "eng": "Psy-RD: favors visual detail preservation at the cost of lower PSNR/SSIM metrics.\n2.0 is a very good default for film. 0 disables it, useful for benchmarking."
+  },
+  "Psy-RDOQ : préservation perceptuelle dans la quantification trellis.\nRenforce les détails fins (texture, grain). 1.0-2.0 typique.": {
+    "fra": "Psy-RDOQ : préservation perceptuelle dans la quantification trellis.\nRenforce les détails fins (texture, grain). 1.0-2.0 typique.",
+    "eng": "Psy-RDOQ: perceptual preservation in the quantification trellis.\nRenforce the fine details (texture, grain). 1.0-2.0 typique."
+  },
+  "Profondeur du Rate-Distortion Optimized Quantization.\n• 0 : désactivé. • 1 : niveau modéré. • 2 : complet (qualité maximale, lent).": {
+    "fra": "Profondeur du Rate-Distortion Optimized Quantization.\n• 0 : désactivé. • 1 : niveau modéré. • 2 : complet (qualité maximale, lent).",
+    "eng": "Rate-Distortion Optimized Quantization depth.\n• 0: disabled. • 1: moderate level. • 2: full mode (maximum quality, slow)."
+  },
+  "Distance minimale entre keyframes.\nTypique : framerate (1 keyframe/seconde min). Évite les keyframes trop rapprochées sur scenecut multiples.": {
+    "fra": "Distance minimale entre keyframes.\nTypique : framerate (1 keyframe/seconde min). Évite les keyframes trop rapprochées sur scenecut multiples.",
+    "eng": "Minimum distance between keyframes.\nTypical value: framerate (minimum 1 keyframe/second). Avoids keyframes being too close on multiple scenecuts."
+  },
+  "Nombre maximum de B-frames consécutives.\n4-8 = bon pour HEVC. 0 = qualité réduite. >8 = gain marginal.": {
+    "fra": "Nombre maximum de B-frames consécutives.\n4-8 = bon pour HEVC. 0 = qualité réduite. >8 = gain marginal.",
+    "eng": "Maximum number of consecutive B-frames.\n4-8 is good for HEVC. 0 reduces quality. >8 gives marginal gains."
+  },
+  "Décision adaptative des B-frames :\n• 0 : nombre fixe.\n• 1 : rapide (compromis).\n• 2 : optimal (lent mais qualité maximale).": {
+    "fra": "Décision adaptative des B-frames :\n• 0 : nombre fixe.\n• 1 : rapide (compromis).\n• 2 : optimal (lent mais qualité maximale).",
+    "eng": "Adaptive B-frame decision:\n• 0: fixed count.\n• 1: fast compromise.\n• 2: optimal (slow but maximum quality)."
+  },
+  "Nombre de frames de référence pour la prédiction inter-image.\nPlus = qualité ↑ sur scènes complexes, encodage plus lent.\nLimité par le level HEVC choisi.": {
+    "fra": "Nombre de frames de référence pour la prédiction inter-image.\nPlus = qualité ↑ sur scènes complexes, encodage plus lent.\nLimité par le level HEVC choisi.",
+    "eng": "Number of reference frames for inter-frame prediction.\nHigher values improve quality on complex scenes but slow down encoding.\nLimited by the selected HEVC level."
+  },
+  "Force des GOP fermés (closed GOP) : pas de référence à des frames antérieures à la dernière keyframe.\nRecommandé pour : streaming HLS/DASH, montage/découpe, Blu-ray.": {
+    "fra": "Force des GOP fermés (closed GOP) : pas de référence à des frames antérieures à la dernière keyframe.\nRecommandé pour : streaming HLS/DASH, montage/découpe, Blu-ray.",
+    "eng": "Forces closed GOPs: no references to frames before the last keyframe.\nRecommended for HLS/DASH streaming, editing/cutting, and Blu-ray."
+  },
+  "Sensibilité de la détection de changement de scène (0-100).\n40 = défaut équilibré. 0 = désactive (GOP régulier strict).": {
+    "fra": "Sensibilité de la détection de changement de scène (0-100).\n40 = défaut équilibré. 0 = désactive (GOP régulier strict).",
+    "eng": "Sensibilite of the scene-change detection (0-100).\n40 = default balanced. 0 = disables (GOP regulier strict)."
+  },
+  "Taille du Coding Tree Unit (équivalent macrobloc HEVC).\n• 64 : qualité maximale 4K (recommandé).\n• 32 : compromis vitesse/qualité.\n• 16 : très rapide, qualité dégradée.": {
+    "fra": "Taille du Coding Tree Unit (équivalent macrobloc HEVC).\n• 64 : qualité maximale 4K (recommandé).\n• 32 : compromis vitesse/qualité.\n• 16 : très rapide, qualité dégradée.",
+    "eng": "Coding Tree Unit size (HEVC macroblock equivalent).\n• 64: maximum 4K quality (recommended).\n• 32: speed/quality compromise.\n• 16: very fast, degraded quality."
+  },
+  "Profondeur du Rate-Distortion (1-6). Plus haut = meilleure décision de partition mais plus lent.\n4 = défaut très bon. 6 = maximum (placebo).": {
+    "fra": "Profondeur du Rate-Distortion (1-6). Plus haut = meilleure décision de partition mais plus lent.\n4 = défaut très bon. 6 = maximum (placebo).",
+    "eng": "Rate-Distortion depth (1-6). Higher values improve partition decisions but are slower.\n4 is a very good default. 6 is maximum (placebo)."
+  },
+  "Précision de motion estimation sub-pixel (1-7).\n3 = défaut. 5+ = qualité maximale, encodage notablement plus lent.": {
+    "fra": "Précision de motion estimation sub-pixel (1-7).\n3 = défaut. 5+ = qualité maximale, encodage notablement plus lent.",
+    "eng": "Sub-pixel motion estimation precision (1-7).\n3 = default. 5+ = maximum quality, noticeably slower encoding."
+  },
+  "Algorithme de motion estimation :\n• dia : diamond — rapide.\n• hex : hexagon — défaut équilibré.\n• umh : uneven multi-hex — qualité ↑.\n• star/sea/full : recherche exhaustive (très lent, gain marginal).": {
+    "fra": "Algorithme de motion estimation :\n• dia : diamond — rapide.\n• hex : hexagon — défaut équilibré.\n• umh : uneven multi-hex — qualité ↑.\n• star/sea/full : recherche exhaustive (très lent, gain marginal).",
+    "eng": "Motion estimation algorithm:\n• dia: diamond - fast.\n• hex: hexagon - balanced default.\n• umh: uneven multi-hex - higher quality.\n• star/sea/full: exhaustive search (very slow, marginal gain)."
+  },
+  "Rayon de recherche du motion estimation en pixels.\n57 = défaut. Augmenter pour scènes très mouvementées (panoramiques rapides).": {
+    "fra": "Rayon de recherche du motion estimation en pixels.\n57 = défaut. Augmenter pour scènes très mouvementées (panoramiques rapides).",
+    "eng": "Motion estimation search radius in pixels.\n57 = default. Increase for very high-motion scenes, such as fast pans."
+  },
+  "Active les partitions rectangulaires asymétriques (Nx2N, 2NxN).\nAméliore la compression à coût modéré. Désactivé par les presets rapides.": {
+    "fra": "Active les partitions rectangulaires asymétriques (Nx2N, 2NxN).\nAméliore la compression à coût modéré. Désactivé par les presets rapides.",
+    "eng": "Enables asymmetric rectangular partitions (Nx2N, 2NxN).\nImproves compression at moderate cost. Disabled by fast presets."
+  },
+  "Asymmetric Motion Partitions : partitions encore plus fines (2NxnU, 2NxnD, etc.).\nGain qualité notable sur preset slower+. Coût encodage important.": {
+    "fra": "Asymmetric Motion Partitions : partitions encore plus fines (2NxnU, 2NxnD, etc.).\nGain qualité notable sur preset slower+. Coût encodage important.",
+    "eng": "Asymmetric Motion Partitions: even finer partitions (2NxnU, 2NxnD, etc.).\nNoticeable quality gain on slower+ presets. High encoding cost."
+  },
+  "Limite intelligemment les modes de prédiction analysés selon le contenu.\nAccélère sans perte significative de qualité.": {
+    "fra": "Limite intelligemment les modes de prédiction analysés selon le contenu.\nAccélère sans perte significative de qualité.",
+    "eng": "Intelligently limits the prediction modes analyzed according to content.\nSpeeds up encoding without significant quality loss."
+  },
+  "Lissage agressif sur grands blocs intra (32×32, 64×64) pour zones très uniformes (ciels, dégradés).\nRecommandé sur sources propres (UHD), à désactiver sur source bruitée.": {
+    "fra": "Lissage agressif sur grands blocs intra (32×32, 64×64) pour zones très uniformes (ciels, dégradés).\nRecommandé sur sources propres (UHD), à désactiver sur source bruitée.",
+    "eng": "Aggressive smoothing on large intra blocks (32x32, 64x64) for very uniform areas such as skies or gradients.\nRecommended for clean UHD sources; disable on noisy sources."
+  },
+  "Sample Adaptive Offset : filtre in-loop qui réduit les artefacts de compression (ringing).\nRecommandé toujours actif (gain qualité visuel, coût mineur).": {
+    "fra": "Sample Adaptive Offset : filtre in-loop qui réduit les artefacts de compression (ringing).\nRecommandé toujours actif (gain qualité visuel, coût mineur).",
+    "eng": "Sample Adaptive Offset: in-loop filter that reduces compression artifacts (ringing).\nRecommended to keep enabled (visual quality gain, minor cost)."
+  },
+  "Configuration des pools de threads NUMA.\n• '*' : auto (utilise tous les cores).\n• '4,4' : 2 pools de 4 threads (NUMA explicite).\n• '+' : limite à 1 pool unique.": {
+    "fra": "Configuration des pools de threads NUMA.\n• '*' : auto (utilise tous les cores).\n• '4,4' : 2 pools de 4 threads (NUMA explicite).\n• '+' : limite à 1 pool unique.",
+    "eng": "NUMA thread pool configuration.\n• '*': auto (uses all cores).\n• '4,4': 2 pools of 4 threads (explicit NUMA).\n• '+': limit to a single pool."
+  },
+  "Nombre de frames encodées en parallèle.\n0 = auto (selon RAM/CPU). Plus = throughput ↑ mais latence et RAM ↑.\nRéduire pour économiser la RAM sur 4K.": {
+    "fra": "Nombre de frames encodées en parallèle.\n0 = auto (selon RAM/CPU). Plus = throughput ↑ mais latence et RAM ↑.\nRéduire pour économiser la RAM sur 4K.",
+    "eng": "Number of frames encoded in parallel.\n0 = auto, based on RAM/CPU. Higher values increase throughput, latency, and RAM usage.\nLower it to save RAM on 4K content."
+  },
+  "Wavefront Parallel Processing : parallélise l'encodage par lignes de CTU.\nRecommandé toujours actif. Permet une accélération multi-cœurs efficace.": {
+    "fra": "Wavefront Parallel Processing : parallélise l'encodage par lignes de CTU.\nRecommandé toujours actif. Permet une accélération multi-cœurs efficace.",
+    "eng": "Wavefront Parallel Processing: parallelizes encoding by CTU rows.\nRecommended to keep enabled. Allows efficient multi-core acceleration."
+  },
+  "Parallélise la décision de mode de partition.\nAccélération CPU sur machines avec beaucoup de cores. Coût mémoire mineur.": {
+    "fra": "Parallélise la décision de mode de partition.\nAccélération CPU sur machines avec beaucoup de cores. Coût mémoire mineur.",
+    "eng": "Parallelise the decision of mode of partition.\nAcceleration CPU on machines with beaucoup of cores. Cout memory mineur."
+  },
+  "Tokens x265-params additionnels (séparés par ':').\nEx: log-level=warning:stats=stats.log:csv=summary.csv": {
+    "fra": "Tokens x265-params additionnels (séparés par ':').\nEx: log-level=warning:stats=stats.log:csv=summary.csv",
+    "eng": "Tokens x265-params additionnels (separated by ':').\nEx: log-level=warning:stats=stats.log:csv=summary.csv"
+  },
+  "Cible d'optimisation de l'encodeur.\n• 0 — VQ : qualité visuelle subjective (recommandé pour film/vidéo).\n• 1 — PSNR : optimise la métrique PSNR (benchmarking).\n• 2 — SSIM : optimise la métrique SSIM.": {
+    "fra": "Cible d'optimisation de l'encodeur.\n• 0 — VQ : qualité visuelle subjective (recommandé pour film/vidéo).\n• 1 — PSNR : optimise la métrique PSNR (benchmarking).\n• 2 — SSIM : optimise la métrique SSIM.",
+    "eng": "Encoder optimization target.\n• 0 - VQ: subjective visual quality (recommended for film/video).\n• 1 - PSNR: optimizes the PSNR metric (benchmarking).\n• 2 - SSIM: optimizes the SSIM metric."
+  },
+  "Synthèse de grain de film côté décodeur (0-50).\nLe grain est analysé puis re-synthétisé après décodage — économise un bitrate considérable sur les sources granuleuses.\n0 = désactivé. 8-15 = source 35mm typique. 25+ = grain prononcé.": {
+    "fra": "Synthèse de grain de film côté décodeur (0-50).\nLe grain est analysé puis re-synthétisé après décodage — économise un bitrate considérable sur les sources granuleuses.\n0 = désactivé. 8-15 = source 35mm typique. 25+ = grain prononcé.",
+    "eng": "Decoder-side film grain synthesis (0-50).\nGrain is analyzed then re-synthesized after decoding, saving considerable bitrate on grainy sources.\n0 = disabled. 8-15 = typical 35mm source. 25+ = strong grain."
+  },
+  "Applique un débruitage avant analyse du grain pour mieux séparer le signal du bruit.\nConseillé conjointement à film-grain ≥ 8 pour les sources analogiques.": {
+    "fra": "Applique un débruitage avant analyse du grain pour mieux séparer le signal du bruit.\nConseillé conjointement à film-grain ≥ 8 pour les sources analogiques.",
+    "eng": "Applies denoising before grain analysis for better separate the signal from noise.\nRecommended together to film-grain ≥ 8 for the analog sources."
+  },
+  "Active la détection de changement de scène pour insérer des keyframes adaptatives.\nRecommandé toujours actif. Améliore la qualité des cuts.": {
+    "fra": "Active la détection de changement de scène pour insérer des keyframes adaptatives.\nRecommandé toujours actif. Améliore la qualité des cuts.",
+    "eng": "Enables scene-change detection to insert adaptive keyframes.\nRecommended to keep enabled. Improves cut quality."
+  },
+  "Frames analysées en avance pour optimiser le placement des frames de référence et la décision de QP.\n33 = bon défaut. 60+ = qualité ↑ légèrement, RAM et latence ↑.": {
+    "fra": "Frames analysées en avance pour optimiser le placement des frames de référence et la décision de QP.\n33 = bon défaut. 60+ = qualité ↑ légèrement, RAM et latence ↑.",
+    "eng": "Frames analyzed ahead to optimize reference-frame placement and QP decisions.\n33 is a good default. 60+ slightly improves quality but increases RAM usage and latency."
+  },
+  "Structure de prédiction inter-image :\n• 0 — low-delay P : streaming faible latence (P-frames seulement).\n• 1 — low-delay B : streaming + B-frames.\n• 2 — random access : pyramide hiérarchique — qualité maximale (recommandé).": {
+    "fra": "Structure de prédiction inter-image :\n• 0 — low-delay P : streaming faible latence (P-frames seulement).\n• 1 — low-delay B : streaming + B-frames.\n• 2 — random access : pyramide hiérarchique — qualité maximale (recommandé).",
+    "eng": "Inter-frame prediction structure:\n• 0 - low-delay P: streaming low latency (P-frames only).\n• 1 - low-delay B: streaming + B-frames.\n• 2 - random access: hierarchical pyramid - maximum quality (recommended)."
+  },
+  "Adaptive Quantization :\n• 0 : désactivé.\n• 1 : basé sur variance des blocs.\n• 2 : variance + ajustement du lagrangien (recommandé).": {
+    "fra": "Adaptive Quantization :\n• 0 : désactivé.\n• 1 : basé sur variance des blocs.\n• 2 : variance + ajustement du lagrangien (recommandé).",
+    "eng": "Adaptive Quantization:\n• 0: disabled.\n• 1: based on block variance.\n• 2: variance + Lagrangian adjustment (recommended)."
+  },
+  "Filtre temporel pré-encodage : réduit le bruit en moyennant les frames voisines.\nAméliore la compression sur sources bruitées. À désactiver sur sources déjà débruitées (anime).": {
+    "fra": "Filtre temporel pré-encodage : réduit le bruit en moyennant les frames voisines.\nAméliore la compression sur sources bruitées. À désactiver sur sources déjà débruitées (anime).",
+    "eng": "Pre-encode temporal filter: reduces noise by averaging neighboring frames.\nImproves compression on noisy sources. Disable on already denoised sources, such as anime."
+  },
+  "Primaires de couleur (codes ITU-T H.273) :\n• 1 : BT.709 (SDR HD).\n• 9 : BT.2020 (UHD/HDR — obligatoire pour HDR10).": {
+    "fra": "Primaires de couleur (codes ITU-T H.273) :\n• 1 : BT.709 (SDR HD).\n• 9 : BT.2020 (UHD/HDR — obligatoire pour HDR10).",
+    "eng": "Color primaries (ITU-T H.273 codes):\n• 1: BT.709 (SDR HD).\n• 9: BT.2020 (UHD/HDR - required for HDR10)."
+  },
+  "Fonction de transfert :\n• 1 : BT.709 (SDR).\n• 16 : SMPTE ST 2084 (PQ — HDR10).\n• 18 : HLG (broadcast HDR).": {
+    "fra": "Fonction de transfert :\n• 1 : BT.709 (SDR).\n• 16 : SMPTE ST 2084 (PQ — HDR10).\n• 18 : HLG (broadcast HDR).",
+    "eng": "Transfer function :\n• 1 : BT.709 (SDR).\n• 16 : SMPTE ST 2084 (PQ — HDR10).\n• 18 : HLG (broadcast HDR)."
+  },
+  "Matrice YCbCr↔RGB :\n• 1 : BT.709.\n• 9 : BT.2020 non-constant luminance (UHD/HDR standard).": {
+    "fra": "Matrice YCbCr↔RGB :\n• 1 : BT.709.\n• 9 : BT.2020 non-constant luminance (UHD/HDR standard).",
+    "eng": "Matrix YCbCr↔RGB :\n• 1 : BT.709.\n• 9 : BT.2020 non-constant luminance (UHD/HDR standard)."
+  },
+  "Métadonnées SMPTE ST 2086 du moniteur de mastering.\nFormat svtav1 : 'G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)' (chromaticité ×50000, luminance ×10000).": {
+    "fra": "Métadonnées SMPTE ST 2086 du moniteur de mastering.\nFormat svtav1 : 'G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)' (chromaticité ×50000, luminance ×10000).",
+    "eng": "Metadata SMPTE ST 2086 of the mastering monitor.\nFormat svtav1: 'G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)' (chromaticity ×50000, luminance ×10000)."
+  },
+  "Max Content Light Level + Max Frame-Average Light Level (cd/m²).\nFormat : 'maxCLL,maxFALL'. Typique HDR10 : 1000,400.": {
+    "fra": "Max Content Light Level + Max Frame-Average Light Level (cd/m²).\nFormat : 'maxCLL,maxFALL'. Typique HDR10 : 1000,400.",
+    "eng": "Max Content Light Level + Max Frame-Average Light Level (cd/m²).\nFormat: 'maxCLL,maxFALL'. Typique HDR10 : 1000,400."
+  },
+  "Nombre de lignes de tuiles, exprimé en log2.\n0 = 1 ligne, 1 = 2, 2 = 4, etc.\nUtile pour 4K+ : améliore parallélisme décodeur (dav1d).": {
+    "fra": "Nombre de lignes de tuiles, exprimé en log2.\n0 = 1 ligne, 1 = 2, 2 = 4, etc.\nUtile pour 4K+ : améliore parallélisme décodeur (dav1d).",
+    "eng": "Number of tile rows, expressed as log2.\n0 = 1 ligne, 1 = 2, 2 = 4, etc.\nUseful for 4K+: improves decoder parallelism (dav1d)."
+  },
+  "Nombre de colonnes de tuiles, log2.\nPour 4K HDR : tile-columns=1 ou 2 typique.": {
+    "fra": "Nombre de colonnes de tuiles, log2.\nPour 4K HDR : tile-columns=1 ou 2 typique.",
+    "eng": "Number of tile columns, log2.\nFor 4K HDR, tile-columns=1 or 2 is typical."
+  },
+  "Tokens svtav1-params additionnels (séparés par ':').": {
+    "fra": "Tokens svtav1-params additionnels (séparés par ':').",
+    "eng": "Tokens svtav1-params additionnels (separated by ':')."
+  },
+  "Profil d'optimisation x264 selon le contenu :\n• film : sources caméra/cinéma — recommandé général.\n• animation : dessin animé / cell-shaded (plus de B-frames, deblocking ↑).\n• grain : préserve le grain de film (psy-rd ↑, dct-decimate off).\n• stillimage : diaporama, screencast.\n• psnr / ssim : optimise la métrique (benchmarking).\n• fastdecode : pour décodeurs faibles (CABAC off).\n• zerolatency : streaming temps réel.": {
+    "fra": "Profil d'optimisation x264 selon le contenu :\n• film : sources caméra/cinéma — recommandé général.\n• animation : dessin animé / cell-shaded (plus de B-frames, deblocking ↑).\n• grain : préserve le grain de film (psy-rd ↑, dct-decimate off).\n• stillimage : diaporama, screencast.\n• psnr / ssim : optimise la métrique (benchmarking).\n• fastdecode : pour décodeurs faibles (CABAC off).\n• zerolatency : streaming temps réel.",
+    "eng": "x264 tuning profile by content:\n• film: camera/cinema sources - recommended general default.\n• animation: cartoons / cell-shaded content (more B-frames, stronger deblocking).\n• grain: preserves film grain (higher psy-rd, dct-decimate off).\n• stillimage: slideshow, screencast.\n• psnr / ssim: optimizes metrics for benchmarking.\n• fastdecode: for weak decoders (CABAC off).\n• zerolatency: real-time streaming."
+  },
+  "Profil H.264 :\n• baseline : compatibilité maximale (anciens mobiles, sans B-frames).\n• main : standard.\n• high : qualité maximale 8-bit — recommandé.\n• high10 : 10-bit 4:2:0.\n• high422 : 10-bit 4:2:2 (cas pro).\n• high444 : 10/12-bit 4:4:4 (mastering).": {
+    "fra": "Profil H.264 :\n• baseline : compatibilité maximale (anciens mobiles, sans B-frames).\n• main : standard.\n• high : qualité maximale 8-bit — recommandé.\n• high10 : 10-bit 4:2:0.\n• high422 : 10-bit 4:2:2 (cas pro).\n• high444 : 10/12-bit 4:4:4 (mastering).",
+    "eng": "H.264 profile:\n• baseline: maximum compatibility with older mobile devices, no B-frames.\n• main: standard.\n• high: maximum 8-bit quality - recommended.\n• high10: 10-bit 4:2:0.\n• high422: 10-bit 4:2:2 (professional use).\n• high444: 10/12-bit 4:4:4 (mastering)."
+  },
+  "Level H.264 : limite résolution/framerate/bitrate.\n• 4.1 : 1080p30 — Blu-ray standard.\n• 4.2 : 1080p60.\n• 5.1 : 4K 30p.\n• 5.2 : 4K 60p (rare en H.264).": {
+    "fra": "Level H.264 : limite résolution/framerate/bitrate.\n• 4.1 : 1080p30 — Blu-ray standard.\n• 4.2 : 1080p60.\n• 5.1 : 4K 30p.\n• 5.2 : 4K 60p (rare en H.264).",
+    "eng": "Level H.264: limits resolution/framerate/bitrate.\n• 4.1: 1080p30 - Blu-ray standard.\n• 4.2: 1080p60.\n• 5.1: 4K 30p.\n• 5.2: 4K 60p (rare in H.264)."
+  },
+  "Distance maximale entre keyframes.\nTypique : 10× framerate. Plus court = meilleur seek, plus long = compression accrue.": {
+    "fra": "Distance maximale entre keyframes.\nTypique : 10× framerate. Plus court = meilleur seek, plus long = compression accrue.",
+    "eng": "Maximum distance between keyframes.\nTypique : 10× framerate. Higher court = meilleur seek, plus long = compression accrue."
+  },
+  "Nombre maximum de B-frames consécutives.\n3 = bon défaut H.264. Limite pratique ~4 (gain marginal au-delà).": {
+    "fra": "Nombre maximum de B-frames consécutives.\n3 = bon défaut H.264. Limite pratique ~4 (gain marginal au-delà).",
+    "eng": "Maximum number of consecutive B-frames.\n3 is a good H.264 default. Practical limit is ~4, with marginal gains beyond that."
+  },
+  "Nombre de frames de référence pour la prédiction inter-image.\nPlus = meilleure qualité sur scènes complexes mais encodage plus lent.\nLimité par le level (Level 4.1 = 4 refs max à 1080p).": {
+    "fra": "Nombre de frames de référence pour la prédiction inter-image.\nPlus = meilleure qualité sur scènes complexes mais encodage plus lent.\nLimité par le level (Level 4.1 = 4 refs max à 1080p).",
+    "eng": "Number of reference frames for inter-frame prediction.\nHigher values improve quality on complex scenes but slow down encoding.\nLimited by the level (Level 4.1 = 4 refs max at 1080p)."
+  },
+  "Passthrough -x264-params : tokens internes au moteur x264 séparés par ':'.\nEx utiles :\n• aq-mode=3 : adaptive quantization avec bias zones sombres.\n• psy-rd=1.0,0.15 : préservation perceptuelle.\n• rc-lookahead=60 : lookahead profond.\n• me=umh : motion estimation qualité.": {
+    "fra": "Passthrough -x264-params : tokens internes au moteur x264 séparés par ':'.\nEx utiles :\n• aq-mode=3 : adaptive quantization avec bias zones sombres.\n• psy-rd=1.0,0.15 : préservation perceptuelle.\n• rc-lookahead=60 : lookahead profond.\n• me=umh : motion estimation qualité.",
+    "eng": "Passthrough -x264-params: internal x264 engine tokens separated by ':'.\nUseful examples:\n• aq-mode=3: adaptive quantization with dark-zone bias.\n• psy-rd=1.0,0.15: perceptual preservation.\n• rc-lookahead=60: deep lookahead.\n• me=umh: quality motion estimation."
+  },
+  "Tokens ffmpeg additionnels concaténés en fin de commande.\nEx: -coder cabac -bf-strategy 2": {
+    "fra": "Tokens ffmpeg additionnels concaténés en fin de commande.\nEx: -coder cabac -bf-strategy 2",
+    "eng": "Tokens ffmpeg additional tokens appended at the end of the command.\nEx: -coder cabac -bf-strategy 2"
   }
 }

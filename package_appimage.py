@@ -303,6 +303,7 @@ def build_onedir() -> Path:
         # sans aspirer les binaires QML Wayland/NFC qui causent des warnings
         "--collect-data=PySide6",
         "--collect-all=pymediainfo",
+        "--collect-submodules=cli",
         # Exclusions — modules Python inutiles
         "--exclude-module=tkinter",
         "--exclude-module=matplotlib",
@@ -789,6 +790,10 @@ def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64") -
     info(f"Copie du bundle → {usr_bin} …")
     shutil.copytree(bundle_dir, usr_bin, dirs_exist_ok=True)
     ok("Bundle copié")
+    cli_link = usr_bin / "mediarecode-cli"
+    if not cli_link.exists() and not cli_link.is_symlink():
+        cli_link.symlink_to("mediarecode")
+        ok("Entrée CLI AppImage créée")
 
     # Marqueur all-inclusive lu par launcher.py au démarrage
     if allinc:

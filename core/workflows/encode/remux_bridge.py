@@ -36,13 +36,17 @@ def merge_remux_into_encode_config(
         file_index = int(item[0])
         mkv_tid = int(item[1])
         entry_id = str(item[2]).strip() if len(item) > 2 else ""
-        src = source_by_index.get(file_index)
-        if src is None:
+        ordered_source = source_by_index.get(file_index)
+        if ordered_source is None:
             continue
-        track = remux_track_map_by_id.get(entry_id) if entry_id else remux_track_map.get((src.path, mkv_tid))
-        if track is None:
+        ordered_track = (
+            remux_track_map_by_id.get(entry_id)
+            if entry_id
+            else remux_track_map.get((ordered_source.path, mkv_tid))
+        )
+        if ordered_track is None:
             continue
-        ordered_tracks.append((src.path, track))
+        ordered_tracks.append((ordered_source.path, ordered_track))
 
     sub_tracks = [
         (src_path, track.mkv_tid)
@@ -130,26 +134,26 @@ def merge_remux_into_encode_config(
     for audio_order, audio_settings in enumerate(encode_cfg.audio_tracks):
         src_path = audio_settings.source_path or encode_cfg.source
         if audio_settings.track_entry_id:
-            track = remux_track_map_by_id.get(audio_settings.track_entry_id)
+            audio_entry = remux_track_map_by_id.get(audio_settings.track_entry_id)
         else:
-            track = _find_track(src_path, audio_settings.stream_index, "audio")
-        if track is None:
+            audio_entry = _find_track(src_path, audio_settings.stream_index, "audio")
+        if audio_entry is None:
             continue
-        edit = _make_edit(audio_offset + audio_order, track)
+        edit = _make_edit(audio_offset + audio_order, audio_entry)
         if edit:
             track_meta_edits.append(edit)
-        _append_track_offset(TrackType.AUDIO.value, src_path, audio_settings.stream_index, track)
+        _append_track_offset(TrackType.AUDIO.value, src_path, audio_settings.stream_index, audio_entry)
 
     sub_offset = audio_offset + len(encode_cfg.audio_tracks)
     used_sub_tracks = sub_tracks or encode_cfg.subtitle_tracks
     for sub_order, (sub_path, sub_sid) in enumerate(used_sub_tracks):
-        track = remux_track_map.get((sub_path, sub_sid))
-        if track is None:
+        subtitle_entry = remux_track_map.get((sub_path, sub_sid))
+        if subtitle_entry is None:
             continue
-        edit = _make_edit(sub_offset + sub_order, track)
+        edit = _make_edit(sub_offset + sub_order, subtitle_entry)
         if edit:
             track_meta_edits.append(edit)
-        _append_track_offset(TrackType.SUBTITLE.value, sub_path, sub_sid, track)
+        _append_track_offset(TrackType.SUBTITLE.value, sub_path, sub_sid, subtitle_entry)
 
     chapter_overrides = remux_cfg.chapter_overrides
     if (

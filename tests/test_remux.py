@@ -1382,21 +1382,28 @@ class TestTrackTableUpdateAudioMeta:
         panel.close()
 
     def test_audio_sync_done_logs_preformatted_i18n_values(self, qt_app, tmp_path):
-        panel = RemuxPanel(AppConfig())
-        track = _track(1, "audio", file_id="fid")
-        panel._track_table.append_tracks(_COLOR_A, [track])
-        emitted: list[tuple[str, str]] = []
-        panel.log_message.connect(lambda level, message: emitted.append((level, message)))
+        prev_lang = current_language()
+        panel = None
+        try:
+            set_current_language("fra")
+            panel = RemuxPanel(AppConfig())
+            track = _track(1, "audio", file_id="fid")
+            panel._track_table.append_tracks(_COLOR_A, [track])
+            emitted: list[tuple[str, str]] = []
+            panel.log_message.connect(lambda level, message: emitted.append((level, message)))
 
-        panel._on_audio_sync_done(track.entry_id, "", -320, 0.876)
+            panel._on_audio_sync_done(track.entry_id, "", -320, 0.876)
 
-        assert emitted == [
-            (
-            "OK",
-            "Synchronisation audio améliorée appliquée : -320 ms (confiance 0.88).",
-            )
-        ]
-        panel.close()
+            assert emitted == [
+                (
+                    "OK",
+                    "Synchronisation audio améliorée appliquée : -320 ms (confiance 0.88).",
+                )
+            ]
+        finally:
+            if panel is not None:
+                panel.close()
+            set_current_language(prev_lang)
 
     def test_audio_sync_done_clears_reference_offset(self, qt_app, tmp_path):
         panel = RemuxPanel(AppConfig())
