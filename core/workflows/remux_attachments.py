@@ -30,7 +30,30 @@ def write_mediainfo_nfo(
             capture_output=True,
             **subprocess_text_kwargs(),
         )
-        nfo_path.write_text(result.stdout, encoding="utf-8")
+        cleaned_lines: list[str] = []
+        changed = False
+        for line in result.stdout.splitlines(keepends=True):
+            line_body = line.rstrip("\r\n")
+            newline = line[len(line_body):]
+            if ":" not in line_body:
+                cleaned_lines.append(line)
+                continue
+
+            key, value = line_body.split(":", 1)
+            current = value.strip()
+            if (
+                key.strip().casefold() == "complete name"
+                and current != output_path.name
+                and ("/" in current or "\\" in current)
+            ):
+                suffix_start = len(value) - len(value.lstrip())
+                cleaned_lines.append(f"{key}:{value[:suffix_start]}{output_path.name}{newline}")
+                changed = True
+            else:
+                cleaned_lines.append(line)
+
+        nfo_text = "".join(cleaned_lines) if changed else result.stdout
+        nfo_path.write_text(nfo_text, encoding="utf-8")
         log_cb("OK", f"NFO généré : {nfo_path.name}")
     except Exception as exc:
         log_cb("WARN", f"Impossible de générer le NFO : {exc}")
