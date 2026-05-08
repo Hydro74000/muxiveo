@@ -1583,7 +1583,7 @@ class MatroskaMuxingAppPostAction:
 
     @staticmethod
     def default_prefix(version_label: str) -> str:
-        return f"Mediarecode {version_label}"
+        return f"AOTR Mediarecode {version_label}"
 
     def apply_if_mkv(
         self,
