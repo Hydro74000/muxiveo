@@ -594,7 +594,7 @@
       ],
       "range": null,
       "editable": "implemented",
-      "description": "Application de muxage et version (ex. \"libmatroska-0.4.3\"). Patché par MatroskaSegmentInfoHeaderEditor : préfixe \"Mediarecode X.Y.Z / <valeur originale>\"."
+      "description": "Application de muxage et version (ex. \"libmatroska-0.4.3\"). Patché par MatroskaSegmentInfoHeaderEditor : préfixe \"AOTR Mediarecode vX.Y.Z\"."
     },
     {
       "name": "WritingApp",
