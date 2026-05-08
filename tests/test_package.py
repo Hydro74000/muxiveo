@@ -480,6 +480,41 @@ def test_build_msix_package_invokes_makeappx_and_signing(tmp_path):
     mock_sign.assert_called_once_with(output_path)
 
 
+def test_build_macos_dmg_retries_hdiutil_create(tmp_path):
+    app_path = tmp_path / "dist" / "Mediarecode.app"
+    contents = app_path / "Contents"
+    contents.mkdir(parents=True)
+    (contents / "Info.plist").write_text("plist", encoding="utf-8")
+
+    commands: list[list[str]] = []
+    attempts = {"count": 0}
+
+    def fake_run(cmd, **kwargs):
+        commands.append([str(part) for part in cmd])
+        if cmd[:2] == ["hdiutil", "create"]:
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                return subprocess.CompletedProcess(args=cmd, returncode=1)
+            output = Path(cmd[-1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text("dmg", encoding="utf-8")
+            return subprocess.CompletedProcess(args=cmd, returncode=0)
+        return subprocess.CompletedProcess(args=cmd, returncode=0)
+
+    with patch.object(package_mod, "ROOT", tmp_path), \
+         patch.object(package_mod.shutil, "which", return_value="/usr/bin/hdiutil"), \
+         patch.object(package_mod, "_run", side_effect=fake_run), \
+         patch.object(package_mod.time, "sleep") as mock_sleep:
+        result = package_mod._build_macos_dmg(app_path, version_tag="1.2.3")
+
+    create_commands = [cmd for cmd in commands if cmd[:2] == ["hdiutil", "create"]]
+    assert len(create_commands) == 2
+    assert result == tmp_path / "dist" / "Mediarecode-1.2.3.dmg"
+    assert result.read_text(encoding="utf-8") == "dmg"
+    assert not (tmp_path / "dist" / "dmg_staging").exists()
+    mock_sleep.assert_called_once_with(2)
+
+
 def test_package_appimage_versioned_output_path_uses_app_version_by_default():
     with patch.object(package_appimage_mod, "APP_VERSION", "8.8.8"):
         output = package_appimage_mod._versioned_output_path(

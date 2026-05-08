@@ -2701,20 +2701,55 @@ def _build_macos_dmg(app_path: Path, version_tag: str | None) -> Path:
     except OSError:
         pass
 
-    _run([
+    create_cmd = [
         "hdiutil", "create",
         "-volname", APP_NAME,
         "-srcfolder", str(staging),
         "-ov",
         "-format", "UDZO",
         str(dmg_path),
-    ])
-    shutil.rmtree(staging, ignore_errors=True)
+    ]
+    try:
+        _run_hdiutil_create_with_retries(create_cmd, dmg_path=dmg_path)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
     if not dmg_path.exists():
         raise FileNotFoundError(f"hdiutil n'a pas produit : {dmg_path}")
     _ok(f"DMG : {dmg_path.name}")
     return dmg_path
+
+
+def _run_hdiutil_create_with_retries(
+    cmd: list[str],
+    *,
+    dmg_path: Path,
+    attempts: int = 3,
+) -> None:
+    """Relance hdiutil create si le runner macOS garde un verrou transitoire."""
+    attempts = max(1, attempts)
+    last_result: subprocess.CompletedProcess | None = None
+
+    for attempt in range(1, attempts + 1):
+        if dmg_path.exists():
+            dmg_path.unlink()
+
+        result = _run(cmd, check=False)
+        if result.returncode == 0:
+            return
+
+        last_result = result
+        if attempt >= attempts:
+            break
+
+        _warn(
+            "hdiutil create a échoué "
+            f"(code {result.returncode}), nouvel essai {attempt + 1}/{attempts}."
+        )
+        time.sleep(min(2 * attempt, 8))
+
+    assert last_result is not None
+    raise subprocess.CalledProcessError(last_result.returncode, last_result.args)
 
 
 def build_macos(dmg: bool, dest: str | None = None, version_tag: str | None = None) -> None:
