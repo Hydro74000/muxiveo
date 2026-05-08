@@ -650,6 +650,32 @@ class TmdbFetcher:
         raw_date = data.get("release_date") or data.get("first_air_date") or ""
         year     = raw_date[:4] if raw_date else result.year
 
+        season_no = 0
+        episode_no = 0
+        if result.kind == "tv":
+            try:
+                season_no = int(season.strip()) if season.strip() else 0
+                episode_no = int(episode.strip()) if episode.strip() else 0
+            except ValueError:
+                season_no = 0
+                episode_no = 0
+
+            if season_no > 0:
+                season_endpoint = f"/tv/{result.tmdb_id}/season/{season_no}"
+                try:
+                    season_data = self._get(season_endpoint)
+                    season_air_date = str(season_data.get("air_date") or "").strip()
+                    if season_air_date:
+                        year = season_air_date[:4]
+                except TmdbError:
+                    self._debug_log(
+                        "TV season metadata fetch failed; keeping series release year",
+                        tmdb_id=result.tmdb_id,
+                        language=self._lang,
+                        season=season_no,
+                        endpoint=season_endpoint,
+                    )
+
         # Genres
         genres = [g["name"] for g in data.get("genres", [])]
 
@@ -681,13 +707,6 @@ class TmdbFetcher:
         # on tente de récupérer le synopsis de l'épisode en priorité.
         # Si indisponible (404, overview vide, etc.), on conserve le synopsis global.
         if result.kind == "tv":
-            try:
-                season_no = int(season.strip()) if season.strip() else 0
-                episode_no = int(episode.strip()) if episode.strip() else 0
-            except ValueError:
-                season_no = 0
-                episode_no = 0
-
             if season_no > 0 and episode_no > 0:
                 ep_endpoint = f"/tv/{result.tmdb_id}/season/{season_no}/episode/{episode_no}"
                 overview_source = "series"
