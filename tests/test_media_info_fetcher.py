@@ -53,6 +53,8 @@ def test_get_details_tv_prefers_episode_overview_when_available(monkeypatch):
                 "overview": "Series overview",
                 "external_ids": {},
             }
+        if endpoint == "/tv/100/season/1":
+            return {"air_date": ""}
         if endpoint == "/tv/100/season/1/episode/2":
             return {"overview": "Episode overview", "name": "Episode Title"}
         raise AssertionError(f"Unexpected endpoint: {endpoint}")
@@ -70,6 +72,90 @@ def test_get_details_tv_prefers_episode_overview_when_available(monkeypatch):
     assert details.to_mkv_tags()["SUBTITLE"] == "My Show - S01E02 - Episode Title"
 
 
+def test_get_details_tv_uses_season_release_year_for_date_released(monkeypatch):
+    fetcher = TmdbFetcher(api_key="dummy")
+
+    def fake_get(endpoint: str, extra: dict | None = None) -> dict:
+        if endpoint == "/tv/110":
+            return {
+                "name": "My Show",
+                "first_air_date": "2020-01-01",
+                "genres": [],
+                "credits": {"cast": [], "crew": []},
+                "created_by": [],
+                "origin_country": ["US"],
+                "overview": "Series overview",
+                "external_ids": {},
+            }
+        if endpoint == "/tv/110/season/2":
+            return {"air_date": "2024-06-01"}
+        raise AssertionError(f"Unexpected endpoint: {endpoint}")
+
+    monkeypatch.setattr(fetcher, "_get", fake_get)
+
+    result = MediaSearchResult(tmdb_id=110, title="My Show", year="2020", kind="tv")
+    details = fetcher.get_details(result, season="2")
+
+    assert details.year == "2024"
+    assert details.to_mkv_tags()["DATE_RELEASED"] == "2024"
+
+
+def test_get_details_tv_falls_back_to_series_year_when_season_release_unavailable(monkeypatch):
+    fetcher = TmdbFetcher(api_key="dummy")
+
+    def fake_get(endpoint: str, extra: dict | None = None) -> dict:
+        if endpoint == "/tv/111":
+            return {
+                "name": "My Show",
+                "first_air_date": "2020-01-01",
+                "genres": [],
+                "credits": {"cast": [], "crew": []},
+                "created_by": [],
+                "origin_country": ["US"],
+                "overview": "Series overview",
+                "external_ids": {},
+            }
+        if endpoint == "/tv/111/season/2":
+            raise TmdbError("not found")
+        raise AssertionError(f"Unexpected endpoint: {endpoint}")
+
+    monkeypatch.setattr(fetcher, "_get", fake_get)
+
+    result = MediaSearchResult(tmdb_id=111, title="My Show", year="2019", kind="tv")
+    details = fetcher.get_details(result, season="2")
+
+    assert details.year == "2020"
+    assert details.to_mkv_tags()["DATE_RELEASED"] == "2020"
+
+
+def test_get_details_tv_without_season_does_not_call_season_endpoint(monkeypatch):
+    fetcher = TmdbFetcher(api_key="dummy")
+    calls: list[str] = []
+
+    def fake_get(endpoint: str, extra: dict | None = None) -> dict:
+        calls.append(endpoint)
+        if endpoint == "/tv/112":
+            return {
+                "name": "My Show",
+                "first_air_date": "2020-01-01",
+                "genres": [],
+                "credits": {"cast": [], "crew": []},
+                "created_by": [],
+                "origin_country": ["US"],
+                "overview": "Series overview",
+                "external_ids": {},
+            }
+        raise AssertionError(f"Unexpected endpoint: {endpoint}")
+
+    monkeypatch.setattr(fetcher, "_get", fake_get)
+
+    result = MediaSearchResult(tmdb_id=112, title="My Show", year="2019", kind="tv")
+    details = fetcher.get_details(result)
+
+    assert calls == ["/tv/112"]
+    assert details.year == "2020"
+
+
 def test_get_details_tv_falls_back_to_series_overview_when_episode_unavailable(monkeypatch):
     fetcher = TmdbFetcher(api_key="dummy")
 
@@ -85,6 +171,8 @@ def test_get_details_tv_falls_back_to_series_overview_when_episode_unavailable(m
                 "overview": "Series overview",
                 "external_ids": {},
             }
+        if endpoint == "/tv/101/season/1":
+            return {"air_date": ""}
         if endpoint == "/tv/101/season/1/episode/99":
             raise TmdbError("not found")
         raise AssertionError(f"Unexpected endpoint: {endpoint}")
@@ -112,6 +200,8 @@ def test_get_details_tv_uses_episode_translations_when_detail_is_empty(monkeypat
                 "overview": "Series overview",
                 "external_ids": {},
             }
+        if endpoint == "/tv/102/season/1":
+            return {"air_date": ""}
         if endpoint == "/tv/102/season/1/episode/4":
             if extra and extra.get("language") == "en-US":
                 return {"overview": "English episode overview", "name": "English Episode Title"}
@@ -156,6 +246,8 @@ def test_get_details_tv_falls_back_to_english_episode_metadata_when_locale_is_em
                 "overview": "Series overview",
                 "external_ids": {},
             }
+        if endpoint == "/tv/102/season/1":
+            return {"air_date": ""}
         if endpoint == "/tv/102/season/1/episode/4":
             if extra and extra.get("language") == "en-US":
                 return {"overview": "English episode overview", "name": "English Episode Title"}
