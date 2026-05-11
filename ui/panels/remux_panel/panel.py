@@ -35,6 +35,7 @@ from core.inspector import AttachmentInfo, ChapterEntry, FileInfo
 from core.runner import TaskSignals, ToolRunner
 from core.workflows.remux import RemuxWorkflow
 from core.workflows.audio_sync import AudioSyncTrack, AudioSyncWorkflow
+from core.workflows.common.ffmpeg_runtime import ffmpeg_progress_args
 from core.workflows.remux_models import (
     RemuxConfig,
     SourceInput,
@@ -112,6 +113,9 @@ class RemuxPanel(QWidget):
     Signaux :
         log_message(level: str, message: str)
         tool_output(label: str, line: str)
+        extract_started(TaskSignals, dict) — extraction de piste lancée depuis le menu contextuel
+        audio_sync_started(dict) — synchronisation audio lancée depuis le tableau des pistes
+        audio_sync_finished(bool, dict) — synchronisation audio terminée
         video_tracks_changed(list)  — pistes vidéo activées (FileInfo, TrackEntry, couleur)
         audio_tracks_changed(list)  — pistes audio activées (AudioTrack, couleur, Path source)
         ready_changed(bool)         — True quand au moins un fichier est inspecté
@@ -119,6 +123,9 @@ class RemuxPanel(QWidget):
 
     log_message = Signal(str, str)
     tool_output = Signal(str, str)
+    extract_started = Signal(object, object)
+    audio_sync_started = Signal(object)
+    audio_sync_finished = Signal(bool, object)
 
     _inspection_done = Signal(str, object)
     _inspection_error = Signal(str, str)
@@ -718,12 +725,26 @@ class RemuxPanel(QWidget):
         self._track_table.set_audio_sync_available(len(by_source) >= 2)
 
     @staticmethod
-    def _looks_5_1_or_more(entry: TrackEntry) -> bool:
+    def _audio_sync_family(entry: TrackEntry) -> str | None:
         info = (entry.display_info or "").lower()
-        return "5.1" in info or "7.1" in info or "6 ch" in info or "8 ch" in info
+        if (
+            "5.1" in info or "7.1" in info or
+            "6 ch" in info or "8 ch" in info or
+            "6 channel" in info or "8 channel" in info
+        ):
+            return "surround"
+        if (
+            "stereo" in info or "2.0" in info or
+            "2 ch" in info or "2ch" in info or "2 channel" in info
+        ):
+            return "stereo"
+        return None
 
     def _audio_sync_reference_choices(self, target: TrackEntry) -> list[tuple[str, TrackEntry]]:
         choices: list[tuple[str, TrackEntry]] = []
+        target_family = self._audio_sync_family(target)
+        if target_family is None:
+            return choices
         seen_sources: set[str] = set()
         for sf in self._source_files:
             if sf.id == target.file_id or sf.id in seen_sources:
@@ -732,13 +753,16 @@ class RemuxPanel(QWidget):
                 entry for entry in self._track_table.current_tracks()
                 if entry.file_id == sf.id
                 and entry.track_type == "audio"
-                and self._looks_5_1_or_more(entry)
+                and self._audio_sync_family(entry) == target_family
             ]
             if not candidates:
                 continue
             ref = candidates[0]
             title = f" - {ref.title}" if ref.title else ""
-            choices.append((f"{sf.path.name} | #{ref.mkv_tid} {ref.codec} {ref.display_info}{title}", ref))
+            choices.append((
+                f"{sf.path.name} | #{ref.mkv_tid} {ref.codec} {ref.display_info}{title}",
+                ref,
+            ))
             seen_sources.add(sf.id)
         return choices
 
@@ -751,7 +775,8 @@ class RemuxPanel(QWidget):
     def _on_audio_sync_requested(self, entry: TrackEntry) -> None:
         if entry.track_type != "audio":
             return
-        if not self._looks_5_1_or_more(entry):
+        target_family = self._audio_sync_family(entry)
+        if target_family is None:
             self.log_message.emit("ERROR", "impossible d'utiliser la synchronisation améliorée")
             return
 
@@ -766,6 +791,16 @@ class RemuxPanel(QWidget):
         reference_entry = dialog.selected_entry()
         if reference_entry is None:
             return
+        if target_family == "stereo":
+            QMessageBox.warning(
+                self,
+                translate_text("Synchronisation stéréo"),
+                translate_text(
+                    "La synchronisation stéréo n'est ni précise ni conseillée. "
+                    "Elle cherche de gros marqueurs sonores sur le même côté, "
+                    "mais le résultat doit être vérifié."
+                ),
+            )
 
         reference = self._audio_sync_track(reference_entry)
         target = self._audio_sync_track(entry)
@@ -781,6 +816,13 @@ class RemuxPanel(QWidget):
                 reference=reference_entry.mkv_tid,
             ),
         )
+        self.audio_sync_started.emit({
+            "label": translate_text(
+                "Synchronisation audio améliorée : piste #{target} vs référence #{reference}…",
+                target=entry.mkv_tid,
+                reference=reference_entry.mkv_tid,
+            )
+        })
 
         target_entry_id = entry.entry_id
         reference_entry_id = reference_entry.entry_id
@@ -811,26 +853,32 @@ class RemuxPanel(QWidget):
         offset_ms: int,
         confidence: float,
     ) -> None:
-        if reference_entry_id and reference_entry_id != entry_id:
-            self._track_table.update_time_shift(reference_entry_id, 0)
-        if self._track_table.update_time_shift(entry_id, offset_ms):
-            offset_label = f"{int(offset_ms):+d}"
-            confidence_label = f"{float(confidence):.2f}"
-            self.log_message.emit(
-                "OK",
-                translate_text(
-                    "Synchronisation audio améliorée appliquée : {offset} ms (confiance {confidence}).",
-                    offset=offset_label,
-                    confidence=confidence_label,
-                ),
-            )
-            self._rebuild_preview()
-            self._emit_audio_tracks()
+        try:
+            if reference_entry_id and reference_entry_id != entry_id:
+                self._track_table.update_time_shift(reference_entry_id, 0)
+            if self._track_table.update_time_shift(entry_id, offset_ms):
+                offset_label = f"{int(offset_ms):+d}"
+                confidence_label = f"{float(confidence):.2f}"
+                self.log_message.emit(
+                    "OK",
+                    translate_text(
+                        "Synchronisation audio améliorée appliquée : {offset} ms (confiance {confidence}).",
+                        offset=offset_label,
+                        confidence=confidence_label,
+                    ),
+                )
+                self._rebuild_preview()
+                self._emit_audio_tracks()
+        finally:
+            self.audio_sync_finished.emit(True, {"entry_id": entry_id})
 
     def _on_audio_sync_error(self, _entry_id: str, detail: str) -> None:
-        self.log_message.emit("ERROR", "impossible d'utiliser la synchronisation améliorée")
-        if detail:
-            self.log_message.emit("ERROR", detail)
+        try:
+            self.log_message.emit("ERROR", "impossible d'utiliser la synchronisation améliorée")
+            if detail:
+                self.log_message.emit("ERROR", detail)
+        finally:
+            self.audio_sync_finished.emit(False, {"entry_id": _entry_id})
 
     def update_video_track_encoding(self, plans) -> None:
         plan_map: dict[str, str] = {}
@@ -971,6 +1019,7 @@ class RemuxPanel(QWidget):
             entry.mkv_tid,
             codec,
             out_path,
+            progress_args=ffmpeg_progress_args(),
         )
 
         self.log_message.emit(
@@ -983,10 +1032,15 @@ class RemuxPanel(QWidget):
 
         runner = ToolRunner()
         self._extract_runner = runner  # conserve la référence pendant l'exécution
-        signals = runner.run(cmd, label=f"extract-sub-{entry.mkv_tid}")
-        signals.progress.connect(
-            lambda line: self.log_message.emit("INFO", line),
-            Qt.ConnectionType.QueuedConnection,
+        label = f"extract-sub-{entry.mkv_tid}"
+        signals = runner.run(cmd, label=label)
+        self.extract_started.emit(
+            signals,
+            {
+                "duration_s": source.info.duration_s,
+                "label": translate_text("Extraction du sous-titre"),
+                "output_name": out_path.name,
+            },
         )
         signals.finished.connect(
             lambda _=None, p=out_path: self.log_message.emit(

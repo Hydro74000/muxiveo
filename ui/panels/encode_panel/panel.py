@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 
 from core.config import AppConfig
 from core.inspector import FileInfo, HDRType, VideoTrack
-from core.i18n import apply_translations, translate_text
+from core.i18n import apply_translations, set_current_language, translate_text
 from core.workflows.remux_models import TrackEntry
 from core.runner import TaskSignals
 from core.workflows.encode import (
@@ -87,6 +87,7 @@ class EncodePanel(QWidget):
     ) -> None:
         super().__init__(parent)
         self._config    = config
+        set_current_language(getattr(config, "language", None))
         self._workflow  = EncodeWorkflow(
             ffmpeg_bin=config.tool_ffmpeg,
             dovi_tool_bin=config.tool_dovi_tool,

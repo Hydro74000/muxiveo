@@ -1109,6 +1109,50 @@ def test_setup_config_ini_path_uses_xdg_on_non_windows(tmp_path):
     assert path == xdg_dir / "mediarecode" / "config.ini"
 
 
+def test_core_config_ini_path_uses_appdata_for_windows_frozen(tmp_path):
+    import core.config as cfg_mod
+
+    appdata = tmp_path / "Roaming"
+    with patch.object(cfg_mod.sys, "platform", "win32"), \
+         patch.object(cfg_mod.sys, "frozen", True, create=True), \
+         patch.dict(os.environ, {"APPDATA": str(appdata)}, clear=False):
+        path = cfg_mod._resolve_ini_path()
+
+    assert path == appdata / "mediarecode" / "config.ini"
+
+
+def test_core_config_ini_path_uses_project_root_for_windows_dev():
+    import core.config as cfg_mod
+
+    with patch.object(cfg_mod.sys, "platform", "win32"), \
+         patch.object(cfg_mod.sys, "frozen", False, create=True):
+        path = cfg_mod._resolve_ini_path()
+
+    assert path == Path(cfg_mod.__file__).parent.parent / "config.ini"
+
+
+def test_app_data_dir_falls_back_to_appdata_on_windows(tmp_path):
+    import core.config as cfg_mod
+
+    appdata = tmp_path / "Roaming"
+    with patch.object(cfg_mod.sys, "platform", "win32"), \
+         patch.dict(os.environ, {"APPDATA": str(appdata)}, clear=False), \
+         patch.object(cfg_mod.QStandardPaths, "writableLocation", return_value=""):
+        path = cfg_mod._app_data_dir()
+
+    assert path == appdata / "mediarecode"
+    assert path.is_dir()
+
+
+def test_default_work_dir_uses_platform_temp_dir(tmp_path):
+    import core.config as cfg_mod
+
+    with patch.object(cfg_mod.tempfile, "gettempdir", return_value=str(tmp_path / "Temp")):
+        path = cfg_mod._default_work_dir()
+
+    assert path == tmp_path / "Temp" / "mediarecode_work"
+
+
 def test_setup_detect_non_windows_tool_path_reads_ini_value(tmp_path):
     import setup as setup_mod
 

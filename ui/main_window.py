@@ -1348,12 +1348,13 @@ class MainWindow(QMainWindow):
         self._running   = False
         self._signals: TaskSignals | None = None
         self._op_start: float = 0.0
-        self._op_mode: str = ""   # "remux" ou "encode"
+        self._op_mode: str = ""   # "remux", "encode", "extract", "audio_sync" ou "merge_dovi"
         # Trace one-shot du banner ffmpeg : on logge la version la 1re fois
         # vue dans la session (en INFO standard), les suivantes restent
         # silencieuses côté UI (mais visibles dans le verbose file).
         self._ffmpeg_version_logged: bool = False
         self._op_encode_config: EncodeConfig | None = None
+        self._op_extract_duration_s: float | None = None
         self._op_encode_fps: float | None = None
         self._op_encode_frame: int | None = None
         # Trackers ETA lissés (EWMA) pour les barres single-stream (remux et
@@ -1739,6 +1740,9 @@ class MainWindow(QMainWindow):
         self._remux_panel.tool_output.connect(
             self._on_tool_output_requested, Qt.ConnectionType.QueuedConnection
         )
+        self._remux_panel.extract_started.connect(self._on_remux_extract_started)
+        self._remux_panel.audio_sync_started.connect(self._on_remux_audio_sync_started)
+        self._remux_panel.audio_sync_finished.connect(self._on_remux_audio_sync_finished)
         # RemuxPanel → EncodePanel : pistes partagées + chemin de sortie commun
         self._remux_panel.video_tracks_changed.connect(self._encode_panel.set_video_tracks)
         self._remux_panel.audio_tracks_changed.connect(self._encode_panel.set_audio_tracks)
@@ -1772,6 +1776,93 @@ class MainWindow(QMainWindow):
         """Met à jour l'état du bouton selon la disponibilité des deux panneaux."""
         enabled = (self._remux_panel.is_ready() or self._encode_panel.collect_config() is not None)
         self._run_btn.setEnabled(enabled and not self._running)
+
+    def _on_remux_extract_started(self, task_signals: object, metadata: object) -> None:
+        if not isinstance(task_signals, TaskSignals):
+            return
+        if self._running:
+            return
+
+        data = metadata if isinstance(metadata, dict) else {}
+        duration_raw = data.get("duration_s")
+        self._op_extract_duration_s = (
+            float(duration_raw)
+            if isinstance(duration_raw, (int, float)) and duration_raw > 0
+            else None
+        )
+        label = str(data.get("label") or translate_text("Extraction du sous-titre")).strip()
+        output_name = str(data.get("output_name") or "").strip()
+        if output_name:
+            label = translate_text("{label} vers {name}", label=label, name=output_name)
+
+        self._running = True
+        self._op_start = time.monotonic()
+        self._op_mode = "extract"
+        self._signals = task_signals
+        self._ffmpeg_version_logged = False
+        self._op_encode_config = None
+        self._op_encode_fps = None
+        self._op_encode_frame = None
+        self._eta_tracker_video.reset()
+        self._eta_tracker_frame.reset()
+        self._op_stage_label = label
+        self._reset_multi_encode_progress_tracking()
+
+        self._run_btn.setEnabled(False)
+        self._cancel_btn.setVisible(True)
+        self._prog_bar.setRange(0, 100)
+        self._prog_bar.setValue(0)
+        self._prog_bar.setStyleSheet(self._progress_bar_stylesheet(_Colors.ACCENT))
+        self._prog_lbl.setText(label)
+        self._prog_widget.setVisible(True)
+        self._status_lbl.setText(translate_text("Extraction en cours…"))
+        self._start_prep_progress()
+
+        task_signals.progress.connect(self._on_op_progress, Qt.ConnectionType.QueuedConnection)
+        task_signals.finished.connect(
+            lambda _: self._on_op_finished(success=True),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        task_signals.failed.connect(
+            lambda msg, _exc: self._on_op_finished(success=False, error=msg),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        task_signals.cancelled.connect(self._on_op_cancelled, Qt.ConnectionType.QueuedConnection)
+
+    def _on_remux_audio_sync_started(self, metadata: object) -> None:
+        if self._running:
+            return
+
+        data = metadata if isinstance(metadata, dict) else {}
+        label = str(data.get("label") or translate_text("Synchronisation audio")).strip()
+
+        self._running = True
+        self._op_start = time.monotonic()
+        self._op_mode = "audio_sync"
+        self._signals = None
+        self._ffmpeg_version_logged = False
+        self._op_encode_config = None
+        self._op_encode_fps = None
+        self._op_encode_frame = None
+        self._eta_tracker_video.reset()
+        self._eta_tracker_frame.reset()
+        self._op_stage_label = label
+        self._reset_multi_encode_progress_tracking()
+
+        self._run_btn.setEnabled(False)
+        self._cancel_btn.setVisible(False)
+        self._prog_bar.setRange(0, 100)
+        self._prog_bar.setValue(0)
+        self._prog_bar.setStyleSheet(self._progress_bar_stylesheet(_Colors.WARN))
+        self._prog_lbl.setText(label)
+        self._prog_widget.setVisible(True)
+        self._status_lbl.setText(translate_text("Synchronisation audio en cours…"))
+        self._start_prep_progress()
+
+    def _on_remux_audio_sync_finished(self, success: bool, _metadata: object) -> None:
+        if self._op_mode != "audio_sync":
+            return
+        self._on_op_finished(success=bool(success))
 
     def _on_run(self) -> None:
         if self._running:
@@ -2078,6 +2169,29 @@ class MainWindow(QMainWindow):
             return
         if _is_ffmpeg_info_noise(line):
             return
+        if self._op_mode == "extract":
+            if line.startswith("$ "):
+                self._stop_prep_progress()
+                self.log_requested.emit("INFO", line)
+                return
+            elapsed_video = ffmpeg_progress_seconds(line)
+            if elapsed_video is not None:
+                dur = self._op_extract_duration_s or self._remux_panel.get_duration_s()
+                if dur and dur > 0:
+                    self._stop_prep_progress()
+                    pct = min(99, int(elapsed_video / dur * 100))
+                    self._prog_bar.setValue(pct)
+                    self._eta_tracker_video.update(elapsed_video, time.monotonic())
+                    eta_s = self._eta_tracker_video.eta(dur, elapsed_video)
+                    eta_str = f"ETA {_fmt_eta(eta_s)}" if eta_s is not None else ""
+                    self._prog_lbl.setText(self._format_progress_label(f"{pct}%", eta_str))
+                else:
+                    self._start_prep_progress()
+                return
+            if _is_encode_progress_noise(line):
+                return
+            self.log_requested.emit("INFO", line)
+            return
         if self._op_mode == "remux":
             if line.startswith("$ "):
                 self._stop_prep_progress()
@@ -2346,6 +2460,7 @@ class MainWindow(QMainWindow):
         self._running = False
         self._signals = None
         self._op_encode_config = None
+        self._op_extract_duration_s = None
         self._reset_multi_encode_progress_tracking()
         self._stop_prep_progress()
         self._run_btn.setEnabled(True)
@@ -2360,6 +2475,8 @@ class MainWindow(QMainWindow):
         self._running = False
         self._signals = None
         self._op_encode_config = None
+        finished_mode = self._op_mode
+        self._op_extract_duration_s = None
         self._reset_multi_encode_progress_tracking()
         self._stop_prep_progress()
         self._run_btn.setEnabled(True)
@@ -2369,8 +2486,13 @@ class MainWindow(QMainWindow):
             self._prog_bar.setValue(100)
             self._prog_lbl.setText(translate_text("100%  ·  terminé"))
             self._status_lbl.setText(translate_text("Terminé."))
-            label = "Encodage terminé" if self._op_mode == "encode" else "Remuxage terminé"
-            self.log_requested.emit("OK", label)
+            label = {
+                "encode": "Encodage terminé",
+                "extract": "Extraction terminée",
+                "audio_sync": "Synchronisation audio terminée",
+                "remux": "Remuxage terminé",
+            }.get(finished_mode, "Opération terminée")
+            self.log_requested.emit("OK", translate_text(label))
         else:
             self._prog_widget.setVisible(False)
             self._prog_lbl.setText("")

@@ -383,6 +383,38 @@
     "fra": "Remuxage terminé",
     "eng": "Remuxing completed"
   },
+  "Extraction terminée": {
+    "fra": "Extraction terminée",
+    "eng": "Extraction completed"
+  },
+  "Extraction en cours…": {
+    "fra": "Extraction en cours…",
+    "eng": "Extracting..."
+  },
+  "Extraction du sous-titre": {
+    "fra": "Extraction du sous-titre",
+    "eng": "Subtitle extraction"
+  },
+  "{label} vers {name}": {
+    "fra": "{label} vers {name}",
+    "eng": "{label} to {name}"
+  },
+  "Opération terminée": {
+    "fra": "Opération terminée",
+    "eng": "Operation completed"
+  },
+  "Synchronisation audio": {
+    "fra": "Synchronisation audio",
+    "eng": "Audio synchronization"
+  },
+  "Synchronisation audio en cours…": {
+    "fra": "Synchronisation audio en cours…",
+    "eng": "Synchronizing audio..."
+  },
+  "Synchronisation audio terminée": {
+    "fra": "Synchronisation audio terminée",
+    "eng": "Audio synchronization completed"
+  },
   "Aucune opération configurée.": {
     "fra": "Aucune opération configurée.",
     "eng": "No operation configured."
@@ -1478,6 +1510,14 @@
   "Choisir la source audio qui servira de référence.": {
     "fra": "Choisir la source audio qui servira de référence.",
     "eng": "Choose the audio source to use as the reference."
+  },
+  "Synchronisation stéréo": {
+    "fra": "Synchronisation stéréo",
+    "eng": "Stereo synchronization"
+  },
+  "La synchronisation stéréo n'est ni précise ni conseillée. Elle cherche de gros marqueurs sonores sur le même côté, mais le résultat doit être vérifié.": {
+    "fra": "La synchronisation stéréo n'est ni précise ni conseillée. Elle cherche de gros marqueurs sonores sur le même côté, mais le résultat doit être vérifié.",
+    "eng": "Stereo synchronization is neither precise nor recommended. It looks for large sound markers on the same side, but the result must be checked."
   },
   "Synchronisation audio améliorée : piste #{target} vs référence #{reference}…": {
     "fra": "Synchronisation audio améliorée : piste #{target} vs référence #{reference}…",

@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -633,15 +634,22 @@ def _app_data_dir() -> Path:
     raw = QStandardPaths.writableLocation(
         QStandardPaths.StandardLocation.AppDataLocation
     )
-    p = Path(raw) / "mediarecode"
+    if raw:
+        root = Path(raw)
+    elif sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        root = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
+    else:
+        root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    p = root / "mediarecode"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
 def _default_work_dir() -> Path:
-    tmp = Path(
-        os.environ.get("TMPDIR", os.environ.get("TEMP", "/tmp"))
-    )
+    tmp = Path(tempfile.gettempdir())
     p = tmp / "mediarecode_work"
     return p
 
