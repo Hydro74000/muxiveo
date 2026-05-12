@@ -6,11 +6,18 @@ from pathlib import Path
 import pytest
 
 import cli.main
+from cli.batch import discover_direct_batch_jobs, run_batch
 from cli.contract import validate_batch_contract, validate_job_contract
-from cli.errors import ContractError
+from cli.errors import CliError, ContractError
 from cli.parser import build_parser
 from cli.rules import apply_track_rules
-from cli.schema import build_cli_json_schema
+from cli.schema import (
+    build_cli_json_schema,
+    build_cli_json_schema_bundle,
+    build_cli_json_schema_v2,
+    build_decision_profile_schema_v1,
+    build_exact_job_schema_v1,
+)
 from core.workflows.remux_models import TrackEntry
 
 
@@ -25,11 +32,40 @@ def test_cli_parser_exposes_expected_subcommands() -> None:
     assert args.command == "batch"
     args = parser.parse_args(["batch", "--template", "template.json", "-i", "a.mkv", "--summary", "summary.json"])
     assert args.summary == "summary.json"
+    args = parser.parse_args(
+        [
+            "batch",
+            "--template",
+            "template.json",
+            "--input-dir",
+            "season",
+            "--recursive",
+            "--include",
+            "*.mkv",
+            "--exclude",
+            "*sample*",
+        ]
+    )
+    assert args.input_dir == ["season"]
+    assert args.recursive is True
+    assert args.include == ["*.mkv"]
+    assert args.exclude == ["*sample*"]
     args = parser.parse_args(["inspect", "a.mkv", "--rules-preview"])
     assert args.rules_preview is True
     args = parser.parse_args(["schema", "--output", "schema.json"])
     assert args.command == "schema"
     assert args.output == "schema.json"
+    args = parser.parse_args(["schema", "--version", "2"])
+    assert args.schema_version == "2"
+    args = parser.parse_args(["schema", "--version", "decision-profile"])
+    assert args.schema_version == "decision-profile"
+    args = parser.parse_args(["run", "--config", "job.json", "--dry-run"])
+    assert args.command == "run"
+    assert args.dry_run is True
+    args = parser.parse_args(["profile", "preview", "--profile", "p.json", "-i", "a.mkv", "--json"])
+    assert args.command == "profile"
+    assert args.profile_command == "preview"
+    assert args.json_output is True
 
 
 def test_cli_main_only_exposes_entrypoint() -> None:
@@ -53,6 +89,26 @@ def test_cli_json_schema_exposes_public_contract_keys() -> None:
         assert key in schema["properties"]
     for definition in ("source", "rules", "condition", "track_edit", "track_order_item", "chapters", "tmdb"):
         assert definition in schema["$defs"]
+
+
+def test_cli_json_schema_v2_exposes_hybrid_contract_keys() -> None:
+    schema = build_cli_json_schema_v2()
+    assert schema["properties"]["version"] == {"const": 2}
+    for key in ("sources", "output", "tracks", "track_order", "audio_variants", "encode"):
+        assert key in schema["properties"]
+    for definition in ("selector", "audio_variant", "encode", "rules", "chapters"):
+        assert definition in schema["$defs"]
+    bundle = build_cli_json_schema_bundle()
+    assert len(bundle["oneOf"]) == 4
+
+
+def test_profile_schemas_expose_exact_and_decision_contracts() -> None:
+    exact = build_exact_job_schema_v1()
+    assert exact["properties"]["kind"] == {"const": "exact-job"}
+    decision = build_decision_profile_schema_v1()
+    assert decision["properties"]["kind"] == {"const": "decision-profile"}
+    assert "rule" in decision["$defs"]
+    assert "action" in decision["$defs"]
 
 
 def test_apply_track_rules_filters_languages_and_renames() -> None:
@@ -178,6 +234,40 @@ def test_validate_job_contract_requires_version_for_json_files() -> None:
         )
 
     assert "$.version: champ requis" in str(excinfo.value)
+
+
+def test_validate_job_contract_accepts_hybrid_v2_selectors() -> None:
+    validate_job_contract(
+        {
+            "version": 2,
+            "kind": "exact-template",
+            "sources": [{"path": "source.mkv"}],
+            "output": "out.mkv",
+            "tracks": [
+                {
+                    "selector": {"source": 0, "type": "audio", "position": 0, "codec": "EAC3"},
+                    "enabled": True,
+                    "language": "fr-FR",
+                }
+            ],
+            "track_order": [{"selector": {"source": 0, "type": "video", "position": 0}}],
+            "audio_variants": [
+                {
+                    "source_selector": {"source": 0, "type": "audio", "position": 0},
+                    "codec": "eac3",
+                    "bitrate_kbps": 640,
+                }
+            ],
+            "encode": {
+                "video": {
+                    "selector": {"source": 0, "type": "video", "position": 0},
+                    "codec": "copy",
+                }
+            },
+            "fallback_profile": {"name": "series-fr"},
+        },
+        require_version=True,
+    )
 
 
 def test_validate_job_contract_rejects_invalid_chapter_shape() -> None:
@@ -379,3 +469,100 @@ def test_validate_batch_contract_reports_job_paths() -> None:
     message = str(excinfo.value)
     assert "$.jobs[0].tracks" in message
     assert "$.jobs[1]" in message
+
+
+def test_batch_rejects_json_batch_mixed_with_direct_inputs() -> None:
+    with pytest.raises(CliError) as excinfo:
+        run_batch(
+            template_path="missing-template.json",
+            batch_path="batch.json",
+            cli_inputs=["a.mkv"],
+            input_dirs=None,
+            recursive=False,
+            include_patterns=None,
+            exclude_patterns=None,
+            output_dir=None,
+            dry_run=True,
+            force=False,
+            continue_on_error=False,
+            summary_path=None,
+            config=None,  # type: ignore[arg-type]
+            options=None,  # type: ignore[arg-type]
+            logger=None,  # type: ignore[arg-type]
+        )
+
+    assert "--batch" in str(excinfo.value)
+    assert "--input-dir" in str(excinfo.value)
+
+
+def test_discover_direct_batch_jobs_filters_video_and_preserves_relative_outputs(tmp_path: Path) -> None:
+    root = tmp_path / "in"
+    nested = root / "Saison 01"
+    nested.mkdir(parents=True)
+    for path in (
+        root / "E00.sample.mkv",
+        root / "E01.mkv",
+        root / "E01.srt",
+        root / "audio.flac",
+        nested / "E02.mp4",
+        nested / "E03.avi",
+    ):
+        path.write_bytes(b"")
+
+    non_recursive = discover_direct_batch_jobs(
+        input_dirs=[str(root)],
+        output_dir=str(tmp_path / "out"),
+        recursive=False,
+    )
+    assert [Path(job["sources"][0]["path"]).name for job in non_recursive.jobs] == [
+        "E00.sample.mkv",
+        "E01.mkv",
+    ]
+
+    recursive = discover_direct_batch_jobs(
+        input_dirs=[str(root)],
+        output_dir=str(tmp_path / "out"),
+        recursive=True,
+        include_patterns=["*.mkv", "Saison 01/*.mp4"],
+        exclude_patterns=["*sample*"],
+    )
+
+    assert [Path(job["sources"][0]["path"]).as_posix().split("/in/")[-1] for job in recursive.jobs] == [
+        "E01.mkv",
+        "Saison 01/E02.mp4",
+    ]
+    assert [Path(job["output"]).as_posix().split("/out/")[-1] for job in recursive.jobs] == [
+        "E01.mkv",
+        "Saison 01/E02.mkv",
+    ]
+    assert recursive.scanned == 6
+    assert recursive.selected == 2
+
+
+def test_discover_direct_batch_jobs_errors_when_no_video_matches(tmp_path: Path) -> None:
+    root = tmp_path / "in"
+    root.mkdir()
+    (root / "subtitle.srt").write_text("1\n", encoding="utf-8")
+    template = tmp_path / "template.json"
+    template.write_text(json.dumps({"version": 1, "rules": {}}), encoding="utf-8")
+
+    with pytest.raises(CliError) as excinfo:
+        run_batch(
+            template_path=str(template),
+            batch_path=None,
+            cli_inputs=None,
+            input_dirs=[str(root)],
+            recursive=False,
+            include_patterns=None,
+            exclude_patterns=None,
+            output_dir=None,
+            dry_run=True,
+            force=False,
+            continue_on_error=False,
+            summary_path=None,
+            config=None,  # type: ignore[arg-type]
+            options=None,  # type: ignore[arg-type]
+            logger=None,  # type: ignore[arg-type]
+        )
+
+    assert "Aucun fichier vidéo compatible" in str(excinfo.value)

@@ -12,59 +12,169 @@ from core.media_info_fetcher import (
     clean_filename_for_search,
     extract_year_from_filename,
 )
-from core.workflows.remux_models import RemuxConfig, TrackEntry
+from core.workflows.remux_models import RemuxConfig, TrackEntry, clone_track_entry
+from core.profiles.hybrid import (
+    HybridResolutionError,
+    apply_track_spec,
+    resolve_track_selector,
+)
 
 from cli.chapters import chapter_entries
-from cli.constants import EXIT_ARGS, EXIT_VALIDATION, FLAG_NAMES
+from cli.constants import EXIT_ARGS, EXIT_VALIDATION
 from cli.contract import validate_job_contract
 from cli.errors import CliError
 from cli.inspection import inspect_sources
 from cli.json_io import deep_merge
 from cli.logging import Logger
 from cli.options import CommonOptions
-from cli.rules import apply_track_rules, normalize_lang
+from cli.rules import apply_track_rules
 
 
-def apply_explicit_track_edits(job: dict[str, Any], tracks: list[TrackEntry]) -> None:
+def _fallback_profile_name(job: dict[str, Any]) -> str:
+    fallback = job.get("fallback_profile")
+    if isinstance(fallback, dict):
+        return str(fallback.get("name") or "").strip()
+    return str(fallback or "").strip()
+
+
+def _track_from_spec(
+    spec: dict[str, Any],
+    tracks: list[TrackEntry],
+    *,
+    strict_selectors: bool = False,
+    context: str = "tracks",
+) -> TrackEntry | None:
+    selector = spec.get("selector")
+    if isinstance(selector, dict):
+        return resolve_track_selector(
+            selector,
+            tracks,
+            context=context,
+            strict=strict_selectors,
+        )
+    raw_source = spec.get("source", spec.get("source_index", 0))
+    source_index = int(0 if raw_source is None else raw_source)
+    file_id = f"src{source_index}"
+    tid = spec.get("id", spec.get("mkv_tid", spec.get("stream")))
+    if tid is None:
+        return None
+    track_id = int(tid)
+    lookup = {(t.file_id, t.mkv_tid): t for t in tracks}
+    return lookup.get((file_id, track_id))
+
+
+def apply_explicit_track_edits(
+    job: dict[str, Any],
+    tracks: list[TrackEntry],
+    *,
+    strict_selectors: bool = False,
+) -> None:
     specs = job.get("tracks", [])
     if not isinstance(specs, list):
         return
-    lookup = {(t.file_id, t.mkv_tid): t for t in tracks}
-    for spec in specs:
+    for index, spec in enumerate(specs):
         if not isinstance(spec, dict):
             continue
-        raw_source = spec.get("source", spec.get("source_index", 0))
-        source_index = int(0 if raw_source is None else raw_source)
-        file_id = f"src{source_index}"
-        tid = spec.get("id", spec.get("mkv_tid", spec.get("stream")))
-        if tid is None:
-            continue
-        track_id = int(tid)
-        track = lookup.get((file_id, track_id))
+        try:
+            track = _track_from_spec(
+                spec,
+                tracks,
+                strict_selectors=strict_selectors,
+                context=f"tracks[{index}]",
+            )
+        except HybridResolutionError as exc:
+            if _fallback_profile_name(job):
+                exc.report["suggested_profile"] = _fallback_profile_name(job)
+            raise
         if track is None:
             continue
-        if "enabled" in spec:
-            track.enabled = bool(spec["enabled"])
-        if "language" in spec:
-            track.language = normalize_lang(str(spec["language"]), track.title)
-        if "title" in spec:
-            track.title = str(spec["title"])
-        flags = spec.get("flags")
-        if isinstance(flags, dict):
-            for name, value in flags.items():
-                if name in FLAG_NAMES:
-                    setattr(track, f"flag_{name}", bool(value))
-        if "time_shift_ms" in spec:
-            track.time_shift_ms = int(spec["time_shift_ms"])
+        apply_track_spec(track, spec)
 
 
-def track_order(job: dict[str, Any], tracks: list[TrackEntry]) -> list[tuple[int, int, str]]:
+def apply_audio_variants(
+    job: dict[str, Any],
+    sources,
+    tracks: list[TrackEntry],
+    *,
+    strict_selectors: bool = False,
+) -> None:
+    specs = job.get("audio_variants", job.get("derived_audio_tracks", []))
+    if not isinstance(specs, list):
+        return
+    source_by_file_id = {
+        track.file_id: source
+        for source in sources
+        for track in source.tracks
+    }
+    for index, spec in enumerate(specs):
+        if not isinstance(spec, dict):
+            continue
+        selector = spec.get("source_selector", spec.get("selector"))
+        if not isinstance(selector, dict):
+            continue
+        try:
+            source_track = resolve_track_selector(
+                selector,
+                tracks,
+                context=f"audio_variants[{index}]",
+                strict=strict_selectors,
+            )
+        except HybridResolutionError as exc:
+            if _fallback_profile_name(job):
+                exc.report["suggested_profile"] = _fallback_profile_name(job)
+            raise
+        if source_track is None or source_track.track_type != "audio":
+            continue
+        new_entry = clone_track_entry(source_track, entry_id=str(spec.get("entry_id") or "") or None)
+        codec = str(spec.get("codec") or spec.get("target_codec") or "").strip()
+        bitrate = int(spec.get("bitrate_kbps") or 0)
+        if codec:
+            new_entry.codec = codec.upper() if codec.lower() != "copy" else source_track.codec
+        if codec and codec.lower() != "copy":
+            parts = [
+                part.strip()
+                for part in str(source_track.display_info or "").replace("·", "  ").split("  ")
+                if part.strip() and "kbps" not in part.lower()
+            ]
+            if bitrate > 0:
+                parts.append(f"{bitrate} kbps")
+            new_entry.display_info = "  ".join(parts)
+        apply_track_spec(new_entry, {**spec, "enabled": spec.get("enabled", True)})
+        source = source_by_file_id.get(source_track.file_id)
+        if source is not None:
+            source.tracks.append(new_entry)
+        tracks.append(new_entry)
+
+
+def track_order(
+    job: dict[str, Any],
+    tracks: list[TrackEntry],
+    *,
+    strict_selectors: bool = False,
+) -> list[tuple[int, int, str]]:
     explicit = job.get("track_order")
     if isinstance(explicit, list):
         order: list[tuple[int, int, str]] = []
         by_key = {(t.file_id, t.mkv_tid): t for t in tracks}
-        for item in explicit:
+        for index, item in enumerate(explicit):
             if isinstance(item, dict):
+                selector = item.get("selector")
+                if isinstance(selector, dict):
+                    try:
+                        track = resolve_track_selector(
+                            selector,
+                            tracks,
+                            context=f"track_order[{index}]",
+                            strict=strict_selectors,
+                        )
+                    except HybridResolutionError as exc:
+                        if _fallback_profile_name(job):
+                            exc.report["suggested_profile"] = _fallback_profile_name(job)
+                        raise
+                    if track is not None and track.enabled:
+                        source_index = int(track.file_id.removeprefix("src")) if track.file_id.startswith("src") else 0
+                        order.append((source_index, track.mkv_tid, track.entry_id))
+                    continue
                 raw_source = item.get("source", item.get("source_index", 0))
                 source_index = int(0 if raw_source is None else raw_source)
                 raw_tid = item.get("id", item.get("mkv_tid", item.get("stream")))
@@ -145,7 +255,9 @@ def build_remux_config(
     validate_job_contract(job, require_version=False)
     sources, infos, tracks = inspect_sources(job, config, options, logger, cli_inputs=cli_inputs)
     tracks = apply_track_rules(tracks, job.get("rules", {}))
-    apply_explicit_track_edits(job, tracks)
+    strict_selectors = int(job.get("version", 1) or 1) == 2 or str(job.get("kind") or "") == "exact-job"
+    apply_audio_variants(job, sources, tracks, strict_selectors=strict_selectors)
+    apply_explicit_track_edits(job, tracks, strict_selectors=strict_selectors)
 
     output_raw = cli_output or job.get("output")
     if not output_raw:
@@ -169,7 +281,7 @@ def build_remux_config(
     return RemuxConfig(
         sources=sources,
         output=output,
-        track_order=track_order(job, tracks),
+        track_order=track_order(job, tracks, strict_selectors=strict_selectors),
         keep_chapters=keep_chapters,
         chapter_overrides=chapter_overrides,
         chapter_source_index=chapter_source_index,
@@ -178,13 +290,14 @@ def build_remux_config(
         file_title=str(job.get("file_title") or tmdb_title or ""),
         tag_overrides=tag_overrides if isinstance(tag_overrides, dict) else None,
         tmdb_cover=tmdb_cover,
+        allow_missing_output_dir=bool(job.get("_allow_missing_output_dir", False)),
     )
 
 
 def config_to_template(job: dict[str, Any], *, include_output: bool = False) -> dict[str, Any]:
     template = {
         "version": 1,
-        "rules": job.get("rules", {}),
+        "kind": "exact-job",
         "chapters": job.get("chapters", {}),
         "tmdb": job.get("tmdb", False),
         "extra_attachments": job.get("extra_attachments", []),

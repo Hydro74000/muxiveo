@@ -224,6 +224,9 @@ class RemuxConfig:
     #: Cover TMDB à télécharger juste avant le remuxage : (url, filename).
     #: None → pas de cover TMDB en attente.
     tmdb_cover:          tuple[str, str] | None = None
+    #: Autorise une preview CLI à construire la commande même si le dossier de
+    #: sortie n'existe pas encore. Ne doit pas être utilisé pour une exécution.
+    allow_missing_output_dir: bool = False
 
 
 # =============================================================================

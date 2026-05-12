@@ -22,12 +22,16 @@ Dans les builds packages, le CLI utilise le même bundle que l'application GUI :
 |---|---|
 | `inspect` | inspecte une source et sort du JSON |
 | `inspect --config-template` | genere un template JSON de depart |
-| `inspect --rules-preview` | affiche les pistes apres application des rules |
+| `inspect --rules-preview` | compatibilite historique rules |
 | `schema` | affiche le schéma JSON public du contrat CLI |
 | `validate` | valide un job/template sans executer ffmpeg |
 | `preview` | affiche la commande ffmpeg prevue |
 | `remux` | execute un remux headless |
 | `batch` | applique un template a plusieurs jobs |
+| `profile validate` | valide un `decision-profile` |
+| `profile preview` | applique un profil en dry preview JSON/commande |
+| `profile apply` | applique un profil et remuxe |
+| `profile batch` | applique un profil a un dossier |
 
 Exemples :
 
@@ -36,6 +40,7 @@ mediarecode-cli inspect source.mkv
 mediarecode-cli inspect source.mkv --config-template --output sortie.mkv
 mediarecode-cli inspect source.mkv --config template.json --rules-preview
 mediarecode-cli schema --output mediarecode-cli.schema.json
+mediarecode-cli schema --version decision-profile
 mediarecode-cli preview --config docs/cli/middle.json
 mediarecode-cli preview --config docs/cli/middle.json --json
 mediarecode-cli validate --config docs/cli/middle.json --json
@@ -44,11 +49,20 @@ mediarecode-cli remux --config docs/cli/middle.json --dry-run
 mediarecode-cli batch --template docs/cli/complexe-toutes-options-template.json --batch docs/cli/complexe-toutes-options-batch.json --force
 mediarecode-cli batch --template template.json --batch batch.json --dry-run --log-format jsonl
 mediarecode-cli batch --template template.json --batch batch.json --summary summary.json
+mediarecode-cli batch --template exact-job.json --input-dir "Serie/Saison 01" --output-dir "out/Saison 01" --dry-run
+mediarecode-cli batch --template exact-job.json --input-dir "Serie" --recursive --include "*.mkv" --exclude "*sample*" --output-dir "out"
+mediarecode-cli profile preview --profile profil.json -i source.mkv --json
+mediarecode-cli profile apply --profile profil.json -i source.mkv -o sortie.mkv
+mediarecode-cli profile batch --profile profil.json --input-dir "Serie" --recursive --output-dir "out" --dry-run
 ```
 
 ## Contrat JSON
 
-Tout fichier JSON de configuration doit contenir `version: 1`.
+Les deux contrats publics principaux sont :
+
+- `kind: "exact-job", version: 1` pour un traitement strict;
+- `kind: "decision-profile", version: 1` pour l'automapping low-code.
+
 Le schéma peut être exporté avec `mediarecode-cli schema`.
 
 Job minimal :
@@ -56,6 +70,7 @@ Job minimal :
 ```json
 {
   "version": 1,
+  "kind": "exact-job",
   "sources": [
     {"path": "source.mkv"}
   ],
@@ -81,9 +96,82 @@ Chaque source peut etre une chaine ou un objet :
 - `"all"` ou `true`;
 - une liste de noms ou indices.
 
-### `rules`
+### `decision-profile`
 
-Les rules v1 couvrent selection, normalisation et renommage :
+Un profil décisionnel ne contient ni source ni sortie. Il décrit des règles
+réutilisables :
+
+```json
+{
+  "version": 1,
+  "kind": "decision-profile",
+  "name": "VF + VO",
+  "variables": {
+    "codec_names": {
+      "EAC3": "DDP",
+      "AC3": "Dolby Digital"
+    }
+  },
+  "groups": [
+    {"id": "audio", "label": "Audio", "enabled": true, "priority": 200}
+  ],
+  "rules": [
+    {
+      "id": "rename_fr",
+      "label": "Renommer VF",
+      "group_id": "audio",
+      "priority": 100,
+      "write_mode": "priority",
+      "scope": "all",
+      "match": {
+        "all": [
+          {"field": "type", "op": "is", "value": "audio"},
+          {"field": "language", "op": "is", "value": "fr-FR"}
+        ]
+      },
+      "actions": [
+        {"type": "set_enabled", "value": true},
+        {"type": "set_title", "pattern": "{lang_name} {codec_name} {channels} {audio_object}"}
+      ]
+    }
+  ]
+}
+```
+
+`write_mode` définit ce qui se passe si plusieurs règles écrivent le même champ :
+
+- `"priority"` : la plus forte priorité gagne; une priorité égale reste un conflit;
+- `"override"` : cette règle remplace une valeur déjà proposée;
+- `"add"` : cette règle complète sans écraser; pour un titre, le fragment est ajouté.
+
+Commandes :
+
+```bash
+mediarecode-cli profile validate --profile profil.json
+mediarecode-cli profile preview --profile profil.json -i source.mkv --json
+mediarecode-cli profile apply --profile profil.json -i source.mkv -o sortie.mkv
+```
+
+Keywords de renommage disponibles :
+
+```text
+{type} {source_index} {track_index}
+{language} {lang} {lang_name}
+{title} {source_title}
+{codec} {codec_name} {channels} {channel_layout} {audio_object} {atmos} {dtsx}
+{resolution} {hdr} {video_flags_hex}
+{flags} {flag_default} {flag_forced}
+{flag_hearing_impaired} {flag_visual_impaired}
+{flag_original} {flag_commentary}
+```
+
+`{codec}` garde le codec technique. `{codec_name}` utilise `variables.codec_names`
+si un alias existe, sinon il retombe sur le codec technique.
+
+### `rules` legacy
+
+Le bloc `rules` reste documente ici comme compatibilite historique. Pour les
+nouveaux usages, preferer `decision-profile`.
 
 ```json
 {
@@ -263,6 +351,41 @@ Le batch fusionne chaque job avec le template :
 
 Le fichier batch est valide avant le premier job. Les entrees de `jobs` ou
 `inputs` doivent etre des objets job ou des chemins string.
+
+Le batch peut aussi créer les jobs depuis un dossier :
+
+```bash
+mediarecode-cli batch \
+  --template exact-job.json \
+  --input-dir "Serie" \
+  --recursive \
+  --output-dir "out" \
+  --dry-run
+```
+
+Dans ce mode, chaque fichier vidéo/conteneur compatible devient un job. Les
+fichiers audio seuls et sous-titres seuls sont ignorés. Le parcours des
+sous-dossiers est activé uniquement avec `--recursive`.
+
+Filtres disponibles :
+
+| Option | Effet |
+|--------|-------|
+| `--input-dir DIR` | ajoute un dossier à scanner ; option répétable |
+| `--recursive` | inclut les sous-dossiers |
+| `--include GLOB` | limite les fichiers retenus ; option répétable |
+| `--exclude GLOB` | ignore les fichiers correspondants ; option répétable |
+| `--output-dir DIR` | génère les sorties en `.mkv` sous ce dossier |
+
+Avec `--recursive` et `--output-dir`, l'arborescence relative est conservée :
+
+```text
+Serie/Saison 01/E01.mkv  ->  out/Saison 01/E01.mkv
+Serie/Saison 02/E01.mkv  ->  out/Saison 02/E01.mkv
+```
+
+`--batch FILE` ne se mélange pas avec `-i/--input` ou `--input-dir` : utilisez
+soit le batch JSON, soit le mode direct.
 
 Avec `--summary FILE`, le batch ecrit un rapport JSON final :
 

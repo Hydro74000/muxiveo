@@ -1005,6 +1005,10 @@ class AppConfig:
     def _load(self) -> None:
         self.work_dir = self._resolve_path("paths", "work_dir", "paths/work_dir", _default_work_dir())
         self.output_dir = self._resolve_path("paths", "output_dir", "paths/output_dir", _default_output_dir())
+        self.config_dir = _INI_PATH.parent
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.profiles_dir = self.config_dir / "profiles"
+        self.profiles_dir.mkdir(parents=True, exist_ok=True)
         self.app_data_dir = _app_data_dir()
 
         self.tool_ffmpeg = self._resolve_tool_value("ffmpeg", "tools/ffmpeg", "ffmpeg")
@@ -1293,6 +1297,8 @@ class AppConfig:
             "paths": {
                 "work_dir": str(self.work_dir),
                 "output_dir": str(self.output_dir),
+                "config_dir": str(self.config_dir),
+                "profiles_dir": str(self.profiles_dir),
                 "app_data": str(self.app_data_dir),
             },
             "tools": {

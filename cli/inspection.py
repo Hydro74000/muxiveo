@@ -103,16 +103,8 @@ def selected_attachments(info: FileInfo, item: dict[str, Any]) -> list[Attachmen
 def config_template_from_info(info: FileInfo, *, output: str = "") -> dict[str, Any]:
     return {
         "version": 1,
+        "kind": "exact-job",
         "sources": [{"path": str(info.path), "attachments": "none", "copy_tags": False}],
         "output": output or str(info.path.with_suffix(".remux.mkv")),
-        "rules": {
-            "normalize_languages": True,
-            "tracks": {
-                "video": {"include": True},
-                "audio": {"include": True},
-                "subtitle": {"include": True},
-            },
-            "rename_patterns": {},
-        },
         "chapters": {"source_index": 0},
     }

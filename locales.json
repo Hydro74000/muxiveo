@@ -939,6 +939,18 @@
     "fra": "HDR",
     "eng": "HDR"
   },
+  "HDR10+": {
+    "fra": "HDR10+",
+    "eng": "HDR10+"
+  },
+  "Dolby Vision": {
+    "fra": "Dolby Vision",
+    "eng": "Dolby Vision"
+  },
+  "Vidéo": {
+    "fra": "Vidéo",
+    "eng": "Video"
+  },
   "Déposer un fichier vidéo ici": {
     "fra": "Déposer un fichier vidéo ici",
     "eng": "Drop a video file here"
@@ -2938,5 +2950,469 @@
   "Tokens ffmpeg additionnels concaténés en fin de commande.\nEx: -coder cabac -bf-strategy 2": {
     "fra": "Tokens ffmpeg additionnels concaténés en fin de commande.\nEx: -coder cabac -bf-strategy 2",
     "eng": "Tokens ffmpeg additional tokens appended at the end of the command.\nEx: -coder cabac -bf-strategy 2"
+  },
+  "Exporter JSON CLI": {
+    "fra": "Exporter JSON CLI",
+    "eng": "Export CLI JSON"
+  },
+  "JSON (*.json);;Tous les fichiers (*)": {
+    "fra": "JSON (*.json);;Tous les fichiers (*)",
+    "eng": "JSON (*.json);;All files (*)"
+  },
+  "Template CLI exporté : {path}": {
+    "fra": "Template CLI exporté : {path}",
+    "eng": "CLI template exported: {path}"
+  },
+  "Sauver profil": {
+    "fra": "Sauver profil",
+    "eng": "Save profile"
+  },
+  "Profil sauvegardé : {path}": {
+    "fra": "Profil sauvegardé : {path}",
+    "eng": "Profile saved: {path}"
+  },
+  "Appliquer profil": {
+    "fra": "Appliquer profil",
+    "eng": "Apply profile"
+  },
+  "Profil :": {
+    "fra": "Profil :",
+    "eng": "Profile:"
+  },
+  "Profil appliqué : {name}": {
+    "fra": "Profil appliqué : {name}",
+    "eng": "Profile applied: {name}"
+  },
+  "Profil hybride": {
+    "fra": "Profil hybride",
+    "eng": "Hybrid profile"
+  },
+  "Aucune configuration complète à exporter.": {
+    "fra": "Aucune configuration complète à exporter.",
+    "eng": "No complete configuration to export."
+  },
+  "Profils": {
+    "fra": "Profils",
+    "eng": "Profiles"
+  },
+  "Aucun profil hybride enregistré.": {
+    "fra": "Aucun profil hybride enregistré.",
+    "eng": "No hybrid profile saved."
+  },
+  "Profil introuvable": {
+    "fra": "Profil introuvable",
+    "eng": "Profile not found"
+  },
+  "Impossible de charger le profil sélectionné.": {
+    "fra": "Impossible de charger le profil sélectionné.",
+    "eng": "Unable to load the selected profile."
+  },
+  "Export impossible": {
+    "fra": "Export impossible",
+    "eng": "Export failed"
+  },
+  "Impossible d'écrire le fichier JSON : {err}": {
+    "fra": "Impossible d'écrire le fichier JSON : {err}",
+    "eng": "Unable to write the JSON file: {err}"
+  },
+  "Sauvegarde impossible": {
+    "fra": "Sauvegarde impossible",
+    "eng": "Save failed"
+  },
+  "Impossible de sauvegarder le profil : {err}": {
+    "fra": "Impossible de sauvegarder le profil : {err}",
+    "eng": "Unable to save the profile: {err}"
+  },
+  "Profil incompatible": {
+    "fra": "Profil incompatible",
+    "eng": "Incompatible profile"
+  },
+  "Profil : {name}": {
+    "fra": "Profil : {name}",
+    "eng": "Profile: {name}"
+  },
+  "Pistes modifiées : {count}": {
+    "fra": "Pistes modifiées : {count}",
+    "eng": "Modified tracks: {count}"
+  },
+  "Ordre des pistes modifié.": {
+    "fra": "Ordre des pistes modifié.",
+    "eng": "Track order changed."
+  },
+  "Titre du conteneur : {title}": {
+    "fra": "Titre du conteneur : {title}",
+    "eng": "Container title: {title}"
+  },
+  "Aucun changement détecté.": {
+    "fra": "Aucun changement détecté.",
+    "eng": "No changes detected."
+  },
+  "Appliquer ce profil ?": {
+    "fra": "Appliquer ce profil ?",
+    "eng": "Apply this profile?"
+  },
+  "Aperçu du profil": {
+    "fra": "Aperçu du profil",
+    "eng": "Profile preview"
+  },
+  "Nom du profil": {
+    "fra": "Nom du profil",
+    "eng": "Profile name"
+  },
+  "Créer un profil d'automapping réutilisable.": {
+    "fra": "Créer un profil d'automapping réutilisable.",
+    "eng": "Create a reusable automapping profile."
+  },
+  "Sélection des pistes": {
+    "fra": "Sélection des pistes",
+    "eng": "Track selection"
+  },
+  "Langues, titres et décalages": {
+    "fra": "Langues, titres et décalages",
+    "eng": "Languages, titles and offsets"
+  },
+  "Flags de pistes": {
+    "fra": "Flags de pistes",
+    "eng": "Track flags"
+  },
+  "Ordre des pistes": {
+    "fra": "Ordre des pistes",
+    "eng": "Track order"
+  },
+  "Pistes audio dérivées": {
+    "fra": "Pistes audio dérivées",
+    "eng": "Derived audio tracks"
+  },
+  "Aucune source prête pour créer un profil.": {
+    "fra": "Aucune source prête pour créer un profil.",
+    "eng": "No ready source to create a profile."
+  },
+  "Aucune piste disponible pour créer un profil.": {
+    "fra": "Aucune piste disponible pour créer un profil.",
+    "eng": "No available track to create a profile."
+  },
+  "Règles appliquées : {count}": {
+    "fra": "Règles appliquées : {count}",
+    "eng": "Applied rules: {count}"
+  },
+  "Pistes audio créées : {count}": {
+    "fra": "Pistes audio créées : {count}",
+    "eng": "Audio tracks created: {count}"
+  },
+  "Règles sans correspondance : {count}": {
+    "fra": "Règles sans correspondance : {count}",
+    "eng": "Rules without match: {count}"
+  },
+  "Règles ambiguës ignorées : {count}": {
+    "fra": "Règles ambiguës ignorées : {count}",
+    "eng": "Ambiguous rules ignored: {count}"
+  },
+  "Ancien profil converti automatiquement. Resauvegardez-le pour stabiliser le format.": {
+    "fra": "Ancien profil converti automatiquement. Resauvegardez-le pour stabiliser le format.",
+    "eng": "Legacy profile converted automatically. Save it again to stabilize the format."
+  },
+  "Profil sauvegardé : {name}": {
+    "fra": "Profil sauvegardé : {name}",
+    "eng": "Profile saved: {name}"
+  },
+  "Conflits non résolus : {count}": {
+    "fra": "Conflits non résolus : {count}",
+    "eng": "Unresolved conflicts: {count}"
+  },
+  "Écritures résolues par mode/priorité : {count}": {
+    "fra": "Écritures résolues par mode/priorité : {count}",
+    "eng": "Writes resolved by mode/priority: {count}"
+  },
+  "Écritures ignorées par priorité : {count}": {
+    "fra": "Écritures ignorées par priorité : {count}",
+    "eng": "Writes ignored by priority: {count}"
+  },
+  "Éditeur de profil": {
+    "fra": "Éditeur de profil",
+    "eng": "Profile editor"
+  },
+  "Profil vide": {
+    "fra": "Profil vide",
+    "eng": "Blank profile"
+  },
+  "Capturer l'état courant": {
+    "fra": "Capturer l'état courant",
+    "eng": "Capture current state"
+  },
+  "Profil existant": {
+    "fra": "Profil existant",
+    "eng": "Existing profile"
+  },
+  "Variables": {
+    "fra": "Variables",
+    "eng": "Variables"
+  },
+  "Aliases codecs": {
+    "fra": "Aliases codecs",
+    "eng": "Codec aliases"
+  },
+  "EAC3=DDP\nAC3=Dolby Digital\nTRUEHD=Dolby TrueHD": {
+    "fra": "EAC3=DDP\nAC3=Dolby Digital\nTRUEHD=Dolby TrueHD",
+    "eng": "EAC3=DDP\nAC3=Dolby Digital\nTRUEHD=Dolby TrueHD"
+  },
+  "Charger": {
+    "fra": "Charger",
+    "eng": "Load"
+  },
+  "Supprimer profil": {
+    "fra": "Supprimer profil",
+    "eng": "Delete profile"
+  },
+  "Supprimer le profil « {name} » ?": {
+    "fra": "Supprimer le profil « {name} » ?",
+    "eng": "Delete profile \"{name}\"?"
+  },
+  "Modèles": {
+    "fra": "Modèles",
+    "eng": "Templates"
+  },
+  "Règle": {
+    "fra": "Règle",
+    "eng": "Rule"
+  },
+  "Activée": {
+    "fra": "Activée",
+    "eng": "Enabled"
+  },
+  "Critères simples": {
+    "fra": "Critères simples",
+    "eng": "Simple criteria"
+  },
+  "Actions": {
+    "fra": "Actions",
+    "eng": "Actions"
+  },
+  "Activer": {
+    "fra": "Activer",
+    "eng": "Enable"
+  },
+  "Désactiver": {
+    "fra": "Désactiver",
+    "eng": "Disable"
+  },
+  "Keywords critères": {
+    "fra": "Keywords critères",
+    "eng": "Criteria keywords"
+  },
+  "Keywords préférés": {
+    "fra": "Keywords préférés",
+    "eng": "Preferred keywords"
+  },
+  "Obligatoire": {
+    "fra": "Obligatoire",
+    "eng": "Required"
+  },
+  "Keywords": {
+    "fra": "Keywords",
+    "eng": "Keywords"
+  },
+  "Insérer keyword": {
+    "fra": "Insérer keyword",
+    "eng": "Insert keyword"
+  },
+  "Piste": {
+    "fra": "Piste",
+    "eng": "Track"
+  },
+  "Source": {
+    "fra": "Source",
+    "eng": "Source"
+  },
+  "Audio": {
+    "fra": "Audio",
+    "eng": "Audio"
+  },
+  "{flag_visual_impaired}, {codec_atmos}": {
+    "fra": "{flag_visual_impaired}, {codec_atmos}",
+    "eng": "{flag_visual_impaired}, {codec_atmos}"
+  },
+  "{atmos}, {dtsx}": {
+    "fra": "{atmos}, {dtsx}",
+    "eng": "{atmos}, {dtsx}"
+  },
+  "Keywords titre": {
+    "fra": "Keywords titre",
+    "eng": "Title keywords"
+  },
+  "Rafraîchir": {
+    "fra": "Rafraîchir",
+    "eng": "Refresh"
+  },
+  "Conflits : {count}": {
+    "fra": "Conflits : {count}",
+    "eng": "Conflicts: {count}"
+  },
+  "Écritures résolues : {count}": {
+    "fra": "Écritures résolues : {count}",
+    "eng": "Resolved writes: {count}"
+  },
+  "Écritures ignorées : {count}": {
+    "fra": "Écritures ignorées : {count}",
+    "eng": "Ignored writes: {count}"
+  },
+  "Ambiguïtés : {count}": {
+    "fra": "Ambiguïtés : {count}",
+    "eng": "Ambiguities: {count}"
+  },
+  "Profil sauvegardé": {
+    "fra": "Profil sauvegardé",
+    "eng": "Profile saved"
+  },
+  "Nom": {
+    "fra": "Nom",
+    "eng": "Name"
+  },
+  "Tags": {
+    "fra": "Tags",
+    "eng": "Tags"
+  },
+  "Description": {
+    "fra": "Description",
+    "eng": "Description"
+  },
+  "Règles": {
+    "fra": "Règles",
+    "eng": "Rules"
+  },
+  "Sélection vidéo": {
+    "fra": "Sélection vidéo",
+    "eng": "Video selection"
+  },
+  "Garder langue": {
+    "fra": "Garder langue",
+    "eng": "Keep language"
+  },
+  "Exclure commentaire": {
+    "fra": "Exclure commentaire",
+    "eng": "Exclude commentary"
+  },
+  "Renommer par pattern": {
+    "fra": "Renommer par pattern",
+    "eng": "Rename by pattern"
+  },
+  "Appliquer flags": {
+    "fra": "Appliquer flags",
+    "eng": "Apply flags"
+  },
+  "Ordre": {
+    "fra": "Ordre",
+    "eng": "Order"
+  },
+  "Variante audio": {
+    "fra": "Variante audio",
+    "eng": "Audio variant"
+  },
+  "Tagger piste": {
+    "fra": "Tagger piste",
+    "eng": "Tag track"
+  },
+  "Critères et actions": {
+    "fra": "Critères et actions",
+    "eng": "Criteria and actions"
+  },
+  "Groupe": {
+    "fra": "Groupe",
+    "eng": "Group"
+  },
+  "Priorité": {
+    "fra": "Priorité",
+    "eng": "Priority"
+  },
+  "Portée": {
+    "fra": "Portée",
+    "eng": "Scope"
+  },
+  "Écriture": {
+    "fra": "Écriture",
+    "eng": "Write mode"
+  },
+  "Remplacer": {
+    "fra": "Remplacer",
+    "eng": "Override"
+  },
+  "Compléter": {
+    "fra": "Compléter",
+    "eng": "Add"
+  },
+  "Titre contient": {
+    "fra": "Titre contient",
+    "eng": "Title contains"
+  },
+  "Sélection": {
+    "fra": "Sélection",
+    "eng": "Selection"
+  },
+  "Titre pattern": {
+    "fra": "Titre pattern",
+    "eng": "Title pattern"
+  },
+  "Tags piste": {
+    "fra": "Tags piste",
+    "eng": "Track tags"
+  },
+  "Preview": {
+    "fra": "Preview",
+    "eng": "Preview"
+  },
+  "Profil": {
+    "fra": "Profil",
+    "eng": "Profile"
+  },
+  "Aucune configuration à capturer.": {
+    "fra": "Aucune configuration à capturer.",
+    "eng": "No configuration to capture."
+  },
+  "Aucune source chargée pour la preview.": {
+    "fra": "Aucune source chargée pour la preview.",
+    "eng": "No loaded source for preview."
+  },
+  "Profil invalide : {err}": {
+    "fra": "Profil invalide : {err}",
+    "eng": "Invalid profile: {err}"
+  },
+  "Tags temporaires :": {
+    "fra": "Tags temporaires :",
+    "eng": "Temporary tags:"
+  },
+  "film, vf, vo": {
+    "fra": "film, vf, vo",
+    "eng": "movie, fr, original"
+  },
+  "forced, commentary, default": {
+    "fra": "forced, commentary, default",
+    "eng": "forced, commentary, default"
+  },
+  "vf_main, forced_sub": {
+    "fra": "vf_main, forced_sub",
+    "eng": "vf_main, forced_sub"
+  },
+  "Type": {
+    "fra": "Type",
+    "eng": "Type"
+  },
+  "Flags": {
+    "fra": "Flags",
+    "eng": "Flags"
+  },
+  "10-Bits": {
+    "fra": "10-Bits",
+    "eng": "10-Bit"
+  },
+  "Timecode": {
+    "fra": "Timecode",
+    "eng": "Timecode"
+  },
+  "{lang_name} {codec} {channels} {audio_object}": {
+    "fra": "{lang_name} {codec} {channels} {audio_object}",
+    "eng": "{lang_name} {codec} {channels} {audio_object}"
+  },
+  "Corrigez les priorités ou les règles avant application.": {
+    "fra": "Corrigez les priorités ou les règles avant application.",
+    "eng": "Fix priorities or rules before applying."
   }
 }

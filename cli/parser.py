@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from cli.commands import cmd_batch, cmd_inspect, cmd_preview, cmd_remux, cmd_schema, cmd_validate
+from cli.commands import cmd_batch, cmd_inspect, cmd_preview, cmd_profile, cmd_remux, cmd_run, cmd_schema, cmd_validate
 
 
 def _add_common_options(parser: argparse.ArgumentParser) -> None:
@@ -32,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     schema = sub.add_parser("schema", help="Afficher le schéma JSON du contrat CLI.")
     schema.add_argument("--output", help="Ecrire le schéma JSON dans un fichier.")
+    schema.add_argument("--version", dest="schema_version", choices=("1", "2", "exact-job", "decision-profile", "all"), default="1")
     schema.add_argument("--log-format", choices=("text", "jsonl"), default="text")
     schema.set_defaults(func=cmd_schema)
 
@@ -39,6 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("validate", "Valider une config remux.", cmd_validate),
         ("preview", "Afficher la commande ffmpeg prévue.", cmd_preview),
         ("remux", "Exécuter un remux.", cmd_remux),
+        ("run", "Exécuter un job remux ou hybride.", cmd_run),
     ):
         p = sub.add_parser(name, help=help_text)
         _add_common_options(p)
@@ -63,6 +65,10 @@ def build_parser() -> argparse.ArgumentParser:
     batch.add_argument("--template", required=True)
     batch.add_argument("--batch", help="JSON contenant `jobs` ou `inputs`.")
     batch.add_argument("-i", "--input", action="append", help="Entrée batch simple; répétable.")
+    batch.add_argument("--input-dir", action="append", help="Dossier à scanner pour créer un job par vidéo; répétable.")
+    batch.add_argument("--recursive", action="store_true", help="Scanner récursivement les dossiers fournis avec --input-dir.")
+    batch.add_argument("--include", action="append", help="Glob de fichiers à inclure lors du scan de dossiers; répétable.")
+    batch.add_argument("--exclude", action="append", help="Glob de fichiers à exclure lors du scan de dossiers; répétable.")
     batch.add_argument("--output-dir")
     batch.add_argument("--force", action="store_true")
     batch.add_argument("--dry-run", action="store_true", help="Valider et afficher les commandes sans exécuter.")
@@ -72,4 +78,45 @@ def build_parser() -> argparse.ArgumentParser:
     batch.add_argument("--no-nfo", dest="nfo", action="store_false")
     batch.add_argument("--writing-application", default="")
     batch.set_defaults(func=cmd_batch)
+
+    profile = sub.add_parser("profile", help="Valider, prévisualiser ou appliquer un profil décisionnel.")
+    profile_sub = profile.add_subparsers(dest="profile_command", required=True)
+
+    profile_validate = profile_sub.add_parser("validate", help="Valider un decision-profile v1.")
+    _add_common_options(profile_validate)
+    profile_validate.add_argument("--profile", required=True)
+    profile_validate.add_argument("--json", dest="json_output", action="store_true")
+    profile_validate.set_defaults(func=cmd_profile)
+
+    profile_preview = profile_sub.add_parser("preview", help="Prévisualiser un profil sur une ou plusieurs sources.")
+    _add_common_options(profile_preview)
+    profile_preview.add_argument("--profile", required=True)
+    profile_preview.add_argument("-i", "--input", action="append", required=True)
+    profile_preview.add_argument("-o", "--output")
+    profile_preview.add_argument("--json", dest="json_output", action="store_true")
+    profile_preview.set_defaults(func=cmd_profile)
+
+    profile_apply = profile_sub.add_parser("apply", help="Appliquer un profil et remuxer.")
+    _add_common_options(profile_apply)
+    profile_apply.add_argument("--profile", required=True)
+    profile_apply.add_argument("-i", "--input", action="append", required=True)
+    profile_apply.add_argument("-o", "--output", required=True)
+    profile_apply.add_argument("--force", action="store_true")
+    profile_apply.add_argument("--dry-run", action="store_true")
+    profile_apply.set_defaults(func=cmd_profile)
+
+    profile_batch = profile_sub.add_parser("batch", help="Appliquer un profil à un lot de fichiers.")
+    _add_common_options(profile_batch)
+    profile_batch.add_argument("--profile", required=True)
+    profile_batch.add_argument("-i", "--input", action="append")
+    profile_batch.add_argument("--input-dir", action="append")
+    profile_batch.add_argument("--recursive", action="store_true")
+    profile_batch.add_argument("--include", action="append")
+    profile_batch.add_argument("--exclude", action="append")
+    profile_batch.add_argument("--output-dir", required=True)
+    profile_batch.add_argument("--dry-run", action="store_true")
+    profile_batch.add_argument("--force", action="store_true")
+    profile_batch.add_argument("--continue-on-error", action="store_true")
+    profile_batch.add_argument("--summary")
+    profile_batch.set_defaults(func=cmd_profile)
     return parser

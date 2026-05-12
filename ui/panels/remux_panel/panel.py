@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -9,11 +11,13 @@ from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtGui import QDropEvent, QFont
 from PySide6.QtWidgets import (
     QComboBox,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLayout,
     QLineEdit,
@@ -32,6 +36,10 @@ from core.file_types import is_accepted
 from core.i18n import apply_translations, translate_text
 from core.matroska_attachment_extractor import extract_matroska_attachment_bytes
 from core.inspector import AttachmentInfo, ChapterEntry, FileInfo
+from core.profiles.hybrid import (
+    remux_config_to_hybrid_job,
+)
+from core.profiles.decision import DecisionProfileManager, apply_decision_profile as apply_decision_profile_v1
 from core.runner import TaskSignals, ToolRunner
 from core.workflows.remux import RemuxWorkflow
 from core.workflows.audio_sync import AudioSyncTrack, AudioSyncWorkflow
@@ -58,6 +66,7 @@ from ui.panels.remux_panel.widgets.attachments import _AttachmentPanel
 from ui.panels.remux_panel.widgets.chapters import _ChapterPanel
 from ui.panels.remux_panel.widgets.file_list import _FileListWidget
 from ui.panels.remux_panel.widgets.track_table import _TrackTable
+from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
 
 
 class _AudioSyncReferenceDialog(QDialog):
@@ -104,6 +113,62 @@ class _AudioSyncReferenceDialog(QDialog):
     def selected_entry(self) -> TrackEntry | None:
         data = self._combo.currentData()
         return data if isinstance(data, TrackEntry) else None
+
+
+class _HybridProfileSaveDialog(QDialog):
+    def __init__(self, *, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(translate_text("Sauver profil"))
+        self.setModal(True)
+        self._name_edit = QLineEdit()
+        self._name_edit.setPlaceholderText(translate_text("Nom du profil"))
+        self._checks: dict[str, QCheckBox] = {}
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(_scale(18), _scale(16), _scale(18), _scale(16))
+        root.setSpacing(_scale(10))
+        self.setStyleSheet(f"""
+            QDialog {{ background: {_C.BG_DEEP}; color: {_C.TEXT_PRI}; }}
+            QLabel, QCheckBox {{ color: {_C.TEXT_SEC}; background: transparent; }}
+            QLineEdit {{
+                background: {_C.BG_CARD};
+                color: {_C.TEXT_PRI};
+                border: 1px solid {_C.BORDER};
+                border-radius: 5px;
+                padding: {_scale(7)}px {_scale(9)}px;
+                min-width: {_scale(360)}px;
+            }}
+        """)
+
+        root.addWidget(QLabel(translate_text("Créer un profil d'automapping réutilisable.")))
+        root.addWidget(self._name_edit)
+        for key, label in (
+            ("selection", translate_text("Sélection des pistes")),
+            ("metadata", translate_text("Langues, titres et décalages")),
+            ("flags", translate_text("Flags de pistes")),
+            ("order", translate_text("Ordre des pistes")),
+            ("audio_variants", translate_text("Pistes audio dérivées")),
+        ):
+            check = QCheckBox(label)
+            check.setChecked(True)
+            self._checks[key] = check
+            root.addWidget(check)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        root.addWidget(buttons)
+        ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok_btn.setEnabled(False)
+        self._name_edit.textChanged.connect(lambda text: ok_btn.setEnabled(bool(text.strip())))
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+    def profile_name(self) -> str:
+        return self._name_edit.text().strip()
+
+    def save_options(self) -> dict[str, bool]:
+        return {key: check.isChecked() for key, check in self._checks.items()}
 
 
 class RemuxPanel(QWidget):
@@ -258,6 +323,16 @@ class RemuxPanel(QWidget):
         btn_none.clicked.connect(lambda: self._set_all_tracks(False))
         track_header.addWidget(btn_all)
         track_header.addWidget(btn_none)
+
+        export_profile_btn = _secondary_button("Exporter JSON CLI")
+        export_profile_btn.clicked.connect(self._export_hybrid_json)
+        save_profile_btn = _secondary_button("Éditer profil")
+        save_profile_btn.clicked.connect(self._save_hybrid_profile)
+        apply_profile_btn = _secondary_button("Appliquer profil")
+        apply_profile_btn.clicked.connect(self._apply_hybrid_profile_dialog)
+        track_header.addWidget(export_profile_btn)
+        track_header.addWidget(save_profile_btn)
+        track_header.addWidget(apply_profile_btn)
 
         self._filter_btn = QPushButton("Sélectionnées seulement")
         self._filter_btn.setCheckable(True)
@@ -569,6 +644,280 @@ class RemuxPanel(QWidget):
 
     def collect_config(self) -> RemuxConfig | None:
         return self._current_config()
+
+    def _hybrid_profile_manager(self) -> DecisionProfileManager:
+        return DecisionProfileManager(self._config.profiles_dir / "decision")
+
+    def _current_hybrid_job(self, *, name: str = "") -> dict | None:
+        config = self._current_config()
+        if config is None:
+            QMessageBox.warning(
+                self,
+                translate_text("Profil hybride"),
+                translate_text("Aucune configuration complète à exporter."),
+            )
+            return None
+        return remux_config_to_hybrid_job(config, name=name)
+
+    def _current_profile_config(self) -> RemuxConfig | None:
+        if not self._has_ready_files():
+            QMessageBox.warning(
+                self,
+                translate_text("Profil hybride"),
+                translate_text("Aucune source prête pour créer un profil."),
+            )
+            return None
+        all_tracks = self._track_table.current_tracks()
+        if not all_tracks:
+            QMessageBox.warning(
+                self,
+                translate_text("Profil hybride"),
+                translate_text("Aucune piste disponible pour créer un profil."),
+            )
+            return None
+        id_to_index = {sf.id: index for index, sf in enumerate(self._source_files)}
+        sources: list[SourceInput] = []
+        for index, source_file in enumerate(self._source_files):
+            if source_file.info is None:
+                continue
+            source_tracks = [track for track in all_tracks if track.file_id == source_file.id]
+            if not source_tracks:
+                source_tracks = source_file.tracks
+            sources.append(
+                SourceInput(
+                    path=source_file.path,
+                    file_index=index,
+                    tracks=source_tracks,
+                    attachment_count=len(source_file.info.attachments),
+                    has_chapters=bool(source_file.info.chapters and source_file.info.chapters.entries),
+                )
+            )
+        if not sources:
+            return None
+        track_order: list[tuple[int, int] | tuple[int, int, str]] = [
+            (id_to_index[track.file_id], track.mkv_tid, track.entry_id)
+            for track in all_tracks
+            if track.enabled and track.file_id in id_to_index
+        ]
+        return RemuxConfig(
+            sources=sources,
+            output=Path("profile-preview.mkv"),
+            track_order=track_order,
+            keep_chapters=True,
+            work_dir=self._config.work_dir,
+        )
+
+    def _export_hybrid_json(self) -> None:
+        job = self._current_hybrid_job()
+        if job is None:
+            return
+        default = self._output_edit.text().strip()
+        if default:
+            default_path = Path(default).with_suffix(".mediarecode-v2.json")
+        elif self._source_files:
+            default_path = self._source_files[0].path.with_suffix(".mediarecode-v2.json")
+        else:
+            default_path = self._config.config_dir / "template.mediarecode-v2.json"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            translate_text("Exporter JSON CLI"),
+            str(default_path),
+            translate_text("JSON (*.json);;Tous les fichiers (*)"),
+        )
+        if not path:
+            return
+        try:
+            Path(path).write_text(
+                json.dumps(job, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                translate_text("Export impossible"),
+                translate_text("Impossible d'écrire le fichier JSON : {err}", err=str(exc)),
+            )
+            return
+        self.log_message.emit("OK", translate_text("Template CLI exporté : {path}", path=path))
+
+    def _save_hybrid_profile(self) -> None:
+        config = self._current_profile_config()
+        current_tracks = self._track_table.current_tracks()
+        source_index_by_file_id = {sf.id: index for index, sf in enumerate(self._source_files)}
+        dialog = DecisionProfileEditorDialog(
+            manager=self._hybrid_profile_manager(),
+            current_config=config,
+            current_tracks=current_tracks,
+            source_index_by_file_id=source_index_by_file_id,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.log_message.emit("OK", translate_text("Profil sauvegardé : {name}", name=dialog.profile().get("name", "")))
+
+    def _apply_hybrid_profile_dialog(self) -> None:
+        manager = self._hybrid_profile_manager()
+        names = manager.names()
+        if not names:
+            QMessageBox.information(
+                self,
+                translate_text("Profils"),
+                translate_text("Aucun profil hybride enregistré."),
+            )
+            return
+        name, ok = QInputDialog.getItem(
+            self,
+            translate_text("Appliquer profil"),
+            translate_text("Profil :"),
+            names,
+            0,
+            False,
+        )
+        if not ok or not name:
+            return
+        profile = manager.load(name)
+        if not profile:
+            QMessageBox.warning(
+                self,
+                translate_text("Profil introuvable"),
+                translate_text("Impossible de charger le profil sélectionné."),
+            )
+            return
+        try:
+            tracks, report = self._build_hybrid_profile_result(profile)
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                translate_text("Profil incompatible"),
+                str(exc),
+            )
+            return
+        if not self._confirm_hybrid_profile_application(name, tracks, report):
+            return
+        self._commit_hybrid_profile_result(tracks)
+        self.log_message.emit("OK", translate_text("Profil appliqué : {name}", name=name))
+
+    def _apply_hybrid_profile(self, profile: dict) -> None:
+        tracks, _report = self._build_hybrid_profile_result(profile)
+        self._commit_hybrid_profile_result(tracks)
+
+    def _build_hybrid_profile_result(self, profile: dict) -> tuple[list[TrackEntry], dict]:
+        all_tracks = copy.deepcopy(self._track_table.current_tracks())
+        if not all_tracks:
+            return [], {"valid": True, "applied_rules": 0}
+        source_index_by_file_id = {sf.id: index for index, sf in enumerate(self._source_files)}
+        result = apply_decision_profile_v1(
+            profile,
+            all_tracks,
+            source_index_by_file_id=source_index_by_file_id,
+        )
+        return result.tracks, result.report
+
+    def _commit_hybrid_profile_result(self, tracks: list[TrackEntry]) -> None:
+        by_file_id: dict[str, list[TrackEntry]] = {}
+        for track in tracks:
+            by_file_id.setdefault(track.file_id, []).append(track)
+        for source in self._source_files:
+            if source.id in by_file_id:
+                source.tracks = by_file_id[source.id]
+        self._replace_track_table_tracks(tracks)
+        self._refresh_audio_sync_buttons()
+        self._track_table.refresh_filter()
+        self._rebuild_preview()
+        self._emit_signals()
+
+    def _confirm_hybrid_profile_application(
+        self,
+        name: str,
+        tracks: list[TrackEntry],
+        report: dict,
+    ) -> bool:
+        before_tracks = self._track_table.current_tracks()
+        before_by_id = {track.entry_id: track for track in before_tracks}
+        before_order = [track.entry_id for track in before_tracks]
+        after_order = [track.entry_id for track in tracks]
+        changed_tracks = 0
+        for track in tracks:
+            before = before_by_id.get(track.entry_id)
+            if before is None:
+                changed_tracks += 1
+                continue
+            if (
+                before.enabled != track.enabled
+                or before.language != track.language
+                or before.title != track.title
+                or before.flag_default != track.flag_default
+                or before.flag_forced != track.flag_forced
+                or before.flag_enabled != track.flag_enabled
+                or before.flag_original != track.flag_original
+                or before.flag_commentary != track.flag_commentary
+                or before.flag_hearing_impaired != track.flag_hearing_impaired
+                or before.flag_visual_impaired != track.flag_visual_impaired
+                or before.time_shift_ms != track.time_shift_ms
+            ):
+                changed_tracks += 1
+
+        lines = [
+            translate_text("Profil : {name}", name=name),
+            translate_text("Pistes modifiées : {count}", count=changed_tracks),
+            translate_text("Règles appliquées : {count}", count=int(report.get("applied_rules", 0) or 0)),
+        ]
+        if before_order != after_order:
+            lines.append(translate_text("Ordre des pistes modifié."))
+        created_count = len(report.get("created_variants", []) if isinstance(report.get("created_variants"), list) else [])
+        if created_count:
+            lines.append(translate_text("Pistes audio créées : {count}", count=created_count))
+        missing_count = len(report.get("missing_rules", []) if isinstance(report.get("missing_rules"), list) else [])
+        if missing_count:
+            lines.append(translate_text("Règles sans correspondance : {count}", count=missing_count))
+        ambiguous_count = len(report.get("ambiguous_matches", report.get("ambiguous_rules", [])) if isinstance(report.get("ambiguous_matches", report.get("ambiguous_rules", [])), list) else [])
+        if ambiguous_count:
+            lines.append(translate_text("Règles ambiguës ignorées : {count}", count=ambiguous_count))
+        conflict_count = len(report.get("conflicts", []) if isinstance(report.get("conflicts"), list) else [])
+        if conflict_count:
+            lines.append(translate_text("Conflits non résolus : {count}", count=conflict_count))
+        resolved_count = len(report.get("resolved_writes", []) if isinstance(report.get("resolved_writes"), list) else [])
+        if resolved_count:
+            lines.append(translate_text("Écritures résolues par mode/priorité : {count}", count=resolved_count))
+        skipped_count = len(report.get("skipped_writes", []) if isinstance(report.get("skipped_writes"), list) else [])
+        if skipped_count:
+            lines.append(translate_text("Écritures ignorées par priorité : {count}", count=skipped_count))
+        if report.get("legacy_converted"):
+            lines.append(translate_text("Ancien profil converti automatiquement. Resauvegardez-le pour stabiliser le format."))
+        if changed_tracks == 0 and before_order == after_order and not created_count and not missing_count and not ambiguous_count and not conflict_count and not resolved_count and not skipped_count:
+            lines.append(translate_text("Aucun changement détecté."))
+
+        message = "\n".join(lines)
+        if conflict_count:
+            QMessageBox.warning(
+                self,
+                translate_text("Aperçu du profil"),
+                message + "\n\n" + translate_text("Corrigez les priorités ou les règles avant application."),
+            )
+            return False
+        message += "\n\n" + translate_text("Appliquer ce profil ?")
+        reply = QMessageBox.question(
+            self,
+            translate_text("Aperçu du profil"),
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes,
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
+    def _replace_track_table_tracks(self, tracks: list[TrackEntry]) -> None:
+        self._track_table.blockSignals(True)
+        try:
+            self._track_table.setRowCount(0)
+            self._track_table._prev_lang.clear()
+            for entry in tracks:
+                row = self._track_table.rowCount()
+                self._track_table.insertRow(row)
+                source_color = self._source_colors.get(entry.file_id, _C.BORDER)
+                self._track_table._fill_row(row, entry, source_color)
+        finally:
+            self._track_table.blockSignals(False)
+            self._track_table._adjust_height()
 
     def refresh_runtime_settings(self) -> None:
         self._workflow.set_ffmpeg_bin(self._config.tool_ffmpeg)

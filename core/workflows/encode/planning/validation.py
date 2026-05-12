@@ -76,7 +76,8 @@ def validate_encode_config(
 
     output_dir = config.output.parent
     if not output_dir.exists():
-        errors.append(f"Dossier de sortie inexistant : {output_dir}")
+        if not bool(getattr(config, "allow_missing_output_dir", False)):
+            errors.append(f"Dossier de sortie inexistant : {output_dir}")
     elif not dir_writable(output_dir):
         errors.append(
             "Dossier de sortie non inscriptible : "

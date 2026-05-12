@@ -190,6 +190,8 @@ def _validate_track_edit(errors: list[str], path: str, value: Any) -> None:
     if not isinstance(value, dict):
         errors.append(f"{path}: attendu object, reçu {_type_name(value)}")
         return
+    if "selector" in value:
+        _validate_selector(errors, f"{path}.selector", value["selector"])
     for key in ("source", "source_index", "id", "mkv_tid", "stream", "time_shift_ms"):
         if key in value:
             _expect(errors, f"{path}.{key}", value[key], "integer", _is_int)
@@ -202,6 +204,90 @@ def _validate_track_edit(errors: list[str], path: str, value: Any) -> None:
         _validate_flags(errors, f"{path}.flags", value["flags"])
 
 
+def _validate_selector(errors: list[str], path: str, value: Any) -> None:
+    if not isinstance(value, dict):
+        errors.append(f"{path}: attendu object, reçu {_type_name(value)}")
+        return
+    for key in ("source", "source_index", "position", "type_index", "id", "mkv_tid", "stream"):
+        if key in value:
+            _expect(errors, f"{path}.{key}", value[key], "integer", _is_int)
+    for key in ("type", "track_type", "codec", "language", "lang", "channels", "audio_object", "title", "title_contains", "display_contains", "entry_id"):
+        if key in value:
+            _expect(errors, f"{path}.{key}", value[key], "string", _is_string)
+    if "codecs" in value:
+        _validate_string_list(errors, f"{path}.codecs", value["codecs"])
+    if "languages" in value:
+        _validate_string_list(errors, f"{path}.languages", value["languages"])
+    if "atmos" in value:
+        _expect(errors, f"{path}.atmos", value["atmos"], "bool", _is_bool)
+    if "flags" in value:
+        _validate_flags(errors, f"{path}.flags", value["flags"])
+
+
+def _validate_audio_variant(errors: list[str], path: str, value: Any) -> None:
+    if not isinstance(value, dict):
+        errors.append(f"{path}: attendu object, reçu {_type_name(value)}")
+        return
+    selector = value.get("source_selector", value.get("selector"))
+    if selector is None:
+        errors.append(f"{path}.selector: champ requis")
+    else:
+        _validate_selector(errors, f"{path}.selector", selector)
+    for key in ("codec", "target_codec", "language", "title", "entry_id"):
+        if key in value:
+            _expect(errors, f"{path}.{key}", value[key], "string", _is_string)
+    if "bitrate_kbps" in value:
+        _expect(errors, f"{path}.bitrate_kbps", value["bitrate_kbps"], "integer", _is_int)
+    if "enabled" in value:
+        _expect(errors, f"{path}.enabled", value["enabled"], "bool", _is_bool)
+    if "flags" in value:
+        _validate_flags(errors, f"{path}.flags", value["flags"])
+
+
+def _validate_encode_track(errors: list[str], path: str, value: Any, *, track_type: str) -> None:
+    if not isinstance(value, dict):
+        errors.append(f"{path}: attendu object, reçu {_type_name(value)}")
+        return
+    if "selector" in value:
+        _validate_selector(errors, f"{path}.selector", value["selector"])
+    for key in ("codec", "quality_mode", "preset", "extra_params", "master_display", "max_cll", "dovi_profile"):
+        if key in value:
+            _expect(errors, f"{path}.{key}", value[key], "string", _is_string)
+    int_keys = ("crf", "cq", "bitrate_kbps", "target_size_mb")
+    for key in int_keys:
+        if key in value:
+            _expect(errors, f"{path}.{key}", value[key], "integer", _is_int)
+    bool_keys = ("force_8bit", "force_10bit", "inject_hdr_meta", "copy_dv", "copy_hdr10plus", "tonemap_to_sdr")
+    for key in bool_keys:
+        if key in value:
+            _expect(errors, f"{path}.{key}", value[key], "bool", _is_bool)
+    if track_type == "audio" and "extract_truehd_core" in value:
+        _expect(errors, f"{path}.extract_truehd_core", value["extract_truehd_core"], "bool", _is_bool)
+
+
+def _validate_encode_block(errors: list[str], path: str, value: Any) -> None:
+    if not isinstance(value, dict):
+        errors.append(f"{path}: attendu object, reçu {_type_name(value)}")
+        return
+    video = value.get("video")
+    if video is not None:
+        _validate_encode_track(errors, f"{path}.video", video, track_type="video")
+    video_tracks = value.get("video_tracks")
+    if video_tracks is not None:
+        if not isinstance(video_tracks, list):
+            errors.append(f"{path}.video_tracks: attendu array[object], reçu {_type_name(video_tracks)}")
+        else:
+            for index, item in enumerate(video_tracks):
+                _validate_encode_track(errors, f"{path}.video_tracks[{index}]", item, track_type="video")
+    audio_tracks = value.get("audio_tracks")
+    if audio_tracks is not None:
+        if not isinstance(audio_tracks, list):
+            errors.append(f"{path}.audio_tracks: attendu array[object], reçu {_type_name(audio_tracks)}")
+        else:
+            for index, item in enumerate(audio_tracks):
+                _validate_encode_track(errors, f"{path}.audio_tracks[{index}]", item, track_type="audio")
+
+
 def _validate_track_order(errors: list[str], path: str, value: Any) -> None:
     if not isinstance(value, list):
         errors.append(f"{path}: attendu array, reçu {_type_name(value)}")
@@ -209,6 +295,9 @@ def _validate_track_order(errors: list[str], path: str, value: Any) -> None:
     for index, item in enumerate(value):
         item_path = f"{path}[{index}]"
         if isinstance(item, dict):
+            if "selector" in item:
+                _validate_selector(errors, f"{item_path}.selector", item["selector"])
+                continue
             for key in ("source", "source_index"):
                 if key in item:
                     _expect(errors, f"{item_path}.{key}", item[key], "integer", _is_int)
@@ -285,6 +374,78 @@ def _validate_tmdb(errors: list[str], path: str, value: Any) -> None:
             _expect(errors, f"{path}.{key}", value[key], "integer", _is_int)
 
 
+def _validate_job_contract_v2(job: dict[str, Any], *, path: str) -> None:
+    errors: list[str] = []
+    if job.get("version") != 2:
+        errors.append(f"{path}.version: attendu 2, reçu {job.get('version')!r}")
+    if "kind" in job:
+        _expect(errors, f"{path}.kind", job["kind"], "string", _is_string)
+    if "name" in job:
+        _expect(errors, f"{path}.name", job["name"], "string", _is_string)
+    if "fallback_profile" in job:
+        fallback = job["fallback_profile"]
+        if isinstance(fallback, str):
+            pass
+        elif isinstance(fallback, dict):
+            if "name" in fallback:
+                _expect(errors, f"{path}.fallback_profile.name", fallback["name"], "string", _is_string)
+        else:
+            errors.append(f"{path}.fallback_profile: attendu string ou object, reçu {_type_name(fallback)}")
+    if "sources" in job:
+        sources = job["sources"]
+        if isinstance(sources, str):
+            pass
+        elif isinstance(sources, list):
+            if not sources:
+                errors.append(f"{path}.sources: ne doit pas être vide")
+            for index, source in enumerate(sources):
+                _validate_source(errors, f"{path}.sources[{index}]", source)
+        else:
+            errors.append(f"{path}.sources: attendu string ou array, reçu {_type_name(sources)}")
+    if "input" in job and not isinstance(job["input"], (str, list)):
+        errors.append(f"{path}.input: attendu string ou array, reçu {_type_name(job['input'])}")
+    for key in ("output", "work_dir", "file_title"):
+        if key in job:
+            _expect(errors, f"{path}.{key}", job[key], "string", _is_string)
+    if "rules" in job:
+        _validate_rules(errors, f"{path}.rules", job["rules"])
+    if "tracks" in job:
+        tracks = job["tracks"]
+        if not isinstance(tracks, list):
+            errors.append(f"{path}.tracks: attendu array[object], reçu {_type_name(tracks)}")
+        else:
+            for index, item in enumerate(tracks):
+                _validate_track_edit(errors, f"{path}.tracks[{index}]", item)
+    if "track_order" in job:
+        _validate_track_order(errors, f"{path}.track_order", job["track_order"])
+    if "audio_variants" in job:
+        variants = job["audio_variants"]
+        if not isinstance(variants, list):
+            errors.append(f"{path}.audio_variants: attendu array[object], reçu {_type_name(variants)}")
+        else:
+            for index, item in enumerate(variants):
+                _validate_audio_variant(errors, f"{path}.audio_variants[{index}]", item)
+    if "chapters" in job:
+        _validate_chapters(errors, f"{path}.chapters", job["chapters"])
+    if "tmdb" in job:
+        _validate_tmdb(errors, f"{path}.tmdb", job["tmdb"])
+    if "extra_attachments" in job:
+        _validate_string_list(errors, f"{path}.extra_attachments", job["extra_attachments"])
+    if "tag_overrides" in job:
+        tags = job["tag_overrides"]
+        if not isinstance(tags, dict):
+            errors.append(f"{path}.tag_overrides: attendu object, reçu {_type_name(tags)}")
+        else:
+            for key, value in tags.items():
+                if not isinstance(value, str):
+                    errors.append(f"{path}.tag_overrides.{key}: attendu string, reçu {_type_name(value)}")
+    encode_block = job.get("encode", job.get("encoding"))
+    if encode_block is not None:
+        _validate_encode_block(errors, f"{path}.encode", encode_block)
+    if errors:
+        raise ContractError(errors)
+
+
 def validate_job_contract(job: dict[str, Any], *, path: str = "$", require_version: bool = False) -> None:
     errors: list[str] = []
     if not isinstance(job, dict):
@@ -292,8 +453,11 @@ def validate_job_contract(job: dict[str, Any], *, path: str = "$", require_versi
     if "version" not in job:
         if require_version:
             errors.append(f"{path}.version: champ requis")
+    elif job["version"] == 2:
+        _validate_job_contract_v2(job, path=path)
+        return
     elif job["version"] != 1:
-        errors.append(f"{path}.version: attendu 1, reçu {job['version']!r}")
+        errors.append(f"{path}.version: attendu 1 ou 2, reçu {job['version']!r}")
     if "sources" in job:
         sources = job["sources"]
         if isinstance(sources, str):
@@ -324,6 +488,13 @@ def validate_job_contract(job: dict[str, Any], *, path: str = "$", require_versi
                 _validate_track_edit(errors, f"{path}.tracks[{index}]", item)
     if "track_order" in job:
         _validate_track_order(errors, f"{path}.track_order", job["track_order"])
+    if "audio_variants" in job:
+        variants = job["audio_variants"]
+        if not isinstance(variants, list):
+            errors.append(f"{path}.audio_variants: attendu array[object], reçu {_type_name(variants)}")
+        else:
+            for index, item in enumerate(variants):
+                _validate_audio_variant(errors, f"{path}.audio_variants[{index}]", item)
     if "chapters" in job:
         _validate_chapters(errors, f"{path}.chapters", job["chapters"])
     if "tmdb" in job:

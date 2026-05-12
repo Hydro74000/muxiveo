@@ -218,6 +218,25 @@ class TestAppConfigRamBuffer:
 
         assert cfg.language == "fra"
 
+    def test_profiles_dir_lives_under_config_dir(self, tmp_path):
+        """Les profils GUI restent dans le dossier utilisateur de config, pas dans app_data."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "user-config" / "config.ini"
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path / "app-data"), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.config_dir == ini_path.parent
+        assert cfg.profiles_dir == ini_path.parent / "profiles"
+        assert cfg.profiles_dir.exists()
+
     def test_default_startup_panel_is_dashboard(self, tmp_path):
         """Sans clé explicite, le panneau de démarrage est le dashboard."""
         import core.config as cfg_mod

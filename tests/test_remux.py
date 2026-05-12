@@ -122,6 +122,7 @@ Exécution :
 from __future__ import annotations
 
 import colorsys
+import json
 import sys
 import time
 from pathlib import Path
@@ -132,7 +133,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
 
 from core.config import AppConfig
 from core.i18n import current_language, set_current_language
@@ -142,6 +143,7 @@ from core.inspector import (
 )
 from core.matroska_attachment_extractor import extract_matroska_attachment_bytes
 from core.media_info_fetcher import MediaDetails
+from core.profiles.decision import remux_config_to_decision_profile
 from core.runner import TaskSignals
 from core.workflows.remux import RemuxWorkflow
 from core.workflows.remux_mapping import resolved_global_tags
@@ -1504,6 +1506,248 @@ class TestRemuxPanelNewAudioTracks:
             new_track.entry_id,
         ]
         panel.close()
+
+
+class TestRemuxPanelHybridDecisionProfiles:
+
+    @staticmethod
+    def _panel_with_tracks(qt_app, tmp_path, tracks: list[TrackEntry], *, file_id: str = "fid") -> RemuxPanel:
+        cfg = AppConfig()
+        cfg.profiles_dir = tmp_path / "profiles"
+        panel = RemuxPanel(cfg)
+        src = tmp_path / f"{file_id}.mkv"
+        src.touch()
+        info = _file_info(path=src, videos=[_video(index=0)], audios=[_audio(index=1, title="Source")])
+        sf = SourceFile(id=file_id, path=src, color=_COLOR_A, info=info, tracks=tracks)
+        panel._source_files = [sf]
+        panel._source_colors = {file_id: _COLOR_A}
+        panel._source_names = {file_id: src.name}
+        panel._track_table.append_tracks(_COLOR_A, tracks)
+        return panel
+
+    def test_save_profile_writes_decision_profile_without_paths(self, qt_app, tmp_path, monkeypatch):
+        video = _track(0, "video", file_id="fid", codec="HEVC", language="und", orig_language="und")
+        audio = _track(1, "audio", file_id="fid", language="fra", title="VF")
+        panel = self._panel_with_tracks(qt_app, tmp_path, [video, audio])
+
+        class FakeDialog:
+            def __init__(self, *, manager=None, current_config=None, current_tracks=None, source_index_by_file_id=None, parent=None, profile=None):
+                self._manager = manager
+                self._profile = remux_config_to_decision_profile(current_config, name="Auto VF")
+
+            def exec(self):
+                self._manager.save(self._profile)
+                return QDialog.DialogCode.Accepted
+
+            def profile(self):
+                return self._profile
+
+        monkeypatch.setattr("ui.panels.remux_panel.panel.DecisionProfileEditorDialog", FakeDialog)
+
+        panel._save_hybrid_profile()
+        payload = json.loads((tmp_path / "profiles" / "decision" / "Auto_VF.json").read_text(encoding="utf-8"))
+
+        assert payload["kind"] == "decision-profile"
+        assert payload["version"] == 1
+        assert "sources" not in payload
+        assert "output" not in payload
+        assert str(tmp_path) not in json.dumps(payload)
+        panel.close()
+
+    def test_decision_profile_applies_to_another_gui_source(self, qt_app, tmp_path):
+        source_audio = _track(1, "audio", file_id="fid", language="fra", title="VF")
+        source_audio.title = "VF EAC3 5.1"
+        source_audio.flag_default = True
+        panel_a = self._panel_with_tracks(qt_app, tmp_path, [
+            _track(0, "video", file_id="fid", codec="HEVC", language="und", orig_language="und"),
+            source_audio,
+        ])
+        profile = remux_config_to_decision_profile(panel_a._current_profile_config(), name="Auto VF")
+
+        target_audio = _track(11, "audio", file_id="other", language="fr-FR", orig_language="fr-FR", title="French")
+        target_extra = _track(12, "audio", file_id="other", language="eng", orig_language="eng", title="English")
+        panel_b = self._panel_with_tracks(qt_app, tmp_path, [
+            target_extra,
+            _track(7, "video", file_id="other", codec="HEVC", language="und", orig_language="und"),
+            target_audio,
+        ], file_id="other")
+
+        panel_b._apply_hybrid_profile(profile)
+
+        applied_tracks = panel_b._track_table.current_tracks()
+        applied_audio = next(track for track in applied_tracks if track.mkv_tid == 11)
+        applied_extra = next(track for track in applied_tracks if track.mkv_tid == 12)
+        assert applied_audio.title == "VF EAC3 5.1"
+        assert applied_audio.flag_default is True
+        assert applied_extra.enabled is False
+        assert all("profile-preview" not in str(source.path) for source in panel_b._source_files)
+        panel_a.close()
+        panel_b.close()
+
+    def test_profile_editor_video_criteria_build_resolution_and_hdr_flags(self, qt_app, tmp_path):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"))
+        dialog._add_template_rule("video")
+        dialog._match_width.setValue(3840)
+        dialog._match_height.setValue(2160)
+        dialog._video_hdr.setChecked(True)
+        dialog._video_hdr10plus.setChecked(True)
+        dialog._video_dolby_vision.setChecked(True)
+        dialog._match_codec.setText("{codec_atmos}")
+        dialog._match_codec_required.setChecked(True)
+        dialog._match_keywords.setText("{flag_visual_impaired}")
+
+        profile = dialog.profile()
+        conditions = profile["rules"][0]["match"]["all"]
+        by_field = {item["field"]: item for item in conditions}
+
+        assert by_field["width"]["value"] == 3840
+        assert by_field["height"]["value"] == 2160
+        video_flags = int(by_field["video_flags_hex"]["value"], 16)
+        assert video_flags & 0x00000008
+        assert video_flags & 0x00000010
+        assert video_flags & 0x00000040
+        assert video_flags & 0x00000080
+        assert by_field["flag_visual_impaired"]["required"] is True
+        assert by_field["codec_atmos"]["required"] is True
+        dialog.close()
+
+    def test_profile_editor_can_make_codec_required_and_atmos_preferred(self, qt_app, tmp_path):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"))
+        dialog._add_template_rule("language")
+        dialog._match_language.setText("fr-FR")
+        dialog._match_codec.setText("EAC3")
+        dialog._match_codec_required.setChecked(True)
+        dialog._match_preferred_keywords.setText("{atmos}")
+
+        profile = dialog.profile()
+        conditions = profile["rules"][0]["match"]["all"]
+        by_field = {item["field"]: item for item in conditions}
+
+        assert by_field["language"]["required"] is True
+        assert by_field["codec"]["required"] is True
+        assert by_field["codec_atmos"]["required"] is False
+        dialog.close()
+
+    def test_profile_editor_can_store_codec_name_variables(self, qt_app, tmp_path):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"))
+        dialog._codec_aliases_edit.setPlainText("EAC3=DDP\nAC3=Dolby Digital")
+
+        profile = dialog.profile()
+
+        assert profile["variables"]["codec_names"] == {
+            "EAC3": "DDP",
+            "AC3": "Dolby Digital",
+        }
+        dialog.close()
+
+    def test_profile_editor_can_load_and_delete_existing_profile(self, qt_app, tmp_path, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        manager = DecisionProfileManager(tmp_path / "profiles")
+        manager.save(
+            {
+                "version": 1,
+                "kind": "decision-profile",
+                "name": "Existing",
+                "rules": [
+                    {
+                        "id": "r1",
+                        "match": {"all": [{"field": "type", "op": "is", "value": "audio"}]},
+                        "actions": [{"type": "set_title", "value": "Loaded"}],
+                    }
+                ],
+            }
+        )
+        dialog = DecisionProfileEditorDialog(manager=manager)
+
+        index = dialog._profile_selector.findData("Existing")
+        assert index >= 0
+        dialog._profile_selector.setCurrentIndex(index)
+        dialog._load_selected_profile()
+
+        assert dialog._name_edit.text() == "Existing"
+        assert dialog._rules()[0]["id"] == "r1"
+
+        monkeypatch.setattr(
+            "ui.panels.remux_panel.profile_editor.QMessageBox.question",
+            lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+        )
+        dialog._delete_selected_profile()
+
+        assert manager.load("Existing") is None
+        assert dialog._profile_selector.findData("Existing") == -1
+        assert dialog._name_edit.text() == "Nouveau profil"
+        dialog.close()
+
+    def test_profile_editor_video_criteria_can_use_width_without_height(self, qt_app, tmp_path):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"))
+        dialog._add_template_rule("video")
+        dialog._match_width.setValue(3840)
+        dialog._match_height.setValue(0)
+
+        profile = dialog.profile()
+        conditions = profile["rules"][0]["match"]["all"]
+        fields = [item["field"] for item in conditions]
+
+        assert "width" in fields
+        assert "height" not in fields
+        assert "resolution" not in fields
+        dialog.close()
+
+    def test_profile_editor_keywords_are_grouped_in_menu(self, qt_app, tmp_path):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog, KeywordLineEdit
+
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"))
+        menu = dialog._keyword_button.menu()
+
+        assert menu is not None
+        assert len(menu.actions()) == 6
+        video_menu = next(
+            submenu
+            for submenu in (action.menu() for action in menu.actions())
+            if submenu is not None and "{video_dolby_vision}" in [item.text() for item in submenu.actions()]
+        )
+        assert video_menu is not None
+        assert isinstance(dialog._title_pattern, KeywordLineEdit)
+        dialog.close()
+
+    def test_keyword_line_edit_exposes_context_keyword_menu_and_badge_segments(self, qt_app):
+        from PySide6.QtWidgets import QMenu
+        from ui.panels.remux_panel.profile_editor import KeywordLineEdit
+
+        edit = KeywordLineEdit()
+        edit.setText("VF {codec} {channels}")
+        menu = QMenu()
+        edit._populate_keyword_menu(menu)
+
+        assert KeywordLineEdit._segments(edit.text()) == [
+            (False, "VF"),
+            (True, "codec"),
+            (True, "channels"),
+        ]
+        assert len(menu.actions()) == 6
+        audio_menu = next(
+            submenu
+            for submenu in (action.menu() for action in menu.actions())
+            if submenu is not None and "{codec_name}" in [item.text() for item in submenu.actions()]
+        )
+        assert audio_menu is not None
+        edit.close()
 
 
 class TestRemuxPanelVideoTrackSignals:

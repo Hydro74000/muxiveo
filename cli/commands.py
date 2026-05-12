@@ -11,15 +11,24 @@ from core.inspector import FileInspector
 
 from cli.batch import run_batch
 from cli.constants import EXIT_OK, EXIT_VALIDATION
+from cli.errors import CliError
+from cli.hybrid import build_hybrid_payload, is_v2_job, preview_hybrid_job, run_hybrid_job
 from cli.inspection import config_template_from_info, inspect_sources
 from cli.jobs import load_job
 from cli.json_io import json_default, write_json
 from cli.logging import Logger
 from cli.options import JobOverrides, common_options
+from cli.profile import profile_apply, profile_batch, profile_preview, profile_validate
 from cli.remux_config import apply_explicit_track_edits, build_remux_config, config_to_template
 from cli.rules import apply_track_rules
 from cli.runtime import preview_remux_config, run_remux_config, workflow
-from cli.schema import build_cli_json_schema
+from cli.schema import (
+    build_cli_json_schema,
+    build_cli_json_schema_bundle,
+    build_cli_json_schema_v2,
+    build_decision_profile_schema_v1,
+    build_exact_job_schema_v1,
+)
 from cli.serializers import serialize_file_info, serialize_remux_config, serialize_track_preview
 
 
@@ -50,7 +59,17 @@ def cmd_inspect(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
 
 
 def cmd_schema(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
-    payload = build_cli_json_schema()
+    version = str(getattr(args, "schema_version", "1") or "1")
+    if version == "2":
+        payload = build_cli_json_schema_v2()
+    elif version == "exact-job":
+        payload = build_exact_job_schema_v1()
+    elif version == "decision-profile":
+        payload = build_decision_profile_schema_v1()
+    elif version == "all":
+        payload = build_cli_json_schema_bundle()
+    else:
+        payload = build_cli_json_schema()
     if args.output:
         write_json(Path(args.output).expanduser(), payload)
         logger.emit("info", f"Schéma JSON sauvegardé : {args.output}")
@@ -62,6 +81,27 @@ def cmd_schema(args: argparse.Namespace, config: AppConfig, logger: Logger) -> i
 def cmd_validate(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
     options = common_options(args)
     job = load_job(JobOverrides.from_namespace(args))
+    if is_v2_job(job):
+        try:
+            payload, _remux_config, _encode_config, _use_encode = build_hybrid_payload(job, config, options, logger)
+        except CliError as exc:
+            if getattr(args, "json_output", False) and exc.exit_code == EXIT_VALIDATION:
+                try:
+                    payload = json.loads(str(exc))
+                except json.JSONDecodeError:
+                    raise
+                print(json.dumps(payload, ensure_ascii=False, indent=2, default=json_default))
+                return EXIT_VALIDATION
+            raise
+        if getattr(args, "json_output", False):
+            print(json.dumps(payload, ensure_ascii=False, indent=2, default=json_default))
+            return EXIT_OK if payload["valid"] else EXIT_VALIDATION
+        if payload["errors"]:
+            for error in payload["errors"]:
+                logger.emit("error", error)
+            return EXIT_VALIDATION
+        logger.emit("info", "Configuration hybride valide.")
+        return EXIT_OK
     remux_config = build_remux_config(job, config, options, logger)
     errors = workflow(config, options, logger).validate(remux_config)
     if getattr(args, "json_output", False):
@@ -83,6 +123,33 @@ def cmd_validate(args: argparse.Namespace, config: AppConfig, logger: Logger) ->
 def cmd_preview(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
     options = common_options(args)
     job = load_job(JobOverrides.from_namespace(args))
+    if is_v2_job(job):
+        try:
+            payload, _remux_config, _encode_config, _use_encode = build_hybrid_payload(
+                job,
+                config,
+                options,
+                logger,
+                include_command=True,
+            )
+        except CliError as exc:
+            if getattr(args, "json_output", False) and exc.exit_code == EXIT_VALIDATION:
+                try:
+                    payload = json.loads(str(exc))
+                except json.JSONDecodeError:
+                    raise
+                print(json.dumps(payload, ensure_ascii=False, indent=2, default=json_default))
+                return EXIT_VALIDATION
+            raise
+        if getattr(args, "json_output", False):
+            print(json.dumps(payload, ensure_ascii=False, indent=2, default=json_default))
+            return EXIT_OK if payload["valid"] else EXIT_VALIDATION
+        if payload["errors"]:
+            for error in payload["errors"]:
+                logger.emit("error", error)
+            return EXIT_VALIDATION
+        print(payload.get("command_text", ""))
+        return EXIT_OK
     remux_config = build_remux_config(job, config, options, logger)
     wf = workflow(config, options, logger)
     errors = wf.validate(remux_config)
@@ -109,6 +176,10 @@ def cmd_preview(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
 def cmd_remux(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
     options = common_options(args)
     job = load_job(JobOverrides.from_namespace(args))
+    if is_v2_job(job):
+        if getattr(args, "dry_run", False):
+            return preview_hybrid_job(config, options, logger, job)
+        return run_hybrid_job(config, options, logger, job, force=bool(args.force))
     if args.save:
         write_json(Path(args.save).expanduser(), config_to_template(job))
         logger.emit("info", f"Template sauvegardé : {args.save}")
@@ -123,6 +194,10 @@ def cmd_batch(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
         template_path=args.template,
         batch_path=args.batch,
         cli_inputs=args.input,
+        input_dirs=args.input_dir,
+        recursive=bool(args.recursive),
+        include_patterns=args.include,
+        exclude_patterns=args.exclude,
         output_dir=args.output_dir,
         dry_run=bool(args.dry_run),
         force=bool(args.force),
@@ -132,3 +207,64 @@ def cmd_batch(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
         options=common_options(args),
         logger=logger,
     )
+
+
+def cmd_profile(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
+    command = str(getattr(args, "profile_command", "") or "")
+    if command == "validate":
+        rc = profile_validate(args.profile, json_output=bool(getattr(args, "json_output", False)))
+        if rc == EXIT_OK and not getattr(args, "json_output", False):
+            logger.emit("info", "Profil décisionnel valide.")
+        return rc
+    if command == "preview":
+        return profile_preview(
+            args.profile,
+            inputs=args.input or [],
+            output=args.output,
+            json_output=bool(getattr(args, "json_output", False)),
+            config=config,
+            options=common_options(args),
+            logger=logger,
+        )
+    if command == "apply":
+        return profile_apply(
+            args.profile,
+            inputs=args.input or [],
+            output=args.output,
+            force=bool(getattr(args, "force", False)),
+            dry_run=bool(getattr(args, "dry_run", False)),
+            config=config,
+            options=common_options(args),
+            logger=logger,
+        )
+    if command == "batch":
+        return profile_batch(
+            args.profile,
+            cli_inputs=args.input,
+            input_dirs=args.input_dir,
+            recursive=bool(args.recursive),
+            include_patterns=args.include,
+            exclude_patterns=args.exclude,
+            output_dir=args.output_dir,
+            dry_run=bool(args.dry_run),
+            force=bool(args.force),
+            continue_on_error=bool(args.continue_on_error),
+            summary_path=args.summary,
+            config=config,
+            options=common_options(args),
+            logger=logger,
+        )
+    raise CliError("Sous-commande profile inconnue.", EXIT_VALIDATION)
+
+
+def cmd_run(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
+    options = common_options(args)
+    job = load_job(JobOverrides.from_namespace(args))
+    if is_v2_job(job):
+        if getattr(args, "dry_run", False):
+            return preview_hybrid_job(config, options, logger, job)
+        return run_hybrid_job(config, options, logger, job, force=bool(args.force))
+    remux_config = build_remux_config(job, config, options, logger)
+    if getattr(args, "dry_run", False):
+        return preview_remux_config(config, options, logger, remux_config)
+    return run_remux_config(config, options, logger, remux_config, force=bool(args.force))
