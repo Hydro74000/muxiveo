@@ -22,6 +22,8 @@ Dans les builds packages, le CLI utilise le même bundle que l'application GUI :
 |---|---|
 | `inspect` | inspecte une source et sort du JSON |
 | `inspect --config-template` | genere un template JSON de depart |
+| `inspect --rules-preview` | affiche les pistes apres application des rules |
+| `schema` | affiche le schéma JSON public du contrat CLI |
 | `validate` | valide un job/template sans executer ffmpeg |
 | `preview` | affiche la commande ffmpeg prevue |
 | `remux` | execute un remux headless |
@@ -32,16 +34,22 @@ Exemples :
 ```bash
 mediarecode-cli inspect source.mkv
 mediarecode-cli inspect source.mkv --config-template --output sortie.mkv
+mediarecode-cli inspect source.mkv --config template.json --rules-preview
+mediarecode-cli schema --output mediarecode-cli.schema.json
 mediarecode-cli preview --config docs/cli/middle.json
+mediarecode-cli preview --config docs/cli/middle.json --json
+mediarecode-cli validate --config docs/cli/middle.json --json
 mediarecode-cli remux -i source.mkv -o sortie.mkv --languages fr-FR,en-US
 mediarecode-cli remux --config docs/cli/middle.json --dry-run
 mediarecode-cli batch --template docs/cli/complexe-toutes-options-template.json --batch docs/cli/complexe-toutes-options-batch.json --force
 mediarecode-cli batch --template template.json --batch batch.json --dry-run --log-format jsonl
+mediarecode-cli batch --template template.json --batch batch.json --summary summary.json
 ```
 
 ## Contrat JSON
 
 Tout fichier JSON de configuration doit contenir `version: 1`.
+Le schéma peut être exporté avec `mediarecode-cli schema`.
 
 Job minimal :
 
@@ -180,6 +188,23 @@ Les edits explicites sont appliques apres les rules :
 }
 ```
 
+### `track_order`
+
+`track_order` permet de fixer l'ordre de sortie apres filtrage. Chaque entree
+peut etre un objet ou un tableau court :
+
+```json
+{
+  "track_order": [
+    {"source": 0, "id": 0},
+    [0, 2]
+  ]
+}
+```
+
+Les erreurs de forme sont reportees avec le chemin exact, par exemple
+`track_order[1][1]`.
+
 ### `chapters`
 
 ```json
@@ -233,6 +258,48 @@ Le batch fusionne chaque job avec le template :
       "tmdb": {"episode": "1"}
     }
   ]
+}
+```
+
+Le fichier batch est valide avant le premier job. Les entrees de `jobs` ou
+`inputs` doivent etre des objets job ou des chemins string.
+
+Avec `--summary FILE`, le batch ecrit un rapport JSON final :
+
+```json
+{
+  "total": 1,
+  "successes": 1,
+  "failures": 0,
+  "exit_code": 0,
+  "jobs": [
+    {
+      "job_index": 0,
+      "input": "S01E01.mkv",
+      "output": "S01E01.remux.mkv",
+      "status": "success",
+      "exit_code": 0
+    }
+  ]
+}
+```
+
+### Sorties JSON de validation et preview
+
+`validate --json` et `preview --json` gardent les mêmes codes retour que les
+commandes texte, mais ecrivent un objet JSON sur stdout.
+
+Exemple `preview --json` :
+
+```json
+{
+  "valid": true,
+  "errors": [],
+  "output": "sortie.mkv",
+  "sources": [{"index": 0, "path": "source.mkv"}],
+  "track_order": [{"source": 0, "id": 0}],
+  "command": ["ffmpeg", "-hide_banner", "..."],
+  "command_text": "ffmpeg \\\n    -hide_banner \\\n    ..."
 }
 ```
 

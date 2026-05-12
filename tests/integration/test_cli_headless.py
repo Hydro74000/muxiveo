@@ -48,6 +48,12 @@ def test_cli_inspect_validate_preview_on_synthetic_media(tmp_path: Path) -> None
     payload = json.loads(inspect.stdout)
     assert payload["files"][0]["tracks"]
 
+    rules_preview = _run_cli(root, "inspect", str(src), "--rules-preview")
+    assert rules_preview.returncode == 0, rules_preview.stderr
+    preview_payload = json.loads(rules_preview.stdout)
+    assert preview_payload["rules_preview"]
+    assert all(isinstance(track["enabled"], bool) for track in preview_payload["rules_preview"])
+
     config = tmp_path / "job.json"
     config.write_text(
         json.dumps({"version": 1, "sources": [{"path": str(src)}], "output": str(out)}),
@@ -61,6 +67,19 @@ def test_cli_inspect_validate_preview_on_synthetic_media(tmp_path: Path) -> None
     assert preview.returncode == 0, preview.stderr
     assert "ffmpeg" in preview.stdout
     assert str(out) in preview.stdout
+
+    validate_json = _run_cli(root, "validate", "--config", str(config), "--json")
+    assert validate_json.returncode == 0, validate_json.stderr
+    validate_payload = json.loads(validate_json.stdout)
+    assert validate_payload["valid"] is True
+    assert validate_payload["output"] == str(out)
+
+    preview_json = _run_cli(root, "preview", "--config", str(config), "--json")
+    assert preview_json.returncode == 0, preview_json.stderr
+    preview_payload = json.loads(preview_json.stdout)
+    assert preview_payload["valid"] is True
+    assert preview_payload["command"][0] == "ffmpeg"
+    assert preview_payload["command_text"].startswith("ffmpeg")
 
 
 def test_cli_remux_dry_run_refuses_invalid_json_before_inspection(tmp_path: Path) -> None:
@@ -83,10 +102,38 @@ def test_cli_remux_dry_run_refuses_invalid_json_before_inspection(tmp_path: Path
     assert "rules.tracks.audio.languages[1]" in result.stderr
 
 
+def test_cli_schema_outputs_and_writes_json(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    schema_path = tmp_path / "schema.json"
+
+    stdout_result = subprocess.run(
+        [sys.executable, str(root / "mediarecode_cli.py"), "schema"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert stdout_result.returncode == 0, stdout_result.stderr
+    stdout_payload = json.loads(stdout_result.stdout)
+    assert stdout_payload["properties"]["version"] == {"const": 1}
+
+    file_result = subprocess.run(
+        [sys.executable, str(root / "mediarecode_cli.py"), "schema", "--output", str(schema_path)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert file_result.returncode == 0, file_result.stderr
+    file_payload = json.loads(schema_path.read_text(encoding="utf-8"))
+    assert file_payload["$id"].endswith("cli-job-v1.json")
+
+
 def test_cli_batch_dry_run_jsonl_reports_job_status(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     src = tmp_path / "source.mkv"
     out = tmp_path / "out.mkv"
+    summary = tmp_path / "summary.json"
     make_av_container(src, duration=0.3)
 
     template = tmp_path / "template.json"
@@ -110,11 +157,44 @@ def test_cli_batch_dry_run_jsonl_reports_job_status(tmp_path: Path) -> None:
         "--dry-run",
         "--log-format",
         "jsonl",
+        "--summary",
+        str(summary),
     )
     assert result.returncode == 0, result.stderr
     events = [json.loads(line) for line in result.stderr.splitlines() if line.strip()]
     assert any(event.get("event") == "batch_job" and event.get("status") == "success" for event in events)
     assert any(event.get("event") == "batch_summary" for event in events)
+    summary_payload = json.loads(summary.read_text(encoding="utf-8"))
+    assert summary_payload["total"] == 1
+    assert summary_payload["failures"] == 0
+    assert summary_payload["jobs"][0]["status"] == "success"
+    assert summary_payload["jobs"][0]["output"] == str(out)
+
+
+def test_cli_preview_respects_multisource_explicit_track_order(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    src_a = tmp_path / "a.mkv"
+    src_b = tmp_path / "b.mkv"
+    out = tmp_path / "ordered.mkv"
+    make_av_container(src_a, duration=0.3)
+    make_av_container(src_b, duration=0.3)
+
+    config = tmp_path / "ordered.json"
+    config.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "sources": [{"path": str(src_a)}, {"path": str(src_b)}],
+                "output": str(out),
+                "track_order": [{"source": 1, "id": 0}, {"source": 0, "id": 1}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_cli(root, "preview", "--config", str(config))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.index("-map 1:0") < result.stdout.index("-map 0:1")
 
 
 def test_cli_remux_headless_runs_and_refuses_existing_output(tmp_path: Path) -> None:

@@ -5,16 +5,54 @@ from pathlib import Path
 
 import pytest
 
-from cli.main import ContractError, apply_track_rules, build_parser, validate_job_contract
+import cli.main
+from cli.contract import validate_batch_contract, validate_job_contract
+from cli.errors import ContractError
+from cli.parser import build_parser
+from cli.rules import apply_track_rules
+from cli.schema import build_cli_json_schema
 from core.workflows.remux_models import TrackEntry
 
 
 def test_cli_parser_exposes_expected_subcommands() -> None:
     parser = build_parser()
-    args = parser.parse_args(["preview", "--config", "job.json"])
+    args = parser.parse_args(["preview", "--config", "job.json", "--json"])
     assert args.command == "preview"
+    assert args.json_output is True
+    args = parser.parse_args(["validate", "--config", "job.json", "--json"])
+    assert args.json_output is True
     args = parser.parse_args(["batch", "--template", "template.json", "-i", "a.mkv"])
     assert args.command == "batch"
+    args = parser.parse_args(["batch", "--template", "template.json", "-i", "a.mkv", "--summary", "summary.json"])
+    assert args.summary == "summary.json"
+    args = parser.parse_args(["inspect", "a.mkv", "--rules-preview"])
+    assert args.rules_preview is True
+    args = parser.parse_args(["schema", "--output", "schema.json"])
+    assert args.command == "schema"
+    assert args.output == "schema.json"
+
+
+def test_cli_main_only_exposes_entrypoint() -> None:
+    assert cli.main.__all__ == ["main"]
+    assert callable(cli.main.main)
+    for moved_name in (
+        "apply_track_rules",
+        "build_cli_json_schema",
+        "build_parser",
+        "validate_batch_contract",
+        "validate_job_contract",
+    ):
+        assert not hasattr(cli.main, moved_name)
+
+
+def test_cli_json_schema_exposes_public_contract_keys() -> None:
+    schema = build_cli_json_schema()
+    assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+    assert schema["properties"]["version"] == {"const": 1}
+    for key in ("sources", "output", "rules", "tracks", "track_order", "chapters", "tmdb"):
+        assert key in schema["properties"]
+    for definition in ("source", "rules", "condition", "track_edit", "track_order_item", "chapters", "tmdb"):
+        assert definition in schema["$defs"]
 
 
 def test_apply_track_rules_filters_languages_and_renames() -> None:
@@ -300,3 +338,44 @@ def test_validate_job_contract_checks_advanced_rule_shapes() -> None:
     assert "rules.presets.series.tracks.audio.limit_per_language" in message
     assert "rules.tracks.audio.conditions.all[0].atmos" in message
     assert "rules.tracks.audio.priority" in message
+
+
+def test_validate_job_contract_reports_track_order_paths() -> None:
+    with pytest.raises(ContractError) as excinfo:
+        validate_job_contract(
+            {
+                "version": 1,
+                "sources": [{"path": "source.mkv"}],
+                "output": "out.mkv",
+                "track_order": [
+                    {"source": "zero"},
+                    [0],
+                    [0, "audio"],
+                    7,
+                ],
+            },
+            require_version=True,
+        )
+
+    message = str(excinfo.value)
+    assert "track_order[0].source" in message
+    assert "track_order[0].id" in message
+    assert "track_order[1]" in message
+    assert "track_order[2][1]" in message
+    assert "track_order[3]" in message
+
+
+def test_validate_batch_contract_reports_job_paths() -> None:
+    with pytest.raises(ContractError) as excinfo:
+        validate_batch_contract(
+            {
+                "jobs": [
+                    {"sources": [{"path": "source.mkv"}], "tracks": "bad"},
+                    42,
+                ]
+            }
+        )
+
+    message = str(excinfo.value)
+    assert "$.jobs[0].tracks" in message
+    assert "$.jobs[1]" in message
