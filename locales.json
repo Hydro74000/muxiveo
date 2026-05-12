@@ -2983,10 +2983,6 @@
     "fra": "Profil appliqué : {name}",
     "eng": "Profile applied: {name}"
   },
-  "Profil hybride": {
-    "fra": "Profil hybride",
-    "eng": "Hybrid profile"
-  },
   "Aucune configuration complète à exporter.": {
     "fra": "Aucune configuration complète à exporter.",
     "eng": "No complete configuration to export."
@@ -2995,9 +2991,9 @@
     "fra": "Profils",
     "eng": "Profiles"
   },
-  "Aucun profil hybride enregistré.": {
-    "fra": "Aucun profil hybride enregistré.",
-    "eng": "No hybrid profile saved."
+  "Aucun profil enregistré.": {
+    "fra": "Aucun profil enregistré.",
+    "eng": "No profile saved."
   },
   "Profil introuvable": {
     "fra": "Profil introuvable",
@@ -3150,6 +3146,14 @@
   "Aliases codecs": {
     "fra": "Aliases codecs",
     "eng": "Codec aliases"
+  },
+  "Une ligne par alias codec :": {
+    "fra": "Une ligne par alias codec :",
+    "eng": "One codec alias per line:"
+  },
+  "{count} alias codec": {
+    "fra": "{count} alias codec",
+    "eng": "{count} codec alias"
   },
   "EAC3=DDP\nAC3=Dolby Digital\nTRUEHD=Dolby TrueHD": {
     "fra": "EAC3=DDP\nAC3=Dolby Digital\nTRUEHD=Dolby TrueHD",

@@ -7,14 +7,16 @@ from typing import Any
 
 from core.config import AppConfig
 from core.media_info_fetcher import (
+    MediaDetails,
     TmdbError,
     TmdbFetcher,
     clean_filename_for_search,
+    default_tmdb_bearer_token,
     extract_year_from_filename,
 )
-from core.workflows.remux_models import RemuxConfig, TrackEntry, clone_track_entry
-from core.profiles.hybrid import (
-    HybridResolutionError,
+from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry, clone_track_entry
+from core.profiles.selectors import (
+    SelectorResolutionError,
     apply_track_spec,
     resolve_track_selector,
 )
@@ -27,7 +29,8 @@ from cli.inspection import inspect_sources
 from cli.json_io import deep_merge
 from cli.logging import Logger
 from cli.options import CommonOptions
-from cli.rules import apply_track_rules
+from cli.output_template import build_output_context, render_output_template
+from cli.tmdb import normalized_tmdb_options
 
 
 def _fallback_profile_name(job: dict[str, Any]) -> str:
@@ -82,7 +85,7 @@ def apply_explicit_track_edits(
                 strict_selectors=strict_selectors,
                 context=f"tracks[{index}]",
             )
-        except HybridResolutionError as exc:
+        except SelectorResolutionError as exc:
             if _fallback_profile_name(job):
                 exc.report["suggested_profile"] = _fallback_profile_name(job)
             raise
@@ -119,7 +122,7 @@ def apply_audio_variants(
                 context=f"audio_variants[{index}]",
                 strict=strict_selectors,
             )
-        except HybridResolutionError as exc:
+        except SelectorResolutionError as exc:
             if _fallback_profile_name(job):
                 exc.report["suggested_profile"] = _fallback_profile_name(job)
             raise
@@ -167,7 +170,7 @@ def track_order(
                             context=f"track_order[{index}]",
                             strict=strict_selectors,
                         )
-                    except HybridResolutionError as exc:
+                    except SelectorResolutionError as exc:
                         if _fallback_profile_name(job):
                             exc.report["suggested_profile"] = _fallback_profile_name(job)
                         raise
@@ -195,23 +198,33 @@ def track_order(
     ]
 
 
-def _resolve_tmdb(
+def resolve_tmdb_metadata(
     job: dict[str, Any],
     config: AppConfig,
     first_source: Path,
     logger: Logger,
-) -> tuple[str, dict[str, str] | None, tuple[str, str] | None]:
-    tmdb = job.get("tmdb")
+    *,
+    source_title: str = "",
+) -> tuple[str, dict[str, str] | None, tuple[str, str] | None, MediaDetails | None]:
+    tmdb = normalized_tmdb_options(job, first_source, source_title=source_title)
     if not tmdb:
-        return "", None, None
-    if tmdb is True:
-        tmdb = {"enabled": True}
-    if not isinstance(tmdb, dict) or not tmdb.get("enabled", True):
-        return "", None, None
+        return "", None, None, None
 
+    api_key = str(tmdb.get("api_key") or config.tmdb_api_key or "").strip()
+    bearer = str(tmdb.get("bearer_token") or config.tmdb_bearer_token or "").strip()
+    if not api_key and not bearer:
+        bearer = default_tmdb_bearer_token()
+    if not api_key and not bearer:
+        raise CliError(
+            "Authentification TMDB manquante. Renseigner --tmdb-apikey, "
+            "la variable d'environnement MEDIARECODE_TMDB_BEARER_TOKEN, "
+            "ou la clé `metadata/tmdb_api_key` (resp. `tmdb_bearer_token`) "
+            "dans ~/.config/mediarecode/Mediarecode.conf.",
+            EXIT_VALIDATION,
+        )
     fetcher = TmdbFetcher(
-        api_key=str(tmdb.get("api_key") or config.tmdb_api_key or ""),
-        bearer_token=str(tmdb.get("bearer_token") or config.tmdb_bearer_token or ""),
+        api_key=api_key,
+        bearer_token=bearer,
         language=str(tmdb.get("language") or "fr-FR"),
     )
     kind = str(tmdb.get("kind") or "all")
@@ -222,11 +235,14 @@ def _resolve_tmdb(
         title = str(tmdb.get("title") or clean_filename_for_search(first_source) or first_source.stem)
         from core.media_info_fetcher import MediaSearchResult
 
+        result_kind = str(tmdb.get("kind") or "all")
+        if result_kind not in {"movie", "tv"}:
+            result_kind = "tv" if season and episode else "movie"
         result = MediaSearchResult(
             tmdb_id=int(tmdb_id),
             title=title,
             year=str(tmdb.get("year") or ""),
-            kind="movie" if kind not in {"movie", "tv"} else kind,
+            kind=result_kind,
         )
     else:
         query = str(tmdb.get("query") or clean_filename_for_search(first_source) or first_source.stem)
@@ -239,8 +255,49 @@ def _resolve_tmdb(
 
     details = fetcher.get_details(result, season=season, episode=episode)
     title = details.formatted_container_title()
-    cover = (details.cover_url, details.cover_filename) if details.cover_url and details.cover_filename else None
-    return title, details.to_mkv_tags(), cover
+    cover = (
+        (details.cover_url, details.cover_filename)
+        if tmdb.get("cover", True) and details.cover_url and details.cover_filename
+        else None
+    )
+    return title, details.to_mkv_tags(), cover, details
+
+
+def resolve_final_output(
+    *,
+    cli_output: str | None,
+    job: dict[str, Any],
+    sources: list[SourceInput],
+    details: MediaDetails | None,
+    preview: bool = False,
+) -> Path:
+    """Calcule le chemin de sortie final, en rendant le template si présent.
+
+    Priorité : ``cli_output`` > ``job.output_template`` > ``job.output`` >
+    fallback preview > erreur.
+    """
+    if cli_output:
+        return Path(str(cli_output)).expanduser()
+    template = str(job.get("output_template") or "").strip()
+    if template and sources:
+        ctx = build_output_context(sources[0].path, details)
+        rendered = render_output_template(template, ctx)
+        rendered_path = Path(rendered)
+        if rendered_path.is_absolute():
+            return rendered_path
+        base_dir = str(job.get("_batch_output_dir") or "").strip()
+        if base_dir:
+            return Path(base_dir).expanduser() / rendered_path
+        return rendered_path.expanduser()
+    raw = job.get("output")
+    if raw:
+        return Path(str(raw)).expanduser()
+    if preview and sources:
+        return sources[0].path.with_suffix(".profile-preview.mkv")
+    raise CliError(
+        "Une sortie est requise (`--output`, `--output-template`, ou `output` JSON).",
+        EXIT_ARGS,
+    )
 
 
 def build_remux_config(
@@ -254,24 +311,32 @@ def build_remux_config(
 ) -> RemuxConfig:
     validate_job_contract(job, require_version=False)
     sources, infos, tracks = inspect_sources(job, config, options, logger, cli_inputs=cli_inputs)
-    tracks = apply_track_rules(tracks, job.get("rules", {}))
-    strict_selectors = int(job.get("version", 1) or 1) == 2 or str(job.get("kind") or "") == "exact-job"
+    strict_selectors = str(job.get("kind") or "") == "exact-job"
     apply_audio_variants(job, sources, tracks, strict_selectors=strict_selectors)
     apply_explicit_track_edits(job, tracks, strict_selectors=strict_selectors)
-
-    output_raw = cli_output or job.get("output")
-    if not output_raw:
-        raise CliError("Une sortie est requise (`--output` ou `output` JSON).", EXIT_ARGS)
-    output = Path(str(output_raw)).expanduser()
 
     keep_chapters, chapter_overrides, chapter_source_index = chapter_entries(job, infos)
     tmdb_title = ""
     tmdb_tags = None
     tmdb_cover = None
+    tmdb_details: MediaDetails | None = None
     try:
-        tmdb_title, tmdb_tags, tmdb_cover = _resolve_tmdb(job, config, sources[0].path, logger)
+        tmdb_title, tmdb_tags, tmdb_cover, tmdb_details = resolve_tmdb_metadata(
+            job,
+            config,
+            sources[0].path,
+            logger,
+            source_title=infos[0].title if infos else "",
+        )
     except TmdbError as exc:
         raise CliError(str(exc), EXIT_VALIDATION) from exc
+
+    output = resolve_final_output(
+        cli_output=cli_output,
+        job=job,
+        sources=sources,
+        details=tmdb_details,
+    )
 
     tag_overrides = job.get("tag_overrides", None)
     if tmdb_tags:

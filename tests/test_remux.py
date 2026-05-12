@@ -1508,7 +1508,7 @@ class TestRemuxPanelNewAudioTracks:
         panel.close()
 
 
-class TestRemuxPanelHybridDecisionProfiles:
+class TestRemuxPanelDecisionProfiles:
 
     @staticmethod
     def _panel_with_tracks(qt_app, tmp_path, tracks: list[TrackEntry], *, file_id: str = "fid") -> RemuxPanel:
@@ -1544,7 +1544,7 @@ class TestRemuxPanelHybridDecisionProfiles:
 
         monkeypatch.setattr("ui.panels.remux_panel.panel.DecisionProfileEditorDialog", FakeDialog)
 
-        panel._save_hybrid_profile()
+        panel._save_decision_profile()
         payload = json.loads((tmp_path / "profiles" / "decision" / "Auto_VF.json").read_text(encoding="utf-8"))
 
         assert payload["kind"] == "decision-profile"
@@ -1572,7 +1572,7 @@ class TestRemuxPanelHybridDecisionProfiles:
             target_audio,
         ], file_id="other")
 
-        panel_b._apply_hybrid_profile(profile)
+        panel_b._apply_decision_profile(profile)
 
         applied_tracks = panel_b._track_table.current_tracks()
         applied_audio = next(track for track in applied_tracks if track.mkv_tid == 11)
@@ -1648,7 +1648,9 @@ class TestRemuxPanelHybridDecisionProfiles:
             "EAC3": "DDP",
             "AC3": "Dolby Digital",
         }
-        assert "2 alias codec" in dialog._codec_aliases_status.text()
+        status = dialog._codec_aliases_status.text()
+        assert "2" in status
+        assert "alias" in status
         dialog.close()
 
     def test_profile_editor_can_load_and_delete_existing_profile(self, qt_app, tmp_path, monkeypatch):

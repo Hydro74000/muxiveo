@@ -44,9 +44,13 @@ class JobOverrides:
     template: str | None = None
     input: list[str] | None = None
     output: str | None = None
-    languages: str | None = None
+    auto_tmdb: bool = False
     tmdb: bool = False
     tmdb_id: int | None = None
+    tmdb_apikey: str = ""
+    output_template: str = ""
+    no_cover: bool = False
+    no_attach: bool = False
 
     @classmethod
     def from_namespace(cls, args: argparse.Namespace) -> "JobOverrides":
@@ -55,9 +59,13 @@ class JobOverrides:
             template=getattr(args, "template", None),
             input=getattr(args, "input", None),
             output=getattr(args, "output", None),
-            languages=getattr(args, "languages", None),
+            auto_tmdb=bool(getattr(args, "auto_tmdb", False)),
             tmdb=bool(getattr(args, "tmdb", False)),
             tmdb_id=getattr(args, "tmdb_id", None),
+            tmdb_apikey=str(getattr(args, "tmdb_apikey", "") or ""),
+            output_template=str(getattr(args, "output_template", "") or ""),
+            no_cover=bool(getattr(args, "no_cover", False)),
+            no_attach=bool(getattr(args, "no_attach", False)),
         )
 
 

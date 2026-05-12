@@ -10,6 +10,7 @@ from core.config import AppConfig
 from core.profiles.decision import (
     DECISION_PROFILE_KIND,
     DecisionProfileError,
+    DecisionProfileManager,
     apply_decision_profile,
     validate_decision_profile,
 )
@@ -19,15 +20,52 @@ from cli.batch import discover_direct_batch_jobs, job_primary_input, write_batch
 from cli.constants import EXIT_ARGS, EXIT_OK, EXIT_PARTIAL, EXIT_VALIDATION, EXIT_WORKFLOW
 from cli.errors import CliError
 from cli.inspection import inspect_sources, source_path_items
-from cli.json_io import json_default, load_json
+from cli.jobs import apply_metadata_overrides
+from cli.json_io import deep_merge, json_default, load_json
 from cli.logging import Logger
 from cli.options import CommonOptions
+from cli.remux_config import resolve_final_output, resolve_tmdb_metadata
 from cli.runtime import preview_remux_config, run_remux_config, workflow
 from cli.serializers import serialize_remux_config, serialize_track_preview
 
 
-def load_decision_profile(path: str | Path) -> dict[str, Any]:
-    profile = load_json(Path(path).expanduser())
+def _profile_path_candidates(raw_profile: str | Path, config: AppConfig | None = None) -> list[Path]:
+    raw_text = str(raw_profile or "").strip()
+    raw = Path(raw_text).expanduser()
+    candidates: list[Path] = []
+
+    def add(path: Path) -> None:
+        if path not in candidates:
+            candidates.append(path)
+
+    add(raw)
+    if not raw.suffix:
+        add(raw.with_suffix(".json"))
+
+    if config is not None:
+        default_dir = Path(config.profiles_dir) / "decision"
+        default_base = Path(raw.name) if raw.is_absolute() else raw
+        add(default_dir / default_base)
+        if not default_base.suffix:
+            add(default_dir / default_base.with_suffix(".json"))
+        safe_name = raw.stem if raw.suffix.lower() == ".json" else raw_text
+        if safe_name:
+            add(DecisionProfileManager(default_dir).path_for_name(safe_name))
+
+    return candidates
+
+
+def resolve_decision_profile_path(raw_profile: str | Path, config: AppConfig | None = None) -> Path:
+    for candidate in _profile_path_candidates(raw_profile, config):
+        if candidate.is_file():
+            return candidate
+    searched = ", ".join(str(path) for path in _profile_path_candidates(raw_profile, config))
+    raise CliError(f"Profil introuvable : {raw_profile}. Chemins testés : {searched}", EXIT_ARGS)
+
+
+def load_decision_profile(path: str | Path, config: AppConfig | None = None) -> dict[str, Any]:
+    profile_path = resolve_decision_profile_path(path, config)
+    profile = load_json(profile_path)
     try:
         validate_decision_profile(profile)
     except DecisionProfileError as exc:
@@ -35,14 +73,6 @@ def load_decision_profile(path: str | Path) -> dict[str, Any]:
     if profile.get("kind") != DECISION_PROFILE_KIND:
         raise CliError("Le fichier n'est pas un decision-profile v1.", EXIT_ARGS)
     return profile
-
-
-def _output_path(raw_output: str | None, sources: list[SourceInput], *, preview: bool = False) -> Path:
-    if raw_output:
-        return Path(str(raw_output)).expanduser()
-    if preview and sources:
-        return sources[0].path.with_suffix(".profile-preview.mkv")
-    raise CliError("Une sortie est requise (`-o/--output`).", EXIT_ARGS)
 
 
 def _refresh_sources_tracks(sources: list[SourceInput], tracks: list[TrackEntry]) -> None:
@@ -77,6 +107,7 @@ def build_profile_remux_config(
     options: CommonOptions,
     logger: Logger,
     preview: bool = False,
+    metadata_job: dict[str, Any] | None = None,
 ) -> tuple[RemuxConfig, dict[str, Any]]:
     if not cli_inputs:
         raise CliError("Au moins une entrée est requise avec `--profile` (`-i/--input`).", EXIT_ARGS)
@@ -91,20 +122,45 @@ def build_profile_remux_config(
     if not result.report.get("valid", True):
         raise CliError(json.dumps(result.report, ensure_ascii=False, default=json_default), EXIT_VALIDATION)
     _refresh_sources_tracks(sources, result.tracks)
-    output = _output_path(cli_output, sources, preview=preview)
+    metadata = metadata_job or {}
+    tmdb_title = ""
+    tmdb_tags = None
+    tmdb_cover = None
+    tmdb_details = None
+    if metadata.get("tmdb"):
+        tmdb_title, tmdb_tags, tmdb_cover, tmdb_details = resolve_tmdb_metadata(
+            metadata,
+            config,
+            sources[0].path,
+            logger,
+            source_title=_infos[0].title if _infos else "",
+        )
+    output = resolve_final_output(
+        cli_output=cli_output,
+        job=metadata,
+        sources=sources,
+        details=tmdb_details,
+        preview=preview,
+    )
+    tag_overrides = metadata.get("tag_overrides", None)
+    if tmdb_tags:
+        tag_overrides = deep_merge(tmdb_tags, tag_overrides if isinstance(tag_overrides, dict) else {})
     remux_config = RemuxConfig(
         sources=sources,
         output=output,
         track_order=_track_order(result.tracks),
         keep_chapters=True,
+        file_title=str(metadata.get("file_title") or tmdb_title or ""),
+        tag_overrides=tag_overrides if isinstance(tag_overrides, dict) else None,
+        tmdb_cover=tmdb_cover,
         work_dir=Path(str(options.work_dir or config.work_dir)).expanduser(),
         allow_missing_output_dir=preview,
     )
     return remux_config, result.report
 
 
-def profile_validate(profile_path: str, *, json_output: bool = False) -> int:
-    profile = load_decision_profile(profile_path)
+def profile_validate(profile_path: str, *, json_output: bool = False, config: AppConfig | None = None) -> int:
+    profile = load_decision_profile(profile_path, config)
     payload = {
         "valid": True,
         "kind": profile.get("kind"),
@@ -127,8 +183,9 @@ def profile_preview(
     options: CommonOptions,
     logger: Logger,
     include_command: bool = True,
+    metadata_job: dict[str, Any] | None = None,
 ) -> int:
-    profile = load_decision_profile(profile_path)
+    profile = load_decision_profile(profile_path, config)
     try:
         remux_config, report = build_profile_remux_config(
             profile,
@@ -138,6 +195,7 @@ def profile_preview(
             options=options,
             logger=logger,
             preview=True,
+            metadata_job=metadata_job,
         )
     except CliError as exc:
         if json_output and exc.exit_code == EXIT_VALIDATION:
@@ -184,8 +242,9 @@ def profile_apply(
     config: AppConfig,
     options: CommonOptions,
     logger: Logger,
+    metadata_job: dict[str, Any] | None = None,
 ) -> int:
-    profile = load_decision_profile(profile_path)
+    profile = load_decision_profile(profile_path, config)
     remux_config, _report = build_profile_remux_config(
         profile,
         cli_inputs=inputs,
@@ -194,6 +253,7 @@ def profile_apply(
         options=options,
         logger=logger,
         preview=dry_run,
+        metadata_job=metadata_job,
     )
     if dry_run:
         return preview_remux_config(config, options, logger, remux_config)
@@ -216,10 +276,30 @@ def profile_batch(
     config: AppConfig,
     options: CommonOptions,
     logger: Logger,
+    auto_tmdb: bool = False,
+    tmdb: bool = False,
+    tmdb_id: int | None = None,
+    tmdb_apikey: str = "",
+    output_template: str = "",
+    no_cover: bool = False,
+    no_attach: bool = False,
 ) -> int:
     if not output_dir:
         raise CliError("`profile batch` requiert `--output-dir`.", EXIT_ARGS)
-    profile = load_decision_profile(profile_path)
+    profile = load_decision_profile(profile_path, config)
+    metadata_template: dict[str, Any] = {}
+    apply_metadata_overrides(
+        metadata_template,
+        auto_tmdb=auto_tmdb,
+        tmdb=tmdb,
+        tmdb_id=tmdb_id,
+        tmdb_apikey=tmdb_apikey,
+        no_cover=no_cover,
+        no_attach=no_attach,
+    )
+    if output_template:
+        metadata_template["output_template"] = output_template
+        metadata_template["_batch_output_dir"] = str(Path(output_dir).expanduser())
     discovery = discover_direct_batch_jobs(
         cli_inputs=cli_inputs,
         input_dirs=input_dirs,
@@ -227,6 +307,7 @@ def profile_batch(
         recursive=recursive,
         include_patterns=include_patterns,
         exclude_patterns=exclude_patterns,
+        output_template=output_template,
     )
     if not discovery.jobs:
         raise CliError("Aucun fichier vidéo compatible trouvé pour le batch profil.", EXIT_ARGS)
@@ -241,6 +322,7 @@ def profile_batch(
     )
     failures = 0
     summary_jobs: list[dict[str, Any]] = []
+    seen_rendered_outputs: dict[str, str] = {}
     for job_index, job in enumerate(discovery.jobs):
         input_label = job_primary_input(job)
         output_label = str(job.get("output") or "")
@@ -256,7 +338,22 @@ def profile_batch(
                 options=options,
                 logger=logger,
                 preview=dry_run,
+                metadata_job=metadata_template,
             )
+            output_label = str(remux_config.output)
+            if output_template:
+                previous_input = seen_rendered_outputs.get(output_label)
+                if previous_input is not None:
+                    raise CliError(
+                        f"Sortie générée en double : {output_label} pour "
+                        f"{previous_input} et {input_label}. Le template "
+                        f"'{output_template}' ne discrimine pas les deux "
+                        "sources — ajoutez {source_name}, {episode} ou {season_episode}.",
+                        EXIT_ARGS,
+                    )
+                seen_rendered_outputs[output_label] = input_label
+                if not dry_run:
+                    Path(output_label).expanduser().parent.mkdir(parents=True, exist_ok=True)
             rc = preview_remux_config(config, options, logger, remux_config) if dry_run else run_remux_config(
                 config,
                 options,

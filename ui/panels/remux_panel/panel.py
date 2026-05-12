@@ -11,7 +11,6 @@ from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtGui import QDropEvent, QFont
 from PySide6.QtWidgets import (
     QComboBox,
-    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -36,10 +35,8 @@ from core.file_types import is_accepted
 from core.i18n import apply_translations, translate_text
 from core.matroska_attachment_extractor import extract_matroska_attachment_bytes
 from core.inspector import AttachmentInfo, ChapterEntry, FileInfo
-from core.profiles.hybrid import (
-    remux_config_to_hybrid_job,
-)
 from core.profiles.decision import DecisionProfileManager, apply_decision_profile as apply_decision_profile_v1
+from core.profiles.selectors import remux_config_to_exact_job
 from core.runner import TaskSignals, ToolRunner
 from core.workflows.remux import RemuxWorkflow
 from core.workflows.audio_sync import AudioSyncTrack, AudioSyncWorkflow
@@ -113,62 +110,6 @@ class _AudioSyncReferenceDialog(QDialog):
     def selected_entry(self) -> TrackEntry | None:
         data = self._combo.currentData()
         return data if isinstance(data, TrackEntry) else None
-
-
-class _HybridProfileSaveDialog(QDialog):
-    def __init__(self, *, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle(translate_text("Sauver profil"))
-        self.setModal(True)
-        self._name_edit = QLineEdit()
-        self._name_edit.setPlaceholderText(translate_text("Nom du profil"))
-        self._checks: dict[str, QCheckBox] = {}
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(_scale(18), _scale(16), _scale(18), _scale(16))
-        root.setSpacing(_scale(10))
-        self.setStyleSheet(f"""
-            QDialog {{ background: {_C.BG_DEEP}; color: {_C.TEXT_PRI}; }}
-            QLabel, QCheckBox {{ color: {_C.TEXT_SEC}; background: transparent; }}
-            QLineEdit {{
-                background: {_C.BG_CARD};
-                color: {_C.TEXT_PRI};
-                border: 1px solid {_C.BORDER};
-                border-radius: 5px;
-                padding: {_scale(7)}px {_scale(9)}px;
-                min-width: {_scale(360)}px;
-            }}
-        """)
-
-        root.addWidget(QLabel(translate_text("Créer un profil d'automapping réutilisable.")))
-        root.addWidget(self._name_edit)
-        for key, label in (
-            ("selection", translate_text("Sélection des pistes")),
-            ("metadata", translate_text("Langues, titres et décalages")),
-            ("flags", translate_text("Flags de pistes")),
-            ("order", translate_text("Ordre des pistes")),
-            ("audio_variants", translate_text("Pistes audio dérivées")),
-        ):
-            check = QCheckBox(label)
-            check.setChecked(True)
-            self._checks[key] = check
-            root.addWidget(check)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        root.addWidget(buttons)
-        ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        ok_btn.setEnabled(False)
-        self._name_edit.textChanged.connect(lambda text: ok_btn.setEnabled(bool(text.strip())))
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-
-    def profile_name(self) -> str:
-        return self._name_edit.text().strip()
-
-    def save_options(self) -> dict[str, bool]:
-        return {key: check.isChecked() for key, check in self._checks.items()}
 
 
 class RemuxPanel(QWidget):
@@ -325,11 +266,11 @@ class RemuxPanel(QWidget):
         track_header.addWidget(btn_none)
 
         export_profile_btn = _secondary_button("Exporter JSON CLI")
-        export_profile_btn.clicked.connect(self._export_hybrid_json)
+        export_profile_btn.clicked.connect(self._export_exact_json)
         save_profile_btn = _secondary_button("Éditer profil")
-        save_profile_btn.clicked.connect(self._save_hybrid_profile)
+        save_profile_btn.clicked.connect(self._save_decision_profile)
         apply_profile_btn = _secondary_button("Appliquer profil")
-        apply_profile_btn.clicked.connect(self._apply_hybrid_profile_dialog)
+        apply_profile_btn.clicked.connect(self._apply_decision_profile_dialog)
         track_header.addWidget(export_profile_btn)
         track_header.addWidget(save_profile_btn)
         track_header.addWidget(apply_profile_btn)
@@ -645,25 +586,25 @@ class RemuxPanel(QWidget):
     def collect_config(self) -> RemuxConfig | None:
         return self._current_config()
 
-    def _hybrid_profile_manager(self) -> DecisionProfileManager:
+    def _decision_profile_manager(self) -> DecisionProfileManager:
         return DecisionProfileManager(self._config.profiles_dir / "decision")
 
-    def _current_hybrid_job(self, *, name: str = "") -> dict | None:
+    def _current_exact_job(self, *, name: str = "") -> dict | None:
         config = self._current_config()
         if config is None:
             QMessageBox.warning(
                 self,
-                translate_text("Profil hybride"),
+                translate_text("Exporter JSON CLI"),
                 translate_text("Aucune configuration complète à exporter."),
             )
             return None
-        return remux_config_to_hybrid_job(config, name=name)
+        return remux_config_to_exact_job(config, name=name)
 
     def _current_profile_config(self) -> RemuxConfig | None:
         if not self._has_ready_files():
             QMessageBox.warning(
                 self,
-                translate_text("Profil hybride"),
+                translate_text("Profils"),
                 translate_text("Aucune source prête pour créer un profil."),
             )
             return None
@@ -671,7 +612,7 @@ class RemuxPanel(QWidget):
         if not all_tracks:
             QMessageBox.warning(
                 self,
-                translate_text("Profil hybride"),
+                translate_text("Profils"),
                 translate_text("Aucune piste disponible pour créer un profil."),
             )
             return None
@@ -707,17 +648,17 @@ class RemuxPanel(QWidget):
             work_dir=self._config.work_dir,
         )
 
-    def _export_hybrid_json(self) -> None:
-        job = self._current_hybrid_job()
+    def _export_exact_json(self) -> None:
+        job = self._current_exact_job()
         if job is None:
             return
         default = self._output_edit.text().strip()
         if default:
-            default_path = Path(default).with_suffix(".mediarecode-v2.json")
+            default_path = Path(default).with_suffix(".exact-job.json")
         elif self._source_files:
-            default_path = self._source_files[0].path.with_suffix(".mediarecode-v2.json")
+            default_path = self._source_files[0].path.with_suffix(".exact-job.json")
         else:
-            default_path = self._config.config_dir / "template.mediarecode-v2.json"
+            default_path = self._config.config_dir / "template.exact-job.json"
         path, _ = QFileDialog.getSaveFileName(
             self,
             translate_text("Exporter JSON CLI"),
@@ -740,12 +681,12 @@ class RemuxPanel(QWidget):
             return
         self.log_message.emit("OK", translate_text("Template CLI exporté : {path}", path=path))
 
-    def _save_hybrid_profile(self) -> None:
+    def _save_decision_profile(self) -> None:
         config = self._current_profile_config()
         current_tracks = self._track_table.current_tracks()
         source_index_by_file_id = {sf.id: index for index, sf in enumerate(self._source_files)}
         dialog = DecisionProfileEditorDialog(
-            manager=self._hybrid_profile_manager(),
+            manager=self._decision_profile_manager(),
             current_config=config,
             current_tracks=current_tracks,
             source_index_by_file_id=source_index_by_file_id,
@@ -755,14 +696,14 @@ class RemuxPanel(QWidget):
             return
         self.log_message.emit("OK", translate_text("Profil sauvegardé : {name}", name=dialog.profile().get("name", "")))
 
-    def _apply_hybrid_profile_dialog(self) -> None:
-        manager = self._hybrid_profile_manager()
+    def _apply_decision_profile_dialog(self) -> None:
+        manager = self._decision_profile_manager()
         names = manager.names()
         if not names:
             QMessageBox.information(
                 self,
                 translate_text("Profils"),
-                translate_text("Aucun profil hybride enregistré."),
+                translate_text("Aucun profil enregistré."),
             )
             return
         name, ok = QInputDialog.getItem(
@@ -784,7 +725,7 @@ class RemuxPanel(QWidget):
             )
             return
         try:
-            tracks, report = self._build_hybrid_profile_result(profile)
+            tracks, report = self._build_decision_profile_result(profile)
         except Exception as exc:
             QMessageBox.warning(
                 self,
@@ -792,16 +733,16 @@ class RemuxPanel(QWidget):
                 str(exc),
             )
             return
-        if not self._confirm_hybrid_profile_application(name, tracks, report):
+        if not self._confirm_decision_profile_application(name, tracks, report):
             return
-        self._commit_hybrid_profile_result(tracks)
+        self._commit_decision_profile_result(tracks)
         self.log_message.emit("OK", translate_text("Profil appliqué : {name}", name=name))
 
-    def _apply_hybrid_profile(self, profile: dict) -> None:
-        tracks, _report = self._build_hybrid_profile_result(profile)
-        self._commit_hybrid_profile_result(tracks)
+    def _apply_decision_profile(self, profile: dict) -> None:
+        tracks, _report = self._build_decision_profile_result(profile)
+        self._commit_decision_profile_result(tracks)
 
-    def _build_hybrid_profile_result(self, profile: dict) -> tuple[list[TrackEntry], dict]:
+    def _build_decision_profile_result(self, profile: dict) -> tuple[list[TrackEntry], dict]:
         all_tracks = copy.deepcopy(self._track_table.current_tracks())
         if not all_tracks:
             return [], {"valid": True, "applied_rules": 0}
@@ -813,7 +754,7 @@ class RemuxPanel(QWidget):
         )
         return result.tracks, result.report
 
-    def _commit_hybrid_profile_result(self, tracks: list[TrackEntry]) -> None:
+    def _commit_decision_profile_result(self, tracks: list[TrackEntry]) -> None:
         by_file_id: dict[str, list[TrackEntry]] = {}
         for track in tracks:
             by_file_id.setdefault(track.file_id, []).append(track)
@@ -826,7 +767,7 @@ class RemuxPanel(QWidget):
         self._rebuild_preview()
         self._emit_signals()
 
-    def _confirm_hybrid_profile_application(
+    def _confirm_decision_profile_application(
         self,
         name: str,
         tracks: list[TrackEntry],

@@ -13,8 +13,8 @@ from core.file_types import is_accepted
 from cli.constants import EXIT_ARGS, EXIT_OK, EXIT_PARTIAL, EXIT_WORKFLOW
 from cli.contract import validate_batch_contract, validate_job_contract
 from cli.errors import CliError
-from cli.hybrid import is_v2_job, preview_hybrid_job, run_hybrid_job
 from cli.inspection import source_path_items
+from cli.jobs import apply_metadata_overrides
 from cli.json_io import deep_merge, load_json, write_json
 from cli.logging import Logger
 from cli.options import CommonOptions
@@ -45,9 +45,20 @@ def _generated_output_path(output_dir: str | None, relative_path: Path) -> str |
     return str(Path(output_dir).expanduser() / relative_path.with_suffix(".mkv"))
 
 
-def _job_for_source(path: Path, *, output: str | None = None) -> dict[str, Any]:
+def _job_for_source(
+    path: Path,
+    *,
+    output: str | None = None,
+    output_dir: str | None = None,
+    output_template: str = "",
+) -> dict[str, Any]:
     job: dict[str, Any] = {"sources": [{"path": str(path)}]}
-    if output:
+    if output_template:
+        job["output_template"] = output_template
+        if output_dir:
+            job["_batch_output_dir"] = str(Path(output_dir).expanduser())
+        job["_batch_generated_output"] = True
+    elif output:
         job["output"] = output
         job["_batch_generated_output"] = True
     return job
@@ -60,6 +71,7 @@ def _assert_unique_generated_outputs(jobs: list[dict[str, Any]]) -> None:
             continue
         output = str(job.get("output") or "")
         if not output:
+            # Template à résoudre plus tard — dedup post-rendu fait dans la boucle batch.
             continue
         input_path = job_primary_input(job)
         previous = seen.get(output)
@@ -81,6 +93,7 @@ def discover_direct_batch_jobs(
     recursive: bool = False,
     include_patterns: list[str] | None = None,
     exclude_patterns: list[str] | None = None,
+    output_template: str = "",
 ) -> BatchDiscovery:
     jobs: list[dict[str, Any]] = []
     scanned = 0
@@ -89,8 +102,8 @@ def discover_direct_batch_jobs(
     for raw in cli_inputs or []:
         path = Path(str(raw)).expanduser()
         scanned += 1
-        output = _generated_output_path(output_dir, Path(path.name))
-        jobs.append(_job_for_source(path, output=output))
+        output = _generated_output_path(output_dir, Path(path.name)) if not output_template else None
+        jobs.append(_job_for_source(path, output=output, output_dir=output_dir, output_template=output_template))
 
     for raw_dir in input_dirs or []:
         root = Path(str(raw_dir)).expanduser()
@@ -113,8 +126,8 @@ def discover_direct_batch_jobs(
                 continue
             if _matches_any(relative, exclude_patterns):
                 continue
-            output = _generated_output_path(output_dir, relative)
-            jobs.append(_job_for_source(path, output=output))
+            output = _generated_output_path(output_dir, relative) if not output_template else None
+            jobs.append(_job_for_source(path, output=output, output_dir=output_dir, output_template=output_template))
 
     _assert_unique_generated_outputs(jobs)
     return BatchDiscovery(
@@ -170,6 +183,13 @@ def run_batch(
     config: AppConfig,
     options: CommonOptions,
     logger: Logger,
+    auto_tmdb: bool = False,
+    tmdb: bool = False,
+    tmdb_id: int | None = None,
+    tmdb_apikey: str = "",
+    output_template: str = "",
+    no_cover: bool = False,
+    no_attach: bool = False,
 ) -> int:
     direct_mode = bool(cli_inputs or input_dirs or recursive or include_patterns or exclude_patterns)
     if batch_path and direct_mode:
@@ -193,6 +213,7 @@ def run_batch(
             recursive=recursive,
             include_patterns=include_patterns,
             exclude_patterns=exclude_patterns,
+            output_template=output_template,
         )
         if not discovery.jobs:
             raise CliError("Aucun fichier vidéo compatible trouvé pour le batch.", EXIT_ARGS)
@@ -212,10 +233,25 @@ def run_batch(
     failures = 0
     total = 0
     summary_jobs: list[dict[str, Any]] = []
+    seen_rendered_outputs: dict[str, str] = {}
     for item in batch_jobs(batch):
         job_index = total
         total += 1
         job = deep_merge(template, item)
+        apply_metadata_overrides(
+            job,
+            auto_tmdb=auto_tmdb,
+            tmdb=tmdb,
+            tmdb_id=tmdb_id,
+            tmdb_apikey=tmdb_apikey,
+            no_cover=no_cover,
+            no_attach=no_attach,
+        )
+        if output_template and "output_template" not in job:
+            job["output_template"] = output_template
+            if output_dir:
+                job["_batch_output_dir"] = str(Path(output_dir).expanduser())
+            job["_batch_generated_output"] = True
         input_label = job_primary_input(job)
         output_label = str(job.get("output") or "")
         logger.emit(
@@ -228,7 +264,7 @@ def run_batch(
             status="started",
         )
         try:
-            if "output" not in job and output_dir:
+            if "output" not in job and "output_template" not in job and output_dir:
                 first = source_path_items(job)[0]["path"]
                 job["output"] = str(Path(output_dir).expanduser() / (Path(str(first)).stem + ".mkv"))
                 job["_batch_generated_output"] = True
@@ -238,19 +274,25 @@ def run_batch(
             if not dry_run and job.get("_batch_generated_output") and job.get("output"):
                 Path(str(job["output"])).expanduser().parent.mkdir(parents=True, exist_ok=True)
             validate_job_contract(job, path=f"jobs[{total - 1}]", require_version=True)
-            if is_v2_job(job):
-                output_label = str(job.get("output") or output_label)
-                if dry_run:
-                    rc = preview_hybrid_job(config, options, logger, job)
-                else:
-                    rc = run_hybrid_job(config, options, logger, job, force=force)
+            remux_config = build_remux_config(job, config, options, logger)
+            output_label = str(remux_config.output)
+            if job.get("output_template"):
+                previous_input = seen_rendered_outputs.get(output_label)
+                if previous_input is not None:
+                    raise CliError(
+                        f"Sortie générée en double : {output_label} pour "
+                        f"{previous_input} et {input_label}. Le template "
+                        f"'{job.get('output_template')}' ne discrimine pas les deux "
+                        "sources — ajoutez {source_name}, {episode} ou {season_episode}.",
+                        EXIT_ARGS,
+                    )
+                seen_rendered_outputs[output_label] = input_label
+                if not dry_run:
+                    Path(output_label).expanduser().parent.mkdir(parents=True, exist_ok=True)
+            if dry_run:
+                rc = preview_remux_config(config, options, logger, remux_config)
             else:
-                remux_config = build_remux_config(job, config, options, logger)
-                output_label = str(remux_config.output)
-                if dry_run:
-                    rc = preview_remux_config(config, options, logger, remux_config)
-                else:
-                    rc = run_remux_config(config, options, logger, remux_config, force=force)
+                rc = run_remux_config(config, options, logger, remux_config, force=force)
             if rc != EXIT_OK:
                 failures += 1
                 summary_jobs.append(

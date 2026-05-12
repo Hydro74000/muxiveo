@@ -69,7 +69,8 @@ def run_remux_config(
         state_exit["value"] = EXIT_WORKFLOW
         loop.quit()
 
-    signals.progress.connect(lambda line: logger.emit("info", line))
+    if options.verbose:
+        signals.progress.connect(lambda line: logger.emit("info", line))
     signals.finished.connect(done)
     signals.failed.connect(failed)
     signals.cancelled.connect(cancelled)

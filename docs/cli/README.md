@@ -22,7 +22,6 @@ Dans les builds packages, le CLI utilise le même bundle que l'application GUI :
 |---|---|
 | `inspect` | inspecte une source et sort du JSON |
 | `inspect --config-template` | genere un template JSON de depart |
-| `inspect --rules-preview` | compatibilite historique rules |
 | `schema` | affiche le schéma JSON public du contrat CLI |
 | `validate` | valide un job/template sans executer ffmpeg |
 | `preview` | affiche la commande ffmpeg prevue |
@@ -38,22 +37,24 @@ Exemples :
 ```bash
 mediarecode-cli inspect source.mkv
 mediarecode-cli inspect source.mkv --config-template --output sortie.mkv
-mediarecode-cli inspect source.mkv --config template.json --rules-preview
 mediarecode-cli schema --output mediarecode-cli.schema.json
 mediarecode-cli schema --version decision-profile
 mediarecode-cli preview --config docs/cli/middle.json
 mediarecode-cli preview --config docs/cli/middle.json --json
 mediarecode-cli validate --config docs/cli/middle.json --json
-mediarecode-cli remux -i source.mkv -o sortie.mkv --languages fr-FR,en-US
+mediarecode-cli remux -i source.mkv -o sortie.mkv
 mediarecode-cli remux --config docs/cli/middle.json --dry-run
 mediarecode-cli batch --template docs/cli/complexe-toutes-options-template.json --batch docs/cli/complexe-toutes-options-batch.json --force
 mediarecode-cli batch --template template.json --batch batch.json --dry-run --log-format jsonl
 mediarecode-cli batch --template template.json --batch batch.json --summary summary.json
 mediarecode-cli batch --template exact-job.json --input-dir "Serie/Saison 01" --output-dir "out/Saison 01" --dry-run
 mediarecode-cli batch --template exact-job.json --input-dir "Serie" --recursive --include "*.mkv" --exclude "*sample*" --output-dir "out"
+mediarecode-cli batch --template exact-job.json --input-dir "Serie" --recursive --output-dir "out" --auto-tmdb
+mediarecode-cli batch --template exact-job.json --input-dir "Serie" --recursive --output-dir "out" --auto-tmdb \
+    --output-template "{title}.S{season}E{episode}.{episode_title}-{group}"
 mediarecode-cli preview --profile profil.json -i source.mkv --json
 mediarecode-cli run --profile profil.json -i source.mkv -o sortie.mkv
-mediarecode-cli batch --profile profil.json --input-dir "Serie" --recursive --output-dir "out" --dry-run
+mediarecode-cli batch --profile profil.json --input-dir "Serie" --recursive --output-dir "out" --auto-tmdb --dry-run
 ```
 
 ## Contrat JSON
@@ -153,6 +154,10 @@ mediarecode-cli run --profile profil.json -i source.mkv -o sortie.mkv
 mediarecode-cli batch --profile profil.json --input-dir "Serie" --recursive --output-dir "out"
 ```
 
+`--profile` accepte soit un chemin complet, soit le nom d'un profil enregistré
+dans `<dossier de config Mediarecode>/profiles/decision/`. L'extension `.json`
+est optionnelle : `--profile BestOfAll` cherchera aussi `BestOfAll.json`.
+
 Keywords de renommage disponibles :
 
 ```text
@@ -170,97 +175,9 @@ Dans les patterns de titre, `variables.codec_names` s'applique à `{codec}` et
 `{codec_name}`. Pour forcer le codec technique brut, utilisez `{codec_raw}`.
 Dans les critères décisionnels, le champ `codec` reste technique.
 
-### `rules` legacy
-
-Le bloc `rules` reste documente ici comme compatibilite historique. Pour les
-nouveaux usages, preferer `decision-profile`.
-
-```json
-{
-  "rules": {
-    "normalize_languages": true,
-    "tracks": {
-      "audio": {
-        "include": true,
-        "languages": ["fr-FR", "en-US"],
-        "flags": {"commentary": false},
-        "rename_pattern": "{LangName} {codec} {channels} {atmos}"
-      },
-      "subtitle": {
-        "include": true,
-        "languages": ["fr-FR"],
-        "rename_pattern": "{LangName} {tag_forced} {tag_malentendant}"
-      }
-    }
-  }
-}
-```
-
-Tokens de pattern :
-
-| Token | Valeur |
-|---|---|
-| `{lang}` / `<lang>` | code langue normalise |
-| `{LangName}` / `<LangName>` | nom lisible de langue |
-| `{codec}` / `<codec>` | codec |
-| `{channels}` / `<channels>` | canaux/layout detecte |
-| `{atmos}` / `<atmos>` | `Atmos`, `DTS:X` ou vide |
-| `{tag_default}` | tag default |
-| `{tag_forced}` | tag forced |
-| `{tag_malentendant}` | tag hearing impaired |
-| `{tag_malvoyant}` | tag visual impaired |
-| `{tag_original}` | tag original |
-| `{tag_commentary}` | tag commentary |
-| `{flags}` | libelle compact des flags |
-| `{title}` / `{source_title}` | titre source |
-| `{type}` | type de piste |
-
-Rules avancees :
-
-```json
-{
-  "rules": {
-    "presets": {
-      "series-fr-en": {
-        "tracks": {
-          "audio": {
-            "languages": ["fr-FR"],
-            "fallback_languages": ["en-US"]
-          }
-        }
-      }
-    },
-    "use_presets": ["series-fr-en"],
-    "tracks": {
-      "audio": {
-        "priority": [
-          {"languages": ["fr-FR"], "codec": "EAC3", "channels": "5.1"},
-          {"languages": ["en-US"]}
-        ],
-        "conditions": {
-          "not": {"flags": {"commentary": true}}
-        },
-        "limit_per_language": 1,
-        "default": "first"
-      }
-    }
-  }
-}
-```
-
-Champs avances v1 :
-
-- `presets` + `use_presets` fusionnent des blocs de rules nommes avant les rules locales;
-- `conditions` accepte `all`, `any`, `not`, `language(s)`, `codec(s)`, `channels`, `flags`, `title_contains`, `atmos`;
-- `priority` trie les pistes d'un même type avant construction de l'ordre de sortie;
-- `fallback_languages` reactive une langue de secours si aucune piste du type n'est retenue;
-- `limit_per_language` garde au plus N pistes activees par langue et par type;
-- `default: "first"` marque la premiere piste activee du type comme default;
-- `default: "first_per_language"` marque la premiere piste activee de chaque langue.
-
 ### `tracks`
 
-Les edits explicites sont appliques apres les rules :
+Les edits explicites modifient une piste ciblee par index ou par sélecteur :
 
 ```json
 {
@@ -335,6 +252,50 @@ TMDB est opt-in. Aucun appel reseau n'est fait si `tmdb` est absent ou faux.
 
 Si `id` ou `tmdb_id` est present, cet ID est utilise. Sinon, le premier resultat de recherche est retenu.
 
+En CLI, `--auto-tmdb` active la recherche TMDB sans modifier le JSON. La
+requête est déduite du nom de fichier, le premier résultat est retenu, et
+Mediarecode détecte automatiquement `S01E02` ou `01x02` pour renseigner saison
+et épisode. `--tmdb` reste disponible comme alias historique.
+
+Options utiles :
+
+| Option | Effet |
+|--------|-------|
+| `--auto-tmdb` | cherche TMDB et applique tags + titre conteneur + cover |
+| `--tmdb-id ID` | utilise un ID TMDB précis au lieu de choisir le premier résultat |
+| `--tmdb-apikey KEY` | surcharge la clé API TMDB (priorité sur la config Mediarecode et le JSON job) |
+| `--no-cover` | applique les tags TMDB mais n'ajoute pas la cover |
+| `--no-attach` | n'inclut aucun attachment source, aucun extra attachment, ni cover TMDB |
+
+Sans `--tmdb-apikey`, la clé est lue dans `~/.config/mediarecode/Mediarecode.conf`
+(`metadata/tmdb_api_key` ou `tmdb_bearer_token`). À défaut, la variable
+d'environnement `MEDIARECODE_TMDB_BEARER_TOKEN` puis un token Bearer embarqué
+servent de repli (parité GUI), donc `--auto-tmdb` fonctionne sans configuration
+préalable.
+
+Exemple batch :
+
+```bash
+mediarecode-cli batch \
+  --template exact-job.json \
+  --input-dir "Serie" \
+  --recursive \
+  --output-dir "out" \
+  --auto-tmdb
+```
+
+Avec un profil décisionnel :
+
+```bash
+mediarecode-cli batch \
+  --profile BestOfAll \
+  --input-dir "Serie" \
+  --recursive \
+  --output-dir "out" \
+  --auto-tmdb \
+  --no-cover
+```
+
 ### `batch`
 
 Le batch fusionne chaque job avec le template :
@@ -389,6 +350,69 @@ Serie/Saison 02/E01.mkv  ->  out/Saison 02/E01.mkv
 `--batch FILE` ne se mélange pas avec `-i/--input` ou `--input-dir` : utilisez
 soit le batch JSON, soit le mode direct.
 
+### `output_template` — composer le nom de sortie
+
+`--output-template` (ou le champ JSON `output_template`) permet de composer le
+nom du fichier de sortie à partir de placeholders alimentés par TMDB et par
+parsing du nom de fichier source. L'option est disponible sur toutes les
+sous-commandes.
+
+```bash
+mediarecode-cli batch \
+  --template exact-job.json \
+  --input-dir "Serie" --recursive --output-dir "out" --auto-tmdb \
+  --output-template "{title}.S{season}E{episode}.{episode_title}.{year}-{group}"
+
+mediarecode-cli batch \
+  --profile BestOfAll --input-dir "Films" --output-dir "out" \
+  --output-template "{source_name}.remux"
+```
+
+Tokens disponibles :
+
+| Token | Source | Exemple |
+|---|---|---|
+| `{source_name}` | nom du fichier source sans extension | `Devil.May.Cry.2025.S01E02.MULTi.1080p.WEB.x264` |
+| `{title}` | titre TMDB (film ou série) | `Devil May Cry` |
+| `{year}` | année TMDB | `2025` |
+| `{episode_title}` | titre d'épisode TMDB | `Pilote` |
+| `{season}` | saison zero-paddée 2 chiffres | `01` |
+| `{episode}` | épisode zero-paddé 2 chiffres | `02` |
+| `{season_num}` | saison brute (int) — combinable `:03d` | `1` |
+| `{episode_num}` | épisode brut (int) | `2` |
+| `{season_episode}` | code combiné style scene | `S01E02` |
+| `{group}` | tag de release extrait du nom source | `RARBG`, `NTb` |
+
+Règles :
+
+- **Priorité** : `--output / -o` explicite > `--output-template` (rendu) > `output` direct (job/JSON).
+- **Texte libre** mélangeable avec les tokens : `"{title}.{year}.texte libre.{group}"`.
+- **Tokens inconnus** rendent une chaîne vide (pas d'erreur).
+- **Extension** : si le template ne se termine pas par une extension vidéo connue
+  (`.mkv`, `.mp4`, `.m4v`, `.mov`, `.avi`, `.webm`, `.mka`, `.m4a`, `.ts`, `.m2ts`),
+  `.mkv` est ajouté automatiquement.
+- **Sanitization** : les caractères interdits filesystem (`/ \ : * ? " < > |`)
+  présents dans les valeurs de tokens sont remplacés par `.`.
+- **Batch + `--output-dir`** : le template est résolu dans `--output-dir`. Si le
+  template ne discrimine pas deux sources (collision de sortie rendue), une erreur
+  explicite est levée et le batch s'arrête (sauf `--continue-on-error`).
+- **Sans TMDB** : `{source_name}` et `{group}` restent utilisables ; les tokens
+  TMDB rendent vide.
+
+Le champ peut également être posé dans le JSON job :
+
+```json
+{
+  "version": 1,
+  "kind": "exact-job",
+  "sources": [{"path": "S01E02.mkv"}],
+  "output_template": "{title}.S{season}E{episode}.{episode_title}-{group}",
+  "tmdb": {"enabled": true}
+}
+```
+
+`--output-template` en ligne de commande surcharge la valeur JSON.
+
 Avec `--summary FILE`, le batch ecrit un rapport JSON final :
 
 ```json
@@ -427,6 +451,21 @@ Exemple `preview --json` :
   "command_text": "ffmpeg \\\n    -hide_banner \\\n    ..."
 }
 ```
+
+## Verbosité
+
+Par défaut, la sortie brute de ffmpeg (lignes `frame=`, `fps=`, `bitrate=`,
+`time=` …) n'est **pas** affichée — seuls les évènements de workflow (début
+d'étape, fin de tâche, erreurs) le sont. Pour suivre la progression ffmpeg en
+direct, ajouter `--verbose` :
+
+```bash
+mediarecode-cli remux -i source.mkv -o sortie.mkv --verbose
+mediarecode-cli batch --template t.json --input-dir Serie --output-dir out --verbose
+```
+
+`--verbose` s'applique à toutes les sous-commandes (`remux`, `run`, `batch`,
+`profile apply`, `profile batch`).
 
 ## Codes retour
 

@@ -10,42 +10,42 @@ from core.config import AppConfig
 from core.inspector import FileInspector
 
 from cli.batch import run_batch
-from cli.constants import EXIT_OK, EXIT_VALIDATION
+from cli.constants import EXIT_ARGS, EXIT_OK, EXIT_VALIDATION
 from cli.errors import CliError
-from cli.hybrid import build_hybrid_payload, is_v2_job, preview_hybrid_job, run_hybrid_job
-from cli.inspection import config_template_from_info, inspect_sources
+from cli.inspection import config_template_from_info
+from cli.jobs import apply_metadata_overrides
 from cli.jobs import load_job
 from cli.json_io import json_default, write_json
 from cli.logging import Logger
 from cli.options import JobOverrides, common_options
 from cli.profile import profile_apply, profile_batch, profile_preview, profile_validate
-from cli.remux_config import apply_explicit_track_edits, build_remux_config, config_to_template
-from cli.rules import apply_track_rules
+from cli.remux_config import build_remux_config, config_to_template
 from cli.runtime import preview_remux_config, run_remux_config, workflow
 from cli.schema import (
     build_cli_json_schema,
     build_cli_json_schema_bundle,
-    build_cli_json_schema_v2,
     build_decision_profile_schema_v1,
     build_exact_job_schema_v1,
 )
-from cli.serializers import serialize_file_info, serialize_remux_config, serialize_track_preview
+from cli.serializers import serialize_file_info, serialize_remux_config
+
+
+def _metadata_job_from_args(args: argparse.Namespace) -> dict:
+    job: dict = {}
+    apply_metadata_overrides(
+        job,
+        auto_tmdb=bool(getattr(args, "auto_tmdb", False)),
+        tmdb=bool(getattr(args, "tmdb", False)),
+        tmdb_id=getattr(args, "tmdb_id", None),
+        tmdb_apikey=str(getattr(args, "tmdb_apikey", "") or ""),
+        no_cover=bool(getattr(args, "no_cover", False)),
+        no_attach=bool(getattr(args, "no_attach", False)),
+    )
+    return job
 
 
 def cmd_inspect(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
     options = common_options(args)
-    if getattr(args, "rules_preview", False):
-        job = load_job(JobOverrides.from_namespace(args))
-        _sources, infos, tracks = inspect_sources(job, config, options, logger, cli_inputs=args.input)
-        tracks = apply_track_rules(tracks, job.get("rules", {}))
-        apply_explicit_track_edits(job, tracks)
-        payload = {
-            "files": [serialize_file_info(info) for info in infos],
-            "rules_preview": [serialize_track_preview(track) for track in tracks],
-        }
-        print(json.dumps(payload, ensure_ascii=False, indent=2, default=json_default))
-        return EXIT_OK
-
     ffprobe = options.ffprobe or config.tool_ffprobe
     mediainfo = options.mediainfo or config.tool_mediainfo
     inspector = FileInspector(ffprobe_bin=str(ffprobe), mediainfo_bin=str(mediainfo))
@@ -60,9 +60,7 @@ def cmd_inspect(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
 
 def cmd_schema(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
     version = str(getattr(args, "schema_version", "1") or "1")
-    if version == "2":
-        payload = build_cli_json_schema_v2()
-    elif version == "exact-job":
+    if version == "exact-job":
         payload = build_exact_job_schema_v1()
     elif version == "decision-profile":
         payload = build_decision_profile_schema_v1()
@@ -85,7 +83,7 @@ def cmd_validate(args: argparse.Namespace, config: AppConfig, logger: Logger) ->
         if getattr(args, "config", None):
             raise CliError("`--profile` ne se combine pas avec `--config`.", EXIT_VALIDATION)
         if not getattr(args, "input", None):
-            rc = profile_validate(profile_path, json_output=bool(getattr(args, "json_output", False)))
+            rc = profile_validate(profile_path, json_output=bool(getattr(args, "json_output", False)), config=config)
             if rc == EXIT_OK and not getattr(args, "json_output", False):
                 logger.emit("info", "Profil décisionnel valide.")
             return rc
@@ -98,29 +96,9 @@ def cmd_validate(args: argparse.Namespace, config: AppConfig, logger: Logger) ->
             options=options,
             logger=logger,
             include_command=False,
+            metadata_job=_metadata_job_from_args(args),
         )
     job = load_job(JobOverrides.from_namespace(args))
-    if is_v2_job(job):
-        try:
-            payload, _remux_config, _encode_config, _use_encode = build_hybrid_payload(job, config, options, logger)
-        except CliError as exc:
-            if getattr(args, "json_output", False) and exc.exit_code == EXIT_VALIDATION:
-                try:
-                    payload = json.loads(str(exc))
-                except json.JSONDecodeError:
-                    raise
-                print(json.dumps(payload, ensure_ascii=False, indent=2, default=json_default))
-                return EXIT_VALIDATION
-            raise
-        if getattr(args, "json_output", False):
-            print(json.dumps(payload, ensure_ascii=False, indent=2, default=json_default))
-            return EXIT_OK if payload["valid"] else EXIT_VALIDATION
-        if payload["errors"]:
-            for error in payload["errors"]:
-                logger.emit("error", error)
-            return EXIT_VALIDATION
-        logger.emit("info", "Configuration hybride valide.")
-        return EXIT_OK
     remux_config = build_remux_config(job, config, options, logger)
     errors = workflow(config, options, logger).validate(remux_config)
     if getattr(args, "json_output", False):
@@ -153,35 +131,9 @@ def cmd_preview(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
             config=config,
             options=options,
             logger=logger,
+            metadata_job=_metadata_job_from_args(args),
         )
     job = load_job(JobOverrides.from_namespace(args))
-    if is_v2_job(job):
-        try:
-            payload, _remux_config, _encode_config, _use_encode = build_hybrid_payload(
-                job,
-                config,
-                options,
-                logger,
-                include_command=True,
-            )
-        except CliError as exc:
-            if getattr(args, "json_output", False) and exc.exit_code == EXIT_VALIDATION:
-                try:
-                    payload = json.loads(str(exc))
-                except json.JSONDecodeError:
-                    raise
-                print(json.dumps(payload, ensure_ascii=False, indent=2, default=json_default))
-                return EXIT_VALIDATION
-            raise
-        if getattr(args, "json_output", False):
-            print(json.dumps(payload, ensure_ascii=False, indent=2, default=json_default))
-            return EXIT_OK if payload["valid"] else EXIT_VALIDATION
-        if payload["errors"]:
-            for error in payload["errors"]:
-                logger.emit("error", error)
-            return EXIT_VALIDATION
-        print(payload.get("command_text", ""))
-        return EXIT_OK
     remux_config = build_remux_config(job, config, options, logger)
     wf = workflow(config, options, logger)
     errors = wf.validate(remux_config)
@@ -220,12 +172,9 @@ def cmd_remux(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
             config=config,
             options=options,
             logger=logger,
+            metadata_job=_metadata_job_from_args(args),
         )
     job = load_job(JobOverrides.from_namespace(args))
-    if is_v2_job(job):
-        if getattr(args, "dry_run", False):
-            return preview_hybrid_job(config, options, logger, job)
-        return run_hybrid_job(config, options, logger, job, force=bool(args.force))
     if args.save:
         write_json(Path(args.save).expanduser(), config_to_template(job))
         logger.emit("info", f"Template sauvegardé : {args.save}")
@@ -252,6 +201,13 @@ def cmd_batch(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
             force=bool(args.force),
             continue_on_error=bool(args.continue_on_error),
             summary_path=args.summary,
+            auto_tmdb=bool(getattr(args, "auto_tmdb", False)),
+            tmdb=bool(getattr(args, "tmdb", False)),
+            tmdb_id=getattr(args, "tmdb_id", None),
+            tmdb_apikey=str(getattr(args, "tmdb_apikey", "") or ""),
+            output_template=str(getattr(args, "output_template", "") or ""),
+            no_cover=bool(getattr(args, "no_cover", False)),
+            no_attach=bool(getattr(args, "no_attach", False)),
             config=config,
             options=common_options(args),
             logger=logger,
@@ -271,6 +227,13 @@ def cmd_batch(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
         force=bool(args.force),
         continue_on_error=bool(args.continue_on_error),
         summary_path=args.summary,
+        auto_tmdb=bool(getattr(args, "auto_tmdb", False)),
+        tmdb=bool(getattr(args, "tmdb", False)),
+        tmdb_id=getattr(args, "tmdb_id", None),
+        tmdb_apikey=str(getattr(args, "tmdb_apikey", "") or ""),
+        output_template=str(getattr(args, "output_template", "") or ""),
+        no_cover=bool(getattr(args, "no_cover", False)),
+        no_attach=bool(getattr(args, "no_attach", False)),
         config=config,
         options=common_options(args),
         logger=logger,
@@ -280,7 +243,7 @@ def cmd_batch(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
 def cmd_profile(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
     command = str(getattr(args, "profile_command", "") or "")
     if command == "validate":
-        rc = profile_validate(args.profile, json_output=bool(getattr(args, "json_output", False)))
+        rc = profile_validate(args.profile, json_output=bool(getattr(args, "json_output", False)), config=config)
         if rc == EXIT_OK and not getattr(args, "json_output", False):
             logger.emit("info", "Profil décisionnel valide.")
         return rc
@@ -293,6 +256,7 @@ def cmd_profile(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
             config=config,
             options=common_options(args),
             logger=logger,
+            metadata_job=_metadata_job_from_args(args),
         )
     if command == "apply":
         return profile_apply(
@@ -304,6 +268,7 @@ def cmd_profile(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
             config=config,
             options=common_options(args),
             logger=logger,
+            metadata_job=_metadata_job_from_args(args),
         )
     if command == "batch":
         return profile_batch(
@@ -318,6 +283,13 @@ def cmd_profile(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
             force=bool(args.force),
             continue_on_error=bool(args.continue_on_error),
             summary_path=args.summary,
+            auto_tmdb=bool(getattr(args, "auto_tmdb", False)),
+            tmdb=bool(getattr(args, "tmdb", False)),
+            tmdb_id=getattr(args, "tmdb_id", None),
+            tmdb_apikey=str(getattr(args, "tmdb_apikey", "") or ""),
+            output_template=str(getattr(args, "output_template", "") or ""),
+            no_cover=bool(getattr(args, "no_cover", False)),
+            no_attach=bool(getattr(args, "no_attach", False)),
             config=config,
             options=common_options(args),
             logger=logger,
@@ -340,12 +312,9 @@ def cmd_run(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
             config=config,
             options=options,
             logger=logger,
+            metadata_job=_metadata_job_from_args(args),
         )
     job = load_job(JobOverrides.from_namespace(args))
-    if is_v2_job(job):
-        if getattr(args, "dry_run", False):
-            return preview_hybrid_job(config, options, logger, job)
-        return run_hybrid_job(config, options, logger, job, force=bool(args.force))
     remux_config = build_remux_config(job, config, options, logger)
     if getattr(args, "dry_run", False):
         return preview_remux_config(config, options, logger, remux_config)

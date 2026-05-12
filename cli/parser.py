@@ -14,8 +14,32 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--mediainfo", help="Chemin mediainfo override.")
     parser.add_argument("--work-dir", help="Répertoire de travail override.")
     parser.add_argument("--threads", type=int, help="Nombre de threads ffmpeg.")
+    parser.add_argument(
+        "--output-template",
+        dest="output_template",
+        default="",
+        help=(
+            "Template du nom de sortie. Placeholders disponibles : "
+            "{source_name},{title},{year},{season},{episode},{episode_title},"
+            "{season_episode},{group} (+ {season_num},{episode_num} pour formats "
+            "numériques). Extension .mkv ajoutée si absente."
+        ),
+    )
     parser.add_argument("--log-format", choices=("text", "jsonl"), default="text")
-    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Affiche la sortie ffmpeg en direct (progression, codecs, timing). Par défaut, seule la progression des étapes de workflow est affichée.",
+    )
+
+
+def _add_tmdb_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--auto-tmdb", action="store_true", help="Chercher TMDB automatiquement et prendre le premier résultat.")
+    parser.add_argument("--tmdb", action="store_true", help="Alias historique de --auto-tmdb.")
+    parser.add_argument("--tmdb-id", type=int, help="ID TMDB explicite.")
+    parser.add_argument("--tmdb-apikey", dest="tmdb_apikey", default="", help="Clé API TMDB v3 (surcharge la config mediarecode et le JSON job).")
+    parser.add_argument("--no-cover", action="store_true", help="Ne pas ajouter la cover TMDB.")
+    parser.add_argument("--no-attach", action="store_true", help="Ne pas inclure d'attachments ni de cover TMDB.")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -26,13 +50,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_options(inspect)
     inspect.add_argument("input", nargs="+")
     inspect.add_argument("--config-template", action="store_true")
-    inspect.add_argument("--rules-preview", action="store_true", help="Afficher les pistes après application des rules.")
     inspect.add_argument("--output")
     inspect.set_defaults(func=cmd_inspect)
 
     schema = sub.add_parser("schema", help="Afficher le schéma JSON du contrat CLI.")
     schema.add_argument("--output", help="Ecrire le schéma JSON dans un fichier.")
-    schema.add_argument("--version", dest="schema_version", choices=("1", "2", "exact-job", "decision-profile", "all"), default="1")
+    schema.add_argument("--version", dest="schema_version", choices=("1", "exact-job", "decision-profile", "all"), default="1")
     schema.add_argument("--log-format", choices=("text", "jsonl"), default="text")
     schema.set_defaults(func=cmd_schema)
 
@@ -40,16 +63,14 @@ def build_parser() -> argparse.ArgumentParser:
         ("validate", "Valider une config remux.", cmd_validate),
         ("preview", "Afficher la commande ffmpeg prévue.", cmd_preview),
         ("remux", "Exécuter un remux.", cmd_remux),
-        ("run", "Exécuter un job remux ou hybride.", cmd_run),
+        ("run", "Exécuter un job remux.", cmd_run),
     ):
         p = sub.add_parser(name, help=help_text)
         _add_common_options(p)
         p.add_argument("--profile", help="Profil décisionnel à appliquer aux entrées.")
         p.add_argument("-i", "--input", action="append")
         p.add_argument("-o", "--output")
-        p.add_argument("--languages", help="Langues audio/sous-titres autorisées, séparées par virgules.")
-        p.add_argument("--tmdb", action="store_true", help="Activer TMDB; premier résultat si pas d'ID.")
-        p.add_argument("--tmdb-id", type=int, help="ID TMDB explicite.")
+        _add_tmdb_options(p)
         p.add_argument("--force", action="store_true", help="Autoriser l'écrasement de la sortie.")
         p.add_argument("--dry-run", action="store_true", help="Valider et afficher la commande sans exécuter.")
         p.add_argument("--nfo", dest="nfo", action="store_true", default=None)
@@ -72,6 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch.add_argument("--include", action="append", help="Glob de fichiers à inclure lors du scan de dossiers; répétable.")
     batch.add_argument("--exclude", action="append", help="Glob de fichiers à exclure lors du scan de dossiers; répétable.")
     batch.add_argument("--output-dir")
+    _add_tmdb_options(batch)
     batch.add_argument("--force", action="store_true")
     batch.add_argument("--dry-run", action="store_true", help="Valider et afficher les commandes sans exécuter.")
     batch.add_argument("--continue-on-error", action="store_true")
@@ -95,6 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
     profile_preview.add_argument("--profile", required=True)
     profile_preview.add_argument("-i", "--input", action="append", required=True)
     profile_preview.add_argument("-o", "--output")
+    _add_tmdb_options(profile_preview)
     profile_preview.add_argument("--json", dest="json_output", action="store_true")
     profile_preview.set_defaults(func=cmd_profile)
 
@@ -103,6 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
     profile_apply.add_argument("--profile", required=True)
     profile_apply.add_argument("-i", "--input", action="append", required=True)
     profile_apply.add_argument("-o", "--output", required=True)
+    _add_tmdb_options(profile_apply)
     profile_apply.add_argument("--force", action="store_true")
     profile_apply.add_argument("--dry-run", action="store_true")
     profile_apply.set_defaults(func=cmd_profile)
@@ -116,6 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
     profile_batch.add_argument("--include", action="append")
     profile_batch.add_argument("--exclude", action="append")
     profile_batch.add_argument("--output-dir", required=True)
+    _add_tmdb_options(profile_batch)
     profile_batch.add_argument("--dry-run", action="store_true")
     profile_batch.add_argument("--force", action="store_true")
     profile_batch.add_argument("--continue-on-error", action="store_true")

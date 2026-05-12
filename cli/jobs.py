@@ -6,8 +6,61 @@ from pathlib import Path
 from typing import Any
 
 from cli.contract import validate_job_contract
-from cli.json_io import csv_values, deep_merge, load_json
+from cli.json_io import deep_merge, load_json
 from cli.options import JobOverrides
+
+
+def _tmdb_block(job: dict[str, Any]) -> dict[str, Any]:
+    raw_tmdb = job.get("tmdb", {})
+    tmdb: dict[str, Any] = raw_tmdb if isinstance(raw_tmdb, dict) else {"enabled": True}
+    job["tmdb"] = tmdb
+    return tmdb
+
+
+def _disable_source_attachments(job: dict[str, Any]) -> None:
+    raw_sources = job.get("sources")
+    if isinstance(raw_sources, (str, Path)):
+        job["sources"] = [{"path": str(raw_sources), "attachments": "none"}]
+        return
+    if not isinstance(raw_sources, list):
+        return
+    sources: list[dict[str, Any]] = []
+    for source in raw_sources:
+        item = dict(source) if isinstance(source, dict) else {"path": str(source)}
+        item["attachments"] = "none"
+        sources.append(item)
+    job["sources"] = sources
+
+
+def apply_metadata_overrides(
+    job: dict[str, Any],
+    *,
+    auto_tmdb: bool = False,
+    tmdb: bool = False,
+    tmdb_id: int | None = None,
+    tmdb_apikey: str = "",
+    no_cover: bool = False,
+    no_attach: bool = False,
+) -> None:
+    apikey = (tmdb_apikey or "").strip()
+    if auto_tmdb or tmdb or tmdb_id is not None or apikey:
+        tmdb_block = _tmdb_block(job)
+        tmdb_block["enabled"] = True
+        if tmdb_id is not None:
+            tmdb_block["id"] = tmdb_id
+        if apikey:
+            tmdb_block["api_key"] = apikey
+    elif no_cover or no_attach:
+        raw_tmdb = job.get("tmdb")
+        tmdb_block = raw_tmdb if isinstance(raw_tmdb, dict) else (_tmdb_block(job) if raw_tmdb else None)
+    else:
+        tmdb_block = None
+
+    if (no_cover or no_attach) and tmdb_block is not None:
+        tmdb_block["cover"] = False
+    if no_attach:
+        _disable_source_attachments(job)
+        job["extra_attachments"] = []
 
 
 def load_job(overrides: JobOverrides) -> dict[str, Any]:
@@ -27,20 +80,16 @@ def load_job(overrides: JobOverrides) -> dict[str, Any]:
         job["sources"] = [{"path": item} for item in overrides.input]
     if overrides.output:
         job["output"] = overrides.output
-    if overrides.languages:
-        langs = csv_values(overrides.languages)
-        job.setdefault("rules", {}).setdefault("tracks", {}).setdefault("audio", {})["languages"] = langs
-        job.setdefault("rules", {}).setdefault("tracks", {}).setdefault("subtitle", {})["languages"] = langs
-    if overrides.tmdb:
-        raw_tmdb = job.get("tmdb", {})
-        tmdb: dict[str, Any] = raw_tmdb if isinstance(raw_tmdb, dict) else {"enabled": True}
-        job["tmdb"] = tmdb
-        tmdb["enabled"] = True
-    if overrides.tmdb_id is not None:
-        raw_tmdb = job.get("tmdb", {})
-        tmdb = raw_tmdb if isinstance(raw_tmdb, dict) else {"enabled": True}
-        job["tmdb"] = tmdb
-        tmdb["enabled"] = True
-        tmdb["id"] = overrides.tmdb_id
+    if overrides.output_template:
+        job["output_template"] = overrides.output_template
+    apply_metadata_overrides(
+        job,
+        auto_tmdb=overrides.auto_tmdb,
+        tmdb=overrides.tmdb,
+        tmdb_id=overrides.tmdb_id,
+        tmdb_apikey=overrides.tmdb_apikey,
+        no_cover=overrides.no_cover,
+        no_attach=overrides.no_attach,
+    )
     validate_job_contract(job, require_version=require_version)
     return job

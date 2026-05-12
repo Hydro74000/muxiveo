@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -17,7 +18,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _run_cli(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _run_cli(root: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             sys.executable,
@@ -31,6 +32,7 @@ def _run_cli(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
             "/bin/false",
         ],
         cwd=root,
+        env=env,
         capture_output=True,
         text=True,
         check=False,
@@ -47,12 +49,6 @@ def test_cli_inspect_validate_preview_on_synthetic_media(tmp_path: Path) -> None
     assert inspect.returncode == 0, inspect.stderr
     payload = json.loads(inspect.stdout)
     assert payload["files"][0]["tracks"]
-
-    rules_preview = _run_cli(root, "inspect", str(src), "--rules-preview")
-    assert rules_preview.returncode == 0, rules_preview.stderr
-    preview_payload = json.loads(rules_preview.stdout)
-    assert preview_payload["rules_preview"]
-    assert all(isinstance(track["enabled"], bool) for track in preview_payload["rules_preview"])
 
     config = tmp_path / "job.json"
     config.write_text(
@@ -91,7 +87,7 @@ def test_cli_remux_dry_run_refuses_invalid_json_before_inspection(tmp_path: Path
                 "version": 1,
                 "sources": [{"path": str(tmp_path / "missing.mkv")}],
                 "output": str(tmp_path / "out.mkv"),
-                "rules": {"tracks": {"audio": {"languages": ["fr-FR", 7]}}},
+                "tracks": "invalid",
             }
         ),
         encoding="utf-8",
@@ -99,7 +95,7 @@ def test_cli_remux_dry_run_refuses_invalid_json_before_inspection(tmp_path: Path
 
     result = _run_cli(root, "remux", "--config", str(config), "--dry-run")
     assert result.returncode == 2
-    assert "rules.tracks.audio.languages[1]" in result.stderr
+    assert "tracks" in result.stderr
 
 
 def test_cli_schema_outputs_and_writes_json(tmp_path: Path) -> None:
@@ -177,6 +173,30 @@ def test_cli_profile_preview_on_synthetic_media(tmp_path: Path) -> None:
     assert any(track["type"] == "audio" and track["title"] for track in payload["tracks"])
 
 
+def test_cli_profile_argument_falls_back_to_user_profile_dir_without_json_suffix(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    xdg_home = tmp_path / "xdg"
+    profile_dir = xdg_home / "mediarecode" / "profiles" / "decision"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "SavedProfile.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "kind": "decision-profile",
+                "name": "SavedProfile",
+                "rules": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    env = {**os.environ, "XDG_CONFIG_HOME": str(xdg_home)}
+
+    result = _run_cli(root, "validate", "--profile", "SavedProfile", "--json", env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["name"] == "SavedProfile"
+
+
 def test_cli_batch_dry_run_jsonl_reports_job_status(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     src = tmp_path / "source.mkv"
@@ -186,7 +206,7 @@ def test_cli_batch_dry_run_jsonl_reports_job_status(tmp_path: Path) -> None:
 
     template = tmp_path / "template.json"
     template.write_text(
-        json.dumps({"version": 1, "rules": {"normalize_languages": True}}),
+        json.dumps({"version": 1}),
         encoding="utf-8",
     )
     batch = tmp_path / "batch.json"
@@ -235,7 +255,7 @@ def test_cli_batch_input_dir_dry_run_preserves_relative_outputs(tmp_path: Path) 
 
     template = tmp_path / "template.json"
     template.write_text(
-        json.dumps({"version": 1, "rules": {"normalize_languages": True}}),
+        json.dumps({"version": 1}),
         encoding="utf-8",
     )
 
@@ -270,7 +290,7 @@ def test_cli_batch_input_dir_dry_run_preserves_relative_outputs(tmp_path: Path) 
     ]
 
 
-def test_cli_batch_input_dir_supports_hybrid_v2_template(tmp_path: Path) -> None:
+def test_cli_batch_input_dir_supports_exact_job_template(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     input_root = tmp_path / "in"
     input_root.mkdir()
@@ -278,12 +298,12 @@ def test_cli_batch_input_dir_supports_hybrid_v2_template(tmp_path: Path) -> None
     out_root = tmp_path / "out"
     make_av_container(src, duration=0.3)
 
-    template = tmp_path / "template-v2.json"
+    template = tmp_path / "exact-job.json"
     template.write_text(
         json.dumps(
             {
-                "version": 2,
-                "kind": "exact-template",
+                "version": 1,
+                "kind": "exact-job",
                 "track_order": [
                     {"selector": {"source": 0, "type": "video", "position": 0}},
                     {"selector": {"source": 0, "type": "audio", "position": 0}},
@@ -334,18 +354,18 @@ def test_cli_preview_respects_multisource_explicit_track_order(tmp_path: Path) -
     assert result.stdout.index("-map 1:0") < result.stdout.index("-map 0:1")
 
 
-def test_cli_hybrid_v2_preview_resolves_track_selectors(tmp_path: Path) -> None:
+def test_cli_exact_job_preview_resolves_track_selectors(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     src = tmp_path / "source.mkv"
-    out = tmp_path / "hybrid.mkv"
+    out = tmp_path / "exact.mkv"
     make_av_container(src, duration=0.3)
 
-    config = tmp_path / "hybrid-v2.json"
+    config = tmp_path / "exact-job.json"
     config.write_text(
         json.dumps(
             {
-                "version": 2,
-                "kind": "exact-template",
+                "version": 1,
+                "kind": "exact-job",
                 "sources": [{"path": str(src)}],
                 "output": str(out),
                 "tracks": [
@@ -368,7 +388,6 @@ def test_cli_hybrid_v2_preview_resolves_track_selectors(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["valid"] is True
-    assert payload["mode"] == "remux"
     assert [(item["source"], item["id"]) for item in payload["track_order"]] == [(0, 0), (0, 1)]
     assert "-metadata:s:a:0 language=fr-FR" in payload["command_text"]
 
