@@ -4,7 +4,7 @@ FULL Vibecoded App for Proof of Concept - no human code, only human prompts and 
 
 Interface graphique pour préparer des fichiers vidéo, remuxer sans perte, réencoder avec `ffmpeg` (et `NVencC` en option pour NVidia), et fusionner des métadonnées Dolby Vision / HDR10+.
 
-Cette documentation correspond à **Mediarecode v2.2.0**.
+Cette documentation correspond à **Mediarecode v3.0.0**.
 
 ## Sommaire
 
@@ -14,9 +14,6 @@ Cette documentation correspond à **Mediarecode v2.2.0**.
   - [Cloner le dépôt](#cloner-le-dépôt)
   - [Installer les dépendances et les outils](#installer-les-dépendances-et-les-outils)
   - [Lancer l'application](#lancer-lapplication)
-- [Windows - Version .exe uniquement](#windows---version-exe-uniquement)
-  - [Windows Security / Controlled Folder Access](#windows-security--controlled-folder-access)
-- [Distribution](#distribution)
 - [Interface et usage](#interface-et-usage)
   - [Tableau de bord](#tableau-de-bord)
   - [Conteneur & Encodage](#conteneur--encodage)
@@ -37,6 +34,8 @@ Cette documentation correspond à **Mediarecode v2.2.0**.
   - [Fusion DoVi / HDR10+](#fusion-dovi--hdr10-1)
   - [Inspection d'un fichier (ffprobe + mediainfo)](#inspection-dun-fichier-ffprobe--mediainfo)
 - [Outils externes](#outils-externes)
+- [Troubleshooting windows](#troubleshooting-windows)
+  - [Windows Security / Controlled Folder Access](#windows-security--controlled-folder-access)
 
 ## Vue rapide
 
@@ -131,91 +130,6 @@ brew install mediarecode
 ```
 
 Sur Linux, la formule installe l’AppImage all-inclusive. Sur macOS, elle installe `Mediarecode.app`, déclare `ffmpeg` et `mediainfo` comme dépendances Homebrew, et embarque `dovi_tool` / `hdr10plus_tool`.
-
-## Windows - Version .exe uniquement
-
-Cette notice ne concerne que les lancement depuis Mediarecode.exe
-
-Le lancement via python (py main.py) n'est pas concerné.
-
-### Windows Security / Controlled Folder Access
-
-Sous Windows, les bibliothèques utilisateur comme **Videos**, **Documents**, **Pictures** et dossiers similaires peuvent être protégées par **Windows Security** via **Controlled Folder Access**.
-
-Quand cette protection est active, Mediarecode peut être empêché d'écrire directement dans ces dossiers, même si :
-
-- le dossier existe ;
-- vous pouvez y accéder manuellement depuis l'Explorateur ;
-- le chemin affiché dans l'application est correct.
-
-Symptômes fréquents :
-
-- popup **Sécurité Windows** indiquant que `mediarecode.exe` ou un outil comme `ffmpeg.exe` a été bloqué ;
-- erreur `No such file or directory` lors d'un export vers `Videos` ou `Documents` ;
-- succès de l'export vers un autre dossier non protégé, comme `Desktop` ou `%TEMP%`.
-
-Au premier setup Windows, Mediarecode peut proposer d'ajouter ses exécutables à l'allowlist de Windows Security afin de pouvoir enregistrer directement dans ces bibliothèques protégées. Cette exception concerne l'application elle-même et `ffmpeg`, l'outil qui écrit effectivement les fichiers de sortie.
-
-Sans cette exception, les exports directs vers **Videos**, **Documents**, **Pictures**, etc. peuvent rester bloqués.
-
-Si vous refusez l'exception ou si vous devez la configurer manuellement :
-
-1. Ouvrez **Sécurité Windows**.
-2. Allez dans **Protection contre les virus et menaces**.
-3. Ouvrez **Protection contre les ransomwares** puis **Gérer la protection contre les ransomwares**.
-4. Entrez dans **Autoriser une application via l'accès contrôlé aux dossiers**.
-5. Ajoutez `mediarecode.exe`.
-6. Si nécessaire, ajoutez aussi `ffmpeg.exe`.
-
-Après ajout à l'allowlist, redémarrez Mediarecode avant de retester un export vers `Videos` ou `Documents`.
-
-## Distribution
-
-L'application peut également être distribuée sous forme de binaire autonome via `package.py`.
-
-Les artefacts sont toujours déposés dans `dist/releases/`.
-
-| Cible | Commande | Artefact produit |
-|-------|----------|-----------------|
-| AppImage Linux | `python3 package.py --allinc` | `dist/releases/Mediarecode-x86_64.AppImage` + `dist/releases/Mediarecode-x86_64.AppImage.zsync` |
-| Package macOS natif | `python3 package.py --dmg` | `Mediarecode.app` + `dist/releases/Mediarecode-<version>.dmg` |
-| Release Homebrew Linux/macOS | workflow `Release Homebrew packages` | AppImage Linux all-inclusive + archive macOS + `mediarecode.rb` |
-| Package Windows (natif + MSIX) | `py package.py --msix` | `dist/releases/Mediarecode.msix` |
-| Soumission Microsoft Store | `py package.py --msix --msixupload --store-config packaging/msix_store.json` | `dist/releases/Mediarecode.msixupload` |
-| Installateur Windows cross (depuis Linux) | `python3 package.py --windows` | `dist/releases/Mediarecode-Setup.exe` via Wine + NSIS |
-
-`--allinc` est requis sur Linux : il intègre toutes les dépendances dans l'AppImage et génère le fichier `.zsync` associé pour les mises à jour différentielles.
-
-Le workflow GitHub Windows de release publie désormais l’installateur **NSIS** (`.exe`) dans les releases GitHub.
-
-Le workflow `Build Windows Store upload` est séparé, manuel, et ne publie rien dans les releases. Il sert uniquement à produire un **`.msixupload`** pour Partner Center.
-
-Pour une vraie soumission Microsoft Store, il faut renseigner l’identité exacte réservée dans Partner Center :
-
-- copier `packaging/msix_store.example.json` vers `packaging/msix_store.json`
-- remplacer `identity` et `publisher` par les valeurs de la page **Product identity** dans Partner Center
-- sur GitHub Actions, exposer ces mêmes valeurs via `WINDOWS_MSIX_IDENTITY`, `WINDOWS_MSIX_PUBLISHER`, `WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME` et `WINDOWS_MSIX_DESCRIPTION`
-
-Le dépôt peut générer l’artefact de soumission, mais il ne peut pas inventer à ta place les valeurs Partner Center ni les captures/listings Store.
-
-Important : le workflow Store upload reste distinct du workflow release. Les releases GitHub ne contiennent donc plus de MSIX.
-
-Si `makeappx.exe` ou `signtool.exe` sont absents, le build Windows tente d’installer le SDK requis avant de packager. Un override explicite reste possible via `MEDIARECODE_WINDOWS_SDK_INSTALLER` ou `MEDIARECODE_WINDOWS_SDK_WINGET_ID`.
-
-Sous Windows packagé, le lancement de l’application rejoue automatiquement `setup.py` au premier démarrage après installation ou mise à jour, afin de réinstaller les dépendances externes manquantes et de régénérer les chemins dans `config.ini`.
-
-Options utiles de `package.py` :
-
-| Option | Effet |
-|--------|-------|
-| `--allinc` | intègre toutes les dépendances dans l'AppImage et génère le `.zsync` (Linux) |
-| `--dmg` | sur macOS natif, produit un `.dmg` distribuable depuis `Mediarecode.app` |
-| `--msix` | produit un package MSIX sur Windows natif, signé si les variables `MEDIARECODE_MSIX_*` sont définies |
-| `--msixupload` | génère un `.msixupload` pour Partner Center à partir du package MSIX |
-| `--store-config PATH` | charge les métadonnées Store/MSIX depuis un JSON dédié |
-| `--windows` | cross-compile un installateur Windows depuis Linux via Wine + NSIS |
-| `--skip-wine` | réutilise `dist/mediarecode-win/` existant (saute l'étape Wine/PyInstaller) |
-| `--clean` | nettoie tous les artefacts de build (`build/`, `dist/`, `.wine_build/`, `*.AppImage`…) |
 
 ## Interface et usage
 
@@ -908,6 +822,43 @@ Dans les artefacts packages, l'entree CLI route vers le même bundle que l'appli
 | `hdr10plus_tool` | extraction et injection HDR10+ |
 | `nvidia-smi` | fallback de détection NVENC sous Linux |
 
+## Troubleshooting windows
+
+Cette notice ne concerne que les lancement depuis Mediarecode.exe
+
+Le lancement via python (py main.py) n'est pas concerné.
+
+### Windows Security / Controlled Folder Access
+
+Sous Windows, les bibliothèques utilisateur comme **Videos**, **Documents**, **Pictures** et dossiers similaires peuvent être protégées par **Windows Security** via **Controlled Folder Access**.
+
+Quand cette protection est active, Mediarecode peut être empêché d'écrire directement dans ces dossiers, même si :
+
+- le dossier existe ;
+- vous pouvez y accéder manuellement depuis l'Explorateur ;
+- le chemin affiché dans l'application est correct.
+
+Symptômes fréquents :
+
+- popup **Sécurité Windows** indiquant que `mediarecode.exe` ou un outil comme `ffmpeg.exe` a été bloqué ;
+- erreur `No such file or directory` lors d'un export vers `Videos` ou `Documents` ;
+- succès de l'export vers un autre dossier non protégé, comme `Desktop` ou `%TEMP%`.
+
+Au premier setup Windows, Mediarecode peut proposer d'ajouter ses exécutables à l'allowlist de Windows Security afin de pouvoir enregistrer directement dans ces bibliothèques protégées. Cette exception concerne l'application elle-même et `ffmpeg`, l'outil qui écrit effectivement les fichiers de sortie.
+
+Sans cette exception, les exports directs vers **Videos**, **Documents**, **Pictures**, etc. peuvent rester bloqués.
+
+Si vous refusez l'exception ou si vous devez la configurer manuellement :
+
+1. Ouvrez **Sécurité Windows**.
+2. Allez dans **Protection contre les virus et menaces**.
+3. Ouvrez **Protection contre les ransomwares** puis **Gérer la protection contre les ransomwares**.
+4. Entrez dans **Autoriser une application via l'accès contrôlé aux dossiers**.
+5. Ajoutez `mediarecode.exe`.
+6. Si nécessaire, ajoutez aussi `ffmpeg.exe`.
+
+Après ajout à l'allowlist, redémarrez Mediarecode avant de retester un export vers `Videos` ou `Documents`.
+
 ---
 
-*Mediarecode v2.2.0*
+*Mediarecode v3.0.0*
