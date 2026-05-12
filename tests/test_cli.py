@@ -62,6 +62,12 @@ def test_cli_parser_exposes_expected_subcommands() -> None:
     args = parser.parse_args(["run", "--config", "job.json", "--dry-run"])
     assert args.command == "run"
     assert args.dry_run is True
+    args = parser.parse_args(["preview", "--profile", "p.json", "-i", "a.mkv", "--json"])
+    assert args.command == "preview"
+    assert args.profile == "p.json"
+    args = parser.parse_args(["batch", "--profile", "p.json", "--input-dir", "season", "--output-dir", "out"])
+    assert args.command == "batch"
+    assert args.profile == "p.json"
     args = parser.parse_args(["profile", "preview", "--profile", "p.json", "-i", "a.mkv", "--json"])
     assert args.command == "profile"
     assert args.profile_command == "preview"

@@ -67,6 +67,7 @@ DECISION_KEYWORDS = (
     "title",
     "source_title",
     "codec",
+    "codec_raw",
     "codec_name",
     "channels",
     "channel_layout",
@@ -102,6 +103,7 @@ _FIELD_WEIGHTS = {
     "language": 18,
     "lang": 18,
     "codec": 8,
+    "codec_raw": 8,
     "codec_name": 8,
     "channels": 8,
     "channel_layout": 8,
@@ -542,6 +544,7 @@ def _track_field_values(
         "title": track.title,
         "source_title": track.orig_title or track.title,
         "codec": codec,
+        "codec_raw": codec,
         "codec_name": _codec_name(codec, variables),
         "channels": channels,
         "channel_layout": channels,
@@ -612,6 +615,8 @@ def render_title_pattern(
 
     def repl(match: re.Match[str]) -> str:
         key = match.group(1).strip()
+        if key == "codec":
+            return _codec_name(values.get("codec_raw") or values.get("codec"), variables)
         value = values.get(key, "")
         if isinstance(value, bool):
             return key.removeprefix("flag_").replace("_", " ").title() if value else ""

@@ -80,6 +80,25 @@ def cmd_schema(args: argparse.Namespace, config: AppConfig, logger: Logger) -> i
 
 def cmd_validate(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
     options = common_options(args)
+    profile_path = str(getattr(args, "profile", "") or "")
+    if profile_path:
+        if getattr(args, "config", None):
+            raise CliError("`--profile` ne se combine pas avec `--config`.", EXIT_VALIDATION)
+        if not getattr(args, "input", None):
+            rc = profile_validate(profile_path, json_output=bool(getattr(args, "json_output", False)))
+            if rc == EXIT_OK and not getattr(args, "json_output", False):
+                logger.emit("info", "Profil décisionnel valide.")
+            return rc
+        return profile_preview(
+            profile_path,
+            inputs=args.input or [],
+            output=args.output,
+            json_output=bool(getattr(args, "json_output", False)),
+            config=config,
+            options=options,
+            logger=logger,
+            include_command=False,
+        )
     job = load_job(JobOverrides.from_namespace(args))
     if is_v2_job(job):
         try:
@@ -122,6 +141,19 @@ def cmd_validate(args: argparse.Namespace, config: AppConfig, logger: Logger) ->
 
 def cmd_preview(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
     options = common_options(args)
+    profile_path = str(getattr(args, "profile", "") or "")
+    if profile_path:
+        if getattr(args, "config", None):
+            raise CliError("`--profile` ne se combine pas avec `--config`.", EXIT_VALIDATION)
+        return profile_preview(
+            profile_path,
+            inputs=args.input or [],
+            output=args.output,
+            json_output=bool(getattr(args, "json_output", False)),
+            config=config,
+            options=options,
+            logger=logger,
+        )
     job = load_job(JobOverrides.from_namespace(args))
     if is_v2_job(job):
         try:
@@ -175,6 +207,20 @@ def cmd_preview(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
 
 def cmd_remux(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
     options = common_options(args)
+    profile_path = str(getattr(args, "profile", "") or "")
+    if profile_path:
+        if getattr(args, "config", None):
+            raise CliError("`--profile` ne se combine pas avec `--config`.", EXIT_VALIDATION)
+        return profile_apply(
+            profile_path,
+            inputs=args.input or [],
+            output=args.output,
+            force=bool(getattr(args, "force", False)),
+            dry_run=bool(getattr(args, "dry_run", False)),
+            config=config,
+            options=options,
+            logger=logger,
+        )
     job = load_job(JobOverrides.from_namespace(args))
     if is_v2_job(job):
         if getattr(args, "dry_run", False):
@@ -190,6 +236,28 @@ def cmd_remux(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
 
 
 def cmd_batch(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
+    profile_path = str(getattr(args, "profile", "") or "")
+    if profile_path:
+        if getattr(args, "template", None) or getattr(args, "batch", None):
+            raise CliError("`--profile` ne se combine pas avec `--template` ou `--batch`.", EXIT_ARGS)
+        return profile_batch(
+            profile_path,
+            cli_inputs=args.input,
+            input_dirs=args.input_dir,
+            recursive=bool(args.recursive),
+            include_patterns=args.include,
+            exclude_patterns=args.exclude,
+            output_dir=args.output_dir,
+            dry_run=bool(args.dry_run),
+            force=bool(args.force),
+            continue_on_error=bool(args.continue_on_error),
+            summary_path=args.summary,
+            config=config,
+            options=common_options(args),
+            logger=logger,
+        )
+    if not args.template:
+        raise CliError("`batch` requiert `--template` ou `--profile`.", EXIT_ARGS)
     return run_batch(
         template_path=args.template,
         batch_path=args.batch,
@@ -259,6 +327,20 @@ def cmd_profile(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
 
 def cmd_run(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
     options = common_options(args)
+    profile_path = str(getattr(args, "profile", "") or "")
+    if profile_path:
+        if getattr(args, "config", None):
+            raise CliError("`--profile` ne se combine pas avec `--config`.", EXIT_VALIDATION)
+        return profile_apply(
+            profile_path,
+            inputs=args.input or [],
+            output=args.output,
+            force=bool(getattr(args, "force", False)),
+            dry_run=bool(getattr(args, "dry_run", False)),
+            config=config,
+            options=options,
+            logger=logger,
+        )
     job = load_job(JobOverrides.from_namespace(args))
     if is_v2_job(job):
         if getattr(args, "dry_run", False):

@@ -86,7 +86,7 @@ def test_codec_name_variable_keyword():
             {
                 "id": "rename",
                 "match": {"all": [{"field": "codec_name", "op": "is", "value": "DDP", "required": True}]},
-                "actions": [{"type": "set_title", "pattern": "{lang_name} {codec_name} {channels}"}],
+                "actions": [{"type": "set_title", "pattern": "{lang_name} {codec} {channels}"}],
             }
         ],
     }

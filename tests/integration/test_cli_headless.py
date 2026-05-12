@@ -165,11 +165,11 @@ def test_cli_profile_preview_on_synthetic_media(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    validate = _run_cli(root, "profile", "validate", "--profile", str(profile), "--json")
+    validate = _run_cli(root, "validate", "--profile", str(profile), "--json")
     assert validate.returncode == 0, validate.stderr
     assert json.loads(validate.stdout)["kind"] == "decision-profile"
 
-    preview = _run_cli(root, "profile", "preview", "--profile", str(profile), "-i", str(src), "-o", str(out), "--json")
+    preview = _run_cli(root, "preview", "--profile", str(profile), "-i", str(src), "-o", str(out), "--json")
     assert preview.returncode == 0, preview.stderr
     payload = json.loads(preview.stdout)
     assert payload["valid"] is True

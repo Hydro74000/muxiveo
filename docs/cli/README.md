@@ -28,10 +28,10 @@ Dans les builds packages, le CLI utilise le même bundle que l'application GUI :
 | `preview` | affiche la commande ffmpeg prevue |
 | `remux` | execute un remux headless |
 | `batch` | applique un template a plusieurs jobs |
-| `profile validate` | valide un `decision-profile` |
-| `profile preview` | applique un profil en dry preview JSON/commande |
-| `profile apply` | applique un profil et remuxe |
-| `profile batch` | applique un profil a un dossier |
+| `validate --profile` | valide un `decision-profile`, ou son application si `-i` est fourni |
+| `preview --profile` | applique un profil en dry preview JSON/commande |
+| `run/remux --profile` | applique un profil et remuxe |
+| `batch --profile` | applique un profil a un dossier |
 
 Exemples :
 
@@ -51,9 +51,9 @@ mediarecode-cli batch --template template.json --batch batch.json --dry-run --lo
 mediarecode-cli batch --template template.json --batch batch.json --summary summary.json
 mediarecode-cli batch --template exact-job.json --input-dir "Serie/Saison 01" --output-dir "out/Saison 01" --dry-run
 mediarecode-cli batch --template exact-job.json --input-dir "Serie" --recursive --include "*.mkv" --exclude "*sample*" --output-dir "out"
-mediarecode-cli profile preview --profile profil.json -i source.mkv --json
-mediarecode-cli profile apply --profile profil.json -i source.mkv -o sortie.mkv
-mediarecode-cli profile batch --profile profil.json --input-dir "Serie" --recursive --output-dir "out" --dry-run
+mediarecode-cli preview --profile profil.json -i source.mkv --json
+mediarecode-cli run --profile profil.json -i source.mkv -o sortie.mkv
+mediarecode-cli batch --profile profil.json --input-dir "Serie" --recursive --output-dir "out" --dry-run
 ```
 
 ## Contrat JSON
@@ -131,7 +131,7 @@ réutilisables :
       },
       "actions": [
         {"type": "set_enabled", "value": true},
-        {"type": "set_title", "pattern": "{lang_name} {codec_name} {channels} {audio_object}"}
+        {"type": "set_title", "pattern": "{lang_name} {codec} {channels} {audio_object}"}
       ]
     }
   ]
@@ -147,9 +147,10 @@ réutilisables :
 Commandes :
 
 ```bash
-mediarecode-cli profile validate --profile profil.json
-mediarecode-cli profile preview --profile profil.json -i source.mkv --json
-mediarecode-cli profile apply --profile profil.json -i source.mkv -o sortie.mkv
+mediarecode-cli validate --profile profil.json
+mediarecode-cli preview --profile profil.json -i source.mkv --json
+mediarecode-cli run --profile profil.json -i source.mkv -o sortie.mkv
+mediarecode-cli batch --profile profil.json --input-dir "Serie" --recursive --output-dir "out"
 ```
 
 Keywords de renommage disponibles :
@@ -158,15 +159,16 @@ Keywords de renommage disponibles :
 {type} {source_index} {track_index}
 {language} {lang} {lang_name}
 {title} {source_title}
-{codec} {codec_name} {channels} {channel_layout} {audio_object} {atmos} {dtsx}
+{codec} {codec_raw} {codec_name} {channels} {channel_layout} {audio_object} {atmos} {dtsx}
 {resolution} {hdr} {video_flags_hex}
 {flags} {flag_default} {flag_forced}
 {flag_hearing_impaired} {flag_visual_impaired}
 {flag_original} {flag_commentary}
 ```
 
-`{codec}` garde le codec technique. `{codec_name}` utilise `variables.codec_names`
-si un alias existe, sinon il retombe sur le codec technique.
+Dans les patterns de titre, `variables.codec_names` s'applique à `{codec}` et
+`{codec_name}`. Pour forcer le codec technique brut, utilisez `{codec_raw}`.
+Dans les critères décisionnels, le champ `codec` reste technique.
 
 ### `rules` legacy
 

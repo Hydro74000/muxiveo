@@ -44,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         p = sub.add_parser(name, help=help_text)
         _add_common_options(p)
+        p.add_argument("--profile", help="Profil décisionnel à appliquer aux entrées.")
         p.add_argument("-i", "--input", action="append")
         p.add_argument("-o", "--output")
         p.add_argument("--languages", help="Langues audio/sous-titres autorisées, séparées par virgules.")
@@ -62,7 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     batch = sub.add_parser("batch", help="Appliquer un template à plusieurs jobs.")
     _add_common_options(batch)
-    batch.add_argument("--template", required=True)
+    batch.add_argument("--template")
+    batch.add_argument("--profile", help="Profil décisionnel à appliquer au lot.")
     batch.add_argument("--batch", help="JSON contenant `jobs` ou `inputs`.")
     batch.add_argument("-i", "--input", action="append", help="Entrée batch simple; répétable.")
     batch.add_argument("--input-dir", action="append", help="Dossier à scanner pour créer un job par vidéo; répétable.")

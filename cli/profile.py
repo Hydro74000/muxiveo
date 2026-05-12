@@ -78,6 +78,8 @@ def build_profile_remux_config(
     logger: Logger,
     preview: bool = False,
 ) -> tuple[RemuxConfig, dict[str, Any]]:
+    if not cli_inputs:
+        raise CliError("Au moins une entrée est requise avec `--profile` (`-i/--input`).", EXIT_ARGS)
     job = {"sources": [{"path": value} for value in cli_inputs]}
     sources, _infos, tracks = inspect_sources(job, config, options, logger)
     source_index_by_file_id = {f"src{source.file_index}": source.file_index for source in sources}
@@ -124,6 +126,7 @@ def profile_preview(
     config: AppConfig,
     options: CommonOptions,
     logger: Logger,
+    include_command: bool = True,
 ) -> int:
     profile = load_decision_profile(profile_path)
     try:
@@ -154,7 +157,7 @@ def profile_preview(
         "tracks": [serialize_track_preview(track) for source in remux_config.sources for track in source.tracks],
         **serialize_remux_config(remux_config),
     }
-    if not errors:
+    if not errors and include_command:
         payload["command"] = wf.build_command(remux_config)
         payload["command_text"] = wf.preview_command(remux_config)
     if json_output:
@@ -164,7 +167,10 @@ def profile_preview(
             for error in errors:
                 logger.emit("error", error)
             return EXIT_VALIDATION
-        print(payload.get("command_text", ""))
+        if include_command:
+            print(payload.get("command_text", ""))
+        else:
+            logger.emit("info", "Configuration profil valide.")
     return EXIT_OK if not errors else EXIT_VALIDATION
 
 
@@ -172,7 +178,7 @@ def profile_apply(
     profile_path: str,
     *,
     inputs: list[str],
-    output: str,
+    output: str | None,
     force: bool,
     dry_run: bool,
     config: AppConfig,

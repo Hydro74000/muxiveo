@@ -56,6 +56,7 @@ KEYWORD_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "Audio",
         (
             "codec",
+            "codec_raw",
             "codec_name",
             "channels",
             "channel_layout",
@@ -203,6 +204,29 @@ def blank_decision_profile() -> dict[str, Any]:
     }
 
 
+class _CodecAliasDialog(QDialog):
+    def __init__(self, aliases: dict[str, str], *, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(translate_text("Aliases codecs"))
+        self.setModal(True)
+        self.resize(_scale(520), _scale(340))
+        root = QVBoxLayout(self)
+        root.setContentsMargins(_scale(14), _scale(14), _scale(14), _scale(10))
+        root.setSpacing(_scale(8))
+        root.addWidget(QLabel(translate_text("Une ligne par alias codec :")))
+        self._edit = QPlainTextEdit()
+        self._edit.setPlaceholderText(translate_text("EAC3=DDP\nAC3=Dolby Digital\nTRUEHD=Dolby TrueHD"))
+        self._edit.setPlainText(DecisionProfileEditorDialog._format_codec_aliases(aliases))
+        root.addWidget(self._edit, stretch=1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    def aliases(self) -> dict[str, str]:
+        return DecisionProfileEditorDialog._parse_codec_aliases(self._edit.toPlainText())
+
+
 class DecisionProfileEditorDialog(QDialog):
     def __init__(
         self,
@@ -220,6 +244,7 @@ class DecisionProfileEditorDialog(QDialog):
         self._current_tracks = current_tracks or []
         self._source_index_by_file_id = source_index_by_file_id or {}
         self._profile = copy.deepcopy(profile) if profile else blank_decision_profile()
+        self._codec_aliases: dict[str, str] = {}
         self._selected_rule_index = -1
 
         self.setWindowTitle(translate_text("Éditeur de profil"))
@@ -272,7 +297,7 @@ class DecisionProfileEditorDialog(QDialog):
         variables = copy.deepcopy(self._profile.get("variables", {}))
         if not isinstance(variables, dict):
             variables = {}
-        codec_names = self._parse_codec_aliases(self._codec_aliases_edit.toPlainText())
+        codec_names = dict(self._codec_aliases)
         if codec_names:
             variables["codec_names"] = codec_names
         else:
@@ -308,29 +333,24 @@ class DecisionProfileEditorDialog(QDialog):
         self._profile_selector.setMinimumWidth(_scale(190))
         load_profile_btn = QPushButton(translate_text("Charger"))
         delete_profile_btn = QPushButton(translate_text("Supprimer profil"))
+        codec_aliases_btn = QPushButton(translate_text("Aliases codecs"))
+        self._codec_aliases_status = QLabel()
         blank_btn.clicked.connect(self._use_blank_profile)
         capture_btn.clicked.connect(self._capture_current_config)
         load_profile_btn.clicked.connect(self._load_selected_profile)
         delete_profile_btn.clicked.connect(self._delete_selected_profile)
+        codec_aliases_btn.clicked.connect(self._edit_codec_aliases)
         mode_row.addWidget(blank_btn)
         mode_row.addWidget(capture_btn)
         mode_row.addWidget(QLabel(translate_text("Profil existant")))
         mode_row.addWidget(self._profile_selector)
         mode_row.addWidget(load_profile_btn)
         mode_row.addWidget(delete_profile_btn)
+        mode_row.addWidget(codec_aliases_btn)
+        mode_row.addWidget(self._codec_aliases_status)
         mode_row.addStretch()
         root.addLayout(mode_row)
         self._refresh_profile_selector(select_name=str(self._profile.get("name") or ""))
-
-        variables_box = QGroupBox(translate_text("Variables"))
-        variables_layout = QVBoxLayout(variables_box)
-        variables_layout.addWidget(QLabel(translate_text("Aliases codecs")))
-        self._codec_aliases_edit = QPlainTextEdit()
-        self._codec_aliases_edit.setMaximumHeight(_scale(82))
-        self._codec_aliases_edit.setPlaceholderText(translate_text("EAC3=DDP\nAC3=Dolby Digital\nTRUEHD=Dolby TrueHD"))
-        self._codec_aliases_edit.textChanged.connect(self._refresh_preview)
-        variables_layout.addWidget(self._codec_aliases_edit)
-        root.addWidget(variables_box)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_left_panel())
@@ -555,8 +575,25 @@ class DecisionProfileEditorDialog(QDialog):
         self._tags_edit.setText(", ".join(str(tag) for tag in self._profile.get("tags", []) if str(tag).strip()))
         variables = self._profile.get("variables", {})
         codec_names = variables.get("codec_names", {}) if isinstance(variables, dict) else {}
-        if hasattr(self, "_codec_aliases_edit"):
-            self._codec_aliases_edit.setPlainText(self._format_codec_aliases(codec_names))
+        self._codec_aliases = self._parse_codec_aliases(self._format_codec_aliases(codec_names))
+        self._refresh_codec_alias_status()
+
+    def _edit_codec_aliases(self) -> None:
+        dialog = _CodecAliasDialog(self._codec_aliases, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._codec_aliases = dialog.aliases()
+        self._refresh_codec_alias_status()
+        self._refresh_preview()
+
+    def _refresh_codec_alias_status(self) -> None:
+        if not hasattr(self, "_codec_aliases_status"):
+            return
+        count = len(self._codec_aliases)
+        if count:
+            self._codec_aliases_status.setText(translate_text("{count} alias codec", count=count))
+        else:
+            self._codec_aliases_status.setText("")
 
     @staticmethod
     def _parse_codec_aliases(text: str) -> dict[str, str]:

@@ -1639,7 +1639,8 @@ class TestRemuxPanelHybridDecisionProfiles:
         from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
 
         dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"))
-        dialog._codec_aliases_edit.setPlainText("EAC3=DDP\nAC3=Dolby Digital")
+        dialog._codec_aliases = {"EAC3": "DDP", "AC3": "Dolby Digital"}
+        dialog._refresh_codec_alias_status()
 
         profile = dialog.profile()
 
@@ -1647,6 +1648,7 @@ class TestRemuxPanelHybridDecisionProfiles:
             "EAC3": "DDP",
             "AC3": "Dolby Digital",
         }
+        assert "2 alias codec" in dialog._codec_aliases_status.text()
         dialog.close()
 
     def test_profile_editor_can_load_and_delete_existing_profile(self, qt_app, tmp_path, monkeypatch):
