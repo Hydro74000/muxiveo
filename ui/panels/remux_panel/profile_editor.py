@@ -75,6 +75,8 @@ class KeywordLineEdit(QLineEdit):
         menu.addSeparator()
         keyword_menu = menu.addMenu(translate_text("Insérer keyword"))
         self._populate_keyword_menu(keyword_menu)
+        operands_menu = menu.addMenu(translate_text("Operands"))
+        self._populate_operands_menu(operands_menu)
         menu.exec(event.globalPos())
 
     def _populate_keyword_menu(self, menu: QMenu) -> None:
@@ -83,6 +85,39 @@ class KeywordLineEdit(QLineEdit):
             for keyword in keywords:
                 action = submenu.addAction("{" + keyword + "}")
                 action.triggered.connect(lambda _checked=False, k=keyword: self.insert("{" + k + "}"))
+
+    def _populate_operands_menu(self, menu: QMenu) -> None:
+        and_action = menu.addAction("AND")
+        and_action.triggered.connect(lambda _checked=False: self.insert(" & "))
+        or_action = menu.addAction("OR")
+        or_action.triggered.connect(lambda _checked=False: self.insert(" | "))
+        group_action = menu.addAction("GROUP ()")
+        group_action.triggered.connect(lambda _checked=False: self._group_selection())
+
+    def _group_selection(self) -> None:
+        start = self.selectionStart()
+        if start >= 0 and self.hasSelectedText():
+            text = self.text()
+            selected = self.selectedText()
+            self.setText(text[:start] + "(" + selected + ")" + text[start + len(selected):])
+            self.setCursorPosition(start + len(selected) + 2)
+            return
+        cursor = self.cursorPosition()
+        self.insert("()")
+        self.setCursorPosition(cursor + 1)
+
+    def keyPressEvent(self, event) -> None:  # type: ignore[override]
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            key = event.key()
+            if key == Qt.Key.Key_Plus:
+                self.insert(" & ")
+                event.accept()
+                return
+            if key in {Qt.Key.Key_Colon, Qt.Key.Key_Slash}:
+                self.insert(" | ")
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
         text = self.text()

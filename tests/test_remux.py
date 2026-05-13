@@ -1879,6 +1879,73 @@ class TestRemuxPanelDecisionProfiles:
         assert audio_menu is not None
         edit.close()
 
+    def test_keyword_line_edit_exposes_context_operands_menu(self, qt_app):
+        from PySide6.QtWidgets import QMenu
+        from ui.panels.remux_panel.profile_editor import KeywordLineEdit
+
+        edit = KeywordLineEdit()
+        menu = QMenu()
+        edit._populate_operands_menu(menu)
+
+        assert [action.text() for action in menu.actions()] == ["AND", "OR", "GROUP ()"]
+
+        edit.setText("VFQ VFF")
+        edit.setSelection(0, 3)
+        menu.actions()[2].trigger()
+        assert edit.text() == "(VFQ) VFF"
+
+        edit.clear()
+        edit.setCursorPosition(0)
+        menu.actions()[2].trigger()
+        assert edit.text() == "()"
+        assert edit.cursorPosition() == 1
+
+        edit.clear()
+        menu.actions()[0].trigger()
+        menu.actions()[1].trigger()
+        assert edit.text() == " &  | "
+        edit.close()
+
+    def test_keyword_line_edit_keyboard_shortcuts_insert_operands(self, qt_app):
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+        from ui.panels.remux_panel.profile_editor import KeywordLineEdit
+
+        edit = KeywordLineEdit()
+
+        edit.keyPressEvent(
+            QKeyEvent(
+                QEvent.Type.KeyPress,
+                Qt.Key.Key_Plus,
+                Qt.KeyboardModifier.ControlModifier,
+                "+",
+            )
+        )
+        assert edit.text() == " & "
+
+        edit.clear()
+        edit.keyPressEvent(
+            QKeyEvent(
+                QEvent.Type.KeyPress,
+                Qt.Key.Key_Colon,
+                Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier,
+                ":",
+            )
+        )
+        assert edit.text() == " | "
+
+        edit.clear()
+        edit.keyPressEvent(
+            QKeyEvent(
+                QEvent.Type.KeyPress,
+                Qt.Key.Key_Slash,
+                Qt.KeyboardModifier.ControlModifier,
+                "/",
+            )
+        )
+        assert edit.text() == " | "
+        edit.close()
+
 
 class TestRemuxPanelVideoTrackSignals:
 
