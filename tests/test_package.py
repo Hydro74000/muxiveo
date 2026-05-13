@@ -77,6 +77,24 @@ def test_desktop_entries_advertise_file_open_support():
     assert "X-AppImage-Website=https://mediarecode.aotr.fr/" in rendered_appimage
 
 
+def test_appstream_metainfo_advertises_homepage_and_desktop_launchable():
+    rendered = package_mod._APPSTREAM_METAINFO.format(
+        appstream_id=package_mod._APPSTREAM_ID,
+        desktop_id="Mediarecode.desktop",
+        website_url=package_mod._APPIMAGE_WEBSITE_URL,
+    )
+    assert "<url type=\"homepage\">https://mediarecode.aotr.fr/</url>" in rendered
+    assert "<launchable type=\"desktop-id\">Mediarecode.desktop</launchable>" in rendered
+
+    rendered_appimage = package_appimage_mod._APPSTREAM_METAINFO.format(
+        appstream_id=package_appimage_mod._APPSTREAM_ID,
+        desktop_id="mediarecode.desktop",
+        website_url=package_appimage_mod._APPIMAGE_WEBSITE_URL,
+    )
+    assert "<url type=\"homepage\">https://mediarecode.aotr.fr/</url>" in rendered_appimage
+    assert "<launchable type=\"desktop-id\">mediarecode.desktop</launchable>" in rendered_appimage
+
+
 def test_windows_supported_types_block_registers_open_with_entries():
     with patch.object(package_mod, "ACCEPTED_EXTENSIONS", frozenset({".mkv", ".srt"})):
         block = package_mod._windows_supported_types_block()

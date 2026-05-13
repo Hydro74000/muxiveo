@@ -76,6 +76,7 @@ _APPIMAGE_UPDATE_OWNER = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_OWNER", "Hy
 _APPIMAGE_UPDATE_REPO = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_REPO", "mediarecode").strip() or "mediarecode"
 _APPIMAGE_UPDATE_RELEASE = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_RELEASE", "latest").strip() or "latest"
 _APPIMAGE_WEBSITE_URL = "https://mediarecode.aotr.fr/"
+_APPSTREAM_ID = "fr.aotr.mediarecode"
 
 # Préfixe Wine dédié au build Windows (isolé du préfixe utilisateur ~/.wine)
 WINE_PREFIX = ROOT / ".wine_build"
@@ -441,6 +442,22 @@ _DESKTOP = textwrap.dedent("""\
     MimeType={mime_types}
     X-AppImage-Website={website_url}
     Terminal=false
+""")
+
+_APPSTREAM_METAINFO = textwrap.dedent("""\
+    <?xml version="1.0" encoding="UTF-8"?>
+    <component type="desktop-application">
+      <id>{appstream_id}</id>
+      <metadata_license>MIT</metadata_license>
+      <project_license>GPL-3.0-or-later</project_license>
+      <name>Mediarecode</name>
+      <summary>MKV/MP4 workflow for DoVi, HDR10+, remux and encode</summary>
+      <description>
+        <p>Mediarecode helps prepare MKV and MP4 video workflows with remuxing, encoding, Dolby Vision and HDR10+ tooling.</p>
+      </description>
+      <launchable type="desktop-id">{desktop_id}</launchable>
+      <url type="homepage">{website_url}</url>
+    </component>
 """)
 
 # Icône SVG de secours (64×64) — remplacez par un PNG 256×256 dans le projet
@@ -818,6 +835,18 @@ def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64") -
     )
     ok(".desktop créé")
 
+    metainfo_dir = appdir / "usr" / "share" / "metainfo"
+    metainfo_dir.mkdir(parents=True, exist_ok=True)
+    metainfo = metainfo_dir / f"{_APPSTREAM_ID}.metainfo.xml"
+    metainfo.write_text(
+        _APPSTREAM_METAINFO.format(
+            appstream_id=_APPSTREAM_ID,
+            desktop_id=desktop.name,
+            website_url=_APPIMAGE_WEBSITE_URL,
+        )
+    )
+    ok("Métadonnées AppStream créées")
+
     # Icône — embarque icon.ico si présent et l'utilise en priorité pour
     # générer le PNG attendu par l'AppDir.
     project_icon_ico = ROOT / "icon.ico"
@@ -932,7 +961,6 @@ def build_appimage(
     run(
         [
             appimagetool,
-            "--no-appstream",
             "-u", update_information,
             str(appdir),
             str(output),

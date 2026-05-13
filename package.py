@@ -93,6 +93,7 @@ _APPIMAGE_UPDATE_OWNER = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_OWNER", "Hy
 _APPIMAGE_UPDATE_REPO = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_REPO", "mediarecode").strip() or "mediarecode"
 _APPIMAGE_UPDATE_RELEASE = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_RELEASE", "latest").strip() or "latest"
 _APPIMAGE_WEBSITE_URL = "https://mediarecode.aotr.fr/"
+_APPSTREAM_ID = "fr.aotr.mediarecode"
 _MSIX_IDENTITY = os.environ.get("MEDIARECODE_MSIX_IDENTITY", "AOTR.Mediarecode").strip() or "AOTR.Mediarecode"
 _MSIX_PUBLISHER = os.environ.get("MEDIARECODE_MSIX_PUBLISHER", "CN=AOTR").strip() or "CN=AOTR"
 _MSIX_PUBLISHER_DISPLAY_NAME = os.environ.get("MEDIARECODE_MSIX_PUBLISHER_DISPLAY_NAME", "AOTR").strip() or "AOTR"
@@ -1168,6 +1169,22 @@ X-AppImage-Website={website_url}
 Terminal=false
 """
 
+_APPSTREAM_METAINFO = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>{appstream_id}</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Mediarecode</name>
+  <summary>MKV/MP4 workflow for DoVi, HDR10+, remux and encode</summary>
+  <description>
+    <p>Mediarecode helps prepare MKV and MP4 video workflows with remuxing, encoding, Dolby Vision and HDR10+ tooling.</p>
+  </description>
+  <launchable type="desktop-id">{desktop_id}</launchable>
+  <url type="homepage">{website_url}</url>
+</component>
+"""
+
 
 def _windows_supported_types_block() -> str:
     """Génère les clés NSIS de support 'Open with...' pour Windows."""
@@ -1223,6 +1240,18 @@ def _build_appdir() -> Path:
         )
     )
     _ok(".desktop créé")
+
+    metainfo_dir = appdir / "usr" / "share" / "metainfo"
+    metainfo_dir.mkdir(parents=True, exist_ok=True)
+    metainfo = metainfo_dir / f"{_APPSTREAM_ID}.metainfo.xml"
+    metainfo.write_text(
+        _APPSTREAM_METAINFO.format(
+            appstream_id=_APPSTREAM_ID,
+            desktop_id=desktop.name,
+            website_url=_APPIMAGE_WEBSITE_URL,
+        )
+    )
+    _ok("Métadonnées AppStream créées")
 
     # Icône
     icon_png = appdir / "Mediarecode.png"
