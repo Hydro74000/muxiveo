@@ -92,6 +92,7 @@ _MACOS_MIN_VERSION = os.environ.get("MEDIARECODE_MACOS_MIN_VERSION", "11.0").str
 _APPIMAGE_UPDATE_OWNER = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_OWNER", "Hydro74000").strip() or "Hydro74000"
 _APPIMAGE_UPDATE_REPO = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_REPO", "mediarecode").strip() or "mediarecode"
 _APPIMAGE_UPDATE_RELEASE = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_RELEASE", "latest").strip() or "latest"
+_APPIMAGE_WEBSITE_URL = "https://mediarecode.aotr.fr/"
 _MSIX_IDENTITY = os.environ.get("MEDIARECODE_MSIX_IDENTITY", "AOTR.Mediarecode").strip() or "AOTR.Mediarecode"
 _MSIX_PUBLISHER = os.environ.get("MEDIARECODE_MSIX_PUBLISHER", "CN=AOTR").strip() or "CN=AOTR"
 _MSIX_PUBLISHER_DISPLAY_NAME = os.environ.get("MEDIARECODE_MSIX_PUBLISHER_DISPLAY_NAME", "AOTR").strip() or "AOTR"
@@ -1163,6 +1164,7 @@ Icon=Mediarecode
 Type=Application
 Categories=AudioVideo;Video;
 MimeType={mime_types}
+X-AppImage-Website={website_url}
 Terminal=false
 """
 
@@ -1214,7 +1216,12 @@ def _build_appdir() -> Path:
 
     # Fichier .desktop
     desktop = appdir / "Mediarecode.desktop"
-    desktop.write_text(_DESKTOP_ENTRY.format(mime_types=build_desktop_mime_type_string()))
+    desktop.write_text(
+        _DESKTOP_ENTRY.format(
+            mime_types=build_desktop_mime_type_string(),
+            website_url=_APPIMAGE_WEBSITE_URL,
+        )
+    )
     _ok(".desktop créé")
 
     # Icône

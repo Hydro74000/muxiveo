@@ -75,6 +75,7 @@ APP_DISPLAY_NAME = "Mediarecode"
 _APPIMAGE_UPDATE_OWNER = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_OWNER", "Hydro74000").strip() or "Hydro74000"
 _APPIMAGE_UPDATE_REPO = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_REPO", "mediarecode").strip() or "mediarecode"
 _APPIMAGE_UPDATE_RELEASE = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_RELEASE", "latest").strip() or "latest"
+_APPIMAGE_WEBSITE_URL = "https://mediarecode.aotr.fr/"
 
 # Préfixe Wine dédié au build Windows (isolé du préfixe utilisateur ~/.wine)
 WINE_PREFIX = ROOT / ".wine_build"
@@ -438,6 +439,7 @@ _DESKTOP = textwrap.dedent("""\
     Type=Application
     Categories=AudioVideo;Video;
     MimeType={mime_types}
+    X-AppImage-Website={website_url}
     Terminal=false
 """)
 
@@ -808,7 +810,12 @@ def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64") -
 
     # .desktop
     desktop = appdir / f"{APP_NAME}.desktop"
-    desktop.write_text(_DESKTOP.format(mime_types=build_desktop_mime_type_string()))
+    desktop.write_text(
+        _DESKTOP.format(
+            mime_types=build_desktop_mime_type_string(),
+            website_url=_APPIMAGE_WEBSITE_URL,
+        )
+    )
     ok(".desktop créé")
 
     # Icône — embarque icon.ico si présent et l'utilise en priorité pour

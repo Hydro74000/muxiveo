@@ -60,13 +60,21 @@ def test_pyinstaller_frontend_flag_keeps_console_on_linux():
 
 
 def test_desktop_entries_advertise_file_open_support():
-    rendered = package_mod._DESKTOP_ENTRY.format(mime_types="video/x-matroska;audio/x-matroska;")
+    rendered = package_mod._DESKTOP_ENTRY.format(
+        mime_types="video/x-matroska;audio/x-matroska;",
+        website_url=package_mod._APPIMAGE_WEBSITE_URL,
+    )
     assert "Exec=mediarecode %F" in rendered
     assert "MimeType=video/x-matroska;audio/x-matroska;" in rendered
+    assert "X-AppImage-Website=https://mediarecode.aotr.fr/" in rendered
     assert "Terminal=false" in rendered
-    rendered_appimage = package_appimage_mod._DESKTOP.format(mime_types="video/x-matroska;")
+    rendered_appimage = package_appimage_mod._DESKTOP.format(
+        mime_types="video/x-matroska;",
+        website_url=package_appimage_mod._APPIMAGE_WEBSITE_URL,
+    )
     assert "Exec=mediarecode %F" in rendered_appimage
     assert "MimeType=video/x-matroska;" in rendered_appimage
+    assert "X-AppImage-Website=https://mediarecode.aotr.fr/" in rendered_appimage
 
 
 def test_windows_supported_types_block_registers_open_with_entries():
