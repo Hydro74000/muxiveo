@@ -261,6 +261,8 @@ def validate_job_contract(job: dict[str, Any], *, path: str = "$", require_versi
         _expect(errors, f"{path}.output", job["output"], "string", _is_string)
     if "output_template" in job:
         _expect(errors, f"{path}.output_template", job["output_template"], "string", _is_string)
+    if "output_all" in job:
+        _expect(errors, f"{path}.output_all", job["output_all"], "boolean", lambda value: isinstance(value, bool))
     if "work_dir" in job:
         _expect(errors, f"{path}.work_dir", job["work_dir"], "string", _is_string)
     if "file_title" in job:

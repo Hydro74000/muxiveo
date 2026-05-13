@@ -49,6 +49,7 @@ class JobOverrides:
     tmdb_id: int | None = None
     tmdb_apikey: str = ""
     output_template: str = ""
+    output_all: bool = False
     no_cover: bool = False
     no_attach: bool = False
 
@@ -64,6 +65,7 @@ class JobOverrides:
             tmdb_id=getattr(args, "tmdb_id", None),
             tmdb_apikey=str(getattr(args, "tmdb_apikey", "") or ""),
             output_template=str(getattr(args, "output_template", "") or ""),
+            output_all=bool(getattr(args, "output_all", False)),
             no_cover=bool(getattr(args, "no_cover", False)),
             no_attach=bool(getattr(args, "no_attach", False)),
         )

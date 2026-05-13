@@ -94,7 +94,7 @@ def test_cli_json_schema_exposes_public_contract_keys() -> None:
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert schema["properties"]["version"] == {"const": 1}
     assert "rules" not in schema["properties"]
-    for key in ("sources", "output", "tracks", "track_order", "audio_variants", "chapters", "tmdb"):
+    for key in ("sources", "output", "output_template", "output_all", "tracks", "track_order", "audio_variants", "chapters", "tmdb"):
         assert key in schema["properties"]
     assert "rules" not in schema["$defs"]
     for definition in ("source", "selector", "track_edit", "track_order_item", "audio_variant", "chapters", "tmdb"):
@@ -110,8 +110,11 @@ def test_cli_json_schema_bundle_excludes_removed_v2_contract() -> None:
 def test_profile_schemas_expose_exact_and_decision_contracts() -> None:
     exact = build_exact_job_schema_v1()
     assert exact["properties"]["kind"] == {"const": "exact-job"}
+    assert "variables" in exact["properties"]
     decision = build_decision_profile_schema_v1()
     assert decision["properties"]["kind"] == {"const": "decision-profile"}
+    assert "expr" in decision["$defs"]["condition"]["properties"]
+    assert "aliases" in decision["properties"]["variables"]["properties"]
     assert "rule" in decision["$defs"]
     assert "action" in decision["$defs"]
 
@@ -200,7 +203,7 @@ def test_output_template_unknown_token_renders_empty() -> None:
     from cli.output_template import render_output_template
 
     out = render_output_template("{title}.{unknown}.mkv", {"title": "A"})
-    assert out == "A..mkv"
+    assert out == "A.mkv"
 
 
 def test_output_template_numeric_variants() -> None:
@@ -226,12 +229,94 @@ def test_output_template_keeps_explicit_extension() -> None:
     assert out == "Bar.mp4"
 
 
+def test_output_template_preserves_relative_path_components() -> None:
+    from cli.output_template import render_output_template
+
+    assert render_output_template("./out/{title}", {"title": "Bar"}) == "./out/Bar.mkv"
+    assert render_output_template("../out/{title}", {"title": "Bar"}) == "../out/Bar.mkv"
+
+
+def test_output_template_supports_release_title_modifier() -> None:
+    from core.media_info_fetcher import MediaDetails
+    from cli.output_template import build_output_context, render_output_template
+
+    details = MediaDetails(title="Été Violent: Le Retour", year="2024")
+    ctx = build_output_context(Path("source.mkv"), details)
+
+    assert render_output_template("{title:release}.{year}", ctx) == "Ete.Violent.Le.Retour.2024.mkv"
+
+
+def test_output_template_track_keywords_best_all_and_output_all() -> None:
+    from cli.output_template import build_output_context, render_output_template
+    from core.workflows.remux_models import TrackEntry
+
+    tracks = [
+        TrackEntry(0, "video", "HEVC", "3840x2160  HDR10+", "", "", file_id="src0"),
+        TrackEntry(1, "audio", "EAC3", "5.1  640 kbps", "fr-FR", "VF", file_id="src0"),
+        TrackEntry(2, "audio", "TRUEHD", "7.1  4000 kbps  Atmos", "en-US", "VO", file_id="src0"),
+        TrackEntry(3, "subtitle", "SUBRIP", "", "fr-FR", "Forced", file_id="src0"),
+    ]
+    order = [(0, 0, tracks[0].entry_id), (0, 1, tracks[1].entry_id), (0, 2, tracks[2].entry_id), (0, 3, tracks[3].entry_id)]
+    ctx = build_output_context(Path("Movie.2024.WEB-DL-GRP.mkv"), None, tracks=tracks, track_order=order)
+
+    assert render_output_template("{audio-lang:all}.{sub-lang:all}", ctx) == "fr-FR+en-US.fr-FR.mkv"
+    assert render_output_template("{audio-codec-release:best}.{audio-channels:best}.{audio-immersive}", ctx) == "TrueHD.7.1.Atmos.mkv"
+    assert render_output_template("{video-source}.{video-resolution:best}.{video-10bit}.{video-hdr:best}.{video-codec-release:best}-{group}", ctx) == "WEB.2160p.10Bits.HDR10P.x265-GRP.mkv"
+
+    output_all_ctx = build_output_context(
+        Path("Movie.2024.WEB-DL-GRP.mkv"),
+        None,
+        tracks=tracks,
+        track_order=order,
+        output_all=True,
+    )
+    assert render_output_template("{audio-lang:best}", output_all_ctx) == "fr-FR+en-US.mkv"
+    assert render_output_template("{audio-codec-release:best}", output_all_ctx) == "DDP+TrueHD.mkv"
+
+
+def test_output_template_ignores_disabled_tracks() -> None:
+    from cli.output_template import build_output_context, render_output_template
+    from core.workflows.remux_models import TrackEntry
+
+    disabled = TrackEntry(1, "audio", "TRUEHD", "7.1  Atmos", "en-US", "VO", enabled=False, file_id="src0")
+    enabled = TrackEntry(2, "audio", "AC3", "5.1", "fr-FR", "VF", file_id="src0")
+    ctx = build_output_context(Path("Movie.mkv"), None, tracks=[disabled, enabled], track_order=[(0, 1, disabled.entry_id), (0, 2, enabled.entry_id)])
+
+    assert render_output_template("{audio-lang:all}.{audio-codec-release:best}", ctx) == "fr-FR.AC3.mkv"
+
+
+def test_output_template_applies_aliases_and_regional_lang_names() -> None:
+    from cli.output_template import build_output_context, render_output_template
+    from core.workflows.remux_models import TrackEntry
+
+    tracks = [
+        TrackEntry(1, "audio", "EAC3", "5.1  640 kbps", "fr-FR", "VFF", file_id="src0"),
+        TrackEntry(2, "audio", "AC3", "5.1  640 kbps", "fr-CA", "VFQ", file_id="src0"),
+    ]
+    order = [(0, 1, tracks[0].entry_id), (0, 2, tracks[1].entry_id)]
+    ctx = build_output_context(
+        Path("Movie.mkv"),
+        None,
+        tracks=tracks,
+        track_order=order,
+        variables={
+            "aliases": {
+                "*": {"EAC3": "DDP", "French": "FR"},
+                "lang_name": {"French": "Français"},
+            }
+        },
+    )
+
+    assert render_output_template("{audio-codec:best}.{audio-lang-name:first}.{audio-lang-name:all}", ctx) == "DDP.Français.Français+French (Canada).mkv"
+
+
 def test_cli_parser_exposes_output_template() -> None:
     parser = build_parser()
     args = parser.parse_args(
-        ["remux", "--config", "j.json", "--output-template", "{title}.mkv"]
+        ["remux", "--config", "j.json", "--output-template", "{title}.mkv", "--output-all"]
     )
     assert args.output_template == "{title}.mkv"
+    assert args.output_all is True
 
 
 def test_load_job_injects_output_template_into_job() -> None:
@@ -239,9 +324,11 @@ def test_load_job_injects_output_template_into_job() -> None:
         JobOverrides(
             input=["a.mkv"],
             output_template="{source_name}.X.mkv",
+            output_all=True,
         )
     )
     assert job["output_template"] == "{source_name}.X.mkv"
+    assert job["output_all"] is True
 
 
 def test_cli_tmdb_options_infer_season_episode_like_gui() -> None:

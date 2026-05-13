@@ -3,13 +3,20 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from core.profiles.decision import (
     DecisionProfileManager,
+    DecisionProfileError,
     apply_decision_profile,
     build_video_flags_hex,
+    DECISION_KEYWORDS,
     remux_config_to_decision_profile,
     render_title_pattern,
+    validate_decision_profile,
 )
+from core.profiles.expressions import CriteriaExpressionError, compile_criteria_expression
+from core.profiles.keywords import KEYWORD_CATEGORIES, lang_name
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry, clone_track_entry
 
 
@@ -75,6 +82,22 @@ def test_title_pattern_keywords_and_empty_cleanup():
     assert render_title_pattern("{lang_name} - {codec} - {channels} - {audio_object} - {flag_forced}", track) == "French - EAC3 - 5.1 - Atmos"
 
 
+def test_lang_name_keeps_region_only_for_non_default_variants():
+    assert lang_name("fr-FR") == "French"
+    assert lang_name("fr-CA") == "French (Canada)"
+    assert lang_name("pt-PT") == "Portuguese"
+    assert lang_name("pt-BR") == "Portuguese (Brazil)"
+    assert render_title_pattern("{lang_name}", _audio(1, language="fr-CA", title="VFQ")) == "French (Canada)"
+
+
+def test_decision_keywords_include_registry_only_fields():
+    assert "source_language" in DECISION_KEYWORDS
+    assert "track_tags" in DECISION_KEYWORDS
+    flattened = {keyword for _category, keywords in KEYWORD_CATEGORIES for keyword in keywords}
+    assert "source_language" in flattened
+    assert "track_tags" in flattened
+
+
 def test_codec_name_variable_keyword():
     track = _audio(1, codec="EAC3", display_info="5.1  640 kbps")
     profile = {
@@ -95,6 +118,128 @@ def test_codec_name_variable_keyword():
 
     assert result.report["valid"] is True
     assert track.title == "French DDP 5.1"
+
+
+def test_render_aliases_can_be_global_or_keyword_scoped():
+    track = _audio(1, codec="EAC3", display_info="5.1  640 kbps")
+    variables = {
+        "aliases": {
+            "*": {"EAC3": "DDP", "French": "FR"},
+            "lang_name": {"French": "Français"},
+        }
+    }
+
+    assert render_title_pattern("{codec} {lang_name}", track, variables=variables) == "DDP Français"
+
+
+def test_render_aliases_do_not_affect_matching():
+    track = _audio(1, codec="EAC3", display_info="5.1  640 kbps")
+    profile = {
+        "version": 1,
+        "kind": "decision-profile",
+        "name": "aliases do not match",
+        "variables": {"aliases": {"codec_name": {"EAC3": "DDP"}}},
+        "rules": [
+            {
+                "id": "rename",
+                "match": {"all": [{"field": "codec_name", "op": "is", "value": "DDP", "required": True}]},
+                "actions": [{"type": "set_title", "pattern": "{codec}"}],
+            }
+        ],
+    }
+
+    result = apply_decision_profile(profile, [track])
+
+    assert result.report["applied_rules"] == 0
+    assert track.title == "VF"
+
+
+def test_criteria_expression_parser_supports_quotes_and_escapes():
+    condition = compile_criteria_expression(
+        r'"A | B" | Dolby \& DTS | \(VFQ\)',
+        lambda atom: {"field": "source_title", "op": "contains", "value": atom, "required": True},
+    )
+
+    assert [item["value"] for item in condition["any"]] == ["A | B", "Dolby & DTS", "(VFQ)"]
+
+    with pytest.raises(CriteriaExpressionError):
+        compile_criteria_expression(
+            "VFQ \\",
+            lambda atom: {"field": "source_title", "op": "contains", "value": atom},
+        )
+
+
+def test_decision_profile_expr_condition_matches_nested_title_values():
+    vff = TrackEntry(5, "subtitle", "SUBRIP", "", "fr-FR", "VFF", file_id="src0", orig_language="fr-FR", orig_title="VFF")
+    vfq_forced = TrackEntry(6, "subtitle", "SUBRIP", "", "fr-FR", "VFQ Forced", file_id="src0", orig_language="fr-FR", orig_title="VFQ Forced")
+    vfq = TrackEntry(7, "subtitle", "SUBRIP", "", "fr-FR", "VFQ", file_id="src0", orig_language="fr-FR", orig_title="VFQ")
+    profile = {
+        "version": 1,
+        "kind": "decision-profile",
+        "name": "expr subtitles",
+        "rules": [
+            {
+                "id": "vfq_forced",
+                "scope": "all",
+                "match": {
+                    "all": [
+                        {"field": "type", "op": "is", "value": "subtitle", "required": True},
+                        {"field": "source_title", "op": "contains", "expr": "(VFQ | VFF) & Forced", "required": True},
+                    ]
+                },
+                "actions": [{"type": "set_language", "value": "fr-CA"}],
+            }
+        ],
+    }
+
+    result = apply_decision_profile(profile, [vff, vfq_forced, vfq])
+
+    assert result.report["applied_rules"] == 1
+    assert vff.language == "fr-FR"
+    assert vfq_forced.language == "fr-CA"
+    assert vfq.language == "fr-FR"
+
+
+def test_decision_profile_expr_condition_can_target_keyword_atoms():
+    target = _audio(1, display_info="7.1  4000 kbps  Atmos", codec="TRUEHD")
+    other = _audio(2, display_info="5.1  640 kbps", codec="EAC3")
+    profile = {
+        "version": 1,
+        "kind": "decision-profile",
+        "name": "expr keywords",
+        "rules": [
+            {
+                "id": "immersive",
+                "scope": "all",
+                "match": {"all": [{"field": "type", "op": "is", "value": "audio"}, {"expr": "{atmos} | {dtsx}"}]},
+                "actions": [{"type": "set_title", "value": "Immersive"}],
+            }
+        ],
+    }
+
+    result = apply_decision_profile(profile, [target, other])
+
+    assert result.report["applied_rules"] == 1
+    assert target.title == "Immersive"
+    assert other.title == "VF"
+
+
+def test_decision_profile_validation_rejects_expr_with_value():
+    profile = {
+        "version": 1,
+        "kind": "decision-profile",
+        "name": "invalid expr",
+        "rules": [
+            {
+                "id": "bad",
+                "match": {"field": "source_title", "op": "contains", "value": "VFQ", "expr": "VFF"},
+                "actions": [],
+            }
+        ],
+    }
+
+    with pytest.raises(DecisionProfileError, match="value and expr"):
+        validate_decision_profile(profile)
 
 
 def test_tags_can_chain_rules():
@@ -125,6 +270,37 @@ def test_tags_can_chain_rules():
 
     assert track.title == "VF EAC3 5.1"
     assert result.report["track_tags"][track.entry_id] == ["vf_main"]
+
+
+def test_all_scope_filters_tracks_on_optional_title_criteria():
+    vff = TrackEntry(5, "subtitle", "SUBRIP", "", "fr-FR", "VFF", file_id="src0", orig_language="fr-FR", orig_title="VFF")
+    vfq_forced = TrackEntry(6, "subtitle", "SUBRIP", "", "fr-FR", "VFQ Forced", file_id="src0", orig_language="fr-FR", orig_title="VFQ Forced")
+    vfq = TrackEntry(7, "subtitle", "SUBRIP", "", "fr-FR", "VFQ", file_id="src0", orig_language="fr-FR", orig_title="VFQ")
+    profile = {
+        "version": 1,
+        "kind": "decision-profile",
+        "name": "vfq subtitles",
+        "rules": [
+            {
+                "id": "vfq_lang",
+                "scope": "all",
+                "match": {
+                    "all": [
+                        {"field": "type", "op": "is", "value": "subtitle", "required": True},
+                        {"field": "source_title", "op": "contains", "value": "VFQ", "required": False},
+                    ]
+                },
+                "actions": [{"type": "set_language", "value": "fr-CA"}],
+            }
+        ],
+    }
+
+    result = apply_decision_profile(profile, [vff, vfq_forced, vfq])
+
+    assert result.report["applied_rules"] == 2
+    assert vff.language == "fr-FR"
+    assert vfq_forced.language == "fr-CA"
+    assert vfq.language == "fr-CA"
 
 
 def test_decision_keyword_fields_match_flags_and_atmos():

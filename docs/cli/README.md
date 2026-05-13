@@ -1,11 +1,11 @@
 # Mediarecode CLI
 
-`mediarecode-cli` est le point d'entree headless de Mediarecode. Il ne lance pas l'interface graphique et reste strictement non interactif.
+`mediarecode-cli` est le point d'entrée headless de Mediarecode. Il ne lance pas l'interface graphique et reste strictement non interactif.
 
 ## Lancement
 
 ```bash
-python3 mediarecode_cli.py --help
+python3 main.py --cli --help
 ./mediarecode-cli --help
 ```
 
@@ -16,21 +16,23 @@ Dans les builds packages, le CLI utilise le même bundle que l'application GUI :
 - macOS : entrée `mediarecode-cli` dans `Mediarecode.app/Contents/MacOS/`;
 - fallback commun : `mediarecode --cli ...`.
 
+Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans initialiser l'interface graphique.
+
 ## Commandes
 
-| Commande | Role |
+| Commande | Rôle |
 |---|---|
 | `inspect` | inspecte une source et sort du JSON |
-| `inspect --config-template` | genere un template JSON de depart |
+| `inspect --config-template` | génère un template JSON de départ |
 | `schema` | affiche le schéma JSON public du contrat CLI |
-| `validate` | valide un job/template sans executer ffmpeg |
-| `preview` | affiche la commande ffmpeg prevue |
-| `remux` | execute un remux headless |
-| `batch` | applique un template a plusieurs jobs |
+| `validate` | valide un job/template sans exécuter ffmpeg |
+| `preview` | affiche la commande ffmpeg prévue |
+| `remux` | exécute un remux headless |
+| `batch` | applique un template à plusieurs jobs |
 | `validate --profile` | valide un `decision-profile`, ou son application si `-i` est fourni |
 | `preview --profile` | applique un profil en dry preview JSON/commande |
 | `run/remux --profile` | applique un profil et remuxe |
-| `batch --profile` | applique un profil a un dossier |
+| `batch --profile` | applique un profil à un dossier |
 
 Exemples :
 
@@ -81,7 +83,7 @@ Job minimal :
 
 ### `sources`
 
-Chaque source peut etre une chaine ou un objet :
+Chaque source peut être une chaîne ou un objet :
 
 ```json
 {
@@ -108,9 +110,14 @@ réutilisables :
   "kind": "decision-profile",
   "name": "VF + VO",
   "variables": {
-    "codec_names": {
-      "EAC3": "DDP",
-      "AC3": "Dolby Digital"
+    "aliases": {
+      "*": {
+        "EAC3": "DDP",
+        "AC3": "Dolby Digital"
+      },
+      "lang_name": {
+        "French": "Français"
+      }
     }
   },
   "groups": [
@@ -127,7 +134,8 @@ réutilisables :
       "match": {
         "all": [
           {"field": "type", "op": "is", "value": "audio"},
-          {"field": "language", "op": "is", "value": "fr-FR"}
+          {"field": "language", "op": "is", "value": "fr-FR"},
+          {"field": "source_title", "op": "contains", "expr": "VFQ | VFF", "required": false}
         ]
       },
       "actions": [
@@ -144,6 +152,30 @@ réutilisables :
 - `"priority"` : la plus forte priorité gagne; une priorité égale reste un conflit;
 - `"override"` : cette règle remplace une valeur déjà proposée;
 - `"add"` : cette règle complète sans écraser; pour un titre, le fragment est ajouté.
+
+Les conditions peuvent utiliser soit `value`, soit `expr`. `expr` accepte la
+même syntaxe que l'éditeur de profils :
+
+```json
+{"field": "source_title", "op": "contains", "expr": "(VFQ | VFF) & Forced"}
+```
+
+Dans une expression :
+
+- `&` signifie AND;
+- `|` signifie OR;
+- les parenthèses fixent la priorité;
+- les atoms `{atmos}` ou `{dtsx}` ciblent les keywords booléens correspondants;
+- les champs restent combinés entre eux par AND dans un bloc `all`.
+
+Pour chercher `&`, `|`, `(` ou `)` comme texte réel, utilisez des guillemets ou
+un échappement :
+
+```json
+{"field": "source_title", "op": "contains", "expr": "\"A | B\" | Dolby \\& DTS"}
+```
+
+Une condition qui contient à la fois `value` et `expr` est invalide.
 
 Commandes :
 
@@ -162,22 +194,56 @@ Keywords de renommage disponibles :
 
 ```text
 {type} {source_index} {track_index}
-{language} {lang} {lang_name}
+{language} {lang} {lang_name} {source_language}
 {title} {source_title}
 {codec} {codec_raw} {codec_name} {channels} {channel_layout} {audio_object} {atmos} {dtsx}
-{resolution} {hdr} {video_flags_hex}
-{flags} {flag_default} {flag_forced}
+{resolution} {width} {height} {hdr} {video_flags_hex}
+{video_hdr} {video_hdr10} {video_hdr10plus}
+{video_dolby_vision} {video_hlg} {video_sdr}
+{flags} {flag_enabled} {flag_default} {flag_forced}
 {flag_hearing_impaired} {flag_visual_impaired}
 {flag_original} {flag_commentary}
+{track_tags}
 ```
 
-Dans les patterns de titre, `variables.codec_names` s'applique à `{codec}` et
-`{codec_name}`. Pour forcer le codec technique brut, utilisez `{codec_raw}`.
-Dans les critères décisionnels, le champ `codec` reste technique.
+`variables.aliases` remplace des valeurs au rendu des patterns de titre et des
+templates de sortie :
+
+```json
+{
+  "variables": {
+    "aliases": {
+      "*": {"EAC3": "DDP"},
+      "lang_name": {"French": "Français"}
+    }
+  }
+}
+```
+
+- `*` est global.
+- `lang_name`, `codec`, `codec_name`, etc. ciblent un keyword précis.
+- priorité : alias ciblé > alias global > valeur originale.
+- matching insensible à la casse et aux espaces de bord.
+- pas de remplacement récursif.
+- les aliases n'affectent pas les critères décisionnels.
+
+`variables.codec_names` reste lu pour compatibilité avec les anciens profils,
+mais les nouveaux profils doivent utiliser `variables.aliases`. Pour forcer le
+codec technique brut, utilisez `{codec_raw}`.
+
+`{lang_name}` masque la région pour la variante d'origine et la conserve entre
+parenthèses pour les variantes régionales non standard :
+
+| Langue | `{lang_name}` |
+|---|---|
+| `fr-FR` | `French` |
+| `fr-CA` | `French (Canada)` |
+| `pt-PT` | `Portuguese` |
+| `pt-BR` | `Portuguese (Brazil)` |
 
 ### `tracks`
 
-Les edits explicites modifient une piste ciblee par index ou par sélecteur :
+Les edits explicites modifient une piste ciblée par index ou par sélecteur :
 
 ```json
 {
@@ -197,8 +263,8 @@ Les edits explicites modifient une piste ciblee par index ou par sélecteur :
 
 ### `track_order`
 
-`track_order` permet de fixer l'ordre de sortie apres filtrage. Chaque entree
-peut etre un objet ou un tableau court :
+`track_order` permet de fixer l'ordre de sortie après filtrage. Chaque entrée
+peut être un objet ou un tableau court :
 
 ```json
 {
@@ -235,7 +301,7 @@ Imports acceptes :
 
 ### `tmdb`
 
-TMDB est opt-in. Aucun appel reseau n'est fait si `tmdb` est absent ou faux.
+TMDB est opt-in. Aucun appel réseau n'est fait si `tmdb` est absent ou faux.
 
 ```json
 {
@@ -250,7 +316,7 @@ TMDB est opt-in. Aucun appel reseau n'est fait si `tmdb` est absent ou faux.
 }
 ```
 
-Si `id` ou `tmdb_id` est present, cet ID est utilise. Sinon, le premier resultat de recherche est retenu.
+Si `id` ou `tmdb_id` est présent, cet ID est utilisé. Sinon, le premier résultat de recherche est retenu.
 
 En CLI, `--auto-tmdb` active la recherche TMDB sans modifier le JSON. La
 requête est déduite du nom de fichier, le premier résultat est retenu, et
@@ -312,8 +378,8 @@ Le batch fusionne chaque job avec le template :
 }
 ```
 
-Le fichier batch est valide avant le premier job. Les entrees de `jobs` ou
-`inputs` doivent etre des objets job ou des chemins string.
+Le fichier batch est validé avant le premier job. Les entrées de `jobs` ou
+`inputs` doivent être des objets job ou des chemins texte.
 
 Le batch peut aussi créer les jobs depuis un dossier :
 
@@ -365,7 +431,7 @@ mediarecode-cli batch \
 
 mediarecode-cli batch \
   --profile BestOfAll --input-dir "Films" --output-dir "out" \
-  --output-template "{source_name}.remux"
+  --output-template "{title:release}.{year}.{audio-multi}.{audio-fr-tag}.{audio-codec-release:best}.{audio-channels:best}.{audio-immersive}.{video-source}.{video-resolution:best}.{video-10bit}.{video-hdr:best}.{video-dolby-vision}.{video-codec-release:best}-{group}"
 ```
 
 Tokens disponibles :
@@ -374,20 +440,48 @@ Tokens disponibles :
 |---|---|---|
 | `{source_name}` | nom du fichier source sans extension | `Devil.May.Cry.2025.S01E02.MULTi.1080p.WEB.x264` |
 | `{title}` | titre TMDB (film ou série) | `Devil May Cry` |
+| `{title:release}` | titre TMDB normalisé release ASCII à points | `Devil.May.Cry` |
 | `{year}` | année TMDB | `2025` |
 | `{episode_title}` | titre d'épisode TMDB | `Pilote` |
-| `{season}` | saison zero-paddée 2 chiffres | `01` |
-| `{episode}` | épisode zero-paddé 2 chiffres | `02` |
+| `{season}` | saison zéro-paddée 2 chiffres | `01` |
+| `{episode}` | épisode zéro-paddé 2 chiffres | `02` |
 | `{season_num}` | saison brute (int) — combinable `:03d` | `1` |
 | `{episode_num}` | épisode brut (int) | `2` |
 | `{season_episode}` | code combiné style scene | `S01E02` |
 | `{group}` | tag de release extrait du nom source | `RARBG`, `NTb` |
+| `{audio-lang:best}` / `{audio-lang:all}` | langue(s) audio des pistes finales | `fr-FR`, `fr-FR+en-US` |
+| `{audio-lang-name:all}` | nom(s) de langue audio régionalisés | `French+French (Canada)` |
+| `{sub-lang:all}` | langue(s) sous-titres des pistes finales | `fr-FR+en-US` |
+| `{audio-multi}` | `MULTi` si plusieurs familles audio | `MULTi` |
+| `{audio-fr-tag}` | tag FR audio final | `VFF`, `VFQ`, `VF2` |
+| `{sub-vostfr}` | `VOSTFR` si sous-titre FR sans audio FR | `VOSTFR` |
+| `{audio-codec-release:best}` | meilleur codec audio release | `TrueHD`, `DDP` |
+| `{audio-channels:best}` | meilleurs canaux audio | `7.1`, `5.1` |
+| `{audio-immersive}` | audio immersif final | `Atmos` |
+| `{video-source}` | source extraite du nom source | `BluRay`, `WEB` |
+| `{video-resolution:best}` | meilleure résolution vidéo release | `2160p` |
+| `{video-10bit}` | tag 10 bits si détecté ou implicite HDR10+/DV | `10Bits` |
+| `{video-hdr:best}` | meilleur HDR release | `HDR10P`, `HDR`, `HLG` |
+| `{video-dolby-vision}` | tag Dolby Vision | `DV` |
+| `{video-codec-release:best}` | codec vidéo release | `x265`, `x264`, `AV1` |
 
 Règles :
 
 - **Priorité** : `--output / -o` explicite > `--output-template` (rendu) > `output` direct (job/JSON).
 - **Texte libre** mélangeable avec les tokens : `"{title}.{year}.texte libre.{group}"`.
+- **Keywords pistes** : les préfixes canoniques sont `video-*`, `audio-*`,
+  `sub-*`; `subtitle-*` et les variantes `_` sont acceptés en alias.
+- **Décisions** : les keywords pistes se basent sur les pistes finales activées,
+  après profil ou edits exact-job. Les modifiers disponibles sont `:best`,
+  `:first` et `:all`; `:best` est le défaut.
+- **Aliases** : `variables.aliases` s'applique aussi aux keywords de pistes
+  rendus par `--output-template`. Par exemple `{audio-codec:best}` peut rendre
+  `DDP` avec `{"variables": {"aliases": {"*": {"EAC3": "DDP"}}}}`.
+- **`--output-all`** : force les keywords pistes en mode `all`, même si le
+  template contient `:best` ou aucun modifier.
 - **Tokens inconnus** rendent une chaîne vide (pas d'erreur).
+- **Nettoyage release** : les segments vides sont compactés pour éviter les
+  doubles points ou les séparateurs `.-` / `-.`.
 - **Extension** : si le template ne se termine pas par une extension vidéo connue
   (`.mkv`, `.mp4`, `.m4v`, `.mov`, `.avi`, `.webm`, `.mka`, `.m4a`, `.ts`, `.m2ts`),
   `.mkv` est ajouté automatiquement.
@@ -407,6 +501,7 @@ Le champ peut également être posé dans le JSON job :
   "kind": "exact-job",
   "sources": [{"path": "S01E02.mkv"}],
   "output_template": "{title}.S{season}E{episode}.{episode_title}-{group}",
+  "output_all": false,
   "tmdb": {"enabled": true}
 }
 ```

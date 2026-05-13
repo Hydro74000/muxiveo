@@ -77,6 +77,27 @@ def _track_edit_schema(flag_properties: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _variables_schema() -> dict[str, Any]:
+    alias_section = {"type": "object", "additionalProperties": {"type": "string"}}
+    return {
+        "type": "object",
+        "additionalProperties": True,
+        "properties": {
+            "aliases": {
+                "type": "object",
+                "additionalProperties": alias_section,
+                "properties": {
+                    "*": alias_section,
+                },
+            },
+            "codec_names": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+            },
+        },
+    }
+
+
 def build_cli_json_schema() -> dict[str, Any]:
     flag_properties = _flag_properties()
     return {
@@ -102,8 +123,10 @@ def build_cli_json_schema() -> dict[str, Any]:
             },
             "output": {"type": "string"},
             "output_template": {"type": "string"},
+            "output_all": {"type": "boolean"},
             "work_dir": {"type": "string"},
             "file_title": {"type": "string"},
+            "variables": _variables_schema(),
             "tracks": {"type": "array", "items": {"$ref": "#/$defs/track_edit"}},
             "track_order": {"type": "array", "items": {"$ref": "#/$defs/track_order_item"}},
             "audio_variants": {"type": "array", "items": {"$ref": "#/$defs/audio_variant"}},
@@ -257,6 +280,7 @@ def build_decision_profile_schema_v1() -> dict[str, Any]:
             "field": {"type": "string"},
             "op": {"type": "string"},
             "value": {},
+            "expr": {"type": "string"},
             "required": {"type": "boolean"},
             "weight": {"type": "integer"},
         },
@@ -325,14 +349,7 @@ def build_decision_profile_schema_v1() -> dict[str, Any]:
             "description": {"type": "string"},
             "tags": {"type": "array", "items": {"type": "string"}},
             "variables": {
-                "type": "object",
-                "additionalProperties": True,
-                "properties": {
-                    "codec_names": {
-                        "type": "object",
-                        "additionalProperties": {"type": "string"},
-                    },
-                },
+                **_variables_schema(),
             },
             "groups": {
                 "type": "array",

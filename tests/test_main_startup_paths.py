@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import types
+import sys
 from pathlib import Path
 from typing import Callable
 from unittest.mock import MagicMock, patch
@@ -102,3 +103,20 @@ def test_main_routes_startup_file_to_main_window(tmp_path) -> None:
     assert len(scheduled_callbacks) == 1
     scheduled_callbacks[0]()
     fake_window.open_startup_paths.assert_called_once_with([startup_file])
+
+
+def test_main_routes_cli_flag_without_qapplication() -> None:
+    fake_cli = types.SimpleNamespace(main=MagicMock(return_value=23))
+
+    class FailingQApplication:
+        @staticmethod
+        def instance():
+            raise AssertionError("QApplication should not be touched in --cli mode")
+
+    with patch.object(main_mod, "QApplication", FailingQApplication), \
+         patch.dict(sys.modules, {"cli.main": fake_cli}), \
+         patch.object(main_mod.sys, "argv", ["main.py", "--cli", "inspect", "file.mkv"]):
+        rc = main_mod.main()
+
+    assert rc == 23
+    fake_cli.main.assert_called_once_with(["inspect", "file.mkv"])

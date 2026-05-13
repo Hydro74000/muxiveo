@@ -21,9 +21,15 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
         help=(
             "Template du nom de sortie. Placeholders disponibles : "
             "{source_name},{title},{year},{season},{episode},{episode_title},"
-            "{season_episode},{group} (+ {season_num},{episode_num} pour formats "
-            "numériques). Extension .mkv ajoutée si absente."
+            "{season_episode},{group}, keywords pistes comme {audio-lang:best} "
+            "(+ {season_num},{episode_num} pour formats numériques). Extension "
+            ".mkv ajoutée si absente."
         ),
+    )
+    parser.add_argument(
+        "--output-all",
+        action="store_true",
+        help="Force les keywords pistes de --output-template en mode all (toutes les valeurs finales trouvées).",
     )
     parser.add_argument("--log-format", choices=("text", "jsonl"), default="text")
     parser.add_argument(

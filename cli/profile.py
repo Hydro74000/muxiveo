@@ -98,6 +98,18 @@ def _track_order(tracks: list[TrackEntry]) -> list[tuple[int, int, str]]:
     return order
 
 
+def _output_variables(profile: dict[str, Any], metadata_job: dict[str, Any] | None) -> dict[str, Any]:
+    metadata_variables = (metadata_job or {}).get("variables")
+    profile_variables = profile.get("variables")
+    if isinstance(metadata_variables, dict) and isinstance(profile_variables, dict):
+        return deep_merge(metadata_variables, profile_variables)
+    if isinstance(profile_variables, dict):
+        return dict(profile_variables)
+    if isinstance(metadata_variables, dict):
+        return dict(metadata_variables)
+    return {}
+
+
 def build_profile_remux_config(
     profile: dict[str, Any],
     *,
@@ -135,12 +147,16 @@ def build_profile_remux_config(
             logger,
             source_title=_infos[0].title if _infos else "",
         )
+    final_track_order = _track_order(result.tracks)
     output = resolve_final_output(
         cli_output=cli_output,
         job=metadata,
         sources=sources,
         details=tmdb_details,
+        tracks=result.tracks,
+        final_track_order=final_track_order,
         preview=preview,
+        variables=_output_variables(profile, metadata),
     )
     tag_overrides = metadata.get("tag_overrides", None)
     if tmdb_tags:
@@ -148,7 +164,7 @@ def build_profile_remux_config(
     remux_config = RemuxConfig(
         sources=sources,
         output=output,
-        track_order=_track_order(result.tracks),
+        track_order=final_track_order,
         keep_chapters=True,
         file_title=str(metadata.get("file_title") or tmdb_title or ""),
         tag_overrides=tag_overrides if isinstance(tag_overrides, dict) else None,
@@ -281,6 +297,7 @@ def profile_batch(
     tmdb_id: int | None = None,
     tmdb_apikey: str = "",
     output_template: str = "",
+    output_all: bool = False,
     no_cover: bool = False,
     no_attach: bool = False,
 ) -> int:
@@ -299,7 +316,11 @@ def profile_batch(
     )
     if output_template:
         metadata_template["output_template"] = output_template
+        if output_all:
+            metadata_template["output_all"] = True
         metadata_template["_batch_output_dir"] = str(Path(output_dir).expanduser())
+    elif output_all:
+        metadata_template["output_all"] = True
     discovery = discover_direct_batch_jobs(
         cli_inputs=cli_inputs,
         input_dirs=input_dirs,
@@ -308,6 +329,7 @@ def profile_batch(
         include_patterns=include_patterns,
         exclude_patterns=exclude_patterns,
         output_template=output_template,
+        output_all=output_all,
     )
     if not discovery.jobs:
         raise CliError("Aucun fichier vidéo compatible trouvé pour le batch profil.", EXIT_ARGS)

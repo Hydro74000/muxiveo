@@ -10,93 +10,37 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from core.lang_tags import Rfc5646LanguageTags
+from core.profiles import keywords as keyword_registry
+from core.profiles.expressions import (
+    CriteriaExpressionError,
+    compile_criteria_expression,
+    parse_criteria_expression,
+)
 from core.workflows.remux_models import RemuxConfig, TrackEntry, clone_track_entry
 
 
 DECISION_PROFILE_KIND = "decision-profile"
 DECISION_PROFILE_VERSION = 1
 
-FLAG_NAMES = (
-    "enabled",
-    "default",
-    "forced",
-    "hearing_impaired",
-    "visual_impaired",
-    "original",
-    "commentary",
-)
-
-VIDEO_FLAG_RES_SD = 0x00000001
-VIDEO_FLAG_RES_HD = 0x00000002
-VIDEO_FLAG_RES_FHD = 0x00000004
-VIDEO_FLAG_RES_UHD = 0x00000008
-VIDEO_FLAG_HDR = 0x00000010
-VIDEO_FLAG_HDR10 = 0x00000020
-VIDEO_FLAG_HDR10PLUS = 0x00000040
-VIDEO_FLAG_DOLBY_VISION = 0x00000080
-VIDEO_FLAG_HLG = 0x00000100
-VIDEO_FLAG_SDR = 0x00000200
-VIDEO_FLAG_BIT_DEPTH_8 = 0x00001000
-VIDEO_FLAG_BIT_DEPTH_10 = 0x00002000
-VIDEO_FLAG_BIT_DEPTH_12 = 0x00004000
-
-VIDEO_RESOLUTION_MASK = (
-    VIDEO_FLAG_RES_SD
-    | VIDEO_FLAG_RES_HD
-    | VIDEO_FLAG_RES_FHD
-    | VIDEO_FLAG_RES_UHD
-)
-VIDEO_HDR_MASK = (
-    VIDEO_FLAG_HDR
-    | VIDEO_FLAG_HDR10
-    | VIDEO_FLAG_HDR10PLUS
-    | VIDEO_FLAG_DOLBY_VISION
-    | VIDEO_FLAG_HLG
-    | VIDEO_FLAG_SDR
-)
-VIDEO_BIT_DEPTH_MASK = VIDEO_FLAG_BIT_DEPTH_8 | VIDEO_FLAG_BIT_DEPTH_10 | VIDEO_FLAG_BIT_DEPTH_12
-
-DECISION_KEYWORDS = (
-    "type",
-    "source_index",
-    "track_index",
-    "language",
-    "lang",
-    "lang_name",
-    "title",
-    "source_title",
-    "codec",
-    "codec_raw",
-    "codec_name",
-    "channels",
-    "channel_layout",
-    "audio_object",
-    "atmos",
-    "dtsx",
-    "codec_atmos",
-    "codec_dtsx",
-    "resolution",
-    "width",
-    "height",
-    "hdr",
-    "video_hdr",
-    "video_hdr10",
-    "video_hdr10plus",
-    "video_dolby_vision",
-    "video_hlg",
-    "video_sdr",
-    "video_flags_hex",
-    "flags",
-    "flag_enabled",
-    "flag_default",
-    "flag_forced",
-    "flag_hearing_impaired",
-    "flag_visual_impaired",
-    "flag_original",
-    "flag_commentary",
-)
-TITLE_KEYWORDS = DECISION_KEYWORDS
+FLAG_NAMES = keyword_registry.FLAG_NAMES
+VIDEO_FLAG_RES_SD = keyword_registry.VIDEO_FLAG_RES_SD
+VIDEO_FLAG_RES_HD = keyword_registry.VIDEO_FLAG_RES_HD
+VIDEO_FLAG_RES_FHD = keyword_registry.VIDEO_FLAG_RES_FHD
+VIDEO_FLAG_RES_UHD = keyword_registry.VIDEO_FLAG_RES_UHD
+VIDEO_FLAG_HDR = keyword_registry.VIDEO_FLAG_HDR
+VIDEO_FLAG_HDR10 = keyword_registry.VIDEO_FLAG_HDR10
+VIDEO_FLAG_HDR10PLUS = keyword_registry.VIDEO_FLAG_HDR10PLUS
+VIDEO_FLAG_DOLBY_VISION = keyword_registry.VIDEO_FLAG_DOLBY_VISION
+VIDEO_FLAG_HLG = keyword_registry.VIDEO_FLAG_HLG
+VIDEO_FLAG_SDR = keyword_registry.VIDEO_FLAG_SDR
+VIDEO_FLAG_BIT_DEPTH_8 = keyword_registry.VIDEO_FLAG_BIT_DEPTH_8
+VIDEO_FLAG_BIT_DEPTH_10 = keyword_registry.VIDEO_FLAG_BIT_DEPTH_10
+VIDEO_FLAG_BIT_DEPTH_12 = keyword_registry.VIDEO_FLAG_BIT_DEPTH_12
+VIDEO_RESOLUTION_MASK = keyword_registry.VIDEO_RESOLUTION_MASK
+VIDEO_HDR_MASK = keyword_registry.VIDEO_HDR_MASK
+VIDEO_BIT_DEPTH_MASK = keyword_registry.VIDEO_BIT_DEPTH_MASK
+DECISION_KEYWORDS = keyword_registry.DECISION_KEYWORDS
+TITLE_KEYWORDS = keyword_registry.TITLE_KEYWORDS
 
 _FIELD_WEIGHTS = {
     "type": 40,
@@ -259,6 +203,8 @@ def validate_decision_profile(profile: Mapping[str, Any]) -> list[str]:
             seen.add(rule_id)
             if "match" not in rule:
                 errors.append(f"rules[{index}].match: required")
+            elif isinstance(rule.get("match"), Mapping):
+                _validate_condition(rule["match"], f"rules[{index}].match", errors)
             if "actions" in rule and not isinstance(rule["actions"], list):
                 errors.append(f"rules[{index}].actions: expected array")
     if errors:
@@ -266,63 +212,73 @@ def validate_decision_profile(profile: Mapping[str, Any]) -> list[str]:
     return errors
 
 
+def _validate_condition(condition: Any, path: str, errors: list[str]) -> None:
+    if not isinstance(condition, Mapping):
+        errors.append(f"{path}: expected object")
+        return
+    for key in ("all", "any"):
+        if key not in condition:
+            continue
+        items = condition.get(key)
+        if not isinstance(items, list):
+            errors.append(f"{path}.{key}: expected array")
+            continue
+        for index, item in enumerate(items):
+            _validate_condition(item, f"{path}.{key}[{index}]", errors)
+    if "not" in condition:
+        _validate_condition(condition["not"], f"{path}.not", errors)
+    if "expr" not in condition:
+        return
+    if "value" in condition:
+        errors.append(f"{path}: value and expr are mutually exclusive")
+    expression = str(condition.get("expr") or "").strip()
+    if not expression:
+        errors.append(f"{path}.expr: required")
+        return
+    try:
+        ast = parse_criteria_expression(expression)
+    except CriteriaExpressionError as exc:
+        errors.append(f"{path}.expr: {exc}")
+        return
+    field = str(condition.get("field") or "").strip()
+    if not field and not _expr_ast_contains_only_keywords(ast):
+        errors.append(f"{path}.field: required when expr atoms are literal values")
+
+
+def _expr_ast_contains_only_keywords(ast: tuple[str, Any]) -> bool:
+    kind, value = ast
+    if kind == "leaf":
+        return bool(keyword_registry.keyword_to_match_field(str(value)))
+    if kind in {"all", "any"}:
+        return all(_expr_ast_contains_only_keywords(child) for child in value)
+    return False
+
+
 def normalize_lang(tag: str | None, title: str | None = None) -> str:
-    if not tag:
-        return ""
-    regionalized = Rfc5646LanguageTags.regionalize_track_language(str(tag), title)
-    if regionalized:
-        return regionalized
-    canonical = Rfc5646LanguageTags.normalize(str(tag))
-    return canonical or str(tag).strip()
+    return keyword_registry.normalize_lang(tag, title)
 
 
 def _lang_name(tag: str) -> str:
-    if not tag:
-        return ""
-    canonical = Rfc5646LanguageTags.normalize(tag) or tag
-    if canonical in Rfc5646LanguageTags.TAGS:
-        return Rfc5646LanguageTags.TAGS[canonical].split(" (", 1)[0]
-    base = canonical.split("-", 1)[0]
-    return Rfc5646LanguageTags.TAGS.get(base, canonical).split(" (", 1)[0]
+    return keyword_registry.lang_name(tag)
 
 
 def _channels_from_display(display_info: str) -> str:
-    text = str(display_info or "")
-    match = re.search(r"\b(?:mono|stereo|[1-9](?:\.[0-9])?)\b", text, flags=re.IGNORECASE)
-    return match.group(0) if match else ""
+    return keyword_registry.channels_from_display(display_info)
 
 
 def _audio_object_from_display(display_info: str) -> str:
-    text = str(display_info or "").lower()
-    if "atmos" in text:
-        return "Atmos"
-    if "dts:x" in text or "dtsx" in text:
-        return "DTS:X"
-    return ""
+    return keyword_registry.audio_object_from_display(display_info)
 
 
 def _flag_value(track: TrackEntry, name: str, *, original: bool = False) -> bool:
-    attr = f"{'orig_' if original else ''}flag_{name}"
-    if name == "enabled":
-        attr = f"{'orig_' if original else ''}flag_enabled"
-    if not hasattr(track, attr):
-        attr = f"flag_{name}"
-    return bool(getattr(track, attr, False))
+    return keyword_registry.flag_value(track, name, original=original)
 
 
 def _source_index_for_track(
     track: TrackEntry,
     source_index_by_file_id: Mapping[str, int] | None = None,
 ) -> int | None:
-    if source_index_by_file_id and track.file_id in source_index_by_file_id:
-        return int(source_index_by_file_id[track.file_id])
-    file_id = str(track.file_id or "")
-    if file_id.startswith("src"):
-        try:
-            return int(file_id[3:])
-        except ValueError:
-            return None
-    return None
+    return keyword_registry.source_index_for_track(track, source_index_by_file_id)
 
 
 def _track_sort_key(
@@ -338,57 +294,19 @@ def _track_sort_key(
 
 
 def _video_text(track: TrackEntry) -> str:
-    return " ".join(
-        str(part or "")
-        for part in (
-            track.orig_display_info,
-            track.display_info,
-            track.orig_title,
-            track.title,
-            track.orig_codec,
-            track.codec,
-        )
-    )
+    return keyword_registry.video_text(track)
 
 
 def _video_resolution(track: TrackEntry) -> tuple[int, int] | None:
-    text = _video_text(track)
-    match = re.search(r"\b(\d{3,5})\s*[xX\u00d7]\s*(\d{3,5})\b", text)
-    if not match:
-        match = re.search(r"\b(720|1080|1440|2160|4320)p\b", text, flags=re.IGNORECASE)
-        if not match:
-            return None
-        height = int(match.group(1))
-        width = {720: 1280, 1080: 1920, 1440: 2560, 2160: 3840, 4320: 7680}.get(height, 0)
-        return (width, height) if width else None
-    width = int(match.group(1))
-    height = int(match.group(2))
-    return (width, height) if width > 0 and height > 0 else None
+    return keyword_registry.video_resolution(track)
 
 
 def _resolution_bucket(width: int, height: int) -> str:
-    longest = max(width, height)
-    shortest = min(width, height)
-    if longest >= 7000 or shortest >= 4000:
-        return "8k"
-    if longest >= 3000 or shortest >= 1800:
-        return "uhd"
-    if shortest >= 1000:
-        return "fhd"
-    if shortest >= 650:
-        return "hd"
-    return "sd"
+    return keyword_registry.resolution_bucket(width, height)
 
 
 def _resolution_flag(width: int, height: int) -> int:
-    bucket = _resolution_bucket(width, height)
-    if bucket in {"8k", "uhd"}:
-        return VIDEO_FLAG_RES_UHD
-    if bucket == "fhd":
-        return VIDEO_FLAG_RES_FHD
-    if bucket == "hd":
-        return VIDEO_FLAG_RES_HD
-    return VIDEO_FLAG_RES_SD
+    return keyword_registry.resolution_flag(width, height)
 
 
 def build_video_flags_hex(
@@ -403,117 +321,45 @@ def build_video_flags_hex(
     sdr: bool = False,
     bit_depth: int = 0,
 ) -> str:
-    """Build the reusable hexadecimal signature used by video decision rules."""
-    flags = 0
-    if width > 0 and height > 0:
-        flags |= _resolution_flag(width, height)
-    if hdr or hdr10 or hdr10plus or dolby_vision or hlg:
-        flags |= VIDEO_FLAG_HDR
-    if hdr10:
-        flags |= VIDEO_FLAG_HDR10
-    if hdr10plus:
-        flags |= VIDEO_FLAG_HDR10PLUS
-    if dolby_vision:
-        flags |= VIDEO_FLAG_DOLBY_VISION
-    if hlg:
-        flags |= VIDEO_FLAG_HLG
-    if sdr:
-        flags |= VIDEO_FLAG_SDR
-    if bit_depth == 8:
-        flags |= VIDEO_FLAG_BIT_DEPTH_8
-    elif bit_depth == 10:
-        flags |= VIDEO_FLAG_BIT_DEPTH_10
-    elif bit_depth == 12:
-        flags |= VIDEO_FLAG_BIT_DEPTH_12
-    return f"0x{flags:08X}"
+    return keyword_registry.build_video_flags_hex(
+        width=width,
+        height=height,
+        hdr=hdr,
+        hdr10=hdr10,
+        hdr10plus=hdr10plus,
+        dolby_vision=dolby_vision,
+        hlg=hlg,
+        sdr=sdr,
+        bit_depth=bit_depth,
+    )
 
 
 def _video_characteristic_flags(track: TrackEntry) -> int:
-    if track.track_type != "video":
-        return 0
-    flags = 0
-    resolution = _video_resolution(track)
-    if resolution:
-        flags |= _resolution_flag(*resolution)
-    text = _video_text(track).lower()
-    has_dv = "dolby vision" in text or "dovi" in text
-    has_hdr10plus = "hdr10+" in text or "hdr10plus" in text
-    has_hdr10 = bool(re.search(r"\bhdr\s*10\b", text)) or "hdr10" in text
-    has_hlg = bool(re.search(r"\bhlg\b", text))
-    has_hdr = has_dv or has_hdr10plus or has_hdr10 or has_hlg or bool(re.search(r"\bhdr\b", text))
-    if has_hdr:
-        flags |= VIDEO_FLAG_HDR
-    if has_dv:
-        flags |= VIDEO_FLAG_DOLBY_VISION
-    if has_hdr10plus:
-        flags |= VIDEO_FLAG_HDR10PLUS
-    elif has_hdr10:
-        flags |= VIDEO_FLAG_HDR10
-    if has_hlg:
-        flags |= VIDEO_FLAG_HLG
-    if not has_hdr:
-        flags |= VIDEO_FLAG_SDR
-    if re.search(r"\b(?:8[\s-]*bit|8\s*bits|yuv\d*p8)\b", text):
-        flags |= VIDEO_FLAG_BIT_DEPTH_8
-    if re.search(r"\b(?:10[\s-]*bit|10\s*bits|main\s*10|yuv\d*p10)\b", text):
-        flags |= VIDEO_FLAG_BIT_DEPTH_10
-    if re.search(r"\b(?:12[\s-]*bit|12\s*bits|yuv\d*p12)\b", text):
-        flags |= VIDEO_FLAG_BIT_DEPTH_12
-    return flags
+    return keyword_registry.video_characteristic_flags(track)
 
 
 def video_flags_hex(track: TrackEntry) -> str:
-    return f"0x{_video_characteristic_flags(track):08X}"
+    return keyword_registry.video_flags_hex(track)
 
 
 def _parse_video_flags(raw: Any) -> int:
-    if isinstance(raw, int):
-        return raw
-    text = str(raw or "").strip()
-    if not text:
-        return 0
-    try:
-        return int(text, 16 if text.lower().startswith("0x") else 10)
-    except ValueError:
-        return 0
+    return keyword_registry.parse_video_flags(raw)
 
 
 def _video_hdr_label(track: TrackEntry) -> str:
-    flags = _video_characteristic_flags(track)
-    parts: list[str] = []
-    if flags & VIDEO_FLAG_DOLBY_VISION:
-        parts.append("Dolby Vision")
-    if flags & VIDEO_FLAG_HDR10PLUS:
-        parts.append("HDR10+")
-    elif flags & VIDEO_FLAG_HDR10:
-        parts.append("HDR10")
-    if flags & VIDEO_FLAG_HLG:
-        parts.append("HLG")
-    if not parts and flags & VIDEO_FLAG_SDR:
-        return "SDR"
-    return " + ".join(parts)
+    return keyword_registry.video_hdr_label(track)
 
 
 def _profile_variables(variables: Mapping[str, Any] | None) -> Mapping[str, Any]:
-    return variables if isinstance(variables, Mapping) else {}
+    return keyword_registry.profile_variables(variables)
 
 
 def _codec_alias_key(codec: Any) -> str:
-    return re.sub(r"[^A-Z0-9]+", "", str(codec or "").upper())
+    return keyword_registry.codec_alias_key(codec)
 
 
 def _codec_name(codec: str, variables: Mapping[str, Any] | None = None) -> str:
-    raw_codec = str(codec or "").strip().upper()
-    profile_variables = _profile_variables(variables)
-    codec_names = profile_variables.get("codec_names", {})
-    if isinstance(codec_names, Mapping):
-        expected = _codec_alias_key(raw_codec)
-        for key, value in codec_names.items():
-            if _codec_alias_key(key) == expected:
-                text = str(value or "").strip()
-                if text:
-                    return text
-    return raw_codec
+    return keyword_registry.codec_name(codec, variables)
 
 
 def _track_field_values(
@@ -523,69 +369,16 @@ def _track_field_values(
     source_index_by_file_id: Mapping[str, int] | None = None,
     variables: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    lang = normalize_lang(track.language, track.title)
-    source_lang = normalize_lang(track.orig_language or track.language, track.orig_title or track.title)
-    channels = _channels_from_display(track.orig_display_info or track.display_info)
-    audio_object = _audio_object_from_display(track.orig_display_info or track.display_info)
-    resolution = _video_resolution(track)
-    width, height = resolution or (0, 0)
-    resolution_text = f"{resolution[0]}x{resolution[1]}" if resolution else ""
-    video_flags = _video_characteristic_flags(track)
-    flags = {name: _flag_value(track, name, original=True) for name in FLAG_NAMES}
-    codec = str(track.orig_codec or track.codec or "").strip().upper()
-    values: dict[str, Any] = {
-        "type": track.track_type,
-        "source_index": _source_index_for_track(track, source_index_by_file_id),
-        "track_index": int(track.mkv_tid),
-        "language": lang,
-        "lang": lang,
-        "lang_name": _lang_name(lang),
-        "source_language": source_lang,
-        "title": track.title,
-        "source_title": track.orig_title or track.title,
-        "codec": codec,
-        "codec_raw": codec,
-        "codec_name": _codec_name(codec, variables),
-        "channels": channels,
-        "channel_layout": channels,
-        "audio_object": audio_object,
-        "atmos": audio_object == "Atmos",
-        "dtsx": audio_object == "DTS:X",
-        "codec_atmos": audio_object == "Atmos",
-        "codec_dtsx": audio_object == "DTS:X",
-        "resolution": resolution_text,
-        "width": width,
-        "height": height,
-        "hdr": _video_hdr_label(track),
-        "video_hdr": bool(video_flags & VIDEO_FLAG_HDR),
-        "video_hdr10": bool(video_flags & VIDEO_FLAG_HDR10),
-        "video_hdr10plus": bool(video_flags & VIDEO_FLAG_HDR10PLUS),
-        "video_dolby_vision": bool(video_flags & VIDEO_FLAG_DOLBY_VISION),
-        "video_hlg": bool(video_flags & VIDEO_FLAG_HLG),
-        "video_sdr": bool(video_flags & VIDEO_FLAG_SDR),
-        "video_flags_hex": video_flags_hex(track),
-        "flags": _flags_label(track),
-        "track_tags": sorted(temporary_tags or set()),
-    }
-    for name, value in flags.items():
-        values[f"flag_{name}"] = bool(value)
-    return values
+    return keyword_registry.track_field_values(
+        track,
+        temporary_tags=temporary_tags,
+        source_index_by_file_id=source_index_by_file_id,
+        variables=variables,
+    )
 
 
 def _flags_label(track: TrackEntry) -> str:
-    labels = []
-    mapping = {
-        "default": "Default",
-        "forced": "Forced",
-        "hearing_impaired": "Malentendant",
-        "visual_impaired": "Malvoyant",
-        "original": "Original",
-        "commentary": "Commentaire",
-    }
-    for name, label in mapping.items():
-        if _flag_value(track, name, original=False):
-            labels.append(label)
-    return " ".join(labels)
+    return keyword_registry.flags_label(track)
 
 
 def _clean_rendered_title(text: str) -> str:
@@ -616,15 +409,54 @@ def render_title_pattern(
     def repl(match: re.Match[str]) -> str:
         key = match.group(1).strip()
         if key == "codec":
-            return _codec_name(values.get("codec_raw") or values.get("codec"), variables)
+            raw_codec = values.get("codec_raw") or values.get("codec")
+            raw_text = str(raw_codec or "")
+            aliased = keyword_registry.render_alias(key, raw_text, variables)
+            if aliased != raw_text.strip():
+                return aliased
+            legacy = _codec_name(raw_text, variables)
+            return keyword_registry.render_alias(key, legacy, variables)
         value = values.get(key, "")
         if isinstance(value, bool):
-            return key.removeprefix("flag_").replace("_", " ").title() if value else ""
+            rendered = key.removeprefix("flag_").replace("_", " ").title() if value else ""
+            return keyword_registry.render_alias(key, rendered, variables)
         if isinstance(value, list):
-            return " ".join(str(item) for item in value if str(item).strip())
-        return str(value or "")
+            rendered = " ".join(str(item) for item in value if str(item).strip())
+            return keyword_registry.render_alias(key, rendered, variables)
+        return keyword_registry.render_alias(key, value, variables)
 
     return _clean_rendered_title(re.sub(r"\{([^{}]+)\}", repl, str(pattern or "")))
+
+
+def _compile_expression_condition(condition: Mapping[str, Any]) -> dict[str, Any]:
+    required = bool(condition.get("required", True))
+    weight = condition.get("weight")
+    base_field = str(condition.get("field") or "").strip()
+    base_op = str(condition.get("op") or "is").strip().lower()
+
+    def atom_builder(atom: str) -> Mapping[str, Any] | None:
+        keyword_field = keyword_registry.keyword_to_match_field(atom)
+        if keyword_field:
+            leaf: dict[str, Any] = {
+                "field": keyword_field,
+                "op": "is",
+                "value": True,
+                "required": required,
+            }
+        else:
+            if not base_field:
+                raise CriteriaExpressionError(f"champ requis pour la valeur : {atom}")
+            leaf = {
+                "field": base_field,
+                "op": base_op,
+                "value": str(atom or "").strip(),
+                "required": required,
+            }
+        if weight is not None:
+            leaf["weight"] = weight
+        return leaf
+
+    return compile_criteria_expression(str(condition.get("expr") or ""), atom_builder)
 
 
 def _condition_leaf_result(
@@ -635,6 +467,18 @@ def _condition_leaf_result(
     source_index_by_file_id: Mapping[str, int] | None,
     variables: Mapping[str, Any] | None,
 ) -> ConditionResult:
+    if "expr" in condition:
+        try:
+            compiled = _compile_expression_condition(condition)
+        except CriteriaExpressionError:
+            return ConditionResult(False, False, 0)
+        return _condition_result(
+            compiled,
+            track,
+            temporary_tags=temporary_tags,
+            source_index_by_file_id=source_index_by_file_id,
+            variables=variables,
+        )
     field = str(condition.get("field") or "").strip()
     if not field:
         return ConditionResult(True, True, 0)
@@ -862,7 +706,7 @@ def _rule_matches(
     source_index_by_file_id: Mapping[str, int] | None,
     variables: Mapping[str, Any] | None,
 ) -> tuple[list[tuple[int, TrackEntry]], list[TrackEntry]]:
-    scored: list[tuple[int, TrackEntry]] = []
+    scored: list[tuple[int, TrackEntry, bool]] = []
     for track in tracks:
         tags = temporary_tags_by_entry_id.get(track.entry_id, set())
         result = _condition_result(
@@ -873,16 +717,17 @@ def _rule_matches(
             variables=variables,
         )
         if result.eligible:
-            scored.append((result.score, track))
+            scored.append((result.score, track, result.matched))
     if not scored:
         return [], []
     scope = str(rule.get("scope") or "best").strip().lower()
     if scope == "all":
-        return scored, []
+        return [(score, track) for score, track, matched in scored if matched], []
+    eligible = [(score, track) for score, track, _matched in scored]
     if scope == "first":
-        return [min(scored, key=lambda item: _track_sort_key(item[1], source_index_by_file_id))], []
-    best_score = max(score for score, _track in scored)
-    best = [(score, track) for score, track in scored if score == best_score]
+        return [min(eligible, key=lambda item: _track_sort_key(item[1], source_index_by_file_id))], []
+    best_score = max(score for score, _track in eligible)
+    best = [(score, track) for score, track in eligible if score == best_score]
     if len(best) == 1:
         return best, []
     if _candidate_type(best) == "video" and str(rule.get("tie_break") or "first_source_index") == "first_source_index":
@@ -1613,7 +1458,7 @@ def remux_config_to_decision_profile(
         "name": name or "Profil decisionnel",
         "description": "",
         "tags": [],
-        "variables": {"codec_names": {}},
+        "variables": {"aliases": {}},
         "groups": groups,
         "selection_policy": {
             "disable_unmatched_types": ["video", "audio", "subtitle"] if include_selection else []

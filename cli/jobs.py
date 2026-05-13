@@ -82,6 +82,8 @@ def load_job(overrides: JobOverrides) -> dict[str, Any]:
         job["output"] = overrides.output
     if overrides.output_template:
         job["output_template"] = overrides.output_template
+    if overrides.output_all:
+        job["output_all"] = True
     apply_metadata_overrides(
         job,
         auto_tmdb=overrides.auto_tmdb,

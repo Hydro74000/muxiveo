@@ -135,6 +135,17 @@ def test_cli_schema_outputs_and_writes_json(tmp_path: Path) -> None:
     decision_payload = json.loads(decision_result.stdout)
     assert decision_payload["properties"]["kind"] == {"const": "decision-profile"}
 
+    main_cli_result = subprocess.run(
+        [sys.executable, str(root / "main.py"), "--cli", "schema", "--version", "decision-profile"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert main_cli_result.returncode == 0, main_cli_result.stderr
+    main_cli_payload = json.loads(main_cli_result.stdout)
+    assert main_cli_payload["properties"]["kind"] == {"const": "decision-profile"}
+
 
 def test_cli_profile_preview_on_synthetic_media(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]

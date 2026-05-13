@@ -80,13 +80,36 @@ def _startup_paths_from_argv(argv: list[str]) -> list[Path]:
     return paths
 
 
-def main() -> int:
-    startup_paths = _startup_paths_from_argv(sys.argv)
+def _is_cli_invocation(argv: list[str]) -> bool:
+    return "--cli" in argv[1:]
+
+
+def _cli_args_from_argv(argv: list[str]) -> list[str]:
+    args = list(argv[1:])
+    try:
+        args.remove("--cli")
+    except ValueError:
+        pass
+    return args
+
+
+def _run_cli_entrypoint(argv: list[str]) -> int:
+    from cli.main import main as _cli_main  # noqa: PLC0415
+
+    return _cli_main(_cli_args_from_argv(argv))
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv if argv is None else argv)
+    if _is_cli_invocation(argv):
+        return _run_cli_entrypoint(argv)
+
+    startup_paths = _startup_paths_from_argv(argv)
     app_instance = QApplication.instance()
     if not isinstance(app_instance, QApplication):
         # High-DPI : activé par défaut sous Qt 6, mais on force le scaling exact
         QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps)
-        app = QApplication(sys.argv)
+        app = QApplication(argv)
     else:
         app = app_instance
     app.setApplicationName("Mediarecode")

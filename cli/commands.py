@@ -32,6 +32,11 @@ from cli.serializers import serialize_file_info, serialize_remux_config
 
 def _metadata_job_from_args(args: argparse.Namespace) -> dict:
     job: dict = {}
+    output_template = str(getattr(args, "output_template", "") or "")
+    if output_template:
+        job["output_template"] = output_template
+    if bool(getattr(args, "output_all", False)):
+        job["output_all"] = True
     apply_metadata_overrides(
         job,
         auto_tmdb=bool(getattr(args, "auto_tmdb", False)),
@@ -206,6 +211,7 @@ def cmd_batch(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
             tmdb_id=getattr(args, "tmdb_id", None),
             tmdb_apikey=str(getattr(args, "tmdb_apikey", "") or ""),
             output_template=str(getattr(args, "output_template", "") or ""),
+            output_all=bool(getattr(args, "output_all", False)),
             no_cover=bool(getattr(args, "no_cover", False)),
             no_attach=bool(getattr(args, "no_attach", False)),
             config=config,
@@ -232,6 +238,7 @@ def cmd_batch(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
         tmdb_id=getattr(args, "tmdb_id", None),
         tmdb_apikey=str(getattr(args, "tmdb_apikey", "") or ""),
         output_template=str(getattr(args, "output_template", "") or ""),
+        output_all=bool(getattr(args, "output_all", False)),
         no_cover=bool(getattr(args, "no_cover", False)),
         no_attach=bool(getattr(args, "no_attach", False)),
         config=config,
@@ -288,6 +295,7 @@ def cmd_profile(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
             tmdb_id=getattr(args, "tmdb_id", None),
             tmdb_apikey=str(getattr(args, "tmdb_apikey", "") or ""),
             output_template=str(getattr(args, "output_template", "") or ""),
+            output_all=bool(getattr(args, "output_all", False)),
             no_cover=bool(getattr(args, "no_cover", False)),
             no_attach=bool(getattr(args, "no_attach", False)),
             config=config,

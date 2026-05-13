@@ -15,6 +15,7 @@ from core.profiles.decision import (
     validate_decision_profile,
     video_flags_hex,
 )
+from core.profiles.keywords import KEYWORD_CATEGORIES
 from core.profiles.selectors import (
     SelectorResolutionError,
     apply_track_spec,
@@ -28,6 +29,7 @@ __all__ = [
     "DECISION_PROFILE_KIND",
     "DECISION_PROFILE_VERSION",
     "DECISION_KEYWORDS",
+    "KEYWORD_CATEGORIES",
     "DecisionProfileManager",
     "DecisionProfileV1Result",
     "SelectorResolutionError",

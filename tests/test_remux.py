@@ -1634,23 +1634,149 @@ class TestRemuxPanelDecisionProfiles:
         assert by_field["codec_atmos"]["required"] is False
         dialog.close()
 
-    def test_profile_editor_can_store_codec_name_variables(self, qt_app, tmp_path):
+    def test_profile_editor_title_contains_filters_all_matching_subtitles(self, qt_app, tmp_path):
+        from core.profiles.decision import DecisionProfileManager, apply_decision_profile
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"))
+        dialog._add_template_rule("language")
+        dialog._set_combo_data(dialog._match_type, "subtitle")
+        dialog._match_title.setText("VFQ")
+        dialog._action_language.setText("fr-CA")
+
+        profile = dialog.profile()
+        rule = profile["rules"][0]
+        conditions = rule["match"]["all"]
+        title_condition = next(item for item in conditions if item["field"] == "source_title")
+        tracks = [
+            _track(5, "subtitle", codec="SUBRIP", title="VFF", orig_title="VFF"),
+            _track(6, "subtitle", codec="SUBRIP", title="VFQ Forced", orig_title="VFQ Forced"),
+            _track(7, "subtitle", codec="SUBRIP", title="VFQ", orig_title="VFQ"),
+        ]
+
+        result = apply_decision_profile(profile, tracks)
+
+        assert rule["scope"] == "all"
+        assert title_condition["required"] is True
+        assert result.report["applied_rules"] == 2
+        assert [track.language for track in tracks] == ["fra", "fr-CA", "fr-CA"]
+        dialog.close()
+
+    def test_profile_editor_criteria_expressions_build_nested_match(self, qt_app, tmp_path):
         from core.profiles.decision import DecisionProfileManager
         from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
 
         dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"))
-        dialog._codec_aliases = {"EAC3": "DDP", "AC3": "Dolby Digital"}
-        dialog._refresh_codec_alias_status()
+        dialog._add_template_rule("language")
+        dialog._match_title.setText("(VFQ | VFF) & Forced")
+        dialog._match_codec.setText("EAC3 | AC3")
+        dialog._match_codec_required.setChecked(True)
+        dialog._match_keywords.setText("{atmos} | {dtsx}")
+
+        profile = dialog.profile()
+        conditions = profile["rules"][0]["match"]["all"]
+        title_condition = next(item for item in conditions if "all" in item and any("source_title" in str(child) for child in item["all"]))
+        codec_condition = next(item for item in conditions if "any" in item and any(child.get("field") == "codec" for child in item["any"]))
+        keyword_condition = next(item for item in conditions if "any" in item and any(child.get("field") == "codec_atmos" for child in item["any"]))
+
+        assert title_condition["all"][0]["any"][0]["value"] == "VFQ"
+        assert title_condition["all"][0]["any"][1]["value"] == "VFF"
+        assert title_condition["all"][1]["value"] == "Forced"
+        assert [item["value"] for item in codec_condition["any"]] == ["EAC3", "AC3"]
+        assert all(item["required"] is True for item in codec_condition["any"])
+        assert {item["field"] for item in keyword_condition["any"]} == {"codec_atmos", "codec_dtsx"}
+        dialog.close()
+
+    def test_profile_editor_title_contains_expression_can_or_values(self, qt_app, tmp_path):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"))
+        dialog._add_template_rule("language")
+        dialog._match_title.setText("VFQ | VFF")
+
+        profile = dialog.profile()
+        title_condition = next(item for item in profile["rules"][0]["match"]["all"] if "any" in item)
+
+        assert [item["value"] for item in title_condition["any"]] == ["VFQ", "VFF"]
+        assert all(item["field"] == "source_title" for item in title_condition["any"])
+        dialog.close()
+
+    def test_profile_editor_title_expression_supports_literal_operator_escapes(self, qt_app, tmp_path):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"))
+        dialog._add_template_rule("language")
+        dialog._match_title.setText(r'"A | B" | Dolby \& DTS')
+
+        profile = dialog.profile()
+        title_condition = next(item for item in profile["rules"][0]["match"]["all"] if "any" in item)
+
+        assert [item["value"] for item in title_condition["any"]] == ["A | B", "Dolby & DTS"]
+        dialog.close()
+
+    def test_profile_editor_invalid_expression_blocks_profile_and_preview(self, qt_app, tmp_path):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"))
+        dialog._add_template_rule("language")
+        dialog._match_title.setText("VFQ |")
+
+        with pytest.raises(ValueError):
+            dialog.profile()
+        dialog._refresh_preview()
+
+        assert "Expression critères invalide" in dialog._preview.toPlainText()
+        dialog.close()
+
+    def test_profile_editor_can_store_generic_alias_variables(self, qt_app, tmp_path):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"))
+        dialog._aliases = {
+            "*": {"EAC3": "DDP"},
+            "lang_name": {"French": "Français"},
+        }
+        dialog._refresh_alias_status()
 
         profile = dialog.profile()
 
-        assert profile["variables"]["codec_names"] == {
-            "EAC3": "DDP",
-            "AC3": "Dolby Digital",
+        assert profile["variables"]["aliases"] == {
+            "*": {"EAC3": "DDP"},
+            "lang_name": {"French": "Français"},
         }
-        status = dialog._codec_aliases_status.text()
+        assert "codec_names" not in profile["variables"]
+        status = dialog._aliases_status.text()
         assert "2" in status
         assert "alias" in status
+        dialog.close()
+
+    def test_profile_editor_alias_parser_supports_global_scoped_and_legacy_codec_names(self, qt_app, tmp_path):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        parsed = DecisionProfileEditorDialog._parse_aliases("EAC3=DDP\nlang_name:French=Français\nDTS:X=DTSX")
+        formatted = DecisionProfileEditorDialog._format_aliases(parsed)
+        dialog = DecisionProfileEditorDialog(
+            manager=DecisionProfileManager(tmp_path / "profiles"),
+            profile={
+                "version": 1,
+                "kind": "decision-profile",
+                "name": "Legacy",
+                "variables": {"codec_names": {"AC3": "Dolby Digital"}},
+                "rules": [],
+            },
+        )
+
+        assert parsed["*"]["EAC3"] == "DDP"
+        assert parsed["*"]["DTS:X"] == "DTSX"
+        assert parsed["lang_name"]["French"] == "Français"
+        assert "lang_name:French=Français" in formatted
+        assert dialog._aliases["codec"]["AC3"] == "Dolby Digital"
+        assert dialog._aliases["codec_name"]["AC3"] == "Dolby Digital"
         dialog.close()
 
     def test_profile_editor_can_load_and_delete_existing_profile(self, qt_app, tmp_path, monkeypatch):

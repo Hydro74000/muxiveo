@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 from core.i18n import translate_text
 from core.profiles.decision import (
     DecisionProfileManager,
+    FLAG_NAMES,
     VIDEO_FLAG_DOLBY_VISION,
     VIDEO_FLAG_HDR,
     VIDEO_FLAG_HDR10PLUS,
@@ -43,60 +44,21 @@ from core.profiles.decision import (
     remux_config_to_decision_profile,
     validate_decision_profile,
 )
+from core.profiles.expressions import (
+    CriteriaExpressionError as _CriteriaExpressionError,
+    CriteriaExpressionParser as _CriteriaExpressionParser,
+    criteria_ast_condition,
+)
+from core.profiles.keywords import KEYWORD_CATEGORIES, keyword_to_match_field
 from core.workflows.remux_models import RemuxConfig, TrackEntry
 from ui.design_system import font_px as _font_px, scale as _scale
 from ui.panels.remux_panel.theme import _C
 
-
-KEYWORD_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Piste", ("type", "source_index", "track_index")),
-    ("Langue", ("language", "lang", "lang_name")),
-    ("Source", ("title", "source_title")),
-    (
-        "Audio",
-        (
-            "codec",
-            "codec_raw",
-            "codec_name",
-            "channels",
-            "channel_layout",
-            "audio_object",
-            "atmos",
-            "dtsx",
-            "codec_atmos",
-            "codec_dtsx",
-        ),
-    ),
-    (
-        "Vidéo",
-        (
-            "resolution",
-            "width",
-            "height",
-            "hdr",
-            "video_hdr",
-            "video_hdr10",
-            "video_hdr10plus",
-            "video_dolby_vision",
-            "video_hlg",
-            "video_sdr",
-            "video_flags_hex",
-        ),
-    ),
-    (
-        "Flags",
-        (
-            "flags",
-            "flag_enabled",
-            "flag_default",
-            "flag_forced",
-            "flag_hearing_impaired",
-            "flag_visual_impaired",
-            "flag_original",
-            "flag_commentary",
-        ),
-    ),
-)
+KEYWORD_CATEGORIES_FLAT = {
+    keyword
+    for _category, keywords in KEYWORD_CATEGORIES
+    for keyword in keywords
+}
 
 
 class KeywordLineEdit(QLineEdit):
@@ -199,32 +161,32 @@ def blank_decision_profile() -> dict[str, Any]:
             {"id": "subtitle", "label": "Sous-titres", "enabled": True, "priority": 100},
             {"id": "order", "label": "Ordre", "enabled": True, "priority": 10},
         ],
-        "variables": {"codec_names": {}},
+        "variables": {"aliases": {}},
         "rules": [],
     }
 
 
-class _CodecAliasDialog(QDialog):
-    def __init__(self, aliases: dict[str, str], *, parent: QWidget | None = None) -> None:
+class _AliasDialog(QDialog):
+    def __init__(self, aliases: dict[str, dict[str, str]], *, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle(translate_text("Aliases codecs"))
+        self.setWindowTitle(translate_text("Aliases"))
         self.setModal(True)
         self.resize(_scale(520), _scale(340))
         root = QVBoxLayout(self)
         root.setContentsMargins(_scale(14), _scale(14), _scale(14), _scale(10))
         root.setSpacing(_scale(8))
-        root.addWidget(QLabel(translate_text("Une ligne par alias codec :")))
+        root.addWidget(QLabel(translate_text("Une ligne par alias :")))
         self._edit = QPlainTextEdit()
-        self._edit.setPlaceholderText(translate_text("EAC3=DDP\nAC3=Dolby Digital\nTRUEHD=Dolby TrueHD"))
-        self._edit.setPlainText(DecisionProfileEditorDialog._format_codec_aliases(aliases))
+        self._edit.setPlaceholderText(translate_text("EAC3=DDP\nlang_name:French=Français\naudio_object:Atmos=Dolby Atmos"))
+        self._edit.setPlainText(DecisionProfileEditorDialog._format_aliases(aliases))
         root.addWidget(self._edit, stretch=1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
-    def aliases(self) -> dict[str, str]:
-        return DecisionProfileEditorDialog._parse_codec_aliases(self._edit.toPlainText())
+    def aliases(self) -> dict[str, dict[str, str]]:
+        return DecisionProfileEditorDialog._parse_aliases(self._edit.toPlainText())
 
 
 class DecisionProfileEditorDialog(QDialog):
@@ -244,7 +206,8 @@ class DecisionProfileEditorDialog(QDialog):
         self._current_tracks = current_tracks or []
         self._source_index_by_file_id = source_index_by_file_id or {}
         self._profile = copy.deepcopy(profile) if profile else blank_decision_profile()
-        self._codec_aliases: dict[str, str] = {}
+        self._aliases: dict[str, dict[str, str]] = {}
+        self._match_error = ""
         self._selected_rule_index = -1
 
         self.setWindowTitle(translate_text("Éditeur de profil"))
@@ -291,17 +254,20 @@ class DecisionProfileEditorDialog(QDialog):
 
     def profile(self) -> dict[str, Any]:
         self._store_current_rule()
+        if self._match_error:
+            raise ValueError(translate_text("Expression critères invalide : {err}", err=self._match_error))
         self._profile["name"] = self._name_edit.text().strip() or "Nouveau profil"
         self._profile["description"] = self._description_edit.text().strip()
         self._profile["tags"] = [item.strip() for item in self._tags_edit.text().split(",") if item.strip()]
         variables = copy.deepcopy(self._profile.get("variables", {}))
         if not isinstance(variables, dict):
             variables = {}
-        codec_names = dict(self._codec_aliases)
-        if codec_names:
-            variables["codec_names"] = codec_names
+        aliases = self._normalized_aliases(self._aliases)
+        variables.pop("codec_names", None)
+        if aliases:
+            variables["aliases"] = aliases
         else:
-            variables.pop("codec_names", None)
+            variables.pop("aliases", None)
         if variables:
             self._profile["variables"] = variables
         else:
@@ -333,21 +299,21 @@ class DecisionProfileEditorDialog(QDialog):
         self._profile_selector.setMinimumWidth(_scale(190))
         load_profile_btn = QPushButton(translate_text("Charger"))
         delete_profile_btn = QPushButton(translate_text("Supprimer profil"))
-        codec_aliases_btn = QPushButton(translate_text("Aliases codecs"))
-        self._codec_aliases_status = QLabel()
+        aliases_btn = QPushButton(translate_text("Aliases"))
+        self._aliases_status = QLabel()
         blank_btn.clicked.connect(self._use_blank_profile)
         capture_btn.clicked.connect(self._capture_current_config)
         load_profile_btn.clicked.connect(self._load_selected_profile)
         delete_profile_btn.clicked.connect(self._delete_selected_profile)
-        codec_aliases_btn.clicked.connect(self._edit_codec_aliases)
+        aliases_btn.clicked.connect(self._edit_aliases)
         mode_row.addWidget(blank_btn)
         mode_row.addWidget(capture_btn)
         mode_row.addWidget(QLabel(translate_text("Profil existant")))
         mode_row.addWidget(self._profile_selector)
         mode_row.addWidget(load_profile_btn)
         mode_row.addWidget(delete_profile_btn)
-        mode_row.addWidget(codec_aliases_btn)
-        mode_row.addWidget(self._codec_aliases_status)
+        mode_row.addWidget(aliases_btn)
+        mode_row.addWidget(self._aliases_status)
         mode_row.addStretch()
         root.addLayout(mode_row)
         self._refresh_profile_selector(select_name=str(self._profile.get("name") or ""))
@@ -574,51 +540,107 @@ class DecisionProfileEditorDialog(QDialog):
         self._description_edit.setText(str(self._profile.get("description") or ""))
         self._tags_edit.setText(", ".join(str(tag) for tag in self._profile.get("tags", []) if str(tag).strip()))
         variables = self._profile.get("variables", {})
+        aliases = variables.get("aliases", {}) if isinstance(variables, dict) else {}
+        self._aliases = self._parse_aliases(self._format_aliases(aliases))
         codec_names = variables.get("codec_names", {}) if isinstance(variables, dict) else {}
-        self._codec_aliases = self._parse_codec_aliases(self._format_codec_aliases(codec_names))
-        self._refresh_codec_alias_status()
+        self._merge_legacy_codec_names(codec_names)
+        self._refresh_alias_status()
 
-    def _edit_codec_aliases(self) -> None:
-        dialog = _CodecAliasDialog(self._codec_aliases, parent=self)
+    def _edit_aliases(self) -> None:
+        dialog = _AliasDialog(self._aliases, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        self._codec_aliases = dialog.aliases()
-        self._refresh_codec_alias_status()
+        self._aliases = dialog.aliases()
+        self._refresh_alias_status()
         self._refresh_preview()
 
-    def _refresh_codec_alias_status(self) -> None:
-        if not hasattr(self, "_codec_aliases_status"):
+    def _refresh_alias_status(self) -> None:
+        if not hasattr(self, "_aliases_status"):
             return
-        count = len(self._codec_aliases)
+        count = sum(len(section) for section in self._normalized_aliases(self._aliases).values())
         if count:
-            self._codec_aliases_status.setText(translate_text("{count} alias codec", count=count))
+            self._aliases_status.setText(translate_text("{count} alias", count=count))
         else:
-            self._codec_aliases_status.setText("")
+            self._aliases_status.setText("")
 
     @staticmethod
-    def _parse_codec_aliases(text: str) -> dict[str, str]:
-        aliases: dict[str, str] = {}
+    def _alias_scope_key(text: str) -> str:
+        return str(text or "").strip().strip("{}")
+
+    @classmethod
+    def _is_alias_scope(cls, text: str) -> bool:
+        scope = cls._alias_scope_key(text)
+        return scope == "*" or scope in KEYWORD_CATEGORIES_FLAT
+
+    @classmethod
+    def _parse_aliases(cls, text: str) -> dict[str, dict[str, str]]:
+        aliases: dict[str, dict[str, str]] = {}
         for raw_line in str(text or "").replace(";", "\n").splitlines():
             line = raw_line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
-            key, value = line.split("=", 1)
-            key = key.strip().upper()
+            key_part, value = line.split("=", 1)
+            key_part = key_part.strip()
             value = value.strip()
+            scope = "*"
+            key = key_part
+            if ":" in key_part:
+                possible_scope, possible_key = key_part.split(":", 1)
+                if cls._is_alias_scope(possible_scope):
+                    scope = cls._alias_scope_key(possible_scope) or "*"
+                    key = possible_key.strip()
             if key and value:
-                aliases[key] = value
-        return aliases
+                aliases.setdefault(scope, {})[key] = value
+        return cls._normalized_aliases(aliases)
 
     @staticmethod
-    def _format_codec_aliases(codec_names: Any) -> str:
-        if not isinstance(codec_names, dict):
+    def _format_aliases(aliases: Any) -> str:
+        if not isinstance(aliases, dict):
             return ""
-        lines = []
-        for key in sorted(codec_names):
-            value = str(codec_names.get(key) or "").strip()
-            if str(key).strip() and value:
-                lines.append(f"{str(key).strip().upper()}={value}")
+        lines: list[str] = []
+        normalized = DecisionProfileEditorDialog._normalized_aliases(aliases)
+        for scope in sorted(normalized, key=lambda item: (item != "*", item)):
+            for key in sorted(normalized[scope]):
+                value = normalized[scope][key]
+                prefix = "" if scope == "*" else f"{scope}:"
+                lines.append(f"{prefix}{key}={value}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _normalized_aliases(aliases: Any) -> dict[str, dict[str, str]]:
+        if not isinstance(aliases, dict):
+            return {}
+        normalized: dict[str, dict[str, str]] = {}
+        flat_values = all(not isinstance(value, dict) for value in aliases.values())
+        if flat_values:
+            aliases = {"*": aliases}
+        for raw_scope, raw_items in aliases.items():
+            scope = str(raw_scope or "*").strip().strip("{}") or "*"
+            if not isinstance(raw_items, dict):
+                continue
+            for raw_key, raw_value in raw_items.items():
+                key = str(raw_key or "").strip()
+                value = str(raw_value or "").strip()
+                if key and value:
+                    normalized.setdefault(scope, {})[key] = value
+        return normalized
+
+    def _merge_legacy_codec_names(self, codec_names: Any) -> None:
+        if not isinstance(codec_names, dict):
+            return
+        for key, value in codec_names.items():
+            source = str(key or "").strip()
+            replacement = str(value or "").strip()
+            if not source or not replacement:
+                continue
+            self._aliases.setdefault("codec", {}).setdefault(source, replacement)
+            self._aliases.setdefault("codec_name", {}).setdefault(source, replacement)
+        self._aliases = self._normalized_aliases(self._aliases)
+
+    # Backward-compatible names used by a few older tests/plugins.
+    _parse_codec_aliases = _parse_aliases
+    _format_codec_aliases = _format_aliases
+    _refresh_codec_alias_status = _refresh_alias_status
 
     def _refresh_profile_selector(self, *, select_name: str = "") -> None:
         if not hasattr(self, "_profile_selector"):
@@ -779,7 +801,11 @@ class DecisionProfileEditorDialog(QDialog):
         rule["priority"] = int(self._rule_priority.value())
         rule["scope"] = str(self._rule_scope.currentData() or "best")
         rule["write_mode"] = str(self._rule_write_mode.currentData() or "priority")
-        rule["match"] = self._simple_match_payload()
+        try:
+            rule["match"] = self._simple_match_payload()
+            self._match_error = ""
+        except _CriteriaExpressionError as exc:
+            self._match_error = str(exc)
         rule["actions"] = self._simple_actions_payload(rule)
         self._refresh_rule_list_item(self._selected_rule_index)
 
@@ -797,29 +823,41 @@ class DecisionProfileEditorDialog(QDialog):
             items.append({"field": "type", "op": "is", "value": track_type, "required": True})
         language = self._match_language.text().strip()
         if language:
-            keyword_conditions = self._keyword_conditions_if_field_is_tokens(language)
-            if keyword_conditions:
-                items.extend(keyword_conditions)
-            else:
-                items.append({"field": "language", "op": "is", "value": language, "required": True})
+            items.append(
+                self._criteria_expression_condition(
+                    language,
+                    lambda atom: self._text_or_keyword_condition(atom, field="language", op="is", required=True),
+                    label=translate_text("Langue"),
+                )
+            )
         codec = self._match_codec.text().strip()
         if codec:
             codec_required = self._match_codec_required.isChecked()
-            keyword_conditions = self._keyword_conditions_if_field_is_tokens(codec, required=codec_required)
-            if keyword_conditions:
-                items.extend(keyword_conditions)
-            else:
-                items.append({"field": "codec", "op": "is", "value": codec, "required": codec_required})
+            items.append(
+                self._criteria_expression_condition(
+                    codec,
+                    lambda atom: self._text_or_keyword_condition(atom, field="codec", op="is", required=codec_required),
+                    label="Codec",
+                )
+            )
         title = self._match_title.text().strip()
         if title:
-            keyword_conditions = self._keyword_conditions_if_field_is_tokens(title)
-            if keyword_conditions:
-                items.extend(keyword_conditions)
-            else:
-                items.append({"field": "source_title", "op": "contains", "value": title, "required": False})
-        for flag in [value.strip() for value in self._match_flags.text().split(",") if value.strip()]:
-            normalized = flag.removeprefix("{").removesuffix("}").removeprefix("flag_")
-            items.append({"field": f"flag_{normalized}", "op": "is", "value": True, "required": False})
+            items.append(
+                self._criteria_expression_condition(
+                    title,
+                    lambda atom: self._text_or_keyword_condition(atom, field="source_title", op="contains", required=True),
+                    label=translate_text("Titre contient"),
+                )
+            )
+        flags = self._match_flags.text().strip()
+        if flags:
+            items.append(
+                self._criteria_expression_condition(
+                    self._normalize_list_expression(flags),
+                    lambda atom: self._flag_condition(atom, required=False),
+                    label="Flags",
+                )
+            )
         width = int(self._match_width.value())
         height = int(self._match_height.value())
         if width > 0:
@@ -855,9 +893,78 @@ class DecisionProfileEditorDialog(QDialog):
                     "required": False,
                 }
             )
-        items.extend(self._keyword_match_conditions(self._match_keywords.text(), required=True))
-        items.extend(self._keyword_match_conditions(self._match_preferred_keywords.text(), required=False))
+        keywords = self._match_keywords.text().strip()
+        if keywords:
+            items.append(
+                self._criteria_expression_condition(
+                    self._normalize_list_expression(keywords),
+                    lambda atom: self._keyword_condition(atom, required=True),
+                    label=translate_text("Keywords critères"),
+                )
+            )
+        preferred_keywords = self._match_preferred_keywords.text().strip()
+        if preferred_keywords:
+            items.append(
+                self._criteria_expression_condition(
+                    self._normalize_list_expression(preferred_keywords),
+                    lambda atom: self._keyword_condition(atom, required=False),
+                    label=translate_text("Keywords préférés"),
+                )
+            )
         return {"all": items} if items else {"all": []}
+
+    def _criteria_expression_condition(self, text: str, atom_builder, *, label: str) -> dict[str, Any]:
+        try:
+            ast = _CriteriaExpressionParser(text).parse()
+            return criteria_ast_condition(ast, atom_builder)
+        except _CriteriaExpressionError as exc:
+            raise _CriteriaExpressionError(f"{label}: {exc}") from exc
+
+    def _criteria_ast_condition(self, ast: tuple[str, Any], atom_builder) -> dict[str, Any]:
+        return criteria_ast_condition(ast, atom_builder)
+
+    @staticmethod
+    def _normalize_list_expression(text: str) -> str:
+        output = []
+        quote = ""
+        escaped = False
+        for char in str(text or ""):
+            if escaped:
+                output.append(char)
+                escaped = False
+                continue
+            if char == "\\" and quote:
+                output.append(char)
+                escaped = True
+                continue
+            if char in {"'", '"'}:
+                quote = "" if quote == char else (char if not quote else quote)
+                output.append(char)
+                continue
+            output.append("&" if char == "," and not quote else char)
+        return "".join(output)
+
+    def _text_or_keyword_condition(self, atom: str, *, field: str, op: str, required: bool) -> dict[str, Any]:
+        keyword_field = self._keyword_to_match_field(atom)
+        if keyword_field:
+            return {"field": keyword_field, "op": "is", "value": True, "required": required}
+        return {"field": field, "op": op, "value": self._unwrapped_atom(atom), "required": required}
+
+    def _flag_condition(self, atom: str, *, required: bool) -> dict[str, Any]:
+        key = self._unwrapped_atom(atom).removeprefix("flag_")
+        if key not in FLAG_NAMES:
+            raise _CriteriaExpressionError(translate_text("flag inconnu : {value}", value=atom))
+        return {"field": f"flag_{key}", "op": "is", "value": True, "required": required}
+
+    def _keyword_condition(self, atom: str, *, required: bool) -> dict[str, Any]:
+        field = self._keyword_to_match_field(atom)
+        if not field:
+            raise _CriteriaExpressionError(translate_text("keyword inconnu : {value}", value=atom))
+        return {"field": field, "op": "is", "value": True, "required": required}
+
+    @staticmethod
+    def _unwrapped_atom(atom: str) -> str:
+        return str(atom or "").strip().strip("{}").strip()
 
     def _build_keyword_menu(self) -> QMenu:
         menu = QMenu(self)
@@ -897,30 +1004,7 @@ class DecisionProfileEditorDialog(QDialog):
 
     @staticmethod
     def _keyword_to_match_field(keyword: str) -> str:
-        key = str(keyword or "").strip().strip("{}")
-        aliases = {
-            "hdr": "video_hdr",
-            "dolby_vision": "video_dolby_vision",
-            "dovi": "video_dolby_vision",
-            "hdr10plus": "video_hdr10plus",
-            "atmos": "codec_atmos",
-            "dtsx": "codec_dtsx",
-        }
-        key = aliases.get(key, key)
-        if key.startswith("flag_"):
-            return key
-        if key in {
-            "codec_atmos",
-            "codec_dtsx",
-            "video_hdr",
-            "video_hdr10",
-            "video_hdr10plus",
-            "video_dolby_vision",
-            "video_hlg",
-            "video_sdr",
-        }:
-            return key
-        return ""
+        return keyword_to_match_field(keyword)
 
     def _simple_actions_payload(self, existing_rule: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         managed = {"set_enabled", "set_language", "set_title", "add_track_tags"}
@@ -955,15 +1039,35 @@ class DecisionProfileEditorDialog(QDialog):
         for item in items if isinstance(items, list) else []:
             if not isinstance(item, dict):
                 continue
+            expression = self._condition_expression(item, self._language_atom)
+            if expression:
+                flat["language"] = expression
+                continue
+            expression = self._condition_expression(item, self._codec_atom)
+            if expression:
+                flat["codec"] = expression
+                flat["codec_required"] = self._condition_required(item)
+                continue
+            expression = self._condition_expression(item, self._title_atom)
+            if expression:
+                flat["title_contains"] = expression
+                continue
+            expression = self._condition_expression(item, self._flag_atom)
+            if expression:
+                flat["flags"].append(expression)
+                continue
+            expression = self._condition_expression(item, lambda leaf: self._keyword_atom(leaf, required=True))
+            if expression:
+                flat["keywords"].append(expression)
+                continue
+            expression = self._condition_expression(item, lambda leaf: self._keyword_atom(leaf, required=False))
+            if expression:
+                flat["preferred_keywords"].append(expression)
+                continue
             field = str(item.get("field") or "")
             value = item.get("value")
             if field == "type":
                 flat["type"] = value
-            elif field == "language":
-                flat["language"] = value
-            elif field == "codec":
-                flat["codec"] = value
-                flat["codec_required"] = bool(item.get("required", False))
             elif field == "resolution" and isinstance(value, dict):
                 flat["width"] = int(value.get("width") or 0)
                 flat["height"] = int(value.get("height") or 0)
@@ -996,6 +1100,101 @@ class DecisionProfileEditorDialog(QDialog):
                 target = "keywords" if bool(item.get("required", True)) else "preferred_keywords"
                 flat[target].append("{" + field + "}")
         return flat
+
+    def _condition_expression(self, condition: Any, atom_builder) -> str:
+        parsed = self._condition_expression_parts(condition, atom_builder)
+        return parsed[0] if parsed else ""
+
+    def _condition_expression_parts(self, condition: Any, atom_builder) -> tuple[str, str] | None:
+        if not isinstance(condition, dict):
+            return None
+        if "all" in condition or "any" in condition:
+            op = "all" if "all" in condition else "any"
+            raw_items = condition.get(op)
+            if not isinstance(raw_items, list) or not raw_items:
+                return None
+            parts: list[tuple[str, str]] = []
+            for item in raw_items:
+                parsed = self._condition_expression_parts(item, atom_builder)
+                if not parsed:
+                    return None
+                parts.append(parsed)
+            separator = " & " if op == "all" else " | "
+            rendered_parts = []
+            for text, child_op in parts:
+                if op == "all" and child_op == "any":
+                    rendered_parts.append(f"({text})")
+                else:
+                    rendered_parts.append(text)
+            return separator.join(rendered_parts), op
+        atom = atom_builder(condition)
+        if not atom:
+            return None
+        return self._quote_expression_atom(atom), "leaf"
+
+    @staticmethod
+    def _quote_expression_atom(atom: str) -> str:
+        text = str(atom or "").strip()
+        if not text:
+            return ""
+        if any(char in text for char in "&|()"):
+            escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+            return f'"{escaped}"'
+        return text
+
+    @staticmethod
+    def _condition_required(condition: Any) -> bool:
+        if isinstance(condition, dict) and "required" in condition:
+            return bool(condition.get("required", False))
+        if isinstance(condition, dict):
+            for key in ("all", "any"):
+                items = condition.get(key)
+                if isinstance(items, list):
+                    return any(DecisionProfileEditorDialog._condition_required(item) for item in items)
+        return False
+
+    @staticmethod
+    def _language_atom(condition: dict[str, Any]) -> str:
+        if condition.get("field") == "language" and condition.get("op") == "is":
+            return str(condition.get("value") or "")
+        return ""
+
+    @staticmethod
+    def _codec_atom(condition: dict[str, Any]) -> str:
+        if condition.get("field") == "codec" and condition.get("op") == "is":
+            return str(condition.get("value") or "")
+        return ""
+
+    @staticmethod
+    def _title_atom(condition: dict[str, Any]) -> str:
+        if condition.get("field") in {"title", "source_title"} and condition.get("op") == "contains":
+            return str(condition.get("value") or "")
+        return ""
+
+    @staticmethod
+    def _flag_atom(condition: dict[str, Any]) -> str:
+        field = str(condition.get("field") or "")
+        if field.startswith("flag_") and condition.get("value") is True and not bool(condition.get("required", True)):
+            return field.removeprefix("flag_")
+        return ""
+
+    @staticmethod
+    def _keyword_atom(condition: dict[str, Any], *, required: bool) -> str:
+        field = str(condition.get("field") or "")
+        if field in {
+            "codec_atmos",
+            "codec_dtsx",
+            "video_hdr",
+            "video_hdr10",
+            "video_hdr10plus",
+            "video_dolby_vision",
+            "video_hlg",
+            "video_sdr",
+        } and condition.get("value") is True and bool(condition.get("required", True)) is required:
+            return "{" + field + "}"
+        if field.startswith("flag_") and condition.get("value") is True and bool(condition.get("required", True)) is required:
+            return "{" + field + "}"
+        return ""
 
     @staticmethod
     def _parse_video_flags(value: Any) -> int:
@@ -1049,9 +1248,9 @@ class DecisionProfileEditorDialog(QDialog):
         if kind == "video":
             base.update(group_id="video", label=translate_text("Sélection vidéo"), match={"all": [{"field": "type", "op": "is", "value": "video", "required": True}]}, actions=[{"type": "set_enabled", "value": True}])
         elif kind == "language":
-            base.update(label=translate_text("Garder langue"), match={"all": [{"field": "language", "op": "is", "value": "fr-FR", "required": True}]}, actions=[{"type": "set_enabled", "value": True}])
+            base.update(label=translate_text("Garder langue"), scope="all", match={"all": [{"field": "language", "op": "is", "value": "fr-FR", "required": True}]}, actions=[{"type": "set_enabled", "value": True}])
         elif kind == "no_commentary":
-            base.update(label=translate_text("Exclure commentaire"), match={"all": [{"field": "source_title", "op": "contains", "value": "comment", "required": False}, {"field": "flag_commentary", "op": "is", "value": True, "required": False}]}, actions=[{"type": "set_enabled", "value": False}])
+            base.update(label=translate_text("Exclure commentaire"), scope="all", match={"any": [{"field": "source_title", "op": "contains", "value": "comment", "required": True}, {"field": "flag_commentary", "op": "is", "value": True, "required": True}]}, actions=[{"type": "set_enabled", "value": False}])
         elif kind == "rename":
             base.update(label=translate_text("Renommer par pattern"), scope="all", actions=[{"type": "set_title", "pattern": "{lang_name} {codec} {channels} {audio_object}"}])
         elif kind == "flags":

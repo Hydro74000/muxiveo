@@ -269,7 +269,10 @@ def resolve_final_output(
     job: dict[str, Any],
     sources: list[SourceInput],
     details: MediaDetails | None,
+    tracks: list[TrackEntry] | None = None,
+    final_track_order: list[tuple[int, int, str]] | None = None,
     preview: bool = False,
+    variables: dict[str, Any] | None = None,
 ) -> Path:
     """Calcule le chemin de sortie final, en rendant le template si présent.
 
@@ -280,7 +283,17 @@ def resolve_final_output(
         return Path(str(cli_output)).expanduser()
     template = str(job.get("output_template") or "").strip()
     if template and sources:
-        ctx = build_output_context(sources[0].path, details)
+        template_variables = variables if isinstance(variables, dict) else job.get("variables")
+        if not isinstance(template_variables, dict):
+            template_variables = {}
+        ctx = build_output_context(
+            sources[0].path,
+            details,
+            tracks=tracks,
+            track_order=final_track_order,
+            output_all=bool(job.get("output_all", False)),
+            variables=template_variables,
+        )
         rendered = render_output_template(template, ctx)
         rendered_path = Path(rendered)
         if rendered_path.is_absolute():
@@ -331,11 +344,15 @@ def build_remux_config(
     except TmdbError as exc:
         raise CliError(str(exc), EXIT_VALIDATION) from exc
 
+    final_track_order = track_order(job, tracks, strict_selectors=strict_selectors)
     output = resolve_final_output(
         cli_output=cli_output,
         job=job,
         sources=sources,
         details=tmdb_details,
+        tracks=tracks,
+        final_track_order=final_track_order,
+        variables=job.get("variables") if isinstance(job.get("variables"), dict) else None,
     )
 
     tag_overrides = job.get("tag_overrides", None)
@@ -346,7 +363,7 @@ def build_remux_config(
     return RemuxConfig(
         sources=sources,
         output=output,
-        track_order=track_order(job, tracks, strict_selectors=strict_selectors),
+        track_order=final_track_order,
         keep_chapters=keep_chapters,
         chapter_overrides=chapter_overrides,
         chapter_source_index=chapter_source_index,

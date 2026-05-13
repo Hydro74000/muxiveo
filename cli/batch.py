@@ -51,10 +51,13 @@ def _job_for_source(
     output: str | None = None,
     output_dir: str | None = None,
     output_template: str = "",
+    output_all: bool = False,
 ) -> dict[str, Any]:
     job: dict[str, Any] = {"sources": [{"path": str(path)}]}
     if output_template:
         job["output_template"] = output_template
+        if output_all:
+            job["output_all"] = True
         if output_dir:
             job["_batch_output_dir"] = str(Path(output_dir).expanduser())
         job["_batch_generated_output"] = True
@@ -94,6 +97,7 @@ def discover_direct_batch_jobs(
     include_patterns: list[str] | None = None,
     exclude_patterns: list[str] | None = None,
     output_template: str = "",
+    output_all: bool = False,
 ) -> BatchDiscovery:
     jobs: list[dict[str, Any]] = []
     scanned = 0
@@ -103,7 +107,7 @@ def discover_direct_batch_jobs(
         path = Path(str(raw)).expanduser()
         scanned += 1
         output = _generated_output_path(output_dir, Path(path.name)) if not output_template else None
-        jobs.append(_job_for_source(path, output=output, output_dir=output_dir, output_template=output_template))
+        jobs.append(_job_for_source(path, output=output, output_dir=output_dir, output_template=output_template, output_all=output_all))
 
     for raw_dir in input_dirs or []:
         root = Path(str(raw_dir)).expanduser()
@@ -127,7 +131,7 @@ def discover_direct_batch_jobs(
             if _matches_any(relative, exclude_patterns):
                 continue
             output = _generated_output_path(output_dir, relative) if not output_template else None
-            jobs.append(_job_for_source(path, output=output, output_dir=output_dir, output_template=output_template))
+            jobs.append(_job_for_source(path, output=output, output_dir=output_dir, output_template=output_template, output_all=output_all))
 
     _assert_unique_generated_outputs(jobs)
     return BatchDiscovery(
@@ -188,6 +192,7 @@ def run_batch(
     tmdb_id: int | None = None,
     tmdb_apikey: str = "",
     output_template: str = "",
+    output_all: bool = False,
     no_cover: bool = False,
     no_attach: bool = False,
 ) -> int:
@@ -214,6 +219,7 @@ def run_batch(
             include_patterns=include_patterns,
             exclude_patterns=exclude_patterns,
             output_template=output_template,
+            output_all=output_all,
         )
         if not discovery.jobs:
             raise CliError("Aucun fichier vidéo compatible trouvé pour le batch.", EXIT_ARGS)
@@ -249,9 +255,13 @@ def run_batch(
         )
         if output_template and "output_template" not in job:
             job["output_template"] = output_template
+            if output_all:
+                job["output_all"] = True
             if output_dir:
                 job["_batch_output_dir"] = str(Path(output_dir).expanduser())
             job["_batch_generated_output"] = True
+        elif output_all:
+            job["output_all"] = True
         input_label = job_primary_input(job)
         output_label = str(job.get("output") or "")
         logger.emit(

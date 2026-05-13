@@ -299,6 +299,35 @@ Exemple : pour une piste audio française en EAC3, avec Atmos si disponible :
 
 Si aucune piste Atmos n'existe, Mediarecode peut quand même garder la meilleure piste française EAC3.
 
+#### Expressions de critères
+
+Les champs texte de critères acceptent une mini-syntaxe commune au GUI et au CLI :
+
+- `&` signifie **AND**
+- `|` signifie **OR**
+- les parenthèses fixent la priorité
+
+Exemples :
+
+```text
+VFQ | VFF
+(VFQ | VFF) & Forced
+EAC3 | AC3
+{atmos} | {dtsx}
+```
+
+Les champs de critères restent combinés entre eux par AND : si vous renseignez `type = audio` et `codec = EAC3 | AC3`, la piste doit être audio et avoir l'un des deux codecs.
+
+Pour chercher un caractère `&`, `|`, `(` ou `)` comme texte réel, utilisez des guillemets ou un échappement :
+
+```text
+"A | B"
+Dolby \& DTS
+\(VFQ\)
+```
+
+Les expressions invalides bloquent la sauvegarde du profil et s'affichent dans la preview au lieu de faire planter l'éditeur.
+
 #### Portée des règles
 
 La portée détermine combien de pistes une règle va modifier.
@@ -385,19 +414,24 @@ Les keywords servent à trois choses :
 
 #### Variables
 
-Un profil peut contenir des variables éditables. Le premier usage disponible dans l'éditeur est **Aliases codecs**, accessible par un bouton dans l'éditeur :
+Un profil peut contenir des variables éditables. Le bouton **Aliases** de l'éditeur permet de définir des remplacements de rendu pour les keywords :
 
 ```text
 EAC3=DDP
 AC3=Dolby Digital
-TRUEHD=Dolby TrueHD
+lang_name:French=Français
+codec:TRUEHD=Dolby TrueHD
 ```
 
 Ensuite :
 
-- dans les patterns de titre, `{codec}` et `{codec_name}` affichent l'alias friendly, par exemple `DDP`
+- `EAC3=DDP` est un alias global, utilisable par tous les keywords rendus
+- `lang_name:French=Français` ne s'applique qu'au keyword `{lang_name}`
+- un alias ciblé gagne sur un alias global
+- les aliases sont insensibles à la casse et aux espaces de bord
+- les aliases changent le rendu des titres et templates de sortie, pas les critères de matching
 - `{codec_raw}` garde toujours le nom technique, par exemple `EAC3`
-- si aucun alias n'existe, `{codec}` et `{codec_name}` retombent sur le codec technique
+- les anciens profils avec `variables.codec_names` restent lus pour compatibilité
 
 Exemple de pattern :
 
@@ -406,6 +440,15 @@ Exemple de pattern :
 ```
 
 Avec `EAC3=DDP`, le titre devient `French DDP 5.1`.
+
+Le keyword `{lang_name}` affiche le nom de langue sans région quand il s'agit de la variante d'origine, et garde la région entre parenthèses pour les variantes non standard :
+
+| Langue | `{lang_name}` |
+|--------|---------------|
+| `fr-FR` | `French` |
+| `fr-CA` | `French (Canada)` |
+| `pt-PT` | `Portuguese` |
+| `pt-BR` | `Portuguese (Brazil)` |
 
 Une action de titre peut utiliser un pattern :
 
@@ -425,7 +468,7 @@ Keywords disponibles au premier lot :
 
 ```text
 {type} {source_index} {track_index}
-{language} {lang} {lang_name}
+{language} {lang} {lang_name} {source_language}
 {title} {source_title}
 {codec} {codec_raw} {codec_name} {channels} {channel_layout} {audio_object}
 {atmos} {dtsx} {codec_atmos} {codec_dtsx}
@@ -649,15 +692,15 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["WORKFLOW TYPE - REMUX"] --> B["STEP 1 - Validation configuration"]
-    B --> C["STEP 2 - Preparation workspace, attachments et cover TMDB"]
-    C --> D["STEP 3 - Analyse mapping pistes + pre-scan de risque<br/>extraction attached_pic si present"]
+    B --> C["STEP 2 - Préparation workspace, attachments et cover TMDB"]
+    C --> D["STEP 3 - Analyse mapping pistes + pre-scan de risque<br/>extraction attached_pic si présent"]
     D --> E{"Risque multi-source<br/>strict interleave"}
     E -->|Oui| F["STEP 4 - Synchronisation timeline multi-source<br/>FIFO, Named Pipe ou fallback fichier"]
     E -->|Non| G["STEP 4 - Synchronisation timeline non requise"]
     F --> H["STEP 5 - Chapitres : override FFMetadata ou copie source"]
     G --> H
     H --> I["STEP 6 - Construction de la commande ffmpeg remux"]
-    I --> J["STEP 7 - Execution du remux ffmpeg"]
+    I --> J["STEP 7 - Exécution du remux ffmpeg"]
     J --> K["STEP 8 - Post-action : Patch MuxingApp + Cleanup"]
     K --> L["Sortie MKV"]
 ```
@@ -667,22 +710,22 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["WORKFLOW TYPE - ENCODE"] --> B["STEP 1 - Validation configuration"]
-    B --> C["STEP 2 - Preparation workspace et attachments"]
+    B --> C["STEP 2 - Préparation workspace et attachments"]
     C --> D["STEP 3 - Normalisation des options HDR dynamiques"]
     D --> E["STEP 4 - Routage du workflow"]
-    E --> F{"Injection fichier<br/>DoVi ou HDR10+<br/>necessaire"}
+    E --> F{"Injection fichier<br/>DoVi ou HDR10+<br/>nécessaire"}
 
     F -->|Oui| K["STEP 5 - Extraction des metadata dynamiques<br/>DoVi et ou HDR10+"]
-    K --> L["STEP 6 - Encodage video seule vers enc.hevc"]
+    K --> L["STEP 6 - Encodage vidéo seule vers enc.hevc"]
     L --> M["STEP 7 - Injection HDR10+ et ou DoVi"]
-    M --> N["STEP 8 - Encapsulation timeline video injectee"]
-    N --> O["STEP 9 - Reconstruction finale MKV<br/>Sync timeline si risque detecte"]
+    M --> N["STEP 8 - Encapsulation timeline vidéo injectée"]
+    N --> O["STEP 9 - Reconstruction finale MKV<br/>Sync timeline si risque détecté"]
 
     F -->|Non| G["STEP 5 - Construction de la commande ffmpeg<br/>sortie directe"]
-    G --> H["STEP 6 - Preparation sync/remap + commande(s)"]
+    G --> H["STEP 6 - Préparation sync/remap + commande(s)"]
     H --> P{"Quality mode = SIZE"}
-    P -->|Oui| Q["STEP 7 - Execution ffmpeg en 2 passes<br/>sync timeline si risque detecte"]
-    P -->|Non| R["STEP 7 - Execution ffmpeg en single pass<br/>sync timeline si risque detecte"]
+    P -->|Oui| Q["STEP 7 - Exécution ffmpeg en 2 passes<br/>sync timeline si risque détecté"]
+    P -->|Non| R["STEP 7 - Exécution ffmpeg en single pass<br/>sync timeline si risque détecté"]
 
     O --> Z["Sortie MKV"]
     Q --> Z
@@ -690,13 +733,13 @@ flowchart TD
 ```
 
 Lecture rapide :
-- Les demandes `copy_hdr10plus` et `copy_dv` sont evaluees apres normalisation source.
-- L'injection "fichier" n'est requise que si une copie DoVi ou HDR10+ reste demandee et que la video n'est pas en `copy`.
-- Si `codec=copy` avec injection desactivee, le workflow reste en sortie directe ffmpeg (STEP 5-7), y compris si l'audio est reencode.
+- Les demandes `copy_hdr10plus` et `copy_dv` sont évaluées après normalisation source.
+- L'injection "fichier" n'est requise que si une copie DoVi ou HDR10+ reste demandée et que la vidéo n'est pas en `copy`.
+- Si `codec=copy` avec injection désactivée, le workflow reste en sortie directe ffmpeg (STEP 5-7), y compris si l'audio est réencodé.
 - Le 2-pass n'existe que dans le chemin direct (`quality_mode=SIZE`, `codec!=copy`).
 - Le chemin injection utilise `enc.hevc`, puis `enc_wrapped.mkv`, puis un remux final ffmpeg (STEP 5-9).
-- La sync timeline multi-source est activee uniquement en cas de risque detecte par pre-scan ffprobe ; sinon le flux reste en chemin direct.
-- En mode TMDB, la cover est resolue en URL lors de la recherche puis telechargee uniquement au lancement du workflow.
+- La sync timeline multi-source est activée uniquement en cas de risque détecté par pre-scan ffprobe ; sinon le flux reste en chemin direct.
+- En mode TMDB, la cover est résolue en URL lors de la recherche puis téléchargée uniquement au lancement du workflow.
 
 ### Fusion DoVi / HDR10+
 
@@ -713,22 +756,22 @@ flowchart TD
     E2 --> F
     E3 --> F
 
-    F{DoVi present ?}
+    F{DoVi présent ?}
     F -->|Oui| G[dovi_tool inject-rpu]
     F -->|Non| H
     G --> H
 
-    H{HDR10+ present ?}
+    H{HDR10+ présent ?}
     H -->|Oui| I[hdr10plus_tool inject]
     H -->|Non| J
     I --> J
 
-    J{DoVi present ?}
-    J -->|Oui| K[Verification RPU frames]
+    J{DoVi présent ?}
+    J -->|Oui| K[Vérification RPU frames]
     J -->|Non| L
     K --> L
 
-    L[ffmpeg final<br/>video injectee + audio/subs/metadata Film 1<br/>map_metadata/map_chapters] --> M[Nettoyage]
+    L[ffmpeg final<br/>vidéo injectée + audio/subs/metadata Film 1<br/>map_metadata/map_chapters] --> M[Nettoyage]
     M --> N([Sortie MKV])
 ```
 
@@ -736,15 +779,15 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A([Fichier a inspecter]) --> B{Fichier accessible ?}
-    B -->|Non| X[Arret avec erreur]
+    A([Fichier à inspecter]) --> B{Fichier accessible ?}
+    B -->|Non| X[Arrêt avec erreur]
     B -->|Oui| C[Analyse de base avec ffprobe]
 
     C --> D{Analyse exploitable ?}
-    D -->|Non| Y[Arret avec erreur]
-    D -->|Oui| E[Creation de la fiche media<br/>en une seule lecture ffprobe<br/>pistes chapitres attachments<br/>infos globales et tags]
+    D -->|Non| Y[Arrêt avec erreur]
+    D -->|Oui| E[Création de la fiche média<br/>en une seule lecture ffprobe<br/>pistes chapitres attachments<br/>infos globales et tags]
 
-    E --> F[Tentative d enrichissement mediainfo<br/>en une seule lecture<br/>frame count et details HDR DoVi]
+    E --> F[Tentative d'enrichissement mediainfo<br/>en une seule lecture<br/>frame count et détails HDR DoVi]
     F --> H{Frame count encore absent ?}
     H -->|Oui| H1[Nouvelle tentative simple<br/>via mediainfo]
     H -->|Non| I
@@ -753,35 +796,35 @@ flowchart TD
     I --> J{Fichier Matroska ou WebM ?}
     J -->|Oui| J1[Enrichissement MKV<br/>langues detaillees language-ietf<br/>et comptage des tags]
     J -->|Non| K
-    J1 --> K[Normalisation des langues<br/>pour obtenir des valeurs coherentes]
+    J1 --> K[Normalisation des langues<br/>pour obtenir des valeurs cohérentes]
 
-    K --> L{Video principale presente ?}
-    L -->|Non| Z[Fiche finale retournee]
-    L -->|Oui| M[Detection HDR]
+    K --> L{Vidéo principale présente ?}
+    L -->|Non| Z[Fiche finale retournée]
+    L -->|Oui| M[Détection HDR]
 
-    M --> N{Metadonnees HDR visibles<br/>directement dans ffprobe ?}
-    N -->|Oui| Q[Determination du type HDR]
-    N -->|Non ou incomplet| O[Essai d enrichissement HDR<br/>avec mediainfo]
-    O --> P{Reponse suffisante ?}
+    M --> N{Métadonnées HDR visibles<br/>directement dans ffprobe ?}
+    N -->|Oui| Q[Détermination du type HDR]
+    N -->|Non ou incomplet| O[Essai d'enrichissement HDR<br/>avec mediainfo]
+    O --> P{Réponse suffisante ?}
     P -->|Oui| Q
     P -->|Non| R[Dernier recours<br/>analyse plus fine par images]
     R --> Q
 
     Q --> S[Classement final<br/>Dolby Vision + HDR10+<br/>Dolby Vision<br/>HDR10+<br/>HDR10<br/>HLG<br/>SDR]
-    S --> T[Mise a jour de la video principale]
-    T --> Z[Fiche finale retournee<br/>prete pour affichage et workflows]
+    S --> T[Mise à jour de la vidéo principale]
+    T --> Z[Fiche finale retournée<br/>prête pour affichage et workflows]
 ```
 
 | Fiche media produite par l inspection |
 |---|
-| **Identite generale** : chemin du fichier, format du conteneur, duree totale, taille, debit global, titre du conteneur, tags globaux utiles.<br><br>**Pistes video** : index, codec, resolution, framerate, profondeur de couleur, infos colorimetriques, type HDR detecte, details Dolby Vision si disponibles, langue, titre, duree, debit.<br><br>**Pistes audio** : index, codec, nombre de canaux, layout `stereo/5.1/7.1`, frequence d echantillonnage, debit, langue, titre, duree, indicateurs utiles comme Atmos ou DTS:X quand ils peuvent etre deduits.<br><br>**Pistes de sous-titres** : index, codec, langue, titre, drapeaux `forced` et `default`.<br><br>**Chapitres** : liste des chapitres avec position temporelle et nom.<br><br>**Attachments** : cover, polices et autres ressources embarquees avec nom, type MIME, taille si disponible, et indication `attached_pic` pour les images de couverture integrees comme flux video.<br><br>**Enrichissement MKV/WebM** : comptage des tags globaux, recuperation prioritaire des langues detaillees `language-ietf` quand elles existent, avec repli sur `language` sinon.<br><br>**Normalisation finale** : harmonisation des langues vers une forme plus coherente et exploitable dans l interface et les workflows suivants.<br><br>**Enrichissement optionnel via mediainfo** : frame count si disponible, confirmation ou enrichissement des metadonnees HDR, et details Dolby Vision supplementaires quand `ffprobe` ne les expose pas assez. |
+| **Identité générale** : chemin du fichier, format du conteneur, durée totale, taille, débit global, titre du conteneur, tags globaux utiles.<br><br>**Pistes vidéo** : index, codec, résolution, framerate, profondeur de couleur, infos colorimétriques, type HDR détecté, détails Dolby Vision si disponibles, langue, titre, durée, débit.<br><br>**Pistes audio** : index, codec, nombre de canaux, layout `stereo/5.1/7.1`, fréquence d'échantillonnage, débit, langue, titre, durée, indicateurs utiles comme Atmos ou DTS:X quand ils peuvent être déduits.<br><br>**Pistes de sous-titres** : index, codec, langue, titre, drapeaux `forced` et `default`.<br><br>**Chapitres** : liste des chapitres avec position temporelle et nom.<br><br>**Attachments** : cover, polices et autres ressources embarquées avec nom, type MIME, taille si disponible, et indication `attached_pic` pour les images de couverture intégrées comme flux vidéo.<br><br>**Enrichissement MKV/WebM** : comptage des tags globaux, récupération prioritaire des langues détaillées `language-ietf` quand elles existent, avec repli sur `language` sinon.<br><br>**Normalisation finale** : harmonisation des langues vers une forme plus cohérente et exploitable dans l'interface et les workflows suivants.<br><br>**Enrichissement optionnel via mediainfo** : frame count si disponible, confirmation ou enrichissement des métadonnées HDR, et détails Dolby Vision supplémentaires quand `ffprobe` ne les expose pas assez. |
 
 ## CLI headless
 
-La branche `devel-cli` ajoute un point d entree sans interface graphique :
+Mediarecode peut être lancé en mode CLI sans initialiser l'interface graphique :
 
 ```bash
-python3 mediarecode_cli.py --help
+python3 main.py --cli --help
 ./mediarecode-cli --help
 ```
 
@@ -790,26 +833,26 @@ Sous-commandes disponibles :
 | Commande | Usage |
 |----------|-------|
 | `inspect` | inspecte une ou plusieurs sources et sort du JSON |
-| `inspect --config-template` | genere un template JSON de remux copiant tout |
-| `validate` | valide un job/template JSON sans executer ffmpeg |
-| `preview` | affiche la commande ffmpeg prevue |
-| `remux` | execute un remux headless |
-| `batch` | applique un template JSON a plusieurs entrees |
+| `inspect --config-template` | génère un template JSON de remux copiant tout |
+| `validate` | valide un job/template JSON sans exécuter ffmpeg |
+| `preview` | affiche la commande ffmpeg prévue |
+| `remux` | exécute un remux headless |
+| `batch` | applique un template JSON à plusieurs entrées |
 
 Exemples :
 
 ```bash
-python3 mediarecode_cli.py remux -i source.mkv -o sortie.mkv
-python3 mediarecode_cli.py preview --config docs/cli/middle.json
-python3 mediarecode_cli.py remux --config docs/cli/middle.json --dry-run
-python3 mediarecode_cli.py batch --template docs/cli/complexe-toutes-options-template.json --batch docs/cli/complexe-toutes-options-batch.json --force
+python3 main.py --cli remux -i source.mkv -o sortie.mkv
+python3 main.py --cli preview --config docs/cli/middle.json
+python3 main.py --cli remux --config docs/cli/middle.json --dry-run
+python3 main.py --cli batch --template docs/cli/complexe-toutes-options-template.json --batch docs/cli/complexe-toutes-options-batch.json --force
 ```
 
-Le CLI est non interactif : une sortie existante est refusee sauf `--force`. Les chemins d outils sont lus depuis `config.ini`, avec overrides `--ffmpeg`, `--ffprobe`, `--mediainfo`, `--work-dir` et `--threads`.
+Le CLI est non interactif : une sortie existante est refusée sauf `--force`. Les chemins d'outils sont lus depuis `config.ini`, avec overrides `--ffmpeg`, `--ffprobe`, `--mediainfo`, `--work-dir` et `--threads`.
 
-Les templates JSON peuvent selectionner les pistes par type, langue et flags d origine, normaliser les langues BCP-47/RFC5646, renommer les pistes via patterns, ajouter/importer des chapitres, demander TMDB et traiter un batch. Trois configs d exemple sont fournies dans `docs/cli/` : simple, middle et complexe toutes options.
+Les templates JSON peuvent sélectionner les pistes par type, langue et flags d'origine, normaliser les langues BCP-47/RFC5646, renommer les pistes via patterns, ajouter/importer des chapitres, demander TMDB et traiter un batch. Trois configs d'exemple sont fournies dans `docs/cli/` : simple, middle et complexe toutes options.
 
-Dans les artefacts packages, l'entree CLI route vers le même bundle que l'application : `mediarecode-cli` sur Linux/AppImage/macOS, `mediarecode-cli.exe` sur Windows, ou `mediarecode --cli ...` en fallback.
+Dans les artefacts packagés, l'entrée CLI route vers le même bundle que l'application : `mediarecode-cli` sur Linux/AppImage/macOS, `mediarecode-cli.exe` sur Windows, ou `mediarecode --cli ...` en fallback. En environnement source, utilisez `python3 main.py --cli ...`.
 
 ## Outils externes
 
