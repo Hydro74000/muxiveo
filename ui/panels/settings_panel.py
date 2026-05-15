@@ -132,7 +132,7 @@ class SettingsPanel(QWidget):
         layout.addWidget(subtitle)
         layout.addWidget(_separator())
 
-        _section_order = {"ui": 0, "audio_encoding": 1, "metadata": 2, "paths": 3}
+        _section_order = {"ui": 0, "audio_encoding": 1, "sync": 2, "metadata": 3, "paths": 4}
         groups = sorted(INI_FIELD_GROUPS, key=lambda group: _section_order.get(group["section"], 4))
         for group in groups:
             layout.addWidget(_section_label(group["title"].upper()))

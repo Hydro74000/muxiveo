@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from core.i18n import translate_text
 from core.lang_tags import Rfc5646LanguageTags
+from core.workflows.common.sync_rewrite import ui_sync_rewrite_label_for_track
 from core.workflows.remux_models import TrackEntry
 from ui.panels.remux_panel.models import (
     _TRACK_INFO_OFFSET_NEG_COLOR,
@@ -145,6 +146,7 @@ class _TrackTable(QTableWidget):
         super().__init__(0, len(self._HEADERS), parent)
         self._filter_selected = False
         self._audio_sync_available = False
+        self._sync_rewrite_enabled = False
         self._prev_lang: dict[int, str] = {}
         self._setup_ui()
         self._adjust_height()
@@ -326,6 +328,10 @@ class _TrackTable(QTableWidget):
                 self._prev_lang[row] = lang_item.text()
 
     def _fill_row(self, row: int, entry: TrackEntry, source_color: str) -> None:
+        entry.sync_rewrite_label = ui_sync_rewrite_label_for_track(
+            entry,
+            enabled=self._sync_rewrite_enabled,
+        )
         src_item = QTableWidgetItem("█")
         src_item.setFlags(self._FLAG_RO & ~Qt.ItemFlag.ItemIsDragEnabled)
         src_item.setForeground(QColor(source_color))
@@ -514,6 +520,10 @@ class _TrackTable(QTableWidget):
         if dlg.exec() == TrackEditDialog.DialogCode.Accepted:
             row = self._find_row_for_entry(entry)
             if row is not None:
+                entry.sync_rewrite_label = ui_sync_rewrite_label_for_track(
+                    entry,
+                    enabled=self._sync_rewrite_enabled,
+                )
                 self.blockSignals(True)
                 lang_item = self.item(row, self.COL_LANG)
                 if lang_item:
@@ -614,6 +624,10 @@ class _TrackTable(QTableWidget):
                     continue
 
                 entry.time_shift_ms = int(offset_ms)
+                entry.sync_rewrite_label = ui_sync_rewrite_label_for_track(
+                    entry,
+                    enabled=self._sync_rewrite_enabled,
+                )
                 info_item = self.item(row, self.COL_INFO)
                 if info_item:
                     info_item.setText(entry.full_info_label)
@@ -622,6 +636,28 @@ class _TrackTable(QTableWidget):
         finally:
             self.blockSignals(False)
         return False
+
+    def set_sync_rewrite_enabled(self, enabled: bool) -> None:
+        self._sync_rewrite_enabled = bool(enabled)
+        self.blockSignals(True)
+        try:
+            for row in range(self.rowCount()):
+                item0 = self.item(row, self.COL_CHECK)
+                if item0 is None:
+                    continue
+                entry = item0.data(Qt.ItemDataRole.UserRole)
+                if not isinstance(entry, TrackEntry):
+                    continue
+                entry.sync_rewrite_label = ui_sync_rewrite_label_for_track(
+                    entry,
+                    enabled=self._sync_rewrite_enabled,
+                )
+                info_item = self.item(row, self.COL_INFO)
+                if info_item:
+                    info_item.setText(entry.full_info_label)
+                    info_item.setData(_TRACK_INFO_OFFSET_VALUE_ROLE, entry.time_shift_value_label)
+        finally:
+            self.blockSignals(False)
 
     def set_audio_sync_available(self, available: bool) -> None:
         available = bool(available)

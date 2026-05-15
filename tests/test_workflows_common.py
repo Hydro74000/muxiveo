@@ -23,6 +23,11 @@ from core.workflows.common.metadata import (
     normalize_track_language_from_track,
     resolve_global_tags,
 )
+from core.workflows.common.sync_rewrite import (
+    SyncRewriteService,
+    audio_bitrate_kbps_from_display_info,
+    ui_sync_rewrite_label_for_track,
+)
 from core.workflows.common.timeline_sync import (
     append_strict_interleave_mux_flags,
     append_sync_inputs,
@@ -120,6 +125,177 @@ class TestCommonTimelineSync:
         append_sync_inputs(cmd, [sync_path, "pipe:sync"], input_formats=["matroska", "nut"])
         assert cmd == ["-f", "matroska", "-i", str(sync_path), "-f", "nut", "-i", "pipe:sync"]
         assert sync_cleanup_paths([sync_path, "pipe:sync"]) == [sync_path]
+
+
+class TestCommonSyncRewrite:
+    def test_shift_srt_positive_and_negative_clamps_or_drops(self):
+        text = (
+            "1\n00:00:00,200 --> 00:00:00,800\nA\n\n"
+            "2\n00:00:01,000 --> 00:00:02,000\nB\n"
+        )
+        shifted = SyncRewriteService._shift_srt(text, -500)
+        assert "00:00:00,000 --> 00:00:00,300" in shifted
+        assert "00:00:00,500 --> 00:00:01,500" in shifted
+
+        dropped = SyncRewriteService._shift_srt(text, -900)
+        assert "A" not in dropped
+        assert "00:00:00,100 --> 00:00:01,100" in dropped
+
+    def test_shift_webvtt_drops_complete_cue_before_zero(self):
+        text = (
+            "WEBVTT\n\n"
+            "00:00:00.100 --> 00:00:00.400\nOld\n\n"
+            "00:00:01.000 --> 00:00:02.000\nKeep\n"
+        )
+        shifted = SyncRewriteService._shift_webvtt(text, -500)
+        assert "Old" not in shifted
+        assert "00:00:00.500 --> 00:00:01.500" in shifted
+
+    def test_shift_ass_respects_format_columns(self):
+        text = (
+            "[Events]\n"
+            "Format: Layer, Start, End, Style, Text\n"
+            "Dialogue: 0,0:00:01.00,0:00:02.00,Default,Hello\n"
+        )
+        shifted = SyncRewriteService._shift_ass(text, 250)
+        assert "Dialogue: 0,0:00:01.25,0:00:02.25,Default,Hello" in shifted
+
+    def test_ui_label_marks_rewrite_and_object_audio_fallback(self):
+        sub = SimpleNamespace(track_type="subtitle", codec="subrip", time_shift_ms=120)
+        audio = SimpleNamespace(track_type="audio", codec="eac3", time_shift_ms=120, display_info="5.1  640 kbps")
+        atmos = SimpleNamespace(track_type="audio", codec="eac3", time_shift_ms=120, display_info="5.1  768 kbps  Atmos")
+
+        assert ui_sync_rewrite_label_for_track(sub, enabled=False) == ""
+        assert ui_sync_rewrite_label_for_track(sub, enabled=True) == "Sync réelle"
+        assert ui_sync_rewrite_label_for_track(audio, enabled=True) == "Sync réelle · audio réencodé"
+        assert ui_sync_rewrite_label_for_track(atmos, enabled=True) == "Offset"
+
+    def test_audio_bitrate_is_parsed_from_display_info(self):
+        assert audio_bitrate_kbps_from_display_info("5.1  640 kbps") == 640
+        assert audio_bitrate_kbps_from_display_info("stereo  128 kb/s") == 128
+        assert audio_bitrate_kbps_from_display_info("stereo") is None
+
+    def test_audio_rewrite_preserves_source_codec_and_bitrate(self, tmp_path, monkeypatch):
+        service = SyncRewriteService(
+            ffmpeg_bin="ffmpeg",
+            ffprobe_bin="ffprobe",
+            audio_bitrate_per_channel={"eac3": 96},
+        )
+        monkeypatch.setattr(
+            service,
+            "_probe_stream",
+            lambda _source, _stream_index: {
+                "codec_name": "eac3",
+                "codec_long_name": "E-AC-3",
+                "profile": "",
+                "channels": 6,
+                "bit_rate": "640000",
+                "tags": {},
+            },
+        )
+        seen: dict[str, object] = {}
+
+        def fake_run(cmd, destination, _error_prefix):
+            seen["cmd"] = cmd
+            destination.write_bytes(b"audio")
+
+        monkeypatch.setattr(service, "_run_checked", fake_run)
+
+        prepared = service.maybe_materialize(
+            source_path=tmp_path / "in.mkv",
+            stream_index=1,
+            track_type="audio",
+            codec="eac3",
+            display_info="5.1  640 kbps",
+            offset_ms=250,
+            tmp_dir=tmp_path,
+            input_idx=2,
+            preserve_source_audio_params=True,
+        )
+
+        assert prepared is not None
+        assert prepared.codec == "eac3"
+        assert prepared.bitrate_kbps == 640
+        cmd = cast(list[str], seen["cmd"])
+        assert cmd[cmd.index("-c:a") + 1] == "eac3"
+        assert cmd[cmd.index("-b:a") + 1] == "640k"
+        assert cmd[cmd.index("-f") + 1] == "matroska"
+
+    def test_audio_rewrite_can_use_explicit_target_params(self, tmp_path, monkeypatch):
+        service = SyncRewriteService(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        monkeypatch.setattr(
+            service,
+            "_probe_stream",
+            lambda _source, _stream_index: {
+                "codec_name": "eac3",
+                "codec_long_name": "E-AC-3",
+                "profile": "",
+                "channels": 6,
+                "bit_rate": "640000",
+                "tags": {},
+            },
+        )
+        seen: dict[str, object] = {}
+
+        def fake_run(cmd, destination, _error_prefix):
+            seen["cmd"] = cmd
+            destination.write_bytes(b"audio")
+
+        monkeypatch.setattr(service, "_run_checked", fake_run)
+
+        prepared = service.maybe_materialize(
+            source_path=tmp_path / "in.mkv",
+            stream_index=1,
+            track_type="audio",
+            codec="eac3",
+            display_info="5.1  640 kbps",
+            offset_ms=-500,
+            tmp_dir=tmp_path,
+            input_idx=2,
+            preserve_source_audio_params=False,
+            audio_target_codec="aac",
+            audio_target_bitrate_kbps=384,
+        )
+
+        assert prepared is not None
+        assert prepared.codec == "aac"
+        assert prepared.bitrate_kbps == 384
+        cmd = cast(list[str], seen["cmd"])
+        assert "atrim=start=0.500,asetpts=PTS-STARTPTS" in cmd
+        assert cmd[cmd.index("-c:a") + 1] == "aac"
+        assert cmd[cmd.index("-b:a") + 1] == "384k"
+        assert cmd[cmd.index("-f") + 1] == "matroska"
+
+    def test_subtitle_rewrite_forces_matroska_muxer_for_mks(self, tmp_path, monkeypatch):
+        source = tmp_path / "in.mkv"
+        source.touch()
+        service = SyncRewriteService(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        seen: list[list[str]] = []
+
+        def fake_run(cmd, destination, _error_prefix):
+            seen.append(list(cmd))
+            if str(destination).endswith("_raw.srt"):
+                destination.write_text("1\n00:00:01,000 --> 00:00:02,000\nBonjour\n", encoding="utf-8")
+            else:
+                destination.write_bytes(b"sub")
+
+        monkeypatch.setattr(service, "_run_checked", fake_run)
+
+        prepared = service.maybe_materialize(
+            source_path=source,
+            stream_index=6,
+            track_type="subtitle",
+            codec="subrip",
+            offset_ms=250,
+            tmp_dir=tmp_path,
+            input_idx=2,
+            token="subtitle",
+        )
+
+        assert prepared is not None
+        assert len(seen) == 2
+        wrap_cmd = seen[1]
+        assert wrap_cmd[-3:] == ["-f", "matroska", str(prepared.path)]
 
 
 class TestCommonTrackTypes:

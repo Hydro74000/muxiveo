@@ -40,6 +40,10 @@ from core.workflows.common.ffmpeg_runtime import (
 from core.workflows.common.metadata import (
     resolve_global_tags as _common_resolve_global_tags,
 )
+from core.workflows.common.sync_rewrite import (
+    SyncRewriteService,
+    sync_rewrite_output_token,
+)
 from core.workflows.common.timeline_sync import (
     sync_cleanup_paths as _common_sync_cleanup_paths,
 )
@@ -277,6 +281,9 @@ class EncodeWorkflow(QObject):
         writing_application:       str  = "",
         generate_nfo:              bool = True,
         nvencc_bin:                str | None = None,
+        sync_rewrite_enabled:      bool = False,
+        aac_bitrate_per_channel_kbps: int = 96,
+        eac3_bitrate_per_channel_kbps: int = 96,
     ) -> None:
         super().__init__(parent)
         self._ffmpeg = ffmpeg_bin
@@ -299,6 +306,12 @@ class EncodeWorkflow(QObject):
             tool_bin=lambda name: self._bins.get(name) or name,
         )
         self._generate_nfo = generate_nfo
+        self._sync_rewrite_enabled = bool(sync_rewrite_enabled)
+        self._sync_rewrite_audio_bitrates = {
+            "aac": int(aac_bitrate_per_channel_kbps or 96),
+            "ac3": int(eac3_bitrate_per_channel_kbps or 96),
+            "eac3": int(eac3_bitrate_per_channel_kbps or 96),
+        }
         self._runner = ToolRunner(max_workers=1, parent=self)
         self._ram_buffer_enabled       = ram_buffer_enabled
         self._ram_buffer_threshold_pct = max(0, min(ram_buffer_threshold_pct, 90))
@@ -356,6 +369,21 @@ class EncodeWorkflow(QObject):
 
     def set_generate_nfo(self, generate_nfo: bool) -> None:
         self._generate_nfo = generate_nfo
+
+    def set_sync_rewrite_enabled(self, enabled: bool) -> None:
+        self._sync_rewrite_enabled = bool(enabled)
+
+    def set_sync_rewrite_audio_bitrates(
+        self,
+        *,
+        aac_bitrate_per_channel_kbps: int,
+        eac3_bitrate_per_channel_kbps: int,
+    ) -> None:
+        self._sync_rewrite_audio_bitrates = {
+            "aac": int(aac_bitrate_per_channel_kbps or 96),
+            "ac3": int(eac3_bitrate_per_channel_kbps or 96),
+            "eac3": int(eac3_bitrate_per_channel_kbps or 96),
+        }
 
     def _ffmpeg_thread_args(self, thread_count: int | None = None) -> list[str]:
         effective = self._ffmpeg_threads if thread_count is None else thread_count
@@ -542,6 +570,23 @@ class EncodeWorkflow(QObject):
                 continue
             if idx_val == int(stream_index):
                 return str(stream.get("codec_name", "") or "")
+        return ""
+
+    def _stream_codec_of(self, source: Path, stream_index: int, track_type: str = "") -> str:
+        payload = self._ffprobe_streams_payload(Path(source))
+        if not payload:
+            return ""
+        for stream in self._ffprobe_stream_dicts(payload):
+            raw_idx = stream.get("index", -1)
+            try:
+                idx_val = int(raw_idx)
+            except (TypeError, ValueError):
+                continue
+            if idx_val != int(stream_index):
+                continue
+            if track_type and str(stream.get("codec_type") or "") != str(track_type):
+                continue
+            return str(stream.get("codec_name", "") or "")
         return ""
 
     def _video_codec_of(self, source: Path, stream_index: int) -> str:
@@ -1116,6 +1161,9 @@ class EncodeWorkflow(QObject):
         sync_remap: dict[tuple[Path, int, str], tuple[int, int]] | None = None,
         video_default_map: tuple[int, int] | None = None,
         video_fallback_input: Path | str | None = None,
+        allow_sync_rewrite: bool = False,
+        sync_rewrite_work_dir: Path | None = None,
+        signals: TaskSignals | None = None,
     ) -> tuple[_ResolvedTrackAssembly, dict[tuple[Path, int, str], tuple[int, int]]]:
         track_assembly = _resolve_track_assembly_plan(
             config,
@@ -1126,17 +1174,82 @@ class EncodeWorkflow(QObject):
             video_default_map=video_default_map,
             video_fallback_input=video_fallback_input,
         )
+        offset_lookup = dict(plan.offset_lookup)
+        rewrite_remap: dict[tuple[Path, int, str], tuple[int, int]] = {}
+        next_input_index = int(start_input_index)
+        if allow_sync_rewrite and self._sync_rewrite_enabled:
+            audio_settings_by_key = {
+                (Path(audio.source_path or config.source), int(audio.stream_index), "audio"): audio
+                for audio in config.audio_tracks
+            }
+            rewrite_service = SyncRewriteService(
+                ffmpeg_bin=self._ffmpeg,
+                ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+                ffmpeg_thread_args=self._ffmpeg_thread_args(None),
+                audio_bitrate_per_channel=self._sync_rewrite_audio_bitrates,
+                log_cb=lambda message: self.log_message.emit("INFO", message),
+            )
+            work_dir = sync_rewrite_work_dir or config.work_dir or config.source.parent
+            for map_key, input_path, input_stream_index in track_assembly.track_mappings:
+                source_path, source_stream_index, track_type = map_key
+                if track_type not in {"audio", "subtitle"}:
+                    continue
+                offset_ms = _track_offset_ms_plan(
+                    offset_lookup,
+                    track_type=track_type,
+                    source_path=Path(source_path),
+                    stream_index=int(source_stream_index),
+                )
+                if offset_ms == 0:
+                    continue
+                codec = ""
+                input_path_obj = Path(str(input_path))
+                if input_path_obj.exists():
+                    codec = self._stream_codec_of(input_path_obj, int(input_stream_index), track_type)
+                if not codec and track_type == "subtitle":
+                    codec = self._subtitle_codec_of(Path(source_path), int(source_stream_index))
+                audio_settings = audio_settings_by_key.get(map_key) if track_type == "audio" else None
+                audio_target_codec = str(getattr(audio_settings, "codec", "") or "")
+                audio_has_manual_encoding = bool(
+                    audio_settings is not None
+                    and audio_target_codec.strip().lower()
+                    and audio_target_codec.strip().lower() != "copy"
+                )
+                prepared = rewrite_service.maybe_materialize(
+                    source_path=input_path,
+                    stream_index=int(input_stream_index),
+                    track_type=track_type,
+                    codec=codec,
+                    offset_ms=offset_ms,
+                    tmp_dir=Path(work_dir),
+                    input_idx=next_input_index,
+                    token=sync_rewrite_output_token(source_path, int(source_stream_index), track_type),
+                    preserve_source_audio_params=not audio_has_manual_encoding,
+                    audio_target_codec=audio_target_codec,
+                    audio_target_bitrate_kbps=(
+                        int(getattr(audio_settings, "bitrate_kbps", 0) or 0)
+                        if audio_has_manual_encoding
+                        else None
+                    ),
+                    cancel_cb=(signals._cancel_event.is_set if signals is not None else None),
+                )
+                if prepared is None:
+                    continue
+                cmd.extend(["-f", "matroska", "-i", str(prepared.path)])
+                rewrite_remap[map_key] = (next_input_index, 0)
+                offset_lookup.pop((track_type, Path(source_path), int(source_stream_index)), None)
+                next_input_index += 1
         _next_input_index, offset_remap = self._append_offset_aux_inputs(
             cmd,
             _build_offset_specs_plan(
                 config,
                 track_mappings=list(track_assembly.track_mappings),
-                offset_lookup=dict(plan.offset_lookup),
+                offset_lookup=offset_lookup,
             ),
-            start_input_index=start_input_index,
+            start_input_index=next_input_index,
         )
         _ = _next_input_index
-        return track_assembly, offset_remap
+        return track_assembly, {**rewrite_remap, **offset_remap}
 
     def _append_primary_video_map_and_codec(
         self,

@@ -17,6 +17,11 @@ from core.workdir import (
 )
 from core.workflows.common.chapters import probe_media_duration_seconds, write_ffmetadata_chapters
 from core.workflows.common.ffmpeg_runtime import cli_path as _cli_path
+from core.workflows.common.sync_rewrite import (
+    SyncRewriteService,
+    audio_bitrate_kbps_from_display_info,
+    normalized_rewrite_codec,
+)
 from core.workflows.remux_attachments import extract_attached_pics as _extract_attached_pics_helper
 from core.workflows.remux_mapping import (
     MappedTrack,
@@ -51,11 +56,33 @@ class RemuxRuntimeRunnerCallbacks:
     apply_muxing_post_action: Callable[[Path], object]
     apply_language_post_action: Callable[[Path], object]
     write_nfo: Callable[[Path], None]
+    sync_rewrite_enabled: Callable[[], bool] = lambda: False
+    sync_rewrite_audio_bitrates: Callable[[], dict[str, int]] = lambda: {}
 
 
 class RemuxRuntimeRunner:
     def __init__(self, callbacks: RemuxRuntimeRunnerCallbacks) -> None:
         self._cb = callbacks
+
+    @staticmethod
+    def _audio_rewrite_preserve_source(track) -> bool:
+        source_codec = normalized_rewrite_codec(str(getattr(track, "orig_codec", "") or getattr(track, "codec", "") or ""))
+        current_codec = normalized_rewrite_codec(str(getattr(track, "codec", "") or ""))
+        if current_codec and source_codec and current_codec != source_codec:
+            return False
+        source_bitrate = audio_bitrate_kbps_from_display_info(
+            str(getattr(track, "orig_display_info", "") or "")
+        )
+        current_bitrate = audio_bitrate_kbps_from_display_info(
+            str(getattr(track, "display_info", "") or "")
+        )
+        if source_bitrate is not None and current_bitrate is not None and source_bitrate != current_bitrate:
+            return False
+        source_display = str(getattr(track, "orig_display_info", "") or "")
+        current_display = str(getattr(track, "display_info", "") or "")
+        if source_display != current_display and (source_bitrate is None) != (current_bitrate is None):
+            return False
+        return True
 
     def run(self, config: RemuxConfig) -> TaskSignals:
         cb = self._cb
@@ -152,12 +179,82 @@ class RemuxRuntimeRunner:
                 else:
                     cb.log_step(4, "Synchronisation timeline multi-source (non requise)")
 
+                if cb.sync_rewrite_enabled():
+                    cb.log_step(5, "Réécriture réelle des décalages audio/sous-titres")
+                    rewrite_service = SyncRewriteService(
+                        ffmpeg_bin=cb.ffmpeg_bin,
+                        ffprobe_bin=cb.ffprobe_bin,
+                        ffmpeg_thread_args=cb.ffmpeg_thread_args(),
+                        audio_bitrate_per_channel=cb.sync_rewrite_audio_bitrates(),
+                        log_cb=lambda msg: cb.log("INFO", msg),
+                    )
+                    rewritten_tracks: list[MappedTrack] = []
+                    rewritten_inputs: list[SyncPreparedInput] = []
+                    for mapped_track in mapped_tracks:
+                        offset_ms = int(getattr(mapped_track.track, "time_shift_ms", 0) or 0)
+                        if offset_ms == 0:
+                            rewritten_tracks.append(mapped_track)
+                            continue
+                        prepared = rewrite_service.maybe_materialize(
+                            source_path=mapped_track.source_path,
+                            stream_index=int(mapped_track.stream_index),
+                            track_type=mapped_track.track.track_type,
+                            codec=mapped_track.track.orig_codec or mapped_track.track.codec,
+                            title=mapped_track.track.title,
+                            display_info=mapped_track.track.orig_display_info or mapped_track.track.display_info,
+                            offset_ms=offset_ms,
+                            tmp_dir=tmp_dir,
+                            input_idx=len(run_config.sources) + len(sync_prepared) + len(rewritten_inputs),
+                            token=(
+                                f"remux_f{mapped_track.source_file_index}_"
+                                f"s{mapped_track.stream_index}_{mapped_track.out_type_index}_"
+                                f"{mapped_track.track.track_type}"
+                            ),
+                            preserve_source_audio_params=self._audio_rewrite_preserve_source(mapped_track.track),
+                            audio_target_codec=mapped_track.track.codec,
+                            audio_target_bitrate_kbps=audio_bitrate_kbps_from_display_info(
+                                mapped_track.track.display_info
+                            ),
+                            cancel_cb=signals._cancel_event.is_set,
+                        )
+                        if prepared is None:
+                            rewritten_tracks.append(mapped_track)
+                            continue
+                        consumed_track = replace(
+                            mapped_track.track,
+                            time_shift_ms=0,
+                            sync_rewrite_label=prepared.mode_label,
+                        )
+                        rewritten_tracks.append(replace(
+                            mapped_track,
+                            source_input_idx=prepared.input_idx,
+                            source_path=prepared.path,
+                            stream_index=0,
+                            track=consumed_track,
+                        ))
+                        rewritten_inputs.append(SyncPreparedInput(
+                            key=(
+                                mapped_track.source_file_index,
+                                mapped_track.stream_index,
+                                mapped_track.track.track_type,
+                            ),
+                            path=prepared.path,
+                            input_idx=prepared.input_idx,
+                            container_format="matroska",
+                        ))
+                    if rewritten_inputs:
+                        mapped_tracks = rewritten_tracks
+                        sync_prepared.extend(rewritten_inputs)
+                else:
+                    cb.log_step(5, "Réécriture réelle des décalages désactivée")
+
+                sync_cleanup_paths = [p for p in (item.path for item in sync_prepared) if isinstance(p, Path)]
                 sync_inputs: list[Path | str] = [item.path for item in sync_prepared]
                 sync_input_formats: list[str] = [item.container_format for item in sync_prepared]
 
                 chapter_input_index: int | None = None
                 if run_config.chapter_overrides:
-                    cb.log_step(5, "Matérialisation des chapitres FFMetadata")
+                    cb.log_step(6, "Matérialisation des chapitres FFMetadata")
                     duration_s = probe_media_duration_seconds(cb.ffprobe_bin, run_config.sources[0].path)
                     chapter_meta_file = write_ffmetadata_chapters(
                         entries=run_config.chapter_overrides,
@@ -167,9 +264,9 @@ class RemuxRuntimeRunner:
                     extra_inputs.append(chapter_meta_file)
                     chapter_input_index = len(run_config.sources) + len(sync_inputs) + len(extra_inputs) - 1
                 else:
-                    cb.log_step(5, "Chapitres: copie source ou désactivé (pas d'override)")
+                    cb.log_step(6, "Chapitres: copie source ou désactivé (pas d'override)")
 
-                cb.log_step(6, "Construction de la commande ffmpeg remux")
+                cb.log_step(7, "Construction de la commande ffmpeg remux")
                 cmd = cb.build_command(
                     run_config,
                     sync_inputs=sync_inputs,
@@ -181,7 +278,7 @@ class RemuxRuntimeRunner:
                 )
                 cb.log("INFO", "$ " + " ".join(str(c) for c in cmd))
 
-                cb.log_step(7, "Exécution du remux ffmpeg")
+                cb.log_step(8, "Exécution du remux ffmpeg")
                 output = cb.run_cmd(
                     cmd,
                     cwd,
@@ -189,7 +286,7 @@ class RemuxRuntimeRunner:
                     lambda line: signals.progress.emit(line),
                     signals,
                 )
-                cb.log_step(8, "Post-action: Patch & Cleanup")
+                cb.log_step(9, "Post-action: Patch & Cleanup")
                 cb.apply_muxing_post_action(run_config.output)
                 cb.apply_language_post_action(run_config.output)
                 cb.write_nfo(run_config.output)

@@ -76,6 +76,40 @@ def test_write_ini_settings_keeps_legacy_ui_key_when_ui_section_is_not_saved(tmp
     assert "ffmpeg = ffmpeg-custom" in content
 
 
+class TestAppConfigSyncRewrite:
+    def test_default_is_disabled(self, tmp_path):
+        from core.config import AppConfig
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.dict(os.environ, {}, clear=False):
+                cfg = AppConfig()
+
+        assert cfg.sync_rewrite_enabled is False
+        assert cfg.to_dict()["sync"]["rewrite_enabled"] is False
+
+    def test_ini_enables_sync_rewrite(self, tmp_path):
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[sync]\nrewrite_enabled = true\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.sync_rewrite_enabled is True
+        assert cfg.to_ini_sections()["sync"]["rewrite_enabled"] == "true"
+
+
 class TestAppConfigRamBuffer:
     """Tests des clés INI ram_buffer_enabled / ram_buffer_threshold_pct."""
 
