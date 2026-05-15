@@ -403,6 +403,23 @@ class _ChapterPanel(QFrame):
         self._modified = False
         self._rebuild_table()
 
+    def shift_timecodes(self, delta_s: float) -> None:
+        """Applique un décalage relatif aux chapitres actuellement affichés."""
+        if abs(float(delta_s or 0.0)) < 0.0005:
+            return
+        self._chapters = sorted(
+            [
+                ChapterEntry(
+                    timecode_s=max(0.0, float(entry.timecode_s) + float(delta_s)),
+                    name=entry.name,
+                )
+                for entry in self._chapters
+            ],
+            key=lambda e: e.timecode_s,
+        )
+        self._modified = True
+        self._rebuild_table()
+
     def clear_all(self) -> None:
         """Restaure l'état initial du panneau quand il n'y a plus de source."""
         self._keep_cb.blockSignals(True)

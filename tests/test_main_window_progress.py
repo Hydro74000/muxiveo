@@ -4,13 +4,29 @@ import json
 from types import MethodType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from core.i18n import current_language, set_current_language
+from core.workflows.common.sync_rewrite import sync_rewrite_stage_progress_line
 from ui.main_window import (
     MainWindow,
     _ENCODE_INTERNAL_PROGRESS_PREFIX,
     _is_encode_stage_message,
     _multi_encode_remaining_seconds,
+    _parse_sync_rewrite_stage_progress,
     _select_multi_encode_label,
+    _sync_rewrite_stage_label,
 )
+
+
+@pytest.fixture(autouse=True)
+def _french_progress_labels():
+    previous = current_language()
+    set_current_language("fra")
+    try:
+        yield
+    finally:
+        set_current_language(previous)
 
 
 class _FakeProgressBar:
@@ -139,6 +155,38 @@ def test_handle_encode_internal_progress_updates_longest_remaining_bar_and_legen
 def test_nvencc_stage_is_recognized_as_encode_stage_message() -> None:
     assert _is_encode_stage_message("Encodage NVEncC")
     assert _is_encode_stage_message("Encodage NVEncC 42%")
+
+
+def test_sync_rewrite_stage_progress_is_translated_with_track_name() -> None:
+    line = sync_rewrite_stage_progress_line("subtitle", "Forced FR")
+
+    parsed = _parse_sync_rewrite_stage_progress(line)
+
+    assert parsed == ("subtitle", "Forced FR")
+    assert _sync_rewrite_stage_label(*parsed) == "Synchro sous-titre Forced FR"
+
+
+def test_on_op_progress_prefixes_sync_rewrite_stage_to_remux_metrics() -> None:
+    dummy = SimpleNamespace()
+    dummy._op_mode = "remux"
+    dummy._op_stage_label = ""
+    dummy._ffmpeg_version_logged = False
+    dummy._prog_bar = _FakeProgressBar()
+    dummy._prog_lbl = _FakeLabel()
+    dummy._remux_panel = SimpleNamespace(get_duration_s=lambda: 10.0)
+    dummy._eta_tracker_video = SimpleNamespace(update=MagicMock(), eta=MagicMock(return_value=5.0))
+    dummy.log_requested = SimpleNamespace(emit=MagicMock())
+    dummy._capture_verbose_progress_line = MagicMock()
+    dummy._stop_prep_progress = MagicMock()
+    dummy._start_prep_progress = MagicMock()
+    dummy._format_progress_label = MethodType(MainWindow._format_progress_label, dummy)
+    dummy._on_op_progress = MethodType(MainWindow._on_op_progress, dummy)
+
+    dummy._on_op_progress(sync_rewrite_stage_progress_line("audio", "VF principale"))
+    dummy._on_op_progress("out_time=00:00:05.000000")
+
+    assert "Synchro piste audio VF principale" in dummy._prog_lbl.text
+    assert "50%" in dummy._prog_lbl.text
 
 
 def test_capture_verbose_progress_line_records_wrapped_tool_output(tmp_path) -> None:

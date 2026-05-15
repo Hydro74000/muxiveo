@@ -1423,6 +1423,14 @@
     "fra": "Piste vidéo",
     "eng": "Video track"
   },
+  "Synchro piste audio {name}": {
+    "fra": "Synchro piste audio {name}",
+    "eng": "Audio track sync {name}"
+  },
+  "Synchro sous-titre {name}": {
+    "fra": "Synchro sous-titre {name}",
+    "eng": "Subtitle sync {name}"
+  },
   "La nouvelle échelle d'interface ({percent}%) est chargée.\nRedémarrer l'application maintenant ?": {
     "fra": "La nouvelle échelle d'interface ({percent}%) est chargée.\nRedémarrer l'application maintenant ?",
     "eng": "The new interface scale ({percent}%) has been loaded.\nRestart the application now?"
@@ -1686,6 +1694,18 @@
   "FFmpeg": {
     "fra": "FFmpeg",
     "eng": "FFmpeg"
+  },
+  "Synchronisation": {
+    "fra": "Synchronisation",
+    "eng": "Synchronization"
+  },
+  "Réécrire physiquement les décalages audio/sous-titres": {
+    "fra": "Réécrire physiquement les décalages audio/sous-titres",
+    "eng": "Physically rewrite audio/subtitle offsets"
+  },
+  "Option expérimentale. Si activée, certains décalages peuvent être matérialisés par réécriture des timestamps sous-titres ou réencodage audio simple. Désactivée par défaut.": {
+    "fra": "Option expérimentale. Si activée, certains décalages peuvent être matérialisés par réécriture des timestamps sous-titres ou réencodage audio simple. Désactivée par défaut.",
+    "eng": "Experimental option. When enabled, some offsets can be materialized by rewriting subtitle timestamps or by simple audio re-encoding. Disabled by default."
   },
   "Interface": {
     "fra": "Interface",
@@ -3142,6 +3162,38 @@
   "Variables": {
     "fra": "Variables",
     "eng": "Variables"
+  },
+  "Operands": {
+    "fra": "Opérateurs",
+    "eng": "Operands"
+  },
+  "Aliases": {
+    "fra": "Aliases",
+    "eng": "Aliases"
+  },
+  "Une ligne par alias :": {
+    "fra": "Une ligne par alias :",
+    "eng": "One alias per line:"
+  },
+  "EAC3=DDP\nlang_name:French=Français\naudio_object:Atmos=Dolby Atmos": {
+    "fra": "EAC3=DDP\nlang_name:French=Français\naudio_object:Atmos=Dolby Atmos",
+    "eng": "EAC3=DDP\nlang_name:French=French\naudio_object:Atmos=Dolby Atmos"
+  },
+  "Expression critères invalide : {err}": {
+    "fra": "Expression critères invalide : {err}",
+    "eng": "Invalid criteria expression: {err}"
+  },
+  "{count} alias": {
+    "fra": "{count} alias",
+    "eng": "{count} alias"
+  },
+  "flag inconnu : {value}": {
+    "fra": "flag inconnu : {value}",
+    "eng": "unknown flag: {value}"
+  },
+  "keyword inconnu : {value}": {
+    "fra": "keyword inconnu : {value}",
+    "eng": "unknown keyword: {value}"
   },
   "Aliases codecs": {
     "fra": "Aliases codecs",

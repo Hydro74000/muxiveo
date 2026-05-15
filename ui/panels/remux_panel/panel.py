@@ -159,6 +159,7 @@ class RemuxPanel(QWidget):
         self._source_files: list[SourceFile] = []
         self._source_names: dict[str, str] = {}
         self._source_colors: dict[str, str] = {}
+        self._source_sync_offsets_ms: dict[str, int] = {}
         self._color_index: int = 0
 
         self._workflow.log_message.connect(
@@ -1072,6 +1073,78 @@ class RemuxPanel(QWidget):
             return None
         return AudioSyncTrack(source_path=source.path, stream_index=int(entry.mkv_tid))
 
+    def _source_index_for_file_id(self, file_id: str) -> int | None:
+        for index, source in enumerate(self._source_files):
+            if source.id == file_id:
+                return index
+        return None
+
+    def _source_sync_offset_ms_for_index(self, source_index: int | None) -> int:
+        if source_index is None or source_index < 0 or source_index >= len(self._source_files):
+            return 0
+        return int(self._source_sync_offsets_ms.get(self._source_files[source_index].id, 0) or 0)
+
+    def _shift_chapter_entries(
+        self,
+        entries: list[ChapterEntry],
+        offset_ms: int,
+    ) -> list[ChapterEntry]:
+        delta_s = int(offset_ms or 0) / 1000.0
+        if abs(delta_s) < 0.0005:
+            return list(entries)
+        return [
+            ChapterEntry(
+                timecode_s=max(0.0, float(entry.timecode_s) + delta_s),
+                name=entry.name,
+            )
+            for entry in entries
+        ]
+
+    def _chapter_entries_for_source(self, source_index: int) -> list[ChapterEntry]:
+        if source_index < 0 or source_index >= len(self._source_files):
+            return []
+        source = self._source_files[source_index]
+        if not source.info or not source.info.chapters or not source.info.chapters.entries:
+            return []
+        return self._shift_chapter_entries(
+            list(source.info.chapters.entries),
+            self._source_sync_offset_ms_for_index(source_index),
+        )
+
+    def _apply_time_shift_to_source_tracks(self, file_id: str, offset_ms: int) -> bool:
+        if not file_id:
+            return False
+        updated = False
+        for entry in self._track_table.current_tracks():
+            if entry.file_id != file_id or entry.track_type not in {"audio", "subtitle"}:
+                continue
+            if self._track_table.update_time_shift(entry.entry_id, int(offset_ms)):
+                updated = True
+        return updated
+
+    def _apply_source_sync_offset(self, file_id: str, offset_ms: int) -> bool:
+        if not file_id:
+            return False
+
+        offset_ms = int(offset_ms)
+        old_offset_ms = int(self._source_sync_offsets_ms.get(file_id, 0) or 0)
+        if offset_ms:
+            self._source_sync_offsets_ms[file_id] = offset_ms
+        else:
+            self._source_sync_offsets_ms.pop(file_id, None)
+
+        updated = self._apply_time_shift_to_source_tracks(file_id, offset_ms)
+        source_index = self._source_index_for_file_id(file_id)
+        selected_source_index = self._chapter_panel.selected_source_index()
+        self._update_chapters_from_sources()
+        if (
+            source_index is not None
+            and selected_source_index == source_index
+            and old_offset_ms != offset_ms
+        ):
+            self._chapter_panel.shift_timecodes((offset_ms - old_offset_ms) / 1000.0)
+        return updated or source_index is not None
+
     def _on_audio_sync_requested(self, entry: TrackEntry) -> None:
         if entry.track_type != "audio":
             return
@@ -1154,9 +1227,18 @@ class RemuxPanel(QWidget):
         confidence: float,
     ) -> None:
         try:
-            if reference_entry_id and reference_entry_id != entry_id:
-                self._track_table.update_time_shift(reference_entry_id, 0)
-            if self._track_table.update_time_shift(entry_id, offset_ms):
+            tracks_by_id = {
+                track.entry_id: track
+                for track in self._track_table.current_tracks()
+            }
+            target_entry = tracks_by_id.get(entry_id)
+            reference_entry = tracks_by_id.get(reference_entry_id) if reference_entry_id else None
+            target_file_id = target_entry.file_id if target_entry is not None else ""
+            reference_file_id = reference_entry.file_id if reference_entry is not None else ""
+
+            if reference_file_id and reference_file_id != target_file_id:
+                self._apply_source_sync_offset(reference_file_id, 0)
+            if self._apply_source_sync_offset(target_file_id, offset_ms):
                 offset_label = f"{int(offset_ms):+d}"
                 confidence_label = f"{float(confidence):.2f}"
                 self.log_message.emit(
@@ -1168,7 +1250,7 @@ class RemuxPanel(QWidget):
                     ),
                 )
                 self._rebuild_preview()
-                self._emit_audio_tracks()
+                self._emit_signals()
         finally:
             self.audio_sync_finished.emit(True, {"entry_id": entry_id})
 
@@ -1233,7 +1315,9 @@ class RemuxPanel(QWidget):
 
     def current_chapter_overrides(self) -> list | None:
         keep_ch = self._chapter_panel.keep_chapters()
-        if keep_ch and self._chapter_panel.is_modified():
+        selected_source_index = self._chapter_panel.selected_source_index()
+        source_has_sync_offset = self._source_sync_offset_ms_for_index(selected_source_index) != 0
+        if keep_ch and (self._chapter_panel.is_modified() or source_has_sync_offset):
             return self._chapter_panel.get_chapters()
         return None
 

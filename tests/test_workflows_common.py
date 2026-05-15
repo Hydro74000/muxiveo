@@ -24,8 +24,10 @@ from core.workflows.common.metadata import (
     resolve_global_tags,
 )
 from core.workflows.common.sync_rewrite import (
+    SYNC_REWRITE_STAGE_PREFIX,
     SyncRewriteService,
     audio_bitrate_kbps_from_display_info,
+    sync_rewrite_stage_progress_line,
     ui_sync_rewrite_label_for_track,
 )
 from core.workflows.common.timeline_sync import (
@@ -338,6 +340,14 @@ class TestCommonSyncRewrite:
 
         cmd = cast(list[str], seen["cmd"])
         assert cmd[3:6] == ["-progress", "pipe:1", "-nostats"]
+        assert progress_lines[0].startswith(SYNC_REWRITE_STAGE_PREFIX)
+
+    def test_sync_rewrite_stage_progress_line_carries_track_name(self):
+        line = sync_rewrite_stage_progress_line("audio", "VF principale")
+
+        assert line.startswith(SYNC_REWRITE_STAGE_PREFIX)
+        assert '"track_type":"audio"' in line
+        assert '"name":"VF principale"' in line
 
 
 class TestCommonTrackTypes:

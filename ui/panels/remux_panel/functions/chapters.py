@@ -24,12 +24,13 @@ def update_chapters_from_sources(panel: "RemuxPanel") -> None:
     for i, sf in enumerate(panel._source_files):
         if sf.info and sf.info.chapters and sf.info.chapters.entries:
             label = f"Source {i + 1} — {sf.path.name}"
-            available.append((i, label, list(sf.info.chapters.entries)))
+            available.append((i, label, panel._chapter_entries_for_source(i)))
     panel._chapter_panel.set_available_sources(available)
 
 
 def reset_empty_state(panel: "RemuxPanel") -> None:
     panel._color_index = 0
+    panel._source_sync_offsets_ms.clear()
     panel._track_table.clear_all()
     panel._attachment_panel.clear_all()
     panel._chapter_panel.clear_all()

@@ -28,6 +28,7 @@ TEXT_SUBTITLE_CODECS: frozenset[str] = frozenset({
 
 REWRITE_SUBTITLE_CODECS: frozenset[str] = TEXT_SUBTITLE_CODECS | CONVERT_TO_SRT
 REWRITE_AUDIO_CODECS: frozenset[str] = frozenset({"ac3", "eac3", "aac"})
+SYNC_REWRITE_STAGE_PREFIX = "__MRE_SYNC_REWRITE_STAGE__ "
 
 _OBJECT_AUDIO_MARKERS = (
     "atmos",
@@ -121,6 +122,14 @@ def sync_rewrite_output_token(source_path: Path | str, stream_index: int, track_
     return f"{safe}_s{int(stream_index)}_{track_type}"
 
 
+def sync_rewrite_stage_progress_line(track_type: str, name: str) -> str:
+    payload = {
+        "track_type": str(track_type or "").strip().lower(),
+        "name": " ".join(str(name or "").split()),
+    }
+    return SYNC_REWRITE_STAGE_PREFIX + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
 class SyncRewriteService:
     def __init__(
         self,
@@ -182,6 +191,11 @@ class SyncRewriteService:
                     f"(codec={codec or 'inconnu'}, stream={stream_index})."
                 )
                 return None
+            self._emit_stage_progress(
+                track_type="subtitle",
+                title=title,
+                stream_index=int(stream_index),
+            )
             out = self._rewrite_subtitle(
                 source=source,
                 stream_index=int(stream_index),
@@ -223,6 +237,12 @@ class SyncRewriteService:
                     f"(stream={stream_index}); fallback offset."
                 )
                 return None
+            self._emit_stage_progress(
+                track_type="audio",
+                title=title,
+                stream_index=int(stream_index),
+                probe=probe,
+            )
             rewrite_codec_key = source_codec_key
             rewrite_bitrate_kbps: int | None = None
             if preserve_source_audio_params:
@@ -418,6 +438,33 @@ class SyncRewriteService:
         if codec_key in {"subrip", "srt"}:
             return "srt", ".srt", "copy"
         return "srt", ".srt", "srt"
+
+    def _emit_stage_progress(
+        self,
+        *,
+        track_type: str,
+        title: str,
+        stream_index: int,
+        probe: Mapping[str, object] | None = None,
+    ) -> None:
+        if self._progress is None:
+            return
+        self._progress(sync_rewrite_stage_progress_line(
+            track_type,
+            self._progress_track_name(title=title, stream_index=stream_index, probe=probe),
+        ))
+
+    @staticmethod
+    def _progress_track_name(
+        *,
+        title: str,
+        stream_index: int,
+        probe: Mapping[str, object] | None = None,
+    ) -> str:
+        tags = probe.get("tags") if isinstance(probe, Mapping) and isinstance(probe.get("tags"), Mapping) else {}
+        probe_title = str(tags.get("title") or "") if isinstance(tags, Mapping) else ""
+        name = " ".join(str(title or probe_title or "").split())
+        return name or f"#{int(stream_index)}"
 
     def _emit_tool_progress(self, line: str) -> None:
         if self._progress is not None:
@@ -712,10 +759,12 @@ class SyncRewriteService:
 __all__ = [
     "REWRITE_AUDIO_CODECS",
     "REWRITE_SUBTITLE_CODECS",
+    "SYNC_REWRITE_STAGE_PREFIX",
     "SyncRewritePreparedInput",
     "SyncRewriteService",
     "audio_bitrate_kbps_from_display_info",
     "normalized_rewrite_codec",
+    "sync_rewrite_stage_progress_line",
     "sync_rewrite_output_token",
     "track_has_object_audio_metadata",
     "ui_sync_rewrite_label_for_track",

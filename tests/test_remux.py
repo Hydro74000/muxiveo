@@ -1421,6 +1421,92 @@ class TestTrackTableUpdateAudioMeta:
         assert reference.time_shift_ms == 0
         panel.close()
 
+    def test_audio_sync_done_applies_delta_to_source_tracks_and_chapters(self, qt_app, tmp_path):
+        panel = RemuxPanel(AppConfig())
+        target_src = tmp_path / "target.mkv"
+        reference_src = tmp_path / "reference.mkv"
+        target_src.touch()
+        reference_src.touch()
+
+        target_video = _track(0, "video", file_id="target")
+        target_audio = _track(1, "audio", file_id="target")
+        target_sub = _track(2, "subtitle", codec="SRT", file_id="target")
+        reference_audio = _track(1, "audio", file_id="reference")
+        target_info = _file_info(
+            path=target_src,
+            videos=[_video(index=0)],
+            audios=[_audio(index=1)],
+            subs=[_subtitle(index=2)],
+        )
+        target_info.chapters = ChapterInfo([
+            ChapterEntry(0.2, "Intro"),
+            ChapterEntry(10.0, "Main"),
+        ])
+        reference_info = _file_info(path=reference_src, audios=[_audio(index=1)])
+        panel._source_files = [
+            SourceFile(id="target", path=target_src, color=_COLOR_A, info=target_info, tracks=[target_video, target_audio, target_sub]),
+            SourceFile(id="reference", path=reference_src, color=_COLOR_B, info=reference_info, tracks=[reference_audio]),
+        ]
+        panel._source_colors = {"target": _COLOR_A, "reference": _COLOR_B}
+        panel._track_table.append_tracks(_COLOR_A, [target_video, target_audio, target_sub])
+        panel._track_table.append_tracks(_COLOR_B, [reference_audio])
+        panel._update_chapters_from_sources()
+
+        panel._on_audio_sync_done(target_audio.entry_id, reference_audio.entry_id, -320, 0.876)
+
+        assert target_video.time_shift_ms == 0
+        assert target_audio.time_shift_ms == -320
+        assert target_sub.time_shift_ms == -320
+        assert reference_audio.time_shift_ms == 0
+        chapters = panel.current_chapter_overrides()
+        assert chapters is not None
+        assert [round(entry.timecode_s, 2) for entry in chapters] == [0.0, 9.68]
+        panel.close()
+
+    def test_audio_sync_done_resets_reference_source_tracks_and_chapters(self, qt_app, tmp_path):
+        panel = RemuxPanel(AppConfig())
+        reference_src = tmp_path / "reference.mkv"
+        target_src = tmp_path / "target.mkv"
+        reference_src.touch()
+        target_src.touch()
+
+        reference_audio = _track(1, "audio", file_id="reference")
+        reference_sub = _track(2, "subtitle", codec="SRT", file_id="reference")
+        target_audio = _track(1, "audio", file_id="target")
+        target_sub = _track(2, "subtitle", codec="SRT", file_id="target")
+        reference_info = _file_info(
+            path=reference_src,
+            audios=[_audio(index=1)],
+            subs=[_subtitle(index=2)],
+        )
+        reference_info.chapters = ChapterInfo([
+            ChapterEntry(0.0, "Intro"),
+            ChapterEntry(10.0, "Main"),
+        ])
+        target_info = _file_info(path=target_src, audios=[_audio(index=1)], subs=[_subtitle(index=2)])
+        panel._source_files = [
+            SourceFile(id="reference", path=reference_src, color=_COLOR_A, info=reference_info, tracks=[reference_audio, reference_sub]),
+            SourceFile(id="target", path=target_src, color=_COLOR_B, info=target_info, tracks=[target_audio, target_sub]),
+        ]
+        panel._source_colors = {"reference": _COLOR_A, "target": _COLOR_B}
+        panel._track_table.append_tracks(_COLOR_A, [reference_audio, reference_sub])
+        panel._track_table.append_tracks(_COLOR_B, [target_audio, target_sub])
+        panel._update_chapters_from_sources()
+
+        panel._on_audio_sync_done(reference_audio.entry_id, "", 250, 0.9)
+        assert reference_audio.time_shift_ms == 250
+        assert reference_sub.time_shift_ms == 250
+        assert [round(entry.timecode_s, 2) for entry in panel._chapter_panel.get_chapters()] == [0.25, 10.25]
+
+        panel._on_audio_sync_done(target_audio.entry_id, reference_audio.entry_id, -320, 0.876)
+
+        assert reference_audio.time_shift_ms == 0
+        assert reference_sub.time_shift_ms == 0
+        assert target_audio.time_shift_ms == -320
+        assert target_sub.time_shift_ms == -320
+        assert [round(entry.timecode_s, 2) for entry in panel._chapter_panel.get_chapters()] == [0.0, 10.0]
+        panel.close()
+
 
 # ===========================================================================
 # RemuxPanel — pistes NEW synchronisées avec EncodePanel
