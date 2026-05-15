@@ -195,7 +195,7 @@ class TestCommonSyncRewrite:
         )
         seen: dict[str, object] = {}
 
-        def fake_run(cmd, destination, _error_prefix):
+        def fake_run(cmd, destination, _error_prefix, **_kwargs):
             seen["cmd"] = cmd
             destination.write_bytes(b"audio")
 
@@ -237,7 +237,7 @@ class TestCommonSyncRewrite:
         )
         seen: dict[str, object] = {}
 
-        def fake_run(cmd, destination, _error_prefix):
+        def fake_run(cmd, destination, _error_prefix, **_kwargs):
             seen["cmd"] = cmd
             destination.write_bytes(b"audio")
 
@@ -272,7 +272,7 @@ class TestCommonSyncRewrite:
         service = SyncRewriteService(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         seen: list[list[str]] = []
 
-        def fake_run(cmd, destination, _error_prefix):
+        def fake_run(cmd, destination, _error_prefix, **_kwargs):
             seen.append(list(cmd))
             if str(destination).endswith("_raw.srt"):
                 destination.write_text("1\n00:00:01,000 --> 00:00:02,000\nBonjour\n", encoding="utf-8")
@@ -296,6 +296,48 @@ class TestCommonSyncRewrite:
         assert len(seen) == 2
         wrap_cmd = seen[1]
         assert wrap_cmd[-3:] == ["-f", "matroska", str(prepared.path)]
+
+    def test_sync_rewrite_commands_accept_ffmpeg_progress_args(self, tmp_path, monkeypatch):
+        progress_lines: list[str] = []
+        service = SyncRewriteService(
+            ffmpeg_bin="ffmpeg",
+            ffprobe_bin="ffprobe",
+            ffmpeg_progress_args=["-progress", "pipe:1", "-nostats"],
+            progress_cb=progress_lines.append,
+        )
+        monkeypatch.setattr(
+            service,
+            "_probe_stream",
+            lambda _source, _stream_index: {
+                "codec_name": "eac3",
+                "codec_long_name": "E-AC-3",
+                "profile": "",
+                "channels": 6,
+                "bit_rate": "640000",
+                "tags": {},
+            },
+        )
+        seen: dict[str, object] = {}
+
+        def fake_run(cmd, destination, _error_prefix, **_kwargs):
+            seen["cmd"] = list(cmd)
+            destination.write_bytes(b"audio")
+
+        monkeypatch.setattr(service, "_run_checked", fake_run)
+
+        service.maybe_materialize(
+            source_path=tmp_path / "in.mkv",
+            stream_index=1,
+            track_type="audio",
+            codec="eac3",
+            display_info="5.1  640 kbps",
+            offset_ms=250,
+            tmp_dir=tmp_path,
+            input_idx=2,
+        )
+
+        cmd = cast(list[str], seen["cmd"])
+        assert cmd[3:6] == ["-progress", "pipe:1", "-nostats"]
 
 
 class TestCommonTrackTypes:

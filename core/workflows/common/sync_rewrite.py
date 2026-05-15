@@ -9,7 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
 
-from core.subprocess_utils import subprocess_text_kwargs
+from core.subprocess_utils import (
+    decode_subprocess_output,
+    subprocess_text_kwargs,
+    subprocess_windows_no_window_kwargs,
+)
 from core.subtitle_codec import CONVERT_TO_SRT
 from core.workflows.remux_models import RemuxError
 
@@ -123,14 +127,18 @@ class SyncRewriteService:
         *,
         ffmpeg_bin: str,
         ffprobe_bin: str = "ffprobe",
+        ffmpeg_progress_args: list[str] | None = None,
         ffmpeg_thread_args: list[str] | None = None,
         log_cb: Callable[[str], None] | None = None,
+        progress_cb: Callable[[str], None] | None = None,
         audio_bitrate_per_channel: Mapping[str, int] | None = None,
     ) -> None:
         self._ffmpeg = ffmpeg_bin
         self._ffprobe = ffprobe_bin
+        self._progress_args = list(ffmpeg_progress_args or [])
         self._thread_args = list(ffmpeg_thread_args or [])
         self._log = log_cb or (lambda _message: None)
+        self._progress = progress_cb
         bitrates = dict(audio_bitrate_per_channel or {})
         self._audio_bitrate_per_channel = {
             "aac": int(bitrates.get("aac", 96) or 96),
@@ -181,6 +189,7 @@ class SyncRewriteService:
                 offset_ms=int(offset_ms),
                 tmp_dir=tmp_dir,
                 token=token,
+                cancel_cb=cancel_cb,
             )
             self._log(
                 "Sync réelle sous-titre: timestamps réécrits "
@@ -251,6 +260,7 @@ class SyncRewriteService:
                 token=token,
                 channels=int(probe.get("channels") or 0),
                 bitrate_kbps=rewrite_bitrate_kbps,
+                cancel_cb=cancel_cb,
             )
             bitrate_label = f", bitrate={rewrite_bitrate_kbps} kbps" if rewrite_bitrate_kbps else ""
             self._log(
@@ -334,6 +344,7 @@ class SyncRewriteService:
         token: str,
         channels: int,
         bitrate_kbps: int | None = None,
+        cancel_cb: Callable[[], bool] | None = None,
     ) -> Path:
         destination = self._unique_path(tmp_dir, f"sync_rewrite_{token}.mka")
         if offset_ms > 0:
@@ -344,6 +355,7 @@ class SyncRewriteService:
         cmd = [
             self._ffmpeg,
             "-hide_banner", "-y",
+            *self._progress_args,
             "-i", str(source),
             "-map", f"0:{stream_index}",
             "-vn", "-sn", "-dn",
@@ -354,7 +366,7 @@ class SyncRewriteService:
             "-f", "matroska",
             str(destination),
         ]
-        self._run_checked(cmd, destination, "Réécriture sync audio échouée")
+        self._run_checked(cmd, destination, "Réécriture sync audio échouée", cancel_cb=cancel_cb)
         return destination
 
     def _rewrite_subtitle(
@@ -366,6 +378,7 @@ class SyncRewriteService:
         offset_ms: int,
         tmp_dir: Path,
         token: str,
+        cancel_cb: Callable[[], bool] | None = None,
     ) -> Path:
         text_kind, ext, codec_arg = self._subtitle_text_plan(codec_key)
         extracted = self._unique_path(tmp_dir, f"sync_rewrite_{token}_raw{ext}")
@@ -374,24 +387,26 @@ class SyncRewriteService:
         extract_cmd = [
             self._ffmpeg,
             "-hide_banner", "-y",
+            *self._progress_args,
             "-i", str(source),
             "-map", f"0:{stream_index}",
             "-c:s", codec_arg,
             str(extracted),
         ]
-        self._run_checked(extract_cmd, extracted, "Extraction sous-titre pour sync réelle échouée")
+        self._run_checked(extract_cmd, extracted, "Extraction sous-titre pour sync réelle échouée", cancel_cb=cancel_cb)
         text = extracted.read_text(encoding="utf-8-sig", errors="replace")
         shifted.write_text(self._shift_subtitle_text(text, text_kind, offset_ms), encoding="utf-8")
         wrap_cmd = [
             self._ffmpeg,
             "-hide_banner", "-y",
+            *self._progress_args,
             "-i", str(shifted),
             "-map", "0:0",
             "-c:s", "copy",
             "-f", "matroska",
             str(destination),
         ]
-        self._run_checked(wrap_cmd, destination, "Encapsulation sous-titre sync réelle échouée")
+        self._run_checked(wrap_cmd, destination, "Encapsulation sous-titre sync réelle échouée", cancel_cb=cancel_cb)
         return destination
 
     @staticmethod
@@ -404,18 +419,53 @@ class SyncRewriteService:
             return "srt", ".srt", "copy"
         return "srt", ".srt", "srt"
 
-    def _run_checked(self, cmd: list[str], destination: Path, error_prefix: str) -> None:
-        self._log("$ " + " ".join(str(part) for part in cmd))
-        result = subprocess.run(
+    def _emit_tool_progress(self, line: str) -> None:
+        if self._progress is not None:
+            self._progress(line)
+        else:
+            self._log(line)
+
+    def _run_checked(
+        self,
+        cmd: list[str],
+        destination: Path,
+        error_prefix: str,
+        *,
+        cancel_cb: Callable[[], bool] | None = None,
+    ) -> None:
+        self._emit_tool_progress("$ " + " ".join(str(part) for part in cmd))
+        with subprocess.Popen(
             cmd,
-            capture_output=True,
-            check=False,
-            timeout=1200,
-            **subprocess_text_kwargs(),
-        )
-        if result.returncode != 0 or not destination.exists() or destination.stat().st_size == 0:
-            stderr = (result.stderr or "").strip()
-            raise RemuxError(f"{error_prefix}: {stderr}")
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            **subprocess_windows_no_window_kwargs(),
+        ) as proc:
+            assert proc.stdout is not None
+            lines: list[str] = []
+            buf = b""
+            while chunk := proc.stdout.read(256):
+                if cancel_cb is not None and cancel_cb():
+                    proc.kill()
+                    raise RemuxError("Réécriture sync annulée.")
+                chunk_bytes = bytes(chunk)
+                buf += chunk_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+                *complete, buf = buf.split(b"\n")
+                for raw in complete:
+                    stripped = decode_subprocess_output(raw).rstrip()
+                    if not stripped:
+                        continue
+                    lines.append(stripped)
+                    self._emit_tool_progress(stripped)
+            if buf.strip():
+                stripped = decode_subprocess_output(buf.strip())
+                if stripped:
+                    lines.append(stripped)
+                    self._emit_tool_progress(stripped)
+            proc.wait()
+
+        output = "\n".join(lines[-10000:])
+        if proc.returncode != 0 or not destination.exists() or destination.stat().st_size == 0:
+            raise RemuxError(f"{error_prefix}: {output[-2000:].strip()}")
 
     @staticmethod
     def _audio_bitrate_kbps_for(codec_key: str, channels: int, per_channel: int) -> int:

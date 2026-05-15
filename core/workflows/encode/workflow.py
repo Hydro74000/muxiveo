@@ -1185,9 +1185,11 @@ class EncodeWorkflow(QObject):
             rewrite_service = SyncRewriteService(
                 ffmpeg_bin=self._ffmpeg,
                 ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+                ffmpeg_progress_args=self._ffmpeg_progress_args(),
                 ffmpeg_thread_args=self._ffmpeg_thread_args(None),
                 audio_bitrate_per_channel=self._sync_rewrite_audio_bitrates,
                 log_cb=lambda message: self.log_message.emit("INFO", message),
+                progress_cb=(signals.progress.emit if signals is not None else None),
             )
             work_dir = sync_rewrite_work_dir or config.work_dir or config.source.parent
             for map_key, input_path, input_stream_index in track_assembly.track_mappings:

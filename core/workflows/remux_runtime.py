@@ -16,7 +16,10 @@ from core.workdir import (
     remove_path,
 )
 from core.workflows.common.chapters import probe_media_duration_seconds, write_ffmetadata_chapters
-from core.workflows.common.ffmpeg_runtime import cli_path as _cli_path
+from core.workflows.common.ffmpeg_runtime import (
+    cli_path as _cli_path,
+    ffmpeg_progress_args as _ffmpeg_progress_args,
+)
 from core.workflows.common.sync_rewrite import (
     SyncRewriteService,
     audio_bitrate_kbps_from_display_info,
@@ -184,9 +187,11 @@ class RemuxRuntimeRunner:
                     rewrite_service = SyncRewriteService(
                         ffmpeg_bin=cb.ffmpeg_bin,
                         ffprobe_bin=cb.ffprobe_bin,
+                        ffmpeg_progress_args=_ffmpeg_progress_args(),
                         ffmpeg_thread_args=cb.ffmpeg_thread_args(),
                         audio_bitrate_per_channel=cb.sync_rewrite_audio_bitrates(),
                         log_cb=lambda msg: cb.log("INFO", msg),
+                        progress_cb=signals.progress.emit,
                     )
                     rewritten_tracks: list[MappedTrack] = []
                     rewritten_inputs: list[SyncPreparedInput] = []
