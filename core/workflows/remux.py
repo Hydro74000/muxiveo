@@ -88,6 +88,10 @@ class RemuxWorkflow(QObject):
         writing_application: str = "",
         generate_nfo: bool = True,
         mediainfo_bin: str = "mediainfo",
+        sync_rewrite_enabled: bool = False,
+        sync_advanced_audio_rewrite_enabled: bool = False,
+        aac_bitrate_per_channel_kbps: int = 96,
+        eac3_bitrate_per_channel_kbps: int = 96,
     ) -> None:
         super().__init__(parent)
         self._ffmpeg = ffmpeg_bin
@@ -95,6 +99,13 @@ class RemuxWorkflow(QObject):
         self._ffmpeg_threads = _normalize_ffmpeg_thread_count(ffmpeg_threads)
         self._generate_nfo = generate_nfo
         self._mediainfo_bin = mediainfo_bin
+        self._sync_rewrite_enabled = bool(sync_rewrite_enabled)
+        self._sync_advanced_audio_rewrite_enabled = bool(sync_advanced_audio_rewrite_enabled)
+        self._sync_rewrite_audio_bitrates = {
+            "aac": int(aac_bitrate_per_channel_kbps or 96),
+            "ac3": int(eac3_bitrate_per_channel_kbps or 96),
+            "eac3": int(eac3_bitrate_per_channel_kbps or 96),
+        }
         self._runner = ToolRunner(max_workers=1, parent=self)
         self._writing_application = writing_application.strip()
         self._muxing_post_action = MatroskaMuxingAppPostAction(
@@ -122,6 +133,24 @@ class RemuxWorkflow(QObject):
 
     def set_mediainfo_bin(self, mediainfo_bin: str) -> None:
         self._mediainfo_bin = mediainfo_bin
+
+    def set_sync_rewrite_enabled(self, enabled: bool) -> None:
+        self._sync_rewrite_enabled = bool(enabled)
+
+    def set_sync_advanced_audio_rewrite_enabled(self, enabled: bool) -> None:
+        self._sync_advanced_audio_rewrite_enabled = bool(enabled)
+
+    def set_sync_rewrite_audio_bitrates(
+        self,
+        *,
+        aac_bitrate_per_channel_kbps: int,
+        eac3_bitrate_per_channel_kbps: int,
+    ) -> None:
+        self._sync_rewrite_audio_bitrates = {
+            "aac": int(aac_bitrate_per_channel_kbps or 96),
+            "ac3": int(eac3_bitrate_per_channel_kbps or 96),
+            "eac3": int(eac3_bitrate_per_channel_kbps or 96),
+        }
 
     def _ffmpeg_thread_args(self) -> list[str]:
         return _common_ffmpeg_thread_args(self._ffmpeg_threads)
@@ -207,6 +236,9 @@ class RemuxWorkflow(QObject):
                 apply_muxing_post_action=self._muxing_post_action.apply_if_mkv,
                 apply_language_post_action=self._language_post_action.apply_if_mkv,
                 write_nfo=self._write_nfo,
+                sync_rewrite_enabled=lambda: self._sync_rewrite_enabled,
+                sync_advanced_audio_rewrite_enabled=lambda: self._sync_advanced_audio_rewrite_enabled,
+                sync_rewrite_audio_bitrates=lambda: dict(self._sync_rewrite_audio_bitrates),
             )
         ).run(config)
 

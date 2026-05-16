@@ -250,6 +250,9 @@ def build_runtime_single_pass_with_sync(
         start_input_index=metadata_inputs.next_input_index,
         sync_remap=sync_remap,
         video_fallback_input=plan.video_source,
+        allow_sync_rewrite=True,
+        sync_rewrite_work_dir=work_dir,
+        signals=signals,
     )
     callbacks.append_primary_video_map_and_codec(
         cmd,
@@ -361,6 +364,9 @@ def build_runtime_two_pass_with_sync(
         sync_remap=sync_remap,
         video_default_map=sync_remap.get(video_key, video_default_map),
         video_fallback_input=plan.video_source,
+        allow_sync_rewrite=True,
+        sync_rewrite_work_dir=work_dir,
+        signals=signals,
     )
     callbacks.append_primary_video_map_and_codec(
         pass2,

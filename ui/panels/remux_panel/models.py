@@ -19,6 +19,7 @@ _FILE_BAR_H = 36
 _FILE_PH_H = 100
 
 _TRACK_INFO_OFFSET_VALUE_ROLE = int(Qt.ItemDataRole.UserRole) + 40
+_TRACK_INFO_SYNC_LABEL_ROLE = int(Qt.ItemDataRole.UserRole) + 41
 _TRACK_INFO_OFFSET_NEG_COLOR = QColor("#d92f2f")
 _TRACK_INFO_OFFSET_POS_COLOR = QColor("#1f9d55")
 _TRACK_INFO_OFFSET_COLOR = _TRACK_INFO_OFFSET_NEG_COLOR
@@ -81,6 +82,7 @@ __all__ = [
     "_TRACK_INFO_OFFSET_NEG_COLOR",
     "_TRACK_INFO_OFFSET_POS_COLOR",
     "_TRACK_INFO_OFFSET_VALUE_ROLE",
+    "_TRACK_INFO_SYNC_LABEL_ROLE",
     "_format_timecode",
     "_normalize_tmdb_manual_title_suggestion",
     "_parse_timecode",

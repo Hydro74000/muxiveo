@@ -132,7 +132,7 @@ class SettingsPanel(QWidget):
         layout.addWidget(subtitle)
         layout.addWidget(_separator())
 
-        _section_order = {"ui": 0, "audio_encoding": 1, "metadata": 2, "paths": 3}
+        _section_order = {"ui": 0, "audio_encoding": 1, "sync": 2, "metadata": 3, "paths": 4}
         groups = sorted(INI_FIELD_GROUPS, key=lambda group: _section_order.get(group["section"], 4))
         for group in groups:
             layout.addWidget(_section_label(group["title"].upper()))
@@ -195,10 +195,13 @@ class SettingsPanel(QWidget):
         layout.setSpacing(_scale(8))
 
         kind = field["kind"]
+        tooltip = str(field.get("tooltip") or "").strip()
         if kind == "bool":
             checkbox = QCheckBox(field["label"])
             checkbox.setObjectName(f"{section}.{field['key']}")
             checkbox.setStyleSheet(_checkbox_style())
+            if tooltip:
+                checkbox.setToolTip(tooltip)
             if section == "ui" and field["key"] == "enable_file_logging":
                 checkbox.toggled.connect(self._sync_file_logging_level_state)
             layout.addWidget(checkbox)
@@ -208,22 +211,30 @@ class SettingsPanel(QWidget):
             label.setStyleSheet(
                 f"color:{_C.TEXT_PRI};font-size:{_font_px(12)}px;font-weight:600;background:transparent;"
             )
+            if tooltip:
+                label.setToolTip(tooltip)
             layout.addWidget(label)
 
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
             row.setSpacing(_scale(8))
             widget = self._make_editor(section, field)
+            if tooltip:
+                widget.setToolTip(tooltip)
             row.addWidget(widget, stretch=1)
             if kind in {"directory", "tool"}:
                 browse_btn = _secondary_button("Parcourir…")
                 browse_btn.clicked.connect(lambda _=False, s=section, f=field: self._browse_for_field(s, f))
+                if tooltip:
+                    browse_btn.setToolTip(tooltip)
                 row.addWidget(browse_btn)
             layout.addLayout(row)
 
         desc = QLabel(field["description"])
         desc.setWordWrap(True)
         desc.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:{_font_px(11)}px;background:transparent;")
+        if tooltip:
+            desc.setToolTip(tooltip)
         layout.addWidget(desc)
         return container
 

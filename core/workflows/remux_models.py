@@ -55,6 +55,8 @@ class TrackEntry:
     encode_plan_summary: str = field(default="", repr=False)
     encode_plan_hdr_badges: tuple[str, ...] = field(default_factory=tuple, repr=False)
     encode_plan_modified: bool = field(default=False, repr=False)
+    sync_rewrite_label: str = field(default="", repr=False)
+    sync_rewrite_mode: str = field(default="", repr=False)  # "" = auto, "offset" = sync standard forcée
 
     # Flags MKV éditables (transmis à FFmpeg si modifiés)
     flag_enabled:          bool = field(default=True,  repr=False)  # --track-enabled-flag
@@ -109,6 +111,7 @@ class TrackEntry:
                 self.display_info,
                 self.flags_label,
                 self.time_shift_label,
+                self.sync_rewrite_label,
             )
             if p
         ]

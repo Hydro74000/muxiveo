@@ -42,6 +42,7 @@ from core.workflows.remux_mapping import (
 )
 from core.workflows.remux_models import RemuxConfig, RemuxError, SourceInput, TrackEntry
 from core.workflows.remux import RemuxWorkflow
+from core.workflows.remux_runtime import RemuxRuntimeRunner, RemuxRuntimeRunnerCallbacks
 from core.workflows.remux_sync import (
     decide_strict_interleave_with_prescan,
     prepare_timeline_sync_inputs,
@@ -51,6 +52,7 @@ from core.workflows.remux_timeline_sync import (
     SyncPreparedInput,
     TimelineSyncFallbackHelper,
 )
+from core.workflows.common.sync_rewrite import SyncRewritePreparedInput
 
 
 def _track(
@@ -240,6 +242,153 @@ class TestRemuxWorkflowBuildCommand:
         map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
         assert "0:0" in map_values
         assert "2:0" in map_values
+
+    def test_runtime_sync_rewrite_consumes_audio_offset(self, tmp_path, monkeypatch):
+        src = tmp_path / "in.mkv"
+        src.touch()
+        cfg = RemuxConfig(
+            sources=[
+                SourceInput(
+                    path=src,
+                    file_index=0,
+                    tracks=[
+                        _track(0, "video"),
+                        _track(1, "audio", codec="EAC3", time_shift_ms=250),
+                    ],
+                )
+            ],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0), (0, 1)],
+            keep_chapters=False,
+            work_dir=tmp_path,
+        )
+        captured: dict[str, object] = {}
+
+        class FakeSyncRewriteService:
+            def __init__(self, **kwargs):
+                captured["service_kwargs"] = kwargs
+
+            def maybe_materialize(self, **kwargs):
+                path = tmp_path / "rewritten.mka"
+                path.write_bytes(b"audio")
+                captured["rewrite_kwargs"] = kwargs
+                return SyncRewritePreparedInput(
+                    path=path,
+                    input_idx=int(kwargs["input_idx"]),
+                    track_type="audio",
+                    codec="eac3",
+                    mode_label="Sync réelle · audio réencodé",
+                    bitrate_kbps=640,
+                )
+
+        monkeypatch.setattr(
+            "core.workflows.remux_runtime.SyncRewriteService",
+            FakeSyncRewriteService,
+        )
+
+        def build_command(_config, **kwargs):
+            captured["sync_inputs"] = list(kwargs.get("sync_inputs") or [])
+            captured["mapped_tracks"] = list(kwargs.get("mapped_tracks_override") or [])
+            return ["ffmpeg", "-hide_banner", "-y", str(cfg.output)]
+
+        runner = RemuxRuntimeRunner(
+            RemuxRuntimeRunnerCallbacks(
+                ffmpeg_bin="ffmpeg",
+                ffprobe_bin="ffprobe",
+                ffmpeg_thread_args=lambda: [],
+                validate=lambda _config: [],
+                build_command=build_command,
+                log_workflow_type=lambda _kind: None,
+                log_step=lambda _idx, _name: None,
+                log=lambda _level, _message: None,
+                bind_temp_cleanup=lambda _signals, _paths: None,
+                run_cmd=lambda _cmd, _cwd, _label, _progress_cb, _signals: "ok",
+                apply_muxing_post_action=lambda _path: None,
+                apply_language_post_action=lambda _path: None,
+                write_nfo=lambda _path: None,
+                sync_rewrite_enabled=lambda: True,
+                sync_advanced_audio_rewrite_enabled=lambda: True,
+                sync_rewrite_audio_bitrates=lambda: {"eac3": 96},
+            )
+        )
+
+        state = _wait_task(runner.run(cfg))
+
+        assert state["failed"] is None
+        assert captured["sync_inputs"]
+        mapped_tracks = cast(list, captured["mapped_tracks"])
+        rewritten_audio = next(mt for mt in mapped_tracks if mt.track.track_type == "audio")
+        assert rewritten_audio.track.time_shift_ms == 0
+        assert rewritten_audio.stream_index == 0
+        assert rewritten_audio.track.sync_rewrite_label == "Sync réelle · audio réencodé"
+        rewrite_kwargs = cast(dict, captured["rewrite_kwargs"])
+        assert rewrite_kwargs["preserve_source_audio_params"] is True
+        service_kwargs = cast(dict, captured["service_kwargs"])
+        assert service_kwargs["advanced_audio_enabled"] is True
+
+    def test_runtime_sync_rewrite_respects_forced_standard_offset(self, tmp_path, monkeypatch):
+        src = tmp_path / "in.mkv"
+        src.touch()
+        audio = _track(1, "audio", codec="EAC3", time_shift_ms=250)
+        audio.sync_rewrite_mode = "offset"
+        cfg = RemuxConfig(
+            sources=[
+                SourceInput(
+                    path=src,
+                    file_index=0,
+                    tracks=[_track(0, "video"), audio],
+                )
+            ],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0), (0, 1)],
+            keep_chapters=False,
+            work_dir=tmp_path,
+        )
+
+        class FakeSyncRewriteService:
+            def __init__(self, **_kwargs):
+                pass
+
+            def maybe_materialize(self, **_kwargs):
+                raise AssertionError("forced standard offset must not use sync rewrite")
+
+        monkeypatch.setattr(
+            "core.workflows.remux_runtime.SyncRewriteService",
+            FakeSyncRewriteService,
+        )
+        captured: dict[str, object] = {}
+
+        def build_command(_config, **kwargs):
+            mapped_tracks = list(kwargs.get("mapped_tracks_override") or [])
+            captured["mapped_tracks"] = mapped_tracks
+            return ["ffmpeg", "-hide_banner", "-y", str(cfg.output)]
+
+        runner = RemuxRuntimeRunner(
+            RemuxRuntimeRunnerCallbacks(
+                ffmpeg_bin="ffmpeg",
+                ffprobe_bin="ffprobe",
+                ffmpeg_thread_args=lambda: [],
+                validate=lambda _config: [],
+                build_command=build_command,
+                log_workflow_type=lambda _kind: None,
+                log_step=lambda _idx, _name: None,
+                log=lambda _level, _message: None,
+                bind_temp_cleanup=lambda _signals, _paths: None,
+                run_cmd=lambda _cmd, _cwd, _label, _progress_cb, _signals: "ok",
+                apply_muxing_post_action=lambda _path: None,
+                apply_language_post_action=lambda _path: None,
+                write_nfo=lambda _path: None,
+                sync_rewrite_enabled=lambda: True,
+                sync_rewrite_audio_bitrates=lambda: {"eac3": 96},
+            )
+        )
+
+        state = _wait_task(runner.run(cfg))
+
+        assert state["failed"] is None
+        mapped_tracks = cast(list, captured["mapped_tracks"])
+        mapped_audio = next(mt for mt in mapped_tracks if mt.track.track_type == "audio")
+        assert mapped_audio.track.time_shift_ms == 250
 
     def test_requires_file_sync_fallback_for_offsets_detects_foreign_offset(self, tmp_path):
         wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
@@ -697,8 +846,6 @@ class TestRemuxWorkflowBuildCommand:
             def prepare_from_mapped_tracks(self, **_kwargs):
                 pytest.fail("temp fallback should not be used when mmap works")
 
-        monkeypatch.setattr("core.workflows.remux_timeline_sync.os.name", "nt", raising=False)
-
         remapped, extra_inputs, live = prepare_timeline_sync_inputs(
             cfg,
             mapped,
@@ -747,8 +894,6 @@ class TestRemuxWorkflowBuildCommand:
 
             def prepare_from_mapped_tracks(self, **_kwargs):
                 return [SyncPreparedInput(key=(1, 1, "audio"), path=tmp_path / "temp.mka", input_idx=2)]
-
-        monkeypatch.setattr("core.workflows.remux_timeline_sync.os.name", "nt", raising=False)
 
         remapped, extra_inputs, live = prepare_timeline_sync_inputs(
             cfg,

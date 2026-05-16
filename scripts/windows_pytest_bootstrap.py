@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
 import types
 from pathlib import Path
 from typing import Any, cast
@@ -63,9 +64,74 @@ class _QApplication(_QCoreApplication):
     pass
 
 
+class _QEventLoop:
+    def __init__(self, parent=None) -> None:
+        self._parent = parent
+        self._quit_event = threading.Event()
+
+    def exec(self) -> int:
+        self._quit_event.wait()
+        return 0
+
+    def quit(self) -> None:
+        self._quit_event.set()
+
+
+class _QLocale:
+    @staticmethod
+    def system():
+        return _QLocale()
+
+    def name(self) -> str:
+        return os.environ.get("LANG", "en_US").split(".", 1)[0]
+
+
 class _Qt:
     class ConnectionType:
         QueuedConnection = 0
+
+    class ItemDataRole:
+        UserRole = 256
+
+
+class _QSettings:
+    class Format:
+        IniFormat = 0
+
+    class Scope:
+        UserScope = 0
+
+    _stores: dict[tuple[str, ...], dict[str, Any]] = {}
+
+    def __init__(self, *args, **_kwargs) -> None:
+        key = tuple(str(arg) for arg in args)
+        self._values = self._stores.setdefault(key, {})
+
+    def value(self, key: str, default=None):
+        return self._values.get(str(key), default)
+
+    def setValue(self, key: str, value) -> None:
+        self._values[str(key)] = value
+
+    def sync(self) -> None:
+        return None
+
+    def clear(self) -> None:
+        self._values.clear()
+
+
+class _QStandardPaths:
+    class StandardLocation:
+        AppDataLocation = 0
+        MoviesLocation = 1
+
+    @staticmethod
+    def writableLocation(location) -> str:
+        if location == _QStandardPaths.StandardLocation.AppDataLocation:
+            return os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        if location == _QStandardPaths.StandardLocation.MoviesLocation:
+            return str(Path.home() / "Videos")
+        return ""
 
 
 def _install_fake_pyside6() -> None:
@@ -79,6 +145,10 @@ def _install_fake_pyside6() -> None:
     qtcore.QObject = _QObject
     qtcore.Signal = _SignalDescriptor
     qtcore.QCoreApplication = _QCoreApplication
+    qtcore.QEventLoop = _QEventLoop
+    qtcore.QLocale = _QLocale
+    qtcore.QSettings = _QSettings
+    qtcore.QStandardPaths = _QStandardPaths
     qtcore.Qt = _Qt
     qtwidgets.QApplication = _QApplication
 

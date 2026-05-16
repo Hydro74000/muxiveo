@@ -124,6 +124,13 @@ def on_remove_file(panel: "RemuxPanel", file_id: str) -> None:
     panel._source_files.remove(sf)
     panel._source_names.pop(file_id, None)
     panel._source_colors.pop(file_id, None)
+    panel._source_sync_offsets_ms.pop(file_id, None)
+    panel._chapter_sync_cancelled_source_ids.discard(file_id)
+    panel._auto_sync_entry_ids.difference_update(
+        track.entry_id
+        for track in sf.tracks
+        if getattr(track, "track_type", "") in {"audio", "subtitle"}
+    )
     panel._file_list.remove_file(file_id)
     panel._track_table.remove_tracks_by_file_id(file_id)
     panel._refresh_audio_sync_buttons()

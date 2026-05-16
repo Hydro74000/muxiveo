@@ -65,6 +65,7 @@ from core.subprocess_utils import subprocess_text_kwargs
 from core.version import APP_VERSION_LABEL, WRITING_APPLICATION_TAG
 from core.workflows.encode.backends import backend_id_for_codec
 from core.workflows.encode import EncodeError
+from core.workflows.common.sync_rewrite import SYNC_REWRITE_STAGE_PREFIX
 from core.workflows.remux_models import RemuxError
 from ui.panels.encode_panel import EncodePanel
 from ui.panels.encode_panel.theme import (
@@ -241,6 +242,31 @@ def _parse_encode_internal_progress(line: str) -> dict[str, object] | None:
     except json.JSONDecodeError:
         return None
     return obj if isinstance(obj, dict) else None
+
+
+def _parse_sync_rewrite_stage_progress(line: str) -> tuple[str, str] | None:
+    if not line.startswith(SYNC_REWRITE_STAGE_PREFIX):
+        return None
+    payload = line[len(SYNC_REWRITE_STAGE_PREFIX):].strip()
+    if not payload:
+        return None
+    try:
+        obj = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    track_type = str(obj.get("track_type") or "").strip().lower()
+    name = " ".join(str(obj.get("name") or "").split())
+    if track_type not in {"audio", "subtitle"} or not name:
+        return None
+    return track_type, name
+
+
+def _sync_rewrite_stage_label(track_type: str, name: str) -> str:
+    if track_type == "audio":
+        return translate_text("Synchro piste audio {name}", name=name)
+    return translate_text("Synchro sous-titre {name}", name=name)
 
 
 def _parse_multi_encode_label(label: str) -> tuple[int, int | None, int] | None:
@@ -2168,6 +2194,12 @@ class MainWindow(QMainWindow):
                 self.log_requested.emit("INFO", short)
             return
         if _is_ffmpeg_info_noise(line):
+            return
+        sync_stage = _parse_sync_rewrite_stage_progress(line)
+        if sync_stage is not None:
+            self._stop_prep_progress()
+            self._op_stage_label = _sync_rewrite_stage_label(*sync_stage)
+            self._prog_lbl.setText(self._op_stage_label)
             return
         if self._op_mode == "extract":
             if line.startswith("$ "):

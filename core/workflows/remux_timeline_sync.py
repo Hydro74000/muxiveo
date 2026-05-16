@@ -26,6 +26,13 @@ from core.workflows.common.ffmpeg_runtime import cli_path as _cli_path
 from core.workflows.remux_models import RemuxError, SourceInput
 
 
+#: Constante isolée pour aiguillage Windows. Les tests doivent monkeypatcher
+#: ``core.workflows.remux_timeline_sync._IS_WINDOWS`` plutôt que ``os.name`` :
+#: modifier ``os.name`` fuit globalement et fait planter ``pathlib.Path()``
+#: (dispatch ``WindowsPath`` sur Linux en Python ≤ 3.12).
+_IS_WINDOWS: bool = os.name == "nt"
+
+
 def _make_safe_close_fd(fd: int) -> Callable[[], None]:
     """Crée une callback fermant un FD POSIX, sans capturer 'self'."""
     def _close() -> None:
@@ -449,7 +456,7 @@ class FfmpegTimelineSync:
         base_input_idx: int,
         cancel_cb: Callable[[], bool] | None = None,
     ) -> LiveSyncSession:
-        if os.name == "nt":
+        if _IS_WINDOWS:
             return self._start_windows_named_pipe_session(
                 mapped_tracks=mapped_tracks,
                 sources=sources,

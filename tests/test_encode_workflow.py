@@ -143,6 +143,7 @@ from core.workflows.encode import (
 )
 from core.inspector import ChapterEntry
 from core.runner import TaskSignals
+from core.workflows.common.sync_rewrite import SyncRewritePreparedInput
 
 
 # ---------------------------------------------------------------------------
@@ -3614,6 +3615,104 @@ class TestEncodeRuntimeMultiSourceSync:
         assert "-max_muxing_queue_size" in cmd
         map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
         assert "2:0" in map_values
+
+    def test_runtime_single_pass_sync_rewrite_consumes_audio_offset(self, tmp_path, monkeypatch):
+        src = tmp_path / "main.mkv"
+        out = tmp_path / "out.mkv"
+        rewritten = tmp_path / "rewritten.mka"
+        src.touch()
+
+        wf = _make_workflow()
+        wf.set_sync_rewrite_enabled(True)
+        cfg = _make_config(
+            src,
+            out,
+            video=_make_video_settings(codec="libx265"),
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy", source_path=src)],
+            copy_subtitles=False,
+            track_time_offsets=[
+                TrackTimeOffset(track_type="audio", source_path=src, stream_index=1, offset_ms=125),
+            ],
+        )
+        captured: dict[str, object] = {}
+
+        class FakeSyncRewriteService:
+            def __init__(self, **_kwargs):
+                pass
+
+            def maybe_materialize(self, **kwargs):
+                rewritten.write_bytes(b"audio")
+                captured["rewrite_kwargs"] = kwargs
+                return SyncRewritePreparedInput(
+                    path=rewritten,
+                    input_idx=int(kwargs["input_idx"]),
+                    track_type="audio",
+                    codec="eac3",
+                    mode_label="Sync réelle · audio réencodé",
+                    bitrate_kbps=640,
+                )
+
+        monkeypatch.setattr(
+            "core.workflows.encode.workflow.SyncRewriteService",
+            FakeSyncRewriteService,
+        )
+
+        with patch.object(wf, "_prepare_multisource_sync", return_value=({}, [], None, False)), \
+             patch.object(wf, "_stream_codec_of", return_value="eac3"):
+            cmd, live, cleanup = wf._build_runtime_single_pass_with_sync(cfg)
+
+        assert live is None
+        assert cleanup == []
+        assert "-itsoffset" not in cmd
+        assert str(rewritten) in cmd
+        map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
+        assert "1:0" in map_values
+        rewrite_kwargs = cast(dict, captured["rewrite_kwargs"])
+        assert rewrite_kwargs["preserve_source_audio_params"] is True
+
+    def test_runtime_single_pass_sync_rewrite_respects_forced_standard_offset(self, tmp_path, monkeypatch):
+        src = tmp_path / "main.mkv"
+        out = tmp_path / "out.mkv"
+        src.touch()
+
+        wf = _make_workflow()
+        wf.set_sync_rewrite_enabled(True)
+        cfg = _make_config(
+            src,
+            out,
+            video=_make_video_settings(codec="libx265"),
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy", source_path=src)],
+            copy_subtitles=False,
+            track_time_offsets=[
+                TrackTimeOffset(
+                    track_type="audio",
+                    source_path=src,
+                    stream_index=1,
+                    offset_ms=125,
+                    sync_rewrite_mode="offset",
+                ),
+            ],
+        )
+
+        class FakeSyncRewriteService:
+            def __init__(self, **_kwargs):
+                pass
+
+            def maybe_materialize(self, **_kwargs):
+                raise AssertionError("forced standard offset must not use sync rewrite")
+
+        monkeypatch.setattr(
+            "core.workflows.encode.workflow.SyncRewriteService",
+            FakeSyncRewriteService,
+        )
+
+        with patch.object(wf, "_prepare_multisource_sync", return_value=({}, [], None, False)):
+            cmd, live, cleanup = wf._build_runtime_single_pass_with_sync(cfg)
+
+        assert live is None
+        assert cleanup == []
+        assert "-itsoffset" in cmd
+        assert cmd[cmd.index("-itsoffset") + 1] == "0.125"
 
     def test_runtime_two_pass_disables_live_and_applies_sync_to_pass2_only(self, tmp_path):
         src_main = tmp_path / "main.mkv"

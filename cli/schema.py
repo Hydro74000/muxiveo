@@ -73,6 +73,7 @@ def _track_edit_schema(flag_properties: dict[str, Any]) -> dict[str, Any]:
             "title": {"type": "string"},
             "flags": {"type": "object", "additionalProperties": False, "properties": flag_properties},
             "time_shift_ms": {"type": "integer"},
+            "sync_rewrite_mode": {"type": "string", "enum": ["", "offset"]},
         },
     }
 

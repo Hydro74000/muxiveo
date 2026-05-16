@@ -29,6 +29,7 @@ class TrackOffset:
     source_path: Path
     stream_index: int
     offset_ms: int = 0
+    sync_rewrite_mode: str = ""
 
 
 @dataclass

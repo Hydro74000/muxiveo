@@ -21,16 +21,25 @@ from PySide6.QtWidgets import (
 
 from core.i18n import translate_text
 from core.lang_tags import Rfc5646LanguageTags
+from core.workflows.common.sync_rewrite import (
+    sync_rewrite_forced_offset,
+    ui_sync_rewrite_can_toggle,
+    ui_sync_rewrite_label_for_track,
+    ui_sync_rewrite_preview_for_track,
+)
 from core.workflows.remux_models import TrackEntry
 from ui.panels.remux_panel.models import (
     _TRACK_INFO_OFFSET_NEG_COLOR,
     _TRACK_INFO_OFFSET_POS_COLOR,
     _TRACK_INFO_OFFSET_VALUE_ROLE,
+    _TRACK_INFO_SYNC_LABEL_ROLE,
 )
-from ui.panels.remux_panel.theme import _C, _pencil_icon, _refresh_icon
+from ui.panels.remux_panel.theme import _C, _pencil_icon, _refresh_icon, _warning_icon, _x_icon
 from ui.panels.track_edit_dialog import TrackEditDialog
 
 class _TrackInfoDelegate(QStyledItemDelegate):
+    _SYNC_LABEL_COLOR = QColor(_C.ACCENT)
+
     @staticmethod
     def _offset_color(offset_value: str) -> QColor:
         return (
@@ -39,11 +48,30 @@ class _TrackInfoDelegate(QStyledItemDelegate):
             else _TRACK_INFO_OFFSET_POS_COLOR
         )
 
+    @staticmethod
+    def _find_next_marker(text: str, cursor: int, markers: dict[str, str]) -> tuple[int, str, str] | None:
+        best: tuple[int, str, str] | None = None
+        for kind, marker in markers.items():
+            if not marker:
+                continue
+            position = text.find(marker, cursor)
+            if position < 0:
+                continue
+            if best is None or position < best[0]:
+                best = (position, kind, marker)
+        return best
+
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:  # type: ignore[override]
         value = index.data(_TRACK_INFO_OFFSET_VALUE_ROLE)
         offset_value = str(value).strip() if value is not None else ""
+        sync_value = index.data(_TRACK_INFO_SYNC_LABEL_ROLE)
+        sync_label = str(sync_value).strip() if sync_value is not None else ""
         text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
-        if not text or not offset_value or offset_value not in text:
+        markers = {
+            "offset": offset_value if offset_value and offset_value in text else "",
+            "sync": sync_label if sync_label and sync_label in text else "",
+        }
+        if not text or not any(markers.values()):
             super().paint(painter, option, index)
             return
 
@@ -63,8 +91,6 @@ class _TrackInfoDelegate(QStyledItemDelegate):
         if text_rect.width() <= 0 or text_rect.height() <= 0:
             return
 
-        prefix, _, suffix = text.partition(offset_value)
-
         fg_value = index.data(Qt.ItemDataRole.ForegroundRole)
         if isinstance(fg_value, QBrush):
             normal = fg_value.color()
@@ -77,27 +103,49 @@ class _TrackInfoDelegate(QStyledItemDelegate):
 
         painter.save()
         painter.setClipRect(text_rect)
-        painter.setFont(opt.font)
         metrics = QFontMetrics(opt.font)
         baseline = text_rect.y() + (text_rect.height() + metrics.ascent() - metrics.descent()) // 2
 
         x = text_rect.x()
-        painter.setPen(normal)
-        painter.drawText(x, baseline, prefix)
-        x += metrics.horizontalAdvance(prefix)
+        cursor = 0
+        while cursor < len(text):
+            marker = self._find_next_marker(text, cursor, markers)
+            if marker is None:
+                chunk = text[cursor:]
+                painter.setFont(opt.font)
+                painter.setPen(normal)
+                painter.drawText(x, baseline, chunk)
+                x += metrics.horizontalAdvance(chunk)
+                break
 
-        painter.setPen(self._offset_color(offset_value))
-        painter.drawText(x, baseline, offset_value)
-        x += metrics.horizontalAdvance(offset_value)
+            position, kind, marker_text = marker
+            if position > cursor:
+                chunk = text[cursor:position]
+                painter.setFont(opt.font)
+                painter.setPen(normal)
+                painter.drawText(x, baseline, chunk)
+                x += metrics.horizontalAdvance(chunk)
 
-        painter.setPen(normal)
-        painter.drawText(x, baseline, suffix)
+            if kind == "offset":
+                painter.setFont(opt.font)
+                painter.setPen(self._offset_color(marker_text))
+            else:
+                sync_font = QFont(opt.font)
+                sync_font.setUnderline(True)
+                painter.setFont(sync_font)
+                painter.setPen(self._SYNC_LABEL_COLOR)
+            painter.drawText(x, baseline, marker_text)
+            x += metrics.horizontalAdvance(marker_text)
+            cursor = position + len(marker_text)
+
         painter.restore()
 
 class _TrackTable(QTableWidget):
     order_changed = Signal()
     extract_requested = Signal(object)  # TrackEntry
     audio_sync_requested = Signal(object)  # TrackEntry
+    auto_sync_cancel_requested = Signal(object)  # TrackEntry
+    sync_rewrite_toggle_requested = Signal(object)  # TrackEntry
 
     _TYPE_ORDER: dict[str, int] = {"video": 0, "audio": 1, "subtitle": 2}
     _MAX_VISIBLE_ROWS = 15
@@ -145,10 +193,14 @@ class _TrackTable(QTableWidget):
         super().__init__(0, len(self._HEADERS), parent)
         self._filter_selected = False
         self._audio_sync_available = False
+        self._auto_sync_cancelable_entry_ids: set[str] = set()
+        self._sync_rewrite_enabled = False
+        self._sync_rewrite_advanced_audio_enabled = False
         self._prev_lang: dict[int, str] = {}
         self._setup_ui()
         self._adjust_height()
         self.itemChanged.connect(self._on_item_changed)
+        self.cellClicked.connect(self._on_cell_clicked)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._on_context_menu)
 
@@ -184,7 +236,7 @@ class _TrackTable(QTableWidget):
         self.setColumnWidth(self.COL_CHECK, 32)
         self.setColumnWidth(self.COL_TYPE, 48)
         self.setColumnWidth(self.COL_LANG, 70)
-        self.setColumnWidth(self.COL_EDIT, 58)
+        self.setColumnWidth(self.COL_EDIT, 82)
 
         self.setItemDelegateForColumn(self.COL_INFO, _TrackInfoDelegate(self))
 
@@ -288,6 +340,9 @@ class _TrackTable(QTableWidget):
             if item is not None:
                 data = item.data(Qt.ItemDataRole.UserRole)
                 if data is not None and getattr(data, "file_id", None) == file_id:
+                    entry_id = str(getattr(data, "entry_id", "") or "")
+                    if entry_id:
+                        self._auto_sync_cancelable_entry_ids.discard(entry_id)
                     self.removeRow(row)
             row -= 1
         self.blockSignals(False)
@@ -305,6 +360,7 @@ class _TrackTable(QTableWidget):
                     continue
                 entry = item.data(Qt.ItemDataRole.UserRole)
                 if isinstance(entry, TrackEntry) and entry.entry_id == entry_id:
+                    self._auto_sync_cancelable_entry_ids.discard(entry.entry_id)
                     self.removeRow(row)
                     return True
         finally:
@@ -316,6 +372,7 @@ class _TrackTable(QTableWidget):
     def clear_all(self) -> None:
         self.setRowCount(0)
         self._prev_lang.clear()
+        self._auto_sync_cancelable_entry_ids.clear()
         self._adjust_height()
 
     def _rebuild_prev_lang(self) -> None:
@@ -326,6 +383,7 @@ class _TrackTable(QTableWidget):
                 self._prev_lang[row] = lang_item.text()
 
     def _fill_row(self, row: int, entry: TrackEntry, source_color: str) -> None:
+        self._update_entry_sync_rewrite_label(entry)
         src_item = QTableWidgetItem("█")
         src_item.setFlags(self._FLAG_RO & ~Qt.ItemFlag.ItemIsDragEnabled)
         src_item.setForeground(QColor(source_color))
@@ -371,7 +429,12 @@ class _TrackTable(QTableWidget):
         info_item.setFlags(self._FLAG_RO)
         info_item.setForeground(QColor(_C.TEXT_SEC))
         info_item.setData(_TRACK_INFO_OFFSET_VALUE_ROLE, entry.time_shift_value_label)
+        info_item.setData(
+            _TRACK_INFO_SYNC_LABEL_ROLE,
+            entry.sync_rewrite_label if self._can_toggle_sync_rewrite(entry) else "",
+        )
         self.setItem(row, self.COL_INFO, info_item)
+        self._update_info_tooltip(row, entry)
 
         title_item = QTableWidgetItem(entry.title)
         title_item.setFlags(self._FLAG_RW)
@@ -421,7 +484,26 @@ class _TrackTable(QTableWidget):
         layout.setSpacing(3)
         layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-        if entry.track_type == "audio" and self._audio_sync_available:
+        preview = self._sync_rewrite_preview(entry)
+        if preview.is_advanced and preview.warning_tooltip and not sync_rewrite_forced_offset(entry):
+            warning_btn = self._make_action_button(
+                tooltip=translate_text(preview.warning_tooltip),
+                icon=_warning_icon("#f0b429", 13),
+            )
+            warning_btn.setCursor(Qt.CursorShape.ArrowCursor)
+            warning_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            layout.addWidget(warning_btn)
+
+        if self._has_cancelable_auto_sync(entry):
+            cancel_btn = self._make_action_button(
+                tooltip=translate_text("Annuler la synchro"),
+                icon=_x_icon(_C.ERROR, 13),
+            )
+            cancel_btn.clicked.connect(
+                lambda _=None, e=entry: self.auto_sync_cancel_requested.emit(e)
+            )
+            layout.addWidget(cancel_btn)
+        elif entry.track_type == "audio" and self._audio_sync_available:
             sync_btn = self._make_action_button(
                 tooltip="Synchronisation améliorée de cette piste audio",
                 icon=_refresh_icon(_C.TEXT_SEC, 13),
@@ -436,6 +518,56 @@ class _TrackTable(QTableWidget):
         edit_btn.clicked.connect(lambda _=None, e=entry: self._open_edit_dialog(e))
         layout.addWidget(edit_btn)
         self.setCellWidget(row, self.COL_EDIT, container)
+
+    def _has_cancelable_auto_sync(self, entry: TrackEntry) -> bool:
+        if entry.track_type not in {"audio", "subtitle"}:
+            return False
+        if entry.entry_id not in self._auto_sync_cancelable_entry_ids:
+            return False
+        return int(entry.time_shift_ms or 0) != 0
+
+    def _sync_rewrite_preview(self, entry: TrackEntry):
+        return ui_sync_rewrite_preview_for_track(
+            entry,
+            enabled=self._sync_rewrite_enabled,
+            advanced_audio_enabled=self._sync_rewrite_advanced_audio_enabled,
+        )
+
+    def _can_toggle_sync_rewrite(self, entry: TrackEntry) -> bool:
+        return ui_sync_rewrite_can_toggle(
+            entry,
+            enabled=self._sync_rewrite_enabled,
+            advanced_audio_enabled=self._sync_rewrite_advanced_audio_enabled,
+        )
+
+    def _update_entry_sync_rewrite_label(self, entry: TrackEntry) -> None:
+        entry.sync_rewrite_label = ui_sync_rewrite_label_for_track(
+            entry,
+            enabled=self._sync_rewrite_enabled,
+            advanced_audio_enabled=self._sync_rewrite_advanced_audio_enabled,
+        )
+
+    def _update_info_tooltip(self, row: int, entry: TrackEntry) -> None:
+        info_item = self.item(row, self.COL_INFO)
+        if info_item is None:
+            return
+        info_item.setToolTip(
+            translate_text("Cliquer pour basculer entre sync réelle et sync offset")
+            if self._can_toggle_sync_rewrite(entry)
+            else ""
+        )
+
+    def _refresh_info_cell(self, row: int, entry: TrackEntry) -> None:
+        self._update_entry_sync_rewrite_label(entry)
+        info_item = self.item(row, self.COL_INFO)
+        if info_item:
+            info_item.setText(entry.full_info_label)
+            info_item.setData(_TRACK_INFO_OFFSET_VALUE_ROLE, entry.time_shift_value_label)
+            info_item.setData(
+                _TRACK_INFO_SYNC_LABEL_ROLE,
+                entry.sync_rewrite_label if self._can_toggle_sync_rewrite(entry) else "",
+            )
+        self._update_info_tooltip(row, entry)
 
     def _apply_new_track_style(self, row: int) -> None:
         for col in (self.COL_CODEC, self.COL_LANG, self.COL_TITLE, self.COL_INFO):
@@ -521,10 +653,8 @@ class _TrackTable(QTableWidget):
                 title_item = self.item(row, self.COL_TITLE)
                 if title_item:
                     title_item.setText(entry.title)
-                info_item = self.item(row, self.COL_INFO)
-                if info_item:
-                    info_item.setText(entry.full_info_label)
-                    info_item.setData(_TRACK_INFO_OFFSET_VALUE_ROLE, entry.time_shift_value_label)
+                self._refresh_info_cell(row, entry)
+                self._set_action_cell(row, entry)
                 self.blockSignals(False)
                 if lang_item is not None:
                     self.itemChanged.emit(lang_item)
@@ -562,6 +692,8 @@ class _TrackTable(QTableWidget):
                         title_item.setText(title)
                     entry.language = lang
                     entry.title = title
+                    self._refresh_info_cell(row, entry)
+                    self._set_action_cell(row, entry)
                     break
         finally:
             self.blockSignals(False)
@@ -589,10 +721,8 @@ class _TrackTable(QTableWidget):
                 codec_item = self.item(row, self.COL_CODEC)
                 if codec_item:
                     codec_item.setText(codec)
-                info_item = self.item(row, self.COL_INFO)
-                if info_item:
-                    info_item.setText(entry.full_info_label)
-                    info_item.setData(_TRACK_INFO_OFFSET_VALUE_ROLE, entry.time_shift_value_label)
+                self._refresh_info_cell(row, entry)
+                self._set_action_cell(row, entry)
                 if entry.is_new:
                     self._apply_new_track_style(row)
                 return True
@@ -614,10 +744,52 @@ class _TrackTable(QTableWidget):
                     continue
 
                 entry.time_shift_ms = int(offset_ms)
-                info_item = self.item(row, self.COL_INFO)
-                if info_item:
-                    info_item.setText(entry.full_info_label)
-                    info_item.setData(_TRACK_INFO_OFFSET_VALUE_ROLE, entry.time_shift_value_label)
+                self._refresh_info_cell(row, entry)
+                if entry.track_type in {"audio", "subtitle"}:
+                    self._set_action_cell(row, entry)
+                return True
+        finally:
+            self.blockSignals(False)
+        return False
+
+    def set_sync_rewrite_enabled(self, enabled: bool, *, advanced_audio_enabled: bool | None = None) -> None:
+        self._sync_rewrite_enabled = bool(enabled)
+        if advanced_audio_enabled is not None:
+            self._sync_rewrite_advanced_audio_enabled = bool(advanced_audio_enabled)
+        self.blockSignals(True)
+        try:
+            for row in range(self.rowCount()):
+                item0 = self.item(row, self.COL_CHECK)
+                if item0 is None:
+                    continue
+                entry = item0.data(Qt.ItemDataRole.UserRole)
+                if not isinstance(entry, TrackEntry):
+                    continue
+                self._refresh_info_cell(row, entry)
+                self._set_action_cell(row, entry)
+        finally:
+            self.blockSignals(False)
+
+    def set_sync_rewrite_advanced_audio_enabled(self, enabled: bool) -> None:
+        self.set_sync_rewrite_enabled(
+            self._sync_rewrite_enabled,
+            advanced_audio_enabled=enabled,
+        )
+
+    def refresh_entry_info(self, entry_id: str) -> bool:
+        if not entry_id:
+            return False
+        self.blockSignals(True)
+        try:
+            for row in range(self.rowCount()):
+                item0 = self.item(row, self.COL_CHECK)
+                if item0 is None:
+                    continue
+                entry = item0.data(Qt.ItemDataRole.UserRole)
+                if not isinstance(entry, TrackEntry) or entry.entry_id != entry_id:
+                    continue
+                self._refresh_info_cell(row, entry)
+                self._set_action_cell(row, entry)
                 return True
         finally:
             self.blockSignals(False)
@@ -628,6 +800,22 @@ class _TrackTable(QTableWidget):
         if self._audio_sync_available == available:
             return
         self._audio_sync_available = available
+        for row in range(self.rowCount()):
+            item0 = self.item(row, self.COL_CHECK)
+            if item0 is None:
+                continue
+            entry = item0.data(Qt.ItemDataRole.UserRole)
+            if isinstance(entry, TrackEntry):
+                self._set_action_cell(row, entry)
+
+    def set_auto_sync_cancelable_entries(
+        self,
+        entry_ids: set[str] | list[str] | tuple[str, ...],
+    ) -> None:
+        normalized = {str(entry_id) for entry_id in entry_ids if str(entry_id or "").strip()}
+        if self._auto_sync_cancelable_entry_ids == normalized:
+            return
+        self._auto_sync_cancelable_entry_ids = normalized
         for row in range(self.rowCount()):
             item0 = self.item(row, self.COL_CHECK)
             if item0 is None:
@@ -684,6 +872,16 @@ class _TrackTable(QTableWidget):
                     translate_text("Erreur : code langue non reconnu"),
                 ),
             )
+
+    def _on_cell_clicked(self, row: int, column: int) -> None:
+        if column != self.COL_INFO:
+            return
+        item0 = self.item(row, self.COL_CHECK)
+        if item0 is None:
+            return
+        entry = item0.data(Qt.ItemDataRole.UserRole)
+        if isinstance(entry, TrackEntry) and self._can_toggle_sync_rewrite(entry):
+            self.sync_rewrite_toggle_requested.emit(entry)
 
     def _on_context_menu(self, pos) -> None:
         index = self.indexAt(pos)

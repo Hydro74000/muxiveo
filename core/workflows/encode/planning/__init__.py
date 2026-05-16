@@ -15,6 +15,7 @@ from .offsets import (
     build_offset_specs,
     offset_seconds,
     track_offset_ms,
+    track_time_offset_mode_lookup,
     track_time_offset_lookup,
     video_map_arg,
 )
@@ -84,6 +85,7 @@ __all__ = [
     "requires_file_sync_fallback_for_offsets",
     "source_input_index_map",
     "track_offset_ms",
+    "track_time_offset_mode_lookup",
     "track_time_offset_lookup",
     "validate_encode_config",
     "video_map_arg",

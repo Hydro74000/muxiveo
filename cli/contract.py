@@ -100,7 +100,7 @@ def _validate_track_edit(errors: list[str], path: str, value: Any) -> None:
             _expect(errors, f"{path}.{key}", value[key], "integer", _is_int)
     if "enabled" in value:
         _expect(errors, f"{path}.enabled", value["enabled"], "bool", _is_bool)
-    for key in ("language", "title"):
+    for key in ("language", "title", "sync_rewrite_mode"):
         if key in value:
             _expect(errors, f"{path}.{key}", value[key], "string", _is_string)
     if "flags" in value:

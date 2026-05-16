@@ -1423,6 +1423,14 @@
     "fra": "Piste vidéo",
     "eng": "Video track"
   },
+  "Synchro piste audio {name}": {
+    "fra": "Synchro piste audio {name}",
+    "eng": "Audio track sync {name}"
+  },
+  "Synchro sous-titre {name}": {
+    "fra": "Synchro sous-titre {name}",
+    "eng": "Subtitle sync {name}"
+  },
   "La nouvelle échelle d'interface ({percent}%) est chargée.\nRedémarrer l'application maintenant ?": {
     "fra": "La nouvelle échelle d'interface ({percent}%) est chargée.\nRedémarrer l'application maintenant ?",
     "eng": "The new interface scale ({percent}%) has been loaded.\nRestart the application now?"
@@ -1555,6 +1563,34 @@
     "fra": "Synchronisation audio améliorée appliquée : {offset} ms (confiance {confidence}).",
     "eng": "Enhanced audio sync applied: {offset} ms (confidence {confidence})."
   },
+  "Synchronisation annulée pour la piste #{idx}.": {
+    "fra": "Synchronisation annulée pour la piste #{idx}.",
+    "eng": "Sync cancelled for track #{idx}."
+  },
+  "Annuler la synchro": {
+    "fra": "Annuler la synchro",
+    "eng": "Cancel sync"
+  },
+  "Annuler la synchro des chapitres": {
+    "fra": "Annuler la synchro des chapitres",
+    "eng": "Cancel chapter sync"
+  },
+  "Annuler toutes les synchros": {
+    "fra": "Annuler toutes les synchros",
+    "eng": "Cancel all syncs"
+  },
+  "Synchronisation des chapitres annulée.": {
+    "fra": "Synchronisation des chapitres annulée.",
+    "eng": "Chapter sync cancelled."
+  },
+  "Toutes les synchronisations ont été annulées.": {
+    "fra": "Toutes les synchronisations ont été annulées.",
+    "eng": "All synchronizations have been cancelled."
+  },
+  "Cliquer pour basculer entre sync réelle et sync offset": {
+    "fra": "Cliquer pour basculer entre sync réelle et sync offset",
+    "eng": "Click to toggle between real sync and sync offset"
+  },
   "Extraction impossible": {
     "fra": "Extraction impossible",
     "eng": "Extraction unavailable"
@@ -1686,6 +1722,30 @@
   "FFmpeg": {
     "fra": "FFmpeg",
     "eng": "FFmpeg"
+  },
+  "Synchronisation": {
+    "fra": "Synchronisation",
+    "eng": "Synchronization"
+  },
+  "Réécrire physiquement les décalages audio/sous-titres": {
+    "fra": "Réécrire physiquement les décalages audio/sous-titres",
+    "eng": "Physically rewrite audio/subtitle offsets"
+  },
+  "Option expérimentale. Si activée, certains décalages peuvent être matérialisés par réécriture des timestamps sous-titres ou réencodage audio simple. Désactivée par défaut.": {
+    "fra": "Option expérimentale. Si activée, certains décalages peuvent être matérialisés par réécriture des timestamps sous-titres ou réencodage audio simple. Désactivée par défaut.",
+    "eng": "Experimental option. When enabled, some offsets can be materialized by rewriting subtitle timestamps or by simple audio re-encoding. Disabled by default."
+  },
+  "Activer la sync réelle audio avancée": {
+    "fra": "Activer la sync réelle audio avancée",
+    "eng": "Enable advanced real audio sync"
+  },
+  "Autorise les stratégies audio avancées pour les formats non simples lorsque la réécriture physique est activée.": {
+    "fra": "Autorise les stratégies audio avancées pour les formats non simples lorsque la réécriture physique est activée.",
+    "eng": "Allows advanced audio strategies for non-simple formats when physical rewriting is enabled."
+  },
+  "Active des stratégies expérimentales pour TrueHD/MLP, DTS/DTS-HD/DTS:X, EAC3+JOC/Atmos, PCM/LPCM, formats lossless et formats lossy. Selon le codec, la piste peut être recopiée par blocs, réencodée, convertie en lossless/lossy, ou rester en sync offset si l'opération n'est pas sûre. Les pistes objet Atmos/DTS:X ne sont pas réencodées.": {
+    "fra": "Active des stratégies expérimentales pour TrueHD/MLP, DTS/DTS-HD/DTS:X, EAC3+JOC/Atmos, PCM/LPCM, formats lossless et formats lossy. Selon le codec, la piste peut être recopiée par blocs, réencodée, convertie en lossless/lossy, ou rester en sync offset si l'opération n'est pas sûre. Les pistes objet Atmos/DTS:X ne sont pas réencodées.",
+    "eng": "Enables experimental strategies for TrueHD/MLP, DTS/DTS-HD/DTS:X, EAC3+JOC/Atmos, PCM/LPCM, lossless formats, and lossy formats. Depending on the codec, the track may be block-copied, re-encoded, converted to lossless/lossy, or left as sync offset when the operation is not safe. Atmos/DTS:X object tracks are not re-encoded."
   },
   "Interface": {
     "fra": "Interface",
@@ -3142,6 +3202,38 @@
   "Variables": {
     "fra": "Variables",
     "eng": "Variables"
+  },
+  "Operands": {
+    "fra": "Opérateurs",
+    "eng": "Operands"
+  },
+  "Aliases": {
+    "fra": "Aliases",
+    "eng": "Aliases"
+  },
+  "Une ligne par alias :": {
+    "fra": "Une ligne par alias :",
+    "eng": "One alias per line:"
+  },
+  "EAC3=DDP\nlang_name:French=Français\naudio_object:Atmos=Dolby Atmos": {
+    "fra": "EAC3=DDP\nlang_name:French=Français\naudio_object:Atmos=Dolby Atmos",
+    "eng": "EAC3=DDP\nlang_name:French=French\naudio_object:Atmos=Dolby Atmos"
+  },
+  "Expression critères invalide : {err}": {
+    "fra": "Expression critères invalide : {err}",
+    "eng": "Invalid criteria expression: {err}"
+  },
+  "{count} alias": {
+    "fra": "{count} alias",
+    "eng": "{count} alias"
+  },
+  "flag inconnu : {value}": {
+    "fra": "flag inconnu : {value}",
+    "eng": "unknown flag: {value}"
+  },
+  "keyword inconnu : {value}": {
+    "fra": "keyword inconnu : {value}",
+    "eng": "unknown keyword: {value}"
   },
   "Aliases codecs": {
     "fra": "Aliases codecs",
