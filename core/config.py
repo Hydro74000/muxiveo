@@ -811,6 +811,14 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
                 "label": "Réécrire physiquement les décalages audio/sous-titres",
                 "description": "Option expérimentale. Si activée, certains décalages peuvent être matérialisés par réécriture des timestamps sous-titres ou réencodage audio simple. Désactivée par défaut.",
             },
+            {
+                "key": "advanced_audio_rewrite_enabled",
+                "attr": "sync_advanced_audio_rewrite_enabled",
+                "kind": "bool",
+                "label": "Activer la sync réelle audio avancée",
+                "description": "Autorise les stratégies audio avancées pour les formats non simples lorsque la réécriture physique est activée.",
+                "tooltip": "Active des stratégies expérimentales pour TrueHD/MLP, DTS/DTS-HD/DTS:X, EAC3+JOC/Atmos, PCM/LPCM, formats lossless et formats lossy. Selon le codec, la piste peut être recopiée par blocs, réencodée, convertie en lossless/lossy, ou rester en sync offset si l'opération n'est pas sûre. Les pistes objet Atmos/DTS:X ne sont pas réencodées.",
+            },
         ),
     },
     {
@@ -1072,6 +1080,12 @@ class AppConfig:
         self.sync_rewrite_enabled = self._resolve_bool(
             "sync", "rewrite_enabled", "sync/rewrite_enabled", False
         )
+        self.sync_advanced_audio_rewrite_enabled = self._resolve_bool(
+            "sync",
+            "advanced_audio_rewrite_enabled",
+            "sync/advanced_audio_rewrite_enabled",
+            False,
+        )
 
         self.language = _normalize_language_code(
             self._resolve_text("ui", "language", "ui/language", _default_language_code())
@@ -1169,6 +1183,10 @@ class AppConfig:
         s.setValue("audio_encoding/aac_bitrate_per_channel_kbps", self.aac_bitrate_per_channel_kbps)
         s.setValue("audio_encoding/eac3_bitrate_per_channel_kbps", self.eac3_bitrate_per_channel_kbps)
         s.setValue("sync/rewrite_enabled", "true" if self.sync_rewrite_enabled else "false")
+        s.setValue(
+            "sync/advanced_audio_rewrite_enabled",
+            "true" if self.sync_advanced_audio_rewrite_enabled else "false",
+        )
 
         s.setValue("ui/language", self.language)
         s.setValue("ui/log_max_lines", self.log_max_lines)
@@ -1347,6 +1365,7 @@ class AppConfig:
             },
             "sync": {
                 "rewrite_enabled": self.sync_rewrite_enabled,
+                "advanced_audio_rewrite_enabled": self.sync_advanced_audio_rewrite_enabled,
             },
             "ui": {
                 "language": self.language,

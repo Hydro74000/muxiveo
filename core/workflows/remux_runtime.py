@@ -61,6 +61,7 @@ class RemuxRuntimeRunnerCallbacks:
     apply_language_post_action: Callable[[Path], object]
     write_nfo: Callable[[Path], None]
     sync_rewrite_enabled: Callable[[], bool] = lambda: False
+    sync_advanced_audio_rewrite_enabled: Callable[[], bool] = lambda: False
     sync_rewrite_audio_bitrates: Callable[[], dict[str, int]] = lambda: {}
 
 
@@ -191,6 +192,7 @@ class RemuxRuntimeRunner:
                         ffmpeg_progress_args=_ffmpeg_progress_args(),
                         ffmpeg_thread_args=cb.ffmpeg_thread_args(),
                         audio_bitrate_per_channel=cb.sync_rewrite_audio_bitrates(),
+                        advanced_audio_enabled=cb.sync_advanced_audio_rewrite_enabled(),
                         log_cb=lambda msg: cb.log("INFO", msg),
                         progress_cb=signals.progress.emit,
                     )

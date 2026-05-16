@@ -882,6 +882,35 @@ class TestTrackTable:
 
         assert emitted == [t]
 
+    def test_advanced_sync_track_shows_warning_icon_tooltip(self, table):
+        table.set_sync_rewrite_enabled(True, advanced_audio_enabled=True)
+        t = _track(1, "audio", file_id="fid", codec="TRUEHD")
+        t.time_shift_ms = 125
+        table.append_tracks(_COLOR_A, [t])
+
+        info_item = table.item(0, _TrackTable.COL_INFO)
+        assert info_item is not None
+        assert info_item.data(_TRACK_INFO_SYNC_LABEL_ROLE) == "Sync réelle · audio avancé"
+        tooltips = [button.toolTip() for button in _action_buttons(table, 0)]
+        warning_tip = next(tip for tip in tooltips if "Sync réelle audio avancée" in tip)
+        assert "TrueHD" in warning_tip
+        assert "Δt +125 ms" in warning_tip
+        assert "non bit-perfect" in warning_tip
+
+    def test_advanced_sync_warning_hides_when_forced_offset(self, table):
+        table.set_sync_rewrite_enabled(True, advanced_audio_enabled=True)
+        t = _track(1, "audio", file_id="fid", codec="TRUEHD")
+        t.time_shift_ms = 125
+        table.append_tracks(_COLOR_A, [t])
+
+        t.sync_rewrite_mode = "offset"
+        assert table.refresh_entry_info(t.entry_id) is True
+
+        info_item = table.item(0, _TrackTable.COL_INFO)
+        assert info_item is not None
+        assert info_item.data(_TRACK_INFO_SYNC_LABEL_ROLE) == "Sync offset"
+        assert all("Sync réelle audio avancée" not in button.toolTip() for button in _action_buttons(table, 0))
+
     def test_info_column_uses_custom_delegate(self, table):
         delegate = table.itemDelegateForColumn(_TrackTable.COL_INFO)
         assert delegate is not None

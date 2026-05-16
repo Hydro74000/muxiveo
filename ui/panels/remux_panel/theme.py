@@ -194,6 +194,27 @@ def _x_icon(color: str | None = None, size: int = 14) -> QIcon:
     return QIcon(pix)
 
 
+def _warning_icon(color: str | None = None, size: int = 14) -> QIcon:
+    color = color or "#f0b429"
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
+        f' fill="none" stroke="{color}" stroke-width="2.2"'
+        ' stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>'
+        '<path d="M12 9v4"/>'
+        '<path d="M12 17h.01"/>'
+        '</svg>'
+    )
+    renderer = QSvgRenderer(svg.encode())
+    icon_size = _scale(size)
+    pix = QPixmap(icon_size, icon_size)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pix)
+
+
 __all__ = [
     "_C",
     "_card",
@@ -205,5 +226,6 @@ __all__ = [
     "_secondary_button",
     "_section_label",
     "_separator",
+    "_warning_icon",
     "_x_icon",
 ]

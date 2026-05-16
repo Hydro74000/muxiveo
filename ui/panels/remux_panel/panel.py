@@ -187,7 +187,10 @@ class RemuxPanel(QWidget):
         )
 
         self._build_ui()
-        self._track_table.set_sync_rewrite_enabled(self._config.sync_rewrite_enabled)
+        self._track_table.set_sync_rewrite_enabled(
+            self._config.sync_rewrite_enabled,
+            advanced_audio_enabled=self._config.sync_advanced_audio_rewrite_enabled,
+        )
         apply_translations(self)
 
     def _make_workflow(self) -> RemuxWorkflow:
@@ -199,6 +202,7 @@ class RemuxPanel(QWidget):
             generate_nfo=self._config.generate_nfo,
             mediainfo_bin=self._config.tool_mediainfo,
             sync_rewrite_enabled=self._config.sync_rewrite_enabled,
+            sync_advanced_audio_rewrite_enabled=self._config.sync_advanced_audio_rewrite_enabled,
             aac_bitrate_per_channel_kbps=self._config.aac_bitrate_per_channel_kbps,
             eac3_bitrate_per_channel_kbps=self._config.eac3_bitrate_per_channel_kbps,
         )
@@ -897,11 +901,17 @@ class RemuxPanel(QWidget):
         self._workflow.set_generate_nfo(self._config.generate_nfo)
         self._workflow.set_mediainfo_bin(self._config.tool_mediainfo)
         self._workflow.set_sync_rewrite_enabled(self._config.sync_rewrite_enabled)
+        self._workflow.set_sync_advanced_audio_rewrite_enabled(
+            self._config.sync_advanced_audio_rewrite_enabled
+        )
         self._workflow.set_sync_rewrite_audio_bitrates(
             aac_bitrate_per_channel_kbps=self._config.aac_bitrate_per_channel_kbps,
             eac3_bitrate_per_channel_kbps=self._config.eac3_bitrate_per_channel_kbps,
         )
-        self._track_table.set_sync_rewrite_enabled(self._config.sync_rewrite_enabled)
+        self._track_table.set_sync_rewrite_enabled(
+            self._config.sync_rewrite_enabled,
+            advanced_audio_enabled=self._config.sync_advanced_audio_rewrite_enabled,
+        )
         self._rebuild_preview()
 
     def update_audio_track_meta(
@@ -1108,7 +1118,11 @@ class RemuxPanel(QWidget):
             self._global_sync_cancel_btn.setToolTip(self._global_sync_tooltip(counts, chapter_active))
 
     def _on_sync_rewrite_toggle_requested(self, entry: TrackEntry) -> None:
-        if not ui_sync_rewrite_can_toggle(entry, enabled=self._config.sync_rewrite_enabled):
+        if not ui_sync_rewrite_can_toggle(
+            entry,
+            enabled=self._config.sync_rewrite_enabled,
+            advanced_audio_enabled=self._config.sync_advanced_audio_rewrite_enabled,
+        ):
             return
         current = normalized_sync_rewrite_mode(entry.sync_rewrite_mode)
         entry.sync_rewrite_mode = "" if current == SYNC_REWRITE_MODE_OFFSET else SYNC_REWRITE_MODE_OFFSET

@@ -22,8 +22,10 @@ from PySide6.QtWidgets import (
 from core.i18n import translate_text
 from core.lang_tags import Rfc5646LanguageTags
 from core.workflows.common.sync_rewrite import (
+    sync_rewrite_forced_offset,
     ui_sync_rewrite_can_toggle,
     ui_sync_rewrite_label_for_track,
+    ui_sync_rewrite_preview_for_track,
 )
 from core.workflows.remux_models import TrackEntry
 from ui.panels.remux_panel.models import (
@@ -32,7 +34,7 @@ from ui.panels.remux_panel.models import (
     _TRACK_INFO_OFFSET_VALUE_ROLE,
     _TRACK_INFO_SYNC_LABEL_ROLE,
 )
-from ui.panels.remux_panel.theme import _C, _pencil_icon, _refresh_icon, _x_icon
+from ui.panels.remux_panel.theme import _C, _pencil_icon, _refresh_icon, _warning_icon, _x_icon
 from ui.panels.track_edit_dialog import TrackEditDialog
 
 class _TrackInfoDelegate(QStyledItemDelegate):
@@ -193,6 +195,7 @@ class _TrackTable(QTableWidget):
         self._audio_sync_available = False
         self._auto_sync_cancelable_entry_ids: set[str] = set()
         self._sync_rewrite_enabled = False
+        self._sync_rewrite_advanced_audio_enabled = False
         self._prev_lang: dict[int, str] = {}
         self._setup_ui()
         self._adjust_height()
@@ -233,7 +236,7 @@ class _TrackTable(QTableWidget):
         self.setColumnWidth(self.COL_CHECK, 32)
         self.setColumnWidth(self.COL_TYPE, 48)
         self.setColumnWidth(self.COL_LANG, 70)
-        self.setColumnWidth(self.COL_EDIT, 58)
+        self.setColumnWidth(self.COL_EDIT, 82)
 
         self.setItemDelegateForColumn(self.COL_INFO, _TrackInfoDelegate(self))
 
@@ -481,6 +484,16 @@ class _TrackTable(QTableWidget):
         layout.setSpacing(3)
         layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
+        preview = self._sync_rewrite_preview(entry)
+        if preview.is_advanced and preview.warning_tooltip and not sync_rewrite_forced_offset(entry):
+            warning_btn = self._make_action_button(
+                tooltip=translate_text(preview.warning_tooltip),
+                icon=_warning_icon("#f0b429", 13),
+            )
+            warning_btn.setCursor(Qt.CursorShape.ArrowCursor)
+            warning_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            layout.addWidget(warning_btn)
+
         if self._has_cancelable_auto_sync(entry):
             cancel_btn = self._make_action_button(
                 tooltip=translate_text("Annuler la synchro"),
@@ -513,13 +526,25 @@ class _TrackTable(QTableWidget):
             return False
         return int(entry.time_shift_ms or 0) != 0
 
+    def _sync_rewrite_preview(self, entry: TrackEntry):
+        return ui_sync_rewrite_preview_for_track(
+            entry,
+            enabled=self._sync_rewrite_enabled,
+            advanced_audio_enabled=self._sync_rewrite_advanced_audio_enabled,
+        )
+
     def _can_toggle_sync_rewrite(self, entry: TrackEntry) -> bool:
-        return ui_sync_rewrite_can_toggle(entry, enabled=self._sync_rewrite_enabled)
+        return ui_sync_rewrite_can_toggle(
+            entry,
+            enabled=self._sync_rewrite_enabled,
+            advanced_audio_enabled=self._sync_rewrite_advanced_audio_enabled,
+        )
 
     def _update_entry_sync_rewrite_label(self, entry: TrackEntry) -> None:
         entry.sync_rewrite_label = ui_sync_rewrite_label_for_track(
             entry,
             enabled=self._sync_rewrite_enabled,
+            advanced_audio_enabled=self._sync_rewrite_advanced_audio_enabled,
         )
 
     def _update_info_tooltip(self, row: int, entry: TrackEntry) -> None:
@@ -667,6 +692,8 @@ class _TrackTable(QTableWidget):
                         title_item.setText(title)
                     entry.language = lang
                     entry.title = title
+                    self._refresh_info_cell(row, entry)
+                    self._set_action_cell(row, entry)
                     break
         finally:
             self.blockSignals(False)
@@ -695,6 +722,7 @@ class _TrackTable(QTableWidget):
                 if codec_item:
                     codec_item.setText(codec)
                 self._refresh_info_cell(row, entry)
+                self._set_action_cell(row, entry)
                 if entry.is_new:
                     self._apply_new_track_style(row)
                 return True
@@ -724,8 +752,10 @@ class _TrackTable(QTableWidget):
             self.blockSignals(False)
         return False
 
-    def set_sync_rewrite_enabled(self, enabled: bool) -> None:
+    def set_sync_rewrite_enabled(self, enabled: bool, *, advanced_audio_enabled: bool | None = None) -> None:
         self._sync_rewrite_enabled = bool(enabled)
+        if advanced_audio_enabled is not None:
+            self._sync_rewrite_advanced_audio_enabled = bool(advanced_audio_enabled)
         self.blockSignals(True)
         try:
             for row in range(self.rowCount()):
@@ -736,8 +766,15 @@ class _TrackTable(QTableWidget):
                 if not isinstance(entry, TrackEntry):
                     continue
                 self._refresh_info_cell(row, entry)
+                self._set_action_cell(row, entry)
         finally:
             self.blockSignals(False)
+
+    def set_sync_rewrite_advanced_audio_enabled(self, enabled: bool) -> None:
+        self.set_sync_rewrite_enabled(
+            self._sync_rewrite_enabled,
+            advanced_audio_enabled=enabled,
+        )
 
     def refresh_entry_info(self, entry_id: str) -> bool:
         if not entry_id:
@@ -752,6 +789,7 @@ class _TrackTable(QTableWidget):
                 if not isinstance(entry, TrackEntry) or entry.entry_id != entry_id:
                     continue
                 self._refresh_info_cell(row, entry)
+                self._set_action_cell(row, entry)
                 return True
         finally:
             self.blockSignals(False)

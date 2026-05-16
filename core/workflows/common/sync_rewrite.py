@@ -32,6 +32,7 @@ SYNC_REWRITE_STAGE_PREFIX = "__MRE_SYNC_REWRITE_STAGE__ "
 SYNC_REWRITE_MODE_AUTO = ""
 SYNC_REWRITE_MODE_OFFSET = "offset"
 SYNC_REWRITE_OFFSET_LABEL = "Sync offset"
+SYNC_REWRITE_ADVANCED_AUDIO_LABEL = "Sync réelle · audio avancé"
 
 _OBJECT_AUDIO_MARKERS = (
     "atmos",
@@ -43,10 +44,27 @@ _OBJECT_AUDIO_MARKERS = (
     "truehd atmos",
 )
 
+_DTS_AUDIO_CODECS = frozenset({"dts", "dca", "dtshd", "dts_hd"})
+_TRUEHD_AUDIO_CODECS = frozenset({"truehd", "mlp"})
+_LOSSLESS_AUDIO_CODECS = frozenset({"flac", "alac", "wavpack", "wv", "tta"})
+_LOSSLESS_TO_FLAC_AUDIO_CODECS = frozenset({"ape", "wmalossless"})
+_LOSSY_AUDIO_CODECS = frozenset({"mp2", "mp3", "opus", "vorbis", "wmav1", "wmav2"})
+
 _AC3_STANDARD_BITRATES_KBPS = (
     32, 40, 48, 56, 64, 80, 96, 112,
     128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640,
 )
+
+
+@dataclass(frozen=True)
+class SyncRewriteUiPreview:
+    label: str = ""
+    can_toggle: bool = False
+    is_advanced: bool = False
+    warning_tooltip: str = ""
+    precision_label: str = ""
+    residual_label: str = ""
+    strategy: str = ""
 
 
 @dataclass(frozen=True)
@@ -59,11 +77,180 @@ class SyncRewritePreparedInput:
     codec: str
     mode_label: str
     bitrate_kbps: int | None = None
+    strategy: str = ""
+    is_advanced: bool = False
+    precision_label: str = ""
+    residual_label: str = ""
 
 
 def normalized_rewrite_codec(codec: str) -> str:
     raw = str(codec or "").strip().lower()
-    return {"subrip": "srt"}.get(raw, raw)
+    compact = re.sub(r"[\s_./+]+", "-", raw)
+    aliases = {
+        "subrip": "srt",
+        "e-ac-3": "eac3",
+        "eac3-joc": "eac3",
+        "e-ac-3-joc": "eac3",
+        "ddp": "eac3",
+        "dd+": "eac3",
+        "dd-": "eac3",
+        "aac-lc": "aac",
+        "dca": "dts",
+        "dts-hd": "dts",
+        "dts-hd-ma": "dts",
+        "dts-hd-hra": "dts",
+        "dts:x": "dts",
+        "dtsx": "dts",
+        "dtshd": "dts",
+        "lpcm": "pcm_s24le",
+        "pcm": "pcm_s24le",
+        "wv": "wavpack",
+        "wma-lossless": "wmalossless",
+        "wma1": "wmav1",
+        "wma2": "wmav2",
+    }
+    if compact in aliases:
+        return aliases[compact]
+    if compact.startswith("dts"):
+        return "dts"
+    if compact.startswith("truehd"):
+        return "truehd"
+    if compact.startswith("pcm-"):
+        return raw.replace("-", "_")
+    return aliases.get(raw, raw)
+
+
+def _is_pcm_audio_codec(codec_key: str) -> bool:
+    return codec_key.startswith("pcm_") or codec_key in {"pcm", "lpcm"}
+
+
+def _is_dts_audio_codec(codec_key: str) -> bool:
+    return codec_key in _DTS_AUDIO_CODECS or codec_key.startswith("dts")
+
+
+def _is_truehd_audio_codec(codec_key: str) -> bool:
+    return codec_key in _TRUEHD_AUDIO_CODECS
+
+
+def _advanced_audio_kind(codec_key: str, *, object_audio: bool) -> str:
+    if codec_key == "eac3" and object_audio:
+        return "eac3_joc"
+    if _is_dts_audio_codec(codec_key):
+        return "dts_object" if object_audio else "dts"
+    if _is_truehd_audio_codec(codec_key):
+        return "truehd_object" if object_audio else "truehd"
+    if _is_pcm_audio_codec(codec_key):
+        return "pcm_lossless"
+    if codec_key in _LOSSLESS_AUDIO_CODECS:
+        return "lossless"
+    if codec_key in _LOSSLESS_TO_FLAC_AUDIO_CODECS:
+        return "lossless_to_flac"
+    if codec_key in _LOSSY_AUDIO_CODECS:
+        return "lossy"
+    return ""
+
+
+def _advanced_audio_kind_supports_offset(kind: str, offset_ms: int) -> bool:
+    if kind in {"eac3_joc", "dts", "dts_object", "truehd_object"}:
+        return int(offset_ms or 0) < 0
+    if kind in {"truehd", "pcm_lossless", "lossless", "lossless_to_flac", "lossy"}:
+        return True
+    return False
+
+
+def _advanced_audio_warning_parts(
+    *,
+    codec_key: str,
+    kind: str,
+    offset_ms: int,
+) -> tuple[str, str, str, str, str]:
+    if kind == "eac3_joc":
+        return (
+            "EAC3+JOC / Atmos",
+            "copie/coupe par paquets audio",
+            "frontière frame/TU",
+            "jusqu'à une frame audio",
+            "Les métadonnées objet sont conservées uniquement par copie. Retard positif laissé en sync offset.",
+        )
+    if kind in {"dts", "dts_object"}:
+        return (
+            "DTS / DTS-HD / DTS:X",
+            "copie/coupe par access unit",
+            "frontière access-unit",
+            "jusqu'à une access unit",
+            "Pas de génération de silence DTS fiable; les retards positifs restent en sync offset.",
+        )
+    if kind == "truehd_object":
+        return (
+            "TrueHD Atmos",
+            "copie/coupe validée par decode",
+            "frontière paquet TrueHD",
+            "jusqu'à une frame audio",
+            "Les métadonnées Atmos ne sont pas réencodées; retard positif laissé en sync offset.",
+        )
+    if kind == "truehd":
+        return (
+            "TrueHD / MLP sans Atmos",
+            "decode PCM + trim/silence + réencodage TrueHD/MLP",
+            "échantillon PCM",
+            "aucun résiduel attendu si le layout est supporté",
+            "Réencodage lossless expérimental, non bit-perfect; fallback si layout non supporté.",
+        )
+    if kind in {"pcm_lossless", "lossless"}:
+        return (
+            "Audio lossless",
+            "trim/silence + réencodage lossless",
+            "échantillon PCM",
+            "aucun résiduel attendu",
+            "Le contenu reste lossless mais le bitstream n'est pas identique à la source.",
+        )
+    if kind == "lossless_to_flac":
+        return (
+            "Audio lossless converti",
+            "trim/silence + conversion FLAC",
+            "échantillon PCM",
+            "aucun résiduel attendu",
+            "Le codec de sortie devient FLAC quand le codec source n'a pas d'encodeur fiable.",
+        )
+    if kind == "lossy":
+        return (
+            "Audio lossy",
+            "trim/silence + réencodage lossy",
+            "échantillon PCM",
+            "aucun résiduel attendu",
+            "Réencodage avec perte générationnelle possible.",
+        )
+    return (
+        codec_key.upper() or "Audio",
+        "stratégie avancée",
+        "inconnue",
+        "inconnu",
+        "Fallback sync offset si l'opération n'est pas sûre.",
+    )
+
+
+def _advanced_audio_warning_tooltip(
+    *,
+    codec_key: str,
+    kind: str,
+    offset_ms: int,
+) -> tuple[str, str, str]:
+    family, strategy, precision, residual, limitation = _advanced_audio_warning_parts(
+        codec_key=codec_key,
+        kind=kind,
+        offset_ms=offset_ms,
+    )
+    offset_label = f"{int(offset_ms):+d} ms"
+    tooltip = "\n".join((
+        "Sync réelle audio avancée",
+        f"Codec/famille : {family}",
+        f"Décalage demandé : Δt {offset_label}",
+        f"Stratégie : {strategy}",
+        f"Précision attendue : {precision}",
+        f"Résiduel possible : {residual}",
+        f"Limitation : {limitation}",
+    ))
+    return tooltip, precision, residual
 
 
 def track_has_object_audio_metadata(
@@ -108,37 +295,97 @@ def sync_rewrite_forced_offset(track) -> bool:
     ) == SYNC_REWRITE_MODE_OFFSET
 
 
-def ui_sync_rewrite_auto_label_for_track(track, *, enabled: bool) -> str:
-    """Best-effort automatic UI label; runtime still performs the authoritative probe."""
+def ui_sync_rewrite_preview_for_track(
+    track,
+    *,
+    enabled: bool,
+    advanced_audio_enabled: bool = False,
+) -> SyncRewriteUiPreview:
+    """Best-effort UI preview; runtime still performs the authoritative probe."""
     offset_ms = int(getattr(track, "time_shift_ms", 0) or 0)
     if not enabled or offset_ms == 0:
-        return ""
+        return SyncRewriteUiPreview()
     track_type = str(getattr(track, "track_type", "") or "").strip().lower()
-    codec = normalized_rewrite_codec(str(getattr(track, "codec", "") or ""))
+    raw_codec = str(getattr(track, "codec", "") or "")
+    codec = normalized_rewrite_codec(raw_codec)
     if track_type == "subtitle":
-        return "Sync réelle" if codec in REWRITE_SUBTITLE_CODECS else SYNC_REWRITE_OFFSET_LABEL
+        if codec in REWRITE_SUBTITLE_CODECS:
+            return SyncRewriteUiPreview(label="Sync réelle", can_toggle=True)
+        return SyncRewriteUiPreview(label=SYNC_REWRITE_OFFSET_LABEL)
     if track_type == "audio":
-        if codec not in REWRITE_AUDIO_CODECS:
-            return SYNC_REWRITE_OFFSET_LABEL
-        if track_has_object_audio_metadata(
-            codec=codec,
+        object_audio = track_has_object_audio_metadata(
+            codec=" ".join([raw_codec, codec]),
             title=str(getattr(track, "title", "") or ""),
             display_info=str(getattr(track, "orig_display_info", "") or getattr(track, "display_info", "") or ""),
-        ):
-            return SYNC_REWRITE_OFFSET_LABEL
-        return "Sync réelle · audio réencodé"
-    return ""
+        )
+        if codec in REWRITE_AUDIO_CODECS and not object_audio:
+            return SyncRewriteUiPreview(
+                label="Sync réelle · audio réencodé",
+                can_toggle=True,
+            )
+        kind = _advanced_audio_kind(codec, object_audio=object_audio)
+        if not kind or not advanced_audio_enabled or not _advanced_audio_kind_supports_offset(kind, offset_ms):
+            return SyncRewriteUiPreview(label=SYNC_REWRITE_OFFSET_LABEL)
+        tooltip, precision, residual = _advanced_audio_warning_tooltip(
+            codec_key=codec,
+            kind=kind,
+            offset_ms=offset_ms,
+        )
+        return SyncRewriteUiPreview(
+            label=SYNC_REWRITE_ADVANCED_AUDIO_LABEL,
+            can_toggle=True,
+            is_advanced=True,
+            warning_tooltip=tooltip,
+            precision_label=precision,
+            residual_label=residual,
+            strategy=kind,
+        )
+    return SyncRewriteUiPreview()
 
 
-def ui_sync_rewrite_label_for_track(track, *, enabled: bool) -> str:
-    if sync_rewrite_forced_offset(track) and ui_sync_rewrite_can_toggle(track, enabled=enabled):
+def ui_sync_rewrite_auto_label_for_track(
+    track,
+    *,
+    enabled: bool,
+    advanced_audio_enabled: bool = False,
+) -> str:
+    return ui_sync_rewrite_preview_for_track(
+        track,
+        enabled=enabled,
+        advanced_audio_enabled=advanced_audio_enabled,
+    ).label
+
+
+def ui_sync_rewrite_label_for_track(
+    track,
+    *,
+    enabled: bool,
+    advanced_audio_enabled: bool = False,
+) -> str:
+    if sync_rewrite_forced_offset(track) and ui_sync_rewrite_can_toggle(
+        track,
+        enabled=enabled,
+        advanced_audio_enabled=advanced_audio_enabled,
+    ):
         return SYNC_REWRITE_OFFSET_LABEL
-    return ui_sync_rewrite_auto_label_for_track(track, enabled=enabled)
+    return ui_sync_rewrite_auto_label_for_track(
+        track,
+        enabled=enabled,
+        advanced_audio_enabled=advanced_audio_enabled,
+    )
 
 
-def ui_sync_rewrite_can_toggle(track, *, enabled: bool) -> bool:
-    label = ui_sync_rewrite_auto_label_for_track(track, enabled=enabled)
-    return label.startswith("Sync réelle")
+def ui_sync_rewrite_can_toggle(
+    track,
+    *,
+    enabled: bool,
+    advanced_audio_enabled: bool = False,
+) -> bool:
+    return ui_sync_rewrite_preview_for_track(
+        track,
+        enabled=enabled,
+        advanced_audio_enabled=advanced_audio_enabled,
+    ).can_toggle
 
 
 def sync_rewrite_output_token(source_path: Path | str, stream_index: int, track_type: str) -> str:
@@ -166,6 +413,7 @@ class SyncRewriteService:
         log_cb: Callable[[str], None] | None = None,
         progress_cb: Callable[[str], None] | None = None,
         audio_bitrate_per_channel: Mapping[str, int] | None = None,
+        advanced_audio_enabled: bool = False,
     ) -> None:
         self._ffmpeg = ffmpeg_bin
         self._ffprobe = ffprobe_bin
@@ -173,6 +421,7 @@ class SyncRewriteService:
         self._thread_args = list(ffmpeg_thread_args or [])
         self._log = log_cb or (lambda _message: None)
         self._progress = progress_cb
+        self._advanced_audio_enabled = bool(advanced_audio_enabled)
         bitrates = dict(audio_bitrate_per_channel or {})
         self._audio_bitrate_per_channel = {
             "aac": int(bitrates.get("aac", 96) or 96),
@@ -245,81 +494,185 @@ class SyncRewriteService:
         if track_type == "audio":
             probe = self._probe_stream(source, int(stream_index))
             source_codec_key = normalized_rewrite_codec(str(probe.get("codec_name") or codec_key))
-            if source_codec_key not in REWRITE_AUDIO_CODECS:
-                self._log(
-                    "Sync réelle ignorée: audio non éligible "
-                    f"(codec={source_codec_key or codec or 'inconnu'}, stream={stream_index})."
-                )
-                return None
-            if not self._audio_probe_is_simple(
+            object_audio = self._audio_probe_has_object_metadata(
                 codec_key=source_codec_key,
                 title=title,
                 display_info=display_info,
                 probe=probe,
-            ):
+            ) or track_has_object_audio_metadata(
+                codec=codec,
+                title=title,
+                display_info=display_info,
+            )
+            try:
+                channels_count = int(probe.get("channels") or 0)
+            except (TypeError, ValueError):
+                channels_count = 0
+            if source_codec_key in REWRITE_AUDIO_CODECS and not object_audio:
+                if channels_count <= 0:
+                    self._log(
+                        "Sync réelle ignorée: audio AC3/EAC3/AAC non prouvé simple "
+                        f"(stream={stream_index}); fallback offset."
+                    )
+                    return None
+                self._emit_stage_progress(
+                    track_type="audio",
+                    title=title,
+                    stream_index=int(stream_index),
+                    probe=probe,
+                )
+                rewrite_codec_key = source_codec_key
+                rewrite_bitrate_kbps: int | None = None
+                if preserve_source_audio_params:
+                    rewrite_bitrate_kbps = self._source_audio_bitrate_kbps(
+                        codec_key=source_codec_key,
+                        probe=probe,
+                        display_info=display_info,
+                        channels=channels_count,
+                    )
+                    if rewrite_bitrate_kbps is None:
+                        self._log(
+                            "Sync réelle audio: bitrate source introuvable; "
+                            "fallback sur le débit configuré."
+                        )
+                else:
+                    requested_codec = normalized_rewrite_codec(audio_target_codec or codec_key)
+                    if requested_codec not in REWRITE_AUDIO_CODECS:
+                        self._log(
+                            "Sync réelle ignorée: codec audio cible non éligible "
+                            f"(codec={requested_codec or 'inconnu'}, stream={stream_index}); fallback offset."
+                        )
+                        return None
+                    rewrite_codec_key = requested_codec
+                    rewrite_bitrate_kbps = self._normalize_audio_bitrate_kbps(
+                        rewrite_codec_key,
+                        audio_target_bitrate_kbps,
+                        channels_count,
+                    )
+                out = self._rewrite_audio(
+                    source=source,
+                    stream_index=int(stream_index),
+                    codec_key=rewrite_codec_key,
+                    offset_ms=int(offset_ms),
+                    tmp_dir=tmp_dir,
+                    token=token,
+                    channels=channels_count,
+                    bitrate_kbps=rewrite_bitrate_kbps,
+                    cancel_cb=cancel_cb,
+                )
+                bitrate_label = f", bitrate={rewrite_bitrate_kbps} kbps" if rewrite_bitrate_kbps else ""
                 self._log(
-                    "Sync réelle ignorée: audio AC3/EAC3/AAC non prouvé simple "
-                    f"(stream={stream_index}); fallback offset."
+                    "Sync réelle audio: piste réencodée après coupe/silence "
+                    f"(codec={rewrite_codec_key.upper()}{bitrate_label}, stream={stream_index}, "
+                    f"offset={int(offset_ms)} ms)."
+                )
+                return SyncRewritePreparedInput(
+                    path=out,
+                    input_idx=int(input_idx),
+                    track_type="audio",
+                    codec=rewrite_codec_key,
+                    mode_label="Sync réelle · audio réencodé",
+                    bitrate_kbps=rewrite_bitrate_kbps,
+                )
+
+            if not self._advanced_audio_enabled:
+                self._log(
+                    "Sync réelle ignorée: audio avancé désactivé "
+                    f"(codec={source_codec_key or codec or 'inconnu'}, stream={stream_index})."
                 )
                 return None
+
+            kind = _advanced_audio_kind(source_codec_key, object_audio=object_audio)
+            if not kind or not _advanced_audio_kind_supports_offset(kind, int(offset_ms)):
+                self._log(
+                    "Sync réelle audio avancée ignorée: stratégie absente ou non sûre "
+                    f"(codec={source_codec_key or codec or 'inconnu'}, stream={stream_index}, "
+                    f"offset={int(offset_ms)} ms); fallback offset."
+                )
+                return None
+
             self._emit_stage_progress(
                 track_type="audio",
                 title=title,
                 stream_index=int(stream_index),
                 probe=probe,
             )
-            rewrite_codec_key = source_codec_key
-            rewrite_bitrate_kbps: int | None = None
-            if preserve_source_audio_params:
-                rewrite_bitrate_kbps = self._source_audio_bitrate_kbps(
-                    codec_key=source_codec_key,
-                    probe=probe,
-                    display_info=display_info,
-                    channels=int(probe.get("channels") or 0),
+            tooltip, precision, residual = _advanced_audio_warning_tooltip(
+                codec_key=source_codec_key,
+                kind=kind,
+                offset_ms=int(offset_ms),
+            )
+            _ = tooltip
+            if kind in {"eac3_joc", "dts", "dts_object", "truehd_object"}:
+                out = self._copy_trim_audio(
+                    source=source,
+                    stream_index=int(stream_index),
+                    offset_ms=int(offset_ms),
+                    tmp_dir=tmp_dir,
+                    token=token,
+                    cancel_cb=cancel_cb,
                 )
-                if rewrite_bitrate_kbps is None:
-                    self._log(
-                        "Sync réelle audio: bitrate source introuvable; "
-                        "fallback sur le débit configuré."
-                    )
-            else:
-                requested_codec = normalized_rewrite_codec(audio_target_codec or codec_key)
-                if requested_codec not in REWRITE_AUDIO_CODECS:
-                    self._log(
-                        "Sync réelle ignorée: codec audio cible non éligible "
-                        f"(codec={requested_codec or 'inconnu'}, stream={stream_index}); fallback offset."
-                    )
-                    return None
-                rewrite_codec_key = requested_codec
-                rewrite_bitrate_kbps = self._normalize_audio_bitrate_kbps(
-                    rewrite_codec_key,
-                    audio_target_bitrate_kbps,
-                    int(probe.get("channels") or 0),
+                self._log(
+                    "Sync réelle audio avancée: piste copiée/coupée sans réencodage "
+                    f"(codec={source_codec_key.upper()}, stream={stream_index}, "
+                    f"offset={int(offset_ms)} ms, précision={precision}, résiduel={residual})."
                 )
-            out = self._rewrite_audio(
+                return SyncRewritePreparedInput(
+                    path=out,
+                    input_idx=int(input_idx),
+                    track_type="audio",
+                    codec=source_codec_key,
+                    mode_label=SYNC_REWRITE_ADVANCED_AUDIO_LABEL,
+                    strategy=kind,
+                    is_advanced=True,
+                    precision_label=precision,
+                    residual_label=residual,
+                )
+
+            rewrite_codec_key = self._advanced_audio_output_codec(source_codec_key, kind)
+            if kind == "truehd" and not self._truehd_reencode_supported(probe):
+                self._log(
+                    "Sync réelle audio avancée ignorée: TrueHD/MLP sans Atmos hors layout "
+                    f"supporté (stream={stream_index}); fallback offset."
+                )
+                return None
+            rewrite_bitrate_kbps = self._advanced_audio_bitrate_kbps(
+                codec_key=rewrite_codec_key,
+                source_codec_key=source_codec_key,
+                kind=kind,
+                audio_target_bitrate_kbps=audio_target_bitrate_kbps,
+                probe=probe,
+                display_info=display_info,
+                channels=channels_count,
+            )
+            out = self._rewrite_audio_advanced(
                 source=source,
                 stream_index=int(stream_index),
                 codec_key=rewrite_codec_key,
                 offset_ms=int(offset_ms),
                 tmp_dir=tmp_dir,
                 token=token,
-                channels=int(probe.get("channels") or 0),
                 bitrate_kbps=rewrite_bitrate_kbps,
+                experimental=kind == "truehd",
                 cancel_cb=cancel_cb,
             )
             bitrate_label = f", bitrate={rewrite_bitrate_kbps} kbps" if rewrite_bitrate_kbps else ""
             self._log(
-                "Sync réelle audio: piste réencodée après coupe/silence "
+                "Sync réelle audio avancée: piste matérialisée après coupe/silence "
                 f"(codec={rewrite_codec_key.upper()}{bitrate_label}, stream={stream_index}, "
-                f"offset={int(offset_ms)} ms)."
+                f"offset={int(offset_ms)} ms, précision={precision}, résiduel={residual})."
             )
             return SyncRewritePreparedInput(
                 path=out,
                 input_idx=int(input_idx),
                 track_type="audio",
                 codec=rewrite_codec_key,
-                mode_label="Sync réelle · audio réencodé",
+                mode_label=SYNC_REWRITE_ADVANCED_AUDIO_LABEL,
                 bitrate_kbps=rewrite_bitrate_kbps,
+                strategy=kind,
+                is_advanced=True,
+                precision_label=precision,
+                residual_label=residual,
             )
 
         return None
@@ -354,6 +707,24 @@ class SyncRewriteService:
                 continue
         return {}
 
+    def _audio_probe_has_object_metadata(
+        self,
+        *,
+        codec_key: str,
+        title: str,
+        display_info: str,
+        probe: Mapping[str, object],
+    ) -> bool:
+        tags = probe.get("tags") if isinstance(probe.get("tags"), dict) else {}
+        probe_title = str(tags.get("title") or "") if isinstance(tags, dict) else ""
+        return track_has_object_audio_metadata(
+            codec=codec_key,
+            title=" ".join([title, probe_title]),
+            display_info=display_info,
+            profile=str(probe.get("profile") or ""),
+            codec_long_name=str(probe.get("codec_long_name") or ""),
+        )
+
     def _audio_probe_is_simple(
         self,
         *,
@@ -368,14 +739,11 @@ class SyncRewriteService:
             channels = 0
         if channels <= 0:
             return False
-        tags = probe.get("tags") if isinstance(probe.get("tags"), dict) else {}
-        probe_title = str(tags.get("title") or "") if isinstance(tags, dict) else ""
-        return not track_has_object_audio_metadata(
+        return not self._audio_probe_has_object_metadata(
             codec=codec_key,
-            title=" ".join([title, probe_title]),
+            title=title,
             display_info=display_info,
-            profile=str(probe.get("profile") or ""),
-            codec_long_name=str(probe.get("codec_long_name") or ""),
+            probe=probe,
         )
 
     def _rewrite_audio(
@@ -412,6 +780,133 @@ class SyncRewriteService:
             str(destination),
         ]
         self._run_checked(cmd, destination, "Réécriture sync audio échouée", cancel_cb=cancel_cb)
+        return destination
+
+    @staticmethod
+    def _advanced_audio_output_codec(source_codec_key: str, kind: str) -> str:
+        if kind == "lossless_to_flac":
+            return "flac"
+        if source_codec_key == "wv":
+            return "wavpack"
+        return source_codec_key
+
+    @staticmethod
+    def _truehd_reencode_supported(probe: Mapping[str, object]) -> bool:
+        try:
+            channels = int(probe.get("channels") or 0)
+        except (TypeError, ValueError):
+            channels = 0
+        # FFmpeg's TrueHD/MLP encoder is experimental and currently tops out at
+        # 5.1-class layouts. Refuse unknown/7.1+ layouts instead of guessing.
+        return 0 < channels <= 6
+
+    def _advanced_audio_bitrate_kbps(
+        self,
+        *,
+        codec_key: str,
+        source_codec_key: str,
+        kind: str,
+        audio_target_bitrate_kbps: int | None,
+        probe: Mapping[str, object],
+        display_info: str,
+        channels: int,
+    ) -> int | None:
+        if kind != "lossy":
+            return None
+        requested = self._normalize_audio_bitrate_kbps(codec_key, audio_target_bitrate_kbps, channels)
+        if requested is not None:
+            return requested
+        source = self._source_audio_bitrate_kbps(
+            codec_key=source_codec_key,
+            probe=probe,
+            display_info=display_info,
+            channels=channels,
+        )
+        if source is not None:
+            return source
+        return self._audio_bitrate_kbps_for(codec_key, channels, 96)
+
+    @staticmethod
+    def _advanced_audio_encoder_args(codec_key: str, *, bitrate_kbps: int | None, experimental: bool) -> list[str]:
+        encoder = {
+            "mp3": "libmp3lame",
+            "opus": "libopus",
+            "vorbis": "libvorbis",
+            "wv": "wavpack",
+        }.get(codec_key, codec_key)
+        args: list[str] = []
+        if experimental:
+            args.extend(["-strict", "-2"])
+        args.extend(["-c:a", encoder])
+        if bitrate_kbps and bitrate_kbps > 0:
+            args.extend(["-b:a", f"{int(bitrate_kbps)}k"])
+        return args
+
+    def _rewrite_audio_advanced(
+        self,
+        *,
+        source: Path,
+        stream_index: int,
+        codec_key: str,
+        offset_ms: int,
+        tmp_dir: Path,
+        token: str,
+        bitrate_kbps: int | None = None,
+        experimental: bool = False,
+        cancel_cb: Callable[[], bool] | None = None,
+    ) -> Path:
+        destination = self._unique_path(tmp_dir, f"sync_rewrite_{token}.mka")
+        if offset_ms > 0:
+            audio_filter = f"adelay={int(offset_ms)}:all=1,asetpts=PTS-STARTPTS"
+        else:
+            audio_filter = f"atrim=start={abs(offset_ms) / 1000.0:.3f},asetpts=PTS-STARTPTS"
+        cmd = [
+            self._ffmpeg,
+            "-hide_banner", "-y",
+            *self._progress_args,
+            "-i", str(source),
+            "-map", f"0:{stream_index}",
+            "-vn", "-sn", "-dn",
+            *self._thread_args,
+            "-af", audio_filter,
+            *self._advanced_audio_encoder_args(
+                codec_key,
+                bitrate_kbps=bitrate_kbps,
+                experimental=experimental,
+            ),
+            "-f", "matroska",
+            str(destination),
+        ]
+        self._run_checked(cmd, destination, "Réécriture sync audio avancée échouée", cancel_cb=cancel_cb)
+        return destination
+
+    def _copy_trim_audio(
+        self,
+        *,
+        source: Path,
+        stream_index: int,
+        offset_ms: int,
+        tmp_dir: Path,
+        token: str,
+        cancel_cb: Callable[[], bool] | None = None,
+    ) -> Path:
+        if int(offset_ms or 0) >= 0:
+            raise RemuxError("Copie/coupe audio avancée impossible pour un retard positif.")
+        destination = self._unique_path(tmp_dir, f"sync_rewrite_{token}.mka")
+        cmd = [
+            self._ffmpeg,
+            "-hide_banner", "-y",
+            *self._progress_args,
+            "-i", str(source),
+            "-map", f"0:{stream_index}",
+            "-vn", "-sn", "-dn",
+            "-ss", f"{abs(int(offset_ms)) / 1000.0:.3f}",
+            "-c:a", "copy",
+            "-avoid_negative_ts", "make_zero",
+            "-f", "matroska",
+            str(destination),
+        ]
+        self._run_checked(cmd, destination, "Copie/coupe sync audio avancée échouée", cancel_cb=cancel_cb)
         return destination
 
     def _rewrite_subtitle(
@@ -574,7 +1069,7 @@ class SyncRewriteService:
             return min(6144, bitrate)
         if codec_key == "aac":
             return max(1, bitrate)
-        return cls._audio_bitrate_kbps_for(codec_key, channels, 96)
+        return max(1, bitrate)
 
     @classmethod
     def _source_audio_bitrate_kbps(
@@ -786,10 +1281,12 @@ __all__ = [
     "REWRITE_SUBTITLE_CODECS",
     "SYNC_REWRITE_MODE_AUTO",
     "SYNC_REWRITE_MODE_OFFSET",
+    "SYNC_REWRITE_ADVANCED_AUDIO_LABEL",
     "SYNC_REWRITE_OFFSET_LABEL",
     "SYNC_REWRITE_STAGE_PREFIX",
     "SyncRewritePreparedInput",
     "SyncRewriteService",
+    "SyncRewriteUiPreview",
     "audio_bitrate_kbps_from_display_info",
     "normalized_rewrite_codec",
     "normalized_sync_rewrite_mode",
@@ -800,4 +1297,5 @@ __all__ = [
     "ui_sync_rewrite_auto_label_for_track",
     "ui_sync_rewrite_can_toggle",
     "ui_sync_rewrite_label_for_track",
+    "ui_sync_rewrite_preview_for_track",
 ]

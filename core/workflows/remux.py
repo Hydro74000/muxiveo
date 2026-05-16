@@ -89,6 +89,7 @@ class RemuxWorkflow(QObject):
         generate_nfo: bool = True,
         mediainfo_bin: str = "mediainfo",
         sync_rewrite_enabled: bool = False,
+        sync_advanced_audio_rewrite_enabled: bool = False,
         aac_bitrate_per_channel_kbps: int = 96,
         eac3_bitrate_per_channel_kbps: int = 96,
     ) -> None:
@@ -99,6 +100,7 @@ class RemuxWorkflow(QObject):
         self._generate_nfo = generate_nfo
         self._mediainfo_bin = mediainfo_bin
         self._sync_rewrite_enabled = bool(sync_rewrite_enabled)
+        self._sync_advanced_audio_rewrite_enabled = bool(sync_advanced_audio_rewrite_enabled)
         self._sync_rewrite_audio_bitrates = {
             "aac": int(aac_bitrate_per_channel_kbps or 96),
             "ac3": int(eac3_bitrate_per_channel_kbps or 96),
@@ -134,6 +136,9 @@ class RemuxWorkflow(QObject):
 
     def set_sync_rewrite_enabled(self, enabled: bool) -> None:
         self._sync_rewrite_enabled = bool(enabled)
+
+    def set_sync_advanced_audio_rewrite_enabled(self, enabled: bool) -> None:
+        self._sync_advanced_audio_rewrite_enabled = bool(enabled)
 
     def set_sync_rewrite_audio_bitrates(
         self,
@@ -232,6 +237,7 @@ class RemuxWorkflow(QObject):
                 apply_language_post_action=self._language_post_action.apply_if_mkv,
                 write_nfo=self._write_nfo,
                 sync_rewrite_enabled=lambda: self._sync_rewrite_enabled,
+                sync_advanced_audio_rewrite_enabled=lambda: self._sync_advanced_audio_rewrite_enabled,
                 sync_rewrite_audio_bitrates=lambda: dict(self._sync_rewrite_audio_bitrates),
             )
         ).run(config)

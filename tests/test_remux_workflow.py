@@ -265,8 +265,8 @@ class TestRemuxWorkflowBuildCommand:
         captured: dict[str, object] = {}
 
         class FakeSyncRewriteService:
-            def __init__(self, **_kwargs):
-                pass
+            def __init__(self, **kwargs):
+                captured["service_kwargs"] = kwargs
 
             def maybe_materialize(self, **kwargs):
                 path = tmp_path / "rewritten.mka"
@@ -307,6 +307,7 @@ class TestRemuxWorkflowBuildCommand:
                 apply_language_post_action=lambda _path: None,
                 write_nfo=lambda _path: None,
                 sync_rewrite_enabled=lambda: True,
+                sync_advanced_audio_rewrite_enabled=lambda: True,
                 sync_rewrite_audio_bitrates=lambda: {"eac3": 96},
             )
         )
@@ -322,6 +323,8 @@ class TestRemuxWorkflowBuildCommand:
         assert rewritten_audio.track.sync_rewrite_label == "Sync réelle · audio réencodé"
         rewrite_kwargs = cast(dict, captured["rewrite_kwargs"])
         assert rewrite_kwargs["preserve_source_audio_params"] is True
+        service_kwargs = cast(dict, captured["service_kwargs"])
+        assert service_kwargs["advanced_audio_enabled"] is True
 
     def test_runtime_sync_rewrite_respects_forced_standard_offset(self, tmp_path, monkeypatch):
         src = tmp_path / "in.mkv"

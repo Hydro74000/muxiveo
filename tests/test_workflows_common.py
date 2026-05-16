@@ -29,6 +29,7 @@ from core.workflows.common.sync_rewrite import (
     audio_bitrate_kbps_from_display_info,
     sync_rewrite_stage_progress_line,
     ui_sync_rewrite_label_for_track,
+    ui_sync_rewrite_preview_for_track,
 )
 from core.workflows.common.timeline_sync import (
     append_strict_interleave_mux_flags,
@@ -172,6 +173,45 @@ class TestCommonSyncRewrite:
         assert ui_sync_rewrite_label_for_track(audio, enabled=True) == "Sync réelle · audio réencodé"
         assert ui_sync_rewrite_label_for_track(atmos, enabled=True) == "Sync offset"
 
+    def test_ui_preview_gates_advanced_audio_formats(self):
+        truehd = SimpleNamespace(track_type="audio", codec="TRUEHD", time_shift_ms=120, display_info="5.1  48 kHz")
+
+        disabled = ui_sync_rewrite_preview_for_track(
+            truehd,
+            enabled=True,
+            advanced_audio_enabled=False,
+        )
+        enabled = ui_sync_rewrite_preview_for_track(
+            truehd,
+            enabled=True,
+            advanced_audio_enabled=True,
+        )
+
+        assert disabled.label == "Sync offset"
+        assert disabled.can_toggle is False
+        assert enabled.label == "Sync réelle · audio avancé"
+        assert enabled.can_toggle is True
+        assert enabled.is_advanced is True
+        assert "Décalage demandé : Δt +120 ms" in enabled.warning_tooltip
+        assert "TrueHD" in enabled.warning_tooltip
+
+    def test_ui_preview_copy_only_object_formats_require_negative_offset(self):
+        delay = SimpleNamespace(track_type="audio", codec="EAC3", time_shift_ms=120, display_info="5.1 Atmos")
+        advance = SimpleNamespace(track_type="audio", codec="EAC3", time_shift_ms=-120, display_info="5.1 Atmos")
+
+        assert ui_sync_rewrite_preview_for_track(
+            delay,
+            enabled=True,
+            advanced_audio_enabled=True,
+        ).label == "Sync offset"
+        preview = ui_sync_rewrite_preview_for_track(
+            advance,
+            enabled=True,
+            advanced_audio_enabled=True,
+        )
+        assert preview.label == "Sync réelle · audio avancé"
+        assert "EAC3+JOC" in preview.warning_tooltip
+
     def test_ui_label_can_force_standard_offset_for_rewrite_eligible_track(self):
         audio = SimpleNamespace(
             track_type="audio",
@@ -232,6 +272,66 @@ class TestCommonSyncRewrite:
         cmd = cast(list[str], seen["cmd"])
         assert cmd[cmd.index("-c:a") + 1] == "eac3"
         assert cmd[cmd.index("-b:a") + 1] == "640k"
+        assert cmd[cmd.index("-f") + 1] == "matroska"
+
+    def test_advanced_audio_rewrite_setting_gates_truehd(self, tmp_path, monkeypatch):
+        probe = {
+            "codec_name": "truehd",
+            "codec_long_name": "Dolby TrueHD",
+            "profile": "",
+            "channels": 6,
+            "tags": {},
+        }
+        disabled = SyncRewriteService(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        monkeypatch.setattr(disabled, "_probe_stream", lambda _source, _stream_index: probe)
+        monkeypatch.setattr(
+            disabled,
+            "_run_checked",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("advanced rewrite disabled")),
+        )
+
+        assert disabled.maybe_materialize(
+            source_path=tmp_path / "in.mkv",
+            stream_index=1,
+            track_type="audio",
+            codec="truehd",
+            display_info="5.1  48 kHz",
+            offset_ms=250,
+            tmp_dir=tmp_path,
+            input_idx=2,
+        ) is None
+
+        enabled = SyncRewriteService(
+            ffmpeg_bin="ffmpeg",
+            ffprobe_bin="ffprobe",
+            advanced_audio_enabled=True,
+        )
+        monkeypatch.setattr(enabled, "_probe_stream", lambda _source, _stream_index: probe)
+        seen: dict[str, object] = {}
+
+        def fake_run(cmd, destination, _error_prefix, **_kwargs):
+            seen["cmd"] = cmd
+            destination.write_bytes(b"audio")
+
+        monkeypatch.setattr(enabled, "_run_checked", fake_run)
+
+        prepared = enabled.maybe_materialize(
+            source_path=tmp_path / "in.mkv",
+            stream_index=1,
+            track_type="audio",
+            codec="truehd",
+            display_info="5.1  48 kHz",
+            offset_ms=250,
+            tmp_dir=tmp_path,
+            input_idx=2,
+        )
+
+        assert prepared is not None
+        assert prepared.mode_label == "Sync réelle · audio avancé"
+        assert prepared.is_advanced is True
+        cmd = cast(list[str], seen["cmd"])
+        assert "-strict" in cmd
+        assert cmd[cmd.index("-c:a") + 1] == "truehd"
         assert cmd[cmd.index("-f") + 1] == "matroska"
 
     def test_audio_rewrite_can_use_explicit_target_params(self, tmp_path, monkeypatch):

@@ -1735,6 +1735,18 @@
     "fra": "Option expérimentale. Si activée, certains décalages peuvent être matérialisés par réécriture des timestamps sous-titres ou réencodage audio simple. Désactivée par défaut.",
     "eng": "Experimental option. When enabled, some offsets can be materialized by rewriting subtitle timestamps or by simple audio re-encoding. Disabled by default."
   },
+  "Activer la sync réelle audio avancée": {
+    "fra": "Activer la sync réelle audio avancée",
+    "eng": "Enable advanced real audio sync"
+  },
+  "Autorise les stratégies audio avancées pour les formats non simples lorsque la réécriture physique est activée.": {
+    "fra": "Autorise les stratégies audio avancées pour les formats non simples lorsque la réécriture physique est activée.",
+    "eng": "Allows advanced audio strategies for non-simple formats when physical rewriting is enabled."
+  },
+  "Active des stratégies expérimentales pour TrueHD/MLP, DTS/DTS-HD/DTS:X, EAC3+JOC/Atmos, PCM/LPCM, formats lossless et formats lossy. Selon le codec, la piste peut être recopiée par blocs, réencodée, convertie en lossless/lossy, ou rester en sync offset si l'opération n'est pas sûre. Les pistes objet Atmos/DTS:X ne sont pas réencodées.": {
+    "fra": "Active des stratégies expérimentales pour TrueHD/MLP, DTS/DTS-HD/DTS:X, EAC3+JOC/Atmos, PCM/LPCM, formats lossless et formats lossy. Selon le codec, la piste peut être recopiée par blocs, réencodée, convertie en lossless/lossy, ou rester en sync offset si l'opération n'est pas sûre. Les pistes objet Atmos/DTS:X ne sont pas réencodées.",
+    "eng": "Enables experimental strategies for TrueHD/MLP, DTS/DTS-HD/DTS:X, EAC3+JOC/Atmos, PCM/LPCM, lossless formats, and lossy formats. Depending on the codec, the track may be block-copied, re-encoded, converted to lossless/lossy, or left as sync offset when the operation is not safe. Atmos/DTS:X object tracks are not re-encoded."
+  },
   "Interface": {
     "fra": "Interface",
     "eng": "Interface"
