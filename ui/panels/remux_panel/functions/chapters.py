@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 
 
 def on_chapters_changed(panel: "RemuxPanel") -> None:
+    panel._refresh_sync_action_buttons()
     panel._rebuild_preview()
 
 
@@ -32,12 +33,14 @@ def reset_empty_state(panel: "RemuxPanel") -> None:
     panel._color_index = 0
     panel._source_sync_offsets_ms.clear()
     panel._auto_sync_entry_ids.clear()
+    panel._chapter_sync_cancelled_source_ids.clear()
     panel._track_table.clear_all()
     panel._attachment_panel.clear_all()
     panel._chapter_panel.clear_all()
     panel._filter_btn.setChecked(False)
     panel._file_title_edit.clear()
     panel._output_edit.clear()
+    panel._refresh_sync_action_buttons()
     panel._sync_tmdb_suggested_title()
 
 

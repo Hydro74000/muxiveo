@@ -1571,6 +1571,22 @@
     "fra": "Annuler la synchro",
     "eng": "Cancel sync"
   },
+  "Annuler la synchro des chapitres": {
+    "fra": "Annuler la synchro des chapitres",
+    "eng": "Cancel chapter sync"
+  },
+  "Annuler toutes les synchros": {
+    "fra": "Annuler toutes les synchros",
+    "eng": "Cancel all syncs"
+  },
+  "Synchronisation des chapitres annulée.": {
+    "fra": "Synchronisation des chapitres annulée.",
+    "eng": "Chapter sync cancelled."
+  },
+  "Toutes les synchronisations ont été annulées.": {
+    "fra": "Toutes les synchronisations ont été annulées.",
+    "eng": "All synchronizations have been cancelled."
+  },
   "Cliquer pour basculer entre sync réelle et sync offset": {
     "fra": "Cliquer pour basculer entre sync réelle et sync offset",
     "eng": "Click to toggle between real sync and sync offset"

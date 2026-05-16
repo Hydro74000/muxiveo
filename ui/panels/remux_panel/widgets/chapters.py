@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtCore import QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 from core.i18n import apply_translations, translate_text
 from core.inspector import ChapterEntry
 from ui.panels.remux_panel.models import _format_timecode, _parse_timecode
-from ui.panels.remux_panel.theme import _C
+from ui.panels.remux_panel.theme import _C, _x_icon
 from ui.design_system import font_px as _font_px, scale as _scale
 
 class _AddChapterDialog(QDialog):
@@ -151,6 +151,7 @@ class _ChapterPanel(QFrame):
     """
 
     changed = Signal()
+    sync_cancel_requested = Signal()
 
     COL_TC   = 0
     COL_NAME = 1
@@ -207,6 +208,29 @@ class _ChapterPanel(QFrame):
         """)
         h_lay.addWidget(title_lbl)
         h_lay.addStretch()
+
+        self._sync_cancel_btn = QPushButton()
+        self._sync_cancel_btn.setIcon(_x_icon(_C.TRACK_TAGS, 13))
+        self._sync_cancel_btn.setIconSize(QSize(_scale(13), _scale(13)))
+        self._sync_cancel_btn.setFixedSize(_scale(22), _scale(22))
+        self._sync_cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._sync_cancel_btn.setToolTip(translate_text("Annuler la synchro des chapitres"))
+        self._sync_cancel_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                border: 1px solid {_C.BORDER};
+                border-radius: {_scale(4)}px;
+                padding: 0;
+            }}
+            QPushButton:hover {{
+                border-color: {_C.TRACK_TAGS};
+                background: {_C.BG_HOVER};
+            }}
+            QPushButton:pressed {{ background: {_C.BG_ACTIVE}; }}
+        """)
+        self._sync_cancel_btn.clicked.connect(self.sync_cancel_requested.emit)
+        self._sync_cancel_btn.setVisible(False)
+        h_lay.addWidget(self._sync_cancel_btn)
 
         self._add_btn = QPushButton("+ Ajouter un chapitre")
         self._add_btn.setFixedHeight(_scale(22))
@@ -546,6 +570,9 @@ class _ChapterPanel(QFrame):
     def get_chapters(self) -> list[ChapterEntry]:
         """Retourne les chapitres courants, triés par timecode."""
         return sorted(self._chapters, key=lambda e: e.timecode_s)
+
+    def set_sync_cancel_available(self, available: bool) -> None:
+        self._sync_cancel_btn.setVisible(bool(available))
 
     # ------------------------------------------------------------------
     # Interne — table

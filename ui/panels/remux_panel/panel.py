@@ -7,7 +7,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, Signal
 from PySide6.QtGui import QDropEvent, QFont
 from PySide6.QtWidgets import (
     QComboBox,
@@ -62,6 +62,7 @@ from ui.panels.remux_panel.theme import (
     _secondary_button,
     _section_label,
     _separator,
+    _x_icon,
 )
 from ui.design_system import font_px as _font_px, scale as _scale
 from ui.panels.remux_panel.widgets.attachments import _AttachmentPanel
@@ -166,6 +167,7 @@ class RemuxPanel(QWidget):
         self._source_colors: dict[str, str] = {}
         self._source_sync_offsets_ms: dict[str, int] = {}
         self._auto_sync_entry_ids: set[str] = set()
+        self._chapter_sync_cancelled_source_ids: set[str] = set()
         self._color_index: int = 0
 
         self._workflow.log_message.connect(
@@ -317,9 +319,19 @@ class RemuxPanel(QWidget):
         track_header.addWidget(self._filter_btn)
         content_layout.addLayout(track_header)
 
+        hint_row = QHBoxLayout()
+        hint_row.setSpacing(_scale(8))
         hint = QLabel("Glisser-déposer les lignes pour réordonner · Double-clic pour éditer Langue / Titre")
         hint.setStyleSheet(f"color: {_C.TEXT_DIM}; font-size: {_font_px(10)}px; background: transparent;")
-        content_layout.addWidget(hint)
+        hint_row.addWidget(hint)
+        hint_row.addStretch()
+        self._global_sync_cancel_btn = _secondary_button(translate_text("Annuler toutes les synchros"))
+        self._global_sync_cancel_btn.setIcon(_x_icon(_C.ERROR, 12))
+        self._global_sync_cancel_btn.setIconSize(QSize(_scale(12), _scale(12)))
+        self._global_sync_cancel_btn.clicked.connect(self._on_global_sync_cancel_requested)
+        self._global_sync_cancel_btn.setVisible(False)
+        hint_row.addWidget(self._global_sync_cancel_btn)
+        content_layout.addLayout(hint_row)
 
         self._track_table = _TrackTable()
         self._track_table.itemChanged.connect(self._on_table_changed)
@@ -360,6 +372,7 @@ class RemuxPanel(QWidget):
 
         self._chapter_panel = _ChapterPanel()
         self._chapter_panel.changed.connect(self._on_chapters_changed)
+        self._chapter_panel.sync_cancel_requested.connect(self._on_chapter_sync_cancel_requested)
         content_layout.addWidget(self._chapter_panel)
 
         content_layout.addWidget(_separator())
@@ -1036,7 +1049,63 @@ class RemuxPanel(QWidget):
     def _refresh_audio_sync_buttons(self) -> None:
         by_source = self._audio_entries_by_source()
         self._track_table.set_audio_sync_available(len(by_source) >= 2)
-        self._track_table.set_auto_sync_cancelable_entries(self._auto_sync_entry_ids)
+        self._refresh_sync_action_buttons()
+
+    def _track_sync_counts(self) -> dict[str, int]:
+        counts = {"video": 0, "audio": 0, "subtitle": 0}
+        for entry in self._track_table.current_tracks():
+            if entry.track_type in counts and int(entry.time_shift_ms or 0) != 0:
+                counts[entry.track_type] += 1
+        return counts
+
+    def _source_has_chapters(self, source_index: int) -> bool:
+        if source_index < 0 or source_index >= len(self._source_files):
+            return False
+        source = self._source_files[source_index]
+        return bool(source.info and source.info.chapters and source.info.chapters.entries)
+
+    def _chapter_sync_is_active_for_index(self, source_index: int | None) -> bool:
+        return (
+            source_index is not None
+            and self._source_has_chapters(source_index)
+            and self._chapter_sync_offset_ms_for_index(source_index) != 0
+        )
+
+    def _any_chapter_sync_active(self) -> bool:
+        return any(
+            self._chapter_sync_is_active_for_index(index)
+            for index in range(len(self._source_files))
+        )
+
+    def _global_sync_tooltip(self, counts: dict[str, int], chapter_active: bool) -> str:
+        return (
+            "<html><body style='white-space:nowrap;'>"
+            "Synchro : "
+            f"<span style='color:{_C.TRACK_VIDEO}; font-weight:700;'>V</span>={counts['video']} "
+            f"<span style='color:{_C.TRACK_AUDIO}; font-weight:700;'>A</span>={counts['audio']} "
+            f"<span style='color:{_C.TRACK_SUBTITLE}; font-weight:700;'>S</span>={counts['subtitle']} "
+            f"<span style='color:{_C.TRACK_TAGS}; font-weight:700;'>C</span>={'Yes' if chapter_active else 'No'}"
+            "</body></html>"
+        )
+
+    def _refresh_sync_action_buttons(self) -> None:
+        if hasattr(self, "_track_table"):
+            self._track_table.set_auto_sync_cancelable_entries(self._auto_sync_entry_ids)
+        selected_source_index = (
+            self._chapter_panel.selected_source_index()
+            if hasattr(self, "_chapter_panel")
+            else None
+        )
+        chapter_active_for_selection = self._chapter_sync_is_active_for_index(selected_source_index)
+        if hasattr(self, "_chapter_panel"):
+            self._chapter_panel.set_sync_cancel_available(chapter_active_for_selection)
+
+        counts = self._track_sync_counts() if hasattr(self, "_track_table") else {"video": 0, "audio": 0, "subtitle": 0}
+        chapter_active = self._any_chapter_sync_active()
+        active = any(counts.values()) or chapter_active
+        if hasattr(self, "_global_sync_cancel_btn"):
+            self._global_sync_cancel_btn.setVisible(active)
+            self._global_sync_cancel_btn.setToolTip(self._global_sync_tooltip(counts, chapter_active))
 
     def _on_sync_rewrite_toggle_requested(self, entry: TrackEntry) -> None:
         if not ui_sync_rewrite_can_toggle(entry, enabled=self._config.sync_rewrite_enabled):
@@ -1117,6 +1186,14 @@ class RemuxPanel(QWidget):
             return 0
         return int(self._source_sync_offsets_ms.get(self._source_files[source_index].id, 0) or 0)
 
+    def _chapter_sync_offset_ms_for_index(self, source_index: int | None) -> int:
+        if source_index is None or source_index < 0 or source_index >= len(self._source_files):
+            return 0
+        source_id = self._source_files[source_index].id
+        if source_id in self._chapter_sync_cancelled_source_ids:
+            return 0
+        return self._source_sync_offset_ms_for_index(source_index)
+
     def _shift_chapter_entries(
         self,
         entries: list[ChapterEntry],
@@ -1151,7 +1228,7 @@ class RemuxPanel(QWidget):
     def _chapter_entries_for_source(self, source_index: int) -> list[ChapterEntry]:
         return self._source_chapter_entries_with_offset(
             source_index,
-            self._source_sync_offset_ms_for_index(source_index),
+            self._chapter_sync_offset_ms_for_index(source_index),
         )
 
     @staticmethod
@@ -1219,9 +1296,6 @@ class RemuxPanel(QWidget):
             for entry in self._track_table.current_tracks()
         )
 
-    def _refresh_auto_sync_cancel_buttons(self) -> None:
-        self._track_table.set_auto_sync_cancelable_entries(self._auto_sync_entry_ids)
-
     def _apply_source_sync_offset(
         self,
         file_id: str,
@@ -1232,47 +1306,52 @@ class RemuxPanel(QWidget):
 
         offset_ms = int(offset_ms)
         sync_entry_ids = self._sync_entry_ids_for_file(file_id)
-        old_offset_ms = int(self._source_sync_offsets_ms.get(file_id, 0) or 0)
+        source_index = self._source_index_for_file_id(file_id)
+        selected_source_index = self._chapter_panel.selected_source_index()
+        old_chapter_offset_ms = self._chapter_sync_offset_ms_for_index(source_index)
         if offset_ms:
             self._source_sync_offsets_ms[file_id] = offset_ms
+            self._chapter_sync_cancelled_source_ids.discard(file_id)
             self._auto_sync_entry_ids.update(sync_entry_ids)
         else:
             self._source_sync_offsets_ms.pop(file_id, None)
+            self._chapter_sync_cancelled_source_ids.discard(file_id)
             self._auto_sync_entry_ids.difference_update(sync_entry_ids)
 
         updated = self._apply_time_shift_to_source_tracks(file_id, offset_ms)
-        self._refresh_auto_sync_cancel_buttons()
-        source_index = self._source_index_for_file_id(file_id)
-        selected_source_index = self._chapter_panel.selected_source_index()
         self._update_chapters_from_sources()
+        new_chapter_offset_ms = self._chapter_sync_offset_ms_for_index(source_index)
         self._sync_selected_chapters_after_source_offset_change(
             source_index,
             selected_source_index,
-            old_offset_ms,
-            offset_ms,
+            old_chapter_offset_ms,
+            new_chapter_offset_ms,
         )
+        self._refresh_sync_action_buttons()
         return updated or source_index is not None
 
     def _on_auto_sync_cancel_requested(self, entry: TrackEntry) -> None:
         if entry.track_type not in {"audio", "subtitle"}:
             return
-        old_offset_ms = int(self._source_sync_offsets_ms.get(entry.file_id, 0) or 0)
         source_index = self._source_index_for_file_id(entry.file_id)
         selected_source_index = self._chapter_panel.selected_source_index()
+        old_chapter_offset_ms = self._chapter_sync_offset_ms_for_index(source_index)
         if not self._track_table.update_time_shift(entry.entry_id, 0):
             return
 
         self._auto_sync_entry_ids.discard(entry.entry_id)
         if not self._file_has_shifted_timeline_tracks(entry.file_id):
             self._source_sync_offsets_ms.pop(entry.file_id, None)
+            self._chapter_sync_cancelled_source_ids.discard(entry.file_id)
             self._update_chapters_from_sources()
+            new_chapter_offset_ms = self._chapter_sync_offset_ms_for_index(source_index)
             self._sync_selected_chapters_after_source_offset_change(
                 source_index,
                 selected_source_index,
-                old_offset_ms,
-                0,
+                old_chapter_offset_ms,
+                new_chapter_offset_ms,
             )
-        self._refresh_auto_sync_cancel_buttons()
+        self._refresh_sync_action_buttons()
         self.log_message.emit(
             "INFO",
             translate_text(
@@ -1280,6 +1359,47 @@ class RemuxPanel(QWidget):
                 idx=entry.mkv_tid,
             ),
         )
+        self._rebuild_preview()
+        self._emit_signals()
+
+    def _on_chapter_sync_cancel_requested(self) -> None:
+        source_index = self._chapter_panel.selected_source_index()
+        if not self._chapter_sync_is_active_for_index(source_index):
+            return
+        assert source_index is not None
+        old_chapter_offset_ms = self._chapter_sync_offset_ms_for_index(source_index)
+        source_id = self._source_files[source_index].id
+        self._chapter_sync_cancelled_source_ids.add(source_id)
+        self._update_chapters_from_sources()
+        self._sync_selected_chapters_after_source_offset_change(
+            source_index,
+            source_index,
+            old_chapter_offset_ms,
+            0,
+        )
+        self._refresh_sync_action_buttons()
+        self.log_message.emit("INFO", translate_text("Synchronisation des chapitres annulée."))
+        self._rebuild_preview()
+        self._emit_signals()
+
+    def _on_global_sync_cancel_requested(self) -> None:
+        selected_source_index = self._chapter_panel.selected_source_index()
+        old_chapter_offset_ms = self._chapter_sync_offset_ms_for_index(selected_source_index)
+        for entry in self._track_table.current_tracks():
+            if int(entry.time_shift_ms or 0) != 0:
+                self._track_table.update_time_shift(entry.entry_id, 0)
+        self._source_sync_offsets_ms.clear()
+        self._auto_sync_entry_ids.clear()
+        self._chapter_sync_cancelled_source_ids.clear()
+        self._update_chapters_from_sources()
+        self._sync_selected_chapters_after_source_offset_change(
+            selected_source_index,
+            selected_source_index,
+            old_chapter_offset_ms,
+            0,
+        )
+        self._refresh_sync_action_buttons()
+        self.log_message.emit("INFO", translate_text("Toutes les synchronisations ont été annulées."))
         self._rebuild_preview()
         self._emit_signals()
 
@@ -1457,7 +1577,7 @@ class RemuxPanel(QWidget):
     def current_chapter_overrides(self) -> list | None:
         keep_ch = self._chapter_panel.keep_chapters()
         selected_source_index = self._chapter_panel.selected_source_index()
-        source_has_sync_offset = self._source_sync_offset_ms_for_index(selected_source_index) != 0
+        source_has_sync_offset = self._chapter_sync_offset_ms_for_index(selected_source_index) != 0
         if keep_ch and (self._chapter_panel.is_modified() or source_has_sync_offset):
             return self._chapter_panel.get_chapters()
         return None
@@ -1467,6 +1587,7 @@ class RemuxPanel(QWidget):
 
     def _update_chapters_from_sources(self) -> None:
         chapter_functions.update_chapters_from_sources(self)
+        self._refresh_sync_action_buttons()
 
     def _reset_empty_state(self) -> None:
         chapter_functions.reset_empty_state(self)

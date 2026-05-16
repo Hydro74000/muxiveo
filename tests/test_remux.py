@@ -1570,6 +1570,13 @@ class TestTrackTableUpdateAudioMeta:
             target_sub.entry_id,
         }.issubset(panel._auto_sync_entry_ids)
         assert [round(entry.timecode_s, 2) for entry in panel._chapter_panel.get_chapters()] == [0.0, 9.68]
+        assert not panel._chapter_panel._sync_cancel_btn.isHidden()
+        assert not panel._global_sync_cancel_btn.isHidden()
+        tooltip = panel._global_sync_cancel_btn.toolTip()
+        assert "V</span>=0" in tooltip
+        assert "A</span>=2" in tooltip
+        assert "S</span>=1" in tooltip
+        assert "C</span>=Yes" in tooltip
 
         panel._on_auto_sync_cancel_requested(target_audio)
 
@@ -1586,6 +1593,90 @@ class TestTrackTableUpdateAudioMeta:
         panel._on_auto_sync_cancel_requested(second_audio)
         assert second_audio.time_shift_ms == 0
         assert [round(entry.timecode_s, 2) for entry in panel._chapter_panel.get_chapters()] == [0.2, 10.0]
+        assert panel._chapter_panel._sync_cancel_btn.isHidden()
+        assert panel._global_sync_cancel_btn.isHidden()
+        panel.close()
+
+    def test_chapter_sync_cancel_only_resets_chapters(self, qt_app, tmp_path):
+        panel = RemuxPanel(AppConfig())
+        target_src = tmp_path / "target.mkv"
+        target_src.touch()
+
+        target_audio = _track(1, "audio", file_id="target")
+        target_sub = _track(2, "subtitle", codec="SRT", file_id="target")
+        target_info = _file_info(
+            path=target_src,
+            audios=[_audio(index=1)],
+            subs=[_subtitle(index=2)],
+        )
+        target_info.chapters = ChapterInfo([
+            ChapterEntry(0.2, "Intro"),
+            ChapterEntry(10.0, "Main"),
+        ])
+        panel._source_files = [
+            SourceFile(
+                id="target",
+                path=target_src,
+                color=_COLOR_A,
+                info=target_info,
+                tracks=[target_audio, target_sub],
+            ),
+        ]
+        panel._source_colors = {"target": _COLOR_A}
+        panel._track_table.append_tracks(_COLOR_A, [target_audio, target_sub])
+        panel._update_chapters_from_sources()
+
+        panel._on_audio_sync_done(target_audio.entry_id, "", -320, 0.876)
+        panel._chapter_panel._sync_cancel_btn.click()
+
+        assert target_audio.time_shift_ms == -320
+        assert target_sub.time_shift_ms == -320
+        assert [round(entry.timecode_s, 2) for entry in panel._chapter_panel.get_chapters()] == [0.2, 10.0]
+        assert panel.current_chapter_overrides() is None
+        assert panel._chapter_panel._sync_cancel_btn.isHidden()
+        assert not panel._global_sync_cancel_btn.isHidden()
+        assert "C</span>=No" in panel._global_sync_cancel_btn.toolTip()
+        panel.close()
+
+    def test_global_sync_cancel_resets_tracks_and_chapters(self, qt_app, tmp_path):
+        panel = RemuxPanel(AppConfig())
+        target_src = tmp_path / "target.mkv"
+        target_src.touch()
+
+        target_audio = _track(1, "audio", file_id="target")
+        target_sub = _track(2, "subtitle", codec="SRT", file_id="target")
+        target_info = _file_info(
+            path=target_src,
+            audios=[_audio(index=1)],
+            subs=[_subtitle(index=2)],
+        )
+        target_info.chapters = ChapterInfo([
+            ChapterEntry(0.2, "Intro"),
+            ChapterEntry(10.0, "Main"),
+        ])
+        panel._source_files = [
+            SourceFile(
+                id="target",
+                path=target_src,
+                color=_COLOR_A,
+                info=target_info,
+                tracks=[target_audio, target_sub],
+            ),
+        ]
+        panel._source_colors = {"target": _COLOR_A}
+        panel._track_table.append_tracks(_COLOR_A, [target_audio, target_sub])
+        panel._update_chapters_from_sources()
+
+        panel._on_audio_sync_done(target_audio.entry_id, "", -320, 0.876)
+        panel._global_sync_cancel_btn.click()
+
+        assert target_audio.time_shift_ms == 0
+        assert target_sub.time_shift_ms == 0
+        assert panel._auto_sync_entry_ids == set()
+        assert panel._source_sync_offsets_ms == {}
+        assert [round(entry.timecode_s, 2) for entry in panel._chapter_panel.get_chapters()] == [0.2, 10.0]
+        assert panel._chapter_panel._sync_cancel_btn.isHidden()
+        assert panel._global_sync_cancel_btn.isHidden()
         panel.close()
 
     def test_collect_config_exports_synced_chapters_after_source_switch(self, qt_app, tmp_path):
