@@ -174,6 +174,26 @@ def _refresh_icon(color: str | None = None, size: int = 14) -> QIcon:
     return QIcon(pix)
 
 
+def _x_icon(color: str | None = None, size: int = 14) -> QIcon:
+    color = color or _C.ERROR
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
+        f' fill="none" stroke="{color}" stroke-width="2.5"'
+        ' stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M18 6 6 18"/>'
+        '<path d="m6 6 12 12"/>'
+        '</svg>'
+    )
+    renderer = QSvgRenderer(svg.encode())
+    icon_size = _scale(size)
+    pix = QPixmap(icon_size, icon_size)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pix)
+
+
 __all__ = [
     "_C",
     "_card",
@@ -185,4 +205,5 @@ __all__ = [
     "_secondary_button",
     "_section_label",
     "_separator",
+    "_x_icon",
 ]

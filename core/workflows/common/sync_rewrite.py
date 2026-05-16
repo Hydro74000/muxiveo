@@ -29,6 +29,9 @@ TEXT_SUBTITLE_CODECS: frozenset[str] = frozenset({
 REWRITE_SUBTITLE_CODECS: frozenset[str] = TEXT_SUBTITLE_CODECS | CONVERT_TO_SRT
 REWRITE_AUDIO_CODECS: frozenset[str] = frozenset({"ac3", "eac3", "aac"})
 SYNC_REWRITE_STAGE_PREFIX = "__MRE_SYNC_REWRITE_STAGE__ "
+SYNC_REWRITE_MODE_AUTO = ""
+SYNC_REWRITE_MODE_OFFSET = "offset"
+SYNC_REWRITE_OFFSET_LABEL = "Sync offset"
 
 _OBJECT_AUDIO_MARKERS = (
     "atmos",
@@ -92,28 +95,50 @@ def audio_bitrate_kbps_from_display_info(display_info: str) -> int | None:
         return None
 
 
-def ui_sync_rewrite_label_for_track(track, *, enabled: bool) -> str:
-    """Best-effort UI label; runtime still performs the authoritative probe."""
-    if not enabled:
-        return ""
+def normalized_sync_rewrite_mode(value: str | None) -> str:
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if raw in {"offset", "sync_offset", "standard", "sync_standard"}:
+        return SYNC_REWRITE_MODE_OFFSET
+    return SYNC_REWRITE_MODE_AUTO
+
+
+def sync_rewrite_forced_offset(track) -> bool:
+    return normalized_sync_rewrite_mode(
+        str(getattr(track, "sync_rewrite_mode", "") or "")
+    ) == SYNC_REWRITE_MODE_OFFSET
+
+
+def ui_sync_rewrite_auto_label_for_track(track, *, enabled: bool) -> str:
+    """Best-effort automatic UI label; runtime still performs the authoritative probe."""
     offset_ms = int(getattr(track, "time_shift_ms", 0) or 0)
-    if offset_ms == 0:
+    if not enabled or offset_ms == 0:
         return ""
     track_type = str(getattr(track, "track_type", "") or "").strip().lower()
     codec = normalized_rewrite_codec(str(getattr(track, "codec", "") or ""))
     if track_type == "subtitle":
-        return "Sync réelle" if codec in REWRITE_SUBTITLE_CODECS else "Offset"
+        return "Sync réelle" if codec in REWRITE_SUBTITLE_CODECS else SYNC_REWRITE_OFFSET_LABEL
     if track_type == "audio":
         if codec not in REWRITE_AUDIO_CODECS:
-            return "Offset"
+            return SYNC_REWRITE_OFFSET_LABEL
         if track_has_object_audio_metadata(
             codec=codec,
             title=str(getattr(track, "title", "") or ""),
             display_info=str(getattr(track, "orig_display_info", "") or getattr(track, "display_info", "") or ""),
         ):
-            return "Offset"
+            return SYNC_REWRITE_OFFSET_LABEL
         return "Sync réelle · audio réencodé"
     return ""
+
+
+def ui_sync_rewrite_label_for_track(track, *, enabled: bool) -> str:
+    if sync_rewrite_forced_offset(track) and ui_sync_rewrite_can_toggle(track, enabled=enabled):
+        return SYNC_REWRITE_OFFSET_LABEL
+    return ui_sync_rewrite_auto_label_for_track(track, enabled=enabled)
+
+
+def ui_sync_rewrite_can_toggle(track, *, enabled: bool) -> bool:
+    label = ui_sync_rewrite_auto_label_for_track(track, enabled=enabled)
+    return label.startswith("Sync réelle")
 
 
 def sync_rewrite_output_token(source_path: Path | str, stream_index: int, track_type: str) -> str:
@@ -759,13 +784,20 @@ class SyncRewriteService:
 __all__ = [
     "REWRITE_AUDIO_CODECS",
     "REWRITE_SUBTITLE_CODECS",
+    "SYNC_REWRITE_MODE_AUTO",
+    "SYNC_REWRITE_MODE_OFFSET",
+    "SYNC_REWRITE_OFFSET_LABEL",
     "SYNC_REWRITE_STAGE_PREFIX",
     "SyncRewritePreparedInput",
     "SyncRewriteService",
     "audio_bitrate_kbps_from_display_info",
     "normalized_rewrite_codec",
+    "normalized_sync_rewrite_mode",
+    "sync_rewrite_forced_offset",
     "sync_rewrite_stage_progress_line",
     "sync_rewrite_output_token",
     "track_has_object_audio_metadata",
+    "ui_sync_rewrite_auto_label_for_track",
+    "ui_sync_rewrite_can_toggle",
     "ui_sync_rewrite_label_for_track",
 ]

@@ -133,10 +133,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication, QDialog, QPushButton
 
 from core.config import AppConfig
-from core.i18n import current_language, set_current_language
+from core.i18n import current_language, set_current_language, translate_text
 from core.inspector import (
     AttachmentInfo, AudioTrack, ChapterEntry, ChapterInfo, FileInfo, HDRType, SubtitleTrack, VideoTrack,
     build_chapter_xml,
@@ -154,7 +154,7 @@ from ui.panels.remux_panel import (
     RemuxPanel, SourceFile, _FILE_BAR_H, _FILE_PH_H, _FILE_ROW_H,
     _AttachmentItemWidget, _AttachmentPanel, _FileListWidget, _TrackInfoDelegate, _TrackTable,
     _TRACK_INFO_OFFSET_COLOR, _TRACK_INFO_OFFSET_NEG_COLOR, _TRACK_INFO_OFFSET_POS_COLOR,
-    _TRACK_INFO_OFFSET_VALUE_ROLE,
+    _TRACK_INFO_OFFSET_VALUE_ROLE, _TRACK_INFO_SYNC_LABEL_ROLE,
     _normalize_tmdb_manual_title_suggestion, _pick_file_color,
 )
 from ui.panels.remux_panel.functions import inspection as inspection_functions
@@ -663,6 +663,12 @@ def _fill_table(
     return tracks
 
 
+def _action_buttons(table: _TrackTable, row: int) -> list[QPushButton]:
+    widget = table.cellWidget(row, _TrackTable.COL_EDIT)
+    assert widget is not None
+    return widget.findChildren(QPushButton)
+
+
 class TestTrackTable:
 
     def test_append_tracks_adds_correct_row_count(self, table):
@@ -811,6 +817,70 @@ class TestTrackTable:
         assert t.time_shift_ms == -320
         assert info_item.text().endswith("Δt -320 ms")
         assert info_item.data(_TRACK_INFO_OFFSET_VALUE_ROLE) == "-320 ms"
+
+    def test_auto_synced_audio_track_shows_cancel_button(self, table):
+        t = _track(1, "audio", file_id="fid")
+        table.append_tracks(_COLOR_A, [t])
+        table.set_audio_sync_available(True)
+        assert "Synchronisation améliorée de cette piste audio" in [
+            button.toolTip() for button in _action_buttons(table, 0)
+        ]
+
+        table.set_auto_sync_cancelable_entries({t.entry_id})
+        table.update_time_shift(t.entry_id, -320)
+
+        cancel_tooltip = translate_text("Annuler la synchro")
+        assert cancel_tooltip in [
+            button.toolTip() for button in _action_buttons(table, 0)
+        ]
+
+    def test_auto_sync_cancel_button_emits_only_row_entry(self, table):
+        first, second = _fill_table(table, 2, file_id="fid")
+        table.set_audio_sync_available(True)
+        table.set_auto_sync_cancelable_entries({first.entry_id})
+        table.update_time_shift(first.entry_id, -320)
+        table.update_time_shift(second.entry_id, -320)
+        emitted: list[TrackEntry] = []
+        table.auto_sync_cancel_requested.connect(emitted.append)
+
+        cancel_tooltip = translate_text("Annuler la synchro")
+        cancel_button = next(
+            button
+            for button in _action_buttons(table, 0)
+            if button.toolTip() == cancel_tooltip
+        )
+        cancel_button.click()
+
+        assert emitted == [first]
+        assert "Synchronisation améliorée de cette piste audio" in [
+            button.toolTip() for button in _action_buttons(table, 1)
+        ]
+
+    def test_auto_synced_subtitle_track_shows_cancel_button(self, table):
+        t = _track(2, "subtitle", file_id="fid", codec="SRT")
+        table.append_tracks(_COLOR_A, [t])
+        table.set_auto_sync_cancelable_entries({t.entry_id})
+        table.update_time_shift(t.entry_id, -320)
+
+        cancel_tooltip = translate_text("Annuler la synchro")
+        assert cancel_tooltip in [
+            button.toolTip() for button in _action_buttons(table, 0)
+        ]
+
+    def test_sync_rewrite_label_click_emits_toggle_for_eligible_track(self, table):
+        table.set_sync_rewrite_enabled(True)
+        t = _track(1, "audio", file_id="fid", codec="EAC3")
+        t.time_shift_ms = 125
+        table.append_tracks(_COLOR_A, [t])
+        info_item = table.item(0, _TrackTable.COL_INFO)
+        assert info_item is not None
+        assert info_item.data(_TRACK_INFO_SYNC_LABEL_ROLE) == "Sync réelle · audio réencodé"
+        emitted: list[TrackEntry] = []
+        table.sync_rewrite_toggle_requested.connect(emitted.append)
+
+        table._on_cell_clicked(0, _TrackTable.COL_INFO)
+
+        assert emitted == [t]
 
     def test_info_column_uses_custom_delegate(self, table):
         delegate = table.itemDelegateForColumn(_TrackTable.COL_INFO)
@@ -1463,6 +1533,121 @@ class TestTrackTableUpdateAudioMeta:
         assert [round(entry.timecode_s, 2) for entry in chapters] == [0.0, 9.68]
         panel.close()
 
+    def test_audio_sync_cancel_resets_only_requested_track(self, qt_app, tmp_path):
+        panel = RemuxPanel(AppConfig())
+        target_src = tmp_path / "target.mkv"
+        target_src.touch()
+
+        target_audio = _track(1, "audio", file_id="target")
+        second_audio = _track(2, "audio", file_id="target")
+        target_sub = _track(3, "subtitle", codec="SRT", file_id="target")
+        target_info = _file_info(
+            path=target_src,
+            audios=[_audio(index=1), _audio(index=2)],
+            subs=[_subtitle(index=3)],
+        )
+        target_info.chapters = ChapterInfo([
+            ChapterEntry(0.2, "Intro"),
+            ChapterEntry(10.0, "Main"),
+        ])
+        panel._source_files = [
+            SourceFile(
+                id="target",
+                path=target_src,
+                color=_COLOR_A,
+                info=target_info,
+                tracks=[target_audio, second_audio, target_sub],
+            ),
+        ]
+        panel._source_colors = {"target": _COLOR_A}
+        panel._track_table.append_tracks(_COLOR_A, [target_audio, second_audio, target_sub])
+        panel._update_chapters_from_sources()
+
+        panel._on_audio_sync_done(target_audio.entry_id, "", -320, 0.876)
+        assert {
+            target_audio.entry_id,
+            second_audio.entry_id,
+            target_sub.entry_id,
+        }.issubset(panel._auto_sync_entry_ids)
+        assert [round(entry.timecode_s, 2) for entry in panel._chapter_panel.get_chapters()] == [0.0, 9.68]
+
+        panel._on_auto_sync_cancel_requested(target_audio)
+
+        assert target_audio.time_shift_ms == 0
+        assert second_audio.time_shift_ms == -320
+        assert target_sub.time_shift_ms == -320
+        assert target_audio.entry_id not in panel._auto_sync_entry_ids
+        assert second_audio.entry_id in panel._auto_sync_entry_ids
+        assert target_sub.entry_id in panel._auto_sync_entry_ids
+        panel._on_auto_sync_cancel_requested(target_sub)
+        assert second_audio.time_shift_ms == -320
+        assert target_sub.time_shift_ms == 0
+        assert [round(entry.timecode_s, 2) for entry in panel._chapter_panel.get_chapters()] == [0.0, 9.68]
+        panel._on_auto_sync_cancel_requested(second_audio)
+        assert second_audio.time_shift_ms == 0
+        assert [round(entry.timecode_s, 2) for entry in panel._chapter_panel.get_chapters()] == [0.2, 10.0]
+        panel.close()
+
+    def test_collect_config_exports_synced_chapters_after_source_switch(self, qt_app, tmp_path):
+        panel = RemuxPanel(AppConfig())
+        reference_src = tmp_path / "reference.mkv"
+        target_src = tmp_path / "target.mkv"
+        reference_src.touch()
+        target_src.touch()
+
+        reference_audio = _track(1, "audio", file_id="reference")
+        target_audio = _track(1, "audio", file_id="target")
+        reference_info = _file_info(path=reference_src, audios=[_audio(index=1)])
+        reference_info.chapters = ChapterInfo([
+            ChapterEntry(0.0, "Ref"),
+            ChapterEntry(12.0, "Ref main"),
+        ])
+        target_info = _file_info(path=target_src, audios=[_audio(index=1)])
+        target_info.chapters = ChapterInfo([
+            ChapterEntry(0.2, "Intro"),
+            ChapterEntry(10.0, "Main"),
+        ])
+        panel._source_files = [
+            SourceFile(id="reference", path=reference_src, color=_COLOR_A, info=reference_info, tracks=[reference_audio]),
+            SourceFile(id="target", path=target_src, color=_COLOR_B, info=target_info, tracks=[target_audio]),
+        ]
+        panel._source_colors = {"reference": _COLOR_A, "target": _COLOR_B}
+        panel._track_table.append_tracks(_COLOR_A, [reference_audio])
+        panel._track_table.append_tracks(_COLOR_B, [target_audio])
+        panel._output_edit.setText(str(tmp_path / "out.mkv"))
+        panel._update_chapters_from_sources()
+
+        panel._on_audio_sync_done(target_audio.entry_id, reference_audio.entry_id, -320, 0.876)
+        panel._chapter_panel._on_source_changed(1)
+
+        config = panel.collect_config()
+
+        assert config is not None
+        assert config.chapter_overrides is not None
+        assert [round(entry.timecode_s, 2) for entry in config.chapter_overrides] == [0.0, 9.68]
+        panel.close()
+
+    def test_sync_rewrite_toggle_switches_track_between_real_and_offset(self, qt_app):
+        config = AppConfig()
+        config.sync_rewrite_enabled = True
+        panel = RemuxPanel(config)
+        track = _track(1, "audio", file_id="target", codec="EAC3")
+        track.time_shift_ms = 125
+        panel._track_table.append_tracks(_COLOR_A, [track])
+
+        panel._on_sync_rewrite_toggle_requested(track)
+
+        info_item = panel._track_table.item(0, _TrackTable.COL_INFO)
+        assert track.sync_rewrite_mode == "offset"
+        assert info_item is not None
+        assert "Sync offset" in info_item.text()
+
+        panel._on_sync_rewrite_toggle_requested(track)
+
+        assert track.sync_rewrite_mode == ""
+        assert "Sync réelle" in info_item.text()
+        panel.close()
+
     def test_audio_sync_done_resets_reference_source_tracks_and_chapters(self, qt_app, tmp_path):
         panel = RemuxPanel(AppConfig())
         reference_src = tmp_path / "reference.mkv"
@@ -1806,16 +1991,23 @@ class TestRemuxPanelDecisionProfiles:
         from core.profiles.decision import DecisionProfileManager
         from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
 
-        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"))
-        dialog._add_template_rule("language")
-        dialog._match_title.setText("VFQ |")
+        prev_lang = current_language()
+        set_current_language("fra")
+        dialog = None
+        try:
+            dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"))
+            dialog._add_template_rule("language")
+            dialog._match_title.setText("VFQ |")
 
-        with pytest.raises(ValueError):
-            dialog.profile()
-        dialog._refresh_preview()
+            with pytest.raises(ValueError):
+                dialog.profile()
+            dialog._refresh_preview()
 
-        assert "Expression critères invalide" in dialog._preview.toPlainText()
-        dialog.close()
+            assert "Expression critères invalide" in dialog._preview.toPlainText()
+        finally:
+            if dialog is not None:
+                dialog.close()
+            set_current_language(prev_lang)
 
     def test_profile_editor_can_store_generic_alias_variables(self, qt_app, tmp_path):
         from core.profiles.decision import DecisionProfileManager

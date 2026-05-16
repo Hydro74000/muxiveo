@@ -9,6 +9,7 @@ from ui.panels.remux_panel.models import (
     _TRACK_INFO_OFFSET_NEG_COLOR,
     _TRACK_INFO_OFFSET_POS_COLOR,
     _TRACK_INFO_OFFSET_VALUE_ROLE,
+    _TRACK_INFO_SYNC_LABEL_ROLE,
     _normalize_tmdb_manual_title_suggestion,
     _pick_file_color,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "_TRACK_INFO_OFFSET_NEG_COLOR",
     "_TRACK_INFO_OFFSET_POS_COLOR",
     "_TRACK_INFO_OFFSET_VALUE_ROLE",
+    "_TRACK_INFO_SYNC_LABEL_ROLE",
     "_normalize_tmdb_manual_title_suggestion",
     "_pick_file_color",
 ]

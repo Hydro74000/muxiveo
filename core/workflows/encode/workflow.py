@@ -41,7 +41,9 @@ from core.workflows.common.metadata import (
     resolve_global_tags as _common_resolve_global_tags,
 )
 from core.workflows.common.sync_rewrite import (
+    SYNC_REWRITE_MODE_OFFSET,
     SyncRewriteService,
+    normalized_sync_rewrite_mode,
     sync_rewrite_output_token,
 )
 from core.workflows.common.timeline_sync import (
@@ -189,6 +191,7 @@ from core.workflows.encode.planning.offsets import (
     build_offset_specs as _build_offset_specs_plan,
     offset_seconds as _offset_seconds_plan,
     track_offset_ms as _track_offset_ms_plan,
+    track_time_offset_mode_lookup as _track_time_offset_mode_lookup_plan,
     track_time_offset_lookup as _track_time_offset_lookup_plan,
     video_map_arg as _video_map_arg_plan,
 )
@@ -1175,6 +1178,7 @@ class EncodeWorkflow(QObject):
             video_fallback_input=video_fallback_input,
         )
         offset_lookup = dict(plan.offset_lookup)
+        offset_mode_lookup = _track_time_offset_mode_lookup_plan(config)
         rewrite_remap: dict[tuple[Path, int, str], tuple[int, int]] = {}
         next_input_index = int(start_input_index)
         if allow_sync_rewrite and self._sync_rewrite_enabled:
@@ -1203,6 +1207,11 @@ class EncodeWorkflow(QObject):
                     stream_index=int(source_stream_index),
                 )
                 if offset_ms == 0:
+                    continue
+                mode = normalized_sync_rewrite_mode(
+                    offset_mode_lookup.get((track_type, Path(source_path), int(source_stream_index)), "")
+                )
+                if mode == SYNC_REWRITE_MODE_OFFSET:
                     continue
                 codec = ""
                 input_path_obj = Path(str(input_path))

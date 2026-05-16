@@ -24,6 +24,7 @@ from core.workflows.common.sync_rewrite import (
     SyncRewriteService,
     audio_bitrate_kbps_from_display_info,
     normalized_rewrite_codec,
+    sync_rewrite_forced_offset,
 )
 from core.workflows.remux_attachments import extract_attached_pics as _extract_attached_pics_helper
 from core.workflows.remux_mapping import (
@@ -197,7 +198,7 @@ class RemuxRuntimeRunner:
                     rewritten_inputs: list[SyncPreparedInput] = []
                     for mapped_track in mapped_tracks:
                         offset_ms = int(getattr(mapped_track.track, "time_shift_ms", 0) or 0)
-                        if offset_ms == 0:
+                        if offset_ms == 0 or sync_rewrite_forced_offset(mapped_track.track):
                             rewritten_tracks.append(mapped_track)
                             continue
                         prepared = rewrite_service.maybe_materialize(

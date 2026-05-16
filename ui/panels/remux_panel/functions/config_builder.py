@@ -60,11 +60,7 @@ def current_config(panel: "RemuxPanel") -> RemuxConfig | None:
     ]
 
     keep_ch = panel._chapter_panel.keep_chapters()
-    ch_overrides = (
-        panel._chapter_panel.get_chapters()
-        if keep_ch and panel._chapter_panel.is_modified()
-        else None
-    )
+    ch_overrides = panel.current_chapter_overrides()
     ch_source_idx = (
         panel._chapter_panel.selected_source_index() if keep_ch else None
     )

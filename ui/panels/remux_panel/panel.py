@@ -41,6 +41,11 @@ from core.runner import TaskSignals, ToolRunner
 from core.workflows.remux import RemuxWorkflow
 from core.workflows.audio_sync import AudioSyncTrack, AudioSyncWorkflow
 from core.workflows.common.ffmpeg_runtime import ffmpeg_progress_args
+from core.workflows.common.sync_rewrite import (
+    SYNC_REWRITE_MODE_OFFSET,
+    normalized_sync_rewrite_mode,
+    ui_sync_rewrite_can_toggle,
+)
 from core.workflows.remux_models import (
     RemuxConfig,
     SourceInput,
@@ -160,6 +165,7 @@ class RemuxPanel(QWidget):
         self._source_names: dict[str, str] = {}
         self._source_colors: dict[str, str] = {}
         self._source_sync_offsets_ms: dict[str, int] = {}
+        self._auto_sync_entry_ids: set[str] = set()
         self._color_index: int = 0
 
         self._workflow.log_message.connect(
@@ -320,6 +326,8 @@ class RemuxPanel(QWidget):
         self._track_table.order_changed.connect(self._on_track_order_changed)
         self._track_table.extract_requested.connect(self._on_extract_track)
         self._track_table.audio_sync_requested.connect(self._on_audio_sync_requested)
+        self._track_table.auto_sync_cancel_requested.connect(self._on_auto_sync_cancel_requested)
+        self._track_table.sync_rewrite_toggle_requested.connect(self._on_sync_rewrite_toggle_requested)
         content_layout.addWidget(self._track_table)
 
         content_layout.addWidget(_separator())
@@ -566,12 +574,14 @@ class RemuxPanel(QWidget):
             self._cmd_preview.setPlainText("(erreur de construction de la commande)")
 
     def _on_table_changed(self, _item: QTableWidgetItem | None = None) -> None:
+        self._prune_auto_sync_entry_ids()
         self._refresh_audio_sync_buttons()
         self._track_table.refresh_filter()
         self._rebuild_preview()
         self._emit_signals()
 
     def _on_track_order_changed(self) -> None:
+        self._prune_auto_sync_entry_ids()
         self._refresh_audio_sync_buttons()
         self._rebuild_preview()
         self._emit_signals()
@@ -852,6 +862,8 @@ class RemuxPanel(QWidget):
         return reply == QMessageBox.StandardButton.Yes
 
     def _replace_track_table_tracks(self, tracks: list[TrackEntry]) -> None:
+        self._auto_sync_entry_ids.intersection_update({track.entry_id for track in tracks})
+        self._track_table.set_auto_sync_cancelable_entries(self._auto_sync_entry_ids)
         self._track_table.blockSignals(True)
         try:
             self._track_table.setRowCount(0)
@@ -1024,6 +1036,27 @@ class RemuxPanel(QWidget):
     def _refresh_audio_sync_buttons(self) -> None:
         by_source = self._audio_entries_by_source()
         self._track_table.set_audio_sync_available(len(by_source) >= 2)
+        self._track_table.set_auto_sync_cancelable_entries(self._auto_sync_entry_ids)
+
+    def _on_sync_rewrite_toggle_requested(self, entry: TrackEntry) -> None:
+        if not ui_sync_rewrite_can_toggle(entry, enabled=self._config.sync_rewrite_enabled):
+            return
+        current = normalized_sync_rewrite_mode(entry.sync_rewrite_mode)
+        entry.sync_rewrite_mode = "" if current == SYNC_REWRITE_MODE_OFFSET else SYNC_REWRITE_MODE_OFFSET
+        self._track_table.refresh_entry_info(entry.entry_id)
+        self._rebuild_preview()
+        self._emit_signals()
+
+    def _prune_auto_sync_entry_ids(self) -> None:
+        active = {
+            entry.entry_id
+            for entry in self._track_table.current_tracks()
+            if entry.track_type in {"audio", "subtitle"} and int(entry.time_shift_ms or 0) != 0
+        }
+        if self._auto_sync_entry_ids.issubset(active):
+            return
+        self._auto_sync_entry_ids.intersection_update(active)
+        self._track_table.set_auto_sync_cancelable_entries(self._auto_sync_entry_ids)
 
     @staticmethod
     def _audio_sync_family(entry: TrackEntry) -> str | None:
@@ -1100,7 +1133,11 @@ class RemuxPanel(QWidget):
             for entry in entries
         ]
 
-    def _chapter_entries_for_source(self, source_index: int) -> list[ChapterEntry]:
+    def _source_chapter_entries_with_offset(
+        self,
+        source_index: int,
+        offset_ms: int,
+    ) -> list[ChapterEntry]:
         if source_index < 0 or source_index >= len(self._source_files):
             return []
         source = self._source_files[source_index]
@@ -1108,8 +1145,49 @@ class RemuxPanel(QWidget):
             return []
         return self._shift_chapter_entries(
             list(source.info.chapters.entries),
+            offset_ms,
+        )
+
+    def _chapter_entries_for_source(self, source_index: int) -> list[ChapterEntry]:
+        return self._source_chapter_entries_with_offset(
+            source_index,
             self._source_sync_offset_ms_for_index(source_index),
         )
+
+    @staticmethod
+    def _chapter_entries_equal(
+        left: list[ChapterEntry],
+        right: list[ChapterEntry],
+    ) -> bool:
+        if len(left) != len(right):
+            return False
+        return all(
+            abs(float(a.timecode_s) - float(b.timecode_s)) < 0.0005
+            and str(a.name or "") == str(b.name or "")
+            for a, b in zip(left, right, strict=True)
+        )
+
+    def _sync_selected_chapters_after_source_offset_change(
+        self,
+        source_index: int | None,
+        selected_source_index: int | None,
+        old_offset_ms: int,
+        new_offset_ms: int,
+    ) -> None:
+        if (
+            source_index is None
+            or selected_source_index != source_index
+            or old_offset_ms == new_offset_ms
+        ):
+            return
+
+        expected_old = self._source_chapter_entries_with_offset(source_index, old_offset_ms)
+        expected_new = self._source_chapter_entries_with_offset(source_index, new_offset_ms)
+        current = self._chapter_panel.get_chapters()
+        if self._chapter_entries_equal(current, expected_old):
+            self._chapter_panel.reset_chapters(expected_new)
+            return
+        self._chapter_panel.shift_timecodes((new_offset_ms - old_offset_ms) / 1000.0)
 
     def _apply_time_shift_to_source_tracks(self, file_id: str, offset_ms: int) -> bool:
         if not file_id:
@@ -1122,28 +1200,88 @@ class RemuxPanel(QWidget):
                 updated = True
         return updated
 
-    def _apply_source_sync_offset(self, file_id: str, offset_ms: int) -> bool:
+    def _sync_entry_ids_for_file(self, file_id: str) -> set[str]:
+        if not file_id:
+            return set()
+        return {
+            entry.entry_id
+            for entry in self._track_table.current_tracks()
+            if entry.file_id == file_id and entry.track_type in {"audio", "subtitle"}
+        }
+
+    def _file_has_shifted_timeline_tracks(self, file_id: str) -> bool:
+        if not file_id:
+            return False
+        return any(
+            entry.file_id == file_id
+            and entry.track_type in {"audio", "subtitle"}
+            and int(entry.time_shift_ms or 0) != 0
+            for entry in self._track_table.current_tracks()
+        )
+
+    def _refresh_auto_sync_cancel_buttons(self) -> None:
+        self._track_table.set_auto_sync_cancelable_entries(self._auto_sync_entry_ids)
+
+    def _apply_source_sync_offset(
+        self,
+        file_id: str,
+        offset_ms: int,
+    ) -> bool:
         if not file_id:
             return False
 
         offset_ms = int(offset_ms)
+        sync_entry_ids = self._sync_entry_ids_for_file(file_id)
         old_offset_ms = int(self._source_sync_offsets_ms.get(file_id, 0) or 0)
         if offset_ms:
             self._source_sync_offsets_ms[file_id] = offset_ms
+            self._auto_sync_entry_ids.update(sync_entry_ids)
         else:
             self._source_sync_offsets_ms.pop(file_id, None)
+            self._auto_sync_entry_ids.difference_update(sync_entry_ids)
 
         updated = self._apply_time_shift_to_source_tracks(file_id, offset_ms)
+        self._refresh_auto_sync_cancel_buttons()
         source_index = self._source_index_for_file_id(file_id)
         selected_source_index = self._chapter_panel.selected_source_index()
         self._update_chapters_from_sources()
-        if (
-            source_index is not None
-            and selected_source_index == source_index
-            and old_offset_ms != offset_ms
-        ):
-            self._chapter_panel.shift_timecodes((offset_ms - old_offset_ms) / 1000.0)
+        self._sync_selected_chapters_after_source_offset_change(
+            source_index,
+            selected_source_index,
+            old_offset_ms,
+            offset_ms,
+        )
         return updated or source_index is not None
+
+    def _on_auto_sync_cancel_requested(self, entry: TrackEntry) -> None:
+        if entry.track_type not in {"audio", "subtitle"}:
+            return
+        old_offset_ms = int(self._source_sync_offsets_ms.get(entry.file_id, 0) or 0)
+        source_index = self._source_index_for_file_id(entry.file_id)
+        selected_source_index = self._chapter_panel.selected_source_index()
+        if not self._track_table.update_time_shift(entry.entry_id, 0):
+            return
+
+        self._auto_sync_entry_ids.discard(entry.entry_id)
+        if not self._file_has_shifted_timeline_tracks(entry.file_id):
+            self._source_sync_offsets_ms.pop(entry.file_id, None)
+            self._update_chapters_from_sources()
+            self._sync_selected_chapters_after_source_offset_change(
+                source_index,
+                selected_source_index,
+                old_offset_ms,
+                0,
+            )
+        self._refresh_auto_sync_cancel_buttons()
+        self.log_message.emit(
+            "INFO",
+            translate_text(
+                "Synchronisation annulée pour la piste #{idx}.",
+                idx=entry.mkv_tid,
+            ),
+        )
+        self._rebuild_preview()
+        self._emit_signals()
 
     def _on_audio_sync_requested(self, entry: TrackEntry) -> None:
         if entry.track_type != "audio":
@@ -1238,7 +1376,10 @@ class RemuxPanel(QWidget):
 
             if reference_file_id and reference_file_id != target_file_id:
                 self._apply_source_sync_offset(reference_file_id, 0)
-            if self._apply_source_sync_offset(target_file_id, offset_ms):
+            if self._apply_source_sync_offset(
+                target_file_id,
+                offset_ms,
+            ):
                 offset_label = f"{int(offset_ms):+d}"
                 confidence_label = f"{float(confidence):.2f}"
                 self.log_message.emit(

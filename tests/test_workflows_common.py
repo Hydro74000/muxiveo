@@ -170,7 +170,18 @@ class TestCommonSyncRewrite:
         assert ui_sync_rewrite_label_for_track(sub, enabled=False) == ""
         assert ui_sync_rewrite_label_for_track(sub, enabled=True) == "Sync réelle"
         assert ui_sync_rewrite_label_for_track(audio, enabled=True) == "Sync réelle · audio réencodé"
-        assert ui_sync_rewrite_label_for_track(atmos, enabled=True) == "Offset"
+        assert ui_sync_rewrite_label_for_track(atmos, enabled=True) == "Sync offset"
+
+    def test_ui_label_can_force_standard_offset_for_rewrite_eligible_track(self):
+        audio = SimpleNamespace(
+            track_type="audio",
+            codec="eac3",
+            time_shift_ms=120,
+            display_info="5.1  640 kbps",
+            sync_rewrite_mode="offset",
+        )
+
+        assert ui_sync_rewrite_label_for_track(audio, enabled=True) == "Sync offset"
 
     def test_audio_bitrate_is_parsed_from_display_info(self):
         assert audio_bitrate_kbps_from_display_info("5.1  640 kbps") == 640

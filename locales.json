@@ -1563,6 +1563,18 @@
     "fra": "Synchronisation audio améliorée appliquée : {offset} ms (confiance {confidence}).",
     "eng": "Enhanced audio sync applied: {offset} ms (confidence {confidence})."
   },
+  "Synchronisation annulée pour la piste #{idx}.": {
+    "fra": "Synchronisation annulée pour la piste #{idx}.",
+    "eng": "Sync cancelled for track #{idx}."
+  },
+  "Annuler la synchro": {
+    "fra": "Annuler la synchro",
+    "eng": "Cancel sync"
+  },
+  "Cliquer pour basculer entre sync réelle et sync offset": {
+    "fra": "Cliquer pour basculer entre sync réelle et sync offset",
+    "eng": "Click to toggle between real sync and sync offset"
+  },
   "Extraction impossible": {
     "fra": "Extraction impossible",
     "eng": "Extraction unavailable"

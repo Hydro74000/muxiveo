@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from core.lang_tags import Rfc5646LanguageTags
+from core.workflows.common.sync_rewrite import normalized_sync_rewrite_mode
 from core.workflows.remux_models import RemuxConfig, TrackEntry
 
 
@@ -521,6 +522,8 @@ def apply_track_spec(track: TrackEntry, spec: Mapping[str, Any]) -> None:
                 setattr(track, f"flag_{name}", bool(value))
     if "time_shift_ms" in spec:
         track.time_shift_ms = int(spec["time_shift_ms"] or 0)
+    if "sync_rewrite_mode" in spec:
+        track.sync_rewrite_mode = normalized_sync_rewrite_mode(str(spec["sync_rewrite_mode"] or ""))
 
 
 def _flags_payload(track: TrackEntry) -> dict[str, bool]:
@@ -580,6 +583,8 @@ def remux_config_to_exact_job(
             "flags": _flags_payload(track),
             "time_shift_ms": int(track.time_shift_ms or 0),
         }
+        if track.sync_rewrite_mode:
+            payload["sync_rewrite_mode"] = track.sync_rewrite_mode
         if track.is_new:
             payload["codec"] = track.codec
             source_track = next(

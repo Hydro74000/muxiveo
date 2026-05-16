@@ -3670,6 +3670,50 @@ class TestEncodeRuntimeMultiSourceSync:
         rewrite_kwargs = cast(dict, captured["rewrite_kwargs"])
         assert rewrite_kwargs["preserve_source_audio_params"] is True
 
+    def test_runtime_single_pass_sync_rewrite_respects_forced_standard_offset(self, tmp_path, monkeypatch):
+        src = tmp_path / "main.mkv"
+        out = tmp_path / "out.mkv"
+        src.touch()
+
+        wf = _make_workflow()
+        wf.set_sync_rewrite_enabled(True)
+        cfg = _make_config(
+            src,
+            out,
+            video=_make_video_settings(codec="libx265"),
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy", source_path=src)],
+            copy_subtitles=False,
+            track_time_offsets=[
+                TrackTimeOffset(
+                    track_type="audio",
+                    source_path=src,
+                    stream_index=1,
+                    offset_ms=125,
+                    sync_rewrite_mode="offset",
+                ),
+            ],
+        )
+
+        class FakeSyncRewriteService:
+            def __init__(self, **_kwargs):
+                pass
+
+            def maybe_materialize(self, **_kwargs):
+                raise AssertionError("forced standard offset must not use sync rewrite")
+
+        monkeypatch.setattr(
+            "core.workflows.encode.workflow.SyncRewriteService",
+            FakeSyncRewriteService,
+        )
+
+        with patch.object(wf, "_prepare_multisource_sync", return_value=({}, [], None, False)):
+            cmd, live, cleanup = wf._build_runtime_single_pass_with_sync(cfg)
+
+        assert live is None
+        assert cleanup == []
+        assert "-itsoffset" in cmd
+        assert cmd[cmd.index("-itsoffset") + 1] == "0.125"
+
     def test_runtime_two_pass_disables_live_and_applies_sync_to_pass2_only(self, tmp_path):
         src_main = tmp_path / "main.mkv"
         src_alt = tmp_path / "alt.mkv"
