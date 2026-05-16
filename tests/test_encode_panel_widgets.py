@@ -932,7 +932,9 @@ class TestEncodePanelDynamicHdrDefaults:
         panel.close()
 
     def test_h264_precheck_forces_8bit_and_logs_switch(self, qt_app):
-        panel = EncodePanel(AppConfig())
+        cfg = AppConfig()
+        cfg.language = "fra"
+        panel = EncodePanel(cfg)
         entry = _video_entry(0)
         entry.entry_id = "video-h264-8bit"
         info = _file_info(_PATH_A, [_video_track(0, HDRType.NONE, bit_depth=10)])
