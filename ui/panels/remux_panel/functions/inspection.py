@@ -101,7 +101,7 @@ def apply_inspection(panel: "RemuxPanel", file_id: str, info: FileInfo) -> None:
     panel._update_chapters_from_sources()
 
     if panel._source_files[0].id == file_id and not panel._output_edit.text().strip():
-        default_out = panel._config.output_dir / f"{info.path.stem}-MRecode.mkv"
+        default_out = panel._config.output_dir / f"{info.path.stem}-MVO.mkv"
         panel._output_edit.setText(str(default_out))
         if not panel._file_title_edit.text().strip():
             panel._file_title_edit.setText(info.title)

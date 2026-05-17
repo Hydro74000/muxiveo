@@ -110,3 +110,8 @@ ignore.md
 mypy.ini
 project_map.html
 tools/*
+
+# Ignore all .md files except READMEs
+*.md
+!README*.md
+!Readme*.md

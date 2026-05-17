@@ -740,7 +740,7 @@ class FfmpegTimelineSync:
                     target=_pump_stdout_to_named_pipe,
                     args=(proc, handle, pipe_name),
                     daemon=True,
-                    name=f"mrecode-pipe-{i}",
+                    name=f"muxiveo-pipe-{i}",
                 )
                 thread.start()
                 threads.append(thread)
