@@ -106,3 +106,7 @@ config.ini
 .claude/
 Mediarecode-Setup*.exe
 ignore.md
+.codex
+mypy.ini
+project_map.html
+tools/*
