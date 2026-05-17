@@ -1,7 +1,8 @@
 # Rebrand Mediarecode vers Muxiveo
 
 ## Summary
-- Créer `rebrand` depuis `origin/syncrewrite`, préserver les changements locaux actuels hors rebrand, puis pousser la branche sur le remote GitHub `git@github.com:Hydro74000/Muxiveo.git`.
+- Créer `rebrand` depuis `origin/syncrewrite` et préserver les changements locaux actuels hors rebrand.
+- Ne pas recréer le dépôt GitHub temporaire `Hydro74000/Muxiveo` : le renommage du dépôt `Hydro74000/mediarecode` sera fait manuellement plus tard afin de conserver les redirections GitHub automatiques.
 - Faire une rupture nette : aucun alias public `Mediarecode`, `mediarecode`, `MEDIARECODE`, `mediarecode-cli` n'est conservé dans le code, l'UI, les docs, les artefacts ou la CI.
 - Utiliser `Muxiveo` avec majuscule partout où c'est techniquement possible ; utiliser une forme minuscule uniquement quand une plateforme l'impose réellement.
 - Créer `rebrand.md` à la racine et le maintenir comme fichier de suivi/source de vérité du plan.
@@ -18,6 +19,7 @@
 - Mettre à jour l'UI Qt : titre fenêtre, sidebar/logo, tooltips, messages de démarrage/erreur, `locales.json`, panneaux de settings, textes setup/launcher et boîtes Windows.
 - Mettre à jour packaging Linux/Windows/macOS : PyInstaller names, AppDir, desktop file, AppRun, AppStream, icônes, NSIS, registre Windows, Controlled Folder Access, MSIX manifest, Info.plist, DMG, Homebrew formula.
 - Mettre à jour documentation et website refs : README, docs CLI/profils, exemples JSON, commandes d'installation, Homebrew, liens GitHub vers `Hydro74000/Muxiveo`.
+- Mettre à jour le dépôt site `mediarecode_web` : constantes PHP, URL publique `https://muxiveo.fr`, liens GitHub, commandes d'installation, Privacy Policy, assets, captures, cookies/localStorage, build `dist_cloudflare`.
 - Mettre à jour `rebrand.md` à chaque ajustement du plan ou décision de rebrand, avant de modifier l'implémentation correspondante.
 
 ## CI Et Artefacts
@@ -32,9 +34,11 @@
 - Lancer les tests ciblés : package, launcher, startup paths, setup/config, logs, UI startup/progress, CLI headless, Homebrew formula, i18n, Matroska header/remux.
 - Lancer `pytest` complet si possible, sinon valider via la matrice GitHub Actions au push de `rebrand`.
 - Contrôler les artefacts CI : noms `Muxiveo*`, aucune création de GitHub Release, aucun upload vers release/tap/store depuis `rebrand`.
+- Contrôler le site `mediarecode_web` : `git grep`/`find` sans ancien nom, lint PHP via distrobox, compilation du build script Python, régénération `dist_cloudflare` avec les assets `Muxiveo*`.
 
 ## Assumptions
 - La branche de base est `origin/syncrewrite`.
-- Le repo visible est `Hydro74000/Muxiveo` avec M majuscule.
+- Le repo cible après renommage manuel est `Hydro74000/Muxiveo` avec M majuscule.
+- Le dépôt GitHub final sera obtenu par renommage manuel du dépôt existant, pas par création d'un nouveau dépôt.
 - `Muxiveo` prend la majuscule partout sauf contrainte réelle de plateforme.
 - Aucune migration automatique des anciennes configs/utilisateurs n'est prévue.
