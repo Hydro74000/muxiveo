@@ -663,8 +663,8 @@ class FfmpegTimelineSync:
                         f"file_index={src_file_index}"
                     )
 
-                # Exemple final: \\.\pipe\mediarecode_sync_<uuid>
-                pipe_name = rf"\\.\pipe\mediarecode_sync_{uuid.uuid4().hex}"
+                # Exemple final: \\.\pipe\Muxiveo_sync_<uuid>
+                pipe_name = rf"\\.\pipe\Muxiveo_sync_{uuid.uuid4().hex}"
                 handle = _create_named_pipe(pipe_name)
                 handles.append(handle)
                 pipe_paths.append(pipe_name)

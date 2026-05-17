@@ -1,20 +1,20 @@
-# Mediarecode CLI
+# Muxiveo CLI
 
-`mediarecode-cli` est le point d'entrée headless de Mediarecode. Il ne lance pas l'interface graphique et reste strictement non interactif.
+`Muxiveo-cli` est le point d'entrée headless de Muxiveo. Il ne lance pas l'interface graphique et reste strictement non interactif.
 
 ## Lancement
 
 ```bash
 python3 main.py --cli --help
-./mediarecode-cli --help
+./Muxiveo-cli --help
 ```
 
 Dans les builds packages, le CLI utilise le même bundle que l'application GUI :
 
-- Linux/AppImage : entrée `mediarecode-cli` à côté de `mediarecode`;
-- Windows : entrée `mediarecode-cli.exe`;
-- macOS : entrée `mediarecode-cli` dans `Mediarecode.app/Contents/MacOS/`;
-- fallback commun : `mediarecode --cli ...`.
+- Linux/AppImage : entrée `Muxiveo-cli` à côté de `Muxiveo`;
+- Windows : entrée `Muxiveo-cli.exe`;
+- macOS : entrée `Muxiveo-cli` dans `Muxiveo.app/Contents/MacOS/`;
+- fallback commun : `Muxiveo --cli ...`.
 
 Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans initialiser l'interface graphique.
 
@@ -37,26 +37,26 @@ Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans ini
 Exemples :
 
 ```bash
-mediarecode-cli inspect source.mkv
-mediarecode-cli inspect source.mkv --config-template --output sortie.mkv
-mediarecode-cli schema --output mediarecode-cli.schema.json
-mediarecode-cli schema --version decision-profile
-mediarecode-cli preview --config docs/cli/middle.json
-mediarecode-cli preview --config docs/cli/middle.json --json
-mediarecode-cli validate --config docs/cli/middle.json --json
-mediarecode-cli remux -i source.mkv -o sortie.mkv
-mediarecode-cli remux --config docs/cli/middle.json --dry-run
-mediarecode-cli batch --template docs/cli/complexe-toutes-options-template.json --batch docs/cli/complexe-toutes-options-batch.json --force
-mediarecode-cli batch --template template.json --batch batch.json --dry-run --log-format jsonl
-mediarecode-cli batch --template template.json --batch batch.json --summary summary.json
-mediarecode-cli batch --template exact-job.json --input-dir "Serie/Saison 01" --output-dir "out/Saison 01" --dry-run
-mediarecode-cli batch --template exact-job.json --input-dir "Serie" --recursive --include "*.mkv" --exclude "*sample*" --output-dir "out"
-mediarecode-cli batch --template exact-job.json --input-dir "Serie" --recursive --output-dir "out" --auto-tmdb
-mediarecode-cli batch --template exact-job.json --input-dir "Serie" --recursive --output-dir "out" --auto-tmdb \
+Muxiveo-cli inspect source.mkv
+Muxiveo-cli inspect source.mkv --config-template --output sortie.mkv
+Muxiveo-cli schema --output Muxiveo-cli.schema.json
+Muxiveo-cli schema --version decision-profile
+Muxiveo-cli preview --config docs/cli/middle.json
+Muxiveo-cli preview --config docs/cli/middle.json --json
+Muxiveo-cli validate --config docs/cli/middle.json --json
+Muxiveo-cli remux -i source.mkv -o sortie.mkv
+Muxiveo-cli remux --config docs/cli/middle.json --dry-run
+Muxiveo-cli batch --template docs/cli/complexe-toutes-options-template.json --batch docs/cli/complexe-toutes-options-batch.json --force
+Muxiveo-cli batch --template template.json --batch batch.json --dry-run --log-format jsonl
+Muxiveo-cli batch --template template.json --batch batch.json --summary summary.json
+Muxiveo-cli batch --template exact-job.json --input-dir "Serie/Saison 01" --output-dir "out/Saison 01" --dry-run
+Muxiveo-cli batch --template exact-job.json --input-dir "Serie" --recursive --include "*.mkv" --exclude "*sample*" --output-dir "out"
+Muxiveo-cli batch --template exact-job.json --input-dir "Serie" --recursive --output-dir "out" --auto-tmdb
+Muxiveo-cli batch --template exact-job.json --input-dir "Serie" --recursive --output-dir "out" --auto-tmdb \
     --output-template "{title}.S{season}E{episode}.{episode_title}-{group}"
-mediarecode-cli preview --profile profil.json -i source.mkv --json
-mediarecode-cli run --profile profil.json -i source.mkv -o sortie.mkv
-mediarecode-cli batch --profile profil.json --input-dir "Serie" --recursive --output-dir "out" --auto-tmdb --dry-run
+Muxiveo-cli preview --profile profil.json -i source.mkv --json
+Muxiveo-cli run --profile profil.json -i source.mkv -o sortie.mkv
+Muxiveo-cli batch --profile profil.json --input-dir "Serie" --recursive --output-dir "out" --auto-tmdb --dry-run
 ```
 
 ## Contrat JSON
@@ -66,7 +66,7 @@ Les deux contrats publics principaux sont :
 - `kind: "exact-job", version: 1` pour un traitement strict;
 - `kind: "decision-profile", version: 1` pour l'automapping low-code.
 
-Le schéma peut être exporté avec `mediarecode-cli schema`.
+Le schéma peut être exporté avec `Muxiveo-cli schema`.
 
 Job minimal :
 
@@ -180,14 +180,14 @@ Une condition qui contient à la fois `value` et `expr` est invalide.
 Commandes :
 
 ```bash
-mediarecode-cli validate --profile profil.json
-mediarecode-cli preview --profile profil.json -i source.mkv --json
-mediarecode-cli run --profile profil.json -i source.mkv -o sortie.mkv
-mediarecode-cli batch --profile profil.json --input-dir "Serie" --recursive --output-dir "out"
+Muxiveo-cli validate --profile profil.json
+Muxiveo-cli preview --profile profil.json -i source.mkv --json
+Muxiveo-cli run --profile profil.json -i source.mkv -o sortie.mkv
+Muxiveo-cli batch --profile profil.json --input-dir "Serie" --recursive --output-dir "out"
 ```
 
 `--profile` accepte soit un chemin complet, soit le nom d'un profil enregistré
-dans `<dossier de config Mediarecode>/profiles/decision/`. L'extension `.json`
+dans `<dossier de config Muxiveo>/profiles/decision/`. L'extension `.json`
 est optionnelle : `--profile BestOfAll` cherchera aussi `BestOfAll.json`.
 
 Keywords de renommage disponibles :
@@ -320,7 +320,7 @@ Si `id` ou `tmdb_id` est présent, cet ID est utilisé. Sinon, le premier résul
 
 En CLI, `--auto-tmdb` active la recherche TMDB sans modifier le JSON. La
 requête est déduite du nom de fichier, le premier résultat est retenu, et
-Mediarecode détecte automatiquement `S01E02` ou `01x02` pour renseigner saison
+Muxiveo détecte automatiquement `S01E02` ou `01x02` pour renseigner saison
 et épisode. `--tmdb` reste disponible comme alias historique.
 
 Options utiles :
@@ -329,20 +329,20 @@ Options utiles :
 |--------|-------|
 | `--auto-tmdb` | cherche TMDB et applique tags + titre conteneur + cover |
 | `--tmdb-id ID` | utilise un ID TMDB précis au lieu de choisir le premier résultat |
-| `--tmdb-apikey KEY` | surcharge la clé API TMDB (priorité sur la config Mediarecode et le JSON job) |
+| `--tmdb-apikey KEY` | surcharge la clé API TMDB (priorité sur la config Muxiveo et le JSON job) |
 | `--no-cover` | applique les tags TMDB mais n'ajoute pas la cover |
 | `--no-attach` | n'inclut aucun attachment source, aucun extra attachment, ni cover TMDB |
 
-Sans `--tmdb-apikey`, la clé est lue dans `~/.config/mediarecode/Mediarecode.conf`
+Sans `--tmdb-apikey`, la clé est lue dans `~/.config/Muxiveo/config.ini`
 (`metadata/tmdb_api_key` ou `tmdb_bearer_token`). À défaut, la variable
-d'environnement `MEDIARECODE_TMDB_BEARER_TOKEN` puis un token Bearer embarqué
+d'environnement `MUXIVEO_TMDB_BEARER_TOKEN` puis un token Bearer embarqué
 servent de repli (parité GUI), donc `--auto-tmdb` fonctionne sans configuration
 préalable.
 
 Exemple batch :
 
 ```bash
-mediarecode-cli batch \
+Muxiveo-cli batch \
   --template exact-job.json \
   --input-dir "Serie" \
   --recursive \
@@ -353,7 +353,7 @@ mediarecode-cli batch \
 Avec un profil décisionnel :
 
 ```bash
-mediarecode-cli batch \
+Muxiveo-cli batch \
   --profile BestOfAll \
   --input-dir "Serie" \
   --recursive \
@@ -384,7 +384,7 @@ Le fichier batch est validé avant le premier job. Les entrées de `jobs` ou
 Le batch peut aussi créer les jobs depuis un dossier :
 
 ```bash
-mediarecode-cli batch \
+Muxiveo-cli batch \
   --template exact-job.json \
   --input-dir "Serie" \
   --recursive \
@@ -424,12 +424,12 @@ parsing du nom de fichier source. L'option est disponible sur toutes les
 sous-commandes.
 
 ```bash
-mediarecode-cli batch \
+Muxiveo-cli batch \
   --template exact-job.json \
   --input-dir "Serie" --recursive --output-dir "out" --auto-tmdb \
   --output-template "{title}.S{season}E{episode}.{episode_title}.{year}-{group}"
 
-mediarecode-cli batch \
+Muxiveo-cli batch \
   --profile BestOfAll --input-dir "Films" --output-dir "out" \
   --output-template "{title:release}.{year}.{audio-multi}.{audio-fr-tag}.{audio-codec-release:best}.{audio-channels:best}.{audio-immersive}.{video-source}.{video-resolution:best}.{video-10bit}.{video-hdr:best}.{video-dolby-vision}.{video-codec-release:best}-{group}"
 ```
@@ -555,8 +555,8 @@ d'étape, fin de tâche, erreurs) le sont. Pour suivre la progression ffmpeg en
 direct, ajouter `--verbose` :
 
 ```bash
-mediarecode-cli remux -i source.mkv -o sortie.mkv --verbose
-mediarecode-cli batch --template t.json --input-dir Serie --output-dir out --verbose
+Muxiveo-cli remux -i source.mkv -o sortie.mkv --verbose
+Muxiveo-cli batch --template t.json --input-dir Serie --output-dir out --verbose
 ```
 
 `--verbose` s'applique à toutes les sous-commandes (`remux`, `run`, `batch`,

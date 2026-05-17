@@ -1,10 +1,10 @@
-# 🎬 Mediarecode
+# 🎬 Muxiveo
 
 FULL Vibecoded App for Proof of Concept - no human code, only human prompts and eyes.
 
 Interface graphique pour préparer des fichiers vidéo, remuxer sans perte, réencoder avec `ffmpeg` (et `NVencC` en option pour NVidia), et fusionner des métadonnées Dolby Vision / HDR10+.
 
-Cette documentation correspond à **Mediarecode v3.0.0**.
+Cette documentation correspond à **Muxiveo v3.0.0**.
 
 ## Sommaire
 
@@ -67,17 +67,17 @@ L'appimage AllInc inclue toutes les dépendances.
 
 | Cible | Binaire | 
 |-------|----------|
-| AppImage Linux | Mediarecode-x86_64_allinc-<version>.AppImage` + `dist/releases/Mediarecode-x86_64_allinc-<version>.AppImage.zsync` |
-| Package macOS natif | `Mediarecode-<version>.dmg` |
-| Installateur Windows | `dist/releases/Mediarecode-Setup-<version>.exe` |
-| Release Homebrew Linux/macOS (preview)| `brew tap Hydro74000/mediarecode && brew install mediarecode` |
+| AppImage Linux | Muxiveo-x86_64_allinc-<version>.AppImage` + `dist/releases/Muxiveo-x86_64_allinc-<version>.AppImage.zsync` |
+| Package macOS natif | `Muxiveo-<version>.dmg` |
+| Installateur Windows | `dist/releases/Muxiveo-Setup-<version>.exe` |
+| Release Homebrew Linux/macOS (preview)| `brew tap Hydro74000/Muxiveo && brew install Muxiveo` |
 
 
 ### Cloner le dépôt
 
 ```bash
 git clone <url-du-depot>
-cd mediarecode
+cd Muxiveo
 ```
 
 ### Installer les dépendances et les outils
@@ -92,14 +92,14 @@ Le script `setup.py` installe automatiquement :
 | Notes plateforme | Debian/Ubuntu via `apt`, Fedora/RHEL via `dnf`, macOS via Homebrew, Windows via `winget` + binaires locaux |
 
 > `setup.py` renseigne `config.ini` avec les chemins détectés.  
-> Emplacement de `config.ini` : Linux/macOS `~/.config/mediarecode/config.ini` (XDG), Windows dev `./config.ini`, Windows packagé `%APPDATA%\mediarecode\config.ini`.
+> Emplacement de `config.ini` : Linux/macOS `~/.config/Muxiveo/config.ini` (XDG), Windows dev `./config.ini`, Windows packagé `%APPDATA%\Muxiveo\config.ini`.
 
 | Plateforme | Commande | Détails |
 |------------|----------|---------|
 | Linux Debian / Ubuntu | `python3 setup.py` | installe `ffmpeg`, `mediainfo` via `apt`, puis `dovi_tool` et `hdr10plus_tool` depuis GitHub |
 | Linux Fedora / RHEL | `python3 setup.py` | active RPM Fusion si nécessaire, installe `ffmpeg`, `mediainfo` via `dnf`, puis les outils GitHub |
 | macOS | `python3 setup.py` | installe `ffmpeg`, `mediainfo` via Homebrew, puis `dovi_tool` et `hdr10plus_tool` |
-| Windows | `py setup.py` | installe `ffmpeg` et `mediainfo` via `winget`, place `dovi_tool` et `hdr10plus_tool` dans `mediarecode\tools`, puis renseigne `config.ini` avec les chemins détectés |
+| Windows | `py setup.py` | installe `ffmpeg` et `mediainfo` via `winget`, place `dovi_tool` et `hdr10plus_tool` dans `Muxiveo\tools`, puis renseigne `config.ini` avec les chemins détectés |
 
 Options utiles du script :
 
@@ -122,14 +122,14 @@ Sous Windows, utilisez `py main.py`.
 
 ### Installation via Homebrew
 
-Une distribution Homebrew est prévue pour Linux et macOS via le tap `Hydro74000/mediarecode`.
+Une distribution Homebrew est prévue pour Linux et macOS via le tap `Hydro74000/Muxiveo`.
 
 ```bash
-brew tap Hydro74000/mediarecode
-brew install mediarecode
+brew tap Hydro74000/Muxiveo
+brew install Muxiveo
 ```
 
-Sur Linux, la formule installe l’AppImage all-inclusive. Sur macOS, elle installe `Mediarecode.app`, déclare `ffmpeg` et `mediainfo` comme dépendances Homebrew, et embarque `dovi_tool` / `hdr10plus_tool`.
+Sur Linux, la formule installe l’AppImage all-inclusive. Sur macOS, elle installe `Muxiveo.app`, déclare `ffmpeg` et `mediainfo` comme dépendances Homebrew, et embarque `dovi_tool` / `hdr10plus_tool`.
 
 ## Interface et usage
 
@@ -186,7 +186,7 @@ Synchronisation audio automatisée en multi-source :
 
 - disponible lorsqu'un projet contient des pistes audio issues d'au moins deux sources différentes
 - pensée pour aligner une piste audio cible sur une source de référence, par exemple VF/VO provenant d'un autre fichier, autre édition, autre plateforme ou autre remux
-- accessible depuis le bouton de synchronisation dans la ligne d'une piste audio ; Mediarecode propose alors les pistes 5.1/7.1 compatibles des autres sources comme références
+- accessible depuis le bouton de synchronisation dans la ligne d'une piste audio ; Muxiveo propose alors les pistes 5.1/7.1 compatibles des autres sources comme références
 - analyse le contenu réel avec `ffmpeg` / `ffprobe`, extrait une signature depuis les canaux surround/LFE, détecte les moments clés communs entre la piste cible et les pistes de la source de référence, puis applique automatiquement l'offset signé en millisecondes
 - affiche l'offset dans la colonne Info (`Δt +125 ms`, `Δt -320 ms`, etc.) et conserve cette valeur dans la configuration de remux
 - remet la piste de référence à `0 ms` quand un offset est appliqué à la cible, afin de garder une seule piste déplacée et une timeline plus lisible
@@ -206,7 +206,7 @@ Backend remux `ffmpeg` (par défaut) :
 - télécharge la cover TMDB différée juste avant l'exécution (dans le dossier temporaire du process), puis nettoie ce dossier en fin de run
 - purge explicitement les balises techniques source `ENCODER` et `CREATION_TIME` avant écriture des métadonnées de sortie
 - n'écrit plus le tag libre `MUXING_APPLICATION` via `-metadata`
-- applique un patch binaire post-action (sans MKVToolNix) sur le header Matroska pour écrire **MuxingApp** (`0x4D80`) à la valeur unique `Mediarecode {version}` ; **WritingApp** (`0x5741`) reste intact
+- applique un patch binaire post-action (sans MKVToolNix) sur le header Matroska pour écrire **MuxingApp** (`0x4D80`) à la valeur unique `Muxiveo {version}` ; **WritingApp** (`0x5741`) reste intact
 
 Limites connues du backend remux `ffmpeg` :
 
@@ -230,7 +230,7 @@ Ergonomie du panneau :
 
 ### Profils
 
-Les profils permettent de réutiliser un traitement sans devoir refaire les mêmes choix à la main sur chaque fichier. Mediarecode distingue deux usages.
+Les profils permettent de réutiliser un traitement sans devoir refaire les mêmes choix à la main sur chaque fichier. Muxiveo distingue deux usages.
 
 | Besoin | Format | Usage |
 |--------|--------|-------|
@@ -255,7 +255,7 @@ Un profil décisionnel `version: 1` peut couvrir :
 Les profils GUI sont enregistrés ici :
 
 ```text
-<dossier de config Mediarecode>/profiles/decision/
+<dossier de config Muxiveo>/profiles/decision/
 ```
 
 #### Éditeur low-code
@@ -297,7 +297,7 @@ Exemple : pour une piste audio française en EAC3, avec Atmos si disponible :
 - codec `EAC3` : obligatoire
 - keyword préféré `{atmos}` : bonus si une piste Atmos existe
 
-Si aucune piste Atmos n'existe, Mediarecode peut quand même garder la meilleure piste française EAC3.
+Si aucune piste Atmos n'existe, Muxiveo peut quand même garder la meilleure piste française EAC3.
 
 #### Expressions de critères
 
@@ -338,7 +338,7 @@ La portée détermine combien de pistes une règle va modifier.
 | `first` | choisit la première piste compatible dans l'ordre des sources | faire confiance à l'ordre du fichier source |
 | `all` | applique la règle à toutes les pistes compatibles | renommer toutes les pistes audio, désactiver tous les commentaires, tagger tous les sous-titres forcés |
 
-`best` est le choix le plus courant pour une sélection intelligente. Le moteur additionne les points des critères compatibles : langue, codec, canaux, Atmos/DTS:X, flags, résolution, HDR, etc. S'il y a une égalité impossible à départager, le GUI le signale dans l'aperçu. Pour la vidéo, si plusieurs pistes ont exactement le même score, Mediarecode garde la première source/index.
+`best` est le choix le plus courant pour une sélection intelligente. Le moteur additionne les points des critères compatibles : langue, codec, canaux, Atmos/DTS:X, flags, résolution, HDR, etc. S'il y a une égalité impossible à départager, le GUI le signale dans l'aperçu. Pour la vidéo, si plusieurs pistes ont exactement le même score, Muxiveo garde la première source/index.
 
 `first` est plus simple : il prend la première piste compatible. C'est pratique quand les fichiers sont toujours construits pareil, par exemple “prendre la première audio française”.
 
@@ -346,7 +346,7 @@ La portée détermine combien de pistes une règle va modifier.
 
 #### Écriture et conflits
 
-Si deux règles écrivent le même champ d'une même piste, Mediarecode utilise le **mode d'écriture** de la règle :
+Si deux règles écrivent le même champ d'une même piste, Muxiveo utilise le **mode d'écriture** de la règle :
 
 - **Priorité** : mode recommandé. La règle la plus prioritaire gagne pour le champ concerné. Les autres règles peuvent toujours écrire d'autres champs.
 - **Remplacer** : la règle écrase la valeur déjà proposée, même si une règle plus prioritaire est passée avant.
@@ -462,7 +462,7 @@ Exemples :
 - `{lang_name} {codec} {channels} {flag_forced}` -> `French PGS Forced`
 - `{lang_name} {codec_raw} {channels} {audio_object}` -> `French EAC3 5.1 Atmos`
 
-Si une valeur manque, Mediarecode l'omet et nettoie les espaces ou séparateurs inutiles.
+Si une valeur manque, Muxiveo l'omet et nettoie les espaces ou séparateurs inutiles.
 
 Keywords disponibles au premier lot :
 
@@ -491,17 +491,17 @@ Depuis le GUI, **Appliquer profil** charge un profil enregistré, affiche un ape
 En CLI :
 
 ```bash
-mediarecode-cli validate --profile profil.json
-mediarecode-cli preview --profile profil.json -i source.mkv --json
-mediarecode-cli run --profile profil.json -i source.mkv -o sortie.mkv
+Muxiveo-cli validate --profile profil.json
+Muxiveo-cli preview --profile profil.json -i source.mkv --json
+Muxiveo-cli run --profile profil.json -i source.mkv -o sortie.mkv
 ```
 
-Vous pouvez donner un chemin complet ou simplement le nom d'un profil sauvegardé dans le dossier utilisateur. L'extension `.json` est optionnelle : `--profile BestOfAll` cherchera aussi `BestOfAll.json` dans `<dossier de config Mediarecode>/profiles/decision/`.
+Vous pouvez donner un chemin complet ou simplement le nom d'un profil sauvegardé dans le dossier utilisateur. L'extension `.json` est optionnelle : `--profile BestOfAll` cherchera aussi `BestOfAll.json` dans `<dossier de config Muxiveo>/profiles/decision/`.
 
 En batch dossier :
 
 ```bash
-mediarecode-cli batch \
+Muxiveo-cli batch \
   --profile profil.json \
   --input-dir "Serie" \
   --recursive \
@@ -521,10 +521,10 @@ La CLI n'ouvre pas de dialogue interactif. Si un conflit ou une ambiguïté ne p
 Il est adapté aux épisodes ou fichiers construits de la même façon :
 
 ```bash
-mediarecode-cli validate --config exact-job.json
-mediarecode-cli preview --config exact-job.json
-mediarecode-cli run --config exact-job.json
-mediarecode-cli batch --template exact-job.json --input-dir "Serie" --output-dir "out"
+Muxiveo-cli validate --config exact-job.json
+Muxiveo-cli preview --config exact-job.json
+Muxiveo-cli run --config exact-job.json
+Muxiveo-cli batch --template exact-job.json --input-dir "Serie" --output-dir "out"
 ```
 
 Utilisez un exact job quand la structure des sources est stable. Utilisez un profil décisionnel quand les sources varient mais que vos décisions restent les mêmes.
@@ -591,7 +591,7 @@ Les tags de langue saisis (pistes audio, sous-titres) utilisent des codes RFC 56
 
 L'application résout ses paramètres dans cet ordre :
 
-1. `config.ini` (Linux/macOS : `~/.config/mediarecode/config.ini` ; Windows dev : racine du projet ; Windows packagé : `%APPDATA%\mediarecode\config.ini`)
+1. `config.ini` (Linux/macOS : `~/.config/Muxiveo/config.ini` ; Windows dev : racine du projet ; Windows packagé : `%APPDATA%\Muxiveo\config.ini`)
 2. les valeurs persistées par l'interface (`QSettings`)
 3. les valeurs par défaut internes
 
@@ -601,14 +601,14 @@ Sous Windows, `setup.py` et le démarrage de l'application peuvent auto-détecte
 
 | Paramètre | Défaut | Description |
 |-----------|--------|-------------|
-| `work_dir` | `/tmp/mediarecode_work` sur Linux/macOS, `%TEMP%\mediarecode_work` sur Windows | dossier des fichiers temporaires |
+| `work_dir` | `/tmp/Muxiveo_work` sur Linux/macOS, `%TEMP%\Muxiveo_work` sur Windows | dossier des fichiers temporaires |
 | `output_dir` | dossier Vidéos de l'OS | dossier de sortie par défaut |
 | `theme` | `dark` | thème visuel (`dark` ou `light`) |
 | `language` | auto-détecté | langue de l'interface (`fra` ou `eng`) |
 | `startup_panel` | `dashboard` | panneau ouvert au démarrage (`dashboard`, `container`, `encoding`, `dovi`, `settings`) |
 | `backend` (section `[remux]`) | `ffmpeg` | backend de remux (`ffmpeg`) |
 | `tmdb_api_key` | vide | clé API TMDB v3 utilisée par la recherche IMDb/TMDB |
-| `tmdb_bearer_token` | vide | token Bearer TMDB v4 (utilisé si `tmdb_api_key` est vide, ou via `MEDIARECODE_TMDB_BEARER_TOKEN`) |
+| `tmdb_bearer_token` | vide | token Bearer TMDB v4 (utilisé si `tmdb_api_key` est vide, ou via `MUXIVEO_TMDB_BEARER_TOKEN`) |
 | `generate_nfo` | `true` | génère un fichier `.nfo` MediaInfo à côté du MKV final après workflow réussi |
 | `ram_buffer_enabled` | `true` | autorise l'usage de `/dev/shm` pour les HEVC intermédiaires si disponible |
 | `ram_buffer_threshold_pct` | `15` | pourcentage minimal de RAM libre à conserver pour activer ce buffer |
@@ -821,11 +821,11 @@ flowchart TD
 
 ## CLI headless
 
-Mediarecode peut être lancé en mode CLI sans initialiser l'interface graphique :
+Muxiveo peut être lancé en mode CLI sans initialiser l'interface graphique :
 
 ```bash
 python3 main.py --cli --help
-./mediarecode-cli --help
+./Muxiveo-cli --help
 ```
 
 Sous-commandes disponibles :
@@ -852,7 +852,7 @@ Le CLI est non interactif : une sortie existante est refusée sauf `--force`. Le
 
 Les templates JSON peuvent sélectionner les pistes par type, langue et flags d'origine, normaliser les langues BCP-47/RFC5646, renommer les pistes via patterns, ajouter/importer des chapitres, demander TMDB et traiter un batch. Trois configs d'exemple sont fournies dans `docs/cli/` : simple, middle et complexe toutes options.
 
-Dans les artefacts packagés, l'entrée CLI route vers le même bundle que l'application : `mediarecode-cli` sur Linux/AppImage/macOS, `mediarecode-cli.exe` sur Windows, ou `mediarecode --cli ...` en fallback. En environnement source, utilisez `python3 main.py --cli ...`.
+Dans les artefacts packagés, l'entrée CLI route vers le même bundle que l'application : `Muxiveo-cli` sur Linux/AppImage/macOS, `Muxiveo-cli.exe` sur Windows, ou `Muxiveo --cli ...` en fallback. En environnement source, utilisez `python3 main.py --cli ...`.
 
 ## Outils externes
 
@@ -867,7 +867,7 @@ Dans les artefacts packagés, l'entrée CLI route vers le même bundle que l'app
 
 ## Troubleshooting windows
 
-Cette notice ne concerne que les lancement depuis Mediarecode.exe
+Cette notice ne concerne que les lancement depuis Muxiveo.exe
 
 Le lancement via python (py main.py) n'est pas concerné.
 
@@ -875,7 +875,7 @@ Le lancement via python (py main.py) n'est pas concerné.
 
 Sous Windows, les bibliothèques utilisateur comme **Videos**, **Documents**, **Pictures** et dossiers similaires peuvent être protégées par **Windows Security** via **Controlled Folder Access**.
 
-Quand cette protection est active, Mediarecode peut être empêché d'écrire directement dans ces dossiers, même si :
+Quand cette protection est active, Muxiveo peut être empêché d'écrire directement dans ces dossiers, même si :
 
 - le dossier existe ;
 - vous pouvez y accéder manuellement depuis l'Explorateur ;
@@ -883,11 +883,11 @@ Quand cette protection est active, Mediarecode peut être empêché d'écrire di
 
 Symptômes fréquents :
 
-- popup **Sécurité Windows** indiquant que `mediarecode.exe` ou un outil comme `ffmpeg.exe` a été bloqué ;
+- popup **Sécurité Windows** indiquant que `Muxiveo.exe` ou un outil comme `ffmpeg.exe` a été bloqué ;
 - erreur `No such file or directory` lors d'un export vers `Videos` ou `Documents` ;
 - succès de l'export vers un autre dossier non protégé, comme `Desktop` ou `%TEMP%`.
 
-Au premier setup Windows, Mediarecode peut proposer d'ajouter ses exécutables à l'allowlist de Windows Security afin de pouvoir enregistrer directement dans ces bibliothèques protégées. Cette exception concerne l'application elle-même et `ffmpeg`, l'outil qui écrit effectivement les fichiers de sortie.
+Au premier setup Windows, Muxiveo peut proposer d'ajouter ses exécutables à l'allowlist de Windows Security afin de pouvoir enregistrer directement dans ces bibliothèques protégées. Cette exception concerne l'application elle-même et `ffmpeg`, l'outil qui écrit effectivement les fichiers de sortie.
 
 Sans cette exception, les exports directs vers **Videos**, **Documents**, **Pictures**, etc. peuvent rester bloqués.
 
@@ -897,10 +897,10 @@ Si vous refusez l'exception ou si vous devez la configurer manuellement :
 2. Allez dans **Protection contre les virus et menaces**.
 3. Ouvrez **Protection contre les ransomwares** puis **Gérer la protection contre les ransomwares**.
 4. Entrez dans **Autoriser une application via l'accès contrôlé aux dossiers**.
-5. Ajoutez `mediarecode.exe`.
+5. Ajoutez `Muxiveo.exe`.
 6. Si nécessaire, ajoutez aussi `ffmpeg.exe`.
 
-Après ajout à l'allowlist, redémarrez Mediarecode avant de retester un export vers `Videos` ou `Documents`.
+Après ajout à l'allowlist, redémarrez Muxiveo avant de retester un export vers `Videos` ou `Documents`.
 
 ---
 
@@ -911,4 +911,4 @@ FFmpeg is licensed under LGPLv2.1+ or GPL depending on the build.
 This package includes a GPL-only FFmpeg build compiled without `--enable-nonfree`.
 The corresponding FFmpeg source code and build configuration are available at: [FFmpeg/FFmpeg](https://github.com/FFmpeg/FFmpeg)
 
-*Mediarecode v3.0.0*
+*Muxiveo v3.0.0*

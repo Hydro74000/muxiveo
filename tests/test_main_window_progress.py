@@ -219,7 +219,7 @@ def test_capture_verbose_progress_line_records_wrapped_tool_output(tmp_path) -> 
 
     dummy._capture_verbose_progress_line(wrapped)
 
-    log_files = sorted((tmp_path / "chosen_logs").glob("mediarecode-verbose-*.log"))
+    log_files = sorted((tmp_path / "chosen_logs").glob("Muxiveo-verbose-*.log"))
     assert len(log_files) == 1
     content = log_files[0].read_text(encoding="utf-8")
     assert "[TOOL] [ffmpeg-video-1] out_time=00:00:05.000000" in content
@@ -249,7 +249,7 @@ def test_capture_verbose_progress_line_records_remux_ffmpeg_progress(tmp_path) -
 
     dummy._capture_verbose_progress_line("out_time=00:00:10.000000")
 
-    log_files = sorted((tmp_path / "chosen_logs").glob("mediarecode-verbose-*.log"))
+    log_files = sorted((tmp_path / "chosen_logs").glob("Muxiveo-verbose-*.log"))
     assert len(log_files) == 1
     content = log_files[0].read_text(encoding="utf-8")
     assert "[TOOL] out_time=00:00:10.000000" in content
@@ -281,7 +281,7 @@ def test_capture_verbose_progress_line_records_all_nvencc_lines(tmp_path) -> Non
 
     dummy._capture_verbose_progress_line("encoded 191733 frames, 191.29 fps, 9310.24 kbps, 8875.45 MB")
 
-    log_files = sorted((tmp_path / "chosen_logs").glob("mediarecode-verbose-*.log"))
+    log_files = sorted((tmp_path / "chosen_logs").glob("Muxiveo-verbose-*.log"))
     assert len(log_files) == 1
     content = log_files[0].read_text(encoding="utf-8")
     assert "[TOOL] encoded 191733 frames, 191.29 fps, 9310.24 kbps, 8875.45 MB" in content
@@ -309,7 +309,7 @@ def test_on_tool_output_requested_records_inspector_verbose_lines(tmp_path) -> N
 
     dummy._on_tool_output_requested("inspector", "Inspection démarrée : /tmp/movie.mkv")
 
-    log_files = sorted((tmp_path / "chosen_logs").glob("mediarecode-verbose-*.log"))
+    log_files = sorted((tmp_path / "chosen_logs").glob("Muxiveo-verbose-*.log"))
     assert len(log_files) == 1
     content = log_files[0].read_text(encoding="utf-8")
     assert "[TOOL] [inspector] Inspection démarrée : /tmp/movie.mkv" in content
@@ -339,5 +339,5 @@ def test_standard_file_logging_skips_verbose_tool_lines(tmp_path) -> None:
     dummy._capture_verbose_progress_line(wrapped)
     dummy._on_tool_output_requested("inspector", "Inspection démarrée : /tmp/movie.mkv")
 
-    log_files = sorted((tmp_path / "chosen_logs").glob("mediarecode-verbose-*.log"))
+    log_files = sorted((tmp_path / "chosen_logs").glob("Muxiveo-verbose-*.log"))
     assert not log_files

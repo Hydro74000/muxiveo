@@ -14,6 +14,7 @@ from core.media_info_fetcher import (
     default_tmdb_bearer_token,
     extract_year_from_filename,
 )
+from core.version import APP_CONFIG_DIR_NAME, APP_ENV_PREFIX
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry, clone_track_entry
 from core.profiles.selectors import (
     SelectorResolutionError,
@@ -217,9 +218,9 @@ def resolve_tmdb_metadata(
     if not api_key and not bearer:
         raise CliError(
             "Authentification TMDB manquante. Renseigner --tmdb-apikey, "
-            "la variable d'environnement MEDIARECODE_TMDB_BEARER_TOKEN, "
+            f"la variable d'environnement {APP_ENV_PREFIX}_TMDB_BEARER_TOKEN, "
             "ou la clé `metadata/tmdb_api_key` (resp. `tmdb_bearer_token`) "
-            "dans ~/.config/mediarecode/Mediarecode.conf.",
+            f"dans ~/.config/{APP_CONFIG_DIR_NAME}/config.ini.",
             EXIT_VALIDATION,
         )
     fetcher = TmdbFetcher(

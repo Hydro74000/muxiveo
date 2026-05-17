@@ -1,4 +1,4 @@
-"""Reusable profile helpers for Mediarecode."""
+"""Reusable profile helpers for Muxiveo."""
 
 from __future__ import annotations
 

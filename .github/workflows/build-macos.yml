@@ -2,6 +2,8 @@ name: Build macOS package
 
 on:
   push:
+    branches:
+      - rebrand
     tags:
       - "v*"
   workflow_dispatch:
@@ -53,21 +55,21 @@ jobs:
       - name: Zip .app bundle
         run: |
           cd dist
-          zip -r --symlinks "Mediarecode-${{ steps.version.outputs.VERSION }}-macos.zip" Mediarecode.app
+          zip -r --symlinks "Muxiveo-${{ steps.version.outputs.VERSION }}-macos.zip" Muxiveo.app
 
       - name: Upload .app artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Mediarecode-${{ steps.version.outputs.VERSION }}-macos
-          path: dist/Mediarecode-${{ steps.version.outputs.VERSION }}-macos.zip
+          name: Muxiveo-${{ steps.version.outputs.VERSION }}-macos
+          path: dist/Muxiveo-${{ steps.version.outputs.VERSION }}-macos.zip
           if-no-files-found: error
 
       - name: Attach DMG to GitHub Release
-        if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && github.event.inputs.version != '')
+        if: github.ref_name != 'rebrand' && (github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && github.event.inputs.version != ''))
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="v${{ steps.version.outputs.VERSION }}"
-          FILE="dist/releases/Mediarecode-${{ steps.version.outputs.VERSION }}.dmg"
+          FILE="dist/releases/Muxiveo-${{ steps.version.outputs.VERSION }}.dmg"
           gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes ""
           gh release upload "$TAG" "$FILE" --clobber

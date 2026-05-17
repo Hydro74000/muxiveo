@@ -17,6 +17,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable
 
+from core.version import APP_VERBOSE_LOG_PREFIX
+
 
 class LogLevel(str, Enum):
     INFO = "INFO"
@@ -40,7 +42,9 @@ def parse_log_level(value: str, default: LogLevel = LogLevel.INFO) -> LogLevel:
 
 VERBOSE_LOG_MAX_BYTES = 50 * 1024 * 1024
 VERBOSE_LOG_MAX_FILES = 3
-_VERBOSE_LOG_FILE_RE = re.compile(r"^mediarecode-verbose-(\d{8}-\d{6})-(\d+)\.log$")
+_VERBOSE_LOG_FILE_RE = re.compile(
+    rf"^{re.escape(APP_VERBOSE_LOG_PREFIX)}-(\d{{8}}-\d{{6}})-(\d+)\.log$"
+)
 
 
 def _latest_verbose_log_file(
@@ -49,7 +53,7 @@ def _latest_verbose_log_file(
     max_files: int,
 ) -> tuple[str, int, Path] | None:
     latest: tuple[str, int, Path] | None = None
-    for path in logs_dir.glob("mediarecode-verbose-*.log"):
+    for path in logs_dir.glob(f"{APP_VERBOSE_LOG_PREFIX}-*.log"):
         match = _VERBOSE_LOG_FILE_RE.match(path.name)
         if match is None:
             continue
@@ -157,7 +161,7 @@ class VerboseFileLogger:
         if self._session_stamp is None:
             self._session_stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         safe_index = max(1, min(self._max_files, int(index)))
-        return logs_dir / f"mediarecode-verbose-{self._session_stamp}-{safe_index:02d}.log"
+        return logs_dir / f"{APP_VERBOSE_LOG_PREFIX}-{self._session_stamp}-{safe_index:02d}.log"
 
     def session_path(self) -> Path:
         if self._session_file_path is None:

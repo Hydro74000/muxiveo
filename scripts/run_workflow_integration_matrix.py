@@ -1569,7 +1569,7 @@ def run_encode_case_dv_inject(case_id: str, sources: PreparedSources, tools: Too
         }
         cleanup = {
             "stale_file_removed": not stale.exists(),
-            "inject_temp_dirs_cleaned": not any("mediarecode_encode_" in part for part in work_state["payload_files"]),
+            "inject_temp_dirs_cleaned": not any("Muxiveo_encode_" in part for part in work_state["payload_files"]),
         }
         notes: list[str] = []
         if request_hdr10plus and not hdr10_ok:

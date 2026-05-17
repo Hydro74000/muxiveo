@@ -1,5 +1,5 @@
 # =============================================================================
-# .gitignore — Mediarecode
+# .gitignore — Muxiveo
 # =============================================================================
 
 # ---------------------------------------------------------------------------
@@ -79,12 +79,12 @@ dmypy.json
 build/
 dist/
 *.spec
-mediarecode.spec
+Muxiveo.spec
 
 # ---------------------------------------------------------------------------
 # AppImage
 # ---------------------------------------------------------------------------
-Mediarecode.AppDir/
+Muxiveo.AppDir/
 *.AppImage
 appimagetool-*.AppImage
 *.zsync
@@ -92,9 +92,9 @@ appimagetool-*.AppImage
 # ---------------------------------------------------------------------------
 # Windows packaging (Wine cross-build)
 # ---------------------------------------------------------------------------
-mediarecode-win/
-Mediarecode-Setup.exe
-mediarecode.nsi
+Muxiveo-win/
+Muxiveo-Setup.exe
+Muxiveo.nsi
 .wine_build/
 python-*.exe
 
@@ -104,7 +104,7 @@ python-*.exe
 config.ini
 config.ini
 .claude/
-Mediarecode-Setup*.exe
+Muxiveo-Setup*.exe
 ignore.md
 .codex
 mypy.ini

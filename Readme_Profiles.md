@@ -1,8 +1,8 @@
-# Profils Mediarecode
+# Profils Muxiveo
 
 ## Vue rapide
 
-Mediarecode distingue deux usages :
+Muxiveo distingue deux usages :
 
 | Besoin | Format | Usage |
 |---|---|---|
@@ -27,7 +27,7 @@ Un profil décisionnel `version: 1` peut couvrir :
 Les profils GUI sont enregistrés ici :
 
 ```text
-<dossier de config Mediarecode>/profiles/decision/
+<dossier de config Muxiveo>/profiles/decision/
 ```
 
 ## Éditeur low-code
@@ -69,7 +69,7 @@ Exemple : pour une piste audio française en EAC3, avec Atmos si disponible :
 - codec `EAC3` : obligatoire ;
 - keyword préféré `{atmos}` : bonus si une piste Atmos existe.
 
-Si aucune piste Atmos n'existe, Mediarecode peut quand même garder la meilleure piste française EAC3.
+Si aucune piste Atmos n'existe, Muxiveo peut quand même garder la meilleure piste française EAC3.
 
 ## Expressions de critères
 
@@ -110,7 +110,7 @@ La portée détermine combien de pistes une règle va modifier.
 | `first` | choisit la première piste compatible dans l'ordre des sources | faire confiance à l'ordre du fichier source |
 | `all` | applique la règle à toutes les pistes compatibles | renommer toutes les pistes audio, désactiver tous les commentaires, tagger tous les sous-titres forcés |
 
-`best` est le choix le plus courant pour une sélection intelligente. Le moteur additionne les points des critères compatibles : langue, codec, canaux, Atmos/DTS:X, flags, résolution, HDR, etc. S'il y a une égalité impossible à départager, le GUI le signale dans l'aperçu. Pour la vidéo, si plusieurs pistes ont exactement le même score, Mediarecode garde la première source/index.
+`best` est le choix le plus courant pour une sélection intelligente. Le moteur additionne les points des critères compatibles : langue, codec, canaux, Atmos/DTS:X, flags, résolution, HDR, etc. S'il y a une égalité impossible à départager, le GUI le signale dans l'aperçu. Pour la vidéo, si plusieurs pistes ont exactement le même score, Muxiveo garde la première source/index.
 
 `first` est plus simple : il prend la première piste compatible. C'est pratique quand les fichiers sont toujours construits pareil, par exemple “prendre la première audio française”.
 
@@ -118,7 +118,7 @@ La portée détermine combien de pistes une règle va modifier.
 
 ## Écriture et conflits
 
-Si deux règles écrivent le même champ d'une même piste, Mediarecode utilise le **mode d'écriture** de la règle :
+Si deux règles écrivent le même champ d'une même piste, Muxiveo utilise le **mode d'écriture** de la règle :
 
 - **Priorité** : mode recommandé. La règle la plus prioritaire gagne pour le champ concerné. Les autres règles peuvent toujours écrire d'autres champs.
 - **Remplacer** : la règle écrase la valeur déjà proposée, même si une règle plus prioritaire est passée avant.
@@ -234,7 +234,7 @@ Exemples :
 - `{lang_name} {codec} {channels} {flag_forced}` -> `French PGS Forced`
 - `{lang_name} {codec_raw} {channels} {audio_object}` -> `French EAC3 5.1 Atmos`
 
-Si une valeur manque, Mediarecode l'omet et nettoie les espaces ou séparateurs inutiles.
+Si une valeur manque, Muxiveo l'omet et nettoie les espaces ou séparateurs inutiles.
 
 Keywords disponibles au premier lot :
 
@@ -271,19 +271,19 @@ Depuis le GUI, **Appliquer profil** charge un profil enregistré, affiche un ape
 En CLI :
 
 ```bash
-mediarecode-cli validate --profile profil.json
-mediarecode-cli preview --profile profil.json -i source.mkv --json
-mediarecode-cli run --profile profil.json -i source.mkv -o sortie.mkv
+Muxiveo-cli validate --profile profil.json
+Muxiveo-cli preview --profile profil.json -i source.mkv --json
+Muxiveo-cli run --profile profil.json -i source.mkv -o sortie.mkv
 ```
 
 Vous pouvez donner un chemin complet ou simplement le nom d'un profil sauvegardé
 dans le dossier utilisateur. L'extension `.json` est optionnelle : `--profile BestOfAll`
-cherchera aussi `BestOfAll.json` dans `<dossier de config Mediarecode>/profiles/decision/`.
+cherchera aussi `BestOfAll.json` dans `<dossier de config Muxiveo>/profiles/decision/`.
 
 En batch dossier :
 
 ```bash
-mediarecode-cli batch \
+Muxiveo-cli batch \
   --profile profil.json \
   --input-dir "Serie" \
   --recursive \
@@ -307,10 +307,10 @@ La CLI n'ouvre pas de dialogue interactif. Si un conflit ou une ambiguïté ne p
 Il est adapté aux épisodes ou fichiers construits de la même façon :
 
 ```bash
-mediarecode-cli validate --config exact-job.json
-mediarecode-cli preview --config exact-job.json
-mediarecode-cli run --config exact-job.json
-mediarecode-cli batch --template exact-job.json --input-dir "Serie" --output-dir "out"
+Muxiveo-cli validate --config exact-job.json
+Muxiveo-cli preview --config exact-job.json
+Muxiveo-cli run --config exact-job.json
+Muxiveo-cli batch --template exact-job.json --input-dir "Serie" --output-dir "out"
 ```
 
 Utilisez un exact job quand la structure des sources est stable. Utilisez un profil décisionnel quand les sources varient mais que vos décisions restent les mêmes.

@@ -64,7 +64,7 @@ def test_i18n_catalog_covers_translate_text_literals():
         *(_PROJECT_ROOT / "cli").rglob("*.py"),
         _PROJECT_ROOT / "main.py",
         _PROJECT_ROOT / "launcher.py",
-        _PROJECT_ROOT / "mediarecode_cli.py",
+        _PROJECT_ROOT / "Muxiveo_cli.py",
         _PROJECT_ROOT / "mediamanager.py",
     ]
     strings: list[tuple[Path, int, str]] = []

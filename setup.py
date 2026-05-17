@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Mediarecode — Setup & Dependency Installer
+Muxiveo — Setup & Dependency Installer
 ==========================================
 
 Installs Python dependencies and external tools required by the application.
@@ -17,7 +17,7 @@ Options:
     --no-github     Skip downloading dovi_tool / hdr10plus_tool from GitHub
     --prefix PATH   Installation prefix for GitHub binaries
                     Default: /usr/local on Linux/macOS,
-                             <mediarecode folder>\\tools on Windows
+                             <Muxiveo folder>\\tools on Windows
     --dry-run       Print what would be done without executing anything
     --force         Retry installs and regenerate Windows tool paths
 """
@@ -439,7 +439,7 @@ def _exe_dir_is_readonly() -> bool:
     except Exception:
         return False
     try:
-        probe = exe_dir / ".mediarecode_write_probe"
+        probe = exe_dir / ".Muxiveo_write_probe"
         probe.write_text("", encoding="utf-8")
         probe.unlink(missing_ok=True)
         return False
@@ -450,19 +450,19 @@ def _exe_dir_is_readonly() -> bool:
 def _windows_user_tools_dir() -> Path:
     """
     Dossier d'installation des outils binaires côté utilisateur.
-    Sous MSIX, %LOCALAPPDATA%\\Mediarecode\\tools est la seule
+    Sous MSIX, %LOCALAPPDATA%\\Muxiveo\\tools est la seule
     localisation writable sans élévation.
     """
     local_appdata = os.environ.get("LOCALAPPDATA")
     base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
-    return base / "Mediarecode" / "tools"
+    return base / "Muxiveo" / "tools"
 
 
 def _default_prefix() -> Path:
     """Return a sensible default install prefix for the current OS."""
     if OS == "Windows":
         # Sous MSIX, Program Files\\WindowsApps est read-only pour l'utilisateur
-        # → on installe dans %LOCALAPPDATA%\\Mediarecode\\tools.
+        # → on installe dans %LOCALAPPDATA%\\Muxiveo\\tools.
         # En dev / installeur classique : tools/ à côté de setup.py.
         if _is_msix_install() or _exe_dir_is_readonly():
             return _windows_user_tools_dir()
@@ -473,8 +473,8 @@ def _default_prefix() -> Path:
 def _windows_config_dir() -> Path:
     appdata = os.environ.get("APPDATA")
     if appdata:
-        return Path(appdata) / "mediarecode"
-    return Path.home() / "AppData" / "Roaming" / "mediarecode"
+        return Path(appdata) / "Muxiveo"
+    return Path.home() / "AppData" / "Roaming" / "Muxiveo"
 
 
 def _is_windows_frozen() -> bool:
@@ -539,7 +539,7 @@ def _config_ini_path() -> Path:
             return _windows_config_dir() / "config.ini"
         return Path(__file__).parent / "config.ini"
     xdg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    return xdg / "mediarecode" / "config.ini"
+    return xdg / "Muxiveo" / "config.ini"
 
 
 def _dedupe_paths(paths: list[Path]) -> list[Path]:
@@ -770,7 +770,7 @@ def _ask_language_dialog_qt_in_process(languages: list[tuple[str, str]]) -> str 
 
     _app = QApplication.instance() or QApplication(sys.argv[:1])
     dlg = QDialog()
-    dlg.setWindowTitle("Mediarecode - Interface Language")
+    dlg.setWindowTitle("Muxiveo - Interface Language")
     dlg.setWindowFlags(dlg.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
     dlg.setMinimumWidth(380)
     layout = QVBoxLayout(dlg)
@@ -818,7 +818,7 @@ def _ask_language_dialog(languages: list[tuple[str, str]]) -> str | None:
     valid_codes = {code for code, _ in languages}
 
     if getattr(sys, "frozen", False):
-        # In PyInstaller bundles, sys.executable is mediarecode.exe, not python.exe.
+        # In PyInstaller bundles, sys.executable is Muxiveo.exe, not python.exe.
         code = _ask_language_dialog_qt_in_process(languages)
         if code in valid_codes:
             return code
@@ -833,7 +833,7 @@ from PySide6.QtCore import Qt
 languages = json.loads(sys.argv[1])
 app = QApplication.instance() or QApplication(sys.argv[:1])
 dlg = QDialog()
-dlg.setWindowTitle("Mediarecode - Interface Language")
+dlg.setWindowTitle("Muxiveo - Interface Language")
 dlg.setWindowFlags(dlg.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
 dlg.setMinimumWidth(380)
 layout = QVBoxLayout(dlg)
@@ -1392,7 +1392,7 @@ def install_winget(dry_run: bool, force: bool = False) -> None:
 def _github_latest_release(repo: str) -> dict:
     """Fetch latest release metadata from GitHub API."""
     url = f"https://api.github.com/repos/{repo}/releases/latest"
-    req = urllib.request.Request(url, headers={"User-Agent": "mediarecode-setup/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "Muxiveo-setup/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read().decode())
@@ -1411,7 +1411,7 @@ def _github_latest_release(repo: str) -> dict:
 def _download_file(url: str, dest: Path) -> None:
     """Download url → dest with a simple progress indicator."""
     info(f"Downloading {url}")
-    req = urllib.request.Request(url, headers={"User-Agent": "mediarecode-setup/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "Muxiveo-setup/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=120) as resp, open(dest, "wb") as out:
             total = int(resp.headers.get("Content-Length", 0))
@@ -1648,7 +1648,7 @@ if ($result.status -eq 'error') { exit 1 }
 exit 0
 """
 
-    with tempfile.TemporaryDirectory(prefix="mediarecode_cfa_") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="Muxiveo_cfa_") as tmp_dir:
         tmp = Path(tmp_dir)
         script_path = tmp / "controlled_folder_access.ps1"
         result_path = tmp / "controlled_folder_access_result.json"
@@ -1728,7 +1728,7 @@ def offer_windows_controlled_folder_access_setup(
     force: bool = False,
 ) -> dict[str, object]:
     """
-    Offer to allowlist Mediarecode writer tools in Windows Security.
+    Offer to allowlist Muxiveo writer tools in Windows Security.
 
     This is intentionally opt-in because it modifies the Defender allowlist.
     """
@@ -1764,17 +1764,17 @@ def offer_windows_controlled_folder_access_setup(
     if not force:
         message = (
             "Windows Security Controlled Folder Access is active.\n\n"
-            "Mediarecode can ask Windows Security to allow its executables "
+            "Muxiveo can ask Windows Security to allow its executables "
             "to write into the protected user libraries such as Videos, "
             "Documents, Pictures, and similar folders.\n\n"
             "Without this exception, saving directly into those folders "
             "may be blocked by Windows, even if the folders exist.\n\n"
-            "This allowlist can include Mediarecode itself and the writer tools "
+            "This allowlist can include Muxiveo itself and the writer tools "
             "it uses, such as ffmpeg.\n\n"
             "An administrator approval prompt may appear.\n\n"
             "Add missing applications now?"
         )
-        if not _windows_yes_no(message, "Mediarecode setup", default_no=True):
+        if not _windows_yes_no(message, "Muxiveo setup", default_no=True):
             info("Controlled Folder Access allowlist step skipped by user")
             return {"status": "skipped", "added": [], "skipped": [], "message": ""}
 
@@ -1820,7 +1820,7 @@ def _windows_fetch_text(url: str) -> str:
         script = (
             "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; "
             "$ProgressPreference='SilentlyContinue'; "
-            "$h=@{'User-Agent'='mediarecode-setup/1.0'}; "
+            "$h=@{'User-Agent'='Muxiveo-setup/1.0'}; "
             "(Invoke-WebRequest -Uri $env:MR_URL -Headers $h -UseBasicParsing).Content"
         )
         env = os.environ.copy()
@@ -1842,7 +1842,7 @@ def _windows_fetch_text(url: str) -> str:
     if not curl:
         raise RuntimeError("No PowerShell/curl fallback available on Windows")
     result = subprocess.run(
-        [curl, "-fsSL", "-H", "User-Agent: mediarecode-setup/1.0", url],
+        [curl, "-fsSL", "-H", "User-Agent: Muxiveo-setup/1.0", url],
         capture_output=True,
         text=True,
         check=False,
@@ -1861,7 +1861,7 @@ def _windows_download_file(url: str, dest: Path) -> None:
         script = (
             "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; "
             "$ProgressPreference='SilentlyContinue'; "
-            "$h=@{'User-Agent'='mediarecode-setup/1.0'}; "
+            "$h=@{'User-Agent'='Muxiveo-setup/1.0'}; "
             "Invoke-WebRequest -Uri $env:MR_URL -Headers $h -OutFile $env:MR_DEST -UseBasicParsing"
         )
         env = os.environ.copy()
@@ -1884,7 +1884,7 @@ def _windows_download_file(url: str, dest: Path) -> None:
     if not curl:
         raise RuntimeError("No PowerShell/curl fallback available on Windows")
     result = subprocess.run(
-        [curl, "-fL", "-H", "User-Agent: mediarecode-setup/1.0", "-o", str(dest), url],
+        [curl, "-fL", "-H", "User-Agent: Muxiveo-setup/1.0", "-o", str(dest), url],
         capture_output=True,
         text=True,
         check=False,
@@ -2153,7 +2153,7 @@ def install_github_tools(prefix: Path, dry_run: bool, force: bool = False) -> No
 
     arch = _arch_key()
 
-    # On Windows: binaries go directly into prefix (mediarecode/tools/).
+    # On Windows: binaries go directly into prefix (Muxiveo/tools/).
     # On Linux/macOS: binaries go into prefix/bin/ (/usr/local/bin/).
     if OS == "Windows":
         bin_dir = prefix
@@ -2402,7 +2402,7 @@ def main() -> None:
 
     print(_c("1;34", """
 ╔══════════════════════════════════════════╗
-║          Mediarecode — Setup             ║
+║          Muxiveo — Setup             ║
 ╚══════════════════════════════════════════╝
 """))
 

@@ -457,7 +457,7 @@ class TestRemuxWorkflowBuildCommand:
         wf = RemuxWorkflow(
             ffmpeg_bin="ffmpeg",
             ffprobe_bin="ffprobe",
-            writing_application="Mediarecode Test/1.0",
+            writing_application="Muxiveo Test/1.0",
         )
         src = tmp_path / "in.mkv"
         src.touch()
@@ -959,13 +959,13 @@ class TestMatroskaSegmentInfoPatch:
         editor = MatroskaSegmentInfoHeaderEditor()
         result = editor.apply_muxing_app_replace_with_header_rebuild(
             path,
-            app_prefix=f"AOTR Mediarecode {APP_VERSION_LABEL}",
+            app_prefix=f"AOTR Muxiveo {APP_VERSION_LABEL}",
         )
 
         assert result.applied is True
         assert not list(tmp_path.glob("*.hdrpatch.*"))
         apps = _segment_info_apps(path)
-        assert apps["muxing_app"] == f"AOTR Mediarecode {APP_VERSION_LABEL}"
+        assert apps["muxing_app"] == f"AOTR Muxiveo {APP_VERSION_LABEL}"
         assert apps["writing_app"] == "Lavf"
 
     def test_patch_works_with_known_size_segment_lavf61_style(self, tmp_path):
@@ -993,12 +993,12 @@ class TestMatroskaSegmentInfoPatch:
         editor = MatroskaSegmentInfoHeaderEditor()
         result = editor.apply_muxing_app_replace_with_header_rebuild(
             path,
-            app_prefix=f"AOTR Mediarecode {APP_VERSION_LABEL}",
+            app_prefix=f"AOTR Muxiveo {APP_VERSION_LABEL}",
         )
 
         assert result.applied is True
         apps = _segment_info_apps(path)
-        assert apps["muxing_app"] == f"AOTR Mediarecode {APP_VERSION_LABEL}"
+        assert apps["muxing_app"] == f"AOTR Muxiveo {APP_VERSION_LABEL}"
         assert apps["writing_app"] == "Lavf61.7.100"
 
     def test_patch_failure_is_skipped_without_file_mutation(self, tmp_path):
@@ -1009,7 +1009,7 @@ class TestMatroskaSegmentInfoPatch:
         editor = MatroskaSegmentInfoHeaderEditor()
         result = editor.apply_muxing_app_replace_with_header_rebuild(
             path,
-            app_prefix=f"AOTR Mediarecode {APP_VERSION_LABEL}",
+            app_prefix=f"AOTR Muxiveo {APP_VERSION_LABEL}",
         )
 
         assert result.applied is False
@@ -1228,7 +1228,7 @@ class TestRemuxWorkflowIntegration:
         wf = RemuxWorkflow(
             ffmpeg_bin="ffmpeg",
             ffprobe_bin="ffprobe",
-            writing_application="MediaRecode v1.2.1 - test",
+            writing_application="Muxiveo v1.2.1 - test",
         )
         cfg = RemuxConfig(
             sources=[SourceInput(path=src, file_index=0, tracks=[_track(0, "video"), _track(1, "audio", language="eng")])],
@@ -1244,6 +1244,6 @@ class TestRemuxWorkflowIntegration:
 
         apps = _segment_info_apps(out)
         muxing_app = apps.get("muxing_app", "")
-        assert muxing_app == f"AOTR Mediarecode {APP_VERSION_LABEL}"
+        assert muxing_app == f"AOTR Muxiveo {APP_VERSION_LABEL}"
         src_apps = _segment_info_apps(src)
         assert apps.get("writing_app") == src_apps.get("writing_app")

@@ -1,5 +1,5 @@
 """
-ui/main_window.py — Fenêtre principale de Mediarecode.
+ui/main_window.py — Fenêtre principale de Muxiveo.
 
 Architecture :
     ┌────────────────────────────────────────────────────────────┐
@@ -718,7 +718,7 @@ class DashboardPage(QWidget):
         root.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         # Titre
-        title = QLabel("Mediarecode")
+        title = QLabel("Muxiveo")
         title.setStyleSheet(f"""
             font-size: {_font_px(26)}px;
             font-weight: 800;
@@ -1224,12 +1224,12 @@ class _Sidebar(QWidget):
 
         self._logo_icon = QLabel("▣")
         self._logo_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._logo_icon.setToolTip("Mediarecode")
+        self._logo_icon.setToolTip("Muxiveo")
         self._logo_icon.setStyleSheet(
             f"color: {_Colors.ACCENT}; font-size: {_font_px(18)}px; background: transparent; border: none;"
         )
         la.addWidget(self._logo_icon)
-        self._logo_text = QLabel("Mediarecode")
+        self._logo_text = QLabel("Muxiveo")
         self._logo_text.setStyleSheet(f"""
             color: {_Colors.TEXT_PRI};
             font-size: {_font_px(13)}px;
@@ -1425,7 +1425,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _setup_window(self) -> None:
-        self.setWindowTitle("Mediarecode")
+        self.setWindowTitle("Muxiveo")
         self.setMinimumSize(1024, 680)
         self.resize(1280, 800)
 
@@ -2760,7 +2760,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _post_init_log(self) -> None:
-        self.log_info("Mediarecode démarré.")
+        self.log_info("Muxiveo démarré.")
         availability = self._config.all_tools_available()
         missing = [n for n, ok in availability.items() if not ok]
         if missing:

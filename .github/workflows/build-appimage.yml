@@ -2,6 +2,8 @@ name: Build AppImage
 
 on:
   push:
+    branches:
+      - rebrand
     tags:
       - "v*"
   workflow_dispatch:
@@ -61,8 +63,8 @@ jobs:
       - name: Locate output files
         id: files
         run: |
-          APPIMAGE=$(ls dist/releases/Mediarecode-x86_64_allinc-*.AppImage 2>/dev/null | head -1)
-          ZSYNC=$(ls dist/releases/Mediarecode-x86_64_allinc-*.AppImage.zsync 2>/dev/null | head -1)
+          APPIMAGE=$(ls dist/releases/Muxiveo-x86_64_allinc-*.AppImage 2>/dev/null | head -1)
+          ZSYNC=$(ls dist/releases/Muxiveo-x86_64_allinc-*.AppImage.zsync 2>/dev/null | head -1)
           echo "APPIMAGE=$APPIMAGE" >> "$GITHUB_OUTPUT"
           echo "ZSYNC=$ZSYNC"       >> "$GITHUB_OUTPUT"
           echo "AppImage : $APPIMAGE"
@@ -71,14 +73,14 @@ jobs:
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Mediarecode-x86_64_allinc-${{ steps.version.outputs.VERSION }}
+          name: Muxiveo-x86_64_allinc-${{ steps.version.outputs.VERSION }}
           path: |
             ${{ steps.files.outputs.APPIMAGE }}
             ${{ steps.files.outputs.ZSYNC }}
           if-no-files-found: error
 
       - name: Attach to GitHub Release
-        if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && github.event.inputs.version != '')
+        if: github.ref_name != 'rebrand' && (github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && github.event.inputs.version != ''))
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

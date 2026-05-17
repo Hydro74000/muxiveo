@@ -16,7 +16,7 @@ def test_startup_paths_from_argv_filters_only_existing_files(tmp_path) -> None:
     existing_b.write_text("", encoding="utf-8")
 
     argv = [
-        "mediarecode",
+        "Muxiveo",
         str(existing_a),
         "--debug",
         str(tmp_path / "missing.mov"),
@@ -84,7 +84,7 @@ def test_main_routes_startup_file_to_main_window(tmp_path) -> None:
          patch.object(main_mod, "_prompt_work_dir_cleanup") as mock_cleanup, \
          patch.object(main_mod.QTimer, "singleShot", side_effect=fake_single_shot), \
          patch.dict("sys.modules", {"ui.main_window": fake_ui_main_window}), \
-         patch.object(main_mod.sys, "argv", ["mediarecode", str(startup_file), "--verbose"]):
+         patch.object(main_mod.sys, "argv", ["Muxiveo", str(startup_file), "--verbose"]):
         mock_design.scale_factor.return_value = 1.0
         rc = main_mod.main()
 
@@ -94,9 +94,9 @@ def test_main_routes_startup_file_to_main_window(tmp_path) -> None:
     mock_design.apply_to_application.assert_called_once_with(fake_app)
     mock_set_language.assert_called_once_with("eng")
     mock_cleanup.assert_called_once_with(fake_config)
-    fake_app.setApplicationName.assert_called_once_with("Mediarecode")
+    fake_app.setApplicationName.assert_called_once_with("Muxiveo")
     fake_app.setApplicationVersion.assert_called_once()
-    fake_app.setOrganizationName.assert_called_once_with("mediarecode")
+    fake_app.setOrganizationName.assert_called_once_with("Muxiveo")
     fake_app.setFont.assert_called_once()
     fake_window.show.assert_called_once_with()
     assert scheduled_delay == [0]

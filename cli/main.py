@@ -1,4 +1,4 @@
-"""Headless CLI entrypoint for Mediarecode."""
+"""Headless CLI entrypoint for Muxiveo."""
 
 from __future__ import annotations
 

@@ -96,7 +96,7 @@ class MetadataInjectRunner:
             work = config.work_dir or Path(tempfile.gettempdir())
             work.mkdir(parents=True, exist_ok=True)
             tmp_dir = tempfile.mkdtemp(
-                prefix="mediarecode_encode_",
+                prefix="Muxiveo_encode_",
                 dir=str(work),
             )
             tmp = Path(tmp_dir)

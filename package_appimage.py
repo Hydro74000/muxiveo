@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-package_appimage.py — Packaging multiplateforme de Mediarecode.
+package_appimage.py — Packaging multiplateforme de Muxiveo.
 
 Modes :
   AppImage Linux (défaut)
-    Mediarecode-<arch>.AppImage          outils installés au 1er lancement
-    Mediarecode-<arch>_allinc.AppImage   tous les outils embarqués (--allinc)
+    Muxiveo-<arch>.AppImage          outils installés au 1er lancement
+    Muxiveo-<arch>_allinc.AppImage   tous les outils embarqués (--allinc)
 
   Installateur Windows (--windows)
-    Mediarecode-Setup.exe                construit via Wine + PyInstaller + NSIS
+    Muxiveo-Setup.exe                construit via Wine + PyInstaller + NSIS
     Nécessite : wine, winetricks, makensis (installés automatiquement si absents)
 
 Étapes AppImage :
@@ -63,20 +63,19 @@ import zipfile
 from pathlib import Path
 
 from core.file_types import build_desktop_mime_type_string
-from core.version import APP_VERSION
+from core.version import APP_APPSTREAM_ID, APP_NAME, APP_VERSION, APP_WEBSITE_URL
 
 ROOT = Path(__file__).parent
 DIST_DIR = ROOT / "dist"
 DIST_RELEASES = ROOT / "dist" / "releases"
 BUILD_DIR = ROOT / "build"
-APPDIR = ROOT / "Mediarecode.AppDir"
-APP_NAME = "mediarecode"
-APP_DISPLAY_NAME = "Mediarecode"
-_APPIMAGE_UPDATE_OWNER = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_OWNER", "Hydro74000").strip() or "Hydro74000"
-_APPIMAGE_UPDATE_REPO = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_REPO", "mediarecode").strip() or "mediarecode"
-_APPIMAGE_UPDATE_RELEASE = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_RELEASE", "latest").strip() or "latest"
-_APPIMAGE_WEBSITE_URL = "https://mediarecode.aotr.fr/"
-_APPSTREAM_ID = "fr.aotr.mediarecode"
+APPDIR = ROOT / "Muxiveo.AppDir"
+APP_DISPLAY_NAME = APP_NAME
+_APPIMAGE_UPDATE_OWNER = os.environ.get("MUXIVEO_APPIMAGE_UPDATE_OWNER", "Hydro74000").strip() or "Hydro74000"
+_APPIMAGE_UPDATE_REPO = os.environ.get("MUXIVEO_APPIMAGE_UPDATE_REPO", "Muxiveo").strip() or "Muxiveo"
+_APPIMAGE_UPDATE_RELEASE = os.environ.get("MUXIVEO_APPIMAGE_UPDATE_RELEASE", "latest").strip() or "latest"
+_APPIMAGE_WEBSITE_URL = APP_WEBSITE_URL
+_APPSTREAM_ID = APP_APPSTREAM_ID
 
 # Préfixe Wine dédié au build Windows (isolé du préfixe utilisateur ~/.wine)
 WINE_PREFIX = ROOT / ".wine_build"
@@ -433,10 +432,10 @@ def _symlink_diricon(appdir: Path, icon_name: str) -> None:
 
 _DESKTOP = textwrap.dedent("""\
     [Desktop Entry]
-    Name=Mediarecode
+    Name=Muxiveo
     Comment=MKV/MP4 Workflow — DoVi · HDR10+ · Remux · Encode
-    Exec=mediarecode %F
-    Icon=mediarecode
+    Exec=Muxiveo %F
+    Icon=Muxiveo
     Type=Application
     Categories=AudioVideo;Video;
     MimeType={mime_types}
@@ -450,10 +449,10 @@ _APPSTREAM_METAINFO = textwrap.dedent("""\
       <id>{appstream_id}</id>
       <metadata_license>MIT</metadata_license>
       <project_license>GPL-3.0-or-later</project_license>
-      <name>Mediarecode</name>
+      <name>Muxiveo</name>
       <summary>MKV/MP4 workflow for DoVi, HDR10+, remux and encode</summary>
       <description>
-        <p>Mediarecode helps prepare MKV and MP4 video workflows with remuxing, encoding, Dolby Vision and HDR10+ tooling.</p>
+        <p>Muxiveo helps prepare MKV and MP4 video workflows with remuxing, encoding, Dolby Vision and HDR10+ tooling.</p>
       </description>
       <launchable type="desktop-id">{desktop_id}</launchable>
       <url type="homepage">{website_url}</url>
@@ -473,7 +472,7 @@ _ICON_SVG = textwrap.dedent("""\
 # AppRun standard
 _APPRUN = textwrap.dedent("""\
     #!/bin/bash
-    # AppRun — lanceur AppImage pour Mediarecode
+    # AppRun — lanceur AppImage pour Muxiveo
     set -e
 
     HERE="$(dirname "$(readlink -f "$0")")"
@@ -492,13 +491,13 @@ _APPRUN = textwrap.dedent("""\
     export QML2_IMPORT_PATH="${INTERNAL}/PySide6/Qt/qml"
     export APPDIR="${HERE}"
 
-    exec "${BIN}/mediarecode" "$@"
+    exec "${BIN}/Muxiveo" "$@"
 """)
 
 # AppRun all-inclusive : les outils embarqués ont priorité sur les outils système
 _APPRUN_ALLINC = textwrap.dedent("""\
     #!/bin/bash
-    # AppRun — lanceur AppImage all-inclusive pour Mediarecode
+    # AppRun — lanceur AppImage all-inclusive pour Muxiveo
     set -e
 
     HERE="$(dirname "$(readlink -f "$0")")"
@@ -523,7 +522,7 @@ _APPRUN_ALLINC = textwrap.dedent("""\
     export QML2_IMPORT_PATH="${INTERNAL}/PySide6/Qt/qml"
     export APPDIR="${HERE}"
 
-    exec "${BIN}/mediarecode" "$@"
+    exec "${BIN}/Muxiveo" "$@"
 """)
 
 
@@ -536,7 +535,7 @@ def _gh_latest_asset(repo: str, *patterns: str) -> str:
     url = f"https://api.github.com/repos/{repo}/releases/latest"
     req = urllib.request.Request(
         url,
-        headers={"Accept": "application/vnd.github+json", "User-Agent": "mediarecode-builder"},
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "Muxiveo-builder"},
     )
     with urllib.request.urlopen(req) as resp:
         data = json.loads(resp.read())
@@ -550,7 +549,7 @@ def _gh_latest_asset(repo: str, *patterns: str) -> str:
 def _download(url: str, dest: Path, timeout: int = 30) -> None:
     """Télécharge url vers dest avec timeout, progress et reprise sur erreur."""
     info(f"Téléchargement : {url}")
-    req = urllib.request.Request(url, headers={"User-Agent": "mediarecode-builder"})
+    req = urllib.request.Request(url, headers={"User-Agent": "Muxiveo-builder"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             total = int(resp.headers.get("Content-Length", 0))
@@ -621,7 +620,7 @@ def _mediainfo_latest_version() -> str:
     """Retourne la dernière version de mediainfo en scrapant le répertoire mediaarea.net."""
     import re
     base = "https://mediaarea.net/download/binary/mediainfo/"
-    req = urllib.request.Request(base, headers={"User-Agent": "mediarecode-builder"})
+    req = urllib.request.Request(base, headers={"User-Agent": "Muxiveo-builder"})
     with urllib.request.urlopen(req) as resp:
         html = resp.read().decode("utf-8", errors="replace")
     versions = re.findall(r'href="(\d{2}\.\d{2})/"', html)
@@ -798,7 +797,7 @@ def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64") -
         except RuntimeError as exc:
             # Dossier non suppressible (permissions uid différent) → utilise un répertoire temporaire
             import tempfile
-            appdir = Path(tempfile.mkdtemp(prefix="Mediarecode.AppDir.", dir=ROOT))
+            appdir = Path(tempfile.mkdtemp(prefix="Muxiveo.AppDir.", dir=ROOT))
             info(f"AppDir alternatif utilisé : {appdir}  ({exc})")
     if not appdir.exists():
         appdir.mkdir()
@@ -809,9 +808,9 @@ def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64") -
     info(f"Copie du bundle → {usr_bin} …")
     shutil.copytree(bundle_dir, usr_bin, dirs_exist_ok=True)
     ok("Bundle copié")
-    cli_link = usr_bin / "mediarecode-cli"
+    cli_link = usr_bin / "Muxiveo-cli"
     if not cli_link.exists() and not cli_link.is_symlink():
-        cli_link.symlink_to("mediarecode")
+        cli_link.symlink_to("Muxiveo")
         ok("Entrée CLI AppImage créée")
 
     # Marqueur all-inclusive lu par launcher.py au démarrage
@@ -1053,14 +1052,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "Embarque ffmpeg, mediainfo, dovi_tool et hdr10plus_tool "
-            "dans l'AppImage. Produit Mediarecode-<arch>_allinc.AppImage. "
+            "dans l'AppImage. Produit Muxiveo-<arch>_allinc.AppImage. "
             "Au premier lancement, seule la configuration est initialisée."
         ),
     )
     p.add_argument(
         "--skip-pyinstaller",
         action="store_true",
-        help="Réutilise le bundle PyInstaller existant dans dist/mediarecode/",
+        help="Réutilise le bundle PyInstaller existant dans dist/Muxiveo/",
     )
     p.add_argument(
         "--arch",
@@ -1100,7 +1099,7 @@ def main() -> None:
 
     print(_c("1;34", """
 ╔══════════════════════════════════════════╗
-║      Mediarecode — AppImage Builder      ║
+║      Muxiveo — AppImage Builder      ║
 ╚══════════════════════════════════════════╝
 """))
     info(f"Architecture  : {arch}")
@@ -1146,7 +1145,7 @@ def main() -> None:
     print(f"    \"{final_appimage}\"\n")
     if allinc:
         info("Mode all-inclusive : au 1er lancement, seule la configuration")
-        info("est initialisée (~/.config/mediarecode/config.ini).")
+        info("est initialisée (~/.config/Muxiveo/config.ini).")
         if zsync_path:
             info("Pour activer les mises à jour automatiques, uploadez sur GitHub Releases :")
             info(f"  • {final_appimage.name}")
@@ -1155,7 +1154,7 @@ def main() -> None:
             info("zsyncmake absent — mises à jour automatiques désactivées (upload .zsync manquant).")
     else:
         info("Au 1er lancement, le setup s'exécute si")
-        info("~/.config/mediarecode/config.ini est absent.")
+        info("~/.config/Muxiveo/config.ini est absent.")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from cli.constants import FLAG_NAMES, TRACK_TYPES
+from core.version import APP_NAME, APP_SCHEMA_BASE_URL
 
 
 def _flag_properties() -> dict[str, dict[str, str]]:
@@ -103,8 +104,8 @@ def build_cli_json_schema() -> dict[str, Any]:
     flag_properties = _flag_properties()
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$id": "https://mediarecode.local/schema/cli-job-v1.json",
-        "title": "Mediarecode CLI job v1",
+        "$id": f"{APP_SCHEMA_BASE_URL}/cli-job-v1.json",
+        "title": f"{APP_NAME} CLI job v1",
         "type": "object",
         "additionalProperties": True,
         "required": ["version"],
@@ -246,7 +247,7 @@ def build_cli_json_schema() -> dict[str, Any]:
 def build_cli_json_schema_bundle() -> dict[str, Any]:
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "Mediarecode CLI schemas",
+        "title": "Muxiveo CLI schemas",
         "oneOf": [
             build_cli_json_schema(),
             build_exact_job_schema_v1(),
@@ -259,8 +260,8 @@ def build_exact_job_schema_v1() -> dict[str, Any]:
     """Schema for exact remux jobs used as strict reusable templates."""
     base = build_cli_json_schema()
     schema = dict(base)
-    schema["$id"] = "https://mediarecode.local/schema/exact-job-v1.json"
-    schema["title"] = "Mediarecode exact job v1"
+    schema["$id"] = f"{APP_SCHEMA_BASE_URL}/exact-job-v1.json"
+    schema["title"] = f"{APP_NAME} exact job v1"
     schema["properties"] = dict(base["properties"])
     schema["properties"]["version"] = {"const": 1}
     schema["properties"]["kind"] = {"const": "exact-job"}
@@ -338,8 +339,8 @@ def build_decision_profile_schema_v1() -> dict[str, Any]:
     }
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$id": "https://mediarecode.local/schema/decision-profile-v1.json",
-        "title": "Mediarecode decision profile v1",
+        "$id": f"{APP_SCHEMA_BASE_URL}/decision-profile-v1.json",
+        "title": f"{APP_NAME} decision profile v1",
         "type": "object",
         "additionalProperties": True,
         "required": ["version", "kind", "name"],

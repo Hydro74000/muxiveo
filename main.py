@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-main.py — Point d'entrée de l'application Mediarecode.
+main.py — Point d'entrée de l'application Muxiveo.
 
 Lance la MainWindow PySide6 après initialisation de la configuration.
 """
@@ -20,7 +20,7 @@ from PySide6.QtWidgets import QMessageBox, QPushButton
 
 from core.config import AppConfig
 from core.i18n import set_current_language, translate_text
-from core.version import APP_VERSION
+from core.version import APP_NAME, APP_VERSION
 from ui.design_system import DesignSystem
 
 
@@ -112,9 +112,9 @@ def main(argv: list[str] | None = None) -> int:
         app = QApplication(argv)
     else:
         app = app_instance
-    app.setApplicationName("Mediarecode")
+    app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
-    app.setOrganizationName("mediarecode")
+    app.setOrganizationName(APP_NAME)
 
     # Police par défaut propre
     default_font = QFont("Segoe UI", 10) if sys.platform == "win32" else QFont("SF Pro Text", 10)

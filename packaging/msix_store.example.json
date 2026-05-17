@@ -1,7 +1,7 @@
 {
-  "identity": "PartnerCenterPublisher.Mediarecode",
+  "identity": "PartnerCenterPublisher.Muxiveo",
   "publisher": "CN=12345678-ABCD-1234-ABCD-1234567890AB",
   "publisher_display_name": "Hydro74000",
-  "description": "Mediarecode video workflow",
-  "display_name": "Mediarecode"
+  "description": "Muxiveo video workflow",
+  "display_name": "Muxiveo"
 }

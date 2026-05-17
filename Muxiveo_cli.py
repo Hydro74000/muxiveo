@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mediarecode CLI launcher."""
+"""Muxiveo CLI launcher."""
 
 from __future__ import annotations
 
