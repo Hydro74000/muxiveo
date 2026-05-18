@@ -3,8 +3,8 @@
 launcher.py â€” Point d'entrée packagé de Muxiveo.
 
 Vérifie la présence de config.ini dans le dossier de configuration utilisateur :
-  Linux / macOS  â†’ $XDG_CONFIG_HOME/Muxiveo/config.ini  (défaut : ~/.config/â€¦)
-  Windows frozen â†’ %APPDATA%\\Muxiveo\\config.ini
+  Linux / macOS  â†’ $XDG_CONFIG_HOME/muxiveo/config.ini  (défaut : ~/.config/â€¦)
+  Windows frozen â†’ %APPDATA%\\muxiveo\\config.ini
   Windows dev    â†’ racine du projet
 
 Si absent â†’ lance le setup systÃ¨me, puis démarre l'application Qt.
@@ -22,7 +22,7 @@ from pathlib import Path
 try:
     from core.version import APP_CONFIG_DIR_NAME, APP_VERSION
 except Exception:
-    APP_CONFIG_DIR_NAME = "Muxiveo"
+    APP_CONFIG_DIR_NAME = "muxiveo"
     APP_VERSION = "0.0.0"
 
 
@@ -107,8 +107,8 @@ def _windows_config_dir() -> Path:
 def _get_config_path() -> Path:
     """
     Retourne le chemin de config.ini selon la plateforme :
-    - Linux / macOS  â†’ ~/.config/Muxiveo/config.ini  (XDG)
-    - Windows frozen â†’ %APPDATA%\\Muxiveo\\config.ini
+    - Linux / macOS  â†’ ~/.config/muxiveo/config.ini  (XDG)
+    - Windows frozen â†’ %APPDATA%\\muxiveo\\config.ini
     - Windows dev    â†’ racine du projet
     """
     if sys.platform != "win32":

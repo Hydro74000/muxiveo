@@ -27,7 +27,7 @@ Un profil décisionnel `version: 1` peut couvrir :
 Les profils GUI sont enregistrés ici :
 
 ```text
-<dossier de config Muxiveo>/profiles/decision/
+<dossier de config muxiveo>/profiles/decision/
 ```
 
 ## Éditeur low-code
@@ -278,7 +278,7 @@ muxiveo --cli run --profile profil.json -i source.mkv -o sortie.mkv
 
 Vous pouvez donner un chemin complet ou simplement le nom d'un profil sauvegardé
 dans le dossier utilisateur. L'extension `.json` est optionnelle : `--profile BestOfAll`
-cherchera aussi `BestOfAll.json` dans `<dossier de config Muxiveo>/profiles/decision/`.
+cherchera aussi `BestOfAll.json` dans `<dossier de config muxiveo>/profiles/decision/`.
 
 En batch dossier :
 

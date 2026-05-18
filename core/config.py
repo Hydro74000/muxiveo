@@ -27,7 +27,11 @@ from PySide6.QtCore import QSettings, QStandardPaths
 
 from core.lang_tags import Rfc5646LanguageTags
 from core.subprocess_utils import subprocess_text_kwargs
-from core.version import APP_CONFIG_DIR_NAME, APP_ENV_PREFIX, APP_NAME, APP_TEMP_WORK_DIR_NAME
+from core.version import (
+    APP_CONFIG_DIR_NAME,
+    APP_ENV_PREFIX,
+    APP_TEMP_WORK_DIR_NAME,
+)
 from core.workflows.common.ffmpeg_runtime import (
     default_ffmpeg_thread_count as _default_ffmpeg_thread_count,
     normalize_ffmpeg_thread_count as _normalize_ffmpeg_thread_count,
@@ -45,8 +49,8 @@ from core.workdir import (
 # Chemin du fichier config.ini
 # ---------------------------------------------------------------------------
 
-# Linux/macOS : config.ini dans le dossier XDG user (~/.config/Muxiveo).
-# Windows frozen : config.ini dans %APPDATA%\\Muxiveo.
+# Linux/macOS : config.ini dans le dossier XDG user (~/.config/muxiveo).
+# Windows frozen : config.ini dans %APPDATA%\\muxiveo.
 # Windows dev : config.ini à la racine du projet.
 def _windows_config_dir() -> Path:
     appdata = os.environ.get("APPDATA")
@@ -58,8 +62,8 @@ def _windows_config_dir() -> Path:
 def _resolve_ini_path() -> Path:
     """
     Résout le chemin de config.ini selon la plateforme et le contexte :
-    - Linux / macOS  → ~/.config/Muxiveo/config.ini  (XDG, dev ET frozen)
-    - Windows frozen → %APPDATA%\\Muxiveo\\config.ini
+    - Linux / macOS  → ~/.config/muxiveo/config.ini  (XDG, dev ET frozen)
+    - Windows frozen → %APPDATA%\\muxiveo\\config.ini
     - Windows dev    → racine du projet (parent de core/)
 
     Sur Linux/macOS, on utilise toujours le chemin XDG — y compris en mode
@@ -897,8 +901,8 @@ class AppConfig:
     documenté au lieu de retomber sur une ancienne valeur QSettings.
     """
 
-    _SETTINGS_ORG = APP_NAME
-    _SETTINGS_APP = APP_NAME
+    _SETTINGS_ORG = APP_CONFIG_DIR_NAME
+    _SETTINGS_APP = APP_CONFIG_DIR_NAME
 
     def __init__(self) -> None:
         if _is_windows():

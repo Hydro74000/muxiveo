@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core.lang_tags import Rfc5646LanguageTags
+from core.version import APP_CONFIG_DIR_NAME
 
 # ---------------------------------------------------------------------------
 # Terminal colours (no external deps)
@@ -473,8 +474,8 @@ def _default_prefix() -> Path:
 def _windows_config_dir() -> Path:
     appdata = os.environ.get("APPDATA")
     if appdata:
-        return Path(appdata) / "Muxiveo"
-    return Path.home() / "AppData" / "Roaming" / "Muxiveo"
+        return Path(appdata) / APP_CONFIG_DIR_NAME
+    return Path.home() / "AppData" / "Roaming" / APP_CONFIG_DIR_NAME
 
 
 def _is_windows_frozen() -> bool:
@@ -539,7 +540,7 @@ def _config_ini_path() -> Path:
             return _windows_config_dir() / "config.ini"
         return Path(__file__).parent / "config.ini"
     xdg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    return xdg / "Muxiveo" / "config.ini"
+    return xdg / APP_CONFIG_DIR_NAME / "config.ini"
 
 
 def _dedupe_paths(paths: list[Path]) -> list[Path]:

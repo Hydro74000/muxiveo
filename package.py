@@ -3040,7 +3040,7 @@ def build_windows(skip_wine: bool, dest: str | None = None, version_tag: str | N
     print(f"""
   Distribuer :
     {final_installer.name}
-  Au premier lancement (sans config.ini dans %APPDATA%\\Muxiveo),
+  Au premier lancement (sans config.ini dans %APPDATA%\\muxiveo),
   le setup s'exécute pour installer les outils externes.
 """)
 

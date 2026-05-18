@@ -92,7 +92,7 @@ Le script `setup.py` installe automatiquement :
 | Notes plateforme | Debian/Ubuntu via `apt`, Fedora/RHEL via `dnf`, macOS via Homebrew, Windows via `winget` + binaires locaux |
 
 > `setup.py` renseigne `config.ini` avec les chemins détectés.  
-> Emplacement de `config.ini` : Linux/macOS `~/.config/Muxiveo/config.ini` (XDG), Windows dev `./config.ini`, Windows packagé `%APPDATA%\Muxiveo\config.ini`.
+> Emplacement de `config.ini` : Linux/macOS `~/.config/muxiveo/config.ini` (XDG), Windows dev `./config.ini`, Windows packagé `%APPDATA%\muxiveo\config.ini`.
 
 | Plateforme | Commande | Détails |
 |------------|----------|---------|
@@ -255,7 +255,7 @@ Un profil décisionnel `version: 1` peut couvrir :
 Les profils GUI sont enregistrés ici :
 
 ```text
-<dossier de config Muxiveo>/profiles/decision/
+<dossier de config muxiveo>/profiles/decision/
 ```
 
 #### Éditeur low-code
@@ -496,7 +496,7 @@ muxiveo --cli preview --profile profil.json -i source.mkv --json
 muxiveo --cli run --profile profil.json -i source.mkv -o sortie.mkv
 ```
 
-Vous pouvez donner un chemin complet ou simplement le nom d'un profil sauvegardé dans le dossier utilisateur. L'extension `.json` est optionnelle : `--profile BestOfAll` cherchera aussi `BestOfAll.json` dans `<dossier de config Muxiveo>/profiles/decision/`.
+Vous pouvez donner un chemin complet ou simplement le nom d'un profil sauvegardé dans le dossier utilisateur. L'extension `.json` est optionnelle : `--profile BestOfAll` cherchera aussi `BestOfAll.json` dans `<dossier de config muxiveo>/profiles/decision/`.
 
 En batch dossier :
 
@@ -591,7 +591,7 @@ Les tags de langue saisis (pistes audio, sous-titres) utilisent des codes RFC 56
 
 L'application résout ses paramètres dans cet ordre :
 
-1. `config.ini` (Linux/macOS : `~/.config/Muxiveo/config.ini` ; Windows dev : racine du projet ; Windows packagé : `%APPDATA%\Muxiveo\config.ini`)
+1. `config.ini` (Linux/macOS : `~/.config/muxiveo/config.ini` ; Windows dev : racine du projet ; Windows packagé : `%APPDATA%\muxiveo\config.ini`)
 2. les valeurs persistées par l'interface (`QSettings`)
 3. les valeurs par défaut internes
 

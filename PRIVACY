@@ -26,9 +26,9 @@ Fichiers de sortie generes : MKV final, fichiers `.nfo` optionnels et autres art
 4. Donnees de configuration
 Muxiveo persiste ses reglages localement, notamment via `config.ini` et les reglages d'interface. Les emplacements documentes sont :
 
-Linux/macOS : `~/.config/Muxiveo/config.ini`.
+Linux/macOS : `~/.config/muxiveo/config.ini`.
 Windows en developpement : `./config.ini`.
-Windows package : `%APPDATA%\Muxiveo\config.ini`.
+Windows package : `%APPDATA%\muxiveo\config.ini`.
 
 Ces reglages peuvent inclure les dossiers de travail et de sortie, le theme, la langue, le panneau de demarrage, les chemins d'outils externes, les preferences d'encodage, les options de buffer RAM, la generation de `.nfo`, ainsi que les identifiants TMDB que vous configurez.
 

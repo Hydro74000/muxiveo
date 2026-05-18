@@ -188,7 +188,7 @@ def test_cli_profile_preview_on_synthetic_media(tmp_path: Path) -> None:
 def test_cli_profile_argument_falls_back_to_user_profile_dir_without_json_suffix(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     xdg_home = tmp_path / "xdg"
-    profile_dir = xdg_home / "Muxiveo" / "profiles" / "decision"
+    profile_dir = xdg_home / "muxiveo" / "profiles" / "decision"
     profile_dir.mkdir(parents=True)
     (profile_dir / "SavedProfile.json").write_text(
         json.dumps(

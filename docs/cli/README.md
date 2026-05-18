@@ -187,7 +187,7 @@ Muxiveo-cli batch --profile profil.json --input-dir "Serie" --recursive --output
 ```
 
 `--profile` accepte soit un chemin complet, soit le nom d'un profil enregistré
-dans `<dossier de config Muxiveo>/profiles/decision/`. L'extension `.json`
+dans `<dossier de config muxiveo>/profiles/decision/`. L'extension `.json`
 est optionnelle : `--profile BestOfAll` cherchera aussi `BestOfAll.json`.
 
 Keywords de renommage disponibles :
@@ -333,7 +333,7 @@ Options utiles :
 | `--no-cover` | applique les tags TMDB mais n'ajoute pas la cover |
 | `--no-attach` | n'inclut aucun attachment source, aucun extra attachment, ni cover TMDB |
 
-Sans `--tmdb-apikey`, la clé est lue dans `~/.config/Muxiveo/config.ini`
+Sans `--tmdb-apikey`, la clé est lue dans `~/.config/muxiveo/config.ini`
 (`metadata/tmdb_api_key` ou `tmdb_bearer_token`). À défaut, la variable
 d'environnement `MUXIVEO_TMDB_BEARER_TOKEN` puis un token Bearer embarqué
 servent de repli (parité GUI), donc `--auto-tmdb` fonctionne sans configuration

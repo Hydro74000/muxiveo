@@ -1169,7 +1169,7 @@ def main() -> None:
     print(f"    \"{final_appimage}\"\n")
     if allinc:
         info("Mode all-inclusive : au 1er lancement, seule la configuration")
-        info("est initialisée (~/.config/Muxiveo/config.ini).")
+        info("est initialisée (~/.config/muxiveo/config.ini).")
         if zsync_path:
             info("Pour activer les mises à jour automatiques, uploadez sur GitHub Releases :")
             info(f"  • {final_appimage.name}")
@@ -1178,7 +1178,7 @@ def main() -> None:
             info("zsyncmake absent — mises à jour automatiques désactivées (upload .zsync manquant).")
     else:
         info("Au 1er lancement, le setup s'exécute si")
-        info("~/.config/Muxiveo/config.ini est absent.")
+        info("~/.config/muxiveo/config.ini est absent.")
 
 
 if __name__ == "__main__":

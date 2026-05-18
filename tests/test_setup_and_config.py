@@ -1183,7 +1183,7 @@ def test_setup_config_ini_path_uses_xdg_on_non_windows(tmp_path):
          patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg_dir)}, clear=False):
         path = setup_mod._config_ini_path()
 
-    assert path == xdg_dir / "Muxiveo" / "config.ini"
+    assert path == xdg_dir / "muxiveo" / "config.ini"
 
 
 def test_core_config_ini_path_uses_appdata_for_windows_frozen(tmp_path):
@@ -1195,7 +1195,7 @@ def test_core_config_ini_path_uses_appdata_for_windows_frozen(tmp_path):
          patch.dict(os.environ, {"APPDATA": str(appdata)}, clear=False):
         path = cfg_mod._resolve_ini_path()
 
-    assert path == appdata / "Muxiveo" / "config.ini"
+    assert path == appdata / "muxiveo" / "config.ini"
 
 
 def test_core_config_ini_path_uses_project_root_for_windows_dev():
@@ -1217,8 +1217,28 @@ def test_app_data_dir_falls_back_to_appdata_on_windows(tmp_path):
          patch.object(cfg_mod.QStandardPaths, "writableLocation", return_value=""):
         path = cfg_mod._app_data_dir()
 
-    assert path == appdata / "Muxiveo"
+    assert path == appdata / "muxiveo"
     assert path.is_dir()
+
+
+def test_app_config_uses_lowercase_qsettings_namespace_on_non_windows(tmp_path):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+
+    ini_path = tmp_path / "config.ini"
+    with patch("core.config.QSettings") as mock_qs, \
+         patch.object(cfg_mod.sys, "platform", "linux"), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path), \
+         patch("core.config._app_data_dir", return_value=tmp_path):
+        mock_qs.return_value.value.return_value = None
+        AppConfig()
+
+        mock_qs.assert_called_with(
+            mock_qs.Format.IniFormat,
+            mock_qs.Scope.UserScope,
+            "muxiveo",
+            "muxiveo",
+        )
 
 
 def test_default_work_dir_uses_platform_temp_dir(tmp_path):

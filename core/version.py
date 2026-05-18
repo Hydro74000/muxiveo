@@ -6,7 +6,7 @@ from __future__ import annotations
 
 APP_NAME = "Muxiveo"
 APP_EXECUTABLE_NAME = "muxiveo"
-APP_CONFIG_DIR_NAME = "Muxiveo"
+APP_CONFIG_DIR_NAME = "muxiveo"
 APP_TEMP_WORK_DIR_NAME = "Muxiveo_work"
 APP_VERBOSE_LOG_PREFIX = "Muxiveo-verbose"
 APP_ENV_PREFIX = "MUXIVEO"
