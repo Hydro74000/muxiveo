@@ -111,7 +111,7 @@ _MSIX_TIMESTAMP_URL = os.environ.get("MUXIVEO_MSIX_TIMESTAMP_URL", "http://times
 _MSIX_STORE_CONFIG = os.environ.get("MUXIVEO_MSIX_STORE_CONFIG", "").strip()
 _WINDOWS_SDK_WINGET_ID = os.environ.get("MUXIVEO_WINDOWS_SDK_WINGET_ID", "Microsoft.WindowsSDK").strip() or "Microsoft.WindowsSDK"
 _WINDOWS_SDK_INSTALLER = os.environ.get("MUXIVEO_WINDOWS_SDK_INSTALLER", "").strip()
-_WINDOWS_EXE_NAME = f"{APP_EXECUTABLE_NAME}.exe"
+_WINDOWS_EXE_NAME = f"{APP_NAME}.exe"
 # Exception MSIX : nom technique distinct du branding/artefacts classiques.
 _MSIX_PACKAGE_NAME = re.sub(
     r"\s+",
@@ -149,7 +149,7 @@ def _rename_windows_executable(exe_path: Path) -> Path:
 def _ensure_windows_bundle_entrypoint(bundle_dir: Path) -> Path:
     """Normalise le nom de l'exécutable Windows dans un bundle onedir."""
     exe_path = bundle_dir / _WINDOWS_EXE_NAME
-    legacy_exe = bundle_dir / f"{APP_NAME}.exe"
+    legacy_exe = bundle_dir / f"{APP_EXECUTABLE_NAME}.exe"
 
     if not exe_path.exists() and legacy_exe.exists():
         legacy_exe.rename(exe_path)
@@ -235,7 +235,7 @@ VSVersionInfo(
           StringStruct('CompanyName', 'Muxiveo'),
           StringStruct('FileDescription', 'Muxiveo video workflow'),
           StringStruct('FileVersion', '{version_str}'),
-          StringStruct('InternalName', '{APP_EXECUTABLE_NAME}'),
+          StringStruct('InternalName', '{APP_NAME}'),
           StringStruct('OriginalFilename', '{_WINDOWS_EXE_NAME}'),
           StringStruct('ProductName', '{APP_NAME}'),
           StringStruct('ProductVersion', '{version_str}')
@@ -2536,7 +2536,7 @@ Unicode true
 
 !define APP_NAME      "{app_name}"
 !define APP_VERSION   "{app_version}"
-!define EXE_NAME      "muxiveo.exe"
+!define EXE_NAME      "Muxiveo.exe"
 !define INSTALL_DIR   "$PROGRAMFILES64\\Muxiveo"
 !define UNINSTALL_KEY "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Muxiveo"
 
@@ -2597,7 +2597,7 @@ Section "Uninstall"
   Delete "$DESKTOP\\Muxiveo.lnk"
 
   ; Suppression des associations "Open with..."
-  DeleteRegKey HKLM "Software\\Classes\\Applications\\muxiveo.exe"
+  DeleteRegKey HKLM "Software\\Classes\\Applications\\Muxiveo.exe"
 
   ; Suppression des clés registre 64 bits
   SetRegView 64

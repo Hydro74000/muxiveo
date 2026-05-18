@@ -21,13 +21,13 @@ class TestLauncherWindowsControlledFolderAccess:
                 sys.modules["core.logging"] = previous_logging
 
     def test_restart_current_app_uses_sys_executable_when_frozen(self):
-        with patch.object(launcher.sys, "executable", r"C:\Apps\Muxiveo\muxiveo.exe"), \
+        with patch.object(launcher.sys, "executable", r"C:\Apps\Muxiveo\Muxiveo.exe"), \
              patch.object(launcher.sys, "frozen", True, create=True), \
              patch("launcher.subprocess.Popen") as mock_popen:
             assert launcher._restart_current_app() is True
 
         mock_popen.assert_called_once_with(
-            [r"C:\Apps\Muxiveo\muxiveo.exe"]
+            [r"C:\Apps\Muxiveo\Muxiveo.exe"]
         )
 
     def test_first_time_setup_shows_popup_after_cfa_update(self, tmp_path):

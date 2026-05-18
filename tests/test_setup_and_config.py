@@ -1025,7 +1025,7 @@ class TestWindowsControlledFolderAccessSetup:
 
         bundle_dir = tmp_path / "bundle"
         bundle_dir.mkdir()
-        app_exe = bundle_dir / "muxiveo.exe"
+        app_exe = bundle_dir / "Muxiveo.exe"
         app_exe.write_text("", encoding="utf-8")
 
         ffmpeg = tmp_path / "ffmpeg.exe"

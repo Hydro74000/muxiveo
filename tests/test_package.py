@@ -99,7 +99,7 @@ def test_appstream_metainfo_advertises_homepage_and_desktop_launchable():
 def test_windows_supported_types_block_registers_open_with_entries():
     with patch.object(package_mod, "ACCEPTED_EXTENSIONS", frozenset({".mkv", ".srt"})):
         block = package_mod._windows_supported_types_block()
-    assert 'Applications\\\\muxiveo.exe\\\\shell\\\\open\\\\command' in block
+    assert 'Applications\\\\Muxiveo.exe\\\\shell\\\\open\\\\command' in block
     assert '.mkv' in block
     assert '.srt' in block
 
@@ -142,9 +142,8 @@ def test_build_pyinstaller_uses_windowed_on_native_windows(tmp_path):
     assert commands
     assert "--windowed" in commands[0]
     assert "--console" not in commands[0]
-    assert result == tmp_path / "dist" / "Muxiveo" / "muxiveo.exe"
-    assert (tmp_path / "dist" / "Muxiveo" / "muxiveo.exe").exists()
-    assert not (tmp_path / "dist" / "Muxiveo" / "Muxiveo.exe").exists()
+    assert result == tmp_path / "dist" / "Muxiveo" / "Muxiveo.exe"
+    assert (tmp_path / "dist" / "Muxiveo" / "Muxiveo.exe").exists()
 
 
 def test_build_pyinstaller_lowercases_linux_entrypoints(tmp_path):
@@ -402,7 +401,7 @@ def test_msix_manifest_contains_full_trust_metadata():
          patch.object(package_mod, "_msix_processor_architecture", return_value="x64"):
         manifest = package_mod._msix_manifest_content(
             "1.3.2",
-            r"VFS\ProgramFilesX64\Muxiveo\muxiveo.exe",
+            r"VFS\ProgramFilesX64\Muxiveo\Muxiveo.exe",
         )
 
     assert 'Name="Hydro74000.Muxiveo"' in manifest
@@ -411,7 +410,7 @@ def test_msix_manifest_contains_full_trust_metadata():
     assert 'ProcessorArchitecture="x64"' in manifest
     assert 'EntryPoint="Windows.FullTrustApplication"' in manifest
     assert '<rescap:Capability Name="runFullTrust" />' in manifest
-    assert r'Executable="VFS\ProgramFilesX64\Muxiveo\muxiveo.exe"' in manifest
+    assert r'Executable="VFS\ProgramFilesX64\Muxiveo\Muxiveo.exe"' in manifest
     assert 'xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"' in manifest
     assert '<desktop:Extension Category="windows.fullTrustProcess"' in manifest
     assert "<desktop:FullTrustProcess />" in manifest
@@ -429,7 +428,7 @@ def test_msix_manifest_forces_revision_zero():
          patch.object(package_mod, "_msix_processor_architecture", return_value="x64"):
         manifest = package_mod._msix_manifest_content(
             "1.4.0.1",
-            r"VFS\ProgramFilesX64\Muxiveo\muxiveo.exe",
+            r"VFS\ProgramFilesX64\Muxiveo\Muxiveo.exe",
         )
 
     assert 'Version="1.4.0.0"' in manifest
@@ -486,8 +485,7 @@ def test_stage_msix_layout_embeds_file_associations_and_bundle(tmp_path):
     manifest = (layout_dir / "AppxManifest.xml").read_text(encoding="utf-8")
     assert '<uap:Extension Category="windows.fileTypeAssociation">' in manifest
     assert '<uap:FileType>.mkv</uap:FileType>' in manifest
-    assert (layout_dir / "VFS" / "ProgramFilesX64" / "AOTRMuxiveo" / "muxiveo.exe").exists()
-    assert not (layout_dir / "VFS" / "ProgramFilesX64" / "AOTRMuxiveo" / "Muxiveo.exe").exists()
+    assert (layout_dir / "VFS" / "ProgramFilesX64" / "AOTRMuxiveo" / "Muxiveo.exe").exists()
 
 
 def test_build_msixupload_wraps_msix_for_partner_center(tmp_path):

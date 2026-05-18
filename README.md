@@ -852,7 +852,7 @@ Le CLI est non interactif : une sortie existante est refusée sauf `--force`. Le
 
 Les templates JSON peuvent sélectionner les pistes par type, langue et flags d'origine, normaliser les langues BCP-47/RFC5646, renommer les pistes via patterns, ajouter/importer des chapitres, demander TMDB et traiter un batch. Trois configs d'exemple sont fournies dans `docs/cli/` : simple, middle et complexe toutes options.
 
-Dans les artefacts packagés, il n'y a pas de binaire CLI séparé : utilisez `muxiveo --cli ...` sur Linux/AppImage/macOS, ou `muxiveo.exe --cli ...` sur Windows. En environnement source, utilisez `./muxiveo --cli ...` ou `python3 main.py --cli ...`.
+Dans les artefacts packagés, il n'y a pas de binaire CLI séparé : utilisez `muxiveo --cli ...` sur Linux/AppImage/macOS, ou `Muxiveo.exe --cli ...` sur Windows. En environnement source, utilisez `./muxiveo --cli ...` ou `python3 main.py --cli ...`.
 
 ## Outils externes
 
@@ -867,7 +867,7 @@ Dans les artefacts packagés, il n'y a pas de binaire CLI séparé : utilisez `m
 
 ## Troubleshooting windows
 
-Cette notice ne concerne que les lancement depuis muxiveo.exe
+Cette notice ne concerne que les lancement depuis Muxiveo.exe
 
 Le lancement via python (py main.py) n'est pas concerné.
 
@@ -883,7 +883,7 @@ Quand cette protection est active, Muxiveo peut être empêché d'écrire direct
 
 Symptômes fréquents :
 
-- popup **Sécurité Windows** indiquant que `muxiveo.exe` ou un outil comme `ffmpeg.exe` a été bloqué ;
+- popup **Sécurité Windows** indiquant que `Muxiveo.exe` ou un outil comme `ffmpeg.exe` a été bloqué ;
 - erreur `No such file or directory` lors d'un export vers `Videos` ou `Documents` ;
 - succès de l'export vers un autre dossier non protégé, comme `Desktop` ou `%TEMP%`.
 
@@ -897,7 +897,7 @@ Si vous refusez l'exception ou si vous devez la configurer manuellement :
 2. Allez dans **Protection contre les virus et menaces**.
 3. Ouvrez **Protection contre les ransomwares** puis **Gérer la protection contre les ransomwares**.
 4. Entrez dans **Autoriser une application via l'accès contrôlé aux dossiers**.
-5. Ajoutez `muxiveo.exe`.
+5. Ajoutez `Muxiveo.exe`.
 6. Si nécessaire, ajoutez aussi `ffmpeg.exe`.
 
 Après ajout à l'allowlist, redémarrez Muxiveo avant de retester un export vers `Videos` ou `Documents`.
