@@ -111,9 +111,10 @@ def bind_temp_cleanup(signals: TaskSignals, cleanup_paths: list[Path]) -> None:
             except OSError:
                 pass
 
-    signals.finished.connect(_cleanup)
-    signals.failed.connect(_cleanup)
-    signals.cancelled.connect(_cleanup)
+    cleanup = signals.retain_callback(_cleanup)
+    signals.finished.connect(cleanup)
+    signals.failed.connect(cleanup)
+    signals.cancelled.connect(cleanup)
 
 
 __all__ = [

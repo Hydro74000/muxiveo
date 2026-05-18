@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import plistlib
 import subprocess
 import struct
@@ -165,6 +166,39 @@ def test_build_pyinstaller_lowercases_linux_entrypoints(tmp_path):
     assert (tmp_path / "dist" / "Muxiveo" / "muxiveo").exists()
     assert not (tmp_path / "dist" / "Muxiveo" / "Muxiveo").exists()
     assert not (tmp_path / "dist" / "Muxiveo" / ("muxiveo" + "-cli")).exists()
+    assert commands[0][commands[0].index("--name") + 1] == "Muxiveo"
+
+
+def test_rename_unix_executable_handles_existing_samefile_target(tmp_path):
+    exe_path = tmp_path / "Muxiveo"
+    target = tmp_path / "muxiveo"
+    exe_path.write_text("bin", encoding="utf-8")
+    os.link(exe_path, target)
+
+    with patch.object(package_mod, "OS", "Linux"):
+        result = package_mod._rename_unix_executable(exe_path)
+
+    assert result == target
+    assert target.read_text(encoding="utf-8") == "bin"
+    assert not exe_path.exists()
+
+
+def test_build_pyinstaller_accepts_lowercase_macos_entrypoint(tmp_path):
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, cwd=None):
+        commands.append(cmd)
+        exe_path = tmp_path / "dist" / "Muxiveo.app" / "Contents" / "MacOS" / "muxiveo"
+        exe_path.parent.mkdir(parents=True, exist_ok=True)
+        exe_path.write_text("", encoding="utf-8")
+
+    with patch.object(package_mod, "ROOT", tmp_path), \
+         patch.object(package_mod, "OS", "Darwin"), \
+         patch.object(package_mod, "DATA_FILES", []), \
+         patch.object(package_mod, "_run", side_effect=fake_run):
+        result = package_mod._build_pyinstaller(onefile=False)
+
+    assert result == tmp_path / "dist" / "Muxiveo.app" / "Contents" / "MacOS" / "muxiveo"
     assert commands[0][commands[0].index("--name") + 1] == "Muxiveo"
 
 
@@ -415,7 +449,7 @@ def test_msix_manifest_contains_full_trust_metadata():
     assert '<desktop:Extension Category="windows.fullTrustProcess"' in manifest
     assert "<desktop:FullTrustProcess />" in manifest
     assert '<uap:Extension Category="windows.fileTypeAssociation">' in manifest
-    assert '<uap:FileTypeAssociation Name="Muxiveo">' in manifest
+    assert '<uap:FileTypeAssociation Name="muxiveo">' in manifest
     assert '<uap:FileType>.mkv</uap:FileType>' in manifest
     assert '<uap:FileType>.srt</uap:FileType>' in manifest
 
@@ -484,6 +518,7 @@ def test_stage_msix_layout_embeds_file_associations_and_bundle(tmp_path):
 
     manifest = (layout_dir / "AppxManifest.xml").read_text(encoding="utf-8")
     assert '<uap:Extension Category="windows.fileTypeAssociation">' in manifest
+    assert '<uap:FileTypeAssociation Name="muxiveo">' in manifest
     assert '<uap:FileType>.mkv</uap:FileType>' in manifest
     assert (layout_dir / "VFS" / "ProgramFilesX64" / "AOTRMuxiveo" / "Muxiveo.exe").exists()
 

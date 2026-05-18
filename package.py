@@ -118,6 +118,7 @@ _MSIX_PACKAGE_NAME = re.sub(
     "",
     os.environ.get("MUXIVEO_MSIX_PACKAGE_NAME", "AOTRMuxiveo").strip(),
 ) or "AOTRMuxiveo"
+_MSIX_FILE_TYPE_ASSOCIATION_NAME = "muxiveo"
 
 
 def _rename_unix_executable(exe_path: Path) -> Path:
@@ -127,6 +128,17 @@ def _rename_unix_executable(exe_path: Path) -> Path:
 
     target = exe_path.with_name(APP_EXECUTABLE_NAME)
     if target.exists() or target.is_symlink():
+        try:
+            if exe_path.exists() and exe_path.samefile(target):
+                temp = target.with_name(f".{target.name}.casefix")
+                if temp.exists() or temp.is_symlink():
+                    temp.unlink()
+                exe_path.rename(temp)
+                temp.rename(target)
+                _ok(f"Exécutable Unix renommé : {target.name}")
+                return target
+        except OSError:
+            pass
         target.unlink()
     exe_path.rename(target)
     _ok(f"Exécutable Unix renommé : {target.name}")
@@ -134,7 +146,7 @@ def _rename_unix_executable(exe_path: Path) -> Path:
 
 
 def _rename_windows_executable(exe_path: Path) -> Path:
-    """Keep the Windows executable lowercase while preserving branded folders."""
+    """Keep the Windows executable branded while preserving existing folders."""
     if OS != "Windows" or exe_path.name == _WINDOWS_EXE_NAME:
         return exe_path
 
@@ -144,6 +156,71 @@ def _rename_windows_executable(exe_path: Path) -> Path:
     exe_path.rename(target)
     _ok(f"Exécutable Windows renommé : {target.name}")
     return target
+
+
+def _resolve_macos_bundle_executable(app_path: Path) -> Path:
+    """Retourne l'exécutable interne d'un .app PyInstaller avant normalisation."""
+    macos_dir = app_path / "Contents" / "MacOS"
+    candidates: list[Path] = []
+    fallback_candidates: list[Path] = []
+
+    def _exact_child(name: str) -> Path | None:
+        if macos_dir.exists():
+            for child in macos_dir.iterdir():
+                if child.name == name:
+                    return child
+        return None
+
+    def _add_candidate(name: object) -> None:
+        if not isinstance(name, str) or not name:
+            return
+        exact = _exact_child(name)
+        candidate = exact or macos_dir / name
+        if exact is not None and candidate not in candidates:
+            candidates.append(candidate)
+        elif exact is None and candidate not in fallback_candidates:
+            fallback_candidates.append(candidate)
+
+    _add_candidate(APP_NAME)
+    _add_candidate(APP_EXECUTABLE_NAME)
+
+    plist_path = app_path / "Contents" / "Info.plist"
+    if plist_path.exists():
+        try:
+            import plistlib
+
+            with plist_path.open("rb") as f:
+                plist = plistlib.load(f)
+            _add_candidate(plist.get("CFBundleExecutable"))
+        except Exception:
+            pass
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    for candidate in fallback_candidates:
+        if candidate.exists():
+            return candidate
+
+    if macos_dir.exists():
+        executables = [
+            path
+            for path in macos_dir.iterdir()
+            if path.is_file() and os.access(path, os.X_OK)
+        ]
+        if len(executables) == 1:
+            return executables[0]
+
+        files = [path for path in macos_dir.iterdir() if path.is_file()]
+        if len(files) == 1:
+            return files[0]
+
+    expected = ", ".join(str(candidate) for candidate in [*candidates, *fallback_candidates])
+    raise FileNotFoundError(
+        f"PyInstaller n'a pas produit d'exécutable macOS dans {macos_dir}"
+        + (f" (attendus : {expected})" if expected else "")
+    )
 
 
 def _ensure_windows_bundle_entrypoint(bundle_dir: Path) -> Path:
@@ -1188,7 +1265,7 @@ def _build_pyinstaller(onefile: bool) -> Path:
     elif OS == "Darwin":
         # --windowed + --name Muxiveo produit dist/Muxiveo.app,
         # puis l'exécutable interne est normalisé en muxiveo.
-        exe_path = ROOT / "dist" / "Muxiveo.app" / "Contents" / "MacOS" / "Muxiveo"
+        exe_path = _resolve_macos_bundle_executable(ROOT / "dist" / "Muxiveo.app")
     else:
         exe_name = "Muxiveo.exe" if OS == "Windows" else "Muxiveo"
         exe_path = ROOT / "dist" / "Muxiveo" / exe_name
@@ -1849,7 +1926,7 @@ def _msix_manifest_content(
           <desktop:FullTrustProcess />
         </desktop:Extension>
         <uap:Extension Category="windows.fileTypeAssociation">
-          <uap:FileTypeAssociation Name="Muxiveo">
+          <uap:FileTypeAssociation Name="{_MSIX_FILE_TYPE_ASSOCIATION_NAME}">
             <uap:DisplayName>{meta['display_name']}</uap:DisplayName>
             <uap:InfoTip>{meta['description']}</uap:InfoTip>
             <uap:SupportedFileTypes>

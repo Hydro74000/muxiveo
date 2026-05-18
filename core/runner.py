@@ -228,6 +228,12 @@ class TaskSignals(QObject):
         self._cancel_event = threading.Event()
         self._active_procs: list[subprocess.Popen] = []
         self._procs_lock   = threading.Lock()
+        self._retained_callbacks: list[Callable[..., object]] = []
+
+    def retain_callback(self, callback: Callable[..., object]) -> Callable[..., object]:
+        """Conserve un slot Python tant que les signaux de tâche existent."""
+        self._retained_callbacks.append(callback)
+        return callback
 
     # ------------------------------------------------------------------
     # API publique
