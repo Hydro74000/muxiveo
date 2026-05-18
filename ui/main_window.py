@@ -417,7 +417,7 @@ class _LogHeader(QWidget):
     """Barre d'en-tête cliquable du panneau de logs."""
     clicked = Signal()
 
-    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+    def mousePressEvent(self, event) -> None:
         self.clicked.emit()
         super().mousePressEvent(event)
 
@@ -1113,7 +1113,7 @@ class _NavButton(QWidget):
 
     # ------------------------------------------------------------------
 
-    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+    def mousePressEvent(self, event) -> None:
         self.clicked.emit()
         super().mousePressEvent(event)
 
@@ -2376,7 +2376,7 @@ class MainWindow(QMainWindow):
                         if self._op_encode_fps is not None and self._op_encode_fps > 0
                         else ""
                     )
-                    eta_s: float | None = None
+                    encode_eta_s: float | None = None
                     # Si ffmpeg a rapporté un fps instantané, l'utiliser
                     # directement : c'est déjà la moyenne glissante côté ffmpeg
                     # et c'est ce que l'utilisateur voit comme "fps". L'ETA
@@ -2386,7 +2386,7 @@ class MainWindow(QMainWindow):
                         and self._op_encode_fps > 0
                         and total_frames > self._op_encode_frame
                     ):
-                        eta_s = self._eta_tracker_frame.eta_from_speed(
+                        encode_eta_s = self._eta_tracker_frame.eta_from_speed(
                             float(total_frames),
                             float(self._op_encode_frame),
                             float(self._op_encode_fps),
@@ -2396,10 +2396,10 @@ class MainWindow(QMainWindow):
                         self._eta_tracker_frame.update(
                             float(self._op_encode_frame), time.monotonic()
                         )
-                        eta_s = self._eta_tracker_frame.eta(
+                        encode_eta_s = self._eta_tracker_frame.eta(
                             float(total_frames), float(self._op_encode_frame)
                         )
-                    eta_str = f"ETA {_fmt_eta(eta_s)}" if eta_s is not None else ""
+                    eta_str = f"ETA {_fmt_eta(encode_eta_s)}" if encode_eta_s is not None else ""
                     parts = [f"{pct}%", fps_str, eta_str]
                     self._prog_lbl.setText(self._format_progress_label(*parts))
                 return
@@ -2732,7 +2732,7 @@ class MainWindow(QMainWindow):
         if self._config.window_geometry:
             self.restoreGeometry(self._config.window_geometry)
 
-    def closeEvent(self, event) -> None:  # type: ignore[override]
+    def closeEvent(self, event) -> None:
         self._config.save_geometry(bytes(self.saveGeometry().data()))
         self._config.save()
         # Arrête proprement tous les ThreadPoolExecutor des pages enfants :

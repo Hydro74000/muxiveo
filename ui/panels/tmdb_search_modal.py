@@ -489,7 +489,7 @@ class TmdbSearchModal(QDialog):
         self._ok_btn.setEnabled(self._results_list.currentRow() >= 0)
         self._status_lbl.setText(f"⚠ {translate_text(msg)}")
 
-    def closeEvent(self, event) -> None:  # type: ignore[override]
+    def closeEvent(self, event) -> None:
         if self._worker and self._worker.isRunning():
             self._worker.quit()
             self._worker.wait()

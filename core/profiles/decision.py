@@ -104,7 +104,7 @@ def _json_default(value: Any) -> Any:
         return str(value)
     if isinstance(value, Enum):
         return value.value
-    if is_dataclass(value):
+    if is_dataclass(value) and not isinstance(value, type):
         return asdict(value)
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
@@ -566,9 +566,9 @@ def _condition_result(
             for item in items
         ]
         eligible = [result for result in results if result.eligible]
-        matched = [result for result in eligible if result.matched]
-        if matched:
-            return ConditionResult(True, True, max(result.score for result in matched))
+        any_matched = [result for result in eligible if result.matched]
+        if any_matched:
+            return ConditionResult(True, True, max(result.score for result in any_matched))
         return ConditionResult(bool(eligible), False, 0)
     if "not" in condition:
         result = _condition_result(
@@ -1294,7 +1294,7 @@ def track_summary(
     *,
     source_index_by_file_id: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
-    payload = {
+    payload: dict[str, Any] = {
         "source": _source_index_for_track(track, source_index_by_file_id),
         "id": track.mkv_tid,
         "entry_id": track.entry_id,

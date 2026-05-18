@@ -2821,12 +2821,12 @@ def _build_icns_from_png(src_png: Path, dest_icns: Path) -> Path | None:
     use_qt_backend = False
 
     try:
-        from PIL import Image as _PILImage  # type: ignore[import-not-found]
+        from PIL import Image as _PILImage  # pyright: ignore[reportMissingImports]
         pil_image = _PILImage
     except ImportError:
         try:
-            from PySide6.QtCore import Qt as _Qt  # type: ignore[import-not-found]
-            from PySide6.QtGui import QImage as _QImage  # type: ignore[import-not-found]
+            from PySide6.QtCore import Qt as _Qt
+            from PySide6.QtGui import QImage as _QImage
             qt_namespace = _Qt
             qimage_cls = _QImage
             use_qt_backend = True

@@ -2024,7 +2024,7 @@ def _extract_rpm_binary(archive_path: Path, binary_name: str, dest_dir: Path) ->
 def _extract_7z_binary(archive_path: Path, binary_name: str, dest_dir: Path) -> None:
     """Extrait ``binary_name`` d'une archive .7z via ``py7zr`` (Python pur)."""
     try:
-        import py7zr  # type: ignore[import-untyped]
+        import py7zr  # type: ignore[import-not-found]
     except ImportError as exc:
         raise RuntimeError(
             "py7zr required to extract .7z archives. "

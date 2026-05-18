@@ -154,7 +154,7 @@ class _TagEditDialog(QDialog):
         h.addWidget(rm_btn)
 
         self._rows_layout.addWidget(row)
-        self._rows.append((name_lbl, val_edit, row))  # type: ignore[arg-type]
+        self._rows.append((name_lbl, val_edit, row))
 
     def _add_new_row(self) -> None:
         """Ajoute une ligne avec combobox (noms standards) + value éditable."""
@@ -393,15 +393,15 @@ class _AttachmentNameButton(QPushButton):
             }}
         """)
 
-    def enterEvent(self, event) -> None:  # type: ignore[override]
+    def enterEvent(self, event) -> None:
         self.hover_moved.emit(QCursor.pos())
         super().enterEvent(event)
 
-    def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
+    def mouseMoveEvent(self, event) -> None:
         self.hover_moved.emit(event.globalPosition().toPoint())
         super().mouseMoveEvent(event)
 
-    def leaveEvent(self, event) -> None:  # type: ignore[override]
+    def leaveEvent(self, event) -> None:
         self.hover_left.emit()
         super().leaveEvent(event)
 
@@ -446,7 +446,7 @@ class _ClickableImageLabel(QLabel):
     """QLabel qui émet un signal au clic gauche."""
     clicked = Signal()
 
-    def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)
@@ -955,7 +955,7 @@ class _AttachmentItemWidget(QWidget):
         pixmap.loadFromData(image_bytes)
         return None if pixmap.isNull() else pixmap
 
-    def closeEvent(self, event) -> None:  # type: ignore[override]
+    def closeEvent(self, event) -> None:
         self._hide_hover_preview()
         super().closeEvent(event)
 
@@ -1452,7 +1452,7 @@ class _AttachmentPanel(QFrame):
         self._edit_tags_btn.setEnabled(True)
         self._edit_tags_btn.setText(translate_text("Éditer les tags"))
 
-    def closeEvent(self, event) -> None:  # type: ignore[override]
+    def closeEvent(self, event) -> None:
         self._clear_pending_tmdb_cover()
         super().closeEvent(event)
 

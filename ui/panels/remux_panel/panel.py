@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -83,8 +84,8 @@ class _AudioSyncReferenceDialog(QDialog):
         self.setWindowTitle(translate_text("Source de référence"))
         self.setModal(True)
         self._combo = QComboBox()
-        for label, entry in choices:
-            self._combo.addItem(label, entry)
+        for choice_label, entry in choices:
+            self._combo.addItem(choice_label, entry)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(_scale(18), _scale(16), _scale(18), _scale(16))
@@ -102,8 +103,8 @@ class _AudioSyncReferenceDialog(QDialog):
             }}
         """)
 
-        label = QLabel(translate_text("Choisir la source audio qui servira de référence."))
-        root.addWidget(label)
+        prompt_label = QLabel(translate_text("Choisir la source audio qui servira de référence."))
+        root.addWidget(prompt_label)
         root.addWidget(self._combo)
 
         buttons = QDialogButtonBox(
@@ -169,6 +170,13 @@ class RemuxPanel(QWidget):
         self._auto_sync_entry_ids: set[str] = set()
         self._chapter_sync_cancelled_source_ids: set[str] = set()
         self._color_index: int = 0
+        self._file_list: _FileListWidget
+        self._track_table: _TrackTable
+        self._file_title_edit: QLineEdit
+        self._attachment_panel: _AttachmentPanel
+        self._chapter_panel: _ChapterPanel
+        self._output_edit: QLineEdit
+        self._cmd_preview: QPlainTextEdit
 
         self._workflow.log_message.connect(
             self.log_message, Qt.ConnectionType.QueuedConnection
@@ -434,7 +442,7 @@ class RemuxPanel(QWidget):
     def _on_add_files(self, paths: list[str]) -> None:
         inspection.on_add_files(self, paths)
 
-    def add_sources(self, paths: list[str | Path]) -> None:
+    def add_sources(self, paths: Sequence[str | Path]) -> None:
         """Ajoute des fichiers source depuis l'extérieur du panneau."""
         normalized = [str(Path(path)) for path in paths if str(path).strip()]
         if not normalized:
@@ -1722,7 +1730,7 @@ class RemuxPanel(QWidget):
         if text:
             QApplication.clipboard().setText(text)
 
-    def closeEvent(self, event) -> None:  # type: ignore[override]
+    def closeEvent(self, event) -> None:
         self._executor.shutdown(wait=True)
         super().closeEvent(event)
 

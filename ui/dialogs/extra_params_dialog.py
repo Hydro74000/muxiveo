@@ -2074,7 +2074,7 @@ def _parse_existing(schema: CodecSchema, current: str) -> dict[str, tuple[bool, 
         bool_pairs: dict[str, ParamSpec] = {}
         for grp in schema.groups:
             for sp in grp.params:
-                if sp.kind == "bool" and sp.bool_repr[0] and sp.bool_repr[0].startswith("--"):
+                if sp.kind == "bool" and sp.bool_repr[0] and sp.bool_repr[1] and sp.bool_repr[0].startswith("--"):
                     bool_pairs[sp.bool_repr[0]] = sp
                     bool_pairs[sp.bool_repr[1]] = sp
         leftovers = []
@@ -2258,45 +2258,45 @@ class _ParamRow(QWidget):
 
     def _build_value_widget(self, spec: ParamSpec) -> QWidget:
         if spec.kind == "int":
-            sb = QSpinBox()
-            sb.setRange(int(spec.minimum if spec.minimum is not None else -2**31),
-                        int(spec.maximum if spec.maximum is not None else 2**31 - 1))
+            spin_box = QSpinBox()
+            spin_box.setRange(int(spec.minimum if spec.minimum is not None else -2**31),
+                              int(spec.maximum if spec.maximum is not None else 2**31 - 1))
             if spec.step is not None:
-                sb.setSingleStep(int(spec.step))
+                spin_box.setSingleStep(int(spec.step))
             if spec.default is not None:
-                sb.setValue(int(spec.default))
+                spin_box.setValue(int(spec.default))
             if spec.suffix:
-                sb.setSuffix(spec.suffix)
-            sb.setStyleSheet(_input_style())
-            return sb
+                spin_box.setSuffix(spec.suffix)
+            spin_box.setStyleSheet(_input_style())
+            return spin_box
         if spec.kind == "float":
-            sb = QDoubleSpinBox()
-            sb.setRange(float(spec.minimum if spec.minimum is not None else -1e9),
-                        float(spec.maximum if spec.maximum is not None else 1e9))
-            sb.setSingleStep(float(spec.step) if spec.step is not None else 0.1)
-            sb.setDecimals(2)
+            double_spin_box = QDoubleSpinBox()
+            double_spin_box.setRange(float(spec.minimum if spec.minimum is not None else -1e9),
+                                     float(spec.maximum if spec.maximum is not None else 1e9))
+            double_spin_box.setSingleStep(float(spec.step) if spec.step is not None else 0.1)
+            double_spin_box.setDecimals(2)
             if spec.default is not None:
-                sb.setValue(float(spec.default))
+                double_spin_box.setValue(float(spec.default))
             if spec.suffix:
-                sb.setSuffix(spec.suffix)
-            sb.setStyleSheet(_input_style())
-            return sb
+                double_spin_box.setSuffix(spec.suffix)
+            double_spin_box.setStyleSheet(_input_style())
+            return double_spin_box
         if spec.kind == "enum":
-            cb = QComboBox()
-            cb.setStyleSheet(_combo_style())
+            combo_box = QComboBox()
+            combo_box.setStyleSheet(_combo_style())
             for value, label in spec.options:
-                cb.addItem(label, value)
+                combo_box.addItem(label, value)
             if spec.default is not None:
-                idx = cb.findData(spec.default)
+                idx = combo_box.findData(spec.default)
                 if idx >= 0:
-                    cb.setCurrentIndex(idx)
-            return cb
+                    combo_box.setCurrentIndex(idx)
+            return combo_box
         if spec.kind == "bool":
-            cb = QCheckBox(translate_text("Activé"))
-            cb.setStyleSheet(_checkbox_style())
+            check_box = QCheckBox(translate_text("Activé"))
+            check_box.setStyleSheet(_checkbox_style())
             if spec.default == "1":
-                cb.setChecked(True)
-            return cb
+                check_box.setChecked(True)
+            return check_box
         # text
         le = QLineEdit()
         le.setStyleSheet(_input_style())
@@ -2415,6 +2415,7 @@ class ExtraParamsDialog(QDialog):
         self._rows: dict[str, _ParamRow] = {}
         self._result_text: str = current_value
         self._infotip_filter = _InfotipFilter(self)
+        self._free_only: QPlainTextEdit | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16, 16, 16, 16)

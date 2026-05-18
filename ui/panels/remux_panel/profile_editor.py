@@ -70,7 +70,7 @@ class KeywordLineEdit(QLineEdit):
         super().__init__(parent)
         self.textChanged.connect(lambda _text: self.update())
 
-    def contextMenuEvent(self, event) -> None:  # type: ignore[override]
+    def contextMenuEvent(self, event) -> None:
         menu = self.createStandardContextMenu()
         menu.addSeparator()
         keyword_menu = menu.addMenu(translate_text("Insérer keyword"))
@@ -106,7 +106,7 @@ class KeywordLineEdit(QLineEdit):
         self.insert("()")
         self.setCursorPosition(cursor + 1)
 
-    def keyPressEvent(self, event) -> None:  # type: ignore[override]
+    def keyPressEvent(self, event) -> None:
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             key = event.key()
             if key == Qt.Key.Key_Plus:
@@ -119,7 +119,7 @@ class KeywordLineEdit(QLineEdit):
                 return
         super().keyPressEvent(event)
 
-    def paintEvent(self, event) -> None:  # type: ignore[override]
+    def paintEvent(self, event) -> None:
         text = self.text()
         if self.hasFocus() or "{" not in text or "}" not in text:
             super().paintEvent(event)

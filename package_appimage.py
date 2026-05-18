@@ -84,6 +84,10 @@ _APPIMAGE_WEBSITE_URL = APP_WEBSITE_URL
 _APPSTREAM_ID = APP_APPSTREAM_ID
 
 
+def warn(msg: str) -> None:
+    print(f"  WARN  {msg}")
+
+
 def _ensure_linux_bundle_entrypoints(bundle_dir: Path) -> Path:
     """Normalise les noms de commandes dans le bundle Linux."""
     exe_path = bundle_dir / APP_EXECUTABLE_NAME

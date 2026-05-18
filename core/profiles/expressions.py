@@ -98,14 +98,14 @@ class CriteriaExpressionParser:
 
     def _parse_or(self) -> ExpressionAst:
         nodes = [self._parse_and()]
-        while self._peek() and self._peek()[0] == "|":
+        while (token := self._peek()) is not None and token[0] == "|":
             self._consume("|")
             nodes.append(self._parse_and())
         return nodes[0] if len(nodes) == 1 else ("any", nodes)
 
     def _parse_and(self) -> ExpressionAst:
         nodes = [self._parse_primary()]
-        while self._peek() and self._peek()[0] == "&":
+        while (token := self._peek()) is not None and token[0] == "&":
             self._consume("&")
             nodes.append(self._parse_primary())
         return nodes[0] if len(nodes) == 1 else ("all", nodes)

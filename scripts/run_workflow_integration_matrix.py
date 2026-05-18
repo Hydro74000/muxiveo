@@ -359,18 +359,22 @@ def wait_task(signals, timeout_s: float) -> dict[str, Any]:
         lambda msg: state["progress"].append(msg),
         Qt.ConnectionType.QueuedConnection,
     )
-    signals.finished.connect(
-        lambda result: (state.__setitem__("finished", result), done.__setitem__("value", True)),
-        Qt.ConnectionType.QueuedConnection,
-    )
-    signals.failed.connect(
-        lambda msg, exc: (state.__setitem__("failed", {"message": msg, "exception": str(exc)}), done.__setitem__("value", True)),
-        Qt.ConnectionType.QueuedConnection,
-    )
-    signals.cancelled.connect(
-        lambda: (state.__setitem__("cancelled", True), done.__setitem__("value", True)),
-        Qt.ConnectionType.QueuedConnection,
-    )
+
+    def on_finished(result: object) -> None:
+        state["finished"] = result
+        done["value"] = True
+
+    def on_failed(msg: str, exc: object) -> None:
+        state["failed"] = {"message": msg, "exception": str(exc)}
+        done["value"] = True
+
+    def on_cancelled() -> None:
+        state["cancelled"] = True
+        done["value"] = True
+
+    signals.finished.connect(on_finished, Qt.ConnectionType.QueuedConnection)
+    signals.failed.connect(on_failed, Qt.ConnectionType.QueuedConnection)
+    signals.cancelled.connect(on_cancelled, Qt.ConnectionType.QueuedConnection)
 
     deadline = time.monotonic() + timeout_s
     while not done["value"] and time.monotonic() < deadline:

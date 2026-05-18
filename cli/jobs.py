@@ -42,6 +42,7 @@ def apply_metadata_overrides(
     no_cover: bool = False,
     no_attach: bool = False,
 ) -> None:
+    tmdb_block: dict[str, Any] | None
     apikey = (tmdb_apikey or "").strip()
     if auto_tmdb or tmdb or tmdb_id is not None or apikey:
         tmdb_block = _tmdb_block(job)
@@ -52,7 +53,7 @@ def apply_metadata_overrides(
             tmdb_block["api_key"] = apikey
     elif no_cover or no_attach:
         raw_tmdb = job.get("tmdb")
-        tmdb_block = raw_tmdb if isinstance(raw_tmdb, dict) else (_tmdb_block(job) if raw_tmdb else None)
+        tmdb_block = dict(raw_tmdb) if isinstance(raw_tmdb, dict) else (_tmdb_block(job) if raw_tmdb else None)
     else:
         tmdb_block = None
 

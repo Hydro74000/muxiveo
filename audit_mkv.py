@@ -13,7 +13,7 @@ import tempfile
 from collections import Counter, deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from core.workflows.encode.catalog import (
     needs_static_hdr_bitstream_patch_codec,
@@ -805,11 +805,12 @@ def _audit_hevc_bitstream(runner: ToolRunner, path: Path) -> HevcAudit:
 
 
 def _audit_dovi_metadata(runner: ToolRunner, path: Path, ffprobe_payload: dict[str, Any]) -> DoviAudit:
-    video_stream = next(
-        (stream for stream in ffprobe_payload.get("streams", []) if stream.get("codec_type") == "video" and stream.get("codec_name") == "hevc"),
+    streams = cast(list[dict[str, Any]], ffprobe_payload.get("streams") or [])
+    video_stream: dict[str, Any] = next(
+        (stream for stream in streams if stream.get("codec_type") == "video" and stream.get("codec_name") == "hevc"),
         {},
     )
-    ffprobe_record = next(
+    ffprobe_record: dict[str, Any] = next(
         (
             side_data
             for side_data in video_stream.get("side_data_list", [])
@@ -882,8 +883,8 @@ def _detect_hdr_mode(
     dovi_audit: DoviAudit,
     hdr10plus_audit: Hdr10PlusAudit,
 ) -> HdrModeAudit:
-    streams = container.get("streams") or []
-    video_stream = next(
+    streams = cast(list[dict[str, Any]], container.get("streams") or [])
+    video_stream: dict[str, Any] = next(
         (
             stream for stream in streams
             if stream.get("codec_type") == "video"

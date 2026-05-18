@@ -904,10 +904,11 @@ class FfmpegTimelineSync:
         proc_stderr = proc.stderr
 
         def _drain_stderr() -> None:
-            if proc_stderr is None:
+            stderr = proc_stderr
+            if stderr is None:
                 return
             try:
-                for chunk in iter(lambda: proc_stderr.read(8192), b""):
+                for chunk in iter(lambda: stderr.read(8192), b""):
                     stderr_chunks.append(chunk)
             except Exception:
                 pass

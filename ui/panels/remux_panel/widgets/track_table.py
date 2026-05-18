@@ -61,7 +61,7 @@ class _TrackInfoDelegate(QStyledItemDelegate):
                 best = (position, kind, marker)
         return best
 
-    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:  # type: ignore[override]
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
         value = index.data(_TRACK_INFO_OFFSET_VALUE_ROLE)
         offset_value = str(value).strip() if value is not None else ""
         sync_value = index.data(_TRACK_INFO_SYNC_LABEL_ROLE)
@@ -929,7 +929,7 @@ class _TrackTable(QTableWidget):
             hidden = self._filter_selected and item.checkState() != Qt.CheckState.Checked
             self.setRowHidden(row, hidden)
 
-    def dropEvent(self, event) -> None:  # type: ignore[override]
+    def dropEvent(self, event) -> None:
         if event.source() is not self:
             event.ignore()
             return

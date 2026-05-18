@@ -22,6 +22,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from types import ModuleType
 
 from PySide6.QtCore import QSettings, QStandardPaths
 
@@ -130,6 +131,7 @@ def _command_exists(command: str | os.PathLike[str] | None) -> bool:
     """True si la commande configurée est résoluble ou pointe vers un fichier."""
     if command in (None, ""):
         return False
+    assert command is not None
     value = os.fspath(command)
     if shutil.which(value) is not None:
         return True
@@ -140,6 +142,7 @@ def _command_path(command: str | os.PathLike[str] | None) -> Path | None:
     """Retourne le chemin résolu d'une commande, y compris si elle est absolue."""
     if command in (None, ""):
         return None
+    assert command is not None
     value = os.fspath(command)
     found = shutil.which(value)
     if found:
@@ -310,8 +313,10 @@ def restart_application() -> bool:
     Préfère le helper du launcher s'il est disponible pour conserver le
     comportement frozen/dev déjà existant.
     """
+    launcher_mod: ModuleType | None
     try:
-        import launcher as launcher_mod  # noqa: PLC0415
+        import launcher as imported_launcher  # noqa: PLC0415
+        launcher_mod = imported_launcher
     except Exception:
         launcher_mod = None
 
@@ -325,7 +330,7 @@ def restart_application() -> bool:
     try:
         # start_new_session détache le nouveau process du tty/groupe parent :
         # évite que sa fermeture entraîne le process courant ou l'inverse.
-        popen_kwargs: dict[str, object] = {
+        popen_kwargs: dict[str, Any] = {
             "stdin": subprocess.DEVNULL,
             "stdout": subprocess.DEVNULL,
             "stderr": subprocess.DEVNULL,

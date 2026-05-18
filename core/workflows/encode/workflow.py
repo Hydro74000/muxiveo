@@ -568,8 +568,8 @@ class EncodeWorkflow(QObject):
             if not isinstance(raw_idx, (int, float, str, bytes, bytearray)):
                 continue
             try:
-                idx_val = int(raw_idx)
-            except (TypeError, ValueError):
+                idx_val = int(str(raw_idx))
+            except ValueError:
                 continue
             if idx_val == int(stream_index):
                 return str(stream.get("codec_name", "") or "")
@@ -582,8 +582,8 @@ class EncodeWorkflow(QObject):
         for stream in self._ffprobe_stream_dicts(payload):
             raw_idx = stream.get("index", -1)
             try:
-                idx_val = int(raw_idx)
-            except (TypeError, ValueError):
+                idx_val = int(str(raw_idx))
+            except ValueError:
                 continue
             if idx_val != int(stream_index):
                 continue

@@ -483,9 +483,9 @@ class AudioSyncWorkflow:
             if not chunk:
                 continue
             energy = math.sqrt(sum(float(s) * float(s) for s in chunk) / len(chunk))
-            peak = max(abs(int(s)) for s in chunk)
+            peak = float(max(abs(int(s)) for s in chunk))
             rms_values.append(energy)
-            peak_values.append(float(peak))
+            peak_values.append(peak)
 
         values: list[float] = []
         for idx, (energy, peak) in enumerate(zip(rms_values, peak_values)):

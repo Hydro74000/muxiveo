@@ -602,13 +602,13 @@ def remux_config_to_exact_job(
         source_index = int(item[0])
         mkv_tid = int(item[1])
         entry_id = str(item[2]) if len(item) > 2 else ""
-        track = (
+        ordered_track = (
             track_by_order_key.get((source_index, mkv_tid, entry_id))
             if entry_id
             else track_by_basic_key.get((source_index, mkv_tid))
         )
-        if track is not None:
-            order_payload.append({"selector": _track_selector(track)})
+        if ordered_track is not None:
+            order_payload.append({"selector": _track_selector(ordered_track)})
 
     sources_payload = []
     for source in config.sources:

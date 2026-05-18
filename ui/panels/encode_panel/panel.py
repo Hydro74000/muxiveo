@@ -1463,8 +1463,8 @@ class EncodePanel(QWidget):
             source_map[(Path(info.path), int(track.mkv_tid))] = (info, track)
 
         for index, video in enumerate(video_tracks, start=1):
-            info: FileInfo | None = None
-            track: TrackEntry | None = None
+            current_info: FileInfo | None = None
+            current_track: TrackEntry | None = None
             entry_id = str(getattr(video, "track_entry_id", "") or "").strip()
             source_path = Path(getattr(video, "source_path", None) or config.source)
             stream_index = int(getattr(video, "stream_index", 0) or 0)
@@ -1472,24 +1472,24 @@ class EncodePanel(QWidget):
             if entry_id:
                 resolved = entry_map.get(entry_id)
                 if resolved is not None:
-                    info, track = resolved
-            if info is None:
+                    current_info, current_track = resolved
+            if current_info is None:
                 resolved = source_map.get((source_path, stream_index))
                 if resolved is not None:
-                    info, track = resolved
-            if info is None and self._file_info is not None and Path(self._file_info.path) == source_path:
-                info = self._file_info
+                    current_info, current_track = resolved
+            if current_info is None and self._file_info is not None and Path(self._file_info.path) == source_path:
+                current_info = self._file_info
 
             duration_s: float | None = None
             total_frames: int | None = None
-            if info is not None:
-                resolved_track = self._video_track_for_entry(info, track)
+            if current_info is not None:
+                resolved_track = self._video_track_for_entry(current_info, current_track)
                 duration_s = (
                     getattr(resolved_track, "duration_s", None)
-                    or getattr(info, "duration_s", None)
+                    or getattr(current_info, "duration_s", None)
                     or config.duration_s
                 )
-                frames_obj = getattr(info, "frame_count", None)
+                frames_obj = getattr(current_info, "frame_count", None)
                 if isinstance(frames_obj, int) and frames_obj > 0:
                     total_frames = frames_obj
             else:
@@ -2414,6 +2414,6 @@ class EncodePanel(QWidget):
         if text:
             QApplication.clipboard().setText(text)
 
-    def closeEvent(self, event) -> None:  # type: ignore[override]
+    def closeEvent(self, event) -> None:
         self._executor.shutdown(wait=True)
         super().closeEvent(event)

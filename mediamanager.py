@@ -99,7 +99,7 @@ def parse_media_file(filepath):
 
 def get_file_size(path) -> str:
     try:
-        size_bytes = os.path.getsize(path)
+        size_bytes = float(os.path.getsize(path))
         for unit in ['B', 'Ko', 'Mo', 'Go', 'To']:
             if size_bytes < 1024: return f"{size_bytes:.2f} {unit}"
             size_bytes /= 1024

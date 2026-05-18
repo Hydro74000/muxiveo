@@ -398,7 +398,7 @@ class _FileDropZone(QWidget):
                 return
         event.ignore()
 
-    def dragLeaveEvent(self, event) -> None:  # type: ignore[override]
+    def dragLeaveEvent(self, event) -> None:
         self.setStyleSheet(f"""
             QWidget {{
                 background: {_C.BG_CARD};
@@ -746,7 +746,7 @@ class FileInspectorWidget(QWidget):
         )
         self._status.setVisible(True)
 
-    def closeEvent(self, event) -> None:  # type: ignore[override]
+    def closeEvent(self, event) -> None:
         """Arrête proprement le ThreadPoolExecutor à la fermeture du widget."""
         self._executor.shutdown(wait=True)
         super().closeEvent(event)

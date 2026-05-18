@@ -7,7 +7,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Mapping, cast
 
 from core.subprocess_utils import (
     decode_subprocess_output,
@@ -505,8 +505,8 @@ class SyncRewriteService:
                 display_info=display_info,
             )
             try:
-                channels_count = int(probe.get("channels") or 0)
-            except (TypeError, ValueError):
+                channels_count = int(str(probe.get("channels") or "0"))
+            except ValueError:
                 channels_count = 0
             if source_codec_key in REWRITE_AUDIO_CODECS and not object_audio:
                 if channels_count <= 0:
@@ -734,13 +734,13 @@ class SyncRewriteService:
         probe: Mapping[str, object],
     ) -> bool:
         try:
-            channels = int(probe.get("channels") or 0)
-        except (TypeError, ValueError):
+            channels = int(str(probe.get("channels") or "0"))
+        except ValueError:
             channels = 0
         if channels <= 0:
             return False
         return not self._audio_probe_has_object_metadata(
-            codec=codec_key,
+            codec_key=codec_key,
             title=title,
             display_info=display_info,
             probe=probe,
@@ -793,8 +793,8 @@ class SyncRewriteService:
     @staticmethod
     def _truehd_reencode_supported(probe: Mapping[str, object]) -> bool:
         try:
-            channels = int(probe.get("channels") or 0)
-        except (TypeError, ValueError):
+            channels = int(str(probe.get("channels") or "0"))
+        except ValueError:
             channels = 0
         # FFmpeg's TrueHD/MLP encoder is experimental and currently tops out at
         # 5.1-class layouts. Refuse unknown/7.1+ layouts instead of guessing.
@@ -1014,7 +1014,11 @@ class SyncRewriteService:
                 if cancel_cb is not None and cancel_cb():
                     proc.kill()
                     raise RemuxError("Réécriture sync annulée.")
-                chunk_bytes = bytes(chunk)
+                chunk_bytes: bytes
+                if isinstance(chunk, str):
+                    chunk_bytes = chunk.encode()
+                else:
+                    chunk_bytes = cast(bytes, chunk)
                 buf += chunk_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
                 *complete, buf = buf.split(b"\n")
                 for raw in complete:
@@ -1082,8 +1086,8 @@ class SyncRewriteService:
     ) -> int | None:
         raw_bps = probe.get("bit_rate")
         try:
-            bitrate_bps = int(raw_bps or 0)
-        except (TypeError, ValueError):
+            bitrate_bps = int(str(raw_bps or "0"))
+        except ValueError:
             bitrate_bps = 0
         if bitrate_bps > 0:
             return cls._normalize_audio_bitrate_kbps(

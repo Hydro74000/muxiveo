@@ -49,7 +49,7 @@ def normalized_tmdb_options(
     raw = job.get("tmdb")
     if not raw:
         return None
-    tmdb = dict(raw) if isinstance(raw, dict) else {"enabled": True}
+    tmdb: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {"enabled": True}
     if not tmdb.get("enabled", True):
         return None
 
