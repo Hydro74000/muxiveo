@@ -147,6 +147,37 @@ def test_build_pyinstaller_uses_windowed_on_native_windows(tmp_path):
     assert (tmp_path / "dist" / "Muxiveo" / "Muxiveo.exe").exists()
 
 
+def test_build_pyinstaller_accepts_lowercase_windows_entrypoint(tmp_path):
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, cwd=None):
+        commands.append(cmd)
+        exe_path = tmp_path / "dist" / "Muxiveo" / "muxiveo.exe"
+        exe_path.parent.mkdir(parents=True, exist_ok=True)
+        exe_path.write_text("", encoding="utf-8")
+
+    version_file = tmp_path / "version.txt"
+    version_file.write_text("", encoding="utf-8")
+
+    with patch.object(package_mod, "ROOT", tmp_path), \
+         patch.object(package_mod, "OS", "Windows"), \
+         patch.object(package_mod, "DATA_FILES", []), \
+         patch.object(package_mod, "_ensure_windows_runtime_dlls_available"), \
+         patch.object(package_mod, "_add_windows_ctypes_to_pyinstaller_native"), \
+         patch.object(package_mod, "_add_windows_sqlite_to_pyinstaller_native"), \
+         patch.object(package_mod, "_add_windows_ssl_to_pyinstaller_native"), \
+         patch.object(package_mod, "_write_windows_version_file", return_value=version_file), \
+         patch.object(package_mod, "_resolve_windows_icon_ico", return_value=None), \
+         patch.object(package_mod, "_verify_windows_runtime_bundle"), \
+         patch.object(package_mod, "_run", side_effect=fake_run):
+        result = package_mod._build_pyinstaller(onefile=False)
+
+    assert commands
+    assert result == tmp_path / "dist" / "Muxiveo" / "Muxiveo.exe"
+    assert (tmp_path / "dist" / "Muxiveo" / "Muxiveo.exe").exists()
+    assert not (tmp_path / "dist" / "Muxiveo" / "muxiveo.exe").exists()
+
+
 def test_build_pyinstaller_lowercases_linux_entrypoints(tmp_path):
     commands: list[list[str]] = []
 

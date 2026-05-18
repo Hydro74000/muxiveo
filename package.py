@@ -158,6 +158,53 @@ def _rename_windows_executable(exe_path: Path) -> Path:
     return target
 
 
+def _resolve_windows_pyinstaller_executable(onefile: bool) -> Path:
+    """Resolve the Windows executable produced by PyInstaller without assuming case."""
+    if onefile:
+        search_dir = ROOT / "dist"
+        direct_candidates = [
+            search_dir / _WINDOWS_EXE_NAME,
+            search_dir / f"{APP_EXECUTABLE_NAME}.exe",
+            search_dir / f"{APP_NAME}.exe",
+        ]
+    else:
+        search_dir = ROOT / "dist" / APP_NAME
+        direct_candidates = [
+            search_dir / _WINDOWS_EXE_NAME,
+            search_dir / f"{APP_EXECUTABLE_NAME}.exe",
+            search_dir / f"{APP_NAME}.exe",
+        ]
+
+    for candidate in direct_candidates:
+        if candidate.is_file():
+            return candidate
+
+    if search_dir.is_dir():
+        executables = sorted(
+            path
+            for path in search_dir.glob("*.exe")
+            if path.is_file()
+        )
+        if len(executables) == 1:
+            return executables[0]
+
+        preferred_names = {
+            _WINDOWS_EXE_NAME.lower(),
+            f"{APP_EXECUTABLE_NAME}.exe".lower(),
+            f"{APP_NAME}.exe".lower(),
+        }
+        for candidate in executables:
+            if candidate.name.lower() in preferred_names:
+                return candidate
+
+    found = sorted(str(path) for path in (ROOT / "dist").glob("**/*.exe"))
+    found_hint = f" Exécutables trouvés: {', '.join(found[:20])}" if found else ""
+    raise FileNotFoundError(
+        f"PyInstaller n'a pas produit d'exécutable Windows dans {search_dir}."
+        + found_hint
+    )
+
+
 def _resolve_macos_bundle_executable(app_path: Path) -> Path:
     """Retourne l'exécutable interne d'un .app PyInstaller avant normalisation."""
     macos_dir = app_path / "Contents" / "MacOS"
@@ -1260,15 +1307,18 @@ def _build_pyinstaller(onefile: bool) -> Path:
     _run(cmd, cwd=ROOT)
 
     if onefile:
-        exe_name = "Muxiveo.exe" if OS == "Windows" else "Muxiveo"
-        exe_path = ROOT / "dist" / exe_name
+        if OS == "Windows":
+            exe_path = _resolve_windows_pyinstaller_executable(onefile=True)
+        else:
+            exe_path = ROOT / "dist" / "Muxiveo"
     elif OS == "Darwin":
         # --windowed + --name Muxiveo produit dist/Muxiveo.app,
         # puis l'exécutable interne est normalisé en muxiveo.
         exe_path = _resolve_macos_bundle_executable(ROOT / "dist" / "Muxiveo.app")
+    elif OS == "Windows":
+        exe_path = _resolve_windows_pyinstaller_executable(onefile=False)
     else:
-        exe_name = "Muxiveo.exe" if OS == "Windows" else "Muxiveo"
-        exe_path = ROOT / "dist" / "Muxiveo" / exe_name
+        exe_path = ROOT / "dist" / "Muxiveo" / "Muxiveo"
 
     if not exe_path.exists():
         raise FileNotFoundError(f"PyInstaller n'a pas produit : {exe_path}")
