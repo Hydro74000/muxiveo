@@ -5,8 +5,7 @@ core/version.py — Métadonnées applicatives centralisées.
 from __future__ import annotations
 
 APP_NAME = "Muxiveo"
-APP_EXECUTABLE_NAME = "Muxiveo"
-APP_CLI_NAME = "Muxiveo-cli"
+APP_EXECUTABLE_NAME = "muxiveo"
 APP_CONFIG_DIR_NAME = "Muxiveo"
 APP_TEMP_WORK_DIR_NAME = "Muxiveo_work"
 APP_VERBOSE_LOG_PREFIX = "Muxiveo-verbose"

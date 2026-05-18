@@ -54,8 +54,8 @@ def test_render_homebrew_formula_contains_platform_blocks(tmp_path):
     assert 'def install_linux_shortcut' in text
     assert 'def install_macos_link' in text
     assert 'def cleanup_shortcuts' in text
-    assert "f\"Exec={opt_bin / 'Muxiveo'} %F" in text
-    assert "f\"TryExec={opt_bin / 'Muxiveo'}" in text
+    assert "f\"Exec={opt_bin / 'muxiveo'} %F" in text
+    assert "f\"TryExec={opt_bin / 'muxiveo'}" in text
     assert 'Icon=Muxiveo' in text
     assert 'user_icon = data_home / "icons" / "hicolor" / "256x256" / "apps" / "Muxiveo.png"' in text
     assert 'desktop-file-validate' in text
@@ -66,14 +66,14 @@ def test_render_homebrew_formula_contains_platform_blocks(tmp_path):
     assert 'import traceback' in text
     assert 'def _safe_log(message: str) -> None:' in text
     assert 'fatal-error={exc!r}' in text
-    assert 'bin.install_symlink libexec/"Muxiveo-uninstall-shortcuts"' in text
-    assert 'Muxiveo-uninstall-shortcuts' in text
+    assert 'bin.install_symlink libexec/"muxiveo-uninstall-shortcuts"' in text
+    assert 'muxiveo-uninstall-shortcuts' in text
     assert 'brew postinstall Muxiveo' in text
     assert 'ICON_PNG_BASE64 =' in text
     assert 'libexec.install Dir["*.AppImage"].first => "Muxiveo.AppImage"' in text
     assert 'prefix.install "Muxiveo.app"' in text
-    assert '(libexec/"Muxiveo").write <<~EOS' in text
-    assert 'bin.install_symlink libexec/"Muxiveo"' in text
+    assert '(libexec/"muxiveo").write <<~EOS' in text
+    assert 'bin.install_symlink libexec/"muxiveo"' in text
     assert 'resource "dovi_tool" do' in text
     assert 'resource "hdr10plus_tool" do' in text
     assert 'setup_brew.py" post-install --platform linux' in text

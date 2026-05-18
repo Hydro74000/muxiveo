@@ -818,7 +818,7 @@ def _ask_language_dialog(languages: list[tuple[str, str]]) -> str | None:
     valid_codes = {code for code, _ in languages}
 
     if getattr(sys, "frozen", False):
-        # In PyInstaller bundles, sys.executable is Muxiveo.exe, not python.exe.
+        # In PyInstaller bundles, sys.executable is muxiveo.exe, not python.exe.
         code = _ask_language_dialog_qt_in_process(languages)
         if code in valid_codes:
             return code

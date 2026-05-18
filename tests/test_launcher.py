@@ -21,13 +21,13 @@ class TestLauncherWindowsControlledFolderAccess:
                 sys.modules["core.logging"] = previous_logging
 
     def test_restart_current_app_uses_sys_executable_when_frozen(self):
-        with patch.object(launcher.sys, "executable", r"C:\Apps\Muxiveo\Muxiveo.exe"), \
+        with patch.object(launcher.sys, "executable", r"C:\Apps\Muxiveo\muxiveo.exe"), \
              patch.object(launcher.sys, "frozen", True, create=True), \
              patch("launcher.subprocess.Popen") as mock_popen:
             assert launcher._restart_current_app() is True
 
         mock_popen.assert_called_once_with(
-            [r"C:\Apps\Muxiveo\Muxiveo.exe"]
+            [r"C:\Apps\Muxiveo\muxiveo.exe"]
         )
 
     def test_first_time_setup_shows_popup_after_cfa_update(self, tmp_path):
@@ -119,18 +119,22 @@ class TestLauncherWindowsControlledFolderAccess:
         mock_setup.assert_called_once_with(config_path.parent)
         fake_main.main.assert_called_once_with()
 
-    def test_main_routes_cli_name_without_setup_or_gui(self):
+    def test_main_requires_explicit_cli_flag(self, tmp_path):
         fake_cli = SimpleNamespace(main=MagicMock(return_value=17))
         fake_main = SimpleNamespace(main=MagicMock(return_value=42))
+        config_path = tmp_path / "config.ini"
+        config_path.write_text("", encoding="utf-8")
 
-        with patch.object(launcher.sys, "argv", ["Muxiveo-cli", "inspect", "file.mkv"]), \
+        with patch.object(launcher.sys, "argv", ["muxiveo", "inspect", "file.mkv"]), \
              patch.dict(sys.modules, {"cli.main": fake_cli, "main": fake_main}), \
+             patch.object(launcher, "_get_config_path", return_value=config_path), \
+             patch.object(launcher, "_needs_windows_post_install_setup", return_value=False), \
              patch.object(launcher, "_run_first_time_setup") as mock_setup:
             rc = launcher.main()
 
-        assert rc == 17
-        fake_cli.main.assert_called_once_with(["inspect", "file.mkv"])
-        fake_main.main.assert_not_called()
+        assert rc == 42
+        fake_cli.main.assert_not_called()
+        fake_main.main.assert_called_once_with()
         mock_setup.assert_not_called()
 
     def test_main_routes_explicit_cli_flag_without_setup_or_gui(self):

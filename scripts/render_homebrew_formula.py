@@ -123,7 +123,7 @@ def render_formula(
   end
 
   def install_uninstall_shortcuts_script
-    (libexec/"Muxiveo-uninstall-shortcuts").write <<~EOS
+    (libexec/"muxiveo-uninstall-shortcuts").write <<~EOS
       #!/bin/bash
       set -euo pipefail
       PYTHON_BIN="$(command -v python3 || command -v python || true)"
@@ -133,8 +133,8 @@ def render_formula(
       fi
       exec "${{PYTHON_BIN}}" "#{{opt_libexec}}/setup_brew.py" cleanup
     EOS
-    chmod 0755, libexec/"Muxiveo-uninstall-shortcuts"
-    bin.install_symlink libexec/"Muxiveo-uninstall-shortcuts"
+    chmod 0755, libexec/"muxiveo-uninstall-shortcuts"
+    bin.install_symlink libexec/"muxiveo-uninstall-shortcuts"
   end
 
   def run_setup_brew(*args)
@@ -162,7 +162,7 @@ def render_formula(
       chmod 0755, libexec/"tools/dovi_tool"
       chmod 0755, libexec/"tools/hdr10plus_tool"
 
-      (libexec/"Muxiveo").write <<~EOS
+      (libexec/"muxiveo").write <<~EOS
         #!/bin/bash
         set -euo pipefail
         CONFIG_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/Muxiveo"
@@ -175,17 +175,17 @@ def render_formula(
 CFG
         fi
         export PATH="#{{opt_libexec}}/tools:#{{HOMEBREW_PREFIX}}/bin:$PATH"
-        exec "#{{opt_prefix}}/Muxiveo.app/Contents/MacOS/Muxiveo" "$@"
+        exec "#{{opt_prefix}}/Muxiveo.app/Contents/MacOS/muxiveo" "$@"
       EOS
-      chmod 0755, libexec/"Muxiveo"
-      bin.install_symlink libexec/"Muxiveo"
+      chmod 0755, libexec/"muxiveo"
+      bin.install_symlink libexec/"muxiveo"
     else
       libexec.install Dir["*.AppImage"].first => "Muxiveo.AppImage"
       chmod 0755, libexec/"Muxiveo.AppImage"
       install_setup_brew_helper
       install_uninstall_shortcuts_script
 
-      (libexec/"Muxiveo").write <<~EOS
+      (libexec/"muxiveo").write <<~EOS
         #!/bin/bash
         set -euo pipefail
         CONFIG_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/Muxiveo"
@@ -206,8 +206,8 @@ CFG
         fi
         exec "#{{opt_libexec}}/Muxiveo.AppImage" "$@"
       EOS
-      chmod 0755, libexec/"Muxiveo"
-      bin.install_symlink libexec/"Muxiveo"
+      chmod 0755, libexec/"muxiveo"
+      bin.install_symlink libexec/"muxiveo"
     end
   end
 
@@ -227,17 +227,17 @@ CFG
       Diagnostic log:
         ~/.local/state/Muxiveo/setup_brew.log
       Before `brew uninstall Muxiveo`, run:
-        Muxiveo-uninstall-shortcuts
+        muxiveo-uninstall-shortcuts
     EOS
   end
 
   test do
     if OS.mac?
       assert_predicate prefix/"Muxiveo.app", :exist?
-      assert_predicate bin/"Muxiveo", :exist?
+      assert_predicate bin/"muxiveo", :exist?
     else
       assert_predicate libexec/"Muxiveo.AppImage", :exist?
-      assert_predicate bin/"Muxiveo", :exist?
+      assert_predicate bin/"muxiveo", :exist?
     end
   end
 end

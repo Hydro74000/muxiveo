@@ -63,7 +63,13 @@ import zipfile
 from pathlib import Path
 
 from core.file_types import build_desktop_mime_type_string
-from core.version import APP_APPSTREAM_ID, APP_NAME, APP_VERSION, APP_WEBSITE_URL
+from core.version import (
+    APP_APPSTREAM_ID,
+    APP_EXECUTABLE_NAME,
+    APP_NAME,
+    APP_VERSION,
+    APP_WEBSITE_URL,
+)
 
 ROOT = Path(__file__).parent
 DIST_DIR = ROOT / "dist"
@@ -76,6 +82,25 @@ _APPIMAGE_UPDATE_REPO = os.environ.get("MUXIVEO_APPIMAGE_UPDATE_REPO", "Muxiveo"
 _APPIMAGE_UPDATE_RELEASE = os.environ.get("MUXIVEO_APPIMAGE_UPDATE_RELEASE", "latest").strip() or "latest"
 _APPIMAGE_WEBSITE_URL = APP_WEBSITE_URL
 _APPSTREAM_ID = APP_APPSTREAM_ID
+
+
+def _ensure_linux_bundle_entrypoints(bundle_dir: Path) -> Path:
+    """Normalise les noms de commandes dans le bundle Linux."""
+    exe_path = bundle_dir / APP_EXECUTABLE_NAME
+    legacy_exe = bundle_dir / APP_NAME
+
+    if not exe_path.exists() and legacy_exe.exists():
+        legacy_exe.rename(exe_path)
+    elif legacy_exe.is_symlink() or legacy_exe.is_file():
+        legacy_exe.unlink()
+
+    legacy_cli = bundle_dir / f"{APP_NAME}-cli"
+    if legacy_cli.is_symlink() or legacy_cli.is_file():
+        legacy_cli.unlink()
+    legacy_cli_lower = bundle_dir / f"{APP_EXECUTABLE_NAME}-cli"
+    if legacy_cli_lower.is_symlink() or legacy_cli_lower.is_file():
+        legacy_cli_lower.unlink()
+    return exe_path
 
 # Préfixe Wine dédié au build Windows (isolé du préfixe utilisateur ~/.wine)
 WINE_PREFIX = ROOT / ".wine_build"
@@ -354,6 +379,7 @@ def build_onedir() -> Path:
         err(f"Build PyInstaller raté : {out_dir} introuvable")
         sys.exit(1)
 
+    _ensure_linux_bundle_entrypoints(out_dir)
     ok(f"Bundle créé : {out_dir}")
     return out_dir
 
@@ -434,7 +460,7 @@ _DESKTOP = textwrap.dedent("""\
     [Desktop Entry]
     Name=Muxiveo
     Comment=MKV/MP4 Workflow — DoVi · HDR10+ · Remux · Encode
-    Exec=Muxiveo %F
+    Exec=muxiveo %F
     Icon=Muxiveo
     Type=Application
     Categories=AudioVideo;Video;
@@ -491,7 +517,7 @@ _APPRUN = textwrap.dedent("""\
     export QML2_IMPORT_PATH="${INTERNAL}/PySide6/Qt/qml"
     export APPDIR="${HERE}"
 
-    exec "${BIN}/Muxiveo" "$@"
+    exec "${BIN}/muxiveo" "$@"
 """)
 
 # AppRun all-inclusive : les outils embarqués ont priorité sur les outils système
@@ -522,7 +548,7 @@ _APPRUN_ALLINC = textwrap.dedent("""\
     export QML2_IMPORT_PATH="${INTERNAL}/PySide6/Qt/qml"
     export APPDIR="${HERE}"
 
-    exec "${BIN}/Muxiveo" "$@"
+    exec "${BIN}/muxiveo" "$@"
 """)
 
 
@@ -808,10 +834,8 @@ def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64") -
     info(f"Copie du bundle → {usr_bin} …")
     shutil.copytree(bundle_dir, usr_bin, dirs_exist_ok=True)
     ok("Bundle copié")
-    cli_link = usr_bin / "Muxiveo-cli"
-    if not cli_link.exists() and not cli_link.is_symlink():
-        cli_link.symlink_to("Muxiveo")
-        ok("Entrée CLI AppImage créée")
+    _ensure_linux_bundle_entrypoints(usr_bin)
+    ok("Entrée Unix AppImage créée")
 
     # Marqueur all-inclusive lu par launcher.py au démarrage
     if allinc:

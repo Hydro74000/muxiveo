@@ -1,11 +1,11 @@
-"""Argparse construction for Muxiveo-cli."""
+"""Argparse construction for muxiveo --cli."""
 
 from __future__ import annotations
 
 import argparse
 
 from cli.commands import cmd_batch, cmd_inspect, cmd_preview, cmd_profile, cmd_remux, cmd_run, cmd_schema, cmd_validate
-from core.version import APP_CLI_NAME, APP_NAME
+from core.version import APP_EXECUTABLE_NAME, APP_NAME
 
 
 def _add_common_options(parser: argparse.ArgumentParser) -> None:
@@ -50,7 +50,7 @@ def _add_tmdb_options(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog=APP_CLI_NAME, description=f"{APP_NAME} headless CLI")
+    parser = argparse.ArgumentParser(prog=f"{APP_EXECUTABLE_NAME} --cli", description=f"{APP_NAME} headless CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
     inspect = sub.add_parser("inspect", help="Inspecter une ou plusieurs sources.")

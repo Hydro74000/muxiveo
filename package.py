@@ -62,6 +62,7 @@ from typing import Any, Iterable
 from core.file_types import ACCEPTED_EXTENSIONS, build_desktop_mime_type_string
 from core.version import (
     APP_APPSTREAM_ID,
+    APP_EXECUTABLE_NAME,
     APP_MACOS_BUNDLE_ID,
     APP_NAME,
     APP_VERSION,
@@ -110,12 +111,70 @@ _MSIX_TIMESTAMP_URL = os.environ.get("MUXIVEO_MSIX_TIMESTAMP_URL", "http://times
 _MSIX_STORE_CONFIG = os.environ.get("MUXIVEO_MSIX_STORE_CONFIG", "").strip()
 _WINDOWS_SDK_WINGET_ID = os.environ.get("MUXIVEO_WINDOWS_SDK_WINGET_ID", "Microsoft.WindowsSDK").strip() or "Microsoft.WindowsSDK"
 _WINDOWS_SDK_INSTALLER = os.environ.get("MUXIVEO_WINDOWS_SDK_INSTALLER", "").strip()
+_WINDOWS_EXE_NAME = f"{APP_EXECUTABLE_NAME}.exe"
 # Exception MSIX : nom technique distinct du branding/artefacts classiques.
 _MSIX_PACKAGE_NAME = re.sub(
     r"\s+",
     "",
     os.environ.get("MUXIVEO_MSIX_PACKAGE_NAME", "AOTRMuxiveo").strip(),
 ) or "AOTRMuxiveo"
+
+
+def _rename_unix_executable(exe_path: Path) -> Path:
+    """Keep Unix command names lowercase while preserving branded bundle names."""
+    if OS == "Windows" or exe_path.name == APP_EXECUTABLE_NAME:
+        return exe_path
+
+    target = exe_path.with_name(APP_EXECUTABLE_NAME)
+    if target.exists() or target.is_symlink():
+        target.unlink()
+    exe_path.rename(target)
+    _ok(f"Exécutable Unix renommé : {target.name}")
+    return target
+
+
+def _rename_windows_executable(exe_path: Path) -> Path:
+    """Keep the Windows executable lowercase while preserving branded folders."""
+    if OS != "Windows" or exe_path.name == _WINDOWS_EXE_NAME:
+        return exe_path
+
+    target = exe_path.with_name(_WINDOWS_EXE_NAME)
+    if target.exists() or target.is_symlink():
+        target.unlink()
+    exe_path.rename(target)
+    _ok(f"Exécutable Windows renommé : {target.name}")
+    return target
+
+
+def _ensure_windows_bundle_entrypoint(bundle_dir: Path) -> Path:
+    """Normalise le nom de l'exécutable Windows dans un bundle onedir."""
+    exe_path = bundle_dir / _WINDOWS_EXE_NAME
+    legacy_exe = bundle_dir / f"{APP_NAME}.exe"
+
+    if not exe_path.exists() and legacy_exe.exists():
+        legacy_exe.rename(exe_path)
+    elif legacy_exe.is_symlink() or legacy_exe.is_file():
+        legacy_exe.unlink()
+    return exe_path
+
+
+def _ensure_unix_bundle_entrypoints(bundle_dir: Path) -> Path:
+    """Normalise les entrées exécutables dans un bundle Linux/macOS."""
+    exe_path = bundle_dir / APP_EXECUTABLE_NAME
+    legacy_exe = bundle_dir / APP_NAME
+
+    if not exe_path.exists() and legacy_exe.exists():
+        legacy_exe.rename(exe_path)
+    elif legacy_exe.is_symlink() or legacy_exe.is_file():
+        legacy_exe.unlink()
+
+    legacy_cli = bundle_dir / f"{APP_NAME}-cli"
+    if legacy_cli.is_symlink() or legacy_cli.is_file():
+        legacy_cli.unlink()
+    legacy_cli_lower = bundle_dir / f"{APP_EXECUTABLE_NAME}-cli"
+    if legacy_cli_lower.is_symlink() or legacy_cli_lower.is_file():
+        legacy_cli_lower.unlink()
+    return exe_path
 
 # ── Modules Python exclus du bundle ──────────────────────────────────────────
 
@@ -176,8 +235,8 @@ VSVersionInfo(
           StringStruct('CompanyName', 'Muxiveo'),
           StringStruct('FileDescription', 'Muxiveo video workflow'),
           StringStruct('FileVersion', '{version_str}'),
-          StringStruct('InternalName', 'Muxiveo'),
-          StringStruct('OriginalFilename', 'Muxiveo.exe'),
+          StringStruct('InternalName', '{APP_EXECUTABLE_NAME}'),
+          StringStruct('OriginalFilename', '{_WINDOWS_EXE_NAME}'),
           StringStruct('ProductName', '{APP_NAME}'),
           StringStruct('ProductVersion', '{version_str}')
         ]
@@ -1070,7 +1129,7 @@ def _build_pyinstaller(onefile: bool) -> Path:
         else:
             _warn(f"Donnée absente, ignorée : {src}")
 
-    app_name = "Muxiveo" if OS == "Darwin" else "Muxiveo"
+    app_name = APP_NAME
     cmd: list[str] = [
         sys.executable, "-m", "PyInstaller",
         "--name", app_name,
@@ -1127,7 +1186,8 @@ def _build_pyinstaller(onefile: bool) -> Path:
         exe_name = "Muxiveo.exe" if OS == "Windows" else "Muxiveo"
         exe_path = ROOT / "dist" / exe_name
     elif OS == "Darwin":
-        # --windowed + --name Muxiveo produit dist/Muxiveo.app/Contents/MacOS/Muxiveo
+        # --windowed + --name Muxiveo produit dist/Muxiveo.app,
+        # puis l'exécutable interne est normalisé en muxiveo.
         exe_path = ROOT / "dist" / "Muxiveo.app" / "Contents" / "MacOS" / "Muxiveo"
     else:
         exe_name = "Muxiveo.exe" if OS == "Windows" else "Muxiveo"
@@ -1136,23 +1196,18 @@ def _build_pyinstaller(onefile: bool) -> Path:
     if not exe_path.exists():
         raise FileNotFoundError(f"PyInstaller n'a pas produit : {exe_path}")
 
+    if OS != "Windows":
+        exe_path = _rename_unix_executable(exe_path)
+    else:
+        exe_path = _rename_windows_executable(exe_path)
+
     if OS == "Windows" and not onefile:
+        _ensure_windows_bundle_entrypoint(exe_path.parent)
         _verify_windows_runtime_bundle(exe_path.parent)
-        cli_exe = exe_path.parent / "Muxiveo-cli.exe"
-        shutil.copy2(exe_path, cli_exe)
-        _ok(f"Entrée CLI Windows créée : {cli_exe.name}")
     elif OS == "Darwin":
-        cli_exe = exe_path.parent / "Muxiveo-cli"
-        if cli_exe.exists() or cli_exe.is_symlink():
-            cli_exe.unlink()
-        cli_exe.symlink_to(exe_path.name)
-        _ok(f"Entrée CLI macOS créée : {cli_exe.name}")
+        _ensure_unix_bundle_entrypoints(exe_path.parent)
     elif not onefile:
-        cli_exe = exe_path.parent / "Muxiveo-cli"
-        if cli_exe.exists() or cli_exe.is_symlink():
-            cli_exe.unlink()
-        cli_exe.symlink_to(exe_path.name)
-        _ok(f"Entrée CLI Linux créée : {cli_exe.name}")
+        _ensure_unix_bundle_entrypoints(exe_path.parent)
 
     _ok(f"Bundle PyInstaller : {exe_path.parent if not onefile else exe_path}")
     return exe_path
@@ -1166,7 +1221,7 @@ _DESKTOP_ENTRY = """\
 [Desktop Entry]
 Name=Muxiveo
 Comment=MKV/MP4 workflow — DoVi, HDR10+, encoding
-Exec=Muxiveo %F
+Exec=muxiveo %F
 Icon=Muxiveo
 Type=Application
 Categories=AudioVideo;Video;
@@ -1195,11 +1250,11 @@ _APPSTREAM_METAINFO = """\
 def _windows_supported_types_block() -> str:
     """Génère les clés NSIS de support 'Open with...' pour Windows."""
     lines = [
-        '  WriteRegStr HKLM "Software\\\\Classes\\\\Applications\\\\Muxiveo.exe\\\\shell\\\\open\\\\command" "" \'\"$INSTDIR\\\\${EXE_NAME}\" \"%1\"\'',
+        f'  WriteRegStr HKLM "Software\\\\Classes\\\\Applications\\\\{_WINDOWS_EXE_NAME}\\\\shell\\\\open\\\\command" "" \'\"$INSTDIR\\\\${{EXE_NAME}}\" \"%1\"\'',
     ]
     for ext in sorted(ACCEPTED_EXTENSIONS):
         lines.append(
-            f'  WriteRegStr HKLM "Software\\\\Classes\\\\Applications\\\\Muxiveo.exe\\\\SupportedTypes" "{ext}" ""'
+            f'  WriteRegStr HKLM "Software\\\\Classes\\\\Applications\\\\{_WINDOWS_EXE_NAME}\\\\SupportedTypes" "{ext}" ""'
         )
     return "\n".join(lines)
 
@@ -1208,7 +1263,7 @@ _APPRUN = """\
 # AppRun — point d'entrée du AppImage Muxiveo
 set -e
 HERE="$(dirname "$(readlink -f "$0")")"
-exec "$HERE/Muxiveo/Muxiveo" "$@"
+exec "$HERE/Muxiveo/muxiveo" "$@"
 """
 
 
@@ -1226,10 +1281,8 @@ def _build_appdir() -> Path:
     bundle_dst = appdir / "Muxiveo"
     shutil.copytree(bundle_src, bundle_dst)
     _ok(f"Bundle copié → {bundle_dst}")
-    cli_link = bundle_dst / "Muxiveo-cli"
-    if not cli_link.exists() and not cli_link.is_symlink():
-        cli_link.symlink_to("Muxiveo")
-        _ok("Entrée CLI AppDir créée")
+    _ensure_unix_bundle_entrypoints(bundle_dst)
+    _ok("Entrée Unix AppDir créée")
 
     # AppRun
     apprun = appdir / "AppRun"
@@ -1826,8 +1879,9 @@ def _stage_msix_layout(
 
     vfs_root = layout_dir / "VFS" / _msix_vfs_root_dir() / _MSIX_PACKAGE_NAME
     shutil.copytree(bundle_dir, vfs_root)
+    _ensure_windows_bundle_entrypoint(vfs_root)
 
-    executable = f"VFS\\{_msix_vfs_root_dir()}\\{_MSIX_PACKAGE_NAME}\\Muxiveo.exe"
+    executable = f"VFS\\{_msix_vfs_root_dir()}\\{_MSIX_PACKAGE_NAME}\\{_WINDOWS_EXE_NAME}"
     manifest_path = layout_dir / "AppxManifest.xml"
     manifest_path.write_text(
         _msix_manifest_content(version_tag, executable, metadata=metadata),
@@ -2464,9 +2518,7 @@ def _build_pyinstaller_wine() -> Path:
         if _WIN_BUNDLE.exists():
             shutil.rmtree(_WIN_BUNDLE)
         shutil.copytree(raw_bundle, _WIN_BUNDLE)
-        gui_exe = _WIN_BUNDLE / "Muxiveo.exe"
-        if gui_exe.exists():
-            shutil.copy2(gui_exe, _WIN_BUNDLE / "Muxiveo-cli.exe")
+        _ensure_windows_bundle_entrypoint(_WIN_BUNDLE)
         _verify_windows_runtime_bundle(_WIN_BUNDLE)
     finally:
         shutil.rmtree(wine_tmpdir, ignore_errors=True)
@@ -2484,7 +2536,7 @@ Unicode true
 
 !define APP_NAME      "{app_name}"
 !define APP_VERSION   "{app_version}"
-!define EXE_NAME      "Muxiveo.exe"
+!define EXE_NAME      "muxiveo.exe"
 !define INSTALL_DIR   "$PROGRAMFILES64\\Muxiveo"
 !define UNINSTALL_KEY "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Muxiveo"
 
@@ -2545,7 +2597,7 @@ Section "Uninstall"
   Delete "$DESKTOP\\Muxiveo.lnk"
 
   ; Suppression des associations "Open with..."
-  DeleteRegKey HKLM "Software\\Classes\\Applications\\Muxiveo.exe"
+  DeleteRegKey HKLM "Software\\Classes\\Applications\\muxiveo.exe"
 
   ; Suppression des clés registre 64 bits
   SetRegView 64
@@ -2698,6 +2750,7 @@ def _patch_macos_info_plist(app_path: Path, version_tag: str | None) -> None:
 
     version = _normalize_version_tag(version_tag)
     plist["CFBundleIdentifier"] = _MACOS_BUNDLE_ID
+    plist["CFBundleExecutable"] = APP_EXECUTABLE_NAME
     plist["CFBundleName"] = APP_NAME
     plist["CFBundleDisplayName"] = APP_NAME
     plist["CFBundleShortVersionString"] = version

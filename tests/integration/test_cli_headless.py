@@ -22,7 +22,8 @@ def _run_cli(root: Path, *args: str, env: dict[str, str] | None = None) -> subpr
     return subprocess.run(
         [
             sys.executable,
-            str(root / "Muxiveo_cli.py"),
+            str(root / "main.py"),
+            "--cli",
             *args,
             "--ffmpeg",
             "ffmpeg",
@@ -103,7 +104,7 @@ def test_cli_schema_outputs_and_writes_json(tmp_path: Path) -> None:
     schema_path = tmp_path / "schema.json"
 
     stdout_result = subprocess.run(
-        [sys.executable, str(root / "Muxiveo_cli.py"), "schema"],
+        [sys.executable, str(root / "main.py"), "--cli", "schema"],
         cwd=root,
         capture_output=True,
         text=True,
@@ -114,7 +115,7 @@ def test_cli_schema_outputs_and_writes_json(tmp_path: Path) -> None:
     assert stdout_payload["properties"]["version"] == {"const": 1}
 
     file_result = subprocess.run(
-        [sys.executable, str(root / "Muxiveo_cli.py"), "schema", "--output", str(schema_path)],
+        [sys.executable, str(root / "main.py"), "--cli", "schema", "--output", str(schema_path)],
         cwd=root,
         capture_output=True,
         text=True,
@@ -125,7 +126,7 @@ def test_cli_schema_outputs_and_writes_json(tmp_path: Path) -> None:
     assert file_payload["$id"].endswith("cli-job-v1.json")
 
     decision_result = subprocess.run(
-        [sys.executable, str(root / "Muxiveo_cli.py"), "schema", "--version", "decision-profile"],
+        [sys.executable, str(root / "main.py"), "--cli", "schema", "--version", "decision-profile"],
         cwd=root,
         capture_output=True,
         text=True,

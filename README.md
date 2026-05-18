@@ -491,9 +491,9 @@ Depuis le GUI, **Appliquer profil** charge un profil enregistré, affiche un ape
 En CLI :
 
 ```bash
-Muxiveo-cli validate --profile profil.json
-Muxiveo-cli preview --profile profil.json -i source.mkv --json
-Muxiveo-cli run --profile profil.json -i source.mkv -o sortie.mkv
+muxiveo --cli validate --profile profil.json
+muxiveo --cli preview --profile profil.json -i source.mkv --json
+muxiveo --cli run --profile profil.json -i source.mkv -o sortie.mkv
 ```
 
 Vous pouvez donner un chemin complet ou simplement le nom d'un profil sauvegardé dans le dossier utilisateur. L'extension `.json` est optionnelle : `--profile BestOfAll` cherchera aussi `BestOfAll.json` dans `<dossier de config Muxiveo>/profiles/decision/`.
@@ -501,7 +501,7 @@ Vous pouvez donner un chemin complet ou simplement le nom d'un profil sauvegard�
 En batch dossier :
 
 ```bash
-Muxiveo-cli batch \
+muxiveo --cli batch \
   --profile profil.json \
   --input-dir "Serie" \
   --recursive \
@@ -521,10 +521,10 @@ La CLI n'ouvre pas de dialogue interactif. Si un conflit ou une ambiguïté ne p
 Il est adapté aux épisodes ou fichiers construits de la même façon :
 
 ```bash
-Muxiveo-cli validate --config exact-job.json
-Muxiveo-cli preview --config exact-job.json
-Muxiveo-cli run --config exact-job.json
-Muxiveo-cli batch --template exact-job.json --input-dir "Serie" --output-dir "out"
+muxiveo --cli validate --config exact-job.json
+muxiveo --cli preview --config exact-job.json
+muxiveo --cli run --config exact-job.json
+muxiveo --cli batch --template exact-job.json --input-dir "Serie" --output-dir "out"
 ```
 
 Utilisez un exact job quand la structure des sources est stable. Utilisez un profil décisionnel quand les sources varient mais que vos décisions restent les mêmes.
@@ -825,7 +825,7 @@ Muxiveo peut être lancé en mode CLI sans initialiser l'interface graphique :
 
 ```bash
 python3 main.py --cli --help
-./Muxiveo-cli --help
+./muxiveo --cli --help
 ```
 
 Sous-commandes disponibles :
@@ -852,7 +852,7 @@ Le CLI est non interactif : une sortie existante est refusée sauf `--force`. Le
 
 Les templates JSON peuvent sélectionner les pistes par type, langue et flags d'origine, normaliser les langues BCP-47/RFC5646, renommer les pistes via patterns, ajouter/importer des chapitres, demander TMDB et traiter un batch. Trois configs d'exemple sont fournies dans `docs/cli/` : simple, middle et complexe toutes options.
 
-Dans les artefacts packagés, l'entrée CLI route vers le même bundle que l'application : `Muxiveo-cli` sur Linux/AppImage/macOS, `Muxiveo-cli.exe` sur Windows, ou `Muxiveo --cli ...` en fallback. En environnement source, utilisez `python3 main.py --cli ...`.
+Dans les artefacts packagés, il n'y a pas de binaire CLI séparé : utilisez `muxiveo --cli ...` sur Linux/AppImage/macOS, ou `muxiveo.exe --cli ...` sur Windows. En environnement source, utilisez `./muxiveo --cli ...` ou `python3 main.py --cli ...`.
 
 ## Outils externes
 
@@ -867,7 +867,7 @@ Dans les artefacts packagés, l'entrée CLI route vers le même bundle que l'app
 
 ## Troubleshooting windows
 
-Cette notice ne concerne que les lancement depuis Muxiveo.exe
+Cette notice ne concerne que les lancement depuis muxiveo.exe
 
 Le lancement via python (py main.py) n'est pas concerné.
 
@@ -883,7 +883,7 @@ Quand cette protection est active, Muxiveo peut être empêché d'écrire direct
 
 Symptômes fréquents :
 
-- popup **Sécurité Windows** indiquant que `Muxiveo.exe` ou un outil comme `ffmpeg.exe` a été bloqué ;
+- popup **Sécurité Windows** indiquant que `muxiveo.exe` ou un outil comme `ffmpeg.exe` a été bloqué ;
 - erreur `No such file or directory` lors d'un export vers `Videos` ou `Documents` ;
 - succès de l'export vers un autre dossier non protégé, comme `Desktop` ou `%TEMP%`.
 
@@ -897,7 +897,7 @@ Si vous refusez l'exception ou si vous devez la configurer manuellement :
 2. Allez dans **Protection contre les virus et menaces**.
 3. Ouvrez **Protection contre les ransomwares** puis **Gérer la protection contre les ransomwares**.
 4. Entrez dans **Autoriser une application via l'accès contrôlé aux dossiers**.
-5. Ajoutez `Muxiveo.exe`.
+5. Ajoutez `muxiveo.exe`.
 6. Si nécessaire, ajoutez aussi `ffmpeg.exe`.
 
 Après ajout à l'allowlist, redémarrez Muxiveo avant de retester un export vers `Videos` ou `Documents`.

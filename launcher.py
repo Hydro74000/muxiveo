@@ -20,9 +20,8 @@ import sys
 from pathlib import Path
 
 try:
-    from core.version import APP_CLI_NAME, APP_CONFIG_DIR_NAME, APP_VERSION
+    from core.version import APP_CONFIG_DIR_NAME, APP_VERSION
 except Exception:
-    APP_CLI_NAME = "Muxiveo-cli"
     APP_CONFIG_DIR_NAME = "Muxiveo"
     APP_VERSION = "0.0.0"
 
@@ -491,9 +490,6 @@ def _run_tmdb_smoke_test() -> int:
 
 
 def _is_cli_invocation() -> bool:
-    executable_name = Path(sys.argv[0]).stem.lower()
-    if executable_name in {APP_CLI_NAME.lower(), "muxiveo_cli"}:
-        return True
     return "--cli" in sys.argv[1:]
 
 

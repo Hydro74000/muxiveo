@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import plistlib
 import subprocess
 import struct
 import zlib
@@ -64,7 +65,7 @@ def test_desktop_entries_advertise_file_open_support():
         mime_types="video/x-matroska;audio/x-matroska;",
         website_url=package_mod._APPIMAGE_WEBSITE_URL,
     )
-    assert "Exec=Muxiveo %F" in rendered
+    assert "Exec=muxiveo %F" in rendered
     assert "MimeType=video/x-matroska;audio/x-matroska;" in rendered
     assert "X-AppImage-Website=https://muxiveo.fr/" in rendered
     assert "Terminal=false" in rendered
@@ -72,7 +73,7 @@ def test_desktop_entries_advertise_file_open_support():
         mime_types="video/x-matroska;",
         website_url=package_appimage_mod._APPIMAGE_WEBSITE_URL,
     )
-    assert "Exec=Muxiveo %F" in rendered_appimage
+    assert "Exec=muxiveo %F" in rendered_appimage
     assert "MimeType=video/x-matroska;" in rendered_appimage
     assert "X-AppImage-Website=https://muxiveo.fr/" in rendered_appimage
 
@@ -98,7 +99,7 @@ def test_appstream_metainfo_advertises_homepage_and_desktop_launchable():
 def test_windows_supported_types_block_registers_open_with_entries():
     with patch.object(package_mod, "ACCEPTED_EXTENSIONS", frozenset({".mkv", ".srt"})):
         block = package_mod._windows_supported_types_block()
-    assert 'Applications\\\\Muxiveo.exe\\\\shell\\\\open\\\\command' in block
+    assert 'Applications\\\\muxiveo.exe\\\\shell\\\\open\\\\command' in block
     assert '.mkv' in block
     assert '.srt' in block
 
@@ -136,11 +137,36 @@ def test_build_pyinstaller_uses_windowed_on_native_windows(tmp_path):
          patch.object(package_mod, "_resolve_windows_icon_ico", return_value=None), \
          patch.object(package_mod, "_verify_windows_runtime_bundle"), \
          patch.object(package_mod, "_run", side_effect=fake_run):
-        package_mod._build_pyinstaller(onefile=False)
+        result = package_mod._build_pyinstaller(onefile=False)
 
     assert commands
     assert "--windowed" in commands[0]
     assert "--console" not in commands[0]
+    assert result == tmp_path / "dist" / "Muxiveo" / "muxiveo.exe"
+    assert (tmp_path / "dist" / "Muxiveo" / "muxiveo.exe").exists()
+    assert not (tmp_path / "dist" / "Muxiveo" / "Muxiveo.exe").exists()
+
+
+def test_build_pyinstaller_lowercases_linux_entrypoints(tmp_path):
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, cwd=None):
+        commands.append(cmd)
+        exe_path = tmp_path / "dist" / "Muxiveo" / "Muxiveo"
+        exe_path.parent.mkdir(parents=True, exist_ok=True)
+        exe_path.write_text("", encoding="utf-8")
+
+    with patch.object(package_mod, "ROOT", tmp_path), \
+         patch.object(package_mod, "OS", "Linux"), \
+         patch.object(package_mod, "DATA_FILES", []), \
+         patch.object(package_mod, "_run", side_effect=fake_run):
+        result = package_mod._build_pyinstaller(onefile=False)
+
+    assert result == tmp_path / "dist" / "Muxiveo" / "muxiveo"
+    assert (tmp_path / "dist" / "Muxiveo" / "muxiveo").exists()
+    assert not (tmp_path / "dist" / "Muxiveo" / "Muxiveo").exists()
+    assert not (tmp_path / "dist" / "Muxiveo" / ("muxiveo" + "-cli")).exists()
+    assert commands[0][commands[0].index("--name") + 1] == "Muxiveo"
 
 
 def test_ensure_wine_deps_pins_pyside6_and_verifies_runtime():
@@ -312,6 +338,8 @@ def test_build_appdir_prefers_icon_ico_when_available(tmp_path):
 
     assert (appdir / "Muxiveo.png").read_bytes() == b"png-from-ico"
     assert (appdir / "Muxiveo.ico").read_bytes() == b"ico"
+    assert (appdir / "Muxiveo" / "muxiveo").exists()
+    assert not (appdir / "Muxiveo" / ("muxiveo" + "-cli")).exists()
     assert (appdir / ".DirIcon").is_symlink()
     assert (appdir / ".DirIcon").readlink() == Path("Muxiveo.png")
 
@@ -330,6 +358,7 @@ def test_build_appdir_falls_back_to_icon_png_if_ico_conversion_fails(tmp_path):
         appdir = package_mod._build_appdir()
 
     assert (appdir / "Muxiveo.png").read_bytes() == b"png-fallback"
+    assert (appdir / "Muxiveo" / "muxiveo").exists()
 
 
 def test_package_appimage_build_appdir_prefers_icon_ico_when_available(tmp_path):
@@ -350,6 +379,8 @@ def test_package_appimage_build_appdir_prefers_icon_ico_when_available(tmp_path)
 
     assert (appdir / "Muxiveo.ico").read_bytes() == b"ico"
     assert (appdir / "Muxiveo.png").read_bytes() == b"png-from-ico"
+    assert (appdir / "usr" / "bin" / "muxiveo").exists()
+    assert not (appdir / "usr" / "bin" / ("muxiveo" + "-cli")).exists()
     assert (appdir / ".DirIcon").is_symlink()
     assert (appdir / ".DirIcon").readlink() == Path("Muxiveo.png")
 
@@ -371,7 +402,7 @@ def test_msix_manifest_contains_full_trust_metadata():
          patch.object(package_mod, "_msix_processor_architecture", return_value="x64"):
         manifest = package_mod._msix_manifest_content(
             "1.3.2",
-            r"VFS\ProgramFilesX64\Muxiveo\Muxiveo.exe",
+            r"VFS\ProgramFilesX64\Muxiveo\muxiveo.exe",
         )
 
     assert 'Name="Hydro74000.Muxiveo"' in manifest
@@ -380,7 +411,7 @@ def test_msix_manifest_contains_full_trust_metadata():
     assert 'ProcessorArchitecture="x64"' in manifest
     assert 'EntryPoint="Windows.FullTrustApplication"' in manifest
     assert '<rescap:Capability Name="runFullTrust" />' in manifest
-    assert r'Executable="VFS\ProgramFilesX64\Muxiveo\Muxiveo.exe"' in manifest
+    assert r'Executable="VFS\ProgramFilesX64\Muxiveo\muxiveo.exe"' in manifest
     assert 'xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"' in manifest
     assert '<desktop:Extension Category="windows.fullTrustProcess"' in manifest
     assert "<desktop:FullTrustProcess />" in manifest
@@ -398,7 +429,7 @@ def test_msix_manifest_forces_revision_zero():
          patch.object(package_mod, "_msix_processor_architecture", return_value="x64"):
         manifest = package_mod._msix_manifest_content(
             "1.4.0.1",
-            r"VFS\ProgramFilesX64\Muxiveo\Muxiveo.exe",
+            r"VFS\ProgramFilesX64\Muxiveo\muxiveo.exe",
         )
 
     assert 'Version="1.4.0.0"' in manifest
@@ -455,7 +486,8 @@ def test_stage_msix_layout_embeds_file_associations_and_bundle(tmp_path):
     manifest = (layout_dir / "AppxManifest.xml").read_text(encoding="utf-8")
     assert '<uap:Extension Category="windows.fileTypeAssociation">' in manifest
     assert '<uap:FileType>.mkv</uap:FileType>' in manifest
-    assert (layout_dir / "VFS" / "ProgramFilesX64" / "AOTRMuxiveo" / "Muxiveo.exe").exists()
+    assert (layout_dir / "VFS" / "ProgramFilesX64" / "AOTRMuxiveo" / "muxiveo.exe").exists()
+    assert not (layout_dir / "VFS" / "ProgramFilesX64" / "AOTRMuxiveo" / "Muxiveo.exe").exists()
 
 
 def test_build_msixupload_wraps_msix_for_partner_center(tmp_path):
@@ -539,6 +571,22 @@ def test_build_macos_dmg_retries_hdiutil_create(tmp_path):
     assert result.read_text(encoding="utf-8") == "dmg"
     assert not (tmp_path / "dist" / "dmg_staging").exists()
     mock_sleep.assert_called_once_with(2)
+
+
+def test_patch_macos_info_plist_uses_lowercase_bundle_executable(tmp_path):
+    app_path = tmp_path / "dist" / "Muxiveo.app"
+    plist_path = app_path / "Contents" / "Info.plist"
+    plist_path.parent.mkdir(parents=True)
+    with plist_path.open("wb") as f:
+        plistlib.dump({}, f)
+
+    package_mod._patch_macos_info_plist(app_path, version_tag="1.2.3")
+
+    with plist_path.open("rb") as f:
+        plist = plistlib.load(f)
+    assert plist["CFBundleName"] == "Muxiveo"
+    assert plist["CFBundleExecutable"] == "muxiveo"
+    assert plist["CFBundleShortVersionString"] == "1.2.3"
 
 
 def test_package_appimage_versioned_output_path_uses_app_version_by_default():

@@ -271,9 +271,9 @@ Depuis le GUI, **Appliquer profil** charge un profil enregistré, affiche un ape
 En CLI :
 
 ```bash
-Muxiveo-cli validate --profile profil.json
-Muxiveo-cli preview --profile profil.json -i source.mkv --json
-Muxiveo-cli run --profile profil.json -i source.mkv -o sortie.mkv
+muxiveo --cli validate --profile profil.json
+muxiveo --cli preview --profile profil.json -i source.mkv --json
+muxiveo --cli run --profile profil.json -i source.mkv -o sortie.mkv
 ```
 
 Vous pouvez donner un chemin complet ou simplement le nom d'un profil sauvegardé
@@ -283,7 +283,7 @@ cherchera aussi `BestOfAll.json` dans `<dossier de config Muxiveo>/profiles/deci
 En batch dossier :
 
 ```bash
-Muxiveo-cli batch \
+muxiveo --cli batch \
   --profile profil.json \
   --input-dir "Serie" \
   --recursive \
@@ -307,10 +307,10 @@ La CLI n'ouvre pas de dialogue interactif. Si un conflit ou une ambiguïté ne p
 Il est adapté aux épisodes ou fichiers construits de la même façon :
 
 ```bash
-Muxiveo-cli validate --config exact-job.json
-Muxiveo-cli preview --config exact-job.json
-Muxiveo-cli run --config exact-job.json
-Muxiveo-cli batch --template exact-job.json --input-dir "Serie" --output-dir "out"
+muxiveo --cli validate --config exact-job.json
+muxiveo --cli preview --config exact-job.json
+muxiveo --cli run --config exact-job.json
+muxiveo --cli batch --template exact-job.json --input-dir "Serie" --output-dir "out"
 ```
 
 Utilisez un exact job quand la structure des sources est stable. Utilisez un profil décisionnel quand les sources varient mais que vos décisions restent les mêmes.
