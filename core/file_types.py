@@ -89,7 +89,7 @@ VIDEO_CONTAINER_EXTENSIONS: frozenset[str] = frozenset({
 
 # MIME types déclarés dans les intégrations desktop/app bundle.
 # L'objectif n'est pas l'exhaustivité parfaite, mais une liste pratique
-# suffisamment large pour que Mediarecode apparaisse dans les dialogues
+# suffisamment large pour que Muxiveo apparaisse dans les dialogues
 # "Ouvrir avec..." des fichiers média usuels.
 DESKTOP_MIME_TYPES: tuple[str, ...] = (
     "audio/aac",

@@ -1,2 +1,2 @@
-"""Headless command-line entrypoints for Mediarecode."""
+"""Headless command-line entrypoints for Muxiveo."""
 

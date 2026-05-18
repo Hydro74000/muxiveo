@@ -419,9 +419,9 @@
     "fra": "Aucune opération configurée.",
     "eng": "No operation configured."
   },
-  "Mediarecode démarré.": {
-    "fra": "Mediarecode démarré.",
-    "eng": "Mediarecode started."
+  "Muxiveo démarré.": {
+    "fra": "Muxiveo démarré.",
+    "eng": "Muxiveo started."
   },
   "Tous les outils externes sont disponibles.": {
     "fra": "Tous les outils externes sont disponibles.",
@@ -579,9 +579,9 @@
     "fra": "Workflow échoué à l'étape {step} : {message}",
     "eng": "Workflow failed at step {step}: {message}"
   },
-  "Mediarecode": {
-    "fra": "Mediarecode",
-    "eng": "Mediarecode"
+  "Muxiveo": {
+    "fra": "Muxiveo",
+    "eng": "Muxiveo"
   },
   "v1.1": {
     "fra": "v1.1",
@@ -1819,9 +1819,9 @@
     "fra": "Token Bearer TMDB",
     "eng": "TMDB bearer token"
   },
-  "Token v4 TMDB optionnel. Utilisé si la clé API est vide. Peut aussi être défini via MEDIARECODE_TMDB_BEARER_TOKEN.": {
-    "fra": "Token v4 TMDB optionnel. Utilisé si la clé API est vide. Peut aussi être défini via MEDIARECODE_TMDB_BEARER_TOKEN.",
-    "eng": "Optional TMDB v4 token. Used if the API key is empty. Can also be set via MEDIARECODE_TMDB_BEARER_TOKEN."
+  "Token v4 TMDB optionnel. Utilisé si la clé API est vide. Peut aussi être défini via MUXIVEO_TMDB_BEARER_TOKEN.": {
+    "fra": "Token v4 TMDB optionnel. Utilisé si la clé API est vide. Peut aussi être défini via MUXIVEO_TMDB_BEARER_TOKEN.",
+    "eng": "Optional TMDB v4 token. Used if the API key is empty. Can also be set via MUXIVEO_TMDB_BEARER_TOKEN."
   },
   "Générer un fichier .nfo après remux/encodage": {
     "fra": "Générer un fichier .nfo après remux/encodage",

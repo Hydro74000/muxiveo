@@ -90,7 +90,7 @@ Plan de couverture :
         - save/load round-trip, delete, names(), overwrite
 
 Exécution :
-    cd mediarecode && pytest tests/test_encode_workflow.py -v
+    cd Muxiveo && pytest tests/test_encode_workflow.py -v
 """
 
 from __future__ import annotations
@@ -2530,7 +2530,7 @@ class TestRunIntegratedMetadata:
             ffmpeg_bin="ffmpeg",
             dovi_tool_bin="dovi_tool",
             hdr10plus_bin="hdr10plus_tool",
-            writing_application="MediarecodeTest",
+            writing_application="MuxiveoTest",
         )
 
         with patch.object(wf._runner, "run") as mock_run:
@@ -2722,7 +2722,7 @@ class TestIntegratedMetadataCommand:
             ffmpeg_bin="ffmpeg",
             dovi_tool_bin="dovi_tool",
             hdr10plus_bin="hdr10plus_tool",
-            writing_application="MediarecodeMuxApp",
+            writing_application="MuxiveoMuxApp",
         )
         cmd = wf.build_command_single(cfg)
         assert not any("muxing_application=" in str(arg) for arg in cmd)
@@ -3158,7 +3158,7 @@ class TestInjectPathIntegratedPostproc:
             ffmpeg_bin="ffmpeg",
             dovi_tool_bin="dovi_tool",
             hdr10plus_bin="hdr10plus_tool",
-            writing_application="MediarecodeMuxApp",
+            writing_application="MuxiveoMuxApp",
             ram_buffer_enabled=False,
         )
 
@@ -3220,7 +3220,7 @@ class TestInjectPathIntegratedPostproc:
             ffmpeg_bin="ffmpeg",
             dovi_tool_bin="dovi_tool",
             hdr10plus_bin="hdr10plus_tool",
-            writing_application="MediarecodeMuxApp",
+            writing_application="MuxiveoMuxApp",
             ram_buffer_enabled=False,
         )
 

@@ -1000,7 +1000,7 @@ def _build_workflow_audit(report: AuditReport, *, workflow_codec: str) -> Workfl
         )
         overall_consistent = overall_consistent and dv_ok
         if dv_ok:
-            notes.append("Dolby Vision postconditions match the Mediarecode metadata-inject path.")
+            notes.append("Dolby Vision postconditions match the Muxiveo metadata-inject path.")
     if mode.has_hdr10plus:
         hdr10p_ok = bool(observed_checks["hdr10plus_present_in_all_access_units"])
         overall_consistent = overall_consistent and hdr10p_ok
@@ -1172,7 +1172,7 @@ def _build_findings(report: AuditReport) -> list[Finding]:
         findings.append(
             Finding(
                 "medium",
-                "The file contains Dolby Vision, but one or more workflow postconditions do not line up cleanly with the Mediarecode NVENC metadata-inject path.",
+                "The file contains Dolby Vision, but one or more workflow postconditions do not line up cleanly with the Muxiveo NVENC metadata-inject path.",
             )
         )
     if not findings:

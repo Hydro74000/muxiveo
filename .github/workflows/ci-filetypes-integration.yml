@@ -1,7 +1,7 @@
 name: Filetypes Integration Tests
 
 # Vérifie la bonne intégration des types de fichiers source étendus
-# (MKV/MP4/MOV/TS/M2TS/WebM/FLV/VOB/…) dans les workflows Mediarecode.
+# (MKV/MP4/MOV/TS/M2TS/WebM/FLV/VOB/…) dans les workflows Muxiveo.
 #
 # - Unit : core/file_types.py, core/subtitle_codec.py
 # - Intégration ffmpeg : remux multi-conteneurs → MKV
@@ -29,6 +29,7 @@ on:
       - main
       - master
       - devel-stable
+      - rebrand
     paths:
       - "core/file_types.py"
       - "core/subtitle_codec.py"

@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
 """
-package.py — Script de packaging de Mediarecode.
+package.py — Script de packaging de Muxiveo.
 
 Cibles :
-  Linux (défaut) → AppImage  (Mediarecode-x86_64.AppImage dans dist/)
+  Linux (défaut) → AppImage  (Muxiveo-x86_64.AppImage dans dist/)
   Windows natif  → .exe / .msix
-  Windows cross  → Mediarecode-Setup.exe via Wine + NSIS (--windows)
+  Windows cross  → Muxiveo-Setup.exe via Wine + NSIS (--windows)
 
 Workflow Linux :
-  1. PyInstaller --onedir  → dist/mediarecode/
+  1. PyInstaller --onedir  → dist/Muxiveo/
   2. Construction du AppDir (AppRun + .desktop + icône)
-  3. appimagetool           → dist/Mediarecode-<arch>.AppImage
+  3. appimagetool           → dist/Muxiveo-<arch>.AppImage
 
 Workflow Windows natif (exécuté sur Windows) :
-  1. PyInstaller --onedir  → dist/mediarecode/
-  2. (optionnel) MSIX       → Mediarecode.msix       (nécessite --msix)
-  3. (optionnel) NSIS       → Mediarecode-Setup.exe  (nécessite --nsis)
+  1. PyInstaller --onedir  → dist/Muxiveo/
+  2. (optionnel) MSIX       → Muxiveo.msix       (nécessite --msix)
+  3. (optionnel) NSIS       → Muxiveo-Setup.exe  (nécessite --nsis)
 
 Workflow Windows cross (depuis Linux avec --windows) :
   1. Installe Wine + préfixe dédié si absent
   2. Installe Python Windows + PyInstaller dans le préfixe Wine
-  3. PyInstaller via wine python.exe → dist/mediarecode-win/
-  4. Génère un script NSIS + makensis → Mediarecode-Setup.exe
+  3. PyInstaller via wine python.exe → dist/Muxiveo-win/
+  4. Génère un script NSIS + makensis → Muxiveo-Setup.exe
 
 Usage :
   python3 package.py [options]
@@ -31,7 +31,7 @@ Options :
   --exe         Force le packaging .exe même sur Linux (PyInstaller natif, pas d'AppImage)
   --windows     Cross-compile un installateur Windows depuis Linux via Wine + NSIS
   --msix        Produit un package MSIX signé sur Windows natif
-  --skip-wine   Réutilise dist/mediarecode-win/ existant (skip étape Wine/PyInstaller)
+  --skip-wine   Réutilise dist/Muxiveo-win/ existant (skip étape Wine/PyInstaller)
   --version TAG Suffixe de version pour le fichier final (défaut: APP_VERSION)
   --dest PATH   Copie le fichier final vers un chemin personnalisé (dossier ou fichier)
   --clean       Nettoie tous les artefacts de build (build/, dist/, .wine_build/, *.AppImage…). Utilise sudo si nécessaire. Quitte sans builder.
@@ -60,7 +60,14 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from core.file_types import ACCEPTED_EXTENSIONS, build_desktop_mime_type_string
-from core.version import APP_NAME, APP_VERSION
+from core.version import (
+    APP_APPSTREAM_ID,
+    APP_EXECUTABLE_NAME,
+    APP_MACOS_BUNDLE_ID,
+    APP_NAME,
+    APP_VERSION,
+    APP_WEBSITE_URL,
+)
 
 ROOT = Path(__file__).parent
 DIST_RELEASES = ROOT / "dist" / "releases"
@@ -76,40 +83,229 @@ _WIN_PY_EXE   = _WINE_PREFIX / "drive_c" / "Python311" / "python.exe"
 # Version PySide6 figée pour le build cross Wine.
 # Un override ponctuel reste possible via l'environnement si besoin de tester
 # une autre release sans modifier le dépôt.
-_WIN_PYSIDE6_VER = os.environ.get("MEDIARECODE_WINE_PYSIDE6_VERSION", "6.10.2").strip() or "6.10.2"
+_WIN_PYSIDE6_VER = os.environ.get("MUXIVEO_WINE_PYSIDE6_VERSION", "6.10.2").strip() or "6.10.2"
 # Runtime ICU Windows utilisé pour satisfaire les dépendances Qt sous Wine.
-_WIN_ICU_NUGET_VERSION = os.environ.get("MEDIARECODE_WINE_ICU_VERSION", "72.1.0.3").strip() or "72.1.0.3"
+_WIN_ICU_NUGET_VERSION = os.environ.get("MUXIVEO_WINE_ICU_VERSION", "72.1.0.3").strip() or "72.1.0.3"
 _WIN_ICU_NUGET_URL = (
     "https://www.nuget.org/api/v2/package/"
     f"Microsoft.ICU.ICU4C.Runtime.win-x64/{_WIN_ICU_NUGET_VERSION}"
 )
 # Bundle PyInstaller Windows (dans dist/)
-_WIN_BUNDLE   = ROOT / "mediarecode-win"   # hors de dist/ (owned by nfsnobody)
+_WIN_BUNDLE   = ROOT / "Muxiveo-win"   # hors de dist/ (owned by nfsnobody)
 # Bundle macOS
-_MACOS_BUNDLE_NAME = "Mediarecode.app"
-_MACOS_BUNDLE_ID = os.environ.get("MEDIARECODE_MACOS_BUNDLE_ID", "com.hydro74000.mediarecode").strip() or "com.hydro74000.mediarecode"
-_MACOS_MIN_VERSION = os.environ.get("MEDIARECODE_MACOS_MIN_VERSION", "11.0").strip() or "11.0"
-_APPIMAGE_UPDATE_OWNER = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_OWNER", "Hydro74000").strip() or "Hydro74000"
-_APPIMAGE_UPDATE_REPO = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_REPO", "mediarecode").strip() or "mediarecode"
-_APPIMAGE_UPDATE_RELEASE = os.environ.get("MEDIARECODE_APPIMAGE_UPDATE_RELEASE", "latest").strip() or "latest"
-_APPIMAGE_WEBSITE_URL = "https://mediarecode.aotr.fr/"
-_APPSTREAM_ID = "fr.aotr.mediarecode"
-_MSIX_IDENTITY = os.environ.get("MEDIARECODE_MSIX_IDENTITY", "AOTR.Mediarecode").strip() or "AOTR.Mediarecode"
-_MSIX_PUBLISHER = os.environ.get("MEDIARECODE_MSIX_PUBLISHER", "CN=AOTR").strip() or "CN=AOTR"
-_MSIX_PUBLISHER_DISPLAY_NAME = os.environ.get("MEDIARECODE_MSIX_PUBLISHER_DISPLAY_NAME", "AOTR").strip() or "AOTR"
-_MSIX_DESCRIPTION = os.environ.get("MEDIARECODE_MSIX_DESCRIPTION", "AOTR Mediarecode is an independent video workflow tool. This software is not affiliated with, authorized, or endorsed by Nero AG or any other media software providers.").strip() or "AOTR Mediarecode is an independent video workflow tool. This software is not affiliated with, authorized, or endorsed by Nero AG or any other media software providers."
-_MSIX_CERT_PFX = os.environ.get("MEDIARECODE_MSIX_CERT_PFX", "").strip()
-_MSIX_CERT_PASSWORD = os.environ.get("MEDIARECODE_MSIX_CERT_PASSWORD", "").strip()
-_MSIX_TIMESTAMP_URL = os.environ.get("MEDIARECODE_MSIX_TIMESTAMP_URL", "http://timestamp.digicert.com").strip() or "http://timestamp.digicert.com"
-_MSIX_STORE_CONFIG = os.environ.get("MEDIARECODE_MSIX_STORE_CONFIG", "").strip()
-_WINDOWS_SDK_WINGET_ID = os.environ.get("MEDIARECODE_WINDOWS_SDK_WINGET_ID", "Microsoft.WindowsSDK").strip() or "Microsoft.WindowsSDK"
-_WINDOWS_SDK_INSTALLER = os.environ.get("MEDIARECODE_WINDOWS_SDK_INSTALLER", "").strip()
+_MACOS_BUNDLE_NAME = f"{APP_NAME}.app"
+_MACOS_BUNDLE_ID = os.environ.get("MUXIVEO_MACOS_BUNDLE_ID", APP_MACOS_BUNDLE_ID).strip() or APP_MACOS_BUNDLE_ID
+_MACOS_MIN_VERSION = os.environ.get("MUXIVEO_MACOS_MIN_VERSION", "11.0").strip() or "11.0"
+_APPIMAGE_UPDATE_OWNER = os.environ.get("MUXIVEO_APPIMAGE_UPDATE_OWNER", "Hydro74000").strip() or "Hydro74000"
+_APPIMAGE_UPDATE_REPO = os.environ.get("MUXIVEO_APPIMAGE_UPDATE_REPO", "Muxiveo").strip() or "Muxiveo"
+_APPIMAGE_UPDATE_RELEASE = os.environ.get("MUXIVEO_APPIMAGE_UPDATE_RELEASE", "latest").strip() or "latest"
+_APPIMAGE_WEBSITE_URL = APP_WEBSITE_URL
+_APPSTREAM_ID = APP_APPSTREAM_ID
+_MSIX_IDENTITY = os.environ.get("MUXIVEO_MSIX_IDENTITY", "AOTR.Muxiveo").strip() or "AOTR.Muxiveo"
+_MSIX_PUBLISHER = os.environ.get("MUXIVEO_MSIX_PUBLISHER", "CN=AOTR").strip() or "CN=AOTR"
+_MSIX_PUBLISHER_DISPLAY_NAME = os.environ.get("MUXIVEO_MSIX_PUBLISHER_DISPLAY_NAME", "AOTR").strip() or "AOTR"
+_MSIX_DESCRIPTION = os.environ.get("MUXIVEO_MSIX_DESCRIPTION", "AOTR Muxiveo is an independent video workflow tool. This software is not affiliated with, authorized, or endorsed by Nero AG or any other media software providers.").strip() or "AOTR Muxiveo is an independent video workflow tool. This software is not affiliated with, authorized, or endorsed by Nero AG or any other media software providers."
+_MSIX_CERT_PFX = os.environ.get("MUXIVEO_MSIX_CERT_PFX", "").strip()
+_MSIX_CERT_PASSWORD = os.environ.get("MUXIVEO_MSIX_CERT_PASSWORD", "").strip()
+_MSIX_TIMESTAMP_URL = os.environ.get("MUXIVEO_MSIX_TIMESTAMP_URL", "http://timestamp.digicert.com").strip() or "http://timestamp.digicert.com"
+_MSIX_STORE_CONFIG = os.environ.get("MUXIVEO_MSIX_STORE_CONFIG", "").strip()
+_WINDOWS_SDK_WINGET_ID = os.environ.get("MUXIVEO_WINDOWS_SDK_WINGET_ID", "Microsoft.WindowsSDK").strip() or "Microsoft.WindowsSDK"
+_WINDOWS_SDK_INSTALLER = os.environ.get("MUXIVEO_WINDOWS_SDK_INSTALLER", "").strip()
+_WINDOWS_EXE_NAME = f"{APP_NAME}.exe"
 # Exception MSIX : nom technique distinct du branding/artefacts classiques.
 _MSIX_PACKAGE_NAME = re.sub(
     r"\s+",
     "",
-    os.environ.get("MEDIARECODE_MSIX_PACKAGE_NAME", "AOTRMediarecode").strip(),
-) or "AOTRMediarecode"
+    os.environ.get("MUXIVEO_MSIX_PACKAGE_NAME", "AOTRMuxiveo").strip(),
+) or "AOTRMuxiveo"
+_MSIX_FILE_TYPE_ASSOCIATION_NAME = "muxiveo"
+
+
+def _rename_unix_executable(exe_path: Path) -> Path:
+    """Keep Unix command names lowercase while preserving branded bundle names."""
+    if OS == "Windows" or exe_path.name == APP_EXECUTABLE_NAME:
+        return exe_path
+
+    target = exe_path.with_name(APP_EXECUTABLE_NAME)
+    if target.exists() or target.is_symlink():
+        try:
+            if exe_path.exists() and exe_path.samefile(target):
+                temp = target.with_name(f".{target.name}.casefix")
+                if temp.exists() or temp.is_symlink():
+                    temp.unlink()
+                exe_path.rename(temp)
+                temp.rename(target)
+                _ok(f"Exécutable Unix renommé : {target.name}")
+                return target
+        except OSError:
+            pass
+        target.unlink()
+    exe_path.rename(target)
+    _ok(f"Exécutable Unix renommé : {target.name}")
+    return target
+
+
+def _rename_windows_executable(exe_path: Path) -> Path:
+    """Keep the Windows executable branded while preserving existing folders."""
+    if OS != "Windows" or exe_path.name == _WINDOWS_EXE_NAME:
+        return exe_path
+
+    target = exe_path.with_name(_WINDOWS_EXE_NAME)
+    if target.exists() or target.is_symlink():
+        target.unlink()
+    exe_path.rename(target)
+    _ok(f"Exécutable Windows renommé : {target.name}")
+    return target
+
+
+def _resolve_windows_pyinstaller_executable(onefile: bool) -> Path:
+    """Resolve the Windows executable produced by PyInstaller without assuming case."""
+    if onefile:
+        search_dir = ROOT / "dist"
+        direct_candidates = [
+            search_dir / _WINDOWS_EXE_NAME,
+            search_dir / f"{APP_EXECUTABLE_NAME}.exe",
+            search_dir / f"{APP_NAME}.exe",
+        ]
+    else:
+        search_dir = ROOT / "dist" / APP_NAME
+        direct_candidates = [
+            search_dir / _WINDOWS_EXE_NAME,
+            search_dir / f"{APP_EXECUTABLE_NAME}.exe",
+            search_dir / f"{APP_NAME}.exe",
+        ]
+
+    for candidate in direct_candidates:
+        if candidate.is_file():
+            return candidate
+
+    if search_dir.is_dir():
+        executables = sorted(
+            path
+            for path in search_dir.glob("*.exe")
+            if path.is_file()
+        )
+        if len(executables) == 1:
+            return executables[0]
+
+        preferred_names = {
+            _WINDOWS_EXE_NAME.lower(),
+            f"{APP_EXECUTABLE_NAME}.exe".lower(),
+            f"{APP_NAME}.exe".lower(),
+        }
+        for candidate in executables:
+            if candidate.name.lower() in preferred_names:
+                return candidate
+
+    found = sorted(str(path) for path in (ROOT / "dist").glob("**/*.exe"))
+    found_hint = f" Exécutables trouvés: {', '.join(found[:20])}" if found else ""
+    raise FileNotFoundError(
+        f"PyInstaller n'a pas produit d'exécutable Windows dans {search_dir}."
+        + found_hint
+    )
+
+
+def _resolve_macos_bundle_executable(app_path: Path) -> Path:
+    """Retourne l'exécutable interne d'un .app PyInstaller avant normalisation."""
+    macos_dir = app_path / "Contents" / "MacOS"
+    candidates: list[Path] = []
+    fallback_candidates: list[Path] = []
+
+    def _exact_child(name: str) -> Path | None:
+        if macos_dir.exists():
+            for child in macos_dir.iterdir():
+                if child.name == name:
+                    return child
+        return None
+
+    def _add_candidate(name: object) -> None:
+        if not isinstance(name, str) or not name:
+            return
+        exact = _exact_child(name)
+        candidate = exact or macos_dir / name
+        if exact is not None and candidate not in candidates:
+            candidates.append(candidate)
+        elif exact is None and candidate not in fallback_candidates:
+            fallback_candidates.append(candidate)
+
+    _add_candidate(APP_NAME)
+    _add_candidate(APP_EXECUTABLE_NAME)
+
+    plist_path = app_path / "Contents" / "Info.plist"
+    if plist_path.exists():
+        try:
+            import plistlib
+
+            with plist_path.open("rb") as f:
+                plist = plistlib.load(f)
+            _add_candidate(plist.get("CFBundleExecutable"))
+        except Exception:
+            pass
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    for candidate in fallback_candidates:
+        if candidate.exists():
+            return candidate
+
+    if macos_dir.exists():
+        executables = [
+            path
+            for path in macos_dir.iterdir()
+            if path.is_file() and os.access(path, os.X_OK)
+        ]
+        if len(executables) == 1:
+            return executables[0]
+
+        files = [path for path in macos_dir.iterdir() if path.is_file()]
+        if len(files) == 1:
+            return files[0]
+
+    expected = ", ".join(str(candidate) for candidate in [*candidates, *fallback_candidates])
+    raise FileNotFoundError(
+        f"PyInstaller n'a pas produit d'exécutable macOS dans {macos_dir}"
+        + (f" (attendus : {expected})" if expected else "")
+    )
+
+
+def _ensure_windows_bundle_entrypoint(bundle_dir: Path) -> Path:
+    """Normalise le nom de l'exécutable Windows dans un bundle onedir."""
+    exe_path = bundle_dir / _WINDOWS_EXE_NAME
+    legacy_exe = bundle_dir / f"{APP_EXECUTABLE_NAME}.exe"
+
+    if not exe_path.exists() and legacy_exe.exists():
+        legacy_exe.rename(exe_path)
+    elif legacy_exe.is_symlink() or legacy_exe.is_file():
+        # On case-insensitive filesystems (Windows), muxiveo.exe and Muxiveo.exe
+        # resolve to the same inode — unlink would delete the branded exe.
+        try:
+            is_same = legacy_exe.samefile(exe_path)
+        except OSError:
+            is_same = False
+        if not is_same:
+            legacy_exe.unlink()
+    return exe_path
+
+
+def _ensure_unix_bundle_entrypoints(bundle_dir: Path) -> Path:
+    """Normalise les entrées exécutables dans un bundle Linux/macOS."""
+    exe_path = bundle_dir / APP_EXECUTABLE_NAME
+    legacy_exe = bundle_dir / APP_NAME
+
+    if not exe_path.exists() and legacy_exe.exists():
+        legacy_exe.rename(exe_path)
+    elif legacy_exe.is_symlink() or legacy_exe.is_file():
+        legacy_exe.unlink()
+
+    legacy_cli = bundle_dir / f"{APP_NAME}-cli"
+    if legacy_cli.is_symlink() or legacy_cli.is_file():
+        legacy_cli.unlink()
+    legacy_cli_lower = bundle_dir / f"{APP_EXECUTABLE_NAME}-cli"
+    if legacy_cli_lower.is_symlink() or legacy_cli_lower.is_file():
+        legacy_cli_lower.unlink()
+    return exe_path
 
 # ── Modules Python exclus du bundle ──────────────────────────────────────────
 
@@ -167,11 +363,11 @@ VSVersionInfo(
       StringTable(
         '040C04B0',
         [
-          StringStruct('CompanyName', 'Mediarecode'),
-          StringStruct('FileDescription', 'Mediarecode video workflow'),
+          StringStruct('CompanyName', 'Muxiveo'),
+          StringStruct('FileDescription', 'Muxiveo video workflow'),
           StringStruct('FileVersion', '{version_str}'),
-          StringStruct('InternalName', 'mediarecode'),
-          StringStruct('OriginalFilename', 'mediarecode.exe'),
+          StringStruct('InternalName', '{APP_NAME}'),
+          StringStruct('OriginalFilename', '{_WINDOWS_EXE_NAME}'),
           StringStruct('ProductName', '{APP_NAME}'),
           StringStruct('ProductVersion', '{version_str}')
         ]
@@ -388,9 +584,9 @@ def _clean_dirs() -> None:
     to_remove: list[Path] = [
         ROOT / "build",
         ROOT / "dist",
-        ROOT / "Mediarecode.AppDir",
-        ROOT / "mediarecode-win",
-        ROOT / "mediarecode.nsi",
+        ROOT / "Muxiveo.AppDir",
+        ROOT / "Muxiveo-win",
+        ROOT / "Muxiveo.nsi",
         ROOT / ".wine_build",
         *ROOT.glob("*.spec"),
     ]
@@ -1064,7 +1260,7 @@ def _build_pyinstaller(onefile: bool) -> Path:
         else:
             _warn(f"Donnée absente, ignorée : {src}")
 
-    app_name = "Mediarecode" if OS == "Darwin" else "mediarecode"
+    app_name = APP_NAME
     cmd: list[str] = [
         sys.executable, "-m", "PyInstaller",
         "--name", app_name,
@@ -1118,35 +1314,34 @@ def _build_pyinstaller(onefile: bool) -> Path:
     _run(cmd, cwd=ROOT)
 
     if onefile:
-        exe_name = "mediarecode.exe" if OS == "Windows" else "mediarecode"
-        exe_path = ROOT / "dist" / exe_name
+        if OS == "Windows":
+            exe_path = _resolve_windows_pyinstaller_executable(onefile=True)
+        else:
+            exe_path = ROOT / "dist" / "Muxiveo"
     elif OS == "Darwin":
-        # --windowed + --name Mediarecode produit dist/Mediarecode.app/Contents/MacOS/Mediarecode
-        exe_path = ROOT / "dist" / "Mediarecode.app" / "Contents" / "MacOS" / "Mediarecode"
+        # --windowed + --name Muxiveo produit dist/Muxiveo.app,
+        # puis l'exécutable interne est normalisé en muxiveo.
+        exe_path = _resolve_macos_bundle_executable(ROOT / "dist" / "Muxiveo.app")
+    elif OS == "Windows":
+        exe_path = _resolve_windows_pyinstaller_executable(onefile=False)
     else:
-        exe_name = "mediarecode.exe" if OS == "Windows" else "mediarecode"
-        exe_path = ROOT / "dist" / "mediarecode" / exe_name
+        exe_path = ROOT / "dist" / "Muxiveo" / "Muxiveo"
 
     if not exe_path.exists():
         raise FileNotFoundError(f"PyInstaller n'a pas produit : {exe_path}")
 
+    if OS != "Windows":
+        exe_path = _rename_unix_executable(exe_path)
+    else:
+        exe_path = _rename_windows_executable(exe_path)
+
     if OS == "Windows" and not onefile:
+        _ensure_windows_bundle_entrypoint(exe_path.parent)
         _verify_windows_runtime_bundle(exe_path.parent)
-        cli_exe = exe_path.parent / "mediarecode-cli.exe"
-        shutil.copy2(exe_path, cli_exe)
-        _ok(f"Entrée CLI Windows créée : {cli_exe.name}")
     elif OS == "Darwin":
-        cli_exe = exe_path.parent / "mediarecode-cli"
-        if cli_exe.exists() or cli_exe.is_symlink():
-            cli_exe.unlink()
-        cli_exe.symlink_to(exe_path.name)
-        _ok(f"Entrée CLI macOS créée : {cli_exe.name}")
+        _ensure_unix_bundle_entrypoints(exe_path.parent)
     elif not onefile:
-        cli_exe = exe_path.parent / "mediarecode-cli"
-        if cli_exe.exists() or cli_exe.is_symlink():
-            cli_exe.unlink()
-        cli_exe.symlink_to(exe_path.name)
-        _ok(f"Entrée CLI Linux créée : {cli_exe.name}")
+        _ensure_unix_bundle_entrypoints(exe_path.parent)
 
     _ok(f"Bundle PyInstaller : {exe_path.parent if not onefile else exe_path}")
     return exe_path
@@ -1158,10 +1353,10 @@ def _build_pyinstaller(onefile: bool) -> Path:
 
 _DESKTOP_ENTRY = """\
 [Desktop Entry]
-Name=Mediarecode
+Name=Muxiveo
 Comment=MKV/MP4 workflow — DoVi, HDR10+, encoding
-Exec=mediarecode %F
-Icon=Mediarecode
+Exec=muxiveo %F
+Icon=Muxiveo
 Type=Application
 Categories=AudioVideo;Video;
 MimeType={mime_types}
@@ -1175,10 +1370,10 @@ _APPSTREAM_METAINFO = """\
   <id>{appstream_id}</id>
   <metadata_license>MIT</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
-  <name>Mediarecode</name>
+  <name>Muxiveo</name>
   <summary>MKV/MP4 workflow for DoVi, HDR10+, remux and encode</summary>
   <description>
-    <p>Mediarecode helps prepare MKV and MP4 video workflows with remuxing, encoding, Dolby Vision and HDR10+ tooling.</p>
+    <p>Muxiveo helps prepare MKV and MP4 video workflows with remuxing, encoding, Dolby Vision and HDR10+ tooling.</p>
   </description>
   <launchable type="desktop-id">{desktop_id}</launchable>
   <url type="homepage">{website_url}</url>
@@ -1189,20 +1384,20 @@ _APPSTREAM_METAINFO = """\
 def _windows_supported_types_block() -> str:
     """Génère les clés NSIS de support 'Open with...' pour Windows."""
     lines = [
-        '  WriteRegStr HKLM "Software\\\\Classes\\\\Applications\\\\mediarecode.exe\\\\shell\\\\open\\\\command" "" \'\"$INSTDIR\\\\${EXE_NAME}\" \"%1\"\'',
+        f'  WriteRegStr HKLM "Software\\\\Classes\\\\Applications\\\\{_WINDOWS_EXE_NAME}\\\\shell\\\\open\\\\command" "" \'\"$INSTDIR\\\\${{EXE_NAME}}\" \"%1\"\'',
     ]
     for ext in sorted(ACCEPTED_EXTENSIONS):
         lines.append(
-            f'  WriteRegStr HKLM "Software\\\\Classes\\\\Applications\\\\mediarecode.exe\\\\SupportedTypes" "{ext}" ""'
+            f'  WriteRegStr HKLM "Software\\\\Classes\\\\Applications\\\\{_WINDOWS_EXE_NAME}\\\\SupportedTypes" "{ext}" ""'
         )
     return "\n".join(lines)
 
 _APPRUN = """\
 #!/bin/bash
-# AppRun — point d'entrée du AppImage Mediarecode
+# AppRun — point d'entrée du AppImage Muxiveo
 set -e
 HERE="$(dirname "$(readlink -f "$0")")"
-exec "$HERE/mediarecode/mediarecode" "$@"
+exec "$HERE/Muxiveo/muxiveo" "$@"
 """
 
 
@@ -1210,20 +1405,18 @@ def _build_appdir() -> Path:
     """Construit le AppDir à partir du bundle PyInstaller onedir."""
     _title("Étape 2 — Construction du AppDir")
 
-    appdir = ROOT / "dist" / "Mediarecode.AppDir"
+    appdir = ROOT / "dist" / "Muxiveo.AppDir"
     if appdir.exists():
         shutil.rmtree(appdir)
     appdir.mkdir(parents=True)
 
     # Copier le bundle PyInstaller dans le AppDir
-    bundle_src = ROOT / "dist" / "mediarecode"
-    bundle_dst = appdir / "mediarecode"
+    bundle_src = ROOT / "dist" / "Muxiveo"
+    bundle_dst = appdir / "Muxiveo"
     shutil.copytree(bundle_src, bundle_dst)
     _ok(f"Bundle copié → {bundle_dst}")
-    cli_link = bundle_dst / "mediarecode-cli"
-    if not cli_link.exists() and not cli_link.is_symlink():
-        cli_link.symlink_to("mediarecode")
-        _ok("Entrée CLI AppDir créée")
+    _ensure_unix_bundle_entrypoints(bundle_dst)
+    _ok("Entrée Unix AppDir créée")
 
     # AppRun
     apprun = appdir / "AppRun"
@@ -1232,7 +1425,7 @@ def _build_appdir() -> Path:
     _ok("AppRun créé")
 
     # Fichier .desktop
-    desktop = appdir / "Mediarecode.desktop"
+    desktop = appdir / "Muxiveo.desktop"
     desktop.write_text(
         _DESKTOP_ENTRY.format(
             mime_types=build_desktop_mime_type_string(),
@@ -1254,7 +1447,7 @@ def _build_appdir() -> Path:
     _ok("Métadonnées AppStream créées")
 
     # Icône
-    icon_png = appdir / "Mediarecode.png"
+    icon_png = appdir / "Muxiveo.png"
     _write_linux_app_icon_png(icon_png)
     diricon = appdir / ".DirIcon"
     if diricon.exists() or diricon.is_symlink():
@@ -1263,7 +1456,7 @@ def _build_appdir() -> Path:
 
     linux_icon_ico = _resolve_windows_icon_ico()
     if linux_icon_ico is not None:
-        shutil.copy2(linux_icon_ico, appdir / "Mediarecode.ico")
+        shutil.copy2(linux_icon_ico, appdir / "Muxiveo.ico")
         _ok(f"Icône ICO copiée : {linux_icon_ico.name}")
 
     return appdir
@@ -1435,7 +1628,7 @@ def _build_appimage(appdir: Path, version_tag: str | None = None) -> Path:
 
     appimagetool = _ensure_appimagetool()
     arch = platform.machine()   # x86_64 | aarch64
-    output = _versioned_output_path(ROOT / "dist" / f"Mediarecode-{arch}.AppImage", version_tag)
+    output = _versioned_output_path(ROOT / "dist" / f"Muxiveo-{arch}.AppImage", version_tag)
 
     env = os.environ.copy()
     env["ARCH"] = arch
@@ -1566,8 +1759,8 @@ def _install_windows_sdk_tools_if_missing() -> None:
     """
     Best-effort install of Windows SDK tools required for MSIX packaging.
 
-    Preferred path is a repo/CI-provided installer via MEDIARECODE_WINDOWS_SDK_INSTALLER.
-    As a fallback, tries winget with MEDIARECODE_WINDOWS_SDK_WINGET_ID.
+    Preferred path is a repo/CI-provided installer via MUXIVEO_WINDOWS_SDK_INSTALLER.
+    As a fallback, tries winget with MUXIVEO_WINDOWS_SDK_WINGET_ID.
     """
     if OS != "Windows":
         return
@@ -1578,7 +1771,7 @@ def _install_windows_sdk_tools_if_missing() -> None:
         installer_value = _WINDOWS_SDK_INSTALLER
         installer_path = Path(installer_value)
         if re.match(r"^https?://", installer_value, flags=re.IGNORECASE):
-            installer_path = Path(tempfile.gettempdir()) / "mediarecode-winsdksetup.exe"
+            installer_path = Path(tempfile.gettempdir()) / "Muxiveo-winsdksetup.exe"
             _info(f"Téléchargement du Windows SDK depuis {installer_value}…")
             urllib.request.urlretrieve(installer_value, installer_path)
         _info("Installation du Windows SDK (makeappx/signtool)…")
@@ -1773,7 +1966,7 @@ def _msix_manifest_content(
     <rescap:Capability Name="runFullTrust" />
   </Capabilities>
   <Applications>
-    <Application Id="Mediarecode" Executable="{executable}" EntryPoint="Windows.FullTrustApplication">
+    <Application Id="Muxiveo" Executable="{executable}" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         DisplayName="{meta['display_name']}"
         Description="{meta['description']}"
@@ -1790,7 +1983,7 @@ def _msix_manifest_content(
           <desktop:FullTrustProcess />
         </desktop:Extension>
         <uap:Extension Category="windows.fileTypeAssociation">
-          <uap:FileTypeAssociation Name="mediarecode">
+          <uap:FileTypeAssociation Name="{_MSIX_FILE_TYPE_ASSOCIATION_NAME}">
             <uap:DisplayName>{meta['display_name']}</uap:DisplayName>
             <uap:InfoTip>{meta['description']}</uap:InfoTip>
             <uap:SupportedFileTypes>
@@ -1820,8 +2013,9 @@ def _stage_msix_layout(
 
     vfs_root = layout_dir / "VFS" / _msix_vfs_root_dir() / _MSIX_PACKAGE_NAME
     shutil.copytree(bundle_dir, vfs_root)
+    _ensure_windows_bundle_entrypoint(vfs_root)
 
-    executable = f"VFS\\{_msix_vfs_root_dir()}\\{_MSIX_PACKAGE_NAME}\\mediarecode.exe"
+    executable = f"VFS\\{_msix_vfs_root_dir()}\\{_MSIX_PACKAGE_NAME}\\{_WINDOWS_EXE_NAME}"
     manifest_path = layout_dir / "AppxManifest.xml"
     manifest_path.write_text(
         _msix_manifest_content(version_tag, executable, metadata=metadata),
@@ -1833,10 +2027,10 @@ def _stage_msix_layout(
 
 def _sign_msix_package(msix_path: Path) -> None:
     if not _MSIX_CERT_PFX:
-        _warn("MEDIARECODE_MSIX_CERT_PFX absent — package MSIX non signé.")
+        _warn("MUXIVEO_MSIX_CERT_PFX absent — package MSIX non signé.")
         return
     if not _MSIX_CERT_PASSWORD:
-        raise RuntimeError("MEDIARECODE_MSIX_CERT_PASSWORD absent — signature MSIX impossible.")
+        raise RuntimeError("MUXIVEO_MSIX_CERT_PASSWORD absent — signature MSIX impossible.")
 
     signtool = _ensure_windows_sdk_tool("signtool.exe")
     _run(
@@ -2289,7 +2483,7 @@ def _verify_wine_pyside6_runtime() -> None:
         hint = (
             " Le wheel PySide6 installe dans Wine semble incomplet pour cette "
             "version/environnement. Essayez une autre version via "
-            "MEDIARECODE_WINE_PYSIDE6_VERSION ou verifiez le contenu du wheel."
+            "MUXIVEO_WINE_PYSIDE6_VERSION ou verifiez le contenu du wheel."
         )
     elif procedure_not_found and has_versioned_icu:
         hint = (
@@ -2384,7 +2578,7 @@ def _build_pyinstaller_wine() -> Path:
 
     cmd: list[str] = [
         str(_WIN_PY_EXE), "-m", "PyInstaller",
-        "--name", "mediarecode",
+        "--name", "Muxiveo",
         "--onedir",
         "--noconfirm",
         _pyinstaller_frontend_flag("Windows"),
@@ -2427,11 +2621,11 @@ def _build_pyinstaller_wine() -> Path:
 
     # distpath / workpath en chemins Windows.
     # On utilise dist/win/ (pas dist/) pour éviter les conflits avec le build
-    # Linux AppImage qui produit dist/mediarecode/ avec des fichiers appartenant
+    # Linux AppImage qui produit dist/Muxiveo/ avec des fichiers appartenant
     # à un autre uid.  workpath dans /tmp pour les mêmes raisons de permissions.
     # Tout le travail Wine (workpath + distpath) dans /tmp pour éviter les
     # conflits de permissions sur dist/ (potentiellement owned by nfsnobody).
-    wine_tmpdir = Path(tempfile.mkdtemp(prefix="mediarecode_wine_"))
+    wine_tmpdir = Path(tempfile.mkdtemp(prefix="Muxiveo_wine_"))
     wine_distpath = wine_tmpdir / "dist"
     wine_distpath.mkdir()
     win_dist = subprocess.check_output(
@@ -2450,7 +2644,7 @@ def _build_pyinstaller_wine() -> Path:
     try:
         _wine(*cmd)
         # Déplace le bundle produit vers _WIN_BUNDLE dans le projet
-        raw_bundle = wine_distpath / "mediarecode"
+        raw_bundle = wine_distpath / "Muxiveo"
         if not raw_bundle.exists():
             print(f"  Bundle introuvable après PyInstaller Wine : {raw_bundle}", file=sys.stderr)
             sys.exit(1)
@@ -2458,9 +2652,7 @@ def _build_pyinstaller_wine() -> Path:
         if _WIN_BUNDLE.exists():
             shutil.rmtree(_WIN_BUNDLE)
         shutil.copytree(raw_bundle, _WIN_BUNDLE)
-        gui_exe = _WIN_BUNDLE / "mediarecode.exe"
-        if gui_exe.exists():
-            shutil.copy2(gui_exe, _WIN_BUNDLE / "mediarecode-cli.exe")
+        _ensure_windows_bundle_entrypoint(_WIN_BUNDLE)
         _verify_windows_runtime_bundle(_WIN_BUNDLE)
     finally:
         shutil.rmtree(wine_tmpdir, ignore_errors=True)
@@ -2478,9 +2670,9 @@ Unicode true
 
 !define APP_NAME      "{app_name}"
 !define APP_VERSION   "{app_version}"
-!define EXE_NAME      "mediarecode.exe"
-!define INSTALL_DIR   "$PROGRAMFILES64\\Mediarecode"
-!define UNINSTALL_KEY "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Mediarecode"
+!define EXE_NAME      "Muxiveo.exe"
+!define INSTALL_DIR   "$PROGRAMFILES64\\Muxiveo"
+!define UNINSTALL_KEY "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Muxiveo"
 
 Name "${{APP_NAME}} ${{APP_VERSION}}"
 OutFile "{outfile}"
@@ -2498,11 +2690,11 @@ Section "Application" SEC_MAIN
   File /r "{bundle_dir_pattern}"
 
   ; Raccourci Menu Démarrer
-  CreateDirectory "$SMPROGRAMS\\Mediarecode"
-  CreateShortcut  "$SMPROGRAMS\\Mediarecode\\Mediarecode.lnk" "$INSTDIR\\${{EXE_NAME}}" "" "$INSTDIR\\${{EXE_NAME}}" 0
+  CreateDirectory "$SMPROGRAMS\\Muxiveo"
+  CreateShortcut  "$SMPROGRAMS\\Muxiveo\\Muxiveo.lnk" "$INSTDIR\\${{EXE_NAME}}" "" "$INSTDIR\\${{EXE_NAME}}" 0
 
   ; Raccourci Bureau
-  CreateShortcut "$DESKTOP\\Mediarecode.lnk" "$INSTDIR\\${{EXE_NAME}}" "" "$INSTDIR\\${{EXE_NAME}}" 0
+  CreateShortcut "$DESKTOP\\Muxiveo.lnk" "$INSTDIR\\${{EXE_NAME}}" "" "$INSTDIR\\${{EXE_NAME}}" 0
 
 {association_block}
 
@@ -2510,7 +2702,7 @@ Section "Application" SEC_MAIN
   SetRegView 64
   WriteRegStr   HKLM "${{UNINSTALL_KEY}}" "DisplayName"      "${{APP_NAME}}"
   WriteRegStr   HKLM "${{UNINSTALL_KEY}}" "DisplayVersion"   "${{APP_VERSION}}"
-  WriteRegStr   HKLM "${{UNINSTALL_KEY}}" "Publisher"        "Mediarecode"
+  WriteRegStr   HKLM "${{UNINSTALL_KEY}}" "Publisher"        "Muxiveo"
   WriteRegStr   HKLM "${{UNINSTALL_KEY}}" "InstallLocation"  "$INSTDIR"
   WriteRegStr   HKLM "${{UNINSTALL_KEY}}" "UninstallString"  "$INSTDIR\\Uninstall.exe"
   WriteRegDWORD HKLM "${{UNINSTALL_KEY}}" "NoModify"         1
@@ -2534,12 +2726,12 @@ Section "Uninstall"
 
   Delete "$INSTDIR\\Uninstall.exe"
   RMDir /r "$INSTDIR"
-  Delete "$SMPROGRAMS\\Mediarecode\\Mediarecode.lnk"
-  RMDir  "$SMPROGRAMS\\Mediarecode"
-  Delete "$DESKTOP\\Mediarecode.lnk"
+  Delete "$SMPROGRAMS\\Muxiveo\\Muxiveo.lnk"
+  RMDir  "$SMPROGRAMS\\Muxiveo"
+  Delete "$DESKTOP\\Muxiveo.lnk"
 
   ; Suppression des associations "Open with..."
-  DeleteRegKey HKLM "Software\\Classes\\Applications\\mediarecode.exe"
+  DeleteRegKey HKLM "Software\\Classes\\Applications\\Muxiveo.exe"
 
   ; Suppression des clés registre 64 bits
   SetRegView 64
@@ -2566,8 +2758,8 @@ def _build_nsis_installer(bundle_dir: Path, version_tag: str | None = None) -> P
     """Génère le script NSIS et invoque makensis pour produire l'installateur."""
     _title("Étape NSIS — Installateur Windows")
 
-    output = _versioned_output_path(ROOT / "Mediarecode-Setup.exe", version_tag)
-    nsi    = ROOT / "mediarecode.nsi"
+    output = _versioned_output_path(ROOT / "Muxiveo-Setup.exe", version_tag)
+    nsi    = ROOT / "Muxiveo.nsi"
     win_icon = _resolve_windows_icon_ico()
     icon_block = ""
     if win_icon is not None:
@@ -2692,6 +2884,7 @@ def _patch_macos_info_plist(app_path: Path, version_tag: str | None) -> None:
 
     version = _normalize_version_tag(version_tag)
     plist["CFBundleIdentifier"] = _MACOS_BUNDLE_ID
+    plist["CFBundleExecutable"] = APP_EXECUTABLE_NAME
     plist["CFBundleName"] = APP_NAME
     plist["CFBundleDisplayName"] = APP_NAME
     plist["CFBundleShortVersionString"] = version
@@ -2702,7 +2895,7 @@ def _patch_macos_info_plist(app_path: Path, version_tag: str | None) -> None:
     plist["LSUIElement"] = False
     plist["CFBundleDocumentTypes"] = [
         {
-            "CFBundleTypeName": "Mediarecode Media Files",
+            "CFBundleTypeName": "Muxiveo Media Files",
             "CFBundleTypeRole": "Viewer",
             "LSHandlerRank": "Alternate",
             "CFBundleTypeExtensions": sorted(ext.lstrip(".") for ext in ACCEPTED_EXTENSIONS),
@@ -2715,14 +2908,14 @@ def _patch_macos_info_plist(app_path: Path, version_tag: str | None) -> None:
 
 
 def _build_macos_dmg(app_path: Path, version_tag: str | None) -> Path:
-    """Crée un .dmg compressé depuis Mediarecode.app."""
+    """Crée un .dmg compressé depuis Muxiveo.app."""
     _title("Étape 3 — DMG")
     if shutil.which("hdiutil") is None:
         raise RuntimeError("hdiutil introuvable (requiert macOS)")
 
     version = _normalize_version_tag(version_tag)
     dist = ROOT / "dist"
-    dmg_path = dist / f"Mediarecode-{version}.dmg"
+    dmg_path = dist / f"Muxiveo-{version}.dmg"
     if dmg_path.exists():
         dmg_path.unlink()
 
@@ -2797,8 +2990,8 @@ def build_macos(dmg: bool, dest: str | None = None, version_tag: str | None = No
     _build_icns_from_png(ICON_PNG, icns_path)
 
     exe_path = _build_pyinstaller(onefile=False)
-    # PyInstaller --name Mediarecode --windowed produit dist/Mediarecode.app
-    app_final = exe_path.parent.parent.parent  # dist/Mediarecode.app
+    # PyInstaller --name Muxiveo --windowed produit dist/Muxiveo.app
+    app_final = exe_path.parent.parent.parent  # dist/Muxiveo.app
 
     # Copy icns into bundle if PyInstaller didn't embed it
     if icns_path.exists():
@@ -2847,7 +3040,7 @@ def build_windows(skip_wine: bool, dest: str | None = None, version_tag: str | N
     print(f"""
   Distribuer :
     {final_installer.name}
-  Au premier lancement (sans config.ini dans %APPDATA%\\Mediarecode),
+  Au premier lancement (sans config.ini dans %APPDATA%\\Muxiveo),
   le setup s'exécute pour installer les outils externes.
 """)
 
@@ -2936,8 +3129,8 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "Génère un package MSIX sur Windows natif. "
-            "Utilise makeappx.exe et signe le package si MEDIARECODE_MSIX_CERT_PFX "
-            "et MEDIARECODE_MSIX_CERT_PASSWORD sont définis."
+            "Utilise makeappx.exe et signe le package si MUXIVEO_MSIX_CERT_PFX "
+            "et MUXIVEO_MSIX_CERT_PASSWORD sont définis."
         ),
     )
     p.add_argument(
@@ -2959,7 +3152,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--skip-wine",
         action="store_true",
-        help="Réutilise mediarecode-win/ existant (skip Wine + PyInstaller)",
+        help="Réutilise Muxiveo-win/ existant (skip Wine + PyInstaller)",
     )
     p.add_argument(
         "--nsis",
@@ -3020,7 +3213,7 @@ if __name__ == "__main__":
         _ensure_pyinstaller()
         exe_path = _build_pyinstaller(onefile=args.onefile)
         if args.onefile:
-            onefile_dir = ROOT / "dist" / "mediarecode-onefile"
+            onefile_dir = ROOT / "dist" / "Muxiveo-onefile"
             onefile_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(exe_path, onefile_dir / exe_path.name)
             bundle_dir = onefile_dir
@@ -3029,7 +3222,22 @@ if __name__ == "__main__":
 
         store_metadata = _load_msix_store_metadata(Path(args.store_config) if args.store_config else None)
 
-        if args.msix or args.msixupload:
+        if args.exe:
+            if args.onefile or args.dest:
+                final_exe = _copy_final_file_if_requested(
+                    exe_path,
+                    args.dest,
+                    version_tag=args.version,
+                )
+            else:
+                final_exe = exe_path
+            _title("Résultat")
+            if args.onefile or args.dest:
+                _ok(f"Exécutable : {final_exe}")
+            else:
+                _ok(f"Dossier    : {bundle_dir}")
+                _ok(f"Exécutable : {exe_path}")
+        elif args.msix or args.msixupload:
             package_path = _build_msix_package(
                 bundle_dir,
                 version_tag=args.version,

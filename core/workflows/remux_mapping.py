@@ -47,7 +47,7 @@ def is_dir_writable(path: Path) -> bool:
         with tempfile.NamedTemporaryFile(
             mode="wb",
             dir=path,
-            prefix="mrecode_write_probe_",
+            prefix="muxiveo_write_probe_",
             delete=True,
         ):
             pass

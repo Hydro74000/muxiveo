@@ -4,7 +4,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 
-WINE_TEST_ROOT=${WINE_TEST_ROOT:-/tmp/mediarecode-wine-remux-tests}
+WINE_TEST_ROOT=${WINE_TEST_ROOT:-/tmp/Muxiveo-wine-remux-tests}
 WINEPREFIX=${WINEPREFIX:-$WINE_TEST_ROOT/prefix}
 KEEP_WINE_TEST_ROOT=${KEEP_WINE_TEST_ROOT:-0}
 PYTHON_INSTALLER=${PYTHON_INSTALLER:-$REPO_ROOT/python-3.11.9-amd64.exe}

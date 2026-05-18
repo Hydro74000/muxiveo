@@ -44,7 +44,7 @@
     "font.ttf"
   ],
   "tag_overrides": {
-    "ENCODER_SETTINGS": "mediarecode-cli template series-v1"
+    "ENCODER_SETTINGS": "muxiveo --cli template series-v1"
   },
-  "work_dir": "/tmp/mediarecode_work"
+  "work_dir": "/tmp/Muxiveo_work"
 }

@@ -2,6 +2,8 @@ name: Release Homebrew packages
 
 on:
   push:
+    branches:
+      - rebrand
     tags:
       - "v*"
   workflow_dispatch:
@@ -13,7 +15,7 @@ on:
 
 env:
   PYTHON_VERSION: "3.11"
-  HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || format('{0}/homebrew-mediarecode', github.repository_owner) }}
+  HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || format('{0}/homebrew-Muxiveo', github.repository_owner) }}
 
 jobs:
   build-linux:
@@ -60,8 +62,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p release-assets/linux
-          cp dist/releases/Mediarecode-x86_64_allinc-*.AppImage release-assets/linux/
-          cp dist/releases/Mediarecode-x86_64_allinc-*.AppImage.zsync release-assets/linux/
+          cp dist/releases/Muxiveo-x86_64_allinc-*.AppImage release-assets/linux/
+          cp dist/releases/Muxiveo-x86_64_allinc-*.AppImage.zsync release-assets/linux/
           ls -la release-assets/linux
 
       - name: Upload Linux artifacts
@@ -111,8 +113,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist/releases release-assets/macos
-          ARCHIVE="Mediarecode-${{ steps.version.outputs.value }}-homebrew-macos.tar.gz"
-          tar -C dist -czf "release-assets/macos/${ARCHIVE}" Mediarecode.app
+          ARCHIVE="Muxiveo-${{ steps.version.outputs.value }}-homebrew-macos.tar.gz"
+          tar -C dist -czf "release-assets/macos/${ARCHIVE}" Muxiveo.app
           ls -la release-assets/macos
 
       - name: Upload macOS artifacts
@@ -205,16 +207,17 @@ jobs:
             --hdr10plus-tool-macos-url "$HDR_URL" \
             --hdr10plus-tool-macos-sha256 "$HDR_SHA" \
             --homepage "https://github.com/${REPO}" \
-            --output release-assets/formula/mediarecode.rb
+            --output release-assets/formula/Muxiveo.rb
 
       - name: Upload formula artifact
         uses: actions/upload-artifact@v4
         with:
           name: homebrew-formula
-          path: release-assets/formula/mediarecode.rb
+          path: release-assets/formula/Muxiveo.rb
           if-no-files-found: error
 
       - name: Publish release assets
+        if: github.ref_name != 'rebrand'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -223,9 +226,10 @@ jobs:
           gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes ""
           gh release upload "$TAG" release-assets/linux/* --clobber
           gh release upload "$TAG" release-assets/macos/* --clobber
-          gh release upload "$TAG" release-assets/formula/mediarecode.rb --clobber
+          gh release upload "$TAG" release-assets/formula/Muxiveo.rb --clobber
 
       - name: Publish formula to tap repository
+        if: github.ref_name != 'rebrand'
         env:
           TAP_REPO: ${{ env.HOMEBREW_TAP_REPO }}
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -237,14 +241,14 @@ jobs:
           fi
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPO}.git" homebrew-tap
           mkdir -p homebrew-tap/Formula
-          cp release-assets/formula/mediarecode.rb homebrew-tap/Formula/mediarecode.rb
+          cp release-assets/formula/Muxiveo.rb homebrew-tap/Formula/Muxiveo.rb
           cd homebrew-tap
-          if [ -z "$(git status --porcelain Formula/mediarecode.rb)" ]; then
+          if [ -z "$(git status --porcelain Formula/Muxiveo.rb)" ]; then
             echo "Formula unchanged"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/mediarecode.rb
-          git commit -m "mediarecode ${{ steps.version.outputs.value }}"
+          git add Formula/Muxiveo.rb
+          git commit -m "Muxiveo ${{ steps.version.outputs.value }}"
           git push

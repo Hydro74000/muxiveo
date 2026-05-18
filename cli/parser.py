@@ -1,10 +1,11 @@
-"""Argparse construction for mediarecode-cli."""
+"""Argparse construction for muxiveo --cli."""
 
 from __future__ import annotations
 
 import argparse
 
 from cli.commands import cmd_batch, cmd_inspect, cmd_preview, cmd_profile, cmd_remux, cmd_run, cmd_schema, cmd_validate
+from core.version import APP_EXECUTABLE_NAME, APP_NAME
 
 
 def _add_common_options(parser: argparse.ArgumentParser) -> None:
@@ -43,13 +44,13 @@ def _add_tmdb_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--auto-tmdb", action="store_true", help="Chercher TMDB automatiquement et prendre le premier résultat.")
     parser.add_argument("--tmdb", action="store_true", help="Alias historique de --auto-tmdb.")
     parser.add_argument("--tmdb-id", type=int, help="ID TMDB explicite.")
-    parser.add_argument("--tmdb-apikey", dest="tmdb_apikey", default="", help="Clé API TMDB v3 (surcharge la config mediarecode et le JSON job).")
+    parser.add_argument("--tmdb-apikey", dest="tmdb_apikey", default="", help=f"Clé API TMDB v3 (surcharge la config {APP_NAME} et le JSON job).")
     parser.add_argument("--no-cover", action="store_true", help="Ne pas ajouter la cover TMDB.")
     parser.add_argument("--no-attach", action="store_true", help="Ne pas inclure d'attachments ni de cover TMDB.")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="mediarecode-cli", description="Mediarecode headless CLI")
+    parser = argparse.ArgumentParser(prog=f"{APP_EXECUTABLE_NAME} --cli", description=f"{APP_NAME} headless CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
     inspect = sub.add_parser("inspect", help="Inspecter une ou plusieurs sources.")

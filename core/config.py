@@ -27,6 +27,7 @@ from PySide6.QtCore import QSettings, QStandardPaths
 
 from core.lang_tags import Rfc5646LanguageTags
 from core.subprocess_utils import subprocess_text_kwargs
+from core.version import APP_CONFIG_DIR_NAME, APP_ENV_PREFIX, APP_NAME, APP_TEMP_WORK_DIR_NAME
 from core.workflows.common.ffmpeg_runtime import (
     default_ffmpeg_thread_count as _default_ffmpeg_thread_count,
     normalize_ffmpeg_thread_count as _normalize_ffmpeg_thread_count,
@@ -44,21 +45,21 @@ from core.workdir import (
 # Chemin du fichier config.ini
 # ---------------------------------------------------------------------------
 
-# Linux/macOS : config.ini dans le dossier XDG user (~/.config/mediarecode).
-# Windows frozen : config.ini dans %APPDATA%\\mediarecode.
+# Linux/macOS : config.ini dans le dossier XDG user (~/.config/Muxiveo).
+# Windows frozen : config.ini dans %APPDATA%\\Muxiveo.
 # Windows dev : config.ini à la racine du projet.
 def _windows_config_dir() -> Path:
     appdata = os.environ.get("APPDATA")
     if appdata:
-        return Path(appdata) / "mediarecode"
-    return Path.home() / "AppData" / "Roaming" / "mediarecode"
+        return Path(appdata) / APP_CONFIG_DIR_NAME
+    return Path.home() / "AppData" / "Roaming" / APP_CONFIG_DIR_NAME
 
 
 def _resolve_ini_path() -> Path:
     """
     Résout le chemin de config.ini selon la plateforme et le contexte :
-    - Linux / macOS  → ~/.config/mediarecode/config.ini  (XDG, dev ET frozen)
-    - Windows frozen → %APPDATA%\\mediarecode\\config.ini
+    - Linux / macOS  → ~/.config/Muxiveo/config.ini  (XDG, dev ET frozen)
+    - Windows frozen → %APPDATA%\\Muxiveo\\config.ini
     - Windows dev    → racine du projet (parent de core/)
 
     Sur Linux/macOS, on utilise toujours le chemin XDG — y compris en mode
@@ -66,7 +67,7 @@ def _resolve_ini_path() -> Path:
     """
     if sys.platform != "win32":
         xdg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-        return xdg / "mediarecode" / "config.ini"
+        return xdg / APP_CONFIG_DIR_NAME / "config.ini"
     # Windows
     if getattr(sys, "frozen", False):
         return _windows_config_dir() / "config.ini"
@@ -431,12 +432,12 @@ def write_ini_settings(section_values: dict[str, dict[str, str]]) -> None:
 def _windows_user_tools_dir() -> Path:
     """
     Dossier d'installation des outils binaires côté utilisateur
-    (%LOCALAPPDATA%\\Mediarecode\\tools). Utilisé quand l'exécutable
+    (%LOCALAPPDATA%\\Muxiveo\\tools). Utilisé quand l'exécutable
     est installé en lecture seule (MSIX, Program Files).
     """
     local_appdata = os.environ.get("LOCALAPPDATA")
     base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
-    return base / "Mediarecode" / "tools"
+    return base / "Muxiveo" / "tools"
 
 
 def _windows_repo_tool_dirs() -> list[Path]:
@@ -643,14 +644,14 @@ def _app_data_dir() -> Path:
         root = Path.home() / "Library" / "Application Support"
     else:
         root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    p = root / "mediarecode"
+    p = root / APP_CONFIG_DIR_NAME
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
 def _default_work_dir() -> Path:
     tmp = Path(tempfile.gettempdir())
-    p = tmp / "mediarecode_work"
+    p = tmp / APP_TEMP_WORK_DIR_NAME
     return p
 
 
@@ -864,7 +865,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         "title": "Métadonnées",
         "fields": (
             {"key": "tmdb_api_key", "attr": "tmdb_api_key", "kind": "text", "label": "Clé API TMDB", "description": "Clé API TMDB v3 (gratuite sur https://www.themoviedb.org/settings/api)."},
-            {"key": "tmdb_bearer_token", "attr": "tmdb_bearer_token", "kind": "text", "label": "Token Bearer TMDB", "description": "Token v4 TMDB optionnel. Utilisé si la clé API est vide. Peut aussi être défini via MEDIARECODE_TMDB_BEARER_TOKEN."},
+            {"key": "tmdb_bearer_token", "attr": "tmdb_bearer_token", "kind": "text", "label": "Token Bearer TMDB", "description": f"Token v4 TMDB optionnel. Utilisé si la clé API est vide. Peut aussi être défini via {APP_ENV_PREFIX}_TMDB_BEARER_TOKEN."},
             {"key": "generate_nfo", "attr": "generate_nfo", "kind": "bool", "label": "Générer un fichier .nfo après remux/encodage", "description": "Crée automatiquement un fichier .nfo (même nom que le MKV) contenant la sortie brute de mediainfo après chaque workflow réussi."},
         ),
     },
@@ -896,8 +897,8 @@ class AppConfig:
     documenté au lieu de retomber sur une ancienne valeur QSettings.
     """
 
-    _SETTINGS_ORG = "mediarecode"
-    _SETTINGS_APP = "Mediarecode"
+    _SETTINGS_ORG = APP_NAME
+    _SETTINGS_APP = APP_NAME
 
     def __init__(self) -> None:
         if _is_windows():

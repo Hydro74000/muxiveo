@@ -22,7 +22,8 @@ def _run_cli(root: Path, *args: str, env: dict[str, str] | None = None) -> subpr
     return subprocess.run(
         [
             sys.executable,
-            str(root / "mediarecode_cli.py"),
+            str(root / "main.py"),
+            "--cli",
             *args,
             "--ffmpeg",
             "ffmpeg",
@@ -103,7 +104,7 @@ def test_cli_schema_outputs_and_writes_json(tmp_path: Path) -> None:
     schema_path = tmp_path / "schema.json"
 
     stdout_result = subprocess.run(
-        [sys.executable, str(root / "mediarecode_cli.py"), "schema"],
+        [sys.executable, str(root / "main.py"), "--cli", "schema"],
         cwd=root,
         capture_output=True,
         text=True,
@@ -114,7 +115,7 @@ def test_cli_schema_outputs_and_writes_json(tmp_path: Path) -> None:
     assert stdout_payload["properties"]["version"] == {"const": 1}
 
     file_result = subprocess.run(
-        [sys.executable, str(root / "mediarecode_cli.py"), "schema", "--output", str(schema_path)],
+        [sys.executable, str(root / "main.py"), "--cli", "schema", "--output", str(schema_path)],
         cwd=root,
         capture_output=True,
         text=True,
@@ -125,7 +126,7 @@ def test_cli_schema_outputs_and_writes_json(tmp_path: Path) -> None:
     assert file_payload["$id"].endswith("cli-job-v1.json")
 
     decision_result = subprocess.run(
-        [sys.executable, str(root / "mediarecode_cli.py"), "schema", "--version", "decision-profile"],
+        [sys.executable, str(root / "main.py"), "--cli", "schema", "--version", "decision-profile"],
         cwd=root,
         capture_output=True,
         text=True,
@@ -187,7 +188,7 @@ def test_cli_profile_preview_on_synthetic_media(tmp_path: Path) -> None:
 def test_cli_profile_argument_falls_back_to_user_profile_dir_without_json_suffix(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     xdg_home = tmp_path / "xdg"
-    profile_dir = xdg_home / "mediarecode" / "profiles" / "decision"
+    profile_dir = xdg_home / "Muxiveo" / "profiles" / "decision"
     profile_dir.mkdir(parents=True)
     (profile_dir / "SavedProfile.json").write_text(
         json.dumps(

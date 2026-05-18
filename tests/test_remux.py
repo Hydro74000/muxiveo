@@ -312,7 +312,7 @@ def _workflow() -> RemuxWorkflow:
         (".s1e1.", (1, 1)),
         (".01x01.", (1, 1)),
         (
-            "Daredevil.Born.Again.S02E01.Le.Northern.Star.2160p.DSNP.WEB.DV.HDR.MULTi.AD.VFF.DDP.5.1.ATMOS.H265-HYDROMUX-MRecode",
+            "Daredevil.Born.Again.S02E01.Le.Northern.Star.2160p.DSNP.WEB.DV.HDR.MULTi.AD.VFF.DDP.5.1.ATMOS.H265-HYDROMUX-Muxiveo",
             (2, 1),
         ),
         ("Movie.Without.Episode.Tag", None),
