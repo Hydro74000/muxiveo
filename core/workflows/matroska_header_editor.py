@@ -1583,7 +1583,8 @@ class MatroskaMuxingAppPostAction:
 
     @staticmethod
     def default_prefix(version_label: str) -> str:
-        return f"AOTR Muxiveo {version_label}"
+        normalized_version = version_label.removeprefix("v")
+        return f"Muxiveo {normalized_version}"
 
     def apply_if_mkv(
         self,
