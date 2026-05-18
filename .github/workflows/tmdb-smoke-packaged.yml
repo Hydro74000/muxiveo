@@ -93,13 +93,16 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # package.py fait PyInstaller onedir → dist/Muxiveo/Muxiveo.exe
-          # (on saute NSIS, inutile pour un smoke test)
-          python package.py --version ci-smoke
-          $exe = "dist\Muxiveo\Muxiveo.exe"
-          if (-not (Test-Path $exe)) {
-            Write-Error "Exécutable $exe introuvable"
-            Get-ChildItem -Recurse dist | Select-Object -First 50
+          # Smoke test: PyInstaller onedir only, no NSIS installer.
+          python package.py --exe --version ci-smoke
+          $exeCandidates = @(
+            "dist\Muxiveo\Muxiveo.exe",
+            "dist\Muxiveo\muxiveo.exe"
+          )
+          $exe = $exeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "Exécutable Windows introuvable dans dist\Muxiveo"
+            Get-ChildItem -Recurse dist -Filter "*.exe" | Select-Object -First 50 FullName
             exit 1
           }
           "PACKAGED_BIN=$((Resolve-Path $exe).Path)" | Out-File -FilePath $env:GITHUB_ENV -Append

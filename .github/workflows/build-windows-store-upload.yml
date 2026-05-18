@@ -1,9 +1,6 @@
 name: Build Windows Store upload
 
 on:
-  push:
-    branches:
-      - rebrand
   workflow_dispatch:
     inputs:
       version:
@@ -13,6 +10,7 @@ on:
 
 jobs:
   build:
+    if: ${{ false }} # Disabled: Windows Store upload is intentionally paused.
     runs-on: windows-latest
 
     steps:

@@ -3165,7 +3165,22 @@ if __name__ == "__main__":
 
         store_metadata = _load_msix_store_metadata(Path(args.store_config) if args.store_config else None)
 
-        if args.msix or args.msixupload:
+        if args.exe:
+            if args.onefile or args.dest:
+                final_exe = _copy_final_file_if_requested(
+                    exe_path,
+                    args.dest,
+                    version_tag=args.version,
+                )
+            else:
+                final_exe = exe_path
+            _title("Résultat")
+            if args.onefile or args.dest:
+                _ok(f"Exécutable : {final_exe}")
+            else:
+                _ok(f"Dossier    : {bundle_dir}")
+                _ok(f"Exécutable : {exe_path}")
+        elif args.msix or args.msixupload:
             package_path = _build_msix_package(
                 bundle_dir,
                 version_tag=args.version,
