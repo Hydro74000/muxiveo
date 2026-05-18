@@ -178,6 +178,23 @@ def test_build_pyinstaller_accepts_lowercase_windows_entrypoint(tmp_path):
     assert not (tmp_path / "dist" / "Muxiveo" / "muxiveo.exe").exists()
 
 
+def test_ensure_windows_bundle_entrypoint_does_not_delete_branded_exe_on_case_insensitive_fs(tmp_path):
+    # Simulate Windows case-insensitive filesystem: Muxiveo.exe already exists,
+    # and samefile(muxiveo.exe, Muxiveo.exe) returns True.  The function must
+    # NOT unlink the branded exe.
+    bundle_dir = tmp_path / "dist" / "Muxiveo"
+    bundle_dir.mkdir(parents=True)
+    branded = bundle_dir / "Muxiveo.exe"
+    branded.write_text("exe", encoding="utf-8")
+
+    with patch.object(package_mod, "_WINDOWS_EXE_NAME", "Muxiveo.exe"), \
+         patch("pathlib.Path.samefile", return_value=True):
+        result = package_mod._ensure_windows_bundle_entrypoint(bundle_dir)
+
+    assert branded.exists(), "Muxiveo.exe was deleted — samefile guard is broken"
+    assert result == bundle_dir / "Muxiveo.exe"
+
+
 def test_build_pyinstaller_lowercases_linux_entrypoints(tmp_path):
     commands: list[list[str]] = []
 

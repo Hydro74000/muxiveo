@@ -278,7 +278,14 @@ def _ensure_windows_bundle_entrypoint(bundle_dir: Path) -> Path:
     if not exe_path.exists() and legacy_exe.exists():
         legacy_exe.rename(exe_path)
     elif legacy_exe.is_symlink() or legacy_exe.is_file():
-        legacy_exe.unlink()
+        # On case-insensitive filesystems (Windows), muxiveo.exe and Muxiveo.exe
+        # resolve to the same inode — unlink would delete the branded exe.
+        try:
+            is_same = legacy_exe.samefile(exe_path)
+        except OSError:
+            is_same = False
+        if not is_same:
+            legacy_exe.unlink()
     return exe_path
 
 
