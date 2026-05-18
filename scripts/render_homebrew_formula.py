@@ -165,7 +165,7 @@ def render_formula(
       (libexec/"muxiveo").write <<~EOS
         #!/bin/bash
         set -euo pipefail
-        CONFIG_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/Muxiveo"
+        CONFIG_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/muxiveo"
         CONFIG_FILE="${{CONFIG_DIR}}/config.ini"
         mkdir -p "${{CONFIG_DIR}}"
         if [ ! -f "${{CONFIG_FILE}}" ]; then
@@ -188,7 +188,7 @@ CFG
       (libexec/"muxiveo").write <<~EOS
         #!/bin/bash
         set -euo pipefail
-        CONFIG_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/Muxiveo"
+        CONFIG_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/muxiveo"
         CONFIG_FILE="${{CONFIG_DIR}}/config.ini"
         mkdir -p "${{CONFIG_DIR}}"
         if [ ! -f "${{CONFIG_FILE}}" ]; then
