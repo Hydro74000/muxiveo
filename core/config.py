@@ -18,14 +18,21 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from types import ModuleType
 
 from PySide6.QtCore import QSettings, QStandardPaths
 
 from core.lang_tags import Rfc5646LanguageTags
 from core.subprocess_utils import subprocess_text_kwargs
+from core.version import (
+    APP_CONFIG_DIR_NAME,
+    APP_ENV_PREFIX,
+    APP_TEMP_WORK_DIR_NAME,
+)
 from core.workflows.common.ffmpeg_runtime import (
     default_ffmpeg_thread_count as _default_ffmpeg_thread_count,
     normalize_ffmpeg_thread_count as _normalize_ffmpeg_thread_count,
@@ -43,21 +50,21 @@ from core.workdir import (
 # Chemin du fichier config.ini
 # ---------------------------------------------------------------------------
 
-# Linux/macOS : config.ini dans le dossier XDG user (~/.config/mediarecode).
-# Windows frozen : config.ini dans %APPDATA%\\mediarecode.
+# Linux/macOS : config.ini dans le dossier XDG user (~/.config/muxiveo).
+# Windows frozen : config.ini dans %APPDATA%\\muxiveo.
 # Windows dev : config.ini à la racine du projet.
 def _windows_config_dir() -> Path:
     appdata = os.environ.get("APPDATA")
     if appdata:
-        return Path(appdata) / "mediarecode"
-    return Path.home() / "AppData" / "Roaming" / "mediarecode"
+        return Path(appdata) / APP_CONFIG_DIR_NAME
+    return Path.home() / "AppData" / "Roaming" / APP_CONFIG_DIR_NAME
 
 
 def _resolve_ini_path() -> Path:
     """
     Résout le chemin de config.ini selon la plateforme et le contexte :
-    - Linux / macOS  → ~/.config/mediarecode/config.ini  (XDG, dev ET frozen)
-    - Windows frozen → %APPDATA%\\mediarecode\\config.ini
+    - Linux / macOS  → ~/.config/muxiveo/config.ini  (XDG, dev ET frozen)
+    - Windows frozen → %APPDATA%\\muxiveo\\config.ini
     - Windows dev    → racine du projet (parent de core/)
 
     Sur Linux/macOS, on utilise toujours le chemin XDG — y compris en mode
@@ -65,7 +72,7 @@ def _resolve_ini_path() -> Path:
     """
     if sys.platform != "win32":
         xdg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-        return xdg / "mediarecode" / "config.ini"
+        return xdg / APP_CONFIG_DIR_NAME / "config.ini"
     # Windows
     if getattr(sys, "frozen", False):
         return _windows_config_dir() / "config.ini"
@@ -124,6 +131,7 @@ def _command_exists(command: str | os.PathLike[str] | None) -> bool:
     """True si la commande configurée est résoluble ou pointe vers un fichier."""
     if command in (None, ""):
         return False
+    assert command is not None
     value = os.fspath(command)
     if shutil.which(value) is not None:
         return True
@@ -134,6 +142,7 @@ def _command_path(command: str | os.PathLike[str] | None) -> Path | None:
     """Retourne le chemin résolu d'une commande, y compris si elle est absolue."""
     if command in (None, ""):
         return None
+    assert command is not None
     value = os.fspath(command)
     found = shutil.which(value)
     if found:
@@ -304,8 +313,10 @@ def restart_application() -> bool:
     Préfère le helper du launcher s'il est disponible pour conserver le
     comportement frozen/dev déjà existant.
     """
+    launcher_mod: ModuleType | None
     try:
-        import launcher as launcher_mod  # noqa: PLC0415
+        import launcher as imported_launcher  # noqa: PLC0415
+        launcher_mod = imported_launcher
     except Exception:
         launcher_mod = None
 
@@ -319,7 +330,7 @@ def restart_application() -> bool:
     try:
         # start_new_session détache le nouveau process du tty/groupe parent :
         # évite que sa fermeture entraîne le process courant ou l'inverse.
-        popen_kwargs: dict[str, object] = {
+        popen_kwargs: dict[str, Any] = {
             "stdin": subprocess.DEVNULL,
             "stdout": subprocess.DEVNULL,
             "stderr": subprocess.DEVNULL,
@@ -430,12 +441,12 @@ def write_ini_settings(section_values: dict[str, dict[str, str]]) -> None:
 def _windows_user_tools_dir() -> Path:
     """
     Dossier d'installation des outils binaires côté utilisateur
-    (%LOCALAPPDATA%\\Mediarecode\\tools). Utilisé quand l'exécutable
+    (%LOCALAPPDATA%\\Muxiveo\\tools). Utilisé quand l'exécutable
     est installé en lecture seule (MSIX, Program Files).
     """
     local_appdata = os.environ.get("LOCALAPPDATA")
     base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
-    return base / "Mediarecode" / "tools"
+    return base / "Muxiveo" / "tools"
 
 
 def _windows_repo_tool_dirs() -> list[Path]:
@@ -633,16 +644,23 @@ def _app_data_dir() -> Path:
     raw = QStandardPaths.writableLocation(
         QStandardPaths.StandardLocation.AppDataLocation
     )
-    p = Path(raw) / "mediarecode"
+    if raw:
+        root = Path(raw)
+    elif sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        root = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
+    else:
+        root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    p = root / APP_CONFIG_DIR_NAME
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
 def _default_work_dir() -> Path:
-    tmp = Path(
-        os.environ.get("TMPDIR", os.environ.get("TEMP", "/tmp"))
-    )
-    p = tmp / "mediarecode_work"
+    tmp = Path(tempfile.gettempdir())
+    p = tmp / APP_TEMP_WORK_DIR_NAME
     return p
 
 
@@ -793,6 +811,27 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         ),
     },
     {
+        "section": "sync",
+        "title": "Synchronisation",
+        "fields": (
+            {
+                "key": "rewrite_enabled",
+                "attr": "sync_rewrite_enabled",
+                "kind": "bool",
+                "label": "Réécrire physiquement les décalages audio/sous-titres",
+                "description": "Option expérimentale. Si activée, certains décalages peuvent être matérialisés par réécriture des timestamps sous-titres ou réencodage audio simple. Désactivée par défaut.",
+            },
+            {
+                "key": "advanced_audio_rewrite_enabled",
+                "attr": "sync_advanced_audio_rewrite_enabled",
+                "kind": "bool",
+                "label": "Activer la sync réelle audio avancée",
+                "description": "Autorise les stratégies audio avancées pour les formats non simples lorsque la réécriture physique est activée.",
+                "tooltip": "Active des stratégies expérimentales pour TrueHD/MLP, DTS/DTS-HD/DTS:X, EAC3+JOC/Atmos, PCM/LPCM, formats lossless et formats lossy. Selon le codec, la piste peut être recopiée par blocs, réencodée, convertie en lossless/lossy, ou rester en sync offset si l'opération n'est pas sûre. Les pistes objet Atmos/DTS:X ne sont pas réencodées.",
+            },
+        ),
+    },
+    {
         "section": "ui",
         "title": "Interface",
         "fields": (
@@ -835,7 +874,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         "title": "Métadonnées",
         "fields": (
             {"key": "tmdb_api_key", "attr": "tmdb_api_key", "kind": "text", "label": "Clé API TMDB", "description": "Clé API TMDB v3 (gratuite sur https://www.themoviedb.org/settings/api)."},
-            {"key": "tmdb_bearer_token", "attr": "tmdb_bearer_token", "kind": "text", "label": "Token Bearer TMDB", "description": "Token v4 TMDB optionnel. Utilisé si la clé API est vide. Peut aussi être défini via MEDIARECODE_TMDB_BEARER_TOKEN."},
+            {"key": "tmdb_bearer_token", "attr": "tmdb_bearer_token", "kind": "text", "label": "Token Bearer TMDB", "description": f"Token v4 TMDB optionnel. Utilisé si la clé API est vide. Peut aussi être défini via {APP_ENV_PREFIX}_TMDB_BEARER_TOKEN."},
             {"key": "generate_nfo", "attr": "generate_nfo", "kind": "bool", "label": "Générer un fichier .nfo après remux/encodage", "description": "Crée automatiquement un fichier .nfo (même nom que le MKV) contenant la sortie brute de mediainfo après chaque workflow réussi."},
         ),
     },
@@ -867,8 +906,8 @@ class AppConfig:
     documenté au lieu de retomber sur une ancienne valeur QSettings.
     """
 
-    _SETTINGS_ORG = "mediarecode"
-    _SETTINGS_APP = "Mediarecode"
+    _SETTINGS_ORG = APP_CONFIG_DIR_NAME
+    _SETTINGS_APP = APP_CONFIG_DIR_NAME
 
     def __init__(self) -> None:
         if _is_windows():
@@ -997,6 +1036,10 @@ class AppConfig:
     def _load(self) -> None:
         self.work_dir = self._resolve_path("paths", "work_dir", "paths/work_dir", _default_work_dir())
         self.output_dir = self._resolve_path("paths", "output_dir", "paths/output_dir", _default_output_dir())
+        self.config_dir = _INI_PATH.parent
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.profiles_dir = self.config_dir / "profiles"
+        self.profiles_dir.mkdir(parents=True, exist_ok=True)
         self.app_data_dir = _app_data_dir()
 
         self.tool_ffmpeg = self._resolve_tool_value("ffmpeg", "tools/ffmpeg", "ffmpeg")
@@ -1043,6 +1086,15 @@ class AppConfig:
             "audio_encoding", "eac3_bitrate_per_channel_kbps",
             "audio_encoding/eac3_bitrate_per_channel_kbps",
             _DEFAULT_AUDIO_BITRATE_PER_CHANNEL_KBPS,
+        )
+        self.sync_rewrite_enabled = self._resolve_bool(
+            "sync", "rewrite_enabled", "sync/rewrite_enabled", False
+        )
+        self.sync_advanced_audio_rewrite_enabled = self._resolve_bool(
+            "sync",
+            "advanced_audio_rewrite_enabled",
+            "sync/advanced_audio_rewrite_enabled",
+            False,
         )
 
         self.language = _normalize_language_code(
@@ -1140,6 +1192,11 @@ class AppConfig:
 
         s.setValue("audio_encoding/aac_bitrate_per_channel_kbps", self.aac_bitrate_per_channel_kbps)
         s.setValue("audio_encoding/eac3_bitrate_per_channel_kbps", self.eac3_bitrate_per_channel_kbps)
+        s.setValue("sync/rewrite_enabled", "true" if self.sync_rewrite_enabled else "false")
+        s.setValue(
+            "sync/advanced_audio_rewrite_enabled",
+            "true" if self.sync_advanced_audio_rewrite_enabled else "false",
+        )
 
         s.setValue("ui/language", self.language)
         s.setValue("ui/log_max_lines", self.log_max_lines)
@@ -1285,6 +1342,8 @@ class AppConfig:
             "paths": {
                 "work_dir": str(self.work_dir),
                 "output_dir": str(self.output_dir),
+                "config_dir": str(self.config_dir),
+                "profiles_dir": str(self.profiles_dir),
                 "app_data": str(self.app_data_dir),
             },
             "tools": {
@@ -1313,6 +1372,10 @@ class AppConfig:
                 "ram_buffer_enabled": self.ram_buffer_enabled,
                 "ram_buffer_threshold_pct": self.ram_buffer_threshold_pct,
                 "max_parallel_video_encodes": self.max_parallel_video_encodes,
+            },
+            "sync": {
+                "rewrite_enabled": self.sync_rewrite_enabled,
+                "advanced_audio_rewrite_enabled": self.sync_advanced_audio_rewrite_enabled,
             },
             "ui": {
                 "language": self.language,

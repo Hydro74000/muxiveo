@@ -25,6 +25,7 @@ on:
     branches:
       - main
       - master
+      - rebrand
     paths:
       - "core/**"
       - "main.py"

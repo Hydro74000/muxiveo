@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 
 from core.config import AppConfig
 from core.inspector import FileInfo, HDRType, VideoTrack
-from core.i18n import apply_translations, translate_text
+from core.i18n import apply_translations, set_current_language, translate_text
 from core.workflows.remux_models import TrackEntry
 from core.runner import TaskSignals
 from core.workflows.encode import (
@@ -87,6 +87,7 @@ class EncodePanel(QWidget):
     ) -> None:
         super().__init__(parent)
         self._config    = config
+        set_current_language(getattr(config, "language", None))
         self._workflow  = EncodeWorkflow(
             ffmpeg_bin=config.tool_ffmpeg,
             dovi_tool_bin=config.tool_dovi_tool,
@@ -100,6 +101,9 @@ class EncodePanel(QWidget):
             writing_application=writing_application,
             generate_nfo=config.generate_nfo,
             nvencc_bin=getattr(config, "tool_nvencc", None) or None,
+            sync_rewrite_enabled=config.sync_rewrite_enabled,
+            aac_bitrate_per_channel_kbps=config.aac_bitrate_per_channel_kbps,
+            eac3_bitrate_per_channel_kbps=config.eac3_bitrate_per_channel_kbps,
         )
         self._profiles  = ProfileManager(config.app_data_dir / "encode_profiles")
         self._executor  = ThreadPoolExecutor(max_workers=1)
@@ -1459,8 +1463,8 @@ class EncodePanel(QWidget):
             source_map[(Path(info.path), int(track.mkv_tid))] = (info, track)
 
         for index, video in enumerate(video_tracks, start=1):
-            info: FileInfo | None = None
-            track: TrackEntry | None = None
+            current_info: FileInfo | None = None
+            current_track: TrackEntry | None = None
             entry_id = str(getattr(video, "track_entry_id", "") or "").strip()
             source_path = Path(getattr(video, "source_path", None) or config.source)
             stream_index = int(getattr(video, "stream_index", 0) or 0)
@@ -1468,24 +1472,24 @@ class EncodePanel(QWidget):
             if entry_id:
                 resolved = entry_map.get(entry_id)
                 if resolved is not None:
-                    info, track = resolved
-            if info is None:
+                    current_info, current_track = resolved
+            if current_info is None:
                 resolved = source_map.get((source_path, stream_index))
                 if resolved is not None:
-                    info, track = resolved
-            if info is None and self._file_info is not None and Path(self._file_info.path) == source_path:
-                info = self._file_info
+                    current_info, current_track = resolved
+            if current_info is None and self._file_info is not None and Path(self._file_info.path) == source_path:
+                current_info = self._file_info
 
             duration_s: float | None = None
             total_frames: int | None = None
-            if info is not None:
-                resolved_track = self._video_track_for_entry(info, track)
+            if current_info is not None:
+                resolved_track = self._video_track_for_entry(current_info, current_track)
                 duration_s = (
                     getattr(resolved_track, "duration_s", None)
-                    or getattr(info, "duration_s", None)
+                    or getattr(current_info, "duration_s", None)
                     or config.duration_s
                 )
-                frames_obj = getattr(info, "frame_count", None)
+                frames_obj = getattr(current_info, "frame_count", None)
                 if isinstance(frames_obj, int) and frames_obj > 0:
                     total_frames = frames_obj
             else:
@@ -2397,6 +2401,11 @@ class EncodePanel(QWidget):
         self._workflow.set_max_parallel_video_encodes(self._config.max_parallel_video_encodes)
         self._workflow.set_mediainfo_bin(self._config.tool_mediainfo)
         self._workflow.set_generate_nfo(self._config.generate_nfo)
+        self._workflow.set_sync_rewrite_enabled(self._config.sync_rewrite_enabled)
+        self._workflow.set_sync_rewrite_audio_bitrates(
+            aac_bitrate_per_channel_kbps=self._config.aac_bitrate_per_channel_kbps,
+            eac3_bitrate_per_channel_kbps=self._config.eac3_bitrate_per_channel_kbps,
+        )
         self._rebuild_preview()
 
     def _copy_command(self) -> None:
@@ -2405,6 +2414,6 @@ class EncodePanel(QWidget):
         if text:
             QApplication.clipboard().setText(text)
 
-    def closeEvent(self, event) -> None:  # type: ignore[override]
+    def closeEvent(self, event) -> None:
         self._executor.shutdown(wait=True)
         super().closeEvent(event)

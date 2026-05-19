@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-launcher.py â€” Point d'entrée packagé de Mediarecode.
+launcher.py â€” Point d'entrée packagé de Muxiveo.
 
 Vérifie la présence de config.ini dans le dossier de configuration utilisateur :
-  Linux / macOS  â†’ $XDG_CONFIG_HOME/mediarecode/config.ini  (défaut : ~/.config/â€¦)
-  Windows frozen â†’ %APPDATA%\\mediarecode\\config.ini
+  Linux / macOS  â†’ $XDG_CONFIG_HOME/muxiveo/config.ini  (défaut : ~/.config/â€¦)
+  Windows frozen â†’ %APPDATA%\\muxiveo\\config.ini
   Windows dev    â†’ racine du projet
 
 Si absent â†’ lance le setup systÃ¨me, puis démarre l'application Qt.
@@ -20,8 +20,9 @@ import sys
 from pathlib import Path
 
 try:
-    from core.version import APP_VERSION
+    from core.version import APP_CONFIG_DIR_NAME, APP_VERSION
 except Exception:
+    APP_CONFIG_DIR_NAME = "muxiveo"
     APP_VERSION = "0.0.0"
 
 
@@ -92,27 +93,27 @@ def _is_allinc() -> bool:
     """
     if not getattr(sys, "frozen", False):
         return False
-    # Le marqueur est Ã  cÃ´té de l'exécutable (dist/mediarecode/_ALLINC)
+    # Le marqueur est Ã  cÃ´té de l'exécutable (dist/Muxiveo/_ALLINC)
     return (Path(sys.executable).parent / "_ALLINC").exists()
 
 
 def _windows_config_dir() -> Path:
     appdata = os.environ.get("APPDATA")
     if appdata:
-        return Path(appdata) / "mediarecode"
-    return Path.home() / "AppData" / "Roaming" / "mediarecode"
+        return Path(appdata) / APP_CONFIG_DIR_NAME
+    return Path.home() / "AppData" / "Roaming" / APP_CONFIG_DIR_NAME
 
 
 def _get_config_path() -> Path:
     """
     Retourne le chemin de config.ini selon la plateforme :
-    - Linux / macOS  â†’ ~/.config/mediarecode/config.ini  (XDG)
-    - Windows frozen â†’ %APPDATA%\\mediarecode\\config.ini
+    - Linux / macOS  â†’ ~/.config/muxiveo/config.ini  (XDG)
+    - Windows frozen â†’ %APPDATA%\\muxiveo\\config.ini
     - Windows dev    â†’ racine du projet
     """
     if sys.platform != "win32":
         xdg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-        return xdg / "mediarecode" / "config.ini"
+        return xdg / APP_CONFIG_DIR_NAME / "config.ini"
     if getattr(sys, "frozen", False):
         return _windows_config_dir() / "config.ini"
     return Path(__file__).parent / "config.ini"
@@ -204,9 +205,9 @@ def _windows_show_restart_required_popup() -> None:
         return
     text = (
         "Windows Security a été mis Ã  jour.\n\n"
-        "Veuillez fermer cette fenÃªtre puis relancer Mediarecode manuellement."
+        "Veuillez fermer cette fenÃªtre puis relancer Muxiveo manuellement."
     )
-    title = "Mediarecode - Redémarrage requis"
+    title = "Muxiveo - Redémarrage requis"
     mb_ok = 0x00000000
     mb_icon_info = 0x00000040
     mb_topmost = 0x00040000
@@ -221,10 +222,10 @@ def _windows_show_setup_error_popup(details: str) -> None:
     if sys.platform != "win32":
         return
     text = (
-        "Mediarecode n'a pas pu terminer son initialisation.\n\n"
+        "Muxiveo n'a pas pu terminer son initialisation.\n\n"
         f"{details}"
     )
-    title = "Mediarecode - Erreur d'initialisation"
+    title = "Muxiveo - Erreur d'initialisation"
     mb_ok = 0x00000000
     mb_icon_error = 0x00000010
     mb_topmost = 0x00040000
@@ -310,9 +311,9 @@ def _run_first_time_setup(install_dir: Path) -> int:
 
     print("\n" + "=" * 60)
     if allinc:
-        print("  Mediarecode â€” Initialisation (all-inclusive)")
+        print("  Muxiveo â€” Initialisation (all-inclusive)")
     else:
-        print("  Mediarecode â€” PremiÃ¨re installation")
+        print("  Muxiveo â€” PremiÃ¨re installation")
     print("=" * 60)
     print(f"\n  config.ini introuvable dans : {install_dir}")
     if allinc:
@@ -348,7 +349,7 @@ def _run_first_time_setup(install_dir: Path) -> int:
         if _windows_ensure_admin():
             print(
                 "\n  Ã‰lévation des privilÃ¨ges demandée."
-                "\n  Mediarecode va redémarrer avec les droits administrateur...\n"
+                "\n  Muxiveo va redémarrer avec les droits administrateur...\n"
             )
             return SETUP_RC_HANDOFF
 
@@ -422,7 +423,7 @@ def _run_first_time_setup(install_dir: Path) -> int:
         try:
             install_dir.mkdir(parents=True, exist_ok=True)
             marker.write_text(
-                "# Mediarecode â€” configuration locale\n"
+                "# Muxiveo â€” configuration locale\n"
                 "# Décommentez et modifiez les clés pour surcharger les valeurs par défaut.\n"
                 "# Voir la section Configuration dans CLAUDE.md pour la liste complÃ¨te.\n",
                 encoding="utf-8",
@@ -442,7 +443,7 @@ def _run_first_time_setup(install_dir: Path) -> int:
     if _os == "Windows" and str(cfa_result.get("status") or "") == "updated":
         print(
             "\n  Windows Security a été mise Ã  jour."
-            "\n  Veuillez redémarrer Mediarecode manuellement pour appliquer l'autorisation.\n"
+            "\n  Veuillez redémarrer Muxiveo manuellement pour appliquer l'autorisation.\n"
         )
         _windows_show_restart_required_popup()
         _windows_close_setup_console(setup_console_token)
@@ -489,9 +490,6 @@ def _run_tmdb_smoke_test() -> int:
 
 
 def _is_cli_invocation() -> bool:
-    executable_name = Path(sys.argv[0]).stem.lower()
-    if executable_name in {"mediarecode-cli", "mediarecode_cli"}:
-        return True
     return "--cli" in sys.argv[1:]
 
 

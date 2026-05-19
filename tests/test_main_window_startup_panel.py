@@ -114,7 +114,7 @@ def test_emit_log_entry_writes_verbose_file_when_enabled(tmp_path) -> None:
     fake_window._emit_log_entry("Bonjour", LogLevel.INFO)
 
     fake_window._log_panel.log.assert_called_once_with("Bonjour", LogLevel.INFO)
-    log_files = sorted((tmp_path / "chosen_logs").glob("mediarecode-verbose-*.log"))
+    log_files = sorted((tmp_path / "chosen_logs").glob("Muxiveo-verbose-*.log"))
     assert len(log_files) == 1
     assert "[INFO] Bonjour" in log_files[0].read_text(encoding="utf-8")
 
@@ -173,22 +173,22 @@ def test_verbose_log_rotation_rolls_and_caps_at_three_files(tmp_path) -> None:
     fake_window._append_verbose_log_file("C" * 20, LogLevel.INFO)
     fake_window._append_verbose_log_file("D" * 20, LogLevel.INFO)
 
-    log_files = sorted((tmp_path / "chosen_logs").glob("mediarecode-verbose-20260423-181000-*.log"))
+    log_files = sorted((tmp_path / "chosen_logs").glob("Muxiveo-verbose-20260423-181000-*.log"))
     assert [path.name for path in log_files] == [
-        "mediarecode-verbose-20260423-181000-01.log",
-        "mediarecode-verbose-20260423-181000-02.log",
-        "mediarecode-verbose-20260423-181000-03.log",
+        "Muxiveo-verbose-20260423-181000-01.log",
+        "Muxiveo-verbose-20260423-181000-02.log",
+        "Muxiveo-verbose-20260423-181000-03.log",
     ]
-    assert "D" * 20 in (tmp_path / "chosen_logs" / "mediarecode-verbose-20260423-181000-01.log").read_text(encoding="utf-8")
-    assert "B" * 20 in (tmp_path / "chosen_logs" / "mediarecode-verbose-20260423-181000-02.log").read_text(encoding="utf-8")
-    assert "C" * 20 in (tmp_path / "chosen_logs" / "mediarecode-verbose-20260423-181000-03.log").read_text(encoding="utf-8")
+    assert "D" * 20 in (tmp_path / "chosen_logs" / "Muxiveo-verbose-20260423-181000-01.log").read_text(encoding="utf-8")
+    assert "B" * 20 in (tmp_path / "chosen_logs" / "Muxiveo-verbose-20260423-181000-02.log").read_text(encoding="utf-8")
+    assert "C" * 20 in (tmp_path / "chosen_logs" / "Muxiveo-verbose-20260423-181000-03.log").read_text(encoding="utf-8")
 
 
 def test_verbose_log_rotation_resumes_last_existing_file_and_continues_roll(tmp_path) -> None:
     logs_dir = tmp_path / "chosen_logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    old_path = logs_dir / "mediarecode-verbose-20260420-080000-03.log"
-    resumed_path = logs_dir / "mediarecode-verbose-20260423-181000-02.log"
+    old_path = logs_dir / "Muxiveo-verbose-20260420-080000-03.log"
+    resumed_path = logs_dir / "Muxiveo-verbose-20260423-181000-02.log"
     old_path.write_text("legacy\n", encoding="utf-8")
     resumed_path.write_text("X" * 95, encoding="utf-8")
     os.utime(old_path, (100.0, 100.0))
@@ -217,7 +217,7 @@ def test_verbose_log_rotation_resumes_last_existing_file_and_continues_roll(tmp_
 
     fake_window._append_verbose_log_file("Suite", LogLevel.INFO)
 
-    rotated_path = logs_dir / "mediarecode-verbose-20260423-181000-03.log"
+    rotated_path = logs_dir / "Muxiveo-verbose-20260423-181000-03.log"
     assert fake_window._verbose_file_logger.session_stamp == "20260423-181000"
     assert fake_window._verbose_file_logger.file_index == 3
     assert rotated_path.exists()
@@ -228,8 +228,8 @@ def test_verbose_log_rotation_resumes_last_existing_file_and_continues_roll(tmp_
 def test_verbose_log_resume_prefers_latest_filename_not_latest_mtime(tmp_path) -> None:
     logs_dir = tmp_path / "chosen_logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    newer_name = logs_dir / "mediarecode-verbose-20260423-181000-02.log"
-    older_name = logs_dir / "mediarecode-verbose-20260422-181000-03.log"
+    newer_name = logs_dir / "Muxiveo-verbose-20260423-181000-02.log"
+    older_name = logs_dir / "Muxiveo-verbose-20260422-181000-03.log"
     newer_name.write_text("newer-name\n", encoding="utf-8")
     older_name.write_text("older-name\n", encoding="utf-8")
     os.utime(newer_name, (100.0, 100.0))

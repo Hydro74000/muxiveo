@@ -461,8 +461,8 @@ class MatroskaNativeMuxer:
         self,
         *,
         ffprobe_bin: str = "ffprobe",
-        muxing_app: str = "Mediarecode native muxer",
-        writing_app: str = "Mediarecode",
+        muxing_app: str = "Muxiveo native muxer",
+        writing_app: str = "Muxiveo",
         frames_per_cluster: int = _DEFAULT_FRAMES_PER_CLUSTER,
     ) -> None:
         self._timestamp_reader = MatroskaTimestampReader(ffprobe_bin=ffprobe_bin)

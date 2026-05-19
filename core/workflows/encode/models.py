@@ -286,6 +286,9 @@ class EncodeConfig:
     #: Cover TMDB à télécharger juste avant l'encodage : (url, filename).
     #: None → pas de cover TMDB en attente.
     tmdb_cover:       tuple[str, str] | None = None
+    #: Autorise une preview CLI à construire la commande même si le dossier de
+    #: sortie n'existe pas encore. Ne doit pas être utilisé pour une exécution.
+    allow_missing_output_dir: bool = False
 
     def __post_init__(self) -> None:
         if not self.video_tracks and self.video is not None:

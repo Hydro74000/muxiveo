@@ -106,6 +106,7 @@ def merge_remux_into_encode_config(
             source_path=src_path,
             stream_index=int(stream_index),
             offset_ms=offset_ms,
+            sync_rewrite_mode=str(getattr(track, "sync_rewrite_mode", "") or ""),
         ))
 
     def _find_track(src_path: Path, stream_index: int, track_type: str) -> TrackEntry | None:

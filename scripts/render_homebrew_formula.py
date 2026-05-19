@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Render the Homebrew formula used to publish Mediarecode for Linux and macOS.
+Render the Homebrew formula used to publish Muxiveo for Linux and macOS.
 """
 
 from __future__ import annotations
@@ -67,8 +67,8 @@ _LINUX_ICON_PNG_BASE64 = base64.b64encode(
 
 def _render_setup_brew_script() -> str:
     script = _SETUP_BREW_TEMPLATE
-    script = script.replace("__MEDIARECODE_ICON_PNG_BASE64__", _LINUX_ICON_PNG_BASE64)
-    script = script.replace("__MEDIARECODE_DESKTOP_MIME_TYPES__", _DESKTOP_MIME_TYPES)
+    script = script.replace("__MUXIVEO_ICON_PNG_BASE64__", _LINUX_ICON_PNG_BASE64)
+    script = script.replace("__MUXIVEO_DESKTOP_MIME_TYPES__", _DESKTOP_MIME_TYPES)
     return script
 
 
@@ -83,10 +83,10 @@ def render_formula(
     dovi_tool_macos_sha256: str,
     hdr10plus_tool_macos_url: str,
     hdr10plus_tool_macos_sha256: str,
-    homepage: str = "https://github.com/Hydro74000/mediarecode",
+    homepage: str = "https://github.com/Hydro74000/Muxiveo",
 ) -> str:
     setup_brew_script = textwrap.indent(_render_setup_brew_script().rstrip(), "      ")
-    return f"""class Mediarecode < Formula
+    return f"""class Muxiveo < Formula
   desc "GUI video workflow tool for remuxing, encoding, Dolby Vision and HDR10+"
   homepage "{homepage}"
   version "{version}"
@@ -123,30 +123,30 @@ def render_formula(
   end
 
   def install_uninstall_shortcuts_script
-    (libexec/"mediarecode-uninstall-shortcuts").write <<~EOS
+    (libexec/"muxiveo-uninstall-shortcuts").write <<~EOS
       #!/bin/bash
       set -euo pipefail
       PYTHON_BIN="$(command -v python3 || command -v python || true)"
       if [ -z "${{PYTHON_BIN}}" ]; then
-        echo "python3 is required to clean Mediarecode shortcuts" >&2
+        echo "python3 is required to clean Muxiveo shortcuts" >&2
         exit 1
       fi
       exec "${{PYTHON_BIN}}" "#{{opt_libexec}}/setup_brew.py" cleanup
     EOS
-    chmod 0755, libexec/"mediarecode-uninstall-shortcuts"
-    bin.install_symlink libexec/"mediarecode-uninstall-shortcuts"
+    chmod 0755, libexec/"muxiveo-uninstall-shortcuts"
+    bin.install_symlink libexec/"muxiveo-uninstall-shortcuts"
   end
 
   def run_setup_brew(*args)
     python = which("python3") || which("python")
-    odie "python3 is required for Mediarecode Homebrew integration" if python.nil?
+    odie "python3 is required for Muxiveo Homebrew integration" if python.nil?
 
     system python, libexec/"setup_brew.py", *args.map(&:to_s)
   end
 
   def install
     if OS.mac?
-      prefix.install "Mediarecode.app"
+      prefix.install "Muxiveo.app"
       (libexec/"tools").mkpath
       install_setup_brew_helper
       install_uninstall_shortcuts_script
@@ -162,38 +162,38 @@ def render_formula(
       chmod 0755, libexec/"tools/dovi_tool"
       chmod 0755, libexec/"tools/hdr10plus_tool"
 
-      (libexec/"mediarecode").write <<~EOS
+      (libexec/"muxiveo").write <<~EOS
         #!/bin/bash
         set -euo pipefail
-        CONFIG_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/mediarecode"
+        CONFIG_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/muxiveo"
         CONFIG_FILE="${{CONFIG_DIR}}/config.ini"
         mkdir -p "${{CONFIG_DIR}}"
         if [ ! -f "${{CONFIG_FILE}}" ]; then
           cat > "${{CONFIG_FILE}}" <<'CFG'
-# Mediarecode - configuration locale
+# Muxiveo - configuration locale
 # Fichier cree par le wrapper Homebrew pour eviter le setup interactif.
 CFG
         fi
         export PATH="#{{opt_libexec}}/tools:#{{HOMEBREW_PREFIX}}/bin:$PATH"
-        exec "#{{opt_prefix}}/Mediarecode.app/Contents/MacOS/Mediarecode" "$@"
+        exec "#{{opt_prefix}}/Muxiveo.app/Contents/MacOS/muxiveo" "$@"
       EOS
-      chmod 0755, libexec/"mediarecode"
-      bin.install_symlink libexec/"mediarecode"
+      chmod 0755, libexec/"muxiveo"
+      bin.install_symlink libexec/"muxiveo"
     else
-      libexec.install Dir["*.AppImage"].first => "Mediarecode.AppImage"
-      chmod 0755, libexec/"Mediarecode.AppImage"
+      libexec.install Dir["*.AppImage"].first => "Muxiveo.AppImage"
+      chmod 0755, libexec/"Muxiveo.AppImage"
       install_setup_brew_helper
       install_uninstall_shortcuts_script
 
-      (libexec/"mediarecode").write <<~EOS
+      (libexec/"muxiveo").write <<~EOS
         #!/bin/bash
         set -euo pipefail
-        CONFIG_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/mediarecode"
+        CONFIG_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/muxiveo"
         CONFIG_FILE="${{CONFIG_DIR}}/config.ini"
         mkdir -p "${{CONFIG_DIR}}"
         if [ ! -f "${{CONFIG_FILE}}" ]; then
           cat > "${{CONFIG_FILE}}" <<'CFG'
-# Mediarecode - configuration locale
+# Muxiveo - configuration locale
 # Fichier cree par le wrapper Homebrew.
 CFG
         fi
@@ -204,10 +204,10 @@ CFG
         if [ -n "${{PYTHON_BIN}}" ]; then
           "${{PYTHON_BIN}}" "#{{opt_libexec}}/setup_brew.py" post-install --platform linux --opt-bin "#{{opt_bin}}" --opt-share "#{{opt_share}}" --opt-prefix "#{{opt_prefix}}" >/dev/null 2>&1 || true
         fi
-        exec "#{{opt_libexec}}/Mediarecode.AppImage" "$@"
+        exec "#{{opt_libexec}}/Muxiveo.AppImage" "$@"
       EOS
-      chmod 0755, libexec/"mediarecode"
-      bin.install_symlink libexec/"mediarecode"
+      chmod 0755, libexec/"muxiveo"
+      bin.install_symlink libexec/"muxiveo"
     end
   end
 
@@ -223,21 +223,21 @@ CFG
     <<~EOS
       User session shortcuts are installed outside the Homebrew prefix.
       If the desktop shortcut does not appear immediately on Linux, run:
-        brew postinstall mediarecode
+        brew postinstall Muxiveo
       Diagnostic log:
-        ~/.local/state/mediarecode/setup_brew.log
-      Before `brew uninstall mediarecode`, run:
-        mediarecode-uninstall-shortcuts
+        ~/.local/state/Muxiveo/setup_brew.log
+      Before `brew uninstall Muxiveo`, run:
+        muxiveo-uninstall-shortcuts
     EOS
   end
 
   test do
     if OS.mac?
-      assert_predicate prefix/"Mediarecode.app", :exist?
-      assert_predicate bin/"mediarecode", :exist?
+      assert_predicate prefix/"Muxiveo.app", :exist?
+      assert_predicate bin/"muxiveo", :exist?
     else
-      assert_predicate libexec/"Mediarecode.AppImage", :exist?
-      assert_predicate bin/"mediarecode", :exist?
+      assert_predicate libexec/"Muxiveo.AppImage", :exist?
+      assert_predicate bin/"muxiveo", :exist?
     end
   end
 end
@@ -245,7 +245,7 @@ end
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Render the Mediarecode Homebrew formula.")
+    parser = argparse.ArgumentParser(description="Render the Muxiveo Homebrew formula.")
     parser.add_argument("--version", required=True)
     parser.add_argument("--linux-url", required=True)
     parser.add_argument("--linux-sha256", required=True)
@@ -255,7 +255,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dovi-tool-macos-sha256", required=True)
     parser.add_argument("--hdr10plus-tool-macos-url", required=True)
     parser.add_argument("--hdr10plus-tool-macos-sha256", required=True)
-    parser.add_argument("--homepage", default="https://github.com/Hydro74000/mediarecode")
+    parser.add_argument("--homepage", default="https://github.com/Hydro74000/Muxiveo")
     parser.add_argument("--output", required=True)
     return parser.parse_args()
 

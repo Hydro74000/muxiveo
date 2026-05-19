@@ -232,7 +232,7 @@ def test_start_live_demux_session_routes_to_windows_backend(tmp_path, monkeypatc
         called["ok"] = True
         return LiveSyncSession(inputs=[], processes=[])
 
-    monkeypatch.setattr("core.workflows.remux_timeline_sync.os.name", "nt", raising=False)
+    monkeypatch.setattr("core.workflows.remux_timeline_sync._IS_WINDOWS", True)
     monkeypatch.setattr(syncer, "_start_windows_named_pipe_session", _fake_windows)
 
     session = syncer.start_live_demux_session(

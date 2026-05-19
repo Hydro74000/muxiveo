@@ -1,5 +1,5 @@
 """
-ui/main_window.py — Fenêtre principale de Mediarecode.
+ui/main_window.py — Fenêtre principale de Muxiveo.
 
 Architecture :
     ┌────────────────────────────────────────────────────────────┐
@@ -65,6 +65,7 @@ from core.subprocess_utils import subprocess_text_kwargs
 from core.version import APP_VERSION_LABEL, WRITING_APPLICATION_TAG
 from core.workflows.encode.backends import backend_id_for_codec
 from core.workflows.encode import EncodeError
+from core.workflows.common.sync_rewrite import SYNC_REWRITE_STAGE_PREFIX
 from core.workflows.remux_models import RemuxError
 from ui.panels.encode_panel import EncodePanel
 from ui.panels.encode_panel.theme import (
@@ -243,6 +244,31 @@ def _parse_encode_internal_progress(line: str) -> dict[str, object] | None:
     return obj if isinstance(obj, dict) else None
 
 
+def _parse_sync_rewrite_stage_progress(line: str) -> tuple[str, str] | None:
+    if not line.startswith(SYNC_REWRITE_STAGE_PREFIX):
+        return None
+    payload = line[len(SYNC_REWRITE_STAGE_PREFIX):].strip()
+    if not payload:
+        return None
+    try:
+        obj = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    track_type = str(obj.get("track_type") or "").strip().lower()
+    name = " ".join(str(obj.get("name") or "").split())
+    if track_type not in {"audio", "subtitle"} or not name:
+        return None
+    return track_type, name
+
+
+def _sync_rewrite_stage_label(track_type: str, name: str) -> str:
+    if track_type == "audio":
+        return translate_text("Synchro piste audio {name}", name=name)
+    return translate_text("Synchro sous-titre {name}", name=name)
+
+
 def _parse_multi_encode_label(label: str) -> tuple[int, int | None, int] | None:
     match = _MULTI_ENCODE_LABEL_RE.match(str(label).strip())
     if match is None:
@@ -391,7 +417,7 @@ class _LogHeader(QWidget):
     """Barre d'en-tête cliquable du panneau de logs."""
     clicked = Signal()
 
-    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+    def mousePressEvent(self, event) -> None:
         self.clicked.emit()
         super().mousePressEvent(event)
 
@@ -692,7 +718,7 @@ class DashboardPage(QWidget):
         root.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         # Titre
-        title = QLabel("Mediarecode")
+        title = QLabel("Muxiveo")
         title.setStyleSheet(f"""
             font-size: {_font_px(26)}px;
             font-weight: 800;
@@ -1087,7 +1113,7 @@ class _NavButton(QWidget):
 
     # ------------------------------------------------------------------
 
-    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+    def mousePressEvent(self, event) -> None:
         self.clicked.emit()
         super().mousePressEvent(event)
 
@@ -1198,12 +1224,12 @@ class _Sidebar(QWidget):
 
         self._logo_icon = QLabel("▣")
         self._logo_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._logo_icon.setToolTip("Mediarecode")
+        self._logo_icon.setToolTip("Muxiveo")
         self._logo_icon.setStyleSheet(
             f"color: {_Colors.ACCENT}; font-size: {_font_px(18)}px; background: transparent; border: none;"
         )
         la.addWidget(self._logo_icon)
-        self._logo_text = QLabel("Mediarecode")
+        self._logo_text = QLabel("Muxiveo")
         self._logo_text.setStyleSheet(f"""
             color: {_Colors.TEXT_PRI};
             font-size: {_font_px(13)}px;
@@ -1348,12 +1374,13 @@ class MainWindow(QMainWindow):
         self._running   = False
         self._signals: TaskSignals | None = None
         self._op_start: float = 0.0
-        self._op_mode: str = ""   # "remux" ou "encode"
+        self._op_mode: str = ""   # "remux", "encode", "extract", "audio_sync" ou "merge_dovi"
         # Trace one-shot du banner ffmpeg : on logge la version la 1re fois
         # vue dans la session (en INFO standard), les suivantes restent
         # silencieuses côté UI (mais visibles dans le verbose file).
         self._ffmpeg_version_logged: bool = False
         self._op_encode_config: EncodeConfig | None = None
+        self._op_extract_duration_s: float | None = None
         self._op_encode_fps: float | None = None
         self._op_encode_frame: int | None = None
         # Trackers ETA lissés (EWMA) pour les barres single-stream (remux et
@@ -1398,7 +1425,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _setup_window(self) -> None:
-        self.setWindowTitle("Mediarecode")
+        self.setWindowTitle("Muxiveo")
         self.setMinimumSize(1024, 680)
         self.resize(1280, 800)
 
@@ -1739,6 +1766,9 @@ class MainWindow(QMainWindow):
         self._remux_panel.tool_output.connect(
             self._on_tool_output_requested, Qt.ConnectionType.QueuedConnection
         )
+        self._remux_panel.extract_started.connect(self._on_remux_extract_started)
+        self._remux_panel.audio_sync_started.connect(self._on_remux_audio_sync_started)
+        self._remux_panel.audio_sync_finished.connect(self._on_remux_audio_sync_finished)
         # RemuxPanel → EncodePanel : pistes partagées + chemin de sortie commun
         self._remux_panel.video_tracks_changed.connect(self._encode_panel.set_video_tracks)
         self._remux_panel.audio_tracks_changed.connect(self._encode_panel.set_audio_tracks)
@@ -1772,6 +1802,93 @@ class MainWindow(QMainWindow):
         """Met à jour l'état du bouton selon la disponibilité des deux panneaux."""
         enabled = (self._remux_panel.is_ready() or self._encode_panel.collect_config() is not None)
         self._run_btn.setEnabled(enabled and not self._running)
+
+    def _on_remux_extract_started(self, task_signals: object, metadata: object) -> None:
+        if not isinstance(task_signals, TaskSignals):
+            return
+        if self._running:
+            return
+
+        data = metadata if isinstance(metadata, dict) else {}
+        duration_raw = data.get("duration_s")
+        self._op_extract_duration_s = (
+            float(duration_raw)
+            if isinstance(duration_raw, (int, float)) and duration_raw > 0
+            else None
+        )
+        label = str(data.get("label") or translate_text("Extraction du sous-titre")).strip()
+        output_name = str(data.get("output_name") or "").strip()
+        if output_name:
+            label = translate_text("{label} vers {name}", label=label, name=output_name)
+
+        self._running = True
+        self._op_start = time.monotonic()
+        self._op_mode = "extract"
+        self._signals = task_signals
+        self._ffmpeg_version_logged = False
+        self._op_encode_config = None
+        self._op_encode_fps = None
+        self._op_encode_frame = None
+        self._eta_tracker_video.reset()
+        self._eta_tracker_frame.reset()
+        self._op_stage_label = label
+        self._reset_multi_encode_progress_tracking()
+
+        self._run_btn.setEnabled(False)
+        self._cancel_btn.setVisible(True)
+        self._prog_bar.setRange(0, 100)
+        self._prog_bar.setValue(0)
+        self._prog_bar.setStyleSheet(self._progress_bar_stylesheet(_Colors.ACCENT))
+        self._prog_lbl.setText(label)
+        self._prog_widget.setVisible(True)
+        self._status_lbl.setText(translate_text("Extraction en cours…"))
+        self._start_prep_progress()
+
+        task_signals.progress.connect(self._on_op_progress, Qt.ConnectionType.QueuedConnection)
+        task_signals.finished.connect(
+            lambda _: self._on_op_finished(success=True),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        task_signals.failed.connect(
+            lambda msg, _exc: self._on_op_finished(success=False, error=msg),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        task_signals.cancelled.connect(self._on_op_cancelled, Qt.ConnectionType.QueuedConnection)
+
+    def _on_remux_audio_sync_started(self, metadata: object) -> None:
+        if self._running:
+            return
+
+        data = metadata if isinstance(metadata, dict) else {}
+        label = str(data.get("label") or translate_text("Synchronisation audio")).strip()
+
+        self._running = True
+        self._op_start = time.monotonic()
+        self._op_mode = "audio_sync"
+        self._signals = None
+        self._ffmpeg_version_logged = False
+        self._op_encode_config = None
+        self._op_encode_fps = None
+        self._op_encode_frame = None
+        self._eta_tracker_video.reset()
+        self._eta_tracker_frame.reset()
+        self._op_stage_label = label
+        self._reset_multi_encode_progress_tracking()
+
+        self._run_btn.setEnabled(False)
+        self._cancel_btn.setVisible(False)
+        self._prog_bar.setRange(0, 100)
+        self._prog_bar.setValue(0)
+        self._prog_bar.setStyleSheet(self._progress_bar_stylesheet(_Colors.WARN))
+        self._prog_lbl.setText(label)
+        self._prog_widget.setVisible(True)
+        self._status_lbl.setText(translate_text("Synchronisation audio en cours…"))
+        self._start_prep_progress()
+
+    def _on_remux_audio_sync_finished(self, success: bool, _metadata: object) -> None:
+        if self._op_mode != "audio_sync":
+            return
+        self._on_op_finished(success=bool(success))
 
     def _on_run(self) -> None:
         if self._running:
@@ -2078,6 +2195,35 @@ class MainWindow(QMainWindow):
             return
         if _is_ffmpeg_info_noise(line):
             return
+        sync_stage = _parse_sync_rewrite_stage_progress(line)
+        if sync_stage is not None:
+            self._stop_prep_progress()
+            self._op_stage_label = _sync_rewrite_stage_label(*sync_stage)
+            self._prog_lbl.setText(self._op_stage_label)
+            return
+        if self._op_mode == "extract":
+            if line.startswith("$ "):
+                self._stop_prep_progress()
+                self.log_requested.emit("INFO", line)
+                return
+            elapsed_video = ffmpeg_progress_seconds(line)
+            if elapsed_video is not None:
+                dur = self._op_extract_duration_s or self._remux_panel.get_duration_s()
+                if dur and dur > 0:
+                    self._stop_prep_progress()
+                    pct = min(99, int(elapsed_video / dur * 100))
+                    self._prog_bar.setValue(pct)
+                    self._eta_tracker_video.update(elapsed_video, time.monotonic())
+                    eta_s = self._eta_tracker_video.eta(dur, elapsed_video)
+                    eta_str = f"ETA {_fmt_eta(eta_s)}" if eta_s is not None else ""
+                    self._prog_lbl.setText(self._format_progress_label(f"{pct}%", eta_str))
+                else:
+                    self._start_prep_progress()
+                return
+            if _is_encode_progress_noise(line):
+                return
+            self.log_requested.emit("INFO", line)
+            return
         if self._op_mode == "remux":
             if line.startswith("$ "):
                 self._stop_prep_progress()
@@ -2230,7 +2376,7 @@ class MainWindow(QMainWindow):
                         if self._op_encode_fps is not None and self._op_encode_fps > 0
                         else ""
                     )
-                    eta_s: float | None = None
+                    encode_eta_s: float | None = None
                     # Si ffmpeg a rapporté un fps instantané, l'utiliser
                     # directement : c'est déjà la moyenne glissante côté ffmpeg
                     # et c'est ce que l'utilisateur voit comme "fps". L'ETA
@@ -2240,7 +2386,7 @@ class MainWindow(QMainWindow):
                         and self._op_encode_fps > 0
                         and total_frames > self._op_encode_frame
                     ):
-                        eta_s = self._eta_tracker_frame.eta_from_speed(
+                        encode_eta_s = self._eta_tracker_frame.eta_from_speed(
                             float(total_frames),
                             float(self._op_encode_frame),
                             float(self._op_encode_fps),
@@ -2250,10 +2396,10 @@ class MainWindow(QMainWindow):
                         self._eta_tracker_frame.update(
                             float(self._op_encode_frame), time.monotonic()
                         )
-                        eta_s = self._eta_tracker_frame.eta(
+                        encode_eta_s = self._eta_tracker_frame.eta(
                             float(total_frames), float(self._op_encode_frame)
                         )
-                    eta_str = f"ETA {_fmt_eta(eta_s)}" if eta_s is not None else ""
+                    eta_str = f"ETA {_fmt_eta(encode_eta_s)}" if encode_eta_s is not None else ""
                     parts = [f"{pct}%", fps_str, eta_str]
                     self._prog_lbl.setText(self._format_progress_label(*parts))
                 return
@@ -2346,6 +2492,7 @@ class MainWindow(QMainWindow):
         self._running = False
         self._signals = None
         self._op_encode_config = None
+        self._op_extract_duration_s = None
         self._reset_multi_encode_progress_tracking()
         self._stop_prep_progress()
         self._run_btn.setEnabled(True)
@@ -2360,6 +2507,8 @@ class MainWindow(QMainWindow):
         self._running = False
         self._signals = None
         self._op_encode_config = None
+        finished_mode = self._op_mode
+        self._op_extract_duration_s = None
         self._reset_multi_encode_progress_tracking()
         self._stop_prep_progress()
         self._run_btn.setEnabled(True)
@@ -2369,8 +2518,13 @@ class MainWindow(QMainWindow):
             self._prog_bar.setValue(100)
             self._prog_lbl.setText(translate_text("100%  ·  terminé"))
             self._status_lbl.setText(translate_text("Terminé."))
-            label = "Encodage terminé" if self._op_mode == "encode" else "Remuxage terminé"
-            self.log_requested.emit("OK", label)
+            label = {
+                "encode": "Encodage terminé",
+                "extract": "Extraction terminée",
+                "audio_sync": "Synchronisation audio terminée",
+                "remux": "Remuxage terminé",
+            }.get(finished_mode, "Opération terminée")
+            self.log_requested.emit("OK", translate_text(label))
         else:
             self._prog_widget.setVisible(False)
             self._prog_lbl.setText("")
@@ -2578,7 +2732,7 @@ class MainWindow(QMainWindow):
         if self._config.window_geometry:
             self.restoreGeometry(self._config.window_geometry)
 
-    def closeEvent(self, event) -> None:  # type: ignore[override]
+    def closeEvent(self, event) -> None:
         self._config.save_geometry(bytes(self.saveGeometry().data()))
         self._config.save()
         # Arrête proprement tous les ThreadPoolExecutor des pages enfants :
@@ -2606,7 +2760,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _post_init_log(self) -> None:
-        self.log_info("Mediarecode démarré.")
+        self.log_info("Muxiveo démarré.")
         availability = self._config.all_tools_available()
         missing = [n for n, ok in availability.items() if not ok]
         if missing:

@@ -43,9 +43,10 @@ class SignalBindingService:
                 signals._unregister_proc(proc)
             session.close()
 
-        signals.finished.connect(_cleanup)
-        signals.failed.connect(_cleanup)
-        signals.cancelled.connect(_cleanup)
+        cleanup = signals.retain_callback(_cleanup)
+        signals.finished.connect(cleanup)
+        signals.failed.connect(cleanup)
+        signals.cancelled.connect(cleanup)
 
     def bind_temp_cleanup(self, signals: TaskSignals, cleanup_paths: list[Path]) -> None:
         if not cleanup_paths:
@@ -63,9 +64,10 @@ class SignalBindingService:
                 except OSError:
                     pass
 
-        signals.finished.connect(_cleanup)
-        signals.failed.connect(_cleanup)
-        signals.cancelled.connect(_cleanup)
+        cleanup = signals.retain_callback(_cleanup)
+        signals.finished.connect(cleanup)
+        signals.failed.connect(cleanup)
+        signals.cancelled.connect(cleanup)
 
     def bind_matroska_segment_muxing_patch(self, signals: TaskSignals, output: Path) -> None:
         self._callbacks.muxing_bind_on_success(signals, output)
@@ -75,7 +77,7 @@ class SignalBindingService:
         def _write(*_args) -> None:
             self._callbacks.write_nfo(output)
 
-        signals.finished.connect(_write)
+        signals.finished.connect(signals.retain_callback(_write))
 
     def bind_output_hooks(
         self,

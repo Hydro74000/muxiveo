@@ -99,7 +99,7 @@ def parse_media_file(filepath):
 
 def get_file_size(path) -> str:
     try:
-        size_bytes = os.path.getsize(path)
+        size_bytes = float(os.path.getsize(path))
         for unit in ['B', 'Ko', 'Mo', 'Go', 'To']:
             if size_bytes < 1024: return f"{size_bytes:.2f} {unit}"
             size_bytes /= 1024
@@ -225,10 +225,22 @@ class InfoCard(QFrame):
             
         layout.addLayout(form)
 
+def _startup_directory_from_argv(argv):
+    """Retourne le premier dossier positionnel passé au lancement."""
+    for raw in argv[1:]:
+        if not raw or raw.startswith("-"):
+            continue
+        path = os.path.abspath(os.path.expanduser(raw))
+        if os.path.isdir(path):
+            return path
+        raise ValueError(f"Le chemin de démarrage n'est pas un dossier valide : {raw}")
+    return None
+
+
 class MediaManager(QMainWindow):
     COL = {"type": 0, "nom": 1, "taille": 2, "action": 3}
 
-    def __init__(self):
+    def __init__(self, startup_dir=None):
         super().__init__()
         self.tree_items = {}
         self.full_data = defaultdict(list)
@@ -240,8 +252,8 @@ class MediaManager(QMainWindow):
         self.resize(1400, 900)
         self.apply_styles()
         self.init_ui()
-        
-        self.target_dir = QFileDialog.getExistingDirectory(self, "Choisir le dossier de films/séries")
+
+        self.target_dir = startup_dir or QFileDialog.getExistingDirectory(self, "Choisir le dossier de films/séries")
         if self.target_dir:
             self.start_scan()
         else:
@@ -765,6 +777,11 @@ class MediaManager(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    win = MediaManager()
+    try:
+        startup_dir = _startup_directory_from_argv(sys.argv)
+    except ValueError as exc:
+        QMessageBox.critical(None, "Dossier invalide", str(exc))
+        sys.exit(2)
+    win = MediaManager(startup_dir)
     win.show()
     sys.exit(app.exec())

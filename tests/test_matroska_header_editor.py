@@ -146,7 +146,7 @@ class TestLocateContext:
         assert ctx.segment is not None
 
     def test_with_writing_app(self, editor):
-        data = make_mkv_data("Lavf61.7.100", writing_app="Mediarecode v1.3.0")
+        data = make_mkv_data("Lavf61.7.100", writing_app="Muxiveo v1.3.0")
         ctx = editor._locate_context(data)
         assert ctx.writing_app is not None
 
@@ -156,14 +156,14 @@ class TestInfoReplacementHelpers:
         data = make_mkv_data("Lavf61.7.100")
         ctx = editor._locate_context(data)
         old_total = ctx.info.end - ctx.info.offset
-        new_el = editor._build_replaced_info_element(data, ctx, new_muxing_app_text="Mediarecode v1.3.0")
+        new_el = editor._build_replaced_info_element(data, ctx, new_muxing_app_text="Muxiveo v1.3.0")
         assert len(new_el) > old_total
 
     def test_replace_stays_same_with_inner_void(self, editor):
         data = make_mkv_data("Lavf61.7.100", void_padding=64)
         ctx = editor._locate_context(data)
         old_total = ctx.info.end - ctx.info.offset
-        new_el = editor._build_replaced_info_element(data, ctx, new_muxing_app_text="Mediarecode v1.3.0")
+        new_el = editor._build_replaced_info_element(data, ctx, new_muxing_app_text="Muxiveo v1.3.0")
         assert len(new_el) == old_total
 
 
@@ -178,23 +178,23 @@ class TestApplyIntegration:
 
         result = editor.apply_muxing_app_replace_with_header_rebuild(
             path,
-            app_prefix="Mediarecode v1.3.0",
+            app_prefix="Muxiveo v1.3.0",
         )
 
         assert result.applied is True
         assert result.muxing_app_before == "Lavf61.7.100"
-        assert result.muxing_app_after == "Mediarecode v1.3.0"
+        assert result.muxing_app_after == "Muxiveo v1.3.0"
 
         data = path.read_bytes()
         ctx = editor._locate_context(data)
         raw = data[ctx.muxing_app.payload_offset:ctx.muxing_app.end]
-        assert raw.decode("utf-8") == "Mediarecode v1.3.0"
+        assert raw.decode("utf-8") == "Muxiveo v1.3.0"
 
     def test_apply_with_inner_void_keeps_file_size(self, editor, tmp_path):
         path = self._make_file(make_mkv_data("Lavf61.7.100", void_padding=64), tmp_path)
         old_size = path.stat().st_size
 
-        result = editor.apply_muxing_app_replace_with_header_rebuild(path, app_prefix="Mediarecode v1.3.0")
+        result = editor.apply_muxing_app_replace_with_header_rebuild(path, app_prefix="Muxiveo v1.3.0")
 
         assert result.applied is True
         assert path.stat().st_size == old_size
@@ -202,7 +202,7 @@ class TestApplyIntegration:
     def test_apply_without_inner_void_is_still_in_place_file(self, editor, tmp_path):
         path = self._make_file(make_mkv_data("Lavf61.7.100"), tmp_path)
 
-        result = editor.apply_muxing_app_replace_with_header_rebuild(path, app_prefix="Mediarecode v1.3.0")
+        result = editor.apply_muxing_app_replace_with_header_rebuild(path, app_prefix="Muxiveo v1.3.0")
 
         assert result.applied is True
         assert not list(path.parent.glob("*.hdrpatch.*"))
@@ -210,8 +210,8 @@ class TestApplyIntegration:
     def test_idempotent_second_call(self, editor, tmp_path):
         path = self._make_file(make_mkv_data("Lavf61.7.100", void_padding=64), tmp_path)
 
-        first = editor.apply_muxing_app_replace_with_header_rebuild(path, app_prefix="Mediarecode v1.3.0")
-        second = editor.apply_muxing_app_replace_with_header_rebuild(path, app_prefix="Mediarecode v1.3.0")
+        first = editor.apply_muxing_app_replace_with_header_rebuild(path, app_prefix="Muxiveo v1.3.0")
+        second = editor.apply_muxing_app_replace_with_header_rebuild(path, app_prefix="Muxiveo v1.3.0")
 
         assert first.applied is True
         assert second.applied is False
@@ -224,7 +224,7 @@ class TestApplyIntegration:
             tmp_path,
         )
 
-        result = editor.apply_muxing_app_replace_with_header_rebuild(path, app_prefix="Mediarecode v1.3.0")
+        result = editor.apply_muxing_app_replace_with_header_rebuild(path, app_prefix="Muxiveo v1.3.0")
         assert result.applied is True
 
     def test_invalid_file_skipped_without_mutation(self, editor, tmp_path):
@@ -232,7 +232,7 @@ class TestApplyIntegration:
         path.write_bytes(b"not a matroska header")
         before = path.read_bytes()
 
-        result = editor.apply_muxing_app_replace_with_header_rebuild(path, app_prefix="Mediarecode v1.3.0")
+        result = editor.apply_muxing_app_replace_with_header_rebuild(path, app_prefix="Muxiveo v1.3.0")
 
         assert result.applied is False
         assert result.skipped is True
@@ -257,7 +257,7 @@ class TestSeekHeadBehavior:
         path = tmp_path / "with_seekhead.mkv"
         path.write_bytes(make_mkv_data("Lavf61.7.100", with_seek_head=True))
 
-        result = editor.apply_muxing_app_replace_with_header_rebuild(path, app_prefix="Mediarecode v1.3.0")
+        result = editor.apply_muxing_app_replace_with_header_rebuild(path, app_prefix="Muxiveo v1.3.0")
         assert result.applied is True
 
         data = path.read_bytes()
@@ -327,6 +327,6 @@ def test_edit_muxing_app_disabled_skips(tmp_path):
     path = tmp_path / "x.mkv"
     path.write_bytes(make_mkv_data("Lavf61.7.100"))
 
-    result = editor.apply_muxing_app_replace_with_header_rebuild(path, app_prefix="Mediarecode v1.3.0")
+    result = editor.apply_muxing_app_replace_with_header_rebuild(path, app_prefix="Muxiveo v1.3.0")
     assert result.applied is False
     assert result.skipped is True

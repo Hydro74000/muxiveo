@@ -26,6 +26,13 @@ from core.workflows.common.ffmpeg_runtime import cli_path as _cli_path
 from core.workflows.remux_models import RemuxError, SourceInput
 
 
+#: Constante isolée pour aiguillage Windows. Les tests doivent monkeypatcher
+#: ``core.workflows.remux_timeline_sync._IS_WINDOWS`` plutôt que ``os.name`` :
+#: modifier ``os.name`` fuit globalement et fait planter ``pathlib.Path()``
+#: (dispatch ``WindowsPath`` sur Linux en Python ≤ 3.12).
+_IS_WINDOWS: bool = os.name == "nt"
+
+
 def _make_safe_close_fd(fd: int) -> Callable[[], None]:
     """Crée une callback fermant un FD POSIX, sans capturer 'self'."""
     def _close() -> None:
@@ -449,7 +456,7 @@ class FfmpegTimelineSync:
         base_input_idx: int,
         cancel_cb: Callable[[], bool] | None = None,
     ) -> LiveSyncSession:
-        if os.name == "nt":
+        if _IS_WINDOWS:
             return self._start_windows_named_pipe_session(
                 mapped_tracks=mapped_tracks,
                 sources=sources,
@@ -656,8 +663,8 @@ class FfmpegTimelineSync:
                         f"file_index={src_file_index}"
                     )
 
-                # Exemple final: \\.\pipe\mediarecode_sync_<uuid>
-                pipe_name = rf"\\.\pipe\mediarecode_sync_{uuid.uuid4().hex}"
+                # Exemple final: \\.\pipe\Muxiveo_sync_<uuid>
+                pipe_name = rf"\\.\pipe\Muxiveo_sync_{uuid.uuid4().hex}"
                 handle = _create_named_pipe(pipe_name)
                 handles.append(handle)
                 pipe_paths.append(pipe_name)
@@ -733,7 +740,7 @@ class FfmpegTimelineSync:
                     target=_pump_stdout_to_named_pipe,
                     args=(proc, handle, pipe_name),
                     daemon=True,
-                    name=f"mrecode-pipe-{i}",
+                    name=f"muxiveo-pipe-{i}",
                 )
                 thread.start()
                 threads.append(thread)
@@ -897,10 +904,11 @@ class FfmpegTimelineSync:
         proc_stderr = proc.stderr
 
         def _drain_stderr() -> None:
-            if proc_stderr is None:
+            stderr = proc_stderr
+            if stderr is None:
                 return
             try:
-                for chunk in iter(lambda: proc_stderr.read(8192), b""):
+                for chunk in iter(lambda: stderr.read(8192), b""):
                     stderr_chunks.append(chunk)
             except Exception:
                 pass

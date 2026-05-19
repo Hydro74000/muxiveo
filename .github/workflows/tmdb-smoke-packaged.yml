@@ -13,6 +13,7 @@ on:
       - main
       - devel-stable
       - levelup
+      - rebrand
     paths:
       - "launcher.py"
       - "core/media_info_fetcher.py"
@@ -69,7 +70,7 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
           python package_appimage.py --allinc --version ci-smoke
-          APPIMAGE=$(ls dist/releases/Mediarecode-x86_64_allinc-*.AppImage 2>/dev/null | head -1)
+          APPIMAGE=$(ls dist/releases/Muxiveo-x86_64_allinc-*.AppImage 2>/dev/null | head -1)
           if [ -z "$APPIMAGE" ]; then
             echo "AppImage introuvable dans dist/releases/" >&2
             ls -la dist/releases/ || true
@@ -92,13 +93,16 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # package.py fait PyInstaller onedir → dist/mediarecode/mediarecode.exe
-          # (on saute NSIS, inutile pour un smoke test)
-          python package.py --version ci-smoke
-          $exe = "dist\mediarecode\mediarecode.exe"
-          if (-not (Test-Path $exe)) {
-            Write-Error "Exécutable $exe introuvable"
-            Get-ChildItem -Recurse dist | Select-Object -First 50
+          # Smoke test: PyInstaller onedir only, no NSIS installer.
+          python package.py --exe --version ci-smoke
+          $exeCandidates = @(
+            "dist\Muxiveo\Muxiveo.exe",
+            "dist\Muxiveo\muxiveo.exe"
+          )
+          $exe = $exeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "Exécutable Windows introuvable dans dist\Muxiveo"
+            Get-ChildItem -Recurse dist -Filter "*.exe" | Select-Object -First 50 FullName
             exit 1
           }
           "PACKAGED_BIN=$((Resolve-Path $exe).Path)" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -110,13 +114,13 @@ jobs:
           # package.py n'a pas de branche macOS dédiée → on invoque PyInstaller
           # directement sur launcher.py (onedir) pour reproduire le même
           # scénario frozen (importlib, SSL, certifi…) que sur les autres OS.
-          pyinstaller --noconfirm --onedir --name mediarecode \
+          pyinstaller --noconfirm --onedir --name Muxiveo \
             --collect-submodules core \
             --collect-submodules ui \
             --collect-data certifi \
             --hidden-import certifi \
             launcher.py
-          BIN="dist/mediarecode/mediarecode"
+          BIN="dist/Muxiveo/Muxiveo"
           if [ ! -x "$BIN" ]; then
             echo "Exécutable $BIN introuvable" >&2
             ls -laR dist | head -100

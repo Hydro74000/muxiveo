@@ -12,7 +12,7 @@ Couverture :
     EncodeError         — est une RuntimeError
 
 Exécution :
-    cd mediarecode && pytest tests/test_encode_models.py -v
+    cd Muxiveo && pytest tests/test_encode_models.py -v
 """
 
 from __future__ import annotations

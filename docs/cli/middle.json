@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "kind": "exact-job",
   "sources": [
     {
       "path": "Episode.S01E01.source.mkv",
@@ -8,26 +9,24 @@
     }
   ],
   "output": "Episode.S01E01.remux.mkv",
-  "rules": {
-    "normalize_languages": true,
-    "tracks": {
-      "video": {
-        "include": true
-      },
-      "audio": {
-        "include": true,
-        "languages": ["fr-FR", "en-US"],
-        "rename_pattern": "{LangName} {codec} {channels} {atmos}"
-      },
-      "subtitle": {
-        "include": true,
-        "languages": ["fr-FR", "en-US"],
-        "rename_pattern": "{LangName} {tag_forced} {tag_malentendant}"
-      }
+  "tracks": [
+    {
+      "selector": {"source": 0, "type": "video", "position": 0},
+      "enabled": true
+    },
+    {
+      "selector": {"source": 0, "type": "audio", "position": 0},
+      "enabled": true,
+      "language": "fr-FR",
+      "title": "French EAC3 5.1"
+    },
+    {
+      "selector": {"source": 0, "type": "subtitle", "position": 0},
+      "enabled": true,
+      "language": "fr-FR"
     }
-  },
+  ],
   "chapters": {
     "source_index": 0
   }
 }
-

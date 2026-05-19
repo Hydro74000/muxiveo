@@ -15,7 +15,7 @@ import urllib.request
 def _headers() -> dict[str, str]:
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "mediarecode-homebrew-release",
+        "User-Agent": "Muxiveo-homebrew-release",
     }
     token = os.environ.get("GITHUB_TOKEN", "").strip()
     if token:
@@ -47,7 +47,7 @@ def _select_asset(release: dict, patterns: list[str]) -> dict:
 
 def _sha256_of_url(url: str) -> str:
     digest = hashlib.sha256()
-    req = urllib.request.Request(url, headers={"User-Agent": "mediarecode-homebrew-release"})
+    req = urllib.request.Request(url, headers={"User-Agent": "Muxiveo-homebrew-release"})
     with urllib.request.urlopen(req) as resp:
         while True:
             chunk = resp.read(1024 * 1024)

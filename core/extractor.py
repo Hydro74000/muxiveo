@@ -7,6 +7,7 @@ Extensible plus tard à l'audio et la vidéo via des méthodes dédiées.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -71,12 +72,16 @@ class TrackExtractor:
         stream_index: int,
         codec: str,
         output: Path,
+        *,
+        progress_args: Sequence[str] | None = None,
     ) -> list[str]:
         """Construit la commande ffmpeg pour extraire un sous-titre."""
         plan = cls.plan_subtitle(codec)
         return [
             ffmpeg_bin,
+            "-hide_banner",
             "-y",
+            *list(progress_args or ()),
             "-i", str(source),
             "-map", f"0:{stream_index}",
             "-c:s", plan.codec_arg,

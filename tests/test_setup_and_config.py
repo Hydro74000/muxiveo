@@ -76,6 +76,64 @@ def test_write_ini_settings_keeps_legacy_ui_key_when_ui_section_is_not_saved(tmp
     assert "ffmpeg = ffmpeg-custom" in content
 
 
+class TestAppConfigSyncRewrite:
+    def test_default_is_disabled(self, tmp_path):
+        from core.config import AppConfig
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.dict(os.environ, {}, clear=False):
+                cfg = AppConfig()
+
+        assert cfg.sync_rewrite_enabled is False
+        assert cfg.sync_advanced_audio_rewrite_enabled is False
+        assert cfg.to_dict()["sync"]["rewrite_enabled"] is False
+        assert cfg.to_dict()["sync"]["advanced_audio_rewrite_enabled"] is False
+
+    def test_ini_enables_sync_rewrite(self, tmp_path):
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[sync]\nrewrite_enabled = true\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.sync_rewrite_enabled is True
+        assert cfg.to_ini_sections()["sync"]["rewrite_enabled"] == "true"
+
+    def test_ini_enables_advanced_audio_sync_rewrite(self, tmp_path):
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text(
+            "[sync]\nrewrite_enabled = true\nadvanced_audio_rewrite_enabled = true\n",
+            encoding="utf-8",
+        )
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.sync_rewrite_enabled is True
+        assert cfg.sync_advanced_audio_rewrite_enabled is True
+        assert cfg.to_ini_sections()["sync"]["advanced_audio_rewrite_enabled"] == "true"
+
+
 class TestAppConfigRamBuffer:
     """Tests des clés INI ram_buffer_enabled / ram_buffer_threshold_pct."""
 
@@ -217,6 +275,25 @@ class TestAppConfigRamBuffer:
                 cfg = AppConfig()
 
         assert cfg.language == "fra"
+
+    def test_profiles_dir_lives_under_config_dir(self, tmp_path):
+        """Les profils GUI restent dans le dossier utilisateur de config, pas dans app_data."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "user-config" / "config.ini"
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path / "app-data"), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+
+        assert cfg.config_dir == ini_path.parent
+        assert cfg.profiles_dir == ini_path.parent / "profiles"
+        assert cfg.profiles_dir.exists()
 
     def test_default_startup_panel_is_dashboard(self, tmp_path):
         """Sans clé explicite, le panneau de démarrage est le dashboard."""
@@ -948,7 +1025,7 @@ class TestWindowsControlledFolderAccessSetup:
 
         bundle_dir = tmp_path / "bundle"
         bundle_dir.mkdir()
-        app_exe = bundle_dir / "mediarecode.exe"
+        app_exe = bundle_dir / "Muxiveo.exe"
         app_exe.write_text("", encoding="utf-8")
 
         ffmpeg = tmp_path / "ffmpeg.exe"
@@ -1106,7 +1183,71 @@ def test_setup_config_ini_path_uses_xdg_on_non_windows(tmp_path):
          patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg_dir)}, clear=False):
         path = setup_mod._config_ini_path()
 
-    assert path == xdg_dir / "mediarecode" / "config.ini"
+    assert path == xdg_dir / "muxiveo" / "config.ini"
+
+
+def test_core_config_ini_path_uses_appdata_for_windows_frozen(tmp_path):
+    import core.config as cfg_mod
+
+    appdata = tmp_path / "Roaming"
+    with patch.object(cfg_mod.sys, "platform", "win32"), \
+         patch.object(cfg_mod.sys, "frozen", True, create=True), \
+         patch.dict(os.environ, {"APPDATA": str(appdata)}, clear=False):
+        path = cfg_mod._resolve_ini_path()
+
+    assert path == appdata / "muxiveo" / "config.ini"
+
+
+def test_core_config_ini_path_uses_project_root_for_windows_dev():
+    import core.config as cfg_mod
+
+    with patch.object(cfg_mod.sys, "platform", "win32"), \
+         patch.object(cfg_mod.sys, "frozen", False, create=True):
+        path = cfg_mod._resolve_ini_path()
+
+    assert path == Path(cfg_mod.__file__).parent.parent / "config.ini"
+
+
+def test_app_data_dir_falls_back_to_appdata_on_windows(tmp_path):
+    import core.config as cfg_mod
+
+    appdata = tmp_path / "Roaming"
+    with patch.object(cfg_mod.sys, "platform", "win32"), \
+         patch.dict(os.environ, {"APPDATA": str(appdata)}, clear=False), \
+         patch.object(cfg_mod.QStandardPaths, "writableLocation", return_value=""):
+        path = cfg_mod._app_data_dir()
+
+    assert path == appdata / "muxiveo"
+    assert path.is_dir()
+
+
+def test_app_config_uses_lowercase_qsettings_namespace_on_non_windows(tmp_path):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+
+    ini_path = tmp_path / "config.ini"
+    with patch("core.config.QSettings") as mock_qs, \
+         patch.object(cfg_mod.sys, "platform", "linux"), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path), \
+         patch("core.config._app_data_dir", return_value=tmp_path):
+        mock_qs.return_value.value.return_value = None
+        AppConfig()
+
+        mock_qs.assert_called_with(
+            mock_qs.Format.IniFormat,
+            mock_qs.Scope.UserScope,
+            "muxiveo",
+            "muxiveo",
+        )
+
+
+def test_default_work_dir_uses_platform_temp_dir(tmp_path):
+    import core.config as cfg_mod
+
+    with patch.object(cfg_mod.tempfile, "gettempdir", return_value=str(tmp_path / "Temp")):
+        path = cfg_mod._default_work_dir()
+
+    assert path == tmp_path / "Temp" / "Muxiveo_work"
 
 
 def test_setup_detect_non_windows_tool_path_reads_ini_value(tmp_path):

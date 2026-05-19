@@ -2,6 +2,8 @@ name: Build Windows package
 
 on:
   push:
+    branches:
+      - rebrand
     tags:
       - "v*"
   workflow_dispatch:
@@ -60,17 +62,17 @@ jobs:
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Mediarecode-Setup-${{ steps.version.outputs.VERSION }}
-          path: dist/releases/Mediarecode-Setup-${{ steps.version.outputs.VERSION }}.exe
+          name: Muxiveo-Setup-${{ steps.version.outputs.VERSION }}
+          path: dist/releases/Muxiveo-Setup-${{ steps.version.outputs.VERSION }}.exe
           if-no-files-found: error
 
       - name: Attach to GitHub Release
-        if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && github.event.inputs.version != '')
+        if: github.ref_name != 'rebrand' && (github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && github.event.inputs.version != ''))
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="v${{ steps.version.outputs.VERSION }}"
-          FILE="dist/releases/Mediarecode-Setup-${{ steps.version.outputs.VERSION }}.exe"
+          FILE="dist/releases/Muxiveo-Setup-${{ steps.version.outputs.VERSION }}.exe"
           gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes ""
           gh release upload "$TAG" "$FILE" --clobber
         shell: bash

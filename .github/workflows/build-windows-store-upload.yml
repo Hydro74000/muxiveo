@@ -10,6 +10,7 @@ on:
 
 jobs:
   build:
+    if: ${{ false }} # Disabled: Windows Store upload is intentionally paused.
     runs-on: windows-latest
 
     steps:
@@ -41,6 +42,7 @@ jobs:
           echo "Version: $ver"
 
       - name: Export Store metadata
+        if: github.ref_name != 'rebrand'
         shell: pwsh
         env:
           WINDOWS_MSIX_IDENTITY: ${{ vars.WINDOWS_MSIX_IDENTITY }}
@@ -54,14 +56,14 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_PUBLISHER)) {
             throw "Missing secret WINDOWS_MSIX_PUBLISHER"
           }
-          "MEDIARECODE_MSIX_IDENTITY=$env:WINDOWS_MSIX_IDENTITY" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "MEDIARECODE_MSIX_PUBLISHER=$env:WINDOWS_MSIX_PUBLISHER" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MUXIVEO_MSIX_IDENTITY=$env:WINDOWS_MSIX_IDENTITY" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MUXIVEO_MSIX_PUBLISHER=$env:WINDOWS_MSIX_PUBLISHER" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME)) {
-            "MEDIARECODE_MSIX_PUBLISHER_DISPLAY_NAME=$env:WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "MUXIVEO_MSIX_PUBLISHER_DISPLAY_NAME=$env:WINDOWS_MSIX_PUBLISHER_DISPLAY_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           }
           if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_MSIX_DESCRIPTION)) {
             $delim = "EOF_$([guid]::NewGuid().ToString('N'))"
-            "MEDIARECODE_MSIX_DESCRIPTION<<$delim" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "MUXIVEO_MSIX_DESCRIPTION<<$delim" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             $env:WINDOWS_MSIX_DESCRIPTION | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             $delim | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           }
@@ -95,13 +97,13 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist/releases | Out-Null
-          Copy-Item "Mediarecode-${{ steps.version.outputs.VERSION }}.msix" "dist/releases/Mediarecode-${{ steps.version.outputs.VERSION }}.msix" -Force
+          Copy-Item "Muxiveo-${{ steps.version.outputs.VERSION }}.msix" "dist/releases/Muxiveo-${{ steps.version.outputs.VERSION }}.msix" -Force
 
       - name: Upload x64 MSIX artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Mediarecode-MSIX-x64-${{ steps.version.outputs.VERSION }}
+          name: Muxiveo-MSIX-x64-${{ steps.version.outputs.VERSION }}
           path: |
-            dist/releases/Mediarecode-${{ steps.version.outputs.VERSION }}.msix
-            dist/releases/Mediarecode-${{ steps.version.outputs.VERSION }}.msixupload
+            dist/releases/Muxiveo-${{ steps.version.outputs.VERSION }}.msix
+            dist/releases/Muxiveo-${{ steps.version.outputs.VERSION }}.msixupload
           if-no-files-found: error

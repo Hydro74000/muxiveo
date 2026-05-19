@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import types
+import sys
 from pathlib import Path
 from typing import Callable
 from unittest.mock import MagicMock, patch
@@ -15,7 +16,7 @@ def test_startup_paths_from_argv_filters_only_existing_files(tmp_path) -> None:
     existing_b.write_text("", encoding="utf-8")
 
     argv = [
-        "mediarecode",
+        "Muxiveo",
         str(existing_a),
         "--debug",
         str(tmp_path / "missing.mov"),
@@ -83,7 +84,7 @@ def test_main_routes_startup_file_to_main_window(tmp_path) -> None:
          patch.object(main_mod, "_prompt_work_dir_cleanup") as mock_cleanup, \
          patch.object(main_mod.QTimer, "singleShot", side_effect=fake_single_shot), \
          patch.dict("sys.modules", {"ui.main_window": fake_ui_main_window}), \
-         patch.object(main_mod.sys, "argv", ["mediarecode", str(startup_file), "--verbose"]):
+         patch.object(main_mod.sys, "argv", ["Muxiveo", str(startup_file), "--verbose"]):
         mock_design.scale_factor.return_value = 1.0
         rc = main_mod.main()
 
@@ -93,12 +94,29 @@ def test_main_routes_startup_file_to_main_window(tmp_path) -> None:
     mock_design.apply_to_application.assert_called_once_with(fake_app)
     mock_set_language.assert_called_once_with("eng")
     mock_cleanup.assert_called_once_with(fake_config)
-    fake_app.setApplicationName.assert_called_once_with("Mediarecode")
+    fake_app.setApplicationName.assert_called_once_with("Muxiveo")
     fake_app.setApplicationVersion.assert_called_once()
-    fake_app.setOrganizationName.assert_called_once_with("mediarecode")
+    fake_app.setOrganizationName.assert_called_once_with("Muxiveo")
     fake_app.setFont.assert_called_once()
     fake_window.show.assert_called_once_with()
     assert scheduled_delay == [0]
     assert len(scheduled_callbacks) == 1
     scheduled_callbacks[0]()
     fake_window.open_startup_paths.assert_called_once_with([startup_file])
+
+
+def test_main_routes_cli_flag_without_qapplication() -> None:
+    fake_cli = types.SimpleNamespace(main=MagicMock(return_value=23))
+
+    class FailingQApplication:
+        @staticmethod
+        def instance():
+            raise AssertionError("QApplication should not be touched in --cli mode")
+
+    with patch.object(main_mod, "QApplication", FailingQApplication), \
+         patch.dict(sys.modules, {"cli.main": fake_cli}), \
+         patch.object(main_mod.sys, "argv", ["main.py", "--cli", "inspect", "file.mkv"]):
+        rc = main_mod.main()
+
+    assert rc == 23
+    fake_cli.main.assert_called_once_with(["inspect", "file.mkv"])

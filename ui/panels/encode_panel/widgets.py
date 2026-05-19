@@ -93,7 +93,7 @@ def _default_lossy_bitrate_kbps(track: AudioTrack, config: "AppConfig | None" = 
 
     def _safe_per_channel(value: object) -> int:
         try:
-            parsed = int(value)  # type: ignore[arg-type]
+            parsed = int(str(value))
             return parsed if parsed > 0 else DEFAULT_AUDIO_KBPS_PER_CHANNEL
         except (TypeError, ValueError):
             return DEFAULT_AUDIO_KBPS_PER_CHANNEL

@@ -263,7 +263,7 @@ class _FilePairSection(QWidget):
         btn.clicked.connect(open_dialog)
 
         # Drag & drop sur la card
-        def dragEnterEvent(event) -> None:  # type: ignore[override]
+        def dragEnterEvent(event) -> None:
             if event.mimeData().hasUrls():
                 url = event.mimeData().urls()[0]
                 if is_accepted(url.toLocalFile(), video_only=True):
@@ -278,7 +278,7 @@ class _FilePairSection(QWidget):
                     return
             event.ignore()
 
-        def dragLeaveEvent(event) -> None:  # type: ignore[override]
+        def dragLeaveEvent(event) -> None:
             card.setStyleSheet(f"""
                 QWidget {{
                     background: {_C.BG_CARD};
@@ -287,7 +287,7 @@ class _FilePairSection(QWidget):
                 }}
             """)
 
-        def dropEvent(event) -> None:  # type: ignore[override]
+        def dropEvent(event) -> None:
             dragLeaveEvent(event)
             urls = event.mimeData().urls()
             if urls:

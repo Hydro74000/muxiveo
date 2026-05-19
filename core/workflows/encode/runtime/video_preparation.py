@@ -304,6 +304,15 @@ class TwoPassRunner:
         executor = ThreadPoolExecutor(max_workers=1)
 
         def _task() -> None:
+            cleaned_passlogs = False
+
+            def _cleanup_passlogs() -> None:
+                nonlocal cleaned_passlogs
+                if cleaned_passlogs:
+                    return
+                cleaned_passlogs = True
+                self._cb.cleanup_two_pass_logs(cwd)
+
             try:
                 self._cb.log_info("Passe 1/2 (analyse)…")
                 self._cb.run_cmd(
@@ -321,13 +330,16 @@ class TwoPassRunner:
                     progress_cb=lambda line: signals.progress.emit(line),
                     signals=signals,
                 )
+                _cleanup_passlogs()
                 signals.finished.emit(output)
             except TaskCancelledError:
+                _cleanup_passlogs()
                 signals.cancelled.emit()
             except Exception as exc:
+                _cleanup_passlogs()
                 signals.failed.emit(str(exc), exc)
             finally:
-                self._cb.cleanup_two_pass_logs(cwd)
+                _cleanup_passlogs()
 
         executor.submit(_task)
         executor.shutdown(wait=False)

@@ -1,0 +1,206 @@
+name: Sync Rewrite & Profiles Tests (POSIX)
+
+# Tests dédiés aux fonctionnalités de la branche syncrewrite, exécutés sur les
+# plateformes POSIX (Linux et macOS). Le pendant Windows est ci-syncrewrite-windows.yml.
+#
+# Couverture :
+#   - réécriture physique des timestamps par piste (audio_sync, sync_rewrite,
+#     remux timeline sync, bridge encode → remux, panneaux UI associés)
+#   - profils : expressions de critères, keywords/aliases, sélecteurs stables,
+#     output_template CLI et éditeur de profils UI.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      # --- sync rewrite ---
+      - "core/workflows/audio_sync.py"
+      - "core/workflows/common/sync_rewrite.py"
+      - "core/workflows/common/track_types.py"
+      - "core/workflows/remux_timeline_sync.py"
+      - "core/workflows/remux.py"
+      - "core/workflows/remux_models.py"
+      - "core/workflows/remux_runtime.py"
+      - "core/workflows/encode/remux_bridge.py"
+      - "core/workflows/encode/workflow.py"
+      - "core/workflows/encode/runtime/command_builders.py"
+      - "core/workflows/encode/planning/offsets.py"
+      - "core/config.py"
+      - "ui/panels/remux_panel/**"
+      - "ui/panels/encode_panel/**"
+      - "ui/panels/settings_panel.py"
+      - "ui/main_window.py"
+      - "tests/test_audio_sync_workflow.py"
+      - "tests/test_workflows_common.py"
+      - "tests/test_remux_timeline_sync.py"
+      - "tests/test_remux_workflow.py"
+      - "tests/test_encode_workflow.py"
+      - "tests/test_remux.py"
+      - "tests/test_settings_panel.py"
+      - "tests/test_setup_and_config.py"
+      - "tests/test_main_window_progress.py"
+      # --- profils ---
+      - "core/profiles/**"
+      - "cli/**"
+      - "tests/test_decision_profiles.py"
+      - "tests/test_profiles_selectors.py"
+      - "tests/test_cli.py"
+      - "tests/integration/test_cli_headless.py"
+      - "tests/test_main_startup_paths.py"
+      # --- shared ---
+      - "tests/conftest.py"
+      - ".github/workflows/ci-syncrewrite.yml"
+  push:
+    paths:
+      - "core/workflows/audio_sync.py"
+      - "core/workflows/common/sync_rewrite.py"
+      - "core/workflows/common/track_types.py"
+      - "core/workflows/remux_timeline_sync.py"
+      - "core/workflows/remux.py"
+      - "core/workflows/remux_models.py"
+      - "core/workflows/remux_runtime.py"
+      - "core/workflows/encode/remux_bridge.py"
+      - "core/workflows/encode/workflow.py"
+      - "core/workflows/encode/runtime/command_builders.py"
+      - "core/workflows/encode/planning/offsets.py"
+      - "core/config.py"
+      - "ui/panels/remux_panel/**"
+      - "ui/panels/encode_panel/**"
+      - "ui/panels/settings_panel.py"
+      - "ui/main_window.py"
+      - "tests/test_audio_sync_workflow.py"
+      - "tests/test_workflows_common.py"
+      - "tests/test_remux_timeline_sync.py"
+      - "tests/test_remux_workflow.py"
+      - "tests/test_encode_workflow.py"
+      - "tests/test_remux.py"
+      - "tests/test_settings_panel.py"
+      - "tests/test_setup_and_config.py"
+      - "tests/test_main_window_progress.py"
+      - "core/profiles/**"
+      - "cli/**"
+      - "tests/test_decision_profiles.py"
+      - "tests/test_profiles_selectors.py"
+      - "tests/test_cli.py"
+      - "tests/integration/test_cli_headless.py"
+      - "tests/test_main_startup_paths.py"
+      - "tests/conftest.py"
+      - ".github/workflows/ci-syncrewrite.yml"
+
+jobs:
+  syncrewrite-core:
+    name: Core sync rewrite tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install System Dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libegl1 libgl1 libglib2.0-0 libdbus-1-3 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+            libxkbcommon-x11-0
+
+      - name: Install Python Dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          for attempt in 1 2 3; do
+            if python -m pip install --retries 5 --timeout 60 pytest pytest-qt PySide6; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: Run Core Sync Rewrite & Profiles Tests
+        env:
+          QT_QPA_PLATFORM: "offscreen"
+        run: |
+          pytest \
+            tests/test_audio_sync_workflow.py \
+            tests/test_workflows_common.py \
+            tests/test_remux_timeline_sync.py \
+            tests/test_decision_profiles.py \
+            tests/test_profiles_selectors.py \
+            tests/test_cli.py \
+            -v
+
+  syncrewrite-ui:
+    name: UI sync rewrite tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install System Dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libegl1 libgl1 libglib2.0-0 libdbus-1-3 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+            libxkbcommon-x11-0 xvfb
+
+      - name: Install Python Dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          for attempt in 1 2 3; do
+            if python -m pip install --retries 5 --timeout 60 pytest pytest-qt PySide6; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: Start Xvfb (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          Xvfb :99 -screen 0 1024x768x24 &
+          echo "DISPLAY=:99" >> $GITHUB_ENV
+
+      - name: Run UI Sync Rewrite & Profiles Tests
+        env:
+          QT_QPA_PLATFORM: "offscreen"
+        run: |
+          pytest \
+            tests/test_remux.py \
+            tests/test_remux_workflow.py \
+            tests/test_encode_workflow.py \
+            tests/test_settings_panel.py \
+            tests/test_setup_and_config.py \
+            tests/test_main_window_progress.py \
+            tests/test_main_startup_paths.py \
+            -v

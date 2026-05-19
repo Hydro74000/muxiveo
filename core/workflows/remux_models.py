@@ -55,6 +55,8 @@ class TrackEntry:
     encode_plan_summary: str = field(default="", repr=False)
     encode_plan_hdr_badges: tuple[str, ...] = field(default_factory=tuple, repr=False)
     encode_plan_modified: bool = field(default=False, repr=False)
+    sync_rewrite_label: str = field(default="", repr=False)
+    sync_rewrite_mode: str = field(default="", repr=False)  # "" = auto, "offset" = sync standard forcée
 
     # Flags MKV éditables (transmis à FFmpeg si modifiés)
     flag_enabled:          bool = field(default=True,  repr=False)  # --track-enabled-flag
@@ -109,6 +111,7 @@ class TrackEntry:
                 self.display_info,
                 self.flags_label,
                 self.time_shift_label,
+                self.sync_rewrite_label,
             )
             if p
         ]
@@ -224,6 +227,9 @@ class RemuxConfig:
     #: Cover TMDB à télécharger juste avant le remuxage : (url, filename).
     #: None → pas de cover TMDB en attente.
     tmdb_cover:          tuple[str, str] | None = None
+    #: Autorise une preview CLI à construire la commande même si le dossier de
+    #: sortie n'existe pas encore. Ne doit pas être utilisé pour une exécution.
+    allow_missing_output_dir: bool = False
 
 
 # =============================================================================

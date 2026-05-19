@@ -15,7 +15,9 @@ import re
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Callable
+from typing import Callable, TextIO
+
+from core.version import APP_VERBOSE_LOG_PREFIX
 
 
 class LogLevel(str, Enum):
@@ -40,7 +42,9 @@ def parse_log_level(value: str, default: LogLevel = LogLevel.INFO) -> LogLevel:
 
 VERBOSE_LOG_MAX_BYTES = 50 * 1024 * 1024
 VERBOSE_LOG_MAX_FILES = 3
-_VERBOSE_LOG_FILE_RE = re.compile(r"^mediarecode-verbose-(\d{8}-\d{6})-(\d+)\.log$")
+_VERBOSE_LOG_FILE_RE = re.compile(
+    rf"^{re.escape(APP_VERBOSE_LOG_PREFIX)}-(\d{{8}}-\d{{6}})-(\d+)\.log$"
+)
 
 
 def _latest_verbose_log_file(
@@ -49,7 +53,7 @@ def _latest_verbose_log_file(
     max_files: int,
 ) -> tuple[str, int, Path] | None:
     latest: tuple[str, int, Path] | None = None
-    for path in logs_dir.glob("mediarecode-verbose-*.log"):
+    for path in logs_dir.glob(f"{APP_VERBOSE_LOG_PREFIX}-*.log"):
         match = _VERBOSE_LOG_FILE_RE.match(path.name)
         if match is None:
             continue
@@ -83,9 +87,7 @@ class VerboseFileLogger:
         max_files: int | None = None,
     ) -> None:
         self._app_data_dir = Path(app_data_dir)
-        self._configured_verbose_log_dir = (
-            Path(verbose_log_dir) if verbose_log_dir not in (None, "") else None
-        )
+        self._configured_verbose_log_dir = self._normalize_verbose_log_dir(verbose_log_dir)
         self._enabled = bool(enabled)
         self._on_write_error = on_write_error
         self._max_bytes = int(max_bytes if max_bytes is not None else VERBOSE_LOG_MAX_BYTES)
@@ -96,13 +98,20 @@ class VerboseFileLogger:
         self._file_index = 1
         self._session_bootstrapped = False
         self._error_reported = False
-        self._open_handle = None
+        self._open_handle: TextIO | None = None
         self._open_handle_path: Path | None = None
         self._open_handle_size: int = 0
 
     @property
     def enabled(self) -> bool:
         return self._enabled
+
+    @staticmethod
+    def _normalize_verbose_log_dir(value: Path | str | None) -> Path | None:
+        if value in (None, ""):
+            return None
+        assert value is not None
+        return Path(value)
 
     @property
     def session_stamp(self) -> str | None:
@@ -121,9 +130,7 @@ class VerboseFileLogger:
     ) -> None:
         previous_dir = self._resolve_logs_dir_path()
         self._app_data_dir = Path(app_data_dir)
-        self._configured_verbose_log_dir = (
-            Path(verbose_log_dir) if verbose_log_dir not in (None, "") else None
-        )
+        self._configured_verbose_log_dir = self._normalize_verbose_log_dir(verbose_log_dir)
         self._enabled = bool(enabled)
         current_dir = self._resolve_logs_dir_path()
         if current_dir != previous_dir:
@@ -157,7 +164,7 @@ class VerboseFileLogger:
         if self._session_stamp is None:
             self._session_stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         safe_index = max(1, min(self._max_files, int(index)))
-        return logs_dir / f"mediarecode-verbose-{self._session_stamp}-{safe_index:02d}.log"
+        return logs_dir / f"{APP_VERBOSE_LOG_PREFIX}-{self._session_stamp}-{safe_index:02d}.log"
 
     def session_path(self) -> Path:
         if self._session_file_path is None:
@@ -235,7 +242,10 @@ class VerboseFileLogger:
                     self._open_handle_size = path.stat().st_size
                 except OSError:
                     self._open_handle_size = 0
-            self._open_handle.write(line)
+            open_handle = self._open_handle
+            if open_handle is None:
+                return
+            open_handle.write(line)
             self._open_handle_size += len(encoded)
         except OSError:
             self._close_handle()

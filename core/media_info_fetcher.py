@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.logging import get_logger
-from core.version import APP_USER_AGENT
+from core.version import APP_ENV_PREFIX, APP_LOGGER_ROOT, APP_USER_AGENT
 
 
 # =============================================================================
@@ -310,10 +310,10 @@ _BASE    = "https://api.themoviedb.org/3"
 _URL_MV  = "https://www.themoviedb.org/movie/{id}"
 _URL_TV  = "https://www.themoviedb.org/tv/{id}"
 _URL_IMD = "https://www.imdb.com/title/{imdb_id}/"
-_TMDB_DEBUG_ENV = "MEDIARECODE_TMDB_DEBUG"
-_TMDB_LOGGER = get_logger("mediarecode.tmdb")
-_TMDB_BEARER_TOKEN_ENV = "MEDIARECODE_TMDB_BEARER_TOKEN"
-_TMDB_INSECURE_SSL_ENV = "MEDIARECODE_TMDB_INSECURE_SSL"
+_TMDB_DEBUG_ENV = f"{APP_ENV_PREFIX}_TMDB_DEBUG"
+_TMDB_LOGGER = get_logger(f"{APP_LOGGER_ROOT}.tmdb")
+_TMDB_BEARER_TOKEN_ENV = f"{APP_ENV_PREFIX}_TMDB_BEARER_TOKEN"
+_TMDB_INSECURE_SSL_ENV = f"{APP_ENV_PREFIX}_TMDB_INSECURE_SSL"
 
 
 def _tmdb_insecure_ssl_enabled() -> bool:
@@ -351,7 +351,7 @@ _TMDB_DEFAULT_BEARER_TOKEN = (
 def default_tmdb_bearer_token() -> str:
     """
     Retourne le token Bearer TMDB:
-    1) variable d'environnement MEDIARECODE_TMDB_BEARER_TOKEN
+    1) variable d'environnement MUXIVEO_TMDB_BEARER_TOKEN
     2) token par défaut embarqué
     """
     return os.environ.get(_TMDB_BEARER_TOKEN_ENV, "").strip() or _TMDB_DEFAULT_BEARER_TOKEN
@@ -406,7 +406,7 @@ class TmdbFetcher:
         """
         urlopen avec fallback automatique en SSL non-vérifié si la vérification
         échoue (pratique quand le bundle CA du frozen ne matche pas l'hôte).
-        Forçable via MEDIARECODE_TMDB_INSECURE_SSL=1.
+        Forçable via MUXIVEO_TMDB_INSECURE_SSL=1.
         """
         if _tmdb_insecure_ssl_enabled():
             return urllib.request.urlopen(req, timeout=timeout, context=_unverified_ssl_context())

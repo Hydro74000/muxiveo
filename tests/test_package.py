@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import plistlib
 import subprocess
 import struct
 import zlib
@@ -60,31 +62,57 @@ def test_pyinstaller_frontend_flag_keeps_console_on_linux():
 
 
 def test_desktop_entries_advertise_file_open_support():
-    rendered = package_mod._DESKTOP_ENTRY.format(mime_types="video/x-matroska;audio/x-matroska;")
-    assert "Exec=mediarecode %F" in rendered
+    rendered = package_mod._DESKTOP_ENTRY.format(
+        mime_types="video/x-matroska;audio/x-matroska;",
+        website_url=package_mod._APPIMAGE_WEBSITE_URL,
+    )
+    assert "Exec=muxiveo %F" in rendered
     assert "MimeType=video/x-matroska;audio/x-matroska;" in rendered
+    assert "X-AppImage-Website=https://muxiveo.fr/" in rendered
     assert "Terminal=false" in rendered
-    rendered_appimage = package_appimage_mod._DESKTOP.format(mime_types="video/x-matroska;")
-    assert "Exec=mediarecode %F" in rendered_appimage
+    rendered_appimage = package_appimage_mod._DESKTOP.format(
+        mime_types="video/x-matroska;",
+        website_url=package_appimage_mod._APPIMAGE_WEBSITE_URL,
+    )
+    assert "Exec=muxiveo %F" in rendered_appimage
     assert "MimeType=video/x-matroska;" in rendered_appimage
+    assert "X-AppImage-Website=https://muxiveo.fr/" in rendered_appimage
+
+
+def test_appstream_metainfo_advertises_homepage_and_desktop_launchable():
+    rendered = package_mod._APPSTREAM_METAINFO.format(
+        appstream_id=package_mod._APPSTREAM_ID,
+        desktop_id="Muxiveo.desktop",
+        website_url=package_mod._APPIMAGE_WEBSITE_URL,
+    )
+    assert "<url type=\"homepage\">https://muxiveo.fr/</url>" in rendered
+    assert "<launchable type=\"desktop-id\">Muxiveo.desktop</launchable>" in rendered
+
+    rendered_appimage = package_appimage_mod._APPSTREAM_METAINFO.format(
+        appstream_id=package_appimage_mod._APPSTREAM_ID,
+        desktop_id="Muxiveo.desktop",
+        website_url=package_appimage_mod._APPIMAGE_WEBSITE_URL,
+    )
+    assert "<url type=\"homepage\">https://muxiveo.fr/</url>" in rendered_appimage
+    assert "<launchable type=\"desktop-id\">Muxiveo.desktop</launchable>" in rendered_appimage
 
 
 def test_windows_supported_types_block_registers_open_with_entries():
     with patch.object(package_mod, "ACCEPTED_EXTENSIONS", frozenset({".mkv", ".srt"})):
         block = package_mod._windows_supported_types_block()
-    assert 'Applications\\\\mediarecode.exe\\\\shell\\\\open\\\\command' in block
+    assert 'Applications\\\\Muxiveo.exe\\\\shell\\\\open\\\\command' in block
     assert '.mkv' in block
     assert '.srt' in block
 
 
 def test_nsis_bundle_glob_uses_posix_separator_on_linux():
     with patch.object(package_mod, "OS", "Linux"):
-        assert package_mod._nsis_bundle_glob(Path("/tmp/mediarecode-win")) == "/tmp/mediarecode-win/*"
+        assert package_mod._nsis_bundle_glob(Path("/tmp/Muxiveo-win")) == "/tmp/Muxiveo-win/*"
 
 
 def test_nsis_bundle_glob_uses_windows_separator_on_windows():
     with patch.object(package_mod, "OS", "Windows"):
-        assert package_mod._nsis_bundle_glob(Path(r"C:\tmp\mediarecode")) == r"C:\tmp\mediarecode\*"
+        assert package_mod._nsis_bundle_glob(Path(r"C:\tmp\Muxiveo")) == r"C:\tmp\Muxiveo\*"
 
 
 def test_build_pyinstaller_uses_windowed_on_native_windows(tmp_path):
@@ -92,7 +120,7 @@ def test_build_pyinstaller_uses_windowed_on_native_windows(tmp_path):
 
     def fake_run(cmd, cwd=None):
         commands.append(cmd)
-        exe_path = tmp_path / "dist" / "mediarecode" / "mediarecode.exe"
+        exe_path = tmp_path / "dist" / "Muxiveo" / "Muxiveo.exe"
         exe_path.parent.mkdir(parents=True, exist_ok=True)
         exe_path.write_text("", encoding="utf-8")
 
@@ -110,11 +138,116 @@ def test_build_pyinstaller_uses_windowed_on_native_windows(tmp_path):
          patch.object(package_mod, "_resolve_windows_icon_ico", return_value=None), \
          patch.object(package_mod, "_verify_windows_runtime_bundle"), \
          patch.object(package_mod, "_run", side_effect=fake_run):
-        package_mod._build_pyinstaller(onefile=False)
+        result = package_mod._build_pyinstaller(onefile=False)
 
     assert commands
     assert "--windowed" in commands[0]
     assert "--console" not in commands[0]
+    assert result == tmp_path / "dist" / "Muxiveo" / "Muxiveo.exe"
+    assert (tmp_path / "dist" / "Muxiveo" / "Muxiveo.exe").exists()
+
+
+def test_build_pyinstaller_accepts_lowercase_windows_entrypoint(tmp_path):
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, cwd=None):
+        commands.append(cmd)
+        exe_path = tmp_path / "dist" / "Muxiveo" / "muxiveo.exe"
+        exe_path.parent.mkdir(parents=True, exist_ok=True)
+        exe_path.write_text("", encoding="utf-8")
+
+    version_file = tmp_path / "version.txt"
+    version_file.write_text("", encoding="utf-8")
+
+    with patch.object(package_mod, "ROOT", tmp_path), \
+         patch.object(package_mod, "OS", "Windows"), \
+         patch.object(package_mod, "DATA_FILES", []), \
+         patch.object(package_mod, "_ensure_windows_runtime_dlls_available"), \
+         patch.object(package_mod, "_add_windows_ctypes_to_pyinstaller_native"), \
+         patch.object(package_mod, "_add_windows_sqlite_to_pyinstaller_native"), \
+         patch.object(package_mod, "_add_windows_ssl_to_pyinstaller_native"), \
+         patch.object(package_mod, "_write_windows_version_file", return_value=version_file), \
+         patch.object(package_mod, "_resolve_windows_icon_ico", return_value=None), \
+         patch.object(package_mod, "_verify_windows_runtime_bundle"), \
+         patch.object(package_mod, "_run", side_effect=fake_run):
+        result = package_mod._build_pyinstaller(onefile=False)
+
+    assert commands
+    assert result == tmp_path / "dist" / "Muxiveo" / "Muxiveo.exe"
+    assert (tmp_path / "dist" / "Muxiveo" / "Muxiveo.exe").exists()
+    assert not (tmp_path / "dist" / "Muxiveo" / "muxiveo.exe").exists()
+
+
+def test_ensure_windows_bundle_entrypoint_does_not_delete_branded_exe_on_case_insensitive_fs(tmp_path):
+    # Simulate Windows case-insensitive filesystem: Muxiveo.exe already exists,
+    # and samefile(muxiveo.exe, Muxiveo.exe) returns True.  The function must
+    # NOT unlink the branded exe.
+    bundle_dir = tmp_path / "dist" / "Muxiveo"
+    bundle_dir.mkdir(parents=True)
+    branded = bundle_dir / "Muxiveo.exe"
+    branded.write_text("exe", encoding="utf-8")
+
+    with patch.object(package_mod, "_WINDOWS_EXE_NAME", "Muxiveo.exe"), \
+         patch("pathlib.Path.samefile", return_value=True):
+        result = package_mod._ensure_windows_bundle_entrypoint(bundle_dir)
+
+    assert branded.exists(), "Muxiveo.exe was deleted — samefile guard is broken"
+    assert result == bundle_dir / "Muxiveo.exe"
+
+
+def test_build_pyinstaller_lowercases_linux_entrypoints(tmp_path):
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, cwd=None):
+        commands.append(cmd)
+        exe_path = tmp_path / "dist" / "Muxiveo" / "Muxiveo"
+        exe_path.parent.mkdir(parents=True, exist_ok=True)
+        exe_path.write_text("", encoding="utf-8")
+
+    with patch.object(package_mod, "ROOT", tmp_path), \
+         patch.object(package_mod, "OS", "Linux"), \
+         patch.object(package_mod, "DATA_FILES", []), \
+         patch.object(package_mod, "_run", side_effect=fake_run):
+        result = package_mod._build_pyinstaller(onefile=False)
+
+    assert result == tmp_path / "dist" / "Muxiveo" / "muxiveo"
+    assert (tmp_path / "dist" / "Muxiveo" / "muxiveo").exists()
+    assert not (tmp_path / "dist" / "Muxiveo" / "Muxiveo").exists()
+    assert not (tmp_path / "dist" / "Muxiveo" / ("muxiveo" + "-cli")).exists()
+    assert commands[0][commands[0].index("--name") + 1] == "Muxiveo"
+
+
+def test_rename_unix_executable_handles_existing_samefile_target(tmp_path):
+    exe_path = tmp_path / "Muxiveo"
+    target = tmp_path / "muxiveo"
+    exe_path.write_text("bin", encoding="utf-8")
+    os.link(exe_path, target)
+
+    with patch.object(package_mod, "OS", "Linux"):
+        result = package_mod._rename_unix_executable(exe_path)
+
+    assert result == target
+    assert target.read_text(encoding="utf-8") == "bin"
+    assert not exe_path.exists()
+
+
+def test_build_pyinstaller_accepts_lowercase_macos_entrypoint(tmp_path):
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, cwd=None):
+        commands.append(cmd)
+        exe_path = tmp_path / "dist" / "Muxiveo.app" / "Contents" / "MacOS" / "muxiveo"
+        exe_path.parent.mkdir(parents=True, exist_ok=True)
+        exe_path.write_text("", encoding="utf-8")
+
+    with patch.object(package_mod, "ROOT", tmp_path), \
+         patch.object(package_mod, "OS", "Darwin"), \
+         patch.object(package_mod, "DATA_FILES", []), \
+         patch.object(package_mod, "_run", side_effect=fake_run):
+        result = package_mod._build_pyinstaller(onefile=False)
+
+    assert result == tmp_path / "dist" / "Muxiveo.app" / "Contents" / "MacOS" / "muxiveo"
+    assert commands[0][commands[0].index("--name") + 1] == "Muxiveo"
 
 
 def test_ensure_wine_deps_pins_pyside6_and_verifies_runtime():
@@ -261,9 +394,9 @@ def test_convert_ico_to_png_uses_largest_embedded_png_frame(tmp_path):
 
 
 def _prepare_linux_bundle(tmp_path: Path) -> None:
-    bundle_dir = tmp_path / "dist" / "mediarecode"
+    bundle_dir = tmp_path / "dist" / "Muxiveo"
     bundle_dir.mkdir(parents=True, exist_ok=True)
-    (bundle_dir / "mediarecode").write_text("", encoding="utf-8")
+    (bundle_dir / "Muxiveo").write_text("", encoding="utf-8")
 
 
 def test_build_appdir_prefers_icon_ico_when_available(tmp_path):
@@ -284,10 +417,12 @@ def test_build_appdir_prefers_icon_ico_when_available(tmp_path):
          patch.object(package_mod, "_convert_ico_to_png", side_effect=fake_convert):
         appdir = package_mod._build_appdir()
 
-    assert (appdir / "Mediarecode.png").read_bytes() == b"png-from-ico"
-    assert (appdir / "Mediarecode.ico").read_bytes() == b"ico"
+    assert (appdir / "Muxiveo.png").read_bytes() == b"png-from-ico"
+    assert (appdir / "Muxiveo.ico").read_bytes() == b"ico"
+    assert (appdir / "Muxiveo" / "muxiveo").exists()
+    assert not (appdir / "Muxiveo" / ("muxiveo" + "-cli")).exists()
     assert (appdir / ".DirIcon").is_symlink()
-    assert (appdir / ".DirIcon").readlink() == Path("Mediarecode.png")
+    assert (appdir / ".DirIcon").readlink() == Path("Muxiveo.png")
 
 
 def test_build_appdir_falls_back_to_icon_png_if_ico_conversion_fails(tmp_path):
@@ -303,13 +438,14 @@ def test_build_appdir_falls_back_to_icon_png_if_ico_conversion_fails(tmp_path):
          patch.object(package_mod, "_convert_ico_to_png", return_value=False):
         appdir = package_mod._build_appdir()
 
-    assert (appdir / "Mediarecode.png").read_bytes() == b"png-fallback"
+    assert (appdir / "Muxiveo.png").read_bytes() == b"png-fallback"
+    assert (appdir / "Muxiveo" / "muxiveo").exists()
 
 
 def test_package_appimage_build_appdir_prefers_icon_ico_when_available(tmp_path):
     bundle_dir = tmp_path / "bundle"
     bundle_dir.mkdir()
-    (bundle_dir / "mediarecode").write_text("", encoding="utf-8")
+    (bundle_dir / "Muxiveo").write_text("", encoding="utf-8")
     ico_path = tmp_path / "icon.ico"
     ico_path.write_bytes(b"ico")
 
@@ -318,61 +454,63 @@ def test_package_appimage_build_appdir_prefers_icon_ico_when_available(tmp_path)
         return True
 
     with patch.object(package_appimage_mod, "ROOT", tmp_path), \
-         patch.object(package_appimage_mod, "APPDIR", tmp_path / "Mediarecode.AppDir"), \
+         patch.object(package_appimage_mod, "APPDIR", tmp_path / "Muxiveo.AppDir"), \
          patch.object(package_appimage_mod, "_convert_ico_to_png", side_effect=fake_convert):
         appdir = package_appimage_mod.build_appdir(bundle_dir)
 
-    assert (appdir / "mediarecode.ico").read_bytes() == b"ico"
-    assert (appdir / "mediarecode.png").read_bytes() == b"png-from-ico"
+    assert (appdir / "Muxiveo.ico").read_bytes() == b"ico"
+    assert (appdir / "Muxiveo.png").read_bytes() == b"png-from-ico"
+    assert (appdir / "usr" / "bin" / "muxiveo").exists()
+    assert not (appdir / "usr" / "bin" / ("muxiveo" + "-cli")).exists()
     assert (appdir / ".DirIcon").is_symlink()
-    assert (appdir / ".DirIcon").readlink() == Path("mediarecode.png")
+    assert (appdir / ".DirIcon").readlink() == Path("Muxiveo.png")
 
 
 def test_package_versioned_output_path_uses_app_version_by_default():
     with patch.object(package_mod, "APP_VERSION", "9.9.9"):
         output = package_mod._versioned_output_path(
-            Path("/tmp/Mediarecode-x86_64.AppImage"),
+            Path("/tmp/Muxiveo-x86_64.AppImage"),
             None,
         )
-    assert output.name == "Mediarecode-x86_64-9.9.9.AppImage"
+    assert output.name == "Muxiveo-x86_64-9.9.9.AppImage"
 
 
 def test_msix_manifest_contains_full_trust_metadata():
-    with patch.object(package_mod, "_MSIX_IDENTITY", "Hydro74000.Mediarecode"), \
+    with patch.object(package_mod, "_MSIX_IDENTITY", "Hydro74000.Muxiveo"), \
          patch.object(package_mod, "_MSIX_PUBLISHER", "CN=Hydro74000"), \
          patch.object(package_mod, "_MSIX_PUBLISHER_DISPLAY_NAME", "Hydro74000"), \
-         patch.object(package_mod, "_MSIX_DESCRIPTION", "Mediarecode video workflow"), \
+         patch.object(package_mod, "_MSIX_DESCRIPTION", "Muxiveo video workflow"), \
          patch.object(package_mod, "_msix_processor_architecture", return_value="x64"):
         manifest = package_mod._msix_manifest_content(
             "1.3.2",
-            r"VFS\ProgramFilesX64\Mediarecode\mediarecode.exe",
+            r"VFS\ProgramFilesX64\Muxiveo\Muxiveo.exe",
         )
 
-    assert 'Name="Hydro74000.Mediarecode"' in manifest
+    assert 'Name="Hydro74000.Muxiveo"' in manifest
     assert 'Publisher="CN=Hydro74000"' in manifest
     assert 'Version="1.3.2.0"' in manifest
     assert 'ProcessorArchitecture="x64"' in manifest
     assert 'EntryPoint="Windows.FullTrustApplication"' in manifest
     assert '<rescap:Capability Name="runFullTrust" />' in manifest
-    assert r'Executable="VFS\ProgramFilesX64\Mediarecode\mediarecode.exe"' in manifest
+    assert r'Executable="VFS\ProgramFilesX64\Muxiveo\Muxiveo.exe"' in manifest
     assert 'xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"' in manifest
     assert '<desktop:Extension Category="windows.fullTrustProcess"' in manifest
     assert "<desktop:FullTrustProcess />" in manifest
     assert '<uap:Extension Category="windows.fileTypeAssociation">' in manifest
-    assert '<uap:FileTypeAssociation Name="mediarecode">' in manifest
+    assert '<uap:FileTypeAssociation Name="muxiveo">' in manifest
     assert '<uap:FileType>.mkv</uap:FileType>' in manifest
     assert '<uap:FileType>.srt</uap:FileType>' in manifest
 
 
 def test_msix_manifest_forces_revision_zero():
-    with patch.object(package_mod, "_MSIX_IDENTITY", "Hydro74000.Mediarecode"), \
+    with patch.object(package_mod, "_MSIX_IDENTITY", "Hydro74000.Muxiveo"), \
          patch.object(package_mod, "_MSIX_PUBLISHER", "CN=Hydro74000"), \
          patch.object(package_mod, "_MSIX_PUBLISHER_DISPLAY_NAME", "Hydro74000"), \
-         patch.object(package_mod, "_MSIX_DESCRIPTION", "Mediarecode video workflow"), \
+         patch.object(package_mod, "_MSIX_DESCRIPTION", "Muxiveo video workflow"), \
          patch.object(package_mod, "_msix_processor_architecture", return_value="x64"):
         manifest = package_mod._msix_manifest_content(
             "1.4.0.1",
-            r"VFS\ProgramFilesX64\Mediarecode\mediarecode.exe",
+            r"VFS\ProgramFilesX64\Muxiveo\Muxiveo.exe",
         )
 
     assert 'Version="1.4.0.0"' in manifest
@@ -382,11 +520,11 @@ def test_load_msix_store_metadata_prefers_config_file(tmp_path):
     config_path = tmp_path / "msix_store.json"
     config_path.write_text(
         json.dumps({
-            "identity": "Contoso.Mediarecode",
+            "identity": "Contoso.Muxiveo",
             "publisher": "CN=Contoso",
             "publisher_display_name": "Contoso",
             "description": "Store build",
-            "display_name": "Mediarecode Store",
+            "display_name": "Muxiveo Store",
         }),
         encoding="utf-8",
     )
@@ -398,58 +536,59 @@ def test_load_msix_store_metadata_prefers_config_file(tmp_path):
         metadata = package_mod._load_msix_store_metadata(config_path)
 
     assert metadata == {
-        "identity": "Contoso.Mediarecode",
+        "identity": "Contoso.Muxiveo",
         "publisher": "CN=Contoso",
         "publisher_display_name": "Contoso",
         "description": "Store build",
-        "display_name": "Mediarecode Store",
+        "display_name": "Muxiveo Store",
     }
 
 
 def test_stage_msix_layout_embeds_file_associations_and_bundle(tmp_path):
     bundle_dir = tmp_path / "bundle"
     bundle_dir.mkdir()
-    (bundle_dir / "mediarecode.exe").write_text("", encoding="utf-8")
+    (bundle_dir / "Muxiveo.exe").write_text("", encoding="utf-8")
 
     metadata = {
-        "identity": "Contoso.Mediarecode",
+        "identity": "Contoso.Muxiveo",
         "publisher": "CN=Contoso",
         "publisher_display_name": "Contoso",
         "description": "Store build",
-        "display_name": "Mediarecode Store",
+        "display_name": "Muxiveo Store",
     }
 
     with patch.object(package_mod, "ROOT", tmp_path), \
-         patch.object(package_mod, "APP_NAME", "Mediarecode"), \
-         patch.object(package_mod, "_MSIX_PACKAGE_NAME", "AOTRMediarecode"), \
+         patch.object(package_mod, "APP_NAME", "Muxiveo"), \
+         patch.object(package_mod, "_MSIX_PACKAGE_NAME", "AOTRMuxiveo"), \
          patch.object(package_mod, "_msix_processor_architecture", return_value="x64"), \
          patch.object(package_mod, "_load_msix_store_metadata", return_value=metadata):
         layout_dir = package_mod._stage_msix_layout(bundle_dir, "1.3.2", metadata=metadata)
 
     manifest = (layout_dir / "AppxManifest.xml").read_text(encoding="utf-8")
     assert '<uap:Extension Category="windows.fileTypeAssociation">' in manifest
+    assert '<uap:FileTypeAssociation Name="muxiveo">' in manifest
     assert '<uap:FileType>.mkv</uap:FileType>' in manifest
-    assert (layout_dir / "VFS" / "ProgramFilesX64" / "AOTRMediarecode" / "mediarecode.exe").exists()
+    assert (layout_dir / "VFS" / "ProgramFilesX64" / "AOTRMuxiveo" / "Muxiveo.exe").exists()
 
 
 def test_build_msixupload_wraps_msix_for_partner_center(tmp_path):
-    msix_path = tmp_path / "Mediarecode-1.3.2.msix"
+    msix_path = tmp_path / "Muxiveo-1.3.2.msix"
     msix_path.write_text("msix", encoding="utf-8")
 
     upload_path = package_mod._build_msixupload(msix_path, version_tag="1.3.2")
 
-    assert upload_path.name == "Mediarecode-1.3.2.msixupload"
+    assert upload_path.name == "Muxiveo-1.3.2.msixupload"
     with package_mod.zipfile.ZipFile(upload_path) as archive:
-        assert archive.namelist() == ["Mediarecode-1.3.2.msix"]
-        assert archive.read("Mediarecode-1.3.2.msix") == b"msix"
+        assert archive.namelist() == ["Muxiveo-1.3.2.msix"]
+        assert archive.read("Muxiveo-1.3.2.msix") == b"msix"
 
 
 def test_build_msix_package_invokes_makeappx_and_signing(tmp_path):
-    bundle_dir = tmp_path / "dist" / "mediarecode"
+    bundle_dir = tmp_path / "dist" / "Muxiveo"
     bundle_dir.mkdir(parents=True)
     layout_dir = tmp_path / "layout"
     layout_dir.mkdir()
-    output_path = tmp_path / "AOTRMediarecode-1.3.2.msix"
+    output_path = tmp_path / "AOTRMuxiveo-1.3.2.msix"
     commands: list[list[str]] = []
 
     def fake_run(cmd, **kwargs):
@@ -459,7 +598,7 @@ def test_build_msix_package_invokes_makeappx_and_signing(tmp_path):
 
     with patch.object(package_mod, "OS", "Windows"), \
          patch.object(package_mod, "ROOT", tmp_path), \
-         patch.object(package_mod, "_MSIX_PACKAGE_NAME", "AOTRMediarecode"), \
+         patch.object(package_mod, "_MSIX_PACKAGE_NAME", "AOTRMuxiveo"), \
          patch.object(package_mod, "_stage_msix_layout", return_value=layout_dir), \
          patch.object(package_mod, "_ensure_windows_sdk_tool", return_value="C:\\sdk\\makeappx.exe"), \
          patch.object(package_mod, "_sign_msix_package") as mock_sign, \
@@ -481,7 +620,7 @@ def test_build_msix_package_invokes_makeappx_and_signing(tmp_path):
 
 
 def test_build_macos_dmg_retries_hdiutil_create(tmp_path):
-    app_path = tmp_path / "dist" / "Mediarecode.app"
+    app_path = tmp_path / "dist" / "Muxiveo.app"
     contents = app_path / "Contents"
     contents.mkdir(parents=True)
     (contents / "Info.plist").write_text("plist", encoding="utf-8")
@@ -509,69 +648,85 @@ def test_build_macos_dmg_retries_hdiutil_create(tmp_path):
 
     create_commands = [cmd for cmd in commands if cmd[:2] == ["hdiutil", "create"]]
     assert len(create_commands) == 2
-    assert result == tmp_path / "dist" / "Mediarecode-1.2.3.dmg"
+    assert result == tmp_path / "dist" / "Muxiveo-1.2.3.dmg"
     assert result.read_text(encoding="utf-8") == "dmg"
     assert not (tmp_path / "dist" / "dmg_staging").exists()
     mock_sleep.assert_called_once_with(2)
 
 
+def test_patch_macos_info_plist_uses_lowercase_bundle_executable(tmp_path):
+    app_path = tmp_path / "dist" / "Muxiveo.app"
+    plist_path = app_path / "Contents" / "Info.plist"
+    plist_path.parent.mkdir(parents=True)
+    with plist_path.open("wb") as f:
+        plistlib.dump({}, f)
+
+    package_mod._patch_macos_info_plist(app_path, version_tag="1.2.3")
+
+    with plist_path.open("rb") as f:
+        plist = plistlib.load(f)
+    assert plist["CFBundleName"] == "Muxiveo"
+    assert plist["CFBundleExecutable"] == "muxiveo"
+    assert plist["CFBundleShortVersionString"] == "1.2.3"
+
+
 def test_package_appimage_versioned_output_path_uses_app_version_by_default():
     with patch.object(package_appimage_mod, "APP_VERSION", "8.8.8"):
         output = package_appimage_mod._versioned_output_path(
-            Path("/tmp/Mediarecode-x86_64_allinc.AppImage"),
+            Path("/tmp/Muxiveo-x86_64_allinc.AppImage"),
             None,
         )
-    assert output.name == "Mediarecode-x86_64_allinc-8.8.8.AppImage"
+    assert output.name == "Muxiveo-x86_64_allinc-8.8.8.AppImage"
 
 
 def test_package_update_information_uses_github_release_pattern():
     with patch.object(package_mod, "_APPIMAGE_UPDATE_OWNER", "Hydro74000"), \
-         patch.object(package_mod, "_APPIMAGE_UPDATE_REPO", "mediarecode"), \
+         patch.object(package_mod, "_APPIMAGE_UPDATE_REPO", "Muxiveo"), \
          patch.object(package_mod, "_APPIMAGE_UPDATE_RELEASE", "latest"):
         assert package_mod._appimage_update_information("x86_64") == (
-            "gh-releases-zsync|Hydro74000|mediarecode|latest|Mediarecode-x86_64-*.AppImage.zsync"
+            "gh-releases-zsync|Hydro74000|Muxiveo|latest|Muxiveo-x86_64-*.AppImage.zsync"
         )
 
 
 def test_package_appimage_update_information_uses_github_release_pattern_for_allinc():
     with patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_OWNER", "Hydro74000"), \
-         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_REPO", "mediarecode"), \
+         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_REPO", "Muxiveo"), \
          patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_RELEASE", "latest"):
         assert package_appimage_mod._appimage_update_information("x86_64", allinc=True) == (
-            "gh-releases-zsync|Hydro74000|mediarecode|latest|Mediarecode-x86_64_allinc-*.AppImage.zsync"
+            "gh-releases-zsync|Hydro74000|Muxiveo|latest|Muxiveo-x86_64_allinc-*.AppImage.zsync"
         )
 
 
 def test_package_appimage_update_information_supports_latest_unstable_channel():
     with patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_OWNER", "Hydro74000"), \
-         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_REPO", "mediarecode"), \
+         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_REPO", "Muxiveo"), \
          patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_RELEASE", "latest-unstable"):
         assert package_appimage_mod._appimage_update_information(
             "x86_64",
             allinc=True,
             version_tag="latest-unstable",
         ) == (
-            "gh-releases-zsync|Hydro74000|mediarecode|latest-unstable|"
-            "Mediarecode-x86_64_allinc-latest-unstable.AppImage.zsync"
+            "gh-releases-zsync|Hydro74000|Muxiveo|latest-unstable|"
+            "Muxiveo-x86_64_allinc-latest-unstable.AppImage.zsync"
         )
 
 
 def test_package_appimage_update_information_auto_reuses_latest_channel_from_version_tag():
     with patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_OWNER", "Hydro74000"), \
-         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_REPO", "mediarecode"), \
+         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_REPO", "Muxiveo"), \
          patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_RELEASE", "latest"):
         assert package_appimage_mod._appimage_update_information(
             "x86_64",
             allinc=True,
             version_tag="latest-unstable",
         ) == (
-            "gh-releases-zsync|Hydro74000|mediarecode|latest-unstable|"
-            "Mediarecode-x86_64_allinc-latest-unstable.AppImage.zsync"
+            "gh-releases-zsync|Hydro74000|Muxiveo|latest-unstable|"
+            "Muxiveo-x86_64_allinc-latest-unstable.AppImage.zsync"
         )
 
 
 def test_package_build_appimage_sets_update_information_env(tmp_path):
-    appdir = tmp_path / "Mediarecode.AppDir"
+    appdir = tmp_path / "Muxiveo.AppDir"
     appdir.mkdir(parents=True, exist_ok=True)
     appimagetool = tmp_path / "appimagetool"
     appimagetool.write_text("", encoding="utf-8")
@@ -590,17 +745,17 @@ def test_package_build_appimage_sets_update_information_env(tmp_path):
          patch.object(package_mod, "_ensure_appimagetool", return_value=appimagetool), \
          patch.object(package_mod, "_run", side_effect=fake_run), \
          patch.object(package_mod, "_APPIMAGE_UPDATE_OWNER", "Hydro74000"), \
-         patch.object(package_mod, "_APPIMAGE_UPDATE_REPO", "mediarecode"), \
+         patch.object(package_mod, "_APPIMAGE_UPDATE_REPO", "Muxiveo"), \
          patch.object(package_mod, "_APPIMAGE_UPDATE_RELEASE", "latest"):
         package_mod._build_appimage(appdir, version_tag="1.2.3")
 
     assert captured_env["UPDATE_INFORMATION"] == (
-        "gh-releases-zsync|Hydro74000|mediarecode|latest|Mediarecode-x86_64-*.AppImage.zsync"
+        "gh-releases-zsync|Hydro74000|Muxiveo|latest|Muxiveo-x86_64-*.AppImage.zsync"
     )
 
 
 def test_package_appimage_build_appimage_sets_update_information_env(tmp_path):
-    appdir = tmp_path / "Mediarecode.AppDir"
+    appdir = tmp_path / "Muxiveo.AppDir"
     appdir.mkdir(parents=True, exist_ok=True)
     appimagetool = tmp_path / "appimagetool"
     appimagetool.write_text("", encoding="utf-8")
@@ -618,7 +773,7 @@ def test_package_appimage_build_appimage_sets_update_information_env(tmp_path):
     with patch.object(package_appimage_mod, "ROOT", tmp_path), \
          patch.object(package_appimage_mod, "run", side_effect=fake_run), \
          patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_OWNER", "Hydro74000"), \
-         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_REPO", "mediarecode"), \
+         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_REPO", "Muxiveo"), \
          patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_RELEASE", "latest"):
         package_appimage_mod.build_appimage(
             appimagetool=appimagetool,
@@ -629,12 +784,12 @@ def test_package_appimage_build_appimage_sets_update_information_env(tmp_path):
         )
 
     assert captured_env["UPDATE_INFORMATION"] == (
-        "gh-releases-zsync|Hydro74000|mediarecode|latest|Mediarecode-x86_64_allinc-*.AppImage.zsync"
+        "gh-releases-zsync|Hydro74000|Muxiveo|latest|Muxiveo-x86_64_allinc-*.AppImage.zsync"
     )
 
 
 def test_package_appimage_build_appimage_sets_reuse_update_information_env(tmp_path):
-    appdir = tmp_path / "Mediarecode.AppDir"
+    appdir = tmp_path / "Muxiveo.AppDir"
     appdir.mkdir(parents=True, exist_ok=True)
     appimagetool = tmp_path / "appimagetool"
     appimagetool.write_text("", encoding="utf-8")
@@ -652,7 +807,7 @@ def test_package_appimage_build_appimage_sets_reuse_update_information_env(tmp_p
     with patch.object(package_appimage_mod, "ROOT", tmp_path), \
          patch.object(package_appimage_mod, "run", side_effect=fake_run), \
          patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_OWNER", "Hydro74000"), \
-         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_REPO", "mediarecode"), \
+         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_REPO", "Muxiveo"), \
          patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_RELEASE", "latest"):
         package_appimage_mod.build_appimage(
             appimagetool=appimagetool,
@@ -663,6 +818,6 @@ def test_package_appimage_build_appimage_sets_reuse_update_information_env(tmp_p
         )
 
     assert captured_env["UPDATE_INFORMATION"] == (
-        "gh-releases-zsync|Hydro74000|mediarecode|latest-unstable|"
-        "Mediarecode-x86_64_allinc-latest-unstable.AppImage.zsync"
+        "gh-releases-zsync|Hydro74000|Muxiveo|latest-unstable|"
+        "Muxiveo-x86_64_allinc-latest-unstable.AppImage.zsync"
     )

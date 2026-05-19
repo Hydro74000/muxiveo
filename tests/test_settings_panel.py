@@ -329,6 +329,57 @@ def test_settings_panel_writes_ui_scale_percent_to_ini(tmp_path, qt_app):
         assert cfg.ui_scale_percent == 130
 
 
+def test_settings_panel_writes_sync_rewrite_enabled_to_ini(tmp_path, qt_app):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[sync]\nrewrite_enabled = false\n", encoding="utf-8")
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path):
+        mock_qs.return_value = _mock_qsettings()
+        cfg = AppConfig()
+
+        panel = SettingsPanel(cfg)
+        checkbox = _field_widget(panel, "sync", "rewrite_enabled")
+        assert checkbox.isChecked() is False
+        checkbox.setChecked(True)
+        panel._on_save_clicked()
+
+        assert "rewrite_enabled = true" in ini_path.read_text(encoding="utf-8")
+        assert cfg.sync_rewrite_enabled is True
+
+
+def test_settings_panel_writes_advanced_audio_sync_rewrite_and_tooltip(tmp_path, qt_app):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[sync]\nadvanced_audio_rewrite_enabled = false\n", encoding="utf-8")
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path):
+        mock_qs.return_value = _mock_qsettings()
+        cfg = AppConfig()
+
+        panel = SettingsPanel(cfg)
+        checkbox = _field_widget(panel, "sync", "advanced_audio_rewrite_enabled")
+        assert checkbox.isChecked() is False
+        assert "TrueHD/MLP" in checkbox.toolTip()
+        assert "Atmos/DTS:X" in checkbox.toolTip()
+        checkbox.setChecked(True)
+        panel._on_save_clicked()
+
+        content = ini_path.read_text(encoding="utf-8")
+        assert "advanced_audio_rewrite_enabled = true" in content
+        assert cfg.sync_advanced_audio_rewrite_enabled is True
+
+
 def test_settings_panel_does_not_expose_legacy_audio_encoding_settings(tmp_path, qt_app):
     import core.config as cfg_mod
     from core.config import AppConfig

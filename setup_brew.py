@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Mediarecode Homebrew post-install helper.
+Muxiveo Homebrew post-install helper.
 
 This script manages user-scoped desktop integration that does not belong inside
 the Homebrew prefix:
@@ -22,9 +22,9 @@ import traceback
 from pathlib import Path
 
 
-ICON_PNG_BASE64 = "__MEDIARECODE_ICON_PNG_BASE64__"
-DESKTOP_MIME_TYPES = "__MEDIARECODE_DESKTOP_MIME_TYPES__"
-APP_NAME = "mediarecode"
+ICON_PNG_BASE64 = "__MUXIVEO_ICON_PNG_BASE64__"
+DESKTOP_MIME_TYPES = "__MUXIVEO_DESKTOP_MIME_TYPES__"
+APP_NAME = "Muxiveo"
 
 
 def _state_log_path() -> Path:
@@ -71,32 +71,32 @@ def _write_binary(path: Path, payload: bytes) -> None:
 def _linux_desktop_file(opt_bin: Path) -> str:
     return (
         "[Desktop Entry]\n"
-        "Name=Mediarecode\n"
+        "Name=Muxiveo\n"
         "Comment=MKV/MP4 workflow - DoVi, HDR10+, encoding\n"
-        f"Exec={opt_bin / 'mediarecode'} %F\n"
-        f"TryExec={opt_bin / 'mediarecode'}\n"
-        "Icon=mediarecode\n"
+        f"Exec={opt_bin / 'muxiveo'} %F\n"
+        f"TryExec={opt_bin / 'muxiveo'}\n"
+        "Icon=Muxiveo\n"
         "Type=Application\n"
         "Categories=AudioVideo;Video;\n"
         f"MimeType={DESKTOP_MIME_TYPES}\n"
         "Keywords=video;encode;remux;hdr;dolby vision;dovi;media;\n"
         "Terminal=false\n"
         "StartupNotify=true\n"
-        "StartupWMClass=Mediarecode\n"
+        "StartupWMClass=Muxiveo\n"
     )
 
 
 def install_linux_shortcut(opt_bin: Path, opt_share: Path) -> None:
     icon_dir = opt_share / "icons" / "hicolor" / "256x256" / "apps"
-    icon_path = icon_dir / "mediarecode.png"
+    icon_path = icon_dir / "Muxiveo.png"
     icon_bytes = base64.b64decode(ICON_PNG_BASE64)
     _write_binary(icon_path, icon_bytes)
 
     data_home = _user_data_home()
-    user_icon = data_home / "icons" / "hicolor" / "256x256" / "apps" / "mediarecode.png"
+    user_icon = data_home / "icons" / "hicolor" / "256x256" / "apps" / "Muxiveo.png"
     _write_binary(user_icon, icon_bytes)
 
-    desktop_file = data_home / "applications" / "mediarecode.desktop"
+    desktop_file = data_home / "applications" / "Muxiveo.desktop"
     _write_text(desktop_file, _linux_desktop_file(opt_bin))
     _log(f"desktop-file={desktop_file}")
     _log(f"user-icon={user_icon}")
@@ -139,8 +139,8 @@ def install_linux_shortcut(opt_bin: Path, opt_share: Path) -> None:
 def install_macos_link(opt_prefix: Path) -> None:
     apps_dir = Path.home() / "Applications"
     apps_dir.mkdir(parents=True, exist_ok=True)
-    app_link = apps_dir / "Mediarecode.app"
-    app_target = opt_prefix / "Mediarecode.app"
+    app_link = apps_dir / "Muxiveo.app"
+    app_target = opt_prefix / "Muxiveo.app"
     if app_link.is_symlink() or app_link.exists():
         return
     try:
@@ -151,9 +151,9 @@ def install_macos_link(opt_prefix: Path) -> None:
 
 def cleanup_shortcuts() -> None:
     data_home = _user_data_home()
-    desktop_file = data_home / "applications" / "mediarecode.desktop"
-    user_icon = data_home / "icons" / "hicolor" / "256x256" / "apps" / "mediarecode.png"
-    app_link = Path.home() / "Applications" / "Mediarecode.app"
+    desktop_file = data_home / "applications" / "Muxiveo.desktop"
+    user_icon = data_home / "icons" / "hicolor" / "256x256" / "apps" / "Muxiveo.png"
+    app_link = Path.home() / "Applications" / "Muxiveo.app"
     log_path = _state_log_path()
     for path in (desktop_file, user_icon, app_link, log_path):
         try:
@@ -165,7 +165,7 @@ def cleanup_shortcuts() -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Mediarecode Homebrew setup helper.")
+    parser = argparse.ArgumentParser(description="Muxiveo Homebrew setup helper.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     post_install = subparsers.add_parser("post-install")

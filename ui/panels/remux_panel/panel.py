@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import copy
+import json
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, Signal
 from PySide6.QtGui import QDropEvent, QFont
 from PySide6.QtWidgets import (
     QComboBox,
@@ -14,6 +17,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLayout,
     QLineEdit,
@@ -32,9 +36,17 @@ from core.file_types import is_accepted
 from core.i18n import apply_translations, translate_text
 from core.matroska_attachment_extractor import extract_matroska_attachment_bytes
 from core.inspector import AttachmentInfo, ChapterEntry, FileInfo
+from core.profiles.decision import DecisionProfileManager, apply_decision_profile as apply_decision_profile_v1
+from core.profiles.selectors import remux_config_to_exact_job
 from core.runner import TaskSignals, ToolRunner
 from core.workflows.remux import RemuxWorkflow
 from core.workflows.audio_sync import AudioSyncTrack, AudioSyncWorkflow
+from core.workflows.common.ffmpeg_runtime import ffmpeg_progress_args
+from core.workflows.common.sync_rewrite import (
+    SYNC_REWRITE_MODE_OFFSET,
+    normalized_sync_rewrite_mode,
+    ui_sync_rewrite_can_toggle,
+)
 from core.workflows.remux_models import (
     RemuxConfig,
     SourceInput,
@@ -51,12 +63,14 @@ from ui.panels.remux_panel.theme import (
     _secondary_button,
     _section_label,
     _separator,
+    _x_icon,
 )
 from ui.design_system import font_px as _font_px, scale as _scale
 from ui.panels.remux_panel.widgets.attachments import _AttachmentPanel
 from ui.panels.remux_panel.widgets.chapters import _ChapterPanel
 from ui.panels.remux_panel.widgets.file_list import _FileListWidget
 from ui.panels.remux_panel.widgets.track_table import _TrackTable
+from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
 
 
 class _AudioSyncReferenceDialog(QDialog):
@@ -70,8 +84,8 @@ class _AudioSyncReferenceDialog(QDialog):
         self.setWindowTitle(translate_text("Source de référence"))
         self.setModal(True)
         self._combo = QComboBox()
-        for label, entry in choices:
-            self._combo.addItem(label, entry)
+        for choice_label, entry in choices:
+            self._combo.addItem(choice_label, entry)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(_scale(18), _scale(16), _scale(18), _scale(16))
@@ -89,8 +103,8 @@ class _AudioSyncReferenceDialog(QDialog):
             }}
         """)
 
-        label = QLabel(translate_text("Choisir la source audio qui servira de référence."))
-        root.addWidget(label)
+        prompt_label = QLabel(translate_text("Choisir la source audio qui servira de référence."))
+        root.addWidget(prompt_label)
         root.addWidget(self._combo)
 
         buttons = QDialogButtonBox(
@@ -112,6 +126,9 @@ class RemuxPanel(QWidget):
     Signaux :
         log_message(level: str, message: str)
         tool_output(label: str, line: str)
+        extract_started(TaskSignals, dict) — extraction de piste lancée depuis le menu contextuel
+        audio_sync_started(dict) — synchronisation audio lancée depuis le tableau des pistes
+        audio_sync_finished(bool, dict) — synchronisation audio terminée
         video_tracks_changed(list)  — pistes vidéo activées (FileInfo, TrackEntry, couleur)
         audio_tracks_changed(list)  — pistes audio activées (AudioTrack, couleur, Path source)
         ready_changed(bool)         — True quand au moins un fichier est inspecté
@@ -119,6 +136,9 @@ class RemuxPanel(QWidget):
 
     log_message = Signal(str, str)
     tool_output = Signal(str, str)
+    extract_started = Signal(object, object)
+    audio_sync_started = Signal(object)
+    audio_sync_finished = Signal(bool, object)
 
     _inspection_done = Signal(str, object)
     _inspection_error = Signal(str, str)
@@ -146,7 +166,17 @@ class RemuxPanel(QWidget):
         self._source_files: list[SourceFile] = []
         self._source_names: dict[str, str] = {}
         self._source_colors: dict[str, str] = {}
+        self._source_sync_offsets_ms: dict[str, int] = {}
+        self._auto_sync_entry_ids: set[str] = set()
+        self._chapter_sync_cancelled_source_ids: set[str] = set()
         self._color_index: int = 0
+        self._file_list: _FileListWidget
+        self._track_table: _TrackTable
+        self._file_title_edit: QLineEdit
+        self._attachment_panel: _AttachmentPanel
+        self._chapter_panel: _ChapterPanel
+        self._output_edit: QLineEdit
+        self._cmd_preview: QPlainTextEdit
 
         self._workflow.log_message.connect(
             self.log_message, Qt.ConnectionType.QueuedConnection
@@ -165,6 +195,10 @@ class RemuxPanel(QWidget):
         )
 
         self._build_ui()
+        self._track_table.set_sync_rewrite_enabled(
+            self._config.sync_rewrite_enabled,
+            advanced_audio_enabled=self._config.sync_advanced_audio_rewrite_enabled,
+        )
         apply_translations(self)
 
     def _make_workflow(self) -> RemuxWorkflow:
@@ -175,6 +209,10 @@ class RemuxPanel(QWidget):
             writing_application=self._writing_application,
             generate_nfo=self._config.generate_nfo,
             mediainfo_bin=self._config.tool_mediainfo,
+            sync_rewrite_enabled=self._config.sync_rewrite_enabled,
+            sync_advanced_audio_rewrite_enabled=self._config.sync_advanced_audio_rewrite_enabled,
+            aac_bitrate_per_channel_kbps=self._config.aac_bitrate_per_channel_kbps,
+            eac3_bitrate_per_channel_kbps=self._config.eac3_bitrate_per_channel_kbps,
         )
 
     def _recreate_workflow(self) -> None:
@@ -252,6 +290,16 @@ class RemuxPanel(QWidget):
         track_header.addWidget(btn_all)
         track_header.addWidget(btn_none)
 
+        export_profile_btn = _secondary_button("Exporter JSON CLI")
+        export_profile_btn.clicked.connect(self._export_exact_json)
+        save_profile_btn = _secondary_button("Éditer profil")
+        save_profile_btn.clicked.connect(self._save_decision_profile)
+        apply_profile_btn = _secondary_button("Appliquer profil")
+        apply_profile_btn.clicked.connect(self._apply_decision_profile_dialog)
+        track_header.addWidget(export_profile_btn)
+        track_header.addWidget(save_profile_btn)
+        track_header.addWidget(apply_profile_btn)
+
         self._filter_btn = QPushButton("Sélectionnées seulement")
         self._filter_btn.setCheckable(True)
         self._filter_btn.setFixedHeight(_scale(28))
@@ -283,15 +331,27 @@ class RemuxPanel(QWidget):
         track_header.addWidget(self._filter_btn)
         content_layout.addLayout(track_header)
 
+        hint_row = QHBoxLayout()
+        hint_row.setSpacing(_scale(8))
         hint = QLabel("Glisser-déposer les lignes pour réordonner · Double-clic pour éditer Langue / Titre")
         hint.setStyleSheet(f"color: {_C.TEXT_DIM}; font-size: {_font_px(10)}px; background: transparent;")
-        content_layout.addWidget(hint)
+        hint_row.addWidget(hint)
+        hint_row.addStretch()
+        self._global_sync_cancel_btn = _secondary_button(translate_text("Annuler toutes les synchros"))
+        self._global_sync_cancel_btn.setIcon(_x_icon(_C.ERROR, 12))
+        self._global_sync_cancel_btn.setIconSize(QSize(_scale(12), _scale(12)))
+        self._global_sync_cancel_btn.clicked.connect(self._on_global_sync_cancel_requested)
+        self._global_sync_cancel_btn.setVisible(False)
+        hint_row.addWidget(self._global_sync_cancel_btn)
+        content_layout.addLayout(hint_row)
 
         self._track_table = _TrackTable()
         self._track_table.itemChanged.connect(self._on_table_changed)
         self._track_table.order_changed.connect(self._on_track_order_changed)
         self._track_table.extract_requested.connect(self._on_extract_track)
         self._track_table.audio_sync_requested.connect(self._on_audio_sync_requested)
+        self._track_table.auto_sync_cancel_requested.connect(self._on_auto_sync_cancel_requested)
+        self._track_table.sync_rewrite_toggle_requested.connect(self._on_sync_rewrite_toggle_requested)
         content_layout.addWidget(self._track_table)
 
         content_layout.addWidget(_separator())
@@ -324,6 +384,7 @@ class RemuxPanel(QWidget):
 
         self._chapter_panel = _ChapterPanel()
         self._chapter_panel.changed.connect(self._on_chapters_changed)
+        self._chapter_panel.sync_cancel_requested.connect(self._on_chapter_sync_cancel_requested)
         content_layout.addWidget(self._chapter_panel)
 
         content_layout.addWidget(_separator())
@@ -381,7 +442,7 @@ class RemuxPanel(QWidget):
     def _on_add_files(self, paths: list[str]) -> None:
         inspection.on_add_files(self, paths)
 
-    def add_sources(self, paths: list[str | Path]) -> None:
+    def add_sources(self, paths: Sequence[str | Path]) -> None:
         """Ajoute des fichiers source depuis l'extérieur du panneau."""
         normalized = [str(Path(path)) for path in paths if str(path).strip()]
         if not normalized:
@@ -538,12 +599,14 @@ class RemuxPanel(QWidget):
             self._cmd_preview.setPlainText("(erreur de construction de la commande)")
 
     def _on_table_changed(self, _item: QTableWidgetItem | None = None) -> None:
+        self._prune_auto_sync_entry_ids()
         self._refresh_audio_sync_buttons()
         self._track_table.refresh_filter()
         self._rebuild_preview()
         self._emit_signals()
 
     def _on_track_order_changed(self) -> None:
+        self._prune_auto_sync_entry_ids()
         self._refresh_audio_sync_buttons()
         self._rebuild_preview()
         self._emit_signals()
@@ -563,12 +626,300 @@ class RemuxPanel(QWidget):
     def collect_config(self) -> RemuxConfig | None:
         return self._current_config()
 
+    def _decision_profile_manager(self) -> DecisionProfileManager:
+        return DecisionProfileManager(self._config.profiles_dir / "decision")
+
+    def _current_exact_job(self, *, name: str = "") -> dict | None:
+        config = self._current_config()
+        if config is None:
+            QMessageBox.warning(
+                self,
+                translate_text("Exporter JSON CLI"),
+                translate_text("Aucune configuration complète à exporter."),
+            )
+            return None
+        return remux_config_to_exact_job(config, name=name)
+
+    def _current_profile_config(self) -> RemuxConfig | None:
+        if not self._has_ready_files():
+            QMessageBox.warning(
+                self,
+                translate_text("Profils"),
+                translate_text("Aucune source prête pour créer un profil."),
+            )
+            return None
+        all_tracks = self._track_table.current_tracks()
+        if not all_tracks:
+            QMessageBox.warning(
+                self,
+                translate_text("Profils"),
+                translate_text("Aucune piste disponible pour créer un profil."),
+            )
+            return None
+        id_to_index = {sf.id: index for index, sf in enumerate(self._source_files)}
+        sources: list[SourceInput] = []
+        for index, source_file in enumerate(self._source_files):
+            if source_file.info is None:
+                continue
+            source_tracks = [track for track in all_tracks if track.file_id == source_file.id]
+            if not source_tracks:
+                source_tracks = source_file.tracks
+            sources.append(
+                SourceInput(
+                    path=source_file.path,
+                    file_index=index,
+                    tracks=source_tracks,
+                    attachment_count=len(source_file.info.attachments),
+                    has_chapters=bool(source_file.info.chapters and source_file.info.chapters.entries),
+                )
+            )
+        if not sources:
+            return None
+        track_order: list[tuple[int, int] | tuple[int, int, str]] = [
+            (id_to_index[track.file_id], track.mkv_tid, track.entry_id)
+            for track in all_tracks
+            if track.enabled and track.file_id in id_to_index
+        ]
+        return RemuxConfig(
+            sources=sources,
+            output=Path("profile-preview.mkv"),
+            track_order=track_order,
+            keep_chapters=True,
+            work_dir=self._config.work_dir,
+        )
+
+    def _export_exact_json(self) -> None:
+        job = self._current_exact_job()
+        if job is None:
+            return
+        default = self._output_edit.text().strip()
+        if default:
+            default_path = Path(default).with_suffix(".exact-job.json")
+        elif self._source_files:
+            default_path = self._source_files[0].path.with_suffix(".exact-job.json")
+        else:
+            default_path = self._config.config_dir / "template.exact-job.json"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            translate_text("Exporter JSON CLI"),
+            str(default_path),
+            translate_text("JSON (*.json);;Tous les fichiers (*)"),
+        )
+        if not path:
+            return
+        try:
+            Path(path).write_text(
+                json.dumps(job, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                translate_text("Export impossible"),
+                translate_text("Impossible d'écrire le fichier JSON : {err}", err=str(exc)),
+            )
+            return
+        self.log_message.emit("OK", translate_text("Template CLI exporté : {path}", path=path))
+
+    def _save_decision_profile(self) -> None:
+        config = self._current_profile_config()
+        current_tracks = self._track_table.current_tracks()
+        source_index_by_file_id = {sf.id: index for index, sf in enumerate(self._source_files)}
+        dialog = DecisionProfileEditorDialog(
+            manager=self._decision_profile_manager(),
+            current_config=config,
+            current_tracks=current_tracks,
+            source_index_by_file_id=source_index_by_file_id,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.log_message.emit("OK", translate_text("Profil sauvegardé : {name}", name=dialog.profile().get("name", "")))
+
+    def _apply_decision_profile_dialog(self) -> None:
+        manager = self._decision_profile_manager()
+        names = manager.names()
+        if not names:
+            QMessageBox.information(
+                self,
+                translate_text("Profils"),
+                translate_text("Aucun profil enregistré."),
+            )
+            return
+        name, ok = QInputDialog.getItem(
+            self,
+            translate_text("Appliquer profil"),
+            translate_text("Profil :"),
+            names,
+            0,
+            False,
+        )
+        if not ok or not name:
+            return
+        profile = manager.load(name)
+        if not profile:
+            QMessageBox.warning(
+                self,
+                translate_text("Profil introuvable"),
+                translate_text("Impossible de charger le profil sélectionné."),
+            )
+            return
+        try:
+            tracks, report = self._build_decision_profile_result(profile)
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                translate_text("Profil incompatible"),
+                str(exc),
+            )
+            return
+        if not self._confirm_decision_profile_application(name, tracks, report):
+            return
+        self._commit_decision_profile_result(tracks)
+        self.log_message.emit("OK", translate_text("Profil appliqué : {name}", name=name))
+
+    def _apply_decision_profile(self, profile: dict) -> None:
+        tracks, _report = self._build_decision_profile_result(profile)
+        self._commit_decision_profile_result(tracks)
+
+    def _build_decision_profile_result(self, profile: dict) -> tuple[list[TrackEntry], dict]:
+        all_tracks = copy.deepcopy(self._track_table.current_tracks())
+        if not all_tracks:
+            return [], {"valid": True, "applied_rules": 0}
+        source_index_by_file_id = {sf.id: index for index, sf in enumerate(self._source_files)}
+        result = apply_decision_profile_v1(
+            profile,
+            all_tracks,
+            source_index_by_file_id=source_index_by_file_id,
+        )
+        return result.tracks, result.report
+
+    def _commit_decision_profile_result(self, tracks: list[TrackEntry]) -> None:
+        by_file_id: dict[str, list[TrackEntry]] = {}
+        for track in tracks:
+            by_file_id.setdefault(track.file_id, []).append(track)
+        for source in self._source_files:
+            if source.id in by_file_id:
+                source.tracks = by_file_id[source.id]
+        self._replace_track_table_tracks(tracks)
+        self._refresh_audio_sync_buttons()
+        self._track_table.refresh_filter()
+        self._rebuild_preview()
+        self._emit_signals()
+
+    def _confirm_decision_profile_application(
+        self,
+        name: str,
+        tracks: list[TrackEntry],
+        report: dict,
+    ) -> bool:
+        before_tracks = self._track_table.current_tracks()
+        before_by_id = {track.entry_id: track for track in before_tracks}
+        before_order = [track.entry_id for track in before_tracks]
+        after_order = [track.entry_id for track in tracks]
+        changed_tracks = 0
+        for track in tracks:
+            before = before_by_id.get(track.entry_id)
+            if before is None:
+                changed_tracks += 1
+                continue
+            if (
+                before.enabled != track.enabled
+                or before.language != track.language
+                or before.title != track.title
+                or before.flag_default != track.flag_default
+                or before.flag_forced != track.flag_forced
+                or before.flag_enabled != track.flag_enabled
+                or before.flag_original != track.flag_original
+                or before.flag_commentary != track.flag_commentary
+                or before.flag_hearing_impaired != track.flag_hearing_impaired
+                or before.flag_visual_impaired != track.flag_visual_impaired
+                or before.time_shift_ms != track.time_shift_ms
+            ):
+                changed_tracks += 1
+
+        lines = [
+            translate_text("Profil : {name}", name=name),
+            translate_text("Pistes modifiées : {count}", count=changed_tracks),
+            translate_text("Règles appliquées : {count}", count=int(report.get("applied_rules", 0) or 0)),
+        ]
+        if before_order != after_order:
+            lines.append(translate_text("Ordre des pistes modifié."))
+        created_count = len(report.get("created_variants", []) if isinstance(report.get("created_variants"), list) else [])
+        if created_count:
+            lines.append(translate_text("Pistes audio créées : {count}", count=created_count))
+        missing_count = len(report.get("missing_rules", []) if isinstance(report.get("missing_rules"), list) else [])
+        if missing_count:
+            lines.append(translate_text("Règles sans correspondance : {count}", count=missing_count))
+        ambiguous_count = len(report.get("ambiguous_matches", report.get("ambiguous_rules", [])) if isinstance(report.get("ambiguous_matches", report.get("ambiguous_rules", [])), list) else [])
+        if ambiguous_count:
+            lines.append(translate_text("Règles ambiguës ignorées : {count}", count=ambiguous_count))
+        conflict_count = len(report.get("conflicts", []) if isinstance(report.get("conflicts"), list) else [])
+        if conflict_count:
+            lines.append(translate_text("Conflits non résolus : {count}", count=conflict_count))
+        resolved_count = len(report.get("resolved_writes", []) if isinstance(report.get("resolved_writes"), list) else [])
+        if resolved_count:
+            lines.append(translate_text("Écritures résolues par mode/priorité : {count}", count=resolved_count))
+        skipped_count = len(report.get("skipped_writes", []) if isinstance(report.get("skipped_writes"), list) else [])
+        if skipped_count:
+            lines.append(translate_text("Écritures ignorées par priorité : {count}", count=skipped_count))
+        if report.get("legacy_converted"):
+            lines.append(translate_text("Ancien profil converti automatiquement. Resauvegardez-le pour stabiliser le format."))
+        if changed_tracks == 0 and before_order == after_order and not created_count and not missing_count and not ambiguous_count and not conflict_count and not resolved_count and not skipped_count:
+            lines.append(translate_text("Aucun changement détecté."))
+
+        message = "\n".join(lines)
+        if conflict_count:
+            QMessageBox.warning(
+                self,
+                translate_text("Aperçu du profil"),
+                message + "\n\n" + translate_text("Corrigez les priorités ou les règles avant application."),
+            )
+            return False
+        message += "\n\n" + translate_text("Appliquer ce profil ?")
+        reply = QMessageBox.question(
+            self,
+            translate_text("Aperçu du profil"),
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes,
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
+    def _replace_track_table_tracks(self, tracks: list[TrackEntry]) -> None:
+        self._auto_sync_entry_ids.intersection_update({track.entry_id for track in tracks})
+        self._track_table.set_auto_sync_cancelable_entries(self._auto_sync_entry_ids)
+        self._track_table.blockSignals(True)
+        try:
+            self._track_table.setRowCount(0)
+            self._track_table._prev_lang.clear()
+            for entry in tracks:
+                row = self._track_table.rowCount()
+                self._track_table.insertRow(row)
+                source_color = self._source_colors.get(entry.file_id, _C.BORDER)
+                self._track_table._fill_row(row, entry, source_color)
+        finally:
+            self._track_table.blockSignals(False)
+            self._track_table._adjust_height()
+
     def refresh_runtime_settings(self) -> None:
         self._workflow.set_ffmpeg_bin(self._config.tool_ffmpeg)
         self._workflow.set_ffprobe_bin(self._config.tool_ffprobe)
         self._workflow.set_ffmpeg_threads(self._config.ffmpeg_threads)
         self._workflow.set_generate_nfo(self._config.generate_nfo)
         self._workflow.set_mediainfo_bin(self._config.tool_mediainfo)
+        self._workflow.set_sync_rewrite_enabled(self._config.sync_rewrite_enabled)
+        self._workflow.set_sync_advanced_audio_rewrite_enabled(
+            self._config.sync_advanced_audio_rewrite_enabled
+        )
+        self._workflow.set_sync_rewrite_audio_bitrates(
+            aac_bitrate_per_channel_kbps=self._config.aac_bitrate_per_channel_kbps,
+            eac3_bitrate_per_channel_kbps=self._config.eac3_bitrate_per_channel_kbps,
+        )
+        self._track_table.set_sync_rewrite_enabled(
+            self._config.sync_rewrite_enabled,
+            advanced_audio_enabled=self._config.sync_advanced_audio_rewrite_enabled,
+        )
         self._rebuild_preview()
 
     def update_audio_track_meta(
@@ -716,14 +1067,109 @@ class RemuxPanel(QWidget):
     def _refresh_audio_sync_buttons(self) -> None:
         by_source = self._audio_entries_by_source()
         self._track_table.set_audio_sync_available(len(by_source) >= 2)
+        self._refresh_sync_action_buttons()
+
+    def _track_sync_counts(self) -> dict[str, int]:
+        counts = {"video": 0, "audio": 0, "subtitle": 0}
+        for entry in self._track_table.current_tracks():
+            if entry.track_type in counts and int(entry.time_shift_ms or 0) != 0:
+                counts[entry.track_type] += 1
+        return counts
+
+    def _source_has_chapters(self, source_index: int) -> bool:
+        if source_index < 0 or source_index >= len(self._source_files):
+            return False
+        source = self._source_files[source_index]
+        return bool(source.info and source.info.chapters and source.info.chapters.entries)
+
+    def _chapter_sync_is_active_for_index(self, source_index: int | None) -> bool:
+        return (
+            source_index is not None
+            and self._source_has_chapters(source_index)
+            and self._chapter_sync_offset_ms_for_index(source_index) != 0
+        )
+
+    def _any_chapter_sync_active(self) -> bool:
+        return any(
+            self._chapter_sync_is_active_for_index(index)
+            for index in range(len(self._source_files))
+        )
+
+    def _global_sync_tooltip(self, counts: dict[str, int], chapter_active: bool) -> str:
+        return (
+            "<html><body style='white-space:nowrap;'>"
+            "Synchro : "
+            f"<span style='color:{_C.TRACK_VIDEO}; font-weight:700;'>V</span>={counts['video']} "
+            f"<span style='color:{_C.TRACK_AUDIO}; font-weight:700;'>A</span>={counts['audio']} "
+            f"<span style='color:{_C.TRACK_SUBTITLE}; font-weight:700;'>S</span>={counts['subtitle']} "
+            f"<span style='color:{_C.TRACK_TAGS}; font-weight:700;'>C</span>={'Yes' if chapter_active else 'No'}"
+            "</body></html>"
+        )
+
+    def _refresh_sync_action_buttons(self) -> None:
+        if hasattr(self, "_track_table"):
+            self._track_table.set_auto_sync_cancelable_entries(self._auto_sync_entry_ids)
+        selected_source_index = (
+            self._chapter_panel.selected_source_index()
+            if hasattr(self, "_chapter_panel")
+            else None
+        )
+        chapter_active_for_selection = self._chapter_sync_is_active_for_index(selected_source_index)
+        if hasattr(self, "_chapter_panel"):
+            self._chapter_panel.set_sync_cancel_available(chapter_active_for_selection)
+
+        counts = self._track_sync_counts() if hasattr(self, "_track_table") else {"video": 0, "audio": 0, "subtitle": 0}
+        chapter_active = self._any_chapter_sync_active()
+        active = any(counts.values()) or chapter_active
+        if hasattr(self, "_global_sync_cancel_btn"):
+            self._global_sync_cancel_btn.setVisible(active)
+            self._global_sync_cancel_btn.setToolTip(self._global_sync_tooltip(counts, chapter_active))
+
+    def _on_sync_rewrite_toggle_requested(self, entry: TrackEntry) -> None:
+        if not ui_sync_rewrite_can_toggle(
+            entry,
+            enabled=self._config.sync_rewrite_enabled,
+            advanced_audio_enabled=self._config.sync_advanced_audio_rewrite_enabled,
+        ):
+            return
+        current = normalized_sync_rewrite_mode(entry.sync_rewrite_mode)
+        entry.sync_rewrite_mode = "" if current == SYNC_REWRITE_MODE_OFFSET else SYNC_REWRITE_MODE_OFFSET
+        self._track_table.refresh_entry_info(entry.entry_id)
+        self._rebuild_preview()
+        self._emit_signals()
+
+    def _prune_auto_sync_entry_ids(self) -> None:
+        active = {
+            entry.entry_id
+            for entry in self._track_table.current_tracks()
+            if entry.track_type in {"audio", "subtitle"} and int(entry.time_shift_ms or 0) != 0
+        }
+        if self._auto_sync_entry_ids.issubset(active):
+            return
+        self._auto_sync_entry_ids.intersection_update(active)
+        self._track_table.set_auto_sync_cancelable_entries(self._auto_sync_entry_ids)
 
     @staticmethod
-    def _looks_5_1_or_more(entry: TrackEntry) -> bool:
+    def _audio_sync_family(entry: TrackEntry) -> str | None:
         info = (entry.display_info or "").lower()
-        return "5.1" in info or "7.1" in info or "6 ch" in info or "8 ch" in info
+        if (
+            "5.1" in info or "7.1" in info or
+            "6 ch" in info or "8 ch" in info or
+            "6 channel" in info or "8 channel" in info
+        ):
+            return "surround"
+        if (
+            "stereo" in info or "2.0" in info or
+            "2 ch" in info or "2ch" in info or "2 channel" in info
+        ):
+            return "stereo"
+        return None
 
     def _audio_sync_reference_choices(self, target: TrackEntry) -> list[tuple[str, TrackEntry]]:
         choices: list[tuple[str, TrackEntry]] = []
+        target_family = self._audio_sync_family(target)
+        if target_family is None:
+            return choices
         seen_sources: set[str] = set()
         for sf in self._source_files:
             if sf.id == target.file_id or sf.id in seen_sources:
@@ -732,13 +1178,16 @@ class RemuxPanel(QWidget):
                 entry for entry in self._track_table.current_tracks()
                 if entry.file_id == sf.id
                 and entry.track_type == "audio"
-                and self._looks_5_1_or_more(entry)
+                and self._audio_sync_family(entry) == target_family
             ]
             if not candidates:
                 continue
             ref = candidates[0]
             title = f" - {ref.title}" if ref.title else ""
-            choices.append((f"{sf.path.name} | #{ref.mkv_tid} {ref.codec} {ref.display_info}{title}", ref))
+            choices.append((
+                f"{sf.path.name} | #{ref.mkv_tid} {ref.codec} {ref.display_info}{title}",
+                ref,
+            ))
             seen_sources.add(sf.id)
         return choices
 
@@ -748,10 +1197,239 @@ class RemuxPanel(QWidget):
             return None
         return AudioSyncTrack(source_path=source.path, stream_index=int(entry.mkv_tid))
 
+    def _source_index_for_file_id(self, file_id: str) -> int | None:
+        for index, source in enumerate(self._source_files):
+            if source.id == file_id:
+                return index
+        return None
+
+    def _source_sync_offset_ms_for_index(self, source_index: int | None) -> int:
+        if source_index is None or source_index < 0 or source_index >= len(self._source_files):
+            return 0
+        return int(self._source_sync_offsets_ms.get(self._source_files[source_index].id, 0) or 0)
+
+    def _chapter_sync_offset_ms_for_index(self, source_index: int | None) -> int:
+        if source_index is None or source_index < 0 or source_index >= len(self._source_files):
+            return 0
+        source_id = self._source_files[source_index].id
+        if source_id in self._chapter_sync_cancelled_source_ids:
+            return 0
+        return self._source_sync_offset_ms_for_index(source_index)
+
+    def _shift_chapter_entries(
+        self,
+        entries: list[ChapterEntry],
+        offset_ms: int,
+    ) -> list[ChapterEntry]:
+        delta_s = int(offset_ms or 0) / 1000.0
+        if abs(delta_s) < 0.0005:
+            return list(entries)
+        return [
+            ChapterEntry(
+                timecode_s=max(0.0, float(entry.timecode_s) + delta_s),
+                name=entry.name,
+            )
+            for entry in entries
+        ]
+
+    def _source_chapter_entries_with_offset(
+        self,
+        source_index: int,
+        offset_ms: int,
+    ) -> list[ChapterEntry]:
+        if source_index < 0 or source_index >= len(self._source_files):
+            return []
+        source = self._source_files[source_index]
+        if not source.info or not source.info.chapters or not source.info.chapters.entries:
+            return []
+        return self._shift_chapter_entries(
+            list(source.info.chapters.entries),
+            offset_ms,
+        )
+
+    def _chapter_entries_for_source(self, source_index: int) -> list[ChapterEntry]:
+        return self._source_chapter_entries_with_offset(
+            source_index,
+            self._chapter_sync_offset_ms_for_index(source_index),
+        )
+
+    @staticmethod
+    def _chapter_entries_equal(
+        left: list[ChapterEntry],
+        right: list[ChapterEntry],
+    ) -> bool:
+        if len(left) != len(right):
+            return False
+        return all(
+            abs(float(a.timecode_s) - float(b.timecode_s)) < 0.0005
+            and str(a.name or "") == str(b.name or "")
+            for a, b in zip(left, right, strict=True)
+        )
+
+    def _sync_selected_chapters_after_source_offset_change(
+        self,
+        source_index: int | None,
+        selected_source_index: int | None,
+        old_offset_ms: int,
+        new_offset_ms: int,
+    ) -> None:
+        if (
+            source_index is None
+            or selected_source_index != source_index
+            or old_offset_ms == new_offset_ms
+        ):
+            return
+
+        expected_old = self._source_chapter_entries_with_offset(source_index, old_offset_ms)
+        expected_new = self._source_chapter_entries_with_offset(source_index, new_offset_ms)
+        current = self._chapter_panel.get_chapters()
+        if self._chapter_entries_equal(current, expected_old):
+            self._chapter_panel.reset_chapters(expected_new)
+            return
+        self._chapter_panel.shift_timecodes((new_offset_ms - old_offset_ms) / 1000.0)
+
+    def _apply_time_shift_to_source_tracks(self, file_id: str, offset_ms: int) -> bool:
+        if not file_id:
+            return False
+        updated = False
+        for entry in self._track_table.current_tracks():
+            if entry.file_id != file_id or entry.track_type not in {"audio", "subtitle"}:
+                continue
+            if self._track_table.update_time_shift(entry.entry_id, int(offset_ms)):
+                updated = True
+        return updated
+
+    def _sync_entry_ids_for_file(self, file_id: str) -> set[str]:
+        if not file_id:
+            return set()
+        return {
+            entry.entry_id
+            for entry in self._track_table.current_tracks()
+            if entry.file_id == file_id and entry.track_type in {"audio", "subtitle"}
+        }
+
+    def _file_has_shifted_timeline_tracks(self, file_id: str) -> bool:
+        if not file_id:
+            return False
+        return any(
+            entry.file_id == file_id
+            and entry.track_type in {"audio", "subtitle"}
+            and int(entry.time_shift_ms or 0) != 0
+            for entry in self._track_table.current_tracks()
+        )
+
+    def _apply_source_sync_offset(
+        self,
+        file_id: str,
+        offset_ms: int,
+    ) -> bool:
+        if not file_id:
+            return False
+
+        offset_ms = int(offset_ms)
+        sync_entry_ids = self._sync_entry_ids_for_file(file_id)
+        source_index = self._source_index_for_file_id(file_id)
+        selected_source_index = self._chapter_panel.selected_source_index()
+        old_chapter_offset_ms = self._chapter_sync_offset_ms_for_index(source_index)
+        if offset_ms:
+            self._source_sync_offsets_ms[file_id] = offset_ms
+            self._chapter_sync_cancelled_source_ids.discard(file_id)
+            self._auto_sync_entry_ids.update(sync_entry_ids)
+        else:
+            self._source_sync_offsets_ms.pop(file_id, None)
+            self._chapter_sync_cancelled_source_ids.discard(file_id)
+            self._auto_sync_entry_ids.difference_update(sync_entry_ids)
+
+        updated = self._apply_time_shift_to_source_tracks(file_id, offset_ms)
+        self._update_chapters_from_sources()
+        new_chapter_offset_ms = self._chapter_sync_offset_ms_for_index(source_index)
+        self._sync_selected_chapters_after_source_offset_change(
+            source_index,
+            selected_source_index,
+            old_chapter_offset_ms,
+            new_chapter_offset_ms,
+        )
+        self._refresh_sync_action_buttons()
+        return updated or source_index is not None
+
+    def _on_auto_sync_cancel_requested(self, entry: TrackEntry) -> None:
+        if entry.track_type not in {"audio", "subtitle"}:
+            return
+        source_index = self._source_index_for_file_id(entry.file_id)
+        selected_source_index = self._chapter_panel.selected_source_index()
+        old_chapter_offset_ms = self._chapter_sync_offset_ms_for_index(source_index)
+        if not self._track_table.update_time_shift(entry.entry_id, 0):
+            return
+
+        self._auto_sync_entry_ids.discard(entry.entry_id)
+        if not self._file_has_shifted_timeline_tracks(entry.file_id):
+            self._source_sync_offsets_ms.pop(entry.file_id, None)
+            self._chapter_sync_cancelled_source_ids.discard(entry.file_id)
+            self._update_chapters_from_sources()
+            new_chapter_offset_ms = self._chapter_sync_offset_ms_for_index(source_index)
+            self._sync_selected_chapters_after_source_offset_change(
+                source_index,
+                selected_source_index,
+                old_chapter_offset_ms,
+                new_chapter_offset_ms,
+            )
+        self._refresh_sync_action_buttons()
+        self.log_message.emit(
+            "INFO",
+            translate_text(
+                "Synchronisation annulée pour la piste #{idx}.",
+                idx=entry.mkv_tid,
+            ),
+        )
+        self._rebuild_preview()
+        self._emit_signals()
+
+    def _on_chapter_sync_cancel_requested(self) -> None:
+        source_index = self._chapter_panel.selected_source_index()
+        if not self._chapter_sync_is_active_for_index(source_index):
+            return
+        assert source_index is not None
+        old_chapter_offset_ms = self._chapter_sync_offset_ms_for_index(source_index)
+        source_id = self._source_files[source_index].id
+        self._chapter_sync_cancelled_source_ids.add(source_id)
+        self._update_chapters_from_sources()
+        self._sync_selected_chapters_after_source_offset_change(
+            source_index,
+            source_index,
+            old_chapter_offset_ms,
+            0,
+        )
+        self._refresh_sync_action_buttons()
+        self.log_message.emit("INFO", translate_text("Synchronisation des chapitres annulée."))
+        self._rebuild_preview()
+        self._emit_signals()
+
+    def _on_global_sync_cancel_requested(self) -> None:
+        selected_source_index = self._chapter_panel.selected_source_index()
+        old_chapter_offset_ms = self._chapter_sync_offset_ms_for_index(selected_source_index)
+        for entry in self._track_table.current_tracks():
+            if int(entry.time_shift_ms or 0) != 0:
+                self._track_table.update_time_shift(entry.entry_id, 0)
+        self._source_sync_offsets_ms.clear()
+        self._auto_sync_entry_ids.clear()
+        self._chapter_sync_cancelled_source_ids.clear()
+        self._update_chapters_from_sources()
+        self._sync_selected_chapters_after_source_offset_change(
+            selected_source_index,
+            selected_source_index,
+            old_chapter_offset_ms,
+            0,
+        )
+        self._refresh_sync_action_buttons()
+        self.log_message.emit("INFO", translate_text("Toutes les synchronisations ont été annulées."))
+        self._rebuild_preview()
+        self._emit_signals()
+
     def _on_audio_sync_requested(self, entry: TrackEntry) -> None:
         if entry.track_type != "audio":
             return
-        if not self._looks_5_1_or_more(entry):
+        target_family = self._audio_sync_family(entry)
+        if target_family is None:
             self.log_message.emit("ERROR", "impossible d'utiliser la synchronisation améliorée")
             return
 
@@ -766,6 +1444,16 @@ class RemuxPanel(QWidget):
         reference_entry = dialog.selected_entry()
         if reference_entry is None:
             return
+        if target_family == "stereo":
+            QMessageBox.warning(
+                self,
+                translate_text("Synchronisation stéréo"),
+                translate_text(
+                    "La synchronisation stéréo n'est ni précise ni conseillée. "
+                    "Elle cherche de gros marqueurs sonores sur le même côté, "
+                    "mais le résultat doit être vérifié."
+                ),
+            )
 
         reference = self._audio_sync_track(reference_entry)
         target = self._audio_sync_track(entry)
@@ -781,6 +1469,13 @@ class RemuxPanel(QWidget):
                 reference=reference_entry.mkv_tid,
             ),
         )
+        self.audio_sync_started.emit({
+            "label": translate_text(
+                "Synchronisation audio améliorée : piste #{target} vs référence #{reference}…",
+                target=entry.mkv_tid,
+                reference=reference_entry.mkv_tid,
+            )
+        })
 
         target_entry_id = entry.entry_id
         reference_entry_id = reference_entry.entry_id
@@ -811,26 +1506,44 @@ class RemuxPanel(QWidget):
         offset_ms: int,
         confidence: float,
     ) -> None:
-        if reference_entry_id and reference_entry_id != entry_id:
-            self._track_table.update_time_shift(reference_entry_id, 0)
-        if self._track_table.update_time_shift(entry_id, offset_ms):
-            offset_label = f"{int(offset_ms):+d}"
-            confidence_label = f"{float(confidence):.2f}"
-            self.log_message.emit(
-                "OK",
-                translate_text(
-                    "Synchronisation audio améliorée appliquée : {offset} ms (confiance {confidence}).",
-                    offset=offset_label,
-                    confidence=confidence_label,
-                ),
-            )
-            self._rebuild_preview()
-            self._emit_audio_tracks()
+        try:
+            tracks_by_id = {
+                track.entry_id: track
+                for track in self._track_table.current_tracks()
+            }
+            target_entry = tracks_by_id.get(entry_id)
+            reference_entry = tracks_by_id.get(reference_entry_id) if reference_entry_id else None
+            target_file_id = target_entry.file_id if target_entry is not None else ""
+            reference_file_id = reference_entry.file_id if reference_entry is not None else ""
+
+            if reference_file_id and reference_file_id != target_file_id:
+                self._apply_source_sync_offset(reference_file_id, 0)
+            if self._apply_source_sync_offset(
+                target_file_id,
+                offset_ms,
+            ):
+                offset_label = f"{int(offset_ms):+d}"
+                confidence_label = f"{float(confidence):.2f}"
+                self.log_message.emit(
+                    "OK",
+                    translate_text(
+                        "Synchronisation audio améliorée appliquée : {offset} ms (confiance {confidence}).",
+                        offset=offset_label,
+                        confidence=confidence_label,
+                    ),
+                )
+                self._rebuild_preview()
+                self._emit_signals()
+        finally:
+            self.audio_sync_finished.emit(True, {"entry_id": entry_id})
 
     def _on_audio_sync_error(self, _entry_id: str, detail: str) -> None:
-        self.log_message.emit("ERROR", "impossible d'utiliser la synchronisation améliorée")
-        if detail:
-            self.log_message.emit("ERROR", detail)
+        try:
+            self.log_message.emit("ERROR", "impossible d'utiliser la synchronisation améliorée")
+            if detail:
+                self.log_message.emit("ERROR", detail)
+        finally:
+            self.audio_sync_finished.emit(False, {"entry_id": _entry_id})
 
     def update_video_track_encoding(self, plans) -> None:
         plan_map: dict[str, str] = {}
@@ -885,7 +1598,9 @@ class RemuxPanel(QWidget):
 
     def current_chapter_overrides(self) -> list | None:
         keep_ch = self._chapter_panel.keep_chapters()
-        if keep_ch and self._chapter_panel.is_modified():
+        selected_source_index = self._chapter_panel.selected_source_index()
+        source_has_sync_offset = self._chapter_sync_offset_ms_for_index(selected_source_index) != 0
+        if keep_ch and (self._chapter_panel.is_modified() or source_has_sync_offset):
             return self._chapter_panel.get_chapters()
         return None
 
@@ -894,6 +1609,7 @@ class RemuxPanel(QWidget):
 
     def _update_chapters_from_sources(self) -> None:
         chapter_functions.update_chapters_from_sources(self)
+        self._refresh_sync_action_buttons()
 
     def _reset_empty_state(self) -> None:
         chapter_functions.reset_empty_state(self)
@@ -971,6 +1687,7 @@ class RemuxPanel(QWidget):
             entry.mkv_tid,
             codec,
             out_path,
+            progress_args=ffmpeg_progress_args(),
         )
 
         self.log_message.emit(
@@ -983,10 +1700,15 @@ class RemuxPanel(QWidget):
 
         runner = ToolRunner()
         self._extract_runner = runner  # conserve la référence pendant l'exécution
-        signals = runner.run(cmd, label=f"extract-sub-{entry.mkv_tid}")
-        signals.progress.connect(
-            lambda line: self.log_message.emit("INFO", line),
-            Qt.ConnectionType.QueuedConnection,
+        label = f"extract-sub-{entry.mkv_tid}"
+        signals = runner.run(cmd, label=label)
+        self.extract_started.emit(
+            signals,
+            {
+                "duration_s": source.info.duration_s,
+                "label": translate_text("Extraction du sous-titre"),
+                "output_name": out_path.name,
+            },
         )
         signals.finished.connect(
             lambda _=None, p=out_path: self.log_message.emit(
@@ -1008,7 +1730,7 @@ class RemuxPanel(QWidget):
         if text:
             QApplication.clipboard().setText(text)
 
-    def closeEvent(self, event) -> None:  # type: ignore[override]
+    def closeEvent(self, event) -> None:
         self._executor.shutdown(wait=True)
         super().closeEvent(event)
 

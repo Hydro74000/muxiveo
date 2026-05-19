@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-main.py — Point d'entrée de l'application Mediarecode.
+main.py — Point d'entrée de l'application Muxiveo.
 
 Lance la MainWindow PySide6 après initialisation de la configuration.
 """
@@ -20,7 +20,7 @@ from PySide6.QtWidgets import QMessageBox, QPushButton
 
 from core.config import AppConfig
 from core.i18n import set_current_language, translate_text
-from core.version import APP_VERSION
+from core.version import APP_NAME, APP_VERSION
 from ui.design_system import DesignSystem
 
 
@@ -80,18 +80,41 @@ def _startup_paths_from_argv(argv: list[str]) -> list[Path]:
     return paths
 
 
-def main() -> int:
-    startup_paths = _startup_paths_from_argv(sys.argv)
+def _is_cli_invocation(argv: list[str]) -> bool:
+    return "--cli" in argv[1:]
+
+
+def _cli_args_from_argv(argv: list[str]) -> list[str]:
+    args = list(argv[1:])
+    try:
+        args.remove("--cli")
+    except ValueError:
+        pass
+    return args
+
+
+def _run_cli_entrypoint(argv: list[str]) -> int:
+    from cli.main import main as _cli_main  # noqa: PLC0415
+
+    return _cli_main(_cli_args_from_argv(argv))
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv if argv is None else argv)
+    if _is_cli_invocation(argv):
+        return _run_cli_entrypoint(argv)
+
+    startup_paths = _startup_paths_from_argv(argv)
     app_instance = QApplication.instance()
     if not isinstance(app_instance, QApplication):
         # High-DPI : activé par défaut sous Qt 6, mais on force le scaling exact
         QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps)
-        app = QApplication(sys.argv)
+        app = QApplication(argv)
     else:
         app = app_instance
-    app.setApplicationName("Mediarecode")
+    app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
-    app.setOrganizationName("mediarecode")
+    app.setOrganizationName(APP_NAME)
 
     # Police par défaut propre
     default_font = QFont("Segoe UI", 10) if sys.platform == "win32" else QFont("SF Pro Text", 10)
