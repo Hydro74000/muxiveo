@@ -1,0 +1,78 @@
+Muxiveo — Third-Party Software Notices
+=======================================
+
+This product bundles or calls third-party software. Their licenses are reproduced
+in full in the LICENSES/ directory of this distribution, and their source code is
+referenced in SOURCES.md.
+
+-------------------------------------------------------------------------------
+FFmpeg / FFprobe
+  Source  : https://ffmpeg.org/
+  Build   : BtbN/FFmpeg-Builds (GPL static, https://github.com/BtbN/FFmpeg-Builds)
+  License : GNU General Public License v2 or later (GPL-2.0-or-later)
+  See     : LICENSES/GPL-2.0-or-later.txt
+
+  This product bundles FFmpeg binaries compiled with GPL-licensed components
+  (libx264, libx265, and others). The full license text is in
+  LICENSES/GPL-2.0-or-later.txt. Source code is available as described in
+  SOURCES.md.
+
+-------------------------------------------------------------------------------
+MediaInfo / MediaInfo CLI
+  Source    : https://mediaarea.net/en/MediaInfo
+  Copyright : Copyright (c) 2002-2026 MediaArea.net SARL
+  License   : BSD-2-Clause
+  See       : LICENSES/BSD-2-Clause-MediaInfo.txt
+
+  Binary redistributions must include the acknowledgement:
+  "This product uses MediaInfo library, Copyright (c) 2002-2026 MediaArea.net SARL"
+
+-------------------------------------------------------------------------------
+dovi_tool
+  Source    : https://github.com/quietvoid/dovi_tool
+  Copyright : Copyright (c) 2026 quietvoid
+  License   : MIT
+  See       : LICENSES/MIT-dovi_tool.txt
+
+-------------------------------------------------------------------------------
+hdr10plus_tool
+  Source    : https://github.com/quietvoid/hdr10plus_tool
+  Copyright : Copyright (c) 2026 quietvoid
+  License   : MIT
+  See       : LICENSES/MIT-hdr10plus_tool.txt
+
+-------------------------------------------------------------------------------
+NVEncC (NVEnc)  [Linux AppImage only]
+  Source    : https://github.com/rigaya/NVEnc
+  Copyright : Copyright (c) 1999-2016 rigaya
+  License   : MIT
+  See       : LICENSES/MIT-NVEncC.txt
+
+  Note: NVEncC contains source code provided by NVIDIA Corporation and relies
+  on the NVIDIA CUDA SDK at runtime (not bundled). The host system must have
+  an NVIDIA driver >= 452.39.
+
+-------------------------------------------------------------------------------
+PySide6 / Qt6
+  Source    : https://www.qt.io/  |  https://pypi.org/project/PySide6/
+  Copyright : Copyright (C) 2016 The Qt Company Ltd.
+  License   : GNU Lesser General Public License v3 or later (LGPL-3.0-or-later)
+  See       : LICENSES/LGPL-3.0-or-later.txt
+
+  As required by the LGPL, the PySide6 shared libraries included in this
+  distribution are provided as separate files (not statically merged into the
+  executable), allowing users to replace them with a compatible version of Qt.
+
+-------------------------------------------------------------------------------
+pymediainfo
+  Source    : https://github.com/sbraz/pymediainfo
+  Copyright : Copyright (c) 2010-2014, Patrick Altman <paltman@gmail.com>
+              Copyright (c) 2016, Louis Sautier <sautier.louis@gmail.com>
+  License   : MIT
+  See       : LICENSES/MIT-pymediainfo.txt
+
+-------------------------------------------------------------------------------
+Muxiveo itself
+  Copyright : Copyright 2026 AOTR
+  License   : MIT
+  See       : LICENSE

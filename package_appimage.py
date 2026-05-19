@@ -779,6 +779,26 @@ def _dl_nvencc(tools_dir: Path, arch: str) -> None:
     ok("NVEncC embarqué (driver NVIDIA hôte requis pour l'exécution)")
 
 
+def _bundle_licenses(appdir: Path) -> None:
+    """Copie NOTICE, SOURCES.md et LICENSES/ dans l'AppImage (conformité licences)."""
+    dest = appdir / "usr" / "share" / "licenses" / "muxiveo"
+    dest.mkdir(parents=True, exist_ok=True)
+
+    for fname in ("NOTICE", "SOURCES.md"):
+        src = ROOT / fname
+        if src.is_file():
+            shutil.copy2(src, dest / fname)
+
+    licenses_src = ROOT / "LICENSES"
+    if licenses_src.is_dir():
+        licenses_dest = dest / "LICENSES"
+        if licenses_dest.exists():
+            shutil.rmtree(licenses_dest)
+        shutil.copytree(licenses_src, licenses_dest)
+
+    ok(f"Fichiers de licence embarqués dans {dest}")
+
+
 def bundle_tools(appdir: Path, arch: str) -> None:
     """Télécharge tous les outils externes et les place dans usr/bin/tools/."""
     step("Téléchargement des outils externes (mode all-inclusive)")
@@ -790,6 +810,7 @@ def bundle_tools(appdir: Path, arch: str) -> None:
     _dl_dovi_tool(tools_dir, arch)
     _dl_hdr10plus_tool(tools_dir, arch)
     _dl_nvencc(tools_dir, arch)
+    _bundle_licenses(appdir)
 
     ok(f"Tous les outils embarqués dans {tools_dir}")
 
