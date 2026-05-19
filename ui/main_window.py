@@ -44,7 +44,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING, cast
 
-from PySide6.QtCore import Qt, Signal, QSize, QTimer
+from PySide6.QtCore import QEvent, Qt, Signal, QSize, QTimer
 from PySide6.QtGui import (
     QColor, QFont, QIcon,
     QTextCharFormat, QTextCursor,
@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
+from core.file_types import is_accepted
 from core.i18n import apply_translations, set_current_language, translate_text
 from core.logging import LogLevel, VerboseFileLogger, parse_log_level
 from core.runner import TaskSignals, _PCT_SENTINEL
@@ -1514,6 +1515,9 @@ class MainWindow(QMainWindow):
         self._settings_panel = SettingsPanel(self._config)
         self._stack.addWidget(self._settings_panel)
 
+        self._install_source_drop_targets(self._dashboard)
+        self._install_source_drop_targets(self._encode_panel)
+
         self._page_area = QScrollArea()
         self._page_area.setWidgetResizable(True)
         self._page_area.setFrameShape(QFrame.Shape.NoFrame)
@@ -1716,6 +1720,11 @@ class MainWindow(QMainWindow):
             return
         self._vsplit.setSizes([768, 32])
 
+    def _open_container_panel(self) -> None:
+        container_index = self._PAGE_INDEX_BY_PANEL_KEY["container"]
+        self._stack.setCurrentIndex(container_index)
+        self._sidebar.select_page(container_index)
+
     def open_startup_paths(self, paths: list[Path | str]) -> None:
         """Charge automatiquement des fichiers transmis au lancement de l'app."""
         normalized = []
@@ -1728,10 +1737,81 @@ class MainWindow(QMainWindow):
         if not normalized:
             return
 
-        container_index = self._PAGE_INDEX_BY_PANEL_KEY["container"]
-        self._stack.setCurrentIndex(container_index)
-        self._sidebar.select_page(container_index)
+        MainWindow._open_container_panel(self)
         self._remux_panel.add_sources(normalized)
+
+    def _install_source_drop_targets(self, root: QWidget) -> None:
+        for target in (root, *root.findChildren(QWidget)):
+            target.setAcceptDrops(True)
+            target.installEventFilter(self)
+
+    @staticmethod
+    def _local_paths_from_drop_event(event: QEvent) -> list[Path]:
+        mime = getattr(event, "mimeData", lambda: None)()
+        urls = mime.urls() if mime is not None and mime.hasUrls() else []
+        paths: list[Path] = []
+        for url in urls:
+            if not url.isLocalFile():
+                continue
+            path = Path(url.toLocalFile())
+            if path.exists():
+                paths.append(path)
+        return paths
+
+    @staticmethod
+    def _collect_drop_source_paths(paths: list[Path]) -> list[Path]:
+        sources: list[Path] = []
+        seen: set[str] = set()
+
+        def add_source(path: Path) -> None:
+            path_key = str(path)
+            if path_key in seen or not is_accepted(path):
+                return
+            sources.append(path)
+            seen.add(path_key)
+
+        for path in paths:
+            if path.is_dir():
+                for child in sorted(path.rglob("*")):
+                    if child.is_file():
+                        add_source(child)
+                continue
+            if path.is_file():
+                add_source(path)
+
+        return sources
+
+    def _handle_source_drop_paths(self, paths: list[Path]) -> bool:
+        sources = MainWindow._collect_drop_source_paths(paths)
+        if not sources:
+            return False
+        self._remux_panel.add_sources(sources)
+        MainWindow._open_container_panel(self)
+        return True
+
+    def eventFilter(self, watched: object, event: QEvent) -> bool:
+        event_type = event.type()
+        if event_type in (QEvent.Type.DragEnter, QEvent.Type.DragMove, QEvent.Type.Drop):
+            local_paths = self._local_paths_from_drop_event(event)
+            if not local_paths:
+                return super().eventFilter(watched, event)
+
+            has_possible_source = any(
+                path.is_dir() or (path.is_file() and is_accepted(path))
+                for path in local_paths
+            )
+            if not has_possible_source:
+                return super().eventFilter(watched, event)
+
+            if event_type == QEvent.Type.Drop and not self._handle_source_drop_paths(local_paths):
+                return super().eventFilter(watched, event)
+
+            accept = getattr(event, "acceptProposedAction", None)
+            if callable(accept):
+                accept()
+            return True
+
+        return super().eventFilter(watched, event)
 
     # ------------------------------------------------------------------
     # Signaux
