@@ -91,6 +91,37 @@ def test_open_startup_paths_routes_files_to_container_page(tmp_path, qt_app) -> 
     assert routed_paths == [media_path]
 
 
+def test_source_drop_routes_media_to_container_page(tmp_path, qt_app) -> None:
+    media_path = tmp_path / "movie.mkv"
+    media_path.write_text("", encoding="utf-8")
+    ignored_path = tmp_path / "cover.jpg"
+    ignored_path.write_text("", encoding="utf-8")
+    folder_path = tmp_path / "season"
+    folder_path.mkdir()
+    episode_path = folder_path / "episode.srt"
+    episode_path.write_text("", encoding="utf-8")
+
+    fake_window = SimpleNamespace(
+        _PAGE_INDEX_BY_PANEL_KEY=MainWindow._PAGE_INDEX_BY_PANEL_KEY,
+        _stack=SimpleNamespace(setCurrentIndex=MagicMock()),
+        _sidebar=SimpleNamespace(select_page=MagicMock()),
+        _remux_panel=SimpleNamespace(add_sources=MagicMock()),
+    )
+    window = cast(Any, fake_window)
+
+    handled = MainWindow._handle_source_drop_paths(
+        window,
+        [media_path, ignored_path, folder_path, media_path],
+    )
+
+    assert handled is True
+    fake_window._remux_panel.add_sources.assert_called_once()
+    routed_paths = fake_window._remux_panel.add_sources.call_args.args[0]
+    assert routed_paths == [media_path, episode_path]
+    fake_window._stack.setCurrentIndex.assert_called_once_with(3)
+    fake_window._sidebar.select_page.assert_called_once_with(3)
+
+
 def test_emit_log_entry_writes_verbose_file_when_enabled(tmp_path) -> None:
     fake_window = SimpleNamespace(
         _config=SimpleNamespace(
