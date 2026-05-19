@@ -63,7 +63,7 @@ from typing import Any, cast
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QLineEdit
+from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QDialog, QLineEdit, QWidget
 
 from core.config import AppConfig
 from core.inspector import AudioTrack, FileInfo, HDRType, VideoTrack
@@ -830,6 +830,111 @@ class TestEncodePanelDynamicHdrDefaults:
         assert row_item is not None
         text = row_item.text().lower()
         assert "[hdr]" in text
+        panel.close()
+
+    def test_encode_panel_tabs_keep_hdr_inside_video_tab(self, qt_app):
+        panel = EncodePanel(AppConfig())
+
+        labels = [panel._tabs.tabText(i) for i in range(panel._tabs.count())]
+        assert labels == [
+            "Sources & Audio",
+            "Video",
+            "Géométrie / Filtres",
+            "Preview / Commande",
+        ]
+        assert "HDR" not in labels
+        assert "Géométrie" not in labels
+        assert "Filtres" not in labels
+        video_tab = panel._tabs.widget(labels.index("Video"))
+        assert panel._inject_hdr_cb in video_tab.findChildren(QCheckBox)
+        geometry_filters_tab = panel._tabs.widget(labels.index("Géométrie / Filtres"))
+        assert panel._geometry_controls in geometry_filters_tab.findChildren(QWidget)
+        assert panel._filters_controls in geometry_filters_tab.findChildren(QWidget)
+        panel.close()
+
+    def test_copy_mode_keeps_geometry_and_filters_visible_with_clear_message(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-copy-transforms"
+        panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0)]), entry, _COLOR)])
+
+        expected = (
+            "Options indisponibles en mode Copy. Choisissez un codec d'encodage "
+            "dans l'onglet Video pour activer la géométrie et les filtres."
+        )
+        assert panel._geometry_copy_msg.text() == expected
+        assert panel._filters_copy_msg.text() == expected
+        assert panel._geometry_copy_msg.isHidden() is False
+        assert panel._filters_copy_msg.isHidden() is False
+        assert panel._geometry_controls.isEnabled() is False
+        assert panel._filters_controls.isEnabled() is False
+
+        idx_x265 = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "libx265"
+        )
+        panel._codec_combo.setCurrentIndex(idx_x265)
+        assert panel._geometry_controls.isEnabled() is True
+        assert panel._filters_controls.isEnabled() is True
+        assert panel._geometry_copy_msg.isHidden() is True
+        assert panel._filters_copy_msg.isHidden() is True
+        panel.close()
+
+    def test_resize_mode_switches_visible_controls_and_presets_update_dimensions(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-resize-ui"
+        panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0)]), entry, _COLOR)])
+
+        panel._set_combo_data(panel._resize_preset_combo, "1080p")
+        assert panel._resize_width_spin.value() == 1920
+        assert panel._resize_height_spin.value() == 1080
+        assert panel._resize_value_stack.currentIndex() == 0
+
+        panel._set_combo_data(panel._resize_mode_combo, "percent")
+        assert panel._resize_value_stack.currentIndex() == 1
+
+        panel._set_combo_data(panel._resize_mode_combo, "size")
+        assert panel._resize_value_stack.currentIndex() == 2
+        panel.close()
+
+    def test_video_row_shows_geometry_and_filter_badges(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-filter-badges"
+        panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0)]), entry, _COLOR)])
+
+        idx_x265 = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "libx265"
+        )
+        panel._codec_combo.setCurrentIndex(idx_x265)
+        panel._resize_enabled_cb.setChecked(True)
+        panel._crop_enabled_cb.setChecked(True)
+        panel._crop_left_spin.setValue(8)
+        panel._yadif_cb.setChecked(True)
+        panel._deblock_cb.setChecked(True)
+        panel._nlmeans_cb.setChecked(True)
+        panel._chroma_cb.setChecked(True)
+
+        row_item = panel._video_list.item(0)
+        assert row_item is not None
+        text = row_item.text()
+        for badge in ("720p", "Crop", "Yadif", "Deblock", "NLMeans", "Chroma"):
+            assert f"[{badge}]" in text
+        panel.close()
+
+    def test_filter_labels_show_features_and_filter_names_stay_visible(self, qt_app):
+        panel = EncodePanel(AppConfig())
+
+        assert panel._yadif_cb.text() == "Désentrelacement"
+        assert panel._deblock_cb.text() == "Deblock"
+        assert panel._nlmeans_cb.text() == "Débruitage"
+        assert panel._chroma_cb.text() == "Color Smooth"
+        assert panel._yadif_filter_combo.itemText(0) == "Yadif"
+        assert panel._deblock_filter_combo.itemText(0) == "deblock"
+        assert panel._nlmeans_filter_combo.itemText(0) == "NLMeans"
+        assert panel._chroma_filter_combo.itemText(0) == "chromanr"
         panel.close()
 
     def test_qsv_locks_manual_hdr_metadata_fields(self, qt_app):

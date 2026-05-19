@@ -60,6 +60,7 @@ class PlannedVideoTrack:
     codec: str
     quality_mode: QualityMode
     inject_hdr_meta: bool
+    has_transform: bool
     tonemap_to_sdr: bool
     copy_dv: bool
     copy_hdr10plus: bool

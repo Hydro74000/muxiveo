@@ -42,8 +42,11 @@ from core.workflows.encode.models import (
     EncodePreset,
     QualityMode,
     TrackTimeOffset,
+    VideoCropSettings,
     VideoTrackEncodePlan,
     VideoEncodeSettings,
+    VideoFilterSettings,
+    VideoResizeSettings,
     presets_for_codec,
 )
 from core.workflows.encode.catalog import HEVC_NVENC_PRESETS
@@ -200,6 +203,21 @@ class TestVideoEncodeSettings:
         assert vs.tonemap_to_sdr is True
         assert vs.tonemap_algorithm == "mobius"
 
+    def test_nested_transform_dicts_are_coerced(self):
+        vs = VideoEncodeSettings(
+            resize={"enabled": True, "mode": "size", "width": 1920, "height": 1080},
+            crop={"enabled": True, "top": 8, "bottom": 8},
+            filters={"deblock_enabled": True, "chroma_smooth_enabled": True},
+        )
+
+        assert isinstance(vs.resize, VideoResizeSettings)
+        assert isinstance(vs.crop, VideoCropSettings)
+        assert isinstance(vs.filters, VideoFilterSettings)
+        assert vs.resize.width == 1920
+        assert vs.crop.top == 8
+        assert vs.filters.deblock_enabled is True
+        assert vs.has_video_transform() is True
+
 
 # ===========================================================================
 # AudioTrackSettings
@@ -335,6 +353,30 @@ class TestEncodePreset:
         assert vs.inject_hdr_meta is True
         assert vs.master_display != ""
         assert vs.max_cll == "1000,400"
+
+    def test_nested_transform_fields_roundtrip_to_video_settings_and_json(self):
+        p = EncodePreset(
+            name="Filters",
+            resize=VideoResizeSettings(enabled=True, mode="preset", preset="1440p"),
+            crop=VideoCropSettings(enabled=True, left=12, right=12),
+            filters=VideoFilterSettings(yadif_enabled=True, nlmeans_enabled=True),
+        )
+
+        vs = p.to_video_settings()
+        as_json = p.to_json_dict()
+
+        assert vs.resize.preset == "1440p"
+        assert vs.crop.left == 12
+        assert vs.filters.yadif_enabled is True
+        assert as_json["resize"]["preset"] == "1440p"
+        assert as_json["crop"]["right"] == 12
+        assert as_json["filters"]["nlmeans_enabled"] is True
+
+    def test_legacy_preset_without_transform_fields_keeps_defaults(self):
+        p = EncodePreset(name="Legacy")
+        assert p.resize == VideoResizeSettings()
+        assert p.crop == VideoCropSettings()
+        assert p.filters == VideoFilterSettings()
 
 
 # ===========================================================================

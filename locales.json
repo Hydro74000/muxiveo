@@ -459,6 +459,22 @@
     "fra": "Encodage Vidéo / Audio",
     "eng": "Video / Audio Encoding"
   },
+  "Sources & Audio": {
+    "fra": "Sources & Audio",
+    "eng": "Sources & Audio"
+  },
+  "Video": {
+    "fra": "Video",
+    "eng": "Video"
+  },
+  "Géométrie / Filtres": {
+    "fra": "Géométrie / Filtres",
+    "eng": "Geometry / Filters"
+  },
+  "Preview / Commande": {
+    "fra": "Preview / Commande",
+    "eng": "Preview / Command"
+  },
   "PISTE VIDÉO SOURCE": {
     "fra": "PISTE VIDÉO SOURCE",
     "eng": "SOURCE VIDEO TRACK"
@@ -470,6 +486,14 @@
   "PISTES AUDIO": {
     "fra": "PISTES AUDIO",
     "eng": "AUDIO TRACKS"
+  },
+  "GÉOMÉTRIE": {
+    "fra": "GÉOMÉTRIE",
+    "eng": "GEOMETRY"
+  },
+  "FILTRES": {
+    "fra": "FILTRES",
+    "eng": "FILTERS"
   },
   "PROFILS": {
     "fra": "PROFILS",
@@ -850,6 +874,30 @@
   "Mode": {
     "fra": "Mode",
     "eng": "Mode"
+  },
+  "Pourcentage": {
+    "fra": "Pourcentage",
+    "eng": "Percentage"
+  },
+  "Largeur": {
+    "fra": "Largeur",
+    "eng": "Width"
+  },
+  "Hauteur": {
+    "fra": "Hauteur",
+    "eng": "Height"
+  },
+  "Filtre": {
+    "fra": "Filtre",
+    "eng": "Filter"
+  },
+  "Redimensionner": {
+    "fra": "Redimensionner",
+    "eng": "Resize"
+  },
+  "Recadrer": {
+    "fra": "Recadrer",
+    "eng": "Crop"
   },
   "kbps": {
     "fra": "kbps",
@@ -3506,6 +3554,138 @@
   "{lang_name} {codec} {channels} {audio_object}": {
     "fra": "{lang_name} {codec} {channels} {audio_object}",
     "eng": "{lang_name} {codec} {channels} {audio_object}"
+  },
+  "Choisit le type de redimensionnement à afficher et appliquer.": {
+    "fra": "Choisit le type de redimensionnement à afficher et appliquer.",
+    "eng": "Chooses the resize type to display and apply."
+  },
+  "Applique une résolution courante et prépare les valeurs WxH correspondantes.": {
+    "fra": "Applique une résolution courante et prépare les valeurs WxH correspondantes.",
+    "eng": "Applies a common resolution and prepares the matching WxH values."
+  },
+  "1280 x 720": {
+    "fra": "1280 x 720",
+    "eng": "1280 x 720"
+  },
+  "100 % conserve la résolution source. L'upscale est plafonné si l'option est décochée.": {
+    "fra": "100 % conserve la résolution source. L'upscale est plafonné si l'option est décochée.",
+    "eng": "100% keeps the source resolution. Upscaling is capped when the option is unchecked."
+  },
+  "Largeur cible en pixels.": {
+    "fra": "Largeur cible en pixels.",
+    "eng": "Target width in pixels."
+  },
+  "Hauteur cible en pixels.": {
+    "fra": "Hauteur cible en pixels.",
+    "eng": "Target height in pixels."
+  },
+  "Filtre de mise à l'échelle utilisé par FFmpeg ou NVEncC.": {
+    "fra": "Filtre de mise à l'échelle utilisé par FFmpeg ou NVEncC.",
+    "eng": "Scaling filter used by FFmpeg or NVEncC."
+  },
+  "Conserver le ratio": {
+    "fra": "Conserver le ratio",
+    "eng": "Keep aspect ratio"
+  },
+  "Évite la déformation en conservant le ratio source dans la résolution cible.": {
+    "fra": "Évite la déformation en conservant le ratio source dans la résolution cible.",
+    "eng": "Avoids distortion by preserving the source aspect ratio inside the target resolution."
+  },
+  "Autoriser upscale": {
+    "fra": "Autoriser upscale",
+    "eng": "Allow upscale"
+  },
+  "Si décoché, la sortie ne dépasse pas la résolution de la source.": {
+    "fra": "Si décoché, la sortie ne dépasse pas la résolution de la source.",
+    "eng": "When unchecked, the output will not exceed the source resolution."
+  },
+  "Unité du recadrage manuel : pixels ou pourcentage de la source.": {
+    "fra": "Unité du recadrage manuel : pixels ou pourcentage de la source.",
+    "eng": "Manual crop unit: pixels or source percentage."
+  },
+  "Auto-crop  (suppression bandes noires)": {
+    "fra": "Auto-crop  (suppression bandes noires)",
+    "eng": "Auto-crop (remove black bars)"
+  },
+  "L'autocrop sera détecté au lancement puis appliqué à la piste active.": {
+    "fra": "L'autocrop sera détecté au lancement puis appliqué à la piste active.",
+    "eng": "Auto-crop will be detected at launch and applied to the active track."
+  },
+  "Désentrelacement FFmpeg yadif, appliqué avant crop et resize.": {
+    "fra": "Désentrelacement FFmpeg yadif, appliqué avant crop et resize.",
+    "eng": "FFmpeg yadif deinterlacing, applied before crop and resize."
+  },
+  "Désentrelacement": {
+    "fra": "Désentrelacement",
+    "eng": "Deinterlacing"
+  },
+  "Filtre de désentrelacement utilisé.": {
+    "fra": "Filtre de désentrelacement utilisé.",
+    "eng": "Selected deinterlacing filter."
+  },
+  "Frame conserve la cadence, Bob double la cadence.": {
+    "fra": "Frame conserve la cadence, Bob double la cadence.",
+    "eng": "Frame keeps the frame rate, Bob doubles it."
+  },
+  "Parité du champ source ; auto convient à la plupart des fichiers.": {
+    "fra": "Parité du champ source ; auto convient à la plupart des fichiers.",
+    "eng": "Source field parity; auto fits most files."
+  },
+  "Réduit les blocs de compression via le filtre FFmpeg deblock.": {
+    "fra": "Réduit les blocs de compression via le filtre FFmpeg deblock.",
+    "eng": "Reduces compression blocking with the FFmpeg deblock filter."
+  },
+  "Force du deblocking. Commencer léger si le grain doit rester visible.": {
+    "fra": "Force du deblocking. Commencer léger si le grain doit rester visible.",
+    "eng": "Deblocking strength. Start light if grain should remain visible."
+  },
+  "Filtre de deblocking utilisé.": {
+    "fra": "Filtre de deblocking utilisé.",
+    "eng": "Selected deblocking filter."
+  },
+  "Taille de bloc analysée par le filtre deblock.": {
+    "fra": "Taille de bloc analysée par le filtre deblock.",
+    "eng": "Block size analyzed by the deblock filter."
+  },
+  "Débruitage spatial/temporal. Plus lent mais utile sur sources bruitées.": {
+    "fra": "Débruitage spatial/temporal. Plus lent mais utile sur sources bruitées.",
+    "eng": "Spatial/temporal denoise. Slower, but useful on noisy sources."
+  },
+  "Débruitage": {
+    "fra": "Débruitage",
+    "eng": "Denoise"
+  },
+  "Filtre de débruitage utilisé.": {
+    "fra": "Filtre de débruitage utilisé.",
+    "eng": "Selected denoise filter."
+  },
+  "Intensité du débruitage NLMeans.": {
+    "fra": "Intensité du débruitage NLMeans.",
+    "eng": "NLMeans denoise intensity."
+  },
+  "Profil de contenu qui ajuste légèrement les paramètres NLMeans.": {
+    "fra": "Profil de contenu qui ajuste légèrement les paramètres NLMeans.",
+    "eng": "Content profile that slightly adjusts NLMeans parameters."
+  },
+  "Chroma smooth": {
+    "fra": "Chroma smooth",
+    "eng": "Chroma smooth"
+  },
+  "Color Smooth": {
+    "fra": "Color Smooth",
+    "eng": "Color Smooth"
+  },
+  "Lisse le bruit couleur via chromanr, sans dépendance externe.": {
+    "fra": "Lisse le bruit couleur via chromanr, sans dépendance externe.",
+    "eng": "Smooths color noise with chromanr, without external dependency."
+  },
+  "Filtre de lissage couleur utilisé.": {
+    "fra": "Filtre de lissage couleur utilisé.",
+    "eng": "Selected color smoothing filter."
+  },
+  "Force du lissage chroma FFmpeg chromanr.": {
+    "fra": "Force du lissage chroma FFmpeg chromanr.",
+    "eng": "FFmpeg chromanr chroma smoothing strength."
   },
   "Corrigez les priorités ou les règles avant application.": {
     "fra": "Corrigez les priorités ou les règles avant application.",

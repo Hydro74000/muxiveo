@@ -24,13 +24,18 @@ import re
 import shlex
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from core.subprocess_utils import subprocess_text_kwargs
 from core.workflows.encode.models import (
     QualityMode,
+    VideoCropSettings,
     VideoEncodeSettings,
+    VideoFilterSettings,
+    VideoResizeSettings,
 )
+from core.workflows.encode.domain.codecs import build_vf as _build_ffmpeg_vf
 
 
 NVENCC_VIDEO_CODECS: frozenset[str] = frozenset({
@@ -65,6 +70,11 @@ NVENCC_WORKFLOW_OWNED_FLAGS: frozenset[str] = frozenset({
     "--vpp-colorspace",
     "--vpp-libplacebo-tonemapping",
     "--vpp-libplacebo-tonemapping-lut",
+    "--crop",
+    "--output-res",
+    "--vpp-resize",
+    "--vpp-yadif",
+    "--vpp-nlmeans",
 })
 
 NVENCC_QP_TRIPLET_FLAGS: frozenset[str] = frozenset({
@@ -212,12 +222,12 @@ def build_decode_pipe_cmd(
     *,
     stream_index: int = 0,
     extra_input_args: list[str] | None = None,
+    vf: str | None = None,
 ) -> list[str]:
     """Phase 1 : décode ffmpeg → yuv4mpegpipe sur stdout.
 
-    Aucun filtre ``-vf`` n'est appliqué : tous les traitements vidéo
-    (resize, deinterlace, tonemap, denoise…) sont délégués à NVEncC via
-    ``--vpp-*``. Phase 1 reste donc minimaliste.
+    Le ``-vf`` optionnel sert uniquement aux préfiltrages portables que
+    NVEncC ne couvre pas nativement dans l'application.
     """
     cmd: list[str] = [str(ffmpeg_bin), "-hide_banner", "-loglevel", "error", "-y"]
     if extra_input_args:
@@ -225,11 +235,38 @@ def build_decode_pipe_cmd(
     cmd.extend(["-i", str(source)])
     cmd.extend([
         "-map", f"0:{int(stream_index)}",
-        "-f", "yuv4mpegpipe",
-        "-strict", "-1",
-        "-",
     ])
+    if vf:
+        cmd.extend(["-vf", str(vf)])
+    cmd.extend(["-f", "yuv4mpegpipe", "-strict", "-1", "-"])
     return cmd
+
+
+def nvencc_requires_ffmpeg_filter_pipe(video: VideoEncodeSettings) -> bool:
+    """True when portable FFmpeg prefiltering is required before NVEncC."""
+    filters = video.filters
+    crop = video.crop
+    resize = video.resize
+    return bool(
+        (filters.deblock_enabled or filters.chroma_smooth_enabled)
+        or (crop.is_active() and crop.unit == "percent")
+        or (resize.is_active() and str(resize.mode or "").strip().lower() == "percent")
+    )
+
+
+def nvencc_ffmpeg_filter_vf(video: VideoEncodeSettings) -> str:
+    return _build_ffmpeg_vf(video)
+
+
+def nvencc_pipe_encode_video(video: VideoEncodeSettings) -> VideoEncodeSettings:
+    """Return settings already filtered by FFmpeg, keeping encode/HDR knobs."""
+    return replace(
+        video,
+        resize=VideoResizeSettings(),
+        crop=VideoCropSettings(),
+        filters=VideoFilterSettings(),
+        tonemap_to_sdr=False,
+    )
 
 
 def _rate_control_args(video: VideoEncodeSettings) -> list[str]:
@@ -343,6 +380,81 @@ def map_nvencc_tonemap_args(video: VideoEncodeSettings) -> list[str]:
         "--vpp-colorspace",
         "matrix=bt2020nc:bt709,hdr2sdr=hable",
     ]
+
+
+def _nvencc_resize_args(video: VideoEncodeSettings) -> list[str]:
+    resize = video.resize
+    if not resize.is_active():
+        return []
+    mode = str(resize.mode or "preset").strip().lower()
+    if mode == "percent":
+        # Percent resize needs source dimensions, so keep it in FFmpeg when
+        # callers require exact scaling. Direct NVEncC keeps native settings.
+        return []
+    if mode == "size":
+        width = max(2, int(resize.width or 2))
+        height = max(2, int(resize.height or 2))
+    else:
+        presets = {
+            "720p": (1280, 720),
+            "1080p": (1920, 1080),
+            "1440p": (2560, 1440),
+            "2160p": (3840, 2160),
+        }
+        width, height = presets.get(str(resize.preset or "720p"), presets["720p"])
+    args = ["--output-res", f"{width}x{height}"]
+    algo = str(resize.algorithm or "lanczos").strip().lower()
+    nvencc_algo = {
+        "lanczos": "lanczos",
+        "bicubic": "bicubic",
+        "bilinear": "bilinear",
+        "spline": "spline36",
+    }.get(algo, "lanczos")
+    args.extend(["--vpp-resize", f"algo={nvencc_algo}"])
+    return args
+
+
+def _nvencc_crop_args(video: VideoEncodeSettings) -> list[str]:
+    crop = video.crop
+    if not crop.is_active() or crop.auto or crop.unit == "percent":
+        return []
+    left = max(0, int(crop.left))
+    top = max(0, int(crop.top))
+    right = max(0, int(crop.right))
+    bottom = max(0, int(crop.bottom))
+    return ["--crop", f"{left},{top},{right},{bottom}"]
+
+
+def _nvencc_filter_args(video: VideoEncodeSettings) -> list[str]:
+    filters = video.filters
+    args: list[str] = []
+    if filters.yadif_enabled:
+        mode = str(filters.yadif_mode or "send_frame").strip().lower()
+        mapped = {
+            "send_frame": "auto",
+            "send_field": "bob",
+            "bob": "bob",
+            "auto": "auto",
+        }.get(mode, "auto")
+        args.extend(["--vpp-yadif", f"mode={mapped}"])
+    if filters.nlmeans_enabled:
+        strength = {
+            "ultralight": (0.003, 0.035, 3, 7),
+            "light": (0.005, 0.050, 5, 11),
+            "medium": (0.008, 0.065, 7, 13),
+            "strong": (0.012, 0.080, 7, 15),
+        }.get(str(filters.nlmeans_strength or "light").strip().lower(), (0.005, 0.050, 5, 11))
+        sigma, h, patch, search = strength
+        args.extend(["--vpp-nlmeans", f"sigma={sigma},h={h},patch={patch},search={search}"])
+    return args
+
+
+def map_nvencc_video_transform_args(video: VideoEncodeSettings) -> list[str]:
+    args: list[str] = []
+    args.extend(_nvencc_crop_args(video))
+    args.extend(_nvencc_resize_args(video))
+    args.extend(_nvencc_filter_args(video))
+    return args
 
 
 def normalize_nvencc_qp_triplet(value: str | None) -> str | None:
@@ -601,6 +713,7 @@ def build_nvencc_command(
             dovi_rpu_prm=dovi_rpu_prm,
         )
     )
+    cmd.extend(map_nvencc_video_transform_args(video))
     cmd.extend(map_nvencc_tonemap_args(video))
 
     # extra_params experts : on retire les flags possédés par le workflow
@@ -678,11 +791,17 @@ def build_nvencc_pipeline(
     via ``Popen`` avec ``p1.stdout = p2.stdin`` (cf. ``merge_dovi.py``).
     La phase 3 démarre une fois ``intermediate`` complet.
     """
+    needs_prefilter = nvencc_requires_ffmpeg_filter_pipe(video)
     decode = build_decode_pipe_cmd(
-        ffmpeg_bin, source, stream_index=stream_index,
+        ffmpeg_bin,
+        source,
+        stream_index=stream_index,
+        vf=nvencc_ffmpeg_filter_vf(video) if needs_prefilter else None,
     )
     encode = build_nvencc_command(
-        nvencc_bin, video, intermediate,
+        nvencc_bin,
+        nvencc_pipe_encode_video(video) if needs_prefilter else video,
+        intermediate,
         hdr10plus_json=hdr10plus_json,
         dovi_rpu=dovi_rpu,
     )
@@ -716,11 +835,15 @@ __all__ = [
     "nvencc_binary_name",
     "detect_nvencc_available",
     "build_decode_pipe_cmd",
+    "nvencc_requires_ffmpeg_filter_pipe",
+    "nvencc_ffmpeg_filter_vf",
+    "nvencc_pipe_encode_video",
     "build_nvencc_command",
     "build_remux_cmd",
     "build_nvencc_pipeline",
     "map_nvencc_dovi_profile",
     "map_nvencc_tonemap_args",
+    "map_nvencc_video_transform_args",
     "normalize_nvencc_qp_triplet",
     "sanitize_nvencc_extra_params",
     "nvencc_intermediate_path",

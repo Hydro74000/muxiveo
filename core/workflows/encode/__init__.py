@@ -33,6 +33,9 @@ from core.workflows.encode.catalog import (
 )
 from core.workflows.encode.models import (
     QualityMode,
+    VideoResizeSettings,
+    VideoCropSettings,
+    VideoFilterSettings,
     VideoEncodeSettings,
     AudioTrackSettings,
     VideoTrackEncodePlan,
@@ -73,6 +76,9 @@ __all__ = [
     "supports_dynamic_hdr",
     "supports_force_8bit",
     "encoder_badge",
+    "VideoResizeSettings",
+    "VideoCropSettings",
+    "VideoFilterSettings",
     "VideoEncodeSettings",
     "AudioTrackSettings",
     "VideoTrackEncodePlan",

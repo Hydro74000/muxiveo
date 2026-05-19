@@ -9,7 +9,12 @@ from core.workflows.encode.backends import (
     backend_for_codec,
     backend_id_for_codec,
 )
-from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
+from core.workflows.encode.models import (
+    EncodeConfig,
+    QualityMode,
+    VideoEncodeSettings,
+    VideoFilterSettings,
+)
 from core.workflows.encode.workflow import EncodeWorkflow
 
 
@@ -72,6 +77,22 @@ class TestBackendCapabilities:
         caps = backend_capabilities_for_codec("nvencc_h264")
         assert caps.supports_dynamic_hdr is False
         assert caps.supports_manual_static_hdr is False
+
+    def test_nvencc_backend_rejects_dynamic_hdr_with_ffmpeg_prefilter(self, tmp_path):
+        cfg = _make_config(tmp_path, "nvencc_hevc")
+        cfg.source.touch()
+        cfg.video.copy_dv = True
+        cfg.video.filters = VideoFilterSettings(chroma_smooth_enabled=True)
+        wf = EncodeWorkflow(
+            ffmpeg_bin="ffmpeg",
+            dovi_tool_bin="dovi_tool",
+            hdr10plus_bin="hdr10plus_tool",
+            nvencc_bin="/usr/bin/NVEncC",
+        )
+
+        errors = wf.validate(cfg)
+
+        assert any("préfiltrage ffmpeg" in error.lower() for error in errors)
 
 
 class TestBackendProgressParsing:

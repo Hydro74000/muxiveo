@@ -49,6 +49,7 @@ def validate_encode_config(
                 codec=str(video.codec),
                 quality_mode=video.quality_mode,
                 inject_hdr_meta=bool(video.inject_hdr_meta),
+                has_transform=bool(video.has_video_transform()),
                 tonemap_to_sdr=bool(video.tonemap_to_sdr),
                 copy_dv=bool(video.copy_dv),
                 copy_hdr10plus=bool(video.copy_hdr10plus),
@@ -65,9 +66,9 @@ def validate_encode_config(
         source = video.source
         if not source.is_file():
             errors.append(f"Piste vidéo #{index} — source introuvable : {source}")
-        if video.codec == "copy" and video.tonemap_to_sdr:
+        if video.codec == "copy" and video.has_transform:
             errors.append(
-                f"Piste vidéo #{index} — codec copy incompatible avec le tone-mapping."
+                f"Piste vidéo #{index} — codec copy incompatible avec les transformations vidéo."
             )
         if (video.copy_dv or video.copy_hdr10plus) and not supports_dynamic_hdr(video.codec):
             errors.append(

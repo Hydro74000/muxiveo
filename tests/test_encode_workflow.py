@@ -139,7 +139,10 @@ from core.workflows.encode import (
     QualityMode,
     TrackMetaEdit,
     TrackTimeOffset,
+    VideoCropSettings,
     VideoEncodeSettings,
+    VideoFilterSettings,
+    VideoResizeSettings,
 )
 from core.inspector import ChapterEntry
 from core.runner import TaskSignals
@@ -1678,6 +1681,66 @@ class TestBuildCommand:
         assert "-vf" in cmd
         assert "hwupload" not in cmd[cmd.index("-vf") + 1]
 
+    def test_ffmpeg_vf_orders_geometry_filters_resize_and_tonemap(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        cmd = self.wf.build_command_single(
+            _make_config(
+                src,
+                tmp_path / "out.mkv",
+                video=_make_video_settings(
+                    filters=VideoFilterSettings(
+                        yadif_enabled=True,
+                        deblock_enabled=True,
+                        nlmeans_enabled=True,
+                        chroma_smooth_enabled=True,
+                    ),
+                    crop=VideoCropSettings(enabled=True, left=8, right=8, top=4, bottom=4),
+                    resize=VideoResizeSettings(
+                        enabled=True,
+                        mode="preset",
+                        preset="720p",
+                        allow_upscale=False,
+                    ),
+                    tonemap_to_sdr=True,
+                ),
+            )
+        )
+
+        vf = cmd[cmd.index("-vf") + 1]
+        expected_order = [
+            "yadif=",
+            "crop=",
+            "deblock=",
+            "nlmeans=",
+            "chromanr=",
+            "scale=",
+            "zscale=transfer=linear",
+        ]
+        positions = [vf.index(token) for token in expected_order]
+        assert positions == sorted(positions)
+        assert "min(1280,iw):min(720,ih)" in vf
+
+    def test_ffmpeg_percent_resize_clamps_when_upscale_is_disabled(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        cmd = self.wf.build_command_single(
+            _make_config(
+                src,
+                tmp_path / "out.mkv",
+                video=_make_video_settings(
+                    resize=VideoResizeSettings(
+                        enabled=True,
+                        mode="percent",
+                        percent=150,
+                        allow_upscale=False,
+                    ),
+                ),
+            )
+        )
+
+        vf = cmd[cmd.index("-vf") + 1]
+        assert "iw*100/100" in vf
+        assert "iw*150/100" not in vf
+
 
 # ===========================================================================
 # validate
@@ -1754,7 +1817,21 @@ class TestValidate:
             video=_make_video_settings(codec="copy", tonemap_to_sdr=True),
         )
         errors = self.wf.validate(config)
-        assert any("tone-mapping" in e.lower() for e in errors)
+        assert any("codec copy incompatible avec les transformations vidéo" in e.lower() for e in errors)
+
+    def test_copy_with_geometry_or_filters_is_rejected(self, tmp_path):
+        src = tmp_path / "src.mkv"; src.touch()
+        config = _make_config(
+            src,
+            tmp_path / "out.mkv",
+            video=_make_video_settings(
+                codec="copy",
+                resize=VideoResizeSettings(enabled=True, mode="preset", preset="720p"),
+                filters=VideoFilterSettings(deblock_enabled=True),
+            ),
+        )
+        errors = self.wf.validate(config)
+        assert any("codec copy incompatible avec les transformations vidéo" in e.lower() for e in errors)
 
     def test_invalid_master_display(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()

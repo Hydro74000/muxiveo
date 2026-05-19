@@ -14,7 +14,7 @@ Public:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Protocol
@@ -182,6 +182,84 @@ def normalize_audio_bitrate_kbps(
 # Dataclasses
 # =============================================================================
 
+def _dataclass_from_value(cls, value):
+    if isinstance(value, cls):
+        return value
+    if isinstance(value, dict):
+        allowed = cls.__dataclass_fields__
+        return cls(**{k: v for k, v in value.items() if k in allowed})
+    return cls()
+
+
+@dataclass
+class VideoResizeSettings:
+    """Réglages de redimensionnement vidéo."""
+    enabled: bool = False
+    mode: str = "preset"          # preset | percent | size
+    preset: str = "720p"
+    percent: int = 100
+    width: int = 1280
+    height: int = 720
+    keep_aspect: bool = True
+    allow_upscale: bool = False
+    algorithm: str = "lanczos"
+
+    def is_active(self) -> bool:
+        return bool(self.enabled)
+
+    @classmethod
+    def from_value(cls, value: object) -> "VideoResizeSettings":
+        return _dataclass_from_value(cls, value)
+
+
+@dataclass
+class VideoCropSettings:
+    """Réglages de recadrage vidéo."""
+    enabled: bool = False
+    unit: str = "px"              # px | percent
+    top: int = 0
+    bottom: int = 0
+    left: int = 0
+    right: int = 0
+    auto: bool = False
+
+    def is_active(self) -> bool:
+        return bool(self.enabled and (self.auto or any((self.top, self.bottom, self.left, self.right))))
+
+    @classmethod
+    def from_value(cls, value: object) -> "VideoCropSettings":
+        return _dataclass_from_value(cls, value)
+
+
+@dataclass
+class VideoFilterSettings:
+    """Filtres vidéo typés appliqués avant encodage."""
+    yadif_enabled: bool = False
+    yadif_mode: str = "send_frame"
+    yadif_parity: str = "auto"
+    yadif_deint: str = "all"
+    deblock_enabled: bool = False
+    deblock_strength: str = "medium"
+    deblock_block: int = 8
+    nlmeans_enabled: bool = False
+    nlmeans_strength: str = "light"
+    nlmeans_profile: str = "standard"
+    chroma_smooth_enabled: bool = False
+    chroma_smooth_strength: str = "medium"
+
+    def is_active(self) -> bool:
+        return bool(
+            self.yadif_enabled
+            or self.deblock_enabled
+            or self.nlmeans_enabled
+            or self.chroma_smooth_enabled
+        )
+
+    @classmethod
+    def from_value(cls, value: object) -> "VideoFilterSettings":
+        return _dataclass_from_value(cls, value)
+
+
 @dataclass
 class VideoEncodeSettings:
     """Paramètres d'encodage vidéo."""
@@ -202,6 +280,10 @@ class VideoEncodeSettings:
     # Sortie 10-bit explicite (profile main10/high10 + pix_fmt p010le/yuv420p10le).
     # Mutuellement exclusif avec force_8bit (qui prend priorité).
     force_10bit:      bool         = False
+    # Transformations vidéo
+    resize:           VideoResizeSettings = field(default_factory=VideoResizeSettings)
+    crop:             VideoCropSettings = field(default_factory=VideoCropSettings)
+    filters:          VideoFilterSettings = field(default_factory=VideoFilterSettings)
     # HDR statique
     inject_hdr_meta:  bool         = False
     master_display:   str          = ""   # ex. "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(40000000,50)"
@@ -218,6 +300,19 @@ class VideoEncodeSettings:
     # Tone mapping
     tonemap_to_sdr:   bool         = False
     tonemap_algorithm: str         = "hable"
+
+    def __post_init__(self) -> None:
+        self.resize = VideoResizeSettings.from_value(self.resize)
+        self.crop = VideoCropSettings.from_value(self.crop)
+        self.filters = VideoFilterSettings.from_value(self.filters)
+
+    def has_video_transform(self) -> bool:
+        return bool(
+            self.resize.is_active()
+            or self.crop.is_active()
+            or self.filters.is_active()
+            or self.tonemap_to_sdr
+        )
 
 
 @dataclass
@@ -240,6 +335,7 @@ class VideoTrackEncodePlan:
     codec_summary: str
     target_codec: str = "copy"
     hdr_badges: tuple[str, ...] = ()
+    filter_badges: tuple[str, ...] = ()
     is_modified: bool = False
 
 
@@ -327,6 +423,9 @@ class EncodePreset:
     preset:                     str  = "slow"
     extra_params:               str  = ""
     force_10bit:                bool = False
+    resize:                     VideoResizeSettings = field(default_factory=VideoResizeSettings)
+    crop:                       VideoCropSettings = field(default_factory=VideoCropSettings)
+    filters:                    VideoFilterSettings = field(default_factory=VideoFilterSettings)
     inject_hdr_meta:            bool = False
     master_display:             str  = ""
     max_cll:                    str  = ""
@@ -334,6 +433,11 @@ class EncodePreset:
     tonemap_algorithm:          str  = "hable"
     default_audio_codec:        str  = "copy"
     default_audio_bitrate_kbps: int  = 384
+
+    def __post_init__(self) -> None:
+        self.resize = VideoResizeSettings.from_value(self.resize)
+        self.crop = VideoCropSettings.from_value(self.crop)
+        self.filters = VideoFilterSettings.from_value(self.filters)
 
     def to_video_settings(self) -> VideoEncodeSettings:
         return VideoEncodeSettings(
@@ -346,12 +450,18 @@ class EncodePreset:
             preset=self.preset,
             extra_params=self.extra_params,
             force_10bit=self.force_10bit,
+            resize=self.resize,
+            crop=self.crop,
+            filters=self.filters,
             inject_hdr_meta=self.inject_hdr_meta,
             master_display=self.master_display,
             max_cll=self.max_cll,
             tonemap_to_sdr=self.tonemap_to_sdr,
             tonemap_algorithm=self.tonemap_algorithm,
         )
+
+    def to_json_dict(self) -> dict:
+        return asdict(self)
 
 
 # =============================================================================

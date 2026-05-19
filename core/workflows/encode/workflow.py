@@ -848,6 +848,7 @@ class EncodeWorkflow(QObject):
     ) -> TaskSignals:
         return _NvenccDirectOutputRunner(
             _NvenccDirectOutputRunnerCallbacks(
+                ffmpeg_bin=self._ffmpeg,
                 nvencc_bin=self._nvencc_bin,
                 check_cancelled=self._check_cancelled,
                 log_step=self._log_step,
