@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import gzip
 import json
+import zlib
 from pathlib import Path
 
 from core.media_info_fetcher import (
@@ -57,7 +57,8 @@ def test_search_accepts_gzip_encoded_tmdb_json(monkeypatch):
         def __exit__(self, exc_type, exc, tb) -> bool:
             return False
 
-    payload = gzip.compress(json.dumps({
+    compressor = zlib.compressobj(wbits=16 + zlib.MAX_WBITS)
+    payload = compressor.compress(json.dumps({
         "results": [
             {
                 "id": 76479,
@@ -67,7 +68,7 @@ def test_search_accepts_gzip_encoded_tmdb_json(monkeypatch):
                 "overview": "Supes gone bad.",
             }
         ]
-    }).encode("utf-8"))
+    }).encode("utf-8")) + compressor.flush() + b"\n"
 
     monkeypatch.setattr(fetcher, "_urlopen_with_ssl_fallback", lambda req, timeout: _FakeResponse(payload))
 

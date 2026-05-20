@@ -8,7 +8,6 @@ Authentification TMDB via :
 """
 from __future__ import annotations
 
-import gzip
 import json
 import mimetypes
 import os
@@ -475,7 +474,8 @@ class TmdbFetcher:
                 # Certains environnements/proxys peuvent déjà fournir le corps
                 # décompressé tout en conservant l'en-tête Content-Encoding.
                 if decoded[:2] == b"\x1f\x8b":
-                    decoded = gzip.decompress(decoded)
+                    decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                    decoded = decoder.decompress(decoded) + decoder.flush()
                 continue
             if encoding == "deflate":
                 try:
