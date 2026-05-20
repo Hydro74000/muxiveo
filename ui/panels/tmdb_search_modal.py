@@ -213,6 +213,7 @@ class TmdbSearchModal(QDialog):
                 selection-background-color: {_C.ACCENT_DIM};
             }}
         """)
+        self._kind_combo.currentIndexChanged.connect(self._on_kind_changed)
         search_h.addWidget(self._kind_combo)
 
         self._search_btn = QPushButton("Rechercher")
@@ -292,7 +293,7 @@ class TmdbSearchModal(QDialog):
         series_h.addWidget(self._episode_spin)
         series_h.addStretch()
 
-        self._series_row.setVisible(False)
+        self._sync_series_row_visibility()
         root.addWidget(self._series_row)
 
         self._status_lbl = QLabel("")
@@ -375,6 +376,20 @@ class TmdbSearchModal(QDialog):
         idx = self._kind_combo.currentIndex()
         return {0: "all", 1: "movie", 2: "tv"}.get(idx, "all")
 
+    def _series_row_should_be_visible(self, selected_kind: str | None = None) -> bool:
+        kind = selected_kind or self._kind_param()
+        if kind == "movie":
+            return False
+        if kind == "tv":
+            return True
+        return self._season_spin.value() > 0 or self._episode_spin.value() > 0
+
+    def _sync_series_row_visibility(self, selected_kind: str | None = None) -> None:
+        self._series_row.setVisible(self._series_row_should_be_visible(selected_kind))
+
+    def _on_kind_changed(self, _index: int) -> None:
+        self._sync_series_row_visibility()
+
     def _make_fetcher(self) -> TmdbFetcher | None:
         from core.media_info_fetcher import TmdbError, iso639_2_to_tmdb_lang
 
@@ -411,7 +426,7 @@ class TmdbSearchModal(QDialog):
         self._results_list.clear()
         self._results.clear()
         self._overview_lbl.setVisible(False)
-        self._series_row.setVisible(False)
+        self._sync_series_row_visibility()
         self._set_busy(True)
 
         if self._worker and self._worker.isRunning():
@@ -428,6 +443,7 @@ class TmdbSearchModal(QDialog):
         self._results = results
         self._results_list.clear()
         if not results:
+            self._sync_series_row_visibility()
             self._status_lbl.setText(translate_text("Aucun résultat."))
             return
         for r in results:
@@ -442,11 +458,10 @@ class TmdbSearchModal(QDialog):
         if row < 0 or row >= len(self._results):
             self._ok_btn.setEnabled(False)
             self._overview_lbl.setVisible(False)
-            self._series_row.setVisible(False)
+            self._sync_series_row_visibility()
             return
         r = self._results[row]
-        is_tv = r.kind == "tv"
-        self._series_row.setVisible(is_tv)
+        self._sync_series_row_visibility(r.kind)
         if r.overview:
             text = r.overview if len(r.overview) <= 200 else r.overview[:200] + "…"
             self._overview_lbl.setText(text)

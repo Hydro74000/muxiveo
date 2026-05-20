@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gzip
+import json
 from pathlib import Path
 
 from core.media_info_fetcher import (
@@ -36,6 +38,49 @@ def test_filename_helpers_delegate_to_text_cleaning():
     assert clean_filename_for_search(path) == "Daredevil Born Again"
     assert extract_year_from_filename(path) == "2025"
     assert extract_year_from_text("Daredevil: Born Again (2025)") == "2025"
+
+
+def test_search_accepts_gzip_encoded_tmdb_json(monkeypatch):
+    fetcher = TmdbFetcher(api_key="dummy")
+
+    class _FakeResponse:
+        def __init__(self, payload: bytes) -> None:
+            self._payload = payload
+            self.headers = {"Content-Encoding": "gzip"}
+
+        def read(self) -> bytes:
+            return self._payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    payload = gzip.compress(json.dumps({
+        "results": [
+            {
+                "id": 76479,
+                "media_type": "tv",
+                "name": "The Boys",
+                "first_air_date": "2019-07-25",
+                "overview": "Supes gone bad.",
+            }
+        ]
+    }).encode("utf-8"))
+
+    monkeypatch.setattr(fetcher, "_urlopen_with_ssl_fallback", lambda req, timeout: _FakeResponse(payload))
+
+    results = fetcher.search("The Boys", kind="tv")
+
+    assert len(results) == 1
+    assert results[0] == MediaSearchResult(
+        tmdb_id=76479,
+        title="The Boys",
+        year="2019",
+        kind="tv",
+        overview="Supes gone bad.",
+    )
 
 
 def test_get_details_tv_prefers_episode_overview_when_available(monkeypatch):

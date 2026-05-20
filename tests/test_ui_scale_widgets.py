@@ -161,6 +161,25 @@ def test_tmdb_modal_builds_at_multiple_scales(tmp_path, qt_app, percent):
     modal.close()
 
 
+def test_tmdb_modal_series_fields_stay_available_without_results(tmp_path, qt_app):
+    from ui.panels.tmdb_search_modal import TmdbSearchModal
+
+    cfg = _build_config(tmp_path)
+    modal = TmdbSearchModal(cfg, suggested_season=1, suggested_episode=2)
+
+    assert not modal._series_row.isHidden()
+
+    modal._kind_combo.setCurrentIndex(1)
+    assert modal._series_row.isHidden()
+
+    modal._kind_combo.setCurrentIndex(2)
+    assert not modal._series_row.isHidden()
+
+    modal._on_results([])
+    assert not modal._series_row.isHidden()
+    modal.close()
+
+
 @pytest.mark.parametrize("percent", [50, 100, 150, 200])
 def test_track_edit_dialog_builds_at_multiple_scales(qt_app, percent):
     from ui.panels.track_edit_dialog import TrackEditDialog

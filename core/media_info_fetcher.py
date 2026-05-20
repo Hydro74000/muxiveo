@@ -8,6 +8,7 @@ Authentification TMDB via :
 """
 from __future__ import annotations
 
+import gzip
 import json
 import mimetypes
 import os
@@ -17,6 +18,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -428,6 +430,7 @@ class TmdbFetcher:
         url = f"{_BASE}{endpoint}?{query}" if query else f"{_BASE}{endpoint}"
         headers = {
             "Accept": "application/json",
+            "Accept-Encoding": "gzip, deflate",
             "User-Agent": APP_USER_AGENT,
         }
         if self._bearer_token:
@@ -435,7 +438,11 @@ class TmdbFetcher:
         req = urllib.request.Request(url, headers=headers)
         try:
             with self._urlopen_with_ssl_fallback(req, timeout=12) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                body = resp.read()
+                content_encoding = str(resp.headers.get("Content-Encoding", "")).strip().lower()
+                if content_encoding:
+                    body = self._decode_http_body(body, content_encoding)
+                return json.loads(body.decode("utf-8"))
         except urllib.error.HTTPError as exc:
             if exc.code == 401:
                 if self._key and not self._bearer_token:
@@ -448,8 +455,40 @@ class TmdbFetcher:
             raise TmdbError(f"Erreur HTTP {exc.code} lors de la requête TMDB.") from exc
         except urllib.error.URLError as exc:
             raise TmdbError(f"Impossible de contacter TMDB : {exc.reason}") from exc
-        except (json.JSONDecodeError, KeyError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError, KeyError, OSError, zlib.error) as exc:
             raise TmdbError(f"Réponse TMDB invalide : {exc}") from exc
+
+    def _decode_http_body(self, body: bytes, content_encoding: str) -> bytes:
+        """
+        Décompresse un payload HTTP selon Content-Encoding.
+
+        TMDB renvoie désormais fréquemment du JSON compressé en gzip.
+        urllib ne le décompresse pas automatiquement, y compris dans
+        certains environnements packagés (AppImage).
+        """
+        decoded = body
+        encodings = [token.strip().lower() for token in content_encoding.split(",") if token.strip()]
+        for encoding in reversed(encodings):
+            if encoding == "identity":
+                continue
+            if encoding == "gzip":
+                # Certains environnements/proxys peuvent déjà fournir le corps
+                # décompressé tout en conservant l'en-tête Content-Encoding.
+                if decoded[:2] == b"\x1f\x8b":
+                    decoded = gzip.decompress(decoded)
+                continue
+            if encoding == "deflate":
+                try:
+                    decoded = zlib.decompress(decoded)
+                except zlib.error:
+                    try:
+                        decoded = zlib.decompress(decoded, -zlib.MAX_WBITS)
+                    except zlib.error:
+                        if decoded[:1] not in {b"{", b"[", b" ", b"\n", b"\r", b"\t"}:
+                            raise
+                continue
+            raise TmdbError(f"Encodage HTTP TMDB non supporté : {encoding}")
+        return decoded
 
     def _get_binary(self, url: str) -> tuple[bytes, str]:
         req = urllib.request.Request(
