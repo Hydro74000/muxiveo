@@ -70,7 +70,7 @@ L'appimage AllInc inclue toutes les dépendances.
 | AppImage Linux | Muxiveo-x86_64_allinc-<version>.AppImage` + `dist/releases/Muxiveo-x86_64_allinc-<version>.AppImage.zsync` |
 | Package macOS natif | `Muxiveo-<version>.dmg` |
 | Installateur Windows | `dist/releases/Muxiveo-Setup-<version>.exe` |
-| Release Homebrew Linux/macOS (preview)| `brew tap Hydro74000/Muxiveo && brew install Muxiveo` |
+| Release Homebrew Linux/macOS (preview)| `brew tap Hydro74000/muxiveo && brew install muxiveo` |
 
 
 ### Cloner le dépôt
