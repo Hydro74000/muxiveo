@@ -300,6 +300,7 @@ def build_decision_profile_schema_v1() -> dict[str, Any]:
                     "set_time_shift_ms",
                     "set_flags",
                     "add_track_tags",
+                    "remove_track_tags",
                     "set_order_priority",
                     "create_audio_variant",
                 ]

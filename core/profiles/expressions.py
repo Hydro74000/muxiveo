@@ -14,9 +14,9 @@ class CriteriaExpressionError(ValueError):
 
 
 class CriteriaExpressionParser:
-    """Parse criteria text using ``&``/``|`` operators and parentheses."""
+    """Parse criteria text using ``&``/``|``/``!`` operators and parentheses."""
 
-    _OPERATORS = {"&", "|", "(", ")"}
+    _OPERATORS = {"&", "|", "(", ")", "!"}
 
     def __init__(self, text: str) -> None:
         self._tokens = self._tokenize(text)
@@ -42,6 +42,23 @@ class CriteriaExpressionParser:
                     raise CriteriaExpressionError("echappement final")
                 current.append(source[cursor + 1])
                 cursor += 2
+                continue
+            if (
+                not "".join(current).strip()
+                and source[cursor:cursor + 3].lower() == "not"
+                and cursor + 3 < len(source)
+                and source[cursor + 3] == "("
+            ):
+                flush_atom()
+                tokens.append(("!", "!"))
+                cursor += 3
+                continue
+            if char == "!":
+                flush_atom()
+                if cursor + 1 >= len(source) or source[cursor + 1].isspace():
+                    raise CriteriaExpressionError("valeur attendue apres !")
+                tokens.append(("!", "!"))
+                cursor += 1
                 continue
             if char in cls._OPERATORS:
                 flush_atom()
@@ -104,18 +121,28 @@ class CriteriaExpressionParser:
         return nodes[0] if len(nodes) == 1 else ("any", nodes)
 
     def _parse_and(self) -> ExpressionAst:
-        nodes = [self._parse_primary()]
+        nodes = [self._parse_not()]
         while (token := self._peek()) is not None and token[0] == "&":
             self._consume("&")
-            nodes.append(self._parse_primary())
+            nodes.append(self._parse_not())
         return nodes[0] if len(nodes) == 1 else ("all", nodes)
+
+    def _parse_not(self) -> ExpressionAst:
+        token = self._peek()
+        if token is not None and token[0] == "!":
+            self._consume("!")
+            return ("not", self._parse_not())
+        return self._parse_primary()
 
     def _parse_primary(self) -> ExpressionAst:
         token = self._peek()
         if token is None:
             raise CriteriaExpressionError("valeur attendue")
         if token[0] == "ATOM":
-            return ("leaf", self._consume("ATOM")[1])
+            atom = self._consume("ATOM")[1]
+            if atom.strip().lower() == "not":
+                raise CriteriaExpressionError("NOT attend des parentheses")
+            return ("leaf", atom)
         if token[0] == "(":
             self._consume("(")
             node = self._parse_or()
@@ -154,4 +181,6 @@ def criteria_ast_condition(
             else:
                 flattened.append(child)
         return {kind: flattened}
+    if kind == "not":
+        return {"not": criteria_ast_condition(value, atom_builder)}
     raise CriteriaExpressionError("expression invalide")

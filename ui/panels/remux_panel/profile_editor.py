@@ -49,7 +49,7 @@ from core.profiles.expressions import (
     CriteriaExpressionParser as _CriteriaExpressionParser,
     criteria_ast_condition,
 )
-from core.profiles.keywords import KEYWORD_CATEGORIES, keyword_to_match_field
+from core.profiles.keywords import KEYWORD_CATEGORIES, is_none_keyword, keyword_to_match_field
 from core.workflows.remux_models import RemuxConfig, TrackEntry
 from ui.design_system import font_px as _font_px, scale as _scale
 from ui.panels.remux_panel.theme import _C
@@ -93,18 +93,23 @@ class KeywordLineEdit(QLineEdit):
         or_action.triggered.connect(lambda _checked=False: self.insert(" | "))
         group_action = menu.addAction("GROUP ()")
         group_action.triggered.connect(lambda _checked=False: self._group_selection())
+        not_action = menu.addAction("NOT()")
+        not_action.triggered.connect(lambda _checked=False: self._wrap_selection("NOT(", ")"))
 
     def _group_selection(self) -> None:
+        self._wrap_selection("(", ")")
+
+    def _wrap_selection(self, prefix: str, suffix: str) -> None:
         start = self.selectionStart()
         if start >= 0 and self.hasSelectedText():
             text = self.text()
             selected = self.selectedText()
-            self.setText(text[:start] + "(" + selected + ")" + text[start + len(selected):])
-            self.setCursorPosition(start + len(selected) + 2)
+            self.setText(text[:start] + prefix + selected + suffix + text[start + len(selected):])
+            self.setCursorPosition(start + len(prefix) + len(selected) + len(suffix))
             return
         cursor = self.cursorPosition()
-        self.insert("()")
-        self.setCursorPosition(cursor + 1)
+        self.insert(prefix + suffix)
+        self.setCursorPosition(cursor + len(prefix))
 
     def keyPressEvent(self, event) -> None:
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -505,24 +510,26 @@ class DecisionProfileEditorDialog(QDialog):
         self._action_language = KeywordLineEdit()
         self._title_pattern = KeywordLineEdit()
         self._title_pattern.setPlaceholderText("{lang_name} {codec} {channels} {audio_object}")
+        self._action_flags = KeywordLineEdit()
+        self._action_flags.setPlaceholderText("default, !forced")
         self._action_tag = KeywordLineEdit()
         self._action_tag.setPlaceholderText("vf_main, forced_sub")
+        self._action_order = QSpinBox()
+        self._action_order.setRange(0, 100000)
+        self._action_order.setSpecialValueText("—")
         action_grid.addWidget(QLabel(translate_text("Sélection")), 0, 0)
         action_grid.addWidget(self._action_enabled, 0, 1)
         action_grid.addWidget(QLabel(translate_text("Langue")), 1, 0)
         action_grid.addWidget(self._action_language, 1, 1)
         action_grid.addWidget(QLabel(translate_text("Titre pattern")), 2, 0)
         action_grid.addWidget(self._title_pattern, 2, 1)
-        action_grid.addWidget(QLabel(translate_text("Tags piste")), 3, 0)
-        action_grid.addWidget(self._action_tag, 3, 1)
+        action_grid.addWidget(QLabel("Flags"), 3, 0)
+        action_grid.addWidget(self._action_flags, 3, 1)
+        action_grid.addWidget(QLabel(translate_text("Tags piste")), 4, 0)
+        action_grid.addWidget(self._action_tag, 4, 1)
+        action_grid.addWidget(QLabel(translate_text("Ordre")), 5, 0)
+        action_grid.addWidget(self._action_order, 5, 1)
         layout.addWidget(action_box)
-
-        tokens_box = QGroupBox(translate_text("Keywords"))
-        tokens_layout = QVBoxLayout(tokens_box)
-        self._keyword_button = QPushButton(translate_text("Insérer keyword"))
-        self._keyword_button.setMenu(self._build_keyword_menu())
-        tokens_layout.addWidget(self._keyword_button)
-        layout.addWidget(tokens_box)
         layout.addStretch()
 
         for widget in (
@@ -548,7 +555,9 @@ class DecisionProfileEditorDialog(QDialog):
             self._action_enabled,
             self._action_language,
             self._title_pattern,
+            self._action_flags,
             self._action_tag,
+            self._action_order,
         ):
             signal = getattr(widget, "textChanged", None) or getattr(widget, "currentIndexChanged", None) or getattr(widget, "valueChanged", None) or getattr(widget, "stateChanged", None)
             if signal is not None:
@@ -568,6 +577,12 @@ class DecisionProfileEditorDialog(QDialog):
         self._preview = QPlainTextEdit()
         self._preview.setReadOnly(True)
         layout.addWidget(self._preview, stretch=1)
+        tokens_box = QGroupBox(translate_text("Keywords"))
+        tokens_layout = QVBoxLayout(tokens_box)
+        self._keyword_button = QPushButton(translate_text("Insérer keyword"))
+        self._keyword_button.setMenu(self._build_keyword_menu())
+        tokens_layout.addWidget(self._keyword_button)
+        layout.addWidget(tokens_box)
         return panel
 
     def _load_profile_to_ui(self) -> None:
@@ -736,7 +751,9 @@ class DecisionProfileEditorDialog(QDialog):
             self._action_enabled,
             self._action_language,
             self._title_pattern,
+            self._action_flags,
             self._action_tag,
+            self._action_order,
         ):
             widget.blockSignals(True)
             widget.setEnabled(enabled)
@@ -760,7 +777,9 @@ class DecisionProfileEditorDialog(QDialog):
             self._match_preferred_keywords.clear()
             self._action_language.clear()
             self._title_pattern.clear()
+            self._action_flags.clear()
             self._action_tag.clear()
+            self._action_order.setValue(0)
         else:
             self._rule_enabled.setChecked(bool(rule.get("enabled", True)))
             self._rule_label.setText(str(rule.get("label") or ""))
@@ -789,8 +808,13 @@ class DecisionProfileEditorDialog(QDialog):
             self._action_language.setText(str(lang_action.get("value") or "") if isinstance(lang_action, dict) else "")
             title_action = next((action for action in actions if action.get("type") == "set_title"), None)
             self._title_pattern.setText(str(title_action.get("pattern") or title_action.get("value") or "") if isinstance(title_action, dict) else "")
+            flag_action = next((action for action in actions if action.get("type") == "set_flags"), None)
+            self._action_flags.setText(self._format_flag_action_values(flag_action.get("value", flag_action.get("flags", {})) if isinstance(flag_action, dict) else {}))
             tag_action = next((action for action in actions if action.get("type") == "add_track_tags"), None)
-            self._action_tag.setText(", ".join(tag_action.get("value", [])) if isinstance(tag_action, dict) and isinstance(tag_action.get("value"), list) else "")
+            remove_tag_action = next((action for action in actions if action.get("type") == "remove_track_tags"), None)
+            self._action_tag.setText(self._format_track_tag_action_values(tag_action, remove_tag_action))
+            order_action = next((action for action in actions if action.get("type") == "set_order_priority"), None)
+            self._action_order.setValue(max(0, int(order_action.get("value") or 0)) if isinstance(order_action, dict) else 0)
         for widget in (
             self._rule_enabled,
             self._rule_label,
@@ -814,7 +838,9 @@ class DecisionProfileEditorDialog(QDialog):
             self._action_enabled,
             self._action_language,
             self._title_pattern,
+            self._action_flags,
             self._action_tag,
+            self._action_order,
         ):
             widget.blockSignals(False)
 
@@ -838,10 +864,10 @@ class DecisionProfileEditorDialog(QDialog):
         rule["write_mode"] = str(self._rule_write_mode.currentData() or "priority")
         try:
             rule["match"] = self._simple_match_payload()
+            rule["actions"] = self._simple_actions_payload(rule)
             self._match_error = ""
         except _CriteriaExpressionError as exc:
             self._match_error = str(exc)
-        rule["actions"] = self._simple_actions_payload(rule)
         self._refresh_rule_list_item(self._selected_rule_index)
 
     def _refresh_rule_list_item(self, index: int) -> None:
@@ -980,12 +1006,16 @@ class DecisionProfileEditorDialog(QDialog):
         return "".join(output)
 
     def _text_or_keyword_condition(self, atom: str, *, field: str, op: str, required: bool) -> dict[str, Any]:
+        if is_none_keyword(atom):
+            return {"field": field, "op": "missing", "required": required}
         keyword_field = self._keyword_to_match_field(atom)
         if keyword_field:
             return {"field": keyword_field, "op": "is", "value": True, "required": required}
         return {"field": field, "op": op, "value": self._unwrapped_atom(atom), "required": required}
 
     def _flag_condition(self, atom: str, *, required: bool) -> dict[str, Any]:
+        if is_none_keyword(atom):
+            return {"field": "flags", "op": "missing", "required": required}
         key = self._unwrapped_atom(atom).removeprefix("flag_")
         if key not in FLAG_NAMES:
             raise _CriteriaExpressionError(translate_text("flag inconnu : {value}", value=atom))
@@ -1041,8 +1071,71 @@ class DecisionProfileEditorDialog(QDialog):
     def _keyword_to_match_field(keyword: str) -> str:
         return keyword_to_match_field(keyword)
 
+    @staticmethod
+    def _split_action_tokens(text: str) -> list[str]:
+        return [value.strip() for value in re.split(r"[,;]", str(text or "")) if value.strip()]
+
+    @staticmethod
+    def _format_flag_action_values(flags: Any) -> str:
+        if not isinstance(flags, dict):
+            return ""
+        parts: list[str] = []
+        for name in FLAG_NAMES:
+            if name not in flags:
+                continue
+            parts.append(name if bool(flags.get(name)) else f"!{name}")
+        return ", ".join(parts)
+
+    @staticmethod
+    def _format_track_tag_action_values(add_action: Any, remove_action: Any) -> str:
+        parts: list[str] = []
+        if isinstance(add_action, dict):
+            values = add_action.get("value", [])
+            if isinstance(values, str):
+                values = [values]
+            if isinstance(values, list):
+                parts.extend(str(value) for value in values if str(value or "").strip())
+        if isinstance(remove_action, dict):
+            values = remove_action.get("value", [])
+            if isinstance(values, str):
+                values = [values]
+            if isinstance(values, list):
+                parts.extend("!" + str(value).strip().lstrip("!") for value in values if str(value or "").strip())
+        return ", ".join(parts)
+
+    def _parse_flag_action_values(self, text: str) -> dict[str, bool]:
+        flags: dict[str, bool] = {}
+        for token in self._split_action_tokens(text):
+            enabled = not token.startswith("!")
+            key = token[1:] if token.startswith("!") else token
+            key = self._unwrapped_atom(key).removeprefix("flag_")
+            if key not in FLAG_NAMES:
+                raise _CriteriaExpressionError(translate_text("flag inconnu : {value}", value=token))
+            flags[key] = enabled
+        return flags
+
+    def _parse_track_tag_action_values(self, text: str) -> tuple[list[str], list[str]]:
+        add_tags: list[str] = []
+        remove_tags: list[str] = []
+        for token in self._split_action_tokens(text):
+            if token.startswith("!"):
+                value = token[1:].strip()
+                if value:
+                    remove_tags.append(value)
+            else:
+                add_tags.append(token)
+        return add_tags, remove_tags
+
     def _simple_actions_payload(self, existing_rule: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        managed = {"set_enabled", "set_language", "set_title", "add_track_tags"}
+        managed = {
+            "set_enabled",
+            "set_language",
+            "set_title",
+            "set_flags",
+            "add_track_tags",
+            "remove_track_tags",
+            "set_order_priority",
+        }
         existing_actions = existing_rule.get("actions", []) if isinstance(existing_rule, dict) else []
         actions: list[dict[str, Any]] = [
             copy.deepcopy(action)
@@ -1063,9 +1156,17 @@ class DecisionProfileEditorDialog(QDialog):
             else:
                 action["value"] = pattern
             actions.append(action)
-        tags = [value.strip() for value in self._action_tag.text().split(",") if value.strip()]
-        if tags:
-            actions.append({"type": "add_track_tags", "value": tags})
+        flags = self._parse_flag_action_values(self._action_flags.text())
+        if flags:
+            actions.append({"type": "set_flags", "value": flags})
+        add_tags, remove_tags = self._parse_track_tag_action_values(self._action_tag.text())
+        if remove_tags:
+            actions.append({"type": "remove_track_tags", "value": remove_tags})
+        if add_tags:
+            actions.append({"type": "add_track_tags", "value": add_tags})
+        order_priority = int(self._action_order.value())
+        if order_priority > 0:
+            actions.append({"type": "set_order_priority", "value": order_priority})
         return actions
 
     def _flatten_simple_match(self, match: Any) -> dict[str, Any]:
@@ -1115,6 +1216,8 @@ class DecisionProfileEditorDialog(QDialog):
                 flat["video_hdr"] = bool(flags & VIDEO_FLAG_HDR)
                 flat["video_hdr10plus"] = bool(flags & VIDEO_FLAG_HDR10PLUS)
                 flat["video_dolby_vision"] = bool(flags & VIDEO_FLAG_DOLBY_VISION)
+            elif field == "flags" and item.get("op") in {"missing", "not_exists"}:
+                flat["flags"].append("{none}")
             elif field in {"title", "source_title"}:
                 flat["title_contains"] = value
             elif field.startswith("flag_") and value is True:
@@ -1162,6 +1265,14 @@ class DecisionProfileEditorDialog(QDialog):
                 else:
                     rendered_parts.append(text)
             return separator.join(rendered_parts), op
+        if "not" in condition:
+            parsed = self._condition_expression_parts(condition.get("not"), atom_builder)
+            if not parsed:
+                return None
+            text, child_op = parsed
+            if child_op in {"all", "any"}:
+                return f"!({text})", "not"
+            return "!" + text, "not"
         atom = atom_builder(condition)
         if not atom:
             return None
@@ -1186,22 +1297,30 @@ class DecisionProfileEditorDialog(QDialog):
                 items = condition.get(key)
                 if isinstance(items, list):
                     return any(DecisionProfileEditorDialog._condition_required(item) for item in items)
+            if "not" in condition:
+                return DecisionProfileEditorDialog._condition_required(condition.get("not"))
         return False
 
     @staticmethod
     def _language_atom(condition: dict[str, Any]) -> str:
+        if condition.get("field") == "language" and condition.get("op") in {"missing", "not_exists"}:
+            return "{none}"
         if condition.get("field") == "language" and condition.get("op") == "is":
             return str(condition.get("value") or "")
         return ""
 
     @staticmethod
     def _codec_atom(condition: dict[str, Any]) -> str:
+        if condition.get("field") == "codec" and condition.get("op") in {"missing", "not_exists"}:
+            return "{none}"
         if condition.get("field") == "codec" and condition.get("op") == "is":
             return str(condition.get("value") or "")
         return ""
 
     @staticmethod
     def _title_atom(condition: dict[str, Any]) -> str:
+        if condition.get("field") in {"title", "source_title"} and condition.get("op") in {"missing", "not_exists"}:
+            return "{none}"
         if condition.get("field") in {"title", "source_title"} and condition.get("op") == "contains":
             return str(condition.get("value") or "")
         return ""
@@ -1209,6 +1328,8 @@ class DecisionProfileEditorDialog(QDialog):
     @staticmethod
     def _flag_atom(condition: dict[str, Any]) -> str:
         field = str(condition.get("field") or "")
+        if field == "flags" and condition.get("op") in {"missing", "not_exists"}:
+            return "{none}"
         if field.startswith("flag_") and condition.get("value") is True and not bool(condition.get("required", True)):
             return field.removeprefix("flag_")
         return ""
@@ -1253,6 +1374,7 @@ class DecisionProfileEditorDialog(QDialog):
             self._match_keywords,
             self._action_language,
             self._title_pattern,
+            self._action_flags,
             self._action_tag,
         ):
             target = self._title_pattern
@@ -1285,13 +1407,13 @@ class DecisionProfileEditorDialog(QDialog):
         elif kind == "language":
             base.update(label=translate_text("Garder langue"), scope="all", match={"all": [{"field": "language", "op": "is", "value": "fr-FR", "required": True}]}, actions=[{"type": "set_enabled", "value": True}])
         elif kind == "no_commentary":
-            base.update(label=translate_text("Exclure commentaire"), scope="all", match={"any": [{"field": "source_title", "op": "contains", "value": "comment", "required": True}, {"field": "flag_commentary", "op": "is", "value": True, "required": True}]}, actions=[{"type": "set_enabled", "value": False}])
+            base.update(label=translate_text("Exclure commentaire"), scope="all", match={"all": [{"any": [{"field": "source_title", "op": "contains", "value": "comment", "required": True}, {"field": "source_title", "op": "contains", "value": "commentary", "required": True}]}]}, actions=[{"type": "set_enabled", "value": False}])
         elif kind == "rename":
             base.update(label=translate_text("Renommer par pattern"), scope="all", actions=[{"type": "set_title", "pattern": "{lang_name} {codec} {channels} {audio_object}"}])
         elif kind == "flags":
             base.update(label=translate_text("Appliquer flags"), actions=[{"type": "set_flags", "value": {"default": True}}])
         elif kind == "order":
-            base.update(group_id="order", label=translate_text("Ordre"), actions=[{"type": "set_order_priority", "value": 100}])
+            base.update(group_id="order", label=translate_text("Ordre"), actions=[{"type": "set_order_priority", "value": 1}])
         elif kind == "variant":
             base.update(label=translate_text("Variante audio"), match={"all": [{"field": "type", "op": "is", "value": "audio", "required": True}]}, actions=[{"type": "create_audio_variant", "codec": "ac3", "bitrate_kbps": 640, "title_pattern": "{lang_name} AC3 {channels}"}])
         elif kind == "tag":

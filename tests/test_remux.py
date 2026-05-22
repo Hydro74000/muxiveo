@@ -1975,6 +1975,39 @@ class TestRemuxPanelDecisionProfiles:
         panel_a.close()
         panel_b.close()
 
+    def test_decision_profile_order_priority_updates_config_track_order_by_entry_id(self, qt_app, tmp_path):
+        video = _track(0, "video", file_id="fid", codec="HEVC", language="und", orig_language="und")
+        audio_fr = _track(1, "audio", file_id="fid", language="fr-FR", orig_language="fr-FR", title="French")
+        audio_en = _track(2, "audio", file_id="fid", language="en-US", orig_language="en-US", title="English")
+        panel = self._panel_with_tracks(qt_app, tmp_path, [video, audio_fr, audio_en])
+        panel._output_edit.setText(str(tmp_path / "out.mkv"))
+        profile = {
+            "version": 1,
+            "kind": "decision-profile",
+            "name": "Order",
+            "rules": [
+                {
+                    "id": "audio",
+                    "scope": "all",
+                    "match": {"all": [{"field": "type", "op": "is", "value": "audio"}]},
+                    "actions": [{"type": "set_order_priority", "value": 1}],
+                },
+                {
+                    "id": "video",
+                    "scope": "all",
+                    "match": {"all": [{"field": "type", "op": "is", "value": "video"}]},
+                    "actions": [{"type": "set_order_priority", "value": 2}],
+                },
+            ],
+        }
+
+        panel._apply_decision_profile(profile)
+        config = panel.collect_config()
+
+        assert config is not None
+        assert [item[2] for item in config.track_order] == [audio_fr.entry_id, audio_en.entry_id, video.entry_id]
+        panel.close()
+
     def test_profile_editor_video_criteria_build_resolution_and_hdr_flags(self, qt_app, tmp_path):
         from core.profiles.decision import DecisionProfileManager
         from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
@@ -2023,6 +2056,20 @@ class TestRemuxPanelDecisionProfiles:
         assert by_field["language"]["required"] is True
         assert by_field["codec"]["required"] is True
         assert by_field["codec_atmos"]["required"] is False
+        dialog.close()
+
+    def test_profile_editor_no_commentary_template_prefills_visible_criteria(self, qt_app, tmp_path):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"))
+        dialog._add_template_rule("no_commentary")
+
+        profile = dialog.profile()
+
+        assert dialog._match_title.text() == "comment | commentary"
+        assert [item["value"] for item in profile["rules"][0]["match"]["all"][0]["any"]] == ["comment", "commentary"]
+        assert profile["rules"][0]["actions"] == [{"type": "set_enabled", "value": False}]
         dialog.close()
 
     def test_profile_editor_title_contains_filters_all_matching_subtitles(self, qt_app, tmp_path):
@@ -2236,6 +2283,73 @@ class TestRemuxPanelDecisionProfiles:
         assert "resolution" not in fields
         dialog.close()
 
+    def test_profile_editor_serializes_not_none_flags_tags_and_order(self, qt_app, tmp_path):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"))
+        dialog._add_template_rule("language")
+        dialog._match_title.setText("!(Commentary | Descriptive)")
+        dialog._match_flags.setText("{none}")
+        dialog._action_flags.setText("default, !forced")
+        dialog._action_tag.setText("vf_main, !old_tag")
+        dialog._action_order.setValue(800)
+
+        profile = dialog.profile()
+        rule = profile["rules"][0]
+        title_condition = next(item for item in rule["match"]["all"] if "not" in item)
+        flags_condition = next(item for item in rule["match"]["all"] if item.get("field") == "flags")
+        actions = rule["actions"]
+
+        assert title_condition["not"]["any"][0]["value"] == "Commentary"
+        assert flags_condition["op"] == "missing"
+        assert {"type": "set_flags", "value": {"default": True, "forced": False}} in actions
+        assert {"type": "remove_track_tags", "value": ["old_tag"]} in actions
+        assert {"type": "add_track_tags", "value": ["vf_main"]} in actions
+        assert {"type": "set_order_priority", "value": 800} in actions
+        dialog.close()
+
+    def test_profile_editor_loads_not_flags_tags_and_order(self, qt_app, tmp_path):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        dialog = DecisionProfileEditorDialog(
+            manager=DecisionProfileManager(tmp_path / "profiles"),
+            profile={
+                "version": 1,
+                "kind": "decision-profile",
+                "name": "Load",
+                "rules": [
+                    {
+                        "id": "r1",
+                        "match": {
+                            "all": [
+                                {"not": {"any": [
+                                    {"field": "source_title", "op": "contains", "value": "Commentary", "required": True},
+                                    {"field": "source_title", "op": "contains", "value": "Descriptive", "required": True},
+                                ]}},
+                                {"field": "flags", "op": "missing", "required": False},
+                            ]
+                        },
+                        "actions": [
+                            {"type": "set_flags", "value": {"default": True, "forced": False}},
+                            {"type": "remove_track_tags", "value": ["old_tag"]},
+                            {"type": "add_track_tags", "value": ["vf_main"]},
+                            {"type": "set_order_priority", "value": 800},
+                        ],
+                    }
+                ],
+            },
+        )
+        dialog._rule_list.setCurrentRow(0)
+
+        assert dialog._match_title.text() == "!(Commentary | Descriptive)"
+        assert dialog._match_flags.text() == "{none}"
+        assert dialog._action_flags.text() == "default, !forced"
+        assert dialog._action_tag.text() == "vf_main, !old_tag"
+        assert dialog._action_order.value() == 800
+        dialog.close()
+
     def test_profile_editor_keywords_are_grouped_in_menu(self, qt_app, tmp_path):
         from core.profiles.decision import DecisionProfileManager
         from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog, KeywordLineEdit
@@ -2244,13 +2358,19 @@ class TestRemuxPanelDecisionProfiles:
         menu = dialog._keyword_button.menu()
 
         assert menu is not None
-        assert len(menu.actions()) == 6
+        assert len(menu.actions()) == 7
         video_menu = next(
             submenu
             for submenu in (action.menu() for action in menu.actions())
             if submenu is not None and "{video_dolby_vision}" in [item.text() for item in submenu.actions()]
         )
+        misc_menu = next(
+            submenu
+            for submenu in (action.menu() for action in menu.actions())
+            if submenu is not None and "{none}" in [item.text() for item in submenu.actions()]
+        )
         assert video_menu is not None
+        assert misc_menu is not None
         assert isinstance(dialog._title_pattern, KeywordLineEdit)
         dialog.close()
 
@@ -2268,7 +2388,7 @@ class TestRemuxPanelDecisionProfiles:
             (True, "codec"),
             (True, "channels"),
         ]
-        assert len(menu.actions()) == 6
+        assert len(menu.actions()) == 7
         audio_menu = next(
             submenu
             for submenu in (action.menu() for action in menu.actions())
@@ -2285,7 +2405,7 @@ class TestRemuxPanelDecisionProfiles:
         menu = QMenu()
         edit._populate_operands_menu(menu)
 
-        assert [action.text() for action in menu.actions()] == ["AND", "OR", "GROUP ()"]
+        assert [action.text() for action in menu.actions()] == ["AND", "OR", "GROUP ()", "NOT()"]
 
         edit.setText("VFQ VFF")
         edit.setSelection(0, 3)
@@ -2297,6 +2417,12 @@ class TestRemuxPanelDecisionProfiles:
         menu.actions()[2].trigger()
         assert edit.text() == "()"
         assert edit.cursorPosition() == 1
+
+        edit.clear()
+        edit.setText("VFQ VFF")
+        edit.setSelection(0, 3)
+        menu.actions()[3].trigger()
+        assert edit.text() == "NOT(VFQ) VFF"
 
         edit.clear()
         menu.actions()[0].trigger()

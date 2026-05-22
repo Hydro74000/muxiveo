@@ -265,7 +265,7 @@ Dans le panneau Remux, **Éditer profil** ouvre une fenêtre dédiée :
 - panneau gauche : groupes et règles
 - panneau central : critères, actions, priorité, mode d'écriture, tags, patterns
 - panneau droit : preview piste par piste
-- bouton **Insérer keyword** : menu par catégories pour remplir le champ actif sans afficher toute la liste en permanence
+- bouton **Insérer keyword** sous la preview : menu par catégories pour remplir le champ actif sans afficher toute la liste en permanence
 - clic droit dans un champ compatible : entrée **Insérer keyword** avec les mêmes catégories
 - keywords affichés comme badges lorsque le champ n'est pas en cours d'édition
 - critères obligatoires ou préférés : un préféré donne un bonus de priorité sans bloquer le fallback
@@ -305,6 +305,7 @@ Les champs texte de critères acceptent une mini-syntaxe commune au GUI et au CL
 
 - `&` signifie **AND**
 - `|` signifie **OR**
+- `!` ou `NOT(...)` signifie **NOT**
 - les parenthèses fixent la priorité
 
 Exemples :
@@ -312,6 +313,8 @@ Exemples :
 ```text
 VFQ | VFF
 (VFQ | VFF) & Forced
+!(Commentary | Descriptive)
+NOT({flag_forced} | {flag_commentary})
 EAC3 | AC3
 {atmos} | {dtsx}
 ```
@@ -325,6 +328,10 @@ Pour chercher un caractère `&`, `|`, `(` ou `)` comme texte réel, utilisez des
 Dolby \& DTS
 \(VFQ\)
 ```
+
+`!` doit toucher directement l'élément exclu : `!Commentary` ou `!(A | B)` sont valides, `! Commentary` ne l'est pas.
+
+Le keyword `{none}` permet de chercher une valeur vide dans le champ courant. Dans le champ **Flags**, `{none}` cible les pistes sans flag actif.
 
 Les expressions invalides bloquent la sauvegarde du profil et s'affichent dans la preview au lieu de faire planter l'éditeur.
 
@@ -382,19 +389,21 @@ La priorité règle donc l'ordre d'évaluation et les écritures concurrentes. E
 
 L'ordre de sortie se règle avec le modèle/action **Ordre**. Cette action donne une priorité d'ordre à la piste matchée :
 
-- plus la valeur est haute, plus la piste remonte
+- plus la valeur est basse, plus la piste remonte : `1` sort en premier, `999` sort après
 - les pistes sans priorité d'ordre gardent leur ordre relatif
 - si deux pistes ont la même priorité d'ordre, leur ordre relatif reste stable
+
+Dans l'éditeur, le champ **Ordre** des actions écrit cette priorité. Si plusieurs règles donnent un ordre à la même piste, les priorités de groupe puis de règle déterminent la valeur gardée. Au moment du traitement, la table réordonnée est exportée avec les `entry_id` des pistes pour distinguer correctement les pistes dupliquées ou variantes.
 
 Une façon simple de construire un profil d'ordre :
 
 | Règle | Portée | Critères | Action d'ordre |
 |-------|--------|----------|----------------|
-| Vidéo principale | `best` | type vidéo, 2160p/HDR/Dolby Vision préférés | `1000` |
-| Audio FR principale | `best` | langue `fr-FR`, codec voulu, Atmos préféré | `800` |
-| Audio VO principale | `best` | langue `en-US`, codec voulu, Atmos préféré | `700` |
-| Sous-titres FR forcés | `all` | langue `fr-FR`, flag forced | `400` |
-| Sous-titres FR complets | `best` | langue `fr-FR`, non forced | `300` |
+| Vidéo principale | `best` | type vidéo, 2160p/HDR/Dolby Vision préférés | `1` |
+| Audio FR principale | `best` | langue `fr-FR`, codec voulu, Atmos préféré | `2` |
+| Audio VO principale | `best` | langue `en-US`, codec voulu, Atmos préféré | `3` |
+| Sous-titres FR forcés | `all` | langue `fr-FR`, flag forced | `10` |
+| Sous-titres FR complets | `best` | langue `fr-FR`, non forced | `20` |
 
 Pour ordonner proprement, séparez souvent les intentions :
 
@@ -411,6 +420,8 @@ Les keywords servent à trois choses :
 - renommer une piste avec un pattern de titre
 - identifier une piste dans les critères du profil, par exemple `{flag_visual_impaired}` ou `{codec_atmos}`
 - compléter certains champs d'action, par exemple garder la langue courante avec `{language}`
+
+Dans les actions, `!flag` retire un flag MKV (`default, !forced`) et `!tag` retire un tag temporaire (`vf_main, !old_tag`). Les retraits de tags sont appliqués avant les ajouts de la même règle.
 
 #### Variables
 
@@ -478,6 +489,7 @@ Keywords disponibles au premier lot :
 {flags} {flag_enabled} {flag_default} {flag_forced}
 {flag_hearing_impaired} {flag_visual_impaired}
 {flag_original} {flag_commentary}
+{track_tags} {none}
 ```
 
 Pour la vidéo, `width` et `height` sont indépendants : vous pouvez renseigner seulement la largeur, seulement la hauteur, les deux, ou aucun des deux. La profondeur couleur, quand elle est détectée, est prise en compte dans les caractéristiques techniques internes (`video_flags_hex`) mais n'a pas de champ dédié dans l'éditeur simple.

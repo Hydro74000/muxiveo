@@ -135,12 +135,13 @@ réutilisables :
         "all": [
           {"field": "type", "op": "is", "value": "audio"},
           {"field": "language", "op": "is", "value": "fr-FR"},
-          {"field": "source_title", "op": "contains", "expr": "VFQ | VFF", "required": false}
+          {"field": "source_title", "op": "contains", "expr": "(VFQ | VFF) & !Commentary", "required": false}
         ]
       },
       "actions": [
         {"type": "set_enabled", "value": true},
-        {"type": "set_title", "pattern": "{lang_name} {codec} {channels} {audio_object}"}
+        {"type": "set_title", "pattern": "{lang_name} {codec} {channels} {audio_object}"},
+        {"type": "remove_track_tags", "value": ["old_tag"]}
       ]
     }
   ]
@@ -152,6 +153,10 @@ réutilisables :
 - `"priority"` : la plus forte priorité gagne; une priorité égale reste un conflit;
 - `"override"` : cette règle remplace une valeur déjà proposée;
 - `"add"` : cette règle complète sans écraser; pour un titre, le fragment est ajouté.
+
+Les expressions acceptent aussi `!` en raccourci et `NOT(...)` pour exclure un critère.
+Le keyword `{none}` cible une valeur vide dans le champ courant. Les actions
+`remove_track_tags` sont appliquées avant les `add_track_tags` de la même règle.
 
 Les conditions peuvent utiliser soit `value`, soit `expr`. `expr` accepte la
 même syntaxe que l'éditeur de profils :

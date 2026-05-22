@@ -251,6 +251,8 @@ def _expr_ast_contains_only_keywords(ast: tuple[str, Any]) -> bool:
         return bool(keyword_registry.keyword_to_match_field(str(value)))
     if kind in {"all", "any"}:
         return all(_expr_ast_contains_only_keywords(child) for child in value)
+    if kind == "not":
+        return _expr_ast_contains_only_keywords(value)
     return False
 
 
@@ -435,6 +437,17 @@ def _compile_expression_condition(condition: Mapping[str, Any]) -> dict[str, Any
     base_op = str(condition.get("op") or "is").strip().lower()
 
     def atom_builder(atom: str) -> Mapping[str, Any] | None:
+        if keyword_registry.is_none_keyword(atom):
+            if not base_field:
+                raise CriteriaExpressionError(f"champ requis pour la valeur : {atom}")
+            leaf = {
+                "field": base_field,
+                "op": "missing",
+                "required": required,
+            }
+            if weight is not None:
+                leaf["weight"] = weight
+            return leaf
         keyword_field = keyword_registry.keyword_to_match_field(atom)
         if keyword_field:
             leaf: dict[str, Any] = {
@@ -748,6 +761,44 @@ def _action_value(action: Mapping[str, Any], key: str = "value", default: Any = 
     return action.get(key, action.get("pattern", default))
 
 
+def _render_track_tag_action_values(
+    values: Any,
+    track: TrackEntry,
+    *,
+    tags: set[str],
+    source_index_by_file_id: Mapping[str, int] | None,
+    variables: Mapping[str, Any] | None,
+) -> list[str]:
+    if isinstance(values, str):
+        values = [values]
+    rendered: list[str] = []
+    if not isinstance(values, Sequence):
+        return rendered
+    for value in values:
+        text = str(value or "").strip()
+        if "{" in text and "}" in text:
+            text = render_title_pattern(
+                text,
+                track,
+                temporary_tags=tags,
+                source_index_by_file_id=source_index_by_file_id,
+                variables=variables,
+            )
+        if text:
+            rendered.append(text)
+    return rendered
+
+
+def _rule_actions_for_application(rule: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    actions = rule.get("actions", [])
+    if not isinstance(actions, list):
+        return []
+    mappings = [action for action in actions if isinstance(action, Mapping)]
+    removals = [action for action in mappings if _action_type(action) == "remove_track_tags"]
+    others = [action for action in mappings if _action_type(action) != "remove_track_tags"]
+    return removals + others
+
+
 def _rule_write_mode(rule: Mapping[str, Any], action: Mapping[str, Any] | None = None) -> str:
     raw = ""
     if action is not None:
@@ -1039,25 +1090,40 @@ def _apply_rule_action(
                         skipped_writes=skipped_writes,
                         conflict_choices=conflict_choices,
                     )
+    elif action_name == "remove_track_tags":
+        for text in _render_track_tag_action_values(
+            action.get("value", []),
+            track,
+            tags=tags,
+            source_index_by_file_id=source_index_by_file_id,
+            variables=variables,
+        ):
+            tags.discard(text)
     elif action_name == "add_track_tags":
-        values = action.get("value", [])
-        if isinstance(values, str):
-            values = [values]
-        if isinstance(values, Sequence):
-            for value in values:
-                text = str(value or "").strip()
-                if "{" in text and "}" in text:
-                    text = render_title_pattern(
-                        text,
-                        track,
-                        temporary_tags=tags,
-                        source_index_by_file_id=source_index_by_file_id,
-                        variables=variables,
-                    )
-                if text:
-                    tags.add(text)
+        for text in _render_track_tag_action_values(
+            action.get("value", []),
+            track,
+            tags=tags,
+            source_index_by_file_id=source_index_by_file_id,
+            variables=variables,
+        ):
+            tags.add(text)
     elif action_name == "set_order_priority":
-        order_priorities[track.entry_id] = int(action.get("value") or 0)
+        value = int(action.get("value") or 0)
+        if value > 0 and _field_change(
+            track,
+            "order_priority",
+            value,
+            rule=rule,
+            mode=write_mode,
+            priority_key=priority_key,
+            proposed=proposed,
+            conflicts=conflicts,
+            resolved_writes=resolved_writes,
+            skipped_writes=skipped_writes,
+            conflict_choices=conflict_choices,
+        ):
+            order_priorities[track.entry_id] = value
     elif action_name == "create_audio_variant" and track.track_type == "audio":
         _apply_audio_variant_action(
             action,
@@ -1242,25 +1308,24 @@ def apply_decision_profile(
             continue
         priority_key = _rule_resolution_key(rule, group_priority.get(group_id, 0))
         for _score, track in matches:
-            for action in rule.get("actions", []) if isinstance(rule.get("actions"), list) else []:
-                if isinstance(action, Mapping):
-                    _apply_rule_action(
-                        action,
-                        track,
-                        rule=rule,
-                        priority_key=priority_key,
-                        tracks=working,
-                        temporary_tags_by_entry_id=temporary_tags_by_entry_id,
-                        order_priorities=order_priorities,
-                        proposed=proposed,
-                        conflicts=conflicts,
-                        resolved_writes=resolved_writes,
-                        skipped_writes=skipped_writes,
-                        report=report,
-                        conflict_choices=conflict_choices,
-                        source_index_by_file_id=source_index_by_file_id,
-                        variables=variables,
-                    )
+            for action in _rule_actions_for_application(rule):
+                _apply_rule_action(
+                    action,
+                    track,
+                    rule=rule,
+                    priority_key=priority_key,
+                    tracks=working,
+                    temporary_tags_by_entry_id=temporary_tags_by_entry_id,
+                    order_priorities=order_priorities,
+                    proposed=proposed,
+                    conflicts=conflicts,
+                    resolved_writes=resolved_writes,
+                    skipped_writes=skipped_writes,
+                    report=report,
+                    conflict_choices=conflict_choices,
+                    source_index_by_file_id=source_index_by_file_id,
+                    variables=variables,
+                )
             report["applied_rules"] += 1
 
     selection_policy = profile.get("selection_policy", {})
@@ -1277,7 +1342,12 @@ def apply_decision_profile(
     if order_priorities:
         before_order = [track.entry_id for track in working]
         stable_index = {track.entry_id: index for index, track in enumerate(working)}
-        working.sort(key=lambda track: (-order_priorities.get(track.entry_id, 0), stable_index.get(track.entry_id, 0)))
+        working.sort(
+            key=lambda track: (
+                order_priorities.get(track.entry_id, 1_000_000),
+                stable_index.get(track.entry_id, 0),
+            )
+        )
         report["order_changed"] = before_order != [track.entry_id for track in working]
 
     report["track_tags"] = {
@@ -1401,7 +1471,7 @@ def remux_config_to_decision_profile(
         if include_flags:
             actions.append({"type": "set_flags", "value": _flag_action_payload(track)})
         if include_order and track.enabled:
-            actions.append({"type": "set_order_priority", "value": len(original_tracks) - index})
+            actions.append({"type": "set_order_priority", "value": index + 1})
         if not actions:
             continue
         rule_id = f"{track.track_type}_{index + 1}"
