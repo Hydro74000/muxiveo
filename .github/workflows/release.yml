@@ -38,7 +38,16 @@ jobs:
       appimage_update_release: ${{ steps.metadata.outputs.appimage_update_release }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ github.ref }}
+          CHECKOUT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$CHECKOUT_REF"
+          git checkout --force "$CHECKOUT_SHA"
 
       - name: Compute release identity
         id: metadata
@@ -107,7 +116,16 @@ jobs:
     needs: release-metadata
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ github.ref }}
+          CHECKOUT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$CHECKOUT_REF"
+          git checkout --force "$CHECKOUT_SHA"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -151,7 +169,16 @@ jobs:
     needs: release-metadata
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        shell: pwsh
+        env:
+          CHECKOUT_REF: ${{ github.ref }}
+          CHECKOUT_SHA: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          git init .
+          git remote add origin "https://github.com/$env:GITHUB_REPOSITORY.git"
+          git fetch --no-tags --depth=1 origin "$env:CHECKOUT_REF"
+          git checkout --force "$env:CHECKOUT_SHA"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -201,7 +228,16 @@ jobs:
     needs: release-metadata
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ github.ref }}
+          CHECKOUT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$CHECKOUT_REF"
+          git checkout --force "$CHECKOUT_SHA"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -255,7 +291,16 @@ jobs:
       - build-macos
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ github.ref }}
+          CHECKOUT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$CHECKOUT_REF"
+          git checkout --force "$CHECKOUT_SHA"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -278,7 +323,7 @@ jobs:
         id: tools
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || '' }}
         run: |
           set -euo pipefail
           DOVI_JSON=$(python scripts/github_release_asset.py --repo quietvoid/dovi_tool --pattern universal-macOS.zip --sha256)
@@ -336,9 +381,15 @@ jobs:
       - homebrew-formula
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        shell: bash
+        env:
+          CHECKOUT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --prune origin '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*'
+          git checkout --force "$CHECKOUT_SHA"
 
       - name: Download release assets
         uses: actions/download-artifact@v4
@@ -359,7 +410,7 @@ jobs:
       - name: Generate release notes
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
           RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
           RELEASE_NAME: ${{ needs.release-metadata.outputs.release_name }}
           CHANNEL: ${{ needs.release-metadata.outputs.channel }}
@@ -417,7 +468,7 @@ jobs:
       - name: Create release when needed, then upload assets
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
           RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
           RELEASE_NAME: ${{ needs.release-metadata.outputs.release_name }}
           PRERELEASE: ${{ needs.release-metadata.outputs.prerelease }}
