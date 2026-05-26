@@ -259,13 +259,21 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ needs.release-metadata.outputs.package_version }}"
-          mkdir -p release-assets/macos release-assets/homebrew
+          mkdir -p release-assets/macos
 
           cp "dist/releases/Muxiveo-${VERSION}.dmg" release-assets/macos/
           (cd dist && zip -qr --symlinks "../release-assets/macos/Muxiveo-${VERSION}-macos.zip" Muxiveo.app)
-          tar -C dist -czf "release-assets/homebrew/Muxiveo-${VERSION}-homebrew-macos.tar.gz" Muxiveo.app
 
           ls -la release-assets/macos
+
+      - name: Collect Homebrew macOS asset
+        if: ${{ needs.release-metadata.outputs.channel == 'stable' && (github.ref_name == 'main' || github.ref_type == 'tag') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.release-metadata.outputs.package_version }}"
+          mkdir -p release-assets/homebrew
+          tar -C dist -czf "release-assets/homebrew/Muxiveo-${VERSION}-homebrew-macos.tar.gz" Muxiveo.app
           ls -la release-assets/homebrew
 
       - name: Upload macOS assets
@@ -276,6 +284,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload Homebrew macOS asset
+        if: ${{ needs.release-metadata.outputs.channel == 'stable' && (github.ref_name == 'main' || github.ref_type == 'tag') }}
         uses: actions/upload-artifact@v4
         with:
           name: homebrew-macos-assets
@@ -285,6 +294,7 @@ jobs:
   homebrew-formula:
     name: Generate Homebrew formula
     runs-on: ubuntu-latest
+    if: ${{ needs.release-metadata.outputs.channel == 'stable' && (github.ref_name == 'main' || github.ref_type == 'tag') }}
     needs:
       - release-metadata
       - build-linux
@@ -373,6 +383,7 @@ jobs:
   release:
     name: Create or update GitHub Release
     runs-on: ubuntu-latest
+    if: ${{ always() && needs.release-metadata.result == 'success' && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' && needs.build-macos.result == 'success' && (needs.homebrew-formula.result == 'success' || needs.homebrew-formula.result == 'skipped') }}
     needs:
       - release-metadata
       - build-linux
@@ -503,7 +514,7 @@ jobs:
     needs:
       - release-metadata
       - release
-    if: needs.release-metadata.outputs.channel == 'stable'
+    if: ${{ needs.release-metadata.outputs.channel == 'stable' && (github.ref_name == 'main' || github.ref_type == 'tag') }}
     steps:
       - name: Download formula artifact
         uses: actions/download-artifact@v4
