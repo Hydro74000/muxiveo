@@ -1,0 +1,487 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - rebrand
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag (ex: 3.0.1 or v3.0.1). Empty uses APP_VERSION."
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.11"
+  HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || format('{0}/homebrew-Muxiveo', github.repository_owner) }}
+
+jobs:
+  release-metadata:
+    name: Prepare release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      package_version: ${{ steps.metadata.outputs.package_version }}
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+      release_name: ${{ steps.metadata.outputs.release_name }}
+      prerelease: ${{ steps.metadata.outputs.prerelease }}
+      channel: ${{ steps.metadata.outputs.channel }}
+      appimage_update_release: ${{ steps.metadata.outputs.appimage_update_release }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute release identity
+        id: metadata
+        shell: bash
+        env:
+          RELEASE_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
+        run: |
+          set -euo pipefail
+
+          base_version="$(python -c 'from core.version import APP_VERSION; print(APP_VERSION)')"
+          input_version="$(printf '%s' "$RELEASE_INPUT" | xargs)"
+
+          normalize_version() {
+            local value="$1"
+            value="${value#v}"
+            value="${value#V}"
+            printf '%s' "$value"
+          }
+
+          if [ -n "$input_version" ]; then
+            package_version="$(normalize_version "$input_version")"
+            channel="stable"
+            prerelease="false"
+          elif [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            package_version="$(normalize_version "${GITHUB_REF_NAME}")"
+            channel="stable"
+            prerelease="false"
+          elif [ "${GITHUB_EVENT_NAME:-}" = "workflow_dispatch" ]; then
+            package_version="$base_version"
+            channel="stable"
+            prerelease="false"
+          else
+            date_id="$(date -u +%Y%m%d)"
+            short_sha="$(git rev-parse --short=7 HEAD)"
+            package_version="${base_version}-unstable.${date_id}.${GITHUB_RUN_NUMBER}.${short_sha}"
+            channel="unstable"
+            prerelease="true"
+          fi
+
+          if [ -z "$package_version" ]; then
+            echo "Unable to resolve package version" >&2
+            exit 1
+          fi
+
+          release_tag="v${package_version}"
+          if [ "$channel" = "stable" ]; then
+            release_name="Release ${release_tag}"
+            appimage_update_release="latest"
+          else
+            release_name="Unstable ${release_tag}"
+            appimage_update_release="$release_tag"
+          fi
+
+          {
+            echo "package_version=$package_version"
+            echo "release_tag=$release_tag"
+            echo "release_name=$release_name"
+            echo "prerelease=$prerelease"
+            echo "channel=$channel"
+            echo "appimage_update_release=$appimage_update_release"
+          } >> "$GITHUB_OUTPUT"
+
+  build-linux:
+    name: Build Linux AppImage
+    runs-on: ubuntu-latest
+    needs: release-metadata
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Install Linux packaging dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y squashfs-tools zsync
+          python -m pip install --upgrade pip
+          pip install "PySide6>=6.6.0" "pymediainfo>=6.1.0" pyinstaller
+
+      - name: Build all-inclusive AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          MUXIVEO_APPIMAGE_UPDATE_RELEASE: ${{ needs.release-metadata.outputs.appimage_update_release }}
+        run: |
+          python package_appimage.py --allinc --version "${{ needs.release-metadata.outputs.package_version }}"
+
+      - name: Collect Linux assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets/linux
+          cp dist/releases/Muxiveo-x86_64_allinc-*.AppImage release-assets/linux/
+          cp dist/releases/Muxiveo-x86_64_allinc-*.AppImage.zsync release-assets/linux/
+          ls -la release-assets/linux
+
+      - name: Upload Linux assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: appimage-linux
+          path: release-assets/linux/*
+          if-no-files-found: error
+
+  build-windows:
+    name: Build Windows installer
+    runs-on: windows-latest
+    needs: release-metadata
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Install Python dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install "PySide6>=6.6.0" "pymediainfo>=6.1.0" pyinstaller
+
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          winget install --id NSIS.NSIS -e --silent --accept-source-agreements --accept-package-agreements
+
+      - name: Build PyInstaller and NSIS package
+        shell: pwsh
+        run: |
+          python package.py --nsis --version "${{ needs.release-metadata.outputs.package_version }}"
+
+      - name: Collect Windows assets
+        shell: pwsh
+        run: |
+          $version = "${{ needs.release-metadata.outputs.package_version }}"
+          $file = "dist\releases\Muxiveo-Setup-$version.exe"
+          if (-not (Test-Path $file)) {
+            Get-ChildItem -Recurse dist | Select-Object -First 200 FullName
+            throw "Windows installer not found: $file"
+          }
+          New-Item -ItemType Directory -Force -Path release-assets\windows | Out-Null
+          Copy-Item $file release-assets\windows\ -Force
+          Get-ChildItem release-assets\windows
+
+      - name: Upload Windows assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-windows
+          path: release-assets/windows/*
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS packages
+    runs-on: macos-latest
+    needs: release-metadata
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Install macOS packaging dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "PySide6>=6.6.0" "pymediainfo>=6.1.0" pyinstaller pillow
+
+      - name: Build macOS app and DMG
+        run: |
+          python package.py --dmg --version "${{ needs.release-metadata.outputs.package_version }}"
+
+      - name: Collect macOS assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.release-metadata.outputs.package_version }}"
+          mkdir -p release-assets/macos release-assets/homebrew
+
+          cp "dist/releases/Muxiveo-${VERSION}.dmg" release-assets/macos/
+          (cd dist && zip -qr --symlinks "../release-assets/macos/Muxiveo-${VERSION}-macos.zip" Muxiveo.app)
+          tar -C dist -czf "release-assets/homebrew/Muxiveo-${VERSION}-homebrew-macos.tar.gz" Muxiveo.app
+
+          ls -la release-assets/macos
+          ls -la release-assets/homebrew
+
+      - name: Upload macOS assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-macos
+          path: release-assets/macos/*
+          if-no-files-found: error
+
+      - name: Upload Homebrew macOS asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: homebrew-macos-assets
+          path: release-assets/homebrew/*
+          if-no-files-found: error
+
+  homebrew-formula:
+    name: Generate Homebrew formula
+    runs-on: ubuntu-latest
+    needs:
+      - release-metadata
+      - build-linux
+      - build-macos
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Download Linux assets
+        uses: actions/download-artifact@v4
+        with:
+          name: appimage-linux
+          path: release-assets/linux
+
+      - name: Download Homebrew macOS asset
+        uses: actions/download-artifact@v4
+        with:
+          name: homebrew-macos-assets
+          path: release-assets/macos
+
+      - name: Resolve external macOS tool assets
+        id: tools
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DOVI_JSON=$(python scripts/github_release_asset.py --repo quietvoid/dovi_tool --pattern universal-macOS.zip --sha256)
+          HDR_JSON=$(python scripts/github_release_asset.py --repo quietvoid/hdr10plus_tool --pattern universal-macOS.zip --sha256)
+          echo "dovi_json=$DOVI_JSON" >> "$GITHUB_OUTPUT"
+          echo "hdr_json=$HDR_JSON" >> "$GITHUB_OUTPUT"
+
+      - name: Generate Homebrew formula
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.release-metadata.outputs.package_version }}
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
+          DOVI_JSON: ${{ steps.tools.outputs.dovi_json }}
+          HDR_JSON: ${{ steps.tools.outputs.hdr_json }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets/formula
+          LINUX_FILE=$(basename "$(find release-assets/linux -maxdepth 1 -type f -name '*.AppImage' | head -1)")
+          MACOS_FILE=$(basename "$(find release-assets/macos -maxdepth 1 -type f -name '*.tar.gz' | head -1)")
+          LINUX_SHA=$(sha256sum "release-assets/linux/${LINUX_FILE}" | awk '{print $1}')
+          MACOS_SHA=$(sha256sum "release-assets/macos/${MACOS_FILE}" | awk '{print $1}')
+          DOVI_URL=$(python -c 'import json, os; print(json.loads(os.environ["DOVI_JSON"])["url"])')
+          DOVI_SHA=$(python -c 'import json, os; print(json.loads(os.environ["DOVI_JSON"])["sha256"])')
+          HDR_URL=$(python -c 'import json, os; print(json.loads(os.environ["HDR_JSON"])["url"])')
+          HDR_SHA=$(python -c 'import json, os; print(json.loads(os.environ["HDR_JSON"])["sha256"])')
+          python scripts/render_homebrew_formula.py \
+            --version "$VERSION" \
+            --linux-url "https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${LINUX_FILE}" \
+            --linux-sha256 "$LINUX_SHA" \
+            --macos-url "https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${MACOS_FILE}" \
+            --macos-sha256 "$MACOS_SHA" \
+            --dovi-tool-macos-url "$DOVI_URL" \
+            --dovi-tool-macos-sha256 "$DOVI_SHA" \
+            --hdr10plus-tool-macos-url "$HDR_URL" \
+            --hdr10plus-tool-macos-sha256 "$HDR_SHA" \
+            --homepage "https://github.com/${REPO}" \
+            --output release-assets/formula/Muxiveo.rb
+
+      - name: Upload formula artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: homebrew-formula
+          path: release-assets/formula/Muxiveo.rb
+          if-no-files-found: error
+
+  release:
+    name: Create or update GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - release-metadata
+      - build-linux
+      - build-windows
+      - build-macos
+      - homebrew-formula
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Add source archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.release-metadata.outputs.package_version }}"
+          PREFIX="Muxiveo-${VERSION}"
+          git archive --format=tar --prefix="${PREFIX}/" HEAD | gzip -9 > "artifacts/${PREFIX}-source.tar.gz"
+          git archive --format=zip --prefix="${PREFIX}/" HEAD -o "artifacts/${PREFIX}-source.zip"
+          ls -la artifacts
+
+      - name: Generate release notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
+          RELEASE_NAME: ${{ needs.release-metadata.outputs.release_name }}
+          CHANNEL: ${{ needs.release-metadata.outputs.channel }}
+        run: |
+          set -euo pipefail
+
+          git fetch --tags --force
+
+          previous_tag=""
+          if [ "$CHANNEL" = "unstable" ]; then
+            previous_tag="$(gh release list --limit 100 --json tagName,isPrerelease \
+              --jq '[.[] | select(.isPrerelease == true and (.tagName | test("-unstable\\.")))][0].tagName // ""')"
+          else
+            previous_tag="$(gh release list --limit 100 --json tagName,isPrerelease \
+              --jq '[.[] | select(.isPrerelease == false)][0].tagName // ""')"
+          fi
+
+          if [ -z "$previous_tag" ]; then
+            previous_tag="$(gh release list --limit 100 --json tagName \
+              --jq '.[0].tagName // ""')"
+          fi
+
+          range=""
+          if [ -n "$previous_tag" ] && git rev-parse -q --verify "refs/tags/$previous_tag" >/dev/null; then
+            range="${previous_tag}..HEAD"
+          fi
+
+          if [ -n "$range" ]; then
+            git log "$range" --no-merges --pretty=format:'- %s (%h)' | sed '/^- $/d' > commits.md
+          else
+            git log --no-merges --pretty=format:'- %s (%h)' | sed '/^- $/d' > commits.md
+          fi
+
+          if [ ! -s commits.md ]; then
+            printf '%s\n' '- No commit found since the previous release.' > commits.md
+          fi
+
+          {
+            echo "# ${RELEASE_NAME}"
+            echo
+            echo "- Channel: ${CHANNEL}"
+            echo "- Commit: ${GITHUB_SHA}"
+            if [ -n "$previous_tag" ]; then
+              echo "- Previous release: ${previous_tag}"
+            else
+              echo "- Previous release: none found"
+            fi
+            echo
+            echo "## Changes since previous release"
+            echo
+            cat commits.md
+            echo
+          } > release-body.md
+
+      - name: Create release when needed, then upload assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
+          RELEASE_NAME: ${{ needs.release-metadata.outputs.release_name }}
+          PRERELEASE: ${{ needs.release-metadata.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; keeping notes and uploading assets."
+          else
+            create_args=()
+            if [ "$PRERELEASE" = "true" ]; then
+              create_args+=(--prerelease)
+            fi
+            gh release create "$RELEASE_TAG" \
+              --target "$GITHUB_SHA" \
+              --title "$RELEASE_NAME" \
+              --notes-file release-body.md \
+              "${create_args[@]}"
+          fi
+
+          mapfile -t files < <(find artifacts -maxdepth 1 -type f | sort)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No release asset found under artifacts/" >&2
+            exit 1
+          fi
+
+          gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
+
+  publish-homebrew-tap:
+    name: Publish Homebrew tap
+    runs-on: ubuntu-latest
+    needs:
+      - release-metadata
+      - release
+    if: needs.release-metadata.outputs.channel == 'stable'
+    steps:
+      - name: Download formula artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: homebrew-formula
+          path: release-assets/formula
+
+      - name: Publish formula to tap repository
+        env:
+          TAP_REPO: ${{ env.HOMEBREW_TAP_REPO }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.release-metadata.outputs.package_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${TAP_TOKEN:-}" ]; then
+            echo "HOMEBREW_TAP_TOKEN absent, skipping tap publication."
+            exit 0
+          fi
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPO}.git" homebrew-tap
+          mkdir -p homebrew-tap/Formula
+          cp release-assets/formula/Muxiveo.rb homebrew-tap/Formula/Muxiveo.rb
+          cd homebrew-tap
+          if [ -z "$(git status --porcelain Formula/Muxiveo.rb)" ]; then
+            echo "Formula unchanged"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/Muxiveo.rb
+          git commit -m "Muxiveo ${VERSION}"
+          git push
