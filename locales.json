@@ -3690,5 +3690,69 @@
   "Corrigez les priorités ou les règles avant application.": {
     "fra": "Corrigez les priorités ou les règles avant application.",
     "eng": "Fix priorities or rules before applying."
+  },
+  "Scène": {
+    "fra": "Scène",
+    "eng": "Scene"
+  },
+  "HH:MM:SS.mmm": {
+    "fra": "HH:MM:SS.mmm",
+    "eng": "HH:MM:SS.mmm"
+  },
+  "Durée vidéo": {
+    "fra": "Durée vidéo",
+    "eng": "Video duration"
+  },
+  "Prêt.": {
+    "fra": "Prêt.",
+    "eng": "Ready."
+  },
+  "Aucune image générée": {
+    "fra": "Aucune image générée",
+    "eng": "No image generated"
+  },
+  "— / —": {
+    "fra": "— / —",
+    "eng": "— / —"
+  },
+  "100 %": {
+    "fra": "100 %",
+    "eng": "100 %"
+  },
+  "Vidéo :": {
+    "fra": "Vidéo :",
+    "eng": "Video:"
+  },
+  "Scène aléatoire prête. Le recalage HDR sera appliqué à la génération.": {
+    "fra": "Scène aléatoire prête. Le recalage HDR sera appliqué à la génération.",
+    "eng": "Random scene ready. HDR snapping will be applied at generation."
+  },
+  "Génération de la preview…": {
+    "fra": "Génération de la preview…",
+    "eng": "Generating preview…"
+  },
+  "Génération…": {
+    "fra": "Génération…",
+    "eng": "Generating…"
+  },
+  "Preview annulée.": {
+    "fra": "Preview annulée.",
+    "eng": "Preview cancelled."
+  },
+  "Sélectionnez une piste vidéo source pour générer une preview.": {
+    "fra": "Sélectionnez une piste vidéo source pour générer une preview.",
+    "eng": "Select a video source track to generate a preview."
+  },
+  "Annulation de la preview…": {
+    "fra": "Annulation de la preview…",
+    "eng": "Cancelling preview…"
+  },
+  "Preview terminée sans image exploitable.": {
+    "fra": "Preview terminée sans image exploitable.",
+    "eng": "Preview finished without usable image."
+  },
+  "default, !forced": {
+    "fra": "default, !forced",
+    "eng": "default, !forced"
   }
 }

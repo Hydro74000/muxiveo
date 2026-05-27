@@ -133,6 +133,7 @@ from core.workflows.encode import (
     AudioTrackSettings,
     EncodeConfig,
     EncodeError,
+    EncodePreviewRequest,
     EncodePreset,
     EncodeWorkflow,
     ProfileManager,
@@ -147,6 +148,7 @@ from core.workflows.encode import (
 from core.inspector import ChapterEntry
 from core.runner import TaskSignals
 from core.workflows.common.sync_rewrite import SyncRewritePreparedInput
+from core.workflows.encode.runtime.hdr_metadata import HdrMetadataProbeService
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +195,290 @@ def _make_workflow(
         ffmpeg_threads=ffmpeg_threads,
         max_parallel_video_encodes=max_parallel_video_encodes,
     )
+
+
+class TestEncodePreviewWorkflow:
+
+    def test_preview_source_segment_command_uses_scene_and_duration(self, tmp_path):
+        wf = _make_workflow()
+        src = tmp_path / "source.mkv"
+        out = tmp_path / "preview.mkv"
+
+        cmd = wf._build_preview_source_segment_cmd(
+            src,
+            out,
+            stream_index=2,
+            start_s=12.3456,
+            duration_s=8.0,
+        )
+
+        assert cmd[:4] == ["ffmpeg", "-hide_banner", "-y", "-ss"]
+        assert cmd[cmd.index("-ss") + 1] == "12.346"
+        assert cmd[cmd.index("-t") + 1] == "8.000"
+        assert cmd[cmd.index("-map") + 1] == "0:2"
+        assert cmd[-1] == str(out)
+
+    def test_preview_encode_config_keeps_video_only_and_converts_size_mode(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.touch()
+        segment = tmp_path / "segment.mkv"
+        segment.touch()
+        output = tmp_path / "preview.mkv"
+        video = _make_video_settings(quality_mode=QualityMode.SIZE, target_size_mb=1000)
+        cfg = _make_config(
+            src,
+            tmp_path / "out.mkv",
+            video=video,
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="aac", bitrate_kbps=384)],
+            copy_subtitles=True,
+            duration_s=1000.0,
+        )
+        wf = _make_workflow()
+
+        preview_cfg = wf._preview_encode_config(
+            cfg,
+            source_segment=segment,
+            output=output,
+            clip_duration_s=10.0,
+        )
+
+        assert preview_cfg.source == segment
+        assert preview_cfg.output == output
+        assert preview_cfg.audio_tracks == []
+        assert preview_cfg.copy_subtitles is False
+        assert preview_cfg.keep_chapters is False
+        assert preview_cfg.video is not None
+        assert preview_cfg.video.source_path == segment
+        assert preview_cfg.video.stream_index == 0
+        assert preview_cfg.video.quality_mode == QualityMode.BITRATE
+        assert preview_cfg.video.bitrate_kbps == wf._size_to_bitrate_kbps(cfg)
+
+    def test_cleanup_preview_dir_removes_all_entries(self, tmp_path):
+        from core.workflows.encode import EncodeWorkflow
+
+        preview_dir = tmp_path / "previews"
+        preview_dir.mkdir()
+        (preview_dir / "a.png").write_bytes(b"a")
+        (preview_dir / "b.mkv").write_bytes(b"b")
+        sub = preview_dir / "sub"
+        sub.mkdir()
+        (sub / "c.png").write_bytes(b"c")
+
+        deleted = EncodeWorkflow.cleanup_preview_dir(tmp_path)
+
+        assert deleted == 3
+        assert not preview_dir.exists()
+
+    def test_cleanup_preview_dir_noop_when_missing(self, tmp_path):
+        from core.workflows.encode import EncodeWorkflow
+
+        assert EncodeWorkflow.cleanup_preview_dir(tmp_path) == 0
+        assert EncodeWorkflow.cleanup_preview_dir(None) == 0
+
+    def test_preview_request_duration_bounds(self):
+        assert EncodePreviewRequest(mode="video", duration_s=3).normalized_duration_s() == 5.0
+        assert EncodePreviewRequest(mode="video", duration_s=99).normalized_duration_s() == 30.0
+        assert EncodePreviewRequest(mode="image", duration_s=99).normalized_duration_s() == 5.0
+
+    def test_run_preview_sync_image_mode_generates_seven_captures(self, tmp_path, monkeypatch):
+        from core.workflows.encode import PREVIEW_IMAGE_CAPTURE_COUNT
+        from core.workflows.encode.runtime.hdr_metadata import DynamicHdrPreviewSceneSelection
+
+        src = tmp_path / "source.mkv"
+        src.touch()
+        wf = _make_workflow()
+        cfg = _make_config(
+            src,
+            tmp_path / "out.mkv",
+            work_dir=tmp_path,
+            duration_s=600.0,
+        )
+        created_images: list[Path] = []
+
+        def fake_run_cmd(cmd, *, cwd=None, env=None, label="", progress_cb=None, progress_pct_cb=None, signals=None):
+            _ = (cwd, env, progress_cb, progress_pct_cb, signals)
+            output = Path(cmd[-1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"\x89PNG\r\n\x1a\n")
+            if label.startswith("ffmpeg-preview-image-"):
+                created_images.append(output)
+            return ""
+
+        fake_scenes = tuple(
+            DynamicHdrPreviewSceneSelection(
+                requested_time_s=float(i) * 60.0,
+                scene_time_s=float(i) * 60.0 + 1.0,
+                reason="I-frame DoVi metadata",
+            )
+            for i in range(PREVIEW_IMAGE_CAPTURE_COUNT)
+        )
+
+        monkeypatch.setattr(wf._runner, "_run_cmd", fake_run_cmd)
+        monkeypatch.setattr(
+            wf._hdr_metadata_service,
+            "select_preview_scenes_random",
+            lambda *args, **kwargs: fake_scenes,
+        )
+        monkeypatch.setattr(
+            wf._hdr_metadata_service,
+            "source_hdr_transfer",
+            lambda *args, **kwargs: "pq",
+        )
+
+        result = wf._run_preview_sync(
+            cfg,
+            EncodePreviewRequest(mode="image"),
+            TaskSignals(),
+        )
+
+        assert result.mode == "image"
+        assert result.video_path is None
+        assert len(result.captures) == PREVIEW_IMAGE_CAPTURE_COUNT
+        assert len(created_images) == PREVIEW_IMAGE_CAPTURE_COUNT
+        assert all(capture.image_path.exists() for capture in result.captures)
+
+    def test_run_preview_sync_video_mode_generates_thumbnails(self, tmp_path, monkeypatch):
+        from core.workflows.encode import PREVIEW_VIDEO_THUMBNAIL_COUNT
+        from core.workflows.encode.runtime.hdr_metadata import DynamicHdrPreviewSceneSelection
+
+        src = tmp_path / "source.mkv"
+        src.touch()
+        wf = _make_workflow()
+        cfg = _make_config(
+            src,
+            tmp_path / "out.mkv",
+            work_dir=tmp_path,
+            duration_s=600.0,
+        )
+        created_thumbs: list[Path] = []
+        created_segments: list[Path] = []
+
+        def fake_run_cmd(cmd, *, cwd=None, env=None, label="", progress_cb=None, progress_pct_cb=None, signals=None):
+            _ = (cwd, env, progress_cb, progress_pct_cb, signals)
+            output = Path(cmd[-1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"data")
+            if label == "ffmpeg-preview-source":
+                created_segments.append(output)
+            elif label.startswith("ffmpeg-preview-thumb-"):
+                created_thumbs.append(output)
+            return ""
+
+        def fake_run_with_preparation(config, *, validate, prep_signals=None):
+            _ = validate
+            config.output.write_bytes(b"encoded")
+            if prep_signals is not None:
+                prep_signals.finished.emit("ok")
+                return prep_signals
+            signals = TaskSignals()
+            signals.finished.emit("ok")
+            return signals
+
+        monkeypatch.setattr(wf._runner, "_run_cmd", fake_run_cmd)
+        monkeypatch.setattr(wf, "_run_with_preparation", fake_run_with_preparation)
+        monkeypatch.setattr(
+            wf._hdr_metadata_service,
+            "select_preview_scene",
+            lambda *args, **kwargs: DynamicHdrPreviewSceneSelection(
+                requested_time_s=0.0,
+                scene_time_s=42.0,
+                reason="I-frame DoVi metadata",
+            ),
+        )
+        monkeypatch.setattr(
+            wf._hdr_metadata_service,
+            "source_hdr_transfer",
+            lambda *args, **kwargs: "",
+        )
+
+        result = wf._run_preview_sync(
+            cfg,
+            EncodePreviewRequest(mode="video", timecode_s=0.0, duration_s=10.0),
+            TaskSignals(),
+        )
+
+        assert result.mode == "video"
+        assert result.video_path is not None and result.video_path.exists()
+        assert len(result.captures) == PREVIEW_VIDEO_THUMBNAIL_COUNT
+        assert len(created_thumbs) == PREVIEW_VIDEO_THUMBNAIL_COUNT
+        assert created_segments and not created_segments[0].exists()
+
+
+class TestDynamicHdrPreviewSceneProbe:
+
+    @staticmethod
+    def _service() -> HdrMetadataProbeService:
+        return HdrMetadataProbeService(
+            ffmpeg_bin=lambda: "ffmpeg",
+            tool_bin=lambda name: name,
+        )
+
+    def test_select_preview_scene_snaps_to_nearest_keyframe_for_hdr(self, tmp_path, monkeypatch):
+        source = tmp_path / "hdr10p.mkv"
+        source.touch()
+        service = self._service()
+        monkeypatch.setattr(
+            service,
+            "preview_keyframe_times",
+            lambda *_args, **_kwargs: (0.0, 2.0, 10.0, 21.0, 40.0, 60.0),
+        )
+
+        selection = service.select_preview_scene(
+            source,
+            requested_time_s=22.0,
+            source_duration_s=120.0,
+            prefer_hdr10plus=True,
+        )
+
+        assert selection.scene_time_s == 21.0
+        assert selection.reason == "I-frame HDR10+"
+        assert selection.snapped is True
+
+    def test_select_preview_scenes_random_skips_probe_for_sdr(self, tmp_path, monkeypatch):
+        source = tmp_path / "sdr.mkv"
+        source.touch()
+        service = self._service()
+        probe_calls: list[int] = []
+        monkeypatch.setattr(
+            service,
+            "preview_keyframe_times",
+            lambda *_args, **_kwargs: probe_calls.append(1) or (),
+        )
+
+        scenes = service.select_preview_scenes_random(
+            source,
+            count=7,
+            source_duration_s=600.0,
+            prefer_dovi=False,
+            prefer_hdr10plus=False,
+        )
+
+        assert len(scenes) == 7
+        assert probe_calls == []
+        assert all(1.0 <= s.scene_time_s <= 595.0 for s in scenes)
+
+    def test_select_preview_scenes_random_uses_keyframes_for_hdr(self, tmp_path, monkeypatch):
+        source = tmp_path / "dv.mkv"
+        source.touch()
+        service = self._service()
+        keyframes = tuple(float(i) * 2.0 for i in range(300))  # 0, 2, 4, ..., 598
+        monkeypatch.setattr(
+            service,
+            "preview_keyframe_times",
+            lambda *_args, **_kwargs: keyframes,
+        )
+
+        scenes = service.select_preview_scenes_random(
+            source,
+            count=7,
+            source_duration_s=600.0,
+            prefer_dovi=True,
+        )
+
+        assert len(scenes) == 7
+        for s in scenes:
+            assert s.scene_time_s in keyframes
+            assert "I-frame" in s.reason
 
 
 # ===========================================================================

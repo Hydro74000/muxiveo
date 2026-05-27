@@ -33,6 +33,14 @@ from core.workflows.encode.catalog import (
 )
 from core.workflows.encode.models import (
     QualityMode,
+    EncodePreviewMode,
+    EncodePreviewRequest,
+    EncodePreviewResult,
+    EncodePreviewCapture,
+    PREVIEW_IMAGE_CAPTURE_COUNT,
+    PREVIEW_VIDEO_THUMBNAIL_COUNT,
+    PREVIEW_FRAME_MIN_OFFSET_S,
+    PREVIEW_FRAME_TAIL_OFFSET_S,
     VideoResizeSettings,
     VideoCropSettings,
     VideoFilterSettings,
@@ -53,6 +61,14 @@ from core.workflows.encode.workflow import EncodeWorkflow
 
 __all__ = [
     "QualityMode",
+    "EncodePreviewMode",
+    "EncodePreviewRequest",
+    "EncodePreviewResult",
+    "EncodePreviewCapture",
+    "PREVIEW_IMAGE_CAPTURE_COUNT",
+    "PREVIEW_VIDEO_THUMBNAIL_COUNT",
+    "PREVIEW_FRAME_MIN_OFFSET_S",
+    "PREVIEW_FRAME_TAIL_OFFSET_S",
     "VideoCodecFamily",
     "VideoCodecSpec",
     "AudioCodecSpec",

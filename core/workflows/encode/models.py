@@ -63,6 +63,17 @@ class QualityMode(str, Enum):
             "size": "Taille cible (Mo)",
         }[self.value]
 
+
+class EncodePreviewMode(str, Enum):
+    IMAGE = "image"
+    VIDEO = "video"
+
+
+PREVIEW_IMAGE_CAPTURE_COUNT = 7
+PREVIEW_VIDEO_THUMBNAIL_COUNT = 5
+PREVIEW_FRAME_MIN_OFFSET_S = 1.0
+PREVIEW_FRAME_TAIL_OFFSET_S = 5.0
+
 AC3_STANDARD_BITRATES_KBPS: list[int] = [
     32, 40, 48, 56, 64, 80, 96, 112,
     128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640,
@@ -326,6 +337,61 @@ class AudioTrackSettings:
     input_channel_layout: str | None = None  # layout source (ex: "7.1", "5.1(side)")
     source_path:         Path | None = None  # None = même fichier que la vidéo (config.source)
     track_entry_id:      str | None = None   # GUID de l'objet TrackEntry synchronisé entre panels
+
+
+@dataclass(frozen=True)
+class EncodePreviewRequest:
+    """Demande de génération de preview réelle depuis l'UI."""
+    mode: str = EncodePreviewMode.IMAGE.value
+    timecode_s: float = 0.0
+    duration_s: float = 5.0
+    random_scene: bool = False
+
+    def normalized_mode(self) -> EncodePreviewMode:
+        try:
+            return EncodePreviewMode(str(self.mode).strip().lower())
+        except ValueError:
+            return EncodePreviewMode.IMAGE
+
+    def normalized_duration_s(self) -> float:
+        if self.normalized_mode() == EncodePreviewMode.VIDEO:
+            return max(5.0, min(30.0, float(self.duration_s or 5.0)))
+        return max(0.5, min(5.0, float(self.duration_s or 2.0)))
+
+
+@dataclass(frozen=True)
+class EncodePreviewCapture:
+    """Une capture image (chemin + scène + label)."""
+    image_path: Path
+    scene_time_s: float
+    label: str = ""
+
+
+@dataclass(frozen=True)
+class EncodePreviewResult:
+    """Résultat sérialisable émis par TaskSignals.finished."""
+    mode: str
+    captures: tuple[EncodePreviewCapture, ...] = ()
+    video_path: Path | None = None
+    warning: str = ""
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "mode": self.mode,
+                "captures": [
+                    {
+                        "image_path": str(c.image_path),
+                        "scene_time_s": c.scene_time_s,
+                        "label": c.label,
+                    }
+                    for c in self.captures
+                ],
+                "video_path": str(self.video_path) if self.video_path is not None else None,
+                "warning": self.warning,
+            },
+            ensure_ascii=False,
+        )
 
 
 @dataclass(frozen=True)

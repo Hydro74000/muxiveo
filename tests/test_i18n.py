@@ -187,3 +187,13 @@ def test_apply_translations_translates_tabwidget_titles_and_keeps_source(qt_app)
     apply_translations(root)
     assert tabs.tabText(0) == "Réglages"
     assert tabs.tabText(1) == "ENCODAGE"
+
+
+def test_apply_translations_escapes_tabwidget_ampersands(qt_app):
+    root = QWidget()
+    tabs = QTabWidget(root)
+    tabs.addTab(QWidget(), "Sources & Audio")
+
+    apply_translations(root)
+
+    assert tabs.tabText(0) == "Sources && Audio"
