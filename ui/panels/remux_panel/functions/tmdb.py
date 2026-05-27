@@ -35,10 +35,9 @@ def default_tmdb_season_episode(panel: "RemuxPanel") -> tuple[int, int]:
         return 0, 0
 
     first = panel._source_files[0]
-    candidates: list[str] = []
+    candidates: list[str] = [first.path.stem]
     if first.info and first.info.title:
         candidates.append(first.info.title)
-    candidates.append(first.path.stem)
 
     for text in candidates:
         match = extract_season_episode(text)

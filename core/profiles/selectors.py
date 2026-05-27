@@ -475,6 +475,89 @@ def match_track_selector(
     ]
 
 
+def _relaxed_selector_variants(selector: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Build safer fallback selectors for reusable GUI exact-job templates."""
+    if not isinstance(selector, Mapping):
+        return []
+    original = dict(selector)
+    track_type = str(original.get("type", original.get("track_type")) or "")
+    variants: list[dict[str, Any]] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+
+    def add(removals: set[str]) -> None:
+        variant = {key: value for key, value in original.items() if key not in removals}
+        if variant == original:
+            return
+        key = tuple(sorted((str(k), repr(v)) for k, v in variant.items()))
+        if key in seen:
+            return
+        seen.add(key)
+        variants.append(variant)
+
+    positional = {"position", "type_index", "id", "mkv_tid", "stream", "entry_id"}
+    noisy = {"language", "lang", "channels", "audio_object", "title", "title_contains", "display_contains", "flags"}
+    if track_type == "video":
+        add({"language", "lang", "channels", "audio_object", "title", "title_contains", "display_contains"})
+        add({"language", "lang", "channels", "audio_object", "title", "title_contains", "display_contains", "flags"})
+        add(noisy)
+        add(noisy | {"resolution", "video_flags", "video_flags_hex"})
+        return variants
+
+    add(positional)
+    add(positional | {"title", "title_contains"})
+    add(positional | {"flags"})
+    add(positional | {"title", "title_contains", "flags"})
+    add(positional | {"title", "title_contains", "flags", "channels", "audio_object"})
+    return variants
+
+
+def resolve_track_selector_relaxed(
+    selector: Mapping[str, Any],
+    tracks: list[TrackEntry],
+    *,
+    context: str = "selector",
+    source_index_by_file_id: Mapping[str, int] | None = None,
+) -> TrackEntry | None:
+    """Resolve a selector with deterministic fallbacks for batch templates."""
+    full_matches = match_track_selector(selector, tracks, source_index_by_file_id=source_index_by_file_id)
+    if len(full_matches) == 1:
+        return full_matches[0]
+
+    attempted: list[dict[str, Any]] = []
+    ambiguous: list[dict[str, Any]] = []
+    for variant in _relaxed_selector_variants(selector):
+        matches = match_track_selector(variant, tracks, source_index_by_file_id=source_index_by_file_id)
+        attempted.append({"selector": variant, "match_count": len(matches)})
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            ambiguous.append(
+                {
+                    "selector": variant,
+                    "match_count": len(matches),
+                    "matches": [track_summary(match, source_index_by_file_id=source_index_by_file_id) for match in matches],
+                }
+            )
+
+    report = {
+        "valid": False,
+        "error": "track_selector_unmatched_relaxed" if not ambiguous else "track_selector_ambiguous_relaxed",
+        "context": context,
+        "selector": dict(selector),
+        "match_count": len(full_matches),
+        "matches": [track_summary(match, source_index_by_file_id=source_index_by_file_id) for match in full_matches],
+        "relaxed_attempts": attempted,
+    }
+    if ambiguous:
+        report["relaxed_ambiguous"] = ambiguous
+    message = (
+        f"Sélecteur de piste introuvable pour {context} même après fallback batch."
+        if not ambiguous
+        else f"Sélecteur de piste ambigu pour {context} après fallback batch."
+    )
+    raise SelectorResolutionError(message, report=report)
+
+
 def resolve_track_selector(
     selector: Mapping[str, Any],
     tracks: list[TrackEntry],
@@ -639,6 +722,16 @@ def remux_config_to_exact_job(
     else:
         chapters = {"source_index": config.chapter_source_index} if config.chapter_source_index is not None else {}
 
+    tmdb_hint: dict[str, Any] | None = None
+    tags = config.tag_overrides if isinstance(config.tag_overrides, dict) else {}
+    if str(tags.get("SEASON") or tags.get("EPISODE") or "").strip():
+        tmdb_hint = {
+            "enabled": False,
+            "kind": "tv",
+            "season": "auto",
+            "episode": "auto",
+        }
+
     job: dict[str, Any] = {
         "version": 1,
         "kind": "exact-job",
@@ -650,6 +743,7 @@ def remux_config_to_exact_job(
         "extra_attachments": [str(path) for path in config.extra_attachments],
         "file_title": config.file_title,
         "tag_overrides": config.tag_overrides,
+        "tmdb": tmdb_hint,
     }
     if name:
         job["name"] = name

@@ -83,7 +83,22 @@ def sanitize_token(value: str) -> str:
 
 def sanitize_release_title(value: str) -> str:
     """Normalize a title to scene-style dotted ASCII text."""
-    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = str(value or "").translate(
+        str.maketrans(
+            {
+                "Æ": "AE",
+                "æ": "ae",
+                "Œ": "OE",
+                "œ": "oe",
+                "Đ": "D",
+                "đ": "d",
+                "Þ": "Th",
+                "þ": "th",
+                "ß": "ss",
+            }
+        )
+    )
+    text = unicodedata.normalize("NFKD", text)
     text = "".join(char for char in text if not unicodedata.combining(char))
     text = re.sub(r"[^\w\s.\-]", "", text, flags=re.ASCII)
     text = re.sub(r"[\s\-]+", ".", text.strip())
@@ -162,7 +177,7 @@ def _render_field(field_name: str, format_spec: str, conversion: str | None, con
     if key not in context:
         return ""
     value = context.get(key)
-    if key == "title" and format_spec == "release":
+    if key in {"title", "episode_title"} and format_spec == "release":
         return sanitize_release_title(str(value or ""))
     if conversion:
         value = _FORMATTER.convert_field(value, conversion)

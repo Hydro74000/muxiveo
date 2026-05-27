@@ -230,6 +230,9 @@ def _validate_tmdb(errors: list[str], path: str, value: Any) -> None:
             _expect(errors, f"{path}.{key}", value[key], "string", _is_string)
     if "cover" in value:
         _expect(errors, f"{path}.cover", value["cover"], "bool", _is_bool)
+    for key in ("auto_detect_episode", "auto_metadata"):
+        if key in value:
+            _expect(errors, f"{path}.{key}", value[key], "bool", _is_bool)
     for key in ("id", "tmdb_id"):
         if key in value:
             _expect(errors, f"{path}.{key}", value[key], "integer", _is_int)

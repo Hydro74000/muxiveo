@@ -20,7 +20,7 @@ from cli.schema import (
     build_decision_profile_schema_v1,
     build_exact_job_schema_v1,
 )
-from cli.tmdb import inferred_season_episode, normalized_tmdb_options
+from cli.tmdb import inferred_season_episode, mark_auto_tmdb, normalized_tmdb_options
 
 
 def test_cli_parser_exposes_expected_subcommands() -> None:
@@ -99,6 +99,8 @@ def test_cli_json_schema_exposes_public_contract_keys() -> None:
     assert "rules" not in schema["$defs"]
     for definition in ("source", "selector", "track_edit", "track_order_item", "audio_variant", "chapters", "tmdb"):
         assert definition in schema["$defs"]
+    assert "auto_detect_episode" in schema["$defs"]["tmdb"]["properties"]
+    assert "auto_metadata" in schema["$defs"]["tmdb"]["properties"]
 
 
 def test_cli_json_schema_bundle_excludes_removed_v2_contract() -> None:
@@ -240,10 +242,12 @@ def test_output_template_supports_release_title_modifier() -> None:
     from core.media_info_fetcher import MediaDetails
     from cli.output_template import build_output_context, render_output_template
 
-    details = MediaDetails(title="Été Violent: Le Retour", year="2024")
+    details = MediaDetails(title="Été Violent: Le Retour", year="2024", episode_title="L'été revient")
     ctx = build_output_context(Path("source.mkv"), details)
 
     assert render_output_template("{title:release}.{year}", ctx) == "Ete.Violent.Le.Retour.2024.mkv"
+    assert render_output_template("{episode_title:release}", ctx) == "Lete.revient.mkv"
+    assert render_output_template("{title:release}", {"title": "Des œufs et du æther"}) == "Des.oeufs.et.du.aether.mkv"
 
 
 def test_output_template_track_keywords_best_all_and_output_all() -> None:
@@ -341,6 +345,56 @@ def test_cli_tmdb_options_infer_season_episode_like_gui() -> None:
     assert tmdb["season"] == "1"
     assert tmdb["episode"] == "2"
     assert tmdb["kind"] == "tv"
+
+
+def test_cli_auto_tmdb_overrides_exported_episode_from_source_filename() -> None:
+    source = Path("Spider-Noir.S01E02.MULTi.VF2.HDR.DV.2160p.WEB.H265-SUPPLY.mkv")
+    job = {"tmdb": {"enabled": True, "kind": "tv", "season": "1", "episode": "1"}}
+    mark_auto_tmdb(job["tmdb"])
+
+    tmdb = normalized_tmdb_options(
+        job,
+        source,
+        source_title="Spider Noir - S01E01 - Pilot",
+    )
+
+    assert tmdb is not None
+    assert tmdb["season"] == "1"
+    assert tmdb["episode"] == "2"
+    assert tmdb["kind"] == "tv"
+
+
+def test_cli_tmdb_auto_season_episode_prefers_source_filename() -> None:
+    source = Path("Spider-Noir.S01E03.MULTi.VF2.HDR.DV.2160p.WEB.H265-SUPPLY.mkv")
+
+    tmdb = normalized_tmdb_options(
+        {"tmdb": {"enabled": True, "kind": "tv", "season": "auto", "episode": "auto"}},
+        source,
+        source_title="Spider Noir - S01E01 - Pilot",
+    )
+
+    assert tmdb is not None
+    assert tmdb["season"] == "1"
+    assert tmdb["episode"] == "3"
+
+
+def test_auto_tmdb_metadata_replaces_exported_gui_tags_and_title() -> None:
+    from cli.remux_config import merge_tmdb_tag_overrides, resolve_metadata_file_title
+
+    explicit_tags = {
+        "EPISODE": "1",
+        "SYNOPSIS": "Old episode",
+        "ENCODER_SETTINGS": "muxiveo gui export",
+    }
+    tmdb_tags = {"EPISODE": "2", "SYNOPSIS": "Fresh episode"}
+
+    assert resolve_metadata_file_title({"file_title": "Old"}, "Fresh", tmdb_wins=True) == "Fresh"
+    assert merge_tmdb_tag_overrides(tmdb_tags, explicit_tags, tmdb_wins=True) == {
+        "EPISODE": "2",
+        "SYNOPSIS": "Fresh episode",
+        "ENCODER_SETTINGS": "muxiveo gui export",
+    }
+    assert merge_tmdb_tag_overrides(tmdb_tags, explicit_tags, tmdb_wins=False)["EPISODE"] == "1"
 
 
 def test_documented_cli_json_examples_are_valid() -> None:
@@ -522,6 +576,30 @@ def test_discover_direct_batch_jobs_filters_video_and_preserves_relative_outputs
     ]
     assert recursive.scanned == 6
     assert recursive.selected == 2
+
+
+def test_discover_direct_batch_jobs_accepts_input_dir_globs(tmp_path: Path) -> None:
+    base = tmp_path / "downloads"
+    first = base / "Spider-Noir.S01E01.MULTi.VF2.HDR.DV.2160p.WEB.H265-SUPPLY"
+    second = base / "Spider-Noir.S01E02.MULTi.VF2.HDR.DV.2160p.WEB.H265-SUPPLY"
+    other = base / "Other.Show.S01E01"
+    for folder in (first, second, other):
+        folder.mkdir(parents=True)
+    (first / "Spider-Noir.S01E01.mkv").write_bytes(b"")
+    (second / "Spider-Noir.S01E02.mkv").write_bytes(b"")
+    (other / "Other.Show.S01E01.mkv").write_bytes(b"")
+
+    discovery = discover_direct_batch_jobs(
+        input_dirs=[str(base / "Spider-Noir.S*E*.MULTi.VF2.HDR.DV.2160p.WEB.H265-SUPPLY")],
+        output_dir=str(tmp_path / "out"),
+    )
+
+    assert [Path(job["sources"][0]["path"]).name for job in discovery.jobs] == [
+        "Spider-Noir.S01E01.mkv",
+        "Spider-Noir.S01E02.mkv",
+    ]
+    assert discovery.roots == [str(first), str(second)]
+    assert discovery.selected == 2
 
 
 def test_discover_direct_batch_jobs_errors_when_no_video_matches(tmp_path: Path) -> None:

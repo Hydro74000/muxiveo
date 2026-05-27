@@ -17,6 +17,7 @@ from core.profiles.selectors import (
     normalize_lang,
     remux_config_to_exact_job,
     resolve_track_selector,
+    resolve_track_selector_relaxed,
     track_selector_for_entry,
     track_summary,
 )
@@ -164,6 +165,55 @@ def test_track_selector_for_entry_includes_resolution_payload_for_video():
     assert "resolution" in selector
     assert selector["resolution"]["bucket"] == "uhd"
     assert selector["video_flags_hex"].startswith("0x")
+
+
+def test_relaxed_selector_resolves_gui_export_video_noise():
+    video = TrackEntry(
+        0,
+        "video",
+        "HEVC",
+        "3840×2080  Dolby Vision P8.1 + HDR10+  23.976 fps",
+        "",
+        "",
+        file_id="src0",
+    )
+    video.flag_default = video.orig_flag_default = True
+    video.flag_original = video.orig_flag_original = True
+
+    selector = {
+        "source": 0,
+        "type": "video",
+        "position": 0,
+        "codec": "HEVC",
+        "language": "und",
+        "channels": "1",
+        "resolution": {"width": 3840, "height": 2080, "bucket": "uhd"},
+        "video_flags_hex": "0x000000D8",
+        "flags": {"default": True, "original": True},
+    }
+
+    assert resolve_track_selector_relaxed(selector, [video]) is video
+
+
+def test_relaxed_selector_resolves_reordered_audio_by_identity():
+    fr = _audio(1, language="fr-FR", title="French (France)", display_info="5.1(side)  640 kbps")
+    fr_ca = _audio(2, language="fr-CA", title="French (Canadien)", display_info="5.1(side)  640 kbps")
+    en = _audio(3, language="en-US", title="", display_info="5.1(side)  576 kbps  Atmos")
+    en.flag_original = en.orig_flag_original = True
+    tracks = [fr, fr_ca, en]
+
+    selector = {
+        "source": 0,
+        "type": "audio",
+        "position": 1,
+        "codec": "EAC3",
+        "language": "en-US",
+        "channels": "5.1",
+        "audio_object": "Atmos",
+        "flags": {"original": True},
+    }
+
+    assert resolve_track_selector_relaxed(selector, tracks) is en
 
 
 def test_track_selector_for_entry_emits_flags_only_when_set():
@@ -377,6 +427,20 @@ def test_remux_config_to_exact_job_skips_chapters_when_disabled(tmp_path):
     config.keep_chapters = False
     job = remux_config_to_exact_job(config)
     assert job["chapters"] is False
+
+
+def test_remux_config_to_exact_job_adds_disabled_tmdb_series_hint(tmp_path):
+    config = _config_with_two_audio_tracks(tmp_path)
+    config.tag_overrides = {"SEASON": "1", "EPISODE": "1", "SYNOPSIS": "Old"}
+
+    job = remux_config_to_exact_job(config)
+
+    assert job["tmdb"] == {
+        "enabled": False,
+        "kind": "tv",
+        "season": "auto",
+        "episode": "auto",
+    }
 
 
 def test_remux_config_to_exact_job_records_attachments_none_label(tmp_path):

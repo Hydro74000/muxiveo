@@ -24,9 +24,15 @@ from cli.jobs import apply_metadata_overrides
 from cli.json_io import deep_merge, json_default, load_json
 from cli.logging import Logger
 from cli.options import CommonOptions
-from cli.remux_config import resolve_final_output, resolve_tmdb_metadata
+from cli.remux_config import (
+    merge_tmdb_tag_overrides,
+    resolve_final_output,
+    resolve_metadata_file_title,
+    resolve_tmdb_metadata,
+)
 from cli.runtime import preview_remux_config, run_remux_config, workflow
 from cli.serializers import serialize_remux_config, serialize_track_preview
+from cli.tmdb import auto_tmdb_metadata_enabled
 
 
 def _profile_path_candidates(raw_profile: str | Path, config: AppConfig | None = None) -> list[Path]:
@@ -158,15 +164,18 @@ def build_profile_remux_config(
         preview=preview,
         variables=_output_variables(profile, metadata),
     )
-    tag_overrides = metadata.get("tag_overrides", None)
-    if tmdb_tags:
-        tag_overrides = deep_merge(tmdb_tags, tag_overrides if isinstance(tag_overrides, dict) else {})
+    tmdb_wins = auto_tmdb_metadata_enabled(metadata)
+    tag_overrides = merge_tmdb_tag_overrides(
+        tmdb_tags,
+        metadata.get("tag_overrides", None),
+        tmdb_wins=tmdb_wins,
+    )
     remux_config = RemuxConfig(
         sources=sources,
         output=output,
         track_order=final_track_order,
         keep_chapters=True,
-        file_title=str(metadata.get("file_title") or tmdb_title or ""),
+        file_title=resolve_metadata_file_title(metadata, tmdb_title, tmdb_wins=tmdb_wins),
         tag_overrides=tag_overrides if isinstance(tag_overrides, dict) else None,
         tmdb_cover=tmdb_cover,
         work_dir=Path(str(options.work_dir or config.work_dir)).expanduser(),

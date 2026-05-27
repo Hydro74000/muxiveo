@@ -236,6 +236,8 @@ def build_cli_json_schema() -> dict[str, Any]:
                     "api_key": {"type": "string"},
                     "bearer_token": {"type": "string"},
                     "cover": {"type": "boolean"},
+                    "auto_detect_episode": {"type": "boolean"},
+                    "auto_metadata": {"type": "boolean"},
                     "id": {"type": "integer"},
                     "tmdb_id": {"type": "integer"},
                 },
