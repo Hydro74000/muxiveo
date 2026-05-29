@@ -108,6 +108,35 @@ class TestRemuxCommandModule:
         assert "-metadata:s:a:0" in cmd
         assert "language=fr-FR" in cmd
 
+    def test_build_remux_command_reencodes_audio_variant(self, tmp_path):
+        # Une variante audio (is_new, codec cible ≠ source) doit être réencodée
+        # au lieu d'être copiée par le `-c copy` global. La piste source conservée
+        # reste en copie.
+        src = tmp_path / "in.mkv"
+        src.touch()
+        kept = TrackEntry(
+            mkv_tid=1, track_type="audio", codec="DTS", display_info="5.1  4000 kbps",
+            language="en", title="English DTS", entry_id="kept",
+        )
+        variant = TrackEntry(
+            mkv_tid=1, track_type="audio", codec="AC3", display_info="5.1  576 kbps",
+            language="en", title="English AC3", entry_id="variant",
+            orig_codec="DTS", is_new=True,
+        )
+        cfg = RemuxConfig(
+            sources=[SourceInput(path=src, file_index=0, tracks=[_track(0, "video"), kept, variant])],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0, "video-0"), (0, 1, "kept"), (0, 1, "variant")],
+        )
+        cmd = build_remux_command(
+            cfg, ffmpeg_bin="ffmpeg", ffmpeg_progress_args=[], ffmpeg_thread_args=[], cli_path=str,
+        )
+        # Variante = sortie audio a:1 → réencodage AC3 576k.
+        assert "-c:a:1" in cmd and cmd[cmd.index("-c:a:1") + 1] == "ac3"
+        assert "-b:a:1" in cmd and cmd[cmd.index("-b:a:1") + 1] == "576k"
+        # La piste DTS conservée (a:0) n'est pas réencodée.
+        assert "-c:a:0" not in cmd
+
     def test_preview_remux_command_formats_multiline_output(self, tmp_path):
         src = tmp_path / "in.mkv"
         src.touch()

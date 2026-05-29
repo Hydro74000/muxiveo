@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Callable
 
 from core.subtitle_codec import plan_subtitle_codec
+from core.workflows.common.sync_rewrite import (
+    audio_bitrate_kbps_from_display_info,
+    normalized_rewrite_codec,
+)
 from core.workflows.common.attachments import mime_for_path
 from core.workflows.common.track_types import TimelineMappedTrack
 from core.workflows.common.metadata import STREAM_SPEC_BY_TRACK_TYPE as STREAM_SPEC_BY_TYPE
@@ -21,6 +26,44 @@ from core.workflows.remux_mapping import (
     resolve_mapped_tracks,
 )
 from core.workflows.remux_models import RemuxConfig, RemuxError
+
+
+# Codec audio cible (label éditeur) → encodeur ffmpeg. Limité aux codecs lossy/FLAC
+# que le panneau d'encodage expose ; les autres restent en copie.
+_AUDIO_REENCODE_ENCODERS = {"aac": "aac", "ac3": "ac3", "eac3": "eac3", "flac": "flac"}
+
+
+def _audio_channel_count(display_info: str) -> int:
+    match = re.search(r"\b(\d)\.(\d)\b", str(display_info or ""))
+    if match:
+        return int(match.group(1)) + int(match.group(2))
+    text = str(display_info or "").lower()
+    if "stereo" in text:
+        return 2
+    if "mono" in text:
+        return 1
+    return 0
+
+
+def _audio_variant_codec_args(mapped_track: MappedTrack) -> list[str]:
+    """Args ffmpeg de réencodage pour une variante audio dont le codec cible
+    diffère de la source (sinon liste vide → copie via le `-c copy` global)."""
+    track = mapped_track.track
+    if track.track_type != "audio":
+        return []
+    target = normalized_rewrite_codec(track.codec)
+    source = normalized_rewrite_codec(track.orig_codec or track.codec)
+    if not target or target == source or target not in _AUDIO_REENCODE_ENCODERS:
+        return []
+    out_idx = mapped_track.out_type_index
+    args = [f"-c:a:{out_idx}", _AUDIO_REENCODE_ENCODERS[target]]
+    if target != "flac":
+        bitrate = audio_bitrate_kbps_from_display_info(track.display_info)
+        if bitrate:
+            args.extend([f"-b:a:{out_idx}", f"{int(bitrate)}k"])
+    if target == "ac3" and _audio_channel_count(track.display_info) > 6:
+        args.extend([f"-ac:a:{out_idx}", "6", f"-channel_layout:a:{out_idx}", "5.1"])
+    return args
 
 
 def build_remux_command(
@@ -93,6 +136,10 @@ def build_remux_command(
             raise RemuxError(str(exc)) from exc
         if codec_arg != "copy":
             cmd.extend([f"-c:s:{mapped_track.out_type_index}", codec_arg])
+
+    for mapped_track in mapped_tracks:
+        cmd.extend(_audio_variant_codec_args(mapped_track))
+
     if needs_strict_interleave:
         cmd.extend(["-max_interleave_delta", "0"])
         cmd.extend(["-max_muxing_queue_size", "9999"])

@@ -7,7 +7,10 @@ from collections.abc import Mapping
 from typing import Any
 
 from core.lang_tags import Rfc5646LanguageTags
-from core.workflows.common.sync_rewrite import normalized_sync_rewrite_mode
+from core.workflows.common.sync_rewrite import (
+    audio_bitrate_kbps_from_display_info,
+    normalized_sync_rewrite_mode,
+)
 from core.workflows.remux_models import RemuxConfig, TrackEntry
 
 
@@ -669,7 +672,11 @@ def remux_config_to_exact_job(
         if track.sync_rewrite_mode:
             payload["sync_rewrite_mode"] = track.sync_rewrite_mode
         if track.is_new:
+            payload["entry_id"] = track.entry_id
             payload["codec"] = track.codec
+            bitrate = audio_bitrate_kbps_from_display_info(track.display_info)
+            if bitrate:
+                payload["bitrate_kbps"] = bitrate
             source_track = next(
                 (candidate for candidate in all_tracks if candidate.entry_id == track.source_entry_id),
                 None,
@@ -691,7 +698,17 @@ def remux_config_to_exact_job(
             else track_by_basic_key.get((source_index, mkv_tid))
         )
         if ordered_track is not None:
-            order_payload.append({"selector": _track_selector(ordered_track)})
+            if ordered_track.is_new:
+                # Variante (piste recréée) : identité stable par entry_id ; son
+                # sélecteur générique porte les métadonnées de la source et serait
+                # ambigu (même mkv_tid/codec d'origine que la piste copiée).
+                order_payload.append({"selector": {
+                    "source": source_index,
+                    "type": ordered_track.track_type,
+                    "entry_id": ordered_track.entry_id,
+                }})
+            else:
+                order_payload.append({"selector": _track_selector(ordered_track)})
 
     sources_payload = []
     for source in config.sources:
