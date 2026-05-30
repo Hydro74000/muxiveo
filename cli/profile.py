@@ -16,7 +16,7 @@ from core.profiles.decision import (
 )
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
 
-from cli.batch import discover_direct_batch_jobs, job_primary_input, write_batch_summary
+from cli.batch import discover_direct_batch_jobs, job_primary_input, log_batch_failures, write_batch_summary
 from cli.constants import EXIT_ARGS, EXIT_OK, EXIT_PARTIAL, EXIT_VALIDATION, EXIT_WORKFLOW
 from cli.errors import CliError
 from cli.inspection import inspect_sources, source_path_items
@@ -422,5 +422,6 @@ def profile_batch(
             "jobs": summary_jobs,
         },
     )
+    log_batch_failures(logger, summary_jobs, event="profile_batch_failure")
     logger.emit("info", f"Batch profil terminé : {total - failures}/{total} succès.", event="profile_batch_summary", total=total, failures=failures)
     return exit_code

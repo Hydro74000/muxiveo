@@ -183,6 +183,26 @@ def write_batch_summary(path: str | None, payload: dict[str, Any]) -> None:
     write_json(Path(path).expanduser(), payload)
 
 
+def log_batch_failures(logger: Logger, summary_jobs: list[dict[str, Any]], *, event: str = "batch_failure") -> None:
+    """Récapitule les fichiers non traités et la cause en fin de batch."""
+    failed = [job for job in summary_jobs if job.get("status") == "failed"]
+    if not failed:
+        return
+    logger.emit("warn", f"{len(failed)} fichier(s) non traité(s) :", event=f"{event}_report", count=len(failed))
+    for job in failed:
+        cause = str(job.get("error") or f"exit_code={job.get('exit_code')}")
+        logger.emit(
+            "error",
+            f"  - {job.get('input') or '?'} : {cause}",
+            event=event,
+            job_index=job.get("job_index"),
+            input=job.get("input"),
+            output=job.get("output"),
+            exit_code=job.get("exit_code"),
+            error=job.get("error"),
+        )
+
+
 def run_batch(
     *,
     template_path: str,
@@ -379,5 +399,6 @@ def run_batch(
         "jobs": summary_jobs,
     }
     write_batch_summary(summary_path, summary)
+    log_batch_failures(logger, summary_jobs)
     logger.emit("info", f"Batch terminé : {total - failures}/{total} succès.", event="batch_summary", total=total, failures=failures)
     return exit_code
