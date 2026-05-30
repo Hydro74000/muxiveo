@@ -7,7 +7,10 @@ from collections.abc import Mapping
 from typing import Any
 
 from core.lang_tags import Rfc5646LanguageTags
-from core.workflows.common.sync_rewrite import normalized_sync_rewrite_mode
+from core.workflows.common.sync_rewrite import (
+    audio_bitrate_kbps_from_display_info,
+    normalized_sync_rewrite_mode,
+)
 from core.workflows.remux_models import RemuxConfig, TrackEntry
 
 
@@ -475,6 +478,89 @@ def match_track_selector(
     ]
 
 
+def _relaxed_selector_variants(selector: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Build safer fallback selectors for reusable GUI exact-job templates."""
+    if not isinstance(selector, Mapping):
+        return []
+    original = dict(selector)
+    track_type = str(original.get("type", original.get("track_type")) or "")
+    variants: list[dict[str, Any]] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+
+    def add(removals: set[str]) -> None:
+        variant = {key: value for key, value in original.items() if key not in removals}
+        if variant == original:
+            return
+        key = tuple(sorted((str(k), repr(v)) for k, v in variant.items()))
+        if key in seen:
+            return
+        seen.add(key)
+        variants.append(variant)
+
+    positional = {"position", "type_index", "id", "mkv_tid", "stream", "entry_id"}
+    noisy = {"language", "lang", "channels", "audio_object", "title", "title_contains", "display_contains", "flags"}
+    if track_type == "video":
+        add({"language", "lang", "channels", "audio_object", "title", "title_contains", "display_contains"})
+        add({"language", "lang", "channels", "audio_object", "title", "title_contains", "display_contains", "flags"})
+        add(noisy)
+        add(noisy | {"resolution", "video_flags", "video_flags_hex"})
+        return variants
+
+    add(positional)
+    add(positional | {"title", "title_contains"})
+    add(positional | {"flags"})
+    add(positional | {"title", "title_contains", "flags"})
+    add(positional | {"title", "title_contains", "flags", "channels", "audio_object"})
+    return variants
+
+
+def resolve_track_selector_relaxed(
+    selector: Mapping[str, Any],
+    tracks: list[TrackEntry],
+    *,
+    context: str = "selector",
+    source_index_by_file_id: Mapping[str, int] | None = None,
+) -> TrackEntry | None:
+    """Resolve a selector with deterministic fallbacks for batch templates."""
+    full_matches = match_track_selector(selector, tracks, source_index_by_file_id=source_index_by_file_id)
+    if len(full_matches) == 1:
+        return full_matches[0]
+
+    attempted: list[dict[str, Any]] = []
+    ambiguous: list[dict[str, Any]] = []
+    for variant in _relaxed_selector_variants(selector):
+        matches = match_track_selector(variant, tracks, source_index_by_file_id=source_index_by_file_id)
+        attempted.append({"selector": variant, "match_count": len(matches)})
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            ambiguous.append(
+                {
+                    "selector": variant,
+                    "match_count": len(matches),
+                    "matches": [track_summary(match, source_index_by_file_id=source_index_by_file_id) for match in matches],
+                }
+            )
+
+    report = {
+        "valid": False,
+        "error": "track_selector_unmatched_relaxed" if not ambiguous else "track_selector_ambiguous_relaxed",
+        "context": context,
+        "selector": dict(selector),
+        "match_count": len(full_matches),
+        "matches": [track_summary(match, source_index_by_file_id=source_index_by_file_id) for match in full_matches],
+        "relaxed_attempts": attempted,
+    }
+    if ambiguous:
+        report["relaxed_ambiguous"] = ambiguous
+    message = (
+        f"Sélecteur de piste introuvable pour {context} même après fallback batch."
+        if not ambiguous
+        else f"Sélecteur de piste ambigu pour {context} après fallback batch."
+    )
+    raise SelectorResolutionError(message, report=report)
+
+
 def resolve_track_selector(
     selector: Mapping[str, Any],
     tracks: list[TrackEntry],
@@ -586,7 +672,11 @@ def remux_config_to_exact_job(
         if track.sync_rewrite_mode:
             payload["sync_rewrite_mode"] = track.sync_rewrite_mode
         if track.is_new:
+            payload["entry_id"] = track.entry_id
             payload["codec"] = track.codec
+            bitrate = audio_bitrate_kbps_from_display_info(track.display_info)
+            if bitrate:
+                payload["bitrate_kbps"] = bitrate
             source_track = next(
                 (candidate for candidate in all_tracks if candidate.entry_id == track.source_entry_id),
                 None,
@@ -608,7 +698,17 @@ def remux_config_to_exact_job(
             else track_by_basic_key.get((source_index, mkv_tid))
         )
         if ordered_track is not None:
-            order_payload.append({"selector": _track_selector(ordered_track)})
+            if ordered_track.is_new:
+                # Variante (piste recréée) : identité stable par entry_id ; son
+                # sélecteur générique porte les métadonnées de la source et serait
+                # ambigu (même mkv_tid/codec d'origine que la piste copiée).
+                order_payload.append({"selector": {
+                    "source": source_index,
+                    "type": ordered_track.track_type,
+                    "entry_id": ordered_track.entry_id,
+                }})
+            else:
+                order_payload.append({"selector": _track_selector(ordered_track)})
 
     sources_payload = []
     for source in config.sources:
@@ -639,6 +739,16 @@ def remux_config_to_exact_job(
     else:
         chapters = {"source_index": config.chapter_source_index} if config.chapter_source_index is not None else {}
 
+    tmdb_hint: dict[str, Any] | None = None
+    tags = config.tag_overrides if isinstance(config.tag_overrides, dict) else {}
+    if str(tags.get("SEASON") or tags.get("EPISODE") or "").strip():
+        tmdb_hint = {
+            "enabled": False,
+            "kind": "tv",
+            "season": "auto",
+            "episode": "auto",
+        }
+
     job: dict[str, Any] = {
         "version": 1,
         "kind": "exact-job",
@@ -650,6 +760,7 @@ def remux_config_to_exact_job(
         "extra_attachments": [str(path) for path in config.extra_attachments],
         "file_title": config.file_title,
         "tag_overrides": config.tag_overrides,
+        "tmdb": tmdb_hint,
     }
     if name:
         job["name"] = name

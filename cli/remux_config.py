@@ -20,6 +20,7 @@ from core.profiles.selectors import (
     SelectorResolutionError,
     apply_track_spec,
     resolve_track_selector,
+    resolve_track_selector_relaxed,
 )
 
 from cli.chapters import chapter_entries
@@ -31,7 +32,25 @@ from cli.json_io import deep_merge
 from cli.logging import Logger
 from cli.options import CommonOptions
 from cli.output_template import build_output_context, render_output_template
-from cli.tmdb import normalized_tmdb_options
+from cli.tmdb import auto_tmdb_metadata_enabled, normalized_tmdb_options
+
+
+TMDB_MKV_TAG_KEYS = frozenset(
+    {
+        "DATE_RELEASED",
+        "GENRE",
+        "DIRECTOR",
+        "CAST",
+        "SUBTITLE",
+        "SYNOPSIS",
+        "COUNTRY",
+        "URL",
+        "DESCRIPTION",
+        "COLLECTION",
+        "SEASON",
+        "EPISODE",
+    }
+)
 
 
 def _fallback_profile_name(job: dict[str, Any]) -> str:
@@ -46,10 +65,17 @@ def _track_from_spec(
     tracks: list[TrackEntry],
     *,
     strict_selectors: bool = False,
+    relaxed_selectors: bool = False,
     context: str = "tracks",
 ) -> TrackEntry | None:
     selector = spec.get("selector")
     if isinstance(selector, dict):
+        if relaxed_selectors:
+            return resolve_track_selector_relaxed(
+                selector,
+                tracks,
+                context=context,
+            )
         return resolve_track_selector(
             selector,
             tracks,
@@ -72,21 +98,30 @@ def apply_explicit_track_edits(
     tracks: list[TrackEntry],
     *,
     strict_selectors: bool = False,
+    relaxed_selectors: bool = False,
 ) -> None:
     specs = job.get("tracks", [])
     if not isinstance(specs, list):
         return
+    source_tracks = [track for track in tracks if not track.is_new]
     for index, spec in enumerate(specs):
         if not isinstance(spec, dict):
             continue
         try:
             track = _track_from_spec(
                 spec,
-                tracks,
+                source_tracks,
                 strict_selectors=strict_selectors,
+                relaxed_selectors=relaxed_selectors,
                 context=f"tracks[{index}]",
             )
         except SelectorResolutionError as exc:
+            if (
+                relaxed_selectors
+                and spec.get("enabled") is False
+                and exc.report.get("error") == "track_selector_unmatched_relaxed"
+            ):
+                continue
             if _fallback_profile_name(job):
                 exc.report["suggested_profile"] = _fallback_profile_name(job)
             raise
@@ -101,6 +136,7 @@ def apply_audio_variants(
     tracks: list[TrackEntry],
     *,
     strict_selectors: bool = False,
+    relaxed_selectors: bool = False,
 ) -> None:
     specs = job.get("audio_variants", job.get("derived_audio_tracks", []))
     if not isinstance(specs, list):
@@ -116,12 +152,21 @@ def apply_audio_variants(
         selector = spec.get("source_selector", spec.get("selector"))
         if not isinstance(selector, dict):
             continue
+        source_tracks = [track for track in tracks if not track.is_new]
         try:
-            source_track = resolve_track_selector(
-                selector,
-                tracks,
-                context=f"audio_variants[{index}]",
-                strict=strict_selectors,
+            source_track = (
+                resolve_track_selector_relaxed(
+                    selector,
+                    source_tracks,
+                    context=f"audio_variants[{index}]",
+                )
+                if relaxed_selectors
+                else resolve_track_selector(
+                    selector,
+                    source_tracks,
+                    context=f"audio_variants[{index}]",
+                    strict=strict_selectors,
+                )
             )
         except SelectorResolutionError as exc:
             if _fallback_profile_name(job):
@@ -155,21 +200,32 @@ def track_order(
     tracks: list[TrackEntry],
     *,
     strict_selectors: bool = False,
+    relaxed_selectors: bool = False,
 ) -> list[tuple[int, int, str]]:
     explicit = job.get("track_order")
     if isinstance(explicit, list):
         order: list[tuple[int, int, str]] = []
         by_key = {(t.file_id, t.mkv_tid): t for t in tracks}
+        source_tracks = [track for track in tracks if not track.is_new]
         for index, item in enumerate(explicit):
             if isinstance(item, dict):
                 selector = item.get("selector")
                 if isinstance(selector, dict):
+                    selector_tracks = tracks if selector.get("entry_id") else source_tracks
                     try:
-                        track = resolve_track_selector(
-                            selector,
-                            tracks,
-                            context=f"track_order[{index}]",
-                            strict=strict_selectors,
+                        track = (
+                            resolve_track_selector_relaxed(
+                                selector,
+                                selector_tracks,
+                                context=f"track_order[{index}]",
+                            )
+                            if relaxed_selectors
+                            else resolve_track_selector(
+                                selector,
+                                selector_tracks,
+                                context=f"track_order[{index}]",
+                                strict=strict_selectors,
+                            )
                         )
                     except SelectorResolutionError as exc:
                         if _fallback_profile_name(job):
@@ -314,6 +370,34 @@ def resolve_final_output(
     )
 
 
+def resolve_metadata_file_title(job: dict[str, Any], tmdb_title: str, *, tmdb_wins: bool = False) -> str:
+    explicit = str(job.get("file_title") or "")
+    if tmdb_wins and tmdb_title:
+        return tmdb_title
+    return explicit or tmdb_title or ""
+
+
+def merge_tmdb_tag_overrides(
+    tmdb_tags: dict[str, str] | None,
+    tag_overrides: Any,
+    *,
+    tmdb_wins: bool = False,
+) -> dict[str, str] | None:
+    explicit = dict(tag_overrides) if isinstance(tag_overrides, dict) else None
+    if not tmdb_tags:
+        return explicit
+    if explicit is None:
+        return dict(tmdb_tags)
+    if tmdb_wins:
+        cleaned_explicit = {
+            key: value
+            for key, value in explicit.items()
+            if key not in TMDB_MKV_TAG_KEYS or key not in tmdb_tags
+        }
+        return deep_merge(cleaned_explicit, tmdb_tags)
+    return deep_merge(tmdb_tags, explicit)
+
+
 def build_remux_config(
     job: dict[str, Any],
     config: AppConfig,
@@ -326,8 +410,20 @@ def build_remux_config(
     validate_job_contract(job, require_version=False)
     sources, infos, tracks = inspect_sources(job, config, options, logger, cli_inputs=cli_inputs)
     strict_selectors = str(job.get("kind") or "") == "exact-job"
-    apply_audio_variants(job, sources, tracks, strict_selectors=strict_selectors)
-    apply_explicit_track_edits(job, tracks, strict_selectors=strict_selectors)
+    relaxed_selectors = bool(job.get("_relaxed_selectors"))
+    apply_audio_variants(
+        job,
+        sources,
+        tracks,
+        strict_selectors=strict_selectors,
+        relaxed_selectors=relaxed_selectors,
+    )
+    apply_explicit_track_edits(
+        job,
+        tracks,
+        strict_selectors=strict_selectors,
+        relaxed_selectors=relaxed_selectors,
+    )
 
     keep_chapters, chapter_overrides, chapter_source_index = chapter_entries(job, infos)
     tmdb_title = ""
@@ -345,7 +441,12 @@ def build_remux_config(
     except TmdbError as exc:
         raise CliError(str(exc), EXIT_VALIDATION) from exc
 
-    final_track_order = track_order(job, tracks, strict_selectors=strict_selectors)
+    final_track_order = track_order(
+        job,
+        tracks,
+        strict_selectors=strict_selectors,
+        relaxed_selectors=relaxed_selectors,
+    )
     output = resolve_final_output(
         cli_output=cli_output,
         job=job,
@@ -356,9 +457,12 @@ def build_remux_config(
         variables=job.get("variables") if isinstance(job.get("variables"), dict) else None,
     )
 
-    tag_overrides = job.get("tag_overrides", None)
-    if tmdb_tags:
-        tag_overrides = deep_merge(tmdb_tags, tag_overrides if isinstance(tag_overrides, dict) else {})
+    tmdb_wins = auto_tmdb_metadata_enabled(job)
+    tag_overrides = merge_tmdb_tag_overrides(
+        tmdb_tags,
+        job.get("tag_overrides", None),
+        tmdb_wins=tmdb_wins,
+    )
 
     work_dir = Path(str(options.work_dir or job.get("work_dir") or config.work_dir)).expanduser()
     return RemuxConfig(
@@ -370,7 +474,7 @@ def build_remux_config(
         chapter_source_index=chapter_source_index,
         extra_attachments=[Path(str(p)).expanduser() for p in job.get("extra_attachments", [])],
         work_dir=work_dir,
-        file_title=str(job.get("file_title") or tmdb_title or ""),
+        file_title=resolve_metadata_file_title(job, tmdb_title, tmdb_wins=tmdb_wins),
         tag_overrides=tag_overrides if isinstance(tag_overrides, dict) else None,
         tmdb_cover=tmdb_cover,
         allow_missing_output_dir=bool(job.get("_allow_missing_output_dir", False)),

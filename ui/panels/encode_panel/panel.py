@@ -15,16 +15,16 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont
+from PySide6.QtCore import QSize, Qt, Signal, QUrl
+from PySide6.QtGui import QBrush, QColor, QDesktopServices, QFont, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog,
-    QFrame, QHBoxLayout, QInputDialog, QLabel,
+    QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
     QLayout,
     QLineEdit, QListWidget, QListWidgetItem,
     QMessageBox,
-    QPlainTextEdit, QPushButton,
-    QScrollArea, QSlider, QSpinBox, QStackedWidget,
+    QPlainTextEdit, QProgressBar, QPushButton,
+    QScrollArea, QSizePolicy, QSlider, QSpinBox, QStackedWidget, QTabWidget,
     QVBoxLayout, QWidget,
 )
 
@@ -36,8 +36,10 @@ from core.runner import TaskSignals
 from core.workflows.encode import (
     AUDIO_CODECS, HARDWARE_VIDEO_CODECS, SOFTWARE_VIDEO_CODECS,
     TONEMAP_ALGORITHMS, AudioTrackSettings, EncodeConfig,
+    EncodePreviewRequest,
     EncodePreset, EncodeWorkflow, HardwareEncoderDetector,
-    ProfileManager, QualityMode, VideoEncodeSettings, VideoTrackEncodePlan, presets_for_codec,
+    ProfileManager, QualityMode, VideoCropSettings, VideoEncodeSettings, VideoFilterSettings,
+    VideoResizeSettings, VideoTrackEncodePlan, presets_for_codec,
 )
 from core.workflows.encode.catalog import (
     VIDEO_ENCODER_BADGES,
@@ -77,6 +79,8 @@ class EncodePanel(QWidget):
     _hw_detected             = Signal(object, object, object)   # (hw: set[str], sw: set[str], hw_ffmpeg: str)
     _VIDEO_ENCODER_BADGES = VIDEO_ENCODER_BADGES
     _VIDEO_HDR_BADGE_ORDER = VIDEO_HDR_BADGE_ORDER
+    _MAX_VISIBLE_VIDEO_SOURCE_ROWS = 10
+    _VIDEO_SOURCE_ROW_H = 34
 
     def __init__(
         self,
@@ -113,6 +117,8 @@ class EncodePanel(QWidget):
         self._video_force_8bit_by_entry_id: dict[str, bool] = {}
         self._current_video_entry_id: str | None = None
         self._loading_video_settings = False
+        self._syncing_video_selectors = False
+        self._video_selector_combos: list[QComboBox] = []
         self._video_apply_all = False
         self._audio_tracks_data: list[tuple] = []   # list[tuple[AudioTrack, str, Path, TrackEntry]]
         self._duration_s: float | None = None
@@ -129,6 +135,13 @@ class EncodePanel(QWidget):
         self._tag_overrides_provider: Callable[[], "dict | None"] = lambda: None
         # Callable fourni par MainWindow pour récupérer les chapter_overrides depuis RemuxPanel.
         self._chapters_provider: Callable[[], "list | None"] = lambda: None
+        self._preview_signals: TaskSignals | None = None
+        self._preview_random_scene = False
+        self._preview_video_path: Path | None = None
+        self._preview_captures: list[dict] = []
+        self._preview_current_index: int = 0
+        self._preview_zoom_percent: int = 100
+        self._preview_current_pixmap: QPixmap | None = None
 
         self._sw_encoders: set[str] = {codec_id for codec_id, _ in SOFTWARE_VIDEO_CODECS}
         self._workflow.log_message.connect(self.log_message, Qt.ConnectionType.QueuedConnection)
@@ -137,6 +150,10 @@ class EncodePanel(QWidget):
         self._build_ui()
         apply_translations(self)
         self._executor.submit(self._detect_hw_encoders)
+        try:
+            EncodeWorkflow.cleanup_preview_dir(self._config.work_dir)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Construction de l'interface
@@ -174,29 +191,48 @@ class EncodePanel(QWidget):
         cl.addWidget(subtitle)
         cl.addWidget(_separator())
 
-        # --- Piste vidéo source ---
-        cl.addWidget(_section_label("PISTE VIDÉO SOURCE"))
-        cl.addWidget(self._build_video_source_card())
-        cl.addWidget(_separator())
+        self._tabs = QTabWidget()
+        self._tabs.setDocumentMode(True)
+        self._tabs.setUsesScrollButtons(False)
+        self._tabs.setStyleSheet(
+            f"QTabWidget::pane{{border:0;background:{_C.BG_DEEP};margin-top:8px;}}"
+            f"QTabBar::tab{{background:transparent;color:{_C.TEXT_SEC};padding:7px 11px;"
+            f"margin-right:4px;border:0;border-bottom:2px solid transparent;}}"
+            f"QTabBar::tab:selected{{color:{_C.TEXT_PRI};background:{_C.BG_CARD};"
+            f"border-bottom:2px solid {_C.ACCENT};border-radius:4px;}}"
+            f"QTabBar::tab:hover{{color:{_C.TEXT_PRI};background:{_C.BG_HOVER};"
+            f"border-radius:4px;}}"
+        )
+        self._tabs.addTab(self._build_sources_audio_tab(), "Sources & Audio")
+        self._tabs.addTab(self._build_video_tab(), "Video")
+        self._tabs.addTab(self._build_geometry_filters_tab(), "Géométrie / Filtres")
+        self._tabs.addTab(self._build_preview_tab(), "Preview / Commande")
+        cl.addWidget(self._tabs)
+        cl.addStretch()
 
-        # --- Encodage vidéo ---
-        cl.addWidget(_section_label("ENCODAGE VIDÉO"))
-        cl.addWidget(self._build_video_card())
-        cl.addWidget(_separator())
+        scroll.setWidget(content)
+        root.addWidget(scroll, stretch=1)
 
-        # --- HDR ---
-        cl.addWidget(_section_label("HDR"))
-        cl.addWidget(self._build_hdr_card())
-        cl.addWidget(_separator())
+    def _new_tab_page(self) -> tuple[QWidget, QVBoxLayout]:
+        page = QWidget()
+        page.setStyleSheet(f"background:{_C.BG_DEEP};")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(14)
+        return page, layout
 
-        # --- Pistes audio ---
-        cl.addWidget(_section_label("PISTES AUDIO"))
+    def _build_sources_audio_tab(self) -> QWidget:
+        page, layout = self._new_tab_page()
+        layout.addWidget(_section_label("PISTE VIDÉO SOURCE"))
+        layout.addWidget(self._build_video_source_card())
+        layout.addWidget(_separator())
+        layout.addWidget(_section_label("PISTES AUDIO"))
         self._audio_table = _AudioTable(self._config)
         self._audio_table.set_changed_callback(self._rebuild_preview)
         self._audio_table.track_meta_changed.connect(self.audio_track_meta_changed)
         self._audio_table.track_encoding_changed.connect(self.audio_track_encoding_changed)
         self._audio_table.track_removed.connect(self.audio_track_remove_requested)
-        cl.addWidget(self._audio_table)
+        layout.addWidget(self._audio_table)
 
         add_track_row = QHBoxLayout()
         add_track_row.setSpacing(0)
@@ -205,22 +241,250 @@ class EncodePanel(QWidget):
         self._add_audio_btn.clicked.connect(self._on_add_audio_track)
         add_track_row.addWidget(self._add_audio_btn)
         add_track_row.addStretch()
-        cl.addLayout(add_track_row)
+        layout.addLayout(add_track_row)
+        layout.addStretch()
+        return page
 
-        cl.addWidget(_separator())
+    def _build_video_tab(self) -> QWidget:
+        page, layout = self._new_tab_page()
+        layout.addWidget(self._build_video_selector_row())
+        layout.addWidget(_section_label("ENCODAGE VIDÉO"))
+        layout.addWidget(self._build_video_card())
+        layout.addWidget(_separator())
+        layout.addWidget(_section_label("HDR"))
+        layout.addWidget(self._build_hdr_card())
+        layout.addStretch()
+        return page
 
-        # --- Aperçu commande ---
+    def _build_geometry_filters_tab(self) -> QWidget:
+        page, layout = self._new_tab_page()
+        layout.addWidget(self._build_video_selector_row())
+        self._geometry_copy_msg = self._build_transform_message_label()
+        self._filters_copy_msg = self._geometry_copy_msg
+        layout.addWidget(self._geometry_copy_msg)
+        layout.addWidget(self._build_geometry_card())
+        layout.addWidget(self._build_filters_card())
+        layout.addStretch()
+        return page
+
+    def _build_preview_tab(self) -> QWidget:
+        page, layout = self._new_tab_page()
+        layout.addWidget(self._build_video_selector_row())
+
+        layout.addWidget(_section_label("PREVIEW RÉELLE"))
+        preview_card = _card()
+        preview_layout = QVBoxLayout(preview_card)
+        preview_layout.setContentsMargins(14, 12, 14, 12)
+        preview_layout.setSpacing(10)
+
+        controls = QGridLayout()
+        controls.setContentsMargins(0, 0, 0, 0)
+        controls.setHorizontalSpacing(10)
+        controls.setVerticalSpacing(8)
+
+        mode_label = QLabel("Mode")
+        mode_label.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        self._preview_mode_combo = QComboBox()
+        self._preview_mode_combo.setObjectName("PreviewModeCombo")
+        self._preview_mode_combo.setStyleSheet(_combo_style())
+        self._preview_mode_combo.addItem("Image", "image")
+        self._preview_mode_combo.addItem("Vidéo", "video")
+        self._preview_mode_combo.currentIndexChanged.connect(self._on_preview_mode_changed)
+        controls.addWidget(mode_label, 0, 0)
+        controls.addWidget(self._preview_mode_combo, 1, 0)
+
+        time_label = QLabel("Scène")
+        time_label.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        time_row = QHBoxLayout()
+        time_row.setContentsMargins(0, 0, 0, 0)
+        time_row.setSpacing(6)
+        self._preview_time_edit = QLineEdit("00:00:00.000")
+        self._preview_time_edit.setObjectName("PreviewTimeEdit")
+        self._preview_time_edit.setStyleSheet(_input_style())
+        self._preview_time_edit.setPlaceholderText("HH:MM:SS.mmm")
+        self._preview_time_edit.textEdited.connect(self._on_preview_time_edited)
+        time_row.addWidget(self._preview_time_edit, 1)
+        self._preview_random_btn = _secondary_button("Hasard")
+        self._preview_random_btn.setObjectName("PreviewRandomButton")
+        self._preview_random_btn.clicked.connect(self._on_random_preview_scene)
+        time_row.addWidget(self._preview_random_btn)
+        time_widget = QWidget()
+        time_widget.setStyleSheet("background:transparent;")
+        time_widget.setLayout(time_row)
+        controls.addWidget(time_label, 0, 1)
+        controls.addWidget(time_widget, 1, 1)
+
+        duration_label = QLabel("Durée vidéo")
+        duration_label.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        self._preview_duration_spin = QSpinBox()
+        self._preview_duration_spin.setObjectName("PreviewDurationSpin")
+        self._preview_duration_spin.setRange(5, 30)
+        self._preview_duration_spin.setValue(10)
+        self._preview_duration_spin.setSuffix(" s")
+        self._preview_duration_spin.setStyleSheet(_input_style())
+        controls.addWidget(duration_label, 0, 2)
+        controls.addWidget(self._preview_duration_spin, 1, 2)
+
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(8)
+        self._preview_generate_btn = _primary_button("Générer")
+        self._preview_generate_btn.setObjectName("PreviewGenerateButton")
+        self._preview_generate_btn.clicked.connect(self._on_generate_preview)
+        self._preview_cancel_btn = _secondary_button("Annuler")
+        self._preview_cancel_btn.setObjectName("PreviewCancelButton")
+        self._preview_cancel_btn.clicked.connect(self._on_cancel_preview)
+        self._preview_cancel_btn.setEnabled(False)
+        action_row.addWidget(self._preview_generate_btn)
+        action_row.addWidget(self._preview_cancel_btn)
+        action_row.addStretch()
+        action_widget = QWidget()
+        action_widget.setStyleSheet("background:transparent;")
+        action_widget.setLayout(action_row)
+        controls.addWidget(action_widget, 1, 3)
+        controls.setColumnStretch(1, 1)
+        preview_layout.addLayout(controls)
+
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(10)
+        self._preview_status = QLabel("Prêt.")
+        self._preview_status.setObjectName("PreviewStatusLabel")
+        self._preview_status.setWordWrap(True)
+        self._preview_status.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        self._preview_progress = QProgressBar()
+        self._preview_progress.setObjectName("PreviewProgressBar")
+        self._preview_progress.setRange(0, 100)
+        self._preview_progress.setValue(0)
+        self._preview_progress.setFixedWidth(180)
+        self._preview_progress.setFixedHeight(14)
+        self._preview_progress.setTextVisible(True)
+        self._preview_progress.setFormat("%p %")
+        self._preview_progress.setVisible(False)
+        self._preview_progress.setStyleSheet(
+            f"QProgressBar{{background:{_C.BG_CARD};border:1px solid {_C.BORDER};"
+            f"border-radius:5px;color:{_C.TEXT_PRI};font-size:10px;text-align:center;}}"
+            f"QProgressBar::chunk{{background:{_C.ACCENT};border-radius:4px;}}"
+        )
+        status_row.addWidget(self._preview_status, 1)
+        status_row.addWidget(self._preview_progress)
+        preview_layout.addLayout(status_row)
+
+        self._preview_scene_status = QLabel("")
+        self._preview_scene_status.setObjectName("PreviewSceneStatusLabel")
+        self._preview_scene_status.setWordWrap(True)
+        self._preview_scene_status.setStyleSheet(f"color:{_C.TEXT_DIM};font-size:11px;background:transparent;")
+        preview_layout.addWidget(self._preview_scene_status)
+
+        self._preview_image = QLabel("Aucune image générée")
+        self._preview_image.setObjectName("PreviewImageLabel")
+        self._preview_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._preview_image.setMinimumSize(0, 0)
+        self._preview_image.setStyleSheet(
+            f"QLabel{{background:{_C.BG_DEEP};color:{_C.TEXT_DIM};padding:10px;}}"
+        )
+        self._preview_scroll = QScrollArea()
+        self._preview_scroll.setObjectName("PreviewImageScroll")
+        self._preview_scroll.setWidget(self._preview_image)
+        self._preview_scroll.setWidgetResizable(True)
+        self._preview_scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._preview_scroll.setMinimumHeight(299)
+        self._preview_scroll.setStyleSheet(
+            f"QScrollArea{{background:{_C.BG_DEEP};border:1px solid {_C.BORDER};border-radius:6px;}}"
+            f"QScrollBar:vertical,QScrollBar:horizontal{{background:{_C.BG_DEEP};width:8px;height:8px;border:none;}}"
+            f"QScrollBar::handle{{background:{_C.BORDER_LT};border-radius:4px;min-height:24px;min-width:24px;}}"
+            f"QScrollBar::add-line,QScrollBar::sub-line{{height:0;width:0;}}"
+        )
+        preview_layout.addWidget(self._preview_scroll, 1)
+
+        nav_row = QHBoxLayout()
+        nav_row.setContentsMargins(0, 0, 0, 0)
+        nav_row.setSpacing(8)
+        self._preview_prev_btn = _secondary_button("◀")
+        self._preview_prev_btn.setObjectName("PreviewPrevButton")
+        self._preview_prev_btn.setFixedWidth(46)
+        self._preview_prev_btn.clicked.connect(self._on_preview_prev)
+        self._preview_prev_btn.setEnabled(False)
+        self._preview_next_btn = _secondary_button("▶")
+        self._preview_next_btn.setObjectName("PreviewNextButton")
+        self._preview_next_btn.setFixedWidth(46)
+        self._preview_next_btn.clicked.connect(self._on_preview_next)
+        self._preview_next_btn.setEnabled(False)
+        self._preview_index_label = QLabel("— / —")
+        self._preview_index_label.setObjectName("PreviewIndexLabel")
+        self._preview_index_label.setStyleSheet(
+            f"color:{_C.TEXT_PRI};font-size:11px;font-family:'JetBrains Mono',monospace;"
+            f"background:transparent;min-width:60px;"
+        )
+        self._preview_index_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._preview_index_label.setFixedWidth(72)
+        zoom_lbl = QLabel("Zoom")
+        zoom_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        self._preview_zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self._preview_zoom_slider.setObjectName("PreviewZoomSlider")
+        self._preview_zoom_slider.setRange(10, 400)
+        self._preview_zoom_slider.setSingleStep(10)
+        self._preview_zoom_slider.setPageStep(25)
+        self._preview_zoom_slider.setValue(100)
+        self._preview_zoom_slider.setMinimumWidth(180)
+        self._preview_zoom_slider.valueChanged.connect(self._on_preview_zoom_changed)
+        self._preview_zoom_value_lbl = QLabel("100 %")
+        self._preview_zoom_value_lbl.setObjectName("PreviewZoomValueLabel")
+        self._preview_zoom_value_lbl.setStyleSheet(
+            f"color:{_C.TEXT_PRI};font-size:11px;font-family:'JetBrains Mono',monospace;"
+            f"background:transparent;min-width:54px;"
+        )
+        self._preview_zoom_value_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._preview_zoom_fit_btn = _secondary_button("Ajuster")
+        self._preview_zoom_fit_btn.setObjectName("PreviewZoomFitButton")
+        self._preview_zoom_fit_btn.clicked.connect(self._on_preview_zoom_fit)
+        nav_row.addWidget(self._preview_prev_btn)
+        nav_row.addWidget(self._preview_index_label)
+        nav_row.addWidget(self._preview_next_btn)
+        nav_row.addStretch()
+        nav_row.addWidget(zoom_lbl)
+        nav_row.addWidget(self._preview_zoom_slider, 1)
+        nav_row.addWidget(self._preview_zoom_value_lbl)
+        nav_row.addWidget(self._preview_zoom_fit_btn)
+        preview_layout.addLayout(nav_row)
+
+        video_result_row = QHBoxLayout()
+        video_result_row.setContentsMargins(0, 0, 0, 0)
+        video_result_row.setSpacing(8)
+        video_lbl = QLabel("Vidéo :")
+        video_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        self._preview_video_path_label = QLabel("")
+        self._preview_video_path_label.setObjectName("PreviewVideoPathLabel")
+        self._preview_video_path_label.setWordWrap(True)
+        self._preview_video_path_label.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        self._preview_open_video_btn = _secondary_button("Ouvrir")
+        self._preview_open_video_btn.setObjectName("PreviewOpenVideoButton")
+        self._preview_open_video_btn.clicked.connect(self._open_preview_video)
+        self._preview_open_video_btn.setEnabled(False)
+        video_result_row.addWidget(video_lbl)
+        video_result_row.addWidget(self._preview_video_path_label, 1)
+        video_result_row.addWidget(self._preview_open_video_btn)
+        video_result = QWidget()
+        video_result.setObjectName("PreviewVideoResultRow")
+        video_result.setStyleSheet("background:transparent;")
+        video_result.setLayout(video_result_row)
+        preview_layout.addWidget(video_result)
+        self._preview_video_result_row = video_result
+
+        layout.addWidget(preview_card)
+        layout.addWidget(_separator())
+
         cmd_row = QHBoxLayout()
         cmd_row.addWidget(_section_label("APERÇU COMMANDE"))
         cmd_row.addStretch()
         copy_btn = _secondary_button("Copier")
         copy_btn.clicked.connect(self._copy_command)
         cmd_row.addWidget(copy_btn)
-        cl.addLayout(cmd_row)
+        layout.addLayout(cmd_row)
 
         self._cmd_preview = QPlainTextEdit()
         self._cmd_preview.setReadOnly(True)
-        self._cmd_preview.setFixedHeight(140)
+        self._cmd_preview.setFixedHeight(220)
         mono = QFont("JetBrains Mono", 9)
         mono.setStyleHint(QFont.StyleHint.Monospace)
         self._cmd_preview.setFont(mono)
@@ -231,11 +495,10 @@ class EncodePanel(QWidget):
         self._cmd_preview.setPlaceholderText(
             "Sélectionnez un fichier source et configurez l'encodage…"
         )
-        cl.addWidget(self._cmd_preview)
-        cl.addStretch()
-
-        scroll.setWidget(content)
-        root.addWidget(scroll, stretch=1)
+        layout.addWidget(self._cmd_preview)
+        self._on_preview_mode_changed()
+        layout.addStretch()
+        return page
 
     def _build_video_source_card(self) -> QWidget:
         """Sélecteur de piste vidéo alimenté par l'onglet Conteneur."""
@@ -248,12 +511,23 @@ class EncodePanel(QWidget):
         self._video_list.setSelectionMode(
             QAbstractItemView.SelectionMode.SingleSelection
         )
+        self._video_list.setUniformItemSizes(True)
+        self._video_list.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        self._video_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._video_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._video_list.setStyleSheet(
             f"QListWidget{{background:{_C.BG_CARD};border:none;border-radius:6px;"
             f"color:{_C.TEXT_PRI};font-size:11px;font-family:'JetBrains Mono',monospace;}}"
             f"QListWidget::item{{padding:8px 12px;border-bottom:1px solid {_C.BORDER};}}"
             f"QListWidget::item:selected{{background:{_C.ACCENT_DIM};}}"
             f"QListWidget::item:hover{{background:{_C.BG_HOVER};}}"
+            f"QScrollBar:vertical{{background:{_C.BG_CARD};width:6px;border:none;}}"
+            f"QScrollBar::handle:vertical{{background:{_C.BORDER_LT};"
+            f"border-radius:3px;min-height:24px;}}"
+            f"QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{{height:0;}}"
         )
         self._video_list.currentRowChanged.connect(self._on_video_row_changed)
         cl.addWidget(self._video_list)
@@ -272,6 +546,67 @@ class EncodePanel(QWidget):
         self._video_placeholder.setVisible(True)
         return card
 
+    def _build_video_selector_row(self) -> QWidget:
+        row = QWidget()
+        row.setStyleSheet("background:transparent;")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        label = QLabel("Piste vidéo")
+        label.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        layout.addWidget(label)
+        combo = QComboBox()
+        combo.setStyleSheet(_combo_style())
+        combo.setMinimumWidth(360)
+        combo.currentIndexChanged.connect(lambda idx, c=combo: self._on_video_selector_changed(c, idx))
+        self._video_selector_combos.append(combo)
+        layout.addWidget(combo, 1)
+        layout.addStretch()
+        return row
+
+    def _on_video_selector_changed(self, combo: QComboBox, index: int) -> None:
+        if self._syncing_video_selectors or index < 0:
+            return
+        data = combo.itemData(index)
+        try:
+            row = int(data)
+        except (TypeError, ValueError):
+            return
+        if hasattr(self, "_video_list") and 0 <= row < self._video_list.count():
+            self._video_list.setCurrentRow(row)
+
+    def _sync_video_selector_items(self) -> None:
+        if not self._video_selector_combos:
+            return
+        self._syncing_video_selectors = True
+        try:
+            current = self._video_list.currentRow() if hasattr(self, "_video_list") else -1
+            for combo in self._video_selector_combos:
+                combo.blockSignals(True)
+                combo.clear()
+                for row, (file_info, track, _color) in enumerate(self._video_tracks):
+                    codec = (track.orig_codec or track.codec or "").upper()
+                    combo.addItem(f"{file_info.path.name} · #{track.mkv_tid} · {codec}", row)
+                combo.setEnabled(bool(self._video_tracks))
+                if 0 <= current < combo.count():
+                    combo.setCurrentIndex(current)
+                combo.blockSignals(False)
+        finally:
+            self._syncing_video_selectors = False
+
+    def _set_video_selector_row(self, row: int) -> None:
+        if not self._video_selector_combos:
+            return
+        self._syncing_video_selectors = True
+        try:
+            for combo in self._video_selector_combos:
+                if 0 <= row < combo.count():
+                    combo.blockSignals(True)
+                    combo.setCurrentIndex(row)
+                    combo.blockSignals(False)
+        finally:
+            self._syncing_video_selectors = False
+
     # ------------------------------------------------------------------
     # API publique — appelée par MainWindow depuis RemuxPanel
     # ------------------------------------------------------------------
@@ -287,6 +622,8 @@ class EncodePanel(QWidget):
         if not tracks:
             self._video_list.setVisible(False)
             self._video_placeholder.setVisible(True)
+            self._adjust_video_list_height()
+            self._sync_video_selector_items()
             self._file_info = None
             self.ready_changed.emit(False)
             self._video_list.blockSignals(False)
@@ -303,6 +640,7 @@ class EncodePanel(QWidget):
             state = self._video_settings_by_entry_id.get(self._video_entry_id(track))
             text = self._video_source_row_text(file_info, track, state=state)
             item = QListWidgetItem(text)
+            item.setSizeHint(QSize(0, self._VIDEO_SOURCE_ROW_H))
             item.setData(Qt.ItemDataRole.UserRole, (file_info, track))
             item.setForeground(QBrush(QColor(color)))
             self._apply_video_source_item_style(item, state)
@@ -329,16 +667,26 @@ class EncodePanel(QWidget):
         self._video_list.setCurrentRow(target_row)
         self._video_list.blockSignals(False)
         self._adjust_video_list_height()
+        self._sync_video_selector_items()
         self._on_video_row_changed(target_row)
         self._ensure_video_states_for_active_tracks()
 
     def _adjust_video_list_height(self) -> None:
-        """Ajuste la hauteur de la liste vidéo pour afficher exactement n lignes."""
+        """Ajuste la hauteur de la liste vidéo, avec scrollbar au-delà de 10 lignes."""
         n = self._video_list.count()
         if n == 0:
+            self._video_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self._video_list.setFixedHeight(0)
             return
-        row_h = self._video_list.sizeHintForRow(0)
-        self._video_list.setFixedHeight(n * row_h + 2)
+        row_h = self._VIDEO_SOURCE_ROW_H
+        visible = min(n, self._MAX_VISIBLE_VIDEO_SOURCE_ROWS)
+        frame_h = self._video_list.frameWidth() * 2
+        self._video_list.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+            if n > self._MAX_VISIBLE_VIDEO_SOURCE_ROWS
+            else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._video_list.setFixedHeight(visible * row_h + frame_h + 2)
 
     def _on_video_row_changed(self, row: int) -> None:
         if row < 0 or row >= len(self._video_tracks):
@@ -346,6 +694,7 @@ class EncodePanel(QWidget):
         self._save_current_video_state()
         file_info, track, _color = self._video_tracks[row]
         self._current_video_entry_id = self._video_entry_id(track)
+        self._set_video_selector_row(row)
         self._apply_file_info(file_info, track)
 
     def _apply_file_info(self, info: FileInfo, track: TrackEntry | None = None) -> None:
@@ -726,6 +1075,443 @@ class EncodePanel(QWidget):
 
         return card
 
+    @staticmethod
+    def _copy_transform_message() -> str:
+        return (
+            "Options indisponibles en mode Copy. Choisissez un codec d'encodage "
+            "dans l'onglet Video pour activer la géométrie et les filtres."
+        )
+
+    def _build_transform_message_label(self) -> QLabel:
+        label = QLabel(self._copy_transform_message())
+        label.setWordWrap(True)
+        label.setStyleSheet(
+            f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;"
+            f"border:none;padding:0 0 2px 0;"
+        )
+        return label
+
+    def _build_transform_surface(self, title: str) -> tuple[QWidget, QVBoxLayout]:
+        surface = QWidget()
+        surface.setObjectName("TransformSurface")
+        surface.setStyleSheet(
+            f"QWidget#TransformSurface{{background:{_C.BG_CARD};border:none;border-radius:6px;}}"
+        )
+        layout = QVBoxLayout(surface)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(14)
+
+        title_label = QLabel(title)
+        title_label.setStyleSheet(
+            f"color:{_C.TEXT_PRI};font-size:12px;font-weight:700;"
+            f"letter-spacing:0;background:transparent;"
+        )
+        layout.addWidget(title_label)
+        return surface, layout
+
+    def _build_geometry_card(self) -> QWidget:
+        card, cl = self._build_transform_surface("GÉOMÉTRIE")
+
+        self._geometry_controls = QWidget()
+        self._geometry_controls.setStyleSheet("background:transparent;")
+        gl = QVBoxLayout(self._geometry_controls)
+        gl.setContentsMargins(0, 0, 0, 0)
+        gl.setSpacing(14)
+
+        self._resize_enabled_cb = QCheckBox("Redimensionner")
+        self._resize_enabled_cb.setStyleSheet(_checkbox_style())
+        self._resize_enabled_cb.toggled.connect(lambda _: self._rebuild_preview())
+
+        resize_head = QHBoxLayout()
+        resize_head.setSpacing(10)
+        resize_head.addWidget(self._resize_enabled_cb)
+        resize_head.addStretch()
+        resize_mode_lbl = QLabel("Mode")
+        resize_mode_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        resize_head.addWidget(resize_mode_lbl)
+        self._resize_mode_combo = QComboBox()
+        self._resize_mode_combo.setStyleSheet(_combo_style())
+        self._resize_mode_combo.setToolTip("Choisit le type de redimensionnement à afficher et appliquer.")
+        self._resize_mode_combo.addItem("Preset", "preset")
+        self._resize_mode_combo.addItem("%", "percent")
+        self._resize_mode_combo.addItem("WxH", "size")
+        self._resize_mode_combo.currentIndexChanged.connect(self._on_resize_mode_changed)
+        self._resize_mode_combo.setFixedWidth(120)
+        resize_head.addWidget(self._resize_mode_combo)
+        resize_algo_lbl = QLabel("Algorithme")
+        resize_algo_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        resize_head.addWidget(resize_algo_lbl)
+        self._resize_algo_combo = QComboBox()
+        self._resize_algo_combo.setStyleSheet(_combo_style())
+        self._resize_algo_combo.setToolTip("Filtre de mise à l'échelle utilisé par FFmpeg ou NVEncC.")
+        for algo in ("lanczos", "bicubic", "bilinear", "spline"):
+            self._resize_algo_combo.addItem(algo, algo)
+        self._resize_algo_combo.currentIndexChanged.connect(lambda _: self._rebuild_preview())
+        self._resize_algo_combo.setFixedWidth(130)
+        resize_head.addWidget(self._resize_algo_combo)
+        gl.addLayout(resize_head)
+
+        self._resize_value_stack = QStackedWidget()
+        self._resize_value_stack.setStyleSheet("background:transparent;")
+        resize_page_style = (
+            f"background:transparent;"
+            f"QLabel{{color:{_C.TEXT_SEC};font-size:11px;background:transparent;}}"
+        )
+
+        resize_preset_page = QWidget()
+        resize_preset_page.setStyleSheet(resize_page_style)
+        preset_l = QHBoxLayout(resize_preset_page)
+        preset_l.setContentsMargins(0, 0, 0, 0)
+        preset_l.setSpacing(8)
+        preset_l.addWidget(QLabel("Preset"))
+        self._resize_preset_combo = QComboBox()
+        self._resize_preset_combo.setStyleSheet(_combo_style())
+        self._resize_preset_combo.setToolTip("Applique une résolution courante et prépare les valeurs WxH correspondantes.")
+        for label in ("720p", "1080p", "1440p", "2160p"):
+            self._resize_preset_combo.addItem(label, label)
+        self._resize_preset_combo.currentIndexChanged.connect(self._on_resize_preset_changed)
+        preset_l.addWidget(self._resize_preset_combo)
+        self._resize_preset_hint = QLabel("1280 x 720")
+        self._resize_preset_hint.setStyleSheet(f"color:{_C.TEXT_DIM};font-size:11px;background:transparent;")
+        preset_l.addWidget(self._resize_preset_hint)
+        preset_l.addStretch()
+        self._resize_value_stack.addWidget(resize_preset_page)
+
+        resize_percent_page = QWidget()
+        resize_percent_page.setStyleSheet(resize_page_style)
+        percent_l = QHBoxLayout(resize_percent_page)
+        percent_l.setContentsMargins(0, 0, 0, 0)
+        percent_l.setSpacing(8)
+        percent_l.addWidget(QLabel("Pourcentage"))
+        self._resize_percent_spin = QSpinBox()
+        self._resize_percent_spin.setRange(1, 400)
+        self._resize_percent_spin.setValue(100)
+        self._resize_percent_spin.setSuffix(" %")
+        self._resize_percent_spin.setToolTip("100 % conserve la résolution source. L'upscale est plafonné si l'option est décochée.")
+        self._resize_percent_spin.setStyleSheet(_input_style())
+        self._resize_percent_spin.valueChanged.connect(lambda _: self._rebuild_preview())
+        percent_l.addWidget(self._resize_percent_spin)
+        percent_l.addStretch()
+        self._resize_value_stack.addWidget(resize_percent_page)
+
+        resize_size_page = QWidget()
+        resize_size_page.setStyleSheet(resize_page_style)
+        size_l = QHBoxLayout(resize_size_page)
+        size_l.setContentsMargins(0, 0, 0, 0)
+        size_l.setSpacing(8)
+        size_l.addWidget(QLabel("Largeur"))
+        self._resize_width_spin = QSpinBox()
+        self._resize_width_spin.setRange(2, 16384)
+        self._resize_width_spin.setValue(1280)
+        self._resize_width_spin.setToolTip("Largeur cible en pixels.")
+        self._resize_width_spin.setStyleSheet(_input_style())
+        self._resize_width_spin.valueChanged.connect(lambda _: self._rebuild_preview())
+        size_l.addWidget(self._resize_width_spin)
+        size_l.addWidget(QLabel("Hauteur"))
+        self._resize_height_spin = QSpinBox()
+        self._resize_height_spin.setRange(2, 16384)
+        self._resize_height_spin.setValue(720)
+        self._resize_height_spin.setToolTip("Hauteur cible en pixels.")
+        self._resize_height_spin.setStyleSheet(_input_style())
+        self._resize_height_spin.valueChanged.connect(lambda _: self._rebuild_preview())
+        size_l.addWidget(self._resize_height_spin)
+        size_l.addStretch()
+        self._resize_value_stack.addWidget(resize_size_page)
+
+        resize_flags = QHBoxLayout()
+        resize_flags.setSpacing(12)
+        resize_flags.addWidget(self._resize_value_stack, 1)
+        self._resize_keep_aspect_cb = QCheckBox("Conserver le ratio")
+        self._resize_keep_aspect_cb.setChecked(True)
+        self._resize_keep_aspect_cb.setStyleSheet(_checkbox_style())
+        self._resize_keep_aspect_cb.setToolTip("Évite la déformation en conservant le ratio source dans la résolution cible.")
+        self._resize_keep_aspect_cb.toggled.connect(lambda _: self._rebuild_preview())
+        resize_flags.addWidget(self._resize_keep_aspect_cb)
+        self._resize_allow_upscale_cb = QCheckBox("Autoriser upscale")
+        self._resize_allow_upscale_cb.setStyleSheet(_checkbox_style())
+        self._resize_allow_upscale_cb.setToolTip("Si décoché, la sortie ne dépasse pas la résolution de la source.")
+        self._resize_allow_upscale_cb.toggled.connect(lambda _: self._rebuild_preview())
+        resize_flags.addWidget(self._resize_allow_upscale_cb)
+        gl.addLayout(resize_flags)
+
+        gl.addWidget(_separator())
+        self._crop_enabled_cb = QCheckBox("Recadrer")
+        self._crop_enabled_cb.setStyleSheet(_checkbox_style())
+        self._crop_enabled_cb.toggled.connect(lambda _: self._rebuild_preview())
+        crop_head = QHBoxLayout()
+        crop_head.setSpacing(10)
+        crop_head.addWidget(self._crop_enabled_cb)
+        crop_head.addStretch()
+        self._crop_auto_cb = QCheckBox("Auto-crop  (suppression bandes noires)")
+        self._crop_auto_cb.setStyleSheet(_checkbox_style())
+        self._crop_auto_cb.setToolTip("L'autocrop sera détecté au lancement puis appliqué à la piste active.")
+        self._crop_auto_cb.toggled.connect(lambda _: self._rebuild_preview())
+        crop_head.addWidget(self._crop_auto_cb)
+        gl.addLayout(crop_head)
+
+        self._crop_unit_combo = QComboBox()
+        self._crop_unit_combo.setStyleSheet(_combo_style())
+        self._crop_unit_combo.setToolTip("Unité du recadrage manuel : pixels ou pourcentage de la source.")
+        self._crop_unit_combo.addItem("px", "px")
+        self._crop_unit_combo.addItem("%", "percent")
+        self._crop_unit_combo.currentIndexChanged.connect(lambda _: self._rebuild_preview())
+        self._crop_unit_combo.setFixedWidth(84)
+        self._crop_top_spin = self._make_crop_spin("Haut")
+        self._crop_bottom_spin = self._make_crop_spin("Bas")
+        self._crop_left_spin = self._make_crop_spin("Gauche")
+        self._crop_right_spin = self._make_crop_spin("Droite")
+        gl.addWidget(self._build_crop_cross_controls())
+
+        cl.addWidget(self._geometry_controls)
+        self._sync_transform_controls_enabled()
+        return card
+
+    def _build_crop_cross_controls(self) -> QWidget:
+        wrap = QWidget()
+        wrap.setStyleSheet("background:transparent;")
+        layout = QHBoxLayout(wrap)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+        layout.addWidget(self._crop_unit_combo, alignment=Qt.AlignmentFlag.AlignTop)
+
+        cross = QWidget()
+        cross.setStyleSheet("background:transparent;")
+        grid = QGridLayout(cross)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(8)
+        grid.addWidget(self._crop_top_spin, 0, 1, alignment=Qt.AlignmentFlag.AlignHCenter)
+        grid.addWidget(self._crop_left_spin, 1, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        grid.addWidget(self._build_crop_preview_frame(), 1, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+        grid.addWidget(self._crop_right_spin, 1, 2, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        grid.addWidget(self._crop_bottom_spin, 2, 1, alignment=Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(cross)
+        layout.addStretch()
+        return wrap
+
+    def _build_crop_preview_frame(self) -> QWidget:
+        frame = QFrame()
+        frame.setObjectName("CropPreviewFrame")
+        frame.setFixedSize(174, 98)
+        frame.setStyleSheet(
+            f"QFrame#CropPreviewFrame{{background:{_C.BG_DEEP};"
+            f"border:1px solid {_C.BORDER_LT};border-radius:5px;}}"
+        )
+
+        grid = QGridLayout(frame)
+        grid.setContentsMargins(8, 7, 8, 7)
+        grid.setSpacing(0)
+
+        top = QFrame()
+        bottom = QFrame()
+        left = QFrame()
+        right = QFrame()
+        image = QFrame()
+        for bar in (top, bottom, left, right):
+            bar.setStyleSheet("background:rgba(0,0,0,105);border:none;")
+        image.setStyleSheet(
+            f"background:qlineargradient(x1:0,y1:0,x2:1,y2:1,"
+            f"stop:0 {_C.BG_HOVER},stop:0.5 {_C.ACCENT_DIM},stop:1 {_C.BG_ACTIVE});"
+            f"border:1px solid {_C.ACCENT};border-radius:3px;"
+        )
+
+        top.setFixedHeight(14)
+        bottom.setFixedHeight(14)
+        left.setFixedWidth(20)
+        right.setFixedWidth(20)
+        grid.addWidget(top, 0, 0, 1, 3)
+        grid.addWidget(left, 1, 0)
+        grid.addWidget(image, 1, 1)
+        grid.addWidget(right, 1, 2)
+        grid.addWidget(bottom, 2, 0, 1, 3)
+        grid.setColumnStretch(1, 1)
+        grid.setRowStretch(1, 1)
+        return frame
+
+    def _make_crop_spin(self, prefix: str) -> QSpinBox:
+        spin = QSpinBox()
+        spin.setRange(0, 4096)
+        spin.setPrefix(prefix + " ")
+        spin.setToolTip(f"Recadrage {prefix.lower()} de la piste vidéo active.")
+        spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        spin.setStyleSheet(
+            f"QSpinBox{{background:{_C.BG_CARD};color:{_C.TEXT_PRI};"
+            f"border:1px solid {_C.BORDER};border-radius:5px;"
+            f"padding:4px 8px;font-size:11px;}}"
+            f"QSpinBox:focus{{border-color:{_C.ACCENT};}}"
+        )
+        spin.setFixedWidth(118)
+        spin.valueChanged.connect(lambda _: self._rebuild_preview())
+        return spin
+
+    @staticmethod
+    def _resize_preset_dimensions(preset: str) -> tuple[int, int]:
+        return {
+            "720p": (1280, 720),
+            "1080p": (1920, 1080),
+            "1440p": (2560, 1440),
+            "2160p": (3840, 2160),
+        }.get(str(preset or "720p"), (1280, 720))
+
+    def _sync_resize_mode_ui(self) -> None:
+        if not hasattr(self, "_resize_value_stack"):
+            return
+        mode = str(self._resize_mode_combo.currentData() or "preset")
+        page = {"preset": 0, "percent": 1, "size": 2}.get(mode, 0)
+        self._resize_value_stack.setCurrentIndex(page)
+        width, height = self._resize_preset_dimensions(str(self._resize_preset_combo.currentData() or "720p"))
+        self._resize_preset_hint.setText(f"{width} x {height}")
+
+    def _on_resize_mode_changed(self, _index: int = 0) -> None:
+        mode = str(self._resize_mode_combo.currentData() or "preset")
+        if mode == "size":
+            width, height = self._resize_preset_dimensions(str(self._resize_preset_combo.currentData() or "720p"))
+            if self._resize_width_spin.value() == 1280 and self._resize_height_spin.value() == 720:
+                self._resize_width_spin.setValue(width)
+                self._resize_height_spin.setValue(height)
+        self._sync_resize_mode_ui()
+        self._rebuild_preview()
+
+    def _on_resize_preset_changed(self, _index: int = 0) -> None:
+        width, height = self._resize_preset_dimensions(str(self._resize_preset_combo.currentData() or "720p"))
+        self._resize_width_spin.setValue(width)
+        self._resize_height_spin.setValue(height)
+        self._sync_resize_mode_ui()
+        self._rebuild_preview()
+
+    def _build_filters_card(self) -> QWidget:
+        card, cl = self._build_transform_surface("FILTRES")
+
+        self._filters_controls = QWidget()
+        self._filters_controls.setStyleSheet("background:transparent;")
+        fl = QVBoxLayout(self._filters_controls)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.setSpacing(12)
+
+        self._yadif_cb = QCheckBox("Désentrelacement")
+        self._yadif_cb.setStyleSheet(_checkbox_style())
+        self._yadif_cb.setToolTip("Désentrelacement FFmpeg yadif, appliqué avant crop et resize.")
+        self._yadif_cb.toggled.connect(lambda _: self._rebuild_preview())
+        self._yadif_filter_combo = QComboBox()
+        self._yadif_filter_combo.setStyleSheet(_combo_style())
+        self._yadif_filter_combo.setToolTip("Filtre de désentrelacement utilisé.")
+        self._yadif_filter_combo.addItem("Yadif", "yadif")
+        self._yadif_filter_combo.setEnabled(False)
+        self._yadif_filter_combo.setVisible(False)
+        self._yadif_mode_combo = QComboBox()
+        self._yadif_mode_combo.setStyleSheet(_combo_style())
+        self._yadif_mode_combo.setToolTip("Frame conserve la cadence, Bob double la cadence.")
+        for label, value in (("Frame", "send_frame"), ("Bob", "send_field")):
+            self._yadif_mode_combo.addItem(label, value)
+        self._yadif_mode_combo.currentIndexChanged.connect(lambda _: self._rebuild_preview())
+        self._yadif_parity_combo = QComboBox()
+        self._yadif_parity_combo.setStyleSheet(_combo_style())
+        self._yadif_parity_combo.setToolTip("Parité du champ source ; auto convient à la plupart des fichiers.")
+        for value in ("auto", "tff", "bff"):
+            self._yadif_parity_combo.addItem(value, value)
+        self._yadif_parity_combo.currentIndexChanged.connect(lambda _: self._rebuild_preview())
+        fl.addWidget(self._build_filter_row(
+            self._yadif_cb,
+            self._filter_tech_label(self._yadif_filter_combo.currentText()),
+            self._yadif_mode_combo,
+            self._yadif_parity_combo,
+        ))
+
+        self._deblock_cb = QCheckBox("Deblock")
+        self._deblock_cb.setStyleSheet(_checkbox_style())
+        self._deblock_cb.setToolTip("Réduit les blocs de compression via le filtre FFmpeg deblock.")
+        self._deblock_cb.toggled.connect(lambda _: self._rebuild_preview())
+        self._deblock_filter_combo = QComboBox()
+        self._deblock_filter_combo.setStyleSheet(_combo_style())
+        self._deblock_filter_combo.setToolTip("Filtre de deblocking utilisé.")
+        self._deblock_filter_combo.addItem("deblock", "deblock")
+        self._deblock_filter_combo.setEnabled(False)
+        self._deblock_filter_combo.setVisible(False)
+        self._deblock_strength_combo = self._preset_combo_widget(("ultralight", "light", "medium", "strong", "stronger", "verystrong"))
+        self._deblock_strength_combo.setToolTip("Force du deblocking. Commencer léger si le grain doit rester visible.")
+        self._deblock_block_combo = self._preset_combo_widget(("4", "8", "16"))
+        self._deblock_block_combo.setToolTip("Taille de bloc analysée par le filtre deblock.")
+        fl.addWidget(self._build_filter_row(
+            self._deblock_cb,
+            self._filter_tech_label(self._deblock_filter_combo.currentText()),
+            self._deblock_strength_combo,
+            self._deblock_block_combo,
+        ))
+
+        self._nlmeans_cb = QCheckBox("Débruitage")
+        self._nlmeans_cb.setStyleSheet(_checkbox_style())
+        self._nlmeans_cb.setToolTip("Débruitage spatial/temporal. Plus lent mais utile sur sources bruitées.")
+        self._nlmeans_cb.toggled.connect(lambda _: self._rebuild_preview())
+        self._nlmeans_filter_combo = QComboBox()
+        self._nlmeans_filter_combo.setStyleSheet(_combo_style())
+        self._nlmeans_filter_combo.setToolTip("Filtre de débruitage utilisé.")
+        self._nlmeans_filter_combo.addItem("NLMeans", "nlmeans")
+        self._nlmeans_filter_combo.setEnabled(False)
+        self._nlmeans_filter_combo.setVisible(False)
+        self._nlmeans_strength_combo = self._preset_combo_widget(("ultralight", "light", "medium", "strong"))
+        self._nlmeans_strength_combo.setToolTip("Intensité du débruitage NLMeans.")
+        self._nlmeans_profile_combo = self._preset_combo_widget(("standard", "grain", "animation", "high motion", "sprite"))
+        self._nlmeans_profile_combo.setToolTip("Profil de contenu qui ajuste légèrement les paramètres NLMeans.")
+        fl.addWidget(self._build_filter_row(
+            self._nlmeans_cb,
+            self._filter_tech_label(self._nlmeans_filter_combo.currentText()),
+            self._nlmeans_strength_combo,
+            self._nlmeans_profile_combo,
+        ))
+
+        self._chroma_cb = QCheckBox("Color Smooth")
+        self._chroma_cb.setStyleSheet(_checkbox_style())
+        self._chroma_cb.setToolTip("Lisse le bruit couleur via chromanr, sans dépendance externe.")
+        self._chroma_cb.toggled.connect(lambda _: self._rebuild_preview())
+        self._chroma_filter_combo = QComboBox()
+        self._chroma_filter_combo.setStyleSheet(_combo_style())
+        self._chroma_filter_combo.setToolTip("Filtre de lissage couleur utilisé.")
+        self._chroma_filter_combo.addItem("chromanr", "chromanr")
+        self._chroma_filter_combo.setEnabled(False)
+        self._chroma_filter_combo.setVisible(False)
+        self._chroma_strength_combo = self._preset_combo_widget(("ultralight", "light", "medium", "strong", "stronger", "verystrong"))
+        self._chroma_strength_combo.setToolTip("Force du lissage chroma FFmpeg chromanr.")
+        fl.addWidget(self._build_filter_row(
+            self._chroma_cb,
+            self._filter_tech_label(self._chroma_filter_combo.currentText()),
+            self._chroma_strength_combo,
+        ))
+
+        cl.addWidget(self._filters_controls)
+        self._sync_transform_controls_enabled()
+        return card
+
+    def _build_filter_row(self, toggle: QCheckBox, *widgets: QWidget) -> QWidget:
+        row = QWidget()
+        row.setStyleSheet("background:transparent;")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        toggle.setMinimumWidth(150)
+        layout.addWidget(toggle)
+        for widget in widgets:
+            layout.addWidget(widget)
+        layout.addStretch()
+        return row
+
+    def _filter_tech_label(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setMinimumWidth(72)
+        label.setStyleSheet(
+            f"color:{_C.TEXT_DIM};font-size:10px;font-weight:700;"
+            f"background:transparent;border:none;"
+        )
+        return label
+
+    def _preset_combo_widget(self, values: tuple[str, ...]) -> QComboBox:
+        combo = QComboBox()
+        combo.setStyleSheet(_combo_style())
+        for value in values:
+            combo.addItem(value, value)
+        combo.currentIndexChanged.connect(lambda _: self._rebuild_preview())
+        return combo
+
     def _build_profiles_row(self) -> QWidget:
         wrap = QWidget()
         wrap.setStyleSheet("background:transparent;")
@@ -1047,7 +1833,22 @@ class EncodePanel(QWidget):
         self._update_ten_bit_control(codec)
         self._sync_hdr_metadata_field_editability(str(codec))
         self._update_passthrough_controls()
+        self._sync_transform_controls_enabled()
         self._rebuild_preview()
+
+    def _sync_transform_controls_enabled(self) -> None:
+        codec = str(self._codec_combo.currentData() or "copy").strip().lower() if hasattr(self, "_codec_combo") else "copy"
+        enabled = codec != "copy"
+        for controls_name, msg_name in (
+            ("_geometry_controls", "_geometry_copy_msg"),
+            ("_filters_controls", "_filters_copy_msg"),
+        ):
+            controls = getattr(self, controls_name, None)
+            if controls is not None:
+                controls.setEnabled(enabled)
+            msg = getattr(self, msg_name, None)
+            if msg is not None:
+                msg.setVisible(not enabled)
 
     def _on_ten_bit_toggled(self, _checked: bool) -> None:
         if self._loading_video_settings:
@@ -1289,6 +2090,344 @@ class EncodePanel(QWidget):
         except Exception:
             self._cmd_preview.setPlainText(translate_text("(erreur de construction de la commande)"))
 
+    def _on_preview_mode_changed(self) -> None:
+        if not hasattr(self, "_preview_mode_combo"):
+            return
+        is_video = self._preview_mode_combo.currentData() == "video"
+        self._preview_duration_spin.setEnabled(is_video)
+        self._preview_time_edit.setEnabled(is_video)
+        self._preview_random_btn.setEnabled(is_video)
+        self._preview_video_result_row.setVisible(is_video)
+
+    def _on_preview_time_edited(self, _text: str) -> None:
+        self._preview_random_scene = False
+
+    def _on_random_preview_scene(self) -> None:
+        duration = max(0.0, float(self._duration_s or 0.0))
+        preview_duration = (
+            float(self._preview_duration_spin.value())
+            if self._preview_mode_combo.currentData() == "video"
+            else 2.0
+        )
+        max_start = max(0.0, duration - preview_duration) if duration > 0 else 0.0
+        import random
+        seconds = random.uniform(0.0, max_start) if max_start > 0 else 0.0
+        self._preview_random_scene = True
+        self._preview_time_edit.blockSignals(True)
+        self._preview_time_edit.setText(self._format_preview_timecode(seconds))
+        self._preview_time_edit.blockSignals(False)
+        self._preview_scene_status.setText("Scène aléatoire prête. Le recalage HDR sera appliqué à la génération.")
+
+    def _on_generate_preview(self) -> None:
+        config = self._current_preview_config()
+        if config is None:
+            self._preview_status.setText("Sélectionnez une piste vidéo source pour générer une preview.")
+            return
+        try:
+            timecode_s = self._parse_preview_timecode(self._preview_time_edit.text())
+        except ValueError as exc:
+            self._preview_status.setText(str(exc))
+            return
+        mode = str(self._preview_mode_combo.currentData() or "image")
+        duration_s = float(self._preview_duration_spin.value()) if mode == "video" else 2.0
+        request = EncodePreviewRequest(
+            mode=mode,
+            timecode_s=timecode_s,
+            duration_s=duration_s,
+            random_scene=self._preview_random_scene,
+        )
+        self._preview_random_scene = False
+        self._set_preview_running(True)
+        self._preview_status.setText("Génération de la preview…")
+        self._preview_scene_status.setText("")
+        self._preview_captures = []
+        self._preview_current_index = 0
+        self._preview_current_pixmap = None
+        self._preview_image.setText("Génération…")
+        self._preview_image.setPixmap(QPixmap())
+        self._update_preview_nav_state()
+        self._preview_video_path = None
+        self._preview_video_path_label.setText("")
+        self._preview_open_video_btn.setEnabled(False)
+        self._preview_progress.setValue(0)
+        self._preview_progress.setVisible(True)
+        signals = self._workflow.run_preview(config, request)
+        self._preview_signals = signals
+        signals.progress.connect(self._on_preview_progress, Qt.ConnectionType.QueuedConnection)
+        signals.progress_pct.connect(self._on_preview_progress_pct, Qt.ConnectionType.QueuedConnection)
+        signals.finished.connect(self._on_preview_finished, Qt.ConnectionType.QueuedConnection)
+        signals.failed.connect(self._on_preview_failed, Qt.ConnectionType.QueuedConnection)
+        signals.cancelled.connect(self._on_preview_cancelled, Qt.ConnectionType.QueuedConnection)
+
+    def _on_cancel_preview(self) -> None:
+        if self._preview_signals is not None:
+            self._preview_status.setText("Annulation de la preview…")
+            self._preview_signals.cancel()
+
+    _PREVIEW_SCAFFOLD_PREFIXES = (
+        "Analyse des keyframes",
+        "Probe HDR",
+        "Scène preview",
+        "Capture ",
+        "Vignette ",
+        "Préparation du segment",
+        "Encodage du segment",
+        "Extraction de l'image",
+    )
+
+    def _on_preview_progress(self, line: str) -> None:
+        text = str(line or "").strip()
+        if not text:
+            return
+        if text.startswith("$ "):
+            return
+        if text.startswith("Scène preview :"):
+            self._preview_scene_status.setText(text.removeprefix("Scène preview :").strip())
+            self.log_message.emit("INFO", text)
+            return
+        self._preview_status.setText(text[:300])
+        if any(text.startswith(p) for p in self._PREVIEW_SCAFFOLD_PREFIXES):
+            self.log_message.emit("INFO", text)
+
+    def _on_preview_progress_pct(self, pct: int) -> None:
+        value = max(0, min(100, int(pct)))
+        if not self._preview_progress.isVisible():
+            self._preview_progress.setVisible(True)
+        self._preview_progress.setValue(value)
+
+    def _on_preview_finished(self, result_text: str) -> None:
+        try:
+            payload = json.loads(result_text or "{}")
+        except json.JSONDecodeError:
+            return
+        if not isinstance(payload, dict) or "mode" not in payload:
+            return
+
+        mode = str(payload.get("mode") or "")
+        warning = str(payload.get("warning") or "").strip()
+        raw_captures = payload.get("captures") or []
+        captures: list[dict] = []
+        for entry in raw_captures:
+            if not isinstance(entry, dict):
+                continue
+            path_str = str(entry.get("image_path") or "")
+            if not path_str:
+                continue
+            captures.append({
+                "image_path": path_str,
+                "scene_time_s": float(entry.get("scene_time_s") or 0.0),
+                "label": str(entry.get("label") or ""),
+            })
+        self._preview_captures = captures
+        self._preview_current_index = 0
+        self._preview_current_pixmap = None
+
+        if mode == "video":
+            video_path = Path(str(payload.get("video_path") or ""))
+            self._preview_video_path = video_path
+            self._preview_video_path_label.setText(str(video_path))
+            self._preview_open_video_btn.setEnabled(video_path.exists())
+        else:
+            self._preview_video_path = None
+            self._preview_video_path_label.setText("")
+            self._preview_open_video_btn.setEnabled(False)
+
+        if captures:
+            self._show_preview_capture(0)
+            count = len(captures)
+            label = "image" if mode == "image" else "vignette"
+            plural = "s" if count > 1 else ""
+            scene_text = f"{count} {label}{plural} disponible{plural}"
+            if warning:
+                scene_text += f" · {warning}"
+            self._preview_scene_status.setText(scene_text)
+            self._preview_status.setText(
+                f"Preview {'image' if mode == 'image' else 'vidéo'} prête : {count} {label}{plural}."
+            )
+        else:
+            self._preview_image.setText("Aucune image générée")
+            self._preview_image.setPixmap(QPixmap())
+            self._preview_current_pixmap = None
+            self._preview_scene_status.setText(warning or "")
+            self._preview_status.setText("Preview terminée sans image exploitable.")
+
+        self._set_preview_running(False)
+        self._update_preview_nav_state()
+
+    def _show_preview_capture(self, index: int) -> None:
+        if not self._preview_captures:
+            self._preview_current_pixmap = None
+            self._preview_image.setPixmap(QPixmap())
+            self._preview_image.setText("Aucune image générée")
+            self._update_preview_nav_state()
+            return
+        index = max(0, min(len(self._preview_captures) - 1, int(index)))
+        self._preview_current_index = index
+        capture = self._preview_captures[index]
+        path = capture["image_path"]
+        pix = QPixmap(path)
+        if pix.isNull():
+            self._preview_current_pixmap = None
+            self._preview_image.setText(f"Image illisible : {path}")
+        else:
+            self._preview_current_pixmap = pix
+            self._apply_preview_zoom()
+        self._update_preview_nav_state()
+
+    def _update_preview_nav_state(self) -> None:
+        total = len(self._preview_captures)
+        if total <= 0:
+            self._preview_index_label.setText("— / —")
+            self._preview_prev_btn.setEnabled(False)
+            self._preview_next_btn.setEnabled(False)
+            return
+        idx = self._preview_current_index
+        capture = self._preview_captures[idx]
+        label_suffix = capture.get("label") or ""
+        text = f"{idx + 1} / {total}"
+        if label_suffix:
+            text += f"  {label_suffix}"
+        self._preview_index_label.setText(text)
+        self._preview_prev_btn.setEnabled(total > 1)
+        self._preview_next_btn.setEnabled(total > 1)
+
+    def _on_preview_prev(self) -> None:
+        if not self._preview_captures:
+            return
+        total = len(self._preview_captures)
+        self._show_preview_capture((self._preview_current_index - 1) % total)
+
+    def _on_preview_next(self) -> None:
+        if not self._preview_captures:
+            return
+        total = len(self._preview_captures)
+        self._show_preview_capture((self._preview_current_index + 1) % total)
+
+    def _on_preview_zoom_changed(self, value: int) -> None:
+        self._preview_zoom_percent = max(10, min(400, int(value)))
+        self._preview_zoom_value_lbl.setText(f"{self._preview_zoom_percent} %")
+        self._apply_preview_zoom()
+
+    def _on_preview_zoom_fit(self) -> None:
+        if self._preview_current_pixmap is None or self._preview_current_pixmap.isNull():
+            return
+        viewport = self._preview_scroll.viewport().size()
+        pix = self._preview_current_pixmap
+        if pix.width() <= 0 or pix.height() <= 0:
+            return
+        ratio_w = (viewport.width() - 8) / pix.width()
+        ratio_h = (viewport.height() - 8) / pix.height()
+        ratio = max(0.01, min(ratio_w, ratio_h))
+        pct = max(10, min(400, int(round(ratio * 100))))
+        if pct != self._preview_zoom_slider.value():
+            self._preview_zoom_slider.blockSignals(True)
+            self._preview_zoom_slider.setValue(pct)
+            self._preview_zoom_slider.blockSignals(False)
+        self._preview_zoom_percent = pct
+        self._preview_zoom_value_lbl.setText(f"{pct} %")
+        self._apply_preview_zoom()
+
+    def _apply_preview_zoom(self) -> None:
+        if self._preview_current_pixmap is None or self._preview_current_pixmap.isNull():
+            return
+        pix = self._preview_current_pixmap
+        target_w = max(1, int(pix.width() * self._preview_zoom_percent / 100))
+        target_h = max(1, int(pix.height() * self._preview_zoom_percent / 100))
+        scaled = pix.scaled(
+            target_w,
+            target_h,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._preview_image.setPixmap(scaled)
+        self._preview_image.resize(scaled.size())
+
+    def _on_preview_failed(self, message: str, _exc: object) -> None:
+        self._preview_status.setText(f"Preview échouée : {message}")
+        self._set_preview_running(False)
+
+    def _on_preview_cancelled(self) -> None:
+        self._preview_status.setText("Preview annulée.")
+        self._set_preview_running(False)
+
+    def _set_preview_running(self, running: bool) -> None:
+        self._preview_generate_btn.setEnabled(not running)
+        self._preview_cancel_btn.setEnabled(running)
+        self._preview_mode_combo.setEnabled(not running)
+        is_video = self._preview_mode_combo.currentData() == "video"
+        active = (not running) and is_video
+        self._preview_time_edit.setEnabled(active)
+        self._preview_random_btn.setEnabled(active)
+        self._preview_duration_spin.setEnabled(active)
+        if not running:
+            self._preview_signals = None
+            self._preview_progress.setVisible(False)
+            self._preview_progress.setValue(0)
+
+    def _open_preview_video(self) -> None:
+        if self._preview_video_path is None:
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._preview_video_path)))
+
+    def _current_preview_config(self) -> EncodeConfig | None:
+        if self._file_info is None:
+            return None
+        self._save_current_video_state()
+        video = self._current_video_settings()
+        source = Path(video.source_path or self._file_info.path)
+        output = self._output_provider()
+        if output is None:
+            output = source.with_name(f"{source.stem}.preview.mkv")
+        return EncodeConfig(
+            source=source,
+            output=output,
+            video=video,
+            video_tracks=[video],
+            audio_tracks=[],
+            copy_subtitles=False,
+            duration_s=self._duration_s,
+            copy_dv=video.copy_dv,
+            copy_hdr10plus=video.copy_hdr10plus,
+            dovi_profile=video.dovi_profile,
+            work_dir=self._config.work_dir,
+            file_title="",
+            extra_attachments=[],
+            tmdb_cover=None,
+            tag_overrides={},
+            chapter_overrides=[],
+        )
+
+    @staticmethod
+    def _parse_preview_timecode(text: str) -> float:
+        raw = str(text or "").strip()
+        if not raw:
+            return 0.0
+        if re.fullmatch(r"\d+(?:[.,]\d+)?", raw):
+            return max(0.0, float(raw.replace(",", ".")))
+        match = re.fullmatch(r"(?:(\d+):)?(\d{1,2}):(\d{1,2})(?:[.,](\d{1,3}))?", raw)
+        if not match:
+            raise ValueError("Timecode invalide. Format attendu : HH:MM:SS.mmm")
+        hours = int(match.group(1) or 0)
+        minutes = int(match.group(2) or 0)
+        seconds = int(match.group(3) or 0)
+        millis_raw = match.group(4) or "0"
+        millis = int(millis_raw.ljust(3, "0")[:3])
+        if minutes >= 60 or seconds >= 60:
+            raise ValueError("Timecode invalide. Minutes et secondes doivent être inférieures à 60.")
+        return hours * 3600 + minutes * 60 + seconds + millis / 1000.0
+
+    @staticmethod
+    def _format_preview_timecode(seconds: float) -> str:
+        seconds = max(0.0, float(seconds or 0.0))
+        whole = int(seconds)
+        millis = int(round((seconds - whole) * 1000))
+        if millis >= 1000:
+            whole += 1
+            millis -= 1000
+        hours, rem = divmod(whole, 3600)
+        minutes, secs = divmod(rem, 60)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
+
     # ------------------------------------------------------------------
     # Profils
     # ------------------------------------------------------------------
@@ -1341,6 +2480,9 @@ class EncodePanel(QWidget):
         self._bitrate_edit.setText(str(vs.bitrate_kbps))
         self._size_edit.setText(str(vs.target_size_mb))
         self._extra_params.setText(vs.extra_params)
+        self._apply_resize_settings(vs.resize)
+        self._apply_crop_settings(vs.crop)
+        self._apply_filter_settings(vs.filters)
         # Les options HDR (inject_hdr_meta / master_display / max_cll /
         # tonemap_to_sdr) dépendent de la source, pas du profil — un même
         # profil "x265 CRF18 slow" doit s'appliquer à une source SDR ou HDR
@@ -1390,6 +2532,9 @@ class EncodePanel(QWidget):
             target_size_mb=vs.target_size_mb,
             preset=vs.preset,
             extra_params=vs.extra_params,
+            resize=vs.resize,
+            crop=vs.crop,
+            filters=vs.filters,
             inject_hdr_meta=False,
             master_display="",
             max_cll="",
@@ -1644,6 +2789,9 @@ class EncodePanel(QWidget):
             "target_size_mb": "4000",
             "extra_params": "",
             "force_10bit": default_10bit,
+            "resize": VideoResizeSettings(),
+            "crop": VideoCropSettings(),
+            "filters": VideoFilterSettings(),
             "inject_hdr_meta": is_hdr_source,
             "master_display": master_display,
             "max_cll": max_cll,
@@ -1726,6 +2874,7 @@ class EncodePanel(QWidget):
         if self._video_force_8bit_for_codec(info, track, target_codec):
             badges.append("8-bit")
         badges.extend(self._sorted_video_hdr_badges(plan.hdr_badges))
+        badges.extend(plan.filter_badges)
         if badges:
             text += "    " + " ".join(f"[{badge}]" for badge in badges)
         return text
@@ -1843,6 +2992,52 @@ class EncodePanel(QWidget):
             self._video_settings_by_entry_id[entry_id] = state
         self._emit_video_encoding_plans()
 
+    def _current_resize_settings(self) -> VideoResizeSettings:
+        if not hasattr(self, "_resize_enabled_cb"):
+            return VideoResizeSettings()
+        return VideoResizeSettings(
+            enabled=self._resize_enabled_cb.isChecked(),
+            mode=str(self._resize_mode_combo.currentData() or "preset"),
+            preset=str(self._resize_preset_combo.currentData() or "720p"),
+            percent=int(self._resize_percent_spin.value()),
+            width=int(self._resize_width_spin.value()),
+            height=int(self._resize_height_spin.value()),
+            keep_aspect=self._resize_keep_aspect_cb.isChecked(),
+            allow_upscale=self._resize_allow_upscale_cb.isChecked(),
+            algorithm=str(self._resize_algo_combo.currentData() or "lanczos"),
+        )
+
+    def _current_crop_settings(self) -> VideoCropSettings:
+        if not hasattr(self, "_crop_enabled_cb"):
+            return VideoCropSettings()
+        return VideoCropSettings(
+            enabled=self._crop_enabled_cb.isChecked(),
+            unit=str(self._crop_unit_combo.currentData() or "px"),
+            top=int(self._crop_top_spin.value()),
+            bottom=int(self._crop_bottom_spin.value()),
+            left=int(self._crop_left_spin.value()),
+            right=int(self._crop_right_spin.value()),
+            auto=self._crop_auto_cb.isChecked(),
+        )
+
+    def _current_filter_settings(self) -> VideoFilterSettings:
+        if not hasattr(self, "_yadif_cb"):
+            return VideoFilterSettings()
+        return VideoFilterSettings(
+            yadif_enabled=self._yadif_cb.isChecked(),
+            yadif_mode=str(self._yadif_mode_combo.currentData() or "send_frame"),
+            yadif_parity=str(self._yadif_parity_combo.currentData() or "auto"),
+            yadif_deint="all",
+            deblock_enabled=self._deblock_cb.isChecked(),
+            deblock_strength=str(self._deblock_strength_combo.currentData() or "medium"),
+            deblock_block=int(str(self._deblock_block_combo.currentData() or "8")),
+            nlmeans_enabled=self._nlmeans_cb.isChecked(),
+            nlmeans_strength=str(self._nlmeans_strength_combo.currentData() or "light"),
+            nlmeans_profile=str(self._nlmeans_profile_combo.currentData() or "standard"),
+            chroma_smooth_enabled=self._chroma_cb.isChecked(),
+            chroma_smooth_strength=str(self._chroma_strength_combo.currentData() or "medium"),
+        )
+
     def _current_video_state(self) -> dict[str, object]:
         # default_master_display / default_max_cll sont figés à la création
         # du state initial (cf. _default_video_state_for_track) — on les
@@ -1863,6 +3058,9 @@ class EncodePanel(QWidget):
             "target_size_mb": self._size_edit.text(),
             "extra_params": self._extra_params.text(),
             "force_10bit": bool(self._ten_bit_cb.isChecked()) if hasattr(self, "_ten_bit_cb") else False,
+            "resize": self._current_resize_settings(),
+            "crop": self._current_crop_settings(),
+            "filters": self._current_filter_settings(),
             "inject_hdr_meta": self._inject_hdr_cb.isChecked(),
             "master_display": self._master_display.text(),
             "max_cll": self._max_cll.text(),
@@ -1958,6 +3156,30 @@ class EncodePanel(QWidget):
             return ("DV", "10+")
         return ()
 
+    def _video_filter_badges_from_state(self, state: dict[str, object]) -> tuple[str, ...]:
+        badges: list[str] = []
+        resize = VideoResizeSettings.from_value(state.get("resize"))
+        crop = VideoCropSettings.from_value(state.get("crop"))
+        filters = VideoFilterSettings.from_value(state.get("filters"))
+        if resize.is_active():
+            if resize.mode == "preset":
+                badges.append(str(resize.preset or "Resize"))
+            elif resize.mode == "percent":
+                badges.append(f"{int(resize.percent or 100)}%")
+            else:
+                badges.append(f"{int(resize.width or 0)}x{int(resize.height or 0)}")
+        if crop.is_active():
+            badges.append("AutoCrop" if crop.auto else "Crop")
+        if filters.yadif_enabled:
+            badges.append("Yadif")
+        if filters.deblock_enabled:
+            badges.append("Deblock")
+        if filters.nlmeans_enabled:
+            badges.append("NLMeans")
+        if filters.chroma_smooth_enabled:
+            badges.append("Chroma")
+        return tuple(badges)
+
     def _video_plan_from_state(
         self,
         *,
@@ -1988,6 +3210,9 @@ class EncodePanel(QWidget):
 
         is_modified = bool(
             codec != "copy"
+            or bool(VideoResizeSettings.from_value(state.get("resize")).is_active())
+            or bool(VideoCropSettings.from_value(state.get("crop")).is_active())
+            or bool(VideoFilterSettings.from_value(state.get("filters")).is_active())
             or bool(state.get("inject_hdr_meta"))
             or bool(state.get("tonemap_to_sdr"))
             or bool(state.get("extra_params"))
@@ -1999,6 +3224,7 @@ class EncodePanel(QWidget):
             codec_summary=summary,
             target_codec=codec,
             hdr_badges=self._video_hdr_badges_from_state(state, source_video=source_video),
+            filter_badges=self._video_filter_badges_from_state(state),
             is_modified=is_modified,
         )
 
@@ -2071,6 +3297,9 @@ class EncodePanel(QWidget):
             self._extra_params.setText(str(state.get("extra_params") or ""))
             if hasattr(self, "_ten_bit_cb"):
                 self._ten_bit_cb.setChecked(bool(state.get("force_10bit")))
+            self._apply_resize_settings(VideoResizeSettings.from_value(state.get("resize")))
+            self._apply_crop_settings(VideoCropSettings.from_value(state.get("crop")))
+            self._apply_filter_settings(VideoFilterSettings.from_value(state.get("filters")))
             self._inject_hdr_cb.setChecked(bool(state.get("inject_hdr_meta")))
             target_codec = str(state.get("codec") or "copy").strip().lower()
             md_state, cll_state = self._effective_static_hdr_fields(
@@ -2093,6 +3322,51 @@ class EncodePanel(QWidget):
         self._tonemap_algo_widget.setVisible(self._tonemap_cb.isChecked())
         self._update_ten_bit_control(self._codec_combo.currentData() or "libx265")
         self._sync_hdr_metadata_field_editability(self._codec_combo.currentData() or "libx265")
+        self._sync_transform_controls_enabled()
+
+    def _apply_resize_settings(self, resize: VideoResizeSettings) -> None:
+        if not hasattr(self, "_resize_enabled_cb"):
+            return
+        self._resize_enabled_cb.setChecked(bool(resize.enabled))
+        self._set_combo_data(self._resize_mode_combo, resize.mode)
+        self._set_combo_data(self._resize_preset_combo, resize.preset)
+        self._resize_percent_spin.setValue(int(resize.percent or 100))
+        self._resize_width_spin.setValue(int(resize.width or 1280))
+        self._resize_height_spin.setValue(int(resize.height or 720))
+        self._resize_keep_aspect_cb.setChecked(bool(resize.keep_aspect))
+        self._resize_allow_upscale_cb.setChecked(bool(resize.allow_upscale))
+        self._set_combo_data(self._resize_algo_combo, resize.algorithm)
+        if str(resize.mode or "preset") == "preset":
+            width, height = self._resize_preset_dimensions(resize.preset)
+            self._resize_width_spin.setValue(width)
+            self._resize_height_spin.setValue(height)
+        self._sync_resize_mode_ui()
+
+    def _apply_crop_settings(self, crop: VideoCropSettings) -> None:
+        if not hasattr(self, "_crop_enabled_cb"):
+            return
+        self._crop_enabled_cb.setChecked(bool(crop.enabled))
+        self._set_combo_data(self._crop_unit_combo, crop.unit)
+        self._crop_top_spin.setValue(int(crop.top or 0))
+        self._crop_bottom_spin.setValue(int(crop.bottom or 0))
+        self._crop_left_spin.setValue(int(crop.left or 0))
+        self._crop_right_spin.setValue(int(crop.right or 0))
+        self._crop_auto_cb.setChecked(bool(crop.auto))
+
+    def _apply_filter_settings(self, filters: VideoFilterSettings) -> None:
+        if not hasattr(self, "_yadif_cb"):
+            return
+        self._yadif_cb.setChecked(bool(filters.yadif_enabled))
+        self._set_combo_data(self._yadif_mode_combo, filters.yadif_mode)
+        self._set_combo_data(self._yadif_parity_combo, filters.yadif_parity)
+        self._deblock_cb.setChecked(bool(filters.deblock_enabled))
+        self._set_combo_data(self._deblock_strength_combo, filters.deblock_strength)
+        self._set_combo_data(self._deblock_block_combo, str(filters.deblock_block))
+        self._nlmeans_cb.setChecked(bool(filters.nlmeans_enabled))
+        self._set_combo_data(self._nlmeans_strength_combo, filters.nlmeans_strength)
+        self._set_combo_data(self._nlmeans_profile_combo, filters.nlmeans_profile)
+        self._chroma_cb.setChecked(bool(filters.chroma_smooth_enabled))
+        self._set_combo_data(self._chroma_strength_combo, filters.chroma_smooth_strength)
 
     def _current_video_settings(self) -> VideoEncodeSettings:
         video_source = self._file_info.path if self._file_info is not None else None
@@ -2160,6 +3434,9 @@ class EncodePanel(QWidget):
             extra_params=self._extra_params.text().strip(),
             force_8bit=force_8bit,
             force_10bit=force_10bit,
+            resize=self._current_resize_settings(),
+            crop=self._current_crop_settings(),
+            filters=self._current_filter_settings(),
             inject_hdr_meta=self._inject_hdr_cb.isChecked(),
             master_display=master_display,
             max_cll=max_cll,
@@ -2212,6 +3489,9 @@ class EncodePanel(QWidget):
                 codec=codec,
                 state_force_10bit=bool(state.get("force_10bit")),
             ),
+            resize=VideoResizeSettings.from_value(state.get("resize")),
+            crop=VideoCropSettings.from_value(state.get("crop")),
+            filters=VideoFilterSettings.from_value(state.get("filters")),
             inject_hdr_meta=bool(state.get("inject_hdr_meta")),
             master_display=master_display,
             max_cll=max_cll,
@@ -2415,5 +3695,11 @@ class EncodePanel(QWidget):
             QApplication.clipboard().setText(text)
 
     def closeEvent(self, event) -> None:
+        if self._preview_signals is not None:
+            self._preview_signals.cancel()
         self._executor.shutdown(wait=True)
+        try:
+            EncodeWorkflow.cleanup_preview_dir(self._config.work_dir)
+        except Exception:
+            pass
         super().closeEvent(event)

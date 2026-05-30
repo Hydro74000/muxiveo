@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from fnmatch import fnmatch
+from glob import glob
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,18 @@ def _matches_any(path: Path, patterns: list[str] | None) -> bool:
     rel = path.as_posix()
     name = path.name
     return any(fnmatch(rel, pattern) or fnmatch(name, pattern) for pattern in patterns)
+
+
+def _expand_input_dirs(raw_dir: str) -> list[Path]:
+    expanded = Path(str(raw_dir)).expanduser()
+    raw_text = str(expanded)
+    if any(char in raw_text for char in "*?["):
+        matches = sorted(Path(match) for match in glob(raw_text))
+        dirs = [path for path in matches if path.is_dir()]
+        if not dirs:
+            raise CliError(f"Aucun dossier --input-dir ne correspond au glob : {raw_dir}", EXIT_ARGS)
+        return dirs
+    return [expanded]
 
 
 def _generated_output_path(output_dir: str | None, relative_path: Path) -> str | None:
@@ -110,28 +123,28 @@ def discover_direct_batch_jobs(
         jobs.append(_job_for_source(path, output=output, output_dir=output_dir, output_template=output_template, output_all=output_all))
 
     for raw_dir in input_dirs or []:
-        root = Path(str(raw_dir)).expanduser()
-        if not root.exists():
-            raise CliError(f"Dossier batch introuvable : {root}", EXIT_ARGS)
-        if not root.is_dir():
-            raise CliError(f"Chemin --input-dir invalide, attendu dossier : {root}", EXIT_ARGS)
-        roots.append(str(root))
-        iterator = root.rglob("*") if recursive else root.iterdir()
-        candidates = sorted(
-            (path for path in iterator if path.is_file()),
-            key=lambda path: path.relative_to(root).as_posix().lower(),
-        )
-        for path in candidates:
-            scanned += 1
-            relative = path.relative_to(root)
-            if not is_accepted(path, video_only=True):
-                continue
-            if include_patterns and not _matches_any(relative, include_patterns):
-                continue
-            if _matches_any(relative, exclude_patterns):
-                continue
-            output = _generated_output_path(output_dir, relative) if not output_template else None
-            jobs.append(_job_for_source(path, output=output, output_dir=output_dir, output_template=output_template, output_all=output_all))
+        for root in _expand_input_dirs(str(raw_dir)):
+            if not root.exists():
+                raise CliError(f"Dossier batch introuvable : {root}", EXIT_ARGS)
+            if not root.is_dir():
+                raise CliError(f"Chemin --input-dir invalide, attendu dossier : {root}", EXIT_ARGS)
+            roots.append(str(root))
+            iterator = root.rglob("*") if recursive else root.iterdir()
+            candidates = sorted(
+                (path for path in iterator if path.is_file()),
+                key=lambda path: path.relative_to(root).as_posix().lower(),
+            )
+            for path in candidates:
+                scanned += 1
+                relative = path.relative_to(root)
+                if not is_accepted(path, video_only=True):
+                    continue
+                if include_patterns and not _matches_any(relative, include_patterns):
+                    continue
+                if _matches_any(relative, exclude_patterns):
+                    continue
+                output = _generated_output_path(output_dir, relative) if not output_template else None
+                jobs.append(_job_for_source(path, output=output, output_dir=output_dir, output_template=output_template, output_all=output_all))
 
     _assert_unique_generated_outputs(jobs)
     return BatchDiscovery(
@@ -168,6 +181,26 @@ def write_batch_summary(path: str | None, payload: dict[str, Any]) -> None:
     if not path:
         return
     write_json(Path(path).expanduser(), payload)
+
+
+def log_batch_failures(logger: Logger, summary_jobs: list[dict[str, Any]], *, event: str = "batch_failure") -> None:
+    """Récapitule les fichiers non traités et la cause en fin de batch."""
+    failed = [job for job in summary_jobs if job.get("status") == "failed"]
+    if not failed:
+        return
+    logger.emit("warn", f"{len(failed)} fichier(s) non traité(s) :", event=f"{event}_report", count=len(failed))
+    for job in failed:
+        cause = str(job.get("error") or f"exit_code={job.get('exit_code')}")
+        logger.emit(
+            "error",
+            f"  - {job.get('input') or '?'} : {cause}",
+            event=event,
+            job_index=job.get("job_index"),
+            input=job.get("input"),
+            output=job.get("output"),
+            exit_code=job.get("exit_code"),
+            error=job.get("error"),
+        )
 
 
 def run_batch(
@@ -244,6 +277,8 @@ def run_batch(
         job_index = total
         total += 1
         job = deep_merge(template, item)
+        if str(template.get("kind") or "") == "exact-job":
+            job["_relaxed_selectors"] = True
         apply_metadata_overrides(
             job,
             auto_tmdb=auto_tmdb,
@@ -364,5 +399,6 @@ def run_batch(
         "jobs": summary_jobs,
     }
     write_batch_summary(summary_path, summary)
+    log_batch_failures(logger, summary_jobs)
     logger.emit("info", f"Batch terminé : {total - failures}/{total} succès.", event="batch_summary", total=total, failures=failures)
     return exit_code

@@ -30,7 +30,7 @@ class ProfileManager:
     def save(self, preset: EncodePreset) -> None:
         safe = re.sub(r"[^\w\-]", "_", preset.name)
         path = self._dir / f"{safe}.json"
-        data = {f: getattr(preset, f) for f in self._FIELDS}
+        data = preset.to_json_dict()
         path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def load_all(self) -> list[EncodePreset]:

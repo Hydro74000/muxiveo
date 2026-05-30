@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 import subprocess
+import time
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, cast
 
@@ -25,6 +28,35 @@ class _LRUCache(OrderedDict):
         super().__setitem__(key, value)
         while len(self) > self._maxsize:
             self.popitem(last=False)
+
+
+@dataclass(frozen=True)
+class DynamicHdrPreviewFrame:
+    time_s: float
+    frame_index: int | None = None
+    is_keyframe: bool = False
+    pict_type: str = ""
+    has_dovi: bool = False
+    has_hdr10plus: bool = False
+
+
+@dataclass(frozen=True)
+class DynamicHdrPreviewProbeResult:
+    keyframes: tuple[DynamicHdrPreviewFrame, ...] = ()
+    dynamic_keyframes: tuple[DynamicHdrPreviewFrame, ...] = ()
+    has_dovi: bool = False
+    has_hdr10plus: bool = False
+    warning: str = ""
+
+
+@dataclass(frozen=True)
+class DynamicHdrPreviewSceneSelection:
+    requested_time_s: float
+    scene_time_s: float
+    reason: str = ""
+    warning: str = ""
+    hdr_kind: str = ""
+    snapped: bool = False
 
 
 class HdrMetadataProbeService:
@@ -49,6 +81,8 @@ class HdrMetadataProbeService:
         self._tool_bin = tool_bin
         self._ffprobe_payload_cache: _LRUCache = _LRUCache(maxsize=256)
         self._ffprobe_frame_hdr_cache: _LRUCache = _LRUCache(maxsize=256)
+        self._preview_scene_cache: _LRUCache = _LRUCache(maxsize=64)
+        self._preview_keyframes_cache: _LRUCache = _LRUCache(maxsize=64)
         self._mediainfo_hdr_cache: _LRUCache = _LRUCache(maxsize=256)
 
     @staticmethod
@@ -263,6 +297,621 @@ class HdrMetadataProbeService:
         if cache_key is not None:
             self._ffprobe_frame_hdr_cache[cache_key] = flags
         return flags
+
+    def select_preview_scene(
+        self,
+        source: Path,
+        *,
+        stream_index: int = 0,
+        requested_time_s: float = 0.0,
+        preview_duration_s: float = 5.0,
+        source_duration_s: float | None = None,
+        random_scene: bool = False,
+        prefer_dovi: bool = False,
+        prefer_hdr10plus: bool = False,
+        progress_cb: Callable[[str], None] | None = None,
+        progress_pct_cb: Callable[[int], None] | None = None,
+    ) -> DynamicHdrPreviewSceneSelection:
+        duration = float(source_duration_s or 0.0)
+        preview_duration = max(0.1, float(preview_duration_s or 0.1))
+        max_start = max(0.0, duration - preview_duration) if duration > 0 else None
+
+        def _clamp(value: float) -> float:
+            value = max(0.0, float(value or 0.0))
+            if max_start is not None:
+                value = min(value, max_start)
+            return value
+
+        requested = _clamp(float(requested_time_s or 0.0))
+        wants_dynamic = bool(prefer_dovi or prefer_hdr10plus)
+
+        if not wants_dynamic:
+            if random_scene:
+                ceiling = max_start or max(duration, 0.0) or 0.0
+                requested = random.uniform(0.0, ceiling) if ceiling > 0 else 0.0
+            return DynamicHdrPreviewSceneSelection(
+                requested_time_s=requested,
+                scene_time_s=_clamp(requested),
+            )
+
+        # HDR : snap-back sur la keyframe la plus proche via packet-probe rapide.
+        keyframes = self.preview_keyframe_times(
+            source,
+            stream_index=stream_index,
+            source_duration_s=source_duration_s,
+            progress_cb=progress_cb,
+            progress_pct_cb=progress_pct_cb,
+        )
+        in_range = [k for k in keyframes if max_start is None or k <= max_start]
+        if not in_range:
+            if random_scene:
+                ceiling = max_start or max(duration, 0.0) or 0.0
+                requested = random.uniform(0.0, ceiling) if ceiling > 0 else 0.0
+            return DynamicHdrPreviewSceneSelection(
+                requested_time_s=requested,
+                scene_time_s=_clamp(requested),
+                warning="Keyframes introuvables : extraction sans snap-back.",
+            )
+
+        if random_scene:
+            requested = random.uniform(0.0, max_start or max(duration, 0.0) or 0.0)
+            candidates_sorted = list(in_range)
+            random.shuffle(candidates_sorted)
+        else:
+            candidates_sorted = sorted(in_range, key=lambda k: abs(k - requested))
+
+        chosen = candidates_sorted[0]
+        verified = False
+        for candidate in candidates_sorted[:8]:
+            if self.verify_keyframe_hdr_at(
+                source,
+                time_s=candidate,
+                stream_index=stream_index,
+                require_dovi=prefer_dovi,
+                require_hdr10plus=prefer_hdr10plus,
+            ):
+                chosen = candidate
+                verified = True
+                break
+
+        labels = [name for name, flag in (("DoVi", prefer_dovi), ("HDR10+", prefer_hdr10plus)) if flag]
+        return DynamicHdrPreviewSceneSelection(
+            requested_time_s=requested,
+            scene_time_s=chosen,
+            reason=f"I-frame {'/'.join(labels)}" if verified else f"I-frame {'/'.join(labels)} (non vérifiée)",
+            hdr_kind="/".join(labels),
+            snapped=abs(chosen - requested) > 0.001,
+            warning="" if verified else "Aucune keyframe vérifiée avec les métadonnées HDR demandées.",
+        )
+
+    def select_preview_scenes_random(
+        self,
+        source: Path,
+        *,
+        count: int,
+        stream_index: int = 0,
+        source_duration_s: float | None = None,
+        skip_lead_s: float = 1.0,
+        skip_tail_s: float = 5.0,
+        prefer_dovi: bool = False,
+        prefer_hdr10plus: bool = False,
+        progress_cb: Callable[[str], None] | None = None,
+        progress_pct_cb: Callable[[int], None] | None = None,
+    ) -> tuple[DynamicHdrPreviewSceneSelection, ...]:
+        """Choisit `count` keyframes uniformément réparties sur la durée.
+
+        - SDR : pas de probe (ffmpeg snappera sur la keyframe la plus proche au moment du extract).
+        - HDR : on récupère les timestamps des keyframes par demux paquet (rapide, sans décodage)
+          puis on tire au hasard une keyframe par bucket de durée. Garantit que les frames
+          extraites portent DoVi RPU / HDR10+ SEI (qui ne sont fiables qu'aux keyframes).
+        """
+        if count <= 0:
+            return ()
+
+        duration = float(source_duration_s or 0.0)
+        min_t = max(0.0, float(skip_lead_s))
+        max_t = max(min_t + 0.1, duration - float(skip_tail_s)) if duration > 0 else None
+        if max_t is None or max_t <= min_t:
+            return ()
+
+        wants_dynamic = bool(prefer_dovi or prefer_hdr10plus)
+        if not wants_dynamic:
+            bucket_size = (max_t - min_t) / count
+            selections: list[DynamicHdrPreviewSceneSelection] = []
+            for i in range(count):
+                lo = min_t + i * bucket_size
+                hi = min_t + (i + 1) * bucket_size
+                t = random.uniform(lo, hi)
+                selections.append(DynamicHdrPreviewSceneSelection(
+                    requested_time_s=t,
+                    scene_time_s=t,
+                ))
+            if progress_pct_cb is not None:
+                progress_pct_cb(100)
+            return tuple(selections)
+
+        keyframes = self.preview_keyframe_times(
+            source,
+            stream_index=stream_index,
+            source_duration_s=source_duration_s,
+            progress_cb=progress_cb,
+            progress_pct_cb=progress_pct_cb,
+        )
+        in_range = [k for k in keyframes if min_t <= k <= max_t]
+        if not in_range:
+            # Pas de keyframe dans la fenêtre utile, fallback au tirage uniforme
+            bucket_size = (max_t - min_t) / count
+            return tuple(
+                DynamicHdrPreviewSceneSelection(
+                    requested_time_s=(t := random.uniform(min_t + i * bucket_size, min_t + (i + 1) * bucket_size)),
+                    scene_time_s=t,
+                )
+                for i in range(count)
+            )
+
+        bucket_size = (max_t - min_t) / count
+        labels = [n for n, f in (("DoVi", prefer_dovi), ("HDR10+", prefer_hdr10plus)) if f]
+        verified_reason = f"I-frame {'/'.join(labels)}"
+        fallback_reason = f"I-frame {'/'.join(labels)} (non vérifiée)"
+
+        def _verify(time_s: float) -> bool:
+            return self.verify_keyframe_hdr_at(
+                source,
+                time_s=time_s,
+                stream_index=stream_index,
+                require_dovi=prefer_dovi,
+                require_hdr10plus=prefer_hdr10plus,
+            )
+
+        results: list[DynamicHdrPreviewSceneSelection] = []
+        used: set[float] = set()
+        for i in range(count):
+            lo = min_t + i * bucket_size
+            hi = min_t + (i + 1) * bucket_size
+            bucket = [k for k in in_range if lo <= k <= hi and k not in used]
+            random.shuffle(bucket)
+            pick = None
+            verified = False
+            for candidate in bucket[:6]:
+                if _verify(candidate):
+                    pick = candidate
+                    verified = True
+                    break
+            if pick is None and bucket:
+                pick = bucket[0]
+            if pick is None:
+                continue
+            used.add(pick)
+            results.append(DynamicHdrPreviewSceneSelection(
+                requested_time_s=pick,
+                scene_time_s=pick,
+                reason=verified_reason if verified else fallback_reason,
+            ))
+
+        if len(results) < count:
+            remaining = [k for k in in_range if k not in used]
+            random.shuffle(remaining)
+            for candidate in remaining:
+                if len(results) >= count:
+                    break
+                verified = _verify(candidate)
+                used.add(candidate)
+                results.append(DynamicHdrPreviewSceneSelection(
+                    requested_time_s=candidate,
+                    scene_time_s=candidate,
+                    reason=verified_reason if verified else fallback_reason,
+                ))
+
+        results.sort(key=lambda s: s.scene_time_s)
+        return tuple(results)
+
+    def source_hdr_transfer(self, source: Path) -> str:
+        """Renvoie "pq" (HDR10/DoVi), "hlg" ou "" (SDR) selon le color_transfer du média."""
+        cmd = [
+            self.ffprobe_bin_from_ffmpeg(self._ffmpeg_bin()),
+            "-v", "quiet",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=color_transfer",
+            "-of", "csv=p=0",
+            str(source),
+        ]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                check=False,
+                timeout=20,
+                **subprocess_text_kwargs(),
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            return ""
+        if result.returncode != 0:
+            return ""
+        transfer = (result.stdout or "").strip().lower()
+        if transfer in {"smpte2084", "smpte2084le"}:
+            return "pq"
+        if transfer in {"arib-std-b67", "bt2020-10", "bt2020-12"}:
+            return "hlg" if transfer == "arib-std-b67" else "pq"
+        return ""
+
+    def preview_scene_probe(
+        self,
+        source: Path,
+        *,
+        stream_index: int = 0,
+        source_duration_s: float | None = None,
+        progress_cb: Callable[[str], None] | None = None,
+        progress_pct_cb: Callable[[int], None] | None = None,
+    ) -> DynamicHdrPreviewProbeResult:
+        source_key = self.source_cache_key(source)
+        cache_key = (*source_key, int(stream_index)) if source_key is not None else None
+        if cache_key is not None and cache_key in self._preview_scene_cache:
+            return self._preview_scene_cache[cache_key]
+
+        cmd = [
+            self.ffprobe_bin_from_ffmpeg(self._ffmpeg_bin()),
+            "-v", "quiet",
+            "-skip_frame", "nokey",
+            "-print_format", "json",
+            "-select_streams", str(max(0, int(stream_index))),
+            "-show_frames",
+            "-show_entries",
+            (
+                "frame=best_effort_timestamp_time,pkt_pts_time,pkt_dts_time,"
+                "coded_picture_number,display_picture_number,key_frame,pict_type:"
+                "frame_side_data=side_data_type"
+            ),
+            str(source),
+        ]
+        if progress_cb is not None:
+            progress_cb("Analyse des keyframes HDR (ffprobe)…")
+        if progress_pct_cb is not None:
+            progress_pct_cb(0)
+        estimated_total = max(50, int(float(source_duration_s or 60.0) / 2.0))
+        timeout_s = 300
+        probe: DynamicHdrPreviewProbeResult
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=1,
+                **subprocess_text_kwargs(),
+            )
+        except (FileNotFoundError, OSError) as exc:
+            probe = DynamicHdrPreviewProbeResult(warning=f"Probe HDR dynamique indisponible : {exc}")
+        else:
+            output_parts: list[str] = []
+            key_count = 0
+            last_pct = -1
+            deadline = time.monotonic() + timeout_s
+            timed_out = False
+            try:
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    if time.monotonic() > deadline:
+                        timed_out = True
+                        break
+                    output_parts.append(line)
+                    if '"key_frame": 1' in line:
+                        key_count += 1
+                        pct = min(95, int(key_count * 100 / estimated_total))
+                        if progress_pct_cb is not None and pct != last_pct:
+                            progress_pct_cb(pct)
+                            last_pct = pct
+                        if progress_cb is not None and key_count % 100 == 0:
+                            progress_cb(f"Probe HDR : {key_count} keyframes analysées…")
+                if timed_out:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                    probe = DynamicHdrPreviewProbeResult(
+                        warning=f"Probe HDR dynamique : timeout après {timeout_s}s."
+                    )
+                else:
+                    proc.wait(timeout=10)
+                    if proc.returncode != 0:
+                        probe = DynamicHdrPreviewProbeResult(
+                            warning="Probe HDR dynamique ffprobe impossible."
+                        )
+                    else:
+                        try:
+                            payload = json.loads("".join(output_parts) or "{}")
+                        except json.JSONDecodeError:
+                            probe = DynamicHdrPreviewProbeResult(
+                                warning="Réponse ffprobe HDR dynamique illisible."
+                            )
+                        else:
+                            probe = self.preview_scene_probe_from_payload(payload)
+                            if progress_cb is not None:
+                                progress_cb(f"Probe HDR : {key_count} keyframes analysées.")
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                probe = DynamicHdrPreviewProbeResult(warning=f"Probe HDR dynamique : {exc}")
+        if progress_pct_cb is not None:
+            progress_pct_cb(100)
+
+        if cache_key is not None:
+            self._preview_scene_cache[cache_key] = probe
+        return probe
+
+    def verify_keyframe_hdr_at(
+        self,
+        source: Path,
+        *,
+        time_s: float,
+        stream_index: int = 0,
+        require_dovi: bool = False,
+        require_hdr10plus: bool = False,
+    ) -> bool:
+        """Décode 1 keyframe à `time_s` et vérifie la présence des side_data demandées."""
+        if not (require_dovi or require_hdr10plus):
+            return True
+        cmd = [
+            self.ffprobe_bin_from_ffmpeg(self._ffmpeg_bin()),
+            "-v", "quiet",
+            "-read_intervals", f"{max(0.0, float(time_s)):.3f}%+#1",
+            "-select_streams", f"v:{max(0, int(stream_index))}",
+            "-show_entries", "frame_side_data=side_data_type",
+            "-of", "json",
+            str(source),
+        ]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                check=False,
+                timeout=20,
+                **subprocess_text_kwargs(),
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            return True  # ne bloque pas si la vérif échoue
+        if result.returncode != 0:
+            return True
+        try:
+            payload = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            return True
+        frames = payload.get("frames")
+        if not isinstance(frames, list) or not frames:
+            return False
+        side_data = frames[0].get("side_data_list") if isinstance(frames[0], dict) else None
+        if not isinstance(side_data, list):
+            return False
+        has_dovi = False
+        has_hdr10plus = False
+        for entry in side_data:
+            if not isinstance(entry, dict):
+                continue
+            kind = str(entry.get("side_data_type", "") or "").lower()
+            if "dolby vision" in kind or "dovi" in kind or "rpu" in kind:
+                has_dovi = True
+            if "smpte2094-40" in kind or "smpte st 2094" in kind or "hdr10+" in kind:
+                has_hdr10plus = True
+        if require_dovi and not has_dovi:
+            return False
+        if require_hdr10plus and not has_hdr10plus:
+            return False
+        return True
+
+    def preview_keyframe_times(
+        self,
+        source: Path,
+        *,
+        stream_index: int = 0,
+        source_duration_s: float | None = None,
+        progress_cb: Callable[[str], None] | None = None,
+        progress_pct_cb: Callable[[int], None] | None = None,
+    ) -> tuple[float, ...]:
+        """Récupère les timestamps des keyframes via demux paquet (sans décodage).
+
+        Beaucoup plus rapide que `preview_scene_probe` (qui décode chaque keyframe pour
+        extraire les side_data HDR). Les DoVi RPU / HDR10+ SEI étant attachés aux
+        keyframes du flux HEVC, leur position est suffisante pour notre snap-back.
+        """
+        source_key = self.source_cache_key(source)
+        cache_key = (*source_key, int(stream_index)) if source_key is not None else None
+        if cache_key is not None and cache_key in self._preview_keyframes_cache:
+            return self._preview_keyframes_cache[cache_key]
+
+        cmd = [
+            self.ffprobe_bin_from_ffmpeg(self._ffmpeg_bin()),
+            "-v", "quiet",
+            "-select_streams", f"v:{max(0, int(stream_index))}",
+            "-show_entries", "packet=pts_time,flags",
+            "-of", "csv=p=0",
+            str(source),
+        ]
+        if progress_cb is not None:
+            progress_cb("Index des keyframes (ffprobe packets)…")
+        if progress_pct_cb is not None:
+            progress_pct_cb(0)
+        duration = max(1.0, float(source_duration_s or 0.0))
+        keyframes: list[float] = []
+        timed_out = False
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=1,
+                **subprocess_text_kwargs(),
+            )
+        except (FileNotFoundError, OSError):
+            if cache_key is not None:
+                self._preview_keyframes_cache[cache_key] = ()
+            return ()
+
+        last_pct = -1
+        deadline = time.monotonic() + 600
+        try:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                if time.monotonic() > deadline:
+                    timed_out = True
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    pts_str, flags = line.split(",", 1)
+                    pts = float(pts_str)
+                except (ValueError, AttributeError):
+                    continue
+                if "K" in flags:
+                    keyframes.append(pts)
+                    if progress_cb is not None and len(keyframes) % 500 == 0:
+                        progress_cb(f"Index keyframes : {len(keyframes)} trouvées…")
+                if progress_pct_cb is not None:
+                    pct = min(95, int(pts * 100 / duration))
+                    if pct != last_pct:
+                        progress_pct_cb(pct)
+                        last_pct = pct
+            if timed_out:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+            else:
+                proc.wait(timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
+        if progress_pct_cb is not None:
+            progress_pct_cb(100)
+        result = tuple(keyframes)
+        if cache_key is not None:
+            self._preview_keyframes_cache[cache_key] = result
+        return result
+
+    @classmethod
+    def preview_scene_probe_from_payload(
+        cls,
+        payload: dict[str, object],
+    ) -> DynamicHdrPreviewProbeResult:
+        frames_obj = payload.get("frames")
+        keyframes: list[DynamicHdrPreviewFrame] = []
+        dynamic_keyframes: list[DynamicHdrPreviewFrame] = []
+        has_dovi = False
+        has_hdr10plus = False
+        if not isinstance(frames_obj, list):
+            return DynamicHdrPreviewProbeResult()
+
+        for frame_index, raw_frame in enumerate(frames_obj):
+            if not isinstance(raw_frame, dict):
+                continue
+            frame = cls._preview_frame_from_ffprobe_dict(raw_frame, fallback_index=frame_index)
+            if frame is None:
+                continue
+            has_dovi = has_dovi or frame.has_dovi
+            has_hdr10plus = has_hdr10plus or frame.has_hdr10plus
+            if frame.is_keyframe:
+                keyframes.append(frame)
+                if frame.has_dovi or frame.has_hdr10plus:
+                    dynamic_keyframes.append(frame)
+
+        return DynamicHdrPreviewProbeResult(
+            keyframes=tuple(keyframes),
+            dynamic_keyframes=tuple(dynamic_keyframes),
+            has_dovi=has_dovi,
+            has_hdr10plus=has_hdr10plus,
+        )
+
+    @staticmethod
+    def _preview_frame_from_ffprobe_dict(
+        frame: dict[str, object],
+        *,
+        fallback_index: int,
+    ) -> DynamicHdrPreviewFrame | None:
+        time_s: float | None = None
+        for key in ("best_effort_timestamp_time", "pkt_pts_time", "pkt_dts_time"):
+            raw_time = frame.get(key)
+            try:
+                time_s = float(str(raw_time))
+                break
+            except (TypeError, ValueError):
+                continue
+        if time_s is None:
+            return None
+
+        pict_type = str(frame.get("pict_type", "") or "").upper()
+        key_raw = frame.get("key_frame", 0)
+        try:
+            key_frame = int(str(key_raw)) == 1
+        except (TypeError, ValueError):
+            key_frame = False
+        is_keyframe = key_frame or pict_type == "I"
+
+        frame_number: int | None = None
+        for number_key in ("coded_picture_number", "display_picture_number"):
+            raw_number = frame.get(number_key)
+            try:
+                frame_number = int(str(raw_number))
+                break
+            except (TypeError, ValueError):
+                continue
+        if frame_number is None:
+            frame_number = fallback_index
+
+        has_dovi = False
+        has_hdr10plus = False
+        side_data_obj = frame.get("side_data_list")
+        if isinstance(side_data_obj, list):
+            for side_data in side_data_obj:
+                if not isinstance(side_data, dict):
+                    continue
+                side_type = str(side_data.get("side_data_type", "") or "")
+                side_type_lower = side_type.lower()
+                if (
+                    "dolby vision" in side_type_lower
+                    or "dovi" in side_type_lower
+                    or "rpu" in side_type_lower
+                ):
+                    has_dovi = True
+                if (
+                    "hdr dynamic metadata smpte2094-40" in side_type_lower
+                    or "hdr10+" in side_type_lower
+                    or "smpte st 2094" in side_type_lower
+                    or "smpte2094" in side_type_lower
+                ):
+                    has_hdr10plus = True
+
+        return DynamicHdrPreviewFrame(
+            time_s=max(0.0, time_s),
+            frame_index=frame_number,
+            is_keyframe=is_keyframe,
+            pict_type=pict_type,
+            has_dovi=has_dovi,
+            has_hdr10plus=has_hdr10plus,
+        )
+
+    @staticmethod
+    def _selection_from_frame(
+        requested: float,
+        frame: DynamicHdrPreviewFrame,
+        *,
+        warning: str = "",
+    ) -> DynamicHdrPreviewSceneSelection:
+        labels: list[str] = []
+        if frame.has_dovi:
+            labels.append("DoVi")
+        if frame.has_hdr10plus:
+            labels.append("HDR10+")
+        hdr_kind = "/".join(labels)
+        reason = f"I-frame {hdr_kind} metadata" if hdr_kind else "I-frame metadata"
+        return DynamicHdrPreviewSceneSelection(
+            requested_time_s=requested,
+            scene_time_s=frame.time_s,
+            reason=reason,
+            warning=warning,
+            hdr_kind=hdr_kind,
+            snapped=abs(frame.time_s - requested) > 0.001,
+        )
 
     def mediainfo_hdr_flags(self, source: Path) -> tuple[bool, bool] | None:
         cache_key = self.source_cache_key(source)

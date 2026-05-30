@@ -251,7 +251,7 @@ def _translate_tab_titles(tabs: QTabWidget) -> None:
         if not source:
             continue
         sources[index] = source
-        tabs.setTabText(index, translate_text(str(source)))
+        tabs.setTabText(index, translate_text(str(source)).replace("&", "&&"))
 
     tabs.setProperty(prop_key, sources)
 

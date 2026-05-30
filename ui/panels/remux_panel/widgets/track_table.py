@@ -159,16 +159,19 @@ class _TrackTable(QTableWidget):
         "hevc_amf": "HEVC",
         "hevc_qsv": "HEVC",
         "hevc_vaapi": "HEVC",
+        "nvencc_hevc": "HEVC",
         "libx264": "H264",
         "h264_nvenc": "H264",
         "h264_amf": "H264",
         "h264_qsv": "H264",
         "h264_vaapi": "H264",
+        "nvencc_h264": "H264",
         "libsvtav1": "AV1",
         "av1_nvenc": "AV1",
         "av1_amf": "AV1",
         "av1_qsv": "AV1",
         "av1_vaapi": "AV1",
+        "nvencc_av1": "AV1",
     }
 
     COL_SOURCE = 0

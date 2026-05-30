@@ -60,6 +60,22 @@ def force_10bit_active(video: VideoEncodeSettings) -> bool:
     return supports_10bit(video.codec)
 
 
+def has_video_transform(video: VideoEncodeSettings) -> bool:
+    return bool(getattr(video, "has_video_transform", lambda: False)())
+
+
+def has_cpu_video_filter(video: VideoEncodeSettings) -> bool:
+    """True when FFmpeg must keep frames in system memory for filtering."""
+    if video.codec == "copy":
+        return False
+    return bool(
+        getattr(video, "resize", None).is_active()
+        or getattr(video, "crop", None).is_active()
+        or getattr(video, "filters", None).is_active()
+        or getattr(video, "tonemap_to_sdr", False)
+    )
+
+
 def ten_bit_args(video: VideoEncodeSettings) -> list[str]:
     """Tokens ffmpeg pour forcer une sortie 10-bit (profile + pix_fmt).
 
@@ -517,16 +533,154 @@ def video_codec_args_bitrate(
             return ["-c:v", video.codec, "-b:v", f"{bitrate_kbps}k"]
 
 
+_RESIZE_PRESETS: dict[str, tuple[int, int, str]] = {
+    "720p": (1280, 720, "720p"),
+    "1080p": (1920, 1080, "1080p"),
+    "1440p": (2560, 1440, "1440p"),
+    "2160p": (3840, 2160, "2160p"),
+}
+
+_DEBLOCK_PRESETS: dict[str, tuple[str, float, float, float, float]] = {
+    "ultralight": ("weak", 0.04, 0.03, 0.02, 0.02),
+    "light": ("weak", 0.06, 0.04, 0.03, 0.03),
+    "medium": ("strong", 0.08, 0.05, 0.04, 0.04),
+    "strong": ("strong", 0.10, 0.06, 0.05, 0.05),
+    "stronger": ("strong", 0.12, 0.07, 0.06, 0.05),
+    "verystrong": ("strong", 0.14, 0.08, 0.07, 0.06),
+}
+
+_NLMEANS_PRESETS: dict[str, tuple[float, int, int]] = {
+    "ultralight": (1.0, 3, 7),
+    "light": (2.0, 5, 9),
+    "medium": (3.0, 7, 11),
+    "strong": (5.0, 7, 15),
+}
+
+_CHROMA_PRESETS: dict[str, tuple[int, int]] = {
+    "ultralight": (12, 3),
+    "light": (18, 5),
+    "medium": (24, 5),
+    "strong": (30, 7),
+    "stronger": (36, 7),
+    "verystrong": (42, 9),
+}
+
+
+def _sanitize_scale_algorithm(value: str) -> str:
+    algo = str(value or "lanczos").strip().lower()
+    return algo if algo in {"fast_bilinear", "bilinear", "bicubic", "neighbor", "area", "lanczos", "spline"} else "lanczos"
+
+
+def _build_crop_filter(video: VideoEncodeSettings) -> str:
+    crop = video.crop
+    if not crop.is_active():
+        return ""
+    top = max(0, int(crop.top))
+    bottom = max(0, int(crop.bottom))
+    left = max(0, int(crop.left))
+    right = max(0, int(crop.right))
+    if crop.auto:
+        # Autocrop detection is session-side; until detection fills numeric
+        # offsets, command generation keeps the source untouched.
+        return ""
+    if crop.unit == "percent":
+        return (
+            "crop="
+            f"iw*(100-{left}-{right})/100:"
+            f"ih*(100-{top}-{bottom})/100:"
+            f"iw*{left}/100:"
+            f"ih*{top}/100"
+        )
+    return f"crop=iw-{left}-{right}:ih-{top}-{bottom}:{left}:{top}"
+
+
+def _build_resize_filter(video: VideoEncodeSettings) -> str:
+    resize = video.resize
+    if not resize.is_active():
+        return ""
+    algo = _sanitize_scale_algorithm(resize.algorithm)
+    mode = str(resize.mode or "preset").strip().lower()
+    if mode == "percent":
+        pct = max(1, int(resize.percent or 100))
+        if not bool(resize.allow_upscale):
+            pct = min(pct, 100)
+        return f"scale=trunc(iw*{pct}/100/2)*2:trunc(ih*{pct}/100/2)*2:flags={algo}"
+    if mode == "size":
+        width = max(2, int(resize.width or 2))
+        height = max(2, int(resize.height or 2))
+    else:
+        width, height, _label = _RESIZE_PRESETS.get(str(resize.preset or "720p"), _RESIZE_PRESETS["720p"])
+    if not bool(resize.allow_upscale):
+        target_w = f"min({width},iw)"
+        target_h = f"min({height},ih)"
+    else:
+        target_w = str(width)
+        target_h = str(height)
+    if resize.keep_aspect:
+        return (
+            f"scale={target_w}:{target_h}:"
+            f"force_original_aspect_ratio=decrease:force_divisible_by=2:flags={algo}"
+        )
+    return f"scale={target_w}:{target_h}:flags={algo}"
+
+
+def _build_filters(video: VideoEncodeSettings) -> list[str]:
+    filters = video.filters
+    chain: list[str] = []
+    if filters.yadif_enabled:
+        mode = str(filters.yadif_mode or "send_frame").strip()
+        parity = str(filters.yadif_parity or "auto").strip()
+        deint = str(filters.yadif_deint or "all").strip()
+        chain.append(f"yadif={mode}:{parity}:{deint}")
+    crop = _build_crop_filter(video)
+    if crop:
+        chain.append(crop)
+    if filters.deblock_enabled:
+        kind, alpha, beta, gamma, delta = _DEBLOCK_PRESETS.get(
+            str(filters.deblock_strength or "medium").strip().lower(),
+            _DEBLOCK_PRESETS["medium"],
+        )
+        block = max(4, min(512, int(filters.deblock_block or 8)))
+        chain.append(
+            f"deblock=filter={kind}:block={block}:"
+            f"alpha={alpha}:beta={beta}:gamma={gamma}:delta={delta}"
+        )
+    if filters.nlmeans_enabled:
+        strength, patch, radius = _NLMEANS_PRESETS.get(
+            str(filters.nlmeans_strength or "light").strip().lower(),
+            _NLMEANS_PRESETS["light"],
+        )
+        if str(filters.nlmeans_profile or "").strip().lower() in {"grain", "animation"}:
+            strength = max(0.5, strength * 0.75)
+        elif str(filters.nlmeans_profile or "").strip().lower() in {"high motion", "highmotion", "sprite"}:
+            radius = max(5, radius - 2)
+        chain.append(f"nlmeans=s={strength}:p={patch}:r={radius}")
+    if filters.chroma_smooth_enabled:
+        thres, size = _CHROMA_PRESETS.get(
+            str(filters.chroma_smooth_strength or "medium").strip().lower(),
+            _CHROMA_PRESETS["medium"],
+        )
+        chain.append(
+            f"chromanr=thres={thres}:sizew={size}:sizeh={size}:"
+            "stepw=1:steph=1:distance=manhattan"
+        )
+    resize = _build_resize_filter(video)
+    if resize:
+        chain.append(resize)
+    return chain
+
+
 def build_encoder_vf(video: VideoEncodeSettings, *, callbacks: EncodeCodecDomainCallbacks) -> str:
     vf = build_vf(video)
     force_8bit = force_h264_8bit(video)
     force_10bit = force_10bit_active(video)
+    software_filtering = bool(vf)
     if video.codec not in VAAPI_VIDEO_CODECS:
         if (
             callbacks.platform == "win32"
             and video.codec in AMF_VIDEO_CODECS
             and callbacks.amf_device is not None
-            and (video.tonemap_to_sdr or force_8bit or force_10bit)
+            and (software_filtering or force_8bit or force_10bit)
         ):
             if force_10bit and not force_8bit:
                 amf_upload = "format=p010le,hwupload"
@@ -548,17 +702,20 @@ def build_encoder_vf(video: VideoEncodeSettings, *, callbacks: EncodeCodecDomain
     if force_10bit and not force_8bit:
         vaapi_upload = "format=p010,hwupload"
         return f"{vf},{vaapi_upload}" if vf else vaapi_upload
-    if video.tonemap_to_sdr or force_8bit:
+    if software_filtering or force_8bit:
         vaapi_upload = "format=nv12,hwupload"
         return f"{vf},{vaapi_upload}" if vf else vaapi_upload
     return vf
 
 
 def build_vf(video: VideoEncodeSettings) -> str:
-    if not video.tonemap_to_sdr:
+    if video.codec == "copy":
         return ""
+    chain = _build_filters(video)
+    if not video.tonemap_to_sdr:
+        return ",".join(chain)
     algo = video.tonemap_algorithm or "hable"
-    return (
+    chain.append(
         "zscale=transfer=linear:npl=100,"
         "format=gbrpf32le,"
         "zscale=primaries=bt709,"
@@ -566,25 +723,27 @@ def build_vf(video: VideoEncodeSettings) -> str:
         "zscale=transfer=bt709:matrix=bt709:range=tv,"
         "format=yuv420p"
     )
+    return ",".join(chain)
 
 
 def hardware_input_args(video: VideoEncodeSettings, *, callbacks: EncodeCodecDomainCallbacks) -> list[str]:
     args: list[str] = []
     tonemap = bool(video.tonemap_to_sdr)
+    software_filtering = has_cpu_video_filter(video)
     force_8bit = force_h264_8bit(video)
     force_10bit = force_10bit_active(video)
 
     if video.codec in VAAPI_VIDEO_CODECS:
         if callbacks.vaapi_device:
             args.extend(["-vaapi_device", callbacks.vaapi_device])
-            if not tonemap and not force_8bit and not force_10bit:
+            if not software_filtering and not tonemap and not force_8bit and not force_10bit:
                 args.extend(["-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi"])
         return args
 
     if video.codec in QSV_VIDEO_CODECS:
         if callbacks.qsv_device:
             args.extend(["-qsv_device", callbacks.qsv_device])
-        if tonemap or force_8bit or force_10bit:
+        if software_filtering or tonemap or force_8bit or force_10bit:
             return args
         args.extend(["-hwaccel", "qsv", "-hwaccel_output_format", "qsv"])
         return args
@@ -595,7 +754,7 @@ def hardware_input_args(video: VideoEncodeSettings, *, callbacks: EncodeCodecDom
                 "-init_hw_device", f"d3d11va=mre_amf:{callbacks.amf_device}",
                 "-filter_hw_device", "mre_amf",
             ])
-        if tonemap or force_8bit or force_10bit:
+        if software_filtering or tonemap or force_8bit or force_10bit:
             return args
         if callbacks.amf_device:
             args.extend([
@@ -607,7 +766,7 @@ def hardware_input_args(video: VideoEncodeSettings, *, callbacks: EncodeCodecDom
             args.extend(["-hwaccel", "d3d11va", "-hwaccel_output_format", "d3d11"])
         return args
 
-    if tonemap or force_8bit or force_10bit:
+    if software_filtering or tonemap or force_8bit or force_10bit:
         return args
 
     if video.codec in NVENC_VIDEO_CODECS:

@@ -90,6 +90,7 @@ DECISION_KEYWORDS = (
     "flag_original",
     "flag_commentary",
     "track_tags",
+    "none",
 )
 TITLE_KEYWORDS = DECISION_KEYWORDS
 
@@ -141,7 +142,12 @@ KEYWORD_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "flag_commentary",
         ),
     ),
+    ("Divers", ("none",)),
 )
+
+
+def is_none_keyword(keyword: str) -> bool:
+    return str(keyword or "").strip().strip("{}").lower() == "none"
 
 
 def normalize_lang(tag: str | None, title: str | None = None) -> str:
@@ -413,6 +419,8 @@ def render_alias(keyword: str, value: Any, variables: Mapping[str, Any] | None =
 
 def keyword_to_match_field(keyword: str) -> str:
     key = str(keyword or "").strip().strip("{}")
+    if is_none_keyword(key):
+        return ""
     aliases = {
         "hdr": "video_hdr",
         "dolby_vision": "video_dolby_vision",
@@ -538,6 +546,7 @@ def track_field_values(
         "video_flags_hex": video_flags_hex(track),
         "flags": flags_label(track),
         "track_tags": sorted(temporary_tags or set()),
+        "none": "",
     }
     for name, value in flags.items():
         values[f"flag_{name}"] = bool(value)

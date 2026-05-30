@@ -8,11 +8,12 @@ from typing import Any
 from cli.contract import validate_job_contract
 from cli.json_io import deep_merge, load_json
 from cli.options import JobOverrides
+from cli.tmdb import mark_auto_tmdb
 
 
 def _tmdb_block(job: dict[str, Any]) -> dict[str, Any]:
     raw_tmdb = job.get("tmdb", {})
-    tmdb: dict[str, Any] = raw_tmdb if isinstance(raw_tmdb, dict) else {"enabled": True}
+    tmdb: dict[str, Any] = dict(raw_tmdb) if isinstance(raw_tmdb, dict) else {"enabled": True}
     job["tmdb"] = tmdb
     return tmdb
 
@@ -47,13 +48,19 @@ def apply_metadata_overrides(
     if auto_tmdb or tmdb or tmdb_id is not None or apikey:
         tmdb_block = _tmdb_block(job)
         tmdb_block["enabled"] = True
+        if auto_tmdb or tmdb:
+            mark_auto_tmdb(tmdb_block)
         if tmdb_id is not None:
             tmdb_block["id"] = tmdb_id
         if apikey:
             tmdb_block["api_key"] = apikey
     elif no_cover or no_attach:
         raw_tmdb = job.get("tmdb")
-        tmdb_block = dict(raw_tmdb) if isinstance(raw_tmdb, dict) else (_tmdb_block(job) if raw_tmdb else None)
+        if isinstance(raw_tmdb, dict):
+            tmdb_block = dict(raw_tmdb)
+            job["tmdb"] = tmdb_block
+        else:
+            tmdb_block = _tmdb_block(job) if raw_tmdb else None
     else:
         tmdb_block = None
 

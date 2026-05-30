@@ -236,6 +236,8 @@ def build_cli_json_schema() -> dict[str, Any]:
                     "api_key": {"type": "string"},
                     "bearer_token": {"type": "string"},
                     "cover": {"type": "boolean"},
+                    "auto_detect_episode": {"type": "boolean"},
+                    "auto_metadata": {"type": "boolean"},
                     "id": {"type": "integer"},
                     "tmdb_id": {"type": "integer"},
                 },
@@ -300,6 +302,7 @@ def build_decision_profile_schema_v1() -> dict[str, Any]:
                     "set_time_shift_ms",
                     "set_flags",
                     "add_track_tags",
+                    "remove_track_tags",
                     "set_order_priority",
                     "create_audio_variant",
                 ]

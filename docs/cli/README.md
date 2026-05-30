@@ -135,12 +135,13 @@ réutilisables :
         "all": [
           {"field": "type", "op": "is", "value": "audio"},
           {"field": "language", "op": "is", "value": "fr-FR"},
-          {"field": "source_title", "op": "contains", "expr": "VFQ | VFF", "required": false}
+          {"field": "source_title", "op": "contains", "expr": "(VFQ | VFF) & !Commentary", "required": false}
         ]
       },
       "actions": [
         {"type": "set_enabled", "value": true},
-        {"type": "set_title", "pattern": "{lang_name} {codec} {channels} {audio_object}"}
+        {"type": "set_title", "pattern": "{lang_name} {codec} {channels} {audio_object}"},
+        {"type": "remove_track_tags", "value": ["old_tag"]}
       ]
     }
   ]
@@ -152,6 +153,10 @@ réutilisables :
 - `"priority"` : la plus forte priorité gagne; une priorité égale reste un conflit;
 - `"override"` : cette règle remplace une valeur déjà proposée;
 - `"add"` : cette règle complète sans écraser; pour un titre, le fragment est ajouté.
+
+Les expressions acceptent aussi `!` en raccourci et `NOT(...)` pour exclure un critère.
+Le keyword `{none}` cible une valeur vide dans le champ courant. Les actions
+`remove_track_tags` sont appliquées avant les `add_track_tags` de la même règle.
 
 Les conditions peuvent utiliser soit `value`, soit `expr`. `expr` accepte la
 même syntaxe que l'éditeur de profils :
@@ -317,11 +322,19 @@ TMDB est opt-in. Aucun appel réseau n'est fait si `tmdb` est absent ou faux.
 ```
 
 Si `id` ou `tmdb_id` est présent, cet ID est utilisé. Sinon, le premier résultat de recherche est retenu.
+Dans un JSON réutilisable, `season` et `episode` peuvent valoir `"auto"` pour
+être relus depuis le nom de chaque source. Les booléens
+`auto_detect_episode` et `auto_metadata` correspondent au comportement
+activé par `--auto-tmdb` : détection source prioritaire, puis remplacement des
+métadonnées TMDB statiques exportées par le GUI.
 
 En CLI, `--auto-tmdb` active la recherche TMDB sans modifier le JSON. La
 requête est déduite du nom de fichier, le premier résultat est retenu, et
 Muxiveo détecte automatiquement `S01E02` ou `01x02` pour renseigner saison
-et épisode. `--tmdb` reste disponible comme alias historique.
+et épisode. Si le template vient d'un export GUI et contient déjà le titre,
+les tags TMDB ou `tmdb.season` / `tmdb.episode` du premier épisode, `--auto-tmdb`
+les régénère pour chaque fichier traité. `--tmdb` reste disponible comme alias
+historique.
 
 Options utiles :
 
@@ -361,6 +374,26 @@ Muxiveo-cli batch \
   --auto-tmdb \
   --no-cover
 ```
+
+Depuis un `exact-job` exporté par le GUI pour un épisode de série, utilisez
+`--auto-tmdb` et un template de sortie pour rendre le titre conteneur, les tags
+SEASON/EPISODE/SUBTITLE/SYNOPSIS et le nom de fichier dynamiques :
+Les exports GUI récents ajoutent aussi un bloc `tmdb` désactivé avec
+`season: "auto"` / `episode: "auto"` quand ils détectent des tags de série ;
+`--auto-tmdb` l'active pour le batch.
+
+```bash
+Muxiveo-cli batch \
+  --template "/home/hydromel/Vidéos/Spider-Noir.S01E01.MULTi.VF2.HDR.DV.2160p.WEB.H265-SUPPLY-MVO.exact-job.json" \
+  --input-dir "/home/hydromel/Téléchargements/sabnzbd/complete/Spider-Noir.S*E*.MULTi.VF2.HDR.DV.2160p.WEB.H265-SUPPLY" \
+  --output-dir "/home/hydromel/Vidéos/Spider-Noir" \
+  --auto-tmdb \
+  --output-template "{title:release}.{season_episode}.{episode_title:release}.{audio-multi}.{audio-fr-tag}.{video-resolution:best}.{video-source}.{video-hdr:best}.{video-dolby-vision}.{video-codec-release:best}-{group}" \
+  --dry-run
+```
+
+`--input-dir` accepte aussi les globs de dossiers ; l'exemple ci-dessus crée un
+job pour les MKV présents dans chaque dossier `Spider-Noir.SxxEyy...`.
 
 ### `batch`
 
@@ -443,6 +476,7 @@ Tokens disponibles :
 | `{title:release}` | titre TMDB normalisé release ASCII à points | `Devil.May.Cry` |
 | `{year}` | année TMDB | `2025` |
 | `{episode_title}` | titre d'épisode TMDB | `Pilote` |
+| `{episode_title:release}` | titre d'épisode normalisé release ASCII à points | `Le.Pilote` |
 | `{season}` | saison zéro-paddée 2 chiffres | `01` |
 | `{episode}` | épisode zéro-paddé 2 chiffres | `02` |
 | `{season_num}` | saison brute (int) — combinable `:03d` | `1` |

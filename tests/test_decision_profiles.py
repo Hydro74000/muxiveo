@@ -93,9 +93,11 @@ def test_lang_name_keeps_region_only_for_non_default_variants():
 def test_decision_keywords_include_registry_only_fields():
     assert "source_language" in DECISION_KEYWORDS
     assert "track_tags" in DECISION_KEYWORDS
+    assert "none" in DECISION_KEYWORDS
     flattened = {keyword for _category, keywords in KEYWORD_CATEGORIES for keyword in keywords}
     assert "source_language" in flattened
     assert "track_tags" in flattened
+    assert "none" in flattened
 
 
 def test_codec_name_variable_keyword():
@@ -169,6 +171,27 @@ def test_criteria_expression_parser_supports_quotes_and_escapes():
         )
 
 
+def test_criteria_expression_parser_supports_not_forms():
+    condition = compile_criteria_expression(
+        "!(VFQ | VFF) & NOT(Forced) & !{flag_commentary}",
+        lambda atom: {"field": "source_title", "op": "contains", "value": atom, "required": True},
+    )
+
+    assert condition["all"][0]["not"]["any"][0]["value"] == "VFQ"
+    assert condition["all"][0]["not"]["any"][1]["value"] == "VFF"
+    assert condition["all"][1]["not"]["value"] == "Forced"
+    assert condition["all"][2]["not"]["value"] == "{flag_commentary}"
+
+
+def test_criteria_expression_parser_rejects_invalid_not_forms():
+    for expression in ("!", "! foo", "NOT"):
+        with pytest.raises(CriteriaExpressionError):
+            compile_criteria_expression(
+                expression,
+                lambda atom: {"field": "source_title", "op": "contains", "value": atom},
+            )
+
+
 def test_decision_profile_expr_condition_matches_nested_title_values():
     vff = TrackEntry(5, "subtitle", "SUBRIP", "", "fr-FR", "VFF", file_id="src0", orig_language="fr-FR", orig_title="VFF")
     vfq_forced = TrackEntry(6, "subtitle", "SUBRIP", "", "fr-FR", "VFQ Forced", file_id="src0", orig_language="fr-FR", orig_title="VFQ Forced")
@@ -224,6 +247,36 @@ def test_decision_profile_expr_condition_can_target_keyword_atoms():
     assert other.title == "VF"
 
 
+def test_decision_profile_expr_condition_can_exclude_values_and_keywords():
+    clean = _audio(1, title="Main")
+    commentary = _audio(2, title="Commentary")
+    commentary.orig_flag_commentary = True
+    profile = {
+        "version": 1,
+        "kind": "decision-profile",
+        "name": "not commentary",
+        "rules": [
+            {
+                "id": "clean",
+                "scope": "all",
+                "match": {
+                    "all": [
+                        {"field": "source_title", "op": "contains", "expr": "!(Commentary | Descriptive)", "required": True},
+                        {"expr": "!{flag_commentary}"},
+                    ]
+                },
+                "actions": [{"type": "set_title", "value": "Clean"}],
+            }
+        ],
+    }
+
+    result = apply_decision_profile(profile, [clean, commentary])
+
+    assert result.report["applied_rules"] == 1
+    assert clean.title == "Clean"
+    assert commentary.title == "Commentary"
+
+
 def test_decision_profile_validation_rejects_expr_with_value():
     profile = {
         "version": 1,
@@ -270,6 +323,63 @@ def test_tags_can_chain_rules():
 
     assert track.title == "VF EAC3 5.1"
     assert result.report["track_tags"][track.entry_id] == ["vf_main"]
+
+
+def test_remove_track_tags_runs_before_add_track_tags():
+    track = _audio(1, title="French")
+    profile = {
+        "version": 1,
+        "kind": "decision-profile",
+        "name": "replace tags",
+        "rules": [
+            {
+                "id": "tag_old",
+                "priority": 20,
+                "scope": "all",
+                "match": {"all": [{"field": "language", "op": "is", "value": "fr-FR"}]},
+                "actions": [{"type": "add_track_tags", "value": ["old"]}],
+            },
+            {
+                "id": "replace",
+                "priority": 10,
+                "scope": "all",
+                "match": {"all": [{"field": "track_tags", "op": "in", "value": ["old"]}]},
+                "actions": [
+                    {"type": "add_track_tags", "value": ["new"]},
+                    {"type": "remove_track_tags", "value": ["old"]},
+                ],
+            },
+        ],
+    }
+
+    result = apply_decision_profile(profile, [track])
+
+    assert result.report["track_tags"][track.entry_id] == ["new"]
+
+
+def test_none_keyword_can_match_tracks_without_flags():
+    plain = _audio(1, title="Plain")
+    default = _audio(2, title="Default")
+    default.flag_default = True
+    profile = {
+        "version": 1,
+        "kind": "decision-profile",
+        "name": "no flags",
+        "rules": [
+            {
+                "id": "plain",
+                "scope": "all",
+                "match": {"all": [{"field": "flags", "expr": "{none}", "required": True}]},
+                "actions": [{"type": "set_title", "value": "No Flags"}],
+            }
+        ],
+    }
+
+    result = apply_decision_profile(profile, [plain, default])
+
+    assert result.report["applied_rules"] == 1
+    assert plain.title == "No Flags"
+    assert default.title == "Default"
 
 
 def test_all_scope_filters_tracks_on_optional_title_criteria():
@@ -438,6 +548,102 @@ def test_build_video_flags_hex_from_editor_parts():
     assert value & 0x00000010
     assert value & 0x00000040
     assert value & 0x00000080
+
+
+def test_set_flags_action_can_clear_existing_flag():
+    track = _audio(1)
+    track.flag_default = True
+    profile = {
+        "version": 1,
+        "kind": "decision-profile",
+        "name": "clear flag",
+        "rules": [
+            {
+                "id": "clear_default",
+                "scope": "all",
+                "match": {"all": [{"field": "type", "op": "is", "value": "audio"}]},
+                "actions": [{"type": "set_flags", "value": {"default": False}}],
+            }
+        ],
+    }
+
+    apply_decision_profile(profile, [track])
+
+    assert track.flag_default is False
+
+
+def test_order_priority_reorders_tracks_stably():
+    video = _video(0, "1920x1080 SDR")
+    audio_fr = _audio(1, language="fr-FR", title="French")
+    audio_en = _audio(2, language="en-US", title="English")
+    profile = {
+        "version": 1,
+        "kind": "decision-profile",
+        "name": "order",
+        "rules": [
+            {
+                "id": "audio_first",
+                "scope": "all",
+                "match": {"all": [{"field": "type", "op": "is", "value": "audio"}]},
+                "actions": [{"type": "set_order_priority", "value": 1}],
+            },
+            {
+                "id": "video_second",
+                "scope": "all",
+                "match": {"all": [{"field": "type", "op": "is", "value": "video"}]},
+                "actions": [{"type": "set_order_priority", "value": 2}],
+            },
+        ],
+    }
+
+    result = apply_decision_profile(profile, [video, audio_fr, audio_en])
+
+    assert [track.entry_id for track in result.tracks] == [audio_fr.entry_id, audio_en.entry_id, video.entry_id]
+    assert result.report["order_changed"] is True
+
+
+def test_order_priority_conflicts_use_rule_group_priority():
+    video = _video(0, "1920x1080 SDR")
+    audio = _audio(1, language="fr-FR", title="French")
+    profile = {
+        "version": 1,
+        "kind": "decision-profile",
+        "name": "order groups",
+        "groups": [
+            {"id": "late", "label": "Late", "enabled": True, "priority": 200},
+            {"id": "early", "label": "Early", "enabled": True, "priority": 100},
+            {"id": "video", "label": "Video", "enabled": True, "priority": 50},
+        ],
+        "rules": [
+            {
+                "id": "audio_late",
+                "group_id": "late",
+                "scope": "all",
+                "match": {"all": [{"field": "type", "op": "is", "value": "audio"}]},
+                "actions": [{"type": "set_order_priority", "value": 5}],
+            },
+            {
+                "id": "audio_early",
+                "group_id": "early",
+                "scope": "all",
+                "match": {"all": [{"field": "type", "op": "is", "value": "audio"}]},
+                "actions": [{"type": "set_order_priority", "value": 1}],
+            },
+            {
+                "id": "video_middle",
+                "group_id": "video",
+                "scope": "all",
+                "match": {"all": [{"field": "type", "op": "is", "value": "video"}]},
+                "actions": [{"type": "set_order_priority", "value": 2}],
+            },
+        ],
+    }
+
+    result = apply_decision_profile(profile, [audio, video])
+
+    assert [track.entry_id for track in result.tracks] == [video.entry_id, audio.entry_id]
+    assert result.report["conflicts"] == []
+    assert result.report["skipped_writes"]
 
 
 def test_priority_resolves_field_conflicts():

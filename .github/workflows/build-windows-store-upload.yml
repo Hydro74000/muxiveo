@@ -10,7 +10,7 @@ on:
 
 jobs:
   build:
-    if: ${{ false }} # Disabled: Windows Store upload is intentionally paused.
+    if: ${{ vars.ENABLE_WINDOWS_STORE_UPLOAD == 'true' }} # Disabled by default: set this repo variable to re-enable Store uploads.
     runs-on: windows-latest
 
     steps:

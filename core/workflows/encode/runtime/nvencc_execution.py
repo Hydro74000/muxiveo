@@ -23,9 +23,13 @@ from core.workflows.encode.planning.track_assembly import (
     resolve_track_assembly as _resolve_track_assembly_plan,
 )
 from core.workflows.encode.runtime.nvencc import (
+    build_decode_pipe_cmd as _build_decode_pipe_cmd_runtime,
     build_nvencc_command as _build_nvencc_command_runtime,
     is_nvencc_codec as _is_nvencc_codec_runtime,
+    nvencc_ffmpeg_filter_vf as _nvencc_ffmpeg_filter_vf_runtime,
     nvencc_intermediate_path as _nvencc_intermediate_path_runtime,
+    nvencc_pipe_encode_video as _nvencc_pipe_encode_video_runtime,
+    nvencc_requires_ffmpeg_filter_pipe as _nvencc_requires_ffmpeg_filter_pipe_runtime,
 )
 from core.workflows.encode.runtime.nvencc_routing import NvenccInputRouting
 from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router
@@ -359,6 +363,7 @@ class NvenccRuntimeRemuxBuilder:
 
 @dataclass(frozen=True)
 class NvenccDirectOutputRunnerCallbacks:
+    ffmpeg_bin: str
     nvencc_bin: str | None
     check_cancelled: Callable[[TaskSignals | None], None]
     log_step: Callable[[int, str], None]
@@ -436,17 +441,29 @@ class NvenccDirectOutputRunner:
                 )
                 encode_cmd = _build_nvencc_command_runtime(
                     cb.nvencc_bin or "",
-                    runtime_video,
+                    (
+                        _nvencc_pipe_encode_video_runtime(runtime_video)
+                        if _nvencc_requires_ffmpeg_filter_pipe_runtime(runtime_video)
+                        else runtime_video
+                    ),
                     intermediate,
-                    input_path=routing.input_path,
-                    stream_index=routing.stream_index,
-                    input_reader=routing.input_reader,
-                    input_fps=routing.input_fps,
-                    input_avsync=routing.input_avsync,
+                    input_path=None if _nvencc_requires_ffmpeg_filter_pipe_runtime(runtime_video) else routing.input_path,
+                    stream_index=None if _nvencc_requires_ffmpeg_filter_pipe_runtime(runtime_video) else routing.stream_index,
+                    input_reader=None if _nvencc_requires_ffmpeg_filter_pipe_runtime(runtime_video) else routing.input_reader,
+                    input_fps=None if _nvencc_requires_ffmpeg_filter_pipe_runtime(runtime_video) else routing.input_fps,
+                    input_avsync=None if _nvencc_requires_ffmpeg_filter_pipe_runtime(runtime_video) else routing.input_avsync,
                     hdr10plus_json=None,
                     dovi_rpu=None,
-                    dovi_rpu_prm=routing.dovi_rpu_prm,
+                    dovi_rpu_prm=None if _nvencc_requires_ffmpeg_filter_pipe_runtime(runtime_video) else routing.dovi_rpu_prm,
                 )
+                decode_cmd: list[str] | None = None
+                if _nvencc_requires_ffmpeg_filter_pipe_runtime(runtime_video):
+                    decode_cmd = _build_decode_pipe_cmd_runtime(
+                        cb.ffmpeg_bin,
+                        routing.input_path,
+                        stream_index=routing.stream_index,
+                        vf=_nvencc_ffmpeg_filter_vf_runtime(runtime_video),
+                    )
                 remux_cmd, live_sync_session, sync_cleanup_paths = cb.build_runtime_remux_cmd(
                     config,
                     intermediate,
@@ -462,13 +479,21 @@ class NvenccDirectOutputRunner:
 
                 cb.check_cancelled(signals)
                 cb.log_step(6, "Encodage NVEncC")
-                cb.run_cmd(
-                    encode_cmd,
-                    cwd,
-                    "nvencc",
-                    lambda line: signals.progress.emit(line),
-                    signals,
-                )
+                if decode_cmd is not None:
+                    NvenccPipeExecutor().run(
+                        decode_cmd=decode_cmd,
+                        encode_cmd=encode_cmd,
+                        cwd=cwd,
+                        signals=signals,
+                    )
+                else:
+                    cb.run_cmd(
+                        encode_cmd,
+                        cwd,
+                        "nvencc",
+                        lambda line: signals.progress.emit(line),
+                        signals,
+                    )
                 cb.check_cancelled(signals)
                 cb.log_step(7, "Remux final ffmpeg")
                 output = cb.run_cmd(
@@ -528,15 +553,28 @@ def build_nvencc_pipeline_commands(
     routing = resolve_input_routing(config)
     encode = _build_nvencc_command_runtime(
         nvencc_bin,
-        routing.video,
+        (
+            _nvencc_pipe_encode_video_runtime(routing.video)
+            if _nvencc_requires_ffmpeg_filter_pipe_runtime(routing.video)
+            else routing.video
+        ),
         intermediate,
-        input_path=routing.input_path,
-        stream_index=routing.stream_index,
-        input_reader=routing.input_reader,
-        input_fps=routing.input_fps,
-        input_avsync=routing.input_avsync,
-        dovi_rpu_prm=routing.dovi_rpu_prm,
+        input_path=None if _nvencc_requires_ffmpeg_filter_pipe_runtime(routing.video) else routing.input_path,
+        stream_index=None if _nvencc_requires_ffmpeg_filter_pipe_runtime(routing.video) else routing.stream_index,
+        input_reader=None if _nvencc_requires_ffmpeg_filter_pipe_runtime(routing.video) else routing.input_reader,
+        input_fps=None if _nvencc_requires_ffmpeg_filter_pipe_runtime(routing.video) else routing.input_fps,
+        input_avsync=None if _nvencc_requires_ffmpeg_filter_pipe_runtime(routing.video) else routing.input_avsync,
+        dovi_rpu_prm=None if _nvencc_requires_ffmpeg_filter_pipe_runtime(routing.video) else routing.dovi_rpu_prm,
     )
+    if _nvencc_requires_ffmpeg_filter_pipe_runtime(routing.video):
+        decode = _build_decode_pipe_cmd_runtime(
+            ffmpeg_bin,
+            routing.input_path,
+            stream_index=routing.stream_index,
+            vf=_nvencc_ffmpeg_filter_vf_runtime(routing.video),
+        )
+    else:
+        decode = None
     remux = [
         ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-y",
         "-i", str(intermediate),
@@ -548,4 +586,4 @@ def build_nvencc_pipeline_commands(
         "-c", "copy",
         str(config.output),
     ]
-    return [encode, remux]
+    return [decode, encode, remux] if decode is not None else [encode, remux]

@@ -29,6 +29,7 @@ def build_planned_video_tracks(
                 codec=str(settings.codec),
                 quality_mode=settings.quality_mode,
                 inject_hdr_meta=bool(settings.inject_hdr_meta),
+                has_transform=bool(settings.has_video_transform()),
                 tonemap_to_sdr=bool(settings.tonemap_to_sdr),
                 copy_dv=bool(settings.copy_dv),
                 copy_hdr10plus=bool(settings.copy_hdr10plus),

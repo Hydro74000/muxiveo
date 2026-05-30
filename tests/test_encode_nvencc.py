@@ -9,7 +9,13 @@ from unittest.mock import patch
 
 import pytest
 
-from core.workflows.encode.models import QualityMode, VideoEncodeSettings
+from core.workflows.encode.models import (
+    QualityMode,
+    VideoCropSettings,
+    VideoEncodeSettings,
+    VideoFilterSettings,
+    VideoResizeSettings,
+)
 from core.workflows.encode.runtime.nvencc import (
     NVENCC_CODEC_FLAG,
     NVENCC_OUTPUT_EXT,
@@ -21,8 +27,10 @@ from core.workflows.encode.runtime.nvencc import (
     build_remux_cmd,
     detect_nvencc_available,
     is_nvencc_codec,
+    map_nvencc_video_transform_args,
     nvencc_binary_name,
     nvencc_intermediate_path,
+    nvencc_requires_ffmpeg_filter_pipe,
 )
 
 
@@ -495,6 +503,29 @@ class TestBuildNvenccCommand:
         assert "--vpp-libplacebo-tonemapping" in cmd
         assert "tonemapping_function=linear" in cmd[cmd.index("--vpp-libplacebo-tonemapping") + 1]
 
+    def test_native_transform_ui_maps_to_nvencc_vpp_args(self):
+        v = _video(
+            crop=VideoCropSettings(enabled=True, left=8, top=4, right=8, bottom=4),
+            resize=VideoResizeSettings(enabled=True, mode="size", width=1920, height=1080),
+            filters=VideoFilterSettings(yadif_enabled=True, nlmeans_enabled=True),
+        )
+
+        cmd = build_nvencc_command("nvencc", v, "/tmp/out.hevc", input_path="/in.mkv", stream_index=0)
+
+        assert cmd[cmd.index("--crop") + 1] == "8,4,8,4"
+        assert cmd[cmd.index("--output-res") + 1] == "1920x1080"
+        assert "--vpp-resize" in cmd
+        assert "--vpp-yadif" in cmd
+        assert "--vpp-nlmeans" in cmd
+
+    def test_deblock_and_chroma_smooth_require_ffmpeg_pipe(self):
+        v = _video(filters=VideoFilterSettings(deblock_enabled=True, chroma_smooth_enabled=True))
+        args = map_nvencc_video_transform_args(v)
+
+        assert nvencc_requires_ffmpeg_filter_pipe(v) is True
+        assert "--vpp-yadif" not in args
+        assert "--vpp-nlmeans" not in args
+
     def test_extra_params_appended(self):
         v = _video(extra_params="--aq --aq-temporal --aq-strength 12 --multipass 2pass-full")
         cmd = build_nvencc_command("nvencc", v, "/tmp/out.hevc")
@@ -689,6 +720,29 @@ class TestBuildNvenccPipeline:
         assert remux[0] == "ffmpeg"
         assert remux[-1] == "/out.mkv"
 
+    def test_ffmpeg_prefilter_pipe_carries_deblock_chroma_and_strips_native_vpp(self):
+        seq = build_nvencc_pipeline(
+            ffmpeg_bin="ffmpeg",
+            nvencc_bin="nvencc",
+            video=_video(
+                resize=VideoResizeSettings(enabled=True, mode="percent", percent=75),
+                filters=VideoFilterSettings(deblock_enabled=True, chroma_smooth_enabled=True),
+            ),
+            source="/in.mkv",
+            output="/out.mkv",
+            intermediate="/work/encoded.hevc",
+        )
+
+        decode, encode, _remux = seq
+        vf = decode[decode.index("-vf") + 1]
+        assert "deblock=" in vf
+        assert "chromanr=" in vf
+        assert "scale=trunc(iw*75/100/2)*2" in vf
+        assert "--y4m" in encode
+        assert encode[encode.index("-i") + 1] == "-"
+        assert "--output-res" not in encode
+        assert "--vpp-resize" not in encode
+
 
 class TestNvenccIntermediatePath:
     @pytest.mark.parametrize("codec", ["nvencc_hevc", "nvencc_h264", "nvencc_av1"])
@@ -751,6 +805,27 @@ class TestWorkflowNvenccShortCircuit:
         assert "--cqp" in encode
         assert remux[0] == "ffmpeg"
         assert remux[-1] == str(tmp_path / "out.mkv")
+
+    def test_nvencc_prefilter_returns_ffmpeg_pipe_encode_remux(self, tmp_path: Path):
+        wf = self._make_wf()
+        config = _make_encode_config(
+            tmp_path / "in.mkv",
+            tmp_path / "out.mkv",
+            codec="nvencc_hevc",
+            filters=VideoFilterSettings(deblock_enabled=True),
+        )
+
+        result = wf.build_command(config)
+
+        assert isinstance(result, list)
+        assert len(result) == 3
+        decode, encode, remux = result
+        assert decode[0] == "ffmpeg"
+        assert "-vf" in decode
+        assert "deblock=" in decode[decode.index("-vf") + 1]
+        assert encode[0] == "/usr/bin/NVEncC"
+        assert encode[encode.index("-i") + 1] == "-"
+        assert remux[0] == "ffmpeg"
 
     def test_no_nvencc_bin_falls_back(self, tmp_path: Path):
         wf = self._make_wf(nvencc=None)

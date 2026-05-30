@@ -12,10 +12,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
+from uuid import uuid4
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Qt, Signal
 from core.runner import TaskCancelledError, TaskSignals, ToolRunner
 from core.subprocess_utils import (
     subprocess_text_kwargs,
@@ -220,7 +223,9 @@ from core.workflows.encode.planning.validation import (
     validate_encode_config as _validate_encode_config_plan,
 )
 from core.workflows.encode.models import (
-    EncodeConfig, QualityMode,
+    EncodeConfig, EncodeError, EncodePreviewCapture, EncodePreviewMode, EncodePreviewRequest, EncodePreviewResult,
+    PREVIEW_FRAME_MIN_OFFSET_S, PREVIEW_FRAME_TAIL_OFFSET_S, PREVIEW_IMAGE_CAPTURE_COUNT,
+    PREVIEW_VIDEO_THUMBNAIL_COUNT, QualityMode,
     VideoEncodeSettings,
     normalize_audio_bitrate_kbps,
 )
@@ -232,6 +237,25 @@ from core.workflows.encode.planning.plan_models import (
     MaterializedContainerMetadataPlan as _MaterializedContainerMetadataPlan,
     ResolvedTrackAssembly as _ResolvedTrackAssembly,
 )
+
+
+def _qt_direct_connection_type():
+    connection_type = getattr(Qt, "ConnectionType", None)
+    if connection_type is not None:
+        direct = getattr(connection_type, "DirectConnection", None)
+        if direct is not None:
+            return direct
+    return getattr(Qt, "DirectConnection", None)
+
+
+def _connect_direct(signal, slot) -> None:
+    direct = _qt_direct_connection_type()
+    if direct is None:
+        signal.connect(slot)
+        return
+    signal.connect(slot, direct)
+
+
 class EncodeWorkflow(QObject):
     """
     Construit et exécute un encodage ffmpeg.
@@ -848,6 +872,7 @@ class EncodeWorkflow(QObject):
     ) -> TaskSignals:
         return _NvenccDirectOutputRunner(
             _NvenccDirectOutputRunnerCallbacks(
+                ffmpeg_bin=self._ffmpeg,
                 nvencc_bin=self._nvencc_bin,
                 check_cancelled=self._check_cancelled,
                 log_step=self._log_step,
@@ -1664,6 +1689,545 @@ class EncodeWorkflow(QObject):
         if len(commands) <= 1:
             return _format_preview_command_plan(commands[0]) if commands else ""
         return _format_preview_commands_plan(commands)
+
+    def run_preview(self, config: EncodeConfig, request: EncodePreviewRequest) -> TaskSignals:
+        """Génère une preview réelle image ou vidéo dans un thread secondaire."""
+        signals = TaskSignals()
+        executor = ThreadPoolExecutor(max_workers=1)
+        active_inner: dict[str, TaskSignals | None] = {"signals": None}
+        original_cancel = signals.cancel
+
+        def _cancel() -> None:
+            original_cancel()
+            inner = active_inner.get("signals")
+            if inner is not None and inner is not signals:
+                inner.cancel()
+
+        signals.cancel = _cancel  # type: ignore[method-assign]
+
+        def _task() -> None:
+            try:
+                result = self._run_preview_sync(
+                    config,
+                    request,
+                    signals,
+                    active_inner=active_inner,
+                )
+                signals.finished.emit(result.to_json())
+            except TaskCancelledError:
+                signals.cancelled.emit()
+            except Exception as exc:
+                signals.failed.emit(str(exc), exc)
+
+        executor.submit(_task)
+        executor.shutdown(wait=False)
+        return signals
+
+    def _run_preview_sync(
+        self,
+        config: EncodeConfig,
+        request: EncodePreviewRequest,
+        signals: TaskSignals,
+        *,
+        active_inner: dict[str, TaskSignals | None] | None = None,
+    ) -> EncodePreviewResult:
+        if request.normalized_mode() == EncodePreviewMode.IMAGE:
+            return self._run_image_preview_sync(config, request, signals)
+        return self._run_video_preview_sync(
+            config,
+            request,
+            signals,
+            active_inner=active_inner,
+        )
+
+    @staticmethod
+    def _scale_pct(lo: int, hi: int, inner_pct: int) -> int:
+        bounded = max(0, min(100, int(inner_pct)))
+        return int(lo + (hi - lo) * bounded / 100)
+
+    def _run_image_preview_sync(
+        self,
+        config: EncodeConfig,
+        request: EncodePreviewRequest,
+        signals: TaskSignals,
+    ) -> EncodePreviewResult:
+        preview_dir = self._preview_output_dir(config)
+        preview_dir.mkdir(parents=True, exist_ok=True)
+
+        source_video = self._primary_video_settings(config)
+        source_path = self._video_source_from_settings(config, source_video)
+        source_stream = self._video_stream_from_settings(source_video)
+        prefer_dv, prefer_hdr10plus = self._preview_dynamic_hdr_preferences(
+            source_path,
+            source_video,
+        )
+        signals.progress_pct.emit(0)
+        scenes = self._hdr_metadata_service.select_preview_scenes_random(
+            source_path,
+            count=PREVIEW_IMAGE_CAPTURE_COUNT,
+            stream_index=source_stream,
+            source_duration_s=config.duration_s,
+            skip_lead_s=PREVIEW_FRAME_MIN_OFFSET_S,
+            skip_tail_s=PREVIEW_FRAME_TAIL_OFFSET_S,
+            prefer_dovi=prefer_dv,
+            prefer_hdr10plus=prefer_hdr10plus,
+            progress_cb=lambda line: signals.progress.emit(line),
+            progress_pct_cb=lambda pct: signals.progress_pct.emit(self._scale_pct(0, 25, pct)),
+        )
+        if not scenes:
+            raise EncodeError(
+                "Impossible de sélectionner des scènes preview : aucune I-frame exploitable."
+            )
+        signals.progress_pct.emit(25)
+
+        hdr_kind = self._hdr_metadata_service.source_hdr_transfer(source_path)
+        token = self._preview_token(config)
+        captures: list[EncodePreviewCapture] = []
+        warning = ""
+        n = len(scenes)
+
+        for idx, scene in enumerate(scenes, start=1):
+            self._check_cancelled(signals)
+            image_path = preview_dir / f"{token}_{idx:02d}.png"
+            signals.progress.emit(
+                f"Capture {idx}/{n} à {self._seconds_label(scene.scene_time_s)}"
+                f"{' (' + scene.reason + ')' if scene.reason else ''}…"
+            )
+            extract_cmd = self._build_preview_image_extract_from_source_cmd(
+                source_path,
+                image_path,
+                scene_time_s=scene.scene_time_s,
+                stream_index=source_stream,
+                hdr_kind=hdr_kind,
+            )
+            self._runner._run_cmd(
+                extract_cmd,
+                cwd=preview_dir,
+                label=f"ffmpeg-preview-image-{idx:02d}",
+                progress_cb=lambda line: signals.progress.emit(line),
+                progress_pct_cb=lambda _pct: None,
+                signals=signals,
+            )
+            self._check_cancelled(signals)
+            if image_path.exists():
+                captures.append(EncodePreviewCapture(
+                    image_path=image_path,
+                    scene_time_s=scene.scene_time_s,
+                    label=scene.reason or "",
+                ))
+            if scene.warning and not warning:
+                warning = scene.warning
+            signals.progress_pct.emit(self._scale_pct(25, 100, int(idx * 100 / n)))
+
+        if not captures:
+            raise EncodeError("Aucune image preview n'a pu être générée.")
+
+        signals.progress_pct.emit(100)
+        return EncodePreviewResult(
+            mode=EncodePreviewMode.IMAGE.value,
+            captures=tuple(captures),
+            warning=warning,
+        )
+
+    def _run_video_preview_sync(
+        self,
+        config: EncodeConfig,
+        request: EncodePreviewRequest,
+        signals: TaskSignals,
+        *,
+        active_inner: dict[str, TaskSignals | None] | None = None,
+    ) -> EncodePreviewResult:
+        clip_duration = request.normalized_duration_s()
+        preview_dir = self._preview_output_dir(config)
+        preview_dir.mkdir(parents=True, exist_ok=True)
+
+        source_video = self._primary_video_settings(config)
+        source_path = self._video_source_from_settings(config, source_video)
+        source_stream = self._video_stream_from_settings(source_video)
+        prefer_dv, prefer_hdr10plus = self._preview_dynamic_hdr_preferences(
+            source_path,
+            source_video,
+        )
+        requested_time = float(request.timecode_s or 0.0)
+        force_random = bool(request.random_scene) or requested_time <= 0.0
+        signals.progress_pct.emit(0)
+        scene = self._hdr_metadata_service.select_preview_scene(
+            source_path,
+            stream_index=source_stream,
+            requested_time_s=requested_time,
+            preview_duration_s=clip_duration,
+            source_duration_s=config.duration_s,
+            random_scene=force_random,
+            prefer_dovi=prefer_dv,
+            prefer_hdr10plus=prefer_hdr10plus,
+            progress_cb=lambda line: signals.progress.emit(line),
+            progress_pct_cb=lambda pct: signals.progress_pct.emit(self._scale_pct(0, 10, pct)),
+        )
+        signals.progress_pct.emit(10)
+        if scene.reason:
+            message = (
+                f"Scène preview : {self._seconds_label(scene.requested_time_s)}"
+                f" -> {self._seconds_label(scene.scene_time_s)} ({scene.reason})"
+            )
+            if scene.warning:
+                message += f" — {scene.warning}"
+            signals.progress.emit(message)
+
+        token = self._preview_token(config)
+        source_segment = preview_dir / f"{token}_source.mkv"
+        encoded_clip = preview_dir / f"{token}.mkv"
+        trim_cmd = self._build_preview_source_segment_cmd(
+            source_path,
+            source_segment,
+            stream_index=source_stream,
+            start_s=scene.scene_time_s,
+            duration_s=clip_duration,
+        )
+        self._check_cancelled(signals)
+        signals.progress.emit("Préparation du segment source preview…")
+        self._runner._run_cmd(
+            trim_cmd,
+            cwd=preview_dir,
+            label="ffmpeg-preview-source",
+            progress_cb=lambda line: signals.progress.emit(line),
+            progress_pct_cb=lambda _pct: None,
+            signals=signals,
+        )
+        self._check_cancelled(signals)
+        signals.progress_pct.emit(15)
+
+        preview_config = self._preview_encode_config(
+            config,
+            source_segment=source_segment,
+            output=encoded_clip,
+            clip_duration_s=clip_duration,
+        )
+        errors = self.validate(preview_config)
+        if errors:
+            raise EncodeError("\n".join(errors))
+
+        signals.progress.emit("Encodage du segment preview avec les paramètres courants…")
+        encode_signals = TaskSignals()
+        encode_failed: list[tuple[str, object]] = []
+        encode_cancelled: list[bool] = []
+        _connect_direct(encode_signals.progress, signals.progress.emit)
+        _connect_direct(
+            encode_signals.progress_pct,
+            lambda pct: signals.progress_pct.emit(self._scale_pct(15, 80, pct)),
+        )
+        _connect_direct(
+            encode_signals.failed,
+            lambda message, exc: encode_failed.append((str(message), exc)),
+        )
+        _connect_direct(
+            encode_signals.cancelled,
+            lambda: encode_cancelled.append(True),
+        )
+        if active_inner is not None:
+            active_inner["signals"] = encode_signals
+        previous_generate_nfo = self._generate_nfo
+        self._generate_nfo = False
+        try:
+            self._run_with_preparation(preview_config, validate=False, prep_signals=encode_signals)
+        finally:
+            self._generate_nfo = previous_generate_nfo
+            if active_inner is not None:
+                active_inner["signals"] = None
+        self._check_cancelled(signals)
+        if encode_cancelled:
+            raise TaskCancelledError()
+        if encode_failed:
+            message, exc = encode_failed[-1]
+            if isinstance(exc, Exception):
+                raise EncodeError(message) from exc
+            raise EncodeError(message)
+        if not encoded_clip.exists():
+            raise EncodeError("La génération du segment preview a échoué.")
+
+        signals.progress_pct.emit(80)
+        encoded_hdr_kind = self._hdr_metadata_service.source_hdr_transfer(encoded_clip)
+        if not encoded_hdr_kind and not bool(getattr(source_video, "tonemap_to_sdr", False)):
+            # Probe may miss the bitstream metadata when container lacks it; fall back
+            # to the source's HDR signature since the encoder preserved the dynamic range.
+            encoded_hdr_kind = self._hdr_metadata_service.source_hdr_transfer(source_path)
+        thumbnails: list[EncodePreviewCapture] = []
+        thumb_count = PREVIEW_VIDEO_THUMBNAIL_COUNT
+        for idx in range(thumb_count):
+            self._check_cancelled(signals)
+            thumb_time = clip_duration * (idx + 0.5) / thumb_count
+            thumb_path = preview_dir / f"{token}_thumb_{idx + 1:02d}.png"
+            signals.progress.emit(f"Vignette {idx + 1}/{thumb_count} à +{thumb_time:.2f}s…")
+            extract_cmd = self._build_preview_image_extract_from_source_cmd(
+                encoded_clip,
+                thumb_path,
+                scene_time_s=thumb_time,
+                stream_index=0,
+                hdr_kind=encoded_hdr_kind,
+            )
+            self._runner._run_cmd(
+                extract_cmd,
+                cwd=preview_dir,
+                label=f"ffmpeg-preview-thumb-{idx + 1:02d}",
+                progress_cb=lambda line: signals.progress.emit(line),
+                progress_pct_cb=lambda _pct: None,
+                signals=signals,
+            )
+            if thumb_path.exists():
+                thumbnails.append(EncodePreviewCapture(
+                    image_path=thumb_path,
+                    scene_time_s=scene.scene_time_s + thumb_time,
+                    label=f"+{thumb_time:.1f}s",
+                ))
+            signals.progress_pct.emit(self._scale_pct(80, 100, int((idx + 1) * 100 / thumb_count)))
+
+        self._remove_preview_temp(source_segment)
+        signals.progress_pct.emit(100)
+
+        return EncodePreviewResult(
+            mode=EncodePreviewMode.VIDEO.value,
+            captures=tuple(thumbnails),
+            video_path=encoded_clip,
+            warning=scene.warning,
+        )
+
+    @staticmethod
+    def _remove_preview_temp(path: Path) -> None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    @classmethod
+    def cleanup_preview_dir(cls, base_dir: Path | str | None) -> int:
+        """Supprime tout le contenu de <base_dir>/previews. Renvoie le nombre d'entrées supprimées."""
+        if not base_dir:
+            return 0
+        preview_dir = Path(base_dir) / "previews"
+        if not preview_dir.exists():
+            return 0
+        deleted = 0
+        for entry in list(preview_dir.iterdir()):
+            try:
+                if entry.is_dir() and not entry.is_symlink():
+                    shutil.rmtree(entry, ignore_errors=True)
+                else:
+                    entry.unlink(missing_ok=True)
+                deleted += 1
+            except OSError:
+                pass
+        try:
+            preview_dir.rmdir()
+        except OSError:
+            pass
+        return deleted
+
+    def _preview_dynamic_hdr_preferences(
+        self,
+        source: Path,
+        video: VideoEncodeSettings,
+    ) -> tuple[bool, bool]:
+        has_dv = bool(video.copy_dv)
+        has_hdr10plus = bool(video.copy_hdr10plus)
+        detected = self._detect_source_dynamic_hdr_presence(source)
+        if detected is not None:
+            detected_dv, detected_hdr10plus = detected
+            has_dv = has_dv or detected_dv
+            has_hdr10plus = has_hdr10plus or detected_hdr10plus
+        return has_dv, has_hdr10plus
+
+    def _preview_output_dir(self, config: EncodeConfig) -> Path:
+        base = config.work_dir or config.output.parent or config.source.parent
+        return Path(base) / "previews"
+
+    @staticmethod
+    def _preview_token(config: EncodeConfig) -> str:
+        raw_stem = (config.output.stem or config.source.stem or "preview").strip()
+        safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in raw_stem).strip("._")
+        if not safe:
+            safe = "preview"
+        return f"{safe}_{uuid4().hex[:8]}"
+
+    @staticmethod
+    def _seconds_arg(seconds: float) -> str:
+        return f"{max(0.0, float(seconds or 0.0)):.3f}"
+
+    @classmethod
+    def _seconds_label(cls, seconds: float) -> str:
+        seconds = max(0.0, float(seconds or 0.0))
+        whole = int(seconds)
+        millis = int(round((seconds - whole) * 1000))
+        if millis >= 1000:
+            whole += 1
+            millis -= 1000
+        h, rem = divmod(whole, 3600)
+        m, s = divmod(rem, 60)
+        return f"{h:02d}:{m:02d}:{s:02d}.{millis:03d}"
+
+    def _build_preview_source_segment_cmd(
+        self,
+        source: Path,
+        output: Path,
+        *,
+        stream_index: int,
+        start_s: float,
+        duration_s: float,
+    ) -> list[str]:
+        cmd = [
+            self._ffmpeg,
+            "-hide_banner",
+            "-y",
+            "-ss", self._seconds_arg(start_s),
+            "-t", self._seconds_arg(duration_s),
+            "-i", str(source),
+            "-map", f"0:{int(stream_index)}",
+            "-c:v", "copy",
+            "-an",
+            "-sn",
+            "-dn",
+            "-map_metadata", "-1",
+            str(output),
+        ]
+        return cmd
+
+    def _build_preview_image_extract_cmd(self, source: Path, output: Path) -> list[str]:
+        return [
+            self._ffmpeg,
+            "-hide_banner",
+            "-y",
+            "-i", str(source),
+            "-frames:v", "1",
+            "-update", "1",
+            str(output),
+        ]
+
+    @staticmethod
+    def _preview_image_zscale_tonemap_filter(hdr_kind: str) -> str:
+        """Fallback HDR→SDR via zscale+tonemap (CPU). Hints d'entrée explicites."""
+        kind = (hdr_kind or "").strip().lower()
+        if kind not in {"pq", "hlg"}:
+            return ""
+        if kind == "pq":
+            tin = "smpte2084"
+            tonemap = "tonemap=tonemap=hable:desat=2:peak=1000"
+        else:
+            tin = "arib-std-b67"
+            tonemap = "tonemap=tonemap=mobius:desat=2"
+        return (
+            f"zscale=tin={tin}:min=bt2020nc:pin=bt2020:t=linear:npl=100,"
+            "format=gbrpf32le,"
+            "zscale=p=bt709,"
+            f"{tonemap},"
+            "zscale=t=bt709:m=bt709:r=tv,"
+            "format=yuv420p"
+        )
+
+    @staticmethod
+    def _preview_image_libplacebo_filter(hdr_kind: str) -> str:
+        """Filtre HDR→SDR via libplacebo (GPU, qualité supérieure)."""
+        kind = (hdr_kind or "").strip().lower()
+        if kind not in {"pq", "hlg"}:
+            return ""
+        return (
+            "libplacebo=tonemapping=auto:"
+            "colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:"
+            "format=yuv420p"
+        )
+
+    def _has_libplacebo(self) -> bool:
+        cached = getattr(self, "_libplacebo_available", None)
+        if cached is not None:
+            return bool(cached)
+        try:
+            result = subprocess.run(
+                [self._ffmpeg, "-hide_banner", "-filters"],
+                capture_output=True,
+                check=False,
+                timeout=10,
+                **subprocess_text_kwargs(),
+            )
+            available = "libplacebo" in (result.stdout or "")
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            available = False
+        self._libplacebo_available = available
+        return available
+
+    def _preview_image_tonemap_filter(self, hdr_kind: str) -> str:
+        if not hdr_kind:
+            return ""
+        if self._has_libplacebo():
+            return self._preview_image_libplacebo_filter(hdr_kind)
+        return self._preview_image_zscale_tonemap_filter(hdr_kind)
+
+    def _build_preview_image_extract_from_source_cmd(
+        self,
+        source: Path,
+        output: Path,
+        *,
+        scene_time_s: float,
+        stream_index: int,
+        hdr_kind: str = "",
+    ) -> list[str]:
+        cmd = [
+            self._ffmpeg,
+            "-hide_banner",
+            "-y",
+            "-ss", self._seconds_arg(scene_time_s),
+            "-i", str(source),
+            "-map", f"0:{int(stream_index)}",
+            "-frames:v", "1",
+            "-update", "1",
+            "-an", "-sn", "-dn",
+        ]
+        tonemap = self._preview_image_tonemap_filter(hdr_kind)
+        if tonemap:
+            cmd += ["-vf", tonemap]
+        cmd.append(str(output))
+        return cmd
+
+    def _preview_encode_config(
+        self,
+        config: EncodeConfig,
+        *,
+        source_segment: Path,
+        output: Path,
+        clip_duration_s: float,
+    ) -> EncodeConfig:
+        original_video = self._primary_video_settings(config)
+        video = replace(
+            original_video,
+            source_path=source_segment,
+            stream_index=0,
+        )
+        if video.codec != "copy" and video.quality_mode == QualityMode.SIZE:
+            video = replace(
+                video,
+                quality_mode=QualityMode.BITRATE,
+                bitrate_kbps=self._size_to_bitrate_kbps(config),
+            )
+        return EncodeConfig(
+            source=source_segment,
+            output=output,
+            video=video,
+            video_tracks=[video],
+            audio_tracks=[],
+            copy_subtitles=False,
+            subtitle_tracks=[],
+            keep_chapters=False,
+            chapter_overrides=[],
+            attachment_streams=[],
+            extra_attachments=[],
+            tag_sources=[],
+            tag_overrides={},
+            track_meta_edits=[],
+            track_time_offsets=[],
+            file_title="",
+            duration_s=clip_duration_s,
+            copy_dv=video.copy_dv,
+            copy_hdr10plus=video.copy_hdr10plus,
+            dovi_profile=video.dovi_profile,
+            work_dir=output.parent,
+            tmdb_cover=None,
+        )
 
     # ------------------------------------------------------------------
     # Validation

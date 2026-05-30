@@ -63,7 +63,9 @@ from typing import Any, cast
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QLineEdit
+from PySide6.QtWidgets import (
+    QApplication, QCheckBox, QComboBox, QDialog, QLineEdit, QPushButton, QSpinBox, QWidget,
+)
 
 from core.config import AppConfig
 from core.inspector import AudioTrack, FileInfo, HDRType, VideoTrack
@@ -830,6 +832,222 @@ class TestEncodePanelDynamicHdrDefaults:
         assert row_item is not None
         text = row_item.text().lower()
         assert "[hdr]" in text
+        panel.close()
+
+    def test_encode_panel_tabs_keep_hdr_inside_video_tab(self, qt_app):
+        panel = EncodePanel(AppConfig())
+
+        raw_labels = [panel._tabs.tabText(i) for i in range(panel._tabs.count())]
+        labels = [label.replace("&&", "&") for label in raw_labels]
+        assert panel._tabs.count() == 4
+        assert raw_labels[0] == "Sources && Audio"
+        assert labels[0] == "Sources & Audio"
+        assert labels[1] == "Video"
+        assert labels[2] in {"Géométrie / Filtres", "Geometry / Filters"}
+        assert labels[3] in {"Preview / Commande", "Preview / Command"}
+        assert not {"HDR", "Géométrie", "Filtres", "Geometry", "Filters"}.intersection(labels)
+        video_tab = panel._tabs.widget(1)
+        assert panel._inject_hdr_cb in video_tab.findChildren(QCheckBox)
+        geometry_filters_tab = panel._tabs.widget(2)
+        assert panel._geometry_controls in geometry_filters_tab.findChildren(QWidget)
+        assert panel._filters_controls in geometry_filters_tab.findChildren(QWidget)
+        panel.close()
+
+    def test_video_source_list_height_is_capped_at_ten_rows(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        tracks = []
+        for index in range(12):
+            path = Path(f"/tmp/film_{index}.mkv")
+            entry = _video_entry(index)
+            entry.entry_id = f"video-{index}"
+            tracks.append((_file_info(path, [_video_track(index)]), entry, _COLOR))
+
+        panel.set_video_tracks(tracks)
+
+        row_h = panel._video_list.sizeHintForRow(0)
+        assert row_h > 0
+        frame_h = panel._video_list.frameWidth() * 2
+        expected_ten_rows = 10 * row_h + frame_h + 2
+        assert panel._video_list.maximumHeight() == expected_ten_rows
+        assert panel._video_list.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
+
+        panel.set_video_tracks(tracks[:3])
+
+        expected_three_rows = 3 * row_h + frame_h + 2
+        assert panel._video_list.maximumHeight() == expected_three_rows
+        panel.close()
+
+    def test_preview_tab_exposes_real_preview_controls(self, qt_app):
+        panel = EncodePanel(AppConfig())
+
+        assert isinstance(panel._preview_mode_combo, QComboBox)
+        assert panel._preview_mode_combo.itemData(0) == "image"
+        assert panel._preview_mode_combo.itemData(1) == "video"
+        assert isinstance(panel._preview_time_edit, QLineEdit)
+        assert isinstance(panel._preview_duration_spin, QSpinBox)
+        assert panel._preview_duration_spin.minimum() == 5
+        assert panel._preview_duration_spin.maximum() == 30
+        assert isinstance(panel._preview_generate_btn, QPushButton)
+        assert isinstance(panel._preview_cancel_btn, QPushButton)
+        assert panel._preview_cancel_btn.isEnabled() is False
+        assert panel._preview_image.isHidden() is False
+        assert panel._preview_video_result_row.isHidden() is True
+        panel.close()
+
+    def test_preview_mode_video_shows_duration_and_video_result(self, qt_app):
+        panel = EncodePanel(AppConfig())
+
+        panel._preview_mode_combo.setCurrentIndex(1)
+
+        assert panel._preview_duration_spin.isEnabled() is True
+        assert panel._preview_time_edit.isEnabled() is True
+        assert panel._preview_random_btn.isEnabled() is True
+        assert panel._preview_video_result_row.isHidden() is False
+        panel.close()
+
+    def test_preview_image_mode_disables_video_only_inputs(self, qt_app):
+        panel = EncodePanel(AppConfig())
+
+        panel._preview_mode_combo.setCurrentIndex(0)
+
+        assert panel._preview_duration_spin.isEnabled() is False
+        assert panel._preview_time_edit.isEnabled() is False
+        assert panel._preview_random_btn.isEnabled() is False
+        assert panel._preview_video_result_row.isHidden() is True
+        panel.close()
+
+    def test_preview_carousel_navigation_cycles_through_captures(self, qt_app, tmp_path):
+        panel = EncodePanel(AppConfig())
+        captures = [
+            {"image_path": str(tmp_path / f"img_{i}.png"), "scene_time_s": float(i), "label": ""}
+            for i in range(3)
+        ]
+        panel._preview_captures = captures
+        panel._show_preview_capture(0)
+
+        assert panel._preview_current_index == 0
+        panel._on_preview_next()
+        assert panel._preview_current_index == 1
+        panel._on_preview_next()
+        panel._on_preview_next()
+        assert panel._preview_current_index == 0
+        panel._on_preview_prev()
+        assert panel._preview_current_index == 2
+        panel.close()
+
+    def test_preview_zoom_slider_updates_percentage(self, qt_app):
+        panel = EncodePanel(AppConfig())
+
+        panel._preview_zoom_slider.setValue(250)
+
+        assert panel._preview_zoom_percent == 250
+        assert panel._preview_zoom_value_lbl.text() == "250 %"
+        assert panel._preview_zoom_slider.minimum() == 10
+        assert panel._preview_zoom_slider.maximum() == 400
+        panel.close()
+
+    def test_preview_progress_bar_responds_to_progress_pct(self, qt_app):
+        panel = EncodePanel(AppConfig())
+
+        panel._on_preview_progress_pct(40)
+        assert panel._preview_progress.value() == 40
+
+        panel._on_preview_progress_pct(150)
+        assert panel._preview_progress.value() == 100
+
+        panel._on_preview_progress_pct(-5)
+        assert panel._preview_progress.value() == 0
+        panel.close()
+
+    def test_preview_timecode_parse_and_format(self, qt_app):
+        assert EncodePanel._parse_preview_timecode("01:02:03.450") == pytest.approx(3723.45)
+        assert EncodePanel._parse_preview_timecode("02:03") == pytest.approx(123.0)
+        assert EncodePanel._parse_preview_timecode("12,5") == pytest.approx(12.5)
+        assert EncodePanel._format_preview_timecode(3723.45) == "01:02:03.450"
+
+    def test_copy_mode_keeps_geometry_and_filters_visible_with_clear_message(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-copy-transforms"
+        panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0)]), entry, _COLOR)])
+
+        expected = (
+            "Options indisponibles en mode Copy. Choisissez un codec d'encodage "
+            "dans l'onglet Video pour activer la géométrie et les filtres."
+        )
+        assert panel._geometry_copy_msg.text() == expected
+        assert panel._filters_copy_msg.text() == expected
+        assert panel._geometry_copy_msg.isHidden() is False
+        assert panel._filters_copy_msg.isHidden() is False
+        assert panel._geometry_controls.isEnabled() is False
+        assert panel._filters_controls.isEnabled() is False
+
+        idx_x265 = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "libx265"
+        )
+        panel._codec_combo.setCurrentIndex(idx_x265)
+        assert panel._geometry_controls.isEnabled() is True
+        assert panel._filters_controls.isEnabled() is True
+        assert panel._geometry_copy_msg.isHidden() is True
+        assert panel._filters_copy_msg.isHidden() is True
+        panel.close()
+
+    def test_resize_mode_switches_visible_controls_and_presets_update_dimensions(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-resize-ui"
+        panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0)]), entry, _COLOR)])
+
+        panel._set_combo_data(panel._resize_preset_combo, "1080p")
+        assert panel._resize_width_spin.value() == 1920
+        assert panel._resize_height_spin.value() == 1080
+        assert panel._resize_value_stack.currentIndex() == 0
+
+        panel._set_combo_data(panel._resize_mode_combo, "percent")
+        assert panel._resize_value_stack.currentIndex() == 1
+
+        panel._set_combo_data(panel._resize_mode_combo, "size")
+        assert panel._resize_value_stack.currentIndex() == 2
+        panel.close()
+
+    def test_video_row_shows_geometry_and_filter_badges(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-filter-badges"
+        panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0)]), entry, _COLOR)])
+
+        idx_x265 = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "libx265"
+        )
+        panel._codec_combo.setCurrentIndex(idx_x265)
+        panel._resize_enabled_cb.setChecked(True)
+        panel._crop_enabled_cb.setChecked(True)
+        panel._crop_left_spin.setValue(8)
+        panel._yadif_cb.setChecked(True)
+        panel._deblock_cb.setChecked(True)
+        panel._nlmeans_cb.setChecked(True)
+        panel._chroma_cb.setChecked(True)
+
+        row_item = panel._video_list.item(0)
+        assert row_item is not None
+        text = row_item.text()
+        for badge in ("720p", "Crop", "Yadif", "Deblock", "NLMeans", "Chroma"):
+            assert f"[{badge}]" in text
+        panel.close()
+
+    def test_filter_labels_show_features_and_filter_names_stay_visible(self, qt_app):
+        panel = EncodePanel(AppConfig())
+
+        assert panel._yadif_cb.text() in {"Désentrelacement", "Deinterlacing"}
+        assert panel._deblock_cb.text() == "Deblock"
+        assert panel._nlmeans_cb.text() in {"Débruitage", "Denoise"}
+        assert panel._chroma_cb.text() == "Color Smooth"
+        assert panel._yadif_filter_combo.itemText(0) == "Yadif"
+        assert panel._deblock_filter_combo.itemText(0) == "deblock"
+        assert panel._nlmeans_filter_combo.itemText(0) == "NLMeans"
+        assert panel._chroma_filter_combo.itemText(0) == "chromanr"
         panel.close()
 
     def test_qsv_locks_manual_hdr_metadata_fields(self, qt_app):
