@@ -103,18 +103,25 @@ def apply_explicit_track_edits(
     specs = job.get("tracks", [])
     if not isinstance(specs, list):
         return
+    source_tracks = [track for track in tracks if not track.is_new]
     for index, spec in enumerate(specs):
         if not isinstance(spec, dict):
             continue
         try:
             track = _track_from_spec(
                 spec,
-                tracks,
+                source_tracks,
                 strict_selectors=strict_selectors,
                 relaxed_selectors=relaxed_selectors,
                 context=f"tracks[{index}]",
             )
         except SelectorResolutionError as exc:
+            if (
+                relaxed_selectors
+                and spec.get("enabled") is False
+                and exc.report.get("error") == "track_selector_unmatched_relaxed"
+            ):
+                continue
             if _fallback_profile_name(job):
                 exc.report["suggested_profile"] = _fallback_profile_name(job)
             raise
@@ -145,17 +152,18 @@ def apply_audio_variants(
         selector = spec.get("source_selector", spec.get("selector"))
         if not isinstance(selector, dict):
             continue
+        source_tracks = [track for track in tracks if not track.is_new]
         try:
             source_track = (
                 resolve_track_selector_relaxed(
                     selector,
-                    tracks,
+                    source_tracks,
                     context=f"audio_variants[{index}]",
                 )
                 if relaxed_selectors
                 else resolve_track_selector(
                     selector,
-                    tracks,
+                    source_tracks,
                     context=f"audio_variants[{index}]",
                     strict=strict_selectors,
                 )
@@ -198,21 +206,23 @@ def track_order(
     if isinstance(explicit, list):
         order: list[tuple[int, int, str]] = []
         by_key = {(t.file_id, t.mkv_tid): t for t in tracks}
+        source_tracks = [track for track in tracks if not track.is_new]
         for index, item in enumerate(explicit):
             if isinstance(item, dict):
                 selector = item.get("selector")
                 if isinstance(selector, dict):
+                    selector_tracks = tracks if selector.get("entry_id") else source_tracks
                     try:
                         track = (
                             resolve_track_selector_relaxed(
                                 selector,
-                                tracks,
+                                selector_tracks,
                                 context=f"track_order[{index}]",
                             )
                             if relaxed_selectors
                             else resolve_track_selector(
                                 selector,
-                                tracks,
+                                selector_tracks,
                                 context=f"track_order[{index}]",
                                 strict=strict_selectors,
                             )

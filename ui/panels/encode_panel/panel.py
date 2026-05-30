@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import Qt, Signal, QUrl
+from PySide6.QtCore import QSize, Qt, Signal, QUrl
 from PySide6.QtGui import QBrush, QColor, QDesktopServices, QFont, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog,
@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QLineEdit, QListWidget, QListWidgetItem,
     QMessageBox,
     QPlainTextEdit, QProgressBar, QPushButton,
-    QScrollArea, QSlider, QSpinBox, QStackedWidget, QTabWidget,
+    QScrollArea, QSizePolicy, QSlider, QSpinBox, QStackedWidget, QTabWidget,
     QVBoxLayout, QWidget,
 )
 
@@ -80,6 +80,7 @@ class EncodePanel(QWidget):
     _VIDEO_ENCODER_BADGES = VIDEO_ENCODER_BADGES
     _VIDEO_HDR_BADGE_ORDER = VIDEO_HDR_BADGE_ORDER
     _MAX_VISIBLE_VIDEO_SOURCE_ROWS = 10
+    _VIDEO_SOURCE_ROW_H = 34
 
     def __init__(
         self,
@@ -511,7 +512,11 @@ class EncodePanel(QWidget):
             QAbstractItemView.SelectionMode.SingleSelection
         )
         self._video_list.setUniformItemSizes(True)
-        self._video_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._video_list.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        self._video_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._video_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._video_list.setStyleSheet(
             f"QListWidget{{background:{_C.BG_CARD};border:none;border-radius:6px;"
@@ -617,6 +622,7 @@ class EncodePanel(QWidget):
         if not tracks:
             self._video_list.setVisible(False)
             self._video_placeholder.setVisible(True)
+            self._adjust_video_list_height()
             self._sync_video_selector_items()
             self._file_info = None
             self.ready_changed.emit(False)
@@ -634,6 +640,7 @@ class EncodePanel(QWidget):
             state = self._video_settings_by_entry_id.get(self._video_entry_id(track))
             text = self._video_source_row_text(file_info, track, state=state)
             item = QListWidgetItem(text)
+            item.setSizeHint(QSize(0, self._VIDEO_SOURCE_ROW_H))
             item.setData(Qt.ItemDataRole.UserRole, (file_info, track))
             item.setForeground(QBrush(QColor(color)))
             self._apply_video_source_item_style(item, state)
@@ -668,12 +675,17 @@ class EncodePanel(QWidget):
         """Ajuste la hauteur de la liste vidéo, avec scrollbar au-delà de 10 lignes."""
         n = self._video_list.count()
         if n == 0:
+            self._video_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self._video_list.setFixedHeight(0)
             return
-        row_h = self._video_list.sizeHintForRow(0)
-        if row_h <= 0:
-            row_h = 34
+        row_h = self._VIDEO_SOURCE_ROW_H
         visible = min(n, self._MAX_VISIBLE_VIDEO_SOURCE_ROWS)
         frame_h = self._video_list.frameWidth() * 2
+        self._video_list.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+            if n > self._MAX_VISIBLE_VIDEO_SOURCE_ROWS
+            else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         self._video_list.setFixedHeight(visible * row_h + frame_h + 2)
 
     def _on_video_row_changed(self, row: int) -> None:

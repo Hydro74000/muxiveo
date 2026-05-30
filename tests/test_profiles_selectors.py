@@ -216,6 +216,84 @@ def test_relaxed_selector_resolves_reordered_audio_by_identity():
     assert resolve_track_selector_relaxed(selector, tracks) is en
 
 
+def test_relaxed_batch_edits_ignore_reencoded_audio_variants():
+    from cli.remux_config import apply_audio_variants, apply_explicit_track_edits
+
+    source = _audio(
+        2,
+        language="en-US",
+        title="Anglais [DTS 5.1]",
+        codec="DTS",
+        display_info="5.1(side)  1536 kbps",
+    )
+    tracks = [source]
+    selector = {
+        "source": 0,
+        "type": "audio",
+        "position": 0,
+        "codec": "DTS",
+        "language": "en-US",
+        "channels": "5.1",
+        "title": "Anglais [DTS-HDMA - 5.1 @ 4000 Kbps]",
+    }
+    job = {
+        "audio_variants": [
+            {
+                "source_selector": selector,
+                "enabled": True,
+                "language": "en-US",
+                "title": "English Dolby Digital 5.1",
+                "codec": "AC3",
+                "bitrate_kbps": 576,
+            }
+        ],
+        "tracks": [
+            {
+                "selector": selector,
+                "title": "English DTS 5.1",
+            }
+        ],
+    }
+    source_input = SourceInput(path=Path("source.mkv"), file_index=0, tracks=[source])
+
+    apply_audio_variants(job, [source_input], tracks, relaxed_selectors=True)
+    assert len(tracks) == 2
+    assert tracks[1].is_new is True
+    assert tracks[1].codec == "AC3"
+    assert tracks[1].orig_codec == "DTS"
+
+    apply_explicit_track_edits(job, tracks, relaxed_selectors=True)
+
+    assert source.title == "English DTS 5.1"
+    assert tracks[1].title == "English Dolby Digital 5.1"
+
+
+def test_relaxed_batch_edits_ignore_missing_disabled_tracks():
+    from cli.remux_config import apply_explicit_track_edits
+
+    tracks = [_audio(1, language="fr-FR", title="VF", codec="AC3", display_info="5.1(side)  384 kbps")]
+    job = {
+        "tracks": [
+            {
+                "selector": {
+                    "source": 0,
+                    "type": "audio",
+                    "position": 1,
+                    "codec": "AC3",
+                    "language": "en-US",
+                    "channels": "stereo",
+                    "title": "Anglais - Commentaire [AC3 - 2.0 @ 192 Kbps]",
+                },
+                "enabled": False,
+            }
+        ]
+    }
+
+    apply_explicit_track_edits(job, tracks, relaxed_selectors=True)
+
+    assert tracks[0].enabled is True
+
+
 def test_track_selector_for_entry_emits_flags_only_when_set():
     track = _audio(1)
     track.orig_flag_forced = True
