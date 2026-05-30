@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version tag (ex: 3.0.1 or v3.0.1). Empty uses APP_VERSION."
+        description: "Version tag (ex: 3.1.0 or v3.1.0). Empty uses APP_VERSION."
         required: false
         default: ""
         type: string

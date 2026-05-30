@@ -237,6 +237,25 @@ from core.workflows.encode.planning.plan_models import (
     MaterializedContainerMetadataPlan as _MaterializedContainerMetadataPlan,
     ResolvedTrackAssembly as _ResolvedTrackAssembly,
 )
+
+
+def _qt_direct_connection_type():
+    connection_type = getattr(Qt, "ConnectionType", None)
+    if connection_type is not None:
+        direct = getattr(connection_type, "DirectConnection", None)
+        if direct is not None:
+            return direct
+    return getattr(Qt, "DirectConnection", None)
+
+
+def _connect_direct(signal, slot) -> None:
+    direct = _qt_direct_connection_type()
+    if direct is None:
+        signal.connect(slot)
+        return
+    signal.connect(slot, direct)
+
+
 class EncodeWorkflow(QObject):
     """
     Construit et exécute un encodage ffmpeg.
@@ -1891,18 +1910,18 @@ class EncodeWorkflow(QObject):
         encode_signals = TaskSignals()
         encode_failed: list[tuple[str, object]] = []
         encode_cancelled: list[bool] = []
-        encode_signals.progress.connect(signals.progress.emit, Qt.ConnectionType.DirectConnection)
-        encode_signals.progress_pct.connect(
+        _connect_direct(encode_signals.progress, signals.progress.emit)
+        _connect_direct(
+            encode_signals.progress_pct,
             lambda pct: signals.progress_pct.emit(self._scale_pct(15, 80, pct)),
-            Qt.ConnectionType.DirectConnection,
         )
-        encode_signals.failed.connect(
+        _connect_direct(
+            encode_signals.failed,
             lambda message, exc: encode_failed.append((str(message), exc)),
-            Qt.ConnectionType.DirectConnection,
         )
-        encode_signals.cancelled.connect(
+        _connect_direct(
+            encode_signals.cancelled,
             lambda: encode_cancelled.append(True),
-            Qt.ConnectionType.DirectConnection,
         )
         if active_inner is not None:
             active_inner["signals"] = encode_signals

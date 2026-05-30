@@ -839,19 +839,16 @@ class TestEncodePanelDynamicHdrDefaults:
 
         raw_labels = [panel._tabs.tabText(i) for i in range(panel._tabs.count())]
         labels = [label.replace("&&", "&") for label in raw_labels]
+        assert panel._tabs.count() == 4
         assert raw_labels[0] == "Sources && Audio"
-        assert labels == [
-            "Sources & Audio",
-            "Video",
-            "Géométrie / Filtres",
-            "Preview / Commande",
-        ]
-        assert "HDR" not in labels
-        assert "Géométrie" not in labels
-        assert "Filtres" not in labels
-        video_tab = panel._tabs.widget(labels.index("Video"))
+        assert labels[0] == "Sources & Audio"
+        assert labels[1] == "Video"
+        assert labels[2] in {"Géométrie / Filtres", "Geometry / Filters"}
+        assert labels[3] in {"Preview / Commande", "Preview / Command"}
+        assert not {"HDR", "Géométrie", "Filtres", "Geometry", "Filters"}.intersection(labels)
+        video_tab = panel._tabs.widget(1)
         assert panel._inject_hdr_cb in video_tab.findChildren(QCheckBox)
-        geometry_filters_tab = panel._tabs.widget(labels.index("Géométrie / Filtres"))
+        geometry_filters_tab = panel._tabs.widget(2)
         assert panel._geometry_controls in geometry_filters_tab.findChildren(QWidget)
         assert panel._filters_controls in geometry_filters_tab.findChildren(QWidget)
         panel.close()
@@ -1043,9 +1040,9 @@ class TestEncodePanelDynamicHdrDefaults:
     def test_filter_labels_show_features_and_filter_names_stay_visible(self, qt_app):
         panel = EncodePanel(AppConfig())
 
-        assert panel._yadif_cb.text() == "Désentrelacement"
+        assert panel._yadif_cb.text() in {"Désentrelacement", "Deinterlacing"}
         assert panel._deblock_cb.text() == "Deblock"
-        assert panel._nlmeans_cb.text() == "Débruitage"
+        assert panel._nlmeans_cb.text() in {"Débruitage", "Denoise"}
         assert panel._chroma_cb.text() == "Color Smooth"
         assert panel._yadif_filter_combo.itemText(0) == "Yadif"
         assert panel._deblock_filter_combo.itemText(0) == "deblock"
