@@ -611,8 +611,9 @@ def _build_resize_filter(video: VideoEncodeSettings) -> str:
     else:
         width, height, _label = _RESIZE_PRESETS.get(str(resize.preset or "720p"), _RESIZE_PRESETS["720p"])
     if not bool(resize.allow_upscale):
-        target_w = f"min({width},iw)"
-        target_h = f"min({height},ih)"
+        # Virgule échappée : ffmpeg sépare les filtres sur ',' dans le filtergraph -vf.
+        target_w = f"min({width}\\,iw)"
+        target_h = f"min({height}\\,ih)"
     else:
         target_w = str(width)
         target_h = str(height)
