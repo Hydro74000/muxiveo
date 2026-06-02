@@ -652,7 +652,8 @@ def _build_filters(video: VideoEncodeSettings) -> list[str]:
             _NLMEANS_PRESETS["light"],
         )
         if str(filters.nlmeans_profile or "").strip().lower() in {"grain", "animation"}:
-            strength = max(0.5, strength * 0.75)
+            # ffmpeg nlmeans 's' a un minimum dur de 1.0 (ultralight*0.75=0.75 → erreur).
+            strength = max(1.0, strength * 0.75)
         elif str(filters.nlmeans_profile or "").strip().lower() in {"high motion", "highmotion", "sprite"}:
             radius = max(5, radius - 2)
         chain.append(f"nlmeans=s={strength}:p={patch}:r={radius}")

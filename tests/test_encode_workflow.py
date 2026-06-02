@@ -2004,7 +2004,8 @@ class TestBuildCommand:
         ]
         positions = [vf.index(token) for token in expected_order]
         assert positions == sorted(positions)
-        assert "min(1280,iw):min(720,ih)" in vf
+        # Virgules échappées : ffmpeg sépare les filtres sur ',' dans le filtergraph.
+        assert "min(1280\\,iw):min(720\\,ih)" in vf
 
     def test_ffmpeg_percent_resize_clamps_when_upscale_is_disabled(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()
