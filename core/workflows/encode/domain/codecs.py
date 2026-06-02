@@ -69,10 +69,10 @@ def has_cpu_video_filter(video: VideoEncodeSettings) -> bool:
     if video.codec == "copy":
         return False
     return bool(
-        getattr(video, "resize", None).is_active()
-        or getattr(video, "crop", None).is_active()
-        or getattr(video, "filters", None).is_active()
-        or getattr(video, "tonemap_to_sdr", False)
+        video.resize.is_active()
+        or video.crop.is_active()
+        or video.filters.is_active()
+        or video.tonemap_to_sdr
     )
 
 

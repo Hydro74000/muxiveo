@@ -1427,6 +1427,7 @@ class TestMetadataInjectDoviProfileRouting:
         src_path, dst_path, master_display, max_cll = calls[0]
         assert src_path.name == "enc_dv.hevc"
         assert dst_path.name == "enc_hdr_static.hevc"
+        assert config.video is not None
         assert master_display == config.video.master_display
         assert max_cll == config.video.max_cll
 

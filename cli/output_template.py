@@ -81,23 +81,22 @@ def sanitize_token(value: str) -> str:
     return cleaned.strip()
 
 
+_TRANSLITERATE: dict[str, str | int | None] = {
+    "Æ": "AE",
+    "æ": "ae",
+    "Œ": "OE",
+    "œ": "oe",
+    "Đ": "D",
+    "đ": "d",
+    "Þ": "Th",
+    "þ": "th",
+    "ß": "ss",
+}
+
+
 def sanitize_release_title(value: str) -> str:
     """Normalize a title to scene-style dotted ASCII text."""
-    text = str(value or "").translate(
-        str.maketrans(
-            {
-                "Æ": "AE",
-                "æ": "ae",
-                "Œ": "OE",
-                "œ": "oe",
-                "Đ": "D",
-                "đ": "d",
-                "Þ": "Th",
-                "þ": "th",
-                "ß": "ss",
-            }
-        )
-    )
+    text = str(value or "").translate(str.maketrans(_TRANSLITERATE))
     text = unicodedata.normalize("NFKD", text)
     text = "".join(char for char in text if not unicodedata.combining(char))
     text = re.sub(r"[^\w\s.\-]", "", text, flags=re.ASCII)

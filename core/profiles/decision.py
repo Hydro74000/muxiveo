@@ -440,7 +440,7 @@ def _compile_expression_condition(condition: Mapping[str, Any]) -> dict[str, Any
         if keyword_registry.is_none_keyword(atom):
             if not base_field:
                 raise CriteriaExpressionError(f"champ requis pour la valeur : {atom}")
-            leaf = {
+            leaf: dict[str, Any] = {
                 "field": base_field,
                 "op": "missing",
                 "required": required,
@@ -450,7 +450,7 @@ def _compile_expression_condition(condition: Mapping[str, Any]) -> dict[str, Any
             return leaf
         keyword_field = keyword_registry.keyword_to_match_field(atom)
         if keyword_field:
-            leaf: dict[str, Any] = {
+            leaf = {
                 "field": keyword_field,
                 "op": "is",
                 "value": True,
@@ -1109,11 +1109,11 @@ def _apply_rule_action(
         ):
             tags.add(text)
     elif action_name == "set_order_priority":
-        value = int(action.get("value") or 0)
-        if value > 0 and _field_change(
+        priority_value = int(action.get("value") or 0)
+        if priority_value > 0 and _field_change(
             track,
             "order_priority",
-            value,
+            priority_value,
             rule=rule,
             mode=write_mode,
             priority_key=priority_key,
@@ -1123,7 +1123,7 @@ def _apply_rule_action(
             skipped_writes=skipped_writes,
             conflict_choices=conflict_choices,
         ):
-            order_priorities[track.entry_id] = value
+            order_priorities[track.entry_id] = priority_value
     elif action_name == "create_audio_variant" and track.track_type == "audio":
         _apply_audio_variant_action(
             action,

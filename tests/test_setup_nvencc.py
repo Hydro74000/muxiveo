@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import importlib
+import importlib.util
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch

@@ -61,14 +61,14 @@ class _FakeTimer:
 
 def test_select_multi_encode_label_prefers_longest_remaining_and_reswitches() -> None:
     # Stream 1 : 300s média en 100s wall (3.0x), reste 300s média → 100s wall.
-    state_1 = {
+    state_1: dict[str, object] = {
         "started_at": 0.0,
         "duration_s": 600.0,
         "done": False,
         "last_update": 90.0,
     }
     # Stream 2 : 100s média en 100s wall (1.0x), reste 500s média → 500s wall.
-    state_2 = {
+    state_2: dict[str, object] = {
         "started_at": 0.0,
         "duration_s": 600.0,
         "done": False,
@@ -162,6 +162,7 @@ def test_sync_rewrite_stage_progress_is_translated_with_track_name() -> None:
 
     parsed = _parse_sync_rewrite_stage_progress(line)
 
+    assert parsed is not None
     assert parsed == ("subtitle", "Forced FR")
     assert _sync_rewrite_stage_label(*parsed) == "Synchro sous-titre Forced FR"
 

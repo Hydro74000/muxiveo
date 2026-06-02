@@ -1923,10 +1923,12 @@ class TestRemuxPanelDecisionProfiles:
 
         class FakeDialog:
             def __init__(self, *, manager=None, current_config=None, current_tracks=None, source_index_by_file_id=None, parent=None, profile=None):
+                assert current_config is not None
                 self._manager = manager
                 self._profile = remux_config_to_decision_profile(current_config, name="Auto VF")
 
             def exec(self):
+                assert self._manager is not None
                 self._manager.save(self._profile)
                 return QDialog.DialogCode.Accepted
 
@@ -1953,7 +1955,9 @@ class TestRemuxPanelDecisionProfiles:
             _track(0, "video", file_id="fid", codec="HEVC", language="und", orig_language="und"),
             source_audio,
         ])
-        profile = remux_config_to_decision_profile(panel_a._current_profile_config(), name="Auto VF")
+        profile_config = panel_a._current_profile_config()
+        assert profile_config is not None
+        profile = remux_config_to_decision_profile(profile_config, name="Auto VF")
 
         target_audio = _track(11, "audio", file_id="other", language="fr-FR", orig_language="fr-FR", title="French")
         target_extra = _track(12, "audio", file_id="other", language="eng", orig_language="eng", title="English")
@@ -2005,7 +2009,7 @@ class TestRemuxPanelDecisionProfiles:
         config = panel.collect_config()
 
         assert config is not None
-        assert [item[2] for item in config.track_order] == [audio_fr.entry_id, audio_en.entry_id, video.entry_id]
+        assert [item[2] for item in config.track_order if len(item) == 3] == [audio_fr.entry_id, audio_en.entry_id, video.entry_id]
         panel.close()
 
     def test_profile_editor_video_criteria_build_resolution_and_hdr_flags(self, qt_app, tmp_path):
@@ -2351,6 +2355,7 @@ class TestRemuxPanelDecisionProfiles:
         dialog.close()
 
     def test_profile_editor_keywords_are_grouped_in_menu(self, qt_app, tmp_path):
+        from PySide6.QtWidgets import QMenu
         from core.profiles.decision import DecisionProfileManager
         from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog, KeywordLineEdit
 
@@ -2362,12 +2367,12 @@ class TestRemuxPanelDecisionProfiles:
         video_menu = next(
             submenu
             for submenu in (action.menu() for action in menu.actions())
-            if submenu is not None and "{video_dolby_vision}" in [item.text() for item in submenu.actions()]
+            if isinstance(submenu, QMenu) and "{video_dolby_vision}" in [item.text() for item in submenu.actions()]
         )
         misc_menu = next(
             submenu
             for submenu in (action.menu() for action in menu.actions())
-            if submenu is not None and "{none}" in [item.text() for item in submenu.actions()]
+            if isinstance(submenu, QMenu) and "{none}" in [item.text() for item in submenu.actions()]
         )
         assert video_menu is not None
         assert misc_menu is not None
@@ -2392,7 +2397,7 @@ class TestRemuxPanelDecisionProfiles:
         audio_menu = next(
             submenu
             for submenu in (action.menu() for action in menu.actions())
-            if submenu is not None and "{codec_name}" in [item.text() for item in submenu.actions()]
+            if isinstance(submenu, QMenu) and "{codec_name}" in [item.text() for item in submenu.actions()]
         )
         assert audio_menu is not None
         edit.close()
