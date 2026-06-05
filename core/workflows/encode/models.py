@@ -299,6 +299,8 @@ class VideoEncodeSettings:
     inject_hdr_meta:  bool         = False
     master_display:   str          = ""   # ex. "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(40000000,50)"
     max_cll:          str          = ""   # ex. "1000,400"
+    static_hdr_metadata_source: str = ""
+    static_hdr_metadata_confidence: str = ""
     # HDR dynamique
     copy_dv:          bool         = False
     copy_hdr10plus:   bool         = False

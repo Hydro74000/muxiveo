@@ -176,10 +176,15 @@ def should_reinject_static_hdr_metadata(video: VideoEncodeSettings) -> bool:
     les exposait correctement. L'injection est idempotente et ne duplique
     pas les SEI déjà présents.
     """
-    if video.codec == "copy":
-        return False
     if not requests_hdr_metadata(video):
         return False
+    if video.codec == "copy":
+        return bool(
+            video.inject_hdr_meta
+            and video.copy_dv
+            and str(video.dovi_profile or "0").strip() == "2"
+            and (video.master_display or video.max_cll)
+        )
     return bool(video.master_display or video.max_cll)
 
 

@@ -48,6 +48,7 @@ class MetadataInjectRunnerCallbacks:
     bins: dict[str, str]
     log_step: Callable[[int, str], None]
     log_info: Callable[[str], None]
+    log_warn: Callable[[str], None]
     check_cancelled: Callable[[TaskSignals | None], None]
     video_source_path: Callable[[EncodeConfig], Path]
     build_video_only_two_pass: Callable[[EncodeConfig, Path], list[list[str]]]
@@ -375,6 +376,12 @@ class MetadataInjectRunner:
                 if should_reinject_static_hdr_metadata(video):
                     cur_size = current_hevc.stat().st_size
                     out_static_hdr = _alloc("enc_hdr_static.hevc", cur_size)
+                    if str(getattr(video, "static_hdr_metadata_source", "") or "") == "estimated_p5_to_p8":
+                        confidence = str(getattr(video, "static_hdr_metadata_confidence", "") or "?")
+                        cb.log_warn(
+                            "Injection HDR10 statique estimée depuis analyse P5→P8.1 "
+                            f"(confiance {confidence}) — fallback approximatif, pas metadata source."
+                        )
                     signals.progress.emit("Injection metadonnees HDR statiques…")
                     static_hdr_result = inject_static_hdr_sei_file(
                         current_hevc,

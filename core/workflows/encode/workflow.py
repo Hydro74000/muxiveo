@@ -2861,6 +2861,7 @@ class EncodeWorkflow(QObject):
                 bins=dict(self._bins),
                 log_step=self._log_step,
                 log_info=lambda message: self.log_message.emit("INFO", message),
+                log_warn=lambda message: self.log_message.emit("WARN", message),
                 check_cancelled=self._check_cancelled,
                 video_source_path=self._video_source_path,
                 build_video_only_two_pass=self._build_video_only_two_pass,
