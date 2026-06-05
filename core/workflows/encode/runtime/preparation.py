@@ -30,6 +30,7 @@ class EncodePreparationRunnerCallbacks:
     normalize_dynamic_hdr_config: Callable[[EncodeConfig], EncodeConfig]
     is_video_passthrough: Callable[[EncodeConfig], bool]
     wants_dynamic_hdr_copy: Callable[[EncodeConfig], bool]
+    wants_dovi_profile_normalization: Callable[[EncodeConfig], bool]
     needs_metadata_inject: Callable[[EncodeConfig], bool]
     ensure_inject_storage_available: Callable[[EncodeConfig], None]
     build_encode_plan: Callable[[EncodeConfig], EncodePlan]
@@ -162,7 +163,10 @@ class EncodePreparationRunner:
         cb.check_cancelled(prep_signals)
         if cb.is_multi_video(prepared_config):
             prepared_config = cb.normalize_dynamic_hdr_multi(prepared_config)
-        elif not cb.is_video_passthrough(prepared_config):
+        elif (
+            not cb.is_video_passthrough(prepared_config)
+            or cb.wants_dovi_profile_normalization(prepared_config)
+        ):
             prepared_config = cb.normalize_dynamic_hdr_config(prepared_config)
         elif cb.wants_dynamic_hdr_copy(prepared_config):
             cb.log(

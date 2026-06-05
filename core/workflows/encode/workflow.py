@@ -477,6 +477,11 @@ class EncodeWorkflow(QObject):
         return bool(video.copy_dv or video.copy_hdr10plus)
 
     @staticmethod
+    def _wants_dovi_profile_normalization(config: EncodeConfig) -> bool:
+        video = EncodeWorkflow._primary_video_settings(config)
+        return bool(video.copy_dv and str(video.dovi_profile or "0").strip() == "2")
+
+    @staticmethod
     def _needs_static_hdr_bitstream_patch(config: EncodeConfig) -> bool:
         video = EncodeWorkflow._primary_video_settings(config)
         if video.codec == "copy":
@@ -486,7 +491,7 @@ class EncodeWorkflow(QObject):
     @classmethod
     def _needs_metadata_inject(cls, config: EncodeConfig) -> bool:
         if cls._is_video_passthrough(config):
-            return False
+            return cls._wants_dovi_profile_normalization(config)
         if _is_nvencc_codec_runtime(EncodeWorkflow._primary_video_settings(config).codec):
             return False
         return cls._wants_dynamic_hdr_copy(config) or cls._needs_static_hdr_bitstream_patch(config)
@@ -2326,6 +2331,7 @@ class EncodeWorkflow(QObject):
                 normalize_dynamic_hdr_config=self._normalize_dynamic_hdr_config,
                 is_video_passthrough=self._is_video_passthrough,
                 wants_dynamic_hdr_copy=self._wants_dynamic_hdr_copy,
+                wants_dovi_profile_normalization=self._wants_dovi_profile_normalization,
                 needs_metadata_inject=self._needs_metadata_inject,
                 ensure_inject_storage_available=self._ensure_inject_storage_available,
                 build_encode_plan=self._build_encode_plan,
