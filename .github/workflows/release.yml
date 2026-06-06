@@ -98,13 +98,8 @@ jobs:
           fi
 
           if [ "$channel" = "stable" ]; then
-            if [ "${GITHUB_REF_TYPE:-}" = "branch" ] && [ "${GITHUB_REF_NAME:-}" = "main" ]; then
-              release_tag="stable"
-              release_name="Stable ${package_version}"
-            else
-              release_tag="v${package_version}"
-              release_name="Release ${release_tag}"
-            fi
+            release_tag="v${package_version}"
+            release_name="Muxiveo ${package_version}"
             appimage_update_release="latest"
           else
             release_tag="v${package_version}"
@@ -498,19 +493,17 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ "$CHANNEL" = "stable" ] && [ "$RELEASE_TAG" = "stable" ]; then
-            git tag -f "$RELEASE_TAG" "$GITHUB_SHA"
-            git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-            git push --force origin "refs/tags/${RELEASE_TAG}"
-            git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          fi
-
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "Release $RELEASE_TAG already exists; keeping notes and uploading assets."
+            if [ "$CHANNEL" = "stable" ]; then
+              gh release edit "$RELEASE_TAG" --latest
+            fi
           else
             create_args=()
             if [ "$PRERELEASE" = "true" ]; then
               create_args+=(--prerelease)
+            else
+              create_args+=(--latest)
             fi
             gh release create "$RELEASE_TAG" \
               --target "$GITHUB_SHA" \
