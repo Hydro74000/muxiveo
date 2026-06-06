@@ -301,10 +301,15 @@ class VideoEncodeSettings:
     max_cll:          str          = ""   # ex. "1000,400"
     static_hdr_metadata_source: str = ""
     static_hdr_metadata_confidence: str = ""
+    static_hdr_metadata_analysis_mode: str = ""
+    static_hdr_metadata_analysis_request: str = ""
     # HDR dynamique
     copy_dv:          bool         = False
     copy_hdr10plus:   bool         = False
     dovi_profile:     str          = "0"
+    # Transformation interne P5 IPT -> base layer HDR10 BT.2020/PQ via
+    # libplacebo. Activée par le workflow, jamais directement par le panel.
+    p5_to_hdr10:      bool         = False
     # Normalisation expérimentale du bitstream HEVC après injection
     # HDR dynamique : retire les SEI pic_timing pour rapprocher la
     # structure SEI des encodes fonctionnels observés.
@@ -325,6 +330,7 @@ class VideoEncodeSettings:
             or self.crop.is_active()
             or self.filters.is_active()
             or self.tonemap_to_sdr
+            or self.p5_to_hdr10
         )
 
 

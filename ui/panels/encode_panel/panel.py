@@ -81,8 +81,6 @@ class EncodePanel(QWidget):
     audio_track_remove_requested = Signal(object)  # (entry_id)
     video_tracks_encoding_changed = Signal(object)
     _hw_detected             = Signal(object, object, object)   # (hw: set[str], sw: set[str], hw_ffmpeg: str)
-    _static_hdr_estimate_ready = Signal(str, object, int)        # (entry_id, StaticHdrEstimate, token)
-    _static_hdr_estimate_failed = Signal(str, str, int)          # (entry_id, message, token)
     _VIDEO_ENCODER_BADGES = VIDEO_ENCODER_BADGES
     _VIDEO_HDR_BADGE_ORDER = VIDEO_HDR_BADGE_ORDER
     _MAX_VISIBLE_VIDEO_SOURCE_ROWS = 10
@@ -114,10 +112,6 @@ class EncodePanel(QWidget):
             sync_rewrite_enabled=config.sync_rewrite_enabled,
             aac_bitrate_per_channel_kbps=config.aac_bitrate_per_channel_kbps,
             eac3_bitrate_per_channel_kbps=config.eac3_bitrate_per_channel_kbps,
-        )
-        self._static_hdr_estimator = StaticHdrEstimateService(
-            ffmpeg_bin=config.tool_ffmpeg,
-            dovi_tool_bin=config.tool_dovi_tool,
         )
         self._profiles  = ProfileManager(config.app_data_dir / "encode_profiles")
         self._executor  = ThreadPoolExecutor(max_workers=1)
@@ -152,18 +146,16 @@ class EncodePanel(QWidget):
         self._preview_current_index: int = 0
         self._preview_zoom_percent: int = 100
         self._preview_current_pixmap: QPixmap | None = None
-        self._static_hdr_estimate_tokens: dict[str, int] = {}
         self._static_hdr_estimate_prompted: set[str] = set()
-        self._static_hdr_estimate_generation = 0
 
         self._sw_encoders: set[str] = {codec_id for codec_id, _ in SOFTWARE_VIDEO_CODECS}
         self._workflow.log_message.connect(self.log_message, Qt.ConnectionType.QueuedConnection)
         self._hw_detected.connect(self._on_hw_detected, Qt.ConnectionType.QueuedConnection)
-        self._static_hdr_estimate_ready.connect(
+        self._workflow.static_hdr_estimate_ready.connect(
             self._on_static_hdr_estimate_ready,
             Qt.ConnectionType.QueuedConnection,
         )
-        self._static_hdr_estimate_failed.connect(
+        self._workflow.static_hdr_estimate_failed.connect(
             self._on_static_hdr_estimate_failed,
             Qt.ConnectionType.QueuedConnection,
         )
@@ -1929,9 +1921,19 @@ class EncodePanel(QWidget):
             if self._current_video_entry_id is not None
             else None
         ) or {}
+        request_mode = str(state.get("static_hdr_metadata_analysis_request") or "")
+        if request_mode:
+            mode = self._static_hdr_estimate_mode_label(request_mode)
+            return (
+                f"Analyse HDR10 P5→P8.1 {mode} programmée ; "
+                "elle démarrera avec le workflow."
+            )
         if str(state.get("static_hdr_metadata_source") or "") == StaticHdrEstimateService.SOURCE_LABEL:
             confidence = str(state.get("static_hdr_metadata_confidence") or "?")
-            return f"HDR10 estimé depuis analyse P5→P8.1 (confiance {confidence})."
+            mode = self._static_hdr_estimate_mode_label(
+                str(state.get("static_hdr_metadata_analysis_mode") or "")
+            )
+            return f"HDR10 estimé depuis analyse P5→P8.1 {mode} (confiance {confidence})."
         return ""
 
     def _update_ten_bit_control(self, codec: str) -> None:
@@ -2018,32 +2020,54 @@ class EncodePanel(QWidget):
     def _maybe_offer_static_hdr_estimate_for_current(self) -> None:
         candidate = self._static_hdr_estimate_candidate_current()
         if candidate is None:
-            if self._current_video_entry_id is not None:
-                self._static_hdr_estimate_tokens.pop(self._current_video_entry_id, None)
             return
-        entry_id, info, track, state = candidate
+        entry_id, _info, _track, state = candidate
         prompt_key = f"{entry_id}:p5_to_p8"
         if prompt_key in self._static_hdr_estimate_prompted:
             return
         self._static_hdr_estimate_prompted.add(prompt_key)
-        response = QMessageBox.question(
-            self,
-            "Analyse HDR10 estimée",
-            (
-                "Cette source Dolby Vision P5 n'expose pas de métadonnées HDR10 "
-                "statiques. L'analyse peut estimer des valeurs MaxCLL/MaxFALL "
-                "pour le fallback P8.1."
-            ),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
+        mode = self._ask_static_hdr_estimate_mode()
+        if mode:
+            self._schedule_static_hdr_estimate(entry_id, state, mode=mode)
+
+    def _ask_static_hdr_estimate_mode(self) -> str:
+        box = QMessageBox(self)
+        box.setWindowTitle("Analyse HDR10 estimée")
+        box.setText(
+            "La conversion P5→P8.1 va réencoder le base layer IPT en HDR10 "
+            "BT.2020/PQ avec libplacebo, puis convertir et réinjecter le RPU "
+            "Dolby Vision.\n\nChoisissez l'analyse HDR10 statique à appliquer "
+            "sur le nouveau base layer."
         )
-        if response == QMessageBox.StandardButton.Yes:
-            self._start_static_hdr_estimate(entry_id, info, track, state)
+        precise_btn = box.addButton("Analyse précise", QMessageBox.ButtonRole.AcceptRole)
+        fast_btn = box.addButton("Analyse rapide", QMessageBox.ButtonRole.ActionRole)
+        ignore_btn = box.addButton("Ignorer", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(precise_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is precise_btn:
+            return StaticHdrEstimateService.PRECISE_MODE
+        if clicked is fast_btn:
+            return StaticHdrEstimateService.FAST_MODE
+        if clicked is ignore_btn:
+            return ""
+        return ""
+
+    @staticmethod
+    def _static_hdr_estimate_mode_label(mode: str) -> str:
+        value = str(mode or "").strip().lower()
+        if value == StaticHdrEstimateService.PRECISE_MODE:
+            return "précise"
+        if value == StaticHdrEstimateService.FAST_MODE:
+            return "rapide"
+        return "estimée"
 
     def _static_hdr_estimate_candidate_current(
         self,
     ) -> tuple[str, FileInfo, TrackEntry, dict[str, object]] | None:
         if self._loading_video_settings or self._current_video_entry_id is None:
+            return None
+        if len(self._video_tracks) != 1:
             return None
         row = self._video_list.currentRow() if hasattr(self, "_video_list") else -1
         if not (0 <= row < len(self._video_tracks)):
@@ -2072,10 +2096,62 @@ class EncodePanel(QWidget):
             return False
         if str(state.get("dovi_profile") or "0").strip() != "2":
             return False
+        if str(state.get("codec") or "").strip().lower().startswith("nvencc_"):
+            return False
         return self._state_allows_static_hdr_estimate(state)
+
+    def _normalize_pending_static_hdr_analysis(
+        self,
+        entry_id: str,
+        state: dict[str, object],
+    ) -> tuple[dict[str, object], bool]:
+        request_mode = str(state.get("static_hdr_metadata_analysis_request") or "").strip()
+        if not request_mode:
+            return state, False
+
+        matching_track = next(
+            (
+                (info, track)
+                for info, track, _color in self._video_tracks
+                if self._video_entry_id(track) == entry_id
+            ),
+            None,
+        )
+        source_video = (
+            self._video_track_for_entry(*matching_track)
+            if matching_track is not None
+            else None
+        )
+        request_is_valid = bool(
+            len(self._video_tracks) == 1
+            and source_video is not None
+            and int(source_video.dovi_profile or 0) == 5
+            and bool(state.get("inject_hdr_meta"))
+            and bool(state.get("copy_dv"))
+            and str(state.get("dovi_profile") or "0").strip() == "2"
+            and not str(state.get("codec") or "").strip().lower().startswith("nvencc_")
+            and not str(state.get("master_display") or "").strip()
+            and not str(state.get("max_cll") or "").strip()
+        )
+        if request_is_valid:
+            return state, False
+
+        normalized = self._copy_video_state(state)
+        normalized.update(
+            {
+                "static_hdr_metadata_analysis_request": "",
+                "static_hdr_metadata_analysis_mode": "",
+                "static_hdr_metadata_source": "",
+                "static_hdr_metadata_confidence": "",
+            }
+        )
+        self._static_hdr_estimate_prompted.discard(f"{entry_id}:p5_to_p8")
+        return normalized, True
 
     @staticmethod
     def _state_allows_static_hdr_estimate(state: dict[str, object]) -> bool:
+        if str(state.get("static_hdr_metadata_analysis_request") or "").strip():
+            return False
         source = str(state.get("static_hdr_metadata_source") or "")
         if source == StaticHdrEstimateService.SOURCE_LABEL:
             return True
@@ -2087,60 +2163,62 @@ class EncodePanel(QWidget):
         )
         return not any(str(state.get(key) or "").strip() for key in fields)
 
-    def _start_static_hdr_estimate(
+    def _schedule_static_hdr_estimate(
         self,
         entry_id: str,
-        info: FileInfo,
-        track: TrackEntry,
         state: dict[str, object],
+        *,
+        mode: str = StaticHdrEstimateService.PRECISE_MODE,
     ) -> None:
-        self._static_hdr_estimate_generation += 1
-        token = self._static_hdr_estimate_generation
-        self._static_hdr_estimate_tokens[entry_id] = token
-        source = Path(info.path)
-        stream_index = int(track.mkv_tid)
-        duration_s = (
-            getattr(self._video_track_for_entry(info, track), "duration_s", None)
-            or getattr(info, "duration_s", None)
-            or self._duration_s
+        mode = (
+            StaticHdrEstimateService.FAST_MODE
+            if str(mode).strip().lower() == StaticHdrEstimateService.FAST_MODE
+            else StaticHdrEstimateService.PRECISE_MODE
         )
-        work_dir = self._config.work_dir
+        scheduled = self._copy_video_state(state)
+        scheduled.update(
+            {
+                "inject_hdr_meta": True,
+                "static_hdr_metadata_analysis_request": mode,
+                "static_hdr_metadata_analysis_mode": "",
+                "static_hdr_metadata_source": "",
+                "static_hdr_metadata_confidence": "",
+            }
+        )
+        self._video_settings_by_entry_id[entry_id] = scheduled
+        if entry_id == self._current_video_entry_id:
+            self._apply_video_state(scheduled)
+        self._emit_video_encoding_plans()
+        mode_label = self._static_hdr_estimate_mode_label(mode)
         self.log_message.emit(
             "INFO",
-            "Analyse HDR10 estimée P5→P8.1 lancée…",
+            (
+                f"Analyse HDR10 estimée P5→P8.1 {mode_label} programmée. "
+                "Elle sera exécutée et suivie dans le workflow d’encodage."
+            ),
         )
-
-        def _run() -> None:
-            try:
-                estimate = self._static_hdr_estimator.estimate_p5_to_p8_static_hdr(
-                    source,
-                    stream_index=stream_index,
-                    duration_s=duration_s,
-                    work_dir=work_dir,
-                    progress_cb=lambda msg: self.log_message.emit("INFO", msg),
-                    cancel_cb=lambda: self._static_hdr_estimate_tokens.get(entry_id) != token,
-                )
-            except Exception as exc:
-                self._static_hdr_estimate_failed.emit(entry_id, str(exc), token)
-                return
-            self._static_hdr_estimate_ready.emit(entry_id, estimate, token)
-
-        self._executor.submit(_run)
 
     def _on_static_hdr_estimate_ready(
         self,
         entry_id: str,
         estimate_obj: object,
-        token: int,
     ) -> None:
-        if self._static_hdr_estimate_tokens.get(entry_id) != token:
-            return
         if not isinstance(estimate_obj, StaticHdrEstimate):
             return
         state = self._video_settings_by_entry_id.get(entry_id)
         if state is None:
             return
-        if not self._state_allows_static_hdr_estimate(state):
+        if not str(state.get("static_hdr_metadata_analysis_request") or "").strip():
+            return
+        source = str(state.get("static_hdr_metadata_source") or "")
+        if source != StaticHdrEstimateService.SOURCE_LABEL and any(
+            str(state.get(key) or "").strip()
+            for key in ("master_display", "max_cll")
+        ):
+            self.log_message.emit(
+                "WARN",
+                "Résultat de l’analyse HDR10 ignoré : des valeurs manuelles sont désormais présentes.",
+            )
             return
         state = self._copy_video_state(state)
         state.update(
@@ -2152,6 +2230,8 @@ class EncodePanel(QWidget):
                 "default_max_cll": estimate_obj.max_cll,
                 "static_hdr_metadata_source": estimate_obj.source,
                 "static_hdr_metadata_confidence": estimate_obj.confidence,
+                "static_hdr_metadata_analysis_mode": estimate_obj.mode,
+                "static_hdr_metadata_analysis_request": "",
             }
         )
         self._video_settings_by_entry_id[entry_id] = state
@@ -2159,21 +2239,34 @@ class EncodePanel(QWidget):
             self._apply_video_state(state)
         self._emit_video_encoding_plans()
         warning_suffix = f" ({'; '.join(estimate_obj.warnings)})" if estimate_obj.warnings else ""
+        mode_label = self._static_hdr_estimate_mode_label(estimate_obj.mode)
+        detail_parts = [
+            f"confiance {estimate_obj.confidence}",
+            f"{estimate_obj.active_sample_count or estimate_obj.sample_count} actifs",
+        ]
+        if estimate_obj.ignored_sample_count:
+            detail_parts.append(f"{estimate_obj.ignored_sample_count} ignorés")
+        if estimate_obj.active_crop:
+            detail_parts.append(f"crop {estimate_obj.active_crop}")
         self.log_message.emit(
             "WARN",
             (
                 "HDR10 statique estimé depuis analyse P5→P8.1 "
-                f"(confiance {estimate_obj.confidence}, "
-                f"{estimate_obj.sample_count} échantillons): "
+                f"{mode_label} ({', '.join(detail_parts)}): "
                 f"{estimate_obj.max_cll}.{warning_suffix}"
             ),
         )
         self._rebuild_preview()
 
-    def _on_static_hdr_estimate_failed(self, entry_id: str, message: str, token: int) -> None:
-        if self._static_hdr_estimate_tokens.get(entry_id) != token:
+    def _on_static_hdr_estimate_failed(self, entry_id: str, message: str) -> None:
+        if entry_id and entry_id not in self._video_settings_by_entry_id:
             return
-        self.log_message.emit("WARN", f"Analyse HDR10 estimée impossible : {message}")
+        self.log_message.emit("ERROR", message)
+        QMessageBox.critical(
+            self,
+            "Analyse HDR10 impossible",
+            message,
+        )
 
     def _update_passthrough_controls(self, *, auto_check: bool = False) -> None:
         """Active/désactive les contrôles DV/HDR10+ selon la source et le codec."""
@@ -3032,6 +3125,8 @@ class EncodePanel(QWidget):
             "default_max_cll": max_cll,
             "static_hdr_metadata_source": "",
             "static_hdr_metadata_confidence": "",
+            "static_hdr_metadata_analysis_mode": "",
+            "static_hdr_metadata_analysis_request": "",
             "copy_dv": self._source_has_dv(source_hdr),
             "copy_hdr10plus": self._source_has_hdr10plus(source_hdr),
             "dovi_profile": "0",
@@ -3307,6 +3402,8 @@ class EncodePanel(QWidget):
             "default_max_cll": str(prev.get("default_max_cll") or ""),
             "static_hdr_metadata_source": str(prev.get("static_hdr_metadata_source") or ""),
             "static_hdr_metadata_confidence": str(prev.get("static_hdr_metadata_confidence") or ""),
+            "static_hdr_metadata_analysis_mode": str(prev.get("static_hdr_metadata_analysis_mode") or ""),
+            "static_hdr_metadata_analysis_request": str(prev.get("static_hdr_metadata_analysis_request") or ""),
             "copy_dv": self._copy_dv_cb.isChecked(),
             "copy_hdr10plus": self._copy_hdr10plus_cb.isChecked(),
             "dovi_profile": self._combo_data(self._dovi_profile_combo),
@@ -3520,10 +3617,22 @@ class EncodePanel(QWidget):
         if not hasattr(self, "_codec_combo") or not hasattr(self, "_copy_dv_cb"):
             return
         state = self._current_video_state()
+        state, analysis_cancelled = self._normalize_pending_static_hdr_analysis(
+            self._current_video_entry_id,
+            state,
+        )
         self._video_settings_by_entry_id[self._current_video_entry_id] = state
         if self._video_apply_all:
             for entry_id in self._active_video_entry_ids():
                 self._video_settings_by_entry_id[entry_id] = self._copy_video_state(state)
+        if analysis_cancelled:
+            self.log_message.emit(
+                "INFO",
+                (
+                    "Analyse HDR10 estimée déprogrammée : les options P5→P8.1 "
+                    "ont changé ou des valeurs HDR10 manuelles ont été saisies."
+                ),
+            )
         self._emit_video_encoding_plans()
 
     def _apply_video_state(self, state: dict[str, object]) -> None:
@@ -3653,13 +3762,14 @@ class EncodePanel(QWidget):
             if selected_file_info is not None and selected_track is not None
             else HDRType.NONE
         )
+        current_state = self._current_video_state()
         copy_dv, copy_hdr10plus = self._effective_dynamic_hdr_flags(
-            self._current_video_state(),
+            current_state,
             source_hdr=source_hdr,
             target_codec=str(codec),
         )
         master_display, max_cll = self._effective_static_hdr_fields(
-            self._current_video_state(),
+            current_state,
             codec=str(codec),
         )
         return VideoEncodeSettings(
@@ -3682,8 +3792,10 @@ class EncodePanel(QWidget):
             inject_hdr_meta=self._inject_hdr_cb.isChecked(),
             master_display=master_display,
             max_cll=max_cll,
-            static_hdr_metadata_source=str(self._current_video_state().get("static_hdr_metadata_source") or ""),
-            static_hdr_metadata_confidence=str(self._current_video_state().get("static_hdr_metadata_confidence") or ""),
+            static_hdr_metadata_source=str(current_state.get("static_hdr_metadata_source") or ""),
+            static_hdr_metadata_confidence=str(current_state.get("static_hdr_metadata_confidence") or ""),
+            static_hdr_metadata_analysis_mode=str(current_state.get("static_hdr_metadata_analysis_mode") or ""),
+            static_hdr_metadata_analysis_request=str(current_state.get("static_hdr_metadata_analysis_request") or ""),
             copy_dv=copy_dv,
             copy_hdr10plus=copy_hdr10plus,
             dovi_profile=self._dovi_profile_combo.currentData() or "0",
@@ -3741,6 +3853,8 @@ class EncodePanel(QWidget):
             max_cll=max_cll,
             static_hdr_metadata_source=str(state.get("static_hdr_metadata_source") or ""),
             static_hdr_metadata_confidence=str(state.get("static_hdr_metadata_confidence") or ""),
+            static_hdr_metadata_analysis_mode=str(state.get("static_hdr_metadata_analysis_mode") or ""),
+            static_hdr_metadata_analysis_request=str(state.get("static_hdr_metadata_analysis_request") or ""),
             copy_dv=copy_dv,
             copy_hdr10plus=copy_hdr10plus,
             dovi_profile=str(state.get("dovi_profile") or "0"),
@@ -3943,7 +4057,6 @@ class EncodePanel(QWidget):
     def closeEvent(self, event) -> None:
         if self._preview_signals is not None:
             self._preview_signals.cancel()
-        self._static_hdr_estimate_tokens.clear()
         self._executor.shutdown(wait=True)
         try:
             EncodeWorkflow.cleanup_preview_dir(self._config.work_dir)
