@@ -41,14 +41,13 @@ jobs:
       - name: Checkout
         shell: bash
         env:
-          CHECKOUT_REF: ${{ github.ref }}
           CHECKOUT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           git init .
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch --no-tags --depth=1 origin "$CHECKOUT_REF"
-          git checkout --force "$CHECKOUT_SHA"
+          git fetch --no-tags --depth=1 origin "$CHECKOUT_SHA"
+          git checkout --detach --force "$CHECKOUT_SHA"
 
       - name: Compute release identity
         id: metadata
@@ -124,14 +123,13 @@ jobs:
       - name: Checkout
         shell: bash
         env:
-          CHECKOUT_REF: ${{ github.ref }}
           CHECKOUT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           git init .
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch --no-tags --depth=1 origin "$CHECKOUT_REF"
-          git checkout --force "$CHECKOUT_SHA"
+          git fetch --no-tags --depth=1 origin "$CHECKOUT_SHA"
+          git checkout --detach --force "$CHECKOUT_SHA"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -177,14 +175,13 @@ jobs:
       - name: Checkout
         shell: pwsh
         env:
-          CHECKOUT_REF: ${{ github.ref }}
           CHECKOUT_SHA: ${{ github.sha }}
         run: |
           $ErrorActionPreference = "Stop"
           git init .
           git remote add origin "https://github.com/$env:GITHUB_REPOSITORY.git"
-          git fetch --no-tags --depth=1 origin "$env:CHECKOUT_REF"
-          git checkout --force "$env:CHECKOUT_SHA"
+          git fetch --no-tags --depth=1 origin "$env:CHECKOUT_SHA"
+          git checkout --detach --force "$env:CHECKOUT_SHA"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -236,14 +233,13 @@ jobs:
       - name: Checkout
         shell: bash
         env:
-          CHECKOUT_REF: ${{ github.ref }}
           CHECKOUT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           git init .
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch --no-tags --depth=1 origin "$CHECKOUT_REF"
-          git checkout --force "$CHECKOUT_SHA"
+          git fetch --no-tags --depth=1 origin "$CHECKOUT_SHA"
+          git checkout --detach --force "$CHECKOUT_SHA"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -309,14 +305,13 @@ jobs:
       - name: Checkout
         shell: bash
         env:
-          CHECKOUT_REF: ${{ github.ref }}
           CHECKOUT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           git init .
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch --no-tags --depth=1 origin "$CHECKOUT_REF"
-          git checkout --force "$CHECKOUT_SHA"
+          git fetch --no-tags --depth=1 origin "$CHECKOUT_SHA"
+          git checkout --detach --force "$CHECKOUT_SHA"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -405,8 +400,9 @@ jobs:
           set -euo pipefail
           git init .
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags origin "$CHECKOUT_SHA"
           git fetch --prune origin '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*'
-          git checkout --force "$CHECKOUT_SHA"
+          git checkout --detach --force "$CHECKOUT_SHA"
 
       - name: Download release assets
         uses: actions/download-artifact@v4
