@@ -192,6 +192,13 @@ class MultiVideoPipelineRunner:
 
             if should_reinject_static_hdr_metadata(video):
                 static_hdr_out = work_dir / f"video_{index}.hdr_static.hevc"
+                if str(getattr(video, "static_hdr_metadata_source", "") or "") == "estimated_p5_to_p8":
+                    confidence = str(getattr(video, "static_hdr_metadata_confidence", "") or "?")
+                    mode = str(getattr(video, "static_hdr_metadata_analysis_mode", "") or "?")
+                    cb.log_info(
+                        f"Piste video {index}: metadata HDR10 statiques estimees "
+                        f"P5->P8.1 (confiance {confidence}, mode {mode})."
+                    )
                 cb.log_info(f"Piste video {index}: injection metadonnees HDR statiques…")
                 static_hdr_result = inject_static_hdr_sei_file(
                     current_hevc,
