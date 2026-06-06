@@ -60,6 +60,11 @@ pytestmark = pytest.mark.skipif(
     reason=_skip_reason or "(unreachable)",
 )
 
+# Alias typés str : le module est skippé si l'un des binaires est None,
+# donc dans les corps de test ils sont garantis présents.
+FFMPEG_BIN: str = FFMPEG or "ffmpeg"
+NVENCC_BIN: str = NVENCC or "nvencc"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -68,7 +73,7 @@ pytestmark = pytest.mark.skipif(
 def _generate_test_mkv(path: Path, duration: float = 1.0) -> None:
     """Génère un MKV de test (testsrc 240p, sans audio) via ffmpeg."""
     cmd = [
-        FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
+        FFMPEG_BIN, "-y", "-hide_banner", "-loglevel", "error",
         "-f", "lavfi", "-i", f"testsrc=duration={duration}:size=320x240:rate=25",
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
         str(path),
@@ -145,8 +150,8 @@ class TestNvenccPipelineE2E:
             crf=24,  # rapide pour le test
         )
         commands = build_nvencc_pipeline(
-            ffmpeg_bin=FFMPEG,
-            nvencc_bin=NVENCC,
+            ffmpeg_bin=FFMPEG_BIN,
+            nvencc_bin=NVENCC_BIN,
             video=video,
             source=src,
             output=out,
@@ -174,8 +179,8 @@ class TestNvenccPipelineE2E:
             crf=24,
         )
         commands = build_nvencc_pipeline(
-            ffmpeg_bin=FFMPEG,
-            nvencc_bin=NVENCC,
+            ffmpeg_bin=FFMPEG_BIN,
+            nvencc_bin=NVENCC_BIN,
             video=video,
             source=src,
             output=out,
@@ -204,8 +209,8 @@ class TestNvenccPipelineE2E:
             crf=30,
         )
         commands = build_nvencc_pipeline(
-            ffmpeg_bin=FFMPEG,
-            nvencc_bin=NVENCC,
+            ffmpeg_bin=FFMPEG_BIN,
+            nvencc_bin=NVENCC_BIN,
             video=video,
             source=src,
             output=out,
@@ -231,8 +236,8 @@ class TestNvenccPipelineE2E:
             extra_params="--aq --aq-temporal --aq-strength 12",
         )
         commands = build_nvencc_pipeline(
-            ffmpeg_bin=FFMPEG,
-            nvencc_bin=NVENCC,
+            ffmpeg_bin=FFMPEG_BIN,
+            nvencc_bin=NVENCC_BIN,
             video=video,
             source=src,
             output=out,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -134,7 +135,7 @@ def test_cli_profile_path_resolution_adds_json_and_uses_default_dir(tmp_path: Pa
     }
     direct.write_text(json.dumps(payload), encoding="utf-8")
     default_profile.write_text(json.dumps(payload), encoding="utf-8")
-    config = SimpleNamespace(profiles_dir=tmp_path / "profiles")
+    config: Any = SimpleNamespace(profiles_dir=tmp_path / "profiles")
 
     assert resolve_decision_profile_path(tmp_path / "direct", config) == direct
     assert resolve_decision_profile_path("BestOfAll", config) == default_profile
@@ -394,7 +395,8 @@ def test_auto_tmdb_metadata_replaces_exported_gui_tags_and_title() -> None:
         "SYNOPSIS": "Fresh episode",
         "ENCODER_SETTINGS": "muxiveo gui export",
     }
-    assert merge_tmdb_tag_overrides(tmdb_tags, explicit_tags, tmdb_wins=False)["EPISODE"] == "1"
+    merged = merge_tmdb_tag_overrides(tmdb_tags, explicit_tags, tmdb_wins=False)
+    assert merged is not None and merged["EPISODE"] == "1"
 
 
 def test_documented_cli_json_examples_are_valid() -> None:

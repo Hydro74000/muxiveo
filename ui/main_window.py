@@ -44,7 +44,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING, cast
 
-from PySide6.QtCore import QEvent, Qt, Signal, QSize, QTimer
+from PySide6.QtCore import QEvent, QObject, Qt, Signal, QSize, QTimer
 from PySide6.QtGui import (
     QColor, QFont, QIcon,
     QTextCharFormat, QTextCursor,
@@ -1789,7 +1789,7 @@ class MainWindow(QMainWindow):
         MainWindow._open_container_panel(self)
         return True
 
-    def eventFilter(self, watched: object, event: QEvent) -> bool:
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         event_type = event.type()
         if event_type in (QEvent.Type.DragEnter, QEvent.Type.DragMove, QEvent.Type.Drop):
             local_paths = self._local_paths_from_drop_event(event)

@@ -2671,6 +2671,7 @@ class EncodePanel(QWidget):
                 str(getattr(video, "codec", "") or "").strip().lower() == "copy"
                 and not bool(getattr(video, "inject_hdr_meta", False))
                 and not bool(getattr(video, "tonemap_to_sdr", False))
+                and not self._video_requires_dovi_profile_normalization(video)
                 for video in video_tracks
             )
             and all(
@@ -2956,6 +2957,13 @@ class EncodePanel(QWidget):
         primary = getattr(config, "video", None)
         return [primary] if primary is not None else []
 
+    @staticmethod
+    def _video_requires_dovi_profile_normalization(video: object) -> bool:
+        return bool(
+            getattr(video, "copy_dv", False)
+            and str(getattr(video, "dovi_profile", "0") or "0").strip() == "2"
+        )
+
     def _ensure_video_states_for_active_tracks(self) -> None:
         """Garantit un état UI pour chaque piste vidéo active du remux."""
         missing_tracks = [
@@ -3218,6 +3226,7 @@ class EncodePanel(QWidget):
             or bool(state.get("extra_params"))
             or (codec != "copy" and copy_dv)
             or (codec != "copy" and copy_hdr10plus)
+            or (copy_dv and str(state.get("dovi_profile") or "0").strip() == "2")
         )
         return VideoTrackEncodePlan(
             track_entry_id=entry_id,

@@ -69,10 +69,10 @@ def has_cpu_video_filter(video: VideoEncodeSettings) -> bool:
     if video.codec == "copy":
         return False
     return bool(
-        getattr(video, "resize", None).is_active()
-        or getattr(video, "crop", None).is_active()
-        or getattr(video, "filters", None).is_active()
-        or getattr(video, "tonemap_to_sdr", False)
+        video.resize.is_active()
+        or video.crop.is_active()
+        or video.filters.is_active()
+        or video.tonemap_to_sdr
     )
 
 
@@ -611,8 +611,9 @@ def _build_resize_filter(video: VideoEncodeSettings) -> str:
     else:
         width, height, _label = _RESIZE_PRESETS.get(str(resize.preset or "720p"), _RESIZE_PRESETS["720p"])
     if not bool(resize.allow_upscale):
-        target_w = f"min({width},iw)"
-        target_h = f"min({height},ih)"
+        # Virgule échappée : ffmpeg sépare les filtres sur ',' dans le filtergraph -vf.
+        target_w = f"min({width}\\,iw)"
+        target_h = f"min({height}\\,ih)"
     else:
         target_w = str(width)
         target_h = str(height)
@@ -651,7 +652,8 @@ def _build_filters(video: VideoEncodeSettings) -> list[str]:
             _NLMEANS_PRESETS["light"],
         )
         if str(filters.nlmeans_profile or "").strip().lower() in {"grain", "animation"}:
-            strength = max(0.5, strength * 0.75)
+            # ffmpeg nlmeans 's' a un minimum dur de 1.0 (ultralight*0.75=0.75 → erreur).
+            strength = max(1.0, strength * 0.75)
         elif str(filters.nlmeans_profile or "").strip().lower() in {"high motion", "highmotion", "sprite"}:
             radius = max(5, radius - 2)
         chain.append(f"nlmeans=s={strength}:p={patch}:r={radius}")

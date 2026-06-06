@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import zlib
 from pathlib import Path
+from typing import Literal
 
 from core.media_info_fetcher import (
     MediaDetails,
@@ -54,7 +55,7 @@ def test_search_accepts_gzip_encoded_tmdb_json(monkeypatch):
         def __enter__(self):
             return self
 
-        def __exit__(self, exc_type, exc, tb) -> bool:
+        def __exit__(self, exc_type, exc, tb) -> Literal[False]:
             return False
 
     compressor = zlib.compressobj(wbits=16 + zlib.MAX_WBITS)

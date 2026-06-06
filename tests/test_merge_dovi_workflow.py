@@ -50,7 +50,7 @@ def test_extract_hevc_uses_ffmpeg_command(tmp_path: Path) -> None:
         calls.append(cmd)
         return ""
 
-    wf._run_raw = _fake_run_raw  # type: ignore[method-assign]
+    wf._run_raw = _fake_run_raw  # type: ignore[method-assign, assignment]
 
     msg = wf._extract_hevc(source, dest, lambda _: None)
 
@@ -84,7 +84,7 @@ def test_step_remux_wraps_and_rebuilds_with_ffmpeg(tmp_path: Path) -> None:
     paths.film1_final.write_bytes(b"hevc")
 
     wf = MergeDoviWorkflow(ffmpeg_bin="ffmpeg")
-    wf._source_video_fps_expr = lambda _src: "24000/1001"  # type: ignore[method-assign]
+    wf._source_video_fps_expr = lambda _src: "24000/1001"  # type: ignore[method-assign, assignment]
 
     calls: list[list[str]] = []
 
@@ -95,7 +95,7 @@ def test_step_remux_wraps_and_rebuilds_with_ffmpeg(tmp_path: Path) -> None:
         out.write_bytes(b"ok")
         return ""
 
-    wf._run_cmd = _fake_run_cmd  # type: ignore[method-assign]
+    wf._run_cmd = _fake_run_cmd  # type: ignore[method-assign, assignment]
 
     wf._step_remux(film1, paths, flags)
 
@@ -199,7 +199,7 @@ def test_validate_sdr_film1_enables_assisted_hdr10_conversion(
             return "BT.709" if path == film1 else "PQ"
         return ""
 
-    wf._mediainfo = _mediainfo  # type: ignore[method-assign]
+    wf._mediainfo = _mediainfo  # type: ignore[method-assign, assignment]
     wf._read_static_hdr_metadata = lambda path: (  # type: ignore[method-assign]
         StaticHdrMetadata()
         if path == film1
@@ -236,8 +236,8 @@ def test_validate_hdr10_film1_keeps_hdr10plus_injection_without_conversion(
             return "PQ"
         return ""
 
-    wf._mediainfo = _mediainfo  # type: ignore[method-assign]
-    wf._read_static_hdr_metadata = lambda _path: StaticHdrMetadata(  # type: ignore[method-assign]
+    wf._mediainfo = _mediainfo  # type: ignore[method-assign, assignment]
+    wf._read_static_hdr_metadata = lambda _path: StaticHdrMetadata(  # type: ignore[method-assign, assignment]
         master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,50)",
         max_cll="1000,400",
     )
@@ -316,14 +316,14 @@ def test_run_sdr_large_frame_delta_converts_without_metadata_injection(tmp_path:
         calls.append("remux")
         remux_flags.append(flags)
 
-    wf._step_extract_hevc = _extract_hevc  # type: ignore[method-assign]
-    wf._step_convert_sdr_to_hdr10 = _convert_sdr  # type: ignore[method-assign]
-    wf._step_extract_metadata = _extract_metadata  # type: ignore[method-assign]
-    wf._step_inject_dovi = _inject_dovi  # type: ignore[method-assign]
-    wf._step_inject_hdr10plus = _inject_hdr10plus  # type: ignore[method-assign]
+    wf._step_extract_hevc = _extract_hevc  # type: ignore[method-assign, assignment]
+    wf._step_convert_sdr_to_hdr10 = _convert_sdr  # type: ignore[method-assign, assignment]
+    wf._step_extract_metadata = _extract_metadata  # type: ignore[method-assign, assignment]
+    wf._step_inject_dovi = _inject_dovi  # type: ignore[method-assign, assignment]
+    wf._step_inject_hdr10plus = _inject_hdr10plus  # type: ignore[method-assign, assignment]
     wf._step_inject_static_hdr = lambda *_args: False  # type: ignore[method-assign]
     wf._step_verify = lambda *_args, **_kwargs: calls.append("verify")  # type: ignore[method-assign]
-    wf._step_remux = _remux  # type: ignore[method-assign]
+    wf._step_remux = _remux  # type: ignore[method-assign, assignment]
     wf._step_cleanup = lambda *_args: calls.append("cleanup")  # type: ignore[method-assign]
 
     wf._run(film1, film2, paths, DoviProfile.P8_1)
@@ -355,7 +355,7 @@ def test_step_convert_sdr_to_hdr10_builds_ffmpeg_hdr10_command(tmp_path: Path) -
         Path(cmd[-1]).write_bytes(b"hdr10")
         return ""
 
-    wf._run_cmd = _fake_run_cmd  # type: ignore[method-assign]
+    wf._run_cmd = _fake_run_cmd  # type: ignore[method-assign, assignment]
 
     wf._step_convert_sdr_to_hdr10(paths, static)
 
@@ -384,7 +384,13 @@ def test_step_inject_dovi_uses_film2_p8_when_converted(
 
     wf = MergeDoviWorkflow(dovi_tool_bin="dovi_tool")
     calls: list[list[str]] = []
-    wf._run_cmd = lambda cmd, step: (calls.append(cmd), Path(cmd[cmd.index("-o") + 1]).write_bytes(b"x"), "")[2]  # type: ignore[method-assign]
+
+    def _fake_run_cmd(cmd: list[str], step: WorkflowStep) -> str:
+        calls.append(cmd)
+        Path(cmd[cmd.index("-o") + 1]).write_bytes(b"x")
+        return ""
+
+    wf._run_cmd = _fake_run_cmd  # type: ignore[method-assign]
 
     wf._step_inject_dovi(paths, flags, DoviProfile.P8_1)
 

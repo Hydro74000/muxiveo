@@ -81,6 +81,7 @@ class TestBackendCapabilities:
     def test_nvencc_backend_rejects_dynamic_hdr_with_ffmpeg_prefilter(self, tmp_path):
         cfg = _make_config(tmp_path, "nvencc_hevc")
         cfg.source.touch()
+        assert cfg.video is not None
         cfg.video.copy_dv = True
         cfg.video.filters = VideoFilterSettings(chroma_smooth_enabled=True)
         wf = EncodeWorkflow(

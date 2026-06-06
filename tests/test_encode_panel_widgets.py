@@ -847,8 +847,10 @@ class TestEncodePanelDynamicHdrDefaults:
         assert labels[3] in {"Preview / Commande", "Preview / Command"}
         assert not {"HDR", "Géométrie", "Filtres", "Geometry", "Filters"}.intersection(labels)
         video_tab = panel._tabs.widget(1)
+        assert video_tab is not None
         assert panel._inject_hdr_cb in video_tab.findChildren(QCheckBox)
         geometry_filters_tab = panel._tabs.widget(2)
+        assert geometry_filters_tab is not None
         assert panel._geometry_controls in geometry_filters_tab.findChildren(QWidget)
         assert panel._filters_controls in geometry_filters_tab.findChildren(QWidget)
         panel.close()
@@ -1299,6 +1301,9 @@ class TestEncodePanelDynamicHdrDefaults:
                 codec="copy",
                 inject_hdr_meta=False,
                 tonemap_to_sdr=False,
+                copy_dv=True,
+                copy_hdr10plus=True,
+                dovi_profile="0",
             ),
             audio_tracks=[],
             copy_dv=True,
@@ -1306,6 +1311,23 @@ class TestEncodePanelDynamicHdrDefaults:
         )
 
         assert panel.is_pure_copy(cast(Any, config)) is True
+        panel.close()
+
+    def test_dovi_normalization_forces_encode_route_when_video_is_copy(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        config = SimpleNamespace(
+            video=SimpleNamespace(
+                codec="copy",
+                inject_hdr_meta=False,
+                tonemap_to_sdr=False,
+                copy_dv=True,
+                copy_hdr10plus=False,
+                dovi_profile="2",
+            ),
+            audio_tracks=[],
+        )
+
+        assert panel.is_pure_copy(cast(Any, config)) is False
         panel.close()
 
     def test_is_pure_copy_is_false_if_any_video_track_requires_encode(self, qt_app):

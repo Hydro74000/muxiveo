@@ -71,7 +71,8 @@ Plan de couverture :
         Interaction : audio, subtitles → -map_metadata toujours présent pour copy
 
     run() bypass inject (TestRunCopyBypassesInject) :
-        - codec=copy + copy_dv=True  → _run_with_metadata_inject NON appelé
+        - codec=copy + copy_dv=True + profil source → _run_with_metadata_inject NON appelé
+        - codec=copy + copy_dv=True + dovi_profile=2 → _run_with_metadata_inject APPELÉ
         - codec=copy + copy_hdr10plus=True → idem
         - codec=copy + les deux → idem
         - codec=libx265 + copy_dv=True → _run_with_metadata_inject APPELÉ (régression)
@@ -1427,6 +1428,7 @@ class TestMetadataInjectDoviProfileRouting:
         src_path, dst_path, master_display, max_cll = calls[0]
         assert src_path.name == "enc_dv.hevc"
         assert dst_path.name == "enc_hdr_static.hevc"
+        assert config.video is not None
         assert master_display == config.video.master_display
         assert max_cll == config.video.max_cll
 
@@ -2004,7 +2006,8 @@ class TestBuildCommand:
         ]
         positions = [vf.index(token) for token in expected_order]
         assert positions == sorted(positions)
-        assert "min(1280,iw):min(720,ih)" in vf
+        # Virgules échappées : ffmpeg sépare les filtres sur ',' dans le filtergraph.
+        assert "min(1280\\,iw):min(720\\,ih)" in vf
 
     def test_ffmpeg_percent_resize_clamps_when_upscale_is_disabled(self, tmp_path):
         src = tmp_path / "src.mkv"; src.touch()
@@ -2577,29 +2580,37 @@ class TestCopyCodecMetadataPassthrough:
 class TestRunCopyBypassesInject:
     """
     Vérifie que run() n'appelle PAS _run_with_metadata_inject quand codec=copy,
-    même si copy_dv ou copy_hdr10plus est activé.
+    sauf si une normalisation DoVi P8.1 est explicitement demandée.
 
     Comportement attendu :
-      - codec=copy + copy_dv=True  → chemin standard FFmpeg (passthrough)
+      - codec=copy + copy_dv=True + profil source → chemin standard FFmpeg (passthrough)
+      - codec=copy + copy_dv=True + dovi_profile=2 → _run_with_metadata_inject
       - codec=copy + copy_hdr10plus=True → idem
       - codec=libx265 + copy_dv=True → _run_with_metadata_inject (inchangé)
       - log_message("INFO", "...passthrough...") émis quand copy est court-circuité
     """
 
-    def _make_copy_config(self, tmp_path, copy_dv=False, copy_hdr10plus=False) -> EncodeConfig:
+    def _make_copy_config(
+        self,
+        tmp_path,
+        copy_dv=False,
+        copy_hdr10plus=False,
+        dovi_profile="0",
+    ) -> EncodeConfig:
         src = tmp_path / "source.mkv"
         src.write_bytes(b"\x00" * 1000)
         return _make_config(
             source=src, output=tmp_path / "output.mkv",
             video=_make_video_settings(codec="copy"),
             copy_dv=copy_dv, copy_hdr10plus=copy_hdr10plus,
+            dovi_profile=dovi_profile,
         )
 
     @pytest.mark.parametrize("copy_dv,copy_hdr10plus", [
         (True, False), (False, True), (True, True)
     ])
     def test_copy_codec_does_not_call_metadata_inject(self, tmp_path, copy_dv, copy_hdr10plus):
-        """run() avec codec=copy ne doit jamais appeler _run_with_metadata_inject."""
+        """run() avec codec=copy + profil source ne doit pas appeler _run_with_metadata_inject."""
         config = self._make_copy_config(tmp_path, copy_dv=copy_dv,
                                         copy_hdr10plus=copy_hdr10plus)
         wf = _make_workflow()
@@ -2617,7 +2628,7 @@ class TestRunCopyBypassesInject:
             wf.run(config)
 
         assert not inject_called[0], \
-            "codec=copy ne doit pas passer par _run_with_metadata_inject"
+            "codec=copy + profil source ne doit pas passer par _run_with_metadata_inject"
 
     def test_copy_codec_skips_dynamic_hdr_detection(self, tmp_path):
         """run() avec codec=copy ne doit pas lancer la détection ffprobe/mediainfo."""
@@ -2636,6 +2647,33 @@ class TestRunCopyBypassesInject:
 
         assert detection_called["value"] is False, \
             "La détection HDR dynamique ne doit pas être appelée en codec=copy."
+
+    def test_copy_codec_with_dovi_normalization_calls_metadata_inject(self, tmp_path):
+        """copy + normalisation DoVi P8.1 doit passer par le pipeline d'injection."""
+        config = self._make_copy_config(tmp_path, copy_dv=True, dovi_profile="2")
+        wf = _make_workflow()
+
+        with patch.object(wf, "_detect_source_dynamic_hdr_presence", return_value=(True, False)) as detect_mock, \
+             patch.object(wf, "_run_with_metadata_inject", return_value=MagicMock()) as inject_mock, \
+             patch.object(wf._runner, "run", return_value=MagicMock()) as direct_mock:
+            wf.run(config)
+
+        assert detect_mock.called
+        assert inject_mock.called, "copy + dovi_profile=2 doit lancer l'injection metadata"
+        assert not direct_mock.called
+
+    def test_copy_codec_with_dovi_normalization_but_no_dv_uses_standard_runner(self, tmp_path):
+        """Si la source ne contient pas de DoVi, la normalisation demandée est ignorée."""
+        config = self._make_copy_config(tmp_path, copy_dv=True, dovi_profile="2")
+        wf = _make_workflow()
+
+        with patch.object(wf, "_detect_source_dynamic_hdr_presence", return_value=(False, False)), \
+             patch.object(wf, "_run_with_metadata_inject", return_value=MagicMock()) as inject_mock, \
+             patch.object(wf._runner, "run", return_value=MagicMock()) as direct_mock:
+            wf.run(config)
+
+        assert not inject_mock.called
+        assert direct_mock.called
 
     def test_non_copy_with_copy_dv_calls_metadata_inject(self, tmp_path):
         """run() avec codec=libx265 + copy_dv=True DOIT appeler _run_with_metadata_inject."""

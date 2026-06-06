@@ -204,10 +204,11 @@ class TestVideoEncodeSettings:
         assert vs.tonemap_algorithm == "mobius"
 
     def test_nested_transform_dicts_are_coerced(self):
+        # Coercion dict → dataclass via __post_init__ (from_value) : input dict volontaire.
         vs = VideoEncodeSettings(
-            resize={"enabled": True, "mode": "size", "width": 1920, "height": 1080},
-            crop={"enabled": True, "top": 8, "bottom": 8},
-            filters={"deblock_enabled": True, "chroma_smooth_enabled": True},
+            resize={"enabled": True, "mode": "size", "width": 1920, "height": 1080},  # pyright: ignore[reportArgumentType]
+            crop={"enabled": True, "top": 8, "bottom": 8},  # pyright: ignore[reportArgumentType]
+            filters={"deblock_enabled": True, "chroma_smooth_enabled": True},  # pyright: ignore[reportArgumentType]
         )
 
         assert isinstance(vs.resize, VideoResizeSettings)

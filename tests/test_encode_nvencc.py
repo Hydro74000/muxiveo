@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -241,10 +243,8 @@ class TestHardwareDetectorIntegration:
 # Construction du pipeline (chapitre 3)
 # ---------------------------------------------------------------------------
 
-def _video(codec="nvencc_hevc", **overrides) -> VideoEncodeSettings:
-    base: dict[str, object] = {"codec": codec}
-    base.update(overrides)
-    return VideoEncodeSettings(**base)
+def _video(codec: str = "nvencc_hevc", **overrides: Any) -> VideoEncodeSettings:
+    return replace(VideoEncodeSettings(codec=codec), **overrides)
 
 
 class TestBuildDecodePipeCmd:
@@ -835,8 +835,11 @@ class TestWorkflowNvenccShortCircuit:
         )
         # Sans bin, le court-circuit retourne None → pipeline ffmpeg normal.
         result = wf.build_command(config)
-        joined = " ".join(result) if (result and isinstance(result[0], str)) \
-                 else " ".join(tok for sub in result for tok in sub)
+        joined = " ".join(
+            tok
+            for sub in result
+            for tok in ([sub] if isinstance(sub, str) else sub)
+        )
         # NVEncC n'est PAS lancé sans binaire configuré.
         assert "NVEncC" not in joined
         # On doit avoir un ffmpeg seul (1 commande), pas de séquence encode+remux NVEncC.

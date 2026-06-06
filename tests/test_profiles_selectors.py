@@ -359,8 +359,8 @@ def test_match_track_selector_filters_by_resolution_object():
 
 
 def test_match_track_selector_rejects_non_mapping_selector():
-    assert match_track_selector(None, [_audio(1)]) == []  # type: ignore[arg-type]
-    assert match_track_selector([], [_audio(1)]) == []  # type: ignore[arg-type]
+    assert match_track_selector(None, [_audio(1)]) == []  # pyright: ignore[reportArgumentType]
+    assert match_track_selector([], [_audio(1)]) == []  # pyright: ignore[reportArgumentType]
 
 
 # --------------------------------------------------------------------- resolve_track_selector
