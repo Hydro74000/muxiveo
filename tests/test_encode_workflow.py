@@ -3408,13 +3408,32 @@ class TestIntegratedMetadataCommand:
         cmd = wf.build_command_single(cfg)
 
         idx = cmd.index("-map_metadata")
-        # Avec tag_overrides, les tags sources sont ignorés mais les chapitres
-        # restent préservés via chapter_map (fallback = input 0). On vérifie
-        # que la source des tags globaux == source des chapitres.
+        # Avec tag_overrides, les tags sources sont ignorés (-map_metadata -1)
+        # mais les chapitres restent préservés via -map_chapters.
         chap_idx = cmd.index("-map_chapters")
-        assert cmd[idx + 1] == cmd[chap_idx + 1]
+        assert cmd[idx + 1] == "-1"
+        assert cmd[chap_idx + 1] == "0"
         assert "GENRE=Drama" in cmd
         assert "title=Titre" in cmd
+
+    def test_empty_tag_overrides_disable_metadata_copy(self, tmp_path):
+        """Balises sources décochées ({} = suppression explicite) : aucune
+        recopie des métadonnées globales de la source."""
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00")
+        out = tmp_path / "output.mkv"
+        cfg = _make_config(
+            src,
+            out,
+            video=_make_video_settings(codec="copy"),
+            tag_overrides={},
+            file_title="Titre",
+        )
+        wf = _make_workflow()
+        cmd = wf.build_command_single(cfg)
+
+        assert cmd[cmd.index("-map_metadata") + 1] == "-1"
+        assert cmd[cmd.index("-map_chapters") + 1] == "0"
 
     def test_chapter_overrides_with_tag_overrides_map_metadata_from_chapter_input(self, tmp_path):
         src = tmp_path / "source.mkv"

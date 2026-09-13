@@ -145,7 +145,6 @@ def container_metadata_map_value(
     tag_input_index: int | None,
     include_copy_video_stream_passthrough: bool,
     is_video_passthrough: Callable[[EncodeConfig], bool],
-    chapter_map: str | None = None,
     container_metadata_plan: ContainerMetadataPlan | None = None,
 ) -> str | None:
     metadata_plan = container_metadata_plan
@@ -165,10 +164,11 @@ def container_metadata_map_value(
         else bool(config.track_meta_edits)
     )
     if tag_overrides_defined:
+        # Les balises globales sont entièrement pilotées par l'utilisateur :
+        # on ne recopie jamais celles de la source (les chapitres restent
+        # préservés indépendamment via -map_chapters).
         if chapter_input_index is not None:
             return str(chapter_input_index)
-        if chapter_map is not None and chapter_map not in {"-1", ""}:
-            return chapter_map
         return "-1"
     if tag_input_index is not None:
         return str(tag_input_index)
@@ -211,7 +211,6 @@ def append_container_metadata_args(
         tag_input_index=tag_input_index,
         include_copy_video_stream_passthrough=include_copy_video_stream_passthrough,
         is_video_passthrough=is_video_passthrough,
-        chapter_map=chapter_map,
         container_metadata_plan=metadata_plan,
     )
     if metadata_map is not None:

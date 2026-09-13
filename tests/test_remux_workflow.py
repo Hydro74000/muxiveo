@@ -755,6 +755,29 @@ class TestRemuxWorkflowBuildCommand:
         cmd = wf.build_command(cfg)
         assert cmd[cmd.index("-map_metadata") + 1] == "-1"
 
+    def test_build_command_drops_source_metadata_when_chapters_are_kept(self, tmp_path):
+        """Balises décochées + chapitres conservés : les tags source ne doivent
+        pas revenir par la copie de métadonnées globales."""
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+        src = tmp_path / "in.mkv"
+        src.touch()
+
+        cfg = RemuxConfig(
+            sources=[SourceInput(
+                path=src,
+                file_index=0,
+                tracks=[_track(0, "video")],
+                copy_tags=False,
+            )],
+            output=tmp_path / "out.mkv",
+            track_order=[(0, 0)],
+            keep_chapters=True,
+            tag_overrides=None,
+        )
+        cmd = wf.build_command(cfg)
+        assert cmd[cmd.index("-map_metadata") + 1] == "-1"
+        assert cmd[cmd.index("-map_chapters") + 1] == "0"
+
     def test_build_command_multi_source_with_subtitles_enables_strict_interleave(self, tmp_path):
         """Le mux multi-source avec sous-titres a besoin d'un entrelacement strict
         pour éviter qu'une piste audio importée soit écrite très loin de la vidéo."""

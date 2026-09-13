@@ -1194,18 +1194,27 @@ class _AttachmentPanel(QFrame):
         - Si l'utilisateur a édité via le dialogue global → retourne les tags édités.
         - Sinon → fusionne les tags sources de toutes les lignes cochées
           (priorité au premier fichier importé pour les clés en commun).
-        - Retourne None si aucune ligne de balises n'est cochée.
+        - Retourne {} si des lignes de balises existent mais sont toutes
+          décochées (suppression explicite des balises sources).
+        - Retourne None si aucune source ne porte de balises (aucune décision).
         """
         if self._panel_tag_overrides is not None:
             return self._panel_tag_overrides
         # Merge first-wins depuis les items de tags activés
         merged: dict[str, str] | None = None
+        has_tag_item = False
         for item in self._items:
-            if item.is_tag and item.enabled:
-                if merged is None:
-                    merged = {}
-                for k, v in item.tags.items():
-                    merged.setdefault(k, v)   # premier fichier garde la priorité
+            if not item.is_tag:
+                continue
+            has_tag_item = True
+            if not item.enabled:
+                continue
+            if merged is None:
+                merged = {}
+            for k, v in item.tags.items():
+                merged.setdefault(k, v)   # premier fichier garde la priorité
+        if merged is None and has_tag_item:
+            return {}
         return merged
 
     def get_extras_per_file(self) -> dict:
@@ -1266,9 +1275,50 @@ class _AttachmentPanel(QFrame):
     def _add_item(self, item: _AttachmentItemWidget) -> None:
         self._items.append(item)
         self._items_layout.addWidget(item)
+        if item.is_tag:
+            # Connecté avant `changed` pour que les consommateurs reçoivent
+            # déjà les overrides resynchronisés.
+            item.changed.connect(
+                lambda *_, toggled_item=item: self._on_tag_item_toggled(toggled_item)
+            )
         item.changed.connect(self.changed)
         item.remove_clicked.connect(self._on_remove_item)
         self._update_state()
+
+    def _on_tag_item_toggled(self, item: _AttachmentItemWidget) -> None:
+        """
+        Réaligne les balises éditées quand une ligne de balises source est
+        (dé)cochée : décocher retire ses clés non modifiées et non fournies par
+        une autre source cochée, recocher les réintègre.
+        """
+        if self._panel_tag_overrides is None:
+            return
+        overrides = dict(self._panel_tag_overrides)
+        if item.enabled:
+            for key, value in item.tags.items():
+                overrides.setdefault(key, value)
+        else:
+            still_enabled = self._merged_source_tags()
+            for key, value in item.tags.items():
+                if key in still_enabled:
+                    continue
+                if overrides.get(key) == value:
+                    overrides.pop(key, None)
+        if overrides != self._panel_tag_overrides:
+            self._panel_tag_overrides = overrides
+            self._refresh_edit_tags_button()
+
+    def _refresh_edit_tags_button(self) -> None:
+        """Met à jour le libellé du bouton d'édition selon les balises retenues."""
+        if self._panel_tag_overrides is None:
+            self._edit_tags_btn.setText(translate_text("Éditer les tags"))
+        else:
+            n = len(self._panel_tag_overrides)
+            self._edit_tags_btn.setText(
+                translate_text("Tags édités ({count})", count=n) if n
+                else translate_text("Tags supprimés")
+            )
+        self._edit_tags_btn.setEnabled(True)
 
     def _on_remove_item(self, item: _AttachmentItemWidget) -> None:
         self._items.remove(item)
@@ -1401,10 +1451,7 @@ class _AttachmentPanel(QFrame):
             if edit_dlg.exec() == QDialog.DialogCode.Accepted:
                 self._panel_tag_overrides = edit_dlg.result_tags()
 
-        n = len(self._panel_tag_overrides or {})
-        label = translate_text("Tags édités ({count})", count=n) if n else translate_text("Tags supprimés")
-        self._edit_tags_btn.setText(label)
-        self._edit_tags_btn.setEnabled(True)
+        self._refresh_edit_tags_button()
         self.changed.emit()
 
     def _open_media_search(self) -> None:
@@ -1439,17 +1486,14 @@ class _AttachmentPanel(QFrame):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._panel_tag_overrides = dlg.result_tags()
             # Met à jour le libellé du bouton pour indiquer qu'il y a des modifications
-            n = len(self._panel_tag_overrides)
-            label = translate_text("Tags édités ({count})", count=n) if n else translate_text("Tags supprimés")
-            self._edit_tags_btn.setText(label)
+            self._refresh_edit_tags_button()
             self.changed.emit()
 
     def _update_state(self) -> None:
         has = bool(self._items)
         self._placeholder.setVisible(not has)
         self._items_widget.setVisible(has)
-        self._edit_tags_btn.setEnabled(True)
-        self._edit_tags_btn.setText(translate_text("Éditer les tags"))
+        self._refresh_edit_tags_button()
 
     def closeEvent(self, event) -> None:
         self._clear_pending_tmdb_cover()

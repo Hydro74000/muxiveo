@@ -289,7 +289,8 @@ def test_append_container_metadata_args_applies_maps_and_tags(tmp_path):
         build_track_meta_args=lambda _cfg, _plan: ["-metadata:s:a:0", "language=fre"],
     )
 
-    assert cmd[:4] == ["-map_metadata", "0", "-map_metadata:s:v:0", "0:s:v:0"]
+    # tag_overrides défini → aucune recopie des balises globales source
+    assert cmd[:4] == ["-map_metadata", "-1", "-map_metadata:s:v:0", "0:s:v:0"]
     assert "-map_chapters" in cmd and cmd[cmd.index("-map_chapters") + 1] == "0"
     assert "title=Titre" in cmd
     assert "GENRE=Drama" in cmd
@@ -318,7 +319,6 @@ def test_container_metadata_helpers_keep_existing_behavior(tmp_path):
         tag_input_index=None,
         include_copy_video_stream_passthrough=False,
         is_video_passthrough=lambda _cfg: False,
-        chapter_map=chapter_map,
     )
 
     assert chapter_map == "-1"
