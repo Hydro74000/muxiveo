@@ -422,7 +422,8 @@ class EncodeConfig:
     #: Balises MKV globales à écrire directement (prioritaire sur tag_sources).
     #: None  → utiliser tag_sources si présents.
     #: dict  → écrire ces balises et ignorer tag_sources.
-    #: {}    → supprimer toutes les balises existantes.
+    #: {}    → supprimer les balises globales (-map_metadata:g -1:g) ; les
+    #:         titres de chapitres et les tags de pistes sont préservés.
     tag_overrides:    dict | None = None                    # dict[str, str] | None
     # Éditions de métadonnées de pistes (langue, titre) appliquées via FFmpeg.
     track_meta_edits: list[TrackMetaEdit] = field(default_factory=list)

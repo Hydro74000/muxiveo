@@ -214,7 +214,12 @@ def append_container_metadata_args(
         container_metadata_plan=metadata_plan,
     )
     if metadata_map is not None:
-        cmd.extend(["-map_metadata", metadata_map])
+        # Un mapping négatif sans type explicite désactive aussi la copie
+        # des métadonnées de chapitres/pistes. Limiter les deux côtés au global.
+        cmd.extend(
+            ["-map_metadata:g", "-1:g"] if metadata_map == "-1"
+            else ["-map_metadata", metadata_map]
+        )
         if include_copy_video_stream_passthrough and is_video_passthrough(config):
             cmd.extend([
                 "-map_metadata:s:v:0",

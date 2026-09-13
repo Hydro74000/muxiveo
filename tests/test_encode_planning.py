@@ -290,7 +290,7 @@ def test_append_container_metadata_args_applies_maps_and_tags(tmp_path):
     )
 
     # tag_overrides défini → aucune recopie des balises globales source
-    assert cmd[:4] == ["-map_metadata", "-1", "-map_metadata:s:v:0", "0:s:v:0"]
+    assert cmd[:4] == ["-map_metadata:g", "-1:g", "-map_metadata:s:v:0", "0:s:v:0"]
     assert "-map_chapters" in cmd and cmd[cmd.index("-map_chapters") + 1] == "0"
     assert "title=Titre" in cmd
     assert "GENRE=Drama" in cmd

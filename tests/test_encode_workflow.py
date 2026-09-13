@@ -3407,11 +3407,11 @@ class TestIntegratedMetadataCommand:
         wf = _make_workflow()
         cmd = wf.build_command_single(cfg)
 
-        idx = cmd.index("-map_metadata")
-        # Avec tag_overrides, les tags sources sont ignorés (-map_metadata -1)
+        idx = cmd.index("-map_metadata:g")
+        # Avec tag_overrides, seuls les tags globaux sources sont ignorés
         # mais les chapitres restent préservés via -map_chapters.
         chap_idx = cmd.index("-map_chapters")
-        assert cmd[idx + 1] == "-1"
+        assert cmd[idx + 1] == "-1:g"
         assert cmd[chap_idx + 1] == "0"
         assert "GENRE=Drama" in cmd
         assert "title=Titre" in cmd
@@ -3432,7 +3432,7 @@ class TestIntegratedMetadataCommand:
         wf = _make_workflow()
         cmd = wf.build_command_single(cfg)
 
-        assert cmd[cmd.index("-map_metadata") + 1] == "-1"
+        assert cmd[cmd.index("-map_metadata:g") + 1] == "-1:g"
         assert cmd[cmd.index("-map_chapters") + 1] == "0"
 
     def test_chapter_overrides_with_tag_overrides_map_metadata_from_chapter_input(self, tmp_path):
@@ -3980,8 +3980,8 @@ class TestInjectPathIntegratedPostproc:
         cmds = self._run_inject(tmp_path, **cfg)
         recon = self._get_recon_cmd(cmds)
 
-        assert "-map_metadata" in recon
-        assert recon[recon.index("-map_metadata") + 1] == "-1"
+        assert "-map_metadata:g" in recon
+        assert recon[recon.index("-map_metadata:g") + 1] == "-1:g"
         assert "-map_chapters" in recon
         assert recon[recon.index("-map_chapters") + 1] == "-1"
         assert "GENRE=Drama" in recon

@@ -753,7 +753,7 @@ class TestRemuxWorkflowBuildCommand:
             tag_overrides=None,
         )
         cmd = wf.build_command(cfg)
-        assert cmd[cmd.index("-map_metadata") + 1] == "-1"
+        assert cmd[cmd.index("-map_metadata:g") + 1] == "-1:g"
 
     def test_build_command_drops_source_metadata_when_chapters_are_kept(self, tmp_path):
         """Balises décochées + chapitres conservés : les tags source ne doivent
@@ -775,7 +775,7 @@ class TestRemuxWorkflowBuildCommand:
             tag_overrides=None,
         )
         cmd = wf.build_command(cfg)
-        assert cmd[cmd.index("-map_metadata") + 1] == "-1"
+        assert cmd[cmd.index("-map_metadata:g") + 1] == "-1:g"
         assert cmd[cmd.index("-map_chapters") + 1] == "0"
 
     def test_build_command_multi_source_with_subtitles_enables_strict_interleave(self, tmp_path):

@@ -146,7 +146,12 @@ def build_remux_command(
         cmd.extend(["-max_muxing_queue_size", "9999"])
 
     meta = metadata_context(config, chapter_input_index)
-    cmd.extend(["-map_metadata", meta.metadata_map])
+    # Préserver les titres de chapitres et les tags de pistes lorsque seules
+    # les balises globales sont supprimées (types explicites des deux côtés).
+    cmd.extend(
+        ["-map_metadata:g", "-1:g"] if meta.metadata_map == "-1"
+        else ["-map_metadata", meta.metadata_map]
+    )
     cmd.extend(["-map_chapters", meta.chapter_map])
     cmd.extend(["-metadata", "encoder=", "-metadata", "creation_time="])
 

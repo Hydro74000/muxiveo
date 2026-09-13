@@ -241,9 +241,9 @@ class RemuxConfig:
     work_dir:            Path | None   = None
     file_title:          str           = ""      # balise Title du segment de sortie
     #: Balises MKV globales à écrire dans le fichier de sortie via post-traitement FFmpeg.
-    #: None  → comportement par défaut (FFmpeg recopie les balises des sources).
-    #: dict  → les balises sources sont ignorées (-map_metadata -1) et ce dict est écrit.
-    #: {}    → supprime toutes les balises (-map_metadata -1, rien n'est écrit).
+    #: None  → copie les balises de la première source avec copy_tags=True.
+    #: dict  → les balises globales sources sont ignorées et ce dict est écrit.
+    #: {}    → supprime les balises globales (-map_metadata:g -1:g).
     tag_overrides:       dict[str, str] | None = None
     #: Cover TMDB à télécharger juste avant le remuxage : (url, filename).
     #: None → pas de cover TMDB en attente.
