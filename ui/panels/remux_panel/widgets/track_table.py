@@ -592,10 +592,7 @@ class _TrackTable(QTableWidget):
         self.setCellWidget(row, self.COL_EDIT, container)
 
     def _open_sync_studio(self, entry: TrackEntry) -> None:
-        if self.sync_studio_requested.receivers(self.sync_studio_requested) > 0:
-            self.sync_studio_requested.emit(entry)
-        else:
-            self._show_sync_cuts_dialog(entry)
+        self.sync_studio_requested.emit(entry)
 
     def _show_sync_cuts_dialog(self, entry: TrackEntry) -> None:
         if not entry.sync_calibration:

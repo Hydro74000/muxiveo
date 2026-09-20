@@ -343,5 +343,46 @@ def test_profile_selector_lists_and_picks_profiles(qt_app, tmp_path):
     assert selector.text() == "TV HD Multi"
 
 
+def test_track_table_sync_studio_requested_signal(qt_app):
+    from ui.panels.remux_panel.widgets.track_table import _TrackTable
+    from core.workflows.remux_models import TrackEntry
+
+    table = _TrackTable()
+    entry = TrackEntry(
+        1,
+        "audio",
+        "E-AC-3",
+        "5.1  640 kbps",
+        "fre",
+        "VFF",
+        time_shift_ms=-100,
+    )
+    entry.sync_calibration = calibration((0, -100), (200000, -200)).to_dict()
+
+    received = []
+    table.sync_studio_requested.connect(lambda e: received.append(e))
+
+    # Calling _open_sync_studio directly should emit sync_studio_requested
+    table._open_sync_studio(entry)
+    assert len(received) == 1
+    assert received[0] is entry
+
+    # Test via cell action button (as clicked in the UI)
+    table.append_tracks("#fff", [entry])
+    action_cell_widget = table.cellWidget(0, table.COL_EDIT)
+    assert action_cell_widget is not None
+    # Find all QPushButton in container
+    from PySide6.QtWidgets import QPushButton
+    buttons = action_cell_widget.findChildren(QPushButton)
+    assert len(buttons) >= 1
+    # Click each button until sync_studio_requested is emitted again
+    count_before = len(received)
+    for btn in buttons:
+        btn.click()
+    assert len(received) > count_before
+    assert received[-1] is entry
+
+
+
 
 
