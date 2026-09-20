@@ -4151,6 +4151,10 @@
     "fra": "FORME D'ONDE ACOUSTIQUE SUPERPOSÉE",
     "eng": "SUPERIMPOSED ACOUSTIC WAVEFORM"
   },
+  "FORME D'ONDE ACOUSTIQUE": {
+    "fra": "FORME D'ONDE ACOUSTIQUE",
+    "eng": "ACOUSTIC WAVEFORM"
+  },
   "Segment {current}/{total} — {pos}": {
     "fra": "Segment {current}/{total} — {pos}",
     "eng": "Segment {current}/{total} — {pos}"

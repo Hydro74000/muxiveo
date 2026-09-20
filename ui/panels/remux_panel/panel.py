@@ -345,7 +345,8 @@ class RemuxPanel(QWidget):
                 border-radius: {_scale(5)}px;
                 font-size: {_font_px(11)}px;
                 font-weight: 500;
-                padding: 0 {_scale(12)}px;
+                padding: 0 {_scale(8)}px;
+                text-align: center;
             }}
             QPushButton:hover {{
                 background: {_C.BG_HOVER};

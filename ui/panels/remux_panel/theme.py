@@ -51,7 +51,8 @@ def _primary_button(text: str) -> QPushButton:
             border-radius: 6px;
             font-size: {_font_px(12)}px;
             font-weight: 700;
-            padding: 0 {_scale(20)}px;
+            padding: 0 {_scale(16)}px;
+            text-align: center;
         }}
         QPushButton:hover  {{ background: #6070f0; }}
         QPushButton:pressed {{ background: #3a52c0; }}
@@ -63,12 +64,32 @@ def _primary_button(text: str) -> QPushButton:
     return btn
 
 
-def _secondary_button(text: str, fixed_width: int | None = None) -> QPushButton:
+def _secondary_button(
+    text: str,
+    fixed_width: int | None = None,
+    *,
+    min_width: int | None = None,
+    padding_h: int | None = None,
+) -> QPushButton:
     btn = QPushButton(text)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
     btn.setFixedHeight(_scale(28))
+
+    is_symbol = len(text.strip()) <= 2
+    if padding_h is not None:
+        pad_px = _scale(padding_h)
+    elif is_symbol:
+        pad_px = _scale(2)
+    elif fixed_width is not None and fixed_width <= 50:
+        pad_px = _scale(4)
+    else:
+        pad_px = _scale(8)
+
     if fixed_width is not None:
         btn.setFixedWidth(_scale(fixed_width))
+    if min_width is not None:
+        btn.setMinimumWidth(_scale(min_width))
+
     btn.setStyleSheet(f"""
         QPushButton {{
             background: {_C.BG_CARD};
@@ -77,7 +98,8 @@ def _secondary_button(text: str, fixed_width: int | None = None) -> QPushButton:
             border-radius: 5px;
             font-size: {_font_px(11)}px;
             font-weight: 500;
-            padding: 0 {_scale(12)}px;
+            padding: 0 {pad_px}px;
+            text-align: center;
         }}
         QPushButton:hover {{
             background: {_C.BG_HOVER};
@@ -85,6 +107,11 @@ def _secondary_button(text: str, fixed_width: int | None = None) -> QPushButton:
             border-color: {_C.BORDER_LT};
         }}
         QPushButton:pressed {{ background: {_C.BG_ACTIVE}; }}
+        QPushButton:disabled {{
+            background: {_C.BG_DEEP};
+            color: {_C.TEXT_DIM};
+            border-color: {_C.BORDER};
+        }}
     """)
     return btn
 
@@ -99,16 +126,16 @@ def _separator() -> QFrame:
 
 def _input_style() -> str:
     return f"""
-        QLineEdit {{
+        QLineEdit, QSpinBox, QDoubleSpinBox {{
             background: {_C.BG_CARD};
             color: {_C.TEXT_PRI};
             border: 1px solid {_C.BORDER};
             border-radius: 5px;
             font-size: {_font_px(12)}px;
             font-family: 'JetBrains Mono', monospace;
-            padding: {_scale(6)}px {_scale(10)}px;
+            padding: {_scale(4)}px {_scale(8)}px;
         }}
-        QLineEdit:focus {{
+        QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
             border-color: {_C.ACCENT};
         }}
         QLineEdit::placeholder {{

@@ -184,7 +184,7 @@ class SyncStudioDialog(QDialog):
 
         wave_header = QHBoxLayout()
         wave_header.setSpacing(_scale(8))
-        wave_header.addWidget(_section_label(translate_text("FORME D'ONDE ACOUSTIQUE SUPERPOSÉE")))
+        wave_header.addWidget(_section_label(translate_text("FORME D'ONDE ACOUSTIQUE")))
 
         # Indicateur de segment actif
         self.seg_indicator = QLabel()
@@ -195,12 +195,12 @@ class SyncStudioDialog(QDialog):
         wave_header.addWidget(self.seg_indicator)
 
         if self.current_calibration.cuts_count > 0:
-            self.btn_prev_seg = _secondary_button("◀", fixed_width=_scale(28))
+            self.btn_prev_seg = _secondary_button("◀", fixed_width=30, padding_h=2)
             self.btn_prev_seg.setToolTip(translate_text("Segment précédent"))
             self.btn_prev_seg.clicked.connect(self._prev_segment)
             wave_header.addWidget(self.btn_prev_seg)
 
-            self.btn_next_seg = _secondary_button("▶", fixed_width=_scale(28))
+            self.btn_next_seg = _secondary_button("▶", fixed_width=30, padding_h=2)
             self.btn_next_seg.setToolTip(translate_text("Segment suivant"))
             self.btn_next_seg.clicked.connect(self._next_segment)
             wave_header.addWidget(self.btn_next_seg)
@@ -211,29 +211,29 @@ class SyncStudioDialog(QDialog):
         wave_header.addStretch()
 
         # Barre d'outils de Zoom
-        self.btn_zoom_out = _secondary_button("−", fixed_width=_scale(28))
+        self.btn_zoom_out = _secondary_button("−", fixed_width=30, padding_h=2)
         self.btn_zoom_out.setToolTip(translate_text("Zoom arrière (Ctrl+Molette bas)"))
         self.btn_zoom_out.clicked.connect(lambda: self.waveform.zoom_out())
         wave_header.addWidget(self.btn_zoom_out)
 
         self.lbl_zoom = QLabel("1.0x")
         self.lbl_zoom.setStyleSheet(
-            f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px; font-weight: 600; min-width: {_scale(36)}px; qproperty-alignment: AlignCenter;"
+            f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px; font-weight: 600; min-width: {_scale(40)}px; qproperty-alignment: AlignCenter;"
         )
         wave_header.addWidget(self.lbl_zoom)
 
-        self.btn_zoom_in = _secondary_button("+", fixed_width=_scale(28))
+        self.btn_zoom_in = _secondary_button("+", fixed_width=30, padding_h=2)
         self.btn_zoom_in.setToolTip(translate_text("Zoom avant (Ctrl+Molette haut)"))
         self.btn_zoom_in.clicked.connect(lambda: self.waveform.zoom_in())
         wave_header.addWidget(self.btn_zoom_in)
 
-        self.btn_zoom_reset = _secondary_button(translate_text("Vue 20s"))
+        self.btn_zoom_reset = _secondary_button(translate_text("Vue 20s"), padding_h=8)
         self.btn_zoom_reset.setToolTip(translate_text("Réinitialiser le zoom"))
         self.btn_zoom_reset.clicked.connect(lambda: self.waveform.reset_zoom())
         wave_header.addWidget(self.btn_zoom_reset)
 
         # Bascule Vue Scindée / Superposée
-        self.btn_mode_switch = _secondary_button(translate_text("Vue : Scindée"))
+        self.btn_mode_switch = _secondary_button(translate_text("Vue : Scindée"), padding_h=8)
         self.btn_mode_switch.setToolTip(translate_text("Passer en vue superposée (même axe)"))
         self.btn_mode_switch.clicked.connect(self._toggle_waveform_mode)
         wave_header.addWidget(self.btn_mode_switch)
@@ -299,6 +299,7 @@ class SyncStudioDialog(QDialog):
 
         self.spin_shift = QDoubleSpinBox(self)
         self.spin_shift.setStyleSheet(_input_style())
+        self.spin_shift.setMinimumWidth(_scale(120))
         self.spin_shift.setRange(-60000.0, 60000.0)
         self.spin_shift.setDecimals(1)
         self.spin_shift.setSingleStep(10.0)
@@ -310,18 +311,18 @@ class SyncStudioDialog(QDialog):
         # Boutons pas rapide
         for step in (-10.0, -1.0, 1.0, 10.0):
             sign = f"{step:+.0f}"
-            btn = _secondary_button(f"{sign} ms", fixed_width=48)
+            btn = _secondary_button(f"{sign} ms", min_width=56, padding_h=6)
             btn.clicked.connect(lambda _=None, s=step: self.spin_shift.setValue(self.spin_shift.value() + s))
             ctrl_row.addWidget(btn)
 
-        reset_btn = _secondary_button(translate_text("Réinitialiser"), fixed_width=80)
+        reset_btn = _secondary_button(translate_text("Réinitialiser"), min_width=75, padding_h=10)
         reset_btn.clicked.connect(self._reset_shifts)
         ctrl_row.addWidget(reset_btn)
 
         ctrl_row.addStretch()
 
         # Bouton Pré-écoute
-        self.listen_btn = _secondary_button(translate_text("Pré-écoute calée (15s)"))
+        self.listen_btn = _secondary_button(translate_text("Pré-écoute calée (15s)"), padding_h=12)
         self.listen_btn.setIcon(_play_icon())
         self.listen_btn.clicked.connect(self._toggle_listen)
         ctrl_row.addWidget(self.listen_btn)

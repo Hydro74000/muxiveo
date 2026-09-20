@@ -95,12 +95,32 @@ def _primary_button(text: str) -> QPushButton:
     return btn
 
 
-def _secondary_button(text: str, fixed_width: int | None = None) -> QPushButton:
+def _secondary_button(
+    text: str,
+    fixed_width: int | None = None,
+    *,
+    min_width: int | None = None,
+    padding_h: int | None = None,
+) -> QPushButton:
     btn = QPushButton(text)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
     btn.setFixedHeight(_scale(30))
+
+    is_symbol = len(text.strip()) <= 2
+    if padding_h is not None:
+        pad_px = _scale(padding_h)
+    elif is_symbol:
+        pad_px = _scale(2)
+    elif fixed_width is not None and fixed_width <= 50:
+        pad_px = _scale(4)
+    else:
+        pad_px = _scale(8)
+
     if fixed_width:
         btn.setFixedWidth(_scale(fixed_width))
+    if min_width:
+        btn.setMinimumWidth(_scale(min_width))
+
     btn.setStyleSheet(f"""
         QPushButton {{
             background: {_C.BG_ACTIVE};
@@ -108,7 +128,8 @@ def _secondary_button(text: str, fixed_width: int | None = None) -> QPushButton:
             border: 1px solid {_C.BORDER_LT};
             border-radius: {_scale(5)}px;
             font-size: {_font_px(11)}px;
-            padding: 0 {_scale(12)}px;
+            padding: 0 {pad_px}px;
+            text-align: center;
         }}
         QPushButton:hover {{
             background: {_C.BG_HOVER};

@@ -773,6 +773,65 @@ def test_panel_sync_studio_propagates_to_all_source_tracks(qt_app, monkeypatch, 
     assert table_tracks[tgt_video.entry_id].time_shift_ms == 0
 
 
+def test_sync_studio_dialog_button_scaling_and_padding(qt_app, tmp_path):
+    from ui.panels.remux_panel.widgets.sync_studio_dialog import SyncStudioDialog
+    from ui.design_system import DesignSystem, set_ui_scale
+    from PySide6.QtWidgets import QPushButton
+
+    orig_scale = DesignSystem.current_ui_scale()
+    try:
+        # Test under 125% display scale
+        set_ui_scale(125)
+
+        target_track = TrackEntry(1, "audio", "E-AC-3", "5.1  640 kbps", "fre", "VFF", time_shift_ms=-67, file_id="src1")
+        ref_track = TrackEntry(1, "audio", "DTS-HD MA", "5.1  1509 kbps", "eng", "VO", time_shift_ms=0, file_id="src0")
+        calib = calibration((0, -67), (239738, -180)).to_dict()
+
+        dialog = SyncStudioDialog(
+            target_entry=target_track,
+            target_source_path=tmp_path / "target.mkv",
+            target_stream_index=1,
+            reference_entry=ref_track,
+            reference_source_path=tmp_path / "ref.mkv",
+            reference_stream_index=1,
+            calibration=calib,
+        )
+        dialog.show()
+        qt_app.processEvents()
+
+        # Symbol buttons: ◀, ▶, −, +
+        for btn, symbol in [
+            (dialog.btn_prev_seg, "◀"),
+            (dialog.btn_next_seg, "▶"),
+            (dialog.btn_zoom_out, "−"),
+            (dialog.btn_zoom_in, "+"),
+        ]:
+            assert btn is not None
+            assert btn.text() == symbol
+            # Button must be scaled properly (at 125%, 30px scaled is 38px)
+            assert btn.width() >= 35
+            # Padding must be compact (pad_px <= 4) so content area is wide enough
+            assert "padding: 0 3px" in btn.styleSheet() or "padding: 0 2px" in btn.styleSheet()
+
+        # Step buttons: -10 ms, -1 ms, +1 ms, +10 ms
+        step_buttons = [
+            b for b in dialog.findChildren(QPushButton)
+            if any(s in b.text() for s in ("-10 ms", "-1 ms", "+1 ms", "+10 ms"))
+        ]
+        assert len(step_buttons) == 4
+        for btn in step_buttons:
+            # Must have min width >= 56 scaled (at 125% -> 70px)
+            assert btn.minimumWidth() >= 65
+
+        # Spinbox must be wide enough
+        assert dialog.spin_shift.minimumWidth() >= 140
+
+        dialog.close()
+    finally:
+        set_ui_scale(orig_scale)
+
+
+
 
 
 

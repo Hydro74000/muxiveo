@@ -40,6 +40,7 @@ from ui.panels.remux_panel.models import (
 )
 from ui.panels.remux_panel.theme import (
     _C,
+    _scale,
     _pencil_icon,
     _refresh_icon,
     _scissors_icon,
@@ -517,8 +518,8 @@ class _TrackTable(QTableWidget):
     def _make_action_button(self, *, tooltip: str, icon) -> QPushButton:
         btn = QPushButton()
         btn.setIcon(icon)
-        btn.setIconSize(QSize(13, 13))
-        btn.setFixedSize(22, 22)
+        btn.setIconSize(QSize(_scale(13), _scale(13)))
+        btn.setFixedSize(_scale(22), _scale(22))
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setToolTip(tooltip)
         btn.setStyleSheet(self._small_action_button_style())
@@ -531,7 +532,7 @@ class _TrackTable(QTableWidget):
         container.setStyleSheet("background: transparent;")
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(3)
+        layout.setSpacing(_scale(3))
         layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         preview = self._sync_rewrite_preview(entry)
