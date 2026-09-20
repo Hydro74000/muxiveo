@@ -147,10 +147,7 @@ class RemuxPanel(QWidget):
 
     _inspection_done = Signal(str, object)
     _inspection_error = Signal(str, str)
-    _audio_sync_done = Signal(
-        (str, str, int, float),
-        (str, str, int, float, object),
-    )
+    _audio_sync_done = Signal(str, str, int, float, object)
     _audio_sync_error = Signal(str, str)
     _preview_compiled = Signal(int, str)
 
@@ -222,10 +219,7 @@ class RemuxPanel(QWidget):
         self._inspection_error.connect(
             self._on_inspection_error, Qt.ConnectionType.QueuedConnection
         )
-        self._audio_sync_done[str, str, int, float].connect(
-            self._on_audio_sync_done, Qt.ConnectionType.QueuedConnection
-        )
-        self._audio_sync_done[str, str, int, float, object].connect(
+        self._audio_sync_done.connect(
             self._on_audio_sync_done, Qt.ConnectionType.QueuedConnection
         )
         self._audio_sync_error.connect(

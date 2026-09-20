@@ -51,6 +51,7 @@ class SyncStudioDialog(QDialog):
     """Dialogue complet d'inspection et d'ajustement acoustique pour le Remux Panel."""
 
     _waveform_ready = Signal(object)
+    _waveform_loading = Signal(str)
     _preview_ready = Signal(str)
     _preview_error = Signal(str)
 
@@ -98,6 +99,7 @@ class SyncStudioDialog(QDialog):
         self._is_playing = False
 
         self._waveform_ready.connect(self._on_waveform_data_ready)
+        self._waveform_loading.connect(self._on_waveform_loading)
         self._preview_ready.connect(self._on_preview_ready)
         self._preview_error.connect(self._on_preview_error)
 
@@ -352,11 +354,18 @@ class SyncStudioDialog(QDialog):
                 )
                 self._waveform_ready.emit(series)
             except Exception as exc:
-                self.waveform.set_loading(f"Aperçu audio non disponible : {exc}")
+                self._waveform_loading.emit(f"Aperçu audio non disponible : {exc}")
 
         threading.Thread(target=_worker, daemon=True).start()
 
+    def _on_waveform_loading(self, text: str) -> None:
+        if getattr(self, "_closing", False):
+            return
+        self.waveform.set_loading(text)
+
     def _on_waveform_data_ready(self, series: list[list[float]]) -> None:
+        if getattr(self, "_closing", False):
+            return
         self.waveform.set_series(series)
 
     def _toggle_listen(self) -> None:
@@ -404,6 +413,8 @@ class SyncStudioDialog(QDialog):
         threading.Thread(target=_worker, daemon=True).start()
 
     def _on_preview_ready(self, path: str) -> None:
+        if getattr(self, "_closing", False):
+            return
         self.listen_btn.setEnabled(True)
         try:
             from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
@@ -431,6 +442,8 @@ class SyncStudioDialog(QDialog):
                 self.listen_status.setText(str(err))
 
     def _on_preview_error(self, message: str) -> None:
+        if getattr(self, "_closing", False):
+            return
         self.listen_btn.setEnabled(True)
         self.listen_status.setText(translate_text("Erreur lors de la pré-écoute : {err}", err=message))
 
@@ -456,7 +469,13 @@ class SyncStudioDialog(QDialog):
     def result_calibration(self) -> tuple[SyncCalibration, int]:
         return self.current_calibration, round(self._current_shift_ms)
 
+    def done(self, r: int) -> None:
+        self._closing = True
+        self._stop_playback()
+        super().done(r)
+
     def closeEvent(self, event) -> None:
+        self._closing = True
         self._stop_playback()
         try:
             self._temp_dir.cleanup()
