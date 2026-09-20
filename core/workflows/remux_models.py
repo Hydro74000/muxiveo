@@ -255,6 +255,11 @@ class RemuxConfig:
     #: directes) ; la distinction « champ absent » vs « choix explicite » est
     #: portée par les loaders, qui résolvent le réglage global [matroska].
     mux_backend: str = "ffmpeg"
+    sync_mode: str = "container"
+    sync_subtitles: str = "mirror"
+    sync_calibrations: dict[str, dict] = field(default_factory=dict)
+    crossfade_ms: int = 80
+    clean_nfo: bool = True
 
 
 # =============================================================================

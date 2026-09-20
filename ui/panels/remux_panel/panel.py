@@ -121,6 +121,8 @@ class _AudioSyncReferenceDialog(QDialog):
 
 
 class RemuxPanel(QWidget):
+    _workflow_loaded = Signal(object, object)
+    _workflow_load_error = Signal(str)
     """
     Panneau de remuxage MKV/MP4 — support multi-sources.
 
@@ -318,8 +320,8 @@ class RemuxPanel(QWidget):
         track_header.addWidget(btn_all)
         track_header.addWidget(btn_none)
 
-        export_profile_btn = _secondary_button("Exporter JSON CLI")
-        export_profile_btn.clicked.connect(self._export_exact_json)
+        from ui.panels.remux_panel.functions.workflow import setup
+        export_profile_btn = setup(self)
         save_profile_btn = _secondary_button("Éditer profil")
         save_profile_btn.clicked.connect(self._save_decision_profile)
         apply_profile_btn = _secondary_button("Appliquer profil")
@@ -884,10 +886,8 @@ class RemuxPanel(QWidget):
         if not path:
             return
         try:
-            Path(path).write_text(
-                json.dumps(job, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
+            from core.workflows.workflow_store import save_workflow
+            save_workflow(Path(path), job)
         except OSError as exc:
             QMessageBox.warning(
                 self,

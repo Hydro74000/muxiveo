@@ -63,6 +63,7 @@ def write_mediainfo_nfo(
     output_path: Path,
     log_cb: Callable[[str, str], None],
     mediainfo_bin: str = "mediainfo",
+    *, clean_nfo: bool = True,
 ) -> None:
     """Génère un fichier .nfo (même nom que le MKV) avec la sortie brute de mediainfo."""
     _write_mediainfo_nfo_helper(
@@ -70,6 +71,7 @@ def write_mediainfo_nfo(
         log_cb=log_cb,
         mediainfo_bin=mediainfo_bin,
         run_cmd=subprocess.run,
+        clean_nfo=clean_nfo,
     )
 
 
@@ -106,6 +108,7 @@ class RemuxWorkflow(QObject):
         self._ffprobe = ffprobe_bin
         self._ffmpeg_threads = _normalize_ffmpeg_thread_count(ffmpeg_threads)
         self._generate_nfo = generate_nfo
+        self._clean_nfo = True
         self._mediainfo_bin = mediainfo_bin
         self._sync_rewrite_enabled = bool(sync_rewrite_enabled)
         self._sync_advanced_audio_rewrite_enabled = bool(sync_advanced_audio_rewrite_enabled)
@@ -296,6 +299,7 @@ class RemuxWorkflow(QObject):
         self.log_message.emit("INFO", f"STEP {step_index} - {step_name}")
 
     def run(self, config: RemuxConfig) -> TaskSignals:
+        self._clean_nfo = config.clean_nfo
         # Chemins absolus AVANT tout : le plan, la validation et le backend
         # doivent consommer exactement les mêmes chemins que l'exécution.
         config = self._absolute_paths_config(config)
@@ -361,7 +365,8 @@ class RemuxWorkflow(QObject):
 
     def _write_nfo(self, output_path: Path) -> None:
         if self._generate_nfo:
-            write_mediainfo_nfo(output_path, log_cb=self.log_message.emit, mediainfo_bin=self._mediainfo_bin)
+            kwargs = {} if self._clean_nfo else {"clean_nfo": False}
+            write_mediainfo_nfo(output_path, log_cb=self.log_message.emit, mediainfo_bin=self._mediainfo_bin, **kwargs)
 
     def _bind_temp_cleanup(self, signals: TaskSignals, cleanup_paths: list[Path]) -> None:
         """Supprime les dossiers temporaires du workflow quand le traitement se termine."""

@@ -47,6 +47,10 @@ def _metadata_job_from_args(args: argparse.Namespace) -> dict:
     mux_backend = getattr(args, "mux_backend", None)
     if mux_backend:
         job["mux_backend"] = mux_backend
+    for key in ("sync_mode", "sync_subtitles", "clean_nfo", "crossfade_ms"):
+        value = getattr(args, key, None)
+        if value is not None:
+            job[key] = value
     apply_metadata_overrides(
         job,
         auto_tmdb=bool(getattr(args, "auto_tmdb", False)),

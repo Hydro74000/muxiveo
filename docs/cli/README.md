@@ -653,3 +653,10 @@ Avec `--log-format jsonl`, le batch emet des evenements structurés :
 {"level":"info","message":"Batch job 1 termine","event":"batch_job","job_index":0,"input":"S01E01.mkv","output":"S01E01.remux.mkv","status":"success"}
 {"level":"info","message":"Batch termine : 1/1 succes.","event":"batch_summary","total":1,"failures":0}
 ```
+
+## Hybridation (branche de développement)
+
+Les commandes `hybrid`, `sync-scan`, `shift-subs`, le menu Workflow et le Studio
+Hybridation sont décrits dans le [guide de synchronisation](../hybridization-guide.md).
+Les anciens jobs restent compatibles ; la synchronisation physique est explicite
+pour le remux et activée par défaut pour `hybrid`.

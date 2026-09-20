@@ -209,6 +209,7 @@ _BUILD_DEPS: list[str] = [
     "pyinstaller",
     "PySide6>=6.6.0",
     "pymediainfo>=6.1.0",
+    "numpy>=1.24",
 ]
 
 
@@ -249,6 +250,8 @@ def ensure_build_deps() -> None:
     if importlib.util.find_spec("PySide6") is None:
         missing_py.append("PySide6>=6.6.0")
 
+    if importlib.util.find_spec("numpy") is None:
+        missing_py.append("numpy>=1.24")
     if importlib.util.find_spec("pymediainfo") is None:
         missing_py.append("pymediainfo>=6.1.0")
 
@@ -337,7 +340,6 @@ def build_onedir() -> Path:
         # Exclusions — modules Python inutiles
         "--exclude-module=tkinter",
         "--exclude-module=matplotlib",
-        "--exclude-module=numpy",
         "--exclude-module=scipy",
         "--exclude-module=PIL",
         "--exclude-module=test",

@@ -141,6 +141,9 @@ def build_profile_remux_config(
     if not result.report.get("valid", True):
         raise CliError(json.dumps(result.report, ensure_ascii=False, default=json_default), EXIT_VALIDATION)
     _refresh_sources_tracks(sources, result.tracks)
+    from core.workflows.subtitle_heuristics import classify_subtitles, forced_first
+    classify_subtitles(sources, _infos, ffmpeg=options.ffmpeg or config.tool_ffmpeg,
+        forced=options.auto_forced_subs, sdh=options.auto_sdh, threshold=options.forced_threshold)
     metadata = metadata_job or {}
     tmdb_title = ""
     tmdb_tags = None
@@ -155,6 +158,8 @@ def build_profile_remux_config(
             source_title=_infos[0].title if _infos else "",
         )
     final_track_order = _track_order(result.tracks)
+    if options.auto_forced_subs:
+        final_track_order = forced_first(final_track_order, sources)
     output = resolve_final_output(
         cli_output=cli_output,
         job=metadata,
@@ -185,6 +190,10 @@ def build_profile_remux_config(
         work_dir=Path(str(options.work_dir or config.work_dir)).expanduser().resolve(),
         allow_missing_output_dir=preview,
         mux_backend=normalize_mux_backend(str(metadata.get("mux_backend", config.matroska_mux_backend))),
+        sync_mode=options.sync_mode or metadata.get("sync_mode", "container"),
+        sync_subtitles=options.sync_subtitles or metadata.get("sync_subtitles", "mirror"),
+        clean_nfo=options.clean_nfo if options.clean_nfo is not None else metadata.get("clean_nfo", True),
+        crossfade_ms=options.crossfade_ms if options.crossfade_ms is not None else metadata.get("crossfade_ms", 80),
     )
     return remux_config, result.report
 

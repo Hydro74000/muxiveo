@@ -94,6 +94,10 @@ def load_job(overrides: JobOverrides) -> dict[str, Any]:
         job["output_all"] = True
     if overrides.mux_backend:
         job["mux_backend"] = overrides.mux_backend
+    for key in ("sync_mode", "sync_subtitles", "clean_nfo", "crossfade_ms"):
+        value = getattr(overrides, key)
+        if value is not None:
+            job[key] = value
     apply_metadata_overrides(
         job,
         auto_tmdb=overrides.auto_tmdb,

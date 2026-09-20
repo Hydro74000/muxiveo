@@ -73,3 +73,10 @@ Le script standalone est l'unique exception MKVToolNix :
   locale des outils.
 
 Cette exception ne doit jamais être importée dans le runtime Muxiveo.
+
+## Hybridation (branche de développement)
+
+Les commandes `hybrid`, `sync-scan`, `shift-subs`, le menu Workflow et le Studio
+Hybridation sont décrits dans le [guide de synchronisation](hybridization-guide.md).
+Les anciens jobs restent compatibles ; la synchronisation physique est explicite
+pour le remux et activée par défaut pour `hybrid`.

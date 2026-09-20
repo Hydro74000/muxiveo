@@ -410,6 +410,11 @@ def build_remux_config(
     cli_inputs: list[str] | None = None,
     cli_output: str | None = None,
 ) -> RemuxConfig:
+    job = dict(job)
+    for key in ("sync_mode", "sync_subtitles", "clean_nfo", "crossfade_ms"):
+        value = getattr(options, key, None)
+        if value is not None:
+            job[key] = value
     validate_job_contract(job, require_version=False)
     sources, infos, tracks = inspect_sources(job, config, options, logger, cli_inputs=cli_inputs)
     strict_selectors = str(job.get("kind") or "") == "exact-job"
@@ -428,6 +433,9 @@ def build_remux_config(
         relaxed_selectors=relaxed_selectors,
     )
 
+    from core.workflows.subtitle_heuristics import classify_subtitles
+    classify_subtitles(sources, infos, ffmpeg=options.ffmpeg or config.tool_ffmpeg,
+        forced=options.auto_forced_subs, sdh=options.auto_sdh, threshold=options.forced_threshold)
     keep_chapters, chapter_overrides, chapter_source_index = chapter_entries(job, infos)
     tmdb_title = ""
     tmdb_tags = None
@@ -450,6 +458,9 @@ def build_remux_config(
         strict_selectors=strict_selectors,
         relaxed_selectors=relaxed_selectors,
     )
+    if options.auto_forced_subs:
+        from core.workflows.subtitle_heuristics import forced_first
+        final_track_order = forced_first(final_track_order, sources)
     output = resolve_final_output(
         cli_output=cli_output,
         job=job,
@@ -482,7 +493,12 @@ def build_remux_config(
         work_dir=work_dir,
         file_title=resolve_metadata_file_title(job, tmdb_title, tmdb_wins=tmdb_wins),
         tag_overrides=tag_overrides if isinstance(tag_overrides, dict) else None,
-        tmdb_cover=tmdb_cover,
+        tmdb_cover=tmdb_cover or (tuple(job["tmdb_cover"]) if job.get("tmdb_cover") else None),
+        sync_mode=job.get("sync_mode", "container"),
+        sync_subtitles=job.get("sync_subtitles", "mirror"),
+        sync_calibrations=job.get("sync_calibrations", {}),
+        crossfade_ms=job.get("crossfade_ms", 80),
+        clean_nfo=job.get("clean_nfo", True),
         allow_missing_output_dir=bool(job.get("_allow_missing_output_dir", False)),
         # Job sans champ → réglage global [matroska] ; champ présent = choix explicite.
         mux_backend=normalize_mux_backend(str(job.get("mux_backend", config.matroska_mux_backend))),

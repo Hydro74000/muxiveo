@@ -285,16 +285,20 @@ def run_native_remux(
             return canonical_root
 
         try:
-            execution_plan = plan or plan_remux(
-                runtime_config, ffmpeg_bin=ffmpeg_bin, ffprobe_bin=ffprobe_bin,
+            prepared_config = runtime_config
+            if config.sync_mode == "physical":
+                from core.workflows.physical_sync import prepare_physical
+                prepared_config = prepare_physical(runtime_config, _ensure_canonical_root(), ffmpeg_bin, _run_external)
+            execution_plan = (plan if prepared_config is runtime_config else None) or plan_remux(
+                prepared_config, ffmpeg_bin=ffmpeg_bin, ffprobe_bin=ffprobe_bin,
             )
             log("INFO", "Backend Matroska natif multi-pistes sélectionné (plan v1).")
-            run_config = replace(runtime_config, sources=[
+            run_config = replace(prepared_config, sources=[
                 replace(
                     source,
                     origin_identity=source.origin_identity or deterministic_source_identity(source.path),
                 )
-                for source in config.sources
+                for source in prepared_config.sources
             ])
             output_contract = execution_plan.output_contract
             if config.tmdb_cover is not None:

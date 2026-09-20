@@ -947,3 +947,10 @@ This package includes a GPL-only FFmpeg build compiled without `--enable-nonfree
 The corresponding FFmpeg source code and build configuration are available at: [FFmpeg/FFmpeg](https://github.com/FFmpeg/FFmpeg)
 
 *Muxiveo v3.2.0*
+
+## Hybridation (branche de développement)
+
+Les commandes `hybrid`, `sync-scan`, `shift-subs`, le menu Workflow et le Studio
+Hybridation sont décrits dans le [guide de synchronisation](docs/hybridization-guide.md).
+Les anciens jobs restent compatibles ; la synchronisation physique est explicite
+pour le remux et activée par défaut pour `hybrid`.

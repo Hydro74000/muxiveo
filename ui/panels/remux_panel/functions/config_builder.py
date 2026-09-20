@@ -78,6 +78,7 @@ def current_config(panel: "RemuxPanel") -> RemuxConfig | None:
         tag_overrides=merged_tag_overrides,
         tmdb_cover=panel._attachment_panel.get_pending_tmdb_cover(),
         mux_backend=str(panel._mux_backend_combo.currentData() or panel._config.matroska_mux_backend),
+        **getattr(panel, "_workflow_options", {}),
     )
 
 

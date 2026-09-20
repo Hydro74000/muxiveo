@@ -125,7 +125,7 @@ class RemuxRuntimeRunner:
         executor = ThreadPoolExecutor(max_workers=1)
 
         def _task() -> None:
-            nonlocal output_contract, run_config
+            nonlocal output_contract, run_config, plan
             tmp_dir = process_work_dir
             chapter_meta_file: Path | None = None
             live_sync_session: LiveSyncSession | None = None
@@ -135,6 +135,13 @@ class RemuxRuntimeRunner:
             try:
                 if signals._cancel_event.is_set():
                     raise TaskCancelledError()
+                if config.sync_mode == "physical":
+                    from core.workflows.physical_sync import prepare_physical
+                    from core.workflows.remux_plan import plan_remux
+                    run_config = prepare_physical(run_config, tmp_dir, cb.ffmpeg_bin,
+                        lambda command, label: cb.run_cmd(command, cwd, label, signals.progress.emit, signals))
+                    plan = plan_remux(run_config, ffmpeg_bin=cb.ffmpeg_bin)
+                    output_contract = plan.output_contract
                 if config.tmdb_cover is not None:
                     tmdb_url, raw_tmdb_filename = config.tmdb_cover
                     tmdb_filename = normalized_tmdb_cover_filename(raw_tmdb_filename)

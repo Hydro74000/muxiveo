@@ -3798,5 +3798,177 @@
   "Assembleur final Matroska des workflows remux et encodage. FFmpeg par défaut ; Auto sélectionne le muxeur natif quand le plan le permet et journalise le repli ; Natif n'autorise aucun repli.": {
     "fra": "Assembleur final Matroska des workflows remux et encodage. FFmpeg par défaut ; Auto sélectionne le muxeur natif quand le plan le permet et journalise le repli ; Natif n'autorise aucun repli.",
     "eng": "Final Matroska assembler for the remux and encode workflows. FFmpeg by default; Auto selects the native muxer whenever the plan allows it and logs the fallback; Native never falls back."
+  },
+  "Workflow": {
+    "fra": "Workflow",
+    "eng": "Workflow"
+  },
+  "Sauvegarder le workflow…": {
+    "fra": "Sauvegarder le workflow…",
+    "eng": "Save workflow…"
+  },
+  "Charger un workflow…": {
+    "fra": "Charger un workflow…",
+    "eng": "Load workflow…"
+  },
+  "Reprendre la dernière session": {
+    "fra": "Reprendre la dernière session",
+    "eng": "Restore last session"
+  },
+  "Studio Hybridation": {
+    "fra": "Studio Hybridation",
+    "eng": "Hybrid Studio"
+  },
+  "Sauvegarde impossible : {err}": {
+    "fra": "Sauvegarde impossible : {err}",
+    "eng": "Could not save: {err}"
+  },
+  "Chargement impossible : {err}": {
+    "fra": "Chargement impossible : {err}",
+    "eng": "Could not load: {err}"
+  },
+  "Relocaliser la source : {path}": {
+    "fra": "Relocaliser la source : {path}",
+    "eng": "Locate source: {path}"
+  },
+  "Forcé": {
+    "fra": "Forcé",
+    "eng": "Forced"
+  },
+  "Référence": {
+    "fra": "Référence",
+    "eng": "Reference"
+  },
+  "Donneur": {
+    "fra": "Donneur",
+    "eng": "Donor"
+  },
+  "Sortie": {
+    "fra": "Sortie",
+    "eng": "Output"
+  },
+  "État": {
+    "fra": "État",
+    "eng": "Status"
+  },
+  "Profil décisionnel": {
+    "fra": "Profil décisionnel",
+    "eng": "Decision profile"
+  },
+  "Détecter les coupures": {
+    "fra": "Détecter les coupures",
+    "eng": "Detect cuts"
+  },
+  "Analyser la saison": {
+    "fra": "Analyser la saison",
+    "eng": "Analyze season"
+  },
+  "Lancer l'hybridation": {
+    "fra": "Lancer l'hybridation",
+    "eng": "Start hybrid assembly"
+  },
+  "Pré-écoute": {
+    "fra": "Pré-écoute",
+    "eng": "Audio preview"
+  },
+  "Choisir un dossier": {
+    "fra": "Choisir un dossier",
+    "eng": "Choose a directory"
+  },
+  "Choisir un dossier de sortie.": {
+    "fra": "Choisir un dossier de sortie.",
+    "eng": "Choose an output directory."
+  },
+  "En attente": {
+    "fra": "En attente",
+    "eng": "Pending"
+  },
+  "Analyse en cours…": {
+    "fra": "Analyse en cours…",
+    "eng": "Analyzing…"
+  },
+  "Hybridation impossible : {err}": {
+    "fra": "Hybridation impossible : {err}",
+    "eng": "Hybrid assembly failed: {err}"
+  },
+  "Échec": {
+    "fra": "Échec",
+    "eng": "Failed"
+  },
+  "La sortie existe déjà : {path}": {
+    "fra": "La sortie existe déjà : {path}",
+    "eng": "Output already exists: {path}"
+  },
+  "Terminé": {
+    "fra": "Terminé",
+    "eng": "Completed"
+  },
+  "Synchronisation physique": {
+    "fra": "Synchronisation physique",
+    "eng": "Physical synchronization"
+  },
+  "Options d'hybridation": {
+    "fra": "Options d'hybridation",
+    "eng": "Hybrid options"
+  },
+  "Détecter les sous-titres forcés": {
+    "fra": "Détecter les sous-titres forcés",
+    "eng": "Detect forced subtitles"
+  },
+  "Détecter les sous-titres SDH": {
+    "fra": "Détecter les sous-titres SDH",
+    "eng": "Detect SDH subtitles"
+  },
+  "Conserver le chemin complet dans le NFO": {
+    "fra": "Conserver le chemin complet dans le NFO",
+    "eng": "Keep the full path in the NFO"
+  },
+  "Sans jaquette TMDB": {
+    "fra": "Sans jaquette TMDB",
+    "eng": "No TMDB cover"
+  },
+  "Seuil forcés": {
+    "fra": "Seuil forcés",
+    "eng": "Forced subtitle threshold"
+  },
+  "Fondu aux raccords (ms)": {
+    "fra": "Fondu aux raccords (ms)",
+    "eng": "Join fade duration (ms)"
+  },
+  "Seuil de dérive (ms)": {
+    "fra": "Seuil de dérive (ms)",
+    "eng": "Drift threshold (ms)"
+  },
+  "ID TMDB": {
+    "fra": "ID TMDB",
+    "eng": "TMDB ID"
+  },
+  "Groupe de release": {
+    "fra": "Groupe de release",
+    "eng": "Release group"
+  },
+  "Template de sortie": {
+    "fra": "Template de sortie",
+    "eng": "Output template"
+  },
+  "Fichier de calibration": {
+    "fra": "Fichier de calibration",
+    "eng": "Calibration file"
+  },
+  "Décalage conteneur": {
+    "fra": "Décalage conteneur",
+    "eng": "Container offset"
+  },
+  "Recaler les sous-titres": {
+    "fra": "Recaler les sous-titres",
+    "eng": "Align subtitles"
+  },
+  "ID TMDB invalide.": {
+    "fra": "ID TMDB invalide.",
+    "eng": "Invalid TMDB ID."
+  },
+  "Sauvegarder les workflows…": {
+    "fra": "Sauvegarder les workflows…",
+    "eng": "Save workflows…"
   }
 }
