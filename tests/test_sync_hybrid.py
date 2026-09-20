@@ -275,4 +275,73 @@ def test_track_table_renders_cuts_action_button(qt_app, tmp_path):
     table.deleteLater()
 
 
+def test_waveform_view_construction_and_paint(qt_app):
+    from ui.widgets.waveform_view import WaveformView
+    wave = WaveformView()
+    wave.set_loading("Chargement...")
+    wave.resize(400, 150)
+    wave.show()
+    qt_app.processEvents()
+
+    series = ([0.1, 0.5, 0.9, 0.2], [0.05, 0.45, 0.85, 0.15])
+    wave.set_series(series)
+    wave.set_shift(120.5)
+    wave.repaint()
+    assert wave.shift_ms == 120.5
+    assert len(wave.series) == 2
+    wave.close()
+
+
+def test_sync_studio_dialog_construction_and_spin_change(qt_app, tmp_path):
+    from ui.panels.remux_panel.widgets.sync_studio_dialog import SyncStudioDialog
+    target_track = TrackEntry(1, "audio", "E-AC-3", "5.1  640 kbps", "fre", "VFF", time_shift_ms=-67, file_id="src1")
+    ref_track = TrackEntry(1, "audio", "DTS-HD MA", "5.1  1509 kbps", "eng", "VO", time_shift_ms=0, file_id="src0")
+
+    calib = calibration((0, -67), (239738, -180)).to_dict()
+    dialog = SyncStudioDialog(
+        target_entry=target_track,
+        target_source_path=tmp_path / "target.mkv",
+        target_stream_index=1,
+        reference_entry=ref_track,
+        reference_source_path=tmp_path / "ref.mkv",
+        reference_stream_index=1,
+        calibration=calib,
+    )
+    assert dialog.cuts_table is not None
+    assert dialog.cuts_table.rowCount() == 2
+
+    # Test spinbox change
+    dialog.spin_shift.setValue(-100.0)
+    cal, offset = dialog.result_calibration()
+    assert offset == -100
+    assert cal.segments[0].shift_ms == -100.0
+    # Relative delta was -113 ms, so segment 1 is -100 + (-113) = -213 ms
+    assert cal.segments[1].shift_ms == pytest.approx(-213.0)
+    dialog.close()
+
+
+def test_profile_selector_lists_and_picks_profiles(qt_app, tmp_path):
+    from ui.panels.hybrid_studio import ProfileSelector
+    from core.profiles.decision import DecisionProfileManager
+
+    profiles_dir = tmp_path / "profiles"
+    mgr = DecisionProfileManager(profiles_dir / "decision")
+    mgr.save({
+        "name": "TV HD Multi",
+        "description": "Profil de test",
+        "tags": [],
+        "variables": {"aliases": {}},
+        "groups": [],
+        "selection_policy": {"disable_unmatched_types": []},
+        "rules": [],
+    })
+
+    selector = ProfileSelector(profiles_dir)
+    assert selector.combo.count() >= 2
+    # Select the profile
+    selector.setText("TV HD Multi")
+    assert selector.text() == "TV HD Multi"
+
+
+
 

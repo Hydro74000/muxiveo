@@ -389,6 +389,7 @@ class RemuxPanel(QWidget):
         self._track_table.order_changed.connect(self._on_track_order_changed)
         self._track_table.extract_requested.connect(self._on_extract_track)
         self._track_table.audio_sync_requested.connect(self._on_audio_sync_requested)
+        self._track_table.sync_studio_requested.connect(self._on_sync_studio_requested)
         self._track_table.auto_sync_cancel_requested.connect(self._on_auto_sync_cancel_requested)
         self._track_table.sync_rewrite_toggle_requested.connect(self._on_sync_rewrite_toggle_requested)
         content_layout.addWidget(self._track_table)
@@ -1828,6 +1829,63 @@ class RemuxPanel(QWidget):
                 self.log_message.emit("ERROR", detail)
         finally:
             self.audio_sync_finished.emit(False, {"entry_id": _entry_id})
+
+    def _on_sync_studio_requested(self, entry: TrackEntry) -> None:
+        target_source = self._find_source(entry.file_id)
+        if target_source is None:
+            return
+
+        reference_entry = None
+        reference_source = None
+        choices = self._audio_sync_reference_choices(entry)
+        if choices:
+            reference_entry = choices[0]
+            reference_source = self._find_source(reference_entry.file_id)
+
+        target_source_idx = self._source_index_for_file_id(entry.file_id)
+        existing_calib = entry.sync_calibration
+        if existing_calib is None and target_source_idx is not None:
+            existing_calib = self._workflow_options.get("sync_calibrations", {}).get(str(target_source_idx))
+
+        from ui.panels.remux_panel.widgets.sync_studio_dialog import SyncStudioDialog
+        dialog = SyncStudioDialog(
+            target_entry=entry,
+            target_source_path=target_source.path,
+            target_stream_index=int(entry.mkv_tid),
+            reference_entry=reference_entry,
+            reference_source_path=reference_source.path if reference_source else None,
+            reference_stream_index=int(reference_entry.mkv_tid) if reference_entry else None,
+            calibration=existing_calib,
+            ffmpeg_bin=self._config.tool_ffmpeg,
+            ffprobe_bin=self._config.tool_ffprobe,
+            parent=self,
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_calibration, new_offset = dialog.result_calibration()
+            if target_source_idx is not None:
+                if "sync_calibrations" not in self._workflow_options:
+                    self._workflow_options["sync_calibrations"] = {}
+                if len(new_calibration.segments) > 1:
+                    self._workflow_options["sync_calibrations"][str(target_source_idx)] = new_calibration.to_dict()
+                    entry.sync_calibration = new_calibration.to_dict()
+                else:
+                    self._workflow_options["sync_calibrations"].pop(str(target_source_idx), None)
+                    entry.sync_calibration = None
+
+            self._apply_source_sync_offset(entry.file_id, new_offset)
+            self._sync_entry_calibrations()
+            self._track_table.refresh_all_entries_info()
+            self._rebuild_preview()
+            self._emit_signals()
+            self.log_message.emit(
+                "OK",
+                translate_text(
+                    "Synchro Studio : synchronisation mise à jour à {offset} ms pour la piste #{tid}.",
+                    offset=f"{new_offset:+d}",
+                    tid=entry.mkv_tid,
+                ),
+            )
+
 
     def update_video_track_encoding(self, plans) -> None:
         plan_map: dict[str, str] = {}

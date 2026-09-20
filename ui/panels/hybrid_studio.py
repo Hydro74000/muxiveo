@@ -197,53 +197,92 @@ class DirectoryEdit(QLineEdit):
                 event.acceptProposedAction()
 
 
-class WaveformView(QWidget):
-    """Enveloppes audio superposables ; le décalage est exprimé en ms."""
-    def __init__(self, parent: QWidget | None = None):
+from ui.widgets.waveform_view import WaveformView
+
+
+class ProfileSelector(QWidget):
+    """Sélecteur de profil décisionnel ou de job exact pour l'hybridation par lot."""
+
+    def __init__(self, profiles_dir: Path, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setMinimumHeight(_scale(130))
-        self.series: tuple[list[float], list[float]] = ([], [])
-        self.shift_ms: float = 0.0
-        self.duration_ms: float = 20000.0
-        self.setStyleSheet(f"""
-            QWidget {{
-                background: {_C.BG_DEEP};
-                border: 1px solid {_C.BORDER};
-                border-radius: {_scale(5)}px;
-            }}
-        """)
+        self.profiles_dir = Path(profiles_dir)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(_scale(6))
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor(_C.BG_DEEP))
+        self.combo = QComboBox()
+        self.combo.setStyleSheet(_input_style())
+        layout.addWidget(self.combo, stretch=1)
 
-        # Lignes guides
-        pen_grid = QPen(QColor(_C.BORDER))
-        pen_grid.setStyle(Qt.PenStyle.DashLine)
-        painter.setPen(pen_grid)
-        painter.drawLine(0, int(self.height() * 0.25), self.width(), int(self.height() * 0.25))
-        painter.drawLine(0, int(self.height() * 0.75), self.width(), int(self.height() * 0.75))
+        self.browse_btn = _secondary_button("…", fixed_width=32)
+        self.browse_btn.setToolTip(translate_text("Parcourir un fichier profil ou exact job JSON"))
+        self.browse_btn.clicked.connect(self._browse)
+        layout.addWidget(self.browse_btn)
 
-        for row, values in enumerate(self.series):
-            if not values:
-                continue
-            middle = self.height() * (0.25 + row * 0.5)
-            path = QPainterPath()
-            scale = max(max(values), 1e-9)
-            delta = (self.shift_ms / self.duration_ms * self.width()) if row else 0.0
-            for i, value in enumerate(values):
-                x = i * self.width() / max(1, len(values) - 1) + delta
-                y = middle - (value / scale * self.height() * 0.20)
-                if i == 0:
-                    path.moveTo(x, y)
-                else:
-                    path.lineTo(x, y)
-            color = QColor(_C.OK) if row == 0 else QColor(_C.ACCENT)
-            pen = QPen(color)
-            pen.setWidthF(_scale(1.5))
-            painter.setPen(pen)
-            painter.drawPath(path)
+        self._custom_path: str = ""
+        self.reload_profiles()
+
+    def reload_profiles(self) -> None:
+        current_data = self.combo.currentData() or self._custom_path
+        self.combo.clear()
+        self.combo.addItem(translate_text("[Aucun profil - Règles par défaut]"), "")
+        try:
+            from core.profiles.decision import DecisionProfileManager
+            mgr = DecisionProfileManager(self.profiles_dir / "decision")
+            for p in mgr.load_all():
+                name = str(p.get("name", "")).strip()
+                if name:
+                    self.combo.addItem(f"Profil : {name}", name)
+        except Exception:
+            pass
+
+        if self._custom_path:
+            label = f"Fichier : {Path(self._custom_path).name}"
+            self.combo.addItem(label, self._custom_path)
+
+        if current_data:
+            self.setText(str(current_data))
+
+    def _browse(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            translate_text("Choisir un profil ou exact job JSON"),
+            str(self.profiles_dir),
+            "JSON (*.json);;Tous les fichiers (*)",
+        )
+        if path:
+            self._custom_path = path
+            self.reload_profiles()
+            self.setText(path)
+
+    def text(self) -> str:
+        data = self.combo.currentData()
+        if data:
+            return str(data)
+        txt = self.combo.currentText().strip()
+        if txt.startswith("["):
+            return ""
+        return txt
+
+    def setText(self, text: str) -> None:
+        target = str(text or "").strip()
+        if not target:
+            self.combo.setCurrentIndex(0)
+            return
+        for i in range(self.combo.count()):
+            data = self.combo.itemData(i)
+            if data == target or self.combo.itemText(i) == target or f"Profil : {target}" == self.combo.itemText(i):
+                self.combo.setCurrentIndex(i)
+                return
+        self._custom_path = target
+        self.combo.addItem(f"Fichier : {Path(target).name}", target)
+        self.combo.setCurrentIndex(self.combo.count() - 1)
+
+    def setEnabled(self, enabled: bool) -> None:
+        super().setEnabled(enabled)
+        self.combo.setEnabled(enabled)
+        self.browse_btn.setEnabled(enabled)
+
 
 
 # =============================================================================
@@ -326,9 +365,7 @@ class HybridStudio(QWidget):
             lbl.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
             form.addRow(lbl, row)
 
-        self.profile = QLineEdit()
-        self.profile.setPlaceholderText(translate_text("Nom du profil décisionnel (optionnel)"))
-        self.profile.setStyleSheet(_input_style())
+        self.profile = ProfileSelector(self.config.profiles_dir, self)
         lbl_prof = QLabel(translate_text("Profil décisionnel"))
         lbl_prof.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
         form.addRow(lbl_prof, self.profile)

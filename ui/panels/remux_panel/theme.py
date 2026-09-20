@@ -63,10 +63,12 @@ def _primary_button(text: str) -> QPushButton:
     return btn
 
 
-def _secondary_button(text: str) -> QPushButton:
+def _secondary_button(text: str, fixed_width: int | None = None) -> QPushButton:
     btn = QPushButton(text)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
     btn.setFixedHeight(_scale(28))
+    if fixed_width is not None:
+        btn.setFixedWidth(_scale(fixed_width))
     btn.setStyleSheet(f"""
         QPushButton {{
             background: {_C.BG_CARD};
@@ -253,19 +255,105 @@ def _scissors_icon(color: str | None = None, size: int = 14) -> QIcon:
     return QIcon(pix)
 
 
+def _waveform_icon(color: str | None = None, size: int = 14) -> QIcon:
+    color = color or "#6070f8"
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
+        f' fill="none" stroke="{color}" stroke-width="2.2"'
+        ' stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M2 10v4M6 6v12M10 3v18M14 8v8M18 5v14M22 10v4"/>'
+        '</svg>'
+    )
+    renderer = QSvgRenderer(svg.encode())
+    icon_size = _scale(size)
+    pix = QPixmap(icon_size, icon_size)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pix)
+
+
+def _play_icon(color: str | None = None, size: int = 14) -> QIcon:
+    color = color or _C.OK
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
+        f' fill="{color}" stroke="{color}" stroke-width="1.5"'
+        ' stroke-linecap="round" stroke-linejoin="round">'
+        '<polygon points="5 3 19 12 5 21 5 3"/>'
+        '</svg>'
+    )
+    renderer = QSvgRenderer(svg.encode())
+    icon_size = _scale(size)
+    pix = QPixmap(icon_size, icon_size)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pix)
+
+
+def _stop_icon(color: str | None = None, size: int = 14) -> QIcon:
+    color = color or _C.ERROR
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
+        f' fill="{color}" stroke="{color}" stroke-width="1.5"'
+        ' stroke-linecap="round" stroke-linejoin="round">'
+        '<rect x="4" y="4" width="16" height="16" rx="2"/>'
+        '</svg>'
+    )
+    renderer = QSvgRenderer(svg.encode())
+    icon_size = _scale(size)
+    pix = QPixmap(icon_size, icon_size)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pix)
+
+
+def _table_style() -> str:
+    return f"""
+        QTableWidget {{
+            background: {_C.BG_CARD};
+            color: {_C.TEXT_PRI};
+            border: 1px solid {_C.BORDER};
+            border-radius: {_scale(5)}px;
+            gridline-color: {_C.BORDER};
+            font-size: {_font_px(11)}px;
+            selection-background-color: {_C.BG_ACTIVE};
+            selection-color: {_C.TEXT_PRI};
+        }}
+        QHeaderView::section {{
+            background: {_C.BG_CARD};
+            color: {_C.TEXT_SEC};
+            border: none;
+            border-bottom: 1px solid {_C.BORDER};
+            padding: {_scale(4)}px {_scale(8)}px;
+            font-size: {_font_px(10)}px;
+            font-weight: 700;
+        }}
+    """
+
+
 __all__ = [
     "_C",
     "_card",
     "_checkbox_style",
     "_input_style",
     "_pencil_icon",
+    "_play_icon",
     "_primary_button",
     "_refresh_icon",
     "_scissors_icon",
     "_secondary_button",
     "_section_label",
     "_separator",
+    "_stop_icon",
+    "_table_style",
     "_warning_icon",
+    "_waveform_icon",
     "_x_icon",
 ]
+
 

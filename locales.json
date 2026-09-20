@@ -4046,7 +4046,108 @@
   "Synchronisation multi-segments ({count} coupures) :\n{summary}": {
     "fra": "Synchronisation multi-segments ({count} coupures) :\n{summary}",
     "eng": "Multi-segment synchronization ({count} cuts):\n{summary}"
+  },
+  "Parcourir un fichier profil ou exact job JSON": {
+    "fra": "Parcourir un fichier profil ou exact job JSON",
+    "eng": "Browse a JSON profile or exact job file"
+  },
+  "[Aucun profil - Règles par défaut]": {
+    "fra": "[Aucun profil - Règles par défaut]",
+    "eng": "[No profile - Default rules]"
+  },
+  "Choisir un profil ou exact job JSON": {
+    "fra": "Choisir un profil ou exact job JSON",
+    "eng": "Choose a JSON profile or exact job"
+  },
+  "Synchro Studio : synchronisation mise à jour à {offset} ms pour la piste #{tid}.": {
+    "fra": "Synchro Studio : synchronisation mise à jour à {offset} ms pour la piste #{tid}.",
+    "eng": "Sync Studio: synchronization updated to {offset} ms for track #{tid}."
+  },
+  "Ouvrir le Synchro Studio (forme d'onde, écoute, ajustement)": {
+    "fra": "Ouvrir le Synchro Studio (forme d'onde, écoute, ajustement)",
+    "eng": "Open Sync Studio (waveform, playback, adjustment)"
+  },
+  "Synchronisation améliorée de cette piste audio": {
+    "fra": "Synchronisation améliorée de cette piste audio",
+    "eng": "Enhanced synchronization for this audio track"
+  },
+  "Synchro Studio…": {
+    "fra": "Synchro Studio…",
+    "eng": "Sync Studio…"
+  },
+  "Synchronisation automatique…": {
+    "fra": "Synchronisation automatique…",
+    "eng": "Automatic synchronization…"
+  },
+  "Synchro Studio — Piste #{idx} ({codec})": {
+    "fra": "Synchro Studio — Piste #{idx} ({codec})",
+    "eng": "Sync Studio — Track #{idx} ({codec})"
+  },
+  "Piste #{idx} ({type} {codec}) — {lang}": {
+    "fra": "Piste #{idx} ({type} {codec}) — {lang}",
+    "eng": "Track #{idx} ({type} {codec}) — {lang}"
+  },
+  "Chargement des signaux audio...": {
+    "fra": "Chargement des signaux audio...",
+    "eng": "Loading audio signals..."
+  },
+  "Décalage au départ :": {
+    "fra": "Décalage au départ :",
+    "eng": "Start offset:"
+  },
+  "Réinitialiser": {
+    "fra": "Réinitialiser",
+    "eng": "Reset"
+  },
+  "Pré-écoute calée (15s)": {
+    "fra": "Pré-écoute calée (15s)",
+    "eng": "Aligned preview (15s)"
+  },
+  "Appliquer la synchronisation": {
+    "fra": "Appliquer la synchronisation",
+    "eng": "Apply synchronization"
+  },
+  "Génération de l'extrait audio calé…": {
+    "fra": "Génération de l'extrait audio calé…",
+    "eng": "Generating aligned audio sample…"
+  },
+  "Erreur lors de la pré-écoute : {err}": {
+    "fra": "Erreur lors de la pré-écoute : {err}",
+    "eng": "Error during playback preview: {err}"
+  },
+  "FORME D'ONDE ACOUSTIQUE SUPERPOSÉE (20s)": {
+    "fra": "FORME D'ONDE ACOUSTIQUE SUPERPOSÉE (20s)",
+    "eng": "SUPERIMPOSED ACOUSTIC WAVEFORM (20s)"
+  },
+  "Cible décalée": {
+    "fra": "Cible décalée",
+    "eng": "Shifted target"
+  },
+  "Coupures et variations de rythme détectées ({count}) :": {
+    "fra": "Coupures et variations de rythme détectées ({count}) :",
+    "eng": "Cuts and cadence variations detected ({count}):"
+  },
+  "Arrêter": {
+    "fra": "Arrêter",
+    "eng": "Stop"
+  },
+  "Lecture de l'extrait calé (15s)…": {
+    "fra": "Lecture de l'extrait calé (15s)…",
+    "eng": "Playing aligned sample (15s)…"
+  },
+  "Référence :": {
+    "fra": "Référence :",
+    "eng": "Reference:"
+  },
+  "Cible :": {
+    "fra": "Cible :",
+    "eng": "Target:"
+  },
+  "Lecture externe ffplay lancée.": {
+    "fra": "Lecture externe ffplay lancée.",
+    "eng": "External ffplay playback launched."
   }
 }
+
 
 
