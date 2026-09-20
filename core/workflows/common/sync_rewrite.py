@@ -779,6 +779,10 @@ class SyncRewriteService:
             "-af", audio_filter,
             "-c:a", codec_key,
             "-b:a", f"{bitrate}k",
+        ])
+        if codec_key in {"ac3", "eac3", "flac"}:
+            cmd.extend(["-bsf:a", "setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS"])
+        cmd.extend([
             "-f", "matroska",
             str(destination),
         ])
@@ -879,6 +883,10 @@ class SyncRewriteService:
                 bitrate_kbps=bitrate_kbps,
                 experimental=experimental,
             ),
+        ])
+        if codec_key in {"ac3", "eac3", "flac"}:
+            cmd.extend(["-bsf:a", "setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS"])
+        cmd.extend([
             "-f", "matroska",
             str(destination),
         ])
@@ -909,6 +917,7 @@ class SyncRewriteService:
             "-vn", "-sn", "-dn",
             "-ss", f"{abs(int(offset_ms)) / 1000.0:.3f}",
             "-c:a", "copy",
+            "-bsf:a", "setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS",
             "-avoid_negative_ts", "make_zero",
             "-f", "matroska",
             str(destination),
@@ -943,8 +952,13 @@ class SyncRewriteService:
             str(extracted),
         ])
         self._run_checked(extract_cmd, extracted, "Extraction sous-titre pour sync réelle échouée", cancel_cb=cancel_cb)
-        text = extracted.read_text(encoding="utf-8-sig", errors="replace")
-        shifted.write_text(self._shift_subtitle_text(text, text_kind, offset_ms), encoding="utf-8")
+        from core.workflows.subtitle_sync import shift_file
+        from core.workflows.sync_calibration import SyncCalibration
+        try:
+            shift_file(extracted, shifted, SyncCalibration.linear(offset_ms))
+        except Exception:
+            text = extracted.read_text(encoding="utf-8-sig", errors="replace")
+            shifted.write_text(self._shift_subtitle_text(text, text_kind, offset_ms), encoding="utf-8")
         wrap_cmd = [
             self._ffmpeg,
             "-hide_banner", "-y",
@@ -1111,11 +1125,25 @@ class SyncRewriteService:
 
     @classmethod
     def _shift_subtitle_text(cls, text: str, kind: str, offset_ms: int) -> str:
-        if kind == "ass":
-            return cls._shift_ass(text, offset_ms)
-        if kind == "webvtt":
-            return cls._shift_webvtt(text, offset_ms)
-        return cls._shift_srt(text, offset_ms)
+        from core.workflows.subtitle_sync import shift_text
+        from core.workflows.sync_calibration import SyncCalibration
+        suffix_map = {
+            "ass": ".ass",
+            "ssa": ".ssa",
+            "webvtt": ".vtt",
+            "vtt": ".vtt",
+            "srt": ".srt",
+            "subrip": ".srt",
+        }
+        suffix = suffix_map.get(str(kind or "").strip().lower(), ".srt")
+        try:
+            return shift_text(text, SyncCalibration.linear(offset_ms), suffix=suffix)
+        except Exception:
+            if kind in {"ass", "ssa"}:
+                return cls._shift_ass(text, offset_ms)
+            if kind in {"webvtt", "vtt"}:
+                return cls._shift_webvtt(text, offset_ms)
+            return cls._shift_srt(text, offset_ms)
 
     @staticmethod
     def _shift_ms(start_ms: int, end_ms: int, offset_ms: int) -> tuple[int, int] | None:
@@ -1130,6 +1158,12 @@ class SyncRewriteService:
 
     @classmethod
     def _shift_srt(cls, text: str, offset_ms: int) -> str:
+        from core.workflows.subtitle_sync import shift_text
+        from core.workflows.sync_calibration import SyncCalibration
+        try:
+            return shift_text(text, SyncCalibration.linear(offset_ms), suffix=".srt")
+        except Exception:
+            pass
         normalized = text.replace("\r\n", "\n").replace("\r", "\n")
         blocks = re.split(r"\n{2,}", normalized.strip())
         out: list[str] = []
@@ -1157,6 +1191,12 @@ class SyncRewriteService:
 
     @classmethod
     def _shift_webvtt(cls, text: str, offset_ms: int) -> str:
+        from core.workflows.subtitle_sync import shift_text
+        from core.workflows.sync_calibration import SyncCalibration
+        try:
+            return shift_text(text, SyncCalibration.linear(offset_ms), suffix=".vtt")
+        except Exception:
+            pass
         normalized = text.replace("\r\n", "\n").replace("\r", "\n")
         blocks = re.split(r"\n{2,}", normalized.strip())
         out: list[str] = []
@@ -1181,6 +1221,12 @@ class SyncRewriteService:
 
     @classmethod
     def _shift_ass(cls, text: str, offset_ms: int) -> str:
+        from core.workflows.subtitle_sync import shift_text
+        from core.workflows.sync_calibration import SyncCalibration
+        try:
+            return shift_text(text, SyncCalibration.linear(offset_ms), suffix=".ass")
+        except Exception:
+            pass
         lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
         start_idx = 1
         end_idx = 2

@@ -7,7 +7,11 @@ from pathlib import Path
 from core.workflows.remux_models import RemuxError, SourceInput
 from core.workflows.remux_mapping import resolve_mapped_tracks
 from core.workflows.sync_calibration import SyncCalibration
-from core.workflows.common.sync_rewrite import audio_bitrate_kbps_from_display_info, normalized_rewrite_codec
+from core.workflows.common.sync_rewrite import (
+    audio_bitrate_kbps_from_display_info,
+    normalized_rewrite_codec,
+    sync_rewrite_forced_offset,
+)
 
 
 def audio_filter(calibration: SyncCalibration, crossfade_ms=80) -> str:
@@ -57,6 +61,8 @@ def preparation_commands(config, root, ffmpeg):
     mapped_tracks = resolve_mapped_tracks(config)
     for index, mapped in enumerate(mapped_tracks):
         track = mapped.track
+        if sync_rewrite_forced_offset(track):
+            continue
         calibrated = str(mapped.source_file_index) in config.sync_calibrations
         mirror_offset = 0
         if track.track_type == "subtitle" and not track.time_shift_ms and not calibrated and config.sync_subtitles == "mirror":

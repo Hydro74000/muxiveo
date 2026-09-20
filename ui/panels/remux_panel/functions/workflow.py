@@ -11,11 +11,59 @@ from PySide6.QtWidgets import QFileDialog, QMenu, QMessageBox, QPushButton
 from core.i18n import translate_text
 from core.workflows.workflow_store import load_workflow, save_workflow
 from core.profiles.selectors import remux_config_to_exact_job
+from ui.panels.remux_panel.theme import _C, _font_px, _scale, _secondary_button
 
 
 def setup(panel):
-    button = QPushButton(translate_text("Workflow"))
+    button = _secondary_button(translate_text("Workflow"))
+    button.setStyleSheet(f"""
+        QPushButton {{
+            background: {_C.BG_CARD};
+            color: {_C.TEXT_SEC};
+            border: 1px solid {_C.BORDER};
+            border-radius: 5px;
+            font-size: {_font_px(11)}px;
+            font-weight: 500;
+            padding: 0 {_scale(18)}px 0 {_scale(12)}px;
+        }}
+        QPushButton:hover {{
+            background: {_C.BG_HOVER};
+            color: {_C.TEXT_PRI};
+            border-color: {_C.BORDER_LT};
+        }}
+        QPushButton:pressed {{ background: {_C.BG_ACTIVE}; }}
+        QPushButton::menu-indicator {{
+            subcontrol-origin: padding;
+            subcontrol-position: center right;
+            right: {_scale(6)}px;
+            width: {_scale(8)}px;
+        }}
+    """)
     menu = QMenu(button)
+    menu.setStyleSheet(f"""
+        QMenu {{
+            background-color: {_C.BG_CARD};
+            color: {_C.TEXT_PRI};
+            border: 1px solid {_C.BORDER};
+            border-radius: 6px;
+            padding: {_scale(4)}px;
+            font-size: {_font_px(11)}px;
+        }}
+        QMenu::item {{
+            background-color: transparent;
+            padding: {_scale(6)}px {_scale(18)}px {_scale(6)}px {_scale(12)}px;
+            border-radius: 4px;
+        }}
+        QMenu::item:selected {{
+            background-color: {_C.BG_HOVER};
+            color: {_C.TEXT_PRI};
+        }}
+        QMenu::separator {{
+            height: 1px;
+            background: {_C.BORDER};
+            margin: {_scale(4)}px 0;
+        }}
+    """)
     for text, shortcut, callback in (
         ("Sauvegarder le workflow…", QKeySequence.StandardKey.Save, panel._export_exact_json),
         ("Charger un workflow…", QKeySequence.StandardKey.Open, lambda: browse(panel)),
@@ -28,9 +76,8 @@ def setup(panel):
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             panel.addAction(action)
     button.setMenu(menu)
-    panel._physical_sync_action = getattr(panel, "_physical_sync_check", None)
     if not hasattr(panel, "_workflow_options"):
-        panel._workflow_options = {"sync_mode": "physical"}
+        panel._workflow_options = {}
     panel._workflow_loading = False
     panel._workflow_loaded.connect(lambda config, infos: restore(panel, config, infos))
     panel._workflow_load_error.connect(lambda error: load_failed(panel, error))
@@ -144,11 +191,6 @@ def restore(panel, config, infos):
         panel._chapter_panel._modified = True
     panel._workflow_options = {key: getattr(config, key) for key in
         ("sync_mode", "sync_subtitles", "sync_calibrations", "crossfade_ms", "clean_nfo")}
-    sync_check = getattr(panel, "_physical_sync_check", None)
-    if sync_check is not None:
-        sync_check.blockSignals(True)
-        sync_check.setChecked(config.sync_mode == "physical")
-        sync_check.blockSignals(False)
     panel._workflow_loading = False
     panel.setEnabled(True)
     panel._refresh_audio_sync_buttons()

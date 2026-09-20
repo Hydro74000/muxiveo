@@ -191,9 +191,8 @@ class RemuxPanel(QWidget):
         self._chapter_panel: _ChapterPanel
         self._output_edit: QLineEdit
         self._mux_backend_combo: QComboBox
-        self._physical_sync_check: QCheckBox
         self._cmd_preview: QPlainTextEdit
-        self._workflow_options: dict[str, Any] = {"sync_mode": "physical"}
+        self._workflow_options: dict[str, Any] = {}
         self._preview_generation = 0
         self._preview_dirty = False
         self._closing = False
@@ -443,15 +442,6 @@ class RemuxPanel(QWidget):
         )
         backend_row.addWidget(backend_label)
         backend_row.addWidget(self._mux_backend_combo)
-        backend_row.addSpacing(_scale(16))
-        self._physical_sync_check = QCheckBox(translate_text("Synchronisation physique"))
-        self._physical_sync_check.setChecked(True)
-        self._physical_sync_check.setToolTip(
-            "Recalage physique des flux audio et sous-titres (aucun délai résiduel en conteneur)."
-        )
-        self._physical_sync_check.setStyleSheet(_checkbox_style())
-        self._physical_sync_check.toggled.connect(self._on_physical_sync_toggled)
-        backend_row.addWidget(self._physical_sync_check)
         backend_row.addStretch()
         content_layout.addLayout(backend_row)
         out_row = QHBoxLayout()
@@ -1117,14 +1107,6 @@ class RemuxPanel(QWidget):
             # Le réglage Matroska est global : sa sauvegarde doit affecter le
             # prochain job sans redémarrage ni recréation du panneau.
             self._mux_backend_combo.setCurrentIndex(backend_index)
-        self._rebuild_preview()
-
-    def _on_physical_sync_toggled(self, checked: bool) -> None:
-        if not hasattr(self, "_workflow_options"):
-            self._workflow_options = {}
-        self._workflow_options["sync_mode"] = "physical" if checked else "container"
-        if not checked:
-            self._workflow_options["sync_calibrations"] = {}
         self._rebuild_preview()
 
     def update_audio_track_meta(
