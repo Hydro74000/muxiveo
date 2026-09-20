@@ -20,7 +20,6 @@ def setup(panel):
         ("Sauvegarder le workflow…", QKeySequence.StandardKey.Save, panel._export_exact_json),
         ("Charger un workflow…", QKeySequence.StandardKey.Open, lambda: browse(panel)),
         ("Reprendre la dernière session", None, lambda: load(panel, autosave_path(panel))),
-        ("Studio Hybridation", None, lambda: open_studio(panel)),
     ):
         action = menu.addAction(translate_text(text))
         action.triggered.connect(callback)
@@ -28,12 +27,10 @@ def setup(panel):
             action.setShortcut(QKeySequence(shortcut))
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             panel.addAction(action)
-    physical = menu.addAction(translate_text("Synchronisation physique"))
-    physical.setCheckable(True)
-    panel._physical_sync_action = physical
-    physical.toggled.connect(lambda enabled: set_physical(panel, enabled))
     button.setMenu(menu)
-    panel._workflow_options = {}
+    panel._physical_sync_action = getattr(panel, "_physical_sync_check", None)
+    if not hasattr(panel, "_workflow_options"):
+        panel._workflow_options = {"sync_mode": "physical"}
     panel._workflow_loading = False
     panel._workflow_loaded.connect(lambda config, infos: restore(panel, config, infos))
     panel._workflow_load_error.connect(lambda error: load_failed(panel, error))
@@ -42,19 +39,6 @@ def setup(panel):
     panel._autosave_timer.timeout.connect(lambda: autosave(panel))
     panel._autosave_timer.start()
     return button
-
-
-def set_physical(panel, enabled):
-    panel._workflow_options["sync_mode"] = "physical" if enabled else "container"
-    if not enabled:
-        panel._workflow_options["sync_calibrations"] = {}
-    panel._rebuild_preview()
-
-
-def open_studio(panel):
-    from ui.panels.hybrid_studio import HybridStudio
-    panel._hybrid_studio = HybridStudio(panel._config, parent=panel)
-    panel._hybrid_studio.show()
 
 
 def autosave_path(panel):
@@ -160,9 +144,11 @@ def restore(panel, config, infos):
         panel._chapter_panel._modified = True
     panel._workflow_options = {key: getattr(config, key) for key in
         ("sync_mode", "sync_subtitles", "sync_calibrations", "crossfade_ms", "clean_nfo")}
-    panel._physical_sync_action.blockSignals(True)
-    panel._physical_sync_action.setChecked(config.sync_mode == "physical")
-    panel._physical_sync_action.blockSignals(False)
+    sync_check = getattr(panel, "_physical_sync_check", None)
+    if sync_check is not None:
+        sync_check.blockSignals(True)
+        sync_check.setChecked(config.sync_mode == "physical")
+        sync_check.blockSignals(False)
     panel._workflow_loading = False
     panel.setEnabled(True)
     panel._refresh_audio_sync_buttons()

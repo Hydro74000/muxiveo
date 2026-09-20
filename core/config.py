@@ -712,6 +712,7 @@ UI_STARTUP_PANEL_CHOICES: tuple[tuple[str, str], ...] = (
     ("dashboard", "Tableau de bord"),
     ("container", "Conteneur"),
     ("encoding", "Encodage"),
+    ("hybrid", "Hybridation"),
     ("dovi", "DoVi / HDR10+"),
     ("settings", "Paramètres"),
 )
@@ -729,6 +730,8 @@ def _normalize_startup_panel(value: str | None) -> str:
         "conteneur": "container",
         "encoding": "encoding",
         "encodage": "encoding",
+        "hybrid": "hybrid",
+        "hybridation": "hybrid",
         "dovi": "dovi",
         "dovi / hdr10+": "dovi",
         "settings": "settings",

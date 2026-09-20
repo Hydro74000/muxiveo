@@ -20,7 +20,8 @@ def test_startup_page_index_mapping() -> None:
     assert MainWindow.startup_page_index("dovi") == 1
     assert MainWindow.startup_page_index("encoding") == 2
     assert MainWindow.startup_page_index("container") == 3
-    assert MainWindow.startup_page_index("settings") == 4
+    assert MainWindow.startup_page_index("hybrid") == 4
+    assert MainWindow.startup_page_index("settings") == 5
 
 
 def test_startup_page_index_fallback_dashboard() -> None:

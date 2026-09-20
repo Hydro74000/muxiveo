@@ -34,6 +34,9 @@ Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans ini
 | `preview --profile` | applique un profil en dry preview JSON/commande |
 | `run/remux --profile` | applique un profil et remuxe |
 | `batch --profile` | applique un profil à un dossier |
+| `hybrid` | hybridation de référence et donneur (paire ou saison entière) |
+| `sync-scan` | corrélation acoustique FFT et extraction de calibration |
+| `shift-subs` | recalage physique de fichiers sous-titres (SRT, ASS) |
 
 Exemples :
 
@@ -654,9 +657,10 @@ Avec `--log-format jsonl`, le batch emet des evenements structurés :
 {"level":"info","message":"Batch termine : 1/1 succes.","event":"batch_summary","total":1,"failures":0}
 ```
 
-## Hybridation (branche de développement)
+## Hybridation et synchronisation physique
 
-Les commandes `hybrid`, `sync-scan`, `shift-subs`, le menu Workflow et le Studio
-Hybridation sont décrits dans le [guide de synchronisation](../hybridization-guide.md).
-Les anciens jobs restent compatibles ; la synchronisation physique est explicite
-pour le remux et activée par défaut pour `hybrid`.
+Les commandes `hybrid`, `sync-scan`, `shift-subs`, la gestion des workflows et le
+Studio d'Hybridation sont décrits en détail dans le [guide d'hybridation](../hybridization-guide.md).
+Dans l'interface graphique, le Studio d'hybridation dispose d'une page dédiée dans la barre
+latérale de navigation, et le panneau Conteneur intègre la case `Synchronisation physique (Zero Delay)`
+cochée par défaut.

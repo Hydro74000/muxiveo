@@ -78,6 +78,7 @@ from ui.panels.encode_panel.theme import (
 )
 from ui.panels.merge_dovi_panel import MergeDoviPanel
 from ui.panels.remux_panel import RemuxPanel
+from ui.panels.hybrid_studio import HybridStudio
 from ui.panels.settings_panel import SettingsPanel
 from ui.design_system import DesignSystem, colors as _Colors, font_px as _font_px, scale as _scale
 
@@ -1184,8 +1185,9 @@ class _Sidebar(QWidget):
         ("Tableau de bord", "⌂", 0, False),
         ("Conteneur",       "⊞", 3, False),
         ("Encodage",        "▶", 2, True),    # sous-menu de Conteneur
+        ("Hybridation",     "⧉", 4, False),
         ("DoVi / HDR10+",   "◈", 1, False),
-        ("Paramètres",      "⚙", 4, False),
+        ("Paramètres",      "⚙", 5, False),
     ]
     _FULL_WIDTH = 200
     _COMPACT_WIDTH = 96
@@ -1365,7 +1367,8 @@ class MainWindow(QMainWindow):
         "dovi": 1,
         "encoding": 2,
         "container": 3,
-        "settings": 4,
+        "hybrid": 4,
+        "settings": 5,
     }
 
     def __init__(self, config: AppConfig) -> None:
@@ -1512,6 +1515,11 @@ class MainWindow(QMainWindow):
         )
         self._stack.addWidget(self._remux_panel)
 
+        # Page 4 — Studio Hybridation (fonctionnelle)
+        self._hybrid_panel = HybridStudio(self._config)
+        self._stack.addWidget(self._hybrid_panel)
+
+        # Page 5 — Paramètres (fonctionnelle)
         self._settings_panel = SettingsPanel(self._config)
         self._stack.addWidget(self._settings_panel)
 
@@ -1847,6 +1855,10 @@ class MainWindow(QMainWindow):
         )
         # RemuxPanel → LogPanel global
         self._remux_panel.log_message.connect(
+            self.log_requested, Qt.ConnectionType.QueuedConnection
+        )
+        # HybridStudio → LogPanel global
+        self._hybrid_panel.log_message.connect(
             self.log_requested, Qt.ConnectionType.QueuedConnection
         )
         self._remux_panel.tool_output.connect(
@@ -2829,7 +2841,7 @@ class MainWindow(QMainWindow):
         # sinon des threads survivent à app.exec() et peuvent retenir des
         # FDs/processus, ce qui empêche l'OS de restaurer les flags du tty
         # parent (terminal sans echo après fermeture).
-        for attr in ("_dashboard", "_encode_panel", "_remux_panel", "_dovi_panel"):
+        for attr in ("_dashboard", "_encode_panel", "_remux_panel", "_dovi_panel", "_hybrid_panel"):
             page = getattr(self, attr, None)
             executor = getattr(page, "_executor", None) if page is not None else None
             if executor is not None:
