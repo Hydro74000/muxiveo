@@ -3986,5 +3986,26 @@
   "Recalage physique des flux audio et sous-titres (aucun délai résiduel en conteneur).": {
     "fra": "Recalage physique des flux audio et sous-titres (aucun délai résiduel en conteneur).",
     "eng": "Physical audio/subtitle alignment (zero residual container delay)."
+  },
+  "Options d'hybridation avancées": {
+    "fra": "Options d'hybridation avancées",
+    "eng": "Advanced hybridization options"
+  },
+  "Détecter les coupures et variations de cadences (cuts multi-segments)": {
+    "fra": "Détecter les coupures et variations de cadences (cuts multi-segments)",
+    "eng": "Detect cuts and cadence variations (multi-segment cuts)"
+  },
+  "DOSSIERS SOURCES ET SORTIE": {
+    "fra": "DOSSIERS SOURCES ET SORTIE",
+    "eng": "SOURCE AND OUTPUT FOLDERS"
+  },
+  "ÉPISODES APPARIÉS ET ÉTATS": {
+    "fra": "ÉPISODES APPARIÉS ET ÉTATS",
+    "eng": "MATCHED EPISODES AND STATUS"
+  },
+  "ANALYSE ACOUSTIQUE ET CALIBRATION": {
+    "fra": "ANALYSE ACOUSTIQUE ET CALIBRATION",
+    "eng": "ACOUSTIC ANALYSIS AND CALIBRATION"
   }
 }
+

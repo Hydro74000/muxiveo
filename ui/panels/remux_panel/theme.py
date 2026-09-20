@@ -7,7 +7,12 @@ from PySide6.QtGui import QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QWidget
 
-from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
+from ui.design_system import (
+    CHECK_ICON_PATH,
+    colors as _C,
+    font_px as _font_px,
+    scale as _scale,
+)
 
 
 def _section_label(text: str) -> QLabel:
@@ -113,23 +118,33 @@ def _input_style() -> str:
 def _checkbox_style() -> str:
     return f"""
         QCheckBox {{
-            color: {_C.TEXT_SEC};
-            font-size: {_font_px(12)}px;
+            color: {_C.TEXT_PRI};
+            font-size: {_font_px(11)}px;
             spacing: {_scale(8)}px;
             background: transparent;
         }}
         QCheckBox::indicator {{
             width: {_scale(14)}px;
             height: {_scale(14)}px;
-            border-radius: 3px;
-            border: 1px solid {_C.BORDER_LT};
-            background: {_C.BG_DEEP};
+            border-radius: {_scale(3)}px;
+            border: 1px solid {_C.CHECKBOX_BORDER};
+            background: {_C.CHECKBOX_BG};
+        }}
+        QCheckBox::indicator:hover {{
+            border-color: {_C.ACCENT};
         }}
         QCheckBox::indicator:checked {{
             background: {_C.ACCENT};
             border-color: {_C.ACCENT};
+            image: url('{CHECK_ICON_PATH}');
         }}
-        QCheckBox:hover {{ color: {_C.TEXT_PRI}; }}
+        QCheckBox::indicator:disabled {{
+            border-color: {_C.BORDER};
+            background: {_C.BG_DEEP};
+        }}
+        QCheckBox:disabled {{
+            color: {_C.TEXT_DIM};
+        }}
     """
 
 

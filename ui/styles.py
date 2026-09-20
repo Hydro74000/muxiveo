@@ -83,9 +83,28 @@ def _combo_style() -> str:
 
 
 def _checkbox_style() -> str:
-    return (f"QCheckBox{{color:{_C.TEXT_SEC};font-size:{_font_px(12)}px;background:transparent;}}"
-            f"QCheckBox::indicator{{width:{_scale(14)}px;height:{_scale(14)}px;"
-            f"border:1px solid {_C.BORDER_LT};border-radius:3px;"
-            f"background:{_C.BG_CARD};}}"
-            f"QCheckBox::indicator:checked{{background:{_C.ACCENT};"
-            f"border-color:{_C.ACCENT};}}")
+    from ui.design_system import CHECK_ICON_PATH
+    return (
+        f"QCheckBox {{ color: {_C.TEXT_PRI}; font-size: {_font_px(11)}px; spacing: {_scale(8)}px; background: transparent; }}"
+        f"QCheckBox::indicator {{ width: {_scale(14)}px; height: {_scale(14)}px; border-radius: {_scale(3)}px; "
+        f"border: 1px solid {_C.CHECKBOX_BORDER}; background: {_C.CHECKBOX_BG}; }}"
+        f"QCheckBox::indicator:hover {{ border-color: {_C.ACCENT}; }}"
+        f"QCheckBox::indicator:checked {{ background: {_C.ACCENT}; border-color: {_C.ACCENT}; image: url('{CHECK_ICON_PATH}'); }}"
+        f"QCheckBox::indicator:disabled {{ border-color: {_C.BORDER}; background: {_C.BG_DEEP}; }}"
+        f"QCheckBox:disabled {{ color: {_C.TEXT_DIM}; }}"
+    )
+
+
+def _groupbox_checkable_style() -> str:
+    from ui.design_system import CHECK_ICON_PATH
+    return (
+        f"QGroupBox {{ color: {_C.TEXT_PRI}; font-size: {_font_px(11)}px; font-weight: 700; "
+        f"background: {_C.BG_CARD}; border: 1px solid {_C.BORDER}; border-radius: {_scale(6)}px; "
+        f"margin-top: {_scale(8)}px; padding-top: {_scale(14)}px; }}"
+        f"QGroupBox::title {{ subcontrol-origin: border; subcontrol-position: top left; "
+        f"left: {_scale(12)}px; padding: {_scale(2)}px {_scale(6)}px; background: {_C.BG_CARD}; }}"
+        f"QGroupBox::indicator {{ width: {_scale(14)}px; height: {_scale(14)}px; border-radius: {_scale(3)}px; "
+        f"border: 1px solid {_C.CHECKBOX_BORDER}; background: {_C.CHECKBOX_BG}; margin-right: {_scale(6)}px; }}"
+        f"QGroupBox::indicator:hover {{ border-color: {_C.ACCENT}; }}"
+        f"QGroupBox::indicator:checked {{ background: {_C.ACCENT}; border-color: {_C.ACCENT}; image: url('{CHECK_ICON_PATH}'); }}"
+    )

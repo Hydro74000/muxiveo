@@ -32,7 +32,7 @@ from core.inspector import AttachmentInfo, STANDARD_MKV_TAGS
 from core.media_info_fetcher import MediaDetails
 from ui.panels.remux_panel.theme import _C
 from ui.panels.tmdb_search_modal import TmdbSearchModal
-from ui.design_system import font_px as _font_px, scale as _scale
+from ui.design_system import CHECK_ICON_PATH, font_px as _font_px, scale as _scale
 
 class _TagEditDialog(QDialog):
     """
@@ -775,12 +775,16 @@ class _AttachmentItemWidget(QWidget):
                 width: {_scale(13)}px;
                 height: {_scale(13)}px;
                 border-radius: {_scale(3)}px;
-                border: 1px solid {_C.BORDER_LT};
-                background: {_C.BG_DEEP};
+                border: 1px solid {_C.CHECKBOX_BORDER};
+                background: {_C.CHECKBOX_BG};
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {_C.ACCENT};
             }}
             QCheckBox::indicator:checked {{
                 background: {_C.ACCENT};
                 border-color: {_C.ACCENT};
+                image: url('{CHECK_ICON_PATH}');
             }}
         """)
         self._cb.stateChanged.connect(self.changed)

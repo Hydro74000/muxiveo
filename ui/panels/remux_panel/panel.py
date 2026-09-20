@@ -61,6 +61,7 @@ from ui.panels.remux_panel.models import SourceFile
 from ui.panels.remux_panel.theme import (
     _C,
     _card,
+    _checkbox_style,
     _input_style,
     _secondary_button,
     _section_label,
@@ -448,9 +449,7 @@ class RemuxPanel(QWidget):
         self._physical_sync_check.setToolTip(
             "Recalage physique des flux audio et sous-titres (aucun délai résiduel en conteneur)."
         )
-        self._physical_sync_check.setStyleSheet(
-            f"color: {_C.TEXT_PRI}; background: transparent; font-size: {_font_px(11)}px;"
-        )
+        self._physical_sync_check.setStyleSheet(_checkbox_style())
         self._physical_sync_check.toggled.connect(self._on_physical_sync_toggled)
         backend_row.addWidget(self._physical_sync_check)
         backend_row.addStretch()

@@ -36,6 +36,7 @@ from core.workflows.audio_sync import AudioSyncTrack
 from core.workflows.audio_sync_scan import AudioSyncScanner
 from core.workflows.sync_calibration import SyncSegment
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
+from ui.styles import _checkbox_style, _groupbox_checkable_style
 
 
 # =============================================================================
@@ -306,7 +307,7 @@ class HybridStudio(QWidget):
         cd_layout = QVBoxLayout(card_dirs)
         cd_layout.setContentsMargins(_scale(12), _scale(10), _scale(12), _scale(10))
         cd_layout.setSpacing(_scale(8))
-        cd_layout.addWidget(_section_label("DOSSIERS SOURCES ET SORTIE"))
+        cd_layout.addWidget(_section_label(translate_text("DOSSIERS SOURCES ET SORTIE")))
 
         form = QFormLayout()
         form.setSpacing(_scale(8))
@@ -326,39 +327,26 @@ class HybridStudio(QWidget):
             form.addRow(lbl, row)
 
         self.profile = QLineEdit()
-        self.profile.setPlaceholderText("Nom du profil décisionnel (optionnel)")
+        self.profile.setPlaceholderText(translate_text("Nom du profil décisionnel (optionnel)"))
         self.profile.setStyleSheet(_input_style())
         lbl_prof = QLabel(translate_text("Profil décisionnel"))
         lbl_prof.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
         form.addRow(lbl_prof, self.profile)
 
-        self.detect_cuts = QCheckBox(translate_text("Détecter les coupures"))
-        self.detect_cuts.setChecked(True)
-        self.detect_cuts.setStyleSheet(f"color: {_C.TEXT_PRI}; font-size: {_font_px(11)}px;")
-        form.addRow("", self.detect_cuts)
-
         cd_layout.addLayout(form)
+
+        self.detect_cuts = QCheckBox(
+            translate_text("Détecter les coupures et variations de cadences (cuts multi-segments)")
+        )
+        self.detect_cuts.setChecked(True)
+        self.detect_cuts.setStyleSheet(_checkbox_style())
+        cd_layout.addWidget(self.detect_cuts)
+
         layout.addWidget(card_dirs)
 
         # ── Carte 2 : Options d'hybridation (dépliables) ───────────────────────
-        advanced = QGroupBox(translate_text("Options d'hybridation"))
-        advanced.setStyleSheet(f"""
-            QGroupBox {{
-                color: {_C.TEXT_PRI};
-                font-size: {_font_px(11)}px;
-                font-weight: 700;
-                background: {_C.BG_CARD};
-                border: 1px solid {_C.BORDER};
-                border-radius: {_scale(6)}px;
-                margin-top: {_scale(8)}px;
-                padding-top: {_scale(12)}px;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: {_scale(10)}px;
-                padding: 0 {_scale(4)}px;
-            }}
-        """)
+        advanced = QGroupBox(translate_text("Options d'hybridation avancées"))
+        advanced.setStyleSheet(_groupbox_checkable_style())
         settings = QFormLayout(advanced)
         settings.setSpacing(_scale(6))
         self.controls = {}
@@ -370,7 +358,7 @@ class HybridStudio(QWidget):
         ):
             control = QCheckBox(translate_text(label))
             control.setChecked(default)
-            control.setStyleSheet(f"color: {_C.TEXT_PRI}; font-size: {_font_px(11)}px;")
+            control.setStyleSheet(_checkbox_style())
             settings.addRow(control)
             self.controls[option] = control
 
@@ -405,13 +393,13 @@ class HybridStudio(QWidget):
         self.mode.setStyleSheet(_input_style())
         self.mode.addItem(translate_text("Synchronisation physique"), "physical")
         self.mode.addItem(translate_text("Décalage conteneur"), "container")
-        lbl_mode = QLabel("Mode de synchro")
+        lbl_mode = QLabel(translate_text("Mode de synchro"))
         lbl_mode.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
         settings.addRow(lbl_mode, self.mode)
 
         self.mirror = QCheckBox(translate_text("Recaler les sous-titres"))
         self.mirror.setChecked(True)
-        self.mirror.setStyleSheet(f"color: {_C.TEXT_PRI}; font-size: {_font_px(11)}px;")
+        self.mirror.setStyleSheet(_checkbox_style())
         settings.addRow(self.mirror)
 
         advanced.setCheckable(True)
@@ -428,7 +416,7 @@ class HybridStudio(QWidget):
         ct_layout = QVBoxLayout(card_table)
         ct_layout.setContentsMargins(_scale(12), _scale(10), _scale(12), _scale(10))
         ct_layout.setSpacing(_scale(8))
-        ct_layout.addWidget(_section_label("ÉPISODES APPARIÉS ET ÉTATS"))
+        ct_layout.addWidget(_section_label(translate_text("ÉPISODES APPARIÉS ET ÉTATS")))
 
         self.table = QTableWidget(0, 3)
         self.table.setStyleSheet(_table_style())
@@ -454,10 +442,10 @@ class HybridStudio(QWidget):
         cw_layout.setSpacing(_scale(8))
 
         wave_header = QHBoxLayout()
-        wave_header.addWidget(_section_label("ANALYSE ACOUSTIQUE ET CALIBRATION"))
+        wave_header.addWidget(_section_label(translate_text("ANALYSE ACOUSTIQUE ET CALIBRATION")))
         wave_header.addStretch()
 
-        adj_label = QLabel("Ajustement manuel :")
+        adj_label = QLabel(translate_text("Ajustement manuel :"))
         adj_label.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
         wave_header.addWidget(adj_label)
 
