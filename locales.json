@@ -4006,6 +4006,47 @@
   "ANALYSE ACOUSTIQUE ET CALIBRATION": {
     "fra": "ANALYSE ACOUSTIQUE ET CALIBRATION",
     "eng": "ACOUSTIC ANALYSIS AND CALIBRATION"
+  },
+  "Synchronisation audio multi-segments appliquée : {count} coupure(s) détectée(s), départ {offset} ms (confiance {confidence}).": {
+    "fra": "Synchronisation audio multi-segments appliquée : {count} coupure(s) détectée(s), départ {offset} ms (confiance {confidence}).",
+    "eng": "Multi-segment audio synchronization applied: {count} cut(s) detected, start {offset} ms (confidence {confidence})."
+  },
+  "Détail des coupures de synchronisation": {
+    "fra": "Détail des coupures de synchronisation",
+    "eng": "Synchronization cut details"
+  },
+  "Piste #{idx} ({type} {codec}) — {count} coupure(s) détectée(s)": {
+    "fra": "Piste #{idx} ({type} {codec}) — {count} coupure(s) détectée(s)",
+    "eng": "Track #{idx} ({type} {codec}) — {count} cut(s) detected"
+  },
+  "Segment": {
+    "fra": "Segment",
+    "eng": "Segment"
+  },
+  "Position": {
+    "fra": "Position",
+    "eng": "Position"
+  },
+  "Décalage": {
+    "fra": "Décalage",
+    "eng": "Offset"
+  },
+  "Saut relatif": {
+    "fra": "Saut relatif",
+    "eng": "Relative jump"
+  },
+  "Départ ({ts})": {
+    "fra": "Départ ({ts})",
+    "eng": "Start ({ts})"
+  },
+  "Coupure à {ts}": {
+    "fra": "Coupure à {ts}",
+    "eng": "Cut at {ts}"
+  },
+  "Synchronisation multi-segments ({count} coupures) :\n{summary}": {
+    "fra": "Synchronisation multi-segments ({count} coupures) :\n{summary}",
+    "eng": "Multi-segment synchronization ({count} cuts):\n{summary}"
   }
 }
+
 

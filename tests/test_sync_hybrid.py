@@ -196,3 +196,83 @@ def test_studio_constructs(qt_app):
     dialog = HybridStudio(AppConfig())
     assert not dialog.run_button.isEnabled()
     dialog.close()
+
+
+def test_sync_calibration_summary_and_cuts_count():
+    from core.workflows.sync_calibration import format_calibration_summary
+
+    calib_single = calibration((0, -100))
+    assert calib_single.cuts_count == 0
+    lines_single = format_calibration_summary(calib_single)
+    assert len(lines_single) == 1
+    assert "00:00:00.000" in lines_single[0]
+    assert "-100.0 ms" in lines_single[0]
+
+    calib_multi = calibration((0, -67), (239738, -180), (838566, -821))
+    assert calib_multi.cuts_count == 2
+    assert SyncCalibration.format_timestamp(239738) == "00:03:59.738"
+    assert SyncCalibration.format_timestamp(3661000) == "01:01:01.000"
+    lines_multi = format_calibration_summary(calib_multi.to_dict())
+    assert len(lines_multi) == 3
+    assert "départ à 00:00:00.000" in lines_multi[0] and "-67.0 ms" in lines_multi[0]
+    assert "coupure à 00:03:59.738" in lines_multi[1] and "-180.0 ms" in lines_multi[1] and "(saut de -113.0 ms)" in lines_multi[1]
+    assert "coupure à 00:13:58.566" in lines_multi[2] and "-821.0 ms" in lines_multi[2] and "(saut de -641.0 ms)" in lines_multi[2]
+
+
+def test_track_entry_cuts_label_and_full_info():
+    track = TrackEntry(1, "audio", "E-AC-3", "5.1  640 kbps", "fre", "VFF", time_shift_ms=-100)
+    assert track.cuts_count == 0
+    assert track.cuts_label == ""
+    assert "✂" not in track.full_info_label
+
+    calib = calibration((0, -67), (239738, -180), (838566, -821)).to_dict()
+    track.sync_calibration = calib
+    assert track.cuts_count == 2
+    assert track.cuts_label == "✂ 2 coupures"
+    assert "✂ 2 coupures" in track.full_info_label
+
+
+def test_prepare_physical_logs_cuts(tmp_path):
+    config = make_config(tmp_path, offset=-67)
+    calib = calibration((0, -67), (239738, -180), (838566, -821)).to_dict()
+    config.sources[0].tracks[0].sync_calibration = calib
+    config.sync_calibrations = {"0": calib}
+    logs = []
+    prepared = prepare_physical(
+        config,
+        tmp_path,
+        "ffmpeg",
+        lambda cmd, label: None,
+        log=lambda level, msg: logs.append(f"{level}: {msg}"),
+    )
+    assert prepared is not None
+    # Check that logs contain the cut breakdown
+    log_text = "\n".join(logs)
+    assert "Synchronisation physique (réécriture exacte)" in log_text
+    assert "3 segments (2 coupures" in log_text
+    assert "départ à 00:00:00.000 -> décalage -67.0 ms" in log_text
+    assert "coupure à 00:03:59.738 -> décalage -180.0 ms (saut de -113.0 ms)" in log_text
+    assert "coupure à 00:13:58.566 -> décalage -821.0 ms (saut de -641.0 ms)" in log_text
+
+
+def test_track_table_renders_cuts_action_button(qt_app, tmp_path):
+    from ui.panels.remux_panel.widgets.track_table import _TrackTable
+    table = _TrackTable()
+    track = TrackEntry(1, "audio", "E-AC-3", "5.1  640 kbps", "fre", "VFF", time_shift_ms=-67, file_id="src0")
+    track.sync_calibration = calibration((0, -67), (239738, -180)).to_dict()
+    table.append_tracks("#3b82f6", [track])
+
+    # Row 0, column COL_EDIT should contain a widget with the scissors button
+    actions_widget = table.cellWidget(0, table.COL_EDIT)
+    assert actions_widget is not None
+    from PySide6.QtWidgets import QPushButton
+    buttons = actions_widget.findChildren(QPushButton)
+    # We should have at least 2 buttons (scissors and edit)
+    assert len(buttons) >= 2
+    # Check tooltip contains multi-segments info
+    tips = [b.toolTip() for b in buttons if b.toolTip()]
+    assert any("Synchronisation multi-segments" in t or "Multi-segment synchronization" in t for t in tips)
+    table.deleteLater()
+
+
+

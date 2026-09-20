@@ -28,14 +28,17 @@ from core.workflows.common.sync_rewrite import (
     ui_sync_rewrite_preview_for_track,
 )
 from core.workflows.remux_models import TrackEntry
+from core.workflows.sync_calibration import SyncCalibration, format_calibration_summary
 from ui.panels.remux_panel.models import (
+    _TRACK_INFO_CUTS_COLOR,
+    _TRACK_INFO_CUTS_LABEL_ROLE,
     _TRACK_INFO_DISABLED_LABEL_ROLE,
     _TRACK_INFO_OFFSET_NEG_COLOR,
     _TRACK_INFO_OFFSET_POS_COLOR,
     _TRACK_INFO_OFFSET_VALUE_ROLE,
     _TRACK_INFO_SYNC_LABEL_ROLE,
 )
-from ui.panels.remux_panel.theme import _C, _pencil_icon, _refresh_icon, _warning_icon, _x_icon
+from ui.panels.remux_panel.theme import _C, _pencil_icon, _refresh_icon, _scissors_icon, _warning_icon, _x_icon
 from ui.panels.track_edit_dialog import TrackEditDialog
 
 class _TrackInfoDelegate(QStyledItemDelegate):
@@ -66,6 +69,8 @@ class _TrackInfoDelegate(QStyledItemDelegate):
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
         value = index.data(_TRACK_INFO_OFFSET_VALUE_ROLE)
         offset_value = str(value).strip() if value is not None else ""
+        cuts_value = index.data(_TRACK_INFO_CUTS_LABEL_ROLE)
+        cuts_label = str(cuts_value).strip() if cuts_value is not None else ""
         sync_value = index.data(_TRACK_INFO_SYNC_LABEL_ROLE)
         sync_label = str(sync_value).strip() if sync_value is not None else ""
         disabled_value = index.data(_TRACK_INFO_DISABLED_LABEL_ROLE)
@@ -73,6 +78,7 @@ class _TrackInfoDelegate(QStyledItemDelegate):
         text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
         markers = {
             "offset": offset_value if offset_value and offset_value in text else "",
+            "cuts": cuts_label if cuts_label and cuts_label in text else "",
             "sync": sync_label if sync_label and sync_label in text else "",
             "disabled": disabled_label if disabled_label and disabled_label in text else "",
         }
@@ -137,6 +143,11 @@ class _TrackInfoDelegate(QStyledItemDelegate):
             if kind == "offset":
                 painter.setFont(opt.font)
                 painter.setPen(self._offset_color(marker_text))
+            elif kind == "cuts":
+                cuts_font = QFont(opt.font)
+                cuts_font.setBold(True)
+                painter.setFont(cuts_font)
+                painter.setPen(_TRACK_INFO_CUTS_COLOR)
             elif kind == "disabled":
                 # Police inchangée : les avances de texte restent calculées
                 # avec ``metrics`` pour les fragments suivants.
@@ -525,6 +536,21 @@ class _TrackTable(QTableWidget):
             warning_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             layout.addWidget(warning_btn)
 
+        if entry.cuts_count > 0 and entry.sync_calibration:
+            lines = format_calibration_summary(entry.sync_calibration)
+            summary_text = "\n".join(f"• {line}" for line in lines)
+            tip = translate_text(
+                "Synchronisation multi-segments ({count} coupures) :\n{summary}",
+                count=entry.cuts_count,
+                summary=summary_text,
+            )
+            cuts_btn = self._make_action_button(
+                tooltip=tip,
+                icon=_scissors_icon("#e5a50a", 13),
+            )
+            cuts_btn.clicked.connect(lambda _=None, e=entry: self._show_sync_cuts_dialog(e))
+            layout.addWidget(cuts_btn)
+
         if self._has_cancelable_auto_sync(entry):
             cancel_btn = self._make_action_button(
                 tooltip=translate_text("Annuler la synchro"),
@@ -549,6 +575,82 @@ class _TrackTable(QTableWidget):
         edit_btn.clicked.connect(lambda _=None, e=entry: self._open_edit_dialog(e))
         layout.addWidget(edit_btn)
         self.setCellWidget(row, self.COL_EDIT, container)
+
+    def _show_sync_cuts_dialog(self, entry: TrackEntry) -> None:
+        if not entry.sync_calibration:
+            return
+        from PySide6.QtWidgets import (
+            QDialog,
+            QVBoxLayout,
+            QLabel,
+            QTableWidget,
+            QTableWidgetItem,
+            QDialogButtonBox,
+            QHeaderView,
+        )
+        dialog = QDialog(self)
+        dialog.setWindowTitle(translate_text("Détail des coupures de synchronisation"))
+        dialog.setMinimumWidth(560)
+        vbox = QVBoxLayout(dialog)
+        vbox.setContentsMargins(16, 16, 16, 16)
+        vbox.setSpacing(12)
+
+        title_lbl = QLabel(
+            translate_text(
+                "Piste #{idx} ({type} {codec}) — {count} coupure(s) détectée(s)",
+                idx=entry.mkv_tid,
+                type=entry.track_type,
+                codec=entry.codec,
+                count=entry.cuts_count,
+            )
+        )
+        title_lbl.setStyleSheet(f"font-weight: 700; font-size: 13px; color: {_C.TEXT_PRI};")
+        vbox.addWidget(title_lbl)
+
+        segments = entry.sync_calibration.get("segments", [])
+        table = QTableWidget(len(segments), 4, dialog)
+        table.setHorizontalHeaderLabels([
+            translate_text("Segment"),
+            translate_text("Position"),
+            translate_text("Décalage"),
+            translate_text("Saut relatif"),
+        ])
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        table.verticalHeader().setVisible(False)
+        table.setShowGrid(True)
+        table.setAlternatingRowColors(True)
+
+        prev_shift = 0.0
+        for i, s in enumerate(segments):
+            start_ms = float(s.get("start_ms", 0.0))
+            shift_ms = float(s.get("shift_ms", 0.0))
+            ts = SyncCalibration.format_timestamp(start_ms)
+            pos_label = (
+                translate_text("Départ ({ts})", ts=ts)
+                if i == 0
+                else translate_text("Coupure à {ts}", ts=ts)
+            )
+            delta_label = "-" if i == 0 else f"{shift_ms - prev_shift:+.1f} ms"
+
+            item_seg = QTableWidgetItem(f"Segment {i + 1}")
+            item_pos = QTableWidgetItem(pos_label)
+            item_shift = QTableWidgetItem(f"{shift_ms:+.1f} ms")
+            item_delta = QTableWidgetItem(delta_label)
+
+            for item in (item_seg, item_pos, item_shift, item_delta):
+                item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+
+            table.setItem(i, 0, item_seg)
+            table.setItem(i, 1, item_pos)
+            table.setItem(i, 2, item_shift)
+            table.setItem(i, 3, item_delta)
+            prev_shift = shift_ms
+
+        vbox.addWidget(table)
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btn_box.rejected.connect(dialog.reject)
+        vbox.addWidget(btn_box)
+        dialog.exec()
 
     def _has_cancelable_auto_sync(self, entry: TrackEntry) -> bool:
         if entry.track_type not in {"audio", "subtitle"}:
@@ -582,11 +684,23 @@ class _TrackTable(QTableWidget):
         info_item = self.item(row, self.COL_INFO)
         if info_item is None:
             return
-        info_item.setToolTip(
-            translate_text("Cliquer pour basculer entre sync réelle et sync offset")
-            if self._can_toggle_sync_rewrite(entry)
-            else ""
-        )
+        tooltips: list[str] = []
+        if entry.cuts_count > 0 and entry.sync_calibration:
+            lines = format_calibration_summary(entry.sync_calibration)
+            if lines:
+                summary_text = "\n".join(f"• {line}" for line in lines)
+                tooltips.append(
+                    translate_text(
+                        "Synchronisation multi-segments ({count} coupures) :\n{summary}",
+                        count=entry.cuts_count,
+                        summary=summary_text,
+                    )
+                )
+        if self._can_toggle_sync_rewrite(entry):
+            tooltips.append(
+                translate_text("Cliquer pour basculer entre sync réelle et sync offset")
+            )
+        info_item.setToolTip("\n\n".join(tooltips))
 
     def _refresh_info_cell(self, row: int, entry: TrackEntry) -> None:
         self._update_entry_sync_rewrite_label(entry)
@@ -594,6 +708,7 @@ class _TrackTable(QTableWidget):
         if info_item:
             info_item.setText(entry.full_info_label)
             info_item.setData(_TRACK_INFO_OFFSET_VALUE_ROLE, entry.time_shift_value_label)
+            info_item.setData(_TRACK_INFO_CUTS_LABEL_ROLE, entry.cuts_label)
             info_item.setData(
                 _TRACK_INFO_SYNC_LABEL_ROLE,
                 entry.sync_rewrite_label if self._can_toggle_sync_rewrite(entry) else "",
@@ -603,6 +718,7 @@ class _TrackTable(QTableWidget):
                 "" if entry.flag_enabled else TrackEntry.DISABLED_LABEL,
             )
         self._update_info_tooltip(row, entry)
+
 
     def _apply_new_track_style(self, row: int) -> None:
         for col in (self.COL_CODEC, self.COL_LANG, self.COL_TITLE, self.COL_INFO):
@@ -829,6 +945,22 @@ class _TrackTable(QTableWidget):
         finally:
             self.blockSignals(False)
         return False
+
+    def refresh_all_entries_info(self) -> None:
+        self.blockSignals(True)
+        try:
+            for row in range(self.rowCount()):
+                item0 = self.item(row, self.COL_CHECK)
+                if item0 is None:
+                    continue
+                entry = item0.data(Qt.ItemDataRole.UserRole)
+                if not isinstance(entry, TrackEntry):
+                    continue
+                self._refresh_info_cell(row, entry)
+                self._set_action_cell(row, entry)
+        finally:
+            self.blockSignals(False)
+
 
     def set_audio_sync_available(self, available: bool) -> None:
         available = bool(available)

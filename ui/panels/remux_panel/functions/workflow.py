@@ -198,6 +198,8 @@ def restore(panel, config, infos):
         panel._chapter_panel._modified = True
     panel._workflow_options = {key: getattr(config, key) for key in
         ("sync_mode", "sync_subtitles", "sync_calibrations", "crossfade_ms", "clean_nfo")}
+    panel._sync_entry_calibrations()
+    panel._track_table.refresh_all_entries_info()
     panel._workflow_loading = False
     panel.setEnabled(True)
     panel._refresh_audio_sync_buttons()

@@ -73,6 +73,7 @@ class TrackEntry:
     encode_plan_modified: bool = field(default=False, repr=False)
     sync_rewrite_label: str = field(default="", repr=False)
     sync_rewrite_mode: str = field(default="", repr=False)  # "" = auto, "offset" = sync standard forcée
+    sync_calibration: dict | None = field(default=None, repr=False)
 
     # Flags MKV éditables (transmis à FFmpeg si modifiés)
     flag_enabled:          bool = field(default=True,  repr=False)  # --track-enabled-flag
@@ -121,6 +122,24 @@ class TrackEntry:
         return "  ·  ".join(parts)
 
     @property
+    def cuts_count(self) -> int:
+        """Nombre de coupures intermédiaires (> 0 si multi-segments)."""
+        if not self.sync_calibration or not isinstance(self.sync_calibration, dict):
+            return 0
+        segments = self.sync_calibration.get("segments", [])
+        return max(0, len(segments) - 1)
+
+    @property
+    def cuts_label(self) -> str:
+        """Libellé affiché dans le tableau pour signaler les coupures intermédiaires."""
+        count = self.cuts_count
+        if count <= 0:
+            return ""
+        if count == 1:
+            return "✂ 1 coupure"
+        return f"✂ {count} coupures"
+
+    @property
     def full_info_label(self) -> str:
         """Info technique + flags actifs (affichage colonne Info)."""
         parts = [
@@ -130,6 +149,7 @@ class TrackEntry:
                 self.display_info,
                 self.flags_label,
                 self.time_shift_label,
+                self.cuts_label,
                 self.sync_rewrite_label,
             )
             if p

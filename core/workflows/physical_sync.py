@@ -112,11 +112,29 @@ def preparation_commands(config, root, ffmpeg):
     return result
 
 
-def prepare_physical(config, root: Path, ffmpeg, run):
+def prepare_physical(config, root: Path, ffmpeg, run, log=None):
     from core.workflows.subtitle_sync import shift_file
     sources = [replace(s, tracks=[replace(t) for t in s.tracks]) for s in config.sources]
     order = list(config.track_order)
     for mapped, output, command, calibration in preparation_commands(config, root, ffmpeg):
+        if log is not None:
+            track = mapped.track
+            segments = calibration.segments
+            if len(segments) > 1:
+                log(
+                    "INFO",
+                    f"Synchronisation physique (réécriture exacte) : piste #{mapped.stream_index} "
+                    f"({track.track_type} {track.codec}) — {len(segments)} segments ({len(segments) - 1} coupures, fondu {config.crossfade_ms} ms) :"
+                )
+                for line in calibration.summary_lines():
+                    log("INFO", f"  • {line}")
+            else:
+                shift = segments[0].shift_ms if segments else 0.0
+                log(
+                    "INFO",
+                    f"Synchronisation physique (réécriture exacte) : piste #{mapped.stream_index} "
+                    f"({track.track_type} {track.codec}) — décalage {shift:+.1f} ms"
+                )
         run(command, "physical-sync")
         if mapped.track.track_type == "subtitle":
             shift_file(output, output, calibration)
@@ -127,3 +145,4 @@ def prepare_physical(config, root: Path, ffmpeg, run):
             if item[0] == mapped.source_file_index and item[1] == mapped.stream_index and (len(item) < 3 or item[2] == track.entry_id):
                 order[index] = (source_index, 0, track.entry_id)
     return replace(config, sources=sources, track_order=order, sync_mode="container", sync_calibrations={})
+

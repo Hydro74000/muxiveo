@@ -21,9 +21,11 @@ _FILE_PH_H = 100
 _TRACK_INFO_OFFSET_VALUE_ROLE = int(Qt.ItemDataRole.UserRole) + 40
 _TRACK_INFO_SYNC_LABEL_ROLE = int(Qt.ItemDataRole.UserRole) + 41
 _TRACK_INFO_DISABLED_LABEL_ROLE = int(Qt.ItemDataRole.UserRole) + 42
+_TRACK_INFO_CUTS_LABEL_ROLE = int(Qt.ItemDataRole.UserRole) + 43
 _TRACK_INFO_OFFSET_NEG_COLOR = QColor("#d92f2f")
 _TRACK_INFO_OFFSET_POS_COLOR = QColor("#1f9d55")
 _TRACK_INFO_OFFSET_COLOR = _TRACK_INFO_OFFSET_NEG_COLOR
+_TRACK_INFO_CUTS_COLOR = QColor("#e5a50a")
 
 _TC_RE = re.compile(r"^(\d+):(\d{2}):(\d{2})(?:[.,](\d+))?$")
 

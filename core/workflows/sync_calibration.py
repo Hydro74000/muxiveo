@@ -51,6 +51,33 @@ class SyncCalibration:
         except (KeyError, TypeError) as exc:
             raise ValueError("Calibration invalide.") from exc
 
+    @property
+    def cuts_count(self) -> int:
+        return max(0, len(self.segments) - 1)
+
+    @staticmethod
+    def format_timestamp(ms: float) -> str:
+        total_sec = max(0.0, float(ms) / 1000.0)
+        h = int(total_sec // 3600)
+        m = int((total_sec % 3600) // 60)
+        s = total_sec % 60
+        return f"{h:02d}:{m:02d}:{s:06.3f}"
+
+    def summary_lines(self) -> list[str]:
+        lines: list[str] = []
+        prev_shift = 0.0
+        for i, segment in enumerate(self.segments):
+            ts = self.format_timestamp(segment.start_ms)
+            if i == 0:
+                lines.append(f"Segment 1 : départ à {ts} -> décalage {segment.shift_ms:+.1f} ms")
+            else:
+                delta = segment.shift_ms - prev_shift
+                lines.append(
+                    f"Segment {i + 1} : coupure à {ts} -> décalage {segment.shift_ms:+.1f} ms (saut de {delta:+.1f} ms)"
+                )
+            prev_shift = segment.shift_ms
+        return lines
+
     def intervals(self, start_ms: float, end_ms: float):
         """Découpe aux jonctions et retire les parties écrasées par un saut négatif."""
         previous_end = 0.0
@@ -63,3 +90,17 @@ class SyncCalibration:
                 if b > a:
                     yield a, b
             previous_end = max(previous_end, stop + segment.shift_ms)
+
+
+def format_calibration_summary(calibration_or_dict: SyncCalibration | dict | None) -> list[str]:
+    if calibration_or_dict is None:
+        return []
+    if isinstance(calibration_or_dict, SyncCalibration):
+        return calibration_or_dict.summary_lines()
+    if isinstance(calibration_or_dict, dict):
+        try:
+            return SyncCalibration.from_dict(calibration_or_dict).summary_lines()
+        except Exception:
+            return []
+    return []
+

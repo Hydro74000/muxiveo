@@ -147,7 +147,10 @@ class RemuxPanel(QWidget):
 
     _inspection_done = Signal(str, object)
     _inspection_error = Signal(str, str)
-    _audio_sync_done = Signal(str, str, int, float)
+    _audio_sync_done = Signal(
+        (str, str, int, float),
+        (str, str, int, float, object),
+    )
     _audio_sync_error = Signal(str, str)
     _preview_compiled = Signal(int, str)
 
@@ -219,7 +222,10 @@ class RemuxPanel(QWidget):
         self._inspection_error.connect(
             self._on_inspection_error, Qt.ConnectionType.QueuedConnection
         )
-        self._audio_sync_done.connect(
+        self._audio_sync_done[str, str, int, float].connect(
+            self._on_audio_sync_done, Qt.ConnectionType.QueuedConnection
+        )
+        self._audio_sync_done[str, str, int, float, object].connect(
             self._on_audio_sync_done, Qt.ConnectionType.QueuedConnection
         )
         self._audio_sync_error.connect(
@@ -1065,7 +1071,19 @@ class RemuxPanel(QWidget):
         )
         return reply == QMessageBox.StandardButton.Yes
 
+    def _sync_entry_calibrations(self, tracks: list[TrackEntry] | None = None) -> None:
+        if tracks is None:
+            tracks = self._track_table.current_tracks()
+        calibrations = self._workflow_options.get("sync_calibrations", {})
+        for entry in tracks:
+            source_idx = self._source_index_for_file_id(entry.file_id)
+            if source_idx is not None and str(source_idx) in calibrations:
+                entry.sync_calibration = calibrations[str(source_idx)]
+            else:
+                entry.sync_calibration = None
+
     def _replace_track_table_tracks(self, tracks: list[TrackEntry]) -> None:
+        self._sync_entry_calibrations(tracks)
         self._auto_sync_entry_ids.intersection_update({track.entry_id for track in tracks})
         self._track_table.set_auto_sync_cancelable_entries(self._auto_sync_entry_ids)
         self._track_table.blockSignals(True)
@@ -1548,6 +1566,10 @@ class RemuxPanel(QWidget):
         if not self._track_table.update_time_shift(entry.entry_id, 0):
             return
 
+        if source_index is not None and "sync_calibrations" in self._workflow_options:
+            self._workflow_options["sync_calibrations"].pop(str(source_index), None)
+        entry.sync_calibration = None
+
         self._auto_sync_entry_ids.discard(entry.entry_id)
         if not self._file_has_shifted_timeline_tracks(entry.file_id):
             self._source_sync_offsets_ms.pop(entry.file_id, None)
@@ -1560,6 +1582,8 @@ class RemuxPanel(QWidget):
                 old_chapter_offset_ms,
                 new_chapter_offset_ms,
             )
+        self._sync_entry_calibrations()
+        self._track_table.refresh_all_entries_info()
         self._refresh_sync_action_buttons()
         self.log_message.emit(
             "INFO",
@@ -1600,6 +1624,10 @@ class RemuxPanel(QWidget):
         self._source_sync_offsets_ms.clear()
         self._auto_sync_entry_ids.clear()
         self._chapter_sync_cancelled_source_ids.clear()
+        if "sync_calibrations" in self._workflow_options:
+            self._workflow_options["sync_calibrations"].clear()
+        self._sync_entry_calibrations()
+        self._track_table.refresh_all_entries_info()
         self._update_chapters_from_sources()
         self._sync_selected_chapters_after_source_offset_change(
             selected_source_index,
@@ -1669,20 +1697,43 @@ class RemuxPanel(QWidget):
 
         def _task() -> None:
             try:
-                workflow = AudioSyncWorkflow(
-                    ffmpeg_bin=self._config.tool_ffmpeg,
-                    ffprobe_bin=self._config.tool_ffprobe,
-                    log_cb=self.log_message.emit,
+                from core.workflows.audio_sync_scan import AudioSyncScanner
+                scanner = AudioSyncScanner(
+                    ffmpeg=self._config.tool_ffmpeg,
+                    ffprobe=self._config.tool_ffprobe,
                 )
-                result = workflow.detect_offset(reference, target)
+                calibration = scanner.scan(
+                    reference,
+                    target,
+                    detect_cuts=True,
+                    log=lambda msg: self.log_message.emit("INFO", f"Analyse acoustique : {msg}"),
+                )
                 self._audio_sync_done.emit(
                     target_entry_id,
                     reference_entry_id,
-                    result.offset_ms,
-                    result.confidence,
+                    round(calibration.segments[0].shift_ms),
+                    calibration.confidence,
+                    calibration,
                 )
             except Exception as exc:
-                self._audio_sync_error.emit(target_entry_id, str(exc))
+                try:
+                    workflow = AudioSyncWorkflow(
+                        ffmpeg_bin=self._config.tool_ffmpeg,
+                        ffprobe_bin=self._config.tool_ffprobe,
+                        log_cb=self.log_message.emit,
+                    )
+                    result = workflow.detect_offset(reference, target)
+                    from core.workflows.sync_calibration import SyncCalibration
+                    cal = SyncCalibration.linear(result.offset_ms)
+                    self._audio_sync_done.emit(
+                        target_entry_id,
+                        reference_entry_id,
+                        result.offset_ms,
+                        result.confidence,
+                        cal,
+                    )
+                except Exception:
+                    self._audio_sync_error.emit(target_entry_id, str(exc))
 
         self._executor.submit(_task)
 
@@ -1692,6 +1743,7 @@ class RemuxPanel(QWidget):
         reference_entry_id: str,
         offset_ms: int,
         confidence: float,
+        calibration: object = None,
     ) -> None:
         try:
             tracks_by_id = {
@@ -1705,24 +1757,69 @@ class RemuxPanel(QWidget):
 
             if reference_file_id and reference_file_id != target_file_id:
                 self._apply_source_sync_offset(reference_file_id, 0)
+                ref_source_idx = self._source_index_for_file_id(reference_file_id)
+                if ref_source_idx is not None and "sync_calibrations" in self._workflow_options:
+                    self._workflow_options["sync_calibrations"].pop(str(ref_source_idx), None)
+
+            target_source_idx = self._source_index_for_file_id(target_file_id)
+            cal_obj = None
+            if calibration is not None:
+                if hasattr(calibration, "segments"):
+                    cal_obj = calibration
+                elif isinstance(calibration, dict):
+                    try:
+                        from core.workflows.sync_calibration import SyncCalibration
+                        cal_obj = SyncCalibration.from_dict(calibration)
+                    except Exception:
+                        cal_obj = None
+
+            if cal_obj is not None and len(cal_obj.segments) > 1:
+                if "sync_calibrations" not in self._workflow_options:
+                    self._workflow_options["sync_calibrations"] = {}
+                self._workflow_options["sync_calibrations"][str(target_source_idx)] = cal_obj.to_dict()
+                if target_entry is not None:
+                    target_entry.sync_calibration = cal_obj.to_dict()
+            else:
+                if target_source_idx is not None and "sync_calibrations" in self._workflow_options:
+                    self._workflow_options["sync_calibrations"].pop(str(target_source_idx), None)
+                if target_entry is not None:
+                    target_entry.sync_calibration = None
+
             if self._apply_source_sync_offset(
                 target_file_id,
                 offset_ms,
             ):
+                self._sync_entry_calibrations()
+                self._track_table.refresh_all_entries_info()
                 offset_label = f"{int(offset_ms):+d}"
                 confidence_label = f"{float(confidence):.2f}"
-                self.log_message.emit(
-                    "OK",
-                    translate_text(
-                        "Synchronisation audio améliorée appliquée : {offset} ms (confiance {confidence}).",
-                        offset=offset_label,
-                        confidence=confidence_label,
-                    ),
-                )
+                if cal_obj is not None and len(cal_obj.segments) > 1:
+                    cuts_count = len(cal_obj.segments) - 1
+                    self.log_message.emit(
+                        "OK",
+                        translate_text(
+                            "Synchronisation audio multi-segments appliquée : {count} coupure(s) détectée(s), départ {offset} ms (confiance {confidence}).",
+                            count=cuts_count,
+                            offset=offset_label,
+                            confidence=confidence_label,
+                        ),
+                    )
+                    for line in cal_obj.summary_lines():
+                        self.log_message.emit("INFO", f"  • {line}")
+                else:
+                    self.log_message.emit(
+                        "OK",
+                        translate_text(
+                            "Synchronisation audio améliorée appliquée : {offset} ms (confiance {confidence}).",
+                            offset=offset_label,
+                            confidence=confidence_label,
+                        ),
+                    )
                 self._rebuild_preview()
                 self._emit_signals()
         finally:
             self.audio_sync_finished.emit(True, {"entry_id": entry_id})
+
 
     def _on_audio_sync_error(self, _entry_id: str, detail: str) -> None:
         try:

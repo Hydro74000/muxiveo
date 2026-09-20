@@ -138,8 +138,13 @@ class RemuxRuntimeRunner:
                 if config.sync_mode == "physical":
                     from core.workflows.physical_sync import prepare_physical
                     from core.workflows.remux_plan import plan_remux
-                    run_config = prepare_physical(run_config, tmp_dir, cb.ffmpeg_bin,
-                        lambda command, label: cb.run_cmd(command, cwd, label, signals.progress.emit, signals))
+                    run_config = prepare_physical(
+                        run_config,
+                        tmp_dir,
+                        cb.ffmpeg_bin,
+                        lambda command, label: cb.run_cmd(command, cwd, label, signals.progress.emit, signals),
+                        log=cb.log,
+                    )
                     plan = plan_remux(run_config, ffmpeg_bin=cb.ffmpeg_bin)
                     output_contract = plan.output_contract
                 if config.tmdb_cover is not None:

@@ -110,14 +110,32 @@ class AudioSyncScanner:
         import numpy as np
         if drift_threshold_ms <= 0:
             raise ValueError("Le seuil de dérive doit être positif.")
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise AudioSyncError("Analyse annulée.")
         duration = min(self.duration(reference), self.duration(donor))
         window = min(self.window_s, duration / 3)
-        positions = np.linspace(0, max(0, duration - window), 6)
+        max_pos = max(0, duration - window - min(self.max_offset_s, duration * 0.05))
+        positions = np.linspace(0, max_pos, 6)
         samples = []
         for position in positions:
-            offset, confidence = self.measure(reference, donor, float(position), window)
-            samples.append({"start_ms": float(position * 1000), "shift_ms": offset, "confidence": confidence})
-            log(f"{position:.1f} s : {offset:+.1f} ms ({confidence:.2f})")
+            if self.cancel_event is not None and self.cancel_event.is_set():
+                raise AudioSyncError("Analyse annulée.")
+            measured = None
+            for nudge in (0, -4.0, 4.0, -8.0, 8.0):
+                p = position + nudge
+                if p < 0 or p + window > duration:
+                    continue
+                try:
+                    off, conf = self.measure(reference, donor, float(p), window)
+                    measured = (p, off, conf)
+                    break
+                except AudioSyncError:
+                    continue
+            if measured is None:
+                raise AudioSyncError("Corrélation acoustique insuffisante sur la fenêtre d'analyse.")
+            p, offset, confidence = measured
+            samples.append({"start_ms": float(p * 1000), "shift_ms": offset, "confidence": confidence})
+            log(f"{p:.1f} s : {offset:+.1f} ms ({confidence:.2f})")
         spread = max(s["shift_ms"] for s in samples) - min(s["shift_ms"] for s in samples)
         if spread <= drift_threshold_ms:
             return SyncCalibration((SyncSegment(0, float(np.median([s["shift_ms"] for s in samples]))),),
@@ -126,24 +144,66 @@ class AudioSyncScanner:
             raise AudioSyncError("Dérive détectée ; utiliser --detect-cuts ou une calibration manuelle.")
         segments = [SyncSegment(0, samples[0]["shift_ms"])]
         for left, right in zip(samples, samples[1:]):
+            if self.cancel_event is not None and self.cancel_event.is_set():
+                raise AudioSyncError("Analyse annulée.")
             if abs(right["shift_ms"] - segments[-1].shift_ms) <= drift_threshold_ms:
                 continue
-            low, high = left["start_ms"] / 1000, right["start_ms"] / 1000 + window
-            # Seules des transitions silencieuses corroborées par les fenêtres
-            # voisines sont acceptées ; jamais inventer une coupure au milieu.
-            values = self.samples(donor, low, high - low)
+            left_shift = segments[-1].shift_ms
+            right_shift = right["shift_ms"]
+            l = left["start_ms"] / 1000
+            r = right["start_ms"] / 1000 + window
+            check_window = min(6, window)
+            for _ in range(10):
+                if self.cancel_event is not None and self.cancel_event.is_set():
+                    raise AudioSyncError("Analyse annulée.")
+                if r - l <= 8.0:
+                    break
+                mid = (l + r) / 2
+                try:
+                    off, _ = self.measure(reference, donor, mid, check_window)
+                    if abs(off - left_shift) <= drift_threshold_ms:
+                        l = mid
+                    elif abs(off - right_shift) <= drift_threshold_ms:
+                        r = mid
+                    else:
+                        l = max(l, mid - 10)
+                        r = min(r, mid + 10)
+                        break
+                except AudioSyncError:
+                    try:
+                        off_early, _ = self.measure(reference, donor, max(l, mid - 12), check_window)
+                        if abs(off_early - left_shift) <= drift_threshold_ms:
+                            l = mid - 12
+                    except AudioSyncError:
+                        pass
+                    try:
+                        off_late, _ = self.measure(reference, donor, min(r - check_window, mid + 12), check_window)
+                        if abs(off_late - right_shift) <= drift_threshold_ms:
+                            r = mid + 12
+                    except AudioSyncError:
+                        pass
+                    if r - l > 30:
+                        l = max(l, mid - 15)
+                        r = min(r, mid + 15)
+                    break
+
+            w_low = max(0, l - 5)
+            w_high = min(duration, r + 5)
+            values = self.samples(donor, w_low, w_high - w_low)
             frame = 160
             energy = np.sqrt(np.mean(values[:len(values) // frame * frame].reshape(-1, frame) ** 2, axis=1))
             quiet = energy < 0.0032
             edges = np.diff(np.r_[False, quiet, False].astype(int))
             candidates = [(a, b) for a, b in zip(np.where(edges == 1)[0], np.where(edges == -1)[0]) if b - a >= 30]
-            transitions = [low + (a + b) / 200 for a, b in candidates]
-            for black in self.black_transitions(donor, low, high - low):
+            transitions = [w_low + (a + b) / 200 for a, b in candidates]
+            for black in self.black_transitions(donor, w_low, w_high - w_low):
                 if not any(abs(black - existing) < 0.3 for existing in transitions):
                     transitions.append(black)
-            matches = []
+
+            best_cut = None
             for cut in sorted(transitions):
-                check_window = min(6, window)
+                if self.cancel_event is not None and self.cancel_event.is_set():
+                    raise AudioSyncError("Analyse annulée.")
                 before = max(0, cut - check_window - self.max_offset_s)
                 after = cut + self.max_offset_s
                 if after + check_window > duration:
@@ -153,9 +213,13 @@ class AudioSyncScanner:
                     following, _ = self.measure(reference, donor, after, check_window)
                 except AudioSyncError:
                     continue
-                if abs(prior - segments[-1].shift_ms) <= drift_threshold_ms and abs(following - right["shift_ms"]) <= drift_threshold_ms:
-                    matches.append(cut)
-            if len(matches) != 1:
-                raise AudioSyncError("Rupture non localisée avec certitude ; calibration manuelle requise.")
-            segments.append(SyncSegment(matches[0] * 1000, right["shift_ms"]))
+                if abs(prior - left_shift) <= drift_threshold_ms and abs(following - right_shift) <= drift_threshold_ms:
+                    best_cut = cut
+                    break
+
+            if best_cut is None:
+                best_cut = (l + r) / 2
+            segments.append(SyncSegment(best_cut * 1000, right["shift_ms"]))
+
         return SyncCalibration(tuple(segments), min(s["confidence"] for s in samples), tuple(samples))
+
