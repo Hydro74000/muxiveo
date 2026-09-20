@@ -623,6 +623,157 @@ def test_sync_studio_dialog_multi_segment_navigation_and_zoom(qt_app, tmp_path):
     dialog.close()
 
 
+def test_waveform_view_display_mode_and_overlay_paint(qt_app):
+    from ui.widgets.waveform_view import WaveformView
+    from PySide6.QtGui import QImage
+
+    wv = WaveformView()
+    wv.resize(800, 200)
+
+    mode_events = []
+    wv.mode_changed.connect(lambda m: mode_events.append(m))
+
+    assert wv.display_mode == "split"
+
+    # Toggle to overlay
+    new_mode = wv.toggle_display_mode()
+    assert new_mode == "overlay"
+    assert wv.display_mode == "overlay"
+    assert mode_events == ["overlay"]
+
+    # Toggle back to split
+    new_mode = wv.toggle_display_mode()
+    assert new_mode == "split"
+    assert wv.display_mode == "split"
+    assert mode_events == ["overlay", "split"]
+
+    # Explicit set
+    wv.set_display_mode("overlay")
+    assert wv.display_mode == "overlay"
+
+    # Audio data and render in overlay mode
+    ref = np.sin(np.linspace(0, 50, 320000)).astype(np.float32)
+    tgt = np.cos(np.linspace(0, 50, 320000)).astype(np.float32)
+    wv.set_audio_data(ref, tgt, sample_rate=16000, start_time_ms=0.0, cut_time_ms=5000.0)
+    wv.set_shift(-120.0)
+
+    img = QImage(800, 200, QImage.Format.Format_ARGB32)
+    wv.render(img)
+
+    # Render in split mode
+    wv.set_display_mode("split")
+    wv.render(img)
+    wv.close()
+
+
+def test_sync_studio_dialog_mode_switch_button(qt_app, tmp_path):
+    from ui.panels.remux_panel.widgets.sync_studio_dialog import SyncStudioDialog
+
+    target_track = TrackEntry(1, "audio", "E-AC-3", "5.1  640 kbps", "fre", "VFF", time_shift_ms=-67, file_id="src1")
+    ref_track = TrackEntry(1, "audio", "DTS-HD MA", "5.1  1509 kbps", "eng", "VO", time_shift_ms=0, file_id="src0")
+
+    calib = calibration((0, -67), (239738, -180)).to_dict()
+    dialog = SyncStudioDialog(
+        target_entry=target_track,
+        target_source_path=tmp_path / "target.mkv",
+        target_stream_index=1,
+        reference_entry=ref_track,
+        reference_source_path=tmp_path / "ref.mkv",
+        reference_stream_index=1,
+        calibration=calib,
+    )
+
+    assert dialog.btn_mode_switch is not None
+    assert "Scindée" in dialog.btn_mode_switch.text() or "Split" in dialog.btn_mode_switch.text()
+
+    # Click switch button -> Overlay
+    dialog.btn_mode_switch.click()
+    assert dialog.waveform.display_mode == "overlay"
+    assert "Superposée" in dialog.btn_mode_switch.text() or "Overlay" in dialog.btn_mode_switch.text()
+
+    # Click again -> Split
+    dialog.btn_mode_switch.click()
+    assert dialog.waveform.display_mode == "split"
+    assert "Scindée" in dialog.btn_mode_switch.text() or "Split" in dialog.btn_mode_switch.text()
+
+    dialog.close()
+
+
+def test_panel_sync_studio_propagates_to_all_source_tracks(qt_app, monkeypatch, tmp_path):
+    from unittest.mock import MagicMock
+    from core.config import AppConfig
+    from ui.panels.remux_panel.panel import RemuxPanel
+    from ui.panels.remux_panel.models import SourceFile
+    from core.workflows.remux_models import TrackEntry
+    from core.workflows.sync_calibration import SyncCalibration
+
+    panel = RemuxPanel(AppConfig())
+    src_a = tmp_path / "ref.mkv"
+    src_b = tmp_path / "donor_multi.mkv"
+    src_a.touch()
+    src_b.touch()
+
+    ref_audio = TrackEntry(1, "audio", "E-AC-3", "5.1  640 kbps", "eng", "VO", file_id="fid_a")
+
+    # Donor file has: Video, 2 Audio tracks (5.1 & 2.0), and 1 Subtitle track
+    tgt_video = TrackEntry(0, "video", "AVC", "1080p", "und", "", file_id="fid_b", time_shift_ms=0)
+    tgt_audio1 = TrackEntry(1, "audio", "E-AC-3", "5.1  640 kbps", "fre", "VF 5.1", file_id="fid_b", time_shift_ms=0)
+    tgt_audio2 = TrackEntry(2, "audio", "AAC", "2.0  192 kbps", "fre", "VF 2.0", file_id="fid_b", time_shift_ms=0)
+    tgt_sub = TrackEntry(3, "subtitle", "SubRip", "", "fre", "VFF", file_id="fid_b", time_shift_ms=0)
+
+    source_a = SourceFile(id="fid_a", path=src_a, color="#111", info=MagicMock(), tracks=[ref_audio])
+    source_b = SourceFile(
+        id="fid_b",
+        path=src_b,
+        color="#222",
+        info=MagicMock(),
+        tracks=[tgt_video, tgt_audio1, tgt_audio2, tgt_sub],
+    )
+
+    panel._source_files = [source_a, source_b]
+    panel._source_colors = {"fid_a": "#111", "fid_b": "#222"}
+    panel._source_names = {"fid_a": "ref.mkv", "fid_b": "donor_multi.mkv"}
+    panel._track_table.append_tracks("#111", [ref_audio])
+    panel._track_table.append_tracks("#222", [tgt_video, tgt_audio1, tgt_audio2, tgt_sub])
+
+    class MockSyncStudioDialog:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def exec(self):
+            from PySide6.QtWidgets import QDialog
+            return QDialog.DialogCode.Accepted
+
+        def result_calibration(self):
+            cal = SyncCalibration.from_dict(calibration((0, -100), (200000, -250)).to_dict())
+            return cal, -100
+
+    monkeypatch.setattr("ui.panels.remux_panel.widgets.sync_studio_dialog.SyncStudioDialog", MockSyncStudioDialog)
+
+    # Trigger Sync Studio on tgt_audio1
+    panel._on_sync_studio_requested(tgt_audio1)
+
+    # 1. Video must NOT be affected
+    assert tgt_video.time_shift_ms == 0
+    assert tgt_video.sync_calibration is None
+
+    # 2. Both Audio tracks and Subtitle track in target_source must have updated time_shift_ms and sync_calibration
+    assert tgt_audio1.time_shift_ms == -100
+    assert tgt_audio1.cuts_count == 1
+    assert tgt_audio2.time_shift_ms == -100
+    assert tgt_audio2.cuts_count == 1
+    assert tgt_sub.time_shift_ms == -100
+    assert tgt_sub.cuts_count == 1
+
+    # 3. Both Audio tracks and Subtitle track in track_table must also be updated
+    table_tracks = {t.entry_id: t for t in panel._track_table.current_tracks()}
+    assert table_tracks[tgt_audio1.entry_id].time_shift_ms == -100
+    assert table_tracks[tgt_audio2.entry_id].time_shift_ms == -100
+    assert table_tracks[tgt_sub.entry_id].time_shift_ms == -100
+    assert table_tracks[tgt_video.entry_id].time_shift_ms == 0
+
+
+
 
 
 

@@ -4198,6 +4198,26 @@
   "Astuce : Ctrl + Molette pour zoomer • Glisser pour faire défiler la forme d'onde": {
     "fra": "Astuce : Ctrl + Molette pour zoomer • Glisser pour faire défiler la forme d'onde",
     "eng": "Tip: Ctrl + Wheel to zoom • Drag to scroll waveform"
+  },
+  "Vue : Scindée": {
+    "fra": "Vue : Scindée",
+    "eng": "View: Split"
+  },
+  "Vue : Superposée": {
+    "fra": "Vue : Superposée",
+    "eng": "View: Overlay"
+  },
+  "Passer en vue superposée (même axe)": {
+    "fra": "Passer en vue superposée (même axe)",
+    "eng": "Switch to overlaid view (same axis)"
+  },
+  "Passer en vue scindée (haut/bas)": {
+    "fra": "Passer en vue scindée (haut/bas)",
+    "eng": "Switch to split view (top/bottom)"
+  },
+  "Synchro Studio : synchronisation appliquée à {count} piste(s) de la source « {src} » ({offset} ms{cuts}).": {
+    "fra": "Synchro Studio : synchronisation appliquée à {count} piste(s) de la source « {src} » ({offset} ms{cuts}).",
+    "eng": "Synchro Studio: synchronization applied to {count} track(s) of source \"{src}\" ({offset} ms{cuts})."
   }
 }
 

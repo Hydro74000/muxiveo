@@ -52,6 +52,7 @@ class WaveformView(QWidget):
 
     zoom_changed = Signal(float, float)
     pan_changed = Signal(float, float, float)
+    mode_changed = Signal(str)
 
     def __init__(
         self,
@@ -64,6 +65,7 @@ class WaveformView(QWidget):
         self.setMinimumHeight(_scale(180))
         self.reference_label = reference_label
         self.target_label = target_label
+        self.display_mode: str = "split"  # "split" (scindé) ou "overlay" (superposé)
 
         # Données audio
         self._ref_samples: np.ndarray = np.array([], dtype=np.float32)
@@ -149,6 +151,18 @@ class WaveformView(QWidget):
     def set_shift(self, shift_ms: float) -> None:
         self.shift_ms = float(shift_ms)
         self.update()
+
+    def set_display_mode(self, mode: str) -> None:
+        mode = "overlay" if mode == "overlay" else "split"
+        if mode != self.display_mode:
+            self.display_mode = mode
+            self.mode_changed.emit(self.display_mode)
+            self.update()
+
+    def toggle_display_mode(self) -> str:
+        new_mode = "overlay" if self.display_mode == "split" else "split"
+        self.set_display_mode(new_mode)
+        return self.display_mode
 
     def set_zoom(self, zoom_factor: float, center_ratio: float = 0.5) -> None:
         new_zoom = max(1.0, min(400.0, float(zoom_factor)))
@@ -300,24 +314,38 @@ class WaveformView(QWidget):
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.loading_text)
             return
 
-        # Lignes centrales pour référence et cible
-        y_ref_center = int(h * 0.28)
-        y_tgt_center = int(h * 0.72)
+        is_overlay = (self.display_mode == "overlay")
 
-        # Ligne de séparation médiane
-        pen_sep = QPen(QColor(_C.BORDER))
-        pen_sep.setStyle(Qt.PenStyle.SolidLine)
-        pen_sep.setWidthF(_scale(1.0))
-        painter.setPen(pen_sep)
-        painter.drawLine(0, int(h * 0.50), w, int(h * 0.50))
+        if is_overlay:
+            y_ref_center = int(h * 0.50)
+            y_tgt_center = int(h * 0.50)
+            max_amp = h * 0.36
 
-        # Guides horizontaux pointillés
-        pen_guide = QPen(QColor(_C.BORDER))
-        pen_guide.setStyle(Qt.PenStyle.DashLine)
-        pen_guide.setWidthF(_scale(0.8))
-        painter.setPen(pen_guide)
-        painter.drawLine(0, y_ref_center, w, y_ref_center)
-        painter.drawLine(0, y_tgt_center, w, y_tgt_center)
+            # Guide horizontal central
+            pen_guide = QPen(QColor(_C.BORDER))
+            pen_guide.setStyle(Qt.PenStyle.DashLine)
+            pen_guide.setWidthF(_scale(0.8))
+            painter.setPen(pen_guide)
+            painter.drawLine(0, y_ref_center, w, y_ref_center)
+        else:
+            y_ref_center = int(h * 0.28)
+            y_tgt_center = int(h * 0.72)
+            max_amp = h * 0.20
+
+            # Ligne de séparation médiane
+            pen_sep = QPen(QColor(_C.BORDER))
+            pen_sep.setStyle(Qt.PenStyle.SolidLine)
+            pen_sep.setWidthF(_scale(1.0))
+            painter.setPen(pen_sep)
+            painter.drawLine(0, int(h * 0.50), w, int(h * 0.50))
+
+            # Guides horizontaux pointillés
+            pen_guide = QPen(QColor(_C.BORDER))
+            pen_guide.setStyle(Qt.PenStyle.DashLine)
+            pen_guide.setWidthF(_scale(0.8))
+            painter.setPen(pen_guide)
+            painter.drawLine(0, y_ref_center, w, y_ref_center)
+            painter.drawLine(0, y_tgt_center, w, y_tgt_center)
 
         # Calcul de la plage temporelle visible
         t_start_ms = self.start_time_ms + self.pan_offset_ms
@@ -375,9 +403,9 @@ class WaveformView(QWidget):
         painter.drawLine(int(w * 0.5), 0, int(w * 0.5), h)
 
         # Rendu des formes d'onde
-        color_ref = QColor("#20c997")
-        color_tgt = QColor(_C.ACCENT)
-        max_amp = h * 0.20
+        color_ref = QColor(32, 201, 151, 190) if is_overlay else QColor("#20c997")
+        color_tgt = QColor(120, 140, 255, 190) if is_overlay else QColor(_C.ACCENT)
+        stroke_w = _scale(1.2) if is_overlay else _scale(1.0)
 
         if has_audio:
             # 1. Forme d'onde de Référence (VO)
@@ -385,7 +413,7 @@ class WaveformView(QWidget):
             scale_ref = max(float(np.max(peaks_ref)), 1e-4) if len(peaks_ref) > 0 else 1.0
 
             pen_ref = QPen(color_ref)
-            pen_ref.setWidthF(_scale(1.0))
+            pen_ref.setWidthF(stroke_w)
             painter.setPen(pen_ref)
             lines_ref = []
             for x in range(w):
@@ -404,7 +432,7 @@ class WaveformView(QWidget):
             scale_tgt = max(float(np.max(peaks_tgt)), 1e-4) if len(peaks_tgt) > 0 else 1.0
 
             pen_tgt = QPen(color_tgt)
-            pen_tgt.setWidthF(_scale(1.0))
+            pen_tgt.setWidthF(stroke_w)
             painter.setPen(pen_tgt)
             lines_tgt = []
             for x in range(w):
@@ -447,13 +475,16 @@ class WaveformView(QWidget):
         painter.setFont(font_lbl)
 
         # Légende Référence
-        painter.setPen(color_ref)
+        painter.setPen(QColor("#20c997"))
         painter.drawText(_scale(8), _scale(15), f"● {self.reference_label}")
 
         # Légende Cible avec décalage
-        painter.setPen(color_tgt)
+        painter.setPen(QColor(_C.ACCENT))
         shift_text = f" ({self.shift_ms:+.1f} ms)" if self.shift_ms else " (0.0 ms)"
-        painter.drawText(_scale(8), int(h * 0.50) + _scale(15), f"● {self.target_label}{shift_text}")
+        if is_overlay:
+            painter.drawText(_scale(175), _scale(15), f"● {self.target_label}{shift_text}")
+        else:
+            painter.drawText(_scale(8), int(h * 0.50) + _scale(15), f"● {self.target_label}{shift_text}")
 
         # Badge de niveau de zoom en haut à droite
         painter.setPen(QColor(_C.TEXT_SEC))

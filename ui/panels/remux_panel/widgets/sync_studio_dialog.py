@@ -232,6 +232,12 @@ class SyncStudioDialog(QDialog):
         self.btn_zoom_reset.clicked.connect(lambda: self.waveform.reset_zoom())
         wave_header.addWidget(self.btn_zoom_reset)
 
+        # Bascule Vue Scindée / Superposée
+        self.btn_mode_switch = _secondary_button(translate_text("Vue : Scindée"))
+        self.btn_mode_switch.setToolTip(translate_text("Passer en vue superposée (même axe)"))
+        self.btn_mode_switch.clicked.connect(self._toggle_waveform_mode)
+        wave_header.addWidget(self.btn_mode_switch)
+
         wc_layout.addLayout(wave_header)
 
         # Widget Waveform
@@ -444,6 +450,15 @@ class SyncStudioDialog(QDialog):
         self.zoom_scrollbar.setPageStep(int(visible_ms))
         self.zoom_scrollbar.setValue(int(pan_ms))
         self.zoom_scrollbar.blockSignals(False)
+
+    def _toggle_waveform_mode(self) -> None:
+        new_mode = self.waveform.toggle_display_mode()
+        if new_mode == "overlay":
+            self.btn_mode_switch.setText(translate_text("Vue : Superposée"))
+            self.btn_mode_switch.setToolTip(translate_text("Passer en vue scindée (haut/bas)"))
+        else:
+            self.btn_mode_switch.setText(translate_text("Vue : Scindée"))
+            self.btn_mode_switch.setToolTip(translate_text("Passer en vue superposée (même axe)"))
 
     def _update_cuts_table(self) -> None:
         if self.cuts_table is None:

@@ -1071,6 +1071,9 @@ class RemuxPanel(QWidget):
             tracks = self._track_table.current_tracks()
         calibrations = self._workflow_options.get("sync_calibrations", {})
         for entry in tracks:
+            if entry.track_type not in {"audio", "subtitle"}:
+                entry.sync_calibration = None
+                continue
             source_idx = self._source_index_for_file_id(entry.file_id)
             if source_idx is not None and str(source_idx) in calibrations:
                 entry.sync_calibration = calibrations[str(source_idx)]
@@ -1870,27 +1873,47 @@ class RemuxPanel(QWidget):
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             new_calibration, new_offset = dialog.result_calibration()
+            is_multi = len(new_calibration.segments) > 1
+            calib_dict = new_calibration.to_dict() if is_multi else None
+
             if target_source_idx is not None:
                 if "sync_calibrations" not in self._workflow_options:
                     self._workflow_options["sync_calibrations"] = {}
-                if len(new_calibration.segments) > 1:
-                    self._workflow_options["sync_calibrations"][str(target_source_idx)] = new_calibration.to_dict()
-                    entry.sync_calibration = new_calibration.to_dict()
+                if is_multi:
+                    self._workflow_options["sync_calibrations"][str(target_source_idx)] = calib_dict
                 else:
                     self._workflow_options["sync_calibrations"].pop(str(target_source_idx), None)
-                    entry.sync_calibration = None
+
+            # Reporter la synchro sur toutes les pistes audio/sous-titres de la même source
+            affected_count = 0
+            for sf in self._source_files:
+                if sf.id == entry.file_id:
+                    for t in sf.tracks:
+                        if t.track_type in {"audio", "subtitle"}:
+                            t.time_shift_ms = int(new_offset)
+                            t.sync_calibration = calib_dict
+
+            for t in self._track_table.current_tracks():
+                if t.file_id == entry.file_id and t.track_type in {"audio", "subtitle"}:
+                    t.time_shift_ms = int(new_offset)
+                    t.sync_calibration = calib_dict
+                    affected_count += 1
 
             self._apply_source_sync_offset(entry.file_id, new_offset)
             self._sync_entry_calibrations()
             self._track_table.refresh_all_entries_info()
             self._rebuild_preview()
             self._emit_signals()
+
+            cuts_info = f" ({len(new_calibration.segments) - 1} coupure(s))" if is_multi else ""
             self.log_message.emit(
                 "OK",
                 translate_text(
-                    "Synchro Studio : synchronisation mise à jour à {offset} ms pour la piste #{tid}.",
+                    "Synchro Studio : synchronisation appliquée à {count} piste(s) de la source « {src} » ({offset} ms{cuts}).",
+                    count=affected_count,
+                    src=target_source.path.name,
                     offset=f"{new_offset:+d}",
-                    tid=entry.mkv_tid,
+                    cuts=cuts_info,
                 ),
             )
 
