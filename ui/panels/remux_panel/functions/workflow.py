@@ -31,7 +31,11 @@ def setup(panel):
             color: {_C.TEXT_PRI};
             border-color: {_C.BORDER_LT};
         }}
-        QPushButton:pressed {{ background: {_C.BG_ACTIVE}; }}
+        QPushButton:pressed, QPushButton:open {{
+            background: {_C.BG_ACTIVE};
+            color: {_C.TEXT_PRI};
+            border-color: {_C.BORDER_LT};
+        }}
         QPushButton::menu-indicator {{
             subcontrol-origin: padding;
             subcontrol-position: center right;
@@ -57,6 +61,9 @@ def setup(panel):
         QMenu::item:selected {{
             background-color: {_C.BG_HOVER};
             color: {_C.TEXT_PRI};
+        }}
+        QMenu::item:disabled {{
+            color: {_C.TEXT_DIM};
         }}
         QMenu::separator {{
             height: 1px;

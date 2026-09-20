@@ -324,12 +324,12 @@ class RemuxPanel(QWidget):
         track_header.addWidget(btn_none)
 
         from ui.panels.remux_panel.functions.workflow import setup
-        export_profile_btn = setup(self)
+        workflow_btn = setup(self)
         save_profile_btn = _secondary_button("Éditer profil")
         save_profile_btn.clicked.connect(self._save_decision_profile)
         apply_profile_btn = _secondary_button("Appliquer profil")
         apply_profile_btn.clicked.connect(self._apply_decision_profile_dialog)
-        track_header.addWidget(export_profile_btn)
+        track_header.addWidget(workflow_btn)
         track_header.addWidget(save_profile_btn)
         track_header.addWidget(apply_profile_btn)
 
