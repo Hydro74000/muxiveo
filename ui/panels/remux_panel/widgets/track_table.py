@@ -176,6 +176,7 @@ class _TrackTable(QTableWidget):
     order_changed = Signal()
     extract_requested = Signal(object)  # TrackEntry
     audio_sync_requested = Signal(object)  # TrackEntry
+    subtitle_sync_requested = Signal(object)  # TrackEntry
     sync_studio_requested = Signal(object)  # TrackEntry
     auto_sync_cancel_requested = Signal(object)  # TrackEntry
     sync_rewrite_toggle_requested = Signal(object)  # TrackEntry
@@ -559,9 +560,14 @@ class _TrackTable(QTableWidget):
             )
             cuts_btn.clicked.connect(lambda _=None, e=entry: self._open_sync_studio(e))
             layout.addWidget(cuts_btn)
-        elif self._has_cancelable_auto_sync(entry) and entry.track_type == "audio":
+        elif self._has_cancelable_auto_sync(entry) and entry.track_type in {"audio", "subtitle"}:
+            tip = (
+                translate_text("Ouvrir le Synchro Studio (forme d'onde, sous-titres, écoute, ajustement)")
+                if entry.track_type == "subtitle"
+                else translate_text("Ouvrir le Synchro Studio (forme d'onde, écoute, ajustement)")
+            )
             studio_btn = self._make_action_button(
-                tooltip=translate_text("Ouvrir le Synchro Studio (forme d'onde, écoute, ajustement)"),
+                tooltip=tip,
                 icon=_waveform_icon("#6070f8", 13),
             )
             studio_btn.clicked.connect(lambda _=None, e=entry: self._open_sync_studio(e))
@@ -582,6 +588,13 @@ class _TrackTable(QTableWidget):
                 icon=_refresh_icon(_C.TEXT_SEC, 13),
             )
             sync_btn.clicked.connect(lambda _=None, e=entry: self.audio_sync_requested.emit(e))
+            layout.addWidget(sync_btn)
+        elif entry.track_type == "subtitle" and self._audio_sync_available:
+            sync_btn = self._make_action_button(
+                tooltip=translate_text("Synchroniser cette piste de sous-titres"),
+                icon=_refresh_icon("#5dcc8a", 13),
+            )
+            sync_btn.clicked.connect(lambda _=None, e=entry: self.subtitle_sync_requested.emit(e))
             layout.addWidget(sync_btn)
 
         edit_btn = self._make_action_button(
@@ -1082,10 +1095,27 @@ class _TrackTable(QTableWidget):
 
         if entry.track_type == "subtitle":
             menu = QMenu(self)
-            action = menu.addAction(translate_text("Extraire…"))
+            action_extract = menu.addAction(translate_text("Extraire…"))
+            action_studio = None
+            action_sync = None
+            action_cancel = None
+
+            if self._has_cancelable_auto_sync(entry) or entry.sync_calibration:
+                action_studio = menu.addAction(translate_text("Synchro Studio…"))
+                action_cancel = menu.addAction(translate_text("Annuler la synchro"))
+            elif self._audio_sync_available:
+                action_sync = menu.addAction(translate_text("Synchroniser cette piste de sous-titres…"))
+                action_studio = menu.addAction(translate_text("Synchro Studio…"))
+
             chosen = menu.exec(self.viewport().mapToGlobal(pos))
-            if chosen is action:
+            if chosen is action_extract:
                 self.extract_requested.emit(entry)
+            elif action_studio is not None and chosen is action_studio:
+                self._open_sync_studio(entry)
+            elif action_cancel is not None and chosen is action_cancel:
+                self.auto_sync_cancel_requested.emit(entry)
+            elif action_sync is not None and chosen is action_sync:
+                self.subtitle_sync_requested.emit(entry)
         elif entry.track_type == "audio":
             menu = QMenu(self)
             action_studio = None

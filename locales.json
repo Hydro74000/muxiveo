@@ -4222,6 +4222,74 @@
   "Synchro Studio : synchronisation appliquée à {count} piste(s) de la source « {src} » ({offset} ms{cuts}).": {
     "fra": "Synchro Studio : synchronisation appliquée à {count} piste(s) de la source « {src} » ({offset} ms{cuts}).",
     "eng": "Synchro Studio: synchronization applied to {count} track(s) of source \"{src}\" ({offset} ms{cuts})."
+  },
+  "FORME D'ONDE & SOUS-TITRES": {
+    "fra": "FORME D'ONDE & SOUS-TITRES",
+    "eng": "WAVEFORM & SUBTITLES"
+  },
+  "Ouvrir le Synchro Studio (forme d'onde, sous-titres, écoute, ajustement)": {
+    "fra": "Ouvrir le Synchro Studio (forme d'onde, sous-titres, écoute, ajustement)",
+    "eng": "Open Sync Studio (waveform, subtitles, playback, adjustment)"
+  },
+  "Synchroniser cette piste de sous-titres": {
+    "fra": "Synchroniser cette piste de sous-titres",
+    "eng": "Synchronize this subtitle track"
+  },
+  "Synchroniser cette piste de sous-titres…": {
+    "fra": "Synchroniser cette piste de sous-titres…",
+    "eng": "Synchronize this subtitle track…"
+  },
+  "Choisir la référence pour les sous-titres": {
+    "fra": "Choisir la référence pour les sous-titres",
+    "eng": "Choose reference for subtitles"
+  },
+  "Choisir la piste de référence (sous-titres ou audio).": {
+    "fra": "Choisir la piste de référence (sous-titres ou audio).",
+    "eng": "Choose reference track (subtitles or audio)."
+  },
+  "Aucune piste de référence compatible trouvée pour la synchronisation des sous-titres.": {
+    "fra": "Aucune piste de référence compatible trouvée pour la synchronisation des sous-titres.",
+    "eng": "No compatible reference track found for subtitle synchronization."
+  },
+  "Synchronisation des sous-titres : piste #{target} vs référence #{reference}…": {
+    "fra": "Synchronisation des sous-titres : piste #{target} vs référence #{reference}…",
+    "eng": "Subtitle synchronization: track #{target} vs reference #{reference}…"
+  },
+  "Synchronisation des sous-titres multi-segments appliquée : {count} coupure(s) détectée(s), départ {offset} ms (confiance {confidence}).": {
+    "fra": "Synchronisation des sous-titres multi-segments appliquée : {count} coupure(s) détectée(s), départ {offset} ms (confiance {confidence}).",
+    "eng": "Multi-segment subtitle synchronization applied: {count} cut(s) detected, start {offset} ms (confidence {confidence})."
+  },
+  "Synchronisation des sous-titres appliquée : {offset} ms (confiance {confidence}).": {
+    "fra": "Synchronisation des sous-titres appliquée : {offset} ms (confiance {confidence}).",
+    "eng": "Subtitle synchronization applied: {offset} ms (confidence {confidence})."
+  },
+  "Échec de la synchronisation des sous-titres.": {
+    "fra": "Échec de la synchronisation des sous-titres.",
+    "eng": "Subtitle synchronization failed."
+  },
+  "⚡ Synchro sous-titres": {
+    "fra": "⚡ Synchro sous-titres",
+    "eng": "⚡ Subtitle sync"
+  },
+  "Lancer l'alignement automatique des sous-titres": {
+    "fra": "Lancer l'alignement automatique des sous-titres",
+    "eng": "Start automatic subtitle alignment"
+  },
+  "Synchronisation automatique des sous-titres en cours…": {
+    "fra": "Synchronisation automatique des sous-titres en cours…",
+    "eng": "Automatic subtitle synchronization in progress…"
+  },
+  "Synchronisation automatique terminée ({offset} ms, confiance {conf}).": {
+    "fra": "Synchronisation automatique terminée ({offset} ms, confiance {conf}).",
+    "eng": "Automatic synchronization completed ({offset} ms, confidence {conf})."
+  },
+  "Extraction des données du segment {idx}…": {
+    "fra": "Extraction des données du segment {idx}…",
+    "eng": "Extracting data for segment {idx}…"
+  },
+  "Lecture de la référence (15s)…": {
+    "fra": "Lecture de la référence (15s)…",
+    "eng": "Playing reference audio (15s)…"
   }
 }
 

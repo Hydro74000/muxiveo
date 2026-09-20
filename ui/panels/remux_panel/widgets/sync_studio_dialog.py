@@ -53,6 +53,9 @@ class SyncStudioDialog(QDialog):
 
     _waveform_loading = Signal(str)
     _segment_audio_ready = Signal(int, object, object, float, object)
+    _subtitles_ready = Signal(object, object)
+    _auto_sub_sync_ready = Signal(object)
+    _auto_sub_sync_failed = Signal(str)
     _preview_ready = Signal(str)
     _preview_error = Signal(str)
 
@@ -100,6 +103,11 @@ class SyncStudioDialog(QDialog):
         self._current_cut_ms: float | None = None
         self._audio_cache: dict[int, tuple[object, object]] = {}
 
+        # Données de sous-titres
+        self._ref_cues: list = []
+        self._tgt_cues: list = []
+        self._is_sub_sync_running: bool = False
+
         self._temp_dir = tempfile.TemporaryDirectory(prefix="mediarecode_sync_studio_")
         self._player = None
         self._audio_output = None
@@ -108,6 +116,9 @@ class SyncStudioDialog(QDialog):
 
         self._waveform_loading.connect(self._on_waveform_loading)
         self._segment_audio_ready.connect(self._on_segment_audio_ready)
+        self._subtitles_ready.connect(self._on_subtitles_ready)
+        self._auto_sub_sync_ready.connect(self._on_auto_sub_sync_ready)
+        self._auto_sub_sync_failed.connect(self._on_auto_sub_sync_failed)
         self._preview_ready.connect(self._on_preview_ready)
         self._preview_error.connect(self._on_preview_error)
 
@@ -184,7 +195,12 @@ class SyncStudioDialog(QDialog):
 
         wave_header = QHBoxLayout()
         wave_header.setSpacing(_scale(8))
-        wave_header.addWidget(_section_label(translate_text("FORME D'ONDE ACOUSTIQUE")))
+        section_title = (
+            translate_text("FORME D'ONDE & SOUS-TITRES")
+            if (self.target_entry.is_subtitle or (self.reference_entry and self.reference_entry.is_subtitle))
+            else translate_text("FORME D'ONDE ACOUSTIQUE")
+        )
+        wave_header.addWidget(_section_label(section_title))
 
         # Indicateur de segment actif
         self.seg_indicator = QLabel()
@@ -320,6 +336,12 @@ class SyncStudioDialog(QDialog):
         ctrl_row.addWidget(reset_btn)
 
         ctrl_row.addStretch()
+
+        if self.target_entry.is_subtitle:
+            self.btn_auto_sub_sync = _secondary_button(translate_text("⚡ Synchro sous-titres"), padding_h=10)
+            self.btn_auto_sub_sync.setToolTip(translate_text("Lancer l'alignement automatique des sous-titres"))
+            self.btn_auto_sub_sync.clicked.connect(self._run_auto_subtitle_sync)
+            ctrl_row.addWidget(self.btn_auto_sub_sync)
 
         # Bouton Pré-écoute
         self.listen_btn = _secondary_button(translate_text("Pré-écoute calée (15s)"), padding_h=12)
@@ -524,27 +546,135 @@ class SyncStudioDialog(QDialog):
             self._apply_audio_to_waveform(idx, ref_samples, tgt_samples, start_s, cut_ms)
             return
 
-        self.waveform.set_loading(translate_text("Extraction audio du segment {idx}…", idx=idx + 1))
+        is_sub = self.target_entry.is_subtitle
+        loading_msg = (
+            translate_text("Extraction des données du segment {idx}…", idx=idx + 1)
+            if is_sub
+            else translate_text("Extraction audio du segment {idx}…", idx=idx + 1)
+        )
+        self.waveform.set_loading(loading_msg)
 
         def _worker() -> None:
             try:
+                is_tgt_sub = self.target_entry.is_subtitle
+                is_ref_sub = self.reference_entry is not None and self.reference_entry.is_subtitle
+
+                # Extraction des sous-titres si applicable
+                if (is_tgt_sub or is_ref_sub) and (not self._tgt_cues and not self._ref_cues):
+                    from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
+                    sub_scanner = SubtitleSyncScanner(self.ffmpeg_bin, self.ffprobe_bin)
+                    new_ref_cues = []
+                    new_tgt_cues = []
+                    if is_ref_sub and self.reference_source_path is not None and self.reference_stream_index is not None:
+                        try:
+                            new_ref_cues = sub_scanner.extract_cues(self.reference_source_path, self.reference_stream_index)
+                        except Exception:
+                            new_ref_cues = []
+                    if is_tgt_sub:
+                        try:
+                            new_tgt_cues = sub_scanner.extract_cues(self.target_source_path, self.target_stream_index)
+                        except Exception:
+                            new_tgt_cues = []
+                    self._subtitles_ready.emit(new_ref_cues, new_tgt_cues)
+
+                # Échantillons audio
                 scanner = AudioSyncScanner(self.ffmpeg_bin, self.ffprobe_bin)
+                ref_samples = np.array([], dtype=np.float32)
+                tgt_samples = np.array([], dtype=np.float32)
+
                 # 1. Échantillons de référence
-                if self.reference_source_path is not None and self.reference_stream_index is not None:
+                if self.reference_source_path is not None and self.reference_stream_index is not None and not is_ref_sub:
                     ref_track = AudioSyncTrack(self.reference_source_path, self.reference_stream_index)
                     ref_samples = scanner.samples(ref_track, start_s, 20.0)
-                else:
-                    ref_samples = np.array([], dtype=np.float32)
 
                 # 2. Échantillons de la cible
-                tgt_track = AudioSyncTrack(self.target_source_path, self.target_stream_index)
-                tgt_samples = scanner.samples(tgt_track, start_s, 20.0)
+                if not is_tgt_sub:
+                    tgt_track = AudioSyncTrack(self.target_source_path, self.target_stream_index)
+                    tgt_samples = scanner.samples(tgt_track, start_s, 20.0)
 
                 self._segment_audio_ready.emit(idx, ref_samples, tgt_samples, start_s, cut_ms)
             except Exception as exc:
-                self._waveform_loading.emit(f"Aperçu audio non disponible : {exc}")
+                self._waveform_loading.emit(f"Aperçu non disponible : {exc}")
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_subtitles_ready(self, ref_cues, tgt_cues) -> None:
+        if getattr(self, "_closing", False):
+            return
+        if ref_cues:
+            self._ref_cues = ref_cues
+        if tgt_cues:
+            self._tgt_cues = tgt_cues
+        self.waveform.set_subtitle_cues(self._ref_cues, self._tgt_cues)
+
+    def _run_auto_subtitle_sync(self) -> None:
+        if self._is_sub_sync_running:
+            return
+        self._is_sub_sync_running = True
+        if hasattr(self, "btn_auto_sub_sync"):
+            self.btn_auto_sub_sync.setEnabled(False)
+        self.waveform.set_loading(translate_text("Synchronisation automatique des sous-titres en cours…"))
+        self.listen_status.setText(translate_text("Synchronisation automatique des sous-titres en cours…"))
+
+        def _worker() -> None:
+            try:
+                from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
+                scanner = SubtitleSyncScanner(self.ffmpeg_bin, self.ffprobe_bin)
+                is_ref_sub = self.reference_entry is not None and self.reference_entry.is_subtitle
+                ref_src = self.reference_source_path or self.target_source_path
+                ref_idx = self.reference_stream_index if self.reference_stream_index is not None else 0
+                cal = scanner.scan(
+                    reference_source=ref_src,
+                    reference_stream_index=ref_idx,
+                    target_source=self.target_source_path,
+                    target_stream_index=self.target_stream_index,
+                    is_ref_sub=is_ref_sub,
+                    detect_cuts=True,
+                )
+                self._auto_sub_sync_ready.emit(cal)
+            except Exception as exc:
+                self._auto_sub_sync_failed.emit(str(exc))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_auto_sub_sync_ready(self, cal: SyncCalibration) -> None:
+        if getattr(self, "_closing", False):
+            return
+        self._is_sub_sync_running = False
+        if hasattr(self, "btn_auto_sub_sync"):
+            self.btn_auto_sub_sync.setEnabled(True)
+
+        self.current_calibration = cal
+        first_shift = cal.segments[0].shift_ms
+        self._current_shift_ms = first_shift
+        self.spin_shift.blockSignals(True)
+        self.spin_shift.setValue(first_shift)
+        self.spin_shift.blockSignals(False)
+        self.waveform.set_shift(first_shift)
+
+        if cal.cuts_count > 0 and self.cuts_table is not None:
+            self.cuts_table.setRowCount(len(cal.segments))
+            self._update_cuts_table()
+
+        conf_pct = f"{cal.confidence:.0%}" if cal.confidence is not None else "100%"
+        offset_label = f"{first_shift:+.1f}"
+        self.listen_status.setText(
+            translate_text(
+                "Synchronisation automatique terminée ({offset} ms, confiance {conf}).",
+                offset=offset_label,
+                conf=conf_pct,
+            )
+        )
+        self._select_segment(0)
+
+    def _on_auto_sub_sync_failed(self, err: str) -> None:
+        if getattr(self, "_closing", False):
+            return
+        self._is_sub_sync_running = False
+        if hasattr(self, "btn_auto_sub_sync"):
+            self.btn_auto_sub_sync.setEnabled(True)
+        self.listen_status.setText(f"Échec de l'auto-synchronisation : {err}")
+        self.waveform.set_loading("")
 
     def _on_waveform_loading(self, text: str) -> None:
         if getattr(self, "_closing", False):
@@ -570,6 +700,8 @@ class SyncStudioDialog(QDialog):
             cut_time_ms=cut_ms,
         )
         self.waveform.set_shift(seg.shift_ms)
+        if self._ref_cues or self._tgt_cues:
+            self.waveform.set_subtitle_cues(self._ref_cues, self._tgt_cues)
 
     def _toggle_listen(self) -> None:
         if self._is_playing:
@@ -579,34 +711,61 @@ class SyncStudioDialog(QDialog):
         self.listen_btn.setEnabled(False)
         self.listen_status.setText(translate_text("Génération de l'extrait audio calé…"))
 
+        is_sub = self.target_entry.is_subtitle
+
         def _worker() -> None:
             try:
                 out_path = Path(self._temp_dir.name) / f"{uuid.uuid4().hex}.wav"
                 scanner = AudioSyncScanner(self.ffmpeg_bin, self.ffprobe_bin)
-                graph = audio_filter(self.current_calibration, crossfade_ms=80).replace(
-                    "[0:a:0]", f"[0:{self.target_stream_index}]"
-                )
-                cmd = [
-                    self.ffmpeg_bin,
-                    "-nostdin",
-                    "-v",
-                    "error",
-                    "-i",
-                    str(self.target_source_path),
-                    "-filter_complex",
-                    graph,
-                    "-map",
-                    "[out]",
-                    "-ss",
-                    str(max(0.0, self._current_start_s)),
-                    "-t",
-                    "15",
-                    "-ac",
-                    "2",
-                    "-c:a",
-                    "pcm_s16le",
-                    str(out_path),
-                ]
+
+                if is_sub:
+                    # Pour les sous-titres, extraire l'audio de référence à écouter
+                    audio_source = self.reference_source_path or self.target_source_path
+                    audio_stream = self.reference_stream_index if (self.reference_entry and not self.reference_entry.is_subtitle) else 0
+                    cmd = [
+                        self.ffmpeg_bin,
+                        "-nostdin",
+                        "-v",
+                        "error",
+                        "-ss",
+                        str(max(0.0, self._current_start_s)),
+                        "-i",
+                        str(audio_source),
+                        "-map",
+                        f"0:{audio_stream}?",
+                        "-t",
+                        "15",
+                        "-ac",
+                        "2",
+                        "-c:a",
+                        "pcm_s16le",
+                        str(out_path),
+                    ]
+                else:
+                    graph = audio_filter(self.current_calibration, crossfade_ms=80).replace(
+                        "[0:a:0]", f"[0:{self.target_stream_index}]"
+                    )
+                    cmd = [
+                        self.ffmpeg_bin,
+                        "-nostdin",
+                        "-v",
+                        "error",
+                        "-i",
+                        str(self.target_source_path),
+                        "-filter_complex",
+                        graph,
+                        "-map",
+                        "[out]",
+                        "-ss",
+                        str(max(0.0, self._current_start_s)),
+                        "-t",
+                        "15",
+                        "-ac",
+                        "2",
+                        "-c:a",
+                        "pcm_s16le",
+                        str(out_path),
+                    ]
                 res = scanner._run(cmd, timeout=30, **subprocess_text_kwargs())
                 if res.returncode != 0:
                     raise RuntimeError(res.stderr)
@@ -627,13 +786,19 @@ class SyncStudioDialog(QDialog):
                 self._audio_output = QAudioOutput(self)
                 self._player.setAudioOutput(self._audio_output)
                 self._player.mediaStatusChanged.connect(self._on_media_status_changed)
+                self._player.positionChanged.connect(self._on_player_position_changed)
 
             self._player.setSource(QUrl.fromLocalFile(path))
             self._player.play()
             self._is_playing = True
             self.listen_btn.setText(translate_text("Arrêter"))
             self.listen_btn.setIcon(_stop_icon())
-            self.listen_status.setText(translate_text("Lecture de l'extrait calé (15s)…"))
+            msg = (
+                translate_text("Lecture de la référence (15s)…")
+                if self.target_entry.is_subtitle
+                else translate_text("Lecture de l'extrait calé (15s)…")
+            )
+            self.listen_status.setText(msg)
         except Exception:
             try:
                 import subprocess
@@ -643,6 +808,23 @@ class SyncStudioDialog(QDialog):
                     self.listen_status.setText(translate_text("Lecture externe ffplay lancée."))
             except Exception as err:
                 self.listen_status.setText(str(err))
+
+    def _on_player_position_changed(self, pos_ms: int) -> None:
+        if getattr(self, "_closing", False) or not self._is_playing:
+            return
+        cur_time_ms = self._current_start_s * 1000.0 + pos_ms
+        self.waveform.set_playhead_pos_ms(cur_time_ms)
+
+        if self.target_entry.is_subtitle and self._tgt_cues:
+            active = [
+                c.text if hasattr(c, "text") else c[2]
+                for c in self._tgt_cues
+                if (c.start_ms if hasattr(c, "start_ms") else c[0]) + self._current_shift_ms
+                <= cur_time_ms
+                <= (c.end_ms if hasattr(c, "end_ms") else c[1]) + self._current_shift_ms
+            ]
+            if active and active[0]:
+                self.listen_status.setText(f"💬 {active[0]}")
 
     def _on_preview_error(self, message: str) -> None:
         if getattr(self, "_closing", False):
@@ -665,6 +847,7 @@ class SyncStudioDialog(QDialog):
             except Exception:
                 pass
         self._is_playing = False
+        self.waveform.set_playhead_pos_ms(None)
         self.listen_btn.setText(translate_text("Pré-écoute calée (15s)"))
         self.listen_btn.setIcon(_play_icon())
         self.listen_status.setText("")

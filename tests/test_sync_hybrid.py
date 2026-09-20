@@ -831,6 +831,186 @@ def test_sync_studio_dialog_button_scaling_and_padding(qt_app, tmp_path):
         set_ui_scale(orig_scale)
 
 
+# =============================================================================
+# Subtitle Synchronization Tests
+# =============================================================================
+
+def test_subtitle_cue_extraction():
+    from core.workflows.subtitle_sync_scan import SubtitleSyncScanner, SubtitleCue
+
+    # Test SRT
+    srt_content = """1
+00:01:10,500 --> 00:01:14,200
+Bonjour le monde !
+
+2
+00:02:00,000 --> 00:02:05,500
+Deuxième réplique.
+"""
+    cues = SubtitleSyncScanner.extract_cues_from_text(srt_content, ".srt")
+    assert len(cues) == 2
+    assert cues[0].start_ms == 70500.0
+    assert cues[0].end_ms == 74200.0
+    assert cues[0].text == "Bonjour le monde !"
+    assert cues[0].duration_ms == 3700.0
+
+    # Test ASS
+    ass_content = """[Script Info]
+Title: Test
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:10.00,0:00:12.50,Default,,0,0,0,,{\\b1}Hello world!{\\b0}
+Dialogue: 0,0:00:15.00,0:00:18.00,Default,,0,0,0,,Second line
+"""
+    cues_ass = SubtitleSyncScanner.extract_cues_from_text(ass_content, ".ass")
+    assert len(cues_ass) == 2
+    assert cues_ass[0].start_ms == 10000.0
+    assert cues_ass[0].end_ms == 12500.0
+    assert cues_ass[0].text == "Hello world!"
+
+
+def test_subtitle_correlation_and_scan(tmp_path):
+    from core.workflows.subtitle_sync_scan import SubtitleSyncScanner, SubtitleCue
+    import numpy as np
+
+    # Synthetic reference cues
+    ref_cues = [
+        SubtitleCue(10000.0, 13000.0, "Ref 1"),
+        SubtitleCue(20000.0, 24000.0, "Ref 2"),
+        SubtitleCue(35000.0, 39000.0, "Ref 3"),
+        SubtitleCue(50000.0, 55000.0, "Ref 4"),
+    ]
+    # Target delayed by +1200ms (so offset to apply is -1200ms)
+    tgt_cues = [
+        SubtitleCue(11200.0, 14200.0, "Tgt 1"),
+        SubtitleCue(21200.0, 25200.0, "Tgt 2"),
+        SubtitleCue(36200.0, 40200.0, "Tgt 3"),
+        SubtitleCue(51200.0, 56200.0, "Tgt 4"),
+    ]
+
+    offset_ms, conf = SubtitleSyncScanner.correlate_cues(ref_cues, tgt_cues)
+    assert abs(offset_ms - (-1200.0)) <= 30.0
+    assert conf > 0.90
+
+    # Audio envelope cross-correlation
+    sr = 16000
+    dur_s = 60
+    audio = np.zeros(dur_s * sr, dtype=np.float32)
+    for c in ref_cues:
+        s_idx = int(c.start_ms * sr / 1000.0)
+        e_idx = int(c.end_ms * sr / 1000.0)
+        audio[s_idx:e_idx] = 0.5
+
+    off_audio, conf_audio = SubtitleSyncScanner.correlate_audio_and_cues(audio, tgt_cues, sample_rate=sr)
+    assert abs(off_audio - (-1200.0)) <= 50.0
+    assert conf_audio > 0.50
+
+
+def test_waveform_view_subtitles_and_playhead(qt_app):
+    from ui.widgets.waveform_view import WaveformView
+    from core.workflows.subtitle_sync_scan import SubtitleCue
+    from PySide6.QtGui import QPixmap, QPainter
+
+    view = WaveformView()
+    view.resize(600, 250)
+    view.set_audio_data(None, None, start_time_ms=10000.0)
+
+    # Pass SubtitleCue objects
+    cues_ref = [SubtitleCue(12000.0, 15000.0, "Ref Dialogue")]
+    cues_tgt = [SubtitleCue(11500.0, 14500.0, "Target Dialogue")]
+    view.set_subtitle_cues(cues_ref, cues_tgt)
+    view.set_shift(500.0)
+    view.set_playhead_pos_ms(13000.0)
+
+    # Must render without error
+    pix = QPixmap(600, 250)
+    view.render(pix)
+
+
+def test_sync_studio_dialog_with_subtitle_track(qt_app, tmp_path):
+    from ui.panels.remux_panel.widgets.sync_studio_dialog import SyncStudioDialog
+    from core.workflows.remux_models import TrackEntry
+    from core.workflows.subtitle_sync_scan import SubtitleCue
+    from core.workflows.sync_calibration import SyncCalibration
+
+    target_sub = TrackEntry(2, "subtitle", "SubRip", "", "fre", "Français", time_shift_ms=0, file_id="src1")
+    ref_audio = TrackEntry(1, "audio", "E-AC-3", "5.1", "eng", "VO", time_shift_ms=0, file_id="src0")
+
+    dialog = SyncStudioDialog(
+        target_entry=target_sub,
+        target_source_path=tmp_path / "target.mkv",
+        target_stream_index=2,
+        reference_entry=ref_audio,
+        reference_source_path=tmp_path / "ref.mkv",
+        reference_stream_index=1,
+    )
+
+    # Verify subtitle auto sync button is created
+    assert hasattr(dialog, "btn_auto_sub_sync")
+    assert dialog.btn_auto_sub_sync is not None
+    assert "⚡" in dialog.btn_auto_sub_sync.text()
+
+    # Simulate auto subtitle sync ready
+    mock_cal = SyncCalibration.linear(-850)
+    dialog._on_auto_sub_sync_ready(mock_cal)
+    assert dialog.current_calibration.segments[0].shift_ms == -850.0
+    assert dialog.spin_shift.value() == -850.0
+
+    # Simulate playback position changed and subtitle display in status
+    dialog._tgt_cues = [SubtitleCue(1000.0, 4000.0, "Hello Subtitle!")]
+    dialog._is_playing = True
+    # At pos_ms = 2500 with shift = -850: 1000 - 850 <= 2500 - 850 <= 4000 - 850 -> cue active
+    # Dialogue check: start_ms + shift <= cur_time <= end_ms + shift
+    # With cur_time = 0 + pos_ms = 2500, start = 1000, shift = 1500 -> start + shift = 2500 <= 2500
+    dialog._current_shift_ms = 1500.0
+    dialog._on_player_position_changed(2500)
+    assert "Hello Subtitle!" in dialog.listen_status.text()
+
+    dialog.close()
+
+
+def test_remux_panel_subtitle_sync_integration(qt_app, monkeypatch, tmp_path):
+    from unittest.mock import MagicMock
+    from core.config import AppConfig
+    from ui.panels.remux_panel.panel import RemuxPanel
+    from ui.panels.remux_panel.models import SourceFile
+    from core.workflows.remux_models import TrackEntry
+    from core.workflows.sync_calibration import SyncCalibration
+
+    panel = RemuxPanel(AppConfig())
+    src_ref = tmp_path / "ref.mkv"
+    src_tgt = tmp_path / "target.mkv"
+    src_ref.touch()
+    src_tgt.touch()
+
+    ref_sub = TrackEntry(2, "subtitle", "SubRip", "", "eng", "English", file_id="fid_ref")
+    ref_audio = TrackEntry(1, "audio", "E-AC-3", "5.1", "eng", "VO", file_id="fid_ref")
+    tgt_sub = TrackEntry(2, "subtitle", "SubRip", "", "fre", "French", file_id="fid_tgt")
+
+    panel._source_files = [
+        SourceFile(id="fid_ref", path=src_ref, color="#111", info=MagicMock(), tracks=[ref_audio, ref_sub]),
+        SourceFile(id="fid_tgt", path=src_tgt, color="#222", info=MagicMock(), tracks=[tgt_sub]),
+    ]
+    panel._source_colors = {"fid_ref": "#111", "fid_tgt": "#222"}
+    panel._source_names = {"fid_ref": "ref.mkv", "fid_tgt": "target.mkv"}
+    panel._track_table.append_tracks("#111", [ref_audio, ref_sub])
+    panel._track_table.append_tracks("#222", [tgt_sub])
+
+    # Test reference choices prioritizing subtitles
+    choices = panel._subtitle_sync_reference_choices(tgt_sub)
+    assert len(choices) == 2
+    assert choices[0][1] is ref_sub  # Subtitle first
+    assert choices[1][1] is ref_audio # Audio second
+
+    # Test subtitle sync done callback propagates shift
+    cal = SyncCalibration.linear(-420)
+    panel._on_subtitle_sync_done(tgt_sub.entry_id, ref_sub.entry_id, -420, 0.95, cal)
+    assert tgt_sub.time_shift_ms == -420
+    assert panel._source_sync_offsets_ms["fid_tgt"] == -420
+
+
+
 
 
 

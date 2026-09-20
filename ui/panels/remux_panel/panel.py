@@ -81,10 +81,12 @@ class _AudioSyncReferenceDialog(QDialog):
         self,
         choices: list[tuple[str, TrackEntry]],
         *,
+        title: str | None = None,
+        prompt: str | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle(translate_text("Source de référence"))
+        self.setWindowTitle(title or translate_text("Source de référence"))
         self.setModal(True)
         self._combo = QComboBox()
         for choice_label, entry in choices:
@@ -106,7 +108,7 @@ class _AudioSyncReferenceDialog(QDialog):
             }}
         """)
 
-        prompt_label = QLabel(translate_text("Choisir la source audio qui servira de référence."))
+        prompt_label = QLabel(prompt or translate_text("Choisir la source audio qui servira de référence."))
         root.addWidget(prompt_label)
         root.addWidget(self._combo)
 
@@ -144,11 +146,15 @@ class RemuxPanel(QWidget):
     extract_started = Signal(object, object)
     audio_sync_started = Signal(object)
     audio_sync_finished = Signal(bool, object)
+    subtitle_sync_started = Signal(object)
+    subtitle_sync_finished = Signal(bool, object)
 
     _inspection_done = Signal(str, object)
     _inspection_error = Signal(str, str)
     _audio_sync_done = Signal(str, str, int, float, object)
     _audio_sync_error = Signal(str, str)
+    _subtitle_sync_done = Signal(str, str, int, float, object)
+    _subtitle_sync_error = Signal(str, str)
     _preview_compiled = Signal(int, str)
 
     video_tracks_changed = Signal(object)
@@ -224,6 +230,12 @@ class RemuxPanel(QWidget):
         )
         self._audio_sync_error.connect(
             self._on_audio_sync_error, Qt.ConnectionType.QueuedConnection
+        )
+        self._subtitle_sync_done.connect(
+            self._on_subtitle_sync_done, Qt.ConnectionType.QueuedConnection
+        )
+        self._subtitle_sync_error.connect(
+            self._on_subtitle_sync_error, Qt.ConnectionType.QueuedConnection
         )
 
         self._build_ui()
@@ -384,6 +396,7 @@ class RemuxPanel(QWidget):
         self._track_table.order_changed.connect(self._on_track_order_changed)
         self._track_table.extract_requested.connect(self._on_extract_track)
         self._track_table.audio_sync_requested.connect(self._on_audio_sync_requested)
+        self._track_table.subtitle_sync_requested.connect(self._on_subtitle_sync_requested)
         self._track_table.sync_studio_requested.connect(self._on_sync_studio_requested)
         self._track_table.auto_sync_cancel_requested.connect(self._on_auto_sync_cancel_requested)
         self._track_table.sync_rewrite_toggle_requested.connect(self._on_sync_rewrite_toggle_requested)
@@ -1395,6 +1408,51 @@ class RemuxPanel(QWidget):
             seen_sources.add(sf.id)
         return choices
 
+    def _subtitle_sync_reference_choices(self, target: TrackEntry) -> list[tuple[str, TrackEntry]]:
+        choices: list[tuple[str, TrackEntry]] = []
+        seen_entries: set[str] = set()
+
+        # 1. Pistes de sous-titres d'autres fichiers (priorité)
+        for sf in self._source_files:
+            if sf.id == target.file_id:
+                continue
+            subs = [
+                entry for entry in self._track_table.current_tracks()
+                if entry.file_id == sf.id and entry.track_type == "subtitle"
+            ]
+            for ref in subs:
+                if ref.entry_id in seen_entries:
+                    continue
+                seen_entries.add(ref.entry_id)
+                lang = f" [{ref.language}]" if ref.language else ""
+                title = f" - {ref.title}" if ref.title else ""
+                choices.append((
+                    f"{sf.path.name} | #{ref.mkv_tid} {ref.codec}{lang}{title} (Sous-titres)",
+                    ref,
+                ))
+
+        # 2. Pistes audio d'autres fichiers (alignement vocal)
+        for sf in self._source_files:
+            if sf.id == target.file_id:
+                continue
+            audios = [
+                entry for entry in self._track_table.current_tracks()
+                if entry.file_id == sf.id and entry.track_type == "audio"
+            ]
+            for ref in audios:
+                if ref.entry_id in seen_entries:
+                    continue
+                seen_entries.add(ref.entry_id)
+                lang = f" [{ref.language}]" if ref.language else ""
+                title = f" - {ref.title}" if ref.title else ""
+                disp = f" {ref.display_info}" if ref.display_info else ""
+                choices.append((
+                    f"{sf.path.name} | #{ref.mkv_tid} {ref.codec}{disp}{lang}{title} (Audio)",
+                    ref,
+                ))
+
+        return choices
+
     def _audio_sync_track(self, entry: TrackEntry) -> AudioSyncTrack | None:
         source = self._find_source(entry.file_id)
         if source is None:
@@ -1828,6 +1886,173 @@ class RemuxPanel(QWidget):
         finally:
             self.audio_sync_finished.emit(False, {"entry_id": _entry_id})
 
+    def _on_subtitle_sync_requested(self, entry: TrackEntry) -> None:
+        if entry.track_type != "subtitle":
+            return
+
+        choices = self._subtitle_sync_reference_choices(entry)
+        if not choices:
+            self.log_message.emit(
+                "ERROR",
+                translate_text("Aucune piste de référence compatible trouvée pour la synchronisation des sous-titres."),
+            )
+            return
+
+        reference_entry: TrackEntry | None = None
+        if len(choices) > 1:
+            dialog = _AudioSyncReferenceDialog(
+                choices,
+                title=translate_text("Choisir la référence pour les sous-titres"),
+                prompt=translate_text("Choisir la piste de référence (sous-titres ou audio)."),
+                parent=self,
+            )
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            reference_entry = dialog.selected_entry()
+        else:
+            reference_entry = choices[0][1]
+
+        if reference_entry is None:
+            return
+
+        target_source = self._find_source(entry.file_id)
+        reference_source = self._find_source(reference_entry.file_id)
+        if target_source is None or reference_source is None:
+            self.log_message.emit("ERROR", "impossible d'utiliser la synchronisation de sous-titres")
+            return
+
+        is_ref_sub = reference_entry.track_type == "subtitle"
+        label_msg = translate_text(
+            "Synchronisation des sous-titres : piste #{target} vs référence #{reference}…",
+            target=entry.mkv_tid,
+            reference=reference_entry.mkv_tid,
+        )
+        self.log_message.emit("INFO", label_msg)
+        self.subtitle_sync_started.emit({"label": label_msg})
+
+        target_entry_id = entry.entry_id
+        reference_entry_id = reference_entry.entry_id
+        target_tid = int(entry.mkv_tid)
+        ref_tid = int(reference_entry.mkv_tid)
+        tgt_path = target_source.path
+        ref_path = reference_source.path
+
+        def _task() -> None:
+            try:
+                from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
+                scanner = SubtitleSyncScanner(
+                    ffmpeg=self._config.tool_ffmpeg,
+                    ffprobe=self._config.tool_ffprobe,
+                )
+                cal = scanner.scan(
+                    reference_source=ref_path,
+                    reference_stream_index=ref_tid,
+                    target_source=tgt_path,
+                    target_stream_index=target_tid,
+                    is_ref_sub=is_ref_sub,
+                    detect_cuts=True,
+                    log=lambda msg: self.log_message.emit("INFO", f"Analyse sous-titres : {msg}"),
+                )
+                self._subtitle_sync_done.emit(
+                    target_entry_id,
+                    reference_entry_id,
+                    round(cal.segments[0].shift_ms),
+                    cal.confidence or 1.0,
+                    cal,
+                )
+            except Exception as exc:
+                self._subtitle_sync_error.emit(target_entry_id, str(exc))
+
+        self._executor.submit(_task)
+
+    def _on_subtitle_sync_done(
+        self,
+        entry_id: str,
+        reference_entry_id: str,
+        offset_ms: int,
+        confidence: float,
+        calibration: object = None,
+    ) -> None:
+        try:
+            tracks_by_id = {
+                track.entry_id: track
+                for track in self._track_table.current_tracks()
+            }
+            target_entry = tracks_by_id.get(entry_id)
+            reference_entry = tracks_by_id.get(reference_entry_id) if reference_entry_id else None
+            target_file_id = target_entry.file_id if target_entry is not None else ""
+            reference_file_id = reference_entry.file_id if reference_entry is not None else ""
+
+            if reference_file_id and reference_file_id != target_file_id:
+                self._apply_source_sync_offset(reference_file_id, 0)
+                ref_source_idx = self._source_index_for_file_id(reference_file_id)
+                if ref_source_idx is not None and "sync_calibrations" in self._workflow_options:
+                    self._workflow_options["sync_calibrations"].pop(str(ref_source_idx), None)
+
+            target_source_idx = self._source_index_for_file_id(target_file_id)
+            cal_obj = None
+            if calibration is not None:
+                if hasattr(calibration, "segments"):
+                    cal_obj = calibration
+                elif isinstance(calibration, dict):
+                    try:
+                        from core.workflows.sync_calibration import SyncCalibration
+                        cal_obj = SyncCalibration.from_dict(calibration)
+                    except Exception:
+                        cal_obj = None
+
+            if cal_obj is not None and len(cal_obj.segments) > 1:
+                if "sync_calibrations" not in self._workflow_options:
+                    self._workflow_options["sync_calibrations"] = {}
+                self._workflow_options["sync_calibrations"][str(target_source_idx)] = cal_obj.to_dict()
+                if target_entry is not None:
+                    target_entry.sync_calibration = cal_obj.to_dict()
+            else:
+                if target_source_idx is not None and "sync_calibrations" in self._workflow_options:
+                    self._workflow_options["sync_calibrations"].pop(str(target_source_idx), None)
+                if target_entry is not None:
+                    target_entry.sync_calibration = None
+
+            if self._apply_source_sync_offset(target_file_id, offset_ms):
+                self._sync_entry_calibrations()
+                self._track_table.refresh_all_entries_info()
+                offset_label = f"{int(offset_ms):+d}"
+                confidence_label = f"{float(confidence):.2f}"
+                if cal_obj is not None and len(cal_obj.segments) > 1:
+                    cuts_count = len(cal_obj.segments) - 1
+                    self.log_message.emit(
+                        "OK",
+                        translate_text(
+                            "Synchronisation des sous-titres multi-segments appliquée : {count} coupure(s) détectée(s), départ {offset} ms (confiance {confidence}).",
+                            count=cuts_count,
+                            offset=offset_label,
+                            confidence=confidence_label,
+                        ),
+                    )
+                    for line in cal_obj.summary_lines():
+                        self.log_message.emit("INFO", f"  • {line}")
+                else:
+                    self.log_message.emit(
+                        "OK",
+                        translate_text(
+                            "Synchronisation des sous-titres appliquée : {offset} ms (confiance {confidence}).",
+                            offset=offset_label,
+                            confidence=confidence_label,
+                        ),
+                    )
+                self._rebuild_preview()
+                self._emit_signals()
+        finally:
+            self.subtitle_sync_finished.emit(True, {"entry_id": entry_id})
+
+    def _on_subtitle_sync_error(self, _entry_id: str, detail: str) -> None:
+        try:
+            self.log_message.emit("ERROR", translate_text("Échec de la synchronisation des sous-titres."))
+            if detail:
+                self.log_message.emit("ERROR", detail)
+        finally:
+            self.subtitle_sync_finished.emit(False, {"entry_id": _entry_id})
+
     def _on_sync_studio_requested(self, entry: TrackEntry) -> None:
         target_source = self._find_source(entry.file_id)
         if target_source is None:
@@ -1835,21 +2060,37 @@ class RemuxPanel(QWidget):
 
         reference_entry = None
         reference_source = None
-        choices = self._audio_sync_reference_choices(entry)
+        if entry.track_type == "subtitle":
+            choices = self._subtitle_sync_reference_choices(entry)
+            dialog_title = translate_text("Choisir la référence pour les sous-titres")
+            dialog_prompt = translate_text("Choisir la piste de référence (sous-titres ou audio).")
+        else:
+            choices = self._audio_sync_reference_choices(entry)
+            dialog_title = translate_text("Source de référence")
+            dialog_prompt = translate_text("Choisir la source audio qui servira de référence.")
+
         if len(choices) > 1:
-            dialog_ref = _AudioSyncReferenceDialog(choices, parent=self)
+            if entry.track_type == "subtitle":
+                dialog_ref = _AudioSyncReferenceDialog(
+                    choices,
+                    title=dialog_title,
+                    prompt=dialog_prompt,
+                    parent=self,
+                )
+            else:
+                dialog_ref = _AudioSyncReferenceDialog(choices, parent=self)
             if dialog_ref.exec() != QDialog.DialogCode.Accepted:
                 return
             reference_entry = dialog_ref.selected_entry()
         elif len(choices) == 1:
             reference_entry = choices[0][1]
         else:
-            other_audio = [
+            other_tracks = [
                 t for t in self._track_table.current_tracks()
-                if t.file_id != entry.file_id and t.track_type == "audio"
+                if t.file_id != entry.file_id and t.track_type in ({"subtitle", "audio"} if entry.track_type == "subtitle" else {"audio"})
             ]
-            if other_audio:
-                reference_entry = other_audio[0]
+            if other_tracks:
+                reference_entry = other_tracks[0]
 
         if reference_entry is not None:
             reference_source = self._find_source(reference_entry.file_id)

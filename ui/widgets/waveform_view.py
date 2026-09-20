@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 import numpy as np
-from PySide6.QtCore import QLineF, QPointF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen, QWheelEvent
+from PySide6.QtCore import QLineF, QPointF, QRect, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen, QWheelEvent
 from PySide6.QtWidgets import QWidget
 
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
@@ -79,6 +80,11 @@ class WaveformView(QWidget):
         # Données historiques de repli
         self.series: tuple[list[float], list[float]] = ([], [])
 
+        # Données de sous-titres (start_ms, end_ms, text)
+        self._ref_cues: list[tuple[float, float, str]] = []
+        self._tgt_cues: list[tuple[float, float, str]] = []
+        self._playhead_ms: float | None = None
+
         # État de zoom et de navigation
         self.zoom_factor: float = 1.0
         self.pan_offset_ms: float = 0.0
@@ -150,6 +156,31 @@ class WaveformView(QWidget):
 
     def set_shift(self, shift_ms: float) -> None:
         self.shift_ms = float(shift_ms)
+        self.update()
+
+    def set_playhead_pos_ms(self, pos_ms: float | None) -> None:
+        self._playhead_ms = float(pos_ms) if pos_ms is not None else None
+        self.update()
+
+    def set_subtitle_cues(
+        self,
+        ref_cues: list[Any] | None = None,
+        tgt_cues: list[Any] | None = None,
+    ) -> None:
+        def _norm(cues):
+            out = []
+            for c in cues or []:
+                if hasattr(c, "start_ms") and hasattr(c, "end_ms"):
+                    out.append((float(c.start_ms), float(c.end_ms), str(getattr(c, "text", "") or "")))
+                elif isinstance(c, (tuple, list)) and len(c) >= 2:
+                    txt = str(c[2]) if len(c) > 2 else ""
+                    out.append((float(c[0]), float(c[1]), txt))
+            return out
+
+        self._ref_cues = _norm(ref_cues)
+        self._tgt_cues = _norm(tgt_cues)
+        if self._ref_cues or self._tgt_cues:
+            self.loading_text = ""
         self.update()
 
     def set_display_mode(self, mode: str) -> None:
@@ -306,7 +337,8 @@ class WaveformView(QWidget):
         # Message d'attente / chargement
         has_audio = (len(self._ref_samples) > 0 or len(self._tgt_samples) > 0)
         has_series = (self.series and any(self.series))
-        if self.loading_text and not has_audio and not has_series:
+        has_subtitles = (len(self._ref_cues) > 0 or len(self._tgt_cues) > 0)
+        if self.loading_text and not has_audio and not has_series and not has_subtitles:
             painter.setPen(QColor(_C.TEXT_SEC))
             font = QFont()
             font.setPixelSize(_font_px(11))
@@ -466,6 +498,71 @@ class WaveformView(QWidget):
                 pen = QPen(colors[row % len(colors)])
                 pen.setWidthF(_scale(1.5))
                 painter.setPen(pen)
+                painter.drawPath(path)
+
+        # Rendu visuel des répliques de sous-titres
+        if self._ref_cues or self._tgt_cues:
+            font_sub = QFont()
+            font_sub.setPixelSize(_font_px(9))
+            painter.setFont(font_sub)
+
+            # 1. Sous-titres de référence
+            if self._ref_cues:
+                sub_ref_y = int(h * 0.18) if is_overlay else int(h * 0.40)
+                sub_ref_h = int(_scale(15))
+                for s_ms, e_ms, txt in self._ref_cues:
+                    x1 = int((s_ms - t_start_ms) / self.visible_duration_ms * w)
+                    x2 = int((e_ms - t_start_ms) / self.visible_duration_ms * w)
+                    if x2 >= 0 and x1 <= w:
+                        cue_w = max(_scale(4), x2 - x1)
+                        painter.setPen(QPen(QColor(32, 201, 151, 220), _scale(1.0)))
+                        painter.setBrush(QBrush(QColor(32, 201, 151, 70)))
+                        r = QRect(x1, sub_ref_y, cue_w, sub_ref_h)
+                        painter.drawRoundedRect(r, _scale(3), _scale(3))
+                        if cue_w > _scale(35) and txt:
+                            painter.setPen(QColor("#ffffff"))
+                            text_r = r.adjusted(_scale(3), 0, -_scale(3), 0)
+                            elided = painter.fontMetrics().elidedText(txt, Qt.TextElideMode.ElideRight, text_r.width())
+                            painter.drawText(text_r, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided)
+
+            # 2. Sous-titres de la cible (décalés dynamiquement selon shift_ms)
+            if self._tgt_cues:
+                if is_overlay:
+                    sub_tgt_y = int(h * 0.74)
+                    sub_tgt_h = int(_scale(15))
+                else:
+                    sub_tgt_y = int(h * 0.84) if has_audio else int(h * 0.65)
+                    sub_tgt_h = int(_scale(15)) if has_audio else int(_scale(24))
+
+                for s_ms, e_ms, txt in self._tgt_cues:
+                    s_shifted = s_ms + self.shift_ms
+                    e_shifted = e_ms + self.shift_ms
+                    x1 = int((s_shifted - t_start_ms) / self.visible_duration_ms * w)
+                    x2 = int((e_shifted - t_start_ms) / self.visible_duration_ms * w)
+                    if x2 >= 0 and x1 <= w:
+                        cue_w = max(_scale(4), x2 - x1)
+                        painter.setPen(QPen(QColor(120, 140, 255, 230), _scale(1.0)))
+                        painter.setBrush(QBrush(QColor(120, 140, 255, 80)))
+                        r = QRect(x1, sub_tgt_y, cue_w, sub_tgt_h)
+                        painter.drawRoundedRect(r, _scale(3), _scale(3))
+                        if cue_w > _scale(35) and txt:
+                            painter.setPen(QColor("#ffffff"))
+                            text_r = r.adjusted(_scale(3), 0, -_scale(3), 0)
+                            elided = painter.fontMetrics().elidedText(txt, Qt.TextElideMode.ElideRight, text_r.width())
+        # ── Curseur de tête de lecture (Playhead) ─────────────────────────
+        if self._playhead_ms is not None:
+            x_play = int((self._playhead_ms - t_start_ms) / self.visible_duration_ms * w)
+            if 0 <= x_play <= w:
+                painter.setPen(QPen(QColor(255, 220, 50, 240), _scale(1.5)))
+                painter.drawLine(x_play, 0, x_play, h)
+                path = QPainterPath()
+                head_w = _scale(5)
+                head_h = _scale(6)
+                path.moveTo(x_play - head_w, 0)
+                path.lineTo(x_play + head_w, 0)
+                path.lineTo(x_play, head_h)
+                path.closeSubpath()
+                painter.setBrush(QBrush(QColor(255, 220, 50, 240)))
                 painter.drawPath(path)
 
         # Légendes d'en-tête

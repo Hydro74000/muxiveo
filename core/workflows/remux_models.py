@@ -122,6 +122,18 @@ class TrackEntry:
         return "  ·  ".join(parts)
 
     @property
+    def is_audio(self) -> bool:
+        return str(self.track_type or "").strip().lower() == "audio"
+
+    @property
+    def is_subtitle(self) -> bool:
+        return str(self.track_type or "").strip().lower() == "subtitle"
+
+    @property
+    def is_video(self) -> bool:
+        return str(self.track_type or "").strip().lower() == "video"
+
+    @property
     def cuts_count(self) -> int:
         """Nombre de coupures intermédiaires (> 0 si multi-segments)."""
         if not self.sync_calibration or not isinstance(self.sync_calibration, dict):
