@@ -443,10 +443,10 @@ class RemuxPanel(QWidget):
         backend_row.addWidget(backend_label)
         backend_row.addWidget(self._mux_backend_combo)
         backend_row.addSpacing(_scale(16))
-        self._physical_sync_check = QCheckBox(translate_text("Synchronisation physique (Zero Delay)"))
+        self._physical_sync_check = QCheckBox(translate_text("Synchronisation physique"))
         self._physical_sync_check.setChecked(True)
         self._physical_sync_check.setToolTip(
-            translate_text("Recalage physique des flux audio et sous-titres (aucun délai résiduel en conteneur).")
+            "Recalage physique des flux audio et sous-titres (aucun délai résiduel en conteneur)."
         )
         self._physical_sync_check.setStyleSheet(
             f"color: {_C.TEXT_PRI}; background: transparent; font-size: {_font_px(11)}px;"

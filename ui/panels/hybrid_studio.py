@@ -279,7 +279,7 @@ class HybridStudio(QWidget):
 
         # En-tête de section
         header_row = QHBoxLayout()
-        title_lbl = QLabel(translate_text("Studio d'Hybridation"))
+        title_lbl = QLabel(translate_text("Studio Hybridation"))
         title_lbl.setStyleSheet(f"""
             color: {_C.TEXT_PRI};
             font-size: {_font_px(15)}px;
@@ -306,13 +306,13 @@ class HybridStudio(QWidget):
         cd_layout = QVBoxLayout(card_dirs)
         cd_layout.setContentsMargins(_scale(12), _scale(10), _scale(12), _scale(10))
         cd_layout.setSpacing(_scale(8))
-        cd_layout.addWidget(_section_label(translate_text("DOSSIERS SOURCES ET SORTIE")))
+        cd_layout.addWidget(_section_label("DOSSIERS SOURCES ET SORTIE"))
 
         form = QFormLayout()
         form.setSpacing(_scale(8))
-        self.reference = DirectoryEdit(translate_text("/chemin/vers/episodes_reference"))
-        self.donor = DirectoryEdit(translate_text("/chemin/vers/episodes_donneur"))
-        self.output = DirectoryEdit(translate_text("/chemin/vers/dossier_sortie"))
+        self.reference = DirectoryEdit("/chemin/vers/episodes_reference")
+        self.donor = DirectoryEdit("/chemin/vers/episodes_donneur")
+        self.output = DirectoryEdit("/chemin/vers/dossier_sortie")
 
         for label, edit in (("Référence", self.reference), ("Donneur", self.donor), ("Sortie", self.output)):
             row = QHBoxLayout()
@@ -326,13 +326,13 @@ class HybridStudio(QWidget):
             form.addRow(lbl, row)
 
         self.profile = QLineEdit()
-        self.profile.setPlaceholderText(translate_text("Nom du profil décisionnel (optionnel)"))
+        self.profile.setPlaceholderText("Nom du profil décisionnel (optionnel)")
         self.profile.setStyleSheet(_input_style())
-        lbl_prof = QLabel(translate_text("Profil"))
+        lbl_prof = QLabel(translate_text("Profil décisionnel"))
         lbl_prof.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
         form.addRow(lbl_prof, self.profile)
 
-        self.detect_cuts = QCheckBox(translate_text("Détecter les coupures et variations de cadences (cuts multi-segments)"))
+        self.detect_cuts = QCheckBox(translate_text("Détecter les coupures"))
         self.detect_cuts.setChecked(True)
         self.detect_cuts.setStyleSheet(f"color: {_C.TEXT_PRI}; font-size: {_font_px(11)}px;")
         form.addRow("", self.detect_cuts)
@@ -341,7 +341,7 @@ class HybridStudio(QWidget):
         layout.addWidget(card_dirs)
 
         # ── Carte 2 : Options d'hybridation (dépliables) ───────────────────────
-        advanced = QGroupBox(translate_text("Options d'hybridation avancées"))
+        advanced = QGroupBox(translate_text("Options d'hybridation"))
         advanced.setStyleSheet(f"""
             QGroupBox {{
                 color: {_C.TEXT_PRI};
@@ -375,9 +375,9 @@ class HybridStudio(QWidget):
             self.controls[option] = control
 
         for option, label, value, maximum in (
-            ("forced-threshold", "Seuil sous-titres forcés", 50, 10000),
+            ("forced-threshold", "Seuil forcés", 50, 10000),
             ("crossfade-ms", "Fondu aux raccords (ms)", 80, 1000),
-            ("drift-threshold-ms", "Seuil de dérive temporelle (ms)", 25, 10000),
+            ("drift-threshold-ms", "Seuil de dérive (ms)", 25, 10000),
         ):
             control = QSpinBox()
             control.setStyleSheet(_input_style())
@@ -403,13 +403,13 @@ class HybridStudio(QWidget):
 
         self.mode = QComboBox()
         self.mode.setStyleSheet(_input_style())
-        self.mode.addItem(translate_text("Synchronisation physique (Zero Delay)"), "physical")
+        self.mode.addItem(translate_text("Synchronisation physique"), "physical")
         self.mode.addItem(translate_text("Décalage conteneur"), "container")
-        lbl_mode = QLabel(translate_text("Mode de synchro"))
+        lbl_mode = QLabel("Mode de synchro")
         lbl_mode.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
         settings.addRow(lbl_mode, self.mode)
 
-        self.mirror = QCheckBox(translate_text("Recaler les sous-titres sur le décalage audio"))
+        self.mirror = QCheckBox(translate_text("Recaler les sous-titres"))
         self.mirror.setChecked(True)
         self.mirror.setStyleSheet(f"color: {_C.TEXT_PRI}; font-size: {_font_px(11)}px;")
         settings.addRow(self.mirror)
@@ -428,7 +428,7 @@ class HybridStudio(QWidget):
         ct_layout = QVBoxLayout(card_table)
         ct_layout.setContentsMargins(_scale(12), _scale(10), _scale(12), _scale(10))
         ct_layout.setSpacing(_scale(8))
-        ct_layout.addWidget(_section_label(translate_text("ÉPISODES APPARIÉS ET ÉTATS")))
+        ct_layout.addWidget(_section_label("ÉPISODES APPARIÉS ET ÉTATS"))
 
         self.table = QTableWidget(0, 3)
         self.table.setStyleSheet(_table_style())
@@ -454,10 +454,10 @@ class HybridStudio(QWidget):
         cw_layout.setSpacing(_scale(8))
 
         wave_header = QHBoxLayout()
-        wave_header.addWidget(_section_label(translate_text("ANALYSE ACOUSTIQUE ET CALIBRATION")))
+        wave_header.addWidget(_section_label("ANALYSE ACOUSTIQUE ET CALIBRATION"))
         wave_header.addStretch()
 
-        adj_label = QLabel(translate_text("Ajustement manuel :"))
+        adj_label = QLabel("Ajustement manuel :")
         adj_label.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
         wave_header.addWidget(adj_label)
 
@@ -743,7 +743,7 @@ class HybridStudio(QWidget):
                 if ffplay.exists():
                     subprocess.Popen([str(ffplay), "-nodisp", "-autoexit", path])
                 else:
-                    self.status.setText(translate_text("Aperçu extrait : {path}", path=path))
+                    self.status.setText(f"Aperçu audio : {path}")
             except Exception:
                 pass
 

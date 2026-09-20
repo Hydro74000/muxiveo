@@ -3970,5 +3970,21 @@
   "Sauvegarder les workflows…": {
     "fra": "Sauvegarder les workflows…",
     "eng": "Save workflows…"
+  },
+  "Nom du profil décisionnel (optionnel)": {
+    "fra": "Nom du profil décisionnel (optionnel)",
+    "eng": "Decision profile name (optional)"
+  },
+  "Mode de synchro": {
+    "fra": "Mode de synchro",
+    "eng": "Sync mode"
+  },
+  "Ajustement manuel :": {
+    "fra": "Ajustement manuel :",
+    "eng": "Manual offset:"
+  },
+  "Recalage physique des flux audio et sous-titres (aucun délai résiduel en conteneur).": {
+    "fra": "Recalage physique des flux audio et sous-titres (aucun délai résiduel en conteneur).",
+    "eng": "Physical audio/subtitle alignment (zero residual container delay)."
   }
 }
