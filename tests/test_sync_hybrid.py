@@ -383,6 +383,143 @@ def test_track_table_sync_studio_requested_signal(qt_app):
     assert received[-1] is entry
 
 
+def test_panel_on_sync_studio_requested_resolves_reference_and_applies(qt_app, monkeypatch, tmp_path):
+    from unittest.mock import MagicMock
+    from core.config import AppConfig
+    from ui.panels.remux_panel.panel import RemuxPanel
+    from ui.panels.remux_panel.models import SourceFile
+    from core.workflows.remux_models import TrackEntry
+    from core.workflows.sync_calibration import SyncCalibration
+
+    panel = RemuxPanel(AppConfig())
+    src_a = tmp_path / "ref.mkv"
+    src_b = tmp_path / "target.mkv"
+    src_a.touch()
+    src_b.touch()
+
+    # Ref audio: English 5.1
+    ref_track = TrackEntry(1, "audio", "E-AC-3", "5.1  640 kbps", "eng", "VO", file_id="fid_a")
+    # Target audio: French 5.1
+    tgt_track = TrackEntry(1, "audio", "E-AC-3", "5.1  640 kbps", "fre", "VF", file_id="fid_b", time_shift_ms=-100)
+
+    source_a = SourceFile(id="fid_a", path=src_a, color="#111", info=MagicMock(), tracks=[ref_track])
+    source_b = SourceFile(id="fid_b", path=src_b, color="#222", info=MagicMock(), tracks=[tgt_track])
+
+    panel._source_files = [source_a, source_b]
+    panel._source_colors = {"fid_a": "#111", "fid_b": "#222"}
+    panel._source_names = {"fid_a": "ref.mkv", "fid_b": "target.mkv"}
+    panel._track_table.append_tracks("#111", [ref_track])
+    panel._track_table.append_tracks("#222", [tgt_track])
+
+    dialog_instances = []
+
+    class MockSyncStudioDialog:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            dialog_instances.append(self)
+
+        def exec(self):
+            from PySide6.QtWidgets import QDialog
+            return QDialog.DialogCode.Accepted
+
+        def result_calibration(self):
+            cal = SyncCalibration.from_dict(calibration((0, -80), (150000, -160)).to_dict())
+            return cal, -80
+
+    monkeypatch.setattr("ui.panels.remux_panel.widgets.sync_studio_dialog.SyncStudioDialog", MockSyncStudioDialog)
+
+    # Trigger Synchro Studio on target track
+    panel._on_sync_studio_requested(tgt_track)
+
+    assert len(dialog_instances) == 1
+    args = dialog_instances[0].kwargs
+    assert args["target_entry"] is tgt_track
+    assert args["target_source_path"] == src_b
+    assert args["reference_entry"] is ref_track
+    assert args["reference_source_path"] == src_a
+    assert args["reference_stream_index"] == 1
+
+    # Verify calibration was applied
+    assert "sync_calibrations" in panel._workflow_options
+    assert "1" in panel._workflow_options["sync_calibrations"]
+    assert tgt_track.sync_calibration is not None
+    assert tgt_track.cuts_count == 1
+    assert tgt_track.time_shift_ms == -80
+
+
+def test_panel_on_sync_studio_requested_multiple_choices_dialog(qt_app, monkeypatch, tmp_path):
+    from unittest.mock import MagicMock
+    from core.config import AppConfig
+    from ui.panels.remux_panel.panel import RemuxPanel
+    from ui.panels.remux_panel.models import SourceFile
+    from core.workflows.remux_models import TrackEntry
+
+    panel = RemuxPanel(AppConfig())
+    src_a = tmp_path / "ref1.mkv"
+    src_b = tmp_path / "target.mkv"
+    src_c = tmp_path / "ref2.mkv"
+    src_a.touch()
+    src_b.touch()
+    src_c.touch()
+
+    ref1 = TrackEntry(1, "audio", "E-AC-3", "5.1  640 kbps", "eng", "VO 1", file_id="fid_a")
+    ref2 = TrackEntry(1, "audio", "E-AC-3", "5.1  640 kbps", "spa", "VO 2", file_id="fid_c")
+    tgt_track = TrackEntry(1, "audio", "E-AC-3", "5.1  640 kbps", "fre", "VF", file_id="fid_b")
+
+    source_a = SourceFile(id="fid_a", path=src_a, color="#111", info=MagicMock(), tracks=[ref1])
+    source_b = SourceFile(id="fid_b", path=src_b, color="#222", info=MagicMock(), tracks=[tgt_track])
+    source_c = SourceFile(id="fid_c", path=src_c, color="#333", info=MagicMock(), tracks=[ref2])
+
+    panel._source_files = [source_a, source_b, source_c]
+    panel._source_colors = {"fid_a": "#111", "fid_b": "#222", "fid_c": "#333"}
+    panel._source_names = {"fid_a": "ref1.mkv", "fid_b": "target.mkv", "fid_c": "ref2.mkv"}
+    panel._track_table.append_tracks("#111", [ref1])
+    panel._track_table.append_tracks("#222", [tgt_track])
+    panel._track_table.append_tracks("#333", [ref2])
+
+    studio_dialog_opened = []
+
+    class MockSyncStudioDialog:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            studio_dialog_opened.append(self)
+
+        def exec(self):
+            from PySide6.QtWidgets import QDialog
+            return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr("ui.panels.remux_panel.widgets.sync_studio_dialog.SyncStudioDialog", MockSyncStudioDialog)
+
+    # Mock user rejecting the reference dialog
+    class MockRefDialogReject:
+        def __init__(self, choices, parent=None):
+            pass
+        def exec(self):
+            from PySide6.QtWidgets import QDialog
+            return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr("ui.panels.remux_panel.panel._AudioSyncReferenceDialog", MockRefDialogReject)
+    panel._on_sync_studio_requested(tgt_track)
+    assert len(studio_dialog_opened) == 0  # Not opened because user cancelled ref choice
+
+    # Mock user selecting ref2
+    class MockRefDialogAccept:
+        def __init__(self, choices, parent=None):
+            pass
+        def exec(self):
+            from PySide6.QtWidgets import QDialog
+            return QDialog.DialogCode.Accepted
+        def selected_entry(self):
+            return ref2
+
+    monkeypatch.setattr("ui.panels.remux_panel.panel._AudioSyncReferenceDialog", MockRefDialogAccept)
+    panel._on_sync_studio_requested(tgt_track)
+    assert len(studio_dialog_opened) == 1
+    assert studio_dialog_opened[0].kwargs["reference_entry"] is ref2
+
+
+
+
 
 
 

@@ -1832,8 +1832,22 @@ class RemuxPanel(QWidget):
         reference_entry = None
         reference_source = None
         choices = self._audio_sync_reference_choices(entry)
-        if choices:
-            reference_entry = choices[0]
+        if len(choices) > 1:
+            dialog_ref = _AudioSyncReferenceDialog(choices, parent=self)
+            if dialog_ref.exec() != QDialog.DialogCode.Accepted:
+                return
+            reference_entry = dialog_ref.selected_entry()
+        elif len(choices) == 1:
+            reference_entry = choices[0][1]
+        else:
+            other_audio = [
+                t for t in self._track_table.current_tracks()
+                if t.file_id != entry.file_id and t.track_type == "audio"
+            ]
+            if other_audio:
+                reference_entry = other_audio[0]
+
+        if reference_entry is not None:
             reference_source = self._find_source(reference_entry.file_id)
 
         target_source_idx = self._source_index_for_file_id(entry.file_id)
