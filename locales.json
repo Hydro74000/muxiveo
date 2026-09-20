@@ -4146,6 +4146,58 @@
   "Lecture externe ffplay lancée.": {
     "fra": "Lecture externe ffplay lancée.",
     "eng": "External ffplay playback launched."
+  },
+  "FORME D'ONDE ACOUSTIQUE SUPERPOSÉE": {
+    "fra": "FORME D'ONDE ACOUSTIQUE SUPERPOSÉE",
+    "eng": "SUPERIMPOSED ACOUSTIC WAVEFORM"
+  },
+  "Segment {current}/{total} — {pos}": {
+    "fra": "Segment {current}/{total} — {pos}",
+    "eng": "Segment {current}/{total} — {pos}"
+  },
+  "Segment précédent": {
+    "fra": "Segment précédent",
+    "eng": "Previous segment"
+  },
+  "Segment suivant": {
+    "fra": "Segment suivant",
+    "eng": "Next segment"
+  },
+  "Zoom avant": {
+    "fra": "Zoom avant",
+    "eng": "Zoom in"
+  },
+  "Zoom avant (Ctrl+Molette haut)": {
+    "fra": "Zoom avant (Ctrl+Molette haut)",
+    "eng": "Zoom in (Ctrl+Wheel up)"
+  },
+  "Zoom arrière": {
+    "fra": "Zoom arrière",
+    "eng": "Zoom out"
+  },
+  "Zoom arrière (Ctrl+Molette bas)": {
+    "fra": "Zoom arrière (Ctrl+Molette bas)",
+    "eng": "Zoom out (Ctrl+Wheel down)"
+  },
+  "Vue 20s": {
+    "fra": "Vue 20s",
+    "eng": "20s View"
+  },
+  "Réinitialiser le zoom": {
+    "fra": "Réinitialiser le zoom",
+    "eng": "Reset zoom"
+  },
+  "Extraction audio du segment {idx}…": {
+    "fra": "Extraction audio du segment {idx}…",
+    "eng": "Extracting audio for segment {idx}…"
+  },
+  "Décalage du segment {idx} :": {
+    "fra": "Décalage du segment {idx} :",
+    "eng": "Offset for segment {idx}:"
+  },
+  "Astuce : Ctrl + Molette pour zoomer • Glisser pour faire défiler la forme d'onde": {
+    "fra": "Astuce : Ctrl + Molette pour zoomer • Glisser pour faire défiler la forme d'onde",
+    "eng": "Tip: Ctrl + Wheel to zoom • Drag to scroll waveform"
   }
 }
 

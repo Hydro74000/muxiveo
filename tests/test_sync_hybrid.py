@@ -518,6 +518,112 @@ def test_panel_on_sync_studio_requested_multiple_choices_dialog(qt_app, monkeypa
     assert studio_dialog_opened[0].kwargs["reference_entry"] is ref2
 
 
+def test_waveform_view_zoom_and_pan_and_paint(qt_app):
+    from ui.widgets.waveform_view import WaveformView
+    from PySide6.QtGui import QImage, QPainter, QWheelEvent
+    from PySide6.QtCore import QPointF
+
+    wv = WaveformView()
+    wv.resize(800, 200)
+
+    # Test initial zoom
+    assert wv.zoom_factor == 1.0
+    assert wv.visible_duration_ms == 20000.0
+
+    # Test setting audio data
+    ref = np.sin(np.linspace(0, 50, 320000)).astype(np.float32)
+    tgt = np.cos(np.linspace(0, 50, 320000)).astype(np.float32)
+    wv.set_audio_data(ref, tgt, sample_rate=16000, start_time_ms=0.0, cut_time_ms=5000.0)
+    assert wv.window_duration_ms == 20000.0
+
+    # Test zoom in / out / reset
+    zoom_events = []
+    wv.zoom_changed.connect(lambda z, p: zoom_events.append((z, p)))
+    wv.zoom_in()
+    assert wv.zoom_factor > 1.0
+    assert wv.visible_duration_ms < 20000.0
+
+    wv.set_zoom(10.0)
+    assert wv.zoom_factor == 10.0
+    assert wv.visible_duration_ms == 2000.0
+
+    # Test pan
+    wv.set_pan_offset_ms(500.0)
+    assert wv.pan_offset_ms == 500.0
+
+    wv.reset_zoom()
+    assert wv.zoom_factor == 1.0
+    assert wv.pan_offset_ms == 0.0
+
+    # Test painting at various zoom levels
+    img = QImage(800, 200, QImage.Format.Format_ARGB32)
+    wv.render(img)
+
+    # Extreme zoom (400x down to 50ms)
+    wv.set_zoom(400.0)
+    wv.render(img)
+
+
+def test_sync_studio_dialog_multi_segment_navigation_and_zoom(qt_app, tmp_path):
+    from ui.panels.remux_panel.widgets.sync_studio_dialog import SyncStudioDialog
+
+    target_track = TrackEntry(1, "audio", "E-AC-3", "5.1  640 kbps", "fre", "VFF", time_shift_ms=-67, file_id="src1")
+    ref_track = TrackEntry(1, "audio", "DTS-HD MA", "5.1  1509 kbps", "eng", "VO", time_shift_ms=0, file_id="src0")
+
+    calib = calibration((0, -67), (239738, -180), (838566, -821)).to_dict()
+    dialog = SyncStudioDialog(
+        target_entry=target_track,
+        target_source_path=tmp_path / "target.mkv",
+        target_stream_index=1,
+        reference_entry=ref_track,
+        reference_source_path=tmp_path / "ref.mkv",
+        reference_stream_index=1,
+        calibration=calib,
+    )
+    dialog.resize(900, 700)
+
+    # Multi-segment navigation
+    assert dialog.current_calibration.cuts_count == 2
+    assert dialog._current_segment_index == 0
+    assert dialog.btn_next_seg is not None
+    assert dialog.btn_next_seg.isEnabled()
+
+    # Navigate to next segment (Segment 2 at 00:03:59.738)
+    dialog._next_segment()
+    assert dialog._current_segment_index == 1
+    assert dialog.spin_shift.value() == -180.0
+    assert dialog._current_cut_ms == 239738.0
+
+    # Navigate to next segment (Segment 3 at 00:13:58.566)
+    dialog._next_segment()
+    assert dialog._current_segment_index == 2
+    assert dialog.spin_shift.value() == -821.0
+    assert not dialog.btn_next_seg.isEnabled()
+
+    # Previous segment
+    dialog._prev_segment()
+    assert dialog._current_segment_index == 1
+
+    # Select via table click
+    dialog._on_cuts_cell_clicked(2, 0)
+    assert dialog._current_segment_index == 2
+
+    # Zoom controls
+    assert dialog.waveform.zoom_factor == 1.0
+    dialog.btn_zoom_in.click()
+    assert dialog.waveform.zoom_factor > 1.0
+    assert dialog.lbl_zoom.text() != "1.0x"
+    assert not dialog.zoom_scrollbar.isHidden()
+
+    dialog.btn_zoom_reset.click()
+    assert dialog.waveform.zoom_factor == 1.0
+    assert dialog.lbl_zoom.text() == "1.0x"
+    assert dialog.zoom_scrollbar.isHidden()
+
+    dialog.close()
+
+
+
 
 
 
