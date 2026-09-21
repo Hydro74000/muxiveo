@@ -12,7 +12,7 @@ from core.workflows.sync_calibration import SyncCalibration, SyncSegment
 
 
 class AudioSyncScanner:
-    def __init__(self, ffmpeg="ffmpeg", ffprobe="ffprobe", *, window_s=20, max_offset_s=10, cancel_event=None):
+    def __init__(self, ffmpeg="ffmpeg", ffprobe="ffprobe", *, window_s=60, max_offset_s=30, cancel_event=None):
         self.ffmpeg, self.ffprobe = str(ffmpeg), str(ffprobe)
         self.window_s, self.max_offset_s = window_s, max_offset_s
         self.cancel_event = cancel_event
