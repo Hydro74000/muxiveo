@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 from pathlib import Path
+import re
 import subprocess
 
 from core.workflows.audio_sync import AudioSyncTrack
@@ -145,18 +146,23 @@ def perform_dynamic_sync(
 
     donor_tracks = [t for t in donor_source.tracks if t.enabled]
     target_audio = next((t for t in donor_tracks if t.track_type == "audio"), None)
+    sync_audio = None
+    if ref_audio is not None and ref_audio.language:
+        sync_audio = next((t for t in donor_source.tracks if t.track_type == "audio" and t.language == ref_audio.language), None)
+    if sync_audio is None:
+        sync_audio = target_audio
     target_sub = next((t for t in donor_tracks if t.track_type == "subtitle"), None)
 
     # 1. Audio vs Audio si disponible
-    if target_audio and ref_audio:
-        logger.emit("info", f"Synchronisation audio dynamique : {ref_source.path.name} #{ref_audio.mkv_tid} vs {donor_source.path.name} #{target_audio.mkv_tid}…")
+    if sync_audio and ref_audio:
+        logger.emit("info", f"Synchronisation audio dynamique : {ref_source.path.name} #{ref_audio.mkv_tid} vs {donor_source.path.name} #{sync_audio.mkv_tid}…")
         audio_scanner = AudioSyncScanner(
             getattr(options, "ffmpeg", None) or config.tool_ffmpeg,
             getattr(options, "ffprobe", None) or config.tool_ffprobe,
         )
         return audio_scanner.scan(
             AudioSyncTrack(ref_source.path, ref_audio.mkv_tid),
-            AudioSyncTrack(donor_source.path, target_audio.mkv_tid),
+            AudioSyncTrack(donor_source.path, sync_audio.mkv_tid),
             detect_cuts=bool(getattr(options, "detect_cuts", False)),
             drift_threshold_ms=getattr(options, "drift_threshold_ms", 25) or 25,
             log=lambda msg: logger.emit("info", msg),
@@ -219,9 +225,17 @@ def prepare_pair(pair, args, config, logger):
         result = build_remux_config(job, config, options, logger)
     # La référence fournit toujours la vidéo et les chapitres. Le profil reste
     # maître de la sélection des pistes audio/sous-titres.
+    for track in result.sources[0].tracks:
+        if track.track_type == "video":
+            track.enabled = True
+    ref_audio = next((t for t in result.sources[0].tracks if t.track_type == "audio"), None)
     donor_tracks = result.sources[1].tracks
     for track in donor_tracks:
         if track.track_type == "video":
+            track.enabled = False
+        if track.track_type == "audio" and ref_audio and track.language == ref_audio.language:
+            track.enabled = False
+        if track.track_type == "subtitle" and ref_audio and track.language == ref_audio.language:
             track.enabled = False
     all_tracks = [track for source in result.sources for track in source.tracks]
     if not args.profile:
@@ -236,12 +250,18 @@ def prepare_pair(pair, args, config, logger):
     if ref_sub is None:
         ref_sub = next((t for t in result.sources[0].tracks if t.track_type == "subtitle"), None)
 
+    sync_audio = None
+    if ref_audio is not None and ref_audio.language:
+        sync_audio = next((t for t in result.sources[1].tracks if t.track_type == "audio" and t.language == ref_audio.language), None)
+    if sync_audio is None:
+        sync_audio = target_audio
+
     if args.calibration:
         calibration = SyncCalibration.from_dict(json.loads(Path(args.calibration).read_text(encoding="utf-8-sig")))
-    elif target_audio is not None and ref_audio is not None:
+    elif sync_audio is not None and ref_audio is not None:
         calibration = scanner(args, config).scan(
             AudioSyncTrack(pair.reference, ref_audio.mkv_tid),
-            AudioSyncTrack(pair.donor, target_audio.mkv_tid),
+            AudioSyncTrack(pair.donor, sync_audio.mkv_tid),
             detect_cuts=args.detect_cuts,
             drift_threshold_ms=args.drift_threshold_ms,
             log=lambda text: logger.emit("info", text),
@@ -285,8 +305,12 @@ def prepare_pair(pair, args, config, logger):
         from cli.remux_config import resolve_tmdb_metadata
         details = resolve_tmdb_metadata(job, config, pair.reference, logger)[3] if job.get("tmdb") else None
         ctx = build_output_context(pair.reference, details, tracks=all_tracks, track_order=list(result.track_order))
+        ref_title_m = re.search(r"S\d+E\d+\.(.*?)\.(?:1080p|720p|2160p|WEB|HDTV|AMZN)", pair.reference.name)
+        ref_ep_title = ref_title_m.group(1) if ref_title_m else ""
+        ref_ep_title = re.sub(r"\.(?:REPACK|PROPER)$", "", ref_ep_title, flags=re.IGNORECASE)
         ctx.update({"release_group": args.tag, "group": args.tag,
-                    "season_num": pair.season, "episode_num": pair.episode})
+                    "season_num": pair.season, "episode_num": pair.episode,
+                    "ref_episode_title": ref_ep_title})
         name = render_output_template(args.output_template, ctx)
         if Path(name).is_absolute() or ".." in Path(name).parts:
             raise CliError("Le template doit rester dans le dossier de sortie.", EXIT_ARGS)
