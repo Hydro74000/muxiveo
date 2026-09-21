@@ -238,11 +238,20 @@ def prepare_pair(pair, args, config, logger):
         if track.track_type == "subtitle" and ref_audio and track.language == ref_audio.language:
             track.enabled = False
     all_tracks = [track for source in result.sources for track in source.tracks]
+    ref_video = next((t for t in result.sources[0].tracks if t.track_type == "video"), None)
     if not args.profile:
         result.track_order = [(s.file_index, t.mkv_tid, t.entry_id) for s in result.sources for t in s.tracks if t.enabled]
     else:
         allowed = {t.entry_id for t in all_tracks if t.enabled}
-        result.track_order = [item for item in result.track_order if len(item) < 3 or item[2] in allowed]
+        filtered_order = [item for item in result.track_order if len(item) < 3 or item[2] in allowed]
+        final_order = []
+        if ref_video:
+            final_order.append((0, ref_video.mkv_tid, ref_video.entry_id))
+        for item in filtered_order:
+            if ref_video and (item[0] == 0 and item[1] == ref_video.mkv_tid):
+                continue
+            final_order.append(item)
+        result.track_order = final_order
     ref_audio = next((t for t in result.sources[0].tracks if t.track_type == "audio"), None)
     target_audio = next((t for t in donor_tracks if t.track_type == "audio" and t.enabled), None)
     target_sub = next((t for t in donor_tracks if t.track_type == "subtitle" and t.enabled), None)

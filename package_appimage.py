@@ -874,6 +874,15 @@ def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64") -
     _ensure_linux_bundle_entrypoints(usr_bin)
     ok("Entrée Unix AppImage créée")
 
+    internal_dir = usr_bin / "_internal"
+    if internal_dir.exists():
+        for pattern in ("libsystemd*", "libudev*"):
+            for f in internal_dir.glob(pattern):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
     # Marqueur all-inclusive lu par launcher.py au démarrage
     if allinc:
         (usr_bin / "_ALLINC").touch()
