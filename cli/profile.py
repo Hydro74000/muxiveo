@@ -179,6 +179,39 @@ def build_profile_remux_config(
     # Chemins résolus en absolu : les runners peuvent exécuter les commandes
     # depuis un répertoire de travail différent du cwd de la CLI.
     sources = [replace(source, path=source.path.expanduser().resolve()) for source in sources]
+    sync_mode = options.sync_mode or metadata.get("sync_mode", "container")
+    sync_subtitles = options.sync_subtitles or metadata.get("sync_subtitles", "mirror")
+    clean_nfo = options.clean_nfo if options.clean_nfo is not None else metadata.get("clean_nfo", True)
+    crossfade_ms = options.crossfade_ms if options.crossfade_ms is not None else metadata.get("crossfade_ms", 80)
+
+    sync_calibrations: dict[str, Any] = {}
+    if options.calibration:
+        from core.workflows.sync_calibration import SyncCalibration
+        calib = SyncCalibration.from_dict(json.loads(Path(options.calibration).read_text(encoding="utf-8-sig")))
+        if sync_mode == "physical":
+            sync_calibrations = {"1": calib.to_dict()}
+        elif len(calib.segments) == 1:
+            if len(sources) > 1:
+                for t in sources[1].tracks:
+                    if t.track_type == "audio" or (t.track_type == "subtitle" and sync_subtitles == "mirror"):
+                        t.time_shift_ms = round(calib.segments[0].shift_ms)
+        else:
+            raise CliError("Le mode container ne prend pas en charge les coupures multi-segments (utilisez --sync-mode physical).", EXIT_ARGS)
+    elif (options.auto_sync or profile.get("auto_sync") or profile.get("sync")) and len(sources) >= 2:
+        from cli.hybrid import perform_dynamic_sync
+        calib = perform_dynamic_sync(sources, result.tracks, config, options, logger)
+        if calib is not None:
+            if sync_mode == "physical":
+                sync_calibrations = {"1": calib.to_dict()}
+            elif len(calib.segments) == 1:
+                for t in sources[1].tracks:
+                    if t.track_type == "audio" or (t.track_type == "subtitle" and sync_subtitles == "mirror"):
+                        t.time_shift_ms = round(calib.segments[0].shift_ms)
+            else:
+                raise CliError("Le mode container ne prend pas en charge les coupures multi-segments (utilisez --sync-mode physical).", EXIT_ARGS)
+    else:
+        sync_calibrations = dict(metadata.get("sync_calibrations", {}))
+
     remux_config = RemuxConfig(
         sources=sources,
         output=output.expanduser().resolve(),
@@ -190,10 +223,11 @@ def build_profile_remux_config(
         work_dir=Path(str(options.work_dir or config.work_dir)).expanduser().resolve(),
         allow_missing_output_dir=preview,
         mux_backend=normalize_mux_backend(str(metadata.get("mux_backend", config.matroska_mux_backend))),
-        sync_mode=options.sync_mode or metadata.get("sync_mode", "container"),
-        sync_subtitles=options.sync_subtitles or metadata.get("sync_subtitles", "mirror"),
-        clean_nfo=options.clean_nfo if options.clean_nfo is not None else metadata.get("clean_nfo", True),
-        crossfade_ms=options.crossfade_ms if options.crossfade_ms is not None else metadata.get("crossfade_ms", 80),
+        sync_mode=sync_mode,
+        sync_subtitles=sync_subtitles,
+        clean_nfo=clean_nfo,
+        crossfade_ms=crossfade_ms,
+        sync_calibrations=sync_calibrations,
     )
     return remux_config, result.report
 

@@ -252,6 +252,12 @@ def validate_job_contract(job: dict[str, Any], *, path: str = "$", require_versi
             errors.append(f"{path}.{key}: attendu {choices}")
     if "clean_nfo" in job and not isinstance(job["clean_nfo"], bool):
         errors.append(f"{path}.clean_nfo: attendu boolean")
+    if "auto_sync" in job and not isinstance(job["auto_sync"], bool):
+        errors.append(f"{path}.auto_sync: attendu boolean")
+    if "detect_cuts" in job and not isinstance(job["detect_cuts"], bool):
+        errors.append(f"{path}.detect_cuts: attendu boolean")
+    if "drift_threshold_ms" in job and (not _is_int(job["drift_threshold_ms"]) or job["drift_threshold_ms"] <= 0):
+        errors.append(f"{path}.drift_threshold_ms: attendu entier > 0")
     if "crossfade_ms" in job and (not _is_int(job["crossfade_ms"]) or not 0 <= job["crossfade_ms"] <= 1000):
         errors.append(f"{path}.crossfade_ms: attendu entier entre 0 et 1000")
     if "sync_calibrations" in job:

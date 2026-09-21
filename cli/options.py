@@ -31,6 +31,10 @@ class CommonOptions:
     sync_subtitles: str | None = None
     clean_nfo: bool | None = None
     crossfade_ms: int | None = None
+    auto_sync: bool = False
+    calibration: str | None = None
+    detect_cuts: bool = False
+    drift_threshold_ms: int = 25
 
     @classmethod
     def from_namespace(cls, args: argparse.Namespace) -> "CommonOptions":
@@ -53,6 +57,10 @@ class CommonOptions:
             sync_subtitles=getattr(args, "sync_subtitles", None),
             clean_nfo=getattr(args, "clean_nfo", None),
             crossfade_ms=getattr(args, "crossfade_ms", None),
+            auto_sync=bool(getattr(args, "auto_sync", False)),
+            calibration=getattr(args, "calibration", None),
+            detect_cuts=bool(getattr(args, "detect_cuts", False)),
+            drift_threshold_ms=getattr(args, "drift_threshold_ms", 25),
         )
 
 
@@ -75,6 +83,10 @@ class JobOverrides:
     sync_subtitles: str | None = None
     clean_nfo: bool | None = None
     crossfade_ms: int | None = None
+    auto_sync: bool = False
+    calibration: str | None = None
+    detect_cuts: bool = False
+    drift_threshold_ms: int = 25
 
     @classmethod
     def from_namespace(cls, args: argparse.Namespace) -> "JobOverrides":
@@ -96,6 +108,10 @@ class JobOverrides:
             sync_subtitles=getattr(args, "sync_subtitles", None),
             clean_nfo=getattr(args, "clean_nfo", None),
             crossfade_ms=getattr(args, "crossfade_ms", None),
+            auto_sync=bool(getattr(args, "auto_sync", False)),
+            calibration=getattr(args, "calibration", None),
+            detect_cuts=bool(getattr(args, "detect_cuts", False)),
+            drift_threshold_ms=getattr(args, "drift_threshold_ms", 25),
         )
 
 

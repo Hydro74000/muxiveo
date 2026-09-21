@@ -98,6 +98,14 @@ def load_job(overrides: JobOverrides) -> dict[str, Any]:
         value = getattr(overrides, key)
         if value is not None:
             job[key] = value
+    if overrides.calibration:
+        job["calibration"] = overrides.calibration
+    if overrides.auto_sync:
+        job["auto_sync"] = True
+    if overrides.detect_cuts:
+        job["detect_cuts"] = True
+    if overrides.drift_threshold_ms:
+        job["drift_threshold_ms"] = overrides.drift_threshold_ms
     apply_metadata_overrides(
         job,
         auto_tmdb=overrides.auto_tmdb,

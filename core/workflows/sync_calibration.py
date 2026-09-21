@@ -40,9 +40,9 @@ class SyncCalibration:
 
     @classmethod
     def from_dict(cls, payload):
-        if (not isinstance(payload, dict) or payload.get("version") != 1
-                or payload.get("kind") != "sync-calibration"
-                or payload.get("timebase") != "donor-ms"):
+        if not isinstance(payload, dict) or "segments" not in payload:
+            raise ValueError("Format de calibration non pris en charge.")
+        if payload.get("version") not in (None, 1) or payload.get("kind") not in (None, "sync-calibration") or payload.get("timebase") not in (None, "donor-ms"):
             raise ValueError("Format de calibration non pris en charge.")
         try:
             return cls(tuple(SyncSegment(float(s["start_ms"]), float(s["shift_ms"]))

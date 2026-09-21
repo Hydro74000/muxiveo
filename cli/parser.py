@@ -16,11 +16,14 @@ def _add_sync_options(parser):
     parser.add_argument("--auto-forced-subs", action="store_true")
     parser.add_argument("--forced-threshold", type=int, default=50)
     parser.add_argument("--auto-sdh", action="store_true")
+    parser.add_argument("--auto-sync", action="store_true", help="Analyser et recalibrer automatiquement les sources dynamiquement.")
+    parser.add_argument("--calibration", help="Fichier JSON de calibration explicite (outrepasse l'analyse dynamique).")
+    parser.add_argument("--detect-cuts", action="store_true", help="Détecter les coupures et ruptures temporelles (multi-segments).")
+    parser.add_argument("--drift-threshold-ms", type=int, default=25, help="Seuil de dérive en ms pour détecter une coupure.")
     parser.add_argument("--export-workflow", help="Sauvegarder le workflow exact sans exécuter.")
 
 
-def _add_common_options(parser: argparse.ArgumentParser) -> None:
-    _add_sync_options(parser)
+def _add_base_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", help="Fichier JSON job/template.")
     parser.add_argument("--ffmpeg", help="Chemin ffmpeg override.")
     parser.add_argument("--ffprobe", help="Chemin ffprobe override.")
@@ -54,6 +57,11 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Affiche la sortie ffmpeg en direct (progression, codecs, timing). Par défaut, seule la progression des étapes de workflow est affichée.",
     )
+
+
+def _add_common_options(parser: argparse.ArgumentParser) -> None:
+    _add_sync_options(parser)
+    _add_base_options(parser)
 
 
 def _add_tmdb_options(parser: argparse.ArgumentParser) -> None:
@@ -174,18 +182,17 @@ def build_parser() -> argparse.ArgumentParser:
     profile_batch.add_argument("--summary")
     profile_batch.set_defaults(func=cmd_profile)
     from cli.hybrid import cmd_hybrid, cmd_sync_scan, cmd_shift_subs
-    scan = sub.add_parser("sync-scan", help="Analyser le calage acoustique.")
+    scan = sub.add_parser("sync-scan", help="Analyser le calage acoustique ou par sous-titres.")
     _add_common_options(scan)
     scan.add_argument("--ref", required=True)
     scan.add_argument("--target", required=True)
     scan.add_argument("--stream-ref", default="0:a:0")
     scan.add_argument("--stream-target", default="0:a:0")
-    scan.add_argument("--detect-cuts", action="store_true")
-    scan.add_argument("--drift-threshold-ms", type=int, default=25)
+    scan.add_argument("--type", choices=("auto", "audio", "subtitle"), default="auto", help="Type d'analyse : auto (détection par extension/flux), audio ou subtitle.")
     scan.add_argument("--output-json")
     scan.set_defaults(func=cmd_sync_scan)
     subs = sub.add_parser("shift-subs", help="Recaler des sous-titres texte.")
-    _add_common_options(subs)
+    _add_base_options(subs)
     subs.add_argument("-i", "--input", required=True)
     subs.add_argument("-o", "--output", required=True)
     calibration = subs.add_mutually_exclusive_group(required=True)
@@ -195,11 +202,9 @@ def build_parser() -> argparse.ArgumentParser:
     subs.set_defaults(func=cmd_shift_subs)
     hybrid = sub.add_parser("hybrid", help="Assembler une paire ou une saison hybride.")
     _add_common_options(hybrid)
-    for option in ("ref", "donor", "ref-dir", "donor-dir", "profile", "calibration", "report-json"):
+    for option in ("ref", "donor", "ref-dir", "donor-dir", "profile", "report-json"):
         hybrid.add_argument("--" + option)
     hybrid.add_argument("-o", "--output-dir", required=True)
-    hybrid.add_argument("--detect-cuts", action="store_true")
-    hybrid.add_argument("--drift-threshold-ms", type=int, default=25)
     hybrid.add_argument("--auto-tmdb", type=int, nargs="?", const=0)
     hybrid.add_argument("--tmdb-apikey", default="")
     hybrid.add_argument("--no-cover", action="store_true")

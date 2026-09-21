@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 from pathlib import Path
+import subprocess
 
 from core.workflows.audio_sync import AudioSyncTrack
 from core.workflows.audio_sync_scan import AudioSyncScanner
@@ -27,11 +28,72 @@ def scanner(args, config):
     return AudioSyncScanner(args.ffmpeg or config.tool_ffmpeg, args.ffprobe or config.tool_ffprobe, cancel_event=getattr(args, "cancel_event", None))
 
 
+def detect_stream_kind(ffprobe: str, path: Path | str, stream_spec: str | int, default: str = "audio") -> str:
+    path = Path(path)
+    suffix = path.suffix.lower()
+    if suffix in {".srt", ".vtt", ".ass", ".ssa"}:
+        return "subtitle"
+    spec_str = str(stream_spec).lower()
+    if ":s" in spec_str or spec_str == "s":
+        return "subtitle"
+    if ":a" in spec_str or spec_str == "a":
+        return "audio"
+    if ":v" in spec_str or spec_str == "v":
+        return "video"
+    try:
+        cmd = [
+            str(ffprobe), "-v", "error",
+            "-select_streams", str(stream_spec),
+            "-show_entries", "stream=codec_type",
+            "-of", "csv=p=0",
+            str(path),
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        output = res.stdout.strip().lower()
+        if output in {"audio", "subtitle", "video"}:
+            return output
+    except Exception:
+        pass
+    return default
+
+
 def cmd_sync_scan(args, config, logger):
-    result = scanner(args, config).scan(
-        AudioSyncTrack(Path(args.ref), args.stream_ref), AudioSyncTrack(Path(args.target), args.stream_target),
-        detect_cuts=args.detect_cuts, drift_threshold_ms=args.drift_threshold_ms,
-        log=lambda message: logger.emit("info", message))
+    scan_type = getattr(args, "type", "auto")
+    ref_path = Path(args.ref)
+    tgt_path = Path(args.target)
+    ffprobe = args.ffprobe or config.tool_ffprobe
+    ffmpeg = args.ffmpeg or config.tool_ffmpeg
+
+    if scan_type == "auto":
+        tgt_kind = detect_stream_kind(ffprobe, tgt_path, args.stream_target, default="audio")
+        ref_kind = detect_stream_kind(ffprobe, ref_path, args.stream_ref, default="audio")
+    elif scan_type == "subtitle":
+        tgt_kind = "subtitle"
+        ref_kind = detect_stream_kind(ffprobe, ref_path, args.stream_ref, default="subtitle")
+    else:
+        tgt_kind = "audio"
+        ref_kind = "audio"
+
+    if tgt_kind == "subtitle":
+        from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
+        sub_scanner = SubtitleSyncScanner(ffmpeg, ffprobe, cancel_event=getattr(args, "cancel_event", None))
+        is_ref_sub = (ref_kind == "subtitle")
+        result = sub_scanner.scan(
+            ref_path, args.stream_ref,
+            tgt_path, args.stream_target,
+            is_ref_sub=is_ref_sub,
+            detect_cuts=(args.detect_cuts if is_ref_sub else False),
+            log=lambda message: logger.emit("info", message),
+        )
+    else:
+        result = scanner(args, config).scan(
+            AudioSyncTrack(ref_path, args.stream_ref),
+            AudioSyncTrack(tgt_path, args.stream_target),
+            detect_cuts=args.detect_cuts,
+            drift_threshold_ms=args.drift_threshold_ms,
+            log=lambda message: logger.emit("info", message),
+        )
+
     if args.output_json:
         _write_json(args.output_json, result.to_dict())
     print(json.dumps(result.to_dict(), ensure_ascii=False))
@@ -61,6 +123,73 @@ def pairs_from_args(args):
     if args.ref_dir and args.donor_dir and not (args.ref or args.donor):
         return pair_directories(Path(args.ref_dir).expanduser(), Path(args.donor_dir).expanduser())
     raise CliError("Choisir --ref/--donor ou --ref-dir/--donor-dir.", EXIT_ARGS)
+
+
+def perform_dynamic_sync(
+    sources: list[Any],
+    tracks: list[Any],
+    config: Any,
+    options: Any,
+    logger: Any,
+) -> SyncCalibration | None:
+    """Analyse dynamiquement les sources pour déterminer le décalage (audio ou sous-titres)."""
+    if len(sources) < 2:
+        return None
+    ref_source = sources[0]
+    donor_source = sources[1]
+
+    ref_audio = next((t for t in ref_source.tracks if t.track_type == "audio"), None)
+    ref_sub = next((t for t in ref_source.tracks if t.track_type == "subtitle" and t.enabled), None)
+    if ref_sub is None:
+        ref_sub = next((t for t in ref_source.tracks if t.track_type == "subtitle"), None)
+
+    donor_tracks = [t for t in donor_source.tracks if t.enabled]
+    target_audio = next((t for t in donor_tracks if t.track_type == "audio"), None)
+    target_sub = next((t for t in donor_tracks if t.track_type == "subtitle"), None)
+
+    # 1. Audio vs Audio si disponible
+    if target_audio and ref_audio:
+        logger.emit("info", f"Synchronisation audio dynamique : {ref_source.path.name} #{ref_audio.mkv_tid} vs {donor_source.path.name} #{target_audio.mkv_tid}…")
+        audio_scanner = AudioSyncScanner(
+            getattr(options, "ffmpeg", None) or config.tool_ffmpeg,
+            getattr(options, "ffprobe", None) or config.tool_ffprobe,
+        )
+        return audio_scanner.scan(
+            AudioSyncTrack(ref_source.path, ref_audio.mkv_tid),
+            AudioSyncTrack(donor_source.path, target_audio.mkv_tid),
+            detect_cuts=bool(getattr(options, "detect_cuts", False)),
+            drift_threshold_ms=getattr(options, "drift_threshold_ms", 25) or 25,
+            log=lambda msg: logger.emit("info", msg),
+        )
+
+    # 2. Sous-titre donneur si pas d'audio
+    if target_sub:
+        from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
+        sub_scanner = SubtitleSyncScanner(
+            getattr(options, "ffmpeg", None) or config.tool_ffmpeg,
+            getattr(options, "ffprobe", None) or config.tool_ffprobe,
+        )
+        if ref_sub is not None:
+            logger.emit("info", f"Synchronisation sous-titres dynamique : {ref_source.path.name} #{ref_sub.mkv_tid} vs {donor_source.path.name} #{target_sub.mkv_tid}…")
+            return sub_scanner.scan(
+                ref_source.path, ref_sub.mkv_tid,
+                donor_source.path, target_sub.mkv_tid,
+                is_ref_sub=True,
+                detect_cuts=bool(getattr(options, "detect_cuts", False)),
+                log=lambda msg: logger.emit("info", msg),
+            )
+        elif ref_audio is not None:
+            logger.emit("info", f"Synchronisation audio vs sous-titre dynamique : {ref_source.path.name} #{ref_audio.mkv_tid} vs {donor_source.path.name} #{target_sub.mkv_tid}…")
+            return sub_scanner.scan(
+                ref_source.path, ref_audio.mkv_tid,
+                donor_source.path, target_sub.mkv_tid,
+                is_ref_sub=False,
+                detect_cuts=False,
+                log=lambda msg: logger.emit("info", msg),
+            )
+
+    logger.emit("warning", f"Aucune paire de pistes compatible trouvée pour la synchronisation automatique de {donor_source.path.name}.")
+    return None
 
 
 def prepare_pair(pair, args, config, logger):
@@ -102,14 +231,44 @@ def prepare_pair(pair, args, config, logger):
         result.track_order = [item for item in result.track_order if len(item) < 3 or item[2] in allowed]
     ref_audio = next((t for t in result.sources[0].tracks if t.track_type == "audio"), None)
     target_audio = next((t for t in donor_tracks if t.track_type == "audio" and t.enabled), None)
-    if ref_audio is None or target_audio is None:
-        raise CliError("Une piste audio de référence et une piste donneuse sont requises.", EXIT_ARGS)
+    target_sub = next((t for t in donor_tracks if t.track_type == "subtitle" and t.enabled), None)
+    ref_sub = next((t for t in result.sources[0].tracks if t.track_type == "subtitle" and t.enabled), None)
+    if ref_sub is None:
+        ref_sub = next((t for t in result.sources[0].tracks if t.track_type == "subtitle"), None)
+
     if args.calibration:
         calibration = SyncCalibration.from_dict(json.loads(Path(args.calibration).read_text(encoding="utf-8-sig")))
+    elif target_audio is not None and ref_audio is not None:
+        calibration = scanner(args, config).scan(
+            AudioSyncTrack(pair.reference, ref_audio.mkv_tid),
+            AudioSyncTrack(pair.donor, target_audio.mkv_tid),
+            detect_cuts=args.detect_cuts,
+            drift_threshold_ms=args.drift_threshold_ms,
+            log=lambda text: logger.emit("info", text),
+        )
+    elif target_sub is not None:
+        from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
+        sub_scanner = SubtitleSyncScanner(args.ffmpeg or config.tool_ffmpeg, args.ffprobe or config.tool_ffprobe)
+        if ref_sub is not None:
+            calibration = sub_scanner.scan(
+                pair.reference, ref_sub.mkv_tid,
+                pair.donor, target_sub.mkv_tid,
+                is_ref_sub=True,
+                detect_cuts=args.detect_cuts,
+                log=lambda text: logger.emit("info", text),
+            )
+        elif ref_audio is not None:
+            calibration = sub_scanner.scan(
+                pair.reference, ref_audio.mkv_tid,
+                pair.donor, target_sub.mkv_tid,
+                is_ref_sub=False,
+                detect_cuts=False,
+                log=lambda text: logger.emit("info", text),
+            )
+        else:
+            raise CliError("Une piste de référence audio ou sous-titre est requise.", EXIT_ARGS)
     else:
-        calibration = scanner(args, config).scan(AudioSyncTrack(pair.reference, ref_audio.mkv_tid),
-            AudioSyncTrack(pair.donor, target_audio.mkv_tid), detect_cuts=args.detect_cuts,
-            drift_threshold_ms=args.drift_threshold_ms, log=lambda text: logger.emit("info", text))
+        raise CliError("Une piste donneuse audio ou sous-titre est requise.", EXIT_ARGS)
     if result.sync_mode == "physical":
         result.sync_calibrations = {"1": calibration.to_dict()}
     elif len(calibration.segments) != 1:

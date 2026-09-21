@@ -120,7 +120,7 @@ class SubtitleSyncScanner:
             raise SubtitleSyncError(f"Fichier introuvable : {source_path}")
 
         suffix = source_path.suffix.lower()
-        if suffix in {".srt", ".vtt", ".ass", ".ssa"} and stream_index is None:
+        if suffix in {".srt", ".vtt", ".ass", ".ssa"}:
             try:
                 content = source_path.read_text(encoding="utf-8-sig", errors="replace")
                 return self.extract_cues_from_text(content, suffix=suffix)
@@ -128,7 +128,12 @@ class SubtitleSyncScanner:
                 raise SubtitleSyncError(f"Erreur de lecture du sous-titre {source_path.name} : {exc}") from exc
 
         # Extraction par FFmpeg depuis conteneur MKV / MP4
-        map_arg = f"0:{stream_index}" if stream_index is not None else "0:s:0"
+        if isinstance(stream_index, str) and (stream_index.startswith("0:") or ":" in stream_index):
+            map_arg = stream_index
+        elif stream_index is not None:
+            map_arg = f"0:{stream_index}"
+        else:
+            map_arg = "0:s:0"
         cmd = [
             self.ffmpeg,
             "-nostdin",
@@ -271,9 +276,9 @@ class SubtitleSyncScanner:
     def scan(
         self,
         reference_source: Path,
-        reference_stream_index: int,
-        target_source: Path,
-        target_stream_index: int,
+        reference_stream_index: int | str = 0,
+        target_source: Path = Path("."),
+        target_stream_index: int | str = 0,
         *,
         is_ref_sub: bool = True,
         detect_cuts: bool = True,

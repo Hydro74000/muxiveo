@@ -415,6 +415,12 @@ def build_remux_config(
         value = getattr(options, key, None)
         if value is not None:
             job[key] = value
+    if getattr(options, "auto_sync", False):
+        job["auto_sync"] = True
+    if getattr(options, "detect_cuts", False):
+        job["detect_cuts"] = True
+    if getattr(options, "calibration", None):
+        job["calibration"] = options.calibration
     validate_job_contract(job, require_version=False)
     sources, infos, tracks = inspect_sources(job, config, options, logger, cli_inputs=cli_inputs)
     strict_selectors = str(job.get("kind") or "") == "exact-job"
@@ -432,6 +438,50 @@ def build_remux_config(
         strict_selectors=strict_selectors,
         relaxed_selectors=relaxed_selectors,
     )
+
+    # Synchronisation explicite via calibration ou dynamique via auto_sync
+    calib_file = job.get("calibration") or getattr(options, "calibration", None)
+    if calib_file and not job.get("sync_calibrations"):
+        import json
+        from core.workflows.sync_calibration import SyncCalibration
+        calib_data = json.loads(Path(calib_file).read_text(encoding="utf-8-sig"))
+        calib = SyncCalibration.from_dict(calib_data)
+        sync_mode = job.get("sync_mode", "container")
+        if sync_mode == "physical":
+            job["sync_calibrations"] = {"1": calib.to_dict()}
+        elif len(calib.segments) == 1:
+            if len(sources) > 1:
+                for t in sources[1].tracks:
+                    if t.track_type == "audio" or (t.track_type == "subtitle" and job.get("sync_subtitles", "mirror") == "mirror"):
+                        t.time_shift_ms = round(calib.segments[0].shift_ms)
+        else:
+            raise CliError("Le mode container ne prend pas en charge les coupures multi-segments (utilisez --sync-mode physical).", EXIT_ARGS)
+    elif (job.get("auto_sync") or getattr(options, "auto_sync", False)) and not job.get("sync_calibrations") and len(sources) >= 2:
+        from cli.hybrid import perform_dynamic_sync
+        calib = perform_dynamic_sync(sources, tracks, config, options, logger)
+        if calib is not None:
+            sync_mode = job.get("sync_mode", "container")
+            if sync_mode == "physical":
+                job["sync_calibrations"] = {"1": calib.to_dict()}
+            elif len(calib.segments) == 1:
+                for t in sources[1].tracks:
+                    if t.track_type == "audio" or (t.track_type == "subtitle" and job.get("sync_subtitles", "mirror") == "mirror"):
+                        t.time_shift_ms = round(calib.segments[0].shift_ms)
+            else:
+                raise CliError("Le mode container ne prend pas en charge les coupures multi-segments (utilisez --sync-mode physical).", EXIT_ARGS)
+    elif job.get("sync_calibrations") and job.get("sync_mode", "container") == "container":
+        from core.workflows.sync_calibration import SyncCalibration
+        calib_payload = job["sync_calibrations"].get("1")
+        if calib_payload:
+            calib = SyncCalibration.from_dict(calib_payload)
+            if len(calib.segments) == 1:
+                if len(sources) > 1:
+                    for t in sources[1].tracks:
+                        if t.track_type == "audio" or (t.track_type == "subtitle" and job.get("sync_subtitles", "mirror") == "mirror"):
+                            t.time_shift_ms = round(calib.segments[0].shift_ms)
+                job["sync_calibrations"] = {}
+            else:
+                raise CliError("Le mode container ne prend pas en charge les coupures multi-segments (utilisez --sync-mode physical).", EXIT_ARGS)
 
     from core.workflows.subtitle_heuristics import classify_subtitles
     classify_subtitles(sources, infos, ffmpeg=options.ffmpeg or config.tool_ffmpeg,
