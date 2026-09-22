@@ -586,6 +586,8 @@ def test_cmd_preview_with_calibration_output_json(tmp_path, capsys, monkeypatch)
         "cli.remux_config.inspect_sources",
         lambda job, conf, opts, log, cli_inputs=None: ([src0, src1], [MagicMock(), MagicMock()], [ref_audio, tgt_audio]),
     )
+    orig_which = shutil.which
+    monkeypatch.setattr("shutil.which", lambda cmd: orig_which(cmd) or f"/mock/bin/{cmd}")
 
     parser = build_parser()
     args = parser.parse_args([
