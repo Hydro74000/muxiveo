@@ -55,7 +55,7 @@ def test_detect_cadence_pal_to_film_23976():
     assert mismatch.cadence_type == CadenceType.PAL_TO_FILM_23976
     assert mismatch.source_fps == 25.0
     assert mismatch.target_fps == 23.976
-    assert math.isclose(mismatch.speed_factor, 24000.0 / 25000.0)
+    assert math.isclose(mismatch.speed_factor, 24000.0 / 25025.0)
     assert mismatch.detection_method == "metadata"
     assert "25" in mismatch.description and "23.976" in mismatch.description
 
@@ -73,7 +73,7 @@ def test_detect_cadence_film_to_pal():
     mismatch = detect_cadence_from_metadata(master_fps_val="25.0", donor_fps_val="23.976")
     assert mismatch is not None
     assert mismatch.cadence_type == CadenceType.FILM_23976_TO_PAL
-    assert math.isclose(mismatch.speed_factor, 25000.0 / 24000.0)
+    assert math.isclose(mismatch.speed_factor, 25025.0 / 24000.0)
 
     mismatch_24 = detect_cadence_from_metadata(master_fps_val=25.0, donor_fps_val=24.0)
     assert mismatch_24 is not None
@@ -152,10 +152,10 @@ def test_build_cadence_audio_filter_atempo():
         cadence_type=CadenceType.PAL_TO_FILM_23976,
         source_fps=25.0,
         target_fps=23.976,
-        speed_factor=24000.0 / 25000.0,
+        speed_factor=24000.0 / 25025.0,
     )
     f_atempo = build_cadence_audio_filter(mismatch, CadenceAudioMethod.ATEMPO)
-    assert f_atempo == "atempo=24000/25000"
+    assert f_atempo == "atempo=24000/25025"
 
     mismatch_24 = CadenceMismatch(
         cadence_type=CadenceType.PAL_TO_FILM_24,
@@ -171,11 +171,11 @@ def test_build_cadence_audio_filter_asetrate():
         cadence_type=CadenceType.PAL_TO_FILM_23976,
         source_fps=25.0,
         target_fps=23.976,
-        speed_factor=24000.0 / 25000.0,
+        speed_factor=24000.0 / 25025.0,
     )
     f_asetrate = build_cadence_audio_filter(mismatch, CadenceAudioMethod.ASETRATE, sample_rate=48000)
-    # 48000 * (24000/25000) = 46080
-    assert f_asetrate == "asetrate=46080,aresample=48000"
+    target_rate = round(48000 * (24000.0 / 25025.0))
+    assert f_asetrate == f"asetrate={target_rate},aresample=48000"
 
 
 # ── 5. SyncCalibration serialization & time stretch ───────────────────────────
@@ -260,7 +260,7 @@ def test_physical_sync_audio_filter_generation():
         cadence_type=CadenceType.PAL_TO_FILM_23976,
         source_fps=25.0,
         target_fps=23.976,
-        speed_factor=24000.0 / 25000.0,
+        speed_factor=24000.0 / 25025.0,
     )
     calib = SyncCalibration(
         segments=(SyncSegment(0.0, 0.0),),
@@ -268,7 +268,7 @@ def test_physical_sync_audio_filter_generation():
         cadence_audio_method="atempo",
     )
     graph = audio_filter(calib, crossfade_ms=80)
-    assert "atempo=24000/25000" in graph
+    assert "atempo=24000/25025" in graph
     assert "[cadence_in]" in graph
 
 
@@ -277,7 +277,7 @@ def test_physical_sync_commands_forces_reencode_on_cadence():
         cadence_type=CadenceType.PAL_TO_FILM_23976,
         source_fps=25.0,
         target_fps=23.976,
-        speed_factor=24000.0 / 25000.0,
+        speed_factor=24000.0 / 25025.0,
     )
     calib = SyncCalibration(
         segments=(SyncSegment(0.0, 0.0),),  # Décalage 0 ms : sans cadence ce serait copié
@@ -322,7 +322,7 @@ def test_audio_sync_scanner_detects_acoustic_cadence(monkeypatch):
 
     # Simuler measure retournant une dérive PAL (+0.04167 ms/ms = ~41.67 ms/s)
     # y = 200.0 + 0.04167 * (p * 1000)
-    def fake_measure(ref, don, p, win, cadence_filter=None):
+    def fake_measure(ref, don, p, win, cadence_filter=None, speed_factor=1.0, **kwargs):
         shift = 200.0 + 0.04167 * (p * 1000.0)
         return shift, 0.92
 
@@ -386,7 +386,7 @@ def test_prepare_matrix_episode_with_cadence_auto_apply(monkeypatch, tmp_path):
         (SyncSegment(0.0, 50.0),),
         confidence=0.99,
         cadence_mismatch=CadenceMismatch(
-            CadenceType.PAL_TO_FILM_23976, 25.0, 23.976, 24000.0 / 25000.0
+            CadenceType.PAL_TO_FILM_23976, 25.0, 23.976, 24000.0 / 25025.0
         ),
     )
     monkeypatch.setattr(AudioSyncScanner, "scan", lambda self, *args, **kwargs: dummy_calib)
@@ -418,4 +418,47 @@ def test_prepare_matrix_episode_with_cadence_auto_apply(monkeypatch, tmp_path):
     # La présence de cadence doit avoir basculé sync_mode en "physical"
     assert cfg.sync_mode == "physical"
     assert ep.cadence_mismatch is not None
+
+
+def test_audio_sync_scanner_with_cadence_and_detect_cuts(monkeypatch):
+    from core.workflows.audio_sync import AudioSyncTrack
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+
+    scanner = AudioSyncScanner("ffmpeg", "ffprobe")
+    monkeypatch.setattr(scanner, "duration", lambda track: 1200.0)
+
+    # Simuler 2 segments avec un cut à 600s
+    # Segment 1 (< 600s) : shift = 100ms
+    # Segment 2 (>= 600s) : shift = 500ms
+    measure_calls = []
+
+    def fake_measure(ref, don, p, win, cadence_filter=None, speed_factor=1.0, **kwargs):
+        measure_calls.append((p, cadence_filter, speed_factor))
+        shift = 100.0 if p < 600.0 else 500.0
+        return shift, 0.95
+
+    monkeypatch.setattr(scanner, "measure", fake_measure)
+    # Mock samples pour l'énergie audio (éviter d'appeler ffmpeg)
+    import numpy as np
+    monkeypatch.setattr(scanner, "samples", lambda track, start, dur, cadence_filter=None: np.zeros(int(dur * 16000)))
+    monkeypatch.setattr(scanner, "black_transitions", lambda track, start, dur: [start + dur / 2])
+
+    mismatch = CadenceMismatch(
+        CadenceType.PAL_TO_FILM_23976, 25.0, 23.976, 24000.0 / 25025.0
+    )
+
+    calib = scanner.scan(
+        AudioSyncTrack(Path("dummy_ref.mkv"), 1),
+        AudioSyncTrack(Path("dummy_don.mkv"), 1),
+        detect_cuts=True,
+        drift_threshold_ms=25,
+        cadence_mismatch=mismatch,
+    )
+
+    assert len(calib.segments) == 2
+    assert calib.cadence_mismatch == mismatch
+    assert len(measure_calls) > 0
+    # Vérifier que speed_factor et filter ont bien été transmis à measure
+    assert all(c[1] == "atempo=24000/25025" for c in measure_calls)
+    assert all(math.isclose(c[2], 24000.0 / 25025.0) for c in measure_calls)
 

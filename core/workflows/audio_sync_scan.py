@@ -104,10 +104,21 @@ class AudioSyncScanner:
             raise AudioSyncError("Corrélation insuffisante ou ambiguë ; calibration manuelle requise.")
         return float(lags[best]), min(1.0, confidence)
 
-    def measure(self, reference, donor, start, duration, cadence_filter: str | None = None):
-        return self.correlate(self.samples(reference, start, duration),
-                              self.samples(donor, start, duration, cadence_filter=cadence_filter),
-                              self.max_offset_s * 1000)
+    def measure(
+        self,
+        reference,
+        donor,
+        start,
+        duration,
+        cadence_filter: str | None = None,
+        speed_factor: float = 1.0,
+    ):
+        p_donor = start * speed_factor
+        return self.correlate(
+            self.samples(reference, start, duration),
+            self.samples(donor, p_donor, duration, cadence_filter=cadence_filter),
+            self.max_offset_s * 1000,
+        )
 
     def scan(self, reference: AudioSyncTrack, donor: AudioSyncTrack, *, detect_cuts=False,
              drift_threshold_ms=25, cadence_mismatch=None, cadence_audio_method="atempo",
@@ -117,15 +128,19 @@ class AudioSyncScanner:
             raise ValueError("Le seuil de dérive doit être positif.")
         if self.cancel_event is not None and self.cancel_event.is_set():
             raise AudioSyncError("Analyse annulée.")
-        duration = min(self.duration(reference), self.duration(donor))
+        filter_str = None
+        speed_factor = 1.0
+        if cadence_mismatch and getattr(cadence_mismatch, "cadence_type", None) not in (None, "none"):
+            from core.workflows.cadence import build_cadence_audio_filter
+            filter_str = build_cadence_audio_filter(cadence_mismatch, cadence_audio_method)
+            speed_factor = getattr(cadence_mismatch, "speed_factor", 1.0)
+
+        donor_duration_ref = self.duration(donor) / speed_factor if speed_factor > 0 else self.duration(donor)
+        duration = min(self.duration(reference), donor_duration_ref)
         window = min(self.window_s, duration / 3)
         max_pos = max(0, duration - window - min(self.max_offset_s, duration * 0.05))
         positions = np.linspace(0, max_pos, 6)
         samples = []
-        filter_str = None
-        if cadence_mismatch and getattr(cadence_mismatch, "cadence_type", None) not in (None, "none"):
-            from core.workflows.cadence import build_cadence_audio_filter
-            filter_str = build_cadence_audio_filter(cadence_mismatch, cadence_audio_method)
 
         for position in positions:
             if self.cancel_event is not None and self.cancel_event.is_set():
@@ -136,7 +151,14 @@ class AudioSyncScanner:
                 if p < 0 or p + window > duration:
                     continue
                 try:
-                    off, conf = self.measure(reference, donor, float(p), window, cadence_filter=filter_str)
+                    off, conf = self.measure(
+                        reference,
+                        donor,
+                        float(p),
+                        window,
+                        cadence_filter=filter_str,
+                        speed_factor=speed_factor,
+                    )
                     measured = (p, off, conf)
                     break
                 except AudioSyncError:
@@ -188,7 +210,10 @@ class AudioSyncScanner:
                     break
                 mid = (l + r) / 2
                 try:
-                    off, _ = self.measure(reference, donor, mid, check_window)
+                    off, _ = self.measure(
+                        reference, donor, mid, check_window,
+                        cadence_filter=filter_str, speed_factor=speed_factor,
+                    )
                     if abs(off - left_shift) <= drift_threshold_ms:
                         l = mid
                     elif abs(off - right_shift) <= drift_threshold_ms:
@@ -199,13 +224,19 @@ class AudioSyncScanner:
                         break
                 except AudioSyncError:
                     try:
-                        off_early, _ = self.measure(reference, donor, max(l, mid - 12), check_window)
+                        off_early, _ = self.measure(
+                            reference, donor, max(l, mid - 12), check_window,
+                            cadence_filter=filter_str, speed_factor=speed_factor,
+                        )
                         if abs(off_early - left_shift) <= drift_threshold_ms:
                             l = mid - 12
                     except AudioSyncError:
                         pass
                     try:
-                        off_late, _ = self.measure(reference, donor, min(r - check_window, mid + 12), check_window)
+                        off_late, _ = self.measure(
+                            reference, donor, min(r - check_window, mid + 12), check_window,
+                            cadence_filter=filter_str, speed_factor=speed_factor,
+                        )
                         if abs(off_late - right_shift) <= drift_threshold_ms:
                             r = mid + 12
                     except AudioSyncError:
@@ -217,16 +248,17 @@ class AudioSyncScanner:
 
             w_low = max(0, l - 5)
             w_high = min(duration, r + 5)
-            values = self.samples(donor, w_low, w_high - w_low)
+            values = self.samples(donor, w_low * speed_factor, w_high - w_low, cadence_filter=filter_str)
             frame = 160
             energy = np.sqrt(np.mean(values[:len(values) // frame * frame].reshape(-1, frame) ** 2, axis=1))
             quiet = energy < 0.0032
             edges = np.diff(np.r_[False, quiet, False].astype(int))
             candidates = [(a, b) for a, b in zip(np.where(edges == 1)[0], np.where(edges == -1)[0]) if b - a >= 30]
             transitions = [w_low + (a + b) / 200 for a, b in candidates]
-            for black in self.black_transitions(donor, w_low, w_high - w_low):
-                if not any(abs(black - existing) < 0.3 for existing in transitions):
-                    transitions.append(black)
+            for black in self.black_transitions(donor, w_low * speed_factor, (w_high - w_low) * speed_factor):
+                black_ref = black / speed_factor if speed_factor > 0 else black
+                if not any(abs(black_ref - existing) < 0.3 for existing in transitions):
+                    transitions.append(black_ref)
 
             best_cut = None
             for cut in sorted(transitions):
@@ -237,8 +269,14 @@ class AudioSyncScanner:
                 if after + check_window > duration:
                     continue
                 try:
-                    prior, _ = self.measure(reference, donor, before, check_window)
-                    following, _ = self.measure(reference, donor, after, check_window)
+                    prior, _ = self.measure(
+                        reference, donor, before, check_window,
+                        cadence_filter=filter_str, speed_factor=speed_factor,
+                    )
+                    following, _ = self.measure(
+                        reference, donor, after, check_window,
+                        cadence_filter=filter_str, speed_factor=speed_factor,
+                    )
                 except AudioSyncError:
                     continue
                 if abs(prior - left_shift) <= drift_threshold_ms and abs(following - right_shift) <= drift_threshold_ms:
@@ -249,5 +287,11 @@ class AudioSyncScanner:
                 best_cut = (l + r) / 2
             segments.append(SyncSegment(best_cut * 1000, right["shift_ms"]))
 
-        return SyncCalibration(tuple(segments), min(s["confidence"] for s in samples), tuple(samples))
+        return SyncCalibration(
+            tuple(segments),
+            min(s["confidence"] for s in samples),
+            tuple(samples),
+            cadence_mismatch=cadence_mismatch,
+            cadence_audio_method=cadence_audio_method,
+        )
 

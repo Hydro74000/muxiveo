@@ -34,7 +34,7 @@ class CadenceMismatch:
     cadence_type: CadenceType
     source_fps: float
     target_fps: float
-    speed_factor: float          # Facteur multiplicateur de vitesse (ex: 24000/25000 = 0.96)
+    speed_factor: float          # Facteur multiplicateur de vitesse (ex: 24000/25025 ≈ 0.95904)
     confidence: float = 1.0      # Niveau de confiance (0.0 à 1.0)
     detection_method: str = "metadata"  # "metadata" ou "acoustic_slope"
     description: str = ""
@@ -139,7 +139,7 @@ def detect_cadence_from_metadata(
                 cadence_type=CadenceType.PAL_TO_FILM_23976,
                 source_fps=25.0,
                 target_fps=23.976,
-                speed_factor=24000.0 / 25000.0,
+                speed_factor=24000.0 / 25025.0,
                 confidence=1.0,
                 detection_method="metadata",
                 description="PAL 25 → 23.976 FPS (+4,1 %)",
@@ -162,7 +162,7 @@ def detect_cadence_from_metadata(
                 cadence_type=CadenceType.FILM_23976_TO_PAL,
                 source_fps=23.976,
                 target_fps=25.0,
-                speed_factor=25000.0 / 24000.0,
+                speed_factor=25025.0 / 24000.0,
                 confidence=1.0,
                 detection_method="metadata",
                 description="23.976 → PAL 25 FPS (-4,1 %)",
@@ -213,7 +213,7 @@ def detect_cadence_from_acoustic_samples(
             cadence_type=CadenceType.PAL_TO_FILM_23976,
             source_fps=25.0,
             target_fps=23.976,
-            speed_factor=24000.0 / 25000.0,
+            speed_factor=24000.0 / 25025.0,
             confidence=round(min(1.0, float(r2)), 3),
             detection_method="acoustic_slope",
             description="PAL 25 → 23.976 FPS (+4,1 %)",
@@ -224,7 +224,7 @@ def detect_cadence_from_acoustic_samples(
             cadence_type=CadenceType.FILM_23976_TO_PAL,
             source_fps=23.976,
             target_fps=25.0,
-            speed_factor=25000.0 / 24000.0,
+            speed_factor=25025.0 / 24000.0,
             confidence=round(min(1.0, float(r2)), 3),
             detection_method="acoustic_slope",
             description="23.976 → PAL 25 FPS (-4,1 %)",
@@ -248,13 +248,13 @@ def build_cadence_audio_filter(
         return f"asetrate={target_rate},aresample={sample_rate}"
 
     # Par défaut : atempo (préservation de la hauteur tonale)
-    # Si le speed factor correspond exactement à 24/25 ou 24000/25000, utiliser la fraction exacte
+    # Si le speed factor correspond exactement aux standards cinéma/PAL, utiliser la fraction exacte
     if mismatch.cadence_type == CadenceType.PAL_TO_FILM_23976:
-        return "atempo=24000/25000"
+        return "atempo=24000/25025"
     elif mismatch.cadence_type == CadenceType.PAL_TO_FILM_24:
         return "atempo=24/25"
     elif mismatch.cadence_type == CadenceType.FILM_23976_TO_PAL:
-        return "atempo=25000/24000"
+        return "atempo=25025/24000"
     elif mismatch.cadence_type == CadenceType.FILM_24_TO_PAL:
         return "atempo=25/24"
 
