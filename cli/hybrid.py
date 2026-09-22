@@ -444,5 +444,8 @@ def cmd_hybrid(args, config, logger):
     if args.report_json:
         _write_json(args.report_json, {"version": 1, "episodes": report})
     if args.dry_run:
-        print(json.dumps(report, ensure_ascii=False, indent=2))
+        try:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        except UnicodeEncodeError:
+            print(json.dumps(report, ensure_ascii=True, indent=2))
     return EXIT_PARTIAL if any(e["status"] == "failed" for e in report) else EXIT_OK
