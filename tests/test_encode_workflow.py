@@ -5334,6 +5334,7 @@ class TestEncodeRuntimeMultiSourceSync:
         active = 0
         max_active = 0
         gate = threading.Lock()
+        barrier = threading.Barrier(2)
 
         def _fake_run_cmd(_cmd, **kwargs):
             nonlocal active, max_active
@@ -5342,7 +5343,10 @@ class TestEncodeRuntimeMultiSourceSync:
                 with gate:
                     active += 1
                     max_active = max(max_active, active)
-                time.sleep(0.06)
+                try:
+                    barrier.wait(timeout=3.0)
+                except threading.BrokenBarrierError:
+                    pass
                 with gate:
                     active -= 1
             return "ok"
