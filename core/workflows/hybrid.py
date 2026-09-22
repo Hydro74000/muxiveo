@@ -42,3 +42,15 @@ def pair_directories(reference: Path, donor: Path) -> list[HybridPair]:
         missing = sorted(refs.keys() ^ donors.keys())
         raise ValueError(f"Appariement incomplet : {missing}")
     return [HybridPair(refs[key], donors[key], *key) for key in sorted(refs)]
+
+
+# Export des composants multi-sources matriciels
+from core.workflows.hybrid_matrix import (
+    HybridMatrix,
+    HybridRecipe,
+    MatrixEpisode,
+    MatrixSource,
+    SourceRole,
+    parse_episode_key,
+    prepare_matrix_episode,
+)

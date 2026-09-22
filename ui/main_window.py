@@ -1733,6 +1733,16 @@ class MainWindow(QMainWindow):
         self._stack.setCurrentIndex(container_index)
         self._sidebar.select_page(container_index)
 
+    def _on_hybrid_open_in_remux(self, config_or_sources) -> None:
+        self._open_container_panel()
+        if hasattr(config_or_sources, "sources"):
+            paths = [s.path for s in config_or_sources.sources]
+            self._remux_panel.add_sources(paths)
+        elif isinstance(config_or_sources, (list, tuple)):
+            self._remux_panel.add_sources(list(config_or_sources))
+        elif isinstance(config_or_sources, (str, Path)):
+            self._remux_panel.add_sources([Path(config_or_sources)])
+
     def open_startup_paths(self, paths: list[Path | str]) -> None:
         """Charge automatiquement des fichiers transmis au lancement de l'app."""
         normalized = []
@@ -1861,6 +1871,7 @@ class MainWindow(QMainWindow):
         self._hybrid_panel.log_message.connect(
             self.log_requested, Qt.ConnectionType.QueuedConnection
         )
+        self._hybrid_panel.open_in_remux.connect(self._on_hybrid_open_in_remux)
         self._remux_panel.tool_output.connect(
             self._on_tool_output_requested, Qt.ConnectionType.QueuedConnection
         )

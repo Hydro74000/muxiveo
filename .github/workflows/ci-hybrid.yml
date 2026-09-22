@@ -30,4 +30,5 @@ jobs:
       - name: Install media tools (Windows)
         if: runner.os == 'Windows'
         run: choco install ffmpeg mediainfo-cli -y --no-progress
-      - run: python -m pytest tests/test_sync_hybrid.py tests/test_workflow_restore.py tests/test_cli.py tests/test_profiles_selectors.py tests/test_nfo_generation.py tests/test_i18n.py -q
+      - run: python -m pytest tests/test_sync_hybrid.py tests/test_hybrid_matrix.py tests/test_cadence.py tests/test_workflow_restore.py tests/test_cli.py tests/test_profiles_selectors.py tests/test_nfo_generation.py tests/test_i18n.py -q
+

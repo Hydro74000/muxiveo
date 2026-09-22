@@ -41,6 +41,7 @@ on:
       - "tests/test_encode_hardware.py"
       - "tests/test_setup_and_config.py"
       - "tests/test_subprocess_utils.py"
+      - "tests/test_cadence.py"
       - "tests/test_nfo_generation.py"
       - "tests/conftest.py"
       - ".github/workflows/ci-core-unit.yml"
@@ -89,5 +90,6 @@ jobs:
             tests/test_encode_hardware.py \
             tests/test_setup_and_config.py \
             tests/test_subprocess_utils.py \
+            tests/test_cadence.py \
             tests/test_nfo_generation.py \
             -v

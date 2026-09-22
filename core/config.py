@@ -840,6 +840,21 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
                 "description": "Autorise les stratégies audio avancées pour les formats non simples lorsque la réécriture physique est activée.",
                 "tooltip": "Active des stratégies expérimentales pour TrueHD/MLP, DTS/DTS-HD/DTS:X, EAC3+JOC/Atmos, PCM/LPCM, formats lossless et formats lossy. Selon le codec, la piste peut être recopiée par blocs, réencodée, convertie en lossless/lossy, ou rester en sync offset si l'opération n'est pas sûre. Les pistes objet Atmos/DTS:X ne sont pas réencodées.",
             },
+            {
+                "key": "cadence_auto_apply",
+                "attr": "sync_cadence_auto_apply",
+                "kind": "bool",
+                "label": "Appliquer automatiquement la conversion PAL ↔ Cinéma",
+                "description": "Convertit automatiquement la vitesse audio/sous-titres lorsqu'un décalage de cadence (PAL 25 FPS ↔ Cinéma 23.976/24 FPS) est détecté.",
+            },
+            {
+                "key": "cadence_audio_method",
+                "attr": "sync_cadence_audio_method",
+                "kind": "choice",
+                "label": "Méthode de conversion de cadence audio",
+                "description": "Algorithme appliqué pour modifier la cadence audio. 'atempo' préserve la hauteur originale des voix et musiques (recommandé de nos jours) ; 'asetrate' applique la variation de tonalité naturelle liée à la vitesse (puriste PAL).",
+                "options": (("atempo", "Préservation de la tonalité (atempo - recommandé)"), ("asetrate", "Variation de vitesse naturelle (asetrate - puriste PAL)")),
+            },
         ),
     },
     {
@@ -1107,6 +1122,18 @@ class AppConfig:
             "sync/advanced_audio_rewrite_enabled",
             False,
         )
+        self.sync_cadence_auto_apply = self._resolve_bool(
+            "sync",
+            "cadence_auto_apply",
+            "sync/cadence_auto_apply",
+            True,
+        )
+        self.sync_cadence_audio_method = self._resolve_text(
+            "sync",
+            "cadence_audio_method",
+            "sync/cadence_audio_method",
+            "atempo",
+        )
         # [matroska] mux_backend — réglage global unique pilotant le muxage
         # final des workflows remux ET encode. Priorité : choix explicite du
         # job/panel/CLI > ce réglage > ffmpeg. Migration : l'ancien
@@ -1240,6 +1267,11 @@ class AppConfig:
             "sync/advanced_audio_rewrite_enabled",
             "true" if self.sync_advanced_audio_rewrite_enabled else "false",
         )
+        s.setValue(
+            "sync/cadence_auto_apply",
+            "true" if self.sync_cadence_auto_apply else "false",
+        )
+        s.setValue("sync/cadence_audio_method", self.sync_cadence_audio_method)
         s.setValue("matroska/mux_backend", self.matroska_mux_backend)
         s.setValue(
             "matroska/regenerate_statistics",
@@ -1424,6 +1456,8 @@ class AppConfig:
             "sync": {
                 "rewrite_enabled": self.sync_rewrite_enabled,
                 "advanced_audio_rewrite_enabled": self.sync_advanced_audio_rewrite_enabled,
+                "cadence_auto_apply": self.sync_cadence_auto_apply,
+                "cadence_audio_method": self.sync_cadence_audio_method,
             },
             "matroska": {
                 "mux_backend": self.matroska_mux_backend,

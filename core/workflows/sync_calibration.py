@@ -5,6 +5,9 @@ from dataclasses import asdict, dataclass
 import math
 
 
+from core.workflows.cadence import CadenceMismatch, CadenceType
+
+
 @dataclass(frozen=True)
 class SyncSegment:
     start_ms: float
@@ -16,6 +19,8 @@ class SyncCalibration:
     segments: tuple[SyncSegment, ...]
     confidence: float = 1.0
     samples: tuple[dict, ...] = ()
+    cadence_mismatch: CadenceMismatch | None = None
+    cadence_audio_method: str = "atempo"
 
     def __post_init__(self):
         if not self.segments or self.segments[0].start_ms != 0:
@@ -34,9 +39,19 @@ class SyncCalibration:
         return cls((SyncSegment(0, float(offset_ms)),))
 
     def to_dict(self):
-        return {"version": 1, "kind": "sync-calibration", "timebase": "donor-ms",
-                "segments": [asdict(s) for s in self.segments],
-                "confidence": self.confidence, "samples": list(self.samples)}
+        data = {
+            "version": 1,
+            "kind": "sync-calibration",
+            "timebase": "donor-ms",
+            "segments": [asdict(s) for s in self.segments],
+            "confidence": self.confidence,
+            "samples": list(self.samples),
+        }
+        if self.cadence_mismatch is not None:
+            data["cadence_mismatch"] = self.cadence_mismatch.to_dict()
+        if self.cadence_audio_method:
+            data["cadence_audio_method"] = self.cadence_audio_method
+        return data
 
     @classmethod
     def from_dict(cls, payload):
@@ -45,10 +60,18 @@ class SyncCalibration:
         if payload.get("version") not in (None, 1) or payload.get("kind") not in (None, "sync-calibration") or payload.get("timebase") not in (None, "donor-ms"):
             raise ValueError("Format de calibration non pris en charge.")
         try:
-            return cls(tuple(SyncSegment(float(s["start_ms"]), float(s["shift_ms"]))
-                             for s in payload["segments"]),
-                       float(payload.get("confidence", 1)), tuple(payload.get("samples", ())))
-        except (KeyError, TypeError) as exc:
+            cadence_payload = payload.get("cadence_mismatch")
+            cadence_mismatch = CadenceMismatch.from_dict(cadence_payload) if cadence_payload else None
+            cadence_method = str(payload.get("cadence_audio_method", "atempo"))
+            return cls(
+                tuple(SyncSegment(float(s["start_ms"]), float(s["shift_ms"]))
+                      for s in payload["segments"]),
+                float(payload.get("confidence", 1)),
+                tuple(payload.get("samples", ())),
+                cadence_mismatch=cadence_mismatch,
+                cadence_audio_method=cadence_method,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("Calibration invalide.") from exc
 
     @property
@@ -65,6 +88,8 @@ class SyncCalibration:
 
     def summary_lines(self) -> list[str]:
         lines: list[str] = []
+        if self.cadence_mismatch is not None and self.cadence_mismatch.cadence_type != CadenceType.NONE:
+            lines.append(f"Cadence : {self.cadence_mismatch.description} ({self.cadence_audio_method})")
         prev_shift = 0.0
         for i, segment in enumerate(self.segments):
             ts = self.format_timestamp(segment.start_ms)
@@ -80,16 +105,20 @@ class SyncCalibration:
 
     def intervals(self, start_ms: float, end_ms: float):
         """Découpe aux jonctions et retire les parties écrasées par un saut négatif."""
+        ratio = self.cadence_mismatch.time_stretch_ratio if self.cadence_mismatch else 1.0
+        scaled_start = start_ms * ratio
+        scaled_end = end_ms * ratio
         previous_end = 0.0
         for index, segment in enumerate(self.segments):
-            stop = self.segments[index + 1].start_ms if index + 1 < len(self.segments) else math.inf
-            effective_start = max(segment.start_ms, previous_end - segment.shift_ms)
-            left, right = max(start_ms, effective_start), min(end_ms, stop)
+            seg_start = segment.start_ms * ratio
+            seg_stop = (self.segments[index + 1].start_ms * ratio) if index + 1 < len(self.segments) else math.inf
+            effective_start = max(seg_start, previous_end - segment.shift_ms)
+            left, right = max(scaled_start, effective_start), min(scaled_end, seg_stop)
             if right > left:
                 a, b = max(0, left + segment.shift_ms), max(0, right + segment.shift_ms)
                 if b > a:
                     yield a, b
-            previous_end = max(previous_end, stop + segment.shift_ms)
+            previous_end = max(previous_end, seg_stop + segment.shift_ms)
 
 
 def format_calibration_summary(calibration_or_dict: SyncCalibration | dict | None) -> list[str]:

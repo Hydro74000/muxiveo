@@ -16,8 +16,25 @@ from core.workflows.common.sync_rewrite import (
 
 def audio_filter(calibration: SyncCalibration, crossfade_ms=80) -> str:
     """Fondus de bord sans chevauchement : la durée et les ancrages restent exacts."""
+    from core.workflows.cadence import CadenceType, build_cadence_audio_filter
+
     segments = calibration.segments
     parts, labels, previous_end = [], [], 0.0
+    in_labels = ["[0:a:0]"] * len(segments)
+
+    if calibration.cadence_mismatch and getattr(calibration.cadence_mismatch, "cadence_type", None) not in (None, "none", CadenceType.NONE):
+        cadence_str = build_cadence_audio_filter(
+            calibration.cadence_mismatch,
+            getattr(calibration, "cadence_audio_method", "atempo"),
+        )
+        if len(segments) > 1:
+            split_labels = "".join(f"[cin{i}]" for i in range(len(segments)))
+            parts.append(f"[0:a:0]{cadence_str},asplit={len(segments)}{split_labels}")
+            in_labels = [f"[cin{i}]" for i in range(len(segments))]
+        else:
+            parts.append(f"[0:a:0]{cadence_str}[cadence_in]")
+            in_labels = ["[cadence_in]"]
+
     for index, segment in enumerate(segments):
         stop = segments[index + 1].start_ms if index + 1 < len(segments) else None
         start = max(segment.start_ms, previous_end - segment.shift_ms, -segment.shift_ms)
@@ -25,7 +42,7 @@ def audio_filter(calibration: SyncCalibration, crossfade_ms=80) -> str:
             previous_end = max(previous_end, stop + segment.shift_ms)
             continue
         gap = max(0, start + segment.shift_ms - previous_end)
-        chain = f"[0:a:0]atrim=start={start / 1000:.6f}"
+        chain = f"{in_labels[index]}atrim=start={start / 1000:.6f}"
         if stop is not None:
             chain += f":end={stop / 1000:.6f}"
         chain += ",asetpts=PTS-STARTPTS"
@@ -80,7 +97,11 @@ def preparation_commands(config, root, ffmpeg):
         output = root / f"sync_{index}.mka"
         if track.track_type == "audio":
             codec = normalized_rewrite_codec(track.codec)
-            copy = len(calibration.segments) == 1 and calibration.segments[0].shift_ms == 0
+            has_cadence = bool(
+                calibration.cadence_mismatch
+                and getattr(calibration.cadence_mismatch, "cadence_type", None) not in (None, "none")
+            )
+            copy = (not has_cadence) and len(calibration.segments) == 1 and calibration.segments[0].shift_ms == 0
             if copy:
                 # Les codecs à pré-roll doivent conserver leur CodecDelay.
                 if codec in {"aac", "opus", "mp3"}:
@@ -120,11 +141,14 @@ def prepare_physical(config, root: Path, ffmpeg, run, log=None):
         if log is not None:
             track = mapped.track
             segments = calibration.segments
+            cadence_info = ""
+            if calibration.cadence_mismatch and getattr(calibration.cadence_mismatch, "cadence_type", None) not in (None, "none"):
+                cadence_info = f" — cadence {calibration.cadence_mismatch.description} ({calibration.cadence_audio_method})"
             if len(segments) > 1:
                 log(
                     "INFO",
                     f"Synchronisation physique (réécriture exacte) : piste #{mapped.stream_index} "
-                    f"({track.track_type} {track.codec}) — {len(segments)} segments ({len(segments) - 1} coupures, fondu {config.crossfade_ms} ms) :"
+                    f"({track.track_type} {track.codec}){cadence_info} — {len(segments)} segments ({len(segments) - 1} coupures, fondu {config.crossfade_ms} ms) :"
                 )
                 for line in calibration.summary_lines():
                     log("INFO", f"  • {line}")
@@ -133,7 +157,7 @@ def prepare_physical(config, root: Path, ffmpeg, run, log=None):
                 log(
                     "INFO",
                     f"Synchronisation physique (réécriture exacte) : piste #{mapped.stream_index} "
-                    f"({track.track_type} {track.codec}) — décalage {shift:+.1f} ms"
+                    f"({track.track_type} {track.codec}){cadence_info} — décalage {shift:+.1f} ms"
                 )
         run(command, "physical-sync")
         if mapped.track.track_type == "subtitle":
