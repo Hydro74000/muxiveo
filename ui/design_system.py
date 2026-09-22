@@ -7,6 +7,7 @@ The selected theme comes from config.ui.theme (dark|light).
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Final
 
 from PySide6.QtGui import QColor, QPalette
@@ -14,6 +15,8 @@ from PySide6.QtWidgets import QApplication
 
 
 ThemeMap = dict[str, str]
+
+CHECK_ICON_PATH: Final[str] = str((Path(__file__).parent / "assets" / "check.svg").resolve()).replace("\\", "/")
 
 
 _THEMES: Final[dict[str, ThemeMap]] = {
@@ -58,6 +61,8 @@ _THEMES: Final[dict[str, ThemeMap]] = {
         "BADGE_ERROR_BORDER": "#3a1515",
         "BADGE_PENDING_BG": "#1a1e2a",
         "BADGE_PENDING_BORDER": "#252a3a",
+        "CHECKBOX_BORDER": "#4a5578",
+        "CHECKBOX_BG": "#0d0f14",
     },
     "light": {
         "BG_DEEP": "#f4f6fb",
@@ -100,6 +105,8 @@ _THEMES: Final[dict[str, ThemeMap]] = {
         "BADGE_ERROR_BORDER": "#f2c3c3",
         "BADGE_PENDING_BG": "#eef2f8",
         "BADGE_PENDING_BORDER": "#d6ddea",
+        "CHECKBOX_BORDER": "#9aa5b8",
+        "CHECKBOX_BG": "#f4f6fb",
     },
 }
 

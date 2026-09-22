@@ -25,6 +25,9 @@ def _isolate_user_config(tmp_path: Path, monkeypatch) -> None:
 
 
 def _run_cli(root: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    cli_env = dict(env or os.environ)
+    cli_env["PYTHONIOENCODING"] = "utf-8"
+    cli_env["PYTHONUTF8"] = "1"
     return subprocess.run(
         [
             sys.executable,
@@ -39,9 +42,11 @@ def _run_cli(root: Path, *args: str, env: dict[str, str] | None = None) -> subpr
             "/bin/false",
         ],
         cwd=root,
-        env=env,
+        env=cli_env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
 

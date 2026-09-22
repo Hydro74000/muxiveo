@@ -247,7 +247,7 @@ def native_capability_reasons(
                     plan_subtitle_codec(track.codec)
                 except ValueError as exc:
                     reasons.append(f"{source.path.name}: {exc}")
-            if track.sync_rewrite_label and track.time_shift_ms:
+            if track.sync_rewrite_label and track.time_shift_ms and config.sync_mode != "physical":
                 reasons.append(
                     f"{source.path.name}: réécriture de synchronisation avancée à matérialiser par FFmpeg"
                 )
@@ -913,6 +913,18 @@ def plan_remux(
         mapping_errors.append(str(exc))
 
     preparation_actions: list[RemuxPreparationAction] = []
+    if config.sync_mode not in {"physical", "container"}:
+        raise RemuxError("sync_mode invalide")
+    if config.sync_subtitles not in {"mirror", "none"} or not 0 <= config.crossfade_ms <= 1000:
+        raise RemuxError("Options de synchronisation invalides")
+    if config.sync_mode == "container" and config.sync_calibrations:
+        raise RemuxError("Les calibrations nécessitent sync_mode=physical")
+    from core.workflows.physical_sync import preparation_commands
+    for mapped, output, command, calibration in preparation_commands(config, PREVIEW_TEMPORARY_DIR, ffmpeg_bin):
+        preparation_actions.append(RemuxPreparationAction(
+            kind="physical_sync", description="Synchronisation physique", command=tuple(command),
+            source_file_index=mapped.source_file_index, target_name=output.name,
+        ))
     if config.tmdb_cover is not None:
         tmdb_filename = normalized_tmdb_cover_filename(config.tmdb_cover[1])
         preparation_actions.append(RemuxPreparationAction(
@@ -941,7 +953,7 @@ def plan_remux(
         needs_ffmpeg_preparation = any(
             action.command
             for action in preparation_actions
-            if action.kind in {"canonicalize_source", "extract_attachment", "audio_variant"}
+            if action.kind in {"canonicalize_source", "extract_attachment", "audio_variant", "physical_sync"}
         )
         required_tools = ("ffprobe", "ffmpeg") if needs_ffmpeg_preparation else ("ffprobe",)
     else:

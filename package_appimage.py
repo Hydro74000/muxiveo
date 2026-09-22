@@ -209,6 +209,7 @@ _BUILD_DEPS: list[str] = [
     "pyinstaller",
     "PySide6>=6.6.0",
     "pymediainfo>=6.1.0",
+    "numpy>=1.24",
 ]
 
 
@@ -249,6 +250,8 @@ def ensure_build_deps() -> None:
     if importlib.util.find_spec("PySide6") is None:
         missing_py.append("PySide6>=6.6.0")
 
+    if importlib.util.find_spec("numpy") is None:
+        missing_py.append("numpy>=1.24")
     if importlib.util.find_spec("pymediainfo") is None:
         missing_py.append("pymediainfo>=6.1.0")
 
@@ -337,7 +340,6 @@ def build_onedir() -> Path:
         # Exclusions — modules Python inutiles
         "--exclude-module=tkinter",
         "--exclude-module=matplotlib",
-        "--exclude-module=numpy",
         "--exclude-module=scipy",
         "--exclude-module=PIL",
         "--exclude-module=test",
@@ -871,6 +873,15 @@ def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64") -
     ok("Bundle copié")
     _ensure_linux_bundle_entrypoints(usr_bin)
     ok("Entrée Unix AppImage créée")
+
+    internal_dir = usr_bin / "_internal"
+    if internal_dir.exists():
+        for pattern in ("libsystemd*", "libudev*"):
+            for f in internal_dir.glob(pattern):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
 
     # Marqueur all-inclusive lu par launcher.py au démarrage
     if allinc:

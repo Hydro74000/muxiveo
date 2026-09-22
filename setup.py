@@ -217,6 +217,7 @@ def detect_linux_distro() -> str:
 PYTHON_PACKAGES = [
     "PySide6",
     "pymediainfo>=6.1.0",
+    "numpy>=1.24",
 ]
 
 # ---------------------------------------------------------------------------

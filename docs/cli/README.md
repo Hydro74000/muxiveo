@@ -34,6 +34,9 @@ Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans ini
 | `preview --profile` | applique un profil en dry preview JSON/commande |
 | `run/remux --profile` | applique un profil et remuxe |
 | `batch --profile` | applique un profil à un dossier |
+| `hybrid` | hybridation de référence et donneur (paire ou saison entière) |
+| `sync-scan` | corrélation acoustique FFT et extraction de calibration |
+| `shift-subs` | recalage physique de fichiers sous-titres (SRT, ASS) |
 
 Exemples :
 
@@ -653,3 +656,23 @@ Avec `--log-format jsonl`, le batch emet des evenements structurés :
 {"level":"info","message":"Batch job 1 termine","event":"batch_job","job_index":0,"input":"S01E01.mkv","output":"S01E01.remux.mkv","status":"success"}
 {"level":"info","message":"Batch termine : 1/1 succes.","event":"batch_summary","total":1,"failures":0}
 ```
+
+## Hybridation, synchronisation physique et cadences
+
+Les commandes `hybrid`, `sync-scan`, `shift-subs`, la gestion des workflows et le
+Studio d'Hybridation sont décrits en détail dans le [guide d'hybridation](../hybridization-guide.md).
+Dans l'interface graphique, le Studio d'hybridation dispose d'une page dédiée dans la barre
+latérale de navigation, et le panneau Conteneur intègre la case `Synchronisation physique (Zero Delay)`
+cochée par défaut.
+
+### Options de synchronisation et cadence vidéo/audio
+
+- `--auto-sync` : Déclenche l'analyse acoustique ou par sous-titres à la volée.
+- `--cadence-auto` / `--no-cadence-auto` : Active (par défaut) la détection automatique des écarts de cadence (ex: PAL 25 FPS ↔ 23.976 / 24 FPS) à partir des métadonnées vidéo des sources.
+- `--cadence-method {atempo,asetrate}` : Méthode audio de conversion de cadence :
+  - `atempo` (défaut) : préserve la hauteur tonale originale.
+  - `asetrate` : applique la variation naturelle de hauteur liée au changement de vitesse.
+- `--detect-cuts` : Active la détection des coupures intermédiaires (multi-segments).
+- `--drift-threshold-ms <ms>` : Seuil de dérive pour découper en plusieurs segments (défaut : 25 ms).
+- `--calibration <fichier.json>` : Charge une calibration explicite enregistrée.
+

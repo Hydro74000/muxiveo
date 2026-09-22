@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 from core.i18n import apply_translations, translate_text
 from core.inspector import ChapterEntry
 from ui.panels.remux_panel.models import _format_timecode, _parse_timecode
-from ui.panels.remux_panel.theme import _C, _x_icon
+from ui.panels.remux_panel.theme import _C, _checkbox_style, _x_icon
 from ui.design_system import font_px as _font_px, scale as _scale
 
 class _AddChapterDialog(QDialog):
@@ -269,26 +269,7 @@ class _ChapterPanel(QFrame):
 
         self._keep_cb = QCheckBox("Conserver les chapitres")
         self._keep_cb.setChecked(True)
-        self._keep_cb.setStyleSheet(f"""
-            QCheckBox {{
-                color: {_C.TEXT_SEC};
-                font-size: {_font_px(12)}px;
-                spacing: {_scale(8)}px;
-                background: transparent;
-            }}
-            QCheckBox::indicator {{
-                width: {_scale(14)}px;
-                height: {_scale(14)}px;
-                border-radius: {_scale(3)}px;
-                border: 1px solid {_C.BORDER_LT};
-                background: {_C.BG_DEEP};
-            }}
-            QCheckBox::indicator:checked {{
-                background: {_C.ACCENT};
-                border-color: {_C.ACCENT};
-            }}
-            QCheckBox:hover {{ color: {_C.TEXT_PRI}; }}
-        """)
+        self._keep_cb.setStyleSheet(_checkbox_style())
         self._keep_cb.stateChanged.connect(self._on_keep_changed)
         cb_lay.addWidget(self._keep_cb)
         cb_lay.addStretch()

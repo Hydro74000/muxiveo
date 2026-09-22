@@ -410,6 +410,17 @@ def build_remux_config(
     cli_inputs: list[str] | None = None,
     cli_output: str | None = None,
 ) -> RemuxConfig:
+    job = dict(job)
+    for key in ("sync_mode", "sync_subtitles", "clean_nfo", "crossfade_ms"):
+        value = getattr(options, key, None)
+        if value is not None:
+            job[key] = value
+    if getattr(options, "auto_sync", False):
+        job["auto_sync"] = True
+    if getattr(options, "detect_cuts", False):
+        job["detect_cuts"] = True
+    if getattr(options, "calibration", None):
+        job["calibration"] = options.calibration
     validate_job_contract(job, require_version=False)
     sources, infos, tracks = inspect_sources(job, config, options, logger, cli_inputs=cli_inputs)
     strict_selectors = str(job.get("kind") or "") == "exact-job"
@@ -428,6 +439,60 @@ def build_remux_config(
         relaxed_selectors=relaxed_selectors,
     )
 
+    # Synchronisation explicite via calibration ou dynamique via auto_sync
+    calib_file = job.get("calibration") or getattr(options, "calibration", None)
+    if calib_file and not job.get("sync_calibrations"):
+        import json
+        from core.workflows.sync_calibration import SyncCalibration
+        calib_data = json.loads(Path(calib_file).read_text(encoding="utf-8-sig"))
+        calib = SyncCalibration.from_dict(calib_data)
+        has_cadence = bool(calib.cadence_mismatch and getattr(calib.cadence_mismatch, "cadence_type", None) not in (None, "none"))
+        sync_mode = job.get("sync_mode", "container")
+        if sync_mode == "physical" or has_cadence:
+            job["sync_mode"] = "physical"
+            job["sync_calibrations"] = {"1": calib.to_dict()}
+        elif len(calib.segments) == 1:
+            if len(sources) > 1:
+                for t in sources[1].tracks:
+                    if t.track_type == "audio" or (t.track_type == "subtitle" and job.get("sync_subtitles", "mirror") == "mirror"):
+                        t.time_shift_ms = round(calib.segments[0].shift_ms)
+        else:
+            raise CliError("Le mode container ne prend pas en charge les coupures multi-segments (utilisez --sync-mode physical).", EXIT_ARGS)
+    elif (job.get("auto_sync") or getattr(options, "auto_sync", False)) and not job.get("sync_calibrations") and len(sources) >= 2:
+        from cli.hybrid import perform_dynamic_sync
+        calib = perform_dynamic_sync(sources, tracks, config, options, logger)
+        if calib is not None:
+            has_cadence = bool(calib.cadence_mismatch and getattr(calib.cadence_mismatch, "cadence_type", None) not in (None, "none"))
+            sync_mode = job.get("sync_mode", "container")
+            if sync_mode == "physical" or has_cadence:
+                job["sync_mode"] = "physical"
+                job["sync_calibrations"] = {"1": calib.to_dict()}
+            elif len(calib.segments) == 1:
+                for t in sources[1].tracks:
+                    if t.track_type == "audio" or (t.track_type == "subtitle" and job.get("sync_subtitles", "mirror") == "mirror"):
+                        t.time_shift_ms = round(calib.segments[0].shift_ms)
+            else:
+                raise CliError("Le mode container ne prend pas en charge les coupures multi-segments (utilisez --sync-mode physical).", EXIT_ARGS)
+    elif job.get("sync_calibrations") and job.get("sync_mode", "container") == "container":
+        from core.workflows.sync_calibration import SyncCalibration
+        calib_payload = job["sync_calibrations"].get("1")
+        if calib_payload:
+            calib = SyncCalibration.from_dict(calib_payload)
+            has_cadence = bool(calib.cadence_mismatch and getattr(calib.cadence_mismatch, "cadence_type", None) not in (None, "none"))
+            if has_cadence:
+                job["sync_mode"] = "physical"
+            elif len(calib.segments) == 1:
+                if len(sources) > 1:
+                    for t in sources[1].tracks:
+                        if t.track_type == "audio" or (t.track_type == "subtitle" and job.get("sync_subtitles", "mirror") == "mirror"):
+                            t.time_shift_ms = round(calib.segments[0].shift_ms)
+                job["sync_calibrations"] = {}
+            else:
+                raise CliError("Le mode container ne prend pas en charge les coupures multi-segments (utilisez --sync-mode physical).", EXIT_ARGS)
+
+    from core.workflows.subtitle_heuristics import classify_subtitles
+    classify_subtitles(sources, infos, ffmpeg=options.ffmpeg or config.tool_ffmpeg,
+        forced=options.auto_forced_subs, sdh=options.auto_sdh, threshold=options.forced_threshold)
     keep_chapters, chapter_overrides, chapter_source_index = chapter_entries(job, infos)
     tmdb_title = ""
     tmdb_tags = None
@@ -450,6 +515,9 @@ def build_remux_config(
         strict_selectors=strict_selectors,
         relaxed_selectors=relaxed_selectors,
     )
+    if options.auto_forced_subs:
+        from core.workflows.subtitle_heuristics import forced_first
+        final_track_order = forced_first(final_track_order, sources)
     output = resolve_final_output(
         cli_output=cli_output,
         job=job,
@@ -482,7 +550,12 @@ def build_remux_config(
         work_dir=work_dir,
         file_title=resolve_metadata_file_title(job, tmdb_title, tmdb_wins=tmdb_wins),
         tag_overrides=tag_overrides if isinstance(tag_overrides, dict) else None,
-        tmdb_cover=tmdb_cover,
+        tmdb_cover=tmdb_cover or (tuple(job["tmdb_cover"]) if job.get("tmdb_cover") else None),
+        sync_mode=job.get("sync_mode", "container"),
+        sync_subtitles=job.get("sync_subtitles", "mirror"),
+        sync_calibrations=job.get("sync_calibrations", {}),
+        crossfade_ms=job.get("crossfade_ms", 80),
+        clean_nfo=job.get("clean_nfo", True),
         allow_missing_output_dir=bool(job.get("_allow_missing_output_dir", False)),
         # Job sans champ → réglage global [matroska] ; champ présent = choix explicite.
         mux_backend=normalize_mux_backend(str(job.get("mux_backend", config.matroska_mux_backend))),

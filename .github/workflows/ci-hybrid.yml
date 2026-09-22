@@ -1,0 +1,34 @@
+name: Hybrid synchronization
+on:
+  push:
+    branches: [devel-hybrid]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  hybrid:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ['3.10', '3.12']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -r requirements.txt pytest
+      - name: Install media tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg mediainfo libegl1 libopengl0
+      - name: Install media tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg mediainfo
+      - name: Install media tools (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg mediainfo-cli -y --no-progress
+      - run: python -m pytest tests/test_sync_hybrid.py tests/test_hybrid_matrix.py tests/test_cadence.py tests/test_workflow_restore.py tests/test_cli.py tests/test_profiles_selectors.py tests/test_nfo_generation.py tests/test_i18n.py -q
+

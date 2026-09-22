@@ -45,6 +45,16 @@ def run_remux_config(
     *,
     force: bool = False,
 ) -> int:
+    if options.export_workflow:
+        from pathlib import Path
+        from core.profiles.selectors import remux_config_to_exact_job
+        from core.workflows.workflow_store import save_workflow
+        destination = Path(options.export_workflow)
+        if options.export_directory:
+            destination.mkdir(parents=True, exist_ok=True)
+            destination /= remux_config.output.stem + ".exact-job.json"
+        save_workflow(destination, remux_config_to_exact_job(remux_config))
+        return EXIT_OK
     if remux_config.output.exists() and not force:
         raise CliError(f"Sortie déjà existante : {remux_config.output} (utiliser --force)", EXIT_EXISTS)
     wf = workflow(config, options, logger)

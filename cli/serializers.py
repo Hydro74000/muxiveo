@@ -93,4 +93,9 @@ def serialize_remux_config(config: RemuxConfig) -> dict[str, Any]:
         "extra_attachments": [str(path) for path in config.extra_attachments],
         "mux_backend": config.mux_backend,
         "file_title": config.file_title,
+        "sync_mode": config.sync_mode,
+        "sync_subtitles": config.sync_subtitles,
+        "sync_calibrations": config.sync_calibrations,
+        "crossfade_ms": config.crossfade_ms,
+        "clean_nfo": config.clean_nfo,
     }

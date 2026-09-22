@@ -45,7 +45,7 @@ jobs:
         shell: pwsh
         run: choco install ffmpeg mediainfo-cli --yes --no-progress
       - name: Install Python test dependencies
-        run: python -m pip install --upgrade pytest pytest-qt PySide6
+        run: python -m pip install --upgrade pytest pytest-qt PySide6 numpy
       - name: Verify checked-in corpus
         run: python scripts/generate_matroska_corpus.py
       - name: Run native unit and integration tests

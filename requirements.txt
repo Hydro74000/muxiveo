@@ -5,6 +5,9 @@
  
 # Interface graphique
 PySide6>=6.6.0
+
+# Corrélation FFT du scanner hybride
+numpy>=1.24
  
 # Inspection médias (alternative Python à mediainfo CLI)
 pymediainfo>=6.1.0

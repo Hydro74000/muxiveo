@@ -224,6 +224,7 @@ class TestWriteMediainfoNfo:
         log_cb = MagicMock()
 
         fake_result = MagicMock()
+        fake_result.returncode = 0
         fake_result.stdout = "General\nFormat: Matroska\n"
 
         with patch("core.workflows.remux.subprocess.run", return_value=fake_result) as mock_run:
@@ -247,6 +248,7 @@ class TestWriteMediainfoNfo:
         mkv = tmp_path / "film.mkv"
         mkv.touch()
         fake_result = MagicMock()
+        fake_result.returncode = 0
         fake_result.stdout = (
             "General\n"
             f"Complete name                            : {mkv.resolve()}\n"
@@ -267,6 +269,7 @@ class TestWriteMediainfoNfo:
         mkv = tmp_path / "film.mkv"
         mkv.touch()
         fake_result = MagicMock()
+        fake_result.returncode = 0
         fake_result.stdout = (
             "General\n"
             "Complete name                            : film.mkv\n"
@@ -286,6 +289,7 @@ class TestWriteMediainfoNfo:
         mkv = tmp_path / "film.mkv"
         mkv.touch()
         fake_result = MagicMock()
+        fake_result.returncode = 0
         fake_result.stdout = "info"
 
         with patch("core.workflows.remux.subprocess.run", return_value=fake_result) as mock_run:
@@ -302,6 +306,7 @@ class TestWriteMediainfoNfo:
         mkv = subdir / "film.mkv"
         mkv.touch()
         fake_result = MagicMock()
+        fake_result.returncode = 0
         fake_result.stdout = "data"
 
         with patch("core.workflows.remux.subprocess.run", return_value=fake_result):
@@ -318,6 +323,7 @@ class TestWriteMediainfoNfo:
         mkv = subdir / "film.mkv"
         mkv.touch()
         fake_result = MagicMock()
+        fake_result.returncode = 0
         fake_result.stdout = "data"
 
         monkeypatch.chdir(tmp_path)

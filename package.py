@@ -312,7 +312,6 @@ def _ensure_unix_bundle_entrypoints(bundle_dir: Path) -> Path:
 EXCLUDED_MODULES: list[str] = [
     "tkinter",
     "matplotlib",
-    "numpy",
     "scipy",
     "PIL",
     "IPython",
@@ -567,6 +566,7 @@ def _ensure_pyinstaller() -> None:
         ("PyInstaller", "pyinstaller"),
         ("PySide6", "PySide6>=6.6.0"),
         ("pymediainfo", "pymediainfo>=6.1.0"),
+        ("numpy", "numpy>=1.24"),
     ]
     missing: list[str] = []
     for module_name, pip_name in required:
@@ -2547,7 +2547,7 @@ def _setup_wine_vcruntime() -> None:
 def _ensure_wine_deps() -> None:
     """Installe PyInstaller + dépendances Python dans le préfixe Wine."""
     _info(f"Installation des dépendances Python dans Wine (PySide6=={_WIN_PYSIDE6_VER})…")
-    _wine_pip("pyinstaller", f"PySide6=={_WIN_PYSIDE6_VER}", "pymediainfo>=6.1.0")
+    _wine_pip("pyinstaller", f"PySide6=={_WIN_PYSIDE6_VER}", "pymediainfo>=6.1.0", "numpy>=1.24")
     _ensure_wine_qt_icu_runtime()
     _verify_wine_pyside6_runtime()
     _ok("Dépendances Python Windows installées")

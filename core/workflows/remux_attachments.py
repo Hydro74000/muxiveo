@@ -19,6 +19,7 @@ def write_mediainfo_nfo(
     mediainfo_bin: str = "mediainfo",
     *,
     run_cmd: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    clean_nfo: bool = True,
 ) -> None:
     output_path = Path(output_path).expanduser()
     if not output_path.is_absolute():
@@ -30,6 +31,8 @@ def write_mediainfo_nfo(
             capture_output=True,
             **subprocess_text_kwargs(),
         )
+        if result.returncode:
+            raise RemuxError(result.stderr or "MediaInfo échoué")
         cleaned_lines: list[str] = []
         changed = False
         for line in result.stdout.splitlines(keepends=True):
@@ -42,7 +45,7 @@ def write_mediainfo_nfo(
             key, value = line_body.split(":", 1)
             current = value.strip()
             if (
-                key.strip().casefold() == "complete name"
+                clean_nfo and key.strip().casefold() == "complete name"
                 and current != output_path.name
                 and ("/" in current or "\\" in current)
             ):

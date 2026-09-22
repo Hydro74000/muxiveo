@@ -23,7 +23,17 @@ def _ensure_qcore_app(argv: list[str] | None = None) -> QCoreApplication:
     return QCoreApplication(argv or [sys.argv[0]])
 
 
+def _configure_io_encoding() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if stream and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _configure_io_encoding()
     argv = list(sys.argv[1:] if argv is None else argv)
     _ensure_qcore_app([sys.argv[0], *argv])
     from cli.parser import build_parser

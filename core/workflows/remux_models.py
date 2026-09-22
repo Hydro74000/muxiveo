@@ -67,12 +67,14 @@ class TrackEntry:
     orig_title:    str = field(default="", repr=False)
     orig_codec:    str = field(default="", repr=False)
     orig_display_info: str = field(default="", repr=False)
+    frame_rate:    str = field(default="", repr=False)  # Cadence brute ffprobe (ex: "24000/1001", "25/1")
     encode_plan_codec: str = field(default="", repr=False)
     encode_plan_summary: str = field(default="", repr=False)
     encode_plan_hdr_badges: tuple[str, ...] = field(default_factory=tuple, repr=False)
     encode_plan_modified: bool = field(default=False, repr=False)
     sync_rewrite_label: str = field(default="", repr=False)
     sync_rewrite_mode: str = field(default="", repr=False)  # "" = auto, "offset" = sync standard forcée
+    sync_calibration: dict | None = field(default=None, repr=False)
 
     # Flags MKV éditables (transmis à FFmpeg si modifiés)
     flag_enabled:          bool = field(default=True,  repr=False)  # --track-enabled-flag
@@ -121,6 +123,36 @@ class TrackEntry:
         return "  ·  ".join(parts)
 
     @property
+    def is_audio(self) -> bool:
+        return str(self.track_type or "").strip().lower() == "audio"
+
+    @property
+    def is_subtitle(self) -> bool:
+        return str(self.track_type or "").strip().lower() == "subtitle"
+
+    @property
+    def is_video(self) -> bool:
+        return str(self.track_type or "").strip().lower() == "video"
+
+    @property
+    def cuts_count(self) -> int:
+        """Nombre de coupures intermédiaires (> 0 si multi-segments)."""
+        if not self.sync_calibration or not isinstance(self.sync_calibration, dict):
+            return 0
+        segments = self.sync_calibration.get("segments", [])
+        return max(0, len(segments) - 1)
+
+    @property
+    def cuts_label(self) -> str:
+        """Libellé affiché dans le tableau pour signaler les coupures intermédiaires."""
+        count = self.cuts_count
+        if count <= 0:
+            return ""
+        if count == 1:
+            return "✂ 1 coupure"
+        return f"✂ {count} coupures"
+
+    @property
     def full_info_label(self) -> str:
         """Info technique + flags actifs (affichage colonne Info)."""
         parts = [
@@ -130,6 +162,7 @@ class TrackEntry:
                 self.display_info,
                 self.flags_label,
                 self.time_shift_label,
+                self.cuts_label,
                 self.sync_rewrite_label,
             )
             if p
@@ -255,6 +288,11 @@ class RemuxConfig:
     #: directes) ; la distinction « champ absent » vs « choix explicite » est
     #: portée par les loaders, qui résolvent le réglage global [matroska].
     mux_backend: str = "ffmpeg"
+    sync_mode: str = "container"
+    sync_subtitles: str = "mirror"
+    sync_calibrations: dict[str, dict] = field(default_factory=dict)
+    crossfade_ms: int = 80
+    clean_nfo: bool = True
 
 
 # =============================================================================
@@ -347,6 +385,7 @@ def tracks_from_file_info(info: FileInfo, file_id: str = "") -> list[TrackEntry]
             orig_language=v.language or "",
             orig_title=v.title or "",
             file_id=file_id,
+            frame_rate=v.frame_rate or "",
             **_flags_from_disp(v.raw, v.index),
         ))
 

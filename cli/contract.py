@@ -247,6 +247,35 @@ def validate_job_contract(job: dict[str, Any], *, path: str = "$", require_versi
             errors.append(f"{path}.version: champ requis")
     elif job["version"] != 1:
         errors.append(f"{path}.version: attendu 1, reçu {job['version']!r}")
+    for key, choices in (("sync_mode", ("physical", "container")), ("sync_subtitles", ("mirror", "none"))):
+        if key in job and job[key] not in choices:
+            errors.append(f"{path}.{key}: attendu {choices}")
+    if "clean_nfo" in job and not isinstance(job["clean_nfo"], bool):
+        errors.append(f"{path}.clean_nfo: attendu boolean")
+    if "auto_sync" in job and not isinstance(job["auto_sync"], bool):
+        errors.append(f"{path}.auto_sync: attendu boolean")
+    if "detect_cuts" in job and not isinstance(job["detect_cuts"], bool):
+        errors.append(f"{path}.detect_cuts: attendu boolean")
+    if "drift_threshold_ms" in job and (not _is_int(job["drift_threshold_ms"]) or job["drift_threshold_ms"] <= 0):
+        errors.append(f"{path}.drift_threshold_ms: attendu entier > 0")
+    if "crossfade_ms" in job and (not _is_int(job["crossfade_ms"]) or not 0 <= job["crossfade_ms"] <= 1000):
+        errors.append(f"{path}.crossfade_ms: attendu entier entre 0 et 1000")
+    if "sync_calibrations" in job:
+        from core.workflows.sync_calibration import SyncCalibration
+        calibrations = job["sync_calibrations"]
+        if not isinstance(calibrations, dict):
+            errors.append(f"{path}.sync_calibrations: attendu object")
+        else:
+            for key, calibration in calibrations.items():
+                try:
+                    if not str(key).isdigit():
+                        raise ValueError("index source invalide")
+                    SyncCalibration.from_dict(calibration)
+                except (ValueError, TypeError) as exc:
+                    errors.append(f"{path}.sync_calibrations.{key}: {exc}")
+    if "tmdb_cover" in job and (not isinstance(job["tmdb_cover"], list) or len(job["tmdb_cover"]) != 2
+                               or not all(isinstance(value, str) for value in job["tmdb_cover"])):
+        errors.append(f"{path}.tmdb_cover: attendu [url, nom]")
     if "sources" in job:
         sources = job["sources"]
         if isinstance(sources, str):
