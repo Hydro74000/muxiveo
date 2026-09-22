@@ -36,7 +36,7 @@ class CommonOptions:
     detect_cuts: bool = False
     drift_threshold_ms: int = 25
     cadence_auto: bool = True
-    cadence_method: str = "atempo"
+    cadence_method: str = "auto"
 
     @classmethod
     def from_namespace(cls, args: argparse.Namespace) -> "CommonOptions":
@@ -64,7 +64,7 @@ class CommonOptions:
             detect_cuts=bool(getattr(args, "detect_cuts", False)),
             drift_threshold_ms=getattr(args, "drift_threshold_ms", 25),
             cadence_auto=getattr(args, "cadence_auto", True) if getattr(args, "cadence_auto", None) is not None else True,
-            cadence_method=str(getattr(args, "cadence_method", "atempo") or "atempo"),
+            cadence_method=str(getattr(args, "cadence_method", "auto") or "auto"),
         )
 
 

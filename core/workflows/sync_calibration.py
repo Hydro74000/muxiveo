@@ -1,9 +1,9 @@
-"""Contrat temporel commun : temps donneur (ms) → temps référence (ms)."""
+"""Contrat temporel commun : temps donneur (ms) -> temps référence (ms)."""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import math
-
+from typing import Any
 
 from core.workflows.cadence import CadenceMismatch, CadenceType
 
@@ -21,6 +21,7 @@ class SyncCalibration:
     samples: tuple[dict, ...] = ()
     cadence_mismatch: CadenceMismatch | None = None
     cadence_audio_method: str = "atempo"
+    cadence_pitch_analysis: Any | None = None
 
     def __post_init__(self):
         if not self.segments or self.segments[0].start_ms != 0:
@@ -51,6 +52,11 @@ class SyncCalibration:
             data["cadence_mismatch"] = self.cadence_mismatch.to_dict()
         if self.cadence_audio_method:
             data["cadence_audio_method"] = self.cadence_audio_method
+        if self.cadence_pitch_analysis is not None:
+            if hasattr(self.cadence_pitch_analysis, "to_dict"):
+                data["cadence_pitch_analysis"] = self.cadence_pitch_analysis.to_dict()
+            elif isinstance(self.cadence_pitch_analysis, dict):
+                data["cadence_pitch_analysis"] = self.cadence_pitch_analysis
         return data
 
     @classmethod
@@ -63,6 +69,9 @@ class SyncCalibration:
             cadence_payload = payload.get("cadence_mismatch")
             cadence_mismatch = CadenceMismatch.from_dict(cadence_payload) if cadence_payload else None
             cadence_method = str(payload.get("cadence_audio_method", "atempo"))
+            pitch_payload = payload.get("cadence_pitch_analysis")
+            from core.workflows.cadence_pitch import CadencePitchAnalysis
+            pitch_analysis = CadencePitchAnalysis.from_dict(pitch_payload) if pitch_payload else None
             return cls(
                 tuple(SyncSegment(float(s["start_ms"]), float(s["shift_ms"]))
                       for s in payload["segments"]),
@@ -70,6 +79,7 @@ class SyncCalibration:
                 tuple(payload.get("samples", ())),
                 cadence_mismatch=cadence_mismatch,
                 cadence_audio_method=cadence_method,
+                cadence_pitch_analysis=pitch_analysis,
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("Calibration invalide.") from exc
@@ -89,7 +99,14 @@ class SyncCalibration:
     def summary_lines(self) -> list[str]:
         lines: list[str] = []
         if self.cadence_mismatch is not None and self.cadence_mismatch.cadence_type != CadenceType.NONE:
-            lines.append(f"Cadence : {self.cadence_mismatch.description} ({self.cadence_audio_method})")
+            pitch_desc = ""
+            if self.cadence_pitch_analysis is not None:
+                details = getattr(self.cadence_pitch_analysis, "details", None)
+                if isinstance(self.cadence_pitch_analysis, dict):
+                    details = self.cadence_pitch_analysis.get("details")
+                if details:
+                    pitch_desc = f" — {details}"
+            lines.append(f"Cadence : {self.cadence_mismatch.description} ({self.cadence_audio_method}){pitch_desc}")
         prev_shift = 0.0
         for i, segment in enumerate(self.segments):
             ts = self.format_timestamp(segment.start_ms)

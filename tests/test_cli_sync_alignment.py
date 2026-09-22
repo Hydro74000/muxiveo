@@ -620,7 +620,7 @@ def test_cli_parser_cadence_options():
     # Defaults
     args = parser.parse_args(["hybrid", "--ref", "r.mkv", "--donor", "d.mkv", "-o", "out"])
     assert args.cadence_auto is True
-    assert args.cadence_method == "atempo"
+    assert args.cadence_method == "auto"
 
     # Désactivation auto
     args = parser.parse_args(["hybrid", "--ref", "r.mkv", "--donor", "d.mkv", "-o", "out", "--no-cadence-auto"])
@@ -629,6 +629,10 @@ def test_cli_parser_cadence_options():
     # Méthode explicite asetrate
     args = parser.parse_args(["hybrid", "--ref", "r.mkv", "--donor", "d.mkv", "-o", "out", "--cadence-method", "asetrate"])
     assert args.cadence_method == "asetrate"
+
+    # Méthode explicite atempo
+    args = parser.parse_args(["hybrid", "--ref", "r.mkv", "--donor", "d.mkv", "-o", "out", "--cadence-method", "atempo"])
+    assert args.cadence_method == "atempo"
 
     # sync-scan options
     args = parser.parse_args(["sync-scan", "--ref", "r.mkv", "--target", "t.mkv", "--cadence-method", "asetrate"])

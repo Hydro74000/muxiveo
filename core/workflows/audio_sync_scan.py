@@ -64,6 +64,59 @@ class AudioSyncScanner:
             raise AudioSyncError(result.stderr.decode("utf-8", errors="replace"))
         return np.frombuffer(result.stdout, dtype="<f4").astype(float)
 
+    def pitch_samples(self, track, start, duration, cadence_filter: str | None = None):
+        """Extrait les échantillons audio sans filtre passe-bande agressif pour l'analyse F0 et spectrale."""
+        import numpy as np
+        af = "lowpass=f=4000"
+        if cadence_filter:
+            af = f"{cadence_filter},{af}"
+        result = self._run([
+            self.ffmpeg, "-v", "error", "-ss", str(max(0, start)), "-i", str(track.source_path),
+            "-map", f"0:{track.stream_index}" if isinstance(track.stream_index, int) else str(track.stream_index),
+            "-t", str(duration), "-af", af,
+            "-ac", "1", "-ar", "16000", "-f", "f32le", "pipe:1"],
+            capture_output=True, timeout=max(120, duration * 4), **subprocess_windows_no_window_kwargs())
+        if result.returncode:
+            return np.array([], dtype=float)
+        return np.frombuffer(result.stdout, dtype="<f4").astype(float)
+
+    def _analyze_cadence_pitch(
+        self,
+        reference: AudioSyncTrack,
+        donor: AudioSyncTrack,
+        p_ref: float,
+        offset_ms: float,
+        cadence_mismatch,
+        duration: float = 4.0,
+    ):
+        """Exécute l'analyse acoustique de hauteur tonale (F0 et spectre de Welch)."""
+        try:
+            from core.workflows.cadence import CadenceAudioMethod, build_cadence_audio_filter
+            from core.workflows.cadence_pitch import analyze_cadence_pitch
+
+            speed_factor = getattr(cadence_mismatch, "speed_factor", 1.0)
+            p_donor = max(0.0, (p_ref + offset_ms / 1000.0) * speed_factor)
+
+            filter_ase = build_cadence_audio_filter(cadence_mismatch, CadenceAudioMethod.ASETRATE)
+            filter_ate = build_cadence_audio_filter(cadence_mismatch, CadenceAudioMethod.ATEMPO)
+
+            ref_samples = self.pitch_samples(reference, p_ref, duration)
+            donor_ase_samples = self.pitch_samples(donor, p_donor, duration, cadence_filter=filter_ase)
+            donor_ate_samples = self.pitch_samples(donor, p_donor, duration, cadence_filter=filter_ate)
+
+            if len(ref_samples) < 16000 or len(donor_ase_samples) < 16000 or len(donor_ate_samples) < 16000:
+                return None
+
+            return analyze_cadence_pitch(
+                ref_samples,
+                donor_ase_samples,
+                donor_ate_samples,
+                sr=16000,
+                mismatch=cadence_mismatch,
+            )
+        except Exception:
+            return None
+
     def black_transitions(self, track, start, duration):
         result = self._run([self.ffmpeg, "-nostdin", "-hide_banner", "-ss", str(start),
             "-i", str(track.source_path), "-t", str(duration), "-an", "-sn",
@@ -121,18 +174,25 @@ class AudioSyncScanner:
         )
 
     def scan(self, reference: AudioSyncTrack, donor: AudioSyncTrack, *, detect_cuts=False,
-             drift_threshold_ms=25, cadence_mismatch=None, cadence_audio_method="atempo",
+             drift_threshold_ms=25, cadence_mismatch=None, cadence_audio_method="auto",
              log=lambda message: None):
         import numpy as np
+        from core.workflows.cadence import CadenceAudioMethod, build_cadence_audio_filter
         if drift_threshold_ms <= 0:
             raise ValueError("Le seuil de dérive doit être positif.")
         if self.cancel_event is not None and self.cancel_event.is_set():
             raise AudioSyncError("Analyse annulée.")
+
+        is_auto_method = cadence_audio_method in ("auto", CadenceAudioMethod.AUTO)
+        active_cadence_method = "atempo" if is_auto_method else (
+            cadence_audio_method.value if isinstance(cadence_audio_method, CadenceAudioMethod) else str(cadence_audio_method)
+        )
+        pitch_analysis = None
+
         filter_str = None
         speed_factor = 1.0
         if cadence_mismatch and getattr(cadence_mismatch, "cadence_type", None) not in (None, "none"):
-            from core.workflows.cadence import build_cadence_audio_filter
-            filter_str = build_cadence_audio_filter(cadence_mismatch, cadence_audio_method)
+            filter_str = build_cadence_audio_filter(cadence_mismatch, active_cadence_method)
             speed_factor = getattr(cadence_mismatch, "speed_factor", 1.0)
 
         donor_duration_ref = self.duration(donor) / speed_factor if speed_factor > 0 else self.duration(donor)
@@ -168,6 +228,15 @@ class AudioSyncScanner:
             p, offset, confidence = measured
             samples.append({"start_ms": float(p * 1000), "shift_ms": offset, "confidence": confidence})
             log(f"{p:.1f} s : {offset:+.1f} ms ({confidence:.2f})")
+
+            # Analyse acoustique de hauteur tonale (sélection auto asetrate vs atempo) au 1er point mesuré
+            if is_auto_method and pitch_analysis is None and cadence_mismatch and getattr(cadence_mismatch, "cadence_type", None) not in (None, "none"):
+                pitch_analysis = self._analyze_cadence_pitch(reference, donor, p, offset, cadence_mismatch)
+                if pitch_analysis is not None:
+                    active_cadence_method = pitch_analysis.selected_method
+                    filter_str = build_cadence_audio_filter(cadence_mismatch, active_cadence_method)
+                    log(f"Analyse acoustique de cadence : méthode '{pitch_analysis.selected_method}' sélectionnée — {pitch_analysis.details}")
+
         spread = max(s["shift_ms"] for s in samples) - min(s["shift_ms"] for s in samples)
         if spread <= drift_threshold_ms:
             return SyncCalibration(
@@ -175,19 +244,28 @@ class AudioSyncScanner:
                 min(s["confidence"] for s in samples),
                 tuple(samples),
                 cadence_mismatch=cadence_mismatch,
-                cadence_audio_method=cadence_audio_method,
+                cadence_audio_method=active_cadence_method,
+                cadence_pitch_analysis=pitch_analysis,
             )
 
         from core.workflows.cadence import detect_cadence_from_acoustic_samples
         acoustic_mismatch = detect_cadence_from_acoustic_samples(samples)
         if acoustic_mismatch is not None:
             log(f"Différence de cadence détectée acoustiquement : {acoustic_mismatch.description}")
+            if is_auto_method and pitch_analysis is None:
+                p0 = samples[0]["start_ms"] / 1000.0
+                off0 = samples[0]["shift_ms"]
+                pitch_analysis = self._analyze_cadence_pitch(reference, donor, p0, off0, acoustic_mismatch)
+                if pitch_analysis is not None:
+                    active_cadence_method = pitch_analysis.selected_method
+                    log(f"Analyse acoustique de cadence : méthode '{pitch_analysis.selected_method}' sélectionnée — {pitch_analysis.details}")
             return SyncCalibration(
                 (SyncSegment(0, float(samples[0]["shift_ms"])),),
                 min(s["confidence"] for s in samples),
                 tuple(samples),
                 cadence_mismatch=acoustic_mismatch,
-                cadence_audio_method=cadence_audio_method,
+                cadence_audio_method=active_cadence_method,
+                cadence_pitch_analysis=pitch_analysis,
             )
 
         if not detect_cuts:
@@ -292,6 +370,7 @@ class AudioSyncScanner:
             min(s["confidence"] for s in samples),
             tuple(samples),
             cadence_mismatch=cadence_mismatch,
-            cadence_audio_method=cadence_audio_method,
+            cadence_audio_method=active_cadence_method,
+            cadence_pitch_analysis=pitch_analysis,
         )
 
