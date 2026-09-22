@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from enum import Enum
+from fractions import Fraction
 import math
 import re
 from typing import Any
@@ -38,6 +39,7 @@ class CadenceMismatch:
     confidence: float = 1.0      # Niveau de confiance (0.0 à 1.0)
     detection_method: str = "metadata"  # "metadata" ou "acoustic_slope"
     description: str = ""
+    speed_ratio: str = ""        # Fraction exacte déduite à la volée des sources vidéo (ex: "24000/25025", "24/25")
 
     def __post_init__(self):
         if not self.description:
@@ -62,6 +64,7 @@ class CadenceMismatch:
             "confidence": self.confidence,
             "detection_method": self.detection_method,
             "description": self.description,
+            "speed_ratio": self.speed_ratio,
         }
 
     @classmethod
@@ -74,6 +77,7 @@ class CadenceMismatch:
             confidence=float(payload.get("confidence", 1.0)),
             detection_method=str(payload.get("detection_method", "metadata")),
             description=str(payload.get("description", "")),
+            speed_ratio=str(payload.get("speed_ratio", "")),
         )
 
 
@@ -107,68 +111,125 @@ def parse_framerate(value: str | float | int | None) -> float | None:
         return None
 
 
-def detect_cadence_from_metadata(
-    master_fps_val: str | float | None,
-    donor_fps_val: str | float | None,
-    tolerance: float = 0.08,
-) -> CadenceMismatch | None:
-    """Détection A : Identifie un écart de cadence type PAL/Cinéma via les métadonnées vidéo."""
-    m_fps = parse_framerate(master_fps_val)
-    d_fps = parse_framerate(donor_fps_val)
-    if not m_fps or not d_fps:
+def parse_framerate_fraction(value: str | float | int | Fraction | None) -> Fraction | None:
+    """Convertit une chaîne, fraction ou flottant en Fraction exacte (ex: '24000/1001', '25/1', 23.976)."""
+    if value is None:
         return None
+    if isinstance(value, Fraction):
+        return value if value > 0 else None
+    if isinstance(value, int):
+        return Fraction(value, 1) if value > 0 else None
+    if isinstance(value, float):
+        if value <= 0:
+            return None
+        # Reconnaissance des cadences NTSC / Cinéma standard lorsque exprimées en float
+        if abs(value - 23.976023976) < 0.002 or abs(value - 23.976) < 0.002:
+            return Fraction(24000, 1001)
+        if abs(value - 29.97002997) < 0.002 or abs(value - 29.97) < 0.002:
+            return Fraction(30000, 1001)
+        if abs(value - 59.94005994) < 0.002 or abs(value - 59.94) < 0.002:
+            return Fraction(60000, 1001)
+        if abs(value - 24.0) < 0.002:
+            return Fraction(24, 1)
+        if abs(value - 25.0) < 0.002:
+            return Fraction(25, 1)
+        return Fraction(value).limit_denominator(1001)
+
+    s = str(value).strip()
+    s = re.sub(r"(?i)\s*fps\b", "", s).strip()
+    if not s:
+        return None
+
+    if "/" in s:
+        parts = s.split("/", 1)
+        try:
+            num = int(float(parts[0].strip()))
+            den = int(float(parts[1].strip()))
+            if den > 0 and num > 0:
+                return Fraction(num, den)
+            return None
+        except (ValueError, ZeroDivisionError):
+            return None
+
+    try:
+        val = float(s)
+        return parse_framerate_fraction(val)
+    except ValueError:
+        return None
+
+
+def detect_cadence_from_metadata(
+    master_fps_val: str | float | Fraction | None,
+    donor_fps_val: str | float | Fraction | None,
+    tolerance: float = 0.01,
+) -> CadenceMismatch | None:
+    """Détection A : Calcule à la volée le ratio exact entre les cadences vidéo master et donneur."""
+    m_frac = parse_framerate_fraction(master_fps_val)
+    d_frac = parse_framerate_fraction(donor_fps_val)
+    if not m_frac or not d_frac:
+        return None
+
+    m_fps = float(m_frac)
+    d_fps = float(d_frac)
 
     # Si les deux framerates sont très proches, aucune conversion
     if abs(m_fps - d_fps) <= tolerance:
         return None
 
-    # 1. Donneur PAL (25 FPS) -> Master Cinéma (23.976 ou 24.0 FPS)
+    # Ratio exact calculé directement à la volée depuis les cadences des sources (target / source) :
+    speed_ratio = m_frac / d_frac
+    speed_factor = float(speed_ratio)
+
+    # Catégorisation pour l'enum et l'UX
+    cadence_type = CadenceType.CUSTOM
     if abs(d_fps - 25.0) <= 0.05:
         if abs(m_fps - 24.0) <= 0.01:
-            return CadenceMismatch(
-                cadence_type=CadenceType.PAL_TO_FILM_24,
-                source_fps=25.0,
-                target_fps=24.0,
-                speed_factor=24.0 / 25.0,
-                confidence=1.0,
-                detection_method="metadata",
-                description="PAL 25 → 24.000 FPS (+4,0 %)",
-            )
+            cadence_type = CadenceType.PAL_TO_FILM_24
         elif abs(m_fps - 23.976025) <= 0.02 or abs(m_fps - 23.976) <= 0.02:
-            return CadenceMismatch(
-                cadence_type=CadenceType.PAL_TO_FILM_23976,
-                source_fps=25.0,
-                target_fps=23.976,
-                speed_factor=24000.0 / 25025.0,
-                confidence=1.0,
-                detection_method="metadata",
-                description="PAL 25 → 23.976 FPS (+4,1 %)",
-            )
-
-    # 2. Donneur Cinéma (23.976 ou 24.0 FPS) -> Master PAL (25 FPS)
-    if abs(m_fps - 25.0) <= 0.05:
+            cadence_type = CadenceType.PAL_TO_FILM_23976
+    elif abs(m_fps - 25.0) <= 0.05:
         if abs(d_fps - 24.0) <= 0.01:
-            return CadenceMismatch(
-                cadence_type=CadenceType.FILM_24_TO_PAL,
-                source_fps=24.0,
-                target_fps=25.0,
-                speed_factor=25.0 / 24.0,
-                confidence=1.0,
-                detection_method="metadata",
-                description="24.000 → PAL 25 FPS (-4,0 %)",
-            )
+            cadence_type = CadenceType.FILM_24_TO_PAL
         elif abs(d_fps - 23.976025) <= 0.02 or abs(d_fps - 23.976) <= 0.02:
-            return CadenceMismatch(
-                cadence_type=CadenceType.FILM_23976_TO_PAL,
-                source_fps=23.976,
-                target_fps=25.0,
-                speed_factor=25025.0 / 24000.0,
-                confidence=1.0,
-                detection_method="metadata",
-                description="23.976 → PAL 25 FPS (-4,1 %)",
-            )
+            cadence_type = CadenceType.FILM_23976_TO_PAL
 
-    return None
+    if cadence_type == CadenceType.PAL_TO_FILM_23976:
+        description = "PAL 25 → 23.976 FPS (+4,1 %)"
+    elif cadence_type == CadenceType.PAL_TO_FILM_24:
+        description = "PAL 25 → 24.000 FPS (+4,0 %)"
+    elif cadence_type == CadenceType.FILM_23976_TO_PAL:
+        description = "23.976 → PAL 25 FPS (-4,1 %)"
+    elif cadence_type == CadenceType.FILM_24_TO_PAL:
+        description = "24.000 → PAL 25 FPS (-4,0 %)"
+    else:
+        stretch_pct = (1.0 / speed_factor - 1.0) * 100.0
+        sign = "+" if stretch_pct >= 0 else ""
+        desc_from = f"{d_fps:.3f}"
+        desc_to = f"{m_fps:.3f}"
+        description = f"{desc_from} → {desc_to} FPS ({sign}{stretch_pct:.1f} %)"
+
+    # Notation de fraction exacte pour atempo
+    if speed_ratio == Fraction(24000, 25025):
+        ratio_str = "24000/25025"
+    elif speed_ratio == Fraction(25025, 24000):
+        ratio_str = "25025/24000"
+    elif speed_ratio == Fraction(24, 25):
+        ratio_str = "24/25"
+    elif speed_ratio == Fraction(25, 24):
+        ratio_str = "25/24"
+    else:
+        ratio_str = f"{speed_ratio.numerator}/{speed_ratio.denominator}"
+
+    return CadenceMismatch(
+        cadence_type=cadence_type,
+        source_fps=round(d_fps, 3),
+        target_fps=round(m_fps, 3),
+        speed_factor=speed_factor,
+        confidence=1.0,
+        detection_method="metadata",
+        description=description,
+        speed_ratio=ratio_str,
+    )
 
 
 def detect_cadence_from_acoustic_samples(
@@ -217,6 +278,7 @@ def detect_cadence_from_acoustic_samples(
             confidence=round(min(1.0, float(r2)), 3),
             detection_method="acoustic_slope",
             description="PAL 25 → 23.976 FPS (+4,1 %)",
+            speed_ratio="24000/25025",
         )
 
     if -0.050 <= slope <= -0.035:
@@ -228,6 +290,7 @@ def detect_cadence_from_acoustic_samples(
             confidence=round(min(1.0, float(r2)), 3),
             detection_method="acoustic_slope",
             description="23.976 → PAL 25 FPS (-4,1 %)",
+            speed_ratio="25025/24000",
         )
 
     return None
@@ -248,7 +311,11 @@ def build_cadence_audio_filter(
         return f"asetrate={target_rate},aresample={sample_rate}"
 
     # Par défaut : atempo (préservation de la hauteur tonale)
-    # Si le speed factor correspond exactement aux standards cinéma/PAL, utiliser la fraction exacte
+    # 1. Utiliser en priorité la fraction exacte calculée à la volée depuis les flux vidéo
+    if mismatch.speed_ratio:
+        return f"atempo={mismatch.speed_ratio}"
+
+    # 2. Fractions standards de référence
     if mismatch.cadence_type == CadenceType.PAL_TO_FILM_23976:
         return "atempo=24000/25025"
     elif mismatch.cadence_type == CadenceType.PAL_TO_FILM_24:

@@ -462,3 +462,40 @@ def test_audio_sync_scanner_with_cadence_and_detect_cuts(monkeypatch):
     assert all(c[1] == "atempo=24000/25025" for c in measure_calls)
     assert all(math.isclose(c[2], 24000.0 / 25025.0) for c in measure_calls)
 
+
+def test_parse_framerate_fraction_canonical_and_custom():
+    from fractions import Fraction
+    from core.workflows.cadence import parse_framerate_fraction
+
+    assert parse_framerate_fraction("24000/1001") == Fraction(24000, 1001)
+    assert parse_framerate_fraction("25/1") == Fraction(25, 1)
+    assert parse_framerate_fraction(23.976) == Fraction(24000, 1001)
+    assert parse_framerate_fraction(29.97) == Fraction(30000, 1001)
+    assert parse_framerate_fraction(59.94) == Fraction(60000, 1001)
+    assert parse_framerate_fraction(25.0) == Fraction(25, 1)
+    assert parse_framerate_fraction(24.0) == Fraction(24, 1)
+    assert parse_framerate_fraction("50/1 fps") == Fraction(50, 1)
+    assert parse_framerate_fraction(None) is None
+
+
+def test_detect_cadence_from_metadata_on_the_fly_custom_rates():
+    from fractions import Fraction
+    from core.workflows.cadence import detect_cadence_from_metadata, build_cadence_audio_filter
+
+    # Ratio calculé à la volée entre NTSC 29.970 (30000/1001) et PAL 25.0 (25/1)
+    mismatch = detect_cadence_from_metadata("25/1", "30000/1001")
+    assert mismatch is not None
+    # 25 / (30000/1001) = 25025 / 30000 = 1001 / 1200
+    expected_ratio = Fraction(25, 1) / Fraction(30000, 1001)
+    assert math.isclose(mismatch.speed_factor, float(expected_ratio))
+    assert mismatch.speed_ratio == "1001/1200"
+    f = build_cadence_audio_filter(mismatch)
+    assert f == "atempo=1001/1200"
+
+    # Ratio calculé à la volée entre 23.976 (24000/1001) et 24.0 (24/1)
+    mismatch_film = detect_cadence_from_metadata("24/1", "24000/1001")
+    assert mismatch_film is not None
+    # 24 / (24000/1001) = 24024 / 24000 = 1001 / 1000
+    assert mismatch_film.speed_ratio == "1001/1000"
+    assert build_cadence_audio_filter(mismatch_film) == "atempo=1001/1000"
+

@@ -67,6 +67,7 @@ class TrackEntry:
     orig_title:    str = field(default="", repr=False)
     orig_codec:    str = field(default="", repr=False)
     orig_display_info: str = field(default="", repr=False)
+    frame_rate:    str = field(default="", repr=False)  # Cadence brute ffprobe (ex: "24000/1001", "25/1")
     encode_plan_codec: str = field(default="", repr=False)
     encode_plan_summary: str = field(default="", repr=False)
     encode_plan_hdr_badges: tuple[str, ...] = field(default_factory=tuple, repr=False)
@@ -384,6 +385,7 @@ def tracks_from_file_info(info: FileInfo, file_id: str = "") -> list[TrackEntry]
             orig_language=v.language or "",
             orig_title=v.title or "",
             file_id=file_id,
+            frame_rate=v.frame_rate or "",
             **_flags_from_disp(v.raw, v.index),
         ))
 

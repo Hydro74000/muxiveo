@@ -551,15 +551,15 @@ class HybridMatrix:
         return episodes
 
 
-def _extract_source_video_fps(source_input: SourceInput) -> float | None:
-    from core.workflows.cadence import parse_framerate
+def _extract_source_video_fps(source_input: SourceInput) -> str | float | None:
     for track in source_input.tracks:
-        if track.track_type == "video" and track.display_info:
-            match = re.search(r"([\d\.]+)\s*fps", track.display_info, re.I)
-            if match:
-                fps = parse_framerate(match.group(1))
-                if fps:
-                    return fps
+        if track.track_type == "video":
+            if getattr(track, "frame_rate", ""):
+                return track.frame_rate
+            if track.display_info:
+                match = re.search(r"([\d\.]+)\s*fps", track.display_info, re.I)
+                if match:
+                    return match.group(1)
     return None
 
 
