@@ -284,6 +284,18 @@ def test_ensure_wine_deps_pins_pyside6_and_verifies_runtime():
     mock_verify.assert_called_once_with()
 
 
+def test_ensure_pyinstaller_deps_list_format():
+    with patch("importlib.util.find_spec", return_value=None), \
+         patch.object(package_mod, "_run") as mock_run:
+        package_mod._ensure_pyinstaller()
+        assert mock_run.called
+        # Vérifie que les arguments pip install passés sont valides et non vides
+        cmd = mock_run.call_args[0][0]
+        assert "pyinstaller" in cmd
+        assert "numpy>=1.24" in cmd
+
+
+
 def test_verify_wine_pyside6_runtime_raises_with_missing_dlls(tmp_path):
     wine_python = tmp_path / "drive_c" / "Python311" / "python.exe"
     pyside_dir = wine_python.parent / "Lib" / "site-packages" / "PySide6"
