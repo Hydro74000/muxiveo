@@ -3,7 +3,12 @@ from __future__ import annotations
 
 import math
 from typing import Any
-import numpy as np
+
+try:
+    import numpy as np
+except ImportError:
+    np = None  # type: ignore[assignment]
+
 from PySide6.QtCore import QLineF, QPointF, QRect, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen, QWheelEvent
 from PySide6.QtWidgets import QWidget
@@ -69,8 +74,12 @@ class WaveformView(QWidget):
         self.display_mode: str = "split"  # "split" (scindé) ou "overlay" (superposé)
 
         # Données audio
-        self._ref_samples: np.ndarray = np.array([], dtype=np.float32)
-        self._tgt_samples: np.ndarray = np.array([], dtype=np.float32)
+        if np is not None:
+            self._ref_samples: Any = np.array([], dtype=np.float32)
+            self._tgt_samples: Any = np.array([], dtype=np.float32)
+        else:
+            self._ref_samples = []
+            self._tgt_samples = []
         self.sample_rate: int = 16000
         self.start_time_ms: float = 0.0
         self.window_duration_ms: float = 20000.0
@@ -115,30 +124,38 @@ class WaveformView(QWidget):
     def set_series(self, series: tuple[list[float], list[float]] | list[list[float]]) -> None:
         """Compatibilité avec HybridStudio ou affichages simplifiés."""
         self.series = tuple(series) if series else ([], [])
-        self._ref_samples = np.array([], dtype=np.float32)
-        self._tgt_samples = np.array([], dtype=np.float32)
+        if np is not None:
+            self._ref_samples = np.array([], dtype=np.float32)
+            self._tgt_samples = np.array([], dtype=np.float32)
+        else:
+            self._ref_samples = []
+            self._tgt_samples = []
         self.loading_text = ""
         self.update()
 
     def set_audio_data(
         self,
-        ref_samples: np.ndarray | list[float] | None,
-        tgt_samples: np.ndarray | list[float] | None,
+        ref_samples: Any,
+        tgt_samples: Any,
         sample_rate: int = 16000,
         start_time_ms: float = 0.0,
         cut_time_ms: float | None = None,
     ) -> None:
         """Définit les échantillons 16kHz haute précision pour un zoom au millimètre."""
-        self._ref_samples = (
-            np.asarray(ref_samples, dtype=np.float32)
-            if ref_samples is not None and len(ref_samples) > 0
-            else np.array([], dtype=np.float32)
-        )
-        self._tgt_samples = (
-            np.asarray(tgt_samples, dtype=np.float32)
-            if tgt_samples is not None and len(tgt_samples) > 0
-            else np.array([], dtype=np.float32)
-        )
+        if np is not None:
+            self._ref_samples = (
+                np.asarray(ref_samples, dtype=np.float32)
+                if ref_samples is not None and len(ref_samples) > 0
+                else np.array([], dtype=np.float32)
+            )
+            self._tgt_samples = (
+                np.asarray(tgt_samples, dtype=np.float32)
+                if tgt_samples is not None and len(tgt_samples) > 0
+                else np.array([], dtype=np.float32)
+            )
+        else:
+            self._ref_samples = list(ref_samples) if ref_samples is not None else []
+            self._tgt_samples = list(tgt_samples) if tgt_samples is not None else []
         self.sample_rate = max(1, sample_rate)
         self.start_time_ms = float(start_time_ms)
         self.cut_time_ms = float(cut_time_ms) if cut_time_ms is not None else None
@@ -284,8 +301,10 @@ class WaveformView(QWidget):
             return
         super().mouseReleaseEvent(event)
 
-    def _extract_column_peaks(self, raw_samples: np.ndarray, t_start_ms: float, t_end_ms: float, width_px: int) -> np.ndarray:
+    def _extract_column_peaks(self, raw_samples: Any, t_start_ms: float, t_end_ms: float, width_px: int) -> Any:
         """Calcule les crêtes d'amplitude échantillonnées pour chaque colonne de pixels."""
+        if np is None:
+            return []
         if len(raw_samples) == 0 or width_px <= 0:
             return np.zeros(max(1, width_px), dtype=np.float32)
 
@@ -301,25 +320,22 @@ class WaveformView(QWidget):
         valid_start = max(0, min(total_samples, idx_start))
         valid_end = max(0, min(total_samples, idx_end))
 
-        valid_slice = raw_samples[valid_start:valid_end]
-        if pad_left > 0 or pad_right > 0:
-            parts = []
-            if pad_left > 0:
-                parts.append(np.zeros(pad_left, dtype=np.float32))
-            if len(valid_slice) > 0:
-                parts.append(valid_slice)
-            if pad_right > 0:
-                parts.append(np.zeros(pad_right, dtype=np.float32))
-            chunk = np.concatenate(parts) if parts else np.zeros(max(1, idx_end - idx_start), dtype=np.float32)
-        else:
-            chunk = valid_slice
+        parts = []
+        if pad_left > 0:
+            parts.append(np.zeros(pad_left, dtype=np.float32))
+        if valid_end > valid_start:
+            parts.append(raw_samples[valid_start:valid_end])
+        if pad_right > 0:
+            parts.append(np.zeros(pad_right, dtype=np.float32))
+        chunk = np.concatenate(parts) if parts else np.zeros(max(1, idx_end - idx_start), dtype=np.float32)
 
         n = len(chunk)
-        if n == 0:
+        chunk_size = n // width_px
+        if chunk_size == 0:
             return np.zeros(width_px, dtype=np.float32)
 
-        if n >= width_px:
-            chunk_size = n // width_px
+        if chunk_size > 1:
+            # Réduction par max absolu de chaque sous-fenêtre
             usable = chunk_size * width_px
             reshaped = np.abs(chunk[:usable].reshape(width_px, chunk_size))
             return np.max(reshaped, axis=1)
@@ -333,6 +349,14 @@ class WaveformView(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
         painter.fillRect(self.rect(), QColor(_C.BG_DEEP))
+
+        if np is None:
+            painter.setPen(QColor(_C.TEXT_SEC))
+            font = QFont()
+            font.setPixelSize(_font_px(11))
+            painter.setFont(font)
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Waveform non disponible (numpy manquant)")
+            return
 
         # Message d'attente / chargement
         has_audio = (len(self._ref_samples) > 0 or len(self._tgt_samples) > 0)

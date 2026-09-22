@@ -121,7 +121,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           for attempt in 1 2 3; do
-            if python -m pip install --retries 5 --timeout 60 pytest pytest-qt PySide6; then
+            if python -m pip install --retries 5 --timeout 60 pytest pytest-qt PySide6 numpy; then
               break
             fi
             if [ "$attempt" -eq 3 ]; then
@@ -181,7 +181,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           for attempt in 1 2 3; do
-            if python -m pip install --retries 5 --timeout 60 pytest pytest-qt PySide6; then
+            if python -m pip install --retries 5 --timeout 60 pytest pytest-qt PySide6 numpy; then
               break
             fi
             if [ "$attempt" -eq 3 ]; then
