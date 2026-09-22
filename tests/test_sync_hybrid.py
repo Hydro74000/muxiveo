@@ -368,6 +368,8 @@ def test_track_table_sync_studio_requested_signal(qt_app):
     assert received[0] is entry
 
     # Test via cell action button (as clicked in the UI)
+    from unittest.mock import MagicMock
+    table._open_edit_dialog = MagicMock()
     table.append_tracks("#fff", [entry])
     action_cell_widget = table.cellWidget(0, table.COL_EDIT)
     assert action_cell_widget is not None

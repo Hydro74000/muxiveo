@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import shutil
-import subprocess
 from unittest.mock import MagicMock
 
 import pytest
@@ -13,13 +11,13 @@ from core.config import AppConfig
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
 from core.workflows.sync_calibration import SyncCalibration, SyncSegment
 from cli.commands import cmd_preview
-from cli.constants import EXIT_ARGS, EXIT_OK, EXIT_VALIDATION
+from cli.constants import EXIT_OK
 from cli.errors import CliError
 from cli.hybrid import cmd_sync_scan, detect_stream_kind, perform_dynamic_sync, prepare_pair, HybridPair
 from cli.logging import Logger
 from cli.options import CommonOptions
 from cli.parser import build_parser
-from cli.profile import build_profile_remux_config, load_decision_profile
+from cli.profile import build_profile_remux_config
 from cli.remux_config import build_remux_config
 
 
@@ -371,12 +369,14 @@ def test_profile_dynamic_sync_reanalyzes_for_each_different_source_pair(tmp_path
     # Paire 1
     src1_ref = tmp_path / "pair1_ref.mkv"
     src1_donor = tmp_path / "pair1_donor.mkv"
-    src1_ref.touch(); src1_donor.touch()
+    src1_ref.touch()
+    src1_donor.touch()
 
     # Paire 2
     src2_ref = tmp_path / "pair2_ref.mkv"
     src2_donor = tmp_path / "pair2_donor.mkv"
-    src2_ref.touch(); src2_donor.touch()
+    src2_ref.touch()
+    src2_donor.touch()
 
     # Simuler deux calibrations complètement différentes retournées dynamiquement
     calib_pair1 = SyncCalibration.linear(-350.0)
@@ -486,7 +486,8 @@ def test_cmd_sync_scan_subtitles_cuts_detection(tmp_path, capsys, monkeypatch):
 def test_perform_dynamic_sync_audio_vs_subtitles(tmp_path, monkeypatch):
     ref_file = tmp_path / "ref.mkv"
     donor_file = tmp_path / "donor.srt"
-    ref_file.touch(); donor_file.touch()
+    ref_file.touch()
+    donor_file.touch()
 
     ref_audio = TrackEntry(0, "audio", "E-AC-3", "5.1", "eng", "VO", file_id="src0")
     tgt_sub = TrackEntry(0, "subtitle", "SubRip", "", "fre", "VF", file_id="src1")
@@ -634,8 +635,6 @@ def test_cli_parser_cadence_options():
 
 
 def test_prepare_pair_auto_cadence_detection(tmp_path, monkeypatch):
-    from core.workflows.cadence import detect_cadence_from_metadata
-
     ref_file = tmp_path / "ref.mkv"
     donor_file = tmp_path / "donor.mkv"
     ref_file.touch()
@@ -698,8 +697,6 @@ def test_prepare_pair_auto_cadence_detection(tmp_path, monkeypatch):
 
 
 def test_perform_dynamic_sync_cadence_detection(tmp_path):
-    from core.workflows.cadence import detect_cadence_from_metadata
-
     ref_video = TrackEntry(0, "video", "HEVC", "1080p", "und", "", frame_rate="24000/1001", file_id="src0")
     ref_audio = TrackEntry(1, "audio", "AAC", "2.0", "fra", "", file_id="src0")
     donor_video = TrackEntry(0, "video", "H264", "1080p", "und", "", frame_rate="25/1", file_id="src1")

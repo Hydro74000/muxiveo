@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+from typing import Any
 
 from core.workflows.audio_sync import AudioSyncTrack
 from core.workflows.audio_sync_scan import AudioSyncScanner

@@ -2981,7 +2981,7 @@ class EncodeWorkflow(QObject):
 
     @staticmethod
     def _derive_passthrough_statistics(
-        config: EncodeConfig, plan: EncodePlan,
+        config: EncodeConfig, plan: _EncodePlan,
     ) -> dict[int, tuple[int, int, int]] | None:
         """Dérive les statistiques de pistes si tout est en copie stricte sans transcodage."""
         video_tracks = getattr(config, "video_tracks", []) or []

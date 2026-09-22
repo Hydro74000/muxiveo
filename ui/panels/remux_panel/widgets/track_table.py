@@ -48,6 +48,7 @@ from ui.panels.remux_panel.theme import (
     _waveform_icon,
     _x_icon,
 )
+from ui.panels.track_edit_dialog import TrackEditDialog
 
 class _TrackInfoDelegate(QStyledItemDelegate):
     _SYNC_LABEL_COLOR = QColor(_C.ACCENT)
