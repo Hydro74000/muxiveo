@@ -87,11 +87,38 @@ def cmd_sync_scan(args, config, logger):
             log=lambda message: logger.emit("info", message),
         )
     else:
+        cadence_mismatch = None
+        cadence_auto = getattr(args, "cadence_auto", None)
+        if cadence_auto is None:
+            cadence_auto = getattr(config, "sync_cadence_auto_apply", True)
+        cadence_method = getattr(args, "cadence_method", None) or getattr(config, "sync_cadence_audio_method", "atempo") or "atempo"
+
+        if cadence_auto:
+            try:
+                from core.inspector import FileInspector
+                from core.workflows.cadence import detect_cadence_from_metadata
+                inspector = FileInspector(ffprobe_bin=ffprobe)
+                ref_info = inspector.inspect(ref_path)
+                tgt_info = inspector.inspect(tgt_path)
+                ref_fps = next((v.frame_rate for v in ref_info.video_tracks if v.frame_rate), None)
+                tgt_fps = next((v.frame_rate for v in tgt_info.video_tracks if v.frame_rate), None)
+                if ref_fps and tgt_fps:
+                    cadence_mismatch = detect_cadence_from_metadata(ref_fps, tgt_fps)
+                    if cadence_mismatch:
+                        logger.emit(
+                            "info",
+                            f"Différence de cadence détectée ({ref_fps} vs {tgt_fps}) : {cadence_mismatch.description} — méthode audio : {cadence_method}",
+                        )
+            except Exception as exc:
+                logger.emit("warning", f"Impossible d'analyser les cadences vidéo : {exc}")
+
         result = scanner(args, config).scan(
             AudioSyncTrack(ref_path, args.stream_ref),
             AudioSyncTrack(tgt_path, args.stream_target),
             detect_cuts=args.detect_cuts,
             drift_threshold_ms=args.drift_threshold_ms,
+            cadence_mismatch=cadence_mismatch,
+            cadence_audio_method=cadence_method,
             log=lambda message: logger.emit("info", message),
         )
 
@@ -155,6 +182,25 @@ def perform_dynamic_sync(
 
     # 1. Audio vs Audio si disponible
     if sync_audio and ref_audio:
+        cadence_mismatch = None
+        cadence_auto = getattr(options, "cadence_auto", None)
+        if cadence_auto is None:
+            cadence_auto = getattr(config, "sync_cadence_auto_apply", True)
+        cadence_method = getattr(options, "cadence_method", None) or getattr(config, "sync_cadence_audio_method", "atempo") or "atempo"
+
+        if cadence_auto:
+            from core.workflows.hybrid_matrix import _extract_source_video_fps
+            from core.workflows.cadence import detect_cadence_from_metadata
+            ref_fps = _extract_source_video_fps(ref_source)
+            donor_fps = _extract_source_video_fps(donor_source)
+            if ref_fps and donor_fps:
+                cadence_mismatch = detect_cadence_from_metadata(ref_fps, donor_fps)
+                if cadence_mismatch:
+                    logger.emit(
+                        "info",
+                        f"Différence de cadence vidéo détectée ({ref_fps} vs {donor_fps}) : {cadence_mismatch.description} — méthode audio : {cadence_method}",
+                    )
+
         logger.emit("info", f"Synchronisation audio dynamique : {ref_source.path.name} #{ref_audio.mkv_tid} vs {donor_source.path.name} #{sync_audio.mkv_tid}…")
         audio_scanner = AudioSyncScanner(
             getattr(options, "ffmpeg", None) or config.tool_ffmpeg,
@@ -165,6 +211,8 @@ def perform_dynamic_sync(
             AudioSyncTrack(donor_source.path, sync_audio.mkv_tid),
             detect_cuts=bool(getattr(options, "detect_cuts", False)),
             drift_threshold_ms=getattr(options, "drift_threshold_ms", 25) or 25,
+            cadence_mismatch=cadence_mismatch,
+            cadence_audio_method=cadence_method,
             log=lambda msg: logger.emit("info", msg),
         )
 
@@ -265,6 +313,25 @@ def prepare_pair(pair, args, config, logger):
     if sync_audio is None:
         sync_audio = target_audio
 
+    cadence_mismatch = None
+    cadence_auto = getattr(args, "cadence_auto", None)
+    if cadence_auto is None:
+        cadence_auto = getattr(config, "sync_cadence_auto_apply", True)
+    cadence_method = getattr(args, "cadence_method", None) or getattr(config, "sync_cadence_audio_method", "atempo") or "atempo"
+
+    if cadence_auto and len(result.sources) >= 2:
+        from core.workflows.hybrid_matrix import _extract_source_video_fps
+        from core.workflows.cadence import detect_cadence_from_metadata
+        ref_fps = _extract_source_video_fps(result.sources[0])
+        donor_fps = _extract_source_video_fps(result.sources[1])
+        if ref_fps and donor_fps:
+            cadence_mismatch = detect_cadence_from_metadata(ref_fps, donor_fps)
+            if cadence_mismatch:
+                logger.emit(
+                    "info",
+                    f"Différence de cadence vidéo détectée ({ref_fps} vs {donor_fps}) : {cadence_mismatch.description} — méthode audio : {cadence_method}",
+                )
+
     if args.calibration:
         calibration = SyncCalibration.from_dict(json.loads(Path(args.calibration).read_text(encoding="utf-8-sig")))
     elif sync_audio is not None and ref_audio is not None:
@@ -273,6 +340,8 @@ def prepare_pair(pair, args, config, logger):
             AudioSyncTrack(pair.donor, sync_audio.mkv_tid),
             detect_cuts=args.detect_cuts,
             drift_threshold_ms=args.drift_threshold_ms,
+            cadence_mismatch=cadence_mismatch,
+            cadence_audio_method=cadence_method,
             log=lambda text: logger.emit("info", text),
         )
     elif target_sub is not None:
@@ -298,6 +367,14 @@ def prepare_pair(pair, args, config, logger):
             raise CliError("Une piste de référence audio ou sous-titre est requise.", EXIT_ARGS)
     else:
         raise CliError("Une piste donneuse audio ou sous-titre est requise.", EXIT_ARGS)
+
+    has_cadence = bool(
+        calibration.cadence_mismatch
+        and getattr(calibration.cadence_mismatch, "cadence_type", None) not in (None, "none")
+    )
+    if has_cadence:
+        result.sync_mode = "physical"
+
     if result.sync_mode == "physical":
         result.sync_calibrations = {"1": calibration.to_dict()}
     elif len(calibration.segments) != 1:

@@ -446,8 +446,10 @@ def build_remux_config(
         from core.workflows.sync_calibration import SyncCalibration
         calib_data = json.loads(Path(calib_file).read_text(encoding="utf-8-sig"))
         calib = SyncCalibration.from_dict(calib_data)
+        has_cadence = bool(calib.cadence_mismatch and getattr(calib.cadence_mismatch, "cadence_type", None) not in (None, "none"))
         sync_mode = job.get("sync_mode", "container")
-        if sync_mode == "physical":
+        if sync_mode == "physical" or has_cadence:
+            job["sync_mode"] = "physical"
             job["sync_calibrations"] = {"1": calib.to_dict()}
         elif len(calib.segments) == 1:
             if len(sources) > 1:
@@ -460,8 +462,10 @@ def build_remux_config(
         from cli.hybrid import perform_dynamic_sync
         calib = perform_dynamic_sync(sources, tracks, config, options, logger)
         if calib is not None:
+            has_cadence = bool(calib.cadence_mismatch and getattr(calib.cadence_mismatch, "cadence_type", None) not in (None, "none"))
             sync_mode = job.get("sync_mode", "container")
-            if sync_mode == "physical":
+            if sync_mode == "physical" or has_cadence:
+                job["sync_mode"] = "physical"
                 job["sync_calibrations"] = {"1": calib.to_dict()}
             elif len(calib.segments) == 1:
                 for t in sources[1].tracks:
@@ -474,7 +478,10 @@ def build_remux_config(
         calib_payload = job["sync_calibrations"].get("1")
         if calib_payload:
             calib = SyncCalibration.from_dict(calib_payload)
-            if len(calib.segments) == 1:
+            has_cadence = bool(calib.cadence_mismatch and getattr(calib.cadence_mismatch, "cadence_type", None) not in (None, "none"))
+            if has_cadence:
+                job["sync_mode"] = "physical"
+            elif len(calib.segments) == 1:
                 if len(sources) > 1:
                     for t in sources[1].tracks:
                         if t.track_type == "audio" or (t.track_type == "subtitle" and job.get("sync_subtitles", "mirror") == "mirror"):

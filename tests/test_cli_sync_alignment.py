@@ -606,3 +606,197 @@ def test_cmd_preview_with_calibration_output_json(tmp_path, capsys, monkeypatch)
     assert "1" in payload["sync_calibrations"]
     assert payload["sync_calibrations"]["1"]["segments"][0]["shift_ms"] == -125.0
 
+
+# =============================================================================
+# 9. Tests Détection & Conversion de Cadence en CLI (Auto + Manuel)
+# =============================================================================
+
+def test_cli_parser_cadence_options():
+    parser = build_parser()
+
+    # Defaults
+    args = parser.parse_args(["hybrid", "--ref", "r.mkv", "--donor", "d.mkv", "-o", "out"])
+    assert args.cadence_auto is True
+    assert args.cadence_method == "atempo"
+
+    # Désactivation auto
+    args = parser.parse_args(["hybrid", "--ref", "r.mkv", "--donor", "d.mkv", "-o", "out", "--no-cadence-auto"])
+    assert args.cadence_auto is False
+
+    # Méthode explicite asetrate
+    args = parser.parse_args(["hybrid", "--ref", "r.mkv", "--donor", "d.mkv", "-o", "out", "--cadence-method", "asetrate"])
+    assert args.cadence_method == "asetrate"
+
+    # sync-scan options
+    args = parser.parse_args(["sync-scan", "--ref", "r.mkv", "--target", "t.mkv", "--cadence-method", "asetrate"])
+    assert args.cadence_auto is True
+    assert args.cadence_method == "asetrate"
+
+
+def test_prepare_pair_auto_cadence_detection(tmp_path, monkeypatch):
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    ref_file = tmp_path / "ref.mkv"
+    donor_file = tmp_path / "donor.mkv"
+    ref_file.touch()
+    donor_file.touch()
+
+    ref_video = TrackEntry(0, "video", "HEVC", "1080p", "und", "", frame_rate="24000/1001", file_id="src0")
+    ref_audio = TrackEntry(1, "audio", "EAC3", "5.1", "eng", "", file_id="src0")
+    donor_video = TrackEntry(0, "video", "H264", "1080p", "und", "", frame_rate="25/1", file_id="src1")
+    donor_audio = TrackEntry(1, "audio", "AC3", "5.1", "fre", "", file_id="src1")
+
+    src0 = SourceInput(path=ref_file, file_index=0, tracks=[ref_video, ref_audio])
+    src1 = SourceInput(path=donor_file, file_index=1, tracks=[donor_video, donor_audio])
+
+    fake_config = RemuxConfig(
+        sources=[src0, src1],
+        output=tmp_path / "out.mkv",
+        track_order=[(0, 0, "src0"), (0, 1, "src0"), (1, 0, "src1"), (1, 1, "src1")],
+        sync_mode="container",  # volontairement container pour tester l'upgrade auto
+    )
+
+    monkeypatch.setattr("cli.hybrid.build_remux_config", lambda job, conf, opts, log: fake_config)
+
+    scanned_args = {}
+
+    def fake_scan(ref_t, don_t, **kwargs):
+        scanned_args.update(kwargs)
+        return SyncCalibration(
+            segments=(SyncSegment(0, -42.0),),
+            confidence=0.95,
+            cadence_mismatch=kwargs.get("cadence_mismatch"),
+            cadence_audio_method=kwargs.get("cadence_audio_method", "atempo"),
+        )
+
+    mock_scanner = MagicMock()
+    mock_scanner.scan = fake_scan
+    monkeypatch.setattr("cli.hybrid.scanner", lambda args, conf: mock_scanner)
+
+    parser = build_parser()
+    args = parser.parse_args([
+        "hybrid",
+        "--ref", str(ref_file),
+        "--donor", str(donor_file),
+        "-o", str(tmp_path / "out"),
+        "--cadence-method", "asetrate",
+    ])
+
+    pair = HybridPair(ref_file, donor_file, 1, 2)
+    result, calib = prepare_pair(pair, args, AppConfig(), Logger(fmt="text"))
+
+    # Vérification que le mismatch de cadence a bien été détecté et passé au scanner
+    assert scanned_args["cadence_mismatch"] is not None
+    assert scanned_args["cadence_mismatch"].speed_ratio == "24000/25025"
+    assert scanned_args["cadence_audio_method"] == "asetrate"
+
+    # Vérification que sync_mode a automatiquement été promu à physical
+    assert result.sync_mode == "physical"
+    assert "1" in result.sync_calibrations
+    assert result.sync_calibrations["1"]["cadence_mismatch"]["speed_ratio"] == "24000/25025"
+    assert result.sync_calibrations["1"]["cadence_audio_method"] == "asetrate"
+
+
+def test_perform_dynamic_sync_cadence_detection(tmp_path):
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    ref_video = TrackEntry(0, "video", "HEVC", "1080p", "und", "", frame_rate="24000/1001", file_id="src0")
+    ref_audio = TrackEntry(1, "audio", "AAC", "2.0", "fra", "", file_id="src0")
+    donor_video = TrackEntry(0, "video", "H264", "1080p", "und", "", frame_rate="25/1", file_id="src1")
+    donor_audio = TrackEntry(1, "audio", "AAC", "2.0", "fra", "", file_id="src1")
+
+    ref_path = tmp_path / "ref.mkv"
+    donor_path = tmp_path / "donor.mkv"
+    ref_path.touch()
+    donor_path.touch()
+
+    src0 = SourceInput(path=ref_path, file_index=0, tracks=[ref_video, ref_audio])
+    src1 = SourceInput(path=donor_path, file_index=1, tracks=[donor_video, donor_audio])
+
+    captured_kwargs = {}
+
+    class MockAudioScanner:
+        def __init__(self, *a, **kw): pass
+        def scan(self, ref_track, tgt_track, **kwargs):
+            captured_kwargs.update(kwargs)
+            return SyncCalibration(
+                segments=(SyncSegment(0, 50.0),),
+                confidence=0.98,
+                cadence_mismatch=kwargs.get("cadence_mismatch"),
+                cadence_audio_method=kwargs.get("cadence_audio_method", "atempo"),
+            )
+
+    import cli.hybrid
+    orig_scanner = cli.hybrid.AudioSyncScanner
+    cli.hybrid.AudioSyncScanner = MockAudioScanner
+    try:
+        parser = build_parser()
+        args = parser.parse_args(["remux", "-i", str(ref_path), "-o", str(tmp_path / "out.mkv"), "--auto-sync", "--cadence-method", "atempo"])
+        options = CommonOptions.from_namespace(args)
+
+        calib = perform_dynamic_sync([src0, src1], [ref_video, ref_audio, donor_video, donor_audio], AppConfig(), options, Logger(fmt="text"))
+
+        assert calib is not None
+        assert captured_kwargs["cadence_mismatch"] is not None
+        assert captured_kwargs["cadence_mismatch"].speed_ratio == "24000/25025"
+        assert captured_kwargs["cadence_audio_method"] == "atempo"
+        assert calib.cadence_mismatch is not None
+    finally:
+        cli.hybrid.AudioSyncScanner = orig_scanner
+
+
+def test_cmd_sync_scan_audio_with_cadence_detection(tmp_path, monkeypatch, capsys):
+    ref_file = tmp_path / "ref.mkv"
+    tgt_file = tmp_path / "tgt.mkv"
+    ref_file.touch()
+    tgt_file.touch()
+
+    class MockInspector:
+        def __init__(self, *a, **kw): pass
+        def inspect(self, p):
+            mock_info = MagicMock()
+            if p == ref_file:
+                v = MagicMock()
+                v.frame_rate = "24000/1001"
+                mock_info.video_tracks = [v]
+            else:
+                v = MagicMock()
+                v.frame_rate = "25/1"
+                mock_info.video_tracks = [v]
+            return mock_info
+
+    monkeypatch.setattr("core.inspector.FileInspector", MockInspector)
+    monkeypatch.setattr("cli.hybrid.detect_stream_kind", lambda *a, **kw: "audio")
+
+    def fake_scan(ref_t, don_t, **kwargs):
+        return SyncCalibration(
+            segments=(SyncSegment(0, 100.0),),
+            confidence=0.99,
+            cadence_mismatch=kwargs.get("cadence_mismatch"),
+            cadence_audio_method=kwargs.get("cadence_audio_method", "atempo"),
+        )
+
+    mock_scanner = MagicMock()
+    mock_scanner.scan = fake_scan
+    monkeypatch.setattr("cli.hybrid.scanner", lambda args, conf: mock_scanner)
+
+    out_json = tmp_path / "calib.json"
+    parser = build_parser()
+    args = parser.parse_args([
+        "sync-scan",
+        "--ref", str(ref_file),
+        "--target", str(tgt_file),
+        "--output-json", str(out_json),
+        "--cadence-method", "asetrate",
+    ])
+
+    rc = cmd_sync_scan(args, AppConfig(), Logger(fmt="text"))
+    assert rc == EXIT_OK
+
+    data = json.loads(out_json.read_text(encoding="utf-8"))
+    assert "cadence_mismatch" in data
+    assert data["cadence_mismatch"]["speed_ratio"] == "24000/25025"
+    assert data["cadence_audio_method"] == "asetrate"
+
+
+

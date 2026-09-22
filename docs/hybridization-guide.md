@@ -71,6 +71,10 @@ Muxiveo-cli hybrid --ref-dir "Saison 01 (4K)" --donor-dir "Saison 01 (Audio FR)"
 ### Options pratiques
 - `--dry-run` : Simule l'opération et affiche les décalages détectés sans créer de gros fichier vidéo.
 - `--detect-cuts` : Détecte automatiquement les coupures (ex: coupures publicitaires TV) et réaligne chaque segment.
+- `--cadence-auto` / `--no-cadence-auto` : Active (par défaut) ou désactive la détection et conversion automatique de cadence lorsque la vidéo master et la vidéo donneuse n'ont pas le même nombre d'images par seconde (ex. PAL 25 FPS ↔ Cinéma 23.976 ou 24.0 FPS).
+- `--cadence-method {atempo,asetrate}` : Choisit la méthode de conversion audio lors d'un décalage de cadence :
+  - `atempo` (défaut) : préserve la hauteur et le timbre d'origine des voix et de la musique (*time-stretch*).
+  - `asetrate` : rééchantillonne la vitesse avec variation naturelle de tonalité (*pitch shift* traditionnel PAL speed-up/slowdown).
 - `--export-workflow dossier_json/` : Sauvegarde les fichiers de projet JSON pour chaque épisode sans les encoder immédiatement.
 - `--auto-tmdb 2734` : Télécharge et injecte automatiquement les titres des épisodes et les métadonnées depuis TheMovieDB.
 

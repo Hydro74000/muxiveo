@@ -20,6 +20,18 @@ def _add_sync_options(parser):
     parser.add_argument("--calibration", help="Fichier JSON de calibration explicite (outrepasse l'analyse dynamique).")
     parser.add_argument("--detect-cuts", action="store_true", help="Détecter les coupures et ruptures temporelles (multi-segments).")
     parser.add_argument("--drift-threshold-ms", type=int, default=25, help="Seuil de dérive en ms pour détecter une coupure.")
+    parser.add_argument(
+        "--cadence-auto",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Détection et conversion automatique de cadence PAL ↔ Cinéma.",
+    )
+    parser.add_argument(
+        "--cadence-method",
+        choices=("atempo", "asetrate"),
+        default="atempo",
+        help="Méthode de conversion audio pour cadence : atempo (tonalité préservée, défaut) ou asetrate (hauteur naturelle / pitch shift).",
+    )
     parser.add_argument("--export-workflow", help="Sauvegarder le workflow exact sans exécuter.")
 
 
