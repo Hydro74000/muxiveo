@@ -133,6 +133,7 @@ def verify() -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--generate", action="store_true", help="Régénérer les médias et le manifeste")
+    args = parser.parse_args()
     if args.generate:
         generate()
     else:

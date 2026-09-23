@@ -109,7 +109,7 @@ class SubtitleSyncScanner:
                     body = re.sub(r"<[^>]+>", "", body).strip()
                     if e_ms > s_ms:
                         cues.append(SubtitleCue(s_ms, e_ms, body))
-                except Exception:
+                except (ValueError, IndexError):
                     continue
         return cues
 

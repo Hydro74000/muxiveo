@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QPushButton,
     QRadioButton,
     QScrollBar,
     QTableWidget,
@@ -43,7 +42,6 @@ from ui.panels.remux_panel.theme import (
     _section_label,
     _stop_icon,
     _table_style,
-    _waveform_icon,
 )
 from ui.widgets.waveform_view import WaveformView
 
