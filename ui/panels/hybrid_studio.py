@@ -11,7 +11,7 @@ import uuid
 from typing import Any, Callable
 
 from PySide6.QtCore import Qt, QUrl, Signal, QMetaObject
-from PySide6.QtGui import QColor, QCursor, QPen
+from PySide6.QtGui import QColor, QCursor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
