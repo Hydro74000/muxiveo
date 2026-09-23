@@ -425,7 +425,7 @@ def preflight(
         lock_held_by_other=check_lock and guard_lock.held_by_other(),
     )
     reasons = list(decision.reasons)
-    if work_dir == Path("/tmp") or Path("/tmp") in work_dir.parents:
+    if work_dir == Path("/tmp") or Path("/tmp") in work_dir.parents:  # nosec B108  # Validation interdisant /tmp
         reasons.append(f"Dossier de travail interdit sous /tmp : {work_dir}.")
     resolved_output = output.expanduser().resolve() if output is not None else None
     if corpus_dir is not None:

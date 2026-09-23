@@ -54,3 +54,16 @@ from core.workflows.hybrid_matrix import (
     parse_episode_key,
     prepare_matrix_episode,
 )
+
+__all__ = [
+    "HybridPair",
+    "episode_key",
+    "pair_directories",
+    "HybridMatrix",
+    "HybridRecipe",
+    "MatrixEpisode",
+    "MatrixSource",
+    "SourceRole",
+    "parse_episode_key",
+    "prepare_matrix_episode",
+]

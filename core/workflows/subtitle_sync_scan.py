@@ -1,7 +1,6 @@
 """Extraction, corrélation et synchronisation temporelle des pistes de sous-titres."""
 from __future__ import annotations
 
-import json
 import math
 import re
 import subprocess
@@ -12,7 +11,7 @@ from typing import Callable
 
 import numpy as np
 
-from core.subprocess_utils import subprocess_text_kwargs, subprocess_windows_no_window_kwargs
+from core.subprocess_utils import subprocess_windows_no_window_kwargs
 from core.workflows.subtitle_sync import parse_time, _TIMING
 from core.workflows.sync_calibration import SyncCalibration, SyncSegment
 
@@ -93,7 +92,7 @@ class SubtitleSyncScanner:
                                 dialogue = re.sub(r"\{[^\}]*\}", "", dialogue).strip()
                                 if e_ms > s_ms:
                                     cues.append(SubtitleCue(s_ms, e_ms, dialogue))
-                            except Exception:
+                            except (ValueError, IndexError):
                                 continue
             return cues
 

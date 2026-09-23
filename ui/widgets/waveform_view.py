@@ -9,7 +9,7 @@ try:
 except ImportError:
     np = None  # type: ignore[assignment]
 
-from PySide6.QtCore import QLineF, QPointF, QRect, Qt, Signal
+from PySide6.QtCore import QLineF, QRect, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen, QWheelEvent
 from PySide6.QtWidgets import QWidget
 

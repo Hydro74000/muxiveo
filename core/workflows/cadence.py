@@ -7,10 +7,9 @@ Fournit :
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from enum import Enum
 from fractions import Fraction
-import math
 import re
 from typing import Any
 

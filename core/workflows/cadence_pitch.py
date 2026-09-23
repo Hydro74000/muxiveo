@@ -15,7 +15,7 @@ from typing import Any
 
 import numpy as np
 
-from core.workflows.cadence import CadenceAudioMethod, CadenceMismatch, CadenceType, build_cadence_audio_filter
+from core.workflows.cadence import CadenceMismatch, CadenceType, build_cadence_audio_filter
 
 
 @dataclass(frozen=True)

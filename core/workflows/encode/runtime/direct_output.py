@@ -125,7 +125,8 @@ class DirectOutputRunner:
             cleanup_paths.extend(single_sync_cleanup_paths)
             cb.check_cancelled(prep_signals)
             cb.log_step(7, "Exécution ffmpeg en single pass (sortie directe)")
-            assert prep_signals is not None
+            if prep_signals is None:
+                raise RuntimeError("prep_signals is unexpectedly None before ffmpeg finalization")
             output = cb.finalize_ffmpeg(
                 config, cmd, cwd, "ffmpeg", prep_signals, plan=encode_plan,
             )

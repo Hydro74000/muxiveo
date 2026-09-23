@@ -524,7 +524,8 @@ class NvenccDirectOutputRunner:
                     signals.finished.emit(str(config.output))
                 else:
                     cb.log_step(7, "Remux final ffmpeg")
-                    assert remux_cmd is not None
+                    if remux_cmd is None:
+                        raise RuntimeError("remux_cmd is unexpectedly None for final ffmpeg remux")
                     output = cb.finalize_ffmpeg(
                         config,
                         remux_cmd,

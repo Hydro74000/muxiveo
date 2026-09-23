@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeySequence
-from PySide6.QtWidgets import QFileDialog, QMenu, QMessageBox, QPushButton
+from PySide6.QtWidgets import QFileDialog, QMenu, QMessageBox
 
 from core.i18n import translate_text
 from core.workflows.workflow_store import load_workflow, save_workflow

@@ -334,6 +334,7 @@ class MediaManager(QMainWindow):
         self.scanned_count = 0
         self._current_path = None
         self._threads = []
+        self.scanner = None
         
         self.setWindowTitle("Media Manager")
         self.resize(1400, 900)
@@ -608,7 +609,7 @@ class MediaManager(QMainWindow):
         self.lbl_status.setText(f"✅ Tri terminé : {len(items)} titres/séries organisés.")
 
     def start_scan(self):
-        if hasattr(self, 'scanner') and self.scanner.isRunning():
+        if self.scanner is not None and self.scanner.isRunning():
             self.scanner.requestInterruption()
             self.scanner.wait(2000)
 
@@ -1162,7 +1163,7 @@ class MediaManager(QMainWindow):
         return self.confirm_delete_item(item)
 
     def closeEvent(self, event):
-        if hasattr(self, 'scanner') and self.scanner.isRunning():
+        if self.scanner is not None and self.scanner.isRunning():
             self.scanner.requestInterruption()
             self.scanner.wait(1000)
         for t in list(self._threads):

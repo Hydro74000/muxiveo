@@ -11,7 +11,7 @@ import uuid
 from typing import Any, Callable
 
 from PySide6.QtCore import Qt, QUrl, Signal, QMetaObject
-from PySide6.QtGui import QColor, QCursor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QCursor, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -45,7 +45,6 @@ from core.workflows.hybrid_matrix import (
     MatrixEpisode,
     MatrixSource,
     SourceRole,
-    parse_episode_key,
     prepare_matrix_episode,
 )
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale

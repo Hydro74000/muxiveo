@@ -10,9 +10,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 import re
-from typing import Any, Callable
+from typing import Any
 
-from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
+from core.workflows.remux_models import RemuxConfig, SourceInput
 from core.workflows.sync_calibration import SyncCalibration
 
 # Extensions multimédia prises en charge
@@ -631,7 +631,6 @@ def prepare_matrix_episode(
 
     for donor_idx, donor_source in enumerate(remux_config.sources[1:], start=1):
         donor_calib: SyncCalibration | None = None
-        has_donor_audio = False
 
         for track in donor_source.tracks:
             if track.track_type == "video":
@@ -643,8 +642,6 @@ def prepare_matrix_episode(
                     )
                 else:
                     track.enabled = True
-                if track.enabled:
-                    has_donor_audio = True
             elif track.track_type == "subtitle":
                 if recipe.donor_sub_langs:
                     track.enabled = track.language in recipe.donor_sub_langs

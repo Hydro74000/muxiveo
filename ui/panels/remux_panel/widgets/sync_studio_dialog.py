@@ -9,11 +9,9 @@ import uuid
 
 import numpy as np
 from PySide6.QtCore import Qt, QUrl, Signal
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
-    QDialogButtonBox,
     QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
@@ -41,7 +39,6 @@ from ui.panels.remux_panel.theme import (
     _input_style,
     _play_icon,
     _primary_button,
-    _scissors_icon,
     _secondary_button,
     _section_label,
     _stop_icon,
