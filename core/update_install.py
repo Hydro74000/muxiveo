@@ -208,9 +208,9 @@ def apply_update(kind: InstallKind, downloaded: Path) -> None:
         try:
             downloaded.chmod(0o755)
             os.replace(downloaded, target)
-            # nosemgrep
-            subprocess.Popen(  # nosec B603  # chemin AppImage local, sans shell
-                [str(target)],
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args, python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            subprocess.Popen(  # nosec B603  # nosemgrep
+                [str(target)],  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
