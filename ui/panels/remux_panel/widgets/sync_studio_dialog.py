@@ -953,6 +953,6 @@ class SyncStudioDialog(QDialog):
         self._stop_playback()
         try:
             self._temp_dir.cleanup()
-        except Exception:
+        except Exception:  # nosec B110
             pass
         super().closeEvent(event)

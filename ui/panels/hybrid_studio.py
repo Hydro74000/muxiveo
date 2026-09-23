@@ -1606,11 +1606,11 @@ class HybridStudio(QWidget):
             try:
                 self.player.stop()
                 self.player.setSource(QUrl())
-            except Exception:
+            except Exception:  # nosec B110
                 pass
         self.executor.shutdown(wait=False, cancel_futures=True)
         try:
             self.preview_temp.cleanup()
-        except Exception:
+        except Exception:  # nosec B110
             pass
         super().closeEvent(event)

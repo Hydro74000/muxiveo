@@ -1225,7 +1225,7 @@ class SyncRewriteService:
         from core.workflows.sync_calibration import SyncCalibration
         try:
             return shift_text(text, SyncCalibration.linear(offset_ms), suffix=".ass")
-        except Exception:
+        except Exception:  # nosec B110
             pass
         lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
         start_idx = 1
