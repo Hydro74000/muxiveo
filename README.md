@@ -36,6 +36,7 @@ Cette documentation correspond à **Muxiveo v4.0.0**.
 - [Outils externes](#outils-externes)
 - [Troubleshooting windows](#troubleshooting-windows)
   - [Windows Security / Controlled Folder Access](#windows-security--controlled-folder-access)
+- [Hybridation & Synchronisation](#hybridation--synchronisation)
 
 ## Vue rapide
 
@@ -948,7 +949,7 @@ The corresponding FFmpeg source code and build configuration are available at: [
 
 *Muxiveo v4.0.0*
 
-## Hybridation (branche de développement)
+## Hybridation & Synchronisation
 
 Les commandes `hybrid`, `sync-scan`, `shift-subs`, le menu Workflow et le Studio
 Hybridation sont décrits dans le [guide de synchronisation](docs/hybridization-guide.md).

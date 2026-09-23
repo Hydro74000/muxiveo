@@ -116,6 +116,7 @@ tools/*
 !README*.md
 !Readme*.md
 !Release_*.md
+!RELEASE_*.md
 !scripts/*.md
 !docs/*.md
 !docs/**/*.md
