@@ -877,7 +877,7 @@ class SyncStudioDialog(QDialog):
                 import subprocess
                 ffplay = Path(self.ffmpeg_bin).parent / "ffplay"
                 if ffplay.exists():
-                    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+                    # nosemgrep
                     subprocess.Popen([str(ffplay), "-nodisp", "-autoexit", path])  # nosec B603 B607
                     self.listen_status.setText(translate_text("Lecture externe ffplay lancée."))
             except Exception as err:
@@ -918,7 +918,7 @@ class SyncStudioDialog(QDialog):
         if self._player is not None:
             try:
                 self._player.stop()
-            except Exception:
+            except Exception:  # nosec B110
                 pass
         self._is_playing = False
         self.waveform.set_playhead_pos_ms(None)

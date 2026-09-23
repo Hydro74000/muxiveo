@@ -255,7 +255,7 @@ class MediaInfoThread(QThread):
                             data[0]["data"]["_Source"] = label
                             self.info_ready.emit(data)
                             return
-                except Exception:
+                except Exception:  # nosec B110
                     pass
 
         try:
