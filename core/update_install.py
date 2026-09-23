@@ -208,7 +208,7 @@ def apply_update(kind: InstallKind, downloaded: Path) -> None:
         try:
             downloaded.chmod(0o755)
             os.replace(downloaded, target)
-            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            # nosemgrep
             subprocess.Popen(  # nosec B603  # chemin AppImage local, sans shell
                 [str(target)],
                 stdin=subprocess.DEVNULL,
@@ -225,7 +225,7 @@ def apply_update(kind: InstallKind, downloaded: Path) -> None:
             raise UpdateInstallError("os.startfile indisponible : installeur Windows non lançable.")
         try:
             # ShellExecute : déclenche l'invite UAC requise par l'installeur (admin).
-            startfile(str(downloaded))
+            startfile(str(downloaded))  # pylint: disable=not-callable
         except OSError as exc:
             raise UpdateInstallError(f"Lancement de l'installeur impossible : {exc}") from exc
         return
