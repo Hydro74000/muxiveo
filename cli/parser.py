@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from cli.commands import cmd_batch, cmd_inspect, cmd_preview, cmd_profile, cmd_remux, cmd_run, cmd_schema, cmd_tools, cmd_validate
+from cli.commands import cmd_batch, cmd_inspect, cmd_preview, cmd_profile, cmd_remux, cmd_run, cmd_schema, cmd_tools, cmd_validate, cmd_version
 from core.version import APP_EXECUTABLE_NAME, APP_NAME
 
 
@@ -105,6 +105,12 @@ def build_parser() -> argparse.ArgumentParser:
     tools = sub.add_parser("tools", help="Afficher les chemins d'outils résolus par Muxiveo.")
     tools.add_argument("--log-format", choices=("text", "jsonl"), default="text")
     tools.set_defaults(func=cmd_tools)
+
+    version = sub.add_parser("version", help="Afficher la version de Muxiveo.")
+    version.add_argument("--check", action="store_true", help="Comparer avec la dernière release GitHub (code retour 8 si mise à jour disponible).")
+    version.add_argument("--channel", choices=("stable", "unstable"), help="Canal de mise à jour (défaut : réglage [ui] update_channel).")
+    version.add_argument("--log-format", choices=("text", "jsonl"), default="text")
+    version.set_defaults(func=cmd_version)
 
     for name, help_text, func in (
         ("validate", "Valider une config remux.", cmd_validate),

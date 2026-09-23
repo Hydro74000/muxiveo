@@ -28,6 +28,7 @@ from PySide6.QtCore import QSettings, QStandardPaths
 
 from core.lang_tags import Rfc5646LanguageTags
 from core.subprocess_utils import subprocess_text_kwargs
+from core.update_check import DEFAULT_UPDATE_CHANNEL, normalize_update_channel
 from core.version import (
     APP_CONFIG_DIR_NAME,
     APP_ENV_PREFIX,
@@ -868,6 +869,8 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "startup_panel", "attr": "startup_panel", "kind": "choice", "label": "Panneau à afficher au démarrage", "description": "Panneau chargé en premier au lancement de l'application.", "options": UI_STARTUP_PANEL_CHOICES},
             {"key": "startup_menu_compact", "attr": "startup_menu_compact", "kind": "bool", "label": "Démarrer avec le menu en mode Compact", "description": "Si activé, le menu latéral est réduit en mode icônes au lancement."},
             {"key": "startup_logs_expanded", "attr": "startup_logs_expanded", "kind": "bool", "label": "Ouvrir les logs au démarrage de l'application", "description": "Si activé, le panneau de logs est déplié au lancement."},
+            {"key": "check_updates", "attr": "check_updates", "kind": "bool", "label": "Vérifier les mises à jour au démarrage", "description": "Interroge GitHub (au plus une fois par 24 h) et signale une nouvelle version dans le menu latéral."},
+            {"key": "update_channel", "attr": "update_channel", "kind": "choice", "label": "Canal de mise à jour", "description": "Stable : releases publiées depuis main. Unstable : pré-versions de développement (devel-cli), plus récentes mais moins testées.", "options": (("stable", "Stable"), ("unstable", "Unstable"))},
             {"key": "enable_file_logging", "attr": "enable_file_logging", "kind": "bool", "label": "Activer le logging fichier", "description": "Si activé, les logs applicatifs sont aussi écrits dans un fichier texte sous app_data/logs/."},
             {"key": "file_logging_level", "attr": "file_logging_level", "kind": "choice", "label": "Niveau de logging fichier", "description": "Standard écrit le flux visible dans la fenêtre. Verbose ajoute les sorties techniques détaillées des outils.", "options": (("standard", "Standard"), ("verbose", "Verbose"))},
             {"key": "verbose_log_dir", "attr": "verbose_log_dir", "kind": "directory", "label": "Dossier des logs fichier", "description": "Dossier où écrire les logs fichier. Prérempli par défaut avec le chemin complet actuel."},
@@ -1215,6 +1218,16 @@ class AppConfig:
             "ui/startup_logs_expanded",
             False,
         )
+        self.check_updates = self._resolve_bool("ui", "check_updates", "ui/check_updates", True)
+        self.update_channel = normalize_update_channel(
+            self._resolve_text("ui", "update_channel", "ui/update_channel", DEFAULT_UPDATE_CHANNEL)
+        )
+        try:
+            self.last_update_check = float(self._settings.value("ui/last_update_check", 0) or 0)
+        except (TypeError, ValueError):
+            self.last_update_check = 0.0
+        self.last_update_version = str(self._settings.value("ui/last_update_version", "") or "")
+        self.last_update_channel = str(self._settings.value("ui/last_update_channel", "") or "")
         geometry_value = self._settings.value("ui/geometry", None)
         self.window_geometry: bytes | None = geometry_value if isinstance(geometry_value, bytes) else None
 
@@ -1297,6 +1310,8 @@ class AppConfig:
             "ui/startup_logs_expanded",
             "true" if self.startup_logs_expanded else "false",
         )
+        s.setValue("ui/check_updates", "true" if self.check_updates else "false")
+        s.setValue("ui/update_channel", self.update_channel)
 
         s.setValue("metadata/tmdb_api_key", self.tmdb_api_key)
         s.setValue("metadata/tmdb_bearer_token", self.tmdb_bearer_token)
@@ -1306,6 +1321,17 @@ class AppConfig:
 
     def save_to_ini(self) -> None:
         write_ini_settings(self.to_ini_sections())
+
+    def save_last_update_check(self, timestamp: float, latest_version: str = "", channel: str = "") -> None:
+        """Mémorise l'horodatage, la version trouvée et le canal de la dernière vérification."""
+        self.last_update_check = timestamp
+        self.last_update_version = latest_version
+        self.last_update_channel = channel
+        self._settings.setValue("ui/last_update_check", timestamp)
+        self._settings.setValue("ui/last_update_version", latest_version)
+        self._settings.setValue("ui/last_update_channel", channel)
+        self._settings.sync()
+        _sanitize_windows_ini_file(_INI_PATH)
 
     def save_geometry(self, geometry: bytes) -> None:
         self._settings.setValue("ui/geometry", geometry)
@@ -1474,6 +1500,8 @@ class AppConfig:
                 "startup_panel": self.startup_panel,
                 "startup_menu_compact": self.startup_menu_compact,
                 "startup_logs_expanded": self.startup_logs_expanded,
+                "check_updates": self.check_updates,
+                "update_channel": self.update_channel,
             },
             "metadata": {
                 "tmdb_api_key": self.tmdb_api_key,

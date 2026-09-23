@@ -4602,5 +4602,81 @@
   "Algorithme appliqué pour modifier la cadence audio. 'auto' discrimine acoustiquement le pitch et la hauteur spectrale (recommandé) ; 'atempo' préserve la tonalité existante ; 'asetrate' applique la variation de vitesse naturelle (puriste PAL).": {
     "fra": "Algorithme appliqué pour modifier la cadence audio. 'auto' discrimine acoustiquement le pitch et la hauteur spectrale (recommandé) ; 'atempo' préserve la tonalité existante ; 'asetrate' applique la variation de vitesse naturelle (puriste PAL).",
     "eng": "Algorithm used to modify audio cadence. 'auto' acoustically discriminates pitch and spectral height (recommended); 'atempo' preserves the existing pitch; 'asetrate' applies natural speed variation (purist PAL)."
+  },
+  "Vérifier les mises à jour au démarrage": {
+    "fra": "Vérifier les mises à jour au démarrage",
+    "eng": "Check for updates at startup"
+  },
+  "Interroge GitHub (au plus une fois par 24 h) et signale une nouvelle version dans le menu latéral.": {
+    "fra": "Interroge GitHub (au plus une fois par 24 h) et signale une nouvelle version dans le menu latéral.",
+    "eng": "Queries GitHub (at most once every 24 h) and shows a new version in the sidebar."
+  },
+  "Nouvelle version disponible : v{version}": {
+    "fra": "Nouvelle version disponible : v{version}",
+    "eng": "New version available: v{version}"
+  },
+  "Nouvelle version disponible : v{version} — {url}": {
+    "fra": "Nouvelle version disponible : v{version} — {url}",
+    "eng": "New version available: v{version} — {url}"
+  },
+  "Mise à jour disponible": {
+    "fra": "Mise à jour disponible",
+    "eng": "Update available"
+  },
+  "Muxiveo v{version} est disponible (version actuelle : {current}).": {
+    "fra": "Muxiveo v{version} est disponible (version actuelle : {current}).",
+    "eng": "Muxiveo v{version} is available (current version: {current})."
+  },
+  "Installer": {
+    "fra": "Installer",
+    "eng": "Install"
+  },
+  "Mise à jour manuelle : {command}": {
+    "fra": "Mise à jour manuelle : {command}",
+    "eng": "Manual update: {command}"
+  },
+  "Voir la release": {
+    "fra": "Voir la release",
+    "eng": "View release"
+  },
+  "Plus tard": {
+    "fra": "Plus tard",
+    "eng": "Later"
+  },
+  "Mise à jour": {
+    "fra": "Mise à jour",
+    "eng": "Update"
+  },
+  "Une opération est en cours : attendez sa fin avant d'installer la mise à jour.": {
+    "fra": "Une opération est en cours : attendez sa fin avant d'installer la mise à jour.",
+    "eng": "An operation is running: wait for it to finish before installing the update."
+  },
+  "Téléchargement de Muxiveo v{version}…": {
+    "fra": "Téléchargement de Muxiveo v{version}…",
+    "eng": "Downloading Muxiveo v{version}…"
+  },
+  "Mise à jour annulée.": {
+    "fra": "Mise à jour annulée.",
+    "eng": "Update cancelled."
+  },
+  "Canal de mise à jour": {
+    "fra": "Canal de mise à jour",
+    "eng": "Update channel"
+  },
+  "Stable : releases publiées depuis main. Unstable : pré-versions de développement (devel-cli), plus récentes mais moins testées.": {
+    "fra": "Stable : releases publiées depuis main. Unstable : pré-versions de développement (devel-cli), plus récentes mais moins testées.",
+    "eng": "Stable: releases published from main. Unstable: development pre-releases (devel-cli), newer but less tested."
+  },
+  "Stable": {
+    "fra": "Stable",
+    "eng": "Stable"
+  },
+  "Unstable": {
+    "fra": "Unstable",
+    "eng": "Unstable"
+  },
+  "Pré-version de développement (canal unstable) : moins testée qu'une release stable.": {
+    "fra": "Pré-version de développement (canal unstable) : moins testée qu'une release stable.",
+    "eng": "Development pre-release (unstable channel): less tested than a stable release."
   }
 }

@@ -6,6 +6,7 @@
 # Python
 # ---------------------------------------------------------------------------
 __pycache__/
+core/_build_version.py
 *.py[cod]
 *$py.class
 *.pyo
@@ -120,5 +121,5 @@ tools/*
 !scripts/*.md
 !docs/*.md
 !docs/**/*.md
-
 audit_*
+!audit_mkv.py

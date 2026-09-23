@@ -26,6 +26,7 @@ Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans ini
 | `inspect --config-template` | génère un template JSON de départ |
 | `schema` | affiche le schéma JSON public du contrat CLI |
 | `tools` | affiche en JSON les chemins d'outils effectivement résolus par Muxiveo |
+| `version [--check] [--channel stable\|unstable]` | affiche la version ; `--check` la compare à la dernière release du canal (stable = `main`, unstable = pré-versions `devel-cli`) |
 | `validate` | valide un job/template sans exécuter ffmpeg |
 | `preview` | affiche la commande ffmpeg prévue |
 | `remux` | exécute un remux headless |
@@ -46,6 +47,8 @@ Muxiveo-cli inspect source.mkv --config-template --output sortie.mkv
 Muxiveo-cli schema --output Muxiveo-cli.schema.json
 Muxiveo-cli schema --version decision-profile
 Muxiveo-cli tools
+Muxiveo-cli version --check --log-format jsonl
+Muxiveo-cli version --check --channel unstable
 Muxiveo-cli preview --config docs/cli/middle.json
 Muxiveo-cli preview --config docs/cli/middle.json --json
 Muxiveo-cli validate --config docs/cli/middle.json --json
@@ -646,6 +649,7 @@ Muxiveo-cli batch --template t.json --input-dir Serie --output-dir out --verbose
 | 5 | sortie existante sans `--force` |
 | 6 | echec workflow |
 | 7 | batch partiellement echoue |
+| 8 | `version --check` : mise a jour disponible |
 
 ## Batch JSON Lines
 
