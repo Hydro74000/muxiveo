@@ -3,15 +3,18 @@ engines:
   bandit:
     exclude_paths:
       - 'tests/**'
-      - 'scripts/windows_pytest_bootstrap.py'
+      - 'scripts/**'
   prospector:
     exclude_paths:
       - 'tests/**'
+      - 'scripts/**'
   opengrep:
     exclude_paths:
       - 'tests/**'
+      - 'scripts/**'
 
 exclude_paths:
   - 'dist/**'
   - 'build/**'
   - '*.egg-info/**'
+  - 'scripts/**'

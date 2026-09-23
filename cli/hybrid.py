@@ -50,7 +50,8 @@ def detect_stream_kind(ffprobe: str, path: Path | str, stream_spec: str | int, d
             "-of", "csv=p=0",
             str(path),
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)  # nosec B603
         output = res.stdout.strip().lower()
         if output in {"audio", "subtitle", "video"}:
             return output

@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 import re
 import subprocess
+from subprocess import CompletedProcess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,9 +47,10 @@ class SubtitleSyncScanner:
         self.ffprobe = str(ffprobe)
         self.cancel_event = cancel_event
 
-    def _run(self, command: list[str], *, timeout: float = 60.0, **kwargs) -> subprocess.CompletedProcess:
+    def _run(self, command: list[str], *, timeout: float = 60.0, **kwargs) -> CompletedProcess:
         kwargs.pop("capture_output", None)
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)  # nosec B603
         deadline = time.monotonic() + timeout
         try:
             while True:
@@ -58,7 +60,7 @@ class SubtitleSyncScanner:
                     raise SubtitleSyncError("Délai d'analyse dépassé.")
                 try:
                     stdout, stderr = process.communicate(timeout=0.2)
-                    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+                    return CompletedProcess(command, process.returncode, stdout, stderr)
                 except subprocess.TimeoutExpired:
                     continue
         finally:

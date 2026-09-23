@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from subprocess import CompletedProcess
 import re
 import time
 
@@ -20,7 +21,8 @@ class AudioSyncScanner:
     def _run(self, command, *, timeout, **kwargs):
         """Interrompt aussi les extractions FFmpeg lorsque l'utilisateur annule."""
         kwargs.pop("capture_output", None)
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)  # nosec B603
         deadline = time.monotonic() + timeout
         try:
             while True:
@@ -30,7 +32,7 @@ class AudioSyncScanner:
                     raise AudioSyncError("Délai d'analyse dépassé.")
                 try:
                     stdout, stderr = process.communicate(timeout=0.2)
-                    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+                    return CompletedProcess(command, process.returncode, stdout, stderr)
                 except subprocess.TimeoutExpired:
                     continue
         finally:

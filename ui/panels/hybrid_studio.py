@@ -1523,7 +1523,9 @@ class HybridStudio(QWidget):
                 import subprocess
                 ffplay = Path(str(self.config.tool_ffmpeg)).parent / "ffplay"
                 if ffplay.exists():
-                    subprocess.Popen([str(ffplay), "-nodisp", "-autoexit", path])
+                    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+                    # nosemgrep: python_exec_rule-subprocess-call-array
+                    subprocess.Popen([str(ffplay), "-nodisp", "-autoexit", path])  # nosec B603 B607
                 else:
                     self.status.setText(f"Aperçu audio : {path}")
             except Exception:

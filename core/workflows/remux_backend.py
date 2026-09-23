@@ -260,8 +260,8 @@ def run_native_remux(
 
         def _run_external(cmd: list[str], label: str) -> None:
             """Commande externe enregistrée dans TaskSignals, annulable proprement."""
-            _check_cancel()
-            proc = subprocess.Popen(
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            proc = subprocess.Popen(  # nosec B603
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,

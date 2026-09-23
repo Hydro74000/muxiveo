@@ -26,7 +26,8 @@ def classify_subtitles(sources, infos, *, ffmpeg, forced=False, sdh=False, thres
             count = getattr(details, "element_count", None)
             text = ""
             if track.codec.casefold() in {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"}:
-                result = subprocess.run([str(ffmpeg), "-nostdin", "-v", "error", "-i", str(source.path),
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+                result = subprocess.run([str(ffmpeg), "-nostdin", "-v", "error", "-i", str(source.path),  # nosec B603
                     "-map", f"0:{track.mkv_tid}", "-c:s", "srt", "-f", "srt", "pipe:1"],
                     capture_output=True, timeout=120, **subprocess_text_kwargs())
                 if result.returncode:

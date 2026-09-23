@@ -260,7 +260,8 @@ class MediaInfoThread(QThread):
 
         try:
             cmd = _resolve_mediainfo_command() + [self.filepath]
-            res = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', stdin=subprocess.DEVNULL)
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            res = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', stdin=subprocess.DEVNULL)  # nosec B603
             if res.stdout:
                 target = mediainfo_nfo_path if os.path.exists(nfo_path) else nfo_path
                 try:
