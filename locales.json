@@ -4574,5 +4574,33 @@
   "Algorithme appliqué pour modifier la cadence audio. 'atempo' préserve la hauteur originale des voix et musiques (recommandé de nos jours) ; 'asetrate' applique la variation de tonalité naturelle liée à la vitesse (puriste PAL).": {
     "fra": "Algorithme appliqué pour modifier la cadence audio. 'atempo' préserve la hauteur originale des voix et musiques (recommandé de nos jours) ; 'asetrate' applique la variation de tonalité naturelle liée à la vitesse (puriste PAL).",
     "eng": "Algorithm used to modify audio cadence. 'atempo' preserves the original pitch of voices and music (recommended nowadays); 'asetrate' applies the natural pitch shift linked to speed (purist PAL)."
+  },
+  "Auto (pitch / tonalité)": {
+    "fra": "Auto (pitch / tonalité)",
+    "eng": "Auto (pitch / tone)"
+  },
+  "Conversion Cadence :": {
+    "fra": "Conversion Cadence :",
+    "eng": "Cadence Conversion:"
+  },
+  "Auto (détecté : {m})": {
+    "fra": "Auto (détecté : {m})",
+    "eng": "Auto (detected: {m})"
+  },
+  "Auto (détection pitch)": {
+    "fra": "Auto (détection pitch)",
+    "eng": "Auto (pitch detection)"
+  },
+  "asetrate (puriste PAL / pitch naturel)": {
+    "fra": "asetrate (puriste PAL / pitch naturel)",
+    "eng": "asetrate (purist PAL / natural pitch)"
+  },
+  "atempo (tonalité préservée)": {
+    "fra": "atempo (tonalité préservée)",
+    "eng": "atempo (pitch-preserved)"
+  },
+  "Algorithme appliqué pour modifier la cadence audio. 'auto' discrimine acoustiquement le pitch et la hauteur spectrale (recommandé) ; 'atempo' préserve la tonalité existante ; 'asetrate' applique la variation de vitesse naturelle (puriste PAL).": {
+    "fra": "Algorithme appliqué pour modifier la cadence audio. 'auto' discrimine acoustiquement le pitch et la hauteur spectrale (recommandé) ; 'atempo' préserve la tonalité existante ; 'asetrate' applique la variation de vitesse naturelle (puriste PAL).",
+    "eng": "Algorithm used to modify audio cadence. 'auto' acoustically discriminates pitch and spectral height (recommended); 'atempo' preserves the existing pitch; 'asetrate' applies natural speed variation (purist PAL)."
   }
 }

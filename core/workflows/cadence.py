@@ -1,4 +1,4 @@
-"""Module de détection et conversion de cadence audio/vidéo (PAL 25 FPS ↔ Cinéma 23.976/24 FPS).
+"""Module de détection et conversion de cadence audio/vidéo (PAL 25 FPS <-> Cinéma 23.976/24 FPS).
 
 Fournit :
 - Détection A : par les métadonnées vidéo (master vs donneur).
@@ -25,8 +25,9 @@ class CadenceType(str, Enum):
 
 
 class CadenceAudioMethod(str, Enum):
-    ATEMPO = "atempo"      # Préservation de la tonalité (moderne, recommandé par défaut)
-    ASETRATE = "asetrate"  # Hauteur cinéma d'origine avec variation de pitch (puriste/historique)
+    AUTO = "auto"          # Détection automatique par analyse de pitch et spectrale
+    ATEMPO = "atempo"      # Préservation de la tonalité (time-stretching)
+    ASETRATE = "asetrate"  # Hauteur cinéma d'origine avec variation de pitch (ré-échantillonnage)
 
 
 @dataclass(frozen=True)
@@ -45,7 +46,7 @@ class CadenceMismatch:
         if not self.description:
             percent = (self.speed_factor - 1.0) * 100.0
             sign = "+" if percent >= 0 else ""
-            desc = f"{self.source_fps:.3f} → {self.target_fps:.3f} FPS ({sign}{percent:.1f} %)"
+            desc = f"{self.source_fps:.3f} -> {self.target_fps:.3f} FPS ({sign}{percent:.1f} %)"
             object.__setattr__(self, "description", desc)
 
     @property
@@ -194,19 +195,19 @@ def detect_cadence_from_metadata(
             cadence_type = CadenceType.FILM_23976_TO_PAL
 
     if cadence_type == CadenceType.PAL_TO_FILM_23976:
-        description = "PAL 25 → 23.976 FPS (+4,1 %)"
+        description = "PAL 25 -> 23.976 FPS (+4,1 %)"
     elif cadence_type == CadenceType.PAL_TO_FILM_24:
-        description = "PAL 25 → 24.000 FPS (+4,0 %)"
+        description = "PAL 25 -> 24.000 FPS (+4,0 %)"
     elif cadence_type == CadenceType.FILM_23976_TO_PAL:
-        description = "23.976 → PAL 25 FPS (-4,1 %)"
+        description = "23.976 -> PAL 25 FPS (-4,1 %)"
     elif cadence_type == CadenceType.FILM_24_TO_PAL:
-        description = "24.000 → PAL 25 FPS (-4,0 %)"
+        description = "24.000 -> PAL 25 FPS (-4,0 %)"
     else:
         stretch_pct = (1.0 / speed_factor - 1.0) * 100.0
         sign = "+" if stretch_pct >= 0 else ""
         desc_from = f"{d_fps:.3f}"
         desc_to = f"{m_fps:.3f}"
-        description = f"{desc_from} → {desc_to} FPS ({sign}{stretch_pct:.1f} %)"
+        description = f"{desc_from} -> {desc_to} FPS ({sign}{stretch_pct:.1f} %)"
 
     # Notation de fraction exacte pour atempo
     if speed_ratio == Fraction(24000, 25025):
@@ -277,7 +278,7 @@ def detect_cadence_from_acoustic_samples(
             speed_factor=24000.0 / 25025.0,
             confidence=round(min(1.0, float(r2)), 3),
             detection_method="acoustic_slope",
-            description="PAL 25 → 23.976 FPS (+4,1 %)",
+            description="PAL 25 -> 23.976 FPS (+4,1 %)",
             speed_ratio="24000/25025",
         )
 
@@ -289,7 +290,7 @@ def detect_cadence_from_acoustic_samples(
             speed_factor=25025.0 / 24000.0,
             confidence=round(min(1.0, float(r2)), 3),
             detection_method="acoustic_slope",
-            description="23.976 → PAL 25 FPS (-4,1 %)",
+            description="23.976 -> PAL 25 FPS (-4,1 %)",
             speed_ratio="25025/24000",
         )
 
@@ -298,10 +299,10 @@ def detect_cadence_from_acoustic_samples(
 
 def build_cadence_audio_filter(
     mismatch: CadenceMismatch,
-    method: CadenceAudioMethod | str = CadenceAudioMethod.ATEMPO,
+    method: CadenceAudioMethod | str = CadenceAudioMethod.AUTO,
     sample_rate: int = 48000,
 ) -> str:
-    """Génère la chaîne de filtres FFmpeg adaptée selon la méthode choisie (atempo vs asetrate)."""
+    """Génère la chaîne de filtres FFmpeg adaptée selon la méthode choisie (atempo vs asetrate vs auto)."""
     method_str = method.value if isinstance(method, CadenceAudioMethod) else str(method).lower()
     speed = mismatch.speed_factor
 

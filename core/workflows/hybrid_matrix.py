@@ -255,7 +255,7 @@ class HybridRecipe:
     sync_subtitles: str = "mirror"  # "mirror" ou "none"
     crossfade_ms: int = 80
     cadence_auto_apply: bool = True
-    cadence_audio_method: str = "atempo"
+    cadence_audio_method: str = "auto"
     output_tag: str = "Hybrid"
 
     @classmethod
@@ -272,7 +272,7 @@ class HybridRecipe:
         recipe.sync_subtitles = getattr(remux_config, "sync_subtitles", "mirror") or "mirror"
         recipe.crossfade_ms = getattr(remux_config, "crossfade_ms", 80) or 80
         recipe.cadence_auto_apply = getattr(remux_config, "cadence_auto_apply", True)
-        recipe.cadence_audio_method = getattr(remux_config, "cadence_audio_method", "atempo") or "atempo"
+        recipe.cadence_audio_method = getattr(remux_config, "cadence_audio_method", "auto") or "auto"
 
         # Pistes du master retenues
         if master_source:
@@ -654,7 +654,7 @@ def prepare_matrix_episode(
         # Détection de cadence A (métadonnées vidéo entre master et donneur)
         cadence_mismatch = None
         cadence_auto_apply = getattr(recipe, "cadence_auto_apply", True)
-        cadence_audio_method = getattr(recipe, "cadence_audio_method", "atempo") or "atempo"
+        cadence_audio_method = getattr(recipe, "cadence_audio_method", "auto") or "auto"
 
         m_fps = _extract_source_video_fps(master_source)
         d_fps = _extract_source_video_fps(donor_source)

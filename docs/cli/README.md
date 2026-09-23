@@ -669,9 +669,10 @@ cochée par défaut.
 
 - `--auto-sync` : Déclenche l'analyse acoustique ou par sous-titres à la volée.
 - `--cadence-auto` / `--no-cadence-auto` : Active (par défaut) la détection automatique des écarts de cadence (ex: PAL 25 FPS ↔ 23.976 / 24 FPS) à partir des métadonnées vidéo des sources.
-- `--cadence-method {atempo,asetrate}` : Méthode audio de conversion de cadence :
-  - `atempo` (défaut) : préserve la hauteur tonale originale.
-  - `asetrate` : applique la variation naturelle de hauteur liée au changement de vitesse.
+- `--cadence-method {auto,atempo,asetrate}` : Méthode audio de conversion de cadence :
+  - `auto` (défaut) : analyse acoustique automatique de la hauteur tonale (F0 et spectre Welch) pour détecter si l'audio d'origine a subi une accélération PAL non compensée (choisit `asetrate`) ou si la tonalité originale a été préservée (choisit `atempo`).
+  - `atempo` : préserve la hauteur tonale existante (*time-stretch*).
+  - `asetrate` : applique la variation naturelle de hauteur liée au changement de vitesse (puriste PAL / ré-échantillonnage).
 - `--detect-cuts` : Active la détection des coupures intermédiaires (multi-segments).
 - `--drift-threshold-ms <ms>` : Seuil de dérive pour découper en plusieurs segments (défaut : 25 ms).
 - `--calibration <fichier.json>` : Charge une calibration explicite enregistrée.

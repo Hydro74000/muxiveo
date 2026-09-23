@@ -11,13 +11,16 @@ import numpy as np
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QPushButton,
+    QRadioButton,
     QScrollBar,
     QTableWidget,
     QTableWidgetItem,
@@ -185,6 +188,81 @@ class SyncStudioDialog(QDialog):
         )
         info_lbl.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
         hc_layout.addWidget(info_lbl)
+
+        # Section Cadence & Hauteur tonale (Pitch)
+        if self.current_calibration.cadence_mismatch and getattr(self.current_calibration.cadence_mismatch, "cadence_type", None) not in (None, "none", "NONE"):
+            mismatch = self.current_calibration.cadence_mismatch
+            pitch = getattr(self.current_calibration, "cadence_pitch_analysis", None)
+
+            cadence_frame = QFrame()
+            cadence_frame.setStyleSheet(f"""
+                QFrame {{
+                    background: {_C.BG_DEEP};
+                    border: 1px solid {_C.BORDER};
+                    border-radius: {_scale(6)}px;
+                }}
+            """)
+            cad_layout = QVBoxLayout(cadence_frame)
+            cad_layout.setContentsMargins(_scale(8), _scale(6), _scale(8), _scale(6))
+            cad_layout.setSpacing(_scale(4))
+
+            top_row = QHBoxLayout()
+            lbl_cad_title = QLabel(f"<b>{translate_text('Conversion Cadence :')}</b> {mismatch.description}")
+            lbl_cad_title.setStyleSheet(f"color: {_C.TEXT_PRI}; font-size: {_font_px(11)}px;")
+            top_row.addWidget(lbl_cad_title)
+            top_row.addStretch()
+
+            best_method = "atempo"
+            if pitch:
+                f0_ref = getattr(pitch, "f0_ref_hz", 0.0) or (pitch.get("f0_ref_hz", 0.0) if isinstance(pitch, dict) else 0.0)
+                f0_don = getattr(pitch, "f0_donor_hz", 0.0) or (pitch.get("f0_donor_hz", 0.0) if isinstance(pitch, dict) else 0.0)
+                shift_semi = getattr(pitch, "pitch_shift_semitones", 0.0) or (pitch.get("pitch_shift_semitones", 0.0) if isinstance(pitch, dict) else 0.0)
+                c_ase = getattr(pitch, "spectral_corr_asetrate", 0.0) or (pitch.get("spectral_corr_asetrate", 0.0) if isinstance(pitch, dict) else 0.0)
+                c_ate = getattr(pitch, "spectral_corr_atempo", 0.0) or (pitch.get("spectral_corr_atempo", 0.0) if isinstance(pitch, dict) else 0.0)
+                best_method = getattr(pitch, "selected_method", "atempo") or (pitch.get("selected_method", "atempo") if isinstance(pitch, dict) else "atempo")
+
+                metric_lbl = QLabel(
+                    f"Pitch : {shift_semi:+.2f} demi-ton (F0 : {f0_ref:.0f} Hz vs {f0_don:.0f} Hz) "
+                    f"• Corr. spectrale : asetrate {c_ase:.2f} | atempo {c_ate:.2f} "
+                    f"• Recommandé : <b>{best_method}</b>"
+                )
+                metric_lbl.setStyleSheet(f"color: {_C.OK}; font-size: {_font_px(11)}px;")
+                top_row.addWidget(metric_lbl)
+
+            cad_layout.addLayout(top_row)
+
+            # Sélecteur de méthode (Radio buttons)
+            radio_row = QHBoxLayout()
+            radio_row.setSpacing(_scale(12))
+            lbl_choose = QLabel(translate_text("Méthode audio :"))
+            lbl_choose.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
+            radio_row.addWidget(lbl_choose)
+
+            self.bg_cadence = QButtonGroup(self)
+            current_method = getattr(self.current_calibration, "cadence_audio_method", "auto") or "auto"
+
+            auto_label = translate_text("Auto (détecté : {m})", m=best_method) if pitch else translate_text("Auto (détection pitch)")
+            self.rb_auto = QRadioButton(auto_label)
+            self.rb_asetrate = QRadioButton(translate_text("asetrate (puriste PAL / pitch naturel)"))
+            self.rb_atempo = QRadioButton(translate_text("atempo (tonalité préservée)"))
+
+            for rb in (self.rb_auto, self.rb_asetrate, self.rb_atempo):
+                rb.setStyleSheet(f"color: {_C.TEXT_PRI}; font-size: {_font_px(11)}px;")
+                self.bg_cadence.addButton(rb)
+                radio_row.addWidget(rb)
+
+            if current_method == "asetrate":
+                self.rb_asetrate.setChecked(True)
+            elif current_method == "atempo":
+                self.rb_atempo.setChecked(True)
+            else:
+                self.rb_auto.setChecked(True)
+
+            self.bg_cadence.buttonClicked.connect(self._on_cadence_method_changed)
+            radio_row.addStretch()
+            cad_layout.addLayout(radio_row)
+            hc_layout.addWidget(cadence_frame)
+
         vbox.addWidget(header_card)
 
         # ── Carte 2 : Forme d'onde avec Zoom & Navigation ─────────────────────
@@ -851,6 +929,20 @@ class SyncStudioDialog(QDialog):
         self.listen_btn.setText(translate_text("Pré-écoute calée (15s)"))
         self.listen_btn.setIcon(_play_icon())
         self.listen_status.setText("")
+
+    def _on_cadence_method_changed(self) -> None:
+        if hasattr(self, "rb_asetrate") and self.rb_asetrate.isChecked():
+            new_method = "asetrate"
+        elif hasattr(self, "rb_atempo") and self.rb_atempo.isChecked():
+            new_method = "atempo"
+        else:
+            new_method = "auto"
+
+        self._stop_playback()
+        self.current_calibration = replace(
+            self.current_calibration,
+            cadence_audio_method=new_method,
+        )
 
     def result_calibration(self) -> tuple[SyncCalibration, int]:
         return self.current_calibration, round(self.current_calibration.segments[0].shift_ms)

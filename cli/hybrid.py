@@ -92,7 +92,7 @@ def cmd_sync_scan(args, config, logger):
         cadence_auto = getattr(args, "cadence_auto", None)
         if cadence_auto is None:
             cadence_auto = getattr(config, "sync_cadence_auto_apply", True)
-        cadence_method = getattr(args, "cadence_method", None) or getattr(config, "sync_cadence_audio_method", "atempo") or "atempo"
+        cadence_method = getattr(args, "cadence_method", None) or getattr(config, "sync_cadence_audio_method", "auto") or "auto"
 
         if cadence_auto:
             try:
@@ -187,7 +187,7 @@ def perform_dynamic_sync(
         cadence_auto = getattr(options, "cadence_auto", None)
         if cadence_auto is None:
             cadence_auto = getattr(config, "sync_cadence_auto_apply", True)
-        cadence_method = getattr(options, "cadence_method", None) or getattr(config, "sync_cadence_audio_method", "atempo") or "atempo"
+        cadence_method = getattr(options, "cadence_method", None) or getattr(config, "sync_cadence_audio_method", "auto") or "auto"
 
         if cadence_auto:
             from core.workflows.hybrid_matrix import _extract_source_video_fps
@@ -318,7 +318,7 @@ def prepare_pair(pair, args, config, logger):
     cadence_auto = getattr(args, "cadence_auto", None)
     if cadence_auto is None:
         cadence_auto = getattr(config, "sync_cadence_auto_apply", True)
-    cadence_method = getattr(args, "cadence_method", None) or getattr(config, "sync_cadence_audio_method", "atempo") or "atempo"
+    cadence_method = getattr(args, "cadence_method", None) or getattr(config, "sync_cadence_audio_method", "auto") or "auto"
 
     if cadence_auto and len(result.sources) >= 2:
         from core.workflows.hybrid_matrix import _extract_source_video_fps

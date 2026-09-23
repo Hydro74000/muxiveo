@@ -852,8 +852,8 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
                 "attr": "sync_cadence_audio_method",
                 "kind": "choice",
                 "label": "Méthode de conversion de cadence audio",
-                "description": "Algorithme appliqué pour modifier la cadence audio. 'atempo' préserve la hauteur originale des voix et musiques (recommandé de nos jours) ; 'asetrate' applique la variation de tonalité naturelle liée à la vitesse (puriste PAL).",
-                "options": (("atempo", "Préservation de la tonalité (atempo - recommandé)"), ("asetrate", "Variation de vitesse naturelle (asetrate - puriste PAL)")),
+                "description": "Algorithme appliqué pour modifier la cadence audio. 'auto' discrimine acoustiquement le pitch et la hauteur spectrale (recommandé) ; 'atempo' préserve la tonalité existante ; 'asetrate' applique la variation de vitesse naturelle (puriste PAL).",
+                "options": (("auto", "Détection automatique du pitch (auto - recommandé)"), ("atempo", "Préservation de la tonalité (atempo)"), ("asetrate", "Variation de vitesse naturelle (asetrate - puriste PAL)")),
             },
         ),
     },
@@ -1132,7 +1132,7 @@ class AppConfig:
             "sync",
             "cadence_audio_method",
             "sync/cadence_audio_method",
-            "atempo",
+            "auto",
         )
         # [matroska] mux_backend — réglage global unique pilotant le muxage
         # final des workflows remux ET encode. Priorité : choix explicite du

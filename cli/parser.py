@@ -24,13 +24,13 @@ def _add_sync_options(parser):
         "--cadence-auto",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Détection et conversion automatique de cadence PAL ↔ Cinéma.",
+        help="Détection et conversion automatique de cadence PAL <-> Cinéma.",
     )
     parser.add_argument(
         "--cadence-method",
-        choices=("atempo", "asetrate"),
-        default="atempo",
-        help="Méthode de conversion audio pour cadence : atempo (tonalité préservée, défaut) ou asetrate (hauteur naturelle / pitch shift).",
+        choices=("auto", "atempo", "asetrate"),
+        default="auto",
+        help="Méthode de conversion audio pour cadence : auto (analyse acoustique du pitch, défaut), atempo (tonalité préservée) ou asetrate (hauteur naturelle / pitch shift).",
     )
     parser.add_argument("--export-workflow", help="Sauvegarder le workflow exact sans exécuter.")
 

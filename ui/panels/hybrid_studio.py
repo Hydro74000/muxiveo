@@ -557,9 +557,10 @@ class HybridStudio(QWidget):
         cadence_row.addWidget(lbl_method)
 
         self.cadence_method_combo = QComboBox()
+        self.cadence_method_combo.addItem(translate_text("Auto (pitch / tonalité)"), "auto")
         self.cadence_method_combo.addItem(translate_text("Préservation tonalité (atempo)"), "atempo")
         self.cadence_method_combo.addItem(translate_text("Hauteur naturelle (asetrate)"), "asetrate")
-        default_method = getattr(self.config, "sync_cadence_audio_method", "atempo") or "atempo"
+        default_method = getattr(self.config, "sync_cadence_audio_method", "auto") or "auto"
         idx = self.cadence_method_combo.findData(default_method)
         if idx >= 0:
             self.cadence_method_combo.setCurrentIndex(idx)
@@ -988,7 +989,7 @@ class HybridStudio(QWidget):
         recipe.sync_mode = self.mode.currentData() or "physical"
         recipe.sync_subtitles = "mirror" if self.mirror.isChecked() else "none"
         recipe.cadence_auto_apply = self.cadence_auto_apply.isChecked()
-        recipe.cadence_audio_method = self.cadence_method_combo.currentData() or "atempo"
+        recipe.cadence_audio_method = self.cadence_method_combo.currentData() or "auto"
         self.recipe = recipe
 
         summary = f"Modèle actif : Vidéo Master ({'Oui' if keep_video else 'Non'}), "
@@ -1072,7 +1073,7 @@ class HybridStudio(QWidget):
             "--sync-subtitles", "mirror" if self.mirror.isChecked() else "none",
         ]
         self.recipe.cadence_auto_apply = self.cadence_auto_apply.isChecked()
-        self.recipe.cadence_audio_method = self.cadence_method_combo.currentData() or "atempo"
+        self.recipe.cadence_audio_method = self.cadence_method_combo.currentData() or "auto"
         try:
             if not self.output.text().strip():
                 raise ValueError(translate_text("Choisir un dossier de sortie."))
@@ -1253,7 +1254,7 @@ class HybridStudio(QWidget):
             item.setForeground(QColor(_C.ACCENT))
 
         self.recipe.cadence_auto_apply = self.cadence_auto_apply.isChecked()
-        self.recipe.cadence_audio_method = self.cadence_method_combo.currentData() or "atempo"
+        self.recipe.cadence_audio_method = self.cadence_method_combo.currentData() or "auto"
 
         def task():
             from cli.logging import Logger
