@@ -278,7 +278,8 @@ def _macos_show_homebrew_required_popup() -> None:
         'Installez-le depuis https://brew.sh puis relancez Muxiveo." as critical'
     )
     try:
-        subprocess.run(
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        subprocess.run(  # nosec B603 B607
             ["osascript", "-e", script],
             check=False,
             capture_output=True,

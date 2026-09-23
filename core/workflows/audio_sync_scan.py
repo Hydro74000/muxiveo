@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-from subprocess import CompletedProcess
 import re
 import time
 
@@ -32,7 +31,8 @@ class AudioSyncScanner:
                     raise AudioSyncError("Délai d'analyse dépassé.")
                 try:
                     stdout, stderr = process.communicate(timeout=0.2)
-                    return CompletedProcess(command, process.returncode, stdout, stderr)
+                    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+                    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
                 except subprocess.TimeoutExpired:
                     continue
         finally:

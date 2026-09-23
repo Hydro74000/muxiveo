@@ -161,7 +161,7 @@ def _resolve_mediainfo_command():
         cfg_tool = AppConfig().tool_mediainfo
         if cfg_tool and os.path.isfile(cfg_tool) and os.access(cfg_tool, os.X_OK):
             return [cfg_tool]
-    except Exception:
+    except Exception:  # nosec B110
         pass
 
     candidates = [

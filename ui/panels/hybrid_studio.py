@@ -263,7 +263,7 @@ class ProfileSelector(QWidget):
                 name = str(p.get("name", "")).strip()
                 if name:
                     self.combo.addItem(f"Profil : {name}", name)
-        except Exception:
+        except Exception:  # nosec B110
             pass
 
         if self._custom_path:
@@ -1524,7 +1524,6 @@ class HybridStudio(QWidget):
                 ffplay = Path(str(self.config.tool_ffmpeg)).parent / "ffplay"
                 if ffplay.exists():
                     # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-                    # nosemgrep: python_exec_rule-subprocess-call-array
                     subprocess.Popen([str(ffplay), "-nodisp", "-autoexit", path])  # nosec B603 B607
                 else:
                     self.status.setText(f"Aperçu audio : {path}")

@@ -55,7 +55,7 @@ def detect_stream_kind(ffprobe: str, path: Path | str, stream_spec: str | int, d
         output = res.stdout.strip().lower()
         if output in {"audio", "subtitle", "video"}:
             return output
-    except Exception:
+    except Exception:  # nosec B110
         pass
     return default
 

@@ -1162,7 +1162,7 @@ class SyncRewriteService:
         from core.workflows.sync_calibration import SyncCalibration
         try:
             return shift_text(text, SyncCalibration.linear(offset_ms), suffix=".srt")
-        except Exception:
+        except Exception:  # nosec B110
             pass
         normalized = text.replace("\r\n", "\n").replace("\r", "\n")
         blocks = re.split(r"\n{2,}", normalized.strip())

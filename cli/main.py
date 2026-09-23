@@ -28,7 +28,7 @@ def _configure_io_encoding() -> None:
         if stream and hasattr(stream, "reconfigure"):
             try:
                 stream.reconfigure(encoding="utf-8", errors="replace")
-            except Exception:
+            except Exception:  # nosec B110
                 pass
 
 
