@@ -317,6 +317,7 @@ def test_verify_wine_pyside6_runtime_raises_with_missing_dlls(tmp_path):
              "run",
              return_value=subprocess.CompletedProcess(args=["wine"], returncode=1, stdout="", stderr=stderr),
          ):
+        text = ""
         try:
             package_mod._verify_wine_pyside6_runtime()
         except RuntimeError as exc:

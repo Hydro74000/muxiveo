@@ -120,3 +120,5 @@ tools/*
 !scripts/*.md
 !docs/*.md
 !docs/**/*.md
+
+audit_*

@@ -17,7 +17,7 @@ _TOOL_TEXT_ENCODING = "utf-8"
 _TOOL_TEXT_ERRORS = "replace"
 
 
-def subprocess_windows_no_window_kwargs() -> dict[str, Any]:
+def subprocess_windows_no_window_kwargs(*, include_stdin: bool = True) -> dict[str, Any]:
     """
     Return subprocess kwargs that prevent a console window from flashing on Windows.
 
@@ -27,8 +27,11 @@ def subprocess_windows_no_window_kwargs() -> dict[str, Any]:
     Sous Windows, évite aussi WinError 50 en mode GUI sans console.
 
     Safe to pass to both subprocess.run() and subprocess.Popen().
+    Set include_stdin=False when the caller provides their own stdin (e.g. pipe).
     """
-    kwargs: dict[str, Any] = {"stdin": subprocess.DEVNULL}
+    kwargs: dict[str, Any] = {}
+    if include_stdin:
+        kwargs["stdin"] = subprocess.DEVNULL
 
     if sys.platform != "win32":
         return kwargs

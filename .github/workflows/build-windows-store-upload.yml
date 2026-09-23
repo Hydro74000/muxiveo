@@ -32,9 +32,11 @@ jobs:
       - name: Determine version
         id: version
         shell: pwsh
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
-          if ("${{ github.event.inputs.version }}" -ne "") {
-            $ver = "${{ github.event.inputs.version }}"
+          if ($env:INPUT_VERSION -ne "") {
+            $ver = $env:INPUT_VERSION
           } else {
             $ver = python -c "from core.version import APP_VERSION; print(APP_VERSION)"
           }

@@ -344,7 +344,9 @@ class SettingsPanel(QWidget):
                 f"color:{_C.TEXT_SEC};font-size:{_font_px(11)}px;font-family:'JetBrains Mono',monospace;background:transparent;"
             )
 
-            def _sync_stepped(idx: int, *, s=slider, lbl=value_label, st=steps) -> None:
+            steps_tuple = tuple(steps)
+
+            def _sync_stepped(idx: int, *, s=slider, lbl=value_label, st=steps_tuple) -> None:
                 clamped = max(0, min(idx, len(st) - 1))
                 if clamped != idx:
                     s.blockSignals(True)

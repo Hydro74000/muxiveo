@@ -212,7 +212,7 @@ class NvenccPipeExecutor:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 cwd=str(cwd),
-                **subprocess_windows_no_window_kwargs(),
+                **subprocess_windows_no_window_kwargs(include_stdin=False),
             )
         except Exception:
             signals._unregister_proc(decode_proc)

@@ -341,7 +341,7 @@ def _is_ssl_error(exc: BaseException) -> bool:
     return False
 
 
-_TMDB_DEFAULT_BEARER_TOKEN = (
+_TMDB_DEFAULT_BEARER_TOKEN = (  # nosec B105  # Fallback public en best-effort
     "eyJhbGciOiJIUzI1NiJ9."
     "eyJhdWQiOiI3MWYxZWFlYTU3MmVlNmNhNTg0OTRmNzMxMjg5ODhhZiIs"
     "Im5iZiI6MTc3NTU3OTA1NS4yOTc5OTk5LCJzdWIiOiI2OWQ1MmZhZjMyZGYxMmRkOTZmOGE2NDYiLCJzY29wZXMiOlsiYXBpX3JlYWQiXSwidmVyc2lvbiI6MX0."

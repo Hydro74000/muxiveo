@@ -2013,7 +2013,14 @@ def _extract_deb_binary(archive_path: Path, binary_name: str, dest_dir: Path) ->
             if not data_tarball:
                 raise RuntimeError("No data.tar.* found inside .deb archive")
             with tarfile.open(data_tarball, "r:*") as tar:
-                tar.extractall(path=extract_dir)
+                if hasattr(tarfile, "data_filter"):
+                    tar.extractall(path=extract_dir, filter="data")
+                else:
+                    for member in tar.getmembers():
+                        resolved_target = (extract_dir / member.name).resolve()
+                        if not resolved_target.is_relative_to(extract_dir.resolve()):
+                            raise RuntimeError(f"Chemin d'archive dangereux détecté: {member.name}")
+                    tar.extractall(path=extract_dir)
         finally:
             os.chdir(cwd_backup)
     # Localise binary_name dans l'arborescence extraite (typiquement usr/bin/).
