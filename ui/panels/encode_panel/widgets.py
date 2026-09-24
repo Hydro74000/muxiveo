@@ -10,6 +10,7 @@ Public:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -589,6 +590,11 @@ class _AudioSourceDialog(QDialog):
 # Tableau des pistes audio
 # =============================================================================
 
+class _AudioOrderItem(QTableWidgetItem):
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        return self.data(Qt.ItemDataRole.UserRole) < other.data(Qt.ItemDataRole.UserRole)
+
+
 class _AudioTable(QTableWidget):
     """
     Tableau listant les pistes audio avec sélecteur codec + débit par ligne.
@@ -677,39 +683,56 @@ class _AudioTable(QTableWidget):
         default_codec: str = "copy",
         default_bitrate: int | None = None,
     ) -> None:
-        previous_settings: dict[object, list[tuple[str, int]]] = {}
+        # Les index persistants de Qt déplacent aussi les widgets de cellule
+        # pendant le tri. Conserver les lignes évite de recréer tous les
+        # sélecteurs de codec/débit à chaque clic dans le panneau remux.
+        previous: dict[object, list[dict]] = {}
         for data in self._row_data:
             key = data.get("track_entry_id") or (data.get("source_path"), data["track"].index)
-            codec = data["combo"].currentData() or default_codec
-            bitrate = data["bitrate"].value()
-            previous_settings.setdefault(key, []).append((codec, bitrate))
+            previous.setdefault(key, []).append(data)
 
-        self.blockSignals(True)
-        self._row_data = []
-        self._prev_lang = {}
-        self.setRowCount(0)
-        for entry in tracks:
-            track, color = entry[0], entry[1]
-            source_path = entry[2] if len(entry) > 2 else None
-            track_entry = entry[3] if len(entry) > 3 else None
-            track_entry_id = track_entry.entry_id if isinstance(track_entry, TrackEntry) else None
-            is_new = bool(getattr(track_entry, "is_new", False))
-            key = track_entry_id or (source_path, track.index)
-            codec = default_codec
-            bitrate = default_bitrate
-            saved_settings = previous_settings.get(key)
-            if saved_settings:
-                codec, bitrate = saved_settings.pop(0)
-            self._append_row(
-                track,
-                color,
-                codec,
-                bitrate,
-                source_path,
-                track_entry_id=track_entry_id,
-                is_new=is_new,
-            )
-        self.blockSignals(False)
+        blocked = self.blockSignals(True)
+        updates = self.updatesEnabled()
+        self.setUpdatesEnabled(False)
+        try:
+            desired = []
+            for entry in tracks:
+                track, color = entry[:2]
+                source_path = entry[2] if len(entry) > 2 else None
+                track_entry = entry[3] if len(entry) > 3 else None
+                entry_id = track_entry.entry_id if isinstance(track_entry, TrackEntry) else None
+                is_new = bool(getattr(track_entry, "is_new", False))
+                matches = previous.get(entry_id or (source_path, track.index), [])
+                data = matches.pop(0) if matches else None
+                codec = data["combo"].currentData() if data else default_codec
+                bitrate = data["bitrate"].value() if data else default_bitrate
+                # Un changement réel de format source exige de recalculer les
+                # choix de débit ; une simple édition langue/titre n'en a pas besoin.
+                if data is None or replace(data["track"], language=track.language, title=track.title) != track:
+                    self._append_row(track, color, codec, bitrate, source_path,
+                                     track_entry_id=entry_id, is_new=is_new)
+                    data = self._row_data[-1]
+                data.update(track=track, color=color, source_path=source_path, is_new=is_new)
+                desired.append(data)
+
+            retained = {id(data) for data in desired}
+            for row in range(len(self._row_data) - 1, -1, -1):
+                if id(self._row_data[row]) not in retained:
+                    self.removeRow(row)
+                    self._row_data.pop(row)
+            positions = {id(data): row for row, data in enumerate(desired)}
+            for row, data in enumerate(self._row_data):
+                self.item(row, self.COL_IDX).setData(Qt.ItemDataRole.UserRole, positions[id(data)])
+                self.item(row, self.COL_LANG).setText(data["track"].language or "")
+                self.item(row, self.COL_TITLE).setText(data["track"].title or "")
+                self.item(row, self.COL_SOURCE).setForeground(QBrush(QColor(data["color"])))
+            if any(a is not b for a, b in zip(self._row_data, desired)):
+                self.sortItems(self.COL_IDX, Qt.SortOrder.AscendingOrder)
+            self._row_data = desired
+            self._prev_lang = {row: data["track"].language or "" for row, data in enumerate(desired)}
+        finally:
+            self.blockSignals(blocked)
+            self.setUpdatesEnabled(updates)
         self._refresh_delete_buttons()
         self._adjust_height()
 
@@ -795,7 +818,10 @@ class _AudioTable(QTableWidget):
             it.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEditable)
             return it
 
-        self.setItem(row, self.COL_IDX,    _item(str(track.index)))
+        index_item = _AudioOrderItem(str(track.index))
+        index_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        index_item.setData(Qt.ItemDataRole.UserRole, row)
+        self.setItem(row, self.COL_IDX, index_item)
         self.setItem(row, self.COL_FORMAT, _item("  ".join(fmt_parts)))
         source_bitrate = _raw_source_bitrate_kbps(track)
         self.setItem(row, self.COL_SRC_BR, _item(str(source_bitrate) if source_bitrate is not None else "—"))

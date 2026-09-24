@@ -2017,6 +2017,11 @@ def _extract_deb_binary(archive_path: Path, binary_name: str, dest_dir: Path) ->
                     tar.extractall(path=extract_dir, filter="data")
                 else:
                     for member in tar.getmembers():
+                        # Sans data_filter, ne jamais matérialiser de liens ou
+                        # de fichiers spéciaux pouvant contourner le contrôle
+                        # des chemins des entrées suivantes.
+                        if not (member.isfile() or member.isdir()):
+                            raise RuntimeError(f"Type d'entrée d'archive dangereux détecté: {member.name}")
                         resolved_target = (extract_dir / member.name).resolve()
                         if not resolved_target.is_relative_to(extract_dir.resolve()):
                             raise RuntimeError(f"Chemin d'archive dangereux détecté: {member.name}")

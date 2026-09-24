@@ -46,7 +46,7 @@ from ..writer import MatroskaWriteProgress, MatroskaWriter
 from ..validation import MatroskaPacketValidation
 
 
-#: Types NAL des parameter sets stockés dans le CodecPrivate hvcC.
+#: Types NAL des parameter sets (CodecPrivate hvcC et in-band).
 _PARAMETER_SET_TYPES = frozenset({32, 33, 34})  # VPS, SPS, PPS
 
 _TRACK_TYPE_VIDEO = 1
@@ -102,16 +102,18 @@ def _updated_hvcc(original: bytes, components: _HvccComponents) -> bytes:
 def _au_to_block_payload(au: HevcAccessUnit, length_size: int | None) -> bytes:
     """Convertit un access unit injecté vers le framing des blocs du MKV.
 
-    hvcC (``length_size`` connu) : NAL préfixés par leur longueur, parameter
-    sets exclus (ils vivent dans le CodecPrivate). Sans hvcC : payload annexB
-    inchangé (parité avec les artefacts du muxer natif).
+    hvcC (``length_size`` connu) : tous les NAL préfixés par leur longueur,
+    parameter sets conservés in-band en plus du CodecPrivate (comme l'oracle
+    et la façade native) : dovi_tool / hdr10plus_tool lisent les blocs MKV
+    sans exploiter le hvcC. Sans hvcC : payload annexB inchangé. Un AU réduit
+    à des parameter sets n'est pas une image : payload vide (échec strict).
     """
+    if all(nal.nal_type in _PARAMETER_SET_TYPES for nal in au.nal_units):
+        return b""
     if length_size is None:
         return au.payload
     parts: list[bytes] = []
     for nal in au.nal_units:
-        if nal.nal_type in _PARAMETER_SET_TYPES:
-            continue
         parts.append(len(nal.payload).to_bytes(length_size, "big"))
         parts.append(nal.payload)
     return b"".join(parts)

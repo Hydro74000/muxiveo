@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import subprocess
+import tarfile
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,6 +26,68 @@ def setup_mod():
     sys.modules["setup_module"] = mod  # requis pour patch("setup_module.X")
     spec.loader.exec_module(mod)
     return mod
+
+
+def _prepare_deb_fallback(setup_mod, monkeypatch, tmp_path, *, legacy):
+    dest = tmp_path / "tools"
+    extracted = dest / "_deb_extracted"
+    extracted.mkdir(parents=True)
+    monkeypatch.setattr(setup_mod.shutil, "which", lambda name: "/usr/bin/ar" if name == "ar" else None)
+    monkeypatch.setattr(setup_mod.subprocess, "run", lambda *args, **kwargs: None)
+    if legacy:
+        real_open = tarfile.open
+
+        def legacy_open(*args, **kwargs):
+            archive = real_open(*args, **kwargs)
+            extractall = archive.extractall
+            archive.extractall = lambda path: extractall(path=path, filter="fully_trusted")
+            return archive
+
+        # Emulate a runtime without data_filter and its historical default.
+        monkeypatch.setattr(setup_mod, "tarfile", SimpleNamespace(open=legacy_open))
+    return dest, extracted / "data.tar.gz"
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "fifo", "traversal"])
+def test_deb_fallback_rejects_unsafe_archive(setup_mod, monkeypatch, tmp_path, legacy, kind):
+    dest, archive_path = _prepare_deb_fallback(setup_mod, monkeypatch, tmp_path, legacy=legacy)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "probe"
+    sentinel.write_bytes(b"original")
+    with tarfile.open(archive_path, "w:gz") as archive:
+        entry = tarfile.TarInfo("link")
+        if kind == "symlink":
+            entry.type = tarfile.SYMTYPE
+            entry.linkname = str(outside)
+        elif kind == "hardlink":
+            entry.type = tarfile.LNKTYPE
+            entry.linkname = str(sentinel)
+        elif kind == "fifo":
+            entry.type = tarfile.FIFOTYPE
+        else:
+            entry.name = "../../outside/probe"
+        archive.addfile(entry)
+        overwrite = tarfile.TarInfo("link/probe" if kind == "symlink" else "link")
+        overwrite.size = 7
+        archive.addfile(overwrite, io.BytesIO(b"changed"))
+    with pytest.raises((RuntimeError, tarfile.TarError)):
+        setup_mod._extract_deb_binary(tmp_path / "input.deb", "NVEncC", dest)
+    assert sentinel.read_bytes() == b"original"
+    assert not (dest / "NVEncC").exists()
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_deb_fallback_still_extracts_regular_binary(setup_mod, monkeypatch, tmp_path, legacy):
+    dest, archive_path = _prepare_deb_fallback(setup_mod, monkeypatch, tmp_path, legacy=legacy)
+    with tarfile.open(archive_path, "w:gz") as archive:
+        entry = tarfile.TarInfo("usr/bin/NVEncC")
+        entry.size = 6
+        entry.mode = 0o755
+        archive.addfile(entry, io.BytesIO(b"binary"))
+    setup_mod._extract_deb_binary(tmp_path / "input.deb", "NVEncC", dest)
+    assert (dest / "NVEncC").read_bytes() == b"binary"
 
 
 # ---------------------------------------------------------------------------

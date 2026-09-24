@@ -294,8 +294,8 @@ class TestRewriterStrictGuards:
         assert not list(tmp_path.rglob("*.partial"))
 
     def test_parameter_set_only_access_unit_fails_strictly(self, tmp_path: Path) -> None:
-        # hvcC (length_size=4) : les parameter sets sont exclus du payload de
-        # bloc — un AU qui n'en contient que produirait un bloc vide interdit.
+        # hvcC (length_size=4) : un AU réduit à des parameter sets n'est pas
+        # une image — il ne doit jamais devenir un bloc.
         codec_private = bytes([1]) + bytes(20) + bytes([0x03]) + bytes([0])
         track = _hevc_track(codec_private=codec_private)
         encoded = _write_encoded_mkv(
@@ -316,3 +316,25 @@ class TestRewriterStrictGuards:
                 output=tmp_path / "rewritten.mkv",
             )
         assert not list(tmp_path.rglob("*.partial"))
+
+
+def test_rewritten_blocks_keep_parameter_sets_in_band_and_hvcc_is_deduplicated() -> None:
+    """dovi_tool / hdr10plus_tool lisent les blocs MKV sans exploiter le hvcC."""
+    from core.matroska.hevc.access_units import split_into_access_units
+    from core.matroska.hevc.payload_rewriter import _au_to_block_payload
+    from core.matroska.native_muxer import _extract_hvcc_components
+
+    vps, sps, pps = (bytes([t << 1, 0x01]) + bytes([t]) * 6 for t in (32, 33, 34))
+    idr = bytes([19 << 1, 0x01, 0x80]) + bytes(8)
+    # Doublons tels que produits par hevc_mp4toannexb (extradata + in-band).
+    nals = (vps, sps, pps, vps, sps, pps, idr)
+    au = split_into_access_units(b"".join(b"\x00\x00\x00\x01" + nal for nal in nals))[0]
+    payload = _au_to_block_payload(au, 4)
+    types, pos = [], 0
+    while pos < len(payload):
+        size = int.from_bytes(payload[pos:pos + 4], "big")
+        types.append(payload[pos + 4] >> 1)
+        pos += 4 + size
+    assert types == [32, 33, 34, 32, 33, 34, 19]
+    components = _extract_hvcc_components(au)
+    assert (components.vps, components.sps, components.pps) == ([vps], [sps], [pps])

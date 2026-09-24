@@ -118,6 +118,22 @@ def test_download_asset_can_be_cancelled(tmp_path: Path):
     assert list(tmp_path.iterdir()) == []
 
 
+def test_cancel_after_last_chunk_does_not_publish_download(tmp_path: Path):
+    cancelled = False
+
+    def progress(received, total):
+        nonlocal cancelled
+        cancelled = received == total
+
+    with patch.object(update_install.urllib.request, "urlopen", _fake_urlopen({"a.bin": _PAYLOAD})):
+        with pytest.raises(UpdateInstallError, match="annulé"):
+            download_asset(
+                _asset("a.bin"), tmp_path / "out.bin", hashlib.sha256(_PAYLOAD).hexdigest(),
+                progress=progress, cancelled=lambda: cancelled,
+            )
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_download_asset_refuses_foreign_url(tmp_path: Path):
     foreign = ReleaseAsset(name="x", url="https://evil.example/x")
     with pytest.raises(UpdateInstallError, match="refusée"):

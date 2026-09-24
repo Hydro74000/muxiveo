@@ -42,8 +42,11 @@ Cette documentation correspond à **Muxiveo v4.0.0**.
 
 | Outil | Usage | Qualité |
 |-------|-------|---------|
+| **Studio d'Hybridation** | apparier automatiquement vidéo de référence et donneur audio/subs, synchronisation acoustique FFT, calibration des coupures pub et conversion de cadence | sans perte (Zero Delay) |
 | **Conteneur & Encodage** | sélectionner les pistes, les réordonner, éditer langue/titre/flags, gérer titre/tags/chapitres/pièces jointes, enrichir les tags via TMDB/IMDb, puis copier ou réencoder | copie = sans perte, encodage = avec recompression |
 | **Fusion DoVi / HDR10+** | injecter les métadonnées HDR d'un fichier source dans le flux vidéo HEVC d'un autre fichier | sans perte |
+
+![Studio d'Hybridation Muxiveo v4](docs/assets/img/Muxiveo-fr-11.png)
 
 > Les panneaux **Remuxage** et **Encodage** forment un seul workflow. Le panneau Remuxage prépare le conteneur ; le panneau Encodage décide comment traiter la vidéo et l'audio.
 
@@ -142,6 +145,8 @@ Sur Linux, la formule installe l’AppImage all-inclusive. Sur macOS, elle insta
 
 ### Tableau de bord
 
+![Tableau de bord Muxiveo](docs/assets/img/Muxiveo-fr-01.png)
+
 Le tableau de bord affiche :
 
 - l'état des outils externes détectés
@@ -153,6 +158,8 @@ Le tableau de bord affiche :
 > Les encodeurs matériels ne sont pas marqués disponibles simplement parce qu'ils apparaissent dans `ffmpeg`. L'application lance un probe réel pour confirmer qu'ils fonctionnent. Les probes sont exécutés en parallèle pour minimiser le délai au démarrage.
 
 ### Conteneur & Encodage
+
+![Tableau des pistes Remux et synchronisation](docs/assets/img/Muxiveo-fr-03.png)
 
 Le workflow unifié permet de :
 
@@ -238,6 +245,8 @@ force MKVToolNix et, sans option, la sélection est Muxiveo puis `mkvmerge` puis
 FFmpeg. Cette compatibilité standalone n'ajoute aucune dépendance MKVToolNix au
 runtime ou au packaging de Muxiveo. Voir [le contrat détaillé](docs/remux-native.md).
 
+![Panneau Encodage - Traitements vidéo et audio](docs/assets/img/Muxiveo-fr-07.png)
+
 Les options HDR disponibles côté encodage sont :
 
 - injection de métadonnées HDR10 statiques
@@ -283,6 +292,8 @@ Les profils GUI sont enregistrés ici :
 ```
 
 #### Éditeur low-code
+
+![Éditeur de Profils de décision](docs/assets/img/Muxiveo-fr-14.png)
 
 Dans le panneau Remux, **Éditer profil** ouvre une fenêtre dédiée :
 
@@ -567,6 +578,8 @@ Utilisez un exact job quand la structure des sources est stable. Utilisez un pro
 
 ### Fusion DoVi / HDR10+
 
+![Fusion Dolby Vision et HDR10+](docs/assets/img/Muxiveo-fr-09.png)
+
 Ce panneau prend :
 
 - **Film 1** : la vidéo cible à enrichir (`.mkv` ou `.hevc`)
@@ -589,6 +602,8 @@ Profils Dolby Vision proposés :
 | **Mode 0** | conserve le profil source sans réécriture |
 
 ### Paramètres
+
+![Paramètres et configuration](docs/assets/img/Muxiveo-fr-10.png)
 
 Le panneau **Paramètres** est un éditeur complet de `config.ini` intégré à l'interface. Il regroupe :
 
@@ -870,23 +885,50 @@ Sous-commandes disponibles :
 |----------|-------|
 | `inspect` | inspecte une ou plusieurs sources et sort du JSON |
 | `inspect --config-template` | génère un template JSON de remux copiant tout |
-| `validate` | valide un job/template JSON sans exécuter ffmpeg |
-| `preview` | affiche la commande ffmpeg prévue |
-| `remux` | exécute un remux headless |
-| `batch` | applique un template JSON à plusieurs entrées |
+| `schema` | affiche le schéma JSON public du contrat CLI |
+| `tools` | affiche en JSON les chemins d'outils résolus par Muxiveo |
+| `version` | affiche la version ou compare aux releases avec `--check` |
+| `validate` | valide un job/template JSON sans exécuter FFmpeg |
+| `preview` | affiche la commande FFmpeg prévue |
+| `remux` / `run` | exécute un remux headless (avec synchronisation optionnelle) |
+| `batch` | applique un template ou profil à plusieurs entrées / dossiers |
+| `profile` | valide, prévisualise ou applique un profil décisionnel |
+| `sync-scan` | analyse le calage acoustique FFT ou par sous-titres |
+| `shift-subs` | décale physiquement des sous-titres (SRT, ASS) |
+| `hybrid` | assemble automatiquement une référence vidéo et un donneur audio/subs |
 
-Exemples :
+![Muxiveo CLI Headless v4 en Terminal](docs/assets/img/Muxiveo-cli-terminal.png)
+
+Exemples concrets :
 
 ```bash
-python3 main.py --cli remux -i source.mkv -o sortie.mkv
-python3 main.py --cli preview --config docs/cli/middle.json
-python3 main.py --cli remux --config docs/cli/middle.json --dry-run
-python3 main.py --cli batch --template docs/cli/complexe-toutes-options-template.json --batch docs/cli/complexe-toutes-options-batch.json --force
+# Remux simple avec métadonnées TMDB et profil de renommage
+muxiveo --cli remux -i film1.mkv -o film1_propre.mkv --profile "MonProfil" --auto-tmdb
+
+# Remux multi-sources avec calage acoustique automatique, détection des coupures et cadence
+muxiveo --cli remux -i film1_video.mkv -i film1_audio.mkv -o film1_synchro.mkv \
+  --auto-sync --detect-cuts --cadence-auto --cadence-method auto --sync-mode physical
+
+# Remux avec calibration manuelle préétablie
+muxiveo --cli remux -i film1_video.mkv -i film1_audio.mkv -o film1_calibre.mkv \
+  --calibration calibration_film1.json --sync-mode physical
+
+# Batch d'une saison complète avec template et détection TMDB
+muxiveo --cli batch --template serie1.exact-job.json --input-dir "serie1/Saison 01" \
+  --output-dir "sorties/serie1/Saison 01" --recursive --auto-tmdb --dry-run
+
+# Hybridation automatique (Vidéo 4K de référence + Audio/Subs d'un donneur)
+muxiveo --cli hybrid --ref film1_ref.mkv --donor film1_donor.mkv -o "sorties/film1" \
+  --auto-sync --detect-cuts --cadence-auto --tag "MVO"
+
+# Hybridation d'une saison complète de série
+muxiveo --cli hybrid --ref-dir "serie1_ref_2160p" --donor-dir "serie1_donor_1080p" \
+  -o "sorties/serie1_hybride" --auto-sync --detect-cuts --cadence-auto
 ```
 
 Le CLI est non interactif : une sortie existante est refusée sauf `--force`. Les chemins d'outils sont lus depuis `config.ini`, avec overrides `--ffmpeg`, `--ffprobe`, `--mediainfo`, `--work-dir` et `--threads`.
 
-Les templates JSON peuvent sélectionner les pistes par type, langue et flags d'origine, normaliser les langues BCP-47/RFC5646, renommer les pistes via patterns, ajouter/importer des chapitres, demander TMDB et traiter un batch. Trois configs d'exemple sont fournies dans `docs/cli/` : simple, middle et complexe toutes options.
+La documentation complète du CLI avec diagrammes et cas concrets détaillés est disponible dans [docs/cli/README.md](docs/cli/README.md).
 
 Dans les artefacts packagés, il n'y a pas de binaire CLI séparé : utilisez `muxiveo --cli ...` sur Linux/AppImage/macOS, ou `Muxiveo.exe --cli ...` sur Windows. En environnement source, utilisez `./muxiveo --cli ...` ou `python3 main.py --cli ...`.
 
@@ -951,7 +993,45 @@ The corresponding FFmpeg source code and build configuration are available at: [
 
 ## Hybridation & Synchronisation
 
-Les commandes `hybrid`, `sync-scan`, `shift-subs`, le menu Workflow et le Studio
-Hybridation sont décrits dans le [guide de synchronisation](docs/hybridization-guide.md).
-Les anciens jobs restent compatibles ; la synchronisation physique est explicite
-pour le remux et activée par défaut pour `hybrid`.
+L'hybridation introduite dans **Muxiveo v4** permet d'associer le meilleur de plusieurs sources : par exemple, combiner une image vidéo UHD 4K ou Blu-ray (la **référence**) avec la piste audio française et les sous-titres d'une autre édition ou diffusion TV (le **donneur**).
+
+Muxiveo analyse acoustiquement les flux audio, calcule le décalage temporel à la milliseconde près, compense les écarts de cadence (ex: PAL 25 FPS ↔ 23.976 Cinema) et gère les coupures publicitaires sans désynchronisation.
+
+### Studio d'Hybridation par lots
+
+Conçu pour traiter automatiquement des saisons entières de séries ou des collections de films :
+
+![Studio d'Hybridation - Matrice d'appariement par lots](docs/assets/img/Muxiveo-fr-11.png)
+
+- **Appariement automatique** des épisodes par reconnaissance des motifs de saison/épisode (`S01E01`, etc.).
+- **Diagnostic audio en direct** : détection acoustique FFT, analyse de pitch/cadence F0 et détection des coupures.
+- **Workflow par lots** : calibration complète de la saison en un clic avant de lancer la production.
+
+### Synchro Studio & Formes d'ondes
+
+Pour inspecter ou affiner le calage à la milliseconde :
+
+![Synchro Studio - Visualiseur de formes d'ondes acoustiques](docs/assets/img/Muxiveo-fr-12.png)
+
+- **Double forme d'onde superposée** (référence VO en vert, donneur VF en bleu).
+- **Zoom temporel et repères** permettant d'identifier immédiatement les transitoires et attaques de parole communes.
+- **Micro-ajustement** par paliers de ±10 ms et ±100 ms avec bouton de **Pré-écoute** instantanée.
+
+### Détection des coupures & Calibration multi-segments
+
+Lorsque la piste audio donneuse provient d'une diffusion télévisée avec des coupures publicitaires, un simple décalage global ne suffit pas. Muxiveo découpe la timeline en segments indépendants :
+
+![Détection des coupures et calibration multi-segments](docs/assets/img/Muxiveo-fr-13.png)
+
+- **Identification des points de rupture** (transitions publicitaires ou variantes de montage).
+- **Recalage différentiel par segment** avec compensation automatique des dérives temporelles.
+- **Export et import de calibration JSON** réutilisable en CLI pour l'automatisation en masse.
+
+### Synchronisation physique (*Zero Delay*)
+
+Au lieu de se limiter à un offset virtuel dans les métadonnées du conteneur (fréquemment ignoré par les téléviseurs, barres de son ou certains lecteurs comme Plex), Muxiveo applique par défaut une **synchronisation physique** :
+- Injection d'un silence propre au début du flux ou suppression de l'excédent (trim exact).
+- Recalage physique synchronisé des sous-titres texte (SRT, ASS, VTT).
+- Respect absolu des flux audio HD et objets spatiaux (Dolby Atmos / TrueHD, DTS:X).
+
+Pour en savoir plus, consultez le [guide d'hybridation complet](docs/hybridization-guide.md) ainsi que la section dédiée dans la [documentation CLI](docs/cli/README.md).

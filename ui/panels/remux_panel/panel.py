@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import json
 from collections.abc import Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -12,7 +11,6 @@ from typing import Any
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QDropEvent, QFont
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -62,7 +60,6 @@ from ui.panels.remux_panel.models import SourceFile
 from ui.panels.remux_panel.theme import (
     _C,
     _card,
-    _checkbox_style,
     _input_style,
     _secondary_button,
     _section_label,
@@ -152,6 +149,7 @@ class RemuxPanel(QWidget):
 
     _inspection_done = Signal(str, object)
     _inspection_error = Signal(str, str)
+    _paths_scanned = Signal(object)
     _audio_sync_done = Signal(str, str, int, float, object)
     _audio_sync_error = Signal(str, str)
     _subtitle_sync_done = Signal(str, str, int, float, object)
@@ -179,6 +177,8 @@ class RemuxPanel(QWidget):
         # chacun être coûteux. Des pools séparés maintiennent l'admission des
         # nouveaux fichiers même lorsqu'une synchro est en cours.
         self._inspection_executor = ThreadPoolExecutor(max_workers=2)
+        self._inspection_futures: dict[str, Future] = {}
+        self._path_executor = ThreadPoolExecutor(max_workers=1)
         self._executor = ThreadPoolExecutor(max_workers=2)
         # Le préflight du backend natif peut lire les sources ; il ne doit pas
         # partager le pool d'inspection ni bloquer la boucle Qt.
@@ -202,6 +202,7 @@ class RemuxPanel(QWidget):
         self._workflow_options: dict[str, Any] = {}
         self._preview_generation = 0
         self._preview_dirty = False
+        self._preview_copy_pending = False
         self._closing = False
         self._preview_future: Future[None] | None = None
 
@@ -226,6 +227,7 @@ class RemuxPanel(QWidget):
         self._inspection_error.connect(
             self._on_inspection_error, Qt.ConnectionType.QueuedConnection
         )
+        self._paths_scanned.connect(self._apply_scanned_paths, Qt.ConnectionType.QueuedConnection)
         self._audio_sync_done.connect(
             self._on_audio_sync_done, Qt.ConnectionType.QueuedConnection
         )
@@ -548,8 +550,9 @@ class RemuxPanel(QWidget):
 
         return source_paths, attachment_paths
 
-    def _select_bluray_playlist(self, folder: Path) -> str | None:
-        titles = discover_titles(folder, min_duration_s=60.0)
+    def _select_bluray_playlist(self, folder: Path, *, titles=None) -> str | None:
+        if titles is None:
+            titles = discover_titles(folder, min_duration_s=60.0)
         if not titles:
             return None
         items: list[str] = []
@@ -580,38 +583,56 @@ class RemuxPanel(QWidget):
         return str(playlist) if playlist is not None else None
 
     def _route_dropped_paths(self, paths: list[str]) -> None:
+        if self._closing or not paths:
+            return
+        self.log_message.emit("INFO", translate_text("Recherche des fichiers sources…"))
+        self._path_executor.submit(self._scan_dropped_paths, list(paths))
+
+    def _scan_dropped_paths(self, paths: list[str]) -> None:
+        """Les stat, parcours récursifs et playlists peuvent attendre le réseau."""
+        found = []
+        for path_str in dict.fromkeys(paths):
+            if self._closing:
+                return
+            path = Path(path_str)
+            try:
+                if path.is_dir():
+                    titles = discover_titles(path, min_duration_s=60.0)
+                    if titles:
+                        found.append(("bluray", (path, titles)))
+                    elif find_disc_root(path) is None:
+                        sources, attachments = self._collect_folder_drop_paths(path)
+                        found.extend(("source", source) for source in sources)
+                        found.extend(("attachment", attachment) for attachment in attachments)
+                elif path.is_file():
+                    found.append(("source" if is_accepted(str(path)) else "attachment", str(path)))
+            except Exception as exc:
+                found.append(("error", f"{path}: {exc}"))
+        if not self._closing:
+            self._paths_scanned.emit(found)
+
+    def _apply_scanned_paths(self, found: list) -> None:
+        if self._closing:
+            return
         source_paths: list[str] = []
         attachment_paths: list[str] = []
         seen_sources: set[str] = set()
         seen_attachments: set[str] = set()
 
-        for path_str in paths:
-            path = Path(path_str)
-            if path.is_dir():
-                bluray_playlist = self._select_bluray_playlist(path)
+        for kind, value in found:
+            if kind == "error":
+                self.log_message.emit("ERROR", value)
+                continue
+            if kind == "bluray":
+                folder, titles = value
+                bluray_playlist = self._select_bluray_playlist(folder, titles=titles)
                 if bluray_playlist:
                     if bluray_playlist not in seen_sources:
                         source_paths.append(bluray_playlist)
                         seen_sources.add(bluray_playlist)
-                    continue
-                if find_disc_root(path) is not None:
-                    continue
-                folder_sources, folder_attachments = self._collect_folder_drop_paths(path)
-                for folder_source in folder_sources:
-                    if folder_source not in seen_sources:
-                        source_paths.append(folder_source)
-                        seen_sources.add(folder_source)
-                for folder_attachment in folder_attachments:
-                    if folder_attachment not in seen_attachments:
-                        attachment_paths.append(folder_attachment)
-                        seen_attachments.add(folder_attachment)
                 continue
-
-            if not path.is_file():
-                continue
-
-            normalized_path = str(path)
-            if is_accepted(normalized_path):
+            normalized_path = value
+            if kind == "source":
                 if normalized_path not in seen_sources:
                     source_paths.append(normalized_path)
                     seen_sources.add(normalized_path)
@@ -717,8 +738,7 @@ class RemuxPanel(QWidget):
         generation = self._preview_generation
         config = self._current_config()
         if config is None:
-            self._preview_dirty = False
-            self._cmd_preview.setPlainText("")
+            self._apply_compiled_preview(generation, "")
             return
 
         # ``preview_command`` ne modifie pas le workflow : il ne fait que
@@ -741,28 +761,17 @@ class RemuxPanel(QWidget):
             text = self._workflow.preview_command(config)
         except Exception:
             text = "(erreur de construction de la commande)"
-        self._preview_compiled.emit(generation, text)
+        if not self._closing:
+            self._preview_compiled.emit(generation, text)
 
     def _apply_compiled_preview(self, generation: int, text: str) -> None:
         if self._closing or generation != self._preview_generation:
             return
         self._preview_dirty = False
         self._cmd_preview.setPlainText(text)
-
-    def _refresh_preview_synchronously(self) -> None:
-        """Rafraîchit le preview avant une action explicite qui l'utilise."""
-        self._preview_timer.stop()
-        self._preview_generation += 1
-        config = self._current_config()
-        if config is None:
-            text = ""
-        else:
-            try:
-                text = self._workflow.preview_command(config)
-            except Exception:
-                text = "(erreur de construction de la commande)"
-        self._preview_dirty = False
-        self._cmd_preview.setPlainText(text)
+        if self._preview_copy_pending:
+            self._preview_copy_pending = False
+            self._copy_command()
 
     def _on_table_changed(self, _item: QTableWidgetItem | None = None) -> None:
         self._prune_auto_sync_entry_ids()
@@ -1271,7 +1280,10 @@ class RemuxPanel(QWidget):
                     entry.display_info,
                 ):
                     self._rebuild_preview()
-                    self._emit_audio_tracks()
+                    # Encode vient de publier ce réglage. Lui renvoyer toutes
+                    # les sources réémettrait tous ses plans (boucle imbriquée
+                    # pour chaque piste modifiée). Le TrackEntry partagé est
+                    # déjà à jour ; seul l'affichage remux devait changer.
                 return
 
     def _audio_entries_by_source(self) -> dict[str, list[TrackEntry]]:
@@ -2257,9 +2269,7 @@ class RemuxPanel(QWidget):
 
     def _set_all_tracks(self, enabled: bool) -> None:
         self._track_table.set_all_enabled(enabled)
-        self._refresh_audio_sync_buttons()
-        self._track_table.refresh_filter()
-        self._rebuild_preview()
+        self._on_table_changed()
 
     def _browse_output(self) -> None:
         default = self._output_edit.text() or str(self._config.output_dir)
@@ -2348,11 +2358,12 @@ class RemuxPanel(QWidget):
     def _copy_command(self) -> None:
         from PySide6.QtWidgets import QApplication
 
-        # Le debounce peut laisser le texte précédent pendant quelques
-        # millisecondes. Pour une copie explicite, la justesse prime : ne pas
-        # recopier une commande correspondant à l'ancien ordre des pistes.
         if self._preview_dirty:
-            self._refresh_preview_synchronously()
+            self._preview_copy_pending = True
+            if self._preview_timer.isActive():
+                self._preview_timer.stop()
+                self._apply_rebuild_preview()
+            return
         text = self._cmd_preview.toPlainText()
         if text:
             QApplication.clipboard().setText(text)
@@ -2362,8 +2373,9 @@ class RemuxPanel(QWidget):
         self._preview_timer.stop()
         if self._preview_future is not None:
             self._preview_future.cancel()
-        self._preview_executor.shutdown(wait=True)
-        self._inspection_executor.shutdown(wait=True)
+        self._preview_executor.shutdown(wait=False, cancel_futures=True)
+        self._path_executor.shutdown(wait=False, cancel_futures=True)
+        self._inspection_executor.shutdown(wait=False, cancel_futures=True)
         self._executor.shutdown(wait=True)
         super().closeEvent(event)
 

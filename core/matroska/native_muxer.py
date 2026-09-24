@@ -147,13 +147,13 @@ def _extract_hvcc_components(au: HevcAccessUnit) -> _HvccComponents:
     vps: list[bytes] = []
     sps: list[bytes] = []
     pps: list[bytes] = []
+    arrays = {32: vps, 33: sps, 34: pps}
     for nal in au.nal_units:
-        if nal.nal_type == 32:
-            vps.append(nal.payload)
-        elif nal.nal_type == 33:
-            sps.append(nal.payload)
-        elif nal.nal_type == 34:
-            pps.append(nal.payload)
+        target = arrays.get(nal.nal_type)
+        # hevc_mp4toannexb réinsère l'extradata devant les parameter sets
+        # in-band : un doublon identique n'a rien à faire dans le hvcC.
+        if target is not None and nal.payload not in target:
+            target.append(nal.payload)
     return _HvccComponents(vps=vps, sps=sps, pps=pps)
 
 
@@ -262,7 +262,8 @@ def _finish_sps_parse(
     reader.ue()  # pic_width_in_luma_samples
     reader.ue()  # pic_height_in_luma_samples
     if reader.u(1):  # conformance_window_flag
-        reader.ue(); reader.ue(); reader.ue(); reader.ue()
+        for _ in range(4):
+            reader.ue()
     bit_depth_luma_minus8 = reader.ue()
     bit_depth_chroma_minus8 = reader.ue()
     return _SpsSummary(

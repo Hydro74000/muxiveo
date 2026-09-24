@@ -2801,6 +2801,7 @@ def test_add_files_uses_dedicated_inspection_executor(tmp_path):
         _color_index=0,
         _file_list=MagicMock(),
         _inspection_executor=inspection_executor,
+        _inspection_futures={},
         _executor=audio_sync_executor,
         _inspect_file=MagicMock(),
         _sync_tmdb_suggested_title=MagicMock(),
@@ -3085,6 +3086,14 @@ class TestAttachmentPanelManualPaths:
 
 class TestRemuxPanelGlobalDropRouting:
 
+    @staticmethod
+    def _wait_for_sources(qt_app, callback):
+        deadline = time.monotonic() + 2
+        while not callback.called and time.monotonic() < deadline:
+            qt_app.processEvents()
+            time.sleep(0.001)
+        assert callback.called
+
     def test_route_dropped_paths_sends_media_to_sources_and_others_to_attachments(self, qt_app, tmp_path):
         cfg = AppConfig()
         panel = RemuxPanel(cfg)
@@ -3096,6 +3105,7 @@ class TestRemuxPanelGlobalDropRouting:
         with patch.object(panel, "_on_add_files") as mock_add_sources, \
              patch.object(panel._attachment_panel, "add_manual_paths") as mock_add_attachments:
             panel._route_dropped_paths([str(src), str(att)])
+            self._wait_for_sources(qt_app, mock_add_sources)
 
         mock_add_sources.assert_called_once_with([str(src)])
         mock_add_attachments.assert_called_once_with([str(att)])
@@ -3124,6 +3134,7 @@ class TestRemuxPanelGlobalDropRouting:
         with patch.object(panel, "_on_add_files") as mock_add_sources, \
              patch.object(panel._attachment_panel, "add_manual_paths") as mock_add_attachments:
             panel._route_dropped_paths([str(folder)])
+            self._wait_for_sources(qt_app, mock_add_sources)
 
         mock_add_sources.assert_called_once_with([str(src), str(nested_src)])
         mock_add_attachments.assert_called_once_with([str(cover), str(nested_cover)])
@@ -3150,6 +3161,7 @@ class TestRemuxPanelGlobalDropRouting:
         with patch.object(panel, "_on_add_files") as mock_add_sources, \
              patch.object(panel._attachment_panel, "add_manual_paths") as mock_add_attachments:
             panel._route_dropped_paths([str(folder_a), str(folder_b), str(folder_a)])
+            self._wait_for_sources(qt_app, mock_add_sources)
 
         mock_add_sources.assert_called_once_with([str(src_a), str(src_b)])
         mock_add_attachments.assert_called_once_with([str(cover_a), str(cover_b)])

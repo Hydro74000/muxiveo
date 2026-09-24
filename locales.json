@@ -1263,6 +1263,10 @@
     "fra": "Erreur d'inspection.",
     "eng": "Inspection error."
   },
+  "Recherche des fichiers sources…": {
+    "fra": "Recherche des fichiers sources…",
+    "eng": "Searching for source files…"
+  },
   "{name} chargé — {video}V  {audio}A  {subtitle}S{att}{tag}{chap}": {
     "fra": "{name} chargé — {video}V  {audio}A  {subtitle}S{att}{tag}{chap}",
     "eng": "{name} loaded - {video}V  {audio}A  {subtitle}S{att}{tag}{chap}"

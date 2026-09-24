@@ -142,6 +142,8 @@ def download_asset(
     digest = hashlib.sha256()
     received = 0
     try:
+        if cancelled is not None and cancelled():
+            raise UpdateInstallError("Téléchargement annulé.")
         with _urlopen(asset.url, timeout) as resp, part.open("wb") as fh:
             total = int(resp.headers.get("Content-Length") or asset.size or 0)
             if total > _MAX_ASSET_BYTES:
@@ -158,6 +160,8 @@ def download_asset(
                     progress(received, total)
         if digest.hexdigest() != expected_sha256.lower():
             raise UpdateInstallError(f"Somme SHA-256 invalide pour {asset.name} : fichier rejeté.")
+        if cancelled is not None and cancelled():
+            raise UpdateInstallError("Téléchargement annulé.")
         os.replace(part, dest)
     except OSError as exc:
         part.unlink(missing_ok=True)

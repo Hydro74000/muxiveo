@@ -32,6 +32,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -659,6 +660,11 @@ class MergeDoviWorkflow(QObject):
         if profile == DoviProfile.DISABLED and flags.has_dovi:
             flags.has_dovi = False
             self.step_progress.emit(step, "Dolby Vision désactivé — RPU ignoré.")
+        elif not flags.has_dovi and profile != DoviProfile.DISABLED and self._has_dovi_rpu(film2):
+            flags.has_dovi = True
+            self.step_progress.emit(
+                step, "Dolby Vision détecté par dovi_tool (RPU non signalé par mediainfo).",
+            )
 
         # Validation transfert Film 1. Si Film 1 est SDR mais Film 2 porte des
         # métadonnées HDR10/HDR10+, on bascule vers le workflow SDR→HDR10.
@@ -1914,6 +1920,21 @@ class MergeDoviWorkflow(QObject):
         if not any_convert:
             return ["-c:s", "copy"]
         return ["-c:s", "copy", *per_index]
+
+    def _has_dovi_rpu(self, path: Path) -> bool:
+        """Repli de mediainfo, aveugle au RPU d'un HEVC brut ou d'un MKV sans dvcC."""
+        if path.suffix.lower() not in {".hevc", ".h265", ".265", ".x265", ".mkv"}:
+            return False
+        with tempfile.TemporaryDirectory(prefix="dovi_probe_") as tmp:
+            rpu = Path(tmp) / "rpu.bin"
+            try:
+                subprocess.run(
+                    [self._bins["dovi_tool"], "extract-rpu", "-i", str(path), "-l", "1", "-o", str(rpu)],
+                    capture_output=True, check=False, timeout=120, **subprocess_text_kwargs(),
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                return False
+            return rpu.is_file() and rpu.stat().st_size > 0
 
     def _mediainfo(self, path: Path, inform: str) -> str:
         """Lance mediainfo --Inform et retourne la sortie brute."""

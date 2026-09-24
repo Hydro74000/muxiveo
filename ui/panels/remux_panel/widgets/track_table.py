@@ -343,6 +343,8 @@ class _TrackTable(QTableWidget):
         finally:
             self.blockSignals(False)
             self.setUpdatesEnabled(updates_enabled)
+        self._rebuild_prev_lang()
+        self.refresh_filter()
         self._adjust_height()
 
     def has_entry_id(self, entry_id: str) -> bool:
@@ -1228,6 +1230,7 @@ class _TrackTable(QTableWidget):
             self.setUpdatesEnabled(updates_enabled)
 
         self._rebuild_prev_lang()
+        self.refresh_filter()
         self.selectRow(adjusted)
         event.setDropAction(Qt.DropAction.IgnoreAction)
         event.accept()
