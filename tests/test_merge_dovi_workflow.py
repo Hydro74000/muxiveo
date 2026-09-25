@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -17,7 +19,6 @@ from core.workflows.merge_dovi import (
     _format_master_display_from_mediainfo,
     _format_max_cll_from_mediainfo,
 )
-from core.dovi_profile_detector import DoviSubProfile
 
 
 def _paths(tmp_path: Path, film1: Path, basename: str = "out") -> _WorkflowPaths:
@@ -620,3 +621,26 @@ def test_cleanup_removes_wrapped_video(tmp_path: Path) -> None:
 
     for p in intermediates:
         assert not p.exists()
+
+
+class TestDoviRpuFallback:
+    """mediainfo ne voit pas le RPU d'un HEVC brut : repli dovi_tool."""
+
+    @staticmethod
+    def _run(rpu_bytes: bytes):
+        def fake_run(cmd, **kwargs):
+            Path(cmd[cmd.index("-o") + 1]).write_bytes(rpu_bytes)
+            assert cmd[1:2] == ["extract-rpu"] and "-l" in cmd
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return fake_run
+
+    @pytest.mark.parametrize("rpu,expected", [(b"\x7c\x01rpu", True), (b"", False)])
+    def test_raw_hevc_rpu_probe(self, tmp_path, rpu, expected):
+        wf = MergeDoviWorkflow()
+        with patch("core.workflows.merge_dovi.subprocess.run", side_effect=self._run(rpu)):
+            assert wf._has_dovi_rpu(tmp_path / "film2.hevc") is expected
+
+    def test_unsupported_container_is_not_probed(self, tmp_path):
+        with patch("core.workflows.merge_dovi.subprocess.run") as run:
+            assert MergeDoviWorkflow()._has_dovi_rpu(tmp_path / "film2.mp4") is False
+        run.assert_not_called()

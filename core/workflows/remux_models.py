@@ -19,6 +19,22 @@ from uuid import uuid4
 from core.inspector import AttachmentInfo, FileInfo, HDRType
 
 
+MUX_BACKENDS = frozenset({"auto", "native", "ffmpeg"})
+
+#: Conteneurs dont les TrackEntry portent un FlagEnabled lisible nativement.
+_MATROSKA_SOURCE_EXTENSIONS = frozenset({".mkv", ".webm", ".mka", ".mks", ".mk3d"})
+
+
+def normalize_mux_backend(value: str | None) -> str:
+    """Return a stable public backend name, rejecting unknown contracts."""
+    backend = str(value or "ffmpeg").strip().lower()
+    if backend not in MUX_BACKENDS:
+        raise ValueError(
+            "mux_backend invalide : attendu 'auto', 'native' ou 'ffmpeg'."
+        )
+    return backend
+
+
 # =============================================================================
 # Modèle de piste
 # =============================================================================
@@ -51,12 +67,14 @@ class TrackEntry:
     orig_title:    str = field(default="", repr=False)
     orig_codec:    str = field(default="", repr=False)
     orig_display_info: str = field(default="", repr=False)
+    frame_rate:    str = field(default="", repr=False)  # Cadence brute ffprobe (ex: "24000/1001", "25/1")
     encode_plan_codec: str = field(default="", repr=False)
     encode_plan_summary: str = field(default="", repr=False)
     encode_plan_hdr_badges: tuple[str, ...] = field(default_factory=tuple, repr=False)
     encode_plan_modified: bool = field(default=False, repr=False)
     sync_rewrite_label: str = field(default="", repr=False)
     sync_rewrite_mode: str = field(default="", repr=False)  # "" = auto, "offset" = sync standard forcée
+    sync_calibration: dict | None = field(default=None, repr=False)
 
     # Flags MKV éditables (transmis à FFmpeg si modifiés)
     flag_enabled:          bool = field(default=True,  repr=False)  # --track-enabled-flag
@@ -81,12 +99,15 @@ class TrackEntry:
         if not self.orig_display_info:
             self.orig_display_info = self.display_info
 
+    #: Libellé de piste désactivée, mis en évidence en rouge dans la colonne Info.
+    DISABLED_LABEL = "disabled"
+
     @property
     def flags_label(self) -> str:
         """Résumé court des flags actifs (pour la colonne Info du tableau)."""
         parts: list[str] = []
         if not self.flag_enabled:
-            parts.append("désact.")
+            parts.append(self.DISABLED_LABEL)
         if self.flag_default:
             parts.append("défaut")
         if self.flag_forced:
@@ -102,6 +123,36 @@ class TrackEntry:
         return "  ·  ".join(parts)
 
     @property
+    def is_audio(self) -> bool:
+        return str(self.track_type or "").strip().lower() == "audio"
+
+    @property
+    def is_subtitle(self) -> bool:
+        return str(self.track_type or "").strip().lower() == "subtitle"
+
+    @property
+    def is_video(self) -> bool:
+        return str(self.track_type or "").strip().lower() == "video"
+
+    @property
+    def cuts_count(self) -> int:
+        """Nombre de coupures intermédiaires (> 0 si multi-segments)."""
+        if not self.sync_calibration or not isinstance(self.sync_calibration, dict):
+            return 0
+        segments = self.sync_calibration.get("segments", [])
+        return max(0, len(segments) - 1)
+
+    @property
+    def cuts_label(self) -> str:
+        """Libellé affiché dans le tableau pour signaler les coupures intermédiaires."""
+        count = self.cuts_count
+        if count <= 0:
+            return ""
+        if count == 1:
+            return "✂ 1 coupure"
+        return f"✂ {count} coupures"
+
+    @property
     def full_info_label(self) -> str:
         """Info technique + flags actifs (affichage colonne Info)."""
         parts = [
@@ -111,6 +162,7 @@ class TrackEntry:
                 self.display_info,
                 self.flags_label,
                 self.time_shift_label,
+                self.cuts_label,
                 self.sync_rewrite_label,
             )
             if p
@@ -185,6 +237,8 @@ class SourceInput:
     #: de cibler -map_chapters sur la bonne source quand keep_chapters=True et
     #: que la première source n'en contient pas.
     has_chapters:            bool                   = False
+    #: Identité stable de la source d'origine, conservée lors des matérialisations temporaires.
+    origin_identity:         str                    = field(default="", repr=False)
 
 
 # =============================================================================
@@ -220,9 +274,9 @@ class RemuxConfig:
     work_dir:            Path | None   = None
     file_title:          str           = ""      # balise Title du segment de sortie
     #: Balises MKV globales à écrire dans le fichier de sortie via post-traitement FFmpeg.
-    #: None  → comportement par défaut (FFmpeg recopie les balises des sources).
-    #: dict  → les balises sources sont ignorées (-map_metadata -1) et ce dict est écrit.
-    #: {}    → supprime toutes les balises (-map_metadata -1, rien n'est écrit).
+    #: None  → copie les balises de la première source avec copy_tags=True.
+    #: dict  → les balises globales sources sont ignorées et ce dict est écrit.
+    #: {}    → supprime les balises globales (-map_metadata:g -1:g).
     tag_overrides:       dict[str, str] | None = None
     #: Cover TMDB à télécharger juste avant le remuxage : (url, filename).
     #: None → pas de cover TMDB en attente.
@@ -230,6 +284,15 @@ class RemuxConfig:
     #: Autorise une preview CLI à construire la commande même si le dossier de
     #: sortie n'existe pas encore. Ne doit pas être utilisé pour une exécution.
     allow_missing_output_dir: bool = False
+    #: Backend public du remux. Défaut ``ffmpeg`` (filet pour les constructions
+    #: directes) ; la distinction « champ absent » vs « choix explicite » est
+    #: portée par les loaders, qui résolvent le réglage global [matroska].
+    mux_backend: str = "ffmpeg"
+    sync_mode: str = "container"
+    sync_subtitles: str = "mirror"
+    sync_calibrations: dict[str, dict] = field(default_factory=dict)
+    crossfade_ms: int = 80
+    clean_nfo: bool = True
 
 
 # =============================================================================
@@ -244,6 +307,25 @@ class RemuxError(RuntimeError):
 # Fabrique depuis FileInfo
 # =============================================================================
 
+def _native_enabled_flags(info: FileInfo) -> dict[int, bool]:
+    """FlagEnabled par index de piste d'une source Matroska.
+
+    ``ffprobe`` n'expose pas cet élément (aucune disposition ne lui
+    correspond) : sans cette lecture, une piste désactivée en source
+    apparaîtrait activée dans le panneau.
+    """
+    path = Path(info.path)
+    if path.suffix.lower() not in _MATROSKA_SOURCE_EXTENSIONS or not path.is_file():
+        return {}
+    try:
+        from core.matroska.reader import MatroskaReader
+
+        tracks = MatroskaReader(path).tracks()
+    except (OSError, ValueError):
+        return {}
+    return {index: track.flag_enabled for index, track in enumerate(tracks)}
+
+
 def tracks_from_file_info(info: FileInfo, file_id: str = "") -> list[TrackEntry]:
     """
     Construit la liste des TrackEntry depuis un FileInfo inspecté.
@@ -252,16 +334,23 @@ def tracks_from_file_info(info: FileInfo, file_id: str = "") -> list[TrackEntry]
     file_id permet d'associer chaque piste à un SourceFile de l'UI.
     """
     entries: list[TrackEntry] = []
+    # FlagEnabled n'est exposé ni par ffprobe ni par ses dispositions : il est
+    # lu directement dans le TrackEntry Matroska pour que l'UI montre — et
+    # que le mux respecte — l'état réel de la source.
+    enabled_by_index = _native_enabled_flags(info)
 
-    def _flags_from_disp(raw: dict) -> dict:
+    def _flags_from_disp(raw: dict, stream_index: int) -> dict:
         disp = raw.get("disposition", {})
+        enabled = enabled_by_index.get(int(stream_index), True)
         return dict(
+            flag_enabled          = enabled,
             flag_default          = bool(disp.get("default",          0)),
             flag_forced           = bool(disp.get("forced",           0)),
             flag_hearing_impaired = bool(disp.get("hearing_impaired", 0)),
             flag_visual_impaired  = bool(disp.get("visual_impaired",  0)),
             flag_original         = bool(disp.get("original",         0)),
             flag_commentary       = bool(disp.get("comment",          0)),
+            orig_flag_enabled          = enabled,
             orig_flag_default          = bool(disp.get("default",          0)),
             orig_flag_forced           = bool(disp.get("forced",           0)),
             orig_flag_hearing_impaired = bool(disp.get("hearing_impaired", 0)),
@@ -296,7 +385,8 @@ def tracks_from_file_info(info: FileInfo, file_id: str = "") -> list[TrackEntry]
             orig_language=v.language or "",
             orig_title=v.title or "",
             file_id=file_id,
-            **_flags_from_disp(v.raw),
+            frame_rate=v.frame_rate or "",
+            **_flags_from_disp(v.raw, v.index),
         ))
 
     for a in info.audio_tracks:
@@ -317,11 +407,11 @@ def tracks_from_file_info(info: FileInfo, file_id: str = "") -> list[TrackEntry]
             orig_language=a.language or "",
             orig_title=a.title or "",
             file_id=file_id,
-            **_flags_from_disp(a.raw),
+            **_flags_from_disp(a.raw, a.index),
         ))
 
     for s in info.subtitle_tracks:
-        disp_flags = _flags_from_disp(s.raw)
+        disp_flags = _flags_from_disp(s.raw, s.index)
         # SubtitleTrack.forced / .default are the authoritative source;
         # override whatever raw["disposition"] may (or may not) contain.
         disp_flags["flag_forced"]      = s.forced

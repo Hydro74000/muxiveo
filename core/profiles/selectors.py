@@ -753,6 +753,13 @@ def remux_config_to_exact_job(
     job: dict[str, Any] = {
         "version": 1,
         "kind": "exact-job",
+        "mux_backend": config.mux_backend,
+        "sync_mode": config.sync_mode,
+        "sync_subtitles": config.sync_subtitles,
+        "sync_calibrations": config.sync_calibrations,
+        "crossfade_ms": config.crossfade_ms,
+        "clean_nfo": config.clean_nfo,
+        "tmdb_cover": list(config.tmdb_cover) if config.tmdb_cover else None,
         "sources": sources_payload,
         "output": str(config.output),
         "tracks": tracks_payload,

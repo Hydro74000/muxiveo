@@ -4,17 +4,48 @@ from __future__ import annotations
 
 import argparse
 
-from cli.commands import cmd_batch, cmd_inspect, cmd_preview, cmd_profile, cmd_remux, cmd_run, cmd_schema, cmd_validate
+from cli.commands import cmd_batch, cmd_inspect, cmd_preview, cmd_profile, cmd_remux, cmd_run, cmd_schema, cmd_tools, cmd_validate, cmd_version
 from core.version import APP_EXECUTABLE_NAME, APP_NAME
 
 
-def _add_common_options(parser: argparse.ArgumentParser) -> None:
+def _add_sync_options(parser):
+    parser.add_argument("--sync-mode", choices=("physical", "container"), default=None)
+    parser.add_argument("--sync-subtitles", choices=("mirror", "none"), default=None)
+    parser.add_argument("--clean-nfo", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--crossfade-ms", type=int, default=None)
+    parser.add_argument("--auto-forced-subs", action="store_true")
+    parser.add_argument("--forced-threshold", type=int, default=50)
+    parser.add_argument("--auto-sdh", action="store_true")
+    parser.add_argument("--auto-sync", action="store_true", help="Analyser et recalibrer automatiquement les sources dynamiquement.")
+    parser.add_argument("--calibration", help="Fichier JSON de calibration explicite (outrepasse l'analyse dynamique).")
+    parser.add_argument("--detect-cuts", action="store_true", help="Détecter les coupures et ruptures temporelles (multi-segments).")
+    parser.add_argument("--drift-threshold-ms", type=int, default=25, help="Seuil de dérive en ms pour détecter une coupure.")
+    parser.add_argument(
+        "--cadence-auto",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Détection et conversion automatique de cadence PAL <-> Cinéma.",
+    )
+    parser.add_argument(
+        "--cadence-method",
+        choices=("auto", "atempo", "asetrate"),
+        default="auto",
+        help="Méthode de conversion audio pour cadence : auto (analyse acoustique du pitch, défaut), atempo (tonalité préservée) ou asetrate (hauteur naturelle / pitch shift).",
+    )
+    parser.add_argument("--export-workflow", help="Sauvegarder le workflow exact sans exécuter.")
+
+
+def _add_base_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", help="Fichier JSON job/template.")
     parser.add_argument("--ffmpeg", help="Chemin ffmpeg override.")
     parser.add_argument("--ffprobe", help="Chemin ffprobe override.")
     parser.add_argument("--mediainfo", help="Chemin mediainfo override.")
     parser.add_argument("--work-dir", help="Répertoire de travail override.")
     parser.add_argument("--threads", type=int, help="Nombre de threads ffmpeg.")
+    parser.add_argument(
+        "--mux-backend", choices=("auto", "native", "ffmpeg"), default=None,
+        help="Backend MKV : auto (défaut), native ou ffmpeg. Prioritaire sur le job.",
+    )
     parser.add_argument(
         "--output-template",
         dest="output_template",
@@ -38,6 +69,11 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Affiche la sortie ffmpeg en direct (progression, codecs, timing). Par défaut, seule la progression des étapes de workflow est affichée.",
     )
+
+
+def _add_common_options(parser: argparse.ArgumentParser) -> None:
+    _add_sync_options(parser)
+    _add_base_options(parser)
 
 
 def _add_tmdb_options(parser: argparse.ArgumentParser) -> None:
@@ -65,6 +101,16 @@ def build_parser() -> argparse.ArgumentParser:
     schema.add_argument("--version", dest="schema_version", choices=("1", "exact-job", "decision-profile", "all"), default="1")
     schema.add_argument("--log-format", choices=("text", "jsonl"), default="text")
     schema.set_defaults(func=cmd_schema)
+
+    tools = sub.add_parser("tools", help="Afficher les chemins d'outils résolus par Muxiveo.")
+    tools.add_argument("--log-format", choices=("text", "jsonl"), default="text")
+    tools.set_defaults(func=cmd_tools)
+
+    version = sub.add_parser("version", help="Afficher la version de Muxiveo.")
+    version.add_argument("--check", action="store_true", help="Comparer avec la dernière release GitHub (code retour 8 si mise à jour disponible).")
+    version.add_argument("--channel", choices=("stable", "unstable"), help="Canal de mise à jour (défaut : réglage [ui] update_channel).")
+    version.add_argument("--log-format", choices=("text", "jsonl"), default="text")
+    version.set_defaults(func=cmd_version)
 
     for name, help_text, func in (
         ("validate", "Valider une config remux.", cmd_validate),
@@ -153,4 +199,37 @@ def build_parser() -> argparse.ArgumentParser:
     profile_batch.add_argument("--continue-on-error", action="store_true")
     profile_batch.add_argument("--summary")
     profile_batch.set_defaults(func=cmd_profile)
+    from cli.hybrid import cmd_hybrid, cmd_sync_scan, cmd_shift_subs
+    scan = sub.add_parser("sync-scan", help="Analyser le calage acoustique ou par sous-titres.")
+    _add_common_options(scan)
+    scan.add_argument("--ref", required=True)
+    scan.add_argument("--target", required=True)
+    scan.add_argument("--stream-ref", default="0:a:0")
+    scan.add_argument("--stream-target", default="0:a:0")
+    scan.add_argument("--type", choices=("auto", "audio", "subtitle"), default="auto", help="Type d'analyse : auto (détection par extension/flux), audio ou subtitle.")
+    scan.add_argument("--output-json")
+    scan.set_defaults(func=cmd_sync_scan)
+    subs = sub.add_parser("shift-subs", help="Recaler des sous-titres texte.")
+    _add_base_options(subs)
+    subs.add_argument("-i", "--input", required=True)
+    subs.add_argument("-o", "--output", required=True)
+    calibration = subs.add_mutually_exclusive_group(required=True)
+    calibration.add_argument("--offset-ms", type=float)
+    calibration.add_argument("--calibration")
+    subs.add_argument("--force", action="store_true")
+    subs.set_defaults(func=cmd_shift_subs)
+    hybrid = sub.add_parser("hybrid", help="Assembler une paire ou une saison hybride.")
+    _add_common_options(hybrid)
+    for option in ("ref", "donor", "ref-dir", "donor-dir", "profile", "report-json"):
+        hybrid.add_argument("--" + option)
+    hybrid.add_argument("-o", "--output-dir", required=True)
+    hybrid.add_argument("--auto-tmdb", type=int, nargs="?", const=0)
+    hybrid.add_argument("--tmdb-apikey", default="")
+    hybrid.add_argument("--no-cover", action="store_true")
+    hybrid.add_argument("--tag", default="MVO")
+    hybrid.add_argument("--purge-temp", action="store_true", help="Compatibilité : nettoyage toujours activé.")
+    hybrid.add_argument("--dry-run", action="store_true")
+    hybrid.add_argument("--force", action="store_true")
+    hybrid.add_argument("--continue-on-error", action="store_true")
+    hybrid.set_defaults(func=cmd_hybrid, sync_mode="physical", sync_subtitles="mirror", clean_nfo=True, crossfade_ms=80)
     return parser

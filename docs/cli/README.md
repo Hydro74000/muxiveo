@@ -25,6 +25,8 @@ Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans ini
 | `inspect` | inspecte une source et sort du JSON |
 | `inspect --config-template` | génère un template JSON de départ |
 | `schema` | affiche le schéma JSON public du contrat CLI |
+| `tools` | affiche en JSON les chemins d'outils effectivement résolus par Muxiveo |
+| `version [--check] [--channel stable\|unstable]` | affiche la version ; `--check` la compare à la dernière release du canal (stable = `main`, unstable = pré-versions `devel-cli`) |
 | `validate` | valide un job/template sans exécuter ffmpeg |
 | `preview` | affiche la commande ffmpeg prévue |
 | `remux` | exécute un remux headless |
@@ -33,6 +35,9 @@ Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans ini
 | `preview --profile` | applique un profil en dry preview JSON/commande |
 | `run/remux --profile` | applique un profil et remuxe |
 | `batch --profile` | applique un profil à un dossier |
+| `hybrid` | hybridation de référence et donneur (paire ou saison entière) |
+| `sync-scan` | corrélation acoustique FFT et extraction de calibration |
+| `shift-subs` | recalage physique de fichiers sous-titres (SRT, ASS) |
 
 Exemples :
 
@@ -41,6 +46,9 @@ Muxiveo-cli inspect source.mkv
 Muxiveo-cli inspect source.mkv --config-template --output sortie.mkv
 Muxiveo-cli schema --output Muxiveo-cli.schema.json
 Muxiveo-cli schema --version decision-profile
+Muxiveo-cli tools
+Muxiveo-cli version --check --log-format jsonl
+Muxiveo-cli version --check --channel unstable
 Muxiveo-cli preview --config docs/cli/middle.json
 Muxiveo-cli preview --config docs/cli/middle.json --json
 Muxiveo-cli validate --config docs/cli/middle.json --json
@@ -80,6 +88,28 @@ Job minimal :
   "output": "sortie.mkv"
 }
 ```
+
+La sortie remux est exclusivement `.mkv`. Le champ additif `mux_backend` est
+facultatif et son absence conserve tous les jobs v1 existants :
+
+```json
+{
+  "version": 1,
+  "kind": "exact-job",
+  "sources": [{"path": "source.mkv"}],
+  "output": "sortie.mkv",
+  "mux_backend": "auto"
+}
+```
+
+- `auto` inspecte le plan complet, choisit le writer natif lorsqu'il peut tenir
+  le contrat et journalise tout repli FFmpeg avec sa raison exacte ;
+- `native` est strict et ne replie jamais ;
+- `ffmpeg` conserve le chemin historique.
+
+`--mux-backend auto|native|ffmpeg` surcharge le job pour `validate`, `preview`,
+`run`, `remux`, `batch` et les variantes basées sur un profil. La préférence
+persistée `[matroska] mux_backend = auto` ne remplace pas un choix explicite du job.
 
 ### `sources`
 
@@ -384,16 +414,16 @@ Les exports GUI récents ajoutent aussi un bloc `tmdb` désactivé avec
 
 ```bash
 Muxiveo-cli batch \
-  --template "/home/hydromel/Vidéos/Spider-Noir.S01E01.MULTi.VF2.HDR.DV.2160p.WEB.H265-SUPPLY-MVO.exact-job.json" \
-  --input-dir "/home/hydromel/Téléchargements/sabnzbd/complete/Spider-Noir.S*E*.MULTi.VF2.HDR.DV.2160p.WEB.H265-SUPPLY" \
-  --output-dir "/home/hydromel/Vidéos/Spider-Noir" \
+  --template "/chemin/vers/serie1.S01E01.MULTi.VF2.HDR.DV.2160p.WEB.H265-SUPPLY-MVO.exact-job.json" \
+  --input-dir "/chemin/vers/telechargements/serie1.S*E*.MULTi.VF2.HDR.DV.2160p.WEB.H265-SUPPLY" \
+  --output-dir "/chemin/vers/videos/serie1" \
   --auto-tmdb \
   --output-template "{title:release}.{season_episode}.{episode_title:release}.{audio-multi}.{audio-fr-tag}.{video-resolution:best}.{video-source}.{video-hdr:best}.{video-dolby-vision}.{video-codec-release:best}-{group}" \
   --dry-run
 ```
 
 `--input-dir` accepte aussi les globs de dossiers ; l'exemple ci-dessus crée un
-job pour les MKV présents dans chaque dossier `Spider-Noir.SxxEyy...`.
+job pour les MKV présents dans chaque dossier `serie1.SxxEyy...`.
 
 ### `batch`
 
@@ -471,9 +501,9 @@ Tokens disponibles :
 
 | Token | Source | Exemple |
 |---|---|---|
-| `{source_name}` | nom du fichier source sans extension | `Devil.May.Cry.2025.S01E02.MULTi.1080p.WEB.x264` |
-| `{title}` | titre TMDB (film ou série) | `Devil May Cry` |
-| `{title:release}` | titre TMDB normalisé release ASCII à points | `Devil.May.Cry` |
+| `{source_name}` | nom du fichier source sans extension | `Serie1.2025.S01E02.MULTi.1080p.WEB.x264` |
+| `{title}` | titre TMDB (film ou série) | `Serie1` |
+| `{title:release}` | titre TMDB normalisé release ASCII à points | `Serie1` |
 | `{year}` | année TMDB | `2025` |
 | `{episode_title}` | titre d'épisode TMDB | `Pilote` |
 | `{episode_title:release}` | titre d'épisode normalisé release ASCII à points | `Le.Pilote` |
@@ -576,10 +606,22 @@ Exemple `preview --json` :
   "output": "sortie.mkv",
   "sources": [{"index": 0, "path": "source.mkv"}],
   "track_order": [{"source": 0, "id": 0}],
+  "selected_backend": "native",
+  "plan_version": 1,
+  "preparation_commands": [],
+  "native_diagnostics": [],
+  "execution_preview": {"backend": "native", "action": "internal_matroska_write"},
   "command": ["ffmpeg", "-hide_banner", "..."],
   "command_text": "ffmpeg \\\n    -hide_banner \\\n    ..."
 }
 ```
+
+`command` et la commande FFmpeg de référence restent présents pour la
+compatibilité des consommateurs v1. `selected_backend`, `plan_version`,
+`execution_preview`, `preparation_commands` et `native_diagnostics` décrivent
+l'exécution réelle. La preview texte commence par le backend choisi. En JSONL,
+l'événement `mux_backend` expose séparément le backend demandé/sélectionné, le
+repli, sa raison et les diagnostics.
 
 ## Verbosité
 
@@ -607,6 +649,7 @@ Muxiveo-cli batch --template t.json --input-dir Serie --output-dir out --verbose
 | 5 | sortie existante sans `--force` |
 | 6 | echec workflow |
 | 7 | batch partiellement echoue |
+| 8 | `version --check` : mise a jour disponible |
 
 ## Batch JSON Lines
 
@@ -617,3 +660,190 @@ Avec `--log-format jsonl`, le batch emet des evenements structurés :
 {"level":"info","message":"Batch job 1 termine","event":"batch_job","job_index":0,"input":"S01E01.mkv","output":"S01E01.remux.mkv","status":"success"}
 {"level":"info","message":"Batch termine : 1/1 succes.","event":"batch_summary","total":1,"failures":0}
 ```
+
+## Cas concrets et synchronisation (Remux & Hybridation)
+
+Cette section illustre l'usage du CLI à travers des cas d'usage réels et progressifs, utilisant des désignations génériques (`film1`, `film2`, `serie1`, `serie2`).
+
+### Flux de décision global
+
+```mermaid
+flowchart TD
+    Start["Fichiers multimédias d'entrée"] --> Decision{"Quel est l'objectif ?"}
+
+    Decision -->|"Nettoyer 1 fichier, réordonner ses pistes,<br/>ou synchroniser 2 fichiers manuellement"| ModeRemux["Mode REMUX"]
+    Decision -->|"Fusionner automatiquement 2 sources<br/>(Vidéo de référence + Langues d'un donneur)"| ModeHybrid["Mode HYBRID"]
+
+    subgraph ModeRemux ["Mode REMUX (Conteneur & Synchronisation)"]
+        R_In["film1.mkv (ou film1_video.mkv + film1_audio.mkv)"]
+        R_In --> R_Choice{"Besoin de synchronisation ?"}
+        R_Choice -->|"Non (copie directe simple)"| R_Fast["Passthrough direct natif v4"]
+        R_Choice -->|"Oui (acoustique dynamique)"| R_Auto["--auto-sync<br/>--detect-cuts (coupures)<br/>--cadence-auto (PAL/Cinéma)"]
+        R_Choice -->|"Oui (fichier enregistré)"| R_Manual["--calibration calibration.json"]
+        R_Auto --> R_ZeroDelay["--sync-mode physical (Zero Delay)"]
+        R_Manual --> R_ZeroDelay
+        R_Fast --> R_Out["film1_propre.mkv"]
+        R_ZeroDelay --> R_Out
+    end
+
+    subgraph ModeHybrid ["Mode HYBRID (Studio d'Hybridation v4)"]
+        H_Ref["Référence : film1_ref.mkv (Vidéo 4K/VO)"]
+        H_Don["Donneur : film1_donor.mkv (Audio/Subs FR)"]
+        H_Ref & H_Don --> H_Core["Appariement auto + FFT acoustique<br/>+ Détection cadence et coupures"]
+        H_Core --> H_Out["film1.Hybrid.mkv (Zero Delay)"]
+    end
+```
+
+---
+
+### Cas 1 : REMUX unitaire et par lot avec synchronisation & détection de coupures
+
+Le mode `remux` traite un fichier unique ou plusieurs flux associés. L'assemblage s'effectue via le muxer natif v4 sans réencodage vidéo. Lorsque des pistes audio doivent être recalées ou converties en cadence, Muxiveo applique une synchronisation physique propre (*Zero Delay*).
+
+#### A. Remux avec synchronisation acoustique automatique (`--auto-sync`)
+
+Dans ce cas concret, on associe une vidéo `film1_video.mkv` avec une piste audio externe `film1_audio.mkv`. On demande à Muxiveo de comparer le son pour calculer le décalage, de détecter les coupures intermédiaires (ex: passages publicitaires TV) et d'adapter la cadence :
+
+```bash
+Muxiveo-cli remux \
+  -i "film1_video.mkv" \
+  -i "film1_audio.mkv" \
+  -o "film1_final.mkv" \
+  --auto-sync \
+  --detect-cuts \
+  --drift-threshold-ms 25 \
+  --cadence-auto \
+  --cadence-method auto \
+  --sync-mode physical \
+  --crossfade-ms 80 \
+  --auto-tmdb \
+  --mux-backend native \
+  --verbose
+```
+
+* `--auto-sync` : Compare automatiquement les pistes audio pour identifier le décalage temporel initial.
+* `--detect-cuts` : Détecte les ruptures temporelles (coupures ou insertions) et scinde le calage en plusieurs segments.
+* `--drift-threshold-ms 25` : Seuil de décalage (en ms) à partir duquel une discontinuité temporelle est considérée comme une coupure.
+* `--cadence-auto` : Détecte un éventuel écart de cadence (ex: source TV à 25 FPS PAL vs source vidéo à 23.976 FPS Cinéma).
+* `--cadence-method auto` : Analyse acoustique de la hauteur tonale (F0) pour appliquer `atempo` (préservation du timbre) ou `asetrate` (hauteur naturelle).
+* `--sync-mode physical` : Ajuste physiquement l'audio (coupe ou insertion de silence) pour garantir un calage parfait sans décalage virtuel susceptible d'être ignoré par certains lecteurs.
+* `--crossfade-ms 80` : Micro-fondu enchaîné aux points de découpe pour supprimer tout bruit ou claquement numérique.
+
+#### B. Remux avec calibration manuelle préétablie (`--calibration`)
+
+Si une calibration a déjà été générée (via le Synchro Studio de l'interface graphique ou via `sync-scan`), elle peut être injectée directement :
+
+```bash
+Muxiveo-cli remux \
+  -i "film1_video.mkv" \
+  -i "film1_audio.mkv" \
+  -o "film1_calibre.mkv" \
+  --calibration "calibration_film1.json" \
+  --sync-mode physical \
+  --auto-tmdb \
+  --mux-backend native
+```
+
+#### C. Remux par lot pour une saison complète (`batch`)
+
+Pour traiter l'ensemble des épisodes d'une série sans intervention manuelle :
+
+```bash
+Muxiveo-cli batch \
+  --profile "ProfilSerie" \
+  --input-dir "/chemin/sources/serie1/Saison 01" \
+  --output-dir "/chemin/sorties/serie1/Saison 01" \
+  --recursive \
+  --auto-tmdb \
+  --output-template "{title:release}.S{season}E{episode}.{episode_title:release}.MULTi.{video-resolution:best}-{group}" \
+  --auto-sync \
+  --detect-cuts \
+  --sync-mode physical \
+  --dry-run
+```
+
+---
+
+### Cas 2 : HYBRID (Le Studio d'Hybridation headless v4)
+
+La commande `hybrid` orchestre automatiquement l'appariement d'une source de référence (qui fournit la vidéo et les chapitres) et d'une source donneuse (qui fournit l'audio et les sous-titres additionnels).
+
+#### Schéma d'analyse hybride
+```text
+RÉFÉRENCE (film1_ref.mkv)   : [Introduction] ── [ Scène 1 (23.976 fps) ] ── [ Scène 2 ]
+DONNEUR   (film1_donor.mkv) :     [Intro TV] ── [ Scène 1 (25.000 fps) ] ── [ Scène 2 ]
+                                       │
+                             [ Scanner Acoustique ]
+                                       │
+  • Calage au départ        ──► Écart mesuré à la milliseconde près.
+  • Écart de cadence        ──► Détection 25 FPS (PAL) ↔ 23.976 FPS (Cinéma).
+  • Discrimination pitch    ──► Choix automatique atempo ou asetrate.
+  • Découpage des coupures  ──► Alignement indépendant des segments temporels.
+  • Calage des sous-titres  ──► Décalage proportionnel des pistes SRT/ASS.
+                                       │
+SORTIE HYBRIDE              : [Vidéo Référence 1:1] + [Audio Donneur Calé Zero Delay]
+```
+
+#### A. Hybridation d'un film unitaire
+```bash
+Muxiveo-cli hybrid \
+  --ref "film1_ref.mkv" \
+  --donor "film1_donor.mkv" \
+  -o "/chemin/sorties/film1" \
+  --auto-sync \
+  --detect-cuts \
+  --cadence-auto \
+  --cadence-method auto \
+  --sync-mode physical \
+  --auto-tmdb \
+  --tag "MVO"
+```
+
+#### B. Hybridation d'une saison complète de série
+```bash
+Muxiveo-cli hybrid \
+  --ref-dir "/chemin/sources/serie1_ref_2160p" \
+  --donor-dir "/chemin/sources/serie1_donor_1080p" \
+  -o "/chemin/sorties/serie1_hybride" \
+  --auto-sync \
+  --detect-cuts \
+  --cadence-auto \
+  --cadence-method auto \
+  --auto-tmdb \
+  --tag "MVO"
+```
+
+* Muxiveo analyse les noms de fichiers dans les deux dossiers, apparie automatiquement chaque épisode (`S01E01` avec `S01E01`, `S01E02` avec `S01E02`, etc.), applique l'analyse acoustique individuelle et assemble les fichiers finaux.
+
+---
+
+### Cas 3 : Outils dédiés `sync-scan` et `shift-subs`
+
+Pour tester ou dissocier l'analyse acoustique du multiplexage final :
+
+#### 1. Extraire une calibration acoustique sans remuxer (`sync-scan`)
+```bash
+Muxiveo-cli sync-scan \
+  --ref "film1_ref.mkv" \
+  --target "film1_donor.mkv" \
+  --detect-cuts \
+  --output-json "calibration_film1.json"
+```
+Ce fichier JSON contient les décalages mesurés, les coupures repérées et les facteurs de cadence, prêt à être réutilisé avec `--calibration`.
+
+#### 2. Recaler physiquement un fichier de sous-titres externe (`shift-subs`)
+```bash
+# Recalage par décalage linéaire fixe (+1250 millisecondes) :
+Muxiveo-cli shift-subs \
+  -i "film1_sous-titre.srt" \
+  -o "film1_sous-titre_cale.srt" \
+  --offset-ms 1250
+
+# Ou recalage complet à partir d'un fichier de calibration multi-coupures :
+Muxiveo-cli shift-subs \
+  -i "film1_sous-titre.ass" \
+  -o "film1_sous-titre_cale.ass" \
+  --calibration "calibration_film1.json"
+```
+
+

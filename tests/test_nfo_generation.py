@@ -12,11 +12,9 @@ Couverture :
 
 from __future__ import annotations
 
-import os
-import subprocess
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -129,11 +127,15 @@ class TestAppConfigGenerateNfo:
         keys = [f["key"] for f in metadata_group["fields"]]
         assert "generate_nfo" in keys
 
-    def test_ini_field_groups_no_remux_section(self):
-        """La section 'remux' a été supprimée de INI_FIELD_GROUPS."""
+    def test_ini_field_groups_includes_mux_backend(self):
+        """La section matroska expose le backend de muxage persistant."""
         from core.config import INI_FIELD_GROUPS
-        sections = [g["section"] for g in INI_FIELD_GROUPS]
-        assert "remux" not in sections
+        matroska_group = next(g for g in INI_FIELD_GROUPS if g["section"] == "matroska")
+        keys = [field["key"] for field in matroska_group["fields"]]
+        assert "mux_backend" in keys
+        assert "regenerate_statistics" in keys
+        mux_field = next(f for f in matroska_group["fields"] if f["key"] == "mux_backend")
+        assert mux_field["attr"] == "matroska_mux_backend"
 
 
 # ===========================================================================
@@ -144,7 +146,6 @@ class TestSettingsPanelGenerateNfo:
 
     def test_checkbox_exists_and_defaults_checked(self, qt_app, tmp_path):
         """Le panneau expose une checkbox generate_nfo cochée par défaut."""
-        from core.config import AppConfig
         from ui.panels.settings_panel import SettingsPanel
 
         cfg, _ = _make_config(tmp_path)
@@ -223,6 +224,7 @@ class TestWriteMediainfoNfo:
         log_cb = MagicMock()
 
         fake_result = MagicMock()
+        fake_result.returncode = 0
         fake_result.stdout = "General\nFormat: Matroska\n"
 
         with patch("core.workflows.remux.subprocess.run", return_value=fake_result) as mock_run:
@@ -246,6 +248,7 @@ class TestWriteMediainfoNfo:
         mkv = tmp_path / "film.mkv"
         mkv.touch()
         fake_result = MagicMock()
+        fake_result.returncode = 0
         fake_result.stdout = (
             "General\n"
             f"Complete name                            : {mkv.resolve()}\n"
@@ -266,6 +269,7 @@ class TestWriteMediainfoNfo:
         mkv = tmp_path / "film.mkv"
         mkv.touch()
         fake_result = MagicMock()
+        fake_result.returncode = 0
         fake_result.stdout = (
             "General\n"
             "Complete name                            : film.mkv\n"
@@ -285,6 +289,7 @@ class TestWriteMediainfoNfo:
         mkv = tmp_path / "film.mkv"
         mkv.touch()
         fake_result = MagicMock()
+        fake_result.returncode = 0
         fake_result.stdout = "info"
 
         with patch("core.workflows.remux.subprocess.run", return_value=fake_result) as mock_run:
@@ -301,6 +306,7 @@ class TestWriteMediainfoNfo:
         mkv = subdir / "film.mkv"
         mkv.touch()
         fake_result = MagicMock()
+        fake_result.returncode = 0
         fake_result.stdout = "data"
 
         with patch("core.workflows.remux.subprocess.run", return_value=fake_result):
@@ -317,6 +323,7 @@ class TestWriteMediainfoNfo:
         mkv = subdir / "film.mkv"
         mkv.touch()
         fake_result = MagicMock()
+        fake_result.returncode = 0
         fake_result.stdout = "data"
 
         monkeypatch.chdir(tmp_path)

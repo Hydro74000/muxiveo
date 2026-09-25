@@ -32,11 +32,17 @@ jobs:
       - name: Determine version
         id: version
         shell: pwsh
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
-          if ("${{ github.event.inputs.version }}" -ne "") {
-            $ver = "${{ github.event.inputs.version }}"
+          if ($env:INPUT_VERSION -ne "") {
+            $ver = $env:INPUT_VERSION
           } else {
             $ver = python -c "from core.version import APP_VERSION; print(APP_VERSION)"
+          }
+          $ver = $ver.Trim()
+          if ($ver -cnotmatch '\A[vV]?[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?\z') {
+            throw "Invalid package version"
           }
           echo "VERSION=$ver" >> $env:GITHUB_OUTPUT
           echo "Version: $ver"
@@ -90,14 +96,18 @@ jobs:
 
       - name: Build PyInstaller + MSIX Store upload package
         shell: pwsh
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
-          python package.py --msix --msixupload --version "${{ steps.version.outputs.VERSION }}"
+          python package.py --msix --msixupload --version "$env:PACKAGE_VERSION"
 
       - name: Collect x64 MSIX artifacts
         shell: pwsh
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
           New-Item -ItemType Directory -Force -Path dist/releases | Out-Null
-          Copy-Item "Muxiveo-${{ steps.version.outputs.VERSION }}.msix" "dist/releases/Muxiveo-${{ steps.version.outputs.VERSION }}.msix" -Force
+          Copy-Item "Muxiveo-$env:PACKAGE_VERSION.msix" "dist/releases/Muxiveo-$env:PACKAGE_VERSION.msix" -Force
 
       - name: Upload x64 MSIX artifacts
         uses: actions/upload-artifact@v4

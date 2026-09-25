@@ -7,6 +7,7 @@ Public:
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -53,6 +54,7 @@ from core.workflows.common.sync_rewrite import (
 from core.workflows.common.timeline_sync import (
     sync_cleanup_paths as _common_sync_cleanup_paths,
 )
+from core.workflows.common.track_statistics import derive_output_statistics
 from core.workflows.encode.catalog import (
     is_h264_video_codec,
 )
@@ -65,14 +67,14 @@ from core.workflows.remux_timeline_sync import (
     LiveSyncSession,
     TimelineSyncFallbackHelper,
 )
+from core.workflows.encode import runtime_helpers as _runtime_helpers
 from core.workflows.encode.runtime_helpers import (
     EncodeOffsetInputSpec as _EncodeOffsetInputSpec,
     VideoPreparationResourcePolicy as _VideoPreparationResourcePolicy,
-    VideoTrackPreparationOrchestrator as _VideoTrackPreparationOrchestrator,
     VideoTrackPrepSpec as _VideoTrackPrepSpec,
-    VideoTrackPrepTask as _VideoTrackPrepTask,
     ui_encode_progress_message as _ui_encode_progress_message,
 )
+
 from core.workflows.encode.runtime import ram_buffer as _ram_buffer_module
 from core.workflows.encode.runtime import (
     AttachmentPreparationService as _AttachmentPreparationService,
@@ -91,6 +93,7 @@ from core.workflows.encode.runtime import (
     estimate_duration_seconds as _estimate_duration_seconds_runtime,
     estimate_inject_storage_requirements as _estimate_inject_storage_requirements_runtime,
     estimate_inject_video_bytes as _estimate_inject_video_bytes_runtime,
+    extract_attachment_data as _extract_attachment_data_runtime,
     extract_attached_pic as _extract_attached_pic_runtime,
     format_bytes as _format_bytes_runtime,
     probe_attachment_stream as _probe_attachment_stream_runtime,
@@ -124,7 +127,6 @@ from core.workflows.encode.runtime.multisource_sync import (
     append_sync_inputs as _append_sync_inputs_runtime,
 )
 from core.workflows.encode.runtime.nvencc import (
-    build_decode_pipe_cmd as _build_decode_pipe_nvencc,
     is_nvencc_codec as _is_nvencc_codec_runtime,
     nvencc_supports_dynamic_hdr as _nvencc_supports_dynamic_hdr_runtime,
 )
@@ -137,6 +139,18 @@ from core.workflows.encode.runtime.nvencc_execution import (
     NvenccRuntimeRemuxBuilder as _NvenccRuntimeRemuxBuilder,
     NvenccRuntimeRemuxBuilderCallbacks as _NvenccRuntimeRemuxBuilderCallbacks,
     build_nvencc_pipeline_commands as _build_nvencc_pipeline_commands_runtime,
+)
+from core.workflows.encode.mux_backend import (
+    EncodeMuxDecision as _EncodeMuxDecision,
+    PIPELINE_FFMPEG_DIRECT as _PIPELINE_FFMPEG_DIRECT,
+    PIPELINE_METADATA_INJECT as _PIPELINE_METADATA_INJECT,
+    PIPELINE_MULTI_VIDEO as _PIPELINE_MULTI_VIDEO,
+    PIPELINE_NVENCC_DIRECT as _PIPELINE_NVENCC_DIRECT,
+    select_encode_mux_backend as _select_encode_mux_backend,
+)
+from core.workflows.encode.runtime.native_mux import (
+    NativeVideoArtifactRef as _NativeVideoArtifactRef,
+    assemble_encode_output_native as _assemble_encode_output_native,
 )
 from core.workflows.encode.runtime.nvencc_routing import (
     NvenccInputRouter as _NvenccInputRouter,
@@ -194,19 +208,15 @@ from core.workflows.encode.planning.metadata_plan import (
 from core.workflows.encode.planning.encode_plan import build_encode_plan as _build_encode_plan_data
 from core.workflows.encode.planning.offsets import (
     build_offset_specs as _build_offset_specs_plan,
-    offset_seconds as _offset_seconds_plan,
     track_offset_ms as _track_offset_ms_plan,
     track_time_offset_mode_lookup as _track_time_offset_mode_lookup_plan,
-    track_time_offset_lookup as _track_time_offset_lookup_plan,
     video_map_arg as _video_map_arg_plan,
 )
 from core.workflows.encode.planning.preview import (
     format_preview_command as _format_preview_command_plan,
     format_preview_commands as _format_preview_commands_plan,
-    format_preview_selection as _format_preview_selection_plan,
 )
 from core.workflows.encode.planning.track_assembly import (
-    build_track_input_paths as _build_track_input_paths_plan,
     resolve_track_assembly as _resolve_track_assembly_plan,
 )
 from core.workflows.encode.planning.sources import (
@@ -216,9 +226,6 @@ from core.workflows.encode.planning.sources import (
 from core.workflows.encode.planning.subtitles import (
     probe_stream_indices as _probe_stream_indices_plan,
     resolve_subtitle_tracks_for_encode as _resolve_subtitle_tracks_for_encode_plan,
-)
-from core.workflows.encode.planning.sync_plan import (
-    build_sync_analysis_plan as _build_sync_analysis_plan,
 )
 from core.workflows.encode.planning.validation import (
     is_dir_writable as _is_dir_writable_plan,
@@ -231,14 +238,18 @@ from core.workflows.encode.models import (
     VideoEncodeSettings,
     normalize_audio_bitrate_kbps,
 )
-from core.workflows.matroska_dovi_block_addition import (
-    MatroskaDoviBlockAdditionEditor,
-)
+from core.workflows.encode.output_contract import build_encode_output_contract
+from core.matroska.contract import ExpectedMatroskaAttachment
+from core.workflows.common.matroska_finalize import MatroskaOutputTransaction, PostAction
 from core.workflows.encode.planning.plan_models import (
     EncodePlan as _EncodePlan,
     MaterializedContainerMetadataPlan as _MaterializedContainerMetadataPlan,
     ResolvedTrackAssembly as _ResolvedTrackAssembly,
 )
+
+# Points d'injection historiques utilisés par les tests et extensions internes.
+_VideoTrackPreparationOrchestrator = _runtime_helpers.VideoTrackPreparationOrchestrator
+_VideoTrackPrepTask = _runtime_helpers.VideoTrackPrepTask
 
 
 def _qt_direct_connection_type():
@@ -315,6 +326,7 @@ class EncodeWorkflow(QObject):
         sync_rewrite_enabled:      bool = False,
         aac_bitrate_per_channel_kbps: int = 96,
         eac3_bitrate_per_channel_kbps: int = 96,
+        regenerate_statistics: bool = True,
     ) -> None:
         super().__init__(parent)
         self._ffmpeg = ffmpeg_bin
@@ -356,8 +368,10 @@ class EncodeWorkflow(QObject):
         self._postprocess_service = RemuxPostprocessService(
             ffprobe_bin=self._ffprobe_bin_from_ffmpeg(ffmpeg_bin),
         )
-        from core.workflows.matroska_header_editor import MatroskaMuxingAppPostAction
-        from core.workflows.matroska_language_editor import MatroskaLanguagePostAction
+        from core.workflows.common.matroska_finalize import MatroskaMuxingAppPostAction
+        from core.workflows.common.matroska_finalize import MatroskaLanguagePostAction
+        from core.workflows.common.matroska_finalize import MatroskaTrackEnabledPostAction
+        from core.workflows.common.matroska_finalize import MatroskaTrackStatisticsPostAction
         self._muxing_post_action = MatroskaMuxingAppPostAction(
             app_prefix=MatroskaMuxingAppPostAction.default_prefix(APP_VERSION_LABEL),
             log_cb=self.log_message.emit,
@@ -365,10 +379,16 @@ class EncodeWorkflow(QObject):
         self._language_post_action = MatroskaLanguagePostAction(
             log_cb=self.log_message.emit,
         )
+        self._track_enabled_post_action = MatroskaTrackEnabledPostAction(
+            log_cb=self.log_message.emit,
+        )
+        self._statistics_post_action = MatroskaTrackStatisticsPostAction(
+            writing_app=MatroskaMuxingAppPostAction.default_prefix(APP_VERSION_LABEL),
+            log_cb=self.log_message.emit,
+            enabled=regenerate_statistics,
+        )
         self._signal_binding_service = _SignalBindingService(
             _SignalBindingServiceCallbacks(
-                muxing_bind_on_success=lambda signals, output: self._muxing_post_action.bind_on_success(signals, output),
-                language_bind_on_success=lambda signals, output: self._language_post_action.bind_on_success(signals, output),
                 write_nfo=lambda output: write_mediainfo_nfo(
                     output,
                     log_cb=self.log_message.emit,
@@ -408,6 +428,9 @@ class EncodeWorkflow(QObject):
 
     def set_generate_nfo(self, generate_nfo: bool) -> None:
         self._generate_nfo = generate_nfo
+
+    def set_regenerate_statistics(self, enabled: bool) -> None:
+        self._statistics_post_action.set_enabled(enabled)
 
     def set_sync_rewrite_enabled(self, enabled: bool) -> None:
         self._sync_rewrite_enabled = bool(enabled)
@@ -886,7 +909,9 @@ class EncodeWorkflow(QObject):
         *,
         prep_signals: TaskSignals | None = None,
         plan: _EncodePlan | None = None,
+        mux_decision: _EncodeMuxDecision | None = None,
     ) -> TaskSignals:
+        native_mux = mux_decision is not None and mux_decision.selected == "native"
         return _NvenccDirectOutputRunner(
             _NvenccDirectOutputRunnerCallbacks(
                 ffmpeg_bin=self._ffmpeg,
@@ -907,12 +932,95 @@ class EncodeWorkflow(QObject):
                     progress_cb=progress_cb,
                     signals=signals,
                 ),
+                finalize_ffmpeg=self._finalize_ffmpeg_output,
+                native_assemble=self._native_assemble_nvencc if native_mux else None,
             )
         ).run(
             config,
             cleanup_paths,
             prep_signals=prep_signals,
             plan=plan,
+        )
+
+    @staticmethod
+    def _plan_resolved_subtitles(plan: _EncodePlan | None) -> list[tuple[Path, int]] | None:
+        """Sous-titres résolus du plan (toutes sources) pour l'assemblage natif.
+
+        ``None`` quand aucun plan complet n'est disponible : l'assembleur
+        applique alors sa résolution native équivalente multi-sources.
+        """
+        if plan is None or not plan.subtitles_resolved:
+            return None
+        return [(Path(path), int(index)) for path, index in plan.resolved_subtitle_tracks]
+
+    def _native_assemble_nvencc(
+        self,
+        config: EncodeConfig,
+        *,
+        intermediate: Path,
+        video_offset_ms: int,
+        signals: TaskSignals,
+        plan: _EncodePlan | None = None,
+        work_dir: Path,
+    ) -> None:
+        """Adaptateur : assemble la sortie NVEncC via le contrat partagé."""
+        _assemble_encode_output_native(
+            config,
+            video_artifacts=[
+                _NativeVideoArtifactRef(Path(intermediate), 0, int(video_offset_ms or 0)),
+            ],
+            resolved_subtitles=self._plan_resolved_subtitles(plan),
+            track_metadata=(plan.track_metadata if plan is not None else None),
+            work_dir=Path(work_dir),
+            signals=signals,
+            run_cmd=lambda cmd, label: self._runner._run_cmd(
+                cmd,
+                signals=signals,
+                cwd=None,
+                label=label,
+                progress_cb=signals.progress.emit,
+            ),
+            log=self.log_message.emit,
+            ffmpeg_bin=self._ffmpeg,
+            ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+        )
+
+    def _native_assemble_multi(
+        self,
+        config: EncodeConfig,
+        *,
+        prepared_inputs: list,
+        track_specs: list,
+        signals: TaskSignals,
+        plan: _EncodePlan | None = None,
+        work_dir: Path,
+    ) -> None:
+        """Adaptateur : assemble les artefacts multi-vidéo via le contrat partagé."""
+        refs: list[_NativeVideoArtifactRef] = []
+        for spec, prepared in zip(track_specs, prepared_inputs):
+            if str(spec.video.codec or "").strip().lower() == "copy":
+                refs.append(_NativeVideoArtifactRef(
+                    Path(prepared.path), int(spec.stream_index), int(spec.offset_ms or 0),
+                ))
+            else:
+                refs.append(_NativeVideoArtifactRef(Path(prepared.path), 0, 0))
+        _assemble_encode_output_native(
+            config,
+            video_artifacts=refs,
+            resolved_subtitles=self._plan_resolved_subtitles(plan),
+            track_metadata=(plan.track_metadata if plan is not None else None),
+            work_dir=Path(work_dir),
+            signals=signals,
+            run_cmd=lambda cmd, label: self._runner._run_cmd(
+                cmd,
+                signals=signals,
+                cwd=None,
+                label=label,
+                progress_cb=signals.progress.emit,
+            ),
+            log=self.log_message.emit,
+            ffmpeg_bin=self._ffmpeg,
+            ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
         )
 
     def _build_encode_plan(self, config: EncodeConfig) -> _EncodePlan:
@@ -1192,6 +1300,7 @@ class EncodeWorkflow(QObject):
             resolve_global_tags=self._resolve_global_tags,
             build_track_meta_args=self._build_track_meta_args,
             container_metadata_plan=(plan.container_metadata if plan is not None else None),
+            encode_plan=plan,
         )
 
     def _resolve_track_assembly_and_offset_remap(
@@ -1629,6 +1738,27 @@ class EncodeWorkflow(QObject):
             thread_count=thread_count,
         )
 
+    def _build_video_only_mkv_commands(
+        self,
+        config: EncodeConfig,
+        video: VideoEncodeSettings,
+        source: Path,
+        output_mkv: Path,
+        *,
+        offset_ms: int = 0,
+        passlog_prefix: Path | None = None,
+        thread_count: int | None = None,
+    ) -> list[list[str]]:
+        return self._video_only_command_builder().build_video_only_mkv_commands(
+            config,
+            video,
+            source,
+            output_mkv,
+            offset_ms=offset_ms,
+            passlog_prefix=passlog_prefix,
+            thread_count=thread_count,
+        )
+
     def _build_video_only_two_pass(
         self, config: EncodeConfig, output_hevc: Path
     ) -> list[list[str]]:
@@ -1699,13 +1829,25 @@ class EncodeWorkflow(QObject):
     # ------------------------------------------------------------------
 
     def preview_command(self, config: EncodeConfig) -> str:
+        mux_decision = self.select_mux_backend(config)
         commands = self._backend_for_config(config).build_preview(
             config,
             ctx=self._backend_context(plan=self._build_encode_plan(config)),
         )
         if len(commands) <= 1:
-            return _format_preview_command_plan(commands[0]) if commands else ""
-        return _format_preview_commands_plan(commands)
+            command_text = _format_preview_command_plan(commands[0]) if commands else ""
+        else:
+            command_text = _format_preview_commands_plan(commands)
+        header = [
+            f"# Muxage final Matroska : {mux_decision.selected} "
+            f"(demandé : {mux_decision.requested})",
+        ]
+        if mux_decision.selected == "native":
+            header.append(
+                "# Assemblage final interne ; les commandes ci-dessous préparent "
+                "les artefacts ou servent de référence."
+            )
+        return "\n".join((*header, command_text))
 
     def run_preview(self, config: EncodeConfig, request: EncodePreviewRequest) -> TaskSignals:
         """Génère une preview réelle image ou vidéo dans un thread secondaire."""
@@ -2280,7 +2422,88 @@ class EncodeWorkflow(QObject):
                 ctx=self._backend_context(plan=plan),
             )
         )
+        # Backend natif strict : toute incompatibilité est signalée avant
+        # l'encodage lourd, aucun repli FFmpeg n'est autorisé.
+        mux_decision = self.select_mux_backend(config)
+        if mux_decision.requested == "native" and mux_decision.diagnostics:
+            errors.extend(
+                f"Backend natif indisponible : {reason}."
+                for reason in mux_decision.diagnostics
+            )
         return errors
+
+    # ------------------------------------------------------------------
+    # Backend de muxage final (lot 2)
+    # ------------------------------------------------------------------
+
+    def _mux_pipeline_kind(self, config: EncodeConfig) -> str:
+        """Pipeline d'assemblage final visé par cette configuration."""
+        if self._is_multi_video(config):
+            return _PIPELINE_MULTI_VIDEO
+        if self._needs_metadata_inject(config):
+            return _PIPELINE_METADATA_INJECT
+        backend = self._backend_for_config(config)
+        if getattr(backend, "backend_id", "ffmpeg") != "ffmpeg":
+            return _PIPELINE_NVENCC_DIRECT
+        return _PIPELINE_FFMPEG_DIRECT
+
+    def select_mux_backend(self, config: EncodeConfig) -> _EncodeMuxDecision:
+        """Décision de backend de muxage final (orthogonale au backend vidéo)."""
+        return _select_encode_mux_backend(config, pipeline=self._mux_pipeline_kind(config))
+
+    def execution_preview(self, config: EncodeConfig) -> dict[str, object]:
+        """Preview d'exécution : encodeur vidéo et muxeur Matroska séparés.
+
+        Expose le backend d'encodage vidéo, le backend de muxage demandé et
+        sélectionné, la raison du choix, les artefacts temporaires prévus,
+        une estimation grossière d'espace disque et les post-patchs prévus.
+        """
+        decision = self.select_mux_backend(config)
+        encoder_backend = getattr(self._backend_for_config(config), "backend_id", "ffmpeg")
+        try:
+            source_size = int(config.source.stat().st_size)
+        except OSError:
+            source_size = 0
+        artifacts: list[str] = []
+        estimated_bytes = 0
+        if decision.pipeline == _PIPELINE_NVENCC_DIRECT:
+            artifacts.append("<work>/nvencc_intermediate.mkv")
+            estimated_bytes += source_size
+        if decision.pipeline == _PIPELINE_MULTI_VIDEO or (
+            decision.selected == "native" and decision.pipeline == _PIPELINE_FFMPEG_DIRECT
+        ):
+            for index, video in enumerate(self._video_tracks(config)):
+                if str(video.codec or "").strip().lower() != "copy":
+                    artifacts.append(f"<work>/video_{index}.mkv")
+                    estimated_bytes += source_size
+        if decision.pipeline == _PIPELINE_METADATA_INJECT:
+            artifacts.extend((
+                "<work>/enc_video.mkv", "<work>/enc_timing.mkv",
+                "<work>/enc.hevc", "<work>/enc_wrapped.mkv",
+            ))
+            # Pic simultané : au plus deux copies vidéo (le squelette de
+            # timing, payloads vides, est négligeable).
+            estimated_bytes += 2 * source_size
+        if decision.selected == "native":
+            for index, audio in enumerate(config.audio_tracks):
+                codec = str(audio.codec or "copy").strip().lower()
+                if codec != "copy" or audio.extract_truehd_core:
+                    artifacts.append(f"<work>/native_audio_{index}.mkv")
+        return {
+            "plan_version": 1,
+            "video_encode_backend": encoder_backend,
+            "requested_mux_backend": decision.requested,
+            "selected_mux_backend": decision.selected,
+            "selection_reason": decision.reason,
+            "pipeline": decision.pipeline,
+            "fallback": decision.uses_fallback,
+            "native_diagnostics": list(decision.diagnostics),
+            "temporary_artifacts": artifacts,
+            "estimated_temp_disk_bytes": estimated_bytes,
+            "post_patches": (
+                ["muxing_app", "language"] if decision.selected == "ffmpeg" else []
+            ),
+        }
 
     def parse_progress(
         self,
@@ -2299,6 +2522,43 @@ class EncodeWorkflow(QObject):
     def _log_step(self, step_index: int, step_name: str) -> None:
         self.log_message.emit("INFO", f"STEP {step_index} - {step_name}")
 
+    @staticmethod
+    def _absolute_paths_config(config: EncodeConfig) -> EncodeConfig:
+        """Config aux chemins résolus en absolu (même filet que le remux).
+
+        FFmpeg s'exécute depuis le workspace (``work_dir``/dossier source)
+        tandis que la transaction et les post-actions résolvent le candidat
+        depuis le cwd du processus — un chemin relatif serait créé puis
+        cherché à deux endroits différents.
+        """
+        from dataclasses import replace as _replace
+
+        def _abs(path: Path | str) -> Path:
+            return Path(path).expanduser().resolve()
+
+        def _abs_settings(settings):
+            if settings is None or not getattr(settings, "source_path", None):
+                return settings
+            return _replace(settings, source_path=_abs(settings.source_path))
+
+        return _replace(
+            config,
+            source=_abs(config.source),
+            output=_abs(config.output),
+            work_dir=_abs(config.work_dir) if config.work_dir else None,
+            video=_abs_settings(config.video),
+            video_tracks=[_abs_settings(video) for video in config.video_tracks],
+            audio_tracks=[_abs_settings(audio) for audio in config.audio_tracks],
+            subtitle_tracks=[(_abs(path), int(index)) for path, index in config.subtitle_tracks],
+            attachment_streams=[(_abs(path), int(index)) for path, index in config.attachment_streams],
+            extra_attachments=[_abs(path) for path in config.extra_attachments],
+            tag_sources=[_abs(path) for path in config.tag_sources],
+            track_time_offsets=[
+                _replace(offset, source_path=_abs(offset.source_path))
+                for offset in config.track_time_offsets
+            ],
+        )
+
     def run(self, config: EncodeConfig, *, validate: bool = True) -> TaskSignals:
         """
         Lance l'encodage dans un thread secondaire.
@@ -2306,6 +2566,9 @@ class EncodeWorkflow(QObject):
         Le mode taille cible exécute deux passes séquentiellement
         dans le même thread et retourne un unique TaskSignals.
         """
+        # Chemins absolus AVANT tout : plan, contrat, commande et transaction
+        # doivent consommer exactement les mêmes chemins que l'exécution.
+        config = self._absolute_paths_config(config)
         if not validate:
             return self._run_async_preparation(config)
 
@@ -2358,6 +2621,7 @@ class EncodeWorkflow(QObject):
                 run_multi_video_pipeline=self._run_multi_video_pipeline,
                 run_with_metadata_inject=self._run_with_metadata_inject,
                 run_direct_output=self._run_direct_output,
+                select_mux_backend=self.select_mux_backend,
             )
         )
 
@@ -2368,19 +2632,37 @@ class EncodeWorkflow(QObject):
         *,
         prep_signals: TaskSignals | None = None,
         plan: _EncodePlan | None = None,
+        mux_decision: _EncodeMuxDecision | None = None,
     ) -> TaskSignals:
+        native_mux = mux_decision is not None and mux_decision.selected == "native"
         backend = self._backend_for_config(config)
         if getattr(backend, "backend_id", "ffmpeg") != "ffmpeg":
+            if native_mux:
+                # Assemblage final natif : le runner NVEncC reçoit l'assembleur
+                # directement, sans post-patch conteneur en aval.
+                signals = self._run_nvencc_direct_output(
+                    config,
+                    cleanup_paths,
+                    prep_signals=prep_signals,
+                    plan=plan,
+                    mux_decision=mux_decision,
+                )
+                return signals
             signals = backend.run(
                 config,
                 cleanup_paths,
                 prep_signals=prep_signals,
                 ctx=self._backend_context(plan=plan or self._build_encode_plan(config)),
             )
-            if prep_signals is None:
-                self._bind_matroska_segment_muxing_patch(signals, config.output)
-                self._bind_nfo_write(signals, config.output)
             return signals
+
+        if native_mux:
+            return self._run_ffmpeg_direct_native_output(
+                config,
+                cleanup_paths,
+                prep_signals=prep_signals,
+                plan=plan,
+            )
 
         return self._run_ffmpeg_direct_output(
             config,
@@ -2388,6 +2670,83 @@ class EncodeWorkflow(QObject):
             prep_signals=prep_signals,
             plan=plan,
         )
+
+    def _run_ffmpeg_direct_native_output(
+        self,
+        config: EncodeConfig,
+        cleanup_paths: list[Path],
+        *,
+        prep_signals: TaskSignals | None = None,
+        plan: _EncodePlan | None = None,
+    ) -> TaskSignals:
+        """Encode the video-only artifact, then let the native writer mux it.
+
+        The historical direct FFmpeg path encoded and muxed in one command.
+        Forced native mode instead writes a disposable mono-video MKV; audio,
+        subtitles, tags and attachments are added only by
+        ``assemble_encode_output_native``.
+        """
+        signals = prep_signals or TaskSignals()
+        encode_plan = plan or self._build_encode_plan(config)
+        work_dir = Path(config.work_dir or config.source.parent)
+        video = self._primary_video_settings(config)
+        source = self._video_source_path(config)
+        video_offset_ms = _track_offset_ms_plan(
+            dict(encode_plan.offset_lookup),
+            track_type="video",
+            source_path=source,
+            stream_index=self._video_stream_index(config),
+        )
+        intermediate = work_dir / f"{config.output.stem}.native-video.mkv"
+        cleanup_paths.append(intermediate)
+        commands = self._build_video_only_mkv_commands(
+            config, video, source, intermediate, offset_ms=video_offset_ms,
+        )
+
+        def _task() -> None:
+            try:
+                self._check_cancelled(signals)
+                self._log_step(5, "Encodage de l'artefact vidéo Matroska natif")
+                for index, command in enumerate(commands, start=1):
+                    self._runner._run_cmd(
+                        command,
+                        cwd=work_dir,
+                        label=f"ffmpeg-native-video-pass{index}",
+                        progress_cb=signals.progress.emit,
+                        signals=signals,
+                    )
+                self._check_cancelled(signals)
+                self._log_step(6, "Assemblage final Matroska natif")
+                _assemble_encode_output_native(
+                    config,
+                    video_artifacts=[_NativeVideoArtifactRef(intermediate)],
+                    resolved_subtitles=self._plan_resolved_subtitles(encode_plan),
+                    track_metadata=encode_plan.track_metadata,
+                    work_dir=work_dir,
+                    signals=signals,
+                    run_cmd=lambda cmd, label: self._runner._run_cmd(
+                        cmd, signals=signals, cwd=work_dir,
+                        label=label, progress_cb=signals.progress.emit,
+                    ),
+                    log=self.log_message.emit,
+                    ffmpeg_bin=self._ffmpeg,
+                    ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+                )
+                signals.finished.emit(str(config.output))
+            except TaskCancelledError:
+                signals.cancelled.emit()
+            except Exception as exc:
+                signals.failed.emit(str(exc), exc)
+            finally:
+                remove_path(intermediate)
+
+        if prep_signals is not None:
+            _task()
+            return signals
+        executor = ThreadPoolExecutor(max_workers=1)
+        executor.submit(_task)
+        executor.shutdown(wait=False)
+        return signals
 
     def _run_ffmpeg_direct_output(
         self,
@@ -2418,8 +2777,12 @@ class EncodeWorkflow(QObject):
                     progress_cb=progress_cb,
                 ),
                 run_tool=lambda cmd, cwd, label: self._runner.run(cmd, cwd=cwd, label=label),
+                finalize_ffmpeg=self._finalize_ffmpeg_output,
                 bind_live_sync_cleanup=self._bind_live_sync_cleanup,
                 cleanup_two_pass_logs=self._cleanup_two_pass_logs,
+                before_async_start=lambda task_signals: self._bind_temp_cleanup(
+                    task_signals, cleanup_paths,
+                ),
             )
         ).run(
             config=config,
@@ -2428,9 +2791,6 @@ class EncodeWorkflow(QObject):
             prep_signals=prep_signals,
             plan=plan,
         )
-        if prep_signals is None:
-            self._bind_matroska_segment_muxing_patch(signals, config.output)
-            self._bind_nfo_write(signals, config.output)
         return signals
 
     def _run_direct_output_multisource_async(
@@ -2460,8 +2820,12 @@ class EncodeWorkflow(QObject):
                     progress_cb=progress_cb,
                 ),
                 run_tool=lambda cmd, cwd, label: self._runner.run(cmd, cwd=cwd, label=label),
+                finalize_ffmpeg=self._finalize_ffmpeg_output,
                 bind_live_sync_cleanup=self._bind_live_sync_cleanup,
                 cleanup_two_pass_logs=self._cleanup_two_pass_logs,
+                before_async_start=lambda task_signals: self._bind_temp_cleanup(
+                    task_signals, cleanup_paths,
+                ),
             )
         ).run_multisource_async(
             config=config,
@@ -2478,7 +2842,9 @@ class EncodeWorkflow(QObject):
         *,
         prep_signals: TaskSignals | None = None,
         plan: _EncodePlan | None = None,
+        mux_decision: _EncodeMuxDecision | None = None,
     ) -> TaskSignals:
+        native_mux = mux_decision is not None and mux_decision.selected == "native"
         return _MultiVideoPipelineRunner(
             _MultiVideoPipelineRunnerCallbacks(
                 ffmpeg_bin=self._ffmpeg,
@@ -2519,15 +2885,16 @@ class EncodeWorkflow(QObject):
                     progress_cb=progress_cb,
                     signals=signals,
                 ),
+                finalize_ffmpeg=self._finalize_ffmpeg_output,
                 log_step=self._log_step,
                 log_info=lambda message: self.log_message.emit("INFO", message),
                 ui_encode_progress_message=_ui_encode_progress_message,
-                build_video_only_two_pass_for_track=self._build_video_only_two_pass_for_track,
                 cleanup_two_pass_logs_for_prefix=self._cleanup_two_pass_logs_for_prefix,
-                build_video_only_cmd_for_track=self._build_video_only_cmd_for_track,
-                wrap_injected_hevc_for_reconstruction=self._wrap_injected_hevc_for_reconstruction,
+                build_video_only_mkv_commands=self._build_video_only_mkv_commands,
+                build_dovi_record_from_rpu=_build_dovi_record_from_rpu_runtime,
                 build_multi_video_track_encode_commands=self._build_multi_video_track_encode_commands,
                 two_pass_log_prefix=self._two_pass_log_prefix,
+                native_assemble=self._native_assemble_multi if native_mux else None,
             )
         ).run(
             config,
@@ -2547,13 +2914,127 @@ class EncodeWorkflow(QObject):
         """Supprime les fichiers/dossiers temporaires quand le workflow se termine."""
         self._signal_binding_service.bind_temp_cleanup(signals, cleanup_paths)
 
-    def _bind_matroska_segment_muxing_patch(self, signals: TaskSignals, output: Path) -> None:
-        self._signal_binding_service.bind_matroska_segment_muxing_patch(signals, output)
-
     def _bind_nfo_write(self, signals: TaskSignals, output: Path) -> None:
         if not self._generate_nfo:
             return
         self._signal_binding_service.bind_nfo_write(signals, output)
+
+    def _write_nfo_after_commit(self, output: Path) -> None:
+        if not self._generate_nfo:
+            return
+        write_mediainfo_nfo(
+            output,
+            log_cb=self.log_message.emit,
+            mediainfo_bin=self._bins.get("mediainfo") or "mediainfo",
+        )
+
+    def _finalize_ffmpeg_output(
+        self,
+        config: EncodeConfig,
+        command: list[str],
+        cwd: Path | None,
+        label: str,
+        signals: TaskSignals,
+        *,
+        plan: _EncodePlan,
+        extra_post_actions: tuple[PostAction, ...] = (),
+        require_dovi_video_indexes: set[int] | None = None,
+    ) -> str:
+        """Exécute le muxage final FFmpeg dans une transaction atomique."""
+        if require_dovi_video_indexes is None:
+            require_dovi_video_indexes = {
+                index
+                for index, video in enumerate(config.video_tracks)
+                if bool(getattr(video, "copy_dv", False))
+            }
+        contract = build_encode_output_contract(
+            config,
+            plan,
+            require_dovi_video_indexes=require_dovi_video_indexes,
+            attachment_stream_expectations=self._attachment_stream_expectations(config),
+            source_has_chapters=self._source_has_chapters_hint(config),
+        )
+        derived_statistics = self._derive_passthrough_statistics(config, plan)
+        transaction = MatroskaOutputTransaction(
+            output=config.output,
+            contract=contract,
+            ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+            run_command=self._run_transaction_command,
+            post_actions=(
+                self._muxing_post_action.apply_if_mkv,
+                self._language_post_action.apply_if_mkv,
+                lambda path: self._statistics_post_action.apply_if_mkv(
+                    path, statistics_by_position=derived_statistics,
+                ),
+            ),
+            write_nfo=self._write_nfo_after_commit if self._generate_nfo else None,
+            warn=lambda message: self.log_message.emit("WARN", message),
+            track_enabled_post_action=self._track_enabled_post_action,
+        )
+        return transaction.execute(
+            command,
+            cwd=cwd,
+            label=label,
+            signals=signals,
+            extra_post_actions=extra_post_actions,
+        )
+
+    @staticmethod
+    def _derive_passthrough_statistics(
+        config: EncodeConfig, plan: _EncodePlan,
+    ) -> dict[int, tuple[int, int, int]] | None:
+        """Dérive les statistiques de pistes si tout est en copie stricte sans transcodage."""
+        video_tracks = getattr(config, "video_tracks", []) or []
+        if not video_tracks and getattr(config, "video", None) is not None:
+            video_tracks = [config.video]
+        if not video_tracks:
+            return None
+        for v in video_tracks:
+            if str(getattr(v, "codec", "") or "").strip().lower() != "copy":
+                return None
+            if bool(getattr(v, "tonemap_to_sdr", False)):
+                return None
+
+        for a in getattr(config, "audio_tracks", []) or []:
+            if str(getattr(a, "codec", "") or "").strip().lower() != "copy":
+                return None
+
+        for offset in getattr(config, "track_time_offsets", []) or []:
+            if int(getattr(offset, "offset_ms", 0) or 0) != 0:
+                return None
+
+        if not plan.track_metadata:
+            return None
+        refs = [(Path(m.source), int(m.stream_index)) for m in plan.track_metadata]
+        return derive_output_statistics(refs)
+
+    def _run_transaction_command(
+        self,
+        command: list[str],
+        cwd: Path | None,
+        label: str,
+        progress_cb: Callable[[str], None],
+        signals: TaskSignals,
+    ) -> str:
+        """Conserve le libellé de commande, avec compatibilité des anciens doubles de test."""
+        try:
+            return self._runner._run_cmd(
+                command,
+                cwd=cwd,
+                label=label,
+                progress_cb=progress_cb,
+                signals=signals,
+            )
+        except TypeError as exc:
+            message = str(exc)
+            if "label" not in message or "unexpected keyword" not in message:
+                raise
+            return self._runner._run_cmd(
+                command,
+                cwd=cwd,
+                progress_cb=progress_cb,
+                signals=signals,
+            )
 
     def _bind_output_hooks(
         self,
@@ -2562,13 +3043,10 @@ class EncodeWorkflow(QObject):
         output: Path,
         cleanup_paths: list[Path] | None = None,
         include_temp_cleanup: bool = True,
-        include_segment_patch: bool = True,
         include_nfo: bool = True,
     ) -> None:
         if include_temp_cleanup and cleanup_paths is not None:
             self._bind_temp_cleanup(signals, cleanup_paths)
-        if include_segment_patch:
-            self._bind_matroska_segment_muxing_patch(signals, output)
         if include_nfo and self._generate_nfo:
             self._bind_nfo_write(signals, output)
 
@@ -2631,6 +3109,12 @@ class EncodeWorkflow(QObject):
                     dest,
                     signals=task_signals,
                 ),
+                extract_attachment_data=lambda source, stream_idx, dest, task_signals: self._extract_attachment_data(
+                    source,
+                    stream_idx,
+                    dest,
+                    signals=task_signals,
+                ),
             )
         ).prepare(
             config,
@@ -2647,6 +3131,61 @@ class EncodeWorkflow(QObject):
             text_kwargs_factory=subprocess_text_kwargs,
         )
 
+    def _source_has_chapters_hint(self, config: EncodeConfig) -> bool | None:
+        """Présence de chapitres dans une source non-Matroska (ffprobe).
+
+        ``None`` pour une source Matroska (la sonde native du contrat fait
+        foi) ou quand aucune copie de chapitres n'est demandée. Sans cet
+        indice, une perte de chapitres MP4/MOV passerait la validation.
+        """
+        if not config.keep_chapters or config.chapter_overrides is not None:
+            return None
+        source = Path(config.source)
+        try:
+            with source.open("rb") as handle:
+                if handle.read(4) == b"\x1a\x45\xdf\xa3":
+                    return None
+        except OSError:
+            return None
+        try:
+            result = subprocess.run(
+                [
+                    self._ffprobe_bin_from_ffmpeg(self._ffmpeg), "-v", "error",
+                    "-show_chapters", "-of", "json", str(source),
+                ],
+                capture_output=True,
+                check=False,
+                **subprocess_text_kwargs(),
+            )
+        except OSError:
+            return None
+        if result.returncode != 0:
+            return None
+        try:
+            payload = json.loads(result.stdout or "{}")
+        except ValueError:
+            return None
+        return bool(payload.get("chapters"))
+
+    def _attachment_stream_expectations(
+        self, config: EncodeConfig,
+    ) -> tuple[ExpectedMatroskaAttachment, ...]:
+        """Attentes des attachments embarqués copiés via ``attachment_streams``.
+
+        Les noms sont calculés avec exactement le même descripteur et le même
+        renommage que la commande de muxage (``filename=`` explicite) : le
+        contrat de validation et la sortie FFmpeg restent alignés.
+        """
+        expectations: list[ExpectedMatroskaAttachment] = []
+        for src_path, stream_idx in config.attachment_streams:
+            meta = self._describe_attachment_stream(Path(src_path), int(stream_idx))
+            mimetype = str(meta.get("mimetype") or "").strip() or "application/octet-stream"
+            expectations.append(ExpectedMatroskaAttachment(
+                name=_default_attachment_filename(meta, int(stream_idx)),
+                media_type=mimetype,
+            ))
+        return tuple(expectations)
+
     def _extract_attached_pic(
         self,
         source: Path,
@@ -2656,6 +3195,30 @@ class EncodeWorkflow(QObject):
         signals: TaskSignals | None = None,
     ) -> None:
         _extract_attached_pic_runtime(
+            source,
+            stream_idx,
+            dest,
+            ffmpeg_bin=self._ffmpeg,
+            ffmpeg_thread_args=self._ffmpeg_thread_args,
+            check_cancelled=self._check_cancelled,
+            log_info=lambda message: self.log_message.emit("INFO", message),
+            run_cmd=lambda cmd, label, task_signals: self._runner._run_cmd(
+                cmd,
+                label=label,
+                signals=task_signals,
+            ),
+            signals=signals,
+        )
+
+    def _extract_attachment_data(
+        self,
+        source: Path,
+        stream_idx: int,
+        dest: Path,
+        *,
+        signals: TaskSignals | None = None,
+    ) -> None:
+        _extract_attachment_data_runtime(
             source,
             stream_idx,
             dest,
@@ -2859,13 +3422,17 @@ class EncodeWorkflow(QObject):
     def _disposition_value_from_edit(edit) -> str | None:
         return _disposition_value_from_edit_runtime(edit)
 
-    def _build_track_meta_args(self, config: EncodeConfig) -> list[str]:
+    def _build_track_meta_args(
+        self,
+        config: EncodeConfig,
+        plan: _EncodePlan | None = None,
+    ) -> list[str]:
         return _TrackMetadataArgsBuilder(
             _TrackMetadataArgsBuilderCallbacks(
                 video_tracks=self._video_tracks,
                 log_warn=lambda message: self.log_message.emit("WARN", message),
             )
-        ).build(config)
+        ).build(config, plan=plan or self._build_encode_plan(config))
 
     def _run_with_metadata_inject(
         self,
@@ -2873,7 +3440,9 @@ class EncodeWorkflow(QObject):
         *,
         prep_signals: TaskSignals | None = None,
         plan: _EncodePlan | None = None,
+        mux_decision: _EncodeMuxDecision | None = None,
     ) -> TaskSignals:
+        native_mux = mux_decision is not None and mux_decision.selected == "native"
         return _MetadataInjectRunner(
             _MetadataInjectRunnerCallbacks(
                 ffmpeg_bin=self._ffmpeg,
@@ -2884,11 +3453,9 @@ class EncodeWorkflow(QObject):
                 check_cancelled=self._check_cancelled,
                 video_source_path=self._video_source_path,
                 video_stream_index=self._video_stream_index,
-                build_video_only_two_pass=self._build_video_only_two_pass,
-                build_video_only_cmd=self._build_video_only_cmd,
-                wrap_injected_hevc_for_reconstruction=self._wrap_injected_hevc_for_reconstruction,
-                source_is_vfr=self._source_is_vfr,
-                source_video_dimensions=self._source_video_dimensions,
+                build_video_track_encode_commands=self._build_video_only_mkv_commands,
+                two_pass_log_prefix=self._two_pass_log_prefix,
+                cleanup_two_pass_logs_for_prefix=self._cleanup_two_pass_logs_for_prefix,
                 build_encode_plan=self._build_encode_plan,
                 source_input_index_map=lambda sources: _source_input_index_map_plan(sources, start_index=1),
                 prepare_multisource_sync=self._prepare_multisource_sync,
@@ -2910,11 +3477,11 @@ class EncodeWorkflow(QObject):
                     cwd=cwd,
                     progress_cb=progress_cb,
                 ),
-                bind_matroska_segment_muxing_patch=self._bind_matroska_segment_muxing_patch,
-                bind_nfo_write=self._bind_nfo_write,
+                finalize_ffmpeg=self._finalize_ffmpeg_output,
                 estimate_static_hdr=self._static_hdr_estimator.estimate_converted_static_hdr,
                 report_static_hdr_estimate=self.static_hdr_estimate_ready.emit,
                 report_static_hdr_failure=self.static_hdr_estimate_failed.emit,
+                native_assemble=self._native_assemble_nvencc if native_mux else None,
             )
         ).run(
             config,

@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "kind": "exact-job",
+  "sources": [
+    {
+      "path": "master.S01E01.mkv"
+    },
+    {
+      "path": "donor.S01E01.mkv"
+    }
+  ],
+  "output": "S01E01.Hybrid-MVO.mkv",
+  "mux_backend": "native",
+  "sync_mode": "physical",
+  "clean_nfo": true,
+  "sync_subtitles": "mirror",
+  "tracks": [
+    {
+      "selector": {
+        "source": 1,
+        "type": "video"
+      },
+      "enabled": false
+    }
+  ],
+  "chapters": {
+    "source_index": 0
+  },
+  "sync_calibrations": {
+    "1": {
+      "version": 1,
+      "kind": "sync-calibration",
+      "timebase": "donor-ms",
+      "confidence": 1.0,
+      "segments": [
+        {
+          "start_ms": 0,
+          "shift_ms": 103
+        },
+        {
+          "start_ms": 600000,
+          "shift_ms": 503
+        },
+        {
+          "start_ms": 1200000,
+          "shift_ms": 203
+        },
+        {
+          "start_ms": 1800000,
+          "shift_ms": 603
+        }
+      ],
+      "samples": []
+    }
+  }
+}

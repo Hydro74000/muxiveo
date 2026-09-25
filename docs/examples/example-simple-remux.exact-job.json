@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "kind": "exact-job",
+  "sources": [
+    {
+      "path": "master.mkv"
+    }
+  ],
+  "output": "output.mkv",
+  "mux_backend": "native",
+  "sync_mode": "container",
+  "clean_nfo": true
+}

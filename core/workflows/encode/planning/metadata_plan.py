@@ -8,6 +8,7 @@ from core.workflows.encode.models import ChapterEntryLike, EncodeConfig
 
 from .plan_models import (
     ContainerMetadataPlan,
+    EncodePlan,
     MaterializedContainerMetadataPlan,
     PreparedContainerMetadataInputs,
 )
@@ -144,7 +145,6 @@ def container_metadata_map_value(
     tag_input_index: int | None,
     include_copy_video_stream_passthrough: bool,
     is_video_passthrough: Callable[[EncodeConfig], bool],
-    chapter_map: str | None = None,
     container_metadata_plan: ContainerMetadataPlan | None = None,
 ) -> str | None:
     metadata_plan = container_metadata_plan
@@ -164,10 +164,11 @@ def container_metadata_map_value(
         else bool(config.track_meta_edits)
     )
     if tag_overrides_defined:
+        # Les balises globales sont entièrement pilotées par l'utilisateur :
+        # on ne recopie jamais celles de la source (les chapitres restent
+        # préservés indépendamment via -map_chapters).
         if chapter_input_index is not None:
             return str(chapter_input_index)
-        if chapter_map is not None and chapter_map not in {"-1", ""}:
-            return chapter_map
         return "-1"
     if tag_input_index is not None:
         return str(tag_input_index)
@@ -189,8 +190,9 @@ def append_container_metadata_args(
     include_copy_video_stream_passthrough: bool,
     is_video_passthrough: Callable[[EncodeConfig], bool],
     resolve_global_tags: Callable[[EncodeConfig], dict[str, str]],
-    build_track_meta_args: Callable[[EncodeConfig], list[str]],
+    build_track_meta_args: Callable[[EncodeConfig, EncodePlan | None], list[str]],
     container_metadata_plan: ContainerMetadataPlan | None = None,
+    encode_plan: EncodePlan | None = None,
 ) -> None:
     metadata_plan = container_metadata_plan or build_container_metadata_plan(
         config,
@@ -209,11 +211,15 @@ def append_container_metadata_args(
         tag_input_index=tag_input_index,
         include_copy_video_stream_passthrough=include_copy_video_stream_passthrough,
         is_video_passthrough=is_video_passthrough,
-        chapter_map=chapter_map,
         container_metadata_plan=metadata_plan,
     )
     if metadata_map is not None:
-        cmd.extend(["-map_metadata", metadata_map])
+        # Un mapping négatif sans type explicite désactive aussi la copie
+        # des métadonnées de chapitres/pistes. Limiter les deux côtés au global.
+        cmd.extend(
+            ["-map_metadata:g", "-1:g"] if metadata_map == "-1"
+            else ["-map_metadata", metadata_map]
+        )
         if include_copy_video_stream_passthrough and is_video_passthrough(config):
             cmd.extend([
                 "-map_metadata:s:v:0",
@@ -230,4 +236,4 @@ def append_container_metadata_args(
     cmd.extend(["-metadata", "encoder=", "-metadata", "creation_time="])
     for key, value in global_tags.items():
         cmd.extend(["-metadata", f"{key}={value}"])
-    cmd.extend(build_track_meta_args(config))
+    cmd.extend(build_track_meta_args(config, encode_plan))

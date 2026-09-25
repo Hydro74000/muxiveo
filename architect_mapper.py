@@ -103,7 +103,8 @@ def scan_project(path):
                 analyzer.visit(tree)
                 all_nodes.extend(analyzer.nodes)
                 all_links.extend(analyzer.links)
-        except: continue
+        except Exception:
+            continue
     return {"nodes": list({n['id']: n for n in all_nodes}.values()), "links": all_links}
 
 def generate_html(data):

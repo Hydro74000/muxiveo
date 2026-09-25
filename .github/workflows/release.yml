@@ -58,7 +58,7 @@ jobs:
           set -euo pipefail
 
           base_version="$(python -c 'from core.version import APP_VERSION; print(APP_VERSION)')"
-          input_version="$(printf '%s' "$RELEASE_INPUT" | xargs)"
+          input_version="$(python -c 'import os; print(os.environ["RELEASE_INPUT"].strip())')"
 
           normalize_version() {
             local value="$1"
@@ -91,8 +91,8 @@ jobs:
             prerelease="true"
           fi
 
-          if [ -z "$package_version" ]; then
-            echo "Unable to resolve package version" >&2
+          if [[ ! "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "Invalid package version" >&2
             exit 1
           fi
 
@@ -142,15 +142,29 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y squashfs-tools zsync
           python -m pip install --upgrade pip
-          pip install "PySide6>=6.6.0" "pymediainfo>=6.1.0" pyinstaller
+          pip install "PySide6>=6.6.0" "pymediainfo>=6.1.0" "numpy>=1.24" pyinstaller
+
+      - name: Embed build version
+        shell: bash
+        env:
+          PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
+        run: |
+          python - <<'PYTHON'
+          import os
+          from pathlib import Path
+          Path("core/_build_version.py").write_text(
+              "BUILD_VERSION = " + repr(os.environ["PACKAGE_VERSION"]) + "\n", encoding="utf-8"
+          )
+          PYTHON
 
       - name: Build all-inclusive AppImage
         env:
+          PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
           APPIMAGE_EXTRACT_AND_RUN: "1"
           MUXIVEO_APPIMAGE_UPDATE_RELEASE: ${{ needs.release-metadata.outputs.appimage_update_release }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          python package_appimage.py --allinc --version "${{ needs.release-metadata.outputs.package_version }}"
+          python package_appimage.py --allinc --version "$PACKAGE_VERSION"
 
       - name: Collect Linux assets
         shell: bash
@@ -194,22 +208,39 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install "PySide6>=6.6.0" "pymediainfo>=6.1.0" pyinstaller
+          pip install "PySide6>=6.6.0" "pymediainfo>=6.1.0" "numpy>=1.24" pyinstaller
 
       - name: Install NSIS
         shell: pwsh
         run: |
           winget install --id NSIS.NSIS -e --silent --accept-source-agreements --accept-package-agreements
 
+      - name: Embed build version
+        shell: bash
+        env:
+          PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
+        run: |
+          python - <<'PYTHON'
+          import os
+          from pathlib import Path
+          Path("core/_build_version.py").write_text(
+              "BUILD_VERSION = " + repr(os.environ["PACKAGE_VERSION"]) + "\n", encoding="utf-8"
+          )
+          PYTHON
+
       - name: Build PyInstaller and NSIS package
         shell: pwsh
+        env:
+          PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
         run: |
-          python package.py --nsis --version "${{ needs.release-metadata.outputs.package_version }}"
+          python package.py --nsis --version "$env:PACKAGE_VERSION"
 
       - name: Collect Windows assets
         shell: pwsh
+        env:
+          PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
         run: |
-          $version = "${{ needs.release-metadata.outputs.package_version }}"
+          $version = $env:PACKAGE_VERSION
           $file = "dist\releases\Muxiveo-Setup-$version.exe"
           if (-not (Test-Path $file)) {
             Get-ChildItem -Recurse dist | Select-Object -First 200 FullName
@@ -251,17 +282,33 @@ jobs:
       - name: Install macOS packaging dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "PySide6>=6.6.0" "pymediainfo>=6.1.0" pyinstaller pillow
+          pip install "PySide6>=6.6.0" "pymediainfo>=6.1.0" "numpy>=1.24" pyinstaller pillow
+
+      - name: Embed build version
+        shell: bash
+        env:
+          PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
+        run: |
+          python - <<'PYTHON'
+          import os
+          from pathlib import Path
+          Path("core/_build_version.py").write_text(
+              "BUILD_VERSION = " + repr(os.environ["PACKAGE_VERSION"]) + "\n", encoding="utf-8"
+          )
+          PYTHON
 
       - name: Build macOS app and DMG
+        env:
+          PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
         run: |
-          python package.py --dmg --version "${{ needs.release-metadata.outputs.package_version }}"
+          python package.py --dmg --version "$PACKAGE_VERSION"
 
       - name: Collect macOS assets
         shell: bash
+        env:
+          VERSION: ${{ needs.release-metadata.outputs.package_version }}
         run: |
           set -euo pipefail
-          VERSION="${{ needs.release-metadata.outputs.package_version }}"
           mkdir -p release-assets/macos
 
           cp "dist/releases/Muxiveo-${VERSION}.dmg" release-assets/macos/
@@ -272,9 +319,10 @@ jobs:
       - name: Collect Homebrew macOS asset
         if: ${{ needs.release-metadata.outputs.channel == 'stable' && (github.ref_name == 'main' || github.ref_type == 'tag') }}
         shell: bash
+        env:
+          VERSION: ${{ needs.release-metadata.outputs.package_version }}
         run: |
           set -euo pipefail
-          VERSION="${{ needs.release-metadata.outputs.package_version }}"
           mkdir -p release-assets/homebrew
           tar -C dist -czf "release-assets/homebrew/Muxiveo-${VERSION}-homebrew-macos.tar.gz" Muxiveo.app
           ls -la release-assets/homebrew
@@ -413,13 +461,26 @@ jobs:
 
       - name: Add source archives
         shell: bash
+        env:
+          VERSION: ${{ needs.release-metadata.outputs.package_version }}
         run: |
           set -euo pipefail
-          VERSION="${{ needs.release-metadata.outputs.package_version }}"
           PREFIX="Muxiveo-${VERSION}"
           git archive --format=tar --prefix="${PREFIX}/" HEAD | gzip -9 > "artifacts/${PREFIX}-source.tar.gz"
           git archive --format=zip --prefix="${PREFIX}/" HEAD -o "artifacts/${PREFIX}-source.zip"
           ls -la artifacts
+
+      # Sommes SHA-256 de tous les assets : requises par la mise à jour intégrée
+      # (core/update_install.py refuse d'installer un asset absent de ce fichier).
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd artifacts
+          rm -f SHA256SUMS
+          find . -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort | xargs -d '\n' sha256sum > ../SHA256SUMS
+          mv ../SHA256SUMS SHA256SUMS
+          cat SHA256SUMS
 
       - name: Generate release notes
         shell: bash

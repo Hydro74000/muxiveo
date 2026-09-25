@@ -25,6 +25,8 @@ def has_ready_files(panel: "RemuxPanel") -> bool:
 
 
 def on_add_files(panel: "RemuxPanel", paths: list[str]) -> None:
+    if getattr(panel, "_closing", False):
+        return
     for path_str in paths:
         path = Path(path_str)
         if any(sf.path == path for sf in panel._source_files):
@@ -45,7 +47,9 @@ def on_add_files(panel: "RemuxPanel", paths: list[str]) -> None:
         panel.log_message.emit(
             "INFO", translate_text("Inspection de {name} (ffprobe + mediainfo)…", name=path.name)
         )
-        panel._executor.submit(panel._inspect_file, sf.id, path)
+        # L'inspection est indépendante des calculs de synchronisation audio.
+        # Un calcul long ne doit pas mettre les nouveaux drops en attente.
+        panel._inspection_futures[sf.id] = panel._inspection_executor.submit(panel._inspect_file, sf.id, path)
 
     panel._sync_tmdb_suggested_title()
 
@@ -58,16 +62,24 @@ def inspect_file(panel: "RemuxPanel", file_id: str, path: Path) -> None:
             verbose_output=lambda line: panel.tool_output.emit("inspector", line),
         )
         info = inspector.inspect(path)
-        panel._inspection_done.emit(file_id, info)
+        if not getattr(panel, "_closing", False):
+            panel._inspection_done.emit(file_id, info)
     except InspectionError as exc:
+        if getattr(panel, "_closing", False):
+            return
         panel.log_message.emit("ERROR", str(exc))
         panel._inspection_error.emit(file_id, translate_text("Erreur d'inspection."))
     except Exception as exc:
+        if getattr(panel, "_closing", False):
+            return
         panel.log_message.emit("ERROR", translate_text("Erreur inattendue : {exc}", exc=exc))
         panel._inspection_error.emit(file_id, translate_text("Erreur d'inspection."))
 
 
 def apply_inspection(panel: "RemuxPanel", file_id: str, info: FileInfo) -> None:
+    panel._inspection_futures.pop(file_id, None)
+    if panel._closing:
+        return
     sf = find_source(panel, file_id)
     if sf is None:
         return
@@ -115,6 +127,9 @@ def apply_inspection(panel: "RemuxPanel", file_id: str, info: FileInfo) -> None:
 
 
 def on_inspection_error(panel: "RemuxPanel", file_id: str, message: str) -> None:
+    panel._inspection_futures.pop(file_id, None)
+    if panel._closing:
+        return
     panel._file_list.set_file_error(file_id, message)
 
 
@@ -123,6 +138,9 @@ def on_remove_file(panel: "RemuxPanel", file_id: str) -> None:
     if sf is None:
         return
 
+    future = panel._inspection_futures.pop(file_id, None)
+    if future is not None:
+        future.cancel()
     panel._source_files.remove(sf)
     panel._source_names.pop(file_id, None)
     panel._source_colors.pop(file_id, None)

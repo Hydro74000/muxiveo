@@ -123,7 +123,7 @@ from __future__ import annotations
 
 import colorsys
 import json
-import sys
+from threading import Event
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -131,8 +131,8 @@ from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
+from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import QApplication, QDialog, QPushButton
 
 from core.config import AppConfig
@@ -141,14 +141,13 @@ from core.inspector import (
     AttachmentInfo, AudioTrack, ChapterEntry, ChapterInfo, FileInfo, HDRType, SubtitleTrack, VideoTrack,
     build_chapter_xml,
 )
-from core.matroska_attachment_extractor import extract_matroska_attachment_bytes
+from core.matroska.reader import MatroskaReader
 from core.media_info_fetcher import MediaDetails
 from core.profiles.decision import remux_config_to_decision_profile
-from core.runner import TaskSignals
 from core.workflows.remux import RemuxWorkflow
 from core.workflows.remux_mapping import resolved_global_tags
 from core.workflows.remux_models import (
-    RemuxConfig, RemuxError, SourceInput, TrackEntry, clone_track_entry, tracks_from_file_info,
+    RemuxConfig, SourceInput, TrackEntry, clone_track_entry, tracks_from_file_info,
 )
 from ui.panels.remux_panel import (
     RemuxPanel, SourceFile, _FILE_BAR_H, _FILE_PH_H, _FILE_ROW_H,
@@ -409,6 +408,15 @@ class TestTrackEntryProperties:
         assert t.is_new is True
         assert t.full_info_label.startswith("NEW")
 
+    def test_disabled_track_is_flagged_in_info_column(self):
+        """Le libellé 'disabled' est le marqueur mis en rouge par le delegate."""
+        t = _track(1, track_type="audio")
+        assert TrackEntry.DISABLED_LABEL not in t.full_info_label
+
+        t.flag_enabled = False
+        assert TrackEntry.DISABLED_LABEL in t.full_info_label
+        assert t.flags_label.startswith(TrackEntry.DISABLED_LABEL)
+
 
 # ===========================================================================
 # tracks_from_file_info
@@ -586,7 +594,7 @@ class TestValidate:
             track_order=[(0, 0)],
         )
         with patch(
-            "core.workflows.remux.tempfile.NamedTemporaryFile",
+            "core.workflows.remux_mapping.tempfile.NamedTemporaryFile",
             side_effect=OSError("blocked"),
         ):
             errors = self.wf.validate(cfg)
@@ -692,6 +700,82 @@ class TestTrackTable:
         _fill_table(table, 3, file_id="B")
         assert table.rowCount() == 5
 
+    def test_drop_moves_only_the_selected_row(self, table, monkeypatch):
+        tracks = _fill_table(table, 3)
+        second_row_actions = table.cellWidget(1, _TrackTable.COL_EDIT)
+        assert second_row_actions is not None
+        table.selectRow(0)
+
+        class _DropEvent:
+            accepted = False
+
+            @staticmethod
+            def source():
+                return table
+
+            @staticmethod
+            def position():
+                return QPointF(0, 0)
+
+            def setDropAction(self, _action):
+                pass
+
+            def accept(self):
+                self.accepted = True
+
+            def ignore(self):
+                raise AssertionError("Le drop interne ne doit pas être ignoré")
+
+        monkeypatch.setattr(table, "_drop_target_row", lambda _event: 3)
+        event = _DropEvent()
+        table.dropEvent(event)
+
+        assert [entry.entry_id for entry in table.current_tracks()] == [
+            tracks[1].entry_id,
+            tracks[2].entry_id,
+            tracks[0].entry_id,
+        ]
+        assert table.cellWidget(0, _TrackTable.COL_EDIT) is second_row_actions
+        assert table.cellWidget(2, _TrackTable.COL_EDIT) is not None
+        assert table.consume_order_changed_track_types() == frozenset({"audio"})
+        assert event.accepted is True
+
+    def test_drop_across_track_types_skips_unchanged_encode_projections(self, table, monkeypatch):
+        video = _track(0, "video")
+        audio = _track(1, "audio")
+        table.append_tracks(_COLOR_A, [video, audio])
+        table.selectRow(1)
+
+        class _DropEvent:
+            @staticmethod
+            def source():
+                return table
+
+            @staticmethod
+            def position():
+                return QPointF(0, 0)
+
+            @staticmethod
+            def setDropAction(_action):
+                pass
+
+            @staticmethod
+            def accept():
+                pass
+
+            @staticmethod
+            def ignore():
+                raise AssertionError("Le drop interne ne doit pas être ignoré")
+
+        monkeypatch.setattr(table, "_drop_target_row", lambda _event: 0)
+        table.dropEvent(_DropEvent())
+
+        assert [entry.entry_id for entry in table.current_tracks()] == [
+            audio.entry_id,
+            video.entry_id,
+        ]
+        assert table.consume_order_changed_track_types() == frozenset()
+
     def test_remove_tracks_by_file_id_removes_only_target(self, table):
         _fill_table(table, 2, file_id="A")
         _fill_table(table, 3, file_id="B")
@@ -700,7 +784,7 @@ class TestTrackTable:
 
     def test_remove_tracks_by_file_id_leaves_other_ids(self, table):
         _fill_table(table, 2, file_id="A")
-        b_tracks = _fill_table(table, 1, file_id="B")
+        _fill_table(table, 1, file_id="B")
         table.remove_tracks_by_file_id("A")
         remaining = table.current_tracks()
         assert all(t.file_id == "B" for t in remaining)
@@ -751,7 +835,7 @@ class TestTrackTable:
 
     def test_set_all_enabled_checks_all(self, table):
         """set_all_enabled(True) → toutes les cases cochées."""
-        tracks = _fill_table(table, 3)
+        _fill_table(table, 3)
         # Décoche quelques cases d'abord
         table.item(0, _TrackTable.COL_CHECK).setCheckState(Qt.CheckState.Unchecked)
         table.item(2, _TrackTable.COL_CHECK).setCheckState(Qt.CheckState.Unchecked)
@@ -1002,8 +1086,10 @@ class TestPickFileColor:
             r = int(c[1:3], 16) / 255
             g = int(c[3:5], 16) / 255
             b = int(c[5:7], 16) / 255
-            _, l, _ = colorsys.rgb_to_hls(r, g, b)
-            assert l > 0.1, f"index {i}: couleur {c} trop sombre (l={l:.2f})"
+            _, lightness, _ = colorsys.rgb_to_hls(r, g, b)
+            assert lightness > 0.1, (
+                f"index {i}: couleur {c} trop sombre (l={lightness:.2f})"
+            )
 
     def test_not_near_white(self):
         """Luminosité < 0.9 pour tous les indices 0–19."""
@@ -1012,8 +1098,10 @@ class TestPickFileColor:
             r = int(c[1:3], 16) / 255
             g = int(c[3:5], 16) / 255
             b = int(c[5:7], 16) / 255
-            _, l, _ = colorsys.rgb_to_hls(r, g, b)
-            assert l < 0.9, f"index {i}: couleur {c} trop claire (l={l:.2f})"
+            _, lightness, _ = colorsys.rgb_to_hls(r, g, b)
+            assert lightness < 0.9, (
+                f"index {i}: couleur {c} trop claire (l={lightness:.2f})"
+            )
 
     def test_golden_angle_spread(self):
         """Les 8 premières couleurs couvrent le cercle chromatique (plage > 200°)."""
@@ -1254,6 +1342,38 @@ class TestFileListWidgetSize:
         file_list.remove_file(sf0.id)
         expected = 1 * _FILE_ROW_H + _FILE_BAR_H
         assert file_list.maximumHeight() == expected
+
+    def test_drop_on_visible_scroll_viewport_is_forwarded(self, file_list, tmp_path):
+        """Le viewport recouvre la zone après la première source."""
+        file_list.add_file(_make_sf(0))
+        source = tmp_path / "second.mkv"
+        source.touch()
+        received: list[list[str]] = []
+        file_list.add_requested.connect(received.append)
+
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(source))])
+        viewport = file_list._scroll.viewport()
+        enter = QDragEnterEvent(
+            QPoint(4, 4),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        QApplication.sendEvent(viewport, enter)
+        drop = QDropEvent(
+            QPoint(4, 4),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        QApplication.sendEvent(viewport, drop)
+
+        assert enter.isAccepted()
+        assert drop.isAccepted()
+        assert received == [[str(source)]]
 
     def test_remove_last_restores_placeholder_height(self, file_list):
         sf = _make_sf(0)
@@ -1911,6 +2031,65 @@ class TestRemuxPanelNewAudioTracks:
         panel.close()
 
 
+class TestRemuxPanelTrackOrderProjections:
+
+    def test_cross_type_reorder_keeps_encode_projections_untouched(self, qt_app, tmp_path, monkeypatch):
+        cfg = AppConfig()
+        panel = RemuxPanel(cfg)
+        source_path = tmp_path / "source.mkv"
+        source_path.touch()
+        video = _track(0, "video", file_id="fid", codec="HEVC")
+        audio = _track(1, "audio", file_id="fid")
+        info = _file_info(
+            path=source_path,
+            videos=[_video(index=0)],
+            audios=[_audio(index=1)],
+        )
+        panel._source_files = [
+            SourceFile(id="fid", path=source_path, color=_COLOR_A, info=info, tracks=[video, audio])
+        ]
+        panel._source_colors = {"fid": _COLOR_A}
+        panel._source_names = {"fid": source_path.name}
+        panel._track_table.append_tracks(_COLOR_A, [video, audio])
+        video_emissions: list = []
+        audio_emissions: list = []
+        panel.video_tracks_changed.connect(video_emissions.append)
+        panel.audio_tracks_changed.connect(audio_emissions.append)
+        panel._track_table.selectRow(1)
+
+        class _DropEvent:
+            @staticmethod
+            def source():
+                return panel._track_table
+
+            @staticmethod
+            def position():
+                return QPointF(0, 0)
+
+            @staticmethod
+            def setDropAction(_action):
+                pass
+
+            @staticmethod
+            def accept():
+                pass
+
+            @staticmethod
+            def ignore():
+                raise AssertionError("Le drop interne ne doit pas être ignoré")
+
+        monkeypatch.setattr(panel._track_table, "_drop_target_row", lambda _event: 0)
+        panel._track_table.dropEvent(_DropEvent())
+
+        assert [entry.entry_id for entry in panel._track_table.current_tracks()] == [
+            audio.entry_id,
+            video.entry_id,
+        ]
+        assert video_emissions == []
+        assert audio_emissions == []
+        panel.close()
+
+
 class TestRemuxPanelDecisionProfiles:
 
     @staticmethod
@@ -2540,6 +2719,23 @@ class TestRemuxPanelVideoTrackSignals:
         assert [entry.entry_id for _info, entry, _color in emitted[-1]] == [video_a.entry_id]
         panel.close()
 
+    def test_video_checkbox_change_does_not_rebuild_audio_projection(self, qt_app, tmp_path):
+        video = _track(0, "video", file_id="fid", codec="HEVC")
+        panel = self._panel_with_video_tracks(qt_app, tmp_path, [video])
+        video_emitted: list = []
+        audio_emitted: list = []
+        panel.video_tracks_changed.connect(video_emitted.append)
+        panel.audio_tracks_changed.connect(audio_emitted.append)
+
+        row = self._row_for_entry(panel, video)
+        row_item = panel._track_table.item(row, _TrackTable.COL_CHECK)
+        assert row_item is not None
+        row_item.setCheckState(Qt.CheckState.Unchecked)
+
+        assert video_emitted == [[]]
+        assert audio_emitted == []
+        panel.close()
+
     def test_reemitted_video_tracks_are_detached_objects(self, qt_app, tmp_path):
         video = _track(0, "video", file_id="fid", codec="HEVC")
         panel = self._panel_with_video_tracks(qt_app, tmp_path, [video])
@@ -2591,6 +2787,33 @@ def test_inspect_file_routes_verbose_inspector_output_to_panel_signal(tmp_path):
     assert verbose_lines == [("inspector", "Inspection démarrée : /tmp/movie.mkv")]
     panel._inspection_done.emit.assert_called_once_with("fid-1", info)
     panel._inspection_error.emit.assert_not_called()
+
+
+def test_add_files_uses_dedicated_inspection_executor(tmp_path):
+    first = tmp_path / "first.mkv"
+    second = tmp_path / "second.mkv"
+    inspection_executor = MagicMock()
+    audio_sync_executor = MagicMock()
+    panel = SimpleNamespace(
+        _source_files=[],
+        _source_names={},
+        _source_colors={},
+        _color_index=0,
+        _file_list=MagicMock(),
+        _inspection_executor=inspection_executor,
+        _inspection_futures={},
+        _executor=audio_sync_executor,
+        _inspect_file=MagicMock(),
+        _sync_tmdb_suggested_title=MagicMock(),
+        log_message=SimpleNamespace(emit=MagicMock()),
+    )
+
+    inspection_functions.on_add_files(cast(Any, panel), [str(first), str(second)])
+
+    assert inspection_executor.submit.call_count == 2
+    assert audio_sync_executor.submit.call_count == 0
+    assert [call.args[2] for call in inspection_executor.submit.call_args_list] == [first, second]
+    assert len(panel._source_files) == 2
 
 
 # ===========================================================================
@@ -2701,7 +2924,7 @@ class TestAttachmentPreviewFormatting:
 
 class TestMatroskaAttachmentExtractor:
 
-    def test_extract_matroska_attachment_bytes_returns_expected_payload(self, tmp_path):
+    def test_attachment_data_returns_expected_payload(self, tmp_path):
         src = tmp_path / "sample.mkv"
         _make_mkv_with_attachments(
             src,
@@ -2711,7 +2934,7 @@ class TestMatroskaAttachmentExtractor:
             ],
         )
 
-        payload = extract_matroska_attachment_bytes(src, 1)
+        payload = MatroskaReader(src).attachment_data(1)
 
         assert payload == b"<root><demo>ok</demo></root>"
 
@@ -2863,6 +3086,14 @@ class TestAttachmentPanelManualPaths:
 
 class TestRemuxPanelGlobalDropRouting:
 
+    @staticmethod
+    def _wait_for_sources(qt_app, callback):
+        deadline = time.monotonic() + 2
+        while not callback.called and time.monotonic() < deadline:
+            qt_app.processEvents()
+            time.sleep(0.001)
+        assert callback.called
+
     def test_route_dropped_paths_sends_media_to_sources_and_others_to_attachments(self, qt_app, tmp_path):
         cfg = AppConfig()
         panel = RemuxPanel(cfg)
@@ -2874,6 +3105,7 @@ class TestRemuxPanelGlobalDropRouting:
         with patch.object(panel, "_on_add_files") as mock_add_sources, \
              patch.object(panel._attachment_panel, "add_manual_paths") as mock_add_attachments:
             panel._route_dropped_paths([str(src), str(att)])
+            self._wait_for_sources(qt_app, mock_add_sources)
 
         mock_add_sources.assert_called_once_with([str(src)])
         mock_add_attachments.assert_called_once_with([str(att)])
@@ -2902,6 +3134,7 @@ class TestRemuxPanelGlobalDropRouting:
         with patch.object(panel, "_on_add_files") as mock_add_sources, \
              patch.object(panel._attachment_panel, "add_manual_paths") as mock_add_attachments:
             panel._route_dropped_paths([str(folder)])
+            self._wait_for_sources(qt_app, mock_add_sources)
 
         mock_add_sources.assert_called_once_with([str(src), str(nested_src)])
         mock_add_attachments.assert_called_once_with([str(cover), str(nested_cover)])
@@ -2928,6 +3161,7 @@ class TestRemuxPanelGlobalDropRouting:
         with patch.object(panel, "_on_add_files") as mock_add_sources, \
              patch.object(panel._attachment_panel, "add_manual_paths") as mock_add_attachments:
             panel._route_dropped_paths([str(folder_a), str(folder_b), str(folder_a)])
+            self._wait_for_sources(qt_app, mock_add_sources)
 
         mock_add_sources.assert_called_once_with([str(src_a), str(src_b)])
         mock_add_attachments.assert_called_once_with([str(cover_a), str(cover_b)])
@@ -3074,3 +3308,69 @@ class TestRemuxWorkflowPostMetadata:
                     time.sleep(0.01)
 
         assert patch_hook.called
+
+
+def test_remux_panel_backend_selector_is_initialized_but_job_local(qt_app):
+    config = AppConfig()
+    config.matroska_mux_backend = "native"
+    panel = RemuxPanel(config)
+
+    assert panel._mux_backend_combo.currentData() == "native"
+    panel._mux_backend_combo.setCurrentIndex(panel._mux_backend_combo.findData("ffmpeg"))
+
+    assert panel._mux_backend_combo.currentData() == "ffmpeg"
+    assert config.matroska_mux_backend == "native"
+
+
+def test_remux_panel_refreshes_backend_after_settings_save(qt_app):
+    config = AppConfig()
+    config.matroska_mux_backend = "native"
+    panel = RemuxPanel(config)
+
+    config.matroska_mux_backend = "ffmpeg"
+    panel.refresh_runtime_settings()
+
+    assert panel._mux_backend_combo.currentData() == "ffmpeg"
+
+
+def test_remux_panel_debounces_preview_and_compiles_it_off_the_ui_thread(qt_app):
+    """Une rafale tableau ne doit ni compiler deux fois ni figer Qt."""
+    panel = RemuxPanel(AppConfig())
+    started = Event()
+    release = Event()
+    sentinel_config = object()
+
+    def _slow_preview(_config):
+        started.set()
+        assert release.wait(timeout=1)
+        return "preview à jour"
+
+    try:
+        with patch.object(panel, "_current_config", return_value=sentinel_config), \
+             patch.object(panel._workflow, "preview_command", side_effect=_slow_preview) as preview:
+            panel._rebuild_preview()
+            panel._rebuild_preview()
+
+            # Avant l'expiration du debounce, aucun préflight n'est déclenché.
+            assert preview.call_count == 0
+            deadline = time.monotonic() + 1.0
+            while not started.is_set() and time.monotonic() < deadline:
+                qt_app.processEvents()
+                time.sleep(0.01)
+            assert started.is_set()
+            assert preview.call_count == 1
+
+            # Le worker reste bloqué, mais la boucle Qt continue de traiter les
+            # événements ; le texte n'est appliqué qu'une fois le calcul fini.
+            qt_app.processEvents()
+            assert panel._cmd_preview.toPlainText() != "preview à jour"
+            release.set()
+            deadline = time.monotonic() + 1.0
+            while panel._cmd_preview.toPlainText() != "preview à jour" and time.monotonic() < deadline:
+                qt_app.processEvents()
+                time.sleep(0.01)
+
+        assert panel._cmd_preview.toPlainText() == "preview à jour"
+    finally:
+        release.set()
+        panel.close()

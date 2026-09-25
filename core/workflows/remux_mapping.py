@@ -15,7 +15,7 @@ from core.workflows.common.metadata import (
     resolve_global_tags,
 )
 from core.workflows.common.timeline_sync import needs_strict_interleave as common_needs_strict_interleave
-from core.workflows.remux_models import RemuxConfig, RemuxError, SourceInput, TrackEntry
+from core.workflows.remux_models import RemuxConfig, RemuxError, TrackEntry
 
 
 @dataclass(frozen=True)
@@ -108,7 +108,7 @@ def resolve_mapped_tracks(config: RemuxConfig) -> list[MappedTrack]:
         src_path, track = found
         if track.track_type not in STREAM_SPEC_BY_TYPE:
             raise RemuxError(
-                "Type de piste non supporté en remux FFmpeg : "
+                "Type de piste non supporté par le remux : "
                 f"{track.track_type} (file_index={file_index}, stream={mkv_tid})"
             )
 
@@ -227,25 +227,19 @@ def chapter_map_value(config: RemuxConfig, chapter_input_index: int | None) -> s
 def metadata_map_value(
     config: RemuxConfig,
     chapter_input_index: int | None,
-    chapter_map: str | None = None,
 ) -> str:
-    # On dérive le défaut de "métadonnées globales" du même input que celui
-    # historiquement utilisé pour les chapitres (input 0 quand keep_chapters
-    # et pas d'override) ; chapter_map peut désormais cibler un autre input
-    # quand seul celui-ci porte des chapitres, mais on ne veut pas pour
-    # autant déplacer la copie des tags globaux : on retombe alors sur "0".
-    fallback_map = "0" if config.keep_chapters else "-1"
+    # Les balises globales ne sont recopiées que si une source est cochée
+    # (copy_tags) ou si les overrides ciblent le fichier de chapitres généré.
+    # Les chapitres restent préservés indépendamment via -map_chapters : on ne
+    # retombe jamais sur l'input source, sinon les balises décochées/supprimées
+    # réapparaissent dans la sortie.
     if config.tag_overrides is not None:
         if config.chapter_overrides and chapter_input_index is not None:
             return str(chapter_input_index)
-        if chapter_map is not None and chapter_map not in ("-1", ""):
-            return fallback_map
         return "-1"
     for input_idx, source in enumerate(config.sources):
         if source.copy_tags:
             return str(input_idx)
-    if chapter_map is not None and chapter_map not in ("-1", ""):
-        return fallback_map
     return "-1"
 
 
@@ -273,7 +267,7 @@ def metadata_context(config: RemuxConfig, chapter_input_index: int | None) -> Re
     chap_map = chapter_map_value(config, chapter_input_index)
     return RemuxMetadataContext(
         chapter_map=chap_map,
-        metadata_map=metadata_map_value(config, chapter_input_index, chap_map),
+        metadata_map=metadata_map_value(config, chapter_input_index),
         global_tags=resolved_global_tags(config),
     )
 

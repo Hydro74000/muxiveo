@@ -38,21 +38,21 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING, cast
 
-from PySide6.QtCore import QEvent, QObject, Qt, Signal, QSize, QTimer
+from PySide6.QtCore import QEvent, QObject, Qt, Signal, QTimer, QUrl
 from PySide6.QtGui import (
-    QColor, QFont, QIcon,
-    QTextCharFormat, QTextCursor,
+    QColor, QDesktopServices, QFont, QTextCharFormat, QTextCursor,
 )
 from PySide6.QtWidgets import (
     QApplication,
     QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
-    QProgressBar, QPushButton, QScrollArea, QSizePolicy,
+    QProgressBar, QProgressDialog, QPushButton, QScrollArea, QSizePolicy,
     QSplitter, QStackedWidget, QTextEdit,
     QVBoxLayout, QWidget,
 )
@@ -64,7 +64,24 @@ from core.i18n import apply_translations, set_current_language, translate_text
 from core.logging import LogLevel, VerboseFileLogger, parse_log_level
 from core.runner import TaskSignals, _PCT_SENTINEL
 from core.subprocess_utils import subprocess_text_kwargs
-from core.version import APP_VERSION_LABEL, WRITING_APPLICATION_TAG
+from core.update_check import (
+    UPDATE_CHECK_INTERVAL_S,
+    UpdateInfo,
+    fetch_latest_release,
+    is_newer,
+    normalize_update_channel,
+    release_page_url,
+)
+from core.update_install import (
+    InstallKind,
+    UpdateInstallError,
+    apply_update,
+    can_self_update,
+    detect_install_kind,
+    download_update,
+    manual_update_hint,
+)
+from core.version import APP_BUILD_VERSION, APP_IS_UNSTABLE_BUILD, APP_VERSION_LABEL, WRITING_APPLICATION_TAG
 from core.workflows.encode.backends import backend_id_for_codec
 from core.workflows.encode import EncodeError
 from core.workflows.common.sync_rewrite import SYNC_REWRITE_STAGE_PREFIX
@@ -79,12 +96,13 @@ from ui.panels.encode_panel.theme import (
 )
 from ui.panels.merge_dovi_panel import MergeDoviPanel
 from ui.panels.remux_panel import RemuxPanel
+from ui.panels.hybrid_studio import HybridStudio
 from ui.panels.settings_panel import SettingsPanel
 from ui.design_system import DesignSystem, colors as _Colors, font_px as _font_px, scale as _scale
 
 if TYPE_CHECKING:
     from core.workflows.encode.models import EncodeConfig
-    from core.workflows.remux_models import RemuxConfig, TrackEntry
+    from core.workflows.remux_models import RemuxConfig
 
 
 # ---------------------------------------------------------------------------
@@ -1178,15 +1196,24 @@ class _NavButton(QWidget):
 # Sidebar
 # ---------------------------------------------------------------------------
 
+class _UpdateDownloadBridge(QObject):
+    """Relais thread worker → UI pour le téléchargement d'une mise à jour."""
+
+    progress = Signal(object, object)   # octets reçus, total (0 si inconnu)
+    finished = Signal(object)           # Path téléchargé ou exception
+
+
 class _Sidebar(QWidget):
     page_changed = Signal(int)
+    update_requested = Signal()
 
     _NAV_ITEMS = [
         ("Tableau de bord", "⌂", 0, False),
         ("Conteneur",       "⊞", 3, False),
         ("Encodage",        "▶", 2, True),    # sous-menu de Conteneur
+        ("Hybridation",     "⧉", 4, False),
         ("DoVi / HDR10+",   "◈", 1, False),
-        ("Paramètres",      "⚙", 4, False),
+        ("Paramètres",      "⚙", 5, False),
     ]
     _FULL_WIDTH = 200
     _COMPACT_WIDTH = 96
@@ -1194,6 +1221,7 @@ class _Sidebar(QWidget):
     def __init__(self, parent: QWidget | None = None, *, compact: bool = False) -> None:
         super().__init__(parent)
         self._compact = compact
+        self._update_info: UpdateInfo | None = None
         self.setFixedWidth(_scale(self._COMPACT_WIDTH if compact else self._FULL_WIDTH))
         self.setStyleSheet(f"""
             QWidget {{
@@ -1289,6 +1317,7 @@ class _Sidebar(QWidget):
         # Version
         self._version_lbl = QLabel(APP_VERSION_LABEL)
         self._version_lbl.setToolTip("")
+        self._version_lbl.linkActivated.connect(lambda _url: self.update_requested.emit())
         self._version_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._version_lbl.setContentsMargins(_scale(16), 0, 0, _scale(12))
         self._version_lbl.setStyleSheet(f"""
@@ -1331,17 +1360,39 @@ class _Sidebar(QWidget):
         if compact:
             self._toggle_btn.setText("▶")
             self._toggle_btn.setToolTip(translate_text("Agrandir le menu"))
-            self._version_lbl.setText(APP_VERSION_LABEL.split()[-1])
-            self._version_lbl.setToolTip(APP_VERSION_LABEL)
             self._version_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._version_lbl.setContentsMargins(0, 0, 0, _scale(12))
         else:
             self._toggle_btn.setText("◀")
             self._toggle_btn.setToolTip(translate_text("Réduire le menu"))
-            self._version_lbl.setText(APP_VERSION_LABEL)
-            self._version_lbl.setToolTip("")
             self._version_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             self._version_lbl.setContentsMargins(_scale(16), 0, 0, _scale(12))
+        self._refresh_version_label()
+
+    def set_update_available(self, info: UpdateInfo | None) -> None:
+        """Affiche une nouvelle version, ou efface le badge si elle est obsolète."""
+        self._update_info = info
+        self._refresh_version_label()
+
+    def _refresh_version_label(self) -> None:
+        info = self._update_info
+        if info is None:
+            self._version_lbl.setText(APP_VERSION_LABEL.split()[-1] if self._compact else APP_VERSION_LABEL)
+            self._version_lbl.setToolTip(f"v{APP_BUILD_VERSION}" if self._compact or APP_IS_UNSTABLE_BUILD else "")
+            return
+        short = info.display_version
+        if not self._compact:
+            text = f"{APP_VERSION_LABEL} → v{short}"
+        elif "-unstable." in short:
+            text = f"↑ #{short.rsplit('.', 1)[-1]}"
+        else:
+            text = f"↑ v{short}"
+        self._version_lbl.setText(
+            f'<a href="{info.url}" style="color:{_Colors.ACCENT}; text-decoration:none;">{text}</a>'
+        )
+        self._version_lbl.setToolTip(
+            translate_text("Nouvelle version disponible : v{version}", version=info.version)
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1360,13 +1411,15 @@ class MainWindow(QMainWindow):
     """
 
     log_requested = Signal(str, str)
+    _update_available = Signal(int, str, object, bool)
     WRITING_APPLICATION = WRITING_APPLICATION_TAG
     _PAGE_INDEX_BY_PANEL_KEY = {
         "dashboard": 0,
         "dovi": 1,
         "encoding": 2,
         "container": 3,
-        "settings": 4,
+        "hybrid": 4,
+        "settings": 5,
     }
 
     def __init__(self, config: AppConfig) -> None:
@@ -1374,6 +1427,7 @@ class MainWindow(QMainWindow):
         self._config = config
         DesignSystem.set_theme(config.theme)
         self._running   = False
+        self._update_info: UpdateInfo | None = None
         self._signals: TaskSignals | None = None
         self._op_start: float = 0.0
         self._op_mode: str = ""   # "remux", "encode", "extract", "audio_sync" ou "merge_dovi"
@@ -1421,6 +1475,7 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._apply_locale()
         self._post_init_log()
+        self._schedule_update_check()
 
     # ------------------------------------------------------------------
     # Fenêtre
@@ -1513,6 +1568,11 @@ class MainWindow(QMainWindow):
         )
         self._stack.addWidget(self._remux_panel)
 
+        # Page 4 — Studio Hybridation (fonctionnelle)
+        self._hybrid_panel = HybridStudio(self._config)
+        self._stack.addWidget(self._hybrid_panel)
+
+        # Page 5 — Paramètres (fonctionnelle)
         self._settings_panel = SettingsPanel(self._config)
         self._stack.addWidget(self._settings_panel)
 
@@ -1726,6 +1786,16 @@ class MainWindow(QMainWindow):
         self._stack.setCurrentIndex(container_index)
         self._sidebar.select_page(container_index)
 
+    def _on_hybrid_open_in_remux(self, config_or_sources) -> None:
+        self._open_container_panel()
+        if hasattr(config_or_sources, "sources"):
+            paths = [s.path for s in config_or_sources.sources]
+            self._remux_panel.add_sources(paths)
+        elif isinstance(config_or_sources, (list, tuple)):
+            self._remux_panel.add_sources(list(config_or_sources))
+        elif isinstance(config_or_sources, (str, Path)):
+            self._remux_panel.add_sources([Path(config_or_sources)])
+
     def open_startup_paths(self, paths: list[Path | str]) -> None:
         """Charge automatiquement des fichiers transmis au lancement de l'app."""
         normalized = []
@@ -1850,6 +1920,11 @@ class MainWindow(QMainWindow):
         self._remux_panel.log_message.connect(
             self.log_requested, Qt.ConnectionType.QueuedConnection
         )
+        # HybridStudio → LogPanel global
+        self._hybrid_panel.log_message.connect(
+            self.log_requested, Qt.ConnectionType.QueuedConnection
+        )
+        self._hybrid_panel.open_in_remux.connect(self._on_hybrid_open_in_remux)
         self._remux_panel.tool_output.connect(
             self._on_tool_output_requested, Qt.ConnectionType.QueuedConnection
         )
@@ -1870,6 +1945,10 @@ class MainWindow(QMainWindow):
         self._encode_panel.set_tmdb_cover_provider(self._remux_panel.current_tmdb_cover)
         self._encode_panel.set_tag_overrides_provider(self._remux_panel.current_tag_overrides)
         self._encode_panel.set_chapters_provider(self._remux_panel.current_chapter_overrides)
+        self._encode_panel.set_mux_backend_provider(self._remux_panel.current_mux_backend)
+        self._remux_panel.mux_backend_changed.connect(
+            lambda _backend: self._encode_panel.refresh_command_preview()
+        )
         # État "prêt" → bouton Exécuter
         self._remux_panel.ready_changed.connect(self._on_ready_changed)
         self._encode_panel.ready_changed.connect(self._on_ready_changed)
@@ -2625,6 +2704,7 @@ class MainWindow(QMainWindow):
         previous_file_logging_enabled = _config_file_logging_enabled(self._config)
         previous_file_logging_level = _config_file_logging_level(self._config)
         self._config.reload()
+        self._sync_update_settings()
         new_theme = DesignSystem.set_theme(self._config.theme)
         new_scale = DesignSystem.set_ui_scale(self._config.ui_scale_percent)
         _ensure_verbose_file_logger(self)
@@ -2820,13 +2900,16 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(self._config.window_geometry)
 
     def closeEvent(self, event) -> None:
+        self._update_request_id += 1
+        if self._update_download_cancel is not None:
+            self._update_download_cancel.set()
         self._config.save_geometry(bytes(self.saveGeometry().data()))
         self._config.save()
         # Arrête proprement tous les ThreadPoolExecutor des pages enfants :
         # sinon des threads survivent à app.exec() et peuvent retenir des
         # FDs/processus, ce qui empêche l'OS de restaurer les flags du tty
         # parent (terminal sans echo après fermeture).
-        for attr in ("_dashboard", "_encode_panel", "_remux_panel", "_dovi_panel"):
+        for attr in ("_dashboard", "_encode_panel", "_remux_panel", "_dovi_panel", "_hybrid_panel"):
             page = getattr(self, attr, None)
             executor = getattr(page, "_executor", None) if page is not None else None
             if executor is not None:
@@ -2845,6 +2928,227 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Post-init
     # ------------------------------------------------------------------
+
+    def _schedule_update_check(self) -> None:
+        """Planifie une vérification de mise à jour (au plus une fois par 24 h)."""
+        self._update_request_id = 0
+        self._update_settings: tuple[str, bool] | None = None
+        self._update_refresh_pending = False
+        self._update_download_cancel: threading.Event | None = None
+        self._sidebar.update_requested.connect(self._on_update_requested)
+        self._update_available.connect(self._on_update_available, Qt.ConnectionType.QueuedConnection)
+        self._sync_update_settings()
+
+    def _sync_update_settings(self) -> None:
+        """Invalide les réponses et le badge dès que les préférences changent."""
+        channel = self._update_channel()
+        enabled = bool(getattr(self._config, "check_updates", False))
+        settings = (channel, enabled)
+        if settings == self._update_settings:
+            return
+        self._update_settings = settings
+        self._update_request_id += 1
+        request_id = self._update_request_id
+        self._update_refresh_pending = False
+        self._update_info = None
+        self._sidebar.set_update_available(None)
+        if self._update_download_cancel is not None:
+            self._update_download_cancel.set()
+        if not enabled:
+            return
+        last = float(getattr(self._config, "last_update_check", 0.0) or 0.0)
+        same_channel = str(getattr(self._config, "last_update_channel", "") or "") == channel
+        if same_channel and time.time() - last < UPDATE_CHECK_INTERVAL_S:
+            # Vérification récente : réafficher la version déjà trouvée, sans requête réseau.
+            known = str(getattr(self._config, "last_update_version", "") or "")
+            if is_newer(known):
+                self._update_info = UpdateInfo(
+                    version=known, url=release_page_url(known), prerelease="-unstable" in known
+                )
+                self._sidebar.set_update_available(self._update_info)
+            return
+        QTimer.singleShot(3000, self, lambda: self._start_update_check(request_id, channel))
+
+    def _is_current_update_request(self, request_id: int, channel: str) -> bool:
+        return (
+            request_id == self._update_request_id
+            and channel == self._update_channel()
+            and bool(getattr(self._config, "check_updates", False))
+        )
+
+    def _start_update_check(self, request_id: int, channel: str, prompt: bool = False) -> None:
+        if not self._is_current_update_request(request_id, channel):
+            return
+        threading.Thread(
+            target=self._run_update_check,
+            args=(request_id, channel, prompt),
+            name="muxiveo-update-check",
+            daemon=True,
+        ).start()
+
+    def _run_update_check(self, request_id: int, channel: str, prompt: bool) -> None:
+        """Thread worker : interroge GitHub puis notifie le thread UI par signal."""
+        info = fetch_latest_release(channel, timeout=10.0 if prompt else 5.0)
+        try:
+            self._update_available.emit(request_id, channel, info, prompt)
+        except RuntimeError:  # fenêtre détruite entre-temps
+            pass
+
+    def _update_channel(self) -> str:
+        return normalize_update_channel(getattr(self._config, "update_channel", None))
+
+    def _on_update_available(self, request_id: int, channel: str, info: UpdateInfo | None, prompt: bool) -> None:
+        if not self._is_current_update_request(request_id, channel):
+            return
+        if prompt:
+            self._update_refresh_pending = False
+            # Hors ligne, la page de la release déjà connue reste accessible.
+            if info is None:
+                info = self._update_info
+        if info is not None and not info.is_newer:
+            info = None
+        self._config.save_last_update_check(time.time(), info.version if info else "", channel)
+        self._update_info = info
+        self._sidebar.set_update_available(info)
+        if info is None:
+            return
+        self.log_info(
+            translate_text("Nouvelle version disponible : v{version} — {url}", version=info.version, url=info.url)
+        )
+        if prompt:
+            self._show_update_dialog(info)
+
+    def _on_update_requested(self) -> None:
+        """Clic sur le badge de version : proposer l'installation ou ouvrir la release."""
+        self._sync_update_settings()
+        info = self._update_info
+        if info is None or self._update_refresh_pending:
+            return
+        if not info.assets:
+            # Info issue du cache 24 h : récupérer la liste des assets.
+            self._update_refresh_pending = True
+            self._start_update_check(self._update_request_id, self._update_channel(), prompt=True)
+            return
+        self._show_update_dialog(info)
+
+    def _show_update_dialog(self, info: UpdateInfo) -> None:
+        kind = detect_install_kind()
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle(translate_text("Mise à jour disponible"))
+        box.setText(
+            translate_text(
+                "Muxiveo v{version} est disponible (version actuelle : {current}).",
+                version=info.version,
+                current=f"v{APP_BUILD_VERSION}",
+            )
+        )
+        notes: list[str] = []
+        if info.prerelease:
+            notes.append(translate_text("Pré-version de développement (canal unstable) : moins testée qu'une release stable."))
+        install_btn = None
+        if can_self_update(info, kind):
+            install_btn = box.addButton(translate_text("Installer"), QMessageBox.ButtonRole.AcceptRole)
+        elif hint := manual_update_hint():
+            notes.append(translate_text("Mise à jour manuelle : {command}", command=hint))
+        if notes:
+            box.setInformativeText("\n\n".join(notes))
+        release_btn = box.addButton(translate_text("Voir la release"), QMessageBox.ButtonRole.ActionRole)
+        box.addButton(translate_text("Plus tard"), QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is release_btn:
+            QDesktopServices.openUrl(QUrl(info.url))
+        elif install_btn is not None and clicked is install_btn:
+            self._start_update_install(info, kind)
+
+    def _start_update_install(self, info: UpdateInfo, kind: InstallKind) -> None:
+        """Télécharge la mise à jour dans un thread, avec dialogue de progression annulable."""
+        if self._update_download_cancel is not None:
+            return
+        if self._running:
+            QMessageBox.warning(
+                self,
+                translate_text("Mise à jour"),
+                translate_text("Une opération est en cours : attendez sa fin avant d'installer la mise à jour."),
+            )
+            return
+        dialog = QProgressDialog(
+            translate_text("Téléchargement de Muxiveo v{version}…", version=info.version),
+            translate_text("Annuler"),
+            0,
+            100,
+            self,
+        )
+        dialog.setWindowTitle(translate_text("Mise à jour"))
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        cancel_event = threading.Event()
+        self._update_download_cancel = cancel_event
+        dialog.canceled.connect(cancel_event.set)
+
+        bridge = _UpdateDownloadBridge(self)
+
+        def _on_progress(received: int, total: int) -> None:
+            if cancel_event.is_set():
+                return
+            if total > 0:
+                dialog.setValue(min(100, int(received * 100 / total)))
+            else:
+                dialog.setRange(0, 0)
+
+        def _on_finished(result: object) -> None:
+            cancelled = cancel_event.is_set()
+            dialog.blockSignals(True)
+            dialog.close()
+            dialog.deleteLater()
+            bridge.deleteLater()
+            self._update_download_cancel = None
+            self._on_update_downloaded(result, kind, cancelled)
+
+        bridge.progress.connect(_on_progress, Qt.ConnectionType.QueuedConnection)
+        bridge.finished.connect(_on_finished, Qt.ConnectionType.QueuedConnection)
+
+        def _worker() -> None:
+            try:
+                result: object = download_update(
+                    info, kind, progress=bridge.progress.emit, cancelled=cancel_event.is_set
+                )
+            except Exception as exc:  # remonté au thread UI
+                result = exc
+            try:
+                bridge.finished.emit(result)
+            except RuntimeError:  # fenêtre détruite entre-temps
+                if isinstance(result, Path):
+                    result.unlink(missing_ok=True)
+
+        threading.Thread(target=_worker, name="muxiveo-update-download", daemon=True).start()
+        dialog.show()
+
+    def _on_update_downloaded(self, result: object, kind: InstallKind, cancelled: bool) -> None:
+        if cancelled or self._running:
+            if isinstance(result, Path):
+                try:
+                    result.unlink(missing_ok=True)
+                except OSError as exc:
+                    self.log_error(str(exc))
+            self.log_info(translate_text("Mise à jour annulée."))
+            return
+        if isinstance(result, BaseException):
+            self.log_error(str(result))
+            QMessageBox.warning(self, translate_text("Mise à jour"), str(result))
+            return
+        try:
+            apply_update(kind, cast(Path, result))
+        except UpdateInstallError as exc:
+            self.log_error(str(exc))
+            QMessageBox.warning(self, translate_text("Mise à jour"), str(exc))
+            return
+        app = cast(QApplication | None, QApplication.instance())
+        if app is not None:
+            app.quit()
 
     def _post_init_log(self) -> None:
         self.log_info("Muxiveo démarré.")

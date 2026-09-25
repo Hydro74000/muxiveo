@@ -297,6 +297,13 @@ def _output_depth_args(video: VideoEncodeSettings) -> list[str]:
         return ["--output-depth", "8"]
     if bool(getattr(video, "force_10bit", False)):
         return ["--output-depth", "10"]
+    # NVEncC sort en 8 bits par défaut, même depuis une source 10 bits : un
+    # HDR conservé exige le 10 bits (NVENC H.264 ne le propose pas).
+    keeps_hdr = not getattr(video, "tonemap_to_sdr", False) and any(
+        getattr(video, name, False) for name in ("copy_dv", "copy_hdr10plus", "inject_hdr_meta")
+    )
+    if keeps_hdr and not is_h264:
+        return ["--output-depth", "10"]
     return []
 
 
@@ -347,18 +354,37 @@ def map_nvencc_dovi_profile(profile: str | None) -> str | None:
     return value
 
 
-def _auto_source_hdr_args(video: VideoEncodeSettings) -> list[str]:
-    """Recopie les caractéristiques HDR source quand NVEncC lit le fichier."""
-    if not (getattr(video, "copy_dv", False) or getattr(video, "copy_hdr10plus", False)):
+def _dovi_profile_for_codec(codec: str, profile: str | None) -> str | None:
+    """Dolby Vision en AV1 = profil 10.x : un profil 8.x y produit un RPU invalide."""
+    if codec == "nvencc_av1" and profile and profile.startswith("8."):
+        return "10." + profile.split(".", 1)[1]
+    return profile
+
+
+def _auto_source_hdr_args(video: VideoEncodeSettings, *, direct_input: bool) -> list[str]:
+    """Signalisation couleur HDR (VUI) et recopie des métadonnées statiques source.
+
+    Sans ``--transfer``/``--colorprim``, NVEncC émet un flux PQ non signalé,
+    lu comme SDR : la VUI doit suivre dès qu'un HDR statique ou dynamique est
+    conservé. Le y4m ne transporte pas la couleur : HDR10 statique = BT.2020/PQ.
+    """
+    if getattr(video, "tonemap_to_sdr", False):
         return []
-    return [
+    dynamic = bool(getattr(video, "copy_dv", False) or getattr(video, "copy_hdr10plus", False))
+    static = bool(getattr(video, "inject_hdr_meta", False))
+    if not (dynamic or static):
+        return []
+    if not direct_input:
+        return ["--colormatrix", "bt2020nc", "--colorprim", "bt2020", "--transfer", "smpte2084"] if static else []
+    args = [
         "--colormatrix", "auto",
         "--colorprim", "auto",
         "--transfer", "auto",
         "--chromaloc", "auto",
-        "--master-display", "copy",
-        "--max-cll", "copy",
     ]
+    if not static:
+        args.extend(["--master-display", "copy", "--max-cll", "copy"])
+    return args
 
 
 def map_nvencc_tonemap_args(video: VideoEncodeSettings) -> list[str]:
@@ -625,7 +651,7 @@ def _hdr_dynamic_args(
         args.extend(["--dhdr10-info", "copy"])
     if dovi_rpu is not None:
         args.extend(["--dolby-vision-rpu", str(dovi_rpu)])
-        mapped_profile = map_nvencc_dovi_profile(video.dovi_profile)
+        mapped_profile = _dovi_profile_for_codec(video.codec, map_nvencc_dovi_profile(video.dovi_profile))
         # Quand on injecte un RPU externe, le profil doit être explicite ou
         # absent ; `copy` n'a de sens qu'en passthrough direct depuis la source.
         if mapped_profile and mapped_profile != "copy":
@@ -635,6 +661,7 @@ def _hdr_dynamic_args(
         mapped_profile = map_nvencc_dovi_profile(video.dovi_profile)
         if mapped_profile in {None, "copy"}:
             mapped_profile = "8.1"
+        mapped_profile = _dovi_profile_for_codec(video.codec, mapped_profile)
         if mapped_profile:
             args.extend(["--dolby-vision-profile", mapped_profile])
     if dovi_rpu_prm and "--dolby-vision-rpu" in args:
@@ -703,8 +730,7 @@ def build_nvencc_command(
                    or (preset.upper() in {"P1", "P2", "P3", "P4", "P5", "P6", "P7"})):
         cmd.extend(["-u", preset])
 
-    if input_path is not None and not getattr(video, "inject_hdr_meta", False):
-        cmd.extend(_auto_source_hdr_args(video))
+    cmd.extend(_auto_source_hdr_args(video, direct_input=input_path is not None))
     cmd.extend(_hdr_static_args(video))
     cmd.extend(
         _hdr_dynamic_args(
@@ -822,6 +848,19 @@ def nvencc_intermediate_path(work_dir: Path, codec: str, base_name: str = "nvenc
     return Path(work_dir) / f"{base_name}{ext}"
 
 
+def is_expected_nvencc_pipe_producer_exit(returncode: int, stderr: str) -> bool:
+    """True si FFmpeg s'est arrêté normalement avec le consommateur NVEncC.
+
+    Selon le timing, la fermeture du pipe par NVEncC est rapportée soit comme
+    SIGPIPE (``-13``), soit comme un code FFmpeg générique ``1`` accompagné du
+    diagnostic ``Broken pipe``. Ce dernier n'est acceptable qu'après succès du
+    consommateur ; les appelants doivent donc toujours vérifier NVEncC d'abord.
+    """
+    if returncode in (0, -13):
+        return True
+    return returncode == 1 and "broken pipe" in stderr.casefold()
+
+
 __all__ = [
     "NVENCC_VIDEO_CODECS",
     "NVENCC_DYNAMIC_HDR_CODECS",
@@ -848,4 +887,5 @@ __all__ = [
     "normalize_nvencc_qp_triplet",
     "sanitize_nvencc_extra_params",
     "nvencc_intermediate_path",
+    "is_expected_nvencc_pipe_producer_exit",
 ]

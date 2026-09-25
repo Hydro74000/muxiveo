@@ -28,17 +28,31 @@ from core.workflows.common.sync_rewrite import (
     ui_sync_rewrite_preview_for_track,
 )
 from core.workflows.remux_models import TrackEntry
+from core.workflows.sync_calibration import SyncCalibration, format_calibration_summary
 from ui.panels.remux_panel.models import (
+    _TRACK_INFO_CUTS_COLOR,
+    _TRACK_INFO_CUTS_LABEL_ROLE,
+    _TRACK_INFO_DISABLED_LABEL_ROLE,
     _TRACK_INFO_OFFSET_NEG_COLOR,
     _TRACK_INFO_OFFSET_POS_COLOR,
     _TRACK_INFO_OFFSET_VALUE_ROLE,
     _TRACK_INFO_SYNC_LABEL_ROLE,
 )
-from ui.panels.remux_panel.theme import _C, _pencil_icon, _refresh_icon, _warning_icon, _x_icon
+from ui.panels.remux_panel.theme import (
+    _C,
+    _scale,
+    _pencil_icon,
+    _refresh_icon,
+    _scissors_icon,
+    _warning_icon,
+    _waveform_icon,
+    _x_icon,
+)
 from ui.panels.track_edit_dialog import TrackEditDialog
 
 class _TrackInfoDelegate(QStyledItemDelegate):
     _SYNC_LABEL_COLOR = QColor(_C.ACCENT)
+    _DISABLED_LABEL_COLOR = QColor(_C.ERROR)
 
     @staticmethod
     def _offset_color(offset_value: str) -> QColor:
@@ -64,12 +78,18 @@ class _TrackInfoDelegate(QStyledItemDelegate):
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
         value = index.data(_TRACK_INFO_OFFSET_VALUE_ROLE)
         offset_value = str(value).strip() if value is not None else ""
+        cuts_value = index.data(_TRACK_INFO_CUTS_LABEL_ROLE)
+        cuts_label = str(cuts_value).strip() if cuts_value is not None else ""
         sync_value = index.data(_TRACK_INFO_SYNC_LABEL_ROLE)
         sync_label = str(sync_value).strip() if sync_value is not None else ""
+        disabled_value = index.data(_TRACK_INFO_DISABLED_LABEL_ROLE)
+        disabled_label = str(disabled_value).strip() if disabled_value is not None else ""
         text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
         markers = {
             "offset": offset_value if offset_value and offset_value in text else "",
+            "cuts": cuts_label if cuts_label and cuts_label in text else "",
             "sync": sync_label if sync_label and sync_label in text else "",
+            "disabled": disabled_label if disabled_label and disabled_label in text else "",
         }
         if not text or not any(markers.values()):
             super().paint(painter, option, index)
@@ -79,7 +99,10 @@ class _TrackInfoDelegate(QStyledItemDelegate):
         self.initStyleOption(opt, index)
         opt.text = ""
         widget = opt.widget
-        get_style = lambda o: o.style() if isinstance(o, QWidget) else None
+
+        def get_style(obj):
+            return obj.style() if isinstance(obj, QWidget) else None
+
         style = get_style(widget) or get_style(self.parent())
 
         if style is None:
@@ -129,6 +152,16 @@ class _TrackInfoDelegate(QStyledItemDelegate):
             if kind == "offset":
                 painter.setFont(opt.font)
                 painter.setPen(self._offset_color(marker_text))
+            elif kind == "cuts":
+                cuts_font = QFont(opt.font)
+                cuts_font.setBold(True)
+                painter.setFont(cuts_font)
+                painter.setPen(_TRACK_INFO_CUTS_COLOR)
+            elif kind == "disabled":
+                # Police inchangée : les avances de texte restent calculées
+                # avec ``metrics`` pour les fragments suivants.
+                painter.setFont(opt.font)
+                painter.setPen(self._DISABLED_LABEL_COLOR)
             else:
                 sync_font = QFont(opt.font)
                 sync_font.setUnderline(True)
@@ -144,6 +177,8 @@ class _TrackTable(QTableWidget):
     order_changed = Signal()
     extract_requested = Signal(object)  # TrackEntry
     audio_sync_requested = Signal(object)  # TrackEntry
+    subtitle_sync_requested = Signal(object)  # TrackEntry
+    sync_studio_requested = Signal(object)  # TrackEntry
     auto_sync_cancel_requested = Signal(object)  # TrackEntry
     sync_rewrite_toggle_requested = Signal(object)  # TrackEntry
 
@@ -200,6 +235,7 @@ class _TrackTable(QTableWidget):
         self._sync_rewrite_enabled = False
         self._sync_rewrite_advanced_audio_enabled = False
         self._prev_lang: dict[int, str] = {}
+        self._last_order_changed_track_types: frozenset[str] | None = None
         self._setup_ui()
         self._adjust_height()
         self.itemChanged.connect(self._on_item_changed)
@@ -288,15 +324,27 @@ class _TrackTable(QTableWidget):
         """)
 
     def append_tracks(self, source_color: str, tracks: list[TrackEntry]) -> None:
+        existing_ids = {
+            entry.entry_id
+            for entry in self.current_tracks()
+        }
+        updates_enabled = self.updatesEnabled()
+        self.setUpdatesEnabled(False)
         self.blockSignals(True)
-        for entry in tracks:
-            if self.has_entry_id(entry.entry_id):
-                continue
-            order = {"video": 0, "audio": 1, "subtitle": 2}.get(entry.track_type, 2)
-            pos = self._find_insert_position(order)
-            self.insertRow(pos)
-            self._fill_row(pos, entry, source_color)
-        self.blockSignals(False)
+        try:
+            for entry in tracks:
+                if entry.entry_id in existing_ids:
+                    continue
+                existing_ids.add(entry.entry_id)
+                order = {"video": 0, "audio": 1, "subtitle": 2}.get(entry.track_type, 2)
+                pos = self._find_insert_position(order)
+                self.insertRow(pos)
+                self._fill_row(pos, entry, source_color)
+        finally:
+            self.blockSignals(False)
+            self.setUpdatesEnabled(updates_enabled)
+        self._rebuild_prev_lang()
+        self.refresh_filter()
         self._adjust_height()
 
     def has_entry_id(self, entry_id: str) -> bool:
@@ -436,6 +484,10 @@ class _TrackTable(QTableWidget):
             _TRACK_INFO_SYNC_LABEL_ROLE,
             entry.sync_rewrite_label if self._can_toggle_sync_rewrite(entry) else "",
         )
+        info_item.setData(
+            _TRACK_INFO_DISABLED_LABEL_ROLE,
+            "" if entry.flag_enabled else TrackEntry.DISABLED_LABEL,
+        )
         self.setItem(row, self.COL_INFO, info_item)
         self._update_info_tooltip(row, entry)
 
@@ -470,8 +522,8 @@ class _TrackTable(QTableWidget):
     def _make_action_button(self, *, tooltip: str, icon) -> QPushButton:
         btn = QPushButton()
         btn.setIcon(icon)
-        btn.setIconSize(QSize(13, 13))
-        btn.setFixedSize(22, 22)
+        btn.setIconSize(QSize(_scale(13), _scale(13)))
+        btn.setFixedSize(_scale(22), _scale(22))
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setToolTip(tooltip)
         btn.setStyleSheet(self._small_action_button_style())
@@ -484,7 +536,7 @@ class _TrackTable(QTableWidget):
         container.setStyleSheet("background: transparent;")
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(3)
+        layout.setSpacing(_scale(3))
         layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         preview = self._sync_rewrite_preview(entry)
@@ -496,6 +548,33 @@ class _TrackTable(QTableWidget):
             warning_btn.setCursor(Qt.CursorShape.ArrowCursor)
             warning_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             layout.addWidget(warning_btn)
+
+        if entry.cuts_count > 0 and entry.sync_calibration:
+            lines = format_calibration_summary(entry.sync_calibration)
+            summary_text = "\n".join(f"• {line}" for line in lines)
+            tip = translate_text(
+                "Synchronisation multi-segments ({count} coupures) :\n{summary}",
+                count=entry.cuts_count,
+                summary=summary_text,
+            )
+            cuts_btn = self._make_action_button(
+                tooltip=tip,
+                icon=_scissors_icon("#e5a50a", 13),
+            )
+            cuts_btn.clicked.connect(lambda _=None, e=entry: self._open_sync_studio(e))
+            layout.addWidget(cuts_btn)
+        elif self._has_cancelable_auto_sync(entry) and entry.track_type in {"audio", "subtitle"}:
+            tip = (
+                translate_text("Ouvrir le Synchro Studio (forme d'onde, sous-titres, écoute, ajustement)")
+                if entry.track_type == "subtitle"
+                else translate_text("Ouvrir le Synchro Studio (forme d'onde, écoute, ajustement)")
+            )
+            studio_btn = self._make_action_button(
+                tooltip=tip,
+                icon=_waveform_icon("#6070f8", 13),
+            )
+            studio_btn.clicked.connect(lambda _=None, e=entry: self._open_sync_studio(e))
+            layout.addWidget(studio_btn)
 
         if self._has_cancelable_auto_sync(entry):
             cancel_btn = self._make_action_button(
@@ -513,6 +592,13 @@ class _TrackTable(QTableWidget):
             )
             sync_btn.clicked.connect(lambda _=None, e=entry: self.audio_sync_requested.emit(e))
             layout.addWidget(sync_btn)
+        elif entry.track_type == "subtitle" and self._audio_sync_available:
+            sync_btn = self._make_action_button(
+                tooltip=translate_text("Synchroniser cette piste de sous-titres"),
+                icon=_refresh_icon("#5dcc8a", 13),
+            )
+            sync_btn.clicked.connect(lambda _=None, e=entry: self.subtitle_sync_requested.emit(e))
+            layout.addWidget(sync_btn)
 
         edit_btn = self._make_action_button(
             tooltip="Éditer les métadonnées de cette piste",
@@ -521,6 +607,85 @@ class _TrackTable(QTableWidget):
         edit_btn.clicked.connect(lambda _=None, e=entry: self._open_edit_dialog(e))
         layout.addWidget(edit_btn)
         self.setCellWidget(row, self.COL_EDIT, container)
+
+    def _open_sync_studio(self, entry: TrackEntry) -> None:
+        self.sync_studio_requested.emit(entry)
+
+    def _show_sync_cuts_dialog(self, entry: TrackEntry) -> None:
+        if not entry.sync_calibration:
+            return
+        from PySide6.QtWidgets import (
+            QDialog,
+            QVBoxLayout,
+            QLabel,
+            QTableWidget,
+            QTableWidgetItem,
+            QDialogButtonBox,
+            QHeaderView,
+        )
+        dialog = QDialog(self)
+        dialog.setWindowTitle(translate_text("Détail des coupures de synchronisation"))
+        dialog.setMinimumWidth(560)
+        vbox = QVBoxLayout(dialog)
+        vbox.setContentsMargins(16, 16, 16, 16)
+        vbox.setSpacing(12)
+
+        title_lbl = QLabel(
+            translate_text(
+                "Piste #{idx} ({type} {codec}) — {count} coupure(s) détectée(s)",
+                idx=entry.mkv_tid,
+                type=entry.track_type,
+                codec=entry.codec,
+                count=entry.cuts_count,
+            )
+        )
+        title_lbl.setStyleSheet(f"font-weight: 700; font-size: 13px; color: {_C.TEXT_PRI};")
+        vbox.addWidget(title_lbl)
+
+        segments = entry.sync_calibration.get("segments", [])
+        table = QTableWidget(len(segments), 4, dialog)
+        table.setHorizontalHeaderLabels([
+            translate_text("Segment"),
+            translate_text("Position"),
+            translate_text("Décalage"),
+            translate_text("Saut relatif"),
+        ])
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        table.verticalHeader().setVisible(False)
+        table.setShowGrid(True)
+        table.setAlternatingRowColors(True)
+
+        prev_shift = 0.0
+        for i, s in enumerate(segments):
+            start_ms = float(s.get("start_ms", 0.0))
+            shift_ms = float(s.get("shift_ms", 0.0))
+            ts = SyncCalibration.format_timestamp(start_ms)
+            pos_label = (
+                translate_text("Départ ({ts})", ts=ts)
+                if i == 0
+                else translate_text("Coupure à {ts}", ts=ts)
+            )
+            delta_label = "-" if i == 0 else f"{shift_ms - prev_shift:+.1f} ms"
+
+            item_seg = QTableWidgetItem(f"Segment {i + 1}")
+            item_pos = QTableWidgetItem(pos_label)
+            item_shift = QTableWidgetItem(f"{shift_ms:+.1f} ms")
+            item_delta = QTableWidgetItem(delta_label)
+
+            for item in (item_seg, item_pos, item_shift, item_delta):
+                item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+
+            table.setItem(i, 0, item_seg)
+            table.setItem(i, 1, item_pos)
+            table.setItem(i, 2, item_shift)
+            table.setItem(i, 3, item_delta)
+            prev_shift = shift_ms
+
+        vbox.addWidget(table)
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btn_box.rejected.connect(dialog.reject)
+        vbox.addWidget(btn_box)
+        dialog.exec()
 
     def _has_cancelable_auto_sync(self, entry: TrackEntry) -> bool:
         if entry.track_type not in {"audio", "subtitle"}:
@@ -554,11 +719,23 @@ class _TrackTable(QTableWidget):
         info_item = self.item(row, self.COL_INFO)
         if info_item is None:
             return
-        info_item.setToolTip(
-            translate_text("Cliquer pour basculer entre sync réelle et sync offset")
-            if self._can_toggle_sync_rewrite(entry)
-            else ""
-        )
+        tooltips: list[str] = []
+        if entry.cuts_count > 0 and entry.sync_calibration:
+            lines = format_calibration_summary(entry.sync_calibration)
+            if lines:
+                summary_text = "\n".join(f"• {line}" for line in lines)
+                tooltips.append(
+                    translate_text(
+                        "Synchronisation multi-segments ({count} coupures) :\n{summary}",
+                        count=entry.cuts_count,
+                        summary=summary_text,
+                    )
+                )
+        if self._can_toggle_sync_rewrite(entry):
+            tooltips.append(
+                translate_text("Cliquer pour basculer entre sync réelle et sync offset")
+            )
+        info_item.setToolTip("\n\n".join(tooltips))
 
     def _refresh_info_cell(self, row: int, entry: TrackEntry) -> None:
         self._update_entry_sync_rewrite_label(entry)
@@ -566,11 +743,17 @@ class _TrackTable(QTableWidget):
         if info_item:
             info_item.setText(entry.full_info_label)
             info_item.setData(_TRACK_INFO_OFFSET_VALUE_ROLE, entry.time_shift_value_label)
+            info_item.setData(_TRACK_INFO_CUTS_LABEL_ROLE, entry.cuts_label)
             info_item.setData(
                 _TRACK_INFO_SYNC_LABEL_ROLE,
                 entry.sync_rewrite_label if self._can_toggle_sync_rewrite(entry) else "",
             )
+            info_item.setData(
+                _TRACK_INFO_DISABLED_LABEL_ROLE,
+                "" if entry.flag_enabled else TrackEntry.DISABLED_LABEL,
+            )
         self._update_info_tooltip(row, entry)
+
 
     def _apply_new_track_style(self, row: int) -> None:
         for col in (self.COL_CODEC, self.COL_LANG, self.COL_TITLE, self.COL_INFO):
@@ -798,6 +981,22 @@ class _TrackTable(QTableWidget):
             self.blockSignals(False)
         return False
 
+    def refresh_all_entries_info(self) -> None:
+        self.blockSignals(True)
+        try:
+            for row in range(self.rowCount()):
+                item0 = self.item(row, self.COL_CHECK)
+                if item0 is None:
+                    continue
+                entry = item0.data(Qt.ItemDataRole.UserRole)
+                if not isinstance(entry, TrackEntry):
+                    continue
+                self._refresh_info_cell(row, entry)
+                self._set_action_cell(row, entry)
+        finally:
+            self.blockSignals(False)
+
+
     def set_audio_sync_available(self, available: bool) -> None:
         available = bool(available)
         if self._audio_sync_available == available:
@@ -894,14 +1093,53 @@ class _TrackTable(QTableWidget):
         if chk is None:
             return
         entry = chk.data(Qt.ItemDataRole.UserRole)
-        if not isinstance(entry, TrackEntry) or entry.track_type != "subtitle":
+        if not isinstance(entry, TrackEntry):
             return
 
-        menu = QMenu(self)
-        action = menu.addAction(translate_text("Extraire…"))
-        chosen = menu.exec(self.viewport().mapToGlobal(pos))
-        if chosen is action:
-            self.extract_requested.emit(entry)
+        if entry.track_type == "subtitle":
+            menu = QMenu(self)
+            action_extract = menu.addAction(translate_text("Extraire…"))
+            action_studio = None
+            action_sync = None
+            action_cancel = None
+
+            if self._has_cancelable_auto_sync(entry) or entry.sync_calibration:
+                action_studio = menu.addAction(translate_text("Synchro Studio…"))
+                action_cancel = menu.addAction(translate_text("Annuler la synchro"))
+            elif self._audio_sync_available:
+                action_sync = menu.addAction(translate_text("Synchroniser cette piste de sous-titres…"))
+                action_studio = menu.addAction(translate_text("Synchro Studio…"))
+
+            chosen = menu.exec(self.viewport().mapToGlobal(pos))
+            if chosen is action_extract:
+                self.extract_requested.emit(entry)
+            elif action_studio is not None and chosen is action_studio:
+                self._open_sync_studio(entry)
+            elif action_cancel is not None and chosen is action_cancel:
+                self.auto_sync_cancel_requested.emit(entry)
+            elif action_sync is not None and chosen is action_sync:
+                self.subtitle_sync_requested.emit(entry)
+        elif entry.track_type == "audio":
+            menu = QMenu(self)
+            action_studio = None
+            action_sync = None
+            action_cancel = None
+
+            if self._has_cancelable_auto_sync(entry) or entry.sync_calibration:
+                action_studio = menu.addAction(translate_text("Synchro Studio…"))
+                action_cancel = menu.addAction(translate_text("Annuler la synchro"))
+            elif self._audio_sync_available:
+                action_sync = menu.addAction(translate_text("Synchronisation automatique…"))
+                action_studio = menu.addAction(translate_text("Synchro Studio…"))
+
+            if not menu.isEmpty():
+                chosen = menu.exec(self.viewport().mapToGlobal(pos))
+                if action_studio is not None and chosen is action_studio:
+                    self._open_sync_studio(entry)
+                elif action_cancel is not None and chosen is action_cancel:
+                    self.auto_sync_cancel_requested.emit(entry)
+                elif action_sync is not None and chosen is action_sync:
+                    self.audio_sync_requested.emit(entry)
 
     def _find_row_for_entry(self, entry: TrackEntry) -> int | None:
         for row in range(self.rowCount()):
@@ -932,6 +1170,16 @@ class _TrackTable(QTableWidget):
             hidden = self._filter_selected and item.checkState() != Qt.CheckState.Checked
             self.setRowHidden(row, hidden)
 
+    def consume_order_changed_track_types(self) -> frozenset[str] | None:
+        """Retourne les projections Encode modifiées par le dernier drop.
+
+        ``None`` représente une émission externe de ``order_changed`` dont
+        l'origine n'est pas un glisser-déposer du tableau.
+        """
+        changed_types = self._last_order_changed_track_types
+        self._last_order_changed_track_types = None
+        return changed_types
+
     def dropEvent(self, event) -> None:
         if event.source() is not self:
             event.ignore()
@@ -942,43 +1190,60 @@ class _TrackTable(QTableWidget):
             event.ignore()
             return
 
+        # La sélection est volontairement limitée à une ligne (voir
+        # _setup_ui). Réutiliser ses items au lieu de reconstruire toutes les
+        # lignes préserve les widgets d'action des autres pistes et évite un
+        # coût proportionnel au nombre total de pistes à chaque drop.
+        source_row = src_rows[0]
         all_entries = self.current_tracks()
         drop_row = self._drop_target_row(event)
+        adjusted = drop_row - (1 if source_row < drop_row else 0)
+        adjusted = max(0, min(adjusted, self.rowCount() - 1))
+        if adjusted == source_row:
+            event.setDropAction(Qt.DropAction.IgnoreAction)
+            event.accept()
+            return
 
-        moving = [all_entries[r] for r in src_rows]
-        remaining = [e for i, e in enumerate(all_entries) if i not in src_rows]
+        source_entry = all_entries[source_row]
+        previous_type_order = [
+            entry.entry_id
+            for entry in all_entries
+            if entry.track_type == source_entry.track_type
+        ]
 
-        adjusted = drop_row
-        for r in src_rows:
-            if r < drop_row:
-                adjusted -= 1
-        adjusted = max(0, min(adjusted, len(remaining)))
-
-        for i, entry in enumerate(moving):
-            remaining.insert(adjusted + i, entry)
-
-        color_by_file_id: dict[str, str] = {}
-        for r in range(self.rowCount()):
-            item_chk = self.item(r, self.COL_CHECK)
-            item_src = self.item(r, self.COL_SOURCE)
-            if item_chk and item_src:
-                e = item_chk.data(Qt.ItemDataRole.UserRole)
-                if isinstance(e, TrackEntry):
-                    color_by_file_id[e.file_id] = item_src.data(Qt.ItemDataRole.UserRole) or _C.BORDER
-
+        updates_enabled = self.updatesEnabled()
+        self.setUpdatesEnabled(False)
         self.blockSignals(True)
-        self.setRowCount(0)
-        for entry in remaining:
-            row = self.rowCount()
-            self.insertRow(row)
-            src_color = color_by_file_id.get(entry.file_id, _C.BORDER)
-            self._fill_row(row, entry, src_color)
-        self.blockSignals(False)
+        try:
+            row_items = [self.takeItem(source_row, column) for column in range(self.columnCount())]
+            self.removeCellWidget(source_row, self.COL_EDIT)
+            self.removeRow(source_row)
+            self.insertRow(adjusted)
+            for column, item in enumerate(row_items):
+                if item is not None:
+                    self.setItem(adjusted, column, item)
+            # Le widget de la cellule d'action est recréé uniquement pour la
+            # ligne déplacée. Les widgets des autres lignes restent intacts.
+            self._set_action_cell(adjusted, source_entry)
+        finally:
+            self.blockSignals(False)
+            self.setUpdatesEnabled(updates_enabled)
 
+        self._rebuild_prev_lang()
+        self.refresh_filter()
         self.selectRow(adjusted)
         event.setDropAction(Qt.DropAction.IgnoreAction)
         event.accept()
-        self._adjust_height()
+        current_type_order = [
+            entry.entry_id
+            for entry in self.current_tracks()
+            if entry.track_type == source_entry.track_type
+        ]
+        self._last_order_changed_track_types = frozenset(
+            {source_entry.track_type}
+            if current_type_order != previous_type_order
+            else set()
+        )
         self.order_changed.emit()
 
     def _drop_target_row(self, event) -> int:

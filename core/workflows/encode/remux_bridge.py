@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace as dataclasses_replace
 from pathlib import Path
 
 from core.workflows.common.track_types import TrackMetaPatch, TrackOffset, TrackType
@@ -66,6 +67,7 @@ def merge_remux_into_encode_config(
         if not lang and orig_lang and lang != orig_lang:
             lang = "und"
         has_flag_state = any((
+            not track.flag_enabled,
             track.flag_default,
             track.flag_forced,
             track.flag_hearing_impaired,
@@ -74,6 +76,7 @@ def merge_remux_into_encode_config(
             track.flag_commentary,
         ))
         has_flag_change = any((
+            track.flag_enabled != track.orig_flag_enabled,
             track.flag_default != track.orig_flag_default,
             track.flag_forced != track.orig_flag_forced,
             track.flag_hearing_impaired != track.orig_flag_hearing_impaired,
@@ -87,6 +90,7 @@ def merge_remux_into_encode_config(
             track_order=track_order,
             language=lang,
             title=title if title else None,
+            flag_enabled=track.flag_enabled,
             flag_default=track.flag_default,
             flag_forced=track.flag_forced,
             flag_hearing_impaired=track.flag_hearing_impaired,
@@ -167,7 +171,11 @@ def merge_remux_into_encode_config(
         and encode_cfg.keep_chapters == remux_cfg.keep_chapters
         and remux_cfg.chapter_overrides is None
     ):
-        return encode_cfg
+        # Le choix de backend de muxage du job conteneur reste propagé, sans
+        # reconstruire l'objet quand rien ne change.
+        if encode_cfg.mux_backend == remux_cfg.mux_backend:
+            return encode_cfg
+        return dataclasses_replace(encode_cfg, mux_backend=remux_cfg.mux_backend)
 
     return EncodeConfig(
         source=encode_cfg.source,
@@ -192,4 +200,5 @@ def merge_remux_into_encode_config(
         file_title=encode_cfg.file_title,
         extra_attachments=encode_cfg.extra_attachments,
         tmdb_cover=encode_cfg.tmdb_cover,
+        mux_backend=remux_cfg.mux_backend,
     )

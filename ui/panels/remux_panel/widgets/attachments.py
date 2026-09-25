@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Iterable, Sequence
 from xml.dom import minidom
 
 from PySide6.QtCore import QPoint, QSize, Qt, Signal
@@ -32,7 +32,7 @@ from core.inspector import AttachmentInfo, STANDARD_MKV_TAGS
 from core.media_info_fetcher import MediaDetails
 from ui.panels.remux_panel.theme import _C
 from ui.panels.tmdb_search_modal import TmdbSearchModal
-from ui.design_system import font_px as _font_px, scale as _scale
+from ui.design_system import CHECK_ICON_PATH, font_px as _font_px, scale as _scale
 
 class _TagEditDialog(QDialog):
     """
@@ -775,12 +775,16 @@ class _AttachmentItemWidget(QWidget):
                 width: {_scale(13)}px;
                 height: {_scale(13)}px;
                 border-radius: {_scale(3)}px;
-                border: 1px solid {_C.BORDER_LT};
-                background: {_C.BG_DEEP};
+                border: 1px solid {_C.CHECKBOX_BORDER};
+                background: {_C.CHECKBOX_BG};
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {_C.ACCENT};
             }}
             QCheckBox::indicator:checked {{
                 background: {_C.ACCENT};
                 border-color: {_C.ACCENT};
+                image: url('{CHECK_ICON_PATH}');
             }}
         """)
         self._cb.stateChanged.connect(self.changed)
@@ -982,6 +986,9 @@ class _AttachmentPanel(QFrame):
         self._items: list[_AttachmentItemWidget] = []
         self._source_attachment_loader: Callable[[str, AttachmentInfo], bytes | None] | None = None
         self._panel_tag_overrides: dict[str, str] | None = None  # None = utiliser tags source
+        # Modifications explicites indépendantes des sources cochées ; None
+        # mémorise une suppression volontaire, même après un recochage.
+        self._tag_edits: dict[str, str | None] = {}
         self._suggested_title: str = ""
         self._suggested_season: int = 0
         self._suggested_episode: int = 0
@@ -1172,8 +1179,9 @@ class _AttachmentPanel(QFrame):
             self._items_layout.removeWidget(item)
             item.deleteLater()
         if to_remove:
-            # Réinitialise les tags édités car la fusion peut avoir changé
-            self._panel_tag_overrides = None
+            # Recalculer les valeurs héritées sans perdre les éditions du
+            # panneau (manuelles ou TMDB). Leur remise à zéro relève de clear_all.
+            self._sync_tag_overrides()
             self._update_state()
             self.changed.emit()
 
@@ -1185,6 +1193,7 @@ class _AttachmentPanel(QFrame):
             item.deleteLater()
         self._items.clear()
         self._panel_tag_overrides = None
+        self._tag_edits.clear()
         self._update_state()
 
     def get_global_tag_overrides(self) -> "dict[str, str] | None":
@@ -1194,18 +1203,27 @@ class _AttachmentPanel(QFrame):
         - Si l'utilisateur a édité via le dialogue global → retourne les tags édités.
         - Sinon → fusionne les tags sources de toutes les lignes cochées
           (priorité au premier fichier importé pour les clés en commun).
-        - Retourne None si aucune ligne de balises n'est cochée.
+        - Retourne {} si des lignes de balises existent mais sont toutes
+          décochées (suppression explicite des balises sources).
+        - Retourne None si aucune source ne porte de balises (aucune décision).
         """
         if self._panel_tag_overrides is not None:
             return self._panel_tag_overrides
         # Merge first-wins depuis les items de tags activés
         merged: dict[str, str] | None = None
+        has_tag_item = False
         for item in self._items:
-            if item.is_tag and item.enabled:
-                if merged is None:
-                    merged = {}
-                for k, v in item.tags.items():
-                    merged.setdefault(k, v)   # premier fichier garde la priorité
+            if not item.is_tag:
+                continue
+            has_tag_item = True
+            if not item.enabled:
+                continue
+            if merged is None:
+                merged = {}
+            for k, v in item.tags.items():
+                merged.setdefault(k, v)   # premier fichier garde la priorité
+        if merged is None and has_tag_item:
+            return {}
         return merged
 
     def get_extras_per_file(self) -> dict:
@@ -1266,9 +1284,60 @@ class _AttachmentPanel(QFrame):
     def _add_item(self, item: _AttachmentItemWidget) -> None:
         self._items.append(item)
         self._items_layout.addWidget(item)
+        if item.is_tag:
+            # Connecté avant `changed` pour que les consommateurs reçoivent
+            # déjà les overrides resynchronisés.
+            item.changed.connect(self._sync_tag_overrides)
+            self._sync_tag_overrides()
         item.changed.connect(self.changed)
         item.remove_clicked.connect(self._on_remove_item)
         self._update_state()
+
+    def _set_edited_tags(
+        self, tags: dict[str, str], *, explicit_keys: Iterable[str] = (),
+    ) -> None:
+        """Mémorise les éditions sans figer les valeurs héritées des sources."""
+        current = self.get_global_tag_overrides() or {}
+        source_tags = self._merged_source_tags()
+        explicit = set(explicit_keys)
+        for key in current.keys() | tags.keys() | explicit:
+            if key in explicit:
+                self._tag_edits[key] = tags.get(key)
+            elif current.get(key) != tags.get(key):
+                # Une remise manuelle à la valeur héritée annule l'édition.
+                # Une simple validation inchangée ne doit pas désépingler un
+                # choix TMDB ou une édition devenue égale à une autre source.
+                if key in tags and tags[key] == source_tags.get(key):
+                    self._tag_edits.pop(key, None)
+                else:
+                    self._tag_edits[key] = tags.get(key)
+        self._panel_tag_overrides = dict(tags)
+
+    def _sync_tag_overrides(self) -> None:
+        """Refusionne les sources par priorité, puis applique les éditions."""
+        if self._panel_tag_overrides is None:
+            return
+        overrides = self._merged_source_tags()
+        for key, value in self._tag_edits.items():
+            if value is None:
+                overrides.pop(key, None)
+            else:
+                overrides[key] = value
+        if overrides != self._panel_tag_overrides:
+            self._panel_tag_overrides = overrides
+            self._refresh_edit_tags_button()
+
+    def _refresh_edit_tags_button(self) -> None:
+        """Met à jour le libellé du bouton d'édition selon les balises retenues."""
+        if self._panel_tag_overrides is None:
+            self._edit_tags_btn.setText(translate_text("Éditer les tags"))
+        else:
+            n = len(self._panel_tag_overrides)
+            self._edit_tags_btn.setText(
+                translate_text("Tags édités ({count})", count=n) if n
+                else translate_text("Tags supprimés")
+            )
+        self._edit_tags_btn.setEnabled(True)
 
     def _on_remove_item(self, item: _AttachmentItemWidget) -> None:
         self._items.remove(item)
@@ -1392,19 +1461,16 @@ class _AttachmentPanel(QFrame):
         )
         # Les données TMDB prennent la priorité sur les balises sources
         merged = {**current, **new_tags}
-        self._panel_tag_overrides = merged
+        self._set_edited_tags(merged, explicit_keys=new_tags)
         self._install_tmdb_cover(details)
 
         if open_editor:
             # Ouvrir le dialogue d'édition pour relecture/corrections
             edit_dlg = _TagEditDialog(merged, parent=self)
             if edit_dlg.exec() == QDialog.DialogCode.Accepted:
-                self._panel_tag_overrides = edit_dlg.result_tags()
+                self._set_edited_tags(edit_dlg.result_tags())
 
-        n = len(self._panel_tag_overrides or {})
-        label = translate_text("Tags édités ({count})", count=n) if n else translate_text("Tags supprimés")
-        self._edit_tags_btn.setText(label)
-        self._edit_tags_btn.setEnabled(True)
+        self._refresh_edit_tags_button()
         self.changed.emit()
 
     def _open_media_search(self) -> None:
@@ -1437,20 +1503,16 @@ class _AttachmentPanel(QFrame):
             else self._merged_source_tags()
         dlg = _TagEditDialog(current, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._panel_tag_overrides = dlg.result_tags()
+            self._set_edited_tags(dlg.result_tags())
             # Met à jour le libellé du bouton pour indiquer qu'il y a des modifications
-            n = len(self._panel_tag_overrides)
-            label = translate_text("Tags édités ({count})", count=n) if n else translate_text("Tags supprimés")
-            self._edit_tags_btn.setText(label)
+            self._refresh_edit_tags_button()
             self.changed.emit()
 
     def _update_state(self) -> None:
         has = bool(self._items)
-        has_tags = any(i.is_tag for i in self._items) or self._panel_tag_overrides is not None
         self._placeholder.setVisible(not has)
         self._items_widget.setVisible(has)
-        self._edit_tags_btn.setEnabled(True)
-        self._edit_tags_btn.setText(translate_text("Éditer les tags"))
+        self._refresh_edit_tags_button()
 
     def closeEvent(self, event) -> None:
         self._clear_pending_tmdb_cover()

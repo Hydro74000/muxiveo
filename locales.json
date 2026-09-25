@@ -3,6 +3,30 @@
     "fra": "Réglages",
     "eng": "Settings"
   },
+  "Remux Matroska": {
+    "fra": "Remux Matroska",
+    "eng": "Matroska remux"
+  },
+  "Backend de muxage": {
+    "fra": "Backend de muxage",
+    "eng": "Muxing backend"
+  },
+  "Natif Matroska": {
+    "fra": "Natif Matroska",
+    "eng": "Native Matroska"
+  },
+  "Auto privilégie le muxeur Matroska natif et journalise un repli FFmpeg lorsque nécessaire.": {
+    "fra": "Auto privilégie le muxeur Matroska natif et journalise un repli FFmpeg lorsque nécessaire.",
+    "eng": "Auto prefers the native Matroska muxer and logs an FFmpeg fallback when required."
+  },
+  "Régénérer les statistiques de pistes (BPS, frames, octets)": {
+    "fra": "Régénérer les statistiques de pistes (BPS, frames, octets)",
+    "eng": "Regenerate track statistics (BPS, frames, bytes)"
+  },
+  "Calcule et écrit les balises statistiques Matroska (BPS, DURATION, NUMBER_OF_FRAMES, NUMBER_OF_BYTES) par piste pour MediaInfo. Activé par défaut.": {
+    "fra": "Calcule et écrit les balises statistiques Matroska (BPS, DURATION, NUMBER_OF_FRAMES, NUMBER_OF_BYTES) par piste pour MediaInfo. Activé par défaut.",
+    "eng": "Calculates and writes Matroska track statistics tags (BPS, DURATION, NUMBER_OF_FRAMES, NUMBER_OF_BYTES) for MediaInfo. Enabled by default."
+  },
   "Modifiez toutes les valeurs persistées dans config.ini. Les changements de langue sont appliqués aux textes maîtrisés par l'application ; un redémarrage reste conseillé pour repartir sur un état propre.": {
     "fra": "Modifiez toutes les valeurs persistées dans config.ini. Les changements de langue sont appliqués aux textes maîtrisés par l'application ; un redémarrage reste conseillé pour repartir sur un état propre.",
     "eng": "Edit every value stored in config.ini. Language changes are applied to UI text and internal messages controlled by the application; restarting is still recommended to start from a clean state."
@@ -1238,6 +1262,10 @@
   "Erreur d'inspection.": {
     "fra": "Erreur d'inspection.",
     "eng": "Inspection error."
+  },
+  "Recherche des fichiers sources…": {
+    "fra": "Recherche des fichiers sources…",
+    "eng": "Searching for source files…"
   },
   "{name} chargé — {video}V  {audio}A  {subtitle}S{att}{tag}{chap}": {
     "fra": "{name} chargé — {video}V  {audio}A  {subtitle}S{att}{tag}{chap}",
@@ -3307,10 +3335,6 @@
     "fra": "EAC3=DDP\nAC3=Dolby Digital\nTRUEHD=Dolby TrueHD",
     "eng": "EAC3=DDP\nAC3=Dolby Digital\nTRUEHD=Dolby TrueHD"
   },
-  "Charger": {
-    "fra": "Charger",
-    "eng": "Load"
-  },
   "Supprimer profil": {
     "fra": "Supprimer profil",
     "eng": "Delete profile"
@@ -3770,5 +3794,893 @@
   "Playlist :": {
     "fra": "Playlist :",
     "eng": "Playlist:"
+  },
+  "Muxage Matroska": {
+    "fra": "Muxage Matroska",
+    "eng": "Matroska muxing"
+  },
+  "Assembleur final Matroska des workflows remux et encodage. FFmpeg par défaut ; Auto sélectionne le muxeur natif quand le plan le permet et journalise le repli ; Natif n'autorise aucun repli.": {
+    "fra": "Assembleur final Matroska des workflows remux et encodage. FFmpeg par défaut ; Auto sélectionne le muxeur natif quand le plan le permet et journalise le repli ; Natif n'autorise aucun repli.",
+    "eng": "Final Matroska assembler for the remux and encode workflows. FFmpeg by default; Auto selects the native muxer whenever the plan allows it and logs the fallback; Native never falls back."
+  },
+  "Workflow": {
+    "fra": "Workflow",
+    "eng": "Workflow"
+  },
+  "Sauvegarder le workflow…": {
+    "fra": "Sauvegarder le workflow…",
+    "eng": "Save workflow…"
+  },
+  "Charger un workflow…": {
+    "fra": "Charger un workflow…",
+    "eng": "Load workflow…"
+  },
+  "Reprendre la dernière session": {
+    "fra": "Reprendre la dernière session",
+    "eng": "Restore last session"
+  },
+  "Studio Hybridation": {
+    "fra": "Studio Hybridation",
+    "eng": "Hybrid Studio"
+  },
+  "Sauvegarde impossible : {err}": {
+    "fra": "Sauvegarde impossible : {err}",
+    "eng": "Could not save: {err}"
+  },
+  "Chargement impossible : {err}": {
+    "fra": "Chargement impossible : {err}",
+    "eng": "Could not load: {err}"
+  },
+  "Relocaliser la source : {path}": {
+    "fra": "Relocaliser la source : {path}",
+    "eng": "Locate source: {path}"
+  },
+  "Forcé": {
+    "fra": "Forcé",
+    "eng": "Forced"
+  },
+  "Référence": {
+    "fra": "Référence",
+    "eng": "Reference"
+  },
+  "Donneur": {
+    "fra": "Donneur",
+    "eng": "Donor"
+  },
+  "Sortie": {
+    "fra": "Sortie",
+    "eng": "Output"
+  },
+  "État": {
+    "fra": "État",
+    "eng": "Status"
+  },
+  "Profil décisionnel": {
+    "fra": "Profil décisionnel",
+    "eng": "Decision profile"
+  },
+  "Détecter les coupures": {
+    "fra": "Détecter les coupures",
+    "eng": "Detect cuts"
+  },
+  "Analyser la saison": {
+    "fra": "Analyser la saison",
+    "eng": "Analyze season"
+  },
+  "Lancer l'hybridation": {
+    "fra": "Lancer l'hybridation",
+    "eng": "Start hybrid assembly"
+  },
+  "Pré-écoute": {
+    "fra": "Pré-écoute",
+    "eng": "Audio preview"
+  },
+  "Choisir un dossier": {
+    "fra": "Choisir un dossier",
+    "eng": "Choose a directory"
+  },
+  "Choisir un dossier de sortie.": {
+    "fra": "Choisir un dossier de sortie.",
+    "eng": "Choose an output directory."
+  },
+  "En attente": {
+    "fra": "En attente",
+    "eng": "Pending"
+  },
+  "Analyse en cours…": {
+    "fra": "Analyse en cours…",
+    "eng": "Analyzing…"
+  },
+  "Hybridation impossible : {err}": {
+    "fra": "Hybridation impossible : {err}",
+    "eng": "Hybrid assembly failed: {err}"
+  },
+  "Échec": {
+    "fra": "Échec",
+    "eng": "Failed"
+  },
+  "La sortie existe déjà : {path}": {
+    "fra": "La sortie existe déjà : {path}",
+    "eng": "Output already exists: {path}"
+  },
+  "Terminé": {
+    "fra": "Terminé",
+    "eng": "Completed"
+  },
+  "Synchronisation physique": {
+    "fra": "Synchronisation physique",
+    "eng": "Physical synchronization"
+  },
+  "Options d'hybridation": {
+    "fra": "Options d'hybridation",
+    "eng": "Hybrid options"
+  },
+  "Détecter les sous-titres forcés": {
+    "fra": "Détecter les sous-titres forcés",
+    "eng": "Detect forced subtitles"
+  },
+  "Détecter les sous-titres SDH": {
+    "fra": "Détecter les sous-titres SDH",
+    "eng": "Detect SDH subtitles"
+  },
+  "Conserver le chemin complet dans le NFO": {
+    "fra": "Conserver le chemin complet dans le NFO",
+    "eng": "Keep the full path in the NFO"
+  },
+  "Sans jaquette TMDB": {
+    "fra": "Sans jaquette TMDB",
+    "eng": "No TMDB cover"
+  },
+  "Seuil forcés": {
+    "fra": "Seuil forcés",
+    "eng": "Forced subtitle threshold"
+  },
+  "Fondu aux raccords (ms)": {
+    "fra": "Fondu aux raccords (ms)",
+    "eng": "Join fade duration (ms)"
+  },
+  "Seuil de dérive (ms)": {
+    "fra": "Seuil de dérive (ms)",
+    "eng": "Drift threshold (ms)"
+  },
+  "ID TMDB": {
+    "fra": "ID TMDB",
+    "eng": "TMDB ID"
+  },
+  "Groupe de release": {
+    "fra": "Groupe de release",
+    "eng": "Release group"
+  },
+  "Template de sortie": {
+    "fra": "Template de sortie",
+    "eng": "Output template"
+  },
+  "Fichier de calibration": {
+    "fra": "Fichier de calibration",
+    "eng": "Calibration file"
+  },
+  "Décalage conteneur": {
+    "fra": "Décalage conteneur",
+    "eng": "Container offset"
+  },
+  "Recaler les sous-titres": {
+    "fra": "Recaler les sous-titres",
+    "eng": "Align subtitles"
+  },
+  "ID TMDB invalide.": {
+    "fra": "ID TMDB invalide.",
+    "eng": "Invalid TMDB ID."
+  },
+  "Sauvegarder les workflows…": {
+    "fra": "Sauvegarder les workflows…",
+    "eng": "Save workflows…"
+  },
+  "Nom du profil décisionnel (optionnel)": {
+    "fra": "Nom du profil décisionnel (optionnel)",
+    "eng": "Decision profile name (optional)"
+  },
+  "Mode de synchro": {
+    "fra": "Mode de synchro",
+    "eng": "Sync mode"
+  },
+  "Ajustement manuel :": {
+    "fra": "Ajustement manuel :",
+    "eng": "Manual offset:"
+  },
+  "Recalage physique des flux audio et sous-titres (aucun délai résiduel en conteneur).": {
+    "fra": "Recalage physique des flux audio et sous-titres (aucun délai résiduel en conteneur).",
+    "eng": "Physical audio/subtitle alignment (zero residual container delay)."
+  },
+  "Options d'hybridation avancées": {
+    "fra": "Options d'hybridation avancées",
+    "eng": "Advanced hybridization options"
+  },
+  "Détecter les coupures et variations de cadences (cuts multi-segments)": {
+    "fra": "Détecter les coupures et variations de cadences (cuts multi-segments)",
+    "eng": "Detect cuts and cadence variations (multi-segment cuts)"
+  },
+  "DOSSIERS SOURCES ET SORTIE": {
+    "fra": "DOSSIERS SOURCES ET SORTIE",
+    "eng": "SOURCE AND OUTPUT FOLDERS"
+  },
+  "ÉPISODES APPARIÉS ET ÉTATS": {
+    "fra": "ÉPISODES APPARIÉS ET ÉTATS",
+    "eng": "MATCHED EPISODES AND STATUS"
+  },
+  "ANALYSE ACOUSTIQUE ET CALIBRATION": {
+    "fra": "ANALYSE ACOUSTIQUE ET CALIBRATION",
+    "eng": "ACOUSTIC ANALYSIS AND CALIBRATION"
+  },
+  "Synchronisation audio multi-segments appliquée : {count} coupure(s) détectée(s), départ {offset} ms (confiance {confidence}).": {
+    "fra": "Synchronisation audio multi-segments appliquée : {count} coupure(s) détectée(s), départ {offset} ms (confiance {confidence}).",
+    "eng": "Multi-segment audio synchronization applied: {count} cut(s) detected, start {offset} ms (confidence {confidence})."
+  },
+  "Détail des coupures de synchronisation": {
+    "fra": "Détail des coupures de synchronisation",
+    "eng": "Synchronization cut details"
+  },
+  "Piste #{idx} ({type} {codec}) — {count} coupure(s) détectée(s)": {
+    "fra": "Piste #{idx} ({type} {codec}) — {count} coupure(s) détectée(s)",
+    "eng": "Track #{idx} ({type} {codec}) — {count} cut(s) detected"
+  },
+  "Segment": {
+    "fra": "Segment",
+    "eng": "Segment"
+  },
+  "Position": {
+    "fra": "Position",
+    "eng": "Position"
+  },
+  "Décalage": {
+    "fra": "Décalage",
+    "eng": "Offset"
+  },
+  "Saut relatif": {
+    "fra": "Saut relatif",
+    "eng": "Relative jump"
+  },
+  "Départ ({ts})": {
+    "fra": "Départ ({ts})",
+    "eng": "Start ({ts})"
+  },
+  "Coupure à {ts}": {
+    "fra": "Coupure à {ts}",
+    "eng": "Cut at {ts}"
+  },
+  "Synchronisation multi-segments ({count} coupures) :\n{summary}": {
+    "fra": "Synchronisation multi-segments ({count} coupures) :\n{summary}",
+    "eng": "Multi-segment synchronization ({count} cuts):\n{summary}"
+  },
+  "Parcourir un fichier profil ou exact job JSON": {
+    "fra": "Parcourir un fichier profil ou exact job JSON",
+    "eng": "Browse a JSON profile or exact job file"
+  },
+  "[Aucun profil - Règles par défaut]": {
+    "fra": "[Aucun profil - Règles par défaut]",
+    "eng": "[No profile - Default rules]"
+  },
+  "Choisir un profil ou exact job JSON": {
+    "fra": "Choisir un profil ou exact job JSON",
+    "eng": "Choose a JSON profile or exact job"
+  },
+  "Synchro Studio : synchronisation mise à jour à {offset} ms pour la piste #{tid}.": {
+    "fra": "Synchro Studio : synchronisation mise à jour à {offset} ms pour la piste #{tid}.",
+    "eng": "Sync Studio: synchronization updated to {offset} ms for track #{tid}."
+  },
+  "Ouvrir le Synchro Studio (forme d'onde, écoute, ajustement)": {
+    "fra": "Ouvrir le Synchro Studio (forme d'onde, écoute, ajustement)",
+    "eng": "Open Sync Studio (waveform, playback, adjustment)"
+  },
+  "Synchronisation améliorée de cette piste audio": {
+    "fra": "Synchronisation améliorée de cette piste audio",
+    "eng": "Enhanced synchronization for this audio track"
+  },
+  "Synchro Studio…": {
+    "fra": "Synchro Studio…",
+    "eng": "Sync Studio…"
+  },
+  "Synchronisation automatique…": {
+    "fra": "Synchronisation automatique…",
+    "eng": "Automatic synchronization…"
+  },
+  "Synchro Studio — Piste #{idx} ({codec})": {
+    "fra": "Synchro Studio — Piste #{idx} ({codec})",
+    "eng": "Sync Studio — Track #{idx} ({codec})"
+  },
+  "Piste #{idx} ({type} {codec}) — {lang}": {
+    "fra": "Piste #{idx} ({type} {codec}) — {lang}",
+    "eng": "Track #{idx} ({type} {codec}) — {lang}"
+  },
+  "Chargement des signaux audio...": {
+    "fra": "Chargement des signaux audio...",
+    "eng": "Loading audio signals..."
+  },
+  "Décalage au départ :": {
+    "fra": "Décalage au départ :",
+    "eng": "Start offset:"
+  },
+  "Réinitialiser": {
+    "fra": "Réinitialiser",
+    "eng": "Reset"
+  },
+  "Pré-écoute calée (15s)": {
+    "fra": "Pré-écoute calée (15s)",
+    "eng": "Aligned preview (15s)"
+  },
+  "Appliquer la synchronisation": {
+    "fra": "Appliquer la synchronisation",
+    "eng": "Apply synchronization"
+  },
+  "Génération de l'extrait audio calé…": {
+    "fra": "Génération de l'extrait audio calé…",
+    "eng": "Generating aligned audio sample…"
+  },
+  "Erreur lors de la pré-écoute : {err}": {
+    "fra": "Erreur lors de la pré-écoute : {err}",
+    "eng": "Error during playback preview: {err}"
+  },
+  "FORME D'ONDE ACOUSTIQUE SUPERPOSÉE (20s)": {
+    "fra": "FORME D'ONDE ACOUSTIQUE SUPERPOSÉE (20s)",
+    "eng": "SUPERIMPOSED ACOUSTIC WAVEFORM (20s)"
+  },
+  "Cible décalée": {
+    "fra": "Cible décalée",
+    "eng": "Shifted target"
+  },
+  "Coupures et variations de rythme détectées ({count}) :": {
+    "fra": "Coupures et variations de rythme détectées ({count}) :",
+    "eng": "Cuts and cadence variations detected ({count}):"
+  },
+  "Arrêter": {
+    "fra": "Arrêter",
+    "eng": "Stop"
+  },
+  "Lecture de l'extrait calé (15s)…": {
+    "fra": "Lecture de l'extrait calé (15s)…",
+    "eng": "Playing aligned sample (15s)…"
+  },
+  "Référence :": {
+    "fra": "Référence :",
+    "eng": "Reference:"
+  },
+  "Cible :": {
+    "fra": "Cible :",
+    "eng": "Target:"
+  },
+  "Lecture externe ffplay lancée.": {
+    "fra": "Lecture externe ffplay lancée.",
+    "eng": "External ffplay playback launched."
+  },
+  "FORME D'ONDE ACOUSTIQUE SUPERPOSÉE": {
+    "fra": "FORME D'ONDE ACOUSTIQUE SUPERPOSÉE",
+    "eng": "SUPERIMPOSED ACOUSTIC WAVEFORM"
+  },
+  "FORME D'ONDE ACOUSTIQUE": {
+    "fra": "FORME D'ONDE ACOUSTIQUE",
+    "eng": "ACOUSTIC WAVEFORM"
+  },
+  "Segment {current}/{total} — {pos}": {
+    "fra": "Segment {current}/{total} — {pos}",
+    "eng": "Segment {current}/{total} — {pos}"
+  },
+  "Segment précédent": {
+    "fra": "Segment précédent",
+    "eng": "Previous segment"
+  },
+  "Segment suivant": {
+    "fra": "Segment suivant",
+    "eng": "Next segment"
+  },
+  "Zoom avant": {
+    "fra": "Zoom avant",
+    "eng": "Zoom in"
+  },
+  "Zoom avant (Ctrl+Molette haut)": {
+    "fra": "Zoom avant (Ctrl+Molette haut)",
+    "eng": "Zoom in (Ctrl+Wheel up)"
+  },
+  "Zoom arrière": {
+    "fra": "Zoom arrière",
+    "eng": "Zoom out"
+  },
+  "Zoom arrière (Ctrl+Molette bas)": {
+    "fra": "Zoom arrière (Ctrl+Molette bas)",
+    "eng": "Zoom out (Ctrl+Wheel down)"
+  },
+  "Vue 20s": {
+    "fra": "Vue 20s",
+    "eng": "20s View"
+  },
+  "Réinitialiser le zoom": {
+    "fra": "Réinitialiser le zoom",
+    "eng": "Reset zoom"
+  },
+  "Extraction audio du segment {idx}…": {
+    "fra": "Extraction audio du segment {idx}…",
+    "eng": "Extracting audio for segment {idx}…"
+  },
+  "Décalage du segment {idx} :": {
+    "fra": "Décalage du segment {idx} :",
+    "eng": "Offset for segment {idx}:"
+  },
+  "Astuce : Ctrl + Molette pour zoomer • Glisser pour faire défiler la forme d'onde": {
+    "fra": "Astuce : Ctrl + Molette pour zoomer • Glisser pour faire défiler la forme d'onde",
+    "eng": "Tip: Ctrl + Wheel to zoom • Drag to scroll waveform"
+  },
+  "Vue : Scindée": {
+    "fra": "Vue : Scindée",
+    "eng": "View: Split"
+  },
+  "Vue : Superposée": {
+    "fra": "Vue : Superposée",
+    "eng": "View: Overlay"
+  },
+  "Passer en vue superposée (même axe)": {
+    "fra": "Passer en vue superposée (même axe)",
+    "eng": "Switch to overlaid view (same axis)"
+  },
+  "Passer en vue scindée (haut/bas)": {
+    "fra": "Passer en vue scindée (haut/bas)",
+    "eng": "Switch to split view (top/bottom)"
+  },
+  "Synchro Studio : synchronisation appliquée à {count} piste(s) de la source « {src} » ({offset} ms{cuts}).": {
+    "fra": "Synchro Studio : synchronisation appliquée à {count} piste(s) de la source « {src} » ({offset} ms{cuts}).",
+    "eng": "Synchro Studio: synchronization applied to {count} track(s) of source \"{src}\" ({offset} ms{cuts})."
+  },
+  "FORME D'ONDE & SOUS-TITRES": {
+    "fra": "FORME D'ONDE & SOUS-TITRES",
+    "eng": "WAVEFORM & SUBTITLES"
+  },
+  "Ouvrir le Synchro Studio (forme d'onde, sous-titres, écoute, ajustement)": {
+    "fra": "Ouvrir le Synchro Studio (forme d'onde, sous-titres, écoute, ajustement)",
+    "eng": "Open Sync Studio (waveform, subtitles, playback, adjustment)"
+  },
+  "Synchroniser cette piste de sous-titres": {
+    "fra": "Synchroniser cette piste de sous-titres",
+    "eng": "Synchronize this subtitle track"
+  },
+  "Synchroniser cette piste de sous-titres…": {
+    "fra": "Synchroniser cette piste de sous-titres…",
+    "eng": "Synchronize this subtitle track…"
+  },
+  "Choisir la référence pour les sous-titres": {
+    "fra": "Choisir la référence pour les sous-titres",
+    "eng": "Choose reference for subtitles"
+  },
+  "Choisir la piste de référence (sous-titres ou audio).": {
+    "fra": "Choisir la piste de référence (sous-titres ou audio).",
+    "eng": "Choose reference track (subtitles or audio)."
+  },
+  "Aucune piste de référence compatible trouvée pour la synchronisation des sous-titres.": {
+    "fra": "Aucune piste de référence compatible trouvée pour la synchronisation des sous-titres.",
+    "eng": "No compatible reference track found for subtitle synchronization."
+  },
+  "Synchronisation des sous-titres : piste #{target} vs référence #{reference}…": {
+    "fra": "Synchronisation des sous-titres : piste #{target} vs référence #{reference}…",
+    "eng": "Subtitle synchronization: track #{target} vs reference #{reference}…"
+  },
+  "Synchronisation des sous-titres multi-segments appliquée : {count} coupure(s) détectée(s), départ {offset} ms (confiance {confidence}).": {
+    "fra": "Synchronisation des sous-titres multi-segments appliquée : {count} coupure(s) détectée(s), départ {offset} ms (confiance {confidence}).",
+    "eng": "Multi-segment subtitle synchronization applied: {count} cut(s) detected, start {offset} ms (confidence {confidence})."
+  },
+  "Synchronisation des sous-titres appliquée : {offset} ms (confiance {confidence}).": {
+    "fra": "Synchronisation des sous-titres appliquée : {offset} ms (confiance {confidence}).",
+    "eng": "Subtitle synchronization applied: {offset} ms (confidence {confidence})."
+  },
+  "Échec de la synchronisation des sous-titres.": {
+    "fra": "Échec de la synchronisation des sous-titres.",
+    "eng": "Subtitle synchronization failed."
+  },
+  "⚡ Synchro sous-titres": {
+    "fra": "⚡ Synchro sous-titres",
+    "eng": "⚡ Subtitle sync"
+  },
+  "Lancer l'alignement automatique des sous-titres": {
+    "fra": "Lancer l'alignement automatique des sous-titres",
+    "eng": "Start automatic subtitle alignment"
+  },
+  "Synchronisation automatique des sous-titres en cours…": {
+    "fra": "Synchronisation automatique des sous-titres en cours…",
+    "eng": "Automatic subtitle synchronization in progress…"
+  },
+  "Synchronisation automatique terminée ({offset} ms, confiance {conf}).": {
+    "fra": "Synchronisation automatique terminée ({offset} ms, confiance {conf}).",
+    "eng": "Automatic synchronization completed ({offset} ms, confidence {conf})."
+  },
+  "Extraction des données du segment {idx}…": {
+    "fra": "Extraction des données du segment {idx}…",
+    "eng": "Extracting data for segment {idx}…"
+  },
+  "Lecture de la référence (15s)…": {
+    "fra": "Lecture de la référence (15s)…",
+    "eng": "Playing reference audio (15s)…"
+  },
+  "Studio Hybridation & Mixage Multi-Sources": {
+    "fra": "Studio Hybridation & Mixage Multi-Sources",
+    "eng": "Hybrid Studio & Multi-Source Mixing"
+  },
+  "+ Ajouter une source donneuse supplémentaire…": {
+    "fra": "+ Ajouter une source donneuse supplémentaire…",
+    "eng": "+ Add additional donor source…"
+  },
+  "Profil décisionnel (optionnel) :": {
+    "fra": "Profil décisionnel (optionnel) :",
+    "eng": "Decision profile (optional):"
+  },
+  "🔍 Inspecter l'épisode témoin": {
+    "fra": "🔍 Inspecter l'épisode témoin",
+    "eng": "🔍 Inspect witness episode"
+  },
+  "Choisissez vos dossiers sources ci-dessus, puis inspectez l'épisode témoin pour choisir les pistes à mixer.": {
+    "fra": "Choisissez vos dossiers sources ci-dessus, puis inspectez l'épisode témoin pour choisir les pistes à mixer.",
+    "eng": "Select your source folders above, then inspect the witness episode to choose the tracks to mix."
+  },
+  "🪄 Appliquer ce modèle à toute la saison": {
+    "fra": "🪄 Appliquer ce modèle à toute la saison",
+    "eng": "🪄 Apply this template to entire season"
+  },
+  "Modèle actuel : Règles automatiques": {
+    "fra": "Modèle actuel : Règles automatiques",
+    "eng": "Current template: Automatic rules"
+  },
+  "Donneur général": {
+    "fra": "Donneur général",
+    "eng": "General donor"
+  },
+  "Audio seul (ex: VF suite/relais)": {
+    "fra": "Audio seul (ex: VF suite/relais)",
+    "eng": "Audio only (e.g. dubbed relay)"
+  },
+  "Sous-titres seuls (ex: Fansub)": {
+    "fra": "Sous-titres seuls (ex: Fansub)",
+    "eng": "Subtitles only (e.g. Fansub)"
+  },
+  "Inspection de l'épisode témoin : {ep} ({file})…": {
+    "fra": "Inspection de l'épisode témoin : {ep} ({file})…",
+    "eng": "Inspecting witness episode: {ep} ({file})…"
+  },
+  "Pistes détectées sur l'épisode témoin. Cochez celles à conserver puis appliquez le modèle.": {
+    "fra": "Pistes détectées sur l'épisode témoin. Cochez celles à conserver puis appliquez le modèle.",
+    "eng": "Tracks detected on witness episode. Check those to keep then apply the template."
+  },
+  "Modèle appliqué à la saison. Vous pouvez lancer l'analyse ou l'hybridation.": {
+    "fra": "Modèle appliqué à la saison. Vous pouvez lancer l'analyse ou l'hybridation.",
+    "eng": "Template applied to the season. You can now start analysis or hybrid remux."
+  },
+  "PLAN D'ASSEMBLAGE TYPE (ÉPISODE TÉMOIN)": {
+    "fra": "PLAN D'ASSEMBLAGE TYPE (ÉPISODE TÉMOIN)",
+    "eng": "ASSEMBLY TEMPLATE (WITNESS EPISODE)"
+  },
+  "Format / Détails": {
+    "fra": "Format / Détails",
+    "eng": "Format / Details"
+  },
+  "ÉPISODES APPARIÉS ET ÉTATS (SAISON)": {
+    "fra": "ÉPISODES APPARIÉS ET ÉTATS (SAISON)",
+    "eng": "PAIRED EPISODES AND STATUS (SEASON)"
+  },
+  "Épisode": {
+    "fra": "Épisode",
+    "eng": "Episode"
+  },
+  "Référence (Master)": {
+    "fra": "Référence (Master)",
+    "eng": "Reference (Master)"
+  },
+  "Donneur(s)": {
+    "fra": "Donneur(s)",
+    "eng": "Donor(s)"
+  },
+  "Synchro & Calibrage": {
+    "fra": "Synchro & Calibrage",
+    "eng": "Sync & Calibration"
+  },
+  "Veuillez sélectionner au moins un dossier de référence.": {
+    "fra": "Veuillez sélectionner au moins un dossier de référence.",
+    "eng": "Please select at least one reference folder."
+  },
+  "Aucun fichier d'épisode valide détecté.": {
+    "fra": "Aucun fichier d'épisode valide détecté.",
+    "eng": "No valid episode file detected."
+  },
+  "Erreur d'inspection : {err}": {
+    "fra": "Erreur d'inspection : {err}",
+    "eng": "Inspection error: {err}"
+  },
+  "[Master manquant]": {
+    "fra": "[Master manquant]",
+    "eng": "[Missing master]"
+  },
+  "[Donneur manquant]": {
+    "fra": "[Donneur manquant]",
+    "eng": "[Missing donor]"
+  },
+  "Pré-écoute de cet épisode": {
+    "fra": "Pré-écoute de cet épisode",
+    "eng": "Preview this episode"
+  },
+  "Ouvrir cet épisode dans le studio Remux": {
+    "fra": "Ouvrir cet épisode dans le studio Remux",
+    "eng": "Open this episode in Remux studio"
+  },
+  "Aucun épisode trouvé dans les sources indiquées.": {
+    "fra": "Aucun épisode trouvé dans les sources indiquées.",
+    "eng": "No episode found in the specified sources."
+  },
+  "Incomplet": {
+    "fra": "Incomplet",
+    "eng": "Incomplete"
+  },
+  "Prêt": {
+    "fra": "Prêt",
+    "eng": "Ready"
+  },
+  "Mode de correspondance :": {
+    "fra": "Mode de correspondance :",
+    "eng": "Matching mode:"
+  },
+  "Épisodes (Séries / Animes)": {
+    "fra": "Épisodes (Séries / Animes)",
+    "eng": "Episodes (Series / Anime)"
+  },
+  "Similitude des titres (Films / Collections)": {
+    "fra": "Similitude des titres (Films / Collections)",
+    "eng": "Title similarity (Movies / Collections)"
+  },
+  "Ordre naturel (Tri alphabétique 1 à 1)": {
+    "fra": "Ordre naturel (Tri alphabétique 1 à 1)",
+    "eng": "Natural order (1-to-1 alphabetical)"
+  },
+  "PLAN DE CORRESPONDANCE ET APPARIEMENT": {
+    "fra": "PLAN DE CORRESPONDANCE ET APPARIEMENT",
+    "eng": "CORRESPONDENCE PLAN AND MATCHING"
+  },
+  "+ Associer manuellement une paire…": {
+    "fra": "+ Associer manuellement une paire…",
+    "eng": "+ Manually associate a pair..."
+  },
+  "Élément / Titre": {
+    "fra": "Élément / Titre",
+    "eng": "Item / Title"
+  },
+  "Donneur(s) assigné(s)": {
+    "fra": "Donneur(s) assigné(s)",
+    "eng": "Assigned donor(s)"
+  },
+  "+ Choisir un master…": {
+    "fra": "+ Choisir un master…",
+    "eng": "+ Choose a master..."
+  },
+  "[Aucun donneur]": {
+    "fra": "[Aucun donneur]",
+    "eng": "[No donor]"
+  },
+  "[Aucun donneur / Ignorer]": {
+    "fra": "[Aucun donneur / Ignorer]",
+    "eng": "[No donor / Ignore]"
+  },
+  "[+ Parcourir un fichier…]": {
+    "fra": "[+ Parcourir un fichier…]",
+    "eng": "[+ Browse file...]"
+  },
+  "Sélectionner un fichier donneur": {
+    "fra": "Sélectionner un fichier donneur",
+    "eng": "Select donor file"
+  },
+  "Sélectionner le fichier Master (Référence)": {
+    "fra": "Sélectionner le fichier Master (Référence)",
+    "eng": "Select Master (Reference) file"
+  },
+  "Sélectionner le fichier Donneur": {
+    "fra": "Sélectionner le fichier Donneur",
+    "eng": "Select Donor file"
+  },
+  "Prêt pour analyse": {
+    "fra": "Prêt pour analyse",
+    "eng": "Ready for analysis"
+  },
+  "Modifié (Prêt pour analyse)": {
+    "fra": "Modifié (Prêt pour analyse)",
+    "eng": "Modified (Ready for analysis)"
+  },
+  "Analyser / Recalibrer cet élément individuellement": {
+    "fra": "Analyser / Recalibrer cet élément individuellement",
+    "eng": "Analyze / Recalibrate this item individually"
+  },
+  "Pré-écoute de cet élément": {
+    "fra": "Pré-écoute de cet élément",
+    "eng": "Preview this item"
+  },
+  "Ouvrir cet élément dans le studio Remux": {
+    "fra": "Ouvrir cet élément dans le studio Remux",
+    "eng": "Open this item in Remux studio"
+  },
+  "Donneur mis à jour pour : {name}": {
+    "fra": "Donneur mis à jour pour : {name}",
+    "eng": "Donor updated for: {name}"
+  },
+  "Nouvelle paire associée : {name}": {
+    "fra": "Nouvelle paire associée : {name}",
+    "eng": "New pair associated: {name}"
+  },
+  "Impossible de calibrer : Master ou Donneur manquant pour cet élément.": {
+    "fra": "Impossible de calibrer : Master ou Donneur manquant pour cet élément.",
+    "eng": "Cannot calibrate: Missing Master or Donor for this item."
+  },
+  "Calibration terminée pour : {name}": {
+    "fra": "Calibration terminée pour : {name}",
+    "eng": "Calibration complete for: {name}"
+  },
+  "Erreur calibration : {err}": {
+    "fra": "Erreur calibration : {err}",
+    "eng": "Calibration error: {err}"
+  },
+  "Veuillez d'abord analyser ou calibrer cet élément (bouton ⚡).": {
+    "fra": "Veuillez d'abord analyser ou calibrer cet élément (bouton ⚡).",
+    "eng": "Please analyze or calibrate this item first (⚡ button)."
+  },
+  "Choisir un dossier…": {
+    "fra": "Choisir un dossier…",
+    "eng": "Choose a directory..."
+  },
+  "Choisir un fichier média…": {
+    "fra": "Choisir un fichier média…",
+    "eng": "Choose a media file..."
+  },
+  "Choisir un dossier de sortie": {
+    "fra": "Choisir un dossier de sortie",
+    "eng": "Choose an output directory"
+  },
+  "Prêt (1 donneur)": {
+    "fra": "Prêt (1 donneur)",
+    "eng": "Ready (1 donor)"
+  },
+  "Donneur manquant": {
+    "fra": "Donneur manquant",
+    "eng": "Missing donor"
+  },
+  "Choisir un fichier média": {
+    "fra": "Choisir un fichier média",
+    "eng": "Choose a media file"
+  },
+  "Appliquer automatiquement la conversion PAL ↔ Cinéma si détectée": {
+    "fra": "Appliquer automatiquement la conversion PAL ↔ Cinéma si détectée",
+    "eng": "Automatically apply PAL ↔ Film conversion if detected"
+  },
+  "Méthode audio :": {
+    "fra": "Méthode audio :",
+    "eng": "Audio method:"
+  },
+  "Préservation tonalité (atempo)": {
+    "fra": "Préservation tonalité (atempo)",
+    "eng": "Pitch-preserved (atempo)"
+  },
+  "Hauteur naturelle (asetrate)": {
+    "fra": "Hauteur naturelle (asetrate)",
+    "eng": "Natural pitch (asetrate)"
+  },
+  "Différence de cadence détectée : {desc} — Conversion nécessaire": {
+    "fra": "Différence de cadence détectée : {desc} — Conversion nécessaire",
+    "eng": "Cadence mismatch detected: {desc} — Conversion required"
+  },
+  "Appliquer automatiquement la conversion PAL ↔ Cinéma": {
+    "fra": "Appliquer automatiquement la conversion PAL ↔ Cinéma",
+    "eng": "Automatically apply PAL ↔ Film conversion"
+  },
+  "Convertit automatiquement la vitesse audio/sous-titres lorsqu'un décalage de cadence (PAL 25 FPS ↔ Cinéma 23.976/24 FPS) est détecté.": {
+    "fra": "Convertit automatiquement la vitesse audio/sous-titres lorsqu'un décalage de cadence (PAL 25 FPS ↔ Cinéma 23.976/24 FPS) est détecté.",
+    "eng": "Automatically converts audio/subtitles speed when a cadence mismatch (PAL 25 FPS ↔ Film 23.976/24 FPS) is detected."
+  },
+  "Méthode de conversion de cadence audio": {
+    "fra": "Méthode de conversion de cadence audio",
+    "eng": "Audio cadence conversion method"
+  },
+  "Algorithme appliqué pour modifier la cadence audio. 'atempo' préserve la hauteur originale des voix et musiques (recommandé de nos jours) ; 'asetrate' applique la variation de tonalité naturelle liée à la vitesse (puriste PAL).": {
+    "fra": "Algorithme appliqué pour modifier la cadence audio. 'atempo' préserve la hauteur originale des voix et musiques (recommandé de nos jours) ; 'asetrate' applique la variation de tonalité naturelle liée à la vitesse (puriste PAL).",
+    "eng": "Algorithm used to modify audio cadence. 'atempo' preserves the original pitch of voices and music (recommended nowadays); 'asetrate' applies the natural pitch shift linked to speed (purist PAL)."
+  },
+  "Auto (pitch / tonalité)": {
+    "fra": "Auto (pitch / tonalité)",
+    "eng": "Auto (pitch / tone)"
+  },
+  "Conversion Cadence :": {
+    "fra": "Conversion Cadence :",
+    "eng": "Cadence Conversion:"
+  },
+  "Auto (détecté : {m})": {
+    "fra": "Auto (détecté : {m})",
+    "eng": "Auto (detected: {m})"
+  },
+  "Auto (détection pitch)": {
+    "fra": "Auto (détection pitch)",
+    "eng": "Auto (pitch detection)"
+  },
+  "asetrate (puriste PAL / pitch naturel)": {
+    "fra": "asetrate (puriste PAL / pitch naturel)",
+    "eng": "asetrate (purist PAL / natural pitch)"
+  },
+  "atempo (tonalité préservée)": {
+    "fra": "atempo (tonalité préservée)",
+    "eng": "atempo (pitch-preserved)"
+  },
+  "Algorithme appliqué pour modifier la cadence audio. 'auto' discrimine acoustiquement le pitch et la hauteur spectrale (recommandé) ; 'atempo' préserve la tonalité existante ; 'asetrate' applique la variation de vitesse naturelle (puriste PAL).": {
+    "fra": "Algorithme appliqué pour modifier la cadence audio. 'auto' discrimine acoustiquement le pitch et la hauteur spectrale (recommandé) ; 'atempo' préserve la tonalité existante ; 'asetrate' applique la variation de vitesse naturelle (puriste PAL).",
+    "eng": "Algorithm used to modify audio cadence. 'auto' acoustically discriminates pitch and spectral height (recommended); 'atempo' preserves the existing pitch; 'asetrate' applies natural speed variation (purist PAL)."
+  },
+  "Vérifier les mises à jour au démarrage": {
+    "fra": "Vérifier les mises à jour au démarrage",
+    "eng": "Check for updates at startup"
+  },
+  "Interroge GitHub (au plus une fois par 24 h) et signale une nouvelle version dans le menu latéral.": {
+    "fra": "Interroge GitHub (au plus une fois par 24 h) et signale une nouvelle version dans le menu latéral.",
+    "eng": "Queries GitHub (at most once every 24 h) and shows a new version in the sidebar."
+  },
+  "Nouvelle version disponible : v{version}": {
+    "fra": "Nouvelle version disponible : v{version}",
+    "eng": "New version available: v{version}"
+  },
+  "Nouvelle version disponible : v{version} — {url}": {
+    "fra": "Nouvelle version disponible : v{version} — {url}",
+    "eng": "New version available: v{version} — {url}"
+  },
+  "Mise à jour disponible": {
+    "fra": "Mise à jour disponible",
+    "eng": "Update available"
+  },
+  "Muxiveo v{version} est disponible (version actuelle : {current}).": {
+    "fra": "Muxiveo v{version} est disponible (version actuelle : {current}).",
+    "eng": "Muxiveo v{version} is available (current version: {current})."
+  },
+  "Installer": {
+    "fra": "Installer",
+    "eng": "Install"
+  },
+  "Mise à jour manuelle : {command}": {
+    "fra": "Mise à jour manuelle : {command}",
+    "eng": "Manual update: {command}"
+  },
+  "Voir la release": {
+    "fra": "Voir la release",
+    "eng": "View release"
+  },
+  "Plus tard": {
+    "fra": "Plus tard",
+    "eng": "Later"
+  },
+  "Mise à jour": {
+    "fra": "Mise à jour",
+    "eng": "Update"
+  },
+  "Une opération est en cours : attendez sa fin avant d'installer la mise à jour.": {
+    "fra": "Une opération est en cours : attendez sa fin avant d'installer la mise à jour.",
+    "eng": "An operation is running: wait for it to finish before installing the update."
+  },
+  "Téléchargement de Muxiveo v{version}…": {
+    "fra": "Téléchargement de Muxiveo v{version}…",
+    "eng": "Downloading Muxiveo v{version}…"
+  },
+  "Mise à jour annulée.": {
+    "fra": "Mise à jour annulée.",
+    "eng": "Update cancelled."
+  },
+  "Canal de mise à jour": {
+    "fra": "Canal de mise à jour",
+    "eng": "Update channel"
+  },
+  "Stable : releases publiées depuis main. Unstable : pré-versions de développement (devel-cli), plus récentes mais moins testées.": {
+    "fra": "Stable : releases publiées depuis main. Unstable : pré-versions de développement (devel-cli), plus récentes mais moins testées.",
+    "eng": "Stable: releases published from main. Unstable: development pre-releases (devel-cli), newer but less tested."
+  },
+  "Stable": {
+    "fra": "Stable",
+    "eng": "Stable"
+  },
+  "Unstable": {
+    "fra": "Unstable",
+    "eng": "Unstable"
+  },
+  "Pré-version de développement (canal unstable) : moins testée qu'une release stable.": {
+    "fra": "Pré-version de développement (canal unstable) : moins testée qu'une release stable.",
+    "eng": "Development pre-release (unstable channel): less tested than a stable release."
   }
 }

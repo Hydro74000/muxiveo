@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import subprocess
+import tarfile
+from types import SimpleNamespace
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -23,6 +26,68 @@ def setup_mod():
     sys.modules["setup_module"] = mod  # requis pour patch("setup_module.X")
     spec.loader.exec_module(mod)
     return mod
+
+
+def _prepare_deb_fallback(setup_mod, monkeypatch, tmp_path, *, legacy):
+    dest = tmp_path / "tools"
+    extracted = dest / "_deb_extracted"
+    extracted.mkdir(parents=True)
+    monkeypatch.setattr(setup_mod.shutil, "which", lambda name: "/usr/bin/ar" if name == "ar" else None)
+    monkeypatch.setattr(setup_mod.subprocess, "run", lambda *args, **kwargs: None)
+    if legacy:
+        real_open = tarfile.open
+
+        def legacy_open(*args, **kwargs):
+            archive = real_open(*args, **kwargs)
+            extractall = archive.extractall
+            archive.extractall = lambda path: extractall(path=path, filter="fully_trusted")
+            return archive
+
+        # Emulate a runtime without data_filter and its historical default.
+        monkeypatch.setattr(setup_mod, "tarfile", SimpleNamespace(open=legacy_open))
+    return dest, extracted / "data.tar.gz"
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "fifo", "traversal"])
+def test_deb_fallback_rejects_unsafe_archive(setup_mod, monkeypatch, tmp_path, legacy, kind):
+    dest, archive_path = _prepare_deb_fallback(setup_mod, monkeypatch, tmp_path, legacy=legacy)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "probe"
+    sentinel.write_bytes(b"original")
+    with tarfile.open(archive_path, "w:gz") as archive:
+        entry = tarfile.TarInfo("link")
+        if kind == "symlink":
+            entry.type = tarfile.SYMTYPE
+            entry.linkname = str(outside)
+        elif kind == "hardlink":
+            entry.type = tarfile.LNKTYPE
+            entry.linkname = str(sentinel)
+        elif kind == "fifo":
+            entry.type = tarfile.FIFOTYPE
+        else:
+            entry.name = "../../outside/probe"
+        archive.addfile(entry)
+        overwrite = tarfile.TarInfo("link/probe" if kind == "symlink" else "link")
+        overwrite.size = 7
+        archive.addfile(overwrite, io.BytesIO(b"changed"))
+    with pytest.raises((RuntimeError, tarfile.TarError)):
+        setup_mod._extract_deb_binary(tmp_path / "input.deb", "NVEncC", dest)
+    assert sentinel.read_bytes() == b"original"
+    assert not (dest / "NVEncC").exists()
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_deb_fallback_still_extracts_regular_binary(setup_mod, monkeypatch, tmp_path, legacy):
+    dest, archive_path = _prepare_deb_fallback(setup_mod, monkeypatch, tmp_path, legacy=legacy)
+    with tarfile.open(archive_path, "w:gz") as archive:
+        entry = tarfile.TarInfo("usr/bin/NVEncC")
+        entry.size = 6
+        entry.mode = 0o755
+        archive.addfile(entry, io.BytesIO(b"binary"))
+    setup_mod._extract_deb_binary(tmp_path / "input.deb", "NVEncC", dest)
+    assert (dest / "NVEncC").read_bytes() == b"binary"
 
 
 # ---------------------------------------------------------------------------
@@ -48,10 +113,43 @@ class TestNvenccGithubToolEntry:
         assert pattern.get("alt_fmt") == "rpm"
         assert pattern.get("alt_suffix", "").endswith(".rpm")
 
-    def test_windows_x86_64_uses_7z(self, setup_mod):
+    def test_windows_x86_64_uses_native_powershell_compatible_zip(self, setup_mod):
         pattern = setup_mod.GITHUB_TOOLS["nvencc"]["asset_patterns"][("Windows", "x86_64")]
-        assert pattern["fmt"] == "7z"
-        assert pattern["suffix"].endswith(".7z")
+        assert pattern["fmt"] == "zip"
+        assert pattern["suffix"] == ".zip"
+        assert pattern["name_prefix"] == "Aviutl_NVEnc_"
+
+    def test_find_asset_honors_prefix_and_suffix(self, setup_mod):
+        release = {
+            "assets": [
+                {"name": "other-tool.zip", "browser_download_url": "https://example.invalid/other"},
+                {"name": "Aviutl_NVEnc_9.25.zip", "browser_download_url": "https://example.invalid/nvencc"},
+            ]
+        }
+
+        assert setup_mod._find_asset(
+            release, ".zip", name_prefix="Aviutl_NVEnc_"
+        ) == "https://example.invalid/nvencc"
+
+    def test_windows_zip_install_copies_nvencc_runtime_files(self, setup_mod, tmp_path):
+        archive = tmp_path / "nvencc.zip"
+        archive.write_bytes(b"placeholder")
+        destination = tmp_path / "tools"
+
+        def fake_powershell_run(_cmd, *, env, **_kwargs):
+            source = Path(env["MR_EXTRACT"]) / "exe_files" / "NVEncC" / "x64"
+            source.mkdir(parents=True)
+            (source / "NVEncC64.exe").write_bytes(b"exe")
+            (source / "avcodec.dll").write_bytes(b"dll")
+            return subprocess.CompletedProcess([], 0, "", "")
+
+        with patch.object(setup_mod, "_windows_powershell", return_value="powershell"), \
+             patch.object(setup_mod.subprocess, "run", side_effect=fake_powershell_run):
+            installed = setup_mod._install_windows_nvencc_zip(archive, destination)
+
+        assert installed == destination / "NVEncC64.exe"
+        assert installed.read_bytes() == b"exe"
+        assert (destination / "avcodec.dll").read_bytes() == b"dll"
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +196,58 @@ class TestCheckNvencAvailable:
         ), patch.object(setup_mod, "OS", "Linux"):
             with patch("pathlib.Path.exists", return_value=False):
                 assert setup_mod._check_nvenc_available() is False
+
+
+class TestWindowsRequiredTools:
+    def test_excludes_eac3to_and_includes_nvencc_only_with_nvidia(self, setup_mod):
+        with patch.object(setup_mod, "_check_nvenc_available", return_value=False):
+            assert setup_mod.windows_required_tool_names() == setup_mod.WINDOWS_REQUIRED_TOOLS
+        with patch.object(setup_mod, "_check_nvenc_available", return_value=True):
+            assert setup_mod.windows_required_tool_names() == (
+                *setup_mod.WINDOWS_REQUIRED_TOOLS, "nvencc"
+            )
+
+    def test_report_returns_only_required_missing_tools(self, setup_mod, tmp_path):
+        paths = {"ffmpeg": r"C:\\ffmpeg.exe", "eac3to": r"C:\\eac3to.exe"}
+        with patch.object(setup_mod, "_check_nvenc_available", return_value=False), \
+             patch.object(setup_mod, "_detect_tool_path", side_effect=lambda name, _prefix: paths.get(name)):
+            report = setup_mod.check_windows_required_tools(tmp_path)
+
+        assert report.found == {"ffmpeg": r"C:\\ffmpeg.exe"}
+        assert report.missing == ("ffprobe", "mediainfo", "dovi_tool", "hdr10plus_tool")
+        assert "eac3to" not in report.required
+
+    def test_report_honors_explicit_windows_tool_path(self, setup_mod, tmp_path):
+        ffmpeg = tmp_path / "ffmpeg.exe"
+        ffmpeg.write_text("placeholder", encoding="utf-8")
+        ini = tmp_path / "config.ini"
+        ini.write_text(f"[tools]\nffmpeg = {ffmpeg}\n", encoding="utf-8")
+        with patch.object(setup_mod, "OS", "Windows"), \
+             patch.object(setup_mod, "_check_nvenc_available", return_value=False), \
+             patch.object(setup_mod, "_config_ini_path", return_value=ini), \
+             patch.object(setup_mod, "_detect_windows_tool_path", return_value=None), \
+             patch.object(setup_mod.shutil, "which", return_value=None):
+            report = setup_mod.check_windows_required_tools(tmp_path)
+
+        assert report.found["ffmpeg"] == str(ffmpeg)
+
+    def test_ensure_installs_only_missing_groups(self, setup_mod, tmp_path):
+        missing = setup_mod.ToolPresenceReport(
+            setup_mod.WINDOWS_REQUIRED_TOOLS, {}, ("ffprobe", "dovi_tool")
+        )
+        healthy = setup_mod.ToolPresenceReport(
+            setup_mod.WINDOWS_REQUIRED_TOOLS, {"ffprobe": "x", "dovi_tool": "y"}, ()
+        )
+        with patch.object(setup_mod, "check_windows_required_tools", side_effect=[missing, healthy]), \
+             patch.object(setup_mod, "install_winget") as install_winget, \
+             patch.object(setup_mod, "install_github_tools") as install_github, \
+             patch.object(setup_mod, "autofill_windows_config_ini") as autofill:
+            report = setup_mod.ensure_windows_required_tools(tmp_path)
+
+        assert report.healthy
+        install_winget.assert_called_once_with(False, force=False, tool_names={"ffprobe"})
+        install_github.assert_called_once_with(tmp_path, False, force=False, tool_names={"dovi_tool"})
+        autofill.assert_called_once_with(tmp_path, False, force=False)
 
 
 # ---------------------------------------------------------------------------

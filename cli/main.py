@@ -23,7 +23,17 @@ def _ensure_qcore_app(argv: list[str] | None = None) -> QCoreApplication:
     return QCoreApplication(argv or [sys.argv[0]])
 
 
+def _configure_io_encoding() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if stream and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:  # nosec B110
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _configure_io_encoding()
     argv = list(sys.argv[1:] if argv is None else argv)
     _ensure_qcore_app([sys.argv[0], *argv])
     from cli.parser import build_parser
@@ -33,6 +43,8 @@ def main(argv: list[str] | None = None) -> int:
     logger = Logger(fmt=args.log_format)
     try:
         config = AppConfig()
+        for warning in getattr(config, "load_warnings", []):
+            logger.emit("warning", warning)
         return int(args.func(args, config, logger))
     except ToolNotFoundError as exc:
         logger.emit("error", str(exc))

@@ -28,6 +28,7 @@ from PySide6.QtCore import QSettings, QStandardPaths
 
 from core.lang_tags import Rfc5646LanguageTags
 from core.subprocess_utils import subprocess_text_kwargs
+from core.update_check import DEFAULT_UPDATE_CHANNEL, normalize_update_channel
 from core.version import (
     APP_CONFIG_DIR_NAME,
     APP_ENV_PREFIX,
@@ -70,6 +71,9 @@ def _resolve_ini_path() -> Path:
     Sur Linux/macOS, on utilise toujours le chemin XDG — y compris en mode
     développement — car setup.py y écrit les chemins absolus des outils détectés.
     """
+    explicit_config_home = os.environ.get("MUXIVEO_CONFIG_HOME")
+    if explicit_config_home:
+        return Path(explicit_config_home).expanduser() / "config.ini"
     if sys.platform != "win32":
         xdg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
         return xdg / APP_CONFIG_DIR_NAME / "config.ini"
@@ -294,10 +298,7 @@ def rerun_application_setup() -> None:
         setup_mod.install_github_tools(prefix, dry_run, force=force)
         setup_mod.check_tools_presence()
     elif os_name == "Windows":
-        setup_mod.install_winget(dry_run, force=force)
-        setup_mod.install_github_tools(prefix, dry_run, force=force)
-        setup_mod.autofill_windows_config_ini(prefix, dry_run, force=force)
-        setup_mod.check_tools_presence(prefix)
+        setup_mod.ensure_windows_required_tools(prefix, dry_run=dry_run, force=force)
         setup_mod.offer_windows_controlled_folder_access_setup(prefix, dry_run, force=force)
 
     setup_mod.initialize_config_ini_language(dry_run, force=force, ini_path=_INI_PATH)
@@ -712,6 +713,7 @@ UI_STARTUP_PANEL_CHOICES: tuple[tuple[str, str], ...] = (
     ("dashboard", "Tableau de bord"),
     ("container", "Conteneur"),
     ("encoding", "Encodage"),
+    ("hybrid", "Hybridation"),
     ("dovi", "DoVi / HDR10+"),
     ("settings", "Paramètres"),
 )
@@ -729,6 +731,8 @@ def _normalize_startup_panel(value: str | None) -> str:
         "conteneur": "container",
         "encoding": "encoding",
         "encodage": "encoding",
+        "hybrid": "hybrid",
+        "hybridation": "hybrid",
         "dovi": "dovi",
         "dovi / hdr10+": "dovi",
         "settings": "settings",
@@ -811,6 +815,14 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         ),
     },
     {
+        "section": "matroska",
+        "title": "Muxage Matroska",
+        "fields": (
+            {"key": "mux_backend", "attr": "matroska_mux_backend", "kind": "choice", "label": "Backend de muxage", "description": "Assembleur final Matroska des workflows remux et encodage. FFmpeg par défaut ; Auto sélectionne le muxeur natif quand le plan le permet et journalise le repli ; Natif n'autorise aucun repli.", "options": (("ffmpeg", "FFmpeg"), ("native", "Natif Matroska"), ("auto", "Auto"))},
+            {"key": "regenerate_statistics", "attr": "matroska_regenerate_statistics", "kind": "bool", "label": "Régénérer les statistiques de pistes (BPS, frames, octets)", "description": "Calcule et écrit les balises statistiques Matroska (BPS, DURATION, NUMBER_OF_FRAMES, NUMBER_OF_BYTES) par piste pour MediaInfo. Activé par défaut."},
+        ),
+    },
+    {
         "section": "sync",
         "title": "Synchronisation",
         "fields": (
@@ -829,6 +841,21 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
                 "description": "Autorise les stratégies audio avancées pour les formats non simples lorsque la réécriture physique est activée.",
                 "tooltip": "Active des stratégies expérimentales pour TrueHD/MLP, DTS/DTS-HD/DTS:X, EAC3+JOC/Atmos, PCM/LPCM, formats lossless et formats lossy. Selon le codec, la piste peut être recopiée par blocs, réencodée, convertie en lossless/lossy, ou rester en sync offset si l'opération n'est pas sûre. Les pistes objet Atmos/DTS:X ne sont pas réencodées.",
             },
+            {
+                "key": "cadence_auto_apply",
+                "attr": "sync_cadence_auto_apply",
+                "kind": "bool",
+                "label": "Appliquer automatiquement la conversion PAL ↔ Cinéma",
+                "description": "Convertit automatiquement la vitesse audio/sous-titres lorsqu'un décalage de cadence (PAL 25 FPS ↔ Cinéma 23.976/24 FPS) est détecté.",
+            },
+            {
+                "key": "cadence_audio_method",
+                "attr": "sync_cadence_audio_method",
+                "kind": "choice",
+                "label": "Méthode de conversion de cadence audio",
+                "description": "Algorithme appliqué pour modifier la cadence audio. 'auto' discrimine acoustiquement le pitch et la hauteur spectrale (recommandé) ; 'atempo' préserve la tonalité existante ; 'asetrate' applique la variation de vitesse naturelle (puriste PAL).",
+                "options": (("auto", "Détection automatique du pitch (auto - recommandé)"), ("atempo", "Préservation de la tonalité (atempo)"), ("asetrate", "Variation de vitesse naturelle (asetrate - puriste PAL)")),
+            },
         ),
     },
     {
@@ -842,6 +869,8 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "startup_panel", "attr": "startup_panel", "kind": "choice", "label": "Panneau à afficher au démarrage", "description": "Panneau chargé en premier au lancement de l'application.", "options": UI_STARTUP_PANEL_CHOICES},
             {"key": "startup_menu_compact", "attr": "startup_menu_compact", "kind": "bool", "label": "Démarrer avec le menu en mode Compact", "description": "Si activé, le menu latéral est réduit en mode icônes au lancement."},
             {"key": "startup_logs_expanded", "attr": "startup_logs_expanded", "kind": "bool", "label": "Ouvrir les logs au démarrage de l'application", "description": "Si activé, le panneau de logs est déplié au lancement."},
+            {"key": "check_updates", "attr": "check_updates", "kind": "bool", "label": "Vérifier les mises à jour au démarrage", "description": "Interroge GitHub (au plus une fois par 24 h) et signale une nouvelle version dans le menu latéral."},
+            {"key": "update_channel", "attr": "update_channel", "kind": "choice", "label": "Canal de mise à jour", "description": "Stable : releases publiées depuis main. Unstable : pré-versions de développement (devel-cli), plus récentes mais moins testées.", "options": (("stable", "Stable"), ("unstable", "Unstable"))},
             {"key": "enable_file_logging", "attr": "enable_file_logging", "kind": "bool", "label": "Activer le logging fichier", "description": "Si activé, les logs applicatifs sont aussi écrits dans un fichier texte sous app_data/logs/."},
             {"key": "file_logging_level", "attr": "file_logging_level", "kind": "choice", "label": "Niveau de logging fichier", "description": "Standard écrit le flux visible dans la fenêtre. Verbose ajoute les sorties techniques détaillées des outils.", "options": (("standard", "Standard"), ("verbose", "Verbose"))},
             {"key": "verbose_log_dir", "attr": "verbose_log_dir", "kind": "directory", "label": "Dossier des logs fichier", "description": "Dossier où écrire les logs fichier. Prérempli par défaut avec le chemin complet actuel."},
@@ -1096,6 +1125,50 @@ class AppConfig:
             "sync/advanced_audio_rewrite_enabled",
             False,
         )
+        self.sync_cadence_auto_apply = self._resolve_bool(
+            "sync",
+            "cadence_auto_apply",
+            "sync/cadence_auto_apply",
+            True,
+        )
+        self.sync_cadence_audio_method = self._resolve_text(
+            "sync",
+            "cadence_audio_method",
+            "sync/cadence_audio_method",
+            "auto",
+        )
+        # [matroska] mux_backend — réglage global unique pilotant le muxage
+        # final des workflows remux ET encode. Priorité : choix explicite du
+        # job/panel/CLI > ce réglage > ffmpeg. Migration : l'ancien
+        # [remux] mux_backend n'est honoré que s'il est explicitement présent
+        # (config.ini ou QSettings) ; absent ou invalide → ffmpeg (avec
+        # avertissement pour une valeur invalide).
+        self.load_warnings: list[str] = []
+        raw_mux_backend = self._resolve_text("matroska", "mux_backend", "matroska/mux_backend", "").lower()
+        if not raw_mux_backend:
+            legacy_ini = self._ini_lookup("remux", "mux_backend")
+            if legacy_ini is not _MISSING and str(legacy_ini) != "":
+                raw_mux_backend = str(legacy_ini).lower()
+            else:
+                legacy_settings = self._settings.value("remux/mux_backend", None)
+                if legacy_settings not in (None, ""):
+                    raw_mux_backend = str(legacy_settings).lower()
+        if raw_mux_backend in {"auto", "native", "ffmpeg"}:
+            self.matroska_mux_backend = raw_mux_backend
+        else:
+            if raw_mux_backend:
+                self.load_warnings.append(
+                    f"[matroska] mux_backend invalide ({raw_mux_backend!r}) : retour au défaut 'ffmpeg'."
+                )
+            self.matroska_mux_backend = "ffmpeg"
+        self.matroska_regenerate_statistics = self._resolve_bool(
+            "matroska",
+            "regenerate_statistics",
+            "matroska/regenerate_statistics",
+            True,
+        )
+        # Alias interne de compatibilité (à supprimer une fois les usages migrés).
+        self.remux_mux_backend = self.matroska_mux_backend
 
         self.language = _normalize_language_code(
             self._resolve_text("ui", "language", "ui/language", _default_language_code())
@@ -1145,6 +1218,16 @@ class AppConfig:
             "ui/startup_logs_expanded",
             False,
         )
+        self.check_updates = self._resolve_bool("ui", "check_updates", "ui/check_updates", True)
+        self.update_channel = normalize_update_channel(
+            self._resolve_text("ui", "update_channel", "ui/update_channel", DEFAULT_UPDATE_CHANNEL)
+        )
+        try:
+            self.last_update_check = float(self._settings.value("ui/last_update_check", 0) or 0)
+        except (TypeError, ValueError):
+            self.last_update_check = 0.0
+        self.last_update_version = str(self._settings.value("ui/last_update_version", "") or "")
+        self.last_update_channel = str(self._settings.value("ui/last_update_channel", "") or "")
         geometry_value = self._settings.value("ui/geometry", None)
         self.window_geometry: bytes | None = geometry_value if isinstance(geometry_value, bytes) else None
 
@@ -1197,6 +1280,16 @@ class AppConfig:
             "sync/advanced_audio_rewrite_enabled",
             "true" if self.sync_advanced_audio_rewrite_enabled else "false",
         )
+        s.setValue(
+            "sync/cadence_auto_apply",
+            "true" if self.sync_cadence_auto_apply else "false",
+        )
+        s.setValue("sync/cadence_audio_method", self.sync_cadence_audio_method)
+        s.setValue("matroska/mux_backend", self.matroska_mux_backend)
+        s.setValue(
+            "matroska/regenerate_statistics",
+            "true" if self.matroska_regenerate_statistics else "false",
+        )
 
         s.setValue("ui/language", self.language)
         s.setValue("ui/log_max_lines", self.log_max_lines)
@@ -1217,6 +1310,8 @@ class AppConfig:
             "ui/startup_logs_expanded",
             "true" if self.startup_logs_expanded else "false",
         )
+        s.setValue("ui/check_updates", "true" if self.check_updates else "false")
+        s.setValue("ui/update_channel", self.update_channel)
 
         s.setValue("metadata/tmdb_api_key", self.tmdb_api_key)
         s.setValue("metadata/tmdb_bearer_token", self.tmdb_bearer_token)
@@ -1226,6 +1321,17 @@ class AppConfig:
 
     def save_to_ini(self) -> None:
         write_ini_settings(self.to_ini_sections())
+
+    def save_last_update_check(self, timestamp: float, latest_version: str = "", channel: str = "") -> None:
+        """Mémorise l'horodatage, la version trouvée et le canal de la dernière vérification."""
+        self.last_update_check = timestamp
+        self.last_update_version = latest_version
+        self.last_update_channel = channel
+        self._settings.setValue("ui/last_update_check", timestamp)
+        self._settings.setValue("ui/last_update_version", latest_version)
+        self._settings.setValue("ui/last_update_channel", channel)
+        self._settings.sync()
+        _sanitize_windows_ini_file(_INI_PATH)
 
     def save_geometry(self, geometry: bytes) -> None:
         self._settings.setValue("ui/geometry", geometry)
@@ -1376,6 +1482,12 @@ class AppConfig:
             "sync": {
                 "rewrite_enabled": self.sync_rewrite_enabled,
                 "advanced_audio_rewrite_enabled": self.sync_advanced_audio_rewrite_enabled,
+                "cadence_auto_apply": self.sync_cadence_auto_apply,
+                "cadence_audio_method": self.sync_cadence_audio_method,
+            },
+            "matroska": {
+                "mux_backend": self.matroska_mux_backend,
+                "regenerate_statistics": self.matroska_regenerate_statistics,
             },
             "ui": {
                 "language": self.language,
@@ -1388,6 +1500,8 @@ class AppConfig:
                 "startup_panel": self.startup_panel,
                 "startup_menu_compact": self.startup_menu_compact,
                 "startup_logs_expanded": self.startup_logs_expanded,
+                "check_updates": self.check_updates,
+                "update_channel": self.update_channel,
             },
             "metadata": {
                 "tmdb_api_key": self.tmdb_api_key,

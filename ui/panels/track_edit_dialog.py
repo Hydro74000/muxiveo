@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import re
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFrame, QGroupBox,
@@ -32,7 +31,12 @@ from PySide6.QtWidgets import (
 from core.i18n import apply_translations, translate_text
 from core.lang_tags import Rfc5646LanguageTags
 from core.workflows.remux_models import TrackEntry
-from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
+from ui.design_system import (
+    CHECK_ICON_PATH,
+    colors as _C,
+    font_px as _font_px,
+    scale as _scale,
+)
 
 
 _SIGNED_INT_RE = re.compile(r"^[+-]?\d+$")
@@ -141,12 +145,16 @@ class TrackEditDialog(QDialog):
                 width: {_scale(14)}px;
                 height: {_scale(14)}px;
                 border-radius: {_scale(3)}px;
-                border: 1px solid {_C.BORDER_LT};
-                background: {_C.BG_DEEP};
+                border: 1px solid {_C.CHECKBOX_BORDER};
+                background: {_C.CHECKBOX_BG};
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {_C.ACCENT};
             }}
             QCheckBox::indicator:checked {{
                 background: {_C.ACCENT};
                 border-color: {_C.ACCENT};
+                image: url('{CHECK_ICON_PATH}');
             }}
             QDialogButtonBox QPushButton {{
                 background: {_C.BG_CARD};

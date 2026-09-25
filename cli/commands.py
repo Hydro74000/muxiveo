@@ -8,9 +8,11 @@ from pathlib import Path
 
 from core.config import AppConfig
 from core.inspector import FileInspector
+from core.update_check import fetch_latest_release, normalize_update_channel
+from core.version import APP_BUILD_VERSION, APP_NAME
 
 from cli.batch import run_batch
-from cli.constants import EXIT_ARGS, EXIT_OK, EXIT_VALIDATION
+from cli.constants import EXIT_ARGS, EXIT_OK, EXIT_UPDATE_AVAILABLE, EXIT_VALIDATION, EXIT_WORKFLOW
 from cli.errors import CliError
 from cli.inspection import config_template_from_info
 from cli.jobs import apply_metadata_overrides
@@ -30,6 +32,39 @@ from cli.schema import (
 from cli.serializers import serialize_file_info, serialize_remux_config
 
 
+def cmd_tools(_args: argparse.Namespace, config: AppConfig, _logger: Logger) -> int:
+    """Expose the exact commands resolved from Muxiveo configuration."""
+    commands = config.tool_commands()
+    print(json.dumps({"version": 1, "tools": commands}, ensure_ascii=False, indent=2))
+    return EXIT_OK
+
+
+def cmd_version(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
+    """Affiche la version ; avec --check, compare à la dernière release du canal choisi."""
+    payload: dict = {"name": APP_NAME, "version": APP_BUILD_VERSION}
+    exit_code = EXIT_OK
+    if args.check:
+        channel = normalize_update_channel(args.channel or getattr(config, "update_channel", None))
+        payload["channel"] = channel
+        info = fetch_latest_release(channel)
+        if info is None:
+            logger.emit("error", "Impossible de joindre GitHub pour vérifier les mises à jour.")
+            exit_code = EXIT_WORKFLOW
+        else:
+            payload.update(latest=info.version, update_available=info.is_newer, url=info.url)
+            exit_code = EXIT_UPDATE_AVAILABLE if info.is_newer else EXIT_OK
+    if args.log_format == "jsonl":
+        print(json.dumps(payload, ensure_ascii=False))
+        return exit_code
+    print(f"{APP_NAME} {APP_BUILD_VERSION}")
+    if "latest" in payload:
+        if payload["update_available"]:
+            print(f"Nouvelle version disponible ({payload['channel']}) : {payload['latest']} — {payload['url']}")
+        else:
+            print(f"À jour (dernière version {payload['channel']} : {payload['latest']}).")
+    return exit_code
+
+
 def _metadata_job_from_args(args: argparse.Namespace) -> dict:
     job: dict = {}
     output_template = str(getattr(args, "output_template", "") or "")
@@ -37,6 +72,13 @@ def _metadata_job_from_args(args: argparse.Namespace) -> dict:
         job["output_template"] = output_template
     if bool(getattr(args, "output_all", False)):
         job["output_all"] = True
+    mux_backend = getattr(args, "mux_backend", None)
+    if mux_backend:
+        job["mux_backend"] = mux_backend
+    for key in ("sync_mode", "sync_subtitles", "clean_nfo", "crossfade_ms"):
+        value = getattr(args, key, None)
+        if value is not None:
+            job[key] = value
     apply_metadata_overrides(
         job,
         auto_tmdb=bool(getattr(args, "auto_tmdb", False)),
@@ -152,6 +194,14 @@ def cmd_preview(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
             command = wf.build_command(remux_config)
             payload["command"] = command
             payload["command_text"] = wf.preview_command(remux_config)
+            execution = wf.execution_preview(remux_config)
+            payload.update({
+                "selected_backend": execution["selected_backend"],
+                "plan_version": execution["plan_version"],
+                "preparation_commands": execution["preparation_commands"],
+                "native_diagnostics": execution["native_diagnostics"],
+                "execution_preview": execution,
+            })
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=json_default))
         return EXIT_OK if not errors else EXIT_VALIDATION
     if errors:
@@ -241,6 +291,7 @@ def cmd_batch(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
         output_all=bool(getattr(args, "output_all", False)),
         no_cover=bool(getattr(args, "no_cover", False)),
         no_attach=bool(getattr(args, "no_attach", False)),
+        mux_backend=getattr(args, "mux_backend", None),
         config=config,
         options=common_options(args),
         logger=logger,

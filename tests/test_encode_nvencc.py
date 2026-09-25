@@ -5,7 +5,6 @@ from __future__ import annotations
 import subprocess
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -29,6 +28,7 @@ from core.workflows.encode.runtime.nvencc import (
     build_remux_cmd,
     detect_nvencc_available,
     is_nvencc_codec,
+    is_expected_nvencc_pipe_producer_exit,
     map_nvencc_video_transform_args,
     nvencc_binary_name,
     nvencc_intermediate_path,
@@ -47,6 +47,25 @@ class TestIsNvenccCodec:
 
     def test_case_insensitive(self):
         assert is_nvencc_codec("NVENCC_HEVC") is True
+
+
+class TestNvenccPipeProducerExit:
+    @pytest.mark.parametrize("returncode", [0, -13])
+    def test_accepts_normal_and_sigpipe_exits(self, returncode):
+        assert is_expected_nvencc_pipe_producer_exit(returncode, "") is True
+
+    def test_accepts_ffmpeg_broken_pipe_after_consumer_success(self):
+        assert is_expected_nvencc_pipe_producer_exit(
+            1,
+            "av_interleaved_write_frame(): Broken pipe",
+        ) is True
+
+    @pytest.mark.parametrize(
+        ("returncode", "stderr"),
+        [(1, "Invalid data found"), (2, "Broken pipe")],
+    )
+    def test_rejects_other_decode_failures(self, returncode, stderr):
+        assert is_expected_nvencc_pipe_producer_exit(returncode, stderr) is False
 
 
 class TestNvenccBinaryName:
@@ -1133,3 +1152,78 @@ class TestDomainCodecsShortCircuit:
         result = video_codec_args(v, 5000, callbacks=cbs)
         assert "-c:v" in result
         assert "libx265" in result
+
+
+def _flag(cmd: list[str], name: str) -> str | None:
+    return cmd[cmd.index(name) + 1] if name in cmd else None
+
+
+class TestNvenccHdrSignalling:
+    _MD = "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)"
+
+    def test_static_hdr10_direct_input_copies_source_vui(self):
+        v = VideoEncodeSettings(codec="nvencc_hevc", inject_hdr_meta=True, master_display=self._MD, max_cll="1000,400")
+        cmd = build_nvencc_command("nvencc", v, "/tmp/o.mkv", input_path="/tmp/src.mkv")
+        assert (_flag(cmd, "--transfer"), _flag(cmd, "--colorprim"), _flag(cmd, "--colormatrix")) == ("auto", "auto", "auto")
+        assert _flag(cmd, "--master-display") == self._MD
+        assert cmd.count("--master-display") == 1
+
+    def test_static_hdr10_y4m_pipe_signals_pq_bt2020(self):
+        v = VideoEncodeSettings(codec="nvencc_av1", inject_hdr_meta=True, master_display=self._MD, max_cll="1000,400")
+        cmd = build_nvencc_command("nvencc", v, "/tmp/o.mkv")
+        assert (_flag(cmd, "--transfer"), _flag(cmd, "--colorprim"), _flag(cmd, "--colormatrix")) == ("smpte2084", "bt2020", "bt2020nc")
+
+    def test_dynamic_copy_keeps_source_static_metadata(self):
+        v = VideoEncodeSettings(codec="nvencc_hevc", copy_hdr10plus=True)
+        cmd = build_nvencc_command("nvencc", v, "/tmp/o.mkv", input_path="/tmp/src.mkv")
+        assert (_flag(cmd, "--transfer"), _flag(cmd, "--master-display"), _flag(cmd, "--max-cll")) == ("auto", "copy", "copy")
+
+    @pytest.mark.parametrize("extra", [{}, {"tonemap_to_sdr": True, "inject_hdr_meta": True}])
+    def test_sdr_or_tonemap_has_no_hdr_vui(self, extra):
+        v = VideoEncodeSettings(codec="nvencc_hevc", **extra)
+        cmd = build_nvencc_command("nvencc", v, "/tmp/o.mkv", input_path="/tmp/src.mkv")
+        assert _flag(cmd, "--transfer") in (None, "bt709")
+
+
+class TestNvenccDoviProfileByCodec:
+    @pytest.mark.parametrize("codec,profile,expected", [
+        ("nvencc_hevc", "0", "8.1"),
+        ("nvencc_av1", "0", "10.1"),
+        ("nvencc_av1", "84", "10.4"),
+        ("nvencc_av1", "10.1", "10.1"),
+    ])
+    def test_copy_dv_profile(self, codec, profile, expected):
+        v = VideoEncodeSettings(codec=codec, copy_dv=True, dovi_profile=profile)
+        cmd = build_nvencc_command("nvencc", v, "/tmp/o.mkv", input_path="/tmp/src.mkv")
+        assert _flag(cmd, "--dolby-vision-rpu") == "copy"
+        assert _flag(cmd, "--dolby-vision-profile") == expected
+
+    def test_external_rpu_av1_maps_explicit_p8_profile(self):
+        v = VideoEncodeSettings(codec="nvencc_av1", dovi_profile="8.1")
+        cmd = build_nvencc_command("nvencc", v, "/tmp/o.mkv", input_path="/tmp/src.mkv", dovi_rpu="/tmp/rpu.bin")
+        assert _flag(cmd, "--dolby-vision-profile") == "10.1"
+
+
+class TestNvenccHdrOutputDepth:
+    @pytest.mark.parametrize("codec,extra,expected", [
+        ("nvencc_hevc", {"inject_hdr_meta": True}, "10"),
+        ("nvencc_av1", {"copy_dv": True}, "10"),
+        ("nvencc_hevc", {"copy_hdr10plus": True, "tonemap_to_sdr": True}, None),
+        ("nvencc_hevc", {}, None),
+        ("nvencc_h264", {"inject_hdr_meta": True}, None),
+        ("nvencc_h264", {"inject_hdr_meta": True, "force_8bit": True}, "8"),
+    ])
+    def test_hdr_defaults_to_10bit(self, codec, extra, expected):
+        cmd = build_nvencc_command("nvencc", VideoEncodeSettings(codec=codec, **extra), "/tmp/o.mkv")
+        assert _flag(cmd, "--output-depth") == expected
+
+
+def test_ffmpeg_tonemap_strips_hdr_frame_metadata():
+    """Sans suppression, l'encodeur réécrit MDCV/CLL/HDR10+ dans le flux SDR."""
+    from core.workflows.encode.domain.codecs import build_vf
+
+    vf = build_vf(VideoEncodeSettings(codec="libx265", tonemap_to_sdr=True))
+    for kind in ("MASTERING_DISPLAY_METADATA", "CONTENT_LIGHT_LEVEL", "DYNAMIC_HDR_PLUS"):
+        assert f"sidedata=mode=delete:type={kind}" in vf
+    assert vf.index("tonemap=") < vf.index("sidedata=")
+    assert "sidedata" not in build_vf(VideoEncodeSettings(codec="libx265"))

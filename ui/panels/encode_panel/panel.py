@@ -7,15 +7,16 @@ Public:
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import subprocess
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import QSize, Qt, Signal, QUrl
+from PySide6.QtCore import QSize, Qt, Signal, QTimer, QUrl
 from PySide6.QtGui import QBrush, QColor, QDesktopServices, QFont, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog,
@@ -23,8 +24,7 @@ from PySide6.QtWidgets import (
     QLayout,
     QLineEdit, QListWidget, QListWidgetItem,
     QMessageBox,
-    QPlainTextEdit, QProgressBar, QPushButton,
-    QScrollArea, QSizePolicy, QSlider, QSpinBox, QStackedWidget, QTabWidget,
+    QPlainTextEdit, QProgressBar, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStackedWidget, QTabWidget,
     QVBoxLayout, QWidget,
 )
 
@@ -35,8 +35,8 @@ from core.i18n import apply_translations, set_current_language, translate_text
 from core.workflows.remux_models import TrackEntry
 from core.runner import TaskSignals
 from core.workflows.encode import (
-    AUDIO_CODECS, HARDWARE_VIDEO_CODECS, SOFTWARE_VIDEO_CODECS,
-    TONEMAP_ALGORITHMS, AudioTrackSettings, EncodeConfig,
+    HARDWARE_VIDEO_CODECS, SOFTWARE_VIDEO_CODECS,
+    TONEMAP_ALGORITHMS, EncodeConfig,
     EncodePreviewRequest,
     EncodePreset, EncodeWorkflow, HardwareEncoderDetector,
     ProfileManager, QualityMode, VideoCropSettings, VideoEncodeSettings, VideoFilterSettings,
@@ -82,6 +82,9 @@ class EncodePanel(QWidget):
     audio_track_remove_requested = Signal(object)  # (entry_id)
     video_tracks_encoding_changed = Signal(object)
     _hw_detected             = Signal(object, object, object)   # (hw: set[str], sw: set[str], hw_ffmpeg: str)
+    _hdr_meta_frame_probe_ready = Signal(int, str, str)
+    _track_hdr_ready = Signal(str, object, object, str, str)
+    _command_preview_ready = Signal(int, str)
     _VIDEO_ENCODER_BADGES = VIDEO_ENCODER_BADGES
     _VIDEO_HDR_BADGE_ORDER = VIDEO_HDR_BADGE_ORDER
     _MAX_VISIBLE_VIDEO_SOURCE_ROWS = 10
@@ -113,9 +116,14 @@ class EncodePanel(QWidget):
             sync_rewrite_enabled=config.sync_rewrite_enabled,
             aac_bitrate_per_channel_kbps=config.aac_bitrate_per_channel_kbps,
             eac3_bitrate_per_channel_kbps=config.eac3_bitrate_per_channel_kbps,
+            regenerate_statistics=getattr(config, "matroska_regenerate_statistics", True),
         )
         self._profiles  = ProfileManager(config.app_data_dir / "encode_profiles")
         self._executor  = ThreadPoolExecutor(max_workers=1)
+        # Le fallback HDR peut attendre un stockage lent. Il ne doit ni
+        # retarder la détection matérielle, ni rendre la fermeture de la GUI
+        # bloquante.
+        self._hdr_meta_executor = ThreadPoolExecutor(max_workers=1)
         self._file_info: FileInfo | None = None
         self._video_tracks: list[tuple[FileInfo, TrackEntry, str]] = []
         self._video_settings_by_entry_id: dict[str, dict[str, object]] = {}
@@ -140,6 +148,10 @@ class EncodePanel(QWidget):
         self._tag_overrides_provider: Callable[[], "dict | None"] = lambda: None
         # Callable fourni par MainWindow pour récupérer les chapter_overrides depuis RemuxPanel.
         self._chapters_provider: Callable[[], "list | None"] = lambda: None
+        # Callable fourni par MainWindow pour le backend de muxage final du job.
+        self._mux_backend_provider: Callable[[], str] = lambda: str(
+            self._config.matroska_mux_backend
+        )
         self._preview_signals: TaskSignals | None = None
         self._preview_random_scene = False
         self._preview_video_path: Path | None = None
@@ -148,10 +160,29 @@ class EncodePanel(QWidget):
         self._preview_zoom_percent: int = 100
         self._preview_current_pixmap: QPixmap | None = None
         self._static_hdr_estimate_prompted: set[str] = set()
+        self._hdr_meta_probe_generation = 0
+        self._hdr_meta_probe_expected: tuple[int, str, str] | None = None
+        self._closing = False
+        self._track_hdr_requests: dict[str, FileInfo] = {}
+        self._command_executor = ThreadPoolExecutor(max_workers=1)
+        self._command_future: Future | None = None
+        self._command_generation = 0
+        self._command_dirty = False
+        self._command_copy_pending = False
+        self._command_timer = QTimer(self)
+        self._command_timer.setSingleShot(True)
+        self._command_timer.setInterval(180)
+        self._command_timer.timeout.connect(self._start_command_preview)
+        self._command_preview_ready.connect(self._apply_command_preview, Qt.ConnectionType.QueuedConnection)
+        self._track_hdr_ready.connect(self._apply_track_hdr, Qt.ConnectionType.QueuedConnection)
 
         self._sw_encoders: set[str] = {codec_id for codec_id, _ in SOFTWARE_VIDEO_CODECS}
         self._workflow.log_message.connect(self.log_message, Qt.ConnectionType.QueuedConnection)
         self._hw_detected.connect(self._on_hw_detected, Qt.ConnectionType.QueuedConnection)
+        self._hdr_meta_frame_probe_ready.connect(
+            self._on_hdr_meta_frame_probe_ready,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self._workflow.static_hdr_estimate_ready.connect(
             self._on_static_hdr_estimate_ready,
             Qt.ConnectionType.QueuedConnection,
@@ -634,6 +665,7 @@ class EncodePanel(QWidget):
         self._video_list.clear()
 
         if not tracks:
+            self._track_hdr_requests.clear()
             self._video_list.setVisible(False)
             self._video_placeholder.setVisible(True)
             self._adjust_video_list_height()
@@ -682,8 +714,17 @@ class EncodePanel(QWidget):
         self._video_list.blockSignals(False)
         self._adjust_video_list_height()
         self._sync_video_selector_items()
-        self._on_video_row_changed(target_row)
+        info, track, _ = tracks[target_row]
+        if selected_entry_id == self._video_entry_id(track) and self._file_info is info:
+            # Un réordonnancement ne change pas les réglages de la vidéo
+            # courante. Réappliquer tous les contrôles déclencherait leurs
+            # signaux et invaliderait inutilement les analyses HDR en vol.
+            self._set_video_selector_row(target_row)
+            self._rebuild_preview()
+        else:
+            self._on_video_row_changed(target_row)
         self._ensure_video_states_for_active_tracks()
+        self._queue_track_hdr_metadata()
 
     def _adjust_video_list_height(self) -> None:
         """Ajuste la hauteur de la liste vidéo, avec scrollbar au-delà de 10 lignes."""
@@ -713,6 +754,9 @@ class EncodePanel(QWidget):
 
     def _apply_file_info(self, info: FileInfo, track: TrackEntry | None = None) -> None:
         """Applique les infos d'un FileInfo sélectionné comme source d'encodage."""
+        # Un éventuel fallback ffprobe de la piste précédemment sélectionnée
+        # ne doit jamais mettre à jour les champs HDR de la nouvelle piste.
+        self._invalidate_hdr_meta_frame_probe()
         self._file_info  = info
         self._duration_s = info.duration_s
 
@@ -727,7 +771,12 @@ class EncodePanel(QWidget):
             else None
         )
         if settings is None and selected_video:
-            self._prefill_hdr_meta(selected_video.raw, info.path, info.mediainfo_json)
+            self._prefill_hdr_meta(
+                selected_video.raw,
+                info.path,
+                info.mediainfo_json,
+                probe_frames=False,
+            )
 
         pass  # Fichier de sortie géré par RemuxPanel
 
@@ -1564,15 +1613,118 @@ class EncodePanel(QWidget):
         raw: dict,
         source_path: Path | None = None,
         mediainfo_json: dict | None = None,
+        *,
+        probe_frames: bool = False,
     ) -> None:
-        """Pré-remplit master_display et max_cll (mediainfo > ffprobe)."""
+        """Pré-remplit master_display et max_cll sans bloquer le thread Qt."""
         master_display, max_cll = self._extract_hdr_meta_fields(
             raw,
             source_path,
-            mediainfo_json=mediainfo_json,
+            mediainfo_json=mediainfo_json or {},
+            include_frame_probe=False,
         )
         self._master_display.setText(master_display)
         self._max_cll.setText(max_cll)
+        if (
+            not probe_frames
+            or source_path is None
+            or (master_display and max_cll)
+        ):
+            return
+
+        generation = self._hdr_meta_probe_generation
+        self._hdr_meta_probe_expected = (generation, master_display, max_cll)
+        self._hdr_meta_executor.submit(self._probe_hdr_meta_from_frames, generation, source_path)
+
+    def _invalidate_hdr_meta_frame_probe(self) -> None:
+        self._hdr_meta_probe_generation += 1
+        self._hdr_meta_probe_expected = None
+
+    def _queue_track_hdr_metadata(self) -> None:
+        """Complète aussi les vidéos non sélectionnées, sans I/O dans Qt."""
+        active = {self._video_entry_id(track): info for info, track, _ in self._video_tracks}
+        self._track_hdr_requests = {
+            key: info for key, info in self._track_hdr_requests.items()
+            if active.get(key) is info
+        }
+        for info, track, _ in self._video_tracks:
+            key = self._video_entry_id(track)
+            video = self._video_track_for_entry(info, track)
+            state = self._video_settings_by_entry_id.get(key)
+            if (state is None or video is None or video.hdr_type == HDRType.NONE
+                    or self._track_hdr_requests.get(key) is info
+                    or (state.get("master_display") and state.get("max_cll"))):
+                continue
+            self._track_hdr_requests[key] = info
+            expected = {name: state.get(name, "") for name in ("master_display", "max_cll")}
+            self._hdr_meta_executor.submit(self._probe_track_hdr, key, info, video, expected)
+
+    def _probe_track_hdr(self, key: str, info: FileInfo, video: VideoTrack, expected: dict) -> None:
+        try:
+            master_display, max_cll = self._extract_hdr_meta_fields(
+                video.raw, info.path, mediainfo_json=info.mediainfo_json,
+                include_frame_probe=False,
+            )
+            if not (master_display and max_cll):
+                md, cll = self._extract_hdr_meta_from_ffprobe_frames(info.path, video.index)
+                master_display, max_cll = master_display or md, max_cll or cll
+        except Exception:
+            master_display, max_cll = "", ""
+        if not self._closing:
+            self._track_hdr_ready.emit(key, info, expected, master_display, max_cll)
+
+    def _apply_track_hdr(self, key: str, info: FileInfo, expected: dict, md: str, cll: str) -> None:
+        if self._closing or self._track_hdr_requests.get(key) is not info:
+            return
+        if not any(self._video_entry_id(t) == key and i is info for i, t, _ in self._video_tracks):
+            return
+        self._save_current_video_state()
+        state = self._video_settings_by_entry_id.get(key)
+        if state is None:
+            return
+        for name, value in (("master_display", md), ("max_cll", cll)):
+            if not value:
+                continue
+            if not state.get("default_" + name):
+                state["default_" + name] = value
+            if state.get(name, "") == expected[name]:
+                state[name] = value
+        if self._current_video_entry_id == key:
+            # Les deux champs font partie d'une seule mise à jour : leurs
+            # textChanged ne doivent pas sauvegarder un état intermédiaire.
+            md_blocked = self._master_display.blockSignals(True)
+            cll_blocked = self._max_cll.blockSignals(True)
+            self._master_display.setText(str(state.get("master_display") or ""))
+            self._max_cll.setText(str(state.get("max_cll") or ""))
+            self._master_display.blockSignals(md_blocked)
+            self._max_cll.blockSignals(cll_blocked)
+        self._rebuild_preview()
+
+    def _probe_hdr_meta_from_frames(self, generation: int, source_path: Path) -> None:
+        try:
+            master_display, max_cll = self._extract_hdr_meta_from_ffprobe_frames(source_path)
+        except Exception:
+            master_display, max_cll = "", ""
+        self._hdr_meta_frame_probe_ready.emit(generation, master_display, max_cll)
+
+    def _on_hdr_meta_frame_probe_ready(
+        self,
+        generation: int,
+        master_display: str,
+        max_cll: str,
+    ) -> None:
+        if self._closing:
+            return
+        expected = self._hdr_meta_probe_expected
+        if expected is None or generation != expected[0]:
+            return
+        self._hdr_meta_probe_expected = None
+        expected_master_display, expected_max_cll = expected[1:]
+        # Ne pas écraser une valeur saisie par l'utilisateur pendant le probe.
+        if master_display and self._master_display.text() == expected_master_display:
+            self._master_display.setText(master_display)
+        if max_cll and self._max_cll.text() == expected_max_cll:
+            self._max_cll.setText(max_cll)
 
     def _extract_hdr_meta_fields(
         self,
@@ -1580,6 +1732,7 @@ class EncodePanel(QWidget):
         source_path: Path | None = None,
         *,
         mediainfo_json: dict | None = None,
+        include_frame_probe: bool = True,
     ) -> tuple[str, str]:
         # 1. Priorité mediainfo (parse de tous les SEI HEVC d'un coup).
         master_display, max_cll = "", ""
@@ -1602,14 +1755,14 @@ class EncodePanel(QWidget):
         #    dans les frames HEVC (cas typique : mediainfo absent et stream-
         #    level n'expose pas les side_data). Indispensable quand
         #    `WARN Outils manquants : mediainfo` au démarrage.
-        if source_path is not None:
+        if include_frame_probe and source_path is not None:
             ff2_md, ff2_cll = self._extract_hdr_meta_from_ffprobe_frames(source_path)
             master_display = master_display or ff2_md
             max_cll = max_cll or ff2_cll
         return master_display, max_cll
 
     def _extract_hdr_meta_from_ffprobe_frames(
-        self, source_path: Path,
+        self, source_path: Path, stream_index: int | None = None,
     ) -> tuple[str, str]:
         """
         Fallback alternatif quand mediainfo est absent : lit MDCV/CLL via
@@ -1622,7 +1775,7 @@ class EncodePanel(QWidget):
         cmd = [
             self._config.tool_ffprobe,
             "-v", "error",
-            "-select_streams", "v:0",
+            "-select_streams", str(stream_index) if stream_index is not None else "v:0",
             "-show_frames",
             "-read_intervals", "%+#1",
             "-print_format", "json",
@@ -1728,8 +1881,13 @@ class EncodePanel(QWidget):
             lmin = lmax = 0.0
         if primaries and lmax > 0:
             (gx, gy), (bx, by), (rx, ry), (wx, wy) = primaries
-            c = lambda f: int(round(f * 50000))
-            l_ = lambda f: int(round(f * 10000))
+
+            def c(value: float) -> int:
+                return int(round(value * 50000))
+
+            def l_(value: float) -> int:
+                return int(round(value * 10000))
+
             master_display = (
                 f"G({c(gx)},{c(gy)})"
                 f"B({c(bx)},{c(by)})"
@@ -1785,14 +1943,23 @@ class EncodePanel(QWidget):
         for sd in raw.get("side_data_list", []):
             if sd.get("side_data_type") == "Mastering display metadata":
                 try:
-                    rx = _rat(sd.get("red_x", 0));         ry = _rat(sd.get("red_y", 0))
-                    gx = _rat(sd.get("green_x", 0));        gy = _rat(sd.get("green_y", 0))
-                    bx = _rat(sd.get("blue_x", 0));         by = _rat(sd.get("blue_y", 0))
-                    wx = _rat(sd.get("white_point_x", 0));  wy = _rat(sd.get("white_point_y", 0))
+                    rx = _rat(sd.get("red_x", 0))
+                    ry = _rat(sd.get("red_y", 0))
+                    gx = _rat(sd.get("green_x", 0))
+                    gy = _rat(sd.get("green_y", 0))
+                    bx = _rat(sd.get("blue_x", 0))
+                    by = _rat(sd.get("blue_y", 0))
+                    wx = _rat(sd.get("white_point_x", 0))
+                    wy = _rat(sd.get("white_point_y", 0))
                     lmax = _rat(sd.get("max_luminance", 0))
                     lmin = _rat(sd.get("min_luminance", 0))
-                    c = lambda f: int(round(f * 50000))
-                    l_ = lambda f: int(round(f * 10000))
+
+                    def c(value: float) -> int:
+                        return int(round(value * 50000))
+
+                    def l_(value: float) -> int:
+                        return int(round(value * 10000))
+
                     master_display = (
                         f"G({c(gx)},{c(gy)})"
                         f"B({c(bx)},{c(by)})"
@@ -2429,18 +2596,44 @@ class EncodePanel(QWidget):
     # ------------------------------------------------------------------
 
     def _rebuild_preview(self) -> None:
-        if not hasattr(self, "_cmd_preview"):
+        if self._closing or not hasattr(self, "_cmd_preview"):
             return   # appelé pendant l'init avant que le widget existe
         self._save_current_video_state()
+        self._command_generation += 1
+        self._command_dirty = True
+        if self._command_future is not None:
+            self._command_future.cancel()
+        self._command_timer.start()
+
+    def _start_command_preview(self) -> None:
+        if self._closing:
+            return
         config = self._current_config()
         if config is None:
-            self._cmd_preview.setPlainText("")
+            self._apply_command_preview(self._command_generation, "")
             return
+        if self._command_future is not None:
+            self._command_future.cancel()
+        self._command_future = self._command_executor.submit(
+            self._compile_command_preview, self._command_generation, copy.deepcopy(config),
+        )
+
+    def _compile_command_preview(self, generation: int, config: EncodeConfig) -> None:
         try:
             text = self._workflow.preview_command(config)
-            self._cmd_preview.setPlainText(text)
         except Exception:
-            self._cmd_preview.setPlainText(translate_text("(erreur de construction de la commande)"))
+            text = translate_text("(erreur de construction de la commande)")
+        if not self._closing:
+            self._command_preview_ready.emit(generation, text)
+
+    def _apply_command_preview(self, generation: int, text: str) -> None:
+        if self._closing or generation != self._command_generation:
+            return
+        self._command_dirty = False
+        self._cmd_preview.setPlainText(text)
+        if self._command_copy_pending:
+            self._command_copy_pending = False
+            self._copy_command()
 
     def _on_preview_mode_changed(self) -> None:
         if not hasattr(self, "_preview_mode_combo"):
@@ -3139,8 +3332,8 @@ class EncodePanel(QWidget):
         raw = source_video.raw if source_video is not None else {}
         master_display, max_cll = self._extract_hdr_meta_fields(
             raw,
-            info.path,
-            mediainfo_json=info.mediainfo_json,
+            mediainfo_json=info.mediainfo_json or {},
+            include_frame_probe=False,
         )
         bit_depth = self._video_source_bit_depth(info, track)
         default_10bit = bit_depth >= 10 or self._source_has_dv(source_hdr) or self._source_has_hdr10plus(source_hdr)
@@ -4007,6 +4200,15 @@ class EncodePanel(QWidget):
         """
         self._chapters_provider = provider
 
+    def set_mux_backend_provider(self, provider: Callable[[], str]) -> None:
+        """Lie la preview encode au choix courant du panneau Remux."""
+        self._mux_backend_provider = provider
+        self._rebuild_preview()
+
+    def refresh_command_preview(self) -> None:
+        """Reconstruit publiquement la preview après un changement partagé."""
+        self._rebuild_preview()
+
     def _current_config(self) -> EncodeConfig | None:
         if self._file_info is None:
             return None
@@ -4034,6 +4236,9 @@ class EncodePanel(QWidget):
             tmdb_cover=self._tmdb_cover_provider(),
             tag_overrides=self._tag_overrides_provider(),
             chapter_overrides=self._chapters_provider(),
+            mux_backend=str(
+                self._mux_backend_provider() or self._config.matroska_mux_backend
+            ),
         )
 
     def _on_add_audio_track(self) -> None:
@@ -4087,6 +4292,7 @@ class EncodePanel(QWidget):
         self._workflow.set_max_parallel_video_encodes(self._config.max_parallel_video_encodes)
         self._workflow.set_mediainfo_bin(self._config.tool_mediainfo)
         self._workflow.set_generate_nfo(self._config.generate_nfo)
+        self._workflow.set_regenerate_statistics(getattr(self._config, "matroska_regenerate_statistics", True))
         self._workflow.set_sync_rewrite_enabled(self._config.sync_rewrite_enabled)
         self._workflow.set_sync_rewrite_audio_bitrates(
             aac_bitrate_per_channel_kbps=self._config.aac_bitrate_per_channel_kbps,
@@ -4096,13 +4302,23 @@ class EncodePanel(QWidget):
 
     def _copy_command(self) -> None:
         from PySide6.QtWidgets import QApplication
+        if self._command_dirty:
+            self._command_copy_pending = True
+            if self._command_timer.isActive():
+                self._command_timer.stop()
+                self._start_command_preview()
+            return
         text = self._cmd_preview.toPlainText()
         if text:
             QApplication.clipboard().setText(text)
 
     def closeEvent(self, event) -> None:
+        self._closing = True
+        self._command_timer.stop()
+        self._command_executor.shutdown(wait=False, cancel_futures=True)
         if self._preview_signals is not None:
             self._preview_signals.cancel()
+        self._hdr_meta_executor.shutdown(wait=False, cancel_futures=True)
         self._executor.shutdown(wait=True)
         try:
             EncodeWorkflow.cleanup_preview_dir(self._config.work_dir)

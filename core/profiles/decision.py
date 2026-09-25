@@ -743,7 +743,8 @@ def _rule_matches(
     best = [(score, track) for score, track in eligible if score == best_score]
     if len(best) == 1:
         return best, []
-    if _candidate_type(best) == "video" and str(rule.get("tie_break") or "first_source_index") == "first_source_index":
+    tie_break = str(rule.get("tie_break") or "").strip()
+    if tie_break == "first_source_index" or (_candidate_type(best) == "video" and tie_break != "ambiguous"):
         return [min(best, key=lambda item: _track_sort_key(item[1], source_index_by_file_id))], []
     return [], [track for _score, track in best]
 

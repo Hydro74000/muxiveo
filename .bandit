@@ -1,0 +1,6 @@
+[bandit]
+# Exclure les suites de tests, répertoires de build et environnements virtuels
+exclude = /tests,/venv,/.venv,/build,/dist
+
+# Ignorer B404 (import subprocess systématique dans un orchestrateur multimédia)
+skips = B404
