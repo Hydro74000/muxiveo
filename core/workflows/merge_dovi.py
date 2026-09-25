@@ -1928,7 +1928,8 @@ class MergeDoviWorkflow(QObject):
         with tempfile.TemporaryDirectory(prefix="dovi_probe_") as tmp:
             rpu = Path(tmp) / "rpu.bin"
             try:
-                subprocess.run(
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+                subprocess.run(  # nosec B603  # nosemgrep  # argv liste, binaire issu de la config
                     [self._bins["dovi_tool"], "extract-rpu", "-i", str(path), "-l", "1", "-o", str(rpu)],
                     capture_output=True, check=False, timeout=120, **subprocess_text_kwargs(),
                 )
