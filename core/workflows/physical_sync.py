@@ -35,9 +35,10 @@ def audio_filter(calibration: SyncCalibration, crossfade_ms=80) -> str:
             parts.append(f"[0:a:0]{cadence_str}[cadence_in]")
             in_labels = ["[cadence_in]"]
 
+    ratio = calibration.cadence_mismatch.time_stretch_ratio if calibration.cadence_mismatch else 1.0
     for index, segment in enumerate(segments):
-        stop = segments[index + 1].start_ms if index + 1 < len(segments) else None
-        start = max(segment.start_ms, previous_end - segment.shift_ms, -segment.shift_ms)
+        stop = segments[index + 1].start_ms * ratio if index + 1 < len(segments) else None
+        start = max(segment.start_ms * ratio, previous_end - segment.shift_ms, -segment.shift_ms)
         if stop is not None and start >= stop:
             previous_end = max(previous_end, stop + segment.shift_ms)
             continue

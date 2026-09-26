@@ -438,10 +438,21 @@ def test_audio_sync_scanner_with_cadence_and_detect_cuts(monkeypatch):
         return shift, 0.95
 
     monkeypatch.setattr(scanner, "measure", fake_measure)
-    # Mock samples pour l'énergie audio (éviter d'appeler ffmpeg)
+    # Enveloppes avec une véritable jonction, déjà converties dans la cadence
+    # référence : vérifier la transmission du filtre et les coordonnées donneur.
     import numpy as np
-    monkeypatch.setattr(scanner, "samples", lambda track, start, dur, cadence_filter=None: np.zeros(int(dur * 16000)))
-    monkeypatch.setattr(scanner, "black_transitions", lambda track, start, dur: [start + dur / 2])
+    rng = np.random.default_rng(18)
+    donor_values = np.repeat(rng.uniform(.01, 1, 120000), 10)
+    ref_values = np.zeros(1200500)
+    ref_values[100:600100] = donor_values[:600000]
+    ref_values[600500:1200500] = donor_values[600000:]
+    envelope_calls = []
+
+    def envelope(track, cadence_filter=None):
+        envelope_calls.append(cadence_filter)
+        return ref_values if "ref" in track.source_path.name else donor_values
+
+    monkeypatch.setattr(scanner, "envelope", envelope)
 
     mismatch = CadenceMismatch(
         CadenceType.PAL_TO_FILM_23976, 25.0, 23.976, 24000.0 / 25025.0
@@ -456,6 +467,8 @@ def test_audio_sync_scanner_with_cadence_and_detect_cuts(monkeypatch):
     )
 
     assert len(calib.segments) == 2
+    assert calib.segments[1].start_ms == pytest.approx(600000 * mismatch.speed_factor, abs=50)
+    assert envelope_calls == [None, "atempo=24000/25025"]
     assert calib.cadence_mismatch == mismatch
     assert len(measure_calls) > 0
     # Vérifier que speed_factor et filter ont bien été transmis à measure
