@@ -2011,15 +2011,11 @@ class MainWindow(QMainWindow):
         self._start_prep_progress()
 
         task_signals.progress.connect(self._on_op_progress, Qt.ConnectionType.QueuedConnection)
-        task_signals.finished.connect(
-            lambda _: self._on_op_finished(success=True),
-            Qt.ConnectionType.QueuedConnection,
+        task_signals.connect_terminal(
+            finished=lambda _: self._on_op_finished(success=True),
+            failed=lambda msg, _exc: self._on_op_finished(success=False, error=msg),
+            cancelled=self._on_op_cancelled,
         )
-        task_signals.failed.connect(
-            lambda msg, _exc: self._on_op_finished(success=False, error=msg),
-            Qt.ConnectionType.QueuedConnection,
-        )
-        task_signals.cancelled.connect(self._on_op_cancelled, Qt.ConnectionType.QueuedConnection)
 
     def _on_remux_audio_sync_started(self, metadata: object) -> None:
         if self._running:
@@ -2140,15 +2136,11 @@ class MainWindow(QMainWindow):
         self._start_prep_progress()
 
         signals.progress.connect(self._on_op_progress, Qt.ConnectionType.QueuedConnection)
-        signals.finished.connect(
-            lambda _: self._on_op_finished(success=True),
-            Qt.ConnectionType.QueuedConnection,
+        signals.connect_terminal(
+            finished=lambda _: self._on_op_finished(success=True),
+            failed=lambda msg, _exc: self._on_op_finished(success=False, error=msg),
+            cancelled=self._on_op_cancelled,
         )
-        signals.failed.connect(
-            lambda msg, _exc: self._on_op_finished(success=False, error=msg),
-            Qt.ConnectionType.QueuedConnection,
-        )
-        signals.cancelled.connect(self._on_op_cancelled, Qt.ConnectionType.QueuedConnection)
 
     def _merge_remux_extras(
         self,

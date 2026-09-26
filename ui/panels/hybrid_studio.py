@@ -1574,9 +1574,11 @@ class HybridStudio(QWidget):
         )
         try:
             self.signals = self.workflow.run(replace(config, allow_missing_output_dir=False))
-            self.signals.finished.connect(self.on_finished)
-            self.signals.failed.connect(lambda message, exc: self.on_failed(message))
-            self.signals.cancelled.connect(lambda: self.set_busy(False))
+            self.signals.connect_terminal(
+                finished=self.on_finished,
+                failed=lambda message, exc: self.on_failed(message),
+                cancelled=lambda: self.set_busy(False),
+            )
             self.signals.progress.connect(self.status.setText)
         except Exception as exc:
             self.on_failed(str(exc))

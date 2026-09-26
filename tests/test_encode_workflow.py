@@ -4413,7 +4413,8 @@ class TestEncodeRuntimeMultiSourceSync:
         map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
         assert "2:0" in map_values
 
-    def test_runtime_single_pass_sync_rewrite_consumes_audio_offset(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("calibrated,applicable", [(False, True), (True, True), (True, False)])
+    def test_runtime_single_pass_sync_rewrite_consumes_audio_offset(self, tmp_path, monkeypatch, calibrated, applicable):
         src = tmp_path / "main.mkv"
         out = tmp_path / "out.mkv"
         rewritten = tmp_path / "rewritten.mka"
@@ -4432,12 +4433,19 @@ class TestEncodeRuntimeMultiSourceSync:
             ],
         )
         captured: dict[str, object] = {}
+        if calibrated:
+            from core.workflows.sync_calibration import SyncCalibration, SyncSegment
+            cfg.track_time_offsets[0].calibration = SyncCalibration(
+                (SyncSegment(0, 125), SyncSegment(1500, 0))
+            ).to_dict()
 
         class FakeSyncRewriteService:
             def __init__(self, **_kwargs):
                 pass
 
             def maybe_materialize(self, **kwargs):
+                if not applicable:
+                    return None
                 rewritten.write_bytes(b"audio")
                 captured["rewrite_kwargs"] = kwargs
                 return SyncRewritePreparedInput(
@@ -4456,6 +4464,10 @@ class TestEncodeRuntimeMultiSourceSync:
 
         with patch.object(wf, "_prepare_multisource_sync", return_value=({}, [], None, False)), \
              patch.object(wf, "_stream_codec_of", return_value="eac3"):
+            if not applicable:
+                with pytest.raises(EncodeError, match="multi-segments"):
+                    wf._build_runtime_single_pass_with_sync(cfg)
+                return
             cmd, live, cleanup = wf._build_runtime_single_pass_with_sync(cfg)
 
         assert live is None
@@ -4466,6 +4478,8 @@ class TestEncodeRuntimeMultiSourceSync:
         assert "1:0" in map_values
         rewrite_kwargs = cast(dict, captured["rewrite_kwargs"])
         assert rewrite_kwargs["preserve_source_audio_params"] is True
+        if calibrated:
+            assert rewrite_kwargs["calibration"] == cfg.track_time_offsets[0].calibration
 
     def test_runtime_single_pass_sync_rewrite_respects_forced_standard_offset(self, tmp_path, monkeypatch):
         src = tmp_path / "main.mkv"
@@ -4737,13 +4751,13 @@ class TestEncodeRuntimeMultiSourceSync:
         assert sync_inputs == [sync_audio]
         assert remap[(src_alt, 1, "audio")] == (2, 0)
 
-    def test_prepare_multisource_sync_fallback_prefers_ram_before_disk(self, tmp_path, monkeypatch):
+    def test_prepare_multisource_sync_fallback_uses_workspace(self, tmp_path, monkeypatch):
         src_main = tmp_path / "main.mkv"
         src_alt = tmp_path / "alt.mkv"
         out = tmp_path / "out.mkv"
         ram_dir = tmp_path / "ram"
         ram_dir.mkdir()
-        sync_audio = ram_dir / "sync_audio.mka"
+        sync_audio = tmp_path / "sync_audio.mka"
         src_main.touch()
         src_alt.touch()
 
@@ -4768,12 +4782,13 @@ class TestEncodeRuntimeMultiSourceSync:
                 raise RuntimeError("live unavailable")
 
             def prepare_from_mapped_tracks_mmap(self, **_kwargs):
+                pytest.fail("unbounded mmap fallback must not run")
+
+            def prepare_from_mapped_tracks(self, **_kwargs):
                 tmp_dir = Path(_kwargs["tmp_dir"])
                 calls.append(tmp_dir)
                 return [SimpleNamespace(key=(1, 1, "audio"), path=sync_audio, input_idx=2)]
 
-            def prepare_from_mapped_tracks(self, **_kwargs):
-                pytest.fail("file fallback should not be used when RAM mmap works")
 
         monkeypatch.setattr("core.workflows.encode.workflow.FfmpegTimelineSync", _FakeSyncer)
         monkeypatch.setattr(EncodeWorkflow, "_ram_buffer_dir", staticmethod(lambda: ram_dir))
@@ -4786,7 +4801,7 @@ class TestEncodeRuntimeMultiSourceSync:
             allow_live=True,
         )
 
-        assert calls == [ram_dir]
+        assert calls == [tmp_path]
         assert live is None
         assert strict is True
         assert sync_inputs == [sync_audio]

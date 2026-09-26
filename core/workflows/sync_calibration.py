@@ -70,8 +70,13 @@ class SyncCalibration:
             cadence_mismatch = CadenceMismatch.from_dict(cadence_payload) if cadence_payload else None
             cadence_method = str(payload.get("cadence_audio_method", "atempo"))
             pitch_payload = payload.get("cadence_pitch_analysis")
-            from core.workflows.cadence_pitch import CadencePitchAnalysis
-            pitch_analysis = CadencePitchAnalysis.from_dict(pitch_payload) if pitch_payload else None
+            pitch_analysis = None
+            if pitch_payload:
+                try:
+                    from core.workflows.cadence_pitch import CadencePitchAnalysis
+                    pitch_analysis = CadencePitchAnalysis.from_dict(pitch_payload)
+                except ImportError:
+                    pitch_analysis = pitch_payload
             return cls(
                 tuple(SyncSegment(float(s["start_ms"]), float(s["shift_ms"]))
                       for s in payload["segments"]),
@@ -150,3 +155,20 @@ def format_calibration_summary(calibration_or_dict: SyncCalibration | dict | Non
             return []
     return []
 
+
+
+def effective_calibration(calibration_or_dict: SyncCalibration | dict | None) -> SyncCalibration | None:
+    """Retourne la calibration si elle n'est pas réductible à un décalage constant (coupures ou cadence)."""
+    calibration = calibration_or_dict
+    if isinstance(calibration, dict):
+        try:
+            calibration = SyncCalibration.from_dict(calibration)
+        except ValueError:
+            return None
+    if not isinstance(calibration, SyncCalibration):
+        return None
+    has_cadence = bool(
+        calibration.cadence_mismatch is not None
+        and calibration.cadence_mismatch.cadence_type != CadenceType.NONE
+    )
+    return calibration if len(calibration.segments) > 1 or has_cadence else None

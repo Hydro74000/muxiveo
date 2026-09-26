@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Protocol
@@ -30,6 +30,8 @@ class TrackOffset:
     stream_index: int
     offset_ms: int = 0
     sync_rewrite_mode: str = ""
+    # Calibration multi-segments/cadence (SyncCalibration.to_dict) ; offset_ms = 1er segment.
+    calibration: dict | None = field(default=None, repr=False)
 
 
 @dataclass

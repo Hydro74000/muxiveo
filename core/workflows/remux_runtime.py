@@ -39,6 +39,7 @@ from core.workflows.remux_mapping import (
 )
 from core.workflows.remux_models import RemuxConfig, RemuxError
 from core.workflows.remux_plan import MuxExecutionPlan
+from core.workflows.sync_calibration import effective_calibration
 from core.workflows.remux_sync import (
     decide_strict_interleave_with_prescan as _decide_strict_interleave_with_prescan_helper,
     prepare_timeline_sync_inputs as _prepare_timeline_sync_inputs_helper,
@@ -181,6 +182,19 @@ class RemuxRuntimeRunner:
                 extra_inputs: list[Path | str] = []
                 cb.log_step(3, "Analyse du mapping pistes + pré-scan de risque")
                 mapped_tracks: list[MappedTrack] = list(plan.mapped_tracks)
+                rewrite_enabled = cb.sync_rewrite_enabled()
+                if not rewrite_enabled and any(
+                    mapped.track.track_type in {"audio", "subtitle"}
+                    and effective_calibration(
+                        mapped.track.sync_calibration
+                        or run_config.sync_calibrations.get(str(mapped.source_file_index))
+                    ) is not None
+                    for mapped in mapped_tracks
+                ):
+                    raise RemuxError(
+                        "Synchronisation multi-segments : la réécriture sync réelle est requise "
+                        "(activer sync.rewrite_enabled ou choisir sync_mode=physical)."
+                    )
                 strict_interleave = _decide_strict_interleave_with_prescan_helper(
                     run_config,
                     resolve_mapped_tracks=lambda _config: list(plan.mapped_tracks),
@@ -223,7 +237,7 @@ class RemuxRuntimeRunner:
                 else:
                     cb.log_step(4, "Synchronisation timeline multi-source (non requise)")
 
-                if cb.sync_rewrite_enabled():
+                if rewrite_enabled:
                     cb.log_step(5, "Réécriture réelle des décalages audio/sous-titres")
                     rewrite_service = SyncRewriteService(
                         ffmpeg_bin=cb.ffmpeg_bin,
@@ -239,7 +253,13 @@ class RemuxRuntimeRunner:
                     rewritten_inputs: list[SyncPreparedInput] = []
                     for mapped_track in mapped_tracks:
                         offset_ms = int(getattr(mapped_track.track, "time_shift_ms", 0) or 0)
-                        if offset_ms == 0 or sync_rewrite_forced_offset(mapped_track.track):
+                        calibration = effective_calibration(
+                            getattr(mapped_track.track, "sync_calibration", None)
+                            or run_config.sync_calibrations.get(str(mapped_track.source_file_index))
+                        ) if mapped_track.track.track_type in {"audio", "subtitle"} else None
+                        if (offset_ms == 0 and calibration is None) or (
+                            calibration is None and sync_rewrite_forced_offset(mapped_track.track)
+                        ):
                             rewritten_tracks.append(mapped_track)
                             continue
                         prepared = rewrite_service.maybe_materialize(
@@ -263,14 +283,22 @@ class RemuxRuntimeRunner:
                                 mapped_track.track.display_info
                             ),
                             cancel_cb=signals._cancel_event.is_set,
+                            calibration=calibration,
+                            crossfade_ms=config.crossfade_ms,
                         )
                         if prepared is None:
+                            if calibration is not None:
+                                raise RemuxError(
+                                    "Calibration multi-segments non applicable à cette piste "
+                                    f"(#{mapped_track.stream_index}) : synchronisation interrompue.",
+                                )
                             rewritten_tracks.append(mapped_track)
                             continue
                         consumed_track = replace(
                             mapped_track.track,
                             time_shift_ms=0,
                             sync_rewrite_label=prepared.mode_label,
+                            sync_calibration=None,
                         )
                         rewritten_tracks.append(replace(
                             mapped_track,

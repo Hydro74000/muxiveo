@@ -210,6 +210,7 @@ from core.workflows.encode.planning.offsets import (
     build_offset_specs as _build_offset_specs_plan,
     track_offset_ms as _track_offset_ms_plan,
     track_time_offset_mode_lookup as _track_time_offset_mode_lookup_plan,
+    track_time_offset_calibration_lookup as _track_time_offset_calibration_lookup_plan,
     video_map_arg as _video_map_arg_plan,
 )
 from core.workflows.encode.planning.preview import (
@@ -1330,7 +1331,13 @@ class EncodeWorkflow(QObject):
         )
         offset_lookup = dict(plan.offset_lookup)
         offset_mode_lookup = _track_time_offset_mode_lookup_plan(config)
+        calibration_lookup = _track_time_offset_calibration_lookup_plan(config)
         rewrite_remap: dict[tuple[Path, int, str], tuple[int, int]] = {}
+        if calibration_lookup and allow_sync_rewrite and not self._sync_rewrite_enabled:
+            raise EncodeError(
+                "Synchronisation multi-segments : la réécriture sync réelle est requise "
+                "(activer sync.rewrite_enabled) ; le décalage du 1er segment seul décalerait tout le fichier."
+            )
         next_input_index = int(start_input_index)
         if allow_sync_rewrite and self._sync_rewrite_enabled:
             audio_settings_by_key = {
@@ -1357,12 +1364,13 @@ class EncodeWorkflow(QObject):
                     source_path=Path(source_path),
                     stream_index=int(source_stream_index),
                 )
-                if offset_ms == 0:
+                calibration = calibration_lookup.get((track_type, Path(source_path), int(source_stream_index)))
+                if offset_ms == 0 and calibration is None:
                     continue
                 mode = normalized_sync_rewrite_mode(
                     offset_mode_lookup.get((track_type, Path(source_path), int(source_stream_index)), "")
                 )
-                if mode == SYNC_REWRITE_MODE_OFFSET:
+                if mode == SYNC_REWRITE_MODE_OFFSET and calibration is None:
                     continue
                 codec = ""
                 input_path_obj = Path(str(input_path))
@@ -1394,8 +1402,14 @@ class EncodeWorkflow(QObject):
                         else None
                     ),
                     cancel_cb=(signals._cancel_event.is_set if signals is not None else None),
+                    calibration=calibration,
                 )
                 if prepared is None:
+                    if calibration is not None:
+                        raise EncodeError(
+                            "Calibration multi-segments non applicable à cette piste "
+                            f"({track_type} #{int(source_stream_index)}) : synchronisation interrompue.",
+                        )
                     continue
                 cmd.extend(["-f", "matroska", "-i", str(prepared.path)])
                 rewrite_remap[map_key] = (next_input_index, 0)
@@ -3000,7 +3014,7 @@ class EncodeWorkflow(QObject):
                 return None
 
         for offset in getattr(config, "track_time_offsets", []) or []:
-            if int(getattr(offset, "offset_ms", 0) or 0) != 0:
+            if int(getattr(offset, "offset_ms", 0) or 0) != 0 or getattr(offset, "calibration", None):
                 return None
 
         if not plan.track_metadata:

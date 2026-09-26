@@ -447,8 +447,13 @@ class SyncRewriteService:
         audio_target_codec: str = "",
         audio_target_bitrate_kbps: int | None = None,
         cancel_cb: Callable[[], bool] | None = None,
+        calibration: object = None,
+        crossfade_ms: int = 80,
     ) -> SyncRewritePreparedInput | None:
-        if int(offset_ms or 0) == 0:
+        from core.workflows.sync_calibration import effective_calibration
+        # Calibration multi-segments/cadence : seule une réécriture physique la respecte.
+        calib = effective_calibration(calibration)
+        if int(offset_ms or 0) == 0 and calib is None:
             return None
         if cancel_cb is not None and cancel_cb():
             raise RemuxError("Réécriture sync annulée.")
@@ -479,10 +484,11 @@ class SyncRewriteService:
                 tmp_dir=tmp_dir,
                 token=token,
                 cancel_cb=cancel_cb,
+                calibration=calib,
             )
             self._log(
                 "Sync réelle sous-titre: timestamps réécrits "
-                f"(stream={stream_index}, offset={int(offset_ms)} ms)."
+                f"(stream={stream_index}, {self._calibration_label(calib, offset_ms)})."
             )
             return SyncRewritePreparedInput(
                 path=out,
@@ -560,12 +566,14 @@ class SyncRewriteService:
                     channels=channels_count,
                     bitrate_kbps=rewrite_bitrate_kbps,
                     cancel_cb=cancel_cb,
+                    calibration=calib,
+                    crossfade_ms=crossfade_ms,
                 )
                 bitrate_label = f", bitrate={rewrite_bitrate_kbps} kbps" if rewrite_bitrate_kbps else ""
                 self._log(
                     "Sync réelle audio: piste réencodée après coupe/silence "
                     f"(codec={rewrite_codec_key.upper()}{bitrate_label}, stream={stream_index}, "
-                    f"offset={int(offset_ms)} ms)."
+                    f"{self._calibration_label(calib, offset_ms)})."
                 )
                 return SyncRewritePreparedInput(
                     path=out,
@@ -576,6 +584,12 @@ class SyncRewriteService:
                     bitrate_kbps=rewrite_bitrate_kbps,
                 )
 
+            if calib is not None:
+                raise RemuxError(
+                    "Synchronisation multi-segments impossible sans réencodage "
+                    f"(codec={source_codec_key or codec or 'inconnu'}, stream={stream_index}) : "
+                    "choisir une piste AC3/EAC3/AAC non Atmos ou annuler la synchronisation."
+                )
             if not self._advanced_audio_enabled:
                 self._log(
                     "Sync réelle ignorée: audio avancé désactivé "
@@ -678,6 +692,13 @@ class SyncRewriteService:
 
         return None
 
+    @staticmethod
+    def _calibration_label(calibration: object, offset_ms: int) -> str:
+        segments = getattr(calibration, "segments", None)
+        if segments:
+            return f"calibration {len(segments)} segment(s), départ {segments[0].shift_ms:+.0f} ms"
+        return f"offset={int(offset_ms)} ms"
+
     def _probe_stream(self, source: Path, stream_index: int) -> dict[str, object]:
         cmd = [
             self._ffprobe,
@@ -759,12 +780,10 @@ class SyncRewriteService:
         channels: int,
         bitrate_kbps: int | None = None,
         cancel_cb: Callable[[], bool] | None = None,
+        calibration: object = None,
+        crossfade_ms: int = 80,
     ) -> Path:
         destination = self._unique_path(tmp_dir, f"sync_rewrite_{token}.mka")
-        if offset_ms > 0:
-            audio_filter = f"adelay={int(offset_ms)}:all=1,asetpts=PTS-STARTPTS"
-        else:
-            audio_filter = f"atrim=start={abs(offset_ms) / 1000.0:.3f},asetpts=PTS-STARTPTS"
         bitrate = bitrate_kbps if bitrate_kbps and bitrate_kbps > 0 else self._audio_bitrate_kbps(codec_key, channels)
         cmd = [
             self._ffmpeg,
@@ -772,11 +791,22 @@ class SyncRewriteService:
             *self._progress_args,
         ]
         append_ffmpeg_input_args(cmd, source)
+        if calibration is not None:
+            from core.workflows.physical_sync import audio_filter as calibrated_audio_filter
+            graph = calibrated_audio_filter(calibration, crossfade_ms).replace("[0:a:0]", f"[0:{stream_index}]")
+            cmd.extend(["-filter_complex", graph, "-map", "[out]", *self._thread_args])
+        else:
+            if offset_ms > 0:
+                audio_filter = f"adelay={int(offset_ms)}:all=1,asetpts=PTS-STARTPTS"
+            else:
+                audio_filter = f"atrim=start={abs(offset_ms) / 1000.0:.3f},asetpts=PTS-STARTPTS"
+            cmd.extend([
+                "-map", f"0:{stream_index}",
+                "-vn", "-sn", "-dn",
+                *self._thread_args,
+                "-af", audio_filter,
+            ])
         cmd.extend([
-            "-map", f"0:{stream_index}",
-            "-vn", "-sn", "-dn",
-            *self._thread_args,
-            "-af", audio_filter,
             "-c:a", codec_key,
             "-b:a", f"{bitrate}k",
         ])
@@ -935,6 +965,7 @@ class SyncRewriteService:
         tmp_dir: Path,
         token: str,
         cancel_cb: Callable[[], bool] | None = None,
+        calibration: object = None,
     ) -> Path:
         text_kind, ext, codec_arg = self._subtitle_text_plan(codec_key)
         extracted = self._unique_path(tmp_dir, f"sync_rewrite_{token}_raw{ext}")
@@ -955,8 +986,10 @@ class SyncRewriteService:
         from core.workflows.subtitle_sync import shift_file
         from core.workflows.sync_calibration import SyncCalibration
         try:
-            shift_file(extracted, shifted, SyncCalibration.linear(offset_ms))
+            shift_file(extracted, shifted, calibration or SyncCalibration.linear(offset_ms))
         except Exception:
+            if calibration is not None:
+                raise
             text = extracted.read_text(encoding="utf-8-sig", errors="replace")
             shifted.write_text(self._shift_subtitle_text(text, text_kind, offset_ms), encoding="utf-8")
         wrap_cmd = [

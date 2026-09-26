@@ -8,6 +8,7 @@ from pathlib import Path
 from core.workflows.common.track_types import TrackMetaPatch, TrackOffset, TrackType
 from core.workflows.encode.models import EncodeConfig
 from core.workflows.remux_models import RemuxConfig, TrackEntry
+from core.workflows.sync_calibration import effective_calibration
 
 
 def merge_remux_into_encode_config(
@@ -103,7 +104,10 @@ def merge_remux_into_encode_config(
         if track is None:
             return
         offset_ms = int(getattr(track, "time_shift_ms", 0) or 0)
-        if offset_ms == 0:
+        calibration = getattr(track, "sync_calibration", None) if track_type != TrackType.VIDEO.value else None
+        if effective_calibration(calibration) is None:
+            calibration = None
+        if offset_ms == 0 and calibration is None:
             return
         track_time_offsets.append(TrackOffset(
             track_type=track_type,
@@ -111,6 +115,7 @@ def merge_remux_into_encode_config(
             stream_index=int(stream_index),
             offset_ms=offset_ms,
             sync_rewrite_mode=str(getattr(track, "sync_rewrite_mode", "") or ""),
+            calibration=calibration,
         ))
 
     def _find_track(src_path: Path, stream_index: int, track_type: str) -> TrackEntry | None:

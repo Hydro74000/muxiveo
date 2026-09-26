@@ -9,6 +9,11 @@ from core.workdir import remove_path
 from core.workflows.remux_timeline_sync import LiveSyncSession
 
 
+def _connect_terminal_hook(signals: TaskSignals, hook: Callable[..., object]) -> None:
+    """Exécute le hook une fois, avant les notifications, même si la fin est passée."""
+    signals.connect_terminal(finished=hook, failed=hook, cancelled=hook, direct=True)
+
+
 @dataclass(frozen=True)
 class SignalBindingServiceCallbacks:
     write_nfo: Callable[[Path], None]
@@ -41,10 +46,7 @@ class SignalBindingService:
                 signals._unregister_proc(proc)
             session.close()
 
-        cleanup = signals.retain_callback(_cleanup)
-        signals.finished.connect(cleanup)
-        signals.failed.connect(cleanup)
-        signals.cancelled.connect(cleanup)
+        _connect_terminal_hook(signals, _cleanup)
 
     def bind_temp_cleanup(self, signals: TaskSignals, cleanup_paths: list[Path]) -> None:
         if not cleanup_paths:
@@ -62,16 +64,13 @@ class SignalBindingService:
                 except OSError:
                     pass
 
-        cleanup = signals.retain_callback(_cleanup)
-        signals.finished.connect(cleanup)
-        signals.failed.connect(cleanup)
-        signals.cancelled.connect(cleanup)
+        _connect_terminal_hook(signals, _cleanup)
 
     def bind_nfo_write(self, signals: TaskSignals, output: Path) -> None:
         def _write(*_args) -> None:
             self._callbacks.write_nfo(output)
 
-        signals.finished.connect(signals.retain_callback(_write))
+        signals.connect_terminal(finished=_write, direct=True)
 
     def bind_output_hooks(
         self,

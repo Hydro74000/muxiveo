@@ -312,7 +312,7 @@ def test_fallback_helper_prefers_live_when_available(tmp_path):
     assert result.prepared_inputs == expected
 
 
-def test_fallback_helper_prefers_ram_before_disk(tmp_path):
+def test_fallback_helper_uses_workspace_even_when_ram_is_available(tmp_path):
     work_dir = tmp_path / "work"
     ram_dir = tmp_path / "ram"
     work_dir.mkdir()
@@ -324,11 +324,11 @@ def test_fallback_helper_prefers_ram_before_disk(tmp_path):
             raise RuntimeError("live unavailable")
 
         def prepare_from_mapped_tracks_mmap(self, **kwargs):
-            calls.append(Path(kwargs["tmp_dir"]))
-            return [SyncPreparedInput(key=(1, 1, "audio"), path=ram_dir / "sync_ram.mka", input_idx=2)]
+            pytest.fail("unbounded mmap fallback must not run")
 
-        def prepare_from_mapped_tracks(self, **_kwargs):
-            pytest.fail("file fallback should not run when RAM mmap works")
+        def prepare_from_mapped_tracks(self, **kwargs):
+            calls.append(Path(kwargs["tmp_dir"]))
+            return [SyncPreparedInput(key=(1, 1, "audio"), path=work_dir / "sync_file.mka", input_idx=2)]
 
     src = tmp_path / "src.mkv"
     src.touch()
@@ -346,6 +346,6 @@ def test_fallback_helper_prefers_ram_before_disk(tmp_path):
         allow_live=True,
     )
 
-    assert calls == [ram_dir]
+    assert calls == [work_dir]
     assert result.live_session is None
     assert len(result.prepared_inputs) == 1

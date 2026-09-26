@@ -40,6 +40,19 @@ def track_time_offset_mode_lookup(config: EncodeConfig) -> dict[tuple[str, Path,
     return lookup
 
 
+def track_time_offset_calibration_lookup(config: EncodeConfig) -> dict[tuple[str, Path, int], dict]:
+    """Calibrations multi-segments/cadence par piste (audio/sous-titres)."""
+    lookup: dict[tuple[str, Path, int], dict] = {}
+    for raw in config.track_time_offsets:
+        if not isinstance(raw, TrackTimeOffset):
+            continue
+        calibration = getattr(raw, "calibration", None)
+        track_type = str(raw.track_type or "").strip().lower()
+        if isinstance(calibration, dict) and track_type in {"audio", "subtitle"}:
+            lookup[(track_type, Path(raw.source_path), int(raw.stream_index))] = calibration
+    return lookup
+
+
 def track_offset_ms(
     lookup: dict[tuple[str, Path, int], int],
     *,

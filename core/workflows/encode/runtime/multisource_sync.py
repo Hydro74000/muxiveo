@@ -135,14 +135,9 @@ class EncodeMultisourceSyncService:
         )
 
         cancel_cb = signals._cancel_event.is_set if signals is not None else None
-        ram_dir: Path | None = None
-        if cb.ram_buffer_enabled:
-            ram_dir = cb.ram_buffer_dir()
-
         prepared_result = cb.fallback_helper_factory(
             syncer=syncer,
             work_dir=work_dir,
-            ram_dir=ram_dir,
             log_cb=lambda msg: cb.log("INFO", msg),
         ).prepare(
             mapped_tracks=list(sync_analysis.mapped_tracks),
