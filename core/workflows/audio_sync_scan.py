@@ -82,6 +82,30 @@ class AudioSyncScanner:
             raise AudioSyncError(result.stderr.decode("utf-8", errors="replace"))
         return np.frombuffer(result.stdout, dtype="<f4").astype(float)
 
+    def _check_cancelled(self):
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise AudioSyncError("Analyse annulée.")
+
+    def envelope(self, track, cadence_filter=None):
+        """Décode une fois la piste en enveloppe 1 kHz (4 Mo par 1000 s).
+
+        Le sous-échantillonnage suit le redressement, après le mixage mono.
+        Aucun seek : toutes les positions restent dans la chronologie source.
+        """
+        import numpy as np
+        filters = ["aformat=channel_layouts=mono"]
+        if cadence_filter:
+            filters.append(cadence_filter)
+        filters += ["highpass=f=300", "lowpass=f=3000", "aeval=abs(val(0))", "aresample=1000"]
+        result = self._run([
+            self.ffmpeg, "-nostdin", "-v", "error", "-i", str(track.source_path),
+            "-map", f"0:{track.stream_index}", "-af", ",".join(filters),
+            "-ac", "1", "-ar", "1000", "-f", "f32le", "pipe:1",
+        ], timeout=max(120, self.duration(track) * 2), **subprocess_windows_no_window_kwargs())
+        if result.returncode:
+            raise AudioSyncError(result.stderr.decode("utf-8", errors="replace"))
+        return np.frombuffer(result.stdout, dtype="<f4")
+
     def pitch_samples(self, track, start, duration, cadence_filter: str | None = None):
         """Extrait les échantillons audio sans filtre passe-bande agressif pour l'analyse F0 et spectrale."""
         import numpy as np
@@ -115,7 +139,7 @@ class AudioSyncScanner:
             from core.workflows.cadence_pitch import analyze_cadence_pitch
 
             speed_factor = getattr(cadence_mismatch, "speed_factor", 1.0)
-            p_donor = max(0.0, (p_ref + offset_ms / 1000.0) * speed_factor)
+            p_donor = max(0.0, (p_ref - offset_ms / 1000.0) * speed_factor)
 
             filter_ase = build_cadence_audio_filter(cadence_mismatch, CadenceAudioMethod.ASETRATE)
             filter_ate = build_cadence_audio_filter(cadence_mismatch, CadenceAudioMethod.ATEMPO)
@@ -258,7 +282,7 @@ class AudioSyncScanner:
                     log(f"Analyse acoustique de cadence : méthode '{pitch_analysis.selected_method}' sélectionnée — {pitch_analysis.details}")
 
         spread = max(s["shift_ms"] for s in samples) - min(s["shift_ms"] for s in samples)
-        if spread <= drift_threshold_ms:
+        if spread <= drift_threshold_ms and not detect_cuts:
             return SyncCalibration(
                 (SyncSegment(0, float(np.median([s["shift_ms"] for s in samples]))),),
                 min(s["confidence"] for s in samples),
@@ -269,7 +293,7 @@ class AudioSyncScanner:
             )
 
         from core.workflows.cadence import detect_cadence_from_acoustic_samples
-        acoustic_mismatch = detect_cadence_from_acoustic_samples(samples)
+        acoustic_mismatch = detect_cadence_from_acoustic_samples(samples) if spread > drift_threshold_ms else None
         if acoustic_mismatch is not None:
             log(f"Différence de cadence détectée acoustiquement : {acoustic_mismatch.description}")
             if is_auto_method and pitch_analysis is None:
@@ -279,116 +303,31 @@ class AudioSyncScanner:
                 if pitch_analysis is not None:
                     active_cadence_method = pitch_analysis.selected_method
                     log(f"Analyse acoustique de cadence : méthode '{pitch_analysis.selected_method}' sélectionnée — {pitch_analysis.details}")
-            return SyncCalibration(
-                (SyncSegment(0, float(samples[0]["shift_ms"])),),
-                min(s["confidence"] for s in samples),
-                tuple(samples),
-                cadence_mismatch=acoustic_mismatch,
-                cadence_audio_method=active_cadence_method,
-                cadence_pitch_analysis=pitch_analysis,
-            )
+            if not detect_cuts:
+                return SyncCalibration(
+                    (SyncSegment(0, float(samples[0]["shift_ms"])),),
+                    min(s["confidence"] for s in samples),
+                    tuple(samples),
+                    cadence_mismatch=acoustic_mismatch,
+                    cadence_audio_method=active_cadence_method,
+                    cadence_pitch_analysis=pitch_analysis,
+                )
+            cadence_mismatch = acoustic_mismatch
+            speed_factor = acoustic_mismatch.speed_factor
+            filter_str = build_cadence_audio_filter(cadence_mismatch, active_cadence_method)
 
         if not detect_cuts:
             raise AudioSyncError("Dérive détectée ; utiliser --detect-cuts ou une calibration manuelle.")
-        segments = [SyncSegment(0, samples[0]["shift_ms"])]
-        for left, right in zip(samples, samples[1:]):
-            if self.cancel_event is not None and self.cancel_event.is_set():
-                raise AudioSyncError("Analyse annulée.")
-            if abs(right["shift_ms"] - segments[-1].shift_ms) <= drift_threshold_ms:
-                continue
-            left_shift = segments[-1].shift_ms
-            right_shift = right["shift_ms"]
-            l = left["start_ms"] / 1000
-            r = right["start_ms"] / 1000 + window
-            check_window = min(6, window)
-            for _ in range(10):
-                if self.cancel_event is not None and self.cancel_event.is_set():
-                    raise AudioSyncError("Analyse annulée.")
-                if r - l <= 8.0:
-                    break
-                mid = (l + r) / 2
-                try:
-                    off, _ = self.measure(
-                        reference, donor, mid, check_window,
-                        cadence_filter=filter_str, speed_factor=speed_factor,
-                    )
-                    if abs(off - left_shift) <= drift_threshold_ms:
-                        l = mid
-                    elif abs(off - right_shift) <= drift_threshold_ms:
-                        r = mid
-                    else:
-                        l = max(l, mid - 10)
-                        r = min(r, mid + 10)
-                        break
-                except AudioSyncError:
-                    try:
-                        off_early, _ = self.measure(
-                            reference, donor, max(l, mid - 12), check_window,
-                            cadence_filter=filter_str, speed_factor=speed_factor,
-                        )
-                        if abs(off_early - left_shift) <= drift_threshold_ms:
-                            l = mid - 12
-                    except AudioSyncError:
-                        pass
-                    try:
-                        off_late, _ = self.measure(
-                            reference, donor, min(r - check_window, mid + 12), check_window,
-                            cadence_filter=filter_str, speed_factor=speed_factor,
-                        )
-                        if abs(off_late - right_shift) <= drift_threshold_ms:
-                            r = mid + 12
-                    except AudioSyncError:
-                        pass
-                    if r - l > 30:
-                        l = max(l, mid - 15)
-                        r = min(r, mid + 15)
-                    break
-
-            w_low = max(0, l - 5)
-            w_high = min(duration, r + 5)
-            values = self.samples(donor, w_low * speed_factor, w_high - w_low, cadence_filter=filter_str)
-            frame = 160
-            energy = np.sqrt(np.mean(values[:len(values) // frame * frame].reshape(-1, frame) ** 2, axis=1))
-            quiet = energy < 0.0032
-            edges = np.diff(np.r_[False, quiet, False].astype(int))
-            candidates = [(a, b) for a, b in zip(np.where(edges == 1)[0], np.where(edges == -1)[0]) if b - a >= 30]
-            transitions = [w_low + (a + b) / 200 for a, b in candidates]
-            for black in self.black_transitions(donor, w_low * speed_factor, (w_high - w_low) * speed_factor):
-                black_ref = black / speed_factor if speed_factor > 0 else black
-                if not any(abs(black_ref - existing) < 0.3 for existing in transitions):
-                    transitions.append(black_ref)
-
-            best_cut = None
-            for cut in sorted(transitions):
-                if self.cancel_event is not None and self.cancel_event.is_set():
-                    raise AudioSyncError("Analyse annulée.")
-                before = max(0, cut - check_window - self.max_offset_s)
-                after = cut + self.max_offset_s
-                if after + check_window > duration:
-                    continue
-                try:
-                    prior, _ = self.measure(
-                        reference, donor, before, check_window,
-                        cadence_filter=filter_str, speed_factor=speed_factor,
-                    )
-                    following, _ = self.measure(
-                        reference, donor, after, check_window,
-                        cadence_filter=filter_str, speed_factor=speed_factor,
-                    )
-                except AudioSyncError:
-                    continue
-                if abs(prior - left_shift) <= drift_threshold_ms and abs(following - right_shift) <= drift_threshold_ms:
-                    best_cut = cut
-                    break
-
-            if best_cut is None:
-                best_cut = (l + r) / 2
-            segments.append(SyncSegment(best_cut * 1000, right["shift_ms"]))
-
+        from core.workflows.audio_sync_segments import scan_envelopes
+        log("Analyse continue des pistes et validation des jonctions…")
+        segments, confidence, anchors = scan_envelopes(
+            self.envelope(reference), self.envelope(donor, filter_str),
+            max_offset_ms=round(self.max_offset_s * 1000),
+            tolerance_ms=drift_threshold_ms, speed_factor=speed_factor,
+            check_cancelled=self._check_cancelled, log=log,
+        )
         return SyncCalibration(
-            tuple(segments),
-            min(s["confidence"] for s in samples),
-            tuple(samples),
+            segments, confidence, anchors,
             cadence_mismatch=cadence_mismatch,
             cadence_audio_method=active_cadence_method,
             cadence_pitch_analysis=pitch_analysis,

@@ -41,7 +41,7 @@ from core.profiles.decision import DecisionProfileManager, apply_decision_profil
 from core.profiles.selectors import remux_config_to_exact_job
 from core.runner import TaskSignals, ToolRunner
 from core.workflows.remux import RemuxWorkflow
-from core.workflows.audio_sync import AudioSyncTrack, AudioSyncWorkflow
+from core.workflows.audio_sync import AudioSyncTrack
 from core.workflows.common.ffmpeg_runtime import ffmpeg_progress_args
 from core.workflows.common.sync_rewrite import (
     SYNC_REWRITE_MODE_OFFSET,
@@ -1786,24 +1786,7 @@ class RemuxPanel(QWidget):
                     calibration,
                 )
             except Exception as exc:
-                try:
-                    workflow = AudioSyncWorkflow(
-                        ffmpeg_bin=self._config.tool_ffmpeg,
-                        ffprobe_bin=self._config.tool_ffprobe,
-                        log_cb=self.log_message.emit,
-                    )
-                    result = workflow.detect_offset(reference, target)
-                    from core.workflows.sync_calibration import SyncCalibration
-                    cal = SyncCalibration.linear(result.offset_ms)
-                    self._audio_sync_done.emit(
-                        target_entry_id,
-                        reference_entry_id,
-                        result.offset_ms,
-                        result.confidence,
-                        cal,
-                    )
-                except Exception:
-                    self._audio_sync_error.emit(target_entry_id, str(exc))
+                self._audio_sync_error.emit(target_entry_id, str(exc))
 
         self._executor.submit(_task)
 
