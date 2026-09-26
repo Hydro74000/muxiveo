@@ -13,7 +13,6 @@ from __future__ import annotations
 import os
 import mmap
 import subprocess
-import sys
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -125,8 +124,7 @@ class TimelineSyncFallbackHelper:
     """
     Orchestration partagée du sync timeline :
       1) live FIFO / named pipe
-      2) fallback memory-mapped (RAM prioritaire)
-      3) fallback fichier temporaire (dernier recours)
+      2) fallback fichier temporaire dans le dossier de travail
     """
 
     def __init__(
@@ -139,25 +137,13 @@ class TimelineSyncFallbackHelper:
     ) -> None:
         self._syncer = syncer
         self._work_dir = work_dir
-        self._ram_dir = ram_dir
+        # ram_dir est conservé pour compatibilité ; le fallback utilise le workspace.
         self._log = log_cb or (lambda _: None)
 
     @staticmethod
     def default_ram_dir() -> Path | None:
-        if sys.platform.startswith("win"):
-            return None
-        shm = Path("/dev/shm")
-        if shm.is_dir() and os.access(shm, os.W_OK | os.X_OK):
-            return shm
+        """Le fallback de pistes complètes n'utilise plus automatiquement tmpfs."""
         return None
-
-    @staticmethod
-    def _dedupe_dirs(paths: Sequence[Path]) -> list[Path]:
-        out: list[Path] = []
-        for path in paths:
-            if path not in out:
-                out.append(path)
-        return out
 
     def prepare(
         self,
@@ -223,7 +209,7 @@ class TimelineSyncFallbackHelper:
             except TaskCancelledError:
                 raise
             except Exception as exc:
-                self._log(f"Sync live audio indisponible ({exc}); fallback RAM puis disque.")
+                self._log(f"Sync live audio indisponible ({exc}); fallback fichier dans le dossier de travail.")
 
         # Subtitle étranger : toujours fallback fichier (NUT ne supporte pas SRT/ASS)
         # Audio étranger aussi en fallback si le live a échoué
@@ -267,7 +253,7 @@ class TimelineSyncFallbackHelper:
             except TaskCancelledError:
                 raise
             except Exception as exc:
-                self._log(f"Sync live indisponible ({exc}); fallback RAM puis disque.")
+                self._log(f"Sync live indisponible ({exc}); fallback fichier dans le dossier de travail.")
         if not prepared:
             prepared = self._prepare_fallback(
                 mapped_tracks=mapped_tracks,
@@ -285,52 +271,17 @@ class TimelineSyncFallbackHelper:
         base_input_idx: int,
         cancel_cb: Callable[[], bool] | None = None,
     ) -> list[SyncPreparedInput]:
-        fallback_dirs = self._dedupe_dirs(
-            ([self._ram_dir] if self._ram_dir is not None else []) + [self._work_dir]
+        # Les pistes peuvent représenter des Go. Un mmap ne borne pas la RAM,
+        # surtout sur tmpfs ; écrire directement dans le workspace choisi.
+        prepared = self._syncer.prepare_from_mapped_tracks(
+            mapped_tracks=mapped_tracks,
+            sources=sources,
+            tmp_dir=self._work_dir,
+            base_input_idx=base_input_idx,
+            cancel_cb=cancel_cb,
         )
-        last_exc: Exception | None = None
-
-        for idx, candidate_dir in enumerate(fallback_dirs):
-            target_label = "RAM" if self._ram_dir is not None and candidate_dir == self._ram_dir else "disque"
-            try:
-                prepared = self._syncer.prepare_from_mapped_tracks_mmap(
-                    mapped_tracks=mapped_tracks,
-                    sources=sources,
-                    tmp_dir=candidate_dir,
-                    base_input_idx=base_input_idx,
-                    cancel_cb=cancel_cb,
-                )
-                self._log(f"Sync fallback memory-mapped utilisé ({target_label}).")
-                return prepared
-            except TaskCancelledError:
-                raise
-            except Exception as mmap_exc:
-                try:
-                    prepared = self._syncer.prepare_from_mapped_tracks(
-                        mapped_tracks=mapped_tracks,
-                        sources=sources,
-                        tmp_dir=candidate_dir,
-                        base_input_idx=base_input_idx,
-                        cancel_cb=cancel_cb,
-                    )
-                    self._log(f"Sync fallback fichier utilisé ({target_label}).")
-                    return prepared
-                except TaskCancelledError:
-                    raise
-                except Exception as file_exc:
-                    last_exc = file_exc
-                    if idx < len(fallback_dirs) - 1:
-                        self._log(
-                            "Sync fallback "
-                            f"{target_label} indisponible (mmap={mmap_exc}; file={file_exc}), "
-                            "tentative suivante."
-                        )
-                        continue
-                    raise
-
-        if last_exc is not None:
-            raise last_exc
-        return []
+        self._log("Sync fallback fichier utilisé (dossier de travail).")
+        return prepared
 
 
 class FfmpegTimelineSync:

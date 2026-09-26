@@ -37,7 +37,9 @@ def needs_strict_interleave(
 
 
 def append_strict_interleave_mux_flags(cmd: list[str]) -> None:
-    cmd.extend(["-max_interleave_delta", "0"])
+    # Microsecondes. Zéro attend chaque flux sans limite : un sous-titre tardif
+    # peut retenir des minutes de vidéo UHD dans la file du muxer.
+    cmd.extend(["-max_interleave_delta", "5000000"])
     cmd.extend(["-max_muxing_queue_size", "9999"])
 
 

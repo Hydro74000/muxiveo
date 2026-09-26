@@ -15,6 +15,7 @@ from core.workflows.common.sync_rewrite import (
 )
 from core.workflows.common.attachments import canonical_attachment_output_name, mime_for_path
 from core.workflows.common.track_types import TimelineMappedTrack
+from core.workflows.common.timeline_sync import append_strict_interleave_mux_flags
 from core.workflows.common.metadata import STREAM_SPEC_BY_TRACK_TYPE as STREAM_SPEC_BY_TYPE
 from core.workflows.remux_attachments import attachment_names, build_attachment_mapping
 from core.workflows.remux_mapping import (
@@ -142,8 +143,7 @@ def build_remux_command(
         cmd.extend(_audio_variant_codec_args(mapped_track))
 
     if needs_strict_interleave:
-        cmd.extend(["-max_interleave_delta", "0"])
-        cmd.extend(["-max_muxing_queue_size", "9999"])
+        append_strict_interleave_mux_flags(cmd)
 
     meta = metadata_context(config, chapter_input_index)
     # Préserver les titres de chapitres et les tags de pistes lorsque seules

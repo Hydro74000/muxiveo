@@ -134,9 +134,7 @@ def _wait_task(signals, timeout: float = 20.0) -> dict[str, object]:
         state["cancelled"] = True
         done["value"] = True
 
-    signals.finished.connect(on_finished, Qt.ConnectionType.QueuedConnection)
-    signals.failed.connect(on_failed, Qt.ConnectionType.QueuedConnection)
-    signals.cancelled.connect(on_cancelled, Qt.ConnectionType.QueuedConnection)
+    signals.connect_terminal(finished=on_finished, failed=on_failed, cancelled=on_cancelled)
 
     deadline = time.monotonic() + timeout
     while not done["value"] and time.monotonic() < deadline:
@@ -277,7 +275,10 @@ class TestRemuxWorkflowBuildCommand:
         assert "0:0" in map_values
         assert "2:0" in map_values
 
-    def test_runtime_sync_rewrite_consumes_audio_offset(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("calibrated,rewrite_enabled,applicable", [
+        (False, True, True), (True, True, True), (True, False, True), (True, True, False),
+    ])
+    def test_runtime_sync_rewrite_consumes_audio_offset(self, tmp_path, monkeypatch, calibrated, rewrite_enabled, applicable):
         src = tmp_path / "in.mkv"
         src.touch()
         cfg = RemuxConfig(
@@ -297,12 +298,19 @@ class TestRemuxWorkflowBuildCommand:
             work_dir=tmp_path,
         )
         captured: dict[str, object] = {}
+        if calibrated:
+            from core.workflows.sync_calibration import SyncCalibration, SyncSegment
+            cfg.sources[0].tracks[1].sync_calibration = SyncCalibration(
+                (SyncSegment(0, 250), SyncSegment(1500, 0))
+            ).to_dict()
 
         class FakeSyncRewriteService:
             def __init__(self, **kwargs):
                 captured["service_kwargs"] = kwargs
 
             def maybe_materialize(self, **kwargs):
+                if not applicable:
+                    return None
                 path = tmp_path / "rewritten.mka"
                 path.write_bytes(b"audio")
                 captured["rewrite_kwargs"] = kwargs
@@ -339,7 +347,7 @@ class TestRemuxWorkflowBuildCommand:
                 apply_muxing_post_action=lambda _path: None,
                 apply_language_post_action=lambda _path: None,
                 write_nfo=lambda _path: None,
-                sync_rewrite_enabled=lambda: True,
+                sync_rewrite_enabled=lambda: rewrite_enabled,
                 sync_advanced_audio_rewrite_enabled=lambda: True,
                 sync_rewrite_audio_bitrates=lambda: {"eac3": 96},
             )
@@ -355,15 +363,23 @@ class TestRemuxWorkflowBuildCommand:
         )
         state = _wait_task(runner.run(cfg, execution_plan))
 
+        if not rewrite_enabled or not applicable:
+            assert state["failed"] is not None
+            assert "multi-segments" in state["failed"][0]
+            assert "mapped_tracks" not in captured
+            return
         assert state["failed"] is None
         assert captured["sync_inputs"]
         mapped_tracks = cast(list, captured["mapped_tracks"])
         rewritten_audio = next(mt for mt in mapped_tracks if mt.track.track_type == "audio")
         assert rewritten_audio.track.time_shift_ms == 0
+        assert rewritten_audio.track.sync_calibration is None
         assert rewritten_audio.stream_index == 0
         assert rewritten_audio.track.sync_rewrite_label == "Sync réelle · audio réencodé"
         rewrite_kwargs = cast(dict, captured["rewrite_kwargs"])
         assert rewrite_kwargs["preserve_source_audio_params"] is True
+        if calibrated:
+            assert len(rewrite_kwargs["calibration"].segments) == 2
         service_kwargs = cast(dict, captured["service_kwargs"])
         assert service_kwargs["advanced_audio_enabled"] is True
 
@@ -798,7 +814,7 @@ class TestRemuxWorkflowBuildCommand:
         )
 
         cmd = wf.build_command(cfg)
-        assert cmd[cmd.index("-max_interleave_delta") + 1] == "0"
+        assert cmd[cmd.index("-max_interleave_delta") + 1] == "5000000"
         assert cmd[cmd.index("-max_muxing_queue_size") + 1] == "9999"
         assert "-fflags" not in cmd
         assert "-copytb" not in cmd
@@ -838,7 +854,7 @@ class TestRemuxWorkflowBuildCommand:
         )
 
         cmd = wf.build_command(cfg, strict_interleave_override=True)
-        assert cmd[cmd.index("-max_interleave_delta") + 1] == "0"
+        assert cmd[cmd.index("-max_interleave_delta") + 1] == "5000000"
         assert cmd[cmd.index("-max_muxing_queue_size") + 1] == "9999"
 
     def test_build_command_multi_source_without_subtitles_keeps_default_interleave(self, tmp_path):
@@ -880,10 +896,10 @@ class TestRemuxWorkflowBuildCommand:
         )
 
         cmd = wf.build_command(cfg)
-        assert cmd[cmd.index("-max_interleave_delta") + 1] == "0"
+        assert cmd[cmd.index("-max_interleave_delta") + 1] == "5000000"
         assert cmd[cmd.index("-max_muxing_queue_size") + 1] == "9999"
 
-    def test_prepare_sync_inputs_windows_prefers_mmap_fallback(self, tmp_path, monkeypatch):
+    def test_prepare_sync_inputs_uses_workspace_when_live_unavailable(self, tmp_path, monkeypatch):
         wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src_a = tmp_path / "a.mkv"
         src_b = tmp_path / "b.mkv"
@@ -909,10 +925,11 @@ class TestRemuxWorkflowBuildCommand:
                 raise LiveSyncNotSupportedError("no live")
 
             def prepare_from_mapped_tracks_mmap(self, **_kwargs):
-                return [SyncPreparedInput(key=(1, 1, "audio"), path=tmp_path / "mmap.mka", input_idx=2)]
+                pytest.fail("unbounded mmap fallback must not run")
 
             def prepare_from_mapped_tracks(self, **_kwargs):
-                pytest.fail("temp fallback should not be used when mmap works")
+                assert _kwargs["tmp_dir"] == tmp_path
+                return [SyncPreparedInput(key=(1, 1, "audio"), path=tmp_path / "mmap.mka", input_idx=2)]
 
         remapped, extra_inputs, live = prepare_timeline_sync_inputs(
             cfg,
@@ -932,7 +949,7 @@ class TestRemuxWorkflowBuildCommand:
         assert audio.source_input_idx == 2
         assert audio.stream_index == 0
 
-    def test_prepare_sync_inputs_windows_falls_back_to_temp_when_mmap_fails(self, tmp_path, monkeypatch):
+    def test_prepare_sync_inputs_works_without_mmap(self, tmp_path, monkeypatch):
         wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
         src_a = tmp_path / "a.mkv"
         src_b = tmp_path / "b.mkv"
@@ -958,7 +975,7 @@ class TestRemuxWorkflowBuildCommand:
                 raise LiveSyncNotSupportedError("no live")
 
             def prepare_from_mapped_tracks_mmap(self, **_kwargs):
-                raise RemuxError("mmap failed")
+                raise AssertionError("mmap must not be attempted")
 
             def prepare_from_mapped_tracks(self, **_kwargs):
                 return [SyncPreparedInput(key=(1, 1, "audio"), path=tmp_path / "temp.mka", input_idx=2)]

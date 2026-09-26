@@ -59,7 +59,6 @@ def prepare_timeline_sync_inputs(
     prepared_result = fallback_helper_factory(
         syncer=syncer,
         work_dir=tmp_dir,
-        ram_dir=fallback_helper_factory.default_ram_dir(),
         log_cb=lambda msg: log_cb("INFO", msg),
     ).prepare(
         mapped_tracks=mapped_tracks,

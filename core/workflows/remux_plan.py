@@ -42,6 +42,7 @@ from core.workflows.remux_mapping import (
     resolve_mapped_tracks,
     track_order_parts,
 )
+from core.workflows.sync_calibration import effective_calibration
 from core.workflows.remux_models import (
     RemuxConfig,
     RemuxError,
@@ -250,6 +251,16 @@ def native_capability_reasons(
             if track.sync_rewrite_label and track.time_shift_ms and config.sync_mode != "physical":
                 reasons.append(
                     f"{source.path.name}: réécriture de synchronisation avancée à matérialiser par FFmpeg"
+                )
+            if (
+                config.sync_mode != "physical"
+                and track.track_type in {"audio", "subtitle"}
+                and effective_calibration(
+                    track.sync_calibration or config.sync_calibrations.get(str(source.file_index))
+                ) is not None
+            ):
+                reasons.append(
+                    f"{source.path.name}: synchronisation multi-segments à matérialiser par FFmpeg"
                 )
         if source.file_index not in participating:
             continue
@@ -917,8 +928,7 @@ def plan_remux(
         raise RemuxError("sync_mode invalide")
     if config.sync_subtitles not in {"mirror", "none"} or not 0 <= config.crossfade_ms <= 1000:
         raise RemuxError("Options de synchronisation invalides")
-    if config.sync_mode == "container" and config.sync_calibrations:
-        raise RemuxError("Les calibrations nécessitent sync_mode=physical")
+    # En mode container, les calibrations sont appliquées par la réécriture sync réelle (remux_runtime).
     from core.workflows.physical_sync import preparation_commands
     for mapped, output, command, calibration in preparation_commands(config, PREVIEW_TEMPORARY_DIR, ffmpeg_bin):
         preparation_actions.append(RemuxPreparationAction(

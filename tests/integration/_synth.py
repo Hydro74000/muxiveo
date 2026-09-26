@@ -188,9 +188,7 @@ def wait_task(signals, timeout: float = 30.0) -> dict:
         state["cancelled"] = True
         done["value"] = True
 
-    signals.finished.connect(on_finished, Qt.ConnectionType.QueuedConnection)
-    signals.failed.connect(on_failed, Qt.ConnectionType.QueuedConnection)
-    signals.cancelled.connect(on_cancelled, Qt.ConnectionType.QueuedConnection)
+    signals.connect_terminal(finished=on_finished, failed=on_failed, cancelled=on_cancelled)
 
     deadline = time.monotonic() + timeout
     while not done["value"] and time.monotonic() < deadline:

@@ -65,7 +65,8 @@ def _assert_statistics(output: Path, *, expected_subtitle_elements: int) -> None
 
 
 @pytest.mark.parametrize("backend", ["auto", "ffmpeg", "native"])
-def test_every_mux_backend_writes_track_statistics(tmp_path: Path, backend: str) -> None:
+@pytest.mark.parametrize("validate", [True, False])
+def test_every_mux_backend_writes_track_statistics(tmp_path: Path, backend: str, validate: bool) -> None:
     src = tmp_path / "src.mkv"
     make_mkv_with_srt(src, duration=2.0)
 
@@ -81,9 +82,12 @@ def test_every_mux_backend_writes_track_statistics(tmp_path: Path, backend: str)
         duration_s=2.0,
         mux_backend=backend,
     )
-    state = wait_task(_workflow().run(cfg), timeout=120.0)
+    # validate=False emprunte la préparation asynchrone utilisée par le GUI.
+    state = wait_task(_workflow().run(cfg, validate=validate), timeout=120.0)
 
     assert state["failed"] is None, state["failed"]
+    assert state["finished"] is not None, state
+    assert not state["cancelled"]
     _assert_statistics(out, expected_subtitle_elements=1)
 
 

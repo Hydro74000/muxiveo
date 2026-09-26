@@ -24,6 +24,10 @@ def workflow(config: AppConfig, options: CommonOptions, logger: Logger) -> Remux
         writing_application=str(options.writing_application or ""),
         generate_nfo=config.generate_nfo if options.nfo is None else bool(options.nfo),
         mediainfo_bin=str(options.mediainfo or config.tool_mediainfo),
+        sync_rewrite_enabled=config.sync_rewrite_enabled,
+        sync_advanced_audio_rewrite_enabled=config.sync_advanced_audio_rewrite_enabled,
+        aac_bitrate_per_channel_kbps=config.aac_bitrate_per_channel_kbps,
+        eac3_bitrate_per_channel_kbps=config.eac3_bitrate_per_channel_kbps,
     )
 
 
@@ -87,9 +91,7 @@ def run_remux_config(
 
     if options.verbose:
         signals.progress.connect(lambda line: logger.emit("info", line))
-    signals.finished.connect(done)
-    signals.failed.connect(failed)
-    signals.cancelled.connect(cancelled)
+    signals.connect_terminal(finished=done, failed=failed, cancelled=cancelled)
 
     stop = threading.Event()
 

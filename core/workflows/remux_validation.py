@@ -9,6 +9,11 @@ from typing import Callable
 
 from core.bluray import validate_bluray_source
 from core.workflows.common.metadata import STREAM_SPEC_BY_TRACK_TYPE
+from core.workflows.common.sync_rewrite import (
+    REWRITE_AUDIO_CODECS, REWRITE_SUBTITLE_CODECS,
+    normalized_rewrite_codec, track_has_object_audio_metadata,
+)
+from core.workflows.sync_calibration import effective_calibration
 from core.workflows.remux_models import RemuxConfig, TrackEntry
 from core.workflows.remux_plan import MuxExecutionPlan, select_mux_backend
 
@@ -171,6 +176,28 @@ def validate_remux_config(
                 "Décalage vidéo négatif interdit : "
                 f"file_index={file_index}, stream={mkv_tid}, offset={selected_track.time_shift_ms} ms"
             )
+        calibration = effective_calibration(
+            selected_track.sync_calibration or config.sync_calibrations.get(str(file_index))
+        )
+        if calibration is not None and selected_track.track_type in {"audio", "subtitle"}:
+            codec = normalized_rewrite_codec(selected_track.orig_codec or selected_track.codec)
+            object_audio = track_has_object_audio_metadata(
+                codec=selected_track.orig_codec or selected_track.codec, title=selected_track.title,
+                display_info=selected_track.orig_display_info or selected_track.display_info,
+            )
+            audio_codecs = REWRITE_AUDIO_CODECS | ({"flac"} if config.sync_mode == "physical" else set())
+            unsupported = (
+                selected_track.track_type == "subtitle" and codec not in REWRITE_SUBTITLE_CODECS
+            ) or (
+                selected_track.track_type == "audio" and (object_audio or codec not in audio_codecs)
+            )
+            if unsupported:
+                errors.append(
+                    "Calibration multi-segments/cadence incompatible avec la piste "
+                    f"{selected_track.title or selected_track.track_type} "
+                    f"(source={file_index}, stream={mkv_tid}, codec={codec}). "
+                    "Retirer cette piste de la sortie, annuler sa calibration ou fournir une variante compatible."
+                )
 
     for extra in config.extra_attachments:
         if not extra.is_file():

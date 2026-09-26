@@ -10,8 +10,22 @@ from __future__ import annotations
 import sys
 
 import pytest
-from PySide6.QtCore import QCoreApplication
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call():
+    """Traite les deleteLater() du test tant que ses fixtures (widgets parents) vivent encore.
+
+    Sans boucle Qt, ces destructions restent en file jusqu'au premier exec()
+    d'un test ultérieur, après le GC des parents : plantage (SIGBUS/SIGSEGV).
+    """
+    try:
+        return (yield)
+    finally:
+        if QCoreApplication.instance() is not None:
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 @pytest.fixture(scope="session")

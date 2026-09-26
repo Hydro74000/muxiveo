@@ -65,7 +65,7 @@ def audio_filter(calibration: SyncCalibration, crossfade_ms=80) -> str:
 
 
 def track_calibration(config, mapped):
-    payload = config.sync_calibrations.get(str(mapped.source_file_index))
+    payload = mapped.track.sync_calibration or config.sync_calibrations.get(str(mapped.source_file_index))
     return SyncCalibration.from_dict(payload) if payload else SyncCalibration.linear(mapped.track.time_shift_ms)
 
 
@@ -80,7 +80,7 @@ def preparation_commands(config, root, ffmpeg):
         track = mapped.track
         if sync_rewrite_forced_offset(track):
             continue
-        calibrated = str(mapped.source_file_index) in config.sync_calibrations
+        calibrated = bool(track.sync_calibration) or str(mapped.source_file_index) in config.sync_calibrations
         mirror_offset = 0
         if track.track_type == "subtitle" and not track.time_shift_ms and not calibrated and config.sync_subtitles == "mirror":
             offsets = {m.track.time_shift_ms for m in mapped_tracks if m.source_file_index == mapped.source_file_index and m.track.track_type == "audio"}
@@ -162,11 +162,10 @@ def prepare_physical(config, root: Path, ffmpeg, run, log=None):
         run(command, "physical-sync")
         if mapped.track.track_type == "subtitle":
             shift_file(output, output, calibration)
-        track = replace(mapped.track, mkv_tid=0, time_shift_ms=0, sync_rewrite_label="", sync_rewrite_mode="", is_new=False, orig_codec=mapped.track.codec)
+        track = replace(mapped.track, mkv_tid=0, time_shift_ms=0, sync_rewrite_label="", sync_rewrite_mode="", sync_calibration=None, is_new=False, orig_codec=mapped.track.codec)
         source_index = max(s.file_index for s in sources) + 1
         sources.append(SourceInput(output, source_index, [track]))
         for index, item in enumerate(order):
             if item[0] == mapped.source_file_index and item[1] == mapped.stream_index and (len(item) < 3 or item[2] == track.entry_id):
                 order[index] = (source_index, 0, track.entry_id)
     return replace(config, sources=sources, track_order=order, sync_mode="container", sync_calibrations={})
-

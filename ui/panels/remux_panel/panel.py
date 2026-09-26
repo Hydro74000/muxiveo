@@ -2342,17 +2342,13 @@ class RemuxPanel(QWidget):
                 "output_name": out_path.name,
             },
         )
-        signals.finished.connect(
-            lambda _=None, p=out_path: self.log_message.emit(
+        signals.connect_terminal(
+            finished=lambda _=None, p=out_path: self.log_message.emit(
                 "OK", translate_text("Sous-titre extrait : {path}", path=str(p)),
             ),
-            Qt.ConnectionType.QueuedConnection,
-        )
-        signals.failed.connect(
-            lambda msg, _exc: self.log_message.emit(
+            failed=lambda msg, _exc: self.log_message.emit(
                 "ERROR", translate_text("Extraction échouée : {msg}", msg=msg),
             ),
-            Qt.ConnectionType.QueuedConnection,
         )
 
     def _copy_command(self) -> None:

@@ -10,6 +10,20 @@ from core.subprocess_utils import subprocess_text_kwargs, subprocess_windows_no_
 from core.workflows.audio_sync import AudioSyncError, AudioSyncTrack
 from core.workflows.sync_calibration import SyncCalibration, SyncSegment
 
+# Marge de pré-roll avant la fenêtre ; le découpage exact précède les filtres
+# de cadence pour conserver les coordonnées temporelles de la source.
+_SEEK_PREROLL_S = 5.0
+
+
+def _seek_args(start: float) -> tuple[list[str], list[str]]:
+    """Retourne les options de seek et les filtres de découpage avant conversion de cadence."""
+    start = max(0.0, float(start))
+    pre = max(0.0, start - _SEEK_PREROLL_S)
+    trim = start - pre
+    return (["-ss", f"{pre:.6f}"] if pre > 0 else []), (
+        [f"atrim=start={trim:.6f}", "asetpts=PTS-STARTPTS"] if trim > 0 else []
+    )
+
 
 class AudioSyncScanner:
     def __init__(self, ffmpeg="ffmpeg", ffprobe="ffprobe", *, window_s=60, max_offset_s=30, cancel_event=None):
@@ -56,8 +70,10 @@ class AudioSyncScanner:
         af = "highpass=f=300,lowpass=f=3000"
         if cadence_filter:
             af = f"{cadence_filter},{af}"
+        seek_in, trim_filters = _seek_args(start)
+        af = ",".join([*trim_filters, af])
         result = self._run([
-            self.ffmpeg, "-v", "error", "-ss", str(max(0, start)), "-i", str(track.source_path),
+            self.ffmpeg, "-v", "error", *seek_in, "-i", str(track.source_path),
             "-map", f"0:{track.stream_index}" if isinstance(track.stream_index, int) else str(track.stream_index),
             "-t", str(duration), "-af", af,
             "-ac", "1", "-ar", "16000", "-f", "f32le", "pipe:1"],
@@ -72,8 +88,10 @@ class AudioSyncScanner:
         af = "lowpass=f=4000"
         if cadence_filter:
             af = f"{cadence_filter},{af}"
+        seek_in, trim_filters = _seek_args(start)
+        af = ",".join([*trim_filters, af])
         result = self._run([
-            self.ffmpeg, "-v", "error", "-ss", str(max(0, start)), "-i", str(track.source_path),
+            self.ffmpeg, "-v", "error", *seek_in, "-i", str(track.source_path),
             "-map", f"0:{track.stream_index}" if isinstance(track.stream_index, int) else str(track.stream_index),
             "-t", str(duration), "-af", af,
             "-ac", "1", "-ar", "16000", "-f", "f32le", "pipe:1"],
@@ -375,4 +393,3 @@ class AudioSyncScanner:
             cadence_audio_method=active_cadence_method,
             cadence_pitch_analysis=pitch_analysis,
         )
-

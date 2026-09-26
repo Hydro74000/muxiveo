@@ -23,11 +23,12 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, Sequence
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QCoreApplication, QObject, Signal, Slot, Qt
 from core.subprocess_utils import decode_subprocess_output, subprocess_windows_no_window_kwargs
 
 
@@ -194,6 +195,22 @@ class CommandError(RuntimeError):
 # TaskSignals — signaux Qt pour une tâche individuelle
 # ---------------------------------------------------------------------------
 
+class _TerminalDispatcher(QObject):
+    """Livre les callbacks différés dans le thread de l'application Qt."""
+
+    ready = Signal()
+
+    def __init__(self, callback: Callable[[], None], app: QCoreApplication) -> None:
+        super().__init__()
+        self._callback = callback
+        self.moveToThread(app.thread())
+        self.ready.connect(self._deliver, Qt.ConnectionType.QueuedConnection)
+
+    @Slot()
+    def _deliver(self) -> None:
+        self._callback()
+
+
 class TaskSignals(QObject):
     """
     Signaux Qt émis par une tâche ToolRunner.
@@ -213,6 +230,8 @@ class TaskSignals(QObject):
 
     Annulation :
         signals.cancel()   — tue le(s) processus actif(s) immédiatement.
+        signals.connect_terminal(...) — reçoit aussi une fin déjà émise
+            (direct=True pour un relais depuis un thread sans boucle Qt).
         Connexion thread-safe recommandée :
             signals.progress.connect(slot, Qt.ConnectionType.QueuedConnection)
     """
@@ -229,6 +248,102 @@ class TaskSignals(QObject):
         self._active_procs: list[subprocess.Popen] = []
         self._procs_lock   = threading.Lock()
         self._retained_callbacks: list[Callable[..., object]] = []
+        self._terminal_lock = threading.Lock()
+        self._terminal_result: tuple[str, tuple] | None = None
+        self._terminal_subscribers: list[dict[str, Callable | None]] = []
+        self._terminal_direct: deque[dict[str, Callable | None]] = deque()
+        self._terminal_dispatching = False
+        app = QCoreApplication.instance()
+        self._terminal_dispatcher = (
+            _TerminalDispatcher(self._deliver_terminal, app) if app is not None else None
+        )
+        # Capture synchrone, indépendante du thread ayant créé TaskSignals.
+        self.finished.connect(self._record_finished, Qt.ConnectionType.DirectConnection)
+        self.failed.connect(self._record_failed, Qt.ConnectionType.DirectConnection)
+        self.cancelled.connect(self._record_cancelled, Qt.ConnectionType.DirectConnection)
+
+    def connect_terminal(self, *, finished=None, failed=None, cancelled=None, direct: bool = False) -> None:
+        """Livre la première fin une seule fois par abonnement, même passée.
+
+        Par défaut, les callbacks sont différés dans le thread de l'application
+        Qt, même si cet objet est créé dans un worker sans boucle d'événements.
+        Sans application Qt à la création de l'objet, le mode direct est utilisé.
+
+        ``direct=True`` : callbacks sérialisés dans le thread émetteur, ou dans
+        le thread d'abonnement si la fin est déjà passée. Un abonnement pendant
+        un callback direct attend son tour sans bloquer le thread appelant.
+        Les callbacks directs (hooks, relais) passent dans l'ordre d'abonnement,
+        avant la notification différée. Brancher les hooks avant de lancer la
+        tâche ; les slots Qt ordinaires ne participent pas à cet ordonnancement.
+        """
+        callbacks = dict(finished=finished, failed=failed, cancelled=cancelled)
+        direct = direct or self._terminal_dispatcher is None
+        with self._terminal_lock:
+            if direct:
+                self._terminal_direct.append(callbacks)
+            else:
+                self._terminal_subscribers.append(callbacks)
+            ready = self._terminal_result is not None and not self._terminal_dispatching
+            if ready and direct:
+                self._terminal_dispatching = True
+        if ready:
+            if direct:
+                self._drain_terminal_direct()
+            else:
+                self._terminal_dispatcher.ready.emit()
+
+    @staticmethod
+    def _invoke_terminal(callbacks: dict[str, Callable | None], result: tuple[str, tuple]) -> None:
+        kind, args = result
+        callback = callbacks[kind]
+        if callback is not None:
+            try:
+                callback(*args)
+            except Exception:
+                # Comme un slot Qt : signaler l'erreur, sans priver les autres
+                # abonnés (notamment le GUI) de la notification de fin.
+                sys.excepthook(*sys.exc_info())
+
+    def _drain_terminal_direct(self) -> None:
+        while True:
+            with self._terminal_lock:
+                if not self._terminal_direct:
+                    self._terminal_dispatching = False
+                    break
+                callbacks = self._terminal_direct.popleft()
+                result = self._terminal_result
+            self._invoke_terminal(callbacks, result)
+        if self._terminal_dispatcher is not None:
+            self._terminal_dispatcher.ready.emit()
+
+    def _record_terminal(self, kind: str, *args) -> None:
+        with self._terminal_lock:
+            if self._terminal_result is not None:
+                return
+            self._terminal_result = (kind, args)
+            self._terminal_dispatching = True
+        self._drain_terminal_direct()
+
+    @Slot(str)
+    def _record_finished(self, result: str) -> None:
+        self._record_terminal("finished", result)
+
+    @Slot(str, object)
+    def _record_failed(self, message: str, exc: object) -> None:
+        self._record_terminal("failed", message, exc)
+
+    @Slot()
+    def _record_cancelled(self) -> None:
+        self._record_terminal("cancelled")
+
+    def _deliver_terminal(self) -> None:
+        with self._terminal_lock:
+            result = self._terminal_result
+            if result is None or self._terminal_dispatching:
+                return
+            subscribers, self._terminal_subscribers = self._terminal_subscribers, []
+        for subscriber in subscribers:
+            self._invoke_terminal(subscriber, result)
 
     def retain_callback(self, callback: Callable[..., object]) -> Callable[..., object]:
         """Conserve un slot Python tant que les signaux de tâche existent."""
@@ -273,14 +388,13 @@ class ToolRunner(QObject):
     """
     Lance des commandes externes, séquentiellement ou en parallèle.
 
-    Chaque appel retourne un objet `TaskSignals` auquel l'appelant peut
-    connecter ses slots avant que la tâche ne démarre.
+    Chaque appel retourne un objet `TaskSignals`. La tâche peut déjà être
+    terminée au retour : `connect_terminal` conserve sa notification de fin.
 
     Usage séquentiel :
         runner = ToolRunner()
         sig = runner.run(["ffmpeg", "-i", "in.mkv", "out.mkv"])
-        sig.finished.connect(on_done)
-        sig.failed.connect(on_error)
+        sig.connect_terminal(finished=on_done, failed=on_error)
 
     Usage parallèle :
         tasks = [
@@ -289,7 +403,7 @@ class ToolRunner(QObject):
         ]
         sig = runner.run_parallel(tasks, label="extraction")
         sig.progress.connect(on_progress)
-        sig.finished.connect(on_done)
+        sig.connect_terminal(finished=on_done)
 
     Notes :
         - Toutes les commandes sont lancées dans des threads secondaires.
@@ -330,7 +444,7 @@ class ToolRunner(QObject):
             on_progress : callback optionnel appelé sur chaque ligne stdout
 
         Returns :
-            TaskSignals — connecter les slots avant que la tâche ne démarre.
+            TaskSignals — utiliser connect_terminal pour recevoir la fin.
         """
         signals = TaskSignals()
         executor = ThreadPoolExecutor(max_workers=1)
@@ -389,7 +503,7 @@ class ToolRunner(QObject):
             label  : préfixe pour les messages de progression
 
         Returns :
-            TaskSignals — connecter les slots avant que la tâche ne démarre.
+            TaskSignals — utiliser connect_terminal pour recevoir la fin.
         """
         signals = TaskSignals()
         executor = ThreadPoolExecutor(max_workers=self._max_workers)

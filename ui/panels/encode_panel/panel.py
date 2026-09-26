@@ -2700,9 +2700,11 @@ class EncodePanel(QWidget):
         self._preview_signals = signals
         signals.progress.connect(self._on_preview_progress, Qt.ConnectionType.QueuedConnection)
         signals.progress_pct.connect(self._on_preview_progress_pct, Qt.ConnectionType.QueuedConnection)
-        signals.finished.connect(self._on_preview_finished, Qt.ConnectionType.QueuedConnection)
-        signals.failed.connect(self._on_preview_failed, Qt.ConnectionType.QueuedConnection)
-        signals.cancelled.connect(self._on_preview_cancelled, Qt.ConnectionType.QueuedConnection)
+        signals.connect_terminal(
+            finished=self._on_preview_finished,
+            failed=self._on_preview_failed,
+            cancelled=self._on_preview_cancelled,
+        )
 
     def _on_cancel_preview(self) -> None:
         if self._preview_signals is not None:

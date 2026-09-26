@@ -42,12 +42,20 @@ class _SignalDescriptor:
 class _QObject:
     def __init__(self, parent=None) -> None:
         self._parent = parent
+        self._thread = threading.current_thread()
+
+    def thread(self):
+        return self._thread
+
+    def moveToThread(self, thread) -> None:
+        self._thread = thread
 
 
-class _QCoreApplication:
+class _QCoreApplication(_QObject):
     _instance = None
 
     def __init__(self, argv=None) -> None:
+        super().__init__()
         _QCoreApplication._instance = self
         type(self)._instance = self
         self.argv = list(argv or [])
@@ -58,6 +66,15 @@ class _QCoreApplication:
 
     def processEvents(self) -> None:
         return None
+
+    @staticmethod
+    def sendPostedEvents(*_args) -> None:
+        return None
+
+
+class _QEvent:
+    class Type:
+        DeferredDelete = 52
 
 
 class _QApplication(_QCoreApplication):
@@ -89,6 +106,7 @@ class _QLocale:
 class _Qt:
     class ConnectionType:
         QueuedConnection = 0
+        DirectConnection = 1
 
     class ItemDataRole:
         UserRole = 256
@@ -144,7 +162,9 @@ def _install_fake_pyside6() -> None:
 
     qtcore.QObject = _QObject
     qtcore.Signal = _SignalDescriptor
+    qtcore.Slot = lambda *_args, **_kwargs: lambda callback: callback
     qtcore.QCoreApplication = _QCoreApplication
+    qtcore.QEvent = _QEvent
     qtcore.QEventLoop = _QEventLoop
     qtcore.QLocale = _QLocale
     qtcore.QSettings = _QSettings

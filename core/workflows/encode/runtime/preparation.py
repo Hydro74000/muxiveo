@@ -8,9 +8,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
+from PySide6.QtCore import Qt
+
 from core.runner import TaskCancelledError, TaskSignals
 from core.workflows.encode.models import EncodeConfig, EncodeError
-from core.workflows.encode.mux_backend import EncodeMuxDecision
+from core.workflows.encode.mux_backend import PIPELINE_FFMPEG_DIRECT, EncodeMuxDecision
 from core.workflows.encode.planning.plan_models import EncodePlan
 
 
@@ -76,10 +78,16 @@ class EncodePreparationRunner:
                 active_inner["signals"] = inner
 
                 if inner is not signals:
-                    inner.progress.connect(signals.progress.emit)
-                    inner.finished.connect(signals.finished.emit)
-                    inner.failed.connect(signals.failed.emit)
-                    inner.cancelled.connect(signals.cancelled.emit)
+                    # Ce thread n'a pas de boucle Qt : une connexion automatique y
+                    # serait différée puis perdue si inner finit pendant qu'il vit.
+                    # Relais direct + rejeu d'une fin déjà émise avant le branchement.
+                    inner.progress.connect(signals.progress.emit, Qt.ConnectionType.DirectConnection)
+                    inner.connect_terminal(
+                        finished=signals.finished.emit,
+                        failed=signals.failed.emit,
+                        cancelled=signals.cancelled.emit,
+                        direct=True,
+                    )
 
                 if signals._cancel_event.is_set() and inner is not signals:
                     inner.cancel()
@@ -195,6 +203,14 @@ class EncodePreparationRunner:
                 f"pipeline={mux_decision.pipeline}",
             )
             diagnostics = mux_decision.diagnostics
+            if mux_decision.pipeline != PIPELINE_FFMPEG_DIRECT and any(
+                getattr(offset, "calibration", None) for offset in prepared_config.track_time_offsets or []
+            ):
+                # Seul le chemin FFmpeg direct matérialise les calibrations (réécriture sync réelle).
+                raise EncodeError(
+                    "Synchronisation multi-segments non prise en charge sur ce pipeline "
+                    f"({mux_decision.pipeline}) : le décalage du 1er segment seul décalerait tout le fichier."
+                )
             if native_mux and diagnostics:
                 # Mode strict : incompatibilité signalée avant l'encodage lourd.
                 raise EncodeError("\n".join(

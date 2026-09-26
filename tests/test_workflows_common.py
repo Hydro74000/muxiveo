@@ -119,7 +119,7 @@ class TestCommonTimelineSync:
     def test_append_strict_interleave_mux_flags(self):
         cmd: list[str] = []
         append_strict_interleave_mux_flags(cmd)
-        assert cmd == ["-max_interleave_delta", "0", "-max_muxing_queue_size", "9999"]
+        assert cmd == ["-max_interleave_delta", "5000000", "-max_muxing_queue_size", "9999"]
 
     def test_append_sync_inputs_uses_formats_and_sync_cleanup_paths_returns_paths(self, tmp_path):
         sync_path = tmp_path / "sync.mka"
