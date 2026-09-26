@@ -13,7 +13,10 @@ from dataclasses import asdict, dataclass
 import math
 from typing import Any
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    np = None  # type: ignore[assignment]
 
 from core.workflows.cadence import CadenceMismatch
 
@@ -54,6 +57,8 @@ class CadencePitchAnalysis:
 
 def compute_welch_psd(x: np.ndarray, sr: int, nperseg: int = 2048) -> np.ndarray:
     """Densité spectrale de puissance moyenne (Welch) en pur NumPy."""
+    if np is None:
+        raise ImportError("numpy est requis pour l'analyse spectrale Welch.")
     if len(x) < 256:
         return np.array([], dtype=float)
     seg_len = min(len(x), nperseg)
@@ -80,6 +85,8 @@ def extract_f0_candidates(
     max_f0: float = 400.0,
 ) -> list[float]:
     """Extrait les fréquences fondamentales candidates F0 par autocorrélation temporelle."""
+    if np is None:
+        raise ImportError("numpy est requis pour l'extraction de fréquence fondamentale.")
     if len(x) < frame_size:
         return []
     min_lag = max(1, int(sr / max_f0))
@@ -115,6 +122,8 @@ def analyze_cadence_pitch(
     mismatch: CadenceMismatch | None = None,
 ) -> CadencePitchAnalysis:
     """Analyse acoustique comparant les hypothèses 'asetrate' et 'atempo' contre la référence."""
+    if np is None:
+        raise ImportError("numpy est requis pour l'analyse acoustique de pitch.")
     n = min(len(ref_samples), len(donor_ase_samples), len(donor_ate_samples))
     if n < sr:  # moins de 1 seconde d'audio
         return CadencePitchAnalysis(
