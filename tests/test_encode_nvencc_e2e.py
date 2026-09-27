@@ -71,12 +71,14 @@ NVENCC_BIN: str = NVENCC or "nvencc"
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _generate_test_mkv(path: Path, duration: float = 1.0) -> None:
-    """Génère un MKV de test (testsrc 240p, sans audio) via ffmpeg."""
+def _generate_test_mkv(
+    path: Path, duration: float = 1.0, *, pix_fmt: str = "yuv420p", fps: str = "25",
+) -> None:
+    """Génère un MKV 240p sans audio, à la cadence et profondeur demandées."""
     cmd = [
         FFMPEG_BIN, "-y", "-hide_banner", "-loglevel", "error",
-        "-f", "lavfi", "-i", f"testsrc=duration={duration}:size=320x240:rate=25",
-        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        "-f", "lavfi", "-i", f"testsrc=duration={duration}:size=320x240:rate={fps}",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", pix_fmt,
         str(path),
     ]
     subprocess.run(cmd, check=True, capture_output=True)
@@ -105,7 +107,7 @@ def _run_nvencc_pipeline(commands: list[list[str]]) -> tuple[int, str]:
         p1.stdout.close()
 
     try:
-        _p2_out, p2_err = p2.communicate()
+        _p2_out, p2_err = p2.communicate(timeout=60)
         p1_err = p1.stderr.read() if p1.stderr is not None else b""
         p1.wait()
     finally:
@@ -154,6 +156,36 @@ def _ffprobe_video_codec(path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 class TestNvenccPipelineE2E:
+    @pytest.mark.parametrize("pix_fmt,fps,frames", [
+        ("yuv420p", "25", 25),
+        ("yuv420p10le", "24000/1001", 24),
+    ])
+    def test_pipe_preserves_dimensions_depth_rate_and_frames(self, tmp_path, pix_fmt, fps, frames):
+        import json
+
+        src, out = tmp_path / "src.mkv", tmp_path / "out.mkv"
+        _generate_test_mkv(src, pix_fmt=pix_fmt, fps=fps)
+        commands = build_nvencc_pipeline(
+            ffmpeg_bin=FFMPEG_BIN, nvencc_bin=NVENCC_BIN,
+            video=VideoEncodeSettings(codec="nvencc_hevc", force_10bit=pix_fmt == "yuv420p10le"),
+            source=src, output=out, intermediate=nvencc_intermediate_path(tmp_path, "nvencc_hevc"),
+        )
+        rc, err = _run_nvencc_pipeline(commands)
+        assert rc == 0, err
+        probe = subprocess.run([
+            "ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames",
+            "-show_streams", "-of", "json", str(out),
+        ], capture_output=True, text=True, check=True, timeout=30)
+        stream = json.loads(probe.stdout)["streams"][0]
+        assert (stream["width"], stream["height"]) == (320, 240)
+        assert stream["pix_fmt"] == pix_fmt
+        assert stream["r_frame_rate"] == ("25/1" if fps == "25" else fps)
+        assert int(stream["nb_read_frames"]) == frames
+        decoded = subprocess.run([
+            FFMPEG_BIN, "-v", "error", "-xerror", "-i", str(out), "-f", "null", "-",
+        ], capture_output=True, text=True, timeout=30)
+        assert decoded.returncode == 0, decoded.stderr
+
     def test_hevc_pipeline_produces_valid_mkv(self, tmp_path: Path):
         # 1. Source synthétique
         src = tmp_path / "src.mkv"

@@ -10,7 +10,7 @@ Public:
     detect_nvencc_available(nvencc_bin) — (available, supported_codecs)
 
     build_decode_pipe_cmd(...)    — phase 1 : ffmpeg → yuv4mpegpipe sur stdout
-    build_nvencc_command(...)     — phase 2 : NVEncC --y4m -i - → bitstream brut
+    build_nvencc_command(...)     — phase 2 : NVEncC lit le pipe Y4M → vidéo encodée
     build_remux_cmd(...)          — phase 3 : ffmpeg remux audio/subs/chapters
     build_nvencc_pipeline(...)    — agrégateur retournant les 3 commandes
 
@@ -701,7 +701,15 @@ def build_nvencc_command(
 
     cmd: list[str] = [str(nvencc_bin), "-c", codec_flag]
     if input_path is None:
-        cmd.extend(["--y4m", "-i", "-"])
+        if sys.platform != "win32":
+            # NVEncC 9.16/9.19 : hors Windows, la couche POSIX rigaya mappe
+            # strtok_s sur strtok (non ré-entrant) dans le parseur Y4M natif,
+            # alors que l'initialisation est parallèle.
+            # Le lecteur libavformat évite les dimensions/fps intermittents
+            # corrompus, en lisant le même en-tête Y4M (sans valeur inventée).
+            cmd.extend(["--avsw", "--input-format", "yuv4mpegpipe", "-i", "-"])
+        else:
+            cmd.extend(["--y4m", "-i", "-"])
     else:
         if input_reader in {"avhw", "avsw"}:
             cmd.append(f"--{input_reader}")

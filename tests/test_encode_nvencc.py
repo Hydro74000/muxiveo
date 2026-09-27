@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -298,7 +299,7 @@ class TestBuildNvenccCommand:
             i = cmd.index("-c")
             assert cmd[i + 1] == flag
             # stdin pipe attendu
-            assert "--y4m" in cmd
+            assert ("--avsw" if sys.platform != "win32" else "--y4m") in cmd
             i_in = cmd.index("-i")
             assert cmd[i_in + 1] == "-"
 
@@ -306,6 +307,23 @@ class TestBuildNvenccCommand:
         v = _video(codec="hevc_nvenc")  # codec ffmpeg, pas NVEncC
         with pytest.raises(ValueError):
             build_nvencc_command("/usr/bin/NVEncC", v, "/tmp/out.bin")
+
+    @pytest.mark.parametrize("platform", ["linux", "win32", "darwin"])
+    def test_pipe_reader_platform_and_direct_input(self, monkeypatch, platform):
+        monkeypatch.setattr("core.workflows.encode.runtime.nvencc.sys.platform", platform)
+        cmd = build_nvencc_command("nvencc", _video(), "/out.mkv")
+        if platform != "win32":
+            assert "--y4m" not in cmd
+            assert "--avsw" in cmd
+            assert cmd[cmd.index("--input-format") + 1] == "yuv4mpegpipe"
+        else:
+            assert "--y4m" in cmd
+            assert "--input-format" not in cmd
+        direct = build_nvencc_command(
+            "nvencc", _video(), "/out.mkv", input_path="/source.mkv", input_reader="avhw",
+        )
+        assert "--avhw" in direct
+        assert "--avsw" not in direct and "--input-format" not in direct
 
     def test_crf_mode_emits_cqp_triplet(self):
         v = _video(quality_mode=QualityMode.CRF, crf=20)
@@ -757,7 +775,7 @@ class TestBuildNvenccPipeline:
         assert "deblock=" in vf
         assert "chromanr=" in vf
         assert "scale=trunc(iw*75/100/2)*2" in vf
-        assert "--y4m" in encode
+        assert ("--avsw" if sys.platform != "win32" else "--y4m") in encode
         assert encode[encode.index("-i") + 1] == "-"
         assert "--output-res" not in encode
         assert "--vpp-resize" not in encode
