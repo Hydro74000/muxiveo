@@ -32,6 +32,11 @@ def match_window(reference, donor, start: int, size: int, max_offset: int) -> An
     b = np.asarray(donor[left:right], dtype=float)
     if len(a) < size or len(b) < size or size < 500:
         raise AudioSyncError("Fenêtre audio insuffisante.")
+    # Une fenêtre surtout silencieuse (début/fin d'épisode) corrèle sur quelques
+    # secondes seulement et produit des ancres parasites : exiger ≥ 50 % d'activité.
+    blocks = np.abs(a[:size // 100 * 100]).reshape(-1, 100).mean(axis=1)
+    if np.count_nonzero(blocks > 1e-4) * 2 < len(blocks):
+        raise AudioSyncError("Fenêtre audio majoritairement silencieuse.")
     a = a - a.mean()
     power = float(a @ a)
     if power < 1e-12:

@@ -4778,5 +4778,21 @@
   "Vérification des mises à jour impossible : {reason}": {
     "fra": "Vérification des mises à jour impossible : {reason}",
     "eng": "Update check failed: {reason}"
+  },
+  "Aller à un instant précis (affiche ±10 s autour)": {
+    "fra": "Aller à un instant précis (affiche ±10 s autour)",
+    "eng": "Go to a specific time (shows ±10 s around it)"
+  },
+  "Aller": {
+    "fra": "Aller",
+    "eng": "Go"
+  },
+  "Instant invalide (format attendu : hh:mm:ss.mmm).": {
+    "fra": "Instant invalide (format attendu : hh:mm:ss.mmm).",
+    "eng": "Invalid time (expected format: hh:mm:ss.mmm)."
+  },
+  "Position {ts} — segment {current}/{total}": {
+    "fra": "Position {ts} — segment {current}/{total}",
+    "eng": "Position {ts} — segment {current}/{total}"
   }
 }

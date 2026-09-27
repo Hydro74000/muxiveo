@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QRadioButton,
     QScrollBar,
     QTableWidget,
@@ -44,6 +45,26 @@ from ui.panels.remux_panel.theme import (
     _table_style,
 )
 from ui.widgets.waveform_view import WaveformView
+
+# Demi-fenêtre affichée autour d'un instant saisi manuellement (20 s au total).
+_GOTO_HALF_WINDOW_S = 10.0
+
+
+def _parse_timestamp_ms(text: str) -> float | None:
+    """Convertit « hh:mm:ss.mmm », « mm:ss » ou « ss.s » en millisecondes."""
+    parts = text.strip().replace(",", ".").split(":")
+    if not parts or len(parts) > 3 or not all(parts):
+        return None
+    try:
+        values = [float(part) for part in parts]
+    except ValueError:
+        return None
+    if any(v < 0 for v in values) or any(v >= 60 for v in values[1:]):
+        return None
+    seconds = 0.0
+    for value in values:
+        seconds = seconds * 60 + value
+    return seconds * 1000.0
 
 
 class SyncStudioDialog(QDialog):
@@ -99,6 +120,7 @@ class SyncStudioDialog(QDialog):
         self._current_segment_index: int = 0
         self._current_start_s: float = 0.0
         self._current_cut_ms: float | None = None
+        # Cache des extraits audio, indexé par position de début (ms).
         self._audio_cache: dict[int, tuple[object, object]] = {}
 
         # Données de sous-titres
@@ -297,6 +319,19 @@ class SyncStudioDialog(QDialog):
             self.btn_prev_seg = None
             self.btn_next_seg = None
 
+        # Navigation libre vers un instant arbitraire (±10 s autour)
+        self.goto_edit = QLineEdit(self)
+        self.goto_edit.setStyleSheet(_input_style())
+        self.goto_edit.setPlaceholderText("hh:mm:ss")
+        self.goto_edit.setFixedWidth(_scale(100))
+        self.goto_edit.setToolTip(translate_text("Aller à un instant précis (affiche ±10 s autour)"))
+        self.goto_edit.returnPressed.connect(self._goto_timestamp)
+        wave_header.addWidget(self.goto_edit)
+
+        self.btn_goto = _secondary_button(translate_text("Aller"), padding_h=8)
+        self.btn_goto.clicked.connect(self._goto_timestamp)
+        wave_header.addWidget(self.btn_goto)
+
         wave_header.addStretch()
 
         # Barre d'outils de Zoom
@@ -482,18 +517,11 @@ class SyncStudioDialog(QDialog):
 
         vbox.addLayout(btn_bar)
 
-    def _select_segment(self, idx: int) -> None:
+    def _activate_segment(self, idx: int) -> None:
+        """Rend le segment `idx` éditable (spin, navigation, tableau)."""
         total = len(self.current_calibration.segments)
-        if idx < 0 or idx >= total:
-            return
         self._current_segment_index = idx
         seg = self.current_calibration.segments[idx]
-
-        ts = SyncCalibration.format_timestamp(seg.start_ms)
-        pos_label = translate_text("Départ ({ts})", ts=ts) if idx == 0 else translate_text("Coupure à {ts}", ts=ts)
-        self.seg_indicator.setText(
-            translate_text("Segment {current}/{total} — {pos}", current=idx + 1, total=total, pos=pos_label)
-        )
         if self.btn_prev_seg is not None:
             self.btn_prev_seg.setEnabled(idx > 0)
         if self.btn_next_seg is not None:
@@ -509,6 +537,19 @@ class SyncStudioDialog(QDialog):
             self.cuts_table.selectRow(idx)
             self.cuts_table.blockSignals(False)
 
+    def _select_segment(self, idx: int) -> None:
+        total = len(self.current_calibration.segments)
+        if idx < 0 or idx >= total:
+            return
+        self._activate_segment(idx)
+        seg = self.current_calibration.segments[idx]
+
+        ts = SyncCalibration.format_timestamp(seg.start_ms)
+        pos_label = translate_text("Départ ({ts})", ts=ts) if idx == 0 else translate_text("Coupure à {ts}", ts=ts)
+        self.seg_indicator.setText(
+            translate_text("Segment {current}/{total} — {pos}", current=idx + 1, total=total, pos=pos_label)
+        )
+
         if idx == 0:
             start_s = 0.0
             cut_ms = None
@@ -519,6 +560,35 @@ class SyncStudioDialog(QDialog):
         self._current_start_s = start_s
         self._current_cut_ms = cut_ms
 
+        self._load_segment_audio_async(idx, start_s, cut_ms)
+
+    def _goto_timestamp(self) -> None:
+        """Affiche 20 s centrées sur l'instant saisi, hors sections identifiées."""
+        target_ms = _parse_timestamp_ms(self.goto_edit.text())
+        if target_ms is None:
+            self.listen_status.setText(translate_text("Instant invalide (format attendu : hh:mm:ss.mmm)."))
+            return
+        self._stop_playback()
+        segments = self.current_calibration.segments
+        idx = max(i for i, s in enumerate(segments) if i == 0 or s.start_ms <= target_ms)
+        self._activate_segment(idx)
+
+        start_s = max(0.0, target_ms / 1000.0 - _GOTO_HALF_WINDOW_S)
+        window_end_ms = start_s * 1000.0 + 2 * _GOTO_HALF_WINDOW_S * 1000.0
+        cuts = [s.start_ms for s in segments[1:] if start_s * 1000.0 <= s.start_ms <= window_end_ms]
+        cut_ms = min(cuts, key=lambda c: abs(c - target_ms)) if cuts else None
+
+        self.seg_indicator.setText(
+            translate_text(
+                "Position {ts} — segment {current}/{total}",
+                ts=SyncCalibration.format_timestamp(target_ms),
+                current=idx + 1,
+                total=len(segments),
+            )
+        )
+        self.listen_status.setText("")
+        self._current_start_s = start_s
+        self._current_cut_ms = cut_ms
         self._load_segment_audio_async(idx, start_s, cut_ms)
 
     def _prev_segment(self) -> None:
@@ -614,8 +684,9 @@ class SyncStudioDialog(QDialog):
         self._update_cuts_table()
 
     def _load_segment_audio_async(self, idx: int, start_s: float, cut_ms: float | None) -> None:
-        if idx in self._audio_cache:
-            ref_samples, tgt_samples = self._audio_cache[idx]
+        key = round(start_s * 1000.0)
+        if key in self._audio_cache:
+            ref_samples, tgt_samples = self._audio_cache[key]
             self._apply_audio_to_waveform(idx, ref_samples, tgt_samples, start_s, cut_ms)
             return
 
@@ -665,7 +736,7 @@ class SyncStudioDialog(QDialog):
                     tgt_track = AudioSyncTrack(self.target_source_path, self.target_stream_index)
                     tgt_samples = scanner.samples(tgt_track, start_s, 20.0)
 
-                self._segment_audio_ready.emit(idx, ref_samples, tgt_samples, start_s, cut_ms)
+                self._segment_audio_ready.emit(key, ref_samples, tgt_samples, start_s, cut_ms)
             except Exception as exc:
                 self._waveform_loading.emit(f"Aperçu non disponible : {exc}")
 
@@ -754,12 +825,15 @@ class SyncStudioDialog(QDialog):
             return
         self.waveform.set_loading(text)
 
-    def _on_segment_audio_ready(self, idx: int, ref_samples, tgt_samples, start_s: float, cut_ms: float | None) -> None:
+    def _on_segment_audio_ready(self, key: int, ref_samples, tgt_samples, start_s: float, cut_ms: float | None) -> None:
         if getattr(self, "_closing", False):
             return
-        self._audio_cache[idx] = (ref_samples, tgt_samples)
-        if self._current_segment_index == idx:
-            self._apply_audio_to_waveform(idx, ref_samples, tgt_samples, start_s, cut_ms)
+        self._audio_cache[key] = (ref_samples, tgt_samples)
+        # Ignorer un extrait obsolète si l'utilisateur a déjà navigué ailleurs.
+        if round(self._current_start_s * 1000.0) == key and self._current_cut_ms == cut_ms:
+            self._apply_audio_to_waveform(
+                self._current_segment_index, ref_samples, tgt_samples, start_s, cut_ms
+            )
 
     def _apply_audio_to_waveform(self, idx: int, ref_samples, tgt_samples, start_s: float, cut_ms: float | None) -> None:
         if getattr(self, "_closing", False):

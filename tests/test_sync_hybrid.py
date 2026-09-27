@@ -344,6 +344,40 @@ def test_sync_studio_dialog_construction_and_spin_change(qt_app, tmp_path):
     dialog.close()
 
 
+def test_sync_studio_goto_timestamp_loads_window_around_time(qt_app, tmp_path, monkeypatch):
+    from ui.panels.remux_panel.widgets import sync_studio_dialog as mod
+    loads = []
+    monkeypatch.setattr(mod.SyncStudioDialog, "_load_segment_audio_async",
+                        lambda self, idx, start_s, cut_ms: loads.append((idx, start_s, cut_ms)))
+    assert mod._parse_timestamp_ms("00:04:05.5") == 245500.0
+    assert mod._parse_timestamp_ms("4:05") == 245000.0
+    assert mod._parse_timestamp_ms("12,5") == 12500.0
+    assert mod._parse_timestamp_ms("1:75") is None
+    assert mod._parse_timestamp_ms("abc") is None
+
+    target_track = TrackEntry(1, "audio", "E-AC-3", "5.1", "fre", "VFF", time_shift_ms=-67, file_id="src1")
+    dialog = mod.SyncStudioDialog(
+        target_entry=target_track, target_source_path=tmp_path / "t.mkv", target_stream_index=1,
+        reference_entry=None, reference_source_path=tmp_path / "r.mkv", reference_stream_index=1,
+        calibration=calibration((0, -67), (239738, -180)).to_dict(),
+    )
+    dialog.goto_edit.setText("00:04:05")
+    dialog._goto_timestamp()
+    assert loads[-1] == (1, 235.0, 239738)
+    assert dialog._current_segment_index == 1
+    assert dialog.spin_shift.value() == -180.0
+
+    dialog.goto_edit.setText("00:01:00")
+    dialog._goto_timestamp()
+    assert loads[-1] == (0, 50.0, None)
+    assert dialog._current_segment_index == 0
+
+    dialog.goto_edit.setText("5")
+    dialog._goto_timestamp()
+    assert loads[-1] == (0, 0.0, None)
+    dialog.close()
+
+
 def test_profile_selector_lists_and_picks_profiles(qt_app, tmp_path):
     from ui.panels.hybrid_studio import ProfileSelector
     from core.profiles.decision import DecisionProfileManager
