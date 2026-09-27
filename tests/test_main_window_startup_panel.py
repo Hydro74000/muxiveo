@@ -284,7 +284,7 @@ def test_window_geometry_fits_small_screen(qt_app) -> None:
     """Sur 1280×720 (barre des tâches déduite) la fenêtre ne dépasse plus la zone utile."""
     from PySide6.QtCore import QRect
 
-    window = MainWindow.__new__(MainWindow)
+    window = MainWindow.__new__(MainWindow)  # pylint: disable=no-value-for-parameter
     screen = MagicMock()
     screen.availableGeometry.return_value = QRect(0, 0, 1280, 672)
     super(MainWindow, window).__init__()
