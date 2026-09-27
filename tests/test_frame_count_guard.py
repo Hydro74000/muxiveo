@@ -62,7 +62,9 @@ class TestFrameCountGuardAudit:
         with patch("subprocess.run") as run:
             run.side_effect = [
                 _make_completed(stdout="3\n"),         # mediainfo source
+                _make_completed(stdout="{}"),          # ffprobe durée/cadence (plausibilité)
                 _make_completed(stdout="3\n"),         # mediainfo encoded
+                _make_completed(stdout="{}"),          # ffprobe durée/cadence (plausibilité)
                 _make_completed(stdout="Frames: 3\n"), # dovi_tool info
             ]
             audit = guard.audit(
@@ -72,6 +74,68 @@ class TestFrameCountGuardAudit:
                 hdr10p_json=hdr,
             )
         assert audit == FrameCountAudit(source=3, encoded=3, rpu=3, hdr10p=3)
+
+    def test_audit_ignores_stale_matroska_statistics(self, tmp_path):
+        """mediainfo annonce 288 frames pour 4,2 s à 23,976 fps : comptage ffprobe."""
+        guard = FrameCountGuard()
+        probe = json.dumps({"streams": [{"avg_frame_rate": "24000/1001"}], "format": {"duration": "4.212"}})
+        with patch("subprocess.run") as run:
+            run.side_effect = [
+                _make_completed(stdout="288\n"),   # mediainfo source (tags périmés)
+                _make_completed(stdout=probe),     # ffprobe durée/cadence
+                _make_completed(stdout="\n"),      # ffprobe nb_frames (absent en MKV)
+                _make_completed(stdout="98\n"),    # ffprobe count_packets
+                _make_completed(stdout="98\n"),    # mediainfo encoded
+                _make_completed(stdout="{}"),      # HEVC brut : durée absente
+            ]
+            audit = guard.audit(source=tmp_path / "src.mkv", encoded=tmp_path / "enc.hevc",
+                                rpu_bin=None, hdr10p_json=None)
+        assert audit.source == 98 and audit.encoded == 98
+
+    @pytest.mark.parametrize("duration", ["39.96", None])
+    def test_audit_recounts_small_mismatch_even_when_statistics_look_plausible(self, tmp_path, duration):
+        source, encoded = tmp_path / "src.mkv", tmp_path / "enc.hevc"
+
+        def run(cmd, **_kwargs):
+            if "--Inform=Video;%FrameCount%" in cmd:
+                return _make_completed(stdout="1000" if cmd[-1] == str(source) else "999")
+            if "-count_packets" in cmd:
+                return _make_completed(stdout="999")
+            return _make_completed(stdout=json.dumps({
+                "streams": [{"avg_frame_rate": "25/1"}], "format": {"duration": duration},
+            }))
+
+        guard = FrameCountGuard()
+        with patch("subprocess.run", side_effect=run):
+            audit = guard.audit(source=source, encoded=encoded)
+        assert audit.source == audit.encoded == 999
+        assert guard.enforce(audit) == audit
+
+    @pytest.mark.parametrize("counted", [(1000, 999), (None, None)])
+    def test_audit_does_not_hide_real_frame_loss_or_failed_recount(self, tmp_path, counted):
+        guard = FrameCountGuard()
+        with patch.object(guard, "_read_video_frame_count", side_effect=[1000, 999]), \
+             patch.object(guard, "_ffprobe_count_packets", side_effect=counted), \
+             patch.object(guard, "_ffprobe_count_frames", return_value=None):
+            audit = guard.audit(source=tmp_path / "src.mkv", encoded=tmp_path / "enc.hevc")
+        with pytest.raises(FrameCountAuditError, match="non frame-preserving"):
+            guard.enforce(audit)
+
+    def test_failed_recount_with_partial_stdout_does_not_hide_frame_loss(self, tmp_path):
+        guard = FrameCountGuard()
+        partial = _make_completed(stdout="999\n", stderr="read error", returncode=1)
+        with patch.object(guard, "_read_video_frame_count", side_effect=[1000, 999]), \
+             patch("subprocess.run", return_value=partial):
+            audit = guard.audit(source=tmp_path / "src.mkv", encoded=tmp_path / "enc.hevc")
+        assert (audit.source, audit.encoded) == (1000, 999)
+        with pytest.raises(FrameCountAuditError, match="non frame-preserving"):
+            guard.enforce(audit)
+
+    @pytest.mark.parametrize("reader", ["_mediainfo_frame_count", "_ffprobe_nb_frames", "_ffprobe_count_frames"])
+    def test_count_readers_reject_failed_processes(self, tmp_path, reader):
+        guard = FrameCountGuard()
+        with patch("subprocess.run", return_value=_make_completed(stdout="999", returncode=1)):
+            assert getattr(guard, reader)(tmp_path / "damaged.mkv") is None
 
     def test_audit_falls_back_to_ffprobe_nb_frames(self, tmp_path):
         guard = FrameCountGuard()
@@ -99,13 +163,15 @@ class TestFrameCountGuardAudit:
         # (typique d'un HEVC brut sans index) → on tombe sur count_packets.
         responses = [
             _make_completed(stdout="1000\n"),   # mediainfo source
+            _make_completed(stdout="{}"),      # ffprobe durée/cadence source
             _make_completed(stdout="\n"),       # mediainfo encoded (vide)
             _make_completed(stdout="N/A\n"),    # ffprobe nb_frames encoded
             _make_completed(stdout="1000\n"),   # ffprobe count_packets encoded
         ]
-        with patch("subprocess.run", side_effect=responses):
+        with patch("subprocess.run", side_effect=responses) as run:
             audit = guard.audit(source=tmp_path / "a", encoded=tmp_path / "b")
         assert audit.source == 1000 and audit.encoded == 1000
+        assert "-count_packets" in run.call_args.args[0]
 
     def test_audit_handles_all_readers_missing(self, tmp_path):
         guard = FrameCountGuard()
@@ -119,7 +185,9 @@ class TestFrameCountGuardAudit:
         with patch("subprocess.run") as run:
             run.side_effect = [
                 _make_completed(stdout="100\n"),
+                _make_completed(stdout="{}"),
                 _make_completed(stdout="100\n"),
+                _make_completed(stdout="{}"),
             ]
             audit = guard.audit(
                 source=tmp_path / "src.mkv",

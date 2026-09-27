@@ -465,3 +465,25 @@ def test_cli_remux_headless_runs_and_refuses_existing_output(tmp_path: Path) -> 
 
     forced = _run_cli(root, "remux", "-i", str(src), "-o", str(out), "--no-nfo", "--force")
     assert forced.returncode == 0, forced.stderr
+
+
+def test_cli_batch_output_dir_overrides_template_output(tmp_path: Path) -> None:
+    """`--output-dir` prime sur la sortie héritée du template en mode `--batch`."""
+    root = Path(__file__).resolve().parents[2]
+    sources = [tmp_path / "a.mkv", tmp_path / "b.mkv"]
+    for src in sources:
+        make_av_container(src, duration=0.3)
+    out_dir = tmp_path / "out"
+    template = tmp_path / "template.json"
+    template.write_text(json.dumps({"version": 1, "kind": "exact-job", "sources": [{"path": str(sources[0])}],
+                                    "output": "x.mkv"}), encoding="utf-8")
+    batch = tmp_path / "batch.json"
+    batch.write_text(json.dumps({"inputs": [str(src) for src in sources]}), encoding="utf-8")
+    summary = tmp_path / "summary.json"
+
+    result = _run_cli(root, "batch", "--template", str(template), "--batch", str(batch),
+                      "--output-dir", str(out_dir), "--dry-run", "--summary", str(summary))
+
+    assert result.returncode == 0, result.stderr
+    outputs = [job["output"] for job in json.loads(summary.read_text(encoding="utf-8"))["jobs"]]
+    assert outputs == [str(out_dir / "a.mkv"), str(out_dir / "b.mkv")]

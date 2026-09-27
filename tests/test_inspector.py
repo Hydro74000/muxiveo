@@ -1109,3 +1109,16 @@ class TestMkvTrackDataFromFfprobe:
         tag_count, lang_map = inspector._extract_mkv_track_data_from_raw({})
         assert tag_count == 0
         assert lang_map == {}
+
+
+def test_detect_hdr_uses_mediainfo_transfer_when_container_lacks_colour():
+    """MKV sans éléments Colour : ffprobe « unknown », mediainfo « PQ » (VUI) → HDR10."""
+    from core.inspector import FileInspector, HDRType
+
+    raw = {"streams": [{"codec_type": "video", "color_transfer": "unknown", "side_data_list": []}]}
+    inspector = FileInspector()
+    mi_video = {"@type": "Video", "HDR_Format": "SMPTE ST 2086", "transfer_characteristics": "PQ"}
+    assert inspector._detect_hdr_from_raw(Path("x.mkv"), raw, mi_video=mi_video) == HDRType.HDR10
+    mi_video = {"@type": "Video", "transfer_characteristics": "HLG"}
+    assert inspector._detect_hdr_from_raw(Path("x.mkv"), raw, mi_video=mi_video) == HDRType.HLG
+    assert inspector._detect_hdr_from_raw(Path("x.mkv"), raw, mi_video={"@type": "Video", "HDR_Format": ""}) == HDRType.NONE

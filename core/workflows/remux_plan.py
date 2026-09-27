@@ -24,6 +24,7 @@ from core.workflows.common.attachments import (
     canonical_attachment_output_name,
     sanitize_filename,
 )
+from core.workflows.common.metadata import matroska_video_tag_args
 from core.workflows.common.sync_rewrite import (
     audio_bitrate_kbps_from_display_info,
     normalized_rewrite_codec,
@@ -383,6 +384,9 @@ def build_canonicalization_command(
         ]
     command.extend(["-c", "copy"])
     codec_by_tid = {track.mkv_tid: track.codec for track in source.tracks}
+    video_tids = [track.mkv_tid for track in source.tracks if track.track_type == "video"]
+    mapped_video = video_tids if selected_streams is None else [tid for tid in selected_streams if tid in video_tids]
+    command.extend(matroska_video_tag_args([codec_by_tid.get(tid, "") for tid in mapped_video]))
     seen_tids: set[int] = set()
     subtitle_index = 0
     for tid in subtitle_tids:

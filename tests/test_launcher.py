@@ -234,3 +234,15 @@ class TestLauncherMacOSFirstInstall:
         assert rc == launcher.SETUP_RC_ERROR
         assert not (tmp_path / "config.ini").exists()
         popup.assert_called_once_with()
+
+
+def test_cli_executable_routes_to_cli_without_flag(monkeypatch):
+    """``Muxiveo-cli.exe`` (entrée console Windows) démarre le CLI sans ``--cli``."""
+    import launcher
+
+    monkeypatch.setattr(launcher.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(launcher.sys, "executable", r"C:\\Program Files\\Muxiveo\\Muxiveo-cli.exe")
+    monkeypatch.setattr(launcher.sys, "argv", ["Muxiveo-cli.exe", "version"])
+    assert launcher._is_cli_invocation()
+    monkeypatch.setattr(launcher.sys, "executable", r"C:\\Program Files\\Muxiveo\\Muxiveo.exe")
+    assert not launcher._is_cli_invocation()

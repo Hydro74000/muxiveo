@@ -112,6 +112,8 @@ _MSIX_STORE_CONFIG = os.environ.get("MUXIVEO_MSIX_STORE_CONFIG", "").strip()
 _WINDOWS_SDK_WINGET_ID = os.environ.get("MUXIVEO_WINDOWS_SDK_WINGET_ID", "Microsoft.WindowsSDK").strip() or "Microsoft.WindowsSDK"
 _WINDOWS_SDK_INSTALLER = os.environ.get("MUXIVEO_WINDOWS_SDK_INSTALLER", "").strip()
 _WINDOWS_EXE_NAME = f"{APP_NAME}.exe"
+# Entrée console (sous-système CUI) : sortie et code retour visibles depuis cmd/PowerShell.
+_WINDOWS_CLI_EXE_NAME = f"{APP_NAME}-cli.exe"
 # Exception MSIX : nom technique distinct du branding/artefacts classiques.
 _MSIX_PACKAGE_NAME = re.sub(
     r"\s+",
@@ -151,11 +153,27 @@ def _rename_windows_executable(exe_path: Path) -> Path:
         return exe_path
 
     target = exe_path.with_name(_WINDOWS_EXE_NAME)
+    if exe_path.name.lower() == target.name.lower():
+        # NTFS insensible à la casse : renommage via un nom temporaire.
+        temp = exe_path.with_name(f".{target.name}.casefix")
+        exe_path.rename(temp)
+        temp.rename(target)
+        _ok(f"Exécutable Windows renommé : {target.name}")
+        return target
     if target.exists() or target.is_symlink():
         target.unlink()
     exe_path.rename(target)
     _ok(f"Exécutable Windows renommé : {target.name}")
     return target
+
+
+def _on_disk_name(path: Path) -> Path:
+    """Retourne le chemin avec la casse réelle du fichier (FS insensible à la casse)."""
+    try:
+        wanted = path.name.lower()
+        return next(p for p in path.parent.iterdir() if p.name.lower() == wanted)
+    except (OSError, StopIteration):
+        return path
 
 
 def _resolve_windows_pyinstaller_executable(onefile: bool) -> Path:
@@ -177,7 +195,7 @@ def _resolve_windows_pyinstaller_executable(onefile: bool) -> Path:
 
     for candidate in direct_candidates:
         if candidate.is_file():
-            return candidate
+            return _on_disk_name(candidate)
 
     if search_dir.is_dir():
         executables = sorted(
@@ -286,7 +304,43 @@ def _ensure_windows_bundle_entrypoint(bundle_dir: Path) -> Path:
             is_same = False
         if not is_same:
             legacy_exe.unlink()
+    if exe_path.is_file():
+        _write_windows_console_entrypoint(exe_path, bundle_dir / _WINDOWS_CLI_EXE_NAME)
     return exe_path
+
+
+# Offsets PE : e_lfanew (DOS), puis signature (4) + COFF (20) + Subsystem (68).
+_PE_HEADER_OFFSET_POS = 0x3C
+_PE_SUBSYSTEM_OFFSET = 4 + 20 + 68
+_PE_SUBSYSTEM_GUI = 2
+_PE_SUBSYSTEM_CONSOLE = 3
+
+
+def _write_windows_console_entrypoint(gui_exe: Path, cli_exe: Path) -> Path:
+    """
+    Crée ``Muxiveo-cli.exe`` : copie de l'exécutable GUI dont le champ PE
+    *Subsystem* passe de GUI à console (équivalent ``editbin /SUBSYSTEM:CONSOLE``).
+
+    Le bootloader et l'archive PyInstaller sont identiques et partagent
+    ``_internal`` ; seul le lancement change : cmd/PowerShell attendent la fin,
+    affichent stdout/stderr et récupèrent le code retour. ``launcher.py`` route
+    un exécutable ``*-cli`` vers le CLI sans exiger ``--cli``.
+    """
+    shutil.copy2(gui_exe, cli_exe)
+    with cli_exe.open("r+b") as fh:
+        fh.seek(_PE_HEADER_OFFSET_POS)
+        pe_offset = struct.unpack("<I", fh.read(4))[0]
+        fh.seek(pe_offset)
+        if fh.read(4) != b"PE\0\0":
+            raise RuntimeError(f"En-tête PE invalide : {gui_exe}")
+        fh.seek(pe_offset + _PE_SUBSYSTEM_OFFSET)
+        subsystem = struct.unpack("<H", fh.read(2))[0]
+        if subsystem not in (_PE_SUBSYSTEM_GUI, _PE_SUBSYSTEM_CONSOLE):
+            raise RuntimeError(f"Sous-système PE inattendu ({subsystem}) : {gui_exe}")
+        fh.seek(pe_offset + _PE_SUBSYSTEM_OFFSET)
+        fh.write(struct.pack("<H", _PE_SUBSYSTEM_CONSOLE))
+    _ok(f"Entrée console Windows créée : {cli_exe.name}")
+    return cli_exe
 
 
 def _ensure_unix_bundle_entrypoints(bundle_dir: Path) -> Path:

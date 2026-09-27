@@ -1892,7 +1892,7 @@ class EncodeWorkflow(QObject):
             except Exception as exc:
                 signals.failed.emit(str(exc), exc)
 
-        executor.submit(_task)
+        signals.watch_future(executor.submit(_task))
         executor.shutdown(wait=False)
         return signals
 
@@ -2758,7 +2758,7 @@ class EncodeWorkflow(QObject):
             _task()
             return signals
         executor = ThreadPoolExecutor(max_workers=1)
-        executor.submit(_task)
+        signals.watch_future(executor.submit(_task))
         executor.shutdown(wait=False)
         return signals
 

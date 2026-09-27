@@ -932,7 +932,7 @@ class MetadataInjectRunner:
 
         if prep_signals is None:
             assert executor is not None
-            executor.submit(_task)
+            signals.watch_future(executor.submit(_task))
             executor.shutdown(wait=False)
         else:
             _task()

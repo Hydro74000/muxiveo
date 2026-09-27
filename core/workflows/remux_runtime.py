@@ -363,7 +363,7 @@ class RemuxRuntimeRunner:
                 cb.log("INFO", "$ " + " ".join(str(c) for c in cmd))
 
                 cb.log_step(8, "Exécution du remux ffmpeg (candidat atomique)")
-                output = cb.run_cmd(
+                cb.run_cmd(
                     cmd,
                     cwd,
                     "ffmpeg-remux",
@@ -421,14 +421,18 @@ class RemuxRuntimeRunner:
                     cb.write_nfo(run_config.output)
                 except Exception as nfo_exc:
                     cb.log("WARN", f"Génération NFO échouée après commit : {nfo_exc}")
-                signals.finished.emit(output)
+                # Même contrat que le backend natif : le chemin produit (le
+                # journal ffmpeg est déjà diffusé via `progress`).
+                signals.finished.emit(str(run_config.output))
             except TaskCancelledError:
+                # Nettoyage tolérant : une OSError ici (fichier verrouillé, nom
+                # invalide sous Windows) priverait l'appelant du signal terminal.
                 if candidate is not None:
-                    candidate.unlink(missing_ok=True)
+                    remove_path(candidate)
                 signals.cancelled.emit()
             except Exception as exc:
                 if candidate is not None:
-                    candidate.unlink(missing_ok=True)
+                    remove_path(candidate)
                 signals.failed.emit(str(exc), exc)
             finally:
                 if live_sync_session is not None:
@@ -446,6 +450,6 @@ class RemuxRuntimeRunner:
                     except OSError:
                         pass
 
-        executor.submit(_task)
+        signals.watch_future(executor.submit(_task))
         executor.shutdown(wait=False)
         return signals

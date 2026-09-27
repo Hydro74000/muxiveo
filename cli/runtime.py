@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 
-from PySide6.QtCore import QEventLoop
+from PySide6.QtCore import QCoreApplication, QEventLoop
 
 from core.config import AppConfig
 from core.workflows.remux import RemuxWorkflow
@@ -105,4 +105,9 @@ def run_remux_config(
         loop.exec()
     finally:
         stop.set()
+        # Les slots de nettoyage (work_dir) sont postés après l'événement de
+        # fin qui quitte la boucle : sans ce vidage, le dispatcher Windows peut
+        # sortir avant de les traiter et laisser des dossiers résiduels.
+        QCoreApplication.sendPostedEvents()
+        QCoreApplication.processEvents()
     return state_exit["value"]

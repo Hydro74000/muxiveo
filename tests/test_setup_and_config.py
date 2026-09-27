@@ -1355,3 +1355,20 @@ def test_setup_install_github_tools_creates_prefix_bin_with_sudo(tmp_path):
 
     commands = [call.args[0] for call in mock_run.call_args_list]
     assert ["sudo", "mkdir", "-p", str(prefix / "bin")] in commands
+
+
+def test_setup_tools_keys_inserted_before_next_section_comment_header(tmp_path):
+    """Les clés outils restent dans [tools], avant l'en-tête commenté de [hdr]."""
+    import setup as setup_mod
+
+    ini = tmp_path / "config.ini"
+    ini.write_text(
+        "[tools]\n\n# ffmpeg = ffmpeg\n\n\n# ----\n# [hdr] — Doc\n# ----\n[hdr]\n# dovi_profile = 8\n",
+        encoding="utf-8",
+    )
+    setup_mod._update_ini_tools_section(ini, {"ffmpeg": "/opt/ffmpeg"})
+    setup_mod._update_ini_tools_section(ini, {"mediainfo": "/opt/mediainfo"})
+
+    lines = ini.read_text(encoding="utf-8").splitlines()
+    assert lines[:5] == ["[tools]", "", "# ffmpeg = ffmpeg", "ffmpeg = /opt/ffmpeg", "mediainfo = /opt/mediainfo"]
+    assert lines.index("# [hdr] — Doc") > lines.index("mediainfo = /opt/mediainfo")

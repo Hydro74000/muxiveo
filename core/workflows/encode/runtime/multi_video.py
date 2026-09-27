@@ -629,6 +629,6 @@ class MultiVideoPipelineRunner:
             return signals
 
         assert executor is not None
-        executor.submit(_run_pipeline)
+        signals.watch_future(executor.submit(_run_pipeline))
         executor.shutdown(wait=False)
         return signals

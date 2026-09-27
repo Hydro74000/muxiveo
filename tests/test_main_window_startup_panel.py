@@ -278,3 +278,18 @@ def test_verbose_log_resume_prefers_latest_filename_not_latest_mtime(tmp_path) -
     assert logger.session_path() == newer_name
     assert logger.session_stamp == "20260423-181000"
     assert logger.file_index == 2
+
+
+def test_window_geometry_fits_small_screen(qt_app) -> None:
+    """Sur 1280×720 (barre des tâches déduite) la fenêtre ne dépasse plus la zone utile."""
+    from PySide6.QtCore import QRect
+
+    window = MainWindow.__new__(MainWindow)
+    screen = MagicMock()
+    screen.availableGeometry.return_value = QRect(0, 0, 1280, 672)
+    from PySide6.QtWidgets import QMainWindow
+    QMainWindow.__init__(window)
+    with patch("ui.main_window.QGuiApplication.primaryScreen", return_value=screen):
+        MainWindow._setup_window(window)
+    assert window.minimumHeight() <= 672 - 40 and window.height() <= 672 - 40
+    assert window.minimumWidth() == 1024 and window.width() == 1280

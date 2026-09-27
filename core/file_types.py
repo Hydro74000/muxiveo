@@ -6,7 +6,9 @@ streams élémentaires, pistes audio, sous-titres, playlists Blu-ray.
 
 from __future__ import annotations
 
-from pathlib import Path
+import re
+import sys
+from pathlib import Path, PurePath
 
 
 # (titre, extensions séparées par espace)
@@ -166,3 +168,57 @@ def is_accepted(path: str | Path, video_only: bool = False) -> bool:
     if video_only:
         return suffix in VIDEO_CONTAINER_EXTENSIONS
     return suffix in ACCEPTED_EXTENSIONS
+
+
+# Caractères interdits dans un nom de fichier Windows (NTFS/FAT) + noms réservés.
+_WINDOWS_FORBIDDEN_NAME_CHARS = re.compile(r'[<>:"|?*\x00-\x1f]')
+_WINDOWS_RESERVED_STEMS = frozenset(
+    {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+)
+
+
+def windows_filename_error(name: str, *, platform: str | None = None) -> str | None:
+    """Retourne un message si ``name`` n'est pas un nom de fichier Windows valide."""
+    if (platform or sys.platform) != "win32":
+        return None
+    bad = sorted(set(_WINDOWS_FORBIDDEN_NAME_CHARS.findall(name)))
+    if bad:
+        shown = " ".join(repr(c) if ord(c) < 32 else c for c in bad)
+        return f"Nom de sortie invalide sous Windows (caractères interdits : {shown}) : {name}"
+    if name.rstrip(" .") != name:
+        return f"Nom de sortie invalide sous Windows (espace ou point final) : {name}"
+    if name.split(".", 1)[0].strip().lower() in _WINDOWS_RESERVED_STEMS:
+        return f"Nom de sortie réservé par Windows : {name}"
+    return None
+
+
+_WINDOWS_MAX_PATH = 260
+
+
+def _windows_long_paths_enabled() -> bool:
+    """Lit ``LongPathsEnabled`` (registre) ; False si indisponible."""
+    try:
+        import winreg  # type: ignore[import-not-found]
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem") as key:
+            return bool(winreg.QueryValueEx(key, "LongPathsEnabled")[0])
+    except (ImportError, OSError):
+        return False
+
+
+def windows_path_length_error(path: PurePath, *, platform: str | None = None, long_paths: bool | None = None) -> str | None:
+    """Message si ``path`` dépasse MAX_PATH sous Windows sans chemins longs activés."""
+    if (platform or sys.platform) != "win32" or len(str(path)) < _WINDOWS_MAX_PATH:
+        return None
+    # Le namespace étendu (lecteur local ou UNC) contourne MAX_PATH sans
+    # dépendre de l'option système LongPathsEnabled.
+    if str(path).startswith("\\\\?\\"):
+        return None
+    if long_paths is None:
+        long_paths = _windows_long_paths_enabled()
+    if long_paths:
+        return None
+    return (
+        f"Chemin de sortie trop long ({len(str(path))} caractères, limite Windows {_WINDOWS_MAX_PATH - 1}) : "
+        f"raccourcissez-le ou activez les chemins longs (LongPathsEnabled). {path}"
+    )

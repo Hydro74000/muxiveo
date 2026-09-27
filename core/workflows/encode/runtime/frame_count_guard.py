@@ -28,14 +28,14 @@ veut pas en dépendre exclusivement. Cascade utilisée :
   1. mediainfo --Inform="Video;%FrameCount%"   (instantané si dispo)
   2. ffprobe -show_streams nb_frames           (instantané si déclaré dans
                                                 le conteneur, ex MP4)
-  3. ffprobe -count_packets -show_streams      (rapide pour MKV indexé,
+  3. ffprobe -count_packets -show_streams      (lecture des paquets sans décodage,
                                                 équivalent au nb de frames
                                                 pour HEVC vidéo)
   4. ffprobe -count_frames                     (lent — dernier recours,
                                                 décode tout le stream)
 
-Le coût de #4 sur un long-métrage est non négligeable (~30 s à 1 min sur
-SSD), donc on ne l'active que si #1-3 ont échoué.
+Les étapes #3 et #4 parcourent le média entier ; #4 décode aussi la vidéo.
+Si les comptes rapides divergent, on repart de #3 avant de refuser l'encodage.
 """
 
 from __future__ import annotations
@@ -47,6 +47,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from core.frame_count import ffprobe_packet_count, frame_count_is_plausible, probe_duration_and_fps
 from core.subprocess_utils import subprocess_text_kwargs
 
 
@@ -150,9 +151,18 @@ class FrameCountGuard:
         rpu_bin: Path | None = None,
         hdr10p_json: Path | None = None,
     ) -> FrameCountAudit:
+        source_count = self._read_video_frame_count(source)
+        encoded_count = self._read_video_frame_count(encoded)
+        if source_count is not None and encoded_count is not None and source_count != encoded_count:
+            # Une estimation durée × cadence n'est pas une preuve exacte : une
+            # coupe d'une image, une durée audio plus longue ou une durée absente
+            # peuvent laisser passer des statistiques périmées. Recompter les
+            # deux vidéos avant de conclure à une perte d'images à l'encodage.
+            source_count = self._recount_video_frames(source) or source_count
+            encoded_count = self._recount_video_frames(encoded) or encoded_count
         return FrameCountAudit(
-            source=self._read_video_frame_count(source),
-            encoded=self._read_video_frame_count(encoded),
+            source=source_count,
+            encoded=encoded_count,
             rpu=self._dovi_rpu_frame_count(rpu_bin) if rpu_bin else None,
             hdr10p=self._hdr10p_json_frame_count(hdr10p_json) if hdr10p_json else None,
         )
@@ -263,6 +273,14 @@ class FrameCountGuard:
     # Lecteurs de frame count
     # ------------------------------------------------------------------
 
+    def _recount_video_frames(self, path: Path) -> int | None:
+        """Recompte sans utiliser les statistiques des en-têtes."""
+        for reader in (self._ffprobe_count_packets, self._ffprobe_count_frames):
+            count = reader(path)
+            if count is not None and count > 0:
+                return count
+        return None
+
     def _read_video_frame_count(self, path: Path) -> int | None:
         """
         Cascade : mediainfo → ffprobe nb_frames → ffprobe count_packets →
@@ -290,9 +308,15 @@ class FrameCountGuard:
             )
         except (FileNotFoundError, OSError):
             return None
+        if result.returncode != 0:
+            return None
         raw = (result.stdout or "").strip()
         if re.fullmatch(r"\d+", raw):
-            return int(raw)
+            count = int(raw)
+            # Tags de statistiques Matroska périmés (fichier coupé/remuxé) :
+            # valeur écartée, la cascade passe au comptage ffprobe.
+            duration, fps = probe_duration_and_fps(self._ffprobe, path)
+            return count if frame_count_is_plausible(count, duration, fps) else None
         return None
 
     def _ffprobe_nb_frames(self, path: Path) -> int | None:
@@ -316,6 +340,8 @@ class FrameCountGuard:
             )
         except (FileNotFoundError, OSError):
             return None
+        if result.returncode != 0:
+            return None
         raw = (result.stdout or "").strip()
         if re.fullmatch(r"\d+", raw):
             return int(raw)
@@ -323,42 +349,17 @@ class FrameCountGuard:
 
     def _ffprobe_count_packets(self, path: Path) -> int | None:
         """
-        ``-count_packets`` lit l'index du conteneur (Cues côté MKV, sample
-        table côté MP4) sans décoder. Pour un stream HEVC vidéo, 1 packet
-        = 1 access unit = 1 frame. Rapide (quelques secondes pour un
-        long-métrage 4K) et fiable tant que le conteneur a un index.
-
-        Pour un HEVC brut (.hevc annexB), le démuxeur compte les access
-        units en parsant les NAL — c'est encore plus rapide qu'un décode
-        complet.
+        Parcourt les paquets sans décoder (pas uniquement l'index).
+        Pour HEVC, un paquet correspond à une access unit, donc une image.
+        Le lecteur partagé rejette un compte partiel si ffprobe échoue.
         """
-        try:
-            result = subprocess.run(
-                [
-                    self._ffprobe, "-v", "error",
-                    "-select_streams", "v:0",
-                    "-count_packets",
-                    "-show_entries", "stream=nb_read_packets",
-                    "-of", "default=noprint_wrappers=1:nokey=1",
-                    str(path),
-                ],
-                capture_output=True,
-                check=False,
-                **subprocess_text_kwargs(),
-            )
-        except (FileNotFoundError, OSError):
-            return None
-        raw = (result.stdout or "").strip()
-        if re.fullmatch(r"\d+", raw):
-            return int(raw)
-        return None
+        return ffprobe_packet_count(self._ffprobe, path)
 
     def _ffprobe_count_frames(self, path: Path) -> int | None:
         """
         Dernier recours : ``-count_frames`` décode tout le stream. Lent (du
-        même ordre que l'encode lui-même) mais infaillible. Activé seulement
-        si les méthodes plus rapides ont toutes échoué (cas exotique :
-        conteneur sans index, source corrompue, format inhabituel).
+        même ordre que l'encode lui-même). Activé seulement si les méthodes
+        plus rapides ont échoué. Un échec du processus invalide aussi le compte.
         """
         try:
             result = subprocess.run(
@@ -375,6 +376,8 @@ class FrameCountGuard:
                 **subprocess_text_kwargs(),
             )
         except (FileNotFoundError, OSError):
+            return None
+        if result.returncode != 0:
             return None
         raw = (result.stdout or "").strip()
         if re.fullmatch(r"\d+", raw):

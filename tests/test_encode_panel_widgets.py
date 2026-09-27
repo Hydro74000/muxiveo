@@ -1305,7 +1305,10 @@ class TestEncodePanelDynamicHdrDefaults:
         entry.entry_id = "video-copy-transforms"
         panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0)]), entry, _COLOR)])
 
-        expected = (
+        from core.i18n import translate_text
+
+        # Attendu dans la langue active (config utilisateur éventuellement non française).
+        expected = translate_text(
             "Options indisponibles en mode Copy. Choisissez un codec d'encodage "
             "dans l'onglet Video pour activer la géométrie et les filtres."
         )

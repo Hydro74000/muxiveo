@@ -72,3 +72,16 @@ def subprocess_text_kwargs() -> dict[str, Any]:
 def decode_subprocess_output(raw: bytes) -> str:
     """Décode un buffer brut provenant d'un outil externe."""
     return raw.decode(_TOOL_TEXT_ENCODING, errors=_TOOL_TEXT_ERRORS)
+
+
+def format_returncode(returncode: int | None) -> str:
+    """
+    Code de retour lisible : sous Windows, les codes > 2^31 (NTSTATUS, AVERROR
+    FFmpeg) sont remis en entier signé et complétés de leur forme hexadécimale.
+    """
+    if returncode is None:
+        return "?"
+    code = int(returncode)
+    if 0x7FFFFFFF < code <= 0xFFFFFFFF:
+        return f"{code - 0x100000000} / 0x{code:08X}"
+    return str(code)

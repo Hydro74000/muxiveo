@@ -538,14 +538,23 @@ def _video_source_from_name(source_path: Path) -> str:
     return ""
 
 
+_DRIVE_COMPONENT_RE = re.compile(r"^[A-Za-z]:$")
+# Caractères interdits dans un composant de chemin (hors séparateurs).
+_FORBIDDEN_COMPONENT_CHARS = re.compile(r"[:*?\"<>|]")
+
+
 def _clean_rendered_template(value: str) -> str:
     parts = re.split(r"([/\\])", str(value or ""))
     cleaned_parts: list[str] = []
-    for part in parts:
+    for index, part in enumerate(parts):
         if part in {"/", "\\"}:
             cleaned_parts.append(part)
             continue
-        cleaned_parts.append(_clean_path_component(part))
+        if index == 0 and _DRIVE_COMPONENT_RE.match(part):
+            cleaned_parts.append(part)
+            continue
+        # Littéraux du template : mêmes règles que les tokens (portabilité Windows).
+        cleaned_parts.append(_clean_path_component(_FORBIDDEN_COMPONENT_CHARS.sub(".", part)))
     return "".join(cleaned_parts).strip()
 
 

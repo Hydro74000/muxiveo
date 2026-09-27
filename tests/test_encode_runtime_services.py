@@ -123,3 +123,32 @@ def test_attachment_preparation_service_materializes_all_selected_attachments(tm
         (src, 6, Path(cleanup_dir) / "font.ttf"),
     ]
     assert (Path(cleanup_dir) / "cover.png").exists()
+
+
+def test_extract_attachment_data_uses_dump_attachment_and_rejects_empty(tmp_path):
+    """``-f data`` produit un fichier vide (payload en extradata) : dump_attachment requis."""
+    import pytest as _pytest
+
+    from core.workflows.encode.models import EncodeError
+    from core.workflows.encode.runtime.attachment_preparation import extract_attachment_data
+
+    dest = tmp_path / "font.ttf"
+    commands: list[list[str]] = []
+
+    def run_cmd(cmd, _label, _signals):
+        commands.append(cmd)
+        dest.write_bytes(b"TTF")
+
+    extract_attachment_data(
+        tmp_path / "src.mkv", 5, dest, ffmpeg_bin="ffmpeg", ffmpeg_thread_args=lambda: [],
+        check_cancelled=lambda _s: None, log_info=lambda _m: None, run_cmd=run_cmd,
+    )
+    assert commands[0][3:5] == ["-dump_attachment:5", str(dest)]
+    assert "data" not in commands[0]
+
+    with _pytest.raises(EncodeError, match="vide"):
+        extract_attachment_data(
+            tmp_path / "src.mkv", 5, dest, ffmpeg_bin="ffmpeg", ffmpeg_thread_args=lambda: [],
+            check_cancelled=lambda _s: None, log_info=lambda _m: None,
+            run_cmd=lambda cmd, _l, _s: dest.write_bytes(b""),
+        )

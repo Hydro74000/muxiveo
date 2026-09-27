@@ -361,6 +361,10 @@ def resolve_final_output(
         base_dir = str(job.get("_batch_output_dir") or "").strip()
         if base_dir:
             return Path(base_dir).expanduser() / rendered_path
+        # `-o dossier` + template relatif : le dossier sert de base (sinon cwd).
+        raw_output = str(job.get("output") or "").strip()
+        if raw_output and (raw_output.endswith(("/", "\\")) or Path(raw_output).expanduser().is_dir()):
+            return Path(raw_output).expanduser() / rendered_path
         return rendered_path.expanduser()
     raw = job.get("output")
     if raw:

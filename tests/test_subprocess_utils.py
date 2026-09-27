@@ -39,3 +39,12 @@ def test_subprocess_windows_no_window_kwargs_off_windows_only_devnull():
 
 def test_decode_subprocess_output_reads_utf8_text():
     assert decode_subprocess_output("Français".encode("utf-8")) == "Français"
+
+
+def test_format_returncode_signs_windows_unsigned_codes():
+    from core.subprocess_utils import format_returncode
+
+    assert format_returncode(3199971767) == "-1094995529 / 0xBEBBB1B7"
+    assert format_returncode(1) == "1"
+    assert format_returncode(-9) == "-9"
+    assert format_returncode(None) == "?"

@@ -246,10 +246,9 @@ class AudioSyncScanner:
         positions = np.linspace(0, max_pos, 6)
         samples = []
 
-        for position in positions:
-            if self.cancel_event is not None and self.cancel_event.is_set():
-                raise AudioSyncError("Analyse annulée.")
-            measured = None
+        method_proven_by_fallback = False
+
+        def _measure_around(position: float, cadence_filter: str | None):
             for nudge in (0, -4.0, 4.0, -8.0, 8.0):
                 p = position + nudge
                 if p < 0 or p + window > duration:
@@ -260,13 +259,32 @@ class AudioSyncScanner:
                         donor,
                         float(p),
                         window,
-                        cadence_filter=filter_str,
+                        cadence_filter=cadence_filter,
                         speed_factor=speed_factor,
                     )
-                    measured = (p, off, conf)
-                    break
+                    return p, off, conf
                 except AudioSyncError:
                     continue
+            return None
+
+        for position in positions:
+            if self.cancel_event is not None and self.cancel_event.is_set():
+                raise AudioSyncError("Analyse annulée.")
+            measured = _measure_around(position, filter_str)
+            if (
+                measured is None and is_auto_method and not samples and pitch_analysis is None
+                and filter_str is not None and cadence_mismatch is not None
+            ):
+                # Mode auto : la mesure initiale suppose atempo (hauteur préservée).
+                # Un donneur accéléré sans correction de hauteur ne corrèle qu'avec
+                # asetrate : retenter avant d'abandonner.
+                alternative = "asetrate" if active_cadence_method == "atempo" else "atempo"
+                alt_filter = build_cadence_audio_filter(cadence_mismatch, alternative)
+                measured = _measure_around(position, alt_filter)
+                if measured is not None:
+                    active_cadence_method, filter_str = alternative, alt_filter
+                    method_proven_by_fallback = True
+                    log(f"Cadence : corrélation obtenue avec la méthode '{alternative}' (repli automatique).")
             if measured is None:
                 raise AudioSyncError("Corrélation acoustique insuffisante sur la fenêtre d'analyse.")
             p, offset, confidence = measured
@@ -276,7 +294,11 @@ class AudioSyncScanner:
             # Analyse acoustique de hauteur tonale (sélection auto asetrate vs atempo) au 1er point mesuré
             if is_auto_method and pitch_analysis is None and cadence_mismatch and getattr(cadence_mismatch, "cadence_type", None) not in (None, "none"):
                 pitch_analysis = self._analyze_cadence_pitch(reference, donor, p, offset, cadence_mismatch)
-                if pitch_analysis is not None:
+                if pitch_analysis is not None and method_proven_by_fallback and pitch_analysis.selected_method != active_cadence_method:
+                    # La corrélation mesurée prime sur l'heuristique spectrale/F0.
+                    log(f"Analyse acoustique de cadence : '{pitch_analysis.selected_method}' suggérée mais seule "
+                        f"'{active_cadence_method}' corrèle — conservée.")
+                elif pitch_analysis is not None:
                     active_cadence_method = pitch_analysis.selected_method
                     filter_str = build_cadence_audio_filter(cadence_mismatch, active_cadence_method)
                     log(f"Analyse acoustique de cadence : méthode '{pitch_analysis.selected_method}' sélectionnée — {pitch_analysis.details}")

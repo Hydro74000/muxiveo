@@ -198,6 +198,30 @@ def test_studio_constructs(qt_app):
     dialog.close()
 
 
+def test_studio_witness_table_lists_typed_tracks(qt_app):
+    """Le tableau témoin lit video/audio/subtitle_tracks de FileInfo (pas d'attribut `streams`)."""
+    from types import SimpleNamespace
+
+    from core.config import AppConfig
+    from ui.panels.hybrid_studio import HybridStudio
+
+    def track(codec, lang, title=""):
+        return SimpleNamespace(codec=codec, language=lang, title=title)
+
+    master = SimpleNamespace(video_tracks=[track("hevc", "und")], audio_tracks=[track("truehd", "eng")], subtitle_tracks=[])
+    donor = SimpleNamespace(video_tracks=[], audio_tracks=[track("ac3", "fre", "VFF")], subtitle_tracks=[track("subrip", "fre")])
+    dialog = HybridStudio(AppConfig())
+    dialog._populate_witness_table([("Master", "master", master), ("Donneur", "donor", donor)])
+
+    assert dialog.witness_table.rowCount() == 4
+    assert [item["type"] for item in dialog.witness_track_items] == ["video", "audio", "audio", "subtitle"]
+    assert dialog.witness_table.item(2, 4).text() == "ac3 VFF"
+    assert dialog.apply_recipe_btn.isEnabled()
+    dialog.apply_witness_recipe()
+    assert dialog.recipe.keep_master_video and dialog.recipe.donor_audio_langs == ["fre"]
+    dialog.close()
+
+
 def test_sync_calibration_summary_and_cuts_count():
     from core.workflows.sync_calibration import format_calibration_summary
 

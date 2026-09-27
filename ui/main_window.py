@@ -47,7 +47,7 @@ from typing import Callable, TYPE_CHECKING, cast
 
 from PySide6.QtCore import QEvent, QObject, Qt, Signal, QTimer, QUrl
 from PySide6.QtGui import (
-    QColor, QDesktopServices, QFont, QTextCharFormat, QTextCursor,
+    QColor, QDesktopServices, QFont, QGuiApplication, QTextCharFormat, QTextCursor,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -231,6 +231,8 @@ def _is_ffmpeg_info_noise(line: str) -> bool:
     sont laissées passer au LogPanel pour visibilité utilisateur).
     """
     return any(line.startswith(prefix) for prefix in _FFMPEG_INFO_PREFIXES)
+# Hauteur réservée au cadre/titre de fenêtre dans la zone utile de l'écran.
+_WINDOW_FRAME_MARGIN_PX = 40
 _STEP_PROGRESS_RE = re.compile(r"^STEP\s+\d+\s*-\s*(.+)$")
 _ENCODE_INTERNAL_PROGRESS_PREFIX = "__MRE_PROGRESS__ "
 _MULTI_ENCODE_LABEL_RE = re.compile(r"^ffmpeg-video-(\d+)(?:-pass(\d+))?$")
@@ -1483,8 +1485,17 @@ class MainWindow(QMainWindow):
 
     def _setup_window(self) -> None:
         self.setWindowTitle("Muxiveo")
-        self.setMinimumSize(1024, 680)
-        self.resize(1280, 800)
+        # Bornée à la zone utile de l'écran (barre des tâches déduite, marge de
+        # cadre) : sur 1280×720 la fenêtre 1280×800 débordait sous la barre des tâches.
+        min_w, min_h, init_w, init_h = 1024, 680, 1280, 800
+        screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            max_w, max_h = avail.width(), avail.height() - _WINDOW_FRAME_MARGIN_PX
+            min_w, min_h = min(min_w, max_w), min(min_h, max_h)
+            init_w, init_h = min(init_w, max_w), min(init_h, max_h)
+        self.setMinimumSize(min_w, min_h)
+        self.resize(init_w, init_h)
 
         # Fond global
         self.setStyleSheet(f"""

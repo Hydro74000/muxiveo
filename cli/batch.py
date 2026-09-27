@@ -327,7 +327,10 @@ def run_batch(
             status="started",
         )
         try:
-            if "output" not in job and "output_template" not in job and output_dir:
+            # `--output-dir` prime sur la sortie héritée du template quand l'item
+            # batch ne fixe pas sa propre sortie (sinon collisions dans le cwd).
+            item_output = isinstance(item, dict) and "output" in item
+            if output_dir and not item_output and "output_template" not in job:
                 first = source_path_items(job)[0]["path"]
                 job["output"] = str(Path(output_dir).expanduser() / (Path(str(first)).stem + ".mkv"))
                 job["_batch_generated_output"] = True

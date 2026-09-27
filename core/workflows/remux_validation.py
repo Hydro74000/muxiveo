@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from core.bluray import validate_bluray_source
+from core.file_types import windows_filename_error, windows_path_length_error
 from core.workflows.common.metadata import STREAM_SPEC_BY_TRACK_TYPE
 from core.workflows.common.sync_rewrite import (
     REWRITE_AUDIO_CODECS, REWRITE_SUBTITLE_CODECS,
@@ -81,6 +82,9 @@ def validate_remux_config(
 
     if config.output.suffix.lower() != ".mkv":
         errors.append("La sortie remux doit être un fichier .mkv.")
+    name_error = windows_filename_error(config.output.name)
+    if name_error:
+        errors.append(name_error)
 
     file_indexes = [src.file_index for src in config.sources]
     if len(set(file_indexes)) != len(file_indexes):
@@ -126,7 +130,10 @@ def validate_remux_config(
             seen_attachment_local_indexes.add(att.local_index)
 
     output_dir = config.output.parent
-    if not output_dir.exists():
+    length_error = windows_path_length_error(config.output)
+    if length_error:
+        errors.append(length_error)
+    elif not output_dir.exists():
         if not bool(getattr(config, "allow_missing_output_dir", False)):
             errors.append(f"Dossier de sortie inexistant : {output_dir}")
     elif not dir_writable(output_dir):

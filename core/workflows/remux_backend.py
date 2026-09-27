@@ -511,10 +511,11 @@ def run_native_remux(
                 log("WARN", f"Post-traitement (NFO) échoué après commit : {exc}")
             signals.finished.emit(str(runtime_config.output))
         except (TaskCancelledError, MatroskaWriteCancelled):
-            partial.unlink(missing_ok=True)
+            # Nettoyage tolérant : garantit l'émission du signal terminal.
+            remove_path(partial)
             signals.cancelled.emit()
         except Exception as exc:
-            partial.unlink(missing_ok=True)
+            remove_path(partial)
             signals.failed.emit(str(exc), exc)
         finally:
             if canonical_root is not None:
@@ -522,7 +523,7 @@ def run_native_remux(
             remove_path(process_work_dir)
 
     executor = ThreadPoolExecutor(max_workers=1)
-    executor.submit(task)
+    signals.watch_future(executor.submit(task))
     executor.shutdown(wait=False)
     return signals
 

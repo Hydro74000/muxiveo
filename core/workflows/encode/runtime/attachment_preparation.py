@@ -156,11 +156,15 @@ def extract_attachment_data(
 ) -> None:
     """Extract a Matroska attachment stream as its original byte payload."""
     check_cancelled(signals)
-    cmd = [ffmpeg_bin, "-hide_banner", "-y"]
+    # Le contenu d'un attachment Matroska est porté par l'extradata du flux,
+    # pas par des paquets : ``-map 0:N -f data`` produit un fichier vide
+    # (FFmpeg ≥ 8). ``-dump_attachment`` écrit le payload d'origine ; la
+    # sortie nulle ne sert qu'à ouvrir l'entrée.
+    cmd = [ffmpeg_bin, "-hide_banner", "-y", f"-dump_attachment:{stream_idx}", str(dest)]
     append_ffmpeg_input_args(cmd, source)
     cmd.extend([
-        "-map", f"0:{stream_idx}", *ffmpeg_thread_args(),
-        "-c", "copy", "-f", "data", str(dest),
+        "-map", "0", *ffmpeg_thread_args(),
+        "-c", "copy", "-t", "0", "-f", "null", "-",
     ])
     log_info("$ " + " ".join(cmd))
     try:
@@ -174,9 +178,10 @@ def extract_attachment_data(
             f"Extraction attachment échouée pour le stream {stream_idx} de {source.name}: {str(exc).strip()}"
         ) from exc
     check_cancelled(signals)
-    if not dest.is_file():
+    if not dest.is_file() or dest.stat().st_size == 0:
+        dest.unlink(missing_ok=True)
         raise EncodeError(
-            f"Extraction attachment échouée pour le stream {stream_idx} de {source.name}: fichier absent"
+            f"Extraction attachment échouée pour le stream {stream_idx} de {source.name}: fichier absent ou vide"
         )
 
 

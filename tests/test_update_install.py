@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import io
 from pathlib import Path
 from unittest.mock import patch
@@ -142,10 +143,12 @@ def test_download_asset_refuses_foreign_url(tmp_path: Path):
 
 def test_download_update_requires_checksums(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("APPIMAGE", str(tmp_path / "Muxiveo.AppImage"))
+    monkeypatch.setattr(update_install.platform, "machine", lambda: "x86_64")
     with pytest.raises(UpdateInstallError, match="SHA256SUMS"):
         download_update(_info(_APPIMAGE), InstallKind.APPIMAGE)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="bit exécutable POSIX (AppImage Linux uniquement)")
 def test_appimage_update_end_to_end(tmp_path: Path, monkeypatch):
     current = tmp_path / "Muxiveo.AppImage"
     current.write_bytes(b"ancienne version")

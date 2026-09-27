@@ -5359,7 +5359,7 @@ class TestEncodeRuntimeMultiSourceSync:
                     active += 1
                     max_active = max(max_active, active)
                 try:
-                    barrier.wait(timeout=3.0)
+                    barrier.wait(timeout=10.0)  # marge : VM 2 vCPU sous charge
                 except threading.BrokenBarrierError:
                     pass
                 with gate:

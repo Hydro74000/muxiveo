@@ -11,10 +11,12 @@ python3 main.py --cli --help
 
 Dans les builds packages, le CLI utilise le même bundle que l'application GUI :
 
-- Linux/AppImage : entrée `Muxiveo-cli` à côté de `Muxiveo`;
-- Windows : entrée `Muxiveo-cli.exe`;
-- macOS : entrée `Muxiveo-cli` dans `Muxiveo.app/Contents/MacOS/`;
-- fallback commun : `Muxiveo --cli ...`.
+- Windows : entrée console `Muxiveo-cli.exe` à côté de `Muxiveo.exe` (même bundle ;
+  `--cli` implicite). C'est elle qu'il faut utiliser depuis cmd/PowerShell : `Muxiveo.exe`
+  est un exécutable graphique, sans sortie ni code retour dans une console interactive.
+  L'installeur n'ajoute pas le dossier au `PATH` :
+  `"C:\Program Files\Muxiveo\Muxiveo-cli.exe" version` ;
+- Linux / macOS : `Muxiveo --cli ...` (AppImage : `./Muxiveo-x86_64.AppImage --cli ...`).
 
 Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans initialiser l'interface graphique.
 

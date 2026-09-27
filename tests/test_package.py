@@ -10,8 +10,24 @@ from pathlib import Path
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+import pytest
+
 import package as package_mod
 import package_appimage as package_appimage_mod
+
+# Chaîne de packaging Unix (AppDir/AppImage, renommages de casse) : exécutée
+# sous Linux uniquement ; un FS insensible à la casse fausse les assertions.
+_UNIX_PACKAGING_ONLY = pytest.mark.skipif(os.name == "nt", reason="packaging Unix : FS sensible à la casse requis")
+
+
+def _fake_windows_pe(subsystem: int = 2) -> bytes:
+    """Stub PE minimal : e_lfanew=0x40, signature, COFF vide, Subsystem."""
+    data = bytearray(0x40 + 4 + 20 + 68 + 2 + 32)
+    data[:2] = b"MZ"
+    data[0x3C:0x40] = struct.pack("<I", 0x40)
+    data[0x40:0x44] = b"PE\0\0"
+    data[0x40 + 4 + 20 + 68:0x40 + 4 + 20 + 70] = struct.pack("<H", subsystem)
+    return bytes(data)
 
 
 def _png_bytes(width: int, height: int) -> bytes:
@@ -139,7 +155,7 @@ def test_build_pyinstaller_uses_windowed_on_native_windows(tmp_path):
         commands.append(cmd)
         exe_path = tmp_path / "dist" / "Muxiveo" / "Muxiveo.exe"
         exe_path.parent.mkdir(parents=True, exist_ok=True)
-        exe_path.write_text("", encoding="utf-8")
+        exe_path.write_bytes(_fake_windows_pe())
 
     version_file = tmp_path / "version.txt"
     version_file.write_text("", encoding="utf-8")
@@ -171,7 +187,7 @@ def test_build_pyinstaller_accepts_lowercase_windows_entrypoint(tmp_path):
         commands.append(cmd)
         exe_path = tmp_path / "dist" / "Muxiveo" / "muxiveo.exe"
         exe_path.parent.mkdir(parents=True, exist_ok=True)
-        exe_path.write_text("", encoding="utf-8")
+        exe_path.write_bytes(_fake_windows_pe())
 
     version_file = tmp_path / "version.txt"
     version_file.write_text("", encoding="utf-8")
@@ -191,8 +207,8 @@ def test_build_pyinstaller_accepts_lowercase_windows_entrypoint(tmp_path):
 
     assert commands
     assert result == tmp_path / "dist" / "Muxiveo" / "Muxiveo.exe"
-    assert (tmp_path / "dist" / "Muxiveo" / "Muxiveo.exe").exists()
-    assert not (tmp_path / "dist" / "Muxiveo" / "muxiveo.exe").exists()
+    # Noms réels sur disque (NTFS insensible à la casse).
+    assert sorted(p.name for p in (tmp_path / "dist" / "Muxiveo").iterdir()) == ["Muxiveo-cli.exe", "Muxiveo.exe"]
 
 
 def test_ensure_windows_bundle_entrypoint_does_not_delete_branded_exe_on_case_insensitive_fs(tmp_path):
@@ -202,7 +218,7 @@ def test_ensure_windows_bundle_entrypoint_does_not_delete_branded_exe_on_case_in
     bundle_dir = tmp_path / "dist" / "Muxiveo"
     bundle_dir.mkdir(parents=True)
     branded = bundle_dir / "Muxiveo.exe"
-    branded.write_text("exe", encoding="utf-8")
+    branded.write_bytes(_fake_windows_pe())
 
     with patch.object(package_mod, "_WINDOWS_EXE_NAME", "Muxiveo.exe"), \
          patch("pathlib.Path.samefile", return_value=True):
@@ -212,6 +228,7 @@ def test_ensure_windows_bundle_entrypoint_does_not_delete_branded_exe_on_case_in
     assert result == bundle_dir / "Muxiveo.exe"
 
 
+@_UNIX_PACKAGING_ONLY
 def test_build_pyinstaller_lowercases_linux_entrypoints(tmp_path):
     commands: list[list[str]] = []
 
@@ -234,6 +251,7 @@ def test_build_pyinstaller_lowercases_linux_entrypoints(tmp_path):
     assert commands[0][commands[0].index("--name") + 1] == "Muxiveo"
 
 
+@_UNIX_PACKAGING_ONLY
 def test_rename_unix_executable_handles_existing_samefile_target(tmp_path):
     exe_path = tmp_path / "Muxiveo"
     target = tmp_path / "muxiveo"
@@ -430,6 +448,7 @@ def _prepare_linux_bundle(tmp_path: Path) -> None:
     (bundle_dir / "Muxiveo").write_text("", encoding="utf-8")
 
 
+@_UNIX_PACKAGING_ONLY
 def test_build_appdir_prefers_icon_ico_when_available(tmp_path):
     _prepare_linux_bundle(tmp_path)
     ico_path = tmp_path / "icon.ico"
@@ -456,6 +475,7 @@ def test_build_appdir_prefers_icon_ico_when_available(tmp_path):
     assert (appdir / ".DirIcon").readlink() == Path("Muxiveo.png")
 
 
+@_UNIX_PACKAGING_ONLY
 def test_build_appdir_falls_back_to_icon_png_if_ico_conversion_fails(tmp_path):
     _prepare_linux_bundle(tmp_path)
     ico_path = tmp_path / "icon.ico"
@@ -473,6 +493,7 @@ def test_build_appdir_falls_back_to_icon_png_if_ico_conversion_fails(tmp_path):
     assert (appdir / "Muxiveo" / "muxiveo").exists()
 
 
+@_UNIX_PACKAGING_ONLY
 def test_package_appimage_build_appdir_prefers_icon_ico_when_available(tmp_path):
     bundle_dir = tmp_path / "bundle"
     bundle_dir.mkdir()
@@ -578,7 +599,7 @@ def test_load_msix_store_metadata_prefers_config_file(tmp_path):
 def test_stage_msix_layout_embeds_file_associations_and_bundle(tmp_path):
     bundle_dir = tmp_path / "bundle"
     bundle_dir.mkdir()
-    (bundle_dir / "Muxiveo.exe").write_text("", encoding="utf-8")
+    (bundle_dir / "Muxiveo.exe").write_bytes(_fake_windows_pe())
 
     metadata = {
         "identity": "Contoso.Muxiveo",
@@ -852,3 +873,24 @@ def test_package_appimage_build_appimage_sets_reuse_update_information_env(tmp_p
         "gh-releases-zsync|Hydro74000|Muxiveo|latest-unstable|"
         "Muxiveo-x86_64_allinc-latest-unstable.AppImage.zsync"
     )
+
+
+def test_windows_console_entrypoint_patches_only_pe_subsystem(tmp_path):
+    """Muxiveo-cli.exe = copie de Muxiveo.exe en sous-système console (3)."""
+    gui = tmp_path / "Muxiveo.exe"
+    gui.write_bytes(_fake_windows_pe(subsystem=2) + b"PYINSTALLER-ARCHIVE")
+    cli = package_mod._write_windows_console_entrypoint(gui, tmp_path / "Muxiveo-cli.exe")
+
+    gui_bytes, cli_bytes = gui.read_bytes(), cli.read_bytes()
+    offset = 0x40 + 4 + 20 + 68
+    assert struct.unpack("<H", cli_bytes[offset:offset + 2])[0] == 3
+    assert struct.unpack("<H", gui_bytes[offset:offset + 2])[0] == 2
+    diff = [i for i, (a, b) in enumerate(zip(gui_bytes, cli_bytes)) if a != b]
+    assert diff == [offset] and len(gui_bytes) == len(cli_bytes)
+
+
+def test_windows_console_entrypoint_rejects_non_pe(tmp_path):
+    gui = tmp_path / "Muxiveo.exe"
+    gui.write_bytes(b"MZ" + b"\0" * 200)
+    with pytest.raises(RuntimeError, match="PE"):
+        package_mod._write_windows_console_entrypoint(gui, tmp_path / "Muxiveo-cli.exe")

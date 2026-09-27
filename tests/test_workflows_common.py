@@ -468,3 +468,11 @@ class TestCommonTrackTypes:
         assert TrackType.SUBTITLE.value == "subtitle"
         assert isinstance(offset, TrackTimeOffset)
         assert isinstance(patch, TrackMetaEdit)
+
+
+def test_matroska_video_tag_args_neutralizes_mp4_dolby_vision_tags():
+    """Un tag MP4 dvh1/dva1 recopié ferait échouer l'en-tête Matroska de FFmpeg."""
+    from core.workflows.common.metadata import matroska_video_tag_args
+
+    assert matroska_video_tag_args(["HEVC", "MJPEG", "H264"]) == ["-tag:v:0", "hvc1", "-tag:v:2", "avc1"]
+    assert matroska_video_tag_args([]) == []

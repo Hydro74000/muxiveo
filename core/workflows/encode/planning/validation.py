@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
+from core.file_types import windows_filename_error, windows_path_length_error
 from core.workflows.common.track_types import TrackTimeOffset
 from core.workflows.encode.catalog import supports_dynamic_hdr
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
@@ -92,8 +93,14 @@ def validate_encode_config(
     # au contenu incohérent avec son nom.
     if config.output.suffix.lower() != ".mkv":
         errors.append("La sortie d'encodage doit être un fichier .mkv.")
+    name_error = windows_filename_error(config.output.name)
+    if name_error:
+        errors.append(name_error)
     output_dir = config.output.parent
-    if not output_dir.exists():
+    length_error = windows_path_length_error(config.output)
+    if length_error:
+        errors.append(length_error)
+    elif not output_dir.exists():
         if not bool(getattr(config, "allow_missing_output_dir", False)):
             errors.append(f"Dossier de sortie inexistant : {output_dir}")
     elif not dir_writable(output_dir):

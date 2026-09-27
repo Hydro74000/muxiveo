@@ -20,7 +20,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 from types import ModuleType
 
@@ -84,6 +84,75 @@ def _resolve_ini_path() -> Path:
 
 _INI_PATH = _resolve_ini_path()
 _MISSING = object()
+
+# Fichier QSettings Windows, distinct de config.ini. QSettings (format INI de
+# Qt) interprète « \ » comme caractère d'échappement : pointé sur config.ini
+# (chemins bruts « C:\Users\… » écrits par setup.py), le moindre setValue()
+# réécrivait tout le fichier avec des chemins détruits (« C:sers… ») et sans
+# ses commentaires. config.ini reste réservé aux écrivains Python.
+_WINDOWS_SETTINGS_FILENAME = f"{APP_CONFIG_DIR_NAME}.conf"
+
+
+def _windows_settings_path() -> Path:
+    if os.environ.get("MUXIVEO_CONFIG_HOME") or getattr(sys, "frozen", False):
+        return _INI_PATH.parent / _WINDOWS_SETTINGS_FILENAME
+    return _windows_config_dir() / _WINDOWS_SETTINGS_FILENAME
+
+
+# « C:sers… » : lettre de lecteur sans séparateur = chemin détruit par QSettings.
+_CORRUPTED_WINDOWS_PATH_RE = re.compile(r"^[A-Za-z]:[^\\/]")
+
+
+def _repair_corrupted_windows_ini_paths(path: Path) -> list[str]:
+    """
+    Retire de [tools]/[paths] les valeurs corrompues par l'ancien partage
+    QSettings/config.ini (l'autodétection les régénère). Retourne les clés retirées.
+    """
+    if not _is_windows() or not path.exists():
+        return []
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    legacy = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#",))
+    legacy.read_string(text)
+    # Ces clés étaient écrites uniquement par QSettings, jamais par setup.py
+    # ni par le panneau des paramètres. Elles identifient l'ancien fichier partagé.
+    shared_with_qsettings = any(
+        legacy.has_option("ui", key)
+        for key in ("geometry", "last_update_check", "last_update_version", "last_update_channel")
+    )
+    section = ""
+    kept: list[str] = []
+    removed: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped[1:-1].strip().lower()
+        elif section in {"tools", "paths"} and "=" in stripped and not stripped.startswith(("#", ";")):
+            key, value = (part.strip() for part in stripped.split("=", 1))
+            # Même traitement des commentaires que _load_ini(). La ligne brute
+            # reste inchangée si le chemin est conservé (y compris son commentaire).
+            value = legacy.get(section, key, fallback=value).strip()
+            if _CORRUPTED_WINDOWS_PATH_RE.match(value) and not Path(value).exists():
+                removed.append(f"{section}.{key}")
+                continue
+            if (
+                shared_with_qsettings and section == "tools"
+                and key.lower() in _WINDOWS_TOOL_FILENAMES
+                and PureWindowsPath(value).is_absolute() and not Path(value).exists()
+            ):
+                # Les échappements reconnus (\t, \n…) conservent parfois le
+                # premier séparateur : C:\tools\dovi_tool.exe devient
+                # C:\toolsovi_tool.exe. Ne retirer ce chemin ambigu que si
+                # l'autodétection dispose effectivement d'un autre exécutable.
+                default = _WINDOWS_TOOL_FILENAMES[key.lower()][0]
+                replacement = _detect_windows_tool_path(key.lower(), default)
+                if Path(replacement).is_file():
+                    removed.append(f"{section}.{key}")
+                    continue
+        kept.append(line)
+    if removed:
+        path.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8")
+    return removed
 
 _WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
     "ffmpeg": ("ffmpeg.exe",),
@@ -926,7 +995,7 @@ class AppConfig:
     Configuration centralisée de l'application.
 
     Les propriétés sont persistées via INI :
-    - Windows : QSettings pointe directement vers config.ini
+    - Windows : QSettings dans un fichier dédié (muxiveo.conf), jamais config.ini
     - Linux/macOS : QSettings user-scope INI
     config.ini a priorité sur les valeurs sauvegardées, elles-mêmes
     prioritaires sur les défauts.
@@ -941,7 +1010,10 @@ class AppConfig:
     def __init__(self) -> None:
         if _is_windows():
             _INI_PATH.parent.mkdir(parents=True, exist_ok=True)
-            self._settings = QSettings(str(_INI_PATH), QSettings.Format.IniFormat)
+            _repair_corrupted_windows_ini_paths(_INI_PATH)
+            settings_path = _windows_settings_path()
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            self._settings = QSettings(str(settings_path), QSettings.Format.IniFormat)
         else:
             self._settings = QSettings(
                 QSettings.Format.IniFormat,

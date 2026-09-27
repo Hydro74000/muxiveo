@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-launcher.py â€” Point d'entrée packagé de Muxiveo.
+launcher.py — Point d'entrée packagé de Muxiveo.
 
 Vérifie la présence de config.ini dans le dossier de configuration utilisateur :
-  Linux / macOS  â†’ $XDG_CONFIG_HOME/muxiveo/config.ini  (défaut : ~/.config/â€¦)
-  Windows frozen â†’ %APPDATA%\\muxiveo\\config.ini
-  Windows dev    â†’ racine du projet
+  Linux / macOS  → $XDG_CONFIG_HOME/muxiveo/config.ini  (défaut : ~/.config/…)
+  Windows frozen → %APPDATA%\\muxiveo\\config.ini
+  Windows dev    → racine du projet
 
-Si absent â†’ lance le setup systÃ¨me, puis démarre l'application Qt.
+Si absent → lance le setup système, puis démarre l'application Qt.
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ SETUP_RC_HANDOFF = 2
 
 
 # ---------------------------------------------------------------------------
-# Résolution du dossier de référence (lÃ  oÃ¹ config.ini doit vivre)
+# Résolution du dossier de référence (là où config.ini doit vivre)
 # ---------------------------------------------------------------------------
 
 def _is_allinc() -> bool:
@@ -94,7 +94,7 @@ def _is_allinc() -> bool:
     """
     if not getattr(sys, "frozen", False):
         return False
-    # Le marqueur est Ã  cÃ´té de l'exécutable (dist/Muxiveo/_ALLINC)
+    # Le marqueur est à côté de l'exécutable (dist/Muxiveo/_ALLINC)
     return (Path(sys.executable).parent / "_ALLINC").exists()
 
 
@@ -108,9 +108,9 @@ def _windows_config_dir() -> Path:
 def _get_config_path() -> Path:
     """
     Retourne le chemin de config.ini selon la plateforme :
-    - Linux / macOS  â†’ ~/.config/muxiveo/config.ini  (XDG)
-    - Windows frozen â†’ %APPDATA%\\muxiveo\\config.ini
-    - Windows dev    â†’ racine du projet
+    - Linux / macOS  → ~/.config/muxiveo/config.ini  (XDG)
+    - Windows frozen → %APPDATA%\\muxiveo\\config.ini
+    - Windows dev    → racine du projet
     """
     if sys.platform != "win32":
         xdg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
@@ -169,7 +169,7 @@ def _windows_ensure_admin() -> bool:
     via ShellExecute 'runas' et retourne True (le processus appelant doit
     alors quitter immédiatement).
 
-    Retourne False si déjÃ  admin ou hors Windows (rien Ã  faire).
+    Retourne False si déjà admin ou hors Windows (rien à faire).
     """
     if sys.platform != "win32" or _windows_is_admin():
         return False
@@ -218,8 +218,8 @@ def _windows_show_restart_required_popup() -> None:
     if sys.platform != "win32":
         return
     text = (
-        "Windows Security a été mis Ã  jour.\n\n"
-        "Veuillez fermer cette fenÃªtre puis relancer Muxiveo manuellement."
+        "Windows Security a été mis à jour.\n\n"
+        "Veuillez fermer cette fenêtre puis relancer Muxiveo manuellement."
     )
     title = "Muxiveo - Redémarrage requis"
     mb_ok = 0x00000000
@@ -356,7 +356,7 @@ def _windows_close_setup_console(token: tuple[tuple[object, object, object], boo
 
 def _run_first_time_setup(install_dir: Path) -> int:
     """
-    Lance le setup systÃ¨me (outils externes + config.ini initial).
+    Lance le setup système (outils externes + config.ini initial).
     Retourne SETUP_RC_OK, SETUP_RC_ERROR, ou SETUP_RC_HANDOFF.
     """
     import platform
@@ -365,13 +365,13 @@ def _run_first_time_setup(install_dir: Path) -> int:
 
     print("\n" + "=" * 60)
     if allinc:
-        print("  Muxiveo â€” Initialisation (all-inclusive)")
+        print("  Muxiveo — Initialisation (all-inclusive)")
     else:
-        print("  Muxiveo â€” PremiÃ¨re installation")
+        print("  Muxiveo — Première installation")
     print("=" * 60)
     print(f"\n  config.ini introuvable dans : {install_dir}")
     if allinc:
-        print("  Les outils sont déjÃ  embarqués â€” initialisation de la configuration...\n")
+        print("  Les outils sont déjà embarqués — initialisation de la configuration...\n")
     else:
         print("  Lancement du setup...\n")
 
@@ -384,7 +384,7 @@ def _run_first_time_setup(install_dir: Path) -> int:
     try:
         import setup as _setup  # bundled alongside launcher or in project root
     except ImportError as exc:
-        print(f"\n  ERREUR : impossible d'importer setup.py â€” {exc}", file=sys.stderr)
+        print(f"\n  ERREUR : impossible d'importer setup.py — {exc}", file=sys.stderr)
         _windows_show_setup_error_popup(f"Impossible d'importer setup.py.\n\n{exc}")
         return SETUP_RC_ERROR
 
@@ -408,7 +408,7 @@ def _run_first_time_setup(install_dir: Path) -> int:
         # create an unnecessary UAC prompt in that case.
         if requires_windows_repair and _windows_ensure_admin():
             print(
-                "\n  Ã‰lévation des privilÃ¨ges demandée."
+                "\n  Élévation des privilèges demandée."
                 "\n  Muxiveo va redémarrer avec les droits administrateur...\n"
             )
             return SETUP_RC_HANDOFF
@@ -421,7 +421,7 @@ def _run_first_time_setup(install_dir: Path) -> int:
 
     try:
         if allinc:
-            # Mode all-inclusive : outils déjÃ  embarqués dans l'AppImage,
+            # Mode all-inclusive : outils déjà embarqués dans l'AppImage,
             # on initialise uniquement la langue / config.ini.
             _setup.initialize_config_ini_language(
                 dry_run, force=force, ini_path=install_dir / "config.ini"
@@ -436,7 +436,7 @@ def _run_first_time_setup(install_dir: Path) -> int:
                     _setup.install_dnf(dry_run, force=force)
                 else:
                     print(
-                        "  Distribution non reconnue â€” installez manuellement :\n"
+                        "  Distribution non reconnue — installez manuellement :\n"
                         "    ffmpeg  mediainfo",
                         file=sys.stderr,
                     )
@@ -464,14 +464,14 @@ def _run_first_time_setup(install_dir: Path) -> int:
                     )
 
             else:
-                print(f"  Plateforme inconnue '{_os}' â€” setup systÃ¨me ignoré.", file=sys.stderr)
+                print(f"  Plateforme inconnue '{_os}' — setup système ignoré.", file=sys.stderr)
 
             # Initialise la langue dans QSettings (et config.ini si absents)
             _setup.initialize_config_ini_language(
                 dry_run, force=force, ini_path=install_dir / "config.ini"
             )
 
-            # Packages Python : inutiles dans un bundle (déjÃ  embarqués)
+            # Packages Python : inutiles dans un bundle (déjà embarqués)
             if not getattr(sys, "frozen", False):
                 _setup.install_python_packages(dry_run, force=force)
 
@@ -479,7 +479,7 @@ def _run_first_time_setup(install_dir: Path) -> int:
         print(f"\n  ERREUR pendant le setup : {exc}", file=sys.stderr)
         _windows_show_setup_error_popup(str(exc))
         try:
-            answer = input("\n  Continuer quand mÃªme ? [o/N] ").strip().lower()
+            answer = input("\n  Continuer quand même ? [o/N] ").strip().lower()
         except (EOFError, OSError, RuntimeError):
             answer = ""
         if answer not in ("o", "oui", "y", "yes"):
@@ -487,19 +487,19 @@ def _run_first_time_setup(install_dir: Path) -> int:
             return SETUP_RC_ERROR
 
     # Crée un config.ini marqueur dans install_dir pour signaler que le setup
-    # a été effectué (évite de relancer le setup Ã  chaque démarrage).
+    # a été effectué (évite de relancer le setup à chaque démarrage).
     marker = install_dir / "config.ini"
     if not marker.exists():
         try:
             install_dir.mkdir(parents=True, exist_ok=True)
             marker.write_text(
-                "# Muxiveo â€” configuration locale\n"
+                "# Muxiveo — configuration locale\n"
                 "# Décommentez et modifiez les clés pour surcharger les valeurs par défaut.\n"
-                "# Voir la section Configuration dans CLAUDE.md pour la liste complÃ¨te.\n",
+                "# Voir la section Configuration dans CLAUDE.md pour la liste complète.\n",
                 encoding="utf-8",
             )
         except OSError:
-            # Dossier en lecture seule (AppImage dans /opt, /usr â€¦) â€” non bloquant
+            # Dossier en lecture seule (AppImage dans /opt, /usr …) — non bloquant
             pass
 
     if _os == "Windows":
@@ -519,7 +519,7 @@ def _run_first_time_setup(install_dir: Path) -> int:
 
     if _os == "Windows" and str(cfa_result.get("status") or "") == "updated":
         print(
-            "\n  Windows Security a été mise Ã  jour."
+            "\n  Windows Security a été mise à jour."
             "\n  Veuillez redémarrer Muxiveo manuellement pour appliquer l'autorisation.\n"
         )
         _windows_show_restart_required_popup()
@@ -570,8 +570,14 @@ def _run_tmdb_smoke_test() -> int:
         return 1
 
 
+def _is_cli_executable(executable: str | None = None) -> bool:
+    """True pour l'entrée console dédiée (``Muxiveo-cli.exe`` sous Windows)."""
+    stem = Path(executable or sys.executable).stem.casefold()
+    return bool(getattr(sys, "frozen", False)) and stem.endswith("-cli")
+
+
 def _is_cli_invocation() -> bool:
-    return "--cli" in sys.argv[1:]
+    return "--cli" in sys.argv[1:] or _is_cli_executable()
 
 
 def _run_cli_entrypoint() -> int:

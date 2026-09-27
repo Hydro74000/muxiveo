@@ -432,3 +432,38 @@ class TestToolRunnerParallel:
             time.sleep(0.2)
         except Exception as exc:
             pytest.fail(f"run_parallel([]) a levé une exception : {exc}")
+
+
+def test_watch_future_emits_failed_when_task_raises_outside_handlers(qt_app):
+    """Une exception échappée d'une tâche soumise émet quand même `failed`."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    signals = TaskSignals()
+    received: list[str] = []
+    signals.connect_terminal(failed=lambda msg, _exc: received.append(msg), direct=True)
+
+    def _task() -> None:
+        raise OSError("[WinError 123] nom invalide")
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        signals.watch_future(executor.submit(_task)).exception()
+
+    assert received and "WinError 123" in received[0]
+
+
+def test_watch_future_ignores_task_already_terminated(qt_app):
+    from concurrent.futures import ThreadPoolExecutor
+
+    signals = TaskSignals()
+    received: list[str] = []
+    signals.connect_terminal(finished=lambda r: received.append(f"ok:{r}"),
+                             failed=lambda msg, _exc: received.append("failed"), direct=True)
+
+    def _task() -> None:
+        signals.finished.emit("x")
+        raise RuntimeError("après la fin")
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        signals.watch_future(executor.submit(_task)).exception()
+
+    assert received == ["ok:x"]

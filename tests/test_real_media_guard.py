@@ -9,7 +9,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from scripts.real_media_guard import (
+# Garde corpus réel : outil dev Linux-only (fcntl, /proc/meminfo, cgroups).
+pytest.importorskip("fcntl")
+
+from scripts.real_media_guard import (  # noqa: E402
     GIB,
     GuardReport,
     RealMediaLock,

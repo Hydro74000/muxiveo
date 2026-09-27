@@ -110,10 +110,10 @@ def bind_temp_cleanup(signals: TaskSignals, cleanup_paths: list[Path]) -> None:
             except OSError:
                 pass
 
-    cleanup = signals.retain_callback(_cleanup)
-    signals.finished.connect(cleanup)
-    signals.failed.connect(cleanup)
-    signals.cancelled.connect(cleanup)
+    # Hook terminal direct : exécuté avant la notification différée qui clôt
+    # l'attente (boucle CLI). Des slots Qt ordinaires, postés après cette
+    # notification, pouvaient ne jamais être traités → dossiers résiduels.
+    signals.connect_terminal(finished=_cleanup, failed=_cleanup, cancelled=_cleanup, direct=True)
 
 
 __all__ = [

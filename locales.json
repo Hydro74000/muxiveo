@@ -4682,5 +4682,97 @@
   "Pré-version de développement (canal unstable) : moins testée qu'une release stable.": {
     "fra": "Pré-version de développement (canal unstable) : moins testée qu'une release stable.",
     "eng": "Development pre-release (unstable channel): less tested than a stable release."
+  },
+  "Modèle actif : Vidéo Master ({video}), Audio Donneur : [{donor_audio}], Audio Master : [{master_audio}], ST Donneur : [{donor_subs}]": {
+    "fra": "Modèle actif : Vidéo Master ({video}), Audio Donneur : [{donor_audio}], Audio Master : [{master_audio}], ST Donneur : [{donor_subs}]",
+    "eng": "Active template: master video ({video}), donor audio: [{donor_audio}], master audio: [{master_audio}], donor subtitles: [{donor_subs}]"
+  },
+  "Non": {
+    "fra": "Non",
+    "eng": "No"
+  },
+  "Paramètres": {
+    "fra": "Paramètres",
+    "eng": "Settings"
+  },
+  "Hybridation": {
+    "fra": "Hybridation",
+    "eng": "Hybridization"
+  },
+  "Dossier de sortie :": {
+    "fra": "Dossier de sortie :",
+    "eng": "Output directory:"
+  },
+  "Dossier de travail :": {
+    "fra": "Dossier de travail :",
+    "eng": "Work directory:"
+  },
+  "Débit": {
+    "fra": "Débit",
+    "eng": "Bitrate"
+  },
+  "Débit (kbps)": {
+    "fra": "Débit (kbps)",
+    "eng": "Bitrate (kbps)"
+  },
+  "Détection automatique du pitch (auto - recommandé)": {
+    "fra": "Détection automatique du pitch (auto - recommandé)",
+    "eng": "Automatic pitch detection (auto - recommended)"
+  },
+  "Détection profil DV": {
+    "fra": "Détection profil DV",
+    "eng": "DV profile detection"
+  },
+  "Film 1 — Cible (vidéo à enrichir)": {
+    "fra": "Film 1 — Cible (vidéo à enrichir)",
+    "eng": "Film 1 — Target (video to enrich)"
+  },
+  "Générer": {
+    "fra": "Générer",
+    "eng": "Generate"
+  },
+  "MÉTADONNÉES": {
+    "fra": "MÉTADONNÉES",
+    "eng": "METADATA"
+  },
+  "Options indisponibles en mode Copy. Choisissez un codec d'encodage dans l'onglet Video pour activer la géométrie et les filtres.": {
+    "fra": "Options indisponibles en mode Copy. Choisissez un codec d'encodage dans l'onglet Video pour activer la géométrie et les filtres.",
+    "eng": "Options unavailable in Copy mode. Choose an encoding codec in the Video tab to enable geometry and filters."
+  },
+  "PREVIEW RÉELLE": {
+    "fra": "PREVIEW RÉELLE",
+    "eng": "ACTUAL PREVIEW"
+  },
+  "Préservation de la tonalité (atempo)": {
+    "fra": "Préservation de la tonalité (atempo)",
+    "eng": "Pitch preservation (atempo)"
+  },
+  "Recadrage bas de la piste vidéo active.": {
+    "fra": "Recadrage bas de la piste vidéo active.",
+    "eng": "Bottom crop of the active video track."
+  },
+  "Recadrage droite de la piste vidéo active.": {
+    "fra": "Recadrage droite de la piste vidéo active.",
+    "eng": "Right crop of the active video track."
+  },
+  "Recadrage gauche de la piste vidéo active.": {
+    "fra": "Recadrage gauche de la piste vidéo active.",
+    "eng": "Left crop of the active video track."
+  },
+  "Recadrage haut de la piste vidéo active.": {
+    "fra": "Recadrage haut de la piste vidéo active.",
+    "eng": "Top crop of the active video track."
+  },
+  "Sauvegarder toute la configuration": {
+    "fra": "Sauvegarder toute la configuration",
+    "eng": "Save the whole configuration"
+  },
+  "Éditer profil": {
+    "fra": "Éditer profil",
+    "eng": "Edit profile"
+  },
+  "Éditer…": {
+    "fra": "Éditer…",
+    "eng": "Edit…"
   }
 }

@@ -24,6 +24,7 @@ import json
 import re
 import shlex
 import subprocess
+from fractions import Fraction
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -36,6 +37,7 @@ from core.bluray import (
     is_bluray_playlist,
     title_for_playlist,
 )
+from core.frame_count import ffprobe_packet_count, frame_count_is_plausible
 from core.lang_tags import Rfc5646LanguageTags
 from core.subprocess_utils import subprocess_text_kwargs
 
@@ -493,6 +495,16 @@ class FileInspector:
                 info.frame_count = self.get_frame_count(path)
             except Exception:
                 pass
+        # Statistiques Matroska périmées (fichier coupé/remuxé en recopiant les
+        # tags) : compte incohérent avec durée × cadence → comptage réel ffprobe.
+        if bluray_title is None and info.frame_count is not None and info.primary_video is not None:
+            try:
+                fps = float(Fraction(str(info.primary_video.frame_rate or "0/0")))
+            except (ValueError, ZeroDivisionError):
+                fps = None
+            if not frame_count_is_plausible(info.frame_count, info.duration_s, fps):
+                self._emit_verbose(f"frame_count mediainfo implausible ({info.frame_count}) — comptage ffprobe.")
+                info.frame_count = ffprobe_packet_count(self._ffprobe, path) or info.frame_count
 
         # Enrichit le profil DoVi depuis mediainfo si ffprobe ne l'a pas fourni
         # (certains builds ffprobe ne remontent pas DOVI configuration record).
@@ -693,6 +705,13 @@ class FileInspector:
                 frame_dovi, frame_hdr10plus = frame_flags
                 has_dovi      = has_dovi      or frame_dovi
                 has_hdr10plus = has_hdr10plus or frame_hdr10plus
+
+        # Conteneur sans courbe de transfert déclarée (ex. MKV sans éléments
+        # Colour) : mediainfo lit le VUI du bitstream (« PQ » / « HLG »).
+        if not has_pq and not has_hlg and mi_video is not None:
+            mi_transfer = str(mi_video.get("transfer_characteristics") or "").strip().upper()
+            has_pq = mi_transfer == "PQ"
+            has_hlg = mi_transfer == "HLG"
 
         # Priorité décroissante
         if has_dovi and has_hdr10plus:

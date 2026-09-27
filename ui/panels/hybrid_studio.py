@@ -903,11 +903,15 @@ class HybridStudio(QWidget):
         self.witness_track_items = []
         row = 0
         for src_label, role, file_info in res:
-            for stream in file_info.streams:
+            typed_tracks = [
+                *(("video", track) for track in file_info.video_tracks),
+                *(("audio", track) for track in file_info.audio_tracks),
+                *(("subtitle", track) for track in file_info.subtitle_tracks),
+            ]
+            for st_type, stream in typed_tracks:
                 self.witness_table.insertRow(row)
 
                 chk = QCheckBox()
-                st_type = stream.stream_type.casefold()
                 is_master = (role == "master")
                 lang = (stream.language or "").casefold()
 
@@ -931,13 +935,13 @@ class HybridStudio(QWidget):
                 item_src.setForeground(QColor(_C.ACCENT if is_master else _C.OK))
                 self.witness_table.setItem(row, 1, item_src)
 
-                item_type = QTableWidgetItem(stream.stream_type.capitalize())
+                item_type = QTableWidgetItem(st_type.capitalize())
                 self.witness_table.setItem(row, 2, item_type)
 
                 item_lang = QTableWidgetItem(stream.language or "-")
                 self.witness_table.setItem(row, 3, item_lang)
 
-                details = f"{stream.codec_name or ''} {stream.display_title or ''}".strip()
+                details = f"{stream.codec or ''} {stream.title or ''}".strip()
                 item_details = QTableWidgetItem(details)
                 self.witness_table.setItem(row, 4, item_details)
 
@@ -946,7 +950,7 @@ class HybridStudio(QWidget):
                     "role": role,
                     "type": st_type,
                     "lang": stream.language or "",
-                    "codec": stream.codec_name or "",
+                    "codec": stream.codec or "",
                 })
                 row += 1
 
@@ -991,10 +995,14 @@ class HybridStudio(QWidget):
         recipe.cadence_audio_method = self.cadence_method_combo.currentData() or "auto"
         self.recipe = recipe
 
-        summary = f"Modèle actif : Vidéo Master ({'Oui' if keep_video else 'Non'}), "
-        summary += f"Audio Donneur : [{', '.join(recipe.donor_audio_langs)}], "
-        summary += f"Audio Master : [{', '.join(recipe.keep_master_audio_langs)}], "
-        summary += f"ST Donneur : [{', '.join(recipe.donor_sub_langs)}]"
+        summary = translate_text(
+            "Modèle actif : Vidéo Master ({video}), Audio Donneur : [{donor_audio}], "
+            "Audio Master : [{master_audio}], ST Donneur : [{donor_subs}]",
+            video=translate_text("Oui") if keep_video else translate_text("Non"),
+            donor_audio=", ".join(recipe.donor_audio_langs),
+            master_audio=", ".join(recipe.keep_master_audio_langs),
+            donor_subs=", ".join(recipe.donor_sub_langs),
+        )
         self.recipe_status_lbl.setText(summary)
         self.recipe_status_lbl.setStyleSheet(f"color: {_C.OK}; font-size: {_font_px(11)}px; font-weight: bold;")
         self.status.setText(translate_text("Modèle appliqué à la saison. Vous pouvez lancer l'analyse ou l'hybridation."))

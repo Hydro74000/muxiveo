@@ -512,3 +512,36 @@ def test_detect_cadence_from_metadata_on_the_fly_custom_rates():
     assert mismatch_film.speed_ratio == "1001/1000"
     assert build_cadence_audio_filter(mismatch_film) == "atempo=1001/1000"
 
+
+
+def test_audio_sync_scanner_auto_falls_back_to_asetrate_when_atempo_never_correlates(monkeypatch):
+    """Mode auto : donneur PAL non compensé → repli asetrate au lieu d'un échec."""
+    from core.workflows.audio_sync import AudioSyncError, AudioSyncTrack
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    scanner = AudioSyncScanner("ffmpeg", "ffprobe")
+    monkeypatch.setattr(scanner, "duration", lambda track: 600.0)
+
+    def fake_measure(ref, don, p, win, cadence_filter=None, speed_factor=1.0, **kwargs):
+        if cadence_filter and "asetrate" in cadence_filter:
+            return 0.0, 0.99
+        raise AudioSyncError("pas de corrélation")
+
+    monkeypatch.setattr(scanner, "measure", fake_measure)
+    # L'heuristique spectrale suggère atempo : la mesure réelle doit primer.
+    monkeypatch.setattr(
+        scanner, "_analyze_cadence_pitch",
+        lambda *a, **k: type("A", (), {"selected_method": "atempo", "details": "heuristique"})(),
+    )
+    logs: list[str] = []
+    calib = scanner.scan(
+        AudioSyncTrack(Path("ref.mkv"), 1),
+        AudioSyncTrack(Path("don.mkv"), 1),
+        cadence_mismatch=detect_cadence_from_metadata("24000/1001", "25/1"),
+        cadence_audio_method="auto",
+        log=logs.append,
+    )
+
+    assert calib.cadence_audio_method == "asetrate"
+    assert any("repli automatique" in line for line in logs)

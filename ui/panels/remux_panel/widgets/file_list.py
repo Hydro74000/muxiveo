@@ -300,7 +300,7 @@ class _FileListWidget(QFrame):
         if mime is None or not mime.hasUrls():
             return []
         return [
-            url.toLocalFile()
+            str(Path(url.toLocalFile()))
             for url in mime.urls()
             if url.isLocalFile() and Path(url.toLocalFile()).exists()
         ]

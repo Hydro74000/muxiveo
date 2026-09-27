@@ -42,7 +42,8 @@ from typing import Callable
 
 from PySide6.QtCore import QObject, Signal
 from core.dovi_profile_detector import DoviProfileDetector, DoviSubProfile
-from core.subprocess_utils import subprocess_text_kwargs
+from core.frame_count import reliable_frame_count
+from core.subprocess_utils import format_returncode, subprocess_text_kwargs
 from core.subtitle_codec import plan_subtitle_codec
 from core.workdir import prepare_process_work_dir
 from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router, P7RoutingDecision
@@ -1689,7 +1690,7 @@ class MergeDoviWorkflow(QObject):
                 if proc.returncode != 0:
                     raise WorkflowError(
                         step,
-                        f"Commande échouée (code {proc.returncode}) : {' '.join(cmd[:2])}\n"
+                        f"Commande échouée (code {format_returncode(proc.returncode)}) : {' '.join(cmd[:2])}\n"
                         + output[-1000:],
                     )
                 return output
@@ -1780,7 +1781,7 @@ class MergeDoviWorkflow(QObject):
             if proc.returncode != 0:
                 raise WorkflowError(
                     step,
-                    f"Commande échouée (code {proc.returncode}) : {' '.join(cmd[:2])}\n"
+                    f"Commande échouée (code {format_returncode(proc.returncode)}) : {' '.join(cmd[:2])}\n"
                     + output[-1000:],
                 )
             return output
@@ -1812,7 +1813,7 @@ class MergeDoviWorkflow(QObject):
         )
         if result.returncode != 0:
             raise RuntimeError(
-                f"Commande échouée (code {result.returncode}) : {' '.join(cmd[:2])}\n"
+                f"Commande échouée (code {format_returncode(result.returncode)}) : {' '.join(cmd[:2])}\n"
                 + (result.stdout + result.stderr)[-500:]
             )
         return result.stdout
@@ -1946,11 +1947,10 @@ class MergeDoviWorkflow(QObject):
         return result.stdout
 
     def _get_framecount(self, path: Path) -> int | None:
-        """Retourne le frame count via mediainfo, ou None si illisible."""
-        raw = self._mediainfo(path, "Video;%FrameCount%").strip()
-        if re.fullmatch(r"\d+", raw):
-            return int(raw)
-        return None
+        """Frame count mediainfo, vérifié contre durée × cadence (repli ffprobe)."""
+        return reliable_frame_count(
+            path, mediainfo_bin=self._bins["mediainfo"], ffprobe_bin=self._bins["ffprobe"],
+        )
 
     def _load_mediainfo_video(self, path: Path) -> dict | None:
         """Charge le track Video du JSON mediainfo (None si indisponible)."""

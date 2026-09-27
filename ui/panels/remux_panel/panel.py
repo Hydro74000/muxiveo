@@ -658,7 +658,7 @@ class RemuxPanel(QWidget):
             mime = getattr(event, "mimeData", lambda: None)()
             urls = mime.urls() if mime is not None and mime.hasUrls() else []
             local_paths = [
-                url.toLocalFile()
+                str(Path(url.toLocalFile()))
                 for url in urls
                 if url.isLocalFile() and Path(url.toLocalFile()).exists()
             ]

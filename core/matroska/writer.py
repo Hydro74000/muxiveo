@@ -373,7 +373,7 @@ def build_track_statistics_tags_element(
     Each value is ``(frame_count, payload_bytes, duration_ns)``.  These are
     ordinary Matroska tags rather than EBML fields.  MediaInfo only promotes
     ``NUMBER_OF_FRAMES`` to the text-subtitle ``ElementCount`` when the
-    mkvmerge-compatible ``_STATISTICS_*`` companion tags are present.
+    standard ``_STATISTICS_*`` companion tags are present.
     """
     written_at = written_at_utc or datetime.now(timezone.utc)
     if written_at.tzinfo is None:

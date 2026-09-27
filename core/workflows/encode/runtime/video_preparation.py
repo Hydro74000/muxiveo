@@ -389,6 +389,6 @@ class TwoPassRunner:
             finally:
                 _cleanup_passlogs()
 
-        executor.submit(_task)
+        signals.watch_future(executor.submit(_task))
         executor.shutdown(wait=False)
         return signals

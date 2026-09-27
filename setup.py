@@ -670,6 +670,22 @@ def _sanitize_windows_tools_lines(lines: list[str]) -> list[str]:
     return lines
 
 
+def _section_insert_index(lines: list[str], start: int, end: int) -> int:
+    """
+    Position d'insertion d'une clé dans une section INI.
+
+    Ignore le bloc de commentaires final (en-tête documentaire de la section
+    suivante) et les lignes vides qui le précèdent : la clé est ajoutée juste
+    après le dernier contenu propre à la section.
+    """
+    index = end - 1
+    while index > start and lines[index].strip().startswith(("#", ";")):
+        index -= 1
+    while index > start and not lines[index].strip():
+        index -= 1
+    return index + 1
+
+
 def _update_ini_tools_section(
     path: Path,
     tool_values: dict[str, str],
@@ -705,7 +721,7 @@ def _update_ini_tools_section(
             del lines[index]
             end -= 1
 
-    insert_at = end
+    insert_at = _section_insert_index(lines, start, end)
     for key, value in tool_values.items():
         rendered = _normalize_windows_backslashes(value)
         updated = False
@@ -2218,6 +2234,7 @@ def _check_nvenc_available() -> bool:
         result = subprocess.run(
             ["nvidia-smi", "-L"],
             capture_output=True, check=False, timeout=5,
+            **_windows_no_window_subprocess_kwargs(),
         )
         if result.returncode == 0 and (result.stdout or b"").strip():
             return True
@@ -2442,7 +2459,9 @@ def install_github_tools(
         # car config.ini reçoit les chemins absolus détectés.
         user_tools = _windows_user_tools_dir()
         installs_to_user_dir = bin_dir == user_tools or bin_dir == (user_tools / "bin")
-        if OS == "Windows" and not path_reminder_shown and not installs_to_user_dir:
+        # Application packagée : config.ini reçoit toujours les chemins absolus.
+        frozen_app = bool(getattr(sys, "frozen", False))
+        if OS == "Windows" and not path_reminder_shown and not installs_to_user_dir and not frozen_app:
             path_reminder_shown = True
             warn(
                 f"Add the following directory to your PATH so Windows can find these tools:\n"
@@ -2475,6 +2494,12 @@ def check_tools_presence(prefix: Path | None = None) -> None:
 
         meta = SYSTEM_TOOLS.get(exe, GITHUB_TOOLS.get(exe, {}))
         if meta.get("path_check", True) is False:
+            continue
+        # Outils conditionnels : non attendus hors plateforme ou sans GPU NVIDIA.
+        platforms = meta.get("platforms")
+        if platforms and OS not in platforms:
+            continue
+        if meta.get("gate") == "nvenc_available" and not _check_nvenc_available():
             continue
 
         path = shutil.which(exe)

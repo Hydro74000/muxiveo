@@ -99,3 +99,28 @@ def test_cli_transmits_sync_preferences(monkeypatch):
     assert captured["sync_advanced_audio_rewrite_enabled"] is True
     assert captured["aac_bitrate_per_channel_kbps"] == 80
     assert captured["eac3_bitrate_per_channel_kbps"] == 112
+
+
+def test_remux_temp_cleanup_runs_before_deferred_terminal_notification(qt_app, tmp_path):
+    """Le work_dir est nettoyé avant que l'attente (boucle CLI) soit notifiée de la fin."""
+    import threading
+
+    from PySide6.QtCore import QCoreApplication
+
+    from core.runner import TaskSignals
+    from core.workflows.remux_sync import bind_temp_cleanup
+
+    process_dir = tmp_path / "job"
+    (process_dir / "attachments").mkdir(parents=True)
+    signals = TaskSignals()
+    bind_temp_cleanup(signals, [process_dir])
+    seen: list[bool] = []
+    signals.connect_terminal(finished=lambda _r: seen.append(process_dir.exists()))
+
+    worker = threading.Thread(target=lambda: signals.finished.emit("ok"))
+    worker.start()
+    worker.join()
+    for _ in range(20):
+        QCoreApplication.processEvents()
+
+    assert seen == [False]

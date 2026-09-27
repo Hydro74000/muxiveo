@@ -96,3 +96,19 @@ def disposition_value(
     if flag_commentary:
         flags.append("comment")
     return "+".join(flags) if flags else "0"
+
+
+# Tags de codec acceptés par le muxer Matroska de FFmpeg : un tag MP4 Dolby
+# Vision (dvh1/dvhe/dva1/dvav) recopié tel quel fait échouer l'écriture de
+# l'en-tête. Forcer le tag générique conserve le dvcC (side data).
+_MATROSKA_SAFE_VIDEO_TAGS = {"HEVC": "hvc1", "H264": "avc1"}
+
+
+def matroska_video_tag_args(video_codecs: list[str]) -> list[str]:
+    """Arguments ``-tag:v:N`` neutralisant les tags MP4 incompatibles Matroska."""
+    args: list[str] = []
+    for out_index, codec in enumerate(video_codecs):
+        tag = _MATROSKA_SAFE_VIDEO_TAGS.get(str(codec or "").upper())
+        if tag:
+            args.extend([f"-tag:v:{out_index}", tag])
+    return args

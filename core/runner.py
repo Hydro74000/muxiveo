@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from PySide6.QtCore import QCoreApplication, QObject, Signal, Slot, Qt
-from core.subprocess_utils import decode_subprocess_output, subprocess_windows_no_window_kwargs
+from core.subprocess_utils import decode_subprocess_output, format_returncode, subprocess_windows_no_window_kwargs
 
 
 # Outils dont la barre de progression n'est émise que si stdout est un TTY.
@@ -187,7 +187,7 @@ class CommandError(RuntimeError):
         self.returncode = returncode
         self.stderr = stderr
         super().__init__(
-            f"Commande échouée (code {returncode}) : {' '.join(cmd)}\n{stderr}"
+            f"Commande échouée (code {format_returncode(returncode)}) : {' '.join(cmd)}\n{stderr}"
         )
 
 
@@ -344,6 +344,22 @@ class TaskSignals(QObject):
             subscribers, self._terminal_subscribers = self._terminal_subscribers, []
         for subscriber in subscribers:
             self._invoke_terminal(subscriber, result)
+
+    def watch_future(self, future: Future) -> Future:
+        """
+        Filet de sécurité : une exception échappée de la tâche soumise émet
+        ``failed`` si aucune fin n'a encore été enregistrée (sinon la boucle
+        d'attente CLI/GUI resterait bloquée indéfiniment).
+        """
+        def _on_done(done: Future) -> None:
+            if done.cancelled():
+                return
+            exc = done.exception()
+            if exc is not None and self._terminal_result is None:
+                self.failed.emit(f"Erreur interne inattendue : {exc}", exc)
+
+        future.add_done_callback(_on_done)
+        return future
 
     def retain_callback(self, callback: Callable[..., object]) -> Callable[..., object]:
         """Conserve un slot Python tant que les signaux de tâche existent."""

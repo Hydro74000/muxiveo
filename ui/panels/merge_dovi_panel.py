@@ -16,8 +16,6 @@ Signaux exposés :
 
 from __future__ import annotations
 
-import re
-import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Protocol
@@ -33,7 +31,7 @@ from PySide6.QtWidgets import (
 from core.config import AppConfig
 from core.file_types import build_qt_filter, is_accepted
 from core.i18n import apply_translations, translate_text
-from core.subprocess_utils import subprocess_text_kwargs
+from core.frame_count import reliable_frame_count
 from core.workflows.merge_dovi import (
     DoviProfile, FrameCountResult,
     MergeDoviWorkflow, StepResult, WorkflowStep,
@@ -1134,15 +1132,11 @@ class MergeDoviPanel(QWidget):
             return
 
         mediainfo_bin = self._config.tool_mediainfo
+        ffprobe_bin = self._config.tool_ffprobe
 
         def _read() -> FrameCountResult:
             def fc(path: Path) -> int | None:
-                res = subprocess.run(
-                    [mediainfo_bin, "--Inform=Video;%FrameCount%", str(path)],
-                    capture_output=True, check=False, **subprocess_text_kwargs(),
-                )
-                raw = res.stdout.strip()
-                return int(raw) if re.fullmatch(r"\d+", raw) else None
+                return reliable_frame_count(path, mediainfo_bin=mediainfo_bin, ffprobe_bin=ffprobe_bin)
 
             fc1  = fc(film1)
             fc2  = fc(film2)
