@@ -157,18 +157,36 @@ def _get_json(url: str, timeout: float) -> object:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def fetch_latest_release(channel: str = DEFAULT_UPDATE_CHANNEL, timeout: float = 5.0) -> UpdateInfo | None:
-    """Dernière release du canal demandé, ou None si GitHub est injoignable."""
+class UpdateCheckError(Exception):
+    """Vérification impossible (réseau, SSL, réponse GitHub invalide)."""
+
+
+def query_latest_release(channel: str = DEFAULT_UPDATE_CHANNEL, timeout: float = 5.0) -> UpdateInfo | None:
+    """
+    Dernière release du canal demandé (None si aucune release exploitable).
+
+    Lève UpdateCheckError si GitHub est injoignable : un échec ne doit pas
+    être confondu avec « aucune mise à jour ».
+    """
     try:
         if normalize_update_channel(channel) == UPDATE_CHANNEL_STABLE:
             return _parse_release(_get_json(LATEST_RELEASE_API_URL, timeout))
         payload = _get_json(f"{RELEASES_API_URL}?per_page=30", timeout)
-    except Exception:  # nosec B110  # vérification best-effort
-        return None
+    except Exception as exc:
+        reason = getattr(exc, "reason", None) or exc
+        raise UpdateCheckError(f"{type(exc).__name__}: {reason}") from exc
     if not isinstance(payload, list):
-        return None
+        raise UpdateCheckError("Réponse GitHub inattendue.")
     releases = [info for info in map(_parse_release, payload) if info is not None]
     return max(releases, key=lambda info: version_key(info.version), default=None)
+
+
+def fetch_latest_release(channel: str = DEFAULT_UPDATE_CHANNEL, timeout: float = 5.0) -> UpdateInfo | None:
+    """Dernière release du canal demandé, ou None si GitHub est injoignable."""
+    try:
+        return query_latest_release(channel, timeout)
+    except UpdateCheckError:
+        return None
 
 
 def check_for_update(channel: str = DEFAULT_UPDATE_CHANNEL, timeout: float = 5.0) -> UpdateInfo | None:

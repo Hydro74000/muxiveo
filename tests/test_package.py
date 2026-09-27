@@ -297,6 +297,7 @@ def test_ensure_wine_deps_pins_pyside6_and_verifies_runtime():
         "PySide6==6.10.2",
         "pymediainfo>=6.1.0",
         "numpy>=1.24",
+        "certifi",
     )
     mock_icu.assert_called_once_with()
     mock_verify.assert_called_once_with()

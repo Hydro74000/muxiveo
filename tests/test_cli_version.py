@@ -11,7 +11,7 @@ from cli import commands
 from cli.constants import EXIT_OK, EXIT_UPDATE_AVAILABLE, EXIT_WORKFLOW
 from cli.logging import Logger
 from cli.parser import build_parser
-from core.update_check import UpdateInfo
+from core.update_check import UpdateCheckError, UpdateInfo
 from core.version import APP_BUILD_VERSION
 
 
@@ -22,7 +22,7 @@ def _run(argv: list[str], monkeypatch, info: UpdateInfo | None, config=None) -> 
         calls.append(channel)
         return info
 
-    monkeypatch.setattr(commands, "fetch_latest_release", _fetch)
+    monkeypatch.setattr(commands, "query_latest_release", _fetch)
     args = build_parser().parse_args(argv)
     rc = commands.cmd_version(args, config or SimpleNamespace(update_channel="stable"), Logger(fmt=args.log_format))
     return rc, calls
@@ -53,3 +53,14 @@ def test_version_check_channel_from_option_or_config(monkeypatch, capsys, argv, 
 def test_version_check_network_error(monkeypatch, capsys):
     rc, _ = _run(["version", "--check"], monkeypatch, None)
     assert rc == EXIT_WORKFLOW
+
+
+def test_version_check_reports_error_reason(monkeypatch, capsys):
+    def _fail(channel, timeout=5.0):
+        raise UpdateCheckError("SSLError: CERTIFICATE_VERIFY_FAILED")
+
+    monkeypatch.setattr(commands, "query_latest_release", _fail)
+    args = build_parser().parse_args(["version", "--check"])
+    rc = commands.cmd_version(args, SimpleNamespace(update_channel="stable"), Logger(fmt="text"))
+    assert rc == EXIT_WORKFLOW
+    assert "CERTIFICATE_VERIFY_FAILED" in capsys.readouterr().err

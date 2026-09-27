@@ -17,7 +17,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from PySide6.QtCore import QSize, Qt, Signal, QTimer, QUrl
-from PySide6.QtGui import QBrush, QColor, QDesktopServices, QFont, QPixmap
+from PySide6.QtGui import QBrush, QColor, QFont, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
@@ -61,6 +61,7 @@ from ui.panels.encode_panel.theme import (
     _input_style, _primary_button, _secondary_button,
     _section_label, _separator,
 )
+from ui.desktop import open_external
 from ui.dialogs.extra_params_dialog import edit_extra_params
 from ui.panels.encode_panel.widgets import _AudioSourceDialog, _AudioTable
 
@@ -2914,7 +2915,7 @@ class EncodePanel(QWidget):
     def _open_preview_video(self) -> None:
         if self._preview_video_path is None:
             return
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._preview_video_path)))
+        open_external(QUrl.fromLocalFile(str(self._preview_video_path)))
 
     def _current_preview_config(self) -> EncodeConfig | None:
         if self._file_info is None:

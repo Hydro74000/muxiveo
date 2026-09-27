@@ -9,7 +9,7 @@ import pytest
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QMainWindow, QProgressDialog
 
-from core.update_check import ReleaseAsset, UpdateInfo
+from core.update_check import ReleaseAsset, UpdateCheckError, UpdateInfo
 from core.update_install import InstallKind, UpdateInstallError
 from ui.main_window import MainWindow, _Sidebar
 
@@ -28,6 +28,7 @@ class UpdateWindow(MainWindow):
         self._update_info = None
         self.log_info = Mock()
         self.log_error = Mock()
+        self.log_warn = Mock()
         self._show_update_dialog = Mock()
         self._schedule_update_check()
 
@@ -36,7 +37,7 @@ class UpdateWindow(MainWindow):
 def window(qt_app, monkeypatch):
     # Keep startup checks explicit and prevent any real network access.
     monkeypatch.setattr(QTimer, "singleShot", Mock())
-    monkeypatch.setattr("ui.main_window.fetch_latest_release", Mock(return_value=None))
+    monkeypatch.setattr("ui.main_window.query_latest_release", Mock(return_value=None))
     widget = UpdateWindow()
     yield widget
     widget.deleteLater()
@@ -110,7 +111,7 @@ def test_late_user_cancel_after_worker_result_prevents_install(window, qt_app, t
 
 def test_response_from_previous_channel_is_discarded(window, qt_app):
     info = UpdateInfo("99.0.0-unstable.20260924.1.abc", "https://example/", prerelease=True)
-    with patch("ui.main_window.fetch_latest_release", return_value=info) as fetch:
+    with patch("ui.main_window.query_latest_release", return_value=info) as fetch:
         window._run_update_check(window._update_request_id, "unstable", False)
     window._config.update_channel = "stable"
     qt_app.processEvents()
@@ -174,7 +175,7 @@ def test_cached_refresh_is_asynchronous_and_deduplicated(window, qt_app):
         return info
 
     try:
-        with patch("ui.main_window.fetch_latest_release", side_effect=fetch) as query:
+        with patch("ui.main_window.query_latest_release", side_effect=fetch) as query:
             window._on_update_requested()
             assert entered.wait(1)
             window._on_update_requested()
@@ -209,3 +210,22 @@ def test_offline_refresh_keeps_manual_release_link(window):
     window._update_info = info
     window._on_update_available(window._update_request_id, "unstable", None, True)
     window._show_update_dialog.assert_called_once_with(info)
+
+
+def test_network_failure_is_logged_without_caching(window, qt_app):
+    """Un échec réseau ne doit pas être mémorisé comme « aucune mise à jour » pendant 24 h."""
+    with patch("ui.main_window.query_latest_release", side_effect=UpdateCheckError("SSLError: CERTIFICATE_VERIFY_FAILED")):
+        window._run_update_check(window._update_request_id, "unstable", False)
+    qt_app.processEvents()
+    window._config.save_last_update_check.assert_not_called()
+    window.log_warn.assert_called_once()
+    assert "CERTIFICATE_VERIFY_FAILED" in window.log_warn.call_args.args[0]
+
+
+def test_network_failure_on_click_keeps_manual_release_link(window, qt_app):
+    info = UpdateInfo("99.0.0", "https://example/")
+    window._update_info = info
+    window._update_refresh_pending = True
+    window._on_update_check_failed(window._update_request_id, "unstable", "offline", True)
+    window._show_update_dialog.assert_called_once_with(info)
+    assert not window._update_refresh_pending

@@ -57,23 +57,38 @@ def _ensure_ssl_ca_bundle() -> None:
     des chemins CA de la machine de build qui n'existent pas sur la machine
     cible → toutes les requêtes HTTPS (TMDB, GitHub…) échouent avec
     CERTIFICATE_VERIFY_FAILED. On force SSL_CERT_FILE sur le bundle certifi
-    embarqué si aucun CA valide n'est visible.
+    embarqué, à défaut sur un bundle CA système connu.
     """
     if not getattr(sys, "frozen", False):
         return
     if os.environ.get("SSL_CERT_FILE") or os.environ.get("REQUESTS_CA_BUNDLE"):
         return
-    try:
-        import certifi  # embarqué par PyInstaller
-    except Exception:
-        return
-    try:
-        ca_path = certifi.where()
-    except Exception:
-        return
-    if ca_path and os.path.exists(ca_path):
+    ca_path = _find_ca_bundle()
+    if ca_path:
         os.environ["SSL_CERT_FILE"] = ca_path
         os.environ.setdefault("REQUESTS_CA_BUNDLE", ca_path)
+
+
+# Bundles CA système usuels (repli si certifi n'est pas embarqué).
+_SYSTEM_CA_BUNDLES = (
+    "/etc/ssl/certs/ca-certificates.crt",                 # Debian/Ubuntu/Arch/Fedora
+    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",  # Fedora/RHEL
+    "/etc/pki/tls/certs/ca-bundle.crt",                   # RHEL/CentOS anciens
+    "/etc/ssl/ca-bundle.pem",                             # openSUSE
+    "/etc/ssl/cert.pem",                                  # macOS/Alpine
+)
+
+
+def _find_ca_bundle() -> str | None:
+    """Bundle CA certifi embarqué, sinon premier bundle système présent."""
+    try:
+        import certifi  # embarqué par PyInstaller
+        ca_path = certifi.where()
+        if ca_path and os.path.isfile(ca_path):
+            return ca_path
+    except Exception:  # nosec B110  # repli sur les bundles système
+        pass
+    return next((path for path in _SYSTEM_CA_BUNDLES if os.path.isfile(path)), None)
 
 
 _ensure_ssl_ca_bundle()

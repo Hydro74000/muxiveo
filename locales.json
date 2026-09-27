@@ -4774,5 +4774,9 @@
   "Éditer…": {
     "fra": "Éditer…",
     "eng": "Edit…"
+  },
+  "Vérification des mises à jour impossible : {reason}": {
+    "fra": "Vérification des mises à jour impossible : {reason}",
+    "eng": "Update check failed: {reason}"
   }
 }

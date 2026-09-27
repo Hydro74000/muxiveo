@@ -8,7 +8,7 @@ from pathlib import Path
 
 from core.config import AppConfig
 from core.inspector import FileInspector
-from core.update_check import fetch_latest_release, normalize_update_channel
+from core.update_check import UpdateCheckError, normalize_update_channel, query_latest_release
 from core.version import APP_BUILD_VERSION, APP_NAME
 
 from cli.batch import run_batch
@@ -46,9 +46,12 @@ def cmd_version(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
     if args.check:
         channel = normalize_update_channel(args.channel or getattr(config, "update_channel", None))
         payload["channel"] = channel
-        info = fetch_latest_release(channel)
+        try:
+            info = query_latest_release(channel)
+        except UpdateCheckError as exc:
+            logger.emit("error", f"Impossible de joindre GitHub pour vérifier les mises à jour : {exc}")
+            info = None
         if info is None:
-            logger.emit("error", "Impossible de joindre GitHub pour vérifier les mises à jour.")
             exit_code = EXIT_WORKFLOW
         else:
             payload.update(latest=info.version, update_available=info.is_newer, url=info.url)

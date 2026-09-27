@@ -11,4 +11,7 @@ numpy>=1.24
  
 # Inspection médias (alternative Python à mediainfo CLI)
 pymediainfo>=6.1.0
+
+# Bundle CA pour HTTPS dans les builds figés (TMDB, mises à jour GitHub)
+certifi
  

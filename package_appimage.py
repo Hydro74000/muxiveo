@@ -210,6 +210,7 @@ _BUILD_DEPS: list[str] = [
     "PySide6>=6.6.0",
     "pymediainfo>=6.1.0",
     "numpy>=1.24",
+    "certifi",
 ]
 
 
@@ -254,6 +255,8 @@ def ensure_build_deps() -> None:
         missing_py.append("numpy>=1.24")
     if importlib.util.find_spec("pymediainfo") is None:
         missing_py.append("pymediainfo>=6.1.0")
+    if importlib.util.find_spec("certifi") is None:
+        missing_py.append("certifi")
 
     if missing_py:
         info(f"Paquets Python manquants : {', '.join(missing_py)}")
@@ -336,6 +339,7 @@ def build_onedir() -> Path:
         # sans aspirer les binaires QML Wayland/NFC qui causent des warnings
         "--collect-data=PySide6",
         "--collect-all=pymediainfo",
+        "--collect-data=certifi",
         "--collect-submodules=cli",
         # Exclusions — modules Python inutiles
         "--exclude-module=tkinter",

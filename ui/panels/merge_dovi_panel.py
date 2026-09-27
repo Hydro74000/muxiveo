@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFrame,
     QHBoxLayout, QLabel, QLayout, QLineEdit, QPushButton,
@@ -36,6 +35,7 @@ from core.workflows.merge_dovi import (
     DoviProfile, FrameCountResult,
     MergeDoviWorkflow, StepResult, WorkflowStep,
 )
+from ui.desktop import open_external
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
 
 
@@ -751,9 +751,7 @@ class _ResultSection(QWidget):
     def _open_folder(self) -> None:
         if self._output_path:
             from PySide6.QtCore import QUrl
-            QDesktopServices.openUrl(
-                QUrl.fromLocalFile(str(self._output_path.parent))
-            )
+            open_external(QUrl.fromLocalFile(str(self._output_path.parent)))
 
     def _copy_path(self) -> None:
         if self._output_path:

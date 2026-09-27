@@ -8,8 +8,10 @@ du système. On force donc l'UTF-8 pour éviter le mojibake du type `FranÃ§ais
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+from collections.abc import Mapping
 from typing import Any
 
 
@@ -72,6 +74,58 @@ def subprocess_text_kwargs() -> dict[str, Any]:
 def decode_subprocess_output(raw: bytes) -> str:
     """Décode un buffer brut provenant d'un outil externe."""
     return raw.decode(_TOOL_TEXT_ENCODING, errors=_TOOL_TEXT_ERRORS)
+
+
+# Variables pouvant pointer dans le bundle figé (AppImage/PyInstaller) et casser
+# les programmes de l'hôte (xdg-open, navigateur, nouvelle AppImage…).
+_BUNDLE_PATH_ENV_VARS = (
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "PATH",
+    "XDG_DATA_DIRS",
+    "QT_PLUGIN_PATH",
+    "QT_QPA_PLATFORM_PLUGIN_PATH",
+    "QML2_IMPORT_PATH",
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "GIO_MODULE_DIR",
+    "GDK_PIXBUF_MODULE_FILE",
+    "GDK_PIXBUF_MODULEDIR",
+    "GTK_PATH",
+    "GSETTINGS_SCHEMA_DIR",
+)
+
+
+def host_environment(env: Mapping[str, str] | None = None, bundle_roots: tuple[str, ...] | None = None) -> dict[str, str]:
+    """
+    Environnement pour lancer un programme de l'hôte depuis un build figé.
+
+    Retire des variables de chemins toute entrée située dans le bundle
+    ($APPDIR, sys._MEIPASS) : sinon le programme lancé charge les bibliothèques
+    embarquées (glib, ssl…) et échoue (ex. « undefined symbol » pour gio/kde-open).
+    Les outils embarqués (ffmpeg…) doivent au contraire garder l'environnement courant.
+    """
+    result = dict(os.environ if env is None else env)
+    if bundle_roots is None:
+        bundle_roots = tuple(r for r in (result.get("APPDIR"), getattr(sys, "_MEIPASS", None)) if r)
+    roots = tuple(str(r).rstrip("/") for r in bundle_roots if r)
+    if not roots:
+        return result
+    result.pop("LD_LIBRARY_PATH_ORIG", None)
+    for name in _BUNDLE_PATH_ENV_VARS:
+        raw = result.get(name)
+        if raw is None:
+            continue
+        kept = [
+            entry
+            for entry in raw.split(os.pathsep)
+            if entry and not any(entry == root or entry.startswith(root + "/") for root in roots)
+        ]
+        if kept:
+            result[name] = os.pathsep.join(kept)
+        else:
+            result.pop(name, None)
+    return result
 
 
 def format_returncode(returncode: int | None) -> str:

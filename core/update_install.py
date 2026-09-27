@@ -24,6 +24,7 @@ from collections.abc import Callable, Mapping
 from enum import Enum
 from pathlib import Path
 
+from core.subprocess_utils import host_environment
 from core.update_check import RELEASE_DOWNLOAD_URL_PREFIX, ReleaseAsset, UpdateInfo, is_repository_url
 from core.version import APP_USER_AGENT
 
@@ -215,6 +216,7 @@ def apply_update(kind: InstallKind, downloaded: Path) -> None:
             # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args, python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             subprocess.Popen(  # nosec B603  # nosemgrep
                 [str(target)],  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
+                env=host_environment(),  # sans les bibliothèques de l'AppImage courante
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

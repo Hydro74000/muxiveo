@@ -10,6 +10,8 @@ from unittest.mock import patch
 from core import update_check
 from core.update_check import (
     LATEST_RELEASE_API_URL,
+    UpdateCheckError,
+    query_latest_release,
     check_for_update,
     display_version,
     fetch_latest_release,
@@ -130,3 +132,13 @@ def test_fetch_is_silent_on_network_error():
 def test_fetch_is_silent_on_invalid_json():
     with patch.object(update_check.urllib.request, "urlopen", return_value=io.BytesIO(b"<html>")):
         assert fetch_latest_release("stable") is None
+
+
+def test_query_raises_on_network_error_with_reason():
+    with patch.object(update_check.urllib.request, "urlopen", side_effect=urllib.error.URLError("CERTIFICATE_VERIFY_FAILED")):
+        try:
+            query_latest_release("stable")
+        except UpdateCheckError as exc:
+            assert "CERTIFICATE_VERIFY_FAILED" in str(exc)
+        else:
+            raise AssertionError("UpdateCheckError attendue")

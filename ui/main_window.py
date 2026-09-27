@@ -47,7 +47,7 @@ from typing import Callable, TYPE_CHECKING, cast
 
 from PySide6.QtCore import QEvent, QObject, Qt, Signal, QTimer, QUrl
 from PySide6.QtGui import (
-    QColor, QDesktopServices, QFont, QGuiApplication, QTextCharFormat, QTextCursor,
+    QColor, QFont, QGuiApplication, QTextCharFormat, QTextCursor,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -67,7 +67,8 @@ from core.subprocess_utils import subprocess_text_kwargs
 from core.update_check import (
     UPDATE_CHECK_INTERVAL_S,
     UpdateInfo,
-    fetch_latest_release,
+    UpdateCheckError,
+    query_latest_release,
     is_newer,
     normalize_update_channel,
     release_page_url,
@@ -98,6 +99,7 @@ from ui.panels.merge_dovi_panel import MergeDoviPanel
 from ui.panels.remux_panel import RemuxPanel
 from ui.panels.hybrid_studio import HybridStudio
 from ui.panels.settings_panel import SettingsPanel
+from ui.desktop import open_external
 from ui.design_system import DesignSystem, colors as _Colors, font_px as _font_px, scale as _scale
 
 if TYPE_CHECKING:
@@ -1414,6 +1416,7 @@ class MainWindow(QMainWindow):
 
     log_requested = Signal(str, str)
     _update_available = Signal(int, str, object, bool)
+    _update_check_failed = Signal(int, str, str, bool)
     WRITING_APPLICATION = WRITING_APPLICATION_TAG
     _PAGE_INDEX_BY_PANEL_KEY = {
         "dashboard": 0,
@@ -2940,6 +2943,7 @@ class MainWindow(QMainWindow):
         self._update_download_cancel: threading.Event | None = None
         self._sidebar.update_requested.connect(self._on_update_requested)
         self._update_available.connect(self._on_update_available, Qt.ConnectionType.QueuedConnection)
+        self._update_check_failed.connect(self._on_update_check_failed, Qt.ConnectionType.QueuedConnection)
         self._sync_update_settings()
 
     def _sync_update_settings(self) -> None:
@@ -2991,11 +2995,26 @@ class MainWindow(QMainWindow):
 
     def _run_update_check(self, request_id: int, channel: str, prompt: bool) -> None:
         """Thread worker : interroge GitHub puis notifie le thread UI par signal."""
-        info = fetch_latest_release(channel, timeout=10.0 if prompt else 5.0)
         try:
+            try:
+                info = query_latest_release(channel, timeout=10.0 if prompt else 5.0)
+            except UpdateCheckError as exc:
+                self._update_check_failed.emit(request_id, channel, str(exc), prompt)
+                return
             self._update_available.emit(request_id, channel, info, prompt)
         except RuntimeError:  # fenêtre détruite entre-temps
             pass
+
+    def _on_update_check_failed(self, request_id: int, channel: str, reason: str, prompt: bool) -> None:
+        """Échec réseau : journalisé, sans horodatage (nouvel essai au prochain lancement)."""
+        if not self._is_current_update_request(request_id, channel):
+            return
+        self.log_warn(translate_text("Vérification des mises à jour impossible : {reason}", reason=reason))
+        if prompt:
+            self._update_refresh_pending = False
+            # Hors ligne, la page de la release déjà connue reste accessible.
+            if self._update_info is not None:
+                self._show_update_dialog(self._update_info)
 
     def _update_channel(self) -> str:
         return normalize_update_channel(getattr(self._config, "update_channel", None))
@@ -3061,7 +3080,7 @@ class MainWindow(QMainWindow):
         box.exec()
         clicked = box.clickedButton()
         if clicked is release_btn:
-            QDesktopServices.openUrl(QUrl(info.url))
+            open_external(QUrl(info.url))
         elif install_btn is not None and clicked is install_btn:
             self._start_update_install(info, kind)
 
