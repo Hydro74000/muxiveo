@@ -287,8 +287,7 @@ def test_window_geometry_fits_small_screen(qt_app) -> None:
     window = MainWindow.__new__(MainWindow)
     screen = MagicMock()
     screen.availableGeometry.return_value = QRect(0, 0, 1280, 672)
-    from PySide6.QtWidgets import QMainWindow
-    QMainWindow.__init__(window)
+    super(MainWindow, window).__init__()
     with patch("ui.main_window.QGuiApplication.primaryScreen", return_value=screen):
         MainWindow._setup_window(window)
     assert window.minimumHeight() <= 672 - 40 and window.height() <= 672 - 40

@@ -26,7 +26,10 @@ _DURATION_ROUNDING_FRAMES = 1
 
 def _run(cmd: list[str]) -> str | None:
     try:
-        result = subprocess.run(cmd, capture_output=True, check=False, **subprocess_text_kwargs())
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(  # nosec B603  # nosemgrep  # argv liste, binaire issu de la config
+            cmd, capture_output=True, check=False, **subprocess_text_kwargs()
+        )
     except (FileNotFoundError, OSError):
         return None
     if result.returncode != 0:
