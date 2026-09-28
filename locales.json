@@ -4794,5 +4794,9 @@
   "Position {ts} — segment {current}/{total}": {
     "fra": "Position {ts} — segment {current}/{total}",
     "eng": "Position {ts} — segment {current}/{total}"
+  },
+  "hh:mm:ss": {
+    "fra": "hh:mm:ss",
+    "eng": "hh:mm:ss"
   }
 }

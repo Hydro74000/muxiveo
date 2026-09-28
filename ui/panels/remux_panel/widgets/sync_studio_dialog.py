@@ -322,7 +322,7 @@ class SyncStudioDialog(QDialog):
         # Navigation libre vers un instant arbitraire (±10 s autour)
         self.goto_edit = QLineEdit(self)
         self.goto_edit.setStyleSheet(_input_style())
-        self.goto_edit.setPlaceholderText("hh:mm:ss")
+        self.goto_edit.setPlaceholderText(translate_text("hh:mm:ss"))
         self.goto_edit.setFixedWidth(_scale(100))
         self.goto_edit.setToolTip(translate_text("Aller à un instant précis (affiche ±10 s autour)"))
         self.goto_edit.returnPressed.connect(self._goto_timestamp)
