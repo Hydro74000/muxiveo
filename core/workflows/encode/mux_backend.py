@@ -18,6 +18,7 @@ Politique (lot 2) :
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -165,8 +166,11 @@ def _wants_dovi_or_hdr(config: EncodeConfig) -> bool:
                             or track.video.get("luminance_max")
                         ):
                             return True
-            except Exception:
-                pass
+            except (OSError, ValueError) as exc:
+                logging.getLogger(__name__).warning(
+                    "Lecture des métadonnées HDR Matroska impossible pour %s : %s",
+                    source_path, exc,
+                )
     return False
 
 

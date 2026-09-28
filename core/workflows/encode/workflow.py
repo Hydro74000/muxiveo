@@ -34,6 +34,7 @@ from core.workdir import (
     remove_path,
 )
 from core.workflows.remux import write_mediainfo_nfo
+from core.workflows.remux_plan import MATROSKA_EXTENSIONS
 from core.workflows.common.remux_postprocess import RemuxPostprocessService
 from core.workflows.common.ffmpeg_runtime import (
     default_ffmpeg_thread_count as _default_ffmpeg_thread_count,
@@ -2726,7 +2727,8 @@ class EncodeWorkflow(QObject):
                     v_indices = [i for i, t in enumerate(tracks) if t.track_type == 1]
                     if v_indices:
                         actual_track_idx = v_indices[0]
-            except Exception:
+            except (OSError, ValueError) as exc:
+                self.log_message.emit("WARN", f"Impossible d'inspecter les pistes vidéo Matroska : {exc}")
                 actual_track_idx = stream_idx
             video_artifacts = [_NativeVideoArtifactRef(source, track_index=actual_track_idx, offset_ms=video_offset_ms)]
             commands = []

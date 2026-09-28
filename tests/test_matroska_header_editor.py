@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from core.matroska.ebml import element, string_element, uint_element
+from core.matroska.reader import MatroskaReader
 from core.matroska.editors.segment_info import (
     MatroskaSegmentInfoHeaderEditor,
     MatroskaSegmentInfoHeaderEditorOptions,
@@ -330,3 +332,88 @@ def test_edit_muxing_app_disabled_skips(tmp_path):
     result = editor.apply_muxing_app_replace_with_header_rebuild(path, app_prefix="Muxiveo v1.3.0")
     assert result.applied is False
     assert result.skipped is True
+
+
+@pytest.mark.parametrize("target_id", [_INFO_ID, _TRACKS_ID])
+@pytest.mark.parametrize("remaining", [0, 1, 25])
+def test_header_growth_reuses_padding_without_moving_clusters(tmp_path, target_id, remaining):
+    """FFmpeg peut séparer le Void réservé des Tracks par l'élément Info."""
+    import zlib
+
+    info = make_info_element(make_mux_element("Lavf"))
+    track = uint_element(b"\xd7", 1) + uint_element(b"\x83", 1) + string_element(b"\x86", "V_MPEG4/ISO/AVC")
+    tracks = element(_TRACKS_ID, element(b"\xae", track))
+    old = info if target_id == _INFO_ID else tracks
+    replacement = element(target_id, old[5:] + element(_VOID_ID, b"extra metadata"))
+    growth = len(replacement) - len(old)
+    padding = MatroskaSegmentInfoHeaderEditor()._build_void_element(growth + remaining)
+
+    def seek_head(info_pos, tracks_pos):
+        seeks = b"".join(
+            element(_SEEK_ID, element(_SEEKID_ID, tid) + element(_SEEKPOS_ID, pos.to_bytes(4, "big")))
+            for tid, pos in ((_INFO_ID, info_pos), (_TRACKS_ID, tracks_pos))
+        )
+        crc = element(b"\xbf", zlib.crc32(seeks).to_bytes(4, "little"))
+        return element(_SEEKHEAD_ID, crc + seeks)
+
+    info_pos = len(seek_head(0, 0)) + len(padding)
+    seeks = seek_head(info_pos, info_pos + len(info))
+    cluster_pos = len(seeks + padding + info + tracks)
+    # Cues est indexé après les Clusters et doit rester intact, offset compris.
+    cues = element(bytes.fromhex("1c53bb6b"), uint_element(b"\xf1", cluster_pos))
+    data = make_ebml_header() + make_segment_known_size(
+        seeks + padding + info + tracks + make_fake_cluster() + cues
+    )
+    path = tmp_path / "compact-header.mkv"
+    path.write_bytes(data)
+    reader = MatroskaReader(path)
+    cluster_offset = next(e.offset for e in reader.top_level() if e.element_id == _CLUSTER_ID)
+
+    editor = MatroskaSegmentInfoHeaderEditor(options=MatroskaSegmentInfoHeaderEditorOptions(
+        allow_post_cluster_rebuild=False,
+    ))
+    assert editor.replace_level1_element(path, element_id=target_id, new_element_bytes=replacement) == 0
+
+    assert path.stat().st_size == len(data)
+    assert path.read_bytes()[cluster_offset:] == data[cluster_offset:]
+    reader = MatroskaReader(path)
+    assert len(reader.tracks()) == 1
+    assert all(e.offset < cluster_offset for e in reader.top_level() if e.element_id in (_INFO_ID, _TRACKS_ID))
+    with path.open("rb") as handle:
+        state = editor._analyze_file(handle, parse_fast=False)
+        head = next(e for e in state.data if e.element_id == _SEEKHEAD_ID)
+        for tid, position in editor._iter_seek_entries(handle, head):
+            target = next(e for e in state.data if e.element_id == tid)
+            assert position == target.offset - state.segment.payload_offset
+        payload = editor._read_exact(handle, head.payload_offset, head.size)
+        assert int.from_bytes(payload[2:6], "little") == zlib.crc32(payload[6:])
+
+
+@pytest.mark.parametrize("patch", ["language", "enabled", "muxing_app"])
+def test_header_growth_without_room_leaves_original_file_intact(tmp_path, patch):
+    from core.matroska.editors.language import MatroskaLanguageEditor
+    from core.matroska.editors.track_flags import MatroskaTrackEnabledEditor
+
+    info = make_info_element(make_mux_element("Lavf"))
+    track = (
+        uint_element(b"\xd7", 1) + uint_element(b"\x83", 1)
+        + string_element(b"\x86", "V_MPEG4/ISO/AVC")
+        + string_element(bytes.fromhex("22b59c"), "fr")
+    )
+    tracks = element(_TRACKS_ID, element(b"\xae", track))
+    data = make_ebml_header() + make_segment_known_size(info + tracks + make_fake_cluster())
+    path = tmp_path / "no-room.mkv"
+    path.write_bytes(data)
+    editor = MatroskaSegmentInfoHeaderEditor(options=MatroskaSegmentInfoHeaderEditorOptions(
+        allow_post_cluster_rebuild=False,
+    ))
+    if patch == "language":
+        result = MatroskaLanguageEditor(editor=editor).apply(path)
+    elif patch == "enabled":
+        result = MatroskaTrackEnabledEditor(editor=editor).apply(path, {0: False})
+    else:
+        result = editor.apply_muxing_app_replace_with_header_rebuild(path, app_prefix="Muxiveo test")
+
+    assert result.skipped and not result.applied
+    assert path.read_bytes() == data
+    assert len(MatroskaReader(path).tracks()) == 1

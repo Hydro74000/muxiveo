@@ -231,7 +231,17 @@ class MatroskaSegmentInfoHeaderEditor:
             state = self._analyze_file(fh, parse_fast=self.options.parse_fast)
             before_size = state.file_size
 
+            if self._replace_before_clusters(fh, state, element_id, new_element_bytes):
+                return 0
+
             self._fix_unknown_size_for_last_level1_element(fh, state)
+            if not self._can_fit_level1_element(
+                state, element_id, len(new_element_bytes), strategy_anywhere=True,
+            ):
+                raise ValueError(
+                    f"Impossible de remplacer l'élément {element_id.hex()} : aucun emplacement "
+                    f"suffisant ({len(new_element_bytes)} octets requis) sans reconstruction post-cluster."
+                )
             self._overwrite_all_instances(fh, state, element_id)
             self._merge_void_elements(fh, state)
             new_idx = self._write_level1_element(fh, state, new_element_bytes, strategy_anywhere=True)
@@ -297,8 +307,23 @@ class MatroskaSegmentInfoHeaderEditor:
 
             before_size = state.file_size
 
+            if self._replace_before_clusters(fh, state, self.options.info_id, new_info):
+                return MatroskaSegmentInfoPatchResult(
+                    applied=True, skipped=False,
+                    reason="Segment Info Matroska patché in-place.",
+                    muxing_app_before=original_mux, muxing_app_after=target_mux,
+                    bytes_delta=0,
+                )
+
             # Sequence for one level-1 element (Info).
             self._fix_unknown_size_for_last_level1_element(fh, state)
+            if not self._can_fit_level1_element(
+                state, self.options.info_id, len(new_info), strategy_anywhere=True,
+            ):
+                raise ValueError(
+                    f"Impossible de remplacer Info : aucun emplacement suffisant "
+                    f"({len(new_info)} octets requis) sans reconstruction post-cluster."
+                )
             self._overwrite_all_instances(fh, state, self.options.info_id)
             self._merge_void_elements(fh, state)
             info_idx = self._write_level1_element(fh, state, new_info, strategy_anywhere=True)
@@ -329,6 +354,124 @@ class MatroskaSegmentInfoHeaderEditor:
                 muxing_app_after=final_mux,
                 bytes_delta=after_size - before_size,
             )
+
+    # ------------------------------------------------------------------
+    # Safe Info/Tracks replacement before the first Cluster
+    # ------------------------------------------------------------------
+
+    def _replace_before_clusters(
+        self, fh: BinaryIO, state: _AnalyzerState,
+        element_id: bytes, replacement: bytes,
+    ) -> bool:
+        """Prépare un patch Info/Tracks sans effacer la cible en cas de manque de place.
+
+        Compacte uniquement le groupe Info/Tracks/Void entourant la cible.
+        Les Clusters, Cues et pièces jointes gardent leurs offsets et payloads.
+        Toutes les tailles et mises à jour SeekHead sont validées avant écriture.
+        """
+        if self.options.allow_post_cluster_rebuild or element_id not in (self.options.info_id, _TRACKS_ID):
+            return False
+        cluster = next((e for e in state.data if e.element_id == _CLUSTER_ID), None)
+        if cluster is None:
+            return False
+        targets = [i for i, e in enumerate(state.data) if e.element_id == element_id]
+        if len(targets) != 1 or state.data[targets[0]].offset >= cluster.offset:
+            raise ValueError("Cible Info/Tracks unique requise avant les Clusters.")
+
+        start = targets[0]
+        stop = start + 1
+        movable = (self.options.info_id, _TRACKS_ID, _VOID_ID)
+        while start > 0 and state.data[start - 1].element_id in movable:
+            start -= 1
+        while stop < len(state.data) and state.data[stop].element_id in movable:
+            stop += 1
+        group = state.data[start:stop]
+        if any(e.unknown_size or e.unresolved_size for e in group):
+            raise ValueError("Taille Info/Tracks/Void indéterminée.")
+        available = group[-1].end - group[0].offset
+        parts = [
+            replacement if e.element_id == element_id
+            else self._read_exact(fh, e.offset, self._element_span(e))
+            for e in group if e.element_id != _VOID_ID
+        ]
+        remaining = available - sum(map(len, parts))
+        if remaining < 0:
+            raise ValueError("Espace insuffisant avant les Clusters pour Info/Tracks.")
+        if remaining == 1:
+            # Un Void exige deux octets : absorber l'octet dans un VINT size.
+            for i, raw in enumerate(parts):
+                entry = self._read_ebml_element_from_bytes(raw, 0)
+                if entry.size_len < 8:
+                    parts[i] = (
+                        entry.element_id
+                        + self._encode_ebml_size(entry.size, length=entry.size_len + 1)
+                        + raw[entry.payload_offset:]
+                    )
+                    break
+            else:
+                raise ValueError("Impossible d'absorber un octet libre avant les Clusters.")
+        elif remaining:
+            parts.append(self._build_void_element(remaining))
+
+        entries: list[_EbmlElement] = []
+        offset = group[0].offset
+        for raw in parts:
+            entry = self._read_ebml_element_from_bytes(raw, 0)
+            entry.offset = offset
+            entry.size_offset += offset
+            entry.payload_offset += offset
+            entries.append(entry)
+            offset += len(raw)
+        state.data[start:stop] = entries
+        seek_updates = self._meta_seek_updates(fh, state)
+        self._write_at(fh, group[0].offset, b"".join(parts))
+        for position, payload in seek_updates:
+            self._write_at(fh, position, payload)
+        return True
+
+    def _can_fit_level1_element(
+        self,
+        state: _AnalyzerState,
+        element_id: bytes,
+        new_element_size: int,
+        *,
+        strategy_anywhere: bool = True,
+    ) -> bool:
+        first_cluster = next((e for e in state.data if e.element_id == _CLUSTER_ID), None)
+        first_cluster_offset = first_cluster.offset if first_cluster is not None else None
+        disallow_post_cluster = (
+            not self.options.allow_post_cluster_rebuild
+            and element_id in (self.options.info_id, _TRACKS_ID)
+        )
+
+        free_intervals: list[tuple[int, int]] = []
+        for e in state.data:
+            if e.element_id == _VOID_ID or e.element_id == element_id:
+                span = self._element_span(e)
+                if span > 0:
+                    free_intervals.append((e.offset, e.offset + span))
+
+        free_intervals.sort(key=lambda item: item[0])
+        merged_intervals: list[tuple[int, int]] = []
+        for start, end in free_intervals:
+            if merged_intervals and start <= merged_intervals[-1][1]:
+                prev_start, prev_end = merged_intervals[-1]
+                merged_intervals[-1] = (prev_start, max(prev_end, end))
+            else:
+                merged_intervals.append((start, end))
+
+        for start, end in merged_intervals:
+            if disallow_post_cluster and first_cluster_offset is not None:
+                if start >= first_cluster_offset:
+                    continue
+                end = min(end, first_cluster_offset)
+            span = end - start
+            if span >= new_element_size:
+                return True
+
+        if disallow_post_cluster and first_cluster_offset is not None:
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Analyzer (fast + meta seek recursion)
@@ -481,11 +624,20 @@ class MatroskaSegmentInfoHeaderEditor:
         strategy_anywhere: bool,
     ) -> int:
         element_size = len(element_bytes)
+        new_elem = self._read_ebml_element_from_bytes(element_bytes, 0)
+        disallow_post_cluster = (
+            not self.options.allow_post_cluster_rebuild
+            and new_elem.element_id in (self.options.info_id, _TRACKS_ID)
+        )
+        first_cluster = next((e for e in state.data if e.element_id == _CLUSTER_ID), None)
+        first_cluster_offset = first_cluster.offset if first_cluster is not None else None
 
         start_idx = 0 if strategy_anywhere else max(0, len(state.data) - 1)
         for idx in range(start_idx, len(state.data)):
             slot = state.data[idx]
             if slot.element_id != _VOID_ID:
+                continue
+            if disallow_post_cluster and first_cluster_offset is not None and slot.offset >= first_cluster_offset:
                 continue
             if self._element_span(slot) < element_size:
                 continue
@@ -504,12 +656,7 @@ class MatroskaSegmentInfoHeaderEditor:
             self._handle_void_elements(fh, state, idx)
             return idx
 
-        new_elem = self._read_ebml_element_from_bytes(element_bytes, 0)
-        if (
-            not self.options.allow_post_cluster_rebuild
-            and new_elem.element_id in (self.options.info_id, _TRACKS_ID)
-            and any(e.element_id == _CLUSTER_ID for e in state.data)
-        ):
+        if disallow_post_cluster and any(e.element_id == _CLUSTER_ID for e in state.data):
             raise ValueError(
                 f"Impossible d'écrire l'élément {new_elem.element_id.hex()} après les Clusters "
                 "(rupture de compatibilité lecteur)."
@@ -635,7 +782,11 @@ class MatroskaSegmentInfoHeaderEditor:
         raise ValueError("Élément cible introuvable après déplacement level-1.")
 
     def _resync_meta_seeks(self, fh: BinaryIO, state: _AnalyzerState) -> None:
-        """Réaligne toutes les SeekPosition sur les offsets réels des éléments.
+        for offset, payload in self._meta_seek_updates(fh, state):
+            self._write_at(fh, offset, payload)
+
+    def _meta_seek_updates(self, fh: BinaryIO, state: _AnalyzerState) -> list[tuple[int, bytes]]:
+        """Prépare les SeekPosition d'après les offsets réels, sans écrire.
 
         Les étapes d'édition in-place peuvent déplacer un élément level-1
         après l'écriture de son entrée Seek (ex. résorption d'un gap d'un
@@ -645,6 +796,7 @@ class MatroskaSegmentInfoHeaderEditor:
         strictement in-place. Les entrées sans cible connue sont laissées
         telles quelles (cas déjà couvert par la suppression d'entrées).
         """
+        updates: list[tuple[int, bytes]] = []
         offsets_by_id: dict[bytes, list[int]] = {}
         for entry in state.data:
             if entry.element_id in (_VOID_ID, _SEEKHEAD_ID):
@@ -700,7 +852,8 @@ class MatroskaSegmentInfoHeaderEditor:
 
             if changed:
                 new_payload = self._refresh_crc32_in_payload(bytes(buf))
-                self._write_at(fh, seek_head.payload_offset, new_payload)
+                updates.append((seek_head.payload_offset, new_payload))
+        return updates
 
     def _try_adding_to_existing_meta_seek(self, fh: BinaryIO, state: _AnalyzerState, seek_entry: bytes) -> bool:
         for idx, sh in enumerate(state.data):

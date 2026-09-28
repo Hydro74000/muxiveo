@@ -1442,8 +1442,11 @@ class MergeDoviWorkflow(QObject):
                         "language": vt.language_bcp47 or vt.language or "und",
                         "name": vt.name or "",
                     }
-            except Exception:
-                pass
+            except (OSError, ValueError) as exc:
+                self.step_progress.emit(
+                    WorkflowStep.REMUX,
+                    f"Lecture des propriétés vidéo Matroska impossible : {exc}. Repli MediaInfo.",
+                )
 
         # Fallback mediainfo
         width_str = self._mediainfo(film, "Video;%Width%").strip()
