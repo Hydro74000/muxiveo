@@ -91,7 +91,9 @@ class MatroskaMuxingAppPostAction:
             options=MatroskaSegmentInfoHeaderEditorOptions(
                 edit_muxing_app=True,
                 edit_writing_app=False,
-                rebuild_on_overflow=False,
+                # Lavf63.1.10x est plus court que le nom Muxiveo : autoriser
+                # l'agrandissement dans l'espace libre avant les Clusters.
+                rebuild_on_overflow=True,
                 allow_post_cluster_rebuild=False,
                 fallback_mode="skip",
             )

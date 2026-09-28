@@ -37,6 +37,8 @@ from core.inspector import AttachmentInfo, ChapterEntry
 from core.runner import TaskSignals
 from core.version import APP_VERSION_LABEL
 from core.matroska.editors.segment_info import MatroskaSegmentInfoHeaderEditor
+from core.matroska.reader import MatroskaReader
+from core.workflows.common.matroska_finalize import MatroskaMuxingAppPostAction
 from core.workflows.remux_mapping import (
     requires_file_sync_fallback_for_offsets,
     resolve_mapped_tracks,
@@ -1027,6 +1029,45 @@ class TestRemuxWorkflowBuildCommand:
 
 
 class TestMatroskaSegmentInfoPatch:
+
+    @pytest.mark.parametrize("old_mux", ["Lavf63.1.101", "Lavf63.1.102"])
+    @pytest.mark.parametrize("suffix", [".mkv", ".mkv.partial"])
+    @pytest.mark.parametrize("has_padding", [True, False])
+    def test_post_action_grows_short_muxing_app_safely(self, tmp_path, old_mux, suffix, has_padding):
+        # Les builds FFmpeg des runners macOS/Windows ont un MuxingApp plus
+        # court que Muxiveo : le test doit couvrir ce cas même sous Linux.
+        target = "Muxiveo 4.0.3"
+        info = element(bytes.fromhex("1549a966"), (
+            ascii_element(b"\x4d\x80", old_mux)
+            + ascii_element(b"\x57\x41", "custom writing application")
+        ))
+        tracks = element(TRACKS_ID, element(TRACK_ENTRY_ID, (
+            uint_element(TRACK_NUMBER_ID, 1) + uint_element(TRACK_UID_ID, 1)
+            + uint_element(TRACK_TYPE_ID, 1) + ascii_element(CODEC_ID_ID, "V_MPEG4/ISO/AVC")
+        )))
+        padding = element(b"\xec", bytes(32)) if has_padding else b""
+        cluster_id = bytes.fromhex("1f43b675")
+        cluster = element(cluster_id, uint_element(b"\xe7", 0))
+        original = element(EBML_HEADER_ID, b"") + element(SEGMENT_ID, padding + info + tracks + cluster)
+        path = tmp_path / f"short-muxing-app{suffix}"
+        path.write_bytes(original)
+        reader = MatroskaReader(path)
+        cluster_offset = next(e.offset for e in reader.top_level() if e.element_id == cluster_id)
+
+        result = MatroskaMuxingAppPostAction(app_prefix=target).apply_if_mkv(path)
+
+        assert result is not None
+        assert result.applied is has_padding
+        assert result.skipped is not has_padding
+        assert _segment_info_apps(path) == {
+            "muxing_app": target if has_padding else old_mux,
+            "writing_app": "custom writing application",
+        }
+        assert path.stat().st_size == len(original)
+        assert MatroskaReader(path).raw_top_level(TRACKS_ID) == (tracks,)
+        assert path.read_bytes()[cluster_offset:] == original[cluster_offset:]
+        if not has_padding:
+            assert path.read_bytes() == original
 
     def test_patch_rebuilds_info_and_updates_only_muxing_app(self, tmp_path):
         old_mux = b"Lavf"
