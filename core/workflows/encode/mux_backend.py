@@ -116,6 +116,60 @@ def encode_native_mux_blockers(config: EncodeConfig, *, pipeline: str) -> tuple[
     return tuple(dict.fromkeys(reasons))
 
 
+def _wants_dovi_or_hdr(config: EncodeConfig) -> bool:
+    """True si le job encode requiert la préservation ou l'injection de métadonnées HDR / Dolby Vision."""
+    if bool(getattr(config, "copy_dv", False)) or bool(getattr(config, "copy_hdr10plus", False)):
+        return True
+    videos = list(getattr(config, "video_tracks", []) or [])
+    if not videos and getattr(config, "video", None) is not None:
+        videos = [config.video]
+    sources_to_check: set[Path] = set()
+    src = Path(getattr(config, "source", ""))
+    if src.is_file():
+        sources_to_check.add(src)
+
+    all_tonemapped = bool(videos)
+    for video in videos:
+        if video is None:
+            continue
+        if not bool(getattr(video, "tonemap_to_sdr", False)):
+            all_tonemapped = False
+        v_src = Path(getattr(video, "source_path", None) or "")
+        if v_src.is_file():
+            sources_to_check.add(v_src)
+        if (
+            bool(getattr(video, "copy_dv", False))
+            or bool(getattr(video, "copy_hdr10plus", False))
+            or bool(getattr(video, "inject_hdr_meta", False))
+            or bool(getattr(video, "master_display", ""))
+            or bool(getattr(video, "max_cll", ""))
+        ):
+            return True
+
+    if all_tonemapped:
+        return False
+
+    for source_path in sources_to_check:
+        if source_path.suffix.lower() in MATROSKA_EXTENSIONS:
+            try:
+                from core.matroska.reader import MatroskaReader
+
+                reader = MatroskaReader(source_path)
+                for track in reader.tracks():
+                    if track.track_type == 1:
+                        tc = track.video.get("transfer_characteristics")
+                        if (
+                            track.block_addition_mappings
+                            or tc in (14, 16, 18)
+                            or track.video.get("max_cll")
+                            or track.video.get("luminance_max")
+                        ):
+                            return True
+            except Exception:
+                pass
+    return False
+
+
 def select_encode_mux_backend(config: EncodeConfig, *, pipeline: str) -> EncodeMuxDecision:
     """Décide du backend d'assemblage final, avant tout démarrage effectif.
 
@@ -142,6 +196,11 @@ def select_encode_mux_backend(config: EncodeConfig, *, pipeline: str) -> EncodeM
             reason="; ".join(blockers), diagnostics=blockers,
         )
     if pipeline == PIPELINE_FFMPEG_DIRECT:
+        if _wants_dovi_or_hdr(config):
+            return EncodeMuxDecision(
+                requested="auto", selected="native", pipeline=pipeline,
+                reason="assemblage natif sélectionné : préservation requise des métadonnées Dolby Vision / HDR10+",
+            )
         return EncodeMuxDecision(
             requested="auto", selected="ffmpeg", pipeline=pipeline,
             reason=(

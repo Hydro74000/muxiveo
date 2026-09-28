@@ -77,105 +77,82 @@ def test_extract_hevc_uses_ffmpeg_command(tmp_path: Path) -> None:
     ]]
 
 
-def test_step_remux_wraps_and_rebuilds_with_ffmpeg(tmp_path: Path) -> None:
+def test_step_remux_executes_native_mux_and_assembly(tmp_path: Path) -> None:
     film1 = tmp_path / "film1.mkv"
     film1.write_bytes(b"film1")
     paths = _paths(tmp_path, film1)
     flags = HDRFlags(has_dovi=False, has_hdr10plus=True)
     paths.film1_final.write_bytes(b"hevc")
 
-    wf = MergeDoviWorkflow(ffmpeg_bin="ffmpeg")
-    wf._source_video_fps_expr = lambda _src: "24000/1001"  # type: ignore[method-assign, assignment]
-    wf._patch_video_timecodes = lambda *_args, **_kwargs: None  # type: ignore[method-assign, assignment]
+    wf = MergeDoviWorkflow()
+    mux_calls: list[dict] = []
+    assemble_calls: list[dict] = []
 
-    calls: list[list[str]] = []
+    def _fake_mux(final_hevc, src_film1, step_paths, video_props, dovi_rec, colour_elem):
+        mux_calls.append({
+            "final_hevc": final_hevc,
+            "source_for_timestamps": src_film1,
+            "output": step_paths.film1_wrapped_video,
+            "video_props": video_props,
+            "dovi_record": dovi_rec,
+            "colour_element": colour_elem,
+        })
+        step_paths.film1_wrapped_video.write_bytes(b"wrapped")
 
-    def _fake_run_cmd(cmd: list[str], _step: WorkflowStep) -> str:
-        calls.append(cmd)
-        out = Path(cmd[-1])
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(b"ok")
-        return ""
+    def _fake_assemble(plan, step_flags, dovi_rec):
+        assemble_calls.append({
+            "plan": plan,
+            "flags": step_flags,
+            "dovi_record": dovi_rec,
+        })
+        plan.output.parent.mkdir(parents=True, exist_ok=True)
+        plan.output.write_bytes(b"final_mkv")
 
-    wf._run_cmd = _fake_run_cmd  # type: ignore[method-assign, assignment]
+    wf._mux_native_video = _fake_mux  # type: ignore[method-assign]
+    wf._assemble_final_mkv = _fake_assemble  # type: ignore[method-assign]
+    wf._read_video_track_props = lambda _f: {  # type: ignore[method-assign]
+        "pixel_width": 3840,
+        "pixel_height": 2160,
+        "language": "und",
+        "name": "",
+    }
 
-    wf._step_remux(film1, paths, flags)
+    class _FakeTrack:
+        track_type = 2
+        language = "fre"
+        language_bcp47 = "fr"
+        name = "Audio FR"
+        flag_enabled = True
+        flag_default = True
+        flag_forced = False
+        flag_hearing_impaired = False
+        flag_visual_impaired = False
+        flag_original = False
+        flag_commentary = False
 
-    assert len(calls) == 2
-    wrap_cmd, final_cmd = calls
+    class _FakeReader:
+        def __init__(self, _p): pass
+        def tracks(self): return [_FakeTrack()]
+        def raw_top_level(self, _id): return []
+        def attachment_headers(self): return []
+        def segment_title(self): return "My Movie"
 
-    assert wrap_cmd[:4] == ["ffmpeg", "-hide_banner", "-y", "-f"]
-    assert "-framerate" in wrap_cmd
-    assert "-bsf:v" in wrap_cmd
-    assert str(paths.film1_wrapped_video) == wrap_cmd[-1]
+    with patch("core.workflows.merge_dovi.MatroskaReader", _FakeReader):
+        wf._step_remux(film1, paths, flags)
 
-    assert final_cmd[:3] == ["ffmpeg", "-hide_banner", "-y"]
-    assert "-map" in final_cmd
-    assert "0:v:0" in final_cmd
-    assert "1:a?" in final_cmd
-    assert "1:s?" in final_cmd
-    assert "1:t?" in final_cmd
-    assert "1:d?" in final_cmd
-    assert "-map_metadata" in final_cmd
-    assert final_cmd[final_cmd.index("-map_metadata") + 1] == "1"
-    assert "-map_chapters" in final_cmd
-    assert final_cmd[final_cmd.index("-map_chapters") + 1] == "1"
-    assert str(paths.output_mkv) == final_cmd[-1]
-
-
-def test_step_remux_patches_video_timecodes_from_source(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    film1 = tmp_path / "film1.mkv"
-    film1.write_bytes(b"film1")
-    paths = _paths(tmp_path, film1)
-    flags = HDRFlags(has_dovi=False, has_hdr10plus=True)
-    paths.film1_final.write_bytes(b"hevc")
-
-    wf = MergeDoviWorkflow(ffmpeg_bin="ffmpeg")
-    wf._source_video_fps_expr = lambda _src: "24000/1001"  # type: ignore[method-assign, assignment]
-
-    calls: list[list[str]] = []
-
-    def _fake_run_cmd(cmd: list[str], _step: WorkflowStep) -> str:
-        calls.append(cmd)
-        Path(cmd[-1]).write_bytes(b"ok")
-        return ""
-
-    wf._run_cmd = _fake_run_cmd  # type: ignore[method-assign, assignment]
-
-    patch_calls: list[tuple[Path, Path]] = []
-
-    class _PatchResult:
-        patched_blocks = 100
-        source_pts = 100
-        first_pts_ms = 0
-        last_pts_ms = 4200
-
-    class _Patcher:
-        def __init__(self, *, ffprobe_bin: str) -> None:
-            self.ffprobe_bin = ffprobe_bin
-
-        def patch(self, *, target_mkv: Path, source_for_timestamps: Path) -> _PatchResult:
-            patch_calls.append((target_mkv, source_for_timestamps))
-            return _PatchResult()
-
-    monkeypatch.setattr(
-        "core.workflows.merge_dovi.MatroskaVideoTimecodePatcher",
-        _Patcher,
-    )
-
-    wf._step_remux(film1, paths, flags)
-
-    assert patch_calls == [(paths.output_mkv, film1)]
-    assert len(calls) == 2
-    assert calls[0][-1] == str(paths.film1_wrapped_video)
-    assert calls[1][calls[1].index("-i") + 1] == str(paths.film1_wrapped_video)
+    assert len(mux_calls) == 1
+    assert mux_calls[0]["final_hevc"] == paths.film1_final
+    assert mux_calls[0]["output"] == paths.film1_wrapped_video
+    assert len(assemble_calls) == 1
+    plan = assemble_calls[0]["plan"]
+    assert plan.output == paths.output_mkv
+    assert len(plan.ordered_tracks) == 2
+    assert plan.ordered_tracks[0].artifact == paths.film1_wrapped_video
+    assert plan.ordered_tracks[1].artifact == film1
+    assert plan.segment_title == "My Movie"
 
 
-def test_step_remux_patches_dovi_block_addition_mapping(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_step_remux_passes_dovi_record_to_native_video_muxer(tmp_path: Path) -> None:
     film1 = tmp_path / "film1.mkv"
     film1.write_bytes(b"film1")
     paths = _paths(tmp_path, film1)
@@ -183,27 +160,94 @@ def test_step_remux_patches_dovi_block_addition_mapping(
     paths.film1_with_dovi.write_bytes(b"hevc")
     paths.film2_rpu.write_bytes(b"rpu")
 
-    wf = MergeDoviWorkflow(ffmpeg_bin="ffmpeg")
-    wf._source_video_fps_expr = lambda _src: "24000/1001"  # type: ignore[method-assign, assignment]
-    wf._patch_video_timecodes = lambda *_args, **_kwargs: None  # type: ignore[method-assign, assignment]
-
-    def _fake_run_cmd(cmd: list[str], _step: WorkflowStep) -> str:
-        out = Path(cmd[-1])
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(b"ok")
-        return ""
-
-    wf._run_cmd = _fake_run_cmd  # type: ignore[method-assign, assignment]
-
+    wf = MergeDoviWorkflow()
     compat_ids: list[int | None] = []
-    record = object()
+    fake_record = object()
 
-    def _fake_record(_rpu: Path, *, forced_compat_id: int | None = None) -> object:
+    def _fake_record_fn(_rpu: Path, *, forced_compat_id: int | None = None):
         compat_ids.append(forced_compat_id)
-        return record
+        return fake_record
 
-    wf._build_dovi_record_from_rpu = _fake_record  # type: ignore[method-assign, assignment]
+    wf._build_dovi_record_from_rpu = _fake_record_fn  # type: ignore[method-assign]
 
+    mux_records: list[object] = []
+    wf._mux_native_video = lambda _fh, _f1, p, _vp, d_rec, _c: (  # type: ignore[method-assign]
+        mux_records.append(d_rec) or p.film1_wrapped_video.write_bytes(b"wrapped")
+    )
+    wf._assemble_final_mkv = lambda p, _f, _d: p.output.write_bytes(b"out")  # type: ignore[method-assign]
+    wf._read_video_track_props = lambda _f: {"pixel_width": 3840, "pixel_height": 2160}  # type: ignore[method-assign]
+
+    class _FakeReader:
+        def __init__(self, _p): pass
+        def tracks(self): return []
+        def raw_top_level(self, _id): return []
+        def attachment_headers(self): return []
+        def segment_title(self): return ""
+
+    with patch("core.workflows.merge_dovi.MatroskaReader", _FakeReader):
+        wf._step_remux(film1, paths, flags, dovi_profile=DoviProfile.P8_1)
+
+    assert compat_ids == [1]
+    assert mux_records == [fake_record]
+
+
+def test_step_remux_incorporates_chapters_from_film2(tmp_path: Path) -> None:
+    film1 = tmp_path / "film1.mkv"
+    film1.write_bytes(b"film1")
+    film2 = tmp_path / "film2.mkv"
+    film2.write_bytes(b"film2")
+    paths = _paths(tmp_path, film1)
+    flags = HDRFlags(has_dovi=False, has_hdr10plus=False)
+    paths.film1_hevc_input.write_bytes(b"hevc")
+
+    wf = MergeDoviWorkflow()
+    wf._mux_native_video = lambda _fh, _f1, p, _vp, _d, _c: p.film1_wrapped_video.write_bytes(b"wrapped")  # type: ignore[method-assign]
+    wf._read_video_track_props = lambda _f: {"pixel_width": 3840, "pixel_height": 2160}  # type: ignore[method-assign]
+
+    captured_plans = []
+    wf._assemble_final_mkv = lambda p, _f, _d: captured_plans.append(p) or p.output.write_bytes(b"out")  # type: ignore[method-assign]
+
+    class _FakeReader:
+        def __init__(self, p): self.p = p
+        def tracks(self): return []
+        def raw_top_level(self, _id):
+            return [b"chapter_bytes"] if self.p == film2 else []
+        def attachment_headers(self): return []
+        def segment_title(self): return ""
+
+    with patch("core.workflows.merge_dovi.MatroskaReader", _FakeReader):
+        wf._step_remux(film1, paths, flags, film2=film2)
+
+    assert len(captured_plans) == 1
+    assert captured_plans[0].chapter_source == film2
+
+
+def test_patch_video_timecodes_invokes_patcher(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wf = MergeDoviWorkflow()
+    patch_calls: list[tuple[Path, Path]] = []
+
+    class _PatchResult:
+        patched_blocks = 100
+        last_pts_ms = 4200
+
+    class _Patcher:
+        def __init__(self, *, ffprobe_bin: str) -> None: pass
+        def patch(self, *, target_mkv: Path, source_for_timestamps: Path):
+            patch_calls.append((target_mkv, source_for_timestamps))
+            return _PatchResult()
+
+    monkeypatch.setattr("core.workflows.merge_dovi.MatroskaVideoTimecodePatcher", _Patcher)
+    wf._patch_video_timecodes(tmp_path / "out.mkv", tmp_path / "src.mkv", WorkflowStep.REMUX)
+    assert patch_calls == [(tmp_path / "out.mkv", tmp_path / "src.mkv")]
+
+
+def test_patch_dovi_block_addition_invokes_editor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    film1 = tmp_path / "film1.mkv"
+    paths = _paths(tmp_path, film1)
+    paths.film2_rpu.write_bytes(b"rpu")
+    wf = MergeDoviWorkflow()
+    record = object()
+    wf._build_dovi_record_from_rpu = lambda _rpu, **_kw: record  # type: ignore[method-assign]
     patched: list[tuple[Path, object]] = []
 
     class _PatchResult:
@@ -214,23 +258,12 @@ def test_step_remux_patches_dovi_block_addition_mapping(
         reason = ""
 
     class _Editor:
-        def patch(self, output: Path, *, record: object) -> _PatchResult:
+        def patch(self, output: Path, *, record: object):
             patched.append((output, record))
             return _PatchResult()
 
-    monkeypatch.setattr(
-        "core.workflows.merge_dovi.MatroskaDoviBlockAdditionEditor",
-        lambda: _Editor(),
-    )
-
-    wf._step_remux(
-        film1,
-        paths,
-        flags,
-        dovi_profile=DoviProfile.P8_1,
-    )
-
-    assert compat_ids == [1]
+    monkeypatch.setattr("core.workflows.merge_dovi.MatroskaDoviBlockAdditionEditor", lambda: _Editor())
+    wf._patch_dovi_block_addition(paths, dovi_profile=DoviProfile.P8_1, step=WorkflowStep.REMUX)
     assert patched == [(paths.output_mkv, record)]
 
 

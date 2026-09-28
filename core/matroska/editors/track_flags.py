@@ -52,7 +52,10 @@ class MatroskaTrackEnabledEditor:
         editor: MatroskaSegmentInfoHeaderEditor | None = None,
     ) -> None:
         self._editor = editor or MatroskaSegmentInfoHeaderEditor(
-            options=MatroskaSegmentInfoHeaderEditorOptions(fallback_mode="skip")
+            options=MatroskaSegmentInfoHeaderEditorOptions(
+                allow_post_cluster_rebuild=False,
+                fallback_mode="skip",
+            )
         )
 
     # ------------------------------------------------------------------

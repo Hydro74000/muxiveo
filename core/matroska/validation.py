@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import contract as _contract
-from .ids import CHAPTERS_ID, TAGS_ID
+from .ids import CHAPTERS_ID, CLUSTER_ID, INFO_ID, TAGS_ID, TRACKS_ID
 from .language import matroska_legacy_language
 from .reader import MatroskaAttachmentHeader, MatroskaReader, MatroskaTrack
 
@@ -200,6 +200,21 @@ def validate_matroska_output(
     if not tracks:
         errors.append("Aucune piste Matroska dans la sortie.")
         return errors
+
+    try:
+        top_level = reader.top_level()
+        first_cluster_offset = next(
+            (el.offset for el in top_level if el.element_id == CLUSTER_ID), None
+        )
+        if first_cluster_offset is not None:
+            for el in top_level:
+                if el.element_id in (INFO_ID, TRACKS_ID) and el.offset > first_cluster_offset:
+                    errors.append(
+                        f"Élément conteneur {el.element_id.hex()} situé après le premier Cluster "
+                        f"(offset {el.offset} > {first_cluster_offset}) : disposition invalide pour les lecteurs."
+                    )
+    except (OSError, ValueError) as exc:
+        errors.append(f"Structure top-level illisible : {exc}")
 
     try:
         duration_ns = reader.segment_duration_ns()

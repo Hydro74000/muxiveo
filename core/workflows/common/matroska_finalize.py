@@ -91,7 +91,8 @@ class MatroskaMuxingAppPostAction:
             options=MatroskaSegmentInfoHeaderEditorOptions(
                 edit_muxing_app=True,
                 edit_writing_app=False,
-                rebuild_on_overflow=True,
+                rebuild_on_overflow=False,
+                allow_post_cluster_rebuild=False,
                 fallback_mode="skip",
             )
         )

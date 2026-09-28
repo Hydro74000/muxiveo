@@ -35,10 +35,10 @@ import sys
 import tempfile
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum, auto
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from PySide6.QtCore import QObject, Signal
 from core.dovi_profile_detector import DoviProfileDetector, DoviSubProfile
@@ -52,11 +52,48 @@ from core.workflows.encode.runtime.frame_count_guard import (
     FrameCountGuard,
 )
 from core.workflows.hevc_static_hdr_metadata import inject_static_hdr_sei_file
+from core.matroska.assembly import (
+    MatroskaAssemblyAttachment,
+    MatroskaAssemblyPlan,
+    MatroskaAssemblyTrack,
+    MatroskaTrackFlags,
+    assembly_output_contract,
+    compile_assembly_plan,
+)
+from core.matroska.ebml import element, float_element, uint_element
 from core.matroska.editors.dovi import (
     DolbyVisionConfigRecord,
     MatroskaDoviBlockAdditionEditor,
 )
 from core.matroska.editors.video_timecodes import MatroskaVideoTimecodePatcher
+from core.matroska.ids import (
+    BITS_PER_CHANNEL_ID,
+    CHAPTERS_ID,
+    COLOUR_ID,
+    LUMINANCE_MAX_ID,
+    LUMINANCE_MIN_ID,
+    MASTERING_METADATA_ID,
+    MATRIX_COEFFICIENTS_ID,
+    MAX_CLL_ID,
+    MAX_FALL_ID,
+    PRIMARY_B_CHROMATICITY_X_ID,
+    PRIMARY_B_CHROMATICITY_Y_ID,
+    PRIMARY_G_CHROMATICITY_X_ID,
+    PRIMARY_G_CHROMATICITY_Y_ID,
+    PRIMARY_R_CHROMATICITY_X_ID,
+    PRIMARY_R_CHROMATICITY_Y_ID,
+    PRIMARIES_ID,
+    RANGE_ID,
+    TAGS_ID,
+    TRACK_TYPE_VIDEO,
+    TRANSFER_CHARACTERISTICS_ID,
+    WHITE_POINT_CHROMATICITY_X_ID,
+    WHITE_POINT_CHROMATICITY_Y_ID,
+)
+from core.matroska.mux_plan import deterministic_source_identity
+from core.matroska.native_muxer import MatroskaNativeMuxer
+from core.matroska.reader import MatroskaReader
+from core.matroska.writer import MatroskaWriter
 
 # Outils dont la barre de progression XX% n'est émise qu'en TTY.
 _PTY_PROGRESS_TOOLS: frozenset[str] = frozenset({"dovi_tool", "hdr10plus_tool"})
@@ -141,8 +178,10 @@ def _format_master_display_from_mediainfo(track: dict) -> str:
     if not m:
         return ""
     try:
-        lmin = int(round(float(m.group(1)) * 10000))
-        lmax = int(round(float(m.group(2)) * 10000))
+        val1 = float(m.group(1))
+        val2 = float(m.group(2))
+        lmin = int(round(min(val1, val2) * 10000))
+        lmax = int(round(max(val1, val2) * 10000))
     except ValueError:
         return ""
 
@@ -168,6 +207,70 @@ def _format_max_cll_from_mediainfo(track: dict) -> str:
     if not m_cll or not m_fall:
         return ""
     return f"{m_cll.group(1)},{m_fall.group(1)}"
+
+
+def _build_colour_element_from_static_hdr(static_hdr: StaticHdrMetadata) -> bytes:
+    """Construit l'élément EBML Colour (0x55B0) pour la piste vidéo Matroska.
+
+    Contient les métadonnées HDR10 conteneur :
+      - MatrixCoefficients (9 = BT.2020 non-constant)
+      - BitsPerChannel (10)
+      - Range (1 = limited)
+      - TransferCharacteristics (16 = PQ)
+      - Primaries (9 = BT.2020)
+      - MaxCLL / MaxFALL
+      - MasteringMetadata (primaires RGB, white point, luminance min/max)
+    """
+    mastering_children: list[bytes] = []
+    if static_hdr.master_display:
+        m = re.search(
+            r"G\((\d+),(\d+)\)B\((\d+),(\d+)\)R\((\d+),(\d+)\)WP\((\d+),(\d+)\)L\((\d+),(\d+)\)",
+            static_hdr.master_display,
+        )
+        if m:
+            gx, gy = int(m.group(1)) / 50000.0, int(m.group(2)) / 50000.0
+            bx, by = int(m.group(3)) / 50000.0, int(m.group(4)) / 50000.0
+            rx, ry = int(m.group(5)) / 50000.0, int(m.group(6)) / 50000.0
+            wpx, wpy = int(m.group(7)) / 50000.0, int(m.group(8)) / 50000.0
+            lum_a = int(m.group(9)) / 10000.0
+            lum_b = int(m.group(10)) / 10000.0
+            lmax = max(lum_a, lum_b)
+            lmin = min(lum_a, lum_b)
+            mastering_children = [
+                float_element(PRIMARY_R_CHROMATICITY_X_ID, rx),
+                float_element(PRIMARY_R_CHROMATICITY_Y_ID, ry),
+                float_element(PRIMARY_G_CHROMATICITY_X_ID, gx),
+                float_element(PRIMARY_G_CHROMATICITY_Y_ID, gy),
+                float_element(PRIMARY_B_CHROMATICITY_X_ID, bx),
+                float_element(PRIMARY_B_CHROMATICITY_Y_ID, by),
+                float_element(WHITE_POINT_CHROMATICITY_X_ID, wpx),
+                float_element(WHITE_POINT_CHROMATICITY_Y_ID, wpy),
+                float_element(LUMINANCE_MAX_ID, lmax),
+                float_element(LUMINANCE_MIN_ID, lmin),
+            ]
+
+    colour_children = [
+        uint_element(MATRIX_COEFFICIENTS_ID, 9),
+        uint_element(BITS_PER_CHANNEL_ID, 10),
+        uint_element(RANGE_ID, 1),
+        uint_element(TRANSFER_CHARACTERISTICS_ID, 16),
+        uint_element(PRIMARIES_ID, 9),
+    ]
+
+    if static_hdr.max_cll:
+        parts = static_hdr.max_cll.split(",")
+        if len(parts) == 2:
+            try:
+                cll, fall = int(parts[0]), int(parts[1])
+                colour_children.append(uint_element(MAX_CLL_ID, cll))
+                colour_children.append(uint_element(MAX_FALL_ID, fall))
+            except ValueError:
+                pass
+
+    if mastering_children:
+        colour_children.append(element(MASTERING_METADATA_ID, b"".join(mastering_children)))
+
+    return element(COLOUR_ID, b"".join(colour_children))
 
 
 # =============================================================================
@@ -444,6 +547,7 @@ class MergeDoviWorkflow(QObject):
         output_dir:   Path,
         dovi_profile: DoviProfile = DoviProfile.P8_1,
         output_basename: str | None = None,
+        extra_subtitle_files: tuple[Path, ...] = (),
     ) -> None:
         """Lance le workflow dans un thread secondaire."""
         self._cancelled = False
@@ -457,7 +561,7 @@ class MergeDoviWorkflow(QObject):
         paths = _WorkflowPaths.from_config(process_work_dir, output_dir, film1, basename)
 
         outer = ThreadPoolExecutor(max_workers=1)
-        outer.submit(self._run, film1, film2, paths, dovi_profile)
+        outer.submit(self._run, film1, film2, paths, dovi_profile, tuple(extra_subtitle_files))
         outer.shutdown(wait=False)
 
     def cancel(self) -> None:
@@ -478,6 +582,7 @@ class MergeDoviWorkflow(QObject):
         film2: Path,
         paths: _WorkflowPaths,
         profile: DoviProfile,
+        extra_subtitle_files: tuple[Path, ...] = (),
     ) -> None:
         try:
             paths.work_dir.mkdir(parents=True, exist_ok=True)
@@ -578,12 +683,16 @@ class MergeDoviWorkflow(QObject):
             self._check_cancel()
 
             # 11 — Remuxage
+            chosen_static = static_hdr_film1 if static_hdr_film1.is_complete else static_hdr_film2
             self._step_remux(
                 film1,
                 paths,
                 flags,
+                film2=film2,
                 static_hdr_applied=static_applied,
                 dovi_profile=effective_profile,
+                static_hdr_metadata=chosen_static,
+                extra_subtitle_files=extra_subtitle_files,
             )
             self._check_cancel()
 
@@ -1316,14 +1425,102 @@ class MergeDoviWorkflow(QObject):
     # Étape 7 — Remuxage final
     # ------------------------------------------------------------------
 
+    def _read_video_track_props(self, film: Path) -> dict[str, Any]:
+        """Extrait la résolution, le format d'affichage et la langue de la piste vidéo."""
+        if film.is_file() and film.suffix.lower() == ".mkv":
+            try:
+                reader = MatroskaReader(film)
+                video_tracks = [t for t in reader.tracks() if t.track_type == TRACK_TYPE_VIDEO]
+                if video_tracks:
+                    vt = video_tracks[0]
+                    v_dict = vt.video or {}
+                    return {
+                        "pixel_width": v_dict.get("pixel_width", 3840),
+                        "pixel_height": v_dict.get("pixel_height", 2160),
+                        "display_width": v_dict.get("display_width"),
+                        "display_height": v_dict.get("display_height"),
+                        "language": vt.language_bcp47 or vt.language or "und",
+                        "name": vt.name or "",
+                    }
+            except Exception:
+                pass
+
+        # Fallback mediainfo
+        width_str = self._mediainfo(film, "Video;%Width%").strip()
+        height_str = self._mediainfo(film, "Video;%Height%").strip()
+        lang_str = self._mediainfo(film, "Video;%Language%").strip()
+        title_str = self._mediainfo(film, "Video;%Title%").strip()
+        try:
+            width = int(width_str) if width_str else 3840
+        except ValueError:
+            width = 3840
+        try:
+            height = int(height_str) if height_str else 2160
+        except ValueError:
+            height = 2160
+        return {
+            "pixel_width": width,
+            "pixel_height": height,
+            "display_width": None,
+            "display_height": None,
+            "language": lang_str or "und",
+            "name": title_str or "",
+        }
+
+    def _mux_native_video(
+        self,
+        final_hevc: Path,
+        film1: Path,
+        paths: _WorkflowPaths,
+        video_props: dict[str, Any],
+        dovi_record: DolbyVisionConfigRecord | None,
+        colour_element: bytes,
+    ) -> None:
+        muxer = MatroskaNativeMuxer(
+            ffprobe_bin=self._bins["ffprobe"],
+        )
+        muxer.mux(
+            hevc_input=final_hevc,
+            source_for_timestamps=film1,
+            output=paths.film1_wrapped_video,
+            pixel_width=video_props["pixel_width"],
+            pixel_height=video_props["pixel_height"],
+            display_width=video_props.get("display_width"),
+            display_height=video_props.get("display_height"),
+            dovi_record=dovi_record,
+            language=video_props.get("language") or "und",
+            colour_element=colour_element,
+            timestamp_order="packet",
+        )
+
+    def _assemble_final_mkv(
+        self,
+        plan: MatroskaAssemblyPlan,
+        flags: HDRFlags,
+        dovi_record: DolbyVisionConfigRecord | None,
+    ) -> None:
+        contract = assembly_output_contract(
+            plan,
+            require_block_addition_mapping=bool(flags.has_dovi and dovi_record is not None),
+        )
+        plan_with_contract = replace(plan, expected_output_contract=contract)
+        mux_plan = compile_assembly_plan(plan_with_contract)
+        MatroskaWriter().write(
+            mux_plan,
+            cancel_cb=lambda: self._cancelled,
+        )
+
     def _step_remux(
         self,
         film1: Path,
         paths: _WorkflowPaths,
         flags: HDRFlags,
         *,
+        film2: Path | None = None,
         static_hdr_applied: bool = False,
         dovi_profile: DoviProfile = DoviProfile.P8_1,
+        static_hdr_metadata: StaticHdrMetadata | None = None,
+        extra_subtitle_files: tuple[Path, ...] = (),
     ) -> None:
         step = WorkflowStep.REMUX
         t0   = time.monotonic()
@@ -1333,12 +1530,6 @@ class MergeDoviWorkflow(QObject):
         if not final_hevc.exists():
             raise WorkflowError(step, f"Flux injecté introuvable : {final_hevc.name}")
 
-        fps_expr = self._source_video_fps_expr(film1)
-        self.step_progress.emit(
-            step,
-            f"Encapsulation vidéo injectée (FPS source: {fps_expr}) → {paths.film1_wrapped_video.name}…",
-        )
-
         dovi_record = None
         if flags.has_dovi and paths.film2_rpu.exists():
             dovi_record = self._build_dovi_record_from_rpu(
@@ -1346,53 +1537,167 @@ class MergeDoviWorkflow(QObject):
                 forced_compat_id=1 if dovi_profile == DoviProfile.P8_1 else None,
             )
 
-        self._run_cmd([
-            self._bins["ffmpeg"],
-            "-hide_banner",
-            "-y",
-            "-f", "hevc",
-            "-framerate", fps_expr,
-            "-i", str(final_hevc),
-            "-map", "0:v:0",
-            "-c:v", "copy",
-            "-bsf:v", f"setts=pts=N/({fps_expr}*TB)",
-            str(paths.film1_wrapped_video),
-        ], step)
+        colour_element = b""
+        if static_hdr_metadata and (static_hdr_metadata.master_display or static_hdr_metadata.max_cll):
+            colour_element = _build_colour_element_from_static_hdr(static_hdr_metadata)
 
-        self.step_progress.emit(step, f"Reconstruction conteneur final → {paths.output_mkv.name}…")
-        # Route les subtitle streams de film1 : copy si MKV l'accepte, srt
-        # sinon (mov_text, eia_608, …). Indispensable quand film1 est un MP4.
-        subs_codec_args = self._subtitle_codec_args_for(film1)
-        self._run_cmd([
-            self._bins["ffmpeg"],
-            "-hide_banner",
-            "-y",
-            "-i", str(paths.film1_wrapped_video),
-            "-i", str(film1),
-            "-map", "0:v:0",
-            "-map", "1:a?",
-            "-map", "1:s?",
-            "-map", "1:t?",
-            "-map", "1:d?",
-            "-c:v", "copy",
-            "-c:a", "copy",
-            *subs_codec_args,
-            "-c:t", "copy",
-            "-c:d", "copy",
-            "-map_metadata", "1",
-            "-map_chapters", "1",
-            str(paths.output_mkv),
-        ], step)
+        # 1. Propriétés vidéo de film1 (résolution, format d'affichage, langue)
+        video_props = self._read_video_track_props(film1)
 
-        self._patch_video_timecodes(paths.output_mkv, film1, step)
-
-        if flags.has_dovi and paths.film2_rpu.exists():
-            self._patch_dovi_block_addition(
+        # 2. Encapsulation native de la vidéo injectée
+        self.step_progress.emit(
+            step,
+            f"Encapsulation vidéo native HEVC → {paths.film1_wrapped_video.name}…",
+        )
+        try:
+            self._mux_native_video(
+                final_hevc,
+                film1,
                 paths,
-                dovi_profile=dovi_profile,
-                step=step,
-                dovi_record=dovi_record,
+                video_props,
+                dovi_record,
+                colour_element,
             )
+        except Exception as exc:
+            raise WorkflowError(step, f"Encapsulation vidéo native échouée : {exc}") from exc
+
+        # 3. Préparation du conteneur pour pistes audio / sous-titres
+        if film1.is_file() and film1.suffix.lower() == ".mkv":
+            source_mkv = film1
+        else:
+            canonical_mkv = paths.work_dir / "film1_canonical.mkv"
+            self.step_progress.emit(
+                step,
+                f"Canonicalisation conteneur source ({film1.suffix}) → {canonical_mkv.name}…",
+            )
+            subs_codec_args = self._subtitle_codec_args_for(film1)
+            self._run_cmd([
+                self._bins["ffmpeg"],
+                "-hide_banner",
+                "-y",
+                "-nostdin",
+                "-i", str(film1),
+                "-map", "0",
+                "-c", "copy",
+                *subs_codec_args,
+                str(canonical_mkv),
+            ], step)
+            source_mkv = canonical_mkv
+
+        source_reader = MatroskaReader(source_mkv)
+
+        # 4. Pistes d'assemblage
+        assembly_tracks: list[MatroskaAssemblyTrack] = [
+            MatroskaAssemblyTrack(
+                artifact=paths.film1_wrapped_video,
+                artifact_track_index=0,
+                source_identity=deterministic_source_identity(paths.film1_wrapped_video),
+                language_value=video_props.get("language") or "und",
+                name=video_props.get("name") or "",
+                flags=MatroskaTrackFlags(enabled=True, default=True),
+            )
+        ]
+
+        # Audio et sous-titres depuis source_mkv
+        for track_idx, track in enumerate(source_reader.tracks()):
+            if track.track_type == TRACK_TYPE_VIDEO:
+                continue
+            assembly_tracks.append(
+                MatroskaAssemblyTrack(
+                    artifact=source_mkv,
+                    artifact_track_index=track_idx,
+                    source_identity=deterministic_source_identity(source_mkv),
+                    language_value=None,  # préserve le TrackEntry source tel quel
+                    name=None,
+                    flags=None,
+                )
+            )
+
+        # Sous-titres supplémentaires optionnels
+        for extra_idx, extra_path in enumerate(extra_subtitle_files):
+            extra_p = Path(extra_path)
+            if not extra_p.is_file():
+                continue
+            if extra_p.suffix.lower() == ".srt":
+                sub_artifact = paths.work_dir / f"extra_sub_{extra_idx}.mkv"
+                self._run_cmd([
+                    self._bins["ffmpeg"],
+                    "-hide_banner",
+                    "-y",
+                    "-nostdin",
+                    "-i", str(extra_p),
+                    "-c:s", "srt",
+                    "-f", "matroska",
+                    str(sub_artifact),
+                ], step)
+            elif extra_p.suffix.lower() == ".mkv":
+                sub_artifact = extra_p
+            else:
+                continue
+
+            stem_lower = extra_p.name.lower()
+            is_sdh = "sdh" in stem_lower or "hi" in stem_lower or "cc" in stem_lower
+            is_forced = "forced" in stem_lower
+            lang = "fre" if ("fr" in stem_lower or "fra" in stem_lower) else ("eng" if "en" in stem_lower else "und")
+            title = "Français (SDH)" if (is_sdh and lang == "fre") else ("Français" if lang == "fre" else extra_p.stem)
+
+            assembly_tracks.append(
+                MatroskaAssemblyTrack(
+                    artifact=sub_artifact,
+                    artifact_track_index=0,
+                    source_identity=deterministic_source_identity(sub_artifact),
+                    language_value=lang,
+                    name=title,
+                    flags=MatroskaTrackFlags(
+                        enabled=True,
+                        default=False,
+                        forced=is_forced,
+                        hearing_impaired=is_sdh,
+                    ),
+                )
+            )
+
+        # 5. Chapitres : source_mkv si présent, sinon repli vers film2 si disponible
+        chapter_source: Path | None = None
+        if source_reader.raw_top_level(CHAPTERS_ID):
+            chapter_source = source_mkv
+        elif film2 is not None and film2.is_file() and film2.suffix.lower() == ".mkv":
+            if MatroskaReader(film2).raw_top_level(CHAPTERS_ID):
+                chapter_source = film2
+                self.step_progress.emit(step, f"Chapitres importés depuis {film2.name}.")
+
+        # 6. Attachments
+        attachments = tuple(
+            MatroskaAssemblyAttachment(
+                artifact=source_mkv,
+                local_index=idx,
+                source_identity=deterministic_source_identity(source_mkv),
+            )
+            for idx in range(len(source_reader.attachment_headers()))
+        )
+
+        # 7. Tags et titre
+        tag_copy_sources = (source_mkv,) if source_reader.raw_top_level(TAGS_ID) else ()
+        segment_title = source_reader.segment_title()
+
+        # 8. Assemblage et écriture native
+        self.step_progress.emit(
+            step,
+            f"Assemblage Matroska natif multi-pistes ({len(assembly_tracks)} pistes) → {paths.output_mkv.name}…",
+        )
+        plan = MatroskaAssemblyPlan(
+            output=paths.output_mkv,
+            ordered_tracks=tuple(assembly_tracks),
+            attachments=attachments,
+            chapter_source=chapter_source,
+            tag_copy_sources=tag_copy_sources,
+            segment_title=segment_title,
+        )
+
+        try:
+            self._assemble_final_mkv(plan, flags, dovi_record)
+        except Exception as exc:
+            raise WorkflowError(step, f"Écriture Matroska native échouée : {exc}") from exc
 
         size_mb = paths.output_mkv.stat().st_size / (1024 ** 2)
         duration = time.monotonic() - t0
@@ -1557,10 +1862,14 @@ class MergeDoviWorkflow(QObject):
             paths.film1_final,
             paths.film1_with_static_hdr,
             paths.film1_wrapped_video,
+            paths.work_dir / "film1_canonical.mkv",
         ]:
             if path.exists():
                 path.unlink()
                 self.step_progress.emit(step, f"Supprimé : {path.name}")
+
+        for extra_temp in paths.work_dir.glob("extra_sub_*.mkv"):
+            extra_temp.unlink(missing_ok=True)
 
         try:
             paths.work_dir.rmdir()

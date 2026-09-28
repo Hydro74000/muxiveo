@@ -2711,29 +2711,52 @@ class EncodeWorkflow(QObject):
             source_path=source,
             stream_index=self._video_stream_index(config),
         )
-        intermediate = work_dir / f"{config.output.stem}.native-video.mkv"
-        cleanup_paths.append(intermediate)
-        commands = self._build_video_only_mkv_commands(
-            config, video, source, intermediate, offset_ms=video_offset_ms,
-        )
+        is_copy = str(video.codec or "copy").strip().lower() == "copy"
+        is_source_mkv = source.suffix.lower() in MATROSKA_EXTENSIONS
+        if is_copy and is_source_mkv:
+            stream_idx = self._video_stream_index(config)
+            actual_track_idx = stream_idx
+            try:
+                from core.matroska.reader import MatroskaReader
+                r = MatroskaReader(source)
+                tracks = r.tracks()
+                if 0 <= stream_idx < len(tracks) and tracks[stream_idx].track_type == 1:
+                    actual_track_idx = stream_idx
+                else:
+                    v_indices = [i for i, t in enumerate(tracks) if t.track_type == 1]
+                    if v_indices:
+                        actual_track_idx = v_indices[0]
+            except Exception:
+                actual_track_idx = stream_idx
+            video_artifacts = [_NativeVideoArtifactRef(source, track_index=actual_track_idx, offset_ms=video_offset_ms)]
+            commands = []
+            intermediate = None
+        else:
+            intermediate = work_dir / f"{config.output.stem}.native-video.mkv"
+            cleanup_paths.append(intermediate)
+            commands = self._build_video_only_mkv_commands(
+                config, video, source, intermediate, offset_ms=video_offset_ms,
+            )
+            video_artifacts = [_NativeVideoArtifactRef(intermediate)]
 
         def _task() -> None:
             try:
                 self._check_cancelled(signals)
-                self._log_step(5, "Encodage de l'artefact vidéo Matroska natif")
-                for index, command in enumerate(commands, start=1):
-                    self._runner._run_cmd(
-                        command,
-                        cwd=work_dir,
-                        label=f"ffmpeg-native-video-pass{index}",
-                        progress_cb=signals.progress.emit,
-                        signals=signals,
-                    )
+                if commands:
+                    self._log_step(5, "Encodage de l'artefact vidéo Matroska natif")
+                    for index, command in enumerate(commands, start=1):
+                        self._runner._run_cmd(
+                            command,
+                            cwd=work_dir,
+                            label=f"ffmpeg-native-video-pass{index}",
+                            progress_cb=signals.progress.emit,
+                            signals=signals,
+                        )
                 self._check_cancelled(signals)
                 self._log_step(6, "Assemblage final Matroska natif")
                 _assemble_encode_output_native(
                     config,
-                    video_artifacts=[_NativeVideoArtifactRef(intermediate)],
+                    video_artifacts=video_artifacts,
                     resolved_subtitles=self._plan_resolved_subtitles(encode_plan),
                     track_metadata=encode_plan.track_metadata,
                     work_dir=work_dir,
@@ -2752,7 +2775,8 @@ class EncodeWorkflow(QObject):
             except Exception as exc:
                 signals.failed.emit(str(exc), exc)
             finally:
-                remove_path(intermediate)
+                if intermediate is not None:
+                    remove_path(intermediate)
 
         if prep_signals is not None:
             _task()

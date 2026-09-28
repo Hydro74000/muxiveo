@@ -160,7 +160,10 @@ class MatroskaDoviBlockAdditionEditor:
         # On réutilise l'éditeur header existant pour bénéficier de toutes
         # ses primitives EBML (parsing, Voids, SeekHead, etc.).
         self._base = MatroskaSegmentInfoHeaderEditor(
-            options=MatroskaSegmentInfoHeaderEditorOptions(fallback_mode="raise"),
+            options=MatroskaSegmentInfoHeaderEditorOptions(
+                allow_post_cluster_rebuild=False,
+                fallback_mode="raise",
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -233,6 +236,7 @@ class MatroskaDoviBlockAdditionEditor:
             + new_track_entry_bytes
             + tracks_payload[target.end:]
         )
+        new_tracks_payload = self._base._refresh_crc32_in_payload(new_tracks_payload)
 
         # 6) Encapsuler en élément Tracks complet et déléguer la réécriture.
         new_tracks_element = (

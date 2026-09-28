@@ -77,6 +77,8 @@ from .ids import (
     CUE_TRACK_ID,
     CUE_TRACK_POSITIONS_ID,
     DEFAULT_TIMESTAMP_SCALE_NS,
+    DISPLAY_HEIGHT_ID,
+    DISPLAY_WIDTH_ID,
     DOC_TYPE_ID,
     DOC_TYPE_READ_VERSION_ID,
     DOC_TYPE_VERSION_ID,
@@ -112,6 +114,7 @@ from .ids import (
 )
 from .hevc.access_units import (
     HevcAccessUnit,
+    iter_hevc_access_units,
     split_into_access_units,
 )
 from .timestamps import (
@@ -429,11 +432,22 @@ def _build_video_track_entry(
     pixel_height: int,
     dovi_record: DolbyVisionConfigRecord | None,
     language: str = "und",
+    colour_element: bytes = b"",
+    display_width: int | None = None,
+    display_height: int | None = None,
 ) -> bytes:
-    video_master = element(VIDEO_ID, b"".join([
+    video_children = [
         uint_element(PIXEL_WIDTH_ID, pixel_width),
         uint_element(PIXEL_HEIGHT_ID, pixel_height),
-    ]))
+    ]
+    if display_width is not None:
+        video_children.append(uint_element(DISPLAY_WIDTH_ID, display_width))
+    if display_height is not None:
+        video_children.append(uint_element(DISPLAY_HEIGHT_ID, display_height))
+    if colour_element:
+        video_children.append(colour_element)
+
+    video_master = element(VIDEO_ID, b"".join(video_children))
 
     children = b"".join([
         uint_element(TRACK_NUMBER_ID, track_number),
@@ -641,41 +655,41 @@ class MatroskaNativeMuxer:
         track_uid: int = 1,
         language: str = "und",
         timestamp_order: str = "presentation",
+        colour_element: bytes = b"",
+        display_width: int | None = None,
+        display_height: int | None = None,
     ) -> MatroskaNativeMuxResult:
         if timestamp_order not in {"presentation", "packet"}:
             raise ValueError("timestamp_order doit être 'presentation' ou 'packet'.")
-        # 1) Parser le HEVC
-        hevc_bytes = hevc_input.read_bytes()
-        access_units = split_into_access_units(hevc_bytes)
-        if not access_units:
-            raise RuntimeError(f"Aucun access unit HEVC trouvé dans {hevc_input}.")
 
-        # 2) Lire les PTS source
+        # 1) Lire les PTS source
         pts_seq = self._timestamp_reader.read(
             source_for_timestamps,
             sort_by_pts=(timestamp_order == "presentation"),
         )
 
-        # 3) Vérifier l'alignement (le frame count guard a normalement déjà
-        #    aligné les choses ; on lève ici si quelque chose a glissé).
-        if len(access_units) != len(pts_seq):
-            raise RuntimeError(
-                f"Désalignement frame count : {len(access_units)} access "
-                f"units HEVC vs {len(pts_seq)} PTS source. L'audit "
-                "frame_count_guard a-t-il été exécuté ?"
-            )
+        # 2) Parser le HEVC en streaming
+        au_iterator = iter_hevc_access_units(hevc_input)
+        first_au = next(au_iterator, None)
+        if first_au is None:
+            raise RuntimeError(f"Aucun access unit HEVC trouvé dans {hevc_input}.")
 
-        # 4) Extraire VPS/SPS/PPS pour CodecPrivate
-        components = _extract_hvcc_components(access_units[0])
+        buffered_aus: list[HevcAccessUnit] = [first_au]
+        components = _extract_hvcc_components(first_au)
         if not components.sps:
             # Si le 1er AU ne contient pas de SPS, on tente d'en trouver un
             # plus loin (cas des AppendVPS/SPS/PPS écrits par certains
             # encodeurs au 1er keyframe seulement).
-            for au in access_units[1:8]:
-                comp_extra = _extract_hvcc_components(au)
+            for _ in range(7):
+                next_au = next(au_iterator, None)
+                if next_au is None:
+                    break
+                buffered_aus.append(next_au)
+                comp_extra = _extract_hvcc_components(next_au)
                 if comp_extra.sps:
                     components = comp_extra
                     break
+
         if not (components.vps and components.sps and components.pps):
             raise RuntimeError(
                 "VPS/SPS/PPS manquants dans le HEVC source — "
@@ -683,9 +697,10 @@ class MatroskaNativeMuxer:
             )
         codec_private = _build_hvcc(components)
 
-        # 5) Écrire le fichier
+        # 3) Écrire le fichier
         return self._write_mkv(
-            access_units=access_units,
+            buffered_aus=buffered_aus,
+            au_iterator=au_iterator,
             pts_seq=pts_seq,
             output=output,
             codec_private=codec_private,
@@ -695,6 +710,9 @@ class MatroskaNativeMuxer:
             track_number=track_number,
             track_uid=track_uid,
             language=language,
+            colour_element=colour_element,
+            display_width=display_width,
+            display_height=display_height,
         )
 
     # ------------------------------------------------------------------
@@ -704,7 +722,8 @@ class MatroskaNativeMuxer:
     def _write_mkv(
         self,
         *,
-        access_units: list[HevcAccessUnit],
+        buffered_aus: list[HevcAccessUnit],
+        au_iterator: Iterator[HevcAccessUnit],
         pts_seq: TimestampSequence,
         output: Path,
         codec_private: bytes,
@@ -714,9 +733,11 @@ class MatroskaNativeMuxer:
         track_number: int,
         track_uid: int,
         language: str,
+        colour_element: bytes = b"",
+        display_width: int | None = None,
+        display_height: int | None = None,
     ) -> MatroskaNativeMuxResult:
-        # Compatibility façade: build the historical HEVC TrackEntry, then
-        # delegate the document to the generic deterministic writer.
+        import itertools
         from io import BytesIO
         from .mux_plan import MatroskaMuxPacket, MatroskaMuxPlan, MatroskaMuxTrack
         from .reader import MatroskaBlock, MatroskaReader, MatroskaTrack, read_element
@@ -730,6 +751,9 @@ class MatroskaNativeMuxer:
             pixel_height=pixel_height,
             dovi_record=dovi_record,
             language=language,
+            colour_element=colour_element,
+            display_width=display_width,
+            display_height=display_height,
         )
         stream = BytesIO(track_entry_raw)
         entry_element = read_element(stream, limit=len(track_entry_raw))
@@ -754,20 +778,35 @@ class MatroskaNativeMuxer:
         # Générateur (ordre producteur = ordre PTS source) : une seule copie
         # reframée en vol à la fois.
         length_size = (codec_private[21] & 0x03) + 1
-        packets = (
-            MatroskaMuxPacket(
-                track_number,
-                MatroskaBlock(
-                    track_number=track_number,
-                    timestamp_ms=pts,
-                    flags=SIMPLE_BLOCK_FLAG_KEYFRAME if access_unit.is_keyframe else 0,
-                    payload=_length_prefixed_payload(access_unit, length_size),
-                    timestamp_ns=pts * 1_000_000,
-                ),
-                source_sequence=sequence,
-            )
-            for sequence, (access_unit, pts) in enumerate(zip(access_units, pts_seq.pts_ms))
-        )
+        total_frames = 0
+
+        def packet_stream():
+            nonlocal total_frames
+            aus = itertools.chain(buffered_aus, au_iterator)
+            for sequence, access_unit in enumerate(aus):
+                if sequence >= len(pts_seq.pts_ms):
+                    raise RuntimeError(
+                        f"Désalignement frame count : le flux HEVC contient plus d'access units que les {len(pts_seq)} PTS source."
+                    )
+                pts = pts_seq.pts_ms[sequence]
+                total_frames += 1
+                yield MatroskaMuxPacket(
+                    track_number,
+                    MatroskaBlock(
+                        track_number=track_number,
+                        timestamp_ms=pts,
+                        flags=SIMPLE_BLOCK_FLAG_KEYFRAME if access_unit.is_keyframe else 0,
+                        payload=_length_prefixed_payload(access_unit, length_size),
+                        timestamp_ns=pts * 1_000_000,
+                    ),
+                    source_sequence=sequence,
+                )
+            if total_frames != len(pts_seq):
+                raise RuntimeError(
+                    f"Désalignement frame count : {total_frames} access units HEVC vs {len(pts_seq)} PTS source."
+                )
+
+        packets = packet_stream()
         MatroskaWriter().write(MatroskaMuxPlan(
             output=output, tracks=(mux_track,), packets=packets,
             duration_ms=pts_seq.total_duration_ms,
@@ -780,7 +819,7 @@ class MatroskaNativeMuxer:
         return MatroskaNativeMuxResult(
             output_path=output,
             track_number=track_number,
-            frames_written=len(access_units),
+            frames_written=total_frames,
             cluster_count=cluster_count,
             duration_ms=pts_seq.total_duration_ms,
         )

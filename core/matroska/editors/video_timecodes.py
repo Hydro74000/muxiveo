@@ -47,7 +47,10 @@ class MatroskaVideoTimecodePatcher:
     def __init__(self, *, ffprobe_bin: str = "ffprobe") -> None:
         self._timestamp_reader = MatroskaTimestampReader(ffprobe_bin=ffprobe_bin)
         self._base = MatroskaSegmentInfoHeaderEditor(
-            options=MatroskaSegmentInfoHeaderEditorOptions(fallback_mode="raise"),
+            options=MatroskaSegmentInfoHeaderEditorOptions(
+                allow_post_cluster_rebuild=False,
+                fallback_mode="raise",
+            ),
         )
 
     def patch(

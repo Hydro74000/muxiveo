@@ -45,6 +45,7 @@ class MatroskaSegmentInfoHeaderEditorOptions:
     rebuild_on_overflow: bool = True
     fallback_mode: str = "skip"
     parse_fast: bool = True
+    allow_post_cluster_rebuild: bool = True
 
 
 @dataclass(frozen=True)
@@ -503,9 +504,19 @@ class MatroskaSegmentInfoHeaderEditor:
             self._handle_void_elements(fh, state, idx)
             return idx
 
+        new_elem = self._read_ebml_element_from_bytes(element_bytes, 0)
+        if (
+            not self.options.allow_post_cluster_rebuild
+            and new_elem.element_id in (self.options.info_id, _TRACKS_ID)
+            and any(e.element_id == _CLUSTER_ID for e in state.data)
+        ):
+            raise ValueError(
+                f"Impossible d'écrire l'élément {new_elem.element_id.hex()} après les Clusters "
+                "(rupture de compatibilité lecteur)."
+            )
+
         pos = self._file_size(fh)
         self._write_at(fh, pos, element_bytes)
-        new_elem = self._read_ebml_element_from_bytes(element_bytes, 0)
         entry = _EbmlElement(
             element_id=new_elem.element_id,
             offset=pos,
@@ -758,6 +769,8 @@ class MatroskaSegmentInfoHeaderEditor:
         return False
 
     def _move_level1_element_before_cluster_to_end_of_file(self, fh: BinaryIO, state: _AnalyzerState) -> bool:
+        if not self.options.allow_post_cluster_rebuild:
+            return False
         candidates: list[tuple[int, int]] = []
         for idx, e in enumerate(state.data):
             if e.element_id == _CLUSTER_ID:
@@ -865,6 +878,8 @@ class MatroskaSegmentInfoHeaderEditor:
 
         if void_size == 1:
             # Handling for 1-byte gap.
+            if nxt.element_id == _CLUSTER_ID:
+                raise ValueError("Impossible de décaler un Cluster pour combler un gap de 1 octet.")
             if nxt.id_len <= 0 or nxt.size_len <= 0:
                 nxt = self._read_ebml_element_from_file(fh, nxt.offset, self._file_size(fh))
                 state.data[data_idx + 1] = nxt
@@ -904,6 +919,7 @@ class MatroskaSegmentInfoHeaderEditor:
 
             # Keep indexes coherent after positional changes.
             state.data.sort(key=lambda e: e.offset)
+            self._resync_meta_seeks(fh, state)
             return False
 
         # void_size >= 2
