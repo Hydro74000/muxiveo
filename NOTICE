@@ -28,6 +28,13 @@ MediaInfo / MediaInfo CLI
   "This product uses MediaInfo library, Copyright (c) 2002-2026 MediaArea.net SARL"
 
 -------------------------------------------------------------------------------
+curl / libcurl  [Windows All-in-One only]
+  Source    : https://curl.se/
+  Copyright : Copyright (c) 1996 - 2026, Daniel Stenberg, <daniel@haxx.se>, and contributors
+  License   : curl license (MIT/X derivative)
+  See       : LICENSES/curl-license.txt
+
+-------------------------------------------------------------------------------
 dovi_tool
   Source    : https://github.com/quietvoid/dovi_tool
   Copyright : Copyright (c) 2026 quietvoid
@@ -42,15 +49,17 @@ hdr10plus_tool
   See       : LICENSES/MIT-hdr10plus_tool.txt
 
 -------------------------------------------------------------------------------
-NVEncC (NVEnc)  [Linux AppImage only]
+NVEncC (NVEnc)
   Source    : https://github.com/rigaya/NVEnc
   Copyright : Copyright (c) 1999-2016 rigaya
   License   : MIT
   See       : LICENSES/MIT-NVEncC.txt
 
   Note: NVEncC contains source code provided by NVIDIA Corporation and relies
-  on the NVIDIA CUDA SDK at runtime (not bundled). The host system must have
-  an NVIDIA driver >= 452.39.
+  on NVIDIA CUDA technology. On Windows, the all-in-one binary distribution bundles
+  NVEncC64.exe along with companion runtime libraries (FFmpeg shared libraries,
+  libplacebo under LGPL, and NVIDIA CUDA runtime redistributables).
+  The host system must have an NVIDIA GPU and driver >= 452.39.
 
 -------------------------------------------------------------------------------
 PySide6 / Qt6

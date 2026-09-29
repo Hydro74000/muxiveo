@@ -228,12 +228,13 @@ jobs:
           )
           PYTHON
 
-      - name: Build PyInstaller and NSIS package
+      - name: Build all-inclusive PyInstaller and NSIS package
         shell: pwsh
         env:
           PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          python package.py --nsis --version "$env:PACKAGE_VERSION"
+          python package.py --nsis --allinc --portable --version "$env:PACKAGE_VERSION"
 
       - name: Collect Windows assets
         shell: pwsh
@@ -247,7 +248,7 @@ jobs:
             throw "Windows installer not found: $file"
           }
           New-Item -ItemType Directory -Force -Path release-assets\windows | Out-Null
-          Copy-Item $file release-assets\windows\ -Force
+          Get-ChildItem -Path dist\releases -Filter "*$version*" | Copy-Item -Destination release-assets\windows\ -Force
           Get-ChildItem release-assets\windows
 
       - name: Upload Windows assets

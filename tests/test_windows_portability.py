@@ -162,3 +162,67 @@ def test_repair_preserves_existing_tool_with_inline_comment(tmp_path, monkeypatc
 
     assert config_mod._repair_corrupted_windows_ini_paths(ini) == []
     assert ini.read_text(encoding="utf-8") == original
+
+
+def test_bundled_tools_dir_windows_allinc(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+    import sys
+    import core.config as config_mod
+
+    exe_dir = tmp_path / "app"
+    exe_dir.mkdir()
+    exe = exe_dir / "Muxiveo.exe"
+    exe.write_bytes(b"MZ")
+    tools = exe_dir / "tools"
+    tools.mkdir()
+    (tools / "ffmpeg.exe").write_bytes(b"FFMPEG")
+
+    monkeypatch.setattr(config_mod, "_is_windows", lambda: True)
+    monkeypatch.setattr(config_mod, "_appimage_tools_dir", lambda: None)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe))
+
+    # Sans marqueur _ALLINC -> None
+    assert config_mod._bundled_tools_dir() is None
+
+    # Avec marqueur _ALLINC -> tools_dir
+    (exe_dir / "_ALLINC").touch()
+    assert config_mod._bundled_tools_dir() == tools
+
+    # Résolution prioritaire de l'outil
+    config = config_mod.AppConfig.__new__(config_mod.AppConfig)
+    config._ini = config_mod._load_ini()
+    config._settings = MagicMock()
+    config._settings.value.return_value = None
+    config._detected_ini_tools = {}
+
+    resolved = config._resolve_tool_value("ffmpeg", "tools/ffmpeg", "ffmpeg")
+    assert resolved == str(tools / "ffmpeg.exe")
+
+
+def test_launcher_is_allinc_and_setup_bypass(tmp_path, monkeypatch):
+    import sys
+    import launcher
+
+    exe_dir = tmp_path / "app"
+    exe_dir.mkdir()
+    exe = exe_dir / "Muxiveo.exe"
+    exe.write_bytes(b"MZ")
+    tools = exe_dir / "tools"
+    tools.mkdir()
+
+    monkeypatch.setenv("APPDATA", str(tmp_path / "roaming"))
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe))
+
+    assert launcher._is_allinc() is False
+    assert launcher._needs_windows_post_install_setup() is True
+    # Missing tools check returns True without _ALLINC (or error in fake env)
+    assert launcher._windows_required_tools_missing() is True
+
+    # Avec marqueur _ALLINC
+    (exe_dir / "_ALLINC").touch()
+    assert launcher._is_allinc() is True
+    assert launcher._needs_windows_post_install_setup() is False
+    assert launcher._windows_required_tools_missing() is False

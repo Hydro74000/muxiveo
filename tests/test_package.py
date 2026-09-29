@@ -895,3 +895,121 @@ def test_windows_console_entrypoint_rejects_non_pe(tmp_path):
     gui.write_bytes(b"MZ" + b"\0" * 200)
     with pytest.raises(RuntimeError, match="PE"):
         package_mod._write_windows_console_entrypoint(gui, tmp_path / "Muxiveo-cli.exe")
+
+
+def test_bundle_windows_tools_downloads_and_sets_allinc_marker(tmp_path, monkeypatch):
+    bundle = tmp_path / "Muxiveo"
+    bundle.mkdir()
+
+    calls = []
+    monkeypatch.setattr(package_mod, "_dl_windows_ffmpeg", lambda d: calls.append("ffmpeg"))
+    monkeypatch.setattr(package_mod, "_dl_windows_mediainfo", lambda d: calls.append("mediainfo"))
+    monkeypatch.setattr(package_mod, "_dl_windows_dovi_tool", lambda d: calls.append("dovi_tool"))
+    monkeypatch.setattr(package_mod, "_dl_windows_hdr10plus_tool", lambda d: calls.append("hdr10plus_tool"))
+    monkeypatch.setattr(package_mod, "_dl_windows_nvencc", lambda d: calls.append("nvencc"))
+
+    tools_dir = package_mod.bundle_windows_tools(bundle)
+
+    assert tools_dir == bundle / "tools"
+    assert tools_dir.is_dir()
+    assert (bundle / "_ALLINC").is_file()
+    assert calls == ["ffmpeg", "mediainfo", "dovi_tool", "hdr10plus_tool", "nvencc"]
+
+
+def test_build_windows_portable_zip(tmp_path, monkeypatch):
+    import zipfile
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "Muxiveo.exe").write_bytes(b"MZ_EXE")
+    tools = bundle / "tools"
+    tools.mkdir()
+    (tools / "ffmpeg.exe").write_bytes(b"FFMPEG")
+    (bundle / "_ALLINC").touch()
+
+    monkeypatch.setattr(package_mod, "DIST_RELEASES", tmp_path / "releases")
+    zip_path = package_mod._build_windows_portable_zip(bundle, version_tag="4.0.3")
+
+    assert zip_path.is_file()
+    assert zip_path.name == "Muxiveo-Windows-x64-allinc-4.0.3.zip"
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        namelist = zf.namelist()
+        assert "Muxiveo/Muxiveo.exe" in namelist
+        assert "Muxiveo/tools/ffmpeg.exe" in namelist
+        assert "Muxiveo/_ALLINC" in namelist
+
+
+def test_build_nsis_installer_copies_allinc_when_marker_present(tmp_path, monkeypatch):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "_ALLINC").touch()
+    (bundle / "Muxiveo.exe").write_bytes(b"MZ_EXE")
+
+    monkeypatch.setattr(package_mod, "ROOT", tmp_path)
+    monkeypatch.setattr(package_mod, "_find_makensis", lambda: "makensis")
+
+    def fake_run(cmd):
+        # cmd: [makensis, nsi_path]
+        # Crée le fichier de sortie attendu
+        output = tmp_path / "Muxiveo-Setup-4.0.3.exe"
+        output.write_bytes(b"SETUP_EXE")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(package_mod, "_run", fake_run)
+    res = package_mod._build_nsis_installer(bundle, version_tag="4.0.3")
+
+    assert res == tmp_path / "Muxiveo-Setup-4.0.3.exe"
+    assert res.is_file()
+    allinc = tmp_path / "Muxiveo-Setup-AllInc-4.0.3.exe"
+    assert allinc.is_file()
+    assert allinc.read_bytes() == b"SETUP_EXE"
+
+
+def test_bundle_windows_licenses(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "LICENSE").write_text("MIT License for Muxiveo", encoding="utf-8")
+    (root / "NOTICE").write_text("Notices", encoding="utf-8")
+    (root / "SOURCES.md").write_text("Sources", encoding="utf-8")
+    licenses_dir = root / "LICENSES"
+    licenses_dir.mkdir()
+    (licenses_dir / "curl-license.txt").write_text("curl license", encoding="utf-8")
+
+    monkeypatch.setattr(package_mod, "ROOT", root)
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    package_mod.bundle_windows_licenses(bundle)
+
+    assert (bundle / "LICENSE").is_file()
+    assert (bundle / "LICENSE.txt").is_file()
+    assert (bundle / "NOTICE").is_file()
+    assert (bundle / "NOTICE.txt").is_file()
+    assert (bundle / "SOURCES.md").is_file()
+    assert (bundle / "LICENSES" / "curl-license.txt").is_file()
+    assert (bundle / "LICENSES" / "curl-license.txt").read_text(encoding="utf-8") == "curl license"
+
+
+def test_package_appimage_bundle_licenses(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "LICENSE").write_text("MIT", encoding="utf-8")
+    (root / "NOTICE").write_text("NOTICE", encoding="utf-8")
+    (root / "SOURCES.md").write_text("SOURCES", encoding="utf-8")
+    licenses_dir = root / "LICENSES"
+    licenses_dir.mkdir()
+    (licenses_dir / "curl-license.txt").write_text("curl", encoding="utf-8")
+
+    monkeypatch.setattr(package_appimage_mod, "ROOT", root)
+
+    appdir = tmp_path / "appdir"
+    package_appimage_mod._bundle_licenses(appdir)
+
+    dest = appdir / "usr" / "share" / "licenses" / "muxiveo"
+    assert (dest / "LICENSE").is_file()
+    assert (dest / "NOTICE").is_file()
+    assert (dest / "SOURCES.md").is_file()
+    assert (dest / "LICENSES" / "curl-license.txt").is_file()
+
+

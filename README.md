@@ -984,10 +984,11 @@ Après ajout à l'allowlist, redémarrez Muxiveo avant de retester un export ver
 
 ## Licence Information
 
-The packaged AppImage includes FFmpeg as a separate command-line executable.
+The packaged distributions (Linux AppImage and Windows All-in-One) include FFmpeg as a separate command-line executable.
 FFmpeg is licensed under LGPLv2.1+ or GPL depending on the build.
-This package includes a GPL-only FFmpeg build compiled without `--enable-nonfree`.
+These packages include a GPL-compatible FFmpeg build compiled without `--enable-nonfree`.
 The corresponding FFmpeg source code and build configuration are available at: [FFmpeg/FFmpeg](https://github.com/FFmpeg/FFmpeg)
+and [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds). See `NOTICE`, `SOURCES.md`, and `LICENSES/` for third-party licenses and attribution.
 
 *Muxiveo v4.0.3*
 

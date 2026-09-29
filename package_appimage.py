@@ -796,11 +796,11 @@ def _dl_nvencc(tools_dir: Path, arch: str) -> None:
 
 
 def _bundle_licenses(appdir: Path) -> None:
-    """Copie NOTICE, SOURCES.md et LICENSES/ dans l'AppImage (conformité licences)."""
+    """Copie LICENSE, NOTICE, SOURCES.md et LICENSES/ dans l'AppImage (conformité licences)."""
     dest = appdir / "usr" / "share" / "licenses" / "muxiveo"
     dest.mkdir(parents=True, exist_ok=True)
 
-    for fname in ("NOTICE", "SOURCES.md"):
+    for fname in ("LICENSE", "NOTICE", "SOURCES.md"):
         src = ROOT / fname
         if src.is_file():
             shutil.copy2(src, dest / fname)
@@ -891,6 +891,8 @@ def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64") -
     if allinc:
         (usr_bin / "_ALLINC").touch()
         bundle_tools(appdir, arch)
+    else:
+        _bundle_licenses(appdir)
 
     # AppRun
     apprun = appdir / "AppRun"
