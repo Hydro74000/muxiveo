@@ -414,7 +414,12 @@ def _build_dovi_block_addition_mapping(
     id_value: int = 1,
     id_name: str = "Dolby Vision configuration",
 ) -> bytes:
-    fourcc = _FOURCC_DVVC if record.profile > 7 else _FOURCC_DVCC
+    if getattr(record, "fourcc", None) == "dvcC":
+        fourcc = _FOURCC_DVCC
+    elif getattr(record, "fourcc", None) == "dvvC":
+        fourcc = _FOURCC_DVVC
+    else:
+        fourcc = _FOURCC_DVVC if record.profile > 7 else _FOURCC_DVCC
     children = b"".join([
         uint_element(BLOCK_ADD_ID_VALUE_ID, id_value),
         string_element(BLOCK_ADD_ID_NAME_ID, id_name),

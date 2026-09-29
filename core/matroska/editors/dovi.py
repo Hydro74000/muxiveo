@@ -555,7 +555,10 @@ def sanitize_dovi_mkv(
         profile = (cfg[2] >> 1) & 0x7F
         raw_level = ((cfg[2] & 0x01) << 5) | ((cfg[3] >> 3) & 0x1F)
         level = sanitize_dovi_level(raw_level, fps=fps)
-        compat_id = (cfg[4] >> 4) & 0x0F or target_compat_id
+        raw_compat = (cfg[4] >> 4) & 0x0F
+        compat_id = target_compat_id if target_compat_id is not None else raw_compat
+    elif compat_id is None:
+        compat_id = 1 if profile == 8 else 0
 
     record = DolbyVisionConfigRecord(
         profile=profile,

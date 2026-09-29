@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from core.workflows.encode.models import (
+    EncodeConfig,
     QualityMode,
     VideoCropSettings,
     VideoEncodeSettings,
@@ -527,6 +528,32 @@ class TestBuildNvenccCommand:
         assert cmd[cmd.index("--colorprim") + 1] == "auto"
         assert cmd[cmd.index("--transfer") + 1] == "auto"
         assert cmd[cmd.index("--chromaloc") + 1] == "auto"
+
+    def test_nvencc_input_router_provides_source_fps_when_copy_dv(self):
+        from core.workflows.encode.runtime.nvencc_routing import NvenccInputRouter, NvenccRoutingCallbacks
+
+        cbs = NvenccRoutingCallbacks(
+            primary_video_settings=lambda cfg: _video(copy_dv=True),
+            video_source_path=lambda cfg: Path("/in.mkv"),
+            video_stream_index=lambda cfg: 0,
+            video_codec_of=lambda path, idx: "hevc",
+            source_video_fps_expr=lambda path: "60000/1001",
+            source_is_vfr=lambda path: False,
+            nvencc_input_fps_hint=lambda s, i: "60000/1001",
+            nvencc_input_avsync_mode=lambda s, i: "cfr",
+            nvencc_dovi_rpu_prm=lambda v: None,
+        )
+        router = NvenccInputRouter(cbs)
+        cfg = EncodeConfig(
+            source=Path("/in.mkv"),
+            output=Path("/out.mkv"),
+            video=_video(copy_dv=True),
+        )
+        routing = router.resolve(cfg)
+        # Pour NVEncC CLI, input_fps est None (timestamps natifs préservés)
+        assert routing.input_fps is None
+        # Mais source_fps est préservé pour le post-processing sanitize_dovi_mkv !
+        assert routing.source_fps == "60000/1001"
 
     def test_tonemap_ui_maps_to_nvencc_vpp_colorspace(self):
         v = _video(tonemap_to_sdr=True, tonemap_algorithm="mobius")

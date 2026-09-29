@@ -312,3 +312,51 @@ class TestMatroskaDoviBlockAdditionEditor:
         data = mkv.read_bytes()
         assert b"dvcC" in data
         assert b"\x55\xee" in data
+
+    def test_sanitize_dovi_mkv_preserves_compat_id_zero(self, tmp_path):
+        from core.matroska.editors.dovi import sanitize_dovi_mkv
+
+        mkv = tmp_path / "test_p5.mkv"
+        mkv.write_bytes(_build_minimal_mkv())
+
+        # Créer un record Profile 5 avec compat_id=0
+        editor = MatroskaDoviBlockAdditionEditor()
+        p5_record = DolbyVisionConfigRecord(
+            profile=5, level=10,
+            rpu_present=True, el_present=False, bl_present=True,
+            bl_signal_compat_id=0,
+            fourcc="dvcC",
+        )
+        editor.patch(mkv, record=p5_record)
+
+        # sanitize_dovi_mkv sans target_compat_id doit préserver compat_id=0 (et ne pas forcer à 1)
+        res = sanitize_dovi_mkv(mkv, fps=24.0, fourcc="dvcC", target_compat_id=None)
+        assert res.applied is True
+        data = mkv.read_bytes()
+        idx = data.index(b"\x41\xed")
+        payload = data[idx + 3:idx + 3 + 24]
+        # Profile 5
+        assert (payload[2] >> 1) == 5
+        # Compat ID (top 4 bits of payload[4]) doit être 0 !
+        assert (payload[4] >> 4) & 0x0F == 0
+
+    def test_native_muxer_respects_explicit_dvcc_fourcc(self):
+        from core.matroska.native_muxer import _build_dovi_block_addition_mapping, _FOURCC_DVCC, _FOURCC_DVVC
+
+        rec_dvcc = DolbyVisionConfigRecord(
+            profile=8, level=6,
+            rpu_present=True, el_present=False, bl_present=True,
+            bl_signal_compat_id=1,
+            fourcc="dvcC",
+        )
+        mapping_dvcc = _build_dovi_block_addition_mapping(rec_dvcc)
+        assert b"dvcC" in mapping_dvcc
+        assert b"dvvC" not in mapping_dvcc
+
+        rec_default = DolbyVisionConfigRecord(
+            profile=8, level=6,
+            rpu_present=True, el_present=False, bl_present=True,
+            bl_signal_compat_id=1,
+        )
+        mapping_default = _build_dovi_block_addition_mapping(rec_default)
+        assert b"dvvC" in mapping_default

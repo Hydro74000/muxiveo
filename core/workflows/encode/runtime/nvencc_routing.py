@@ -27,6 +27,7 @@ class NvenccInputRouting:
     dovi_rpu_prm: str | None = None
     rebased_to_source: bool = False
     forced_reader: str | None = None
+    source_fps: str | None = None
 
 
 @dataclass(frozen=True)
@@ -292,6 +293,12 @@ class NvenccInputRouter:
             routed_video = replace(video, dovi_profile="8.1")
 
         source_for_timing = Path(input_path)
+        source_fps: str | None = None
+        try:
+            source_fps = self._cb.source_video_fps_expr(source_for_timing)
+        except Exception:
+            pass
+
         return NvenccInputRouting(
             input_path=Path(input_path),
             stream_index=int(stream_index),
@@ -306,4 +313,5 @@ class NvenccInputRouter:
             dovi_rpu_prm=self._cb.nvencc_dovi_rpu_prm(routed_video),
             rebased_to_source=rebased_to_source,
             forced_reader=forced_reader,
+            source_fps=source_fps,
         )

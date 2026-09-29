@@ -511,12 +511,12 @@ class NvenccDirectOutputRunner:
                         lambda line: signals.progress.emit(line),
                         signals,
                     )
-                cb.check_cancelled(signals)
+                effective_fps = routing.source_fps or routing.input_fps
                 if getattr(video, "copy_dv", False) and intermediate.is_file():
                     cb.log_info(
                         "Dolby Vision : validation MaxBlockAdditionID=1 et niveau (Level 6/9 au lieu de 10) sur l'artefact NVEncC."
                     )
-                    sanitize_dovi_mkv(intermediate, fps=routing.input_fps, fourcc="dvcC")
+                    sanitize_dovi_mkv(intermediate, fps=effective_fps, fourcc="dvcC")
 
                 if cb.native_assemble is not None:
                     cb.log_step(7, "Assemblage final Matroska natif")
@@ -529,7 +529,7 @@ class NvenccDirectOutputRunner:
                         work_dir=cwd,
                     )
                     if getattr(video, "copy_dv", False) and config.output.is_file():
-                        sanitize_dovi_mkv(config.output, fps=routing.input_fps, fourcc="dvcC")
+                        sanitize_dovi_mkv(config.output, fps=effective_fps, fourcc="dvcC")
                     signals.finished.emit(str(config.output))
                 else:
                     cb.log_step(7, "Remux final ffmpeg")
@@ -544,7 +544,7 @@ class NvenccDirectOutputRunner:
                         plan=plan,
                     )
                     if getattr(video, "copy_dv", False) and config.output.is_file():
-                        sanitize_dovi_mkv(config.output, fps=routing.input_fps, fourcc="dvcC")
+                        sanitize_dovi_mkv(config.output, fps=effective_fps, fourcc="dvcC")
                     signals.finished.emit(output)
             except TaskCancelledError:
                 signals.cancelled.emit()
