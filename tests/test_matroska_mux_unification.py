@@ -451,14 +451,14 @@ class TestEncodeMuxSelector:
         assert decision.selected == "native"
         assert not decision.diagnostics
 
-    def test_dynamic_hdr_blocks_native_nvencc_but_not_multi_video(self, tmp_path: Path) -> None:
+    def test_dynamic_hdr_nvencc_and_multi_video_eligible_for_native(self, tmp_path: Path) -> None:
         video = _video_settings()
         video.copy_dv = True
         config = _encode_config(tmp_path, mux_backend="auto", video=video, video_tracks=[video])
         nvencc = select_encode_mux_backend(config, pipeline=PIPELINE_NVENCC_DIRECT)
-        assert nvencc.selected == "ffmpeg"
-        assert any("NVEncC" in reason for reason in nvencc.diagnostics)
-        # Multi-vidéo : le rewriter du lot 3 embarque la signalisation DoVi.
+        assert nvencc.selected == "native"
+        assert not nvencc.diagnostics
+        # Multi-vidéo : le rewriter embarque la signalisation DoVi.
         multi = select_encode_mux_backend(config, pipeline=PIPELINE_MULTI_VIDEO)
         assert multi.selected == "native"
 

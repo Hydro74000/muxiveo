@@ -103,17 +103,6 @@ def encode_native_mux_blockers(config: EncodeConfig, *, pipeline: str) -> tuple[
     # Clusters natifs par ``compile_assembly_plan``.
     if any(getattr(offset, "calibration", None) for offset in config.track_time_offsets or []):
         reasons.append("synchronisation multi-segments à matérialiser par FFmpeg")
-    if pipeline == PIPELINE_NVENCC_DIRECT:
-        # NVEncC écrit lui-même son MKV : la signalisation DoVi/HDR10+ de cet
-        # intermédiaire n'est pas encore vérifiée pour l'assemblage natif.
-        for video in config.video_tracks or ([config.video] if config.video else []):
-            if video is None:
-                continue
-            if video.copy_dv or video.copy_hdr10plus:
-                reasons.append(
-                    "HDR dynamique NVEncC : signalisation de l'intermédiaire non vérifiée — chemin FFmpeg"
-                )
-                break
     return tuple(dict.fromkeys(reasons))
 
 
