@@ -34,7 +34,7 @@ Référence
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import BinaryIO
 
@@ -42,6 +42,40 @@ from .segment_info import (
     MatroskaSegmentInfoHeaderEditor,
     MatroskaSegmentInfoHeaderEditorOptions,
 )
+
+
+def sanitize_dovi_level(
+    level: int,
+    fps: float | str | None = None,
+    height: int | None = None,
+) -> int:
+    """Assainit le niveau Dolby Vision pour éviter le rejet par les décodeurs matériels.
+
+    Un niveau 10 (0x55 = UHD 120fps) généré par défaut par certains encodeurs
+    (ex: NVEncC) fait échouer les décodeurs TV (Amlogic, Realtek, MediaTek) et
+    provoque un fallback vers DAV1 ou SDR.
+    Cette fonction ramène le niveau à une valeur valide :
+    - UHD <= 30 fps : Level 6 (UHD 30fps)
+    - UHD > 30 fps : Level 9 (UHD 60fps)
+    - 1080p <= 30 fps : Level 4 (FHD 30fps)
+    - 1080p > 30 fps : Level 5 (FHD 60fps)
+    """
+    parsed_fps: float | None = None
+    if fps is not None:
+        try:
+            if isinstance(fps, str) and "/" in fps:
+                num, den = fps.split("/", 1)
+                parsed_fps = float(num) / float(den)
+            else:
+                parsed_fps = float(fps)
+        except (ValueError, ZeroDivisionError):
+            parsed_fps = None
+
+    if level <= 0 or level >= 10:
+        if parsed_fps is not None and parsed_fps > 30.0:
+            return 9 if (height is None or height > 1080) else 5
+        return 6 if (height is None or height > 1080) else 4
+    return level
 
 
 # Element IDs Matroska (cf spec)
@@ -58,7 +92,7 @@ _BLOCK_ADD_ID_EXTRA_DATA_ID = b"\x41\xed"
 _MAX_BLOCK_ADD_ID = b"\x55\xee"
 
 # FourCCs
-_FOURCC_DVCC = 0x64766343  # "dvcC" — Dolby Vision configuration record v1 (profiles <= 7)
+_FOURCC_DVCC = 0x64766343  # "dvcC" — Dolby Vision configuration record v1 (profiles <= 7 et fallback universel MKV)
 _FOURCC_DVVC = 0x64767643  # "dvvC" — version 2 (profiles > 7, ex: P8.1)
 
 _HEVC_CODEC_IDS = {
@@ -93,6 +127,7 @@ class DolbyVisionConfigRecord:
     el_present: bool        # False pour mono-layer (P8.1 typique)
     bl_present: bool        # True
     bl_signal_compat_id: int  # 1 pour P8.1 (HDR10 fallback), 0 pour P8.0
+    fourcc: str | int | None = None  # None -> auto ("dvvC" si profile > 7 sinon "dvcC"), ou forcer "dvcC" / "dvvC"
 
     def __post_init__(self) -> None:
         if not (0 <= self.profile < 128):
@@ -179,9 +214,14 @@ class MatroskaDoviBlockAdditionEditor:
         block_add_id_value: int = 1,
         block_add_id_name: str = "Dolby Vision configuration",
         force: bool = False,
+        fourcc: str | int | None = None,
     ) -> DoviBlockAdditionPatchResult:
         if not path.is_file():
             raise ValueError(f"Fichier introuvable: {path}")
+
+        # Assainissement de sécurité : éviter Level 10 (120fps) qui casse le décodeur Amlogic/TV
+        if record.level >= 10:
+            record = replace(record, level=sanitize_dovi_level(record.level))
 
         # 1) Lire le bloc Tracks.
         with path.open("rb") as fh:
@@ -224,6 +264,7 @@ class MatroskaDoviBlockAdditionEditor:
             record=record,
             id_value=block_add_id_value,
             id_name=block_add_id_name,
+            fourcc_override=fourcc,
         )
         new_track_entry_bytes = self._inject_into_track_entry(
             tracks_payload[target.payload_offset:target.end],
@@ -389,9 +430,16 @@ class MatroskaDoviBlockAdditionEditor:
         record: DolbyVisionConfigRecord,
         id_value: int,
         id_name: str,
+        fourcc_override: int | str | None = None,
     ) -> bytes:
         """Construit l'élément complet ``BlockAdditionMapping`` (header + payload)."""
-        fourcc = _FOURCC_DVVC if record.profile > 7 else _FOURCC_DVCC
+        fourcc_val = fourcc_override if fourcc_override is not None else record.fourcc
+        if isinstance(fourcc_val, str):
+            fourcc = _FOURCC_DVCC if fourcc_val.lower() == "dvcc" else _FOURCC_DVVC
+        elif isinstance(fourcc_val, int):
+            fourcc = fourcc_val
+        else:
+            fourcc = _FOURCC_DVVC if record.profile > 7 else _FOURCC_DVCC
         children = b"".join([
             self._build_uint_element(_BLOCK_ADD_ID_VALUE_ID, id_value),
             self._build_string_element(_BLOCK_ADD_ID_NAME_ID, id_name),
@@ -467,8 +515,64 @@ class MatroskaDoviBlockAdditionEditor:
         ) + new_payload
 
 
+def sanitize_dovi_mkv(
+    path: Path,
+    *,
+    fps: float | str | None = None,
+    fourcc: str | int | None = "dvcC",
+    target_compat_id: int = 1,
+) -> DoviBlockAdditionPatchResult:
+    """Assainit un fichier MKV pour garantir un signal Dolby Vision valide et compatible.
+
+    - Force le niveau Dolby Vision à une valeur supportée (Level 6 <=30fps, Level 9 <=60fps) au lieu de Level 10 (120fps).
+    - Enforce MaxBlockAdditionID = 1.
+    - Utilise le FourCC dvcC (ou celui spécifié) pour compatibilité maximale TV/ExoPlayer/Android TV.
+    - Recalcule le CRC-32 du bloc Tracks.
+    """
+    path = Path(path)
+    if not path.is_file():
+        return DoviBlockAdditionPatchResult(applied=False, skipped=True, reason="Fichier introuvable.")
+
+    editor = MatroskaDoviBlockAdditionEditor()
+    with path.open("rb") as fh:
+        try:
+            _, tracks_payload = editor._read_tracks_payload(fh)
+        except Exception as exc:
+            return DoviBlockAdditionPatchResult(applied=False, skipped=True, reason=f"Lecture Tracks impossible: {exc}")
+
+    entries = editor._parse_track_entries(tracks_payload)
+    hevc_entries = [e for e in entries if e.is_hevc]
+    if not hevc_entries:
+        return DoviBlockAdditionPatchResult(applied=False, skipped=True, reason="Aucune piste HEVC.")
+
+    # Déterminer le profil et level existants si possible
+    profile = 8
+    level = sanitize_dovi_level(10, fps=fps)
+    compat_id = target_compat_id
+    first_hevc = hevc_entries[0]
+    if first_hevc.dovi_config_bytes and len(first_hevc.dovi_config_bytes) >= 5:
+        cfg = first_hevc.dovi_config_bytes
+        profile = (cfg[2] >> 1) & 0x7F
+        raw_level = ((cfg[2] & 0x01) << 5) | ((cfg[3] >> 3) & 0x1F)
+        level = sanitize_dovi_level(raw_level, fps=fps)
+        compat_id = (cfg[4] >> 4) & 0x0F or target_compat_id
+
+    record = DolbyVisionConfigRecord(
+        profile=profile,
+        level=level,
+        rpu_present=True,
+        el_present=False,
+        bl_present=True,
+        bl_signal_compat_id=compat_id,
+        fourcc=fourcc,
+    )
+    return editor.patch(path, record=record, force=True, fourcc=fourcc)
+
+
 __all__ = [
     "DolbyVisionConfigRecord",
     "DoviBlockAdditionPatchResult",
     "MatroskaDoviBlockAdditionEditor",
+    "sanitize_dovi_level",
+    "sanitize_dovi_mkv",
 ]

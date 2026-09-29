@@ -375,7 +375,10 @@ def _auto_source_hdr_args(video: VideoEncodeSettings, *, direct_input: bool) -> 
     if not (dynamic or static):
         return []
     if not direct_input:
-        return ["--colormatrix", "bt2020nc", "--colorprim", "bt2020", "--transfer", "smpte2084"] if static else []
+        args = ["--colormatrix", "bt2020nc", "--colorprim", "bt2020", "--transfer", "smpte2084"] if (static or dynamic) else []
+        if getattr(video, "copy_dv", False) and args:
+            args.extend(["--chromaloc", "2"])
+        return args
     args = [
         "--colormatrix", "auto",
         "--colorprim", "auto",
@@ -649,7 +652,9 @@ def _hdr_dynamic_args(
         args.extend(["--dhdr10-info", str(hdr10plus_json)])
     elif getattr(video, "copy_hdr10plus", False):
         args.extend(["--dhdr10-info", "copy"])
+    has_dovi = False
     if dovi_rpu is not None:
+        has_dovi = True
         args.extend(["--dolby-vision-rpu", str(dovi_rpu)])
         mapped_profile = _dovi_profile_for_codec(video.codec, map_nvencc_dovi_profile(video.dovi_profile))
         # Quand on injecte un RPU externe, le profil doit être explicite ou
@@ -657,6 +662,7 @@ def _hdr_dynamic_args(
         if mapped_profile and mapped_profile != "copy":
             args.extend(["--dolby-vision-profile", mapped_profile])
     elif getattr(video, "copy_dv", False):
+        has_dovi = True
         args.extend(["--dolby-vision-rpu", "copy"])
         mapped_profile = map_nvencc_dovi_profile(video.dovi_profile)
         if mapped_profile in {None, "copy"}:
@@ -666,6 +672,26 @@ def _hdr_dynamic_args(
             args.extend(["--dolby-vision-profile", mapped_profile])
     if dovi_rpu_prm and "--dolby-vision-rpu" in args:
         args.extend(["--dolby-vision-rpu-prm", str(dovi_rpu_prm)])
+
+    if has_dovi and video.codec == "nvencc_hevc":
+        # Conformité stricte Dolby Vision Profile 8.1 pour lecture sur diffuseurs TV :
+        # - Main10 et Tier High
+        # - AUD et repeat-headers pour synchronisation continue du processeur DV
+        # - strict-gop et gop-len borné pour l'indexation RPU
+        if "--profile" not in args:
+            args.extend(["--profile", "main10"])
+        if "--tier" not in args:
+            args.extend(["--tier", "high"])
+        if "--repeat-headers" not in args:
+            args.append("--repeat-headers")
+        if "--aud" not in args:
+            args.append("--aud")
+        if "--strict-gop" not in args:
+            args.append("--strict-gop")
+        extra_raw = str(getattr(video, "extra_params", "") or "")
+        if "--gop-len" not in extra_raw and "-g " not in extra_raw and not extra_raw.endswith("-g") and "--gop-len" not in args:
+            args.extend(["--gop-len", "48"])
+
     return args
 
 

@@ -2488,17 +2488,32 @@ class EncodePanel(QWidget):
             return
 
         codec = self._codec_combo.currentData() or "libx265"
-        supports_hdr_passthrough = self._backend_capabilities(codec).supports_dynamic_hdr
         hdr = self._selected_video_hdr_type()
 
         has_dv       = hdr in (HDRType.DOLBY_VISION, HDRType.DOLBY_VISION_HDR10PLUS)
         has_hdr10plus = hdr in (HDRType.HDR10PLUS, HDRType.DOLBY_VISION_HDR10PLUS)
 
-        dv_ok       = has_dv and supports_hdr_passthrough
-        hdr10plus_ok = has_hdr10plus and supports_hdr_passthrough
+        dv_ok       = has_dv and self._is_dovi_codec(codec)
+        hdr10plus_ok = has_hdr10plus and self._is_hdr10plus_codec(codec)
 
         self._copy_dv_cb.setEnabled(dv_ok)
         self._copy_hdr10plus_cb.setEnabled(hdr10plus_ok)
+
+        if not dv_ok and has_dv:
+            if codec == "hevc_nvenc":
+                self._copy_dv_cb.setToolTip(
+                    "FFmpeg hevc_nvenc ne supporte pas l'injection native Dolby Vision (incompatibilité DPB).\n"
+                    "Sélectionnez le codec 'NVEncC — HEVC (NVIDIA, rigaya)' pour un encodage GPU Dolby Vision Profile 8.1 garanti."
+                )
+            elif codec != "copy":
+                self._copy_dv_cb.setToolTip(
+                    f"Le codec '{codec}' ne supporte pas l'encodage Dolby Vision.\n"
+                    "Utilisez 'NVEncC — HEVC (NVIDIA, rigaya)', 'x265 (logiciel)' ou 'Copie (sans réencodage)'."
+                )
+        else:
+            self._copy_dv_cb.setToolTip(
+                "Conserve et synchronise les métadonnées dynamiques Dolby Vision (Profile 8.1)."
+            )
 
         if auto_check:
             self._copy_dv_cb.setChecked(dv_ok)
@@ -2556,9 +2571,10 @@ class EncodePanel(QWidget):
             self._update_passthrough_controls(auto_check=False)
             hdr = self._selected_video_hdr_type()
             codec = self._codec_combo.currentData() or "libx265"
-            if self._backend_capabilities(codec).supports_dynamic_hdr:
+            if self._is_dovi_codec(codec):
                 if hdr in (HDRType.DOLBY_VISION, HDRType.DOLBY_VISION_HDR10PLUS):
                     self._copy_dv_cb.setChecked(True)
+            if self._is_hdr10plus_codec(codec):
                 if hdr in (HDRType.HDR10PLUS, HDRType.DOLBY_VISION_HDR10PLUS):
                     self._copy_hdr10plus_cb.setChecked(True)
         else:
@@ -3247,6 +3263,14 @@ class EncodePanel(QWidget):
     def _is_dynamic_hdr_codec(cls, codec: str) -> bool:
         return cls._backend_capabilities(codec).supports_dynamic_hdr
 
+    @classmethod
+    def _is_dovi_codec(cls, codec: str) -> bool:
+        return getattr(cls._backend_capabilities(codec), "supports_dovi", False)
+
+    @classmethod
+    def _is_hdr10plus_codec(cls, codec: str) -> bool:
+        return getattr(cls._backend_capabilities(codec), "supports_hdr10plus", False)
+
     @staticmethod
     def _backend_capabilities(codec: str):
         return backend_capabilities_for_codec(codec)
@@ -3297,9 +3321,8 @@ class EncodePanel(QWidget):
             if target_codec is not None
             else self._video_state_target_codec(state)
         )
-        supports_dynamic_hdr = self._is_dynamic_hdr_codec(codec)
-        copy_dv = bool(state.get("copy_dv")) and supports_dynamic_hdr and self._source_has_dv(source_hdr)
-        copy_hdr10plus = bool(state.get("copy_hdr10plus")) and supports_dynamic_hdr and self._source_has_hdr10plus(source_hdr)
+        copy_dv = bool(state.get("copy_dv")) and self._is_dovi_codec(codec) and self._source_has_dv(source_hdr)
+        copy_hdr10plus = bool(state.get("copy_hdr10plus")) and self._is_hdr10plus_codec(codec) and self._source_has_hdr10plus(source_hdr)
         return copy_dv, copy_hdr10plus
 
     def _normalized_video_state_for_track(

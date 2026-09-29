@@ -7,7 +7,11 @@ from typing import Callable
 
 from core.file_types import windows_filename_error, windows_path_length_error
 from core.workflows.common.track_types import TrackTimeOffset
-from core.workflows.encode.catalog import supports_dynamic_hdr
+from core.workflows.encode.catalog import (
+    supports_dovi,
+    supports_dynamic_hdr,
+    supports_hdr10plus,
+)
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
 from core.workflows.encode.planning.plan_models import PlannedVideoTrack
 
@@ -74,9 +78,27 @@ def validate_encode_config(
             errors.append(
                 f"Piste vidéo #{index} — codec copy incompatible avec les transformations vidéo."
             )
-        if (video.copy_dv or video.copy_hdr10plus) and not supports_dynamic_hdr(video.codec):
+        if video.copy_dv and not supports_dovi(video.codec):
+            if video.codec == "hevc_nvenc":
+                errors.append(
+                    f"Piste vidéo #{index} — Le codec FFmpeg 'hevc_nvenc' ne gère pas nativement "
+                    "les métadonnées dynamiques Dolby Vision (incompatibilité DPB / risque d'écran noir "
+                    "ou de rejet sur téléviseur). Suggestion : utilisez l'encodeur matériel dédié 'NVEncC (rigaya)' "
+                    "(codec 'nvencc_hevc') qui intègre libdovi nativement, ou passez la vidéo en mode 'copy' (passthrough)."
+                )
+            elif str(video.codec or "").startswith("nvencc_") and video.codec != "nvencc_hevc":
+                errors.append(
+                    f"Piste vidéo #{index} — {video.codec} ne supporte pas le profil Dolby Vision. "
+                    "Suggestion : sélectionnez 'nvencc_hevc'."
+                )
+            else:
+                errors.append(
+                    f"Piste vidéo #{index} — L'encodeur '{video.codec}' ne supporte pas l'injection Dolby Vision. "
+                    "Suggestion : utilisez 'nvencc_hevc' (NVEncC avec libdovi), 'libx265' (logiciel) ou 'copy' (passthrough)."
+                )
+        if video.copy_hdr10plus and not supports_hdr10plus(video.codec):
             errors.append(
-                f"Piste vidéo #{index} — DoVi/HDR10+ exige un codec compatible."
+                f"Piste vidéo #{index} — Le codec '{video.codec}' ne supporte pas l'injection HDR10+."
             )
         analysis_request = str(video.static_hdr_analysis_request or "").strip()
         if analysis_request and (

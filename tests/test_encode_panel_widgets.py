@@ -1480,6 +1480,29 @@ class TestEncodePanelDynamicHdrDefaults:
         )
         panel._codec_combo.setCurrentIndex(idx_nvencc)
 
+        # AV1 ne supporte pas le passthrough Dolby Vision (incompatible décodeurs TV),
+        # mais supporte le passthrough dynamique HDR10+.
+        assert panel._copy_dv_cb.isEnabled() is False
+        assert panel._copy_hdr10plus_cb.isEnabled() is True
+        assert panel._copy_dv_cb.isChecked() is False
+        assert panel._copy_hdr10plus_cb.isChecked() is True
+        panel.close()
+
+    def test_nvencc_hevc_enables_both_dovi_and_hdr10plus_passthrough(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        panel._hw_encoders = {"nvencc_hevc"}
+        panel._populate_codec_combo()
+        entry = _video_entry(0)
+        entry.entry_id = "video-nvencc-hevc-dv"
+        info = _file_info(_PATH_A, [_video_track(0, HDRType.DOLBY_VISION_HDR10PLUS)])
+        panel.set_video_tracks([(info, entry, _COLOR)])
+
+        idx_nvencc = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "nvencc_hevc"
+        )
+        panel._codec_combo.setCurrentIndex(idx_nvencc)
+
         assert panel._copy_dv_cb.isEnabled() is True
         assert panel._copy_hdr10plus_cb.isEnabled() is True
         assert panel._copy_dv_cb.isChecked() is True

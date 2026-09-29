@@ -66,10 +66,14 @@ H264_VIDEO_CODECS: frozenset[str] = frozenset({
 CQ_CAPABLE_VIDEO_CODECS: frozenset[str] = (
     NVENC_VIDEO_CODECS | AMF_VIDEO_CODECS | QSV_VIDEO_CODECS | VAAPI_VIDEO_CODECS | NVENCC_VIDEO_CODECS
 )
-DYNAMIC_HDR_VIDEO_CODECS: frozenset[str] = frozenset({
+DOVI_VIDEO_CODECS: frozenset[str] = frozenset({
+    "copy", "libx265", "nvencc_hevc",
+})
+HDR10PLUS_VIDEO_CODECS: frozenset[str] = frozenset({
     "copy", "libx265", "hevc_nvenc", "hevc_amf", "hevc_qsv", "hevc_vaapi",
     "nvencc_hevc", "nvencc_av1",
 })
+DYNAMIC_HDR_VIDEO_CODECS: frozenset[str] = DOVI_VIDEO_CODECS | HDR10PLUS_VIDEO_CODECS
 
 VIDEO_ENCODER_BADGES: dict[str, str] = {
     "libx265": "x265",
@@ -121,6 +125,8 @@ class VideoCodecSpec:
     presets: tuple[str, ...]
     encoder_badge: str
     supports_dynamic_hdr: bool = False
+    supports_dovi: bool = False
+    supports_hdr10plus: bool = False
     is_h264: bool = False
     supports_force_8bit: bool = False
     supports_10bit: bool = False
@@ -148,6 +154,8 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         presets=tuple(X265_PRESETS),
         encoder_badge="x265",
         supports_dynamic_hdr=True,
+        supports_dovi=True,
+        supports_hdr10plus=True,
         supports_10bit=True,
     ),
     "libx264": VideoCodecSpec(
@@ -175,6 +183,8 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         presets=tuple(HEVC_NVENC_PRESETS),
         encoder_badge="NVENC",
         supports_dynamic_hdr=True,
+        supports_dovi=False,  # FFmpeg hevc_nvenc ne supporte pas l'injection native RPU
+        supports_hdr10plus=True,
         supports_10bit=True,
     ),
     "hevc_amf": VideoCodecSpec(
@@ -184,6 +194,8 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         presets=tuple(AMF_PRESETS),
         encoder_badge="AMF",
         supports_dynamic_hdr=True,
+        supports_dovi=False,
+        supports_hdr10plus=True,
         supports_10bit=True,
     ),
     "hevc_vaapi": VideoCodecSpec(
@@ -193,6 +205,8 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         presets=tuple(VAAPI_PRESETS),
         encoder_badge="VAAPI",
         supports_dynamic_hdr=True,
+        supports_dovi=False,
+        supports_hdr10plus=True,
         supports_10bit=True,
     ),
     "hevc_qsv": VideoCodecSpec(
@@ -202,6 +216,8 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         presets=tuple(QSV_PRESETS),
         encoder_badge="QSV",
         supports_dynamic_hdr=True,
+        supports_dovi=False,
+        supports_hdr10plus=True,
         supports_10bit=True,
     ),
     "h264_nvenc": VideoCodecSpec(
@@ -279,6 +295,8 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         presets=tuple(NVENCC_PRESETS),
         encoder_badge="NVEncC",
         supports_dynamic_hdr=True,
+        supports_dovi=True,
+        supports_hdr10plus=True,
         supports_10bit=True,
     ),
     "nvencc_h264": VideoCodecSpec(
@@ -298,6 +316,8 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         presets=tuple(NVENCC_PRESETS),
         encoder_badge="NVEncC",
         supports_dynamic_hdr=True,
+        supports_dovi=False,
+        supports_hdr10plus=True,
         supports_10bit=True,
     ),
 }
@@ -360,6 +380,20 @@ def supports_dynamic_hdr(codec: str) -> bool:
     if spec is not None:
         return spec.supports_dynamic_hdr
     return str(codec or "").strip().lower() in DYNAMIC_HDR_VIDEO_CODECS
+
+
+def supports_dovi(codec: str) -> bool:
+    spec = video_codec_spec(codec)
+    if spec is not None:
+        return spec.supports_dovi
+    return str(codec or "").strip().lower() in DOVI_VIDEO_CODECS
+
+
+def supports_hdr10plus(codec: str) -> bool:
+    spec = video_codec_spec(codec)
+    if spec is not None:
+        return spec.supports_hdr10plus
+    return str(codec or "").strip().lower() in HDR10PLUS_VIDEO_CODECS
 
 
 def encoder_badge(codec: str) -> str:
@@ -441,6 +475,8 @@ __all__ = [
     "NVENCC_VIDEO_CODECS",
     "H264_VIDEO_CODECS",
     "CQ_CAPABLE_VIDEO_CODECS",
+    "DOVI_VIDEO_CODECS",
+    "HDR10PLUS_VIDEO_CODECS",
     "DYNAMIC_HDR_VIDEO_CODECS",
     "VIDEO_ENCODER_BADGES",
     "VIDEO_HDR_BADGE_ORDER",
@@ -452,6 +488,8 @@ __all__ = [
     "presets_for_codec",
     "is_h264_video_codec",
     "supports_dynamic_hdr",
+    "supports_dovi",
+    "supports_hdr10plus",
     "encoder_badge",
     "video_codec_spec",
     "audio_codec_spec",

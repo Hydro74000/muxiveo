@@ -588,6 +588,8 @@ class EncodeWorkflow(QObject):
             errors.append("NVEncC ne supporte pas le mode taille cible (2 passes) dans cette version.")
         if video.inject_hdr_meta and video.codec == "nvencc_h264":
             errors.append("NVEncC H.264 ne supporte pas les métadonnées HDR statiques.")
+        if video.copy_dv and video.codec != "nvencc_hevc":
+            errors.append(f"{video.codec} ne supporte pas Dolby Vision. Seul 'nvencc_hevc' gère Dolby Vision.")
         if (video.copy_dv or video.copy_hdr10plus) and not _nvencc_supports_dynamic_hdr_runtime(video.codec):
             errors.append("Le codec NVEncC sélectionné ne supporte pas DoVi/HDR10+.")
         _ = plan

@@ -35,6 +35,7 @@ from core.workflows.encode.runtime.nvencc import (
 )
 from core.workflows.encode.runtime.nvencc_routing import NvenccInputRouting
 from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router
+from core.matroska.editors.dovi import sanitize_dovi_mkv
 from core.workflows.common.timeline_sync import sync_cleanup_paths as _common_sync_cleanup_paths
 from core.workflows.remux_timeline_sync import LiveSyncSession
 
@@ -511,6 +512,12 @@ class NvenccDirectOutputRunner:
                         signals,
                     )
                 cb.check_cancelled(signals)
+                if getattr(video, "copy_dv", False) and intermediate.is_file():
+                    cb.log_info(
+                        "Dolby Vision : validation MaxBlockAdditionID=1 et niveau (Level 6/9 au lieu de 10) sur l'artefact NVEncC."
+                    )
+                    sanitize_dovi_mkv(intermediate, fps=routing.input_fps, fourcc="dvcC")
+
                 if cb.native_assemble is not None:
                     cb.log_step(7, "Assemblage final Matroska natif")
                     cb.native_assemble(
@@ -521,6 +528,8 @@ class NvenccDirectOutputRunner:
                         plan=plan,
                         work_dir=cwd,
                     )
+                    if getattr(video, "copy_dv", False) and config.output.is_file():
+                        sanitize_dovi_mkv(config.output, fps=routing.input_fps, fourcc="dvcC")
                     signals.finished.emit(str(config.output))
                 else:
                     cb.log_step(7, "Remux final ffmpeg")
@@ -534,6 +543,8 @@ class NvenccDirectOutputRunner:
                         signals,
                         plan=plan,
                     )
+                    if getattr(video, "copy_dv", False) and config.output.is_file():
+                        sanitize_dovi_mkv(config.output, fps=routing.input_fps, fourcc="dvcC")
                     signals.finished.emit(output)
             except TaskCancelledError:
                 signals.cancelled.emit()

@@ -46,6 +46,8 @@ class NvenccEncodeBackend(EncodeBackend):
             backend_id=self.backend_id,
             quality_modes=tuple(modes),
             supports_dynamic_hdr=nvencc_supports_dynamic_hdr(codec),
+            supports_dovi=codec == "nvencc_hevc",
+            supports_hdr10plus=codec in ("nvencc_hevc", "nvencc_av1"),
             supports_manual_static_hdr=nvencc_supports_manual_static_hdr(codec),
             supports_tonemap=True,
             supports_multi_video=False,
@@ -86,6 +88,8 @@ class NvenccEncodeBackend(EncodeBackend):
                 "NVEncC ne peut pas copier DoVi/HDR10+ dynamiques depuis une playlist Blu-ray ; "
                 "utilisez le backend FFmpeg pour cette source."
             )
+        if video.copy_dv and video.codec != "nvencc_hevc":
+            errors.append(f"{video.codec} ne supporte pas Dolby Vision. Seul 'nvencc_hevc' gère Dolby Vision.")
         if (video.copy_dv or video.copy_hdr10plus) and not nvencc_supports_dynamic_hdr(video.codec):
             errors.append("Le codec NVEncC sélectionné ne supporte pas DoVi/HDR10+.")
         if (video.copy_dv or video.copy_hdr10plus) and nvencc_requires_ffmpeg_filter_pipe(video):
