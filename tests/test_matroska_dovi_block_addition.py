@@ -313,32 +313,31 @@ class TestMatroskaDoviBlockAdditionEditor:
         assert b"dvcC" in data
         assert b"\x55\xee" in data
 
-    def test_sanitize_dovi_mkv_preserves_compat_id_zero(self, tmp_path):
+    def test_sanitize_dovi_mkv_preserves_compat_id_zero_and_others_by_default(self, tmp_path):
         from core.matroska.editors.dovi import sanitize_dovi_mkv
 
-        mkv = tmp_path / "test_p5.mkv"
-        mkv.write_bytes(_build_minimal_mkv())
+        for expected_compat in (0, 1, 2, 4):
+            mkv = tmp_path / f"test_compat_{expected_compat}.mkv"
+            mkv.write_bytes(_build_minimal_mkv())
 
-        # Créer un record Profile 5 avec compat_id=0
-        editor = MatroskaDoviBlockAdditionEditor()
-        p5_record = DolbyVisionConfigRecord(
-            profile=5, level=10,
-            rpu_present=True, el_present=False, bl_present=True,
-            bl_signal_compat_id=0,
-            fourcc="dvcC",
-        )
-        editor.patch(mkv, record=p5_record)
+            editor = MatroskaDoviBlockAdditionEditor()
+            record = DolbyVisionConfigRecord(
+                profile=8 if expected_compat != 0 else 5,
+                level=10,
+                rpu_present=True, el_present=False, bl_present=True,
+                bl_signal_compat_id=expected_compat,
+                fourcc="dvcC",
+            )
+            editor.patch(mkv, record=record)
 
-        # sanitize_dovi_mkv sans target_compat_id doit préserver compat_id=0 (et ne pas forcer à 1)
-        res = sanitize_dovi_mkv(mkv, fps=24.0, fourcc="dvcC", target_compat_id=None)
-        assert res.applied is True
-        data = mkv.read_bytes()
-        idx = data.index(b"\x41\xed")
-        payload = data[idx + 3:idx + 3 + 24]
-        # Profile 5
-        assert (payload[2] >> 1) == 5
-        # Compat ID (top 4 bits of payload[4]) doit être 0 !
-        assert (payload[4] >> 4) & 0x0F == 0
+            # Appel par défaut de production (SANS spécifier target_compat_id)
+            res = sanitize_dovi_mkv(mkv, fps=24.0, fourcc="dvcC")
+            assert res.applied is True
+            data = mkv.read_bytes()
+            idx = data.index(b"\x41\xed")
+            payload = data[idx + 3:idx + 3 + 24]
+            actual_compat = (payload[4] >> 4) & 0x0F
+            assert actual_compat == expected_compat
 
     def test_native_muxer_respects_explicit_dvcc_fourcc(self):
         from core.matroska.native_muxer import _build_dovi_block_addition_mapping, _FOURCC_DVCC, _FOURCC_DVVC

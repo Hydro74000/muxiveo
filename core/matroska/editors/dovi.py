@@ -516,17 +516,19 @@ class MatroskaDoviBlockAdditionEditor:
 
 
 def sanitize_dovi_mkv(
-    path: Path,
+    path: Path | str,
     *,
     fps: float | str | None = None,
     fourcc: str | int | None = "dvcC",
-    target_compat_id: int = 1,
+    target_compat_id: int | None = None,
+    target_level: int | None = None,
 ) -> DoviBlockAdditionPatchResult:
     """Assainit un fichier MKV pour garantir un signal Dolby Vision valide et compatible.
 
     - Force le niveau Dolby Vision à une valeur supportée (Level 6 <=30fps, Level 9 <=60fps) au lieu de Level 10 (120fps).
     - Enforce MaxBlockAdditionID = 1.
     - Utilise le FourCC dvcC (ou celui spécifié) pour compatibilité maximale TV/ExoPlayer/Android TV.
+    - Préserve fidèlement la compatibilité existante (compat_id 0, 1, 2, 4) sauf si target_compat_id est forcé.
     - Recalcule le CRC-32 du bloc Tracks.
     """
     path = Path(path)
@@ -547,14 +549,14 @@ def sanitize_dovi_mkv(
 
     # Déterminer le profil et level existants si possible
     profile = 8
-    level = sanitize_dovi_level(10, fps=fps)
+    level = target_level if target_level is not None else sanitize_dovi_level(10, fps=fps)
     compat_id = target_compat_id
     first_hevc = hevc_entries[0]
     if first_hevc.dovi_config_bytes and len(first_hevc.dovi_config_bytes) >= 5:
         cfg = first_hevc.dovi_config_bytes
         profile = (cfg[2] >> 1) & 0x7F
         raw_level = ((cfg[2] & 0x01) << 5) | ((cfg[3] >> 3) & 0x1F)
-        level = sanitize_dovi_level(raw_level, fps=fps)
+        level = target_level if target_level is not None else sanitize_dovi_level(raw_level, fps=fps)
         raw_compat = (cfg[4] >> 4) & 0x0F
         compat_id = target_compat_id if target_compat_id is not None else raw_compat
     elif compat_id is None:
