@@ -529,9 +529,16 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
         opaque_digest,
         timestamp_scale_ns,
     )
+    total_packets = sum(v["frame_count"] for v in statistics.values())
+    total_payload_bytes = sum(v["payload_bytes"] for v in statistics.values())
+    max_duration_ns = max((v["duration_ns"] for v in statistics.values()), default=0)
     return MatroskaMuxPlan(
-        plan.output, tuple(output_tracks), packet_stream, duration_ms=0,
-        duration_ns=0, timestamp_scale_ns=timestamp_scale_ns,
+        plan.output, tuple(output_tracks), packet_stream,
+        duration_ms=round(max_duration_ns / 1_000_000),
+        duration_ns=max_duration_ns,
+        total_packets=total_packets,
+        total_payload_bytes=total_payload_bytes,
+        timestamp_scale_ns=timestamp_scale_ns,
         segment_uid=segment_uid,
         muxing_app=f"Muxiveo {APP_VERSION_LABEL.removeprefix('v')}",
         writing_app=plan.writing_app or WRITING_APPLICATION_TAG,

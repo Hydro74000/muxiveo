@@ -55,10 +55,11 @@ _BLOCK_ADD_ID_VALUE_ID = b"\x41\xf0"
 _BLOCK_ADD_ID_NAME_ID = b"\x41\xa4"
 _BLOCK_ADD_ID_TYPE_ID = b"\x41\xe7"
 _BLOCK_ADD_ID_EXTRA_DATA_ID = b"\x41\xed"
+_MAX_BLOCK_ADD_ID = b"\x55\xee"
 
 # FourCCs
-_FOURCC_DVCC = 0x64766343  # "dvcC" — Dolby Vision configuration record v1
-_FOURCC_DVVC = 0x64767643  # "dvvC" — version 2 (étendu, non utilisé ici)
+_FOURCC_DVCC = 0x64766343  # "dvcC" — Dolby Vision configuration record v1 (profiles <= 7)
+_FOURCC_DVVC = 0x64767643  # "dvvC" — version 2 (profiles > 7, ex: P8.1)
 
 _HEVC_CODEC_IDS = {
     "V_MPEGH/ISO/HEVC",
@@ -371,10 +372,11 @@ class MatroskaDoviBlockAdditionEditor:
         id_name: str,
     ) -> bytes:
         """Construit l'élément complet ``BlockAdditionMapping`` (header + payload)."""
+        fourcc = _FOURCC_DVVC if record.profile > 7 else _FOURCC_DVCC
         children = b"".join([
             self._build_uint_element(_BLOCK_ADD_ID_VALUE_ID, id_value),
             self._build_string_element(_BLOCK_ADD_ID_NAME_ID, id_name),
-            self._build_uint_element(_BLOCK_ADD_ID_TYPE_ID, _FOURCC_DVCC),
+            self._build_uint_element(_BLOCK_ADD_ID_TYPE_ID, fourcc),
             self._build_binary_element(_BLOCK_ADD_ID_EXTRA_DATA_ID, record.to_bytes()),
         ])
         return self._wrap_element(_BLOCK_ADD_MAPPING_ID, children)
@@ -407,15 +409,36 @@ class MatroskaDoviBlockAdditionEditor:
         old_entry_header: bytes,
     ) -> bytes:
         """
-        Reconstruit le TrackEntry complet en append-ant le BlockAdditionMapping
-        à la fin de son payload, et en réencodant la taille du TrackEntry.
-
-        ``old_entry_header`` n'est plus utilisé pour l'écriture (on régénère
-        l'ID + size depuis zéro), mais on le passe pour information / future
-        évolution éventuelle.
+        Reconstruit le TrackEntry complet en s'assurant que MaxBlockAdditionID >= 1,
+        en append-ant le BlockAdditionMapping à la fin de son payload,
+        et en réencodant la taille du TrackEntry.
         """
         _ = old_entry_header
-        new_payload = old_entry_payload + bam_element
+        has_max_block_add_id = False
+        rebuilt_children: list[bytes] = []
+        pos = 0
+        n = len(old_entry_payload)
+        while pos < n:
+            try:
+                el = self._base._read_ebml_element_from_bytes(old_entry_payload, pos)
+            except ValueError:
+                break
+            if el.unknown_size:
+                break
+            payload = old_entry_payload[el.payload_offset:el.end]
+            if el.element_id == _MAX_BLOCK_ADD_ID:
+                current_val = int.from_bytes(payload, "big") if payload else 0
+                rebuilt_children.append(self._build_uint_element(_MAX_BLOCK_ADD_ID, max(current_val, 1)))
+                has_max_block_add_id = True
+            else:
+                rebuilt_children.append(old_entry_payload[el.offset:el.end])
+            pos = el.end
+
+        if not has_max_block_add_id:
+            rebuilt_children.append(self._build_uint_element(_MAX_BLOCK_ADD_ID, 1))
+        rebuilt_children.append(bam_element)
+        new_payload = b"".join(rebuilt_children)
+
         return _TRACK_ENTRY_ID + self._base._encode_ebml_size_prefer_length(
             len(new_payload), preferred_length=2,
         ) + new_payload

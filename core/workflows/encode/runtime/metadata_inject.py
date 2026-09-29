@@ -666,6 +666,9 @@ class MetadataInjectRunner:
                         )
                     else:
                         _free(out_static_hdr)
+                        signals.progress.emit(
+                            "Métadonnées SEI HDR statiques déjà présentes dans le flux."
+                        )
                     _check()
 
                 if (

@@ -150,10 +150,11 @@ class TestMatroskaDoviBlockAdditionEditor:
         assert result.patched_track_number == 1
 
         # Le fichier doit maintenant contenir un BlockAdditionMapping (0x41E4)
-        # avec le FourCC dvcC (0x64766343).
+        # avec le FourCC dvvC (0x64767643) pour profile 8 et MaxBlockAdditionID (0x55EE).
         data = mkv.read_bytes()
         assert b"\x41\xe4" in data
-        assert struct.pack(">I", 0x64766343) in data
+        assert b"\x55\xee" in data
+        assert struct.pack(">I", 0x64767643) in data
         # Et le payload 24 octets DOVI v1 (premier byte = 1, second = 0).
         # On cherche la signature spécifique : 01 00 [profile<<1|level_hi] ...
         # On valide indirectement via re-parse.
@@ -196,8 +197,8 @@ class TestMatroskaDoviBlockAdditionEditor:
 
         # Re-parser et chercher l'extra_data.
         data = mkv.read_bytes()
-        # Localiser la marque dvcC.
-        idx = data.index(struct.pack(">I", 0x64766343))
+        # Localiser la marque dvvC.
+        idx = data.index(struct.pack(">I", 0x64767643))
         # Après ça, on cherche l'élément BlockAddIDExtraData (0x41ED) qui suit.
         extra_idx = data.index(b"\x41\xed", idx)
         # Lire size VINT (1 octet ici car payload=24 → fits sur 1 octet de size).

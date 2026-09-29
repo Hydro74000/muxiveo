@@ -213,3 +213,48 @@ def test_file_injection_is_visible_to_ffprobe(tmp_path: Path) -> None:
     side_data_types = {entry.get("side_data_type") for entry in side_data}
     assert "Mastering display metadata" in side_data_types
     assert "Content light level metadata" in side_data_types
+
+
+def test_file_reinjection_early_exit_does_not_create_output(tmp_path: Path) -> None:
+    stream = _stream(
+        _nal(32),
+        _nal(33),
+        _nal(34),
+        _nal(19, first_slice=True, extra=b"\x44" * 8),
+        _nal(1, first_slice=True, extra=b"\x55" * 8),
+    )
+    injected_bytes, _ = inject_static_hdr_sei(
+        stream,
+        master_display=_MASTER_DISPLAY,
+        max_cll=_MAX_CLL,
+    )
+    src_file = tmp_path / "already_has_sei.hevc"
+    dst_file = tmp_path / "should_not_exist.hevc"
+    src_file.write_bytes(injected_bytes)
+
+    result = inject_static_hdr_sei_file(
+        src_file,
+        dst_file,
+        master_display=_MASTER_DISPLAY,
+        max_cll=_MAX_CLL,
+    )
+
+    assert result.applied is False
+    assert dst_file.exists() is False, "Le fichier de sortie ne doit pas être créé si les SEI sont déjà présents"
+
+
+def test_file_empty_does_not_create_output(tmp_path: Path) -> None:
+    empty_src = tmp_path / "empty.hevc"
+    empty_src.write_bytes(b"")
+    dst = tmp_path / "dst.hevc"
+
+    result = inject_static_hdr_sei_file(
+        empty_src,
+        dst,
+        master_display=_MASTER_DISPLAY,
+        max_cll=_MAX_CLL,
+    )
+
+    assert result.applied is False
+    assert dst.exists() is False
+

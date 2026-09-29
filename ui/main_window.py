@@ -2025,6 +2025,8 @@ class MainWindow(QMainWindow):
         self._start_prep_progress()
 
         task_signals.progress.connect(self._on_op_progress, Qt.ConnectionType.QueuedConnection)
+        if hasattr(task_signals, "progress_pct"):
+            task_signals.progress_pct.connect(self._on_op_progress_pct, Qt.ConnectionType.QueuedConnection)
         task_signals.connect_terminal(
             finished=lambda _: self._on_op_finished(success=True),
             failed=lambda msg, _exc: self._on_op_finished(success=False, error=msg),
@@ -2150,6 +2152,8 @@ class MainWindow(QMainWindow):
         self._start_prep_progress()
 
         signals.progress.connect(self._on_op_progress, Qt.ConnectionType.QueuedConnection)
+        if hasattr(signals, "progress_pct"):
+            signals.progress_pct.connect(self._on_op_progress_pct, Qt.ConnectionType.QueuedConnection)
         signals.connect_terminal(
             finished=lambda _: self._on_op_finished(success=True),
             failed=lambda msg, _exc: self._on_op_finished(success=False, error=msg),
@@ -2352,9 +2356,24 @@ class MainWindow(QMainWindow):
         self.log_requested.emit("INFO", raw_line)
         return True
 
+    def _on_op_progress_pct(self, pct: int) -> None:
+        self._stop_prep_progress()
+        self._prog_bar.setRange(0, 100)
+        self._prog_bar.setValue(max(0, min(100, int(pct))))
+
     def _on_op_progress(self, line: str) -> None:
         """Gère la progression selon le mode (remux ou encode)."""
         self._capture_verbose_progress_line(line)
+        if line.startswith(("Assemblage Matroska", "Écriture Matroska")):
+            self._stop_prep_progress()
+            m = re.search(r"(\d+)%", line)
+            if m:
+                pct = int(m.group(1))
+                self._prog_bar.setRange(0, 100)
+                self._prog_bar.setValue(max(0, min(100, pct)))
+            self._prog_lbl.setText(line.strip())
+            self.log_requested.emit("DEBUG", line)
+            return
         # Banner/listing ffmpeg : ne pas pourrir l'UI mais loguer la version
         # la 1re fois pour traçabilité standard. Le verbose file a déjà la
         # ligne complète via _capture_verbose_progress_line ci-dessus.

@@ -507,9 +507,12 @@ def assemble_encode_output_native(
         def _on_progress(progress: MatroskaWriteProgress) -> None:
             if signals is None:
                 return
+            if progress.percent is not None and hasattr(signals, "progress_pct"):
+                signals.progress_pct.emit(progress.percent)
             if progress.stage != "clusters":
+                pct_str = f"{progress.percent}% " if progress.percent is not None else ""
                 signals.progress.emit(
-                    f"Assemblage Matroska ({progress.stage}) : "
+                    f"Assemblage Matroska ({progress.stage}) : {pct_str}"
                     f"{progress.packets_written} paquets, "
                     f"{progress.bytes_written / (1024 * 1024):.1f} Mio"
                 )
@@ -520,9 +523,11 @@ def assemble_encode_output_native(
             ):
                 progress_state["packets"] = progress.packets_written
                 progress_state["bytes"] = progress.bytes_written
+                pct_str = f"{progress.percent}% " if progress.percent is not None else ""
                 signals.progress.emit(
-                    f"Assemblage Matroska : {progress.packets_written} paquets, "
-                    f"{progress.bytes_written / (1024 * 1024):.1f} Mio"
+                    f"Assemblage Matroska : {pct_str}"
+                    f"({progress.packets_written} paquets, "
+                    f"{progress.bytes_written / (1024 * 1024):.1f} Mio)"
                 )
 
         try:

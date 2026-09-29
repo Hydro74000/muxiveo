@@ -137,10 +137,11 @@ class TestMatroskaNativeMuxerSmoke:
             )
 
         data = out.read_bytes()
-        # FourCC dvcC = 0x64766343 doit apparaître
-        assert b"\x64\x76\x63\x43" in data
-        # BlockAdditionMapping ID
+        # FourCC dvvC = 0x64767643 doit apparaître pour Profile 8
+        assert b"\x64\x76\x76\x43" in data
+        # BlockAdditionMapping ID et MaxBlockAdditionID
         assert b"\x41\xe4" in data
+        assert b"\x55\xee" in data
 
     def test_blocks_are_hvcc_length_prefixed_simpleblocks(self, tmp_path):
         """MKV-S4 : NAL length-prefixed (toutes conservées), SimpleBlocks,

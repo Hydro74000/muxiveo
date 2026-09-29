@@ -27,8 +27,9 @@ from ..editors.dovi import DolbyVisionConfigRecord
 from ..ids import (
     BLOCK_ADDITION_MAPPING_ID,
     CODEC_PRIVATE_ID,
+    MAX_BLOCK_ADDITION_ID_ID,
 )
-from ..ebml import binary_element, element
+from ..ebml import binary_element, element, uint_element
 from .access_units import (
     DEFAULT_HEVC_CHUNK_SIZE,
     HevcAccessUnit,
@@ -99,6 +100,27 @@ def _updated_hvcc(original: bytes, components: _HvccComponents) -> bytes:
     return bytes(out)
 
 
+def _canonical_nal_rank(nal_type: int) -> int:
+    """Rang canonique d'un NAL unit HEVC selon ITU-T H.265 § 7.4.2.4.4.
+
+    Garantit l'ordre légal des flux HEVC dans chaque Access Unit :
+    AUD (35) -> Parameter sets VPS/SPS/PPS (32, 33, 34) -> Prefix SEI (39) -> Slices (0..31) -> Suffix SEI (40) -> UNSPEC/DoVi RPU (62, 63)
+    """
+    if nal_type == 35:
+        return 0
+    if nal_type in (32, 33, 34):
+        return 10
+    if nal_type == 39:
+        return 20
+    if 0 <= nal_type <= 31:
+        return 30
+    if nal_type == 40:
+        return 40
+    if nal_type in (62, 63):
+        return 50
+    return 35
+
+
 def _au_to_block_payload(au: HevcAccessUnit, length_size: int | None) -> bytes:
     """Convertit un access unit injecté vers le framing des blocs du MKV.
 
@@ -110,10 +132,13 @@ def _au_to_block_payload(au: HevcAccessUnit, length_size: int | None) -> bytes:
     """
     if all(nal.nal_type in _PARAMETER_SET_TYPES for nal in au.nal_units):
         return b""
+    # Tri stable selon l'ordre canonique H.265 pour garantir que VPS/SPS/PPS
+    # précèdent impérativement les SEI prefix sur les keyframes.
+    ordered_nals = sorted(au.nal_units, key=lambda n: _canonical_nal_rank(n.nal_type))
     if length_size is None:
-        return au.payload
+        return b"".join(b"\x00\x00\x00\x01" + nal.payload for nal in ordered_nals)
     parts: list[bytes] = []
-    for nal in au.nal_units:
+    for nal in ordered_nals:
         parts.append(len(nal.payload).to_bytes(length_size, "big"))
         parts.append(nal.payload)
     return b"".join(parts)
@@ -134,6 +159,7 @@ def _patched_raw_entry(
 ) -> bytes:
     """Reconstruit le payload TrackEntry : CodecPrivate remplacé, mapping DoVi ajouté."""
     children: list[bytes] = []
+    has_max_block_add_id = False
     for element_id, payload in payload_children(raw_entry):
         if element_id == CODEC_PRIVATE_ID and codec_private is not None:
             children.append(binary_element(CODEC_PRIVATE_ID, codec_private))
@@ -141,8 +167,15 @@ def _patched_raw_entry(
         if element_id == BLOCK_ADDITION_MAPPING_ID and dovi_mapping is not None:
             # Remplacé par le mapping reconstruit (ajouté en fin d'entrée).
             continue
+        if element_id == MAX_BLOCK_ADDITION_ID_ID and dovi_mapping is not None:
+            current_val = int.from_bytes(payload, "big") if payload else 0
+            children.append(uint_element(MAX_BLOCK_ADDITION_ID_ID, max(current_val, 1)))
+            has_max_block_add_id = True
+            continue
         children.append(element(element_id, payload))
     if dovi_mapping is not None:
+        if not has_max_block_add_id:
+            children.append(uint_element(MAX_BLOCK_ADDITION_ID_ID, 1))
         children.append(dovi_mapping)
     return b"".join(children)
 
