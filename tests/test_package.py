@@ -940,30 +940,36 @@ def test_build_windows_portable_zip(tmp_path, monkeypatch):
         assert "Muxiveo/_ALLINC" in namelist
 
 
-def test_build_nsis_installer_copies_allinc_when_marker_present(tmp_path, monkeypatch):
-    bundle = tmp_path / "bundle"
-    bundle.mkdir()
-    (bundle / "_ALLINC").touch()
-    (bundle / "Muxiveo.exe").write_bytes(b"MZ_EXE")
-
+def test_build_nsis_installer_names_allinc_when_marker_present_and_standard_otherwise(tmp_path, monkeypatch):
     monkeypatch.setattr(package_mod, "ROOT", tmp_path)
     monkeypatch.setattr(package_mod, "_find_makensis", lambda: "makensis")
 
     def fake_run(cmd):
-        # cmd: [makensis, nsi_path]
-        # Crée le fichier de sortie attendu
-        output = tmp_path / "Muxiveo-Setup-4.0.3.exe"
-        output.write_bytes(b"SETUP_EXE")
+        nsi_text = (tmp_path / "Muxiveo.nsi").read_text(encoding="utf-8")
+        for line in nsi_text.splitlines():
+            if line.startswith("OutFile "):
+                outfile = line.split("OutFile ", 1)[1].strip('"')
+                Path(outfile).write_bytes(b"SETUP_EXE")
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(package_mod, "_run", fake_run)
-    res = package_mod._build_nsis_installer(bundle, version_tag="4.0.3")
 
-    assert res == tmp_path / "Muxiveo-Setup-4.0.3.exe"
-    assert res.is_file()
-    allinc = tmp_path / "Muxiveo-Setup-AllInc-4.0.3.exe"
-    assert allinc.is_file()
-    assert allinc.read_bytes() == b"SETUP_EXE"
+    # 1. Standard (sans marqueur _ALLINC)
+    bundle_std = tmp_path / "bundle_std"
+    bundle_std.mkdir()
+    (bundle_std / "Muxiveo.exe").write_bytes(b"MZ_EXE")
+    res_std = package_mod._build_nsis_installer(bundle_std, version_tag="4.0.3")
+    assert res_std == tmp_path / "Muxiveo-Setup-4.0.3.exe"
+    assert res_std.is_file()
+
+    # 2. AllInc (avec marqueur _ALLINC)
+    bundle_allinc = tmp_path / "bundle_allinc"
+    bundle_allinc.mkdir()
+    (bundle_allinc / "_ALLINC").touch()
+    (bundle_allinc / "Muxiveo.exe").write_bytes(b"MZ_EXE")
+    res_allinc = package_mod._build_nsis_installer(bundle_allinc, version_tag="4.0.3")
+    assert res_allinc == tmp_path / "Muxiveo-Setup-AllInc-4.0.3.exe"
+    assert res_allinc.is_file()
 
 
 def test_bundle_windows_licenses(tmp_path, monkeypatch):
@@ -1011,5 +1017,52 @@ def test_package_appimage_bundle_licenses(tmp_path, monkeypatch):
     assert (dest / "NOTICE").is_file()
     assert (dest / "SOURCES.md").is_file()
     assert (dest / "LICENSES" / "curl-license.txt").is_file()
+
+
+def test_build_windows_allinc_produces_both_installers_and_portable_zip(tmp_path, monkeypatch):
+    bundle = tmp_path / "Muxiveo-win"
+    bundle.mkdir()
+    (bundle / "Muxiveo.exe").write_bytes(b"MZ_EXE")
+
+    nsis_calls = []
+    tools_bundled = []
+    portable_built = []
+
+    monkeypatch.setattr(package_mod, "_WIN_BUNDLE", bundle)
+    monkeypatch.setattr(package_mod, "_ensure_wine", lambda: None)
+    monkeypatch.setattr(package_mod, "_ensure_makensis", lambda: None)
+    monkeypatch.setattr(package_mod, "bundle_windows_licenses", lambda b: None)
+    monkeypatch.setattr(
+        package_mod,
+        "bundle_windows_tools",
+        lambda b: (tools_bundled.append(True), (b / "_ALLINC").touch())[0],
+    )
+
+    def fake_build_nsis(b, version_tag=None):
+        name = "Muxiveo-Setup-AllInc-4.0.3.exe" if (b / "_ALLINC").exists() else "Muxiveo-Setup-4.0.3.exe"
+        p = tmp_path / name
+        p.write_bytes(b"EXE")
+        nsis_calls.append(name)
+        return p
+
+    monkeypatch.setattr(package_mod, "_build_nsis_installer", fake_build_nsis)
+    monkeypatch.setattr(package_mod, "_copy_final_file_if_requested", lambda p, d, version_tag=None: p)
+    monkeypatch.setattr(
+        package_mod,
+        "_build_windows_portable_zip",
+        lambda b, version_tag=None: (portable_built.append(True), tmp_path / "portable.zip")[1],
+    )
+
+    package_mod.build_windows(
+        skip_wine=True,
+        dest=None,
+        version_tag="4.0.3",
+        allinc=True,
+        portable=True,
+    )
+
+    assert nsis_calls == ["Muxiveo-Setup-4.0.3.exe", "Muxiveo-Setup-AllInc-4.0.3.exe"]
+    assert tools_bundled == [True]
+    assert portable_built == [True]
 
 

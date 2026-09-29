@@ -3037,7 +3037,9 @@ def _build_nsis_installer(bundle_dir: Path, version_tag: str | None = None) -> P
     """Génère le script NSIS et invoque makensis pour produire l'installateur."""
     _title("Étape NSIS — Installateur Windows")
 
-    output = _versioned_output_path(ROOT / "Muxiveo-Setup.exe", version_tag)
+    is_allinc = (bundle_dir / "_ALLINC").exists()
+    base_name = f"{APP_NAME}-Setup-AllInc.exe" if is_allinc else f"{APP_NAME}-Setup.exe"
+    output = _versioned_output_path(ROOT / base_name, version_tag)
     nsi    = ROOT / "Muxiveo.nsi"
     win_icon = _resolve_windows_icon_ico()
     icon_block = ""
@@ -3072,10 +3074,6 @@ def _build_nsis_installer(bundle_dir: Path, version_tag: str | None = None) -> P
         sys.exit(1)
 
     _ok(f"Installateur : {output}")
-    if (bundle_dir / "_ALLINC").exists():
-        allinc_output = _versioned_output_path(ROOT / f"{APP_NAME}-Setup-AllInc.exe", version_tag)
-        shutil.copy2(output, allinc_output)
-        _ok(f"Installateur AllInc : {allinc_output}")
     return output
 
 
@@ -3321,36 +3319,38 @@ def build_windows(
         _ensure_wine_deps()
         bundle_dir = _build_pyinstaller_wine()
 
-    if allinc:
-        bundle_windows_tools(bundle_dir)
-    else:
-        bundle_windows_licenses(bundle_dir)
+    bundle_windows_licenses(bundle_dir)
 
     installer = _build_nsis_installer(bundle_dir, version_tag=version_tag)
-    final_installer = _copy_final_file_if_requested(installer, dest, version_tag=version_tag)
-    if allinc or (bundle_dir / "_ALLINC").exists():
-        allinc_installer = _versioned_output_path(ROOT / f"{APP_NAME}-Setup-AllInc.exe", version_tag)
-        if allinc_installer.exists():
-            _copy_final_file_if_requested(allinc_installer, dest, version_tag=version_tag)
+    final_std = _copy_final_file_if_requested(installer, dest, version_tag=version_tag)
+
+    final_allinc = None
+    final_portable = None
+
+    if allinc:
+        bundle_windows_tools(bundle_dir)
+        allinc_installer = _build_nsis_installer(bundle_dir, version_tag=version_tag)
+        final_allinc = _copy_final_file_if_requested(allinc_installer, dest, version_tag=version_tag)
+
     if portable or allinc:
+        if not (bundle_dir / "_ALLINC").exists():
+            bundle_windows_tools(bundle_dir)
         portable_zip = _build_windows_portable_zip(bundle_dir, version_tag=version_tag)
         if dest:
-            _copy_final_file_if_requested(portable_zip, dest, version_tag=version_tag)
+            final_portable = _copy_final_file_if_requested(portable_zip, dest, version_tag=version_tag)
 
     _title("Résultat")
-    _ok(f"Installateur Windows : {final_installer}")
-    if allinc or (bundle_dir / "_ALLINC").exists():
-        print(f"""
-  Distribuer :
-    {final_installer.name} (AllInc avec ffmpeg, mediainfo, dovi_tool, hdr10plus_tool, nvencc embarqués)
-""")
-    else:
-        print(f"""
-  Distribuer :
-    {final_installer.name}
-  Au premier lancement (sans config.ini dans %APPDATA%\\muxiveo),
-  le setup s'exécute pour installer les outils externes.
-""")
+    _ok(f"Installateur Standard : {final_std}")
+    if final_allinc:
+        _ok(f"Installateur AllInc   : {final_allinc}")
+    if final_portable:
+        _ok(f"Archive Portable      : {final_portable}")
+    msg = f"\n  Distribuer :\n    {final_std.name} (standard, outils téléchargés au 1er lancement)\n"
+    if final_allinc:
+        msg += f"    {final_allinc.name} (AllInc avec ffmpeg, mediainfo, dovi_tool, hdr10plus_tool, nvencc embarqués)\n"
+    if final_portable:
+        msg += f"    {final_portable.name} (archive portable sans installation)\n"
+    print(msg)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3537,14 +3537,13 @@ if __name__ == "__main__":
         else:
             bundle_dir = exe_path.parent
 
-        if args.allinc:
-            bundle_windows_tools(bundle_dir)
-        else:
-            bundle_windows_licenses(bundle_dir)
+        bundle_windows_licenses(bundle_dir)
 
         store_metadata = _load_msix_store_metadata(Path(args.store_config) if args.store_config else None)
 
         if args.exe:
+            if args.allinc:
+                bundle_windows_tools(bundle_dir)
             if args.onefile or args.dest:
                 final_exe = _copy_final_file_if_requested(
                     exe_path,
@@ -3560,6 +3559,8 @@ if __name__ == "__main__":
                 _ok(f"Dossier    : {bundle_dir}")
                 _ok(f"Exécutable : {exe_path}")
         elif args.msix or args.msixupload:
+            if args.allinc:
+                bundle_windows_tools(bundle_dir)
             package_path = _build_msix_package(
                 bundle_dir,
                 version_tag=args.version,
@@ -3574,17 +3575,29 @@ if __name__ == "__main__":
         else:
             _ensure_makensis()
             installer = _build_nsis_installer(bundle_dir, version_tag=args.version)
-            final_file = _copy_final_file_if_requested(installer, args.dest, version_tag=args.version)
-            if (bundle_dir / "_ALLINC").exists():
-                allinc_installer = _versioned_output_path(ROOT / f"{APP_NAME}-Setup-AllInc.exe", args.version)
-                if allinc_installer.exists():
-                    _copy_final_file_if_requested(allinc_installer, args.dest, version_tag=args.version)
+            final_std = _copy_final_file_if_requested(installer, args.dest, version_tag=args.version)
+
+            final_allinc = None
+            final_portable = None
+
+            if args.allinc:
+                bundle_windows_tools(bundle_dir)
+                allinc_installer = _build_nsis_installer(bundle_dir, version_tag=args.version)
+                final_allinc = _copy_final_file_if_requested(allinc_installer, args.dest, version_tag=args.version)
+
             if args.portable or args.allinc:
+                if not (bundle_dir / "_ALLINC").exists():
+                    bundle_windows_tools(bundle_dir)
                 portable_zip = _build_windows_portable_zip(bundle_dir, version_tag=args.version)
                 if args.dest:
-                    _copy_final_file_if_requested(portable_zip, args.dest, version_tag=args.version)
+                    final_portable = _copy_final_file_if_requested(portable_zip, args.dest, version_tag=args.version)
+
             _title("Résultat")
-            _ok(f"Installateur : {final_file}")
+            _ok(f"Installateur Standard : {final_std}")
+            if final_allinc:
+                _ok(f"Installateur AllInc   : {final_allinc}")
+            if final_portable:
+                _ok(f"Archive Portable      : {final_portable}")
     elif args.windows:
         # Cross-compilation Windows depuis Linux via Wine + NSIS
         if OS != "Linux":

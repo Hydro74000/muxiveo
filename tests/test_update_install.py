@@ -87,6 +87,31 @@ def test_select_asset_matches_unstable_names():
     assert select_asset(info, InstallKind.WINDOWS_INSTALLER).name == f"Muxiveo-Setup-{unstable}.exe"
 
 
+def test_select_asset_distinguishes_standard_and_allinc_windows(tmp_path, monkeypatch):
+    import sys
+    exe_dir = tmp_path / "app"
+    exe_dir.mkdir()
+    exe = exe_dir / "Muxiveo.exe"
+    exe.write_bytes(b"MZ")
+
+    info = _info(
+        "Muxiveo-Setup-99.0.0.exe",
+        "Muxiveo-Setup-AllInc-99.0.0.exe",
+        "Muxiveo-Windows-x64-allinc-99.0.0.zip",
+        "SHA256SUMS",
+    )
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe))
+
+    # Sans marqueur _ALLINC -> sélectionne l'installeur standard
+    assert select_asset(info, InstallKind.WINDOWS_INSTALLER).name == "Muxiveo-Setup-99.0.0.exe"
+
+    # Avec marqueur _ALLINC -> sélectionne l'installeur AllInc
+    (exe_dir / "_ALLINC").touch()
+    assert select_asset(info, InstallKind.WINDOWS_INSTALLER).name == "Muxiveo-Setup-AllInc-99.0.0.exe"
+
+
 def test_parse_checksums_accepts_binary_marker():
     digest = "a" * 64
     assert parse_checksums(f"{digest}  a.exe\n{digest.upper()} *b c.AppImage\nbruit\n") == {

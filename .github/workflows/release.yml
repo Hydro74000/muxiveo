@@ -242,10 +242,20 @@ jobs:
           PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
         run: |
           $version = $env:PACKAGE_VERSION
-          $file = "dist\releases\Muxiveo-Setup-$version.exe"
-          if (-not (Test-Path $file)) {
+          $std_file = "dist\releases\Muxiveo-Setup-$version.exe"
+          $allinc_file = "dist\releases\Muxiveo-Setup-AllInc-$version.exe"
+          $portable_file = "dist\releases\Muxiveo-Windows-x64-allinc-$version.zip"
+          if (-not (Test-Path $std_file)) {
             Get-ChildItem -Recurse dist | Select-Object -First 200 FullName
-            throw "Windows installer not found: $file"
+            throw "Standard Windows installer not found: $std_file"
+          }
+          if (-not (Test-Path $allinc_file)) {
+            Get-ChildItem -Recurse dist | Select-Object -First 200 FullName
+            throw "AllInc Windows installer not found: $allinc_file"
+          }
+          if (-not (Test-Path $portable_file)) {
+            Get-ChildItem -Recurse dist | Select-Object -First 200 FullName
+            throw "Portable Windows ZIP not found: $portable_file"
           }
           New-Item -ItemType Directory -Force -Path release-assets\windows | Out-Null
           Get-ChildItem -Path dist\releases -Filter "*$version*" | Copy-Item -Destination release-assets\windows\ -Force
