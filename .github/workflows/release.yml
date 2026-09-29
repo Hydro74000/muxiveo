@@ -103,7 +103,7 @@ jobs:
           else
             release_tag="v${package_version}"
             release_name="Unstable ${release_tag}"
-            appimage_update_release="$release_tag"
+            appimage_update_release="latest-pre"
           fi
 
           {
