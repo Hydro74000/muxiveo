@@ -466,6 +466,7 @@ class NvenccDirectOutputRunner:
                     stream_index=None if needs_ffmpeg_pipe else routing.stream_index,
                     input_reader=None if needs_ffmpeg_pipe else routing.input_reader,
                     input_fps=None if needs_ffmpeg_pipe else routing.input_fps,
+                    source_fps=routing.source_fps or routing.input_fps,
                     input_avsync=None if needs_ffmpeg_pipe else routing.input_avsync,
                     hdr10plus_json=None,
                     dovi_rpu=None,
@@ -609,6 +610,7 @@ def build_nvencc_pipeline_commands(
         stream_index=None if needs_ffmpeg_pipe else routing.stream_index,
         input_reader=None if needs_ffmpeg_pipe else routing.input_reader,
         input_fps=None if needs_ffmpeg_pipe else routing.input_fps,
+        source_fps=routing.source_fps or routing.input_fps,
         input_avsync=None if needs_ffmpeg_pipe else routing.input_avsync,
         dovi_rpu_prm=None if needs_ffmpeg_pipe else routing.dovi_rpu_prm,
     )

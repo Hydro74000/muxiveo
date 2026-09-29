@@ -38,7 +38,6 @@ nvencc -i "source.mkv" \
   --aq --aq-strength 8 --aq-temporal \
   --qvbr 24 --qp-max 32 \
   --gop-len 48 \
-  --strict-gop \
   --repeat-headers \
   --aud \
   --colorprim bt2020 --transfer smpte2084 --colormatrix bt2020nc --colorrange limited \
@@ -48,7 +47,7 @@ nvencc -i "source.mkv" \
 
 ### Rôle des options clés :
 - `--dolby-vision-profile 8.1` & `--dolby-vision-rpu copy` : Extrait et convertit automatiquement le RPU de la source en Profil 8.1 et l'insère trame par trame.
-- `--gop-len 48 --strict-gop` : Force un cycle d'images clés régulier (2 secondes max), permettant au décodeur TV de caler son buffer.
+- `--gop-len (2 × fps, ex: 48 à 24fps, 50 à 25fps, 100 à 50fps)` : Plafonne le cycle maximal d'images clés à 2 secondes pour éviter le débordement du tampon matériel (DPB/RPU) des téléviseurs, tout en laissant l'encodeur libre d'insérer des trames IDR adaptatives sur les changements de scène (pas de `--strict-gop` rigide).
 - `--repeat-headers --aud` : Répète les en-têtes VPS/SPS/PPS à chaque image clé et insère les délimiteurs d'Access Unit.
 
 ---

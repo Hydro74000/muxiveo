@@ -639,12 +639,39 @@ def strip_nvencc_latency_args(args: list[str]) -> list[str]:
     return stripped
 
 
+def _compute_dovi_gop_len(input_fps: str | float | None = None) -> int:
+    """Calcule la longueur maximale de GOP pour borner le cycle IDR à 2 secondes max (Dolby Vision).
+
+    Évite la saturation du buffer matériel DPB/RPU des téléviseurs (LG OLED, Sony, etc.)
+    tout en adaptant le nombre d'images à la cadence réelle :
+    - 23.976 / 24 fps : 48
+    - 25 fps : 50
+    - 29.97 / 30 fps : 60
+    - 50 fps : 100
+    - 59.94 / 60 fps : 120
+    Fallback par défaut (cinéma 24fps) : 48
+    """
+    if input_fps is not None:
+        try:
+            if isinstance(input_fps, str) and "/" in input_fps:
+                num, den = input_fps.split("/", 1)
+                fps_val = float(num) / float(den)
+            else:
+                fps_val = float(input_fps)
+            if fps_val > 0:
+                return max(24, int(round(fps_val * 2.0)))
+        except (ValueError, ZeroDivisionError):
+            pass
+    return 48
+
+
 def _hdr_dynamic_args(
     video: VideoEncodeSettings,
     *,
     hdr10plus_json: Path | str | None = None,
     dovi_rpu: Path | str | None = None,
     dovi_rpu_prm: str | None = None,
+    input_fps: str | float | None = None,
 ) -> list[str]:
     """Flux HDR10+ et DoVi : passthrough (``copy``) ou fichiers extraits amont."""
     args: list[str] = []
@@ -674,10 +701,10 @@ def _hdr_dynamic_args(
         args.extend(["--dolby-vision-rpu-prm", str(dovi_rpu_prm)])
 
     if has_dovi and video.codec == "nvencc_hevc":
-        # Conformité stricte Dolby Vision Profile 8.1 pour lecture sur diffuseurs TV :
+        # Conformité Dolby Vision Profile 8.1 pour lecture sur diffuseurs TV :
         # - Main10 et Tier High
         # - AUD et repeat-headers pour synchronisation continue du processeur DV
-        # - strict-gop et gop-len borné pour l'indexation RPU
+        # - gop-len borné à 2 secondes max (selon la cadence réelle) pour borner le buffer matériel DPB/RPU
         if "--profile" not in args:
             args.extend(["--profile", "main10"])
         if "--tier" not in args:
@@ -686,11 +713,10 @@ def _hdr_dynamic_args(
             args.append("--repeat-headers")
         if "--aud" not in args:
             args.append("--aud")
-        if "--strict-gop" not in args:
-            args.append("--strict-gop")
         extra_raw = str(getattr(video, "extra_params", "") or "")
         if "--gop-len" not in extra_raw and "-g " not in extra_raw and not extra_raw.endswith("-g") and "--gop-len" not in args:
-            args.extend(["--gop-len", "48"])
+            gop_len = _compute_dovi_gop_len(input_fps)
+            args.extend(["--gop-len", str(gop_len)])
 
     return args
 
@@ -704,6 +730,7 @@ def build_nvencc_command(
     stream_index: int | None = None,
     input_reader: str | None = None,
     input_fps: str | None = None,
+    source_fps: str | float | None = None,
     input_avsync: str | None = None,
     hdr10plus_json: Path | str | None = None,
     dovi_rpu: Path | str | None = None,
@@ -772,6 +799,7 @@ def build_nvencc_command(
             hdr10plus_json=hdr10plus_json,
             dovi_rpu=dovi_rpu,
             dovi_rpu_prm=dovi_rpu_prm,
+            input_fps=source_fps or input_fps,
         )
     )
     cmd.extend(map_nvencc_video_transform_args(video))

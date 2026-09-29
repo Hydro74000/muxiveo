@@ -555,6 +555,38 @@ class TestBuildNvenccCommand:
         # Mais source_fps est préservé pour le post-processing sanitize_dovi_mkv !
         assert routing.source_fps == "60000/1001"
 
+    def test_dovi_hevc_dynamic_gop_len_and_no_strict_gop(self):
+        v = _video(copy_dv=True)
+        # 1. Fallback par défaut (24fps) -> 48, et pas de strict-gop rigide
+        cmd_default = build_nvencc_command("nvencc", v, "/tmp/out.hevc")
+        assert "--gop-len" in cmd_default
+        assert cmd_default[cmd_default.index("--gop-len") + 1] == "48"
+        assert "--strict-gop" not in cmd_default
+        assert "--repeat-headers" in cmd_default
+        assert "--aud" in cmd_default
+
+        # 2. 25 fps (PAL / TV) -> 50
+        cmd_25 = build_nvencc_command("nvencc", v, "/tmp/out.hevc", source_fps="25")
+        assert cmd_25[cmd_25.index("--gop-len") + 1] == "50"
+
+        # 3. 50 fps -> 100
+        cmd_50 = build_nvencc_command("nvencc", v, "/tmp/out.hevc", source_fps="50")
+        assert cmd_50[cmd_50.index("--gop-len") + 1] == "100"
+
+        # 4. 60 fps (59.94) -> 120
+        cmd_60 = build_nvencc_command("nvencc", v, "/tmp/out.hevc", source_fps="60000/1001")
+        assert cmd_60[cmd_60.index("--gop-len") + 1] == "120"
+
+        # 5. Surcharge utilisateur dans extra_params respectée
+        v_custom_gop = _video(copy_dv=True, extra_params="--gop-len 240")
+        cmd_custom_gop = build_nvencc_command("nvencc", v_custom_gop, "/tmp/out.hevc", source_fps="25")
+        assert cmd_custom_gop[cmd_custom_gop.index("--gop-len") + 1] == "240"
+
+        # 6. Surcharge utilisateur demandant explicitement strict-gop respectée
+        v_custom_strict = _video(copy_dv=True, extra_params="--strict-gop")
+        cmd_custom_strict = build_nvencc_command("nvencc", v_custom_strict, "/tmp/out.hevc")
+        assert "--strict-gop" in cmd_custom_strict
+
     def test_tonemap_ui_maps_to_nvencc_vpp_colorspace(self):
         v = _video(tonemap_to_sdr=True, tonemap_algorithm="mobius")
         cmd = build_nvencc_command("nvencc", v, "/tmp/out.hevc")
