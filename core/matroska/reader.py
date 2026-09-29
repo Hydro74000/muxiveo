@@ -62,10 +62,10 @@ def _read_vint_value(data: bytes, offset: int = 0) -> tuple[int, int]:
     return value, length
 
 
-def _split_laces(payload: bytes, flags: int) -> tuple[bytes, ...]:
+def _split_lace_sizes(payload: bytes, flags: int, total_payload_len: int) -> tuple[int, ...]:
     mode = (flags >> 1) & 0x03
     if mode == 0:
-        return (payload,)
+        return (total_payload_len,)
     if not payload:
         raise ValueError("En-tête de lacing absent")
     count = payload[0] + 1
@@ -84,7 +84,7 @@ def _split_laces(payload: bytes, flags: int) -> tuple[bytes, ...]:
                     break
             sizes.append(size)
     elif mode == 2:  # fixed
-        remaining = len(payload) - cursor
+        remaining = total_payload_len - cursor
         if remaining % count:
             raise ValueError("Lacing fixed de taille non divisible")
         sizes = [remaining // count] * (count - 1)
@@ -99,10 +99,19 @@ def _split_laces(payload: bytes, flags: int) -> tuple[bytes, ...]:
             sizes.append(sizes[-1] + encoded - bias)
             if sizes[-1] < 0:
                 raise ValueError("Lacing EBML avec taille négative")
-    last = len(payload) - cursor - sum(sizes)
+    last = total_payload_len - cursor - sum(sizes)
     if last < 0:
         raise ValueError("Tailles de lacing hors payload")
     sizes.append(last)
+    return tuple(sizes)
+
+
+def _split_laces(payload: bytes, flags: int) -> tuple[bytes, ...]:
+    mode = (flags >> 1) & 0x03
+    if mode == 0:
+        return (payload,)
+    sizes = _split_lace_sizes(payload, flags, len(payload))
+    cursor = len(payload) - sum(sizes)
     frames: list[bytes] = []
     for size in sizes:
         frames.append(payload[cursor:cursor + size])
@@ -748,10 +757,79 @@ class MatroskaReader:
             lacing_mode=(flags >> 1) & 0x03,
             encoded_frames_payload=encoded_frames_payload,
             is_keyframe=bool(flags & 0x80) if is_keyframe is None else is_keyframe,
+            payload_bytes=len(frame),
         ) for index, frame in enumerate(frames))
 
-    def blocks(self) -> Iterator["MatroskaBlock"]:
-        """Yield SimpleBlock and BlockGroup frames, including all lacing modes."""
+    @classmethod
+    def _decode_block_header_only_stream(
+        cls,
+        fh: BinaryIO,
+        payload_offset: int,
+        elem_size: int,
+        cluster_timestamp: int,
+        *,
+        header: bytes,
+        track_no: int,
+        vint_len: int,
+        duration_ms: int | None = None,
+        references: tuple[int, ...] = (),
+        discard_padding_ns: int = 0,
+        codec_state: bytes = b"",
+        block_additions: bytes = b"",
+        duration_ns: int | None = None,
+        references_ns: tuple[int, ...] = (),
+        is_keyframe: bool | None = None,
+    ) -> tuple["MatroskaBlock", ...]:
+        if len(header) < vint_len + 3:
+            raise ValueError("Block Matroska tronqué")
+        relative = int.from_bytes(header[vint_len:vint_len + 2], "big", signed=True)
+        flags = header[vint_len + 2]
+        mode = (flags >> 1) & 0x03
+        total_payload_len = elem_size - (vint_len + 3)
+        probe_size = len(header)
+        while True:
+            try:
+                sizes = _split_lace_sizes(header[vint_len + 3:], flags, total_payload_len)
+                break
+            except ValueError:
+                if probe_size >= elem_size:
+                    raise
+                probe_size = min(elem_size, probe_size * 4)
+                fh.seek(payload_offset)
+                header = _read_exact(fh, probe_size)
+
+        return tuple(MatroskaBlock(
+            track_number=track_no,
+            timestamp_ms=cluster_timestamp + relative,
+            flags=flags,
+            payload=b"",
+            lace_index=index,
+            lace_count=len(sizes),
+            duration_ms=duration_ms,
+            references=references,
+            discard_padding_ns=discard_padding_ns,
+            codec_state=codec_state,
+            block_additions=block_additions,
+            duration_ns=duration_ns,
+            references_ns=references_ns,
+            lacing_mode=mode,
+            encoded_frames_payload=b"",
+            is_keyframe=bool(flags & 0x80) if is_keyframe is None else is_keyframe,
+            payload_bytes=frame_size,
+        ) for index, frame_size in enumerate(sizes))
+
+    def blocks(
+        self,
+        *,
+        track_numbers: set[int] | None = None,
+        read_payload: bool = True,
+    ) -> Iterator["MatroskaBlock"]:
+        """Yield SimpleBlock and BlockGroup frames, including all lacing modes.
+
+        Permet de filtrer en amont par numéros de pistes (``track_numbers``) et
+        de sauter la lecture du contenu brut des frames (``read_payload=False``)
+        en ne décodant que les en-têtes et métadonnées temporelles.
+        """
         size = self.path.stat().st_size
         scale_ns = self.timestamp_scale_ns()
         with self.path.open("rb") as fh:
@@ -761,30 +839,56 @@ class MatroskaReader:
                 timestamp = 0
                 fh.seek(cluster.payload_offset)
                 for child in iter_children(fh, cluster, file_size=size):
-                    if child.element_id == self.TIMESTAMP_ID and child.size is not None:
-                        timestamp = int.from_bytes(self.payload(child), "big")
-                    elif child.element_id == self.SIMPLE_BLOCK_ID and child.size is not None:
-                        decoded = self._decode_block(self.payload(child), timestamp)
+                    if child.size is None:
+                        continue
+                    if child.element_id == self.TIMESTAMP_ID:
+                        fh.seek(child.payload_offset)
+                        timestamp = int.from_bytes(_read_exact(fh, child.size), "big")
+                    elif child.element_id == self.SIMPLE_BLOCK_ID:
+                        probe_len = min(child.size, 256 if not read_payload else 16)
+                        fh.seek(child.payload_offset)
+                        header = _read_exact(fh, probe_len)
+                        track_no, vint_len = _read_vint_value(header)
+                        if track_numbers is not None and track_no not in track_numbers:
+                            continue
+                        if read_payload:
+                            fh.seek(child.payload_offset)
+                            raw = _read_exact(fh, child.size)
+                            decoded = self._decode_block(raw, timestamp)
+                        else:
+                            decoded = self._decode_block_header_only_stream(
+                                fh, child.payload_offset, child.size, timestamp,
+                                header=header, track_no=track_no, vint_len=vint_len,
+                            )
                         for block in decoded:
                             timestamp_ns = block.timestamp_ms * scale_ns if block.lace_index == 0 else None
                             yield block.__class__(**{
                                 **block.__dict__,
                                 "timestamp_ms": round(block.timestamp_ms * scale_ns / 1_000_000),
-                                # Une frame secondaire lacée n'a pas de timestamp
-                                # EBML propre. Conserver None évite d'inventer des
-                                # timestamps superposés ; le codec ou ffprobe peut
-                                # reconstruire sa cadence lors d'un rapport média.
                                 "timestamp_ns": timestamp_ns,
                             })
                     elif child.element_id == self.BLOCK_GROUP_ID and child.size is not None:
-                        values: dict[bytes, list[bytes]] = {}
+                        group_children: list[EbmlElement] = []
                         fh.seek(child.payload_offset)
                         for part in iter_children(fh, child, file_size=size):
                             if part.size is not None:
-                                values.setdefault(part.element_id, []).append(self.payload(part))
-                        raw_blocks = values.get(self.BLOCK_ID, [])
-                        if not raw_blocks:
+                                group_children.append(part)
+                        block_elem = next((p for p in group_children if p.element_id == self.BLOCK_ID), None)
+                        if block_elem is None or block_elem.size is None:
                             raise ValueError("BlockGroup sans Block")
+                        probe_len = min(block_elem.size, 256 if not read_payload else 16)
+                        fh.seek(block_elem.payload_offset)
+                        header = _read_exact(fh, probe_len)
+                        track_no, vint_len = _read_vint_value(header)
+                        if track_numbers is not None and track_no not in track_numbers:
+                            continue
+                        values: dict[bytes, list[bytes]] = {}
+                        for part in group_children:
+                            if part.element_id == self.BLOCK_ID:
+                                continue
+                            fh.seek(part.payload_offset)
+                            values.setdefault(part.element_id, []).append(_read_exact(fh, part.size))
+
                         def uint(key: bytes) -> int:
                             entries = values.get(key)
                             return int.from_bytes(entries[0], "big") if entries else 0
@@ -796,17 +900,49 @@ class MatroskaReader:
                             )
 
                         references = sint_values(self.REFERENCE_BLOCK_ID)
-                        decoded = self._decode_block(
-                            raw_blocks[0], timestamp,
-                            duration_ms=(round(uint(self.BLOCK_DURATION_ID) * scale_ns / 1_000_000) if uint(self.BLOCK_DURATION_ID) else None),
-                            duration_ns=(uint(self.BLOCK_DURATION_ID) * scale_ns if uint(self.BLOCK_DURATION_ID) else None),
-                            references=tuple(round(value * scale_ns / 1_000_000) for value in references),
-                            references_ns=tuple(value * scale_ns for value in references),
-                            is_keyframe=not references,
-                            discard_padding_ns=(sint_values(self.DISCARD_PADDING_ID) or (0,))[0],
-                            codec_state=(values.get(self.CODEC_STATE_ID) or [b""])[0],
-                            block_additions=(values.get(self.BLOCK_ADDITIONS_ID) or [b""])[0],
+                        duration_ticks = uint(self.BLOCK_DURATION_ID)
+                        duration_ms = (
+                            round(duration_ticks * scale_ns / 1_000_000)
+                            if duration_ticks else None
                         )
+                        duration_ns = (
+                            duration_ticks * scale_ns
+                            if duration_ticks else None
+                        )
+                        references_ms = tuple(round(value * scale_ns / 1_000_000) for value in references)
+                        references_ns = tuple(value * scale_ns for value in references)
+                        is_keyframe = not references
+                        discard_padding_ns = (sint_values(self.DISCARD_PADDING_ID) or (0,))[0]
+                        codec_state = (values.get(self.CODEC_STATE_ID) or [b""])[0]
+                        block_additions = (values.get(self.BLOCK_ADDITIONS_ID) or [b""])[0]
+
+                        if read_payload:
+                            fh.seek(block_elem.payload_offset)
+                            raw = _read_exact(fh, block_elem.size)
+                            decoded = self._decode_block(
+                                raw, timestamp,
+                                duration_ms=duration_ms,
+                                duration_ns=duration_ns,
+                                references=references_ms,
+                                references_ns=references_ns,
+                                is_keyframe=is_keyframe,
+                                discard_padding_ns=discard_padding_ns,
+                                codec_state=codec_state,
+                                block_additions=block_additions,
+                            )
+                        else:
+                            decoded = self._decode_block_header_only_stream(
+                                fh, block_elem.payload_offset, block_elem.size, timestamp,
+                                header=header, track_no=track_no, vint_len=vint_len,
+                                duration_ms=duration_ms,
+                                duration_ns=duration_ns,
+                                references=references_ms,
+                                references_ns=references_ns,
+                                is_keyframe=is_keyframe,
+                                discard_padding_ns=discard_padding_ns,
+                                codec_state=codec_state,
+                                block_additions=block_additions,
+                            )
                         for block in decoded:
                             timestamp_ns = block.timestamp_ms * scale_ns if block.lace_index == 0 else None
                             yield block.__class__(**{
@@ -1183,6 +1319,7 @@ class MatroskaBlock:
     encoded_frames_payload: bytes = b""
     # SimpleBlock: bit keyframe. BlockGroup: absence de ReferenceBlock.
     is_keyframe: bool | None = None
+    payload_bytes: int = 0
 
 
 @dataclass(frozen=True)

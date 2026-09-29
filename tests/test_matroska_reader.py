@@ -219,3 +219,65 @@ def test_parallel_block_summaries_match_the_sequential_scan(tmp_path: Path) -> N
     for workers in (2, 4, 8):
         assert list(reader.block_summaries(workers=workers)) == sequential, workers
     assert len(sequential) == 80
+
+
+def test_blocks_track_filtering(tmp_path: Path) -> None:
+    """blocks(track_numbers=...) filtre les pistes et ignore les autres sans lire leur payload."""
+    cluster, timestamp, block = bytes.fromhex("1f43b675"), bytes.fromhex("e7"), bytes.fromhex("a3")
+    data = (
+        element(EBML_HEADER_ID, b"")
+        + SEGMENT_ID
+        + b"\xff"
+        + element(
+            cluster,
+            element(timestamp, b"\x00")
+            + element(block, b"\x81\x00\x00\x80video_frame")
+            + element(block, b"\x82\x00\x05\x80audio_frame")
+            + element(block, b"\x83\x00\x0a\x80sub_frame"),
+        )
+    )
+    path = tmp_path / "filtered.mkv"
+    path.write_bytes(data)
+    reader = MatroskaReader(path)
+
+    all_blocks = list(reader.blocks())
+    assert [b.track_number for b in all_blocks] == [1, 2, 3]
+
+    audio_only = list(reader.blocks(track_numbers={2}))
+    assert len(audio_only) == 1
+    assert audio_only[0].track_number == 2
+    assert audio_only[0].payload == b"audio_frame"
+
+    non_video = list(reader.blocks(track_numbers={2, 3}))
+    assert [b.track_number for b in non_video] == [2, 3]
+
+
+def test_blocks_read_payload_false(tmp_path: Path) -> None:
+    """blocks(read_payload=False) renvoie payload=b"" tout en conservant payload_bytes et les métadonnées."""
+    cluster, timestamp, block = bytes.fromhex("1f43b675"), bytes.fromhex("e7"), bytes.fromhex("a3")
+    payload = b"big_video_payload_bytes"
+    data = (
+        element(EBML_HEADER_ID, b"")
+        + SEGMENT_ID
+        + b"\xff"
+        + element(
+            cluster,
+            element(timestamp, b"\x00")
+            + element(block, b"\x81\x00\x00\x80" + payload),
+        )
+    )
+    path = tmp_path / "no_payload.mkv"
+    path.write_bytes(data)
+    reader = MatroskaReader(path)
+
+    full = list(reader.blocks())[0]
+    assert full.payload == payload
+    assert full.payload_bytes == len(payload)
+
+    header_only = list(reader.blocks(read_payload=False))[0]
+    assert header_only.payload == b""
+    assert header_only.payload_bytes == len(payload)
+    assert header_only.track_number == full.track_number
+    assert header_only.timestamp_ms == full.timestamp_ms
+    assert header_only.flags == full.flags
+

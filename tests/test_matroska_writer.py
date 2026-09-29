@@ -279,3 +279,48 @@ def test_block_group_without_reference_is_indexed_as_keyframe(tmp_path: Path) ->
     decoded = list(reader.blocks())
     assert decoded[0].is_keyframe is True
     assert reader.raw_top_level(CUES_ID)
+
+
+def test_subtitle_gaps_do_not_inflate_segment_duration(tmp_path: Path) -> None:
+    """Un écart important entre sous-titres ne doit pas gonfler la durée Info ni faire échouer la validation."""
+    video = source_track(1, 10, "V_MPEG4/ISO/AVC", 1)
+    sub = source_track(2, 20, "S_HDMV/PGS", 17)
+    tracks = (
+        MatroskaMuxTrack(Path("v.mkv"), video, 1, deterministic_uid("v")),
+        MatroskaMuxTrack(Path("s.mkv"), sub, 2, deterministic_uid("s")),
+    )
+    # Vidéo de 0 à 1000 ms (durée par frame 40 ms)
+    # Sous-titres à 100 ms, puis 800 ms (écart 700 ms sans durée explicite), puis 950 ms
+    packets = [
+        MatroskaMuxPacket(1, MatroskaBlock(1, t, 0x80, b"v", duration_ms=40))
+        for t in range(0, 1040, 40)
+    ]
+    packets.extend([
+        MatroskaMuxPacket(2, MatroskaBlock(2, 100, 0x80, b"s1")),
+        MatroskaMuxPacket(2, MatroskaBlock(2, 800, 0x80, b"s2")),
+        MatroskaMuxPacket(2, MatroskaBlock(2, 950, 0x80, b"s3")),
+    ])
+    packets.sort(key=lambda p: p.block.timestamp_ms)
+    output = tmp_path / "subs_gap.mkv"
+    contract = MatroskaOutputContract(
+        track_types=("video", "subtitle"),
+        duration_coherent=True,
+    )
+    summary_holder: list[MatroskaPacketValidation] = []
+
+    def validator(path: Path, summary: MatroskaPacketValidation) -> None:
+        summary_holder.append(summary)
+        errors = validate_matroska_output(path, contract, packet_validation=summary)
+        assert errors == []
+
+    MatroskaWriter().write(
+        MatroskaMuxPlan(output, tracks, tuple(packets)),
+        external_validator=validator,
+    )
+    reader = MatroskaReader(output)
+    duration_ns = reader.segment_duration_ns()
+    # La durée doit correspondre à la fin de la vidéo (1040 ms), pas 800 + 700 = 1500 ms !
+    assert duration_ns is not None
+    assert duration_ns <= 1_040_000_000
+    assert summary_holder
+

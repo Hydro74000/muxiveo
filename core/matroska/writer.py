@@ -534,6 +534,10 @@ class MatroskaWriter:
             track.output_number for track in plan.tracks
             if track.source_track.track_type == 17
         }
+        continuous_tracks = {
+            track.output_number for track in plan.tracks
+            if track.source_track.track_type in (1, 2)
+        }
         default_duration_by_track = {
             track.output_number: track.source_track.default_duration_ns
             for track in plan.tracks
@@ -541,10 +545,9 @@ class MatroskaWriter:
         # Fin réelle par piste, toutes pistes confondues (les muxeurs de
         # référence prolongent la durée jusqu'au dernier sous-titre) : durée
         # explicite du block, sinon DefaultDuration × laces, sinon dernier
-        # delta positif observé. Ce dernier repli (pistes sans
-        # DefaultDuration, ex. FLAC) majore la fin d'au plus un inter-block
-        # quand la dernière frame est plus courte — information codec
-        # inaccessible au niveau conteneur.
+        # delta positif observé pour les flux continus (audio/vidéo). Pour
+        # les flux discontinus (sous-titres), un grand écart entre dialogues
+        # ne doit jamais prolonger la durée du segment.
         last_timestamp_by_track: dict[int, int] = {}
         last_delta_by_track: dict[int, int] = {}
         observed_end_ns = 0
@@ -554,10 +557,11 @@ class MatroskaWriter:
             nonlocal observed_end_ns, validation_max_packet_timestamp_ns
             track_number = packet.output_track_number
             timestamp = _timestamp_ns(packet)
-            previous = last_timestamp_by_track.get(track_number)
-            if previous is not None and timestamp > previous:
-                last_delta_by_track[track_number] = timestamp - previous
-            last_timestamp_by_track[track_number] = timestamp
+            if track_number in continuous_tracks:
+                previous = last_timestamp_by_track.get(track_number)
+                if previous is not None and timestamp > previous:
+                    last_delta_by_track[track_number] = timestamp - previous
+                last_timestamp_by_track[track_number] = timestamp
             # Même calcul que validate_matroska_output : seules les durées
             # explicites des blocks interviennent dans la borne supérieure.
             validation_duration = _explicit_duration_ns(packet) or 0
@@ -571,8 +575,11 @@ class MatroskaWriter:
                 default_duration = default_duration_by_track.get(track_number, 0)
                 if default_duration:
                     duration = default_duration * max(1, packet.block.lace_count)
+                elif track_number in continuous_tracks:
+                    delta = last_delta_by_track.get(track_number, 0)
+                    duration = min(delta, 1_000_000_000)
                 else:
-                    duration = last_delta_by_track.get(track_number, 0)
+                    duration = 0
             observed_end_ns = max(observed_end_ns, timestamp + duration)
 
         try:

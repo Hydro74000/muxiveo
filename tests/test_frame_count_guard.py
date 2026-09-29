@@ -157,6 +157,18 @@ class TestFrameCountGuardAudit:
             audit = guard.audit(source=tmp_path / "a", encoded=tmp_path / "b")
         assert audit.source == 500 and audit.encoded == 500
 
+    def test_audit_uses_known_encoded_frames(self, tmp_path):
+        guard = FrameCountGuard()
+        with patch.object(guard, "_read_video_frame_count", return_value=1200) as mock_read:
+            audit = guard.audit(
+                source=tmp_path / "src.mkv",
+                encoded=tmp_path / "enc.hevc",
+                known_encoded_frames=1200,
+            )
+        assert audit.source == 1200
+        assert audit.encoded == 1200
+        mock_read.assert_called_once_with(tmp_path / "src.mkv")
+
     def test_audit_falls_back_to_count_packets_when_nb_frames_empty(self, tmp_path):
         guard = FrameCountGuard()
         # mediainfo OK pour la source, mais nb_frames vide pour l'encoded
@@ -313,6 +325,12 @@ class TestFrameCountGuardReaders:
         guard = FrameCountGuard()
         with patch("subprocess.run", return_value=_make_completed(stdout="N/A\n")):
             assert guard._mediainfo_frame_count(tmp_path / "x") is None
+
+    def test_ffprobe_nb_frames_reads_stream_tags_number_of_frames(self, tmp_path):
+        guard = FrameCountGuard()
+        output = "nb_frames=N/A\nTAG:NUMBER_OF_FRAMES=262524\n"
+        with patch("subprocess.run", return_value=_make_completed(stdout=output)):
+            assert guard._ffprobe_nb_frames(tmp_path / "src.mkv") == 262524
 
 
 class TestBuildDoviRecordFromRpu:

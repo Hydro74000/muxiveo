@@ -80,7 +80,11 @@ def write_timing_skeleton(
 
     def _packets() -> Iterator[MatroskaMuxPacket]:
         """Rejoue les blocs vidéo en ordre de décodage, payloads vidés."""
-        for sequence, block in enumerate(reader.blocks()):
+        try:
+            stream = reader.blocks(track_numbers={video.number}, read_payload=False)
+        except TypeError:
+            stream = reader.blocks()
+        for sequence, block in enumerate(stream):
             if block.track_number != video.number:
                 continue
             if block.lace_count > 1 or block.lacing_mode:
@@ -89,9 +93,14 @@ def write_timing_skeleton(
                     f"(bloc #{sequence + 1})."
                 )
             blocks_written["count"] += 1
+            skeleton_block = (
+                block
+                if not block.payload and not block.encoded_frames_payload
+                else dataclasses.replace(block, payload=b"", encoded_frames_payload=b"")
+            )
             yield MatroskaMuxPacket(
                 video.number,
-                dataclasses.replace(block, payload=b"", encoded_frames_payload=b""),
+                skeleton_block,
                 sequence,
             )
 

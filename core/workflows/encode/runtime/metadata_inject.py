@@ -569,6 +569,7 @@ class MetadataInjectRunner:
                         encoded=current_hevc,
                         rpu_bin=rpu_bin if (video.copy_dv and rpu_bin.exists()) else None,
                         hdr10p_json=hdr10p_json if (video.copy_hdr10plus and hdr10p_json.exists()) else None,
+                        known_encoded_frames=skeleton_result.blocks_written,
                     )
                     try:
                         guard.enforce(

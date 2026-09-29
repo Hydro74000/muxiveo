@@ -338,6 +338,7 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
             source_track.number,
             offset * 1_000_000,
             source_track.default_duration_ns,
+            source_track.track_type,
         ))
         packet_routes.setdefault(track.artifact, {}).setdefault(
             source_track.number, []).append((output_index, offset))
@@ -345,7 +346,7 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
     def artifact_packet_stream(artifact: Path) -> Iterator[MatroskaMuxPacket]:
         """Une passe streaming sur les blocks d'un artefact (mémoire bornée)."""
         routes = packet_routes.get(artifact, {})
-        for source_sequence, block in enumerate(readers[artifact].blocks()):
+        for source_sequence, block in enumerate(readers[artifact].blocks(track_numbers=set(routes.keys()))):
             targets = routes.get(block.track_number)
             if not targets:
                 continue
@@ -441,12 +442,12 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
     # selected output packets:
     # source values are stale after selection, offsets or a track remap.  This
     # remains a bounded streaming pass and does not materialize packet data.
-    statistics_routes: dict[Path, dict[int, list[tuple[int, int, int]]]] = {}
+    statistics_routes: dict[Path, dict[int, list[tuple[int, int, int, int]]]] = {}
     statistics: dict[int, dict[str, int]] = {}
-    for output_uid, source_path, source_track_number, offset_ns, default_duration_ns in statistics_sources:
+    for output_uid, source_path, source_track_number, offset_ns, default_duration_ns, track_type in statistics_sources:
         statistics_routes.setdefault(source_path, {}).setdefault(
             source_track_number, [],
-        ).append((output_uid, offset_ns, default_duration_ns))
+        ).append((output_uid, offset_ns, default_duration_ns, track_type))
         statistics[output_uid] = {
             "frame_count": 0,
             "payload_bytes": 0,
@@ -455,7 +456,10 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
             "last_delta_ns": 0,
         }
     for source_path, routes in statistics_routes.items():
-        for block in readers[source_path].blocks():
+        for block in readers[source_path].blocks(
+            track_numbers=set(routes.keys()),
+            read_payload=False,
+        ):
             targets = routes.get(block.track_number)
             if not targets:
                 continue
@@ -469,13 +473,13 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
                 if block.duration_ns is not None
                 else ((block.duration_ms or 0) * 1_000_000 if block.duration_ms is not None else None)
             )
-            for output_uid, offset_ns, default_duration_ns in targets:
+            for output_uid, offset_ns, default_duration_ns, track_type in targets:
                 shifted_timestamp_ns = timestamp_ns + offset_ns
                 if shifted_timestamp_ns < 0:
                     continue
                 item = statistics[output_uid]
                 item["frame_count"] += 1
-                item["payload_bytes"] += len(block.payload)
+                item["payload_bytes"] += block.payload_bytes if block.payload_bytes else len(block.payload)
                 previous_timestamp_ns = item["last_timestamp_ns"]
                 if shifted_timestamp_ns > previous_timestamp_ns >= 0:
                     item["last_delta_ns"] = shifted_timestamp_ns - previous_timestamp_ns
@@ -484,7 +488,10 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
                 if duration_ns is None and default_duration_ns:
                     duration_ns = default_duration_ns * max(1, block.lace_count)
                 if duration_ns is None:
-                    duration_ns = item["last_delta_ns"]
+                    if track_type in (1, 2):
+                        duration_ns = min(item["last_delta_ns"], 1_000_000_000)
+                    else:
+                        duration_ns = 0
                 item["duration_ns"] = max(
                     item["duration_ns"], shifted_timestamp_ns + duration_ns,
                 )

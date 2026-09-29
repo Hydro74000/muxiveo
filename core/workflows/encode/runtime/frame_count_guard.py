@@ -150,16 +150,21 @@ class FrameCountGuard:
         encoded: Path,
         rpu_bin: Path | None = None,
         hdr10p_json: Path | None = None,
+        known_encoded_frames: int | None = None,
     ) -> FrameCountAudit:
         source_count = self._read_video_frame_count(source)
-        encoded_count = self._read_video_frame_count(encoded)
+        if known_encoded_frames is not None and known_encoded_frames > 0:
+            encoded_count = known_encoded_frames
+        else:
+            encoded_count = self._read_video_frame_count(encoded)
         if source_count is not None and encoded_count is not None and source_count != encoded_count:
             # Une estimation durée × cadence n'est pas une preuve exacte : une
             # coupe d'une image, une durée audio plus longue ou une durée absente
             # peuvent laisser passer des statistiques périmées. Recompter les
             # deux vidéos avant de conclure à une perte d'images à l'encodage.
             source_count = self._recount_video_frames(source) or source_count
-            encoded_count = self._recount_video_frames(encoded) or encoded_count
+            if known_encoded_frames is None:
+                encoded_count = self._recount_video_frames(encoded) or encoded_count
         return FrameCountAudit(
             source=source_count,
             encoded=encoded_count,
@@ -274,11 +279,10 @@ class FrameCountGuard:
     # ------------------------------------------------------------------
 
     def _recount_video_frames(self, path: Path) -> int | None:
-        """Recompte sans utiliser les statistiques des en-têtes."""
-        for reader in (self._ffprobe_count_packets, self._ffprobe_count_frames):
-            count = reader(path)
-            if count is not None and count > 0:
-                return count
+        """Recompte sans utiliser les statistiques des en-têtes (par paquets conteneur)."""
+        count = self._ffprobe_count_packets(path)
+        if count is not None and count > 0:
+            return count
         return None
 
     def _read_video_frame_count(self, path: Path) -> int | None:
@@ -321,17 +325,17 @@ class FrameCountGuard:
 
     def _ffprobe_nb_frames(self, path: Path) -> int | None:
         """
-        Lecture directe de ``nb_frames`` dans le conteneur. Instantané quand
-        le muxer le déclare (toujours en MP4 ; en MKV, selon le muxeur
-        d'origine — on tente, on saute si absent).
+        Lecture directe de ``nb_frames`` dans le conteneur ou tags de statistiques.
+        Instantané quand le muxer le déclare (toujours en MP4 ; en MKV via tags
+        NUMBER_OF_FRAMES ou header — on tente, on saute si absent).
         """
         try:
             result = subprocess.run(
                 [
                     self._ffprobe, "-v", "error",
                     "-select_streams", "v:0",
-                    "-show_entries", "stream=nb_frames",
-                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    "-show_entries", "stream=nb_frames:stream_tags=NUMBER_OF_FRAMES",
+                    "-of", "default=noprint_wrappers=1",
                     str(path),
                 ],
                 capture_output=True,
@@ -342,9 +346,15 @@ class FrameCountGuard:
             return None
         if result.returncode != 0:
             return None
-        raw = (result.stdout or "").strip()
-        if re.fullmatch(r"\d+", raw):
-            return int(raw)
+        for line in (result.stdout or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            val = line.split("=", 1)[-1].strip() if "=" in line else line
+            if re.fullmatch(r"\d+", val):
+                count = int(val)
+                if count > 0:
+                    return count
         return None
 
     def _ffprobe_count_packets(self, path: Path) -> int | None:
