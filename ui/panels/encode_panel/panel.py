@@ -1086,6 +1086,32 @@ class EncodePanel(QWidget):
         self._copy_dv_cb.stateChanged.connect(self._on_dv_toggle)
         cl.addWidget(self._copy_dv_cb)
 
+        # Alerte visuelle pour Dolby Vision non supporté
+        self._dovi_warning_widget = QWidget()
+        self._dovi_warning_widget.setObjectName("DoviWarningWidget")
+        self._dovi_warning_widget.setStyleSheet(
+            f"QWidget#DoviWarningWidget {{"
+            f"  background: {_C.BADGE_ERROR_BG};"
+            f"  border: 1px solid {_C.WARN};"
+            f"  border-radius: 6px;"
+            f"}}"
+        )
+        dw_l = QHBoxLayout(self._dovi_warning_widget)
+        dw_l.setContentsMargins(10, 6, 10, 6)
+        dw_l.setSpacing(8)
+
+        self._dovi_warning_icon = QLabel("⚠️")
+        self._dovi_warning_icon.setStyleSheet("font-size: 14px; background: transparent; border: none;")
+        self._dovi_warning_text = QLabel()
+        self._dovi_warning_text.setWordWrap(True)
+        self._dovi_warning_text.setStyleSheet(
+            f"color: {_C.WARN}; font-size: 11px; background: transparent; border: none; font-weight: 500;"
+        )
+        dw_l.addWidget(self._dovi_warning_icon)
+        dw_l.addWidget(self._dovi_warning_text, 1)
+        self._dovi_warning_widget.setVisible(False)
+        cl.addWidget(self._dovi_warning_widget)
+
         self._dovi_profile_widget = QWidget()
         self._dovi_profile_widget.setStyleSheet("background:transparent;")
         dp_l = QHBoxLayout(self._dovi_profile_widget)
@@ -2485,6 +2511,8 @@ class EncodePanel(QWidget):
         if self._file_info is None:
             self._copy_dv_cb.setEnabled(False)
             self._copy_hdr10plus_cb.setEnabled(False)
+            if hasattr(self, "_dovi_warning_widget"):
+                self._dovi_warning_widget.setVisible(False)
             return
 
         codec = self._codec_combo.currentData() or "libx265"
@@ -2501,19 +2529,35 @@ class EncodePanel(QWidget):
 
         if not dv_ok and has_dv:
             if codec == "hevc_nvenc":
-                self._copy_dv_cb.setToolTip(
-                    "FFmpeg hevc_nvenc ne supporte pas l'injection native Dolby Vision (incompatibilité DPB).\n"
-                    "Sélectionnez le codec 'NVEncC — HEVC (NVIDIA, rigaya)' pour un encodage GPU Dolby Vision Profile 8.1 garanti."
+                msg = (
+                    "Dolby Vision non supporté par FFmpeg 'hevc_nvenc' (rupture de synchro RPU / DPB).\n"
+                    "Sélectionnez 'NVEncC — HEVC (NVIDIA, rigaya)' pour un encodage GPU Dolby Vision Profile 8.1 garanti."
+                )
+            elif codec == "nvencc_av1":
+                msg = (
+                    "Dolby Vision non supporté sur le codec AV1 (Profile 10 incompatible décodeurs TV).\n"
+                    "Sélectionnez 'NVEncC — HEVC' pour conserver le Dolby Vision Profile 8.1."
                 )
             elif codec != "copy":
-                self._copy_dv_cb.setToolTip(
-                    f"Le codec '{codec}' ne supporte pas l'encodage Dolby Vision.\n"
+                msg = (
+                    f"Le codec '{codec}' ne supporte pas le passthrough Dolby Vision.\n"
                     "Utilisez 'NVEncC — HEVC (NVIDIA, rigaya)', 'x265 (logiciel)' ou 'Copie (sans réencodage)'."
                 )
+            else:
+                msg = ""
+            self._copy_dv_cb.setToolTip(msg)
+            if hasattr(self, "_dovi_warning_widget"):
+                if msg:
+                    self._dovi_warning_text.setText(msg)
+                    self._dovi_warning_widget.setVisible(True)
+                else:
+                    self._dovi_warning_widget.setVisible(False)
         else:
             self._copy_dv_cb.setToolTip(
                 "Conserve et synchronise les métadonnées dynamiques Dolby Vision (Profile 8.1)."
             )
+            if hasattr(self, "_dovi_warning_widget"):
+                self._dovi_warning_widget.setVisible(False)
 
         if auto_check:
             self._copy_dv_cb.setChecked(dv_ok)

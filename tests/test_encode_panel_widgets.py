@@ -1507,6 +1507,41 @@ class TestEncodePanelDynamicHdrDefaults:
         assert panel._copy_hdr10plus_cb.isEnabled() is True
         assert panel._copy_dv_cb.isChecked() is True
         assert panel._copy_hdr10plus_cb.isChecked() is True
+        assert panel._dovi_warning_widget.isHidden() is True
+        panel.close()
+
+    def test_hevc_nvenc_shows_dovi_warning_banner_and_disables_cb(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        panel._hw_encoders = {"hevc_nvenc", "nvencc_hevc"}
+        panel._populate_codec_combo()
+        entry = _video_entry(0)
+        entry.entry_id = "video-nvenc-dv-warn"
+        info = _file_info(_PATH_A, [_video_track(0, HDRType.DOLBY_VISION_HDR10PLUS)])
+        panel.set_video_tracks([(info, entry, _COLOR)])
+
+        idx_nvenc = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "hevc_nvenc"
+        )
+        panel._codec_combo.setCurrentIndex(idx_nvenc)
+
+        # DoVi checkbox désactivée et décochée
+        assert panel._copy_dv_cb.isEnabled() is False
+        assert panel._copy_dv_cb.isChecked() is False
+        # Bannière d'alerte visible avec picto et recommandation NVEncC
+        assert panel._dovi_warning_widget.isHidden() is False
+        assert "⚠️" in panel._dovi_warning_icon.text()
+        assert "hevc_nvenc" in panel._dovi_warning_text.text()
+        assert "NVEncC" in panel._dovi_warning_text.text()
+
+        # Bascule vers nvencc_hevc : la bannière d'alerte doit disparaître
+        idx_nvencc = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "nvencc_hevc"
+        )
+        panel._codec_combo.setCurrentIndex(idx_nvencc)
+        assert panel._copy_dv_cb.isEnabled() is True
+        assert panel._dovi_warning_widget.isHidden() is True
         panel.close()
 
     def test_h264_precheck_forces_8bit_and_logs_switch(self, qt_app):
