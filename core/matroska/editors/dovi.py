@@ -178,6 +178,7 @@ class MatroskaDoviBlockAdditionEditor:
         record: DolbyVisionConfigRecord,
         block_add_id_value: int = 1,
         block_add_id_name: str = "Dolby Vision configuration",
+        force: bool = False,
     ) -> DoviBlockAdditionPatchResult:
         if not path.is_file():
             raise ValueError(f"Fichier introuvable: {path}")
@@ -194,13 +195,12 @@ class MatroskaDoviBlockAdditionEditor:
                 reason="Aucun TrackEntry trouvé dans Tracks.",
             )
 
-        # 3) Trouver le 1er TrackEntry HEVC sans BlockAdditionMapping DOVI.
+        # 3) Trouver le 1er TrackEntry HEVC à patcher ou mettre à niveau.
         target_idx = -1
         for i, entry_info in enumerate(entries):
             if not entry_info.is_hevc:
                 continue
-            if entry_info.has_dovi_block_addition:
-                # Déjà patché → no-op.
+            if entry_info.has_dovi_block_addition and not force:
                 return DoviBlockAdditionPatchResult(
                     applied=False, skipped=True,
                     reason=f"TrackEntry #{entry_info.track_number} a déjà un "
@@ -287,6 +287,8 @@ class MatroskaDoviBlockAdditionEditor:
         codec_id: str
         is_hevc: bool
         has_dovi_block_addition: bool
+        max_block_addition_id: int | None = None
+        dovi_config_bytes: bytes | None = None
 
     def _parse_track_entries(self, tracks_payload: bytes) -> list["MatroskaDoviBlockAdditionEditor._TrackEntryInfo"]:
         out: list[MatroskaDoviBlockAdditionEditor._TrackEntryInfo] = []
@@ -301,7 +303,7 @@ class MatroskaDoviBlockAdditionEditor:
                 break
             if el.element_id == _TRACK_ENTRY_ID:
                 entry_payload = tracks_payload[el.payload_offset:el.end]
-                track_number, codec_id, has_bam = self._scan_track_entry_children(entry_payload)
+                track_number, codec_id, has_bam, max_id, dovi_bytes = self._scan_track_entry_children(entry_payload)
                 out.append(
                     MatroskaDoviBlockAdditionEditor._TrackEntryInfo(
                         offset=el.offset,
@@ -311,16 +313,22 @@ class MatroskaDoviBlockAdditionEditor:
                         codec_id=codec_id,
                         is_hevc=codec_id in _HEVC_CODEC_IDS,
                         has_dovi_block_addition=has_bam,
+                        max_block_addition_id=max_id,
+                        dovi_config_bytes=dovi_bytes,
                     )
                 )
             pos = el.end if not el.unknown_size else n
         return out
 
-    def _scan_track_entry_children(self, entry_payload: bytes) -> tuple[int, str, bool]:
-        """Retourne (track_number, codec_id, has_dovi_block_addition)."""
+    def _scan_track_entry_children(
+        self, entry_payload: bytes
+    ) -> tuple[int, str, bool, int | None, bytes | None]:
+        """Retourne (track_number, codec_id, has_dovi_block_addition, max_block_addition_id, dovi_config_bytes)."""
         track_number = 0
         codec_id = ""
         has_bam = False
+        max_block_add_id: int | None = None
+        dovi_config_bytes: bytes | None = None
         pos = 0
         n = len(entry_payload)
         while pos < n:
@@ -335,16 +343,21 @@ class MatroskaDoviBlockAdditionEditor:
                 track_number = int.from_bytes(payload, "big") if payload else 0
             elif el.element_id == _CODEC_ID_ID:
                 codec_id = payload.rstrip(b"\x00").decode("ascii", errors="replace")
+            elif el.element_id == _MAX_BLOCK_ADD_ID:
+                max_block_add_id = int.from_bytes(payload, "big") if payload else 0
             elif el.element_id == _BLOCK_ADD_MAPPING_ID:
-                # Vérifier si c'est un mapping DOVI (dvcC ou dvvC).
-                if self._block_addition_mapping_is_dovi(payload):
+                is_dovi, cfg = self._parse_block_addition_mapping(payload)
+                if is_dovi:
                     has_bam = True
+                    dovi_config_bytes = cfg
             pos = el.end
-        return track_number, codec_id, has_bam
+        return track_number, codec_id, has_bam, max_block_add_id, dovi_config_bytes
 
-    def _block_addition_mapping_is_dovi(self, bam_payload: bytes) -> bool:
+    def _parse_block_addition_mapping(self, bam_payload: bytes) -> tuple[bool, bytes | None]:
         pos = 0
         n = len(bam_payload)
+        is_dovi = False
+        extra_data = None
         while pos < n:
             try:
                 el = self._base._read_ebml_element_from_bytes(bam_payload, pos)
@@ -356,9 +369,15 @@ class MatroskaDoviBlockAdditionEditor:
                 value_bytes = bam_payload[el.payload_offset:el.end]
                 value = int.from_bytes(value_bytes, "big") if value_bytes else 0
                 if value in (_FOURCC_DVCC, _FOURCC_DVVC):
-                    return True
+                    is_dovi = True
+            elif el.element_id == _BLOCK_ADD_ID_EXTRA_DATA_ID:
+                extra_data = bam_payload[el.payload_offset:el.end]
             pos = el.end
-        return False
+        return is_dovi, extra_data
+
+    def _block_addition_mapping_is_dovi(self, bam_payload: bytes) -> bool:
+        is_dovi, _ = self._parse_block_addition_mapping(bam_payload)
+        return is_dovi
 
     # ------------------------------------------------------------------
     # Construction du BlockAdditionMapping
@@ -430,6 +449,10 @@ class MatroskaDoviBlockAdditionEditor:
                 current_val = int.from_bytes(payload, "big") if payload else 0
                 rebuilt_children.append(self._build_uint_element(_MAX_BLOCK_ADD_ID, max(current_val, 1)))
                 has_max_block_add_id = True
+            elif el.element_id == _BLOCK_ADD_MAPPING_ID:
+                if not self._block_addition_mapping_is_dovi(payload):
+                    rebuilt_children.append(old_entry_payload[el.offset:el.end])
+                # Sinon on omet l'ancien mapping DOVI car bam_element le remplace à jour
             else:
                 rebuilt_children.append(old_entry_payload[el.offset:el.end])
             pos = el.end

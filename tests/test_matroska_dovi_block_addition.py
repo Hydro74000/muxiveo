@@ -224,3 +224,23 @@ class TestMatroskaDoviBlockAdditionEditor:
         second = editor.patch(mkv, record=self._make_record())
         assert second.applied is False
         assert second.skipped is True
+
+    def test_patch_force_updates_existing_bam(self, tmp_path):
+        mkv = tmp_path / "in.mkv"
+        # Fichier avec BAM existant (dvcC et dummy extra_data)
+        mkv.write_bytes(_build_minimal_mkv(add_dovi_bam=True))
+
+        editor = MatroskaDoviBlockAdditionEditor()
+        new_record = DolbyVisionConfigRecord(
+            profile=8, level=6,
+            rpu_present=True, el_present=False, bl_present=True,
+            bl_signal_compat_id=1,
+        )
+        res = editor.patch(mkv, record=new_record, force=True)
+        assert res.applied is True
+        assert res.skipped is False
+
+        # Vérifier que le nouveau FourCC dvvC et le level 6 sont bien présents
+        data = mkv.read_bytes()
+        assert b"dvvC" in data
+        assert b"\x55\xee" in data  # MaxBlockAdditionID présent
