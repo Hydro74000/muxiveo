@@ -3362,9 +3362,9 @@ class EncodeWorkflow(QObject):
         return _nvencc_dovi_rpu_prm_runtime(video)
 
     def _resolve_nvencc_input_routing(self, config: EncodeConfig) -> _NvenccInputRouting:
-        return _NvenccInputRouter(self._nvencc_routing_callbacks()).resolve(config)
+        return _NvenccInputRouter(self._nvencc_routing_callbacks(stream_index=self._video_stream_index(config))).resolve(config)
 
-    def _nvencc_routing_callbacks(self) -> _NvenccRoutingCallbacks:
+    def _nvencc_routing_callbacks(self, *, stream_index: int = 0) -> _NvenccRoutingCallbacks:
         return _NvenccRoutingCallbacks(
             primary_video_settings=self._primary_video_settings,
             video_source_path=self._video_source_path,
@@ -3381,22 +3381,32 @@ class EncodeWorkflow(QObject):
                 input_path=input_path,
             ),
             nvencc_dovi_rpu_prm=self._nvencc_dovi_rpu_prm,
-            source_video_dimensions=self._source_video_dimensions,
-            probe_dovi_l5_offsets=self._probe_dovi_l5_offsets,
+            source_video_dimensions=(self._source_video_dimensions if stream_index == 0 else
+                lambda source: self._source_video_dimensions(source, stream_index=stream_index)),
+            probe_dovi_l5_offsets=(self._probe_dovi_l5_offsets if stream_index == 0 else
+                lambda source: self._probe_dovi_l5_offsets(source, stream_index=stream_index)),
         )
 
-    def _probe_dovi_l5_offsets(self, source: Path) -> tuple[int, int, int, int] | None:
+    def _probe_dovi_l5_offsets(self, source: Path, *, stream_index: int = 0) -> tuple[int, int, int, int] | None:
         from core.dovi_profile_detector import DoviProfileDetector
 
         dovi_bin = self._bins.get("dovi_tool") or "dovi_tool"
         try:
-            return DoviProfileDetector(dovi_tool_bin=dovi_bin).probe_l5_offsets(source)
+            key = (dovi_bin, self._ffmpeg)
+            if getattr(self, "_dovi_geometry_detector_key", None) != key:
+                self._dovi_geometry_detector = DoviProfileDetector(
+                    dovi_tool_bin=dovi_bin, ffmpeg_bin=self._ffmpeg,
+                    ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+                )
+                self._dovi_geometry_detector_key = key
+            return self._dovi_geometry_detector.probe_l5_offsets(source, stream_index=stream_index)
         except Exception:
             return None
 
-    def _source_video_dimensions(self, source: Path) -> tuple[int, int]:
+    def _source_video_dimensions(self, source: Path, *, stream_index: int | None = None) -> tuple[int, int]:
         return _source_video_dimensions_runtime(
             source,
+            stream_index=stream_index,
             ffprobe_streams_payload=self._ffprobe_streams_payload,
             ffprobe_stream_dicts=self._ffprobe_stream_dicts,
         )

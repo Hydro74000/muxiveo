@@ -77,6 +77,13 @@ class NvenccEncodeBackend(EncodeBackend):
             return errors
 
         video = videos[0]
+        if video.copy_dv:
+            try:
+                # Resolve percent crops and the 1:1 DV policy before checking
+                # whether FFmpeg prefilters / dynamic metadata are compatible.
+                video = ctx.workflow._resolve_nvencc_input_routing(config).video
+            except Exception as exc:
+                errors.append(str(exc))
         if not ctx.workflow._nvencc_bin:
             errors.append("NVEncC est sélectionné mais le binaire n'est pas configuré.")
         if video.quality_mode == QualityMode.SIZE:
@@ -97,7 +104,7 @@ class NvenccEncodeBackend(EncodeBackend):
                 "NVEncC avec préfiltrage FFmpeg (deblock/chroma_smooth/crop %/resize %) "
                 "est incompatible avec la copie DoVi/HDR10+ dynamique dans cette version."
             )
-        if video.copy_dv or video.copy_hdr10plus:
+        if video.copy_hdr10plus and not videos[0].copy_dv:
             try:
                 ctx.workflow._resolve_nvencc_input_routing(config)
             except Exception as exc:

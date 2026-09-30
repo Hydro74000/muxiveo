@@ -184,3 +184,18 @@ def test_confirm_dovi_geometry_alignment_prompt_cancel(encode_panel):
 
             assert confirmed is False
             assert encode_panel._tabs.currentIndex() == 2
+
+
+def test_resize_disables_dv_in_ui_and_leaves_crop_optional(encode_panel):
+    encode_panel.set_video_tracks([(_file_info(_PATH_A), _video_entry(), _COLOR)])
+    encode_panel._set_combo_data(encode_panel._codec_combo, "nvencc_hevc")
+    encode_panel._copy_dv_cb.setChecked(True)
+    messages = []
+    encode_panel.log_message.connect(lambda level, text: messages.append(text))
+    encode_panel._set_combo_data(encode_panel._resize_preset_combo, "1080p")
+    encode_panel._resize_enabled_cb.setChecked(True)
+    assert not encode_panel._copy_dv_cb.isChecked()
+    assert not encode_panel._crop_enabled_cb.isChecked()
+    assert encode_panel._inject_hdr_cb.isChecked()
+    assert any("Dolby Vision désactivée" in message for message in messages)
+    assert encode_panel.confirm_dovi_geometry_alignment_if_needed()

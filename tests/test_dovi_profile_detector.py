@@ -220,3 +220,38 @@ class TestDetectFromDoviTool:
             result = detector.detect_from_dovi_tool(tmp_path / "src.mkv")
         assert result.sub_profile == DoviSubProfile.UNKNOWN
         assert result.raw_source == "none"
+
+
+def test_l5_range_keeps_minimum_common_borders():
+    result = DoviProfileDetector().parse_dovi_tool_output(
+        "Profile: 8\nL5 offsets: top=0..275, bottom=12..275, left=0, right=0..10\n"
+    )
+    assert result.l5_offsets == (0, 12, 0, 0)
+
+
+def test_l5_probe_seeks_across_duration_and_caches_success(tmp_path):
+    source = tmp_path / "movie.mkv"
+    source.touch()
+    detector = DoviProfileDetector(ffmpeg_bin="my_ffmpeg")
+    positions = []
+    def run(cmd, **kwargs):
+        if cmd[0] == "my_ffmpeg":
+            positions.append(float(cmd[cmd.index("-ss") + 1]))
+            assert cmd[cmd.index("-frames:v") + 1] == "12"
+        summary = "L5 offsets: top=0, bottom=0, left=0, right=0" if len(positions) == 4 else (
+            "L5 offsets: top=275, bottom=275, left=0, right=0"
+        )
+        return subprocess.CompletedProcess(cmd, 0, stdout=summary, stderr="")
+    with patch("core.dovi_profile_detector.subprocess.run", side_effect=run):
+        assert detector.probe_l5_offsets(source, duration_s=7200) == (0, 0, 0, 0)
+        assert detector.probe_l5_offsets(source, duration_s=7200) == (0, 0, 0, 0)
+    assert len(positions) == 6
+    assert positions[0] == 0
+    assert positions[-1] == 6480
+
+
+def test_l5_failed_sample_does_not_authorize_crop(tmp_path):
+    source = tmp_path / "movie.mkv"
+    source.touch()
+    with patch("core.dovi_profile_detector.subprocess.run", side_effect=subprocess.TimeoutExpired("ffmpeg", 20)):
+        assert DoviProfileDetector().probe_l5_offsets(source, duration_s=7200) is None

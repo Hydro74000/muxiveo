@@ -41,11 +41,13 @@ from __future__ import annotations
 
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
 from core.subprocess_utils import subprocess_text_kwargs
+from core.video_sampling import probe_video_duration, video_sample_times
 
 
 class DoviSubProfile(Enum):
@@ -132,9 +134,12 @@ class DoviProfileDetector:
             result = detector.detect_from_dovi_tool(source_path)
     """
 
-    def __init__(self, *, dovi_tool_bin: str = "dovi_tool") -> None:
+    def __init__(self, *, dovi_tool_bin: str = "dovi_tool", ffmpeg_bin: str = "ffmpeg",
+                 ffprobe_bin: str = "ffprobe") -> None:
         self._dovi_tool = dovi_tool_bin
-        self._l5_cache: dict[Path, tuple[int, int, int, int] | None] = {}
+        self._ffmpeg = ffmpeg_bin
+        self._ffprobe = ffprobe_bin
+        self._l5_cache: dict[tuple, tuple[int, int, int, int]] = {}
 
     # ------------------------------------------------------------------
     # Mediainfo (préféré : déjà parsé en amont)
@@ -208,8 +213,6 @@ class DoviProfileDetector:
         ``dovi_tool extract-rpu`` (qui sait lire MKV directement et HEVC
         annexB ; pour MP4 on passe par un pipe ffmpeg + bsf hevc_mp4toannexb).
         """
-        import tempfile
-
         ext = source.suffix.lower()
         rpu_dir = Path(tempfile.mkdtemp(prefix="dovi_detect_"))
         rpu_bin = rpu_dir / "rpu.bin"
@@ -228,15 +231,17 @@ class DoviProfileDetector:
             else:
                 # MP4/MOV/TS : pipe ffmpeg → dovi_tool extract-rpu via stdin.
                 ff = subprocess.Popen(
-                    ["ffmpeg", "-nostdin", "-loglevel", "error", "-i", str(source),
+                    [self._ffmpeg, "-nostdin", "-loglevel", "error", "-i", str(source),
                      "-map", "0:v:0", "-c", "copy", "-bsf:v", "hevc_mp4toannexb",
                      "-f", "hevc", "-"],
                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 )
+                pipe_kwargs = subprocess_text_kwargs()
+                pipe_kwargs.pop("stdin", None)
                 dt = subprocess.run(
                     [self._dovi_tool, "extract-rpu", "-", "-l", "100", "-o", str(rpu_bin)],
                     stdin=ff.stdout, capture_output=True, check=False,
-                    **subprocess_text_kwargs(),
+                    **pipe_kwargs,
                 )
                 if ff.stdout is not None:
                     ff.stdout.close()
@@ -319,7 +324,8 @@ class DoviProfileDetector:
 
         # Offsets L5 (Level 5 : Active Area)
         m_l5 = re.search(
-            r"L5\s+offsets:\s*top=(\d+),\s*bottom=(\d+),\s*left=(\d+),\s*right=(\d+)",
+            r"L5\s+offsets:\s*top=(\d+)(?:\.\.\d+)?,\s*bottom=(\d+)(?:\.\.\d+)?,"
+            r"\s*left=(\d+)(?:\.\.\d+)?,\s*right=(\d+)(?:\.\.\d+)?",
             text,
             re.IGNORECASE,
         )
@@ -343,20 +349,56 @@ class DoviProfileDetector:
             l5_offsets=l5_offsets,
         )
 
-    def probe_l5_offsets(self, source: Path | str) -> tuple[int, int, int, int] | None:
-        """Inspecte rapidement les offsets Level 5 (Active Area) du RPU de la source.
+    def probe_l5_offsets(
+        self, source: Path | str, *, duration_s: float | None = None, stream_index: int = 0,
+    ) -> tuple[int, int, int, int] | None:
+        """Sample L5 across the timeline; retain only borders common to all samples.
 
-        Retourne (top, bottom, left, right) ou None si non Dolby Vision.
+        This is a bounded heuristic, not proof of constant framing. The runtime
+        editor still preserves the full per-frame L5 timeline when applying it.
+        Unknown duration or a failed sample cannot justify automatic cropping.
         """
         source_path = Path(source).resolve()
-        if source_path in self._l5_cache:
-            return self._l5_cache[source_path]
         try:
-            res = self.detect_from_dovi_tool(source_path)
-            offsets = res.l5_offsets
-        except Exception:
-            offsets = None
-        self._l5_cache[source_path] = offsets
+            stat = source_path.stat()
+        except OSError:
+            return None
+        key = (source_path, stat.st_mtime_ns, stat.st_size, stream_index, duration_s)
+        if key in self._l5_cache:
+            return self._l5_cache[key]
+        duration = duration_s or probe_video_duration(source_path, ffprobe_bin=self._ffprobe)
+        if not duration or duration <= 0:
+            return None
+        samples: list[tuple[int, int, int, int]] = []
+        try:
+            with tempfile.TemporaryDirectory(prefix="dovi_l5_") as tmp:
+                hevc = Path(tmp) / "sample.hevc"
+                rpu = Path(tmp) / "sample.bin"
+                for position in video_sample_times(duration):
+                    # Input seeking uses the container index. Stream copy reads a
+                    # small GOP fragment, without decoding/scanning the whole film.
+                    subprocess.run(
+                        [self._ffmpeg, "-nostdin", "-v", "error", "-y", "-ss", f"{position:.3f}",
+                         "-i", str(source_path), "-map", f"0:{stream_index}", "-c:v", "copy",
+                         "-frames:v", "12", "-bsf:v", "hevc_mp4toannexb", "-f", "hevc", str(hevc)],
+                        capture_output=True, check=True, timeout=20, **subprocess_text_kwargs(),
+                    )
+                    subprocess.run(
+                        [self._dovi_tool, "extract-rpu", "-i", str(hevc), "-o", str(rpu)],
+                        capture_output=True, check=True, timeout=10, **subprocess_text_kwargs(),
+                    )
+                    result = subprocess.run(
+                        [self._dovi_tool, "info", "-i", str(rpu), "--summary"],
+                        capture_output=True, check=True, timeout=10, **subprocess_text_kwargs(),
+                    )
+                    offsets = self.parse_dovi_tool_output(result.stdout).l5_offsets
+                    if offsets is None:
+                        return None
+                    samples.append(offsets)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        offsets = tuple(min(values) for values in zip(*samples))
+        self._l5_cache[key] = offsets
         return offsets
 
     # ------------------------------------------------------------------

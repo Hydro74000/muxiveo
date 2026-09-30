@@ -11,13 +11,13 @@ Supports:
 
 from __future__ import annotations
 
-import collections
 import re
 import subprocess
 from pathlib import Path
 
 from core.dovi_profile_detector import DoviProfileDetector
 from core.subprocess_utils import subprocess_text_kwargs
+from core.video_sampling import probe_video_duration, video_sample_times
 
 
 _CROP_RE = re.compile(r"\bcrop=(\d+):(\d+):(\d+):(\d+)")
@@ -30,6 +30,8 @@ def detect_black_bars_ffmpeg(
     duration_s: float | None = None,
     dimensions: tuple[int, int] | None = None,
     limit: int = 64,
+    ffprobe_bin: str = "ffprobe",
+    stream_index: int = 0,
 ) -> tuple[int, int, int, int]:
     """Détecte les bandes noires via le filtre cropdetect de ffmpeg sur plusieurs échantillons.
 
@@ -41,17 +43,8 @@ def detect_black_bars_ffmpeg(
     else:
         src_w, src_h = dimensions
 
-    if duration_s and duration_s > 180:
-        sample_times = [
-            duration_s * 0.20,
-            duration_s * 0.40,
-            duration_s * 0.60,
-            duration_s * 0.80,
-        ]
-    elif duration_s and duration_s > 30:
-        sample_times = [duration_s * 0.35, duration_s * 0.65]
-    else:
-        sample_times = [600.0, 1800.0, 3600.0]
+    duration = duration_s or probe_video_duration(source_path, ffprobe_bin=ffprobe_bin)
+    sample_times = video_sample_times(duration)
 
     detected_crops: list[tuple[int, int, int, int]] = []
 
@@ -61,13 +54,14 @@ def detect_black_bars_ffmpeg(
             "-hide_banner",
             "-nostdin",
             "-ss",
-            f"{ts:.1f}",
+            f"{ts:.3f}",
             "-i",
             str(source_path),
+            "-map", f"0:{stream_index}",
             "-vframes",
             "5",
             "-vf",
-            f"cropdetect=limit={limit}:round=2:reset=0",
+            f"cropdetect=limit={limit}:round=2:reset=0:skip=0",
             "-an",
             "-f",
             "null",
@@ -105,10 +99,8 @@ def detect_black_bars_ffmpeg(
     if not detected_crops:
         return (0, 0, 0, 0)
 
-    # Prendre le mode (valeur la plus fréquente) ou la médiane
-    counts = collections.Counter(detected_crops)
-    most_common, count = counts.most_common(1)[0]
-    return most_common
+    # Only remove borders shared by every sample (variable aspect ratios).
+    return tuple(min(values) for values in zip(*detected_crops))
 
 
 def detect_video_crop(
@@ -121,10 +113,12 @@ def detect_video_crop(
     duration_s: float | None = None,
     ffmpeg_bin: str = "ffmpeg",
     dovi_tool_bin: str = "dovi_tool",
+    ffprobe_bin: str = "ffprobe",
+    stream_index: int = 0,
 ) -> tuple[int, int, int, int]:
     """Détecte les bandes noires et renvoie le crop (top, bottom, left, right) aligné pour le codec.
 
-    1. Si Dolby Vision présent : probe RPU Level 5 en premier (mastering exact en ~1s).
+    1. Sonde RPU Level 5 par échantillons répartis sur la durée connue.
     2. Fallback ffmpeg cropdetect multi-points avec seuil adapté (64 pour HDR 10-bit / master dither).
     3. Alignement sur multiple de 32 (si NVEncC + DV) ou multiple de 2 (standard).
     """
@@ -132,14 +126,15 @@ def detect_video_crop(
 
     # Toujours tenter le probing L5 si la source peut être Dolby Vision
     try:
-        detector = DoviProfileDetector(dovi_tool_bin=dovi_tool_bin)
-        l5 = detector.probe_l5_offsets(source_path)
-        if l5 and any(v > 0 for v in l5):
+        detector = DoviProfileDetector(dovi_tool_bin=dovi_tool_bin, ffmpeg_bin=ffmpeg_bin,
+                                       ffprobe_bin=ffprobe_bin)
+        l5 = detector.probe_l5_offsets(source_path, duration_s=duration_s, stream_index=stream_index)
+        if l5 is not None:
             raw_crop = (l5[0], l5[1], l5[2], l5[3])  # (top, bottom, left, right)
     except Exception:
         raw_crop = None
 
-    if raw_crop is None or (raw_crop[0] == 0 and raw_crop[1] == 0 and raw_crop[2] == 0 and raw_crop[3] == 0):
+    if raw_crop is None:
         # Fallback ffmpeg cropdetect
         raw_crop = detect_black_bars_ffmpeg(
             source_path,
@@ -147,6 +142,8 @@ def detect_video_crop(
             duration_s=duration_s,
             dimensions=dimensions,
             limit=64,
+            ffprobe_bin=ffprobe_bin,
+            stream_index=stream_index,
         )
 
     return align_crop_for_codec(
@@ -168,12 +165,16 @@ def align_crop_for_codec(
     if src_w <= 0 or src_h <= 0:
         return (0, 0, 0, 0)
 
-    top, bottom, left, right = raw_crop
+    top, bottom, left, right = (max(0, int(value)) for value in raw_crop)
     if top == 0 and bottom == 0 and left == 0 and right == 0:
         return (0, 0, 0, 0)
 
     is_nvencc_dv = (codec == "nvencc_hevc" and copy_dv)
     mult = 32 if is_nvencc_dv else 2
+
+    # Round each edge up before distributing the remaining alignment pixels.
+    # Moving pixels between odd edges afterwards can reintroduce a black bar.
+    top, bottom, left, right = ((value + 1) // 2 * 2 for value in (top, bottom, left, right))
 
     act_w = src_w - (left + right)
     act_h = src_h - (top + bottom)
@@ -182,39 +183,14 @@ def align_crop_for_codec(
 
     aligned_w = (act_w // mult) * mult
     aligned_h = (act_h // mult) * mult
+    if aligned_w < mult or aligned_h < mult:
+        return (0, 0, 0, 0)
     diff_w = act_w - aligned_w
     diff_h = act_h - aligned_h
 
-    final_left = left + diff_w // 2
-    final_right = right + (diff_w - diff_w // 2)
-    final_top = top + diff_h // 2
-    final_bottom = bottom + (diff_h - diff_h // 2)
-
-    # Pour tous les codecs, s'assurer que les offsets individuels sont pairs pour YUV420p
-    if not is_nvencc_dv:
-        if final_left % 2 != 0:
-            final_left += 1
-        if final_right % 2 != 0:
-            final_right += 1
-        if final_top % 2 != 0:
-            final_top += 1
-        if final_bottom % 2 != 0:
-            final_bottom += 1
-    else:
-        # Pour NVEncC + DV, la hauteur résultante DOIT être exactement un multiple de 32.
-        # Si un offset est impair, ajuster la répartition sans changer la somme totale:
-        if final_top % 2 != 0 and final_bottom > 0:
-            final_top += 1
-            final_bottom -= 1
-        elif final_bottom % 2 != 0 and final_top > 0:
-            final_bottom += 1
-            final_top -= 1
-
-        if final_left % 2 != 0 and final_right > 0:
-            final_left += 1
-            final_right -= 1
-        elif final_right % 2 != 0 and final_left > 0:
-            final_right += 1
-            final_left -= 1
+    final_left = left + (diff_w // 4) * 2
+    final_right = right + (diff_w - (diff_w // 4) * 2)
+    final_top = top + (diff_h // 4) * 2
+    final_bottom = bottom + (diff_h - (diff_h // 4) * 2)
 
     return (final_top, final_bottom, final_left, final_right)

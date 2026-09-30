@@ -1,18 +1,7 @@
-"""Dolby Vision geometry alignment for NVEncC hardware CTU constraints.
+"""NVEncC Dolby Vision geometry without resampling the base layer.
 
-Aligns video dimensions to multiples of 32 to prevent NVENC hardware
-padding (which causes conformance window mismatches breaking Dolby
-Vision playback on TVs / Android TV SoC hardware compositors).
-
-Two operational modes:
-1. Active area with black bars (or user crop):
-   Adjust crop to the nearest multiple of 32 (rounding down active picture,
-   cropping minimal extra border to remove black bar residue).
-   Sets ``--dolby-vision-rpu-prm crop=true`` so libdovi zeroes out L5 active area.
-2. Fullframe image on edges (no black bars, RPU padding at 0):
-   Pad to the next multiple of 32 with ``--vpp-pad <left>,<top>,<right>,<bottom>``.
-   Realigns RPU metadata via ``dovi_tool editor`` so Level 5 active area matches
-   the added padding without cropping active content.
+Crop/pad offsets are expressed in source pixels. Full RPU editing translates
+Level 5 per scene and preserves the remaining metadata and frame ordering.
 """
 
 from __future__ import annotations
@@ -21,18 +10,60 @@ import json
 import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Callable
 
-from core.workflows.encode.models import VideoCropSettings, VideoEncodeSettings
+from core.bluray import append_ffmpeg_input_args
+from core.subprocess_utils import subprocess_text_kwargs
+
+from core.workflows.encode.models import EncodeError, VideoCropSettings, VideoEncodeSettings, VideoResizeSettings
 from core.workflows.encode.runtime.nvencc_routing import nvencc_crop_offsets_from_extra_params
+from core.workflows.encode.runtime.crop_detector import align_crop_for_codec
 
 
 @dataclass(frozen=True)
 class NvenccDoviGeometryResult:
     video: VideoEncodeSettings
     vpp_pad: tuple[int, int, int, int] | None = None  # (left, top, right, bottom)
-    dovi_rpu_prm: str | None = None  # "crop=true" when cropped
-    needs_rpu_pad_alignment: bool = False
+    dovi_rpu_prm: str | None = None  # External RPU edits must not be zeroed by crop=true.
+    needs_rpu_alignment: bool = False
     pad_offsets: tuple[int, int, int, int] | None = None  # (left, top, right, bottom)
+    crop_offsets: tuple[int, int, int, int] | None = None  # (left, top, right, bottom)
+
+
+def absolute_dovi_crop(video: VideoEncodeSettings, dimensions: tuple[int, int]) -> VideoCropSettings:
+    crop = video.crop
+    extra = nvencc_crop_offsets_from_extra_params(video.extra_params)
+    if extra is not None and any(extra):
+        return VideoCropSettings(enabled=True, left=extra[0], top=extra[1], right=extra[2], bottom=extra[3])
+    if not crop.is_active() or crop.auto:
+        return VideoCropSettings()
+    if crop.unit != "percent":
+        return replace(crop)
+    width, height = dimensions
+    return VideoCropSettings(
+        enabled=True, left=width * max(0, crop.left) // 100,
+        right=width * max(0, crop.right) // 100,
+        top=height * max(0, crop.top) // 100, bottom=height * max(0, crop.bottom) // 100,
+    )
+
+
+def nvencc_dovi_resize_changes_scale(video: VideoEncodeSettings, dimensions: tuple[int, int]) -> bool:
+    """Application policy: resampling and Dolby Vision copy are mutually exclusive."""
+    resize = video.resize
+    if not resize.is_active():
+        return False
+    if resize.mode == "percent":
+        pct = max(1, int(resize.percent or 100))
+        return min(pct, 100) != 100 if not resize.allow_upscale else pct != 100
+    if min(dimensions) <= 0:
+        return True
+    crop = absolute_dovi_crop(video, dimensions)
+    cropped = (dimensions[0] - crop.left - crop.right, dimensions[1] - crop.top - crop.bottom)
+    target = ((max(2, resize.width), max(2, resize.height)) if resize.mode == "size" else {
+        "720p": (1280, 720), "1080p": (1920, 1080),
+        "1440p": (2560, 1440), "2160p": (3840, 2160),
+    }.get(resize.preset, (1280, 720)))
+    return target != cropped
 
 
 def align_nvencc_dovi_geometry(
@@ -50,23 +81,15 @@ def align_nvencc_dovi_geometry(
     ):
         return NvenccDoviGeometryResult(video=video)
 
-    # 1. Vérification du crop utilisateur (widget UI ou extra_params)
-    crop_obj = getattr(video, "crop", None)
-    has_user_crop = False
-    u_left = u_top = u_right = u_bottom = 0
-    if crop_obj is not None and getattr(crop_obj, "is_active", lambda: False)():
-        if not getattr(crop_obj, "auto", False) and getattr(crop_obj, "unit", "") != "percent":
-            u_left = max(0, int(getattr(crop_obj, "left", 0) or 0))
-            u_top = max(0, int(getattr(crop_obj, "top", 0) or 0))
-            u_right = max(0, int(getattr(crop_obj, "right", 0) or 0))
-            u_bottom = max(0, int(getattr(crop_obj, "bottom", 0) or 0))
-            if any(c != 0 for c in (u_left, u_top, u_right, u_bottom)):
-                has_user_crop = True
-
-    extra_crop = nvencc_crop_offsets_from_extra_params(getattr(video, "extra_params", ""))
-    if extra_crop is not None and any(c != 0 for c in extra_crop):
-        has_user_crop = True
-        u_left, u_top, u_right, u_bottom = extra_crop
+    if nvencc_dovi_resize_changes_scale(video, dimensions):
+        return NvenccDoviGeometryResult(video=replace(video, copy_dv=False, inject_hdr_meta=True))
+    # A no-op resize must not turn into scaling after alignment changes the canvas.
+    video = replace(video, resize=VideoResizeSettings())
+    if src_w % 2 or src_h % 2:
+        raise EncodeError("Dolby Vision NVEncC : dimensions source paires requises pour l'alignement YUV420.")
+    crop = absolute_dovi_crop(video, dimensions)
+    u_left, u_top, u_right, u_bottom = crop.left, crop.top, crop.right, crop.bottom
+    has_user_crop = crop.is_active()
 
     # 2. Vérification des offsets L5 RPU : (top, bottom, left, right)
     rpu_top = rpu_bottom = rpu_left = rpu_right = 0
@@ -86,17 +109,13 @@ def align_nvencc_dovi_geometry(
         act_w = src_w - (b_left + b_right)
         act_h = src_h - (b_top + b_bottom)
         if act_w <= 0 or act_h <= 0:
-            return NvenccDoviGeometryResult(video=video)
+            raise EncodeError("Dolby Vision : le recadrage dépasse les dimensions source.")
 
-        aligned_w = (act_w // 32) * 32
-        aligned_h = (act_h // 32) * 32
-        diff_w = act_w - aligned_w
-        diff_h = act_h - aligned_h
-
-        final_left = b_left + diff_w // 2
-        final_right = b_right + (diff_w - diff_w // 2)
-        final_top = b_top + diff_h // 2
-        final_bottom = b_bottom + (diff_h - diff_h // 2)
+        final_top, final_bottom, final_left, final_right = align_crop_for_codec(
+            (b_top, b_bottom, b_left, b_right), dimensions, video.codec, copy_dv=True,
+        )
+        if not any((final_top, final_bottom, final_left, final_right)):
+            raise EncodeError("Dolby Vision : recadrage trop important pour la résolution source.")
 
         new_crop = VideoCropSettings(
             enabled=True,
@@ -108,9 +127,8 @@ def align_nvencc_dovi_geometry(
         return NvenccDoviGeometryResult(
             video=replace(video, crop=new_crop),
             vpp_pad=None,
-            dovi_rpu_prm="crop=true",
-            needs_rpu_pad_alignment=False,
-            pad_offsets=None,
+            needs_rpu_alignment=True,
+            crop_offsets=(final_left, final_top, final_right, final_bottom),
         )
 
     # BRANCHE 2 (PAD) : Image bord à bord sans bandes (padding RPU à 0)
@@ -124,9 +142,9 @@ def align_nvencc_dovi_geometry(
     target_h = ((src_h + 31) // 32) * 32
     pad_w = target_w - src_w
     pad_h = target_h - src_h
-    pad_left = pad_w // 2
+    pad_left = (pad_w // 4) * 2
     pad_right = pad_w - pad_left
-    pad_top = pad_h // 2
+    pad_top = (pad_h // 4) * 2
     pad_bottom = pad_h - pad_top
     vpp_pad = (pad_left, pad_top, pad_right, pad_bottom)
 
@@ -135,53 +153,68 @@ def align_nvencc_dovi_geometry(
         video=replace(video, crop=cleared_crop),
         vpp_pad=vpp_pad,
         dovi_rpu_prm=None,
-        needs_rpu_pad_alignment=True,
+        needs_rpu_alignment=True,
         pad_offsets=vpp_pad,
     )
 
 
-def align_dovi_rpu_padding(
-    *,
-    dovi_tool_bin: str,
-    rpu_input: Path,
-    output_rpu: Path,
-    pad_offsets: tuple[int, int, int, int],  # (left, top, right, bottom)
-    work_dir: Path,
+def extract_dovi_rpu(
+    *, source: Path, stream_index: int, ffmpeg_bin: str, dovi_tool_bin: str,
+    output_rpu: Path, work_dir: Path, run_cmd: Callable[[list[str]], object],
+    cleanup_paths: list[Path],
 ) -> Path:
-    """Édite le fichier RPU Dolby Vision pour réaligner l'aire active (Level 5) selon le padding."""
-    edit_cfg = {
-        "mode": 0,
-        "active_area": {
-            "presets": [
-                {
-                    "id": 0,
-                    "left": pad_offsets[0],
-                    "top": pad_offsets[1],
-                    "right": pad_offsets[2],
-                    "bottom": pad_offsets[3],
-                }
-            ],
-            "edits": {
-                "all": 0,
-            },
-        },
-    }
-    json_path = work_dir / "dovi_pad_edit.json"
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(edit_cfg, f)
+    """Follow the standard metadata workflow: container -> Annex B -> RPU.
 
-    subprocess.run(
-        [
-            dovi_tool_bin,
-            "editor",
-            "-i",
-            str(rpu_input),
-            "-j",
-            str(json_path),
-            "-o",
-            str(output_rpu),
-        ],
-        check=True,
-        capture_output=True,
-    )
+    dovi_tool accepts MKV for extraction only (first video on older versions).
+    Other containers and explicitly selected streams go through FFmpeg first.
+    """
+    meta_input = source
+    if source.suffix.lower() not in {".mkv", ".hevc", ".h265", ".265", ".x265"} or stream_index != 0:
+        meta_input = work_dir / "source_meta.hevc"
+        cleanup_paths.append(meta_input)
+        cmd = [ffmpeg_bin, "-nostdin", "-y"]
+        append_ffmpeg_input_args(cmd, source)
+        cmd.extend(["-map", f"0:{stream_index}", "-c:v", "copy", "-bsf:v", "hevc_mp4toannexb",
+                    "-f", "hevc", str(meta_input)])
+        run_cmd(cmd)
+    run_cmd([dovi_tool_bin, "extract-rpu", "-i", str(meta_input), "-o", str(output_rpu)])
+    if meta_input != source:
+        meta_input.unlink(missing_ok=True)
+    return output_rpu
+
+
+def align_dovi_rpu_geometry(
+    *, dovi_tool_bin: str, rpu_input: Path, output_rpu: Path,
+    pad_offsets: tuple[int, int, int, int] = (0, 0, 0, 0),
+    crop_offsets: tuple[int, int, int, int] = (0, 0, 0, 0),
+    work_dir: Path, run_cmd: Callable[[list[str]], object] | None = None,
+) -> Path:
+    """Translate each existing L5 preset, retaining its exact frame ranges.
+
+    Padding adds borders; cropping removes them (saturating at the picture
+    edge). Never use active_area.crop/all to flatten scene-dependent offsets.
+    Mode 0 preserves mapping, trims and the original RPU profile.
+    """
+    def run(cmd: list[str]) -> object:
+        if run_cmd is not None:
+            return run_cmd(cmd)
+        return subprocess.run(cmd, check=True, capture_output=True, **subprocess_text_kwargs())
+
+    json_path = work_dir / "dovi_geometry_edit.json"
+    run([dovi_tool_bin, "export", "-i", str(rpu_input), "-d", f"level5={json_path}"])
+    active_area = json.loads(json_path.read_text(encoding="utf-8"))
+    presets = active_area.get("presets")
+    edits = active_area.get("edits")
+    if not presets or not edits:
+        raise EncodeError("Dolby Vision : les métadonnées L5 ne permettent pas un réalignement sûr.")
+    for preset in presets:
+        for index, edge in enumerate(("left", "top", "right", "bottom")):
+            preset[edge] = max(0, int(preset[edge]) - crop_offsets[index]) + pad_offsets[index]
+    # The export also contains crop=true. Remove it so missing ranges/levels
+    # are not implicitly rewritten to zero by the editor.
+    edit_cfg = {"mode": 0, "active_area": {"presets": presets, "edits": edits}}
+    json_path.write_text(json.dumps(edit_cfg), encoding="utf-8")
+    run([dovi_tool_bin, "editor", "-i", str(rpu_input), "-j", str(json_path), "-o", str(output_rpu)])
+    if not output_rpu.is_file() or output_rpu.stat().st_size == 0:
+        raise EncodeError("Dolby Vision : aucun RPU réaligné n'a été produit.")
     return output_rpu

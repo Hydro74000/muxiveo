@@ -122,24 +122,22 @@ Dans le module `core/workflows/encode/` :
 2. **Sécurité et blocage des codecs incompatibles** : Le catalogue (`catalog.py`) sépare désormais explicitement `supports_dovi` et `supports_hdr10plus`. Les encodeurs incompatibles (`hevc_nvenc`, `hevc_vaapi`, `nvencc_av1`...) ont leur case DV désactivée avec un bandeau d'avertissement et une recommandation vers `nvencc_hevc` ou `libx265`.
 3. **Assainissement automatique post-encode** : La fonction `sanitize_dovi_mkv` s'exécute automatiquement après l'encodage NVEncC pour corriger le niveau (Level 6/9), standardiser le FourCC en `dvvC` et valider les blocs EBML.
 4. **Assemblage Matroska natif unifié** : L'assemblage final est pris en charge par le muxeur natif Matroska (`compile_assembly_plan`), qui préserve intégralement les éléments `Colour` (`0x55B0`) et `BlockAdditionMapping` sans dépendre d'un remux FFmpeg secondaire.
-5. **Alignement géométrique automatique sur multiple de 32 (Élimination du bug Amlogic / Android TV)** :
-   - Le hardware NVENC force un codage par blocs CTU de 32x32 pixels. Sur une résolution non multiple de 32 (comme 2160p où $2160/32 = 67{,}5$), NVENC encode en réalité 2176 pixels et insère une `conformance_window` de 16 pixels. Sur les puces Android TV (Amlogic, Realtek), ce décalage fait échouer le compositeur matériel Dolby Vision (la TV reste en SDR malgré le logo DV).
-   - **Branche 1 (Bandes noires / Crop)** : Dès que le flux présente des bandes noires (offsets L5 du RPU $> 0$) ou qu'un crop est saisi, Muxiveo aligne automatiquement le rognage sur le multiple de 32 inférieur le plus proche (ex: 280px haut et bas pour passer de 1610px à 1600px) et injecte `--dolby-vision-rpu-prm crop=true` pour remettre l'aire active à zéro.
-   - **Branche 2 (Image bord à bord / Plein écran)** : Si l'image occupe toute la surface (offsets L5 à 0) mais n'est pas un multiple de 32, Muxiveo n'ampute aucun pixel d'image utile : il ajoute des bandes de remplissage matérielles avec `--vpp-pad` (ex: 8px haut et bas pour atteindre 2176px) et réaligne automatiquement le RPU via `dovi_tool editor` avec ces nouveaux offsets Level 5.
-   - Résultat : dans tous les cas, la hauteur physique encodée est un multiple exact de 32, le flux HEVC a `conformance_window = None`, et le Dolby Vision s'affiche parfaitement sur toutes les box et TV.
-6. **Intégration et Automatisation dans l'interface utilisateur (GUI)** :
-   - **Bouton « 🎯 Auto-crop » (Onglet « Géométrie / Filtres »)** :
-     - Accessible pour **n'importe quel codec sélectionné**.
-     - Détecte instantanément le cadrage optimal : si la source possède des métadonnées Dolby Vision, il extrait directement les coordonnées Level 5 du RPU en ~1 seconde (mastering natif exact) ; sinon, il échantillonne le flux avec le filtre `cropdetect` de FFmpeg en écartant les logos et fondus au noir.
-     - Règle de calcul intelligente selon le codec :
-       - Pour **NVEncC + Dolby Vision** : alignement strict sur le **multiple de 32** (ex: 1610px $\rightarrow$ 1600px avec 280px haut et bas).
-       - Pour **tous les autres codecs** (`libx265`, `svt-av1`, `libx264`...) : alignement sur le **multiple de 2** (ex: 1608px avec 276px haut et bas), garantissant la cohérence du sous-échantillonnage chroma YUV420p.
-     - Remplit automatiquement les champs (Haut, Bas, Gauche, Droite), active la case « Recadrer », bascule l'unité en « px » et régénère l'aperçu.
-   - **Boîte de dialogue de confirmation avant encodage** :
-     - Si l'utilisateur lance un encodage avec `nvencc_hevc` et Dolby Vision actif alors que la géométrie choisie n'est pas alignée sur un multiple de 32 :
-       - Une boîte de dialogue explicative s'affiche pour prévenir du risque de repli en SDR sur téléviseur et propose la résolution corrigée (Branche 1 Crop ou Branche 2 Padding).
-       - Si acceptée : applique instantanément les valeurs dans l'onglet « Géométrie / Filtres », bascule la vue sur cet onglet et lance l'encodage assaini.
-       - Si annulée : interrompt le démarrage et bascule sur l'onglet Géométrie pour permettre un ajustement manuel.
+5. **Géométrie Dolby Vision à l'échelle 1:1** :
+   - La conservation DV avec NVEncC n'autorise pas le rééchantillonnage dans ce workflow. Un resize effectif désactive explicitement la copie Dolby Vision ; le crop reste facultatif et aucun padding ou multiple de 32 DV n'est imposé. Le HDR statique disponible et l'option HDR10+ restent indépendants.
+   - Un resize sans changement d'échelle est retiré avant l'alignement, afin de ne pas réétirer l'image après le crop/padding.
+   - Les crops en pourcentage sont convertis en pixels source, puis alignés : chaque offset est pair et les dimensions finales sont multiples de 32. La même géométrie absolue est utilisée pour la vidéo et le RPU.
+   - Avec des bandes communes aux échantillons (ou un crop utilisateur), le crop est ajusté au multiple de 32 inférieur. Sans bandes communes identifiées, le padding conserve le cadre source et atteint le multiple supérieur. Les bords ajoutés sont pairs, éventuellement asymétriques.
+6. **Détection bornée dans le temps et réécriture des métadonnées** :
+   - Pour une durée connue, le détecteur L5 cherche 12 images à six positions réparties entre le début et 90 % du film. Les clips de 30 secondes ou moins utilisent au plus trois positions, toujours à l'intérieur du fichier. Les seeks précèdent l'entrée FFmpeg et l'extraction se fait en copie de flux.
+   - Seules les bandes communes aux échantillons sont proposées : minimum de chaque offset, y compris lorsqu'un échantillon est plein cadre. Une durée inconnue ou une sonde L5 incomplète n'autorise pas de crop DV automatique. L'échantillonnage reste une heuristique et peut manquer une variation brève entre deux positions.
+   - Le bouton Auto-crop utilise L5 lorsqu'il est disponible, sinon FFmpeg cropdetect. Ce dernier prend également le minimum des bandes observées et démarre au début lorsque la durée est inconnue.
+   - Au lancement effectif, le workflow extrait le RPU complet pour conserver ses plages d'images. `dovi_tool extract-rpu` accepte MKV/HEVC ; MP4, MOV, TS et les pistes explicitement sélectionnées passent d'abord par l'extraction HEVC Annex B de FFmpeg. `dovi_tool editor` reçoit toujours un fichier RPU, jamais le conteneur.
+   - Pour tout crop/padding DV, `dovi_tool export --data level5` fournit les presets et leurs plages d'images. Chaque bord devient `max(0, ancien_offset - crop) + padding`. L'éditeur fonctionne en mode 0 : les autres niveaux, trims, mapping et le nombre/ordre des images sont conservés. Le RPU ainsi édité est transmis à NVEncC ; `crop=true` n'est pas ajouté car il annulerait les offsets variables restants.
+   - NVEncC conserve sa lecture directe du conteneur pour l'encodage. Sans modification géométrique, la copie native `--dolby-vision-rpu copy` reste utilisée.
+7. **Interface** :
+   - Le passage à un resize effectif décoche Dolby Vision et affiche la raison dans le journal.
+   - Le bouton Auto-crop renseigne les offsets en pixels et les aligne à 32 pour NVEncC + DV, à 2 sinon.
+   - La confirmation avant encodage propose le crop/padding calculé. Le crop en pourcentage est matérialisé en pixels dans l'interface après acceptation.
 
 ---
 
@@ -147,11 +145,11 @@ Dans le module `core/workflows/encode/` :
 
 | Paramètre / Pratique | Statut | Valeur / Règle | Impact et Justification Technique |
 | :--- | :---: | :--- | :--- |
-| **Alignement multiple de 32 (Crop vs Pad)** | 🟢 Automatisé | `Crop` si barres<br>`--vpp-pad` si plein écran | Évite le padding interne NVENC (`conformance_window`) qui fait retomber les SoC Android TV (Amlogic) en SDR. Aligne le crop à 32 ou ajoute des bandes symétriques + recalibrage RPU L5. |
+| **Alignement multiple de 32 (Crop vs Pad)** | 🟢 Automatisé | `Crop` si barres<br>`--vpp-pad` si plein écran | Évite le padding interne NVENC (`conformance_window`) qui fait retomber les SoC Android TV (Amlogic) en SDR. Aligne le crop à 32 ou ajoute des bandes paires + recalibrage RPU L5 par scène. |
 | **`--dolby-vision-profile`** | 🟢 Recommandé | `8.1` | Normalise en Profil 8.1 universel (couche de base HDR10 compatible + métadonnées dynamiques RPU). |
 | **`--dolby-vision-rpu`** | 🟢 Obligatoire | `copy` *(ou chemin fichier)* | Extrait, synchronise et réinjecte le RPU trame par trame dans le GPU via la bibliothèque `libdovi` intégrée à NVEncC. |
 | **Double HDR (`HDR10+` + `Dolby Vision`)** | 🟢 Supporté | `--dhdr10-info copy` + `--dolby-vision-rpu copy` | Génère un flux hybride universel : les SEI HDR10+ (ITU-T T.35) et le RPU Dolby Vision coexistent sans conflit sur la base layer HDR10. Chaque téléviseur exploite automatiquement son format dynamique natif (DV sur LG/Sony, HDR10+ sur Samsung). |
-| **`--dolby-vision-rpu-prm`** | 🟢 Obligatoire si crop | `crop=true` *(si recadrage)* | Obligatoire si un rognage est appliqué : réinitialise les coordonnées Level 5 (Active Area) à zéro pour s'aligner sur la nouvelle géométrie. |
+| **RPU externe après crop/padding** | 🟢 Obligatoire | L5 ajusté par plage d'images | Évite la remise à zéro globale de `crop=true` ; conserve les bandes restantes et leurs variations par scène. |
 | **`--profile`** | 🟢 Obligatoire | `main10` | Profil HEVC Main 10 obligatoire pour encoder en 10 bits (requis pour la compatibilité HDR10 / Dolby Vision). |
 | **`--tier`** | 🟢 Recommandé | `high` | Requis en 4K UHD pour supporter les débits de pointe sans saturer les décodeurs matériels. |
 | **Longueur de GOP (`--gop-len`)** | 🟢 Obligatoire | `2 × fps` *(ex: 48 à 24fps)* | Obligatoire pour borner le buffer DPB/RPU. Par défaut (250 trames / 10s), le décodeur matériel des téléviseurs sature, provoquant des gels au seeking et des timeouts `MediaCodec`. Les specs Dolby Vision imposent $\le 2\text{ s}$. |
@@ -162,8 +160,8 @@ Dans le module `core/workflows/encode/` :
 | **FourCC Matroska (`dvvC` / `dvcC`)** | 🟢 Obligatoire | `dvvC` (Profils $> 7$)<br>`dvcC` (Profils $\le 7$) | Spécification Matroska formelle : `dvvC` est requis pour les profils $> 7$ (dont le Profil 8.1 réencodé), tandis que `dvcC` est impératif pour les profils $\le 7$ (ex: remux Profil 7 ou Profil 5). Utiliser `dvcC` sur un flux réencodé en Profil 8 fait échouer la détection sur Smart TV (LG webOS, Tizen...) qui retombent en HDR10 simple. *(Muxiveo sélectionne automatiquement le bon FourCC).* |
 | **DoVi Level** | 🟢 Calibrage | `Level 6` ($\le 30$ fps) ou `9` ($50/60$ fps) | Évite le Niveau 10 par défaut de NVEncC qui fait planter le décodeur `MediaCodec` d'Android TV / ExoPlayer. Clamping automatique dans Muxiveo. |
 | **`--dolby-vision-profile 10.x` en HEVC** | 🔴 Proscrit | *Ne jamais utiliser en HEVC* | Le profil 10 est exclusif au codec AV1. Le forcer sur du HEVC génère un flux corrompu rejeté par tous les décodeurs. |
-| **Redimensionnement (`--vpp-resize`)** | 🔴 Proscrit | *Downscale 4K $\rightarrow$ 1080p interdit* | Le RPU est étalonné pour la résolution native 4K. Réduire la taille de trame sans re-calcul complet corrompt le tone-mapping spatial et cause un écran noir ou une image délavée. |
-| **`--crop` sans `crop=true`** | 🔴 Proscrit | *Crop sans adaptation RPU* | Rogne l'image sans réinitialiser le bloc Level 5 $\rightarrow$ la TV applique le tone-mapping sur des coordonnées de bandes noires décalées ou rejette le signal DV. |
+| **Redimensionnement (`--vpp-resize`)** | 🟠 Sans copie DV | *Downscale autorisé, Dolby Vision désactivé* | Le workflow conserve DV uniquement à l'échelle 1:1. Sans DV, aucun alignement à 32 n'est imposé. |
+| **Crop sans adaptation RPU** | 🔴 Proscrit | *Les offsets vidéo et L5 doivent correspondre* | Le workflow édite L5 par scène avec les mêmes offsets absolus que le crop vidéo. |
 | **GOP Strict (`--strict-gop`)** | 🔴 Proscrit | *Ne pas activer* | Interdit à l'encodeur d'insérer des IDR sur les coupures de plan. Le RPU (`scene_refresh_flag = 1`) perd son alignement avec les images clés $\rightarrow$ décalages d'exposition et saccades. |
 | **Pipeline FFmpeg `hevc_nvenc` + RPU** | 🔴 Proscrit | *Désactivé dans Muxiveo* | Absence de `libdovi`, padding matériel forcé (multiples 32/64 px) et désynchronisation DPB $\rightarrow$ écran noir ou repli HDR10 quasi-systématique. |
 | **`-b_ref_mode middle` / `--b-pyramid`** | 🔴 Proscrit | *Sous FFmpeg hevc_nvenc* | Entrelacement pyramidal complexe sous FFmpeg qui réordonne les trames sans recalage du RPU externe $\rightarrow$ désynchronisation et rupture de buffer DPB. |
@@ -189,9 +187,9 @@ Malgré la faisabilité théorique ci-dessus, ce workflow présente des handicap
 
 | Critère | NVEncC (`nvencc_hevc`) | FFmpeg (`hevc_nvenc`) + inject-rpu |
 | :--- | :--- | :--- |
-| **Intégration `libdovi`** | 🟢 **Natif en mémoire GPU** : RPU injecté trame par trame dans le bitstream sans fichier temporaire. | 🔴 **Externe a posteriori** : Nécessite 5 étapes séquentielles et des outils séparés. |
-| **Empreinte disque temporaire** | 🟢 **Nulle (0 Go)** : Stream direct en mémoire et tube vers le muxer. | 🔴 **Colossale (40 à 80 Go)** : Doit stocker le flux élémentaire `.hevc` brut intermédiaire pour un film UHD complet, usant inutilement les SSD. |
-| **Vitesse d'exécution** | 🟢 **Plein débit matériel** : 1 seule passe globale. | 🔴 **2 à 3 fois plus lent** en raison des I/O disques répétées (demux $\rightarrow$ encode $\rightarrow$ inject $\rightarrow$ mux). |
+| **Intégration `libdovi`** | 🟢 RPU intégré au bitstream par NVEncC ; fichier RPU externe après correction géométrique. | 🔴 **Externe a posteriori** : Nécessite 5 étapes séquentielles et des outils séparés. |
+| **Empreinte disque temporaire** | RPU et JSON si crop/padding ; extraction Annex B temporaire pour MP4/MOV/TS. Le MKV encodé reste un artefact intermédiaire du workflow. | 🔴 **Colossale (40 à 80 Go)** : Doit stocker le flux élémentaire `.hevc` brut intermédiaire pour un film UHD complet, usant inutilement les SSD. |
+| **Vitesse d'exécution** | Une passe d'encodage matériel, précédée de l'extraction/édition du RPU si la géométrie change. | Étapes supplémentaires de démultiplexage et d'injection après encodage. |
 | **Risque de désynchronisation VFR** | 🟢 **Protégé** : NVEncC refuse ou aligne nativement le timing. | 🔴 **Critique** : Si FFmpeg saute ou duplique une seule trame (drop/dup), le nombre de trames du fichier `.hevc` ne correspond plus à `rpu.bin` $\rightarrow$ échec fatal de `dovi_tool` ou clignotement / corruption colorimétrique du film. |
 | **Gestion des B-frames & DPB** | 🟢 **Compatible B-pyramid** : NVEncC gère la table des références en synchronisation avec le RPU. | 🔴 **Très fragile** : Nécessite de désactiver B-pyramid (`-b_ref_mode 0`) sous peine de rupture de séquence DPB sur les Smart TV. |
 
@@ -199,6 +197,3 @@ Malgré la faisabilité théorique ci-dessus, ce workflow présente des handicap
 Débloquer le chemin `hevc_nvenc` pour Dolby Vision dans FFmpeg n'apporte **aucune valeur ajoutée** pour l'utilisateur par rapport à `nvencc_hevc`, tout en introduisant une complexité d'I/O disque et des risques élevés d'échec sur les cadences variables (VFR).  
 
 **Recommandation finale** : Maintenir le blocage de `hevc_nvenc` pour Dolby Vision dans l'interface de Muxiveo avec la recommandation claire vers **`NVEncC (rigaya)`** pour l'accélération matérielle NVIDIA, ou vers **`libx265`** pour l'encodage logiciel CPU.
-
-
-

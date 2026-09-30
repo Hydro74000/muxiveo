@@ -78,3 +78,27 @@ def test_detect_video_crop_uses_dovi_l5_when_present():
             copy_dv=True,
         )
         assert res == (280, 280, 0, 0)
+
+
+def test_short_clip_sampling_never_seeks_past_end():
+    from core.video_sampling import video_sample_times
+    for duration in (0.01, 0.2, 2.0, 30.0):
+        positions = video_sample_times(duration)
+        assert positions[0] == 0
+        assert all(0 <= position < duration for position in positions)
+    assert video_sample_times(None) == [0.0]
+
+
+def test_cropdetect_uses_common_borders_not_majority():
+    outputs = ["crop=1920:800:0:140"] * 5 + ["crop=1920:1080:0:0"]
+    with patch("subprocess.run", side_effect=[MagicMock(stderr=s, stdout="") for s in outputs]):
+        result = detect_black_bars_ffmpeg(Path("movie.mkv"), dimensions=(1920, 1080), duration_s=600)
+    assert result == (0, 0, 0, 0)
+
+
+def test_l5_fullframe_sample_does_not_fall_back_to_cropdetect():
+    with patch("core.workflows.encode.runtime.crop_detector.DoviProfileDetector") as detector, \
+         patch("core.workflows.encode.runtime.crop_detector.detect_black_bars_ffmpeg") as cropdetect:
+        detector.return_value.probe_l5_offsets.return_value = (0, 0, 0, 0)
+        assert detect_video_crop(Path("variable.mkv"), dimensions=(3840, 2160), copy_dv=True) == (0, 0, 0, 0)
+        cropdetect.assert_not_called()

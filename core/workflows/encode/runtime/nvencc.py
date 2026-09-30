@@ -386,8 +386,10 @@ def _auto_source_hdr_args(video: VideoEncodeSettings, *, direct_input: bool) -> 
         "--transfer", "auto",
         "--chromaloc", "auto",
     ]
-    if not static:
-        args.extend(["--master-display", "copy", "--max-cll", "copy"])
+    if not static or not video.master_display:
+        args.extend(["--master-display", "copy"])
+    if not static or not video.max_cll:
+        args.extend(["--max-cll", "copy"])
     return args
 
 

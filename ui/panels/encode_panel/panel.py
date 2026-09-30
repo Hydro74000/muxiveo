@@ -2667,6 +2667,19 @@ class EncodePanel(QWidget):
     def _rebuild_preview(self) -> None:
         if self._closing or not hasattr(self, "_cmd_preview"):
             return   # appelé pendant l'init avant que le widget existe
+        if (not self._loading_video_settings
+                and self._codec_combo.currentData() == "nvencc_hevc" and self._copy_dv_cb.isChecked()):
+            from core.workflows.encode.runtime.dovi_geometry import nvencc_dovi_resize_changes_scale
+
+            _, dimensions = self._geometry_source()
+            if nvencc_dovi_resize_changes_scale(self._current_video_settings(), dimensions):
+                self._copy_dv_cb.setChecked(False)
+                if not self._tonemap_cb.isChecked():
+                    self._inject_hdr_cb.setChecked(True)
+                self.log_message.emit(
+                    "INFO", "Redimensionnement NVEncC : copie Dolby Vision désactivée. "
+                    "La conservation Dolby Vision requiert une image à l'échelle 1:1.",
+                )
         self._save_current_video_state()
         self._command_generation += 1
         self._command_dirty = True
@@ -4036,7 +4049,7 @@ class EncodePanel(QWidget):
         self._chroma_cb.setChecked(bool(filters.chroma_smooth_enabled))
         self._set_combo_data(self._chroma_strength_combo, filters.chroma_smooth_strength)
 
-    def _on_auto_crop_clicked(self) -> None:
+    def _geometry_source(self) -> tuple[Path | None, tuple[int, int]]:
         source_path = None
         dimensions = (0, 0)
         row = self._video_list.currentRow() if hasattr(self, "_video_list") else -1
@@ -4044,13 +4057,20 @@ class EncodePanel(QWidget):
             file_info, track, _color = self._video_tracks[row]
             source_path = file_info.path
             if file_info.video_tracks:
-                vt = file_info.video_tracks[0]
+                stream_index = self._current_video_settings().stream_index
+                vt = next((v for v in file_info.video_tracks if v.index == stream_index), file_info.video_tracks[0])
                 dimensions = (int(vt.width or 0), int(vt.height or 0))
+
         elif self._file_info is not None:
             source_path = self._file_info.path
             if self._file_info.video_tracks:
                 vt = self._file_info.video_tracks[0]
                 dimensions = (int(vt.width or 0), int(vt.height or 0))
+
+        return source_path, dimensions
+
+    def _on_auto_crop_clicked(self) -> None:
+        source_path, dimensions = self._geometry_source()
 
         if source_path is None or dimensions[0] <= 0 or dimensions[1] <= 0:
             self.log_message.emit("WARN", "Auto-crop impossible : aucune source vidéo ou dimensions introuvables.")
@@ -4072,6 +4092,8 @@ class EncodePanel(QWidget):
                 duration_s=duration_s,
                 ffmpeg_bin=self._config.tool_ffmpeg,
                 dovi_tool_bin=self._config.tool_dovi_tool,
+                ffprobe_bin=self._workflow._ffprobe_bin_from_ffmpeg(self._config.tool_ffmpeg),
+                stream_index=self._current_video_settings().stream_index,
             )
             top, bottom, left, right = crop_result
             if top == 0 and bottom == 0 and left == 0 and right == 0:
@@ -4121,39 +4143,24 @@ class EncodePanel(QWidget):
         if vs.codec != "nvencc_hevc" or not getattr(vs, "copy_dv", False):
             return True
 
-        source_path = None
-        dimensions = (0, 0)
-        row = self._video_list.currentRow() if hasattr(self, "_video_list") else -1
-        if 0 <= row < len(self._video_tracks):
-            file_info, track, _color = self._video_tracks[row]
-            source_path = file_info.path
-            if file_info.video_tracks:
-                vt = file_info.video_tracks[0]
-                dimensions = (int(vt.width or 0), int(vt.height or 0))
-        elif self._file_info is not None:
-            source_path = self._file_info.path
-            if self._file_info.video_tracks:
-                vt = self._file_info.video_tracks[0]
-                dimensions = (int(vt.width or 0), int(vt.height or 0))
+        source_path, dimensions = self._geometry_source()
 
         src_w, src_h = dimensions
         if src_w <= 0 or src_h <= 0 or source_path is None:
             return True
 
-        from core.dovi_profile_detector import DoviProfileDetector
         from core.workflows.encode.runtime.dovi_geometry import align_nvencc_dovi_geometry
 
         l5_offsets = None
         try:
-            detector = DoviProfileDetector(dovi_tool_bin=self._config.tool_dovi_tool)
-            l5_offsets = detector.probe_l5_offsets(source_path)
+            l5_offsets = self._workflow._probe_dovi_l5_offsets(source_path, stream_index=vs.stream_index)
         except Exception:
             l5_offsets = None
 
         res = align_nvencc_dovi_geometry(vs, dimensions, l5_offsets=l5_offsets)
 
         # 1. Branche 1 : Recadrage requis
-        if res.dovi_rpu_prm == "crop=true" and res.video.crop is not None:
+        if res.crop_offsets is not None:
             curr_crop = vs.crop
             curr_top = int(curr_crop.top or 0) if (curr_crop.enabled and not curr_crop.auto) else 0
             curr_bottom = int(curr_crop.bottom or 0) if (curr_crop.enabled and not curr_crop.auto) else 0
@@ -4170,7 +4177,8 @@ class EncodePanel(QWidget):
             act_h = src_h - (req_top + req_bottom)
 
             needs_alignment = (
-                curr_top != req_top
+                curr_crop.unit != "px"
+                or curr_top != req_top
                 or curr_bottom != req_bottom
                 or curr_left != req_left
                 or curr_right != req_right
@@ -4208,7 +4216,7 @@ class EncodePanel(QWidget):
                 return False
 
         # 2. Branche 2 : Padding requis (image pleine sans bandes)
-        if res.needs_rpu_pad_alignment and res.vpp_pad is not None:
+        if res.needs_rpu_alignment and res.vpp_pad is not None:
             pad_left, pad_top, pad_right, pad_bottom = res.vpp_pad
             target_w = src_w + pad_left + pad_right
             target_h = src_h + pad_top + pad_bottom
@@ -4218,10 +4226,10 @@ class EncodePanel(QWidget):
             dlg.setWindowTitle("Alignement géométrique Dolby Vision (NVENC)")
             dlg.setText(
                 "<h3>Alignement matériel par padding requis pour Dolby Vision</h3>"
-                f"<p>L'image est pleine (sans bandes noires), mais sa hauteur ({src_h} px) "
-                "n'est pas un multiple de 32 (ex: 2160p nécessite 2176p pour les blocs CTU NVENC).</p>"
+                f"<p>Aucun recadrage commun n'a été retenu. Le cadre source ({src_w} × {src_h}) "
+                "doit être complété pour atteindre des dimensions multiples de 32.</p>"
                 f"<p>Un padding de <b>{pad_top} px</b> en haut et <b>{pad_bottom} px</b> en bas "
-                f"va être appliqué automatiquement ({target_w} × {target_h}) avec réalignement des métadonnées RPU Dolby Vision, "
+                f"va être appliqué automatiquement ({target_w} × {target_h}) avec réalignement des métadonnées RPU Dolby Vision par scène, "
                 "préservant 100% de l'image sans recadrage.</p>"
                 "<p>Souhaitez-vous continuer avec cet alignement automatique ?</p>"
             )
