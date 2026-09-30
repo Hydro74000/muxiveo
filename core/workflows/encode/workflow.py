@@ -934,6 +934,7 @@ class EncodeWorkflow(QObject):
                     cwd=cwd,
                     label=label,
                     progress_cb=progress_cb,
+                    progress_pct_cb=(signals.progress_pct.emit if signals is not None else None),
                     signals=signals,
                 ),
                 finalize_ffmpeg=self._finalize_ffmpeg_output,

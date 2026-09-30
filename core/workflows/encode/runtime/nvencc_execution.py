@@ -472,14 +472,22 @@ class NvenccDirectOutputRunner:
                     )
                     def run_metadata(cmd: list[str]) -> object:
                         cb.check_cancelled(signals)
-                        return cb.run_cmd(cmd, cwd, "dovi-geometry", lambda _: None, signals)
+                        return cb.run_cmd(
+                            cmd,
+                            cwd,
+                            "dovi-geometry",
+                            lambda line: signals.progress.emit(line),
+                            signals,
+                        )
 
+                    signals.progress.emit("Extraction RPU Dolby Vision…")
                     extract_dovi_rpu(
                         source=routing.input_path, stream_index=routing.stream_index,
                         ffmpeg_bin=cb.ffmpeg_bin, dovi_tool_bin=dovi_bin,
                         output_rpu=raw_rpu, work_dir=cwd, run_cmd=run_metadata,
                         cleanup_paths=cleanup_paths,
                     )
+                    signals.progress.emit("Réalignement RPU Dolby Vision…")
                     align_dovi_rpu_geometry(
                         dovi_tool_bin=dovi_bin,
                         rpu_input=raw_rpu,

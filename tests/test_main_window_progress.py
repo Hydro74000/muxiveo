@@ -379,3 +379,28 @@ def test_matroska_assembly_progress_updates_bar_and_emits_debug() -> None:
     assert dummy._prog_lbl.text == remux_line
     dummy.log_requested.emit.assert_called_once_with("DEBUG", remux_line)
 
+
+def test_pct_sentinel_progress_updates_bar_and_label() -> None:
+    from core.runner import _PCT_SENTINEL
+
+    dummy = SimpleNamespace()
+    dummy._op_mode = "encode"
+    dummy._op_stage_label = "Extraction RPU Dolby Vision…"
+    dummy._capture_verbose_progress_line = MagicMock()
+    dummy._handle_encode_internal_progress = MagicMock(return_value=False)
+    dummy._stop_prep_progress = MagicMock()
+    dummy._prog_bar = _FakeProgressBar()
+    dummy._prog_bar.setRange = MagicMock()
+    dummy._prog_lbl = _FakeLabel()
+    dummy.log_requested = SimpleNamespace(emit=MagicMock())
+    dummy._format_progress_label = MethodType(MainWindow._format_progress_label, dummy)
+    dummy._on_op_progress = MethodType(MainWindow._on_op_progress, dummy)
+
+    dummy._on_op_progress(f"{_PCT_SENTINEL}53")
+
+    dummy._stop_prep_progress.assert_called_once()
+    dummy._prog_bar.setRange.assert_called_once_with(0, 100)
+    assert dummy._prog_bar.value == 53
+    assert dummy._prog_lbl.text == "Extraction RPU Dolby Vision…  ·  53%"
+
+

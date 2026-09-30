@@ -359,10 +359,14 @@ def test_direct_runner_edits_rpu_before_encode_and_does_not_zero_it(tmp_path, qt
         run_cmd=run, finalize_ffmpeg=lambda *a, **k: str(config.output), native_assemble=lambda *a, **k: None,
     )
     failures = []
+    progress_events = []
     signals = TaskSignals()
     signals.failed.connect(lambda message, *_: failures.append(message))
+    signals.progress.connect(progress_events.append)
     NvenccDirectOutputRunner(callbacks).run(config, [], prep_signals=signals)
     assert failures == []
+    assert "Extraction RPU Dolby Vision…" in progress_events
+    assert "Réalignement RPU Dolby Vision…" in progress_events
     assert [cmd[0] for cmd in commands] == ["ffmpeg", "dovi_tool", "dovi_tool", "dovi_tool", "nvencc"]
     encode = commands[-1]
     assert encode[encode.index("--dolby-vision-rpu") + 1].endswith("rpu_aligned.bin")

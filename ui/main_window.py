@@ -132,6 +132,7 @@ _ENCODE_STAGE_PREFIXES: tuple[str, ...] = (
     "Extraction HEVC source",
     "Extraction HEVC annexB",
     "Extraction RPU Dolby Vision",
+    "Réalignement RPU Dolby Vision",
     "Extraction métadonnées HDR10+",
     "Conversion P5 → P8",
     "Conversion P7 FEL → P8.1",
@@ -151,6 +152,7 @@ _ENCODE_STAGE_PREFIXES: tuple[str, ...] = (
 # anime la barre en mode indéterminé pour montrer que ça travaille.
 _ENCODE_INDETERMINATE_STAGE_PREFIXES: tuple[str, ...] = (
     "Extraction RPU Dolby Vision",
+    "Réalignement RPU Dolby Vision",
     "Extraction métadonnées HDR10+",
     "Conversion P5 → P8",
     "Conversion P7 FEL → P8.1",
@@ -2365,6 +2367,9 @@ class MainWindow(QMainWindow):
         self._stop_prep_progress()
         self._prog_bar.setRange(0, 100)
         self._prog_bar.setValue(max(0, min(100, int(pct))))
+        if hasattr(self, "_format_progress_label"):
+            parts = [f"{int(pct)}%"]
+            self._prog_lbl.setText(self._format_progress_label(*parts))
 
     def _on_op_progress(self, line: str) -> None:
         """Gère la progression selon le mode (remux ou encode)."""
@@ -2454,6 +2459,9 @@ class MainWindow(QMainWindow):
                 self._stop_prep_progress()
                 self._prog_bar.setRange(0, 100)
                 self._prog_bar.setValue(max(0, min(100, pct)))
+                if hasattr(self, "_format_progress_label"):
+                    parts = [f"{pct}%"]
+                    self._prog_lbl.setText(self._format_progress_label(*parts))
                 return
             if self._NOISE_RE.search(line):
                 return
