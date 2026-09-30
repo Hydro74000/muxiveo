@@ -22,6 +22,14 @@ Lors du réencodage d'une source 4K HDR10 / Dolby Vision (notamment Blu-ray UHD 
    - Par défaut, certains encodeurs matériels comme `NVEncC` écrivent un niveau maximal arbitraire : **Niveau 10** (0x55 = UHD @ 120 fps).
    - **Symptôme Android TV / ExoPlayer** : Sur Android (Plex, ExoPlayer, Nvidia Shield, Fire TV), le framework `MediaCodec` valide la contrainte `dv_level <= 9`. Face au Niveau 10, le lecteur plante ou refuse le traitement Dolby Vision.
    - **Assainissement requis** : Le niveau doit être ramené automatiquement au **Niveau 6** ($\le 30$ fps) ou **Niveau 9** ($50/60$ fps) selon la cadence d'images réelle du flux.
+6. **Alignement matériel NVENC (multiples de 32 ou 64) et Redimensionnement (Resize / Crop)** :
+   - Le hardware NVENC (blocs CTU HEVC 32x32 ou 64x64) impose des surfaces d'encodage dont les dimensions sont des multiples stricts de 32 ou 64 pixels.
+   - Lorsque FFmpeg effectue un redimensionnement ou un crop (via `scale`, `scale_cuda`, etc.) vers une résolution non alignée ou arbitraire, il applique un padding (remplissage) ou un ajustement forcé des dimensions encodées (`coded_width` / `coded_height`).
+   - **Rupture fatale avec le RPU Dolby Vision** :
+     - Les métadonnées dynamiques RPU (notamment le bloc **Level 5 / Active Area offsets** qui définit les bandes noires `top`, `bottom`, `left`, `right`) sont calculées en pixels absolus par rapport au canvas de la source d'origine.
+     - Si la vidéo est redimensionnée (ex: 4K $\rightarrow$ 1080p), rognée (crop des bandes noires), ou si FFmpeg/NVENC padde l'image pour satisfaire l'alignement 32/64, **les coordonnées du RPU ne correspondent plus à l'image encodée**.
+     - **Conséquence** : Le moteur de tone-mapping Dolby Vision du téléviseur constate une incohérence spatiale entre le flux vidéo HEVC et le RPU. Selon la marque de TV, cela provoque un rejet pur et simple du Dolby Vision (repli en HDR10 ou écran noir) ou une colorimétrie totalement corrompue (bandes de distorsion lumineuse).
+     - **Règle absolue** : En passthrough Dolby Vision, **aucun redimensionnement ni rognage arbitraire ne doit être appliqué** sans recalibrage mathématique du RPU (via `dovi_tool editor` pour mettre à jour les offsets L5). La résolution géométrique source doit être strictement conservée 1:1.
 
 ---
 
@@ -116,3 +124,4 @@ Dans le module `core/workflows/encode/` :
 2. **Sécurité et blocage des codecs incompatibles** : Le catalogue (`catalog.py`) sépare désormais explicitement `supports_dovi` et `supports_hdr10plus`. Les encodeurs incompatibles (`hevc_nvenc`, `hevc_vaapi`, `nvencc_av1`...) ont leur case DV désactivée avec un bandeau d'avertissement et une recommandation vers `nvencc_hevc` ou `libx265`.
 3. **Assainissement automatique post-encode** : La fonction `sanitize_dovi_mkv` s'exécute automatiquement après l'encodage NVEncC pour corriger le niveau (Level 6/9), standardiser le FourCC en `dvvC` et valider les blocs EBML.
 4. **Assemblage Matroska natif unifié** : L'assemblage final est pris en charge par le muxeur natif Matroska (`compile_assembly_plan`), qui préserve intégralement les éléments `Colour` (`0x55B0`) et `BlockAdditionMapping` sans dépendre d'un remux FFmpeg secondaire.
+5. **Préservation stricte de la géométrie (Pas de resize/crop sans adaptation RPU)** : En Dolby Vision, la résolution géométrique et les bandes noires d'origine doivent être strictement conservées en 1:1. L'application d'un redimensionnement ou d'un rognage (crop) sans réécriture mathématique du RPU (notamment des coordonnées L5) brise le tone-mapping matériel des téléviseurs.
