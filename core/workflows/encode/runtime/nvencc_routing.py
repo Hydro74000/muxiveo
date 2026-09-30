@@ -355,7 +355,7 @@ class NvenccInputRouter:
         try:
             source_fps = self._cb.source_video_fps_expr(source_for_timing)
         except Exception:
-            pass
+            source_fps = None
 
         return NvenccInputRouting(
             input_path=Path(input_path),

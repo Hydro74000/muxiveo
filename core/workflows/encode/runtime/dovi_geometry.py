@@ -175,7 +175,9 @@ def _probe_rpu_frame_count(
             text = ""
     if not text:
         try:
-            res = subprocess.run(cmd, check=True, capture_output=True, **subprocess_text_kwargs())
+            # Outil local configuré et arguments séparés, sans interprétation shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            res = subprocess.run(cmd, check=True, capture_output=True, **subprocess_text_kwargs())  # nosec B603
             text = (res.stdout or "") + (res.stderr or "")
         except Exception:
             text = ""
@@ -228,7 +230,9 @@ def align_dovi_rpu_geometry(
     def run(cmd: list[str]) -> object:
         if run_cmd is not None:
             return run_cmd(cmd)
-        return subprocess.run(cmd, check=True, capture_output=True, **subprocess_text_kwargs())
+        # Commandes dovi_tool construites ci-dessous en argv, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        return subprocess.run(cmd, check=True, capture_output=True, **subprocess_text_kwargs())  # nosec B603
 
     if rpu_input.is_file() and rpu_input.stat().st_size == 0:
         raise EncodeError(f"Dolby Vision : fichier RPU vide ({rpu_input.name}).")

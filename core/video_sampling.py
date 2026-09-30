@@ -21,7 +21,9 @@ def video_sample_times(duration_s: float | None) -> list[float]:
 
 def probe_video_duration(source: Path, *, ffprobe_bin: str = "ffprobe") -> float | None:
     try:
-        result = subprocess.run(
+        # argv séparés, sans shell ; ffprobe provient de la configuration locale.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(  # nosec B603
             [ffprobe_bin, "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", str(source)],
             capture_output=True, check=True, timeout=10, **subprocess_text_kwargs(),

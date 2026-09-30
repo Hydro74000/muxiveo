@@ -68,7 +68,9 @@ def detect_black_bars_ffmpeg(
             "-",
         ]
         try:
-            res = subprocess.run(
+            # FFmpeg configuré localement ; chemins et filtre restent des argv sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            res = subprocess.run(  # nosec B603
                 cmd,
                 capture_output=True,
                 check=False,

@@ -54,6 +54,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -2726,15 +2727,18 @@ def _step(msg: str) -> None:
 
 def _download_file(url: str, dest: Path, timeout: int = 120) -> None:
     """Télécharge une URL vers dest avec progression."""
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("Le téléchargement nécessite une URL HTTP(S) avec un hôte.")
     _info(f"Téléchargement : {url}")
     dest.parent.mkdir(parents=True, exist_ok=True)
     headers = {"User-Agent": "Muxiveo-builder"}
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if token and "github.com" in url:
+    if token and parsed.scheme == "https" and parsed.hostname in {"github.com", "api.github.com"}:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310  # schéma HTTP(S) et hôte vérifiés
             total = int(resp.headers.get("Content-Length", 0))
             downloaded = 0
             chunk = 65536
@@ -2766,7 +2770,7 @@ def _gh_latest_asset_url(repo: str, *patterns: str) -> str:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req) as resp:
+    with urllib.request.urlopen(req) as resp:  # nosec B310  # origine HTTPS api.github.com constante
         data = json.loads(resp.read().decode("utf-8"))
     for asset in data.get("assets", []):
         name: str = asset.get("name", "")

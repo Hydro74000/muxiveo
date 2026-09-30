@@ -377,17 +377,21 @@ class DoviProfileDetector:
                 for position in video_sample_times(duration):
                     # Input seeking uses the container index. Stream copy reads a
                     # small GOP fragment, without decoding/scanning the whole film.
-                    subprocess.run(
+                    # Configured local tools, separate argv, no shell expansion.
+                    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+                    subprocess.run(  # nosec B603
                         [self._ffmpeg, "-nostdin", "-v", "error", "-y", "-ss", f"{position:.3f}",
                          "-i", str(source_path), "-map", f"0:{stream_index}", "-c:v", "copy",
                          "-frames:v", "12", "-bsf:v", "hevc_mp4toannexb", "-f", "hevc", str(hevc)],
                         capture_output=True, check=True, timeout=20, **subprocess_text_kwargs(),
                     )
-                    subprocess.run(
+                    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+                    subprocess.run(  # nosec B603  # même contrat argv sans shell
                         [self._dovi_tool, "extract-rpu", "-i", str(hevc), "-o", str(rpu)],
                         capture_output=True, check=True, timeout=10, **subprocess_text_kwargs(),
                     )
-                    result = subprocess.run(
+                    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+                    result = subprocess.run(  # nosec B603  # même contrat argv sans shell
                         [self._dovi_tool, "info", "-i", str(rpu), "--summary"],
                         capture_output=True, check=True, timeout=10, **subprocess_text_kwargs(),
                     )

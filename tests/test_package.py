@@ -74,6 +74,41 @@ def test_pyinstaller_frontend_flag_uses_windowed_on_windows():
     assert package_mod._pyinstaller_frontend_flag("Windows") == "--windowed"
 
 
+@pytest.mark.parametrize("url", [
+    "file:///etc/passwd", "ftp://example.test/tool.zip",
+    "data:text/plain,tool", "https:///missing-host", "/local/tool.zip",
+])
+def test_download_file_rejects_non_http_urls_before_io(tmp_path, url):
+    dest = tmp_path / "downloads" / "tool.zip"
+    with patch.object(package_mod.urllib.request, "urlopen") as urlopen:
+        with pytest.raises(ValueError, match="HTTP"):
+            package_mod._download_file(url, dest)
+    urlopen.assert_not_called()
+    assert not dest.parent.exists()
+
+
+@pytest.mark.parametrize(("url", "authorized"), [
+    ("https://github.com/owner/repo/tool.zip", True),
+    ("https://api.github.com/repos/owner/repo/releases/assets/1", True),
+    ("http://github.com/owner/repo/tool.zip", False),
+    ("https://github.com.example.test/tool.zip", False),
+    ("https://example.test/github.com/tool.zip", False),
+    ("https://github.com@example.test/tool.zip", False),
+])
+def test_download_file_limits_github_token_to_https_github(tmp_path, monkeypatch, url, authorized):
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    response = MagicMock()
+    response.__enter__.return_value = response
+    response.headers = {"Content-Length": "4"}
+    response.read.side_effect = [b"tool", b""]
+    dest = tmp_path / "tool.zip"
+    with patch.object(package_mod.urllib.request, "urlopen", return_value=response) as urlopen:
+        package_mod._download_file(url, dest)
+    request = urlopen.call_args.args[0]
+    assert request.get_header("Authorization") == ("Bearer test-token" if authorized else None)
+    assert dest.read_bytes() == b"tool"
+
+
 def test_pyinstaller_frontend_flag_keeps_console_on_linux():
     assert package_mod._pyinstaller_frontend_flag("Linux") == "--console"
 
@@ -1064,5 +1099,4 @@ def test_build_windows_allinc_produces_both_installers_and_portable_zip(tmp_path
     assert nsis_calls == ["Muxiveo-Setup-4.0.3.exe", "Muxiveo-Setup-AllInc-4.0.3.exe"]
     assert tools_bundled == [True]
     assert portable_built == [True]
-
 

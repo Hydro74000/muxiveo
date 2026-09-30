@@ -9,7 +9,6 @@ from core.file_types import windows_filename_error, windows_path_length_error
 from core.workflows.common.track_types import TrackTimeOffset
 from core.workflows.encode.catalog import (
     supports_dovi,
-    supports_dynamic_hdr,
     supports_hdr10plus,
 )
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
