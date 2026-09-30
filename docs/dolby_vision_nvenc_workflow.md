@@ -123,3 +123,40 @@ Dans le module `core/workflows/encode/` :
 3. **Assainissement automatique post-encode** : La fonction `sanitize_dovi_mkv` s'exécute automatiquement après l'encodage NVEncC pour corriger le niveau (Level 6/9), standardiser le FourCC en `dvvC` et valider les blocs EBML.
 4. **Assemblage Matroska natif unifié** : L'assemblage final est pris en charge par le muxeur natif Matroska (`compile_assembly_plan`), qui préserve intégralement les éléments `Colour` (`0x55B0`) et `BlockAdditionMapping` sans dépendre d'un remux FFmpeg secondaire.
 5. **Préservation stricte de la géométrie (Pas de resize/crop sans adaptation RPU)** : En Dolby Vision, la résolution géométrique et les bandes noires d'origine doivent être strictement conservées en 1:1. L'application d'un redimensionnement ou d'un rognage (crop) sans réécriture mathématique du RPU (notamment des coordonnées L5) brise le tone-mapping matériel des téléviseurs.
+
+---
+
+## 5. Tableau Récapitulatif : Options Recommandées vs Options Toxiques
+
+### Tableau 1 : Options Indispensables et Recommandées (NVEncC)
+
+| Paramètre | Valeur Recommandée | Rôle et Justification Technique |
+| :--- | :--- | :--- |
+| `--dolby-vision-profile` | `8.1` | Normalise en Profil 8.1 universel (couche de base HDR10 compatible + RPU dynamique). |
+| `--dolby-vision-rpu` | `copy` *(ou fichier RPU)* | Extrait, synchronise et réinjecte le RPU trame par trame via `libdovi` intégré dans le GPU. |
+| `--dolby-vision-rpu-prm` | `crop=true` *(si recadrage)* | Obligatoire si un rognage est appliqué : réinitialise les offsets Level 5 (Active Area) à 0. |
+| `--profile` | `main10` | Profil HEVC Main 10 obligatoire pour encoder en 10 bits (requis pour HDR10 / Dolby Vision). |
+| `--tier` | `high` | Requis en 4K UHD pour supporter les pics de débit sans dépassement des contraintes de décodage. |
+| `--gop-len` | `2 × fps` *(ex: 48 à 24fps)* | Borne le buffer DPB/RPU des téléviseurs tout en maximisant la qualité des scènes lentes. |
+| `--repeat-headers` | *Activé* | Répète VPS/SPS/PPS à chaque image clé (indispensable pour l'accroche HDMI et le seeking). |
+| `--aud` | *Activé* | Insère les délimiteurs d'Access Unit (NAL 35), indispensables pour synchroniser le RPU et la vidéo. |
+| `--colormatrix` / `--colorprim` / `--transfer` | `auto` ou `bt2020nc` / `bt2020` / `smpte2084` | Renseigne la VUI HDR. Sans cela, l'écran interprète le flux en SDR (image délavée et terne). |
+| `--chromaloc` | `auto` ou `2` | Positionne le sous-échantillonnage chroma (Type 2 = aligné à gauche, standard UHD BD / Web). |
+| `FourCC Matroska` | `dvvC` *(automatique Muxiveo)* | Identifie le Profil 8 auprès des Smart TV (LG webOS, Tizen) pour déclencher le mode DV. |
+| `DoVi Level` | `6` ($\le 30$ fps) ou `9` ($50/60$ fps) | Évite le Niveau 10 par défaut qui fait planter le décodeur `MediaCodec` d'Android TV / ExoPlayer. |
+
+---
+
+### Tableau 2 : Options Toxiques à Proscrire Absolument
+
+| Option Toxique | Gravité | Risque et Dysfonctionnement Provoqué |
+| :--- | :---: | :--- |
+| **`--strict-gop`** | 🔴 Élevé | Empêche l'encodeur d'insérer des images clés IDR sur les coupures de plan. Le RPU (`scene_refresh_flag = 1`) n'est plus aligné avec les images clés $\rightarrow$ décalages d'exposition et saccades sur TV. |
+| **`--vpp-resize` / `--output-res`** *(Downscale 4K $\rightarrow$ 1080p)* | 🔴 Critique | Réduit la vidéo alors que le RPU est étalonné pour le canevas 4K $\rightarrow$ incohérence spatiale du tone-mapping, colorimétrie corrompue ou rejet pur et simple par le téléviseur. |
+| **`--crop` sans `crop=true`** | 🔴 Critique | Rogne la vidéo sans mettre à jour le bloc Level 5 $\rightarrow$ la TV applique le tone-mapping sur des coordonnées de bandes noires décalées ou rejette le signal DV. |
+| **`hevc_nvenc` via FFmpeg** *(pour DV)* | 🔴 Critique | Absence de `libdovi`, padding matériel forcé (multiples 32/64 px) et désynchronisation DPB $\rightarrow$ écran noir ou repli HDR10 quasi-systématique. |
+| **`-b_ref_mode middle` / `--b-pyramid`** *(avec FFmpeg)* | 🔴 Élevé | Entrelacement pyramidal complexe sous FFmpeg qui désordonne les trames sans synchronisation RPU $\rightarrow$ rupture de buffer DPB sur les SoC TV. |
+| **FourCC `dvcC` pour du Profil 8** | 🟠 Modéré | Non conforme aux spécifications Matroska pour les profils $> 7$ $\rightarrow$ la Smart TV ignore le Dolby Vision et bascule en HDR10 simple. |
+| **`--dhdr10-info copy` + `--dolby-vision-rpu copy`** *(sur TV LG)* | 🟠 Modéré | Embarquer du double HDR dynamique (HDR10+ et DV) est valide en théorie, mais fait planter le parser de certains téléviseurs stricts qui ne possèdent pas de licence HDR10+ (ex: LG webOS). |
+| **`--dolby-vision-profile 10.x` en HEVC** | 🔴 Critique | Le profil 10 est exclusif au codec AV1. Le déclarer sur du HEVC produit un bitstream invalide rejeté par tous les décodeurs. |
+
