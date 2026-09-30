@@ -78,17 +78,47 @@ Même lorsque NVEncC gère nativement le RPU, le fichier MKV généré nécessit
 
 ## 3. Méthode 2 : Pipeline FFmpeg (`hevc_nvenc`) + `dovi_tool` (Historique / Déprécié)
 
-> ⚠️ **Note Muxiveo v4.1+** : L'encodage Dolby Vision avec `hevc_nvenc` via FFmpeg est **désactivé et bloqué dans l'UI** de Muxiveo avec une alerte explicite. Le buffer DPB de l'encodeur FFmpeg NVENC provoque des désynchronisations du RPU après injection externe, et le padding matériel automatique (surfaces multiples de 32/64) corrompt les offsets géométriques L5 du RPU. Il est vivement conseillé d'utiliser **`NVEncC — HEVC`** (GPU) ou **`x265`** (CPU).
+> ⛔ **Statut dans Muxiveo v4.1+ : BLOQUÉ ET DÉSACTIVÉ DANS L'UI**  
+> L'encodage Dolby Vision avec le codec `hevc_nvenc` de FFmpeg est formellement bloqué dans Muxiveo (case à cocher désactivée avec pictogramme d'alerte `⚠️`).  
+> Ce pipeline externe accumule des **impasses techniques majeures** qui rendent son utilisation imprévisible et provoquent quasi-systématiquement des échecs de lecture sur téléviseur (écran noir, artefacts ou repli forcé en HDR10).
 
-Si ce pipeline doit néanmoins être utilisé manuellement :
+### Pourquoi ce pipeline est-il une impasse technique ?
 
-### Étape 1 : Extraction & Normalisation du RPU
+#### 1. Le blocage fatal du Crop (rognage des bandes noires) et du Resize
+* **Incohérence du bloc Level 5 (Active Area)** :
+  * Le RPU extrait à l'étape 1 conserve les coordonnées géométriques complètes de la source (ex. $3840\times 2160$ avec $276$ pixels de bandes noires en haut et en bas dans le bloc L5).
+  * Si un crop est appliqué dans FFmpeg (ex. `-vf crop=3840:1608:0:276`), la vidéo encodée ne fait plus que $1608$ pixels de haut.
+  * L'injection aveugle avec `dovi_tool inject-rpu` applique alors des offsets L5 d'une image avec bandes noires sur une image qui n'en a plus, ou échoue en constatant la discordance de résolution.
+* **Le piège de l'alignement matériel NVENC (multiples de 32 ou 64)** :
+  * L'encodeur matériel NVENC sous FFmpeg impose que les surfaces mémoires allouées soient des **multiples stricts de 32 ou 64 pixels**.
+  * Si la hauteur croppée n'est pas un multiple exact (ex: $1606$ ou $1610$ px), FFmpeg et le driver NVENC appliquent un **padding (rembourrage) matériel automatique** pour atteindre la frontière matérielle supérieure ($1632$ px).
+  * Ce padding altère la trame réelle encodée, rompant toute corrélation spatiale avec les métadonnées de luminosité et de tone-mapping du RPU.
+* **Complexité d'un contournement manuel** :
+  * Pour fonctionner, il faudrait extraire le RPU, écrire un script JSON complexe pour `dovi_tool editor`, recalculer manuellement les offsets L5 de chaque plan, s'assurer que la résolution résultante tombe au pixel près sur un multiple matériel de 32/64, puis réinjecter le tout. Ce processus est fragile, non automatisable universellement et source constante de rejets TV.
+
+#### 2. La rupture du Buffer de Décision (DPB) et l'instabilité des B-frames
+* Même en forçant un GOP fermé (`-strict_gop 1`) et en désactivant le mode pyramidal (`-b_ref_mode 0`), l'encodeur FFmpeg NVENC gère la hiérarchie de décodage des trames B de façon autonome dans le silicium NVIDIA.
+* Lorsque `dovi_tool inject-rpu` réinsère les trames RPU dans le flux élémentaire `.hevc`, le pointeur d'images de décodage (POC) diverge fréquemment de l'ordre d'affichage (PTS).
+* Sur les téléviseurs (notamment les SoC MediaTek et Amlogic des Smart TV LG, Philips, Sony), le processeur matériel Dolby Vision détecte une rupture de continuité dans le buffer DPB et désactive instantanément le traitement DV.
+
+#### 3. Risque de désynchronisation de trames (Frame Drop / VFR)
+* Le RPU extrait est strictement indexé trame par trame.
+* Si le décodage FFmpeg subit la moindre duplication ou omission de trame (par exemple lors d'une conversion de cadence VFR $\rightarrow$ CFR ou d'un filtre temporel), le nombre total de trames du fichier `.hevc` devient différent de celui de `RPU.bin`.
+* `dovi_tool inject-rpu` échoue immédiatement avec une erreur de désalignement de trames, ou décale progressivement toutes les scènes du film.
+
+---
+
+### Déroulement théorique (à titre d'illustration historique) :
+
+Si ce pipeline devait être reproduit manuellement en ligne de commande, il exige impérativement une **source 1:1 sans aucun filtre, sans crop et sans resize** :
+
+#### Étape 1 : Extraction & Normalisation du RPU
 ```bash
 ffmpeg -i "source.mkv" -c:v copy -vbsf hevc_mp4toannexb -f hevc - | dovi_tool -m 2 extract-rpu - -o "RPU.bin"
 ```
-> Le paramètre `-m 2` est capital : il convertit le RPU en Profil 8.1 standard et supprime les métadonnées de reconstruction Enhancement Layer (EL) incompatibles avec un réencodage simple couche.
+> Le paramètre `-m 2` convertit le RPU en Profil 8.1 standard (suppression de l'EL).
 
-### Étape 2 : Encodage FFmpeg `hevc_nvenc`
+#### Étape 2 : Encodage FFmpeg `hevc_nvenc` sous contraintes maximales
 ```bash
 ffmpeg -i "source.mkv" \
   -c:v hevc_nvenc \
@@ -104,21 +134,19 @@ ffmpeg -i "source.mkv" \
   "video_enc.hevc"
 ```
 
-#### Différences critiques par rapport à un encodage standard :
-- `-g 48 -forced-idr 1 -strict_gop 1` : Ferme impérativement les GOPs à 2 secondes et force des vrais IDR (pas d'IDR ouvert avec leading frames).
-- `-b_ref_mode 0` (désactivé) : Évite l'entrelacement pyramidal complexe qui désynchronise le pointeur d'images de `dovi_tool`.
-- `-aud 1` : NAL 35 avant chaque trame.
-
-### Étape 3 : Réinjection du RPU
+#### Étape 3 : Réinjection externe du RPU
 ```bash
 dovi_tool -m 2 inject-rpu -i "video_enc.hevc" -r "RPU.bin" -o "video_dv.hevc"
 ```
 
-### Étape 4 : Assemblage Matroska
-Le multiplexage dans Muxiveo applique les corrections de conteneur :
-- FourCC `dvvC` (`0x64767643`) dans `BlockAddIDType`.
+#### Étape 4 : Assemblage Matroska
+Le conteneur doit obligatoirement être finalisé avec :
+- FourCC **`dvvC`** (`0x64767643`) dans `BlockAddIDType`.
 - `MaxBlockAdditionID = 1` (`0x55EE`).
-- Ordonnancement canonique des NALs (VPS/SPS/PPS avant les SEI prefix).
+- Clamping du niveau dans `BlockAddIDExtraData` (Level 6 ou 9 au lieu de 10).
+- Ordonnancement canonique des NALs (`AUD -> VPS -> SPS -> PPS -> Prefix SEI -> Slices -> RPU`).
+
+> **Conclusion** : En raison de l'extrême fragilité de ce pipeline, Muxiveo délègue l'intégralité du réencodage matériel Dolby Vision à **`NVEncC (rigaya)`** qui intègre `libdovi` en interne, ou à **`libx265`** en mode logiciel.
 
 ---
 
