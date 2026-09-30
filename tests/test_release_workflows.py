@@ -80,3 +80,55 @@ def test_embedded_version_is_serialized_as_data(tmp_path):
         assert len(module.body) == 1
         assert ast.literal_eval(module.body[0].value) == version
         assert not (tmp_path / "injected").exists()
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="Bash is required to run release scripts")
+def test_generate_release_notes_includes_installer_links(tmp_path):
+    script = dict(_scripts("release.yml"))["Generate release notes"]
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "Muxiveo-Setup-AllInc-4.1.0.exe").touch()
+    (artifacts / "Muxiveo-x86_64_allinc-4.1.0.AppImage").touch()
+    (artifacts / "Muxiveo-x86_64_allinc-4.1.0.AppImage.zsync").touch()
+    (artifacts / "Muxiveo-4.1.0.dmg").touch()
+    (artifacts / "Muxiveo-4.1.0-source.zip").touch()
+
+    # Mock gh CLI
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (bin_dir / "gh").chmod(0o755)
+
+    # Initialize a git repo so git fetch and log will succeed
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "--allow-empty", "-m", "initial commit"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(tmp_path)], cwd=tmp_path, check=True)
+
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+        "RELEASE_TAG": "v4.1.0",
+        "RELEASE_NAME": "Muxiveo 4.1.0",
+        "CHANNEL": "stable",
+        "GITHUB_REPOSITORY": "Hydro74000/muxiveo",
+        "GITHUB_SHA": "1234567890abcdef",
+    }
+
+    result = subprocess.run(["bash", "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert result.returncode == 0, f"Script failed: {result.stderr}"
+
+    body_file = tmp_path / "release-body.md"
+    assert body_file.is_file()
+    content = body_file.read_text(encoding="utf-8")
+
+    assert "### 📥 Téléchargements / Direct Downloads" in content
+    assert "- 🪟 **Windows (Allinc setup)** : [Muxiveo-Setup-AllInc-4.1.0.exe](https://github.com/Hydro74000/muxiveo/releases/download/v4.1.0/Muxiveo-Setup-AllInc-4.1.0.exe)" in content
+    assert "- 🐧 **Linux (AppImage)** : [Muxiveo-x86_64_allinc-4.1.0.AppImage](https://github.com/Hydro74000/muxiveo/releases/download/v4.1.0/Muxiveo-x86_64_allinc-4.1.0.AppImage)" in content
+    assert "- 🍏 **macOS (DMG)** : [Muxiveo-4.1.0.dmg](https://github.com/Hydro74000/muxiveo/releases/download/v4.1.0/Muxiveo-4.1.0.dmg)" in content
+
+    downloads_pos = content.index("### 📥 Téléchargements / Direct Downloads")
+    changes_pos = content.index("## Changes since previous release")
+    assert downloads_pos < changes_pos
+
