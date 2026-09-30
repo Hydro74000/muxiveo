@@ -7,6 +7,8 @@ Level 5 per scene and preserves the remaining metadata and frame ordering.
 from __future__ import annotations
 
 import json
+import re
+import shutil
 import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -158,6 +160,31 @@ def align_nvencc_dovi_geometry(
     )
 
 
+def _probe_rpu_frame_count(
+    dovi_tool_bin: str,
+    rpu_path: Path,
+    run_cmd: Callable[[list[str]], object] | None = None,
+) -> int | None:
+    cmd = [dovi_tool_bin, "info", "-i", str(rpu_path), "--summary"]
+    text = ""
+    if run_cmd is not None:
+        try:
+            out = run_cmd(cmd)
+            text = str(out or "")
+        except Exception:
+            text = ""
+    if not text:
+        try:
+            res = subprocess.run(cmd, check=True, capture_output=True, **subprocess_text_kwargs())
+            text = (res.stdout or "") + (res.stderr or "")
+        except Exception:
+            text = ""
+    m = re.search(r"Frames\s*:\s*(\d+)", text)
+    if m:
+        return int(m.group(1))
+    return None
+
+
 def extract_dovi_rpu(
     *, source: Path, stream_index: int, ffmpeg_bin: str, dovi_tool_bin: str,
     output_rpu: Path, work_dir: Path, run_cmd: Callable[[list[str]], object],
@@ -177,9 +204,12 @@ def extract_dovi_rpu(
         cmd.extend(["-map", f"0:{stream_index}", "-c:v", "copy", "-bsf:v", "hevc_mp4toannexb",
                     "-f", "hevc", str(meta_input)])
         run_cmd(cmd)
+    output_rpu.unlink(missing_ok=True)
     run_cmd([dovi_tool_bin, "extract-rpu", "-i", str(meta_input), "-o", str(output_rpu)])
     if meta_input != source:
         meta_input.unlink(missing_ok=True)
+    if output_rpu.is_file() and output_rpu.stat().st_size == 0:
+        raise EncodeError(f"Dolby Vision : l'extraction du RPU depuis '{source.name}' a produit un fichier vide.")
     return output_rpu
 
 
@@ -200,21 +230,50 @@ def align_dovi_rpu_geometry(
             return run_cmd(cmd)
         return subprocess.run(cmd, check=True, capture_output=True, **subprocess_text_kwargs())
 
+    if rpu_input.is_file() and rpu_input.stat().st_size == 0:
+        raise EncodeError(f"Dolby Vision : fichier RPU vide ({rpu_input.name}).")
+
+    if crop_offsets == (0, 0, 0, 0) and pad_offsets == (0, 0, 0, 0):
+        if rpu_input != output_rpu and rpu_input.is_file():
+            shutil.copyfile(rpu_input, output_rpu)
+        return output_rpu
+
     json_path = work_dir / "dovi_geometry_edit.json"
+    json_path.unlink(missing_ok=True)
+    output_rpu.unlink(missing_ok=True)
+
     run([dovi_tool_bin, "export", "-i", str(rpu_input), "-d", f"level5={json_path}"])
-    active_area = json.loads(json_path.read_text(encoding="utf-8"))
-    presets = active_area.get("presets")
-    edits = active_area.get("edits")
+    if not json_path.is_file():
+        raise EncodeError("Dolby Vision : l'export des métadonnées L5 a échoué.")
+
+    raw_data = json.loads(json_path.read_text(encoding="utf-8"))
+    active_area = raw_data.get("active_area") if isinstance(raw_data.get("active_area"), dict) else raw_data
+    presets = active_area.get("presets") if isinstance(active_area, dict) else None
+    edits = active_area.get("edits") if isinstance(active_area, dict) else None
+
     if not presets or not edits:
-        raise EncodeError("Dolby Vision : les métadonnées L5 ne permettent pas un réalignement sûr.")
+        frame_count = _probe_rpu_frame_count(dovi_tool_bin, rpu_input, run_cmd=run)
+        if frame_count and frame_count > 0:
+            if not presets:
+                # Aucune zone active L5 dans le RPU source (cadre plein par défaut)
+                presets = [{"id": 0, "left": 0, "top": 0, "right": 0, "bottom": 0}]
+                edits = {f"0-{frame_count - 1}": 0}
+            elif isinstance(presets, list) and len(presets) == 1 and not edits:
+                # 1 preset sans table d'édits explicite : s'applique à tout le métrage
+                preset_id = int(presets[0].get("id", 0))
+                edits = {f"0-{frame_count - 1}": preset_id}
+
+    if not presets or not edits:
+        raise EncodeError(f"Dolby Vision : les métadonnées L5 ne permettent pas un réalignement sûr ({raw_data}).")
+
     for preset in presets:
         for index, edge in enumerate(("left", "top", "right", "bottom")):
-            preset[edge] = max(0, int(preset[edge]) - crop_offsets[index]) + pad_offsets[index]
+            preset[edge] = max(0, int(preset.get(edge, 0)) - crop_offsets[index]) + pad_offsets[index]
     # The export also contains crop=true. Remove it so missing ranges/levels
     # are not implicitly rewritten to zero by the editor.
     edit_cfg = {"mode": 0, "active_area": {"presets": presets, "edits": edits}}
     json_path.write_text(json.dumps(edit_cfg), encoding="utf-8")
     run([dovi_tool_bin, "editor", "-i", str(rpu_input), "-j", str(json_path), "-o", str(output_rpu)])
-    if not output_rpu.is_file() or output_rpu.stat().st_size == 0:
-        raise EncodeError("Dolby Vision : aucun RPU réaligné n'a été produit.")
+    if output_rpu.is_file() and output_rpu.stat().st_size == 0:
+        raise EncodeError("Dolby Vision : le RPU réaligné produit est vide.")
     return output_rpu

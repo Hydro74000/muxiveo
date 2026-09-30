@@ -410,3 +410,116 @@ def test_geometry_dimensions_follow_selected_stream():
     assert source_video_dimensions(Path("movie.mkv"), stream_index=2,
                                     ffprobe_streams_payload=lambda _: payload,
                                     ffprobe_stream_dicts=lambda p: p["streams"]) == (3840, 2160)
+
+
+def test_align_dovi_rpu_geometry_nested_active_area(tmp_path: Path):
+    """Vérifie le parsing correct d'un JSON dovi_tool export encapsulé sous active_area."""
+    import json
+    raw_rpu = tmp_path / "raw.bin"
+    raw_rpu.write_bytes(b"\x00\x00\x00\x01\x19\x02")
+    out_rpu = tmp_path / "out.bin"
+
+    def run(cmd):
+        if "export" in cmd:
+            target = Path(cmd[-1].split("=", 1)[1])
+            target.write_text(json.dumps({
+                "mode": 0,
+                "active_area": {
+                    "crop": True,
+                    "presets": [{"id": 0, "top": 275, "bottom": 275, "left": 0, "right": 0}],
+                    "edits": {"0-99": 0},
+                }
+            }))
+        elif "editor" in cmd:
+            Path(cmd[-1]).write_bytes(b"edited rpu")
+        return ""
+
+    res = align_dovi_rpu_geometry(
+        dovi_tool_bin="dovi_tool", rpu_input=raw_rpu, output_rpu=out_rpu,
+        crop_offsets=(0, 280, 0, 280), work_dir=tmp_path, run_cmd=run,
+    )
+    assert res == out_rpu
+    data = json.loads((tmp_path / "dovi_geometry_edit.json").read_text())
+    assert data["active_area"]["presets"][0]["top"] == 0
+    assert data["active_area"]["presets"][0]["bottom"] == 0
+
+
+def test_align_dovi_rpu_geometry_missing_edits_fallback(tmp_path: Path):
+    """Vérifie la génération automatique de la plage d'édits si un seul preset est présent sans édits."""
+    import json
+    raw_rpu = tmp_path / "raw.bin"
+    raw_rpu.write_bytes(b"\x00\x00\x00\x01\x19\x02")
+    out_rpu = tmp_path / "out.bin"
+
+    def run(cmd):
+        if "export" in cmd:
+            target = Path(cmd[-1].split("=", 1)[1])
+            target.write_text(json.dumps({
+                "crop": True,
+                "presets": [{"id": 0, "top": 100, "bottom": 100, "left": 0, "right": 0}],
+                "edits": {},
+            }))
+        elif "info" in cmd:
+            return "Parsing RPU file...\nSummary:\n  Frames: 500\n  Profile: 8\n"
+        elif "editor" in cmd:
+            Path(cmd[-1]).write_bytes(b"edited rpu")
+        return ""
+
+    res = align_dovi_rpu_geometry(
+        dovi_tool_bin="dovi_tool", rpu_input=raw_rpu, output_rpu=out_rpu,
+        crop_offsets=(0, 100, 0, 100), work_dir=tmp_path, run_cmd=run,
+    )
+    assert res == out_rpu
+    data = json.loads((tmp_path / "dovi_geometry_edit.json").read_text())
+    assert data["active_area"]["edits"] == {"0-499": 0}
+    assert data["active_area"]["presets"][0]["top"] == 0
+
+
+def test_align_dovi_rpu_geometry_no_l5_presets_full_frame(tmp_path: Path):
+    """Vérifie la création d'un preset plein cadre avec translation quand le RPU source n'a aucun bloc L5."""
+    import json
+    raw_rpu = tmp_path / "raw.bin"
+    raw_rpu.write_bytes(b"\x00\x00\x00\x01\x19\x02")
+    out_rpu = tmp_path / "out.bin"
+
+    def run(cmd):
+        if "export" in cmd:
+            target = Path(cmd[-1].split("=", 1)[1])
+            target.write_text(json.dumps({
+                "crop": True,
+                "presets": [],
+                "edits": {},
+            }))
+        elif "info" in cmd:
+            return "Parsing RPU file...\nSummary:\n  Frames: 250\n  Profile: 8\n"
+        elif "editor" in cmd:
+            Path(cmd[-1]).write_bytes(b"edited rpu")
+        return ""
+
+    res = align_dovi_rpu_geometry(
+        dovi_tool_bin="dovi_tool", rpu_input=raw_rpu, output_rpu=out_rpu,
+        pad_offsets=(0, 8, 0, 8), work_dir=tmp_path, run_cmd=run,
+    )
+    assert res == out_rpu
+    data = json.loads((tmp_path / "dovi_geometry_edit.json").read_text())
+    assert data["active_area"]["edits"] == {"0-249": 0}
+    assert data["active_area"]["presets"][0]["top"] == 8
+    assert data["active_area"]["presets"][0]["bottom"] == 8
+
+
+def test_align_dovi_rpu_geometry_zero_offsets(tmp_path: Path):
+    """Vérifie que des offsets nuls copient directement le RPU sans appel dovi_tool."""
+    raw_rpu = tmp_path / "raw.bin"
+    raw_rpu.write_bytes(b"original rpu content")
+    out_rpu = tmp_path / "out.bin"
+
+    calls = []
+    res = align_dovi_rpu_geometry(
+        dovi_tool_bin="dovi_tool", rpu_input=raw_rpu, output_rpu=out_rpu,
+        crop_offsets=(0, 0, 0, 0), pad_offsets=(0, 0, 0, 0),
+        work_dir=tmp_path, run_cmd=calls.append,
+    )
+    assert res == out_rpu
+    assert out_rpu.read_bytes() == b"original rpu content"
+    assert calls == []
+
