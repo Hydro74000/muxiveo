@@ -2089,6 +2089,11 @@ class MainWindow(QMainWindow):
 
         if use_encode:
             assert encode_cfg is not None
+            if not self._encode_panel.confirm_dovi_geometry_alignment_if_needed(self):
+                return
+            # Re-collecter la configuration si le recadrage a été appliqué dans l'interface
+            encode_cfg = self._encode_panel.collect_config()
+            assert encode_cfg is not None
             # Enrichir l'encode config avec les sous-titres / chapitres du remux
             if remux_cfg is not None:
                 encode_cfg = self._merge_remux_extras(encode_cfg, remux_cfg)

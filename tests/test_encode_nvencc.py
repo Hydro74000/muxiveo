@@ -1304,3 +1304,26 @@ def test_ffmpeg_tonemap_strips_hdr_frame_metadata():
         assert f"sidedata=mode=delete:type={kind}" in vf
     assert vf.index("tonemap=") < vf.index("sidedata=")
     assert "sidedata" not in build_vf(VideoEncodeSettings(codec="libx265"))
+
+
+def test_nvencc_dovi_rpu_prm_handles_both_extra_params_and_ui_crop():
+    from core.workflows.encode.models import VideoCropSettings, VideoEncodeSettings
+    from core.workflows.encode.runtime.nvencc_routing import nvencc_dovi_rpu_prm
+
+    # Sans copy_dv -> None
+    v_nodv = VideoEncodeSettings(codec="nvencc_hevc", copy_dv=False, extra_params="--crop 0,280,0,280")
+    assert nvencc_dovi_rpu_prm(v_nodv) is None
+
+    # Avec copy_dv et --crop dans extra_params -> crop=true
+    v_extra = VideoEncodeSettings(codec="nvencc_hevc", copy_dv=True, extra_params="--crop 0,280,0,280")
+    assert nvencc_dovi_rpu_prm(v_extra) == "crop=true"
+
+    # Avec copy_dv et crop UI actif -> crop=true
+    crop_ui = VideoCropSettings(enabled=True, top=280, bottom=280)
+    v_ui = VideoEncodeSettings(codec="nvencc_hevc", copy_dv=True, crop=crop_ui)
+    assert nvencc_dovi_rpu_prm(v_ui) == "crop=true"
+
+    # Avec copy_dv sans crop -> None
+    v_none = VideoEncodeSettings(codec="nvencc_hevc", copy_dv=True)
+    assert nvencc_dovi_rpu_prm(v_none) is None
+

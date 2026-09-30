@@ -28,6 +28,9 @@ class NvenccInputRouting:
     rebased_to_source: bool = False
     forced_reader: str | None = None
     source_fps: str | None = None
+    vpp_pad: tuple[int, int, int, int] | None = None
+    needs_rpu_pad_alignment: bool = False
+    pad_offsets: tuple[int, int, int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -41,6 +44,8 @@ class NvenccRoutingCallbacks:
     nvencc_input_fps_hint: Callable[[Path, Path | str | None], str | None]
     nvencc_input_avsync_mode: Callable[[Path, Path | str | None], str | None]
     nvencc_dovi_rpu_prm: Callable[[VideoEncodeSettings], str | None]
+    source_video_dimensions: Callable[[Path], tuple[int, int]] | None = None
+    probe_dovi_l5_offsets: Callable[[Path], tuple[int, int, int, int] | None] | None = None
 
 
 def normalize_frame_rate_expr(value: object) -> str | None:
@@ -195,10 +200,17 @@ def nvencc_dovi_rpu_prm(video: VideoEncodeSettings) -> str | None:
     if not getattr(video, "copy_dv", False):
         return None
     crop = nvencc_crop_offsets_from_extra_params(video.extra_params)
-    if crop is None:
-        return None
-    if any(component != 0 for component in crop):
+    if crop is not None and any(component != 0 for component in crop):
         return "crop=true"
+    crop_obj = getattr(video, "crop", None)
+    if crop_obj is not None and getattr(crop_obj, "is_active", lambda: False)():
+        if not getattr(crop_obj, "auto", False) and getattr(crop_obj, "unit", "") != "percent":
+            left = max(0, int(getattr(crop_obj, "left", 0) or 0))
+            top = max(0, int(getattr(crop_obj, "top", 0) or 0))
+            right = max(0, int(getattr(crop_obj, "right", 0) or 0))
+            bottom = max(0, int(getattr(crop_obj, "bottom", 0) or 0))
+            if any(c != 0 for c in (left, top, right, bottom)):
+                return "crop=true"
     return None
 
 
@@ -292,6 +304,41 @@ class NvenccInputRouter:
         if video.copy_dv and str(video.dovi_profile or "").strip().lower() in {"", "0", "copy"}:
             routed_video = replace(video, dovi_profile="8.1")
 
+        vpp_pad = None
+        needs_rpu_pad_alignment = False
+        pad_offsets = None
+        dovi_rpu_prm = self._cb.nvencc_dovi_rpu_prm(routed_video)
+
+        if video.copy_dv and video.codec == "nvencc_hevc":
+            from core.workflows.encode.runtime.dovi_geometry import align_nvencc_dovi_geometry
+
+            dims = (0, 0)
+            if self._cb.source_video_dimensions is not None:
+                try:
+                    dims = self._cb.source_video_dimensions(Path(input_path))
+                    if dims == (0, 0) and Path(input_path) != Path(config.source):
+                        dims = self._cb.source_video_dimensions(Path(config.source))
+                except Exception:
+                    dims = (0, 0)
+
+            l5 = None
+            if self._cb.probe_dovi_l5_offsets is not None:
+                try:
+                    l5 = self._cb.probe_dovi_l5_offsets(Path(input_path))
+                    if l5 is None and Path(input_path) != Path(config.source):
+                        l5 = self._cb.probe_dovi_l5_offsets(Path(config.source))
+                except Exception:
+                    l5 = None
+
+            if dims != (0, 0):
+                geom = align_nvencc_dovi_geometry(routed_video, dims, l5_offsets=l5)
+                routed_video = geom.video
+                vpp_pad = geom.vpp_pad
+                if geom.dovi_rpu_prm is not None:
+                    dovi_rpu_prm = geom.dovi_rpu_prm
+                needs_rpu_pad_alignment = geom.needs_rpu_pad_alignment
+                pad_offsets = geom.pad_offsets
+
         source_for_timing = Path(input_path)
         source_fps: str | None = None
         try:
@@ -310,8 +357,11 @@ class NvenccInputRouter:
                 else self._cb.nvencc_input_fps_hint(source_for_timing, input_path)
             ),
             input_avsync=self._cb.nvencc_input_avsync_mode(source_for_timing, input_path),
-            dovi_rpu_prm=self._cb.nvencc_dovi_rpu_prm(routed_video),
+            dovi_rpu_prm=dovi_rpu_prm,
             rebased_to_source=rebased_to_source,
             forced_reader=forced_reader,
             source_fps=source_fps,
+            vpp_pad=vpp_pad,
+            needs_rpu_pad_alignment=needs_rpu_pad_alignment,
+            pad_offsets=pad_offsets,
         )

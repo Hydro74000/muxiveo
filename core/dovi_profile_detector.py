@@ -115,6 +115,7 @@ class DoviDetectionResult:
     level: int | None
     bl_signal_compat_id: int | None
     raw_source: str        # "mediainfo" | "dovi_tool" | "none"
+    l5_offsets: tuple[int, int, int, int] | None = None  # (top, bottom, left, right)
 
 
 class DoviProfileDetector:
@@ -133,6 +134,7 @@ class DoviProfileDetector:
 
     def __init__(self, *, dovi_tool_bin: str = "dovi_tool") -> None:
         self._dovi_tool = dovi_tool_bin
+        self._l5_cache: dict[Path, tuple[int, int, int, int] | None] = {}
 
     # ------------------------------------------------------------------
     # Mediainfo (préféré : déjà parsé en amont)
@@ -214,7 +216,7 @@ class DoviProfileDetector:
         try:
             if ext in {".mkv", ".hevc", ".h265", ".265", ".x265"}:
                 extract = subprocess.run(
-                    [self._dovi_tool, "extract-rpu", "-i", str(source), "-o", str(rpu_bin)],
+                    [self._dovi_tool, "extract-rpu", "-i", str(source), "-l", "100", "-o", str(rpu_bin)],
                     capture_output=True, check=False, **subprocess_text_kwargs(),
                 )
                 if extract.returncode != 0 or not rpu_bin.exists():
@@ -232,7 +234,7 @@ class DoviProfileDetector:
                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 )
                 dt = subprocess.run(
-                    [self._dovi_tool, "extract-rpu", "-", "-o", str(rpu_bin)],
+                    [self._dovi_tool, "extract-rpu", "-", "-l", "100", "-o", str(rpu_bin)],
                     stdin=ff.stdout, capture_output=True, check=False,
                     **subprocess_text_kwargs(),
                 )
@@ -315,6 +317,16 @@ class DoviProfileDetector:
         if compat_id is None and profile == 8 and sub_profile_minor is not None:
             compat_id = sub_profile_minor
 
+        # Offsets L5 (Level 5 : Active Area)
+        m_l5 = re.search(
+            r"L5\s+offsets:\s*top=(\d+),\s*bottom=(\d+),\s*left=(\d+),\s*right=(\d+)",
+            text,
+            re.IGNORECASE,
+        )
+        l5_offsets = None
+        if m_l5:
+            l5_offsets = (int(m_l5.group(1)), int(m_l5.group(2)), int(m_l5.group(3)), int(m_l5.group(4)))
+
         sub_profile = self._classify(
             profile=profile,
             compat_id=compat_id,
@@ -328,7 +340,24 @@ class DoviProfileDetector:
             level=level,
             bl_signal_compat_id=compat_id,
             raw_source="dovi_tool",
+            l5_offsets=l5_offsets,
         )
+
+    def probe_l5_offsets(self, source: Path | str) -> tuple[int, int, int, int] | None:
+        """Inspecte rapidement les offsets Level 5 (Active Area) du RPU de la source.
+
+        Retourne (top, bottom, left, right) ou None si non Dolby Vision.
+        """
+        source_path = Path(source).resolve()
+        if source_path in self._l5_cache:
+            return self._l5_cache[source_path]
+        try:
+            res = self.detect_from_dovi_tool(source_path)
+            offsets = res.l5_offsets
+        except Exception:
+            offsets = None
+        self._l5_cache[source_path] = offsets
+        return offsets
 
     # ------------------------------------------------------------------
     # Classification commune

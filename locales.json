@@ -1,4 +1,12 @@
 {
+  "Alignement géométrique Dolby Vision (NVENC)": {
+    "fra": "Alignement géométrique Dolby Vision (NVENC)",
+    "eng": "Dolby Vision geometry alignment (NVENC)"
+  },
+  "Détecte automatiquement les bandes noires et renseigne les dimensions de recadrage adaptées au codec sélectionné (multiple de 32 pour NVENC + DV, multiple de 2 sinon).": {
+    "fra": "Détecte automatiquement les bandes noires et renseigne les dimensions de recadrage adaptées au codec sélectionné (multiple de 32 pour NVENC + DV, multiple de 2 sinon).",
+    "eng": "Automatically detects black bars and sets crop dimensions adapted to the selected codec (multiple of 32 for NVENC + DV, multiple of 2 otherwise)."
+  },
   "Réglages": {
     "fra": "Réglages",
     "eng": "Settings"

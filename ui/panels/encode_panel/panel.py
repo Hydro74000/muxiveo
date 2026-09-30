@@ -17,7 +17,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from PySide6.QtCore import QSize, Qt, Signal, QTimer, QUrl
-from PySide6.QtGui import QBrush, QColor, QFont, QPixmap
+from PySide6.QtGui import QBrush, QColor, QFont, QPixmap, QCursor
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
@@ -1337,6 +1337,14 @@ class EncodePanel(QWidget):
         self._crop_auto_cb.setToolTip("L'autocrop sera détecté au lancement puis appliqué à la piste active.")
         self._crop_auto_cb.toggled.connect(lambda _: self._rebuild_preview())
         crop_head.addWidget(self._crop_auto_cb)
+
+        self._auto_crop_btn = _secondary_button("🎯  Auto-crop")
+        self._auto_crop_btn.setToolTip(
+            "Détecte automatiquement les bandes noires et renseigne les dimensions de recadrage adaptées "
+            "au codec sélectionné (multiple de 32 pour NVENC + DV, multiple de 2 sinon)."
+        )
+        self._auto_crop_btn.clicked.connect(self._on_auto_crop_clicked)
+        crop_head.addWidget(self._auto_crop_btn)
         gl.addLayout(crop_head)
 
         self._crop_unit_combo = QComboBox()
@@ -4027,6 +4035,209 @@ class EncodePanel(QWidget):
         self._set_combo_data(self._nlmeans_profile_combo, filters.nlmeans_profile)
         self._chroma_cb.setChecked(bool(filters.chroma_smooth_enabled))
         self._set_combo_data(self._chroma_strength_combo, filters.chroma_smooth_strength)
+
+    def _on_auto_crop_clicked(self) -> None:
+        source_path = None
+        dimensions = (0, 0)
+        row = self._video_list.currentRow() if hasattr(self, "_video_list") else -1
+        if 0 <= row < len(self._video_tracks):
+            file_info, track, _color = self._video_tracks[row]
+            source_path = file_info.path
+            if file_info.video_tracks:
+                vt = file_info.video_tracks[0]
+                dimensions = (int(vt.width or 0), int(vt.height or 0))
+        elif self._file_info is not None:
+            source_path = self._file_info.path
+            if self._file_info.video_tracks:
+                vt = self._file_info.video_tracks[0]
+                dimensions = (int(vt.width or 0), int(vt.height or 0))
+
+        if source_path is None or dimensions[0] <= 0 or dimensions[1] <= 0:
+            self.log_message.emit("WARN", "Auto-crop impossible : aucune source vidéo ou dimensions introuvables.")
+            return
+
+        codec = str(self._codec_combo.currentData() or "libx265")
+        copy_dv = bool(self._copy_dv_cb.isChecked())
+        duration_s = self._duration_s
+
+        from core.workflows.encode.runtime.crop_detector import detect_video_crop
+
+        self.setCursor(QCursor(Qt.CursorShape.WaitCursor))
+        try:
+            crop_result = detect_video_crop(
+                source_path,
+                dimensions=dimensions,
+                codec=codec,
+                copy_dv=copy_dv,
+                duration_s=duration_s,
+                ffmpeg_bin=self._config.tool_ffmpeg,
+                dovi_tool_bin=self._config.tool_dovi_tool,
+            )
+            top, bottom, left, right = crop_result
+            if top == 0 and bottom == 0 and left == 0 and right == 0:
+                self.log_message.emit(
+                    "INFO",
+                    f"Auto-crop : aucune bande noire détectée ({dimensions[0]}×{dimensions[1]}).",
+                )
+                self._apply_crop_settings(VideoCropSettings(enabled=False, unit="px"))
+            else:
+                act_w = dimensions[0] - (left + right)
+                act_h = dimensions[1] - (top + bottom)
+                new_crop = VideoCropSettings(
+                    enabled=True,
+                    unit="px",
+                    top=top,
+                    bottom=bottom,
+                    left=left,
+                    right=right,
+                    auto=False,
+                )
+                self._apply_crop_settings(new_crop)
+                mult_desc = (
+                    "multiple de 32 (NVENC+DV)"
+                    if (codec == "nvencc_hevc" and copy_dv)
+                    else "multiple de 2"
+                )
+                self.log_message.emit(
+                    "INFO",
+                    (
+                        f"Auto-crop appliqué [{mult_desc}] : "
+                        f"Haut={top}px, Bas={bottom}px, Gauche={left}px, Droite={right}px "
+                        f"→ Résolution active {act_w}×{act_h}"
+                    ),
+                )
+            self._save_current_video_state()
+            self._rebuild_preview()
+        finally:
+            self.unsetCursor()
+
+    def confirm_dovi_geometry_alignment_if_needed(self, parent: QWidget | None = None) -> bool:
+        """Vérifie si un alignement géométrique sur un multiple de 32 est requis pour NVEncC + DV.
+
+        Si nécessaire, ouvre une boîte de dialogue proposant d'appliquer automatiquement
+        le recadrage (ou padding) et affiche l'onglet 'Géométrie / Filtres'.
+        """
+        vs = self._current_video_settings()
+        if vs.codec != "nvencc_hevc" or not getattr(vs, "copy_dv", False):
+            return True
+
+        source_path = None
+        dimensions = (0, 0)
+        row = self._video_list.currentRow() if hasattr(self, "_video_list") else -1
+        if 0 <= row < len(self._video_tracks):
+            file_info, track, _color = self._video_tracks[row]
+            source_path = file_info.path
+            if file_info.video_tracks:
+                vt = file_info.video_tracks[0]
+                dimensions = (int(vt.width or 0), int(vt.height or 0))
+        elif self._file_info is not None:
+            source_path = self._file_info.path
+            if self._file_info.video_tracks:
+                vt = self._file_info.video_tracks[0]
+                dimensions = (int(vt.width or 0), int(vt.height or 0))
+
+        src_w, src_h = dimensions
+        if src_w <= 0 or src_h <= 0 or source_path is None:
+            return True
+
+        from core.dovi_profile_detector import DoviProfileDetector
+        from core.workflows.encode.runtime.dovi_geometry import align_nvencc_dovi_geometry
+
+        l5_offsets = None
+        try:
+            detector = DoviProfileDetector(dovi_tool_bin=self._config.tool_dovi_tool)
+            l5_offsets = detector.probe_l5_offsets(source_path)
+        except Exception:
+            l5_offsets = None
+
+        res = align_nvencc_dovi_geometry(vs, dimensions, l5_offsets=l5_offsets)
+
+        # 1. Branche 1 : Recadrage requis
+        if res.dovi_rpu_prm == "crop=true" and res.video.crop is not None:
+            curr_crop = vs.crop
+            curr_top = int(curr_crop.top or 0) if (curr_crop.enabled and not curr_crop.auto) else 0
+            curr_bottom = int(curr_crop.bottom or 0) if (curr_crop.enabled and not curr_crop.auto) else 0
+            curr_left = int(curr_crop.left or 0) if (curr_crop.enabled and not curr_crop.auto) else 0
+            curr_right = int(curr_crop.right or 0) if (curr_crop.enabled and not curr_crop.auto) else 0
+
+            req_crop = res.video.crop
+            req_top = int(req_crop.top or 0)
+            req_bottom = int(req_crop.bottom or 0)
+            req_left = int(req_crop.left or 0)
+            req_right = int(req_crop.right or 0)
+
+            act_w = src_w - (req_left + req_right)
+            act_h = src_h - (req_top + req_bottom)
+
+            needs_alignment = (
+                curr_top != req_top
+                or curr_bottom != req_bottom
+                or curr_left != req_left
+                or curr_right != req_right
+            )
+            if not needs_alignment:
+                return True
+
+            dlg = QMessageBox(parent or self)
+            dlg.setIcon(QMessageBox.Icon.Information)
+            dlg.setWindowTitle("Alignement géométrique Dolby Vision (NVENC)")
+            dlg.setText(
+                "<h3>Alignement matériel requis pour Dolby Vision</h3>"
+                "<p>Pour garantir la compatibilité Dolby Vision avec NVENC et éviter le basculement "
+                "en SDR sur téléviseur ou box Android TV (lié à la fenêtre de conformité HEVC SPS), "
+                "la résolution encodée doit être un <b>multiple de 32</b> pixels.</p>"
+                f"<p><b>Résolution recommandée :</b> {act_w} × {act_h} (multiple de 32)<br>"
+                f"<b>Recadrage calculé :</b> Haut: {req_top} px, Bas: {req_bottom} px, "
+                f"Gauche: {req_left} px, Droite: {req_right} px</p>"
+                "<p>Souhaitez-vous appliquer automatiquement ce recadrage dans l'onglet 'Géométrie / Filtres' "
+                "et continuer l'encodage ?</p>"
+            )
+            apply_btn = dlg.addButton("Appliquer et continuer", QMessageBox.ButtonRole.AcceptRole)
+            cancel_btn = dlg.addButton("Annuler", QMessageBox.ButtonRole.RejectRole)
+            dlg.setDefaultButton(apply_btn)
+            dlg.exec()
+
+            if dlg.clickedButton() == apply_btn:
+                self._apply_crop_settings(res.video.crop)
+                self._save_current_video_state()
+                self._tabs.setCurrentIndex(2)  # Géométrie / Filtres
+                self._rebuild_preview()
+                return True
+            else:
+                self._tabs.setCurrentIndex(2)
+                return False
+
+        # 2. Branche 2 : Padding requis (image pleine sans bandes)
+        if res.needs_rpu_pad_alignment and res.vpp_pad is not None:
+            pad_left, pad_top, pad_right, pad_bottom = res.vpp_pad
+            target_w = src_w + pad_left + pad_right
+            target_h = src_h + pad_top + pad_bottom
+
+            dlg = QMessageBox(parent or self)
+            dlg.setIcon(QMessageBox.Icon.Information)
+            dlg.setWindowTitle("Alignement géométrique Dolby Vision (NVENC)")
+            dlg.setText(
+                "<h3>Alignement matériel par padding requis pour Dolby Vision</h3>"
+                f"<p>L'image est pleine (sans bandes noires), mais sa hauteur ({src_h} px) "
+                "n'est pas un multiple de 32 (ex: 2160p nécessite 2176p pour les blocs CTU NVENC).</p>"
+                f"<p>Un padding de <b>{pad_top} px</b> en haut et <b>{pad_bottom} px</b> en bas "
+                f"va être appliqué automatiquement ({target_w} × {target_h}) avec réalignement des métadonnées RPU Dolby Vision, "
+                "préservant 100% de l'image sans recadrage.</p>"
+                "<p>Souhaitez-vous continuer avec cet alignement automatique ?</p>"
+            )
+            apply_btn = dlg.addButton("Continuer", QMessageBox.ButtonRole.AcceptRole)
+            cancel_btn = dlg.addButton("Annuler", QMessageBox.ButtonRole.RejectRole)
+            dlg.setDefaultButton(apply_btn)
+            dlg.exec()
+
+            if dlg.clickedButton() == apply_btn:
+                self._tabs.setCurrentIndex(2)
+                return True
+            else:
+                self._tabs.setCurrentIndex(2)
+                return False
+
+        return True
 
     def _current_video_settings(self) -> VideoEncodeSettings:
         video_source = self._file_info.path if self._file_info is not None else None

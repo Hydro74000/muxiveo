@@ -938,6 +938,7 @@ class EncodeWorkflow(QObject):
                 ),
                 finalize_ffmpeg=self._finalize_ffmpeg_output,
                 native_assemble=self._native_assemble_nvencc if native_mux else None,
+                bins=dict(self._bins),
             )
         ).run(
             config,
@@ -3380,7 +3381,18 @@ class EncodeWorkflow(QObject):
                 input_path=input_path,
             ),
             nvencc_dovi_rpu_prm=self._nvencc_dovi_rpu_prm,
+            source_video_dimensions=self._source_video_dimensions,
+            probe_dovi_l5_offsets=self._probe_dovi_l5_offsets,
         )
+
+    def _probe_dovi_l5_offsets(self, source: Path) -> tuple[int, int, int, int] | None:
+        from core.dovi_profile_detector import DoviProfileDetector
+
+        dovi_bin = self._bins.get("dovi_tool") or "dovi_tool"
+        try:
+            return DoviProfileDetector(dovi_tool_bin=dovi_bin).probe_l5_offsets(source)
+        except Exception:
+            return None
 
     def _source_video_dimensions(self, source: Path) -> tuple[int, int]:
         return _source_video_dimensions_runtime(

@@ -76,6 +76,7 @@ NVENCC_WORKFLOW_OWNED_FLAGS: frozenset[str] = frozenset({
     "--vpp-resize",
     "--vpp-yadif",
     "--vpp-nlmeans",
+    "--vpp-pad",
 })
 
 NVENCC_QP_TRIPLET_FLAGS: frozenset[str] = frozenset({
@@ -479,9 +480,15 @@ def _nvencc_filter_args(video: VideoEncodeSettings) -> list[str]:
     return args
 
 
-def map_nvencc_video_transform_args(video: VideoEncodeSettings) -> list[str]:
+def map_nvencc_video_transform_args(
+    video: VideoEncodeSettings,
+    *,
+    vpp_pad: tuple[int, int, int, int] | None = None,
+) -> list[str]:
     args: list[str] = []
     args.extend(_nvencc_crop_args(video))
+    if vpp_pad is not None and any(p > 0 for p in vpp_pad):
+        args.extend(["--vpp-pad", f"{vpp_pad[0]},{vpp_pad[1]},{vpp_pad[2]},{vpp_pad[3]}"])
     args.extend(_nvencc_resize_args(video))
     args.extend(_nvencc_filter_args(video))
     return args
@@ -735,6 +742,7 @@ def build_nvencc_command(
     hdr10plus_json: Path | str | None = None,
     dovi_rpu: Path | str | None = None,
     dovi_rpu_prm: str | None = None,
+    vpp_pad: tuple[int, int, int, int] | None = None,
 ) -> list[str]:
     """Phase 2 : commande NVEncC complète (stdin = yuv4mpegpipe phase 1).
 
@@ -802,7 +810,7 @@ def build_nvencc_command(
             input_fps=source_fps or input_fps,
         )
     )
-    cmd.extend(map_nvencc_video_transform_args(video))
+    cmd.extend(map_nvencc_video_transform_args(video, vpp_pad=vpp_pad))
     cmd.extend(map_nvencc_tonemap_args(video))
 
     # extra_params experts : on retire les flags possédés par le workflow
