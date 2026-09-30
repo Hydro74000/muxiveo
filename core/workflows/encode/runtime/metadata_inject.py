@@ -1039,7 +1039,7 @@ def _build_dovi_record_from_rpu(
         el_present=False,
         bl_present=True,
         bl_signal_compat_id=max(0, min(15, compat_id)),
-        fourcc="dvcC",
+        fourcc=None,
     )
 
 

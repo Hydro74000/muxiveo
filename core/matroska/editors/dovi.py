@@ -519,7 +519,7 @@ def sanitize_dovi_mkv(
     path: Path | str,
     *,
     fps: float | str | None = None,
-    fourcc: str | int | None = "dvcC",
+    fourcc: str | int | None = None,
     target_compat_id: int | None = None,
     target_level: int | None = None,
 ) -> DoviBlockAdditionPatchResult:
@@ -527,7 +527,7 @@ def sanitize_dovi_mkv(
 
     - Force le niveau Dolby Vision à une valeur supportée (Level 6 <=30fps, Level 9 <=60fps) au lieu de Level 10 (120fps).
     - Enforce MaxBlockAdditionID = 1.
-    - Utilise le FourCC dvcC (ou celui spécifié) pour compatibilité maximale TV/ExoPlayer/Android TV.
+    - Utilise le FourCC standardisé (dvvC pour Profile 8 / >7, dvcC pour Profile <=7) ou celui spécifié.
     - Préserve fidèlement la compatibilité existante (compat_id 0, 1, 2, 4) sauf si target_compat_id est forcé.
     - Recalcule le CRC-32 du bloc Tracks.
     """

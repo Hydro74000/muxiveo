@@ -4798,5 +4798,9 @@
   "hh:mm:ss": {
     "fra": "hh:mm:ss",
     "eng": "hh:mm:ss"
+  },
+  "Conserve et synchronise les métadonnées dynamiques Dolby Vision (Profile 8.1).": {
+    "fra": "Conserve et synchronise les métadonnées dynamiques Dolby Vision (Profile 8.1).",
+    "eng": "Preserve and synchronize Dolby Vision dynamic metadata (Profile 8.1)."
   }
 }
