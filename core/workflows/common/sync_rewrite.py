@@ -12,6 +12,7 @@ from typing import Callable, Mapping, cast
 from core.bluray import append_ffmpeg_input_args, ffprobe_input_args
 from core.subprocess_utils import (
     decode_subprocess_output,
+    kill_process_tree,
     subprocess_text_kwargs,
     subprocess_windows_no_window_kwargs,
 )
@@ -1066,28 +1067,32 @@ class SyncRewriteService:
             assert proc.stdout is not None
             lines: list[str] = []
             buf = b""
-            while chunk := proc.stdout.read(256):
+            try:
+                while chunk := proc.stdout.read(256):
+                    if cancel_cb is not None and cancel_cb():
+                        kill_process_tree(proc, timeout=0.2)
+                        raise RemuxError("Réécriture sync annulée.")
+                    chunk_bytes: bytes
+                    if isinstance(chunk, str):
+                        chunk_bytes = chunk.encode()
+                    else:
+                        chunk_bytes = cast(bytes, chunk)
+                    buf += chunk_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+                    *complete, buf = buf.split(b"\n")
+                    for raw in complete:
+                        stripped = decode_subprocess_output(raw).rstrip()
+                        if not stripped:
+                            continue
+                        lines.append(stripped)
+                        self._emit_tool_progress(stripped)
+                if buf.strip():
+                    stripped = decode_subprocess_output(buf.strip())
+                    if stripped:
+                        lines.append(stripped)
+                        self._emit_tool_progress(stripped)
+            finally:
                 if cancel_cb is not None and cancel_cb():
-                    proc.kill()
-                    raise RemuxError("Réécriture sync annulée.")
-                chunk_bytes: bytes
-                if isinstance(chunk, str):
-                    chunk_bytes = chunk.encode()
-                else:
-                    chunk_bytes = cast(bytes, chunk)
-                buf += chunk_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-                *complete, buf = buf.split(b"\n")
-                for raw in complete:
-                    stripped = decode_subprocess_output(raw).rstrip()
-                    if not stripped:
-                        continue
-                    lines.append(stripped)
-                    self._emit_tool_progress(stripped)
-            if buf.strip():
-                stripped = decode_subprocess_output(buf.strip())
-                if stripped:
-                    lines.append(stripped)
-                    self._emit_tool_progress(stripped)
+                    kill_process_tree(proc, timeout=0.2)
             proc.wait()
 
         output = "\n".join(lines[-10000:])

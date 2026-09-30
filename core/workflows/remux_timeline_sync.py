@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Callable, Protocol, Sequence
 
 from core.runner import TaskCancelledError
-from core.subprocess_utils import subprocess_text_kwargs
+from core.subprocess_utils import kill_process_tree, subprocess_text_kwargs
 from core.workflows.common.ffmpeg_runtime import cli_path as _cli_path
 from core.workflows.remux_models import RemuxError, SourceInput
 
@@ -40,8 +40,6 @@ def _make_safe_close_fd(fd: int) -> Callable[[], None]:
         except (OSError, ValueError):
             pass
     return _close
-
-
 
 
 class _TrackLike(Protocol):
@@ -80,27 +78,28 @@ class LiveSyncSession:
     named_pipe_paths: list[str] = field(default_factory=list)
     _cleanup_callbacks: list[Callable[[], None]] = field(default_factory=list)
     _threads: list[threading.Thread] = field(default_factory=list)
+    _closed: bool = False
+    _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def close(self) -> None:
-        for proc in self.processes:
-            if proc.poll() is not None:
-                continue
-            try:
-                proc.terminate()
-                proc.wait(timeout=1.0)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+
         for callback in self._cleanup_callbacks:
             try:
                 callback()
             except Exception:
                 pass
+        for proc in self.processes:
+            try:
+                kill_process_tree(proc, timeout=0.2)
+            except Exception:
+                pass
         for thread in self._threads:
             try:
-                thread.join(timeout=1.0)
+                thread.join(timeout=0.2)
             except Exception:
                 pass
         for fifo in self.fifo_paths:
@@ -373,11 +372,19 @@ class FfmpegTimelineSync:
             ext = ".mka" if track_type == "audio" else ".mks"
             out_name = f"sync_mmap_f{src_file_index}_s{stream_index}_{track_type}{ext}"
             out_path = self._unique_path(tmp_dir, out_name)
-            self._extract_stream_via_mmap(
-                source=src.path,
-                stream_index=stream_index,
-                destination=out_path,
-            )
+            try:
+                self._extract_stream_via_mmap(
+                    source=src.path,
+                    stream_index=stream_index,
+                    destination=out_path,
+                    cancel_cb=cancel_cb,
+                )
+            except TypeError:
+                self._extract_stream_via_mmap(
+                    source=src.path,
+                    stream_index=stream_index,
+                    destination=out_path,
+                )
             outputs[key] = out_path
 
         prepared: list[SyncPreparedInput] = []
@@ -566,6 +573,51 @@ class FfmpegTimelineSync:
         pipe_readmode_byte = 0x00000000
         pipe_wait = 0x00000000
 
+        class _NamedPipeWrapper:
+            def __init__(self, name: str, handle) -> None:
+                self.name = name
+                self.handle = handle
+                self.closed = False
+                self.lock = threading.Lock()
+
+            def unblock_and_cancel(self) -> None:
+                with self.lock:
+                    if self.closed or not self.handle:
+                        return
+                    try:
+                        kernel32.CancelIoEx(self.handle, None)
+                    except Exception:
+                        pass
+                    try:
+                        kernel32.DisconnectNamedPipe(self.handle)
+                    except Exception:
+                        pass
+                try:
+                    def _poke():
+                        try:
+                            with open(self.name, "rb"):
+                                pass
+                        except Exception:
+                            pass
+                    poke_t = threading.Thread(target=_poke, daemon=True)
+                    poke_t.start()
+                    poke_t.join(timeout=0.05)
+                except Exception:
+                    pass
+
+            def close(self) -> None:
+                with self.lock:
+                    if self.closed:
+                        return
+                    self.closed = True
+                    h = self.handle
+                    self.handle = None
+                if h is not None and h != invalid_handle:
+                    try:
+                        kernel32.CloseHandle(h)
+                    except Exception:
+                        pass
+
         def _create_named_pipe(pipe_name: str):
             handle = kernel32.CreateNamedPipeW(
                 pipe_name,
@@ -583,22 +635,10 @@ class FfmpegTimelineSync:
                 )
             return handle
 
-        def _close_handle(handle) -> None:
-            try:
-                kernel32.CloseHandle(handle)
-            except Exception:
-                pass
-
-        def _make_safe_close_handle(handle):
-            """Crée une callback fermant un handle, sans capturer 'self'."""
-            def _close() -> None:
-                _close_handle(handle)
-            return _close
-
         inputs: list[SyncPreparedInput] = []
         processes: list[subprocess.Popen] = []
         threads: list[threading.Thread] = []
-        handles: list = []
+        pipe_wrappers: list[_NamedPipeWrapper] = []
         pipe_paths: list[str] = []
 
         try:
@@ -617,7 +657,8 @@ class FfmpegTimelineSync:
                 # Exemple final: \\.\pipe\Muxiveo_sync_<uuid>
                 pipe_name = rf"\\.\pipe\Muxiveo_sync_{uuid.uuid4().hex}"
                 handle = _create_named_pipe(pipe_name)
-                handles.append(handle)
+                pipe_obj = _NamedPipeWrapper(pipe_name, handle)
+                pipe_wrappers.append(pipe_obj)
                 pipe_paths.append(pipe_name)
 
                 cmd = [
@@ -644,26 +685,26 @@ class FfmpegTimelineSync:
 
                 def _pump_stdout_to_named_pipe(
                     process: subprocess.Popen,
-                    pipe_handle,
+                    pipe: _NamedPipeWrapper,
                     pipe_label: str,
                 ) -> None:
                     stdout = process.stdout
                     if stdout is None:
-                        _close_handle(pipe_handle)
+                        pipe.close()
                         return
                     try:
-                        connected = kernel32.ConnectNamedPipe(pipe_handle, None)
+                        connected = kernel32.ConnectNamedPipe(pipe.handle, None)
                         if not connected:
                             err = int(kernel32.GetLastError())
                             if err != error_pipe_connected:
                                 return
-                        while True:
+                        while not pipe.closed:
                             chunk = stdout.read(64 * 1024)
-                            if not chunk:
+                            if not chunk or pipe.closed:
                                 break
                             written = wintypes.DWORD(0)
                             ok = kernel32.WriteFile(
-                                pipe_handle,
+                                pipe.handle,
                                 chunk,
                                 len(chunk),
                                 ctypes.byref(written),
@@ -673,14 +714,10 @@ class FfmpegTimelineSync:
                                 break
                     finally:
                         try:
-                            kernel32.FlushFileBuffers(pipe_handle)
+                            kernel32.DisconnectNamedPipe(pipe.handle)
                         except Exception:
                             pass
-                        try:
-                            kernel32.DisconnectNamedPipe(pipe_handle)
-                        except Exception:
-                            pass
-                        _close_handle(pipe_handle)
+                        pipe.close()
                         try:
                             stdout.close()
                         except Exception:
@@ -689,7 +726,7 @@ class FfmpegTimelineSync:
 
                 thread = threading.Thread(
                     target=_pump_stdout_to_named_pipe,
-                    args=(proc, handle, pipe_name),
+                    args=(proc, pipe_obj, pipe_name),
                     daemon=True,
                     name=f"muxiveo-pipe-{i}",
                 )
@@ -703,12 +740,18 @@ class FfmpegTimelineSync:
                 ))
 
         except Exception:
+            def _make_cleanup_cb(w: _NamedPipeWrapper) -> Callable[[], None]:
+                def _cleanup() -> None:
+                    w.unblock_and_cancel()
+                    w.close()
+                return _cleanup
+
             session = LiveSyncSession(
                 inputs=inputs,
                 processes=processes,
                 named_pipe_paths=pipe_paths,
                 _threads=threads,
-                _cleanup_callbacks=[_make_safe_close_handle(h) for h in handles],
+                _cleanup_callbacks=[_make_cleanup_cb(w) for w in pipe_wrappers],
             )
             session.close()
             raise
@@ -717,12 +760,13 @@ class FfmpegTimelineSync:
             "Timeline sync live (multi-source):"
             f"{len(inputs)} named pipe(s) actives pour le remux final."
         )
-        def _cleanup_callback(handle) -> Callable[[], None]:
+        def _cleanup_callback(wrapper: _NamedPipeWrapper) -> Callable[[], None]:
             def _cleanup() -> None:
-                _close_handle(handle)
+                wrapper.unblock_and_cancel()
+                wrapper.close()
             return _cleanup
 
-        cleanup_callbacks = [_cleanup_callback(handle) for handle in handles]
+        cleanup_callbacks = [_cleanup_callback(w) for w in pipe_wrappers]
         return LiveSyncSession(
             inputs=inputs,
             processes=processes,
@@ -825,7 +869,14 @@ class FfmpegTimelineSync:
                 f"(source={source.name}, stream={stream_index}): {stderr}"
             )
 
-    def _extract_stream_via_mmap(self, *, source: Path, stream_index: int, destination: Path) -> None:
+    def _extract_stream_via_mmap(
+        self,
+        *,
+        source: Path,
+        stream_index: int,
+        destination: Path,
+        cancel_cb: Callable[[], bool] | None = None,
+    ) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         track_type = self._track_type_from_sync_destination(destination)
         cmd = [
@@ -882,6 +933,8 @@ class FfmpegTimelineSync:
                     raise RemuxError("Flux stdout indisponible pour l'extraction mmap.")
 
                 while True:
+                    if cancel_cb is not None and cancel_cb():
+                        raise TaskCancelledError()
                     chunk = stdout.read(max_chunk)
                     if not chunk:
                         break
@@ -902,12 +955,14 @@ class FfmpegTimelineSync:
                 mm.close()
                 fh.truncate(written)
         finally:
-            try:
-                proc.wait(timeout=1200)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
-            stderr_thread.join(timeout=5)
+            if proc.poll() is None:
+                kill_process_tree(proc, timeout=0.2)
+            else:
+                try:
+                    proc.wait(timeout=1.0)
+                except Exception:
+                    pass
+            stderr_thread.join(timeout=1.0)
             for stream in (proc.stdout, proc.stderr):
                 if stream is not None:
                     try:

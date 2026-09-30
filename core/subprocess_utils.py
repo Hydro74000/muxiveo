@@ -139,3 +139,62 @@ def format_returncode(returncode: int | None) -> str:
     if 0x7FFFFFFF < code <= 0xFFFFFFFF:
         return f"{code - 0x100000000} / 0x{code:08X}"
     return str(code)
+
+
+def kill_process_tree(proc: subprocess.Popen | None, timeout: float = 0.5) -> None:
+    """
+    Termine brutalement un processus et l'arbre de ses sous-processus.
+
+    Sous Windows :
+      - `proc.kill()` (TerminateProcess) ne tue pas les enfants créés par l'outil.
+      - `taskkill /F /T /PID <pid>` force l'arrêt récursif de tout l'arbre.
+      - Les flux stdin/stdout/stderr du Popen sont fermés pour débloquer immédiatement
+        les boucles de lecture ou threads de pompage.
+      - Un court `proc.wait(timeout)` permet à l'OS de libérer le handle du processus.
+    """
+    if proc is None:
+        return
+
+    poll = getattr(proc, "poll", None)
+    if callable(poll):
+        try:
+            if poll() is not None:
+                return
+        except Exception:
+            pass
+
+    pid = getattr(proc, "pid", None)
+    if sys.platform == "win32" and pid is not None:
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+                timeout=2.0,
+            )
+        except Exception:
+            pass
+
+    kill = getattr(proc, "kill", None)
+    if callable(kill):
+        try:
+            kill()
+        except OSError:
+            pass
+
+    for attr in ("stdin", "stdout", "stderr"):
+        stream = getattr(proc, attr, None)
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+    wait = getattr(proc, "wait", None)
+    if callable(wait):
+        try:
+            wait(timeout=timeout)
+        except Exception:
+            pass
+

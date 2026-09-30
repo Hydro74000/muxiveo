@@ -37,6 +37,7 @@ def _prompt_work_dir_cleanup(config: AppConfig) -> None:
         preview += ", ..."
 
     box = QMessageBox()
+    box.setWindowFlags(box.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
     box.setIcon(QMessageBox.Icon.Warning)
     box.setWindowTitle(translate_text("Répertoire de travail non nettoyé"))
     box.setText(

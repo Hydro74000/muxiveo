@@ -128,9 +128,17 @@ def _wait(signals, timeout: float = 20.0) -> dict[str, object]:
         state["cancelled"] = True
         done["value"] = True
 
-    signals.finished.connect(on_finished, Qt.ConnectionType.QueuedConnection)
-    signals.failed.connect(on_failed, Qt.ConnectionType.QueuedConnection)
-    signals.cancelled.connect(on_cancelled, Qt.ConnectionType.QueuedConnection)
+    if hasattr(signals, "connect_terminal"):
+        signals.connect_terminal(
+            finished=on_finished,
+            failed=on_failed,
+            cancelled=on_cancelled,
+            direct=True,
+        )
+    else:
+        signals.finished.connect(on_finished, Qt.ConnectionType.QueuedConnection)
+        signals.failed.connect(on_failed, Qt.ConnectionType.QueuedConnection)
+        signals.cancelled.connect(on_cancelled, Qt.ConnectionType.QueuedConnection)
     deadline = time.monotonic() + timeout
     while not done["value"] and time.monotonic() < deadline:
         app.processEvents()
@@ -482,7 +490,7 @@ class _CancellingProcess:
         self.returncode = -9
 
     def communicate(self):
-        deadline = time.monotonic() + 5.0
+        deadline = time.monotonic() + 15.0
         while "signals" not in self.holder and time.monotonic() < deadline:
             time.sleep(0.01)
         signals = self.holder.get("signals")

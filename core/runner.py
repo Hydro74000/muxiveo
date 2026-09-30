@@ -29,7 +29,12 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from PySide6.QtCore import QCoreApplication, QObject, Signal, Slot, Qt
-from core.subprocess_utils import decode_subprocess_output, format_returncode, subprocess_windows_no_window_kwargs
+from core.subprocess_utils import (
+    decode_subprocess_output,
+    format_returncode,
+    kill_process_tree,
+    subprocess_windows_no_window_kwargs,
+)
 
 
 # Outils dont la barre de progression n'est émise que si stdout est un TTY.
@@ -374,11 +379,9 @@ class TaskSignals(QObject):
         """Annule l'opération : marque l'événement et tue les processus actifs."""
         self._cancel_event.set()
         with self._procs_lock:
-            for proc in list(self._active_procs):
-                try:
-                    proc.kill()
-                except OSError:
-                    pass
+            procs = list(self._active_procs)
+        for proc in procs:
+            kill_process_tree(proc, timeout=0.2)
 
     # ------------------------------------------------------------------
     # Usage interne par ToolRunner._run_cmd
@@ -654,7 +657,7 @@ class ToolRunner(QObject):
                     # Annulation : le processus a été tué par cancel(), read() retourne b""
                     # ou on le tue ici si le signal arrive entre deux lectures.
                     if signals is not None and signals._cancel_event.is_set():
-                        proc.kill()
+                        kill_process_tree(proc, timeout=0.2)
                         raise TaskCancelledError()
                     chunk_bytes: bytes
                     if isinstance(chunk, str):
@@ -682,6 +685,7 @@ class ToolRunner(QObject):
                 # Si le processus a été tué par cancel() et qu'on sort de la boucle
                 # parce que stdout s'est fermé (b"" retourné) avant la vérification
                 if signals is not None and signals._cancel_event.is_set():
+                    kill_process_tree(proc, timeout=0.2)
                     raise TaskCancelledError()
 
                 # Borne la sortie retournée : ffmpeg peut produire >100K lignes
