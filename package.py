@@ -2783,7 +2783,7 @@ def _mediainfo_latest_windows_version() -> str:
     """Retourne la dernière version de MediaInfo CLI Windows depuis mediaarea.net."""
     base = "https://mediaarea.net/download/binary/mediainfo/"
     req = urllib.request.Request(base, headers={"User-Agent": "Muxiveo-builder"})
-    with urllib.request.urlopen(req) as resp:
+    with urllib.request.urlopen(req) as resp:  # nosec B310  # URL HTTPS mediaarea.net constante
         html = resp.read().decode("utf-8", errors="replace")
     versions = re.findall(r'href="(\d{2}\.\d{2})/"', html)
     if not versions:
