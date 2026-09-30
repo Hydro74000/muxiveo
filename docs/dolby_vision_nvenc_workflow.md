@@ -108,45 +108,10 @@ Même lorsque NVEncC gère nativement le RPU, le fichier MKV généré nécessit
 
 ---
 
-### Déroulement théorique (à titre d'illustration historique) :
+### Conclusion sur le pipeline FFmpeg externe :
+Tenter de réencoder du Dolby Vision en dissociant l'encodage vidéo (FFmpeg `hevc_nvenc`) et l'injection du RPU (`dovi_tool`) est un **modèle intrinsèquement vicié** pour du matériel GPU NVENC : l'encodeur matériel ne peut pas synchroniser ses décisions de compression (références DPB, padding, surfaces) avec les métadonnées Dolby Vision injectées a posteriori en aveugle.
 
-Si ce pipeline devait être reproduit manuellement en ligne de commande, il exige impérativement une **source 1:1 sans aucun filtre, sans crop et sans resize** :
-
-#### Étape 1 : Extraction & Normalisation du RPU
-```bash
-ffmpeg -i "source.mkv" -c:v copy -vbsf hevc_mp4toannexb -f hevc - | dovi_tool -m 2 extract-rpu - -o "RPU.bin"
-```
-> Le paramètre `-m 2` convertit le RPU en Profil 8.1 standard (suppression de l'EL).
-
-#### Étape 2 : Encodage FFmpeg `hevc_nvenc` sous contraintes maximales
-```bash
-ffmpeg -i "source.mkv" \
-  -c:v hevc_nvenc \
-  -profile:v main10 -tier high \
-  -multipass qres -rc-lookahead 32 -qmax 32 \
-  -spatial-aq 1 -aq-strength 8 -temporal-aq 1 \
-  -g 48 -forced-idr 1 -strict_gop 1 -no-scenecut 0 \
-  -bf 3 -b_ref_mode 0 \
-  -refs 4 \
-  -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc -color_range tv \
-  -aud 1 \
-  -an -sn \
-  "video_enc.hevc"
-```
-
-#### Étape 3 : Réinjection externe du RPU
-```bash
-dovi_tool -m 2 inject-rpu -i "video_enc.hevc" -r "RPU.bin" -o "video_dv.hevc"
-```
-
-#### Étape 4 : Assemblage Matroska
-Le conteneur doit obligatoirement être finalisé avec :
-- FourCC **`dvvC`** (`0x64767643`) dans `BlockAddIDType`.
-- `MaxBlockAdditionID = 1` (`0x55EE`).
-- Clamping du niveau dans `BlockAddIDExtraData` (Level 6 ou 9 au lieu de 10).
-- Ordonnancement canonique des NALs (`AUD -> VPS -> SPS -> PPS -> Prefix SEI -> Slices -> RPU`).
-
-> **Conclusion** : En raison de l'extrême fragilité de ce pipeline, Muxiveo délègue l'intégralité du réencodage matériel Dolby Vision à **`NVEncC (rigaya)`** qui intègre `libdovi` en interne, ou à **`libx265`** en mode logiciel.
+C'est pourquoi Muxiveo a formellement **abandonné et bloqué ce pipeline** dans son interface au profit de **`NVEncC (rigaya)`** (qui intègre `libdovi` au cœur même de la boucle d'encodage GPU) et de **`libx265`** (en mode CPU logiciel).
 
 ---
 
