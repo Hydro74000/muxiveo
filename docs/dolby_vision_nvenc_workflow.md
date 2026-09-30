@@ -14,15 +14,20 @@ Lors du réencodage d'une source 4K HDR10 / Dolby Vision (notamment Blu-ray UHD 
    - La pyramide B-frame NVENC en mode `middle` réorganise les trames de référence selon une hiérarchie spécifique. Lorsque `dovi_tool inject-rpu` réinjecte naïvement le RPU dans ce flux, le moteur matériel Dolby Vision du téléviseur constate une rupture de séquence de référence et désactive le traitement DV.
 3. **Absence des balises obligatoires (AUD & VUI)** :
    - Les Access Unit Delimiters (NAL 35, `-aud 1`) et les balises VUI complètes (BT.2020 / SMPTE ST 2084 / BT.2020nc) sont indispensables pour que le processeur vidéo délimite chaque image et valide la couche de base.
-4. **Signalisation dans le conteneur Matroska** :
-   - Le conteneur doit obligatoirement déclarer `MaxBlockAdditionID = 1` et le FourCC `dvvC` (`0x64767643`) pour le Profil 8.1 (et non `dvcC` réservé aux profils $\le 7$).
+4. **Signalisation FourCC dans le conteneur Matroska** :
+   - Le conteneur doit obligatoirement déclarer `MaxBlockAdditionID = 1` et le FourCC **`dvvC`** (`0x64767643`) pour le Profil 8.1 (et non `dvcC` strictement réservé aux profils $\le 7$).
+   - **Symptôme Smart TV** : Si un flux Profil 8 est encapsulé avec le FourCC `dvcC`, les décodeurs de téléviseurs (LG webOS, Tizen, etc.) ne reconnaissent pas la configuration DV pour ce profil et basculent immédiatement en **mode de repli HDR10 simple**.
    - L'ordre des NAL units sur les images clés doit respecter la norme ITU-T H.265 § 7.4.2.4.4 : `AUD (35) -> VPS (32) -> SPS (33) -> PPS (34) -> Prefix SEI (39) -> VCL Slices -> RPU (62)`.
+5. **Niveau Dolby Vision (Level) dans `BlockAddIDExtraData`** :
+   - Par défaut, certains encodeurs matériels comme `NVEncC` écrivent un niveau maximal arbitraire : **Niveau 10** (0x55 = UHD @ 120 fps).
+   - **Symptôme Android TV / ExoPlayer** : Sur Android (Plex, ExoPlayer, Nvidia Shield, Fire TV), le framework `MediaCodec` valide la contrainte `dv_level <= 9`. Face au Niveau 10, le lecteur plante ou refuse le traitement Dolby Vision.
+   - **Assainissement requis** : Le niveau doit être ramené automatiquement au **Niveau 6** ($\le 30$ fps) ou **Niveau 9** ($50/60$ fps) selon la cadence d'images réelle du flux.
 
 ---
 
 ## 2. Méthode 1 : NVEncC (rigaya) avec `libdovi` natif
 
-Il s'agit de la méthode la plus robuste et la plus directe car `NVEncC` synchronise les métadonnées Dolby Vision en interne pendant l'encodage matériel.
+Il s'agit de la méthode recommandée et privilégiée dans Muxiveo car `NVEncC` synchronise les métadonnées Dolby Vision en interne pendant l'encodage matériel GPU.
 
 ### Commande de référence :
 ```bash
@@ -50,11 +55,19 @@ nvencc -i "source.mkv" \
 - `--gop-len (2 × fps, ex: 48 à 24fps, 50 à 25fps, 100 à 50fps)` : Plafonne le cycle maximal d'images clés à 2 secondes pour éviter le débordement du tampon matériel (DPB/RPU) des téléviseurs, tout en laissant l'encodeur libre d'insérer des trames IDR adaptatives sur les changements de scène (pas de `--strict-gop` rigide).
 - `--repeat-headers --aud` : Répète les en-têtes VPS/SPS/PPS à chaque image clé et insère les délimiteurs d'Access Unit.
 
+### Assainissement post-encodage (`sanitize_dovi_mkv`) :
+Même lorsque NVEncC gère nativement le RPU, le fichier MKV généré nécessite une passe d'assainissement automatique :
+1. **Clamping du Niveau DoVi** : Ramène le Niveau 10 par défaut écrit par NVEncC au **Niveau 6** ($\le 30$ fps) ou **Niveau 9** ($50/60$ fps) pour rendre le fichier immédiatement compatible avec le décodeur `MediaCodec` d'Android TV et ExoPlayer.
+2. **FourCC `dvvC`** : Enforce le FourCC canonique `dvvC` pour le Profil 8.1 dans le `BlockAddIDType` pour que les téléviseurs (LG webOS, Tizen) activent le pipeline Dolby Vision au lieu de basculer en HDR10 simple.
+3. **`MaxBlockAdditionID = 1`** et recalcul du CRC-32 du bloc Tracks.
+
 ---
 
-## 3. Méthode 2 : Pipeline FFmpeg (`hevc_nvenc`) + `dovi_tool`
+## 3. Méthode 2 : Pipeline FFmpeg (`hevc_nvenc`) + `dovi_tool` (Historique / Déprécié)
 
-Si l'encodage est réalisé via FFmpeg, le flux doit être strictement calibré pour être compatible avec l'injection externe de `dovi_tool`.
+> ⚠️ **Note Muxiveo v4.1+** : L'encodage Dolby Vision avec `hevc_nvenc` via FFmpeg est **désactivé et bloqué dans l'UI** de Muxiveo avec une alerte explicite. Le buffer DPB de l'encodeur FFmpeg NVENC provoque trop souvent des désynchronisations du RPU après injection externe. Il est vivement conseillé d'utiliser **`NVEncC — HEVC`** (GPU) ou **`x265`** (CPU).
+
+Si ce pipeline doit néanmoins être utilisé manuellement :
 
 ### Étape 1 : Extraction & Normalisation du RPU
 ```bash
@@ -96,8 +109,10 @@ Le multiplexage dans Muxiveo applique les corrections de conteneur :
 
 ---
 
-## 4. Recommandations d'Intégration dans Muxiveo
+## 4. Architecture et Implémentation dans Muxiveo (v4.1+)
 
 Dans le module `core/workflows/encode/` :
-1. **Sélection NVEncC native** : Quand `video.copy_dv` est actif et que l'utilisateur choisit le backend NVEncC, router directement l'argument `--dolby-vision-profile 8.1` et `--dolby-vision-rpu copy` à `_build_nvencc_command_runtime` au lieu de passer par une extraction/réécriture intermédiaire.
-2. **Profil de contrainte FFmpeg** : Si l'utilisateur choisit l'encodeur FFmpeg NVENC pour du contenu HDR/DV, forcer automatiquement `-g 48`, `-forced-idr 1`, `-strict_gop 1`, `-aud 1` et interdire `-b_ref_mode middle`.
+1. **Routage NVEncC natif (`nvencc_direct`)** : Quand `video.copy_dv` est actif et que l'utilisateur choisit le backend NVEncC, la commande injecte directement `--dolby-vision-profile 8.1` et `--dolby-vision-rpu copy`. Le calcul du GOP est dynamique (`--gop-len = 2 × fps`).
+2. **Sécurité et blocage des codecs incompatibles** : Le catalogue (`catalog.py`) sépare désormais explicitement `supports_dovi` et `supports_hdr10plus`. Les encodeurs incompatibles (`hevc_nvenc`, `hevc_vaapi`, `nvencc_av1`...) ont leur case DV désactivée avec un bandeau d'avertissement et une recommandation vers `nvencc_hevc` ou `libx265`.
+3. **Assainissement automatique post-encode** : La fonction `sanitize_dovi_mkv` s'exécute automatiquement après l'encodage NVEncC pour corriger le niveau (Level 6/9), standardiser le FourCC en `dvvC` et valider les blocs EBML.
+4. **Assemblage Matroska natif unifié** : L'assemblage final est pris en charge par le muxeur natif Matroska (`compile_assembly_plan`), qui préserve intégralement les éléments `Colour` (`0x55B0`) et `BlockAdditionMapping` sans dépendre d'un remux FFmpeg secondaire.
