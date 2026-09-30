@@ -24,12 +24,16 @@ Lors du réencodage d'une source 4K HDR10 / Dolby Vision (notamment Blu-ray UHD 
    - **Assainissement requis** : Le niveau doit être ramené automatiquement au **Niveau 6** ($\le 30$ fps) ou **Niveau 9** ($50/60$ fps) selon la cadence d'images réelle du flux.
 6. **Alignement matériel NVENC (multiples de 32 ou 64) et Redimensionnement (Resize / Crop)** :
    - Le hardware NVENC (blocs CTU HEVC 32x32 ou 64x64) impose des surfaces d'encodage dont les dimensions sont des multiples stricts de 32 ou 64 pixels.
-   - Lorsque FFmpeg effectue un redimensionnement ou un crop (via `scale`, `scale_cuda`, etc.) vers une résolution non alignée ou arbitraire, il applique un padding (remplissage) ou un ajustement forcé des dimensions encodées (`coded_width` / `coded_height`).
-   - **Rupture fatale avec le RPU Dolby Vision** :
-     - Les métadonnées dynamiques RPU (notamment le bloc **Level 5 / Active Area offsets** qui définit les bandes noires `top`, `bottom`, `left`, `right`) sont calculées en pixels absolus par rapport au canvas de la source d'origine.
-     - Si la vidéo est redimensionnée (ex: 4K $\rightarrow$ 1080p), rognée (crop des bandes noires), ou si FFmpeg/NVENC padde l'image pour satisfaire l'alignement 32/64, **les coordonnées du RPU ne correspondent plus à l'image encodée**.
-     - **Conséquence** : Le moteur de tone-mapping Dolby Vision du téléviseur constate une incohérence spatiale entre le flux vidéo HEVC et le RPU. Selon la marque de TV, cela provoque un rejet pur et simple du Dolby Vision (repli en HDR10 ou écran noir) ou une colorimétrie totalement corrompue (bandes de distorsion lumineuse).
-     - **Règle absolue** : En passthrough Dolby Vision, **aucun redimensionnement ni rognage arbitraire ne doit être appliqué** sans recalibrage mathématique du RPU (via `dovi_tool editor` pour mettre à jour les offsets L5). La résolution géométrique source doit être strictement conservée 1:1.
+   - **Pourquoi c'est fatal sous FFmpeg (`hevc_nvenc`)** :
+     - FFmpeg n'a aucune intégration de `libdovi` et traite la vidéo comme une simple grille YUV brute.
+     - Lorsqu'un filtre CUDA (`scale_cuda`, `crop`, `hwupload`) produit une résolution non alignée sur ces frontières matérielles, FFmpeg applique un **padding (rembourrage) matériel automatique** pour combler la trame codée (`coded_width` / `coded_height`).
+     - Les métadonnées RPU (notamment le bloc **Level 5 / Active Area offsets** qui définit les bandes noires `top`, `bottom`, `left`, `right`) sont calculées au pixel près par rapport au canvas d'origine.
+     - Comme l'injection du RPU avec `dovi_tool` a lieu *après coup* à l'aveugle, le RPU d'origine se retrouve injecté dans un flux vidéo aux dimensions physiques modifiées ou paddées.
+     - **Conséquence** : Incohérence spatiale totale détectée par le téléviseur, provoquant un rejet du Dolby Vision (repli en HDR10 ou écran noir) ou une colorimétrie corrompue.
+   - **Comment NVEncC (rigaya) résout ce problème** :
+     - NVEncC intègre **nativement `libdovi`** au sein de son propre pipeline d'encodage.
+     - Lors d'un crop, l'option `--dolby-vision-rpu-prm crop=true` indique à `libdovi` de recalculer et d'écraser automatiquement les offsets L5 à zéro pour correspondre à la nouvelle image rognée.
+     - En revanche, pour un redimensionnement d'échelle (downscale 4K $\rightarrow$ 1080p), les courbes polynomiales et tables de saturation du RPU ayant été étalonnées pour la résolution 4K d'origine, la règle d'or reste de **conserver la résolution native 1:1**.
 
 ---
 
@@ -60,6 +64,7 @@ nvencc -i "source.mkv" \
 
 ### Rôle des options clés :
 - `--dolby-vision-profile 8.1` & `--dolby-vision-rpu copy` : Extrait et convertit automatiquement le RPU de la source en Profil 8.1 et l'insère trame par trame.
+- `--dolby-vision-rpu-prm crop=true` : Si un recadrage (`--crop`) est spécifié, ordonne à `libdovi` de réécrire les offsets L5 de zone active à 0 pour éviter tout décalage géométrique sur le téléviseur.
 - `--gop-len (2 × fps, ex: 48 à 24fps, 50 à 25fps, 100 à 50fps)` : Plafonne le cycle maximal d'images clés à 2 secondes pour éviter le débordement du tampon matériel (DPB/RPU) des téléviseurs, tout en laissant l'encodeur libre d'insérer des trames IDR adaptatives sur les changements de scène (pas de `--strict-gop` rigide).
 - `--repeat-headers --aud` : Répète les en-têtes VPS/SPS/PPS à chaque image clé et insère les délimiteurs d'Access Unit.
 
@@ -73,7 +78,7 @@ Même lorsque NVEncC gère nativement le RPU, le fichier MKV généré nécessit
 
 ## 3. Méthode 2 : Pipeline FFmpeg (`hevc_nvenc`) + `dovi_tool` (Historique / Déprécié)
 
-> ⚠️ **Note Muxiveo v4.1+** : L'encodage Dolby Vision avec `hevc_nvenc` via FFmpeg est **désactivé et bloqué dans l'UI** de Muxiveo avec une alerte explicite. Le buffer DPB de l'encodeur FFmpeg NVENC provoque trop souvent des désynchronisations du RPU après injection externe. Il est vivement conseillé d'utiliser **`NVEncC — HEVC`** (GPU) ou **`x265`** (CPU).
+> ⚠️ **Note Muxiveo v4.1+** : L'encodage Dolby Vision avec `hevc_nvenc` via FFmpeg est **désactivé et bloqué dans l'UI** de Muxiveo avec une alerte explicite. Le buffer DPB de l'encodeur FFmpeg NVENC provoque des désynchronisations du RPU après injection externe, et le padding matériel automatique (surfaces multiples de 32/64) corrompt les offsets géométriques L5 du RPU. Il est vivement conseillé d'utiliser **`NVEncC — HEVC`** (GPU) ou **`x265`** (CPU).
 
 Si ce pipeline doit néanmoins être utilisé manuellement :
 
