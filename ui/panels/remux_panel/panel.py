@@ -160,6 +160,7 @@ class RemuxPanel(QWidget):
     audio_tracks_changed = Signal(object)
     ready_changed = Signal(bool)
     mux_backend_changed = Signal(str)
+    sources_reset = Signal()
 
     def __init__(
         self,
@@ -2230,6 +2231,7 @@ class RemuxPanel(QWidget):
 
     def _reset_empty_state(self) -> None:
         chapter_functions.reset_empty_state(self)
+        self.sources_reset.emit()
 
     def _resolve_base_chapters(self) -> list[ChapterEntry]:
         return chapter_functions.resolve_base_chapters(self)

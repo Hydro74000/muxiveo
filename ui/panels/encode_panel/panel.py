@@ -194,6 +194,7 @@ class EncodePanel(QWidget):
         )
 
         self._build_ui()
+        self._initial_video_state = self._current_video_state()
         apply_translations(self)
         self._executor.submit(self._detect_hw_encoders)
         try:
@@ -656,6 +657,41 @@ class EncodePanel(QWidget):
     # ------------------------------------------------------------------
     # API publique — appelée par MainWindow depuis RemuxPanel
     # ------------------------------------------------------------------
+
+    def reset(self) -> None:
+        """Réinitialise le panneau après suppression de toutes les sources."""
+        if self._preview_signals is not None:
+            self._preview_signals.cancel()
+        self._set_preview_running(False)
+        self._invalidate_hdr_meta_frame_probe()
+        self.set_video_tracks([])
+        self._duration_s = None
+        self._video_settings_by_entry_id.clear()
+        self._static_hdr_estimate_prompted.clear()
+        self._apply_all_video_cb.setChecked(False)
+        self._apply_video_state(self._initial_video_state)
+        self._update_passthrough_controls()
+        self._profile_combo.setCurrentIndex(-1)
+        self._profile_name.clear()
+        self.set_audio_tracks([])
+
+        self._preview_captures.clear()
+        self._preview_current_index = 0
+        self._preview_current_pixmap = None
+        self._show_preview_capture(0)
+        self._preview_video_path = None
+        self._preview_video_path_label.clear()
+        self._preview_open_video_btn.setEnabled(False)
+        self._preview_mode_combo.setCurrentIndex(0)
+        self._preview_time_edit.setText("00:00:00.000")
+        self._preview_random_scene = False
+        self._preview_duration_spin.setValue(10)
+        self._preview_zoom_slider.setValue(100)
+        self._preview_status.setText("Prêt.")
+        self._preview_scene_status.clear()
+        self._command_copy_pending = False
+        self._command_timer.stop()
+        self._apply_command_preview(self._command_generation, "")
 
     def set_video_tracks(self, tracks: list[tuple]) -> None:
         """Met à jour la liste des pistes vidéo depuis l'onglet Conteneur."""
@@ -2782,10 +2818,18 @@ class EncodePanel(QWidget):
         self._preview_signals = signals
         signals.progress.connect(self._on_preview_progress, Qt.ConnectionType.QueuedConnection)
         signals.progress_pct.connect(self._on_preview_progress_pct, Qt.ConnectionType.QueuedConnection)
+
+        def if_current(callback: Callable[..., None]) -> Callable[..., None]:
+            # Une fin déjà en file Qt peut arriver après la remise à zéro.
+            def deliver(*args) -> None:
+                if self._preview_signals is signals:
+                    callback(*args)
+            return deliver
+
         signals.connect_terminal(
-            finished=self._on_preview_finished,
-            failed=self._on_preview_failed,
-            cancelled=self._on_preview_cancelled,
+            finished=if_current(self._on_preview_finished),
+            failed=if_current(self._on_preview_failed),
+            cancelled=if_current(self._on_preview_cancelled),
         )
 
     def _on_cancel_preview(self) -> None:
@@ -2805,6 +2849,8 @@ class EncodePanel(QWidget):
     )
 
     def _on_preview_progress(self, line: str) -> None:
+        if self.sender() is not None and self.sender() is not self._preview_signals:
+            return
         text = str(line or "").strip()
         if not text:
             return
@@ -2819,6 +2865,8 @@ class EncodePanel(QWidget):
             self.log_message.emit("INFO", text)
 
     def _on_preview_progress_pct(self, pct: int) -> None:
+        if self.sender() is not None and self.sender() is not self._preview_signals:
+            return
         value = max(0, min(100, int(pct)))
         if not self._preview_progress.isVisible():
             self._preview_progress.setVisible(True)

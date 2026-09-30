@@ -1950,6 +1950,7 @@ class MainWindow(QMainWindow):
         # RemuxPanel → EncodePanel : pistes partagées + chemin de sortie commun
         self._remux_panel.video_tracks_changed.connect(self._encode_panel.set_video_tracks)
         self._remux_panel.audio_tracks_changed.connect(self._encode_panel.set_audio_tracks)
+        self._remux_panel.sources_reset.connect(self._encode_panel.reset)
         self._encode_panel.video_tracks_encoding_changed.connect(self._remux_panel.update_video_track_encoding)
         self._encode_panel.audio_track_meta_changed.connect(self._remux_panel.update_audio_track_meta)
         self._encode_panel.audio_track_encoding_changed.connect(self._remux_panel.update_audio_track_encoding)
