@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core.ui_language import system_ui_language
-from core.version import APP_CONFIG_DIR_NAME
+from core.version import APP_CONFIG_DIR_NAME, APP_REPOSITORY, MUXIVEO_RIFE_RELEASE_TAG
 
 # ---------------------------------------------------------------------------
 # Terminal colours (no external deps)
@@ -146,6 +146,7 @@ WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
     "hdr10plus_tool": ("hdr10plus_tool.exe",),
     "eac3to": ("eac3to.exe",),
     "nvencc": ("NVEncC64.exe", "NVEncC.exe"),
+    "muxiveo_rife": ("muxiveo-rife.exe",),
 }
 
 WINDOWS_WINGET_PATTERNS: dict[str, tuple[str, ...]] = {
@@ -276,6 +277,23 @@ SYSTEM_TOOLS: dict[str, dict] = {
 #   suffix  — substring that uniquely identifies the asset filename
 #   fmt     — "tar.gz" or "zip"
 GITHUB_TOOLS: dict[str, dict] = {
+    "muxiveo_rife": {
+        "repo": APP_REPOSITORY,
+        "release_tag": MUXIVEO_RIFE_RELEASE_TAG,
+        "desc": "Interpolation d'images RIFE (Vulkan) livrée avec Muxiveo",
+        # Archive complète : binaire + rife-models/ (+ MoltenVK sous macOS).
+        "bundle": True,
+        "binary_name": {
+            "Linux":   "muxiveo-rife",
+            "Darwin":  "muxiveo-rife",
+            "Windows": "muxiveo-rife.exe",
+        },
+        "asset_patterns": {
+            ("Linux",   "x86_64"): {"suffix": "-linux-x86_64.tar.gz",   "fmt": "tar.gz", "name_prefix": "muxiveo-rife-"},
+            ("Darwin",  "arm64"):  {"suffix": "-macos-arm64.tar.gz",    "fmt": "tar.gz", "name_prefix": "muxiveo-rife-"},
+            ("Windows", "x86_64"): {"suffix": "-windows-x86_64.zip",    "fmt": "zip",    "name_prefix": "muxiveo-rife-"},
+        },
+    },
     "dovi_tool": {
         "repo": "quietvoid/dovi_tool",
         "desc": "Dolby Vision RPU extraction and injection",
@@ -1249,9 +1267,18 @@ def install_winget(
 # Step 3 — GitHub binary tools
 # ---------------------------------------------------------------------------
 
+def _github_release_by_tag(repo: str, tag: str) -> dict:
+    """Fetch the metadata of a pinned release (``releases/tags/<tag>``)."""
+    return _github_release_json(f"https://api.github.com/repos/{repo}/releases/tags/{tag}")
+
+
 def _github_latest_release(repo: str) -> dict:
     """Fetch latest release metadata from GitHub API."""
-    url = f"https://api.github.com/repos/{repo}/releases/latest"
+    return _github_release_json(f"https://api.github.com/repos/{repo}/releases/latest")
+
+
+def _github_release_json(url: str) -> dict:
+    """GET JSON GitHub API (repli PowerShell sous Windows)."""
     req = urllib.request.Request(url, headers={"User-Agent": "Muxiveo-setup/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -1263,10 +1290,10 @@ def _github_latest_release(repo: str) -> dict:
                 return json.loads(payload)
             except Exception as fallback_error:
                 raise RuntimeError(
-                    f"Cannot reach GitHub API for {repo}: {e} "
+                    f"Cannot reach GitHub API ({url}): {e} "
                     f"(Windows fallback failed: {fallback_error})"
                 ) from fallback_error
-        raise RuntimeError(f"Cannot reach GitHub API for {repo}: {e}") from e
+        raise RuntimeError(f"Cannot reach GitHub API ({url}): {e}") from e
 
 def _download_file(url: str, dest: Path) -> None:
     """Download url → dest with a simple progress indicator."""
@@ -1762,6 +1789,72 @@ def _find_asset(release: dict, suffix: str, *, name_prefix: str = "") -> Optiona
             return asset["browser_download_url"]
     return None
 
+def _ensure_safe_archive_names(names) -> None:
+    """Refuse les chemins absolus ou remontants (``..``) d'une archive."""
+    for name in names:
+        parts = Path(name.replace("\\", "/")).parts
+        if Path(name).is_absolute() or ".." in parts or name.startswith(("/", "\\")):
+            raise RuntimeError(f"Unsafe path in archive: {name}")
+
+
+def _install_tool_bundle(
+    archive_path: Path,
+    fmt: str,
+    binary_name: str,
+    *,
+    prefix: Path,
+    bin_dir: Path,
+    tmp_path: Path,
+    sudo: list[str],
+) -> Path:
+    """Installe une archive outil complète (binaire + ressources voisines).
+
+    Windows : contenu copié dans ``bin_dir`` (dossier tools/).
+    Linux/macOS : contenu dans ``<prefix>/lib/<outil>``, lien symbolique dans
+    ``bin_dir`` (le binaire résout ses ressources depuis son chemin réel).
+    """
+    staging = tmp_path / "bundle"
+    staging.mkdir(parents=True, exist_ok=True)
+    if fmt == "tar.gz":
+        with tarfile.open(archive_path, "r:gz") as tar:
+            members = [m for m in tar.getmembers() if m.isfile() or m.isdir()]
+            _ensure_safe_archive_names(m.name for m in members)
+            tar.extractall(staging, members=members)
+    elif fmt == "zip":
+        with zipfile.ZipFile(archive_path) as zf:
+            _ensure_safe_archive_names(zf.namelist())
+            zf.extractall(staging)
+    else:
+        raise RuntimeError(f"Unknown bundle format: {fmt}")
+
+    binary = next((p for p in staging.rglob(binary_name) if p.is_file()), None)
+    if binary is None:
+        raise RuntimeError(f"Binary '{binary_name}' not found inside archive")
+    root = binary.parent
+
+    if OS == "Windows":
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(root, bin_dir, dirs_exist_ok=True)
+        return bin_dir / binary_name
+
+    lib_dir = prefix / "lib" / Path(binary_name).stem
+    link = bin_dir / binary_name
+    if sudo and not is_root():
+        run(sudo + ["rm", "-rf", str(lib_dir)])
+        run(sudo + ["mkdir", "-p", str(lib_dir), str(bin_dir)])
+        run(sudo + ["cp", "-R", f"{root}/.", str(lib_dir)])
+        run(sudo + ["chmod", "755", str(lib_dir / binary_name)])
+        run(sudo + ["ln", "-sf", str(lib_dir / binary_name), str(link)])
+    else:
+        shutil.rmtree(lib_dir, ignore_errors=True)
+        shutil.copytree(root, lib_dir)
+        (lib_dir / binary_name).chmod(0o755)
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        link.unlink(missing_ok=True)
+        link.symlink_to(lib_dir / binary_name)
+    return link
+
+
 def _extract_binary(archive_path: Path, binary_name: str, fmt: str, dest_dir: Path) -> Path:
     """Extract binary_name from a tar.gz, ZIP, deb or RPM archive into dest_dir."""
     if fmt == "tar.gz":
@@ -2183,9 +2276,13 @@ def install_github_tools(
             ok(f"{exe} installed → {dest}")
             continue
 
-        release = _github_latest_release(meta["repo"])
+        release = (
+            _github_release_by_tag(meta["repo"], meta["release_tag"])
+            if meta.get("release_tag")
+            else _github_latest_release(meta["repo"])
+        )
         tag = release.get("tag_name", "?")
-        info(f"Latest release: {tag}")
+        info(f"Release: {tag}")
 
         # Sélection asset : suffix principal puis alt_suffix (ex: .deb → .rpm).
         download_url = _find_asset(
@@ -2228,6 +2325,19 @@ def install_github_tools(
                         ok(f"{exe} installed natively → {found}")
                         continue
                     warn(f"{exe}: native install reported success but binary not found on PATH.")
+
+            if meta.get("bundle"):
+                try:
+                    dest = _install_tool_bundle(
+                        archive_path, chosen_fmt, binary_name,
+                        prefix=prefix, bin_dir=bin_dir, tmp_path=tmp_path, sudo=sudo,
+                    )
+                except RuntimeError as exc:
+                    warn(f"{exe}: installation failed ({exc}). Skipping.")
+                    continue
+                detected_tool_paths[exe] = str(dest)
+                ok(f"{exe} installed → {dest}")
+                continue
 
             # Fallback : extraction binaire pure (pas de gestion des deps libs).
             try:

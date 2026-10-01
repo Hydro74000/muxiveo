@@ -68,6 +68,8 @@ from core.version import (
     APP_NAME,
     APP_VERSION,
     APP_WEBSITE_URL,
+    MUXIVEO_RIFE_RELEASE_TAG,
+    muxiveo_rife_asset_url,
 )
 
 ROOT = Path(__file__).parent
@@ -2836,6 +2838,34 @@ def _dl_windows_mediainfo(tools_dir: Path) -> None:
     _ok("MediaInfo.exe installé dans tools/")
 
 
+def _dl_windows_muxiveo_rife(tools_dir: Path) -> None:
+    """muxiveo-rife.exe + rife-models/ (archive locale ``MUXIVEO_RIFE_ARCHIVE`` ou release épinglée)."""
+    if (tools_dir / "muxiveo-rife.exe").is_file() and (tools_dir / "rife-models").is_dir():
+        _ok("muxiveo-rife.exe déjà présent dans tools/")
+        return
+    _step(f"muxiveo-rife Windows ({MUXIVEO_RIFE_RELEASE_TAG})")
+    with tempfile.TemporaryDirectory() as tmp:
+        local = os.environ.get("MUXIVEO_RIFE_ARCHIVE")
+        archive = Path(local) if local else Path(tmp) / "muxiveo-rife.zip"
+        if not local:
+            try:
+                _download_file(muxiveo_rife_asset_url("windows-x86_64.zip"), archive, timeout=180)
+            except Exception as exc:
+                _warn(f"muxiveo-rife indisponible ({exc}) — interpolation d'images absente de ce build.")
+                return
+        with zipfile.ZipFile(archive) as zf:
+            names = [n for n in zf.namelist() if not n.endswith("/")]
+            prefix = os.path.commonpath(names) if len(names) > 1 else ""
+            for name in names:
+                rel = Path(os.path.relpath(name, prefix)) if prefix else Path(name)
+                if rel.is_absolute() or ".." in rel.parts:
+                    continue
+                dest = tools_dir / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(zf.read(name))
+    _ok("muxiveo-rife.exe installé dans tools/")
+
+
 def _dl_windows_dovi_tool(tools_dir: Path) -> None:
     if (tools_dir / "dovi_tool.exe").is_file():
         _ok("dovi_tool.exe déjà présent dans tools/")
@@ -2919,6 +2949,7 @@ def bundle_windows_tools(bundle_dir: Path) -> Path:
     _dl_windows_dovi_tool(tools_dir)
     _dl_windows_hdr10plus_tool(tools_dir)
     _dl_windows_nvencc(tools_dir)
+    _dl_windows_muxiveo_rife(tools_dir)
     bundle_windows_licenses(bundle_dir)
 
     # Pose le marqueur _ALLINC à côté de l'exécutable

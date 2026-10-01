@@ -24,7 +24,7 @@ from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeS
 from core.workflows.encode.planning.plan_models import EncodePlan
 from core.workflows.encode.runtime.nvencc import (
     is_nvencc_codec,
-    nvencc_requires_ffmpeg_filter_pipe,
+    nvencc_requires_ffmpeg_prefilter,
     nvencc_supports_dynamic_hdr,
     nvencc_supports_manual_static_hdr,
     sanitize_nvencc_extra_params,
@@ -105,7 +105,7 @@ class NvenccEncodeBackend(EncodeBackend):
             errors.append(f"{video.codec} ne supporte pas Dolby Vision. Seul 'nvencc_hevc' gère Dolby Vision.")
         if (video.copy_dv or video.copy_hdr10plus) and not nvencc_supports_dynamic_hdr(video.codec):
             errors.append("Le codec NVEncC sélectionné ne supporte pas DoVi/HDR10+.")
-        if (video.copy_dv or video.copy_hdr10plus) and nvencc_requires_ffmpeg_filter_pipe(video):
+        if (video.copy_dv or video.copy_hdr10plus) and nvencc_requires_ffmpeg_prefilter(video):
             errors.append(
                 "NVEncC avec préfiltrage FFmpeg (deblock/chroma_smooth/crop %/resize %) "
                 "est incompatible avec la copie DoVi/HDR10+ dynamique dans cette version."

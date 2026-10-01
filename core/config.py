@@ -162,6 +162,7 @@ _WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
     "hdr10plus_tool": ("hdr10plus_tool.exe",),
     "eac3to": ("eac3to.exe",),
     "nvencc": ("NVEncC64.exe", "NVEncC.exe"),
+    "muxiveo_rife": ("muxiveo-rife.exe",),
 }
 
 _WINDOWS_WINGET_PATTERNS: dict[str, tuple[str, ...]] = {
@@ -858,6 +859,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "hdr10plus_tool", "attr": "tool_hdr10plus", "kind": "tool", "label": "hdr10plus_tool", "description": "Outil HDR10+ utilisé pour les workflows HDR."},
             {"key": "eac3to", "attr": "tool_eac3to", "kind": "tool", "label": "eac3to", "description": "Option facultative sous Windows pour la conversion audio avancée."},
             {"key": "nvencc", "attr": "tool_nvencc", "kind": "tool", "label": "NVEncC", "description": "Wrapper NVIDIA NVENC standalone (rigaya) — encodage avancé. Détecté uniquement si un GPU NVIDIA est présent."},
+            {"key": "muxiveo_rife", "attr": "tool_muxiveo_rife", "kind": "tool", "label": "muxiveo-rife", "description": "Interpolation d'images RIFE (Vulkan) livrée avec Muxiveo — multiplication de cadence à l'encodage."},
         ),
     },
     {
@@ -1110,9 +1112,10 @@ class AppConfig:
                     if candidate.is_file():
                         return str(candidate)
             else:
-                candidate = tools_dir / ini_key
-                if candidate.is_file():
-                    return str(candidate)
+                for name in dict.fromkeys((ini_key, Path(default).name)):
+                    candidate = tools_dir / name
+                    if candidate.is_file():
+                        return str(candidate)
 
         # Priorité 2 : config.ini
         ini_value = self._ini_lookup("tools", ini_key)
@@ -1131,9 +1134,10 @@ class AppConfig:
             resolved = shutil.which(default)
             if resolved:
                 return resolved
-            for candidate in _non_windows_tool_candidates(ini_key):
-                if candidate.is_file():
-                    return str(candidate)
+            for name in dict.fromkeys((ini_key, Path(default).name)):
+                for candidate in _non_windows_tool_candidates(name):
+                    if candidate.is_file():
+                        return str(candidate)
             return default
 
         # Priorité 3c : Windows — autodetect étendu + persistance dans QSettings
@@ -1184,6 +1188,12 @@ class AppConfig:
                 if fallback:
                     resolved = fallback
             self.tool_nvencc = resolved
+        # muxiveo-rife : binaire Muxiveo (native/muxiveo-rife), optionnel.
+        self.tool_muxiveo_rife = self._resolve_tool_value(
+            "muxiveo_rife",
+            "tools/muxiveo_rife",
+            "muxiveo-rife.exe" if _is_windows() else "muxiveo-rife",
+        )
         self._tool_versions = ToolVersionRegistry(self.tool_commands())
 
         self.ffmpeg_threads = _normalize_ffmpeg_thread_count(
@@ -1443,6 +1453,7 @@ class AppConfig:
             "dovi_tool": self.tool_dovi_tool,
             "hdr10plus_tool": self.tool_hdr10plus,
             "eac3to": self.tool_eac3to,
+            "muxiveo-rife": getattr(self, "tool_muxiveo_rife", "muxiveo-rife"),
         }
 
     def refresh_tool_versions(self) -> None:
@@ -1551,6 +1562,7 @@ class AppConfig:
                 "dovi_tool": self.tool_dovi_tool,
                 "hdr10plus_tool": self.tool_hdr10plus,
                 "eac3to": self.tool_eac3to,
+                "muxiveo_rife": getattr(self, "tool_muxiveo_rife", ""),
             },
             "tool_versions": {
                 name: {

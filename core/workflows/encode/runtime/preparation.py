@@ -43,6 +43,9 @@ class EncodePreparationRunnerCallbacks:
     run_direct_output: Callable[..., TaskSignals]
     #: Sélection du backend de muxage final (lot 2). None → FFmpeg historique.
     select_mux_backend: Callable[[EncodeConfig], EncodeMuxDecision] | None = None
+    #: Interpolation RIFE sur une piste unique sans injection : encode vidéo
+    #: découpé (pipeline multi-pistes) au lieu de la commande FFmpeg directe.
+    needs_split_video_encode: Callable[[EncodeConfig], bool] | None = None
 
 
 class EncodePreparationRunner:
@@ -225,8 +228,14 @@ class EncodePreparationRunner:
                 )
 
         cb.check_cancelled(prep_signals)
-        if cb.is_multi_video(prepared_config):
-            cb.log_step(4, "Routage du workflow (pipeline multi-pistes vidéo)")
+        split_video_encode = cb.needs_split_video_encode is not None and cb.needs_split_video_encode(prepared_config)
+        if cb.is_multi_video(prepared_config) or split_video_encode:
+            cb.log_step(
+                4,
+                "Routage du workflow (pipeline multi-pistes vidéo)"
+                if not split_video_encode
+                else "Routage du workflow (encode vidéo interpolé puis assemblage)",
+            )
             plan = cb.build_encode_plan(prepared_config)
             if prep_signals is not None:
                 cb.bind_output_hooks(

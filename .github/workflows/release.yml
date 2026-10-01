@@ -401,6 +401,9 @@ jobs:
           HDR_JSON=$(python scripts/github_release_asset.py --repo quietvoid/hdr10plus_tool --pattern universal-macOS.zip --sha256)
           echo "dovi_json=$DOVI_JSON" >> "$GITHUB_OUTPUT"
           echo "hdr_json=$HDR_JSON" >> "$GITHUB_OUTPUT"
+          RIFE_TAG=$(python -c "from core.version import MUXIVEO_RIFE_RELEASE_TAG as t; print(t)")
+          RIFE_JSON=$(python scripts/github_release_asset.py --repo "$GITHUB_REPOSITORY" --tag "$RIFE_TAG" --pattern macos-arm64.tar.gz --sha256 || echo '{}')
+          echo "rife_json=$RIFE_JSON" >> "$GITHUB_OUTPUT"
 
       - name: Generate Homebrew formula
         shell: bash
@@ -410,6 +413,7 @@ jobs:
           RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
           DOVI_JSON: ${{ steps.tools.outputs.dovi_json }}
           HDR_JSON: ${{ steps.tools.outputs.hdr_json }}
+          RIFE_JSON: ${{ steps.tools.outputs.rife_json }}
         run: |
           set -euo pipefail
           mkdir -p release-assets/formula
@@ -432,6 +436,8 @@ jobs:
             --hdr10plus-tool-macos-url "$HDR_URL" \
             --hdr10plus-tool-macos-sha256 "$HDR_SHA" \
             --homepage "https://github.com/${REPO}" \
+            --muxiveo-rife-macos-url "$(python -c 'import json, os; print(json.loads(os.environ.get("RIFE_JSON") or "{}").get("url", ""))')" \
+            --muxiveo-rife-macos-sha256 "$(python -c 'import json, os; print(json.loads(os.environ.get("RIFE_JSON") or "{}").get("sha256", ""))')" \
             --output release-assets/formula/Muxiveo.rb
 
       - name: Upload formula artifact

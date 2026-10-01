@@ -4818,5 +4818,45 @@
   "En copie, le HDR de la source est recopié tel quel.": {
     "fra": "En copie, le HDR de la source est recopié tel quel.",
     "eng": "In copy mode, the source HDR is passed through unchanged."
+  },
+  "Génère des images intermédiaires (RIFE, GPU Vulkan) pour multiplier la cadence. Les images d'origine sont conservées ; les coupes de scène sont dupliquées. Dolby Vision et HDR10+ suivent la nouvelle cadence.": {
+    "fra": "Génère des images intermédiaires (RIFE, GPU Vulkan) pour multiplier la cadence. Les images d'origine sont conservées ; les coupes de scène sont dupliquées. Dolby Vision et HDR10+ suivent la nouvelle cadence.",
+    "eng": "Generates in-between frames (RIFE, Vulkan GPU) to multiply the frame rate. Original frames are kept; scene cuts are duplicated. Dolby Vision and HDR10+ follow the new frame rate."
+  },
+  "Interpolation d'images RIFE (Vulkan) livrée avec Muxiveo — multiplication de cadence à l'encodage.": {
+    "fra": "Interpolation d'images RIFE (Vulkan) livrée avec Muxiveo — multiplication de cadence à l'encodage.",
+    "eng": "RIFE frame interpolation (Vulkan) shipped with Muxiveo — frame rate multiplication during encoding."
+  },
+  "Modèle RIFE : Rapide (v4.22 lite), Équilibré (v4.26), Max (v4.25 heavy, plus lent).": {
+    "fra": "Modèle RIFE : Rapide (v4.22 lite), Équilibré (v4.26), Max (v4.25 heavy, plus lent).",
+    "eng": "RIFE model: Fast (v4.22 lite), Balanced (v4.26), Max (v4.25 heavy, slower)."
+  },
+  "Multiplicateur de cadence (ex. x2 : 29,97 -> 59,94 i/s).": {
+    "fra": "Multiplicateur de cadence (ex. x2 : 29,97 -> 59,94 i/s).",
+    "eng": "Frame rate multiplier (e.g. x2: 29.97 -> 59.94 fps)."
+  },
+  "muxiveo-rife": {
+    "fra": "muxiveo-rife",
+    "eng": "muxiveo-rife"
+  },
+  "muxiveo-rife introuvable : Paramètres > Outils externes, ou relancer le setup.": {
+    "fra": "muxiveo-rife introuvable : Paramètres > Outils externes, ou relancer le setup.",
+    "eng": "muxiveo-rife not found: Settings > External tools, or run setup again."
+  },
+  "Interpolation": {
+    "fra": "Interpolation",
+    "eng": "Interpolation"
+  },
+  "Rapide": {
+    "fra": "Rapide",
+    "eng": "Fast"
+  },
+  "Équilibré": {
+    "fra": "Équilibré",
+    "eng": "Balanced"
+  },
+  "Max": {
+    "fra": "Max",
+    "eng": "Max"
   }
 }

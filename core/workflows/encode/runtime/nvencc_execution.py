@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from core.bluray import append_ffmpeg_input_args, is_bluray_playlist
+from core.pipeline_command import command_preview_tokens, command_stages
 from core.runner import TaskCancelledError, TaskSignals
 from core.subprocess_utils import (
     decode_subprocess_output,
@@ -174,6 +175,12 @@ class NvenccAssetPreparationService:
 
 
 class NvenccPipeExecutor:
+    """Exécute ``décodage [| étages intermédiaires] | NVEncC``.
+
+    ``decode_cmd`` peut être un ``PipelineCommand`` (ex. ``ffmpeg | muxiveo-rife``) :
+    tous ses étages sont chaînés avant NVEncC.
+    """
+
     def run(
         self,
         *,
@@ -195,59 +202,80 @@ class NvenccPipeExecutor:
                 sink.append(line)
                 signals.progress.emit(f"[{label}] {line}")
 
-        decode_lines: list[str] = []
+        producer_stages = command_stages(decode_cmd)
+        producer_labels = ["ffmpeg-decode", *(Path(stage[0]).stem for stage in producer_stages[1:])]
+        producer_lines: list[list[str]] = [[] for _ in producer_stages]
         encode_lines: list[str] = []
+        producers: list[subprocess.Popen] = []
+        encode_proc: subprocess.Popen | None = None
 
-        decode_proc = subprocess.Popen(
-            decode_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=str(cwd),
-            **subprocess_windows_no_window_kwargs(),
-        )
-        signals._register_proc(decode_proc)
         try:
+            prev_stdout = None
+            for stage in producer_stages:
+                popen_kwargs = subprocess_windows_no_window_kwargs(include_stdin=prev_stdout is None)
+                if prev_stdout is not None:
+                    popen_kwargs["stdin"] = prev_stdout
+                proc = subprocess.Popen(
+                    stage,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    cwd=str(cwd),
+                    **popen_kwargs,
+                )
+                if prev_stdout is not None:
+                    prev_stdout.close()
+                producers.append(proc)
+                signals._register_proc(proc)
+                prev_stdout = proc.stdout
+
             encode_proc = subprocess.Popen(
                 encode_cmd,
-                stdin=decode_proc.stdout,
+                stdin=prev_stdout,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 cwd=str(cwd),
                 **subprocess_windows_no_window_kwargs(include_stdin=False),
             )
         except Exception:
-            signals._unregister_proc(decode_proc)
-            try:
-                decode_proc.kill()
-            except OSError:
-                pass
+            for proc in producers:
+                signals._unregister_proc(proc)
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
             raise
         signals._register_proc(encode_proc)
-        if decode_proc.stdout is not None:
-            decode_proc.stdout.close()
+        if prev_stdout is not None:
+            prev_stdout.close()
 
-        decode_reader = ThreadPoolExecutor(max_workers=2)
-        decode_reader.submit(_reader, decode_proc.stderr, "ffmpeg-decode", decode_lines)
-        decode_reader.submit(_reader, encode_proc.stdout, "nvencc", encode_lines)
+        readers = ThreadPoolExecutor(max_workers=len(producers) + 1)
+        for proc, label, sink in zip(producers, producer_labels, producer_lines):
+            readers.submit(_reader, proc.stderr, label, sink)
+        readers.submit(_reader, encode_proc.stdout, "nvencc", encode_lines)
         try:
             encode_rc = encode_proc.wait()
-            decode_rc = decode_proc.wait()
-            decode_reader.shutdown(wait=True)
+            producer_rcs = [proc.wait() for proc in producers]
+            readers.shutdown(wait=True)
             if signals._cancel_event.is_set():
                 raise TaskCancelledError()
             if encode_rc != 0:
                 tail = "\n".join(encode_lines[-40:])
                 raise EncodeError(f"NVEncC a échoué.\n{tail}")
             if not is_expected_nvencc_pipe_producer_exit(
-                decode_rc,
-                "\n".join(decode_lines),
+                producer_rcs[0],
+                "\n".join(producer_lines[0]),
             ):
-                tail = "\n".join(decode_lines[-40:])
+                tail = "\n".join(producer_lines[0][-40:])
                 raise EncodeError(f"FFmpeg decode a échoué.\n{tail}")
+            for label, rc, lines in zip(producer_labels[1:], producer_rcs[1:], producer_lines[1:]):
+                if rc != 0:
+                    tail = "\n".join(lines[-40:])
+                    raise EncodeError(f"{label} a échoué (code {rc}).\n{tail}")
             return "\n".join(encode_lines[-400:])
         finally:
             signals._unregister_proc(encode_proc)
-            signals._unregister_proc(decode_proc)
+            for proc in producers:
+                signals._unregister_proc(proc)
 
 
 @dataclass(frozen=True)
@@ -387,6 +415,8 @@ class NvenccDirectOutputRunnerCallbacks:
     #: Assemblage final Matroska natif (lot 2). None → remux final FFmpeg.
     native_assemble: Callable[..., None] | None = None
     bins: dict[str, str] = field(default_factory=dict)
+    #: Interpolation RIFE : chaîne ``muxiveo-rife`` après le décodage y4m.
+    wrap_decode_with_interpolation: Callable[[list[str], VideoEncodeSettings, Path], list[str]] | None = None
 
 
 class NvenccDirectOutputRunner:
@@ -520,6 +550,10 @@ class NvenccDirectOutputRunner:
                         stream_index=routing.stream_index,
                         vf=_nvencc_ffmpeg_filter_vf_runtime(runtime_video),
                     )
+                    if cb.wrap_decode_with_interpolation is not None:
+                        decode_cmd = cb.wrap_decode_with_interpolation(
+                            decode_cmd, runtime_video, routing.input_path,
+                        )
                 remux_cmd: list[str] | None = None
                 if cb.native_assemble is None:
                     remux_cmd, live_sync_session, sync_cleanup_paths = cb.build_runtime_remux_cmd(
@@ -614,6 +648,7 @@ def build_nvencc_pipeline_commands(
     ffmpeg_bin: str,
     video_tracks: Callable[[EncodeConfig], list[VideoEncodeSettings]],
     resolve_input_routing: Callable[[EncodeConfig], NvenccInputRouting],
+    wrap_decode_with_interpolation: Callable[[list[str], VideoEncodeSettings, Path], list[str]] | None = None,
 ) -> list[list[str]] | None:
     if len(video_tracks(config)) != 1:
         return None
@@ -666,6 +701,11 @@ def build_nvencc_pipeline_commands(
             stream_index=routing.stream_index,
             vf=_nvencc_ffmpeg_filter_vf_runtime(routing.video),
         )
+        if wrap_decode_with_interpolation is not None:
+            # aperçu : décodage | muxiveo-rife sur une seule ligne de jetons
+            decode = command_preview_tokens(
+                wrap_decode_with_interpolation(decode, routing.video, routing.input_path)
+            )
     else:
         decode = None
     remux = [

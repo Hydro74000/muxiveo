@@ -1,0 +1,180 @@
+name: muxiveo-rife
+
+# Build, tests fonctionnels (Vulkan lavapipe sous Linux) et release du binaire
+# natif d'interpolation d'images (native/muxiveo-rife).
+# Release : pousser un tag `muxiveo-rife-vX.Y.Z` (version = project() du CMakeLists
+# et MUXIVEO_RIFE_VERSION de core/version.py).
+
+on:
+  push:
+    paths:
+      - "native/muxiveo-rife/**"
+      - "tests/native/**"
+      - ".github/workflows/muxiveo-rife.yml"
+    tags:
+      - "muxiveo-rife-v*"
+  pull_request:
+    paths:
+      - "native/muxiveo-rife/**"
+      - "tests/native/**"
+      - ".github/workflows/muxiveo-rife.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: muxiveo-rife-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+            exe: muxiveo-rife
+          - os: windows-2022
+            platform: windows-x86_64
+            exe: muxiveo-rife.exe
+          - os: macos-14
+            platform: macos-arm64
+            exe: muxiveo-rife
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          CMAKE_VERSION=$(sed -n 's/^project(muxiveo-rife VERSION \([0-9.]*\).*/\1/p' native/muxiveo-rife/CMakeLists.txt)
+          APP_VERSION=$(python -c "import re,pathlib; print(re.search(r'MUXIVEO_RIFE_VERSION = \"([0-9.]+)\"', pathlib.Path('core/version.py').read_text()).group(1))")
+          if [ "$CMAKE_VERSION" != "$APP_VERSION" ]; then
+            echo "::error::Version CMake ($CMAKE_VERSION) != core/version.py ($APP_VERSION)"
+            exit 1
+          fi
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "muxiveo-rife-v${CMAKE_VERSION}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} != muxiveo-rife-v${CMAKE_VERSION}"
+            exit 1
+          fi
+          echo "version=${CMAKE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "package=muxiveo-rife-${CMAKE_VERSION}-${{ matrix.platform }}" >> "$GITHUB_OUTPUT"
+
+      - name: Toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ninja-build mesa-vulkan-drivers libvulkan1 ffmpeg
+
+      - name: Toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja molten-vk ffmpeg
+
+      - name: Configure
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake -S native/muxiveo-rife -B build -G "Visual Studio 17 2022" -A x64
+          else
+            cmake -S native/muxiveo-rife -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+          fi
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Stage package
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="build/package/${{ steps.version.outputs.package }}"
+          mkdir -p "$PKG/LICENSES"
+          BIN=$(find build -maxdepth 2 -type f -name "${{ matrix.exe }}" | head -1)
+          cp "$BIN" "$PKG/"
+          python native/muxiveo-rife/scripts/fetch_models.py "$PKG/rife-models"
+          cp native/muxiveo-rife/README.md native/muxiveo-rife/UPSTREAM.md native/muxiveo-rife/models.json "$PKG/"
+          cp LICENSES/MIT-rife-ncnn-vulkan.txt LICENSES/BSD-3-Clause-ncnn.txt LICENSES/MIT-Practical-RIFE.txt "$PKG/LICENSES/"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            MVK="$(brew --prefix molten-vk)"
+            cp "$MVK/lib/libMoltenVK.dylib" "$PKG/"
+            cp "$MVK/LICENSE" "$PKG/LICENSES/Apache-2.0-MoltenVK.txt" 2>/dev/null \
+              || curl -fsSL https://raw.githubusercontent.com/KhronosGroup/MoltenVK/main/LICENSE -o "$PKG/LICENSES/Apache-2.0-MoltenVK.txt"
+          fi
+          echo "dir=$PKG" >> "$GITHUB_OUTPUT"
+          echo "bin=$PKG/${{ matrix.exe }}" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          "${{ steps.stage.outputs.bin }}" --version
+          "${{ steps.stage.outputs.bin }}" --list-gpus
+
+      - name: Functional tests
+        shell: bash
+        env:
+          MUXIVEO_RIFE_BIN: ${{ steps.stage.outputs.bin }}
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet pytest numpy
+          # Sans GPU Vulkan (Windows/macOS hébergés), les tests sont ignorés.
+          python -m pytest -q -p no:cacheprovider tests/native
+
+      - name: Archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd build/package
+          NAME="${{ steps.version.outputs.package }}"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a -tzip "${NAME}.zip" "${NAME}" > /dev/null
+          else
+            tar czf "${NAME}.tar.gz" "${NAME}"
+          fi
+          ls -la
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.package }}
+          path: |
+            build/package/*.tar.gz
+            build/package/*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/muxiveo-rife-v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ls -la assets
+          (cd assets && sha256sum * > SHA256SUMS)
+          gh release create "$TAG" assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "muxiveo-rife ${TAG#muxiveo-rife-v}" \
+            --notes "Binaire d'interpolation d'images RIFE (Vulkan) utilisé par Muxiveo. Voir native/muxiveo-rife/README.md." \
+            --latest=false

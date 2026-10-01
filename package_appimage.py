@@ -69,6 +69,8 @@ from core.version import (
     APP_NAME,
     APP_VERSION,
     APP_WEBSITE_URL,
+    MUXIVEO_RIFE_RELEASE_TAG,
+    muxiveo_rife_asset_url,
 )
 
 ROOT = Path(__file__).parent
@@ -718,6 +720,35 @@ def _dl_dovi_tool(tools_dir: Path, arch: str) -> None:
     ok("dovi_tool installé")
 
 
+def _dl_muxiveo_rife(tools_dir: Path, arch: str) -> None:
+    """muxiveo-rife + rife-models/ (archive locale ``MUXIVEO_RIFE_ARCHIVE`` ou release épinglée)."""
+    step(f"muxiveo-rife ({MUXIVEO_RIFE_RELEASE_TAG})")
+    if arch != "x86_64":
+        warn(f"muxiveo-rife : pas de build {arch} — interpolation d'images indisponible.")
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        local = os.environ.get("MUXIVEO_RIFE_ARCHIVE")
+        archive = Path(local) if local else Path(tmp) / "muxiveo-rife.tar.gz"
+        if not local:
+            try:
+                _download(muxiveo_rife_asset_url("linux-x86_64.tar.gz"), archive, timeout=120)
+            except Exception as exc:
+                warn(f"muxiveo-rife indisponible ({exc}) — interpolation d'images absente de ce build.")
+                return
+        with tarfile.open(archive) as tf:
+            prefix = os.path.commonpath([m.name for m in tf.getmembers()])
+            for member in tf.getmembers():
+                rel = os.path.relpath(member.name, prefix)
+                if rel == "." or rel.startswith("..") or os.path.isabs(rel):
+                    continue
+                if not (member.isfile() or member.isdir()):
+                    continue
+                member.name = rel
+                tf.extract(member, tools_dir)
+    _chmod_x(tools_dir / "muxiveo-rife")
+    ok("muxiveo-rife installé")
+
+
 def _dl_hdr10plus_tool(tools_dir: Path, arch: str) -> None:
     step("Téléchargement hdr10plus_tool (GitHub)")
     _sfx = {"x86_64": "x86_64-unknown-linux-musl", "aarch64": "aarch64-unknown-linux-musl"}.get(arch, arch)
@@ -826,6 +857,7 @@ def bundle_tools(appdir: Path, arch: str) -> None:
     _dl_dovi_tool(tools_dir, arch)
     _dl_hdr10plus_tool(tools_dir, arch)
     _dl_nvencc(tools_dir, arch)
+    _dl_muxiveo_rife(tools_dir, arch)
     _bundle_licenses(appdir)
 
     ok(f"Tous les outils embarqués dans {tools_dir}")

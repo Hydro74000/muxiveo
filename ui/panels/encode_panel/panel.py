@@ -10,9 +10,11 @@ from __future__ import annotations
 import copy
 import json
 import re
+import shutil
 import subprocess
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
+from fractions import Fraction
 from pathlib import Path
 from uuid import uuid4
 
@@ -39,9 +41,10 @@ from core.workflows.encode import (
     TONEMAP_ALGORITHMS, EncodeConfig,
     EncodePreviewRequest,
     EncodePreset, EncodeWorkflow, HardwareEncoderDetector,
-    ProfileManager, QualityMode, VideoCropSettings, VideoEncodeSettings, VideoFilterSettings,
-    VideoResizeSettings, VideoTrackEncodePlan, presets_for_codec,
+    FrameInterpolationSettings, ProfileManager, QualityMode, VideoCropSettings, VideoEncodeSettings,
+    VideoFilterSettings, VideoResizeSettings, VideoTrackEncodePlan, presets_for_codec,
 )
+from core.workflows.encode.interpolation import INTERPOLATION_FACTORS
 from core.workflows.encode.catalog import (
     VIDEO_ENCODER_BADGES,
     VIDEO_HDR_BADGE_ORDER,
@@ -67,6 +70,11 @@ from ui.desktop import open_external
 from ui.design_system import scale as _scale
 from ui.dialogs.extra_params_dialog import edit_extra_params
 from ui.panels.encode_panel.widgets import _AudioSourceDialog, _AudioTable
+
+
+def _format_fps(value: float) -> str:
+    """Cadence lisible à la française (ex. 59,94)."""
+    return f"{value:.3f}".rstrip("0").rstrip(".").replace(".", ",")
 
 
 class EncodePanel(QWidget):
@@ -117,6 +125,7 @@ class EncodePanel(QWidget):
             writing_application=writing_application,
             generate_nfo=config.generate_nfo,
             nvencc_bin=getattr(config, "tool_nvencc", None) or None,
+            rife_bin=getattr(config, "tool_muxiveo_rife", None) or None,
             sync_rewrite_enabled=config.sync_rewrite_enabled,
             aac_bitrate_per_channel_kbps=config.aac_bitrate_per_channel_kbps,
             eac3_bitrate_per_channel_kbps=config.eac3_bitrate_per_channel_kbps,
@@ -1626,9 +1635,105 @@ class EncodePanel(QWidget):
             self._chroma_strength_combo,
         ))
 
+        self._interp_cb = QCheckBox("Interpolation")
+        self._interp_cb.setStyleSheet(_checkbox_style())
+        self._interp_cb.toggled.connect(lambda _: self._on_interpolation_changed())
+        self._interp_factor_combo = QComboBox()
+        self._interp_factor_combo.setStyleSheet(_combo_style())
+        self._interp_factor_combo.setToolTip("Multiplicateur de cadence (ex. x2 : 29,97 -> 59,94 i/s).")
+        for factor in INTERPOLATION_FACTORS:
+            self._interp_factor_combo.addItem(f"x{factor}", factor)
+        self._interp_factor_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
+        self._interp_quality_combo = QComboBox()
+        self._interp_quality_combo.setStyleSheet(_combo_style())
+        self._interp_quality_combo.setToolTip(
+            "Modèle RIFE : Rapide (v4.22 lite), Équilibré (v4.26), Max (v4.25 heavy, plus lent)."
+        )
+        for label, value in (("Rapide", "fast"), ("Équilibré", "balanced"), ("Max", "max")):
+            self._interp_quality_combo.addItem(label, value)
+        self._set_combo_data(self._interp_quality_combo, "balanced")
+        self._interp_quality_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
+        self._interp_fps_label = self._filter_tech_label("")
+        fl.addWidget(self._build_filter_row(
+            self._interp_cb,
+            self._filter_tech_label("RIFE"),
+            self._interp_factor_combo,
+            self._interp_quality_combo,
+            self._interp_fps_label,
+        ))
+        self._sync_interpolation_availability()
+
         cl.addWidget(self._filters_controls)
         self._sync_transform_controls_enabled()
         return card
+
+    def _interpolation_tool_available(self) -> bool:
+        rife = getattr(self._config, "tool_muxiveo_rife", None) or ""
+        return bool(rife) and (Path(rife).is_file() or shutil.which(rife) is not None)
+
+    def _sync_interpolation_availability(self) -> None:
+        if not hasattr(self, "_interp_cb"):
+            return
+        available = self._interpolation_tool_available()
+        self._interp_cb.setEnabled(available)
+        self._interp_cb.setToolTip(
+            translate_text(
+                "Génère des images intermédiaires (RIFE, GPU Vulkan) pour multiplier la cadence. "
+                "Les images d'origine sont conservées ; les coupes de scène sont dupliquées. "
+                "Dolby Vision et HDR10+ suivent la nouvelle cadence."
+            )
+            if available
+            else translate_text("muxiveo-rife introuvable : Paramètres > Outils externes, ou relancer le setup.")
+        )
+        if not available and self._interp_cb.isChecked():
+            self._interp_cb.setChecked(False)
+        self._sync_interpolation_controls()
+
+    def _sync_interpolation_controls(self) -> None:
+        enabled = self._interp_cb.isChecked() and self._interp_cb.isEnabled()
+        self._interp_factor_combo.setEnabled(enabled)
+        self._interp_quality_combo.setEnabled(enabled)
+        self._interp_fps_label.setText(self._interpolation_fps_hint() if enabled else "")
+
+    def _interpolation_fps_hint(self) -> str:
+        """Cadence source -> cadence interpolée de la piste courante (ex. « 29,97 -> 59,94 i/s »)."""
+        row = self._video_list.currentRow() if hasattr(self, "_video_list") else -1
+        if not 0 <= row < len(self._video_tracks):
+            return ""
+        file_info, _track, _color = self._video_tracks[row]
+        stream_index = self._current_video_settings().stream_index
+        vt = next((v for v in file_info.video_tracks if v.index == stream_index), None)
+        if vt is None and file_info.video_tracks:
+            vt = file_info.video_tracks[0]
+        try:
+            fps = float(Fraction(str(vt.frame_rate))) if vt is not None and vt.frame_rate else 0.0
+        except (ValueError, ZeroDivisionError):
+            fps = 0.0
+        if fps <= 0:
+            return ""
+        factor = int(self._interp_factor_combo.currentData() or 2)
+        return f"{_format_fps(fps)} -> {_format_fps(fps * factor)} i/s"
+
+    def _on_interpolation_changed(self) -> None:
+        self._sync_interpolation_controls()
+        self._rebuild_preview()
+
+    def _current_interpolation_settings(self) -> FrameInterpolationSettings:
+        if not hasattr(self, "_interp_cb"):
+            return FrameInterpolationSettings()
+        return FrameInterpolationSettings(
+            enabled=self._interp_cb.isChecked() and self._interp_cb.isEnabled(),
+            factor=int(self._interp_factor_combo.currentData() or 2),
+            quality=str(self._interp_quality_combo.currentData() or "balanced"),
+        )
+
+    def _apply_interpolation_settings(self, settings: FrameInterpolationSettings) -> None:
+        if not hasattr(self, "_interp_cb"):
+            return
+        self._interp_cb.setChecked(bool(settings.enabled) and self._interp_cb.isEnabled())
+        self._set_combo_data(self._interp_factor_combo, int(settings.factor))
+        self._set_combo_data(self._interp_quality_combo, settings.quality)
+        self._sync_interpolation_controls()
 
     def _build_filter_row(self, toggle: QCheckBox, *widgets: QWidget) -> QWidget:
         row = QWidget()
@@ -3244,6 +3349,7 @@ class EncodePanel(QWidget):
         self._apply_resize_settings(vs.resize)
         self._apply_crop_settings(vs.crop)
         self._apply_filter_settings(vs.filters)
+        self._apply_interpolation_settings(vs.interpolation)
         # Les options HDR (inject_hdr_meta / master_display / max_cll /
         # tonemap_to_sdr) dépendent de la source, pas du profil — un même
         # profil "x265 CRF18 slow" doit s'appliquer à une source SDR ou HDR
@@ -3296,6 +3402,7 @@ class EncodePanel(QWidget):
             resize=vs.resize,
             crop=vs.crop,
             filters=vs.filters,
+            interpolation=vs.interpolation,
             inject_hdr_meta=False,
             master_display="",
             max_cll="",
@@ -3665,6 +3772,7 @@ class EncodePanel(QWidget):
             "resize": VideoResizeSettings(),
             "crop": VideoCropSettings(),
             "filters": VideoFilterSettings(),
+            "interpolation": FrameInterpolationSettings(),
             "inject_hdr_meta": is_hdr_source,
             "master_display": master_display,
             "max_cll": max_cll,
@@ -3945,6 +4053,7 @@ class EncodePanel(QWidget):
             "resize": self._current_resize_settings(),
             "crop": self._current_crop_settings(),
             "filters": self._current_filter_settings(),
+            "interpolation": self._current_interpolation_settings(),
             "inject_hdr_meta": self._inject_hdr_cb.isChecked(),
             "master_display": self._master_display.text(),
             "max_cll": self._max_cll.text(),
@@ -4067,6 +4176,9 @@ class EncodePanel(QWidget):
             badges.append("NLMeans")
         if filters.chroma_smooth_enabled:
             badges.append("Chroma")
+        interpolation = FrameInterpolationSettings.from_value(state.get("interpolation"))
+        if interpolation.is_active():
+            badges.append(f"RIFE x{int(interpolation.factor)}")
         return tuple(badges)
 
     def _video_plan_from_state(
@@ -4102,6 +4214,7 @@ class EncodePanel(QWidget):
             or bool(VideoResizeSettings.from_value(state.get("resize")).is_active())
             or bool(VideoCropSettings.from_value(state.get("crop")).is_active())
             or bool(VideoFilterSettings.from_value(state.get("filters")).is_active())
+            or bool(FrameInterpolationSettings.from_value(state.get("interpolation")).is_active())
             or bool(state.get("inject_hdr_meta"))
             or bool(state.get("tonemap_to_sdr"))
             or bool(state.get("extra_params"))
@@ -4202,6 +4315,7 @@ class EncodePanel(QWidget):
             self._apply_resize_settings(VideoResizeSettings.from_value(state.get("resize")))
             self._apply_crop_settings(VideoCropSettings.from_value(state.get("crop")))
             self._apply_filter_settings(VideoFilterSettings.from_value(state.get("filters")))
+            self._apply_interpolation_settings(FrameInterpolationSettings.from_value(state.get("interpolation")))
             self._inject_hdr_cb.setChecked(bool(state.get("inject_hdr_meta")))
             target_codec = str(state.get("codec") or "copy").strip().lower()
             md_state, cll_state = self._effective_static_hdr_fields(
@@ -4541,6 +4655,7 @@ class EncodePanel(QWidget):
             resize=self._current_resize_settings(),
             crop=self._current_crop_settings(),
             filters=self._current_filter_settings(),
+            interpolation=self._current_interpolation_settings(),
             inject_hdr_meta=inject_hdr_meta,
             master_display=master_display,
             max_cll=max_cll,
@@ -4602,6 +4717,7 @@ class EncodePanel(QWidget):
             resize=VideoResizeSettings.from_value(state.get("resize")),
             crop=VideoCropSettings.from_value(state.get("crop")),
             filters=VideoFilterSettings.from_value(state.get("filters")),
+            interpolation=FrameInterpolationSettings.from_value(state.get("interpolation")),
             inject_hdr_meta=inject_hdr_meta,
             master_display=master_display,
             max_cll=max_cll,
@@ -4806,6 +4922,8 @@ class EncodePanel(QWidget):
         self._workflow.set_ffmpeg_threads(self._config.ffmpeg_threads)
         self._workflow.set_max_parallel_video_encodes(self._config.max_parallel_video_encodes)
         self._workflow.set_mediainfo_bin(self._config.tool_mediainfo)
+        self._workflow.set_rife_bin(getattr(self._config, "tool_muxiveo_rife", None) or None)
+        self._sync_interpolation_availability()
         self._workflow.set_generate_nfo(self._config.generate_nfo)
         self._workflow.set_regenerate_statistics(getattr(self._config, "matroska_regenerate_statistics", True))
         self._workflow.set_sync_rewrite_enabled(self._config.sync_rewrite_enabled)

@@ -4,6 +4,7 @@ core/workflows/encode/models.py — Data models and enums for encoding.
 Public:
     QualityMode
     VideoEncodeSettings, AudioTrackSettings, EncodeConfig, EncodePreset
+    FrameInterpolationSettings
     EncodeError
 """
 
@@ -254,6 +255,23 @@ class VideoFilterSettings:
 
 
 @dataclass
+class FrameInterpolationSettings:
+    """Interpolation d'images RIFE (muxiveo-rife) : multiplication de la cadence."""
+    enabled: bool = False
+    factor: int = 2                   # multiplicateur entier de cadence (2 = 29,97 -> 59,94)
+    quality: str = "balanced"         # fast | balanced | max (modèle RIFE)
+    scene_threshold: float = 10.0     # seuil de coupe 0-100 (0 = désactivé)
+    gpu: int = -1                     # index GPU Vulkan (-1 = automatique)
+
+    def is_active(self) -> bool:
+        return bool(self.enabled) and int(self.factor) > 1
+
+    @classmethod
+    def from_value(cls, value: object) -> "FrameInterpolationSettings":
+        return _dataclass_from_value(cls, value)
+
+
+@dataclass
 class VideoEncodeSettings:
     """Paramètres d'encodage vidéo."""
     stream_index:     int          = 0      # index global ffprobe de la piste vidéo source
@@ -277,6 +295,7 @@ class VideoEncodeSettings:
     resize:           VideoResizeSettings = field(default_factory=VideoResizeSettings)
     crop:             VideoCropSettings = field(default_factory=VideoCropSettings)
     filters:          VideoFilterSettings = field(default_factory=VideoFilterSettings)
+    interpolation:    FrameInterpolationSettings = field(default_factory=FrameInterpolationSettings)
     # HDR statique
     inject_hdr_meta:  bool         = False
     master_display:   str          = ""   # ex. "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(40000000,50)"
@@ -305,15 +324,23 @@ class VideoEncodeSettings:
         self.resize = VideoResizeSettings.from_value(self.resize)
         self.crop = VideoCropSettings.from_value(self.crop)
         self.filters = VideoFilterSettings.from_value(self.filters)
+        self.interpolation = FrameInterpolationSettings.from_value(self.interpolation)
 
     def has_video_transform(self) -> bool:
         return bool(
             self.resize.is_active()
             or self.crop.is_active()
             or self.filters.is_active()
+            or self.interpolation.is_active()
             or self.tonemap_to_sdr
             or self.p5_to_hdr10
         )
+
+    def frame_multiplier(self) -> int:
+        """Nombre de trames encodées par trame source (interpolation RIFE)."""
+        if self.codec == "copy" or not self.interpolation.is_active():
+            return 1
+        return int(self.interpolation.factor)
 
 
 @dataclass
@@ -488,6 +515,7 @@ class EncodePreset:
     resize:                     VideoResizeSettings = field(default_factory=VideoResizeSettings)
     crop:                       VideoCropSettings = field(default_factory=VideoCropSettings)
     filters:                    VideoFilterSettings = field(default_factory=VideoFilterSettings)
+    interpolation:              FrameInterpolationSettings = field(default_factory=FrameInterpolationSettings)
     inject_hdr_meta:            bool = False
     master_display:             str  = ""
     max_cll:                    str  = ""
@@ -500,6 +528,7 @@ class EncodePreset:
         self.resize = VideoResizeSettings.from_value(self.resize)
         self.crop = VideoCropSettings.from_value(self.crop)
         self.filters = VideoFilterSettings.from_value(self.filters)
+        self.interpolation = FrameInterpolationSettings.from_value(self.interpolation)
 
     def to_video_settings(self) -> VideoEncodeSettings:
         return VideoEncodeSettings(
@@ -515,6 +544,7 @@ class EncodePreset:
             resize=self.resize,
             crop=self.crop,
             filters=self.filters,
+            interpolation=self.interpolation,
             inject_hdr_meta=self.inject_hdr_meta,
             master_display=self.master_display,
             max_cll=self.max_cll,

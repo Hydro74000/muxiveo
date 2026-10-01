@@ -681,11 +681,21 @@ def _build_filters(video: VideoEncodeSettings) -> list[str]:
     return chain
 
 
-def build_encoder_vf(video: VideoEncodeSettings, *, callbacks: EncodeCodecDomainCallbacks) -> str:
-    vf = build_vf(video)
+def build_encoder_vf(
+    video: VideoEncodeSettings,
+    *,
+    callbacks: EncodeCodecDomainCallbacks,
+    piped_frames: bool = False,
+) -> str:
+    """Chaîne ``-vf`` de l'encodeur.
+
+    ``piped_frames`` : les trames arrivent déjà filtrées d'un pipe y4m
+    (interpolation RIFE) — seul le suffixe format/upload matériel est produit.
+    """
+    vf = "" if piped_frames else build_vf(video)
     force_8bit = force_h264_8bit(video)
     force_10bit = force_10bit_active(video)
-    software_filtering = bool(vf)
+    software_filtering = bool(vf) or piped_frames
     if video.codec not in VAAPI_VIDEO_CODECS:
         if (
             callbacks.platform == "win32"
@@ -756,15 +766,30 @@ def build_vf(video: VideoEncodeSettings) -> str:
     return ",".join(chain)
 
 
-def hardware_input_args(video: VideoEncodeSettings, *, callbacks: EncodeCodecDomainCallbacks) -> list[str]:
-    args: list[str] = []
-    if bool(getattr(video, "p5_to_hdr10", False)):
-        args.extend([
-            "-init_hw_device", "vulkan=mre_dovi",
-            "-filter_hw_device", "mre_dovi",
-        ])
+def p5_filter_device_args(video: VideoEncodeSettings) -> list[str]:
+    """Périphérique Vulkan du filtre libplacebo P5 -> HDR10 (étage de décodage)."""
+    if not bool(getattr(video, "p5_to_hdr10", False)):
+        return []
+    return [
+        "-init_hw_device", "vulkan=mre_dovi",
+        "-filter_hw_device", "mre_dovi",
+    ]
+
+
+def hardware_input_args(
+    video: VideoEncodeSettings,
+    *,
+    callbacks: EncodeCodecDomainCallbacks,
+    piped_frames: bool = False,
+) -> list[str]:
+    """Options d'entrée matérielles (périphérique encodeur, décodage HW).
+
+    ``piped_frames`` : entrée y4m logicielle — périphérique encodeur seul, sans
+    ``-hwaccel`` ni filtre P5 (portés par l'étage de décodage).
+    """
+    args: list[str] = [] if piped_frames else p5_filter_device_args(video)
     tonemap = bool(video.tonemap_to_sdr)
-    software_filtering = has_cpu_video_filter(video)
+    software_filtering = has_cpu_video_filter(video) or piped_frames
     force_8bit = force_h264_8bit(video)
     force_10bit = force_10bit_active(video)
 

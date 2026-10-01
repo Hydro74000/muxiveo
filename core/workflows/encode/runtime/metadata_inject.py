@@ -19,6 +19,7 @@ from core.workflows.encode.domain import should_reinject_static_hdr_metadata
 from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode
 from core.workflows.encode.planning.track_assembly import build_track_input_paths, resolve_track_assembly
 from core.workflows.encode.planning.plan_models import EncodePlan
+from core.workflows.encode.interpolation import expand_dynamic_hdr_metadata
 from core.workflows.encode.runtime.frame_count_guard import (
     FrameCountAuditError,
     FrameCountGuard,
@@ -394,6 +395,18 @@ class MetadataInjectRunner:
                 if needs_annexb and (video.copy_dv or video.copy_hdr10plus):
                     _free(meta_input)
 
+                # Interpolation RIFE : une trame source -> ``factor`` trames
+                # encodées ; chaque trame interpolée hérite des métadonnées
+                # dynamiques de la trame source qui la précède.
+                expand_dynamic_hdr_metadata(
+                    factor=video.frame_multiplier(),
+                    rpu_bin=rpu_bin if video.copy_dv else None,
+                    hdr10p_json=hdr10p_json if video.copy_hdr10plus else None,
+                    dovi_tool_bin=cb.bins.get("dovi_tool"),
+                    run_cmd=_run,
+                    log=cb.log_info,
+                )
+
                 native_dovi_record = None
                 if cb.native_assemble is not None and video.copy_dv:
                     if not rpu_bin.is_file():
@@ -571,6 +584,7 @@ class MetadataInjectRunner:
                         rpu_bin=rpu_bin if (video.copy_dv and rpu_bin.exists()) else None,
                         hdr10p_json=hdr10p_json if (video.copy_hdr10plus and hdr10p_json.exists()) else None,
                         known_encoded_frames=skeleton_result.blocks_written,
+                        frame_multiplier=video.frame_multiplier(),
                     )
                     try:
                         guard.enforce(

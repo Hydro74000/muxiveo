@@ -11,16 +11,20 @@ from typing import Callable
 
 from core.bluray import append_ffmpeg_input_args
 from core.runner import TaskCancelledError, TaskSignals
+from core.pipeline_command import PipelineCommand
 from core.workflows.encode.domain import (
     EncodeCodecDomainCallbacks,
     build_encoder_vf,
+    build_vf,
     hardware_input_args,
     hdr_meta_args,
     needs_hdr_vui,
+    p5_filter_device_args,
     video_codec_args,
     video_codec_args_bitrate,
 )
-from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
+from core.workflows.encode.interpolation import InterpolationSource, build_decode_stage, build_rife_stage
+from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode, VideoEncodeSettings
 from core.workflows.encode.runtime_helpers import VideoPreparationResourcePolicy, VideoTrackPrepSpec
 
 
@@ -36,6 +40,9 @@ class VideoOnlyCommandBuilderCallbacks:
     video_stream_from_settings: Callable[[VideoEncodeSettings], int]
     size_to_bitrate_kbps: Callable[[EncodeConfig], int]
     size_to_bitrate_kbps_for_video: Callable[[EncodeConfig, VideoEncodeSettings], int]
+    # Interpolation RIFE : binaire muxiveo-rife et propriétés couleur/départ de la source.
+    rife_bin: str | None = None
+    interpolation_source: Callable[[VideoEncodeSettings, Path], InterpolationSource] | None = None
 
 
 class VideoOnlyCommandBuilder:
@@ -52,6 +59,14 @@ class VideoOnlyCommandBuilder:
         thread_count: int | None = None,
     ) -> list[str]:
         cb = self._cb
+        if video.frame_multiplier() > 1:
+            return self._build_interpolated_base_cmd(
+                video=video,
+                source=source,
+                stream_index=stream_index,
+                offset_ms=offset_ms,
+                thread_count=thread_count,
+            )
         cmd = [cb.ffmpeg_bin, "-hide_banner", "-y"]
         cmd.extend(cb.ffmpeg_progress_args())
         cmd.extend(cb.offset_input_args(offset_ms))
@@ -63,6 +78,66 @@ class VideoOnlyCommandBuilder:
         cmd.extend(cb.ffmpeg_thread_args(thread_count))
         cmd.extend(["-map", f"0:{int(stream_index)}"])
         return cmd
+
+    def _build_interpolated_base_cmd(
+        self,
+        *,
+        video: VideoEncodeSettings,
+        source: Path,
+        stream_index: int,
+        offset_ms: int,
+        thread_count: int | None,
+    ) -> PipelineCommand:
+        """Pipeline ``ffmpeg (décodage + filtres) | muxiveo-rife | ffmpeg (encodeur)``.
+
+        Les filtres logiciels (désentrelacement, crop, resize, tone mapping,
+        P5 -> HDR10) s'appliquent avant l'interpolation. Le y4m ne porte pas
+        de timestamps : le départ du flux source et un décalage positif sont
+        réappliqués à l'entrée de l'encodeur (``-itsoffset``) ; un décalage
+        négatif (``-ss``) coupe au décodage.
+        """
+        cb = self._cb
+        if not cb.rife_bin or cb.interpolation_source is None:
+            raise EncodeError("Interpolation d'images : outil muxiveo-rife introuvable.")
+        domain = cb.codec_domain_callbacks()
+        info = cb.interpolation_source(video, source)
+        settings = video.interpolation
+
+        decode_pre = list(p5_filter_device_args(video))
+        if offset_ms < 0:
+            decode_pre.extend(cb.offset_input_args(offset_ms))
+        # Source VFR : normalisation CFR à la cadence nominale (le y4m est CFR) ;
+        # les trames dupliquées deviennent des paires figées, recopiées par RIFE.
+        decode_vf = ",".join(part for part in (build_vf(video), f"fps={info.cfr_rate}" if info.cfr_rate else "") if part)
+        decode = build_decode_stage(
+            cb.ffmpeg_bin,
+            source,
+            stream_index=stream_index,
+            vf=decode_vf,
+            pre_input_args=decode_pre,
+        )
+        rife = build_rife_stage(
+            cb.rife_bin,
+            factor=int(settings.factor),
+            quality=settings.quality,
+            source=info,
+            scene_threshold=settings.scene_threshold,
+            gpu=settings.gpu,
+        )
+
+        encoder_offset_s = info.start_offset_s + (offset_ms / 1000.0 if offset_ms > 0 else 0.0)
+        cmd = [cb.ffmpeg_bin, "-hide_banner", "-y"]
+        cmd.extend(cb.ffmpeg_progress_args())
+        cmd.extend(hardware_input_args(video, callbacks=domain, piped_frames=True))
+        if encoder_offset_s > 0:
+            cmd.extend(["-itsoffset", f"{encoder_offset_s:.6f}"])
+        cmd.extend(["-f", "yuv4mpegpipe", "-i", "pipe:0"])
+        vf = build_encoder_vf(video, callbacks=domain, piped_frames=True)
+        if vf:
+            cmd.extend(["-vf", vf])
+        cmd.extend(cb.ffmpeg_thread_args(thread_count))
+        cmd.extend(["-map", "0:0"])
+        return PipelineCommand(cmd, [decode, rife])
 
     def append_video_codec_and_hdr_args(
         self,

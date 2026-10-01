@@ -151,8 +151,17 @@ class FrameCountGuard:
         rpu_bin: Path | None = None,
         hdr10p_json: Path | None = None,
         known_encoded_frames: int | None = None,
+        frame_multiplier: int = 1,
     ) -> FrameCountAudit:
+        """Compte les trames de chaque flux.
+
+        ``frame_multiplier`` (interpolation RIFE) : le compte source est
+        rapporté à la cadence encodée (``source × facteur``).
+        """
+        multiplier = max(1, int(frame_multiplier))
         source_count = self._read_video_frame_count(source)
+        if source_count is not None:
+            source_count *= multiplier
         encoded_count: int | None
         if known_encoded_frames is not None and known_encoded_frames > 0:
             encoded_count = known_encoded_frames
@@ -163,7 +172,8 @@ class FrameCountGuard:
             # coupe d'une image, une durée audio plus longue ou une durée absente
             # peuvent laisser passer des statistiques périmées. Recompter les
             # deux vidéos avant de conclure à une perte d'images à l'encodage.
-            source_count = self._recount_video_frames(source) or source_count
+            recounted = self._recount_video_frames(source)
+            source_count = recounted * multiplier if recounted else source_count
             if known_encoded_frames is None:
                 encoded_count = self._recount_video_frames(encoded) or encoded_count
         return FrameCountAudit(

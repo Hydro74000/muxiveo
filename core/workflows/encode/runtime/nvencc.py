@@ -260,6 +260,11 @@ def build_decode_pipe_cmd(
 
 
 def nvencc_requires_ffmpeg_filter_pipe(video: VideoEncodeSettings) -> bool:
+    """True when NVEncC must read a y4m pipe (FFmpeg prefilters or RIFE interpolation)."""
+    return nvencc_requires_ffmpeg_prefilter(video) or video.frame_multiplier() > 1
+
+
+def nvencc_requires_ffmpeg_prefilter(video: VideoEncodeSettings) -> bool:
     """True when portable FFmpeg prefiltering is required before NVEncC."""
     filters = video.filters
     crop = video.crop
@@ -969,6 +974,7 @@ __all__ = [
     "detect_nvencc_available",
     "build_decode_pipe_cmd",
     "nvencc_requires_ffmpeg_filter_pipe",
+    "nvencc_requires_ffmpeg_prefilter",
     "nvencc_ffmpeg_filter_vf",
     "nvencc_pipe_encode_video",
     "build_nvencc_command",

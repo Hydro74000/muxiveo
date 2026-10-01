@@ -17,6 +17,7 @@ from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode,
 from core.workflows.encode.planning.plan_models import EncodePlan
 from core.workflows.encode.planning.track_assembly import build_track_input_paths, resolve_track_assembly
 from core.workflows.hevc_static_hdr_metadata import inject_static_hdr_sei_file
+from core.workflows.encode.interpolation import expand_dynamic_hdr_metadata
 from core.matroska.editors.dovi import DolbyVisionConfigRecord
 from core.matroska.hevc.access_units import HevcStreamCancelled
 from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter
@@ -144,6 +145,15 @@ class MultiVideoPipelineRunner:
                     str(meta_input), "-o", str(hdr10p_json),
                 ], f"hdr10plus-extract-{index}")
                 local_cleanup.append(hdr10p_json)
+
+            expand_dynamic_hdr_metadata(
+                factor=video.frame_multiplier(),
+                rpu_bin=rpu_bin if video.copy_dv else None,
+                hdr10p_json=hdr10p_json if video.copy_hdr10plus else None,
+                dovi_tool_bin=cb.bins.get("dovi_tool"),
+                run_cmd=lambda cmd: run_cmd(cmd, f"dovi-scenes-{index}"),
+                log=lambda message: cb.log_info(f"Piste vidéo {index}: {message}"),
+            )
 
             record_for_rewriter = None
             if video.copy_dv and rpu_bin.exists():
