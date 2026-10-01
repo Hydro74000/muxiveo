@@ -122,8 +122,16 @@ jobs:
       - name: Smoke test
         shell: bash
         run: |
+          set -uo pipefail
           "${{ steps.stage.outputs.bin }}" --version
-          "${{ steps.stage.outputs.bin }}" --list-gpus
+          if ! "${{ steps.stage.outputs.bin }}" --list-gpus --verbose; then
+            # Runners macOS hébergés : pas de GPU Metal exploitable par MoltenVK.
+            if [ "$RUNNER_OS" = "macOS" ]; then
+              echo "::warning::--list-gpus a échoué (runner sans GPU Metal)"
+            else
+              exit 1
+            fi
+          fi
 
       - name: Functional tests
         shell: bash
@@ -133,7 +141,8 @@ jobs:
           set -euo pipefail
           python -m pip install --quiet pytest numpy
           # Sans GPU Vulkan (Windows/macOS hébergés), les tests sont ignorés.
-          python -m pytest -q -p no:cacheprovider tests/native
+          # --noconftest : tests/conftest.py importe PySide6 (inutile ici)
+          python -m pytest -q -p no:cacheprovider --noconftest tests/native
 
       - name: Archive
         shell: bash
