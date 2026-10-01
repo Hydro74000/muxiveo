@@ -110,7 +110,7 @@ def _repair_corrupted_windows_ini_paths(path: Path) -> list[str]:
     """
     if not _is_windows() or not path.exists():
         return []
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8-sig")
     lines = text.splitlines()
     legacy = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#",))
     legacy.read_string(text)
@@ -196,7 +196,7 @@ def _load_ini() -> configparser.ConfigParser:
     )
     if _INI_PATH.exists():
         _sanitize_windows_ini_file(_INI_PATH)
-        parser.read(_INI_PATH, encoding="utf-8")
+        parser.read(_INI_PATH, encoding="utf-8-sig")
     return parser
 
 
@@ -352,7 +352,7 @@ def _sanitize_windows_ini_file(path: Path) -> None:
     if not _is_windows() or not path.exists():
         return
 
-    original = path.read_text(encoding="utf-8")
+    original = path.read_text(encoding="utf-8-sig")
     lines = original.splitlines()
     sanitized_lines = _sanitize_windows_ini_lines(lines.copy())
     sanitized = "\n".join(sanitized_lines).rstrip() + "\n"
@@ -502,7 +502,7 @@ def _update_ini_tools_section(path: Path, tool_values: dict[str, str]) -> None:
     if not tool_values:
         return
 
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    text = path.read_text(encoding="utf-8-sig") if path.exists() else ""
     lines = text.splitlines()
     lines = _upsert_ini_section(lines, "tools", tool_values, replace_blank_only=True)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -511,7 +511,7 @@ def _update_ini_tools_section(path: Path, tool_values: dict[str, str]) -> None:
 
 def write_ini_settings(section_values: dict[str, dict[str, str]]) -> None:
     """Écrit des valeurs explicites dans config.ini en conservant les commentaires."""
-    text = _INI_PATH.read_text(encoding="utf-8") if _INI_PATH.exists() else ""
+    text = _INI_PATH.read_text(encoding="utf-8-sig") if _INI_PATH.exists() else ""
     lines = text.splitlines()
 
     for section, values in section_values.items():

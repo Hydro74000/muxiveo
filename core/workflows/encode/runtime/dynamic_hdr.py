@@ -147,6 +147,7 @@ class DynamicHdrConfigNormalizer:
         )
         if (
             (copy_dv or copy_hdr10plus)
+            and video.inject_hdr_meta
             and (not auto_md or not auto_cll)
             and not analysis_pending
         ):

@@ -382,6 +382,7 @@ DATA_FILES: list[tuple[str, str]] = [
     ("locales.json", "."),
     ("requirements.txt", "."),
     ("README.md", "."),
+    ("ui/assets", "ui/assets"),
 ]
 
 

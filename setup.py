@@ -774,7 +774,7 @@ def initialize_config_ini_language(
         default_section="DEFAULT",
     )
     if ini_path.exists():
-        parser.read(ini_path, encoding="utf-8")
+        parser.read(ini_path, encoding="utf-8-sig")
 
     existing = ""
     if parser.has_option("ui", "language"):
@@ -787,7 +787,7 @@ def initialize_config_ini_language(
     detected = _system_language_code()
     info(f"UI language: {detected}")
 
-    text = ini_path.read_text(encoding="utf-8") if ini_path.exists() else ""
+    text = ini_path.read_text(encoding="utf-8-sig") if ini_path.exists() else ""
     lines = text.splitlines()
     start, end = _section_bounds(lines, "ui")
 

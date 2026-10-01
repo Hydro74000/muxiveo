@@ -66,15 +66,6 @@ H264_VIDEO_CODECS: frozenset[str] = frozenset({
 CQ_CAPABLE_VIDEO_CODECS: frozenset[str] = (
     NVENC_VIDEO_CODECS | AMF_VIDEO_CODECS | QSV_VIDEO_CODECS | VAAPI_VIDEO_CODECS | NVENCC_VIDEO_CODECS
 )
-DOVI_VIDEO_CODECS: frozenset[str] = frozenset({
-    "copy", "libx265", "nvencc_hevc",
-})
-HDR10PLUS_VIDEO_CODECS: frozenset[str] = frozenset({
-    "copy", "libx265", "hevc_nvenc", "hevc_amf", "hevc_qsv", "hevc_vaapi",
-    "nvencc_hevc", "nvencc_av1",
-})
-DYNAMIC_HDR_VIDEO_CODECS: frozenset[str] = DOVI_VIDEO_CODECS | HDR10PLUS_VIDEO_CODECS
-
 VIDEO_ENCODER_BADGES: dict[str, str] = {
     "libx265": "x265",
     "libx264": "x264",
@@ -118,15 +109,33 @@ class StaticHdrMetadataMode(str, Enum):
 
 
 @dataclass(frozen=True)
+class VideoCodecHdrCapabilities:
+    """Compatibilité HDR d'un codec vidéo cible.
+
+    Source unique consultée par le workflow (construction des commandes,
+    validation) et par l'UI (activation des options HDR).
+    """
+    hdr: bool = False
+    """Le flux de sortie peut être HDR (VUI PQ/HLG, case HDR10 statique)."""
+    static_mode: StaticHdrMetadataMode = StaticHdrMetadataMode.NONE
+    """Voie d'écriture des métadonnées statiques MDCV/CLL."""
+    manual_static: bool = False
+    """master-display / max-cll éditables manuellement."""
+    dovi: bool = False
+    hdr10plus: bool = False
+
+    @property
+    def dynamic(self) -> bool:
+        return self.dovi or self.hdr10plus
+
+
+@dataclass(frozen=True)
 class VideoCodecSpec:
     codec_id: str
     label: str
     family: VideoCodecFamily
     presets: tuple[str, ...]
     encoder_badge: str
-    supports_dynamic_hdr: bool = False
-    supports_dovi: bool = False
-    supports_hdr10plus: bool = False
     is_h264: bool = False
     supports_force_8bit: bool = False
     supports_10bit: bool = False
@@ -134,6 +143,22 @@ class VideoCodecSpec:
     @property
     def is_hardware(self) -> bool:
         return self.family is not VideoCodecFamily.SOFTWARE
+
+    @property
+    def hdr(self) -> "VideoCodecHdrCapabilities":
+        return hdr_capabilities(self.codec_id)
+
+    @property
+    def supports_dynamic_hdr(self) -> bool:
+        return self.hdr.dynamic
+
+    @property
+    def supports_dovi(self) -> bool:
+        return self.hdr.dovi
+
+    @property
+    def supports_hdr10plus(self) -> bool:
+        return self.hdr.hdr10plus
 
 
 @dataclass(frozen=True)
@@ -153,9 +178,6 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         family=VideoCodecFamily.SOFTWARE,
         presets=tuple(X265_PRESETS),
         encoder_badge="x265",
-        supports_dynamic_hdr=True,
-        supports_dovi=True,
-        supports_hdr10plus=True,
         supports_10bit=True,
     ),
     "libx264": VideoCodecSpec(
@@ -182,9 +204,6 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         family=VideoCodecFamily.NVENC,
         presets=tuple(HEVC_NVENC_PRESETS),
         encoder_badge="NVENC",
-        supports_dynamic_hdr=True,
-        supports_dovi=False,  # FFmpeg hevc_nvenc ne supporte pas l'injection native RPU
-        supports_hdr10plus=True,
         supports_10bit=True,
     ),
     "hevc_amf": VideoCodecSpec(
@@ -193,9 +212,6 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         family=VideoCodecFamily.AMF,
         presets=tuple(AMF_PRESETS),
         encoder_badge="AMF",
-        supports_dynamic_hdr=True,
-        supports_dovi=False,
-        supports_hdr10plus=True,
         supports_10bit=True,
     ),
     "hevc_vaapi": VideoCodecSpec(
@@ -204,9 +220,6 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         family=VideoCodecFamily.VAAPI,
         presets=tuple(VAAPI_PRESETS),
         encoder_badge="VAAPI",
-        supports_dynamic_hdr=True,
-        supports_dovi=False,
-        supports_hdr10plus=True,
         supports_10bit=True,
     ),
     "hevc_qsv": VideoCodecSpec(
@@ -215,9 +228,6 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         family=VideoCodecFamily.QSV,
         presets=tuple(QSV_PRESETS),
         encoder_badge="QSV",
-        supports_dynamic_hdr=True,
-        supports_dovi=False,
-        supports_hdr10plus=True,
         supports_10bit=True,
     ),
     "h264_nvenc": VideoCodecSpec(
@@ -294,9 +304,6 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         family=VideoCodecFamily.NVENCC,
         presets=tuple(NVENCC_PRESETS),
         encoder_badge="NVEncC",
-        supports_dynamic_hdr=True,
-        supports_dovi=True,
-        supports_hdr10plus=True,
         supports_10bit=True,
     ),
     "nvencc_h264": VideoCodecSpec(
@@ -315,9 +322,6 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         family=VideoCodecFamily.NVENCC,
         presets=tuple(NVENCC_PRESETS),
         encoder_badge="NVEncC",
-        supports_dynamic_hdr=True,
-        supports_dovi=False,
-        supports_hdr10plus=True,
         supports_10bit=True,
     ),
 }
@@ -345,22 +349,59 @@ AUDIO_CODEC_SPECS: dict[str, AudioCodecSpec] = {
     ),
 }
 
-STATIC_HDR_METADATA_MODE_BY_CODEC: dict[str, StaticHdrMetadataMode] = {
-    "libx265": StaticHdrMetadataMode.X265_PARAMS,
-    "hevc_vaapi": StaticHdrMetadataMode.VAAPI_SEI,
-    "hevc_amf": StaticHdrMetadataMode.FRAME_SIDE_DATA,
-    "hevc_qsv": StaticHdrMetadataMode.FRAME_SIDE_DATA,
-    "hevc_nvenc": StaticHdrMetadataMode.BITSTREAM_PATCH,
-    "nvencc_hevc": StaticHdrMetadataMode.NATIVE,
-    "nvencc_av1": StaticHdrMetadataMode.NATIVE,
+_HDR = VideoCodecHdrCapabilities
+_SDR_ONLY = VideoCodecHdrCapabilities()
+_MODE = StaticHdrMetadataMode
+
+# Table de compatibilité HDR par codec cible. Un codec absent est traité
+# comme SDR uniquement : aucune option HDR ne lui est transmise.
+#   - copy   : conserve la source telle quelle (normalisation DoVi possible).
+#   - H.264  : SDR uniquement (pas de signalisation HDR10/DoVi/HDR10+).
+#   - DoVi   : libx265 / NVEncC HEVC (RPU synchronisé) ; FFmpeg NVENC/AMF/
+#              QSV/VAAPI cassent la synchro RPU/DPB.
+VIDEO_CODEC_HDR_CAPABILITIES: dict[str, VideoCodecHdrCapabilities] = {
+    "copy": _HDR(hdr=True, dovi=True, hdr10plus=True),
+    "libx265": _HDR(hdr=True, static_mode=_MODE.X265_PARAMS, manual_static=True, dovi=True, hdr10plus=True),
+    "libx264": _SDR_ONLY,
+    "libsvtav1": _HDR(hdr=True),
+    "hevc_nvenc": _HDR(hdr=True, static_mode=_MODE.BITSTREAM_PATCH, manual_static=True, hdr10plus=True),
+    "hevc_amf": _HDR(hdr=True, static_mode=_MODE.FRAME_SIDE_DATA, hdr10plus=True),
+    "hevc_vaapi": _HDR(hdr=True, static_mode=_MODE.VAAPI_SEI, hdr10plus=True),
+    "hevc_qsv": _HDR(hdr=True, static_mode=_MODE.FRAME_SIDE_DATA, hdr10plus=True),
+    "h264_nvenc": _SDR_ONLY,
+    "h264_amf": _SDR_ONLY,
+    "h264_vaapi": _SDR_ONLY,
+    "h264_qsv": _SDR_ONLY,
+    "av1_nvenc": _HDR(hdr=True),
+    "av1_amf": _HDR(hdr=True),
+    "av1_vaapi": _HDR(hdr=True),
+    "av1_qsv": _HDR(hdr=True),
+    "nvencc_hevc": _HDR(hdr=True, static_mode=_MODE.NATIVE, manual_static=True, dovi=True, hdr10plus=True),
+    "nvencc_h264": _SDR_ONLY,
+    "nvencc_av1": _HDR(hdr=True, static_mode=_MODE.NATIVE, manual_static=True, hdr10plus=True),
 }
 
-MANUAL_STATIC_HDR_METADATA_CODECS: frozenset[str] = frozenset({
-    "libx265",
-    "hevc_nvenc",
-    "nvencc_hevc",
-    "nvencc_av1",
-})
+
+def hdr_capabilities(codec: str | None) -> VideoCodecHdrCapabilities:
+    """Capacités HDR du codec cible (SDR uniquement si inconnu)."""
+    return VIDEO_CODEC_HDR_CAPABILITIES.get(str(codec or "").strip().lower(), _SDR_ONLY)
+
+
+def _codecs_where(predicate) -> frozenset[str]:
+    return frozenset(codec for codec, caps in VIDEO_CODEC_HDR_CAPABILITIES.items() if predicate(caps))
+
+
+# Vues dérivées de la table (compatibilité des imports existants).
+HDR_VIDEO_CODECS: frozenset[str] = _codecs_where(lambda caps: caps.hdr)
+DOVI_VIDEO_CODECS: frozenset[str] = _codecs_where(lambda caps: caps.dovi)
+HDR10PLUS_VIDEO_CODECS: frozenset[str] = _codecs_where(lambda caps: caps.hdr10plus)
+DYNAMIC_HDR_VIDEO_CODECS: frozenset[str] = DOVI_VIDEO_CODECS | HDR10PLUS_VIDEO_CODECS
+MANUAL_STATIC_HDR_METADATA_CODECS: frozenset[str] = _codecs_where(lambda caps: caps.manual_static)
+STATIC_HDR_METADATA_MODE_BY_CODEC: dict[str, StaticHdrMetadataMode] = {
+    codec: caps.static_mode
+    for codec, caps in VIDEO_CODEC_HDR_CAPABILITIES.items()
+    if caps.static_mode is not StaticHdrMetadataMode.NONE
+}
 
 
 def presets_for_codec(codec: str) -> list[str]:
@@ -376,24 +417,15 @@ def is_h264_video_codec(codec: str) -> bool:
 
 
 def supports_dynamic_hdr(codec: str) -> bool:
-    spec = video_codec_spec(codec)
-    if spec is not None:
-        return spec.supports_dynamic_hdr
-    return str(codec or "").strip().lower() in DYNAMIC_HDR_VIDEO_CODECS
+    return hdr_capabilities(codec).dynamic
 
 
 def supports_dovi(codec: str) -> bool:
-    spec = video_codec_spec(codec)
-    if spec is not None:
-        return spec.supports_dovi
-    return str(codec or "").strip().lower() in DOVI_VIDEO_CODECS
+    return hdr_capabilities(codec).dovi
 
 
 def supports_hdr10plus(codec: str) -> bool:
-    spec = video_codec_spec(codec)
-    if spec is not None:
-        return spec.supports_hdr10plus
-    return str(codec or "").strip().lower() in HDR10PLUS_VIDEO_CODECS
+    return hdr_capabilities(codec).hdr10plus
 
 
 def encoder_badge(codec: str) -> str:
@@ -426,6 +458,11 @@ def is_hardware_video_codec(codec: str) -> bool:
     return bool(spec is not None and spec.is_hardware)
 
 
+def supports_hdr_output(codec: str) -> bool:
+    """Vrai si le codec cible peut porter du HDR (``copy`` conserve la source)."""
+    return hdr_capabilities(codec).hdr
+
+
 def supports_force_8bit(codec: str) -> bool:
     spec = video_codec_spec(codec)
     return bool(spec is not None and spec.supports_force_8bit)
@@ -437,8 +474,7 @@ def supports_10bit(codec: str) -> bool:
 
 
 def static_hdr_metadata_mode(codec: str) -> StaticHdrMetadataMode:
-    normalized = str(codec or "").strip().lower()
-    return STATIC_HDR_METADATA_MODE_BY_CODEC.get(normalized, StaticHdrMetadataMode.NONE)
+    return hdr_capabilities(codec).static_mode
 
 
 def needs_static_hdr_bitstream_patch_codec(codec: str) -> bool:
@@ -446,14 +482,17 @@ def needs_static_hdr_bitstream_patch_codec(codec: str) -> bool:
 
 
 def supports_manual_static_hdr_metadata(codec: str) -> bool:
-    normalized = str(codec or "").strip().lower()
-    return normalized in MANUAL_STATIC_HDR_METADATA_CODECS
+    return hdr_capabilities(codec).manual_static
 
 
 __all__ = [
     "VideoCodecFamily",
     "StaticHdrMetadataMode",
     "VideoCodecSpec",
+    "VideoCodecHdrCapabilities",
+    "VIDEO_CODEC_HDR_CAPABILITIES",
+    "HDR_VIDEO_CODECS",
+    "hdr_capabilities",
     "AudioCodecSpec",
     "SOFTWARE_VIDEO_CODECS",
     "HARDWARE_VIDEO_CODECS",
@@ -487,6 +526,7 @@ __all__ = [
     "MANUAL_STATIC_HDR_METADATA_CODECS",
     "presets_for_codec",
     "is_h264_video_codec",
+    "supports_hdr_output",
     "supports_dynamic_hdr",
     "supports_dovi",
     "supports_hdr10plus",

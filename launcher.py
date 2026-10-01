@@ -432,9 +432,12 @@ def _run_first_time_setup(install_dir: Path) -> int:
             )
             return SETUP_RC_HANDOFF
 
+    # Console de suivi uniquement pour une réparation (téléchargements) :
+    # en all-inclusive le setup ne fait qu'écrire la langue, et une console
+    # éphémère retardait/masquait l'apparition de la fenêtre principale.
     setup_console_token = (
         _windows_open_setup_console()
-        if _os == "Windows" and (allinc or requires_windows_repair)
+        if _os == "Windows" and requires_windows_repair
         else None
     )
 

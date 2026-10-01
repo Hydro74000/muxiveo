@@ -58,6 +58,8 @@ from core.workflows.common.timeline_sync import (
 from core.workflows.common.track_statistics import derive_output_statistics
 from core.workflows.encode.catalog import (
     is_h264_video_codec,
+    supports_dovi,
+    supports_hdr_output,
 )
 from core.workflows.encode.domain import (
     EncodeCodecDomainCallbacks as _EncodeCodecDomainCallbacks,
@@ -586,9 +588,9 @@ class EncodeWorkflow(QObject):
             errors.append("NVEncC est sélectionné mais le binaire n'est pas configuré.")
         if video.quality_mode == QualityMode.SIZE:
             errors.append("NVEncC ne supporte pas le mode taille cible (2 passes) dans cette version.")
-        if video.inject_hdr_meta and video.codec == "nvencc_h264":
-            errors.append("NVEncC H.264 ne supporte pas les métadonnées HDR statiques.")
-        if video.copy_dv and video.codec != "nvencc_hevc":
+        if video.inject_hdr_meta and not supports_hdr_output(video.codec):
+            errors.append(f"{video.codec} ne supporte pas les métadonnées HDR statiques.")
+        if video.copy_dv and not supports_dovi(video.codec):
             errors.append(f"{video.codec} ne supporte pas Dolby Vision. Seul 'nvencc_hevc' gère Dolby Vision.")
         if (video.copy_dv or video.copy_hdr10plus) and not _nvencc_supports_dynamic_hdr_runtime(video.codec):
             errors.append("Le codec NVEncC sélectionné ne supporte pas DoVi/HDR10+.")

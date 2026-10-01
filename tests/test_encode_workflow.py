@@ -1468,6 +1468,7 @@ class TestMetadataInjectDoviProfileRouting:
             output=tmp_path / "output.mkv",
             video=_make_video_settings(
                 codec="libx265",
+                inject_hdr_meta=True,
                 master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)",
                 max_cll="1000,400",
             ),
@@ -5944,6 +5945,7 @@ class TestNvenccRuntimeRouting:
             tmp_path,
             copy_dv=True,
             copy_hdr10plus=True,
+            inject_hdr_meta=True,
             master_display="UI_MD",
             max_cll="1111,222",
         )

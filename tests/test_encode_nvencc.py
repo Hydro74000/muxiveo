@@ -553,7 +553,7 @@ class TestBuildNvenccCommand:
         assert cmd[cmd.index("--dolby-vision-profile") + 1] == "8.1"
 
     def test_direct_input_dynamic_hdr_copies_static_hdr_from_source(self):
-        v = _video(copy_dv=True, copy_hdr10plus=True)
+        v = _video(copy_dv=True, copy_hdr10plus=True, inject_hdr_meta=True)
         cmd = build_nvencc_command(
             "nvencc",
             v,
@@ -567,6 +567,30 @@ class TestBuildNvenccCommand:
         assert cmd[cmd.index("--colorprim") + 1] == "auto"
         assert cmd[cmd.index("--transfer") + 1] == "auto"
         assert cmd[cmd.index("--chromaloc") + 1] == "auto"
+
+    def test_unchecked_static_hdr_is_never_passed(self):
+        v = _video(
+            copy_dv=True,
+            copy_hdr10plus=True,
+            inject_hdr_meta=False,
+            master_display="G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)",
+            max_cll="1000,400",
+        )
+        cmd = build_nvencc_command("nvencc", v, "/tmp/out.hevc", input_path="/in.mkv", stream_index=0)
+        assert "--master-display" not in cmd
+        assert "--max-cll" not in cmd
+
+    def test_h264_never_receives_hdr_signaling(self):
+        v = _video(
+            codec="nvencc_h264",
+            inject_hdr_meta=True,
+            master_display="G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)",
+            max_cll="1000,400",
+        )
+        for input_path in (None, "/in.mkv"):
+            cmd = build_nvencc_command("nvencc", v, "/tmp/out.mkv", input_path=input_path)
+            for flag in ("--master-display", "--max-cll", "--transfer", "--colorprim", "--colormatrix"):
+                assert flag not in cmd
 
     def test_nvencc_input_router_provides_source_fps_when_copy_dv(self):
         from core.workflows.encode.runtime.nvencc_routing import NvenccInputRouter, NvenccRoutingCallbacks
@@ -745,8 +769,6 @@ class TestBuildNvenccCommand:
             copy_dv=True,
             dovi_profile="2",
             copy_hdr10plus=True,
-            tonemap_to_sdr=True,
-            tonemap_algorithm="mobius",
             extra_params=(
                 "--master-display OLD_MD "
                 "--max-cll 1,2 "
@@ -782,7 +804,17 @@ class TestBuildNvenccCommand:
         assert cmd[cmd.index("--dolby-vision-profile") + 1] == "8.1"
         assert "matrix=bt709:bt709,hdr2sdr=hable" not in joined
         assert "tonemapping_function=clip" not in joined
-        assert "--vpp-colorspace" in cmd
+        assert "--vpp-colorspace" not in cmd
+        assert "--vpp-libplacebo-tonemapping" not in cmd
+
+        # Tone-mapping SDR : la VPP workflow remplace celles des extra_params
+        # et aucune métadonnée HDR statique n'est transmise.
+        sdr = replace(v, copy_dv=False, copy_hdr10plus=False, tonemap_to_sdr=True, tonemap_algorithm="mobius")
+        cmd = build_nvencc_command("nvencc", sdr, "/tmp/out.hevc", input_path="/in.mkv", stream_index=0)
+        joined = " ".join(cmd)
+        assert "--master-display" not in cmd
+        assert "--max-cll" not in cmd
+        assert "matrix=bt709:bt709,hdr2sdr=hable" not in joined
         assert "hdr2sdr=mobius" in cmd[cmd.index("--vpp-colorspace") + 1]
         assert "--vpp-libplacebo-tonemapping" not in cmd
 
@@ -1290,9 +1322,16 @@ class TestNvenccHdrSignalling:
         assert (_flag(cmd, "--transfer"), _flag(cmd, "--colorprim"), _flag(cmd, "--colormatrix")) == ("smpte2084", "bt2020", "bt2020nc")
 
     def test_dynamic_copy_keeps_source_static_metadata(self):
-        v = VideoEncodeSettings(codec="nvencc_hevc", copy_hdr10plus=True)
+        v = VideoEncodeSettings(codec="nvencc_hevc", copy_hdr10plus=True, inject_hdr_meta=True)
         cmd = build_nvencc_command("nvencc", v, "/tmp/o.mkv", input_path="/tmp/src.mkv")
         assert (_flag(cmd, "--transfer"), _flag(cmd, "--master-display"), _flag(cmd, "--max-cll")) == ("auto", "copy", "copy")
+
+    def test_dynamic_copy_without_static_checkbox_sends_no_static_metadata(self):
+        v = VideoEncodeSettings(codec="nvencc_hevc", copy_hdr10plus=True)
+        cmd = build_nvencc_command("nvencc", v, "/tmp/o.mkv", input_path="/tmp/src.mkv")
+        assert _flag(cmd, "--transfer") == "auto"
+        assert _flag(cmd, "--master-display") is None
+        assert _flag(cmd, "--max-cll") is None
 
     @pytest.mark.parametrize("extra", [{}, {"tonemap_to_sdr": True, "inject_hdr_meta": True}])
     def test_sdr_or_tonemap_has_no_hdr_vui(self, extra):

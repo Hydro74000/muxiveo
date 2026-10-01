@@ -17,6 +17,7 @@ from core.workflows.encode.catalog import (
     supports_dovi,
     supports_dynamic_hdr,
     supports_hdr10plus,
+    supports_hdr_output,
     supports_manual_static_hdr_metadata,
 )
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
@@ -43,6 +44,7 @@ class FfmpegEncodeBackend(EncodeBackend):
             supports_dovi=supports_dovi(codec),
             supports_hdr10plus=supports_hdr10plus(codec),
             supports_manual_static_hdr=supports_manual_static_hdr_metadata(codec),
+            supports_hdr=supports_hdr_output(codec),
             supports_tonemap=True,
             supports_multi_video=True,
             supports_main_filters=True,

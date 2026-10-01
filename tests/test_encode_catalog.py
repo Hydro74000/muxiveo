@@ -124,3 +124,33 @@ class TestAudioCodecSpecs:
         assert isinstance(spec, AudioCodecSpec)
         assert spec.lossless is True
         assert spec.supports_bitrate is False
+
+
+class TestVideoCodecHdrCapabilities:
+    def test_table_is_single_source_for_hdr_helpers(self):
+        from core.workflows.encode.catalog import (
+            VIDEO_CODEC_HDR_CAPABILITIES,
+            hdr_capabilities,
+            supports_dovi,
+            supports_hdr10plus,
+            supports_hdr_output,
+        )
+
+        for codec, caps in VIDEO_CODEC_HDR_CAPABILITIES.items():
+            assert supports_hdr_output(codec) is caps.hdr
+            assert supports_dovi(codec) is caps.dovi
+            assert supports_hdr10plus(codec) is caps.hdr10plus
+            assert supports_dynamic_hdr(codec) is caps.dynamic
+            assert supports_manual_static_hdr_metadata(codec) is caps.manual_static
+            assert static_hdr_metadata_mode(codec) is caps.static_mode
+            # Aucun HDR dynamique/statique sans flux HDR possible.
+            assert caps.hdr or not (caps.dynamic or caps.manual_static)
+        assert hdr_capabilities("unknown_codec").hdr is False
+
+    def test_h264_codecs_are_sdr_only(self):
+        from core.workflows.encode.catalog import H264_VIDEO_CODECS, supports_hdr_output
+
+        for codec in H264_VIDEO_CODECS:
+            assert supports_hdr_output(codec) is False
+        assert supports_hdr_output("copy") is True
+        assert supports_hdr_output("libsvtav1") is True

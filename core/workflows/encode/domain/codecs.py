@@ -14,6 +14,7 @@ from core.workflows.encode.catalog import (
     is_h264_video_codec,
     needs_static_hdr_bitstream_patch_codec,
     supports_10bit,
+    supports_hdr_output,
 )
 from core.workflows.encode.models import (
     AudioTrackSettings,
@@ -154,7 +155,7 @@ def x265_params(video: VideoEncodeSettings) -> str:
 
 
 def requests_hdr_metadata(video: VideoEncodeSettings) -> bool:
-    if video.tonemap_to_sdr:
+    if video.tonemap_to_sdr or not supports_hdr_output(video.codec):
         return False
     return bool(video.inject_hdr_meta or video.copy_dv or video.copy_hdr10plus)
 
@@ -178,12 +179,13 @@ def should_reinject_static_hdr_metadata(video: VideoEncodeSettings) -> bool:
     les exposait correctement. L'injection est idempotente et ne duplique
     pas les SEI déjà présents.
     """
-    if not requests_hdr_metadata(video):
+    # Case HDR10 statique décochée : aucune métadonnée statique, même si
+    # des valeurs sont renseignées ou qu'un HDR dynamique est conservé.
+    if not video.inject_hdr_meta or not requests_hdr_metadata(video):
         return False
     if video.codec == "copy":
         return bool(
-            video.inject_hdr_meta
-            and video.copy_dv
+            video.copy_dv
             and str(video.dovi_profile or "0").strip() == "2"
             and (video.master_display or video.max_cll)
         )
@@ -817,7 +819,7 @@ def nvenc_device_args(callbacks: EncodeCodecDomainCallbacks) -> list[str]:
 
 
 def hdr_meta_args(video: VideoEncodeSettings) -> list[str]:
-    if video.codec in ("copy", "libx264", "h264_nvenc", "h264_amf", "h264_qsv", "h264_vaapi"):
+    if video.codec == "copy" or not supports_hdr_output(video.codec):
         return []
     # VUI tagging — placés en options output (après -c:v) pour qu'ffmpeg les
     # attache au flux encodé et non au décodeur d'entrée. Couvre tous les

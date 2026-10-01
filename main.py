@@ -13,15 +13,48 @@ ROOT = Path(__file__).parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+APP_ICON_PATH = ROOT / "ui" / "assets" / "muxiveo.png"
+
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QMessageBox, QPushButton
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtWidgets import QMessageBox, QPushButton, QSplashScreen
 
 from core.config import AppConfig
 from core.i18n import set_current_language, translate_text
 from core.version import APP_NAME, APP_VERSION
-from ui.design_system import DesignSystem
+from ui.design_system import DesignSystem, colors
+
+
+def _show_startup_splash(app: QApplication) -> QSplashScreen:
+    """Retour visuel immédiat pendant la construction de la fenêtre principale.
+
+    Au premier lancement (antivirus analysant les binaires fraîchement
+    installés), plusieurs secondes peuvent s'écouler sans aucune fenêtre.
+    """
+    width, height = DesignSystem.scale(360), DesignSystem.scale(220)
+    pixmap = QPixmap(width, height)
+    pixmap.fill(QColor(colors.BG_DEEP))
+    icon = QPixmap(str(APP_ICON_PATH))
+    if not icon.isNull():
+        size = DesignSystem.scale(112)
+        icon = icon.scaled(
+            size, size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        painter = QPainter(pixmap)
+        painter.drawPixmap((width - icon.width()) // 2, DesignSystem.scale(24), icon)
+        painter.end()
+    splash = QSplashScreen(pixmap)
+    splash.showMessage(
+        f"{APP_NAME} {APP_VERSION} — " + translate_text("Chargement…"),
+        Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom,
+        QColor(colors.TEXT_PRI),
+    )
+    splash.show()
+    app.processEvents()
+    return splash
 
 
 def _prompt_work_dir_cleanup(config: AppConfig) -> None:
@@ -114,6 +147,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         app = app_instance
     app.setApplicationName(APP_NAME)
+    if APP_ICON_PATH.is_file():
+        app.setWindowIcon(QIcon(str(APP_ICON_PATH)))
     app.setApplicationVersion(APP_VERSION)
     app.setOrganizationName(APP_NAME)
 
@@ -130,6 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     DesignSystem.apply_to_application(app)
     set_current_language(config.language)
     _prompt_work_dir_cleanup(config)
+    splash = _show_startup_splash(app)
 
     # Fenêtre principale
     from ui.main_window import MainWindow
@@ -138,6 +174,7 @@ def main(argv: list[str] | None = None) -> int:
         startup_items: list[Path | str] = list(startup_paths)
         QTimer.singleShot(0, lambda: window.open_startup_paths(startup_items))
     window.show()
+    splash.finish(window)
 
     return app.exec()
 

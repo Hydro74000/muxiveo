@@ -10,6 +10,7 @@ from core.workflows.common.track_types import TrackTimeOffset
 from core.workflows.encode.catalog import (
     supports_dovi,
     supports_hdr10plus,
+    supports_hdr_output,
 )
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
 from core.workflows.encode.planning.plan_models import PlannedVideoTrack
@@ -77,6 +78,16 @@ def validate_encode_config(
             errors.append(
                 f"Piste vidéo #{index} — codec copy incompatible avec les transformations vidéo."
             )
+        if video.inject_hdr_meta and not video.tonemap_to_sdr and not supports_hdr_output(video.codec):
+            errors.append(
+                f"Piste vidéo #{index} — Le codec '{video.codec}' ne peut pas porter de métadonnées HDR. "
+                "Suggestion : utilisez un codec HEVC/AV1 ou le tone-mapping HDR → SDR."
+            )
+        if video.tonemap_to_sdr and (video.copy_dv or video.copy_hdr10plus):
+            errors.append(
+                f"Piste vidéo #{index} — le tone-mapping HDR → SDR est incompatible "
+                "avec la copie Dolby Vision / HDR10+."
+            )
         if video.copy_dv and not supports_dovi(video.codec):
             if video.codec == "hevc_nvenc":
                 errors.append(
@@ -85,7 +96,7 @@ def validate_encode_config(
                     "ou de rejet sur téléviseur). Suggestion : utilisez l'encodeur matériel dédié 'NVEncC (rigaya)' "
                     "(codec 'nvencc_hevc') qui intègre libdovi nativement, ou passez la vidéo en mode 'copy' (passthrough)."
                 )
-            elif str(video.codec or "").startswith("nvencc_") and video.codec != "nvencc_hevc":
+            elif str(video.codec or "").startswith("nvencc_"):
                 errors.append(
                     f"Piste vidéo #{index} — {video.codec} ne supporte pas le profil Dolby Vision. "
                     "Suggestion : sélectionnez 'nvencc_hevc'."

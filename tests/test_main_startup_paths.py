@@ -34,6 +34,7 @@ def test_main_routes_startup_file_to_main_window(tmp_path) -> None:
             self.setApplicationName = MagicMock()
             self.setApplicationVersion = MagicMock()
             self.setOrganizationName = MagicMock()
+            self.setWindowIcon = MagicMock()
             self.setFont = MagicMock()
             self.exec = MagicMock(return_value=0)
 
@@ -81,6 +82,8 @@ def test_main_routes_startup_file_to_main_window(tmp_path) -> None:
          patch.object(main_mod, "DesignSystem", autospec=True) as mock_design, \
          patch.object(main_mod, "set_current_language") as mock_set_language, \
          patch.object(main_mod, "_prompt_work_dir_cleanup") as mock_cleanup, \
+         patch.object(main_mod, "_show_startup_splash") as mock_splash, \
+         patch.object(main_mod, "QIcon"), \
          patch.object(main_mod.QTimer, "singleShot", side_effect=fake_single_shot), \
          patch.dict("sys.modules", {"ui.main_window": fake_ui_main_window}), \
          patch.object(main_mod.sys, "argv", ["Muxiveo", str(startup_file), "--verbose"]):
@@ -93,6 +96,7 @@ def test_main_routes_startup_file_to_main_window(tmp_path) -> None:
     mock_design.apply_to_application.assert_called_once_with(fake_app)
     mock_set_language.assert_called_once_with("eng")
     mock_cleanup.assert_called_once_with(fake_config)
+    mock_splash.return_value.finish.assert_called_once()
     fake_app.setApplicationName.assert_called_once_with("Muxiveo")
     fake_app.setApplicationVersion.assert_called_once()
     fake_app.setOrganizationName.assert_called_once_with("Muxiveo")

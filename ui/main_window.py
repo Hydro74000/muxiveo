@@ -706,6 +706,7 @@ class DashboardPage(QWidget):
     """Page d'accueil — résumé des outils disponibles et raccourcis."""
 
     _hw_detected = Signal(object)   # set[str] — encodeurs HW disponibles
+    _sw_detected = Signal(object)   # dict[str, bool] — encodeurs logiciels/audio
 
     # codec_id → (label affiché, badge QLabel) pour mise à jour async
     _HW_VIDEO: list[tuple[str, str]] = [
@@ -732,8 +733,10 @@ class DashboardPage(QWidget):
         self._config = config
         self._log = log
         self._hw_badges: dict[str, tuple[QLabel, str]] = {}   # codec_id → (badge, label)
+        self._sw_badges: dict[str, tuple[QLabel, str]] = {}   # codec_id → (badge, label)
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._hw_detected.connect(self._on_hw_detected, Qt.ConnectionType.QueuedConnection)
+        self._sw_detected.connect(self._on_sw_detected, Qt.ConnectionType.QueuedConnection)
         self._build_ui()
         self._start_hw_detection()
 
@@ -885,13 +888,14 @@ class DashboardPage(QWidget):
     # ------------------------------------------------------------------
 
     def _build_encoder_section(self, root: QVBoxLayout) -> None:
-        """Ajoute la section encodeurs au layout root. Détection SW synchrone, HW asynchrone."""
-        self._hw_badges = {}
-        ffmpeg_bin = self._config.tool_ffmpeg
+        """Ajoute la section encodeurs au layout root (détections SW et HW asynchrones).
 
-        # Détection synchrone des encodeurs logiciels via ffmpeg -encoders
-        all_sw_ids = [c for c, _ in self._SW_VIDEO] + [c for c, _ in self._AUDIO]
-        sw_avail = self._scan_encoder_availability(ffmpeg_bin, all_sw_ids)
+        Aucun appel outil ici : au premier lancement Windows, l'analyse
+        antivirus des binaires fraîchement installés retardait l'affichage
+        de la fenêtre de plusieurs secondes.
+        """
+        self._hw_badges = {}
+        self._sw_badges = {}
 
         # Séparateur + titre
         sep = QFrame()
@@ -923,8 +927,9 @@ class DashboardPage(QWidget):
         # Vidéo logiciel
         row, rl = _row("Vidéo — logiciel")
         for codec_id, label in self._SW_VIDEO:
-            state = "available" if sw_avail.get(codec_id) else "unavailable"
-            rl.addWidget(self._make_encoder_badge(label, state))
+            badge = self._make_encoder_badge(label, "pending")
+            self._sw_badges[codec_id] = (badge, label)
+            rl.addWidget(badge)
         rl.addStretch()
         root.addWidget(row)
 
@@ -958,8 +963,9 @@ class DashboardPage(QWidget):
         # Audio
         row, rl = _row("Audio")
         for codec_id, label in self._AUDIO:
-            state = "available" if sw_avail.get(codec_id) else "unavailable"
-            rl.addWidget(self._make_encoder_badge(label, state))
+            badge = self._make_encoder_badge(label, "pending")
+            self._sw_badges[codec_id] = (badge, label)
+            rl.addWidget(badge)
         rl.addStretch()
         root.addWidget(row)
 
@@ -979,6 +985,7 @@ class DashboardPage(QWidget):
                 [resolved, "-hide_banner", "-encoders"],
                 capture_output=True,
                 check=False,
+                timeout=120,
                 **subprocess_text_kwargs(),
             )
             encoders_output = "\n".join(part for part in (result.stdout, result.stderr) if part)
@@ -986,7 +993,7 @@ class DashboardPage(QWidget):
                 codec_id: bool(re.search(rf"\b{re.escape(codec_id)}\b", encoders_output))
                 for codec_id in codec_ids
             }
-        except FileNotFoundError:
+        except (OSError, subprocess.TimeoutExpired):
             return {codec_id: False for codec_id in codec_ids}
 
     def _apply_encoder_badge_state(self, badge: QLabel, label: str, state: str) -> None:
@@ -1011,10 +1018,22 @@ class DashboardPage(QWidget):
     # ------------------------------------------------------------------
 
     def _start_hw_detection(self) -> None:
-        """Remet les badges HW en état "pending" et soumet la détection à l'executor."""
-        for codec_id, (badge, label) in self._hw_badges.items():
+        """Remet les badges SW/HW en état "pending" et soumet les détections à l'executor."""
+        for badge, label in (*self._sw_badges.values(), *self._hw_badges.values()):
             self._apply_encoder_badge_state(badge, label, "pending")
+        self._executor.submit(self._run_sw_detection)
         self._executor.submit(self._run_hw_detection)
+
+    def _run_sw_detection(self) -> None:
+        """Thread worker : encodeurs logiciels/audio listés par ``ffmpeg -encoders``."""
+        codec_ids = [c for c, _ in self._SW_VIDEO] + [c for c, _ in self._AUDIO]
+        self._sw_detected.emit(self._scan_encoder_availability(self._config.tool_ffmpeg, codec_ids))
+
+    def _on_sw_detected(self, available: dict[str, bool]) -> None:
+        """Slot Qt (thread principal) : met à jour les badges logiciels/audio."""
+        for codec_id, (badge, label) in self._sw_badges.items():
+            state = "available" if available.get(codec_id) else "unavailable"
+            self._apply_encoder_badge_state(badge, label, state)
 
     def _run_hw_detection(self) -> None:
         """Thread worker : probe runtime de chaque encodeur HW."""

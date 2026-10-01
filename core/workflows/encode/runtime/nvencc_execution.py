@@ -5,7 +5,7 @@ from __future__ import annotations
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -429,12 +429,6 @@ class NvenccDirectOutputRunner:
                 runtime_video = routing.video
                 if video.copy_dv and not runtime_video.copy_dv:
                     cb.log_info("Redimensionnement NVEncC : copie Dolby Vision désactivée ; aucun alignement DV imposé.")
-
-                if (
-                    not runtime_video.inject_hdr_meta
-                    and (runtime_video.master_display or runtime_video.max_cll)
-                ):
-                    runtime_video = replace(runtime_video, inject_hdr_meta=True)
 
                 if routing.rebased_to_source:
                     cb.log_info(

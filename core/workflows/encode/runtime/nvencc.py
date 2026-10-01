@@ -28,6 +28,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from core.bluray import append_ffmpeg_input_args
+from core.workflows.encode.catalog import hdr_capabilities, supports_hdr_output
 from core.subprocess_utils import subprocess_text_kwargs
 from core.workflows.encode.models import (
     QualityMode,
@@ -45,15 +46,14 @@ NVENCC_VIDEO_CODECS: frozenset[str] = frozenset({
     "nvencc_av1",
 })
 
-NVENCC_DYNAMIC_HDR_CODECS: frozenset[str] = frozenset({
-    "nvencc_hevc",
-    "nvencc_av1",
-})
+# Vues dérivées de la table de compatibilité HDR du catalogue.
+NVENCC_DYNAMIC_HDR_CODECS: frozenset[str] = frozenset(
+    codec for codec in NVENCC_VIDEO_CODECS if hdr_capabilities(codec).dynamic
+)
 
-NVENCC_MANUAL_STATIC_HDR_CODECS: frozenset[str] = frozenset({
-    "nvencc_hevc",
-    "nvencc_av1",
-})
+NVENCC_MANUAL_STATIC_HDR_CODECS: frozenset[str] = frozenset(
+    codec for codec in NVENCC_VIDEO_CODECS if hdr_capabilities(codec).manual_static
+)
 
 NVENCC_WORKFLOW_OWNED_FLAGS: frozenset[str] = frozenset({
     "--master-display",
@@ -115,15 +115,11 @@ def is_nvencc_codec(codec: str | None) -> bool:
 
 
 def nvencc_supports_dynamic_hdr(codec: str | None) -> bool:
-    if not codec:
-        return False
-    return str(codec).strip().lower() in NVENCC_DYNAMIC_HDR_CODECS
+    return is_nvencc_codec(codec) and hdr_capabilities(codec).dynamic
 
 
 def nvencc_supports_manual_static_hdr(codec: str | None) -> bool:
-    if not codec:
-        return False
-    return str(codec).strip().lower() in NVENCC_MANUAL_STATIC_HDR_CODECS
+    return is_nvencc_codec(codec) and hdr_capabilities(codec).manual_static
 
 
 def nvencc_binary_name() -> str:
@@ -322,7 +318,7 @@ def _output_depth_args(video: VideoEncodeSettings) -> list[str]:
     keeps_hdr = not getattr(video, "tonemap_to_sdr", False) and any(
         getattr(video, name, False) for name in ("copy_dv", "copy_hdr10plus", "inject_hdr_meta")
     )
-    if keeps_hdr and not is_h264:
+    if keeps_hdr and supports_hdr_output(video.codec):
         return ["--output-depth", "10"]
     return []
 
@@ -330,7 +326,11 @@ def _output_depth_args(video: VideoEncodeSettings) -> list[str]:
 def _hdr_static_args(video: VideoEncodeSettings) -> list[str]:
     """Métadonnées HDR statiques (master display + MaxCLL/MaxFALL)."""
     args: list[str] = []
-    if not getattr(video, "inject_hdr_meta", False):
+    if (
+        not getattr(video, "inject_hdr_meta", False)
+        or getattr(video, "tonemap_to_sdr", False)
+        or not nvencc_supports_manual_static_hdr(video.codec)
+    ):
         return args
     md = (video.master_display or "").strip()
     if md:
@@ -388,7 +388,8 @@ def _auto_source_hdr_args(video: VideoEncodeSettings, *, direct_input: bool) -> 
     lu comme SDR : la VUI doit suivre dès qu'un HDR statique ou dynamique est
     conservé. Le y4m ne transporte pas la couleur : HDR10 statique = BT.2020/PQ.
     """
-    if getattr(video, "tonemap_to_sdr", False):
+    # NVEncC H.264 refuse toute signalisation HDR (--master-display/--max-cll).
+    if getattr(video, "tonemap_to_sdr", False) or not supports_hdr_output(video.codec):
         return []
     dynamic = bool(getattr(video, "copy_dv", False) or getattr(video, "copy_hdr10plus", False))
     static = bool(getattr(video, "inject_hdr_meta", False))
@@ -405,9 +406,10 @@ def _auto_source_hdr_args(video: VideoEncodeSettings, *, direct_input: bool) -> 
         "--transfer", "auto",
         "--chromaloc", "auto",
     ]
-    if not static or not video.master_display:
+    # Case HDR10 statique décochée : ni valeurs ni recopie source.
+    if static and not video.master_display:
         args.extend(["--master-display", "copy"])
-    if not static or not video.max_cll:
+    if static and not video.max_cll:
         args.extend(["--max-cll", "copy"])
     return args
 

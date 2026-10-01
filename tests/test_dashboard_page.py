@@ -45,3 +45,19 @@ def test_dashboard_hw_detection_uses_configured_ffmpeg_path():
 
     mock_detect.assert_called_once_with(custom_ffmpeg, nvencc_bin=None)
     assert emitted == [{"hevc_nvenc"}]
+
+
+def test_dashboard_sw_detection_runs_off_ui_thread_and_emits_states():
+    custom_ffmpeg = r"C:\Tools\ffmpeg\bin\ffmpeg.exe"
+    emitted: list[dict[str, bool]] = []
+    fake_page = SimpleNamespace(
+        _config=SimpleNamespace(tool_ffmpeg=custom_ffmpeg),
+        _SW_VIDEO=[("libx265", "x265")],
+        _AUDIO=[("aac", "AAC")],
+        _sw_detected=SimpleNamespace(emit=emitted.append),
+        _scan_encoder_availability=lambda ffmpeg, ids: {codec: codec == "aac" for codec in ids},
+    )
+
+    DashboardPage._run_sw_detection(cast(Any, fake_page))
+
+    assert emitted == [{"libx265": False, "aac": True}]
