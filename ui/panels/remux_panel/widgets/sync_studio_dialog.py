@@ -876,7 +876,7 @@ class SyncStudioDialog(QDialog):
                 if is_sub:
                     # Pour les sous-titres, extraire l'audio de référence à écouter
                     audio_source = self.reference_source_path or self.target_source_path
-                    audio_stream = self.reference_stream_index if (self.reference_entry and not self.reference_entry.is_subtitle) else 0
+                    audio_stream = self.reference_stream_index if (self.reference_entry and not self.reference_entry.is_subtitle) else "a:0"
                     cmd = [
                         self.ffmpeg_bin,
                         "-nostdin",

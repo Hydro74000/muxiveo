@@ -144,10 +144,26 @@ def format_returncode(returncode: int | None) -> str:
     return str(code)
 
 
+_WINDOWS_SYSTEM_DIR_FALLBACK = r"C:\Windows\System32"
+
+
+def _windows_system_directory() -> str:
+    """Dossier système Windows via GetSystemDirectoryW (ni PATH ni variable d'environnement)."""
+    try:
+        import ctypes
+
+        buffer = ctypes.create_unicode_buffer(260)
+        length = ctypes.windll.kernel32.GetSystemDirectoryW(buffer, len(buffer))  # type: ignore[attr-defined]
+        if 0 < length < len(buffer):
+            return buffer.value
+    except (AttributeError, OSError):
+        pass
+    return _WINDOWS_SYSTEM_DIR_FALLBACK
+
+
 def _windows_taskkill_path() -> Path:
-    """Chemin absolu de taskkill.exe (évite la résolution via PATH)."""
-    system_root = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
-    return Path(system_root) / "System32" / "taskkill.exe"
+    """Chemin absolu de taskkill.exe, non influençable par l'environnement."""
+    return Path(_windows_system_directory()) / "taskkill.exe"
 
 
 def kill_process_tree(proc: subprocess.Popen | None, timeout: float = 0.5) -> None:
@@ -172,7 +188,8 @@ def kill_process_tree(proc: subprocess.Popen | None, timeout: float = 0.5) -> No
     pid = getattr(proc, "pid", None)
     if sys.platform == "win32" and pid is not None:
         with suppress(Exception):
-            subprocess.run(  # nosec B603  # argv fixe, binaire système absolu, PID entier
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            subprocess.run(  # nosec B603  # nosemgrep  # argv fixe, binaire système absolu, PID entier
                 [str(_windows_taskkill_path()), "/F", "/T", "/PID", str(int(pid))],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

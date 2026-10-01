@@ -7,6 +7,7 @@ n'utilisaient que QCoreApplication continuent de fonctionner.
 """
 from __future__ import annotations
 
+import os
 import sys
 
 import pytest
@@ -34,6 +35,9 @@ def qt_app():
     QApplication partagée (widgets). Créée uniquement à la demande : les
     workflows CI sans deps Qt complètes (ex. encode-integration) peuvent
     exécuter leurs tests sans jamais instancier QApplication.
+
+    Seule source d'instance Qt de la suite : un module qui créerait sa propre
+    QCoreApplication rendrait impossibles les tests de widgets exécutés après.
     """
     existing = QCoreApplication.instance()
     if isinstance(existing, QApplication):
@@ -43,4 +47,11 @@ def qt_app():
             "QCoreApplication déjà créée sans être une QApplication : "
             "impossible d'instancier des widgets Qt."
         )
+    # Sans affichage, QApplication avorte (qFatal) au lieu de lever une exception.
+    if (
+        sys.platform.startswith("linux")
+        and not os.environ.get("DISPLAY")
+        and not os.environ.get("WAYLAND_DISPLAY")
+    ):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     return QApplication(sys.argv)

@@ -1405,25 +1405,25 @@ class RemuxPanel(QWidget):
         target_family = self._audio_sync_family(target)
         if target_family is None:
             return choices
-        seen_sources: set[str] = set()
+        seen_entries: set[str] = set()
         for sf in self._source_files:
-            if sf.id == target.file_id or sf.id in seen_sources:
+            if sf.id == target.file_id:
                 continue
-            candidates = [
-                entry for entry in self._track_table.current_tracks()
-                if entry.file_id == sf.id
-                and entry.track_type == "audio"
-                and self._audio_sync_family(entry) == target_family
-            ]
-            if not candidates:
-                continue
-            ref = candidates[0]
-            title = f" - {ref.title}" if ref.title else ""
-            choices.append((
-                f"{sf.path.name} | #{ref.mkv_tid} {ref.codec} {ref.display_info}{title}",
-                ref,
-            ))
-            seen_sources.add(sf.id)
+            for ref in self._track_table.current_tracks():
+                if (
+                    ref.file_id != sf.id
+                    or ref.track_type != "audio"
+                    or ref.entry_id in seen_entries
+                    or self._audio_sync_family(ref) != target_family
+                ):
+                    continue
+                seen_entries.add(ref.entry_id)
+                lang = f" [{ref.language}]" if ref.language else ""
+                title = f" - {ref.title}" if ref.title else ""
+                choices.append((
+                    f"{sf.path.name} | #{ref.mkv_tid} {ref.codec} {ref.display_info}{lang}{title}",
+                    ref,
+                ))
         return choices
 
     def _subtitle_sync_reference_choices(self, target: TrackEntry) -> list[tuple[str, TrackEntry]]:

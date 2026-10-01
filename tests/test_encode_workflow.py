@@ -101,7 +101,6 @@ from __future__ import annotations
 # ruff: noqa: E402
 
 import json
-import sys
 import threading
 import time
 from contextlib import ExitStack
@@ -117,19 +116,15 @@ import core.workflows.encode.workflow as encode_workflow_mod
 from core.workflows.encode.runtime import ram_buffer as _ram_buffer_mod
 from core.workflows.encode.domain.codecs import hdr_meta_args as _hdr_meta_args
 
-_app: QCoreApplication | None = None
-
-
 def _get_app() -> QCoreApplication:
-    global _app
-    if _app is None:
-        _app = QCoreApplication.instance() or QCoreApplication(sys.argv)
-    return _app
+    app = QCoreApplication.instance()
+    assert app is not None, "fixture qt_app (conftest) requise"
+    return app
 
 
 @pytest.fixture(autouse=True)
-def qt_app():
-    return _get_app()
+def _ensure_qt_app(qt_app):
+    return qt_app
 
 
 from core.workflows.encode import (

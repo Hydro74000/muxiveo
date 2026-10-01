@@ -175,3 +175,26 @@ def test_positive_delay_longer_than_probe_preserves_beginning_and_tail():
     segments, _, samples = scan_envelopes(ref, donor)
     assert len(segments) == 1 and segments[0].shift_ms == 18000
     assert samples[-1]['start_ms'] > len(donor) - 8000
+
+
+def test_audio_reference_choices_list_every_compatible_track_of_other_sources():
+    from pathlib import Path
+    from types import SimpleNamespace
+    from ui.panels.remux_panel import panel
+
+    def track(entry_id, file_id, tid, info="5.1"):
+        return SimpleNamespace(
+            entry_id=entry_id, file_id=file_id, mkv_tid=tid, track_type="audio",
+            codec="ac3", display_info=info, language="", title="",
+        )
+
+    target = track("t", "A", 1)
+    tracks = [target, track("b2", "B", 2), track("b1", "B", 1), track("b3", "B", 3, "stereo")]
+    fake = SimpleNamespace(
+        _source_files=[SimpleNamespace(id="A", path=Path("a.mkv")), SimpleNamespace(id="B", path=Path("b.mkv"))],
+        _track_table=SimpleNamespace(current_tracks=lambda: tracks),
+        _audio_sync_family=panel.RemuxPanel._audio_sync_family,
+    )
+    choices = panel.RemuxPanel._audio_sync_reference_choices(cast(Any, fake), cast(Any, target))
+    # Ordre du tableau conservé (pistes réordonnées), piste stéréo exclue.
+    assert [entry.entry_id for _label, entry in choices] == ["b2", "b1"]

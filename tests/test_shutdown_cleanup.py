@@ -7,6 +7,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from core.subprocess_utils import kill_process_tree
 from core.workflows.remux_timeline_sync import LiveSyncSession
 
@@ -269,11 +271,23 @@ def test_shutdown_accepts_cancelled_queued_work(qt_app):
     assert shutdown.done.wait(5)
 
 
-def test_windows_taskkill_path_is_absolute(monkeypatch) -> None:
-    """taskkill est résolu depuis SystemRoot, jamais via PATH."""
-    from core.subprocess_utils import _windows_taskkill_path
+def test_windows_taskkill_path_ignores_environment(monkeypatch) -> None:
+    """taskkill est résolu via l'API système, jamais via PATH ni SystemRoot."""
+    import core.subprocess_utils as subprocess_utils
 
-    monkeypatch.setenv("SystemRoot", r"D:\Win")
-    path = _windows_taskkill_path()
-    assert str(path).startswith(r"D:\Win")
+    monkeypatch.setenv("SystemRoot", r"D:\Evil")
+    monkeypatch.setenv("windir", r"D:\Evil")
+    monkeypatch.setattr(subprocess_utils, "_windows_system_directory", lambda: r"C:\Windows\System32")
+    path = subprocess_utils._windows_taskkill_path()
+    assert str(path).startswith(r"C:\Windows\System32")
+    assert "Evil" not in str(path)
     assert path.name == "taskkill.exe"
+
+
+def test_windows_system_directory_falls_back_without_windll() -> None:
+    """Hors Windows (pas de ctypes.windll) : repli sur le dossier système standard."""
+    from core.subprocess_utils import _WINDOWS_SYSTEM_DIR_FALLBACK, _windows_system_directory
+
+    if sys.platform == "win32":
+        pytest.skip("windll disponible sous Windows")
+    assert _windows_system_directory() == _WINDOWS_SYSTEM_DIR_FALLBACK
