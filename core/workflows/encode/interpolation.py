@@ -18,11 +18,15 @@ Public:
 from __future__ import annotations
 
 import json
+import subprocess
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 
-from core.bluray import append_ffmpeg_input_args
+from core.bluray import append_ffmpeg_input_args, ffprobe_input_args
+from core.matroska.editors.dovi import minimum_dovi_level
+from core.subprocess_utils import subprocess_text_kwargs
 from core.pipeline_command import PipelineCommand, command_stages
 
 # Préréglage qualité → modèle RIFE embarqué (voir native/muxiveo-rife/models.json).
@@ -321,6 +325,75 @@ def expand_dynamic_hdr_metadata(
             log(f"Interpolation x{factor} : métadonnées HDR10+ étendues à {count} trames.")
 
 
+def multiply_fps_expr(expr: str | float | None, factor: int) -> str | None:
+    """Cadence ``expr`` (``"24000/1001"`` ou nombre) multipliée par ``factor``."""
+    if expr in (None, ""):
+        return None
+    try:
+        value = Fraction(str(expr)) * max(1, int(factor))
+    except (ValueError, ZeroDivisionError):
+        return None
+    return f"{value.numerator}/{value.denominator}"
+
+
+def ffprobe_beside(ffmpeg_bin: str) -> str:
+    """ffprobe livré à côté de ``ffmpeg_bin`` (sinon résolution par le PATH)."""
+    path = Path(ffmpeg_bin)
+    if path.parent != Path("."):
+        return str(path.with_name("ffprobe" + path.suffix))
+    return "ffprobe"
+
+
+def required_dovi_level(ffprobe_bin: str, source: Path, stream_index: int, factor: int) -> int | None:
+    """Niveau Dolby Vision minimal de la sortie interpolée (dimensions source, cadence × facteur)."""
+    cmd = [ffprobe_bin, "-v", "error", "-print_format", "json", "-show_streams"]
+    cmd.extend(ffprobe_input_args(source))
+    try:
+        result = subprocess.run(cmd, capture_output=True, check=False, timeout=30, **subprocess_text_kwargs())
+        streams = json.loads(result.stdout or "{}").get("streams") or []
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    stream = next((s for s in streams if int(s.get("index", -1)) == int(stream_index)), None)
+    if stream is None:
+        return None
+    try:
+        fps = float(Fraction(str(stream.get("avg_frame_rate") or stream.get("r_frame_rate") or "0")))
+    except (ValueError, ZeroDivisionError):
+        return None
+    width, height = int(stream.get("width") or 0), int(stream.get("height") or 0)
+    if fps <= 0 or width <= 0 or height <= 0:
+        return None
+    return minimum_dovi_level(width, height, fps * max(1, int(factor)))
+
+
+def extract_hdr10plus_metadata(
+    *,
+    source: Path,
+    stream_index: int,
+    ffmpeg_bin: str,
+    hdr10plus_bin: str,
+    output_json: Path,
+    work_dir: Path,
+    run_cmd: Callable[[list[str]], object],
+    cleanup_paths: list[Path],
+) -> Path:
+    """Extrait le JSON HDR10+ (MKV/HEVC direct, autres conteneurs via Annex B)."""
+    meta_input = source
+    if source.suffix.lower() not in {".mkv", ".hevc", ".h265", ".265", ".x265"} or stream_index != 0:
+        meta_input = work_dir / "source_hdr10plus.hevc"
+        cleanup_paths.append(meta_input)
+        cmd = [ffmpeg_bin, "-nostdin", "-y"]
+        append_ffmpeg_input_args(cmd, source)
+        cmd.extend(["-map", f"0:{stream_index}", "-c:v", "copy", "-bsf:v", "hevc_mp4toannexb",
+                    "-f", "hevc", str(meta_input)])
+        run_cmd(cmd)
+    output_json.unlink(missing_ok=True)
+    run_cmd([hdr10plus_bin, "extract", str(meta_input), "-o", str(output_json)])
+    if meta_input != source:
+        meta_input.unlink(missing_ok=True)
+    return output_json
+
+
 __all__ = [
     "INTERPOLATION_DEFAULT_QUALITY",
     "INTERPOLATION_FACTORS",
@@ -334,5 +407,9 @@ __all__ = [
     "expand_dynamic_hdr_metadata",
     "expand_hdr10plus_json",
     "expand_rpu_file",
+    "extract_hdr10plus_metadata",
+    "ffprobe_beside",
     "interpolation_source_from_probe",
+    "multiply_fps_expr",
+    "required_dovi_level",
 ]

@@ -11,6 +11,11 @@ from typing import Callable
 
 from core.bluray import append_ffmpeg_input_args, is_bluray_playlist
 from core.pipeline_command import command_preview_tokens, command_stages
+from core.workflows.encode.interpolation import (
+    expand_dynamic_hdr_metadata as _expand_dynamic_hdr_metadata,
+    extract_hdr10plus_metadata as _extract_hdr10plus_metadata,
+    multiply_fps_expr as _multiply_fps_expr,
+)
 from core.runner import TaskCancelledError, TaskSignals
 from core.subprocess_utils import (
     decode_subprocess_output,
@@ -523,6 +528,52 @@ class NvenccDirectOutputRunner:
                     )
                     dovi_rpu_path = padded_rpu
 
+                # Interpolation RIFE : NVEncC lit un pipe y4m, la copie DoVi /
+                # HDR10+ depuis la source est impossible ; les métadonnées sont
+                # extraites, étendues à la cadence interpolée et fournies en fichiers.
+                multiplier = runtime_video.frame_multiplier() if needs_ffmpeg_pipe else 1
+                hdr10plus_json_path: Path | None = None
+                if multiplier > 1 and (runtime_video.copy_dv or runtime_video.copy_hdr10plus):
+                    dovi_bin = (cb.bins.get("dovi_tool") if cb.bins else None) or "dovi_tool"
+                    hdr10plus_bin = (cb.bins.get("hdr10plus_tool") if cb.bins else None) or "hdr10plus_tool"
+
+                    def run_interp_metadata(cmd: list[str]) -> object:
+                        cb.check_cancelled(signals)
+                        return cb.run_cmd(cmd, cwd, "interpolation-metadata",
+                                          lambda line: signals.progress.emit(line), signals)
+
+                    if runtime_video.copy_dv and dovi_rpu_path is None:
+                        from core.workflows.encode.runtime.dovi_geometry import extract_dovi_rpu
+
+                        source_rpu = cwd / "source_rpu.bin"
+                        cleanup_paths.append(source_rpu)
+                        signals.progress.emit("Extraction RPU Dolby Vision…")
+                        dovi_rpu_path = extract_dovi_rpu(
+                            source=routing.input_path, stream_index=routing.stream_index,
+                            ffmpeg_bin=cb.ffmpeg_bin, dovi_tool_bin=dovi_bin,
+                            output_rpu=source_rpu, work_dir=cwd, run_cmd=run_interp_metadata,
+                            cleanup_paths=cleanup_paths,
+                        )
+                    if runtime_video.copy_hdr10plus:
+                        hdr10plus_json_path = cwd / "source_hdr10plus.json"
+                        cleanup_paths.append(hdr10plus_json_path)
+                        signals.progress.emit("Extraction métadonnées HDR10+…")
+                        _extract_hdr10plus_metadata(
+                            source=routing.input_path, stream_index=routing.stream_index,
+                            ffmpeg_bin=cb.ffmpeg_bin, hdr10plus_bin=hdr10plus_bin,
+                            output_json=hdr10plus_json_path, work_dir=cwd,
+                            run_cmd=run_interp_metadata, cleanup_paths=cleanup_paths,
+                        )
+                    _expand_dynamic_hdr_metadata(
+                        factor=multiplier,
+                        rpu_bin=dovi_rpu_path if runtime_video.copy_dv else None,
+                        hdr10p_json=hdr10plus_json_path,
+                        dovi_tool_bin=dovi_bin,
+                        run_cmd=run_interp_metadata,
+                        log=cb.log_info,
+                    )
+                output_fps = _multiply_fps_expr(routing.source_fps or routing.input_fps, multiplier)
+
                 encode_cmd = _build_nvencc_command_runtime(
                     cb.nvencc_bin or "",
                     (
@@ -535,9 +586,9 @@ class NvenccDirectOutputRunner:
                     stream_index=None if needs_ffmpeg_pipe else routing.stream_index,
                     input_reader=None if needs_ffmpeg_pipe else routing.input_reader,
                     input_fps=None if needs_ffmpeg_pipe else routing.input_fps,
-                    source_fps=routing.source_fps or routing.input_fps,
+                    source_fps=output_fps or routing.source_fps or routing.input_fps,
                     input_avsync=None if needs_ffmpeg_pipe else routing.input_avsync,
-                    hdr10plus_json=None,
+                    hdr10plus_json=hdr10plus_json_path,
                     dovi_rpu=dovi_rpu_path,
                     dovi_rpu_prm=None if needs_ffmpeg_pipe else routing.dovi_rpu_prm,
                     vpp_pad=routing.vpp_pad,
@@ -586,7 +637,7 @@ class NvenccDirectOutputRunner:
                         lambda line: signals.progress.emit(line),
                         signals,
                     )
-                effective_fps = routing.source_fps or routing.input_fps
+                effective_fps = output_fps or routing.source_fps or routing.input_fps
                 if runtime_video.copy_dv and intermediate.is_file():
                     cb.log_info(
                         "Dolby Vision : validation MaxBlockAdditionID=1 et niveau (Level 6/9 au lieu de 10) sur l'artefact NVEncC."

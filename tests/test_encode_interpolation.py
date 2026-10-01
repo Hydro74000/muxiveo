@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -34,6 +35,7 @@ from core.workflows.encode import (
     VideoFilterSettings,
 )
 from core.workflows.encode.domain import EncodeCodecDomainCallbacks, build_encoder_vf, hardware_input_args
+from core.matroska.editors.dovi import minimum_dovi_level
 from core.workflows.encode.interpolation import (
     INTERPOLATION_MODELS,
     InterpolationSource,
@@ -42,8 +44,12 @@ from core.workflows.encode.interpolation import (
     expand_dynamic_hdr_metadata,
     expand_hdr10plus_json,
     expand_rpu_file,
+    ffprobe_beside,
     interpolation_source_from_probe,
+    multiply_fps_expr,
 )
+from core.workflows.encode.runtime.metadata_inject import _build_dovi_record_from_rpu
+from core.workflows.encode.workflow import _interpolation_decode_cmd
 from core.workflows.encode.runtime.frame_count_guard import FrameCountGuard
 from core.workflows.encode.runtime.nvencc import nvencc_requires_ffmpeg_filter_pipe
 from core.workflows.encode.runtime.nvencc_execution import NvenccPipeExecutor
@@ -446,6 +452,12 @@ class TestWorkflowInterpolation:
             info = interp_workflow._interpolation_source(_video(), tmp_path / "s.mp4")
         assert info.is_vfr and info.cfr_rate == "30/1"
 
+    def test_vfr_not_normalized_with_dynamic_hdr(self, interp_workflow, tmp_path):
+        payload = _probe_payload(r_frame_rate="30/1", avg_frame_rate="29/1")
+        with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=payload):
+            info = interp_workflow._interpolation_source(_video(copy_dv=True), tmp_path / "s.mkv")
+        assert info.is_vfr and info.cfr_rate == ""
+
     def test_matroska_original_vfr_ignored(self, interp_workflow, tmp_path):
         with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_probe_payload()), \
                 patch.object(EncodeWorkflow, "_load_mediainfo_video_track", return_value={"FrameRate_Mode": "CFR", "FrameRate_Mode_Original": "VFR"}):
@@ -464,7 +476,7 @@ class TestWorkflowInterpolation:
         with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_probe_payload(color_space="bt709")):
             wrapped = interp_workflow._wrap_decode_with_interpolation(["ffmpeg", "-"], _video(), tmp_path / "s.mkv")
         assert isinstance(wrapped, PipelineCommand)
-        assert wrapped.upstream == [["ffmpeg", "-"]]
+        assert wrapped.upstream == [["ffmpeg", "-fps_mode", "passthrough", "-"]]
         assert Path(wrapped[0]).name == "muxiveo-rife"
         plain = interp_workflow._wrap_decode_with_interpolation(["ffmpeg", "-"], VideoEncodeSettings(), tmp_path / "s.mkv")
         assert plain == ["ffmpeg", "-"] and not isinstance(plain, PipelineCommand)
@@ -480,3 +492,69 @@ class TestWorkflowInterpolation:
         with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=payload):
             info = interp_workflow._interpolation_source(_video(stream_index=2), tmp_path / "s.mkv")
         assert (info.matrix, info.start_offset_s) == ("bt2020nc", 0.5)
+
+
+# ---------------------------------------------------------------------------
+# Cadence de sortie : niveau Dolby Vision, GOP, décodage NVEncC
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("width", "height", "fps", "level"),
+    [
+        (3840, 2160, 23.976, 6),
+        (3840, 2160, 47.952, 8),
+        (3840, 2160, 59.94, 9),
+        (3840, 1600, 47.952, 8),
+        (1920, 1080, 47.952, 5),
+        (1920, 1080, 23.976, 3),
+        (3840, 2160, 119.88, 10),
+    ],
+)
+def test_minimum_dovi_level(width, height, fps, level):
+    assert minimum_dovi_level(width, height, fps) == level
+
+
+def test_multiply_fps_expr():
+    assert multiply_fps_expr("24000/1001", 2) == "48000/1001"
+    assert multiply_fps_expr("25", 3) == "75/1"
+    assert multiply_fps_expr(None, 2) is None
+    assert multiply_fps_expr("abc", 2) is None
+
+
+def test_ffprobe_beside():
+    assert ffprobe_beside("ffmpeg") == "ffprobe"
+    assert Path(ffprobe_beside(str(Path("tools") / "ffmpeg.exe"))) == Path("tools") / "ffprobe.exe"
+
+
+def test_dovi_record_level_raised_for_interpolation(tmp_path):
+    summary = SimpleNamespace(stdout="Summary:\n  Frames: 75\n  Profile: 8\n", stderr="")
+    with patch("core.workflows.encode.runtime.metadata_inject.subprocess.run", return_value=summary):
+        base = _build_dovi_record_from_rpu(rpu_bin=tmp_path / "r.bin", dovi_tool_bin="dovi_tool")
+        raised = _build_dovi_record_from_rpu(rpu_bin=tmp_path / "r.bin", dovi_tool_bin="dovi_tool", min_level=8)
+    assert base is not None and raised is not None
+    assert (base.level, raised.level) == (6, 8)
+
+
+class TestNvenccInterpolationDecode:
+    _DECODE = ["ffmpeg", "-hide_banner", "-i", "s.mkv", "-map", "0:0", "-f", "yuv4mpegpipe", "-strict", "-1", "-"]
+
+    def test_passthrough_added(self):
+        cmd = _interpolation_decode_cmd(self._DECODE, InterpolationSource())
+        assert cmd[cmd.index("-fps_mode") + 1] == "passthrough"
+        assert cmd.index("-fps_mode") < cmd.index("-f")
+
+    def test_vfr_filter_appended_or_created(self):
+        created = _interpolation_decode_cmd(self._DECODE, InterpolationSource(is_vfr=True, cfr_rate="30/1"))
+        assert created[created.index("-vf") + 1] == "fps=30/1"
+        with_vf = [*self._DECODE[:6], "-vf", "yadif", *self._DECODE[6:]]
+        appended = _interpolation_decode_cmd(with_vf, InterpolationSource(is_vfr=True, cfr_rate="30/1"))
+        assert appended[appended.index("-vf") + 1] == "yadif,fps=30/1"
+
+    def test_nvencc_dynamic_hdr_accepted(self, qt_app, tmp_path):
+        _ = qt_app
+        rife = tmp_path / "muxiveo-rife"
+        rife.write_text("")
+        wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", rife_bin=str(rife), nvencc_bin="nvencc")
+        video = _video(codec="nvencc_hevc", copy_dv=True, copy_hdr10plus=True)
+        with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_probe_payload()):
+            assert wf._interpolation_validation_errors(_cfg(tmp_path, video)) == []

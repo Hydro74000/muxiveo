@@ -17,7 +17,7 @@ from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode,
 from core.workflows.encode.planning.plan_models import EncodePlan
 from core.workflows.encode.planning.track_assembly import build_track_input_paths, resolve_track_assembly
 from core.workflows.hevc_static_hdr_metadata import inject_static_hdr_sei_file
-from core.workflows.encode.interpolation import expand_dynamic_hdr_metadata
+from core.workflows.encode.interpolation import expand_dynamic_hdr_metadata, ffprobe_beside, required_dovi_level
 from core.matroska.editors.dovi import DolbyVisionConfigRecord
 from core.matroska.hevc.access_units import HevcStreamCancelled
 from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter
@@ -160,6 +160,13 @@ class MultiVideoPipelineRunner:
                 record_for_rewriter = cb.build_dovi_record_from_rpu(
                     rpu_bin=rpu_bin,
                     dovi_tool_bin=cb.bins["dovi_tool"],
+                    min_level=(
+                        required_dovi_level(
+                            ffprobe_beside(cb.ffmpeg_bin), source, int(video.stream_index), video.frame_multiplier(),
+                        )
+                        if video.frame_multiplier() > 1
+                        else None
+                    ),
                 )
                 if cb.native_assemble is not None and record_for_rewriter is None:
                     raise EncodeError(

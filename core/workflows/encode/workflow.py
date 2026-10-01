@@ -283,6 +283,31 @@ def _connect_direct(signal, slot) -> None:
     signal.connect(slot, direct)
 
 
+def _interpolation_decode_cmd(decode_cmd: list[str], info: _InterpolationSource) -> list[str]:
+    """Décodage y4m aligné trame à trame pour RIFE.
+
+    ``-fps_mode passthrough`` : aucune trame dupliquée ou supprimée par ffmpeg
+    (les métadonnées dynamiques sont indexées par trame) ; source VFR
+    normalisée CFR à sa cadence nominale.
+    """
+    cmd = list(decode_cmd)
+
+    def insert_before_output(args: list[str]) -> None:
+        # options de sortie : avant ``-f yuv4mpegpipe`` (sinon avant la sortie)
+        at = cmd.index("-f") if "-f" in cmd else max(1, len(cmd) - 1)
+        cmd[at:at] = args
+
+    if info.cfr_rate:
+        if "-vf" in cmd:
+            index = cmd.index("-vf") + 1
+            cmd[index] = f"{cmd[index]},fps={info.cfr_rate}"
+        else:
+            insert_before_output(["-vf", f"fps={info.cfr_rate}"])
+    if "-fps_mode" not in cmd:
+        insert_before_output(["-fps_mode", "passthrough"])
+    return cmd
+
+
 class EncodeWorkflow(QObject):
     """
     Construit et exécute un encodage ffmpeg.
@@ -938,15 +963,16 @@ class EncodeWorkflow(QObject):
         if not self._rife_bin:
             raise EncodeError("Interpolation d'images : outil muxiveo-rife introuvable.")
         settings = video.interpolation
+        info = self._interpolation_source(video, source)
         rife = _build_rife_stage(
             self._rife_bin,
             factor=int(settings.factor),
             quality=settings.quality,
-            source=self._interpolation_source(video, source),
+            source=info,
             scene_threshold=settings.scene_threshold,
             gpu=settings.gpu,
         )
-        return _PipelineCommand(rife, [decode_cmd])
+        return _PipelineCommand(rife, [_interpolation_decode_cmd(decode_cmd, info)])
 
     def _run_nvencc_direct_output(
         self,
@@ -1739,6 +1765,10 @@ class EncodeWorkflow(QObject):
             # Les écarts r/avg ffprobe ne voient pas toujours le VFR des smartphones.
             rate = str(stream.get("r_frame_rate") or stream.get("avg_frame_rate") or "")
             info = dataclasses.replace(info, is_vfr=True, cfr_rate=rate)
+        if info.cfr_rate and (video.copy_dv or video.copy_hdr10plus):
+            # DoVi / HDR10+ sont indexés par trame décodée : aucune trame ne doit
+            # être ajoutée ou retirée, la normalisation CFR est désactivée.
+            info = dataclasses.replace(info, cfr_rate="")
         return info
 
     def _mediainfo_frame_rate_mode(self, source: Path) -> str:
@@ -2528,7 +2558,6 @@ class EncodeWorkflow(QObject):
     def _interpolation_validation_errors(self, config: EncodeConfig) -> list[str]:
         """Contrôles propres à l'interpolation RIFE (outil, cadence, entrelacement)."""
         errors: list[str] = []
-        nvencc_backend = getattr(self._backend_for_config(config), "backend_id", "ffmpeg") != "ffmpeg"
         for video in self._video_tracks(config):
             settings = video.interpolation
             if not settings.enabled:
@@ -2548,11 +2577,6 @@ class EncodeWorkflow(QObject):
                 errors.append(
                     "Interpolation d'images : outil muxiveo-rife introuvable "
                     "(Paramètres > Outils externes, ou relancer le setup)."
-                )
-            if nvencc_backend and (video.copy_dv or video.copy_hdr10plus):
-                errors.append(
-                    "Interpolation d'images avec NVEncC : copie DoVi/HDR10+ dynamique non prise en charge ; "
-                    "utilisez un encodeur FFmpeg (libx265, hevc_nvenc…) pour conserver ces métadonnées."
                 )
             source = self._video_source_from_settings(config, video)
             if self._video_stream_is_interlaced(source, self._video_stream_from_settings(video)) and not (

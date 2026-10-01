@@ -19,7 +19,7 @@ from core.workflows.encode.domain import should_reinject_static_hdr_metadata
 from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode
 from core.workflows.encode.planning.track_assembly import build_track_input_paths, resolve_track_assembly
 from core.workflows.encode.planning.plan_models import EncodePlan
-from core.workflows.encode.interpolation import expand_dynamic_hdr_metadata
+from core.workflows.encode.interpolation import expand_dynamic_hdr_metadata, ffprobe_beside, required_dovi_level
 from core.workflows.encode.runtime.frame_count_guard import (
     FrameCountAuditError,
     FrameCountGuard,
@@ -406,6 +406,16 @@ class MetadataInjectRunner:
                     run_cmd=_run,
                     log=cb.log_info,
                 )
+                dovi_min_level = (
+                    required_dovi_level(
+                        ffprobe_beside(cb.ffmpeg_bin),
+                        cb.video_source_path(effective_config),
+                        cb.video_stream_index(effective_config),
+                        video.frame_multiplier(),
+                    )
+                    if video.copy_dv and video.frame_multiplier() > 1
+                    else None
+                )
 
                 native_dovi_record = None
                 if cb.native_assemble is not None and video.copy_dv:
@@ -420,6 +430,7 @@ class MetadataInjectRunner:
                             p7_router_decision=p7_router_decision,
                             user_dovi_profile=str(video.dovi_profile or "0"),
                         ),
+                        min_level=dovi_min_level,
                     )
                     if native_dovi_record is None:
                         raise EncodeError(
@@ -723,6 +734,7 @@ class MetadataInjectRunner:
                             p7_router_decision=p7_router_decision,
                             user_dovi_profile=str(video.dovi_profile or "0"),
                         ),
+                        min_level=dovi_min_level,
                     )
                 signals.progress.emit(
                     "Réécriture des payloads vidéo (timestamps de l'encodeur conservés)…"
@@ -881,6 +893,7 @@ class MetadataInjectRunner:
                             rpu_bin=rpu_bin,
                             dovi_tool_bin=cb.bins["dovi_tool"],
                             forced_compat_id=forced_compat_id,
+                            min_level=dovi_min_level,
                         )
                         if record is None:
                             signals.progress.emit(
@@ -991,6 +1004,7 @@ def _build_dovi_record_from_rpu(
     rpu_bin: Path,
     dovi_tool_bin: str,
     forced_compat_id: int | None = None,
+    min_level: int | None = None,
 ) -> DolbyVisionConfigRecord | None:
     """
     Interroge ``dovi_tool info -i RPU --summary`` et construit le record DOVI
@@ -1043,6 +1057,9 @@ def _build_dovi_record_from_rpu(
     level_match = re.search(r"DV\s+Level\s*:\s*(\d+)", text, re.IGNORECASE)
     raw_level = int(level_match.group(1)) if level_match else 6
     level = sanitize_dovi_level(raw_level)
+    if min_level is not None:
+        # Cadence de sortie supérieure à la source (interpolation) : niveau relevé.
+        level = max(level, int(min_level))
 
     # En sortie de pipeline metadata_inject, on a forcément un stream
     # mono-layer (le BL est ce que NVENC a encodé) avec RPU réinjecté.
