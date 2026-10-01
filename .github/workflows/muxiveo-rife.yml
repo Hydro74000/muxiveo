@@ -7,6 +7,10 @@ name: muxiveo-rife
 
 on:
   push:
+    # `branches` requis : avec `tags` seul, les pushes de branche ne déclenchent rien.
+    # Les filtres `paths` ne s'appliquent pas aux pushes de tags.
+    branches:
+      - "**"
     paths:
       - "native/muxiveo-rife/**"
       - "tests/native/**"
