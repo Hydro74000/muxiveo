@@ -519,12 +519,13 @@ jobs:
               --jq '[.[] | select(.isPrerelease == true and (.tagName | test("-unstable\\.")))][0].tagName // ""')"
           else
             previous_tag="$(gh release list --limit 100 --json tagName,isPrerelease \
-              --jq '[.[] | select(.isPrerelease == false)][0].tagName // ""')"
+              --jq '[.[] | select(.isPrerelease == false and (.tagName | startswith("v")))][0].tagName // ""')"
           fi
 
           if [ -z "$previous_tag" ]; then
+            # tags de l'app uniquement (muxiveo-rife-v* a ses propres releases)
             previous_tag="$(gh release list --limit 100 --json tagName \
-              --jq '.[0].tagName // ""')"
+              --jq '[.[] | select(.tagName | startswith("v"))][0].tagName // ""')"
           fi
 
           range=""
