@@ -65,13 +65,11 @@ from core.logging import LogLevel, VerboseFileLogger, parse_log_level
 from core.runner import TaskSignals, _PCT_SENTINEL
 from core.subprocess_utils import subprocess_text_kwargs
 from core.update_check import (
-    UPDATE_CHECK_INTERVAL_S,
+    UPDATE_CHECK_TIMEOUT_S,
     UpdateInfo,
     UpdateCheckError,
     query_latest_release,
-    is_newer,
     normalize_update_channel,
-    release_page_url,
 )
 from core.update_install import (
     InstallKind,
@@ -3002,7 +3000,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _schedule_update_check(self) -> None:
-        """Planifie une vérification de mise à jour (au plus une fois par 24 h)."""
+        """Planifie une vérification de mise à jour en arrière-plan à chaque lancement."""
         self._update_request_id = 0
         self._update_settings: tuple[str, bool] | None = None
         self._update_refresh_pending = False
@@ -3029,17 +3027,7 @@ class MainWindow(QMainWindow):
             self._update_download_cancel.set()
         if not enabled:
             return
-        last = float(getattr(self._config, "last_update_check", 0.0) or 0.0)
-        same_channel = str(getattr(self._config, "last_update_channel", "") or "") == channel
-        if same_channel and time.time() - last < UPDATE_CHECK_INTERVAL_S:
-            # Vérification récente : réafficher la version déjà trouvée, sans requête réseau.
-            known = str(getattr(self._config, "last_update_version", "") or "")
-            if is_newer(known):
-                self._update_info = UpdateInfo(
-                    version=known, url=release_page_url(known), prerelease="-unstable" in known
-                )
-                self._sidebar.set_update_available(self._update_info)
-            return
+        # Pas de cache : requête légère et bornée, sans impact sur le démarrage (thread daemon).
         QTimer.singleShot(3000, self, lambda: self._start_update_check(request_id, channel))
 
     def _is_current_update_request(self, request_id: int, channel: str) -> bool:
@@ -3063,7 +3051,8 @@ class MainWindow(QMainWindow):
         """Thread worker : interroge GitHub puis notifie le thread UI par signal."""
         try:
             try:
-                info = query_latest_release(channel, timeout=10.0 if prompt else 5.0)
+                timeout = 2 * UPDATE_CHECK_TIMEOUT_S if prompt else UPDATE_CHECK_TIMEOUT_S
+                info = query_latest_release(channel, timeout=timeout)
             except UpdateCheckError as exc:
                 self._update_check_failed.emit(request_id, channel, str(exc), prompt)
                 return
@@ -3113,7 +3102,7 @@ class MainWindow(QMainWindow):
         if info is None or self._update_refresh_pending:
             return
         if not info.assets:
-            # Info issue du cache 24 h : récupérer la liste des assets.
+            # Info sans liste d'assets : la récupérer avant de proposer l'installation.
             self._update_refresh_pending = True
             self._start_update_check(self._update_request_id, self._update_channel(), prompt=True)
             return

@@ -229,3 +229,26 @@ def test_network_failure_on_click_keeps_manual_release_link(window, qt_app):
     window._on_update_check_failed(window._update_request_id, "unstable", "offline", True)
     window._show_update_dialog.assert_called_once_with(info)
     assert not window._update_refresh_pending
+
+
+@pytest.mark.parametrize("channel", ["stable", "unstable"])
+def test_startup_always_checks_network_despite_recent_check(qt_app, monkeypatch, channel):
+    """Vérification à chaque lancement, quel que soit le canal et la date du dernier contrôle."""
+    single_shot = Mock()
+    monkeypatch.setattr(QTimer, "singleShot", single_shot)
+    monkeypatch.setattr(UpdateWindow, "_schedule_update_check", lambda self: None)
+    widget = UpdateWindow()
+    widget._config.update_channel = channel
+    widget._config.last_update_check = time.time()
+    widget._config.last_update_channel = channel
+    widget._config.last_update_version = ""
+    try:
+        MainWindow._schedule_update_check(widget)
+        single_shot.assert_called_once()
+        with patch("ui.main_window.threading.Thread") as worker:
+            single_shot.call_args.args[-1]()
+        assert worker.call_args.kwargs["daemon"] is True
+        assert worker.call_args.kwargs["args"][1] == channel
+    finally:
+        widget.deleteLater()
+        qt_app.processEvents()
