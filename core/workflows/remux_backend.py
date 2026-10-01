@@ -477,10 +477,12 @@ def run_native_remux(
             progress_state = {"packets": 0, "bytes": 0}
 
             def on_write_progress(progress: MatroskaWriteProgress) -> None:
-                # Étape indéterminée avec compteurs : pas de pourcentage artificiel.
+                if progress.percent is not None and hasattr(signals, "progress_pct"):
+                    signals.progress_pct.emit(progress.percent)
                 if progress.stage != "clusters":
+                    pct_str = f"{progress.percent}% " if progress.percent is not None else ""
                     signals.progress.emit(
-                        f"Écriture Matroska ({progress.stage}) : "
+                        f"Écriture Matroska ({progress.stage}) : {pct_str}"
                         f"{progress.packets_written} paquets, "
                         f"{progress.bytes_written / (1024 * 1024):.1f} Mio"
                     )
@@ -491,9 +493,11 @@ def run_native_remux(
                 ):
                     progress_state["packets"] = progress.packets_written
                     progress_state["bytes"] = progress.bytes_written
+                    pct_str = f"{progress.percent}% " if progress.percent is not None else ""
                     signals.progress.emit(
-                        f"Écriture Matroska : {progress.packets_written} paquets, "
-                        f"{progress.bytes_written / (1024 * 1024):.1f} Mio"
+                        f"Écriture Matroska : {pct_str}"
+                        f"({progress.packets_written} paquets, "
+                        f"{progress.bytes_written / (1024 * 1024):.1f} Mio)"
                     )
 
             MatroskaWriter().write(

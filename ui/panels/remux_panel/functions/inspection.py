@@ -141,7 +141,21 @@ def on_remove_file(panel: "RemuxPanel", file_id: str) -> None:
     future = panel._inspection_futures.pop(file_id, None)
     if future is not None:
         future.cancel()
+    removed_index = panel._source_files.index(sf)
     panel._source_files.remove(sf)
+    # Les calibrations sont indexées par position de source : réindexer après retrait.
+    calibrations = panel._workflow_options.get("sync_calibrations")
+    if calibrations:
+        reindexed: dict[str, dict] = {}
+        for key, value in calibrations.items():
+            try:
+                index = int(key)
+            except (TypeError, ValueError):
+                continue
+            if index == removed_index:
+                continue
+            reindexed[str(index - 1 if index > removed_index else index)] = value
+        panel._workflow_options["sync_calibrations"] = reindexed
     panel._source_names.pop(file_id, None)
     panel._source_colors.pop(file_id, None)
     panel._source_sync_offsets_ms.pop(file_id, None)

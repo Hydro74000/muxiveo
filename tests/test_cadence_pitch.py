@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -45,7 +47,7 @@ def test_cadence_pitch_analysis_dataclass_and_serialization():
 
     assert CadencePitchAnalysis.from_dict(None) is None
     assert CadencePitchAnalysis.from_dict({}) is None
-    assert CadencePitchAnalysis.from_dict("not a dict") is None
+    assert CadencePitchAnalysis.from_dict(cast(Any, "not a dict")) is None
 
 
 def test_compute_welch_psd():
@@ -223,8 +225,8 @@ def test_audio_sync_scanner_auto_pitch_detection_mocked(monkeypatch):
 
     logs = []
     calib = scanner.scan(
-        AudioSyncTrack("ref.mkv", 0),
-        AudioSyncTrack("donor.mkv", 0),
+        AudioSyncTrack(Path("ref.mkv"), 0),
+        AudioSyncTrack(Path("donor.mkv"), 0),
         cadence_mismatch=mismatch,
         cadence_audio_method="auto",
         log=lambda msg: logs.append(msg),

@@ -58,6 +58,8 @@ from core.workflows.common.timeline_sync import (
 from core.workflows.common.track_statistics import derive_output_statistics
 from core.workflows.encode.catalog import (
     is_h264_video_codec,
+    supports_dovi,
+    supports_hdr_output,
 )
 from core.workflows.encode.domain import (
     EncodeCodecDomainCallbacks as _EncodeCodecDomainCallbacks,
@@ -586,8 +588,10 @@ class EncodeWorkflow(QObject):
             errors.append("NVEncC est sélectionné mais le binaire n'est pas configuré.")
         if video.quality_mode == QualityMode.SIZE:
             errors.append("NVEncC ne supporte pas le mode taille cible (2 passes) dans cette version.")
-        if video.inject_hdr_meta and video.codec == "nvencc_h264":
-            errors.append("NVEncC H.264 ne supporte pas les métadonnées HDR statiques.")
+        if video.inject_hdr_meta and not supports_hdr_output(video.codec):
+            errors.append(f"{video.codec} ne supporte pas les métadonnées HDR statiques.")
+        if video.copy_dv and not supports_dovi(video.codec):
+            errors.append(f"{video.codec} ne supporte pas Dolby Vision. Seul 'nvencc_hevc' gère Dolby Vision.")
         if (video.copy_dv or video.copy_hdr10plus) and not _nvencc_supports_dynamic_hdr_runtime(video.codec):
             errors.append("Le codec NVEncC sélectionné ne supporte pas DoVi/HDR10+.")
         _ = plan
@@ -932,10 +936,12 @@ class EncodeWorkflow(QObject):
                     cwd=cwd,
                     label=label,
                     progress_cb=progress_cb,
+                    progress_pct_cb=(signals.progress_pct.emit if signals is not None else None),
                     signals=signals,
                 ),
                 finalize_ffmpeg=self._finalize_ffmpeg_output,
                 native_assemble=self._native_assemble_nvencc if native_mux else None,
+                bins=dict(self._bins),
             )
         ).run(
             config,
@@ -2099,6 +2105,7 @@ class EncodeWorkflow(QObject):
         )
         if active_inner is not None:
             active_inner["signals"] = encode_signals
+        signals.link_workers(encode_signals)
         previous_generate_nfo = self._generate_nfo
         self._generate_nfo = False
         try:
@@ -3359,9 +3366,9 @@ class EncodeWorkflow(QObject):
         return _nvencc_dovi_rpu_prm_runtime(video)
 
     def _resolve_nvencc_input_routing(self, config: EncodeConfig) -> _NvenccInputRouting:
-        return _NvenccInputRouter(self._nvencc_routing_callbacks()).resolve(config)
+        return _NvenccInputRouter(self._nvencc_routing_callbacks(stream_index=self._video_stream_index(config))).resolve(config)
 
-    def _nvencc_routing_callbacks(self) -> _NvenccRoutingCallbacks:
+    def _nvencc_routing_callbacks(self, *, stream_index: int = 0) -> _NvenccRoutingCallbacks:
         return _NvenccRoutingCallbacks(
             primary_video_settings=self._primary_video_settings,
             video_source_path=self._video_source_path,
@@ -3378,11 +3385,32 @@ class EncodeWorkflow(QObject):
                 input_path=input_path,
             ),
             nvencc_dovi_rpu_prm=self._nvencc_dovi_rpu_prm,
+            source_video_dimensions=(self._source_video_dimensions if stream_index == 0 else
+                lambda source: self._source_video_dimensions(source, stream_index=stream_index)),
+            probe_dovi_l5_offsets=(self._probe_dovi_l5_offsets if stream_index == 0 else
+                lambda source: self._probe_dovi_l5_offsets(source, stream_index=stream_index)),
         )
 
-    def _source_video_dimensions(self, source: Path) -> tuple[int, int]:
+    def _probe_dovi_l5_offsets(self, source: Path, *, stream_index: int = 0) -> tuple[int, int, int, int] | None:
+        from core.dovi_profile_detector import DoviProfileDetector
+
+        dovi_bin = self._bins.get("dovi_tool") or "dovi_tool"
+        try:
+            key = (dovi_bin, self._ffmpeg)
+            if getattr(self, "_dovi_geometry_detector_key", None) != key:
+                self._dovi_geometry_detector = DoviProfileDetector(
+                    dovi_tool_bin=dovi_bin, ffmpeg_bin=self._ffmpeg,
+                    ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+                )
+                self._dovi_geometry_detector_key = key
+            return self._dovi_geometry_detector.probe_l5_offsets(source, stream_index=stream_index)
+        except Exception:
+            return None
+
+    def _source_video_dimensions(self, source: Path, *, stream_index: int | None = None) -> tuple[int, int]:
         return _source_video_dimensions_runtime(
             source,
+            stream_index=stream_index,
             ffprobe_streams_payload=self._ffprobe_streams_payload,
             ffprobe_stream_dicts=self._ffprobe_stream_dicts,
         )

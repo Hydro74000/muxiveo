@@ -87,6 +87,7 @@ from core.workflows.encode.backends import backend_id_for_codec
 from core.workflows.encode import EncodeError
 from core.workflows.common.sync_rewrite import SYNC_REWRITE_STAGE_PREFIX
 from core.workflows.remux_models import RemuxError
+from ui.shutdown import Shutdown, defer_close
 from ui.panels.encode_panel import EncodePanel
 from ui.panels.encode_panel.theme import (
     _FPS_RE,
@@ -132,6 +133,7 @@ _ENCODE_STAGE_PREFIXES: tuple[str, ...] = (
     "Extraction HEVC source",
     "Extraction HEVC annexB",
     "Extraction RPU Dolby Vision",
+    "Réalignement RPU Dolby Vision",
     "Extraction métadonnées HDR10+",
     "Conversion P5 → P8",
     "Conversion P7 FEL → P8.1",
@@ -151,6 +153,7 @@ _ENCODE_STAGE_PREFIXES: tuple[str, ...] = (
 # anime la barre en mode indéterminé pour montrer que ça travaille.
 _ENCODE_INDETERMINATE_STAGE_PREFIXES: tuple[str, ...] = (
     "Extraction RPU Dolby Vision",
+    "Réalignement RPU Dolby Vision",
     "Extraction métadonnées HDR10+",
     "Conversion P5 → P8",
     "Conversion P7 FEL → P8.1",
@@ -703,6 +706,7 @@ class DashboardPage(QWidget):
     """Page d'accueil — résumé des outils disponibles et raccourcis."""
 
     _hw_detected = Signal(object)   # set[str] — encodeurs HW disponibles
+    _sw_detected = Signal(object)   # dict[str, bool] — encodeurs logiciels/audio
 
     # codec_id → (label affiché, badge QLabel) pour mise à jour async
     _HW_VIDEO: list[tuple[str, str]] = [
@@ -729,8 +733,10 @@ class DashboardPage(QWidget):
         self._config = config
         self._log = log
         self._hw_badges: dict[str, tuple[QLabel, str]] = {}   # codec_id → (badge, label)
+        self._sw_badges: dict[str, tuple[QLabel, str]] = {}   # codec_id → (badge, label)
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._hw_detected.connect(self._on_hw_detected, Qt.ConnectionType.QueuedConnection)
+        self._sw_detected.connect(self._on_sw_detected, Qt.ConnectionType.QueuedConnection)
         self._build_ui()
         self._start_hw_detection()
 
@@ -882,13 +888,14 @@ class DashboardPage(QWidget):
     # ------------------------------------------------------------------
 
     def _build_encoder_section(self, root: QVBoxLayout) -> None:
-        """Ajoute la section encodeurs au layout root. Détection SW synchrone, HW asynchrone."""
-        self._hw_badges = {}
-        ffmpeg_bin = self._config.tool_ffmpeg
+        """Ajoute la section encodeurs au layout root (détections SW et HW asynchrones).
 
-        # Détection synchrone des encodeurs logiciels via ffmpeg -encoders
-        all_sw_ids = [c for c, _ in self._SW_VIDEO] + [c for c, _ in self._AUDIO]
-        sw_avail = self._scan_encoder_availability(ffmpeg_bin, all_sw_ids)
+        Aucun appel outil ici : au premier lancement Windows, l'analyse
+        antivirus des binaires fraîchement installés retardait l'affichage
+        de la fenêtre de plusieurs secondes.
+        """
+        self._hw_badges = {}
+        self._sw_badges = {}
 
         # Séparateur + titre
         sep = QFrame()
@@ -920,8 +927,9 @@ class DashboardPage(QWidget):
         # Vidéo logiciel
         row, rl = _row("Vidéo — logiciel")
         for codec_id, label in self._SW_VIDEO:
-            state = "available" if sw_avail.get(codec_id) else "unavailable"
-            rl.addWidget(self._make_encoder_badge(label, state))
+            badge = self._make_encoder_badge(label, "pending")
+            self._sw_badges[codec_id] = (badge, label)
+            rl.addWidget(badge)
         rl.addStretch()
         root.addWidget(row)
 
@@ -955,8 +963,9 @@ class DashboardPage(QWidget):
         # Audio
         row, rl = _row("Audio")
         for codec_id, label in self._AUDIO:
-            state = "available" if sw_avail.get(codec_id) else "unavailable"
-            rl.addWidget(self._make_encoder_badge(label, state))
+            badge = self._make_encoder_badge(label, "pending")
+            self._sw_badges[codec_id] = (badge, label)
+            rl.addWidget(badge)
         rl.addStretch()
         root.addWidget(row)
 
@@ -976,6 +985,7 @@ class DashboardPage(QWidget):
                 [resolved, "-hide_banner", "-encoders"],
                 capture_output=True,
                 check=False,
+                timeout=120,
                 **subprocess_text_kwargs(),
             )
             encoders_output = "\n".join(part for part in (result.stdout, result.stderr) if part)
@@ -983,7 +993,7 @@ class DashboardPage(QWidget):
                 codec_id: bool(re.search(rf"\b{re.escape(codec_id)}\b", encoders_output))
                 for codec_id in codec_ids
             }
-        except FileNotFoundError:
+        except (OSError, subprocess.TimeoutExpired):
             return {codec_id: False for codec_id in codec_ids}
 
     def _apply_encoder_badge_state(self, badge: QLabel, label: str, state: str) -> None:
@@ -1008,10 +1018,22 @@ class DashboardPage(QWidget):
     # ------------------------------------------------------------------
 
     def _start_hw_detection(self) -> None:
-        """Remet les badges HW en état "pending" et soumet la détection à l'executor."""
-        for codec_id, (badge, label) in self._hw_badges.items():
+        """Remet les badges SW/HW en état "pending" et soumet les détections à l'executor."""
+        for badge, label in (*self._sw_badges.values(), *self._hw_badges.values()):
             self._apply_encoder_badge_state(badge, label, "pending")
+        self._executor.submit(self._run_sw_detection)
         self._executor.submit(self._run_hw_detection)
+
+    def _run_sw_detection(self) -> None:
+        """Thread worker : encodeurs logiciels/audio listés par ``ffmpeg -encoders``."""
+        codec_ids = [c for c, _ in self._SW_VIDEO] + [c for c, _ in self._AUDIO]
+        self._sw_detected.emit(self._scan_encoder_availability(self._config.tool_ffmpeg, codec_ids))
+
+    def _on_sw_detected(self, available: dict[str, bool]) -> None:
+        """Slot Qt (thread principal) : met à jour les badges logiciels/audio."""
+        for codec_id, (badge, label) in self._sw_badges.items():
+            state = "available" if available.get(codec_id) else "unavailable"
+            self._apply_encoder_badge_state(badge, label, state)
 
     def _run_hw_detection(self) -> None:
         """Thread worker : probe runtime de chaque encodeur HW."""
@@ -1032,6 +1054,13 @@ class DashboardPage(QWidget):
         for codec_id, (badge, label) in self._hw_badges.items():
             state = "available" if codec_id in available else "unavailable"
             self._apply_encoder_badge_state(badge, label, state)
+
+    def closeEvent(self, event) -> None:
+        if not hasattr(self, "_shutdown"):
+            self._shutdown = Shutdown(executors=(self._executor,))
+        if defer_close(self, event, ready=self._shutdown.done.is_set()):
+            return
+        super().closeEvent(event)
 
     # ------------------------------------------------------------------
     # Vérification manuelle des outils
@@ -1948,6 +1977,7 @@ class MainWindow(QMainWindow):
         # RemuxPanel → EncodePanel : pistes partagées + chemin de sortie commun
         self._remux_panel.video_tracks_changed.connect(self._encode_panel.set_video_tracks)
         self._remux_panel.audio_tracks_changed.connect(self._encode_panel.set_audio_tracks)
+        self._remux_panel.sources_reset.connect(self._encode_panel.reset)
         self._encode_panel.video_tracks_encoding_changed.connect(self._remux_panel.update_video_track_encoding)
         self._encode_panel.audio_track_meta_changed.connect(self._remux_panel.update_audio_track_meta)
         self._encode_panel.audio_track_encoding_changed.connect(self._remux_panel.update_audio_track_encoding)
@@ -2025,6 +2055,8 @@ class MainWindow(QMainWindow):
         self._start_prep_progress()
 
         task_signals.progress.connect(self._on_op_progress, Qt.ConnectionType.QueuedConnection)
+        if hasattr(task_signals, "progress_pct"):
+            task_signals.progress_pct.connect(self._on_op_progress_pct, Qt.ConnectionType.QueuedConnection)
         task_signals.connect_terminal(
             finished=lambda _: self._on_op_finished(success=True),
             failed=lambda msg, _exc: self._on_op_finished(success=False, error=msg),
@@ -2086,6 +2118,11 @@ class MainWindow(QMainWindow):
             use_encode = not self._encode_panel.is_pure_copy(encode_cfg)
 
         if use_encode:
+            assert encode_cfg is not None
+            if not self._encode_panel.confirm_dovi_geometry_alignment_if_needed(self):
+                return
+            # Re-collecter la configuration si le recadrage a été appliqué dans l'interface
+            encode_cfg = self._encode_panel.collect_config()
             assert encode_cfg is not None
             # Enrichir l'encode config avec les sous-titres / chapitres du remux
             if remux_cfg is not None:
@@ -2150,6 +2187,8 @@ class MainWindow(QMainWindow):
         self._start_prep_progress()
 
         signals.progress.connect(self._on_op_progress, Qt.ConnectionType.QueuedConnection)
+        if hasattr(signals, "progress_pct"):
+            signals.progress_pct.connect(self._on_op_progress_pct, Qt.ConnectionType.QueuedConnection)
         signals.connect_terminal(
             finished=lambda _: self._on_op_finished(success=True),
             failed=lambda msg, _exc: self._on_op_finished(success=False, error=msg),
@@ -2352,9 +2391,27 @@ class MainWindow(QMainWindow):
         self.log_requested.emit("INFO", raw_line)
         return True
 
+    def _on_op_progress_pct(self, pct: int) -> None:
+        self._stop_prep_progress()
+        self._prog_bar.setRange(0, 100)
+        self._prog_bar.setValue(max(0, min(100, int(pct))))
+        if hasattr(self, "_format_progress_label"):
+            parts = [f"{int(pct)}%"]
+            self._prog_lbl.setText(self._format_progress_label(*parts))
+
     def _on_op_progress(self, line: str) -> None:
         """Gère la progression selon le mode (remux ou encode)."""
         self._capture_verbose_progress_line(line)
+        if line.startswith(("Assemblage Matroska", "Écriture Matroska")):
+            self._stop_prep_progress()
+            m = re.search(r"(\d+)%", line)
+            if m:
+                pct = int(m.group(1))
+                self._prog_bar.setRange(0, 100)
+                self._prog_bar.setValue(max(0, min(100, pct)))
+            self._prog_lbl.setText(line.strip())
+            self.log_requested.emit("DEBUG", line)
+            return
         # Banner/listing ffmpeg : ne pas pourrir l'UI mais loguer la version
         # la 1re fois pour traçabilité standard. Le verbose file a déjà la
         # ligne complète via _capture_verbose_progress_line ci-dessus.
@@ -2430,6 +2487,9 @@ class MainWindow(QMainWindow):
                 self._stop_prep_progress()
                 self._prog_bar.setRange(0, 100)
                 self._prog_bar.setValue(max(0, min(100, pct)))
+                if hasattr(self, "_format_progress_label"):
+                    parts = [f"{pct}%"]
+                    self._prog_lbl.setText(self._format_progress_label(*parts))
                 return
             if self._NOISE_RE.search(line):
                 return
@@ -2906,23 +2966,29 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(self._config.window_geometry)
 
     def closeEvent(self, event) -> None:
-        self._update_request_id += 1
-        if self._update_download_cancel is not None:
-            self._update_download_cancel.set()
+        if not hasattr(self, "_shutdown"):
+            self.setEnabled(False)
+            self._update_request_id += 1
+            if self._update_download_cancel is not None:
+                self._update_download_cancel.set()
+            self._shutdown = Shutdown(tasks=(self._signals,))
+            for name in ("_prep_progress_timer", "_op_encode_multi_reselect_timer"):
+                timer = getattr(self, name, None)
+                if timer is not None:
+                    timer.stop()
+            self._shutdown_pages = [
+                page for name in ("_dashboard", "_encode_panel", "_remux_panel",
+                                  "_dovi_panel", "_hybrid_panel", "_settings_panel")
+                if (page := getattr(self, name, None)) is not None
+            ]
+        # Chaque panneau annule et rejoint ses propres workers. Un panneau qui
+        # refuse encore sa fermeture est réessayé, sans bloquer la boucle Qt.
+        self._shutdown_pages = [page for page in self._shutdown_pages if not page.close()]
+        if defer_close(self, event, ready=self._shutdown.done.is_set() and not self._shutdown_pages):
+            return
         self._config.save_geometry(bytes(self.saveGeometry().data()))
         self._config.save()
-        # Arrête proprement tous les ThreadPoolExecutor des pages enfants :
-        # sinon des threads survivent à app.exec() et peuvent retenir des
-        # FDs/processus, ce qui empêche l'OS de restaurer les flags du tty
-        # parent (terminal sans echo après fermeture).
-        for attr in ("_dashboard", "_encode_panel", "_remux_panel", "_dovi_panel", "_hybrid_panel"):
-            page = getattr(self, attr, None)
-            executor = getattr(page, "_executor", None) if page is not None else None
-            if executor is not None:
-                try:
-                    executor.shutdown(wait=True)
-                except Exception:
-                    pass
+
         verbose_logger = getattr(self, "_verbose_file_logger", None)
         if verbose_logger is not None:
             try:

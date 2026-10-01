@@ -76,8 +76,9 @@ class TestLauncherWindowsControlledFolderAccess:
 
         assert rc == launcher.SETUP_RC_ERROR
         mock_popup.assert_called_once_with("boom")
-        mock_open_console.assert_called_once_with()
-        mock_close_console.assert_called_once_with(("token", False))
+        # All-inclusive : pas de console de setup (rien à télécharger).
+        mock_open_console.assert_not_called()
+        mock_close_console.assert_called_once_with(None)
 
     def test_main_does_not_launch_qt_when_setup_handoffs(self, tmp_path):
         config_path = tmp_path / "config.ini"

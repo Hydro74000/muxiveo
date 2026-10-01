@@ -1,0 +1,14 @@
+{
+  "pythonVersion": "3.11",
+  "exclude": [
+    "**/__pycache__",
+    "**/.*",
+    "build",
+    "dist",
+    "Muxiveo.AppDir",
+    "Mediarecode.AppDir",
+    "mediarecode-win",
+    "audit_linux_hw_20260927",
+    "audit_11_commits_repros.py"
+  ]
+}

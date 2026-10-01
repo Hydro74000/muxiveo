@@ -52,29 +52,16 @@ import pytest
 # QApplication existe déjà → évite de casser les tests widgets qui suivent.
 from PySide6.QtCore import QCoreApplication, Qt
 
-_app: QCoreApplication | None = None
-
-
 def _get_app() -> QCoreApplication:
-    global _app
-    if _app is not None:
-        return _app
-    existing = QCoreApplication.instance()
-    if existing is not None:
-        _app = existing
-        return _app
-    try:
-        from PySide6.QtWidgets import QApplication
-        _app = QApplication(sys.argv)
-    except Exception:
-        _app = QCoreApplication(sys.argv)
-    return _app
+    app = QCoreApplication.instance()
+    assert app is not None, "fixture qt_app (conftest) requise"
+    return app
 
 
 @pytest.fixture(autouse=True)
-def qt_app():
-    """Assure qu'une QCoreApplication existe pour tous les tests."""
-    return _get_app()
+def _ensure_qt_app(qt_app):
+    """Assure que l'application Qt partagée (conftest) existe pour tous les tests."""
+    return qt_app
 
 
 # ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ def test_gui_restores_workflow(qt_app, tmp_path):
     panel = RemuxPanel(AppConfig())
     restore(panel, config, [info])
     result = panel.collect_config()
+    assert result is not None
     assert result.file_title == config.file_title
     assert result.tag_overrides == config.tag_overrides
     assert result.tmdb_cover == config.tmdb_cover
@@ -28,7 +29,7 @@ def test_gui_restores_workflow(qt_app, tmp_path):
     assert result.sources[0].tracks[0].time_shift_ms == 125
     assert result.sources[0].tracks[0].flag_hearing_impaired
     assert not result.sources[0].tracks[1].enabled
-    assert result.chapter_overrides[0].name == "Chapitre"
+    assert result.chapter_overrides and result.chapter_overrides[0].name == "Chapitre"
     panel.close()
 
 

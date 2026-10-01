@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import configparser
 import json
-import locale
 import os
 import platform
 import re
@@ -28,6 +27,7 @@ from PySide6.QtCore import QSettings, QStandardPaths
 
 from core.lang_tags import Rfc5646LanguageTags
 from core.subprocess_utils import subprocess_text_kwargs
+from core.ui_language import system_ui_language
 from core.update_check import DEFAULT_UPDATE_CHANNEL, normalize_update_channel
 from core.version import (
     APP_CONFIG_DIR_NAME,
@@ -110,7 +110,7 @@ def _repair_corrupted_windows_ini_paths(path: Path) -> list[str]:
     """
     if not _is_windows() or not path.exists():
         return []
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8-sig")
     lines = text.splitlines()
     legacy = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#",))
     legacy.read_string(text)
@@ -196,7 +196,7 @@ def _load_ini() -> configparser.ConfigParser:
     )
     if _INI_PATH.exists():
         _sanitize_windows_ini_file(_INI_PATH)
-        parser.read(_INI_PATH, encoding="utf-8")
+        parser.read(_INI_PATH, encoding="utf-8-sig")
     return parser
 
 
@@ -246,6 +246,26 @@ def _appimage_tools_dir() -> Path | None:
         return None
     tools = Path(appdir) / "usr" / "bin" / "tools"
     return tools if tools.is_dir() else None
+
+
+def _bundled_tools_dir() -> Path | None:
+    """
+    Dans une distribution all-inclusive (AppImage Linux ou bundle Windows avec marqueur _ALLINC),
+    retourne le chemin absolu du dossier contenant les outils externes embarqués.
+    Retourne None si l'application ne tourne pas en mode allinc.
+    """
+    appimage = _appimage_tools_dir()
+    if appimage is not None:
+        return appimage
+
+    if _is_windows() and getattr(sys, "frozen", False):
+        base_dir = Path(sys.executable).parent
+        if (base_dir / "_ALLINC").exists():
+            tools = base_dir / "tools"
+            if tools.is_dir():
+                return tools
+
+    return None
 
 
 def _dedupe_paths(paths: list[Path]) -> list[Path]:
@@ -332,7 +352,7 @@ def _sanitize_windows_ini_file(path: Path) -> None:
     if not _is_windows() or not path.exists():
         return
 
-    original = path.read_text(encoding="utf-8")
+    original = path.read_text(encoding="utf-8-sig")
     lines = original.splitlines()
     sanitized_lines = _sanitize_windows_ini_lines(lines.copy())
     sanitized = "\n".join(sanitized_lines).rstrip() + "\n"
@@ -482,7 +502,7 @@ def _update_ini_tools_section(path: Path, tool_values: dict[str, str]) -> None:
     if not tool_values:
         return
 
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    text = path.read_text(encoding="utf-8-sig") if path.exists() else ""
     lines = text.splitlines()
     lines = _upsert_ini_section(lines, "tools", tool_values, replace_blank_only=True)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -491,7 +511,7 @@ def _update_ini_tools_section(path: Path, tool_values: dict[str, str]) -> None:
 
 def write_ini_settings(section_values: dict[str, dict[str, str]]) -> None:
     """Écrit des valeurs explicites dans config.ini en conservant les commentaires."""
-    text = _INI_PATH.read_text(encoding="utf-8") if _INI_PATH.exists() else ""
+    text = _INI_PATH.read_text(encoding="utf-8-sig") if _INI_PATH.exists() else ""
     lines = text.splitlines()
 
     for section, values in section_values.items():
@@ -746,21 +766,8 @@ def _default_verbose_log_dir() -> Path:
 
 
 def _default_language_code() -> str:
-    candidates: list[str | None] = [
-        os.environ.get("LC_ALL"),
-        (os.environ.get("LANGUAGE") or "").split(":", 1)[0] or None,
-        os.environ.get("LANG"),
-    ]
-    try:
-        candidates.append(locale.getlocale()[0])
-    except (TypeError, ValueError):
-        pass
-
-    for candidate in candidates:
-        code = Rfc5646LanguageTags.from_locale_name(candidate)
-        if code:
-            return code
-    return "eng"
+    """Langue UI système si prise en charge par locales.json, sinon anglais."""
+    return system_ui_language()
 
 
 def _normalize_language_code(code: str | None) -> str:
@@ -1089,17 +1096,23 @@ class AppConfig:
         Résout la valeur d'un outil externe.
 
         Priorité :
-          1. AppImage allinc  — chemin absolu dans $APPDIR/usr/bin/tools/
+          1. Distribution allinc (AppImage Linux ou bundle Windows) — outils embarqués dans tools/
           2. config.ini       — valeur explicite dans [tools]
           3. Linux / macOS    — nom brut (ex: "ffmpeg") appelé directement via PATH
              Windows          — autodetect (Program Files, WinGet, QSettings)
         """
-        # Priorité 1 : AppImage allinc
-        tools_dir = _appimage_tools_dir()
+        # Priorité 1 : Distribution all-inclusive (AppImage Linux ou bundle Windows)
+        tools_dir = _bundled_tools_dir()
         if tools_dir is not None:
-            candidate = tools_dir / ini_key
-            if candidate.is_file():
-                return str(candidate)
+            if _is_windows():
+                for exe_name in _WINDOWS_TOOL_FILENAMES.get(ini_key, (f"{ini_key}.exe",)):
+                    candidate = tools_dir / exe_name
+                    if candidate.is_file():
+                        return str(candidate)
+            else:
+                candidate = tools_dir / ini_key
+                if candidate.is_file():
+                    return str(candidate)
 
         # Priorité 2 : config.ini
         ini_value = self._ini_lookup("tools", ini_key)
@@ -1135,6 +1148,13 @@ class AppConfig:
     # ------------------------------------------------------------------
 
     def _load(self) -> None:
+        bundled = _bundled_tools_dir()
+        if bundled is not None:
+            bundled_str = str(bundled)
+            current_path = os.environ.get("PATH", "")
+            if bundled_str not in current_path.split(os.pathsep):
+                os.environ["PATH"] = f"{bundled_str}{os.pathsep}{current_path}"
+
         self.work_dir = self._resolve_path("paths", "work_dir", "paths/work_dir", _default_work_dir())
         self.output_dir = self._resolve_path("paths", "output_dir", "paths/output_dir", _default_output_dir())
         self.config_dir = _INI_PATH.parent
@@ -1295,7 +1315,7 @@ class AppConfig:
             self._resolve_text("ui", "update_channel", "ui/update_channel", DEFAULT_UPDATE_CHANNEL)
         )
         try:
-            self.last_update_check = float(self._settings.value("ui/last_update_check", 0) or 0)
+            self.last_update_check = float(str(self._settings.value("ui/last_update_check", 0) or 0))
         except (TypeError, ValueError):
             self.last_update_check = 0.0
         self.last_update_version = str(self._settings.value("ui/last_update_version", "") or "")

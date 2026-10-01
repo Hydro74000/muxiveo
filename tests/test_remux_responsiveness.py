@@ -2,17 +2,19 @@
 from dataclasses import replace
 from threading import Event, get_ident
 import time
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QTimer
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QComboBox
 from shiboken6 import Shiboken
 
 from core.config import AppConfig
 from core.inspector import HDRType
+from core.runner import TaskSignals
 from ui.panels.encode_panel.panel import EncodePanel
-from ui.panels.encode_panel.widgets import _AudioTable
+from ui.panels.encode_panel.widgets import _AudioBitrateEditor, _AudioTable
 from ui.panels.remux_panel.panel import RemuxPanel
 from ui.panels.remux_panel.models import SourceFile
 from tests.test_encode_panel_widgets import _at, _file_info, _video_entry, _video_track
@@ -154,9 +156,9 @@ def test_audio_reorder_and_metadata_reuse_widgets_and_settings(qt_app):
     tracks = [(_at(1), "#fff", None, first), (_at(2), "#fff", None, second)]
     try:
         table.load_tracks(tracks)
-        combo = table.cellWidget(0, table.COL_CODEC)
+        combo = cast(QComboBox, table.cellWidget(0, table.COL_CODEC))
         combo.setCurrentIndex(combo.findData("aac"))
-        bitrate = table.cellWidget(0, table.COL_BITRATE)
+        bitrate = cast(_AudioBitrateEditor, table.cellWidget(0, table.COL_BITRATE))
         before = bitrate.value()
         table.load_tracks(list(reversed(tracks)))
         # Détecte aussi une destruction différée accidentelle des widgets Qt.
@@ -170,8 +172,9 @@ def test_audio_reorder_and_metadata_reuse_widgets_and_settings(qt_app):
         changed = (replace(tracks[0][0], title="Edited", language="eng"), *tracks[0][1:])
         table.load_tracks([changed])
         assert table.cellWidget(0, table.COL_CODEC) is combo
-        assert table.item(0, table.COL_TITLE).text() == "Edited"
-        assert table.item(0, table.COL_LANG).text() == "eng"
+        title_item, lang_item = table.item(0, table.COL_TITLE), table.item(0, table.COL_LANG)
+        assert title_item is not None and title_item.text() == "Edited"
+        assert lang_item is not None and lang_item.text() == "eng"
         assert combo.currentData() == "aac"
         assert bitrate.value() == before
         assert table.current_audio_settings()[0].track_entry_id == first.entry_id
@@ -244,7 +247,7 @@ def test_audio_encoding_feedback_does_not_reload_sources(qt_app, tmp_path):
         remux._apply_inspection(sf.id, info)
         assert len(observed) == 1
         table = encode._audio_table
-        combo = table.cellWidget(0, table.COL_CODEC)
+        combo = cast(QComboBox, table.cellWidget(0, table.COL_CODEC))
         combo.setCurrentIndex(combo.findData("aac"))
         assert len(observed) == 1
         assert table.cellWidget(0, table.COL_CODEC) is combo
@@ -272,3 +275,91 @@ def test_removing_queued_source_cancels_inspection(qt_app, monkeypatch, tmp_path
         assert not panel._source_files
     finally:
         panel.close()
+
+
+def test_last_source_removal_resets_encode_panel(qt_app, tmp_path):
+    remux = RemuxPanel(AppConfig())
+    encode = EncodePanel(AppConfig())
+    remux.video_tracks_changed.connect(encode.set_video_tracks)
+    remux.audio_tracks_changed.connect(encode.set_audio_tracks)
+    remux.sources_reset.connect(encode.reset)
+    try:
+        for index in range(2):
+            info = _file_info(tmp_path / f"source{index}.mkv", [_video_track(0)])
+            info.audio_tracks = [_at()]
+            source = SourceFile(f"source{index}", info.path, "#fff")
+            remux._source_files.append(source)
+            remux._source_colors[source.id] = source.color
+            remux._apply_inspection(source.id, info)
+
+        encode._codec_combo.setCurrentIndex(encode._codec_combo.findData("libx265"))
+        encode._crf_spin.setValue(30)
+        encode._extra_params.setText("-threads 2")
+        encode._resize_enabled_cb.setChecked(True)
+        encode._apply_all_video_cb.setChecked(True)
+        encode._preview_captures = [{"path": "old.png"}]
+        encode._preview_video_path = tmp_path / "old.mkv"
+        encode._preview_time_edit.setText("00:01:00.000")
+        encode._profile_name.setText("ancien profil")
+        encode._static_hdr_estimate_prompted.add("old")
+
+        remux._on_remove_file("source1")
+        assert encode._crf_spin.value() == 30
+        assert encode._resize_enabled_cb.isChecked()
+        assert encode._apply_all_video_cb.isChecked()
+
+        # Désactiver toutes les vidéos ne supprime pas les sources.
+        encode.set_video_tracks([])
+        assert encode._crf_spin.value() == 30
+        remux._emit_signals()
+
+        remux._on_remove_file("source0")
+        assert encode._current_video_state() == encode._initial_video_state
+        assert not encode._video_settings_by_entry_id
+        assert not encode._video_force_8bit_by_entry_id
+        assert not encode._apply_all_video_cb.isChecked()
+        assert not encode._static_hdr_estimate_prompted
+        assert encode._video_list.count() == 0
+        assert encode._audio_table.rowCount() == 0
+        assert encode.get_duration_s() is None
+        assert encode.collect_config() is None
+        assert not encode._preview_captures
+        assert encode._preview_video_path is None
+        assert encode._preview_time_edit.text() == "00:00:00.000"
+        assert encode._profile_name.text() == ""
+        assert encode._cmd_preview.toPlainText() == ""
+
+        info = _file_info(tmp_path / "new.mkv", [_video_track(0)])
+        source = SourceFile("new", info.path, "#fff")
+        remux._source_files.append(source)
+        remux._source_colors[source.id] = source.color
+        remux._apply_inspection(source.id, info)
+        assert encode._codec_combo.currentData() == "copy"
+        assert encode._crf_spin.value() == 18
+        assert not encode._resize_enabled_cb.isChecked()
+        assert encode._extra_params.text() == ""
+    finally:
+        encode.close()
+        remux.close()
+
+
+def test_encode_reset_ignores_pending_preview_results(qt_app, monkeypatch):
+    encode = EncodePanel(AppConfig())
+    signals = TaskSignals()
+    monkeypatch.setattr(encode, "_current_preview_config", lambda: object())
+    monkeypatch.setattr(encode._workflow, "run_preview", lambda *_args: signals)
+    try:
+        encode._on_generate_preview()
+        signals.progress.emit("Ancienne preview")
+        signals.progress_pct.emit(75)
+        signals.finished.emit('{"mode": "video", "video_path": "/tmp/old.mkv"}')
+        encode.reset()
+        qt_app.processEvents()
+        assert encode._preview_signals is None
+        assert encode._preview_video_path is None
+        assert encode._preview_status.text() == "Prêt."
+        assert encode._preview_progress.value() == 0
+        assert encode._preview_progress.isHidden()
+        assert not encode._preview_open_video_btn.isEnabled()
+    finally:
+        encode.close()

@@ -1,6 +1,9 @@
 """Mesures de contenu : les jonctions détectées doivent correspondre aux edits réels."""
 from __future__ import annotations
 
+import threading
+from typing import Any, cast
+
 import numpy as np
 import pytest
 
@@ -106,7 +109,8 @@ def test_ui_reports_failed_analysis_without_constant_offset_fallback(monkeypatch
         exec=lambda: QDialog.DialogCode.Accepted, selected_entry=lambda: reference,
     ))
 
-    def fail(*_a, **_k):
+    def fail(scanner, *_a, **_k):
+        assert scanner.cancel_event is fake._scan_cancel
         raise AudioSyncError("Jonction non vérifiée")
 
     def forbidden(*_a, **_k):
@@ -116,6 +120,7 @@ def test_ui_reports_failed_analysis_without_constant_offset_fallback(monkeypatch
     monkeypatch.setattr(AudioSyncWorkflow, "detect_offset", forbidden)
     errors = []
     fake = SimpleNamespace(
+        _scan_cancel=threading.Event(),
         _audio_sync_family=lambda _entry: "surround",
         _audio_sync_reference_choices=lambda _entry: [reference],
         _audio_sync_track=lambda entry: entry,
@@ -126,7 +131,7 @@ def test_ui_reports_failed_analysis_without_constant_offset_fallback(monkeypatch
         _audio_sync_done=SimpleNamespace(emit=forbidden),
         _executor=SimpleNamespace(submit=lambda callback: callback()),
     )
-    panel.RemuxPanel._on_audio_sync_requested(fake, target)
+    panel.RemuxPanel._on_audio_sync_requested(cast(Any, fake), cast(Any, target))
     assert errors == [("target", "Jonction non vérifiée")]
 
 
@@ -170,3 +175,26 @@ def test_positive_delay_longer_than_probe_preserves_beginning_and_tail():
     segments, _, samples = scan_envelopes(ref, donor)
     assert len(segments) == 1 and segments[0].shift_ms == 18000
     assert samples[-1]['start_ms'] > len(donor) - 8000
+
+
+def test_audio_reference_choices_list_every_compatible_track_of_other_sources():
+    from pathlib import Path
+    from types import SimpleNamespace
+    from ui.panels.remux_panel import panel
+
+    def track(entry_id, file_id, tid, info="5.1"):
+        return SimpleNamespace(
+            entry_id=entry_id, file_id=file_id, mkv_tid=tid, track_type="audio",
+            codec="ac3", display_info=info, language="", title="",
+        )
+
+    target = track("t", "A", 1)
+    tracks = [target, track("b2", "B", 2), track("b1", "B", 1), track("b3", "B", 3, "stereo")]
+    fake = SimpleNamespace(
+        _source_files=[SimpleNamespace(id="A", path=Path("a.mkv")), SimpleNamespace(id="B", path=Path("b.mkv"))],
+        _track_table=SimpleNamespace(current_tracks=lambda: tracks),
+        _audio_sync_family=panel.RemuxPanel._audio_sync_family,
+    )
+    choices = panel.RemuxPanel._audio_sync_reference_choices(cast(Any, fake), cast(Any, target))
+    # Ordre du tableau conservé (pistes réordonnées), piste stéréo exclue.
+    assert [entry.entry_id for _label, entry in choices] == ["b2", "b1"]

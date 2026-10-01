@@ -5,7 +5,7 @@ from __future__ import annotations
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -35,6 +35,7 @@ from core.workflows.encode.runtime.nvencc import (
 )
 from core.workflows.encode.runtime.nvencc_routing import NvenccInputRouting
 from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router
+from core.matroska.editors.dovi import sanitize_dovi_mkv
 from core.workflows.common.timeline_sync import sync_cleanup_paths as _common_sync_cleanup_paths
 from core.workflows.remux_timeline_sync import LiveSyncSession
 
@@ -385,6 +386,7 @@ class NvenccDirectOutputRunnerCallbacks:
     finalize_ffmpeg: Callable[..., str]
     #: Assemblage final Matroska natif (lot 2). None → remux final FFmpeg.
     native_assemble: Callable[..., None] | None = None
+    bins: dict[str, str] = field(default_factory=dict)
 
 
 class NvenccDirectOutputRunner:
@@ -425,12 +427,8 @@ class NvenccDirectOutputRunner:
                 cleanup_paths.append(intermediate)
                 routing = cb.resolve_input_routing(config)
                 runtime_video = routing.video
-
-                if (
-                    not runtime_video.inject_hdr_meta
-                    and (runtime_video.master_display or runtime_video.max_cll)
-                ):
-                    runtime_video = replace(runtime_video, inject_hdr_meta=True)
+                if video.copy_dv and not runtime_video.copy_dv:
+                    cb.log_info("Redimensionnement NVEncC : copie Dolby Vision désactivée ; aucun alignement DV imposé.")
 
                 if routing.rebased_to_source:
                     cb.log_info(
@@ -453,6 +451,48 @@ class NvenccDirectOutputRunner:
                     _nvencc_requires_ffmpeg_filter_pipe_runtime(runtime_video)
                     or is_bluray_playlist(routing.input_path)
                 )
+                dovi_rpu_path: Path | None = None
+                if routing.needs_rpu_alignment:
+                    from core.workflows.encode.runtime.dovi_geometry import align_dovi_rpu_geometry, extract_dovi_rpu
+
+                    dovi_bin = (cb.bins.get("dovi_tool") if cb.bins else None) or "dovi_tool"
+                    raw_rpu = cwd / "source_rpu.bin"
+                    padded_rpu = cwd / "rpu_aligned.bin"
+                    pad_json = cwd / "dovi_geometry_edit.json"
+                    cleanup_paths.extend([raw_rpu, padded_rpu, pad_json])
+                    cb.log_info(
+                        f"Dolby Vision : recadrage {routing.crop_offsets}, padding {routing.pad_offsets}. "
+                        "Réalignement des offsets L5 par scène, sans réinitialisation globale du RPU."
+                    )
+                    def run_metadata(cmd: list[str]) -> object:
+                        cb.check_cancelled(signals)
+                        return cb.run_cmd(
+                            cmd,
+                            cwd,
+                            "dovi-geometry",
+                            lambda line: signals.progress.emit(line),
+                            signals,
+                        )
+
+                    signals.progress.emit("Extraction RPU Dolby Vision…")
+                    extract_dovi_rpu(
+                        source=routing.input_path, stream_index=routing.stream_index,
+                        ffmpeg_bin=cb.ffmpeg_bin, dovi_tool_bin=dovi_bin,
+                        output_rpu=raw_rpu, work_dir=cwd, run_cmd=run_metadata,
+                        cleanup_paths=cleanup_paths,
+                    )
+                    signals.progress.emit("Réalignement RPU Dolby Vision…")
+                    align_dovi_rpu_geometry(
+                        dovi_tool_bin=dovi_bin,
+                        rpu_input=raw_rpu,
+                        output_rpu=padded_rpu,
+                        pad_offsets=routing.pad_offsets or (0, 0, 0, 0),
+                        crop_offsets=routing.crop_offsets or (0, 0, 0, 0),
+                        work_dir=cwd,
+                        run_cmd=run_metadata,
+                    )
+                    dovi_rpu_path = padded_rpu
+
                 encode_cmd = _build_nvencc_command_runtime(
                     cb.nvencc_bin or "",
                     (
@@ -465,10 +505,12 @@ class NvenccDirectOutputRunner:
                     stream_index=None if needs_ffmpeg_pipe else routing.stream_index,
                     input_reader=None if needs_ffmpeg_pipe else routing.input_reader,
                     input_fps=None if needs_ffmpeg_pipe else routing.input_fps,
+                    source_fps=routing.source_fps or routing.input_fps,
                     input_avsync=None if needs_ffmpeg_pipe else routing.input_avsync,
                     hdr10plus_json=None,
-                    dovi_rpu=None,
+                    dovi_rpu=dovi_rpu_path,
                     dovi_rpu_prm=None if needs_ffmpeg_pipe else routing.dovi_rpu_prm,
+                    vpp_pad=routing.vpp_pad,
                 )
                 decode_cmd: list[str] | None = None
                 if needs_ffmpeg_pipe:
@@ -510,7 +552,13 @@ class NvenccDirectOutputRunner:
                         lambda line: signals.progress.emit(line),
                         signals,
                     )
-                cb.check_cancelled(signals)
+                effective_fps = routing.source_fps or routing.input_fps
+                if runtime_video.copy_dv and intermediate.is_file():
+                    cb.log_info(
+                        "Dolby Vision : validation MaxBlockAdditionID=1 et niveau (Level 6/9 au lieu de 10) sur l'artefact NVEncC."
+                    )
+                    sanitize_dovi_mkv(intermediate, fps=effective_fps)
+
                 if cb.native_assemble is not None:
                     cb.log_step(7, "Assemblage final Matroska natif")
                     cb.native_assemble(
@@ -521,6 +569,8 @@ class NvenccDirectOutputRunner:
                         plan=plan,
                         work_dir=cwd,
                     )
+                    if runtime_video.copy_dv and config.output.is_file():
+                        sanitize_dovi_mkv(config.output, fps=effective_fps)
                     signals.finished.emit(str(config.output))
                 else:
                     cb.log_step(7, "Remux final ffmpeg")
@@ -534,6 +584,8 @@ class NvenccDirectOutputRunner:
                         signals,
                         plan=plan,
                     )
+                    if runtime_video.copy_dv and config.output.is_file():
+                        sanitize_dovi_mkv(config.output, fps=effective_fps)
                     signals.finished.emit(output)
             except TaskCancelledError:
                 signals.cancelled.emit()
@@ -586,6 +638,9 @@ def build_nvencc_pipeline_commands(
         _nvencc_requires_ffmpeg_filter_pipe_runtime(routing.video)
         or is_bluray_playlist(routing.input_path)
     )
+    dovi_rpu_preview: Path | None = None
+    if routing.needs_rpu_alignment:
+        dovi_rpu_preview = work_dir / "rpu_aligned.bin"
     encode = _build_nvencc_command_runtime(
         nvencc_bin,
         (
@@ -598,8 +653,11 @@ def build_nvencc_pipeline_commands(
         stream_index=None if needs_ffmpeg_pipe else routing.stream_index,
         input_reader=None if needs_ffmpeg_pipe else routing.input_reader,
         input_fps=None if needs_ffmpeg_pipe else routing.input_fps,
+        source_fps=routing.source_fps or routing.input_fps,
         input_avsync=None if needs_ffmpeg_pipe else routing.input_avsync,
+        dovi_rpu=dovi_rpu_preview,
         dovi_rpu_prm=None if needs_ffmpeg_pipe else routing.dovi_rpu_prm,
+        vpp_pad=routing.vpp_pad,
     )
     if needs_ffmpeg_pipe:
         decode = _build_decode_pipe_cmd_runtime(

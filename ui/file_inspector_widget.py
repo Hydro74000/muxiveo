@@ -46,6 +46,7 @@ from core.inspector import (
     AudioTrack, ChapterInfo, FileInfo, FileInspector,
     HDRType, InspectionError, SubtitleTrack, VideoTrack,
 )
+from ui.shutdown import Shutdown, defer_close
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
 
 
@@ -748,7 +749,10 @@ class FileInspectorWidget(QWidget):
 
     def closeEvent(self, event) -> None:
         """Arrête proprement le ThreadPoolExecutor à la fermeture du widget."""
-        self._executor.shutdown(wait=True)
+        if not hasattr(self, "_shutdown"):
+            self._shutdown = Shutdown(executors=(self._executor,))
+        if defer_close(self, event, ready=self._shutdown.done.is_set()):
+            return
         super().closeEvent(event)
 
     def current_info(self) -> FileInfo | None:

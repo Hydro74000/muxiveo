@@ -33,6 +33,7 @@ from core.workflows.encode.runtime.static_hdr_estimator import StaticHdrEstimate
 from core.matroska.editors.dovi import (
     DolbyVisionConfigRecord,
     MatroskaDoviBlockAdditionEditor,
+    sanitize_dovi_level,
 )
 from core.matroska.hevc.access_units import HevcStreamCancelled
 from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter
@@ -666,6 +667,9 @@ class MetadataInjectRunner:
                         )
                     else:
                         _free(out_static_hdr)
+                        signals.progress.emit(
+                            "Métadonnées SEI HDR statiques déjà présentes dans le flux."
+                        )
                     _check()
 
                 if (
@@ -1023,7 +1027,8 @@ def _build_dovi_record_from_rpu(
             compat_id = 1 if profile == 8 else 0
 
     level_match = re.search(r"DV\s+Level\s*:\s*(\d+)", text, re.IGNORECASE)
-    level = int(level_match.group(1)) if level_match else 6
+    raw_level = int(level_match.group(1)) if level_match else 6
+    level = sanitize_dovi_level(raw_level)
 
     # En sortie de pipeline metadata_inject, on a forcément un stream
     # mono-layer (le BL est ce que NVENC a encodé) avec RPU réinjecté.
@@ -1034,6 +1039,7 @@ def _build_dovi_record_from_rpu(
         el_present=False,
         bl_present=True,
         bl_signal_compat_id=max(0, min(15, compat_id)),
+        fourcc=None,
     )
 
 

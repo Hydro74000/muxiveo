@@ -28,6 +28,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from core.bluray import append_ffmpeg_input_args
+from core.workflows.encode.catalog import hdr_capabilities, supports_hdr_output
 from core.subprocess_utils import subprocess_text_kwargs
 from core.workflows.encode.models import (
     QualityMode,
@@ -45,15 +46,14 @@ NVENCC_VIDEO_CODECS: frozenset[str] = frozenset({
     "nvencc_av1",
 })
 
-NVENCC_DYNAMIC_HDR_CODECS: frozenset[str] = frozenset({
-    "nvencc_hevc",
-    "nvencc_av1",
-})
+# Vues dérivées de la table de compatibilité HDR du catalogue.
+NVENCC_DYNAMIC_HDR_CODECS: frozenset[str] = frozenset(
+    codec for codec in NVENCC_VIDEO_CODECS if hdr_capabilities(codec).dynamic
+)
 
-NVENCC_MANUAL_STATIC_HDR_CODECS: frozenset[str] = frozenset({
-    "nvencc_hevc",
-    "nvencc_av1",
-})
+NVENCC_MANUAL_STATIC_HDR_CODECS: frozenset[str] = frozenset(
+    codec for codec in NVENCC_VIDEO_CODECS if hdr_capabilities(codec).manual_static
+)
 
 NVENCC_WORKFLOW_OWNED_FLAGS: frozenset[str] = frozenset({
     "--master-display",
@@ -76,6 +76,7 @@ NVENCC_WORKFLOW_OWNED_FLAGS: frozenset[str] = frozenset({
     "--vpp-resize",
     "--vpp-yadif",
     "--vpp-nlmeans",
+    "--vpp-pad",
 })
 
 NVENCC_QP_TRIPLET_FLAGS: frozenset[str] = frozenset({
@@ -114,15 +115,11 @@ def is_nvencc_codec(codec: str | None) -> bool:
 
 
 def nvencc_supports_dynamic_hdr(codec: str | None) -> bool:
-    if not codec:
-        return False
-    return str(codec).strip().lower() in NVENCC_DYNAMIC_HDR_CODECS
+    return is_nvencc_codec(codec) and hdr_capabilities(codec).dynamic
 
 
 def nvencc_supports_manual_static_hdr(codec: str | None) -> bool:
-    if not codec:
-        return False
-    return str(codec).strip().lower() in NVENCC_MANUAL_STATIC_HDR_CODECS
+    return is_nvencc_codec(codec) and hdr_capabilities(codec).manual_static
 
 
 def nvencc_binary_name() -> str:
@@ -141,50 +138,65 @@ def nvencc_binary_name() -> str:
 # Détection à l'exécution
 # ---------------------------------------------------------------------------
 
-# `--check-features` produit une liste de codecs supportés par le GPU.
-# On parse les sections du genre "Codec: H.264/AVC", "Codec: H.265/HEVC",
-# "Codec: AV1". L'ordre / le format exact peut varier mais ces tokens sont
-# stables dans la sortie de rigaya.
+# Codecs d'encodage NVENC réellement exposés par le GPU. Seules deux zones de
+# sortie sont fiables : la liste suivant « Avaliable Codec(s) » de ``--check-hw``
+# (faute d'orthographe d'origine chez rigaya) et les lignes « Codec: … » de
+# ``--check-features``. La bannière de version (« reader: … [H.264/AVC, …, AV1] »)
+# liste les *décodeurs* d'entrée : la parcourir donnerait de faux positifs (AV1).
 _FEATURE_TOKEN_BY_CODEC: dict[str, tuple[str, ...]] = {
     "nvencc_h264": ("H.264/AVC", "H.264", "AVC"),
     "nvencc_hevc": ("H.265/HEVC", "H.265", "HEVC"),
     "nvencc_av1": ("AV1",),
 }
+_CHECK_HW_HEADER_RE = re.compile(r"^\s*(?:avaliable|available)\s+codec\(s\)\s*:?\s*$", re.IGNORECASE)
+_FEATURES_CODEC_RE = re.compile(r"^\s*Codec\s*:\s*(.+?)\s*$", re.IGNORECASE)
 
 
-def _run_nvencc_check_features(nvencc_bin: str) -> str | None:
-    """Exécute ``NVEncC --check-features`` et retourne sa sortie texte."""
+def _run_nvencc_probe(nvencc_bin: str, option: str) -> str | None:
+    """Exécute une sonde NVEncC ; None si l'outil ou le GPU/pilote NVIDIA est inutilisable."""
     try:
         proc = subprocess.run(
-            [nvencc_bin, "--check-features"],
+            [nvencc_bin, option],
             capture_output=True,
             check=False,
-            timeout=10,
+            timeout=15,
             **subprocess_text_kwargs(),
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None
-    # NVEncC écrit l'output principal sur stdout, mais certains warnings
-    # peuvent partir sur stderr. On combine pour robustesse.
-    combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
-    if proc.returncode != 0 and not combined.strip():
+    # Sans GPU NVIDIA / pilote compatible, NVEncC échoue avec un code non nul.
+    if proc.returncode != 0:
         return None
-    return combined
+    return (proc.stdout or "") + "\n" + (proc.stderr or "")
 
 
-def _parse_supported_codecs(features_output: str) -> set[str]:
-    """Extrait les codecs NVEncC supportés depuis la sortie ``--check-features``."""
-    if not features_output:
-        return set()
-    supported: set[str] = set()
+def _codec_from_label(label: str) -> str | None:
     for codec_id, tokens in _FEATURE_TOKEN_BY_CODEC.items():
-        for token in tokens:
-            # Match insensible à la casse, en évitant les sous-chaînes
-            # ambiguës (le token "AV1" est court mais isolé dans la doc).
-            pattern = re.compile(rf"\b{re.escape(token)}\b", re.IGNORECASE)
-            if pattern.search(features_output):
-                supported.add(codec_id)
+        if any(re.search(rf"\b{re.escape(token)}\b", label, re.IGNORECASE) for token in tokens):
+            return codec_id
+    return None
+
+
+def _parse_supported_codecs(output: str) -> set[str]:
+    """Codecs d'encodage listés par ``--check-hw`` (prioritaire) ou ``--check-features``."""
+    if not output:
+        return set()
+    lines = output.splitlines()
+    supported: set[str] = set()
+    for i, line in enumerate(lines):
+        if not _CHECK_HW_HEADER_RE.match(line):
+            continue
+        # Une ligne par codec jusqu'à la première ligne vide ou non reconnue.
+        for entry in lines[i + 1:]:
+            codec_id = _codec_from_label(entry) if entry.strip() else None
+            if codec_id is None:
                 break
+            supported.add(codec_id)
+        return supported
+    for line in lines:
+        match = _FEATURES_CODEC_RE.match(line)
+        if match and (codec_id := _codec_from_label(match.group(1))) is not None:
+            supported.add(codec_id)
     return supported
 
 
@@ -192,24 +204,28 @@ def detect_nvencc_available(nvencc_bin: str | None) -> tuple[bool, set[str]]:
     """
     Détecte si NVEncC est utilisable et liste les codecs supportés par le GPU.
 
-    Args:
-        nvencc_bin: chemin résolu vers le binaire (``AppConfig.tool_nvencc``).
-                    None ou chaîne vide → indisponible.
+    Sonde ``--check-hw`` (même option sous Windows et Linux ; NVEncC n'existe
+    pas sous macOS) : code 0 uniquement si un GPU NVIDIA et un pilote
+    compatibles répondent, suivi de la liste des encodeurs disponibles.
+    ``--check-features`` sert de repli si ce format venait à changer.
+
+    Indépendant de NVENC ffmpeg : NVEncC embarque sa propre négociation d'API
+    et peut fonctionner quand le ffmpeg fourni exige un pilote plus récent.
 
     Returns:
-        (available, codecs)
-            available : True si le binaire répond et au moins 1 codec dispo.
-            codecs    : sous-ensemble de ``NVENCC_VIDEO_CODECS``.
-
-    Le caller (HardwareEncoderDetector) doit avoir préalablement vérifié que
-    NVENC ffmpeg est disponible — NVEncC n'est jamais exposé sans NVENC.
+        (available, codecs) — codecs ⊂ ``NVENCC_VIDEO_CODECS``.
     """
     if not nvencc_bin:
         return False, set()
-    output = _run_nvencc_check_features(nvencc_bin)
-    if output is None:
-        return False, set()
-    supported = _parse_supported_codecs(output)
+    supported: set[str] = set()
+    for option in ("--check-hw", "--check-features"):
+        output = _run_nvencc_probe(nvencc_bin, option)
+        if output is None:
+            # Échec d'exécution (binaire absent, pas de GPU) : inutile d'insister.
+            return False, set()
+        supported = _parse_supported_codecs(output) & NVENCC_VIDEO_CODECS
+        if supported:
+            break
     return bool(supported), supported
 
 
@@ -302,7 +318,7 @@ def _output_depth_args(video: VideoEncodeSettings) -> list[str]:
     keeps_hdr = not getattr(video, "tonemap_to_sdr", False) and any(
         getattr(video, name, False) for name in ("copy_dv", "copy_hdr10plus", "inject_hdr_meta")
     )
-    if keeps_hdr and not is_h264:
+    if keeps_hdr and supports_hdr_output(video.codec):
         return ["--output-depth", "10"]
     return []
 
@@ -310,7 +326,11 @@ def _output_depth_args(video: VideoEncodeSettings) -> list[str]:
 def _hdr_static_args(video: VideoEncodeSettings) -> list[str]:
     """Métadonnées HDR statiques (master display + MaxCLL/MaxFALL)."""
     args: list[str] = []
-    if not getattr(video, "inject_hdr_meta", False):
+    if (
+        not getattr(video, "inject_hdr_meta", False)
+        or getattr(video, "tonemap_to_sdr", False)
+        or not nvencc_supports_manual_static_hdr(video.codec)
+    ):
         return args
     md = (video.master_display or "").strip()
     if md:
@@ -368,22 +388,29 @@ def _auto_source_hdr_args(video: VideoEncodeSettings, *, direct_input: bool) -> 
     lu comme SDR : la VUI doit suivre dès qu'un HDR statique ou dynamique est
     conservé. Le y4m ne transporte pas la couleur : HDR10 statique = BT.2020/PQ.
     """
-    if getattr(video, "tonemap_to_sdr", False):
+    # NVEncC H.264 refuse toute signalisation HDR (--master-display/--max-cll).
+    if getattr(video, "tonemap_to_sdr", False) or not supports_hdr_output(video.codec):
         return []
     dynamic = bool(getattr(video, "copy_dv", False) or getattr(video, "copy_hdr10plus", False))
     static = bool(getattr(video, "inject_hdr_meta", False))
     if not (dynamic or static):
         return []
     if not direct_input:
-        return ["--colormatrix", "bt2020nc", "--colorprim", "bt2020", "--transfer", "smpte2084"] if static else []
+        args = ["--colormatrix", "bt2020nc", "--colorprim", "bt2020", "--transfer", "smpte2084"] if (static or dynamic) else []
+        if getattr(video, "copy_dv", False) and args:
+            args.extend(["--chromaloc", "2"])
+        return args
     args = [
         "--colormatrix", "auto",
         "--colorprim", "auto",
         "--transfer", "auto",
         "--chromaloc", "auto",
     ]
-    if not static:
-        args.extend(["--master-display", "copy", "--max-cll", "copy"])
+    # Case HDR10 statique décochée : ni valeurs ni recopie source.
+    if static and not video.master_display:
+        args.extend(["--master-display", "copy"])
+    if static and not video.max_cll:
+        args.extend(["--max-cll", "copy"])
     return args
 
 
@@ -476,9 +503,15 @@ def _nvencc_filter_args(video: VideoEncodeSettings) -> list[str]:
     return args
 
 
-def map_nvencc_video_transform_args(video: VideoEncodeSettings) -> list[str]:
+def map_nvencc_video_transform_args(
+    video: VideoEncodeSettings,
+    *,
+    vpp_pad: tuple[int, int, int, int] | None = None,
+) -> list[str]:
     args: list[str] = []
     args.extend(_nvencc_crop_args(video))
+    if vpp_pad is not None and any(p > 0 for p in vpp_pad):
+        args.extend(["--vpp-pad", f"{vpp_pad[0]},{vpp_pad[1]},{vpp_pad[2]},{vpp_pad[3]}"])
     args.extend(_nvencc_resize_args(video))
     args.extend(_nvencc_filter_args(video))
     return args
@@ -636,12 +669,39 @@ def strip_nvencc_latency_args(args: list[str]) -> list[str]:
     return stripped
 
 
+def _compute_dovi_gop_len(input_fps: str | float | None = None) -> int:
+    """Calcule la longueur maximale de GOP pour borner le cycle IDR à 2 secondes max (Dolby Vision).
+
+    Évite la saturation du buffer matériel DPB/RPU des téléviseurs (LG OLED, Sony, etc.)
+    tout en adaptant le nombre d'images à la cadence réelle :
+    - 23.976 / 24 fps : 48
+    - 25 fps : 50
+    - 29.97 / 30 fps : 60
+    - 50 fps : 100
+    - 59.94 / 60 fps : 120
+    Fallback par défaut (cinéma 24fps) : 48
+    """
+    if input_fps is not None:
+        try:
+            if isinstance(input_fps, str) and "/" in input_fps:
+                num, den = input_fps.split("/", 1)
+                fps_val = float(num) / float(den)
+            else:
+                fps_val = float(input_fps)
+            if fps_val > 0:
+                return max(24, int(round(fps_val * 2.0)))
+        except (ValueError, ZeroDivisionError):
+            pass
+    return 48
+
+
 def _hdr_dynamic_args(
     video: VideoEncodeSettings,
     *,
     hdr10plus_json: Path | str | None = None,
     dovi_rpu: Path | str | None = None,
     dovi_rpu_prm: str | None = None,
+    input_fps: str | float | None = None,
 ) -> list[str]:
     """Flux HDR10+ et DoVi : passthrough (``copy``) ou fichiers extraits amont."""
     args: list[str] = []
@@ -649,7 +709,9 @@ def _hdr_dynamic_args(
         args.extend(["--dhdr10-info", str(hdr10plus_json)])
     elif getattr(video, "copy_hdr10plus", False):
         args.extend(["--dhdr10-info", "copy"])
+    has_dovi = False
     if dovi_rpu is not None:
+        has_dovi = True
         args.extend(["--dolby-vision-rpu", str(dovi_rpu)])
         mapped_profile = _dovi_profile_for_codec(video.codec, map_nvencc_dovi_profile(video.dovi_profile))
         # Quand on injecte un RPU externe, le profil doit être explicite ou
@@ -657,6 +719,7 @@ def _hdr_dynamic_args(
         if mapped_profile and mapped_profile != "copy":
             args.extend(["--dolby-vision-profile", mapped_profile])
     elif getattr(video, "copy_dv", False):
+        has_dovi = True
         args.extend(["--dolby-vision-rpu", "copy"])
         mapped_profile = map_nvencc_dovi_profile(video.dovi_profile)
         if mapped_profile in {None, "copy"}:
@@ -666,6 +729,25 @@ def _hdr_dynamic_args(
             args.extend(["--dolby-vision-profile", mapped_profile])
     if dovi_rpu_prm and "--dolby-vision-rpu" in args:
         args.extend(["--dolby-vision-rpu-prm", str(dovi_rpu_prm)])
+
+    if has_dovi and video.codec == "nvencc_hevc":
+        # Conformité Dolby Vision Profile 8.1 pour lecture sur diffuseurs TV :
+        # - Main10 et Tier High
+        # - AUD et repeat-headers pour synchronisation continue du processeur DV
+        # - gop-len borné à 2 secondes max (selon la cadence réelle) pour borner le buffer matériel DPB/RPU
+        if "--profile" not in args:
+            args.extend(["--profile", "main10"])
+        if "--tier" not in args:
+            args.extend(["--tier", "high"])
+        if "--repeat-headers" not in args:
+            args.append("--repeat-headers")
+        if "--aud" not in args:
+            args.append("--aud")
+        extra_raw = str(getattr(video, "extra_params", "") or "")
+        if "--gop-len" not in extra_raw and "-g " not in extra_raw and not extra_raw.endswith("-g") and "--gop-len" not in args:
+            gop_len = _compute_dovi_gop_len(input_fps)
+            args.extend(["--gop-len", str(gop_len)])
+
     return args
 
 
@@ -678,10 +760,12 @@ def build_nvencc_command(
     stream_index: int | None = None,
     input_reader: str | None = None,
     input_fps: str | None = None,
+    source_fps: str | float | None = None,
     input_avsync: str | None = None,
     hdr10plus_json: Path | str | None = None,
     dovi_rpu: Path | str | None = None,
     dovi_rpu_prm: str | None = None,
+    vpp_pad: tuple[int, int, int, int] | None = None,
 ) -> list[str]:
     """Phase 2 : commande NVEncC complète (stdin = yuv4mpegpipe phase 1).
 
@@ -746,9 +830,10 @@ def build_nvencc_command(
             hdr10plus_json=hdr10plus_json,
             dovi_rpu=dovi_rpu,
             dovi_rpu_prm=dovi_rpu_prm,
+            input_fps=source_fps or input_fps,
         )
     )
-    cmd.extend(map_nvencc_video_transform_args(video))
+    cmd.extend(map_nvencc_video_transform_args(video, vpp_pad=vpp_pad))
     cmd.extend(map_nvencc_tonemap_args(video))
 
     # extra_params experts : on retire les flags possédés par le workflow

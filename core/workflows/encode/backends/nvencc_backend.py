@@ -14,7 +14,12 @@ from core.workflows.encode.backends.models import (
     ProgressEvent,
 )
 from core.workflows.encode.backends.progress import parse_nvencc_progress
-from core.workflows.encode.catalog import CQ_CAPABLE_VIDEO_CODECS
+from core.workflows.encode.catalog import (
+    CQ_CAPABLE_VIDEO_CODECS,
+    supports_dovi,
+    supports_hdr10plus,
+    supports_hdr_output,
+)
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
 from core.workflows.encode.planning.plan_models import EncodePlan
 from core.workflows.encode.runtime.nvencc import (
@@ -46,7 +51,10 @@ class NvenccEncodeBackend(EncodeBackend):
             backend_id=self.backend_id,
             quality_modes=tuple(modes),
             supports_dynamic_hdr=nvencc_supports_dynamic_hdr(codec),
+            supports_dovi=supports_dovi(codec),
+            supports_hdr10plus=supports_hdr10plus(codec),
             supports_manual_static_hdr=nvencc_supports_manual_static_hdr(codec),
+            supports_hdr=supports_hdr_output(codec),
             supports_tonemap=True,
             supports_multi_video=False,
             supports_main_filters=True,
@@ -75,17 +83,26 @@ class NvenccEncodeBackend(EncodeBackend):
             return errors
 
         video = videos[0]
+        if video.copy_dv:
+            try:
+                # Resolve percent crops and the 1:1 DV policy before checking
+                # whether FFmpeg prefilters / dynamic metadata are compatible.
+                video = ctx.workflow._resolve_nvencc_input_routing(config).video
+            except Exception as exc:
+                errors.append(str(exc))
         if not ctx.workflow._nvencc_bin:
             errors.append("NVEncC est sélectionné mais le binaire n'est pas configuré.")
         if video.quality_mode == QualityMode.SIZE:
             errors.append("NVEncC ne supporte pas le mode taille cible (2 passes) dans cette version.")
-        if video.inject_hdr_meta and video.codec == "nvencc_h264":
-            errors.append("NVEncC H.264 ne supporte pas les métadonnées HDR statiques.")
+        if video.inject_hdr_meta and not supports_hdr_output(video.codec):
+            errors.append(f"{video.codec} ne supporte pas les métadonnées HDR statiques.")
         if (video.copy_dv or video.copy_hdr10plus) and is_bluray_playlist(video.source_path or config.source):
             errors.append(
                 "NVEncC ne peut pas copier DoVi/HDR10+ dynamiques depuis une playlist Blu-ray ; "
                 "utilisez le backend FFmpeg pour cette source."
             )
+        if video.copy_dv and not supports_dovi(video.codec):
+            errors.append(f"{video.codec} ne supporte pas Dolby Vision. Seul 'nvencc_hevc' gère Dolby Vision.")
         if (video.copy_dv or video.copy_hdr10plus) and not nvencc_supports_dynamic_hdr(video.codec):
             errors.append("Le codec NVEncC sélectionné ne supporte pas DoVi/HDR10+.")
         if (video.copy_dv or video.copy_hdr10plus) and nvencc_requires_ffmpeg_filter_pipe(video):
@@ -93,7 +110,7 @@ class NvenccEncodeBackend(EncodeBackend):
                 "NVEncC avec préfiltrage FFmpeg (deblock/chroma_smooth/crop %/resize %) "
                 "est incompatible avec la copie DoVi/HDR10+ dynamique dans cette version."
             )
-        if video.copy_dv or video.copy_hdr10plus:
+        if video.copy_hdr10plus and not videos[0].copy_dv:
             try:
                 ctx.workflow._resolve_nvencc_input_routing(config)
             except Exception as exc:

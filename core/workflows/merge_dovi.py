@@ -33,6 +33,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
@@ -43,7 +44,7 @@ from typing import Any, Callable
 from PySide6.QtCore import QObject, Signal
 from core.dovi_profile_detector import DoviProfileDetector, DoviSubProfile
 from core.frame_count import reliable_frame_count
-from core.subprocess_utils import format_returncode, subprocess_text_kwargs
+from core.subprocess_utils import format_returncode, kill_process_tree, subprocess_text_kwargs
 from core.subtitle_codec import plan_subtitle_codec
 from core.workdir import prepare_process_work_dir
 from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router, P7RoutingDecision
@@ -534,6 +535,8 @@ class MergeDoviWorkflow(QObject):
         }
         self._max_workers    = max_workers
         self._cancelled      = False
+        self._procs: list[subprocess.Popen] = []
+        self._procs_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # API publique
@@ -566,11 +569,29 @@ class MergeDoviWorkflow(QObject):
 
     def cancel(self) -> None:
         """
-        Demande l'annulation propre du workflow.
-        L'étape en cours se termine, puis _check_cancel() lève _CancelledError.
-        Les sous-processus déjà lancés ne sont pas interrompus de force.
+        Demande l'annulation du workflow : les sous-processus longs en cours
+        sont tués, puis _check_cancel() (ou l'échec de l'étape) arrête le run.
         """
         self._cancelled = True
+        with self._procs_lock:
+            procs = list(self._procs)
+        for proc in procs:
+            kill_process_tree(proc, timeout=0.2)
+
+    def _track_proc(self, proc: subprocess.Popen) -> None:
+        with self._procs_lock:
+            self._procs.append(proc)
+            cancelled = self._cancelled
+        # cancel() peut avoir pris son instantané juste avant l'enregistrement.
+        if cancelled:
+            kill_process_tree(proc, timeout=0.2)
+
+    def _untrack_proc(self, proc: subprocess.Popen) -> None:
+        with self._procs_lock:
+            try:
+                self._procs.remove(proc)
+            except ValueError:
+                pass
 
     # ------------------------------------------------------------------
     # Orchestration principale (thread secondaire)
@@ -702,9 +723,18 @@ class MergeDoviWorkflow(QObject):
             self.workflow_finished.emit(str(paths.output_mkv))
 
         except WorkflowError as exc:
-            self.workflow_failed.emit(exc.step, exc.message)
+            if self._cancelled:
+                # Échec provoqué par le kill des sous-processus à l'annulation.
+                self.workflow_failed.emit(exc.step, "Workflow annulé.")
+            else:
+                self.workflow_failed.emit(exc.step, exc.message)
         except _CancelledError:
             self.workflow_failed.emit(WorkflowStep.VALIDATION, "Workflow annulé.")
+        except Exception as exc:
+            # Filet : sans signal de fin, le panneau resterait « en cours » et
+            # sa fermeture attendrait indéfiniment.
+            message = "Workflow annulé." if self._cancelled else f"Erreur interne inattendue : {exc}"
+            self.workflow_failed.emit(WorkflowStep.VALIDATION, message)
 
     def _check_cancel(self) -> None:
         if self._cancelled:
@@ -1990,14 +2020,22 @@ class MergeDoviWorkflow(QObject):
                 stderr=subprocess.STDOUT,
                 **subprocess_text_kwargs(),
             ) as proc:
-                lines: list[str] = []
-                assert proc.stdout is not None
-                for line in proc.stdout:
-                    stripped = line.rstrip("\n")
-                    if stripped:
-                        lines.append(stripped)
-                        self.step_progress.emit(step, stripped)
-                proc.wait()
+                self._track_proc(proc)
+                try:
+                    lines: list[str] = []
+                    assert proc.stdout is not None
+                    for line in proc.stdout:
+                        stripped = line.rstrip("\n")
+                        if stripped:
+                            lines.append(stripped)
+                            self.step_progress.emit(step, stripped)
+                    proc.wait()
+                except BaseException:
+                    # Tuer avant Popen.__exit__, qui attendrait sinon la fin de l'outil.
+                    kill_process_tree(proc, timeout=0.2)
+                    raise
+                finally:
+                    self._untrack_proc(proc)
                 output = "\n".join(lines)
                 if proc.returncode != 0:
                     raise WorkflowError(
@@ -2044,6 +2082,7 @@ class MergeDoviWorkflow(QObject):
             env=env,
         )
         os.close(slave_fd)
+        self._track_proc(proc)
 
         lines: list[str] = []
         last_pct: int = -1
@@ -2097,7 +2136,11 @@ class MergeDoviWorkflow(QObject):
                     + output[-1000:],
                 )
             return output
+        except BaseException:
+            kill_process_tree(proc, timeout=0.2)
+            raise
         finally:
+            self._untrack_proc(proc)
             try:
                 os.close(master_fd)
             except OSError:
@@ -2117,18 +2160,27 @@ class MergeDoviWorkflow(QObject):
         ):
             return self._run_cmd_pty(cmd, step)
 
-        result = subprocess.run(
+        # Popen (et non run) : le processus doit rester tuable par cancel().
+        with subprocess.Popen(
             cmd,
-            capture_output=True,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             **subprocess_text_kwargs(),
-        )
-        if result.returncode != 0:
+        ) as proc:
+            self._track_proc(proc)
+            try:
+                stdout, stderr = proc.communicate()
+            except BaseException:
+                kill_process_tree(proc, timeout=0.2)
+                raise
+            finally:
+                self._untrack_proc(proc)
+        if proc.returncode != 0:
             raise RuntimeError(
-                f"Commande échouée (code {format_returncode(result.returncode)}) : {' '.join(cmd[:2])}\n"
-                + (result.stdout + result.stderr)[-500:]
+                f"Commande échouée (code {format_returncode(proc.returncode)}) : {' '.join(cmd[:2])}\n"
+                + ((stdout or "") + (stderr or ""))[-500:]
             )
-        return result.stdout
+        return stdout or ""
 
     # ------------------------------------------------------------------
     # Helpers mediainfo

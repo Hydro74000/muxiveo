@@ -42,6 +42,9 @@ class BackendCapabilities:
     supports_main_filters: bool
     extra_params_backend: str
     progress_kind: str
+    supports_dovi: bool = False
+    supports_hdr10plus: bool = False
+    supports_hdr: bool = True
 
     def supports_quality_mode(self, mode: QualityMode) -> bool:
         return mode in self.quality_modes

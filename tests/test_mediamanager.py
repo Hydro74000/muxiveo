@@ -175,6 +175,7 @@ def test_mediamanager_ui_workflow(qapp, tmp_path):
     ep1.write_bytes(b"Z" * 150)
 
     win = mediamanager.MediaManager(startup_dir=str(tmp_path))
+    assert win.scanner is not None
     win.scanner.wait(3000)
     qapp.processEvents()
 
@@ -253,6 +254,7 @@ def test_delete_full_season_and_cancellation(qapp, tmp_path, monkeypatch):
     ep3.write_bytes(b"C" * 150)
 
     win = mediamanager.MediaManager(startup_dir=str(tmp_path))
+    assert win.scanner is not None
     win.scanner.wait(3000)
     qapp.processEvents()
 
@@ -309,6 +311,7 @@ def test_delete_full_movie_with_duplicates(qapp, tmp_path, monkeypatch):
     m2.write_bytes(b"M2" * 200)
 
     win = mediamanager.MediaManager(startup_dir=str(tmp_path))
+    assert win.scanner is not None
     win.scanner.wait(3000)
     qapp.processEvents()
 
@@ -342,6 +345,7 @@ def test_delete_full_series(qapp, tmp_path, monkeypatch):
     ep1.write_bytes(b"Fargo" * 50)
 
     win = mediamanager.MediaManager(startup_dir=str(tmp_path))
+    assert win.scanner is not None
     win.scanner.wait(3000)
     qapp.processEvents()
 
@@ -367,12 +371,14 @@ def test_delete_buttons_exist_on_all_levels(qapp, tmp_path):
     ep.write_bytes(b"Lost" * 20)
 
     win = mediamanager.MediaManager(startup_dir=str(tmp_path))
+    assert win.scanner is not None
     win.scanner.wait(3000)
     qapp.processEvents()
 
     show_item = win.tree_items.get("S|Lost")
     season_item = win.tree_items.get("S|Lost|1")
     ep_item = win.tree_items.get("S|Lost|1|1")
+    assert ep_item is not None
     file_item = ep_item.child(0)
 
     for item, expected_tip in [

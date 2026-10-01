@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import copy
+import threading
 from collections.abc import Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QDropEvent, QFont
@@ -54,9 +55,11 @@ from core.workflows.remux_models import (
     TrackEntry,
     clone_track_entry,
 )
+from ui.shutdown import Shutdown, defer_close
 from ui.panels.remux_panel.functions import chapters as chapter_functions
 from ui.panels.remux_panel.functions import config_builder, inspection, signals, tmdb
 from ui.panels.remux_panel.models import SourceFile
+from core.workflows.sync_calibration import SyncCalibration
 from ui.panels.remux_panel.theme import (
     _C,
     _card,
@@ -160,6 +163,7 @@ class RemuxPanel(QWidget):
     audio_tracks_changed = Signal(object)
     ready_changed = Signal(bool)
     mux_backend_changed = Signal(str)
+    sources_reset = Signal()
 
     def __init__(
         self,
@@ -180,6 +184,7 @@ class RemuxPanel(QWidget):
         self._inspection_futures: dict[str, Future] = {}
         self._path_executor = ThreadPoolExecutor(max_workers=1)
         self._executor = ThreadPoolExecutor(max_workers=2)
+        self._scan_cancel = threading.Event()
         # Le préflight du backend natif peut lire les sources ; il ne doit pas
         # partager le pool d'inspection ni bloquer la boucle Qt.
         self._preview_executor = ThreadPoolExecutor(max_workers=1)
@@ -590,7 +595,7 @@ class RemuxPanel(QWidget):
 
     def _scan_dropped_paths(self, paths: list[str]) -> None:
         """Les stat, parcours récursifs et playlists peuvent attendre le réseau."""
-        found = []
+        found: list[tuple[str, Any]] = []
         for path_str in dict.fromkeys(paths):
             if self._closing:
                 return
@@ -1400,25 +1405,25 @@ class RemuxPanel(QWidget):
         target_family = self._audio_sync_family(target)
         if target_family is None:
             return choices
-        seen_sources: set[str] = set()
+        seen_entries: set[str] = set()
         for sf in self._source_files:
-            if sf.id == target.file_id or sf.id in seen_sources:
+            if sf.id == target.file_id:
                 continue
-            candidates = [
-                entry for entry in self._track_table.current_tracks()
-                if entry.file_id == sf.id
-                and entry.track_type == "audio"
-                and self._audio_sync_family(entry) == target_family
-            ]
-            if not candidates:
-                continue
-            ref = candidates[0]
-            title = f" - {ref.title}" if ref.title else ""
-            choices.append((
-                f"{sf.path.name} | #{ref.mkv_tid} {ref.codec} {ref.display_info}{title}",
-                ref,
-            ))
-            seen_sources.add(sf.id)
+            for ref in self._track_table.current_tracks():
+                if (
+                    ref.file_id != sf.id
+                    or ref.track_type != "audio"
+                    or ref.entry_id in seen_entries
+                    or self._audio_sync_family(ref) != target_family
+                ):
+                    continue
+                seen_entries.add(ref.entry_id)
+                lang = f" [{ref.language}]" if ref.language else ""
+                title = f" - {ref.title}" if ref.title else ""
+                choices.append((
+                    f"{sf.path.name} | #{ref.mkv_tid} {ref.codec} {ref.display_info}{lang}{title}",
+                    ref,
+                ))
         return choices
 
     def _subtitle_sync_reference_choices(self, target: TrackEntry) -> list[tuple[str, TrackEntry]]:
@@ -1771,6 +1776,7 @@ class RemuxPanel(QWidget):
                 scanner = AudioSyncScanner(
                     ffmpeg=self._config.tool_ffmpeg,
                     ffprobe=self._config.tool_ffprobe,
+                    cancel_event=self._scan_cancel,
                 )
                 calibration = scanner.scan(
                     reference,
@@ -1815,13 +1821,12 @@ class RemuxPanel(QWidget):
                     self._workflow_options["sync_calibrations"].pop(str(ref_source_idx), None)
 
             target_source_idx = self._source_index_for_file_id(target_file_id)
-            cal_obj = None
+            cal_obj: SyncCalibration | None = None
             if calibration is not None:
                 if hasattr(calibration, "segments"):
-                    cal_obj = calibration
+                    cal_obj = cast(SyncCalibration, calibration)
                 elif isinstance(calibration, dict):
                     try:
-                        from core.workflows.sync_calibration import SyncCalibration
                         cal_obj = SyncCalibration.from_dict(calibration)
                     except Exception:
                         cal_obj = None
@@ -1939,6 +1944,7 @@ class RemuxPanel(QWidget):
                 scanner = SubtitleSyncScanner(
                     ffmpeg=self._config.tool_ffmpeg,
                     ffprobe=self._config.tool_ffprobe,
+                    cancel_event=self._scan_cancel,
                 )
                 cal = scanner.scan(
                     reference_source=ref_path,
@@ -1986,13 +1992,12 @@ class RemuxPanel(QWidget):
                     self._workflow_options["sync_calibrations"].pop(str(ref_source_idx), None)
 
             target_source_idx = self._source_index_for_file_id(target_file_id)
-            cal_obj = None
+            cal_obj: SyncCalibration | None = None
             if calibration is not None:
                 if hasattr(calibration, "segments"):
-                    cal_obj = calibration
+                    cal_obj = cast(SyncCalibration, calibration)
                 elif isinstance(calibration, dict):
                     try:
-                        from core.workflows.sync_calibration import SyncCalibration
                         cal_obj = SyncCalibration.from_dict(calibration)
                     except Exception:
                         cal_obj = None
@@ -2230,6 +2235,7 @@ class RemuxPanel(QWidget):
 
     def _reset_empty_state(self) -> None:
         chapter_functions.reset_empty_state(self)
+        self.sources_reset.emit()
 
     def _resolve_base_chapters(self) -> list[ChapterEntry]:
         return chapter_functions.resolve_base_chapters(self)
@@ -2348,14 +2354,17 @@ class RemuxPanel(QWidget):
             QApplication.clipboard().setText(text)
 
     def closeEvent(self, event) -> None:
-        self._closing = True
-        self._preview_timer.stop()
-        if self._preview_future is not None:
-            self._preview_future.cancel()
-        self._preview_executor.shutdown(wait=False, cancel_futures=True)
-        self._path_executor.shutdown(wait=False, cancel_futures=True)
-        self._inspection_executor.shutdown(wait=False, cancel_futures=True)
-        self._executor.shutdown(wait=True)
+        if not hasattr(self, "_shutdown"):
+            self._closing = True
+            self.setEnabled(False)
+            self._scan_cancel.set()
+            self._preview_timer.stop()
+            self._shutdown = Shutdown(executors=(
+                self._preview_executor, self._path_executor,
+                self._inspection_executor, self._executor,
+            ))
+        if defer_close(self, event, ready=self._shutdown.done.is_set()):
+            return
         super().closeEvent(event)
 
 

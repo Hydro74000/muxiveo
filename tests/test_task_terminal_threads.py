@@ -6,6 +6,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from core import runner as runner_module
@@ -14,6 +15,11 @@ from core.workflows.encode.runtime.bindings import SignalBindingService, SignalB
 from core.workflows.encode.runtime.preparation import EncodePreparationRunner
 
 _ARGS = {"finished": ("ok",), "failed": ("boom", RuntimeError("boom")), "cancelled": ()}
+
+
+def _callbacks(kind: str, callback: Any) -> dict[str, Any]:
+    """Abonnement à un seul type de fin (évite la collision avec ``direct``)."""
+    return {kind: callback}
 
 
 def _emit_from_worker(signals: TaskSignals, kind: str) -> None:
@@ -98,11 +104,11 @@ def test_preparation_relay_survives_fast_inner_task(qt_app, kind, timing):
                 original(**kwargs)
                 _emit_from_worker(inner, kind)  # Le thread d'exécution vit encore.
 
-            inner.connect_terminal = connect_then_finish  # type: ignore[method-assign]
+            setattr(inner, "connect_terminal", connect_then_finish)
         return inner
 
-    runner = EncodePreparationRunner(SimpleNamespace(run_with_preparation=run_with_preparation))  # type: ignore[arg-type]
-    outer = runner.run_async_preparation(SimpleNamespace())  # type: ignore[arg-type]
+    runner = EncodePreparationRunner(cast(Any, SimpleNamespace(run_with_preparation=run_with_preparation)))
+    outer = runner.run_async_preparation(cast(Any, SimpleNamespace()))
     seen: list[str] = []
     outer.connect_terminal(
         finished=lambda _r: seen.append("finished"),
@@ -208,10 +214,10 @@ def test_no_application_uses_direct_replay(monkeypatch, kind):
     monkeypatch.setattr(runner_module, "QCoreApplication", SimpleNamespace(instance=lambda: None))
     signals = TaskSignals()
     seen = []
-    signals.connect_terminal(**{kind: lambda *args: seen.append(args)})
+    signals.connect_terminal(**_callbacks(kind, lambda *args: seen.append(args)))
     _emit_from_worker(signals, kind)
     assert seen == [_ARGS[kind]]
-    signals.connect_terminal(**{kind: lambda *args: seen.append(args)})
+    signals.connect_terminal(**_callbacks(kind, lambda *args: seen.append(args)))
     assert seen == [_ARGS[kind], _ARGS[kind]]
 
 

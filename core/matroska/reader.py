@@ -887,7 +887,7 @@ class MatroskaReader:
                             if part.element_id == self.BLOCK_ID:
                                 continue
                             fh.seek(part.payload_offset)
-                            values.setdefault(part.element_id, []).append(_read_exact(fh, part.size))
+                            values.setdefault(part.element_id, []).append(_read_exact(fh, part.size or 0))
 
                         def uint(key: bytes) -> int:
                             entries = values.get(key)
@@ -1031,12 +1031,15 @@ class MatroskaReader:
         # de longues listes de résultats en mémoire.
         chunk_size = max(1, min(512, len(clusters) // (workers * 8) or 1))
         chunks = [clusters[index:index + chunk_size] for index in range(0, len(clusters), chunk_size)]
+        def scan(chunk: list[EbmlElement]) -> list[MatroskaBlockSummary]:
+            return list(self._scan_clusters(chunk))
+
         with ThreadPoolExecutor(max_workers=workers) as pool:
             pending: deque[Future[list[MatroskaBlockSummary]]] = deque()
             for chunk in chunks:
                 while len(pending) >= workers * 2:
                     yield from pending.popleft().result()
-                pending.append(pool.submit(lambda item=chunk: list(self._scan_clusters(item))))
+                pending.append(pool.submit(scan, chunk))
             while pending:
                 yield from pending.popleft().result()
 

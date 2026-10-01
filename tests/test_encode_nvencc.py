@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from core.workflows.encode.models import (
+    EncodeConfig,
     QualityMode,
     VideoCropSettings,
     VideoEncodeSettings,
@@ -127,12 +128,28 @@ class TestParseSupportedCodecs:
     def test_empty_output(self):
         assert _parse_supported_codecs("") == set()
 
-    def test_recognizes_alternate_tokens(self):
-        # Format alternatif sans le slash.
-        sample = "HEVC: supported\nH.264: supported"
-        codecs = _parse_supported_codecs(sample)
-        assert "nvencc_hevc" in codecs
-        assert "nvencc_h264" in codecs
+    def test_check_hw_list_ignores_reader_banner(self):
+        # Sortie réelle NVEncC 9.x sur GTX 1070 : la bannière liste les
+        # décodeurs d'entrée (dont AV1), pas les encodeurs du GPU.
+        sample = (
+            "NVEncC (x64) 9.36 (r4153) by rigaya\n"
+            "  [NVENC API v13.1, CUDA 11.8]\n"
+            " reader: raw, y4m, avi, avs, vpy, avsw, avhw [H.264/AVC, H.265/HEVC, "
+            "MPEG2, VP8, VP9, VC-1, MPEG1, MPEG4, AV1]\n"
+            "#0: NVIDIA GeForce GTX 1070 (1920 cores, 1784 MHz)[PCIe3x16][581.57]\n"
+            "Avaliable Codec(s)\n"
+            "H.264/AVC\n"
+            "H.265/HEVC\n"
+        )
+        assert _parse_supported_codecs(sample) == {"nvencc_h264", "nvencc_hevc"}
+
+    def test_check_hw_list_with_fixed_spelling_and_av1(self):
+        sample = "banner AV1\nAvailable Codec(s)\nH.264/AVC\nH.265/HEVC\nAV1\n\nAV1 ignored"
+        assert _parse_supported_codecs(sample) == {"nvencc_h264", "nvencc_hevc", "nvencc_av1"}
+
+    def test_features_fallback_reads_only_codec_lines(self):
+        sample = " reader: raw [H.264/AVC, H.265/HEVC, AV1]\nCodec: H.264/AVC\nMax Level 62\n"
+        assert _parse_supported_codecs(sample) == {"nvencc_h264"}
 
 
 class TestDetectNvenccAvailable:
@@ -194,6 +211,19 @@ class TestDetectNvenccAvailable:
         assert available is True
         assert codecs == {"nvencc_hevc", "nvencc_h264"}
 
+    def test_nonzero_exit_returns_unavailable(self):
+        # Sans GPU NVIDIA / pilote compatible, NVEncC sort en erreur.
+        fake = subprocess.CompletedProcess(
+            args=["NVEncC"], returncode=1, stdout="Avaliable Codec(s)\nH.264/AVC\n", stderr="no GPU",
+        )
+        with patch(
+            "core.workflows.encode.runtime.nvencc.subprocess.run",
+            return_value=fake,
+        ) as run:
+            available, codecs = detect_nvencc_available("/usr/bin/NVEncC")
+        assert (available, codecs) == (False, set())
+        assert run.call_args.args[0] == ["/usr/bin/NVEncC", "--check-hw"]
+
     def test_empty_output_returns_unavailable(self):
         # Cas hypothétique : binaire répond mais sans codec listé.
         fake = subprocess.CompletedProcess(
@@ -240,23 +270,33 @@ class TestHardwareDetectorIntegration:
         assert "nvencc_h264" in available
         assert "nvencc_av1" not in available
 
-    def test_nvencc_skipped_when_nvenc_unavailable(self):
-        """Garde-fou : NVEncC ne s'expose jamais sans NVENC ffmpeg détecté."""
+    def test_nvencc_exposed_when_ffmpeg_nvenc_unavailable(self):
+        """NVEncC négocie sa propre API : exposé même si NVENC ffmpeg échoue (pilote trop ancien)."""
         from core.workflows.encode.hardware import HardwareEncoderDetector
 
         detector = HardwareEncoderDetector()
-        # NVENC compilé mais probe échoue → nvenc_available reste vide.
         with patch.object(detector, "_compiled_hw", return_value=("ffmpeg", {"hevc_nvenc"})), \
              patch.object(detector, "_detect_nvenc", return_value=set()), \
              patch.object(detector, "_probe_codecs", return_value=set()), \
              patch(
                 "core.workflows.encode.hardware.detect_nvencc_available",
                 return_value=(True, {"nvencc_hevc"}),
-             ) as mocked_detect:
+             ):
             available, _ff = detector.detect("ffmpeg", nvencc_bin="/usr/bin/NVEncC")
-        assert "nvencc_hevc" not in available
-        # Important : detect_nvencc_available NE DOIT PAS être appelée car NVENC absent.
-        mocked_detect.assert_not_called()
+        assert available == {"nvencc_hevc"}
+
+    def test_nvencc_probed_without_ffmpeg_hw_codecs(self):
+        from core.workflows.encode.hardware import HardwareEncoderDetector
+
+        detector = HardwareEncoderDetector()
+        with patch.object(detector, "_compiled_hw", return_value=("/sys/ffmpeg", set())), \
+             patch(
+                "core.workflows.encode.hardware.detect_nvencc_available",
+                return_value=(True, {"nvencc_h264"}),
+             ):
+            available, ff = detector.detect("ffmpeg", nvencc_bin="/usr/bin/NVEncC")
+        assert available == {"nvencc_h264"}
+        assert ff == "ffmpeg"
 
 
 # ---------------------------------------------------------------------------
@@ -513,7 +553,7 @@ class TestBuildNvenccCommand:
         assert cmd[cmd.index("--dolby-vision-profile") + 1] == "8.1"
 
     def test_direct_input_dynamic_hdr_copies_static_hdr_from_source(self):
-        v = _video(copy_dv=True, copy_hdr10plus=True)
+        v = _video(copy_dv=True, copy_hdr10plus=True, inject_hdr_meta=True)
         cmd = build_nvencc_command(
             "nvencc",
             v,
@@ -527,6 +567,88 @@ class TestBuildNvenccCommand:
         assert cmd[cmd.index("--colorprim") + 1] == "auto"
         assert cmd[cmd.index("--transfer") + 1] == "auto"
         assert cmd[cmd.index("--chromaloc") + 1] == "auto"
+
+    def test_unchecked_static_hdr_is_never_passed(self):
+        v = _video(
+            copy_dv=True,
+            copy_hdr10plus=True,
+            inject_hdr_meta=False,
+            master_display="G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)",
+            max_cll="1000,400",
+        )
+        cmd = build_nvencc_command("nvencc", v, "/tmp/out.hevc", input_path="/in.mkv", stream_index=0)
+        assert "--master-display" not in cmd
+        assert "--max-cll" not in cmd
+
+    def test_h264_never_receives_hdr_signaling(self):
+        v = _video(
+            codec="nvencc_h264",
+            inject_hdr_meta=True,
+            master_display="G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)",
+            max_cll="1000,400",
+        )
+        for input_path in (None, "/in.mkv"):
+            cmd = build_nvencc_command("nvencc", v, "/tmp/out.mkv", input_path=input_path)
+            for flag in ("--master-display", "--max-cll", "--transfer", "--colorprim", "--colormatrix"):
+                assert flag not in cmd
+
+    def test_nvencc_input_router_provides_source_fps_when_copy_dv(self):
+        from core.workflows.encode.runtime.nvencc_routing import NvenccInputRouter, NvenccRoutingCallbacks
+
+        cbs = NvenccRoutingCallbacks(
+            primary_video_settings=lambda cfg: _video(copy_dv=True),
+            video_source_path=lambda cfg: Path("/in.mkv"),
+            video_stream_index=lambda cfg: 0,
+            video_codec_of=lambda path, idx: "hevc",
+            source_video_fps_expr=lambda path: "60000/1001",
+            source_is_vfr=lambda path: False,
+            nvencc_input_fps_hint=lambda s, i: "60000/1001",
+            nvencc_input_avsync_mode=lambda s, i: "cfr",
+            nvencc_dovi_rpu_prm=lambda v: None,
+        )
+        router = NvenccInputRouter(cbs)
+        cfg = EncodeConfig(
+            source=Path("/in.mkv"),
+            output=Path("/out.mkv"),
+            video=_video(copy_dv=True),
+        )
+        routing = router.resolve(cfg)
+        # Pour NVEncC CLI, input_fps est None (timestamps natifs préservés)
+        assert routing.input_fps is None
+        # Mais source_fps est préservé pour le post-processing sanitize_dovi_mkv !
+        assert routing.source_fps == "60000/1001"
+
+    def test_dovi_hevc_dynamic_gop_len_and_no_strict_gop(self):
+        v = _video(copy_dv=True)
+        # 1. Fallback par défaut (24fps) -> 48, et pas de strict-gop rigide
+        cmd_default = build_nvencc_command("nvencc", v, "/tmp/out.hevc")
+        assert "--gop-len" in cmd_default
+        assert cmd_default[cmd_default.index("--gop-len") + 1] == "48"
+        assert "--strict-gop" not in cmd_default
+        assert "--repeat-headers" in cmd_default
+        assert "--aud" in cmd_default
+
+        # 2. 25 fps (PAL / TV) -> 50
+        cmd_25 = build_nvencc_command("nvencc", v, "/tmp/out.hevc", source_fps="25")
+        assert cmd_25[cmd_25.index("--gop-len") + 1] == "50"
+
+        # 3. 50 fps -> 100
+        cmd_50 = build_nvencc_command("nvencc", v, "/tmp/out.hevc", source_fps="50")
+        assert cmd_50[cmd_50.index("--gop-len") + 1] == "100"
+
+        # 4. 60 fps (59.94) -> 120
+        cmd_60 = build_nvencc_command("nvencc", v, "/tmp/out.hevc", source_fps="60000/1001")
+        assert cmd_60[cmd_60.index("--gop-len") + 1] == "120"
+
+        # 5. Surcharge utilisateur dans extra_params respectée
+        v_custom_gop = _video(copy_dv=True, extra_params="--gop-len 240")
+        cmd_custom_gop = build_nvencc_command("nvencc", v_custom_gop, "/tmp/out.hevc", source_fps="25")
+        assert cmd_custom_gop[cmd_custom_gop.index("--gop-len") + 1] == "240"
+
+        # 6. Surcharge utilisateur demandant explicitement strict-gop respectée
+        v_custom_strict = _video(copy_dv=True, extra_params="--strict-gop")
+        cmd_custom_strict = build_nvencc_command("nvencc", v_custom_strict, "/tmp/out.hevc")
+        assert "--strict-gop" in cmd_custom_strict
 
     def test_tonemap_ui_maps_to_nvencc_vpp_colorspace(self):
         v = _video(tonemap_to_sdr=True, tonemap_algorithm="mobius")
@@ -647,8 +769,6 @@ class TestBuildNvenccCommand:
             copy_dv=True,
             dovi_profile="2",
             copy_hdr10plus=True,
-            tonemap_to_sdr=True,
-            tonemap_algorithm="mobius",
             extra_params=(
                 "--master-display OLD_MD "
                 "--max-cll 1,2 "
@@ -684,7 +804,17 @@ class TestBuildNvenccCommand:
         assert cmd[cmd.index("--dolby-vision-profile") + 1] == "8.1"
         assert "matrix=bt709:bt709,hdr2sdr=hable" not in joined
         assert "tonemapping_function=clip" not in joined
-        assert "--vpp-colorspace" in cmd
+        assert "--vpp-colorspace" not in cmd
+        assert "--vpp-libplacebo-tonemapping" not in cmd
+
+        # Tone-mapping SDR : la VPP workflow remplace celles des extra_params
+        # et aucune métadonnée HDR statique n'est transmise.
+        sdr = replace(v, copy_dv=False, copy_hdr10plus=False, tonemap_to_sdr=True, tonemap_algorithm="mobius")
+        cmd = build_nvencc_command("nvencc", sdr, "/tmp/out.hevc", input_path="/in.mkv", stream_index=0)
+        joined = " ".join(cmd)
+        assert "--master-display" not in cmd
+        assert "--max-cll" not in cmd
+        assert "matrix=bt709:bt709,hdr2sdr=hable" not in joined
         assert "hdr2sdr=mobius" in cmd[cmd.index("--vpp-colorspace") + 1]
         assert "--vpp-libplacebo-tonemapping" not in cmd
 
@@ -1192,9 +1322,16 @@ class TestNvenccHdrSignalling:
         assert (_flag(cmd, "--transfer"), _flag(cmd, "--colorprim"), _flag(cmd, "--colormatrix")) == ("smpte2084", "bt2020", "bt2020nc")
 
     def test_dynamic_copy_keeps_source_static_metadata(self):
-        v = VideoEncodeSettings(codec="nvencc_hevc", copy_hdr10plus=True)
+        v = VideoEncodeSettings(codec="nvencc_hevc", copy_hdr10plus=True, inject_hdr_meta=True)
         cmd = build_nvencc_command("nvencc", v, "/tmp/o.mkv", input_path="/tmp/src.mkv")
         assert (_flag(cmd, "--transfer"), _flag(cmd, "--master-display"), _flag(cmd, "--max-cll")) == ("auto", "copy", "copy")
+
+    def test_dynamic_copy_without_static_checkbox_sends_no_static_metadata(self):
+        v = VideoEncodeSettings(codec="nvencc_hevc", copy_hdr10plus=True)
+        cmd = build_nvencc_command("nvencc", v, "/tmp/o.mkv", input_path="/tmp/src.mkv")
+        assert _flag(cmd, "--transfer") == "auto"
+        assert _flag(cmd, "--master-display") is None
+        assert _flag(cmd, "--max-cll") is None
 
     @pytest.mark.parametrize("extra", [{}, {"tonemap_to_sdr": True, "inject_hdr_meta": True}])
     def test_sdr_or_tonemap_has_no_hdr_vui(self, extra):
@@ -1245,3 +1382,26 @@ def test_ffmpeg_tonemap_strips_hdr_frame_metadata():
         assert f"sidedata=mode=delete:type={kind}" in vf
     assert vf.index("tonemap=") < vf.index("sidedata=")
     assert "sidedata" not in build_vf(VideoEncodeSettings(codec="libx265"))
+
+
+def test_nvencc_dovi_rpu_prm_handles_both_extra_params_and_ui_crop():
+    from core.workflows.encode.models import VideoCropSettings, VideoEncodeSettings
+    from core.workflows.encode.runtime.nvencc_routing import nvencc_dovi_rpu_prm
+
+    # Sans copy_dv -> None
+    v_nodv = VideoEncodeSettings(codec="nvencc_hevc", copy_dv=False, extra_params="--crop 0,280,0,280")
+    assert nvencc_dovi_rpu_prm(v_nodv) is None
+
+    # Avec copy_dv et --crop dans extra_params -> crop=true
+    v_extra = VideoEncodeSettings(codec="nvencc_hevc", copy_dv=True, extra_params="--crop 0,280,0,280")
+    assert nvencc_dovi_rpu_prm(v_extra) == "crop=true"
+
+    # Avec copy_dv et crop UI actif -> crop=true
+    crop_ui = VideoCropSettings(enabled=True, top=280, bottom=280)
+    v_ui = VideoEncodeSettings(codec="nvencc_hevc", copy_dv=True, crop=crop_ui)
+    assert nvencc_dovi_rpu_prm(v_ui) == "crop=true"
+
+    # Avec copy_dv sans crop -> None
+    v_none = VideoEncodeSettings(codec="nvencc_hevc", copy_dv=True)
+    assert nvencc_dovi_rpu_prm(v_none) is None
+

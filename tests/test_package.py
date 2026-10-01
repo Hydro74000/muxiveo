@@ -74,6 +74,41 @@ def test_pyinstaller_frontend_flag_uses_windowed_on_windows():
     assert package_mod._pyinstaller_frontend_flag("Windows") == "--windowed"
 
 
+@pytest.mark.parametrize("url", [
+    "file:///etc/passwd", "ftp://example.test/tool.zip",
+    "data:text/plain,tool", "https:///missing-host", "/local/tool.zip",
+])
+def test_download_file_rejects_non_http_urls_before_io(tmp_path, url):
+    dest = tmp_path / "downloads" / "tool.zip"
+    with patch.object(package_mod.urllib.request, "urlopen") as urlopen:
+        with pytest.raises(ValueError, match="HTTP"):
+            package_mod._download_file(url, dest)
+    urlopen.assert_not_called()
+    assert not dest.parent.exists()
+
+
+@pytest.mark.parametrize(("url", "authorized"), [
+    ("https://github.com/owner/repo/tool.zip", True),
+    ("https://api.github.com/repos/owner/repo/releases/assets/1", True),
+    ("http://github.com/owner/repo/tool.zip", False),
+    ("https://github.com.example.test/tool.zip", False),
+    ("https://example.test/github.com/tool.zip", False),
+    ("https://github.com@example.test/tool.zip", False),
+])
+def test_download_file_limits_github_token_to_https_github(tmp_path, monkeypatch, url, authorized):
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    response = MagicMock()
+    response.__enter__.return_value = response
+    response.headers = {"Content-Length": "4"}
+    response.read.side_effect = [b"tool", b""]
+    dest = tmp_path / "tool.zip"
+    with patch.object(package_mod.urllib.request, "urlopen", return_value=response) as urlopen:
+        package_mod._download_file(url, dest)
+    request = urlopen.call_args.args[0]
+    assert request.get_header("Authorization") == ("Bearer test-token" if authorized else None)
+    assert dest.read_bytes() == b"tool"
+
+
 def test_pyinstaller_frontend_flag_keeps_console_on_linux():
     assert package_mod._pyinstaller_frontend_flag("Linux") == "--console"
 
@@ -895,3 +930,173 @@ def test_windows_console_entrypoint_rejects_non_pe(tmp_path):
     gui.write_bytes(b"MZ" + b"\0" * 200)
     with pytest.raises(RuntimeError, match="PE"):
         package_mod._write_windows_console_entrypoint(gui, tmp_path / "Muxiveo-cli.exe")
+
+
+def test_bundle_windows_tools_downloads_and_sets_allinc_marker(tmp_path, monkeypatch):
+    bundle = tmp_path / "Muxiveo"
+    bundle.mkdir()
+
+    calls = []
+    monkeypatch.setattr(package_mod, "_dl_windows_ffmpeg", lambda d: calls.append("ffmpeg"))
+    monkeypatch.setattr(package_mod, "_dl_windows_mediainfo", lambda d: calls.append("mediainfo"))
+    monkeypatch.setattr(package_mod, "_dl_windows_dovi_tool", lambda d: calls.append("dovi_tool"))
+    monkeypatch.setattr(package_mod, "_dl_windows_hdr10plus_tool", lambda d: calls.append("hdr10plus_tool"))
+    monkeypatch.setattr(package_mod, "_dl_windows_nvencc", lambda d: calls.append("nvencc"))
+
+    tools_dir = package_mod.bundle_windows_tools(bundle)
+
+    assert tools_dir == bundle / "tools"
+    assert tools_dir.is_dir()
+    assert (bundle / "_ALLINC").is_file()
+    assert calls == ["ffmpeg", "mediainfo", "dovi_tool", "hdr10plus_tool", "nvencc"]
+
+
+def test_build_windows_portable_zip(tmp_path, monkeypatch):
+    import zipfile
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "Muxiveo.exe").write_bytes(b"MZ_EXE")
+    tools = bundle / "tools"
+    tools.mkdir()
+    (tools / "ffmpeg.exe").write_bytes(b"FFMPEG")
+    (bundle / "_ALLINC").touch()
+
+    monkeypatch.setattr(package_mod, "DIST_RELEASES", tmp_path / "releases")
+    zip_path = package_mod._build_windows_portable_zip(bundle, version_tag="4.0.3")
+
+    assert zip_path.is_file()
+    assert zip_path.name == "Muxiveo-Windows-x64-allinc-4.0.3.zip"
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        namelist = zf.namelist()
+        assert "Muxiveo/Muxiveo.exe" in namelist
+        assert "Muxiveo/tools/ffmpeg.exe" in namelist
+        assert "Muxiveo/_ALLINC" in namelist
+
+
+def test_build_nsis_installer_names_allinc_when_marker_present_and_standard_otherwise(tmp_path, monkeypatch):
+    monkeypatch.setattr(package_mod, "ROOT", tmp_path)
+    monkeypatch.setattr(package_mod, "_find_makensis", lambda: "makensis")
+
+    def fake_run(cmd):
+        nsi_text = (tmp_path / "Muxiveo.nsi").read_text(encoding="utf-8")
+        for line in nsi_text.splitlines():
+            if line.startswith("OutFile "):
+                outfile = line.split("OutFile ", 1)[1].strip('"')
+                Path(outfile).write_bytes(b"SETUP_EXE")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(package_mod, "_run", fake_run)
+
+    # 1. Standard (sans marqueur _ALLINC)
+    bundle_std = tmp_path / "bundle_std"
+    bundle_std.mkdir()
+    (bundle_std / "Muxiveo.exe").write_bytes(b"MZ_EXE")
+    res_std = package_mod._build_nsis_installer(bundle_std, version_tag="4.0.3")
+    assert res_std == tmp_path / "Muxiveo-Setup-4.0.3.exe"
+    assert res_std.is_file()
+
+    # 2. AllInc (avec marqueur _ALLINC)
+    bundle_allinc = tmp_path / "bundle_allinc"
+    bundle_allinc.mkdir()
+    (bundle_allinc / "_ALLINC").touch()
+    (bundle_allinc / "Muxiveo.exe").write_bytes(b"MZ_EXE")
+    res_allinc = package_mod._build_nsis_installer(bundle_allinc, version_tag="4.0.3")
+    assert res_allinc == tmp_path / "Muxiveo-Setup-AllInc-4.0.3.exe"
+    assert res_allinc.is_file()
+
+
+def test_bundle_windows_licenses(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "LICENSE").write_text("MIT License for Muxiveo", encoding="utf-8")
+    (root / "NOTICE").write_text("Notices", encoding="utf-8")
+    (root / "SOURCES.md").write_text("Sources", encoding="utf-8")
+    licenses_dir = root / "LICENSES"
+    licenses_dir.mkdir()
+    (licenses_dir / "curl-license.txt").write_text("curl license", encoding="utf-8")
+
+    monkeypatch.setattr(package_mod, "ROOT", root)
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    package_mod.bundle_windows_licenses(bundle)
+
+    assert (bundle / "LICENSE").is_file()
+    assert (bundle / "LICENSE.txt").is_file()
+    assert (bundle / "NOTICE").is_file()
+    assert (bundle / "NOTICE.txt").is_file()
+    assert (bundle / "SOURCES.md").is_file()
+    assert (bundle / "LICENSES" / "curl-license.txt").is_file()
+    assert (bundle / "LICENSES" / "curl-license.txt").read_text(encoding="utf-8") == "curl license"
+
+
+def test_package_appimage_bundle_licenses(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "LICENSE").write_text("MIT", encoding="utf-8")
+    (root / "NOTICE").write_text("NOTICE", encoding="utf-8")
+    (root / "SOURCES.md").write_text("SOURCES", encoding="utf-8")
+    licenses_dir = root / "LICENSES"
+    licenses_dir.mkdir()
+    (licenses_dir / "curl-license.txt").write_text("curl", encoding="utf-8")
+
+    monkeypatch.setattr(package_appimage_mod, "ROOT", root)
+
+    appdir = tmp_path / "appdir"
+    package_appimage_mod._bundle_licenses(appdir)
+
+    dest = appdir / "usr" / "share" / "licenses" / "muxiveo"
+    assert (dest / "LICENSE").is_file()
+    assert (dest / "NOTICE").is_file()
+    assert (dest / "SOURCES.md").is_file()
+    assert (dest / "LICENSES" / "curl-license.txt").is_file()
+
+
+def test_build_windows_allinc_produces_both_installers_and_portable_zip(tmp_path, monkeypatch):
+    bundle = tmp_path / "Muxiveo-win"
+    bundle.mkdir()
+    (bundle / "Muxiveo.exe").write_bytes(b"MZ_EXE")
+
+    nsis_calls = []
+    tools_bundled = []
+    portable_built = []
+
+    monkeypatch.setattr(package_mod, "_WIN_BUNDLE", bundle)
+    monkeypatch.setattr(package_mod, "_ensure_wine", lambda: None)
+    monkeypatch.setattr(package_mod, "_ensure_makensis", lambda: None)
+    monkeypatch.setattr(package_mod, "bundle_windows_licenses", lambda b: None)
+    monkeypatch.setattr(
+        package_mod,
+        "bundle_windows_tools",
+        lambda b: (tools_bundled.append(True), (b / "_ALLINC").touch())[0],
+    )
+
+    def fake_build_nsis(b, version_tag=None):
+        name = "Muxiveo-Setup-AllInc-4.0.3.exe" if (b / "_ALLINC").exists() else "Muxiveo-Setup-4.0.3.exe"
+        p = tmp_path / name
+        p.write_bytes(b"EXE")
+        nsis_calls.append(name)
+        return p
+
+    monkeypatch.setattr(package_mod, "_build_nsis_installer", fake_build_nsis)
+    monkeypatch.setattr(package_mod, "_copy_final_file_if_requested", lambda p, d, version_tag=None: p)
+    monkeypatch.setattr(
+        package_mod,
+        "_build_windows_portable_zip",
+        lambda b, version_tag=None: (portable_built.append(True), tmp_path / "portable.zip")[1],
+    )
+
+    package_mod.build_windows(
+        skip_wine=True,
+        dest=None,
+        version_tag="4.0.3",
+        allinc=True,
+        portable=True,
+    )
+
+    assert nsis_calls == ["Muxiveo-Setup-4.0.3.exe", "Muxiveo-Setup-AllInc-4.0.3.exe"]
+    assert tools_bundled == [True]
+    assert portable_built == [True]
+

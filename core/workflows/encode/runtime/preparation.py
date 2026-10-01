@@ -78,6 +78,8 @@ class EncodePreparationRunner:
                 active_inner["signals"] = inner
 
                 if inner is not signals:
+                    # La fin est relayée : l'arrêt doit aussi attendre les finally d'inner.
+                    signals.link_workers(inner)
                     # Ce thread n'a pas de boucle Qt : une connexion automatique y
                     # serait différée puis perdue si inner finit pendant qu'il vit.
                     # Relais direct + rejeu d'une fin déjà émise avant le branchement.

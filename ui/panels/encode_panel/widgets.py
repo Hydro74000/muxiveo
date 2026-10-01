@@ -687,9 +687,9 @@ class _AudioTable(QTableWidget):
         # pendant le tri. Conserver les lignes évite de recréer tous les
         # sélecteurs de codec/débit à chaque clic dans le panneau remux.
         previous: dict[object, list[dict]] = {}
-        for data in self._row_data:
-            key = data.get("track_entry_id") or (data.get("source_path"), data["track"].index)
-            previous.setdefault(key, []).append(data)
+        for existing in self._row_data:
+            key = existing.get("track_entry_id") or (existing.get("source_path"), existing["track"].index)
+            previous.setdefault(key, []).append(existing)
 
         blocked = self.blockSignals(True)
         updates = self.updatesEnabled()
@@ -703,7 +703,7 @@ class _AudioTable(QTableWidget):
                 entry_id = track_entry.entry_id if isinstance(track_entry, TrackEntry) else None
                 is_new = bool(getattr(track_entry, "is_new", False))
                 matches = previous.get(entry_id or (source_path, track.index), [])
-                data = matches.pop(0) if matches else None
+                data: dict | None = matches.pop(0) if matches else None
                 codec = data["combo"].currentData() if data else default_codec
                 bitrate = data["bitrate"].value() if data else default_bitrate
                 # Un changement réel de format source exige de recalculer les
@@ -721,11 +721,17 @@ class _AudioTable(QTableWidget):
                     self.removeRow(row)
                     self._row_data.pop(row)
             positions = {id(data): row for row, data in enumerate(desired)}
-            for row, data in enumerate(self._row_data):
-                self.item(row, self.COL_IDX).setData(Qt.ItemDataRole.UserRole, positions[id(data)])
-                self.item(row, self.COL_LANG).setText(data["track"].language or "")
-                self.item(row, self.COL_TITLE).setText(data["track"].title or "")
-                self.item(row, self.COL_SOURCE).setForeground(QBrush(QColor(data["color"])))
+            for row, row_data in enumerate(self._row_data):
+                idx_item = self.item(row, self.COL_IDX)
+                lang_item = self.item(row, self.COL_LANG)
+                title_item = self.item(row, self.COL_TITLE)
+                source_item = self.item(row, self.COL_SOURCE)
+                if idx_item is None or lang_item is None or title_item is None or source_item is None:
+                    continue
+                idx_item.setData(Qt.ItemDataRole.UserRole, positions[id(row_data)])
+                lang_item.setText(row_data["track"].language or "")
+                title_item.setText(row_data["track"].title or "")
+                source_item.setForeground(QBrush(QColor(row_data["color"])))
             if any(a is not b for a, b in zip(self._row_data, desired)):
                 self.sortItems(self.COL_IDX, Qt.SortOrder.AscendingOrder)
             self._row_data = desired

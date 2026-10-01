@@ -87,6 +87,23 @@ def select_asset(info: UpdateInfo, kind: InstallKind, machine: str | None = None
             None,
         )
     if kind is InstallKind.WINDOWS_INSTALLER:
+        is_allinc = False
+        if getattr(sys, "frozen", False):
+            is_allinc = (Path(sys.executable).parent / "_ALLINC").exists()
+        if is_allinc:
+            allinc_asset = next(
+                (a for a in info.assets if re.match(r"^Muxiveo-Setup-AllInc-.+\.exe$", a.name, re.IGNORECASE)),
+                None,
+            )
+            if allinc_asset is not None:
+                return allinc_asset
+        else:
+            std_asset = next(
+                (a for a in info.assets if re.match(r"^Muxiveo-Setup-(?!AllInc).+\.exe$", a.name, re.IGNORECASE)),
+                None,
+            )
+            if std_asset is not None:
+                return std_asset
         return next((a for a in info.assets if _WINDOWS_INSTALLER_RE.match(a.name)), None)
     return None
 

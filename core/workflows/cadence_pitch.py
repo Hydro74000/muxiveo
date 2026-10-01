@@ -11,12 +11,15 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import math
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from numpy import ndarray
 
 try:
     import numpy as np
 except ImportError:
-    np = None  # type: ignore[assignment]
+    np = None
 
 from core.workflows.cadence import CadenceMismatch
 
@@ -55,7 +58,7 @@ class CadencePitchAnalysis:
             return None
 
 
-def compute_welch_psd(x: np.ndarray, sr: int, nperseg: int = 2048) -> np.ndarray:
+def compute_welch_psd(x: ndarray, sr: int, nperseg: int = 2048) -> ndarray:
     """Densité spectrale de puissance moyenne (Welch) en pur NumPy."""
     if np is None:
         raise ImportError("numpy est requis pour l'analyse spectrale Welch.")
@@ -77,7 +80,7 @@ def compute_welch_psd(x: np.ndarray, sr: int, nperseg: int = 2048) -> np.ndarray
 
 
 def extract_f0_candidates(
-    x: np.ndarray,
+    x: ndarray,
     sr: int,
     frame_size: int = 1024,
     hop_size: int = 512,
@@ -115,9 +118,9 @@ def extract_f0_candidates(
 
 
 def analyze_cadence_pitch(
-    ref_samples: np.ndarray,
-    donor_ase_samples: np.ndarray,
-    donor_ate_samples: np.ndarray,
+    ref_samples: ndarray,
+    donor_ase_samples: ndarray,
+    donor_ate_samples: ndarray,
     sr: int = 16000,
     mismatch: CadenceMismatch | None = None,
 ) -> CadencePitchAnalysis:

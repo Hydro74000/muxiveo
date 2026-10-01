@@ -20,7 +20,7 @@ import time
 import threading
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from PySide6.QtCore import QCoreApplication, Qt
@@ -128,13 +128,25 @@ def _wait(signals, timeout: float = 20.0) -> dict[str, object]:
         state["cancelled"] = True
         done["value"] = True
 
-    signals.finished.connect(on_finished, Qt.ConnectionType.QueuedConnection)
-    signals.failed.connect(on_failed, Qt.ConnectionType.QueuedConnection)
-    signals.cancelled.connect(on_cancelled, Qt.ConnectionType.QueuedConnection)
+    if hasattr(signals, "connect_terminal"):
+        signals.connect_terminal(
+            finished=on_finished,
+            failed=on_failed,
+            cancelled=on_cancelled,
+            direct=True,
+        )
+    else:
+        signals.finished.connect(on_finished, Qt.ConnectionType.QueuedConnection)
+        signals.failed.connect(on_failed, Qt.ConnectionType.QueuedConnection)
+        signals.cancelled.connect(on_cancelled, Qt.ConnectionType.QueuedConnection)
     deadline = time.monotonic() + timeout
     while not done["value"] and time.monotonic() < deadline:
         app.processEvents()
         time.sleep(0.01)
+    # Le nettoyage (finally) du worker suit le signal terminal.
+    if done["value"] and hasattr(signals, "wait_for_workers"):
+        signals.wait_for_workers()
+    app.processEvents()
     return state
 
 
@@ -482,12 +494,12 @@ class _CancellingProcess:
         self.returncode = -9
 
     def communicate(self):
-        deadline = time.monotonic() + 5.0
+        deadline = time.monotonic() + 15.0
         while "signals" not in self.holder and time.monotonic() < deadline:
             time.sleep(0.01)
         signals = self.holder.get("signals")
         if signals is not None:
-            signals.cancel()  # type: ignore[attr-defined]
+            cast(Any, signals).cancel()
         return "", None
 
 
@@ -604,6 +616,7 @@ class TestNativeEndToEnd:
 
     def test_native_cleans_process_directory_after_success(self, tmp_path: Path) -> None:
         cfg = self._config(tmp_path)
+        assert cfg.work_dir is not None
         process_dir = cfg.work_dir / cfg.output.stem
         process_dir.mkdir(parents=True)
         (process_dir / "stale.bin").write_bytes(b"stale")

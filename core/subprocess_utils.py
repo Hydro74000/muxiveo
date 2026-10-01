@@ -11,7 +11,10 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from collections.abc import Mapping
+import threading
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager, suppress
+from pathlib import Path
 from typing import Any
 
 
@@ -139,3 +142,98 @@ def format_returncode(returncode: int | None) -> str:
     if 0x7FFFFFFF < code <= 0xFFFFFFFF:
         return f"{code - 0x100000000} / 0x{code:08X}"
     return str(code)
+
+
+_WINDOWS_SYSTEM_DIR_FALLBACK = r"C:\Windows\System32"
+
+
+def _windows_system_directory() -> str:
+    """Dossier système Windows via GetSystemDirectoryW (ni PATH ni variable d'environnement)."""
+    try:
+        import ctypes
+
+        buffer = ctypes.create_unicode_buffer(260)
+        length = ctypes.windll.kernel32.GetSystemDirectoryW(buffer, len(buffer))  # type: ignore[attr-defined]
+        if 0 < length < len(buffer):
+            return buffer.value
+    except (AttributeError, OSError):
+        pass
+    return _WINDOWS_SYSTEM_DIR_FALLBACK
+
+
+def _windows_taskkill_path() -> Path:
+    """Chemin absolu de taskkill.exe, non influençable par l'environnement."""
+    return Path(_windows_system_directory()) / "taskkill.exe"
+
+
+def kill_process_tree(proc: subprocess.Popen | None, timeout: float = 0.5) -> None:
+    """
+    Tue le processus (et ses descendants sous Windows), puis attend brièvement.
+
+    Sous Windows :
+      - `proc.kill()` (TerminateProcess) ne tue pas les enfants créés par l'outil.
+      - `taskkill /F /T /PID <pid>` force l'arrêt récursif de tout l'arbre.
+    Les flux appartiennent au worker : les fermer ici peut bloquer sur le verrou
+    d'un lecteur ou lui faire lever ValueError. Le worker les ferme après EOF.
+    """
+    if proc is None:
+        return
+
+    poll = getattr(proc, "poll", None)
+    if callable(poll):
+        with suppress(Exception):
+            if poll() is not None:
+                return
+
+    pid = getattr(proc, "pid", None)
+    if sys.platform == "win32" and pid is not None:
+        with suppress(Exception):
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            subprocess.run(  # nosec B603  # nosemgrep  # argv fixe, binaire système absolu, PID entier
+                [str(_windows_taskkill_path()), "/F", "/T", "/PID", str(int(pid))],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+                timeout=2.0,
+            )
+
+    kill = getattr(proc, "kill", None)
+    if callable(kill):
+        with suppress(OSError):
+            kill()
+
+    wait = getattr(proc, "wait", None)
+    if callable(wait):
+        with suppress(Exception):
+            wait(timeout=timeout)
+
+
+@contextmanager
+def watch_process_cancellation(
+    proc: subprocess.Popen,
+    cancel_cb: Callable[[], bool] | None,
+) -> Iterator[None]:
+    """Interrompt aussi un processus silencieux pendant une lecture ou wait().
+
+    Le surveillant ne touche jamais aux flux et est rejoint avant de rendre le
+    processus à l'appelant : aucune annulation tardive après la sortie du bloc.
+    """
+    stopped = threading.Event()
+
+    def watch() -> None:
+        while not stopped.is_set():
+            if cancel_cb is not None and cancel_cb():
+                kill_process_tree(proc, timeout=0.2)
+                return
+            stopped.wait(0.05)
+
+    thread = None
+    if cancel_cb is not None:
+        thread = threading.Thread(target=watch, name="process-cancellation", daemon=True)
+        thread.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        if thread is not None:
+            thread.join()

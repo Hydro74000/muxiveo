@@ -19,6 +19,11 @@ from cli.logging import Logger
 from cli.options import CommonOptions
 
 
+def _name(path: Path | None) -> str:
+    assert path is not None
+    return path.name
+
+
 def test_parse_episode_key_formats():
     assert parse_episode_key("Breaking.Bad.S01E05.2160p.mkv") == (1, 5)
     assert parse_episode_key("series.s2e12.hdtv.mp4") == (2, 12)
@@ -72,7 +77,7 @@ def test_matrix_multi_sources_relay_and_missing(tmp_path):
     # Vérification E01 : Master + DVD + Subs
     ep1 = episodes[0]
     assert ep1.season == 1 and ep1.episode == 1
-    assert ep1.master_file.name == "Show.S01E01.uhd.mkv"
+    assert _name(ep1.master_file) == "Show.S01E01.uhd.mkv"
     donor_names = [p.name for _, p in ep1.donor_files]
     assert "Show.S01E01.dvd.ac3" in donor_names
     assert "Show.S01E01.fr.ass" in donor_names
@@ -81,7 +86,7 @@ def test_matrix_multi_sources_relay_and_missing(tmp_path):
     # Vérification E02 : Master + DVD + Subs
     ep2 = episodes[1]
     assert ep2.season == 1 and ep2.episode == 2
-    assert ep2.master_file.name == "Show.S01E02.uhd.mkv"
+    assert _name(ep2.master_file) == "Show.S01E02.uhd.mkv"
     donor_names2 = [p.name for _, p in ep2.donor_files]
     assert "Show.S01E02.dvd.ac3" in donor_names2
     assert "Show.S01E02.fr.ass" in donor_names2
@@ -90,7 +95,7 @@ def test_matrix_multi_sources_relay_and_missing(tmp_path):
     # Vérification E03 : Relais automatique vers TVRip car absent du DVD !
     ep3 = episodes[2]
     assert ep3.season == 1 and ep3.episode == 3
-    assert ep3.master_file.name == "Show.S01E03.uhd.mkv"
+    assert _name(ep3.master_file) == "Show.S01E03.uhd.mkv"
     donor_names3 = [p.name for _, p in ep3.donor_files]
     assert "Show.S01E03.tvrip.eac3" in donor_names3
     assert "Show.S01E03.fr.ass" in donor_names3
@@ -178,7 +183,7 @@ def test_matrix_fuzzy_movie_matching(tmp_path):
         assert item.status == "ready"
 
     # Vérification des appariements
-    matched_pairs = {item.master_file.name: item.donor_files[0][1].name for item in items}
+    matched_pairs = {_name(item.master_file): item.donor_files[0][1].name for item in items}
     assert matched_pairs["The.Matrix.1999.2160p.UHD.Remux.mkv"] == "Matrix.1999.MULTi.1080p.mkv"
     assert matched_pairs["The.Matrix.Reloaded.2003.2160p.mkv"] == "Matrix.Reloaded.2003.FRENCH.mkv"
     assert matched_pairs["Star.Wars.Episode.IV.A.New.Hope.1977.Remux.mkv"] == "Star Wars - A New Hope (1977) [1080p].mkv"
@@ -206,11 +211,11 @@ def test_matrix_order_matching(tmp_path):
 
     items = matrix.scan()
     assert len(items) == 3
-    assert items[0].master_file.name == "Part_01_Introduction.mkv"
+    assert _name(items[0].master_file) == "Part_01_Introduction.mkv"
     assert items[0].donor_files[0][1].name == "01_Intro_VF.mka"
-    assert items[1].master_file.name == "Part_02_Development.mkv"
+    assert _name(items[1].master_file) == "Part_02_Development.mkv"
     assert items[1].donor_files[0][1].name == "02_Dev_VF.mka"
-    assert items[2].master_file.name == "Part_03_Conclusion.mkv"
+    assert _name(items[2].master_file) == "Part_03_Conclusion.mkv"
     assert items[2].donor_files[0][1].name == "03_Concl_VF.mka"
 
 

@@ -209,9 +209,15 @@ def _video_entry(mkv_tid: int = 0) -> TrackEntry:
     )
 
 
+def _select_codec(panel: EncodePanel, codec: str) -> None:
+    idx = next(i for i in range(panel._codec_combo.count()) if panel._codec_combo.itemData(i) == codec)
+    panel._codec_combo.setCurrentIndex(idx)
+
+
 # ===========================================================================
 # Flags éditables
 # ===========================================================================
+
 
 class TestAudioTableEditableFlags:
 
@@ -563,6 +569,89 @@ class TestEncodePanelNewTrackSources:
         panel.close()
 
 
+class TestEncodePanelCodecHdrPolicy:
+    _MD = "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)"
+
+    def test_h264_disables_hdr_options_and_restores_them_on_hevc(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-h264"
+        info = _file_info(_PATH_A, [_video_track(0, HDRType.DOLBY_VISION_HDR10PLUS)])
+        panel.set_video_tracks([(info, entry, _COLOR)])
+        _select_codec(panel, "libx265")
+        assert panel._inject_hdr_cb.isChecked() is True
+
+        for codec in ("libx264", "nvencc_h264"):
+            if panel._codec_combo.findData(codec) < 0:
+                continue
+            _select_codec(panel, codec)
+            assert panel._inject_hdr_cb.isEnabled() is False
+            assert panel._inject_hdr_cb.isChecked() is False
+            assert panel._copy_dv_cb.isChecked() is False
+            assert panel._copy_hdr10plus_cb.isChecked() is False
+            assert panel._tonemap_cb.isEnabled() is True
+            video = panel._current_video_settings()
+            assert (video.inject_hdr_meta, video.master_display, video.max_cll) == (False, "", "")
+
+        _select_codec(panel, "libx265")
+        assert panel._inject_hdr_cb.isEnabled() is True
+        assert panel._inject_hdr_cb.isChecked() is True
+        assert panel._copy_dv_cb.isChecked() is True
+        panel.close()
+
+    def test_unchecked_static_hdr_sends_no_values(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-static"
+        info = _file_info(_PATH_A, [_video_track(0, HDRType.HDR10)])
+        panel.set_video_tracks([(info, entry, _COLOR)])
+        _select_codec(panel, "libx265")
+        panel._master_display.setText(self._MD)
+        panel._max_cll.setText("1000,400")
+        panel._inject_hdr_cb.setChecked(False)
+
+        video = panel._current_video_settings()
+        assert (video.inject_hdr_meta, video.master_display, video.max_cll) == (False, "", "")
+        panel.close()
+
+    def test_copy_locks_hdr_options_on_source(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-copy"
+        info = _file_info(_PATH_A, [_video_track(0, HDRType.HDR10PLUS)])
+        panel.set_video_tracks([(info, entry, _COLOR)])
+        _select_codec(panel, "copy")
+
+        for checkbox in (panel._inject_hdr_cb, panel._copy_dv_cb, panel._copy_hdr10plus_cb, panel._tonemap_cb):
+            assert checkbox.isEnabled() is False
+        assert panel._inject_hdr_cb.isChecked() is True
+        assert panel._copy_hdr10plus_cb.isChecked() is True
+        assert panel._copy_dv_cb.isChecked() is False
+        assert panel._tonemap_cb.isChecked() is False
+        panel.close()
+
+    def test_apply_all_keeps_hdr_metadata_per_source(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        hdr_info = _file_info(_PATH_A, [_video_track(0, HDRType.HDR10)])
+        sdr_info = _file_info(_PATH_B, [_video_track(0, HDRType.NONE)])
+        hdr_entry = _video_entry(0)
+        hdr_entry.entry_id = "video-hdr"
+        sdr_entry = _video_entry(0)
+        sdr_entry.entry_id = "video-sdr"
+        panel.set_video_tracks([(hdr_info, hdr_entry, _COLOR), (sdr_info, sdr_entry, _COLOR)])
+        panel._video_list.setCurrentRow(0)
+        _select_codec(panel, "libx265")
+        panel._master_display.setText(self._MD)
+        panel._apply_all_video_cb.setChecked(True)
+
+        sdr_state = panel._video_settings_by_entry_id["video-sdr"]
+        assert sdr_state["codec"] == "libx265"
+        assert sdr_state["inject_hdr_meta"] is False
+        assert sdr_state["master_display"] == ""
+        assert panel._video_settings_by_entry_id["video-hdr"]["master_display"] == self._MD
+        panel.close()
+
+
 class TestEncodePanelDynamicHdrDefaults:
 
     def test_sdr_source_never_runs_hdr_frame_probe_on_ui_thread(self, qt_app, tmp_path, monkeypatch):
@@ -607,6 +696,12 @@ class TestEncodePanelDynamicHdrDefaults:
 
         panel.set_video_tracks([(second_source, _video_entry(0), _COLOR)])
 
+        # Copie : HDR source recopié tel quel, cases verrouillées.
+        assert panel._copy_dv_cb.isEnabled() is False
+        assert panel._copy_dv_cb.isChecked() is True
+        assert panel._copy_hdr10plus_cb.isChecked() is False
+
+        _select_codec(panel, "libx265")
         assert panel._copy_dv_cb.isEnabled() is True
         assert panel._copy_dv_cb.isChecked() is True
         assert panel._copy_hdr10plus_cb.isChecked() is False
@@ -1143,6 +1238,8 @@ class TestEncodePanelDynamicHdrDefaults:
         info = _file_info(_PATH_A, [_video_track(0, HDRType.HDR10)])
         panel.set_video_tracks([(info, entry, _COLOR)])
 
+        assert panel._tonemap_cb.isEnabled() is False  # copie : tone-mapping impossible
+        _select_codec(panel, "libx265")
         panel._tonemap_cb.setChecked(True)
         row_item = panel._video_list.item(0)
         assert row_item is not None
@@ -1159,6 +1256,7 @@ class TestEncodePanelDynamicHdrDefaults:
         info = _file_info(_PATH_A, [_video_track(0, HDRType.NONE)])
         panel.set_video_tracks([(info, entry, _COLOR)])
 
+        _select_codec(panel, "libx265")
         panel._inject_hdr_cb.setChecked(True)
         row_item = panel._video_list.item(0)
         assert row_item is not None
@@ -1480,10 +1578,68 @@ class TestEncodePanelDynamicHdrDefaults:
         )
         panel._codec_combo.setCurrentIndex(idx_nvencc)
 
+        # AV1 ne supporte pas le passthrough Dolby Vision (incompatible décodeurs TV),
+        # mais supporte le passthrough dynamique HDR10+.
+        assert panel._copy_dv_cb.isEnabled() is False
+        assert panel._copy_hdr10plus_cb.isEnabled() is True
+        assert panel._copy_dv_cb.isChecked() is False
+        assert panel._copy_hdr10plus_cb.isChecked() is True
+        panel.close()
+
+    def test_nvencc_hevc_enables_both_dovi_and_hdr10plus_passthrough(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        panel._hw_encoders = {"nvencc_hevc"}
+        panel._populate_codec_combo()
+        entry = _video_entry(0)
+        entry.entry_id = "video-nvencc-hevc-dv"
+        info = _file_info(_PATH_A, [_video_track(0, HDRType.DOLBY_VISION_HDR10PLUS)])
+        panel.set_video_tracks([(info, entry, _COLOR)])
+
+        idx_nvencc = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "nvencc_hevc"
+        )
+        panel._codec_combo.setCurrentIndex(idx_nvencc)
+
         assert panel._copy_dv_cb.isEnabled() is True
         assert panel._copy_hdr10plus_cb.isEnabled() is True
         assert panel._copy_dv_cb.isChecked() is True
         assert panel._copy_hdr10plus_cb.isChecked() is True
+        assert panel._dovi_warning_widget.isHidden() is True
+        panel.close()
+
+    def test_hevc_nvenc_shows_dovi_warning_banner_and_disables_cb(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        panel._hw_encoders = {"hevc_nvenc", "nvencc_hevc"}
+        panel._populate_codec_combo()
+        entry = _video_entry(0)
+        entry.entry_id = "video-nvenc-dv-warn"
+        info = _file_info(_PATH_A, [_video_track(0, HDRType.DOLBY_VISION_HDR10PLUS)])
+        panel.set_video_tracks([(info, entry, _COLOR)])
+
+        idx_nvenc = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "hevc_nvenc"
+        )
+        panel._codec_combo.setCurrentIndex(idx_nvenc)
+
+        # DoVi checkbox désactivée et décochée
+        assert panel._copy_dv_cb.isEnabled() is False
+        assert panel._copy_dv_cb.isChecked() is False
+        # Bannière d'alerte visible avec picto et recommandation NVEncC
+        assert panel._dovi_warning_widget.isHidden() is False
+        assert "⚠️" in panel._dovi_warning_icon.text()
+        assert "hevc_nvenc" in panel._dovi_warning_text.text()
+        assert "NVEncC" in panel._dovi_warning_text.text()
+
+        # Bascule vers nvencc_hevc : la bannière d'alerte doit disparaître
+        idx_nvencc = next(
+            i for i in range(panel._codec_combo.count())
+            if panel._codec_combo.itemData(i) == "nvencc_hevc"
+        )
+        panel._codec_combo.setCurrentIndex(idx_nvencc)
+        assert panel._copy_dv_cb.isEnabled() is True
+        assert panel._dovi_warning_widget.isHidden() is True
         panel.close()
 
     def test_h264_precheck_forces_8bit_and_logs_switch(self, qt_app):
@@ -1573,6 +1729,7 @@ class TestEncodePanelDynamicHdrDefaults:
             (info, second_entry, _COLOR),
         ])
         panel._apply_all_video_cb.setChecked(False)
+        _select_codec(panel, "libx265")
         panel._copy_dv_cb.setChecked(False)
 
         panel._video_list.setCurrentRow(1)

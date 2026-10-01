@@ -80,6 +80,8 @@ class MatroskaMuxPlan:
     timestamp_scale_ns: int = 1_000_000
     duration_ms: int = 0
     duration_ns: int = 0
+    total_packets: int = 0
+    total_payload_bytes: int = 0
     segment_uid: int = 0
     opaque_top_level: tuple[bytes, ...] = field(default_factory=tuple)
     muxing_app: str = "Muxiveo"

@@ -72,6 +72,7 @@ def prepare_timeline_sync_inputs(
     if live_session is not None:
         for proc in live_session.processes:
             signals._register_proc(proc)
+        bind_live_sync_cleanup(signals, live_session)
 
     if not prepared:
         return mapped_tracks, [], live_session
@@ -92,6 +93,23 @@ def prepare_timeline_sync_inputs(
         ))
 
     return remapped, prepared, live_session
+
+
+def bind_live_sync_cleanup(signals: TaskSignals, session: LiveSyncSession | None) -> None:
+    if session is None:
+        return
+
+    done = {"closed": False}
+
+    def _cleanup(*_args) -> None:
+        if done["closed"]:
+            return
+        done["closed"] = True
+        for proc in session.processes:
+            signals._unregister_proc(proc)
+        session.close()
+
+    signals.connect_terminal(finished=_cleanup, failed=_cleanup, cancelled=_cleanup, direct=True)
 
 
 def bind_temp_cleanup(signals: TaskSignals, cleanup_paths: list[Path]) -> None:
@@ -117,6 +135,7 @@ def bind_temp_cleanup(signals: TaskSignals, cleanup_paths: list[Path]) -> None:
 
 
 __all__ = [
+    "bind_live_sync_cleanup",
     "bind_temp_cleanup",
     "decide_strict_interleave_with_prescan",
     "prepare_timeline_sync_inputs",

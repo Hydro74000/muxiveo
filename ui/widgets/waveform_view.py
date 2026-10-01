@@ -7,7 +7,7 @@ from typing import Any
 try:
     import numpy as np
 except ImportError:
-    np = None  # type: ignore[assignment]
+    np = None
 
 from PySide6.QtCore import QLineF, QRect, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen, QWheelEvent
@@ -87,7 +87,7 @@ class WaveformView(QWidget):
         self.shift_ms: float = 0.0
 
         # Données historiques de repli
-        self.series: tuple[list[float], list[float]] = ([], [])
+        self.series: tuple[list[float], ...] = ([], [])
 
         # Données de sous-titres (start_ms, end_ms, text)
         self._ref_cues: list[tuple[float, float, str]] = []
@@ -512,12 +512,12 @@ class WaveformView(QWidget):
                 delta = (self.shift_ms / self.window_duration_ms * w) if row else 0.0
 
                 for i, value in enumerate(values):
-                    x = i * w / max(1, len(values) - 1) + delta
+                    px = i * w / max(1, len(values) - 1) + delta
                     y = middle - (value / scale_val * max_amp)
                     if i == 0:
-                        path.moveTo(x, y)
+                        path.moveTo(px, y)
                     else:
-                        path.lineTo(x, y)
+                        path.lineTo(px, y)
 
                 pen = QPen(colors[row % len(colors)])
                 pen.setWidthF(_scale(1.5))

@@ -17,7 +17,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from PySide6.QtCore import QSize, Qt, Signal, QTimer, QUrl
-from PySide6.QtGui import QBrush, QColor, QFont, QPixmap
+from PySide6.QtGui import QBrush, QColor, QFont, QPixmap, QCursor
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
@@ -48,6 +48,7 @@ from core.workflows.encode.catalog import (
     encoder_badge,
     is_h264_video_codec,
     supports_10bit,
+    supports_hdr_output,
 )
 from core.workflows.encode.backends import (
     backend_capabilities_for_codec,
@@ -56,12 +57,14 @@ from core.workflows.encode.runtime.static_hdr_estimator import (
     StaticHdrEstimate,
     StaticHdrEstimateService,
 )
+from ui.shutdown import Shutdown, defer_close
 from ui.panels.encode_panel.theme import (
-    _C, _card, _checkbox_style, _combo_style,
+    _C, _bolt_icon, _card, _checkbox_style, _combo_style,
     _input_style, _primary_button, _secondary_button,
     _section_label, _separator,
 )
 from ui.desktop import open_external
+from ui.design_system import scale as _scale
 from ui.dialogs.extra_params_dialog import edit_extra_params
 from ui.panels.encode_panel.widgets import _AudioSourceDialog, _AudioTable
 
@@ -131,6 +134,10 @@ class EncodePanel(QWidget):
         self._video_force_8bit_by_entry_id: dict[str, bool] = {}
         self._current_video_entry_id: str | None = None
         self._loading_video_settings = False
+        # HDR statique décoché automatiquement par un codec sans HDR (H.264…) :
+        # recoché au retour sur un codec compatible.
+        self._hdr_disabled_by_codec = False
+        self._syncing_hdr_controls = False
         self._syncing_video_selectors = False
         self._video_selector_combos: list[QComboBox] = []
         self._video_apply_all = False
@@ -194,6 +201,7 @@ class EncodePanel(QWidget):
         )
 
         self._build_ui()
+        self._initial_video_state = self._current_video_state()
         apply_translations(self)
         self._executor.submit(self._detect_hw_encoders)
         try:
@@ -657,6 +665,41 @@ class EncodePanel(QWidget):
     # API publique — appelée par MainWindow depuis RemuxPanel
     # ------------------------------------------------------------------
 
+    def reset(self) -> None:
+        """Réinitialise le panneau après suppression de toutes les sources."""
+        if self._preview_signals is not None:
+            self._preview_signals.cancel()
+        self._set_preview_running(False)
+        self._invalidate_hdr_meta_frame_probe()
+        self.set_video_tracks([])
+        self._duration_s = None
+        self._video_settings_by_entry_id.clear()
+        self._static_hdr_estimate_prompted.clear()
+        self._apply_all_video_cb.setChecked(False)
+        self._apply_video_state(self._initial_video_state)
+        self._update_passthrough_controls()
+        self._profile_combo.setCurrentIndex(-1)
+        self._profile_name.clear()
+        self.set_audio_tracks([])
+
+        self._preview_captures.clear()
+        self._preview_current_index = 0
+        self._preview_current_pixmap = None
+        self._show_preview_capture(0)
+        self._preview_video_path = None
+        self._preview_video_path_label.clear()
+        self._preview_open_video_btn.setEnabled(False)
+        self._preview_mode_combo.setCurrentIndex(0)
+        self._preview_time_edit.setText("00:00:00.000")
+        self._preview_random_scene = False
+        self._preview_duration_spin.setValue(10)
+        self._preview_zoom_slider.setValue(100)
+        self._preview_status.setText("Prêt.")
+        self._preview_scene_status.clear()
+        self._command_copy_pending = False
+        self._command_timer.stop()
+        self._apply_command_preview(self._command_generation, "")
+
     def set_video_tracks(self, tracks: list[tuple]) -> None:
         """Met à jour la liste des pistes vidéo depuis l'onglet Conteneur."""
         self._save_current_video_state()
@@ -842,6 +885,7 @@ class EncodePanel(QWidget):
         self._codec_combo = QComboBox()
         self._codec_combo.setStyleSheet(_combo_style())
         self._codec_combo.setMinimumWidth(220)
+        self._codec_combo.setIconSize(QSize(14, 14))
         self._populate_codec_combo()
         self._codec_combo.currentIndexChanged.connect(self._on_codec_changed)
         r1.addWidget(self._codec_combo)
@@ -914,14 +958,7 @@ class EncodePanel(QWidget):
             f"background:{_C.ACCENT};border-radius:7px;}}"
             f"QSlider::sub-page:horizontal{{background:{_C.ACCENT};border-radius:2px;}}"
         )
-        self._crf_spin = QSpinBox()
-        self._crf_spin.setRange(0, 51)
-        self._crf_spin.setValue(18)
-        self._crf_spin.setFixedWidth(52)
-        self._crf_spin.setStyleSheet(
-            f"QSpinBox{{background:{_C.BG_CARD};color:{_C.TEXT_PRI};"
-            f"border:1px solid {_C.BORDER};border-radius:4px;padding:2px 4px;}}"
-        )
+        self._crf_spin = self._make_quality_spin(18)
         self._crf_slider.valueChanged.connect(self._crf_spin.setValue)
         self._crf_spin.valueChanged.connect(self._crf_slider.setValue)
         self._crf_slider.valueChanged.connect(lambda _: self._rebuild_preview())
@@ -946,14 +983,7 @@ class EncodePanel(QWidget):
             f"background:{_C.ACCENT};border-radius:7px;}}"
             f"QSlider::sub-page:horizontal{{background:{_C.ACCENT};border-radius:2px;}}"
         )
-        self._cq_spin = QSpinBox()
-        self._cq_spin.setRange(0, 51)
-        self._cq_spin.setValue(26)
-        self._cq_spin.setFixedWidth(52)
-        self._cq_spin.setStyleSheet(
-            f"QSpinBox{{background:{_C.BG_CARD};color:{_C.TEXT_PRI};"
-            f"border:1px solid {_C.BORDER};border-radius:4px;padding:2px 4px;}}"
-        )
+        self._cq_spin = self._make_quality_spin(26)
         self._cq_slider.valueChanged.connect(self._cq_spin.setValue)
         self._cq_spin.valueChanged.connect(self._cq_slider.setValue)
         self._cq_slider.valueChanged.connect(lambda _: self._rebuild_preview())
@@ -1085,6 +1115,32 @@ class EncodePanel(QWidget):
         self._copy_dv_cb.setEnabled(False)
         self._copy_dv_cb.stateChanged.connect(self._on_dv_toggle)
         cl.addWidget(self._copy_dv_cb)
+
+        # Alerte visuelle pour Dolby Vision non supporté
+        self._dovi_warning_widget = QWidget()
+        self._dovi_warning_widget.setObjectName("DoviWarningWidget")
+        self._dovi_warning_widget.setStyleSheet(
+            f"QWidget#DoviWarningWidget {{"
+            f"  background: {_C.BADGE_ERROR_BG};"
+            f"  border: 1px solid {_C.WARN};"
+            f"  border-radius: 6px;"
+            f"}}"
+        )
+        dw_l = QHBoxLayout(self._dovi_warning_widget)
+        dw_l.setContentsMargins(10, 6, 10, 6)
+        dw_l.setSpacing(8)
+
+        self._dovi_warning_icon = QLabel("⚠️")
+        self._dovi_warning_icon.setStyleSheet("font-size: 14px; background: transparent; border: none;")
+        self._dovi_warning_text = QLabel()
+        self._dovi_warning_text.setWordWrap(True)
+        self._dovi_warning_text.setStyleSheet(
+            f"color: {_C.WARN}; font-size: 11px; background: transparent; border: none; font-weight: 500;"
+        )
+        dw_l.addWidget(self._dovi_warning_icon)
+        dw_l.addWidget(self._dovi_warning_text, 1)
+        self._dovi_warning_widget.setVisible(False)
+        cl.addWidget(self._dovi_warning_widget)
 
         self._dovi_profile_widget = QWidget()
         self._dovi_profile_widget.setStyleSheet("background:transparent;")
@@ -1311,6 +1367,14 @@ class EncodePanel(QWidget):
         self._crop_auto_cb.setToolTip("L'autocrop sera détecté au lancement puis appliqué à la piste active.")
         self._crop_auto_cb.toggled.connect(lambda _: self._rebuild_preview())
         crop_head.addWidget(self._crop_auto_cb)
+
+        self._auto_crop_btn = _secondary_button("🎯  Auto-crop")
+        self._auto_crop_btn.setToolTip(
+            "Détecte automatiquement les bandes noires et renseigne les dimensions de recadrage adaptées "
+            "au codec sélectionné (multiple de 32 pour NVENC + DV, multiple de 2 sinon)."
+        )
+        self._auto_crop_btn.clicked.connect(self._on_auto_crop_clicked)
+        crop_head.addWidget(self._auto_crop_btn)
         gl.addLayout(crop_head)
 
         self._crop_unit_combo = QComboBox()
@@ -1391,6 +1455,26 @@ class EncodePanel(QWidget):
         grid.setColumnStretch(1, 1)
         grid.setRowStretch(1, 1)
         return frame
+
+    @staticmethod
+    def _make_quality_spin(value: int) -> QSpinBox:
+        """Valeur CRF/CQ couplée au slider.
+
+        Sans boutons ▲▼ : sous Windows ils occupaient toute la largeur fixe
+        et masquaient la valeur. Largeur dérivée de la police et de l'échelle UI.
+        """
+        spin = QSpinBox()
+        spin.setRange(0, 51)
+        spin.setValue(value)
+        spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        spin.setStyleSheet(
+            f"QSpinBox{{background:{_C.BG_CARD};color:{_C.TEXT_PRI};"
+            f"border:1px solid {_C.BORDER};border-radius:4px;padding:3px 6px;}}"
+            f"QSpinBox:focus{{border-color:{_C.ACCENT};}}"
+        )
+        spin.setFixedWidth(max(_scale(56), spin.fontMetrics().horizontalAdvance("00") + _scale(32)))
+        return spin
 
     def _make_crop_spin(self, prefix: str) -> QSpinBox:
         spin = QSpinBox()
@@ -2027,9 +2111,10 @@ class EncodePanel(QWidget):
         for codec_id, label in SOFTWARE_VIDEO_CODECS:
             if codec_id in self._sw_encoders:
                 self._codec_combo.addItem(label, codec_id)
+        hw_icon = _bolt_icon()
         for codec_id, label in HARDWARE_VIDEO_CODECS:
             if codec_id in self._hw_encoders:
-                self._codec_combo.addItem(f"⚡ {label}", codec_id)
+                self._codec_combo.addItem(hw_icon, label, codec_id)
         self._codec_combo.blockSignals(False)
 
     # ------------------------------------------------------------------
@@ -2485,20 +2570,54 @@ class EncodePanel(QWidget):
         if self._file_info is None:
             self._copy_dv_cb.setEnabled(False)
             self._copy_hdr10plus_cb.setEnabled(False)
+            if hasattr(self, "_dovi_warning_widget"):
+                self._dovi_warning_widget.setVisible(False)
+            self._sync_hdr_controls_for_codec()
             return
 
         codec = self._codec_combo.currentData() or "libx265"
-        supports_hdr_passthrough = self._backend_capabilities(codec).supports_dynamic_hdr
         hdr = self._selected_video_hdr_type()
 
         has_dv       = hdr in (HDRType.DOLBY_VISION, HDRType.DOLBY_VISION_HDR10PLUS)
         has_hdr10plus = hdr in (HDRType.HDR10PLUS, HDRType.DOLBY_VISION_HDR10PLUS)
 
-        dv_ok       = has_dv and supports_hdr_passthrough
-        hdr10plus_ok = has_hdr10plus and supports_hdr_passthrough
+        dv_ok       = has_dv and self._is_dovi_codec(codec)
+        hdr10plus_ok = has_hdr10plus and self._is_hdr10plus_codec(codec)
 
         self._copy_dv_cb.setEnabled(dv_ok)
         self._copy_hdr10plus_cb.setEnabled(hdr10plus_ok)
+
+        if not dv_ok and has_dv:
+            if codec == "hevc_nvenc":
+                msg = (
+                    "Dolby Vision non supporté par FFmpeg 'hevc_nvenc' (rupture de synchro RPU / DPB).\n"
+                    "Sélectionnez 'NVEncC — HEVC (NVIDIA, rigaya)' pour un encodage GPU Dolby Vision Profile 8.1 garanti."
+                )
+            elif codec == "nvencc_av1":
+                msg = (
+                    "Dolby Vision non supporté sur le codec AV1 (Profile 10 incompatible décodeurs TV).\n"
+                    "Sélectionnez 'NVEncC — HEVC' pour conserver le Dolby Vision Profile 8.1."
+                )
+            elif codec != "copy":
+                msg = (
+                    f"Le codec '{codec}' ne supporte pas le passthrough Dolby Vision.\n"
+                    "Utilisez 'NVEncC — HEVC (NVIDIA, rigaya)', 'x265 (logiciel)' ou 'Copie (sans réencodage)'."
+                )
+            else:
+                msg = ""
+            self._copy_dv_cb.setToolTip(msg)
+            if hasattr(self, "_dovi_warning_widget"):
+                if msg:
+                    self._dovi_warning_text.setText(msg)
+                    self._dovi_warning_widget.setVisible(True)
+                else:
+                    self._dovi_warning_widget.setVisible(False)
+        else:
+            self._copy_dv_cb.setToolTip(
+                "Conserve et synchronise les métadonnées dynamiques Dolby Vision (Profile 8.1)."
+            )
+            if hasattr(self, "_dovi_warning_widget"):
+                self._dovi_warning_widget.setVisible(False)
 
         if auto_check:
             self._copy_dv_cb.setChecked(dv_ok)
@@ -2507,13 +2626,80 @@ class EncodePanel(QWidget):
             # quelle forme (HDR10/HDR10+/DV) — pas seulement si master_display
             # est rempli. Sans MDCV/CLL dans le BL encodé, un fichier DoVi
             # P8.1 affiche fade et désynchronise le décodeur côté TV.
-            is_hdr_source = hdr is not None and hdr != HDRType.NONE
-            self._inject_hdr_cb.setChecked(is_hdr_source)
+            self._inject_hdr_cb.setChecked(
+                self._source_has_static_hdr10(hdr) and supports_hdr_output(str(codec))
+            )
 
         if not dv_ok and not self._video_apply_all:
             self._copy_dv_cb.setChecked(False)
         if not hdr10plus_ok and not self._video_apply_all:
             self._copy_hdr10plus_cb.setChecked(False)
+        self._sync_hdr_controls_for_codec()
+
+    def _sync_hdr_controls_for_codec(self) -> None:
+        """Grise les options HDR quand le codec cible ne peut pas porter de HDR (H.264…).
+
+        Le tone-mapping HDR → SDR reste disponible : c'est la seule sortie
+        cohérente d'une source HDR vers un codec SDR.
+        """
+        if not hasattr(self, "_inject_hdr_cb") or not hasattr(self, "_codec_combo"):
+            return
+        if self._syncing_hdr_controls:
+            return
+        self._syncing_hdr_controls = True
+        try:
+            self._apply_codec_hdr_policy_to_widgets(str(self._codec_combo.currentData() or "libx265"))
+        finally:
+            self._syncing_hdr_controls = False
+
+    def _apply_codec_hdr_policy_to_widgets(self, codec: str) -> None:
+        if codec == "copy":
+            # Copie : le HDR source est recopié tel quel (in-band) ; seules
+            # les options de normalisation DoVi restent modifiables.
+            self._hdr_disabled_by_codec = False
+            hdr = self._selected_video_hdr_type()
+            locked_tip = translate_text(
+                "En copie, le HDR de la source est recopié tel quel."
+            )
+            self._tonemap_cb.setChecked(False)
+            self._tonemap_cb.setEnabled(False)
+            self._tonemap_cb.setToolTip(locked_tip)
+            for checkbox, checked in (
+                (self._inject_hdr_cb, self._source_has_static_hdr10(hdr)),
+                (self._copy_dv_cb, self._source_has_dv(hdr)),
+                (self._copy_hdr10plus_cb, self._source_has_hdr10plus(hdr)),
+            ):
+                checkbox.setChecked(checked)
+                checkbox.setEnabled(False)
+                checkbox.setToolTip(locked_tip)
+            self._hdr_meta_widget.setVisible(self._inject_hdr_cb.isChecked())
+            self._dovi_profile_widget.setVisible(self._copy_dv_cb.isChecked())
+            return
+        self._tonemap_cb.setEnabled(True)
+        self._tonemap_cb.setToolTip("")
+        self._copy_hdr10plus_cb.setToolTip("")
+        hdr_ok = self._backend_capabilities(codec).supports_hdr
+        self._inject_hdr_cb.setEnabled(hdr_ok)
+        if hdr_ok:
+            self._inject_hdr_cb.setToolTip("")
+            if self._hdr_disabled_by_codec:
+                self._hdr_disabled_by_codec = False
+                self._inject_hdr_cb.setChecked(True)
+            return
+        if self._inject_hdr_cb.isChecked() and not self._loading_video_settings:
+            self._hdr_disabled_by_codec = True
+        self._inject_hdr_cb.setToolTip(
+            translate_text(
+                "Le codec sélectionné ne peut pas porter de métadonnées HDR. "
+                "Choisissez un codec HEVC/AV1 ou activez le tone-mapping HDR → SDR."
+            )
+        )
+        self._inject_hdr_cb.setChecked(False)
+        for checkbox in (self._copy_dv_cb, self._copy_hdr10plus_cb):
+            checkbox.setChecked(False)
+            checkbox.setEnabled(False)
+        self._hdr_meta_widget.setVisible(False)
+        self._dovi_profile_widget.setVisible(False)
 
     def _on_mode_changed(self, _idx: int = 0) -> None:
         mode = self._mode_combo.currentData()
@@ -2556,9 +2742,10 @@ class EncodePanel(QWidget):
             self._update_passthrough_controls(auto_check=False)
             hdr = self._selected_video_hdr_type()
             codec = self._codec_combo.currentData() or "libx265"
-            if self._backend_capabilities(codec).supports_dynamic_hdr:
+            if self._is_dovi_codec(codec):
                 if hdr in (HDRType.DOLBY_VISION, HDRType.DOLBY_VISION_HDR10PLUS):
                     self._copy_dv_cb.setChecked(True)
+            if self._is_hdr10plus_codec(codec):
                 if hdr in (HDRType.HDR10PLUS, HDRType.DOLBY_VISION_HDR10PLUS):
                     self._copy_hdr10plus_cb.setChecked(True)
         else:
@@ -2571,7 +2758,8 @@ class EncodePanel(QWidget):
             # Cocher tone-mapping si la source est HDR (transformation cohérente
             # vers SDR plutôt qu'un HDR cassé).
             hdr = self._selected_video_hdr_type()
-            if hdr is not None and hdr != HDRType.NONE:
+            codec = self._codec_combo.currentData() or "libx265"
+            if hdr is not None and hdr != HDRType.NONE and codec != "copy":
                 self._tonemap_cb.setChecked(True)
         self._rebuild_preview()
 
@@ -2599,6 +2787,19 @@ class EncodePanel(QWidget):
     def _rebuild_preview(self) -> None:
         if self._closing or not hasattr(self, "_cmd_preview"):
             return   # appelé pendant l'init avant que le widget existe
+        if (not self._loading_video_settings
+                and self._codec_combo.currentData() == "nvencc_hevc" and self._copy_dv_cb.isChecked()):
+            from core.workflows.encode.runtime.dovi_geometry import nvencc_dovi_resize_changes_scale
+
+            _, dimensions = self._geometry_source()
+            if nvencc_dovi_resize_changes_scale(self._current_video_settings(), dimensions):
+                self._copy_dv_cb.setChecked(False)
+                if not self._tonemap_cb.isChecked():
+                    self._inject_hdr_cb.setChecked(True)
+                self.log_message.emit(
+                    "INFO", "Redimensionnement NVEncC : copie Dolby Vision désactivée. "
+                    "La conservation Dolby Vision requiert une image à l'échelle 1:1.",
+                )
         self._save_current_video_state()
         self._command_generation += 1
         self._command_dirty = True
@@ -2701,10 +2902,18 @@ class EncodePanel(QWidget):
         self._preview_signals = signals
         signals.progress.connect(self._on_preview_progress, Qt.ConnectionType.QueuedConnection)
         signals.progress_pct.connect(self._on_preview_progress_pct, Qt.ConnectionType.QueuedConnection)
+
+        def if_current(callback: Callable[..., None]) -> Callable[..., None]:
+            # Une fin déjà en file Qt peut arriver après la remise à zéro.
+            def deliver(*args) -> None:
+                if self._preview_signals is signals:
+                    callback(*args)
+            return deliver
+
         signals.connect_terminal(
-            finished=self._on_preview_finished,
-            failed=self._on_preview_failed,
-            cancelled=self._on_preview_cancelled,
+            finished=if_current(self._on_preview_finished),
+            failed=if_current(self._on_preview_failed),
+            cancelled=if_current(self._on_preview_cancelled),
         )
 
     def _on_cancel_preview(self) -> None:
@@ -2724,6 +2933,8 @@ class EncodePanel(QWidget):
     )
 
     def _on_preview_progress(self, line: str) -> None:
+        if self.sender() is not None and self.sender() is not self._preview_signals:
+            return
         text = str(line or "").strip()
         if not text:
             return
@@ -2738,6 +2949,8 @@ class EncodePanel(QWidget):
             self.log_message.emit("INFO", text)
 
     def _on_preview_progress_pct(self, pct: int) -> None:
+        if self.sender() is not None and self.sender() is not self._preview_signals:
+            return
         value = max(0, min(100, int(pct)))
         if not self._preview_progress.isVisible():
             self._preview_progress.setVisible(True)
@@ -3247,6 +3460,14 @@ class EncodePanel(QWidget):
     def _is_dynamic_hdr_codec(cls, codec: str) -> bool:
         return cls._backend_capabilities(codec).supports_dynamic_hdr
 
+    @classmethod
+    def _is_dovi_codec(cls, codec: str) -> bool:
+        return getattr(cls._backend_capabilities(codec), "supports_dovi", False)
+
+    @classmethod
+    def _is_hdr10plus_codec(cls, codec: str) -> bool:
+        return getattr(cls._backend_capabilities(codec), "supports_hdr10plus", False)
+
     @staticmethod
     def _backend_capabilities(codec: str):
         return backend_capabilities_for_codec(codec)
@@ -3278,6 +3499,19 @@ class EncodePanel(QWidget):
         )
 
     @staticmethod
+    def _source_has_static_hdr10(source_hdr: HDRType | None) -> bool:
+        """Source PQ portant (ou pouvant porter) des métadonnées HDR10 statiques.
+
+        HLG exclu : le forcer en HDR10 réécrirait la VUI en PQ.
+        """
+        return source_hdr in (
+            HDRType.HDR10,
+            HDRType.HDR10PLUS,
+            HDRType.DOLBY_VISION,
+            HDRType.DOLBY_VISION_HDR10PLUS,
+        )
+
+    @staticmethod
     def _source_has_dv(source_hdr: HDRType) -> bool:
         return source_hdr in (HDRType.DOLBY_VISION, HDRType.DOLBY_VISION_HDR10PLUS)
 
@@ -3297,9 +3531,8 @@ class EncodePanel(QWidget):
             if target_codec is not None
             else self._video_state_target_codec(state)
         )
-        supports_dynamic_hdr = self._is_dynamic_hdr_codec(codec)
-        copy_dv = bool(state.get("copy_dv")) and supports_dynamic_hdr and self._source_has_dv(source_hdr)
-        copy_hdr10plus = bool(state.get("copy_hdr10plus")) and supports_dynamic_hdr and self._source_has_hdr10plus(source_hdr)
+        copy_dv = bool(state.get("copy_dv")) and self._is_dovi_codec(codec) and self._source_has_dv(source_hdr)
+        copy_hdr10plus = bool(state.get("copy_hdr10plus")) and self._is_hdr10plus_codec(codec) and self._source_has_hdr10plus(source_hdr)
         return copy_dv, copy_hdr10plus
 
     def _normalized_video_state_for_track(
@@ -3312,6 +3545,7 @@ class EncodePanel(QWidget):
         normalized = self._copy_video_state(state)
         source_hdr = self._hdr_type_for_entry(info, track)
         target_codec = self._video_state_target_codec(normalized)
+        self._apply_codec_hdr_policy_to_state(normalized, source_hdr=source_hdr, codec=target_codec)
         copy_dv, copy_hdr10plus = self._effective_dynamic_hdr_flags(
             normalized,
             source_hdr=source_hdr,
@@ -3323,6 +3557,80 @@ class EncodePanel(QWidget):
         normalized["master_display"] = md
         normalized["max_cll"] = cll
         return normalized
+
+    def _apply_codec_hdr_policy_to_state(
+        self,
+        state: dict[str, object],
+        *,
+        source_hdr: HDRType,
+        codec: str,
+    ) -> None:
+        """Miroir, sur un état de piste, de la politique HDR des widgets.
+
+        - copy        : HDR source recopié tel quel (cases calquées sur la source).
+        - codec SDR   : aucune option HDR (H.264…).
+        - source sans HDR10 statique : pas d'injection HDR10 héritée d'une autre piste.
+        """
+        if codec == "copy":
+            state["inject_hdr_meta"] = self._source_has_static_hdr10(source_hdr)
+            state["copy_dv"] = self._source_has_dv(source_hdr)
+            state["copy_hdr10plus"] = self._source_has_hdr10plus(source_hdr)
+            state["tonemap_to_sdr"] = False
+            return
+        if not supports_hdr_output(codec):
+            state["inject_hdr_meta"] = False
+            state["copy_dv"] = False
+            state["copy_hdr10plus"] = False
+            state["static_hdr_metadata_analysis_request"] = ""
+            return
+        if not self._source_has_static_hdr10(source_hdr):
+            state["inject_hdr_meta"] = False
+
+    # Champs HDR propres à chaque source : jamais recopiés d'une piste à l'autre.
+    _PER_SOURCE_HDR_KEYS: tuple[str, ...] = (
+        "master_display",
+        "max_cll",
+        "default_master_display",
+        "default_max_cll",
+        "static_hdr_metadata_source",
+        "static_hdr_metadata_confidence",
+        "static_hdr_metadata_analysis_mode",
+        "static_hdr_metadata_analysis_request",
+    )
+
+    def _state_propagated_to_track(
+        self,
+        *,
+        info: FileInfo,
+        track: TrackEntry,
+        template: dict[str, object],
+    ) -> dict[str, object]:
+        """Applique les réglages communs de ``template`` à une piste.
+
+        Les métadonnées HDR statiques restent celles de la source de la piste
+        et les cases HDR sont réalignées sur ce que sa source et le codec
+        autorisent.
+        """
+        entry_id = self._video_entry_id(track)
+        own = self._video_settings_by_entry_id.get(entry_id)
+        if own is None:
+            own = self._default_video_state_for_track(info=info, track=track)
+        state = self._copy_video_state(template)
+        for key in self._PER_SOURCE_HDR_KEYS:
+            state[key] = own.get(key, "")
+        return self._normalized_video_state_for_track(info=info, track=track, state=state)
+
+    def _propagate_state_to_active_tracks(self, template: dict[str, object]) -> None:
+        for info, track, _color in self._video_tracks:
+            entry_id = self._video_entry_id(track)
+            if entry_id == self._current_video_entry_id:
+                self._video_settings_by_entry_id[entry_id] = self._copy_video_state(template)
+                continue
+            self._video_settings_by_entry_id[entry_id] = self._state_propagated_to_track(
+                info=info,
+                track=track,
+                template=template,
+            )
 
     def _default_video_state_for_track(
         self,
@@ -3343,7 +3651,7 @@ class EncodePanel(QWidget):
         # Source HDR (HDR10/HDR10+/DV) → injection HDR statique activée par
         # défaut. Sans master_display/max-cll dans le HEVC encodé, les TV
         # et players appliquent un tone-mapping générique → image fade.
-        is_hdr_source = source_hdr is not None and source_hdr != HDRType.NONE
+        is_hdr_source = self._source_has_static_hdr10(source_hdr)
         state: dict[str, object] = {
             "codec": "copy",
             "quality_mode": QualityMode.CRF,
@@ -3558,10 +3866,10 @@ class EncodePanel(QWidget):
         for info, track in missing_tracks:
             entry_id = self._video_entry_id(track)
             if propagate_global:
-                state = self._normalized_video_state_for_track(
+                state = self._state_propagated_to_track(
                     info=info,
                     track=track,
-                    state=template_state,
+                    template=template_state,
                 )
             else:
                 state = self._default_video_state_for_track(info=info, track=track)
@@ -3665,8 +3973,7 @@ class EncodePanel(QWidget):
         state = self._video_settings_by_entry_id.get(source_id)
         if state is None:
             state = self._current_video_state()
-        for entry_id in self._active_video_entry_ids():
-            self._video_settings_by_entry_id[entry_id] = self._copy_video_state(state)
+        self._propagate_state_to_active_tracks(state)
         self._emit_video_encoding_plans()
 
     @staticmethod
@@ -3701,23 +4008,25 @@ class EncodePanel(QWidget):
             source_hdr=source_hdr,
             target_codec=target_codec,
         )
+        if target_codec == "copy":
+            if copy_dv and str(state.get("dovi_profile") or "0").strip() == "2":
+                return ("DV", "HDR")
+            return self._source_hdr_badges(source_hdr, source_video)
         if bool(state.get("tonemap_to_sdr")):
             return ("SDR",)
 
         badges: list[str] = []
-        if bool(state.get("inject_hdr_meta")):
+        if bool(state.get("inject_hdr_meta")) and supports_hdr_output(target_codec):
             badges.append("HDR")
         if copy_dv:
             badges.append("DV")
         if copy_hdr10plus:
             badges.append("10+")
 
-        if badges:
-            return tuple(badges)
+        return tuple(badges)
 
-        if target_codec != "copy":
-            return ()
-
+    @staticmethod
+    def _source_hdr_badges(source_hdr: HDRType, source_video: VideoTrack | None) -> tuple[str, ...]:
         if source_hdr == HDRType.HDR10:
             return ("HDR",)
         if source_hdr == HDRType.HDR10PLUS:
@@ -3865,8 +4174,7 @@ class EncodePanel(QWidget):
         )
         self._video_settings_by_entry_id[self._current_video_entry_id] = state
         if self._video_apply_all:
-            for entry_id in self._active_video_entry_ids():
-                self._video_settings_by_entry_id[entry_id] = self._copy_video_state(state)
+            self._propagate_state_to_active_tracks(state)
         if analysis_cancelled:
             self.log_message.emit(
                 "INFO",
@@ -3878,6 +4186,7 @@ class EncodePanel(QWidget):
         self._emit_video_encoding_plans()
 
     def _apply_video_state(self, state: dict[str, object]) -> None:
+        self._hdr_disabled_by_codec = False
         self._loading_video_settings = True
         try:
             self._set_combo_data(self._codec_combo, state.get("codec"))
@@ -3915,6 +4224,7 @@ class EncodePanel(QWidget):
         self._tonemap_algo_widget.setVisible(self._tonemap_cb.isChecked())
         self._update_ten_bit_control(self._codec_combo.currentData() or "libx265")
         self._sync_hdr_metadata_field_editability(self._codec_combo.currentData() or "libx265")
+        self._sync_hdr_controls_for_codec()
         self._sync_transform_controls_enabled()
 
     def _apply_resize_settings(self, resize: VideoResizeSettings) -> None:
@@ -3960,6 +4270,204 @@ class EncodePanel(QWidget):
         self._set_combo_data(self._nlmeans_profile_combo, filters.nlmeans_profile)
         self._chroma_cb.setChecked(bool(filters.chroma_smooth_enabled))
         self._set_combo_data(self._chroma_strength_combo, filters.chroma_smooth_strength)
+
+    def _geometry_source(self) -> tuple[Path | None, tuple[int, int]]:
+        source_path = None
+        dimensions = (0, 0)
+        row = self._video_list.currentRow() if hasattr(self, "_video_list") else -1
+        if 0 <= row < len(self._video_tracks):
+            file_info, track, _color = self._video_tracks[row]
+            source_path = file_info.path
+            if file_info.video_tracks:
+                stream_index = self._current_video_settings().stream_index
+                vt = next((v for v in file_info.video_tracks if v.index == stream_index), file_info.video_tracks[0])
+                dimensions = (int(vt.width or 0), int(vt.height or 0))
+
+        elif self._file_info is not None:
+            source_path = self._file_info.path
+            if self._file_info.video_tracks:
+                vt = self._file_info.video_tracks[0]
+                dimensions = (int(vt.width or 0), int(vt.height or 0))
+
+        return source_path, dimensions
+
+    def _on_auto_crop_clicked(self) -> None:
+        source_path, dimensions = self._geometry_source()
+
+        if source_path is None or dimensions[0] <= 0 or dimensions[1] <= 0:
+            self.log_message.emit("WARN", "Auto-crop impossible : aucune source vidéo ou dimensions introuvables.")
+            return
+
+        codec = str(self._codec_combo.currentData() or "libx265")
+        copy_dv = bool(self._copy_dv_cb.isChecked())
+        duration_s = self._duration_s
+
+        from core.workflows.encode.runtime.crop_detector import detect_video_crop
+
+        self.setCursor(QCursor(Qt.CursorShape.WaitCursor))
+        try:
+            crop_result = detect_video_crop(
+                source_path,
+                dimensions=dimensions,
+                codec=codec,
+                copy_dv=copy_dv,
+                duration_s=duration_s,
+                ffmpeg_bin=self._config.tool_ffmpeg,
+                dovi_tool_bin=self._config.tool_dovi_tool,
+                ffprobe_bin=self._workflow._ffprobe_bin_from_ffmpeg(self._config.tool_ffmpeg),
+                stream_index=self._current_video_settings().stream_index,
+            )
+            top, bottom, left, right = crop_result
+            if top == 0 and bottom == 0 and left == 0 and right == 0:
+                self.log_message.emit(
+                    "INFO",
+                    f"Auto-crop : aucune bande noire détectée ({dimensions[0]}×{dimensions[1]}).",
+                )
+                self._apply_crop_settings(VideoCropSettings(enabled=False, unit="px"))
+            else:
+                act_w = dimensions[0] - (left + right)
+                act_h = dimensions[1] - (top + bottom)
+                new_crop = VideoCropSettings(
+                    enabled=True,
+                    unit="px",
+                    top=top,
+                    bottom=bottom,
+                    left=left,
+                    right=right,
+                    auto=False,
+                )
+                self._apply_crop_settings(new_crop)
+                mult_desc = (
+                    "multiple de 32 (NVENC+DV)"
+                    if (codec == "nvencc_hevc" and copy_dv)
+                    else "multiple de 2"
+                )
+                self.log_message.emit(
+                    "INFO",
+                    (
+                        f"Auto-crop appliqué [{mult_desc}] : "
+                        f"Haut={top}px, Bas={bottom}px, Gauche={left}px, Droite={right}px "
+                        f"→ Résolution active {act_w}×{act_h}"
+                    ),
+                )
+            self._save_current_video_state()
+            self._rebuild_preview()
+        finally:
+            self.unsetCursor()
+
+    def confirm_dovi_geometry_alignment_if_needed(self, parent: QWidget | None = None) -> bool:
+        """Vérifie si un alignement géométrique sur un multiple de 32 est requis pour NVEncC + DV.
+
+        Si nécessaire, ouvre une boîte de dialogue proposant d'appliquer automatiquement
+        le recadrage (ou padding) et affiche l'onglet 'Géométrie / Filtres'.
+        """
+        vs = self._current_video_settings()
+        if vs.codec != "nvencc_hevc" or not getattr(vs, "copy_dv", False):
+            return True
+
+        source_path, dimensions = self._geometry_source()
+
+        src_w, src_h = dimensions
+        if src_w <= 0 or src_h <= 0 or source_path is None:
+            return True
+
+        from core.workflows.encode.runtime.dovi_geometry import align_nvencc_dovi_geometry
+
+        l5_offsets = None
+        try:
+            l5_offsets = self._workflow._probe_dovi_l5_offsets(source_path, stream_index=vs.stream_index)
+        except Exception:
+            l5_offsets = None
+
+        res = align_nvencc_dovi_geometry(vs, dimensions, l5_offsets=l5_offsets)
+
+        # 1. Branche 1 : Recadrage requis
+        if res.crop_offsets is not None:
+            curr_crop = vs.crop
+            curr_top = int(curr_crop.top or 0) if (curr_crop.enabled and not curr_crop.auto) else 0
+            curr_bottom = int(curr_crop.bottom or 0) if (curr_crop.enabled and not curr_crop.auto) else 0
+            curr_left = int(curr_crop.left or 0) if (curr_crop.enabled and not curr_crop.auto) else 0
+            curr_right = int(curr_crop.right or 0) if (curr_crop.enabled and not curr_crop.auto) else 0
+
+            req_crop = res.video.crop
+            req_top = int(req_crop.top or 0)
+            req_bottom = int(req_crop.bottom or 0)
+            req_left = int(req_crop.left or 0)
+            req_right = int(req_crop.right or 0)
+
+            act_w = src_w - (req_left + req_right)
+            act_h = src_h - (req_top + req_bottom)
+
+            needs_alignment = (
+                curr_crop.unit != "px"
+                or curr_top != req_top
+                or curr_bottom != req_bottom
+                or curr_left != req_left
+                or curr_right != req_right
+            )
+            if not needs_alignment:
+                return True
+
+            dlg = QMessageBox(parent or self)
+            dlg.setIcon(QMessageBox.Icon.Information)
+            dlg.setWindowTitle("Alignement géométrique Dolby Vision (NVENC)")
+            dlg.setText(
+                "<h3>Alignement matériel requis pour Dolby Vision</h3>"
+                "<p>Pour garantir la compatibilité Dolby Vision avec NVENC et éviter le basculement "
+                "en SDR sur téléviseur ou box Android TV (lié à la fenêtre de conformité HEVC SPS), "
+                "la résolution encodée doit être un <b>multiple de 32</b> pixels.</p>"
+                f"<p><b>Résolution recommandée :</b> {act_w} × {act_h} (multiple de 32)<br>"
+                f"<b>Recadrage calculé :</b> Haut: {req_top} px, Bas: {req_bottom} px, "
+                f"Gauche: {req_left} px, Droite: {req_right} px</p>"
+                "<p>Souhaitez-vous appliquer automatiquement ce recadrage dans l'onglet 'Géométrie / Filtres' "
+                "et continuer l'encodage ?</p>"
+            )
+            apply_btn = dlg.addButton("Appliquer et continuer", QMessageBox.ButtonRole.AcceptRole)
+            cancel_btn = dlg.addButton("Annuler", QMessageBox.ButtonRole.RejectRole)
+            dlg.setDefaultButton(apply_btn)
+            dlg.exec()
+
+            if dlg.clickedButton() == apply_btn:
+                self._apply_crop_settings(res.video.crop)
+                self._save_current_video_state()
+                self._tabs.setCurrentIndex(2)  # Géométrie / Filtres
+                self._rebuild_preview()
+                return True
+            else:
+                self._tabs.setCurrentIndex(2)
+                return False
+
+        # 2. Branche 2 : Padding requis (image pleine sans bandes)
+        if res.needs_rpu_alignment and res.vpp_pad is not None:
+            pad_left, pad_top, pad_right, pad_bottom = res.vpp_pad
+            target_w = src_w + pad_left + pad_right
+            target_h = src_h + pad_top + pad_bottom
+
+            dlg = QMessageBox(parent or self)
+            dlg.setIcon(QMessageBox.Icon.Information)
+            dlg.setWindowTitle("Alignement géométrique Dolby Vision (NVENC)")
+            dlg.setText(
+                "<h3>Alignement matériel par padding requis pour Dolby Vision</h3>"
+                f"<p>Aucun recadrage commun n'a été retenu. Le cadre source ({src_w} × {src_h}) "
+                "doit être complété pour atteindre des dimensions multiples de 32.</p>"
+                f"<p>Un padding de <b>{pad_top} px</b> en haut et <b>{pad_bottom} px</b> en bas "
+                f"va être appliqué automatiquement ({target_w} × {target_h}) avec réalignement des métadonnées RPU Dolby Vision par scène, "
+                "préservant 100% de l'image sans recadrage.</p>"
+                "<p>Souhaitez-vous continuer avec cet alignement automatique ?</p>"
+            )
+            apply_btn = dlg.addButton("Continuer", QMessageBox.ButtonRole.AcceptRole)
+            cancel_btn = dlg.addButton("Annuler", QMessageBox.ButtonRole.RejectRole)
+            dlg.setDefaultButton(apply_btn)
+            dlg.exec()
+
+            if dlg.clickedButton() == apply_btn:
+                self._tabs.setCurrentIndex(2)
+                return True
+            else:
+                self._tabs.setCurrentIndex(2)
+                return False
+
+        return True
 
     def _current_video_settings(self) -> VideoEncodeSettings:
         video_source = self._file_info.path if self._file_info is not None else None
@@ -4010,9 +4518,11 @@ class EncodePanel(QWidget):
             source_hdr=source_hdr,
             target_codec=str(codec),
         )
-        master_display, max_cll = self._effective_static_hdr_fields(
-            current_state,
-            codec=str(codec),
+        inject_hdr_meta = self._inject_hdr_cb.isChecked() and supports_hdr_output(str(codec))
+        master_display, max_cll = (
+            self._effective_static_hdr_fields(current_state, codec=str(codec))
+            if inject_hdr_meta
+            else ("", "")
         )
         return VideoEncodeSettings(
             stream_index=stream_index,
@@ -4031,7 +4541,7 @@ class EncodePanel(QWidget):
             resize=self._current_resize_settings(),
             crop=self._current_crop_settings(),
             filters=self._current_filter_settings(),
-            inject_hdr_meta=self._inject_hdr_cb.isChecked(),
+            inject_hdr_meta=inject_hdr_meta,
             master_display=master_display,
             max_cll=max_cll,
             static_hdr_metadata_source=str(current_state.get("static_hdr_metadata_source") or ""),
@@ -4064,9 +4574,11 @@ class EncodePanel(QWidget):
             source_hdr=source_hdr,
             target_codec=codec,
         )
-        master_display, max_cll = self._effective_static_hdr_fields(
-            state,
-            codec=codec,
+        inject_hdr_meta = bool(state.get("inject_hdr_meta")) and supports_hdr_output(codec)
+        master_display, max_cll = (
+            self._effective_static_hdr_fields(state, codec=codec)
+            if inject_hdr_meta
+            else ("", "")
         )
         return VideoEncodeSettings(
             stream_index=int(track.mkv_tid),
@@ -4090,7 +4602,7 @@ class EncodePanel(QWidget):
             resize=VideoResizeSettings.from_value(state.get("resize")),
             crop=VideoCropSettings.from_value(state.get("crop")),
             filters=VideoFilterSettings.from_value(state.get("filters")),
-            inject_hdr_meta=bool(state.get("inject_hdr_meta")),
+            inject_hdr_meta=inject_hdr_meta,
             master_display=master_display,
             max_cll=max_cll,
             static_hdr_metadata_source=str(state.get("static_hdr_metadata_source") or ""),
@@ -4141,10 +4653,10 @@ class EncodePanel(QWidget):
                     settings.append(self._current_video_settings())
                     continue
                 if self._should_propagate_global_state(template_state):
-                    state = self._normalized_video_state_for_track(
+                    state = self._state_propagated_to_track(
                         info=file_info,
                         track=track,
-                        state=template_state or {},
+                        template=template_state or {},
                     )
                 else:
                     state = self._default_video_state_for_track(
@@ -4316,13 +4828,16 @@ class EncodePanel(QWidget):
             QApplication.clipboard().setText(text)
 
     def closeEvent(self, event) -> None:
-        self._closing = True
-        self._command_timer.stop()
-        self._command_executor.shutdown(wait=False, cancel_futures=True)
-        if self._preview_signals is not None:
-            self._preview_signals.cancel()
-        self._hdr_meta_executor.shutdown(wait=False, cancel_futures=True)
-        self._executor.shutdown(wait=True)
+        if not hasattr(self, "_shutdown"):
+            self._closing = True
+            self.setEnabled(False)
+            self._command_timer.stop()
+            self._shutdown = Shutdown(
+                executors=(self._command_executor, self._hdr_meta_executor, self._executor),
+                tasks=(self._preview_signals,),
+            )
+        if defer_close(self, event, ready=self._shutdown.done.is_set()):
+            return
         try:
             EncodeWorkflow.cleanup_preview_dir(self._config.work_dir)
         except Exception:

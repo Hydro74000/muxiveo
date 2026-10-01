@@ -27,7 +27,7 @@ from core.workflows.common.sync_rewrite import (
     normalized_rewrite_codec,
     sync_rewrite_forced_offset,
 )
-from core.matroska.contract import without_expected_attachment
+from core.matroska.contract import MatroskaOutputContract, without_expected_attachment
 from core.matroska.validation import MatroskaPacketValidation, validate_matroska_output
 from core.workflows.common.track_statistics import derive_output_statistics
 from core.workflows.remux_plan import passthrough_source_refs
@@ -67,7 +67,7 @@ class RemuxRuntimeRunnerCallbacks:
     apply_language_post_action: Callable[[Path], object]
     write_nfo: Callable[[Path], None]
     apply_statistics_post_action: Callable[..., object] = lambda _path, **_kwargs: None
-    apply_track_enabled_post_action: Callable[[Path, object], object] = (
+    apply_track_enabled_post_action: Callable[[Path, MatroskaOutputContract], object] = (
         lambda _path, _contract: None
     )
     sync_rewrite_enabled: Callable[[], bool] = lambda: False

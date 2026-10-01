@@ -1093,44 +1093,65 @@ def test_setup_initializes_ui_language_in_config_ini(tmp_path):
     ini_path.write_text("[ui]\n", encoding="utf-8")
 
     with patch.object(setup_mod, "_config_ini_path", return_value=ini_path), \
-         patch.object(setup_mod, "_system_language_code", return_value="fra"), \
-         patch.object(setup_mod, "_ask_language_dialog", return_value=None):
+         patch.object(setup_mod, "_system_language_code", return_value="fra"):
         setup_mod.initialize_config_ini_language(dry_run=False, force=False)
 
     assert "language = fra" in ini_path.read_text(encoding="utf-8")
 
 
-def test_setup_language_dialog_uses_in_process_qt_when_frozen():
-    import setup as setup_mod
-
-    languages = [("eng", "English"), ("fra", "Français")]
-    with patch.object(setup_mod.sys, "frozen", True, create=True), \
-         patch.object(setup_mod, "_ask_language_dialog_qt_in_process", return_value="fra") as mock_in_process, \
-         patch.object(setup_mod.subprocess, "run") as mock_run:
-        selected = setup_mod._ask_language_dialog(languages)
-
-    assert selected == "fra"
-    mock_in_process.assert_called_once_with(languages)
-    mock_run.assert_not_called()
-
-
-def test_setup_language_dialog_ignores_non_windows_popup(tmp_path):
+def test_setup_windows_first_launch_uses_system_language_without_dialog(tmp_path):
+    """Windows : plus de popup, la langue système est posée directement."""
     import setup as setup_mod
 
     ini_path = tmp_path / "config.ini"
     ini_path.write_text("[ui]\n", encoding="utf-8")
 
-    with patch.object(setup_mod, "OS", "Linux"), \
+    with patch.object(setup_mod, "OS", "Windows"), \
          patch.object(setup_mod, "_config_ini_path", return_value=ini_path), \
-         patch.object(setup_mod, "_system_language_code", return_value="eng"), \
-         patch.object(setup_mod, "_ask_language_dialog") as mock_dialog:
+         patch.object(setup_mod, "system_ui_language", return_value="fra"):
         setup_mod.initialize_config_ini_language(dry_run=False, force=False)
 
-    mock_dialog.assert_not_called()
-    assert "language = eng" in ini_path.read_text(encoding="utf-8")
+    assert not hasattr(setup_mod, "_ask_language_dialog")
+    assert "language = fra" in ini_path.read_text(encoding="utf-8")
 
 
-def test_setup_language_dialog_skips_when_language_already_defined_on_windows(tmp_path):
+@pytest.mark.parametrize(
+    ("windows_locale", "env_lang", "expected"),
+    [
+        ("fr_FR", None, "fra"),
+        ("en_US", None, "eng"),
+        ("de_DE", None, "eng"),
+        (None, "fr_FR.UTF-8", "fra"),
+        (None, "ja_JP.UTF-8", "eng"),
+        (None, "C.UTF-8", "eng"),
+    ],
+)
+def test_system_ui_language_falls_back_to_english_when_unsupported(
+    monkeypatch, windows_locale, env_lang, expected
+):
+    from core import ui_language
+
+    for name in ("LC_ALL", "LANGUAGE", "LANG"):
+        monkeypatch.delenv(name, raising=False)
+    if env_lang:
+        monkeypatch.setenv("LANG", env_lang)
+    monkeypatch.setattr(ui_language, "_windows_ui_locale_name", lambda: windows_locale)
+    monkeypatch.setattr(ui_language.locale, "getlocale", lambda: (None, None))
+
+    assert ui_language.system_ui_language({"eng", "fra"}) == expected
+
+
+def test_supported_ui_languages_reads_locales_json(tmp_path):
+    from core.ui_language import supported_ui_languages
+
+    path = tmp_path / "locales.json"
+    path.write_text('{"Bonjour": {"fra": "Bonjour", "ENG": "Hello"}}', encoding="utf-8")
+
+    assert supported_ui_languages(path) == frozenset({"eng", "fra"})
+    assert supported_ui_languages(tmp_path / "missing.json") == frozenset({"eng"})
+
+
+def test_setup_language_skips_when_already_defined_on_windows(tmp_path):
     import setup as setup_mod
 
     ini_path = tmp_path / "config.ini"
@@ -1138,11 +1159,9 @@ def test_setup_language_dialog_skips_when_language_already_defined_on_windows(tm
 
     with patch.object(setup_mod, "OS", "Windows"), \
          patch.object(setup_mod, "_config_ini_path", return_value=ini_path), \
-         patch.object(setup_mod, "_ask_language_dialog") as mock_dialog, \
          patch.object(setup_mod, "_system_language_code") as mock_detect:
         setup_mod.initialize_config_ini_language(dry_run=False, force=False)
 
-    mock_dialog.assert_not_called()
     mock_detect.assert_not_called()
     assert "language = fra" in ini_path.read_text(encoding="utf-8")
 

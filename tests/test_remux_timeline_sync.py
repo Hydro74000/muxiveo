@@ -262,7 +262,7 @@ def test_prepare_from_mapped_tracks_mmap_uses_mmap_extractor(tmp_path, monkeypat
 
     calls: list[tuple[Path, int, Path]] = []
 
-    def _fake_extract_mmap(*, source: Path, stream_index: int, destination: Path) -> None:
+    def _fake_extract_mmap(*, source: Path, stream_index: int, destination: Path, cancel_cb=None) -> None:
         calls.append((source, stream_index, destination))
         destination.write_bytes(b"mmap-sync")
 

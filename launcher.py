@@ -146,6 +146,8 @@ def _needs_windows_post_install_setup() -> bool:
     """
     if sys.platform != "win32" or not getattr(sys, "frozen", False):
         return False
+    if _is_allinc():
+        return False
 
     marker = _windows_setup_version_marker_path()
     try:
@@ -158,6 +160,8 @@ def _needs_windows_post_install_setup() -> bool:
 def _windows_required_tools_missing() -> bool:
     """Return whether a frozen Windows build needs dependency repair."""
     if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return False
+    if _is_allinc():
         return False
     try:
         import setup as setup_mod  # noqa: PLC0415
@@ -428,9 +432,12 @@ def _run_first_time_setup(install_dir: Path) -> int:
             )
             return SETUP_RC_HANDOFF
 
+    # Console de suivi uniquement pour une réparation (téléchargements) :
+    # en all-inclusive le setup ne fait qu'écrire la langue, et une console
+    # éphémère retardait/masquait l'apparition de la fenêtre principale.
     setup_console_token = (
         _windows_open_setup_console()
-        if _os == "Windows" and (allinc or requires_windows_repair)
+        if _os == "Windows" and requires_windows_repair
         else None
     )
 
@@ -606,6 +613,14 @@ def _run_cli_entrypoint() -> int:
 
 
 def main() -> int:
+    if _is_allinc() and sys.platform == "win32":
+        tools_dir = Path(sys.executable).parent / "tools"
+        if tools_dir.is_dir():
+            tools_str = str(tools_dir)
+            current_path = os.environ.get("PATH", "")
+            if tools_str not in current_path.split(os.pathsep):
+                os.environ["PATH"] = f"{tools_str}{os.pathsep}{current_path}"
+
     if "--tmdb-smoke-test" in sys.argv:
         return _run_tmdb_smoke_test()
 

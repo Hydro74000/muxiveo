@@ -1,4 +1,12 @@
 {
+  "Alignement géométrique Dolby Vision (NVENC)": {
+    "fra": "Alignement géométrique Dolby Vision (NVENC)",
+    "eng": "Dolby Vision geometry alignment (NVENC)"
+  },
+  "Détecte automatiquement les bandes noires et renseigne les dimensions de recadrage adaptées au codec sélectionné (multiple de 32 pour NVENC + DV, multiple de 2 sinon).": {
+    "fra": "Détecte automatiquement les bandes noires et renseigne les dimensions de recadrage adaptées au codec sélectionné (multiple de 32 pour NVENC + DV, multiple de 2 sinon).",
+    "eng": "Automatically detects black bars and sets crop dimensions adapted to the selected codec (multiple of 32 for NVENC + DV, multiple of 2 otherwise)."
+  },
   "Réglages": {
     "fra": "Réglages",
     "eng": "Settings"
@@ -4271,9 +4279,9 @@
     "fra": "Échec de la synchronisation des sous-titres.",
     "eng": "Subtitle synchronization failed."
   },
-  "⚡ Synchro sous-titres": {
-    "fra": "⚡ Synchro sous-titres",
-    "eng": "⚡ Subtitle sync"
+  "Synchro sous-titres": {
+    "fra": "Synchro sous-titres",
+    "eng": "Subtitle sync"
   },
   "Lancer l'alignement automatique des sous-titres": {
     "fra": "Lancer l'alignement automatique des sous-titres",
@@ -4798,5 +4806,17 @@
   "hh:mm:ss": {
     "fra": "hh:mm:ss",
     "eng": "hh:mm:ss"
+  },
+  "Conserve et synchronise les métadonnées dynamiques Dolby Vision (Profile 8.1).": {
+    "fra": "Conserve et synchronise les métadonnées dynamiques Dolby Vision (Profile 8.1).",
+    "eng": "Preserve and synchronize Dolby Vision dynamic metadata (Profile 8.1)."
+  },
+  "Le codec sélectionné ne peut pas porter de métadonnées HDR. Choisissez un codec HEVC/AV1 ou activez le tone-mapping HDR → SDR.": {
+    "fra": "Le codec sélectionné ne peut pas porter de métadonnées HDR. Choisissez un codec HEVC/AV1 ou activez le tone-mapping HDR → SDR.",
+    "eng": "The selected codec cannot carry HDR metadata. Choose an HEVC/AV1 codec or enable HDR → SDR tone mapping."
+  },
+  "En copie, le HDR de la source est recopié tel quel.": {
+    "fra": "En copie, le HDR de la source est recopié tel quel.",
+    "eng": "In copy mode, the source HDR is passed through unchanged."
   }
 }

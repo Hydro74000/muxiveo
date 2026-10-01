@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -83,7 +83,7 @@ def test_cli_parser_exposes_expected_subcommands() -> None:
 
 
 def test_cli_tools_exposes_resolved_commands_as_structured_json(capsys) -> None:
-    config = SimpleNamespace(
+    config: Any = SimpleNamespace(
         tool_commands=lambda: {
             "ffmpeg": "/opt/muxiveo/ffmpeg",
             "ffprobe": "/opt/muxiveo/ffprobe",
@@ -91,7 +91,7 @@ def test_cli_tools_exposes_resolved_commands_as_structured_json(capsys) -> None:
         }
     )
 
-    assert cmd_tools(SimpleNamespace(), config, SimpleNamespace()) == 0
+    assert cmd_tools(cast(Any, SimpleNamespace()), config, cast(Any, SimpleNamespace())) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload == {

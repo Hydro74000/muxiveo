@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -24,7 +25,7 @@ def _run(argv: list[str], monkeypatch, info: UpdateInfo | None, config=None) -> 
 
     monkeypatch.setattr(commands, "query_latest_release", _fetch)
     args = build_parser().parse_args(argv)
-    rc = commands.cmd_version(args, config or SimpleNamespace(update_channel="stable"), Logger(fmt=args.log_format))
+    rc = commands.cmd_version(args, cast(Any, config or SimpleNamespace(update_channel="stable")), Logger(fmt=args.log_format))
     return rc, calls
 
 
@@ -61,6 +62,6 @@ def test_version_check_reports_error_reason(monkeypatch, capsys):
 
     monkeypatch.setattr(commands, "query_latest_release", _fail)
     args = build_parser().parse_args(["version", "--check"])
-    rc = commands.cmd_version(args, SimpleNamespace(update_channel="stable"), Logger(fmt="text"))
+    rc = commands.cmd_version(args, cast(Any, SimpleNamespace(update_channel="stable")), Logger(fmt="text"))
     assert rc == EXIT_WORKFLOW
     assert "CERTIFICATE_VERIFY_FAILED" in capsys.readouterr().err

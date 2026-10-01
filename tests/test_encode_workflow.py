@@ -101,7 +101,6 @@ from __future__ import annotations
 # ruff: noqa: E402
 
 import json
-import sys
 import threading
 import time
 from contextlib import ExitStack
@@ -117,19 +116,15 @@ import core.workflows.encode.workflow as encode_workflow_mod
 from core.workflows.encode.runtime import ram_buffer as _ram_buffer_mod
 from core.workflows.encode.domain.codecs import hdr_meta_args as _hdr_meta_args
 
-_app: QCoreApplication | None = None
-
-
 def _get_app() -> QCoreApplication:
-    global _app
-    if _app is None:
-        _app = QCoreApplication.instance() or QCoreApplication(sys.argv)
-    return _app
+    app = QCoreApplication.instance()
+    assert app is not None, "fixture qt_app (conftest) requise"
+    return app
 
 
 @pytest.fixture(autouse=True)
-def qt_app():
-    return _get_app()
+def _ensure_qt_app(qt_app):
+    return qt_app
 
 
 from core.workflows.encode import (
@@ -1473,6 +1468,7 @@ class TestMetadataInjectDoviProfileRouting:
             output=tmp_path / "output.mkv",
             video=_make_video_settings(
                 codec="libx265",
+                inject_hdr_meta=True,
                 master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)",
                 max_cll="1000,400",
             ),
@@ -5776,14 +5772,19 @@ class TestNvenccRuntimeRouting:
         cleanup_paths: list[Path] = []
         captured: dict[str, list[str]] = {}
         remux_calls: list[tuple[list[str], str | None]] = []
+        prep_signals = TaskSignals()
+        progress_values: list[int] = []
+        prep_signals.progress_pct.connect(progress_values.append)
 
-        def _capture_run_cmd(cmd, *, cwd, label, progress_cb=None, signals=None):
+        def _capture_run_cmd(cmd, *, cwd, label, progress_cb=None, progress_pct_cb=None, signals=None):
             _ = cwd
             _ = progress_cb
             _ = signals
             remux_calls.append((list(cmd), label))
             if label == "nvencc":
                 captured["encode"] = list(cmd)
+                assert progress_pct_cb is not None
+                progress_pct_cb(42)
             return "remux-ok"
 
         with patch.object(wf, "_prepare_nvencc_dynamic_hdr_assets", side_effect=AssertionError("plus d'extraction HDR externe attendue")), \
@@ -5791,9 +5792,10 @@ class TestNvenccRuntimeRouting:
             wf._run_nvencc_direct_output(
                 cfg,
                 cleanup_paths,
-                prep_signals=TaskSignals(),
+                prep_signals=prep_signals,
             )
 
+        assert progress_values == [42]
         encode_cmd = captured["encode"]
         assert encode_cmd[0] == "/usr/bin/NVEncC"
         assert encode_cmd[encode_cmd.index("-i") + 1] == str(cfg.source)
@@ -5826,7 +5828,7 @@ class TestNvenccRuntimeRouting:
         cleanup_paths: list[Path] = []
         remux_cmds: list[list[str]] = []
 
-        def _capture_run_cmd(cmd, *, cwd, label, progress_cb=None, signals=None):
+        def _capture_run_cmd(cmd, *, cwd, label, progress_cb=None, progress_pct_cb=None, signals=None):
             _ = cwd
             _ = progress_cb
             _ = signals
@@ -5943,6 +5945,7 @@ class TestNvenccRuntimeRouting:
             tmp_path,
             copy_dv=True,
             copy_hdr10plus=True,
+            inject_hdr_meta=True,
             master_display="UI_MD",
             max_cll="1111,222",
         )
@@ -5950,7 +5953,7 @@ class TestNvenccRuntimeRouting:
         cleanup_paths: list[Path] = []
         captured_encode_cmds: list[list[str]] = []
 
-        def _capture_run_cmd(cmd, *, cwd, label, progress_cb=None, signals=None):
+        def _capture_run_cmd(cmd, *, cwd, label, progress_cb=None, progress_pct_cb=None, signals=None):
             _ = cwd
             _ = progress_cb
             _ = signals
@@ -5997,7 +6000,7 @@ class TestNvenccRuntimeRouting:
         cleanup_paths: list[Path] = []
         captured_encode_cmds: list[list[str]] = []
 
-        def _capture_run_cmd(cmd, *, cwd, label, progress_cb=None, signals=None):
+        def _capture_run_cmd(cmd, *, cwd, label, progress_cb=None, progress_pct_cb=None, signals=None):
             _ = cwd
             _ = progress_cb
             _ = signals
@@ -6051,7 +6054,7 @@ class TestNvenccRuntimeRouting:
         cleanup_paths: list[Path] = []
         captured_encode_cmds: list[list[str]] = []
 
-        def _capture_run_cmd(cmd, *, cwd, label, progress_cb=None, signals=None):
+        def _capture_run_cmd(cmd, *, cwd, label, progress_cb=None, progress_pct_cb=None, signals=None):
             _ = cwd
             _ = progress_cb
             _ = signals
@@ -6080,7 +6083,7 @@ class TestNvenccRuntimeRouting:
         cleanup_paths: list[Path] = []
         cmds_by_label: dict[str, list[list[str]]] = {}
 
-        def _capture_run_cmd(cmd, *, cwd, label, progress_cb=None, signals=None):
+        def _capture_run_cmd(cmd, *, cwd, label, progress_cb=None, progress_pct_cb=None, signals=None):
             _ = cwd
             _ = progress_cb
             _ = signals
@@ -6120,7 +6123,7 @@ class TestNvenccRuntimeRouting:
 
         preview_cmd = wf.build_command_single(cfg)
 
-        def _capture_run_cmd(cmd, *, cwd, label, progress_cb=None, signals=None):
+        def _capture_run_cmd(cmd, *, cwd, label, progress_cb=None, progress_pct_cb=None, signals=None):
             _ = cwd
             _ = progress_cb
             _ = signals

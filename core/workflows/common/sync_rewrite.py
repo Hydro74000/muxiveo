@@ -7,16 +7,22 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, cast
+from typing import TYPE_CHECKING, Callable, Mapping, cast
 
 from core.bluray import append_ffmpeg_input_args, ffprobe_input_args
 from core.subprocess_utils import (
     decode_subprocess_output,
+    kill_process_tree,
+    watch_process_cancellation,
     subprocess_text_kwargs,
     subprocess_windows_no_window_kwargs,
 )
+from core.runner import TaskCancelledError
 from core.subtitle_codec import CONVERT_TO_SRT
 from core.workflows.remux_models import RemuxError
+
+if TYPE_CHECKING:
+    from core.workflows.sync_calibration import SyncCalibration
 
 
 TEXT_SUBTITLE_CODECS: frozenset[str] = frozenset({
@@ -447,7 +453,7 @@ class SyncRewriteService:
         audio_target_codec: str = "",
         audio_target_bitrate_kbps: int | None = None,
         cancel_cb: Callable[[], bool] | None = None,
-        calibration: object = None,
+        calibration: SyncCalibration | dict | None = None,
         crossfade_ms: int = 80,
     ) -> SyncRewritePreparedInput | None:
         from core.workflows.sync_calibration import effective_calibration
@@ -456,7 +462,7 @@ class SyncRewriteService:
         if int(offset_ms or 0) == 0 and calib is None:
             return None
         if cancel_cb is not None and cancel_cb():
-            raise RemuxError("Réécriture sync annulée.")
+            raise TaskCancelledError()
 
         track_type = str(track_type or "").strip().lower()
         codec_key = normalized_rewrite_codec(codec)
@@ -780,7 +786,7 @@ class SyncRewriteService:
         channels: int,
         bitrate_kbps: int | None = None,
         cancel_cb: Callable[[], bool] | None = None,
-        calibration: object = None,
+        calibration: SyncCalibration | None = None,
         crossfade_ms: int = 80,
     ) -> Path:
         destination = self._unique_path(tmp_dir, f"sync_rewrite_{token}.mka")
@@ -965,7 +971,7 @@ class SyncRewriteService:
         tmp_dir: Path,
         token: str,
         cancel_cb: Callable[[], bool] | None = None,
-        calibration: object = None,
+        calibration: SyncCalibration | None = None,
     ) -> Path:
         text_kind, ext, codec_arg = self._subtitle_text_plan(codec_key)
         extracted = self._unique_path(tmp_dir, f"sync_rewrite_{token}_raw{ext}")
@@ -1066,29 +1072,37 @@ class SyncRewriteService:
             assert proc.stdout is not None
             lines: list[str] = []
             buf = b""
-            while chunk := proc.stdout.read(256):
-                if cancel_cb is not None and cancel_cb():
-                    proc.kill()
-                    raise RemuxError("Réécriture sync annulée.")
-                chunk_bytes: bytes
-                if isinstance(chunk, str):
-                    chunk_bytes = chunk.encode()
-                else:
-                    chunk_bytes = cast(bytes, chunk)
-                buf += chunk_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-                *complete, buf = buf.split(b"\n")
-                for raw in complete:
-                    stripped = decode_subprocess_output(raw).rstrip()
-                    if not stripped:
-                        continue
-                    lines.append(stripped)
-                    self._emit_tool_progress(stripped)
-            if buf.strip():
-                stripped = decode_subprocess_output(buf.strip())
-                if stripped:
-                    lines.append(stripped)
-                    self._emit_tool_progress(stripped)
-            proc.wait()
+            try:
+                with watch_process_cancellation(proc, cancel_cb):
+                    while chunk := proc.stdout.read(256):
+                        if cancel_cb is not None and cancel_cb():
+                            raise TaskCancelledError()
+                        chunk_bytes: bytes
+                        if isinstance(chunk, str):
+                            chunk_bytes = chunk.encode()
+                        else:
+                            chunk_bytes = cast(bytes, chunk)
+                        buf += chunk_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+                        *complete, buf = buf.split(b"\n")
+                        for raw in complete:
+                            stripped = decode_subprocess_output(raw).rstrip()
+                            if not stripped:
+                                continue
+                            lines.append(stripped)
+                            self._emit_tool_progress(stripped)
+                    if buf.strip():
+                        stripped = decode_subprocess_output(buf.strip())
+                        if stripped:
+                            lines.append(stripped)
+                            self._emit_tool_progress(stripped)
+                    proc.wait()
+                    if cancel_cb is not None and cancel_cb():
+                        raise TaskCancelledError()
+            except BaseException:
+                # Inclut l'annulation et les erreurs des callbacks de progression.
+                # Tuer avant Popen.__exit__, qui attend sinon indéfiniment.
+                kill_process_tree(proc, timeout=0.2)
+                raise
 
         output = "\n".join(lines[-10000:])
         if proc.returncode != 0 or not destination.exists() or destination.stat().st_size == 0:

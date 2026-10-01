@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import threading
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from PySide6.QtCore import QEventLoop, QTimer, QObject, Signal, QThread
@@ -25,7 +26,8 @@ def test_terminal_delivery_once_in_qt_thread(qt_app, kind, early):
         getattr(signals, kind).emit(*args)
 
     def subscribe():
-        signals.connect_terminal(**{kind: lambda *values: seen.append((values, QThread.currentThread()))})
+        callbacks: dict[str, Any] = {kind: lambda *values: seen.append((values, QThread.currentThread()))}
+        signals.connect_terminal(**callbacks)
 
     if not early:
         subscribe()
@@ -76,8 +78,8 @@ def test_cli_receives_completion_before_run_returns(qt_app, tmp_path, monkeypatc
     timer.start(1000)
     try:
         result = runtime.run_remux_config(
-            SimpleNamespace(), CommonOptions(), Logger(stream=io.StringIO()),
-            SimpleNamespace(output=tmp_path / "out.mkv"),
+            cast(Any, SimpleNamespace()), CommonOptions(), Logger(stream=io.StringIO()),
+            cast(Any, SimpleNamespace(output=tmp_path / "out.mkv")),
         )
     finally:
         timer.stop()
@@ -94,7 +96,7 @@ def test_cli_transmits_sync_preferences(monkeypatch):
         aac_bitrate_per_channel_kbps=80, eac3_bitrate_per_channel_kbps=112,
     )
     monkeypatch.setattr(runtime, "RemuxWorkflow", lambda **kwargs: captured.update(kwargs))
-    runtime.workflow(config, CommonOptions(), Logger())
+    runtime.workflow(cast(Any, config), CommonOptions(), Logger())
     assert captured["sync_rewrite_enabled"] is True
     assert captured["sync_advanced_audio_rewrite_enabled"] is True
     assert captured["aac_bitrate_per_channel_kbps"] == 80

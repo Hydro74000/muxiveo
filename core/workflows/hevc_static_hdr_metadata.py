@@ -16,7 +16,7 @@ _START_CODE_3 = b"\x00\x00\x01"
 
 _VCL_RANGE = range(0, 32)
 _IRAP_TYPES = frozenset({16, 17, 18, 19, 20, 21})
-_PREFIX_BOUNDARY_TYPES = frozenset({32, 33, 34, 35, 39, 62, 63})
+_PREFIX_BOUNDARY_TYPES = frozenset({32, 33, 34, 35, 39})
 _PREFIX_SEI_NAL_TYPE = 39
 
 _MASTERING_DISPLAY_PAYLOAD_TYPE = 137
@@ -52,6 +52,75 @@ class _NalRef:
     first_slice_in_pic: bool
 
 
+def _stream_has_all_requested_sei(
+    data: bytes | mmap.mmap,
+    requested_types: frozenset[int],
+    max_keyframes_to_check: int = 5,
+) -> bool:
+    """Vérifie si les premières unités d'accès cibles contiennent déjà les SEI demandés.
+
+    Retourne True si toutes les AU cibles vérifiées (première AU et keyframes suivantes)
+    contiennent déjà tous les types SEI requis, évitant ainsi une réécriture complète du fichier.
+    """
+    current_au: list[_NalRef] = []
+    access_units = 0
+    checked_targets = 0
+    has_slice = False
+    current_is_keyframe = False
+
+    for nal in _iter_nal_refs(data):
+        is_slice = nal.nal_type in _VCL_RANGE
+        if is_slice and nal.first_slice_in_pic and has_slice:
+            if current_au:
+                is_first_au = access_units == 0
+                is_target = is_first_au or current_is_keyframe
+                access_units += 1
+                if is_target:
+                    present_types = _collect_prefix_sei_payload_types(data, current_au)
+                    if not requested_types.issubset(present_types):
+                        return False
+                    checked_targets += 1
+                    if checked_targets >= max_keyframes_to_check:
+                        return True
+            current_au = []
+            has_slice = False
+            current_is_keyframe = False
+
+        if not is_slice and has_slice and nal.nal_type in _PREFIX_BOUNDARY_TYPES:
+            if current_au:
+                is_first_au = access_units == 0
+                is_target = is_first_au or current_is_keyframe
+                access_units += 1
+                if is_target:
+                    present_types = _collect_prefix_sei_payload_types(data, current_au)
+                    if not requested_types.issubset(present_types):
+                        return False
+                    checked_targets += 1
+                    if checked_targets >= max_keyframes_to_check:
+                        return True
+            current_au = []
+            has_slice = False
+            current_is_keyframe = False
+
+        current_au.append(nal)
+        if is_slice:
+            has_slice = True
+            if nal.nal_type in _IRAP_TYPES:
+                current_is_keyframe = True
+
+    if current_au:
+        is_first_au = access_units == 0
+        is_target = is_first_au or current_is_keyframe
+        access_units += 1
+        if is_target:
+            present_types = _collect_prefix_sei_payload_types(data, current_au)
+            if not requested_types.issubset(present_types):
+                return False
+            checked_targets += 1
+
+    return checked_targets > 0
+
+
 def inject_static_hdr_sei(
     stream: bytes,
     *,
@@ -63,6 +132,8 @@ def inject_static_hdr_sei(
         master_display=master_display,
         max_cll=max_cll,
     )
+    if _stream_has_all_requested_sei(stream, requested_types):
+        return stream, StaticHdrSeiInjectionResult(0, 0, 0, preserved_access_units=1)
     writer = BytesIO()
     result = _rewrite_stream(
         stream,
@@ -87,24 +158,35 @@ def inject_static_hdr_sei_file(
         master_display=master_display,
         max_cll=max_cll,
     )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     file_size = input_path.stat().st_size
     if file_size == 0:
-        shutil.copyfile(input_path, output_path)
         return StaticHdrSeiInjectionResult(0, 0, 0, 0)
 
-    with input_path.open("rb") as src, output_path.open("wb") as dst:
+    # Pré-vérification précoce (early-exit) : si le flux d'entrée contient déjà
+    # l'ensemble des SEI demandés sur ses keyframes cibles, on évite d'ouvrir
+    # ou d'écrire des dizaines de Go sur le disque pour rien.
+    with input_path.open("rb") as src:
         with mmap.mmap(src.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-            result = _rewrite_stream(
-                mm,
-                dst,
-                sei_nal=sei_nal,
-                requested_types=requested_types,
-            )
+            if _stream_has_all_requested_sei(mm, requested_types):
+                return StaticHdrSeiInjectionResult(
+                    access_units=0,
+                    targeted_access_units=0,
+                    injected_access_units=0,
+                    preserved_access_units=1,
+                )
+
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with output_path.open("wb") as dst:
+                result = _rewrite_stream(
+                    mm,
+                    dst,
+                    sei_nal=sei_nal,
+                    requested_types=requested_types,
+                )
 
     if not result.applied:
-        shutil.copyfile(input_path, output_path)
+        output_path.unlink(missing_ok=True)
     return result
 
 

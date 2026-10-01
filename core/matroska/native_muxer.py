@@ -94,6 +94,7 @@ from .ids import (
     FLAG_LACING_ID,
     INFO_ID,
     LANGUAGE_ID,
+    MAX_BLOCK_ADDITION_ID_ID,
     MUXING_APP_ID,
     PIXEL_HEIGHT_ID,
     PIXEL_WIDTH_ID,
@@ -126,7 +127,8 @@ from .timestamps import (
 
 # --- FourCCs DoVi ----------------------------------------------------------
 
-_FOURCC_DVCC = 0x64766343  # "dvcC"
+_FOURCC_DVCC = 0x64766343  # "dvcC" (profiles <= 7)
+_FOURCC_DVVC = 0x64767643  # "dvvC" (profiles > 7, ex: profile 8)
 
 # --- Réglages muxer ---------------------------------------------------------
 
@@ -412,10 +414,16 @@ def _build_dovi_block_addition_mapping(
     id_value: int = 1,
     id_name: str = "Dolby Vision configuration",
 ) -> bytes:
+    if getattr(record, "fourcc", None) == "dvcC":
+        fourcc = _FOURCC_DVCC
+    elif getattr(record, "fourcc", None) == "dvvC":
+        fourcc = _FOURCC_DVVC
+    else:
+        fourcc = _FOURCC_DVVC if record.profile > 7 else _FOURCC_DVCC
     children = b"".join([
         uint_element(BLOCK_ADD_ID_VALUE_ID, id_value),
         string_element(BLOCK_ADD_ID_NAME_ID, id_name),
-        uint_element(BLOCK_ADD_ID_TYPE_ID, _FOURCC_DVCC),
+        uint_element(BLOCK_ADD_ID_TYPE_ID, fourcc),
         binary_element(BLOCK_ADD_ID_EXTRA_DATA_ID, record.to_bytes()),
     ])
     return element(BLOCK_ADDITION_MAPPING_ID, children)
@@ -463,6 +471,7 @@ def _build_video_track_entry(
         video_master,
     ])
     if dovi_record is not None:
+        children += uint_element(MAX_BLOCK_ADDITION_ID_ID, 1)
         children += _build_dovi_block_addition_mapping(dovi_record)
     return element(TRACK_ENTRY_ID, children)
 

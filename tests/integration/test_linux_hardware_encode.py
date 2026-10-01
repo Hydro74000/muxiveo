@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import cast
 import shutil
 import subprocess
 import sys
@@ -254,7 +255,8 @@ def test_gpu_cancel_active_encoder(qt_app, source, tmp_path, hardware, codec):
         with signals._procs_lock:
             procs = list(signals._active_procs)
         active = [p for p in procs if p.poll() is None and (
-            codec in p.args or (codec.startswith("nvencc") and "nvencc" in Path(p.args[0]).name.lower())
+            codec in cast(list[str], p.args)
+            or (codec.startswith("nvencc") and "nvencc" in Path(cast(list[str], p.args)[0]).name.lower())
         )]
         if active:
             break

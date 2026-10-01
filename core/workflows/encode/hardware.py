@@ -195,26 +195,23 @@ class HardwareEncoderDetector:
         pas les encodeurs HW (typique dans un AppImage avec ffmpeg statique).
         Ce chemin doit être utilisé pour l'encodage HW effectif.
 
-        Si ``nvencc_bin`` est fourni *et* que NVENC ffmpeg est disponible, on
-        ajoute les codecs NVEncC supportés par le GPU (parsing
-        ``NVEncC --check-features``). NVEncC n'est jamais exposé sans NVENC.
+        Si ``nvencc_bin`` est fourni, on ajoute les codecs NVEncC supportés par
+        le GPU (``NVEncC --check-hw``), indépendamment de NVENC ffmpeg : NVEncC
+        négocie sa propre API et fonctionne même si le ffmpeg fourni exige un
+        pilote plus récent (le décodage/mux ffmpeg n'utilise pas NVENC).
         """
         ff, compiled = self._compiled_hw(ffmpeg_bin)
-        if not compiled:
-            return set(), ffmpeg_bin
-
-        resolved = self._resolve_ffmpeg(ff)
         available: set[str] = set()
-        nvenc_compiled = compiled & _NVENC_CODECS
-        nvenc_available: set[str] = set()
+        if compiled:
+            resolved = self._resolve_ffmpeg(ff)
+            nvenc_compiled = compiled & _NVENC_CODECS
+            if nvenc_compiled:
+                available |= self._detect_nvenc(resolved, nvenc_compiled)
+            available |= self._probe_codecs(resolved, compiled - _NVENC_CODECS)
+        else:
+            ff = ffmpeg_bin
 
-        if nvenc_compiled:
-            nvenc_available = self._detect_nvenc(resolved, nvenc_compiled)
-            available |= nvenc_available
-
-        available |= self._probe_codecs(resolved, compiled - _NVENC_CODECS)
-
-        if nvencc_bin and nvenc_available:
+        if nvencc_bin:
             _, nvencc_codecs = detect_nvencc_available(nvencc_bin)
             available |= nvencc_codecs & _NVENCC_CODECS
 

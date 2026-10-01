@@ -15,6 +15,7 @@ from core.matroska.reader import MatroskaBlock, MatroskaReader, MatroskaTrack
 from core.matroska.contract import ExpectedMatroskaTrack, MatroskaOutputContract
 from core.matroska.validation import MatroskaPacketValidation, validate_matroska_output
 from core.matroska.writer import (
+    MatroskaWriteProgress,
     MatroskaWriter,
     build_track_statistics_tags_element,
     rewrite_tag_target_uids,
@@ -323,4 +324,38 @@ def test_subtitle_gaps_do_not_inflate_segment_duration(tmp_path: Path) -> None:
     assert duration_ns is not None
     assert duration_ns <= 1_040_000_000
     assert summary_holder
+
+
+def test_writer_progress_reports_percent(tmp_path: Path) -> None:
+    output = tmp_path / "progress.mkv"
+    video = source_track(1, 101, "V_MPEGH/ISO/HEVC", 1)
+    tracks = (MatroskaMuxTrack(Path("v.mkv"), video, 1, 101),)
+    packets = [
+        MatroskaMuxPacket(1, MatroskaBlock(1, t, 0x80, b"frame", duration_ms=40))
+        for t in range(0, 400, 40)
+    ]
+    plan = MatroskaMuxPlan(
+        output, tracks, tuple(packets),
+        duration_ms=400,
+        total_packets=len(packets),
+    )
+    progress_events: list[MatroskaWriteProgress] = []
+    MatroskaWriter().write(
+        plan,
+        progress_cb=progress_events.append,
+    )
+
+    assert progress_events
+    stages = [p.stage for p in progress_events]
+    assert "clusters" in stages
+    assert "commit" in stages
+
+    commit_event = next(p for p in progress_events if p.stage == "commit")
+    assert commit_event.percent == 100
+    assert commit_event.total_packets == len(packets)
+
+    for p in progress_events:
+        if p.percent is not None:
+            assert 0 <= p.percent <= 100
+
 

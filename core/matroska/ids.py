@@ -138,6 +138,7 @@ CHANNEL_POSITIONS_ID = _hex_to_bytes("0x7D7B")
 BIT_DEPTH_ID = _hex_to_bytes("0x6264")
 
 # BlockAdditionMapping (DV signal)
+MAX_BLOCK_ADDITION_ID_ID = _hex_to_bytes("0x55EE")
 BLOCK_ADDITION_MAPPING_ID = _hex_to_bytes("0x41E4")
 BLOCK_ADD_ID_VALUE_ID = _hex_to_bytes("0x41F0")
 BLOCK_ADD_ID_NAME_ID = _hex_to_bytes("0x41A4")
@@ -280,6 +281,7 @@ __all__ = [
     "LANGUAGE_ID",
     "MUXING_APP_ID",
     "MASTERING_METADATA_ID", "MAX_CLL_ID", "MAX_FALL_ID",
+    "MAX_BLOCK_ADDITION_ID_ID",
     "NAME_ID",
     "PIXEL_HEIGHT_ID",
     "PIXEL_WIDTH_ID",

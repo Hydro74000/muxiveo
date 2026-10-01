@@ -488,6 +488,8 @@ class MatroskaWriteProgress:
     packets_written: int
     bytes_written: int
     candidate: Path
+    total_packets: int = 0
+    percent: int | None = None
 
 
 class MatroskaWriter:
@@ -513,11 +515,24 @@ class MatroskaWriter:
 
         def _notify(stage: str, bytes_written: int) -> None:
             if progress_cb is not None:
+                percent: int | None = None
+                if stage == "clusters":
+                    if plan.total_packets > 0:
+                        percent = min(99, max(0, int(packets_written * 100 / plan.total_packets)))
+                    elif duration_ns > 0 and observed_end_ns > 0:
+                        percent = min(99, max(0, int(observed_end_ns * 100 / duration_ns)))
+                elif stage in ("cues", "validation"):
+                    percent = 99
+                elif stage == "commit":
+                    percent = 100
+
                 progress_cb(MatroskaWriteProgress(
                     stage=stage,
                     packets_written=packets_written,
                     bytes_written=bytes_written,
                     candidate=partial,
+                    total_packets=plan.total_packets,
+                    percent=percent,
                 ))
         if isinstance(plan.packets, (tuple, list)):
             packets: Iterable[MatroskaMuxPacket] = _interleave_packets(tuple(plan.packets))

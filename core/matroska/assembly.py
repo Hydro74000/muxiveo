@@ -269,7 +269,7 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
     timestamp_scale_ns = timestamp_scale_ns or 1_000_000
 
     output_tracks: list[MatroskaMuxTrack] = []
-    statistics_sources: list[tuple[int, Path, int, int, int]] = []
+    statistics_sources: list[tuple[int, Path, int, int, int, int]] = []
     track_uid_maps: dict[Path, dict[int, int]] = {}
     # artefact → numéro de piste source → [(piste sortie, offset ms)].
     packet_routes: dict[Path, dict[int, list[tuple[int, int]]]] = {}
@@ -477,23 +477,23 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
                 shifted_timestamp_ns = timestamp_ns + offset_ns
                 if shifted_timestamp_ns < 0:
                     continue
-                item = statistics[output_uid]
-                item["frame_count"] += 1
-                item["payload_bytes"] += block.payload_bytes if block.payload_bytes else len(block.payload)
-                previous_timestamp_ns = item["last_timestamp_ns"]
+                stats = statistics[output_uid]
+                stats["frame_count"] += 1
+                stats["payload_bytes"] += block.payload_bytes if block.payload_bytes else len(block.payload)
+                previous_timestamp_ns = stats["last_timestamp_ns"]
                 if shifted_timestamp_ns > previous_timestamp_ns >= 0:
-                    item["last_delta_ns"] = shifted_timestamp_ns - previous_timestamp_ns
-                item["last_timestamp_ns"] = shifted_timestamp_ns
+                    stats["last_delta_ns"] = shifted_timestamp_ns - previous_timestamp_ns
+                stats["last_timestamp_ns"] = shifted_timestamp_ns
                 duration_ns = explicit_duration_ns
                 if duration_ns is None and default_duration_ns:
                     duration_ns = default_duration_ns * max(1, block.lace_count)
                 if duration_ns is None:
                     if track_type in (1, 2):
-                        duration_ns = min(item["last_delta_ns"], 1_000_000_000)
+                        duration_ns = min(stats["last_delta_ns"], 1_000_000_000)
                     else:
                         duration_ns = 0
-                item["duration_ns"] = max(
-                    item["duration_ns"], shifted_timestamp_ns + duration_ns,
+                stats["duration_ns"] = max(
+                    stats["duration_ns"], shifted_timestamp_ns + duration_ns,
                 )
     # La date de génération des statistiques varie à chaque muxage. Elle ne
     # doit pas rendre le SegmentUID instable pour un plan sémantiquement
@@ -529,9 +529,16 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
         opaque_digest,
         timestamp_scale_ns,
     )
+    total_packets = sum(v["frame_count"] for v in statistics.values())
+    total_payload_bytes = sum(v["payload_bytes"] for v in statistics.values())
+    max_duration_ns = max((v["duration_ns"] for v in statistics.values()), default=0)
     return MatroskaMuxPlan(
-        plan.output, tuple(output_tracks), packet_stream, duration_ms=0,
-        duration_ns=0, timestamp_scale_ns=timestamp_scale_ns,
+        plan.output, tuple(output_tracks), packet_stream,
+        duration_ms=round(max_duration_ns / 1_000_000),
+        duration_ns=max_duration_ns,
+        total_packets=total_packets,
+        total_payload_bytes=total_payload_bytes,
+        timestamp_scale_ns=timestamp_scale_ns,
         segment_uid=segment_uid,
         muxing_app=f"Muxiveo {APP_VERSION_LABEL.removeprefix('v')}",
         writing_app=plan.writing_app or WRITING_APPLICATION_TAG,

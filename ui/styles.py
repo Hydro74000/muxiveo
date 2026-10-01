@@ -8,6 +8,8 @@ de cycle d'imports. Utilise ``ui.design_system`` pour les couleurs et le scale.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon, QPainter, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QWidget
 
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
@@ -25,6 +27,30 @@ def _card(parent: QWidget | None = None) -> QWidget:
     w.setStyleSheet(f"QWidget{{background:{_C.BG_CARD};border:1px solid {_C.BORDER};"
                     f"border-radius:6px;}}")
     return w
+
+
+def _bolt_icon(color: str | None = None, size: int = 14) -> QIcon:
+    """Icône éclair (encodeur matériel / action rapide).
+
+    Dessinée en SVG plutôt que via le glyphe emoji ⚡, qui n'est pas rendu
+    quand aucune police emoji compatible n'est disponible (AppImage, etc.).
+    """
+    color = color or _C.WARN
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
+        f' fill="{color}" stroke="{color}" stroke-width="1.5"'
+        ' stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>'
+        '</svg>'
+    )
+    renderer = QSvgRenderer(svg.encode())
+    icon_size = _scale(size)
+    pix = QPixmap(icon_size, icon_size)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pix)
 
 
 def _primary_button(text: str) -> QPushButton:

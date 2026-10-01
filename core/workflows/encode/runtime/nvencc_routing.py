@@ -27,6 +27,11 @@ class NvenccInputRouting:
     dovi_rpu_prm: str | None = None
     rebased_to_source: bool = False
     forced_reader: str | None = None
+    source_fps: str | None = None
+    vpp_pad: tuple[int, int, int, int] | None = None
+    needs_rpu_alignment: bool = False
+    pad_offsets: tuple[int, int, int, int] | None = None
+    crop_offsets: tuple[int, int, int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -40,6 +45,8 @@ class NvenccRoutingCallbacks:
     nvencc_input_fps_hint: Callable[[Path, Path | str | None], str | None]
     nvencc_input_avsync_mode: Callable[[Path, Path | str | None], str | None]
     nvencc_dovi_rpu_prm: Callable[[VideoEncodeSettings], str | None]
+    source_video_dimensions: Callable[[Path], tuple[int, int]] | None = None
+    probe_dovi_l5_offsets: Callable[[Path], tuple[int, int, int, int] | None] | None = None
 
 
 def normalize_frame_rate_expr(value: object) -> str | None:
@@ -194,16 +201,24 @@ def nvencc_dovi_rpu_prm(video: VideoEncodeSettings) -> str | None:
     if not getattr(video, "copy_dv", False):
         return None
     crop = nvencc_crop_offsets_from_extra_params(video.extra_params)
-    if crop is None:
-        return None
-    if any(component != 0 for component in crop):
+    if crop is not None and any(component != 0 for component in crop):
         return "crop=true"
+    crop_obj = getattr(video, "crop", None)
+    if crop_obj is not None and getattr(crop_obj, "is_active", lambda: False)():
+        if not getattr(crop_obj, "auto", False) and getattr(crop_obj, "unit", "") != "percent":
+            left = max(0, int(getattr(crop_obj, "left", 0) or 0))
+            top = max(0, int(getattr(crop_obj, "top", 0) or 0))
+            right = max(0, int(getattr(crop_obj, "right", 0) or 0))
+            bottom = max(0, int(getattr(crop_obj, "bottom", 0) or 0))
+            if any(c != 0 for c in (left, top, right, bottom)):
+                return "crop=true"
     return None
 
 
 def source_video_dimensions(
     source: Path,
     *,
+    stream_index: int | None = None,
     ffprobe_streams_payload: Callable[[Path], dict[str, object] | None],
     ffprobe_stream_dicts: Callable[[dict[str, object]], list[dict[str, object]]],
 ) -> tuple[int, int]:
@@ -212,6 +227,8 @@ def source_video_dimensions(
         return (0, 0)
     for stream in ffprobe_stream_dicts(payload):
         if stream.get("codec_type") != "video":
+            continue
+        if stream_index is not None and stream.get("index") != stream_index:
             continue
         try:
             width = stream.get("width")
@@ -291,7 +308,55 @@ class NvenccInputRouter:
         if video.copy_dv and str(video.dovi_profile or "").strip().lower() in {"", "0", "copy"}:
             routed_video = replace(video, dovi_profile="8.1")
 
+        vpp_pad = None
+        needs_rpu_alignment = False
+        pad_offsets = None
+        crop_offsets = None
+        dovi_rpu_prm = self._cb.nvencc_dovi_rpu_prm(routed_video)
+
+        if video.copy_dv and video.codec == "nvencc_hevc":
+            from core.workflows.encode.runtime.dovi_geometry import (
+                align_nvencc_dovi_geometry, nvencc_dovi_resize_changes_scale,
+            )
+
+            dims = (0, 0)
+            if self._cb.source_video_dimensions is not None:
+                try:
+                    dims = self._cb.source_video_dimensions(Path(input_path))
+                    if dims == (0, 0) and Path(input_path) != Path(config.source):
+                        dims = self._cb.source_video_dimensions(Path(config.source))
+                except Exception:
+                    dims = (0, 0)
+
+            l5 = None
+            resamples = nvencc_dovi_resize_changes_scale(routed_video, dims)
+            if not resamples and self._cb.probe_dovi_l5_offsets is not None:
+                try:
+                    l5 = self._cb.probe_dovi_l5_offsets(Path(input_path))
+                    if l5 is None and Path(input_path) != Path(config.source):
+                        l5 = self._cb.probe_dovi_l5_offsets(Path(config.source))
+                except Exception:
+                    l5 = None
+
+            if resamples:
+                routed_video = replace(routed_video, copy_dv=False, inject_hdr_meta=True)
+                dovi_rpu_prm = None
+            elif dims != (0, 0):
+                geom = align_nvencc_dovi_geometry(routed_video, dims, l5_offsets=l5)
+                routed_video = geom.video
+                vpp_pad = geom.vpp_pad
+                dovi_rpu_prm = geom.dovi_rpu_prm
+                needs_rpu_alignment = geom.needs_rpu_alignment
+                pad_offsets = geom.pad_offsets
+                crop_offsets = geom.crop_offsets
+
         source_for_timing = Path(input_path)
+        source_fps: str | None = None
+        try:
+            source_fps = self._cb.source_video_fps_expr(source_for_timing)
+        except Exception:
+            source_fps = None
+
         return NvenccInputRouting(
             input_path=Path(input_path),
             stream_index=int(stream_index),
@@ -303,7 +368,12 @@ class NvenccInputRouter:
                 else self._cb.nvencc_input_fps_hint(source_for_timing, input_path)
             ),
             input_avsync=self._cb.nvencc_input_avsync_mode(source_for_timing, input_path),
-            dovi_rpu_prm=self._cb.nvencc_dovi_rpu_prm(routed_video),
+            dovi_rpu_prm=dovi_rpu_prm,
             rebased_to_source=rebased_to_source,
             forced_reader=forced_reader,
+            source_fps=source_fps,
+            vpp_pad=vpp_pad,
+            needs_rpu_alignment=needs_rpu_alignment,
+            pad_offsets=pad_offsets,
+            crop_offsets=crop_offsets,
         )

@@ -54,6 +54,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -381,6 +382,7 @@ DATA_FILES: list[tuple[str, str]] = [
     ("locales.json", "."),
     ("requirements.txt", "."),
     ("README.md", "."),
+    ("ui/assets", "ui/assets"),
 ]
 
 
@@ -2718,6 +2720,231 @@ def _build_pyinstaller_wine() -> Path:
     return _WIN_BUNDLE
 
 
+# ── Outils externes Windows (--allinc) ──────────────────────────────────────────
+
+def _step(msg: str) -> None:
+    print(f"  \033[35m➜\033[0m  {msg}")
+
+
+def _download_file(url: str, dest: Path, timeout: int = 120) -> None:
+    """Télécharge une URL vers dest avec progression."""
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("Le téléchargement nécessite une URL HTTP(S) avec un hôte.")
+    _info(f"Téléchargement : {url}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    headers = {"User-Agent": "Muxiveo-builder"}
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token and parsed.scheme == "https" and parsed.hostname in {"github.com", "api.github.com"}:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310  # schéma HTTP(S) et hôte vérifiés
+            total = int(resp.headers.get("Content-Length", 0))
+            downloaded = 0
+            chunk = 65536
+            with open(dest, "wb") as f:
+                while True:
+                    buf = resp.read(chunk)
+                    if not buf:
+                        break
+                    f.write(buf)
+                    downloaded += len(buf)
+                    if total:
+                        pct = downloaded * 100 // total
+                        mb = downloaded / 1_048_576
+                        print(f"\r    {pct:3d}%  {mb:.1f} Mo", end="", flush=True)
+            if total:
+                print()
+    except TimeoutError as e:
+        raise RuntimeError(f"Timeout ({timeout}s) lors du téléchargement de {url}") from e
+
+
+def _gh_latest_asset_url(repo: str, *patterns: str) -> str:
+    """Retourne l'URL du premier asset GitHub dont le nom contient tous les patterns."""
+    url = f"https://api.github.com/repos/{repo}/releases/latest"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "Muxiveo-builder",
+    }
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req) as resp:  # nosec B310  # origine HTTPS api.github.com constante
+        data = json.loads(resp.read().decode("utf-8"))
+    for asset in data.get("assets", []):
+        name: str = asset.get("name", "")
+        if all(p in name for p in patterns):
+            return asset["browser_download_url"]
+    raise RuntimeError(f"Aucun asset correspondant à {patterns} dans {repo}")
+
+
+def _mediainfo_latest_windows_version() -> str:
+    """Retourne la dernière version de MediaInfo CLI Windows depuis mediaarea.net."""
+    base = "https://mediaarea.net/download/binary/mediainfo/"
+    req = urllib.request.Request(base, headers={"User-Agent": "Muxiveo-builder"})
+    with urllib.request.urlopen(req) as resp:  # nosec B310  # URL HTTPS mediaarea.net constante
+        html = resp.read().decode("utf-8", errors="replace")
+    versions = re.findall(r'href="(\d{2}\.\d{2})/"', html)
+    if not versions:
+        raise RuntimeError(f"Aucune version mediainfo trouvée sur {base}")
+    versions.sort(key=lambda v: tuple(int(x) for x in v.split(".")), reverse=True)
+    return versions[0]
+
+
+def _dl_windows_ffmpeg(tools_dir: Path) -> None:
+    if (tools_dir / "ffmpeg.exe").is_file() and (tools_dir / "ffprobe.exe").is_file():
+        _ok("ffmpeg.exe et ffprobe.exe déjà présents dans tools/")
+        return
+    _step("Téléchargement FFmpeg + FFprobe Windows (BtbN master GPL static)")
+    url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+    with tempfile.TemporaryDirectory() as tmp:
+        archive = Path(tmp) / "ffmpeg.zip"
+        try:
+            _download_file(url, archive, timeout=180)
+        except Exception as exc:
+            _warn(f"Échec BtbN ({exc}), tentative fallback Gyan...")
+            url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+            _download_file(url, archive, timeout=180)
+        with zipfile.ZipFile(archive) as zf:
+            for name in zf.namelist():
+                base_name = Path(name).name.lower()
+                if base_name in ("ffmpeg.exe", "ffprobe.exe"):
+                    data = zf.read(name)
+                    dest = tools_dir / Path(name).name
+                    dest.write_bytes(data)
+    _ok("ffmpeg.exe et ffprobe.exe installés dans tools/")
+
+
+def _dl_windows_mediainfo(tools_dir: Path) -> None:
+    if (tools_dir / "MediaInfo.exe").is_file() or (tools_dir / "mediainfo.exe").is_file():
+        _ok("MediaInfo.exe déjà présent dans tools/")
+        return
+    _step("Téléchargement MediaInfo CLI Windows (MediaArea)")
+    ver = _mediainfo_latest_windows_version()
+    url = f"https://mediaarea.net/download/binary/mediainfo/{ver}/MediaInfo_CLI_{ver}_Windows_x64.zip"
+    with tempfile.TemporaryDirectory() as tmp:
+        archive = Path(tmp) / "mediainfo.zip"
+        _download_file(url, archive, timeout=60)
+        with zipfile.ZipFile(archive) as zf:
+            for name in zf.namelist():
+                base_name = Path(name).name
+                if base_name in ("MediaInfo.exe", "LIBCURL.DLL", "libcurl.dll"):
+                    data = zf.read(name)
+                    (tools_dir / base_name).write_bytes(data)
+    _ok("MediaInfo.exe installé dans tools/")
+
+
+def _dl_windows_dovi_tool(tools_dir: Path) -> None:
+    if (tools_dir / "dovi_tool.exe").is_file():
+        _ok("dovi_tool.exe déjà présent dans tools/")
+        return
+    _step("Téléchargement dovi_tool Windows (quietvoid/dovi_tool)")
+    url = _gh_latest_asset_url("quietvoid/dovi_tool", "x86_64-pc-windows-msvc.zip")
+    with tempfile.TemporaryDirectory() as tmp:
+        archive = Path(tmp) / "dovi_tool.zip"
+        _download_file(url, archive, timeout=60)
+        with zipfile.ZipFile(archive) as zf:
+            for name in zf.namelist():
+                if Path(name).name.lower() == "dovi_tool.exe":
+                    (tools_dir / "dovi_tool.exe").write_bytes(zf.read(name))
+    _ok("dovi_tool.exe installé dans tools/")
+
+
+def _dl_windows_hdr10plus_tool(tools_dir: Path) -> None:
+    if (tools_dir / "hdr10plus_tool.exe").is_file():
+        _ok("hdr10plus_tool.exe déjà présent dans tools/")
+        return
+    _step("Téléchargement hdr10plus_tool Windows (quietvoid/hdr10plus_tool)")
+    url = _gh_latest_asset_url("quietvoid/hdr10plus_tool", "x86_64-pc-windows-msvc.zip")
+    with tempfile.TemporaryDirectory() as tmp:
+        archive = Path(tmp) / "hdr10plus_tool.zip"
+        _download_file(url, archive, timeout=60)
+        with zipfile.ZipFile(archive) as zf:
+            for name in zf.namelist():
+                if Path(name).name.lower() == "hdr10plus_tool.exe":
+                    (tools_dir / "hdr10plus_tool.exe").write_bytes(zf.read(name))
+    _ok("hdr10plus_tool.exe installé dans tools/")
+
+
+def _dl_windows_nvencc(tools_dir: Path) -> None:
+    if (tools_dir / "NVEncC64.exe").is_file():
+        _ok("NVEncC64.exe déjà présent dans tools/")
+        return
+    _step("Téléchargement NVEncC64 Windows (rigaya/NVEnc)")
+    url = _gh_latest_asset_url("rigaya/NVEnc", "Aviutl_NVEnc_", ".zip")
+    with tempfile.TemporaryDirectory() as tmp:
+        archive = Path(tmp) / "nvencc.zip"
+        _download_file(url, archive, timeout=90)
+        with zipfile.ZipFile(archive) as zf:
+            candidates = [n for n in zf.namelist() if Path(n).name.lower() == "nvencc64.exe"]
+            if not candidates:
+                raise RuntimeError("NVEncC64.exe introuvable dans l'archive NVEnc")
+            base_dir_in_zip = Path(candidates[0]).parent.as_posix()
+            prefix = base_dir_in_zip + "/" if not base_dir_in_zip.endswith("/") else base_dir_in_zip
+            for name in zf.namelist():
+                if name.startswith(prefix) and not name.endswith("/"):
+                    filename = Path(name).name
+                    (tools_dir / filename).write_bytes(zf.read(name))
+    _ok("NVEncC64.exe et dépendances installés dans tools/")
+
+
+def bundle_windows_licenses(bundle_dir: Path) -> None:
+    """Copie LICENSE, NOTICE, SOURCES.md et le dossier LICENSES/ dans le bundle Windows."""
+    for fname in ("LICENSE", "NOTICE", "SOURCES.md"):
+        src = ROOT / fname
+        if src.is_file():
+            shutil.copy2(src, bundle_dir / fname)
+            if not fname.endswith(".txt") and not fname.endswith(".md"):
+                shutil.copy2(src, bundle_dir / f"{fname}.txt")
+
+    licenses_src = ROOT / "LICENSES"
+    if licenses_src.is_dir():
+        licenses_dest = bundle_dir / "LICENSES"
+        if licenses_dest.exists():
+            shutil.rmtree(licenses_dest)
+        shutil.copytree(licenses_src, licenses_dest)
+    _ok(f"Fichiers de licence embarqués dans {bundle_dir}")
+
+
+def bundle_windows_tools(bundle_dir: Path) -> Path:
+    """Télécharge et embarque tous les outils externes pour Windows dans bundle_dir/tools."""
+    _title("Embarquement des outils externes Windows (--allinc)")
+    tools_dir = bundle_dir / "tools"
+    tools_dir.mkdir(parents=True, exist_ok=True)
+
+    _dl_windows_ffmpeg(tools_dir)
+    _dl_windows_mediainfo(tools_dir)
+    _dl_windows_dovi_tool(tools_dir)
+    _dl_windows_hdr10plus_tool(tools_dir)
+    _dl_windows_nvencc(tools_dir)
+    bundle_windows_licenses(bundle_dir)
+
+    # Pose le marqueur _ALLINC à côté de l'exécutable
+    (bundle_dir / "_ALLINC").touch()
+    _ok(f"Tous les outils Windows embarqués dans {tools_dir} (mode AllInc activé)")
+    return tools_dir
+
+
+def _build_windows_portable_zip(bundle_dir: Path, version_tag: str | None = None) -> Path:
+    """Génère une archive ZIP portable contenant l'application complète sans installation."""
+    _title("Étape ZIP — Application Portable Windows All-in-One")
+    version = _normalize_version_tag(version_tag)
+    output = _versioned_output_path(DIST_RELEASES / f"{APP_NAME}-Windows-x64-allinc.zip", version)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    _info(f"Création de l'archive portable : {output}")
+
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+        for file_path in sorted(bundle_dir.rglob("*")):
+            if file_path.is_file():
+                arcname = Path(APP_NAME) / file_path.relative_to(bundle_dir)
+                zf.write(file_path, arcname=str(arcname))
+
+    _ok(f"Application portable : {output}")
+    return output
+
+
 # ── Script NSIS ────────────────────────────────────────────────────────────────
 
 _NSIS_TEMPLATE = r"""\
@@ -2815,7 +3042,9 @@ def _build_nsis_installer(bundle_dir: Path, version_tag: str | None = None) -> P
     """Génère le script NSIS et invoque makensis pour produire l'installateur."""
     _title("Étape NSIS — Installateur Windows")
 
-    output = _versioned_output_path(ROOT / "Muxiveo-Setup.exe", version_tag)
+    is_allinc = (bundle_dir / "_ALLINC").exists()
+    base_name = f"{APP_NAME}-Setup-AllInc.exe" if is_allinc else f"{APP_NAME}-Setup.exe"
+    output = _versioned_output_path(ROOT / base_name, version_tag)
     nsi    = ROOT / "Muxiveo.nsi"
     win_icon = _resolve_windows_icon_ico()
     icon_block = ""
@@ -3073,7 +3302,13 @@ def build_macos(dmg: bool, dest: str | None = None, version_tag: str | None = No
 """)
 
 
-def build_windows(skip_wine: bool, dest: str | None = None, version_tag: str | None = None) -> None:
+def build_windows(
+    skip_wine: bool,
+    dest: str | None = None,
+    version_tag: str | None = None,
+    allinc: bool = False,
+    portable: bool = False,
+) -> None:
     """Orchestre le build Windows cross depuis Linux."""
     _title("Build Windows (Wine + PyInstaller + NSIS)")
 
@@ -3089,17 +3324,38 @@ def build_windows(skip_wine: bool, dest: str | None = None, version_tag: str | N
         _ensure_wine_deps()
         bundle_dir = _build_pyinstaller_wine()
 
+    bundle_windows_licenses(bundle_dir)
+
     installer = _build_nsis_installer(bundle_dir, version_tag=version_tag)
-    final_installer = _copy_final_file_if_requested(installer, dest, version_tag=version_tag)
+    final_std = _copy_final_file_if_requested(installer, dest, version_tag=version_tag)
+
+    final_allinc = None
+    final_portable = None
+
+    if allinc:
+        bundle_windows_tools(bundle_dir)
+        allinc_installer = _build_nsis_installer(bundle_dir, version_tag=version_tag)
+        final_allinc = _copy_final_file_if_requested(allinc_installer, dest, version_tag=version_tag)
+
+    if portable or allinc:
+        if not (bundle_dir / "_ALLINC").exists():
+            bundle_windows_tools(bundle_dir)
+        portable_zip = _build_windows_portable_zip(bundle_dir, version_tag=version_tag)
+        if dest:
+            final_portable = _copy_final_file_if_requested(portable_zip, dest, version_tag=version_tag)
 
     _title("Résultat")
-    _ok(f"Installateur Windows : {final_installer}")
-    print(f"""
-  Distribuer :
-    {final_installer.name}
-  Au premier lancement (sans config.ini dans %APPDATA%\\muxiveo),
-  le setup s'exécute pour installer les outils externes.
-""")
+    _ok(f"Installateur Standard : {final_std}")
+    if final_allinc:
+        _ok(f"Installateur AllInc   : {final_allinc}")
+    if final_portable:
+        _ok(f"Archive Portable      : {final_portable}")
+    msg = f"\n  Distribuer :\n    {final_std.name} (standard, outils téléchargés au 1er lancement)\n"
+    if final_allinc:
+        msg += f"    {final_allinc.name} (AllInc avec ffmpeg, mediainfo, dovi_tool, hdr10plus_tool, nvencc embarqués)\n"
+    if final_portable:
+        msg += f"    {final_portable.name} (archive portable sans installation)\n"
+    print(msg)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3223,7 +3479,16 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--allinc",
         action="store_true",
-        help="Délègue à package_appimage.py --allinc (AppImage avec tous les outils embarqués).",
+        help=(
+            "Embarque tous les outils externes dans le paquet final. "
+            "Sur Linux : AppImage all-inclusive (délègue à package_appimage.py --allinc). "
+            "Sur Windows (ou --windows) : télécharge et embarque ffmpeg, mediainfo, dovi_tool, hdr10plus_tool, nvencc."
+        ),
+    )
+    p.add_argument(
+        "--portable",
+        action="store_true",
+        help="Sur Windows : produit une archive ZIP portable contenant l'application complète sans installation.",
     )
     p.add_argument(
         "--dmg",
@@ -3277,9 +3542,13 @@ if __name__ == "__main__":
         else:
             bundle_dir = exe_path.parent
 
+        bundle_windows_licenses(bundle_dir)
+
         store_metadata = _load_msix_store_metadata(Path(args.store_config) if args.store_config else None)
 
         if args.exe:
+            if args.allinc:
+                bundle_windows_tools(bundle_dir)
             if args.onefile or args.dest:
                 final_exe = _copy_final_file_if_requested(
                     exe_path,
@@ -3295,6 +3564,8 @@ if __name__ == "__main__":
                 _ok(f"Dossier    : {bundle_dir}")
                 _ok(f"Exécutable : {exe_path}")
         elif args.msix or args.msixupload:
+            if args.allinc:
+                bundle_windows_tools(bundle_dir)
             package_path = _build_msix_package(
                 bundle_dir,
                 version_tag=args.version,
@@ -3309,9 +3580,41 @@ if __name__ == "__main__":
         else:
             _ensure_makensis()
             installer = _build_nsis_installer(bundle_dir, version_tag=args.version)
-            final_file = _copy_final_file_if_requested(installer, args.dest, version_tag=args.version)
+            final_std = _copy_final_file_if_requested(installer, args.dest, version_tag=args.version)
+
+            final_allinc = None
+            final_portable = None
+
+            if args.allinc:
+                bundle_windows_tools(bundle_dir)
+                allinc_installer = _build_nsis_installer(bundle_dir, version_tag=args.version)
+                final_allinc = _copy_final_file_if_requested(allinc_installer, args.dest, version_tag=args.version)
+
+            if args.portable or args.allinc:
+                if not (bundle_dir / "_ALLINC").exists():
+                    bundle_windows_tools(bundle_dir)
+                portable_zip = _build_windows_portable_zip(bundle_dir, version_tag=args.version)
+                if args.dest:
+                    final_portable = _copy_final_file_if_requested(portable_zip, args.dest, version_tag=args.version)
+
             _title("Résultat")
-            _ok(f"Installateur : {final_file}")
+            _ok(f"Installateur Standard : {final_std}")
+            if final_allinc:
+                _ok(f"Installateur AllInc   : {final_allinc}")
+            if final_portable:
+                _ok(f"Archive Portable      : {final_portable}")
+    elif args.windows:
+        # Cross-compilation Windows depuis Linux via Wine + NSIS
+        if OS != "Linux":
+            print("--windows est uniquement supporté depuis Linux.", file=sys.stderr)
+            sys.exit(1)
+        build_windows(
+            skip_wine=args.skip_wine,
+            dest=args.dest,
+            version_tag=args.version,
+            allinc=args.allinc,
+            portable=args.portable,
+        )
     elif args.allinc:
         # Délègue à package_appimage.py --allinc
         script = ROOT / "package_appimage.py"
@@ -3324,12 +3627,6 @@ if __name__ == "__main__":
         if args.version:
             argv += ["--version", args.version]
         os.execv(sys.executable, argv)
-    elif args.windows:
-        # Cross-compilation Windows depuis Linux via Wine + NSIS
-        if OS != "Linux":
-            print("--windows est uniquement supporté depuis Linux.", file=sys.stderr)
-            sys.exit(1)
-        build_windows(skip_wine=args.skip_wine, dest=args.dest, version_tag=args.version)
     elif OS == "Darwin":
         _ensure_pyinstaller()
         build_macos(dmg=args.dmg, dest=args.dest, version_tag=args.version)

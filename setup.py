@@ -28,7 +28,6 @@ import argparse
 import ctypes
 import configparser
 import json
-import locale
 import os
 import platform
 import re
@@ -45,7 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from core.lang_tags import Rfc5646LanguageTags
+from core.ui_language import system_ui_language
 from core.version import APP_CONFIG_DIR_NAME
 
 # ---------------------------------------------------------------------------
@@ -752,195 +751,8 @@ def _update_ini_tools_section(
 
 
 def _system_language_code() -> str:
-    candidates: list[str | None] = [
-        os.environ.get("LC_ALL"),
-        (os.environ.get("LANGUAGE") or "").split(":", 1)[0] or None,
-        os.environ.get("LANG"),
-    ]
-    try:
-        candidates.append(locale.getlocale()[0])
-    except (TypeError, ValueError):
-        pass
-
-    for candidate in candidates:
-        code = Rfc5646LanguageTags.from_locale_name(candidate)
-        if code:
-            return code
-    return "eng"
-
-
-def _available_ui_languages() -> list[tuple[str, str]]:
-    """
-    Return the list of UI languages available in locales.json as
-    (iso639-2 code, display name) pairs, sorted by display name.
-    """
-    iso_names: dict[str, str] = {
-        "eng": "English",
-        "fra": "Français",
-        "deu": "Deutsch",
-        "spa": "Español",
-        "ita": "Italiano",
-        "por": "Português",
-        "nld": "Nederlands",
-        "pol": "Polski",
-        "rus": "Русский",
-        "jpn": "日本語",
-        "zho": "中文",
-        "kor": "한국어",
-        "ara": "العربية",
-    }
-    try:
-        locales_path = Path(__file__).parent / "locales.json"
-        data: dict = json.loads(locales_path.read_text(encoding="utf-8"))
-        codes: set[str] = set()
-        for values in data.values():
-            if isinstance(values, dict):
-                codes.update(str(key).lower() for key in values)
-        if codes:
-            items = [(code, iso_names.get(code, code)) for code in sorted(codes)]
-            return sorted(items, key=lambda item: item[1].lower())
-    except Exception:
-        pass
-    return [("eng", "English"), ("fra", "Français")]
-
-
-def _ask_language_dialog_qt_in_process(languages: list[tuple[str, str]]) -> str | None:
-    """Show the language dialog in-process and return the selected code."""
-    try:
-        from PySide6.QtCore import Qt
-        from PySide6.QtWidgets import (
-            QApplication,
-            QComboBox,
-            QDialog,
-            QDialogButtonBox,
-            QLabel,
-            QVBoxLayout,
-        )
-    except Exception:
-        return None
-
-    _app = QApplication.instance() or QApplication(sys.argv[:1])
-    dlg = QDialog()
-    dlg.setWindowTitle("Muxiveo - Interface Language")
-    dlg.setWindowFlags(dlg.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
-    dlg.setMinimumWidth(380)
-    layout = QVBoxLayout(dlg)
-    layout.setContentsMargins(16, 16, 16, 16)
-    layout.setSpacing(10)
-    label = QLabel("Select the interface language / Choisissez la langue:")
-    label.setWordWrap(True)
-    layout.addWidget(label)
-    combo = QComboBox()
-    for code, name in languages:
-        combo.addItem(name, code)
-    layout.addWidget(combo)
-    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
-    buttons.accepted.connect(dlg.accept)
-    layout.addWidget(buttons)
-    if dlg.exec() == QDialog.DialogCode.Accepted:
-        selected = combo.currentData()
-        if isinstance(selected, str):
-            return selected.strip().lower()
-    return None
-
-
-def _python_executable_for_qt_subprocess() -> str | None:
-    """Return a Python interpreter suitable for `python -c` subprocess calls."""
-    candidates = [getattr(sys, "executable", ""), getattr(sys, "_base_executable", "")]
-    for candidate in candidates:
-        if not candidate:
-            continue
-        name = Path(candidate).name.lower()
-        if name.startswith("python") or name in {"py", "py.exe"}:
-            return candidate
-
-    for command in ("python3", "python", "py"):
-        found = shutil.which(command)
-        if found:
-            return found
-    return None
-
-
-def _ask_language_dialog(languages: list[tuple[str, str]]) -> str | None:
-    """Show a language picker and return the chosen ISO 639-2 code."""
-    if not languages:
-        return None
-
-    valid_codes = {code for code, _ in languages}
-
-    if getattr(sys, "frozen", False):
-        # In PyInstaller bundles, sys.executable is Muxiveo.exe, not python.exe.
-        code = _ask_language_dialog_qt_in_process(languages)
-        if code in valid_codes:
-            return code
-    else:
-        qt_script = """\
-import sys, json
-from PySide6.QtWidgets import (
-    QApplication, QDialog, QVBoxLayout, QLabel, QComboBox, QDialogButtonBox,
-)
-from PySide6.QtCore import Qt
-
-languages = json.loads(sys.argv[1])
-app = QApplication.instance() or QApplication(sys.argv[:1])
-dlg = QDialog()
-dlg.setWindowTitle("Muxiveo - Interface Language")
-dlg.setWindowFlags(dlg.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
-dlg.setMinimumWidth(380)
-layout = QVBoxLayout(dlg)
-layout.setContentsMargins(16, 16, 16, 16)
-layout.setSpacing(10)
-label = QLabel("Select the interface language / Choisissez la langue:")
-label.setWordWrap(True)
-layout.addWidget(label)
-combo = QComboBox()
-for code, name in languages:
-    combo.addItem(name, code)
-layout.addWidget(combo)
-buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
-buttons.accepted.connect(dlg.accept)
-layout.addWidget(buttons)
-if dlg.exec() == QDialog.DialogCode.Accepted:
-    print(combo.currentData(), end="")
-"""
-        python_exe = _python_executable_for_qt_subprocess()
-        if python_exe:
-            try:
-                result = subprocess.run(
-                    [python_exe, "-c", qt_script, json.dumps(languages)],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    timeout=120,
-                    **_windows_no_window_subprocess_kwargs(),
-                )
-                if result.returncode == 0:
-                    code = result.stdout.strip().lower()
-                    if code in valid_codes:
-                        return code
-            except Exception:
-                pass
-
-    if not _stream_isatty(sys.stdin) or not _stream_isatty(sys.stdout):
-        return None
-
-    bar = _UI_BAR * 40
-    print(f"\n  {bar}")
-    print("  Select interface language / Choisissez la langue :")
-    for index, (code, name) in enumerate(languages, 1):
-        print(f"    {index:2d}. {name}  ({code})")
-    print(f"  {bar}")
-    try:
-        raw = input(f"  Choice [1-{len(languages)}] (Enter = auto-detect): ").strip()
-    except (EOFError, RuntimeError):
-        return None
-    if not raw:
-        return None
-    if raw.isdigit():
-        selected_index = int(raw) - 1
-        if 0 <= selected_index < len(languages):
-            return languages[selected_index][0]
-    return None
+    """Langue UI système si prise en charge par locales.json, sinon anglais."""
+    return system_ui_language()
 
 
 def initialize_config_ini_language(
@@ -949,10 +761,8 @@ def initialize_config_ini_language(
     ini_path: Path | None = None,
 ) -> None:
     """
-    Initialise la langue UI dans config.ini.
-
-    - Windows : popup de sélection de langue.
-    - Linux / macOS : détection automatique depuis la locale système.
+    Initialise la langue UI dans config.ini depuis la langue système
+    (anglais si elle n'est pas prise en charge par locales.json).
     """
     title("Step 5 — config.ini UI language")
 
@@ -964,7 +774,7 @@ def initialize_config_ini_language(
         default_section="DEFAULT",
     )
     if ini_path.exists():
-        parser.read(ini_path, encoding="utf-8")
+        parser.read(ini_path, encoding="utf-8-sig")
 
     existing = ""
     if parser.has_option("ui", "language"):
@@ -974,18 +784,10 @@ def initialize_config_ini_language(
         ok(f"config.ini already defines ui.language = {existing}")
         return
 
-    chosen: str | None = None
-    if not dry_run and OS == "Windows":
-        chosen = _ask_language_dialog(_available_ui_languages())
-        if chosen:
-            info(f"Language selected by user: {chosen}")
-        else:
-            info("Language dialog cancelled or unavailable — falling back to system detection")
-
-    detected = chosen or _system_language_code()
+    detected = _system_language_code()
     info(f"UI language: {detected}")
 
-    text = ini_path.read_text(encoding="utf-8") if ini_path.exists() else ""
+    text = ini_path.read_text(encoding="utf-8-sig") if ini_path.exists() else ""
     lines = text.splitlines()
     start, end = _section_bounds(lines, "ui")
 

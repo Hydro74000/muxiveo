@@ -103,7 +103,7 @@ jobs:
           else
             release_tag="v${package_version}"
             release_name="Unstable ${release_tag}"
-            appimage_update_release="$release_tag"
+            appimage_update_release="latest-pre"
           fi
 
           {
@@ -228,12 +228,13 @@ jobs:
           )
           PYTHON
 
-      - name: Build PyInstaller and NSIS package
+      - name: Build all-inclusive PyInstaller and NSIS package
         shell: pwsh
         env:
           PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          python package.py --nsis --version "$env:PACKAGE_VERSION"
+          python package.py --nsis --allinc --portable --version "$env:PACKAGE_VERSION"
 
       - name: Collect Windows assets
         shell: pwsh
@@ -241,13 +242,23 @@ jobs:
           PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
         run: |
           $version = $env:PACKAGE_VERSION
-          $file = "dist\releases\Muxiveo-Setup-$version.exe"
-          if (-not (Test-Path $file)) {
+          $std_file = "dist\releases\Muxiveo-Setup-$version.exe"
+          $allinc_file = "dist\releases\Muxiveo-Setup-AllInc-$version.exe"
+          $portable_file = "dist\releases\Muxiveo-Windows-x64-allinc-$version.zip"
+          if (-not (Test-Path $std_file)) {
             Get-ChildItem -Recurse dist | Select-Object -First 200 FullName
-            throw "Windows installer not found: $file"
+            throw "Standard Windows installer not found: $std_file"
+          }
+          if (-not (Test-Path $allinc_file)) {
+            Get-ChildItem -Recurse dist | Select-Object -First 200 FullName
+            throw "AllInc Windows installer not found: $allinc_file"
+          }
+          if (-not (Test-Path $portable_file)) {
+            Get-ChildItem -Recurse dist | Select-Object -First 200 FullName
+            throw "Portable Windows ZIP not found: $portable_file"
           }
           New-Item -ItemType Directory -Force -Path release-assets\windows | Out-Null
-          Copy-Item $file release-assets\windows\ -Force
+          Get-ChildItem -Path dist\releases -Filter "*$version*" | Copy-Item -Destination release-assets\windows\ -Force
           Get-ChildItem release-assets\windows
 
       - name: Upload Windows assets
@@ -489,6 +500,8 @@ jobs:
           RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
           RELEASE_NAME: ${{ needs.release-metadata.outputs.release_name }}
           CHANNEL: ${{ needs.release-metadata.outputs.channel }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
@@ -523,9 +536,61 @@ jobs:
             printf '%s\n' '- No commit found since the previous release.' > commits.md
           fi
 
+          win_installer=""
+          linux_appimage=""
+          macos_dmg=""
+
+          for f in artifacts/*; do
+            [ -f "$f" ] || continue
+            fname="$(basename "$f")"
+            case "$fname" in
+              Muxiveo-Setup-AllInc-*.exe|*allinc*.exe)
+                win_installer="$fname"
+                ;;
+              *.AppImage)
+                if [[ "$fname" != *.zsync ]]; then
+                  linux_appimage="$fname"
+                fi
+                ;;
+              *.dmg)
+                macos_dmg="$fname"
+                ;;
+            esac
+          done
+
+          if [ -z "$win_installer" ]; then
+            for f in artifacts/*; do
+              [ -f "$f" ] || continue
+              fname="$(basename "$f")"
+              case "$fname" in
+                Muxiveo-Setup-*.exe)
+                  win_installer="$fname"
+                  ;;
+              esac
+            done
+          fi
+
+          base_download_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+
           {
             echo "# ${RELEASE_NAME}"
             echo
+            if [ -n "$win_installer" ] || [ -n "$linux_appimage" ] || [ -n "$macos_dmg" ]; then
+              echo "### 📥 Téléchargements / Direct Downloads"
+              echo
+              if [ -n "$win_installer" ]; then
+                echo "- 🪟 **Windows (Allinc setup)** : [${win_installer}](${base_download_url}/${win_installer})"
+              fi
+              if [ -n "$linux_appimage" ]; then
+                echo "- 🐧 **Linux (AppImage)** : [${linux_appimage}](${base_download_url}/${linux_appimage})"
+              fi
+              if [ -n "$macos_dmg" ]; then
+                echo "- 🍏 **macOS (DMG)** : [${macos_dmg}](${base_download_url}/${macos_dmg})"
+              fi
+              echo
+              echo "---"
+              echo
+            fi
             echo "- Channel: ${CHANNEL}"
             echo "- Commit: ${GITHUB_SHA}"
             if [ -n "$previous_tag" ]; then
@@ -548,14 +613,31 @@ jobs:
           RELEASE_NAME: ${{ needs.release-metadata.outputs.release_name }}
           PRERELEASE: ${{ needs.release-metadata.outputs.prerelease }}
           CHANNEL: ${{ needs.release-metadata.outputs.channel }}
+          GITHUB_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
+          mapfile -t files < <(find artifacts -maxdepth 1 -type f | sort)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No release asset found under artifacts/" >&2
+            exit 1
+          fi
+
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "Release $RELEASE_TAG already exists; keeping notes and uploading assets."
+            echo "Release $RELEASE_TAG already exists; uploading assets and updating notes."
+            gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
+            edit_args=(--title "$RELEASE_NAME" --notes-file release-body.md)
             if [ "$CHANNEL" = "stable" ]; then
-              gh release edit "$RELEASE_TAG" --latest
+              edit_args+=(--latest)
             fi
+            if [ "$PRERELEASE" = "true" ]; then
+              edit_args+=(--prerelease)
+            fi
+            is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft // false')"
+            if [ "$is_draft" = "true" ]; then
+              edit_args+=(--draft=false)
+            fi
+            gh release edit "$RELEASE_TAG" "${edit_args[@]}"
           else
             create_args=()
             if [ "$PRERELEASE" = "true" ]; then
@@ -564,19 +646,12 @@ jobs:
               create_args+=(--latest)
             fi
             gh release create "$RELEASE_TAG" \
+              "${files[@]}" \
               --target "$GITHUB_SHA" \
               --title "$RELEASE_NAME" \
               --notes-file release-body.md \
               "${create_args[@]}"
           fi
-
-          mapfile -t files < <(find artifacts -maxdepth 1 -type f | sort)
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "No release asset found under artifacts/" >&2
-            exit 1
-          fi
-
-          gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
 
   publish-homebrew-tap:
     name: Publish Homebrew tap

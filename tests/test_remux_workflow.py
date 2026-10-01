@@ -28,7 +28,7 @@ import subprocess
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from PySide6.QtCore import QCoreApplication, Qt
@@ -367,7 +367,7 @@ class TestRemuxWorkflowBuildCommand:
 
         if not rewrite_enabled or not applicable:
             assert state["failed"] is not None
-            assert "multi-segments" in state["failed"][0]
+            assert "multi-segments" in cast(Any, state["failed"])[0]
             assert "mapped_tracks" not in captured
             return
         assert state["failed"] is None
@@ -1399,6 +1399,7 @@ class TestAbsolutePathNormalization:
         assert normalized.output == tmp_path / "sub" / "out.mkv"
         assert normalized.work_dir == tmp_path / "wip"
         assert normalized.extra_attachments == [tmp_path / "cover.jpg"]
+        assert normalized.work_dir is not None
         assert all(path.is_absolute() for path in (
             normalized.sources[0].path, normalized.output, normalized.work_dir,
             *normalized.extra_attachments,

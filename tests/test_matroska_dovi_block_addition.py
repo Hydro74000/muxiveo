@@ -150,10 +150,11 @@ class TestMatroskaDoviBlockAdditionEditor:
         assert result.patched_track_number == 1
 
         # Le fichier doit maintenant contenir un BlockAdditionMapping (0x41E4)
-        # avec le FourCC dvcC (0x64766343).
+        # avec le FourCC dvvC (0x64767643) pour profile 8 et MaxBlockAdditionID (0x55EE).
         data = mkv.read_bytes()
         assert b"\x41\xe4" in data
-        assert struct.pack(">I", 0x64766343) in data
+        assert b"\x55\xee" in data
+        assert struct.pack(">I", 0x64767643) in data
         # Et le payload 24 octets DOVI v1 (premier byte = 1, second = 0).
         # On cherche la signature spécifique : 01 00 [profile<<1|level_hi] ...
         # On valide indirectement via re-parse.
@@ -196,8 +197,8 @@ class TestMatroskaDoviBlockAdditionEditor:
 
         # Re-parser et chercher l'extra_data.
         data = mkv.read_bytes()
-        # Localiser la marque dvcC.
-        idx = data.index(struct.pack(">I", 0x64766343))
+        # Localiser la marque dvvC.
+        idx = data.index(struct.pack(">I", 0x64767643))
         # Après ça, on cherche l'élément BlockAddIDExtraData (0x41ED) qui suit.
         extra_idx = data.index(b"\x41\xed", idx)
         # Lire size VINT (1 octet ici car payload=24 → fits sur 1 octet de size).
@@ -223,3 +224,150 @@ class TestMatroskaDoviBlockAdditionEditor:
         second = editor.patch(mkv, record=self._make_record())
         assert second.applied is False
         assert second.skipped is True
+
+    def test_patch_force_updates_existing_bam(self, tmp_path):
+        mkv = tmp_path / "in.mkv"
+        # Fichier avec BAM existant (dvcC et dummy extra_data)
+        mkv.write_bytes(_build_minimal_mkv(add_dovi_bam=True))
+
+        editor = MatroskaDoviBlockAdditionEditor()
+        new_record = DolbyVisionConfigRecord(
+            profile=8, level=6,
+            rpu_present=True, el_present=False, bl_present=True,
+            bl_signal_compat_id=1,
+        )
+        res = editor.patch(mkv, record=new_record, force=True)
+        assert res.applied is True
+        assert res.skipped is False
+
+        # Vérifier que le nouveau FourCC dvvC et le level 6 sont bien présents
+        data = mkv.read_bytes()
+        assert b"dvvC" in data
+        assert b"\x55\xee" in data  # MaxBlockAdditionID présent
+
+    def test_patch_auto_clamps_level_10(self, tmp_path):
+        mkv = tmp_path / "in.mkv"
+        mkv.write_bytes(_build_minimal_mkv())
+
+        editor = MatroskaDoviBlockAdditionEditor()
+        # Level 10 (UHD 120fps) doit être automatiquement ramené à Level 6 (UHD 30fps)
+        record = DolbyVisionConfigRecord(
+            profile=8, level=10,
+            rpu_present=True, el_present=False, bl_present=True,
+            bl_signal_compat_id=1,
+        )
+        res = editor.patch(mkv, record=record)
+        assert res.applied is True
+
+        data = mkv.read_bytes()
+        idx = data.index(b"\x41\xed")  # BlockAddIDExtraData
+        payload = data[idx + 3:idx + 3 + 24]
+        # Profile 8 (0x10) + high bit of level
+        assert payload[2] == (8 << 1) | 0
+        # Level 6 -> (6 & 0x1F) << 3 | 0x05 = 0x35
+        assert payload[3] == ((6 << 3) | 0x05)
+
+    def test_patch_with_explicit_dvcc_fourcc(self, tmp_path):
+        mkv = tmp_path / "in.mkv"
+        mkv.write_bytes(_build_minimal_mkv())
+
+        editor = MatroskaDoviBlockAdditionEditor()
+        record = DolbyVisionConfigRecord(
+            profile=8, level=6,
+            rpu_present=True, el_present=False, bl_present=True,
+            bl_signal_compat_id=1,
+            fourcc="dvcC",
+        )
+        res = editor.patch(mkv, record=record)
+        assert res.applied is True
+
+        data = mkv.read_bytes()
+        assert b"dvcC" in data
+        assert b"dvvC" not in data
+
+    def test_sanitize_dovi_mkv_helper(self, tmp_path):
+        from core.matroska.editors.dovi import sanitize_dovi_mkv, sanitize_dovi_level
+
+        assert sanitize_dovi_level(10, fps=24.0) == 6
+        assert sanitize_dovi_level(10, fps=60.0) == 9
+        assert sanitize_dovi_level(6, fps=24.0) == 6
+
+        mkv = tmp_path / "test_dovi.mkv"
+        mkv.write_bytes(_build_minimal_mkv())
+
+        # Premier patch avec Level 10 et FourCC dvcC
+        editor = MatroskaDoviBlockAdditionEditor()
+        bad_record = DolbyVisionConfigRecord(
+            profile=8, level=10,
+            rpu_present=True, el_present=False, bl_present=True,
+            bl_signal_compat_id=1,
+            fourcc="dvcC",
+        )
+        editor.patch(mkv, record=bad_record)
+        assert b"dvcC" in mkv.read_bytes()
+
+        # sanitize_dovi_mkv par défaut doit corriger le level à 6 et standardiser en dvvC pour P8
+        res = sanitize_dovi_mkv(mkv, fps=23.976)
+        assert res.applied is True
+        data = mkv.read_bytes()
+        assert b"dvvC" in data
+        assert b"\x55\xee" in data
+        idx = data.index(b"\x41\xed")
+        payload = data[idx + 3:idx + 3 + 24]
+        # Level 6 -> 0x35
+        assert payload[3] == ((6 << 3) | 0x05)
+
+        # On peut aussi forcer explicitement dvcC si demandé
+        res_dvcc = sanitize_dovi_mkv(mkv, fps=23.976, fourcc="dvcC")
+        assert res_dvcc.applied is True
+        assert b"dvcC" in mkv.read_bytes()
+
+    def test_sanitize_dovi_mkv_preserves_compat_id_zero_and_others_by_default(self, tmp_path):
+        from core.matroska.editors.dovi import sanitize_dovi_mkv
+
+        for expected_compat in (0, 1, 2, 4):
+            mkv = tmp_path / f"test_compat_{expected_compat}.mkv"
+            mkv.write_bytes(_build_minimal_mkv())
+
+            editor = MatroskaDoviBlockAdditionEditor()
+            record = DolbyVisionConfigRecord(
+                profile=8 if expected_compat != 0 else 5,
+                level=10,
+                rpu_present=True, el_present=False, bl_present=True,
+                bl_signal_compat_id=expected_compat,
+            )
+            editor.patch(mkv, record=record)
+
+            # Appel par défaut de production (SANS spécifier target_compat_id ni fourcc)
+            res = sanitize_dovi_mkv(mkv, fps=24.0)
+            assert res.applied is True
+            data = mkv.read_bytes()
+            idx = data.index(b"\x41\xed")
+            payload = data[idx + 3:idx + 3 + 24]
+            actual_compat = (payload[4] >> 4) & 0x0F
+            assert actual_compat == expected_compat
+            if expected_compat == 0:
+                assert b"dvcC" in data  # Profile 5 -> dvcC
+            else:
+                assert b"dvvC" in data  # Profile 8 -> dvvC
+
+    def test_native_muxer_respects_explicit_dvcc_fourcc(self):
+        from core.matroska.native_muxer import _build_dovi_block_addition_mapping, _FOURCC_DVCC, _FOURCC_DVVC
+
+        rec_dvcc = DolbyVisionConfigRecord(
+            profile=8, level=6,
+            rpu_present=True, el_present=False, bl_present=True,
+            bl_signal_compat_id=1,
+            fourcc="dvcC",
+        )
+        mapping_dvcc = _build_dovi_block_addition_mapping(rec_dvcc)
+        assert b"dvcC" in mapping_dvcc
+        assert b"dvvC" not in mapping_dvcc
+
+        rec_default = DolbyVisionConfigRecord(
+            profile=8, level=6,
+            rpu_present=True, el_present=False, bl_present=True,
+            bl_signal_compat_id=1,
+        )
+        mapping_default = _build_dovi_block_addition_mapping(rec_default)
+        assert b"dvvC" in mapping_default
