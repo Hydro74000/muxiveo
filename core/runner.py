@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 from collections import deque
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -254,6 +254,8 @@ class TaskSignals(QObject):
         self._procs_lock   = threading.Lock()
         self._retained_callbacks: list[Callable[..., object]] = []
         self._terminal_lock = threading.Lock()
+        self._worker_futures: list[Future] = []
+        self._linked_tasks: list[TaskSignals] = []
         self._terminal_result: tuple[str, tuple] | None = None
         self._terminal_subscribers: list[dict[str, Callable | None]] = []
         self._terminal_direct: deque[dict[str, Callable | None]] = deque()
@@ -294,7 +296,7 @@ class TaskSignals(QObject):
         if ready:
             if direct:
                 self._drain_terminal_direct()
-            else:
+            elif self._terminal_dispatcher is not None:
                 self._terminal_dispatcher.ready.emit()
 
     @staticmethod
@@ -304,10 +306,10 @@ class TaskSignals(QObject):
         if callback is not None:
             try:
                 callback(*args)
-            except Exception:
+            except Exception as exc:
                 # Comme un slot Qt : signaler l'erreur, sans priver les autres
                 # abonnés (notamment le GUI) de la notification de fin.
-                sys.excepthook(*sys.exc_info())
+                sys.excepthook(type(exc), exc, exc.__traceback__)
 
     def _drain_terminal_direct(self) -> None:
         while True:
@@ -317,6 +319,8 @@ class TaskSignals(QObject):
                     break
                 callbacks = self._terminal_direct.popleft()
                 result = self._terminal_result
+            # Le drain ne démarre qu'après l'enregistrement d'une fin.
+            assert result is not None
             self._invoke_terminal(callbacks, result)
         if self._terminal_dispatcher is not None:
             self._terminal_dispatcher.ready.emit()
@@ -356,8 +360,18 @@ class TaskSignals(QObject):
         ``failed`` si aucune fin n'a encore été enregistrée (sinon la boucle
         d'attente CLI/GUI resterait bloquée indéfiniment).
         """
+        with self._terminal_lock:
+            self._worker_futures.append(future)
+
         def _on_done(done: Future) -> None:
+            with self._terminal_lock:
+                try:
+                    self._worker_futures.remove(done)
+                except ValueError:
+                    pass
             if done.cancelled():
+                if self._terminal_result is None:
+                    self.cancelled.emit()
                 return
             exc = done.exception()
             if exc is not None and self._terminal_result is None:
@@ -365,6 +379,39 @@ class TaskSignals(QObject):
 
         future.add_done_callback(_on_done)
         return future
+
+    def link_workers(self, other: "TaskSignals") -> None:
+        """Rattache une tâche relayée : ``wait_for_workers`` attend aussi ses workers."""
+        if other is self:
+            return
+        with self._terminal_lock:
+            self._linked_tasks.append(other)
+
+    def wait_for_workers(self, _seen: set[int] | None = None) -> None:
+        """Attend aussi les finally après le signal terminal, hors du thread Qt.
+
+        Boucle jusqu'à stabilité : un worker peut encore soumettre ou relayer
+        une tâche pendant l'attente (préparation → encodage).
+        """
+        seen = set() if _seen is None else _seen
+        if id(self) in seen:
+            return
+        seen.add(id(self))
+        waited_links = 0
+        while True:
+            with self._terminal_lock:
+                futures = [f for f in self._worker_futures if not f.done()]
+                links = self._linked_tasks[waited_links:]
+            if not futures and not links:
+                return
+            for future in futures:
+                try:
+                    future.exception()
+                except CancelledError:
+                    pass
+            for task in links:
+                task.wait_for_workers(seen)
+            waited_links += len(links)
 
     def retain_callback(self, callback: Callable[..., object]) -> Callable[..., object]:
         """Conserve un slot Python tant que les signaux de tâche existent."""
@@ -390,6 +437,10 @@ class TaskSignals(QObject):
     def _register_proc(self, proc: subprocess.Popen) -> None:
         with self._procs_lock:
             self._active_procs.append(proc)
+            cancelled = self._cancel_event.is_set()
+        # cancel() peut avoir pris son instantané juste avant cet enregistrement.
+        if cancelled:
+            kill_process_tree(proc, timeout=0.2)
 
     def _unregister_proc(self, proc: subprocess.Popen) -> None:
         with self._procs_lock:
@@ -490,7 +541,7 @@ class ToolRunner(QObject):
             except Exception as exc:
                 signals.failed.emit(str(exc), exc)
 
-        executor.submit(_task)
+        signals.watch_future(executor.submit(_task))
         # shutdown(wait=False) ferme l'executor au retour du _task ; le thread
         # est libéré proprement sans bloquer l'appelant.
         executor.shutdown(wait=False)
@@ -582,7 +633,7 @@ class ToolRunner(QObject):
                 signals.finished.emit(summary)
 
         outer = ThreadPoolExecutor(max_workers=1)
-        outer.submit(_parallel)
+        signals.watch_future(outer.submit(_parallel))
         outer.shutdown(wait=False)
         return signals
 

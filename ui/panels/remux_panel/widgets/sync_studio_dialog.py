@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import threading
 import uuid
+from typing import TYPE_CHECKING
 
 import numpy as np
 from PySide6.QtCore import Qt, QUrl, Signal
@@ -45,6 +46,11 @@ from ui.panels.remux_panel.theme import (
     _table_style,
 )
 from ui.widgets.waveform_view import WaveformView
+
+if TYPE_CHECKING:
+    # QtMultimedia est optionnel à l'exécution.
+    from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+    from PySide6.QtWidgets import QPushButton
 
 # Demi-fenêtre affichée autour d'un instant saisi manuellement (20 s au total).
 _GOTO_HALF_WINDOW_S = 10.0
@@ -129,8 +135,8 @@ class SyncStudioDialog(QDialog):
         self._is_sub_sync_running: bool = False
 
         self._temp_dir = tempfile.TemporaryDirectory(prefix="mediarecode_sync_studio_")
-        self._player = None
-        self._audio_output = None
+        self._player: QMediaPlayer | None = None
+        self._audio_output: QAudioOutput | None = None
         self._is_playing = False
         self._closing = False
 
@@ -306,12 +312,12 @@ class SyncStudioDialog(QDialog):
         wave_header.addWidget(self.seg_indicator)
 
         if self.current_calibration.cuts_count > 0:
-            self.btn_prev_seg = _secondary_button("◀", fixed_width=30, padding_h=2)
+            self.btn_prev_seg: QPushButton | None = _secondary_button("◀", fixed_width=30, padding_h=2)
             self.btn_prev_seg.setToolTip(translate_text("Segment précédent"))
             self.btn_prev_seg.clicked.connect(self._prev_segment)
             wave_header.addWidget(self.btn_prev_seg)
 
-            self.btn_next_seg = _secondary_button("▶", fixed_width=30, padding_h=2)
+            self.btn_next_seg: QPushButton | None = _secondary_button("▶", fixed_width=30, padding_h=2)
             self.btn_next_seg.setToolTip(translate_text("Segment suivant"))
             self.btn_next_seg.clicked.connect(self._next_segment)
             wave_header.addWidget(self.btn_next_seg)
@@ -365,7 +371,7 @@ class SyncStudioDialog(QDialog):
         wc_layout.addLayout(wave_header)
 
         # Widget Waveform
-        self.waveform = WaveformView(
+        self.waveform: WaveformView = WaveformView(
             self,
             reference_label=translate_text("Référence"),
             target_label=translate_text("Cible décalée"),
@@ -481,7 +487,7 @@ class SyncStudioDialog(QDialog):
             cuts_layout.addWidget(cuts_header)
 
             segments = self.current_calibration.segments
-            self.cuts_table = QTableWidget(len(segments), 4, self)
+            self.cuts_table: QTableWidget | None = QTableWidget(len(segments), 4, self)
             self.cuts_table.setStyleSheet(_table_style())
             self.cuts_table.setHorizontalHeaderLabels([
                 translate_text("Segment"),
@@ -928,15 +934,17 @@ class SyncStudioDialog(QDialog):
         self.listen_btn.setEnabled(True)
         try:
             from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
-            if self._player is None:
-                self._player = QMediaPlayer(self)
-                self._audio_output = QAudioOutput(self)
-                self._player.setAudioOutput(self._audio_output)
-                self._player.mediaStatusChanged.connect(self._on_media_status_changed)
-                self._player.positionChanged.connect(self._on_player_position_changed)
+            player = self._player
+            if player is None:
+                player = QMediaPlayer(self)
+                audio_output = QAudioOutput(self)
+                player.setAudioOutput(audio_output)
+                player.mediaStatusChanged.connect(self._on_media_status_changed)
+                player.positionChanged.connect(self._on_player_position_changed)
+                self._player, self._audio_output = player, audio_output
 
-            self._player.setSource(QUrl.fromLocalFile(path))
-            self._player.play()
+            player.setSource(QUrl.fromLocalFile(path))
+            player.play()
             self._is_playing = True
             self.listen_btn.setText(translate_text("Arrêter"))
             self.listen_btn.setIcon(_stop_icon())

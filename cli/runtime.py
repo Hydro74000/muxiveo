@@ -105,6 +105,9 @@ def run_remux_config(
         loop.exec()
     finally:
         stop.set()
+        # Le signal terminal précède le finally du worker (nettoyage work_dir) :
+        # l'attendre rend la sortie déterministe (batch, résumé, code retour).
+        signals.wait_for_workers()
         # Les slots de nettoyage (work_dir) sont postés après l'événement de
         # fin qui quitte la boucle : sans ce vidage, le dispatcher Windows peut
         # sortir avant de les traiter et laisser des dossiers résiduels.

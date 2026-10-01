@@ -2,18 +2,19 @@
 from dataclasses import replace
 from threading import Event, get_ident
 import time
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QTimer
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QComboBox
 from shiboken6 import Shiboken
 
 from core.config import AppConfig
 from core.inspector import HDRType
 from core.runner import TaskSignals
 from ui.panels.encode_panel.panel import EncodePanel
-from ui.panels.encode_panel.widgets import _AudioTable
+from ui.panels.encode_panel.widgets import _AudioBitrateEditor, _AudioTable
 from ui.panels.remux_panel.panel import RemuxPanel
 from ui.panels.remux_panel.models import SourceFile
 from tests.test_encode_panel_widgets import _at, _file_info, _video_entry, _video_track
@@ -155,9 +156,9 @@ def test_audio_reorder_and_metadata_reuse_widgets_and_settings(qt_app):
     tracks = [(_at(1), "#fff", None, first), (_at(2), "#fff", None, second)]
     try:
         table.load_tracks(tracks)
-        combo = table.cellWidget(0, table.COL_CODEC)
+        combo = cast(QComboBox, table.cellWidget(0, table.COL_CODEC))
         combo.setCurrentIndex(combo.findData("aac"))
-        bitrate = table.cellWidget(0, table.COL_BITRATE)
+        bitrate = cast(_AudioBitrateEditor, table.cellWidget(0, table.COL_BITRATE))
         before = bitrate.value()
         table.load_tracks(list(reversed(tracks)))
         # Détecte aussi une destruction différée accidentelle des widgets Qt.
@@ -171,8 +172,9 @@ def test_audio_reorder_and_metadata_reuse_widgets_and_settings(qt_app):
         changed = (replace(tracks[0][0], title="Edited", language="eng"), *tracks[0][1:])
         table.load_tracks([changed])
         assert table.cellWidget(0, table.COL_CODEC) is combo
-        assert table.item(0, table.COL_TITLE).text() == "Edited"
-        assert table.item(0, table.COL_LANG).text() == "eng"
+        title_item, lang_item = table.item(0, table.COL_TITLE), table.item(0, table.COL_LANG)
+        assert title_item is not None and title_item.text() == "Edited"
+        assert lang_item is not None and lang_item.text() == "eng"
         assert combo.currentData() == "aac"
         assert bitrate.value() == before
         assert table.current_audio_settings()[0].track_entry_id == first.entry_id
@@ -245,7 +247,7 @@ def test_audio_encoding_feedback_does_not_reload_sources(qt_app, tmp_path):
         remux._apply_inspection(sf.id, info)
         assert len(observed) == 1
         table = encode._audio_table
-        combo = table.cellWidget(0, table.COL_CODEC)
+        combo = cast(QComboBox, table.cellWidget(0, table.COL_CODEC))
         combo.setCurrentIndex(combo.findData("aac"))
         assert len(observed) == 1
         assert table.cellWidget(0, table.COL_CODEC) is combo

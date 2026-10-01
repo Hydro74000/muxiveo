@@ -142,50 +142,65 @@ def nvencc_binary_name() -> str:
 # Détection à l'exécution
 # ---------------------------------------------------------------------------
 
-# `--check-features` produit une liste de codecs supportés par le GPU.
-# On parse les sections du genre "Codec: H.264/AVC", "Codec: H.265/HEVC",
-# "Codec: AV1". L'ordre / le format exact peut varier mais ces tokens sont
-# stables dans la sortie de rigaya.
+# Codecs d'encodage NVENC réellement exposés par le GPU. Seules deux zones de
+# sortie sont fiables : la liste suivant « Avaliable Codec(s) » de ``--check-hw``
+# (faute d'orthographe d'origine chez rigaya) et les lignes « Codec: … » de
+# ``--check-features``. La bannière de version (« reader: … [H.264/AVC, …, AV1] »)
+# liste les *décodeurs* d'entrée : la parcourir donnerait de faux positifs (AV1).
 _FEATURE_TOKEN_BY_CODEC: dict[str, tuple[str, ...]] = {
     "nvencc_h264": ("H.264/AVC", "H.264", "AVC"),
     "nvencc_hevc": ("H.265/HEVC", "H.265", "HEVC"),
     "nvencc_av1": ("AV1",),
 }
+_CHECK_HW_HEADER_RE = re.compile(r"^\s*(?:avaliable|available)\s+codec\(s\)\s*:?\s*$", re.IGNORECASE)
+_FEATURES_CODEC_RE = re.compile(r"^\s*Codec\s*:\s*(.+?)\s*$", re.IGNORECASE)
 
 
-def _run_nvencc_check_features(nvencc_bin: str) -> str | None:
-    """Exécute ``NVEncC --check-features`` et retourne sa sortie texte."""
+def _run_nvencc_probe(nvencc_bin: str, option: str) -> str | None:
+    """Exécute une sonde NVEncC ; None si l'outil ou le GPU/pilote NVIDIA est inutilisable."""
     try:
         proc = subprocess.run(
-            [nvencc_bin, "--check-features"],
+            [nvencc_bin, option],
             capture_output=True,
             check=False,
-            timeout=10,
+            timeout=15,
             **subprocess_text_kwargs(),
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None
-    # NVEncC écrit l'output principal sur stdout, mais certains warnings
-    # peuvent partir sur stderr. On combine pour robustesse.
-    combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
-    if proc.returncode != 0 and not combined.strip():
+    # Sans GPU NVIDIA / pilote compatible, NVEncC échoue avec un code non nul.
+    if proc.returncode != 0:
         return None
-    return combined
+    return (proc.stdout or "") + "\n" + (proc.stderr or "")
 
 
-def _parse_supported_codecs(features_output: str) -> set[str]:
-    """Extrait les codecs NVEncC supportés depuis la sortie ``--check-features``."""
-    if not features_output:
-        return set()
-    supported: set[str] = set()
+def _codec_from_label(label: str) -> str | None:
     for codec_id, tokens in _FEATURE_TOKEN_BY_CODEC.items():
-        for token in tokens:
-            # Match insensible à la casse, en évitant les sous-chaînes
-            # ambiguës (le token "AV1" est court mais isolé dans la doc).
-            pattern = re.compile(rf"\b{re.escape(token)}\b", re.IGNORECASE)
-            if pattern.search(features_output):
-                supported.add(codec_id)
+        if any(re.search(rf"\b{re.escape(token)}\b", label, re.IGNORECASE) for token in tokens):
+            return codec_id
+    return None
+
+
+def _parse_supported_codecs(output: str) -> set[str]:
+    """Codecs d'encodage listés par ``--check-hw`` (prioritaire) ou ``--check-features``."""
+    if not output:
+        return set()
+    lines = output.splitlines()
+    supported: set[str] = set()
+    for i, line in enumerate(lines):
+        if not _CHECK_HW_HEADER_RE.match(line):
+            continue
+        # Une ligne par codec jusqu'à la première ligne vide ou non reconnue.
+        for entry in lines[i + 1:]:
+            codec_id = _codec_from_label(entry) if entry.strip() else None
+            if codec_id is None:
                 break
+            supported.add(codec_id)
+        return supported
+    for line in lines:
+        match = _FEATURES_CODEC_RE.match(line)
+        if match and (codec_id := _codec_from_label(match.group(1))) is not None:
+            supported.add(codec_id)
     return supported
 
 
@@ -193,24 +208,28 @@ def detect_nvencc_available(nvencc_bin: str | None) -> tuple[bool, set[str]]:
     """
     Détecte si NVEncC est utilisable et liste les codecs supportés par le GPU.
 
-    Args:
-        nvencc_bin: chemin résolu vers le binaire (``AppConfig.tool_nvencc``).
-                    None ou chaîne vide → indisponible.
+    Sonde ``--check-hw`` (même option sous Windows et Linux ; NVEncC n'existe
+    pas sous macOS) : code 0 uniquement si un GPU NVIDIA et un pilote
+    compatibles répondent, suivi de la liste des encodeurs disponibles.
+    ``--check-features`` sert de repli si ce format venait à changer.
+
+    Indépendant de NVENC ffmpeg : NVEncC embarque sa propre négociation d'API
+    et peut fonctionner quand le ffmpeg fourni exige un pilote plus récent.
 
     Returns:
-        (available, codecs)
-            available : True si le binaire répond et au moins 1 codec dispo.
-            codecs    : sous-ensemble de ``NVENCC_VIDEO_CODECS``.
-
-    Le caller (HardwareEncoderDetector) doit avoir préalablement vérifié que
-    NVENC ffmpeg est disponible — NVEncC n'est jamais exposé sans NVENC.
+        (available, codecs) — codecs ⊂ ``NVENCC_VIDEO_CODECS``.
     """
     if not nvencc_bin:
         return False, set()
-    output = _run_nvencc_check_features(nvencc_bin)
-    if output is None:
-        return False, set()
-    supported = _parse_supported_codecs(output)
+    supported: set[str] = set()
+    for option in ("--check-hw", "--check-features"):
+        output = _run_nvencc_probe(nvencc_bin, option)
+        if output is None:
+            # Échec d'exécution (binaire absent, pas de GPU) : inutile d'insister.
+            return False, set()
+        supported = _parse_supported_codecs(output) & NVENCC_VIDEO_CODECS
+        if supported:
+            break
     return bool(supported), supported
 
 

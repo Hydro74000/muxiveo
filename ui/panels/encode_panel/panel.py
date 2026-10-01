@@ -56,6 +56,7 @@ from core.workflows.encode.runtime.static_hdr_estimator import (
     StaticHdrEstimate,
     StaticHdrEstimateService,
 )
+from ui.shutdown import Shutdown, defer_close
 from ui.panels.encode_panel.theme import (
     _C, _card, _checkbox_style, _combo_style,
     _input_style, _primary_button, _secondary_button,
@@ -4650,13 +4651,16 @@ class EncodePanel(QWidget):
             QApplication.clipboard().setText(text)
 
     def closeEvent(self, event) -> None:
-        self._closing = True
-        self._command_timer.stop()
-        self._command_executor.shutdown(wait=False, cancel_futures=True)
-        if self._preview_signals is not None:
-            self._preview_signals.cancel()
-        self._hdr_meta_executor.shutdown(wait=False, cancel_futures=True)
-        self._executor.shutdown(wait=True)
+        if not hasattr(self, "_shutdown"):
+            self._closing = True
+            self.setEnabled(False)
+            self._command_timer.stop()
+            self._shutdown = Shutdown(
+                executors=(self._command_executor, self._hdr_meta_executor, self._executor),
+                tasks=(self._preview_signals,),
+            )
+        if defer_close(self, event, ready=self._shutdown.done.is_set()):
+            return
         try:
             EncodeWorkflow.cleanup_preview_dir(self._config.work_dir)
         except Exception:

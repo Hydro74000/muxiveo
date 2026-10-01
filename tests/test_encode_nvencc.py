@@ -128,12 +128,28 @@ class TestParseSupportedCodecs:
     def test_empty_output(self):
         assert _parse_supported_codecs("") == set()
 
-    def test_recognizes_alternate_tokens(self):
-        # Format alternatif sans le slash.
-        sample = "HEVC: supported\nH.264: supported"
-        codecs = _parse_supported_codecs(sample)
-        assert "nvencc_hevc" in codecs
-        assert "nvencc_h264" in codecs
+    def test_check_hw_list_ignores_reader_banner(self):
+        # Sortie réelle NVEncC 9.x sur GTX 1070 : la bannière liste les
+        # décodeurs d'entrée (dont AV1), pas les encodeurs du GPU.
+        sample = (
+            "NVEncC (x64) 9.36 (r4153) by rigaya\n"
+            "  [NVENC API v13.1, CUDA 11.8]\n"
+            " reader: raw, y4m, avi, avs, vpy, avsw, avhw [H.264/AVC, H.265/HEVC, "
+            "MPEG2, VP8, VP9, VC-1, MPEG1, MPEG4, AV1]\n"
+            "#0: NVIDIA GeForce GTX 1070 (1920 cores, 1784 MHz)[PCIe3x16][581.57]\n"
+            "Avaliable Codec(s)\n"
+            "H.264/AVC\n"
+            "H.265/HEVC\n"
+        )
+        assert _parse_supported_codecs(sample) == {"nvencc_h264", "nvencc_hevc"}
+
+    def test_check_hw_list_with_fixed_spelling_and_av1(self):
+        sample = "banner AV1\nAvailable Codec(s)\nH.264/AVC\nH.265/HEVC\nAV1\n\nAV1 ignored"
+        assert _parse_supported_codecs(sample) == {"nvencc_h264", "nvencc_hevc", "nvencc_av1"}
+
+    def test_features_fallback_reads_only_codec_lines(self):
+        sample = " reader: raw [H.264/AVC, H.265/HEVC, AV1]\nCodec: H.264/AVC\nMax Level 62\n"
+        assert _parse_supported_codecs(sample) == {"nvencc_h264"}
 
 
 class TestDetectNvenccAvailable:
@@ -195,6 +211,19 @@ class TestDetectNvenccAvailable:
         assert available is True
         assert codecs == {"nvencc_hevc", "nvencc_h264"}
 
+    def test_nonzero_exit_returns_unavailable(self):
+        # Sans GPU NVIDIA / pilote compatible, NVEncC sort en erreur.
+        fake = subprocess.CompletedProcess(
+            args=["NVEncC"], returncode=1, stdout="Avaliable Codec(s)\nH.264/AVC\n", stderr="no GPU",
+        )
+        with patch(
+            "core.workflows.encode.runtime.nvencc.subprocess.run",
+            return_value=fake,
+        ) as run:
+            available, codecs = detect_nvencc_available("/usr/bin/NVEncC")
+        assert (available, codecs) == (False, set())
+        assert run.call_args.args[0] == ["/usr/bin/NVEncC", "--check-hw"]
+
     def test_empty_output_returns_unavailable(self):
         # Cas hypothétique : binaire répond mais sans codec listé.
         fake = subprocess.CompletedProcess(
@@ -241,23 +270,33 @@ class TestHardwareDetectorIntegration:
         assert "nvencc_h264" in available
         assert "nvencc_av1" not in available
 
-    def test_nvencc_skipped_when_nvenc_unavailable(self):
-        """Garde-fou : NVEncC ne s'expose jamais sans NVENC ffmpeg détecté."""
+    def test_nvencc_exposed_when_ffmpeg_nvenc_unavailable(self):
+        """NVEncC négocie sa propre API : exposé même si NVENC ffmpeg échoue (pilote trop ancien)."""
         from core.workflows.encode.hardware import HardwareEncoderDetector
 
         detector = HardwareEncoderDetector()
-        # NVENC compilé mais probe échoue → nvenc_available reste vide.
         with patch.object(detector, "_compiled_hw", return_value=("ffmpeg", {"hevc_nvenc"})), \
              patch.object(detector, "_detect_nvenc", return_value=set()), \
              patch.object(detector, "_probe_codecs", return_value=set()), \
              patch(
                 "core.workflows.encode.hardware.detect_nvencc_available",
                 return_value=(True, {"nvencc_hevc"}),
-             ) as mocked_detect:
+             ):
             available, _ff = detector.detect("ffmpeg", nvencc_bin="/usr/bin/NVEncC")
-        assert "nvencc_hevc" not in available
-        # Important : detect_nvencc_available NE DOIT PAS être appelée car NVENC absent.
-        mocked_detect.assert_not_called()
+        assert available == {"nvencc_hevc"}
+
+    def test_nvencc_probed_without_ffmpeg_hw_codecs(self):
+        from core.workflows.encode.hardware import HardwareEncoderDetector
+
+        detector = HardwareEncoderDetector()
+        with patch.object(detector, "_compiled_hw", return_value=("/sys/ffmpeg", set())), \
+             patch(
+                "core.workflows.encode.hardware.detect_nvencc_available",
+                return_value=(True, {"nvencc_h264"}),
+             ):
+            available, ff = detector.detect("ffmpeg", nvencc_bin="/usr/bin/NVEncC")
+        assert available == {"nvencc_h264"}
+        assert ff == "ffmpeg"
 
 
 # ---------------------------------------------------------------------------

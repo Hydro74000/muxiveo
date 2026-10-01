@@ -152,4 +152,5 @@ def test_real_nvencc_preserves_rpu_after_geometry(tmp_path, variable_mp4, operat
         output_rpu = tmp_path / "output.bin"
         run(["dovi_tool", "extract-rpu", "-i", str(output), "-o", str(output_rpu)])
         # NVEncC must insert the edited RPU in the original display order.
+        assert rpu is not None
         assert export_all(output_rpu, tmp_path / "output.json") == export_all(rpu, tmp_path / "aligned.json")

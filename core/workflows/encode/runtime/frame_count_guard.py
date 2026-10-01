@@ -153,6 +153,7 @@ class FrameCountGuard:
         known_encoded_frames: int | None = None,
     ) -> FrameCountAudit:
         source_count = self._read_video_frame_count(source)
+        encoded_count: int | None
         if known_encoded_frames is not None and known_encoded_frames > 0:
             encoded_count = known_encoded_frames
         else:

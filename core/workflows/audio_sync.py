@@ -21,7 +21,8 @@ class AudioSyncError(RuntimeError):
 @dataclass(frozen=True)
 class AudioSyncTrack:
     source_path: Path
-    stream_index: int
+    # Index absolu, ou spécificateur ffmpeg (« 0:a:1 ») accepté par le scanner.
+    stream_index: int | str
 
 
 @dataclass(frozen=True)

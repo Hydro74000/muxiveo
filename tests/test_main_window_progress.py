@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 from types import MethodType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -32,6 +33,8 @@ def _french_progress_labels():
 class _FakeProgressBar:
     def __init__(self) -> None:
         self.value = 0
+        # Remplacé par un MagicMock dans certains tests.
+        self.setRange: Any = lambda *_args: None
 
     def setValue(self, value: int) -> None:
         self.value = value

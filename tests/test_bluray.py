@@ -5,6 +5,7 @@ import subprocess
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -534,7 +535,7 @@ def test_cli_inspection_accepts_explicit_bluray_playlist_id(
 
     sources, infos, tracks = inspect_sources(
         {"sources": [{"path": str(root), "playlist": 14}]},
-        SimpleNamespace(tool_ffprobe="ffprobe", tool_mediainfo="mediainfo"),
+        cast(Any, SimpleNamespace(tool_ffprobe="ffprobe", tool_mediainfo="mediainfo")),
         CommonOptions(),
         Logger(stream=StringIO()),
     )
@@ -572,7 +573,7 @@ def test_cli_inspection_auto_selects_longest_bluray_title_for_directory(
 
     sources, _infos, _tracks = inspect_sources(
         {"sources": [str(root)]},
-        SimpleNamespace(tool_ffprobe="ffprobe", tool_mediainfo="mediainfo"),
+        cast(Any, SimpleNamespace(tool_ffprobe="ffprobe", tool_mediainfo="mediainfo")),
         CommonOptions(),
         Logger(stream=StringIO()),
     )
@@ -587,7 +588,7 @@ def test_cli_inspection_rejects_missing_bluray_playlist_id(tmp_path: Path) -> No
     with pytest.raises(CliError) as exc:
         inspect_sources(
             {"sources": [{"path": str(root), "playlist": 99}]},
-            SimpleNamespace(tool_ffprobe="ffprobe", tool_mediainfo="mediainfo"),
+            cast(Any, SimpleNamespace(tool_ffprobe="ffprobe", tool_mediainfo="mediainfo")),
             CommonOptions(),
             Logger(stream=StringIO()),
         )
@@ -669,7 +670,7 @@ def test_nvencc_backend_rejects_dynamic_hdr_copy_from_bluray_playlist(tmp_path: 
     errors = NvenccEncodeBackend().validate(
         config,
         plan=None,
-        ctx=BackendContext(workflow=FakeWorkflow()),
+        ctx=BackendContext(workflow=cast(Any, FakeWorkflow())),
     )
 
     assert any("playlist Blu-ray" in error for error in errors)

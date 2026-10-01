@@ -506,7 +506,7 @@ def test_perform_dynamic_sync_audio_vs_subtitles(tmp_path, monkeypatch):
     calib = perform_dynamic_sync([src0, src1], [ref_audio, tgt_sub], AppConfig(), options, logger)
 
     assert calib == mock_calib
-    assert calib.segments[0].shift_ms == -800.0
+    assert calib is not None and calib.segments[0].shift_ms == -800.0
 
 
 def test_build_remux_config_auto_sync_flag_runs_dynamic_sync(tmp_path, monkeypatch):

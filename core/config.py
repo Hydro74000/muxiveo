@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import configparser
 import json
-import locale
 import os
 import platform
 import re
@@ -28,6 +27,7 @@ from PySide6.QtCore import QSettings, QStandardPaths
 
 from core.lang_tags import Rfc5646LanguageTags
 from core.subprocess_utils import subprocess_text_kwargs
+from core.ui_language import system_ui_language
 from core.update_check import DEFAULT_UPDATE_CHANNEL, normalize_update_channel
 from core.version import (
     APP_CONFIG_DIR_NAME,
@@ -766,21 +766,8 @@ def _default_verbose_log_dir() -> Path:
 
 
 def _default_language_code() -> str:
-    candidates: list[str | None] = [
-        os.environ.get("LC_ALL"),
-        (os.environ.get("LANGUAGE") or "").split(":", 1)[0] or None,
-        os.environ.get("LANG"),
-    ]
-    try:
-        candidates.append(locale.getlocale()[0])
-    except (TypeError, ValueError):
-        pass
-
-    for candidate in candidates:
-        code = Rfc5646LanguageTags.from_locale_name(candidate)
-        if code:
-            return code
-    return "eng"
+    """Langue UI système si prise en charge par locales.json, sinon anglais."""
+    return system_ui_language()
 
 
 def _normalize_language_code(code: str | None) -> str:
@@ -1328,7 +1315,7 @@ class AppConfig:
             self._resolve_text("ui", "update_channel", "ui/update_channel", DEFAULT_UPDATE_CHANNEL)
         )
         try:
-            self.last_update_check = float(self._settings.value("ui/last_update_check", 0) or 0)
+            self.last_update_check = float(str(self._settings.value("ui/last_update_check", 0) or 0))
         except (TypeError, ValueError):
             self.last_update_check = 0.0
         self.last_update_version = str(self._settings.value("ui/last_update_version", "") or "")

@@ -87,6 +87,7 @@ from core.workflows.encode.backends import backend_id_for_codec
 from core.workflows.encode import EncodeError
 from core.workflows.common.sync_rewrite import SYNC_REWRITE_STAGE_PREFIX
 from core.workflows.remux_models import RemuxError
+from ui.shutdown import Shutdown, defer_close
 from ui.panels.encode_panel import EncodePanel
 from ui.panels.encode_panel.theme import (
     _FPS_RE,
@@ -1034,6 +1035,13 @@ class DashboardPage(QWidget):
         for codec_id, (badge, label) in self._hw_badges.items():
             state = "available" if codec_id in available else "unavailable"
             self._apply_encoder_badge_state(badge, label, state)
+
+    def closeEvent(self, event) -> None:
+        if not hasattr(self, "_shutdown"):
+            self._shutdown = Shutdown(executors=(self._executor,))
+        if defer_close(self, event, ready=self._shutdown.done.is_set()):
+            return
+        super().closeEvent(event)
 
     # ------------------------------------------------------------------
     # Vérification manuelle des outils
@@ -2939,74 +2947,28 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(self._config.window_geometry)
 
     def closeEvent(self, event) -> None:
-        self._update_request_id += 1
-        if self._update_download_cancel is not None:
-            self._update_download_cancel.set()
+        if not hasattr(self, "_shutdown"):
+            self.setEnabled(False)
+            self._update_request_id += 1
+            if self._update_download_cancel is not None:
+                self._update_download_cancel.set()
+            self._shutdown = Shutdown(tasks=(self._signals,))
+            for name in ("_prep_progress_timer", "_op_encode_multi_reselect_timer"):
+                timer = getattr(self, name, None)
+                if timer is not None:
+                    timer.stop()
+            self._shutdown_pages = [
+                page for name in ("_dashboard", "_encode_panel", "_remux_panel",
+                                  "_dovi_panel", "_hybrid_panel", "_settings_panel")
+                if (page := getattr(self, name, None)) is not None
+            ]
+        # Chaque panneau annule et rejoint ses propres workers. Un panneau qui
+        # refuse encore sa fermeture est réessayé, sans bloquer la boucle Qt.
+        self._shutdown_pages = [page for page in self._shutdown_pages if not page.close()]
+        if defer_close(self, event, ready=self._shutdown.done.is_set() and not self._shutdown_pages):
+            return
         self._config.save_geometry(bytes(self.saveGeometry().data()))
         self._config.save()
-
-        # 1. Si une opération de workflow est en cours, l'annuler immédiatement
-        # pour forcer l'arrêt propre et la destruction de tous les processus fils (ffmpeg, etc.)
-        if self._signals is not None:
-            try:
-                self._signals.cancel()
-            except Exception:
-                pass
-
-        # 2. Arrêt des timers de la fenêtre principale
-        if hasattr(self, "_prep_progress_timer") and self._prep_progress_timer.isActive():
-            self._prep_progress_timer.stop()
-        if hasattr(self, "_op_encode_multi_reselect_timer") and self._op_encode_multi_reselect_timer.isActive():
-            self._op_encode_multi_reselect_timer.stop()
-
-        # 3. Notification explicite de fermeture aux panneaux enfants (QStackedWidget
-        # ne propage pas automatiquement closeEvent à ses pages).
-        pages = (
-            getattr(self, "_dashboard", None),
-            getattr(self, "_encode_panel", None),
-            getattr(self, "_remux_panel", None),
-            getattr(self, "_dovi_panel", None),
-            getattr(self, "_hybrid_panel", None),
-            getattr(self, "_settings_panel", None),
-        )
-        for page in pages:
-            if page is not None:
-                try:
-                    page.close()
-                except Exception:
-                    pass
-
-        # 4. Arrêt propre et non bloquant de tous les ThreadPoolExecutor connus :
-        # wait=False avec cancel_futures=True garantit qu'aucun worker bloqué
-        # ne laisse le process Muxiveo en tâche de fond (processus fantôme).
-        for page in pages:
-            if page is None:
-                continue
-            for exec_name in (
-                "_executor",
-                "executor",
-                "_command_executor",
-                "_hdr_meta_executor",
-                "_preview_executor",
-                "_path_executor",
-                "_inspection_executor",
-            ):
-                executor = getattr(page, exec_name, None)
-                if executor is not None and isinstance(executor, ThreadPoolExecutor):
-                    try:
-                        executor.shutdown(wait=False, cancel_futures=True)
-                    except Exception:
-                        pass
-
-        # 5. Nettoyage explicite des répertoires temporaires des panneaux
-        hybrid_page = getattr(self, "_hybrid_panel", None)
-        if hybrid_page is not None:
-            preview_temp = getattr(hybrid_page, "preview_temp", None)
-            if preview_temp is not None:
-                try:
-                    preview_temp.cleanup()
-                except Exception:
-                    pass
 
         verbose_logger = getattr(self, "_verbose_file_logger", None)
         if verbose_logger is not None:

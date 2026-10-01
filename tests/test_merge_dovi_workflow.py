@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -108,9 +109,9 @@ def test_step_remux_executes_native_mux_and_assembly(tmp_path: Path) -> None:
         plan.output.parent.mkdir(parents=True, exist_ok=True)
         plan.output.write_bytes(b"final_mkv")
 
-    wf._mux_native_video = _fake_mux  # type: ignore[method-assign]
-    wf._assemble_final_mkv = _fake_assemble  # type: ignore[method-assign]
-    wf._read_video_track_props = lambda _f: {  # type: ignore[method-assign]
+    cast(Any, wf)._mux_native_video = _fake_mux
+    cast(Any, wf)._assemble_final_mkv = _fake_assemble
+    cast(Any, wf)._read_video_track_props = lambda _f: {
         "pixel_width": 3840,
         "pixel_height": 2160,
         "language": "und",
@@ -168,14 +169,16 @@ def test_step_remux_passes_dovi_record_to_native_video_muxer(tmp_path: Path) -> 
         compat_ids.append(forced_compat_id)
         return fake_record
 
-    wf._build_dovi_record_from_rpu = _fake_record_fn  # type: ignore[method-assign]
+    cast(Any, wf)._build_dovi_record_from_rpu = _fake_record_fn
 
     mux_records: list[object] = []
-    wf._mux_native_video = lambda _fh, _f1, p, _vp, d_rec, _c: (  # type: ignore[method-assign]
-        mux_records.append(d_rec) or p.film1_wrapped_video.write_bytes(b"wrapped")
-    )
-    wf._assemble_final_mkv = lambda p, _f, _d: p.output.write_bytes(b"out")  # type: ignore[method-assign]
-    wf._read_video_track_props = lambda _f: {"pixel_width": 3840, "pixel_height": 2160}  # type: ignore[method-assign]
+    def _record_mux(_fh, _f1, p, _vp, d_rec, _c):
+        mux_records.append(d_rec)
+        return p.film1_wrapped_video.write_bytes(b"wrapped")
+
+    cast(Any, wf)._mux_native_video = _record_mux
+    cast(Any, wf)._assemble_final_mkv = lambda p, _f, _d: p.output.write_bytes(b"out")
+    cast(Any, wf)._read_video_track_props = lambda _f: {"pixel_width": 3840, "pixel_height": 2160}
 
     class _FakeReader:
         def __init__(self, _p): pass
@@ -201,11 +204,15 @@ def test_step_remux_incorporates_chapters_from_film2(tmp_path: Path) -> None:
     paths.film1_hevc_input.write_bytes(b"hevc")
 
     wf = MergeDoviWorkflow()
-    wf._mux_native_video = lambda _fh, _f1, p, _vp, _d, _c: p.film1_wrapped_video.write_bytes(b"wrapped")  # type: ignore[method-assign]
-    wf._read_video_track_props = lambda _f: {"pixel_width": 3840, "pixel_height": 2160}  # type: ignore[method-assign]
+    cast(Any, wf)._mux_native_video = lambda _fh, _f1, p, _vp, _d, _c: p.film1_wrapped_video.write_bytes(b"wrapped")
+    cast(Any, wf)._read_video_track_props = lambda _f: {"pixel_width": 3840, "pixel_height": 2160}
 
     captured_plans = []
-    wf._assemble_final_mkv = lambda p, _f, _d: captured_plans.append(p) or p.output.write_bytes(b"out")  # type: ignore[method-assign]
+    def _capture_plan(p, _f, _d):
+        captured_plans.append(p)
+        return p.output.write_bytes(b"out")
+
+    cast(Any, wf)._assemble_final_mkv = _capture_plan
 
     class _FakeReader:
         def __init__(self, p): self.p = p
@@ -247,7 +254,7 @@ def test_patch_dovi_block_addition_invokes_editor(tmp_path: Path, monkeypatch: p
     paths.film2_rpu.write_bytes(b"rpu")
     wf = MergeDoviWorkflow()
     record = object()
-    wf._build_dovi_record_from_rpu = lambda _rpu, **_kw: record  # type: ignore[method-assign]
+    cast(Any, wf)._build_dovi_record_from_rpu = lambda _rpu, **_kw: record
     patched: list[tuple[Path, object]] = []
 
     class _PatchResult:
@@ -346,7 +353,7 @@ def test_validate_sdr_film1_enables_assisted_hdr10_conversion(
         return ""
 
     wf._mediainfo = _mediainfo  # type: ignore[method-assign, assignment]
-    wf._read_static_hdr_metadata = lambda path: (  # type: ignore[method-assign]
+    cast(Any, wf)._read_static_hdr_metadata = lambda path: (
         StaticHdrMetadata()
         if path == film1
         else StaticHdrMetadata(
@@ -403,7 +410,7 @@ def test_framecount_large_delta_allowed_for_sdr_conversion_only(tmp_path: Path) 
 
     wf = MergeDoviWorkflow()
     counts = {film1: 1000, film2: 1020}
-    wf._get_framecount = lambda path: counts[path]  # type: ignore[method-assign]
+    cast(Any, wf)._get_framecount = lambda path: counts[path]
 
     with pytest.raises(WorkflowError, match="Écart de 20 frames"):
         wf._step_framecount(film1, film2)
@@ -428,15 +435,15 @@ def test_run_sdr_large_frame_delta_converts_without_metadata_injection(tmp_path:
     calls: list[str] = []
     remux_flags: list[HDRFlags] = []
 
-    wf._step_validate = lambda *_args: ValidationContext(  # type: ignore[method-assign]
+    cast(Any, wf)._step_validate = lambda *_args: ValidationContext(
         flags=HDRFlags(has_dovi=True, has_hdr10plus=True),
         static_film1=StaticHdrMetadata(),
         static_film2=static,
         film1_needs_sdr_to_hdr10=True,
         film2_has_hdr10_reference=True,
     )
-    wf._step_detect_dovi = lambda *_args: None  # type: ignore[method-assign]
-    wf._step_framecount = lambda *_args, **_kwargs: FrameCountResult(1000, 1020, 20)  # type: ignore[method-assign]
+    cast(Any, wf)._step_detect_dovi = lambda *_args: None
+    cast(Any, wf)._step_framecount = lambda *_args, **_kwargs: FrameCountResult(1000, 1020, 20)
 
     def _extract_hevc(_film1, _film2, step_paths, flags, routing) -> None:
         calls.append("extract_hevc")
@@ -467,10 +474,10 @@ def test_run_sdr_large_frame_delta_converts_without_metadata_injection(tmp_path:
     wf._step_extract_metadata = _extract_metadata  # type: ignore[method-assign, assignment]
     wf._step_inject_dovi = _inject_dovi  # type: ignore[method-assign, assignment]
     wf._step_inject_hdr10plus = _inject_hdr10plus  # type: ignore[method-assign, assignment]
-    wf._step_inject_static_hdr = lambda *_args: False  # type: ignore[method-assign]
-    wf._step_verify = lambda *_args, **_kwargs: calls.append("verify")  # type: ignore[method-assign]
+    cast(Any, wf)._step_inject_static_hdr = lambda *_args: False
+    cast(Any, wf)._step_verify = lambda *_args, **_kwargs: calls.append("verify")
     wf._step_remux = _remux  # type: ignore[method-assign, assignment]
-    wf._step_cleanup = lambda *_args: calls.append("cleanup")  # type: ignore[method-assign]
+    cast(Any, wf)._step_cleanup = lambda *_args: calls.append("cleanup")
 
     wf._run(film1, film2, paths, DoviProfile.P8_1)
 
@@ -536,7 +543,7 @@ def test_step_inject_dovi_uses_film2_p8_when_converted(
         Path(cmd[cmd.index("-o") + 1]).write_bytes(b"x")
         return ""
 
-    wf._run_cmd = _fake_run_cmd  # type: ignore[method-assign]
+    cast(Any, wf)._run_cmd = _fake_run_cmd
 
     wf._step_inject_dovi(paths, flags, DoviProfile.P8_1)
 

@@ -215,7 +215,8 @@ def test_studio_witness_table_lists_typed_tracks(qt_app):
 
     assert dialog.witness_table.rowCount() == 4
     assert [item["type"] for item in dialog.witness_track_items] == ["video", "audio", "audio", "subtitle"]
-    assert dialog.witness_table.item(2, 4).text() == "ac3 VFF"
+    codec_item = dialog.witness_table.item(2, 4)
+    assert codec_item is not None and codec_item.text() == "ac3 VFF"
     assert dialog.apply_recipe_btn.isEnabled()
     dialog.apply_witness_recipe()
     assert dialog.recipe.keep_master_video and dialog.recipe.donor_audio_langs == ["fre"]

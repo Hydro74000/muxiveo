@@ -30,6 +30,12 @@ _SETUP = "Muxiveo-Setup-99.0.0.exe"
 _PAYLOAD = b"nouvelle version" * 1000
 
 
+def _selected(*args, **kwargs):
+    asset = select_asset(*args, **kwargs)
+    assert asset is not None
+    return asset
+
+
 def _asset(name: str, size: int = 0) -> ReleaseAsset:
     return ReleaseAsset(name=name, url=f"{RELEASE_DOWNLOAD_URL_PREFIX}v99.0.0/{name}", size=size)
 
@@ -72,9 +78,9 @@ def test_manual_update_hint():
 
 def test_select_asset_and_can_self_update():
     info = _info(_APPIMAGE, _SETUP, "SHA256SUMS", "Muxiveo-99.0.0.dmg")
-    assert select_asset(info, InstallKind.APPIMAGE, machine="x86_64").name == _APPIMAGE
+    assert _selected(info, InstallKind.APPIMAGE, machine="x86_64").name == _APPIMAGE
     assert select_asset(info, InstallKind.APPIMAGE, machine="aarch64") is None
-    assert select_asset(info, InstallKind.WINDOWS_INSTALLER).name == _SETUP
+    assert _selected(info, InstallKind.WINDOWS_INSTALLER).name == _SETUP
     assert select_asset(info, InstallKind.UNSUPPORTED) is None
     assert can_self_update(info, InstallKind.WINDOWS_INSTALLER)
     assert not can_self_update(_info(_SETUP), InstallKind.WINDOWS_INSTALLER)
@@ -83,8 +89,8 @@ def test_select_asset_and_can_self_update():
 def test_select_asset_matches_unstable_names():
     unstable = "4.0.0-unstable.20260923.46.51df45c"
     info = _info(f"Muxiveo-x86_64_allinc-{unstable}.AppImage", f"Muxiveo-x86_64_allinc-{unstable}.AppImage.zsync", f"Muxiveo-Setup-{unstable}.exe")
-    assert select_asset(info, InstallKind.APPIMAGE, machine="x86_64").name.endswith(".AppImage")
-    assert select_asset(info, InstallKind.WINDOWS_INSTALLER).name == f"Muxiveo-Setup-{unstable}.exe"
+    assert _selected(info, InstallKind.APPIMAGE, machine="x86_64").name.endswith(".AppImage")
+    assert _selected(info, InstallKind.WINDOWS_INSTALLER).name == f"Muxiveo-Setup-{unstable}.exe"
 
 
 def test_select_asset_distinguishes_standard_and_allinc_windows(tmp_path, monkeypatch):
@@ -105,11 +111,11 @@ def test_select_asset_distinguishes_standard_and_allinc_windows(tmp_path, monkey
     monkeypatch.setattr(sys, "executable", str(exe))
 
     # Sans marqueur _ALLINC -> sélectionne l'installeur standard
-    assert select_asset(info, InstallKind.WINDOWS_INSTALLER).name == "Muxiveo-Setup-99.0.0.exe"
+    assert _selected(info, InstallKind.WINDOWS_INSTALLER).name == "Muxiveo-Setup-99.0.0.exe"
 
     # Avec marqueur _ALLINC -> sélectionne l'installeur AllInc
     (exe_dir / "_ALLINC").touch()
-    assert select_asset(info, InstallKind.WINDOWS_INSTALLER).name == "Muxiveo-Setup-AllInc-99.0.0.exe"
+    assert _selected(info, InstallKind.WINDOWS_INSTALLER).name == "Muxiveo-Setup-AllInc-99.0.0.exe"
 
 
 def test_parse_checksums_accepts_binary_marker():

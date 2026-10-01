@@ -25,9 +25,10 @@ def _ensure_qcore_app(argv: list[str] | None = None) -> QCoreApplication:
 
 def _configure_io_encoding() -> None:
     for stream in (sys.stdout, sys.stderr):
-        if stream and hasattr(stream, "reconfigure"):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
             try:
-                stream.reconfigure(encoding="utf-8", errors="replace")
+                reconfigure(encoding="utf-8", errors="replace")
             except Exception:  # nosec B110
                 pass
 

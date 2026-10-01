@@ -20,7 +20,10 @@ from pathlib import Path
 from typing import Callable, Protocol, Sequence
 
 from core.runner import TaskCancelledError
-from core.subprocess_utils import kill_process_tree, subprocess_text_kwargs
+from core.subprocess_utils import (
+    kill_process_tree, subprocess_text_kwargs, subprocess_windows_no_window_kwargs,
+    watch_process_cancellation,
+)
 from core.workflows.common.ffmpeg_runtime import cli_path as _cli_path
 from core.workflows.remux_models import RemuxError, SourceInput
 
@@ -372,19 +375,12 @@ class FfmpegTimelineSync:
             ext = ".mka" if track_type == "audio" else ".mks"
             out_name = f"sync_mmap_f{src_file_index}_s{stream_index}_{track_type}{ext}"
             out_path = self._unique_path(tmp_dir, out_name)
-            try:
-                self._extract_stream_via_mmap(
-                    source=src.path,
-                    stream_index=stream_index,
-                    destination=out_path,
-                    cancel_cb=cancel_cb,
-                )
-            except TypeError:
-                self._extract_stream_via_mmap(
-                    source=src.path,
-                    stream_index=stream_index,
-                    destination=out_path,
-                )
+            self._extract_stream_via_mmap(
+                source=src.path,
+                stream_index=stream_index,
+                destination=out_path,
+                cancel_cb=cancel_cb,
+            )
             outputs[key] = out_path
 
         prepared: list[SyncPreparedInput] = []
@@ -518,7 +514,7 @@ class FfmpegTimelineSync:
                     input_idx=base_input_idx + i,
                     container_format="nut",
                 ))
-        except Exception:
+        except BaseException:
             LiveSyncSession(
                 inputs=inputs,
                 processes=processes,
@@ -547,9 +543,7 @@ class FfmpegTimelineSync:
         base_input_idx: int,
         cancel_cb: Callable[[], bool] | None = None,
     ) -> LiveSyncSession:
-        # Import local: évite de charger ctypes/wintypes hors Windows.
-        import ctypes
-        from ctypes import wintypes
+        from core.windows_named_pipe import WindowsNamedPipe
 
         source_by_index = {src.file_index: src for src in sources}
         ordered_keys = self._collect_foreign_targets(
@@ -560,85 +554,10 @@ class FfmpegTimelineSync:
         if not ordered_keys:
             return LiveSyncSession(inputs=[], processes=[], named_pipe_paths=[])
 
-        windll_factory = getattr(ctypes, "WinDLL", None)
-        if windll_factory is None:
-            raise LiveSyncNotSupportedError(
-                "ctypes.WinDLL indisponible sur cette plateforme."
-            )
-        kernel32 = windll_factory("kernel32", use_last_error=True)
-        invalid_handle = ctypes.c_void_p(-1).value
-        error_pipe_connected = 535
-        pipe_access_outbound = 0x00000002
-        pipe_type_byte = 0x00000000
-        pipe_readmode_byte = 0x00000000
-        pipe_wait = 0x00000000
-
-        class _NamedPipeWrapper:
-            def __init__(self, name: str, handle) -> None:
-                self.name = name
-                self.handle = handle
-                self.closed = False
-                self.lock = threading.Lock()
-
-            def unblock_and_cancel(self) -> None:
-                with self.lock:
-                    if self.closed or not self.handle:
-                        return
-                    try:
-                        kernel32.CancelIoEx(self.handle, None)
-                    except Exception:
-                        pass
-                    try:
-                        kernel32.DisconnectNamedPipe(self.handle)
-                    except Exception:
-                        pass
-                try:
-                    def _poke():
-                        try:
-                            with open(self.name, "rb"):
-                                pass
-                        except Exception:
-                            pass
-                    poke_t = threading.Thread(target=_poke, daemon=True)
-                    poke_t.start()
-                    poke_t.join(timeout=0.05)
-                except Exception:
-                    pass
-
-            def close(self) -> None:
-                with self.lock:
-                    if self.closed:
-                        return
-                    self.closed = True
-                    h = self.handle
-                    self.handle = None
-                if h is not None and h != invalid_handle:
-                    try:
-                        kernel32.CloseHandle(h)
-                    except Exception:
-                        pass
-
-        def _create_named_pipe(pipe_name: str):
-            handle = kernel32.CreateNamedPipeW(
-                pipe_name,
-                pipe_access_outbound,
-                pipe_type_byte | pipe_readmode_byte | pipe_wait,
-                1,
-                1 << 20,
-                1 << 20,
-                0,
-                None,
-            )
-            if handle == invalid_handle:
-                raise LiveSyncNotSupportedError(
-                    f"Création named pipe impossible sur cette plateforme/FS: {pipe_name}"
-                )
-            return handle
-
         inputs: list[SyncPreparedInput] = []
         processes: list[subprocess.Popen] = []
         threads: list[threading.Thread] = []
-        pipe_wrappers: list[_NamedPipeWrapper] = []
+        pipe_wrappers: list[WindowsNamedPipe] = []
         pipe_paths: list[str] = []
 
         try:
@@ -656,8 +575,7 @@ class FfmpegTimelineSync:
 
                 # Exemple final: \\.\pipe\Muxiveo_sync_<uuid>
                 pipe_name = rf"\\.\pipe\Muxiveo_sync_{uuid.uuid4().hex}"
-                handle = _create_named_pipe(pipe_name)
-                pipe_obj = _NamedPipeWrapper(pipe_name, handle)
+                pipe_obj = WindowsNamedPipe(pipe_name)
                 pipe_wrappers.append(pipe_obj)
                 pipe_paths.append(pipe_name)
 
@@ -676,57 +594,17 @@ class FfmpegTimelineSync:
                 self._log("$ " + " ".join(str(c) for c in cmd))
                 proc = subprocess.Popen(
                     cmd,
-                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     bufsize=0,
+                    **subprocess_windows_no_window_kwargs(),
                 )
                 processes.append(proc)
 
-                def _pump_stdout_to_named_pipe(
-                    process: subprocess.Popen,
-                    pipe: _NamedPipeWrapper,
-                    pipe_label: str,
-                ) -> None:
-                    stdout = process.stdout
-                    if stdout is None:
-                        pipe.close()
-                        return
-                    try:
-                        connected = kernel32.ConnectNamedPipe(pipe.handle, None)
-                        if not connected:
-                            err = int(kernel32.GetLastError())
-                            if err != error_pipe_connected:
-                                return
-                        while not pipe.closed:
-                            chunk = stdout.read(64 * 1024)
-                            if not chunk or pipe.closed:
-                                break
-                            written = wintypes.DWORD(0)
-                            ok = kernel32.WriteFile(
-                                pipe.handle,
-                                chunk,
-                                len(chunk),
-                                ctypes.byref(written),
-                                None,
-                            )
-                            if not ok:
-                                break
-                    finally:
-                        try:
-                            kernel32.DisconnectNamedPipe(pipe.handle)
-                        except Exception:
-                            pass
-                        pipe.close()
-                        try:
-                            stdout.close()
-                        except Exception:
-                            pass
-                        self._log(f"Timeline sync live: fermeture pipe {pipe_label}")
-
+                assert proc.stdout is not None
                 thread = threading.Thread(
-                    target=_pump_stdout_to_named_pipe,
-                    args=(proc, pipe_obj, pipe_name),
+                    target=pipe_obj.pump,
+                    args=(proc.stdout,),
                     daemon=True,
                     name=f"muxiveo-pipe-{i}",
                 )
@@ -739,19 +617,13 @@ class FfmpegTimelineSync:
                     input_idx=base_input_idx + i,
                 ))
 
-        except Exception:
-            def _make_cleanup_cb(w: _NamedPipeWrapper) -> Callable[[], None]:
-                def _cleanup() -> None:
-                    w.unblock_and_cancel()
-                    w.close()
-                return _cleanup
-
+        except BaseException:
             session = LiveSyncSession(
                 inputs=inputs,
                 processes=processes,
                 named_pipe_paths=pipe_paths,
                 _threads=threads,
-                _cleanup_callbacks=[_make_cleanup_cb(w) for w in pipe_wrappers],
+                _cleanup_callbacks=[pipe.cancel for pipe in pipe_wrappers],
             )
             session.close()
             raise
@@ -760,19 +632,12 @@ class FfmpegTimelineSync:
             "Timeline sync live (multi-source):"
             f"{len(inputs)} named pipe(s) actives pour le remux final."
         )
-        def _cleanup_callback(wrapper: _NamedPipeWrapper) -> Callable[[], None]:
-            def _cleanup() -> None:
-                wrapper.unblock_and_cancel()
-                wrapper.close()
-            return _cleanup
-
-        cleanup_callbacks = [_cleanup_callback(w) for w in pipe_wrappers]
         return LiveSyncSession(
             inputs=inputs,
             processes=processes,
             named_pipe_paths=pipe_paths,
             _threads=threads,
-            _cleanup_callbacks=cleanup_callbacks,
+            _cleanup_callbacks=[pipe.cancel for pipe in pipe_wrappers],
         )
 
     @staticmethod
@@ -894,10 +759,10 @@ class FfmpegTimelineSync:
 
         proc = subprocess.Popen(
             cmd,
-            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             bufsize=0,
+            **subprocess_windows_no_window_kwargs(),
         )
 
         # Drain stderr en parallèle : sinon ffmpeg bloque dès que le tampon
@@ -914,6 +779,8 @@ class FfmpegTimelineSync:
                     stderr_chunks.append(chunk)
             except Exception:
                 pass
+            finally:
+                stderr.close()
 
         stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
         stderr_thread.start()
@@ -923,52 +790,48 @@ class FfmpegTimelineSync:
         written = 0
 
         try:
-            with open(destination, "w+b") as fh:
-                fh.truncate(initial_size)
-                mm = mmap.mmap(fh.fileno(), initial_size, access=mmap.ACCESS_WRITE)
-                allocated = initial_size
-
-                stdout = proc.stdout
-                if stdout is None:
-                    raise RemuxError("Flux stdout indisponible pour l'extraction mmap.")
-
-                while True:
-                    if cancel_cb is not None and cancel_cb():
-                        raise TaskCancelledError()
-                    chunk = stdout.read(max_chunk)
-                    if not chunk:
-                        break
-                    needed = written + len(chunk)
-                    if needed > allocated:
-                        new_size = allocated
-                        while new_size < needed:
-                            new_size *= 2
+            with watch_process_cancellation(proc, cancel_cb):
+                with open(destination, "w+b") as fh:
+                    fh.truncate(initial_size)
+                    mm = mmap.mmap(fh.fileno(), initial_size, access=mmap.ACCESS_WRITE)
+                    allocated = initial_size
+                    try:
+                        stdout = proc.stdout
+                        if stdout is None:
+                            raise RemuxError("Flux stdout indisponible pour l'extraction mmap.")
+                        while True:
+                            if cancel_cb is not None and cancel_cb():
+                                raise TaskCancelledError()
+                            chunk = stdout.read(max_chunk)
+                            if not chunk:
+                                break
+                            needed = written + len(chunk)
+                            if needed > allocated:
+                                new_size = allocated
+                                while new_size < needed:
+                                    new_size *= 2
+                                mm.close()
+                                fh.truncate(new_size)
+                                mm = mmap.mmap(fh.fileno(), new_size, access=mmap.ACCESS_WRITE)
+                                allocated = new_size
+                            mm[written:written + len(chunk)] = chunk
+                            written += len(chunk)
                         mm.flush()
+                    finally:
                         mm.close()
-                        fh.truncate(new_size)
-                        mm = mmap.mmap(fh.fileno(), new_size, access=mmap.ACCESS_WRITE)
-                        allocated = new_size
-                    mm[written:written + len(chunk)] = chunk
-                    written += len(chunk)
-
-                mm.flush()
-                mm.close()
-                fh.truncate(written)
+                    fh.truncate(written)
+                # EOF n'est pas la fin du processus : laisser FFmpeg se terminer.
+                proc.wait(timeout=1200)
+                if cancel_cb is not None and cancel_cb():
+                    raise TaskCancelledError()
+        except BaseException:
+            kill_process_tree(proc, timeout=0.2)
+            raise
         finally:
-            if proc.poll() is None:
-                kill_process_tree(proc, timeout=0.2)
-            else:
-                try:
-                    proc.wait(timeout=1.0)
-                except Exception:
-                    pass
-            stderr_thread.join(timeout=1.0)
+            stderr_thread.join()
             for stream in (proc.stdout, proc.stderr):
                 if stream is not None:
-                    try:
-                        stream.close()
-                    except Exception:
-                        pass
+                    stream.close()
 
         stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace").strip()
         if proc.returncode != 0 or written == 0 or not destination.exists():

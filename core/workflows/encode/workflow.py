@@ -2103,6 +2103,7 @@ class EncodeWorkflow(QObject):
         )
         if active_inner is not None:
             active_inner["signals"] = encode_signals
+        signals.link_workers(encode_signals)
         previous_generate_nfo = self._generate_nfo
         self._generate_nfo = False
         try:

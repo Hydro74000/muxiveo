@@ -115,7 +115,7 @@ class SubtitleSyncScanner:
                     continue
         return cues
 
-    def extract_cues(self, source_path: Path, stream_index: int | None = None) -> list[SubtitleCue]:
+    def extract_cues(self, source_path: Path, stream_index: int | str | None = None) -> list[SubtitleCue]:
         source_path = Path(source_path)
         if not source_path.exists():
             raise SubtitleSyncError(f"Fichier introuvable : {source_path}")
@@ -358,9 +358,9 @@ class SubtitleSyncScanner:
             ref_track = AudioSyncTrack(reference_source, reference_stream_index)
             # Analyser les premières minutes (ou fenêtres significatives)
             duration_s = min(300.0, audio_scanner.duration(ref_track))
-            samples = audio_scanner.samples(ref_track, 0.0, duration_s)
+            ref_samples = audio_scanner.samples(ref_track, 0.0, duration_s)
             offset_ms, confidence = self.correlate_audio_and_cues(
-                samples,
+                ref_samples,
                 tgt_cues,
                 sample_rate=16000,
                 start_time_ms=0.0,

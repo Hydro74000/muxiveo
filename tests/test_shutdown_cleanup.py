@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import Any
 
 from core.subprocess_utils import kill_process_tree
 from core.workflows.remux_timeline_sync import LiveSyncSession
@@ -22,7 +23,7 @@ def test_kill_process_tree_mock_without_methods() -> None:
 
 
 def test_kill_process_tree_real_process() -> None:
-    cmd = ["sleep", "10"] if sys.platform != "win32" else ["timeout", "/t", "10"]
+    cmd = [sys.executable, "-c", "import time; time.sleep(30)"]
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -31,8 +32,10 @@ def test_kill_process_tree_real_process() -> None:
     assert proc.poll() is None
     kill_process_tree(proc, timeout=1.0)
     assert proc.poll() is not None
-    assert proc.stdout is not None and proc.stdout.closed
-    assert proc.stderr is not None and proc.stderr.closed
+    # The owner can finish reading EOF and closes the streams itself.
+    assert proc.stdout is not None and not proc.stdout.closed
+    assert proc.stderr is not None and not proc.stderr.closed
+    assert proc.communicate(timeout=5) == (b"", b"")
 
 
 def test_live_sync_session_close_idempotent(tmp_path: Path) -> None:
@@ -69,47 +72,198 @@ def test_live_sync_session_close_idempotent(tmp_path: Path) -> None:
 
 
 def test_main_window_close_event_lifecycle(qt_app) -> None:
+    import time
     from concurrent.futures import ThreadPoolExecutor
     from unittest.mock import MagicMock
-    from PySide6.QtWidgets import QMainWindow
-    from ui.main_window import MainWindow
-
-    class _TestWindow(MainWindow):
-        def __init__(self) -> None:
-            QMainWindow.__init__(self)
-
-    dummy = _TestWindow()
-    dummy._update_request_id = 0
-    dummy._update_download_cancel = threading.Event()
-    dummy._config = MagicMock()
-    dummy.saveGeometry = MagicMock(return_value=MagicMock(data=lambda: b"geom"))
-
-    dummy._signals = MagicMock()
-    dummy._prep_progress_timer = MagicMock(isActive=lambda: True)
-    dummy._op_encode_multi_reselect_timer = MagicMock(isActive=lambda: True)
-
-    fake_executor = ThreadPoolExecutor(max_workers=1)
-    mock_panel = MagicMock()
-    mock_panel._executor = fake_executor
-    mock_hybrid = MagicMock()
-    mock_hybrid.preview_temp = MagicMock()
-
-    dummy._dashboard = mock_panel
-    dummy._encode_panel = mock_panel
-    dummy._remux_panel = mock_panel
-    dummy._dovi_panel = mock_panel
-    dummy._hybrid_panel = mock_hybrid
-    dummy._settings_panel = mock_panel
-    dummy._verbose_file_logger = MagicMock()
-
+    from PySide6.QtWidgets import QMainWindow, QWidget
     from PySide6.QtGui import QCloseEvent
-    event = QCloseEvent()
-    dummy.closeEvent(event)
+    from core.runner import TaskSignals
+    from ui.main_window import MainWindow
+    from ui.panels.remux_panel.panel import RemuxPanel
 
-    dummy._signals.cancel.assert_called_once()
-    dummy._prep_progress_timer.stop.assert_called_once()
-    dummy._op_encode_multi_reselect_timer.stop.assert_called_once()
-    assert mock_panel.close.call_count >= 1
-    assert fake_executor._shutdown
-    mock_hybrid.preview_temp.cleanup.assert_called_once()
-    dummy._verbose_file_logger.close.assert_called_once()
+    started = threading.Event()
+    release = threading.Event()
+    executor = ThreadPoolExecutor(max_workers=1)
+    def work():
+        started.set()
+        release.wait(5)
+    future = executor.submit(work)
+    assert started.wait(5)
+    queued = executor.submit(lambda: None)
+
+    class Panel(RemuxPanel):
+        def __init__(self):
+            QWidget.__init__(self)
+            self._scan_cancel = threading.Event()
+            self._preview_timer = MagicMock()
+            self._executor = executor
+            self._preview_executor = ThreadPoolExecutor(max_workers=1)
+            self._path_executor = ThreadPoolExecutor(max_workers=1)
+            self._inspection_executor = ThreadPoolExecutor(max_workers=1)
+
+    class Window(MainWindow):
+        def __init__(self):
+            QMainWindow.__init__(self)
+            self._update_request_id = 0
+            self._update_download_cancel = threading.Event()
+            self._config = MagicMock()
+            self._signals = TaskSignals()
+            self._prep_progress_timer = MagicMock()
+            self._op_encode_multi_reselect_timer = MagicMock()
+            self._remux_panel = Panel()
+            self._verbose_file_logger = MagicMock()
+
+    window = Window()
+    fake: Any = window  # Attributs remplacés par des MagicMock.
+    try:
+        event = QCloseEvent()
+        start = time.monotonic()
+        window.closeEvent(event)
+        assert time.monotonic() - start < 0.5
+        assert not event.isAccepted()
+        assert window._remux_panel._scan_cancel.is_set()
+        assert queued.cancelled()
+        fake._config.save.assert_not_called()
+        fake._verbose_file_logger.close.assert_not_called()
+        release.set()
+        assert window._remux_panel._shutdown.done.wait(5)
+        assert future.done()
+        # Main workflow is independent of panel executors: also await its end.
+        event = QCloseEvent()
+        window.closeEvent(event)
+        assert not event.isAccepted()
+        fake._signals.cancelled.emit()
+        assert window._shutdown.done.wait(5)
+        event = QCloseEvent()
+        window.closeEvent(event)
+        assert event.isAccepted()
+        fake._config.save.assert_called_once()
+        fake._verbose_file_logger.close.assert_called_once()
+        fake._prep_progress_timer.stop.assert_called_once()
+        fake._op_encode_multi_reselect_timer.stop.assert_called_once()
+    finally:
+        release.set()
+        fake._signals.cancelled.emit()
+        executor.shutdown()
+        window.close()
+
+
+def test_hybrid_close_keeps_temp_files_until_worker_finishes(qt_app, tmp_path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    import tempfile
+    from PySide6.QtWidgets import QWidget
+    from PySide6.QtGui import QCloseEvent
+    from ui.panels.hybrid_studio import HybridStudio
+
+    class Panel(HybridStudio):
+        def __init__(self):
+            QWidget.__init__(self)
+            self.executor = ThreadPoolExecutor(max_workers=1)
+            self.cancel_event = threading.Event()
+            self.signals = None
+            self.preview_temp = tempfile.TemporaryDirectory(dir=tmp_path)
+
+    panel = Panel()
+    root = Path(panel.preview_temp.name)
+    started, release = threading.Event(), threading.Event()
+    def work():
+        started.set()
+        assert release.wait(5)
+        (root / 'last-write').write_bytes(b'data')
+    future = panel.executor.submit(work)
+    assert started.wait(5)
+    try:
+        event = QCloseEvent()
+        panel.closeEvent(event)
+        assert not event.isAccepted()
+        assert root.exists()
+        assert panel.cancel_event.is_set()
+        release.set()
+        assert panel._shutdown.done.wait(5)
+        future.result()
+        assert (root / 'last-write').read_bytes() == b'data'
+        event = QCloseEvent()
+        panel.closeEvent(event)
+        assert event.isAccepted()
+        assert not root.exists()
+    finally:
+        release.set()
+        panel.executor.shutdown()
+        panel.close()
+
+
+def test_application_exits_after_cancelling_its_worker(tmp_path) -> None:
+    """Check actual interpreter exit, not just closeEvent returning."""
+    import os
+    import textwrap
+    script = textwrap.dedent('''
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QApplication, QWidget
+        from PySide6.QtGui import QCloseEvent
+        from ui.shutdown import Shutdown, defer_close
+        app = QApplication([])
+        release = threading.Event()
+        executor = ThreadPoolExecutor(max_workers=1)
+        executor.submit(release.wait)
+        class Window(QWidget):
+            def closeEvent(self, event):
+                if not hasattr(self, '_shutdown'):
+                    release.set()
+                    self._shutdown = Shutdown(executors=(executor,))
+                if defer_close(self, event, ready=self._shutdown.done.is_set()):
+                    return
+                super().closeEvent(event)
+        window = Window()
+        window.show()
+        QTimer.singleShot(0, window.close)
+        QTimer.singleShot(4000, lambda: app.exit(7))
+        raise SystemExit(app.exec())
+    ''')
+    result = subprocess.run(
+        [sys.executable, '-c', script],
+        env={**os.environ, 'QT_QPA_PLATFORM': 'offscreen'},
+        capture_output=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors='replace')
+
+
+def test_shutdown_waits_for_workflow_finally_after_terminal_signal(qt_app):
+    from concurrent.futures import ThreadPoolExecutor
+    from core.runner import TaskSignals
+    from ui.shutdown import Shutdown
+
+    signals = TaskSignals()
+    cleanup_started, cleanup_release = threading.Event(), threading.Event()
+    def work():
+        try:
+            signals.finished.emit('complete')
+        finally:
+            cleanup_started.set()
+            assert cleanup_release.wait(5)
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = signals.watch_future(executor.submit(work))
+    executor.shutdown(wait=False)
+    assert cleanup_started.wait(5)
+    shutdown = Shutdown(tasks=(signals,))
+    try:
+        assert not shutdown.done.wait(0.05)
+        cleanup_release.set()
+        assert shutdown.done.wait(5)
+        assert future.done()
+    finally:
+        cleanup_release.set()
+        executor.shutdown()
+
+
+def test_shutdown_accepts_cancelled_queued_work(qt_app):
+    from concurrent.futures import Future
+    from core.runner import TaskSignals
+    from ui.shutdown import Shutdown
+
+    signals = TaskSignals()
+    future = signals.watch_future(Future())
+    assert future.cancel()
+    shutdown = Shutdown(tasks=(signals,))
+    assert shutdown.done.wait(5)

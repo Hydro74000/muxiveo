@@ -10,7 +10,7 @@ Ces tests :
 Skippés automatiquement si :
 - ffmpeg n'est pas dans le PATH ;
 - NVEncC n'est pas détecté ;
-- aucun GPU NVIDIA accessible (gate `--check-features`).
+- aucun GPU NVIDIA accessible (gate `--check-hw`).
 
 Doivent tourner dans la distrobox configurée pour NVIDIA (CUDA + driver host).
 """
@@ -320,8 +320,9 @@ class TestRealHardwareDetection:
         from core.workflows.encode.hardware import HardwareEncoderDetector
 
         detector = HardwareEncoderDetector()
+        # NVEncC est exposé même si NVENC ffmpeg est indisponible (pilote plus
+        # ancien que l'API exigée par le ffmpeg fourni).
         available, _ff = detector.detect("ffmpeg", nvencc_bin=NVENCC)
-        assert "hevc_nvenc" in available, "NVENC ffmpeg requis pour exposer NVEncC"
         assert "nvencc_hevc" in available
         assert "nvencc_h264" in available
 

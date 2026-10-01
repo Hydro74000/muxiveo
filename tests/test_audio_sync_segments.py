@@ -1,6 +1,9 @@
 """Mesures de contenu : les jonctions détectées doivent correspondre aux edits réels."""
 from __future__ import annotations
 
+import threading
+from typing import Any, cast
+
 import numpy as np
 import pytest
 
@@ -106,7 +109,8 @@ def test_ui_reports_failed_analysis_without_constant_offset_fallback(monkeypatch
         exec=lambda: QDialog.DialogCode.Accepted, selected_entry=lambda: reference,
     ))
 
-    def fail(*_a, **_k):
+    def fail(scanner, *_a, **_k):
+        assert scanner.cancel_event is fake._scan_cancel
         raise AudioSyncError("Jonction non vérifiée")
 
     def forbidden(*_a, **_k):
@@ -116,6 +120,7 @@ def test_ui_reports_failed_analysis_without_constant_offset_fallback(monkeypatch
     monkeypatch.setattr(AudioSyncWorkflow, "detect_offset", forbidden)
     errors = []
     fake = SimpleNamespace(
+        _scan_cancel=threading.Event(),
         _audio_sync_family=lambda _entry: "surround",
         _audio_sync_reference_choices=lambda _entry: [reference],
         _audio_sync_track=lambda entry: entry,
@@ -126,7 +131,7 @@ def test_ui_reports_failed_analysis_without_constant_offset_fallback(monkeypatch
         _audio_sync_done=SimpleNamespace(emit=forbidden),
         _executor=SimpleNamespace(submit=lambda callback: callback()),
     )
-    panel.RemuxPanel._on_audio_sync_requested(fake, target)
+    panel.RemuxPanel._on_audio_sync_requested(cast(Any, fake), cast(Any, target))
     assert errors == [("target", "Jonction non vérifiée")]
 
 

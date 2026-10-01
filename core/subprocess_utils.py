@@ -11,7 +11,9 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from collections.abc import Mapping
+import threading
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from typing import Any
 
 
@@ -143,14 +145,13 @@ def format_returncode(returncode: int | None) -> str:
 
 def kill_process_tree(proc: subprocess.Popen | None, timeout: float = 0.5) -> None:
     """
-    Termine brutalement un processus et l'arbre de ses sous-processus.
+    Tue le processus (et ses descendants sous Windows), puis attend brièvement.
 
     Sous Windows :
       - `proc.kill()` (TerminateProcess) ne tue pas les enfants créés par l'outil.
       - `taskkill /F /T /PID <pid>` force l'arrêt récursif de tout l'arbre.
-      - Les flux stdin/stdout/stderr du Popen sont fermés pour débloquer immédiatement
-        les boucles de lecture ou threads de pompage.
-      - Un court `proc.wait(timeout)` permet à l'OS de libérer le handle du processus.
+    Les flux appartiennent au worker : les fermer ici peut bloquer sur le verrou
+    d'un lecteur ou lui faire lever ValueError. Le worker les ferme après EOF.
     """
     if proc is None:
         return
@@ -183,14 +184,6 @@ def kill_process_tree(proc: subprocess.Popen | None, timeout: float = 0.5) -> No
         except OSError:
             pass
 
-    for attr in ("stdin", "stdout", "stderr"):
-        stream = getattr(proc, attr, None)
-        if stream is not None:
-            try:
-                stream.close()
-            except Exception:
-                pass
-
     wait = getattr(proc, "wait", None)
     if callable(wait):
         try:
@@ -198,3 +191,33 @@ def kill_process_tree(proc: subprocess.Popen | None, timeout: float = 0.5) -> No
         except Exception:
             pass
 
+
+@contextmanager
+def watch_process_cancellation(
+    proc: subprocess.Popen,
+    cancel_cb: Callable[[], bool] | None,
+) -> Iterator[None]:
+    """Interrompt aussi un processus silencieux pendant une lecture ou wait().
+
+    Le surveillant ne touche jamais aux flux et est rejoint avant de rendre le
+    processus à l'appelant : aucune annulation tardive après la sortie du bloc.
+    """
+    stopped = threading.Event()
+
+    def watch() -> None:
+        while not stopped.is_set():
+            if cancel_cb is not None and cancel_cb():
+                kill_process_tree(proc, timeout=0.2)
+                return
+            stopped.wait(0.05)
+
+    thread = None
+    if cancel_cb is not None:
+        thread = threading.Thread(target=watch, name="process-cancellation", daemon=True)
+        thread.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        if thread is not None:
+            thread.join()

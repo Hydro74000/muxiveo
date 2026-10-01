@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -27,7 +28,7 @@ def _write_mkv(path: Path) -> Path:
 
 
 def _track(track_type: str = "audio", **kwargs) -> TrackEntry:
-    values = dict(
+    values: dict[str, Any] = dict(
         mkv_tid=1, track_type=track_type, codec="EAC3", display_info="5.1",
         language="fra", title="", file_id="src0", orig_codec="EAC3",
     )
@@ -145,13 +146,13 @@ def test_editor_writes_supplied_statistics_without_scanning(tmp_path: Path) -> N
         scanned.append(str(self.path))
         return original(self, **kwargs)
 
-    MatroskaReader.block_summaries = _guard
+    setattr(MatroskaReader, "block_summaries", _guard)
     try:
         result = MatroskaTrackStatisticsEditor().apply(
             output, writing_app="Muxiveo", statistics_by_position=supplied,
         )
     finally:
-        MatroskaReader.block_summaries = original
+        setattr(MatroskaReader, "block_summaries", original)
 
     assert result.applied and result.track_count == 2
     assert scanned == []

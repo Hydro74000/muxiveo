@@ -35,6 +35,7 @@ from core.workflows.merge_dovi import (
     DoviProfile, FrameCountResult,
     MergeDoviWorkflow, StepResult, WorkflowStep,
 )
+from ui.shutdown import defer_close
 from ui.desktop import open_external
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
 
@@ -1008,6 +1009,16 @@ class MergeDoviPanel(QWidget):
             output_dir   = self._config_section.output_dir,
             dovi_profile = self._config_section.dovi_profile,
         )
+
+    def closeEvent(self, event) -> None:
+        if not getattr(self, "_closing", False):
+            self._closing = True
+            self.setEnabled(False)
+            if self._workflow is not None:
+                self._workflow.cancel()
+        if defer_close(self, event, ready=not self._running):
+            return
+        super().closeEvent(event)
 
     def _on_cancel(self) -> None:
         """

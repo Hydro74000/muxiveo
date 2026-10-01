@@ -5,6 +5,7 @@ panneau Conteneur quand une ligne de balises source est (dé)cochée.
 from __future__ import annotations
 
 import pytest
+from typing import Any, cast
 from PySide6.QtWidgets import QDialog
 
 from core.media_info_fetcher import MediaDetails
@@ -14,7 +15,7 @@ from ui.panels.remux_panel.widgets.attachments import _AttachmentItemWidget, _At
 
 @pytest.fixture
 def panel(qt_app):
-    widget = _AttachmentPanel(config=None)
+    widget = _AttachmentPanel(config=cast(Any, None))
     yield widget
     widget.close()
     widget.deleteLater()

@@ -299,7 +299,7 @@ def test_encode_workflow_derives_passthrough_statistics(tmp_path: Path) -> None:
         subtitles_resolved=True,
         video_source=src,
         video_stream=0,
-        video_key=("video", src, 0),
+        video_key=(src, 0, "video"),
         video_input_idx=0,
         video_default_map=(0, 0),
         video_tracks=(),

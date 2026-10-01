@@ -40,7 +40,7 @@ def _prepare_deb_fallback(setup_mod, monkeypatch, tmp_path, *, legacy):
         def legacy_open(*args, **kwargs):
             archive = real_open(*args, **kwargs)
             extractall = archive.extractall
-            archive.extractall = lambda path: extractall(path=path, filter="fully_trusted")
+            setattr(archive, "extractall", lambda path: extractall(path=path, filter="fully_trusted"))
             return archive
 
         # Emulate a runtime without data_filter and its historical default.

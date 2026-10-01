@@ -354,13 +354,14 @@ def validate_matroska_output(
                 for position, track in enumerate(tracks, start=1)
                 if track.track_type in _MEDIA_TRACK_TYPES
             }
+        last_delta_by_track: dict[int, int]
         if packet_validation is not None:
             media_numbers.difference_update(packet_validation.track_numbers)
             max_packet_timestamp_ns = packet_validation.max_packet_timestamp_ns
             last_delta_by_track = packet_validation.last_delta_by_track
         else:
             max_packet_timestamp_ns = None
-            last_delta_by_track: dict[int, int] = {}
+            last_delta_by_track = {}
             try:
                 probe = _probe_packet_validation(
                     reader, set(media_numbers), workers=packet_scan_workers,

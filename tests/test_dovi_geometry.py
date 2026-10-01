@@ -1,6 +1,7 @@
 """Tests unitaires pour l'alignement géométrique Dolby Vision (multiple de 32) et le réalignement RPU."""
 
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -42,6 +43,7 @@ def test_align_nvencc_dovi_geometry_fullframe_2160p():
 
     assert res.video.crop.enabled is False
     assert res.vpp_pad == (0, 8, 0, 8)
+    assert res.vpp_pad is not None
     final_h = 2160 + res.vpp_pad[1] + res.vpp_pad[3]
     assert final_h == 2176
     assert final_h % 32 == 0
@@ -57,6 +59,7 @@ def test_align_nvencc_dovi_geometry_fullframe_1080p():
 
     assert res.video.crop.enabled is False
     assert res.vpp_pad == (0, 4, 0, 4)
+    assert res.vpp_pad is not None
     final_h = 1080 + res.vpp_pad[1] + res.vpp_pad[3]
     assert final_h == 1088
     assert final_h % 32 == 0
@@ -354,7 +357,7 @@ def test_direct_runner_edits_rpu_before_encode_and_does_not_zero_it(tmp_path, qt
         ffmpeg_bin="ffmpeg", nvencc_bin="nvencc", bins={"dovi_tool": "dovi_tool"},
         check_cancelled=lambda *_: None, log_step=lambda *_: None, log_info=lambda *_: None,
         primary_video_settings=lambda _: video, video_source_path=lambda _: config.source,
-        video_stream_index=lambda _: 0, build_encode_plan=lambda _: SimpleNamespace(offset_lookup={}),
+        video_stream_index=lambda _: 0, build_encode_plan=lambda _: cast(Any, SimpleNamespace(offset_lookup={})),
         resolve_input_routing=lambda _: routing, build_runtime_remux_cmd=lambda *a, **k: ([], None, []),
         run_cmd=run, finalize_ffmpeg=lambda *a, **k: str(config.output), native_assemble=lambda *a, **k: None,
     )
@@ -369,6 +372,7 @@ def test_direct_runner_edits_rpu_before_encode_and_does_not_zero_it(tmp_path, qt
     assert "Réalignement RPU Dolby Vision…" in progress_events
     assert [cmd[0] for cmd in commands] == ["ffmpeg", "dovi_tool", "dovi_tool", "dovi_tool", "nvencc"]
     encode = commands[-1]
+    assert geometry.crop_offsets is not None
     assert encode[encode.index("--dolby-vision-rpu") + 1].endswith("rpu_aligned.bin")
     assert encode[encode.index("--crop") + 1] == ",".join(map(str, geometry.crop_offsets))
     assert "--dolby-vision-rpu-prm" not in encode
@@ -404,7 +408,7 @@ def test_backend_validation_uses_effective_dovi_geometry(tmp_path, transform):
     workflow = SimpleNamespace(_nvencc_bin="nvencc", _video_tracks=lambda _: [video],
                                _resolve_nvencc_input_routing=lambda _: SimpleNamespace(video=geometry.video))
     config = EncodeConfig(source=tmp_path / "in.mkv", output=tmp_path / "out.mkv", video=video)
-    assert NvenccEncodeBackend().validate(config, plan=None, ctx=SimpleNamespace(workflow=workflow)) == []
+    assert NvenccEncodeBackend().validate(config, plan=None, ctx=cast(Any, SimpleNamespace(workflow=workflow))) == []
 
 
 def test_geometry_dimensions_follow_selected_stream():
@@ -412,8 +416,8 @@ def test_geometry_dimensions_follow_selected_stream():
     payload = {"streams": [{"index": 0, "codec_type": "video", "width": 1920, "height": 1080},
                            {"index": 2, "codec_type": "video", "width": 3840, "height": 2160}]}
     assert source_video_dimensions(Path("movie.mkv"), stream_index=2,
-                                    ffprobe_streams_payload=lambda _: payload,
-                                    ffprobe_stream_dicts=lambda p: p["streams"]) == (3840, 2160)
+                                    ffprobe_streams_payload=lambda _: cast(dict[str, object], payload),
+                                    ffprobe_stream_dicts=lambda p: cast(list[dict[str, object]], p["streams"])) == (3840, 2160)
 
 
 def test_align_dovi_rpu_geometry_nested_active_area(tmp_path: Path):
@@ -517,7 +521,7 @@ def test_align_dovi_rpu_geometry_zero_offsets(tmp_path: Path):
     raw_rpu.write_bytes(b"original rpu content")
     out_rpu = tmp_path / "out.bin"
 
-    calls = []
+    calls: list[list[str]] = []
     res = align_dovi_rpu_geometry(
         dovi_tool_bin="dovi_tool", rpu_input=raw_rpu, output_rpu=out_rpu,
         crop_offsets=(0, 0, 0, 0), pad_offsets=(0, 0, 0, 0),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 from core.matroska.ebml import ascii_element, element, uint_element
 from core.matroska.ids import (
@@ -79,7 +80,7 @@ def _mkv(path: Path, entries: list[bytes], clusters: bytes = b"") -> Path:
 
 
 def _config(source: Path, output: Path, **kwargs) -> EncodeConfig:
-    values = dict(
+    values: dict[str, Any] = dict(
         source=source,
         output=output,
         video=VideoEncodeSettings(source_path=source, stream_index=0, codec="libx265"),
@@ -156,14 +157,14 @@ def test_ffmpeg_args_contract_and_native_plan_share_values(tmp_path: Path) -> No
         audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")],
     )
     metadata = resolve_track_metadata(config, video_refs=[(source, 0)], subtitle_refs=[])
-    plan = SimpleNamespace(
+    plan: Any = SimpleNamespace(
         track_metadata=metadata,
         resolved_subtitle_tracks=(),
         subtitles_resolved=True,
     )
 
     args = TrackMetadataArgsBuilder(TrackMetadataArgsBuilderCallbacks(
-        video_tracks=lambda cfg: [cfg.video],
+        video_tracks=lambda cfg: [video for video in (cfg.video,) if video is not None],
         log_warn=lambda _message: None,
     )).build(config, plan=plan)
     contract = build_encode_output_contract(config, plan)
@@ -202,7 +203,7 @@ def test_packet_diagnostic_rejects_empty_audio_not_empty_subtitle(tmp_path: Path
         video_refs=[(source, 0)],
         subtitle_refs=[(source, 2)],
     )
-    plan = SimpleNamespace(
+    plan: Any = SimpleNamespace(
         track_metadata=metadata,
         resolved_subtitle_tracks=((source, 2),),
         subtitles_resolved=True,
@@ -237,7 +238,7 @@ def test_source_disabled_tracks_are_carried_to_the_plan(tmp_path: Path) -> None:
         subtitle_refs=[(source, 2)],
     )
 
-    assert [item.flags.enabled for item in metadata] == [True, False, False]
+    assert [item.flags and item.flags.enabled for item in metadata] == [True, False, False]
 
 
 def test_panel_enabled_flag_overrides_the_source_value(tmp_path: Path) -> None:
@@ -259,13 +260,13 @@ def test_panel_enabled_flag_overrides_the_source_value(tmp_path: Path) -> None:
         subtitle_refs=[(source, 2)],
     )
 
-    assert [item.flags.enabled for item in metadata] == [False, True, False]
-    contract = build_encode_output_contract(config, SimpleNamespace(
+    assert [item.flags and item.flags.enabled for item in metadata] == [False, True, False]
+    contract = build_encode_output_contract(config, cast(Any, SimpleNamespace(
         track_metadata=metadata,
         resolved_subtitle_tracks=((source, 2),),
         subtitles_resolved=True,
-    ))
-    assert [track.flags.enabled for track in contract.expected_tracks] == [False, True, False]
+    )))
+    assert [track.flags and track.flags.enabled for track in contract.expected_tracks] == [False, True, False]
 
 
 def test_disabled_flag_reaches_the_ffmpeg_transaction_contract(tmp_path: Path) -> None:
@@ -300,6 +301,6 @@ def test_disabled_flag_reaches_the_ffmpeg_transaction_contract(tmp_path: Path) -
         [_entry(1, 1, "V_MPEG4/ISO/AVC"), _entry(2, 2, "A_AAC")],
         _cluster(1) + _cluster(2),
     )
-    MatroskaTrackEnabledPostAction(editor=_Editor()).apply_for_contract(output, contract)
+    MatroskaTrackEnabledPostAction(editor=cast(Any, _Editor())).apply_for_contract(output, contract)
 
     assert applied == [(output, {0: True, 1: False})]

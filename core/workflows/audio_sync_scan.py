@@ -5,10 +5,14 @@ import json
 import subprocess
 import re
 import time
+from typing import TYPE_CHECKING, Any
 
 from core.subprocess_utils import subprocess_text_kwargs, subprocess_windows_no_window_kwargs
 from core.workflows.audio_sync import AudioSyncError, AudioSyncTrack
 from core.workflows.sync_calibration import SyncCalibration, SyncSegment
+
+if TYPE_CHECKING:
+    from numpy import ndarray
 
 # Marge de pré-roll avant la fenêtre ; le découpage exact précède les filtres
 # de cadence pour conserver les coordonnées temporelles de la source.
@@ -31,7 +35,7 @@ class AudioSyncScanner:
         self.window_s, self.max_offset_s = window_s, max_offset_s
         self.cancel_event = cancel_event
 
-    def _run(self, command, *, timeout, **kwargs):
+    def _run(self, command: list[str], *, timeout: float, **kwargs: Any) -> subprocess.CompletedProcess[Any]:
         """Interrompt aussi les extractions FFmpeg lorsque l'utilisateur annule."""
         kwargs.pop("capture_output", None)
         # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
@@ -65,7 +69,7 @@ class AudioSyncScanner:
             raise AudioSyncError("Durée audio invalide.")
         return duration
 
-    def samples(self, track, start, duration, cadence_filter: str | None = None):
+    def samples(self, track, start, duration, cadence_filter: str | None = None) -> ndarray:
         import numpy as np
         af = "highpass=f=300,lowpass=f=3000"
         if cadence_filter:
@@ -86,7 +90,7 @@ class AudioSyncScanner:
         if self.cancel_event is not None and self.cancel_event.is_set():
             raise AudioSyncError("Analyse annulée.")
 
-    def envelope(self, track, cadence_filter=None):
+    def envelope(self, track, cadence_filter=None) -> ndarray:
         """Décode une fois la piste en enveloppe 1 kHz (4 Mo par 1000 s).
 
         Le sous-échantillonnage suit le redressement, après le mixage mono.
@@ -106,7 +110,7 @@ class AudioSyncScanner:
             raise AudioSyncError(result.stderr.decode("utf-8", errors="replace"))
         return np.frombuffer(result.stdout, dtype="<f4")
 
-    def pitch_samples(self, track, start, duration, cadence_filter: str | None = None):
+    def pitch_samples(self, track, start, duration, cadence_filter: str | None = None) -> ndarray:
         """Extrait les échantillons audio sans filtre passe-bande agressif pour l'analyse F0 et spectrale."""
         import numpy as np
         af = "lowpass=f=4000"
@@ -244,7 +248,7 @@ class AudioSyncScanner:
         window = min(self.window_s, duration / 3)
         max_pos = max(0, duration - window - min(self.max_offset_s, duration * 0.05))
         positions = np.linspace(0, max_pos, 6)
-        samples = []
+        samples: list[dict[str, Any]] = []
 
         method_proven_by_fallback = False
 

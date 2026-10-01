@@ -1086,7 +1086,7 @@ class MediaManager(QMainWindow):
 
         elif isinstance(user_data, str) and user_data.startswith("S|") and len(user_data.split("|")) == 3:
             # Saison complète
-            show_node = item.parent()
+            show_node: QTreeWidgetItem | None = item.parent()
             season_key = user_data
             season_size = item.data(C["taille"], Qt.ItemDataRole.UserRole) or 0
             if show_node:
@@ -1098,7 +1098,7 @@ class MediaManager(QMainWindow):
 
         elif isinstance(user_data, str) and user_data.startswith("S|") and len(user_data.split("|")) == 4:
             # Épisode
-            season_node = item.parent()
+            season_node: QTreeWidgetItem | None = item.parent()
             show_node = season_node.parent() if season_node else None
             ep_key = user_data
             ep_size = item.data(C["taille"], Qt.ItemDataRole.UserRole) or 0

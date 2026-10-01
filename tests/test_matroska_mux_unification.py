@@ -209,7 +209,10 @@ class TestMatroskaOutputTransaction:
             return "ok"
 
         def action(name: str):
-            return lambda candidate: order.append(name) or candidate
+            def apply(candidate):
+                order.append(name)
+                return candidate
+            return apply
 
         def fail_nfo(path: Path) -> None:
             assert path == output and path.is_file()
@@ -1009,7 +1012,7 @@ class TestExternalAuditFixes:
             source=primary,
             audio_tracks=[
                 AudioTrackSettings(stream_index=0, codec="copy"),
-                AudioTrackSettings(stream_index=0, codec="copy", source_path=str(secondary)),
+                AudioTrackSettings(stream_index=0, codec="copy", source_path=secondary),
             ],
             copy_subtitles=True,
             work_dir=tmp_path,
@@ -1055,7 +1058,7 @@ class TestExternalAuditFixes:
         config = _encode_config(
             tmp_path,
             source=primary,
-            audio_tracks=[AudioTrackSettings(stream_index=0, codec="copy", source_path=str(foreign))],
+            audio_tracks=[AudioTrackSettings(stream_index=0, codec="copy", source_path=foreign)],
             copy_subtitles=True,
         )
         with pytest.raises(EncodeError, match="non\\s+Matroska"):
@@ -1083,7 +1086,7 @@ class TestExternalAuditFixes:
         foreign.write_bytes(b"mp4")
         config = _encode_config(
             tmp_path,
-            audio_tracks=[AudioTrackSettings(stream_index=0, codec="aac", source_path=str(foreign))],
+            audio_tracks=[AudioTrackSettings(stream_index=0, codec="aac", source_path=foreign)],
             copy_subtitles=False,
             keep_chapters=False,
         )
@@ -1096,7 +1099,7 @@ class TestExternalAuditFixes:
         foreign.write_bytes(b"mp4")
         config = _encode_config(
             tmp_path,
-            audio_tracks=[AudioTrackSettings(stream_index=0, codec="copy", source_path=str(foreign))],
+            audio_tracks=[AudioTrackSettings(stream_index=0, codec="copy", source_path=foreign)],
             copy_subtitles=False,
             keep_chapters=False,
         )
@@ -1109,7 +1112,7 @@ class TestExternalAuditFixes:
         foreign.write_bytes(b"mp4")
         config = _encode_config(
             tmp_path,
-            audio_tracks=[AudioTrackSettings(stream_index=0, codec="aac", source_path=str(foreign))],
+            audio_tracks=[AudioTrackSettings(stream_index=0, codec="aac", source_path=foreign)],
             copy_subtitles=True,
             keep_chapters=False,
         )

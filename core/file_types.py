@@ -197,8 +197,10 @@ _WINDOWS_MAX_PATH = 260
 
 def _windows_long_paths_enabled() -> bool:
     """Lit ``LongPathsEnabled`` (registre) ; False si indisponible."""
+    if sys.platform != "win32":
+        return False
     try:
-        import winreg  # type: ignore[import-not-found]
+        import winreg
 
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem") as key:
             return bool(winreg.QueryValueEx(key, "LongPathsEnabled")[0])

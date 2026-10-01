@@ -10,7 +10,7 @@ import uuid
 
 from typing import Any, Callable
 
-from PySide6.QtCore import Qt, QUrl, Signal, QMetaObject
+from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QCursor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -47,6 +47,7 @@ from core.workflows.hybrid_matrix import (
     SourceRole,
     prepare_matrix_episode,
 )
+from ui.shutdown import Shutdown, defer_close
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
 from ui.styles import _checkbox_style, _groupbox_checkable_style
 
@@ -426,6 +427,8 @@ class HybridStudio(QWidget):
     log_message = Signal(str, str)
     open_in_remux = Signal(object)
     witness_inspected = Signal(object)
+    single_calibration_done = Signal(int, object, object)
+    single_calibration_failed = Signal(int, str)
 
     def __init__(self, config, parent=None):
         super().__init__(parent)
@@ -624,7 +627,7 @@ class HybridStudio(QWidget):
         advanced.setStyleSheet(_groupbox_checkable_style())
         settings = QFormLayout(advanced)
         settings.setSpacing(_scale(6))
-        self.controls = {}
+        self.controls: dict[str, QWidget] = {}
         for option, label, default in (
             ("auto-forced-subs", "Détecter les sous-titres forcés", False),
             ("auto-sdh", "Détecter les sous-titres SDH", False),
@@ -642,14 +645,14 @@ class HybridStudio(QWidget):
             ("crossfade-ms", "Fondu aux raccords (ms)", 80, 1000),
             ("drift-threshold-ms", "Seuil de dérive (ms)", 25, 10000),
         ):
-            control = QSpinBox()
-            control.setStyleSheet(_input_style())
-            control.setRange(0 if option == "crossfade-ms" else 1, maximum)
-            control.setValue(value)
+            spin = QSpinBox()
+            spin.setStyleSheet(_input_style())
+            spin.setRange(0 if option == "crossfade-ms" else 1, maximum)
+            spin.setValue(value)
             lbl_spin = QLabel(translate_text(label))
             lbl_spin.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
-            settings.addRow(lbl_spin, control)
-            self.controls[option] = control
+            settings.addRow(lbl_spin, spin)
+            self.controls[option] = spin
 
         for option, label in (
             ("auto-tmdb", "ID TMDB"),
@@ -657,12 +660,12 @@ class HybridStudio(QWidget):
             ("output-template", "Template de sortie"),
             ("calibration", "Fichier de calibration"),
         ):
-            control = QLineEdit("MVO" if option == "tag" else "")
-            control.setStyleSheet(_input_style())
+            line_edit = QLineEdit("MVO" if option == "tag" else "")
+            line_edit.setStyleSheet(_input_style())
             lbl_txt = QLabel(translate_text(label))
             lbl_txt.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
-            settings.addRow(lbl_txt, control)
-            self.controls[option] = control
+            settings.addRow(lbl_txt, line_edit)
+            self.controls[option] = line_edit
 
         self.mode = QComboBox()
         self.mode.setStyleSheet(_input_style())
@@ -679,10 +682,14 @@ class HybridStudio(QWidget):
 
         advanced.setCheckable(True)
         advanced.setChecked(False)
-        advanced.toggled.connect(lambda checked: [
-            settings.itemAt(i).widget().setVisible(checked)
-            for i in range(settings.count()) if settings.itemAt(i).widget()
-        ])
+        def _toggle_advanced(checked: bool) -> None:
+            for i in range(settings.count()):
+                item = settings.itemAt(i)
+                widget = item.widget() if item is not None else None
+                if widget is not None:
+                    widget.setVisible(checked)
+
+        advanced.toggled.connect(_toggle_advanced)
         advanced.toggled.emit(False)
         layout.addWidget(advanced)
 
@@ -790,6 +797,8 @@ class HybridStudio(QWidget):
         self.waveform_ready.connect(self.on_waveform)
         self.preview_ready.connect(self.play_preview)
         self.witness_inspected.connect(self._populate_witness_table)
+        self.single_calibration_done.connect(self._on_single_calibration_done)
+        self.single_calibration_failed.connect(self._on_single_calibration_failed)
 
     def _add_extra_source_row(self, path: str = "", role: SourceRole = SourceRole.DONOR, label: str = ""):
         row_widget = QWidget()
@@ -873,12 +882,14 @@ class HybridStudio(QWidget):
             translate_text("Inspection de l'épisode témoin : {ep} ({file})…", ep=witness_ep.display_name, file=witness_ep.master_file.name)
         )
 
+        master_file = witness_ep.master_file
+
         def task():
             from core.inspector import FileInspector
             inspector = FileInspector(str(self.config.tool_ffprobe), str(self.config.tool_mediainfo))
             sources_tracks = []
             try:
-                master_info = inspector.inspect(witness_ep.master_file)
+                master_info = inspector.inspect(master_file)
                 sources_tracks.append(("Master", "master", master_info))
                 for d_src, d_path in witness_ep.donor_files:
                     d_info = inspector.inspect(d_path)
@@ -888,6 +899,8 @@ class HybridStudio(QWidget):
                 return exc
 
         def on_done(future):
+            if future.cancelled():
+                return
             res = future.result()
             self.witness_inspected.emit(res)
 
@@ -1070,7 +1083,7 @@ class HybridStudio(QWidget):
                     arguments.append("--" + option)
             elif isinstance(control, QSpinBox):
                 arguments += ["--" + option, str(control.value())]
-            elif control.text().strip():
+            elif isinstance(control, QLineEdit) and control.text().strip():
                 if option == "auto-tmdb" and not control.text().strip().isdigit():
                     self.on_failed(translate_text("ID TMDB invalide."))
                     return
@@ -1263,17 +1276,22 @@ class HybridStudio(QWidget):
         self.recipe.cadence_auto_apply = self.cadence_auto_apply.isChecked()
         self.recipe.cadence_audio_method = self.cadence_method_combo.currentData() or "auto"
 
+        # Widgets lus dans le thread GUI : le worker ne doit pas y toucher.
+        output_dir = self.output.text().strip() or tempfile.gettempdir()
+        detect_cuts = self.detect_cuts.isChecked()
+        args = self.args if hasattr(self, "args") else None
+
         def task():
             from cli.logging import Logger
             try:
                 config, calibration = prepare_matrix_episode(
                     ep,
                     self.recipe,
-                    self.output.text().strip() or tempfile.gettempdir(),
+                    output_dir,
                     self.config,
-                    self.args if hasattr(self, "args") else None,
+                    args,
                     Logger(),
-                    detect_cuts=self.detect_cuts.isChecked(),
+                    detect_cuts=detect_cuts,
                     drift_threshold_ms=25,
                 )
                 return config, calibration
@@ -1281,12 +1299,16 @@ class HybridStudio(QWidget):
                 return exc
 
         def on_done(fut):
+            if fut.cancelled():
+                return
             res = fut.result()
+            # Signaux : livraison en file vers le thread GUI (invokeMethod
+            # n'accepte pas de callable sous PySide6).
             if isinstance(res, Exception):
-                QMetaObject.invokeMethod(self, lambda: self._on_single_calibration_failed(row, str(res)))
+                self.single_calibration_failed.emit(row, str(res))
             else:
                 config, calibration = res
-                QMetaObject.invokeMethod(self, lambda: self._on_single_calibration_done(row, config, calibration))
+                self.single_calibration_done.emit(row, config, calibration)
 
         fut = self.executor.submit(task)
         fut.add_done_callback(on_done)
@@ -1474,20 +1496,19 @@ class HybridStudio(QWidget):
             self.status.setText(translate_text("Veuillez d'abord analyser ou calibrer cet élément (bouton ⚡)."))
             return
 
-        has_qt_media = False
         try:
             from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
-            has_qt_media = True
         except ImportError:
             has_qt_media = False
-
-        if has_qt_media and not hasattr(self, "player"):
-            try:
-                self.player = QMediaPlayer(self)
-                self.audio = QAudioOutput(self)
-                self.player.setAudioOutput(self.audio)
-            except Exception:
-                has_qt_media = False
+        else:
+            has_qt_media = True
+            if not hasattr(self, "player"):
+                try:
+                    self.player = QMediaPlayer(self)
+                    self.audio = QAudioOutput(self)
+                    self.player.setAudioOutput(self.audio)
+                except Exception:
+                    has_qt_media = False
 
         config, calibration = self.jobs[row]
         self.listen_button.setEnabled(False)
@@ -1608,9 +1629,12 @@ class HybridStudio(QWidget):
             self.signals.cancel()
 
     def closeEvent(self, event):
-        if self.busy or self.aux_running:
-            self.cancel()
-            event.ignore()
+        if not hasattr(self, "_shutdown"):
+            self.setEnabled(False)
+            self.stopped = True
+            self.cancel_event.set()
+            self._shutdown = Shutdown(executors=(self.executor,), tasks=(self.signals,))
+        if defer_close(self, event, ready=self._shutdown.done.is_set()):
             return
         if hasattr(self, "player") and self.player is not None:
             try:
@@ -1618,7 +1642,6 @@ class HybridStudio(QWidget):
                 self.player.setSource(QUrl())
             except Exception:  # nosec B110
                 pass
-        self.executor.shutdown(wait=False, cancel_futures=True)
         try:
             self.preview_temp.cleanup()
         except Exception:  # nosec B110
