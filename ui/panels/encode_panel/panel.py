@@ -58,7 +58,7 @@ from core.workflows.encode.runtime.static_hdr_estimator import (
 )
 from ui.shutdown import Shutdown, defer_close
 from ui.panels.encode_panel.theme import (
-    _C, _card, _checkbox_style, _combo_style,
+    _C, _bolt_icon, _card, _checkbox_style, _combo_style,
     _input_style, _primary_button, _secondary_button,
     _section_label, _separator,
 )
@@ -879,6 +879,7 @@ class EncodePanel(QWidget):
         self._codec_combo = QComboBox()
         self._codec_combo.setStyleSheet(_combo_style())
         self._codec_combo.setMinimumWidth(220)
+        self._codec_combo.setIconSize(QSize(14, 14))
         self._populate_codec_combo()
         self._codec_combo.currentIndexChanged.connect(self._on_codec_changed)
         r1.addWidget(self._codec_combo)
@@ -2098,9 +2099,10 @@ class EncodePanel(QWidget):
         for codec_id, label in SOFTWARE_VIDEO_CODECS:
             if codec_id in self._sw_encoders:
                 self._codec_combo.addItem(label, codec_id)
+        hw_icon = _bolt_icon()
         for codec_id, label in HARDWARE_VIDEO_CODECS:
             if codec_id in self._hw_encoders:
-                self._codec_combo.addItem(f"⚡ {label}", codec_id)
+                self._codec_combo.addItem(hw_icon, label, codec_id)
         self._codec_combo.blockSignals(False)
 
     # ------------------------------------------------------------------

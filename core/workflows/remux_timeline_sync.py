@@ -601,7 +601,8 @@ class FfmpegTimelineSync:
                 )
                 processes.append(proc)
 
-                assert proc.stdout is not None
+                if proc.stdout is None:
+                    raise RuntimeError("ffmpeg pipe:1 sans stdout")
                 thread = threading.Thread(
                     target=pipe_obj.pump,
                     args=(proc.stdout,),

@@ -1010,7 +1010,7 @@ def test_sync_studio_dialog_with_subtitle_track(qt_app, tmp_path):
     # Verify subtitle auto sync button is created
     assert hasattr(dialog, "btn_auto_sub_sync")
     assert dialog.btn_auto_sub_sync is not None
-    assert "⚡" in dialog.btn_auto_sub_sync.text()
+    assert not dialog.btn_auto_sub_sync.icon().isNull()
 
     # Simulate auto subtitle sync ready
     mock_cal = SyncCalibration.linear(-850)

@@ -4279,9 +4279,9 @@
     "fra": "Échec de la synchronisation des sous-titres.",
     "eng": "Subtitle synchronization failed."
   },
-  "⚡ Synchro sous-titres": {
-    "fra": "⚡ Synchro sous-titres",
-    "eng": "⚡ Subtitle sync"
+  "Synchro sous-titres": {
+    "fra": "Synchro sous-titres",
+    "eng": "Subtitle sync"
   },
   "Lancer l'alignement automatique des sous-titres": {
     "fra": "Lancer l'alignement automatique des sous-titres",

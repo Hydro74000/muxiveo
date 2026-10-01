@@ -3,6 +3,7 @@ ui/panels/encode_panel/theme.py — Color palette, UI helper factories and progr
 
 Public:
     _C              — color constants
+    _bolt_icon      — QIcon éclair (encodeurs matériels)
     _section_label  — returns a styled section QLabel
     _card           — returns a styled card QWidget
     _primary_button — returns a primary QPushButton
@@ -23,13 +24,13 @@ import re
 
 from ui.design_system import colors as _C
 from ui.styles import (
-    _card, _checkbox_style, _combo_style, _input_style,
+    _bolt_icon, _card, _checkbox_style, _combo_style, _input_style,
     _primary_button, _secondary_button, _section_label, _separator,
 )
 
 
 __all__ = [
-    "_C", "_card", "_checkbox_style", "_combo_style", "_input_style",
+    "_C", "_bolt_icon", "_card", "_checkbox_style", "_combo_style", "_input_style",
     "_primary_button", "_secondary_button", "_section_label", "_separator",
     "_TIME_RE", "_FPS_RE", "ffmpeg_progress_seconds", "_fmt_eta",
     "EtaTracker",

@@ -49,7 +49,7 @@ from core.workflows.hybrid_matrix import (
 )
 from ui.shutdown import Shutdown, defer_close
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
-from ui.styles import _checkbox_style, _groupbox_checkable_style
+from ui.styles import _bolt_icon, _checkbox_style, _groupbox_checkable_style
 
 
 # =============================================================================
@@ -1164,7 +1164,8 @@ class HybridStudio(QWidget):
         act_l.setContentsMargins(_scale(2), _scale(2), _scale(2), _scale(2))
         act_l.setSpacing(_scale(4))
 
-        btn_calibrate = _secondary_button("⚡", fixed_width=28)
+        btn_calibrate = _secondary_button("", fixed_width=28)
+        btn_calibrate.setIcon(_bolt_icon())
         btn_calibrate.setToolTip(translate_text("Analyser / Recalibrer cet élément individuellement"))
         btn_calibrate.clicked.connect(lambda checked=False, r=row: self.calibrate_single_row(r))
         act_l.addWidget(btn_calibrate)
@@ -1496,19 +1497,16 @@ class HybridStudio(QWidget):
             self.status.setText(translate_text("Veuillez d'abord analyser ou calibrer cet élément (bouton ⚡)."))
             return
 
-        try:
-            from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
-        except ImportError:
-            has_qt_media = False
-        else:
-            has_qt_media = True
-            if not hasattr(self, "player"):
-                try:
-                    self.player = QMediaPlayer(self)
-                    self.audio = QAudioOutput(self)
-                    self.player.setAudioOutput(self.audio)
-                except Exception:
-                    has_qt_media = False
+        if not hasattr(self, "player"):
+            # Lecteur Qt optionnel : fallback ffplay si QtMultimedia indisponible.
+            try:
+                from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+
+                self.player = QMediaPlayer(self)
+                self.audio = QAudioOutput(self)
+                self.player.setAudioOutput(self.audio)
+            except Exception:
+                self.player = None
 
         config, calibration = self.jobs[row]
         self.listen_button.setEnabled(False)

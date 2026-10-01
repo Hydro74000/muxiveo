@@ -13,7 +13,8 @@ import subprocess
 import sys
 import threading
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
+from pathlib import Path
 from typing import Any
 
 
@@ -143,6 +144,12 @@ def format_returncode(returncode: int | None) -> str:
     return str(code)
 
 
+def _windows_taskkill_path() -> Path:
+    """Chemin absolu de taskkill.exe (évite la résolution via PATH)."""
+    system_root = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
+    return Path(system_root) / "System32" / "taskkill.exe"
+
+
 def kill_process_tree(proc: subprocess.Popen | None, timeout: float = 0.5) -> None:
     """
     Tue le processus (et ses descendants sous Windows), puis attend brièvement.
@@ -158,38 +165,30 @@ def kill_process_tree(proc: subprocess.Popen | None, timeout: float = 0.5) -> No
 
     poll = getattr(proc, "poll", None)
     if callable(poll):
-        try:
+        with suppress(Exception):
             if poll() is not None:
                 return
-        except Exception:
-            pass
 
     pid = getattr(proc, "pid", None)
     if sys.platform == "win32" and pid is not None:
-        try:
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(pid)],
+        with suppress(Exception):
+            subprocess.run(  # nosec B603  # argv fixe, binaire système absolu, PID entier
+                [str(_windows_taskkill_path()), "/F", "/T", "/PID", str(int(pid))],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
                 timeout=2.0,
             )
-        except Exception:
-            pass
 
     kill = getattr(proc, "kill", None)
     if callable(kill):
-        try:
+        with suppress(OSError):
             kill()
-        except OSError:
-            pass
 
     wait = getattr(proc, "wait", None)
     if callable(wait):
-        try:
+        with suppress(Exception):
             wait(timeout=timeout)
-        except Exception:
-            pass
 
 
 @contextmanager

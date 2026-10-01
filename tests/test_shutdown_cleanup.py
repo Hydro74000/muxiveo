@@ -267,3 +267,13 @@ def test_shutdown_accepts_cancelled_queued_work(qt_app):
     assert future.cancel()
     shutdown = Shutdown(tasks=(signals,))
     assert shutdown.done.wait(5)
+
+
+def test_windows_taskkill_path_is_absolute(monkeypatch) -> None:
+    """taskkill est résolu depuis SystemRoot, jamais via PATH."""
+    from core.subprocess_utils import _windows_taskkill_path
+
+    monkeypatch.setenv("SystemRoot", r"D:\Win")
+    path = _windows_taskkill_path()
+    assert str(path).startswith(r"D:\Win")
+    assert path.name == "taskkill.exe"

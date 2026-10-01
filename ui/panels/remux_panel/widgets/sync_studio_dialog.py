@@ -45,6 +45,7 @@ from ui.panels.remux_panel.theme import (
     _stop_icon,
     _table_style,
 )
+from ui.styles import _bolt_icon
 from ui.widgets.waveform_view import WaveformView
 
 if TYPE_CHECKING:
@@ -452,7 +453,8 @@ class SyncStudioDialog(QDialog):
         ctrl_row.addStretch()
 
         if self.target_entry.is_subtitle:
-            self.btn_auto_sub_sync = _secondary_button(translate_text("⚡ Synchro sous-titres"), padding_h=10)
+            self.btn_auto_sub_sync = _secondary_button(translate_text("Synchro sous-titres"), padding_h=10)
+            self.btn_auto_sub_sync.setIcon(_bolt_icon())
             self.btn_auto_sub_sync.setToolTip(translate_text("Lancer l'alignement automatique des sous-titres"))
             self.btn_auto_sub_sync.clicked.connect(self._run_auto_subtitle_sync)
             ctrl_row.addWidget(self.btn_auto_sub_sync)

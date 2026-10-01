@@ -320,7 +320,8 @@ class TaskSignals(QObject):
                 callbacks = self._terminal_direct.popleft()
                 result = self._terminal_result
             # Le drain ne démarre qu'après l'enregistrement d'une fin.
-            assert result is not None
+            if result is None:
+                raise RuntimeError("drain terminal sans résultat enregistré")
             self._invoke_terminal(callbacks, result)
         if self._terminal_dispatcher is not None:
             self._terminal_dispatcher.ready.emit()
