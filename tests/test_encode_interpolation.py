@@ -209,6 +209,11 @@ def test_rife_stage_arguments():
     assert "--gpu" not in build_rife_stage("r", factor=2, quality="?", source=InterpolationSource())
     assert "--uhd" not in cmd
     assert "--uhd" in build_rife_stage("r", quality="balanced", source=InterpolationSource(), mode="fast")
+    assert "--tta" not in cmd
+    tta = build_rife_stage("r", quality="balanced", source=InterpolationSource(), tta=4)
+    assert tta[tta.index("--tta") + 1] == "4"
+    assert FrameInterpolationSettings.from_value({"enabled": True, "tta": 8}).tta == 8
+    assert EncodePreset(name="p", interpolation={"enabled": True, "tta": 2}).to_video_settings().interpolation.tta == 2
 
 
 def test_presets_map_to_benchmarked_models():
@@ -629,6 +634,20 @@ class TestWorkflowInterpolation:
             bad = _cfg(tmp_path, _video(interpolation=_interp(mode="turbo")))
             assert any("turbo" in e for e in interp_workflow._interpolation_validation_errors(bad))
         assert len(errors) == 1 and "1.1.0" in errors[0] and "1.0.0" in errors[0]
+
+    def test_tta_requires_rife_1_2_and_supported_level(self, interp_workflow, tmp_path):
+        model = tmp_path / "rife-models" / "rife-v4.6"
+        model.mkdir(parents=True)
+        (model / "flownet.param").write_text("")
+        cfg = _cfg(tmp_path, _video(interpolation=_interp(tta=4)))
+        with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_probe_payload()):
+            with patch("core.workflows.encode.workflow._rife_version", return_value=(1, 1, 1)):
+                old = interp_workflow._interpolation_validation_errors(cfg)
+            with patch("core.workflows.encode.workflow._rife_version", return_value=(1, 2, 0)):
+                assert interp_workflow._interpolation_validation_errors(cfg) == []
+                bad = _cfg(tmp_path, _video(interpolation=_interp(tta=3)))
+                assert any("TTA x3" in e for e in interp_workflow._interpolation_validation_errors(bad))
+        assert len(old) == 1 and "TTA" in old[0] and "1.2.0" in old[0] and "1.1.1" in old[0]
 
     def test_vfr_with_dynamic_hdr_copy_rejected(self, interp_workflow, tmp_path):
         payload = _probe_payload(r_frame_rate="30/1", avg_frame_rate="29/1")

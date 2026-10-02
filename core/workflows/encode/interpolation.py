@@ -56,6 +56,9 @@ INTERPOLATION_TARGET_FPS: tuple[str, ...] = ("60000/1001", "60/1")
 INTERPOLATION_MODES: tuple[str, ...] = ("normal", "fast")
 # Version minimale de muxiveo-rife : modèles v4.6 / v4.15-lite et --uhd (release 1.1.0).
 RIFE_MIN_VERSION: tuple[int, int, int] = (1, 1, 0)
+# Moyennage TTA (--tta) : nombre de passes moyennées par image interpolée (1 = désactivé).
+INTERPOLATION_TTA_LEVELS: tuple[int, ...] = (1, 2, 4, 8)
+RIFE_TTA_MIN_VERSION: tuple[int, int, int] = (1, 2, 0)
 
 # Intervalle des lignes ``progress`` de muxiveo-rife : alimentent la barre de
 # progression (non journalisées, log verbose uniquement).
@@ -292,10 +295,12 @@ def build_rife_stage(
     scene_threshold: float = 10.0,
     gpu: int = -1,
     mode: str = "normal",
+    tta: int = 1,
 ) -> list[str]:
     """Étage 2 : muxiveo-rife (y4m stdin → y4m stdout), facteur entier ou cadence cible.
 
-    ``mode="fast"`` : flux optique calculé à demi-résolution (``--uhd``).
+    ``mode="fast"`` : flux optique calculé à demi-résolution (``--uhd``) ;
+    ``tta`` > 1 : moyenne de ``tta`` passes (sens inverse, miroirs), coût x ``tta``.
     """
     model = INTERPOLATION_MODELS.get(str(quality or ""), INTERPOLATION_MODELS[INTERPOLATION_DEFAULT_QUALITY])
     rate_args = ["--fps", str(target_fps)] if target_fps else ["--factor", str(int(factor))]
@@ -313,6 +318,8 @@ def build_rife_stage(
         cmd.append("--uhd")
     if int(gpu) >= 0:
         cmd.extend(["--gpu", str(int(gpu))])
+    if int(tta) > 1:
+        cmd.extend(["--tta", str(int(tta))])
     return cmd
 
 
@@ -648,6 +655,8 @@ __all__ = [
     "INTERPOLATION_MODES",
     "INTERPOLATION_FAST_QUALITIES",
     "RIFE_MIN_VERSION",
+    "RIFE_TTA_MIN_VERSION",
+    "INTERPOLATION_TTA_LEVELS",
     "rife_model_available",
     "InterpolationSource",
     "PipelineCommand",

@@ -4874,5 +4874,25 @@
   "Light": {
     "fra": "Light",
     "eng": "Light"
+  },
+  "TTA : Désactivé": {
+    "fra": "TTA : Désactivé",
+    "eng": "TTA: Off"
+  },
+  "TTA : ×2": {
+    "fra": "TTA : ×2",
+    "eng": "TTA: ×2"
+  },
+  "TTA : ×4": {
+    "fra": "TTA : ×4",
+    "eng": "TTA: ×4"
+  },
+  "TTA : ×8": {
+    "fra": "TTA : ×8",
+    "eng": "TTA: ×8"
+  },
+  "TTA : chaque image intermédiaire est calculée plusieurs fois (sens inverse, miroirs) puis moyennée, ce qui lisse les petites erreurs. Temps de calcul RIFE multiplié par 2, 4 ou 8. Sans effet sur les motifs répétitifs (grilles, barreaux).": {
+    "fra": "TTA : chaque image intermédiaire est calculée plusieurs fois (sens inverse, miroirs) puis moyennée, ce qui lisse les petites erreurs. Temps de calcul RIFE multiplié par 2, 4 ou 8. Sans effet sur les motifs répétitifs (grilles, barreaux).",
+    "eng": "TTA: each in-between frame is computed several times (reversed, mirrored) and averaged, which smooths small errors. RIFE processing time multiplied by 2, 4 or 8. No effect on repeating patterns (grids, bars)."
   }
 }

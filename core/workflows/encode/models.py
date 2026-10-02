@@ -269,6 +269,7 @@ class FrameInterpolationSettings:
     target_fps: str = ""              # cadence cible (ex. "60000/1001"), prioritaire sur factor
     quality: str = "balanced"         # fast | balanced | light (modèle RIFE ; « max » : ancien preset)
     mode: str = "normal"              # normal | fast (flux optique à demi-résolution, --uhd)
+    tta: int = 1                      # moyennage TTA (1 = désactivé, 2 / 4 / 8 passes, coût x n)
     scene_threshold: float = 10.0     # seuil de coupe 0-100 (0 = désactivé)
     gpu: int = -1                     # index GPU Vulkan (-1 = automatique)
 

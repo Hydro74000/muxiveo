@@ -116,6 +116,8 @@ from core.workflows.encode.interpolation import (
     INTERPOLATION_MODELS as _INTERPOLATION_MODELS,
     INTERPOLATION_MODES as _INTERPOLATION_MODES,
     RIFE_MIN_VERSION as _RIFE_MIN_VERSION,
+    RIFE_TTA_MIN_VERSION as _RIFE_TTA_MIN_VERSION,
+    INTERPOLATION_TTA_LEVELS as _INTERPOLATION_TTA_LEVELS,
     rife_model_available as _rife_model_available,
     InterpolationSource as _InterpolationSource,
     build_rife_stage as _build_rife_stage,
@@ -979,6 +981,7 @@ class EncodeWorkflow(QObject):
             scene_threshold=settings.scene_threshold,
             gpu=settings.gpu,
             mode=settings.mode,
+            tta=settings.tta,
         )
         return _PipelineCommand(rife, [_interpolation_decode_cmd(decode_cmd, info)])
 
@@ -2614,6 +2617,11 @@ class EncodeWorkflow(QObject):
                 errors.append(f"Interpolation d'images : qualité « {settings.quality} » inconnue.")
             if settings.mode not in _INTERPOLATION_MODES:
                 errors.append(f"Interpolation d'images : mode « {settings.mode} » inconnu.")
+            if int(settings.tta) not in _INTERPOLATION_TTA_LEVELS:
+                errors.append(
+                    f"Interpolation d'images : TTA x{settings.tta} non supporté "
+                    f"(valeurs : {', '.join(f'x{n}' for n in _INTERPOLATION_TTA_LEVELS if n > 1)})."
+                )
             rife_bin = self._rife_bin
             if not rife_bin or not (Path(rife_bin).is_file() or shutil.which(rife_bin)):
                 errors.append(
@@ -2628,6 +2636,12 @@ class EncodeWorkflow(QObject):
                     errors.append(
                         "Interpolation d'images : muxiveo-rife "
                         f"{'.'.join(map(str, _RIFE_MIN_VERSION))} ou plus récent requis "
+                        f"(installé : {'.'.join(map(str, version))}) ; relancer le setup."
+                    )
+                elif version is not None and int(settings.tta) > 1 and version < _RIFE_TTA_MIN_VERSION:
+                    errors.append(
+                        "Interpolation d'images : le TTA requiert muxiveo-rife "
+                        f"{'.'.join(map(str, _RIFE_TTA_MIN_VERSION))} ou plus récent "
                         f"(installé : {'.'.join(map(str, version))}) ; relancer le setup."
                     )
                 elif version is not None and model and not _rife_model_available(resolved, model):

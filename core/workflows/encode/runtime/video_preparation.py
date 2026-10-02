@@ -125,6 +125,7 @@ class VideoOnlyCommandBuilder:
             scene_threshold=settings.scene_threshold,
             gpu=settings.gpu,
             mode=settings.mode,
+            tta=settings.tta,
         )
 
         encoder_offset_s = info.start_offset_s + (offset_ms / 1000.0 if offset_ms > 0 else 0.0)

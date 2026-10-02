@@ -44,7 +44,11 @@ from core.workflows.encode import (
     FrameInterpolationSettings, ProfileManager, QualityMode, VideoCropSettings, VideoEncodeSettings,
     VideoFilterSettings, VideoResizeSettings, VideoTrackEncodePlan, presets_for_codec,
 )
-from core.workflows.encode.interpolation import INTERPOLATION_FACTORS, INTERPOLATION_TARGET_FPS
+from core.workflows.encode.interpolation import (
+    INTERPOLATION_FACTORS,
+    INTERPOLATION_TARGET_FPS,
+    INTERPOLATION_TTA_LEVELS,
+)
 from core.workflows.encode.catalog import (
     VIDEO_ENCODER_BADGES,
     VIDEO_HDR_BADGE_ORDER,
@@ -1665,6 +1669,16 @@ class EncodePanel(QWidget):
         for label, value in (("Mode : Normal", "normal"), ("Mode : Fast", "fast")):
             self._interp_mode_combo.addItem(label, value)
         self._interp_mode_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
+        self._interp_tta_combo = QComboBox()
+        self._interp_tta_combo.setStyleSheet(_combo_style())
+        self._interp_tta_combo.setToolTip(
+            "TTA : chaque image intermédiaire est calculée plusieurs fois (sens inverse, miroirs) puis moyennée, "
+            "ce qui lisse les petites erreurs. Temps de calcul RIFE multiplié par 2, 4 ou 8. "
+            "Sans effet sur les motifs répétitifs (grilles, barreaux)."
+        )
+        for level in INTERPOLATION_TTA_LEVELS:
+            self._interp_tta_combo.addItem("TTA : Désactivé" if level == 1 else f"TTA : ×{level}", level)
+        self._interp_tta_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
         self._interp_fps_label = self._filter_tech_label("")
         fl.addWidget(self._build_filter_row(
             self._interp_cb,
@@ -1672,6 +1686,7 @@ class EncodePanel(QWidget):
             self._interp_factor_combo,
             self._interp_quality_combo,
             self._interp_mode_combo,
+            self._interp_tta_combo,
             self._interp_fps_label,
         ))
         self._sync_interpolation_availability()
@@ -1702,8 +1717,13 @@ class EncodePanel(QWidget):
             self._interp_cb.setChecked(False)
         self._sync_interpolation_controls()
 
+    def _interpolation_tool_flag(self) -> bool:
+        """État propre de la case RIFE (outil disponible), indépendant des parents
+        désactivés tant que le codec est « copy »."""
+        return self._interp_cb.isEnabledTo(self._interp_cb.parentWidget())
+
     def _sync_interpolation_controls(self) -> None:
-        enabled = self._interp_cb.isChecked() and self._interp_cb.isEnabled()
+        enabled = self._interp_cb.isChecked() and self._interpolation_tool_flag()
         self._interp_factor_combo.setEnabled(enabled)
         self._interp_quality_combo.setEnabled(enabled)
         # Light impose le mode Fast (v4.15 lite + flux à demi-résolution)
@@ -1711,6 +1731,7 @@ class EncodePanel(QWidget):
         if light:
             self._set_combo_data(self._interp_mode_combo, "fast")
         self._interp_mode_combo.setEnabled(enabled and not light)
+        self._interp_tta_combo.setEnabled(enabled)
         self._interp_fps_label.setText(self._interpolation_fps_hint() if enabled else "")
 
     def _interpolation_fps_hint(self) -> str:
@@ -1754,16 +1775,18 @@ class EncodePanel(QWidget):
             quality=str(self._interp_quality_combo.currentData() or "balanced"),
             mode="fast" if self._interp_quality_combo.currentData() == "light"
             else str(self._interp_mode_combo.currentData() or "normal"),
+            tta=int(self._interp_tta_combo.currentData() or 1),
         )
 
     def _apply_interpolation_settings(self, settings: FrameInterpolationSettings) -> None:
         if not hasattr(self, "_interp_cb"):
             return
-        self._interp_cb.setChecked(bool(settings.enabled) and self._interp_cb.isEnabled())
+        self._interp_cb.setChecked(bool(settings.enabled) and self._interpolation_tool_flag())
         self._set_combo_data(self._interp_factor_combo, settings.target_fps or str(int(settings.factor)))
         quality = settings.quality if settings.quality in ("fast", "balanced", "light") else "balanced"
         self._set_combo_data(self._interp_quality_combo, quality)
         self._set_combo_data(self._interp_mode_combo, "fast" if settings.fast_mode() else settings.mode)
+        self._set_combo_data(self._interp_tta_combo, int(settings.tta) if int(settings.tta) in INTERPOLATION_TTA_LEVELS else 1)
         self._sync_interpolation_controls()
 
     def _build_filter_row(self, toggle: QCheckBox, *widgets: QWidget) -> QWidget:
@@ -4216,7 +4239,11 @@ class EncodePanel(QWidget):
             )
             if interpolation.quality == "light":
                 badge += " Light"
-            badges.append(f"{badge} Fast" if interpolation.fast_mode() else badge)
+            if interpolation.fast_mode():
+                badge += " Fast"
+            if int(interpolation.tta) > 1:
+                badge += f" TTA ×{int(interpolation.tta)}"
+            badges.append(badge)
         return tuple(badges)
 
     def _video_plan_from_state(
