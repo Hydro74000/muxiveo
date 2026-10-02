@@ -170,6 +170,31 @@ def needs_static_hdr_bitstream_patch(video: VideoEncodeSettings) -> bool:
     return needs_static_hdr_bitstream_patch_codec(video.codec)
 
 
+# Encodeurs ffmpeg qui posent le HDR10 statique depuis les side data des images
+# décodées : ces données sont perdues par le pipe y4m de l'interpolation RIFE.
+_SIDE_DATA_HDR_HEVC_ENCODERS = frozenset({"hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_vaapi"})
+_SIDE_DATA_HDR_AV1_ENCODERS = frozenset({"av1_nvenc", "av1_qsv", "av1_amf", "av1_vaapi", "libsvtav1"})
+
+
+def needs_interpolated_static_hdr_reinjection(video: VideoEncodeSettings) -> bool:
+    """Vrai si une piste interpolée doit recevoir ses SEI HDR10 statiques après encodage."""
+    return (
+        video.interpolates()
+        and video.codec in _SIDE_DATA_HDR_HEVC_ENCODERS
+        and should_reinject_static_hdr_metadata(video)
+    )
+
+
+def interpolated_static_hdr_lost(video: VideoEncodeSettings) -> bool:
+    """Vrai si l'interpolation fait perdre un HDR10 statique impossible à réinjecter (AV1)."""
+    return (
+        video.interpolates()
+        and video.codec in _SIDE_DATA_HDR_AV1_ENCODERS
+        and bool(video.inject_hdr_meta)
+        and requests_hdr_metadata(video)
+    )
+
+
 def should_reinject_static_hdr_metadata(video: VideoEncodeSettings) -> bool:
     """Vrai si le pipeline d'injection doit reposer des SEI HDR statiques.
 

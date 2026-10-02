@@ -169,3 +169,25 @@ def test_query_raises_on_network_error_with_reason():
             assert "CERTIFICATE_VERIFY_FAILED" in str(exc)
         else:
             raise AssertionError("UpdateCheckError attendue")
+
+
+def test_get_json_timeout_covers_header_wait():
+    """Des en-têtes lents (1 s) ne prolongent pas l'attente au-delà du délai demandé."""
+    import time as _time
+    from unittest.mock import patch as _patch
+
+    from core import update_check
+
+    def slow_urlopen(*_args, **_kwargs):
+        _time.sleep(1.0)
+        raise OSError("trop tard")
+
+    started = _time.monotonic()
+    with _patch.object(update_check.urllib.request, "urlopen", side_effect=slow_urlopen):
+        try:
+            update_check._get_json("https://example.invalid/", 0.2)
+        except TimeoutError:
+            pass
+        else:  # pragma: no cover
+            raise AssertionError("TimeoutError attendu")
+    assert _time.monotonic() - started < 0.6

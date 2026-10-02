@@ -1729,7 +1729,7 @@ class EncodePanel(QWidget):
             rate = Fraction(0)
         if rate <= 0:
             return ""
-        target = rate * self._current_interpolation_settings().ratio(str(rate))
+        target = rate * self._current_video_settings().frame_ratio(str(rate))
         return f"{_format_fps(float(rate))} -> {_format_fps(float(target))} i/s"
 
     def _on_interpolation_changed(self) -> None:

@@ -242,6 +242,12 @@ class VideoFilterSettings:
     chroma_smooth_enabled: bool = False
     chroma_smooth_strength: str = "medium"
 
+    def field_rate_multiplier(self) -> int:
+        """Images produites par trame source au désentrelacement (2 : YADIF une image par champ)."""
+        if self.yadif_enabled and str(self.yadif_mode or "").startswith("send_field"):
+            return 2
+        return 1
+
     def is_active(self) -> bool:
         return bool(
             self.yadif_enabled
@@ -361,7 +367,11 @@ class VideoEncodeSettings:
         """Trames encodées par trame source (1 sans interpolation ; x2,5 pour 23,976 -> 59,94)."""
         if not self.interpolates():
             return Fraction(1)
-        return self.interpolation.ratio(source_rate)
+        ratio = self.interpolation.ratio(source_rate)
+        if not self.interpolation.target_fps:
+            # Le facteur s'applique aux images désentrelacées (YADIF une image par champ : x2).
+            ratio *= self.filters.field_rate_multiplier()
+        return ratio
 
 
 @dataclass

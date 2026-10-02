@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -159,7 +160,32 @@ class UpdateCheckError(Exception):
 
 
 def _get_json(url: str, timeout: float) -> object:
-    """GET JSON borné : `timeout` couvre la réponse complète (pas seulement chaque lecture socket)."""
+    """GET JSON borné : `timeout` couvre toute la requête (connexion, en-têtes et corps).
+
+    ``urlopen`` attend les en-têtes sans échéance globale (le timeout socket
+    s'applique à chaque lecture) : la requête tourne dans un thread démon et
+    l'appelant n'attend jamais plus que `timeout`.
+    """
+    outcome: dict[str, object] = {}
+
+    def _worker() -> None:
+        try:
+            outcome["value"] = _fetch_json(url, timeout)
+        except BaseException as exc:  # relayée à l'appelant
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=_worker, name="update-check-http", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise TimeoutError(f"délai de {timeout:g} s dépassé")
+    if "error" in outcome:
+        raise outcome["error"]  # type: ignore[misc]
+    return outcome.get("value")
+
+
+def _fetch_json(url: str, timeout: float) -> object:
+    """Lecture JSON avec échéance entre deux blocs (la borne globale est dans `_get_json`)."""
     deadline = time.monotonic() + timeout
     req = urllib.request.Request(
         url,

@@ -45,6 +45,7 @@ from core.workflows.encode.interpolation import (
     InterpolationSource,
     build_rife_stage,
     rife_version,
+    required_dovi_level,
     dovi_scene_cut_edit,
     expand_dynamic_hdr_metadata,
     expand_hdr10plus_json,
@@ -100,6 +101,13 @@ class TestSettings:
         assert restored.interpolation == _interp(quality="fast", mode="fast")
         assert restored.to_video_settings().frame_ratio() == 2
 
+    def test_field_deinterlace_doubles_factor_only(self):
+        field = VideoFilterSettings(yadif_enabled=True, yadif_mode="send_field")
+        assert _video(filters=field).frame_ratio() == 4
+        assert _video(filters=VideoFilterSettings(yadif_enabled=True)).frame_ratio() == 2
+        target = _video(filters=field, interpolation=_interp(target_fps="60000/1001"))
+        assert target.frame_ratio("24000/1001") == Fraction(5, 2)
+
     def test_mode_defaults_to_normal_for_old_presets(self):
         assert FrameInterpolationSettings.from_value({"enabled": True, "factor": 2}).mode == "normal"
 
@@ -115,7 +123,8 @@ class TestInterpolationSource:
              "start_time": "0.042000", "r_frame_rate": "24000/1001", "avg_frame_rate": "24000/1001"},
             format_start_time="0.000000",
         )
-        assert info == InterpolationSource("bt2020nc", "limited", "topleft", 0.042, False, "", "24000/1001")
+        assert info == InterpolationSource("bt2020nc", "limited", "topleft", 0.042, False, "", "24000/1001",
+                                           colorspace="bt2020nc")
         assert info.decode_rate == "24000/1001"
 
     def test_untagged_fallbacks(self):
@@ -134,11 +143,46 @@ class TestInterpolationSource:
         info = interpolation_source_from_probe({"start_time": "1.500"}, format_start_time="1.400")
         assert info.start_offset_s == pytest.approx(0.1)
 
+    def test_declared_color_tags(self):
+        hlg = interpolation_source_from_probe({"color_primaries": "bt2020", "color_transfer": "arib-std-b67",
+                                               "color_space": "bt2020nc", "color_range": "tv"})
+        assert hlg.setparams_filter() == ("setparams=color_primaries=bt2020:color_trc=arib-std-b67:"
+                                          "colorspace=bt2020nc:range=tv")
+        assert hlg.setparams_filter(hdr_pq=True) == ("setparams=color_primaries=bt2020:color_trc=smpte2084:"
+                                                     "colorspace=bt2020nc:range=tv")
+        assert hlg.nvencc_color_args() == ["--colorprim", "bt2020", "--transfer", "arib-std-b67",
+                                           "--colormatrix", "bt2020nc", "--colorrange", "limited"]
+        assert interpolation_source_from_probe({"color_primaries": "unknown", "height": 1080}).setparams_filter() == ""
+        tonemapped = interpolation_source_from_probe({"color_transfer": "smpte2084"}, tonemap_to_sdr=True)
+        assert tonemapped.setparams_filter().startswith("setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709")
+
     def test_vfr_detection(self):
         vfr = interpolation_source_from_probe({"r_frame_rate": "30/1", "avg_frame_rate": "75510000/2523679"})
         cfr = interpolation_source_from_probe({"r_frame_rate": "30000/1001", "avg_frame_rate": "2997/100"})
         assert vfr.is_vfr and vfr.cfr_rate == "30/1"
         assert not cfr.is_vfr and cfr.cfr_rate == ""
+
+    @pytest.mark.parametrize("probe_name,nvencc_name", [
+        ("smpte428", "st428"), ("smpte431", "st431-2"), ("smpte432", "st432-1"),
+        ("ebu3213", "ebu3213-e"), ("jedec-p22", "ebu3213-e"),
+    ])
+    def test_nvencc_primary_names(self, probe_name, nvencc_name):
+        info = interpolation_source_from_probe({"color_primaries": probe_name})
+        assert info.nvencc_color_args() == ["--colorprim", nvencc_name, "--colorrange", "limited"]
+
+    @pytest.mark.parametrize("probe_name,nvencc_name", [
+        ("gbr", "GBR"), ("ycgco", "YCgCo"), ("chroma-derived-nc", "derived-ncl"),
+        ("chroma-derived-c", "derived-cl"), ("ictcp", "ictco"),
+    ])
+    def test_nvencc_matrix_names(self, probe_name, nvencc_name):
+        info = interpolation_source_from_probe({"color_space": probe_name})
+        assert info.nvencc_color_args() == ["--colormatrix", nvencc_name, "--colorrange", "limited"]
+
+    def test_nvencc_unknown_color_tags_omitted(self):
+        info = interpolation_source_from_probe({
+            "color_primaries": "future-primaries", "color_transfer": "future-transfer", "color_space": "future-matrix",
+        })
+        assert info.nvencc_color_args() == []
 
 
 def test_rife_stage_arguments():
@@ -229,6 +273,16 @@ class TestVideoOnlyBuilder:
         assert encode[encode.index("-map") + 1] == "0:0"
         assert "libx265" in encode and encode[-1] == str(tmp_path / "v.mkv")
         assert " | " in command_display(cmd)
+
+    def test_sdr_color_tags_restored_after_y4m(self, tmp_path):
+        video = _video()
+        cfg = EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv", video=video)
+        info = interpolation_source_from_probe({"color_primaries": "bt709", "color_transfer": "bt709",
+                                                "color_space": "bt709", "height": 1080})
+        [cmd] = _builder(info).build_video_only_mkv_commands(cfg, video, cfg.source, tmp_path / "v.mkv")
+        encode = command_stages(cmd)[-1]
+        assert encode[encode.index("-vf") + 1].startswith(
+            "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709")
 
     def test_vfr_source_normalized_before_rife(self, tmp_path):
         video = _video()
@@ -502,6 +556,11 @@ class TestWorkflowInterpolation:
             with patch("core.workflows.encode.workflow._rife_version", return_value=(1, 0, 0)):
                 errors = interp_workflow._interpolation_validation_errors(cfg)
             with patch("core.workflows.encode.workflow._rife_version", return_value=(1, 1, 0)):
+                missing = interp_workflow._interpolation_validation_errors(cfg)
+                assert len(missing) == 1 and "rife-v4.6" in missing[0] and "absent" in missing[0]
+                model = tmp_path / "rife-models" / "rife-v4.6"
+                model.mkdir(parents=True)
+                (model / "flownet.param").write_text("")
                 assert interp_workflow._interpolation_validation_errors(cfg) == []
             light = _cfg(tmp_path, _video(interpolation=_interp(quality="light")))
             with patch("core.workflows.encode.workflow._rife_version", return_value=(1, 0, 0)):
@@ -509,6 +568,21 @@ class TestWorkflowInterpolation:
             bad = _cfg(tmp_path, _video(interpolation=_interp(mode="turbo")))
             assert any("turbo" in e for e in interp_workflow._interpolation_validation_errors(bad))
         assert len(errors) == 1 and "1.1.0" in errors[0] and "1.0.0" in errors[0]
+
+    def test_vfr_with_dynamic_hdr_copy_rejected(self, interp_workflow, tmp_path):
+        payload = _probe_payload(r_frame_rate="30/1", avg_frame_rate="29/1")
+        with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=payload):
+            errors = interp_workflow._interpolation_validation_errors(_cfg(tmp_path, _video(copy_dv=True)))
+            assert not interp_workflow._interpolation_validation_errors(_cfg(tmp_path, _video()))
+        assert any("cadence variable" in e for e in errors)
+
+    def test_target_fps_compared_after_field_deinterlace(self, interp_workflow, tmp_path):
+        video = _video(filters=VideoFilterSettings(yadif_enabled=True, yadif_mode="send_field"),
+                       interpolation=_interp(target_fps="60000/1001"))
+        payload = _probe_payload(r_frame_rate="30000/1001", avg_frame_rate="30000/1001", field_order="tt")
+        with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=payload):
+            errors = interp_workflow._interpolation_validation_errors(_cfg(tmp_path, video))
+        assert any("après désentrelacement" in e for e in errors)
 
     def test_copy_codec_rejected(self, interp_workflow, tmp_path):
         errors = interp_workflow._interpolation_validation_errors(_cfg(tmp_path, _video(codec="copy")))
@@ -725,3 +799,10 @@ def test_target_fps_must_exceed_source(interp_workflow, tmp_path):
     ok_payload = _probe_payload(avg_frame_rate="24000/1001", r_frame_rate="24000/1001")
     with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=ok_payload):
         assert interp_workflow._interpolation_validation_errors(_cfg(tmp_path, video)) == []
+
+
+def test_required_dovi_level_capped_for_tv_compat():
+    stream = {"index": 0, "width": 3840, "height": 2160, "avg_frame_rate": "50/1", "r_frame_rate": "50/1"}
+    with patch("core.workflows.encode.interpolation._probe_stream", return_value=stream):
+        assert required_dovi_level("ffprobe", Path("s.mkv"), 0, 2) == 9            # 100 i/s : plafonné (TV)
+        assert required_dovi_level("ffprobe", Path("s.mkv"), 0, Fraction(6, 5)) == 9  # 60 i/s

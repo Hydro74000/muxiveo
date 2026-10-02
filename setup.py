@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core.ui_language import system_ui_language
-from core.version import APP_CONFIG_DIR_NAME, APP_REPOSITORY, MUXIVEO_RIFE_RELEASE_TAG
+from core.version import APP_CONFIG_DIR_NAME, APP_REPOSITORY, MUXIVEO_RIFE_RELEASE_TAG, MUXIVEO_RIFE_VERSION
 
 # ---------------------------------------------------------------------------
 # Terminal colours (no external deps)
@@ -283,6 +283,8 @@ GITHUB_TOOLS: dict[str, dict] = {
         "desc": "Interpolation d'images RIFE (Vulkan) livrée avec Muxiveo",
         # Archive complète : binaire + rife-models/ (+ MoltenVK sous macOS).
         "bundle": True,
+        # Une installation plus ancienne est remplacée (modèles livrés par release).
+        "min_version": MUXIVEO_RIFE_VERSION,
         "binary_name": {
             "Linux":   "muxiveo-rife",
             "Darwin":  "muxiveo-rife",
@@ -1797,6 +1799,64 @@ def _ensure_safe_archive_names(names) -> None:
             raise RuntimeError(f"Unsafe path in archive: {name}")
 
 
+def _prefix_writable(prefix: Path) -> bool:
+    """Vrai si l'utilisateur peut écrire dans ``prefix`` (ou dans son premier parent existant)."""
+    probe = prefix
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    return os.access(probe, os.W_OK | (os.X_OK if probe.is_dir() else 0))
+
+
+def _tool_destination_writable(prefix: Path, bin_dir: Path, binary_name: str, *, bundle: bool) -> bool:
+    """Vérifie aussi les fichiers laissés par une ancienne installation avec sudo."""
+    paths = [prefix, bin_dir, bin_dir / binary_name]
+    lib_dir = prefix / "lib" / Path(binary_name).stem
+    if bundle:
+        paths.extend((lib_dir.parent, lib_dir))
+    if not all(_prefix_writable(path) for path in paths):
+        return False
+
+    def unreadable(error: OSError) -> None:
+        raise error
+
+    if bundle and lib_dir.is_dir():
+        try:
+            for root, directories, files in os.walk(lib_dir, onerror=unreadable):
+                if not all(_prefix_writable(Path(root) / name) for name in directories + files):
+                    return False
+        except OSError:
+            return False
+    return True
+
+
+def _tool_version(binary: Path) -> tuple[int, ...] | None:
+    """Version ``X.Y.Z`` annoncée par ``<binaire> --version`` (None si illisible)."""
+    kwargs: dict = {}
+    if OS == "Windows":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        out = subprocess.run([str(binary), "--version"], capture_output=True, text=True,
+                             timeout=15, check=False, stdin=subprocess.DEVNULL, **kwargs)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", (out.stdout or "") + (out.stderr or ""))
+    return tuple(int(x) for x in match.groups()) if match else None
+
+
+def _github_tool_outdated(exe: str, meta: dict, binary: Path) -> bool:
+    """Vrai si l'outil installé est plus ancien que ``meta["min_version"]`` (à remplacer)."""
+    wanted = meta.get("min_version")
+    if not wanted:
+        return False
+    installed = _tool_version(binary)
+    target = tuple(int(x) for x in str(wanted).split("."))
+    if installed is not None and installed >= target:
+        return False
+    found = ".".join(map(str, installed)) if installed else "inconnue"
+    info(f"{exe}: version installée {found} < {wanted} — mise à jour.")
+    return True
+
+
 def _install_tool_bundle(
     archive_path: Path,
     fmt: str,
@@ -1846,7 +1906,8 @@ def _install_tool_bundle(
         run(sudo + ["chmod", "755", str(lib_dir / binary_name)])
         run(sudo + ["ln", "-sf", str(lib_dir / binary_name), str(link)])
     else:
-        shutil.rmtree(lib_dir, ignore_errors=True)
+        if lib_dir.exists():
+            shutil.rmtree(lib_dir)
         shutil.copytree(root, lib_dir)
         (lib_dir / binary_name).chmod(0o755)
         bin_dir.mkdir(parents=True, exist_ok=True)
@@ -2219,9 +2280,6 @@ def install_github_tools(
     else:
         bin_dir = prefix / "bin"
 
-    # On Windows we install to a user-writable directory (no sudo needed).
-    use_sudo = OS != "Windows"
-    sudo = sudo_prefix(dry_run) if use_sudo else []
     ini_path = _config_ini_path()
 
     path_reminder_shown = False
@@ -2245,7 +2303,7 @@ def install_github_tools(
         binary_name = meta["binary_name"].get(OS, meta["binary_name"].get("Linux"))
         dest = bin_dir / binary_name
 
-        if not force and dest.is_file():
+        if not force and dest.is_file() and not _github_tool_outdated(exe, meta, dest):
             ok(f"{exe} already present ({dest})")
             detected_tool_paths[exe] = str(dest)
             continue
@@ -2253,7 +2311,7 @@ def install_github_tools(
         # Recherche tolérante à la casse : .rpm Fedora installe `nvencc` (minuscules)
         # alors que .deb Debian installe `NVEncC` (PascalCase). On accepte les deux.
         existing = shutil.which(exe) or shutil.which(exe.lower()) or shutil.which(exe.capitalize())
-        if not force and existing:
+        if not force and existing and not _github_tool_outdated(exe, meta, Path(existing)):
             ok(f"{exe} already present ({existing})")
             detected_tool_paths[exe] = existing
             continue
@@ -2274,6 +2332,17 @@ def install_github_tools(
             info(f"[dry-run] Would download and install {exe} to {dest}")
             detected_tool_paths[exe] = str(dest)
             ok(f"{exe} installed → {dest}")
+            continue
+
+        # Décision par outil : le préfixe peut être accessible alors que son
+        # ancien binaire ou bundle appartient à root.
+        try:
+            use_sudo = OS != "Windows" and not _tool_destination_writable(
+                prefix, bin_dir, binary_name, bundle=bool(meta.get("bundle")),
+            )
+            sudo = sudo_prefix(dry_run) if use_sudo else []
+        except (RuntimeError, OSError) as exc:
+            warn(f"{exe}: installation failed ({exc}). Skipping.")
             continue
 
         release = (
@@ -2332,7 +2401,7 @@ def install_github_tools(
                         archive_path, chosen_fmt, binary_name,
                         prefix=prefix, bin_dir=bin_dir, tmp_path=tmp_path, sudo=sudo,
                     )
-                except RuntimeError as exc:
+                except (RuntimeError, OSError) as exc:
                     warn(f"{exe}: installation failed ({exc}). Skipping.")
                     continue
                 detected_tool_paths[exe] = str(dest)
@@ -2345,23 +2414,26 @@ def install_github_tools(
                     extracted = _install_windows_nvencc_zip(archive_path, bin_dir)
                 else:
                     extracted = _extract_binary(archive_path, binary_name, chosen_fmt, tmp_path)
-            except RuntimeError as exc:
+            except (RuntimeError, OSError) as exc:
                 warn(f"{exe}: extraction failed ({exc}). Skipping.")
                 continue
 
             info(f"Installing to {dest}")
 
-            if OS == "Windows" and exe == "nvencc" and chosen_fmt == "zip":
-                # The native extractor above already copied the complete runtime
-                # next to NVEncC64.exe, including its required DLLs.
-                dest = extracted
-            elif use_sudo and not is_root():
-                run(sudo + ["mkdir", "-p", str(bin_dir)])
-                run(sudo + ["install", "-m", "755", str(extracted), str(dest)])
-            else:
-                bin_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(extracted, dest)
-                dest.chmod(dest.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+            try:
+                if OS == "Windows" and exe == "nvencc" and chosen_fmt == "zip":
+                    # The native extractor already copied the complete runtime.
+                    dest = extracted
+                elif use_sudo and not is_root():
+                    run(sudo + ["mkdir", "-p", str(bin_dir)])
+                    run(sudo + ["install", "-m", "755", str(extracted), str(dest)])
+                else:
+                    bin_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(extracted, dest)
+                    dest.chmod(dest.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+            except (RuntimeError, OSError) as exc:
+                warn(f"{exe}: installation failed ({exc}). Skipping.")
+                continue
 
         detected_tool_paths[exe] = str(dest)
         ok(f"{exe} installed → {dest}")

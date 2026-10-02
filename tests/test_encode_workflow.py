@@ -5816,7 +5816,8 @@ class TestNvenccRuntimeRouting:
         assert "-c:v" in remux_cmd
         assert remux_cmd[remux_cmd.index("-c:v") + 1] == "copy"
 
-    def test_run_nvencc_direct_output_applies_video_offset_on_remux_input(self, tmp_path):
+    @pytest.mark.parametrize("source_start", [0.0, 0.4])
+    def test_run_nvencc_direct_output_applies_video_offset_on_remux_input(self, tmp_path, source_start):
         cfg = self._make_config(tmp_path)
         cfg.track_time_offsets = [TrackTimeOffset(
             source_path=cfg.source,
@@ -5836,7 +5837,8 @@ class TestNvenccRuntimeRouting:
                 remux_cmds.append(list(cmd))
             return "ok"
 
-        with patch.object(wf._runner, "_run_cmd", side_effect=_capture_run_cmd):
+        with patch.object(wf._runner, "_run_cmd", side_effect=_capture_run_cmd), \
+             patch("core.workflows.encode.runtime.nvencc_execution._stream_start_offset", return_value=source_start) as probe:
             wf._run_nvencc_direct_output(
                 cfg,
                 cleanup_paths,
@@ -5846,7 +5848,8 @@ class TestNvenccRuntimeRouting:
         assert remux_cmds, "Le remux final doit être lancé."
         remux_cmd = remux_cmds[-1]
         assert "-itsoffset" in remux_cmd
-        assert remux_cmd[remux_cmd.index("-itsoffset") + 1] == "1.500"
+        assert remux_cmd[remux_cmd.index("-itsoffset") + 1] == f"{1.5 + source_start:.3f}"
+        probe.assert_called_once_with("ffprobe", cfg.source, 0)
 
     def test_build_runtime_nvencc_remux_cmd_uses_sync_input_for_foreign_audio(self, tmp_path):
         src_main = tmp_path / "main.mkv"

@@ -53,7 +53,8 @@ INTERPOLATION_FACTORS: tuple[int, ...] = (2, 3, 4)
 INTERPOLATION_TARGET_FPS: tuple[str, ...] = ("60000/1001", "60/1")
 # Mode de calcul du flux optique : "fast" = muxiveo-rife --uhd (flux à demi-résolution).
 INTERPOLATION_MODES: tuple[str, ...] = ("normal", "fast")
-RIFE_UHD_MIN_VERSION: tuple[int, int, int] = (1, 1, 0)
+# Version minimale de muxiveo-rife : modèles v4.6 / v4.15-lite et --uhd (release 1.1.0).
+RIFE_MIN_VERSION: tuple[int, int, int] = (1, 1, 0)
 
 # Intervalle des lignes ``progress`` de muxiveo-rife : alimentent la barre de
 # progression (non journalisées, log verbose uniquement).
@@ -65,8 +66,25 @@ _RIFE_VERSION_RE = re.compile(r"muxiveo-rife (\d+)\.(\d+)\.(\d+)")
 
 _RIFE_MATRICES = {"bt709", "bt2020nc", "bt2020", "bt601", "smpte170m", "bt470bg", "smpte240m", "fcc"}
 _RIFE_CHROMA_LOCATIONS = {"left", "center", "topleft"}
+# Noms ffprobe -> NVEncC ; une valeur inconnue reste omise.
+_NVENCC_PRIMARIES = {
+    **{name: name for name in ("bt709", "smpte170m", "bt470m", "bt470bg", "smpte240m", "film", "bt2020")},
+    "smpte428": "st428", "smpte431": "st431-2", "smpte432": "st432-1",
+    "ebu3213": "ebu3213-e", "jedec-p22": "ebu3213-e",
+}
+_NVENCC_TRANSFERS = {name: name for name in ("bt709", "smpte170m", "bt470m", "bt470bg", "smpte240m", "linear", "log100", "log316",
+                     "iec61966-2-4", "bt1361e", "iec61966-2-1", "bt2020-10", "bt2020-12", "smpte2084",
+                     "smpte428", "arib-std-b67")}
+_NVENCC_MATRICES = {
+    **{name: name for name in ("bt709", "smpte170m", "bt470bg", "smpte240m", "fcc", "bt2020nc", "bt2020c")},
+    "gbr": "GBR", "ycgco": "YCgCo",
+    "chroma-derived-nc": "derived-ncl", "chroma-derived-c": "derived-cl",
+    "ictcp": "ictco",
+}
 
 _RPU_START_CODE = b"\x00\x00\x00\x01"
+# Niveau Dolby Vision maximal signalé (compatibilité des décodeurs TV, cf. sanitize_dovi_level).
+_DOVI_MAX_COMPAT_LEVEL = 9
 
 
 @dataclass(frozen=True)
@@ -84,6 +102,37 @@ class InterpolationSource:
     cfr_rate: str = ""
     # Cadence du flux (avg_frame_rate, sinon r_frame_rate).
     frame_rate: str = ""
+    # Marquage couleur déclaré par la source ("" si absent) : le y4m ne le
+    # transporte pas, l'encodeur doit le recevoir explicitement.
+    primaries: str = ""
+    transfer: str = ""
+    colorspace: str = ""
+
+    def setparams_filter(self, *, hdr_pq: bool = False) -> str:
+        """Filtre ``setparams`` posant le marquage couleur sur les images y4m.
+
+        Depuis ffmpeg 7, l'encodeur lit ces propriétés sur les images : les options
+        de sortie ``-color_*`` ne suffisent plus. ``hdr_pq`` : sortie HDR10 (BT.2020/PQ).
+        """
+        if hdr_pq:
+            values = [("color_primaries", "bt2020"), ("color_trc", "smpte2084"), ("colorspace", "bt2020nc")]
+            color_range = "tv"
+        else:
+            values = [(key, value) for key, value in (("color_primaries", self.primaries),
+                                                      ("color_trc", self.transfer),
+                                                      ("colorspace", self.colorspace)) if value]
+            if not values:
+                return ""
+            color_range = "pc" if self.color_range == "full" else "tv"
+        return "setparams=" + ":".join(f"{key}={value}" for key, value in values) + f":range={color_range}"
+
+    def nvencc_color_args(self) -> list[str]:
+        """Options NVEncC rétablissant le marquage couleur de la source."""
+        args = [opt for flag, value, mapping in (("--colorprim", self.primaries, _NVENCC_PRIMARIES),
+                                                 ("--transfer", self.transfer, _NVENCC_TRANSFERS),
+                                                 ("--colormatrix", self.colorspace, _NVENCC_MATRICES))
+                if value in mapping for opt in (flag, mapping[value])]
+        return [*args, "--colorrange", self.color_range] if args else []
 
     @property
     def decode_rate(self) -> str:
@@ -105,16 +154,22 @@ def interpolation_source_from_probe(
     tonemap_to_sdr: bool = False,
 ) -> InterpolationSource:
     """Construit les propriétés d'interpolation depuis un flux ``ffprobe -show_streams``."""
+    def declared(key: str) -> str:
+        value = str(stream.get(key) or "").strip().lower()
+        return "" if value in {"", "unknown", "unspecified", "reserved"} else value
+
     if tonemap_to_sdr:
         # Le tone mapping (avant RIFE) produit du BT.709 limité.
         matrix = "bt709"
         color_range = "limited"
+        primaries = transfer = colorspace = "bt709"
     else:
+        primaries, transfer, colorspace = declared("color_primaries"), declared("color_transfer"), declared("color_space")
         matrix = str(stream.get("color_space") or "").strip().lower()
         if matrix not in _RIFE_MATRICES:
-            transfer = str(stream.get("color_transfer") or "").strip().lower()
+            # matrice de calcul RIFE devinée (n'affecte pas le marquage déclaré)
             height = int(_float_or_none(stream.get("height")) or 0)
-            if transfer in {"smpte2084", "arib-std-b67"}:
+            if str(stream.get("color_transfer") or "").strip().lower() in {"smpte2084", "arib-std-b67"}:
                 matrix = "bt2020nc"
             else:
                 matrix = "bt709" if height > 576 else "bt601"
@@ -142,7 +197,35 @@ def interpolation_source_from_probe(
         is_vfr=is_vfr,
         cfr_rate=nominal_cfr_rate(r_rate, avg_rate) if is_vfr else "",
         frame_rate=avg_rate if _rate_value(avg_rate) else r_rate,
+        primaries=primaries,
+        transfer=transfer,
+        colorspace=colorspace,
     )
+
+
+def stream_start_offset(ffprobe_bin: str, source: Path, stream_index: int) -> float:
+    """Départ (s) d'un flux relativement au début du conteneur (0 si inconnu ou négatif)."""
+    cmd = [ffprobe_bin, "-v", "error", "-print_format", "json", "-show_streams", "-show_format"]
+    cmd.extend(ffprobe_input_args(source))
+    try:
+        result = subprocess.run(cmd, capture_output=True, check=False, timeout=30, **subprocess_text_kwargs())
+        payload = json.loads(result.stdout or "{}")
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return 0.0
+    stream = next((s for s in payload.get("streams") or [] if int(s.get("index", -1)) == int(stream_index)), {})
+    return interpolation_source_from_probe(
+        stream, format_start_time=(payload.get("format") or {}).get("start_time")
+    ).start_offset_s
+
+
+def probe_interpolation_source(
+    ffprobe_bin: str, source: Path, stream_index: int, *, tonemap_to_sdr: bool = False
+) -> InterpolationSource | None:
+    """``InterpolationSource`` d'un flux sondé directement (None si la sonde échoue)."""
+    stream = _probe_stream(ffprobe_bin, source, stream_index)
+    if stream is None:
+        return None
+    return interpolation_source_from_probe(stream, tonemap_to_sdr=tonemap_to_sdr)
 
 
 def nominal_cfr_rate(r_rate: str, avg_rate: str) -> str:
@@ -230,6 +313,15 @@ def build_rife_stage(
     if int(gpu) >= 0:
         cmd.extend(["--gpu", str(int(gpu))])
     return cmd
+
+
+def rife_model_available(rife_bin: str, model: str) -> bool:
+    """Vrai si ``<dossier réel du binaire>/rife-models/<model>`` contient le modèle."""
+    try:
+        exe_dir = Path(rife_bin).resolve().parent
+    except OSError:
+        return False
+    return (exe_dir / "rife-models" / model / "flownet.param").is_file()
 
 
 @functools.lru_cache(maxsize=8)
@@ -495,7 +587,9 @@ def required_dovi_level(ffprobe_bin: str, source: Path, stream_index: int, ratio
     width, height = int(stream.get("width") or 0), int(stream.get("height") or 0)
     if fps <= 0 or width <= 0 or height <= 0:
         return None
-    return minimum_dovi_level(width, height, fps * float(Fraction(ratio)))
+    # Plafond 9 (UHD 60 i/s) comme sanitize_dovi_level : un niveau >= 10 fait échouer
+    # les décodeurs Dolby Vision des téléviseurs, même au-delà de 60 i/s.
+    return min(minimum_dovi_level(width, height, fps * float(Fraction(ratio))), _DOVI_MAX_COMPAT_LEVEL)
 
 
 def extract_hdr10plus_metadata(
@@ -533,13 +627,16 @@ __all__ = [
     "INTERPOLATION_MODELS",
     "INTERPOLATION_MODES",
     "INTERPOLATION_FAST_QUALITIES",
-    "RIFE_UHD_MIN_VERSION",
+    "RIFE_MIN_VERSION",
+    "rife_model_available",
     "InterpolationSource",
     "PipelineCommand",
     "RifeProgress",
     "build_decode_stage",
     "build_rife_stage",
     "rife_version",
+    "probe_interpolation_source",
+    "stream_start_offset",
     "command_stages",
     "dovi_scene_cut_edit",
     "expand_dynamic_hdr_metadata",

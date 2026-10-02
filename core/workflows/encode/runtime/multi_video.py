@@ -10,6 +10,8 @@ from core.bluray import append_ffmpeg_input_args
 from core.runner import TaskCancelledError, TaskSignals
 from core.workdir import remove_path
 from core.workflows.encode.domain import (
+    interpolated_static_hdr_lost,
+    needs_interpolated_static_hdr_reinjection,
     needs_static_hdr_bitstream_patch,
     should_reinject_static_hdr_metadata,
 )
@@ -22,6 +24,7 @@ from core.workflows.encode.interpolation import (
     ffprobe_beside,
     required_dovi_level,
     resolve_frame_ratio,
+    stream_start_offset,
 )
 from core.matroska.editors.dovi import DolbyVisionConfigRecord
 from core.matroska.hevc.access_units import HevcStreamCancelled
@@ -41,6 +44,9 @@ class PreparedVideoInput:
     input_args: list[str]
     path: Path | str
     map_arg: str
+    # Départ voulu (s) d'un intermédiaire réencodé : l'assemblage ffmpeg ramène le
+    # départ de chaque entrée à zéro, il le réapplique (-itsoffset).
+    start_offset_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -115,7 +121,17 @@ class MultiVideoPipelineRunner:
         cb.check_cancelled(signals)
         cb.log_info(f"Préparation vidéo {index}/{total_tracks}…")
 
-        if video.copy_dv or video.copy_hdr10plus or needs_static_hdr_bitstream_patch(video):
+        if interpolated_static_hdr_lost(video):
+            cb.log_info(
+                f"Piste vidéo {index}: ATTENTION — l'interpolation ne transmet pas les métadonnées "
+                f"HDR10 statiques à {video.codec} (aucune réinjection possible en AV1)."
+            )
+        if (
+            video.copy_dv
+            or video.copy_hdr10plus
+            or needs_static_hdr_bitstream_patch(video)
+            or needs_interpolated_static_hdr_reinjection(video)
+        ):
             rpu_bin = work_dir / f"video_{index}.rpu.bin"
             hdr10p_json = work_dir / f"video_{index}.hdr10plus.json"
             enc_video_mkv = work_dir / f"video_{index}.enc.mkv"
@@ -124,7 +140,7 @@ class MultiVideoPipelineRunner:
             # pré-extraction obligatoire pour MP4/MOV/TS/... (BSF hevc_mp4toannexb).
             _RAW_HEVC_EXT = {".hevc", ".h265", ".265", ".x265"}
             src_ext = source.suffix.lower()
-            if src_ext not in _RAW_HEVC_EXT and src_ext != ".mkv":
+            if src_ext not in _RAW_HEVC_EXT and src_ext != ".mkv" and (video.copy_dv or video.copy_hdr10plus):
                 annexb_src = work_dir / f"video_{index}.source.hevc"
                 annexb_cmd = [cb.ffmpeg_bin, "-nostdin", "-y"]
                 append_ffmpeg_input_args(annexb_cmd, source)
@@ -312,6 +328,7 @@ class MultiVideoPipelineRunner:
                 input_args=[],
                 path=wrapped,
                 map_arg=f"{order}:v:0",
+                start_offset_s=self._intended_start_s(source, spec.stream_index, offset_ms),
             ), local_cleanup
 
         output_path = work_dir / f"video_{index}.mkv"
@@ -345,7 +362,13 @@ class MultiVideoPipelineRunner:
             input_args=[],
             path=output_path,
             map_arg=f"{order}:v:0",
+            start_offset_s=self._intended_start_s(source, spec.stream_index, offset_ms),
         ), local_cleanup
+
+    def _intended_start_s(self, source: Path, stream_index: int, offset_ms: int) -> float:
+        """Départ voulu d'une piste réencodée : décalage du flux dans la source + retard positif."""
+        start = stream_start_offset(ffprobe_beside(self._callbacks.ffmpeg_bin), source, stream_index)
+        return round(start + max(0, offset_ms) / 1000.0, 6)
 
     def run(
         self,
@@ -542,6 +565,8 @@ class MultiVideoPipelineRunner:
                 final_cmd.extend(cb.ffmpeg_progress_args())
                 for prepared_input in prepared_inputs_ready:
                     final_cmd.extend(prepared_input.input_args)
+                    if not prepared_input.input_args and prepared_input.start_offset_s > 0.0005:
+                        final_cmd.extend(["-itsoffset", f"{prepared_input.start_offset_s:.6f}"])
                     append_ffmpeg_input_args(final_cmd, prepared_input.path)
                 for src in all_sources:
                     append_ffmpeg_input_args(final_cmd, src)

@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from core.workflows.common import TrackTimeOffset
 from core.workflows.encode import (
     AudioTrackSettings,
     EncodeConfig,
@@ -106,3 +107,32 @@ def test_encode_interpolation_doubles_frame_rate(tmp_path: Path, mux_backend: st
     assert len(streams_of_type(probe, "audio")) == 1
     assert abs(float(probe["format"]["duration"]) - 1.0) < 0.15
     assert any("muxiveo-rife" in str(line) for line in state["progress"])
+
+
+@pytest.mark.parametrize("mux_backend", ["ffmpeg", "native"])
+def test_encode_interpolation_keeps_video_delay(tmp_path: Path, mux_backend: str) -> None:
+    """Un retard vidéo (+400 ms) survit à l'encode interpolé et à l'assemblage final."""
+    src = tmp_path / "src.mkv"
+    make_av_container(src, duration=2.0)
+    out = tmp_path / f"delay-{mux_backend}.mkv"
+    cfg = EncodeConfig(
+        source=src,
+        output=out,
+        video=VideoEncodeSettings(
+            codec="libx264", quality_mode=QualityMode.CRF, crf=30, preset="ultrafast",
+            interpolation=FrameInterpolationSettings(enabled=True, factor=2),
+        ),
+        audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")],
+        copy_subtitles=False,
+        keep_chapters=False,
+        duration_s=2.0,
+        mux_backend=mux_backend,
+        track_time_offsets=[TrackTimeOffset(track_type="video", source_path=src, stream_index=0, offset_ms=400)],
+    )
+    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", ram_buffer_enabled=False, ffmpeg_threads=1, generate_nfo=False,
+                        rife_bin=RIFE_BIN)
+    assert wf.validate(cfg) == []
+    state = wait_task(wf.run(cfg), timeout=180.0)
+    assert state["failed"] is None, f"Encode failed: {state['failed']}"
+    starts = {s["codec_type"]: float(s.get("start_time") or 0.0) for s in ffprobe_json(out)["streams"]}
+    assert abs((starts["video"] - starts["audio"]) - 0.4) < 0.05

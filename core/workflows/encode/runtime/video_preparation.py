@@ -134,7 +134,12 @@ class VideoOnlyCommandBuilder:
         if encoder_offset_s > 0:
             cmd.extend(["-itsoffset", f"{encoder_offset_s:.6f}"])
         cmd.extend(["-f", "yuv4mpegpipe", "-i", "pipe:0"])
-        vf = build_encoder_vf(video, callbacks=domain, piped_frames=True)
+        # Le y4m ne transporte pas le marquage couleur : posé sur les images
+        # (setparams) avant les éventuels format/upload matériels de l'encodeur.
+        vf = ",".join(part for part in (
+            info.setparams_filter(hdr_pq=needs_hdr_vui(video) and not video.tonemap_to_sdr),
+            build_encoder_vf(video, callbacks=domain, piped_frames=True),
+        ) if part)
         if vf:
             cmd.extend(["-vf", vf])
         cmd.extend(cb.ffmpeg_thread_args(thread_count))

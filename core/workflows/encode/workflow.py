@@ -115,7 +115,8 @@ from core.workflows.encode.interpolation import (
     INTERPOLATION_FACTORS as _INTERPOLATION_FACTORS,
     INTERPOLATION_MODELS as _INTERPOLATION_MODELS,
     INTERPOLATION_MODES as _INTERPOLATION_MODES,
-    RIFE_UHD_MIN_VERSION as _RIFE_UHD_MIN_VERSION,
+    RIFE_MIN_VERSION as _RIFE_MIN_VERSION,
+    rife_model_available as _rife_model_available,
     InterpolationSource as _InterpolationSource,
     build_rife_stage as _build_rife_stage,
     parse_rife_progress as _parse_rife_progress,
@@ -2572,19 +2573,26 @@ class EncodeWorkflow(QObject):
             if video.codec == "copy":
                 errors.append("Interpolation d'images : impossible avec le codec vidéo COPY (réencodage requis).")
                 continue
+            source = self._video_source_from_settings(config, video)
+            info = self._interpolation_source(video, source)
+            if info.is_vfr and (video.copy_dv or video.copy_hdr10plus):
+                errors.append(
+                    f"Interpolation d'images : {source.name} est à cadence variable (VFR). La copie "
+                    "Dolby Vision / HDR10+ impose de conserver chaque trame, ce qui fausserait la durée : "
+                    "désactiver la copie DoVi / HDR10+ (la cadence sera alors normalisée) ou l'interpolation."
+                )
             if settings.target_fps:
-                source = self._video_source_from_settings(config, video)
-                info = self._interpolation_source(video, source)
                 try:
                     target = Fraction(str(settings.target_fps))
                 except (ValueError, ZeroDivisionError):
                     target = Fraction(0)
                 if target <= 0:
                     errors.append(f"Interpolation d'images : cadence cible « {settings.target_fps} » invalide.")
-                elif info.decode_rate and settings.ratio(info.decode_rate) <= 1:
+                elif info.decode_rate and settings.ratio(info.decode_rate) <= video.filters.field_rate_multiplier():
                     errors.append(
                         f"Interpolation d'images : la cadence cible ({float(target):.3f} i/s) doit dépasser "
-                        f"celle de {source.name}."
+                        f"celle de {source.name}"
+                        + (" après désentrelacement (une image par champ)." if video.filters.field_rate_multiplier() > 1 else ".")
                     )
             elif int(settings.factor) not in _INTERPOLATION_FACTORS:
                 errors.append(
@@ -2601,15 +2609,21 @@ class EncodeWorkflow(QObject):
                     "Interpolation d'images : outil muxiveo-rife introuvable "
                     "(Paramètres > Outils externes, ou relancer le setup)."
                 )
-            elif settings.fast_mode():
-                version = _rife_version(str(shutil.which(rife_bin) or rife_bin))
-                if version is not None and version < _RIFE_UHD_MIN_VERSION:
+            else:
+                resolved = str(shutil.which(rife_bin) or rife_bin)
+                version = _rife_version(resolved)
+                model = _INTERPOLATION_MODELS.get(settings.quality, "")
+                if version is not None and version < _RIFE_MIN_VERSION:
                     errors.append(
-                        "Interpolation d'images : le mode Fast (et le préréglage Light) requiert muxiveo-rife "
-                        f"{'.'.join(map(str, _RIFE_UHD_MIN_VERSION))} ou plus récent "
+                        "Interpolation d'images : muxiveo-rife "
+                        f"{'.'.join(map(str, _RIFE_MIN_VERSION))} ou plus récent requis "
                         f"(installé : {'.'.join(map(str, version))}) ; relancer le setup."
                     )
-            source = self._video_source_from_settings(config, video)
+                elif version is not None and model and not _rife_model_available(resolved, model):
+                    errors.append(
+                        f"Interpolation d'images : modèle RIFE « {model} » absent de "
+                        f"{Path(resolved).resolve().parent / 'rife-models'} ; relancer le setup."
+                    )
             if self._video_stream_is_interlaced(source, self._video_stream_from_settings(video)) and not (
                 video.filters.yadif_enabled
             ):

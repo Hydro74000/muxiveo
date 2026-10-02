@@ -1369,11 +1369,166 @@ def test_setup_install_github_tools_creates_prefix_bin_with_sudo(tmp_path):
          patch.object(setup_mod, "_extract_binary", side_effect=fake_extract), \
          patch.object(setup_mod, "_config_ini_path", return_value=tmp_path / "config.ini"), \
          patch.object(setup_mod, "_update_ini_tools_section"), \
+         patch.object(setup_mod, "_prefix_writable", return_value=False), \
          patch.object(setup_mod, "run") as mock_run:
         setup_mod.install_github_tools(prefix, dry_run=False, force=False)
 
     commands = [call.args[0] for call in mock_run.call_args_list]
     assert ["sudo", "mkdir", "-p", str(prefix / "bin")] in commands
+
+
+def test_setup_install_github_tools_user_prefix_without_sudo(tmp_path):
+    """Préfixe inscriptible (ex. ~/.local) : aucun sudo, fichiers à l'utilisateur."""
+    import setup as setup_mod
+
+    prefix = tmp_path / "prefix"
+    fake_tools = {
+        "dovi_tool": {
+            "repo": "quietvoid/dovi_tool",
+            "desc": "Dolby Vision RPU extraction and injection",
+            "binary_name": {"Linux": "dovi_tool"},
+            "asset_patterns": {("Linux", "x86_64"): {"suffix": ".tar.gz", "fmt": "tar.gz"}},
+        }
+    }
+
+    def fake_extract(_archive_path, binary_name, _fmt, dest_dir):
+        extracted = dest_dir / binary_name
+        extracted.write_text("", encoding="utf-8")
+        return extracted
+
+    with patch.object(setup_mod, "OS", "Linux"), \
+         patch.object(setup_mod, "GITHUB_TOOLS", fake_tools), \
+         patch.object(setup_mod, "_arch_key", return_value="x86_64"), \
+         patch.object(setup_mod.shutil, "which", return_value=None), \
+         patch.object(setup_mod, "is_root", return_value=False), \
+         patch.object(setup_mod, "sudo_prefix", return_value=["sudo"]), \
+         patch.object(setup_mod, "_github_latest_release", return_value={"tag_name": "v1.0.0"}), \
+         patch.object(setup_mod, "_find_asset", return_value="https://example.invalid/dovi_tool.tar.gz"), \
+         patch.object(setup_mod, "_download_file"), \
+         patch.object(setup_mod, "_extract_binary", side_effect=fake_extract), \
+         patch.object(setup_mod, "_config_ini_path", return_value=tmp_path / "config.ini"), \
+         patch.object(setup_mod, "_update_ini_tools_section"), \
+         patch.object(setup_mod, "run") as mock_run:
+        setup_mod.install_github_tools(prefix, dry_run=False, force=False)
+
+    commands = [call.args[0] for call in mock_run.call_args_list]
+    assert not any(cmd and cmd[0] == "sudo" for cmd in commands)
+
+
+def test_setup_outdated_bundle_tool_is_replaced(tmp_path):
+    """Un muxiveo-rife plus ancien que la version épinglée est réinstallé."""
+    import setup as setup_mod
+
+    meta = {"min_version": "1.1.0"}
+    binary = tmp_path / "muxiveo-rife"
+    binary.write_text("", encoding="utf-8")
+    with patch.object(setup_mod, "_tool_version", return_value=(1, 0, 0)):
+        assert setup_mod._github_tool_outdated("muxiveo_rife", meta, binary)
+    with patch.object(setup_mod, "_tool_version", return_value=(1, 1, 0)):
+        assert not setup_mod._github_tool_outdated("muxiveo_rife", meta, binary)
+    assert not setup_mod._github_tool_outdated("dovi_tool", {}, binary)
+
+
+@pytest.fixture
+def github_install_environment(tmp_path, monkeypatch):
+    """Archives locales réelles, sans accès réseau ni installation système."""
+    import zipfile
+    import setup as setup_mod
+
+    def download(url, archive):
+        name = Path(url).stem
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr(f"release/{name}", "new binary")
+
+    def configure(*, bundle):
+        monkeypatch.setattr(setup_mod, "GITHUB_TOOLS", {
+            name: {
+                "repo": name, "desc": name, "bundle": bundle,
+                "binary_name": {"Linux": name},
+                "asset_patterns": {("Linux", "x86_64"): {"suffix": ".zip", "fmt": "zip"}},
+            } for name in ("tool_a", "tool_b")
+        })
+
+    monkeypatch.setattr(setup_mod, "OS", "Linux")
+    monkeypatch.setattr(setup_mod, "_arch_key", lambda: "x86_64")
+    monkeypatch.setattr(setup_mod, "is_root", lambda: False)
+    monkeypatch.setattr(setup_mod, "sudo_prefix", lambda _dry_run: ["sudo"])
+    monkeypatch.setattr(setup_mod, "_github_latest_release", lambda repo: {
+        "tag_name": "v1.1.0", "assets": [{"name": f"{repo}.zip", "browser_download_url": f"https://example.invalid/{repo}.zip"}],
+    })
+    monkeypatch.setattr(setup_mod, "_download_file", download)
+    monkeypatch.setattr(setup_mod, "_config_ini_path", lambda: tmp_path / "config.ini")
+    configure(bundle=True)
+    return setup_mod, tmp_path / "prefix", configure
+
+
+@pytest.mark.parametrize("protected", ["bundle", "nested_directory", "nested_file", "binary", "link_parent"])
+def test_setup_uses_sudo_for_existing_protected_destination(github_install_environment, protected):
+    setup_mod, prefix, configure = github_install_environment
+    bundle = protected != "binary"
+    configure(bundle=bundle)
+    bin_dir = prefix / "bin"
+    bin_dir.mkdir(parents=True)
+    if bundle:
+        lib = prefix / "lib" / "tool_a"
+        nested = lib / "rife-models" / "model"
+        nested.mkdir(parents=True)
+        model_file = nested / "flownet.bin"
+        model_file.write_text("old model")
+        (lib / "tool_a").write_text("old binary")
+        (bin_dir / "tool_a").symlink_to(lib / "tool_a")
+        target = {"bundle": lib, "nested_directory": nested, "nested_file": model_file, "link_parent": bin_dir}[protected]
+    else:
+        target = bin_dir / "tool_a"
+        target.write_text("old binary")
+    previous_mode = target.stat().st_mode
+    try:
+        target.chmod(0o555 if target.is_dir() else 0o444)
+        if os.access(target, os.W_OK):
+            pytest.skip("L'utilisateur courant contourne les permissions en lecture seule")
+        assert setup_mod._prefix_writable(prefix)
+        with patch.object(setup_mod, "run") as run, patch.object(setup_mod, "_update_ini_tools_section"):
+            setup_mod.install_github_tools(prefix, dry_run=False, force=True)
+        commands = [call.args[0] for call in run.call_args_list]
+        if bundle:
+            assert any(cmd[:3] == ["sudo", "rm", "-rf"] for cmd in commands)
+        else:
+            assert any(cmd[:2] == ["sudo", "install"] for cmd in commands)
+        # Le second outil reste installé sans sudo si sa destination est accessible.
+        if protected != "link_parent":
+            assert (bin_dir / "tool_b").read_text() == "new binary"
+            assert not any("tool_b" in " ".join(cmd) for cmd in commands)
+    finally:
+        target.chmod(previous_mode)
+
+
+@pytest.mark.parametrize("bundle", [False, True])
+def test_setup_continues_after_install_oserror(github_install_environment, monkeypatch, bundle):
+    setup_mod, prefix, configure = github_install_environment
+    configure(bundle=bundle)
+    if bundle:
+        original = setup_mod._install_tool_bundle
+
+        def install(archive, fmt, binary_name, **kwargs):
+            if binary_name == "tool_a":
+                raise PermissionError("destination inaccessible")
+            return original(archive, fmt, binary_name, **kwargs)
+
+        monkeypatch.setattr(setup_mod, "_install_tool_bundle", install)
+    else:
+        original = setup_mod.shutil.copy2
+
+        def copy(source, dest):
+            if dest.name == "tool_a":
+                raise PermissionError("destination inaccessible")
+            return original(source, dest)
+
+        monkeypatch.setattr(setup_mod.shutil, "copy2", copy)
+    with patch.object(setup_mod, "warn") as warn, patch.object(setup_mod, "_update_ini_tools_section") as update:
+        setup_mod.install_github_tools(prefix, dry_run=False, force=True)
+    assert (prefix / "bin" / "tool_b").read_text() == "new binary"
+    assert any("tool_a: installation failed" in call.args[0] for call in warn.call_args_list)
+    assert update.call_args.args[1] == {"tool_b": str(prefix / "bin" / "tool_b")}
 
 
 def test_setup_tools_keys_inserted_before_next_section_comment_header(tmp_path):

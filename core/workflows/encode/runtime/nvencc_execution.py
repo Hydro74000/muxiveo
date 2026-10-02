@@ -18,7 +18,9 @@ from core.workflows.encode.interpolation import (
     extract_hdr10plus_metadata as _extract_hdr10plus_metadata,
     ffprobe_beside as _ffprobe_beside,
     multiply_fps_expr as _multiply_fps_expr,
+    probe_interpolation_source as _probe_interpolation_source,
     resolve_frame_ratio as _resolve_frame_ratio,
+    stream_start_offset as _stream_start_offset,
 )
 from core.runner import TaskCancelledError, TaskSignals
 from core.subprocess_utils import (
@@ -502,6 +504,13 @@ class NvenccDirectOutputRunner:
                     source_path=cb.video_source_path(config),
                     stream_index=cb.video_stream_index(config),
                 )
+                # L'assemblage ramène l'intermédiaire à zéro, avec ou sans pipe
+                # RIFE : rétablir le départ du flux dans la source d'origine.
+                video_offset_ms += round(1000 * _stream_start_offset(
+                    _ffprobe_beside(cb.ffmpeg_bin),
+                    cb.video_source_path(config),
+                    cb.video_stream_index(config),
+                ))
                 needs_ffmpeg_pipe = (
                     _nvencc_requires_ffmpeg_filter_pipe_runtime(runtime_video)
                     or is_bluray_playlist(routing.input_path)
@@ -622,6 +631,16 @@ class NvenccDirectOutputRunner:
                     dovi_rpu_prm=None if needs_ffmpeg_pipe else routing.dovi_rpu_prm,
                     vpp_pad=routing.vpp_pad,
                 )
+                if "--colorprim" not in encode_cmd and "-o" in encode_cmd:
+                    # Rétablir le marquage source : perdu en y4m et non repris
+                    # automatiquement par NVEncC sans pipe. Le HDR PQ est déjà explicite.
+                    probed = _probe_interpolation_source(
+                        _ffprobe_beside(cb.ffmpeg_bin), routing.input_path, routing.stream_index,
+                        tonemap_to_sdr=bool(runtime_video.tonemap_to_sdr),
+                    )
+                    color_args = probed.nvencc_color_args() if probed is not None else []
+                    out_at = encode_cmd.index("-o")
+                    encode_cmd = [*encode_cmd[:out_at], *color_args, *encode_cmd[out_at:]]
                 decode_cmd: list[str] | None = None
                 if needs_ffmpeg_pipe:
                     decode_cmd = _build_decode_pipe_cmd_runtime(
