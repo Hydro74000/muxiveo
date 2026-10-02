@@ -227,3 +227,27 @@ def test_uhd_mode_rejects_unrecognized_graph(tmp_path: Path) -> None:
     proc = run_rife(data, "--model", str(model), "--uhd", "--matrix", "bt709")
     assert proc.returncode == 3
     assert "mode UHD" in proc.stderr.decode()
+
+
+@pytest.mark.parametrize("tta", ["2", "4", "8"])
+def test_tta_keeps_originals_and_averages_variants(tta: str) -> None:
+    data = make_y4m("testsrc2=size=160x96:rate=25", frames=4, pix_fmt="yuv420p10le")
+    src = parse_y4m(data)
+    plain = run_rife(data, "--factor", "2", "--matrix", "bt709")
+    averaged = run_rife(data, "--tta", tta, "--factor", "2", "--matrix", "bt709")
+    assert plain.returncode == 0, plain.stderr.decode()
+    assert averaged.returncode == 0, averaged.stderr.decode()
+    out = parse_y4m(averaged.stdout)
+    assert len(out.frames) == 2 * len(src.frames)
+    assert out.frames[0::2] == src.frames
+    # moyenne de variantes : trame générée différente de l'inférence simple, mais proche
+    plain_frame = parse_y4m(plain.stdout).frames[1]
+    assert out.frames[1] != plain_frame
+    assert _psnr(out.frames[1], plain_frame, 10) > 25.0
+
+
+def test_tta_rejects_unsupported_count() -> None:
+    data = make_y4m("testsrc2=size=96x64:rate=25", frames=2)
+    proc = run_rife(data, "--tta", "3", "--matrix", "bt709")
+    assert proc.returncode == 1
+    assert b"--tta" in proc.stderr
