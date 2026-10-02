@@ -21,6 +21,7 @@ import functools
 import json
 import math
 import re
+import shutil
 import subprocess
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -324,9 +325,23 @@ def rife_model_available(rife_bin: str, model: str) -> bool:
     return (exe_dir / "rife-models" / model / "flownet.param").is_file()
 
 
-@functools.lru_cache(maxsize=8)
 def rife_version(rife_bin: str) -> tuple[int, int, int] | None:
-    """Version annoncée par ``muxiveo-rife --version`` (None si illisible)."""
+    """Version annoncée par ``muxiveo-rife --version`` (None si illisible).
+
+    Cache indexé sur l'identité du fichier : un binaire remplacé sur place par
+    le setup est relu sans redémarrer l'application.
+    """
+    try:
+        info = Path(shutil.which(str(rife_bin)) or rife_bin).stat()
+        identity = (info.st_ino, info.st_size, info.st_mtime_ns)
+    except OSError:
+        identity = (0, 0, 0)
+    return _rife_version_cached(str(rife_bin), identity)
+
+
+@functools.lru_cache(maxsize=8)
+def _rife_version_cached(rife_bin: str, identity: tuple[int, int, int]) -> tuple[int, int, int] | None:
+    _ = identity
     try:
         result = subprocess.run(
             [str(rife_bin), "--version"], capture_output=True, check=False, timeout=15, **subprocess_text_kwargs()
@@ -335,6 +350,11 @@ def rife_version(rife_bin: str) -> tuple[int, int, int] | None:
         return None
     match = _RIFE_VERSION_RE.search(result.stdout or "")
     return (int(match[1]), int(match[2]), int(match[3])) if match else None
+
+
+def clear_rife_version_cache() -> None:
+    """Vide le cache des versions ``muxiveo-rife`` (tests)."""
+    _rife_version_cached.cache_clear()
 
 
 @dataclass(frozen=True)
@@ -634,6 +654,7 @@ __all__ = [
     "RifeProgress",
     "build_decode_stage",
     "build_rife_stage",
+    "clear_rife_version_cache",
     "rife_version",
     "probe_interpolation_source",
     "stream_start_offset",

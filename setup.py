@@ -162,6 +162,7 @@ WINDOWS_CONFIG_TOOL_ORDER: tuple[str, ...] = (
     "dovi_tool",
     "hdr10plus_tool",
     "eac3to",
+    "muxiveo_rife",
 )
 
 # Outils qui écrivent dans les dossiers protégés (Windows CFA allowlist).
@@ -178,6 +179,12 @@ WINDOWS_REQUIRED_TOOLS: tuple[str, ...] = (
     "mediainfo",
     "dovi_tool",
     "hdr10plus_tool",
+)
+
+# Outils GitHub facultatifs sous Windows : installés (ou mis à jour) par le
+# setup sans conditionner la santé de l'installation.
+WINDOWS_OPTIONAL_GITHUB_TOOLS: tuple[str, ...] = (
+    "muxiveo_rife",
 )
 
 
@@ -958,18 +965,26 @@ def _non_windows_tool_candidates(tool_name: str, prefix: Path | None = None) -> 
     return _dedupe_paths(candidates)
 
 
+def _tool_binary_names(tool_name: str) -> tuple[str, ...]:
+    """Noms de binaire d'un outil : clé de config puis nom réel (ex. muxiveo_rife -> muxiveo-rife)."""
+    binary = GITHUB_TOOLS.get(tool_name, {}).get("binary_name", {})
+    return tuple(dict.fromkeys((tool_name, binary.get(OS, binary.get("Linux", tool_name)))))
+
+
 def _detect_non_windows_tool_path(tool_name: str, prefix: Path | None = None) -> str | None:
-    resolved = shutil.which(tool_name)
-    if resolved:
-        return resolved
+    for name in _tool_binary_names(tool_name):
+        resolved = shutil.which(name)
+        if resolved:
+            return resolved
 
     ini_value = _existing_ini_tool_values(_config_ini_path()).get(tool_name.lower(), "")
     if ini_value and Path(ini_value).is_file():
         return ini_value
 
-    for candidate in _non_windows_tool_candidates(tool_name, prefix):
-        if candidate.is_file():
-            return str(candidate)
+    for name in _tool_binary_names(tool_name):
+        for candidate in _non_windows_tool_candidates(name, prefix):
+            if candidate.is_file():
+                return str(candidate)
 
     return None
 
@@ -2242,20 +2257,38 @@ def check_windows_required_tools(prefix: Path) -> ToolPresenceReport:
     return ToolPresenceReport(required, found, tuple(missing))
 
 
+def _optional_tool_needs_install(tool_name: str, prefix: Path, force: bool) -> bool:
+    """Outil GitHub facultatif absent ou plus ancien que sa ``min_version``."""
+    meta = GITHUB_TOOLS.get(tool_name)
+    if meta is None:
+        return False
+    if force:
+        return True
+    path = _detect_tool_path(tool_name, prefix)
+    return not path or _github_tool_outdated(tool_name, meta, Path(path))
+
+
 def ensure_windows_required_tools(
     prefix: Path,
     dry_run: bool = False,
     force: bool = False,
     install_github: bool = True,
 ) -> ToolPresenceReport:
-    """Install only missing required Windows dependencies and re-check them."""
+    """Install only missing required Windows dependencies and re-check them.
+
+    Les outils facultatifs (muxiveo-rife) absents ou trop anciens sont aussi installés.
+    """
     report = check_windows_required_tools(prefix)
-    if report.healthy and not force:
+    optional = {
+        name for name in WINDOWS_OPTIONAL_GITHUB_TOOLS
+        if install_github and _optional_tool_needs_install(name, prefix, force)
+    }
+    if report.healthy and not force and not optional:
         return report
 
     candidates = set(report.required if force else report.missing)
     system_missing = candidates.intersection(SYSTEM_TOOLS)
-    github_missing = candidates.intersection(GITHUB_TOOLS) if install_github else set()
+    github_missing = (candidates.intersection(GITHUB_TOOLS) | optional) if install_github else set()
     if system_missing:
         install_winget(dry_run, force=force, tool_names=system_missing)
     if github_missing:
@@ -2310,7 +2343,10 @@ def install_github_tools(
 
         # Recherche tolérante à la casse : .rpm Fedora installe `nvencc` (minuscules)
         # alors que .deb Debian installe `NVEncC` (PascalCase). On accepte les deux.
-        existing = shutil.which(exe) or shutil.which(exe.lower()) or shutil.which(exe.capitalize())
+        existing = (
+            shutil.which(binary_name) or shutil.which(exe)
+            or shutil.which(exe.lower()) or shutil.which(exe.capitalize())
+        )
         if not force and existing and not _github_tool_outdated(exe, meta, Path(existing)):
             ok(f"{exe} already present ({existing})")
             detected_tool_paths[exe] = existing
@@ -2486,7 +2522,7 @@ def check_tools_presence(prefix: Path | None = None) -> None:
         if meta.get("gate") == "nvenc_available" and not _check_nvenc_available():
             continue
 
-        path = shutil.which(exe)
+        path = next((found for name in _tool_binary_names(exe) if (found := shutil.which(name))), None)
         if not path and OS == "Windows" and prefix is not None and exe in WINDOWS_TOOL_FILENAMES:
             path = _detect_windows_tool_path(exe, prefix)
         if not path and OS != "Windows":

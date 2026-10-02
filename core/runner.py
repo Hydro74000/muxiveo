@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from PySide6.QtCore import QCoreApplication, QObject, Signal, Slot, Qt
-from core.pipeline_command import PipelineCommand, command_display
+from core.pipeline_command import PipelineCommand, command_display, pipeline_root_failure
 from core.subprocess_utils import (
     decode_subprocess_output,
     format_returncode,
@@ -862,20 +862,25 @@ class ToolRunner(QObject):
                 raise TaskCancelledError()
 
             output = "\n".join(lines[-10000:])
-            if last_proc.returncode != 0:
+            # Cause première : un étage tué par un pipe fermé (aval arrêté) ou
+            # l'encodeur privé de flux (amont arrêté) n'est qu'une conséquence.
+            root = pipeline_root_failure([
+                *((stage, proc.returncode, "\n".join(tail)) for stage, proc, tail in zip(stages[:-1], procs[:-1], tails)),
+                (stages[-1], last_proc.returncode, output[-2000:]),
+            ])
+            if root == len(stages) - 1:
                 upstream_tail = "\n".join(line for tail in tails for line in tail)
                 raise CommandError(
                     cmd=stages[-1],
                     returncode=last_proc.returncode,
                     stderr=(upstream_tail + "\n" + output[-2000:]).strip(),
                 )
-            for stage, proc, tail in zip(stages[:-1], procs[:-1], tails):
-                if proc.returncode != 0:
-                    raise CommandError(
-                        cmd=stage,
-                        returncode=proc.returncode,
-                        stderr="\n".join(tail),
-                    )
+            if root is not None:
+                raise CommandError(
+                    cmd=stages[root],
+                    returncode=procs[root].returncode,
+                    stderr="\n".join(tails[root]),
+                )
             return output
         finally:
             for proc in procs:

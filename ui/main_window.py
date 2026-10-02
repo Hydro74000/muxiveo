@@ -2497,6 +2497,7 @@ class MainWindow(QMainWindow):
                 return
             if line.startswith("$ "):
                 self._stop_prep_progress()
+                self._tool_json_depth = 0  # bloc EditConfig éventuellement tronqué
                 self._op_encode_fps = None
                 self._op_encode_frame = None
                 self._eta_tracker_video.reset()
@@ -2895,6 +2896,10 @@ class MainWindow(QMainWindow):
     def _is_debug_tool_line(self, line: str) -> bool:
         """Détail d'outil réservé au debug : bloc ``EditConfig {…}`` de dovi_tool, progression muxiveo-rife."""
         stripped = line.strip()
+        if stripped.startswith("$ "):
+            # Nouvelle commande : un bloc tronqué (outil interrompu) ne masque pas la suite.
+            self._tool_json_depth = 0
+            return False
         depth = getattr(self, "_tool_json_depth", 0)
         if depth == 0 and stripped == "EditConfig {":
             self._tool_json_depth = 1

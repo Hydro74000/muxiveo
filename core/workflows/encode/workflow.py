@@ -2586,9 +2586,20 @@ class EncodeWorkflow(QObject):
                     target = Fraction(str(settings.target_fps))
                 except (ValueError, ZeroDivisionError):
                     target = Fraction(0)
+                try:
+                    source_rate = Fraction(str(info.decode_rate)) if info.decode_rate else Fraction(0)
+                except (ValueError, ZeroDivisionError):
+                    source_rate = Fraction(0)
                 if target <= 0:
                     errors.append(f"Interpolation d'images : cadence cible « {settings.target_fps} » invalide.")
-                elif info.decode_rate and settings.ratio(info.decode_rate) <= video.filters.field_rate_multiplier():
+                elif source_rate <= 0:
+                    # Sans cadence source, le rapport retomberait à 1 (métadonnées
+                    # dynamiques non étendues, contrôle du nombre de trames faussé).
+                    errors.append(
+                        f"Interpolation d'images : cadence de {source.name} inconnue ; "
+                        "choisir un facteur (x2, x3, x4) plutôt qu'une cadence cible."
+                    )
+                elif settings.ratio(info.decode_rate) <= video.filters.field_rate_multiplier():
                     errors.append(
                         f"Interpolation d'images : la cadence cible ({float(target):.3f} i/s) doit dépasser "
                         f"celle de {source.name}"

@@ -25,10 +25,17 @@ from unittest.mock import patch
 
 import pytest
 
-from core.pipeline_command import PipelineCommand, command_display, command_stages
+from core.pipeline_command import (
+    PipelineCommand,
+    command_display,
+    command_stages,
+    is_broken_pipe_exit,
+    pipeline_root_failure,
+)
 from core.runner import CommandError, TaskSignals, ToolRunner
 from core.workflows.encode import (
     EncodeConfig,
+    EncodeError,
     EncodePreset,
     EncodeWorkflow,
     FrameInterpolationSettings,
@@ -44,6 +51,7 @@ from core.workflows.encode.interpolation import (
     ratio_label,
     InterpolationSource,
     build_rife_stage,
+    clear_rife_version_cache,
     rife_version,
     required_dovi_level,
     dovi_scene_cut_edit,
@@ -214,13 +222,29 @@ def test_presets_map_to_benchmarked_models():
 
 
 def test_rife_version_parsed_from_binary():
-    rife_version.cache_clear()
+    clear_rife_version_cache()
     out = subprocess.CompletedProcess([], 0, stdout="muxiveo-rife 1.1.0 (ncnn 20260526)\n", stderr="")
     with patch("core.workflows.encode.interpolation.subprocess.run", return_value=out):
         assert rife_version("/opt/muxiveo-rife-a") == (1, 1, 0)
     with patch("core.workflows.encode.interpolation.subprocess.run", side_effect=OSError):
         assert rife_version("/opt/muxiveo-rife-b") is None
-    rife_version.cache_clear()
+    clear_rife_version_cache()
+
+
+def test_rife_version_reread_after_in_place_update(tmp_path):
+    clear_rife_version_cache()
+    binary = tmp_path / "muxiveo-rife"
+    binary.write_bytes(b"old")
+    old = subprocess.CompletedProcess([], 0, stdout="muxiveo-rife 1.0.0\n", stderr="")
+    new = subprocess.CompletedProcess([], 0, stdout="muxiveo-rife 1.1.0\n", stderr="")
+    with patch("core.workflows.encode.interpolation.subprocess.run", return_value=old):
+        assert rife_version(str(binary)) == (1, 0, 0)
+    with patch("core.workflows.encode.interpolation.subprocess.run", return_value=new) as run:
+        assert rife_version(str(binary)) == (1, 0, 0)  # inchangé : cache
+        run.assert_not_called()
+        binary.write_bytes(b"new binary")  # mise à jour sur place (setup)
+        assert rife_version(str(binary)) == (1, 1, 0)
+    clear_rife_version_cache()
 
 
 # ---------------------------------------------------------------------------
@@ -465,6 +489,31 @@ class TestRunnerPipeline:
             ToolRunner()._run_cmd(PipelineCommand(consumer, [_PRODUCER]))
         assert exc.value.returncode == 5
 
+    def test_middle_failure_is_root_cause(self, qt_app):
+        """RIFE en échec (VRAM) : le décodeur tué par le pipe fermé n'est qu'une conséquence."""
+        _ = qt_app
+        with pytest.raises(CommandError) as exc:
+            ToolRunner()._run_cmd(PipelineCommand(_CONSUMER, [_ENDLESS_PRODUCER, _VRAM_FAILURE]))
+        assert exc.value.returncode == 5
+        assert "VRAM" in exc.value.stderr
+
+
+_ENDLESS_PRODUCER = [_PY, "-c", "import sys\nwhile True: sys.stdout.write('x' * 65536)"]
+_VRAM_FAILURE = [_PY, "-c", "import sys; sys.stdin.read(1 << 16); sys.stderr.write('error: VRAM\\n'); sys.exit(5)"]
+
+
+def test_pipeline_root_failure_rules():
+    rife = ["muxiveo-rife", "--factor", "2"]
+    dec, enc = ["ffmpeg", "-i", "x"], ["ffmpeg", "-i", "-"]
+    assert pipeline_root_failure([(dec, 0, ""), (rife, 0, ""), (enc, 0, "")]) is None
+    # VRAM : décodeur tué par le pipe, encodeur privé de flux
+    assert pipeline_root_failure([(dec, 224, "Broken pipe"), (rife, 5, ""), (enc, 1, "EOF")]) == 1
+    # encodeur en échec : amont arrêté par le pipe fermé (muxiveo-rife EXIT_IO)
+    assert pipeline_root_failure([(dec, -13, ""), (rife, 4, ""), (enc, 1, "")]) == 2
+    # décodage en échec : RIFE reçoit une trame tronquée
+    assert pipeline_root_failure([(dec, 1, "Invalid data"), (rife, 2, "tronquée"), (enc, 0, "")]) == 0
+    assert is_broken_pipe_exit(rife, 4) and not is_broken_pipe_exit(dec, 4)
+
 
 def test_nvencc_executor_runs_intermediate_stage(qt_app):
     _ = qt_app
@@ -476,6 +525,18 @@ def test_nvencc_executor_runs_intermediate_stage(qt_app):
         signals=signals,
     )
     assert "frames=3" in out
+
+
+def test_nvencc_executor_reports_intermediate_root_cause(qt_app):
+    _ = qt_app
+    with pytest.raises(EncodeError) as exc:
+        NvenccPipeExecutor().run(
+            decode_cmd=PipelineCommand(_VRAM_FAILURE, [_ENDLESS_PRODUCER]),
+            encode_cmd=_CONSUMER,
+            cwd=Path.cwd(),
+            signals=TaskSignals(),
+        )
+    assert "code 5" in str(exc.value) and "VRAM" in str(exc.value)
 
 
 def test_nvencc_pipe_forced_by_interpolation():
@@ -583,6 +644,13 @@ class TestWorkflowInterpolation:
         with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=payload):
             errors = interp_workflow._interpolation_validation_errors(_cfg(tmp_path, video))
         assert any("après désentrelacement" in e for e in errors)
+
+    def test_target_fps_requires_known_source_rate(self, interp_workflow, tmp_path):
+        video = _video(interpolation=_interp(target_fps="60000/1001"))
+        payload = _probe_payload(r_frame_rate="0/0", avg_frame_rate="0/0")
+        with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=payload):
+            errors = interp_workflow._interpolation_validation_errors(_cfg(tmp_path, video))
+        assert any("cadence de src.mkv inconnue" in e for e in errors)
 
     def test_copy_codec_rejected(self, interp_workflow, tmp_path):
         errors = interp_workflow._interpolation_validation_errors(_cfg(tmp_path, _video(codec="copy")))

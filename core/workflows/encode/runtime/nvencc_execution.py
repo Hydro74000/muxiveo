@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 from core.bluray import append_ffmpeg_input_args, is_bluray_playlist
-from core.pipeline_command import command_preview_tokens, command_stages
+from core.pipeline_command import command_preview_tokens, command_stages, is_broken_pipe_exit, pipeline_root_failure
 from core.workflows.encode.backends.progress import parse_nvencc_progress
 from core.workflows.encode.interpolation import (
     expand_dynamic_hdr_metadata as _expand_dynamic_hdr_metadata,
@@ -285,19 +285,27 @@ class NvenccPipeExecutor:
             readers.shutdown(wait=True)
             if signals._cancel_event.is_set():
                 raise TaskCancelledError()
-            if encode_rc != 0:
+            # Cause première (ex. VRAM insuffisante pour muxiveo-rife) : le
+            # décodage tué par le pipe fermé et NVEncC privé de flux en découlent.
+            results = [
+                *((stage, rc, "\n".join(lines)) for stage, rc, lines in zip(producer_stages, producer_rcs, producer_lines)),
+                (list(encode_cmd), encode_rc, "\n".join(encode_lines)),
+            ]
+            root = pipeline_root_failure(results)
+            if root == len(producers):
                 tail = "\n".join(encode_lines[-40:])
                 raise EncodeError(f"NVEncC a échoué.\n{tail}")
-            if not is_expected_nvencc_pipe_producer_exit(
-                producer_rcs[0],
-                "\n".join(producer_lines[0]),
-            ):
-                tail = "\n".join(producer_lines[0][-40:])
-                raise EncodeError(f"FFmpeg decode a échoué.\n{tail}")
-            for label, rc, lines in zip(producer_labels[1:], producer_rcs[1:], producer_lines[1:]):
-                if rc != 0:
-                    tail = "\n".join(lines[-40:])
-                    raise EncodeError(f"{label} a échoué (code {rc}).\n{tail}")
+            if root is not None:
+                stage, rc, err = results[root]
+                # Pipe refermé par NVEncC après un encodage réussi : arrêt attendu.
+                expected = encode_rc == 0 and (
+                    is_expected_nvencc_pipe_producer_exit(rc, err) if root == 0 else is_broken_pipe_exit(stage, rc, err)
+                )
+                if not expected:
+                    tail = "\n".join(producer_lines[root][-40:])
+                    if root == 0:
+                        raise EncodeError(f"FFmpeg decode a échoué.\n{tail}")
+                    raise EncodeError(f"{producer_labels[root]} a échoué (code {rc}).\n{tail}")
             return "\n".join(encode_lines[-400:])
         finally:
             signals._unregister_proc(encode_proc)

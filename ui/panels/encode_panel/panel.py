@@ -1549,7 +1549,7 @@ class EncodePanel(QWidget):
         self._yadif_cb = QCheckBox("Désentrelacement")
         self._yadif_cb.setStyleSheet(_checkbox_style())
         self._yadif_cb.setToolTip("Désentrelacement FFmpeg yadif, appliqué avant crop et resize.")
-        self._yadif_cb.toggled.connect(lambda _: self._rebuild_preview())
+        self._yadif_cb.toggled.connect(lambda _: self._on_deinterlace_changed())
         self._yadif_filter_combo = QComboBox()
         self._yadif_filter_combo.setStyleSheet(_combo_style())
         self._yadif_filter_combo.setToolTip("Filtre de désentrelacement utilisé.")
@@ -1561,7 +1561,7 @@ class EncodePanel(QWidget):
         self._yadif_mode_combo.setToolTip("Frame conserve la cadence, Bob double la cadence.")
         for label, value in (("Frame", "send_frame"), ("Bob", "send_field")):
             self._yadif_mode_combo.addItem(label, value)
-        self._yadif_mode_combo.currentIndexChanged.connect(lambda _: self._rebuild_preview())
+        self._yadif_mode_combo.currentIndexChanged.connect(lambda _: self._on_deinterlace_changed())
         self._yadif_parity_combo = QComboBox()
         self._yadif_parity_combo.setStyleSheet(_combo_style())
         self._yadif_parity_combo.setToolTip("Parité du champ source ; auto convient à la plupart des fichiers.")
@@ -1731,6 +1731,12 @@ class EncodePanel(QWidget):
             return ""
         target = rate * self._current_video_settings().frame_ratio(str(rate))
         return f"{_format_fps(float(rate))} -> {_format_fps(float(target))} i/s"
+
+    def _on_deinterlace_changed(self) -> None:
+        # YADIF « une image par champ » double la cadence interpolée affichée.
+        if hasattr(self, "_interp_cb"):
+            self._sync_interpolation_controls()
+        self._rebuild_preview()
 
     def _on_interpolation_changed(self) -> None:
         self._sync_interpolation_controls()

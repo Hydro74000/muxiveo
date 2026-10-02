@@ -444,6 +444,20 @@ def test_dovi_edit_config_block_goes_to_debug_only(tmp_path) -> None:
     dummy.log_requested.emit.assert_called_once_with("INFO", "Parsing RPU file...")
 
 
+def test_truncated_edit_config_block_released_by_next_command(tmp_path) -> None:
+    """Bloc EditConfig interrompu : la commande suivante rétablit le journal."""
+    dummy = _debug_routing_dummy(tmp_path)
+    dummy._encode_panel = SimpleNamespace(parse_progress_line=lambda _cfg, _line: None)
+    dummy._eta_tracker_video = MagicMock()
+    dummy._eta_tracker_frame = MagicMock()
+    for line in ("EditConfig {", '"mode": 0,', '"active_area": {'):
+        dummy._on_op_progress(line)
+    dummy._on_op_progress("$ ffmpeg -i in.mkv out.mkv")
+    dummy._on_op_progress("Parsing RPU file...")
+    dummy.log_requested.emit.assert_any_call("INFO", "Parsing RPU file...")
+    assert not dummy._is_debug_tool_line("$ dovi_tool info")
+
+
 def test_rife_progress_drives_bar_without_logging(tmp_path) -> None:
     from core.workflows.encode.backends.models import ProgressEvent
 

@@ -69,6 +69,7 @@ from core.version import (
     APP_VERSION,
     APP_WEBSITE_URL,
     MUXIVEO_RIFE_RELEASE_TAG,
+    MUXIVEO_RIFE_VERSION,
     muxiveo_rife_asset_url,
 )
 
@@ -2838,11 +2839,26 @@ def _dl_windows_mediainfo(tools_dir: Path) -> None:
     _ok("MediaInfo.exe installé dans tools/")
 
 
+def _muxiveo_rife_version(exe: Path) -> str | None:
+    """Version ``X.Y.Z`` annoncée par ``muxiveo-rife --version`` (None si illisible)."""
+    try:
+        out = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r"muxiveo-rife (\d+\.\d+\.\d+)", out.stdout or "")
+    return match.group(1) if match else None
+
+
 def _dl_windows_muxiveo_rife(tools_dir: Path) -> None:
     """muxiveo-rife.exe + rife-models/ (archive locale ``MUXIVEO_RIFE_ARCHIVE`` ou release épinglée)."""
-    if (tools_dir / "muxiveo-rife.exe").is_file() and (tools_dir / "rife-models").is_dir():
-        _ok("muxiveo-rife.exe déjà présent dans tools/")
-        return
+    exe = tools_dir / "muxiveo-rife.exe"
+    if exe.is_file() and (tools_dir / "rife-models").is_dir():
+        if _muxiveo_rife_version(exe) == MUXIVEO_RIFE_VERSION:
+            _ok("muxiveo-rife.exe déjà présent dans tools/")
+            return
+        # tools/ réutilisé d'un build précédent : binaire et modèles remplacés
+        _warn(f"muxiveo-rife.exe présent mais différent de {MUXIVEO_RIFE_VERSION} — remplacement.")
+        shutil.rmtree(tools_dir / "rife-models", ignore_errors=True)
     _step(f"muxiveo-rife Windows ({MUXIVEO_RIFE_RELEASE_TAG})")
     with tempfile.TemporaryDirectory() as tmp:
         local = os.environ.get("MUXIVEO_RIFE_ARCHIVE")
