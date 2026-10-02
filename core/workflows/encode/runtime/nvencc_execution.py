@@ -6,15 +6,19 @@ import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 from typing import Callable
 
 from core.bluray import append_ffmpeg_input_args, is_bluray_playlist
 from core.pipeline_command import command_preview_tokens, command_stages
+from core.workflows.encode.backends.progress import parse_nvencc_progress
 from core.workflows.encode.interpolation import (
     expand_dynamic_hdr_metadata as _expand_dynamic_hdr_metadata,
     extract_hdr10plus_metadata as _extract_hdr10plus_metadata,
+    ffprobe_beside as _ffprobe_beside,
     multiply_fps_expr as _multiply_fps_expr,
+    resolve_frame_ratio as _resolve_frame_ratio,
 )
 from core.runner import TaskCancelledError, TaskSignals
 from core.subprocess_utils import (
@@ -194,20 +198,36 @@ class NvenccPipeExecutor:
         cwd: Path,
         signals: TaskSignals,
     ) -> str:
+        producer_stages = command_stages(decode_cmd)
+        # Étage intermédiaire (muxiveo-rife) : c'est lui qui rapporte la
+        # position dans la source ; les compteurs NVEncC (trames ×N) sont écartés.
+        has_intermediate = len(producer_stages) > 1
+
+        def _emit(label: str, line: str, sink: list[str]) -> None:
+            if label == "nvencc" and parse_nvencc_progress(line) is not None and not line.lower().startswith("encoded"):
+                if not has_intermediate:
+                    # sans préfixe : reconnue par le parseur de progression NVEncC
+                    signals.progress.emit(line)
+                return
+            sink.append(line)
+            signals.progress.emit(f"[{label}] {line}")
+
         def _reader(stream, label: str, sink: list[str]) -> None:
             if stream is None:
                 return
-            while True:
-                raw = stream.readline()
-                if not raw:
-                    break
-                line = decode_subprocess_output(raw).rstrip()
-                if not line:
-                    continue
-                sink.append(line)
-                signals.progress.emit(f"[{label}] {line}")
+            # NVEncC rafraîchit sa progression avec \r : découpage sur \r et \n.
+            buf = b""
+            while chunk := stream.read1(4096) if hasattr(stream, "read1") else stream.read(4096):
+                buf += chunk.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+                *complete, buf = buf.split(b"\n")
+                for raw in complete:
+                    line = decode_subprocess_output(raw).rstrip()
+                    if line:
+                        _emit(label, line, sink)
+            line = decode_subprocess_output(buf).rstrip()
+            if line:
+                _emit(label, line, sink)
 
-        producer_stages = command_stages(decode_cmd)
         producer_labels = ["ffmpeg-decode", *(Path(stage[0]).stem for stage in producer_stages[1:])]
         producer_lines: list[list[str]] = [[] for _ in producer_stages]
         encode_lines: list[str] = []
@@ -531,9 +551,18 @@ class NvenccDirectOutputRunner:
                 # Interpolation RIFE : NVEncC lit un pipe y4m, la copie DoVi /
                 # HDR10+ depuis la source est impossible ; les métadonnées sont
                 # extraites, étendues à la cadence interpolée et fournies en fichiers.
-                multiplier = runtime_video.frame_multiplier() if needs_ffmpeg_pipe else 1
+                frame_ratio = (
+                    _resolve_frame_ratio(
+                        runtime_video,
+                        ffprobe_bin=_ffprobe_beside(cb.ffmpeg_bin),
+                        source=routing.input_path,
+                        stream_index=routing.stream_index,
+                    )
+                    if needs_ffmpeg_pipe
+                    else Fraction(1)
+                )
                 hdr10plus_json_path: Path | None = None
-                if multiplier > 1 and (runtime_video.copy_dv or runtime_video.copy_hdr10plus):
+                if frame_ratio > 1 and (runtime_video.copy_dv or runtime_video.copy_hdr10plus):
                     dovi_bin = (cb.bins.get("dovi_tool") if cb.bins else None) or "dovi_tool"
                     hdr10plus_bin = (cb.bins.get("hdr10plus_tool") if cb.bins else None) or "hdr10plus_tool"
 
@@ -565,14 +594,14 @@ class NvenccDirectOutputRunner:
                             run_cmd=run_interp_metadata, cleanup_paths=cleanup_paths,
                         )
                     _expand_dynamic_hdr_metadata(
-                        factor=multiplier,
+                        ratio=frame_ratio,
                         rpu_bin=dovi_rpu_path if runtime_video.copy_dv else None,
                         hdr10p_json=hdr10plus_json_path,
                         dovi_tool_bin=dovi_bin,
                         run_cmd=run_interp_metadata,
                         log=cb.log_info,
                     )
-                output_fps = _multiply_fps_expr(routing.source_fps or routing.input_fps, multiplier)
+                output_fps = _multiply_fps_expr(routing.source_fps or routing.input_fps, frame_ratio)
 
                 encode_cmd = _build_nvencc_command_runtime(
                     cb.nvencc_bin or "",

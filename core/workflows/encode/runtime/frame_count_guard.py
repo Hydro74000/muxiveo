@@ -41,9 +41,11 @@ Si les comptes rapides divergent, on repart de #3 avant de refuser l'encodage.
 from __future__ import annotations
 
 import json
+import math
 import re
 import subprocess
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Callable
 
@@ -151,17 +153,17 @@ class FrameCountGuard:
         rpu_bin: Path | None = None,
         hdr10p_json: Path | None = None,
         known_encoded_frames: int | None = None,
-        frame_multiplier: int = 1,
+        frame_ratio: Fraction | int = 1,
     ) -> FrameCountAudit:
         """Compte les trames de chaque flux.
 
-        ``frame_multiplier`` (interpolation RIFE) : le compte source est
-        rapporté à la cadence encodée (``source × facteur``).
+        ``frame_ratio`` (interpolation RIFE) : le compte source est rapporté
+        à la cadence encodée (``ceil(source × rapport)``, règle de muxiveo-rife).
         """
-        multiplier = max(1, int(frame_multiplier))
+        ratio = Fraction(frame_ratio)
         source_count = self._read_video_frame_count(source)
         if source_count is not None:
-            source_count *= multiplier
+            source_count = math.ceil(source_count * ratio)
         encoded_count: int | None
         if known_encoded_frames is not None and known_encoded_frames > 0:
             encoded_count = known_encoded_frames
@@ -173,7 +175,7 @@ class FrameCountGuard:
             # peuvent laisser passer des statistiques périmées. Recompter les
             # deux vidéos avant de conclure à une perte d'images à l'encodage.
             recounted = self._recount_video_frames(source)
-            source_count = recounted * multiplier if recounted else source_count
+            source_count = math.ceil(recounted * ratio) if recounted else source_count
             if known_encoded_frames is None:
                 encoded_count = self._recount_video_frames(encoded) or encoded_count
         return FrameCountAudit(

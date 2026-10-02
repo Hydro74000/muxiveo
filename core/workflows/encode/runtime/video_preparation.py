@@ -59,7 +59,7 @@ class VideoOnlyCommandBuilder:
         thread_count: int | None = None,
     ) -> list[str]:
         cb = self._cb
-        if video.frame_multiplier() > 1:
+        if video.interpolates():
             return self._build_interpolated_base_cmd(
                 video=video,
                 source=source,
@@ -119,6 +119,7 @@ class VideoOnlyCommandBuilder:
         rife = build_rife_stage(
             cb.rife_bin,
             factor=int(settings.factor),
+            target_fps=settings.target_fps,
             quality=settings.quality,
             source=info,
             scene_threshold=settings.scene_threshold,

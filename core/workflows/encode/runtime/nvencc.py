@@ -261,7 +261,7 @@ def build_decode_pipe_cmd(
 
 def nvencc_requires_ffmpeg_filter_pipe(video: VideoEncodeSettings) -> bool:
     """True when NVEncC must read a y4m pipe (FFmpeg prefilters or RIFE interpolation)."""
-    return nvencc_requires_ffmpeg_prefilter(video) or video.frame_multiplier() > 1
+    return nvencc_requires_ffmpeg_prefilter(video) or video.interpolates()
 
 
 def nvencc_requires_ffmpeg_prefilter(video: VideoEncodeSettings) -> bool:

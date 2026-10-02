@@ -18,16 +18,22 @@ Public:
 from __future__ import annotations
 
 import json
+import math
+import re
 import subprocess
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from core.bluray import append_ffmpeg_input_args, ffprobe_input_args
 from core.matroska.editors.dovi import minimum_dovi_level
 from core.subprocess_utils import subprocess_text_kwargs
 from core.pipeline_command import PipelineCommand, command_stages
+
+if TYPE_CHECKING:
+    from core.workflows.encode.models import VideoEncodeSettings
 
 # Préréglage qualité → modèle RIFE embarqué (voir native/muxiveo-rife/models.json).
 INTERPOLATION_MODELS: dict[str, str] = {
@@ -37,9 +43,14 @@ INTERPOLATION_MODELS: dict[str, str] = {
 }
 INTERPOLATION_DEFAULT_QUALITY = "balanced"
 INTERPOLATION_FACTORS: tuple[int, ...] = (2, 3, 4)
+# Cadences cibles proposées (rapport non entier possible, ex. 23,976 -> 59,94 = x2,5).
+INTERPOLATION_TARGET_FPS: tuple[str, ...] = ("60000/1001", "60/1")
 
-# Intervalle des lignes ``progress`` de muxiveo-rife (le log suit l'encodeur).
-_RIFE_PROGRESS_INTERVAL_S = 30
+# Intervalle des lignes ``progress`` de muxiveo-rife : alimentent la barre de
+# progression (non journalisées, log verbose uniquement).
+_RIFE_PROGRESS_INTERVAL_S = 2
+
+_RIFE_PROGRESS_RE = re.compile(r"\[muxiveo-rife\] progress in=(\d+) out=(\d+)\b.*?\bfps=([\d.]+)")
 
 _RIFE_MATRICES = {"bt709", "bt2020nc", "bt2020", "bt601", "smpte170m", "bt470bg", "smpte240m", "fcc"}
 _RIFE_CHROMA_LOCATIONS = {"left", "center", "topleft"}
@@ -60,6 +71,13 @@ class InterpolationSource:
     is_vfr: bool = False
     # Cadence nominale imposée au décodage quand la source est VFR (y4m = CFR).
     cfr_rate: str = ""
+    # Cadence du flux (avg_frame_rate, sinon r_frame_rate).
+    frame_rate: str = ""
+
+    @property
+    def decode_rate(self) -> str:
+        """Cadence des trames remises à RIFE (après normalisation CFR éventuelle)."""
+        return self.cfr_rate or self.frame_rate
 
 
 def _float_or_none(value: object) -> float | None:
@@ -112,6 +130,7 @@ def interpolation_source_from_probe(
         start_offset_s=round(start_offset, 6),
         is_vfr=is_vfr,
         cfr_rate=nominal_cfr_rate(r_rate, avg_rate) if is_vfr else "",
+        frame_rate=avg_rate if _rate_value(avg_rate) else r_rate,
     )
 
 
@@ -171,17 +190,19 @@ def build_decode_stage(
 def build_rife_stage(
     rife_bin: str,
     *,
-    factor: int,
+    factor: int = 2,
+    target_fps: str = "",
     quality: str,
     source: InterpolationSource,
     scene_threshold: float = 10.0,
     gpu: int = -1,
 ) -> list[str]:
-    """Étage 2 : muxiveo-rife (y4m stdin → y4m stdout)."""
+    """Étage 2 : muxiveo-rife (y4m stdin → y4m stdout), facteur entier ou cadence cible."""
     model = INTERPOLATION_MODELS.get(str(quality or ""), INTERPOLATION_MODELS[INTERPOLATION_DEFAULT_QUALITY])
+    rate_args = ["--fps", str(target_fps)] if target_fps else ["--factor", str(int(factor))]
     cmd = [
         str(rife_bin),
-        "--factor", str(int(factor)),
+        *rate_args,
         "--model", model,
         "--matrix", source.matrix,
         "--range", source.color_range,
@@ -194,84 +215,135 @@ def build_rife_stage(
     return cmd
 
 
+@dataclass(frozen=True)
+class RifeProgress:
+    """Ligne ``progress`` de muxiveo-rife : trames source lues / produites, débit de sortie."""
+
+    frames_in: int
+    frames_out: int
+    fps_out: float
+
+    def percent(self, total_source_frames: int | None) -> float | None:
+        if not total_source_frames or total_source_frames <= 0:
+            return None
+        return min(99.0, self.frames_in * 100.0 / total_source_frames)
+
+    def eta_seconds(self, total_source_frames: int | None) -> float | None:
+        """Reste à traiter au débit moyen observé (trames source / s)."""
+        if not total_source_frames or self.fps_out <= 0 or self.frames_out <= 0:
+            return None
+        rate_in = self.fps_out * self.frames_in / self.frames_out
+        if rate_in <= 0:
+            return None
+        return max(0, total_source_frames - self.frames_in) / rate_in
+
+
+def parse_rife_progress(line: str) -> RifeProgress | None:
+    """Reconnaît ``[muxiveo-rife] progress in=… out=… fps=…`` (lignes relayées du pipeline)."""
+    match = _RIFE_PROGRESS_RE.search(line)
+    if match is None:
+        return None
+    return RifeProgress(int(match.group(1)), int(match.group(2)), float(match.group(3)))
+
+
 # =============================================================================
 # Métadonnées dynamiques par trame (DoVi RPU, HDR10+)
 # =============================================================================
 
-def expand_rpu_file(source: Path, dest: Path, factor: int) -> int:
-    """Duplique chaque RPU Dolby Vision ``factor`` fois ; retourne le nombre de RPU écrits.
+def frame_repeats(index: int, ratio: Fraction | int) -> int:
+    """Trames de sortie issues de la trame source ``index`` (sortie = source × ``ratio``).
+
+    Même règle que muxiveo-rife : la trame de sortie ``k`` provient de la trame
+    source ``floor(k / ratio)`` (x2 -> 2,2,2… ; x2,5 -> 3,2,3,2…).
+    """
+    r = Fraction(ratio)
+    return math.ceil((index + 1) * r) - math.ceil(index * r)
+
+
+def ratio_label(ratio: Fraction | int) -> str:
+    """Libellé court du rapport de cadence (``x2``, ``x2,5``, ``x2,5025``)."""
+    r = Fraction(ratio)
+    if r.denominator == 1:
+        return f"x{r.numerator}"
+    return "x" + f"{float(r):.4f}".rstrip("0").rstrip(".").replace(".", ",")
+
+
+def expand_rpu_file(source: Path, dest: Path, ratio: Fraction | int) -> int:
+    """Répète chaque RPU Dolby Vision selon le rapport de cadence ; retourne le nombre de RPU écrits.
 
     ``dovi_tool extract-rpu`` écrit une suite de NAL UNSPEC62 préfixées par un
     start code 4 octets ; l'émulation de start code garantit qu'aucun préfixe
-    n'apparaît dans une charge utile. La trame interpolée hérite ainsi des
+    n'apparaît dans une charge utile. Chaque trame interpolée hérite des
     métadonnées de la trame source qui la précède.
     """
     data = source.read_bytes()
     if not data.startswith(_RPU_START_CODE):
         raise ValueError(f"RPU illisible (start code absent) : {source}")
     units = [unit for unit in data.split(_RPU_START_CODE) if unit]
-    factor = max(1, int(factor))
+    written = 0
     with dest.open("wb") as fh:
-        for unit in units:
-            for _ in range(factor):
+        for index, unit in enumerate(units):
+            for _ in range(frame_repeats(index, ratio)):
                 fh.write(_RPU_START_CODE)
                 fh.write(unit)
-    return len(units) * factor
+                written += 1
+    return written
 
 
-def expand_hdr10plus_json(source: Path, dest: Path, factor: int) -> int:
-    """Duplique chaque trame d'un JSON ``hdr10plus_tool extract`` ``factor`` fois.
+def expand_hdr10plus_json(source: Path, dest: Path, ratio: Fraction | int) -> int:
+    """Répète chaque trame d'un JSON ``hdr10plus_tool extract`` selon le rapport de cadence.
 
-    Les index de trame (séquence et scène) et le résumé des scènes sont
-    renumérotés ; retourne le nombre de trames écrites.
+    Index de séquence, index dans la scène et résumé des scènes sont
+    recalculés ; retourne le nombre de trames écrites.
     """
     payload = json.loads(source.read_text(encoding="utf-8"))
-    factor = max(1, int(factor))
     scenes = payload.get("SceneInfo")
     if not isinstance(scenes, list):
         raise ValueError(f"JSON HDR10+ sans SceneInfo : {source}")
 
     expanded: list[dict[str, object]] = []
-    for entry in scenes:
-        if not isinstance(entry, dict):
-            continue
-        for copy_index in range(factor):
+    scene_starts: list[int] = []
+    for index, entry in enumerate(e for e in scenes if isinstance(e, dict)):
+        if entry.get("SceneFrameIndex") == 0 or not scene_starts:
+            scene_starts.append(len(expanded))
+        for _ in range(frame_repeats(index, ratio)):
             frame = dict(entry)
-            for key in ("SequenceFrameIndex", "SceneFrameIndex"):
-                value = entry.get(key)
-                if isinstance(value, int):
-                    frame[key] = value * factor + copy_index
+            out_index = len(expanded)
+            if isinstance(entry.get("SequenceFrameIndex"), int):
+                frame["SequenceFrameIndex"] = out_index
+            if isinstance(entry.get("SceneFrameIndex"), int):
+                frame["SceneFrameIndex"] = out_index - scene_starts[-1]
             expanded.append(frame)
     payload["SceneInfo"] = expanded
 
     summary = payload.get("SceneInfoSummary")
     if isinstance(summary, dict):
-        for key in ("SceneFirstFrameIndex", "SceneFrameNumbers"):
-            values = summary.get(key)
-            if isinstance(values, list):
-                summary[key] = [v * factor if isinstance(v, int) else v for v in values]
+        bounds = [*scene_starts, len(expanded)]
+        summary["SceneFirstFrameIndex"] = scene_starts
+        summary["SceneFrameNumbers"] = [bounds[i + 1] - bounds[i] for i in range(len(scene_starts))]
 
     dest.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return len(expanded)
 
 
-def dovi_scene_cut_edit(scene_frames: Iterable[int], factor: int) -> dict[str, object]:
+def dovi_scene_cut_edit(scene_frames: Iterable[int], ratio: Fraction | int) -> dict[str, object]:
     """Édition ``dovi_tool editor`` retirant le drapeau de coupe des copies interpolées.
 
-    Après duplication, la coupe de la trame source ``s`` est portée par les
-    trames ``s*f … s*f+f-1`` ; seule la première doit rester une coupe.
+    Après répétition, la coupe de la trame source ``s`` est portée par toutes
+    ses trames de sortie ; seule la première doit rester une coupe.
     """
     cuts: dict[str, bool] = {}
-    if factor > 1:
-        for frame in sorted(set(int(f) for f in scene_frames)):
-            first = frame * factor + 1
-            cuts[f"{first}-{frame * factor + factor - 1}"] = False
+    for frame in sorted(set(int(f) for f in scene_frames)):
+        repeats = frame_repeats(frame, ratio)
+        if repeats > 1:
+            first = math.ceil(frame * Fraction(ratio))
+            cuts[f"{first + 1}-{first + repeats - 1}"] = False
     return {"scene_cuts": cuts} if cuts else {}
 
 
 def expand_dynamic_hdr_metadata(
     *,
-    factor: int,
+    ratio: Fraction | int,
     rpu_bin: Path | None = None,
     hdr10p_json: Path | None = None,
     dovi_tool_bin: str | None = None,
@@ -283,8 +355,11 @@ def expand_dynamic_hdr_metadata(
     Avec ``dovi_tool_bin`` et ``run_cmd``, les coupes de scène Dolby Vision
     restent sur la seule trame d'origine (sinon chaque coupe serait doublée).
     """
-    if factor <= 1:
+    ratio = Fraction(ratio)
+    if ratio <= 1:
         return
+    label = ratio_label(ratio)
+    tag = label.replace(",", "_")
     if rpu_bin is not None and rpu_bin.is_file():
         scenes_txt = rpu_bin.with_name(f"{rpu_bin.stem}.scenes.txt")
         scene_frames: list[int] = []
@@ -294,16 +369,16 @@ def expand_dynamic_hdr_metadata(
                 scene_frames = [int(line) for line in scenes_txt.read_text(encoding="utf-8").split() if line.isdigit()]
             except Exception as exc:  # noqa: BLE001 — nettoyage cosmétique, non bloquant
                 if log:
-                    log(f"Interpolation x{factor} : coupes Dolby Vision non relues ({exc}) ; drapeaux dupliqués conservés.")
+                    log(f"Interpolation {label} : coupes Dolby Vision non relues ({exc}) ; drapeaux dupliqués conservés.")
             finally:
                 scenes_txt.unlink(missing_ok=True)
 
-        expanded = rpu_bin.with_name(f"{rpu_bin.stem}.x{factor}{rpu_bin.suffix}")
-        count = expand_rpu_file(rpu_bin, expanded, factor)
-        edit = dovi_scene_cut_edit(scene_frames, factor)
+        expanded = rpu_bin.with_name(f"{rpu_bin.stem}.{tag}{rpu_bin.suffix}")
+        count = expand_rpu_file(rpu_bin, expanded, ratio)
+        edit = dovi_scene_cut_edit(scene_frames, ratio)
         if edit and dovi_tool_bin and run_cmd is not None:
             edit_json = rpu_bin.with_name(f"{rpu_bin.stem}.scenes.json")
-            fixed = rpu_bin.with_name(f"{rpu_bin.stem}.x{factor}.scenes{rpu_bin.suffix}")
+            fixed = rpu_bin.with_name(f"{rpu_bin.stem}.{tag}.scenes{rpu_bin.suffix}")
             edit_json.write_text(json.dumps(edit), encoding="utf-8")
             try:
                 run_cmd([dovi_tool_bin, "editor", "-i", str(expanded), "-j", str(edit_json), "-o", str(fixed)])
@@ -314,23 +389,23 @@ def expand_dynamic_hdr_metadata(
         expanded.replace(rpu_bin)
         if log:
             log(
-                f"Interpolation x{factor} : RPU Dolby Vision étendu à {count} trames "
+                f"Interpolation {label} : RPU Dolby Vision étendu à {count} trames "
                 f"({len(scene_frames)} coupe(s) de scène conservée(s))."
             )
     if hdr10p_json is not None and hdr10p_json.is_file():
-        expanded = hdr10p_json.with_name(f"{hdr10p_json.stem}.x{factor}{hdr10p_json.suffix}")
-        count = expand_hdr10plus_json(hdr10p_json, expanded, factor)
+        expanded = hdr10p_json.with_name(f"{hdr10p_json.stem}.{tag}{hdr10p_json.suffix}")
+        count = expand_hdr10plus_json(hdr10p_json, expanded, ratio)
         expanded.replace(hdr10p_json)
         if log:
-            log(f"Interpolation x{factor} : métadonnées HDR10+ étendues à {count} trames.")
+            log(f"Interpolation {label} : métadonnées HDR10+ étendues à {count} trames.")
 
 
-def multiply_fps_expr(expr: str | float | None, factor: int) -> str | None:
-    """Cadence ``expr`` (``"24000/1001"`` ou nombre) multipliée par ``factor``."""
+def multiply_fps_expr(expr: str | float | None, ratio: Fraction | int) -> str | None:
+    """Cadence ``expr`` (``"24000/1001"`` ou nombre) multipliée par ``ratio``."""
     if expr in (None, ""):
         return None
     try:
-        value = Fraction(str(expr)) * max(1, int(factor))
+        value = Fraction(str(expr)) * Fraction(ratio)
     except (ValueError, ZeroDivisionError):
         return None
     return f"{value.numerator}/{value.denominator}"
@@ -344,8 +419,7 @@ def ffprobe_beside(ffmpeg_bin: str) -> str:
     return "ffprobe"
 
 
-def required_dovi_level(ffprobe_bin: str, source: Path, stream_index: int, factor: int) -> int | None:
-    """Niveau Dolby Vision minimal de la sortie interpolée (dimensions source, cadence × facteur)."""
+def _probe_stream(ffprobe_bin: str, source: Path, stream_index: int) -> dict | None:
     cmd = [ffprobe_bin, "-v", "error", "-print_format", "json", "-show_streams"]
     cmd.extend(ffprobe_input_args(source))
     try:
@@ -353,17 +427,45 @@ def required_dovi_level(ffprobe_bin: str, source: Path, stream_index: int, facto
         streams = json.loads(result.stdout or "{}").get("streams") or []
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return None
-    stream = next((s for s in streams if int(s.get("index", -1)) == int(stream_index)), None)
+    return next((s for s in streams if int(s.get("index", -1)) == int(stream_index)), None)
+
+
+def _stream_rate(stream: dict) -> str:
+    avg = str(stream.get("avg_frame_rate") or "")
+    return avg if _rate_value(avg) else str(stream.get("r_frame_rate") or "")
+
+
+def probe_frame_rate(ffprobe_bin: str, source: Path, stream_index: int) -> str | None:
+    """Cadence du flux vidéo ``stream_index`` (avg_frame_rate, sinon r_frame_rate)."""
+    stream = _probe_stream(ffprobe_bin, source, stream_index)
+    rate = _stream_rate(stream) if stream else ""
+    return rate if _rate_value(rate) else None
+
+
+def resolve_frame_ratio(
+    video: VideoEncodeSettings,
+    *,
+    ffprobe_bin: str,
+    source: Path,
+    stream_index: int,
+) -> Fraction:
+    """Rapport de cadence effectif d'une piste (sonde ffprobe seulement pour une cadence cible)."""
+    if not video.interpolates():
+        return Fraction(1)
+    rate = probe_frame_rate(ffprobe_bin, source, stream_index) if video.interpolation.target_fps else None
+    return video.frame_ratio(rate)
+
+
+def required_dovi_level(ffprobe_bin: str, source: Path, stream_index: int, ratio: Fraction | int) -> int | None:
+    """Niveau Dolby Vision minimal de la sortie interpolée (dimensions source, cadence × ratio)."""
+    stream = _probe_stream(ffprobe_bin, source, stream_index)
     if stream is None:
         return None
-    try:
-        fps = float(Fraction(str(stream.get("avg_frame_rate") or stream.get("r_frame_rate") or "0")))
-    except (ValueError, ZeroDivisionError):
-        return None
+    fps = _rate_value(_stream_rate(stream)) or 0.0
     width, height = int(stream.get("width") or 0), int(stream.get("height") or 0)
     if fps <= 0 or width <= 0 or height <= 0:
         return None
-    return minimum_dovi_level(width, height, fps * max(1, int(factor)))
+    return minimum_dovi_level(width, height, fps * float(Fraction(ratio)))
 
 
 def extract_hdr10plus_metadata(
@@ -397,9 +499,11 @@ def extract_hdr10plus_metadata(
 __all__ = [
     "INTERPOLATION_DEFAULT_QUALITY",
     "INTERPOLATION_FACTORS",
+    "INTERPOLATION_TARGET_FPS",
     "INTERPOLATION_MODELS",
     "InterpolationSource",
     "PipelineCommand",
+    "RifeProgress",
     "build_decode_stage",
     "build_rife_stage",
     "command_stages",
@@ -408,8 +512,13 @@ __all__ = [
     "expand_hdr10plus_json",
     "expand_rpu_file",
     "extract_hdr10plus_metadata",
+    "frame_repeats",
+    "probe_frame_rate",
+    "ratio_label",
     "ffprobe_beside",
     "interpolation_source_from_probe",
     "multiply_fps_expr",
+    "parse_rife_progress",
     "required_dovi_level",
+    "resolve_frame_ratio",
 ]

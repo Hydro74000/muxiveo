@@ -16,6 +16,7 @@ import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from fractions import Fraction
 from pathlib import Path
 from typing import Callable
 from uuid import uuid4
@@ -115,6 +116,7 @@ from core.workflows.encode.interpolation import (
     INTERPOLATION_MODELS as _INTERPOLATION_MODELS,
     InterpolationSource as _InterpolationSource,
     build_rife_stage as _build_rife_stage,
+    parse_rife_progress as _parse_rife_progress,
     interpolation_source_from_probe as _interpolation_source_from_probe,
 )
 from core.workflows.encode.runtime.metadata_inject import (
@@ -958,7 +960,7 @@ class EncodeWorkflow(QObject):
         source: Path,
     ) -> list[str]:
         """Ajoute l'étage muxiveo-rife derrière un décodage y4m (pipeline NVEncC)."""
-        if video.frame_multiplier() <= 1:
+        if not video.interpolates():
             return decode_cmd
         if not self._rife_bin:
             raise EncodeError("Interpolation d'images : outil muxiveo-rife introuvable.")
@@ -967,6 +969,7 @@ class EncodeWorkflow(QObject):
         rife = _build_rife_stage(
             self._rife_bin,
             factor=int(settings.factor),
+            target_fps=settings.target_fps,
             quality=settings.quality,
             source=info,
             scene_threshold=settings.scene_threshold,
@@ -2565,7 +2568,21 @@ class EncodeWorkflow(QObject):
             if video.codec == "copy":
                 errors.append("Interpolation d'images : impossible avec le codec vidéo COPY (réencodage requis).")
                 continue
-            if int(settings.factor) not in _INTERPOLATION_FACTORS:
+            if settings.target_fps:
+                source = self._video_source_from_settings(config, video)
+                info = self._interpolation_source(video, source)
+                try:
+                    target = Fraction(str(settings.target_fps))
+                except (ValueError, ZeroDivisionError):
+                    target = Fraction(0)
+                if target <= 0:
+                    errors.append(f"Interpolation d'images : cadence cible « {settings.target_fps} » invalide.")
+                elif info.decode_rate and settings.ratio(info.decode_rate) <= 1:
+                    errors.append(
+                        f"Interpolation d'images : la cadence cible ({float(target):.3f} i/s) doit dépasser "
+                        f"celle de {source.name}."
+                    )
+            elif int(settings.factor) not in _INTERPOLATION_FACTORS:
                 errors.append(
                     f"Interpolation d'images : facteur x{settings.factor} non supporté "
                     f"(valeurs : {', '.join(f'x{f}' for f in _INTERPOLATION_FACTORS)})."
@@ -2609,7 +2626,7 @@ class EncodeWorkflow(QObject):
         if self._is_multi_video(config) or self._needs_metadata_inject(config):
             return False
         video = self._primary_video_settings(config)
-        if video.frame_multiplier() <= 1:
+        if not video.interpolates():
             return False
         return getattr(self._backend_for_config(config), "backend_id", "ffmpeg") == "ffmpeg"
 
@@ -2687,7 +2704,38 @@ class EncodeWorkflow(QObject):
         config: EncodeConfig,
         line: str,
     ) -> _ProgressEvent | None:
+        rife = _parse_rife_progress(line)
+        if rife is not None:
+            # Interpolation : RIFE est l'étage qui connaît la position dans la
+            # source (l'encodeur lit un pipe sans durée ni nombre de trames).
+            total = self._interpolation_total_source_frames(config)
+            return _ProgressEvent(
+                raw_line=line,
+                percent=rife.percent(total),
+                fps=rife.fps_out,
+                eta_seconds=rife.eta_seconds(total),
+                should_log=False,
+            )
         return self._backend_for_config(config).parse_progress(line)
+
+    def _interpolation_total_source_frames(self, config: EncodeConfig) -> int | None:
+        """Trames source de la piste interpolée (durée × cadence ffprobe)."""
+        video = self._primary_video_settings(config)
+        source = self._video_source_from_settings(config, video)
+        payload = self._ffprobe_streams_payload(source) or {}
+        stream_index = self._video_stream_from_settings(video)
+        stream = next(
+            (s for s in self._ffprobe_stream_dicts(payload) if int(str(s.get("index", -1))) == stream_index),
+            {},
+        )
+        fps = self._fps_expr_to_float(stream.get("avg_frame_rate") or stream.get("r_frame_rate"))
+        duration = config.duration_s
+        if not duration:
+            fmt = payload.get("format")
+            duration = self._fps_expr_to_float(fmt.get("duration")) if isinstance(fmt, dict) else None
+        if not fps or not duration:
+            return None
+        return int(round(float(duration) * fps))
 
     # ------------------------------------------------------------------
     # Exécution

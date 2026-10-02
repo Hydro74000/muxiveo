@@ -44,7 +44,7 @@ from core.workflows.encode import (
     FrameInterpolationSettings, ProfileManager, QualityMode, VideoCropSettings, VideoEncodeSettings,
     VideoFilterSettings, VideoResizeSettings, VideoTrackEncodePlan, presets_for_codec,
 )
-from core.workflows.encode.interpolation import INTERPOLATION_FACTORS
+from core.workflows.encode.interpolation import INTERPOLATION_FACTORS, INTERPOLATION_TARGET_FPS
 from core.workflows.encode.catalog import (
     VIDEO_ENCODER_BADGES,
     VIDEO_HDR_BADGE_ORDER,
@@ -1640,9 +1640,13 @@ class EncodePanel(QWidget):
         self._interp_cb.toggled.connect(lambda _: self._on_interpolation_changed())
         self._interp_factor_combo = QComboBox()
         self._interp_factor_combo.setStyleSheet(_combo_style())
-        self._interp_factor_combo.setToolTip("Multiplicateur de cadence (ex. x2 : 29,97 -> 59,94 i/s).")
+        self._interp_factor_combo.setToolTip(
+            "Multiplicateur de cadence (x2 : 29,97 -> 59,94 i/s) ou cadence cible (23,976 -> 59,94 i/s)."
+        )
         for factor in INTERPOLATION_FACTORS:
-            self._interp_factor_combo.addItem(f"x{factor}", factor)
+            self._interp_factor_combo.addItem(f"x{factor}", str(factor))
+        for target in INTERPOLATION_TARGET_FPS:
+            self._interp_factor_combo.addItem(f"{_format_fps(float(Fraction(target)))} i/s", target)
         self._interp_factor_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
         self._interp_quality_combo = QComboBox()
         self._interp_quality_combo.setStyleSheet(_combo_style())
@@ -1706,13 +1710,13 @@ class EncodePanel(QWidget):
         if vt is None and file_info.video_tracks:
             vt = file_info.video_tracks[0]
         try:
-            fps = float(Fraction(str(vt.frame_rate))) if vt is not None and vt.frame_rate else 0.0
+            rate = Fraction(str(vt.frame_rate)) if vt is not None and vt.frame_rate else Fraction(0)
         except (ValueError, ZeroDivisionError):
-            fps = 0.0
-        if fps <= 0:
+            rate = Fraction(0)
+        if rate <= 0:
             return ""
-        factor = int(self._interp_factor_combo.currentData() or 2)
-        return f"{_format_fps(fps)} -> {_format_fps(fps * factor)} i/s"
+        target = rate * self._current_interpolation_settings().ratio(str(rate))
+        return f"{_format_fps(float(rate))} -> {_format_fps(float(target))} i/s"
 
     def _on_interpolation_changed(self) -> None:
         self._sync_interpolation_controls()
@@ -1721,9 +1725,12 @@ class EncodePanel(QWidget):
     def _current_interpolation_settings(self) -> FrameInterpolationSettings:
         if not hasattr(self, "_interp_cb"):
             return FrameInterpolationSettings()
+        choice = str(self._interp_factor_combo.currentData() or "2")
+        is_target = "/" in choice
         return FrameInterpolationSettings(
             enabled=self._interp_cb.isChecked() and self._interp_cb.isEnabled(),
-            factor=int(self._interp_factor_combo.currentData() or 2),
+            factor=2 if is_target else int(choice),
+            target_fps=choice if is_target else "",
             quality=str(self._interp_quality_combo.currentData() or "balanced"),
         )
 
@@ -1731,7 +1738,7 @@ class EncodePanel(QWidget):
         if not hasattr(self, "_interp_cb"):
             return
         self._interp_cb.setChecked(bool(settings.enabled) and self._interp_cb.isEnabled())
-        self._set_combo_data(self._interp_factor_combo, int(settings.factor))
+        self._set_combo_data(self._interp_factor_combo, settings.target_fps or str(int(settings.factor)))
         self._set_combo_data(self._interp_quality_combo, settings.quality)
         self._sync_interpolation_controls()
 
@@ -4178,7 +4185,11 @@ class EncodePanel(QWidget):
             badges.append("Chroma")
         interpolation = FrameInterpolationSettings.from_value(state.get("interpolation"))
         if interpolation.is_active():
-            badges.append(f"RIFE x{int(interpolation.factor)}")
+            badges.append(
+                f"RIFE {_format_fps(float(Fraction(interpolation.target_fps)))}"
+                if interpolation.target_fps
+                else f"RIFE x{int(interpolation.factor)}"
+            )
         return tuple(badges)
 
     def _video_plan_from_state(

@@ -19,7 +19,12 @@ from core.workflows.encode.domain import should_reinject_static_hdr_metadata
 from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode
 from core.workflows.encode.planning.track_assembly import build_track_input_paths, resolve_track_assembly
 from core.workflows.encode.planning.plan_models import EncodePlan
-from core.workflows.encode.interpolation import expand_dynamic_hdr_metadata, ffprobe_beside, required_dovi_level
+from core.workflows.encode.interpolation import (
+    expand_dynamic_hdr_metadata,
+    ffprobe_beside,
+    required_dovi_level,
+    resolve_frame_ratio,
+)
 from core.workflows.encode.runtime.frame_count_guard import (
     FrameCountAuditError,
     FrameCountGuard,
@@ -398,8 +403,14 @@ class MetadataInjectRunner:
                 # Interpolation RIFE : une trame source -> ``factor`` trames
                 # encodées ; chaque trame interpolée hérite des métadonnées
                 # dynamiques de la trame source qui la précède.
+                frame_ratio = resolve_frame_ratio(
+                    video,
+                    ffprobe_bin=ffprobe_beside(cb.ffmpeg_bin),
+                    source=cb.video_source_path(config),
+                    stream_index=cb.video_stream_index(config),
+                )
                 expand_dynamic_hdr_metadata(
-                    factor=video.frame_multiplier(),
+                    ratio=frame_ratio,
                     rpu_bin=rpu_bin if video.copy_dv else None,
                     hdr10p_json=hdr10p_json if video.copy_hdr10plus else None,
                     dovi_tool_bin=cb.bins.get("dovi_tool"),
@@ -411,9 +422,9 @@ class MetadataInjectRunner:
                         ffprobe_beside(cb.ffmpeg_bin),
                         cb.video_source_path(effective_config),
                         cb.video_stream_index(effective_config),
-                        video.frame_multiplier(),
+                        frame_ratio,
                     )
-                    if video.copy_dv and video.frame_multiplier() > 1
+                    if video.copy_dv and frame_ratio > 1
                     else None
                 )
 
@@ -595,7 +606,7 @@ class MetadataInjectRunner:
                         rpu_bin=rpu_bin if (video.copy_dv and rpu_bin.exists()) else None,
                         hdr10p_json=hdr10p_json if (video.copy_hdr10plus and hdr10p_json.exists()) else None,
                         known_encoded_frames=skeleton_result.blocks_written,
-                        frame_multiplier=video.frame_multiplier(),
+                        frame_ratio=frame_ratio,
                     )
                     try:
                         guard.enforce(

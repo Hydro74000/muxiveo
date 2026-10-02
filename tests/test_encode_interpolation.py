@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import sys
+from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -38,6 +39,8 @@ from core.workflows.encode.domain import EncodeCodecDomainCallbacks, build_encod
 from core.matroska.editors.dovi import minimum_dovi_level
 from core.workflows.encode.interpolation import (
     INTERPOLATION_MODELS,
+    frame_repeats,
+    ratio_label,
     InterpolationSource,
     build_rife_stage,
     dovi_scene_cut_edit,
@@ -47,6 +50,7 @@ from core.workflows.encode.interpolation import (
     ffprobe_beside,
     interpolation_source_from_probe,
     multiply_fps_expr,
+    parse_rife_progress,
 )
 from core.workflows.encode.runtime.metadata_inject import _build_dovi_record_from_rpu
 from core.workflows.encode.workflow import _interpolation_decode_cmd
@@ -74,12 +78,13 @@ def _video(**kw) -> VideoEncodeSettings:
 class TestSettings:
     def test_inactive_by_default(self):
         assert not FrameInterpolationSettings().is_active()
-        assert VideoEncodeSettings().frame_multiplier() == 1
+        assert VideoEncodeSettings().frame_ratio() == 1
 
     def test_multiplier_requires_reencode(self):
-        assert _video().frame_multiplier() == 2
-        assert _video(codec="copy").frame_multiplier() == 1
-        assert _video(interpolation=_interp(factor=1)).frame_multiplier() == 1
+        assert _video().frame_ratio() == 2
+        assert _video(codec="copy").frame_ratio() == 1
+        assert _video(interpolation=_interp(factor=1)).frame_ratio() == 1
+        assert not _video(interpolation=_interp(factor=1)).interpolates()
 
     def test_from_dict_and_transform_flag(self):
         video = VideoEncodeSettings(interpolation={"enabled": True, "factor": 3, "quality": "max"})
@@ -91,7 +96,7 @@ class TestSettings:
         preset = EncodePreset(name="x", interpolation=_interp(quality="fast"))
         restored = EncodePreset(**json.loads(json.dumps(preset.to_json_dict())))
         assert restored.interpolation == _interp(quality="fast")
-        assert restored.to_video_settings().frame_multiplier() == 2
+        assert restored.to_video_settings().frame_ratio() == 2
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +110,8 @@ class TestInterpolationSource:
              "start_time": "0.042000", "r_frame_rate": "24000/1001", "avg_frame_rate": "24000/1001"},
             format_start_time="0.000000",
         )
-        assert info == InterpolationSource("bt2020nc", "limited", "topleft", 0.042, False, "")
+        assert info == InterpolationSource("bt2020nc", "limited", "topleft", 0.042, False, "", "24000/1001")
+        assert info.decode_rate == "24000/1001"
 
     def test_untagged_fallbacks(self):
         hdr = interpolation_source_from_probe({"color_transfer": "smpte2084", "height": 2160})
@@ -323,7 +329,7 @@ class TestDynamicMetadataExpansion:
                 Path(cmd[cmd.index("-o") + 1]).write_bytes(b"\x00\x00\x00\x01\x7c\x01\xbb" * 4)
 
         logs: list[str] = []
-        expand_dynamic_hdr_metadata(factor=2, rpu_bin=rpu, dovi_tool_bin="dovi_tool", run_cmd=fake_run, log=logs.append)
+        expand_dynamic_hdr_metadata(ratio=2, rpu_bin=rpu, dovi_tool_bin="dovi_tool", run_cmd=fake_run, log=logs.append)
         assert [c[1] for c in calls] == ["export", "editor"]
         assert len(_rpu_units(rpu.read_bytes())) == 4
         assert sorted(p.name for p in tmp_path.iterdir()) == ["rpu.bin"]
@@ -332,14 +338,14 @@ class TestDynamicMetadataExpansion:
     def test_factor_one_is_noop(self, tmp_path):
         rpu = tmp_path / "rpu.bin"
         rpu.write_bytes(b"\x00\x00\x00\x01\x7c\x01")
-        expand_dynamic_hdr_metadata(factor=1, rpu_bin=rpu)
+        expand_dynamic_hdr_metadata(ratio=1, rpu_bin=rpu)
         assert rpu.read_bytes() == b"\x00\x00\x00\x01\x7c\x01"
 
 
 def test_frame_count_guard_scales_source(tmp_path):
     guard = FrameCountGuard(mediainfo_bin="mediainfo")
     with patch.object(FrameCountGuard, "_read_video_frame_count", return_value=100):
-        audit = guard.audit(source=tmp_path / "s", encoded=tmp_path / "e", known_encoded_frames=200, frame_multiplier=2)
+        audit = guard.audit(source=tmp_path / "s", encoded=tmp_path / "e", known_encoded_frames=200, frame_ratio=2)
     assert (audit.source, audit.encoded) == (200, 200)
     assert audit.is_aligned()[0]
 
@@ -558,3 +564,123 @@ class TestNvenccInterpolationDecode:
         video = _video(codec="nvencc_hevc", copy_dv=True, copy_hdr10plus=True)
         with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_probe_payload()):
             assert wf._interpolation_validation_errors(_cfg(tmp_path, video)) == []
+
+
+# ---------------------------------------------------------------------------
+# Progression : muxiveo-rife pilote la barre, NVEncC filtré
+# ---------------------------------------------------------------------------
+
+_RIFE_LINE = "[muxiveo-rife] progress in=1507 out=3012 interpolated=1451 scenes=16 static=39 fps=25.08"
+
+
+def test_parse_rife_progress_percent_and_eta():
+    progress = parse_rife_progress(_RIFE_LINE)
+    assert progress is not None
+    assert (progress.frames_in, progress.frames_out, progress.fps_out) == (1507, 3012, 25.08)
+    assert progress.percent(65520) == pytest.approx(2.3, abs=0.01)
+    # débit source = 25.08 × 1507/3012 ≈ 12.55 trames/s
+    assert progress.eta_seconds(65520) == pytest.approx((65520 - 1507) / (25.08 * 1507 / 3012), rel=1e-6)
+    assert progress.percent(None) is None
+    assert parse_rife_progress("[muxiveo-rife] info: 3840x2160") is None
+
+
+def test_workflow_parse_progress_uses_rife(interp_workflow, tmp_path):
+    cfg = _cfg(tmp_path, _video(codec="nvencc_hevc"), duration_s=2732.73)
+    payload = _probe_payload(avg_frame_rate="24000/1001", r_frame_rate="24000/1001")
+    with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=payload):
+        event = interp_workflow.parse_progress(cfg, _RIFE_LINE)
+    assert event is not None and not event.should_log
+    assert event.fps == 25.08
+    assert event.percent == pytest.approx(1507 * 100 / round(2732.73 * 24000 / 1001), rel=1e-6)
+    assert event.eta_seconds is not None and event.eta_seconds > 0
+
+
+_CR_PRODUCER = [_PY, "-c", "import sys; sys.stdout.write('abc\\n' * 3)"]
+_CR_CONSUMER = [
+    _PY, "-c",
+    "import sys; sys.stdin.read(); "
+    "sys.stdout.write('10 frames: 5.0 fps, 1 kbps\\r20 frames: 6.0 fps, 1 kbps\\rencoded 30 frames, 6.0 fps\\n')",
+]
+
+
+@pytest.mark.parametrize("with_rife", [True, False])
+def test_nvencc_executor_splits_cr_and_filters_progress(qt_app, with_rife):
+    _ = qt_app
+    signals = TaskSignals()
+    lines: list[str] = []
+    signals.progress.connect(lines.append)
+    decode = PipelineCommand(_UPPER, [_CR_PRODUCER]) if with_rife else _CR_PRODUCER
+    NvenccPipeExecutor().run(decode_cmd=decode, encode_cmd=_CR_CONSUMER, cwd=Path.cwd(), signals=signals)
+    qt_app.processEvents()
+    assert "[nvencc] encoded 30 frames, 6.0 fps" in lines
+    progress = [line for line in lines if "frames: " in line]
+    if with_rife:
+        assert progress == []  # RIFE rapporte la position source
+    else:
+        assert progress == ["10 frames: 5.0 fps, 1 kbps", "20 frames: 6.0 fps, 1 kbps"]
+
+
+# ---------------------------------------------------------------------------
+# Cadence cible non entière (ex. 23,976 -> 59,94 = x2,5)
+# ---------------------------------------------------------------------------
+
+_X25 = Fraction(5, 2)
+
+
+def test_target_fps_ratio_and_repeats():
+    settings = _interp(target_fps="60000/1001")
+    assert settings.ratio("24000/1001") == _X25
+    assert settings.ratio(None) == 1  # cadence source inconnue : pas de rapport
+    assert _video(interpolation=settings).frame_ratio("24000/1001") == _X25
+    assert [frame_repeats(i, _X25) for i in range(4)] == [3, 2, 3, 2]
+    assert sum(frame_repeats(i, _X25) for i in range(5)) == 13  # ceil(5 x 2,5), règle muxiveo-rife
+    assert (ratio_label(2), ratio_label(_X25)) == ("x2", "x2,5")
+
+
+def test_rife_stage_target_fps():
+    cmd = build_rife_stage("rife", target_fps="60000/1001", quality="balanced", source=InterpolationSource())
+    assert cmd[cmd.index("--fps") + 1] == "60000/1001"
+    assert "--factor" not in cmd
+
+
+def test_rpu_and_hdr10plus_follow_uneven_cadence(tmp_path):
+    rpu, rpu_out = tmp_path / "rpu.bin", tmp_path / "rpu25.bin"
+    rpu.write_bytes(b"".join(b"\x00\x00\x00\x01\x7c\x01" + bytes([i]) for i in range(4)))
+    assert expand_rpu_file(rpu, rpu_out, _X25) == 10
+    assert [u[-1] for u in _rpu_units(rpu_out.read_bytes())] == [0, 0, 0, 1, 1, 2, 2, 2, 3, 3]
+
+    frames = [
+        {"SceneFrameIndex": 0, "SceneId": 0, "SequenceFrameIndex": 0},
+        {"SceneFrameIndex": 1, "SceneId": 0, "SequenceFrameIndex": 1},
+        {"SceneFrameIndex": 0, "SceneId": 1, "SequenceFrameIndex": 2},
+    ]
+    src, dst = tmp_path / "h.json", tmp_path / "h25.json"
+    src.write_text(json.dumps({"SceneInfo": frames, "SceneInfoSummary": {"SceneFirstFrameIndex": [0, 2], "SceneFrameNumbers": [2, 1]}}))
+    assert expand_hdr10plus_json(src, dst, _X25) == 8
+    out = json.loads(dst.read_text())
+    assert [f["SequenceFrameIndex"] for f in out["SceneInfo"]] == list(range(8))
+    assert [f["SceneFrameIndex"] for f in out["SceneInfo"]] == [0, 1, 2, 3, 4, 0, 1, 2]
+    assert out["SceneInfoSummary"] == {"SceneFirstFrameIndex": [0, 5], "SceneFrameNumbers": [5, 3]}
+
+
+def test_scene_cut_edit_uneven_cadence():
+    # coupes aux trames source 0, 1, 3 -> sorties 0-2, 3-4, 8-9
+    assert dovi_scene_cut_edit([0, 1, 3], _X25) == {"scene_cuts": {"1-2": False, "4-4": False, "9-9": False}}
+
+
+def test_frame_count_guard_rounds_up_uneven_ratio(tmp_path):
+    guard = FrameCountGuard(mediainfo_bin="mediainfo")
+    with patch.object(FrameCountGuard, "_read_video_frame_count", return_value=5):
+        audit = guard.audit(source=tmp_path / "s", encoded=tmp_path / "e", known_encoded_frames=13, frame_ratio=_X25)
+    assert (audit.source, audit.encoded) == (13, 13)
+
+
+def test_target_fps_must_exceed_source(interp_workflow, tmp_path):
+    payload = _probe_payload(avg_frame_rate="60/1", r_frame_rate="60/1")
+    video = _video(interpolation=_interp(target_fps="60000/1001"))
+    with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=payload):
+        errors = interp_workflow._interpolation_validation_errors(_cfg(tmp_path, video))
+    assert errors and "doit dépasser" in errors[0]
+    ok_payload = _probe_payload(avg_frame_rate="24000/1001", r_frame_rate="24000/1001")
+    with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=ok_payload):
+        assert interp_workflow._interpolation_validation_errors(_cfg(tmp_path, video)) == []

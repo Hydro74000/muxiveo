@@ -82,6 +82,7 @@ from core.update_install import (
 )
 from core.version import APP_BUILD_VERSION, APP_IS_UNSTABLE_BUILD, APP_VERSION_LABEL, WRITING_APPLICATION_TAG
 from core.workflows.encode.backends import backend_id_for_codec
+from core.workflows.encode.interpolation import parse_rife_progress
 from core.workflows.encode import EncodeError
 from core.workflows.common.sync_rewrite import SYNC_REWRITE_STAGE_PREFIX
 from core.workflows.remux_models import RemuxError
@@ -2386,6 +2387,9 @@ class MainWindow(QMainWindow):
             self._op_stage_label = raw_line.strip()
             self._prog_lbl.setText(raw_line)
             return True
+        if self._is_debug_tool_line(raw_line):
+            self._log_debug_only(raw_line, label=label)
+            return True
         self.log_requested.emit("INFO", raw_line)
         return True
 
@@ -2499,6 +2503,11 @@ class MainWindow(QMainWindow):
                 self._eta_tracker_frame.reset()
                 self.log_requested.emit("INFO", line)
                 return
+            rife_progress_line = parse_rife_progress(line) is not None
+            if self._is_debug_tool_line(line):
+                self._log_debug_only(line)
+                if not rife_progress_line:
+                    return
             progress_event = (
                 self._encode_panel.parse_progress_line(self._op_encode_config, line)
                 if self._op_encode_config is not None
@@ -2882,6 +2891,29 @@ class MainWindow(QMainWindow):
         label: str | None = None,
     ) -> None:
         _ensure_verbose_file_logger(self).append_tool_output(line, label=label)
+
+    def _is_debug_tool_line(self, line: str) -> bool:
+        """Détail d'outil réservé au debug : bloc ``EditConfig {…}`` de dovi_tool, progression muxiveo-rife."""
+        stripped = line.strip()
+        depth = getattr(self, "_tool_json_depth", 0)
+        if depth == 0 and stripped == "EditConfig {":
+            self._tool_json_depth = 1
+            return True
+        if depth > 0:
+            delta = stripped.count("{") + stripped.count("[") - stripped.count("}") - stripped.count("]")
+            self._tool_json_depth = max(0, depth + delta)
+            return True
+        return parse_rife_progress(line) is not None
+
+    def _log_debug_only(self, line: str, *, label: str | None = None) -> None:
+        """Écrit ``line`` dans le log fichier verbose uniquement (absente du journal standard)."""
+        if not _config_file_logging_is_verbose(self._config):
+            return
+        encode_cfg = getattr(self, "_op_encode_config", None)
+        encode_codec = str(getattr(getattr(encode_cfg, "video", None), "codec", "") or "").strip().lower()
+        if label is None and encode_codec and backend_id_for_codec(encode_codec) == "nvencc":
+            return  # déjà capturée par _capture_verbose_progress_line
+        self._append_verbose_tool_output(line, label=label)
 
     def _capture_verbose_progress_line(self, line: str) -> None:
         if not _config_file_logging_is_verbose(self._config):

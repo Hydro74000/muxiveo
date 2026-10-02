@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from enum import Enum
+from fractions import Fraction
 from pathlib import Path
 from typing import Protocol
 
@@ -259,12 +260,23 @@ class FrameInterpolationSettings:
     """Interpolation d'images RIFE (muxiveo-rife) : multiplication de la cadence."""
     enabled: bool = False
     factor: int = 2                   # multiplicateur entier de cadence (2 = 29,97 -> 59,94)
+    target_fps: str = ""              # cadence cible (ex. "60000/1001"), prioritaire sur factor
     quality: str = "balanced"         # fast | balanced | max (modèle RIFE)
     scene_threshold: float = 10.0     # seuil de coupe 0-100 (0 = désactivé)
     gpu: int = -1                     # index GPU Vulkan (-1 = automatique)
 
     def is_active(self) -> bool:
-        return bool(self.enabled) and int(self.factor) > 1
+        return bool(self.enabled) and (bool(self.target_fps) or int(self.factor) > 1)
+
+    def ratio(self, source_rate: str | None = None) -> Fraction:
+        """Rapport cadence de sortie / cadence source (``target_fps`` exige ``source_rate``)."""
+        if self.target_fps:
+            try:
+                source = Fraction(str(source_rate))
+                return Fraction(str(self.target_fps)) / source if source > 0 else Fraction(1)
+            except (TypeError, ValueError, ZeroDivisionError):
+                return Fraction(1)
+        return Fraction(max(1, int(self.factor)))
 
     @classmethod
     def from_value(cls, value: object) -> "FrameInterpolationSettings":
@@ -336,11 +348,15 @@ class VideoEncodeSettings:
             or self.p5_to_hdr10
         )
 
-    def frame_multiplier(self) -> int:
-        """Nombre de trames encodées par trame source (interpolation RIFE)."""
-        if self.codec == "copy" or not self.interpolation.is_active():
-            return 1
-        return int(self.interpolation.factor)
+    def interpolates(self) -> bool:
+        """Interpolation RIFE active sur une piste réencodée."""
+        return self.codec != "copy" and self.interpolation.is_active()
+
+    def frame_ratio(self, source_rate: str | None = None) -> Fraction:
+        """Trames encodées par trame source (1 sans interpolation ; x2,5 pour 23,976 -> 59,94)."""
+        if not self.interpolates():
+            return Fraction(1)
+        return self.interpolation.ratio(source_rate)
 
 
 @dataclass

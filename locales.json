@@ -4831,10 +4831,6 @@
     "fra": "Modèle RIFE : Rapide (v4.22 lite), Équilibré (v4.26), Max (v4.25 heavy, plus lent).",
     "eng": "RIFE model: Fast (v4.22 lite), Balanced (v4.26), Max (v4.25 heavy, slower)."
   },
-  "Multiplicateur de cadence (ex. x2 : 29,97 -> 59,94 i/s).": {
-    "fra": "Multiplicateur de cadence (ex. x2 : 29,97 -> 59,94 i/s).",
-    "eng": "Frame rate multiplier (e.g. x2: 29.97 -> 59.94 fps)."
-  },
   "muxiveo-rife": {
     "fra": "muxiveo-rife",
     "eng": "muxiveo-rife"
@@ -4858,5 +4854,9 @@
   "Max": {
     "fra": "Max",
     "eng": "Max"
+  },
+  "Multiplicateur de cadence (x2 : 29,97 -> 59,94 i/s) ou cadence cible (23,976 -> 59,94 i/s).": {
+    "fra": "Multiplicateur de cadence (x2 : 29,97 -> 59,94 i/s) ou cadence cible (23,976 -> 59,94 i/s).",
+    "eng": "Frame rate multiplier (x2: 29.97 -> 59.94 fps) or target frame rate (23.976 -> 59.94 fps)."
   }
 }
