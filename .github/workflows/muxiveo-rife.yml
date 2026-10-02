@@ -2,8 +2,10 @@ name: muxiveo-rife
 
 # Build, tests fonctionnels (Vulkan lavapipe sous Linux) et release du binaire
 # natif d'interpolation d'images (native/muxiveo-rife).
-# Release : pousser un tag `muxiveo-rife-vX.Y.Z` (version = project() du CMakeLists
-# et MUXIVEO_RIFE_VERSION de core/version.py).
+# Release automatique : release.yml appelle ce workflow (publish: true) quand la
+# release `muxiveo-rife-vX.Y.Z` de la version épinglée n'existe pas encore
+# (version = project() du CMakeLists = MUXIVEO_RIFE_VERSION de core/version.py).
+# Release manuelle toujours possible : pousser le tag `muxiveo-rife-vX.Y.Z`.
 
 on:
   push:
@@ -23,12 +25,20 @@ on:
       - "tests/native/**"
       - ".github/workflows/muxiveo-rife.yml"
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      publish:
+        description: "Publier la release muxiveo-rife-vX.Y.Z sur le commit courant"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
+# github.workflow : nom de l'appelant en workflow_call -> pas d'annulation
+# croisée avec le build déclenché par le même push.
 concurrency:
-  group: muxiveo-rife-${{ github.ref }}
+  group: muxiveo-rife-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -48,6 +58,8 @@ jobs:
             platform: macos-arm64
             exe: muxiveo-rife
     runs-on: ${{ matrix.os }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -68,7 +80,7 @@ jobs:
             echo "::error::Version CMake ($CMAKE_VERSION) != core/version.py ($APP_VERSION)"
             exit 1
           fi
-          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "muxiveo-rife-v${CMAKE_VERSION}" ]; then
+          if [[ "${GITHUB_REF_TYPE:-}" = "tag" && "${GITHUB_REF_NAME}" == muxiveo-rife-v* && "${GITHUB_REF_NAME}" != "muxiveo-rife-v${CMAKE_VERSION}" ]]; then
             echo "::error::Tag ${GITHUB_REF_NAME} != muxiveo-rife-v${CMAKE_VERSION}"
             exit 1
           fi
@@ -187,7 +199,7 @@ jobs:
 
   release:
     name: Publish release
-    if: startsWith(github.ref, 'refs/tags/muxiveo-rife-v')
+    if: startsWith(github.ref, 'refs/tags/muxiveo-rife-v') || inputs.publish
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -200,13 +212,20 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: muxiveo-rife-v${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
           ls -la assets
-          (cd assets && sha256sum * > SHA256SUMS)
+          # Deux releases Muxiveo simultanées (devel-cli, main) : la seconde n'a rien à faire.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::notice::$TAG déjà publiée"
+            exit 0
+          fi
+          (cd assets && sha256sum -- * > SHA256SUMS)
+          # --target : crée le tag sur le commit construit (appel depuis release.yml)
           gh release create "$TAG" assets/* \
             --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
             --title "muxiveo-rife ${TAG#muxiveo-rife-v}" \
             --notes "Binaire d'interpolation d'images RIFE (Vulkan) utilisé par Muxiveo. Voir native/muxiveo-rife/README.md." \
             --latest=false
