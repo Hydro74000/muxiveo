@@ -201,3 +201,29 @@ def test_unknown_model_fails_with_gpu_exit_code() -> None:
     data = make_y4m("testsrc2=size=96x64:rate=25", frames=2)
     proc = run_rife(data, "--model", "rife-inexistant", "--matrix", "bt709")
     assert proc.returncode == 3
+
+
+@pytest.mark.parametrize("model", ["rife-v4.6", "rife-v4.15-lite"])
+def test_uhd_mode_keeps_originals_and_changes_interpolation(model: str) -> None:
+    data = make_y4m("testsrc2=size=160x96:rate=25", frames=4, pix_fmt="yuv420p10le")
+    src = parse_y4m(data)
+    normal = run_rife(data, "--model", model, "--factor", "2", "--matrix", "bt709")
+    uhd = run_rife(data, "--model", model, "--uhd", "--factor", "2", "--matrix", "bt709")
+    assert normal.returncode == 0, normal.stderr.decode()
+    assert uhd.returncode == 0, uhd.stderr.decode()
+    out = parse_y4m(uhd.stdout)
+    assert len(out.frames) == 2 * len(src.frames)
+    assert out.frames[0::2] == src.frames
+    # graphe réécrit (échelles x2) : trames générées différentes du mode normal
+    assert out.frames[1] != parse_y4m(normal.stdout).frames[1]
+
+
+def test_uhd_mode_rejects_unrecognized_graph(tmp_path: Path) -> None:
+    model = tmp_path / "rife-sans-interp"
+    model.mkdir()
+    (model / "flownet.param").write_text("7767517\n1 1\nInput in0 0 1 in0\n")
+    (model / "flownet.bin").write_bytes(b"")
+    data = make_y4m("testsrc2=size=96x64:rate=25", frames=2)
+    proc = run_rife(data, "--model", str(model), "--uhd", "--matrix", "bt709")
+    assert proc.returncode == 3
+    assert "mode UHD" in proc.stderr.decode()

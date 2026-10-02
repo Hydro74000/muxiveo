@@ -114,9 +114,12 @@ from core.pipeline_command import command_preview_tokens as _command_preview_tok
 from core.workflows.encode.interpolation import (
     INTERPOLATION_FACTORS as _INTERPOLATION_FACTORS,
     INTERPOLATION_MODELS as _INTERPOLATION_MODELS,
+    INTERPOLATION_MODES as _INTERPOLATION_MODES,
+    RIFE_UHD_MIN_VERSION as _RIFE_UHD_MIN_VERSION,
     InterpolationSource as _InterpolationSource,
     build_rife_stage as _build_rife_stage,
     parse_rife_progress as _parse_rife_progress,
+    rife_version as _rife_version,
     interpolation_source_from_probe as _interpolation_source_from_probe,
 )
 from core.workflows.encode.runtime.metadata_inject import (
@@ -974,6 +977,7 @@ class EncodeWorkflow(QObject):
             source=info,
             scene_threshold=settings.scene_threshold,
             gpu=settings.gpu,
+            mode=settings.mode,
         )
         return _PipelineCommand(rife, [_interpolation_decode_cmd(decode_cmd, info)])
 
@@ -2589,12 +2593,22 @@ class EncodeWorkflow(QObject):
                 )
             if settings.quality not in _INTERPOLATION_MODELS:
                 errors.append(f"Interpolation d'images : qualité « {settings.quality} » inconnue.")
+            if settings.mode not in _INTERPOLATION_MODES:
+                errors.append(f"Interpolation d'images : mode « {settings.mode} » inconnu.")
             rife_bin = self._rife_bin
             if not rife_bin or not (Path(rife_bin).is_file() or shutil.which(rife_bin)):
                 errors.append(
                     "Interpolation d'images : outil muxiveo-rife introuvable "
                     "(Paramètres > Outils externes, ou relancer le setup)."
                 )
+            elif settings.fast_mode():
+                version = _rife_version(str(shutil.which(rife_bin) or rife_bin))
+                if version is not None and version < _RIFE_UHD_MIN_VERSION:
+                    errors.append(
+                        "Interpolation d'images : le mode Fast (et le préréglage Light) requiert muxiveo-rife "
+                        f"{'.'.join(map(str, _RIFE_UHD_MIN_VERSION))} ou plus récent "
+                        f"(installé : {'.'.join(map(str, version))}) ; relancer le setup."
+                    )
             source = self._video_source_from_settings(config, video)
             if self._video_stream_is_interlaced(source, self._video_stream_from_settings(video)) and not (
                 video.filters.yadif_enabled

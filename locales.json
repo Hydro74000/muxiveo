@@ -4827,10 +4827,6 @@
     "fra": "Interpolation d'images RIFE (Vulkan) livrée avec Muxiveo — multiplication de cadence à l'encodage.",
     "eng": "RIFE frame interpolation (Vulkan) shipped with Muxiveo — frame rate multiplication during encoding."
   },
-  "Modèle RIFE : Rapide (v4.22 lite), Équilibré (v4.26), Max (v4.25 heavy, plus lent).": {
-    "fra": "Modèle RIFE : Rapide (v4.22 lite), Équilibré (v4.26), Max (v4.25 heavy, plus lent).",
-    "eng": "RIFE model: Fast (v4.22 lite), Balanced (v4.26), Max (v4.25 heavy, slower)."
-  },
   "muxiveo-rife": {
     "fra": "muxiveo-rife",
     "eng": "muxiveo-rife"
@@ -4858,5 +4854,25 @@
   "Multiplicateur de cadence (x2 : 29,97 -> 59,94 i/s) ou cadence cible (23,976 -> 59,94 i/s).": {
     "fra": "Multiplicateur de cadence (x2 : 29,97 -> 59,94 i/s) ou cadence cible (23,976 -> 59,94 i/s).",
     "eng": "Frame rate multiplier (x2: 29.97 -> 59.94 fps) or target frame rate (23.976 -> 59.94 fps)."
+  },
+  "Mode : Normal": {
+    "fra": "Mode : Normal",
+    "eng": "Mode: Normal"
+  },
+  "Mode : Fast": {
+    "fra": "Mode : Fast",
+    "eng": "Mode: Fast"
+  },
+  "Mode Fast : flux optique calculé à demi-résolution (RIFE UHD). En 4K : +16 à +36 % de vitesse et 44 % de mémoire GPU en moins, pour une perte de qualité légère ; en 1080p, perte plus marquée.": {
+    "fra": "Mode Fast : flux optique calculé à demi-résolution (RIFE UHD). En 4K : +16 à +36 % de vitesse et 44 % de mémoire GPU en moins, pour une perte de qualité légère ; en 1080p, perte plus marquée.",
+    "eng": "Fast mode: optical flow computed at half resolution (RIFE UHD). In 4K: 16 to 36% faster and 44% less GPU memory, for a slight quality loss; at 1080p the loss is larger."
+  },
+  "Modèle RIFE : Rapide et Équilibré (v4.6), Light (v4.15 lite + mode Fast, petites cartes graphiques).": {
+    "fra": "Modèle RIFE : Rapide et Équilibré (v4.6), Light (v4.15 lite + mode Fast, petites cartes graphiques).",
+    "eng": "RIFE model: Fast and Balanced (v4.6), Light (v4.15 lite + Fast mode, small graphics cards)."
+  },
+  "Light": {
+    "fra": "Light",
+    "eng": "Light"
   }
 }

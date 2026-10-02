@@ -261,12 +261,17 @@ class FrameInterpolationSettings:
     enabled: bool = False
     factor: int = 2                   # multiplicateur entier de cadence (2 = 29,97 -> 59,94)
     target_fps: str = ""              # cadence cible (ex. "60000/1001"), prioritaire sur factor
-    quality: str = "balanced"         # fast | balanced | max (modèle RIFE)
+    quality: str = "balanced"         # fast | balanced | light (modèle RIFE ; « max » : ancien preset)
+    mode: str = "normal"              # normal | fast (flux optique à demi-résolution, --uhd)
     scene_threshold: float = 10.0     # seuil de coupe 0-100 (0 = désactivé)
     gpu: int = -1                     # index GPU Vulkan (-1 = automatique)
 
     def is_active(self) -> bool:
         return bool(self.enabled) and (bool(self.target_fps) or int(self.factor) > 1)
+
+    def fast_mode(self) -> bool:
+        """Mode Fast effectif : choisi, ou imposé par le préréglage Light."""
+        return self.mode == "fast" or self.quality == "light"
 
     def ratio(self, source_rate: str | None = None) -> Fraction:
         """Rapport cadence de sortie / cadence source (``target_fps`` exige ``source_rate``)."""

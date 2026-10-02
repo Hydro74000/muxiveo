@@ -7,7 +7,7 @@ la vidéo passe par un pipeline de trois processus reliés par des pipes ::
     ffmpeg (décodage + filtres logiciels) | muxiveo-rife | encodeur
 
 Public:
-    INTERPOLATION_MODELS, INTERPOLATION_FACTORS
+    INTERPOLATION_MODELS, INTERPOLATION_FACTORS, INTERPOLATION_MODES
     PipelineCommand          — commande finale précédée d'étages amont
     InterpolationSource      — couleur / décalage de départ de la source
     probe_interpolation_source(...)
@@ -17,6 +17,7 @@ Public:
 
 from __future__ import annotations
 
+import functools
 import json
 import math
 import re
@@ -36,21 +37,31 @@ if TYPE_CHECKING:
     from core.workflows.encode.models import VideoEncodeSettings
 
 # Préréglage qualité → modèle RIFE embarqué (voir native/muxiveo-rife/models.json).
+# v4.6 : meilleur VMAF moyen, débit le plus élevé et VRAM la plus basse sur le banc
+# (docs/benchmarks) ; Light = v4.15-lite toujours en mode Fast (petites cartes).
 INTERPOLATION_MODELS: dict[str, str] = {
-    "fast": "rife-v4.22-lite",
-    "balanced": "rife-v4.26",
-    "max": "rife-v4.25-heavy",
+    "fast": "rife-v4.6",
+    "balanced": "rife-v4.6",
+    "light": "rife-v4.15-lite",
+    "max": "rife-v4.6",  # ancien préréglage Max (v4.25-heavy), conservé pour les presets enregistrés
 }
+# Préréglages qui imposent le mode Fast (--uhd).
+INTERPOLATION_FAST_QUALITIES: frozenset[str] = frozenset({"light"})
 INTERPOLATION_DEFAULT_QUALITY = "balanced"
 INTERPOLATION_FACTORS: tuple[int, ...] = (2, 3, 4)
 # Cadences cibles proposées (rapport non entier possible, ex. 23,976 -> 59,94 = x2,5).
 INTERPOLATION_TARGET_FPS: tuple[str, ...] = ("60000/1001", "60/1")
+# Mode de calcul du flux optique : "fast" = muxiveo-rife --uhd (flux à demi-résolution).
+INTERPOLATION_MODES: tuple[str, ...] = ("normal", "fast")
+RIFE_UHD_MIN_VERSION: tuple[int, int, int] = (1, 1, 0)
 
 # Intervalle des lignes ``progress`` de muxiveo-rife : alimentent la barre de
 # progression (non journalisées, log verbose uniquement).
 _RIFE_PROGRESS_INTERVAL_S = 2
 
 _RIFE_PROGRESS_RE = re.compile(r"\[muxiveo-rife\] progress in=(\d+) out=(\d+)\b.*?\bfps=([\d.]+)")
+
+_RIFE_VERSION_RE = re.compile(r"muxiveo-rife (\d+)\.(\d+)\.(\d+)")
 
 _RIFE_MATRICES = {"bt709", "bt2020nc", "bt2020", "bt601", "smpte170m", "bt470bg", "smpte240m", "fcc"}
 _RIFE_CHROMA_LOCATIONS = {"left", "center", "topleft"}
@@ -196,8 +207,12 @@ def build_rife_stage(
     source: InterpolationSource,
     scene_threshold: float = 10.0,
     gpu: int = -1,
+    mode: str = "normal",
 ) -> list[str]:
-    """Étage 2 : muxiveo-rife (y4m stdin → y4m stdout), facteur entier ou cadence cible."""
+    """Étage 2 : muxiveo-rife (y4m stdin → y4m stdout), facteur entier ou cadence cible.
+
+    ``mode="fast"`` : flux optique calculé à demi-résolution (``--uhd``).
+    """
     model = INTERPOLATION_MODELS.get(str(quality or ""), INTERPOLATION_MODELS[INTERPOLATION_DEFAULT_QUALITY])
     rate_args = ["--fps", str(target_fps)] if target_fps else ["--factor", str(int(factor))]
     cmd = [
@@ -210,9 +225,24 @@ def build_rife_stage(
         "--scene-threshold", f"{max(0.0, float(scene_threshold)):g}",
         "--progress-interval", str(_RIFE_PROGRESS_INTERVAL_S),
     ]
+    if mode == "fast" or quality in INTERPOLATION_FAST_QUALITIES:
+        cmd.append("--uhd")
     if int(gpu) >= 0:
         cmd.extend(["--gpu", str(int(gpu))])
     return cmd
+
+
+@functools.lru_cache(maxsize=8)
+def rife_version(rife_bin: str) -> tuple[int, int, int] | None:
+    """Version annoncée par ``muxiveo-rife --version`` (None si illisible)."""
+    try:
+        result = subprocess.run(
+            [str(rife_bin), "--version"], capture_output=True, check=False, timeout=15, **subprocess_text_kwargs()
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = _RIFE_VERSION_RE.search(result.stdout or "")
+    return (int(match[1]), int(match[2]), int(match[3])) if match else None
 
 
 @dataclass(frozen=True)
@@ -501,11 +531,15 @@ __all__ = [
     "INTERPOLATION_FACTORS",
     "INTERPOLATION_TARGET_FPS",
     "INTERPOLATION_MODELS",
+    "INTERPOLATION_MODES",
+    "INTERPOLATION_FAST_QUALITIES",
+    "RIFE_UHD_MIN_VERSION",
     "InterpolationSource",
     "PipelineCommand",
     "RifeProgress",
     "build_decode_stage",
     "build_rife_stage",
+    "rife_version",
     "command_stages",
     "dovi_scene_cut_edit",
     "expand_dynamic_hdr_metadata",

@@ -1651,18 +1651,27 @@ class EncodePanel(QWidget):
         self._interp_quality_combo = QComboBox()
         self._interp_quality_combo.setStyleSheet(_combo_style())
         self._interp_quality_combo.setToolTip(
-            "Modèle RIFE : Rapide (v4.22 lite), Équilibré (v4.26), Max (v4.25 heavy, plus lent)."
+            "Modèle RIFE : Rapide et Équilibré (v4.6), Light (v4.15 lite + mode Fast, petites cartes graphiques)."
         )
-        for label, value in (("Rapide", "fast"), ("Équilibré", "balanced"), ("Max", "max")):
+        for label, value in (("Rapide", "fast"), ("Équilibré", "balanced"), ("Light", "light")):
             self._interp_quality_combo.addItem(label, value)
         self._set_combo_data(self._interp_quality_combo, "balanced")
         self._interp_quality_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
+        self._interp_mode_combo = QComboBox()
+        self._interp_mode_combo.setStyleSheet(_combo_style())
+        self._interp_mode_combo.setToolTip(
+            "Mode Fast : flux optique calculé à demi-résolution (RIFE UHD). En 4K : +16 à +36 % de vitesse et 44 % de mémoire GPU en moins, pour une perte de qualité légère ; en 1080p, perte plus marquée."
+        )
+        for label, value in (("Mode : Normal", "normal"), ("Mode : Fast", "fast")):
+            self._interp_mode_combo.addItem(label, value)
+        self._interp_mode_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
         self._interp_fps_label = self._filter_tech_label("")
         fl.addWidget(self._build_filter_row(
             self._interp_cb,
             self._filter_tech_label("RIFE"),
             self._interp_factor_combo,
             self._interp_quality_combo,
+            self._interp_mode_combo,
             self._interp_fps_label,
         ))
         self._sync_interpolation_availability()
@@ -1697,6 +1706,11 @@ class EncodePanel(QWidget):
         enabled = self._interp_cb.isChecked() and self._interp_cb.isEnabled()
         self._interp_factor_combo.setEnabled(enabled)
         self._interp_quality_combo.setEnabled(enabled)
+        # Light impose le mode Fast (v4.15 lite + flux à demi-résolution)
+        light = self._interp_quality_combo.currentData() == "light"
+        if light:
+            self._set_combo_data(self._interp_mode_combo, "fast")
+        self._interp_mode_combo.setEnabled(enabled and not light)
         self._interp_fps_label.setText(self._interpolation_fps_hint() if enabled else "")
 
     def _interpolation_fps_hint(self) -> str:
@@ -1732,6 +1746,8 @@ class EncodePanel(QWidget):
             factor=2 if is_target else int(choice),
             target_fps=choice if is_target else "",
             quality=str(self._interp_quality_combo.currentData() or "balanced"),
+            mode="fast" if self._interp_quality_combo.currentData() == "light"
+            else str(self._interp_mode_combo.currentData() or "normal"),
         )
 
     def _apply_interpolation_settings(self, settings: FrameInterpolationSettings) -> None:
@@ -1739,7 +1755,9 @@ class EncodePanel(QWidget):
             return
         self._interp_cb.setChecked(bool(settings.enabled) and self._interp_cb.isEnabled())
         self._set_combo_data(self._interp_factor_combo, settings.target_fps or str(int(settings.factor)))
-        self._set_combo_data(self._interp_quality_combo, settings.quality)
+        quality = settings.quality if settings.quality in ("fast", "balanced", "light") else "balanced"
+        self._set_combo_data(self._interp_quality_combo, quality)
+        self._set_combo_data(self._interp_mode_combo, "fast" if settings.fast_mode() else settings.mode)
         self._sync_interpolation_controls()
 
     def _build_filter_row(self, toggle: QCheckBox, *widgets: QWidget) -> QWidget:
@@ -4185,11 +4203,14 @@ class EncodePanel(QWidget):
             badges.append("Chroma")
         interpolation = FrameInterpolationSettings.from_value(state.get("interpolation"))
         if interpolation.is_active():
-            badges.append(
+            badge = (
                 f"RIFE {_format_fps(float(Fraction(interpolation.target_fps)))}"
                 if interpolation.target_fps
                 else f"RIFE x{int(interpolation.factor)}"
             )
+            if interpolation.quality == "light":
+                badge += " Light"
+            badges.append(f"{badge} Fast" if interpolation.fast_mode() else badge)
         return tuple(badges)
 
     def _video_plan_from_state(

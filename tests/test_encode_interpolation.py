@@ -16,6 +16,7 @@ Couverture (sans binaire ni GPU, subprocess réels limités à Python) :
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from fractions import Fraction
 from pathlib import Path
@@ -43,6 +44,7 @@ from core.workflows.encode.interpolation import (
     ratio_label,
     InterpolationSource,
     build_rife_stage,
+    rife_version,
     dovi_scene_cut_edit,
     expand_dynamic_hdr_metadata,
     expand_hdr10plus_json,
@@ -93,10 +95,13 @@ class TestSettings:
         assert video.has_video_transform()
 
     def test_preset_roundtrip(self):
-        preset = EncodePreset(name="x", interpolation=_interp(quality="fast"))
+        preset = EncodePreset(name="x", interpolation=_interp(quality="fast", mode="fast"))
         restored = EncodePreset(**json.loads(json.dumps(preset.to_json_dict())))
-        assert restored.interpolation == _interp(quality="fast")
+        assert restored.interpolation == _interp(quality="fast", mode="fast")
         assert restored.to_video_settings().frame_ratio() == 2
+
+    def test_mode_defaults_to_normal_for_old_presets(self):
+        assert FrameInterpolationSettings.from_value({"enabled": True, "factor": 2}).mode == "normal"
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +155,28 @@ def test_rife_stage_arguments():
     assert cmd[cmd.index("--scene-threshold") + 1] == "12.5"
     assert cmd[cmd.index("--gpu") + 1] == "1"
     assert "--gpu" not in build_rife_stage("r", factor=2, quality="?", source=InterpolationSource())
+    assert "--uhd" not in cmd
+    assert "--uhd" in build_rife_stage("r", quality="balanced", source=InterpolationSource(), mode="fast")
+
+
+def test_presets_map_to_benchmarked_models():
+    assert INTERPOLATION_MODELS["fast"] == INTERPOLATION_MODELS["balanced"] == "rife-v4.6"
+    assert INTERPOLATION_MODELS["max"] == "rife-v4.6"  # ancien preset Max enregistré
+    light = build_rife_stage("r", quality="light", source=InterpolationSource(), mode="normal")
+    assert light[light.index("--model") + 1] == "rife-v4.15-lite"
+    assert "--uhd" in light  # Light impose le mode Fast
+    assert _interp(quality="light").fast_mode()
+    assert not _interp(quality="balanced").fast_mode()
+
+
+def test_rife_version_parsed_from_binary():
+    rife_version.cache_clear()
+    out = subprocess.CompletedProcess([], 0, stdout="muxiveo-rife 1.1.0 (ncnn 20260526)\n", stderr="")
+    with patch("core.workflows.encode.interpolation.subprocess.run", return_value=out):
+        assert rife_version("/opt/muxiveo-rife-a") == (1, 1, 0)
+    with patch("core.workflows.encode.interpolation.subprocess.run", side_effect=OSError):
+        assert rife_version("/opt/muxiveo-rife-b") is None
+    rife_version.cache_clear()
 
 
 # ---------------------------------------------------------------------------
@@ -468,6 +495,20 @@ class TestWorkflowInterpolation:
         with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_probe_payload()), \
                 patch.object(EncodeWorkflow, "_load_mediainfo_video_track", return_value={"FrameRate_Mode": "CFR", "FrameRate_Mode_Original": "VFR"}):
             assert not interp_workflow._interpolation_source(_video(), tmp_path / "s.mkv").is_vfr
+
+    def test_fast_mode_requires_recent_rife(self, interp_workflow, tmp_path):
+        cfg = _cfg(tmp_path, _video(interpolation=_interp(mode="fast")))
+        with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_probe_payload()):
+            with patch("core.workflows.encode.workflow._rife_version", return_value=(1, 0, 0)):
+                errors = interp_workflow._interpolation_validation_errors(cfg)
+            with patch("core.workflows.encode.workflow._rife_version", return_value=(1, 1, 0)):
+                assert interp_workflow._interpolation_validation_errors(cfg) == []
+            light = _cfg(tmp_path, _video(interpolation=_interp(quality="light")))
+            with patch("core.workflows.encode.workflow._rife_version", return_value=(1, 0, 0)):
+                assert any("1.1.0" in e for e in interp_workflow._interpolation_validation_errors(light))
+            bad = _cfg(tmp_path, _video(interpolation=_interp(mode="turbo")))
+            assert any("turbo" in e for e in interp_workflow._interpolation_validation_errors(bad))
+        assert len(errors) == 1 and "1.1.0" in errors[0] and "1.0.0" in errors[0]
 
     def test_copy_codec_rejected(self, interp_workflow, tmp_path):
         errors = interp_workflow._interpolation_validation_errors(_cfg(tmp_path, _video(codec="copy")))
