@@ -847,9 +847,9 @@
     "fra": "Workflow échoué",
     "eng": "Workflow failed"
   },
-  "Transfère les métadonnées Dolby Vision et/ou HDR10+ de Film 2 (source) vers Film 1 (cible).": {
-    "fra": "Transfère les métadonnées Dolby Vision et/ou HDR10+ de Film 2 (source) vers Film 1 (cible).",
-    "eng": "Transfers Dolby Vision and/or HDR10+ metadata from Film 2 (source) to Film 1 (target)."
+  "Transfère les métadonnées Dolby Vision et/ou HDR10+ de Film 2 (source) vers Film 1 (cible). Profil « Désactivé » : HDR10+ seul, le Dolby Vision de Film 1 est conservé.": {
+    "fra": "Transfère les métadonnées Dolby Vision et/ou HDR10+ de Film 2 (source) vers Film 1 (cible). Profil « Désactivé » : HDR10+ seul, le Dolby Vision de Film 1 est conservé.",
+    "eng": "Transfers Dolby Vision and/or HDR10+ metadata from Film 2 (source) to Film 1 (target). “Disabled” profile: HDR10+ only, Film 1 Dolby Vision is kept."
   },
   "▶  Lancer le workflow": {
     "fra": "▶  Lancer le workflow",
@@ -1747,9 +1747,9 @@
     "fra": "Réduire le menu",
     "eng": "Collapse menu"
   },
-  "Disabled  —  ne pas injecter Dolby Vision": {
-    "fra": "Disabled  —  ne pas injecter Dolby Vision",
-    "eng": "Disabled - do not inject Dolby Vision"
+  "Désactivé  —  n'injecte pas le DV de Film 2 (celui de Film 1 est conservé)": {
+    "fra": "Désactivé  —  n'injecte pas le DV de Film 2 (celui de Film 1 est conservé)",
+    "eng": "Disabled  —  do not inject Film 2 DV (Film 1 DV is kept)"
   },
   "Appliquer à toutes les pistes": {
     "fra": "Appliquer à toutes les pistes",
@@ -4898,5 +4898,41 @@
   "Converti automatiquement en {target} (codec {codec} non supporté par Matroska)": {
     "fra": "Converti automatiquement en {target} (codec {codec} non supporté par Matroska)",
     "eng": "Automatically converted to {target} ({codec} codec not supported by Matroska)"
+  },
+  "Film 1 : {film1}  ·  Film 2 : {film2}": {
+    "fra": "Film 1 : {film1}  ·  Film 2 : {film2}",
+    "eng": "Film 1: {film1}  ·  Film 2: {film2}"
+  },
+  "Le RPU Dolby Vision de Film 1 sera remplacé par celui de Film 2. Choisir « Désactivé » pour n'injecter que le HDR10+.": {
+    "fra": "Le RPU Dolby Vision de Film 1 sera remplacé par celui de Film 2. Choisir « Désactivé » pour n'injecter que le HDR10+.",
+    "eng": "Film 1 Dolby Vision RPU will be replaced by Film 2's. Choose “Disabled” to inject HDR10+ only."
+  },
+  "Le Dolby Vision de Film 1 sera conservé.": {
+    "fra": "Le Dolby Vision de Film 1 sera conservé.",
+    "eng": "Film 1 Dolby Vision will be kept."
+  },
+  "Le HDR10+ de Film 1 sera remplacé par celui de Film 2.": {
+    "fra": "Le HDR10+ de Film 1 sera remplacé par celui de Film 2.",
+    "eng": "Film 1 HDR10+ will be replaced by Film 2's."
+  },
+  "Film 1 contient déjà Dolby Vision : son RPU sera remplacé par celui de Film 2 (profil « Désactivé » pour le conserver).": {
+    "fra": "Film 1 contient déjà Dolby Vision : son RPU sera remplacé par celui de Film 2 (profil « Désactivé » pour le conserver).",
+    "eng": "Film 1 already has Dolby Vision: its RPU will be replaced by Film 2's (“Disabled” profile to keep it)."
+  },
+  "Film 1 — Dolby Vision existant conservé.": {
+    "fra": "Film 1 — Dolby Vision existant conservé.",
+    "eng": "Film 1 — existing Dolby Vision kept."
+  },
+  "Film 1 contient déjà HDR10+ : ses métadonnées seront remplacées par celles de Film 2.": {
+    "fra": "Film 1 contient déjà HDR10+ : ses métadonnées seront remplacées par celles de Film 2.",
+    "eng": "Film 1 already has HDR10+: its metadata will be replaced by Film 2's."
+  },
+  "[WARN] Configuration Dolby Vision de Film 1 illisible : piste non signalée Dolby Vision au niveau Matroska.": {
+    "fra": "[WARN] Configuration Dolby Vision de Film 1 illisible : piste non signalée Dolby Vision au niveau Matroska.",
+    "eng": "[WARN] Film 1 Dolby Vision configuration unreadable: track not signalled as Dolby Vision at Matroska level."
+  },
+  "Signal Dolby Vision de Film 1 conservé (profil {profile}, niveau {level}).": {
+    "fra": "Signal Dolby Vision de Film 1 conservé (profil {profile}, niveau {level}).",
+    "eng": "Film 1 Dolby Vision signalling kept (profile {profile}, level {level})."
   }
 }

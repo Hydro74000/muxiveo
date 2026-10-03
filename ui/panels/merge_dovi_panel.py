@@ -32,8 +32,8 @@ from core.file_types import build_qt_filter, is_accepted
 from core.i18n import apply_translations, translate_text
 from core.frame_count import reliable_frame_count
 from core.workflows.merge_dovi import (
-    DoviProfile, FrameCountResult,
-    MergeDoviWorkflow, StepResult, WorkflowStep,
+    DoviProfile, FrameCountResult, HdrState,
+    MergeDoviWorkflow, StepResult, WorkflowStep, probe_hdr_state,
 )
 from ui.shutdown import defer_close
 from ui.desktop import open_external
@@ -412,6 +412,7 @@ class _ConfigSection(QWidget):
         self._config = config
         self._work_input: QLineEdit
         self._output_input: QLineEdit
+        self._hdr_states: tuple[HdrState, HdrState] | None = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -439,7 +440,10 @@ class _ConfigSection(QWidget):
         r1l.addWidget(lbl_profile)
 
         self._profile_combo = QComboBox()
-        self._profile_combo.addItem("Disabled  —  ne pas injecter Dolby Vision", DoviProfile.DISABLED)
+        self._profile_combo.addItem(
+            "Désactivé  —  n'injecte pas le DV de Film 2 (celui de Film 1 est conservé)",
+            DoviProfile.DISABLED,
+        )
         self._profile_combo.addItem("Profile 8.1  —  -m 2, standard remux UHD (recommandé)", DoviProfile.P8_1)
         self._profile_combo.addItem("Mode 0  —  rewrite untouched, préserve le profil source",  DoviProfile.P8_0)
         self._profile_combo.setCurrentIndex(1)
@@ -465,6 +469,13 @@ class _ConfigSection(QWidget):
         """)
         r1l.addWidget(self._profile_combo, stretch=1)
         cl.addWidget(row1)
+
+        # État HDR des deux films + conséquence du profil choisi
+        self._hdr_hint = QLabel()
+        self._hdr_hint.setWordWrap(True)
+        self._hdr_hint.setVisible(False)
+        cl.addWidget(self._hdr_hint)
+        self._profile_combo.currentIndexChanged.connect(lambda _: self._update_hdr_hint())
 
         # Dossier de travail + sortie
         for label, attr, default in [
@@ -519,6 +530,39 @@ class _ConfigSection(QWidget):
     @property
     def dovi_profile(self) -> DoviProfile:
         return self._profile_combo.currentData()
+
+    def set_hdr_states(self, film1: HdrState | None, film2: HdrState | None) -> None:
+        """Mémorise l'état HDR des deux films (None = inconnu) et met à jour l'indication."""
+        self._hdr_states = (film1, film2) if film1 is not None and film2 is not None else None
+        self._update_hdr_hint()
+
+    def _update_hdr_hint(self) -> None:
+        if self._hdr_states is None:
+            self._hdr_hint.setVisible(False)
+            return
+        film1, film2 = self._hdr_states
+        lines = [translate_text(
+            "Film 1 : {film1}  ·  Film 2 : {film2}", film1=film1.label, film2=film2.label,
+        )]
+        warn = False
+        if film1.has_dovi:
+            if film2.has_dovi and self.dovi_profile != DoviProfile.DISABLED:
+                warn = True
+                lines.append(translate_text(
+                    "Le RPU Dolby Vision de Film 1 sera remplacé par celui de Film 2. "
+                    "Choisir « Désactivé » pour n'injecter que le HDR10+."
+                ))
+            else:
+                lines.append(translate_text("Le Dolby Vision de Film 1 sera conservé."))
+        if film1.has_hdr10plus and film2.has_hdr10plus:
+            warn = True
+            lines.append(translate_text("Le HDR10+ de Film 1 sera remplacé par celui de Film 2."))
+        self._hdr_hint.setText("\n".join(lines))
+        self._hdr_hint.setStyleSheet(
+            f"color: {_C.WARN if warn else _C.TEXT_SEC}; font-size: 11px; "
+            "background: transparent; border: none;"
+        )
+        self._hdr_hint.setVisible(True)
 
     @property
     def work_dir(self) -> Path:
@@ -891,7 +935,8 @@ class MergeDoviPanel(QWidget):
 
         subtitle = QLabel(
             "Transfère les métadonnées Dolby Vision et/ou HDR10+ "
-            "de Film 2 (source) vers Film 1 (cible)."
+            "de Film 2 (source) vers Film 1 (cible). Profil « Désactivé » : "
+            "HDR10+ seul, le Dolby Vision de Film 1 est conservé."
         )
         subtitle.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(12)}px; background: transparent;")
         content_layout.addWidget(subtitle)
@@ -1123,6 +1168,7 @@ class MergeDoviPanel(QWidget):
         self._error_section.hide_error()
         self._step_progress.reset()
         self._framecount_bar.reset()
+        self._config_section.set_hdr_states(None, None)
 
         # Déclenche la lecture des frame counts après un court délai
         # (évite plusieurs appels rapides lors d'un drag-and-drop)
@@ -1130,8 +1176,8 @@ class MergeDoviPanel(QWidget):
 
     def _refresh_framecounts(self) -> None:
         """
-        Lit les frame counts des deux fichiers dans un thread secondaire
-        et met à jour la barre via QTimer.singleShot (thread-safe).
+        Lit les frame counts et l'état HDR des deux fichiers dans un thread
+        secondaire et met à jour l'UI via QTimer.singleShot (thread-safe).
         """
         film1 = self._file_section.film1
         film2 = self._file_section.film2
@@ -1143,20 +1189,22 @@ class MergeDoviPanel(QWidget):
         mediainfo_bin = self._config.tool_mediainfo
         ffprobe_bin = self._config.tool_ffprobe
 
-        def _read() -> FrameCountResult:
+        def _read() -> tuple[FrameCountResult, HdrState, HdrState]:
             def fc(path: Path) -> int | None:
                 return reliable_frame_count(path, mediainfo_bin=mediainfo_bin, ffprobe_bin=ffprobe_bin)
 
             fc1  = fc(film1)
             fc2  = fc(film2)
             diff = abs(fc2 - fc1) if fc1 is not None and fc2 is not None else None
-            return FrameCountResult(fc1, fc2, diff)
+            hdr1 = probe_hdr_state(film1, mediainfo_bin)
+            hdr2 = probe_hdr_state(film2, mediainfo_bin)
+            return FrameCountResult(fc1, fc2, diff), hdr1, hdr2
 
         def _done(future) -> None:
             try:
                 result = future.result()
                 # QTimer.singleShot est thread-safe : repasse dans le thread Qt
-                QTimer.singleShot(0, lambda r=result: self._framecount_bar.set_result(r))
+                QTimer.singleShot(0, lambda r=result: self._apply_probe(*r))
             except Exception:
                 pass
 
@@ -1164,3 +1212,7 @@ class MergeDoviPanel(QWidget):
         f = executor.submit(_read)
         f.add_done_callback(_done)
         executor.shutdown(wait=False)
+
+    def _apply_probe(self, result: FrameCountResult, hdr1: HdrState, hdr2: HdrState) -> None:
+        self._framecount_bar.set_result(result)
+        self._config_section.set_hdr_states(hdr1, hdr2)

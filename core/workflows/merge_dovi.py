@@ -381,12 +381,63 @@ class StaticHdrMetadata:
 
 
 @dataclass(frozen=True)
+class HdrState:
+    """État HDR d'une piste vidéo, lu depuis mediainfo (``HDR_Format`` + transfert)."""
+    has_dovi: bool = False
+    has_hdr10plus: bool = False
+    transfer: str = ""
+
+    @classmethod
+    def from_mediainfo(cls, hdr_format: str, transfer: str) -> "HdrState":
+        # Match strict « App 4 » : « SMPTE ST 2094-10 » (DV legacy) n'est pas HDR10+.
+        hdr_lower = hdr_format.lower()
+        return cls(
+            has_dovi="dolby vision" in hdr_lower,
+            has_hdr10plus="smpte st 2094 app 4" in hdr_lower,
+            transfer=transfer.strip().lower(),
+        )
+
+    @property
+    def label(self) -> str:
+        parts = ["Dolby Vision"] if self.has_dovi else []
+        if self.has_hdr10plus:
+            parts.append("HDR10+")
+        elif any(k in self.transfer for k in ("hlg", "arib")):
+            parts.append("HLG")
+        elif any(k in self.transfer for k in ("pq", "2084")):
+            parts.append("HDR10")
+        elif self.transfer and not parts:
+            parts.append("SDR")
+        return " + ".join(parts) or "?"
+
+
+def probe_hdr_state(path: Path, mediainfo_bin: str = "mediainfo") -> HdrState:
+    """Lit l'état HDR de la première piste vidéo de ``path`` (mediainfo JSON)."""
+    try:
+        result = subprocess.run(
+            [mediainfo_bin, "--Output=JSON", str(path)],
+            capture_output=True, check=False, **subprocess_text_kwargs(),
+        )
+        data = json.loads(result.stdout or "{}")
+    except (OSError, json.JSONDecodeError):
+        return HdrState()
+    for track in (data.get("media") or {}).get("track") or []:
+        if isinstance(track, dict) and track.get("@type") == "Video":
+            return HdrState.from_mediainfo(
+                str(track.get("HDR_Format") or ""),
+                str(track.get("transfer_characteristics") or ""),
+            )
+    return HdrState()
+
+
+@dataclass(frozen=True)
 class ValidationContext:
     flags: HDRFlags
     static_film1: StaticHdrMetadata
     static_film2: StaticHdrMetadata
     film1_needs_sdr_to_hdr10: bool = False
     film2_has_hdr10_reference: bool = False
+    film1_has_dovi: bool = False
 
 
 @dataclass
@@ -714,6 +765,7 @@ class MergeDoviWorkflow(QObject):
                 dovi_profile=effective_profile,
                 static_hdr_metadata=chosen_static,
                 extra_subtitle_files=extra_subtitle_files,
+                preserve_film1_dovi=validation.film1_has_dovi and not flags.has_dovi,
             )
             self._check_cancel()
 
@@ -840,6 +892,36 @@ class MergeDoviWorkflow(QObject):
             if film1_is_hdr:
                 self.step_progress.emit(step, f"Film 1 — transfert HDR confirmé ({transfer1}).")
 
+        # HDR avancé déjà présent dans Film 1 : dovi_tool inject-rpu et
+        # hdr10plus_tool inject remplacent l'existant ; sans injection DV, le
+        # RPU de Film 1 reste dans le flux et son signal Matroska est conservé.
+        film1_state = HdrState.from_mediainfo(
+            self._mediainfo(film1, "Video;%HDR_Format%").strip(), transfer1,
+        )
+        film1_has_dovi = film1_state.has_dovi
+        if (
+            not film1_has_dovi
+            and not flags.has_dovi
+            and not film1_needs_sdr_to_hdr10
+            and self._has_dovi_rpu(film1)
+        ):
+            film1_has_dovi = True
+        if film1_has_dovi:
+            if flags.has_dovi:
+                self.step_progress.emit(
+                    step,
+                    "Film 1 contient déjà Dolby Vision : son RPU sera remplacé par "
+                    "celui de Film 2 (profil « Désactivé » pour le conserver).",
+                )
+            else:
+                self.step_progress.emit(step, "Film 1 — Dolby Vision existant conservé.")
+        if film1_state.has_hdr10plus and flags.has_hdr10plus:
+            self.step_progress.emit(
+                step,
+                "Film 1 contient déjà HDR10+ : ses métadonnées seront remplacées "
+                "par celles de Film 2.",
+            )
+
         # Lecture des SEI HDR10 statiques (Mastering Display + MaxCLL/MaxFALL)
         # sur les deux films. Si Film 1 n'en a pas mais Film 2 oui, on
         # complétera plus tard via inject_static_hdr_sei_file.
@@ -866,6 +948,7 @@ class MergeDoviWorkflow(QObject):
             static_film2=static_film2,
             film1_needs_sdr_to_hdr10=film1_needs_sdr_to_hdr10,
             film2_has_hdr10_reference=film2_has_hdr10_reference,
+            film1_has_dovi=film1_has_dovi,
         )
 
     @staticmethod
@@ -1529,12 +1612,11 @@ class MergeDoviWorkflow(QObject):
     def _assemble_final_mkv(
         self,
         plan: MatroskaAssemblyPlan,
-        flags: HDRFlags,
         dovi_record: DolbyVisionConfigRecord | None,
     ) -> None:
         contract = assembly_output_contract(
             plan,
-            require_block_addition_mapping=bool(flags.has_dovi and dovi_record is not None),
+            require_block_addition_mapping=dovi_record is not None,
         )
         plan_with_contract = replace(plan, expected_output_contract=contract)
         mux_plan = compile_assembly_plan(plan_with_contract)
@@ -1554,6 +1636,7 @@ class MergeDoviWorkflow(QObject):
         dovi_profile: DoviProfile = DoviProfile.P8_1,
         static_hdr_metadata: StaticHdrMetadata | None = None,
         extra_subtitle_files: tuple[Path, ...] = (),
+        preserve_film1_dovi: bool = False,
     ) -> None:
         step = WorkflowStep.REMUX
         t0   = time.monotonic()
@@ -1569,6 +1652,21 @@ class MergeDoviWorkflow(QObject):
                 paths.film2_rpu,
                 forced_compat_id=1 if dovi_profile == DoviProfile.P8_1 else None,
             )
+        elif preserve_film1_dovi:
+            dovi_record = self._film1_dovi_record(film1, final_hevc)
+            if dovi_record is None:
+                self.step_progress.emit(
+                    step,
+                    "[WARN] Configuration Dolby Vision de Film 1 illisible : "
+                    "piste non signalée Dolby Vision au niveau Matroska.",
+                )
+            else:
+                self.step_progress.emit(
+                    step,
+                    f"Signal Dolby Vision de Film 1 conservé (profil "
+                    f"{dovi_record.profile}.{dovi_record.bl_signal_compat_id}, "
+                    f"niveau {dovi_record.level}).",
+                )
 
         colour_element = b""
         if static_hdr_metadata and (static_hdr_metadata.master_display or static_hdr_metadata.max_cll):
@@ -1728,7 +1826,7 @@ class MergeDoviWorkflow(QObject):
         )
 
         try:
-            self._assemble_final_mkv(plan, flags, dovi_record)
+            self._assemble_final_mkv(plan, dovi_record)
         except Exception as exc:
             raise WorkflowError(step, f"Écriture Matroska native échouée : {exc}") from exc
 
@@ -2291,16 +2389,62 @@ class MergeDoviWorkflow(QObject):
         if path.suffix.lower() not in {".hevc", ".h265", ".265", ".x265", ".mkv"}:
             return False
         with tempfile.TemporaryDirectory(prefix="dovi_probe_") as tmp:
+            return self._extract_first_rpu(path, Path(tmp) / "rpu.bin")
+
+    def _extract_first_rpu(self, path: Path, rpu: Path) -> bool:
+        """Extrait le premier RPU de ``path`` (``extract-rpu -l 1``) ; True si obtenu."""
+        try:
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            subprocess.run(  # nosec B603  # nosemgrep  # argv liste, binaire issu de la config
+                [self._bins["dovi_tool"], "extract-rpu", "-i", str(path), "-l", "1", "-o", str(rpu)],
+                capture_output=True, check=False, timeout=120, **subprocess_text_kwargs(),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return rpu.is_file() and rpu.stat().st_size > 0
+
+    def _film1_dovi_record(self, film1: Path, hevc: Path) -> DolbyVisionConfigRecord | None:
+        """Configuration Dolby Vision existante de Film 1, conservée quand seul
+        le HDR10+ est injecté. Priorité au record du conteneur (ffprobe, exact :
+        niveau, couche EL) ; repli sur le premier RPU du flux HEVC injecté."""
+        record = self._probe_dovi_config_record(film1)
+        if record is not None:
+            return record
+        with tempfile.TemporaryDirectory(prefix="dovi_probe_") as tmp:
             rpu = Path(tmp) / "rpu.bin"
-            try:
-                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-                subprocess.run(  # nosec B603  # nosemgrep  # argv liste, binaire issu de la config
-                    [self._bins["dovi_tool"], "extract-rpu", "-i", str(path), "-l", "1", "-o", str(rpu)],
-                    capture_output=True, check=False, timeout=120, **subprocess_text_kwargs(),
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                return False
-            return rpu.is_file() and rpu.stat().st_size > 0
+            if not self._extract_first_rpu(hevc, rpu):
+                return None
+            return self._build_dovi_record_from_rpu(rpu)
+
+    def _probe_dovi_config_record(self, path: Path) -> DolbyVisionConfigRecord | None:
+        """Lit le « DOVI configuration record » de la première piste vidéo (ffprobe)."""
+        try:
+            result = subprocess.run(
+                [
+                    self._bins["ffprobe"], "-v", "error", "-select_streams", "v:0",
+                    "-show_streams", "-of", "json", str(path),
+                ],
+                capture_output=True, check=False, **subprocess_text_kwargs(),
+            )
+            streams = json.loads(result.stdout or "{}").get("streams") or []
+        except (OSError, json.JSONDecodeError, AttributeError):
+            return None
+        for stream in streams[:1]:
+            for side_data in stream.get("side_data_list") or []:
+                if side_data.get("side_data_type") != "DOVI configuration record":
+                    continue
+                try:
+                    return DolbyVisionConfigRecord(
+                        profile=int(side_data["dv_profile"]),
+                        level=int(side_data["dv_level"]),
+                        rpu_present=bool(int(side_data.get("rpu_present_flag", 1))),
+                        el_present=bool(int(side_data.get("el_present_flag", 0))),
+                        bl_present=bool(int(side_data.get("bl_present_flag", 1))),
+                        bl_signal_compat_id=int(side_data.get("dv_bl_signal_compatibility_id", 0)),
+                    )
+                except (KeyError, TypeError, ValueError):
+                    return None
+        return None
 
     def _mediainfo(self, path: Path, inform: str) -> str:
         """Lance mediainfo --Inform et retourne la sortie brute."""
