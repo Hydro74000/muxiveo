@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from PySide6.QtCore import QCoreApplication, QObject, Signal, Slot, Qt
+from core.pipeline_command import PipelineCommand, command_display, pipeline_root_failure
 from core.subprocess_utils import (
     decode_subprocess_output,
     format_returncode,
@@ -669,11 +670,20 @@ class ToolRunner(QObject):
         proc_env = {**os.environ, **(env or {})} if env else None
 
         if progress_cb:
-            progress_cb("$ " + " ".join(cmd))
+            progress_cb("$ " + command_display(cmd))
 
         # Filtre les lignes de bruit (NAL unit skips, "Last message repeated N times").
         # Le premier match émet un warning unique, les suivants sont supprimés.
         progress_cb = _wrap_noise_filter(progress_cb) if progress_cb else None
+
+        if isinstance(cmd, PipelineCommand) and cmd.upstream:
+            return self._run_pipeline(
+                cmd,
+                cwd=cwd,
+                env=proc_env,
+                progress_cb=progress_cb,
+                signals=signals,
+            )
 
         binary = Path(cmd[0]).name
         use_pty = sys.platform != "win32" and binary in _PTY_PROGRESS_TOOLS
@@ -701,36 +711,7 @@ class ToolRunner(QObject):
             if signals is not None:
                 signals._register_proc(proc)
             try:
-                lines: list[str] = []
-                assert proc.stdout is not None
-
-                buf: bytes = b""
-                while chunk := proc.stdout.read(256):
-                    # Annulation : le processus a été tué par cancel(), read() retourne b""
-                    # ou on le tue ici si le signal arrive entre deux lectures.
-                    if signals is not None and signals._cancel_event.is_set():
-                        kill_process_tree(proc, timeout=0.2)
-                        raise TaskCancelledError()
-                    chunk_bytes: bytes
-                    if isinstance(chunk, str):
-                        chunk_bytes = chunk.encode("utf-8", errors="replace")
-                    else:
-                        chunk_bytes = bytes(chunk)
-                    # Normalise \r\n et \r solitaire en \n pour un split uniforme
-                    buf += chunk_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-                    *complete, buf = buf.split(b"\n")
-                    for raw in complete:
-                        stripped = decode_subprocess_output(raw).rstrip()
-                        lines.append(stripped)
-                        if progress_cb and stripped:
-                            progress_cb(stripped)
-
-                # Vide le tampon résiduel (dernière ligne sans \n terminal)
-                if buf.strip():
-                    stripped = decode_subprocess_output(buf.strip())
-                    lines.append(stripped)
-                    if progress_cb and stripped:
-                        progress_cb(stripped)
+                lines = self._pump_output(proc, progress_cb=progress_cb, signals=signals)
 
                 proc.wait()
 
@@ -756,6 +737,155 @@ class ToolRunner(QObject):
 
                 return output
             finally:
+                if signals is not None:
+                    signals._unregister_proc(proc)
+
+    @staticmethod
+    def _pump_output(
+        proc: subprocess.Popen,
+        *,
+        progress_cb: Callable[[str], None] | None,
+        signals: TaskSignals | None,
+    ) -> list[str]:
+        """Lit stdout de ``proc`` ligne à ligne (``\r`` compris) jusqu'à sa fermeture."""
+        lines: list[str] = []
+        assert proc.stdout is not None
+
+        buf: bytes = b""
+        while chunk := proc.stdout.read(256):
+            # Annulation : le processus a été tué par cancel(), read() retourne b""
+            # ou on le tue ici si le signal arrive entre deux lectures.
+            if signals is not None and signals._cancel_event.is_set():
+                kill_process_tree(proc, timeout=0.2)
+                raise TaskCancelledError()
+            chunk_bytes: bytes
+            if isinstance(chunk, str):
+                chunk_bytes = chunk.encode("utf-8", errors="replace")
+            else:
+                chunk_bytes = bytes(chunk)
+            # Normalise \r\n et \r solitaire en \n pour un split uniforme
+            buf += chunk_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+            *complete, buf = buf.split(b"\n")
+            for raw in complete:
+                stripped = decode_subprocess_output(raw).rstrip()
+                lines.append(stripped)
+                if progress_cb and stripped:
+                    progress_cb(stripped)
+
+        # Vide le tampon résiduel (dernière ligne sans \n terminal)
+        if buf.strip():
+            stripped = decode_subprocess_output(buf.strip())
+            lines.append(stripped)
+            if progress_cb and stripped:
+                progress_cb(stripped)
+        return lines
+
+    # ------------------------------------------------------------------
+    # Pipeline de processus (ex. décodage | muxiveo-rife | encodeur)
+    # ------------------------------------------------------------------
+
+    def _run_pipeline(
+        self,
+        cmd: PipelineCommand,
+        *,
+        cwd: Path | None,
+        env: dict[str, str] | None,
+        progress_cb: Callable[[str], None] | None,
+        signals: TaskSignals | None,
+    ) -> str:
+        """
+        Exécute les étages d'un ``PipelineCommand`` reliés par des pipes.
+
+        La sortie du dernier étage (progression de l'encodeur) est lue comme
+        dans ``_run_cmd`` ; stderr des étages amont est relayé préfixé du nom
+        de l'outil. Un étage amont en échec fait échouer la commande même si
+        l'encodeur a terminé proprement (flux tronqué).
+        """
+        stages = cmd.stages()
+        procs: list[subprocess.Popen] = []
+        tails: list[deque[str]] = []
+        readers: list[threading.Thread] = []
+
+        def _relay(stream, label: str, tail: deque[str]) -> None:
+            for raw in iter(stream.readline, b""):
+                line = decode_subprocess_output(raw).rstrip()
+                if not line:
+                    continue
+                tail.append(line)
+                if progress_cb:
+                    progress_cb(f"[{label}] {line}")
+            stream.close()
+
+        try:
+            prev_stdout = None
+            for index, stage in enumerate(stages):
+                last = index == len(stages) - 1
+                popen_kwargs = subprocess_windows_no_window_kwargs(include_stdin=prev_stdout is None)
+                if prev_stdout is not None:
+                    popen_kwargs["stdin"] = prev_stdout
+                proc = subprocess.Popen(
+                    stage,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT if last else subprocess.PIPE,
+                    cwd=str(cwd) if cwd else None,
+                    env=env,
+                    **popen_kwargs,
+                )
+                # Le parent ne garde pas l'extrémité lecture : l'étage amont
+                # reçoit EPIPE si l'aval s'arrête.
+                if prev_stdout is not None:
+                    prev_stdout.close()
+                procs.append(proc)
+                if signals is not None:
+                    signals._register_proc(proc)
+                if not last:
+                    prev_stdout = proc.stdout
+                    tail: deque[str] = deque(maxlen=40)
+                    tails.append(tail)
+                    reader = threading.Thread(
+                        target=_relay,
+                        args=(proc.stderr, Path(stage[0]).stem, tail),
+                        daemon=True,
+                    )
+                    reader.start()
+                    readers.append(reader)
+
+            last_proc = procs[-1]
+            lines = self._pump_output(last_proc, progress_cb=progress_cb, signals=signals)
+            last_proc.wait()
+            for proc in procs[:-1]:
+                proc.wait()
+            for reader in readers:
+                reader.join(timeout=5)
+
+            if signals is not None and signals._cancel_event.is_set():
+                raise TaskCancelledError()
+
+            output = "\n".join(lines[-10000:])
+            # Cause première : un étage tué par un pipe fermé (aval arrêté) ou
+            # l'encodeur privé de flux (amont arrêté) n'est qu'une conséquence.
+            root = pipeline_root_failure([
+                *((stage, proc.returncode, "\n".join(tail)) for stage, proc, tail in zip(stages[:-1], procs[:-1], tails)),
+                (stages[-1], last_proc.returncode, output[-2000:]),
+            ])
+            if root == len(stages) - 1:
+                upstream_tail = "\n".join(line for tail in tails for line in tail)
+                raise CommandError(
+                    cmd=stages[-1],
+                    returncode=last_proc.returncode,
+                    stderr=(upstream_tail + "\n" + output[-2000:]).strip(),
+                )
+            if root is not None:
+                raise CommandError(
+                    cmd=stages[root],
+                    returncode=procs[root].returncode,
+                    stderr="\n".join(tails[root]),
+                )
+            return output
+        finally:
+            for proc in procs:
+                if proc.poll() is None:
+                    kill_process_tree(proc, timeout=0.2)
                 if signals is not None:
                     signals._unregister_proc(proc)
 

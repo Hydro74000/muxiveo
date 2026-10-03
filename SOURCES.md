@@ -37,6 +37,10 @@ distribution, but their source code is publicly available:
 | MediaInfo CLI | https://github.com/MediaArea/MediaInfo | Media analysis engine (BSD-2-Clause) |
 | curl / libcurl | https://github.com/curl/curl | Network library bundled with MediaInfo Windows CLI (curl/MIT) |
 | NVEncC | https://github.com/rigaya/NVEnc | Hardware encoder (MIT, contains NVIDIA and LGPL libplacebo/FFmpeg components) |
+| muxiveo-rife | `native/muxiveo-rife/` in this repository | RIFE frame interpolation (MIT), derived from https://github.com/nihui/rife-ncnn-vulkan and https://github.com/TNTwise/rife-ncnn-vulkan (MIT) — see `native/muxiveo-rife/UPSTREAM.md` |
+| ncnn | https://github.com/Tencent/ncnn | Neural network inference library statically linked into muxiveo-rife (BSD-3-Clause) |
+| RIFE models | https://github.com/hzwer/Practical-RIFE | Model weights bundled with muxiveo-rife (MIT), pinned in `native/muxiveo-rife/models.json` |
+| MoltenVK (macOS) | https://github.com/KhronosGroup/MoltenVK | Vulkan-on-Metal runtime shipped with muxiveo-rife on macOS (Apache-2.0) |
 
 ---
 

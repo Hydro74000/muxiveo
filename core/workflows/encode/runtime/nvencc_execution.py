@@ -6,10 +6,22 @@ import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 from typing import Callable
 
 from core.bluray import append_ffmpeg_input_args, is_bluray_playlist
+from core.pipeline_command import command_preview_tokens, command_stages, is_broken_pipe_exit, pipeline_root_failure
+from core.workflows.encode.backends.progress import parse_nvencc_progress
+from core.workflows.encode.interpolation import (
+    expand_dynamic_hdr_metadata as _expand_dynamic_hdr_metadata,
+    extract_hdr10plus_metadata as _extract_hdr10plus_metadata,
+    ffprobe_beside as _ffprobe_beside,
+    multiply_fps_expr as _multiply_fps_expr,
+    probe_interpolation_source as _probe_interpolation_source,
+    resolve_frame_ratio as _resolve_frame_ratio,
+    stream_start_offset as _stream_start_offset,
+)
 from core.runner import TaskCancelledError, TaskSignals
 from core.subprocess_utils import (
     decode_subprocess_output,
@@ -174,6 +186,12 @@ class NvenccAssetPreparationService:
 
 
 class NvenccPipeExecutor:
+    """Exécute ``décodage [| étages intermédiaires] | NVEncC``.
+
+    ``decode_cmd`` peut être un ``PipelineCommand`` (ex. ``ffmpeg | muxiveo-rife``) :
+    tous ses étages sont chaînés avant NVEncC.
+    """
+
     def run(
         self,
         *,
@@ -182,72 +200,117 @@ class NvenccPipeExecutor:
         cwd: Path,
         signals: TaskSignals,
     ) -> str:
+        producer_stages = command_stages(decode_cmd)
+        # Étage intermédiaire (muxiveo-rife) : c'est lui qui rapporte la
+        # position dans la source ; les compteurs NVEncC (trames ×N) sont écartés.
+        has_intermediate = len(producer_stages) > 1
+
+        def _emit(label: str, line: str, sink: list[str]) -> None:
+            if label == "nvencc" and parse_nvencc_progress(line) is not None and not line.lower().startswith("encoded"):
+                if not has_intermediate:
+                    # sans préfixe : reconnue par le parseur de progression NVEncC
+                    signals.progress.emit(line)
+                return
+            sink.append(line)
+            signals.progress.emit(f"[{label}] {line}")
+
         def _reader(stream, label: str, sink: list[str]) -> None:
             if stream is None:
                 return
-            while True:
-                raw = stream.readline()
-                if not raw:
-                    break
-                line = decode_subprocess_output(raw).rstrip()
-                if not line:
-                    continue
-                sink.append(line)
-                signals.progress.emit(f"[{label}] {line}")
+            # NVEncC rafraîchit sa progression avec \r : découpage sur \r et \n.
+            buf = b""
+            while chunk := stream.read1(4096) if hasattr(stream, "read1") else stream.read(4096):
+                buf += chunk.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+                *complete, buf = buf.split(b"\n")
+                for raw in complete:
+                    line = decode_subprocess_output(raw).rstrip()
+                    if line:
+                        _emit(label, line, sink)
+            line = decode_subprocess_output(buf).rstrip()
+            if line:
+                _emit(label, line, sink)
 
-        decode_lines: list[str] = []
+        producer_labels = ["ffmpeg-decode", *(Path(stage[0]).stem for stage in producer_stages[1:])]
+        producer_lines: list[list[str]] = [[] for _ in producer_stages]
         encode_lines: list[str] = []
+        producers: list[subprocess.Popen] = []
+        encode_proc: subprocess.Popen | None = None
 
-        decode_proc = subprocess.Popen(
-            decode_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=str(cwd),
-            **subprocess_windows_no_window_kwargs(),
-        )
-        signals._register_proc(decode_proc)
         try:
+            prev_stdout = None
+            for stage in producer_stages:
+                popen_kwargs = subprocess_windows_no_window_kwargs(include_stdin=prev_stdout is None)
+                if prev_stdout is not None:
+                    popen_kwargs["stdin"] = prev_stdout
+                proc = subprocess.Popen(
+                    stage,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    cwd=str(cwd),
+                    **popen_kwargs,
+                )
+                if prev_stdout is not None:
+                    prev_stdout.close()
+                producers.append(proc)
+                signals._register_proc(proc)
+                prev_stdout = proc.stdout
+
             encode_proc = subprocess.Popen(
                 encode_cmd,
-                stdin=decode_proc.stdout,
+                stdin=prev_stdout,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 cwd=str(cwd),
                 **subprocess_windows_no_window_kwargs(include_stdin=False),
             )
         except Exception:
-            signals._unregister_proc(decode_proc)
-            try:
-                decode_proc.kill()
-            except OSError:
-                pass
+            for proc in producers:
+                signals._unregister_proc(proc)
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
             raise
         signals._register_proc(encode_proc)
-        if decode_proc.stdout is not None:
-            decode_proc.stdout.close()
+        if prev_stdout is not None:
+            prev_stdout.close()
 
-        decode_reader = ThreadPoolExecutor(max_workers=2)
-        decode_reader.submit(_reader, decode_proc.stderr, "ffmpeg-decode", decode_lines)
-        decode_reader.submit(_reader, encode_proc.stdout, "nvencc", encode_lines)
+        readers = ThreadPoolExecutor(max_workers=len(producers) + 1)
+        for proc, label, sink in zip(producers, producer_labels, producer_lines):
+            readers.submit(_reader, proc.stderr, label, sink)
+        readers.submit(_reader, encode_proc.stdout, "nvencc", encode_lines)
         try:
             encode_rc = encode_proc.wait()
-            decode_rc = decode_proc.wait()
-            decode_reader.shutdown(wait=True)
+            producer_rcs = [proc.wait() for proc in producers]
+            readers.shutdown(wait=True)
             if signals._cancel_event.is_set():
                 raise TaskCancelledError()
-            if encode_rc != 0:
+            # Cause première (ex. VRAM insuffisante pour muxiveo-rife) : le
+            # décodage tué par le pipe fermé et NVEncC privé de flux en découlent.
+            results = [
+                *((stage, rc, "\n".join(lines)) for stage, rc, lines in zip(producer_stages, producer_rcs, producer_lines)),
+                (list(encode_cmd), encode_rc, "\n".join(encode_lines)),
+            ]
+            root = pipeline_root_failure(results)
+            if root == len(producers):
                 tail = "\n".join(encode_lines[-40:])
                 raise EncodeError(f"NVEncC a échoué.\n{tail}")
-            if not is_expected_nvencc_pipe_producer_exit(
-                decode_rc,
-                "\n".join(decode_lines),
-            ):
-                tail = "\n".join(decode_lines[-40:])
-                raise EncodeError(f"FFmpeg decode a échoué.\n{tail}")
+            if root is not None:
+                stage, rc, err = results[root]
+                # Pipe refermé par NVEncC après un encodage réussi : arrêt attendu.
+                expected = encode_rc == 0 and (
+                    is_expected_nvencc_pipe_producer_exit(rc, err) if root == 0 else is_broken_pipe_exit(stage, rc, err)
+                )
+                if not expected:
+                    tail = "\n".join(producer_lines[root][-40:])
+                    if root == 0:
+                        raise EncodeError(f"FFmpeg decode a échoué.\n{tail}")
+                    raise EncodeError(f"{producer_labels[root]} a échoué (code {rc}).\n{tail}")
             return "\n".join(encode_lines[-400:])
         finally:
             signals._unregister_proc(encode_proc)
-            signals._unregister_proc(decode_proc)
+            for proc in producers:
+                signals._unregister_proc(proc)
 
 
 @dataclass(frozen=True)
@@ -387,6 +450,8 @@ class NvenccDirectOutputRunnerCallbacks:
     #: Assemblage final Matroska natif (lot 2). None → remux final FFmpeg.
     native_assemble: Callable[..., None] | None = None
     bins: dict[str, str] = field(default_factory=dict)
+    #: Interpolation RIFE : chaîne ``muxiveo-rife`` après le décodage y4m.
+    wrap_decode_with_interpolation: Callable[[list[str], VideoEncodeSettings, Path], list[str]] | None = None
 
 
 class NvenccDirectOutputRunner:
@@ -447,6 +512,13 @@ class NvenccDirectOutputRunner:
                     source_path=cb.video_source_path(config),
                     stream_index=cb.video_stream_index(config),
                 )
+                # L'assemblage ramène l'intermédiaire à zéro, avec ou sans pipe
+                # RIFE : rétablir le départ du flux dans la source d'origine.
+                video_offset_ms += round(1000 * _stream_start_offset(
+                    _ffprobe_beside(cb.ffmpeg_bin),
+                    cb.video_source_path(config),
+                    cb.video_stream_index(config),
+                ))
                 needs_ffmpeg_pipe = (
                     _nvencc_requires_ffmpeg_filter_pipe_runtime(runtime_video)
                     or is_bluray_playlist(routing.input_path)
@@ -493,6 +565,61 @@ class NvenccDirectOutputRunner:
                     )
                     dovi_rpu_path = padded_rpu
 
+                # Interpolation RIFE : NVEncC lit un pipe y4m, la copie DoVi /
+                # HDR10+ depuis la source est impossible ; les métadonnées sont
+                # extraites, étendues à la cadence interpolée et fournies en fichiers.
+                frame_ratio = (
+                    _resolve_frame_ratio(
+                        runtime_video,
+                        ffprobe_bin=_ffprobe_beside(cb.ffmpeg_bin),
+                        source=routing.input_path,
+                        stream_index=routing.stream_index,
+                    )
+                    if needs_ffmpeg_pipe
+                    else Fraction(1)
+                )
+                hdr10plus_json_path: Path | None = None
+                if frame_ratio > 1 and (runtime_video.copy_dv or runtime_video.copy_hdr10plus):
+                    dovi_bin = (cb.bins.get("dovi_tool") if cb.bins else None) or "dovi_tool"
+                    hdr10plus_bin = (cb.bins.get("hdr10plus_tool") if cb.bins else None) or "hdr10plus_tool"
+
+                    def run_interp_metadata(cmd: list[str]) -> object:
+                        cb.check_cancelled(signals)
+                        return cb.run_cmd(cmd, cwd, "interpolation-metadata",
+                                          lambda line: signals.progress.emit(line), signals)
+
+                    if runtime_video.copy_dv and dovi_rpu_path is None:
+                        from core.workflows.encode.runtime.dovi_geometry import extract_dovi_rpu
+
+                        source_rpu = cwd / "source_rpu.bin"
+                        cleanup_paths.append(source_rpu)
+                        signals.progress.emit("Extraction RPU Dolby Vision…")
+                        dovi_rpu_path = extract_dovi_rpu(
+                            source=routing.input_path, stream_index=routing.stream_index,
+                            ffmpeg_bin=cb.ffmpeg_bin, dovi_tool_bin=dovi_bin,
+                            output_rpu=source_rpu, work_dir=cwd, run_cmd=run_interp_metadata,
+                            cleanup_paths=cleanup_paths,
+                        )
+                    if runtime_video.copy_hdr10plus:
+                        hdr10plus_json_path = cwd / "source_hdr10plus.json"
+                        cleanup_paths.append(hdr10plus_json_path)
+                        signals.progress.emit("Extraction métadonnées HDR10+…")
+                        _extract_hdr10plus_metadata(
+                            source=routing.input_path, stream_index=routing.stream_index,
+                            ffmpeg_bin=cb.ffmpeg_bin, hdr10plus_bin=hdr10plus_bin,
+                            output_json=hdr10plus_json_path, work_dir=cwd,
+                            run_cmd=run_interp_metadata, cleanup_paths=cleanup_paths,
+                        )
+                    _expand_dynamic_hdr_metadata(
+                        ratio=frame_ratio,
+                        rpu_bin=dovi_rpu_path if runtime_video.copy_dv else None,
+                        hdr10p_json=hdr10plus_json_path,
+                        dovi_tool_bin=dovi_bin,
+                        run_cmd=run_interp_metadata,
+                        log=cb.log_info,
+                    )
+                output_fps = _multiply_fps_expr(routing.source_fps or routing.input_fps, frame_ratio)
+
                 encode_cmd = _build_nvencc_command_runtime(
                     cb.nvencc_bin or "",
                     (
@@ -505,13 +632,23 @@ class NvenccDirectOutputRunner:
                     stream_index=None if needs_ffmpeg_pipe else routing.stream_index,
                     input_reader=None if needs_ffmpeg_pipe else routing.input_reader,
                     input_fps=None if needs_ffmpeg_pipe else routing.input_fps,
-                    source_fps=routing.source_fps or routing.input_fps,
+                    source_fps=output_fps or routing.source_fps or routing.input_fps,
                     input_avsync=None if needs_ffmpeg_pipe else routing.input_avsync,
-                    hdr10plus_json=None,
+                    hdr10plus_json=hdr10plus_json_path,
                     dovi_rpu=dovi_rpu_path,
                     dovi_rpu_prm=None if needs_ffmpeg_pipe else routing.dovi_rpu_prm,
                     vpp_pad=routing.vpp_pad,
                 )
+                if "--colorprim" not in encode_cmd and "-o" in encode_cmd:
+                    # Rétablir le marquage source : perdu en y4m et non repris
+                    # automatiquement par NVEncC sans pipe. Le HDR PQ est déjà explicite.
+                    probed = _probe_interpolation_source(
+                        _ffprobe_beside(cb.ffmpeg_bin), routing.input_path, routing.stream_index,
+                        tonemap_to_sdr=bool(runtime_video.tonemap_to_sdr),
+                    )
+                    color_args = probed.nvencc_color_args() if probed is not None else []
+                    out_at = encode_cmd.index("-o")
+                    encode_cmd = [*encode_cmd[:out_at], *color_args, *encode_cmd[out_at:]]
                 decode_cmd: list[str] | None = None
                 if needs_ffmpeg_pipe:
                     decode_cmd = _build_decode_pipe_cmd_runtime(
@@ -520,6 +657,10 @@ class NvenccDirectOutputRunner:
                         stream_index=routing.stream_index,
                         vf=_nvencc_ffmpeg_filter_vf_runtime(runtime_video),
                     )
+                    if cb.wrap_decode_with_interpolation is not None:
+                        decode_cmd = cb.wrap_decode_with_interpolation(
+                            decode_cmd, runtime_video, routing.input_path,
+                        )
                 remux_cmd: list[str] | None = None
                 if cb.native_assemble is None:
                     remux_cmd, live_sync_session, sync_cleanup_paths = cb.build_runtime_remux_cmd(
@@ -552,7 +693,7 @@ class NvenccDirectOutputRunner:
                         lambda line: signals.progress.emit(line),
                         signals,
                     )
-                effective_fps = routing.source_fps or routing.input_fps
+                effective_fps = output_fps or routing.source_fps or routing.input_fps
                 if runtime_video.copy_dv and intermediate.is_file():
                     cb.log_info(
                         "Dolby Vision : validation MaxBlockAdditionID=1 et niveau (Level 6/9 au lieu de 10) sur l'artefact NVEncC."
@@ -614,6 +755,7 @@ def build_nvencc_pipeline_commands(
     ffmpeg_bin: str,
     video_tracks: Callable[[EncodeConfig], list[VideoEncodeSettings]],
     resolve_input_routing: Callable[[EncodeConfig], NvenccInputRouting],
+    wrap_decode_with_interpolation: Callable[[list[str], VideoEncodeSettings, Path], list[str]] | None = None,
 ) -> list[list[str]] | None:
     if len(video_tracks(config)) != 1:
         return None
@@ -666,6 +808,11 @@ def build_nvencc_pipeline_commands(
             stream_index=routing.stream_index,
             vf=_nvencc_ffmpeg_filter_vf_runtime(routing.video),
         )
+        if wrap_decode_with_interpolation is not None:
+            # aperçu : décodage | muxiveo-rife sur une seule ligne de jetons
+            decode = command_preview_tokens(
+                wrap_decode_with_interpolation(decode, routing.video, routing.input_path)
+            )
     else:
         decode = None
     remux = [

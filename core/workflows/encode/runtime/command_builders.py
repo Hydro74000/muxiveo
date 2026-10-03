@@ -43,6 +43,32 @@ class EncodeCommandBuilderCallbacks:
     video_track_mapping: Callable[..., tuple[tuple[Path, int, str], Path | str, int]]
 
 
+def _video_output_args(
+    callbacks: EncodeCommandBuilderCallbacks,
+    video: VideoEncodeSettings,
+    *,
+    video_input: int,
+) -> list[str]:
+    """``-vf`` et ``-threads`` de l'encodeur, à placer après la dernière entrée.
+
+    Avant une entrée (auxiliaire de décalage, synchronisation, métadonnées),
+    FFmpeg les appliquerait à cette entrée et refuserait la commande. Le décodage
+    matériel (``-hwaccel``) ne concerne que l'entrée 0.
+    """
+    args: list[str] = []
+    vf = _build_encoder_vf_domain(
+        video, callbacks=callbacks.codec_domain_callbacks(), hw_decoded=video_input == 0,
+    )
+    if vf:
+        args.extend(["-vf", vf])
+    args.extend(callbacks.ffmpeg_thread_args(None))
+    return args
+
+
+def _video_input(video_map: tuple[int, int], offset_remap: dict, video_key) -> int:
+    return int(offset_remap.get(video_key, video_map)[0])
+
+
 def build_single_pass(
     callbacks: EncodeCommandBuilderCallbacks,
     config: EncodeConfig,
@@ -70,11 +96,6 @@ def build_single_pass(
     )
     cmd.extend(metadata_inputs.input_args)
 
-    vf = _build_encoder_vf_domain(video, callbacks=callbacks.codec_domain_callbacks())
-    if vf:
-        cmd.extend(["-vf", vf])
-
-    cmd.extend(callbacks.ffmpeg_thread_args(None))
     track_assembly, offset_remap = callbacks.resolve_track_assembly_and_offset_remap(
         cmd=cmd,
         config=config,
@@ -83,6 +104,9 @@ def build_single_pass(
         track_input_paths=_build_track_input_paths_plan(all_sources=all_sources),
         start_input_index=metadata_inputs.next_input_index,
     )
+    cmd.extend(_video_output_args(
+        callbacks, video, video_input=_video_input(track_assembly.video_map, offset_remap, plan.video_key),
+    ))
 
     callbacks.append_primary_video_map_and_codec(
         cmd,
@@ -113,7 +137,6 @@ def build_two_pass(
 ) -> list[list[str]]:
     video = callbacks.primary_video_settings(config)
     bitrate = callbacks.size_to_bitrate_kbps(config)
-    vf = _build_encoder_vf_domain(video, callbacks=callbacks.codec_domain_callbacks())
     plan = plan or callbacks.build_encode_plan(config)
     all_sources = list(plan.all_sources)
     source_idx = dict(plan.source_idx)
@@ -124,9 +147,6 @@ def build_two_pass(
         c.extend(_hardware_input_args_domain(video, callbacks=callbacks.codec_domain_callbacks()))
         for src in all_sources:
             append_ffmpeg_input_args(c, src)
-        if vf:
-            c.extend(["-vf", vf])
-        c.extend(callbacks.ffmpeg_thread_args(None))
         return c
 
     pass1 = _base()
@@ -140,6 +160,9 @@ def build_two_pass(
         start_input_index=len(all_sources),
     )
     _ = _next1
+    pass1.extend(_video_output_args(
+        callbacks, video, video_input=_video_input(plan.video_default_map, pass1_offset_remap, plan.video_key),
+    ))
     callbacks.append_primary_video_map_and_codec(
         pass1,
         plan=plan,
@@ -170,6 +193,9 @@ def build_two_pass(
         track_input_paths=_build_track_input_paths_plan(all_sources=all_sources),
         start_input_index=metadata_inputs.next_input_index,
     )
+    pass2.extend(_video_output_args(
+        callbacks, video, video_input=_video_input(track_assembly.video_map, pass2_offset_remap, plan.video_key),
+    ))
 
     callbacks.append_primary_video_map_and_codec(
         pass2,
@@ -234,11 +260,6 @@ def build_runtime_single_pass_with_sync(
     )
     cmd.extend(metadata_inputs.input_args)
 
-    vf = _build_encoder_vf_domain(video, callbacks=callbacks.codec_domain_callbacks())
-    if vf:
-        cmd.extend(["-vf", vf])
-
-    cmd.extend(callbacks.ffmpeg_thread_args(None))
     track_assembly, offset_remap = callbacks.resolve_track_assembly_and_offset_remap(
         cmd=cmd,
         config=config,
@@ -255,6 +276,9 @@ def build_runtime_single_pass_with_sync(
         sync_rewrite_work_dir=work_dir,
         signals=signals,
     )
+    cmd.extend(_video_output_args(
+        callbacks, video, video_input=_video_input(track_assembly.video_map, offset_remap, plan.video_key),
+    ))
     callbacks.append_primary_video_map_and_codec(
         cmd,
         plan=plan,
@@ -287,7 +311,6 @@ def build_runtime_two_pass_with_sync(
 ) -> tuple[list[list[str]], LiveSyncSession | None, list[Path]]:
     video = callbacks.primary_video_settings(config)
     bitrate = callbacks.size_to_bitrate_kbps(config)
-    vf = _build_encoder_vf_domain(video, callbacks=callbacks.codec_domain_callbacks())
     plan = plan or callbacks.build_encode_plan(config)
     all_sources = list(plan.all_sources)
     source_idx = dict(plan.source_idx)
@@ -311,9 +334,6 @@ def build_runtime_two_pass_with_sync(
             append_ffmpeg_input_args(c, src)
         if include_sync_inputs:
             callbacks.append_sync_inputs(c, sync_inputs)
-        if vf:
-            c.extend(["-vf", vf])
-        c.extend(callbacks.ffmpeg_thread_args(None))
         return c
 
     video_key = plan.video_key
@@ -330,6 +350,9 @@ def build_runtime_two_pass_with_sync(
         start_input_index=len(all_sources),
     )
     _ = _next1
+    pass1.extend(_video_output_args(
+        callbacks, video, video_input=_video_input(video_default_map, pass1_offset_remap, video_key),
+    ))
     callbacks.append_primary_video_map_and_codec(
         pass1,
         plan=plan,
@@ -369,6 +392,9 @@ def build_runtime_two_pass_with_sync(
         sync_rewrite_work_dir=work_dir,
         signals=signals,
     )
+    pass2.extend(_video_output_args(
+        callbacks, video, video_input=_video_input(track_assembly.video_map, pass2_offset_remap, video_key),
+    ))
     callbacks.append_primary_video_map_and_codec(
         pass2,
         plan=plan,

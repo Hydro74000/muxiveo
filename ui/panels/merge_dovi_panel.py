@@ -22,7 +22,7 @@ from typing import Any, Protocol
 
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QFrame,
+    QApplication, QCheckBox, QComboBox, QFileDialog, QFrame,
     QHBoxLayout, QLabel, QLayout, QLineEdit, QPushButton,
     QScrollArea, QVBoxLayout, QWidget,
 )
@@ -31,10 +31,12 @@ from core.config import AppConfig
 from core.file_types import build_qt_filter, is_accepted
 from core.i18n import apply_translations, translate_text
 from core.frame_count import reliable_frame_count
+from core.workflows.encode.runtime.frame_count_guard import MetadataAdjustment
 from core.workflows.merge_dovi import (
-    DoviProfile, FrameCountResult,
-    MergeDoviWorkflow, StepResult, WorkflowStep,
+    DoviProfile, FrameCountResult, HdrState,
+    MergeDoviWorkflow, StepResult, WorkflowStep, probe_hdr_state,
 )
+from ui.confirm import confirm_overwrite, ValidationOverridePrompt
 from ui.shutdown import defer_close
 from ui.desktop import open_external
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
@@ -375,12 +377,21 @@ class _FrameCountBar(QWidget):
         layout.addStretch()
 
     def set_result(self, result: FrameCountResult) -> None:
-        self._lbl.setText(result.status_text)
-        color = (
-            _C.OK   if result.diff == 0 else
-            _C.WARN if result.warning else
-            _C.ERROR
-        )
+        if result.fc1 is None or result.fc2 is None:
+            # Valeur rapide invérifiable (flux brut, statistiques douteuses) :
+            # le compte exact est établi au lancement, pas à la sélection.
+            known = [f"Film {i} : {fc}" for i, fc in ((1, result.fc1), (2, result.fc2)) if fc is not None]
+            self._lbl.setText(
+                "  |  ".join(known + [translate_text("comptage exact au lancement")])
+            )
+            color = _C.TEXT_DIM
+        else:
+            self._lbl.setText(result.status_text)
+            color = (
+                _C.OK   if result.diff == 0 else
+                _C.WARN if result.warning else
+                _C.ERROR
+            )
         self._lbl.setStyleSheet(f"""
             color: {color};
             font-size: 11px;
@@ -412,6 +423,7 @@ class _ConfigSection(QWidget):
         self._config = config
         self._work_input: QLineEdit
         self._output_input: QLineEdit
+        self._hdr_states: tuple[HdrState, HdrState] | None = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -439,7 +451,10 @@ class _ConfigSection(QWidget):
         r1l.addWidget(lbl_profile)
 
         self._profile_combo = QComboBox()
-        self._profile_combo.addItem("Disabled  —  ne pas injecter Dolby Vision", DoviProfile.DISABLED)
+        self._profile_combo.addItem(
+            "Désactivé  —  n'injecte pas le DV de Film 2 (celui de Film 1 est conservé)",
+            DoviProfile.DISABLED,
+        )
         self._profile_combo.addItem("Profile 8.1  —  -m 2, standard remux UHD (recommandé)", DoviProfile.P8_1)
         self._profile_combo.addItem("Mode 0  —  rewrite untouched, préserve le profil source",  DoviProfile.P8_0)
         self._profile_combo.setCurrentIndex(1)
@@ -465,6 +480,29 @@ class _ConfigSection(QWidget):
         """)
         r1l.addWidget(self._profile_combo, stretch=1)
         cl.addWidget(row1)
+
+        # Politique explicite si Film 2 a quelques trames de plus que Film 1 :
+        # décochée par défaut (comptages identiques exigés), non mémorisée.
+        self._trim_tail_cb = QCheckBox(
+            "Écart de 1 à 4 trames : retirer l'excédent de métadonnées en fin de flux"
+        )
+        self._trim_tail_cb.setToolTip(
+            "Si Film 2 a 1 à 4 trames de plus que Film 1, les métadonnées DoVi / HDR10+ "
+            "excédentaires sont retirées à la fin, en supposant le début des deux films aligné.\n"
+            "Aucune métadonnée n'est jamais inventée : si Film 2 est plus court, l'injection est refusée.\n"
+            "Un comptage identique ne prouve pas l'alignement temporel."
+        )
+        self._trim_tail_cb.setStyleSheet(
+            f"color: {_C.TEXT_SEC}; font-size: 12px; background: transparent; border: none;"
+        )
+        cl.addWidget(self._trim_tail_cb)
+
+        # État HDR des deux films + conséquence du profil choisi
+        self._hdr_hint = QLabel()
+        self._hdr_hint.setWordWrap(True)
+        self._hdr_hint.setVisible(False)
+        cl.addWidget(self._hdr_hint)
+        self._profile_combo.currentIndexChanged.connect(lambda _: self._update_hdr_hint())
 
         # Dossier de travail + sortie
         for label, attr, default in [
@@ -521,6 +559,44 @@ class _ConfigSection(QWidget):
         return self._profile_combo.currentData()
 
     @property
+    def metadata_adjustment(self) -> MetadataAdjustment:
+        """Politique choisie explicitement par l'utilisateur pour un écart de trames."""
+        return MetadataAdjustment.TRIM_TAIL if self._trim_tail_cb.isChecked() else MetadataAdjustment.EXACT
+
+    def set_hdr_states(self, film1: HdrState | None, film2: HdrState | None) -> None:
+        """Mémorise l'état HDR des deux films (None = inconnu) et met à jour l'indication."""
+        self._hdr_states = (film1, film2) if film1 is not None and film2 is not None else None
+        self._update_hdr_hint()
+
+    def _update_hdr_hint(self) -> None:
+        if self._hdr_states is None:
+            self._hdr_hint.setVisible(False)
+            return
+        film1, film2 = self._hdr_states
+        lines = [translate_text(
+            "Film 1 : {film1}  ·  Film 2 : {film2}", film1=film1.label, film2=film2.label,
+        )]
+        warn = False
+        if film1.has_dovi:
+            if film2.has_dovi and self.dovi_profile != DoviProfile.DISABLED:
+                warn = True
+                lines.append(translate_text(
+                    "Le RPU Dolby Vision de Film 1 sera remplacé par celui de Film 2. "
+                    "Choisir « Désactivé » pour n'injecter que le HDR10+."
+                ))
+            else:
+                lines.append(translate_text("Le Dolby Vision de Film 1 sera conservé."))
+        if film1.has_hdr10plus and film2.has_hdr10plus:
+            warn = True
+            lines.append(translate_text("Le HDR10+ de Film 1 sera remplacé par celui de Film 2."))
+        self._hdr_hint.setText("\n".join(lines))
+        self._hdr_hint.setStyleSheet(
+            f"color: {_C.WARN if warn else _C.TEXT_SEC}; font-size: 11px; "
+            "background: transparent; border: none;"
+        )
+        self._hdr_hint.setVisible(True)
+
+    @property
     def work_dir(self) -> Path:
         return Path(self._work_input.text())
 
@@ -537,9 +613,11 @@ _STEP_LABELS: dict[WorkflowStep, str] = {
     WorkflowStep.VALIDATION:        "Validation",
     WorkflowStep.DETECT_DOVI:       "Détection profil DV",
     WorkflowStep.FRAME_COUNT:       "Frame count",
+    WorkflowStep.STORAGE_CHECK:     "Espace disque",
     WorkflowStep.EXTRACT_PARALLEL:  "Extractions",
     WorkflowStep.SDR_TO_HDR10:      "Conversion SDR → HDR10",
     WorkflowStep.CONVERT_DOVI:      "Conversion P7/P5 → P8.1",
+    WorkflowStep.CHECK_METADATA:    "Contrôle métadonnées",
     WorkflowStep.INJECT_DOVI:       "Injection DoVi",
     WorkflowStep.INJECT_HDR10PLUS:  "Injection HDR10+",
     WorkflowStep.INJECT_STATIC_HDR: "Injection HDR10 statique",
@@ -891,7 +969,8 @@ class MergeDoviPanel(QWidget):
 
         subtitle = QLabel(
             "Transfère les métadonnées Dolby Vision et/ou HDR10+ "
-            "de Film 2 (source) vers Film 1 (cible)."
+            "de Film 2 (source) vers Film 1 (cible). Profil « Désactivé » : "
+            "HDR10+ seul, le Dolby Vision de Film 1 est conservé."
         )
         subtitle.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(12)}px; background: transparent;")
         content_layout.addWidget(subtitle)
@@ -956,6 +1035,7 @@ class MergeDoviPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _init_workflow(self) -> None:
+        self._validation_prompt = ValidationOverridePrompt(self)
         self._workflow = MergeDoviWorkflow(
             mediainfo_bin    = self._config.tool_mediainfo,
             ffmpeg_bin       = self._config.tool_ffmpeg,
@@ -965,20 +1045,31 @@ class MergeDoviPanel(QWidget):
             max_workers      = 4,
         )
         wf = self._workflow
+        wf.set_validation_override(self._validation_prompt.request)
         wf.step_started.connect(self._on_step_started,   Qt.ConnectionType.QueuedConnection)
         wf.step_progress.connect(self._on_step_progress, Qt.ConnectionType.QueuedConnection)
         wf.step_progress_pct.connect(self._on_step_progress_pct, Qt.ConnectionType.QueuedConnection)
         wf.step_finished.connect(self._on_step_finished, Qt.ConnectionType.QueuedConnection)
         wf.workflow_finished.connect(self._on_workflow_finished, Qt.ConnectionType.QueuedConnection)
         wf.workflow_failed.connect(self._on_workflow_failed,     Qt.ConnectionType.QueuedConnection)
+        wf.workflow_cancelled.connect(self._on_workflow_cancelled, Qt.ConnectionType.QueuedConnection)
 
     def _on_run(self) -> None:
+        if self._running:
+            return
+        guard = getattr(self, "_operation_start_guard", None)
+        if guard is not None and not guard():
+            return
         film1 = self._file_section.film1
         film2 = self._file_section.film2
 
         if not film1 or not film2:
             self._error_section.show_error(translate_text("Sélectionnez Film 1 et Film 2 avant de lancer."))
             self._result_section.hide_result()
+            return
+
+        output_path = MergeDoviWorkflow.output_path_for(film1, self._config_section.output_dir)
+        if not confirm_overwrite(self, output_path):
             return
 
         self._result_section.hide_result()
@@ -1002,13 +1093,21 @@ class MergeDoviPanel(QWidget):
         )
 
         assert self._workflow is not None
-        self._workflow.start(
-            film1        = film1,
-            film2        = film2,
-            work_dir     = self._config_section.work_dir,
-            output_dir   = self._config_section.output_dir,
-            dovi_profile = self._config_section.dovi_profile,
-        )
+        try:
+            self._workflow.start(
+                film1        = film1,
+                film2        = film2,
+                work_dir     = self._config_section.work_dir,
+                output_dir   = self._config_section.output_dir,
+                dovi_profile = self._config_section.dovi_profile,
+                metadata_adjustment = self._config_section.metadata_adjustment,
+            )
+        except OSError as exc:
+            # Dossier de travail non créable (droits, disque) : rien n'a démarré.
+            self._on_workflow_failed(
+                WorkflowStep.VALIDATION,
+                translate_text("Dossier de travail inutilisable : {error}", error=str(exc)),
+            )
 
     def closeEvent(self, event) -> None:
         if not getattr(self, "_closing", False):
@@ -1022,10 +1121,10 @@ class MergeDoviPanel(QWidget):
 
     def _on_cancel(self) -> None:
         """
-        Demande l'annulation. Le workflow finit l'étape en cours puis émet
-        workflow_failed("Workflow annulé.") — c'est ce signal qui remet l'UI
-        en état idle via _on_workflow_failed. On ne touche pas l'état ici
-        pour éviter que le bouton Run soit réactivé pendant que le thread tourne.
+        Demande l'annulation. Le workflow arrête l'étape en cours, nettoie
+        puis émet workflow_cancelled — c'est ce signal qui remet l'UI en état
+        idle. On ne touche pas l'état ici pour éviter que le bouton Run soit
+        réactivé pendant que le thread tourne.
         """
         if self._workflow:
             self._workflow.cancel()
@@ -1085,32 +1184,34 @@ class MergeDoviPanel(QWidget):
         self.log_message.emit("OK", translate_text("Fichier de sortie : {path}", path=output_path))
         self.op_state_changed.emit("finished", translate_text("Terminé."))
 
+    def _on_workflow_cancelled(self) -> None:
+        self._error_section.hide_error()
+        self.log_message.emit("WARN", translate_text("Workflow annulé par l'utilisateur."))
+        self.op_state_changed.emit("cancelled", translate_text("Annulé."))
+        self._set_idle_state()
+
     def _on_workflow_failed(self, step: WorkflowStep, message: str) -> None:
-        lowered = message.lower()
-        cancelled = "annulé" in lowered or "cancel" in lowered
-        if cancelled:
-            self._error_section.hide_error()
-            self.log_message.emit("WARN", translate_text("Workflow annulé par l'utilisateur."))
-            self.op_state_changed.emit("cancelled", translate_text("Annulé."))
-        else:
-            step_label = translate_text(_STEP_LABELS[step])
-            local_message = translate_text(message)
-            self._step_progress.set_error(step, local_message)
-            self._error_section.show_error(f"[{step_label}] {local_message}")
-            self.log_message.emit(
-                "ERROR",
-                translate_text(
-                    "Workflow échoué à l'étape {step} : {message}",
-                    step=step_label,
-                    message=local_message,
-                ),
-            )
-            self.op_state_changed.emit("failed", translate_text("Échec."))
+        step_label = translate_text(_STEP_LABELS[step])
+        local_message = translate_text(message)
+        self._step_progress.set_error(step, local_message)
+        self._error_section.show_error(f"[{step_label}] {local_message}")
+        self.log_message.emit(
+            "ERROR",
+            translate_text(
+                "Workflow échoué à l'étape {step} : {message}",
+                step=step_label,
+                message=local_message,
+            ),
+        )
+        self.op_state_changed.emit("failed", translate_text("Échec."))
         self._set_idle_state()
 
     # ------------------------------------------------------------------
     # Utilitaires
     # ------------------------------------------------------------------
+
+    def set_operation_start_guard(self, guard) -> None:
+        self._operation_start_guard = guard
 
     def _set_idle_state(self) -> None:
         self._running = False
@@ -1123,6 +1224,7 @@ class MergeDoviPanel(QWidget):
         self._error_section.hide_error()
         self._step_progress.reset()
         self._framecount_bar.reset()
+        self._config_section.set_hdr_states(None, None)
 
         # Déclenche la lecture des frame counts après un court délai
         # (évite plusieurs appels rapides lors d'un drag-and-drop)
@@ -1130,8 +1232,8 @@ class MergeDoviPanel(QWidget):
 
     def _refresh_framecounts(self) -> None:
         """
-        Lit les frame counts des deux fichiers dans un thread secondaire
-        et met à jour la barre via QTimer.singleShot (thread-safe).
+        Lit les frame counts et l'état HDR des deux fichiers dans un thread
+        secondaire et met à jour l'UI via QTimer.singleShot (thread-safe).
         """
         film1 = self._file_section.film1
         film2 = self._file_section.film2
@@ -1143,20 +1245,26 @@ class MergeDoviPanel(QWidget):
         mediainfo_bin = self._config.tool_mediainfo
         ffprobe_bin = self._config.tool_ffprobe
 
-        def _read() -> FrameCountResult:
+        def _read() -> tuple[FrameCountResult, HdrState, HdrState]:
             def fc(path: Path) -> int | None:
-                return reliable_frame_count(path, mediainfo_bin=mediainfo_bin, ffprobe_bin=ffprobe_bin)
+                # Affichage seulement : jamais de lecture complète du fichier
+                # (flux brut de plusieurs dizaines de Go) ; compte exact au lancement.
+                return reliable_frame_count(
+                    path, mediainfo_bin=mediainfo_bin, ffprobe_bin=ffprobe_bin, full_scan=False,
+                )
 
             fc1  = fc(film1)
             fc2  = fc(film2)
             diff = abs(fc2 - fc1) if fc1 is not None and fc2 is not None else None
-            return FrameCountResult(fc1, fc2, diff)
+            hdr1 = probe_hdr_state(film1, mediainfo_bin)
+            hdr2 = probe_hdr_state(film2, mediainfo_bin)
+            return FrameCountResult(fc1, fc2, diff), hdr1, hdr2
 
         def _done(future) -> None:
             try:
                 result = future.result()
                 # QTimer.singleShot est thread-safe : repasse dans le thread Qt
-                QTimer.singleShot(0, lambda r=result: self._framecount_bar.set_result(r))
+                QTimer.singleShot(0, lambda r=result: self._apply_probe(*r))
             except Exception:
                 pass
 
@@ -1164,3 +1272,7 @@ class MergeDoviPanel(QWidget):
         f = executor.submit(_read)
         f.add_done_callback(_done)
         executor.shutdown(wait=False)
+
+    def _apply_probe(self, result: FrameCountResult, hdr1: HdrState, hdr2: HdrState) -> None:
+        self._framecount_bar.set_result(result)
+        self._config_section.set_hdr_states(hdr1, hdr2)

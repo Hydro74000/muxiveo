@@ -43,7 +43,8 @@ class _TrackAccumulator:
 
     frame_count: int = 0
     payload_bytes: int = 0
-    duration_ns: int = 0
+    duration_ns: int = 0          # instant de fin (horodatage + durée) le plus tardif
+    first_timestamp_ns: int = -1
     last_timestamp_ns: int = -1
     last_delta_ns: int = 0
 
@@ -145,9 +146,11 @@ class MatroskaTrackStatisticsEditor:
             accumulators, packet_validation = self._measure(
                 reader, default_duration_ns=default_duration_ns, workers=self._scan_workers,
             )
+            # DURATION = durée de la piste (fin - premier paquet), pas l'instant de fin.
             statistics = {
                 uid_by_number[number]: (
-                    item.frame_count, item.payload_bytes, item.duration_ns,
+                    item.frame_count, item.payload_bytes,
+                    item.duration_ns - max(0, item.first_timestamp_ns),
                 )
                 for number, item in accumulators.items()
                 if number in uid_by_number and item.frame_count > 0
@@ -234,6 +237,8 @@ class MatroskaTrackStatisticsEditor:
             item = accumulators.setdefault(block.track_number, _TrackAccumulator())
             timestamp_ns = block.timestamp_ns
             explicit_duration_ns = block.duration_ns
+            if item.first_timestamp_ns < 0 or timestamp_ns < item.first_timestamp_ns:
+                item.first_timestamp_ns = timestamp_ns
             item.frame_count += block.frame_count
             item.payload_bytes += block.payload_bytes
             if timestamp_ns > item.last_timestamp_ns >= 0:

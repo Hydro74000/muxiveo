@@ -122,7 +122,8 @@ def test_statistics_are_measured_from_written_packets(tmp_path: Path) -> None:
     assert subtitle_tags["NUMBER_OF_BYTES"] == str(len(b"sub-0") * 3)
     assert subtitle_tags["_STATISTICS_WRITING_APP"] == "Muxiveo 9.9.9"
     assert subtitle_tags["_STATISTICS_TAGS"] == "BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES"
-    assert subtitle_tags["DURATION"] == "00:00:00.110000000"
+    # DURATION = durée de la piste (fin - premier élément), pas l'instant de fin
+    assert subtitle_tags["DURATION"] == "00:00:00.100000000"
 
 
 def test_inherited_statistics_are_replaced_and_other_tags_kept(tmp_path: Path) -> None:

@@ -44,13 +44,26 @@ from typing import Any, Callable
 from PySide6.QtCore import QObject, Signal
 from core.dovi_profile_detector import DoviProfileDetector, DoviSubProfile
 from core.frame_count import reliable_frame_count
-from core.subprocess_utils import format_returncode, kill_process_tree, subprocess_text_kwargs
+from core.subprocess_utils import format_returncode, kill_process_tree, run_cancellable_capture, subprocess_text_kwargs
+from core.workflows.common.validation_override import ValidationOverride, accept_validation_override
+from core.workflows.common.validation_override import validate_final_output
+from core.runner import TaskCancelledError
+from core.matroska.validation import validate_matroska_output
 from core.subtitle_codec import plan_subtitle_codec
-from core.workdir import prepare_process_work_dir
+from core.workdir import ProcessWorkDir, create_process_work_dir, filesystem_type
 from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router, P7RoutingDecision
 from core.workflows.encode.runtime.frame_count_guard import (
+    FrameCountAudit,
     FrameCountAuditError,
     FrameCountGuard,
+    MetadataAdjustment,
+)
+from core.workflows.merge_dovi_storage import (
+    MergeStorageInputs,
+    format_bytes,
+    merge_storage_phases,
+    storage_margin,
+    storage_requirement,
 )
 from core.workflows.hevc_static_hdr_metadata import inject_static_hdr_sei_file
 from core.matroska.assembly import (
@@ -304,44 +317,97 @@ class WorkflowStep(Enum):
     VALIDATION        = auto()   # Vérifications préliminaires
     DETECT_DOVI       = auto()   # Détection du sous-profil DoVi de Film 2 (P5/P7/P8.x)
     FRAME_COUNT       = auto()   # Comparaison des frame counts
+    STORAGE_CHECK     = auto()   # Espace disque : fichiers simultanés par phase et par volume
     EXTRACT_PARALLEL  = auto()   # Extractions parallèles (HEVC + RPU + HDR10+)
     SDR_TO_HDR10      = auto()   # Conversion Film 1 SDR → HDR10 assistée par Film 2
     CONVERT_DOVI      = auto()   # Conversion P7/P5 → P8.1 si nécessaire
+    CHECK_METADATA    = auto()   # Comptage RPU / HDR10+ extraits vs Film 1, avant injection
     INJECT_DOVI       = auto()   # Injection RPU DoVi
     INJECT_HDR10PLUS  = auto()   # Injection HDR10+
     INJECT_STATIC_HDR = auto()   # Injection SEI HDR10 statiques (master_display / max_cll)
-    VERIFY            = auto()   # Vérification intégrité RPU frames + alignement frame count
+    VERIFY            = auto()   # Relecture du flux final : trames vidéo, RPU et HDR10+ injectés
     REMUX             = auto()   # Remuxage final MKV
     CLEANUP           = auto()   # Nettoyage des fichiers intermédiaires
 
 
+#: Surplus maximal de trames de métadonnées retirable en fin de flux (option explicite).
+_METADATA_TAIL_TOLERANCE = 4
+
+
 @dataclass
 class FrameCountResult:
-    """Résultat de la comparaison des frame counts des deux fichiers."""
+    """Résultat de la comparaison des frame counts des deux fichiers.
+
+    Comparaison de **comptages** : des nombres égaux ne prouvent pas
+    l'alignement temporel (coupes, décalage en tête).
+    """
     fc1: int | None
     fc2: int | None
     diff: int | None
+    #: Film 2 HEVC brut : pas de comptage vidéo (lecture complète évitée) ;
+    #: le contrôle exact porte sur ses métadonnées extraites (CHECK_METADATA).
+    fc2_deferred: bool = False
 
     @property
     def compatible(self) -> bool:
-        if self.diff is None:
-            return False
-        return self.diff <= 4
+        """Comptages identiques (seul cas injectable sans option explicite)."""
+        return self.diff == 0
 
     @property
     def warning(self) -> bool:
-        """True si l'écart est tolérable mais non nul."""
-        return self.diff is not None and 0 < self.diff <= 4
+        """True si l'écart est faible mais non nul (option explicite possible si Film 2 est plus long)."""
+        return self.diff is not None and 0 < self.diff <= _METADATA_TAIL_TOLERANCE
 
     @property
     def status_text(self) -> str:
+        if self.fc2_deferred and self.fc1 is not None:
+            return f"{self.fc1} frames — Film 2 (flux brut) compté sur ses métadonnées"
         if self.fc1 is None or self.fc2 is None:
             return "Frame count illisible"
         if self.diff == 0:
-            return f"{self.fc1} frames — identiques ✓"
+            return f"{self.fc1} frames — comptages identiques"
         if self.warning:
-            return f"{self.fc1} / {self.fc2} frames — écart {self.diff} (tolérable)"
+            return f"{self.fc1} / {self.fc2} frames — écart {self.diff} (ajustement explicite requis)"
         return f"{self.fc1} / {self.fc2} frames — écart {self.diff} (incompatible)"
+
+    def metadata_verdict(self, adjustment: MetadataAdjustment) -> str | None:
+        """Motif empêchant d'injecter les métadonnées de Film 2 dans Film 1 ; None si possible.
+
+        Film 2 sert d'estimation du nombre de trames de ses métadonnées ; le
+        comptage réel RPU / HDR10+ est contrôlé après extraction.
+        """
+        if self.fc1 is None:
+            return (
+                "Nombre de trames de Film 1 illisible : comptage des métadonnées "
+                "impossible, injection refusée."
+            )
+        if self.fc2_deferred:
+            return None
+        if self.fc2 is None:
+            return (
+                "Nombre de trames illisible (Film 1 ou Film 2) : comptage des métadonnées "
+                "impossible, injection refusée."
+            )
+        delta = self.fc2 - self.fc1
+        if delta == 0:
+            return None
+        if abs(delta) > _METADATA_TAIL_TOLERANCE:
+            return (
+                f"Écart de {abs(delta)} frames trop important — "
+                "les deux fichiers ne semblent pas être le même contenu."
+            )
+        if delta < 0:
+            return (
+                f"Film 2 a {self.fc2} trames, Film 1 {self.fc1} ({delta}) : ses métadonnées "
+                "seraient plus courtes que Film 1 — aucune trame de métadonnées n'est fabriquée."
+            )
+        if adjustment is MetadataAdjustment.EXACT:
+            return (
+                f"Film 2 a {self.fc2} trames, Film 1 {self.fc1} (+{delta}) : comptages différents, "
+                "politique exacte. Si le début des deux films est aligné, activer « Retirer "
+                "l'excédent de métadonnées en fin de flux »."
+            )
+        return None
 
 
 @dataclass
@@ -381,12 +447,63 @@ class StaticHdrMetadata:
 
 
 @dataclass(frozen=True)
+class HdrState:
+    """État HDR d'une piste vidéo, lu depuis mediainfo (``HDR_Format`` + transfert)."""
+    has_dovi: bool = False
+    has_hdr10plus: bool = False
+    transfer: str = ""
+
+    @classmethod
+    def from_mediainfo(cls, hdr_format: str, transfer: str) -> "HdrState":
+        # Match strict « App 4 » : « SMPTE ST 2094-10 » (DV legacy) n'est pas HDR10+.
+        hdr_lower = hdr_format.lower()
+        return cls(
+            has_dovi="dolby vision" in hdr_lower,
+            has_hdr10plus="smpte st 2094 app 4" in hdr_lower,
+            transfer=transfer.strip().lower(),
+        )
+
+    @property
+    def label(self) -> str:
+        parts = ["Dolby Vision"] if self.has_dovi else []
+        if self.has_hdr10plus:
+            parts.append("HDR10+")
+        elif any(k in self.transfer for k in ("hlg", "arib")):
+            parts.append("HLG")
+        elif any(k in self.transfer for k in ("pq", "2084")):
+            parts.append("HDR10")
+        elif self.transfer and not parts:
+            parts.append("SDR")
+        return " + ".join(parts) or "?"
+
+
+def probe_hdr_state(path: Path, mediainfo_bin: str = "mediainfo") -> HdrState:
+    """Lit l'état HDR de la première piste vidéo de ``path`` (mediainfo JSON)."""
+    try:
+        result = subprocess.run(
+            [mediainfo_bin, "--Output=JSON", str(path)],
+            capture_output=True, check=False, **subprocess_text_kwargs(),
+        )
+        data = json.loads(result.stdout or "{}")
+    except (OSError, json.JSONDecodeError):
+        return HdrState()
+    for track in (data.get("media") or {}).get("track") or []:
+        if isinstance(track, dict) and track.get("@type") == "Video":
+            return HdrState.from_mediainfo(
+                str(track.get("HDR_Format") or ""),
+                str(track.get("transfer_characteristics") or ""),
+            )
+    return HdrState()
+
+
+@dataclass(frozen=True)
 class ValidationContext:
     flags: HDRFlags
     static_film1: StaticHdrMetadata
     static_film2: StaticHdrMetadata
     film1_needs_sdr_to_hdr10: bool = False
     film2_has_hdr10_reference: bool = False
+    film1_has_dovi: bool = False
 
 
 @dataclass
@@ -419,6 +536,8 @@ class _WorkflowPaths:
     film1_with_static_hdr: Path  # Film 1 final + SEI HDR10 statiques injectés
     film1_wrapped_video: Path  # Encapsulation MKV de la vidéo injectée (PTS reconstruit)
     output_mkv:       Path   # Fichier de sortie final
+    #: Dossier process créé par start() ; None = propriété non prouvée (aucune suppression récursive).
+    owned_dir:        ProcessWorkDir | None = None
 
     @classmethod
     def from_config(
@@ -427,6 +546,8 @@ class _WorkflowPaths:
         output_dir: Path,
         film1: Path,
         basename: str,
+        *,
+        owned_dir: ProcessWorkDir | None = None,
     ) -> "_WorkflowPaths":
         return cls(
             work_dir        = work_dir,
@@ -442,7 +563,50 @@ class _WorkflowPaths:
             film1_with_static_hdr = work_dir / "film1_with_static_hdr.hevc",
             film1_wrapped_video = work_dir / "film1_wrapped_video.mkv",
             output_mkv      = output_dir / f"{basename}.mkv",
+            owned_dir       = owned_dir,
         )
+
+    @property
+    def verify_rpu(self) -> Path:
+        """RPU relu depuis le flux final (VERIFY)."""
+        return self.work_dir / "verify_rpu.bin"
+
+    @property
+    def verify_hdr10plus(self) -> Path:
+        """HDR10+ relu depuis le flux final (VERIFY)."""
+        return self.work_dir / "verify_hdr10plus.json"
+
+    def intermediates(self) -> tuple[Path, ...]:
+        """Fichiers que le workflow crée dans le dossier de travail (jamais Film 1 / Film 2)."""
+        return (
+            self.film1_hevc,
+            self.film1_hdr10_hevc,
+            self.film2_hevc,
+            self.film2_hevc_p8,
+            self.film2_rpu,
+            self.film2_hdr10plus,
+            self.film1_with_dovi,
+            self.film1_final,
+            self.film1_with_static_hdr,
+            self.film1_wrapped_video,
+            self.work_dir / "film1_canonical.mkv",
+            self.verify_rpu,
+            self.verify_hdr10plus,
+        )
+
+    def discard(self, *candidates: Path) -> list[Path]:
+        """Supprime les intermédiaires consommés parmi ``candidates`` ; retourne ceux supprimés.
+
+        Seuls les noms connus du dossier de travail sont supprimables : un
+        chemin utilisateur (Film 1 HEVC brut, Film 2) n'est jamais touché.
+        """
+        known = set(self.intermediates())
+        removed: list[Path] = []
+        for path in candidates:
+            if path in known and path not in (self.film1,) and path.is_file():
+                path.unlink(missing_ok=True)
+                removed.append(path)
+        return removed
 
     @property
     def film1_hevc_input(self) -> Path:
@@ -514,6 +678,7 @@ class MergeDoviWorkflow(QObject):
     step_finished   = Signal(object, object)  # WorkflowStep, StepResult
     workflow_finished = Signal(str)           # chemin du fichier de sortie
     workflow_failed   = Signal(object, str)   # WorkflowStep, message d'erreur
+    workflow_cancelled = Signal()             # annulation demandée par l'utilisateur
 
     def __init__(
         self,
@@ -536,11 +701,32 @@ class MergeDoviWorkflow(QObject):
         self._max_workers    = max_workers
         self._cancelled      = False
         self._procs: list[subprocess.Popen] = []
+        # Tous les processus lancés pendant l'exécution courante (non retirés
+        # à la fin) : leur arrêt effectif conditionne le nettoyage sur échec.
+        self._run_procs: list[subprocess.Popen] = []
         self._procs_lock = threading.Lock()
+        self._validation_override: ValidationOverride | None = None
+
+    def set_validation_override(self, callback: ValidationOverride | None) -> None:
+        self._validation_override = callback
+
+    def _run_probe(self, command: list[str], **kwargs):
+        return run_cancellable_capture(
+            command, cancel_cb=lambda: self._cancelled,
+            check_cancelled=self._check_cancel,
+            on_start=self._track_proc, on_end=self._untrack_proc,
+            **kwargs,
+        )
 
     # ------------------------------------------------------------------
     # API publique
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def output_path_for(film1: Path, output_dir: Path, output_basename: str | None = None) -> Path:
+        """Chemin du fichier final produit pour ``film1``."""
+        basename = output_basename or f"{film1.stem}_DOVI_HDR10PLUS"
+        return output_dir / f"{basename}.mkv"
 
     def start(
         self,
@@ -551,20 +737,29 @@ class MergeDoviWorkflow(QObject):
         dovi_profile: DoviProfile = DoviProfile.P8_1,
         output_basename: str | None = None,
         extra_subtitle_files: tuple[Path, ...] = (),
+        metadata_adjustment: MetadataAdjustment = MetadataAdjustment.EXACT,
     ) -> None:
-        """Lance le workflow dans un thread secondaire."""
+        """Lance le workflow dans un thread secondaire.
+
+        ``metadata_adjustment`` : politique explicite si les métadonnées de
+        Film 2 n'ont pas le nombre de trames de Film 1 (``EXACT`` par défaut).
+        """
         self._cancelled = False
-        basename = output_basename or f"{film1.stem}_DOVI_HDR10PLUS"
-        output_path = output_dir / f"{basename}.mkv"
-        process_work_dir = prepare_process_work_dir(
+        output_path = self.output_path_for(film1, output_dir, output_basename)
+        # Dossier process neuf, propriété exclusive de cette exécution.
+        process_dir = create_process_work_dir(
             work_dir,
             output_path=output_path,
             fallback_name="dovi_job",
         )
-        paths = _WorkflowPaths.from_config(process_work_dir, output_dir, film1, basename)
+        paths = _WorkflowPaths.from_config(
+            process_dir.path, output_dir, film1, output_path.stem, owned_dir=process_dir,
+        )
 
         outer = ThreadPoolExecutor(max_workers=1)
-        outer.submit(self._run, film1, film2, paths, dovi_profile, tuple(extra_subtitle_files))
+        outer.submit(
+            self._run, film1, film2, paths, dovi_profile, tuple(extra_subtitle_files), metadata_adjustment,
+        )
         outer.shutdown(wait=False)
 
     def cancel(self) -> None:
@@ -581,6 +776,7 @@ class MergeDoviWorkflow(QObject):
     def _track_proc(self, proc: subprocess.Popen) -> None:
         with self._procs_lock:
             self._procs.append(proc)
+            self._run_procs.append(proc)
             cancelled = self._cancelled
         # cancel() peut avoir pris son instantané juste avant l'enregistrement.
         if cancelled:
@@ -604,7 +800,11 @@ class MergeDoviWorkflow(QObject):
         paths: _WorkflowPaths,
         profile: DoviProfile,
         extra_subtitle_files: tuple[Path, ...] = (),
+        metadata_adjustment: MetadataAdjustment = MetadataAdjustment.EXACT,
     ) -> None:
+        with self._procs_lock:
+            self._run_procs = []
+        outcome: tuple[str, WorkflowStep, str] = ("finished", WorkflowStep.CLEANUP, "")
         try:
             paths.work_dir.mkdir(parents=True, exist_ok=True)
             paths.output_mkv.parent.mkdir(parents=True, exist_ok=True)
@@ -639,28 +839,24 @@ class MergeDoviWorkflow(QObject):
                     f"(source {routing.sub_profile.label} convertie).",
                 )
 
-            # 3 — Frame count. Pour Film 1 SDR, un gros écart interdit les
-            # injections temporelles RPU/HDR10+, mais n'empêche pas la
-            # conversion HDR10 statique assistée.
+            # 3 — Comptage des trames selon la politique explicite. Film 1
+            # SDR : métadonnées non injectables → conversion HDR10 seule ;
+            # Film 1 HDR : arrêt (levé par l'étape).
+            metadata_requested = flags.has_dovi or flags.has_hdr10plus
             frame_counts = self._step_framecount(
                 film1,
                 film2,
-                allow_large_delta=validation.film1_needs_sdr_to_hdr10,
+                adjustment=metadata_adjustment,
+                metadata_requested=metadata_requested,
+                allow_hdr10_fallback=validation.film1_needs_sdr_to_hdr10,
             )
-            metadata_injection_allowed = not (
-                validation.film1_needs_sdr_to_hdr10
-                and frame_counts.diff is not None
-                and frame_counts.diff > 4
-            )
-            if not metadata_injection_allowed:
-                if flags.has_dovi or flags.has_hdr10plus:
-                    self.step_progress.emit(
-                        WorkflowStep.FRAME_COUNT,
-                        "Écart frame count trop important : injection DoVi/HDR10+ "
-                        "désactivée, conversion HDR10 seule.",
-                    )
+            if metadata_requested and frame_counts.metadata_verdict(metadata_adjustment) is not None:
                 flags = HDRFlags(has_dovi=False, has_hdr10plus=False)
                 routing = None
+            self._check_cancel()
+
+            # 3-bis — Espace disque (fichiers simultanés par phase et par volume)
+            self._step_check_storage(film1, film2, paths, flags, routing, validation)
             self._check_cancel()
 
             # 4 — Extractions parallèles HEVC (Film 1 et Film 2 si nécessaire)
@@ -671,6 +867,7 @@ class MergeDoviWorkflow(QObject):
             if validation.film1_needs_sdr_to_hdr10:
                 self._step_convert_sdr_to_hdr10(paths, static_hdr_film2)
                 static_hdr_film1 = static_hdr_film2
+                self._discard_consumed(WorkflowStep.SDR_TO_HDR10, paths, paths.film1_hevc)
                 self._check_cancel()
 
             # 5 — Conversion P7/P5 → P8.1 si Film 2 le demande, AVANT extract-rpu
@@ -678,29 +875,67 @@ class MergeDoviWorkflow(QObject):
                 self._step_convert_dovi(film2, paths, routing)
                 self._check_cancel()
 
-            # 6 — Extraction métadonnées DV/HDR10+ depuis la source appropriée
+            # 6 — Extraction métadonnées DV/HDR10+ depuis la source appropriée,
+            # puis contrôle de leur comptage AVANT toute injection.
             if flags.has_dovi or flags.has_hdr10plus:
                 self._step_extract_metadata(film2, paths, flags, routing)
+                self._discard_consumed(
+                    WorkflowStep.EXTRACT_PARALLEL, paths, paths.film2_hevc, paths.film2_hevc_p8,
+                )
+                self._check_cancel()
+                flags = self._step_check_metadata(
+                    frame_counts,
+                    paths,
+                    flags,
+                    metadata_adjustment,
+                    allow_hdr10_fallback=validation.film1_needs_sdr_to_hdr10,
+                )
                 self._check_cancel()
 
-            # 7 — Injection DoVi
+            # 7 — Injection DoVi (le flux d'entrée intermédiaire est ensuite supprimé)
             if flags.has_dovi:
+                dovi_input = paths.film1_hevc_input
                 self._step_inject_dovi(paths, flags, effective_profile)
+                self._discard_consumed(WorkflowStep.INJECT_DOVI, paths, dovi_input)
                 self._check_cancel()
 
             # 8 — Injection HDR10+
             if flags.has_hdr10plus:
+                hdr10plus_input = paths.film1_with_dovi if flags.has_dovi else paths.film1_hevc_input
                 self._step_inject_hdr10plus(paths, flags)
+                self._discard_consumed(WorkflowStep.INJECT_HDR10PLUS, paths, hdr10plus_input)
                 self._check_cancel()
 
             # 9 — Injection SEI HDR10 statiques si Film 1 ne les a pas
+            static_input = paths.injection_chain_final(flags, static_hdr_applied=False)
             static_applied = self._step_inject_static_hdr(
                 paths, flags, static_hdr_film1, static_hdr_film2,
             )
+            if static_applied:
+                self._discard_consumed(WorkflowStep.INJECT_STATIC_HDR, paths, static_input)
             self._check_cancel()
 
-            # 10 — Vérification frame count strict (FrameCountGuard)
-            self._step_verify(film1, paths, flags, static_hdr_applied=static_applied)
+            # 10 — Relecture du flux final (trames, RPU et HDR10+ réellement injectés)
+            verify_overridden = False
+            try:
+                self._step_verify(
+                    film1, paths, flags, static_hdr_applied=static_applied,
+                    film1_frames=frame_counts.fc1,
+                )
+            except WorkflowError as exc:
+                self._check_cancel()
+                final = paths.injection_chain_final(flags, static_hdr_applied=static_applied)
+                if not final.is_file() or not accept_validation_override(
+                    self._validation_override, final, exc.message, lambda: self._cancelled,
+                    lambda msg: self.step_progress.emit(WorkflowStep.VERIFY, f"[WARN] {msg}"),
+                ):
+                    self._check_cancel()
+                    raise
+                verify_overridden = True
+                self.step_finished.emit(
+                    WorkflowStep.VERIFY,
+                    StepResult(WorkflowStep.VERIFY, True, "Contrôle final ignoré par l'utilisateur", 0),
+                )
             self._check_cancel()
 
             # 11 — Remuxage
@@ -714,27 +949,94 @@ class MergeDoviWorkflow(QObject):
                 dovi_profile=effective_profile,
                 static_hdr_metadata=chosen_static,
                 extra_subtitle_files=extra_subtitle_files,
+                preserve_film1_dovi=validation.film1_has_dovi and not flags.has_dovi,
+                allow_frame_count_mismatch=verify_overridden,
             )
             self._check_cancel()
 
             # 12 — Nettoyage
             self._step_cleanup(paths)
 
-            self.workflow_finished.emit(str(paths.output_mkv))
-
         except WorkflowError as exc:
-            if self._cancelled:
-                # Échec provoqué par le kill des sous-processus à l'annulation.
-                self.workflow_failed.emit(exc.step, "Workflow annulé.")
-            else:
-                self.workflow_failed.emit(exc.step, exc.message)
-        except _CancelledError:
-            self.workflow_failed.emit(WorkflowStep.VALIDATION, "Workflow annulé.")
+            # Un échec provoqué par le kill des sous-processus à l'annulation
+            # reste une annulation.
+            outcome = ("cancelled", exc.step, "") if self._cancelled else ("failed", exc.step, exc.message)
+        except (_CancelledError, TaskCancelledError):
+            outcome = ("cancelled", WorkflowStep.CLEANUP, "")
         except Exception as exc:
             # Filet : sans signal de fin, le panneau resterait « en cours » et
             # sa fermeture attendrait indéfiniment.
-            message = "Workflow annulé." if self._cancelled else f"Erreur interne inattendue : {exc}"
-            self.workflow_failed.emit(WorkflowStep.VALIDATION, message)
+            outcome = (
+                ("cancelled", WorkflowStep.CLEANUP, "")
+                if self._cancelled
+                else ("failed", WorkflowStep.VALIDATION, f"Erreur interne inattendue : {exc}")
+            )
+
+        kind, step, message = outcome
+        if kind != "finished":
+            # Nettoyage AVANT le signal terminal : l'UI ne repasse au repos
+            # qu'une fois les intermédiaires traités.
+            self._discard_failed_run(paths, step)
+        if kind == "finished":
+            self.workflow_finished.emit(str(paths.output_mkv))
+        elif kind == "cancelled":
+            self.workflow_cancelled.emit()
+        else:
+            self.workflow_failed.emit(step, message)
+
+    def _discard_consumed(self, step: WorkflowStep, paths: _WorkflowPaths, *candidates: Path) -> None:
+        """Supprime les intermédiaires devenus inutiles (libère l'espace des phases suivantes)."""
+        try:
+            removed = paths.discard(*candidates)
+        except OSError as exc:
+            self.step_progress.emit(step, f"[WARN] Intermédiaire non supprimé : {exc}")
+            return
+        for path in removed:
+            self.step_progress.emit(step, f"Intermédiaire libéré : {path.name}")
+
+    def _wait_run_processes(self, timeout: float = 10.0) -> bool:
+        """Vrai si tous les processus lancés pendant l'exécution sont arrêtés (kill si besoin)."""
+        with self._procs_lock:
+            procs = list(self._run_procs)
+        for proc in procs:
+            if proc.poll() is None:
+                kill_process_tree(proc, timeout=0.5)
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                return False
+        return True
+
+    def _discard_failed_run(self, paths: _WorkflowPaths, step: WorkflowStep) -> None:
+        """Échec / annulation : supprime le dossier process seulement si c'est sûr.
+
+        Conditions : dossier créé par ``start()`` pour cette exécution
+        (jeton du marqueur), et plus aucun processus de l'exécution actif.
+        Sinon le dossier est conservé et son chemin signalé.
+        """
+        owned = paths.owned_dir
+        if owned is None:
+            return
+        if not self._wait_run_processes():
+            self.step_progress.emit(
+                step,
+                f"[WARN] Un outil ne s'est pas arrêté : intermédiaires conservés dans {owned.path}.",
+            )
+            return
+        try:
+            removed = owned.remove()
+        except OSError as exc:
+            self.step_progress.emit(
+                step, f"[WARN] Nettoyage incomplet de {owned.path} : {exc}",
+            )
+            return
+        if removed:
+            self.step_progress.emit(step, f"Intermédiaires supprimés : {owned.path.name}")
+        else:
+            self.step_progress.emit(
+                step,
+                f"[WARN] Dossier de travail conservé (propriété non prouvée) : {owned.path}",
+            )
 
     def _check_cancel(self) -> None:
         if self._cancelled:
@@ -840,6 +1142,36 @@ class MergeDoviWorkflow(QObject):
             if film1_is_hdr:
                 self.step_progress.emit(step, f"Film 1 — transfert HDR confirmé ({transfer1}).")
 
+        # HDR avancé déjà présent dans Film 1 : dovi_tool inject-rpu et
+        # hdr10plus_tool inject remplacent l'existant ; sans injection DV, le
+        # RPU de Film 1 reste dans le flux et son signal Matroska est conservé.
+        film1_state = HdrState.from_mediainfo(
+            self._mediainfo(film1, "Video;%HDR_Format%").strip(), transfer1,
+        )
+        film1_has_dovi = film1_state.has_dovi
+        if (
+            not film1_has_dovi
+            and not flags.has_dovi
+            and not film1_needs_sdr_to_hdr10
+            and self._has_dovi_rpu(film1)
+        ):
+            film1_has_dovi = True
+        if film1_has_dovi:
+            if flags.has_dovi:
+                self.step_progress.emit(
+                    step,
+                    "Film 1 contient déjà Dolby Vision : son RPU sera remplacé par "
+                    "celui de Film 2 (profil « Désactivé » pour le conserver).",
+                )
+            else:
+                self.step_progress.emit(step, "Film 1 — Dolby Vision existant conservé.")
+        if film1_state.has_hdr10plus and flags.has_hdr10plus:
+            self.step_progress.emit(
+                step,
+                "Film 1 contient déjà HDR10+ : ses métadonnées seront remplacées "
+                "par celles de Film 2.",
+            )
+
         # Lecture des SEI HDR10 statiques (Mastering Display + MaxCLL/MaxFALL)
         # sur les deux films. Si Film 1 n'en a pas mais Film 2 oui, on
         # complétera plus tard via inject_static_hdr_sei_file.
@@ -866,6 +1198,7 @@ class MergeDoviWorkflow(QObject):
             static_film2=static_film2,
             film1_needs_sdr_to_hdr10=film1_needs_sdr_to_hdr10,
             film2_has_hdr10_reference=film2_has_hdr10_reference,
+            film1_has_dovi=film1_has_dovi,
         )
 
     @staticmethod
@@ -925,31 +1258,58 @@ class MergeDoviWorkflow(QObject):
         film1: Path,
         film2: Path,
         *,
-        allow_large_delta: bool = False,
+        adjustment: MetadataAdjustment = MetadataAdjustment.EXACT,
+        metadata_requested: bool = True,
+        allow_hdr10_fallback: bool = False,
     ) -> FrameCountResult:
+        """Compare les comptages de trames et applique la politique d'injection.
+
+        Métadonnées non injectables (voir :meth:`FrameCountResult.metadata_verdict`) :
+        repli HDR10 seul si ``allow_hdr10_fallback`` (Film 1 SDR), arrêt sinon.
+        """
         step = WorkflowStep.FRAME_COUNT
         t0   = time.monotonic()
         self.step_started.emit(step)
 
+        # Film 1 : compte exact indispensable (cible du contrôle des
+        # métadonnées et de VERIFY). Film 2 HEVC brut : un compte exact
+        # imposerait une lecture complète ; ses métadonnées extraites (petits
+        # fichiers) sont comptées exactement à CHECK_METADATA.
         fc1 = self._get_framecount(film1)
-        fc2 = self._get_framecount(film2)
+        fc2_deferred = _is_raw_hevc(film2)
+        fc2 = None if fc2_deferred else self._get_framecount(film2)
 
         diff = abs(fc2 - fc1) if fc1 is not None and fc2 is not None else None
-        result = FrameCountResult(fc1, fc2, diff)
+        result = FrameCountResult(fc1, fc2, diff, fc2_deferred=fc2_deferred)
 
-        self.step_progress.emit(step, f"Film 1 : {fc1} frames  |  Film 2 : {fc2} frames")
-
-        if diff is not None and diff > 4 and allow_large_delta:
+        if fc2_deferred:
             self.step_progress.emit(
                 step,
-                f"[WARN] Écart de {diff} frames trop important pour injecter "
-                "DoVi/HDR10+ ; conversion HDR10 seule autorisée.",
+                f"Film 1 : {fc1} frames  |  Film 2 : flux brut, comptage exact sur ses "
+                "métadonnées extraites (lecture complète évitée).",
             )
-        elif diff is not None and diff > 4:
-            raise WorkflowError(
+        else:
+            self.step_progress.emit(step, f"Film 1 : {fc1} frames  |  Film 2 : {fc2} frames")
+
+        verdict = result.metadata_verdict(adjustment) if metadata_requested else None
+        if verdict is not None and allow_hdr10_fallback:
+            self.step_progress.emit(
                 step,
-                f"Écart de {diff} frames trop important — "
-                "les deux fichiers ne semblent pas être le même contenu.",
+                f"[WARN] {verdict} Injection DoVi/HDR10+ désactivée, conversion HDR10 seule.",
+            )
+        elif verdict is not None:
+            raise WorkflowError(step, verdict)
+        elif metadata_requested and diff:
+            self.step_progress.emit(
+                step,
+                f"[WARN] Film 2 a {diff} trame(s) de plus : l'excédent de métadonnées sera "
+                "retiré en fin de flux (option activée ; début supposé aligné).",
+            )
+        elif metadata_requested and not fc2_deferred:
+            self.step_progress.emit(
+                step,
+                "Comptages identiques. L'alignement temporel des deux films n'est pas "
+                "vérifié par ce contrôle.",
             )
 
         duration = time.monotonic() - t0
@@ -957,6 +1317,122 @@ class MergeDoviWorkflow(QObject):
             step, StepResult(step, True, result.status_text, duration)
         )
         return result
+
+    # ------------------------------------------------------------------
+    # Étape 3-bis — Espace disque
+    # ------------------------------------------------------------------
+
+    def _video_stream_bytes(self, path: Path) -> tuple[int, str]:
+        """Taille estimée du flux vidéo de ``path`` et sa provenance (pour le message)."""
+        size = path.stat().st_size
+        if _is_raw_hevc(path):
+            return size, "flux brut"
+        track = self._load_mediainfo_video(path) or {}
+        try:
+            declared = int(str(track.get("StreamSize") or "0").strip())
+        except ValueError:
+            declared = 0
+        if 0 < declared <= size:
+            return declared, "piste déclarée"
+        return size, "taille du fichier, borne haute"
+
+    def _film2_needs_extraction(self, film2: Path, routing: P7RoutingDecision | None) -> bool:
+        """Film 2 extrait en annexB : conversion DoVi requise, ou conteneur non lu par les outils."""
+        film2_is_raw = _is_raw_hevc(film2)
+        needs_conversion = bool(routing and routing.conversion_needed)
+        return (needs_conversion and not film2_is_raw) or (
+            film2.suffix.lower() != ".mkv" and not film2_is_raw
+        )
+
+    @staticmethod
+    def _tmpfs_note(directory: Path) -> str:
+        return (
+            " Ce dossier est en RAM (tmpfs) : choisir un dossier de travail sur disque."
+            if filesystem_type(directory) == "tmpfs"
+            else ""
+        )
+
+    def _ensure_free_space(self, step: WorkflowStep, directory: Path, needed: int, what: str) -> None:
+        """Contrôle juste-à-temps sur une taille réelle, avant une écriture lourde."""
+        need = needed + storage_margin(needed)
+        free = shutil.disk_usage(directory).free
+        if free < need:
+            raise WorkflowError(
+                step,
+                f"Espace insuffisant pour {what} dans {directory} : ≈{format_bytes(need)} requis, "
+                f"{format_bytes(free)} libres." + self._tmpfs_note(directory),
+            )
+
+    def _step_check_storage(
+        self,
+        film1: Path,
+        film2: Path,
+        paths: _WorkflowPaths,
+        flags: HDRFlags,
+        routing: P7RoutingDecision | None,
+        validation: ValidationContext,
+    ) -> None:
+        """Besoin d'espace par volume, calculé sur les fichiers présents simultanément."""
+        step = WorkflowStep.STORAGE_CHECK
+        t0 = time.monotonic()
+        self.step_started.emit(step)
+
+        film1_video, film1_basis = self._video_stream_bytes(film1)
+        film2_video, film2_basis = self._video_stream_bytes(film2)
+        static_copy = not validation.static_film1.is_complete and (
+            validation.static_film2.has_any or validation.static_film1.has_any
+        )
+        phases = merge_storage_phases(MergeStorageInputs(
+            film1_bytes=film1.stat().st_size,
+            film1_video_bytes=film1_video,
+            film1_raw=_is_raw_hevc(film1),
+            film1_matroska=film1.suffix.lower() == ".mkv",
+            film2_video_bytes=film2_video,
+            film2_extracted=bool(flags.has_dovi or flags.has_hdr10plus) and self._film2_needs_extraction(film2, routing),
+            film2_converted=bool(routing and routing.conversion_needed),
+            sdr_to_hdr10=validation.film1_needs_sdr_to_hdr10,
+            inject_dovi=flags.has_dovi,
+            inject_hdr10plus=flags.has_hdr10plus,
+            static_hdr_copy=static_copy,
+        ))
+        work_dir = paths.work_dir
+        output_dir = paths.output_mkv.parent
+        try:
+            same_volume = os.stat(work_dir).st_dev == os.stat(output_dir).st_dev
+        except OSError:
+            same_volume = True
+        need = storage_requirement(phases, same_volume=same_volume)
+
+        self.step_progress.emit(
+            step,
+            f"Flux vidéo estimés : Film 1 ≈ {format_bytes(film1_video)} ({film1_basis}), "
+            f"Film 2 ≈ {format_bytes(film2_video)} ({film2_basis})."
+            + (" Flux HDR10 réencodé supposé de taille comparable (non garanti)."
+               if validation.film1_needs_sdr_to_hdr10 else ""),
+        )
+        checks = [(work_dir, need.work_bytes, "dossier de travail" + (" et sortie" if same_volume else ""))]
+        if not same_volume and need.output_bytes:
+            checks.append((output_dir, need.output_bytes, "sortie"))
+        for directory, required, label in checks:
+            free = shutil.disk_usage(directory).free
+            self.step_progress.emit(
+                step,
+                f"{label.capitalize()} ({directory}) : pic ≈ {format_bytes(required)} "
+                f"(phase « {need.peak_phase if directory == work_dir else 'Assemblage final'} », marge incluse), "
+                f"{format_bytes(free)} libres.",
+            )
+            if free < required:
+                raise WorkflowError(
+                    step,
+                    f"Espace insuffisant ({label}, {directory}) : ≈{format_bytes(required)} requis "
+                    f"au pic, {format_bytes(free)} libres. Libérez de l'espace ou choisissez un "
+                    "autre dossier." + self._tmpfs_note(directory),
+                )
+
+        duration = time.monotonic() - t0
+        self.step_finished.emit(
+            step, StepResult(step, True, "Espace disque suffisant (estimation)", duration),
+        )
 
     # ------------------------------------------------------------------
     # Étape 3 — Extractions parallèles
@@ -980,16 +1456,19 @@ class MergeDoviWorkflow(QObject):
         self.step_started.emit(step)
 
         film1_needs_extract = _needs_hevc_extraction(film1)
-        film2_is_mkv = film2.suffix.lower() == ".mkv"
-        film2_is_raw = _is_raw_hevc(film2)
-        needs_conversion = bool(routing and routing.conversion_needed)
         # Film 2 doit être extrait en annexB si :
         #   - on doit le convertir (dovi_tool convert exige annexB) ; ou
         #   - son conteneur n'est ni MKV ni raw HEVC (extract-rpu/hdr10plus
         #     n'acceptent pas MP4/MOV/TS).
-        film2_needs_extract = (
-            needs_conversion and not film2_is_raw
-        ) or (not film2_is_mkv and not film2_is_raw)
+        film2_needs_extract = bool(flags.has_dovi or flags.has_hdr10plus) and self._film2_needs_extraction(film2, routing)
+
+        needed = 0
+        if film1_needs_extract:
+            needed += self._video_stream_bytes(film1)[0]
+        if film2_needs_extract:
+            needed += self._video_stream_bytes(film2)[0]
+        if needed:
+            self._ensure_free_space(step, paths.work_dir, needed, "l'extraction HEVC")
 
         errors: list[str] = []
 
@@ -1106,6 +1585,8 @@ class MergeDoviWorkflow(QObject):
             f"(dovi_tool -m {routing.convert_mode} convert)…",
         )
 
+        self._ensure_free_space(step, paths.work_dir, source.stat().st_size, "la conversion Dolby Vision")
+
         cmd = [
             self._bins["dovi_tool"],
             "-m", routing.convert_mode or "2",
@@ -1129,6 +1610,88 @@ class MergeDoviWorkflow(QObject):
                 duration,
             ),
         )
+
+    # ------------------------------------------------------------------
+    # Étape 6-bis — Comptage des métadonnées extraites (avant injection)
+    # ------------------------------------------------------------------
+
+    def _frame_count_guard(self) -> FrameCountGuard:
+        return FrameCountGuard(
+            mediainfo_bin=self._bins["mediainfo"],
+            ffprobe_bin=self._bins["ffprobe"],
+            dovi_tool_bin=self._bins["dovi_tool"],
+            run_command=self._run_probe,
+        )
+
+    def _step_check_metadata(
+        self,
+        frame_counts: FrameCountResult,
+        paths: _WorkflowPaths,
+        flags: HDRFlags,
+        adjustment: MetadataAdjustment,
+        *,
+        allow_hdr10_fallback: bool = False,
+    ) -> HDRFlags:
+        """Compare le nombre de trames RPU / HDR10+ extraits à Film 1, avant toute injection.
+
+        Applique la politique explicite (``EXACT`` ou ``TRIM_TAIL``, jamais de
+        trame fabriquée). Refus : Film 1 SDR → HDR10 seul (flags vidés),
+        sinon arrêt. Retourne les flags d'injection effectifs.
+        """
+        step = WorkflowStep.CHECK_METADATA
+        t0 = time.monotonic()
+        self.step_started.emit(step)
+
+        target = frame_counts.fc1
+        rpu = paths.film2_rpu if flags.has_dovi else None
+        hdr = paths.film2_hdr10plus if flags.has_hdr10plus else None
+        guard = self._frame_count_guard()
+        try:
+            if target is None:
+                raise FrameCountAuditError("Nombre de trames de Film 1 illisible : contrôle impossible.")
+            for path in (rpu, hdr):
+                if path is not None and not path.is_file():
+                    raise FrameCountAuditError(f"Métadonnées extraites introuvables : {path.name}.")
+            audit = FrameCountAudit(
+                source=target,
+                encoded=target,
+                rpu=guard.rpu_frame_count(rpu) if rpu is not None else None,
+                hdr10p=guard.hdr10p_frame_count(hdr) if hdr is not None else None,
+            )
+            self.step_progress.emit(
+                step,
+                f"Film 1 : {target} trames"
+                + (f"  |  RPU : {audit.rpu}" if rpu is not None else "")
+                + (f"  |  HDR10+ : {audit.hdr10p}" if hdr is not None else ""),
+            )
+            guard.enforce(
+                audit,
+                adjustment=adjustment,
+                rpu_bin=rpu,
+                hdr10p_json=hdr,
+                on_warn=lambda msg: self.step_progress.emit(step, f"[WARN] {msg}"),
+                on_info=lambda msg: self.step_progress.emit(step, msg),
+            )
+        except FrameCountAuditError as exc:
+            if not allow_hdr10_fallback:
+                raise WorkflowError(step, f"Métadonnées non injectables : {exc}") from exc
+            self.step_progress.emit(
+                step,
+                f"[WARN] Métadonnées non injectables ({exc}) : conversion HDR10 seule.",
+            )
+            flags = HDRFlags(has_dovi=False, has_hdr10plus=False)
+
+        duration = time.monotonic() - t0
+        self.step_finished.emit(
+            step,
+            StepResult(
+                step, True,
+                "Comptage des métadonnées conforme" if (flags.has_dovi or flags.has_hdr10plus)
+                else "Métadonnées dynamiques écartées (HDR10 seul)",
+                duration,
+            ),
+        )
+        return flags
 
     # ------------------------------------------------------------------
     # Étape 4-bis — Conversion Film 1 SDR → HDR10
@@ -1158,6 +1721,8 @@ class MergeDoviWorkflow(QObject):
             )
         if not static_hdr.is_complete:
             raise WorkflowError(step, "Métadonnées HDR10 de référence incomplètes.")
+        # Taille du flux réencodé inconnue : supposée comparable au flux source.
+        self._ensure_free_space(step, paths.work_dir, hevc_input.stat().st_size, "la conversion SDR → HDR10")
 
         x265_params = (
             f"repeat-headers=1:"
@@ -1231,6 +1796,7 @@ class MergeDoviWorkflow(QObject):
                 f"Fichier HEVC source introuvable : {hevc_input.name} — "
                 "vérifiez que l'étape d'extraction s'est bien déroulée.",
             )
+        self._ensure_free_space(step, paths.work_dir, hevc_input.stat().st_size, "l'injection RPU")
 
         # -m est un flag GLOBAL de dovi_tool placé avant la sous-commande.
         # La valeur de DoviProfile.value est directement le flag -m à passer.
@@ -1269,6 +1835,8 @@ class MergeDoviWorkflow(QObject):
         # Si DoVi a déjà été injecté → partir de film1_with_dovi.
         # Sinon (HDR10+ seul) → film1_hevc_input résout MKV extrait vs HEVC direct.
         hevc_input = paths.film1_with_dovi if flags.has_dovi else paths.film1_hevc_input
+        if hevc_input.exists():
+            self._ensure_free_space(step, paths.work_dir, hevc_input.stat().st_size, "l'injection HDR10+")
 
         self._run_cmd([
             self._bins["hdr10plus_tool"],
@@ -1337,6 +1905,7 @@ class MergeDoviWorkflow(QObject):
                 f"Source HEVC introuvable pour patch SEI statiques : {source_hevc.name}",
             )
 
+        self._ensure_free_space(step, paths.work_dir, source_hevc.stat().st_size, "l'injection SEI HDR10")
         self.step_progress.emit(
             step,
             f"Injection SEI HDR10 statiques (master_display="
@@ -1399,10 +1968,17 @@ class MergeDoviWorkflow(QObject):
         flags: HDRFlags,
         *,
         static_hdr_applied: bool = False,
+        film1_frames: int | None = None,
     ) -> None:
-        """Audit final via FrameCountGuard : compare frame counts du flux
-        final HEVC, du RPU et du JSON HDR10+ vs Film 1. Politique stricte :
-        encoded == film1 obligatoire ; RPU/HDR10+ tolérance ≤ 4 frames."""
+        """Relit le flux HEVC final : trames vidéo, RPU et HDR10+ réellement injectés.
+
+        ``film1_frames`` : compte de Film 1 établi à FRAME_COUNT (évite de
+        relire un Film 1 HEVC brut en entier).
+
+        Égalité stricte avec Film 1, sans aucun ajustement (les éventuels
+        ajustements explicites ont lieu avant l'injection). Contrôle de
+        comptage : l'alignement temporel n'est pas prouvé.
+        """
         step = WorkflowStep.VERIFY
         t0   = time.monotonic()
         self.step_started.emit(step)
@@ -1411,38 +1987,75 @@ class MergeDoviWorkflow(QObject):
         if not final.exists():
             raise WorkflowError(step, f"Flux injecté introuvable : {final.name}")
 
-        guard = FrameCountGuard(
-            mediainfo_bin=self._bins["mediainfo"],
-            ffprobe_bin=self._bins["ffprobe"],
-            dovi_tool_bin=self._bins["dovi_tool"],
-        )
+        final_frames = self._get_framecount(final)
+        if final_frames is None or final_frames <= 0:
+            raise WorkflowError(step, "Nombre exact de trames du flux final illisible : vérification impossible.")
+        guard = self._frame_count_guard()
         audit = guard.audit(
-            source=film1,
-            encoded=final,
-            rpu_bin=paths.film2_rpu if (flags.has_dovi and paths.film2_rpu.exists()) else None,
-            hdr10p_json=paths.film2_hdr10plus if (
-                flags.has_hdr10plus and paths.film2_hdr10plus.exists()
-            ) else None,
+            source=film1, encoded=final, known_source_frames=film1_frames,
+            known_encoded_frames=final_frames,
         )
-
-        try:
-            guard.enforce(
-                audit,
-                rpu_bin=paths.film2_rpu if (flags.has_dovi and paths.film2_rpu.exists()) else None,
-                hdr10p_json=paths.film2_hdr10plus if (
-                    flags.has_hdr10plus and paths.film2_hdr10plus.exists()
-                ) else None,
-                on_warn=lambda msg: self.step_progress.emit(step, f"[WARN] {msg}"),
-                on_info=lambda msg: self.step_progress.emit(step, msg),
+        if audit.source is None or audit.encoded is None:
+            raise WorkflowError(
+                step,
+                "Nombre de trames illisible (Film 1 ou flux final) : vérification impossible.",
             )
-        except FrameCountAuditError as exc:
-            raise WorkflowError(step, f"Audit frame count : {exc}") from exc
+        if audit.encoded != audit.source:
+            raise WorkflowError(
+                step,
+                f"Flux final : {audit.encoded} trames contre {audit.source} pour Film 1 "
+                "(frame count divergent après injection).",
+            )
+
+        def _emit(msg: str) -> None:
+            self.step_progress.emit(step, msg)
+
+        tasks: dict[str, Callable] = {}
+        if flags.has_dovi:
+            tasks["RPU Dolby Vision"] = lambda: self._run_raw([
+                self._bins["dovi_tool"], "extract-rpu",
+                "-i", str(final), "-o", str(paths.verify_rpu),
+            ], step=step)
+        if flags.has_hdr10plus:
+            tasks["HDR10+"] = lambda: self._run_raw([
+                self._bins["hdr10plus_tool"], "extract",
+                str(final), "-o", str(paths.verify_hdr10plus),
+            ], step=step)
+
+        injected: dict[str, int] = {}
+        try:
+            if tasks:
+                _emit(f"Relecture des métadonnées injectées ({', '.join(tasks)}) dans {final.name}…")
+                errors: list[str] = []
+                self._run_pool(tasks, errors)
+                if errors:
+                    raise WorkflowError(
+                        step, "Relecture des métadonnées du flux final échouée :\n" + "\n".join(errors),
+                    )
+            readers = (
+                ("RPU Dolby Vision", flags.has_dovi, paths.verify_rpu, guard.rpu_frame_count),
+                ("HDR10+", flags.has_hdr10plus, paths.verify_hdr10plus, guard.hdr10p_frame_count),
+            )
+            for label, active, path, count_frames in readers:
+                if not active:
+                    continue
+                count = count_frames(path) if path.is_file() else None
+                if count is None:
+                    raise WorkflowError(step, f"{label} du flux final illisible.")
+                if count != audit.source:
+                    raise WorkflowError(
+                        step,
+                        f"{label} du flux final : {count} trames contre {audit.source} pour Film 1.",
+                    )
+                injected[label] = count
+        finally:
+            paths.verify_rpu.unlink(missing_ok=True)
+            paths.verify_hdr10plus.unlink(missing_ok=True)
 
         detail = (
-            f"Source : {audit.source if audit.source is not None else '?'}  |  "
-            f"Final : {audit.encoded if audit.encoded is not None else '?'}  |  "
-            f"RPU : {audit.rpu if audit.rpu is not None else '-'}  |  "
-            f"HDR10+ : {audit.hdr10p if audit.hdr10p is not None else '-'}"
+            f"Film 1 : {audit.source}  |  Flux final : {audit.encoded}"
+            + "".join(f"  |  {label} injecté : {count}" for label, count in injected.items())
+            + "  —  comptages identiques (alignement temporel non vérifié)"
         )
         self.step_progress.emit(step, detail)
 
@@ -1508,11 +2121,14 @@ class MergeDoviWorkflow(QObject):
         video_props: dict[str, Any],
         dovi_record: DolbyVisionConfigRecord | None,
         colour_element: bytes,
+        *,
+        allow_frame_count_mismatch: bool = False,
     ) -> None:
+        """``allow_frame_count_mismatch`` : contrôle final ignoré par l'utilisateur."""
         muxer = MatroskaNativeMuxer(
             ffprobe_bin=self._bins["ffprobe"],
         )
-        muxer.mux(
+        result = muxer.mux(
             hevc_input=final_hevc,
             source_for_timestamps=film1,
             output=paths.film1_wrapped_video,
@@ -1524,23 +2140,55 @@ class MergeDoviWorkflow(QObject):
             language=video_props.get("language") or "und",
             colour_element=colour_element,
             timestamp_order="packet",
+            allow_frame_count_mismatch=allow_frame_count_mismatch,
         )
+        written, available = result.frames_written, result.source_timestamps
+        if result.dropped_frames:
+            self.step_progress.emit(
+                WorkflowStep.REMUX,
+                f"[WARN] {result.dropped_frames} image(s) sans horodatage Film 1 écartée(s) "
+                f"en fin de flux ({written} conservées).",
+            )
+        elif written != available:
+            self.step_progress.emit(
+                WorkflowStep.REMUX,
+                f"[WARN] {written} images pour {available} horodatages Film 1 : association par "
+                "position, durée ramenée aux images écrites (désynchronisation si des images "
+                "manquent ailleurs qu'en fin de flux).",
+            )
 
     def _assemble_final_mkv(
         self,
         plan: MatroskaAssemblyPlan,
-        flags: HDRFlags,
         dovi_record: DolbyVisionConfigRecord | None,
     ) -> None:
         contract = assembly_output_contract(
             plan,
-            require_block_addition_mapping=bool(flags.has_dovi and dovi_record is not None),
+            require_block_addition_mapping=dovi_record is not None,
         )
         plan_with_contract = replace(plan, expected_output_contract=contract)
         mux_plan = compile_assembly_plan(plan_with_contract)
+
+        def validate(path, packet_validation):
+            validate_final_output(
+                path, validate_matroska_output(path, contract, packet_validation=packet_validation),
+                lambda: self._run_raw([
+                    self._bins["ffprobe"], "-v", "error", "-show_entries",
+                    "format=format_name", "-of", "json", str(path),
+                ], step=WorkflowStep.REMUX),
+                message_prefix="Validation de la sortie Merge DoVi échouée : ",
+                override=self._validation_override, cancelled=lambda: self._cancelled,
+                warn=lambda msg: self.step_progress.emit(WorkflowStep.REMUX, f"[WARN] {msg}"),
+            )
+
         MatroskaWriter().write(
             mux_plan,
             cancel_cb=lambda: self._cancelled,
+            external_validator=validate,
+            validation_error_handler=lambda path, message: accept_validation_override(
+                self._validation_override, path, message, lambda: self._cancelled,
+                lambda msg: self.step_progress.emit(WorkflowStep.REMUX, f"[WARN] {msg}"),
+            ),
         )
 
     def _step_remux(
@@ -1554,6 +2202,8 @@ class MergeDoviWorkflow(QObject):
         dovi_profile: DoviProfile = DoviProfile.P8_1,
         static_hdr_metadata: StaticHdrMetadata | None = None,
         extra_subtitle_files: tuple[Path, ...] = (),
+        preserve_film1_dovi: bool = False,
+        allow_frame_count_mismatch: bool = False,
     ) -> None:
         step = WorkflowStep.REMUX
         t0   = time.monotonic()
@@ -1569,6 +2219,21 @@ class MergeDoviWorkflow(QObject):
                 paths.film2_rpu,
                 forced_compat_id=1 if dovi_profile == DoviProfile.P8_1 else None,
             )
+        elif preserve_film1_dovi:
+            dovi_record = self._film1_dovi_record(film1, final_hevc)
+            if dovi_record is None:
+                self.step_progress.emit(
+                    step,
+                    "[WARN] Configuration Dolby Vision de Film 1 illisible : "
+                    "piste non signalée Dolby Vision au niveau Matroska.",
+                )
+            else:
+                self.step_progress.emit(
+                    step,
+                    f"Signal Dolby Vision de Film 1 conservé (profil "
+                    f"{dovi_record.profile}.{dovi_record.bl_signal_compat_id}, "
+                    f"niveau {dovi_record.level}).",
+                )
 
         colour_element = b""
         if static_hdr_metadata and (static_hdr_metadata.master_display or static_hdr_metadata.max_cll):
@@ -1578,6 +2243,7 @@ class MergeDoviWorkflow(QObject):
         video_props = self._read_video_track_props(film1)
 
         # 2. Encapsulation native de la vidéo injectée
+        self._ensure_free_space(step, paths.work_dir, final_hevc.stat().st_size, "l'encapsulation vidéo")
         self.step_progress.emit(
             step,
             f"Encapsulation vidéo native HEVC → {paths.film1_wrapped_video.name}…",
@@ -1590,15 +2256,19 @@ class MergeDoviWorkflow(QObject):
                 video_props,
                 dovi_record,
                 colour_element,
+                allow_frame_count_mismatch=allow_frame_count_mismatch,
             )
         except Exception as exc:
             raise WorkflowError(step, f"Encapsulation vidéo native échouée : {exc}") from exc
+        # Le flux HEVC final vit désormais dans l'encapsulation MKV.
+        self._discard_consumed(step, paths, final_hevc)
 
         # 3. Préparation du conteneur pour pistes audio / sous-titres
         if film1.is_file() and film1.suffix.lower() == ".mkv":
             source_mkv = film1
         else:
             canonical_mkv = paths.work_dir / "film1_canonical.mkv"
+            self._ensure_free_space(step, paths.work_dir, film1.stat().st_size, "la canonicalisation MKV")
             self.step_progress.emit(
                 step,
                 f"Canonicalisation conteneur source ({film1.suffix}) → {canonical_mkv.name}…",
@@ -1727,8 +2397,13 @@ class MergeDoviWorkflow(QObject):
             segment_title=segment_title,
         )
 
+        # Sortie ≈ vidéo encapsulée + pistes non vidéo de Film 1 (+ sous-titres ajoutés).
+        output_estimate = paths.film1_wrapped_video.stat().st_size + max(
+            0, film1.stat().st_size - self._video_stream_bytes(film1)[0],
+        ) + sum(Path(p).stat().st_size for p in extra_subtitle_files if Path(p).is_file())
+        self._ensure_free_space(step, paths.output_mkv.parent, output_estimate, "le fichier final")
         try:
-            self._assemble_final_mkv(plan, flags, dovi_record)
+            self._assemble_final_mkv(plan, dovi_record)
         except Exception as exc:
             raise WorkflowError(step, f"Écriture Matroska native échouée : {exc}") from exc
 
@@ -1824,7 +2499,7 @@ class MergeDoviWorkflow(QObject):
     ) -> DolbyVisionConfigRecord | None:
         """Construit le record ``dvcC`` Matroska depuis le résumé dovi_tool."""
         try:
-            result = subprocess.run(
+            result = self._run_probe(
                 [
                     self._bins["dovi_tool"],
                     "info",
@@ -1884,19 +2559,7 @@ class MergeDoviWorkflow(QObject):
         t0   = time.monotonic()
         self.step_started.emit(step)
 
-        for path in [
-            paths.film1_hevc,
-            paths.film1_hdr10_hevc,
-            paths.film2_hevc,
-            paths.film2_hevc_p8,
-            paths.film2_rpu,
-            paths.film2_hdr10plus,
-            paths.film1_with_dovi,
-            paths.film1_final,
-            paths.film1_with_static_hdr,
-            paths.film1_wrapped_video,
-            paths.work_dir / "film1_canonical.mkv",
-        ]:
+        for path in paths.intermediates():
             if path.exists():
                 path.unlink()
                 self.step_progress.emit(step, f"Supprimé : {path.name}")
@@ -1904,8 +2567,12 @@ class MergeDoviWorkflow(QObject):
         for extra_temp in paths.work_dir.glob("extra_sub_*.mkv"):
             extra_temp.unlink(missing_ok=True)
 
+        # Dossier process créé par start() : suppression prouvée par jeton
+        # (marqueur compris) ; sinon seulement s'il est vide.
+        owned = paths.owned_dir
         try:
-            paths.work_dir.rmdir()
+            if owned is None or not owned.remove():
+                paths.work_dir.rmdir()
         except OSError:
             pass
 
@@ -2206,12 +2873,14 @@ class MergeDoviWorkflow(QObject):
             str(source),
         ]
         try:
-            result = subprocess.run(
+            result = self._run_probe(
                 cmd,
                 capture_output=True,
                 check=False,
                 **subprocess_text_kwargs(),
             )
+        except _CancelledError:
+            raise
         except Exception:
             return _FALLBACK_HEVC_FRAME_RATE
         if result.returncode != 0:
@@ -2250,10 +2919,12 @@ class MergeDoviWorkflow(QObject):
             str(source),
         ]
         try:
-            result = subprocess.run(
+            result = self._run_probe(
                 cmd, capture_output=True, check=False,
                 **subprocess_text_kwargs(),
             )
+        except _CancelledError:
+            raise
         except Exception:
             return ["-c:s", "copy"]
         if result.returncode != 0:
@@ -2291,35 +2962,82 @@ class MergeDoviWorkflow(QObject):
         if path.suffix.lower() not in {".hevc", ".h265", ".265", ".x265", ".mkv"}:
             return False
         with tempfile.TemporaryDirectory(prefix="dovi_probe_") as tmp:
+            return self._extract_first_rpu(path, Path(tmp) / "rpu.bin")
+
+    def _extract_first_rpu(self, path: Path, rpu: Path) -> bool:
+        """Extrait le premier RPU de ``path`` (``extract-rpu -l 1``) ; True si obtenu."""
+        try:
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            self._run_probe(
+                [self._bins["dovi_tool"], "extract-rpu", "-i", str(path), "-l", "1", "-o", str(rpu)],
+                capture_output=True, check=False, timeout=120, **subprocess_text_kwargs(),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return rpu.is_file() and rpu.stat().st_size > 0
+
+    def _film1_dovi_record(self, film1: Path, hevc: Path) -> DolbyVisionConfigRecord | None:
+        """Configuration Dolby Vision existante de Film 1, conservée quand seul
+        le HDR10+ est injecté. Priorité au record du conteneur (ffprobe, exact :
+        niveau, couche EL) ; repli sur le premier RPU du flux HEVC injecté."""
+        record = self._probe_dovi_config_record(film1)
+        if record is not None:
+            return record
+        with tempfile.TemporaryDirectory(prefix="dovi_probe_") as tmp:
             rpu = Path(tmp) / "rpu.bin"
-            try:
-                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-                subprocess.run(  # nosec B603  # nosemgrep  # argv liste, binaire issu de la config
-                    [self._bins["dovi_tool"], "extract-rpu", "-i", str(path), "-l", "1", "-o", str(rpu)],
-                    capture_output=True, check=False, timeout=120, **subprocess_text_kwargs(),
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                return False
-            return rpu.is_file() and rpu.stat().st_size > 0
+            if not self._extract_first_rpu(hevc, rpu):
+                return None
+            return self._build_dovi_record_from_rpu(rpu)
+
+    def _probe_dovi_config_record(self, path: Path) -> DolbyVisionConfigRecord | None:
+        """Lit le « DOVI configuration record » de la première piste vidéo (ffprobe)."""
+        try:
+            result = self._run_probe(
+                [
+                    self._bins["ffprobe"], "-v", "error", "-select_streams", "v:0",
+                    "-show_streams", "-of", "json", str(path),
+                ],
+                capture_output=True, check=False, **subprocess_text_kwargs(),
+            )
+            streams = json.loads(result.stdout or "{}").get("streams") or []
+        except (OSError, json.JSONDecodeError, AttributeError):
+            return None
+        for stream in streams[:1]:
+            for side_data in stream.get("side_data_list") or []:
+                if side_data.get("side_data_type") != "DOVI configuration record":
+                    continue
+                try:
+                    return DolbyVisionConfigRecord(
+                        profile=int(side_data["dv_profile"]),
+                        level=int(side_data["dv_level"]),
+                        rpu_present=bool(int(side_data.get("rpu_present_flag", 1))),
+                        el_present=bool(int(side_data.get("el_present_flag", 0))),
+                        bl_present=bool(int(side_data.get("bl_present_flag", 1))),
+                        bl_signal_compat_id=int(side_data.get("dv_bl_signal_compatibility_id", 0)),
+                    )
+                except (KeyError, TypeError, ValueError):
+                    return None
+        return None
 
     def _mediainfo(self, path: Path, inform: str) -> str:
         """Lance mediainfo --Inform et retourne la sortie brute."""
-        result = subprocess.run(
+        result = self._run_probe(
             [self._bins["mediainfo"], f"--Inform={inform}", str(path)],
             capture_output=True, check=False, **subprocess_text_kwargs(),
         )
         return result.stdout
 
     def _get_framecount(self, path: Path) -> int | None:
-        """Frame count mediainfo, vérifié contre durée × cadence (repli ffprobe)."""
+        """Compte exact, sans statistiques périmées, avec scan annulable."""
         return reliable_frame_count(
             path, mediainfo_bin=self._bins["mediainfo"], ffprobe_bin=self._bins["ffprobe"],
+            exact=True, run_command=self._run_probe,
         )
 
     def _load_mediainfo_video(self, path: Path) -> dict | None:
         """Charge le track Video du JSON mediainfo (None si indisponible)."""
         try:
-            result = subprocess.run(
+            result = self._run_probe(
                 [self._bins["mediainfo"], "--Output=JSON", str(path)],
                 capture_output=True, check=False, **subprocess_text_kwargs(),
             )

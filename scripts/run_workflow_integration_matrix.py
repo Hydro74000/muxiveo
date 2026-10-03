@@ -35,7 +35,12 @@ if str(REPO_ROOT) not in sys.path:
 from PySide6.QtCore import QCoreApplication, Qt
 
 from core.inspector import ChapterEntry, FileInfo, FileInspector
-from core.workdir import process_folder_name_from_output, work_dir_entries
+from core.workdir import (
+    PROCESS_DIR_MARKER,
+    is_owned_process_dir,
+    process_folder_name_from_output,
+    work_dir_entries,
+)
 from core.workflows.encode.models import (
     AudioTrackSettings,
     EncodeConfig,
@@ -641,16 +646,20 @@ def mediainfo_hdr(path: Path, tools: ToolPaths) -> str:
 
 
 def process_dir_state(work_root: Path, output_path: Path) -> dict[str, Any]:
-    process_dir = work_root / process_folder_name_from_output(output_path.resolve())
-    top_entries = [str(p.name) for p in work_dir_entries(process_dir)]
+    """État des dossiers process (créés neufs et marqués) du job ``output_path``."""
+    name = process_folder_name_from_output(output_path.resolve())
+    process_dirs = sorted(
+        d for d in work_root.glob(f"{name}.*") if is_owned_process_dir(d, root=work_root)
+    ) if work_root.is_dir() else []
+    top_entries = [str(p.name) for d in process_dirs for p in work_dir_entries(d)]
     payload_files: list[str] = []
-    if process_dir.exists():
+    for process_dir in process_dirs:
         for child in sorted(process_dir.rglob("*")):
-            if child.is_file():
-                payload_files.append(str(child.relative_to(process_dir)))
+            if child.is_file() and child.name != PROCESS_DIR_MARKER:
+                payload_files.append(str(child.relative_to(work_root)))
     return {
-        "process_dir": str(process_dir),
-        "exists": process_dir.exists(),
+        "process_dir": ", ".join(str(d) for d in process_dirs),
+        "exists": bool(process_dirs),
         "top_entries": top_entries,
         "payload_files": payload_files[:50],
         "payload_file_count": len(payload_files),
@@ -678,9 +687,10 @@ def make_cover_under_tmdb_root(work_root: Path, filename: str = "cover.jpg") -> 
 
 
 def seed_stale_file(work_root: Path, output_path: Path) -> Path:
-    process_dir = work_root / process_folder_name_from_output(output_path.resolve())
-    process_dir.mkdir(parents=True, exist_ok=True)
-    stale = process_dir / "stale.tmp"
+    """Dossier homonyme préexistant, non créé par le job : il doit être préservé."""
+    foreign_dir = work_root / process_folder_name_from_output(output_path.resolve())
+    foreign_dir.mkdir(parents=True, exist_ok=True)
+    stale = foreign_dir / "stale.tmp"
     stale.write_text("stale", encoding="utf-8")
     return stale
 
@@ -1008,8 +1018,8 @@ def run_remux_case_attachments(
             "subtitle_title_written": stream_titles(info.subtitle_tracks)[0] == "FR Forced",
         }
         cleanup = {
-            "stale_file_removed": not stale.exists(),
-            "process_dir_removed": not Path(process_dir_state(work_root, output_path)["process_dir"]).exists(),
+            "foreign_dir_preserved": stale.exists(),
+            "process_dir_removed": not process_dir_state(work_root, output_path)["exists"],
         }
         return finalize_case(
             case_id=case_id,
@@ -1110,9 +1120,9 @@ def run_remux_case_override(
             "custom_chapters_written": chapter_titles(info) == ["Case Intro", "Case Outro"],
         }
         cleanup = {
-            "stale_file_removed": not stale.exists(),
+            "foreign_dir_preserved": stale.exists(),
             "tmdb_root_empty": not any(tmdb_root.rglob("*")) if tmdb_root.exists() else True,
-            "process_dir_removed": not Path(process_dir_state(work_root, output_path)["process_dir"]).exists(),
+            "process_dir_removed": not process_dir_state(work_root, output_path)["exists"],
         }
         return finalize_case(
             case_id=case_id,
@@ -1203,8 +1213,8 @@ def run_remux_case_cleanup(
             "audio_language_removed": stream_languages(info.audio_tracks)[0] == "",
         }
         cleanup = {
-            "stale_file_removed": not stale.exists(),
-            "process_dir_removed": not Path(process_dir_state(work_root, output_path)["process_dir"]).exists(),
+            "foreign_dir_preserved": stale.exists(),
+            "process_dir_removed": not process_dir_state(work_root, output_path)["exists"],
         }
         return finalize_case(
             case_id=case_id,
@@ -1306,7 +1316,7 @@ def run_encode_case_copy_attachments(case_id: str, sources: PreparedSources, too
             "audio_titles_written": stream_titles(out_info.audio_tracks) == ["VF Copy", "VO Copy"],
         }
         cleanup = {
-            "stale_file_removed": not stale.exists(),
+            "foreign_dir_preserved": stale.exists(),
             "attachment_tmp_dir_cleaned": not any("enc_attachments_" in part for part in work_state["payload_files"]),
         }
         notes: list[str] = []
@@ -1411,7 +1421,7 @@ def run_encode_case_single_pass(case_id: str, sources: PreparedSources, tools: T
             "audio_titles_written": stream_titles(out_info.audio_tracks) == ["VF Copy", "VO AAC"],
         }
         cleanup = {
-            "stale_file_removed": not stale.exists(),
+            "foreign_dir_preserved": stale.exists(),
             "chapter_tmp_dir_cleaned": not any("enc_chapters_" in part for part in work_state["payload_files"]),
         }
         notes: list[str] = []
@@ -1506,7 +1516,7 @@ def run_encode_case_two_pass(case_id: str, sources: PreparedSources, tools: Tool
             "source_tag_removed": tag_lookup(out_info.global_tags, "SOURCE") is None,
         }
         cleanup = {
-            "stale_file_removed": not stale.exists(),
+            "foreign_dir_preserved": stale.exists(),
             "passlog_cleaned": not any("ffmpeg2pass" in part for part in work_state["payload_files"]),
         }
         notes: list[str] = []
@@ -1606,7 +1616,7 @@ def run_encode_case_copy_dv_hdr10p(case_id: str, sources: PreparedSources, tools
             "hdr10plus_preserved": has_hdr10plus(output_path, tools),
         }
         cleanup = {
-            "stale_file_removed": not stale.exists(),
+            "foreign_dir_preserved": stale.exists(),
         }
         notes: list[str] = []
         if any("HDR10+" in warning for warning in warnings):
@@ -1733,7 +1743,7 @@ def run_encode_case_dv_inject(
             ),
         }
         cleanup = {
-            "stale_file_removed": not stale.exists(),
+            "foreign_dir_preserved": stale.exists(),
             "inject_temp_dirs_cleaned": not any("Muxiveo_encode_" in part for part in work_state["payload_files"]),
         }
         notes: list[str] = []

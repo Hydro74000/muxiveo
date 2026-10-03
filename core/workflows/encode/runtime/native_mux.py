@@ -9,12 +9,20 @@ puis ffprobe en second validateur, sans aucun post-patch conteneur.
 
 from __future__ import annotations
 
+import json
+import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
+from core.bluray import ffprobe_input_args
 from core.runner import TaskCancelledError, TaskSignals
+from core.workflows.common.validation_override import ValidationOverride, accept_validation_override, validate_final_output
+from core.subprocess_utils import subprocess_text_kwargs
+from core.subtitle_codec import plan_subtitle_codec
 from core.workdir import remove_path
+from core.workflows.common.ffmpeg_runtime import ffmpeg_progress_args
+from core.workflows.common.metadata import matroska_video_tag_args
 from core.workflows.encode.domain.codecs import audio_codec_args
 from core.workflows.encode.models import EncodeConfig, EncodeError
 from core.matroska.assembly import (
@@ -56,27 +64,36 @@ class NativeEncodePreparation:
     """Artefacts nécessaires à un assemblage final Matroska natif.
 
     Une piste copiée depuis MP4/MOV/TS ne peut pas être lue directement par
-    :class:`MatroskaReader`.  Elle est donc remballée *piste par piste* en
-    MKV avant l'assemblage.  Ce n'est pas un mux final FFmpeg : le writer
-    interne reste l'unique producteur de la sortie demandée.
+    :class:`MatroskaReader`.  Chaque source non Matroska est donc remballée
+    *une seule fois* en MKV, limitée aux flux réellement utilisés (vidéo
+    copiée, audio copié, sous-titres, porteur de métadonnées).  Ce n'est pas
+    un mux final FFmpeg : le writer interne reste l'unique producteur de la
+    sortie demandée.
     """
 
-    track_artifacts: dict[tuple[Path, int], Path] = field(default_factory=dict)
+    #: (source, index ffprobe) → (artefact MKV, position de piste dans l'artefact).
+    track_artifacts: dict[tuple[Path, int], tuple[Path, int]] = field(default_factory=dict)
     container_artifacts: dict[Path, Path] = field(default_factory=dict)
     resolved_subtitles: tuple[tuple[Path, int], ...] = ()
     subtitles_prepared: bool = False
     cleanup_paths: tuple[Path, ...] = ()
 
-    def artifact_for_track(self, source: Path, stream_index: int) -> Path:
-        return self.track_artifacts.get((Path(source), int(stream_index)), Path(source))
+    def artifact_for_track(self, source: Path, stream_index: int) -> tuple[Path, int]:
+        """Artefact lisible et position de piste ; une source Matroska se lit telle quelle."""
+        key = (Path(source), int(stream_index))
+        return self.track_artifacts.get(key, key)
 
     def artifact_for_container(self, source: Path) -> Path:
         return self.container_artifacts.get(Path(source), Path(source))
 
 
-def _matroska_track_index_for_stream(artifact: Path, stream_index: int) -> int:
-    """Index positionnel de piste pour un index de stream ffprobe (MKV)."""
-    return int(stream_index)
+@dataclass(frozen=True)
+class ProbedStream:
+    """Flux d'une source vu par ffprobe."""
+
+    codec_type: str
+    codec_name: str
+    attached_pic: bool = False
 
 
 def _is_matroska(path: Path) -> bool:
@@ -102,6 +119,79 @@ def _offset_ms(config: EncodeConfig, track_type: str, source: Path, stream_index
     return 0
 
 
+def probe_source_streams(source: Path, ffprobe_bin: str) -> dict[int, ProbedStream] | None:
+    """Flux ffprobe de ``source`` (index → type, codec, attached_pic).
+
+    Retourne ``None`` si la sonde échoue (erreur, timeout, sortie illisible),
+    à distinguer d'une source sans flux : l'appelant décide d'interrompre ou
+    d'un repli explicite.
+    """
+    try:
+        result = subprocess.run(
+            [
+                ffprobe_bin, "-v", "quiet", "-print_format", "json",
+                "-show_entries",
+                "stream=index,codec_type,codec_name:stream_disposition=attached_pic",
+                *ffprobe_input_args(source),
+            ],
+            capture_output=True,
+            check=False,
+            timeout=20,
+            **subprocess_text_kwargs(),
+        )
+        if result.returncode != 0:
+            return None
+        payload = json.loads(result.stdout or "{}")
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return None
+    raw_streams = payload.get("streams") if isinstance(payload, dict) else None
+    if not isinstance(raw_streams, list):
+        return None
+    streams: dict[int, ProbedStream] = {}
+    for stream in raw_streams:
+        try:
+            streams[int(stream.get("index"))] = ProbedStream(
+                codec_type=str(stream.get("codec_type") or "").lower(),
+                codec_name=str(stream.get("codec_name") or "").lower(),
+                attached_pic=bool((stream.get("disposition") or {}).get("attached_pic")),
+            )
+        except (TypeError, ValueError):
+            continue
+    return streams
+
+
+def _metadata_carrier(streams: dict[int, ProbedStream]) -> int | None:
+    """Flux le plus léger pour porter chapitres/tags quand aucune piste n'est copiée."""
+    for codec_type in ("subtitle", "audio", "video"):
+        for index, stream in sorted(streams.items()):
+            if stream.codec_type != codec_type or stream.attached_pic:
+                continue
+            if codec_type == "subtitle":
+                try:
+                    plan_subtitle_codec(stream.codec_name)
+                except ValueError:
+                    continue
+            return index
+    return None
+
+
+def _subtitle_conversion_args(codecs: list[str]) -> list[str]:
+    """Args ``-c:s:N <codec>`` pour les sous-titres refusés tels quels par Matroska.
+
+    ``codecs`` suit l'ordre de sortie des sous-titres. Un codec non supporté
+    reste en copie : FFmpeg signalera l'erreur s'il est réellement refusé.
+    """
+    args: list[str] = []
+    for out_index, codec in enumerate(codecs):
+        try:
+            codec_arg, _warning = plan_subtitle_codec(codec)
+        except ValueError:
+            continue
+        if codec_arg != "copy":
+            args.extend([f"-c:s:{out_index}", codec_arg])
+    return args
+
+
 def prepare_native_encode_inputs(
     config: EncodeConfig,
     *,
@@ -109,18 +199,30 @@ def prepare_native_encode_inputs(
     ffmpeg_bin: str,
     run_cmd: Callable[[list[str], str], str],
     resolved_subtitles: list[tuple[Path, int]] | None = None,
+    ffprobe_bin: str = "ffprobe",
+    video_refs: list[tuple[Path, int]] | None = None,
 ) -> NativeEncodePreparation:
-    """Materialise non-Matroska copied inputs for the native final mux.
+    """Matérialise en MKV les entrées non Matroska de l'assemblage natif.
 
-    The conversion is deliberately narrow: each selected copied audio or
-    subtitle stream becomes a one-track MKV, preserving packet data and
-    timestamps.  A second, full-container artifact is made only when it is
-    required as the source of chapters or global tags.
+    Une seule canonicalisation par source : seuls les flux utilisés
+    (``video_refs`` copiées, audio copié, sous-titres) sont transposés, les
+    paquets et horodatages étant conservés.  Chapitres et tags globaux ne
+    sont repris que si la source en est le fournisseur ; à défaut de flux
+    utilisé, le flux le plus léger sert de porteur.  Les sous-titres que
+    Matroska refuse en copie (``mov_text``…) sont convertis en SRT au
+    passage (:func:`plan_subtitle_codec`), les tags vidéo MP4 Dolby Vision
+    neutralisés (:func:`matroska_video_tag_args`).
     """
     work_dir.mkdir(parents=True, exist_ok=True)
-    tracks: dict[tuple[Path, int], Path] = {}
+    tracks: dict[tuple[Path, int], tuple[Path, int]] = {}
     containers: dict[Path, Path] = {}
     cleanup: list[Path] = []
+    probed: dict[Path, dict[int, ProbedStream] | None] = {}
+
+    def _streams(source: Path) -> dict[int, ProbedStream] | None:
+        if source not in probed:
+            probed[source] = probe_source_streams(source, ffprobe_bin)
+        return probed[source]
 
     def _run(command: list[str], label: str, target: Path) -> None:
         try:
@@ -140,20 +242,6 @@ def prepare_native_encode_inputs(
             context_sources.add(Path(config.source))
         if config.tag_overrides is None:
             context_sources.update(Path(path) for path in config.tag_sources)
-        if resolved_subtitles is None and config.copy_subtitles:
-            # Un conteneur MKV complet donne au lecteur natif la liste exacte des
-            # sous-titres d'une source MP4/MOV sans dépendre des indices FFprobe.
-            context_sources.update(resolve_source_layout(config).sources)
-        for ordinal, source in enumerate(sorted(context_sources)):
-            if _is_matroska(source):
-                continue
-            target = work_dir / f"native_container_{ordinal}.mkv"
-            _run([
-                ffmpeg_bin, "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
-                "-i", str(source), "-map", "0", "-c", "copy",
-                "-map_metadata", "0", "-map_chapters", "0", str(target),
-            ], f"ffmpeg-native-canonical-container-{ordinal}", target)
-            containers[source] = target
 
         if resolved_subtitles is not None:
             subtitles = [(Path(path), int(index)) for path, index in resolved_subtitles]
@@ -162,34 +250,90 @@ def prepare_native_encode_inputs(
         else:
             subtitles = []
             for source in resolve_source_layout(config).sources:
-                artifact = containers.get(Path(source), Path(source))
-                for index, track in enumerate(MatroskaReader(artifact).tracks()):
-                    if track.track_type == _SUBTITLE_TRACK_TYPE:
-                        # La référence logique reste la source d'origine ; le
-                        # plan retrouvera l'artefact via ``container_artifacts``.
-                        subtitles.append((Path(source), index))
+                source = Path(source)
+                if _is_matroska(source):
+                    for index, track in enumerate(MatroskaReader(source).tracks()):
+                        if track.track_type == _SUBTITLE_TRACK_TYPE:
+                            subtitles.append((source, index))
+                    continue
+                source_streams = _streams(source)
+                if source_streams is None:
+                    # « Aucun sous-titre » et « sonde en échec » ne doivent pas
+                    # se confondre : la copie demandée serait perdue en silence.
+                    raise EncodeError(
+                        f"{source.name} : sonde ffprobe en échec, sous-titres à "
+                        "copier indéterminables."
+                    )
+                subtitles.extend(
+                    (source, index)
+                    for index, stream in sorted(source_streams.items())
+                    if stream.codec_type == "subtitle"
+                )
 
-        selections: list[tuple[Path, int]] = []
+        # Rôle connu de chaque flux sélectionné : la sonde peut échouer.
+        roles: dict[tuple[Path, int], str] = {}
+        for path, index in video_refs or ():
+            roles.setdefault((Path(path), int(index)), "video")
         for audio in config.audio_tracks:
             if str(audio.codec or "copy").strip().lower() == "copy" and not audio.extract_truehd_core:
-                selections.append((Path(audio.source_path or config.source), int(audio.stream_index)))
-        selections.extend(subtitles)
+                roles.setdefault(
+                    (Path(audio.source_path or config.source), int(audio.stream_index)), "audio",
+                )
+        for key in subtitles:
+            roles.setdefault(key, "subtitle")
 
-        for ordinal, (source, stream_index) in enumerate(dict.fromkeys(selections)):
-            if _is_matroska(source):
-                continue
-            # Les sous-titres issus d'un conteneur canonicalisé emploient déjà un
-            # index Matroska. Ils peuvent être lus directement depuis celui-ci.
-            if source in containers and (source, stream_index) in subtitles:
-                tracks[(source, stream_index)] = containers[source]
-                continue
-            target = work_dir / f"native_track_{ordinal}.mkv"
-            _run([
+        wanted: dict[Path, set[int]] = {
+            source: set() for source in context_sources if not _is_matroska(source)
+        }
+        for source, index in roles:
+            if not _is_matroska(source):
+                wanted.setdefault(source, set()).add(index)
+
+        for ordinal, source in enumerate(sorted(wanted)):
+            probed_streams = _streams(source)
+            streams = probed_streams or {}
+            indexes = sorted(wanted[source])
+            if not indexes:
+                # Sonde en échec : repli explicite sur le flux 0, présent dans
+                # tout média (porteur plus lourd, contexte conservé).
+                carrier = _metadata_carrier(streams) if probed_streams is not None else 0
+                if carrier is None:
+                    raise EncodeError(
+                        f"{source.name} : aucun flux pour porter chapitres et tags."
+                    )
+                indexes = [carrier]
+
+            def _kind(index: int) -> str:
+                role = roles.get((source, index))
+                return role or (streams[index].codec_type if index in streams else "")
+
+            def _codec(index: int) -> str:
+                return streams[index].codec_name if index in streams else ""
+
+            keep_context = source in context_sources
+            target = work_dir / f"native_source_{ordinal}.mkv"
+            # Passe complète sur la source : progression machine pour l'UI.
+            command = [
                 ffmpeg_bin, "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
-                "-i", str(source), "-map", f"0:{stream_index}", "-c", "copy",
-                "-map_metadata", "-1", "-map_chapters", "-1", str(target),
-            ], f"ffmpeg-native-canonical-track-{ordinal}", target)
-            tracks[(source, stream_index)] = target
+                *ffmpeg_progress_args(),
+                "-i", str(source),
+            ]
+            for index in indexes:
+                command.extend(["-map", f"0:{index}"])
+            command.extend(["-c", "copy"])
+            command.extend(matroska_video_tag_args(
+                [_codec(index).upper() for index in indexes if _kind(index) == "video"]
+            ))
+            command.extend(_subtitle_conversion_args(
+                [_codec(index) for index in indexes if _kind(index) == "subtitle"]
+            ))
+            context_arg = "0" if keep_context else "-1"
+            command.extend(["-map_metadata", context_arg, "-map_chapters", context_arg, str(target)])
+            _run(command, f"ffmpeg-native-canonical-source-{ordinal}", target)
+            for position, index in enumerate(indexes):
+                tracks[(source, index)] = (target, position)
+            if keep_context:
+                containers[source] = target
     except Exception:
         for path in cleanup:
             remove_path(path)
@@ -258,28 +402,29 @@ def build_encode_assembly_plan(
 
     ordered: list[MatroskaAssemblyTrack] = []
     for ref in video_artifacts:
+        artifact, track_index = preparation.artifact_for_track(ref.path, ref.track_index)
         ordered.append(MatroskaAssemblyTrack(
-            artifact=ref.path,
-            artifact_track_index=ref.track_index,
+            artifact=artifact,
+            artifact_track_index=track_index,
             source_identity=_identity(ref.path),
             time_shift_ms=int(ref.offset_ms or 0),
         ))
 
     for audio_index, audio in enumerate(config.audio_tracks):
         source = Path(audio.source_path or config.source)
-        artifact = materialized_audio.get(audio_index)
-        if artifact is not None:
+        audio_artifact = materialized_audio.get(audio_index)
+        if audio_artifact is not None:
             ordered.append(MatroskaAssemblyTrack(
-                artifact=artifact,
+                artifact=audio_artifact,
                 artifact_track_index=0,
                 source_identity=_identity(source),
                 provenance=f"audio:{audio.stream_index}:{audio.codec}",
             ))
         else:
-            track_artifact = preparation.artifact_for_track(source, audio.stream_index)
+            track_artifact, track_index = preparation.artifact_for_track(source, audio.stream_index)
             ordered.append(MatroskaAssemblyTrack(
                 artifact=track_artifact,
-                artifact_track_index=(0 if track_artifact != source else _matroska_track_index_for_stream(source, audio.stream_index)),
+                artifact_track_index=track_index,
                 source_identity=_identity(source),
                 time_shift_ms=_offset_ms(config, "audio", source, audio.stream_index),
             ))
@@ -291,16 +436,10 @@ def build_encode_assembly_plan(
     else:
         subtitles = resolve_native_subtitle_tracks(config)
     for subtitle_path, subtitle_index in subtitles:
-        track_artifact = preparation.artifact_for_track(subtitle_path, subtitle_index)
-        container_artifact = preparation.artifact_for_container(subtitle_path)
-        if track_artifact == subtitle_path and container_artifact != subtitle_path:
-            track_artifact = container_artifact
+        track_artifact, track_index = preparation.artifact_for_track(subtitle_path, subtitle_index)
         ordered.append(MatroskaAssemblyTrack(
             artifact=track_artifact,
-            artifact_track_index=(
-                subtitle_index if track_artifact == container_artifact and container_artifact != subtitle_path
-                else (0 if track_artifact != subtitle_path else _matroska_track_index_for_stream(subtitle_path, subtitle_index))
-            ),
+            artifact_track_index=track_index,
             source_identity=_identity(subtitle_path),
             time_shift_ms=_offset_ms(config, "subtitle", subtitle_path, subtitle_index),
         ))
@@ -364,11 +503,13 @@ def build_encode_assembly_plan(
     ):
         chapter_source = preparation.artifact_for_container(Path(config.source))
 
+    # Repli sur l'artefact (déjà redirigé) de la première vidéo : une vidéo
+    # copiée depuis un MP4 n'est lisible que via son MKV canonique.
     segment_info_source = (
         preparation.artifact_for_container(Path(config.source))
         if _is_matroska(preparation.artifact_for_container(Path(config.source)))
         and preparation.artifact_for_container(Path(config.source)).is_file()
-        else (video_artifacts[0].path if video_artifacts else None)
+        else (ordered[0].artifact if video_artifacts else None)
     )
 
     return MatroskaAssemblyPlan(
@@ -415,6 +556,7 @@ def materialize_audio_artifacts(
             cleanup_paths.append(target)
         command = [
             ffmpeg_bin, "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+            *ffmpeg_progress_args(),
             "-i", str(source), "-map", f"0:{int(audio.stream_index)}",
         ]
         command.extend(audio_codec_args(0, audio))
@@ -436,6 +578,7 @@ def assemble_encode_output_native(
     ffprobe_bin: str = "ffprobe",
     resolved_subtitles: list[tuple[Path, int]] | None = None,
     track_metadata: tuple[PlannedTrackMetadata, ...] | None = None,
+    validation_override: ValidationOverride | None = None,
 ) -> Path:
     """Assemblage final natif : matérialisation audio, contrat, écriture atomique.
 
@@ -457,12 +600,22 @@ def assemble_encode_output_native(
             run_cmd=run_cmd,
             cleanup_paths=audio_cleanup_paths,
         ) if config.audio_tracks else {}
+        # Seules les pistes vidéo copiées depuis une source déclarée sont
+        # canonicalisables : un artefact encodé non Matroska doit échouer,
+        # pas être remuxé silencieusement (cadence d'un flux brut perdue).
+        declared_sources = {Path(path) for path in resolve_source_layout(config).sources}
         preparation = prepare_native_encode_inputs(
             config,
             work_dir=work_dir,
             ffmpeg_bin=ffmpeg_bin,
             run_cmd=run_cmd,
             resolved_subtitles=resolved_subtitles,
+            ffprobe_bin=ffprobe_bin,
+            video_refs=[
+                (ref.path, ref.track_index)
+                for ref in video_artifacts
+                if Path(ref.path) in declared_sources
+            ],
         )
         preparation_cleanup_paths = preparation.cleanup_paths
         assembly = build_encode_assembly_plan(
@@ -489,17 +642,18 @@ def assemble_encode_output_native(
             errors = validate_matroska_output(
                 path, contract, packet_validation=packet_validation,
             )
-            if errors:
-                raise EncodeError(
-                    "Validation sémantique de la sortie native échouée : "
-                    + " ; ".join(errors)
-                )
-            run_cmd(
+            validate_final_output(
+                path, errors, lambda: run_cmd(
                 [
                     ffprobe_bin, "-v", "error", "-show_entries",
                     "format=format_name", "-of", "json", str(path),
                 ],
                 "ffprobe-native-validation",
+                ),
+                message_prefix="Validation sémantique de la sortie native échouée : ",
+                override=validation_override,
+                cancelled=signals._cancel_event.is_set if signals is not None else lambda: False,
+                warn=lambda message: log("WARN", message),
             )
 
         progress_state = {"packets": 0, "bytes": 0}
@@ -534,6 +688,11 @@ def assemble_encode_output_native(
             MatroskaWriter().write(
                 mux_plan,
                 external_validator=_validate,
+                validation_error_handler=lambda path, message: accept_validation_override(
+                    validation_override, path, message,
+                    signals._cancel_event.is_set if signals is not None else lambda: False,
+                    lambda msg: log("WARN", msg),
+                ),
                 cancel_cb=(signals._cancel_event.is_set if signals is not None else None),
                 progress_cb=_on_progress,
             )
@@ -555,5 +714,6 @@ __all__ = [
     "build_encode_assembly_plan",
     "materialize_audio_artifacts",
     "prepare_native_encode_inputs",
+    "probe_source_streams",
     "resolve_native_subtitle_tracks",
 ]

@@ -87,8 +87,26 @@ def render_formula(
     hdr10plus_tool_macos_url: str,
     hdr10plus_tool_macos_sha256: str,
     homepage: str = "https://github.com/Hydro74000/Muxiveo",
+    muxiveo_rife_macos_url: str = "",
+    muxiveo_rife_macos_sha256: str = "",
 ) -> str:
     setup_brew_script = textwrap.indent(_render_setup_brew_script().rstrip(), "      ")
+    # muxiveo-rife (interpolation RIFE) : optionnel tant que sa release n'existe pas.
+    rife_resource = ""
+    rife_install = ""
+    if muxiveo_rife_macos_url and muxiveo_rife_macos_sha256:
+        rife_resource = f"""
+
+    resource "muxiveo-rife" do
+      url "{muxiveo_rife_macos_url}"
+      sha256 "{muxiveo_rife_macos_sha256}"
+    end"""
+        rife_install = """
+      resource("muxiveo-rife").stage do
+        (libexec/"tools").install Dir["*"]
+      end
+      chmod 0755, libexec/"tools/muxiveo-rife"
+"""
     return f"""class Muxiveo < Formula
   desc "GUI video workflow tool for remuxing, encoding, Dolby Vision and HDR10+"
   homepage "{homepage}"
@@ -115,7 +133,7 @@ def render_formula(
     resource "hdr10plus_tool" do
       url "{hdr10plus_tool_macos_url}"
       sha256 "{hdr10plus_tool_macos_sha256}"
-    end
+    end{rife_resource}
   end
 
   def install_setup_brew_helper
@@ -164,7 +182,7 @@ def render_formula(
 
       chmod 0755, libexec/"tools/dovi_tool"
       chmod 0755, libexec/"tools/hdr10plus_tool"
-
+{rife_install}
       (libexec/"muxiveo").write <<~EOS
         #!/bin/bash
         set -euo pipefail
@@ -259,6 +277,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hdr10plus-tool-macos-url", required=True)
     parser.add_argument("--hdr10plus-tool-macos-sha256", required=True)
     parser.add_argument("--homepage", default="https://github.com/Hydro74000/Muxiveo")
+    parser.add_argument("--muxiveo-rife-macos-url", default="")
+    parser.add_argument("--muxiveo-rife-macos-sha256", default="")
     parser.add_argument("--output", required=True)
     return parser.parse_args()
 
@@ -279,6 +299,8 @@ def main() -> None:
             hdr10plus_tool_macos_url=args.hdr10plus_tool_macos_url,
             hdr10plus_tool_macos_sha256=args.hdr10plus_tool_macos_sha256,
             homepage=args.homepage,
+            muxiveo_rife_macos_url=args.muxiveo_rife_macos_url,
+            muxiveo_rife_macos_sha256=args.muxiveo_rife_macos_sha256,
         ),
         encoding="utf-8",
     )

@@ -18,6 +18,10 @@ class _FakeWorkflow:
         self.step_finished = _DummySignal()
         self.workflow_finished = _DummySignal()
         self.workflow_failed = _DummySignal()
+        self.workflow_cancelled = _DummySignal()
+
+    def set_validation_override(self, callback) -> None:
+        self.validation_override = callback
 
 
 class _DummyConfig:
@@ -59,3 +63,34 @@ def test_merge_dovi_panel_inits_workflow_with_ffmpeg_bins(tmp_path, qt_app, monk
     combo = panel._config_section._profile_combo
     values = [combo.itemData(i) for i in range(combo.count())]
     assert values == [DoviProfile.DISABLED, DoviProfile.P8_1, DoviProfile.P8_0]
+
+
+def test_merge_dovi_panel_hdr_hint_follows_profile(tmp_path, qt_app, monkeypatch):
+    import ui.panels.merge_dovi_panel as panel_mod
+    from core.i18n import translate_text
+    from core.workflows.merge_dovi import DoviProfile, HdrState
+
+    monkeypatch.setattr(panel_mod, "MergeDoviWorkflow", lambda **kw: _FakeWorkflow(**kw))
+    panel = panel_mod.MergeDoviPanel(cast(Any, _DummyConfig(tmp_path)))
+    section = panel._config_section
+    combo = section._profile_combo
+
+    section.set_hdr_states(
+        HdrState(has_dovi=True, transfer="pq"),
+        HdrState(has_dovi=True, has_hdr10plus=True, transfer="pq"),
+    )
+    text = section._hdr_hint.text()
+    assert translate_text(
+        "Film 1 : {film1}  ·  Film 2 : {film2}",
+        film1="Dolby Vision + HDR10", film2="Dolby Vision + HDR10+",
+    ) in text
+    assert translate_text(
+        "Le RPU Dolby Vision de Film 1 sera remplacé par celui de Film 2. "
+        "Choisir « Désactivé » pour n'injecter que le HDR10+."
+    ) in text
+
+    combo.setCurrentIndex(combo.findData(DoviProfile.DISABLED))
+    assert translate_text("Le Dolby Vision de Film 1 sera conservé.") in section._hdr_hint.text()
+
+    section.set_hdr_states(None, None)
+    assert section._hdr_hint.isHidden()

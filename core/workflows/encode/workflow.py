@@ -7,6 +7,7 @@ Public:
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import shutil
@@ -15,6 +16,7 @@ import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from fractions import Fraction
 from pathlib import Path
 from typing import Callable
 from uuid import uuid4
@@ -64,6 +66,7 @@ from core.workflows.encode.catalog import (
 from core.workflows.encode.domain import (
     EncodeCodecDomainCallbacks as _EncodeCodecDomainCallbacks,
     needs_static_hdr_bitstream_patch as _needs_static_hdr_bitstream_patch_domain,
+    needs_static_hdr_sei_reinjection as _needs_static_hdr_sei_reinjection_domain,
 )
 from core.workflows.remux_timeline_sync import (
     FfmpegTimelineSync,
@@ -107,6 +110,22 @@ from core.workflows.encode.runtime.dynamic_hdr import (
     DynamicHdrNormalizerCallbacks,
 )
 from core.workflows.encode.runtime.hdr_metadata import HdrMetadataProbeService
+from core.pipeline_command import PipelineCommand as _PipelineCommand
+from core.pipeline_command import command_preview_tokens as _command_preview_tokens
+from core.workflows.encode.interpolation import (
+    INTERPOLATION_FACTORS as _INTERPOLATION_FACTORS,
+    INTERPOLATION_MODELS as _INTERPOLATION_MODELS,
+    INTERPOLATION_MODES as _INTERPOLATION_MODES,
+    RIFE_MIN_VERSION as _RIFE_MIN_VERSION,
+    RIFE_TTA_MIN_VERSION as _RIFE_TTA_MIN_VERSION,
+    INTERPOLATION_TTA_LEVELS as _INTERPOLATION_TTA_LEVELS,
+    rife_model_available as _rife_model_available,
+    InterpolationSource as _InterpolationSource,
+    build_rife_stage as _build_rife_stage,
+    parse_rife_progress as _parse_rife_progress,
+    rife_version as _rife_version,
+    interpolation_source_from_probe as _interpolation_source_from_probe,
+)
 from core.workflows.encode.runtime.metadata_inject import (
     _build_dovi_record_from_rpu as _build_dovi_record_from_rpu_runtime,
 )
@@ -245,6 +264,7 @@ from core.workflows.encode.models import (
 from core.workflows.encode.output_contract import build_encode_output_contract
 from core.matroska.contract import ExpectedMatroskaAttachment
 from core.workflows.common.matroska_finalize import MatroskaOutputTransaction, PostAction
+from core.workflows.common.validation_override import ValidationOverride
 from core.workflows.encode.planning.plan_models import (
     EncodePlan as _EncodePlan,
     MaterializedContainerMetadataPlan as _MaterializedContainerMetadataPlan,
@@ -271,6 +291,31 @@ def _connect_direct(signal, slot) -> None:
         signal.connect(slot)
         return
     signal.connect(slot, direct)
+
+
+def _interpolation_decode_cmd(decode_cmd: list[str], info: _InterpolationSource) -> list[str]:
+    """Décodage y4m aligné trame à trame pour RIFE.
+
+    ``-fps_mode passthrough`` : aucune trame dupliquée ou supprimée par ffmpeg
+    (les métadonnées dynamiques sont indexées par trame) ; source VFR
+    normalisée CFR à sa cadence nominale.
+    """
+    cmd = list(decode_cmd)
+
+    def insert_before_output(args: list[str]) -> None:
+        # options de sortie : avant ``-f yuv4mpegpipe`` (sinon avant la sortie)
+        at = cmd.index("-f") if "-f" in cmd else max(1, len(cmd) - 1)
+        cmd[at:at] = args
+
+    if info.cfr_rate:
+        if "-vf" in cmd:
+            index = cmd.index("-vf") + 1
+            cmd[index] = f"{cmd[index]},fps={info.cfr_rate}"
+        else:
+            insert_before_output(["-vf", f"fps={info.cfr_rate}"])
+    if "-fps_mode" not in cmd:
+        insert_before_output(["-fps_mode", "passthrough"])
+    return cmd
 
 
 class EncodeWorkflow(QObject):
@@ -327,6 +372,7 @@ class EncodeWorkflow(QObject):
         writing_application:       str  = "",
         generate_nfo:              bool = True,
         nvencc_bin:                str | None = None,
+        rife_bin:                  str | None = None,
         sync_rewrite_enabled:      bool = False,
         aac_bitrate_per_channel_kbps: int = 96,
         eac3_bitrate_per_channel_kbps: int = 96,
@@ -343,6 +389,8 @@ class EncodeWorkflow(QObject):
         # pour permettre une vérification explicite avant d'invoquer le pipeline
         # ffmpeg → NVEncC → ffmpeg.
         self._nvencc_bin: str | None = nvencc_bin
+        # muxiveo-rife (interpolation d'images) : optionnel, None = indisponible.
+        self._rife_bin: str | None = rife_bin
         # Cache mémoire : évite de ré-exécuter ffprobe/mediainfo à chaque
         # reconstruction d'aperçu (preview_command peut être appelé des dizaines
         # de fois pour le même fichier lors de changements UI).
@@ -357,6 +405,7 @@ class EncodeWorkflow(QObject):
             dovi_tool_bin=self._bins["dovi_tool"],
         )
         self._generate_nfo = generate_nfo
+        self._validation_override: ValidationOverride | None = None
         self._sync_rewrite_enabled = bool(sync_rewrite_enabled)
         self._sync_rewrite_audio_bitrates = {
             "aac": int(aac_bitrate_per_channel_kbps or 96),
@@ -430,8 +479,18 @@ class EncodeWorkflow(QObject):
         """Met à jour le chemin vers NVEncC (None = pipeline NVEncC indisponible)."""
         self._nvencc_bin = nvencc_bin or None
 
+    def set_rife_bin(self, rife_bin: str | None) -> None:
+        """Met à jour le chemin vers muxiveo-rife (None = interpolation indisponible)."""
+        self._rife_bin = rife_bin or None
+
     def set_generate_nfo(self, generate_nfo: bool) -> None:
         self._generate_nfo = generate_nfo
+
+    def set_validation_override(self, callback: ValidationOverride | None) -> None:
+        self._validation_override = callback
+
+    def _validation_override_for(self, config: EncodeConfig) -> ValidationOverride | None:
+        return self._validation_override if config.allow_validation_override else None
 
     def set_regenerate_statistics(self, enabled: bool) -> None:
         self._statistics_post_action.set_enabled(enabled)
@@ -809,6 +868,7 @@ class EncodeWorkflow(QObject):
             ffmpeg_bin=self._ffmpeg,
             video_tracks=self._video_tracks,
             resolve_input_routing=self._resolve_nvencc_input_routing,
+            wrap_decode_with_interpolation=self._wrap_decode_with_interpolation,
         )
 
     def _build_runtime_nvencc_remux_cmd(
@@ -854,7 +914,7 @@ class EncodeWorkflow(QObject):
         selection = _build_encode_command_selection_plan(
             config,
             plan=self._build_encode_plan(config),
-            is_multi_video=self._is_multi_video,
+            is_multi_video=lambda cfg: self._is_multi_video(cfg) or self._needs_split_video_encode(cfg),
             uses_two_pass=self._uses_two_pass,
             build_multi_video_preview=self._build_multi_video_command_preview,
             build_two_pass=self._build_two_pass,
@@ -908,6 +968,32 @@ class EncodeWorkflow(QObject):
             signals=signals,
         )
 
+    def _wrap_decode_with_interpolation(
+        self,
+        decode_cmd: list[str],
+        video: VideoEncodeSettings,
+        source: Path,
+    ) -> list[str]:
+        """Ajoute l'étage muxiveo-rife derrière un décodage y4m (pipeline NVEncC)."""
+        if not video.interpolates():
+            return decode_cmd
+        if not self._rife_bin:
+            raise EncodeError("Interpolation d'images : outil muxiveo-rife introuvable.")
+        settings = video.interpolation
+        info = self._interpolation_source(video, source)
+        rife = _build_rife_stage(
+            self._rife_bin,
+            factor=int(settings.factor),
+            target_fps=settings.target_fps,
+            quality=settings.quality,
+            source=info,
+            scene_threshold=settings.scene_threshold,
+            gpu=settings.gpu,
+            mode=settings.mode,
+            tta=settings.tta,
+        )
+        return _PipelineCommand(rife, [_interpolation_decode_cmd(decode_cmd, info)])
+
     def _run_nvencc_direct_output(
         self,
         config: EncodeConfig,
@@ -942,6 +1028,7 @@ class EncodeWorkflow(QObject):
                 finalize_ffmpeg=self._finalize_ffmpeg_output,
                 native_assemble=self._native_assemble_nvencc if native_mux else None,
                 bins=dict(self._bins),
+                wrap_decode_with_interpolation=self._wrap_decode_with_interpolation,
             )
         ).run(
             config,
@@ -977,6 +1064,7 @@ class EncodeWorkflow(QObject):
             video_artifacts=[
                 _NativeVideoArtifactRef(Path(intermediate), 0, int(video_offset_ms or 0)),
             ],
+            validation_override=self._validation_override_for(config),
             resolved_subtitles=self._plan_resolved_subtitles(plan),
             track_metadata=(plan.track_metadata if plan is not None else None),
             work_dir=Path(work_dir),
@@ -1015,6 +1103,7 @@ class EncodeWorkflow(QObject):
         _assemble_encode_output_native(
             config,
             video_artifacts=refs,
+            validation_override=self._validation_override_for(config),
             resolved_subtitles=self._plan_resolved_subtitles(plan),
             track_metadata=(plan.track_metadata if plan is not None else None),
             work_dir=Path(work_dir),
@@ -1064,28 +1153,21 @@ class EncodeWorkflow(QObject):
             source = self._video_source_from_settings(config, video)
             if video.codec == "copy":
                 continue
+            track_commands = [
+                _command_preview_tokens(cmd)
+                for cmd in self._build_multi_video_track_encode_commands(
+                    config,
+                    video,
+                    source,
+                    Path(f"<video_{idx}.mkv>"),
+                    thread_count=thread_count,
+                    for_preview=True,
+                )
+            ]
             if video.quality_mode == QualityMode.SIZE:
-                commands.extend(
-                    self._build_multi_video_track_encode_commands(
-                        config,
-                        video,
-                        source,
-                        Path(f"<video_{idx}.mkv>"),
-                        thread_count=thread_count,
-                        for_preview=True,
-                    )
-                )
+                commands.extend(track_commands)
             else:
-                commands.append(
-                    self._build_multi_video_track_encode_commands(
-                        config,
-                        video,
-                        source,
-                        Path(f"<video_{idx}.mkv>"),
-                        thread_count=thread_count,
-                        for_preview=True,
-                    )[-1]
-                )
+                commands.append(track_commands[-1])
         commands.append(self._build_multi_video_final_mux_command(config, [], plan=plan))
         return commands
 
@@ -1326,6 +1408,7 @@ class EncodeWorkflow(QObject):
         allow_sync_rewrite: bool = False,
         sync_rewrite_work_dir: Path | None = None,
         signals: TaskSignals | None = None,
+        include_video: bool = True,
     ) -> tuple[_ResolvedTrackAssembly, dict[tuple[Path, int, str], tuple[int, int]]]:
         track_assembly = _resolve_track_assembly_plan(
             config,
@@ -1335,6 +1418,7 @@ class EncodeWorkflow(QObject):
             sync_remap=sync_remap,
             video_default_map=video_default_map,
             video_fallback_input=video_fallback_input,
+            include_video=include_video,
         )
         offset_lookup = dict(plan.offset_lookup)
         offset_mode_lookup = _track_time_offset_mode_lookup_plan(config)
@@ -1657,6 +1741,9 @@ class EncodeWorkflow(QObject):
         return ["-ss", f"{abs(offset_ms) / 1000.0:.3f}"]
 
     def _size_to_bitrate_kbps_for_video(self, config: EncodeConfig, video: VideoEncodeSettings) -> int:
+        # Mono-vidéo (encodage séparé : RIFE, réinjection HDR) : budget audio déduit.
+        if not self._is_multi_video(config):
+            return self._size_to_bitrate_kbps(config)
         duration = config.duration_s or 3600.0
         total_bits = video.target_size_mb * 8 * 1024 * 1024
         video_bits = max(total_bits, int(duration * 500_000))
@@ -1679,8 +1766,48 @@ class EncodeWorkflow(QObject):
                 video_stream_from_settings=self._video_stream_from_settings,
                 size_to_bitrate_kbps=self._size_to_bitrate_kbps,
                 size_to_bitrate_kbps_for_video=self._size_to_bitrate_kbps_for_video,
+                rife_bin=self._rife_bin,
+                interpolation_source=self._interpolation_source,
             )
         )
+
+    def _interpolation_source(self, video: VideoEncodeSettings, source: Path) -> _InterpolationSource:
+        """Couleur, départ et régularité de cadence du flux vidéo à interpoler."""
+        payload = self._ffprobe_streams_payload(source) or {}
+        stream_index = self._video_stream_from_settings(video)
+        stream = next(
+            (
+                item for item in self._ffprobe_stream_dicts(payload)
+                if int(str(item.get("index", -1))) == stream_index
+            ),
+            {},
+        )
+        fmt = payload.get("format")
+        info = _interpolation_source_from_probe(
+            stream,
+            format_start_time=fmt.get("start_time") if isinstance(fmt, dict) else None,
+            tonemap_to_sdr=bool(video.tonemap_to_sdr),
+        )
+        if not info.is_vfr and self._mediainfo_frame_rate_mode(source) == "vfr":
+            # Les écarts r/avg ffprobe ne voient pas toujours le VFR des smartphones.
+            rate = str(stream.get("r_frame_rate") or stream.get("avg_frame_rate") or "")
+            info = dataclasses.replace(info, is_vfr=True, cfr_rate=rate)
+        if info.cfr_rate and (video.copy_dv or video.copy_hdr10plus):
+            # DoVi / HDR10+ sont indexés par trame décodée : aucune trame ne doit
+            # être ajoutée ou retirée, la normalisation CFR est désactivée.
+            info = dataclasses.replace(info, cfr_rate="")
+        return info
+
+    def _mediainfo_frame_rate_mode(self, source: Path) -> str:
+        """``FrameRate_Mode`` MediaInfo du flux (``cfr``/``vfr``/``""``).
+
+        ``FrameRate_Mode_Original`` est ignoré : en Matroska il vaut souvent
+        VFR (horodatage conteneur) pour un flux réellement CFR.
+        """
+        track = self._load_mediainfo_video_track(source)
+        if not isinstance(track, dict):
+            return ""
+        return str(track.get("FrameRate_Mode") or "").strip().lower()
 
     def _build_video_track_base_cmd(
         self,
@@ -2106,12 +2233,9 @@ class EncodeWorkflow(QObject):
         if active_inner is not None:
             active_inner["signals"] = encode_signals
         signals.link_workers(encode_signals)
-        previous_generate_nfo = self._generate_nfo
-        self._generate_nfo = False
         try:
             self._run_with_preparation(preview_config, validate=False, prep_signals=encode_signals)
         finally:
-            self._generate_nfo = previous_generate_nfo
             if active_inner is not None:
                 active_inner["signals"] = None
         self._check_cancelled(signals)
@@ -2415,6 +2539,8 @@ class EncodeWorkflow(QObject):
             dovi_profile=video.dovi_profile,
             work_dir=output.parent,
             tmdb_cover=None,
+            write_nfo=False,
+            allow_validation_override=False,
         )
 
     # ------------------------------------------------------------------
@@ -2444,6 +2570,7 @@ class EncodeWorkflow(QObject):
                 ctx=self._backend_context(plan=plan),
             )
         )
+        errors.extend(self._interpolation_validation_errors(config))
         # Backend natif strict : toute incompatibilité est signalée avant
         # l'encodage lourd, aucun repli FFmpeg n'est autorisé.
         mux_decision = self.select_mux_backend(config)
@@ -2454,13 +2581,126 @@ class EncodeWorkflow(QObject):
             )
         return errors
 
+    def _interpolation_validation_errors(self, config: EncodeConfig) -> list[str]:
+        """Contrôles propres à l'interpolation RIFE (outil, cadence, entrelacement)."""
+        errors: list[str] = []
+        for video in self._video_tracks(config):
+            settings = video.interpolation
+            if not settings.enabled:
+                continue
+            if video.codec == "copy":
+                errors.append("Interpolation d'images : impossible avec le codec vidéo COPY (réencodage requis).")
+                continue
+            source = self._video_source_from_settings(config, video)
+            info = self._interpolation_source(video, source)
+            if info.is_vfr and (video.copy_dv or video.copy_hdr10plus):
+                errors.append(
+                    f"Interpolation d'images : {source.name} est à cadence variable (VFR). La copie "
+                    "Dolby Vision / HDR10+ impose de conserver chaque trame, ce qui fausserait la durée : "
+                    "désactiver la copie DoVi / HDR10+ (la cadence sera alors normalisée) ou l'interpolation."
+                )
+            if settings.target_fps:
+                try:
+                    target = Fraction(str(settings.target_fps))
+                except (ValueError, ZeroDivisionError):
+                    target = Fraction(0)
+                try:
+                    source_rate = Fraction(str(info.decode_rate)) if info.decode_rate else Fraction(0)
+                except (ValueError, ZeroDivisionError):
+                    source_rate = Fraction(0)
+                if target <= 0:
+                    errors.append(f"Interpolation d'images : cadence cible « {settings.target_fps} » invalide.")
+                elif source_rate <= 0:
+                    # Sans cadence source, le rapport retomberait à 1 (métadonnées
+                    # dynamiques non étendues, contrôle du nombre de trames faussé).
+                    errors.append(
+                        f"Interpolation d'images : cadence de {source.name} inconnue ; "
+                        "choisir un facteur (x2, x3, x4) plutôt qu'une cadence cible."
+                    )
+                elif settings.ratio(info.decode_rate) <= video.filters.field_rate_multiplier():
+                    errors.append(
+                        f"Interpolation d'images : la cadence cible ({float(target):.3f} i/s) doit dépasser "
+                        f"celle de {source.name}"
+                        + (" après désentrelacement (une image par champ)." if video.filters.field_rate_multiplier() > 1 else ".")
+                    )
+            elif int(settings.factor) not in _INTERPOLATION_FACTORS:
+                errors.append(
+                    f"Interpolation d'images : facteur x{settings.factor} non supporté "
+                    f"(valeurs : {', '.join(f'x{f}' for f in _INTERPOLATION_FACTORS)})."
+                )
+            if settings.quality not in _INTERPOLATION_MODELS:
+                errors.append(f"Interpolation d'images : qualité « {settings.quality} » inconnue.")
+            if settings.mode not in _INTERPOLATION_MODES:
+                errors.append(f"Interpolation d'images : mode « {settings.mode} » inconnu.")
+            if int(settings.tta) not in _INTERPOLATION_TTA_LEVELS:
+                errors.append(
+                    f"Interpolation d'images : TTA x{settings.tta} non supporté "
+                    f"(valeurs : {', '.join(f'x{n}' for n in _INTERPOLATION_TTA_LEVELS if n > 1)})."
+                )
+            rife_bin = self._rife_bin
+            if not rife_bin or not (Path(rife_bin).is_file() or shutil.which(rife_bin)):
+                errors.append(
+                    "Interpolation d'images : outil muxiveo-rife introuvable "
+                    "(Paramètres > Outils externes, ou relancer le setup)."
+                )
+            else:
+                resolved = str(shutil.which(rife_bin) or rife_bin)
+                version = _rife_version(resolved)
+                model = _INTERPOLATION_MODELS.get(settings.quality, "")
+                if version is not None and version < _RIFE_MIN_VERSION:
+                    errors.append(
+                        "Interpolation d'images : muxiveo-rife "
+                        f"{'.'.join(map(str, _RIFE_MIN_VERSION))} ou plus récent requis "
+                        f"(installé : {'.'.join(map(str, version))}) ; relancer le setup."
+                    )
+                elif version is not None and int(settings.tta) > 1 and version < _RIFE_TTA_MIN_VERSION:
+                    errors.append(
+                        "Interpolation d'images : le TTA requiert muxiveo-rife "
+                        f"{'.'.join(map(str, _RIFE_TTA_MIN_VERSION))} ou plus récent "
+                        f"(installé : {'.'.join(map(str, version))}) ; relancer le setup."
+                    )
+                elif version is not None and model and not _rife_model_available(resolved, model):
+                    errors.append(
+                        f"Interpolation d'images : modèle RIFE « {model} » absent de "
+                        f"{Path(resolved).resolve().parent / 'rife-models'} ; relancer le setup."
+                    )
+            if self._video_stream_is_interlaced(source, self._video_stream_from_settings(video)) and not (
+                video.filters.yadif_enabled
+            ):
+                errors.append(
+                    f"Interpolation d'images : {source.name} est entrelacée ; "
+                    "activez le désentrelacement (appliqué avant l'interpolation)."
+                )
+        return errors
+
+    def _video_stream_is_interlaced(self, source: Path, stream_index: int) -> bool:
+        payload = self._ffprobe_streams_payload(source) or {}
+        for stream in self._ffprobe_stream_dicts(payload):
+            if int(str(stream.get("index", -1))) == stream_index:
+                return str(stream.get("field_order") or "").lower() in {"tt", "bb", "tb", "bt"}
+        return False
+
     # ------------------------------------------------------------------
     # Backend de muxage final (lot 2)
     # ------------------------------------------------------------------
 
+    def _needs_split_video_encode(self, config: EncodeConfig) -> bool:
+        """Piste unique encodée par FFmpeg à part, sans injection de métadonnées dynamiques.
+
+        Interpolation (la vidéo transite par un pipe y4m) ou SEI HDR10 statiques posés
+        après encodage : la commande FFmpeg directe (toutes pistes en une passe) est
+        remplacée par l'encode vidéo seul suivi de l'assemblage du pipeline multi-pistes.
+        """
+        if self._is_multi_video(config) or self._needs_metadata_inject(config):
+            return False
+        video = self._primary_video_settings(config)
+        if not (video.interpolates() or _needs_static_hdr_sei_reinjection_domain(video)):
+            return False
+        return getattr(self._backend_for_config(config), "backend_id", "ffmpeg") == "ffmpeg"
+
     def _mux_pipeline_kind(self, config: EncodeConfig) -> str:
         """Pipeline d'assemblage final visé par cette configuration."""
-        if self._is_multi_video(config):
+        if self._is_multi_video(config) or self._needs_split_video_encode(config):
             return _PIPELINE_MULTI_VIDEO
         if self._needs_metadata_inject(config):
             return _PIPELINE_METADATA_INJECT
@@ -2532,7 +2772,38 @@ class EncodeWorkflow(QObject):
         config: EncodeConfig,
         line: str,
     ) -> _ProgressEvent | None:
+        rife = _parse_rife_progress(line)
+        if rife is not None:
+            # Interpolation : RIFE est l'étage qui connaît la position dans la
+            # source (l'encodeur lit un pipe sans durée ni nombre de trames).
+            total = self._interpolation_total_source_frames(config)
+            return _ProgressEvent(
+                raw_line=line,
+                percent=rife.percent(total),
+                fps=rife.fps_out,
+                eta_seconds=rife.eta_seconds(total),
+                should_log=False,
+            )
         return self._backend_for_config(config).parse_progress(line)
+
+    def _interpolation_total_source_frames(self, config: EncodeConfig) -> int | None:
+        """Trames source de la piste interpolée (durée × cadence ffprobe)."""
+        video = self._primary_video_settings(config)
+        source = self._video_source_from_settings(config, video)
+        payload = self._ffprobe_streams_payload(source) or {}
+        stream_index = self._video_stream_from_settings(video)
+        stream = next(
+            (s for s in self._ffprobe_stream_dicts(payload) if int(str(s.get("index", -1))) == stream_index),
+            {},
+        )
+        fps = self._fps_expr_to_float(stream.get("avg_frame_rate") or stream.get("r_frame_rate"))
+        duration = config.duration_s
+        if not duration:
+            fmt = payload.get("format")
+            duration = self._fps_expr_to_float(fmt.get("duration")) if isinstance(fmt, dict) else None
+        if not fps or not duration:
+            return None
+        return int(round(float(duration) * fps))
 
     # ------------------------------------------------------------------
     # Exécution
@@ -2644,6 +2915,7 @@ class EncodeWorkflow(QObject):
                 run_with_metadata_inject=self._run_with_metadata_inject,
                 run_direct_output=self._run_direct_output,
                 select_mux_backend=self.select_mux_backend,
+                needs_split_video_encode=self._needs_split_video_encode,
             )
         )
 
@@ -2766,6 +3038,7 @@ class EncodeWorkflow(QObject):
                 _assemble_encode_output_native(
                     config,
                     video_artifacts=video_artifacts,
+                    validation_override=self._validation_override_for(config),
                     resolved_subtitles=self._plan_resolved_subtitles(encode_plan),
                     track_metadata=encode_plan.track_metadata,
                     work_dir=work_dir,
@@ -2921,6 +3194,7 @@ class EncodeWorkflow(QObject):
                 ffmpeg_thread_args=self._ffmpeg_thread_args,
                 append_offset_aux_inputs=self._append_offset_aux_inputs,
                 build_offset_specs=lambda config, **kwargs: _build_offset_specs_plan(config, **kwargs),
+                resolve_track_assembly_and_offset_remap=self._resolve_track_assembly_and_offset_remap,
                 append_stream_maps_and_attachments=self._append_stream_maps_and_attachments,
                 append_strict_interleave_mux_flags=self._append_strict_interleave_mux_flags,
                 append_container_metadata_args=self._append_container_metadata_args,
@@ -2942,6 +3216,7 @@ class EncodeWorkflow(QObject):
                 build_multi_video_track_encode_commands=self._build_multi_video_track_encode_commands,
                 two_pass_log_prefix=self._two_pass_log_prefix,
                 native_assemble=self._native_assemble_multi if native_mux else None,
+                validation_override=self._validation_override_for(config),
             )
         ).run(
             config,
@@ -3014,9 +3289,10 @@ class EncodeWorkflow(QObject):
                     path, statistics_by_position=derived_statistics,
                 ),
             ),
-            write_nfo=self._write_nfo_after_commit if self._generate_nfo else None,
+            write_nfo=self._write_nfo_after_commit if (self._generate_nfo and config.write_nfo) else None,
             warn=lambda message: self.log_message.emit("WARN", message),
             track_enabled_post_action=self._track_enabled_post_action,
+            validation_override=self._validation_override_for(config),
         )
         return transaction.execute(
             command,
@@ -3319,9 +3595,10 @@ class EncodeWorkflow(QObject):
             load_mediainfo_video_track=self._load_mediainfo_video_track,
         )
 
-    def _source_video_fps_expr(self, source: Path) -> str:
+    def _source_video_fps_expr(self, source: Path, *, stream_index: int | None = None) -> str:
         return _source_video_fps_expr_runtime(
             source,
+            stream_index=stream_index,
             ffprobe_streams_payload=self._ffprobe_streams_payload,
             ffprobe_stream_dicts=self._ffprobe_stream_dicts,
             mediainfo_fps_expr=self._mediainfo_video_fps_expr,
@@ -3374,7 +3651,8 @@ class EncodeWorkflow(QObject):
             video_source_path=self._video_source_path,
             video_stream_index=self._video_stream_index,
             video_codec_of=self._video_codec_of,
-            source_video_fps_expr=self._source_video_fps_expr,
+            source_video_fps_expr=(self._source_video_fps_expr if stream_index == 0 else
+                lambda source: self._source_video_fps_expr(source, stream_index=stream_index)),
             source_is_vfr=self._source_is_vfr,
             nvencc_input_fps_hint=lambda source_for_fps, input_path: self._nvencc_input_fps_hint(
                 source_for_fps=source_for_fps,
@@ -3550,6 +3828,7 @@ class EncodeWorkflow(QObject):
                 report_static_hdr_estimate=self.static_hdr_estimate_ready.emit,
                 report_static_hdr_failure=self.static_hdr_estimate_failed.emit,
                 native_assemble=self._native_assemble_nvencc if native_mux else None,
+                validation_override=self._validation_override_for(config),
             )
         ).run(
             config,

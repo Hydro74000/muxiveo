@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import time
 import urllib.request
 from dataclasses import dataclass
 
@@ -21,7 +23,12 @@ from core.version import APP_BUILD_VERSION, APP_IS_UNSTABLE_BUILD, APP_REPOSITOR
 RELEASES_API_URL = f"https://api.github.com/repos/{APP_REPOSITORY}/releases"
 LATEST_RELEASE_API_URL = f"{RELEASES_API_URL}/latest"
 RELEASE_DOWNLOAD_URL_PREFIX = f"{APP_REPOSITORY_URL}releases/download/"
-UPDATE_CHECK_INTERVAL_S = 24 * 3600
+# Délai total (connexion + lecture) d'une vérification : au-delà, abandon silencieux.
+UPDATE_CHECK_TIMEOUT_S = 5.0
+# Pré-versions récentes examinées en canal unstable (requête légère).
+UNSTABLE_RELEASES_PAGE_SIZE = 10
+_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+_READ_CHUNK_BYTES = 16 * 1024
 
 UPDATE_CHANNEL_STABLE = "stable"
 UPDATE_CHANNEL_UNSTABLE = "unstable"
@@ -148,20 +155,60 @@ def _parse_release(payload: object) -> UpdateInfo | None:
     )
 
 
+class UpdateCheckError(Exception):
+    """Vérification impossible (réseau, SSL, délai dépassé, réponse GitHub invalide)."""
+
+
 def _get_json(url: str, timeout: float) -> object:
+    """GET JSON borné : `timeout` couvre toute la requête (connexion, en-têtes et corps).
+
+    ``urlopen`` attend les en-têtes sans échéance globale (le timeout socket
+    s'applique à chaque lecture) : la requête tourne dans un thread démon et
+    l'appelant n'attend jamais plus que `timeout`.
+    """
+    outcome: dict[str, object] = {}
+
+    def _worker() -> None:
+        try:
+            outcome["value"] = _fetch_json(url, timeout)
+        except BaseException as exc:  # relayée à l'appelant
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=_worker, name="update-check-http", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise TimeoutError(f"délai de {timeout:g} s dépassé")
+    if "error" in outcome:
+        raise outcome["error"]  # type: ignore[misc]
+    return outcome.get("value")
+
+
+def _fetch_json(url: str, timeout: float) -> object:
+    """Lecture JSON avec échéance entre deux blocs (la borne globale est dans `_get_json`)."""
+    deadline = time.monotonic() + timeout
     req = urllib.request.Request(
         url,
         headers={"User-Agent": APP_USER_AGENT, "Accept": "application/vnd.github+json"},
     )
+    chunks: list[bytes] = []
+    size = 0
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310  # URL HTTPS constante
-        return json.loads(resp.read().decode("utf-8"))
+        read = getattr(resp, "read1", None) or resp.read
+        while True:
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"délai de {timeout:g} s dépassé")
+            chunk = read(_READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > _MAX_RESPONSE_BYTES:
+                raise UpdateCheckError("Réponse GitHub trop volumineuse.")
+            chunks.append(chunk)
+    return json.loads(b"".join(chunks).decode("utf-8"))
 
 
-class UpdateCheckError(Exception):
-    """Vérification impossible (réseau, SSL, réponse GitHub invalide)."""
-
-
-def query_latest_release(channel: str = DEFAULT_UPDATE_CHANNEL, timeout: float = 5.0) -> UpdateInfo | None:
+def query_latest_release(channel: str = DEFAULT_UPDATE_CHANNEL, timeout: float = UPDATE_CHECK_TIMEOUT_S) -> UpdateInfo | None:
     """
     Dernière release du canal demandé (None si aucune release exploitable).
 
@@ -171,7 +218,7 @@ def query_latest_release(channel: str = DEFAULT_UPDATE_CHANNEL, timeout: float =
     try:
         if normalize_update_channel(channel) == UPDATE_CHANNEL_STABLE:
             return _parse_release(_get_json(LATEST_RELEASE_API_URL, timeout))
-        payload = _get_json(f"{RELEASES_API_URL}?per_page=30", timeout)
+        payload = _get_json(f"{RELEASES_API_URL}?per_page={UNSTABLE_RELEASES_PAGE_SIZE}", timeout)
     except Exception as exc:
         reason = getattr(exc, "reason", None) or exc
         raise UpdateCheckError(f"{type(exc).__name__}: {reason}") from exc
@@ -181,7 +228,7 @@ def query_latest_release(channel: str = DEFAULT_UPDATE_CHANNEL, timeout: float =
     return max(releases, key=lambda info: version_key(info.version), default=None)
 
 
-def fetch_latest_release(channel: str = DEFAULT_UPDATE_CHANNEL, timeout: float = 5.0) -> UpdateInfo | None:
+def fetch_latest_release(channel: str = DEFAULT_UPDATE_CHANNEL, timeout: float = UPDATE_CHECK_TIMEOUT_S) -> UpdateInfo | None:
     """Dernière release du canal demandé, ou None si GitHub est injoignable."""
     try:
         return query_latest_release(channel, timeout)
@@ -189,7 +236,7 @@ def fetch_latest_release(channel: str = DEFAULT_UPDATE_CHANNEL, timeout: float =
         return None
 
 
-def check_for_update(channel: str = DEFAULT_UPDATE_CHANNEL, timeout: float = 5.0) -> UpdateInfo | None:
+def check_for_update(channel: str = DEFAULT_UPDATE_CHANNEL, timeout: float = UPDATE_CHECK_TIMEOUT_S) -> UpdateInfo | None:
     """Renvoie la dernière release du canal si elle est plus récente que le build courant."""
     info = fetch_latest_release(channel, timeout)
     return info if info is not None and info.is_newer else None

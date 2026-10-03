@@ -1902,3 +1902,29 @@ class TestEncodePanelRunOperation:
         assert panel.run_operation(cast(Any, config)) is expected_signals
         assert captured == {"config": config, "validate": False}
         panel.close()
+
+
+class TestEncodePanelInterpolationTta:
+    def test_tta_combo_round_trip_badge_and_enabling(self, qt_app, monkeypatch):
+        from core.workflows.encode import FrameInterpolationSettings
+
+        panel = EncodePanel(AppConfig())
+        monkeypatch.setattr(panel, "_interpolation_tool_available", lambda: True)
+        panel._sync_interpolation_availability()
+
+        panel._apply_interpolation_settings(FrameInterpolationSettings(enabled=True, factor=2, tta=4))
+        tta = panel._interp_tta_combo
+        # état propre de la liste (les parents restent désactivés tant que le codec est « copy »)
+        assert tta.isEnabledTo(tta.parentWidget())
+        assert panel._current_interpolation_settings().tta == 4
+        badges = panel._video_filter_badges_from_state(
+            {"interpolation": FrameInterpolationSettings(enabled=True, factor=2, tta=4)}
+        )
+        assert any(b.startswith("RIFE x2") and "TTA ×4" in b for b in badges)
+
+        panel._interp_cb.setChecked(False)
+        assert not tta.isEnabledTo(tta.parentWidget())
+        # valeur hors liste (preset édité à la main) : retour à « Désactivé »
+        panel._apply_interpolation_settings(FrameInterpolationSettings(enabled=True, tta=3))
+        assert panel._current_interpolation_settings().tta == 1
+        panel.close()

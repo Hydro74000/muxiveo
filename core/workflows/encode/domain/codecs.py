@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass
 
 from core.workflows.encode.catalog import (
+    StaticHdrMetadataMode,
+    static_hdr_metadata_mode,
     AMF_VIDEO_CODECS,
     NVENC_VIDEO_CODECS,
     NVENCC_VIDEO_CODECS,
@@ -15,6 +18,7 @@ from core.workflows.encode.catalog import (
     needs_static_hdr_bitstream_patch_codec,
     supports_10bit,
     supports_hdr_output,
+    supports_manual_static_hdr_metadata,
 )
 from core.workflows.encode.models import (
     AudioTrackSettings,
@@ -154,6 +158,38 @@ def x265_params(video: VideoEncodeSettings) -> str:
     return ":".join(part for part in parts if part)
 
 
+_X265_MASTER_DISPLAY_RE = re.compile(
+    r"G\((\d+),(\d+)\)B\((\d+),(\d+)\)R\((\d+),(\d+)\)WP\((\d+),(\d+)\)L\((\d+),(\d+)\)"
+)
+
+
+def svtav1_mastering_display(master_display: str) -> str:
+    """master-display x265 (chromaticités ×50000, luminances ×10000) au format SVT-AV1 (décimal)."""
+    match = _X265_MASTER_DISPLAY_RE.fullmatch(str(master_display or "").strip())
+    if match is None:
+        return ""
+    xy = [int(value) / 50000 for value in match.groups()[:8]]
+    lmax, lmin = int(match[9]) / 10000, int(match[10]) / 10000
+    return (
+        f"G({xy[0]:.5f},{xy[1]:.5f})B({xy[2]:.5f},{xy[3]:.5f})R({xy[4]:.5f},{xy[5]:.5f})"
+        f"WP({xy[6]:.5f},{xy[7]:.5f})L({lmax:.4f},{lmin:.4f})"
+    )
+
+
+def svtav1_params(video: VideoEncodeSettings) -> str:
+    """``-svtav1-params`` : paramètres libres + HDR10 statique (mastering-display, content-light)."""
+    parts: list[str] = []
+    if video.extra_params:
+        parts.append(video.extra_params.strip(":"))
+    if video.inject_hdr_meta and not video.tonemap_to_sdr:
+        mastering = svtav1_mastering_display(video.master_display)
+        if mastering:
+            parts.append(f"mastering-display={mastering}")
+        if video.max_cll:
+            parts.append(f"content-light={video.max_cll.strip()}")
+    return ":".join(part for part in parts if part)
+
+
 def requests_hdr_metadata(video: VideoEncodeSettings) -> bool:
     if video.tonemap_to_sdr or not supports_hdr_output(video.codec):
         return False
@@ -168,6 +204,59 @@ def needs_static_hdr_bitstream_patch(video: VideoEncodeSettings) -> bool:
     if not (video.master_display or video.max_cll):
         return False
     return needs_static_hdr_bitstream_patch_codec(video.codec)
+
+
+# Encodeurs ffmpeg qui posent le HDR10 statique depuis les side data des images
+# décodées : ces données sont perdues par le pipe y4m de l'interpolation RIFE.
+_SIDE_DATA_HDR_HEVC_ENCODERS = frozenset({"hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_vaapi"})
+_SIDE_DATA_HDR_AV1_ENCODERS = frozenset({"av1_nvenc", "av1_qsv", "av1_amf", "av1_vaapi"})
+
+# Retrait des métadonnées HDR10 statiques des images : l'encodeur n'écrit plus celles
+# de la source, les valeurs voulues sont posées en SEI après encodage.
+_STRIP_STATIC_HDR_SIDE_DATA = (
+    "sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA,"
+    "sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL"
+)
+
+
+def needs_static_hdr_sei_reinjection(video: VideoEncodeSettings) -> bool:
+    """Vrai si les SEI HDR10 statiques d'une piste HEVC sont posés après encodage.
+
+    Encodeurs ffmpeg qui ne les écrivent que depuis les side data des images :
+    interpolation (le pipe y4m les perd) ou valeurs éditables (hevc_nvenc, dont
+    l'encodeur ignorerait les valeurs saisies au profit de celles de la source).
+    """
+    return (
+        video.codec in _SIDE_DATA_HDR_HEVC_ENCODERS
+        and should_reinject_static_hdr_metadata(video)
+        and (video.interpolates() or supports_manual_static_hdr_metadata(video.codec))
+    )
+
+
+def strips_source_static_hdr_side_data(video: VideoEncodeSettings) -> bool:
+    """Vrai si les métadonnées HDR10 statiques de la source sont retirées des images.
+
+    Valeurs écrites explicitement (paramètres x265 / SVT-AV1) ou SEI réinjectés :
+    sinon l'encodeur ou le conteneur (éléments Colour) reprend celles de la source,
+    et les valeurs saisies ne seraient visibles que dans le flux.
+    """
+    if not should_reinject_static_hdr_metadata(video):
+        return False
+    explicit = static_hdr_metadata_mode(video.codec) in {
+        StaticHdrMetadataMode.X265_PARAMS,
+        StaticHdrMetadataMode.SVTAV1_PARAMS,
+    }
+    return explicit or needs_static_hdr_sei_reinjection(video)
+
+
+def interpolated_static_hdr_lost(video: VideoEncodeSettings) -> bool:
+    """Vrai si l'interpolation fait perdre un HDR10 statique impossible à réinjecter (AV1)."""
+    return (
+        video.interpolates()
+        and video.codec in _SIDE_DATA_HDR_AV1_ENCODERS
+        and bool(video.inject_hdr_meta)
+        and requests_hdr_metadata(video)
+    )
 
 
 def should_reinject_static_hdr_metadata(video: VideoEncodeSettings) -> bool:
@@ -327,8 +416,9 @@ def video_codec_args_crf(video: VideoEncodeSettings, *, callbacks: EncodeCodecDo
         case "libsvtav1":
             args = ["-c:v", "libsvtav1", "-crf", str(video.crf), "-preset", video.preset]
             args.extend(ten_bit_args(video))
-            if video.extra_params:
-                args.extend(["-svtav1-params", video.extra_params])
+            params = svtav1_params(video)
+            if params:
+                args.extend(["-svtav1-params", params])
             return args
         case "hevc_nvenc":
             return [
@@ -447,8 +537,9 @@ def video_codec_args_bitrate(
         case "libsvtav1":
             args = ["-c:v", "libsvtav1", "-b:v", f"{bitrate_kbps}k", "-preset", video.preset]
             args.extend(ten_bit_args(video))
-            if video.extra_params:
-                args.extend(["-svtav1-params", video.extra_params])
+            params = svtav1_params(video)
+            if params:
+                args.extend(["-svtav1-params", params])
             return args
         case "hevc_nvenc":
             return [
@@ -681,11 +772,28 @@ def _build_filters(video: VideoEncodeSettings) -> list[str]:
     return chain
 
 
-def build_encoder_vf(video: VideoEncodeSettings, *, callbacks: EncodeCodecDomainCallbacks) -> str:
-    vf = build_vf(video)
+def build_encoder_vf(
+    video: VideoEncodeSettings,
+    *,
+    callbacks: EncodeCodecDomainCallbacks,
+    piped_frames: bool = False,
+    hw_decoded: bool = True,
+) -> str:
+    """Chaîne ``-vf`` de l'encodeur.
+
+    ``piped_frames`` : les trames arrivent déjà filtrées d'un pipe y4m
+    (interpolation RIFE) — seul le suffixe format/upload matériel est produit.
+    ``hw_decoded`` : faux si la vidéo provient d'une entrée sans ``-hwaccel``
+    (entrée auxiliaire de décalage, autre source) — VAAPI exige alors un upload.
+    """
+    vf = "" if piped_frames else build_vf(video)
+    if strips_source_static_hdr_side_data(video):
+        # Valeurs voulues écrites par l'encodeur ou réinjectées en SEI (un SEI déjà
+        # présent n'est jamais remplacé) : celles de la source ne doivent pas suivre.
+        vf = f"{vf},{_STRIP_STATIC_HDR_SIDE_DATA}" if vf else _STRIP_STATIC_HDR_SIDE_DATA
     force_8bit = force_h264_8bit(video)
     force_10bit = force_10bit_active(video)
-    software_filtering = bool(vf)
+    software_filtering = bool(vf) or piped_frames
     if video.codec not in VAAPI_VIDEO_CODECS:
         if (
             callbacks.platform == "win32"
@@ -713,7 +821,7 @@ def build_encoder_vf(video: VideoEncodeSettings, *, callbacks: EncodeCodecDomain
     if force_10bit and not force_8bit:
         vaapi_upload = "format=p010,hwupload"
         return f"{vf},{vaapi_upload}" if vf else vaapi_upload
-    if software_filtering or force_8bit:
+    if software_filtering or force_8bit or not hw_decoded:
         vaapi_upload = "format=nv12,hwupload"
         return f"{vf},{vaapi_upload}" if vf else vaapi_upload
     return vf
@@ -756,15 +864,30 @@ def build_vf(video: VideoEncodeSettings) -> str:
     return ",".join(chain)
 
 
-def hardware_input_args(video: VideoEncodeSettings, *, callbacks: EncodeCodecDomainCallbacks) -> list[str]:
-    args: list[str] = []
-    if bool(getattr(video, "p5_to_hdr10", False)):
-        args.extend([
-            "-init_hw_device", "vulkan=mre_dovi",
-            "-filter_hw_device", "mre_dovi",
-        ])
+def p5_filter_device_args(video: VideoEncodeSettings) -> list[str]:
+    """Périphérique Vulkan du filtre libplacebo P5 -> HDR10 (étage de décodage)."""
+    if not bool(getattr(video, "p5_to_hdr10", False)):
+        return []
+    return [
+        "-init_hw_device", "vulkan=mre_dovi",
+        "-filter_hw_device", "mre_dovi",
+    ]
+
+
+def hardware_input_args(
+    video: VideoEncodeSettings,
+    *,
+    callbacks: EncodeCodecDomainCallbacks,
+    piped_frames: bool = False,
+) -> list[str]:
+    """Options d'entrée matérielles (périphérique encodeur, décodage HW).
+
+    ``piped_frames`` : entrée y4m logicielle — périphérique encodeur seul, sans
+    ``-hwaccel`` ni filtre P5 (portés par l'étage de décodage).
+    """
+    args: list[str] = [] if piped_frames else p5_filter_device_args(video)
     tonemap = bool(video.tonemap_to_sdr)
-    software_filtering = has_cpu_video_filter(video)
+    software_filtering = has_cpu_video_filter(video) or piped_frames
     force_8bit = force_h264_8bit(video)
     force_10bit = force_10bit_active(video)
 
@@ -845,7 +968,7 @@ def hdr_meta_args(video: VideoEncodeSettings) -> list[str]:
     #     (déjà géré par x265_params() ci-dessus, branche écrite par la
     #     génération `video_codec_args`).
     #   - libsvtav1 : via `-svtav1-params mastering-display=...:content-light=...`
-    #     (à implémenter si besoin ; format L décimal, pas ×10000).
+    #     (svtav1_params(), conversion vers le format décimal SVT-AV1).
     #   - hevc_vaapi : `-sei +hdr` (par défaut) sérialise les side_data HDR.
     #   - hevc_amf / hevc_qsv : support natif via side_data AVFrame déjà
     #     présents sur la source, mais pas de voie CLI fiable pour éditer

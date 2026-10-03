@@ -121,6 +121,7 @@ def test_ui_reports_failed_analysis_without_constant_offset_fallback(monkeypatch
     errors = []
     fake = SimpleNamespace(
         _scan_cancel=threading.Event(),
+        _can_start_auxiliary_operation=lambda: True,
         _audio_sync_family=lambda _entry: "surround",
         _audio_sync_reference_choices=lambda _entry: [reference],
         _audio_sync_track=lambda entry: entry,

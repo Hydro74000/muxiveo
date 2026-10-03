@@ -452,6 +452,7 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
             "frame_count": 0,
             "payload_bytes": 0,
             "duration_ns": 0,
+            "first_timestamp_ns": -1,
             "last_timestamp_ns": -1,
             "last_delta_ns": 0,
         }
@@ -478,6 +479,8 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
                 if shifted_timestamp_ns < 0:
                     continue
                 stats = statistics[output_uid]
+                if stats["first_timestamp_ns"] < 0 or shifted_timestamp_ns < stats["first_timestamp_ns"]:
+                    stats["first_timestamp_ns"] = shifted_timestamp_ns
                 stats["frame_count"] += 1
                 stats["payload_bytes"] += block.payload_bytes if block.payload_bytes else len(block.payload)
                 previous_timestamp_ns = stats["last_timestamp_ns"]
@@ -500,11 +503,14 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
     # identique ; les données de piste et les autres métadonnées sont déjà
     # couvertes par ce digest.
     opaque_digest = hashlib.sha256(b"".join(opaque)).hexdigest()
+    # DURATION = durée de la piste (fin - premier paquet), pas l'instant de fin :
+    # MediaInfo en déduit cadence (NUMBER_OF_FRAMES / DURATION) et débit, faux
+    # d'autant plus que la piste démarre tard.
     statistics_tags = build_track_statistics_tags_element({
         output_uid: (
             values["frame_count"],
             values["payload_bytes"],
-            values["duration_ns"],
+            values["duration_ns"] - max(0, values["first_timestamp_ns"]),
         )
         for output_uid, values in statistics.items()
     }, writing_app=f"Muxiveo {APP_VERSION_LABEL.removeprefix('v')}")
