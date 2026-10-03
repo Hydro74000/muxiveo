@@ -61,6 +61,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from core.file_types import ACCEPTED_EXTENSIONS, build_desktop_mime_type_string
+from core.github_release import release_asset, verify_download
 from core.version import (
     APP_APPSTREAM_ID,
     APP_EXECUTABLE_NAME,
@@ -2763,26 +2764,6 @@ def _download_file(url: str, dest: Path, timeout: int = 120) -> None:
         raise RuntimeError(f"Timeout ({timeout}s) lors du téléchargement de {url}") from e
 
 
-def _gh_latest_asset_url(repo: str, *patterns: str) -> str:
-    """Retourne l'URL du premier asset GitHub dont le nom contient tous les patterns."""
-    url = f"https://api.github.com/repos/{repo}/releases/latest"
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "Muxiveo-builder",
-    }
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req) as resp:  # nosec B310  # origine HTTPS api.github.com constante
-        data = json.loads(resp.read().decode("utf-8"))
-    for asset in data.get("assets", []):
-        name: str = asset.get("name", "")
-        if all(p in name for p in patterns):
-            return asset["browser_download_url"]
-    raise RuntimeError(f"Aucun asset correspondant à {patterns} dans {repo}")
-
-
 def _mediainfo_latest_windows_version() -> str:
     """Retourne la dernière version de MediaInfo CLI Windows depuis mediaarea.net."""
     base = "https://mediaarea.net/download/binary/mediainfo/"
@@ -2887,10 +2868,11 @@ def _dl_windows_dovi_tool(tools_dir: Path) -> None:
         _ok("dovi_tool.exe déjà présent dans tools/")
         return
     _step("Téléchargement dovi_tool Windows (quietvoid/dovi_tool)")
-    url = _gh_latest_asset_url("quietvoid/dovi_tool", "x86_64-pc-windows-msvc.zip")
+    asset = release_asset("dovi_tool", "dovi_tool-", "x86_64-pc-windows-msvc.zip")
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "dovi_tool.zip"
-        _download_file(url, archive, timeout=60)
+        _download_file(asset.url, archive, timeout=60)
+        verify_download(asset, archive)
         with zipfile.ZipFile(archive) as zf:
             for name in zf.namelist():
                 if Path(name).name.lower() == "dovi_tool.exe":
@@ -2903,10 +2885,11 @@ def _dl_windows_hdr10plus_tool(tools_dir: Path) -> None:
         _ok("hdr10plus_tool.exe déjà présent dans tools/")
         return
     _step("Téléchargement hdr10plus_tool Windows (quietvoid/hdr10plus_tool)")
-    url = _gh_latest_asset_url("quietvoid/hdr10plus_tool", "x86_64-pc-windows-msvc.zip")
+    asset = release_asset("hdr10plus_tool", "hdr10plus_tool-", "x86_64-pc-windows-msvc.zip")
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "hdr10plus_tool.zip"
-        _download_file(url, archive, timeout=60)
+        _download_file(asset.url, archive, timeout=60)
+        verify_download(asset, archive)
         with zipfile.ZipFile(archive) as zf:
             for name in zf.namelist():
                 if Path(name).name.lower() == "hdr10plus_tool.exe":
@@ -2919,10 +2902,11 @@ def _dl_windows_nvencc(tools_dir: Path) -> None:
         _ok("NVEncC64.exe déjà présent dans tools/")
         return
     _step("Téléchargement NVEncC64 Windows (rigaya/NVEnc)")
-    url = _gh_latest_asset_url("rigaya/NVEnc", "Aviutl_NVEnc_", ".zip")
+    asset = release_asset("nvencc", "Aviutl_NVEnc_", ".zip")
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "nvencc.zip"
-        _download_file(url, archive, timeout=90)
+        _download_file(asset.url, archive, timeout=90)
+        verify_download(asset, archive)
         with zipfile.ZipFile(archive) as zf:
             candidates = [n for n in zf.namelist() if Path(n).name.lower() == "nvencc64.exe"]
             if not candidates:

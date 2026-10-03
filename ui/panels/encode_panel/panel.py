@@ -71,6 +71,7 @@ from ui.panels.encode_panel.theme import (
     _section_label, _separator,
 )
 from ui.desktop import open_external
+from ui.confirm import ValidationOverridePrompt
 from ui.design_system import scale as _scale
 from ui.dialogs.extra_params_dialog import edit_extra_params
 from ui.panels.encode_panel.widgets import _AudioSourceDialog, _AudioTable
@@ -116,6 +117,7 @@ class EncodePanel(QWidget):
         super().__init__(parent)
         self._config    = config
         set_current_language(getattr(config, "language", None))
+        self._validation_prompt = ValidationOverridePrompt(self)
         self._workflow  = EncodeWorkflow(
             ffmpeg_bin=config.tool_ffmpeg,
             dovi_tool_bin=config.tool_dovi_tool,
@@ -136,6 +138,7 @@ class EncodePanel(QWidget):
             regenerate_statistics=getattr(config, "matroska_regenerate_statistics", True),
         )
         self._profiles  = ProfileManager(config.app_data_dir / "encode_profiles")
+        self._workflow.set_validation_override(self._validation_prompt.request)
         self._executor  = ThreadPoolExecutor(max_workers=1)
         # Le fallback HDR peut attendre un stockage lent. Il ne doit ni
         # retarder la détection matérielle, ni rendre la fermeture de la GUI
@@ -1720,7 +1723,8 @@ class EncodePanel(QWidget):
     def _interpolation_tool_flag(self) -> bool:
         """État propre de la case RIFE (outil disponible), indépendant des parents
         désactivés tant que le codec est « copy »."""
-        return self._interp_cb.isEnabledTo(self._interp_cb.parentWidget())
+        parent = self._interp_cb.parentWidget()
+        return self._interp_cb.isEnabledTo(parent) if parent is not None else self._interp_cb.isEnabled()
 
     def _sync_interpolation_controls(self) -> None:
         enabled = self._interp_cb.isChecked() and self._interpolation_tool_flag()
@@ -3025,6 +3029,11 @@ class EncodePanel(QWidget):
         self._preview_scene_status.setText("Scène aléatoire prête. Le recalage HDR sera appliqué à la génération.")
 
     def _on_generate_preview(self) -> None:
+        if getattr(self, "_operation_running", False):
+            self._preview_status.setText(
+                translate_text("Preview indisponible pendant une opération en cours.")
+            )
+            return
         config = self._current_preview_config()
         if config is None:
             self._preview_status.setText("Sélectionnez une piste vidéo source pour générer une preview.")
@@ -3271,7 +3280,7 @@ class EncodePanel(QWidget):
         self._set_preview_running(False)
 
     def _set_preview_running(self, running: bool) -> None:
-        self._preview_generate_btn.setEnabled(not running)
+        self._preview_generate_btn.setEnabled(not running and not getattr(self, "_operation_running", False))
         self._preview_cancel_btn.setEnabled(running)
         self._preview_mode_combo.setEnabled(not running)
         is_video = self._preview_mode_combo.currentData() == "video"
@@ -3569,6 +3578,17 @@ class EncodePanel(QWidget):
             }
         return targets
 
+    def set_operation_running(self, running: bool) -> None:
+        """Bloque la génération de preview pendant une opération globale (GPU / I/O partagés)."""
+        self._operation_running = bool(running)
+        self._preview_generate_btn.setEnabled(
+            not self._operation_running and self._preview_signals is None
+        )
+
+    def is_preview_running(self) -> bool:
+        """Vrai tant qu'une preview est en cours de génération."""
+        return getattr(self, "_preview_signals", None) is not None
+
     def run_operation(self, config: "EncodeConfig") -> "TaskSignals":
         """Lance l'encodage et retourne les signaux de progression."""
         # MainWindow valide juste avant l'appel ; éviter un second passage I/O
@@ -3593,6 +3613,7 @@ class EncodePanel(QWidget):
                 str(getattr(video, "codec", "") or "").strip().lower() == "copy"
                 and not bool(getattr(video, "inject_hdr_meta", False))
                 and not bool(getattr(video, "tonemap_to_sdr", False))
+                and not bool(getattr(video, "has_video_transform", lambda: False)())
                 and not self._video_requires_dovi_profile_normalization(video)
                 for video in video_tracks
             )

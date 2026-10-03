@@ -40,10 +40,10 @@ from core.workflows.common.ffmpeg_runtime import (
     normalize_max_parallel_video_encodes as _normalize_max_parallel_video_encodes,
 )
 from core.workdir import (
+    cleanable_work_dir_entries,
     clear_work_dir as clear_work_dir_contents,
+    ensure_work_dir as ensure_work_dir_path,
     prepare_process_work_dir,
-    work_dir_entries as list_work_dir_entries,
-    work_dir_has_entries,
 )
 
 
@@ -749,10 +749,27 @@ def _app_data_dir() -> Path:
     return p
 
 
+def _legacy_default_work_dir() -> Path:
+    """Ancien défaut (≤ 4.2.0) : dossier temporaire système."""
+    return Path(tempfile.gettempdir()) / APP_TEMP_WORK_DIR_NAME
+
+
 def _default_work_dir() -> Path:
-    tmp = Path(tempfile.gettempdir())
-    p = tmp / APP_TEMP_WORK_DIR_NAME
-    return p
+    """Work dir par défaut, toujours sur disque.
+
+    Linux : /tmp est souvent un tmpfs (RAM) — Fedora, Arch, Debian 13 — trop
+    petit pour des flux UHD intermédiaires de plusieurs dizaines de Go ; le
+    cache utilisateur XDG est utilisé à la place.
+    """
+    if sys.platform.startswith("linux"):
+        cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+        return cache / APP_CONFIG_DIR_NAME / "work"
+    return _legacy_default_work_dir()
+
+
+def _is_default_work_dir(path: Path) -> bool:
+    """Vrai pour un chemin par défaut de l'application (actuel ou ancien)."""
+    return path in {_default_work_dir(), _legacy_default_work_dir()}
 
 
 def _default_output_dir() -> Path:
@@ -1160,6 +1177,15 @@ class AppConfig:
                 os.environ["PATH"] = f"{bundled_str}{os.pathsep}{current_path}"
 
         self.work_dir = self._resolve_path("paths", "work_dir", "paths/work_dir", _default_work_dir())
+        if (
+            self.work_dir == _legacy_default_work_dir()
+            and self.work_dir != _default_work_dir()
+            and self._ini_lookup("paths", "work_dir") is _MISSING
+        ):
+            # Valeur QSettings égale à l'ancien défaut (/tmp, souvent en RAM) :
+            # migrée vers le nouveau défaut sur disque. Un choix explicite dans
+            # config.ini est respecté.
+            self.work_dir = _default_work_dir()
         self.output_dir = self._resolve_path("paths", "output_dir", "paths/output_dir", _default_output_dir())
         self.config_dir = _INI_PATH.parent
         self.config_dir.mkdir(parents=True, exist_ok=True)
@@ -1490,19 +1516,19 @@ class AppConfig:
         return {name: _command_exists(cmd) for name, cmd in self.tool_commands().items()}
 
     def ensure_work_dir(self) -> Path:
-        self.work_dir.mkdir(parents=True, exist_ok=True)
-        return self.work_dir
+        """Crée le work_dir ; un chemin par défaut de l'application est marqué Muxiveo."""
+        return ensure_work_dir_path(self.work_dir, adopt=_is_default_work_dir(self.work_dir))
 
     def work_dir_entries(self) -> list[Path]:
-        """Retourne les entrées présentes dans le work_dir."""
-        return list_work_dir_entries(self.ensure_work_dir())
+        """Entrées que le nettoyage supprimerait (exactement celles à montrer)."""
+        return cleanable_work_dir_entries(self.ensure_work_dir())
 
     def work_dir_has_leftovers(self) -> bool:
-        """True si le work_dir contient des éléments non nettoyés."""
-        return work_dir_has_entries(self.ensure_work_dir())
+        """True si le work_dir contient des éléments Muxiveo non nettoyés."""
+        return bool(self.work_dir_entries())
 
     def clear_work_dir(self) -> Path:
-        """Vide le contenu du work_dir (sans supprimer le dossier racine)."""
+        """Supprime les entrées nettoyables du work_dir (jamais la racine)."""
         root = self.ensure_work_dir()
         clear_work_dir_contents(root)
         return root
@@ -1514,10 +1540,10 @@ class AppConfig:
         process_name: str | None = None,
     ) -> Path:
         """
-        Prépare un dossier process dédié sous work_dir.
+        Crée un dossier process neuf sous work_dir.
 
-        Le nom du dossier est dérivé du nom du fichier de sortie.
-        Si le dossier existe déjà, il est vidé avant usage.
+        Le nom est dérivé du fichier de sortie, suffixé d'un identifiant
+        aléatoire ; aucun dossier existant n'est réutilisé ni vidé.
         """
         return prepare_process_work_dir(
             self.ensure_work_dir(),

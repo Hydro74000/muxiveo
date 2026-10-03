@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core.ui_language import system_ui_language
+from core.github_release import THIRD_PARTY_TOOLS, asset_sha256, file_sha256, release_api_url, requested_tag
 from core.version import APP_CONFIG_DIR_NAME, APP_REPOSITORY, MUXIVEO_RIFE_RELEASE_TAG, MUXIVEO_RIFE_VERSION
 
 # ---------------------------------------------------------------------------
@@ -239,13 +240,16 @@ SYSTEM_TOOLS: dict[str, dict] = {
         "apt":    "python3-pip",
         "dnf":    "python3-pip",
         "brew":   "python",
-        "winget": "buyukakyuz.install-nothing",
+        # Windows : pip est livré avec Python (appelé via ``sys.executable -m pip``).
+        "winget": "",
         "desc":   "Python Package Installer",
     },
     "openGL": {
-        "apt":    "libegl1-mesa",
+        # libegl1 (libglvnd) : libegl1-mesa n'existe plus (Debian 13, Ubuntu 24.04+).
+        "apt":    "libegl1",
         "dnf":    "mesa-libEGL",
-        "brew":   "xquartz",
+        # macOS : Qt (Cocoa) n'utilise ni X11 ni EGL, rien à installer.
+        "brew":   "",
         "winget": "",
         "desc":   "OpenGL libraries",
         "path_check": False,
@@ -312,12 +316,12 @@ GITHUB_TOOLS: dict[str, dict] = {
             "Windows": "dovi_tool.exe",
         },
         "asset_patterns": {
-            ("Linux",   "x86_64"): {"suffix": "x86_64-unknown-linux-musl.tar.gz",  "fmt": "tar.gz"},
-            ("Linux",   "arm64"):  {"suffix": "aarch64-unknown-linux-musl.tar.gz", "fmt": "tar.gz"},
-            ("Darwin",  "x86_64"): {"suffix": "universal-macOS.zip",               "fmt": "zip"},
-            ("Darwin",  "arm64"):  {"suffix": "universal-macOS.zip",               "fmt": "zip"},
-            ("Windows", "x86_64"): {"suffix": "x86_64-pc-windows-msvc.zip",        "fmt": "zip"},
-            ("Windows", "arm64"):  {"suffix": "aarch64-pc-windows-msvc.zip",       "fmt": "zip"},
+            ("Linux",   "x86_64"): {"suffix": "x86_64-unknown-linux-musl.tar.gz",  "fmt": "tar.gz", "name_prefix": "dovi_tool-"},
+            ("Linux",   "arm64"):  {"suffix": "aarch64-unknown-linux-musl.tar.gz", "fmt": "tar.gz", "name_prefix": "dovi_tool-"},
+            ("Darwin",  "x86_64"): {"suffix": "universal-macOS.zip",               "fmt": "zip", "name_prefix": "dovi_tool-"},
+            ("Darwin",  "arm64"):  {"suffix": "universal-macOS.zip",               "fmt": "zip", "name_prefix": "dovi_tool-"},
+            ("Windows", "x86_64"): {"suffix": "x86_64-pc-windows-msvc.zip",        "fmt": "zip", "name_prefix": "dovi_tool-"},
+            ("Windows", "arm64"):  {"suffix": "aarch64-pc-windows-msvc.zip",       "fmt": "zip", "name_prefix": "dovi_tool-"},
         },
     },
     "hdr10plus_tool": {
@@ -329,12 +333,12 @@ GITHUB_TOOLS: dict[str, dict] = {
             "Windows": "hdr10plus_tool.exe",
         },
         "asset_patterns": {
-            ("Linux",   "x86_64"): {"suffix": "x86_64-unknown-linux-musl.tar.gz",  "fmt": "tar.gz"},
-            ("Linux",   "arm64"):  {"suffix": "aarch64-unknown-linux-musl.tar.gz", "fmt": "tar.gz"},
-            ("Darwin",  "x86_64"): {"suffix": "universal-macOS.zip",               "fmt": "zip"},
-            ("Darwin",  "arm64"):  {"suffix": "universal-macOS.zip",               "fmt": "zip"},
-            ("Windows", "x86_64"): {"suffix": "x86_64-pc-windows-msvc.zip",        "fmt": "zip"},
-            ("Windows", "arm64"):  {"suffix": "aarch64-pc-windows-msvc.zip",       "fmt": "zip"},
+            ("Linux",   "x86_64"): {"suffix": "x86_64-unknown-linux-musl.tar.gz",  "fmt": "tar.gz", "name_prefix": "hdr10plus_tool-"},
+            ("Linux",   "arm64"):  {"suffix": "aarch64-unknown-linux-musl.tar.gz", "fmt": "tar.gz", "name_prefix": "hdr10plus_tool-"},
+            ("Darwin",  "x86_64"): {"suffix": "universal-macOS.zip",               "fmt": "zip", "name_prefix": "hdr10plus_tool-"},
+            ("Darwin",  "arm64"):  {"suffix": "universal-macOS.zip",               "fmt": "zip", "name_prefix": "hdr10plus_tool-"},
+            ("Windows", "x86_64"): {"suffix": "x86_64-pc-windows-msvc.zip",        "fmt": "zip", "name_prefix": "hdr10plus_tool-"},
+            ("Windows", "arm64"):  {"suffix": "aarch64-pc-windows-msvc.zip",       "fmt": "zip", "name_prefix": "hdr10plus_tool-"},
         },
     },
     "nvencc": {
@@ -1253,12 +1257,6 @@ def install_winget(
         if not winget_id or winget_id in already_seen:
             continue
         already_seen.add(winget_id)
-        if winget_id == "buyukakyuz.install-nothing" and force:
-            if shutil.which(exe):
-                ok(f"{exe} already present")
-            else:
-                warn("Skipping pip force-reinstall on Windows (winget placeholder package)")
-            continue
         if not force and shutil.which(exe):
             ok(f"{exe} already present")
         else:
@@ -1284,14 +1282,9 @@ def install_winget(
 # Step 3 — GitHub binary tools
 # ---------------------------------------------------------------------------
 
-def _github_release_by_tag(repo: str, tag: str) -> dict:
-    """Fetch the metadata of a pinned release (``releases/tags/<tag>``)."""
-    return _github_release_json(f"https://api.github.com/repos/{repo}/releases/tags/{tag}")
-
-
-def _github_latest_release(repo: str) -> dict:
-    """Fetch latest release metadata from GitHub API."""
-    return _github_release_json(f"https://api.github.com/repos/{repo}/releases/latest")
+def _github_release(repo: str, tag: str | None) -> dict:
+    """Fetch release metadata (``releases/tags/<tag>``, or ``releases/latest`` if no tag)."""
+    return _github_release_json(release_api_url(repo, tag))
 
 
 def _github_release_json(url: str) -> dict:
@@ -1805,6 +1798,36 @@ def _find_asset(release: dict, suffix: str, *, name_prefix: str = "") -> Optiona
         if name.endswith(suffix) and (not name_prefix or name.startswith(name_prefix)):
             return asset["browser_download_url"]
     return None
+
+def _expected_asset_sha256(release: dict, url: str) -> Optional[str]:
+    """Somme SHA-256 publiée (champ ``digest``) de l'asset téléchargé depuis ``url``."""
+    for asset in release.get("assets", []):
+        if asset.get("browser_download_url") == url:
+            return asset_sha256(asset)
+    return None
+
+
+def _verify_release_asset(release: dict, url: str, path: Path, *, required: bool) -> None:
+    """Vérifie la somme SHA-256 d'un asset téléchargé.
+
+    ``required`` (outil tiers) : somme non publiée ou différente → refus.
+    Sinon (release Muxiveo par tag) : la somme publiée par GitHub est vérifiée
+    si elle existe, avertissement dans le cas contraire.
+    """
+    name = url.rsplit("/", 1)[-1]
+    expected = _expected_asset_sha256(release, url)
+    if expected is None:
+        if required:
+            raise RuntimeError(f"No SHA-256 published by GitHub for {name}: installation refused.")
+        warn(f"{name}: no published SHA-256, integrity not verified.")
+        return
+    actual = file_sha256(path)
+    if actual != expected:
+        raise RuntimeError(
+            f"SHA-256 mismatch for {name} (expected {expected}, got {actual}): installation refused."
+        )
+    ok(f"SHA-256 verified: {name}")
+
 
 def _ensure_safe_archive_names(names) -> None:
     """Refuse les chemins absolus ou remontants (``..``) d'une archive."""
@@ -2362,7 +2385,10 @@ def install_github_tools(
             continue
 
         step(f"Installing {exe}  ({meta['desc']})")
-        info(f"Fetching latest release from github.com/{meta['repo']}")
+        # Outil tiers : dernière release, ou tag MUXIVEO_<OUTIL>_TAG ; SHA-256 GitHub obligatoire.
+        third_party = exe in THIRD_PARTY_TOOLS
+        release_tag = requested_tag(exe) if third_party else meta.get("release_tag")
+        info(f"Release {release_tag or 'latest'} from github.com/{meta['repo']}")
 
         if dry_run:
             info(f"[dry-run] Would download and install {exe} to {dest}")
@@ -2381,11 +2407,11 @@ def install_github_tools(
             warn(f"{exe}: installation failed ({exc}). Skipping.")
             continue
 
-        release = (
-            _github_release_by_tag(meta["repo"], meta["release_tag"])
-            if meta.get("release_tag")
-            else _github_latest_release(meta["repo"])
-        )
+        try:
+            release = _github_release(meta["repo"], release_tag)
+        except RuntimeError as exc:
+            warn(f"{exe}: {exc}. Skipping.")
+            continue
         tag = release.get("tag_name", "?")
         info(f"Release: {tag}")
 
@@ -2413,6 +2439,11 @@ def install_github_tools(
             tmp_path = Path(tmp)
             archive_path = tmp_path / f"{exe}_archive.{chosen_fmt}"
             _download_file(download_url, archive_path)
+            try:
+                _verify_release_asset(release, download_url, archive_path, required=third_party)
+            except RuntimeError as exc:
+                warn(f"{exe}: {exc} Skipping.")
+                continue
 
             # Tentative d'installation native via package manager (Linux .deb/.rpm) :
             # gère automatiquement les dépendances (libcuda, libavformat, etc.).

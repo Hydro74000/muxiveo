@@ -264,6 +264,7 @@ from core.workflows.encode.models import (
 from core.workflows.encode.output_contract import build_encode_output_contract
 from core.matroska.contract import ExpectedMatroskaAttachment
 from core.workflows.common.matroska_finalize import MatroskaOutputTransaction, PostAction
+from core.workflows.common.validation_override import ValidationOverride
 from core.workflows.encode.planning.plan_models import (
     EncodePlan as _EncodePlan,
     MaterializedContainerMetadataPlan as _MaterializedContainerMetadataPlan,
@@ -404,6 +405,7 @@ class EncodeWorkflow(QObject):
             dovi_tool_bin=self._bins["dovi_tool"],
         )
         self._generate_nfo = generate_nfo
+        self._validation_override: ValidationOverride | None = None
         self._sync_rewrite_enabled = bool(sync_rewrite_enabled)
         self._sync_rewrite_audio_bitrates = {
             "aac": int(aac_bitrate_per_channel_kbps or 96),
@@ -483,6 +485,12 @@ class EncodeWorkflow(QObject):
 
     def set_generate_nfo(self, generate_nfo: bool) -> None:
         self._generate_nfo = generate_nfo
+
+    def set_validation_override(self, callback: ValidationOverride | None) -> None:
+        self._validation_override = callback
+
+    def _validation_override_for(self, config: EncodeConfig) -> ValidationOverride | None:
+        return self._validation_override if config.allow_validation_override else None
 
     def set_regenerate_statistics(self, enabled: bool) -> None:
         self._statistics_post_action.set_enabled(enabled)
@@ -1056,6 +1064,7 @@ class EncodeWorkflow(QObject):
             video_artifacts=[
                 _NativeVideoArtifactRef(Path(intermediate), 0, int(video_offset_ms or 0)),
             ],
+            validation_override=self._validation_override_for(config),
             resolved_subtitles=self._plan_resolved_subtitles(plan),
             track_metadata=(plan.track_metadata if plan is not None else None),
             work_dir=Path(work_dir),
@@ -1094,6 +1103,7 @@ class EncodeWorkflow(QObject):
         _assemble_encode_output_native(
             config,
             video_artifacts=refs,
+            validation_override=self._validation_override_for(config),
             resolved_subtitles=self._plan_resolved_subtitles(plan),
             track_metadata=(plan.track_metadata if plan is not None else None),
             work_dir=Path(work_dir),
@@ -2223,12 +2233,9 @@ class EncodeWorkflow(QObject):
         if active_inner is not None:
             active_inner["signals"] = encode_signals
         signals.link_workers(encode_signals)
-        previous_generate_nfo = self._generate_nfo
-        self._generate_nfo = False
         try:
             self._run_with_preparation(preview_config, validate=False, prep_signals=encode_signals)
         finally:
-            self._generate_nfo = previous_generate_nfo
             if active_inner is not None:
                 active_inner["signals"] = None
         self._check_cancelled(signals)
@@ -2532,6 +2539,8 @@ class EncodeWorkflow(QObject):
             dovi_profile=video.dovi_profile,
             work_dir=output.parent,
             tmdb_cover=None,
+            write_nfo=False,
+            allow_validation_override=False,
         )
 
     # ------------------------------------------------------------------
@@ -3029,6 +3038,7 @@ class EncodeWorkflow(QObject):
                 _assemble_encode_output_native(
                     config,
                     video_artifacts=video_artifacts,
+                    validation_override=self._validation_override_for(config),
                     resolved_subtitles=self._plan_resolved_subtitles(encode_plan),
                     track_metadata=encode_plan.track_metadata,
                     work_dir=work_dir,
@@ -3206,6 +3216,7 @@ class EncodeWorkflow(QObject):
                 build_multi_video_track_encode_commands=self._build_multi_video_track_encode_commands,
                 two_pass_log_prefix=self._two_pass_log_prefix,
                 native_assemble=self._native_assemble_multi if native_mux else None,
+                validation_override=self._validation_override_for(config),
             )
         ).run(
             config,
@@ -3278,9 +3289,10 @@ class EncodeWorkflow(QObject):
                     path, statistics_by_position=derived_statistics,
                 ),
             ),
-            write_nfo=self._write_nfo_after_commit if self._generate_nfo else None,
+            write_nfo=self._write_nfo_after_commit if (self._generate_nfo and config.write_nfo) else None,
             warn=lambda message: self.log_message.emit("WARN", message),
             track_enabled_post_action=self._track_enabled_post_action,
+            validation_override=self._validation_override_for(config),
         )
         return transaction.execute(
             command,
@@ -3816,6 +3828,7 @@ class EncodeWorkflow(QObject):
                 report_static_hdr_estimate=self.static_hdr_estimate_ready.emit,
                 report_static_hdr_failure=self.static_hdr_estimate_failed.emit,
                 native_assemble=self._native_assemble_nvencc if native_mux else None,
+                validation_override=self._validation_override_for(config),
             )
         ).run(
             config,

@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Callable
 
 from core.bluray import append_ffmpeg_input_args
-from core.subprocess_utils import subprocess_text_kwargs
+from core.subprocess_utils import run_cancellable_capture, subprocess_text_kwargs
+from core.workflows.common.validation_override import ValidationOverride, accept_validation_override
 
 from core.runner import TaskCancelledError, TaskSignals
 from core.workdir import remove_path
@@ -32,6 +33,7 @@ from core.workflows.encode.interpolation import (
 from core.workflows.encode.runtime.frame_count_guard import (
     FrameCountAuditError,
     FrameCountGuard,
+    MetadataAdjustment,
 )
 from core.workflows.hevc_static_hdr_metadata import inject_static_hdr_sei_file
 from core.dovi_profile_detector import DoviSubProfile
@@ -126,6 +128,7 @@ class MetadataInjectRunnerCallbacks:
     report_static_hdr_failure: Callable[[str, str], None]
     #: Assemblage final Matroska natif (lot 3). None → reconstruction FFmpeg.
     native_assemble: Callable[..., None] | None = None
+    validation_override: ValidationOverride | None = None
 
 
 class MetadataInjectRunner:
@@ -615,25 +618,42 @@ class MetadataInjectRunner:
                         mediainfo_bin=cb.bins.get("mediainfo", "mediainfo"),
                         ffprobe_bin=cb.bins.get("ffprobe", "ffprobe"),
                         dovi_tool_bin=cb.bins["dovi_tool"],
+                        run_command=lambda cmd, **kwargs: run_cancellable_capture(
+                            cmd, cancel_cb=signals._cancel_event.is_set,
+                            check_cancelled=_check,
+                            on_start=signals._register_proc, on_end=signals._unregister_proc,
+                            **kwargs,
+                        ),
                     )
                     audit = guard.audit(
                         source=cb.video_source_path(effective_config),
                         encoded=current_hevc,
+                        source_stream_index=cb.video_stream_index(effective_config),
                         rpu_bin=rpu_bin if (video.copy_dv and rpu_bin.exists()) else None,
                         hdr10p_json=hdr10p_json if (video.copy_hdr10plus and hdr10p_json.exists()) else None,
                         known_encoded_frames=skeleton_result.blocks_written,
                         frame_ratio=frame_ratio,
                     )
                     try:
+                        # TRIM_TAIL : RPU / HDR10+ extraits du même fichier que
+                        # la vidéo encodée, début aligné par construction ; un
+                        # surplus final (≤ 4) est retiré, un manque bloque.
                         guard.enforce(
                             audit,
+                            adjustment=MetadataAdjustment.TRIM_TAIL,
                             rpu_bin=rpu_bin if (video.copy_dv and rpu_bin.exists()) else None,
                             hdr10p_json=hdr10p_json if (video.copy_hdr10plus and hdr10p_json.exists()) else None,
                             on_warn=lambda msg: signals.progress.emit(f"[WARN] {msg}"),
                             on_info=lambda msg: signals.progress.emit(msg),
                         )
                     except FrameCountAuditError as exc:
-                        raise RuntimeError(f"Audit frame count : {exc}") from exc
+                        _check()
+                        if not accept_validation_override(
+                            cb.validation_override, current_hevc, f"Audit frame count : {exc}",
+                            signals._cancel_event.is_set, cb.log_warn,
+                        ):
+                            _check()
+                            raise RuntimeError(f"Audit frame count : {exc}") from exc
                     _check()
 
                 # Si on avait converti P7/P5 → P8.1 en amont, le HEVC

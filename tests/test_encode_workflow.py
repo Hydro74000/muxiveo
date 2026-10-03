@@ -1563,7 +1563,9 @@ class TestRuntimeCleanup:
         with patch.object(wf, "_finalize_ffmpeg_output", side_effect=_hold_finalizer):
             returned = wf.run(cfg)
             assert finalizer_started.wait(5.0)
-            process_dir = work_dir / "output"
+            process_dirs = list(work_dir.glob("output.*"))
+            assert len(process_dirs) == 1
+            process_dir = process_dirs[0]
             attachments_dir = process_dir / "attachments"
             assert (attachments_dir / "cover.jpg").exists()
             assert not guid_dir.exists()

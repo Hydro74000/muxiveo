@@ -1,4 +1,12 @@
 {
+  "Contrôle final rejeté": {
+    "fra": "Contrôle final rejeté",
+    "eng": "Final validation rejected"
+  },
+  "Le contrôle final a rejeté {name}.\n\n{reason}\n\nPoursuivre quand même et conserver le résultat ?\nLe fichier peut être incomplet ou ses métadonnées désalignées.": {
+    "fra": "Le contrôle final a rejeté {name}.\n\n{reason}\n\nPoursuivre quand même et conserver le résultat ?\nLe fichier peut être incomplet ou ses métadonnées désalignées.",
+    "eng": "Final validation rejected {name}.\n\n{reason}\n\nProceed anyway and keep the result?\nThe file may be incomplete or its metadata may be misaligned."
+  },
   "Alignement géométrique Dolby Vision (NVENC)": {
     "fra": "Alignement géométrique Dolby Vision (NVENC)",
     "eng": "Dolby Vision geometry alignment (NVENC)"
@@ -4934,5 +4942,77 @@
   "Signal Dolby Vision de Film 1 conservé (profil {profile}, niveau {level}).": {
     "fra": "Signal Dolby Vision de Film 1 conservé (profil {profile}, niveau {level}).",
     "eng": "Film 1 Dolby Vision signalling kept (profile {profile}, level {level})."
+  },
+  " … (+{count} autres)": {
+    "fra": " … (+{count} autres)",
+    "eng": " … (+{count} more)"
+  },
+  "Work dir : {path}\nÉléments Muxiveo à supprimer ({count}) : {preview}": {
+    "fra": "Work dir : {path}\nÉléments Muxiveo à supprimer ({count}) : {preview}",
+    "eng": "Work dir: {path}\nMuxiveo items to delete ({count}): {preview}"
+  },
+  "Fichier existant": {
+    "fra": "Fichier existant",
+    "eng": "File already exists"
+  },
+  "{name} existe déjà dans {folder}.\nLe remplacer à la fin du traitement ?": {
+    "fra": "{name} existe déjà dans {folder}.\nLe remplacer à la fin du traitement ?",
+    "eng": "{name} already exists in {folder}.\nReplace it when processing finishes?"
+  },
+  "Opération en cours": {
+    "fra": "Opération en cours",
+    "eng": "Operation in progress"
+  },
+  "Une opération est en cours depuis {minutes} min.\nQuitter l'annulera et le fichier partiel sera supprimé.\nQuitter quand même ?": {
+    "fra": "Une opération est en cours depuis {minutes} min.\nQuitter l'annulera et le fichier partiel sera supprimé.\nQuitter quand même ?",
+    "eng": "An operation has been running for {minutes} min.\nQuitting will cancel it and the partial file will be deleted.\nQuit anyway?"
+  },
+  "Écart de 1 à 4 trames : retirer l'excédent de métadonnées en fin de flux": {
+    "fra": "Écart de 1 à 4 trames : retirer l'excédent de métadonnées en fin de flux",
+    "eng": "1 to 4 frame difference: remove surplus metadata at the end of the stream"
+  },
+  "Si Film 2 a 1 à 4 trames de plus que Film 1, les métadonnées DoVi / HDR10+ excédentaires sont retirées à la fin, en supposant le début des deux films aligné.\nAucune métadonnée n'est jamais inventée : si Film 2 est plus court, l'injection est refusée.\nUn comptage identique ne prouve pas l'alignement temporel.": {
+    "fra": "Si Film 2 a 1 à 4 trames de plus que Film 1, les métadonnées DoVi / HDR10+ excédentaires sont retirées à la fin, en supposant le début des deux films aligné.\nAucune métadonnée n'est jamais inventée : si Film 2 est plus court, l'injection est refusée.\nUn comptage identique ne prouve pas l'alignement temporel.",
+    "eng": "If Film 2 has 1 to 4 more frames than Film 1, the surplus DoVi / HDR10+ metadata is removed at the end, assuming both films start aligned.\nMetadata is never invented: if Film 2 is shorter, injection is refused.\nAn identical frame count does not prove temporal alignment."
+  },
+  "Espace disque": {
+    "fra": "Espace disque",
+    "eng": "Disk space"
+  },
+  "Contrôle métadonnées": {
+    "fra": "Contrôle métadonnées",
+    "eng": "Metadata check"
+  },
+  "Configuration invalide.": {
+    "fra": "Configuration invalide.",
+    "eng": "Invalid configuration."
+  },
+  "Impossible de lancer l'opération": {
+    "fra": "Impossible de lancer l'opération",
+    "eng": "Cannot start the operation"
+  },
+  "Échec : {reason}": {
+    "fra": "Échec : {reason}",
+    "eng": "Failed: {reason}"
+  },
+  "… et {count} autre(s) (voir le journal).": {
+    "fra": "… et {count} autre(s) (voir le journal).",
+    "eng": "… and {count} more (see the log)."
+  },
+  "Une preview est en cours de génération : attendez sa fin ou annulez-la.": {
+    "fra": "Une preview est en cours de génération : attendez sa fin ou annulez-la.",
+    "eng": "A preview is being generated: wait for it to finish or cancel it."
+  },
+  "Preview indisponible pendant une opération en cours.": {
+    "fra": "Preview indisponible pendant une opération en cours.",
+    "eng": "Preview unavailable while an operation is running."
+  },
+  "Dossier de travail inutilisable : {error}": {
+    "fra": "Dossier de travail inutilisable : {error}",
+    "eng": "Work folder unusable: {error}"
+  },
+  "comptage exact au lancement": {
+    "fra": "comptage exact au lancement",
+    "eng": "exact count at start"
   }
 }

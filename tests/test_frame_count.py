@@ -47,6 +47,21 @@ def test_reliable_frame_count_counts_packets_when_statistics_are_stale():
     assert logs and "périmées" in logs[0]
 
 
+def test_raw_stream_estimate_without_duration_is_recounted():
+    """Flux HEVC brut : sans durée, l'estimation mediainfo (parfois fausse) est remplacée par le comptage."""
+    with patch("core.frame_count.subprocess.run", side_effect=_fake_tools("16", None, "24000/1001", "48")):
+        assert reliable_frame_count(Path("film.hevc"), mediainfo_bin="mi", ffprobe_bin="fp") == 48
+
+
+def test_display_mode_never_reads_whole_file():
+    """``full_scan=False`` (panneau) : valeur invérifiable → None, sans comptage des paquets."""
+    with patch("core.frame_count.subprocess.run", side_effect=_fake_tools("16", None, "24000/1001", "48")) as run:
+        assert reliable_frame_count(Path("film.hevc"), mediainfo_bin="mi", ffprobe_bin="fp", full_scan=False) is None
+    assert not any("-count_packets" in call.args[0] for call in run.call_args_list)
+    with patch("core.frame_count.subprocess.run", side_effect=_fake_tools("288", "12.012", "24000/1001", "0")):
+        assert reliable_frame_count(Path("a.mkv"), mediainfo_bin="mi", ffprobe_bin="fp", full_scan=False) == 288
+
+
 @pytest.mark.parametrize("count,duration,fps,packets", [
     ("1000", "39.2", "25/1", "980"),  # petite coupe, moins de 3 %
     ("288", "11.8", "24/1", "283"),  # moins de six images

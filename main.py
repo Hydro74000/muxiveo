@@ -64,10 +64,11 @@ def _prompt_work_dir_cleanup(config: AppConfig) -> None:
     if not config.work_dir_has_leftovers():
         return
 
+    # Liste = exactement ce que « Nettoyer » supprimera (éléments Muxiveo uniquement).
     entries = config.work_dir_entries()
     preview = ", ".join(p.name for p in entries[:6])
     if len(entries) > 6:
-        preview += ", ..."
+        preview += translate_text(" … (+{count} autres)", count=len(entries) - 6)
 
     box = QMessageBox()
     box.setWindowFlags(box.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
@@ -81,8 +82,9 @@ def _prompt_work_dir_cleanup(config: AppConfig) -> None:
     )
     box.setInformativeText(
         translate_text(
-            "Work dir : {path}\nContenu détecté : {preview}",
+            "Work dir : {path}\nÉléments Muxiveo à supprimer ({count}) : {preview}",
             path=str(config.work_dir),
+            count=len(entries),
             preview=preview or "-",
         )
     )

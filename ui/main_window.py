@@ -86,6 +86,7 @@ from core.workflows.encode.interpolation import parse_rife_progress
 from core.workflows.encode import EncodeError
 from core.workflows.common.sync_rewrite import SYNC_REWRITE_STAGE_PREFIX
 from core.workflows.remux_models import RemuxError
+from ui.confirm import confirm_close_while_running, confirm_overwrite
 from ui.shutdown import Shutdown, defer_close
 from ui.panels.encode_panel import EncodePanel
 from ui.panels.encode_panel.theme import (
@@ -1455,6 +1456,20 @@ class MainWindow(QMainWindow):
         "settings": 5,
     }
 
+    @property
+    def _running(self) -> bool:
+        """Opération globale en cours (encodage, remux, extraction, DoVi…)."""
+        return getattr(self, "_running_flag", False)
+
+    @_running.setter
+    def _running(self, value: bool) -> None:
+        # Toute transition propage l'état au panneau Encodage (preview bloquée
+        # pendant une opération : GPU / disque partagés, état du workflow commun).
+        self._running_flag = bool(value)
+        set_operation_running = getattr(getattr(self, "_encode_panel", None), "set_operation_running", None)
+        if callable(set_operation_running):
+            set_operation_running(self._running_flag)
+
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
         self._config = config
@@ -1937,6 +1952,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _connect_signals(self) -> None:
+        self._dovi_panel.set_operation_start_guard(self._can_start_operation)
+        self._remux_panel.set_operation_start_guard(self._can_start_operation)
         self._sidebar.page_changed.connect(self._stack.setCurrentIndex)
         self.log_requested.connect(self._on_log_requested)
         self._log_panel.collapse_toggled.connect(self._on_log_collapsed)
@@ -1973,6 +1990,8 @@ class MainWindow(QMainWindow):
         self._remux_panel.extract_started.connect(self._on_remux_extract_started)
         self._remux_panel.audio_sync_started.connect(self._on_remux_audio_sync_started)
         self._remux_panel.audio_sync_finished.connect(self._on_remux_audio_sync_finished)
+        self._remux_panel.subtitle_sync_started.connect(self._on_remux_audio_sync_started)
+        self._remux_panel.subtitle_sync_finished.connect(self._on_remux_audio_sync_finished)
         # RemuxPanel → EncodePanel : pistes partagées + chemin de sortie commun
         self._remux_panel.video_tracks_changed.connect(self._encode_panel.set_video_tracks)
         self._remux_panel.audio_tracks_changed.connect(self._encode_panel.set_audio_tracks)
@@ -2089,7 +2108,7 @@ class MainWindow(QMainWindow):
         self._prog_bar.setStyleSheet(self._progress_bar_stylesheet(_Colors.WARN))
         self._prog_lbl.setText(label)
         self._prog_widget.setVisible(True)
-        self._status_lbl.setText(translate_text("Synchronisation audio en cours…"))
+        self._status_lbl.setText(label)
         self._start_prep_progress()
 
     def _on_remux_audio_sync_finished(self, success: bool, _metadata: object) -> None:
@@ -2097,13 +2116,19 @@ class MainWindow(QMainWindow):
             return
         self._on_op_finished(success=bool(success))
 
-    def _on_run(self) -> None:
+    def _can_start_operation(self) -> bool:
         if self._running:
-            return
+            return False
+        if self._encode_panel.is_preview_running():
+            self._report_blocking_errors([
+                translate_text("Une preview est en cours de génération : attendez sa fin ou annulez-la."),
+            ])
+            return False
+        return True
 
-        # Reset au démarrage : on veut voir la version ffmpeg de cette
-        # exécution (utile en diag), puis silence pour les invocations
-        # internes suivantes.
+    def _on_run(self) -> None:
+        if not self._can_start_operation():
+            return
         self._ffmpeg_version_logged = False
 
         remux_cfg  = self._remux_panel.collect_config()
@@ -2128,8 +2153,9 @@ class MainWindow(QMainWindow):
                 encode_cfg = self._merge_remux_extras(encode_cfg, remux_cfg)
             errors = self._encode_panel.validate_config(encode_cfg)
             if errors:
-                for e in errors:
-                    self.log_requested.emit("ERROR", e)
+                self._report_blocking_errors(errors)
+                return
+            if not confirm_overwrite(self, encode_cfg.output):
                 return
             self._op_mode = "encode"
             self._op_encode_config = encode_cfg
@@ -2137,22 +2163,23 @@ class MainWindow(QMainWindow):
             try:
                 signals = self._encode_panel.run_operation(encode_cfg)
             except EncodeError as exc:
-                self.log_requested.emit("ERROR", str(exc))
+                self._report_blocking_errors([str(exc)])
                 return
 
         elif remux_cfg is not None:
             self._op_encode_config = None
             errors = self._remux_panel.validate_config(remux_cfg)
             if errors:
-                for e in errors:
-                    self.log_requested.emit("ERROR", e)
+                self._report_blocking_errors(errors)
+                return
+            if not confirm_overwrite(self, remux_cfg.output):
                 return
             self._op_mode = "remux"
             self.log_requested.emit("INFO", f"Remuxage → {remux_cfg.output.name}")
             try:
                 signals = self._remux_panel.run_operation(remux_cfg)
             except RemuxError as exc:
-                self.log_requested.emit("ERROR", str(exc))
+                self._report_blocking_errors([str(exc)])
                 return
 
         else:
@@ -2656,6 +2683,23 @@ class MainWindow(QMainWindow):
                 self._prog_lbl.setText(line)
             self.log_requested.emit("INFO", line)
 
+    def _expand_log_panel(self) -> None:
+        """Déplie le panneau de logs (erreur à lire) sans attendre une action de l'utilisateur."""
+        if self._log_panel.is_collapsed():
+            self._log_panel.set_collapsed(False)
+            self._on_log_collapsed(False)
+
+    def _report_blocking_errors(self, errors: list[str]) -> None:
+        """Erreurs empêchant le lancement : journal, logs dépliés et boîte récapitulative."""
+        for error in errors:
+            self.log_requested.emit("ERROR", error)
+        self._expand_log_panel()
+        self._status_lbl.setText(translate_text("Configuration invalide."))
+        shown = "\n".join(f"• {translate_text(error)}" for error in errors[:8])
+        if len(errors) > 8:
+            shown += "\n" + translate_text("… et {count} autre(s) (voir le journal).", count=len(errors) - 8)
+        QMessageBox.warning(self, translate_text("Impossible de lancer l'opération"), shown)
+
     def _on_cancel_op(self) -> None:
         reply = QMessageBox.question(
             self,
@@ -2758,6 +2802,7 @@ class MainWindow(QMainWindow):
             self._prog_bar.setValue(100)
             self._prog_lbl.setText(translate_text("100%  ·  terminé"))
             self._status_lbl.setText(translate_text("Terminé."))
+            self._status_lbl.setToolTip("")
             label = {
                 "encode": "Encodage terminé",
                 "extract": "Extraction terminée",
@@ -2768,7 +2813,14 @@ class MainWindow(QMainWindow):
         else:
             self._prog_widget.setVisible(False)
             self._prog_lbl.setText("")
-            self._status_lbl.setText(translate_text("Échec."))
+            first_line = next((line.strip() for line in str(error or "").splitlines() if line.strip()), "")
+            if len(first_line) > 120:
+                first_line = first_line[:117] + "…"
+            self._status_lbl.setText(
+                translate_text("Échec : {reason}", reason=first_line) if first_line else translate_text("Échec.")
+            )
+            self._status_lbl.setToolTip(str(error or ""))
+            self._expand_log_panel()
             if error:
                 self.log_requested.emit("ERROR", error)
 
@@ -3002,6 +3054,11 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         if not hasattr(self, "_shutdown"):
+            if self._running and not confirm_close_while_running(
+                self, time.monotonic() - getattr(self, "_op_start", time.monotonic()),
+            ):
+                event.ignore()
+                return
             self.setEnabled(False)
             self._update_request_id += 1
             if self._update_download_cancel is not None:

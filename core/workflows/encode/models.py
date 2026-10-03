@@ -509,6 +509,13 @@ class EncodeConfig:
     #: explicite » est portée par les loaders (réglage global [matroska],
     #: propagation du job conteneur via merge_remux_into_encode_config).
     mux_backend: str = "ffmpeg"
+    #: Écrit le NFO après le commit si le réglage global l'autorise. Porté par
+    #: la configuration du job (False pour une preview) : jamais par un état
+    #: mutable partagé du workflow.
+    write_nfo: bool = True
+    #: Les previews restent automatiques ; un job GUI peut demander une
+    #: décision explicite sur le résultat du contrôle final.
+    allow_validation_override: bool = True
 
     def __post_init__(self) -> None:
         if not self.video_tracks and self.video is not None:

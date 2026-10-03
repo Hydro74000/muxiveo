@@ -12,7 +12,6 @@ import json
 import mimetypes
 import os
 import re
-import ssl
 import sys
 import urllib.error
 import urllib.parse
@@ -22,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.logging import get_logger
+from core.tls import TlsVerificationError, urlopen_tls
 from core.version import APP_ENV_PREFIX, APP_LOGGER_ROOT, APP_USER_AGENT
 
 
@@ -315,30 +315,12 @@ _TMDB_DEBUG_ENV = f"{APP_ENV_PREFIX}_TMDB_DEBUG"
 _TMDB_LOGGER = get_logger(f"{APP_LOGGER_ROOT}.tmdb")
 _TMDB_BEARER_TOKEN_ENV = f"{APP_ENV_PREFIX}_TMDB_BEARER_TOKEN"
 _TMDB_INSECURE_SSL_ENV = f"{APP_ENV_PREFIX}_TMDB_INSECURE_SSL"
+_API_KEY_QUERY_RE = re.compile(r"(api_key=)[^&\s'\"]+", re.IGNORECASE)
 
 
-def _tmdb_insecure_ssl_enabled() -> bool:
-    raw = os.environ.get(_TMDB_INSECURE_SSL_ENV, "").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
-
-
-def _unverified_ssl_context() -> ssl.SSLContext:
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    return ctx
-
-
-def _is_ssl_error(exc: BaseException) -> bool:
-    cur: BaseException | None = exc
-    while cur is not None:
-        if isinstance(cur, ssl.SSLError):
-            return True
-        reason = getattr(cur, "reason", None)
-        if isinstance(reason, ssl.SSLError):
-            return True
-        cur = cur.__cause__ or cur.__context__
-    return False
+def _redact_url(value: str) -> str:
+    """Masque la clé API TMDB présente dans une URL (logs de diagnostic)."""
+    return _API_KEY_QUERY_RE.sub(r"\1***", value)
 
 
 _TMDB_DEFAULT_BEARER_TOKEN = (  # nosec B105  # Fallback public en best-effort
@@ -393,7 +375,7 @@ class TmdbFetcher:
         parts = [message]
         for key, value in fields.items():
             parts.append(f"{key}={value!r}")
-        line = " | ".join(parts)
+        line = _redact_url(" | ".join(parts))
         if _TMDB_LOGGER.hasHandlers():
             _TMDB_LOGGER.debug(line)
             return
@@ -403,21 +385,16 @@ class TmdbFetcher:
     # Requête HTTP interne
     # ------------------------------------------------------------------
 
-    def _urlopen_with_ssl_fallback(self, req: urllib.request.Request, timeout: int):
+    def _urlopen(self, req: urllib.request.Request, timeout: int):
+        """urlopen TLS vérifié ; non vérifié uniquement si MUXIVEO_TMDB_INSECURE_SSL=1.
+
+        Aucun repli automatique : un certificat refusé est une erreur.
         """
-        urlopen avec fallback automatique en SSL non-vérifié si la vérification
-        échoue (pratique quand le bundle CA du frozen ne matche pas l'hôte).
-        Forçable via MUXIVEO_TMDB_INSECURE_SSL=1.
-        """
-        if _tmdb_insecure_ssl_enabled():
-            return urllib.request.urlopen(req, timeout=timeout, context=_unverified_ssl_context())
         try:
-            return urllib.request.urlopen(req, timeout=timeout)
-        except urllib.error.URLError as exc:
-            if not _is_ssl_error(exc):
-                raise
-            self._debug_log("SSL verification failed; retrying insecure", url=req.full_url)
-            return urllib.request.urlopen(req, timeout=timeout, context=_unverified_ssl_context())
+            return urlopen_tls(req, timeout, insecure_env=_TMDB_INSECURE_SSL_ENV)
+        except TlsVerificationError as exc:
+            self._debug_log("TLS verification failed", url=req.full_url)
+            raise TmdbError(f"Connexion TMDB refusée : {exc}") from exc
 
     def _get(self, endpoint: str, extra: dict | None = None) -> dict:
         params: dict[str, str] = {"language": self._lang}
@@ -436,7 +413,7 @@ class TmdbFetcher:
             headers["Authorization"] = f"Bearer {self._bearer_token}"
         req = urllib.request.Request(url, headers=headers)
         try:
-            with self._urlopen_with_ssl_fallback(req, timeout=12) as resp:
+            with self._urlopen(req, timeout=12) as resp:
                 body = resp.read()
                 content_encoding = str(resp.headers.get("Content-Encoding", "")).strip().lower()
                 if content_encoding:
@@ -499,7 +476,7 @@ class TmdbFetcher:
             },
         )
         try:
-            with self._urlopen_with_ssl_fallback(req, timeout=20) as resp:
+            with self._urlopen(req, timeout=20) as resp:
                 content_type = resp.headers.get("Content-Type", "").split(";", 1)[0].strip()
                 return resp.read(), content_type
         except urllib.error.HTTPError as exc:

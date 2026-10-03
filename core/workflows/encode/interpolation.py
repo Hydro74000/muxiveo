@@ -216,7 +216,7 @@ def stream_start_offset(ffprobe_bin: str, source: Path, stream_index: int) -> fl
         payload = json.loads(result.stdout or "{}")
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return 0.0
-    stream = next((s for s in payload.get("streams") or [] if int(s.get("index", -1)) == int(stream_index)), {})
+    stream: dict = next((s for s in payload.get("streams") or [] if int(s.get("index", -1)) == int(stream_index)), {})
     return interpolation_source_from_probe(
         stream, format_start_time=(payload.get("format") or {}).get("start_time")
     ).start_offset_s

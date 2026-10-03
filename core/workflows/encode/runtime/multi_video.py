@@ -8,6 +8,9 @@ from typing import Callable, cast
 
 from core.bluray import append_ffmpeg_input_args
 from core.runner import TaskCancelledError, TaskSignals
+from core.subprocess_utils import run_cancellable_capture
+from core.workflows.common.validation_override import ValidationOverride, accept_validation_override
+from core.workflows.encode.runtime.frame_count_guard import FrameCountGuard, FrameCountAuditError, MetadataAdjustment
 from core.workdir import remove_path
 from core.workflows.encode.domain import (
     interpolated_static_hdr_lost,
@@ -94,6 +97,7 @@ class MultiVideoPipelineRunnerCallbacks:
     #: Pistes audio / sous-titres de l'assemblage FFmpeg avec décalages et réécriture
     #: de synchronisation (calibrations multi-segments), comme le chemin direct.
     resolve_track_assembly_and_offset_remap: Callable[..., tuple[object, dict[tuple[Path, int, str], tuple[int, int]]]] | None = None
+    validation_override: ValidationOverride | None = None
 
 
 class MultiVideoPipelineRunner:
@@ -235,7 +239,7 @@ class MultiVideoPipelineRunner:
             timing_mkv = work_dir / f"video_{index}.timing.mkv"
             local_cleanup.append(timing_mkv)
             try:
-                write_timing_skeleton(
+                skeleton_result = write_timing_skeleton(
                     enc_video_mkv, timing_mkv,
                     cancel_cb=signals._cancel_event.is_set,
                 )
@@ -250,6 +254,44 @@ class MultiVideoPipelineRunner:
             ], f"annexb-from-encoded-{index}")
             local_cleanup.append(current_hevc)
             remove_path(enc_video_mkv)
+
+            if video.copy_dv or video.copy_hdr10plus:
+                guard = FrameCountGuard(
+                    mediainfo_bin=cb.bins.get("mediainfo", "mediainfo"),
+                    ffprobe_bin=cb.bins.get("ffprobe", ffprobe_beside(cb.ffmpeg_bin)),
+                    dovi_tool_bin=cb.bins.get("dovi_tool", "dovi_tool"),
+                    run_command=lambda cmd, **kwargs: run_cancellable_capture(
+                        cmd, cancel_cb=signals._cancel_event.is_set,
+                        check_cancelled=lambda: cb.check_cancelled(signals),
+                        on_start=signals._register_proc, on_end=signals._unregister_proc,
+                        **kwargs,
+                    ),
+                )
+                audit = guard.audit(
+                    source=meta_input, encoded=current_hevc,
+                    rpu_bin=rpu_bin if video.copy_dv else None,
+                    hdr10p_json=hdr10p_json if video.copy_hdr10plus else None,
+                    known_encoded_frames=skeleton_result.blocks_written,
+                    frame_ratio=frame_ratio,
+                )
+                try:
+                    guard.enforce(
+                        audit, adjustment=MetadataAdjustment.TRIM_TAIL,
+                        rpu_bin=rpu_bin if video.copy_dv else None,
+                        hdr10p_json=hdr10p_json if video.copy_hdr10plus else None,
+                        on_warn=lambda msg: signals.progress.emit(f"[WARN] {msg}"),
+                        on_info=cb.log_info,
+                    )
+                except FrameCountAuditError as exc:
+                    cb.check_cancelled(signals)
+                    if not accept_validation_override(
+                        cb.validation_override, current_hevc, f"Audit frame count : {exc}",
+                        signals._cancel_event.is_set,
+                        lambda msg: signals.progress.emit(f"[WARN] {msg}"),
+                    ):
+                        cb.check_cancelled(signals)
+                        raise RuntimeError(f"Audit frame count : {exc}") from exc
+                cb.check_cancelled(signals)
 
             if video.copy_hdr10plus and hdr10p_json.exists():
                 hdr10_out = work_dir / f"video_{index}.hdr10plus.hevc"

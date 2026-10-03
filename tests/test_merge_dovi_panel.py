@@ -18,6 +18,10 @@ class _FakeWorkflow:
         self.step_finished = _DummySignal()
         self.workflow_finished = _DummySignal()
         self.workflow_failed = _DummySignal()
+        self.workflow_cancelled = _DummySignal()
+
+    def set_validation_override(self, callback) -> None:
+        self.validation_override = callback
 
 
 class _DummyConfig:

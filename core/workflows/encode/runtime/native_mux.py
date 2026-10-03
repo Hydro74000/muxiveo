@@ -17,6 +17,7 @@ from typing import Callable
 
 from core.bluray import ffprobe_input_args
 from core.runner import TaskCancelledError, TaskSignals
+from core.workflows.common.validation_override import ValidationOverride, accept_validation_override, validate_final_output
 from core.subprocess_utils import subprocess_text_kwargs
 from core.subtitle_codec import plan_subtitle_codec
 from core.workdir import remove_path
@@ -408,10 +409,10 @@ def build_encode_assembly_plan(
 
     for audio_index, audio in enumerate(config.audio_tracks):
         source = Path(audio.source_path or config.source)
-        artifact = materialized_audio.get(audio_index)
-        if artifact is not None:
+        audio_artifact = materialized_audio.get(audio_index)
+        if audio_artifact is not None:
             ordered.append(MatroskaAssemblyTrack(
-                artifact=artifact,
+                artifact=audio_artifact,
                 artifact_track_index=0,
                 source_identity=_identity(source),
                 provenance=f"audio:{audio.stream_index}:{audio.codec}",
@@ -573,6 +574,7 @@ def assemble_encode_output_native(
     ffprobe_bin: str = "ffprobe",
     resolved_subtitles: list[tuple[Path, int]] | None = None,
     track_metadata: tuple[PlannedTrackMetadata, ...] | None = None,
+    validation_override: ValidationOverride | None = None,
 ) -> Path:
     """Assemblage final natif : matérialisation audio, contrat, écriture atomique.
 
@@ -636,17 +638,18 @@ def assemble_encode_output_native(
             errors = validate_matroska_output(
                 path, contract, packet_validation=packet_validation,
             )
-            if errors:
-                raise EncodeError(
-                    "Validation sémantique de la sortie native échouée : "
-                    + " ; ".join(errors)
-                )
-            run_cmd(
+            validate_final_output(
+                path, errors, lambda: run_cmd(
                 [
                     ffprobe_bin, "-v", "error", "-show_entries",
                     "format=format_name", "-of", "json", str(path),
                 ],
                 "ffprobe-native-validation",
+                ),
+                message_prefix="Validation sémantique de la sortie native échouée : ",
+                override=validation_override,
+                cancelled=signals._cancel_event.is_set if signals is not None else lambda: False,
+                warn=lambda message: log("WARN", message),
             )
 
         progress_state = {"packets": 0, "bytes": 0}
@@ -681,6 +684,11 @@ def assemble_encode_output_native(
             MatroskaWriter().write(
                 mux_plan,
                 external_validator=_validate,
+                validation_error_handler=lambda path, message: accept_validation_override(
+                    validation_override, path, message,
+                    signals._cancel_event.is_set if signals is not None else lambda: False,
+                    lambda msg: log("WARN", msg),
+                ),
                 cancel_cb=(signals._cancel_event.is_set if signals is not None else None),
                 progress_cb=_on_progress,
             )

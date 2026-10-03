@@ -90,7 +90,7 @@ def test_step_remux_executes_native_mux_and_assembly(tmp_path: Path) -> None:
     mux_calls: list[dict] = []
     assemble_calls: list[dict] = []
 
-    def _fake_mux(final_hevc, src_film1, step_paths, video_props, dovi_rec, colour_elem):
+    def _fake_mux(final_hevc, src_film1, step_paths, video_props, dovi_rec, colour_elem, **_kw):
         mux_calls.append({
             "final_hevc": final_hevc,
             "source_for_timestamps": src_film1,
@@ -172,7 +172,7 @@ def test_step_remux_passes_dovi_record_to_native_video_muxer(tmp_path: Path) -> 
     cast(Any, wf)._build_dovi_record_from_rpu = _fake_record_fn
 
     mux_records: list[object] = []
-    def _record_mux(_fh, _f1, p, _vp, d_rec, _c):
+    def _record_mux(_fh, _f1, p, _vp, d_rec, _c, **_kw):
         mux_records.append(d_rec)
         return p.film1_wrapped_video.write_bytes(b"wrapped")
 
@@ -204,7 +204,7 @@ def test_step_remux_incorporates_chapters_from_film2(tmp_path: Path) -> None:
     paths.film1_hevc_input.write_bytes(b"hevc")
 
     wf = MergeDoviWorkflow()
-    cast(Any, wf)._mux_native_video = lambda _fh, _f1, p, _vp, _d, _c: p.film1_wrapped_video.write_bytes(b"wrapped")
+    cast(Any, wf)._mux_native_video = lambda _fh, _f1, p, _vp, _d, _c, **_kw: p.film1_wrapped_video.write_bytes(b"wrapped")
     cast(Any, wf)._read_video_track_props = lambda _f: {"pixel_width": 3840, "pixel_height": 2160}
 
     captured_plans = []
@@ -291,12 +291,12 @@ def test_verify_raises_when_injected_framecount_is_outside_tolerance(
             stderr = ""
             stdout = ""
         binary = Path(cmd[0]).name
-        if binary == "mediainfo":
+        if binary == "mediainfo" or "-count_packets" in cmd:
             target = Path(cmd[-1])
             _R.stdout = "1000" if target == film1 else "1005"
         return _R()
 
-    monkeypatch.setattr("core.workflows.encode.runtime.frame_count_guard.subprocess.run", _fake_run)
+    monkeypatch.setattr(MergeDoviWorkflow, "_run_probe", lambda self, cmd, **kw: _fake_run(cmd, **kw))
 
     wf = MergeDoviWorkflow()
     with pytest.raises(WorkflowError, match="frame count"):
@@ -306,13 +306,19 @@ def test_verify_raises_when_injected_framecount_is_outside_tolerance(
 def test_verify_passes_when_frame_counts_align(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Audit FrameCountGuard : tout aligné → pas d'exception."""
+    """VERIFY relit le RPU du flux final : comptages identiques → pas d'exception."""
     film1 = tmp_path / "film1.mkv"
     film1.write_bytes(b"film1")
     paths = _paths(tmp_path, film1)
     paths.film1_with_dovi.write_bytes(b"hevc")
     paths.film2_rpu.write_bytes(b"rpu")
     flags = HDRFlags(has_dovi=True, has_hdr10plus=False)
+    extracted: list[list[str]] = []
+
+    def _fake_run_raw(cmd: list[str], step=None) -> str:
+        extracted.append(cmd)
+        Path(cmd[cmd.index("-o") + 1]).write_bytes(b"rpu-final")
+        return ""
 
     def _fake_run(cmd, capture_output=True, check=False, **kw):
         class _R:
@@ -320,16 +326,21 @@ def test_verify_passes_when_frame_counts_align(
             stderr = ""
             stdout = ""
         binary = Path(cmd[0]).name
-        if binary == "mediainfo":
+        if binary == "mediainfo" or "-count_packets" in cmd:
             _R.stdout = "1000"
         elif binary == "dovi_tool":
             _R.stdout = "Frames: 1000\n"
         return _R()
 
-    monkeypatch.setattr("core.workflows.encode.runtime.frame_count_guard.subprocess.run", _fake_run)
+    monkeypatch.setattr(MergeDoviWorkflow, "_run_probe", lambda self, cmd, **kw: _fake_run(cmd, **kw))
 
     wf = MergeDoviWorkflow()
+    cast(Any, wf)._run_raw = _fake_run_raw
     wf._step_verify(film1, paths, flags)  # ne lève pas
+
+    # Le RPU relu provient du flux final (pas du RPU extrait de Film 2).
+    assert extracted and extracted[0][extracted[0].index("-i") + 1] == str(paths.film1_with_dovi)
+    assert not paths.verify_rpu.exists()
 
 
 def test_validate_sdr_film1_enables_assisted_hdr10_conversion(
@@ -417,7 +428,7 @@ def test_framecount_large_delta_allowed_for_sdr_conversion_only(tmp_path: Path) 
     with pytest.raises(WorkflowError, match="Écart de 20 frames"):
         wf._step_framecount(film1, film2)
 
-    result = wf._step_framecount(film1, film2, allow_large_delta=True)
+    result = wf._step_framecount(film1, film2, allow_hdr10_fallback=True)
 
     assert result.diff == 20
     assert result.compatible is False
@@ -679,12 +690,13 @@ class TestDoviRpuFallback:
     @pytest.mark.parametrize("rpu,expected", [(b"\x7c\x01rpu", True), (b"", False)])
     def test_raw_hevc_rpu_probe(self, tmp_path, rpu, expected):
         wf = MergeDoviWorkflow()
-        with patch("core.workflows.merge_dovi.subprocess.run", side_effect=self._run(rpu)):
+        with patch.object(wf, "_run_probe", side_effect=self._run(rpu)):
             assert wf._has_dovi_rpu(tmp_path / "film2.hevc") is expected
 
     def test_unsupported_container_is_not_probed(self, tmp_path):
-        with patch("core.workflows.merge_dovi.subprocess.run") as run:
-            assert MergeDoviWorkflow()._has_dovi_rpu(tmp_path / "film2.mp4") is False
+        wf = MergeDoviWorkflow()
+        with patch.object(wf, "_run_probe") as run:
+            assert wf._has_dovi_rpu(tmp_path / "film2.mp4") is False
         run.assert_not_called()
 
 
@@ -781,7 +793,7 @@ def _remux_with_preserved_film1_dovi(tmp_path: Path, wf: MergeDoviWorkflow) -> l
     paths.film1_final.write_bytes(b"hevc")
     records: list[object] = []
 
-    def _mux(_fh, _f1, p, _vp, d_rec, _c):
+    def _mux(_fh, _f1, p, _vp, d_rec, _c, **_kw):
         records.append(d_rec)
         p.film1_wrapped_video.write_bytes(b"wrapped")
 
@@ -815,8 +827,8 @@ def test_step_remux_keeps_film1_dovi_record_from_container(tmp_path: Path) -> No
         '"bl_present_flag": 1, "dv_bl_signal_compatibility_id": 1}]}]}'
     )
     wf = MergeDoviWorkflow()
-    with patch(
-        "core.workflows.merge_dovi.subprocess.run",
+    with patch.object(
+        wf, "_run_probe",
         return_value=subprocess.CompletedProcess([], 0, ffprobe_json, ""),
     ):
         records = _remux_with_preserved_film1_dovi(tmp_path, wf)
@@ -867,6 +879,8 @@ def test_run_requests_film1_dovi_preservation_without_dovi_injection(tmp_path: P
     )
     cast(Any, wf)._step_detect_dovi = lambda *_args: None
     cast(Any, wf)._step_framecount = lambda *_args, **_kwargs: FrameCountResult(10, 10, 0)
+    cast(Any, wf)._step_check_storage = lambda *_args, **_kwargs: None
+    cast(Any, wf)._step_check_metadata = lambda _counts, _paths, flags, *_a, **_k: flags
     for name in (
         "_step_extract_hevc", "_step_extract_metadata", "_step_inject_hdr10plus",
         "_step_cleanup",
@@ -879,6 +893,45 @@ def test_run_requests_film1_dovi_preservation_without_dovi_injection(tmp_path: P
     wf._run(film1, film2, paths, DoviProfile.DISABLED)
 
     assert remux_kwargs and remux_kwargs[0]["preserve_film1_dovi"] is True
+
+
+@pytest.mark.parametrize("accepted", [True, False])
+def test_verify_override_relaxes_native_mux_frame_count(tmp_path: Path, accepted: bool) -> None:
+    """« Oui » explicite au rejet VERIFY : le muxer natif tolère l'écart de comptage."""
+    film1 = tmp_path / "film1.mkv"
+    film2 = tmp_path / "film2.mkv"
+    paths = _paths(tmp_path, film1)
+    wf = MergeDoviWorkflow()
+    remux_kwargs: list[dict] = []
+    flags = HDRFlags(has_dovi=False, has_hdr10plus=True)
+
+    cast(Any, wf)._step_validate = lambda *_args: ValidationContext(
+        flags=flags, static_film1=StaticHdrMetadata(), static_film2=StaticHdrMetadata(),
+    )
+    cast(Any, wf)._step_detect_dovi = lambda *_args: None
+    cast(Any, wf)._step_framecount = lambda *_args, **_kwargs: FrameCountResult(48, 48, 0)
+    cast(Any, wf)._step_check_storage = lambda *_args, **_kwargs: None
+    cast(Any, wf)._step_check_metadata = lambda _counts, _paths, flags, *_a, **_k: flags
+    for name in ("_step_extract_hevc", "_step_extract_metadata", "_step_inject_hdr10plus", "_step_cleanup"):
+        setattr(wf, name, lambda *_args: None)
+    cast(Any, wf)._step_inject_static_hdr = lambda *_args: False
+    final = paths.injection_chain_final(flags, static_hdr_applied=False)
+    final.parent.mkdir(parents=True, exist_ok=True)
+    final.write_bytes(b"hevc")
+
+    def _verify(*_args, **_kwargs):
+        raise WorkflowError(WorkflowStep.VERIFY, "Flux final : 46 trames contre 48 pour Film 1")
+
+    cast(Any, wf)._step_verify = _verify
+    cast(Any, wf)._step_remux = lambda *_args, **kwargs: remux_kwargs.append(kwargs)
+    wf.set_validation_override(lambda *_args: accepted)
+
+    wf._run(film1, film2, paths, DoviProfile.DISABLED)
+
+    if accepted:
+        assert remux_kwargs and remux_kwargs[0]["allow_frame_count_mismatch"] is True
+    else:
+        assert remux_kwargs == []
 
 
 @pytest.mark.parametrize("hdr_format,transfer,label", [

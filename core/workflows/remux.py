@@ -13,6 +13,7 @@ from core.workflows.common.matroska_finalize import MatroskaMuxingAppPostAction
 from core.workflows.common.matroska_finalize import MatroskaLanguagePostAction
 from core.workflows.common.matroska_finalize import MatroskaTrackEnabledPostAction
 from core.workflows.common.matroska_finalize import MatroskaTrackStatisticsPostAction
+from core.workflows.common.validation_override import ValidationOverride
 from core.workflows.common.chapters import (
     probe_media_duration_seconds,
     write_ffmetadata_chapters,
@@ -109,6 +110,7 @@ class RemuxWorkflow(QObject):
         self._ffmpeg_threads = _normalize_ffmpeg_thread_count(ffmpeg_threads)
         self._generate_nfo = generate_nfo
         self._clean_nfo = True
+        self._validation_override: ValidationOverride | None = None
         self._mediainfo_bin = mediainfo_bin
         self._sync_rewrite_enabled = bool(sync_rewrite_enabled)
         self._sync_advanced_audio_rewrite_enabled = bool(sync_advanced_audio_rewrite_enabled)
@@ -149,6 +151,9 @@ class RemuxWorkflow(QObject):
 
     def set_generate_nfo(self, generate_nfo: bool) -> None:
         self._generate_nfo = generate_nfo
+
+    def set_validation_override(self, callback: ValidationOverride | None) -> None:
+        self._validation_override = callback
 
     def set_regenerate_statistics(self, enabled: bool) -> None:
         self._statistics_post_action.set_enabled(enabled)
@@ -325,6 +330,7 @@ class RemuxWorkflow(QObject):
             log=self.log_message.emit, log_step=self._log_step,
             ffmpeg_bin=self._ffmpeg, ffprobe_bin=self._ffprobe,
             finalize=self._write_nfo, plan=plan,
+            validation_override=self._validation_override,
         )
         ffmpeg_backend = FfmpegRemuxBackend(
             execute_callback=lambda item: self._run_ffmpeg(item, plan),
@@ -360,6 +366,7 @@ class RemuxWorkflow(QObject):
                 sync_rewrite_enabled=lambda: self._sync_rewrite_enabled,
                 sync_advanced_audio_rewrite_enabled=lambda: self._sync_advanced_audio_rewrite_enabled,
                 sync_rewrite_audio_bitrates=lambda: dict(self._sync_rewrite_audio_bitrates),
+                validation_override=self._validation_override,
             )
         ).run(config, plan)
 

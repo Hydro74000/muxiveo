@@ -104,7 +104,7 @@ class DirectOutputRunner:
                 )
                 prep_signals.finished.emit(output)
                 signals = prep_signals
-            except Exception:
+            except BaseException:
                 if live_sync_session is not None:
                     live_sync_session.close()
                 raise
@@ -132,7 +132,7 @@ class DirectOutputRunner:
             )
             prep_signals.finished.emit(output)
             signals = prep_signals
-        except Exception:
+        except BaseException:
             if live_sync_session is not None:
                 live_sync_session.close()
             raise

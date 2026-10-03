@@ -217,6 +217,37 @@ class TestMatroskaNativeMuxerSmoke:
                     pixel_height=1080,
                 )
 
+    @pytest.mark.parametrize(("frames", "pts", "written", "dropped", "duration_ms"), [
+        (2, [0.0, 0.041, 0.083], 2, 0, 83),   # flux plus court : durée des images écrites
+        (3, [0.0, 0.041], 2, 1, 82),          # AU en excès écartée en fin de flux
+    ])
+    def test_frame_count_mismatch_tolerated_on_explicit_override(
+        self, tmp_path, frames, pts, written, dropped, duration_ms,
+    ):
+        hevc = tmp_path / "in.hevc"
+        hevc.write_bytes(_build_fake_hevc(frame_count=frames))
+        out = tmp_path / "out.mkv"
+
+        with patch(
+            "core.matroska.timestamps.subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=_make_packets_json(pts), stderr="",
+            ),
+        ):
+            result = MatroskaNativeMuxer().mux(
+                hevc_input=hevc,
+                source_for_timestamps=tmp_path / "src.mkv",
+                output=out,
+                pixel_width=1920,
+                pixel_height=1080,
+                allow_frame_count_mismatch=True,
+            )
+
+        assert (result.frames_written, result.dropped_frames) == (written, dropped)
+        assert result.source_timestamps == len(pts)
+        assert result.duration_ms == duration_ms
+        assert MatroskaReader(out).segment_duration_ns() == duration_ms * 1_000_000
+
     def test_vfr_timestamps_preserved_in_clusters(self, tmp_path):
         # Source VFR : intervalles non uniformes.
         hevc = tmp_path / "in.hevc"
