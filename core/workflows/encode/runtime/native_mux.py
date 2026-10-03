@@ -9,11 +9,16 @@ puis ffprobe en second validateur, sans aucun post-patch conteneur.
 
 from __future__ import annotations
 
+import json
+import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
+from core.bluray import ffprobe_input_args
 from core.runner import TaskCancelledError, TaskSignals
+from core.subprocess_utils import subprocess_text_kwargs
+from core.subtitle_codec import plan_subtitle_codec
 from core.workdir import remove_path
 from core.workflows.encode.domain.codecs import audio_codec_args
 from core.workflows.encode.models import EncodeConfig, EncodeError
@@ -102,6 +107,53 @@ def _offset_ms(config: EncodeConfig, track_type: str, source: Path, stream_index
     return 0
 
 
+def probe_subtitle_codecs(source: Path, ffprobe_bin: str) -> dict[int, str]:
+    """Codecs ffprobe des flux de sous-titres de ``source`` (index → codec).
+
+    Retourne un dictionnaire vide si la sonde échoue : le remballage reste
+    alors en copie pure (comportement historique).
+    """
+    try:
+        result = subprocess.run(
+            [
+                ffprobe_bin, "-v", "quiet", "-print_format", "json",
+                "-select_streams", "s", "-show_entries", "stream=index,codec_name",
+                *ffprobe_input_args(source),
+            ],
+            capture_output=True,
+            check=False,
+            timeout=20,
+            **subprocess_text_kwargs(),
+        )
+        payload = json.loads(result.stdout or "{}") if result.returncode == 0 else {}
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return {}
+    codecs: dict[int, str] = {}
+    for stream in payload.get("streams") or []:
+        try:
+            codecs[int(stream.get("index"))] = str(stream.get("codec_name") or "").lower()
+        except (TypeError, ValueError):
+            continue
+    return codecs
+
+
+def _subtitle_conversion_args(codecs: list[str]) -> list[str]:
+    """Args ``-c:s:N <codec>`` pour les sous-titres refusés tels quels par Matroska.
+
+    ``codecs`` suit l'ordre de sortie des sous-titres. Un codec non supporté
+    reste en copie : FFmpeg signalera l'erreur s'il est réellement refusé.
+    """
+    args: list[str] = []
+    for out_index, codec in enumerate(codecs):
+        try:
+            codec_arg, _warning = plan_subtitle_codec(codec)
+        except ValueError:
+            continue
+        if codec_arg != "copy":
+            args.extend([f"-c:s:{out_index}", codec_arg])
+    return args
+
+
 def prepare_native_encode_inputs(
     config: EncodeConfig,
     *,
@@ -109,6 +161,7 @@ def prepare_native_encode_inputs(
     ffmpeg_bin: str,
     run_cmd: Callable[[list[str], str], str],
     resolved_subtitles: list[tuple[Path, int]] | None = None,
+    ffprobe_bin: str = "ffprobe",
 ) -> NativeEncodePreparation:
     """Materialise non-Matroska copied inputs for the native final mux.
 
@@ -116,11 +169,19 @@ def prepare_native_encode_inputs(
     subtitle stream becomes a one-track MKV, preserving packet data and
     timestamps.  A second, full-container artifact is made only when it is
     required as the source of chapters or global tags.
+    Les sous-titres que Matroska refuse en copie (``mov_text``…) sont
+    convertis en SRT au passage (:func:`plan_subtitle_codec`).
     """
     work_dir.mkdir(parents=True, exist_ok=True)
     tracks: dict[tuple[Path, int], Path] = {}
     containers: dict[Path, Path] = {}
     cleanup: list[Path] = []
+    probed: dict[Path, dict[int, str]] = {}
+
+    def _subtitle_codecs(source: Path) -> dict[int, str]:
+        if source not in probed:
+            probed[source] = probe_subtitle_codecs(source, ffprobe_bin)
+        return probed[source]
 
     def _run(command: list[str], label: str, target: Path) -> None:
         try:
@@ -148,9 +209,11 @@ def prepare_native_encode_inputs(
             if _is_matroska(source):
                 continue
             target = work_dir / f"native_container_{ordinal}.mkv"
+            subtitle_codecs = _subtitle_codecs(source)
             _run([
                 ffmpeg_bin, "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
                 "-i", str(source), "-map", "0", "-c", "copy",
+                *_subtitle_conversion_args([subtitle_codecs[i] for i in sorted(subtitle_codecs)]),
                 "-map_metadata", "0", "-map_chapters", "0", str(target),
             ], f"ffmpeg-native-canonical-container-{ordinal}", target)
             containers[source] = target
@@ -184,9 +247,14 @@ def prepare_native_encode_inputs(
                 tracks[(source, stream_index)] = containers[source]
                 continue
             target = work_dir / f"native_track_{ordinal}.mkv"
+            subtitle_codec = (
+                _subtitle_codecs(source).get(stream_index)
+                if (source, stream_index) in subtitles else None
+            )
             _run([
                 ffmpeg_bin, "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
                 "-i", str(source), "-map", f"0:{stream_index}", "-c", "copy",
+                *(_subtitle_conversion_args([subtitle_codec]) if subtitle_codec else []),
                 "-map_metadata", "-1", "-map_chapters", "-1", str(target),
             ], f"ffmpeg-native-canonical-track-{ordinal}", target)
             tracks[(source, stream_index)] = target
@@ -463,6 +531,7 @@ def assemble_encode_output_native(
             ffmpeg_bin=ffmpeg_bin,
             run_cmd=run_cmd,
             resolved_subtitles=resolved_subtitles,
+            ffprobe_bin=ffprobe_bin,
         )
         preparation_cleanup_paths = preparation.cleanup_paths
         assembly = build_encode_assembly_plan(

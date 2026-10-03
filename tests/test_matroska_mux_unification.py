@@ -758,6 +758,33 @@ class TestNativeEncodeAssembly:
 
         assert not list(tmp_path.glob("native_container_*.mkv"))
 
+    def test_native_input_preparation_converts_mov_text_to_srt(self, tmp_path: Path) -> None:
+        """mov_text (MP4) est refusé par Matroska en copie : conversion SRT."""
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"mp4")
+        config = _encode_config(tmp_path, source=source, keep_chapters=True, chapter_overrides=None)
+        commands: list[list[str]] = []
+
+        def _run(command: list[str], _label: str) -> str:
+            commands.append(command)
+            Path(command[-1]).write_bytes(b"mkv")
+            return "ok"
+
+        with patch(
+            "core.workflows.encode.runtime.native_mux.probe_subtitle_codecs",
+            return_value={2: "subrip", 3: "mov_text"},
+        ):
+            prepare_native_encode_inputs(
+                config,
+                work_dir=tmp_path,
+                ffmpeg_bin="ffmpeg",
+                run_cmd=_run,
+                resolved_subtitles=[(source, 3)],
+            )
+
+        container = next(c for c in commands if "native_container_0" in c[-1])
+        assert container[container.index("-c") + 2:container.index("-map_metadata")] == ["-c:s:1", "srt"]
+
     def test_keep_chapters_on_chapterless_source_succeeds(self, tmp_path: Path) -> None:
         """keep_chapters=True sur une source SANS chapitres : le contrat ne
         doit pas exiger de chapitres (sinon toute source sans chapitres rend
