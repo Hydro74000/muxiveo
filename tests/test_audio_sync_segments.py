@@ -8,7 +8,9 @@ import numpy as np
 import pytest
 
 from core.workflows.audio_sync import AudioSyncError
-from core.workflows.audio_sync_segments import Anchor, locate_transition, match_window, scan_envelopes
+from core.workflows.audio_sync_segments import (
+    Anchor, _returning_excursion, locate_transition, match_window, scan_envelopes,
+)
 
 
 def _edited_pair(cuts, shifts, duration=180_000):
@@ -58,11 +60,27 @@ def test_unverified_transition_raises_instead_of_inventing_midpoint():
         locate_transition(ref, donor, Anchor(4000, 200, .99), Anchor(20000, 4000, .99))
 
 
-def test_long_unverified_interval_is_rejected():
-    ref, donor = _edited_pair([], [200])
+def test_long_unverified_interval_with_shift_change_is_rejected():
+    ref, donor = _edited_pair([90000], [200, 900])
     donor[60000:120000] = 0
     with pytest.raises(AudioSyncError, match="non vérifié"):
         scan_envelopes(ref, donor)
+
+
+def test_long_unmatched_interval_with_stable_shift_is_rejected():
+    ref, donor = _edited_pair([], [200])
+    # Les deux pistes restent sonores, mais le doublage de ce passage ne
+    # fournit aucune correspondance acoustique exploitable.
+    donor[60000:120000] = np.random.default_rng(419).uniform(0.01, 1, 60000)
+    with pytest.raises(AudioSyncError, match="non vérifié"):
+        scan_envelopes(ref, donor)
+
+
+def test_short_unmatched_interval_with_stable_shift_is_accepted():
+    ref, donor = _edited_pair([], [200])
+    donor[60000:72000] = np.random.default_rng(419).uniform(0.01, 1, 12000)
+    segments, _, _ = scan_envelopes(ref, donor)
+    assert [s.shift_ms for s in segments] == [200]
 
 
 def test_cancelled_dense_analysis_stops():
@@ -94,6 +112,100 @@ def test_unverified_intro_is_rejected():
     ref[:50000] = 0
     with pytest.raises(AudioSyncError, match="Début de piste"):
         scan_envelopes(ref, donor)
+
+
+def test_silent_intro_on_both_sides_is_accepted():
+    ref, donor = _edited_pair([], [1006])
+    ref[:31000] = 1e-6
+    donor[:30000] = 1e-6
+    messages = []
+    segments, _, _ = scan_envelopes(ref, donor, log=messages.append)
+    assert [s.shift_ms for s in segments] == [1006]
+    assert any("Début silencieux" in message for message in messages)
+
+
+def test_short_small_unverified_excursion_returning_to_plateau_is_ignored():
+    anchors = [Anchor(t, 1000, .8) for t in (32000, 36000)] + [Anchor(t, 1031, .75) for t in (44000, 48000, 52000)]
+    anchors += [Anchor(t, 1001, .8) for t in (56000, 60000)]
+    assert _returning_excursion(anchors, 2, 1000, 25) == 5
+    assert _returning_excursion(anchors[:5], 2, 1000, 25) is None
+
+
+def test_large_or_long_excursion_is_not_ignored():
+    large = [Anchor(32000, 1000, .8), Anchor(36000, 1100, .8), Anchor(40000, 1000, .8)]
+    assert _returning_excursion(large, 1, 1000, 25) is None
+    long = [Anchor(32000, 1000, .8), *[Anchor(t, 1031, .8) for t in range(36000, 70000, 4000)], Anchor(70000, 1000, .8)]
+    assert _returning_excursion(long, 1, 1000, 25) is None
+
+
+def test_scanner_retries_without_center_channel(monkeypatch):
+    from pathlib import Path
+    from core.workflows.audio_sync import AudioSyncTrack
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+
+    scanner = AudioSyncScanner()
+    monkeypatch.setattr(scanner, "measure", lambda *args, **kwargs: (1006.0, .9))
+    monkeypatch.setattr(scanner, "duration", lambda track: 7600.0)
+    monkeypatch.setattr(scanner, "channel_layout", lambda track: (6, "5.1(side)"))
+    ref, donor = _edited_pair([], [1006])
+    calls = []
+
+    def envelope(track, cadence_filter=None, downmix=None):
+        calls.append(downmix)
+        if downmix is None:
+            return np.zeros(len(ref)) if track.stream_index == 1 else donor
+        return ref if track.stream_index == 1 else donor
+
+    monkeypatch.setattr(scanner, "envelope", envelope)
+    messages = []
+    calibration = scanner.scan(AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2),
+                               detect_cuts=True, log=messages.append)
+    assert [s.shift_ms for s in calibration.segments] == [1006]
+    assert calls == [None, None, "pan=mono|c0=SL+SR", "pan=mono|c0=SL+SR"]
+    assert any("hors dialogues" in message for message in messages)
+
+
+def test_scanner_retries_when_initial_mono_windows_fail(monkeypatch):
+    from pathlib import Path
+    from core.workflows.audio_sync import AudioSyncTrack
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+
+    scanner = AudioSyncScanner()
+    monkeypatch.setattr(scanner, "duration", lambda track: 180.0)
+    monkeypatch.setattr(scanner, "channel_layout", lambda track: (6, "5.1(side)"))
+    ref, donor = _edited_pair([], [1006])
+    measured = []
+
+    def measure(*args, downmixes=None, **kwargs):
+        measured.append(downmixes)
+        if downmixes is None:
+            raise AudioSyncError("Corrélation mono insuffisante")
+        return 1006.0, .9
+
+    def envelope(track, cadence_filter=None, downmix=None):
+        assert downmix == "pan=mono|c0=SL+SR"
+        return ref if track.stream_index == 1 else donor
+
+    monkeypatch.setattr(scanner, "measure", measure)
+    monkeypatch.setattr(scanner, "envelope", envelope)
+    calibration = scanner.scan(AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2),
+                               detect_cuts=True)
+    assert [s.shift_ms for s in calibration.segments] == [1006]
+    assert None in measured
+    assert ("pan=mono|c0=SL+SR",) * 2 in measured
+
+
+def test_dialogue_free_downmixes_follow_layouts():
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+
+    assert AudioSyncScanner.dialogue_free_downmixes((8, "7.1"), (6, "5.1(side)")) == (
+        "pan=mono|c0=BL+BR+SL+SR", "pan=mono|c0=SL+SR")
+    assert AudioSyncScanner.dialogue_free_downmixes((8, "7.1(wide)"), (8, "7.1(wide-side)")) == (
+        "pan=mono|c0=BL+BR", "pan=mono|c0=SL+SR")
+    assert AudioSyncScanner.dialogue_free_downmixes((6, "5.1"), (2, "stereo")) == ("pan=mono|c0=c0-c1",) * 2
+    assert AudioSyncScanner.dialogue_free_downmixes((1, "mono"), (6, "5.1")) is None
+    with pytest.raises(AudioSyncError, match="Disposition multicanal non reconnue"):
+        AudioSyncScanner.dialogue_free_downmixes((8, "7.1(inconnu)"), (6, "5.1(side)"))
 
 
 def test_ui_reports_failed_analysis_without_constant_offset_fallback(monkeypatch):

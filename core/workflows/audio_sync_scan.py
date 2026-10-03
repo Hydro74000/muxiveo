@@ -18,6 +18,24 @@ if TYPE_CHECKING:
 # de cadence pour conserver les coordonnées temporelles de la source.
 _SEEK_PREROLL_S = 5.0
 
+# Noms des canaux d'ambiance des dispositions que FFmpeg expose via ffprobe.
+# Les 7.1 « wide » placent aussi des canaux avant après c3 : le nombre de
+# canaux seul ne permet donc pas de choisir les surrounds.
+_SURROUND_BY_LAYOUT = {
+    "5.1": ("BL", "BR"),
+    "5.1(side)": ("SL", "SR"),
+    "6.1": ("SL", "SR", "BC"),
+    "6.1(back)": ("BL", "BR", "BC"),
+    "7.1": ("BL", "BR", "SL", "SR"),
+    "7.1(wide)": ("BL", "BR"),
+    "7.1(wide-side)": ("SL", "SR"),
+    "5.1.2": ("SL", "SR"),
+    "5.1.2(back)": ("BL", "BR"),
+    "5.1.4": ("SL", "SR"),
+    "7.1.2": ("BL", "BR", "SL", "SR"),
+    "7.1.4": ("BL", "BR", "SL", "SR"),
+}
+
 
 def _seek_args(start: float) -> tuple[list[str], list[str]]:
     """Retourne les options de seek et les filtres de découpage avant conversion de cadence."""
@@ -69,11 +87,11 @@ class AudioSyncScanner:
             raise AudioSyncError("Durée audio invalide.")
         return duration
 
-    def samples(self, track, start, duration, cadence_filter: str | None = None) -> ndarray:
+    def samples(self, track, start, duration, cadence_filter: str | None = None,
+                downmix: str | None = None) -> ndarray:
         import numpy as np
-        af = "highpass=f=300,lowpass=f=3000"
-        if cadence_filter:
-            af = f"{cadence_filter},{af}"
+        af = ",".join(filter_part for filter_part in (downmix, cadence_filter, "highpass=f=300", "lowpass=f=3000")
+                      if filter_part)
         seek_in, trim_filters = _seek_args(start)
         af = ",".join([*trim_filters, af])
         result = self._run([
@@ -90,14 +108,48 @@ class AudioSyncScanner:
         if self.cancel_event is not None and self.cancel_event.is_set():
             raise AudioSyncError("Analyse annulée.")
 
-    def envelope(self, track, cadence_filter=None) -> ndarray:
+    def channel_layout(self, track) -> tuple[int, str]:
+        """Nombre de canaux et disposition de la piste analysée."""
+        spec = str(track.stream_index).removeprefix("0:")
+        result = self._run([self.ffprobe, "-v", "error", "-select_streams", spec,
+                            "-show_entries", "stream=channels,channel_layout", "-of", "json", str(track.source_path)],
+                           timeout=30, **subprocess_text_kwargs())
+        if result.returncode:
+            raise AudioSyncError("Impossible de lire la disposition audio ; revue manuelle de la synchro nécessaire.")
+        try:
+            stream = (json.loads(result.stdout or "{}").get("streams") or [])[0]
+            return int(stream.get("channels") or 0), str(stream.get("channel_layout") or "")
+        except (IndexError, TypeError, ValueError) as exc:
+            raise AudioSyncError("Disposition audio indisponible ; revue manuelle de la synchro nécessaire.") from exc
+
+    @staticmethod
+    def dialogue_free_downmixes(ref_layout: tuple[int, str], donor_layout: tuple[int, str]) -> tuple[str, str] | None:
+        """Mixages sans canal central : un doublage n'y modifie que peu le signal.
+
+        5.1/7.1 : surrounds seuls (musique et effets communs aux versions).
+        Stéréo : différence L−R, qui annule les dialogues centrés.
+        """
+        if min(ref_layout[0], donor_layout[0]) >= 6:
+            channels = (_SURROUND_BY_LAYOUT.get(ref_layout[1]), _SURROUND_BY_LAYOUT.get(donor_layout[1]))
+            if None in channels:
+                raise AudioSyncError("Disposition multicanal non reconnue ; revue manuelle de la synchro nécessaire.")
+            return tuple("pan=mono|c0=" + "+".join(names) for names in channels)
+        if min(ref_layout[0], donor_layout[0]) >= 2:
+            return ("pan=mono|c0=c0-c1",) * 2
+        return None
+
+    def _dialogue_free_downmixes(self, reference, donor) -> tuple[str, str] | None:
+        return self.dialogue_free_downmixes(self.channel_layout(reference), self.channel_layout(donor))
+
+    def envelope(self, track, cadence_filter=None, downmix: str | None = None) -> ndarray:
         """Décode une fois la piste en enveloppe 1 kHz (4 Mo par 1000 s).
 
-        Le sous-échantillonnage suit le redressement, après le mixage mono.
+        Le sous-échantillonnage suit le redressement, après le mixage mono
+        (`downmix` : filtre pan remplaçant le mixage de tous les canaux).
         Aucun seek : toutes les positions restent dans la chronologie source.
         """
         import numpy as np
-        filters = ["aformat=channel_layouts=mono"]
+        filters = [downmix or "aformat=channel_layouts=mono"]
         if cadence_filter:
             filters.append(cadence_filter)
         filters += ["highpass=f=300", "lowpass=f=3000", "aeval=abs(val(0))", "aresample=1000"]
@@ -213,17 +265,24 @@ class AudioSyncScanner:
         duration,
         cadence_filter: str | None = None,
         speed_factor: float = 1.0,
+        downmixes: tuple[str, str] | None = None,
     ):
         p_donor = start * speed_factor
+        if downmixes is None:
+            reference_samples = self.samples(reference, start, duration)
+            donor_samples = self.samples(donor, p_donor, duration, cadence_filter=cadence_filter)
+        else:
+            reference_samples = self.samples(reference, start, duration, downmix=downmixes[0])
+            donor_samples = self.samples(donor, p_donor, duration, cadence_filter=cadence_filter,
+                                         downmix=downmixes[1])
         return self.correlate(
-            self.samples(reference, start, duration),
-            self.samples(donor, p_donor, duration, cadence_filter=cadence_filter),
+            reference_samples, donor_samples,
             self.max_offset_s * 1000,
         )
 
     def scan(self, reference: AudioSyncTrack, donor: AudioSyncTrack, *, detect_cuts=False,
              drift_threshold_ms=25, cadence_mismatch=None, cadence_audio_method="auto",
-             log=lambda message: None):
+             log=lambda message: None, _downmixes: tuple[str, str] | None = None):
         import numpy as np
         from core.workflows.cadence import CadenceAudioMethod, build_cadence_audio_filter
         if drift_threshold_ms <= 0:
@@ -251,6 +310,7 @@ class AudioSyncScanner:
         samples: list[dict[str, Any]] = []
 
         method_proven_by_fallback = False
+        measure_kwargs = {"downmixes": _downmixes} if _downmixes else {}
 
         def _measure_around(position: float, cadence_filter: str | None):
             for nudge in (0, -4.0, 4.0, -8.0, 8.0):
@@ -265,6 +325,7 @@ class AudioSyncScanner:
                         window,
                         cadence_filter=cadence_filter,
                         speed_factor=speed_factor,
+                        **measure_kwargs,
                     )
                     return p, off, conf
                 except AudioSyncError:
@@ -290,6 +351,16 @@ class AudioSyncScanner:
                     method_proven_by_fallback = True
                     log(f"Cadence : corrélation obtenue avec la méthode '{alternative}' (repli automatique).")
             if measured is None:
+                if _downmixes is None:
+                    self._check_cancelled()
+                    downmixes = self._dialogue_free_downmixes(reference, donor)
+                    if downmixes is not None:
+                        log("Corrélation mono insuffisante ; nouvelle analyse hors dialogues (surrounds ou L−R)…")
+                        return self.scan(reference, donor, detect_cuts=detect_cuts,
+                                         drift_threshold_ms=drift_threshold_ms,
+                                         cadence_mismatch=cadence_mismatch,
+                                         cadence_audio_method=cadence_audio_method,
+                                         log=log, _downmixes=downmixes)
                 raise AudioSyncError("Corrélation acoustique insuffisante sur la fenêtre d'analyse.")
             p, offset, confidence = measured
             samples.append({"start_ms": float(p * 1000), "shift_ms": offset, "confidence": confidence})
@@ -346,12 +417,27 @@ class AudioSyncScanner:
             raise AudioSyncError("Dérive détectée ; utiliser --detect-cuts ou une calibration manuelle.")
         from core.workflows.audio_sync_segments import scan_envelopes
         log("Analyse continue des pistes et validation des jonctions…")
-        segments, confidence, anchors = scan_envelopes(
-            self.envelope(reference), self.envelope(donor, filter_str),
-            max_offset_ms=round(self.max_offset_s * 1000),
-            tolerance_ms=drift_threshold_ms, speed_factor=speed_factor,
-            check_cancelled=self._check_cancelled, log=log,
-        )
+        options = dict(max_offset_ms=round(self.max_offset_s * 1000), tolerance_ms=drift_threshold_ms,
+                       speed_factor=speed_factor, check_cancelled=self._check_cancelled, log=log)
+        if _downmixes is not None:
+            segments, confidence, anchors = scan_envelopes(
+                self.envelope(reference, downmix=_downmixes[0]),
+                self.envelope(donor, filter_str, downmix=_downmixes[1]), **options)
+        else:
+            try:
+                segments, confidence, anchors = scan_envelopes(
+                    self.envelope(reference), self.envelope(donor, filter_str), **options)
+            except AudioSyncError as exc:
+                self._check_cancelled()
+                # Pistes de langues différentes : les dialogues masquent la musique
+                # et les effets communs. Seconde passe sans le canal central.
+                downmixes = self._dialogue_free_downmixes(reference, donor)
+                if downmixes is None:
+                    raise
+                log(f"{exc} Nouvelle analyse hors dialogues (surrounds ou L−R)…")
+                segments, confidence, anchors = scan_envelopes(
+                    self.envelope(reference, downmix=downmixes[0]),
+                    self.envelope(donor, filter_str, downmix=downmixes[1]), **options)
         return SyncCalibration(
             segments, confidence, anchors,
             cadence_mismatch=cadence_mismatch,
