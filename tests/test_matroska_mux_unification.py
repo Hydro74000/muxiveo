@@ -450,6 +450,23 @@ class TestEncodeMuxSelector:
         assert not decision.uses_fallback  # choix de coût, pas un repli sur blocage
         assert "monopasse" in decision.reason
 
+    def test_auto_keeps_ffmpeg_for_dovi_copy_from_non_matroska(self, tmp_path: Path) -> None:
+        # Vidéo COPY depuis MP4 : le natif imposerait un remballage complet.
+        mp4 = tmp_path / "src.mp4"
+        mp4.write_bytes(b"mp4")
+        video = _video_settings(codec="copy", copy_dv=True)
+        config = _encode_config(tmp_path, source=mp4, mux_backend="auto", video=video)
+        decision = select_encode_mux_backend(config, pipeline=PIPELINE_FFMPEG_DIRECT)
+        assert decision.selected == "ffmpeg"
+        assert not decision.uses_fallback
+        assert "src.mp4" in decision.reason
+        mkv = tmp_path / "src.mkv"
+        mkv.write_bytes(b"mkv")
+        config = _encode_config(tmp_path, source=mkv, mux_backend="auto", video=video)
+        assert select_encode_mux_backend(config, pipeline=PIPELINE_FFMPEG_DIRECT).selected == "native"
+        config = _encode_config(tmp_path, source=mp4, mux_backend="native", video=video)
+        assert select_encode_mux_backend(config, pipeline=PIPELINE_FFMPEG_DIRECT).selected == "native"
+
     def test_requested_native_uses_native_for_direct_pipeline(self, tmp_path: Path) -> None:
         config = _encode_config(tmp_path, mux_backend="native")
         decision = select_encode_mux_backend(config, pipeline=PIPELINE_FFMPEG_DIRECT)
@@ -836,6 +853,7 @@ class TestNativeEncodeAssembly:
         command = commands[0]
         maps = [command[i + 1] for i, arg in enumerate(command) if arg == "-map"]
         assert maps == ["0:0", "0:1", "0:3", "0:4"]
+        assert command[command.index("-progress") + 1] == "pipe:1"
         assert command[command.index("-tag:v:0") + 1] == "hvc1"
         assert command[command.index("-c:s:0") + 1] == "srt"
         assert command[command.index("-c:s:1") + 1] == "srt"

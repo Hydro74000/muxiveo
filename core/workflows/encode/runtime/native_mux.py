@@ -21,6 +21,7 @@ from core.workflows.common.validation_override import ValidationOverride, accept
 from core.subprocess_utils import subprocess_text_kwargs
 from core.subtitle_codec import plan_subtitle_codec
 from core.workdir import remove_path
+from core.workflows.common.ffmpeg_runtime import ffmpeg_progress_args
 from core.workflows.common.metadata import matroska_video_tag_args
 from core.workflows.encode.domain.codecs import audio_codec_args
 from core.workflows.encode.models import EncodeConfig, EncodeError
@@ -311,8 +312,10 @@ def prepare_native_encode_inputs(
 
             keep_context = source in context_sources
             target = work_dir / f"native_source_{ordinal}.mkv"
+            # Passe complète sur la source : progression machine pour l'UI.
             command = [
                 ffmpeg_bin, "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+                *ffmpeg_progress_args(),
                 "-i", str(source),
             ]
             for index in indexes:
@@ -553,6 +556,7 @@ def materialize_audio_artifacts(
             cleanup_paths.append(target)
         command = [
             ffmpeg_bin, "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+            *ffmpeg_progress_args(),
             "-i", str(source), "-map", f"0:{int(audio.stream_index)}",
         ]
         command.extend(audio_codec_args(0, audio))
