@@ -222,6 +222,13 @@ def stream_start_offset(ffprobe_bin: str, source: Path, stream_index: int) -> fl
     ).start_offset_s
 
 
+def stream_start_time(ffprobe_bin: str, source: Path, stream_index: int) -> float:
+    """Horodatage (s) du premier paquet d'un flux, sans référence au conteneur (0 si inconnu)."""
+    stream = _probe_stream(ffprobe_bin, source, stream_index)
+    value = _float_or_none(stream.get("start_time")) if stream else None
+    return max(0.0, value or 0.0)
+
+
 def probe_interpolation_source(
     ffprobe_bin: str, source: Path, stream_index: int, *, tonemap_to_sdr: bool = False
 ) -> InterpolationSource | None:
@@ -667,6 +674,7 @@ __all__ = [
     "rife_version",
     "probe_interpolation_source",
     "stream_start_offset",
+    "stream_start_time",
     "command_stages",
     "dovi_scene_cut_edit",
     "expand_dynamic_hdr_metadata",

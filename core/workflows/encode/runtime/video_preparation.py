@@ -45,6 +45,17 @@ class VideoOnlyCommandBuilderCallbacks:
     interpolation_source: Callable[[VideoEncodeSettings, Path], InterpolationSource] | None = None
 
 
+_RAW_VIDEO_SUFFIXES = frozenset({".hevc", ".h265", ".265", ".x265", ".h264", ".264", ".avc"})
+
+
+def raw_input_rate_args(video: VideoEncodeSettings, source: Path | str) -> list[str]:
+    """``-r`` d'entrée pour un flux brut : sans lui, FFmpeg prend la cadence de la VUI, ou 25 i/s."""
+    rate = str(getattr(video, "input_frame_rate", "") or "").strip()
+    if rate and Path(source).suffix.lower() in _RAW_VIDEO_SUFFIXES:
+        return ["-r", rate]
+    return []
+
+
 class VideoOnlyCommandBuilder:
     def __init__(self, callbacks: VideoOnlyCommandBuilderCallbacks) -> None:
         self._cb = callbacks
@@ -71,6 +82,7 @@ class VideoOnlyCommandBuilder:
         cmd.extend(cb.ffmpeg_progress_args())
         cmd.extend(cb.offset_input_args(offset_ms))
         cmd.extend(hardware_input_args(video, callbacks=cb.codec_domain_callbacks()))
+        cmd.extend(raw_input_rate_args(video, source))
         append_ffmpeg_input_args(cmd, source)
         vf = build_encoder_vf(video, callbacks=cb.codec_domain_callbacks())
         if vf:
@@ -104,6 +116,7 @@ class VideoOnlyCommandBuilder:
         settings = video.interpolation
 
         decode_pre = list(p5_filter_device_args(video))
+        decode_pre.extend(raw_input_rate_args(video, source))
         if offset_ms < 0:
             decode_pre.extend(cb.offset_input_args(offset_ms))
         # Source VFR : normalisation CFR à la cadence nominale (le y4m est CFR) ;

@@ -3079,28 +3079,28 @@ class TestRunCopyBypassesInject:
         assert not inject_called[0], "Sans DV/HDR10+ source, l'injection ne doit pas être lancée."
         assert mock_run.called, "Le chemin encode standard doit rester utilisé."
 
-    def test_hevc_nvenc_with_explicit_hdr10_stays_on_standard_path_when_patch_is_disabled(self, tmp_path):
-        """Le patch HDR10 statique NVENC est conservé mais désactivé dans le workflow actif."""
+    def test_hevc_nvenc_with_explicit_hdr10_uses_split_encode_with_sei_reinjection(self, tmp_path):
+        """hevc_nvenc n'écrit le HDR10 statique que depuis les images source : encode vidéo
+        séparé, métadonnées source retirées, valeurs voulues réinjectées en SEI."""
+        from core.workflows.encode.domain import EncodeCodecDomainCallbacks, build_encoder_vf
+
         src = tmp_path / "source.mkv"
         src.write_bytes(b"\x00" * 1000)
-        config = _make_config(
-            source=src,
-            output=tmp_path / "output.mkv",
-            video=_make_video_settings(
-                codec="hevc_nvenc",
-                inject_hdr_meta=True,
-                master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)",
-                max_cll="1000,400",
-            ),
+        video = _make_video_settings(
+            codec="hevc_nvenc",
+            inject_hdr_meta=True,
+            master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)",
+            max_cll="1000,400",
         )
+        config = _make_config(source=src, output=tmp_path / "output.mkv", video=video)
         wf = _make_workflow()
 
-        with patch.object(wf, "_run_with_metadata_inject", return_value=MagicMock()) as inject_mock, \
-             patch.object(wf, "_finalize_ffmpeg_output", side_effect=_delayed_finalizer) as mock_run:
-            _collect_signals(wf.run(config))
-
-        assert not inject_mock.called, "Le fallback bitstream HDR10 NVENC ne doit plus être actif."
-        assert mock_run.called, "Le chemin encode standard doit rester utilisé."
+        assert not wf._needs_metadata_inject(config)
+        assert wf._needs_split_video_encode(config)
+        assert wf._mux_pipeline_kind(config) == "multi_video"
+        vf = build_encoder_vf(video, callbacks=EncodeCodecDomainCallbacks(platform="linux"))
+        assert "sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA" in vf
+        assert "sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL" in vf
 
     def test_libx265_with_explicit_hdr10_stays_on_native_codec_path(self, tmp_path):
         """libx265 injecte le HDR statique nativement via x265-params."""

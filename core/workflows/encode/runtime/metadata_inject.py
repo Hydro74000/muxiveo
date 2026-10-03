@@ -19,11 +19,15 @@ from core.workflows.encode.domain import should_reinject_static_hdr_metadata
 from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode
 from core.workflows.encode.planning.track_assembly import build_track_input_paths, resolve_track_assembly
 from core.workflows.encode.planning.plan_models import EncodePlan
+from core.workflows.encode.planning.offsets import track_offset_ms
 from core.workflows.encode.interpolation import (
     expand_dynamic_hdr_metadata,
     ffprobe_beside,
+    probe_frame_rate,
     required_dovi_level,
     resolve_frame_ratio,
+    stream_start_offset,
+    stream_start_time,
 )
 from core.workflows.encode.runtime.frame_count_guard import (
     FrameCountAuditError,
@@ -335,12 +339,21 @@ class MetadataInjectRunner:
                         # `config` original reste intact pour STEP 8/9
                         # (timestamps source, audio, subs, chapitres).
                         if continue_rebound:
+                            # annexB brut sans horodatage : cadence de la source d'origine
+                            source_rate = probe_frame_rate(
+                                ffprobe_beside(cb.ffmpeg_bin), selected_video_source, selected_video_stream,
+                            ) or ""
+                            video = dataclasses.replace(video, input_frame_rate=source_rate)
                             rebound_tracks = [
-                                dataclasses.replace(track, source_path=converted, stream_index=0)
+                                dataclasses.replace(
+                                    track, source_path=converted, stream_index=0, input_frame_rate=source_rate,
+                                )
                                 for track in config.video_tracks
                             ]
                             rebound_video = (
-                                dataclasses.replace(config.video, source_path=converted, stream_index=0)
+                                dataclasses.replace(
+                                    config.video, source_path=converted, stream_index=0, input_frame_rate=source_rate,
+                                )
                                 if config.video is not None
                                 else None
                             )
@@ -360,17 +373,20 @@ class MetadataInjectRunner:
                 # HEVC annexB brut. Pour MP4/MOV/TS/..., il faut extraire d'abord
                 # en HEVC annexB via ffmpeg + bsf hevc_mp4toannexb, sinon le
                 # parser HEVC panique sur le VPS.
+                # Les outils lisent la première piste vidéo : une autre piste est
+                # extraite en annexB, comme les conteneurs non MKV.
                 _RAW_HEVC_EXT = {".hevc", ".h265", ".265", ".x265"}
                 meta_src = cb.video_source_path(effective_config)
+                meta_stream = int(cb.video_stream_index(effective_config))
                 meta_src_ext = meta_src.suffix.lower()
-                needs_annexb = meta_src_ext not in _RAW_HEVC_EXT and meta_src_ext != ".mkv"
+                needs_annexb = (meta_src_ext not in _RAW_HEVC_EXT and meta_src_ext != ".mkv") or meta_stream != 0
                 if needs_annexb and (video.copy_dv or video.copy_hdr10plus):
                     annexb_src = _alloc("source.hevc", src_size_est)
                     signals.progress.emit("Extraction HEVC annexB pour outillage DoVi/HDR10+…")
                     annexb_cmd = [cb.ffmpeg_bin, "-nostdin", "-y"]
                     append_ffmpeg_input_args(annexb_cmd, meta_src)
                     annexb_cmd.extend([
-                        "-map", "0:v:0", "-c", "copy",
+                        "-map", f"0:{meta_stream}", "-c", "copy",
                         "-bsf:v", "hevc_mp4toannexb",
                         "-f", "hevc", str(annexb_src),
                     ])
@@ -769,14 +785,31 @@ class MetadataInjectRunner:
                 current_video_input = wrapped_video
                 _check()
 
+                # Départ voulu de la vidéo : départ du flux dans la source d'origine
+                # (perdu par une conversion P7/P5 en annexB brut, ou par la remise à
+                # zéro des entrées FFmpeg) + décalage configuré.
+                encode_plan = plan or cb.build_encode_plan(config)
+                video_source = cb.video_source_path(config)
+                video_stream = cb.video_stream_index(config)
+                intended_video_ms = round(1000 * stream_start_offset(
+                    ffprobe_beside(cb.ffmpeg_bin), video_source, video_stream,
+                )) + max(0, track_offset_ms(
+                    dict(encode_plan.offset_lookup),
+                    track_type="video", source_path=video_source, stream_index=video_stream,
+                ))
+
                 if cb.native_assemble is not None:
                     cb.log_step(9, "Assemblage final Matroska natif")
+                    # L'assembleur natif décale les horodatages de l'artefact.
+                    artifact_ms = round(1000 * stream_start_time(
+                        ffprobe_beside(cb.ffmpeg_bin), current_video_input, 0,
+                    ))
                     cb.native_assemble(
                         config,
                         intermediate=current_video_input,
-                        video_offset_ms=0,
+                        video_offset_ms=max(intended_video_ms - artifact_ms, -artifact_ms),
                         signals=signals,
-                        plan=plan or cb.build_encode_plan(config),
+                        plan=encode_plan,
                         work_dir=tmp,
                     )
                     signals.finished.emit(str(config.output))
@@ -784,7 +817,6 @@ class MetadataInjectRunner:
 
                 cb.log_step(9, "Reconstruction finale du conteneur MKV")
                 signals.progress.emit("Reconstitution finale…")
-                encode_plan = plan or cb.build_encode_plan(config)
                 all_sources = list(encode_plan.all_sources)
                 extra_sources = all_sources[1:]
                 recon_source_idx = cb.source_input_index_map(all_sources)
@@ -847,12 +879,16 @@ class MetadataInjectRunner:
                     video_fallback_input=current_video_input,
                 )
 
+                # FFmpeg ramène chaque entrée à zéro : le départ voulu de la vidéo
+                # remplace son décalage configuré (entrée auxiliaire -itsoffset).
+                offset_lookup = dict(encode_plan.offset_lookup)
+                offset_lookup[("video", Path(video_source), int(video_stream))] = intended_video_ms
                 next_input_index, offset_remap = cb.append_offset_aux_inputs(
                     recon_cmd,
                     cb.build_offset_specs(
                         config,
                         track_mappings=list(track_assembly.track_mappings),
-                        offset_lookup=dict(encode_plan.offset_lookup),
+                        offset_lookup=offset_lookup,
                     ),
                     start_input_index=next_input_index,
                 )

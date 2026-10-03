@@ -301,6 +301,9 @@ class VideoEncodeSettings:
     stream_index:     int          = 0      # index global ffprobe de la piste vidéo source
     source_path:      Path | None  = None   # None = même fichier que EncodeConfig.source
     track_entry_id:   str | None   = None   # GUID TrackEntry synchronisé avec RemuxPanel
+    # Cadence imposée (-r) quand la source est un flux brut sans horodatage
+    # (HEVC annexB d'une conversion Dolby Vision) ; renseignée par le workflow.
+    input_frame_rate: str          = ""
     codec:            str          = "libx265"
     quality_mode:     QualityMode  = QualityMode.CRF
     crf:              int          = 18

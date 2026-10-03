@@ -11,7 +11,7 @@ from core.runner import TaskCancelledError, TaskSignals
 from core.workdir import remove_path
 from core.workflows.encode.domain import (
     interpolated_static_hdr_lost,
-    needs_interpolated_static_hdr_reinjection,
+    needs_static_hdr_sei_reinjection,
     needs_static_hdr_bitstream_patch,
     should_reinject_static_hdr_metadata,
 )
@@ -91,6 +91,9 @@ class MultiVideoPipelineRunnerCallbacks:
     two_pass_log_prefix: Callable[[Path, str], Path]
     #: Assemblage final Matroska natif (lot 2). None → reconstruction FFmpeg.
     native_assemble: Callable[..., None] | None = None
+    #: Pistes audio / sous-titres de l'assemblage FFmpeg avec décalages et réécriture
+    #: de synchronisation (calibrations multi-segments), comme le chemin direct.
+    resolve_track_assembly_and_offset_remap: Callable[..., tuple[object, dict[tuple[Path, int, str], tuple[int, int]]]] | None = None
 
 
 class MultiVideoPipelineRunner:
@@ -130,22 +133,25 @@ class MultiVideoPipelineRunner:
             video.copy_dv
             or video.copy_hdr10plus
             or needs_static_hdr_bitstream_patch(video)
-            or needs_interpolated_static_hdr_reinjection(video)
+            or needs_static_hdr_sei_reinjection(video)
         ):
             rpu_bin = work_dir / f"video_{index}.rpu.bin"
             hdr10p_json = work_dir / f"video_{index}.hdr10plus.json"
             enc_video_mkv = work_dir / f"video_{index}.enc.mkv"
             current_hevc = work_dir / f"video_{index}.enc.hevc"
-            # dovi_tool / hdr10plus_tool n'acceptent que MKV ou HEVC annexB :
-            # pré-extraction obligatoire pour MP4/MOV/TS/... (BSF hevc_mp4toannexb).
+            # dovi_tool / hdr10plus_tool n'acceptent que MKV ou HEVC annexB et lisent
+            # la première piste vidéo : pré-extraction du flux sélectionné pour
+            # MP4/MOV/TS/... (BSF hevc_mp4toannexb) ou une autre piste que la première.
             _RAW_HEVC_EXT = {".hevc", ".h265", ".265", ".x265"}
             src_ext = source.suffix.lower()
-            if src_ext not in _RAW_HEVC_EXT and src_ext != ".mkv" and (video.copy_dv or video.copy_hdr10plus):
+            stream_index = int(spec.stream_index)
+            needs_annexb = (src_ext not in _RAW_HEVC_EXT and src_ext != ".mkv") or stream_index != 0
+            if needs_annexb and (video.copy_dv or video.copy_hdr10plus):
                 annexb_src = work_dir / f"video_{index}.source.hevc"
                 annexb_cmd = [cb.ffmpeg_bin, "-nostdin", "-y"]
                 append_ffmpeg_input_args(annexb_cmd, source)
                 annexb_cmd.extend([
-                    "-map", "0:v:0", "-c", "copy",
+                    "-map", f"0:{stream_index}", "-c", "copy",
                     "-bsf:v", "hevc_mp4toannexb",
                     "-f", "hevc", str(annexb_src),
                 ])
@@ -595,31 +601,47 @@ class MultiVideoPipelineRunner:
                     chapter_materialize_dir=chapter_dir,
                     chapter_probe_source=config.source,
                 )
-                final_cmd.extend(cb.ffmpeg_thread_args())
                 resolved_subtitle_tracks = list(encode_plan.resolved_subtitle_tracks)
-                track_assembly = resolve_track_assembly(
-                    config,
-                    encode_plan,
-                    source_idx=source_idx,
-                    track_input_paths=build_track_input_paths(
-                        leading_inputs=[prepared_input.path for prepared_input in prepared_inputs_ready],
-                        all_sources=all_sources,
-                        sync_inputs=sync_inputs,
-                    ),
-                    sync_remap=sync_remap,
-                    include_video=False,
+                track_input_paths = build_track_input_paths(
+                    leading_inputs=[prepared_input.path for prepared_input in prepared_inputs_ready],
+                    all_sources=all_sources,
+                    sync_inputs=sync_inputs,
                 )
-
-                next_input_index, offset_remap = cb.append_offset_aux_inputs(
-                    final_cmd,
-                    cb.build_offset_specs(
+                if cb.resolve_track_assembly_and_offset_remap is not None:
+                    _track_assembly, offset_remap = cb.resolve_track_assembly_and_offset_remap(
+                        cmd=final_cmd,
+                        config=config,
+                        plan=encode_plan,
+                        source_idx=source_idx,
+                        track_input_paths=track_input_paths,
+                        start_input_index=next_input_index,
+                        sync_remap=sync_remap,
+                        include_video=False,
+                        allow_sync_rewrite=True,
+                        sync_rewrite_work_dir=work_dir,
+                        signals=signals,
+                    )
+                else:
+                    track_assembly = resolve_track_assembly(
                         config,
-                        track_mappings=list(track_assembly.track_mappings),
-                        offset_lookup=dict(encode_plan.offset_lookup),
-                    ),
-                    start_input_index=next_input_index,
-                )
-                _ = next_input_index
+                        encode_plan,
+                        source_idx=source_idx,
+                        track_input_paths=track_input_paths,
+                        sync_remap=sync_remap,
+                        include_video=False,
+                    )
+                    next_input_index, offset_remap = cb.append_offset_aux_inputs(
+                        final_cmd,
+                        cb.build_offset_specs(
+                            config,
+                            track_mappings=list(track_assembly.track_mappings),
+                            offset_lookup=dict(encode_plan.offset_lookup),
+                        ),
+                        start_input_index=next_input_index,
+                    )
+                    _ = next_input_index
+                # options de sortie après la dernière entrée (réécriture, décalages)
+                final_cmd.extend(cb.ffmpeg_thread_args())
 
                 for out_idx, prepared_input in enumerate(prepared_inputs_ready):
                     final_cmd.extend(["-map", str(prepared_input.map_arg)])

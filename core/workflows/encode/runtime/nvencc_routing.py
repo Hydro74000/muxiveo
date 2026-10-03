@@ -136,20 +136,22 @@ def mediainfo_video_is_vfr(
 def source_video_fps_expr(
     source: Path,
     *,
+    stream_index: int | None = None,
     ffprobe_streams_payload: Callable[[Path], dict[str, object] | None],
     ffprobe_stream_dicts: Callable[[dict[str, object]], list[dict[str, object]]],
     mediainfo_fps_expr: Callable[[Path], str | None],
 ) -> str:
+    """Cadence du flux vidéo ``stream_index`` (premier flux vidéo si absent ou introuvable)."""
     payload = ffprobe_streams_payload(source)
     if payload is not None:
-        for stream in ffprobe_stream_dicts(payload):
-            if stream.get("codec_type") != "video":
-                continue
+        videos = [stream for stream in ffprobe_stream_dicts(payload) if stream.get("codec_type") == "video"]
+        selected = next((stream for stream in videos if stream.get("index") == stream_index), None)
+        stream = selected if selected is not None else (videos[0] if videos else None)
+        if stream is not None:
             for key in ("avg_frame_rate", "r_frame_rate"):
                 fps_expr = normalize_frame_rate_expr(stream.get(key))
                 if fps_expr is not None:
                     return fps_expr
-            break
     return mediainfo_fps_expr(source) or FALLBACK_HEVC_FRAME_RATE
 
 

@@ -538,6 +538,12 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # Archives du job muxiveo-rife du même run (publiées dans leur propre release) :
+      # download-artifact ne sait pas exclure par motif.
+      - name: Drop muxiveo-rife artifacts
+        shell: bash
+        run: rm -fv artifacts/muxiveo-rife-*
+
       - name: Add source archives
         shell: bash
         env:

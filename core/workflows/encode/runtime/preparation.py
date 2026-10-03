@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt
 
 from core.runner import TaskCancelledError, TaskSignals
 from core.workflows.encode.models import EncodeConfig, EncodeError
-from core.workflows.encode.mux_backend import PIPELINE_FFMPEG_DIRECT, EncodeMuxDecision
+from core.workflows.encode.mux_backend import PIPELINE_FFMPEG_DIRECT, PIPELINE_MULTI_VIDEO, EncodeMuxDecision
 from core.workflows.encode.planning.plan_models import EncodePlan
 
 
@@ -208,10 +208,11 @@ class EncodePreparationRunner:
                 f"pipeline={mux_decision.pipeline}",
             )
             diagnostics = mux_decision.diagnostics
-            if mux_decision.pipeline != PIPELINE_FFMPEG_DIRECT and any(
+            if mux_decision.pipeline not in {PIPELINE_FFMPEG_DIRECT, PIPELINE_MULTI_VIDEO} and any(
                 getattr(offset, "calibration", None) for offset in prepared_config.track_time_offsets or []
             ):
-                # Seul le chemin FFmpeg direct matérialise les calibrations (réécriture sync réelle).
+                # Seuls les assemblages FFmpeg direct et multi-pistes matérialisent les
+                # calibrations (réécriture sync réelle) ; le backend natif est écarté en amont.
                 raise EncodeError(
                     "Synchronisation multi-segments non prise en charge sur ce pipeline "
                     f"({mux_decision.pipeline}) : le décalage du 1er segment seul décalerait tout le fichier."

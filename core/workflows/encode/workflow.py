@@ -66,6 +66,7 @@ from core.workflows.encode.catalog import (
 from core.workflows.encode.domain import (
     EncodeCodecDomainCallbacks as _EncodeCodecDomainCallbacks,
     needs_static_hdr_bitstream_patch as _needs_static_hdr_bitstream_patch_domain,
+    needs_static_hdr_sei_reinjection as _needs_static_hdr_sei_reinjection_domain,
 )
 from core.workflows.remux_timeline_sync import (
     FfmpegTimelineSync,
@@ -1397,6 +1398,7 @@ class EncodeWorkflow(QObject):
         allow_sync_rewrite: bool = False,
         sync_rewrite_work_dir: Path | None = None,
         signals: TaskSignals | None = None,
+        include_video: bool = True,
     ) -> tuple[_ResolvedTrackAssembly, dict[tuple[Path, int, str], tuple[int, int]]]:
         track_assembly = _resolve_track_assembly_plan(
             config,
@@ -1406,6 +1408,7 @@ class EncodeWorkflow(QObject):
             sync_remap=sync_remap,
             video_default_map=video_default_map,
             video_fallback_input=video_fallback_input,
+            include_video=include_video,
         )
         offset_lookup = dict(plan.offset_lookup)
         offset_mode_lookup = _track_time_offset_mode_lookup_plan(config)
@@ -1728,6 +1731,9 @@ class EncodeWorkflow(QObject):
         return ["-ss", f"{abs(offset_ms) / 1000.0:.3f}"]
 
     def _size_to_bitrate_kbps_for_video(self, config: EncodeConfig, video: VideoEncodeSettings) -> int:
+        # Mono-vidéo (encodage séparé : RIFE, réinjection HDR) : budget audio déduit.
+        if not self._is_multi_video(config):
+            return self._size_to_bitrate_kbps(config)
         duration = config.duration_s or 3600.0
         total_bits = video.target_size_mb * 8 * 1024 * 1024
         video_bits = max(total_bits, int(duration * 500_000))
@@ -2670,16 +2676,16 @@ class EncodeWorkflow(QObject):
     # ------------------------------------------------------------------
 
     def _needs_split_video_encode(self, config: EncodeConfig) -> bool:
-        """Piste unique interpolée (RIFE) encodée par FFmpeg sans injection de métadonnées.
+        """Piste unique encodée par FFmpeg à part, sans injection de métadonnées dynamiques.
 
-        La vidéo transite par un pipe y4m : la commande FFmpeg directe (toutes
-        pistes en une passe) est remplacée par l'encode vidéo seul suivi de
-        l'assemblage du pipeline multi-pistes.
+        Interpolation (la vidéo transite par un pipe y4m) ou SEI HDR10 statiques posés
+        après encodage : la commande FFmpeg directe (toutes pistes en une passe) est
+        remplacée par l'encode vidéo seul suivi de l'assemblage du pipeline multi-pistes.
         """
         if self._is_multi_video(config) or self._needs_metadata_inject(config):
             return False
         video = self._primary_video_settings(config)
-        if not video.interpolates():
+        if not (video.interpolates() or _needs_static_hdr_sei_reinjection_domain(video)):
             return False
         return getattr(self._backend_for_config(config), "backend_id", "ffmpeg") == "ffmpeg"
 
@@ -3178,6 +3184,7 @@ class EncodeWorkflow(QObject):
                 ffmpeg_thread_args=self._ffmpeg_thread_args,
                 append_offset_aux_inputs=self._append_offset_aux_inputs,
                 build_offset_specs=lambda config, **kwargs: _build_offset_specs_plan(config, **kwargs),
+                resolve_track_assembly_and_offset_remap=self._resolve_track_assembly_and_offset_remap,
                 append_stream_maps_and_attachments=self._append_stream_maps_and_attachments,
                 append_strict_interleave_mux_flags=self._append_strict_interleave_mux_flags,
                 append_container_metadata_args=self._append_container_metadata_args,
@@ -3576,9 +3583,10 @@ class EncodeWorkflow(QObject):
             load_mediainfo_video_track=self._load_mediainfo_video_track,
         )
 
-    def _source_video_fps_expr(self, source: Path) -> str:
+    def _source_video_fps_expr(self, source: Path, *, stream_index: int | None = None) -> str:
         return _source_video_fps_expr_runtime(
             source,
+            stream_index=stream_index,
             ffprobe_streams_payload=self._ffprobe_streams_payload,
             ffprobe_stream_dicts=self._ffprobe_stream_dicts,
             mediainfo_fps_expr=self._mediainfo_video_fps_expr,
@@ -3631,7 +3639,8 @@ class EncodeWorkflow(QObject):
             video_source_path=self._video_source_path,
             video_stream_index=self._video_stream_index,
             video_codec_of=self._video_codec_of,
-            source_video_fps_expr=self._source_video_fps_expr,
+            source_video_fps_expr=(self._source_video_fps_expr if stream_index == 0 else
+                lambda source: self._source_video_fps_expr(source, stream_index=stream_index)),
             source_is_vfr=self._source_is_vfr,
             nvencc_input_fps_hint=lambda source_for_fps, input_path: self._nvencc_input_fps_hint(
                 source_for_fps=source_for_fps,

@@ -207,6 +207,8 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: assets
+          # appelé depuis release.yml, le run contient aussi les artefacts de Muxiveo
+          pattern: muxiveo-rife-*
           merge-multiple: true
 
       - name: Publish
