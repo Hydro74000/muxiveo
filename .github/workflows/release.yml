@@ -226,6 +226,11 @@ jobs:
         run: |
           python package_appimage.py --allinc --version "$PACKAGE_VERSION"
 
+      # Le packaging n'émet qu'un avertissement si muxiveo-rife manque : bloquant ici.
+      - name: Verify embedded muxiveo-rife
+        shell: bash
+        run: python scripts/check_allinc_rife.py dist/releases/Muxiveo-x86_64_allinc-*.AppImage
+
       - name: Collect Linux assets
         shell: bash
         run: |
@@ -297,6 +302,16 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           python package.py --nsis --allinc --portable --version "$env:PACKAGE_VERSION"
+
+      # Le packaging n'émet qu'un avertissement si muxiveo-rife manque : bloquant ici.
+      - name: Verify embedded muxiveo-rife
+        shell: pwsh
+        env:
+          PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
+        run: |
+          python scripts/check_allinc_rife.py `
+            "dist\releases\Muxiveo-Setup-AllInc-$env:PACKAGE_VERSION.exe" `
+            "dist\releases\Muxiveo-Windows-x64-allinc-$env:PACKAGE_VERSION.zip"
 
       - name: Collect Windows assets
         shell: pwsh
