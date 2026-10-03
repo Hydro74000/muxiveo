@@ -16,6 +16,7 @@ Couverture :
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
@@ -42,6 +43,7 @@ from core.workflows.encode.mux_backend import (
 from core.workflows.encode.remux_bridge import merge_remux_into_encode_config
 from core.workflows.encode.runtime.native_mux import (
     NativeVideoArtifactRef,
+    ProbedStream,
     assemble_encode_output_native,
     prepare_native_encode_inputs,
 )
@@ -711,7 +713,7 @@ class TestNativeEncodeAssembly:
 
         def _run(cmd: list[str], label: str) -> str:
             recorded.append(cmd)
-            if label.startswith("ffmpeg-native-canonical-track"):
+            if label.startswith("ffmpeg-native-canonical-source"):
                 _write_mkv(Path(cmd[-1]), [_entry_bytes(1, 2, "A_AAC")], clusters=_simple_cluster(1))
             return "ok"
 
@@ -724,9 +726,9 @@ class TestNativeEncodeAssembly:
             log=lambda _level, _message: None,
         )
         assert [track.track_type for track in MatroskaReader(output).tracks()] == [1, 2]
-        canonical = next(cmd for cmd in recorded if "native_track_0.mkv" in str(cmd[-1]))
+        canonical = next(cmd for cmd in recorded if "native_source_0.mkv" in str(cmd[-1]))
         assert "-c" in canonical and "copy" in canonical
-        assert not (tmp_path / "native_track_0.mkv").exists()
+        assert not (tmp_path / "native_source_0.mkv").exists()
 
     def test_native_input_preparation_cleans_partial_artifacts_on_failure(self, tmp_path: Path) -> None:
         first = tmp_path / "first.mp4"
@@ -742,7 +744,7 @@ class TestNativeEncodeAssembly:
 
         def _run(command: list[str], _label: str) -> str:
             target = Path(command[-1])
-            if "native_container_0" in target.name:
+            if "native_source_0" in target.name:
                 target.write_bytes(b"partial")
                 return "ok"
             target.write_bytes(b"partial")
@@ -756,7 +758,7 @@ class TestNativeEncodeAssembly:
                 run_cmd=_run,
             )
 
-        assert not list(tmp_path.glob("native_container_*.mkv"))
+        assert not list(tmp_path.glob("native_source_*.mkv"))
 
     def test_native_input_preparation_converts_mov_text_to_srt(self, tmp_path: Path) -> None:
         """mov_text (MP4) est refusé par Matroska en copie : conversion SRT."""
@@ -771,10 +773,13 @@ class TestNativeEncodeAssembly:
             return "ok"
 
         with patch(
-            "core.workflows.encode.runtime.native_mux.probe_subtitle_codecs",
-            return_value={2: "subrip", 3: "mov_text"},
+            "core.workflows.encode.runtime.native_mux.probe_source_streams",
+            return_value={
+                2: ProbedStream("subtitle", "subrip"),
+                3: ProbedStream("subtitle", "mov_text"),
+            },
         ):
-            prepare_native_encode_inputs(
+            preparation = prepare_native_encode_inputs(
                 config,
                 work_dir=tmp_path,
                 ffmpeg_bin="ffmpeg",
@@ -782,8 +787,162 @@ class TestNativeEncodeAssembly:
                 resolved_subtitles=[(source, 3)],
             )
 
-        container = next(c for c in commands if "native_container_0" in c[-1])
-        assert container[container.index("-c") + 2:container.index("-map_metadata")] == ["-c:s:1", "srt"]
+        container = next(c for c in commands if "native_source_0" in c[-1])
+        assert container[container.index("-c") + 2:container.index("-map_metadata")] == ["-c:s:0", "srt"]
+        assert preparation.artifact_for_track(source, 3) == (tmp_path / "native_source_0.mkv", 0)
+
+    def test_native_preparation_canonicalizes_copied_video_source_once(self, tmp_path: Path) -> None:
+        """Vidéo copiée depuis un MP4 : un seul artefact par source, limité aux
+        flux utilisés (régression « VINT EBML invalide » : le MP4 était lu
+        comme du Matroska)."""
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"mp4")
+        config = _encode_config(
+            tmp_path,
+            source=source,
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy", source_path=source)],
+            copy_subtitles=True,
+            keep_chapters=True,
+            chapter_overrides=None,
+        )
+        commands: list[list[str]] = []
+
+        def _run(command: list[str], _label: str) -> str:
+            commands.append(command)
+            Path(command[-1]).write_bytes(b"mkv")
+            return "ok"
+
+        streams = {
+            0: ProbedStream("video", "hevc"),
+            1: ProbedStream("audio", "eac3"),
+            2: ProbedStream("audio", "eac3"),
+            3: ProbedStream("subtitle", "mov_text"),
+            4: ProbedStream("subtitle", "mov_text"),
+            5: ProbedStream("video", "mjpeg", attached_pic=True),
+        }
+        with patch(
+            "core.workflows.encode.runtime.native_mux.probe_source_streams",
+            return_value=streams,
+        ):
+            preparation = prepare_native_encode_inputs(
+                config,
+                work_dir=tmp_path,
+                ffmpeg_bin="ffmpeg",
+                run_cmd=_run,
+                video_refs=[(source, 0)],
+            )
+
+        assert len(commands) == 1
+        command = commands[0]
+        maps = [command[i + 1] for i, arg in enumerate(command) if arg == "-map"]
+        assert maps == ["0:0", "0:1", "0:3", "0:4"]
+        assert command[command.index("-tag:v:0") + 1] == "hvc1"
+        assert command[command.index("-c:s:0") + 1] == "srt"
+        assert command[command.index("-c:s:1") + 1] == "srt"
+        assert command[command.index("-map_chapters") + 1] == "0"
+        artifact = tmp_path / "native_source_0.mkv"
+        assert preparation.artifact_for_track(source, 0) == (artifact, 0)
+        assert preparation.artifact_for_track(source, 1) == (artifact, 1)
+        assert preparation.artifact_for_track(source, 4) == (artifact, 3)
+        assert preparation.artifact_for_container(source) == artifact
+        assert preparation.resolved_subtitles == ((source, 3), (source, 4))
+
+    def test_native_preparation_uses_light_metadata_carrier(self, tmp_path: Path) -> None:
+        """Chapitres seuls depuis un MP4 : le porteur est un sous-titre, jamais la vidéo."""
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"mp4")
+        config = _encode_config(tmp_path, source=source, keep_chapters=True, chapter_overrides=None)
+        commands: list[list[str]] = []
+
+        def _run(command: list[str], _label: str) -> str:
+            commands.append(command)
+            Path(command[-1]).write_bytes(b"mkv")
+            return "ok"
+
+        with patch(
+            "core.workflows.encode.runtime.native_mux.probe_source_streams",
+            return_value={
+                0: ProbedStream("video", "hevc"),
+                1: ProbedStream("audio", "eac3"),
+                2: ProbedStream("subtitle", "mov_text"),
+            },
+        ):
+            prepare_native_encode_inputs(config, work_dir=tmp_path, ffmpeg_bin="ffmpeg", run_cmd=_run)
+
+        assert [commands[0][i + 1] for i, arg in enumerate(commands[0]) if arg == "-map"] == ["0:2"]
+
+    def test_native_assembly_copied_mp4_video_without_context(self, tmp_path: Path) -> None:
+        """Vidéo MP4 copiée sans chapitres ni tags : les infos de segment
+        viennent de l'artefact canonique, jamais du MP4 (« VINT EBML invalide »)."""
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"\x00\x00\x00\x20ftypisom" + b"\x00" * 64)
+        config = _encode_config(
+            tmp_path, source=source, keep_chapters=False, copy_subtitles=False, work_dir=tmp_path,
+        )
+
+        def _run(command: list[str], label: str) -> str:
+            if label.startswith("ffmpeg-native-canonical-source"):
+                _write_mkv(Path(command[-1]), [_entry_bytes(1, 1, "V_MPEGH/ISO/HEVC")], clusters=_simple_cluster(1))
+            return "ok"
+
+        with patch(
+            "core.workflows.encode.runtime.native_mux.probe_source_streams",
+            return_value={0: ProbedStream("video", "hevc")},
+        ):
+            output = assemble_encode_output_native(
+                config,
+                video_artifacts=[NativeVideoArtifactRef(source, 0, 0)],
+                work_dir=tmp_path,
+                signals=None,
+                run_cmd=_run,
+                log=lambda _level, _message: None,
+            )
+        assert [track.track_type for track in MatroskaReader(output).tracks()] == [1]
+        assert not (tmp_path / "native_source_0.mkv").exists()
+
+    @pytest.mark.parametrize(
+        "probe_result",
+        [
+            subprocess.TimeoutExpired("ffprobe", 20),
+            subprocess.CompletedProcess([], 1, stdout="", stderr="boom"),
+            subprocess.CompletedProcess([], 0, stdout="{}", stderr=""),
+        ],
+        ids=["timeout", "returncode", "sans-streams"],
+    )
+    def test_native_preparation_fails_loudly_when_subtitle_probe_fails(
+        self, tmp_path: Path, probe_result: object,
+    ) -> None:
+        """Sonde en échec ≠ aucun sous-titre : la copie implicite ne doit pas
+        perdre les pistes en silence."""
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"mp4")
+        config = _encode_config(tmp_path, source=source, copy_subtitles=True)
+        run_cmd = MagicMock(return_value="ok")
+        mock_kwargs = (
+            {"side_effect": probe_result}
+            if isinstance(probe_result, BaseException)
+            else {"return_value": probe_result}
+        )
+        with patch("core.workflows.encode.runtime.native_mux.subprocess.run", **mock_kwargs):
+            with pytest.raises(EncodeError, match="sonde ffprobe en échec"):
+                prepare_native_encode_inputs(
+                    config, work_dir=tmp_path, ffmpeg_bin="ffmpeg", run_cmd=run_cmd,
+                )
+        run_cmd.assert_not_called()
+
+    def test_native_preparation_without_subtitles_is_not_a_probe_failure(self, tmp_path: Path) -> None:
+        """Sonde réussie sans sous-titre : aucune erreur, aucune piste."""
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"mp4")
+        config = _encode_config(tmp_path, source=source, copy_subtitles=True)
+        with patch(
+            "core.workflows.encode.runtime.native_mux.probe_source_streams",
+            return_value={0: ProbedStream("video", "hevc")},
+        ):
+            preparation = prepare_native_encode_inputs(
+                config, work_dir=tmp_path, ffmpeg_bin="ffmpeg", run_cmd=MagicMock(return_value="ok"),
+            )
+        assert preparation.resolved_subtitles == ()
 
     def test_keep_chapters_on_chapterless_source_succeeds(self, tmp_path: Path) -> None:
         """keep_chapters=True sur une source SANS chapitres : le contrat ne
