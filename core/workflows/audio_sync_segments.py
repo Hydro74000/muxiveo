@@ -142,7 +142,7 @@ def locate_transition(reference, donor, left: Anchor, right: Anchor) -> tuple[in
     return low + cut_index + 250, min(prior_conf, following_conf, left.confidence, right.confidence)
 
 
-def _returning_excursion(anchors, index: int, plateau: int, tolerance_ms: int) -> int | None:
+def _returning_excursion(anchors, index: int, plateau: float, tolerance_ms: int) -> int | None:
     """Indice de l'ancre qui revient au plateau après un écart bref et faible.
 
     Des mixages différents (Atmos, réverbérations des surrounds) décalent

@@ -3,7 +3,9 @@ entrées brutes, VAAPI, cadence NVEncC)."""
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
+from typing import cast
 
 from core.workflows.common import TrackTimeOffset
 from core.workflows.encode import AudioTrackSettings, EncodeConfig, EncodeWorkflow, QualityMode, VideoEncodeSettings
@@ -42,7 +44,8 @@ def test_video_output_options_follow_every_input(qt_app, tmp_path):
                            "quality_mode": quality, **extra}), audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")],
                            copy_subtitles=False, keep_chapters=False, duration_s=10, track_time_offsets=offsets)
         built = EncodeWorkflow(ffmpeg_bin="ffmpeg", generate_nfo=False).build_command(cfg)
-        for cmd in built if isinstance(built[0], list) else [built]:
+        commands = cast(list[list[str]], built) if isinstance(built[0], list) else [cast(list[str], built)]
+        for cmd in commands:
             last_input = max(i for i, token in enumerate(cmd) if token == "-i")
             assert cmd.index("-vf") > last_input and cmd.index("-threads") > last_input
 
@@ -84,17 +87,23 @@ def test_raw_annexb_input_gets_source_frame_rate():
 
 
 def test_nvencc_frame_rate_of_selected_stream():
-    payload = {"streams": [
+    payload: dict[str, object] = {"streams": [
         {"index": 0, "codec_type": "video", "avg_frame_rate": "25/1"},
         {"index": 1, "codec_type": "audio"},
         {"index": 2, "codec_type": "video", "avg_frame_rate": "24000/1001"},
     ]}
-    probe = dict(ffprobe_streams_payload=lambda _p: payload, ffprobe_stream_dicts=lambda p: p["streams"],
-                 mediainfo_fps_expr=lambda _p: None)
-    assert source_video_fps_expr(Path("s.mkv"), stream_index=2, **probe) == "24000/1001"
-    assert source_video_fps_expr(Path("s.mkv"), **probe) == "25/1"
+    def probe_streams(_source: Path) -> dict[str, object]:
+        return payload
+
+    def stream_dicts(result: dict[str, object]) -> list[dict[str, object]]:
+        return cast(list[dict[str, object]], result["streams"])
+
+    fps_expr = partial(source_video_fps_expr, ffprobe_streams_payload=probe_streams,
+                       ffprobe_stream_dicts=stream_dicts, mediainfo_fps_expr=lambda _source: None)
+    assert fps_expr(Path("s.mkv"), stream_index=2) == "24000/1001"
+    assert fps_expr(Path("s.mkv")) == "25/1"
     # index introuvable (flux brut) : premier flux vidéo
-    assert source_video_fps_expr(Path("s.hevc"), stream_index=7, **probe) == "25/1"
+    assert fps_expr(Path("s.hevc"), stream_index=7) == "25/1"
 
 
 def test_size_mode_single_video_split_encode_keeps_audio_budget(qt_app, tmp_path):
@@ -157,5 +166,6 @@ def test_multi_video_assembly_materializes_calibrated_audio(qt_app, tmp_path, mo
          patch.object(wf, "_finalize_ffmpeg_output", side_effect=_finalize):
         wf._run_multi_video_pipeline(cfg, cleanup_paths=[], prep_signals=TaskSignals())
     cmd = calls["cmd"]
+    assert isinstance(cmd, list)
     assert calls["calibration"] == offset.calibration
     assert str(rewritten) in cmd and "-itsoffset" not in cmd

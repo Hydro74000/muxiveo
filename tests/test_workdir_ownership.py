@@ -310,10 +310,11 @@ def test_cover_download_has_no_insecure_fallback(monkeypatch: pytest.MonkeyPatch
 def test_insecure_tls_requires_explicit_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
     contexts: list[ssl.SSLContext | None] = []
     monkeypatch.setenv("MUXIVEO_TMDB_INSECURE_SSL", "1")
-    monkeypatch.setattr(
-        tls.urllib.request, "urlopen",
-        lambda req, timeout=None, context=None: contexts.append(context) or "ok",
-    )
+    def urlopen(req, timeout=None, context=None):
+        contexts.append(context)
+        return "ok"
+
+    monkeypatch.setattr(tls.urllib.request, "urlopen", urlopen)
     req = urllib.request.Request("https://image.tmdb.org/t/p/original/x.jpg")
 
     assert _urlopen_image(req) == "ok"
@@ -354,7 +355,7 @@ def test_tmdb_debug_log_redacts_api_key(monkeypatch: pytest.MonkeyPatch, capsys)
 
 @pytest.mark.skipif(os.name != "nt", reason="jonctions NTFS : Windows uniquement")
 def test_windows_junctions_are_never_followed(tmp_path: Path) -> None:
-    import _winapi  # type: ignore[import-not-found]
+    import _winapi
 
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -363,7 +364,7 @@ def test_windows_junctions_are_never_followed(tmp_path: Path) -> None:
 
     # Jonction à l'intérieur d'un dossier process : seul le lien est retiré.
     job = create_process_work_dir(tmp_path / "work", process_name="job")
-    _winapi.CreateJunction(str(outside), str(job.path / "junction"))
+    getattr(_winapi, "CreateJunction")(str(outside), str(job.path / "junction"))
     assert job.remove() is True
     assert (outside / "precious.mkv").read_bytes() == b"film"
 
@@ -372,6 +373,6 @@ def test_windows_junctions_are_never_followed(tmp_path: Path) -> None:
     (outside / PROCESS_DIR_MARKER).write_text(f"{job2.token}\n", encoding="ascii")
     (job2.path / PROCESS_DIR_MARKER).unlink()
     job2.path.rmdir()
-    _winapi.CreateJunction(str(outside), str(job2.path))
+    getattr(_winapi, "CreateJunction")(str(outside), str(job2.path))
     assert job2.remove() is False
     assert (outside / "precious.mkv").read_bytes() == b"film"

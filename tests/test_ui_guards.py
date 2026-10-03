@@ -128,11 +128,12 @@ def test_blocking_errors_are_shown_not_only_logged(qt_app) -> None:
 def test_running_state_is_propagated_to_encode_panel(qt_app) -> None:
     window = _Window()
     try:
-        window._encode_panel = cast(Any, MagicMock())
+        encode_panel = MagicMock()
+        window._encode_panel = cast(Any, encode_panel)
         window._running = True
-        window._encode_panel.set_operation_running.assert_called_with(True)
+        encode_panel.set_operation_running.assert_called_with(True)
         window._running = False
-        window._encode_panel.set_operation_running.assert_called_with(False)
+        encode_panel.set_operation_running.assert_called_with(False)
     finally:
         window.deleteLater()
 
@@ -187,8 +188,8 @@ def test_preview_blocks_merge_dovi_start(qt_app):
         _running=False, _encode_panel=SimpleNamespace(is_preview_running=lambda: True),
         _report_blocking_errors=MagicMock(),
     )
-    panel = SimpleNamespace(_running=False, _operation_start_guard=lambda: MainWindow._can_start_operation(window))
-    MergeDoviPanel._on_run(panel)
+    panel = SimpleNamespace(_running=False, _operation_start_guard=lambda: MainWindow._can_start_operation(cast(MainWindow, window)))
+    MergeDoviPanel._on_run(cast(MergeDoviPanel, panel))
     window._report_blocking_errors.assert_called_once()
 
 
@@ -206,4 +207,4 @@ def test_copy_with_resize_is_routed_through_encode_validation(qt_app, tmp_path):
         _routing_video_tracks=lambda _c: [video],
         _video_requires_dovi_profile_normalization=lambda _v: False,
     )
-    assert EncodePanel.is_pure_copy(panel, cfg) is False
+    assert EncodePanel.is_pure_copy(cast(EncodePanel, panel), cfg) is False

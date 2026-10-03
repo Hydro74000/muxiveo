@@ -1,6 +1,5 @@
 """Rejet injecté au contrôle final d'un vrai Remux/Encode FFmpeg ou natif."""
 
-from pathlib import Path
 import shutil
 
 import pytest
@@ -54,6 +53,9 @@ def test_final_override_preserves_output_until_decision(qt_app, source, tmp_path
             output=output, work_dir=work, mux_backend=backend, keep_chapters=False,
         )
         workflow = RemuxWorkflow(generate_nfo=False, ffmpeg_threads=1)
+        workflow.log_message.connect(lambda level, message: warnings.append(message) if level == "WARN" else None)
+        workflow.set_validation_override(decide)
+        signals = workflow.run(config)
     else:
         config = EncodeConfig(
             source=source, output=output, work_dir=work, mux_backend=backend,
@@ -61,9 +63,9 @@ def test_final_override_preserves_output_until_decision(qt_app, source, tmp_path
             copy_subtitles=False, keep_chapters=False, duration_s=0.4,
         )
         workflow = EncodeWorkflow(generate_nfo=False, ffmpeg_threads=1)
-    workflow.log_message.connect(lambda level, message: warnings.append(message) if level == "WARN" else None)
-    workflow.set_validation_override(decide)
-    signals = workflow.run(config)
+        workflow.log_message.connect(lambda level, message: warnings.append(message) if level == "WARN" else None)
+        workflow.set_validation_override(decide)
+        signals = workflow.run(config)
     state["signals"] = signals
     result = wait_task(signals, timeout=30)
     signals.wait_for_workers()

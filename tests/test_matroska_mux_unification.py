@@ -936,7 +936,7 @@ class TestNativeEncodeAssembly:
         source.write_bytes(b"mp4")
         config = _encode_config(tmp_path, source=source, copy_subtitles=True)
         run_cmd = MagicMock(return_value="ok")
-        mock_kwargs = (
+        mock_kwargs: dict[str, Any] = (
             {"side_effect": probe_result}
             if isinstance(probe_result, BaseException)
             else {"return_value": probe_result}

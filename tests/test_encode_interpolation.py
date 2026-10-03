@@ -20,6 +20,7 @@ import subprocess
 import sys
 from fractions import Fraction
 from pathlib import Path
+from typing import cast
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -98,7 +99,7 @@ class TestSettings:
         assert not _video(interpolation=_interp(factor=1)).interpolates()
 
     def test_from_dict_and_transform_flag(self):
-        video = VideoEncodeSettings(interpolation={"enabled": True, "factor": 3, "quality": "max"})
+        video = VideoEncodeSettings(interpolation=cast(FrameInterpolationSettings, {"enabled": True, "factor": 3, "quality": "max"}))
         assert isinstance(video.interpolation, FrameInterpolationSettings)
         assert video.interpolation.factor == 3
         assert video.has_video_transform()
@@ -213,7 +214,7 @@ def test_rife_stage_arguments():
     tta = build_rife_stage("r", quality="balanced", source=InterpolationSource(), tta=4)
     assert tta[tta.index("--tta") + 1] == "4"
     assert FrameInterpolationSettings.from_value({"enabled": True, "tta": 8}).tta == 8
-    assert EncodePreset(name="p", interpolation={"enabled": True, "tta": 2}).to_video_settings().interpolation.tta == 2
+    assert EncodePreset(name="p", interpolation=cast(FrameInterpolationSettings, {"enabled": True, "tta": 2})).to_video_settings().interpolation.tta == 2
 
 
 def test_presets_map_to_benchmarked_models():
@@ -264,6 +265,10 @@ def _domain(platform: str = "linux", vaapi: str | None = None) -> EncodeCodecDom
 
 def _builder(source_info: InterpolationSource | None = None, rife_bin: str | None = "/bin/muxiveo-rife",
              domain: EncodeCodecDomainCallbacks | None = None) -> VideoOnlyCommandBuilder:
+    def primary_video_settings(cfg: EncodeConfig) -> VideoEncodeSettings:
+        assert cfg.video is not None
+        return cfg.video
+
     return VideoOnlyCommandBuilder(
         VideoOnlyCommandBuilderCallbacks(
             ffmpeg_bin="ffmpeg",
@@ -271,7 +276,7 @@ def _builder(source_info: InterpolationSource | None = None, rife_bin: str | Non
             ffmpeg_thread_args=lambda _n: ["-threads", "4"],
             offset_input_args=lambda ms: [] if ms == 0 else (["-itsoffset", f"{ms / 1000:.3f}"] if ms > 0 else ["-ss", f"{-ms / 1000:.3f}"]),
             codec_domain_callbacks=lambda: domain or _domain(),
-            primary_video_settings=lambda cfg: cfg.video,
+            primary_video_settings=primary_video_settings,
             video_source_path=lambda cfg: cfg.source,
             video_stream_from_settings=lambda v: v.stream_index,
             size_to_bitrate_kbps=lambda _cfg: 4000,

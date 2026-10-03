@@ -16,7 +16,7 @@ def _completed(stdout: str) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
 
 
-def _fake_tools(mediainfo: str, duration: str, fps: str, packets: str):
+def _fake_tools(mediainfo: str, duration: str | None, fps: str, packets: str):
     def run(cmd, **_kwargs):
         if "--Inform=Video;%FrameCount%" in cmd:
             return _completed(mediainfo)

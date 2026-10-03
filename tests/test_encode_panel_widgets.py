@@ -1915,7 +1915,9 @@ class TestEncodePanelInterpolationTta:
         panel._apply_interpolation_settings(FrameInterpolationSettings(enabled=True, factor=2, tta=4))
         tta = panel._interp_tta_combo
         # état propre de la liste (les parents restent désactivés tant que le codec est « copy »)
-        assert tta.isEnabledTo(tta.parentWidget())
+        parent = tta.parentWidget()
+        assert parent is not None
+        assert tta.isEnabledTo(parent)
         assert panel._current_interpolation_settings().tta == 4
         badges = panel._video_filter_badges_from_state(
             {"interpolation": FrameInterpolationSettings(enabled=True, factor=2, tta=4)}
@@ -1923,7 +1925,9 @@ class TestEncodePanelInterpolationTta:
         assert any(b.startswith("RIFE x2") and "TTA ×4" in b for b in badges)
 
         panel._interp_cb.setChecked(False)
-        assert not tta.isEnabledTo(tta.parentWidget())
+        parent = tta.parentWidget()
+        assert parent is not None
+        assert not tta.isEnabledTo(parent)
         # valeur hors liste (preset édité à la main) : retour à « Désactivé »
         panel._apply_interpolation_settings(FrameInterpolationSettings(enabled=True, tta=3))
         assert panel._current_interpolation_settings().tta == 1

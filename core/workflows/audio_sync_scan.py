@@ -130,12 +130,14 @@ class AudioSyncScanner:
         Stéréo : différence L−R, qui annule les dialogues centrés.
         """
         if min(ref_layout[0], donor_layout[0]) >= 6:
-            channels = (_SURROUND_BY_LAYOUT.get(ref_layout[1]), _SURROUND_BY_LAYOUT.get(donor_layout[1]))
-            if None in channels:
+            reference_channels = _SURROUND_BY_LAYOUT.get(ref_layout[1])
+            donor_channels = _SURROUND_BY_LAYOUT.get(donor_layout[1])
+            if reference_channels is None or donor_channels is None:
                 raise AudioSyncError("Disposition multicanal non reconnue ; revue manuelle de la synchro nécessaire.")
-            return tuple("pan=mono|c0=" + "+".join(names) for names in channels)
+            return ("pan=mono|c0=" + "+".join(reference_channels),
+                    "pan=mono|c0=" + "+".join(donor_channels))
         if min(ref_layout[0], donor_layout[0]) >= 2:
-            return ("pan=mono|c0=c0-c1",) * 2
+            return ("pan=mono|c0=c0-c1", "pan=mono|c0=c0-c1")
         return None
 
     def _dialogue_free_downmixes(self, reference, donor) -> tuple[str, str] | None:
@@ -417,16 +419,23 @@ class AudioSyncScanner:
             raise AudioSyncError("Dérive détectée ; utiliser --detect-cuts ou une calibration manuelle.")
         from core.workflows.audio_sync_segments import scan_envelopes
         log("Analyse continue des pistes et validation des jonctions…")
-        options = dict(max_offset_ms=round(self.max_offset_s * 1000), tolerance_ms=drift_threshold_ms,
-                       speed_factor=speed_factor, check_cancelled=self._check_cancelled, log=log)
+        max_offset_ms = round(self.max_offset_s * 1000)
+        check_cancelled = self._check_cancelled
+
+        def scan(reference_envelope: ndarray, donor_envelope: ndarray):
+            return scan_envelopes(
+                reference_envelope, donor_envelope,
+                max_offset_ms=max_offset_ms, tolerance_ms=drift_threshold_ms,
+                speed_factor=speed_factor, check_cancelled=check_cancelled, log=log,
+            )
         if _downmixes is not None:
-            segments, confidence, anchors = scan_envelopes(
+            segments, confidence, anchors = scan(
                 self.envelope(reference, downmix=_downmixes[0]),
-                self.envelope(donor, filter_str, downmix=_downmixes[1]), **options)
+                self.envelope(donor, filter_str, downmix=_downmixes[1]))
         else:
             try:
-                segments, confidence, anchors = scan_envelopes(
-                    self.envelope(reference), self.envelope(donor, filter_str), **options)
+                segments, confidence, anchors = scan(
+                    self.envelope(reference), self.envelope(donor, filter_str))
             except AudioSyncError as exc:
                 self._check_cancelled()
                 # Pistes de langues différentes : les dialogues masquent la musique
@@ -435,9 +444,9 @@ class AudioSyncScanner:
                 if downmixes is None:
                     raise
                 log(f"{exc} Nouvelle analyse hors dialogues (surrounds ou L−R)…")
-                segments, confidence, anchors = scan_envelopes(
+                segments, confidence, anchors = scan(
                     self.envelope(reference, downmix=downmixes[0]),
-                    self.envelope(donor, filter_str, downmix=downmixes[1]), **options)
+                    self.envelope(donor, filter_str, downmix=downmixes[1]))
         return SyncCalibration(
             segments, confidence, anchors,
             cadence_mismatch=cadence_mismatch,

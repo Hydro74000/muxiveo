@@ -6,6 +6,7 @@ et nettoyage du workflow Merge DoVi.
 from __future__ import annotations
 
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -127,7 +128,11 @@ def test_framecount_raw_film2_is_not_read_and_defers_to_metadata(tmp_path: Path)
     film1, film2 = tmp_path / "f1.mkv", tmp_path / "f2.hevc"
     wf = MergeDoviWorkflow()
     counted: list[Path] = []
-    cast(Any, wf)._get_framecount = lambda path: counted.append(path) or 1000
+    def count_frame(path: Path) -> int:
+        counted.append(path)
+        return 1000
+
+    cast(Any, wf)._get_framecount = count_frame
     result = wf._step_framecount(film1, film2, adjustment=EXACT)
     assert counted == [film1]
     assert result.fc2_deferred and result.metadata_verdict(EXACT) is None
@@ -262,13 +267,12 @@ def test_verify_does_not_accept_plausible_estimate_for_final_video(tmp_path, mon
 # ---------------------------------------------------------------------------
 
 def _inputs(**overrides) -> MergeStorageInputs:
-    base = dict(
+    base = MergeStorageInputs(
         film1_bytes=60 * GIB, film1_video_bytes=55 * GIB, film1_raw=False, film1_matroska=True,
         film2_video_bytes=50 * GIB, film2_extracted=False, film2_converted=False,
         sdr_to_hdr10=False, inject_dovi=True, inject_hdr10plus=True, static_hdr_copy=False,
     )
-    base.update(overrides)
-    return MergeStorageInputs(**base)
+    return replace(base, **overrides)
 
 
 def test_storage_phases_follow_simultaneous_files() -> None:

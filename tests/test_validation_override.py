@@ -7,6 +7,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,7 +20,8 @@ from core.subprocess_utils import run_cancellable_capture, subprocess_text_kwarg
 from core.workflows.common.matroska_finalize import MatroskaOutputTransaction
 from core.workflows.common.validation_override import ValidationOverrideRequest, validate_final_output
 from core.workflows.encode.models import EncodeConfig, VideoEncodeSettings
-from core.workflows.encode.runtime.direct_output import DirectOutputRunner
+from core.workflows.encode.planning.plan_models import EncodePlan
+from core.workflows.encode.runtime.direct_output import DirectOutputRunner, DirectOutputRunnerCallbacks
 from core.workflows.encode.workflow import EncodeWorkflow
 from core.workflows.encode.runtime.frame_count_guard import FrameCountGuard, MetadataAdjustment
 from ui.confirm import ValidationOverridePrompt
@@ -198,7 +200,10 @@ def test_direct_encode_cancel_closes_live_sync_session(qt_app, tmp_path, two_pas
     )
     cfg = EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv", video=VideoEncodeSettings())
     with pytest.raises(TaskCancelledError):
-        DirectOutputRunner(cb).run(config=cfg, cleanup_paths=[], cwd=tmp_path, prep_signals=signals, plan=SimpleNamespace(all_sources=[cfg.source]))
+        DirectOutputRunner(cast(DirectOutputRunnerCallbacks, cb)).run(
+            config=cfg, cleanup_paths=[], cwd=tmp_path, prep_signals=signals,
+            plan=cast(EncodePlan, SimpleNamespace(all_sources=[cfg.source])),
+        )
     session.close.assert_called_once()
 
 
@@ -229,6 +234,7 @@ def test_encode_rejects_output_matching_any_input_source(qt_app, tmp_path, kind)
     secondary.write_bytes(b"source to preserve")
     cfg = EncodeConfig(source=source, output=secondary, video=VideoEncodeSettings(codec="libx265"))
     if kind == "video":
+        assert cfg.video is not None
         cfg.video.source_path = secondary
     elif kind == "audio":
         cfg.audio_tracks = [AudioTrackSettings(stream_index=1, source_path=secondary)]
