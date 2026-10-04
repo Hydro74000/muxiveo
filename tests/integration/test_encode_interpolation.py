@@ -1,9 +1,8 @@
-"""Intégration : interpolation d'images RIFE (muxiveo-rife) dans EncodeWorkflow.
+"""Intégration : interpolation RIFE/MVTools avec FFmpeg et NVEncC.
 
 Génère une source A/V synthétique, encode avec interpolation x2 puis vérifie
-cadence, nombre de trames et présence de l'audio. Nécessite le binaire
-``muxiveo-rife`` (``MUXIVEO_RIFE_BIN`` ou PATH), ses modèles et un
-périphérique Vulkan (llvmpipe accepté).
+cadence, nombre de trames, audio et offsets. Chaque moteur/encodeur disponible
+est testé indépendamment ; RIFE nécessite Vulkan et NVEncC un GPU NVENC.
 """
 
 from __future__ import annotations
@@ -25,6 +24,7 @@ from core.workflows.encode import (
     QualityMode,
     VideoEncodeSettings,
 )
+from core.workflows.encode.runtime.nvencc import detect_nvencc_available
 
 from tests.integration._synth import ffprobe_json, make_av_container, streams_of_type, wait_task
 
@@ -38,14 +38,14 @@ def _rife_bin() -> str | None:
         gpus = json.loads(probe.stdout or "{}").get("gpus") or []
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return None
-    return candidate if gpus else None
+    return str(Path(candidate).resolve()) if gpus else None
 
 
 RIFE_BIN = _rife_bin()
 
 pytestmark = pytest.mark.skipif(
     shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
-    reason="ffmpeg/ffprobe, muxiveo-rife et un périphérique Vulkan requis",
+    reason="ffmpeg/ffprobe requis",
 )
 
 
@@ -68,6 +68,16 @@ def _qt_app(qt_app):
     return qt_app
 
 
+@pytest.fixture(params=["libx264", "nvencc_hevc"])
+def encode_backend(request):
+    if request.param == "libx264":
+        return "libx264", "ultrafast", {}
+    binary = shutil.which("nvencc") or shutil.which("NVEncC")
+    if not binary or not detect_nvencc_available(binary)[0]:
+        pytest.skip("NVEncC et GPU NVENC requis")
+    return "nvencc_hevc", "performance", {"nvencc_bin": binary}
+
+
 def _frame_count(path: Path) -> int:
     out = subprocess.run(
         [
@@ -80,7 +90,7 @@ def _frame_count(path: Path) -> int:
 
 
 @pytest.mark.parametrize("mux_backend", ["ffmpeg", "native"])
-def test_encode_interpolation_doubles_frame_rate(tmp_path: Path, mux_backend: str, interpolation_engine) -> None:
+def test_encode_interpolation_doubles_frame_rate(tmp_path: Path, mux_backend: str, interpolation_engine, encode_backend) -> None:
     src = tmp_path / "src.mkv"
     make_av_container(src, duration=1.0)
     src_frames = _frame_count(src)
@@ -90,10 +100,10 @@ def test_encode_interpolation_doubles_frame_rate(tmp_path: Path, mux_backend: st
         source=src,
         output=out,
         video=VideoEncodeSettings(
-            codec="libx264",
+            codec=encode_backend[0],
             quality_mode=QualityMode.CRF,
             crf=30,
-            preset="ultrafast",
+            preset=encode_backend[1],
             interpolation=FrameInterpolationSettings(enabled=True, factor=2, quality="fast", **interpolation_engine[0]),
         ),
         audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")],
@@ -108,6 +118,7 @@ def test_encode_interpolation_doubles_frame_rate(tmp_path: Path, mux_backend: st
         ffmpeg_threads=1,
         generate_nfo=False,
         **interpolation_engine[1],
+        **encode_backend[2],
     )
     assert wf.validate(cfg) == []
     state = wait_task(wf.run(cfg), timeout=180.0)
@@ -124,7 +135,7 @@ def test_encode_interpolation_doubles_frame_rate(tmp_path: Path, mux_backend: st
 
 
 @pytest.mark.parametrize("mux_backend", ["ffmpeg", "native"])
-def test_encode_interpolation_keeps_video_delay(tmp_path: Path, mux_backend: str, interpolation_engine) -> None:
+def test_encode_interpolation_keeps_video_delay(tmp_path: Path, mux_backend: str, interpolation_engine, encode_backend) -> None:
     """Un retard vidéo (+400 ms) survit à l'encode interpolé et à l'assemblage final."""
     src = tmp_path / "src.mkv"
     make_av_container(src, duration=2.0)
@@ -133,7 +144,7 @@ def test_encode_interpolation_keeps_video_delay(tmp_path: Path, mux_backend: str
         source=src,
         output=out,
         video=VideoEncodeSettings(
-            codec="libx264", quality_mode=QualityMode.CRF, crf=30, preset="ultrafast",
+            codec=encode_backend[0], quality_mode=QualityMode.CRF, crf=30, preset=encode_backend[1],
             interpolation=FrameInterpolationSettings(enabled=True, factor=2, **interpolation_engine[0]),
         ),
         audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")],
@@ -143,8 +154,10 @@ def test_encode_interpolation_keeps_video_delay(tmp_path: Path, mux_backend: str
         mux_backend=mux_backend,
         track_time_offsets=[TrackTimeOffset(track_type="video", source_path=src, stream_index=0, offset_ms=400)],
     )
-    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", ram_buffer_enabled=False, ffmpeg_threads=1, generate_nfo=False,
-                        **interpolation_engine[1])
+    wf = EncodeWorkflow(
+        ffmpeg_bin="ffmpeg", ram_buffer_enabled=False, ffmpeg_threads=1, generate_nfo=False,
+        **interpolation_engine[1], **encode_backend[2],
+    )
     assert wf.validate(cfg) == []
     state = wait_task(wf.run(cfg), timeout=180.0)
     assert state["failed"] is None, f"Encode failed: {state['failed']}"

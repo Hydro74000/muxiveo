@@ -44,7 +44,8 @@ sans zoom/occultation. Les répétitions comprennent le prolongement final atten
 
 UHD améliore Standard sur barreaux, grilles, escaliers et panoramique dans ce
 banc. Standard est meilleur sur le zoom et l’occultation. RIFE a la MAE la plus
-faible sur ces six séquences ; cela ne permet pas d’affirmer que MVTools élimine
+faible sur cinq séquences ; MVTools Standard est meilleur sur le zoom. Ces
+mesures ne permettent pas d’affirmer que MVTools élimine
 les dédoublements/clignotements des films concernés. Les motifs périodiques
 restent ambigus lorsque le déplacement ressemble à plusieurs périodes.
 La réduction des défauts sur les extraits réels demeure à vérifier sur le master
@@ -123,8 +124,9 @@ Python dans le paquet, et le hash du rendu d’autotest est identique.
   420/422/444, dimensions non multiples de blocs, coupes/flashes/frontières,
   fenêtres 8/16 identiques, erreurs, runtime absent, isolation, fermeture
   encodeur, annulation et durée/RSS.
-- 12 encodages réels : RIFE + MVTools Standard/UHD, assemblages FFmpeg et natif,
-  audio conservé et retard vidéo +400 ms conservé.
+- 24 encodages réels : RIFE + MVTools Standard/UHD, encodeurs FFmpeg/libx264 et
+  NVEncC/HEVC sur RTX 4070 Ti SUPER, assemblages FFmpeg et natif, audio conservé
+  et retard vidéo +400 ms conservé.
 - Tests de profils, paramètres indépendants, interfaces, progression, choix
   explicite de moteur et construction NVEncC ; compte HDR fractionnaire partagé.
 - 352 tests ciblés initiaux et 296 tests du workflow ; contrôles supplémentaires
@@ -133,8 +135,8 @@ Python dans le paquet, et le hash du rendu d’autotest est identique.
 
 La copie et l’expansion DoVi/HDR10+ utilisent les règles existantes, sans
 modification du calendrier des métadonnées. Le banc n’utilise pas de film HDR
-commercial ni de GPU NVENC pour le rendu final : NVEncC est vérifié par la
-construction de sa chaîne de commandes et le runner commun.
+commercial ; les formats YUV haute profondeur et les comptes de métadonnées
+sont couverts par les tests natifs et du workflow.
 
 ## Reproduction
 

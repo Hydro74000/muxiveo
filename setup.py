@@ -2335,14 +2335,15 @@ def check_windows_required_tools(prefix: Path) -> ToolPresenceReport:
 
 
 def _optional_tool_needs_install(tool_name: str, prefix: Path, force: bool) -> bool:
-    """Outil GitHub facultatif absent ou plus ancien que sa ``min_version``."""
+    """Outil GitHub facultatif absent, incomplet ou trop ancien."""
     meta = GITHUB_TOOLS.get(tool_name)
     if meta is None:
         return False
     if force:
         return True
     path = _detect_tool_path(tool_name, prefix)
-    return not path or _github_tool_outdated(tool_name, meta, Path(path))
+    return (not path or _github_tool_outdated(tool_name, meta, Path(path))
+            or not _bundle_complete(tool_name, Path(path)))
 
 
 def ensure_windows_required_tools(
@@ -2353,7 +2354,8 @@ def ensure_windows_required_tools(
 ) -> ToolPresenceReport:
     """Install only missing required Windows dependencies and re-check them.
 
-    Les outils facultatifs (muxiveo-rife) absents ou trop anciens sont aussi installés.
+    Les outils facultatifs RIFE/MVTools absents, incomplets ou trop anciens
+    sont aussi installés.
     """
     report = check_windows_required_tools(prefix)
     optional = {

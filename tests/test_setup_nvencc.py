@@ -346,24 +346,43 @@ class TestWindowsRequiredTools:
         install_github.assert_called_once_with(tmp_path, False, force=False, tool_names={"dovi_tool"})
         autofill.assert_called_once_with(tmp_path, False, force=False)
 
-    def test_ensure_installs_missing_or_outdated_rife_on_healthy_install(self, setup_mod, tmp_path):
-        """muxiveo-rife est facultatif : installé ou mis à jour même si l'installation est saine."""
+    @pytest.mark.parametrize("tool_name", ["muxiveo_rife", "muxiveo_mvtools"])
+    def test_ensure_installs_missing_or_outdated_interpolator_on_healthy_install(self, setup_mod, tmp_path, tool_name):
+        """Les moteurs facultatifs sont mis à jour même si l'installation est saine."""
         healthy = setup_mod.ToolPresenceReport(setup_mod.WINDOWS_REQUIRED_TOOLS, {"ffmpeg": "x"}, ())
         rife = tmp_path / "muxiveo-rife.exe"
         rife.write_text("", encoding="utf-8")
         for detected, outdated, expected in ((None, False, True), (str(rife), True, True), (str(rife), False, False)):
             with patch.object(setup_mod, "check_windows_required_tools", return_value=healthy), \
+                 patch.object(setup_mod, "WINDOWS_OPTIONAL_GITHUB_TOOLS", (tool_name,)), \
                  patch.object(setup_mod, "_detect_tool_path", return_value=detected), \
                  patch.object(setup_mod, "_github_tool_outdated", return_value=outdated), \
+                 patch.object(setup_mod, "_bundle_complete", return_value=True), \
                  patch.object(setup_mod, "install_winget") as install_winget, \
                  patch.object(setup_mod, "install_github_tools") as install_github, \
                  patch.object(setup_mod, "autofill_windows_config_ini"):
                 setup_mod.ensure_windows_required_tools(tmp_path)
             install_winget.assert_not_called()
             if expected:
-                install_github.assert_called_once_with(tmp_path, False, force=False, tool_names={"muxiveo_rife"})
+                install_github.assert_called_once_with(tmp_path, False, force=False, tool_names={tool_name})
             else:
                 install_github.assert_not_called()
+
+    def test_ensure_repairs_mvtools_runtime_on_healthy_install(self, setup_mod, tmp_path):
+        """Un exécutable à jour sans bibliothèques doit être réinstallé."""
+        healthy = setup_mod.ToolPresenceReport(setup_mod.WINDOWS_REQUIRED_TOOLS, {"ffmpeg": "x"}, ())
+        binary = tmp_path / "muxiveo-mvtools.exe"
+        binary.write_bytes(b"native")
+        with patch.object(setup_mod, "check_windows_required_tools", return_value=healthy), \
+             patch.object(setup_mod, "WINDOWS_OPTIONAL_GITHUB_TOOLS", ("muxiveo_mvtools",)), \
+             patch.object(setup_mod, "_detect_tool_path", return_value=str(binary)), \
+             patch.object(setup_mod, "_github_tool_outdated", return_value=False), \
+             patch.object(setup_mod, "install_winget") as install_winget, \
+             patch.object(setup_mod, "install_github_tools") as install_github, \
+             patch.object(setup_mod, "autofill_windows_config_ini"):
+            setup_mod.ensure_windows_required_tools(tmp_path)
+        install_winget.assert_not_called()
+        install_github.assert_called_once_with(tmp_path, False, force=False, tool_names={"muxiveo_mvtools"})
 
     def test_rife_path_written_to_config(self, setup_mod):
         assert "muxiveo_rife" in setup_mod.WINDOWS_CONFIG_TOOL_ORDER
