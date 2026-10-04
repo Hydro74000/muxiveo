@@ -72,6 +72,26 @@ def test_write_ini_settings_keeps_legacy_ui_key_when_ui_section_is_not_saved(tmp
     assert "ffmpeg = ffmpeg-custom" in content
 
 
+def test_windows_allinc_mvtools_has_priority_over_external_configuration(tmp_path, monkeypatch):
+    import core.config as cfg_mod
+    binary = tmp_path / "muxiveo-mvtools.exe"
+    binary.write_bytes(b"native")
+    monkeypatch.setattr(cfg_mod, "_bundled_tools_dir", lambda: tmp_path)
+    monkeypatch.setattr(cfg_mod, "_is_windows", lambda: True)
+    config = object.__new__(cfg_mod.AppConfig)
+    config._ini_lookup = lambda *_: "external.exe"
+    assert config._resolve_tool_value("muxiveo_mvtools", "tools/muxiveo_mvtools", "muxiveo-mvtools.exe") == str(binary)
+
+
+def test_mvtools_path_saved_in_qsettings(tmp_path):
+    from core.config import AppConfig
+    config = AppConfig()
+    config._settings = MagicMock()
+    config.tool_muxiveo_mvtools = str(tmp_path / "muxiveo-mvtools")
+    config.save()
+    config._settings.setValue.assert_any_call("tools/muxiveo_mvtools", config.tool_muxiveo_mvtools)
+
+
 class TestAppConfigSyncRewrite:
     def test_default_is_disabled(self, tmp_path):
         from core.config import AppConfig

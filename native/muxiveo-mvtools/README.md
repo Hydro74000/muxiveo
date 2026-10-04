@@ -1,4 +1,4 @@
-# muxiveo-mvtools 1.0.0
+# muxiveo-mvtools 1.0.1
 
 Moteur d’interpolation CPU autonome de Muxiveo. Aucun modèle neuronal (0 Mio).
 Il charge VapourSynth R80 et MVTools v29_2 via l’API C, sans Python installé chez
@@ -70,6 +70,11 @@ Commun : delta=1 bidirectionnel, chroma/truemotion/global=true, search_coarse=3,
 padding 32, sharp=2, rfilter=2. Les valeurs non précisées restent celles de v29_2.
 Les caches sont des limites souples : ils ne plafonnent pas la RAM totale.
 Les modes utilisent tous deux la résolution reçue, y compris UHD en 1080p.
+Le nombre de threads est plafonné à 256, comme l’interface native.
+
+Depuis 1.0.1, les nombres et marqueurs Y4M sont validés strictement ; des
+cadences équivalentes sont réduites avant calcul. Les chemins d’entrée/sortie
+désignant le même fichier (y compris liens) sont refusés sans altérer la source.
 
 Progression sur stderr : `progress in=N out=M scenes=S static=T fps=X`.
 Les gardes ne sont pas comptées. stdout contient uniquement le flux Y4M (ou JSON

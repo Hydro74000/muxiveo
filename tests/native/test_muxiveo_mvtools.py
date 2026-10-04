@@ -119,6 +119,52 @@ def test_invalid_input(binary, args, data):
     assert result.returncode != 0 and b"error:" in result.stderr
 
 
+@pytest.mark.parametrize("original,replacement", [
+    (b"YUV4MPEG2", b"YUV4MPEG2BAD"), (b"W96", b"W96junk"),
+    (b"H64", b"H18446744073709551680"), (b"F24:1", b"F24:1junk"),
+    (b"F24:1", b"F92233720368547758080:1"), (b"C420", b"C420p10junk"),
+    (b"Ip", b"Ipjunk"), (b"W96", b"W96 W128"), (b"FRAME\n", b"FRAMEBAD\n"),
+])
+def test_malformed_y4m_is_rejected(binary, original, replacement):
+    result = run(binary, clip(1)[0].replace(original, replacement), ok=False)
+    assert result.returncode == 2 and b"error:" in result.stderr
+
+
+@pytest.mark.parametrize("alias", ["same", "hardlink", "symlink"])
+def test_input_output_alias_preserves_source(binary, tmp_path, alias):
+    source = tmp_path / "input.y4m"
+    data = clip(1)[0]
+    source.write_bytes(data)
+    output = source
+    if alias != "same":
+        output = tmp_path / "alias.y4m"
+        try:
+            if alias == "hardlink":
+                output.hardlink_to(source)
+            else:
+                output.symlink_to(source)
+        except OSError:
+            pytest.skip("création du lien indisponible")
+    result = subprocess.run([str(binary), "-i", str(source), "-o", str(output)], capture_output=True, timeout=30)
+    assert result.returncode == 1 and source.read_bytes() == data
+
+
+def test_invalid_header_does_not_truncate_output(binary, tmp_path):
+    source = tmp_path / "input.y4m"
+    source.write_bytes(b"invalid")
+    output = tmp_path / "output.y4m"
+    output.write_bytes(b"existing")
+    result = subprocess.run([str(binary), "-i", str(source), "-o", str(output)], capture_output=True, timeout=30)
+    assert result.returncode == 2 and output.read_bytes() == b"existing"
+
+
+def test_large_equivalent_input_rate(binary):
+    data, frames = clip(2, fps="2400000000000000000:100000000000000000")
+    result = run(binary, data, "--factor", "4")
+    header, output = unpack(result, len(frames[0]))
+    assert b"F96:1" in header and len(output) == 8
+
+
 def test_isolated_and_missing_runtime(binary, tmp_path):
     copy = tmp_path / binary.name
     shutil.copy2(binary, copy)

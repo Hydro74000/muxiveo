@@ -1756,6 +1756,9 @@ class EncodePanel(QWidget):
         light = self._interp_quality_combo.currentData() == "light"
         if light:
             self._set_combo_data(self._interp_mode_combo, "fast")
+        else:
+            with QSignalBlocker(self._interp_mode_combo):
+                self._set_combo_data(self._interp_mode_combo, self._interp_preserved_rife_mode)
         self._interp_mode_combo.setEnabled(enabled and not light and not mvtools)
         self._interp_tta_combo.setEnabled(enabled and not mvtools)
         self._interp_fps_label.setText(self._interpolation_fps_hint() if enabled else "")
@@ -1807,8 +1810,8 @@ class EncodePanel(QWidget):
         is_target = "/" in choice
         return FrameInterpolationSettings(
             enabled=self._interp_cb.isChecked(),
-            backend=str(self._interp_backend_combo.currentData() or "rife"),
-            mvtools_mode=str(self._interp_mvtools_mode_combo.currentData() or "standard"),
+            backend=str(self._interp_backend_combo.currentData()),
+            mvtools_mode=str(self._interp_mvtools_mode_combo.currentData()),
             scene_threshold=self._interp_preserved_scene_threshold,
             gpu=self._interp_preserved_gpu,
             factor=2 if is_target else int(choice),
@@ -1821,8 +1824,13 @@ class EncodePanel(QWidget):
     def _apply_interpolation_settings(self, settings: FrameInterpolationSettings) -> None:
         if not hasattr(self, "_interp_cb"):
             return
-        self._set_combo_data(self._interp_backend_combo, settings.backend)
-        self._set_combo_data(self._interp_mvtools_mode_combo, settings.mvtools_mode)
+        for combo, value in ((self._interp_backend_combo, settings.backend),
+                             (self._interp_mvtools_mode_combo, settings.mvtools_mode)):
+            # Un profil invalide doit être refusé par la validation du workflow,
+            # sans sélectionner silencieusement un autre moteur/préréglage.
+            if combo.findData(value) < 0:
+                combo.addItem(str(value), value)
+            self._set_combo_data(combo, value)
         self._interp_preserved_scene_threshold = settings.scene_threshold
         self._interp_preserved_gpu = settings.gpu
         self._interp_cb.setChecked(bool(settings.enabled))

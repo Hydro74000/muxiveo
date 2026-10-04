@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 cmake_policy(SET CMP0091 NEW)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-project(muxiveo-mvtools VERSION 1.0.0 LANGUAGES CXX)
+project(muxiveo-mvtools VERSION 1.0.1 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(MUXIVEO_MVTOOLS_VS_INCLUDE "" CACHE PATH "En-têtes de VapourSynth R80")

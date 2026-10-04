@@ -67,7 +67,7 @@ static Options parse(int argc,char** argv) {
         else if(a=="-i")o.input=value();
         else if(a=="-o")o.output=value();
         else if(a=="--factor"){o.factor=(int)integer(value());factor=true;}
-        else if(a=="--fps")o.fps=value();
+        else if(a=="--fps"){o.fps=value();if(o.fps.empty())throw Failure(1,"cadence cible vide");}
         else if(a=="--mode")o.mode=value();
         else if(a=="--threads")o.threads=(int)integer(value());
         else if(a=="--window-frames")o.window=(int)integer(value()); // diagnostic des frontières
@@ -267,11 +267,16 @@ static int process(const Options& options) {
         return std::fopen(path.c_str(),write?"wb":"rb");
 #endif
     };
+    if(options.input!="-" && options.output!="-") {
+        std::error_code ec;
+        if(fs::equivalent(fs::u8path(options.input),fs::u8path(options.output),ec))
+            throw Failure(1,"entrée et sortie désignent le même fichier");
+    }
     if(options.input!="-"){infile.reset(open_file(options.input,false));if(!infile)throw Failure(4,"entrée illisible");input=infile.get();}
-    if(options.output!="-"){outfile.reset(open_file(options.output,true));if(!outfile)throw Failure(4,"sortie illisible");output=outfile.get();}
-    Y4mReader reader(input);Y4mWriter writer(output);std::string error;
+    Y4mReader reader(input);std::string error;
     if(!reader.read_header(error))throw Failure(2,error);
     auto f=reader.format();
+    auto rate_gcd=std::gcd(f.fps_num,f.fps_den);f.fps_num/=rate_gcd;f.fps_den/=rate_gcd;
     if(f.width<64||f.height<64||f.width>16384||f.height>16384||f.width%f.sub_x||f.height%f.sub_y)throw Failure(2,"dimensions incompatibles (64..16384, multiples du sous-échantillonnage)");
     if(f.interlace!='p' && f.interlace!='?')throw Failure(2,"désentrelacer avant MVTools");
     int64_t p=options.factor,q=1;
@@ -282,8 +287,11 @@ static int process(const Options& options) {
     auto gcd=std::gcd(p,q);p/=gcd;q/=gcd;if(p<=q||p>multiply(q,1000))throw Failure(1,"cadence cible hors limites");
     auto out_format=f;out_format.fps_num=multiply(f.fps_num,p);out_format.fps_den=multiply(f.fps_den,q);
     gcd=std::gcd(out_format.fps_num,out_format.fps_den);out_format.fps_num/=gcd;out_format.fps_den/=gcd;
-    int budget=(int)std::max(1u,std::thread::hardware_concurrency());int threads=options.threads?options.threads:options.mode=="standard"?std::max(1,std::min(4,budget/2)):budget;
+    int budget=(int)std::min(256u,std::max(1u,std::thread::hardware_concurrency()));int threads=options.threads?options.threads:options.mode=="standard"?std::max(1,std::min(4,budget/2)):budget;
     Runtime runtime(threads);
+    // Ne pas tronquer une sortie existante avant validation de l'entrée/runtime.
+    if(options.output!="-"){outfile.reset(open_file(options.output,true));if(!outfile)throw Failure(4,"sortie illisible");output=outfile.get();}
+    Y4mWriter writer(output);
     if(!writer.write_header(out_format,reader.passthrough_tokens()))throw Failure(4,"écriture en-tête impossible");
     std::fprintf(stderr,"info: MVTools %s | %dx%d %d bits | CPU threads=%d | pel=%d | phase=1/256\n",options.mode.c_str(),f.width,f.height,f.bit_depth,threads,options.mode=="uhd"?4:2);
     std::deque<Frame> buffer;int64_t first=0,total=0,out=0,done=0,cuts=0,statics=0;bool eof=false;double previous=0;

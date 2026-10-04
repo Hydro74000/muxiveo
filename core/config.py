@@ -1398,6 +1398,7 @@ class AppConfig:
         s.setValue("tools/dovi_tool", self.tool_dovi_tool)
         s.setValue("tools/hdr10plus_tool", self.tool_hdr10plus)
         s.setValue("tools/eac3to", self.tool_eac3to)
+        s.setValue("tools/muxiveo_mvtools", self.tool_muxiveo_mvtools)
 
         s.setValue("ffmpeg/threads", self.ffmpeg_threads)
 

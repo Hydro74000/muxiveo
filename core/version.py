@@ -24,7 +24,7 @@ APP_VERSION_LABEL = f"v{APP_VERSION}"
 # publiée par le workflow muxiveo-rife.yml sur ce même dépôt.
 MUXIVEO_RIFE_VERSION = "1.2.1"
 MUXIVEO_RIFE_RELEASE_TAG = f"muxiveo-rife-v{MUXIVEO_RIFE_VERSION}"
-MUXIVEO_MVTOOLS_VERSION = "1.0.0"
+MUXIVEO_MVTOOLS_VERSION = "1.0.1"
 MUXIVEO_MVTOOLS_RELEASE_TAG = f"muxiveo-mvtools-v{MUXIVEO_MVTOOLS_VERSION}"
 
 

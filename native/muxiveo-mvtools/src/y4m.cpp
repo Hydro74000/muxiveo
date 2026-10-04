@@ -2,8 +2,16 @@
 
 #include "y4m.h"
 
-#include <cstdlib>
+#include <charconv>
 #include <cstring>
+#include <limits>
+#include <string_view>
+
+static bool positive_integer(std::string_view text, int64_t& value)
+{
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
+    return result.ec == std::errc{} && result.ptr == text.data() + text.size() && value > 0;
+}
 
 static bool parse_colorspace(const std::string& c, FrameFormat& fmt)
 {
@@ -14,9 +22,10 @@ static bool parse_colorspace(const std::string& c, FrameFormat& fmt)
     if (c.size() > 4 && c[3] == 'p' && c[4] >= '0' && c[4] <= '9')
     {
         base = c.substr(0, 3);
-        depth = atoi(c.c_str() + 4);
-        if (depth < 8 || depth > 16)
+        int64_t parsed = 0;
+        if (!positive_integer(std::string_view(c).substr(4), parsed) || parsed < 8 || parsed > 16)
             return false;
+        depth = static_cast<int>(parsed);
     }
 
     if (base.compare(0, 3, "420") == 0)
@@ -68,7 +77,11 @@ bool Y4mReader::read_line(std::string& line, size_t max_len)
         if (ch == EOF)
             return false;
         if (ch == '\n')
+        {
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
             return true;
+        }
         if (line.size() >= max_len)
             return false;
         line.push_back((char)ch);
@@ -83,7 +96,7 @@ bool Y4mReader::read_header(std::string& error)
         error = "flux y4m vide ou en-tête illisible";
         return false;
     }
-    if (line.compare(0, 9, "YUV4MPEG2") != 0)
+    if (line.compare(0, 9, "YUV4MPEG2") != 0 || (line.size() > 9 && line[9] != ' '))
     {
         error = "signature YUV4MPEG2 absente (entrée y4m attendue)";
         return false;
@@ -93,6 +106,7 @@ bool Y4mReader::read_header(std::string& error)
     parse_colorspace("420jpeg", fmt);
 
     size_t pos = 9;
+    bool seen[256] = {};
     while (pos < line.size())
     {
         while (pos < line.size() && line[pos] == ' ')
@@ -105,18 +119,38 @@ bool Y4mReader::read_header(std::string& error)
         std::string tok = line.substr(pos, end - pos);
         pos = end;
 
+        if (tok[0] == 'W' || tok[0] == 'H' || tok[0] == 'F' || tok[0] == 'I' || tok[0] == 'C')
+        {
+            auto key = static_cast<unsigned char>(tok[0]);
+            if (seen[key])
+            {
+                error = "jeton y4m dupliqué : " + tok;
+                return false;
+            }
+            seen[key] = true;
+        }
+
         switch (tok[0])
         {
         case 'W':
-            fmt.width = atoi(tok.c_str() + 1);
-            break;
         case 'H':
-            fmt.height = atoi(tok.c_str() + 1);
+        {
+            int64_t value = 0;
+            if (!positive_integer(std::string_view(tok).substr(1), value) || value > std::numeric_limits<int>::max())
+            {
+                error = "dimension y4m invalide : " + tok;
+                return false;
+            }
+            (tok[0] == 'W' ? fmt.width : fmt.height) = static_cast<int>(value);
             break;
+        }
         case 'F':
         {
-            long long num = 0, den = 0;
-            if (sscanf(tok.c_str() + 1, "%lld:%lld", &num, &den) != 2 || num <= 0 || den <= 0)
+            int64_t num = 0, den = 0;
+            auto rate = std::string_view(tok).substr(1);
+            auto colon = rate.find(':');
+            if (colon == std::string_view::npos || !positive_integer(rate.substr(0, colon), num)
+                || !positive_integer(rate.substr(colon + 1), den))
             {
                 error = "cadence y4m invalide : " + tok;
                 return false;
@@ -126,7 +160,12 @@ bool Y4mReader::read_header(std::string& error)
             break;
         }
         case 'I':
-            fmt.interlace = tok.size() > 1 ? tok[1] : '?';
+            if (tok.size() != 2 || std::string("ptbm?").find(tok[1]) == std::string::npos)
+            {
+                error = "entrelacement y4m invalide : " + tok;
+                return false;
+            }
+            fmt.interlace = tok[1];
             tokens.push_back(tok);
             break;
         case 'C':
@@ -173,7 +212,7 @@ int Y4mReader::read_frame(uint8_t* dst, std::string& error)
         error = "en-tête de trame y4m tronqué";
         return -1;
     }
-    if (line.compare(0, 5, "FRAME") != 0)
+    if (line.compare(0, 5, "FRAME") != 0 || (line.size() > 5 && line[5] != ' '))
     {
         error = "marqueur FRAME attendu, reçu : " + line.substr(0, 32);
         return -1;

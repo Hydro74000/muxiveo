@@ -31,6 +31,10 @@ def test_render_homebrew_formula_contains_platform_blocks(tmp_path):
         "https://example.test/hdr10plus.zip",
         "--hdr10plus-tool-macos-sha256",
         "d" * 64,
+        "--muxiveo-mvtools-macos-url",
+        "https://example.test/mvtools.tar.gz",
+        "--muxiveo-mvtools-macos-sha256",
+        "e" * 64,
         "--output",
         str(output),
     ]
@@ -76,4 +80,10 @@ def test_render_homebrew_formula_contains_platform_blocks(tmp_path):
     assert 'bin.install_symlink libexec/"muxiveo"' in text
     assert 'resource "dovi_tool" do' in text
     assert 'resource "hdr10plus_tool" do' in text
+    assert 'resource "muxiveo-mvtools" do' in text
+    assert 'url "https://example.test/mvtools.tar.gz"' in text
+    assert f'sha256 "{"e" * 64}"' in text
+    assert 'resource("muxiveo-mvtools").stage do' in text
+    assert '(libexec/"tools").install Dir["*"]' in text
+    assert 'system libexec/"tools/muxiveo-mvtools", "--self-test", "--json"' in text
     assert 'setup_brew.py" post-install --platform linux' in text

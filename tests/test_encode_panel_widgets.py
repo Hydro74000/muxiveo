@@ -1940,6 +1940,27 @@ class TestEncodePanelInterpolationTta:
         assert panel._current_interpolation_settings().enabled
         panel.close()
 
+    def test_leaving_light_restores_visible_saved_mode(self, qt_app, monkeypatch):
+        from core.workflows.encode import FrameInterpolationSettings
+        panel = EncodePanel(AppConfig())
+        monkeypatch.setattr(panel, "_interpolation_tool_available", lambda: True)
+        panel._apply_interpolation_settings(FrameInterpolationSettings(enabled=True, mode="normal"))
+        panel._interp_quality_combo.setCurrentIndex(panel._interp_quality_combo.findData("light"))
+        assert panel._interp_mode_combo.currentData() == "fast"
+        panel._interp_quality_combo.setCurrentIndex(panel._interp_quality_combo.findData("balanced"))
+        assert panel._interp_mode_combo.currentData() == panel._current_interpolation_settings().mode == "normal"
+        panel.close()
+
+    @pytest.mark.parametrize("backend,mode", [("unknown", "standard"), ("mvtools", "unknown"), ("", "standard")])
+    def test_invalid_engine_choices_are_preserved_for_validation(self, qt_app, monkeypatch, backend, mode):
+        from core.workflows.encode import FrameInterpolationSettings
+        panel = EncodePanel(AppConfig())
+        monkeypatch.setattr(panel, "_interpolation_tool_available", lambda: False)
+        settings = FrameInterpolationSettings(enabled=True, backend=backend, mvtools_mode=mode)
+        panel._apply_interpolation_settings(settings)
+        assert panel._current_interpolation_settings() == settings
+        panel.close()
+
     def test_tta_combo_round_trip_badge_and_enabling(self, qt_app, monkeypatch):
         from core.workflows.encode import FrameInterpolationSettings
 

@@ -16,6 +16,7 @@ from core.workflows.encode.interpolation import InterpolationSource, build_inter
 from tests.test_encode_interpolation import _builder
 from core.workflows.encode.runtime_helpers import VideoPreparationResourcePolicy
 from core.native_mvtools import bundle_errors, extract_bundle
+from core.version import MUXIVEO_MVTOOLS_VERSION
 
 
 def test_old_profile_and_independent_parameters():
@@ -27,7 +28,7 @@ def test_old_profile_and_independent_parameters():
     assert replace(restored.interpolation, backend="rife") == replace(old, mvtools_mode="uhd")
 
 
-@pytest.mark.parametrize("mode,budget,expected", [("standard", 1, 1), ("standard", 6, 3), ("standard", 64, 4), ("uhd", 6, 6)])
+@pytest.mark.parametrize("mode,budget,expected", [("standard", 1, 1), ("standard", 6, 3), ("standard", 64, 4), ("uhd", 6, 6), ("uhd", 1024, 256)])
 def test_thread_budget(mode, budget, expected):
     assert mvtools_thread_count(mode, budget) == expected
 
@@ -42,6 +43,12 @@ def test_stage_and_progress():
     assert result is not None and result.frames_in == 8 and result.frames_out == 21
     with pytest.raises(EncodeError, match="introuvable"):
         build_interpolation_stage(settings, InterpolationSource(), rife_bin="available-rife")
+
+
+def test_decimal_target_rate_is_sent_as_exact_fraction():
+    settings = FrameInterpolationSettings(enabled=True, backend="mvtools", target_fps="59.94")
+    args = build_interpolation_stage(settings, InterpolationSource(), mvtools_bin="/opt/muxiveo-mvtools")
+    assert args[args.index("--fps") + 1] == "2997/50"
 
 
 def test_ffmpeg_filters_and_per_job_budget(tmp_path):
@@ -84,7 +91,7 @@ def test_parallel_scheduler_reserves_measured_cpu_memory():
 def test_archive_installation_rejects_missing_and_changed_libraries(tmp_path):
     files = {"muxiveo-mvtools": b"native", **{f"mvtools-runtime/{name}.so": name.encode() for name in
                                              ("libvapoursynth", "libvapoursynthfilters", "mvtools")}}
-    manifest = {"version": "1.0.0", "files": {name: {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    manifest = {"version": MUXIVEO_MVTOOLS_VERSION, "files": {name: {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
                                                for name, data in files.items()}}
     archive = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive, "w") as zf:
@@ -107,3 +114,70 @@ def test_archive_cannot_write_outside_installation(tmp_path):
     with pytest.raises(ValueError, match="chemin"):
         extract_bundle(archive, tmp_path / "installed")
     assert not (tmp_path / "outside").exists()
+
+
+@pytest.mark.parametrize("payload", [[], None, {"version": MUXIVEO_MVTOOLS_VERSION, "files": []},
+                                     {"version": MUXIVEO_MVTOOLS_VERSION, "files": {"muxiveo-mvtools": None}}])
+def test_malformed_manifest_reports_error(tmp_path, payload):
+    runtime = tmp_path / "mvtools-runtime"
+    runtime.mkdir()
+    (runtime / "manifest.json").write_text(json.dumps(payload))
+    assert bundle_errors(tmp_path / "muxiveo-mvtools", render=False)
+
+
+def test_extraction_refuses_existing_symlink_destination(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = tmp_path / "destination"
+    try:
+        target.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("création du lien indisponible")
+    with pytest.raises(ValueError, match="destination"):
+        extract_bundle(tmp_path / "unused.zip", target)
+    assert not list(outside.iterdir())
+
+
+def test_manifest_can_be_regenerated(tmp_path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("mvtools_build", Path(__file__).parents[1] / "native/muxiveo-mvtools/scripts/build.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for filename in ("muxiveo-mvtools", "mvtools-runtime/libvapoursynth.so", "mvtools-runtime/libvapoursynthfilters.so", "mvtools-runtime/mvtools.so"):
+        path = tmp_path / filename
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(filename.encode())
+    for _ in range(2):
+        module.write_manifest(tmp_path, {}, {}, MUXIVEO_MVTOOLS_VERSION)
+        assert not bundle_errors(tmp_path / "muxiveo-mvtools", render=False)
+    manifest = json.loads((tmp_path / "mvtools-runtime/manifest.json").read_text())
+    assert "mvtools-runtime/manifest.json" not in manifest["files"]
+
+
+def test_runtime_cache_detects_changed_library(tmp_path, monkeypatch):
+    import subprocess
+    from core.workflows.encode.interpolation import mvtools_runtime_info
+    files = {"muxiveo-mvtools": b"native", **{f"mvtools-runtime/{name}.so": name.encode() for name in
+                                             ("libvapoursynth", "libvapoursynthfilters", "mvtools")}}
+    for name, data in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(data)
+    manifest = {"version": MUXIVEO_MVTOOLS_VERSION, "files": {name: {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                                               for name, data in files.items()}}
+    (tmp_path / "mvtools-runtime/manifest.json").write_text(json.dumps(manifest))
+    calls = []
+
+    def selftest(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, json.dumps({"ok": True, "version": MUXIVEO_MVTOOLS_VERSION}), "")
+
+    monkeypatch.setattr(subprocess, "run", selftest)
+    binary = str(tmp_path / "muxiveo-mvtools")
+    assert mvtools_runtime_info(binary)["ok"] is True
+    assert mvtools_runtime_info(binary)["ok"] is True
+    assert len(calls) == 1
+    library = tmp_path / "mvtools-runtime/mvtools.so"
+    library.write_bytes(b"damaged")
+    assert mvtools_runtime_info(binary) is None
+    assert len(calls) == 1

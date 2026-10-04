@@ -2645,7 +2645,8 @@ class EncodeWorkflow(QObject):
                     except ValueError:
                         version = ()
                     if version < _MVTOOLS_MIN_VERSION:
-                        errors.append("Interpolation d'images : muxiveo-mvtools 1.0.0 ou plus récent requis.")
+                        errors.append("Interpolation d'images : muxiveo-mvtools "
+                                      f"{'.'.join(map(str, _MVTOOLS_MIN_VERSION))} ou plus récent requis.")
             elif settings.backend == "rife":
                 if settings.quality not in _INTERPOLATION_MODELS:
                     errors.append(f"Interpolation d'images : qualité « {settings.quality} » inconnue.")

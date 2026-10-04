@@ -62,7 +62,7 @@ INTERPOLATION_TTA_LEVELS: tuple[int, ...] = (1, 2, 4, 8)
 RIFE_TTA_MIN_VERSION: tuple[int, int, int] = (1, 2, 0)
 INTERPOLATION_BACKENDS: tuple[str, ...] = ("rife", "mvtools")
 MVTOOLS_MODES: tuple[str, ...] = ("standard", "uhd")
-MVTOOLS_MIN_VERSION: tuple[int, int, int] = (1, 0, 0)
+MVTOOLS_MIN_VERSION: tuple[int, int, int] = (1, 0, 1)
 
 # Intervalle des lignes ``progress`` de muxiveo-rife : alimentent la barre de
 # progression (non journalisées, log verbose uniquement).
@@ -338,7 +338,7 @@ def build_rife_stage(
 
 def mvtools_thread_count(mode: str, budget: int | None = None) -> int:
     """Part du budget CPU affectée à MVTools, après répartition entre tâches."""
-    count = max(1, int(budget or os.cpu_count() or 1))
+    count = max(1, min(256, int(budget or os.cpu_count() or 1)))
     return max(1, min(4, count // 2)) if mode == "standard" else count
 
 
@@ -351,7 +351,17 @@ def build_mvtools_stage(
     resolved = shutil.which(mvtools_bin)
     if resolved or Path(mvtools_bin).is_file():
         mvtools_bin = str(Path(resolved or mvtools_bin).resolve())
-    rate = ["--fps", target_fps] if target_fps else ["--factor", str(int(factor))]
+    if target_fps:
+        from core.workflows.encode.models import EncodeError
+        try:
+            fps = Fraction(str(target_fps))
+            if fps <= 0 or max(fps.numerator, fps.denominator) > 1_000_000_000:
+                raise ValueError("cadence hors limites")
+        except (ValueError, ZeroDivisionError) as exc:
+            raise EncodeError(f"Interpolation MVTools : cadence cible « {target_fps} » invalide.") from exc
+        rate = ["--fps", f"{fps.numerator}/{fps.denominator}"]
+    else:
+        rate = ["--factor", str(int(factor))]
     return [
         str(mvtools_bin), *rate, "--mode", mode,
         "--threads", str(mvtools_thread_count(mode, thread_budget)),
@@ -386,6 +396,9 @@ def build_interpolation_stage(
 def _mvtools_runtime_cached(binary: str, identity: tuple[object, ...]) -> dict[str, object] | None:
     """Autotest du runtime embarqué, mémorisé jusqu'au remplacement du binaire."""
     try:
+        from core.native_mvtools import bundle_errors
+        if bundle_errors(Path(binary), render=False, expected_version=None):
+            return None
         # Outil configuré, arguments constants, aucun shell.
         # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         result = subprocess.run(  # nosec B603
@@ -404,8 +417,8 @@ def mvtools_runtime_info(binary: str) -> dict[str, object] | None:
         path = Path(shutil.which(binary) or binary).resolve()
         stat = path.stat()
         runtime = path.parent / "mvtools-runtime"
-        identity = (stat.st_mtime_ns, stat.st_size, tuple(
-            (p.name, p.stat().st_size, p.stat().st_mtime_ns)
+        identity = (stat.st_ino, stat.st_ctime_ns, stat.st_mtime_ns, stat.st_size, tuple(
+            (p.name, p.stat().st_ino, p.stat().st_ctime_ns, p.stat().st_size, p.stat().st_mtime_ns)
             for p in sorted(runtime.iterdir()) if p.is_file()
         ))
         if not runtime.is_dir():
