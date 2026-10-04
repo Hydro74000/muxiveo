@@ -10,15 +10,19 @@ sources DV P7, filtres non-frame-preserving). Sans cette garde, le pipeline
 produit un fichier décalé, les scènes-cuts DV/HDR10+ ne tombent plus aux bons
 endroits.
 
-Politique :
-- Écart 0 frames partout → OK, on continue.
-- Écart RPU ou HDR10+ ≤ tolérance (4 par défaut) → trim auto + WARN.
+Politique (explicite, choisie par l'appelant via :class:`MetadataAdjustment`) :
 - Écart encoded vs source > 0 → abort (ré-encodage non frame-preserving).
-- Écart RPU ou HDR10+ > tolérance → abort.
+- Métadonnées (RPU / HDR10+) de même nombre de trames que la vidéo → OK.
+  Ce contrôle est un **comptage** : il ne prouve pas l'alignement temporel.
+- ``EXACT`` : tout écart de métadonnées → abort.
+- ``TRIM_TAIL`` : surplus ≤ tolérance (4) retiré **en fin de flux** (hypothèse
+  affichée : début aligné) ; surplus > tolérance → abort.
+- Métadonnées plus courtes que la vidéo → abort, quelle que soit la politique :
+  aucune trame de métadonnées n'est fabriquée (pas de duplication).
 
-Le trim auto sur HDR10+ est trivial (JSON tronqué). Sur RPU, on délègue à
-``dovi_tool editor`` avec un edit JSON ``remove`` pour retirer les frames de
-queue.
+Le trim HDR10+ tronque le JSON ; le trim RPU délègue à ``dovi_tool editor``
+avec une plage ``remove`` exacte (dovi_tool ≥ 2.3 refuse une borne de fin
+au-delà du nombre de trames).
 
 Fallback frame count
 ====================
@@ -41,9 +45,12 @@ Si les comptes rapides divergent, on repart de #3 avant de refuser l'encodage.
 from __future__ import annotations
 
 import json
+import math
 import re
 import subprocess
 from dataclasses import dataclass
+from enum import Enum
+from fractions import Fraction
 from pathlib import Path
 from typing import Callable
 
@@ -53,10 +60,60 @@ from core.subprocess_utils import subprocess_text_kwargs
 
 _FRAME_COUNT_FIELD = "Video;%FrameCount%"
 _DEFAULT_TOLERANCE = 4
+#: Flux HEVC bruts (annexB) : aucun index, un compte exact exige une lecture complète.
+_RAW_HEVC_SUFFIXES = frozenset({".hevc", ".h265", ".265", ".x265"})
+
+
+def _is_raw_hevc(path: Path) -> bool:
+    return Path(path).suffix.lower() in _RAW_HEVC_SUFFIXES
 
 
 class FrameCountAuditError(RuntimeError):
     """Erreur fatale d'alignement de frames — abort de l'injection."""
+
+
+class MetadataAdjustment(Enum):
+    """Ajustement autorisé quand RPU / HDR10+ n'ont pas le nombre de trames de la vidéo."""
+
+    EXACT = "exact"          # aucun ajustement : égalité stricte des comptes
+    TRIM_TAIL = "trim_tail"  # surplus ≤ tolérance retiré en fin de flux ; jamais de trame fabriquée
+
+
+_METADATA_LABELS = {"rpu": "RPU Dolby Vision", "hdr10p": "HDR10+"}
+
+
+def metadata_count_verdict(
+    name: str,
+    value: int,
+    target: int,
+    *,
+    adjustment: MetadataAdjustment,
+    tolerance: int = _DEFAULT_TOLERANCE,
+) -> str | None:
+    """Motif de refus pour des métadonnées de ``value`` trames face à ``target`` ; None si acceptable.
+
+    Un surplus accepté (``TRIM_TAIL``) reste à retirer en fin de flux par l'appelant.
+    """
+    label = _METADATA_LABELS.get(name, name)
+    delta = value - target
+    if delta == 0:
+        return None
+    if delta < 0:
+        return (
+            f"{label} plus court que la vidéo : {value} trames contre {target} "
+            f"({delta}) — aucune trame de métadonnées n'est fabriquée."
+        )
+    if adjustment is MetadataAdjustment.EXACT:
+        return (
+            f"{label} : {value} trames contre {target} (+{delta}) — aucun ajustement "
+            "autorisé (politique exacte)."
+        )
+    if delta > tolerance:
+        return (
+            f"{label} : {value} trames contre {target} (+{delta}) — surplus au-delà de "
+            f"la tolérance ({tolerance})."
+        )
+    return None
 
 
 @dataclass(frozen=True)
@@ -65,6 +122,10 @@ class FrameCountAudit:
     encoded: int | None
     rpu: int | None
     hdr10p: int | None
+    #: Provenance du compte source : « video » (lu sur la source), « known »
+    #: (fourni par l'appelant) ou « metadata » (RPU / HDR10+ extraits de la
+    #: même source et égaux au flux encodé : source non relue).
+    source_basis: str = "video"
 
     def deltas(self) -> dict[str, int]:
         """Renvoie les écarts vs source pour chaque flux disponible."""
@@ -80,12 +141,17 @@ class FrameCountAudit:
                 out[name] = value - self.source
         return out
 
-    def is_aligned(self, *, tolerance: int = _DEFAULT_TOLERANCE) -> tuple[bool, str]:
+    def is_aligned(
+        self,
+        *,
+        adjustment: MetadataAdjustment = MetadataAdjustment.EXACT,
+        tolerance: int = _DEFAULT_TOLERANCE,
+    ) -> tuple[bool, str]:
         """
-        Renvoie (ok, message). ok=True si :
-          - encoded == source (aucune tolérance sur le réencodage)
-          - |rpu - source| ≤ tolerance
-          - |hdr10p - source| ≤ tolerance
+        Renvoie (ok, message) selon la même politique que :meth:`FrameCountGuard.enforce`
+        (sans effet de bord) :
+          - encoded == source (aucune tolérance sur le réencodage) ;
+          - métadonnées acceptées par :func:`metadata_count_verdict`.
         Si source ou encoded sont inconnus → ok=False (audit incomplet).
         """
         if self.source is None or self.encoded is None:
@@ -99,14 +165,12 @@ class FrameCountAudit:
         for name, value in (("rpu", self.rpu), ("hdr10p", self.hdr10p)):
             if value is None:
                 continue
-            delta = abs(value - self.source)
-            if delta > tolerance:
-                return (
-                    False,
-                    f"frame count {name} ({value}) divergent vs source ({self.source}) "
-                    f"de {delta} frames (tolérance {tolerance})",
-                )
-        return (True, "alignement OK")
+            reason = metadata_count_verdict(
+                name, value, self.source, adjustment=adjustment, tolerance=tolerance,
+            )
+            if reason is not None:
+                return (False, reason)
+        return (True, "comptages identiques (alignement temporel non vérifié)")
 
 
 class FrameCountGuard:
@@ -122,7 +186,7 @@ class FrameCountGuard:
             rpu_bin=rpu_bin if has_dv else None,
             hdr10p_json=hdr10p_json if has_hdr10p else None,
         )
-        guard.enforce(audit, on_warn=log_fn)
+        guard.enforce(audit, adjustment=MetadataAdjustment.TRIM_TAIL, on_warn=log_fn)
         # → lève FrameCountAuditError si désaligné, sinon trim auto.
     """
 
@@ -133,11 +197,16 @@ class FrameCountGuard:
         ffprobe_bin: str = "ffprobe",
         dovi_tool_bin: str = "dovi_tool",
         tolerance: int = _DEFAULT_TOLERANCE,
+        run_command: Callable | None = None,
     ) -> None:
         self._mediainfo = mediainfo_bin
         self._ffprobe = ffprobe_bin
         self._dovi_tool = dovi_tool_bin
         self._tolerance = tolerance
+        self._run_command = run_command
+
+    def _run(self, command: list[str], **kwargs):
+        return (self._run_command or subprocess.run)(command, **kwargs)
 
     # ------------------------------------------------------------------
     # Audit
@@ -151,26 +220,103 @@ class FrameCountGuard:
         rpu_bin: Path | None = None,
         hdr10p_json: Path | None = None,
         known_encoded_frames: int | None = None,
+        known_source_frames: int | None = None,
+        source_stream_index: int | None = None,
+        frame_ratio: Fraction | int = 1,
     ) -> FrameCountAudit:
-        source_count = self._read_video_frame_count(source)
+        """Compte les trames de chaque flux.
+
+        ``frame_ratio`` (interpolation RIFE) : le compte source est rapporté
+        à la cadence encodée (``ceil(source × rapport)``, règle de muxiveo-rife).
+        ``known_source_frames`` : compte exact déjà établi (aucune relecture de
+        la source, utile pour un flux brut volumineux).
+        ``source_stream_index`` : index absolu de la piste sélectionnée ; une
+        piste secondaire est comptée explicitement si les métadonnées ne
+        prouvent pas déjà son compte (aucun repli sur la première vidéo).
+        """
+        ratio = Fraction(frame_ratio)
+        source_known = known_source_frames is not None and known_source_frames > 0
+        # HEVC brut ou piste secondaire : le lecteur rapide générique ne
+        # prouve pas le compte ; attendre les métadonnées avant un scan complet.
+        raw_source = not source_known and _is_raw_hevc(source)
+        selected_source = source_stream_index is not None and source_stream_index != 0
+        deferred_source = not source_known and (raw_source or selected_source)
+        source_count: int | None
+        if known_source_frames is not None and known_source_frames > 0:
+            source_count = math.ceil(known_source_frames * ratio)
+        elif deferred_source:
+            source_count = None
+        else:
+            source_count = self._read_video_frame_count(source)
+            if source_count is not None:
+                source_count = math.ceil(source_count * ratio)
+        encoded_known = known_encoded_frames is not None and known_encoded_frames > 0
         encoded_count: int | None
-        if known_encoded_frames is not None and known_encoded_frames > 0:
+        if encoded_known:
             encoded_count = known_encoded_frames
         else:
             encoded_count = self._read_video_frame_count(encoded)
-        if source_count is not None and encoded_count is not None and source_count != encoded_count:
-            # Une estimation durée × cadence n'est pas une preuve exacte : une
-            # coupe d'une image, une durée audio plus longue ou une durée absente
-            # peuvent laisser passer des statistiques périmées. Recompter les
-            # deux vidéos avant de conclure à une perte d'images à l'encodage.
-            source_count = self._recount_video_frames(source) or source_count
-            if known_encoded_frames is None:
-                encoded_count = self._recount_video_frames(encoded) or encoded_count
+        rpu_count = self._dovi_rpu_frame_count(rpu_bin) if rpu_bin else None
+        hdr10p_count = self._hdr10p_json_frame_count(hdr10p_json) if hdr10p_json else None
+
+        # RPU / HDR10+ extraits de la même source (lecture complète déjà faite
+        # par dovi_tool / hdr10plus_tool) et égaux au flux encodé — compté
+        # exactement (squelette de timing), jamais estimé : ils valent compte
+        # source. Évite une lecture complète de la source quand son compte
+        # rapide est impossible (HEVC brut) ou inexact (estimation durée ×
+        # cadence d'un conteneur sans statistiques NUMBER_OF_FRAMES).
+        metadata = [count for count in (rpu_count, hdr10p_count) if count is not None]
+        metadata_agree = encoded_known and bool(metadata) and all(
+            count == encoded_count for count in metadata
+        )
+        basis = "known" if source_known else "video"
+
+        if deferred_source:
+            if metadata_agree:
+                source_count, basis = encoded_count, "metadata"
+            else:
+                # Désaccord ou pas de métadonnées : seul le comptage des
+                # paquets est exact sur un flux brut.
+                exact = (
+                    ffprobe_packet_count(self._ffprobe, source, run_command=self._run_command, stream_index=source_stream_index)
+                    if selected_source else self._recount_video_frames(source)
+                )
+                source_count = math.ceil(exact * ratio) if exact else None
+        elif (
+            not source_known
+            and source_count is not None
+            and encoded_count is not None
+            and source_count != encoded_count
+        ):
+            if metadata_agree:
+                # Compte rapide du conteneur contredit par les métadonnées de
+                # la même source : estimation inexacte, pas de relecture complète.
+                source_count, basis = encoded_count, "metadata"
+            else:
+                # Une estimation durée × cadence n'est pas une preuve exacte : une
+                # coupe d'une image, une durée audio plus longue ou une durée absente
+                # peuvent laisser passer des statistiques périmées. Recompter les
+                # deux vidéos avant de conclure à une perte d'images à l'encodage.
+                recounted = self._recount_video_frames(source)
+                source_count = math.ceil(recounted * ratio) if recounted else source_count
+                if not encoded_known:
+                    encoded_count = self._recount_video_frames(encoded) or encoded_count
+        if (
+            (source_known or deferred_source)
+            and not encoded_known
+            and source_count is not None
+            and encoded_count is not None
+            and source_count != encoded_count
+        ):
+            # Compte source sûr (fourni ou compté exactement) : le compte rapide
+            # du flux encodé qui le contredit est recompté exactement.
+            encoded_count = self._recount_video_frames(encoded) or encoded_count
         return FrameCountAudit(
             source=source_count,
             encoded=encoded_count,
-            rpu=self._dovi_rpu_frame_count(rpu_bin) if rpu_bin else None,
-            hdr10p=self._hdr10p_json_frame_count(hdr10p_json) if hdr10p_json else None,
+            rpu=rpu_count,
+            hdr10p=hdr10p_count,
+            source_basis=basis,
         )
 
     # ------------------------------------------------------------------
@@ -181,18 +327,19 @@ class FrameCountGuard:
         self,
         audit: FrameCountAudit,
         *,
+        adjustment: MetadataAdjustment,
         rpu_bin: Path | None = None,
         hdr10p_json: Path | None = None,
         on_warn: Callable[[str], None] | None = None,
         on_info: Callable[[str], None] | None = None,
     ) -> FrameCountAudit:
         """
-        Applique la politique d'alignement :
-          - bloque si l'audit est incomplet (mediainfo manquant).
-          - bloque si le HEVC encodé diverge de la source (frame-preserving requis).
-          - bloque si RPU ou HDR10+ dépassent la tolérance.
-          - normalise au strict (trim) si RPU/HDR10+ divergent dans la tolérance,
-            même de 1 seule frame — l'injection demande un alignement parfait.
+        Applique la politique ``adjustment`` (obligatoire : chaque appelant la choisit) :
+          - audit vidéo incomplet (mediainfo et ffprobe en échec) → WARN, pas de blocage ;
+          - HEVC encodé ≠ source → abort (frame-preserving requis) ;
+          - métadonnées fournies mais comptage illisible → abort ;
+          - métadonnées refusées par :func:`metadata_count_verdict` → abort ;
+          - surplus accepté (``TRIM_TAIL``) → retiré en fin de flux puis recompté.
 
         Renvoie l'audit mis à jour après éventuel trim.
         """
@@ -215,65 +362,78 @@ class FrameCountGuard:
                 f"NVENC plus lent (p4/p5) ou un encodeur software."
             )
 
-        # encoded == source : si RPU et HDR10+ matchent strictement aussi → OK direct.
-        rpu_aligned = audit.rpu is None or audit.rpu == audit.source
-        hdr_aligned = audit.hdr10p is None or audit.hdr10p == audit.source
-        if rpu_aligned and hdr_aligned:
+        target = audit.source
+        counts = {"rpu": audit.rpu, "hdr10p": audit.hdr10p}
+        files = {"rpu": rpu_bin, "hdr10p": hdr10p_json}
+        for name, path in files.items():
+            if path is not None and counts[name] is None:
+                raise FrameCountAuditError(
+                    f"Comptage {_METADATA_LABELS[name]} illisible ({path.name}) : "
+                    "contrôle impossible, injection refusée."
+                )
+            value = counts[name]
+            if value is None:
+                continue
+            reason = metadata_count_verdict(
+                name, value, target, adjustment=adjustment, tolerance=self._tolerance,
+            )
+            if reason is not None:
+                raise FrameCountAuditError(reason)
+
+        if all(value is None or value == target for value in counts.values()):
             if on_info:
+                basis = (
+                    "flux encodé et métadonnées extraites de la source (source non relue)"
+                    if audit.source_basis == "metadata"
+                    else "vidéo et métadonnées"
+                )
                 on_info(
-                    f"Audit frame count : alignement OK ({audit.source} frames)."
+                    f"Comptage identique ({target} trames) : {basis}. "
+                    "L'alignement temporel n'est pas vérifié par ce contrôle."
                 )
             return audit
 
-        # RPU / HDR10+ : trim auto si écart ≤ tolérance.
-        new_rpu = audit.rpu
-        new_hdr10p = audit.hdr10p
-        target = audit.source
-
-        if audit.rpu is not None and audit.rpu != target:
-            delta = abs(audit.rpu - target)
-            if delta > self._tolerance:
+        # Surplus accepté par TRIM_TAIL : retrait en fin de flux puis recomptage.
+        for name, value in counts.items():
+            if value is None or value == target:
+                continue
+            path = files[name]
+            if path is None:
                 raise FrameCountAuditError(
-                    f"RPU DoVi désaligné : {audit.rpu} frames vs source {target} "
-                    f"(écart {delta} > tolérance {self._tolerance})."
-                )
-            if rpu_bin is None:
-                raise FrameCountAuditError(
-                    "RPU désaligné mais rpu_bin non fourni à enforce()."
+                    f"{_METADATA_LABELS[name]} excédentaire mais fichier non fourni à enforce()."
                 )
             if on_warn:
                 on_warn(
-                    f"RPU DoVi a {audit.rpu} frames vs source {target} — trim "
-                    f"auto à {target} frames."
+                    f"{_METADATA_LABELS[name]} : {value - target} trame(s) excédentaire(s) "
+                    f"retirée(s) en fin de flux ({value} → {target}). Hypothèse : début aligné."
                 )
-            self._trim_rpu(rpu_bin, target_frames=target)
-            new_rpu = self._dovi_rpu_frame_count(rpu_bin)
-
-        if audit.hdr10p is not None and audit.hdr10p != target:
-            delta = abs(audit.hdr10p - target)
-            if delta > self._tolerance:
+            if name == "rpu":
+                self._trim_rpu(path, target_frames=target, current_frames=value)
+                counts[name] = self._dovi_rpu_frame_count(path)
+            else:
+                self._trim_hdr10p_json(path, target_frames=target)
+                counts[name] = self._hdr10p_json_frame_count(path)
+            if counts[name] != target:
                 raise FrameCountAuditError(
-                    f"HDR10+ JSON désaligné : {audit.hdr10p} frames vs source "
-                    f"{target} (écart {delta} > tolérance {self._tolerance})."
+                    f"{_METADATA_LABELS[name]} : coupe en fin de flux sans effet "
+                    f"({counts[name]} trames après coupe, {target} attendues)."
                 )
-            if hdr10p_json is None:
-                raise FrameCountAuditError(
-                    "HDR10+ désaligné mais hdr10p_json non fourni à enforce()."
-                )
-            if on_warn:
-                on_warn(
-                    f"HDR10+ JSON a {audit.hdr10p} scènes vs source {target} "
-                    f"frames — trim auto."
-                )
-            self._trim_hdr10p_json(hdr10p_json, target_frames=target)
-            new_hdr10p = self._hdr10p_json_frame_count(hdr10p_json)
 
         return FrameCountAudit(
             source=audit.source,
             encoded=audit.encoded,
-            rpu=new_rpu,
-            hdr10p=new_hdr10p,
+            rpu=counts["rpu"],
+            hdr10p=counts["hdr10p"],
+            source_basis=audit.source_basis,
         )
+
+    def rpu_frame_count(self, rpu_bin: Path) -> int | None:
+        """Nombre de trames d'un RPU binaire (``dovi_tool info --summary``)."""
+        return self._dovi_rpu_frame_count(rpu_bin)
+
+    def hdr10p_frame_count(self, hdr10p_json: Path) -> int | None:
+        """Nombre de trames d'un JSON ``hdr10plus_tool extract``."""
+        return self._hdr10p_json_frame_count(hdr10p_json)
 
     # ------------------------------------------------------------------
     # Lecteurs de frame count
@@ -305,7 +465,7 @@ class FrameCountGuard:
 
     def _mediainfo_frame_count(self, path: Path) -> int | None:
         try:
-            result = subprocess.run(
+            result = self._run(
                 [self._mediainfo, f"--Inform={_FRAME_COUNT_FIELD}", str(path)],
                 capture_output=True,
                 check=False,
@@ -320,7 +480,7 @@ class FrameCountGuard:
             count = int(raw)
             # Tags de statistiques Matroska périmés (fichier coupé/remuxé) :
             # valeur écartée, la cascade passe au comptage ffprobe.
-            duration, fps = probe_duration_and_fps(self._ffprobe, path)
+            duration, fps = probe_duration_and_fps(self._ffprobe, path, run_command=self._run_command)
             return count if frame_count_is_plausible(count, duration, fps) else None
         return None
 
@@ -331,7 +491,7 @@ class FrameCountGuard:
         NUMBER_OF_FRAMES ou header — on tente, on saute si absent).
         """
         try:
-            result = subprocess.run(
+            result = self._run(
                 [
                     self._ffprobe, "-v", "error",
                     "-select_streams", "v:0",
@@ -364,7 +524,7 @@ class FrameCountGuard:
         Pour HEVC, un paquet correspond à une access unit, donc une image.
         Le lecteur partagé rejette un compte partiel si ffprobe échoue.
         """
-        return ffprobe_packet_count(self._ffprobe, path)
+        return ffprobe_packet_count(self._ffprobe, path, run_command=self._run_command)
 
     def _ffprobe_count_frames(self, path: Path) -> int | None:
         """
@@ -373,7 +533,7 @@ class FrameCountGuard:
         plus rapides ont échoué. Un échec du processus invalide aussi le compte.
         """
         try:
-            result = subprocess.run(
+            result = self._run(
                 [
                     self._ffprobe, "-v", "error",
                     "-select_streams", "v:0",
@@ -397,7 +557,7 @@ class FrameCountGuard:
 
     def _dovi_rpu_frame_count(self, rpu_bin: Path) -> int | None:
         try:
-            result = subprocess.run(
+            result = self._run(
                 [self._dovi_tool, "info", "-i", str(rpu_bin), "--summary"],
                 capture_output=True,
                 check=False,
@@ -427,6 +587,7 @@ class FrameCountGuard:
     # ------------------------------------------------------------------
 
     def _trim_hdr10p_json(self, hdr10p_json: Path, *, target_frames: int) -> None:
+        """Retire les trames HDR10+ au-delà de ``target_frames`` (fin de flux) et met le résumé à jour."""
         data = json.loads(hdr10p_json.read_text(encoding="utf-8"))
         scene_info = data.get("SceneInfo")
         if not isinstance(scene_info, list):
@@ -434,38 +595,41 @@ class FrameCountGuard:
         if len(scene_info) <= target_frames:
             return
         data["SceneInfo"] = scene_info[:target_frames]
-        # SceneInfoSummary.SceneFirstFrameIndex peut référencer des frames retirées
-        # → on filtre côté résumé pour éviter les références vers des frames coupées.
+        # Le résumé ne doit référencer que des trames conservées : premières
+        # trames de scène filtrées, longueurs de scène recalculées.
         summary = data.get("SceneInfoSummary")
         if isinstance(summary, dict):
             firsts = summary.get("SceneFirstFrameIndex")
             if isinstance(firsts, list):
-                summary["SceneFirstFrameIndex"] = [
-                    idx for idx in firsts if isinstance(idx, int) and idx < target_frames
-                ]
+                kept = [idx for idx in firsts if isinstance(idx, int) and idx < target_frames]
+                summary["SceneFirstFrameIndex"] = kept
+                if isinstance(summary.get("SceneFrameNumbers"), list):
+                    bounds = [*kept, target_frames]
+                    summary["SceneFrameNumbers"] = [bounds[i + 1] - bounds[i] for i in range(len(kept))]
         hdr10p_json.write_text(
             json.dumps(data, separators=(",", ":")),
             encoding="utf-8",
         )
 
-    def _trim_rpu(self, rpu_bin: Path, *, target_frames: int) -> None:
+    def _trim_rpu(self, rpu_bin: Path, *, target_frames: int, current_frames: int) -> None:
         """
-        Tronque le RPU aux N premières frames via ``dovi_tool editor``.
+        Retire les trames RPU ``target_frames`` … ``current_frames - 1`` (fin de flux)
+        via ``dovi_tool editor``.
 
-        On génère un edit JSON minimal qui ``remove`` toutes les frames à
-        partir de target_frames jusqu'à la fin.
+        La plage est exacte : dovi_tool ≥ 2.3 refuse une borne de fin au-delà
+        du nombre de trames (``invalid end range``).
         """
+        if current_frames <= target_frames:
+            return
         edit_path = rpu_bin.with_suffix(".edit.json")
-        # remove range exclusif sur la dernière frame ; dovi_tool accepte
-        # une borne supérieure ouverte avec un grand nombre.
-        edit_payload = {"remove": [f"{target_frames}-9999999"]}
+        edit_payload = {"remove": [f"{target_frames}-{current_frames - 1}"]}
         edit_path.write_text(
             json.dumps(edit_payload, separators=(",", ":")),
             encoding="utf-8",
         )
         out_path = rpu_bin.with_suffix(".trimmed.bin")
         try:
-            subprocess.run(
+            self._run(
                 [
                     self._dovi_tool,
                     "editor",
@@ -479,6 +643,7 @@ class FrameCountGuard:
             )
         except subprocess.CalledProcessError as exc:
             stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+            out_path.unlink(missing_ok=True)
             raise FrameCountAuditError(
                 f"dovi_tool editor a échoué pour le trim RPU : {stderr}"
             ) from exc
@@ -492,4 +657,6 @@ __all__ = [
     "FrameCountAudit",
     "FrameCountAuditError",
     "FrameCountGuard",
+    "MetadataAdjustment",
+    "metadata_count_verdict",
 ]

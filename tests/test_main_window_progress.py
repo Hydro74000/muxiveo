@@ -407,3 +407,64 @@ def test_pct_sentinel_progress_updates_bar_and_label() -> None:
     assert dummy._prog_lbl.text == "Extraction RPU Dolby Vision…  ·  53%"
 
 
+
+
+def _debug_routing_dummy(tmp_path) -> SimpleNamespace:
+    dummy = SimpleNamespace()
+    dummy._config = SimpleNamespace(enable_file_logging=False, file_logging_level="standard",
+                                    app_data_dir=tmp_path, verbose_log_dir=tmp_path)
+    dummy._op_mode = "encode"
+    dummy._op_encode_config = SimpleNamespace(video=SimpleNamespace(codec="nvencc_hevc"))
+    dummy._op_stage_label = ""
+    dummy._op_encode_fps = None
+    dummy._op_encode_frame = None
+    dummy._NOISE_RE = MainWindow._NOISE_RE
+    dummy._capture_verbose_progress_line = MagicMock()
+    dummy._handle_encode_internal_progress = MagicMock(return_value=False)
+    dummy._stop_prep_progress = MagicMock()
+    dummy._prog_bar = _FakeProgressBar()
+    dummy._prog_lbl = _FakeLabel()
+    dummy.log_requested = SimpleNamespace(emit=MagicMock())
+    dummy._format_progress_label = MethodType(MainWindow._format_progress_label, dummy)
+    dummy._is_debug_tool_line = MethodType(MainWindow._is_debug_tool_line, dummy)
+    dummy._log_debug_only = MethodType(MainWindow._log_debug_only, dummy)
+    dummy._on_op_progress = MethodType(MainWindow._on_op_progress, dummy)
+    return dummy
+
+
+def test_dovi_edit_config_block_goes_to_debug_only(tmp_path) -> None:
+    dummy = _debug_routing_dummy(tmp_path)
+    dummy._encode_panel = SimpleNamespace(parse_progress_line=lambda _cfg, _line: None)
+    block = ["EditConfig {", '"mode": 0,', '"active_area": {', '"presets": [', "{", '"top": 8', "},", "],",
+             '"edits": {', '"0-23": 0', "}", "}", "}"]
+    for line in block:
+        dummy._on_op_progress(line)
+    dummy.log_requested.emit.assert_not_called()
+    dummy._on_op_progress("Parsing RPU file...")
+    dummy.log_requested.emit.assert_called_once_with("INFO", "Parsing RPU file...")
+
+
+def test_truncated_edit_config_block_released_by_next_command(tmp_path) -> None:
+    """Bloc EditConfig interrompu : la commande suivante rétablit le journal."""
+    dummy = _debug_routing_dummy(tmp_path)
+    dummy._encode_panel = SimpleNamespace(parse_progress_line=lambda _cfg, _line: None)
+    dummy._eta_tracker_video = MagicMock()
+    dummy._eta_tracker_frame = MagicMock()
+    for line in ("EditConfig {", '"mode": 0,', '"active_area": {'):
+        dummy._on_op_progress(line)
+    dummy._on_op_progress("$ ffmpeg -i in.mkv out.mkv")
+    dummy._on_op_progress("Parsing RPU file...")
+    dummy.log_requested.emit.assert_any_call("INFO", "Parsing RPU file...")
+    assert not dummy._is_debug_tool_line("$ dovi_tool info")
+
+
+def test_rife_progress_drives_bar_without_logging(tmp_path) -> None:
+    from core.workflows.encode.backends.models import ProgressEvent
+
+    dummy = _debug_routing_dummy(tmp_path)
+    event = ProgressEvent(raw_line="x", percent=42.4, fps=25.0, eta_seconds=3600.0, should_log=False)
+    dummy._encode_panel = SimpleNamespace(parse_progress_line=lambda _cfg, _line: event)
+    dummy._on_op_progress("[muxiveo-rife] progress in=10 out=20 interpolated=9 scenes=0 static=0 fps=25.00")
+    assert dummy._prog_bar.value == 42
+    assert "42.4%" in dummy._prog_lbl.text and "25.0 fps" in dummy._prog_lbl.text
+    dummy.log_requested.emit.assert_not_called()

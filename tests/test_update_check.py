@@ -134,6 +134,33 @@ def test_fetch_is_silent_on_invalid_json():
         assert fetch_latest_release("stable") is None
 
 
+def test_unstable_query_is_light():
+    seen: list[str] = []
+    with patch.object(update_check.urllib.request, "urlopen", _urlopen([], seen)):
+        fetch_latest_release("unstable")
+    assert seen == [f"{update_check.RELEASES_API_URL}?per_page={update_check.UNSTABLE_RELEASES_PAGE_SIZE}"]
+
+
+def test_total_timeout_aborts_slow_response():
+    """Le délai couvre la réponse entière : un serveur lent ne bloque pas le worker indéfiniment."""
+    clock = iter([0.0, 0.1, 99.0])
+    with patch.object(update_check.urllib.request, "urlopen", _urlopen([_release("v99.0.0")] * 50)), \
+         patch.object(update_check, "_READ_CHUNK_BYTES", 8), \
+         patch.object(update_check.time, "monotonic", lambda: next(clock)):
+        try:
+            query_latest_release("unstable", timeout=5.0)
+        except UpdateCheckError as exc:
+            assert "TimeoutError" in str(exc)
+        else:
+            raise AssertionError("UpdateCheckError attendue")
+
+
+def test_oversized_response_is_rejected():
+    with patch.object(update_check.urllib.request, "urlopen", _urlopen([_release("v99.0.0")] * 50)), \
+         patch.object(update_check, "_MAX_RESPONSE_BYTES", 64):
+        assert fetch_latest_release("unstable") is None
+
+
 def test_query_raises_on_network_error_with_reason():
     with patch.object(update_check.urllib.request, "urlopen", side_effect=urllib.error.URLError("CERTIFICATE_VERIFY_FAILED")):
         try:
@@ -142,3 +169,25 @@ def test_query_raises_on_network_error_with_reason():
             assert "CERTIFICATE_VERIFY_FAILED" in str(exc)
         else:
             raise AssertionError("UpdateCheckError attendue")
+
+
+def test_get_json_timeout_covers_header_wait():
+    """Des en-têtes lents (1 s) ne prolongent pas l'attente au-delà du délai demandé."""
+    import time as _time
+    from unittest.mock import patch as _patch
+
+    from core import update_check
+
+    def slow_urlopen(*_args, **_kwargs):
+        _time.sleep(1.0)
+        raise OSError("trop tard")
+
+    started = _time.monotonic()
+    with _patch.object(update_check.urllib.request, "urlopen", side_effect=slow_urlopen):
+        try:
+            update_check._get_json("https://example.invalid/", 0.2)
+        except TimeoutError:
+            pass
+        else:  # pragma: no cover
+            raise AssertionError("TimeoutError attendu")
+    assert _time.monotonic() - started < 0.6

@@ -617,9 +617,10 @@ class TestNativeEndToEnd:
     def test_native_cleans_process_directory_after_success(self, tmp_path: Path) -> None:
         cfg = self._config(tmp_path)
         assert cfg.work_dir is not None
-        process_dir = cfg.work_dir / cfg.output.stem
-        process_dir.mkdir(parents=True)
-        (process_dir / "stale.bin").write_bytes(b"stale")
+        # Dossier homonyme préexistant : non créé par ce job, il est préservé.
+        foreign_dir = cfg.work_dir / cfg.output.stem
+        foreign_dir.mkdir(parents=True)
+        (foreign_dir / "stale.bin").write_bytes(b"stale")
 
         state = _wait(run_native_remux(
             cfg,
@@ -629,7 +630,8 @@ class TestNativeEndToEnd:
         ))
 
         assert state["failed"] is None
-        assert not process_dir.exists()
+        assert (foreign_dir / "stale.bin").read_bytes() == b"stale"
+        assert not list(cfg.work_dir.glob(f"{cfg.output.stem}.*"))
 
     def test_explicit_empty_metadata_clears_source_segment_title(self, tmp_path: Path) -> None:
         cfg = self._config(tmp_path)

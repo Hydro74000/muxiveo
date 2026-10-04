@@ -61,6 +61,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from core.file_types import ACCEPTED_EXTENSIONS, build_desktop_mime_type_string
+from core.github_release import release_asset, verify_download
 from core.version import (
     APP_APPSTREAM_ID,
     APP_EXECUTABLE_NAME,
@@ -68,6 +69,9 @@ from core.version import (
     APP_NAME,
     APP_VERSION,
     APP_WEBSITE_URL,
+    MUXIVEO_RIFE_RELEASE_TAG,
+    MUXIVEO_RIFE_VERSION,
+    muxiveo_rife_asset_url,
 )
 
 ROOT = Path(__file__).parent
@@ -2760,26 +2764,6 @@ def _download_file(url: str, dest: Path, timeout: int = 120) -> None:
         raise RuntimeError(f"Timeout ({timeout}s) lors du téléchargement de {url}") from e
 
 
-def _gh_latest_asset_url(repo: str, *patterns: str) -> str:
-    """Retourne l'URL du premier asset GitHub dont le nom contient tous les patterns."""
-    url = f"https://api.github.com/repos/{repo}/releases/latest"
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "Muxiveo-builder",
-    }
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req) as resp:  # nosec B310  # origine HTTPS api.github.com constante
-        data = json.loads(resp.read().decode("utf-8"))
-    for asset in data.get("assets", []):
-        name: str = asset.get("name", "")
-        if all(p in name for p in patterns):
-            return asset["browser_download_url"]
-    raise RuntimeError(f"Aucun asset correspondant à {patterns} dans {repo}")
-
-
 def _mediainfo_latest_windows_version() -> str:
     """Retourne la dernière version de MediaInfo CLI Windows depuis mediaarea.net."""
     base = "https://mediaarea.net/download/binary/mediainfo/"
@@ -2836,15 +2820,61 @@ def _dl_windows_mediainfo(tools_dir: Path) -> None:
     _ok("MediaInfo.exe installé dans tools/")
 
 
+def _muxiveo_rife_version(exe: Path) -> str | None:
+    """Version ``X.Y.Z`` annoncée par ``muxiveo-rife --version`` (None si illisible)."""
+    try:
+        # Outil du dossier de packaging choisi par l'utilisateur ; argv fixe, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        out = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=30, check=False)  # nosec B603
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r"muxiveo-rife (\d+\.\d+\.\d+)", out.stdout or "")
+    return match.group(1) if match else None
+
+
+def _dl_windows_muxiveo_rife(tools_dir: Path) -> None:
+    """muxiveo-rife.exe + rife-models/ (archive locale ``MUXIVEO_RIFE_ARCHIVE`` ou release épinglée)."""
+    exe = tools_dir / "muxiveo-rife.exe"
+    if exe.is_file() and (tools_dir / "rife-models").is_dir():
+        if _muxiveo_rife_version(exe) == MUXIVEO_RIFE_VERSION:
+            _ok("muxiveo-rife.exe déjà présent dans tools/")
+            return
+        # tools/ réutilisé d'un build précédent : binaire et modèles remplacés
+        _warn(f"muxiveo-rife.exe présent mais différent de {MUXIVEO_RIFE_VERSION} — remplacement.")
+        shutil.rmtree(tools_dir / "rife-models", ignore_errors=True)
+    _step(f"muxiveo-rife Windows ({MUXIVEO_RIFE_RELEASE_TAG})")
+    with tempfile.TemporaryDirectory() as tmp:
+        local = os.environ.get("MUXIVEO_RIFE_ARCHIVE")
+        archive = Path(local) if local else Path(tmp) / "muxiveo-rife.zip"
+        if not local:
+            try:
+                _download_file(muxiveo_rife_asset_url("windows-x86_64.zip"), archive, timeout=180)
+            except Exception as exc:
+                _warn(f"muxiveo-rife indisponible ({exc}) — interpolation d'images absente de ce build.")
+                return
+        with zipfile.ZipFile(archive) as zf:
+            names = [n for n in zf.namelist() if not n.endswith("/")]
+            prefix = os.path.commonpath(names) if len(names) > 1 else ""
+            for name in names:
+                rel = Path(os.path.relpath(name, prefix)) if prefix else Path(name)
+                if rel.is_absolute() or ".." in rel.parts:
+                    continue
+                dest = tools_dir / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(zf.read(name))
+    _ok("muxiveo-rife.exe installé dans tools/")
+
+
 def _dl_windows_dovi_tool(tools_dir: Path) -> None:
     if (tools_dir / "dovi_tool.exe").is_file():
         _ok("dovi_tool.exe déjà présent dans tools/")
         return
     _step("Téléchargement dovi_tool Windows (quietvoid/dovi_tool)")
-    url = _gh_latest_asset_url("quietvoid/dovi_tool", "x86_64-pc-windows-msvc.zip")
+    asset = release_asset("dovi_tool", "dovi_tool-", "x86_64-pc-windows-msvc.zip")
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "dovi_tool.zip"
-        _download_file(url, archive, timeout=60)
+        _download_file(asset.url, archive, timeout=60)
+        verify_download(asset, archive)
         with zipfile.ZipFile(archive) as zf:
             for name in zf.namelist():
                 if Path(name).name.lower() == "dovi_tool.exe":
@@ -2857,10 +2887,11 @@ def _dl_windows_hdr10plus_tool(tools_dir: Path) -> None:
         _ok("hdr10plus_tool.exe déjà présent dans tools/")
         return
     _step("Téléchargement hdr10plus_tool Windows (quietvoid/hdr10plus_tool)")
-    url = _gh_latest_asset_url("quietvoid/hdr10plus_tool", "x86_64-pc-windows-msvc.zip")
+    asset = release_asset("hdr10plus_tool", "hdr10plus_tool-", "x86_64-pc-windows-msvc.zip")
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "hdr10plus_tool.zip"
-        _download_file(url, archive, timeout=60)
+        _download_file(asset.url, archive, timeout=60)
+        verify_download(asset, archive)
         with zipfile.ZipFile(archive) as zf:
             for name in zf.namelist():
                 if Path(name).name.lower() == "hdr10plus_tool.exe":
@@ -2873,10 +2904,11 @@ def _dl_windows_nvencc(tools_dir: Path) -> None:
         _ok("NVEncC64.exe déjà présent dans tools/")
         return
     _step("Téléchargement NVEncC64 Windows (rigaya/NVEnc)")
-    url = _gh_latest_asset_url("rigaya/NVEnc", "Aviutl_NVEnc_", ".zip")
+    asset = release_asset("nvencc", "Aviutl_NVEnc_", ".zip")
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "nvencc.zip"
-        _download_file(url, archive, timeout=90)
+        _download_file(asset.url, archive, timeout=90)
+        verify_download(asset, archive)
         with zipfile.ZipFile(archive) as zf:
             candidates = [n for n in zf.namelist() if Path(n).name.lower() == "nvencc64.exe"]
             if not candidates:
@@ -2919,6 +2951,7 @@ def bundle_windows_tools(bundle_dir: Path) -> Path:
     _dl_windows_dovi_tool(tools_dir)
     _dl_windows_hdr10plus_tool(tools_dir)
     _dl_windows_nvencc(tools_dir)
+    _dl_windows_muxiveo_rife(tools_dir)
     bundle_windows_licenses(bundle_dir)
 
     # Pose le marqueur _ALLINC à côté de l'exécutable

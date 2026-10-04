@@ -18,6 +18,23 @@ class Anchor:
     confidence: float
 
 
+_ACTIVITY_LEVEL = 1e-4
+# Trou maximal admis entre deux ancres, même si le décalage revient à la même valeur.
+_MAX_ANCHOR_GAP_MS = 30_000
+# Écart non vérifiable toléré s'il revient au même décalage : 45 ms (seuil de
+# perception de la synchro labiale), sur 30 s au plus.
+_MAX_EXCURSION_SHIFT_MS = 45
+_MAX_EXCURSION_MS = 30_000
+
+
+def _active_blocks(values):
+    """Blocs de 100 ms dont le niveau moyen dépasse le plancher de silence."""
+    import numpy as np
+
+    values = np.abs(np.asarray(values, dtype=float))
+    return values[:len(values) // 100 * 100].reshape(-1, 100).mean(axis=1) > _ACTIVITY_LEVEL
+
+
 def match_window(reference, donor, start: int, size: int, max_offset: int) -> Anchor:
     """Cherche une courte fenêtre de référence dans une plage donneur élargie.
 
@@ -34,8 +51,8 @@ def match_window(reference, donor, start: int, size: int, max_offset: int) -> An
         raise AudioSyncError("Fenêtre audio insuffisante.")
     # Une fenêtre surtout silencieuse (début/fin d'épisode) corrèle sur quelques
     # secondes seulement et produit des ancres parasites : exiger ≥ 50 % d'activité.
-    blocks = np.abs(a[:size // 100 * 100]).reshape(-1, 100).mean(axis=1)
-    if np.count_nonzero(blocks > 1e-4) * 2 < len(blocks):
+    active = _active_blocks(a)
+    if np.count_nonzero(active) * 2 < len(active):
         raise AudioSyncError("Fenêtre audio majoritairement silencieuse.")
     a = a - a.mean()
     power = float(a @ a)
@@ -125,6 +142,26 @@ def locate_transition(reference, donor, left: Anchor, right: Anchor) -> tuple[in
     return low + cut_index + 250, min(prior_conf, following_conf, left.confidence, right.confidence)
 
 
+def _returning_excursion(anchors, index: int, plateau: float, tolerance_ms: int) -> int | None:
+    """Indice de l'ancre qui revient au plateau après un écart bref et faible.
+
+    Des mixages différents (Atmos, réverbérations des surrounds) décalent
+    parfois quelques ancres de quelques dizaines de ms. Un écart sous le seuil
+    de perception, qui revient au même décalage, ne déplace pas la chronologie.
+    """
+    origin = anchors[index - 1].donor_ms
+    for back in range(index, len(anchors)):
+        anchor = anchors[back]
+        if anchor.donor_ms - origin > _MAX_EXCURSION_MS:
+            return None
+        deviation = abs(anchor.shift_ms - plateau)
+        if deviation <= tolerance_ms:
+            return back
+        if deviation > _MAX_EXCURSION_SHIFT_MS:
+            return None
+    return None
+
+
 def scan_envelopes(reference, donor, *, max_offset_ms=30000, tolerance_ms=25,
                    speed_factor=1.0, check_cancelled=lambda: None, log=lambda message: None):
     """Sonde toute la piste, y compris le début et les plateaux intermédiaires."""
@@ -147,24 +184,53 @@ def scan_envelopes(reference, donor, *, max_offset_ms=30000, tolerance_ms=25,
         anchors.append(anchor)
     if not anchors:
         raise AudioSyncError("Aucune correspondance acoustique fiable.")
-    first_reference_start = anchors[0].donor_ms + anchors[0].shift_ms - size // 2
-    if first_reference_start > max(0, anchors[0].shift_ms) + size:
-        raise AudioSyncError("Début de piste non vérifié ; calibration manuelle requise.")
+    # Avant la première ancre, une fenêtre (plus le décalage) peut rester non
+    # mesurée. Au-delà, seul un silence des deux côtés (logos muets) est admis :
+    # il ne porte aucune synchro à vérifier, contrairement à un son actif.
+    first = anchors[0]
+    unverified = first.donor_ms + first.shift_ms - size // 2 - max(0, first.shift_ms) - size
+    if unverified > 0:
+        if _active_blocks(reference[:unverified]).any() or _active_blocks(donor[:unverified]).any():
+            raise AudioSyncError("Début de piste non vérifié ; calibration manuelle requise.")
+        log(f"Début silencieux sans correspondance : {unverified / 1000:.1f} s.")
     segments = [SyncSegment(0, anchors[0].shift_ms)]
     confidence = anchors[0].confidence
-    for left, right in zip(anchors, anchors[1:]):
+    stable_gaps = []
+    index = 1
+    while index < len(anchors):
         check_cancelled()
-        if right.donor_ms - left.donor_ms > max(30000, size * 3):
+        left, right = anchors[index - 1], anchors[index]
+        stable = abs(right.shift_ms - segments[-1].shift_ms) <= tolerance_ms
+        gap = right.donor_ms - left.donor_ms
+        if gap > _MAX_ANCHOR_GAP_MS:
             raise AudioSyncError(f"Intervalle audio non vérifié ({left.donor_ms / 1000:.1f}–{right.donor_ms / 1000:.1f} s) ; calibration manuelle requise.")
-        if abs(right.shift_ms - segments[-1].shift_ms) <= tolerance_ms:
+        if stable and gap > size * 3:
+            # Un bref passage doublé peut ne fournir aucune correspondance ;
+            # conserver le décalage observé des deux côtés, et le signaler.
+            stable_gaps.append(gap)
+        if stable:
             confidence = min(confidence, right.confidence)
+            index += 1
             continue
-        cut, cut_confidence = locate_transition(reference, donor, left, right)
+        try:
+            cut, cut_confidence = locate_transition(reference, donor, left, right)
+        except AudioSyncError:
+            back = _returning_excursion(anchors, index, segments[-1].shift_ms, tolerance_ms)
+            if back is None:
+                raise
+            log(f"Écart bref ignoré ({right.donor_ms / 1000:.1f}–{anchors[back - 1].donor_ms / 1000:.1f} s, "
+                f"{right.shift_ms - segments[-1].shift_ms:+.0f} ms) : jonction non vérifiable, même décalage ensuite.")
+            del anchors[index:back]
+            continue
         if cut * speed_factor <= segments[-1].start_ms:
             raise AudioSyncError("Ordre des jonctions incohérent.")
         segments.append(SyncSegment(cut * speed_factor, right.shift_ms))
         confidence = min(confidence, cut_confidence)
         log(f"Jonction vérifiée à {cut * speed_factor / 1000:.3f} s : {right.shift_ms:+.0f} ms ({cut_confidence:.2f})")
+        index += 1
+    if stable_gaps:
+        log(f"{len(stable_gaps)} intervalle(s) sans correspondance (max {max(stable_gaps) / 1000:.0f} s) : "
+            "décalage identique de part et d'autre.")
     # Une queue différente (générique/localisation) ne doit pas cacher une zone
     # non mesurée au milieu de l'épisode ; elle est signalée explicitement.
     covered = anchors[-1].donor_ms + size // 2

@@ -4,6 +4,7 @@ core/workflows/encode/models.py — Data models and enums for encoding.
 Public:
     QualityMode
     VideoEncodeSettings, AudioTrackSettings, EncodeConfig, EncodePreset
+    FrameInterpolationSettings
     EncodeError
 """
 
@@ -12,6 +13,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from enum import Enum
+from fractions import Fraction
 from pathlib import Path
 from typing import Protocol
 
@@ -240,6 +242,12 @@ class VideoFilterSettings:
     chroma_smooth_enabled: bool = False
     chroma_smooth_strength: str = "medium"
 
+    def field_rate_multiplier(self) -> int:
+        """Images produites par trame source au désentrelacement (2 : YADIF une image par champ)."""
+        if self.yadif_enabled and str(self.yadif_mode or "").startswith("send_field"):
+            return 2
+        return 1
+
     def is_active(self) -> bool:
         return bool(
             self.yadif_enabled
@@ -254,11 +262,48 @@ class VideoFilterSettings:
 
 
 @dataclass
+class FrameInterpolationSettings:
+    """Interpolation d'images RIFE (muxiveo-rife) : multiplication de la cadence."""
+    enabled: bool = False
+    factor: int = 2                   # multiplicateur entier de cadence (2 = 29,97 -> 59,94)
+    target_fps: str = ""              # cadence cible (ex. "60000/1001"), prioritaire sur factor
+    quality: str = "balanced"         # fast | balanced | light (modèle RIFE ; « max » : ancien preset)
+    mode: str = "normal"              # normal | fast (flux optique à demi-résolution, --uhd)
+    tta: int = 1                      # moyennage TTA (1 = désactivé, 2 / 4 / 8 passes, coût x n)
+    scene_threshold: float = 10.0     # seuil de coupe 0-100 (0 = désactivé)
+    gpu: int = -1                     # index GPU Vulkan (-1 = automatique)
+
+    def is_active(self) -> bool:
+        return bool(self.enabled) and (bool(self.target_fps) or int(self.factor) > 1)
+
+    def fast_mode(self) -> bool:
+        """Mode Fast effectif : choisi, ou imposé par le préréglage Light."""
+        return self.mode == "fast" or self.quality == "light"
+
+    def ratio(self, source_rate: str | None = None) -> Fraction:
+        """Rapport cadence de sortie / cadence source (``target_fps`` exige ``source_rate``)."""
+        if self.target_fps:
+            try:
+                source = Fraction(str(source_rate))
+                return Fraction(str(self.target_fps)) / source if source > 0 else Fraction(1)
+            except (TypeError, ValueError, ZeroDivisionError):
+                return Fraction(1)
+        return Fraction(max(1, int(self.factor)))
+
+    @classmethod
+    def from_value(cls, value: object) -> "FrameInterpolationSettings":
+        return _dataclass_from_value(cls, value)
+
+
+@dataclass
 class VideoEncodeSettings:
     """Paramètres d'encodage vidéo."""
     stream_index:     int          = 0      # index global ffprobe de la piste vidéo source
     source_path:      Path | None  = None   # None = même fichier que EncodeConfig.source
     track_entry_id:   str | None   = None   # GUID TrackEntry synchronisé avec RemuxPanel
+    # Cadence imposée (-r) quand la source est un flux brut sans horodatage
+    # (HEVC annexB d'une conversion Dolby Vision) ; renseignée par le workflow.
+    input_frame_rate: str          = ""
     codec:            str          = "libx265"
     quality_mode:     QualityMode  = QualityMode.CRF
     crf:              int          = 18
@@ -277,6 +322,7 @@ class VideoEncodeSettings:
     resize:           VideoResizeSettings = field(default_factory=VideoResizeSettings)
     crop:             VideoCropSettings = field(default_factory=VideoCropSettings)
     filters:          VideoFilterSettings = field(default_factory=VideoFilterSettings)
+    interpolation:    FrameInterpolationSettings = field(default_factory=FrameInterpolationSettings)
     # HDR statique
     inject_hdr_meta:  bool         = False
     master_display:   str          = ""   # ex. "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(40000000,50)"
@@ -305,15 +351,31 @@ class VideoEncodeSettings:
         self.resize = VideoResizeSettings.from_value(self.resize)
         self.crop = VideoCropSettings.from_value(self.crop)
         self.filters = VideoFilterSettings.from_value(self.filters)
+        self.interpolation = FrameInterpolationSettings.from_value(self.interpolation)
 
     def has_video_transform(self) -> bool:
         return bool(
             self.resize.is_active()
             or self.crop.is_active()
             or self.filters.is_active()
+            or self.interpolation.is_active()
             or self.tonemap_to_sdr
             or self.p5_to_hdr10
         )
+
+    def interpolates(self) -> bool:
+        """Interpolation RIFE active sur une piste réencodée."""
+        return self.codec != "copy" and self.interpolation.is_active()
+
+    def frame_ratio(self, source_rate: str | None = None) -> Fraction:
+        """Trames encodées par trame source (1 sans interpolation ; x2,5 pour 23,976 -> 59,94)."""
+        if not self.interpolates():
+            return Fraction(1)
+        ratio = self.interpolation.ratio(source_rate)
+        if not self.interpolation.target_fps:
+            # Le facteur s'applique aux images désentrelacées (YADIF une image par champ : x2).
+            ratio *= self.filters.field_rate_multiplier()
+        return ratio
 
 
 @dataclass
@@ -447,6 +509,13 @@ class EncodeConfig:
     #: explicite » est portée par les loaders (réglage global [matroska],
     #: propagation du job conteneur via merge_remux_into_encode_config).
     mux_backend: str = "ffmpeg"
+    #: Écrit le NFO après le commit si le réglage global l'autorise. Porté par
+    #: la configuration du job (False pour une preview) : jamais par un état
+    #: mutable partagé du workflow.
+    write_nfo: bool = True
+    #: Les previews restent automatiques ; un job GUI peut demander une
+    #: décision explicite sur le résultat du contrôle final.
+    allow_validation_override: bool = True
 
     def __post_init__(self) -> None:
         if not self.video_tracks and self.video is not None:
@@ -488,6 +557,7 @@ class EncodePreset:
     resize:                     VideoResizeSettings = field(default_factory=VideoResizeSettings)
     crop:                       VideoCropSettings = field(default_factory=VideoCropSettings)
     filters:                    VideoFilterSettings = field(default_factory=VideoFilterSettings)
+    interpolation:              FrameInterpolationSettings = field(default_factory=FrameInterpolationSettings)
     inject_hdr_meta:            bool = False
     master_display:             str  = ""
     max_cll:                    str  = ""
@@ -500,6 +570,7 @@ class EncodePreset:
         self.resize = VideoResizeSettings.from_value(self.resize)
         self.crop = VideoCropSettings.from_value(self.crop)
         self.filters = VideoFilterSettings.from_value(self.filters)
+        self.interpolation = FrameInterpolationSettings.from_value(self.interpolation)
 
     def to_video_settings(self) -> VideoEncodeSettings:
         return VideoEncodeSettings(
@@ -515,6 +586,7 @@ class EncodePreset:
             resize=self.resize,
             crop=self.crop,
             filters=self.filters,
+            interpolation=self.interpolation,
             inject_hdr_meta=self.inject_hdr_meta,
             master_display=self.master_display,
             max_cll=self.max_cll,

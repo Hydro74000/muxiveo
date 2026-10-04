@@ -120,11 +120,8 @@ def merge_remux_into_encode_config(
 
     def _find_track(src_path: Path, stream_index: int, track_type: str) -> TrackEntry | None:
         track = remux_track_map.get((src_path, stream_index))
-        if track is not None:
+        if track is not None and track.track_type == track_type:
             return track
-        for entry in remux_track_map.values():
-            if entry.mkv_tid == stream_index and entry.track_type == track_type:
-                return entry
         return None
 
     for video_order, video_settings in enumerate(video_tracks, start=1):
@@ -182,10 +179,8 @@ def merge_remux_into_encode_config(
             return encode_cfg
         return dataclasses_replace(encode_cfg, mux_backend=remux_cfg.mux_backend)
 
-    return EncodeConfig(
-        source=encode_cfg.source,
-        output=encode_cfg.output,
-        video=encode_cfg.video,
+    return dataclasses_replace(
+        encode_cfg,
         video_tracks=video_tracks,
         audio_tracks=encode_cfg.audio_tracks,
         copy_subtitles=encode_cfg.copy_subtitles if not sub_tracks else False,
@@ -197,13 +192,5 @@ def merge_remux_into_encode_config(
         tag_overrides=tag_overrides,
         track_meta_edits=track_meta_edits,
         track_time_offsets=track_time_offsets,
-        duration_s=encode_cfg.duration_s,
-        copy_dv=encode_cfg.copy_dv,
-        copy_hdr10plus=encode_cfg.copy_hdr10plus,
-        dovi_profile=encode_cfg.dovi_profile,
-        work_dir=encode_cfg.work_dir,
-        file_title=encode_cfg.file_title,
-        extra_attachments=encode_cfg.extra_attachments,
-        tmdb_cover=encode_cfg.tmdb_cover,
         mux_backend=remux_cfg.mux_backend,
     )

@@ -79,6 +79,45 @@ def decode_subprocess_output(raw: bytes) -> str:
     return raw.decode(_TOOL_TEXT_ENCODING, errors=_TOOL_TEXT_ERRORS)
 
 
+def run_cancellable_capture(
+    command: list[str],
+    *,
+    cancel_cb: Callable[[], bool],
+    check_cancelled: Callable[[], None],
+    on_start: Callable[[subprocess.Popen], None] | None = None,
+    on_end: Callable[[subprocess.Popen], None] | None = None,
+    capture_output: bool = True,
+    check: bool = False,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess:
+    """Sonde avec sortie capturée, tuable même pendant une lecture silencieuse."""
+    check_cancelled()
+    timeout = kwargs.pop("timeout", None)
+    # Commande fournie par les workflows sous forme d'argv, sans interprétation shell.
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+    with subprocess.Popen(  # nosec B603
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs,
+    ) as proc:
+        if on_start is not None:
+            on_start(proc)
+        try:
+            with watch_process_cancellation(proc, cancel_cb):
+                stdout, stderr = proc.communicate(timeout=timeout)
+            check_cancelled()
+            # Simple objet résultat : aucun lancement de processus.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            result = subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
+            if check:
+                result.check_returncode()
+            return result
+        except BaseException:
+            kill_process_tree(proc, timeout=0.2)
+            raise
+        finally:
+            if on_end is not None:
+                on_end(proc)
+
+
 # Variables pouvant pointer dans le bundle figé (AppImage/PyInstaller) et casser
 # les programmes de l'hôte (xdg-open, navigateur, nouvelle AppImage…).
 _BUNDLE_PATH_ENV_VARS = (

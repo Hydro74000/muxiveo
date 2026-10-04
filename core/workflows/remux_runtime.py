@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 from core.runner import TaskCancelledError, TaskSignals
+from core.workflows.common.validation_override import ValidationOverride, validate_final_output
 from core.workdir import (
     download_tmdb_cover,
     normalized_tmdb_cover_filename,
@@ -73,6 +74,7 @@ class RemuxRuntimeRunnerCallbacks:
     sync_rewrite_enabled: Callable[[], bool] = lambda: False
     sync_advanced_audio_rewrite_enabled: Callable[[], bool] = lambda: False
     sync_rewrite_audio_bitrates: Callable[[], dict[str, int]] = lambda: {}
+    validation_override: ValidationOverride | None = None
 
 
 class RemuxRuntimeRunner:
@@ -111,14 +113,8 @@ class RemuxRuntimeRunner:
             output_path=config.output,
             fallback_name="remux_job",
         )
-        relocated_attachments = relocate_tmdb_covers_to_process_dir(
-            [Path(p) for p in config.extra_attachments],
-            work_root=work_root,
-            process_dir=process_work_dir,
-        )
-
         output_contract = plan.output_contract
-        run_config = replace(config, extra_attachments=relocated_attachments)
+        run_config = config
         cwd = process_work_dir
 
         signals = TaskSignals()
@@ -136,6 +132,12 @@ class RemuxRuntimeRunner:
             try:
                 if signals._cancel_event.is_set():
                     raise TaskCancelledError()
+                relocated_attachments = relocate_tmdb_covers_to_process_dir(
+                    [Path(p) for p in config.extra_attachments],
+                    work_root=work_root,
+                    process_dir=process_work_dir,
+                )
+                run_config = replace(config, extra_attachments=relocated_attachments)
                 if config.sync_mode == "physical":
                     from core.workflows.physical_sync import prepare_physical
                     from core.workflows.remux_plan import plan_remux
@@ -400,11 +402,8 @@ class RemuxRuntimeRunner:
                         else None
                     ),
                 )
-                if validation_errors:
-                    raise RemuxError(
-                        "Validation de la sortie remux échouée : " + " ; ".join(validation_errors)
-                    )
-                cb.run_cmd(
+                validate_final_output(
+                    candidate, validation_errors, lambda: cb.run_cmd(
                     [
                         cb.ffprobe_bin, "-v", "error", "-show_entries",
                         "format=format_name", "-of", "json", str(candidate),
@@ -413,7 +412,14 @@ class RemuxRuntimeRunner:
                     "ffprobe-validation",
                     lambda line: signals.progress.emit(line),
                     signals,
+                    ),
+                    message_prefix="Validation de la sortie remux échouée : ",
+                    override=cb.validation_override,
+                    cancelled=signals._cancel_event.is_set,
+                    warn=lambda message: cb.log("WARN", message),
                 )
+                if signals._cancel_event.is_set():
+                    raise TaskCancelledError()
                 candidate.replace(run_config.output)
                 # Un échec NFO après commit ne transforme plus un média valide
                 # en workflow échoué.

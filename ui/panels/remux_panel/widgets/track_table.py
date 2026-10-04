@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from core.i18n import translate_text
 from core.lang_tags import Rfc5646LanguageTags
+from core.subtitle_codec import plan_subtitle_codec
 from core.workflows.common.sync_rewrite import (
     sync_rewrite_forced_offset,
     ui_sync_rewrite_can_toggle,
@@ -41,6 +42,7 @@ from ui.panels.remux_panel.models import (
 from ui.panels.remux_panel.theme import (
     _C,
     _scale,
+    _convert_icon,
     _pencil_icon,
     _refresh_icon,
     _scissors_icon,
@@ -469,6 +471,7 @@ class _TrackTable(QTableWidget):
 
         codec_item = QTableWidgetItem(entry.codec)
         codec_item.setFlags(self._FLAG_RO)
+        self._apply_subtitle_conversion_hint(codec_item, entry)
         self.setItem(row, self.COL_CODEC, codec_item)
 
         lang_item = QTableWidgetItem(entry.language)
@@ -500,6 +503,24 @@ class _TrackTable(QTableWidget):
         self._apply_video_encode_style(row, entry)
 
         self._set_action_cell(row, entry)
+
+    @staticmethod
+    def _apply_subtitle_conversion_hint(item: QTableWidgetItem, entry: TrackEntry) -> None:
+        """Picto + infobulle si le sous-titre sera converti pour Matroska (ex. MOV_TEXT → SRT)."""
+        if entry.track_type != "subtitle":
+            return
+        try:
+            target, _warning = plan_subtitle_codec(entry.orig_codec or entry.codec)
+        except ValueError:
+            return
+        if target == "copy":
+            return
+        item.setIcon(_convert_icon(_C.ACCENT, 13))
+        item.setToolTip(translate_text(
+            "Converti automatiquement en {target} (codec {codec} non supporté par Matroska)",
+            target=target.upper(),
+            codec=entry.orig_codec or entry.codec,
+        ))
 
     @staticmethod
     def _small_action_button_style() -> str:

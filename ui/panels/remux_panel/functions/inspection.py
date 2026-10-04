@@ -27,6 +27,7 @@ def has_ready_files(panel: "RemuxPanel") -> bool:
 def on_add_files(panel: "RemuxPanel", paths: list[str]) -> None:
     if getattr(panel, "_closing", False):
         return
+    added = False
     for path_str in paths:
         path = Path(path_str)
         if any(sf.path == path for sf in panel._source_files):
@@ -37,6 +38,7 @@ def on_add_files(panel: "RemuxPanel", paths: list[str]) -> None:
         panel._color_index += 1
         sf = SourceFile(id=str(uuid.uuid4()), path=path, color=color)
         panel._source_files.append(sf)
+        added = True
 
         name = path.name
         short = name[:18] + "…" if len(name) > 20 else name
@@ -52,6 +54,9 @@ def on_add_files(panel: "RemuxPanel", paths: list[str]) -> None:
         panel._inspection_futures[sf.id] = panel._inspection_executor.submit(panel._inspect_file, sf.id, path)
 
     panel._sync_tmdb_suggested_title()
+    if added:
+        from ui.panels.remux_panel.functions.workflow import mark_dirty
+        mark_dirty(panel)
 
 
 def inspect_file(panel: "RemuxPanel", file_id: str, path: Path) -> None:

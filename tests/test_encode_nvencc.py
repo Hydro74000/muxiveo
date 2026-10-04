@@ -34,6 +34,7 @@ from core.workflows.encode.runtime.nvencc import (
     map_nvencc_video_transform_args,
     nvencc_binary_name,
     nvencc_intermediate_path,
+    nvencc_pipe_encode_video,
     nvencc_requires_ffmpeg_filter_pipe,
 )
 
@@ -62,12 +63,34 @@ class TestNvenccPipeProducerExit:
             "av_interleaved_write_frame(): Broken pipe",
         ) is True
 
+    def test_accepts_ffmpeg8_epipe_code(self):
+        assert is_expected_nvencc_pipe_producer_exit(224, "Error writing trailer: Broken pipe") is True
+
     @pytest.mark.parametrize(
         ("returncode", "stderr"),
         [(1, "Invalid data found"), (2, "Broken pipe")],
     )
     def test_rejects_other_decode_failures(self, returncode, stderr):
         assert is_expected_nvencc_pipe_producer_exit(returncode, stderr) is False
+
+
+class TestNvenccPipeEncodeVideo:
+    def test_tonemap_drops_static_hdr_signalling(self):
+        """Tone mapping fait par FFmpeg : trames SDR, ni VUI PQ ni HDR10 statique côté NVEncC."""
+        video = VideoEncodeSettings(
+            codec="nvencc_hevc", tonemap_to_sdr=True, inject_hdr_meta=True,
+            master_display="G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)",
+            max_cll="1000,400",
+        )
+        piped = nvencc_pipe_encode_video(video)
+        assert (piped.tonemap_to_sdr, piped.inject_hdr_meta, piped.master_display, piped.max_cll) == (False, False, "", "")
+        cmd = build_nvencc_command("nvencc", piped, Path("out.mkv"), input_path=None)
+        assert not {"--master-display", "--max-cll", "smpte2084"} & set(cmd)
+
+    def test_hdr_kept_without_tonemap(self):
+        video = VideoEncodeSettings(codec="nvencc_hevc", inject_hdr_meta=True, max_cll="1000,400")
+        piped = nvencc_pipe_encode_video(video)
+        assert piped.inject_hdr_meta and piped.max_cll == "1000,400"
 
 
 class TestNvenccBinaryName:

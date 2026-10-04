@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -87,6 +87,9 @@ class MatroskaMuxPlan:
     muxing_app: str = "Muxiveo"
     writing_app: str = "Muxiveo"
     title: str = ""
+    #: Durée connue seulement après consommation du flux (ex. flux tronqué
+    #: accepté sur dérogation) : Info réécrite à taille égale en fin d'écriture.
+    final_duration_ns: Callable[[], int] | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         if not self.tracks:

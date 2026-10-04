@@ -16,7 +16,7 @@ def _completed(stdout: str) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
 
 
-def _fake_tools(mediainfo: str, duration: str, fps: str, packets: str):
+def _fake_tools(mediainfo: str, duration: str | None, fps: str, packets: str):
     def run(cmd, **_kwargs):
         if "--Inform=Video;%FrameCount%" in cmd:
             return _completed(mediainfo)
@@ -45,6 +45,21 @@ def test_reliable_frame_count_counts_packets_when_statistics_are_stale():
     with patch("core.frame_count.subprocess.run", side_effect=_fake_tools("288", "4.212", "24000/1001", "98")):
         assert reliable_frame_count(Path("a.mkv"), mediainfo_bin="mi", ffprobe_bin="fp", log=logs.append) == 98
     assert logs and "périmées" in logs[0]
+
+
+def test_raw_stream_estimate_without_duration_is_recounted():
+    """Flux HEVC brut : sans durée, l'estimation mediainfo (parfois fausse) est remplacée par le comptage."""
+    with patch("core.frame_count.subprocess.run", side_effect=_fake_tools("16", None, "24000/1001", "48")):
+        assert reliable_frame_count(Path("film.hevc"), mediainfo_bin="mi", ffprobe_bin="fp") == 48
+
+
+def test_display_mode_never_reads_whole_file():
+    """``full_scan=False`` (panneau) : valeur invérifiable → None, sans comptage des paquets."""
+    with patch("core.frame_count.subprocess.run", side_effect=_fake_tools("16", None, "24000/1001", "48")) as run:
+        assert reliable_frame_count(Path("film.hevc"), mediainfo_bin="mi", ffprobe_bin="fp", full_scan=False) is None
+    assert not any("-count_packets" in call.args[0] for call in run.call_args_list)
+    with patch("core.frame_count.subprocess.run", side_effect=_fake_tools("288", "12.012", "24000/1001", "0")):
+        assert reliable_frame_count(Path("a.mkv"), mediainfo_bin="mi", ffprobe_bin="fp", full_scan=False) == 288
 
 
 @pytest.mark.parametrize("count,duration,fps,packets", [

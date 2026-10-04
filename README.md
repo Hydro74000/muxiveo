@@ -4,7 +4,7 @@ FULL Vibecoded App for Proof of Concept - no human code, only human prompts and 
 
 Interface graphique pour préparer des fichiers vidéo, remuxer sans perte, réencoder avec `ffmpeg` (et `NVencC` en option pour NVidia), et fusionner des métadonnées Dolby Vision / HDR10+.
 
-Cette documentation correspond à **Muxiveo v4.1.0**.
+Cette documentation correspond à **Muxiveo v4.2.0**.
 
 ## Sommaire
 
@@ -990,7 +990,7 @@ These packages include a GPL-compatible FFmpeg build compiled without `--enable-
 The corresponding FFmpeg source code and build configuration are available at: [FFmpeg/FFmpeg](https://github.com/FFmpeg/FFmpeg)
 and [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds). See `NOTICE`, `SOURCES.md`, and `LICENSES/` for third-party licenses and attribution.
 
-*Muxiveo v4.1.0*
+*Muxiveo v4.2.0*
 
 ## Hybridation & Synchronisation
 

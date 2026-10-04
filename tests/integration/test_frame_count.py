@@ -7,7 +7,7 @@ import subprocess
 import pytest
 
 from core.frame_count import ffprobe_packet_count, reliable_frame_count
-from core.workflows.encode.runtime.frame_count_guard import FrameCountGuard
+from core.workflows.encode.runtime.frame_count_guard import FrameCountGuard, MetadataAdjustment
 from tests.integration._synth import _run_ffmpeg
 
 
@@ -57,4 +57,4 @@ def test_small_real_cut_passes_frame_count_guard(tmp_path, monkeypatch):
     guard = FrameCountGuard(mediainfo_bin="review-mediainfo")
     audit = guard.audit(source=cut, encoded=encoded)
     assert audit.source == audit.encoded == 980
-    assert guard.enforce(audit) == audit
+    assert guard.enforce(audit, adjustment=MetadataAdjustment.EXACT) == audit

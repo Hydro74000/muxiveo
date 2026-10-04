@@ -52,7 +52,7 @@ class TestVideoCodecSpecs:
         assert static_hdr_metadata_mode("hevc_nvenc") is StaticHdrMetadataMode.BITSTREAM_PATCH
         assert static_hdr_metadata_mode("hevc_amf") is StaticHdrMetadataMode.FRAME_SIDE_DATA
         assert static_hdr_metadata_mode("hevc_qsv") is StaticHdrMetadataMode.FRAME_SIDE_DATA
-        assert static_hdr_metadata_mode("libsvtav1") is StaticHdrMetadataMode.NONE
+        assert static_hdr_metadata_mode("libsvtav1") is StaticHdrMetadataMode.SVTAV1_PARAMS
 
     def test_only_nvenc_needs_static_hdr_bitstream_patch(self):
         assert needs_static_hdr_bitstream_patch_codec("hevc_nvenc") is True

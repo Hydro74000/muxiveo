@@ -198,6 +198,75 @@ def test_studio_constructs(qt_app):
     dialog.close()
 
 
+def test_studio_can_launch_without_prior_analysis(qt_app, monkeypatch):
+    """Le bouton de lancement prépare directement la saison selon le mode choisi."""
+    from core.config import AppConfig
+    from ui.panels.hybrid_studio import HybridStudio
+
+    dialog = HybridStudio(AppConfig())
+    dialog.reference.setText("/ref")
+    dialog.donor.setText("/donor")
+    dialog.output.setText("/output")
+    dialog.sync_strategy.setCurrentIndex(dialog.sync_strategy.findData("none"))
+    called = []
+    monkeypatch.setattr(dialog, "scan", lambda auto_run=False, reuse_matrix=False: called.append((auto_run, reuse_matrix)))
+
+    assert dialog.run_button.isEnabled()
+    dialog.run()
+    assert called == [(True, False)]
+    dialog.close()
+
+
+def test_studio_manual_offset_can_be_changed_per_episode(qt_app, tmp_path, monkeypatch):
+    """Un réglage manuel d'épisode atteint tous ses donneurs et reste dans le job lancé."""
+    from PySide6.QtWidgets import QTableWidgetItem
+
+    from core.config import AppConfig
+    from ui.panels.hybrid_studio import HybridStudio
+
+    def make_config(name):
+        master = SourceInput(tmp_path / f"{name}-master.mkv", 0, [
+            TrackEntry(0, "video", "HEVC", "", "", "", file_id="src0"),
+        ])
+        donors = [
+            SourceInput(tmp_path / f"{name}-donor-{index}.mkv", index, [
+                TrackEntry(0, "audio", "AC3", "", "fra", "", file_id=f"src{index}"),
+                TrackEntry(1, "subtitle", "SUBRIP", "", "fra", "", file_id=f"src{index}"),
+            ])
+            for index in (1, 2)
+        ]
+        return RemuxConfig(
+            sources=[master, *donors], output=tmp_path / f"{name}.mkv", track_order=[],
+            sync_mode="physical", sync_subtitles="mirror",
+        )
+
+    dialog = HybridStudio(AppConfig())
+    dialog.sync_strategy.setCurrentIndex(dialog.sync_strategy.findData("manual"))
+    first, second = make_config("first"), make_config("second")
+    dialog.jobs = {0: (first, SyncCalibration.linear(0)), 1: (second, SyncCalibration.linear(0))}
+    dialog.table.setRowCount(2)
+    dialog.table.setItem(1, 3, QTableWidgetItem("+0 ms"))
+    dialog.table.blockSignals(True)
+    dialog.table.selectRow(1)
+    dialog.table.blockSignals(False)
+    dialog.adjust.setValue(325)
+
+    assert all(track.time_shift_ms == 0 for source in first.sources[1:] for track in source.tracks)
+    assert all(track.time_shift_ms == 325 for source in second.sources[1:] for track in source.tracks)
+    assert second.sync_calibrations == {}
+    assert dialog.jobs[1][1].segments[0].shift_ms == 325
+    assert "+325.0 ms" in dialog.table.item(1, 3).text()
+
+    launched = []
+    monkeypatch.setattr(dialog, "run_next", lambda: launched.extend(dialog.jobs[row][0] for row in dialog.execution_rows))
+    dialog._prepared_signature = dialog._settings_signature()
+    dialog.run()
+    assert launched == [first, second]
+    assert all(track.time_shift_ms == 325 for source in launched[1].sources[1:] for track in source.tracks)
+    dialog.set_busy(False)
+    dialog.close()
+
+
 def test_studio_witness_table_lists_typed_tracks(qt_app):
     """Le tableau témoin lit video/audio/subtitle_tracks de FileInfo (pas d'attribut `streams`)."""
     from types import SimpleNamespace
@@ -1069,9 +1138,6 @@ def test_remux_panel_subtitle_sync_integration(qt_app, monkeypatch, tmp_path):
     panel._on_subtitle_sync_done(tgt_sub.entry_id, ref_sub.entry_id, -420, 0.95, cal)
     assert tgt_sub.time_shift_ms == -420
     assert panel._source_sync_offsets_ms["fid_tgt"] == -420
-
-
-
 
 
 

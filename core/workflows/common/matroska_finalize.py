@@ -27,6 +27,7 @@ from core.matroska.editors.track_flags import (
 from core.matroska.reader import MatroskaReader
 from core.matroska.validation import MatroskaPacketValidation, validate_matroska_output
 from core.runner import TaskCancelledError, TaskSignals
+from core.workflows.common.validation_override import ValidationOverride, validate_final_output
 
 
 PostAction = Callable[[Path], object]
@@ -295,6 +296,7 @@ class MatroskaOutputTransaction:
     warn: Callable[[str], None] | None = None
     #: Applique le FlagEnabled du contrat, que FFmpeg ne sait pas écrire.
     track_enabled_post_action: MatroskaTrackEnabledPostAction | None = None
+    validation_override: ValidationOverride | None = None
 
     @property
     def candidate(self) -> Path:
@@ -350,12 +352,8 @@ class MatroskaOutputTransaction:
             errors = validate_matroska_output(
                 candidate, self.contract, packet_validation=packet_validation,
             )
-            if errors:
-                raise RuntimeError(
-                    "Validation sémantique de la sortie candidate échouée : "
-                    + " ; ".join(errors)
-                )
-            self.run_command(
+            validate_final_output(
+                candidate, errors, lambda: self.run_command(
                 [
                     self.ffprobe_bin,
                     "-v", "error",
@@ -367,6 +365,11 @@ class MatroskaOutputTransaction:
                 "ffprobe-validation",
                 lambda line: signals.progress.emit(line),
                 signals,
+                ),
+                message_prefix="Validation sémantique de la sortie candidate échouée : ",
+                override=self.validation_override,
+                cancelled=signals._cancel_event.is_set,
+                warn=self.warn,
             )
             self._check_cancelled(signals)
             candidate.replace(self.output)

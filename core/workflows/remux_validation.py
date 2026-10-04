@@ -10,6 +10,7 @@ from typing import Callable
 from core.bluray import validate_bluray_source
 from core.file_types import windows_filename_error, windows_path_length_error
 from core.workflows.common.metadata import STREAM_SPEC_BY_TRACK_TYPE
+from core.workflows.common.path_safety import same_filesystem_target as _same_filesystem_target
 from core.workflows.common.sync_rewrite import (
     REWRITE_AUDIO_CODECS, REWRITE_SUBTITLE_CODECS,
     normalized_rewrite_codec, track_has_object_audio_metadata,
@@ -22,21 +23,6 @@ from core.workflows.remux_plan import MuxExecutionPlan, select_mux_backend
 TrackOrderItem = tuple[int, int] | tuple[int, int, str]
 TrackOrderParts = Callable[[TrackOrderItem], tuple[int, int, str | None]]
 DirWritable = Callable[[Path], bool]
-
-
-def _same_filesystem_target(source: Path, output: Path) -> bool:
-    """Détecte source == sortie, y compris liens symboliques et hardlinks."""
-    if source == output:
-        return True
-    try:
-        if source.resolve() == output.resolve():
-            return True
-    except OSError:
-        pass
-    try:
-        return source.exists() and output.exists() and source.samefile(output)
-    except OSError:
-        return False
 
 
 def _tool_available(binary: str) -> bool:

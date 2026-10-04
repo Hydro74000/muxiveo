@@ -37,6 +37,26 @@ def _merge(encode_cfg: EncodeConfig, remux_cfg: RemuxConfig) -> EncodeConfig:
     return MainWindow._merge_remux_extras(cast(Any, object()), encode_cfg, remux_cfg)
 
 
+def test_bridge_preserves_execution_options(tmp_path):
+    encode = _encode_cfg(tmp_path / "s.mkv", tmp_path / "o.mkv")
+    encode.write_nfo = False
+    encode.allow_validation_override = False
+    encode.allow_missing_output_dir = True
+    merged = _merge(encode, _remux_cfg(encode.source, encode.output, keep_chapters=False))
+    assert merged.write_nfo is False
+    assert merged.allow_validation_override is False
+    assert merged.allow_missing_output_dir is True
+
+
+def test_bridge_does_not_apply_metadata_from_another_source_with_same_stream_index(tmp_path):
+    encode = _encode_cfg(tmp_path / "a.mkv", tmp_path / "o.mkv")
+    remux = _remux_cfg(tmp_path / "b.mkv", encode.output)
+    remux.sources[0].tracks[0].time_shift_ms = 500
+    merged = _merge(encode, remux)
+    assert merged.track_time_offsets == []
+    assert merged.track_meta_edits == []
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

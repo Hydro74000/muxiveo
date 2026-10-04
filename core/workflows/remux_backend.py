@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from core.runner import TaskCancelledError, TaskSignals
+from core.workflows.common.validation_override import ValidationOverride, accept_validation_override, validate_final_output
 from core.matroska.assembly import (
     MatroskaAssemblyAttachment,
     MatroskaAssemblyPlan,
@@ -84,6 +85,7 @@ class NativeMatroskaBackend:
     finalize: Callable[[Path], None] = lambda _path: None
     plan: MuxExecutionPlan | None = None
     name: str = "native"
+    validation_override: ValidationOverride | None = None
 
     def validate(self, config: RemuxConfig) -> tuple[str, ...]:
         return native_capability_reasons(config)
@@ -101,6 +103,7 @@ class NativeMatroskaBackend:
             config, log=self.log, log_step=self.log_step,
             ffmpeg_bin=self.ffmpeg_bin, ffprobe_bin=self.ffprobe_bin,
             finalize=self.finalize, plan=self.plan,
+            validation_override=self.validation_override,
         )
 
 
@@ -228,6 +231,7 @@ def run_native_remux(
     ffprobe_bin: str = "ffprobe",
     finalize: Callable[[Path], None] = lambda _path: None,
     plan: MuxExecutionPlan | None = None,
+    validation_override: ValidationOverride | None = None,
 ) -> TaskSignals:
     """Runner natif : mêmes signaux ``TaskSignals`` que le runner FFmpeg.
 
@@ -242,12 +246,6 @@ def run_native_remux(
         output_path=config.output,
         fallback_name="remux_job",
     )
-    relocated_attachments = relocate_tmdb_covers_to_process_dir(
-        [Path(path) for path in config.extra_attachments],
-        work_root=work_root,
-        process_dir=process_work_dir,
-    )
-    runtime_config = replace(config, extra_attachments=relocated_attachments)
     signals = TaskSignals()
 
     def task() -> None:
@@ -286,6 +284,13 @@ def run_native_remux(
             return canonical_root
 
         try:
+            _check_cancel()
+            relocated_attachments = relocate_tmdb_covers_to_process_dir(
+                [Path(path) for path in config.extra_attachments],
+                work_root=work_root,
+                process_dir=process_work_dir,
+            )
+            runtime_config = replace(config, extra_attachments=relocated_attachments)
             prepared_config = runtime_config
             if config.sync_mode == "physical":
                 from core.workflows.physical_sync import prepare_physical
@@ -461,17 +466,18 @@ def run_native_remux(
                 errors = validate_matroska_output(
                     path, output_contract, packet_validation=packet_validation,
                 )
-                if errors:
-                    raise RuntimeError(
-                        "Validation sémantique de la sortie native échouée : "
-                        + " ; ".join(errors)
-                    )
-                _run_external(
+                validate_final_output(
+                    path, errors, lambda: _run_external(
                     [
                         ffprobe_bin, "-v", "error", "-show_entries",
                         "format=format_name", "-of", "json", str(path),
                     ],
                     "Validation ffprobe de la sortie native impossible",
+                    ),
+                    message_prefix="Validation sémantique de la sortie native échouée : ",
+                    override=validation_override,
+                    cancelled=signals._cancel_event.is_set,
+                    warn=lambda message: log("WARN", message),
                 )
 
             progress_state = {"packets": 0, "bytes": 0}
@@ -503,6 +509,10 @@ def run_native_remux(
             MatroskaWriter().write(
                 plan_matroska,
                 external_validator=validate_partial,
+                validation_error_handler=lambda path, message: accept_validation_override(
+                    validation_override, path, message, signals._cancel_event.is_set,
+                    lambda msg: log("WARN", msg),
+                ),
                 cancel_cb=signals._cancel_event.is_set,
                 progress_cb=on_write_progress,
             )

@@ -113,20 +113,34 @@ def test_pyinstaller_frontend_flag_keeps_console_on_linux():
     assert package_mod._pyinstaller_frontend_flag("Linux") == "--console"
 
 
-def test_github_latest_asset_uses_ci_token_when_available(monkeypatch):
+def test_appimage_tool_download_uses_latest_release_and_verifies_sha256(tmp_path, monkeypatch):
+    """dovi_tool embarqué : dernière release (jeton CI transmis), somme GitHub vérifiée avant extraction."""
+    name = "dovi_tool-9.9.9-x86_64-unknown-linux-musl.tar.gz"
+    url = f"https://github.com/quietvoid/dovi_tool/releases/download/9.9.9/{name}"
     response = MagicMock()
-    response.read.return_value = json.dumps({
-        "assets": [{"name": "dovi-x86_64", "browser_download_url": "https://example.test/dovi"}],
-    }).encode()
+    response.read.return_value = json.dumps({"tag_name": "9.9.9", "assets": [{
+        "name": name, "browser_download_url": url, "digest": "sha256:" + "0" * 64,
+    }]}).encode()
     response.__enter__.return_value = response
     monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.delenv("MUXIVEO_DOVI_TOOL_TAG", raising=False)
+    downloads: list[str] = []
 
-    with patch.object(package_appimage_mod.urllib.request, "urlopen", return_value=response) as urlopen:
-        url = package_appimage_mod._gh_latest_asset("owner/repo", "x86_64")
+    def fake_download(url, dest, timeout=30):
+        downloads.append(url)
+        dest.write_bytes(b"contenu altere")
 
-    assert url == "https://example.test/dovi"
+    with patch("core.github_release.urllib.request.urlopen", return_value=response) as urlopen, \
+         patch.object(package_appimage_mod, "_download", side_effect=fake_download), \
+         patch.object(package_appimage_mod, "_extract_from_tar") as extract:
+        with pytest.raises(RuntimeError, match="SHA-256 invalide"):
+            package_appimage_mod._dl_dovi_tool(tmp_path, "x86_64")
+
     request = urlopen.call_args.args[0]
+    assert request.full_url.endswith("/quietvoid/dovi_tool/releases/latest")
     assert request.get_header("Authorization") == "Bearer test-token"
+    assert downloads == [url]
+    extract.assert_not_called()
 
 
 def test_desktop_entries_advertise_file_open_support():

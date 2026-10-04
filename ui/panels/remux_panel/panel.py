@@ -126,7 +126,7 @@ class _AudioSyncReferenceDialog(QDialog):
 
 
 class RemuxPanel(QWidget):
-    _workflow_loaded = Signal(object, object)
+    _workflow_loaded = Signal(object, object, object)
     _workflow_load_error = Signal(str)
     """
     Panneau de remuxage MKV/MP4 — support multi-sources.
@@ -254,7 +254,10 @@ class RemuxPanel(QWidget):
         apply_translations(self)
 
     def _make_workflow(self) -> RemuxWorkflow:
-        return RemuxWorkflow(
+        from ui.confirm import ValidationOverridePrompt
+        if not hasattr(self, "_validation_prompt"):
+            self._validation_prompt = ValidationOverridePrompt(self)
+        workflow = RemuxWorkflow(
             ffmpeg_bin=self._config.tool_ffmpeg,
             ffprobe_bin=self._config.tool_ffprobe,
             ffmpeg_threads=self._config.ffmpeg_threads,
@@ -267,6 +270,15 @@ class RemuxPanel(QWidget):
             eac3_bitrate_per_channel_kbps=self._config.eac3_bitrate_per_channel_kbps,
             regenerate_statistics=getattr(self._config, "matroska_regenerate_statistics", True),
         )
+        workflow.set_validation_override(self._validation_prompt.request)
+        return workflow
+
+    def set_operation_start_guard(self, guard) -> None:
+        self._operation_start_guard = guard
+
+    def _can_start_auxiliary_operation(self) -> bool:
+        guard = getattr(self, "_operation_start_guard", None)
+        return guard is None or bool(guard())
 
     def _recreate_workflow(self) -> None:
         try:
@@ -728,6 +740,9 @@ class RemuxPanel(QWidget):
     def _rebuild_preview(self) -> None:
         if self._closing:
             return
+        if hasattr(self, "_autosave_timer"):
+            from ui.panels.remux_panel.functions.workflow import mark_dirty
+            mark_dirty(self)
         # Coalesce les rafales d'événements (cases, reorder) en une seule
         # recompilation via le timer single-shot. Invalider immédiatement le
         # résultat en vol évite d'afficher une commande devenue obsolète.
@@ -1716,6 +1731,8 @@ class RemuxPanel(QWidget):
         self._emit_signals()
 
     def _on_audio_sync_requested(self, entry: TrackEntry) -> None:
+        if not self._can_start_auxiliary_operation():
+            return
         if entry.track_type != "audio":
             return
         target_family = self._audio_sync_family(entry)
@@ -1888,6 +1905,8 @@ class RemuxPanel(QWidget):
             self.audio_sync_finished.emit(False, {"entry_id": _entry_id})
 
     def _on_subtitle_sync_requested(self, entry: TrackEntry) -> None:
+        if not self._can_start_auxiliary_operation():
+            return
         if entry.track_type != "subtitle":
             return
 
@@ -2055,6 +2074,8 @@ class RemuxPanel(QWidget):
             self.subtitle_sync_finished.emit(False, {"entry_id": _entry_id})
 
     def _on_sync_studio_requested(self, entry: TrackEntry) -> None:
+        if not self._can_start_auxiliary_operation():
+            return
         target_source = self._find_source(entry.file_id)
         if target_source is None:
             return
@@ -2272,6 +2293,8 @@ class RemuxPanel(QWidget):
             self._output_edit.setText(path)
 
     def _on_extract_track(self, entry: TrackEntry) -> None:
+        if not self._can_start_auxiliary_operation():
+            return
         source = self._find_source(entry.file_id)
         if source is None or source.info is None:
             self.log_message.emit("WARN", translate_text("Source introuvable pour cette piste."))
@@ -2355,6 +2378,8 @@ class RemuxPanel(QWidget):
 
     def closeEvent(self, event) -> None:
         if not hasattr(self, "_shutdown"):
+            from ui.panels.remux_panel.functions.workflow import autosave
+            autosave(self, retry_if_locked=False)
             self._closing = True
             self.setEnabled(False)
             self._scan_cancel.set()

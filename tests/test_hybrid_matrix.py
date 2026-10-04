@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 import pytest
 
 from core.workflows.hybrid_matrix import (
@@ -153,6 +154,116 @@ def test_hybrid_recipe_from_witness():
     assert recipe.donor_sub_langs == ["fre"]
     assert recipe.sync_mode == "physical"
     assert recipe.sync_subtitles == "mirror"
+
+
+@pytest.mark.parametrize("strategy,shift,mirror", [
+    ("manual", 275, "mirror"),
+    ("manual", -120, "none"),
+    ("manual", 0, "mirror"),
+    ("none", 0, "mirror"),
+])
+def test_prepare_without_acoustic_scan(tmp_path, monkeypatch, strategy, shift, mirror):
+    """Les modes rapides ignorent les scanners et appliquent uniquement le choix explicite."""
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+    from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
+    from core.workflows.physical_sync import preparation_commands
+
+    master = tmp_path / "master.mkv"
+    donor = tmp_path / "donor.mkv"
+    source = MatrixSource("donor", donor, SourceRole.DONOR)
+    episode = MatrixEpisode(master_file=master, donor_files=[(source, donor)])
+    options = CommonOptions(sync_mode="physical", calibration="ignored.json", auto_sync=True)
+    seen = []
+
+    def build(job, config, build_options, logger):
+        seen.append(build_options)
+        master_tracks = [TrackEntry(0, "video", "HEVC", "", "", "", file_id="src0"),
+                         TrackEntry(1, "audio", "AAC", "", "eng", "", file_id="src0")]
+        donor_tracks = [TrackEntry(0, "audio", "AC3", "", "fra", "", file_id="src1", time_shift_ms=99),
+                        TrackEntry(1, "subtitle", "SUBRIP", "", "fra", "", file_id="src1", time_shift_ms=99)]
+        return RemuxConfig(
+            sources=[SourceInput(master, 0, master_tracks), SourceInput(donor, 1, donor_tracks)],
+            output=Path(job["output"]), track_order=[], sync_mode=job["sync_mode"],
+            sync_subtitles=job["sync_subtitles"],
+        )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Scanner appelé en mode sans analyse")
+
+    monkeypatch.setattr("cli.remux_config.build_remux_config", build)
+    monkeypatch.setattr(AudioSyncScanner, "scan", forbidden)
+    monkeypatch.setattr(SubtitleSyncScanner, "scan", forbidden)
+    recipe = HybridRecipe(sync_strategy=strategy, manual_shift_ms=shift, sync_subtitles=mirror)
+    result, calibration = prepare_matrix_episode(
+        episode, recipe, tmp_path / "out", SimpleNamespace(tool_ffmpeg="ffmpeg", tool_ffprobe="ffprobe"),
+        options, Logger(),
+    )
+
+    assert seen[0].calibration is None and seen[0].auto_sync is False
+    assert result.sync_calibrations == {}
+    audio, subtitle = result.sources[1].tracks
+    assert audio.time_shift_ms == shift
+    assert subtitle.time_shift_ms == (shift if strategy == "manual" and mirror == "mirror" else 0)
+    if strategy == "none":
+        assert result.sync_mode == "container" and result.sync_subtitles == "none"
+        assert calibration is None
+        assert preparation_commands(result, tmp_path, "ffmpeg") == []
+    else:
+        assert result.sync_mode == "physical" and calibration.segments[0].shift_ms == shift
+        expected = (2 if mirror == "mirror" else 1) if shift else 0
+        assert len(preparation_commands(result, tmp_path, "ffmpeg")) == expected
+
+
+def test_prepare_scans_matching_language_even_when_track_is_not_kept(tmp_path, monkeypatch):
+    """La VO donneuse sert de témoin acoustique, seule la VF est conservée."""
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+
+    master = tmp_path / "master.mkv"
+    donor = tmp_path / "donor.mkv"
+    episode = MatrixEpisode(
+        master_file=master,
+        donor_files=[(MatrixSource("donor", donor, SourceRole.DONOR), donor)],
+    )
+
+    def build(job, config, options, logger):
+        master_tracks = [
+            TrackEntry(0, "video", "HEVC", "", "", "", file_id="src0"),
+            TrackEntry(1, "audio", "EAC3", "", "en-US", "", file_id="src0"),
+            TrackEntry(2, "subtitle", "SUBRIP", "", "fr-FR", "", file_id="src0"),
+        ]
+        donor_tracks = [
+            TrackEntry(0, "video", "HEVC", "", "", "", file_id="src1"),
+            TrackEntry(1, "audio", "EAC3", "", "fr-FR", "VFF", file_id="src1"),
+            TrackEntry(2, "audio", "EAC3", "", "en-GB", "VO", file_id="src1"),
+            TrackEntry(3, "subtitle", "SUBRIP", "", "fr-FR", "", file_id="src1"),
+            TrackEntry(4, "subtitle", "SUBRIP", "", "en-US", "", file_id="src1"),
+        ]
+        return RemuxConfig(
+            sources=[SourceInput(master, 0, master_tracks), SourceInput(donor, 1, donor_tracks)],
+            output=Path(job["output"]), track_order=[], sync_mode="physical",
+        )
+
+    scanned = []
+
+    def scan(self, reference, target, **kwargs):
+        scanned.append((reference.stream_index, target.stream_index))
+        return SyncCalibration.linear(0)
+
+    monkeypatch.setattr("cli.remux_config.build_remux_config", build)
+    monkeypatch.setattr(AudioSyncScanner, "scan", scan)
+    result, calibration = prepare_matrix_episode(
+        episode, HybridRecipe(), tmp_path / "out",
+        SimpleNamespace(tool_ffmpeg="ffmpeg", tool_ffprobe="ffprobe"),
+        CommonOptions(), Logger(), detect_cuts=True,
+    )
+
+    assert scanned == [(1, 2)]
+    assert calibration.segments[0].shift_ms == 0
+    assert [(track.mkv_tid, track.enabled) for track in result.sources[1].tracks] == [
+        (0, False), (1, True), (2, False), (3, True), (4, False),
+    ]
+    assert result.sources[0].tracks[2].enabled is False
+    assert list(result.sync_calibrations) == ["1"]
 
 
 def test_matrix_fuzzy_movie_matching(tmp_path):

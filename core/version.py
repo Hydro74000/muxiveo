@@ -17,8 +17,21 @@ APP_WEBSITE_URL = "https://muxiveo.fr/"
 APP_SCHEMA_BASE_URL = "https://muxiveo.local/schema"
 APP_MACOS_BUNDLE_ID = "com.hydro74000.muxiveo"
 APP_APPSTREAM_ID = "fr.aotr.muxiveo"
-APP_VERSION = "4.1.0"
+APP_VERSION = "4.2.0"
 APP_VERSION_LABEL = f"v{APP_VERSION}"
+
+# Outil natif muxiveo-rife (native/muxiveo-rife) : release GitHub épinglée,
+# publiée par le workflow muxiveo-rife.yml sur ce même dépôt.
+MUXIVEO_RIFE_VERSION = "1.2.1"
+MUXIVEO_RIFE_RELEASE_TAG = f"muxiveo-rife-v{MUXIVEO_RIFE_VERSION}"
+
+
+def muxiveo_rife_asset_url(platform_suffix: str) -> str:
+    """URL de l'archive muxiveo-rife (ex. ``linux-x86_64.tar.gz``) de la release épinglée."""
+    return (
+        f"https://github.com/{APP_REPOSITORY}/releases/download/{MUXIVEO_RIFE_RELEASE_TAG}/"
+        f"muxiveo-rife-{MUXIVEO_RIFE_VERSION}-{platform_suffix}"
+    )
 
 # Version complète du build (ex. « 4.0.0-unstable.20260924.123.abc1234 »), injectée
 # par la CI de release dans core/_build_version.py ; absente en exécution depuis les sources.
