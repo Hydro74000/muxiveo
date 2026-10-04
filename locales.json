@@ -3903,6 +3903,10 @@
     "fra": "Sauvegarde impossible : {err}",
     "eng": "Could not save: {err}"
   },
+  "Sauvegarde de session ignorée : fichier verrouillé.": {
+    "fra": "Sauvegarde de session ignorée : fichier verrouillé.",
+    "eng": "Session save skipped: file is locked."
+  },
   "Chargement impossible : {err}": {
     "fra": "Chargement impossible : {err}",
     "eng": "Could not load: {err}"

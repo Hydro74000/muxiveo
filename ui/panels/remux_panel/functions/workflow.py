@@ -221,7 +221,8 @@ def _session_job(panel):
 
 
 def autosave(panel, *, retry_if_locked=True):
-    if panel._workflow_loading or panel._closing or not panel._source_files:
+    if (not hasattr(panel, "_autosave_timer") or panel._workflow_loading
+            or panel._closing or not panel._source_files):
         return
     if not panel._autosave_dirty:
         return
