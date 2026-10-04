@@ -1,0 +1,31 @@
+{
+  "platform": "macOS-14.8.9-arm64-arm-64bit",
+  "cpu": "arm",
+  "logical_cpus": 3,
+  "width": 3840,
+  "height": 2160,
+  "bits": 10,
+  "source_frames": 4,
+  "thread_budget": 4,
+  "reference_fps": 120,
+  "source_fps": 24,
+  "target_fps": 60,
+  "results": [
+    {
+      "engine": "mvtools-standard",
+      "scene": "bars",
+      "seconds": 6.111953125000014,
+      "peak_rss_bytes": 1429766144,
+      "fps_out": 1.636138202548793,
+      "stderr": "info: MVTools standard | 3840x2160 10 bits | CPU threads=2 | pel=2 | phase=1/256\nprogress in=0 out=2 scenes=0 static=0 fps=0.99\nprogress in=1 out=5 scenes=0 static=0 fps=1.02\nprogress in=4 out=10 scenes=0 static=1 fps=1.65"
+    },
+    {
+      "engine": "mvtools-uhd",
+      "scene": "bars",
+      "seconds": 47.25107970900007,
+      "peak_rss_bytes": 2712420352,
+      "fps_out": 0.21163537556360362,
+      "stderr": "info: MVTools uhd | 3840x2160 10 bits | CPU threads=4 | pel=4 | phase=1/256\nprogress in=0 out=2 scenes=0 static=0 fps=0.21\nprogress in=0 out=3 scenes=0 static=0 fps=0.18\nprogress in=1 out=4 scenes=0 static=0 fps=0.16\nprogress in=1 out=5 scenes=0 static=0 fps=0.15\nprogress in=2 out=7 scenes=0 static=0 fps=0.17\nprogress in=2 out=8 scenes=0 static=0 fps=0.17\nprogress in=4 out=10 scenes=0 static=1 fps=0.21"
+    }
+  ]
+}

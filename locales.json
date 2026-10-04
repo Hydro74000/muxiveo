@@ -5106,5 +5106,13 @@
   "muxiveo-mvtools": {
     "fra": "muxiveo-mvtools",
     "eng": "muxiveo-mvtools"
+  },
+  "Lent UHD (CPU)": {
+    "fra": "Lent UHD (CPU)",
+    "eng": "Slow UHD (CPU)"
+  },
+  "Standard (CPU)": {
+    "fra": "Standard (CPU)",
+    "eng": "Standard (CPU)"
   }
 }

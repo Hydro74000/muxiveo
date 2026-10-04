@@ -1,0 +1,31 @@
+{
+  "platform": "Linux-7.2.7-ogc1.1.fc44.x86_64-x86_64-with-glibc2.43",
+  "cpu": "",
+  "logical_cpus": 16,
+  "width": 3840,
+  "height": 2160,
+  "bits": 10,
+  "source_frames": 16,
+  "thread_budget": 16,
+  "reference_fps": 120,
+  "source_fps": 24,
+  "target_fps": 60,
+  "results": [
+    {
+      "engine": "mvtools-standard",
+      "scene": "bars",
+      "seconds": 15.842583450998063,
+      "peak_rss_bytes": 2055786496,
+      "fps_out": 2.524840732177431,
+      "stderr": "info: MVTools standard | 3840x2160 10 bits | CPU threads=4 | pel=2 | phase=1/256\nprogress in=1 out=4 scenes=0 static=0 fps=1.70\nprogress in=3 out=9 scenes=0 static=0 fps=1.96\nprogress in=5 out=15 scenes=0 static=0 fps=2.19\nprogress in=7 out=20 scenes=0 static=0 fps=2.26\nprogress in=9 out=25 scenes=0 static=0 fps=2.23\nprogress in=12 out=32 scenes=0 static=0 fps=2.35\nprogress in=14 out=38 scenes=0 static=0 fps=2.42\nprogress in=16 out=40 scenes=0 static=1 fps=2.54"
+    },
+    {
+      "engine": "mvtools-uhd",
+      "scene": "bars",
+      "seconds": 177.76034983000136,
+      "peak_rss_bytes": 3912077312,
+      "fps_out": 0.22502205940893705,
+      "stderr": "info: MVTools uhd | 3840x2160 10 bits | CPU threads=16 | pel=4 | phase=1/256\nprogress in=0 out=2 scenes=0 static=0 fps=0.32\nprogress in=0 out=3 scenes=0 static=0 fps=0.25\nprogress in=1 out=4 scenes=0 static=0 fps=0.22\nprogress in=1 out=5 scenes=0 static=0 fps=0.21\nprogress in=2 out=7 scenes=0 static=0 fps=0.24\nprogress in=2 out=8 scenes=0 static=0 fps=0.23\nprogress in=3 out=9 scenes=0 static=0 fps=0.22\nprogress in=3 out=10 scenes=0 static=0 fps=0.22\nprogress in=4 out=12 scenes=0 static=0 fps=0.24\nprogress in=4 out=13 scenes=0 static=0 fps=0.23\nprogress in=5 out=14 scenes=0 static=0 fps=0.23\nprogress in=5 out=15 scenes=0 static=0 fps=0.23\nprogress in=6 out=17 scenes=0 static=0 fps=0.23\nprogress in=6 out=18 scenes=0 static=0 fps=0.23\nprogress in=7 out=19 scenes=0 static=0 fps=0.22\nprogress in=7 out=20 scenes=0 static=0 fps=0.22\nprogress in=8 out=22 scenes=0 static=0 fps=0.22\nprogress in=8 out=23 scenes=0 static=0 fps=0.21\nprogress in=9 out=24 scenes=0 static=0 fps=0.21\nprogress in=9 out=25 scenes=0 static=0 fps=0.20\nprogress in=10 out=27 scenes=0 static=0 fps=0.21\nprogress in=10 out=28 scenes=0 static=0 fps=0.21\nprogress in=11 out=29 scenes=0 static=0 fps=0.21\nprogress in=11 out=30 scenes=0 static=0 fps=0.21\nprogress in=12 out=32 scenes=0 static=0 fps=0.21\nprogress in=12 out=33 scenes=0 static=0 fps=0.21\nprogress in=13 out=34 scenes=0 static=0 fps=0.21\nprogress in=13 out=35 scenes=0 static=0 fps=0.21\nprogress in=14 out=37 scenes=0 static=0 fps=0.21\nprogress in=14 out=38 scenes=0 static=0 fps=0.21\nprogress in=16 out=40 scenes=0 static=1 fps=0.23"
+    }
+  ]
+}

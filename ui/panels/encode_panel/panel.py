@@ -4304,7 +4304,8 @@ class EncodePanel(QWidget):
                 else f"{engine} x{int(interpolation.factor)}"
             )
             if interpolation.backend == "mvtools":
-                badge += " Lent UHD (CPU)" if interpolation.mvtools_mode == "uhd" else " Standard (CPU)"
+                badge += " " + (translate_text("Lent UHD (CPU)") if interpolation.mvtools_mode == "uhd"
+                                else translate_text("Standard (CPU)"))
             elif interpolation.quality == "light":
                 badge += " Light"
             if interpolation.backend == "rife" and interpolation.fast_mode():

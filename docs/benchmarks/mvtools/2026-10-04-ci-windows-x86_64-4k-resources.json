@@ -1,0 +1,31 @@
+{
+  "platform": "Windows-2022Server-10.0.20348-SP0",
+  "cpu": "AMD64 Family 26 Model 2 Stepping 1, AuthenticAMD",
+  "logical_cpus": 4,
+  "width": 3840,
+  "height": 2160,
+  "bits": 10,
+  "source_frames": 4,
+  "thread_budget": 4,
+  "reference_fps": 120,
+  "source_fps": 24,
+  "target_fps": 60,
+  "results": [
+    {
+      "engine": "mvtools-standard",
+      "scene": "bars",
+      "seconds": 4.656999999999982,
+      "peak_rss_bytes": 1442799616,
+      "fps_out": 2.147305132059274,
+      "stderr": "info: MVTools standard | 3840x2160 10 bits | CPU threads=2 | pel=2 | phase=1/256\r\nprogress in=1 out=4 scenes=0 static=0 fps=1.74\r\nprogress in=2 out=8 scenes=0 static=0 fps=1.78\r\nprogress in=4 out=10 scenes=0 static=1 fps=2.17"
+    },
+    {
+      "engine": "mvtools-uhd",
+      "scene": "bars",
+      "seconds": 31.795999999999992,
+      "peak_rss_bytes": 2461495296,
+      "fps_out": 0.3145049691785131,
+      "stderr": "info: MVTools uhd | 3840x2160 10 bits | CPU threads=4 | pel=4 | phase=1/256\r\nprogress in=0 out=2 scenes=0 static=0 fps=0.34\r\nprogress in=0 out=3 scenes=0 static=0 fps=0.26\r\nprogress in=1 out=4 scenes=0 static=0 fps=0.24\r\nprogress in=1 out=5 scenes=0 static=0 fps=0.22\r\nprogress in=2 out=7 scenes=0 static=0 fps=0.26\r\nprogress in=2 out=8 scenes=0 static=0 fps=0.25\r\nprogress in=4 out=10 scenes=0 static=1 fps=0.31"
+    }
+  ]
+}

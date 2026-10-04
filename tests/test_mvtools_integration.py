@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import zipfile
 from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
@@ -13,6 +15,7 @@ from core.workflows.encode import EncodeConfig, EncodeError, EncodePreset, Encod
 from core.workflows.encode.interpolation import InterpolationSource, build_interpolation_stage, mvtools_thread_count, parse_interpolation_progress, frame_repeats
 from tests.test_encode_interpolation import _builder
 from core.workflows.encode.runtime_helpers import VideoPreparationResourcePolicy
+from core.native_mvtools import bundle_errors, extract_bundle
 
 
 def test_old_profile_and_independent_parameters():
@@ -76,3 +79,31 @@ def test_parallel_scheduler_reserves_measured_cpu_memory():
     base = policy.estimated_ram_bytes(plain, source_size=1)
     assert policy.estimated_ram_bytes(standard, source_size=1) >= base + 2 * 2**30
     assert policy.estimated_ram_bytes(uhd, source_size=1) >= base + 6 * 2**30
+
+
+def test_archive_installation_rejects_missing_and_changed_libraries(tmp_path):
+    files = {"muxiveo-mvtools": b"native", **{f"mvtools-runtime/{name}.so": name.encode() for name in
+                                             ("libvapoursynth", "libvapoursynthfilters", "mvtools")}}
+    manifest = {"version": "1.0.0", "files": {name: {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                                               for name, data in files.items()}}
+    archive = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        for name, data in files.items():
+            zf.writestr("package/" + name, data)
+        zf.writestr("package/mvtools-runtime/manifest.json", json.dumps(manifest))
+    binary = extract_bundle(archive, tmp_path / "installed")
+    assert bundle_errors(binary, render=False) == []
+    library = binary.parent / "mvtools-runtime/mvtools.so"
+    library.write_bytes(b"changed")
+    assert any("empreinte" in e for e in bundle_errors(binary, render=False))
+    library.unlink()
+    assert any("absent" in e for e in bundle_errors(binary, render=False))
+
+
+def test_archive_cannot_write_outside_installation(tmp_path):
+    archive = tmp_path / "bad.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("package/../../outside", b"bad")
+    with pytest.raises(ValueError, match="chemin"):
+        extract_bundle(archive, tmp_path / "installed")
+    assert not (tmp_path / "outside").exists()

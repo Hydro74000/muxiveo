@@ -1,0 +1,31 @@
+{
+  "platform": "Linux-7.2.7-ogc1.1.fc44.x86_64-x86_64-with-glibc2.43",
+  "cpu": "",
+  "logical_cpus": 16,
+  "width": 3840,
+  "height": 2160,
+  "bits": 10,
+  "source_frames": 4,
+  "thread_budget": 16,
+  "reference_fps": 120,
+  "source_fps": 24,
+  "target_fps": 60,
+  "results": [
+    {
+      "engine": "mvtools-standard",
+      "scene": "bars",
+      "seconds": 4.120894783998665,
+      "peak_rss_bytes": 1764466688,
+      "fps_out": 2.426657443143115,
+      "stderr": "info: MVTools standard | 3840x2160 10 bits | CPU threads=4 | pel=2 | phase=1/256\nprogress in=1 out=4 scenes=0 static=0 fps=1.77\nprogress in=4 out=10 scenes=0 static=1 fps=2.47"
+    },
+    {
+      "engine": "mvtools-uhd",
+      "scene": "bars",
+      "seconds": 33.38209511600144,
+      "peak_rss_bytes": 3019534336,
+      "fps_out": 0.2995617850003243,
+      "stderr": "info: MVTools uhd | 3840x2160 10 bits | CPU threads=16 | pel=4 | phase=1/256\nprogress in=0 out=2 scenes=0 static=0 fps=0.31\nprogress in=0 out=3 scenes=0 static=0 fps=0.24\nprogress in=1 out=4 scenes=0 static=0 fps=0.22\nprogress in=1 out=5 scenes=0 static=0 fps=0.21\nprogress in=2 out=7 scenes=0 static=0 fps=0.24\nprogress in=2 out=8 scenes=0 static=0 fps=0.24\nprogress in=4 out=10 scenes=0 static=1 fps=0.30"
+    }
+  ]
+}
