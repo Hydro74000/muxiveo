@@ -260,6 +260,11 @@ def build_decode_pipe_cmd(
 
 
 def nvencc_requires_ffmpeg_filter_pipe(video: VideoEncodeSettings) -> bool:
+    """True when NVEncC must read a y4m pipe (FFmpeg prefilters or RIFE interpolation)."""
+    return nvencc_requires_ffmpeg_prefilter(video) or video.interpolates()
+
+
+def nvencc_requires_ffmpeg_prefilter(video: VideoEncodeSettings) -> bool:
     """True when portable FFmpeg prefiltering is required before NVEncC."""
     filters = video.filters
     crop = video.crop
@@ -276,13 +281,21 @@ def nvencc_ffmpeg_filter_vf(video: VideoEncodeSettings) -> str:
 
 
 def nvencc_pipe_encode_video(video: VideoEncodeSettings) -> VideoEncodeSettings:
-    """Return settings already filtered by FFmpeg, keeping encode/HDR knobs."""
+    """Return settings already filtered by FFmpeg, keeping encode/HDR knobs.
+
+    Tone mapping fait par FFmpeg : les trames sont SDR, aucune signalisation
+    HDR10 statique (VUI PQ, master display, MaxCLL) ne doit suivre.
+    """
+    sdr = bool(video.tonemap_to_sdr)
     return replace(
         video,
         resize=VideoResizeSettings(),
         crop=VideoCropSettings(),
         filters=VideoFilterSettings(),
         tonemap_to_sdr=False,
+        inject_hdr_meta=False if sdr else video.inject_hdr_meta,
+        master_display="" if sdr else video.master_display,
+        max_cll="" if sdr else video.max_cll,
     )
 
 
@@ -951,7 +964,8 @@ def is_expected_nvencc_pipe_producer_exit(returncode: int, stderr: str) -> bool:
     """
     if returncode in (0, -13):
         return True
-    return returncode == 1 and "broken pipe" in stderr.casefold()
+    # FFmpeg 8 : AVERROR(EPIPE) -> code 224.
+    return returncode in (1, 224) and "broken pipe" in stderr.casefold()
 
 
 __all__ = [
@@ -969,6 +983,7 @@ __all__ = [
     "detect_nvencc_available",
     "build_decode_pipe_cmd",
     "nvencc_requires_ffmpeg_filter_pipe",
+    "nvencc_requires_ffmpeg_prefilter",
     "nvencc_ffmpeg_filter_vf",
     "nvencc_pipe_encode_video",
     "build_nvencc_command",

@@ -498,6 +498,7 @@ class MatroskaWriter:
         plan: MatroskaMuxPlan,
         *,
         external_validator: Callable[[Path, MatroskaPacketValidation], None] | None = None,
+        validation_error_handler: Callable[[Path, str], bool] | None = None,
         cancel_cb: Callable[[], bool] | None = None,
         progress_cb: Callable[[MatroskaWriteProgress], None] | None = None,
     ) -> Path:
@@ -722,7 +723,12 @@ class MatroskaWriter:
                 )
                 fh.seek(payload_start)
                 fh.write(seek)
-                if not duration_ns and observed_end_ns:
+                resolved_duration_ns = plan.final_duration_ns() if plan.final_duration_ns is not None else 0
+                if resolved_duration_ns and resolved_duration_ns != duration_ns:
+                    # Durée résolue par le producteur après consommation.
+                    fh.seek(payload_start + info_offset)
+                    fh.write(_plan_info(plan, resolved_duration_ns))
+                elif not duration_ns and observed_end_ns:
                     # Durée non fournie par le plan : Info réécrite à taille
                     # égale avec la fin réelle du dernier paquet.
                     fh.seek(payload_start + info_offset)
@@ -735,20 +741,27 @@ class MatroskaWriter:
             _notify("validation", partial.stat().st_size)
             from .reader import MatroskaReader
 
-            validation_reader = MatroskaReader(partial)
-            validation_reader.segment()
-            if len(validation_reader.tracks()) != len(plan.tracks):
-                raise ValueError("Validation native : nombre de pistes incohérent")
-            missing_media = [
-                track.output_number for track in plan.tracks
-                if track.source_track.track_type in (1, 2)
-                and not packet_counts.get(track.output_number)
-            ]
-            if missing_media:
-                raise ValueError(
-                    "Validation native : aucun paquet écrit pour les pistes média "
-                    + ", ".join(f"#{number}" for number in missing_media)
-                )
+            try:
+                validation_reader = MatroskaReader(partial)
+                validation_reader.segment()
+                if len(validation_reader.tracks()) != len(plan.tracks):
+                    raise ValueError("Validation native : nombre de pistes incohérent")
+                missing_media = [
+                    track.output_number for track in plan.tracks
+                    if track.source_track.track_type in (1, 2)
+                    and not packet_counts.get(track.output_number)
+                ]
+                if missing_media:
+                    raise ValueError(
+                        "Validation native : aucun paquet écrit pour les pistes média "
+                        + ", ".join(f"#{number}" for number in missing_media)
+                    )
+            except (ValueError, OSError) as exc:
+                _check_cancel("validation")
+                accepted = validation_error_handler is not None and validation_error_handler(partial, str(exc))
+                _check_cancel("validation")
+                if not accepted:
+                    raise
             if external_validator is not None:
                 external_validator(
                     partial,

@@ -301,7 +301,9 @@ def track_selector_for_entry(
             source_index_by_file_id=source_index_by_file_id,
         ),
         "codec": track.orig_codec or track.codec,
-        "language": normalize_lang(track.orig_language or track.language, track.orig_title or track.title),
+        # Le sélecteur doit décrire la piste d'entrée. Si sa langue d'origine
+        # est vide, une langue saisie dans l'UI ne doit pas empêcher la reprise.
+        "language": normalize_lang(track.orig_language, track.orig_title),
     }
     if track.track_type == "audio":
         channels = _channels_from_display(track.orig_display_info or track.display_info)
@@ -776,4 +778,10 @@ def remux_config_to_exact_job(
         job["fallback_profile"] = fallback_profile
     if audio_variants:
         job["audio_variants"] = audio_variants
-    return {key: value for key, value in job.items() if value not in ({}, [], None, "")}
+    # Ces deux valeurs vides sont des décisions explicites : aucune piste
+    # sélectionnée, ou suppression des balises globales.
+    return {
+        key: value for key, value in job.items()
+        if (key in {"track_order", "tag_overrides"} and value is not None)
+        or value not in ({}, [], None, "")
+    }

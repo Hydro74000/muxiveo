@@ -71,7 +71,7 @@ def test_search_accepts_gzip_encoded_tmdb_json(monkeypatch):
         ]
     }).encode("utf-8")) + compressor.flush() + b"\n"
 
-    monkeypatch.setattr(fetcher, "_urlopen_with_ssl_fallback", lambda req, timeout: _FakeResponse(payload))
+    monkeypatch.setattr(fetcher, "_urlopen", lambda req, timeout: _FakeResponse(payload))
 
     results = fetcher.search("The Boys", kind="tv")
 

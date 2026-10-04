@@ -8,8 +8,13 @@ from typing import Callable, cast
 
 from core.bluray import append_ffmpeg_input_args
 from core.runner import TaskCancelledError, TaskSignals
+from core.subprocess_utils import run_cancellable_capture
+from core.workflows.common.validation_override import ValidationOverride, accept_validation_override
+from core.workflows.encode.runtime.frame_count_guard import FrameCountGuard, FrameCountAuditError, MetadataAdjustment
 from core.workdir import remove_path
 from core.workflows.encode.domain import (
+    interpolated_static_hdr_lost,
+    needs_static_hdr_sei_reinjection,
     needs_static_hdr_bitstream_patch,
     should_reinject_static_hdr_metadata,
 )
@@ -17,6 +22,13 @@ from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode,
 from core.workflows.encode.planning.plan_models import EncodePlan
 from core.workflows.encode.planning.track_assembly import build_track_input_paths, resolve_track_assembly
 from core.workflows.hevc_static_hdr_metadata import inject_static_hdr_sei_file
+from core.workflows.encode.interpolation import (
+    expand_dynamic_hdr_metadata,
+    ffprobe_beside,
+    required_dovi_level,
+    resolve_frame_ratio,
+    stream_start_offset,
+)
 from core.matroska.editors.dovi import DolbyVisionConfigRecord
 from core.matroska.hevc.access_units import HevcStreamCancelled
 from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter
@@ -35,6 +47,9 @@ class PreparedVideoInput:
     input_args: list[str]
     path: Path | str
     map_arg: str
+    # Départ voulu (s) d'un intermédiaire réencodé : l'assemblage ffmpeg ramène le
+    # départ de chaque entrée à zéro, il le réapplique (-itsoffset).
+    start_offset_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -79,6 +94,10 @@ class MultiVideoPipelineRunnerCallbacks:
     two_pass_log_prefix: Callable[[Path, str], Path]
     #: Assemblage final Matroska natif (lot 2). None → reconstruction FFmpeg.
     native_assemble: Callable[..., None] | None = None
+    #: Pistes audio / sous-titres de l'assemblage FFmpeg avec décalages et réécriture
+    #: de synchronisation (calibrations multi-segments), comme le chemin direct.
+    resolve_track_assembly_and_offset_remap: Callable[..., tuple[object, dict[tuple[Path, int, str], tuple[int, int]]]] | None = None
+    validation_override: ValidationOverride | None = None
 
 
 class MultiVideoPipelineRunner:
@@ -109,21 +128,34 @@ class MultiVideoPipelineRunner:
         cb.check_cancelled(signals)
         cb.log_info(f"Préparation vidéo {index}/{total_tracks}…")
 
-        if video.copy_dv or video.copy_hdr10plus or needs_static_hdr_bitstream_patch(video):
+        if interpolated_static_hdr_lost(video):
+            cb.log_info(
+                f"Piste vidéo {index}: ATTENTION — l'interpolation ne transmet pas les métadonnées "
+                f"HDR10 statiques à {video.codec} (aucune réinjection possible en AV1)."
+            )
+        if (
+            video.copy_dv
+            or video.copy_hdr10plus
+            or needs_static_hdr_bitstream_patch(video)
+            or needs_static_hdr_sei_reinjection(video)
+        ):
             rpu_bin = work_dir / f"video_{index}.rpu.bin"
             hdr10p_json = work_dir / f"video_{index}.hdr10plus.json"
             enc_video_mkv = work_dir / f"video_{index}.enc.mkv"
             current_hevc = work_dir / f"video_{index}.enc.hevc"
-            # dovi_tool / hdr10plus_tool n'acceptent que MKV ou HEVC annexB :
-            # pré-extraction obligatoire pour MP4/MOV/TS/... (BSF hevc_mp4toannexb).
+            # dovi_tool / hdr10plus_tool n'acceptent que MKV ou HEVC annexB et lisent
+            # la première piste vidéo : pré-extraction du flux sélectionné pour
+            # MP4/MOV/TS/... (BSF hevc_mp4toannexb) ou une autre piste que la première.
             _RAW_HEVC_EXT = {".hevc", ".h265", ".265", ".x265"}
             src_ext = source.suffix.lower()
-            if src_ext not in _RAW_HEVC_EXT and src_ext != ".mkv":
+            stream_index = int(spec.stream_index)
+            needs_annexb = (src_ext not in _RAW_HEVC_EXT and src_ext != ".mkv") or stream_index != 0
+            if needs_annexb and (video.copy_dv or video.copy_hdr10plus):
                 annexb_src = work_dir / f"video_{index}.source.hevc"
                 annexb_cmd = [cb.ffmpeg_bin, "-nostdin", "-y"]
                 append_ffmpeg_input_args(annexb_cmd, source)
                 annexb_cmd.extend([
-                    "-map", "0:v:0", "-c", "copy",
+                    "-map", f"0:{stream_index}", "-c", "copy",
                     "-bsf:v", "hevc_mp4toannexb",
                     "-f", "hevc", str(annexb_src),
                 ])
@@ -145,11 +177,30 @@ class MultiVideoPipelineRunner:
                 ], f"hdr10plus-extract-{index}")
                 local_cleanup.append(hdr10p_json)
 
+            frame_ratio = resolve_frame_ratio(
+                video, ffprobe_bin=ffprobe_beside(cb.ffmpeg_bin), source=source, stream_index=int(video.stream_index),
+            )
+            expand_dynamic_hdr_metadata(
+                ratio=frame_ratio,
+                rpu_bin=rpu_bin if video.copy_dv else None,
+                hdr10p_json=hdr10p_json if video.copy_hdr10plus else None,
+                dovi_tool_bin=cb.bins.get("dovi_tool"),
+                run_cmd=lambda cmd: run_cmd(cmd, f"dovi-scenes-{index}"),
+                log=lambda message: cb.log_info(f"Piste vidéo {index}: {message}"),
+            )
+
             record_for_rewriter = None
             if video.copy_dv and rpu_bin.exists():
                 record_for_rewriter = cb.build_dovi_record_from_rpu(
                     rpu_bin=rpu_bin,
                     dovi_tool_bin=cb.bins["dovi_tool"],
+                    min_level=(
+                        required_dovi_level(
+                            ffprobe_beside(cb.ffmpeg_bin), source, int(video.stream_index), frame_ratio,
+                        )
+                        if frame_ratio > 1
+                        else None
+                    ),
                 )
                 if cb.native_assemble is not None and record_for_rewriter is None:
                     raise EncodeError(
@@ -188,7 +239,7 @@ class MultiVideoPipelineRunner:
             timing_mkv = work_dir / f"video_{index}.timing.mkv"
             local_cleanup.append(timing_mkv)
             try:
-                write_timing_skeleton(
+                skeleton_result = write_timing_skeleton(
                     enc_video_mkv, timing_mkv,
                     cancel_cb=signals._cancel_event.is_set,
                 )
@@ -203,6 +254,44 @@ class MultiVideoPipelineRunner:
             ], f"annexb-from-encoded-{index}")
             local_cleanup.append(current_hevc)
             remove_path(enc_video_mkv)
+
+            if video.copy_dv or video.copy_hdr10plus:
+                guard = FrameCountGuard(
+                    mediainfo_bin=cb.bins.get("mediainfo", "mediainfo"),
+                    ffprobe_bin=cb.bins.get("ffprobe", ffprobe_beside(cb.ffmpeg_bin)),
+                    dovi_tool_bin=cb.bins.get("dovi_tool", "dovi_tool"),
+                    run_command=lambda cmd, **kwargs: run_cancellable_capture(
+                        cmd, cancel_cb=signals._cancel_event.is_set,
+                        check_cancelled=lambda: cb.check_cancelled(signals),
+                        on_start=signals._register_proc, on_end=signals._unregister_proc,
+                        **kwargs,
+                    ),
+                )
+                audit = guard.audit(
+                    source=meta_input, encoded=current_hevc,
+                    rpu_bin=rpu_bin if video.copy_dv else None,
+                    hdr10p_json=hdr10p_json if video.copy_hdr10plus else None,
+                    known_encoded_frames=skeleton_result.blocks_written,
+                    frame_ratio=frame_ratio,
+                )
+                try:
+                    guard.enforce(
+                        audit, adjustment=MetadataAdjustment.TRIM_TAIL,
+                        rpu_bin=rpu_bin if video.copy_dv else None,
+                        hdr10p_json=hdr10p_json if video.copy_hdr10plus else None,
+                        on_warn=lambda msg: signals.progress.emit(f"[WARN] {msg}"),
+                        on_info=cb.log_info,
+                    )
+                except FrameCountAuditError as exc:
+                    cb.check_cancelled(signals)
+                    if not accept_validation_override(
+                        cb.validation_override, current_hevc, f"Audit frame count : {exc}",
+                        signals._cancel_event.is_set,
+                        lambda msg: signals.progress.emit(f"[WARN] {msg}"),
+                    ):
+                        cb.check_cancelled(signals)
+                        raise RuntimeError(f"Audit frame count : {exc}") from exc
+                cb.check_cancelled(signals)
 
             if video.copy_hdr10plus and hdr10p_json.exists():
                 hdr10_out = work_dir / f"video_{index}.hdr10plus.hevc"
@@ -287,6 +376,7 @@ class MultiVideoPipelineRunner:
                 input_args=[],
                 path=wrapped,
                 map_arg=f"{order}:v:0",
+                start_offset_s=self._intended_start_s(source, spec.stream_index, offset_ms),
             ), local_cleanup
 
         output_path = work_dir / f"video_{index}.mkv"
@@ -320,7 +410,13 @@ class MultiVideoPipelineRunner:
             input_args=[],
             path=output_path,
             map_arg=f"{order}:v:0",
+            start_offset_s=self._intended_start_s(source, spec.stream_index, offset_ms),
         ), local_cleanup
+
+    def _intended_start_s(self, source: Path, stream_index: int, offset_ms: int) -> float:
+        """Départ voulu d'une piste réencodée : décalage du flux dans la source + retard positif."""
+        start = stream_start_offset(ffprobe_beside(self._callbacks.ffmpeg_bin), source, stream_index)
+        return round(start + max(0, offset_ms) / 1000.0, 6)
 
     def run(
         self,
@@ -517,6 +613,8 @@ class MultiVideoPipelineRunner:
                 final_cmd.extend(cb.ffmpeg_progress_args())
                 for prepared_input in prepared_inputs_ready:
                     final_cmd.extend(prepared_input.input_args)
+                    if not prepared_input.input_args and prepared_input.start_offset_s > 0.0005:
+                        final_cmd.extend(["-itsoffset", f"{prepared_input.start_offset_s:.6f}"])
                     append_ffmpeg_input_args(final_cmd, prepared_input.path)
                 for src in all_sources:
                     append_ffmpeg_input_args(final_cmd, src)
@@ -545,31 +643,47 @@ class MultiVideoPipelineRunner:
                     chapter_materialize_dir=chapter_dir,
                     chapter_probe_source=config.source,
                 )
-                final_cmd.extend(cb.ffmpeg_thread_args())
                 resolved_subtitle_tracks = list(encode_plan.resolved_subtitle_tracks)
-                track_assembly = resolve_track_assembly(
-                    config,
-                    encode_plan,
-                    source_idx=source_idx,
-                    track_input_paths=build_track_input_paths(
-                        leading_inputs=[prepared_input.path for prepared_input in prepared_inputs_ready],
-                        all_sources=all_sources,
-                        sync_inputs=sync_inputs,
-                    ),
-                    sync_remap=sync_remap,
-                    include_video=False,
+                track_input_paths = build_track_input_paths(
+                    leading_inputs=[prepared_input.path for prepared_input in prepared_inputs_ready],
+                    all_sources=all_sources,
+                    sync_inputs=sync_inputs,
                 )
-
-                next_input_index, offset_remap = cb.append_offset_aux_inputs(
-                    final_cmd,
-                    cb.build_offset_specs(
+                if cb.resolve_track_assembly_and_offset_remap is not None:
+                    _track_assembly, offset_remap = cb.resolve_track_assembly_and_offset_remap(
+                        cmd=final_cmd,
+                        config=config,
+                        plan=encode_plan,
+                        source_idx=source_idx,
+                        track_input_paths=track_input_paths,
+                        start_input_index=next_input_index,
+                        sync_remap=sync_remap,
+                        include_video=False,
+                        allow_sync_rewrite=True,
+                        sync_rewrite_work_dir=work_dir,
+                        signals=signals,
+                    )
+                else:
+                    track_assembly = resolve_track_assembly(
                         config,
-                        track_mappings=list(track_assembly.track_mappings),
-                        offset_lookup=dict(encode_plan.offset_lookup),
-                    ),
-                    start_input_index=next_input_index,
-                )
-                _ = next_input_index
+                        encode_plan,
+                        source_idx=source_idx,
+                        track_input_paths=track_input_paths,
+                        sync_remap=sync_remap,
+                        include_video=False,
+                    )
+                    next_input_index, offset_remap = cb.append_offset_aux_inputs(
+                        final_cmd,
+                        cb.build_offset_specs(
+                            config,
+                            track_mappings=list(track_assembly.track_mappings),
+                            offset_lookup=dict(encode_plan.offset_lookup),
+                        ),
+                        start_input_index=next_input_index,
+                    )
+                    _ = next_input_index
+                # options de sortie après la dernière entrée (réécriture, décalages)
+                final_cmd.extend(cb.ffmpeg_thread_args())
 
                 for out_idx, prepared_input in enumerate(prepared_inputs_ready):
                     final_cmd.extend(["-map", str(prepared_input.map_arg)])

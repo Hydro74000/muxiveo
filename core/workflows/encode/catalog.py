@@ -103,6 +103,7 @@ class StaticHdrMetadataMode(str, Enum):
     NONE = "none"
     NATIVE = "native"
     X265_PARAMS = "x265_params"
+    SVTAV1_PARAMS = "svtav1_params"
     FRAME_SIDE_DATA = "frame_side_data"
     VAAPI_SEI = "vaapi_sei"
     BITSTREAM_PATCH = "bitstream_patch"
@@ -363,7 +364,7 @@ VIDEO_CODEC_HDR_CAPABILITIES: dict[str, VideoCodecHdrCapabilities] = {
     "copy": _HDR(hdr=True, dovi=True, hdr10plus=True),
     "libx265": _HDR(hdr=True, static_mode=_MODE.X265_PARAMS, manual_static=True, dovi=True, hdr10plus=True),
     "libx264": _SDR_ONLY,
-    "libsvtav1": _HDR(hdr=True),
+    "libsvtav1": _HDR(hdr=True, static_mode=_MODE.SVTAV1_PARAMS, manual_static=True),
     "hevc_nvenc": _HDR(hdr=True, static_mode=_MODE.BITSTREAM_PATCH, manual_static=True, hdr10plus=True),
     "hevc_amf": _HDR(hdr=True, static_mode=_MODE.FRAME_SIDE_DATA, hdr10plus=True),
     "hevc_vaapi": _HDR(hdr=True, static_mode=_MODE.VAAPI_SEI, hdr10plus=True),

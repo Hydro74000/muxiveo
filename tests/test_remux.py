@@ -3192,15 +3192,21 @@ class TestRemuxRunCleanup:
             return ""
 
         with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run_cmd):
-            wf.run(cfg)
-            process_dir = work_dir / "output"
+            signals = wf.run(cfg)
+            done: list[str] = []
+            signals.connect_terminal(
+                finished=lambda _r: done.append("finished"),
+                failed=lambda _m, _e: done.append("failed"),
+                cancelled=lambda: done.append("cancelled"),
+            )
             cleanup_deadline = time.monotonic() + 2.0
-            while process_dir.exists() and time.monotonic() < cleanup_deadline:
+            while (not done or list(work_dir.glob("output.*"))) and time.monotonic() < cleanup_deadline:
                 qt_app.processEvents()
                 time.sleep(0.01)
 
         assert out.exists()
-        assert not process_dir.exists()
+        # Dossier process créé neuf (« output.<suffixe> ») puis supprimé.
+        assert not list(work_dir.glob("output.*"))
 
 
 # ===========================================================================

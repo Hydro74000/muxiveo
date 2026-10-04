@@ -106,6 +106,19 @@ def encode_native_mux_blockers(config: EncodeConfig, *, pipeline: str) -> tuple[
     return tuple(dict.fromkeys(reasons))
 
 
+def _non_matroska_copied_video_sources(config: EncodeConfig) -> list[Path]:
+    """Sources non Matroska des pistes vidéo copiées (remballage MKV complet requis en natif)."""
+    videos = list(config.video_tracks or []) or ([config.video] if config.video is not None else [])
+    sources: list[Path] = []
+    for video in videos:
+        if video is None or str(video.codec or "copy").strip().lower() != "copy":
+            continue
+        source = Path(video.source_path or config.source)
+        if source.suffix.lower() not in MATROSKA_EXTENSIONS and source not in sources:
+            sources.append(source)
+    return sources
+
+
 def _wants_dovi_or_hdr(config: EncodeConfig) -> bool:
     """True si le job encode requiert la préservation ou l'injection de métadonnées HDR / Dolby Vision."""
     if bool(getattr(config, "copy_dv", False)) or bool(getattr(config, "copy_hdr10plus", False)):
@@ -189,6 +202,17 @@ def select_encode_mux_backend(config: EncodeConfig, *, pipeline: str) -> EncodeM
             reason="; ".join(blockers), diagnostics=blockers,
         )
     if pipeline == PIPELINE_FFMPEG_DIRECT:
+        remuxed = _non_matroska_copied_video_sources(config)
+        if remuxed:
+            return EncodeMuxDecision(
+                requested="auto", selected="ffmpeg", pipeline=pipeline,
+                reason=(
+                    "chemin FFmpeg direct monopasse conservé : vidéo copiée depuis "
+                    f"une source non Matroska ({', '.join(p.name for p in remuxed)}) — "
+                    "le natif imposerait un remballage complet préalable, pour une "
+                    "signalisation DoVi/HDR identique (muxer Matroska FFmpeg)"
+                ),
+            )
         if _wants_dovi_or_hdr(config):
             return EncodeMuxDecision(
                 requested="auto", selected="native", pipeline=pipeline,

@@ -10,8 +10,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 import re
+from types import SimpleNamespace
 from typing import Any
 
+from core.lang_tags import Rfc5646LanguageTags
 from core.workflows.remux_models import RemuxConfig, SourceInput
 from core.workflows.sync_calibration import SyncCalibration
 
@@ -253,6 +255,8 @@ class HybridRecipe:
     exclude_languages: list[str] = field(default_factory=list)
     sync_mode: str = "physical"  # "physical" ou "container"
     sync_subtitles: str = "mirror"  # "mirror" ou "none"
+    sync_strategy: str = "auto"  # "auto", "manual" ou "none"
+    manual_shift_ms: int = 0
     crossfade_ms: int = 80
     cadence_auto_apply: bool = True
     cadence_audio_method: str = "auto"
@@ -563,6 +567,30 @@ def _extract_source_video_fps(source_input: SourceInput) -> str | float | None:
     return None
 
 
+def _language_key(language: str | None) -> str:
+    """Ramène les codes ISO et BCP 47 à leur langue de base."""
+    value = (language or "").strip().casefold()
+    if not value or value == "und":
+        return ""
+    return Rfc5646LanguageTags.to_iso639_2(value) or value.split("-", 1)[0]
+
+
+def _language_selected(language: str | None, expected: list[str]) -> bool:
+    """Respecte une région explicite ; accepte les recettes ISO 639 sans région."""
+    actual = (language or "").strip().casefold()
+    actual_key = _language_key(actual)
+    if not actual_key:
+        return False
+    for wanted in expected:
+        wanted = wanted.strip().casefold()
+        if _language_key(wanted) != actual_key:
+            continue
+        if "-" in wanted and "-" in actual and wanted != actual:
+            continue
+        return True
+    return False
+
+
 def prepare_matrix_episode(
     episode: MatrixEpisode,
     recipe: HybridRecipe,
@@ -583,6 +611,8 @@ def prepare_matrix_episode(
         raise ValueError(f"Épisode {episode.display_name} sans fichier master.")
     if not episode.donor_files:
         raise ValueError(f"Épisode {episode.display_name} sans donneur.")
+    if recipe.sync_strategy not in {"auto", "manual", "none"}:
+        raise ValueError(f"Stratégie de synchro invalide : {recipe.sync_strategy}")
 
     outdir = Path(output_dir).expanduser().resolve()
     outdir.mkdir(parents=True, exist_ok=True)
@@ -602,22 +632,38 @@ def prepare_matrix_episode(
         "_allow_missing_output_dir": True,
     }
 
-    remux_config = build_remux_config(job_payload, config, options, logger)
+    build_options = options
+    if recipe.sync_strategy != "auto":
+        # Le fichier de calibration et l'auto-sync de la CLI ne doivent pas
+        # réintroduire une analyse dans les deux modes sans analyse.
+        values = vars(options).copy()
+        values.update(calibration=None, auto_sync=False)
+        if recipe.sync_strategy == "none":
+            values.update(sync_mode="container", sync_subtitles="none")
+        build_options = SimpleNamespace(**values)
+    remux_config = build_remux_config(job_payload, config, build_options, logger)
+    if recipe.sync_strategy == "none":
+        remux_config.sync_mode = "container"
+        remux_config.sync_subtitles = "none"
 
     # 1. Source 0 : Master (Vidéo, VO, Chapitres)
     master_source = remux_config.sources[0]
+    master_has_preferred_audio = any(
+        t.track_type == "audio" and _language_selected(t.language, recipe.keep_master_audio_langs)
+        for t in master_source.tracks
+    )
     for track in master_source.tracks:
         if track.track_type == "video":
             track.enabled = recipe.keep_master_video
         elif track.track_type == "audio":
             if recipe.keep_master_audio_langs:
-                track.enabled = (track.language in recipe.keep_master_audio_langs) or not any(
-                    t.language in recipe.keep_master_audio_langs for t in master_source.tracks if t.track_type == "audio"
-                )
+                track.enabled = _language_selected(track.language, recipe.keep_master_audio_langs) or not master_has_preferred_audio
         elif track.track_type == "subtitle":
-            track.enabled = track.language not in recipe.donor_sub_langs
+            track.enabled = not _language_selected(track.language, recipe.donor_sub_langs)
 
-    ref_audio = next((t for t in master_source.tracks if t.track_type == "audio"), None)
+    ref_audio = next((t for t in master_source.tracks if t.track_type == "audio" and t.enabled), None)
+    if ref_audio is None:
+        ref_audio = next((t for t in master_source.tracks if t.track_type == "audio"), None)
     ref_sub = next((t for t in master_source.tracks if t.track_type == "subtitle"), None)
 
     # 2. Sources 1..N : Donneurs (Audio VF, Sous-titres)
@@ -626,25 +672,27 @@ def prepare_matrix_episode(
 
     ffmpeg_bin = getattr(options, "ffmpeg", None) or config.tool_ffmpeg
     ffprobe_bin = getattr(options, "ffprobe", None) or config.tool_ffprobe
-    audio_scanner = AudioSyncScanner(ffmpeg_bin, ffprobe_bin)
-    sub_scanner = SubtitleSyncScanner(ffmpeg_bin, ffprobe_bin)
+    audio_scanner = AudioSyncScanner(ffmpeg_bin, ffprobe_bin) if recipe.sync_strategy == "auto" else None
+    sub_scanner = SubtitleSyncScanner(ffmpeg_bin, ffprobe_bin) if recipe.sync_strategy == "auto" else None
 
     for donor_idx, donor_source in enumerate(remux_config.sources[1:], start=1):
         donor_calib: SyncCalibration | None = None
+        donor_has_preferred_audio = any(
+            t.track_type == "audio" and _language_selected(t.language, recipe.donor_audio_langs)
+            for t in donor_source.tracks
+        )
 
         for track in donor_source.tracks:
             if track.track_type == "video":
                 track.enabled = False
             elif track.track_type == "audio":
                 if recipe.donor_audio_langs:
-                    track.enabled = track.language in recipe.donor_audio_langs or not any(
-                        t.language in recipe.donor_audio_langs for t in donor_source.tracks if t.track_type == "audio"
-                    )
+                    track.enabled = _language_selected(track.language, recipe.donor_audio_langs) or not donor_has_preferred_audio
                 else:
                     track.enabled = True
             elif track.track_type == "subtitle":
                 if recipe.donor_sub_langs:
-                    track.enabled = track.language in recipe.donor_sub_langs
+                    track.enabled = _language_selected(track.language, recipe.donor_sub_langs)
                 else:
                     track.enabled = True
 
@@ -653,8 +701,8 @@ def prepare_matrix_episode(
         cadence_auto_apply = getattr(recipe, "cadence_auto_apply", True)
         cadence_audio_method = getattr(recipe, "cadence_audio_method", "auto") or "auto"
 
-        m_fps = _extract_source_video_fps(master_source)
-        d_fps = _extract_source_video_fps(donor_source)
+        m_fps = _extract_source_video_fps(master_source) if recipe.sync_strategy == "auto" else None
+        d_fps = _extract_source_video_fps(donor_source) if recipe.sync_strategy == "auto" else None
         if m_fps and d_fps:
             from core.workflows.cadence import detect_cadence_from_metadata
             cadence_mismatch = detect_cadence_from_metadata(m_fps, d_fps)
@@ -666,13 +714,36 @@ def prepare_matrix_episode(
 
         # Calibration du donneur contre le master
         target_audio = next((t for t in donor_source.tracks if t.track_type == "audio" and t.enabled), None)
+        reference_language = _language_key(ref_audio.language) if ref_audio else ""
+        sync_audio = next((
+            t for t in donor_source.tracks
+            if t.track_type == "audio" and reference_language and _language_key(t.language) == reference_language
+        ), None) or target_audio
         target_sub = next((t for t in donor_source.tracks if t.track_type == "subtitle" and t.enabled), None)
 
-        if target_audio and ref_audio:
-            logger.emit("info", f"[{episode.display_name}] Synchronisation audio donneur #{donor_idx}…")
+        if recipe.sync_strategy == "manual":
+            shift = int(recipe.manual_shift_ms)
+            for track in donor_source.tracks:
+                track.time_shift_ms = 0
+                track.sync_calibration = None
+                if track.enabled and (track.track_type == "audio" or
+                                      (track.track_type == "subtitle" and recipe.sync_subtitles == "mirror")):
+                    track.time_shift_ms = shift
+            donor_calib = SyncCalibration.linear(shift)
+        elif recipe.sync_strategy == "none":
+            for track in donor_source.tracks:
+                track.time_shift_ms = 0
+                track.sync_calibration = None
+        elif sync_audio and ref_audio:
+            logger.emit(
+                "info",
+                f"[{episode.display_name}] Synchronisation audio donneur #{donor_idx} : "
+                f"master #{ref_audio.mkv_tid} ({ref_audio.language}) / "
+                f"donneur #{sync_audio.mkv_tid} ({sync_audio.language})…",
+            )
             donor_calib = audio_scanner.scan(
                 AudioSyncTrack(master_source.path, ref_audio.mkv_tid),
-                AudioSyncTrack(donor_source.path, target_audio.mkv_tid),
+                AudioSyncTrack(donor_source.path, sync_audio.mkv_tid),
                 detect_cuts=detect_cuts,
                 drift_threshold_ms=drift_threshold_ms,
                 cadence_mismatch=cadence_mismatch if cadence_auto_apply else None,
@@ -699,16 +770,17 @@ def prepare_matrix_episode(
                 )
 
         if donor_calib:
-            calibrations[str(donor_idx)] = donor_calib.to_dict()
             if primary_calibration is None:
                 primary_calibration = donor_calib
-            has_cadence = bool(donor_calib.cadence_mismatch and getattr(donor_calib.cadence_mismatch, "cadence_type", None) not in (None, "none"))
-            if has_cadence and cadence_auto_apply:
-                remux_config.sync_mode = "physical"
-            elif recipe.sync_mode != "physical" and len(donor_calib.segments) == 1:
-                for t in donor_source.tracks:
-                    if t.enabled:
-                        t.time_shift_ms = round(donor_calib.segments[0].shift_ms)
+            if recipe.sync_strategy == "auto":
+                calibrations[str(donor_idx)] = donor_calib.to_dict()
+                has_cadence = bool(donor_calib.cadence_mismatch and getattr(donor_calib.cadence_mismatch, "cadence_type", None) not in (None, "none"))
+                if has_cadence and cadence_auto_apply:
+                    remux_config.sync_mode = "physical"
+                elif recipe.sync_mode != "physical" and len(donor_calib.segments) == 1:
+                    for t in donor_source.tracks:
+                        if t.enabled:
+                            t.time_shift_ms = round(donor_calib.segments[0].shift_ms)
 
     remux_config.sync_calibrations = calibrations
 
@@ -748,5 +820,10 @@ def prepare_matrix_episode(
         episode.segments_count = len(primary_calibration.segments)
         episode.confidence = primary_calibration.confidence
         episode.cadence_mismatch = primary_calibration.cadence_mismatch
+    else:
+        episode.shift_ms = 0.0
+        episode.segments_count = 1
+        episode.confidence = 1.0
+        episode.cadence_mismatch = None
 
     return remux_config, primary_calibration

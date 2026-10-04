@@ -1,4 +1,72 @@
 {
+  "Analyse synchro :": {
+    "fra": "Analyse synchro :",
+    "eng": "Sync analysis:"
+  },
+  "Automatique (analyse acoustique)": {
+    "fra": "Automatique (analyse acoustique)",
+    "eng": "Automatic (acoustic analysis)"
+  },
+  "Décalage manuel (sans analyse)": {
+    "fra": "Décalage manuel (sans analyse)",
+    "eng": "Manual offset (no analysis)"
+  },
+  "Aucune synchronisation": {
+    "fra": "Aucune synchronisation",
+    "eng": "No synchronization"
+  },
+  "L'analyse automatique décode plusieurs fenêtres audio par donneur. Le mode manuel applique le même décalage à chaque donneur ; aucune synchronisation conserve les pistes sans recalage.": {
+    "fra": "L'analyse automatique décode plusieurs fenêtres audio par donneur. Le mode manuel applique le même décalage à chaque donneur ; aucune synchronisation conserve les pistes sans recalage.",
+    "eng": "Automatic analysis decodes several audio windows per donor. Manual mode applies the same offset to every donor; no synchronization keeps tracks without adjustment."
+  },
+  "Décalage (ms) :": {
+    "fra": "Décalage (ms) :",
+    "eng": "Offset (ms):"
+  },
+  "Préparation en cours…": {
+    "fra": "Préparation en cours…",
+    "eng": "Preparing…"
+  },
+  "Sans synchro": {
+    "fra": "Sans synchro",
+    "eng": "No sync"
+  },
+  "Prêt (0 ms)": {
+    "fra": "Prêt (0 ms)",
+    "eng": "Ready (0 ms)"
+  },
+  "Préparer / Recalibrer cet élément individuellement": {
+    "fra": "Préparer / Recalibrer cet élément individuellement",
+    "eng": "Prepare / Recalibrate this item individually"
+  },
+  "Préparation terminée pour : {name}": {
+    "fra": "Préparation terminée pour : {name}",
+    "eng": "Preparation complete for: {name}"
+  },
+  "Analyse synchro": {
+    "fra": "Analyse synchro",
+    "eng": "Sync analysis"
+  },
+  "Préparation": {
+    "fra": "Préparation",
+    "eng": "Preparation"
+  },
+  "Préparer la saison": {
+    "fra": "Préparer la saison",
+    "eng": "Prepare season"
+  },
+  "{step} {current}/{total} : {name}": {
+    "fra": "{step} {current}/{total} : {name}",
+    "eng": "{step} {current}/{total}: {name}"
+  },
+  "Contrôle final rejeté": {
+    "fra": "Contrôle final rejeté",
+    "eng": "Final validation rejected"
+  },
+  "Le contrôle final a rejeté {name}.\n\n{reason}\n\nPoursuivre quand même et conserver le résultat ?\nLe fichier peut être incomplet ou ses métadonnées désalignées.": {
+    "fra": "Le contrôle final a rejeté {name}.\n\n{reason}\n\nPoursuivre quand même et conserver le résultat ?\nLe fichier peut être incomplet ou ses métadonnées désalignées.",
+    "eng": "Final validation rejected {name}.\n\n{reason}\n\nProceed anyway and keep the result?\nThe file may be incomplete or its metadata may be misaligned."
+  },
   "Alignement géométrique Dolby Vision (NVENC)": {
     "fra": "Alignement géométrique Dolby Vision (NVENC)",
     "eng": "Dolby Vision geometry alignment (NVENC)"
@@ -847,9 +915,9 @@
     "fra": "Workflow échoué",
     "eng": "Workflow failed"
   },
-  "Transfère les métadonnées Dolby Vision et/ou HDR10+ de Film 2 (source) vers Film 1 (cible).": {
-    "fra": "Transfère les métadonnées Dolby Vision et/ou HDR10+ de Film 2 (source) vers Film 1 (cible).",
-    "eng": "Transfers Dolby Vision and/or HDR10+ metadata from Film 2 (source) to Film 1 (target)."
+  "Transfère les métadonnées Dolby Vision et/ou HDR10+ de Film 2 (source) vers Film 1 (cible). Profil « Désactivé » : HDR10+ seul, le Dolby Vision de Film 1 est conservé.": {
+    "fra": "Transfère les métadonnées Dolby Vision et/ou HDR10+ de Film 2 (source) vers Film 1 (cible). Profil « Désactivé » : HDR10+ seul, le Dolby Vision de Film 1 est conservé.",
+    "eng": "Transfers Dolby Vision and/or HDR10+ metadata from Film 2 (source) to Film 1 (target). “Disabled” profile: HDR10+ only, Film 1 Dolby Vision is kept."
   },
   "▶  Lancer le workflow": {
     "fra": "▶  Lancer le workflow",
@@ -1747,9 +1815,9 @@
     "fra": "Réduire le menu",
     "eng": "Collapse menu"
   },
-  "Disabled  —  ne pas injecter Dolby Vision": {
-    "fra": "Disabled  —  ne pas injecter Dolby Vision",
-    "eng": "Disabled - do not inject Dolby Vision"
+  "Désactivé  —  n'injecte pas le DV de Film 2 (celui de Film 1 est conservé)": {
+    "fra": "Désactivé  —  n'injecte pas le DV de Film 2 (celui de Film 1 est conservé)",
+    "eng": "Disabled  —  do not inject Film 2 DV (Film 1 DV is kept)"
   },
   "Appliquer à toutes les pistes": {
     "fra": "Appliquer à toutes les pistes",
@@ -3835,6 +3903,10 @@
     "fra": "Sauvegarde impossible : {err}",
     "eng": "Could not save: {err}"
   },
+  "Sauvegarde de session ignorée : fichier verrouillé.": {
+    "fra": "Sauvegarde de session ignorée : fichier verrouillé.",
+    "eng": "Session save skipped: file is locked."
+  },
   "Chargement impossible : {err}": {
     "fra": "Chargement impossible : {err}",
     "eng": "Could not load: {err}"
@@ -4818,5 +4890,193 @@
   "En copie, le HDR de la source est recopié tel quel.": {
     "fra": "En copie, le HDR de la source est recopié tel quel.",
     "eng": "In copy mode, the source HDR is passed through unchanged."
+  },
+  "Génère des images intermédiaires (RIFE, GPU Vulkan) pour multiplier la cadence. Les images d'origine sont conservées ; les coupes de scène sont dupliquées. Dolby Vision et HDR10+ suivent la nouvelle cadence.": {
+    "fra": "Génère des images intermédiaires (RIFE, GPU Vulkan) pour multiplier la cadence. Les images d'origine sont conservées ; les coupes de scène sont dupliquées. Dolby Vision et HDR10+ suivent la nouvelle cadence.",
+    "eng": "Generates in-between frames (RIFE, Vulkan GPU) to multiply the frame rate. Original frames are kept; scene cuts are duplicated. Dolby Vision and HDR10+ follow the new frame rate."
+  },
+  "Interpolation d'images RIFE (Vulkan) livrée avec Muxiveo — multiplication de cadence à l'encodage.": {
+    "fra": "Interpolation d'images RIFE (Vulkan) livrée avec Muxiveo — multiplication de cadence à l'encodage.",
+    "eng": "RIFE frame interpolation (Vulkan) shipped with Muxiveo — frame rate multiplication during encoding."
+  },
+  "muxiveo-rife": {
+    "fra": "muxiveo-rife",
+    "eng": "muxiveo-rife"
+  },
+  "muxiveo-rife introuvable : Paramètres > Outils externes, ou relancer le setup.": {
+    "fra": "muxiveo-rife introuvable : Paramètres > Outils externes, ou relancer le setup.",
+    "eng": "muxiveo-rife not found: Settings > External tools, or run setup again."
+  },
+  "Interpolation": {
+    "fra": "Interpolation",
+    "eng": "Interpolation"
+  },
+  "Rapide": {
+    "fra": "Rapide",
+    "eng": "Fast"
+  },
+  "Équilibré": {
+    "fra": "Équilibré",
+    "eng": "Balanced"
+  },
+  "Max": {
+    "fra": "Max",
+    "eng": "Max"
+  },
+  "Multiplicateur de cadence (x2 : 29,97 -> 59,94 i/s) ou cadence cible (23,976 -> 59,94 i/s).": {
+    "fra": "Multiplicateur de cadence (x2 : 29,97 -> 59,94 i/s) ou cadence cible (23,976 -> 59,94 i/s).",
+    "eng": "Frame rate multiplier (x2: 29.97 -> 59.94 fps) or target frame rate (23.976 -> 59.94 fps)."
+  },
+  "Mode : Normal": {
+    "fra": "Mode : Normal",
+    "eng": "Mode: Normal"
+  },
+  "Mode : Fast": {
+    "fra": "Mode : Fast",
+    "eng": "Mode: Fast"
+  },
+  "Mode Fast : flux optique calculé à demi-résolution (RIFE UHD). En 4K : +16 à +36 % de vitesse et 44 % de mémoire GPU en moins, pour une perte de qualité légère ; en 1080p, perte plus marquée.": {
+    "fra": "Mode Fast : flux optique calculé à demi-résolution (RIFE UHD). En 4K : +16 à +36 % de vitesse et 44 % de mémoire GPU en moins, pour une perte de qualité légère ; en 1080p, perte plus marquée.",
+    "eng": "Fast mode: optical flow computed at half resolution (RIFE UHD). In 4K: 16 to 36% faster and 44% less GPU memory, for a slight quality loss; at 1080p the loss is larger."
+  },
+  "Modèle RIFE : Rapide et Équilibré (v4.6), Light (v4.15 lite + mode Fast, petites cartes graphiques).": {
+    "fra": "Modèle RIFE : Rapide et Équilibré (v4.6), Light (v4.15 lite + mode Fast, petites cartes graphiques).",
+    "eng": "RIFE model: Fast and Balanced (v4.6), Light (v4.15 lite + Fast mode, small graphics cards)."
+  },
+  "Light": {
+    "fra": "Light",
+    "eng": "Light"
+  },
+  "TTA : Désactivé": {
+    "fra": "TTA : Désactivé",
+    "eng": "TTA: Off"
+  },
+  "TTA : ×2": {
+    "fra": "TTA : ×2",
+    "eng": "TTA: ×2"
+  },
+  "TTA : ×4": {
+    "fra": "TTA : ×4",
+    "eng": "TTA: ×4"
+  },
+  "TTA : ×8": {
+    "fra": "TTA : ×8",
+    "eng": "TTA: ×8"
+  },
+  "TTA : chaque image intermédiaire est calculée plusieurs fois (sens inverse, miroirs) puis moyennée, ce qui lisse les petites erreurs. Temps de calcul RIFE multiplié par 2, 4 ou 8. Sans effet sur les motifs répétitifs (grilles, barreaux).": {
+    "fra": "TTA : chaque image intermédiaire est calculée plusieurs fois (sens inverse, miroirs) puis moyennée, ce qui lisse les petites erreurs. Temps de calcul RIFE multiplié par 2, 4 ou 8. Sans effet sur les motifs répétitifs (grilles, barreaux).",
+    "eng": "TTA: each in-between frame is computed several times (reversed, mirrored) and averaged, which smooths small errors. RIFE processing time multiplied by 2, 4 or 8. No effect on repeating patterns (grids, bars)."
+  },
+  "Converti automatiquement en {target} (codec {codec} non supporté par Matroska)": {
+    "fra": "Converti automatiquement en {target} (codec {codec} non supporté par Matroska)",
+    "eng": "Automatically converted to {target} ({codec} codec not supported by Matroska)"
+  },
+  "Film 1 : {film1}  ·  Film 2 : {film2}": {
+    "fra": "Film 1 : {film1}  ·  Film 2 : {film2}",
+    "eng": "Film 1: {film1}  ·  Film 2: {film2}"
+  },
+  "Le RPU Dolby Vision de Film 1 sera remplacé par celui de Film 2. Choisir « Désactivé » pour n'injecter que le HDR10+.": {
+    "fra": "Le RPU Dolby Vision de Film 1 sera remplacé par celui de Film 2. Choisir « Désactivé » pour n'injecter que le HDR10+.",
+    "eng": "Film 1 Dolby Vision RPU will be replaced by Film 2's. Choose “Disabled” to inject HDR10+ only."
+  },
+  "Le Dolby Vision de Film 1 sera conservé.": {
+    "fra": "Le Dolby Vision de Film 1 sera conservé.",
+    "eng": "Film 1 Dolby Vision will be kept."
+  },
+  "Le HDR10+ de Film 1 sera remplacé par celui de Film 2.": {
+    "fra": "Le HDR10+ de Film 1 sera remplacé par celui de Film 2.",
+    "eng": "Film 1 HDR10+ will be replaced by Film 2's."
+  },
+  "Film 1 contient déjà Dolby Vision : son RPU sera remplacé par celui de Film 2 (profil « Désactivé » pour le conserver).": {
+    "fra": "Film 1 contient déjà Dolby Vision : son RPU sera remplacé par celui de Film 2 (profil « Désactivé » pour le conserver).",
+    "eng": "Film 1 already has Dolby Vision: its RPU will be replaced by Film 2's (“Disabled” profile to keep it)."
+  },
+  "Film 1 — Dolby Vision existant conservé.": {
+    "fra": "Film 1 — Dolby Vision existant conservé.",
+    "eng": "Film 1 — existing Dolby Vision kept."
+  },
+  "Film 1 contient déjà HDR10+ : ses métadonnées seront remplacées par celles de Film 2.": {
+    "fra": "Film 1 contient déjà HDR10+ : ses métadonnées seront remplacées par celles de Film 2.",
+    "eng": "Film 1 already has HDR10+: its metadata will be replaced by Film 2's."
+  },
+  "[WARN] Configuration Dolby Vision de Film 1 illisible : piste non signalée Dolby Vision au niveau Matroska.": {
+    "fra": "[WARN] Configuration Dolby Vision de Film 1 illisible : piste non signalée Dolby Vision au niveau Matroska.",
+    "eng": "[WARN] Film 1 Dolby Vision configuration unreadable: track not signalled as Dolby Vision at Matroska level."
+  },
+  "Signal Dolby Vision de Film 1 conservé (profil {profile}, niveau {level}).": {
+    "fra": "Signal Dolby Vision de Film 1 conservé (profil {profile}, niveau {level}).",
+    "eng": "Film 1 Dolby Vision signalling kept (profile {profile}, level {level})."
+  },
+  " … (+{count} autres)": {
+    "fra": " … (+{count} autres)",
+    "eng": " … (+{count} more)"
+  },
+  "Work dir : {path}\nÉléments Muxiveo à supprimer ({count}) : {preview}": {
+    "fra": "Work dir : {path}\nÉléments Muxiveo à supprimer ({count}) : {preview}",
+    "eng": "Work dir: {path}\nMuxiveo items to delete ({count}): {preview}"
+  },
+  "Fichier existant": {
+    "fra": "Fichier existant",
+    "eng": "File already exists"
+  },
+  "{name} existe déjà dans {folder}.\nLe remplacer à la fin du traitement ?": {
+    "fra": "{name} existe déjà dans {folder}.\nLe remplacer à la fin du traitement ?",
+    "eng": "{name} already exists in {folder}.\nReplace it when processing finishes?"
+  },
+  "Opération en cours": {
+    "fra": "Opération en cours",
+    "eng": "Operation in progress"
+  },
+  "Une opération est en cours depuis {minutes} min.\nQuitter l'annulera et le fichier partiel sera supprimé.\nQuitter quand même ?": {
+    "fra": "Une opération est en cours depuis {minutes} min.\nQuitter l'annulera et le fichier partiel sera supprimé.\nQuitter quand même ?",
+    "eng": "An operation has been running for {minutes} min.\nQuitting will cancel it and the partial file will be deleted.\nQuit anyway?"
+  },
+  "Écart de 1 à 4 trames : retirer l'excédent de métadonnées en fin de flux": {
+    "fra": "Écart de 1 à 4 trames : retirer l'excédent de métadonnées en fin de flux",
+    "eng": "1 to 4 frame difference: remove surplus metadata at the end of the stream"
+  },
+  "Si Film 2 a 1 à 4 trames de plus que Film 1, les métadonnées DoVi / HDR10+ excédentaires sont retirées à la fin, en supposant le début des deux films aligné.\nAucune métadonnée n'est jamais inventée : si Film 2 est plus court, l'injection est refusée.\nUn comptage identique ne prouve pas l'alignement temporel.": {
+    "fra": "Si Film 2 a 1 à 4 trames de plus que Film 1, les métadonnées DoVi / HDR10+ excédentaires sont retirées à la fin, en supposant le début des deux films aligné.\nAucune métadonnée n'est jamais inventée : si Film 2 est plus court, l'injection est refusée.\nUn comptage identique ne prouve pas l'alignement temporel.",
+    "eng": "If Film 2 has 1 to 4 more frames than Film 1, the surplus DoVi / HDR10+ metadata is removed at the end, assuming both films start aligned.\nMetadata is never invented: if Film 2 is shorter, injection is refused.\nAn identical frame count does not prove temporal alignment."
+  },
+  "Espace disque": {
+    "fra": "Espace disque",
+    "eng": "Disk space"
+  },
+  "Contrôle métadonnées": {
+    "fra": "Contrôle métadonnées",
+    "eng": "Metadata check"
+  },
+  "Configuration invalide.": {
+    "fra": "Configuration invalide.",
+    "eng": "Invalid configuration."
+  },
+  "Impossible de lancer l'opération": {
+    "fra": "Impossible de lancer l'opération",
+    "eng": "Cannot start the operation"
+  },
+  "Échec : {reason}": {
+    "fra": "Échec : {reason}",
+    "eng": "Failed: {reason}"
+  },
+  "… et {count} autre(s) (voir le journal).": {
+    "fra": "… et {count} autre(s) (voir le journal).",
+    "eng": "… and {count} more (see the log)."
+  },
+  "Une preview est en cours de génération : attendez sa fin ou annulez-la.": {
+    "fra": "Une preview est en cours de génération : attendez sa fin ou annulez-la.",
+    "eng": "A preview is being generated: wait for it to finish or cancel it."
+  },
+  "Preview indisponible pendant une opération en cours.": {
+    "fra": "Preview indisponible pendant une opération en cours.",
+    "eng": "Preview unavailable while an operation is running."
+  },
+  "Dossier de travail inutilisable : {error}": {
+    "fra": "Dossier de travail inutilisable : {error}",
+    "eng": "Work folder unusable: {error}"
+  },
+  "comptage exact au lancement": {
+    "fra": "comptage exact au lancement",
+    "eng": "exact count at start"
   }
 }

@@ -18,6 +18,8 @@ import time
 import pytest
 
 from core.workflows.encode import EncodeConfig, EncodeWorkflow, QualityMode, VideoEncodeSettings
+from core.workflows.common import TrackTimeOffset
+from core.workflows.encode.models import FrameInterpolationSettings
 from core.workflows.encode.hardware import HardwareEncoderDetector
 from core.workflows.encode.hw_devices import select_linux_hwaccel_device
 from core.workflows.encode.models import AudioTrackSettings, VideoResizeSettings
@@ -41,6 +43,58 @@ def hardware_preset(codec):
     if codec.endswith("_vaapi"):
         return "0"
     return "default" if codec.startswith("nvencc") else "p4"
+
+
+@pytest.mark.skipif("nvencc" not in REQUESTED, reason="Activer MUXIVEO_TEST_HW=nvencc")
+@pytest.mark.parametrize("mux_backend", ["ffmpeg", "native"])
+@pytest.mark.parametrize("interpolate", [False, True])
+@pytest.mark.parametrize("offset_ms", [0, 200])
+def test_nvencc_keeps_source_delay_and_p3(tmp_path, hardware, qt_app, mux_backend, interpolate, offset_ms):
+    """Le départ source s'ajoute au retard demandé ; le pipe conserve le marquage P3."""
+    ffmpeg, nvencc, available = hardware
+    assert "nvencc_h264" in available
+    rife = os.environ.get("MUXIVEO_RIFE_BIN") or shutil.which("muxiveo-rife")
+    if interpolate and not rife:
+        pytest.skip("muxiveo-rife requis pour le cas interpolé")
+    src = tmp_path / "source.mkv"
+    subprocess.run([
+        ffmpeg, "-v", "error", "-y",
+        "-itsoffset", "0.4", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=2",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2.4",
+        "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast",
+        "-vf", "setparams=color_primaries=smpte432:color_trc=iec61966-2-1:colorspace=bt709",
+        "-c:a", "flac", "-fps_mode", "passthrough", str(src),
+    ], check=True)
+    original = {s["codec_type"]: s for s in ffprobe_json(src)["streams"]}
+    assert float(original["video"]["start_time"]) - float(original["audio"]["start_time"]) == pytest.approx(0.4)
+    assert original["video"]["color_primaries"] == "smpte432"
+    config = EncodeConfig(
+        source=src, output=tmp_path / "result.mkv",
+        video=VideoEncodeSettings(
+            codec="nvencc_h264", preset="P1",
+            interpolation=FrameInterpolationSettings(enabled=interpolate, factor=2),
+        ),
+        audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")],
+        copy_subtitles=False, keep_chapters=False, duration_s=2.4,
+        mux_backend=mux_backend, work_dir=tmp_path,
+        track_time_offsets=[TrackTimeOffset(track_type="video", source_path=src, stream_index=0, offset_ms=offset_ms)],
+    )
+    workflow = EncodeWorkflow(
+        ffmpeg_bin=ffmpeg, nvencc_bin=nvencc, rife_bin=rife,
+        ffmpeg_threads=1, ram_buffer_enabled=False, generate_nfo=False,
+    )
+    assert workflow.validate(config) == []
+    state = wait_task(workflow.run(config), timeout=90)
+    (tmp_path / "workflow.log").write_text("\n".join(map(str, state["progress"])) + "\n" + str(state["failed"]), encoding="utf-8")
+    assert state["failed"] is None, state["failed"]
+    assert state["finished"] and not state["cancelled"], state
+    streams = {s["codec_type"]: s for s in ffprobe_json(config.output)["streams"]}
+    assert float(streams["video"]["start_time"]) - float(streams["audio"]["start_time"]) == pytest.approx(
+        0.4 + offset_ms / 1000, abs=0.025,
+    )
+    assert streams["video"]["color_primaries"] == "smpte432"
+    assert streams["video"]["color_transfer"] == "iec61966-2-1"
+    assert streams["video"]["color_space"] == "bt709"
 
 
 @pytest.fixture(scope="module")

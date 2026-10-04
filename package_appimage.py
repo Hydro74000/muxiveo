@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
-import json
 import os
 import platform
 import re
@@ -63,12 +62,15 @@ import zipfile
 from pathlib import Path
 
 from core.file_types import build_desktop_mime_type_string
+from core.github_release import release_asset, verify_download
 from core.version import (
     APP_APPSTREAM_ID,
     APP_EXECUTABLE_NAME,
     APP_NAME,
     APP_VERSION,
     APP_WEBSITE_URL,
+    MUXIVEO_RIFE_RELEASE_TAG,
+    muxiveo_rife_asset_url,
 )
 
 ROOT = Path(__file__).parent
@@ -566,32 +568,6 @@ _APPRUN_ALLINC = textwrap.dedent("""\
 # Téléchargement des outils externes (mode --allinc)
 # ---------------------------------------------------------------------------
 
-def _gh_latest_asset(repo: str, *patterns: str) -> str:
-    """Retourne l'URL du premier asset GitHub dont le nom contient un des patterns."""
-    url = f"https://api.github.com/repos/{repo}/releases/latest"
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "Muxiveo-builder",
-    }
-    # Les builds CI peuvent dépasser rapidement la limite anonyme de l'API
-    # GitHub en téléchargeant les outils embarqués. Un token est facultatif
-    # pour conserver le script utilisable hors GitHub Actions.
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(
-        url,
-        headers=headers,
-    )
-    with urllib.request.urlopen(req) as resp:
-        data = json.loads(resp.read())
-    for asset in data["assets"]:
-        name: str = asset["name"]
-        if any(p in name for p in patterns):
-            return asset["browser_download_url"]
-    raise RuntimeError(f"Aucun asset trouvé pour {patterns} dans {repo} (assets: {[a['name'] for a in data['assets']]})")
-
-
 def _download(url: str, dest: Path, timeout: int = 30) -> None:
     """Télécharge url vers dest avec timeout, progress et reprise sur erreur."""
     info(f"Téléchargement : {url}")
@@ -710,21 +686,52 @@ def _dl_mediainfo(tools_dir: Path, arch: str) -> None:
 def _dl_dovi_tool(tools_dir: Path, arch: str) -> None:
     step("Téléchargement dovi_tool (GitHub)")
     _sfx = {"x86_64": "x86_64-unknown-linux-musl", "aarch64": "aarch64-unknown-linux-musl"}.get(arch, arch)
-    url = _gh_latest_asset("quietvoid/dovi_tool", _sfx)
+    asset = release_asset("dovi_tool", "dovi_tool-", _sfx, ".tar.gz")
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "dovi_tool.tar.gz"
-        _download(url, archive)
+        _download(asset.url, archive)
+        verify_download(asset, archive)
         _extract_from_tar(archive, ["dovi_tool"], tools_dir)
     ok("dovi_tool installé")
+
+
+def _dl_muxiveo_rife(tools_dir: Path, arch: str) -> None:
+    """muxiveo-rife + rife-models/ (archive locale ``MUXIVEO_RIFE_ARCHIVE`` ou release épinglée)."""
+    step(f"muxiveo-rife ({MUXIVEO_RIFE_RELEASE_TAG})")
+    if arch != "x86_64":
+        warn(f"muxiveo-rife : pas de build {arch} — interpolation d'images indisponible.")
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        local = os.environ.get("MUXIVEO_RIFE_ARCHIVE")
+        archive = Path(local) if local else Path(tmp) / "muxiveo-rife.tar.gz"
+        if not local:
+            try:
+                _download(muxiveo_rife_asset_url("linux-x86_64.tar.gz"), archive, timeout=120)
+            except Exception as exc:
+                warn(f"muxiveo-rife indisponible ({exc}) — interpolation d'images absente de ce build.")
+                return
+        with tarfile.open(archive) as tf:
+            prefix = os.path.commonpath([m.name for m in tf.getmembers()])
+            for member in tf.getmembers():
+                rel = os.path.relpath(member.name, prefix)
+                if rel == "." or rel.startswith("..") or os.path.isabs(rel):
+                    continue
+                if not (member.isfile() or member.isdir()):
+                    continue
+                member.name = rel
+                tf.extract(member, tools_dir)
+    _chmod_x(tools_dir / "muxiveo-rife")
+    ok("muxiveo-rife installé")
 
 
 def _dl_hdr10plus_tool(tools_dir: Path, arch: str) -> None:
     step("Téléchargement hdr10plus_tool (GitHub)")
     _sfx = {"x86_64": "x86_64-unknown-linux-musl", "aarch64": "aarch64-unknown-linux-musl"}.get(arch, arch)
-    url = _gh_latest_asset("quietvoid/hdr10plus_tool", _sfx)
+    asset = release_asset("hdr10plus_tool", "hdr10plus_tool-", _sfx, ".tar.gz")
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "hdr10plus_tool.tar.gz"
-        _download(url, archive)
+        _download(asset.url, archive)
+        verify_download(asset, archive)
         _extract_from_tar(archive, ["hdr10plus_tool"], tools_dir)
     ok("hdr10plus_tool installé")
 
@@ -745,11 +752,12 @@ def _dl_nvencc(tools_dir: Path, arch: str) -> None:
         warn("NVEncC : pas de build aarch64 disponible chez rigaya — skip.")
         return
     step("Téléchargement NVEncC (rigaya/NVEnc)")
-    url = _gh_latest_asset("rigaya/NVEnc", "_amd64.deb")
+    asset = release_asset("nvencc", "_amd64.deb")
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         archive = tmp_path / "nvencc.deb"
-        _download(url, archive)
+        _download(asset.url, archive)
+        verify_download(asset, archive)
         # Extraction via dpkg-deb -x (présent dans la plupart des images de build).
         dpkg_deb = shutil.which("dpkg-deb")
         if dpkg_deb is None:
@@ -826,6 +834,7 @@ def bundle_tools(appdir: Path, arch: str) -> None:
     _dl_dovi_tool(tools_dir, arch)
     _dl_hdr10plus_tool(tools_dir, arch)
     _dl_nvencc(tools_dir, arch)
+    _dl_muxiveo_rife(tools_dir, arch)
     _bundle_licenses(appdir)
 
     ok(f"Tous les outils embarqués dans {tools_dir}")

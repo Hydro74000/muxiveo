@@ -238,6 +238,29 @@ def _x_icon(color: str | None = None, size: int = 14) -> QIcon:
     return QIcon(pix)
 
 
+def _convert_icon(color: str | None = None, size: int = 14) -> QIcon:
+    """Picto « conversion automatique » (flèches opposées)."""
+    color = color or _C.ACCENT
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
+        f' fill="none" stroke="{color}" stroke-width="2.2"'
+        ' stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M4 8h14"/>'
+        '<path d="m14 4 4 4-4 4"/>'
+        '<path d="M20 16H6"/>'
+        '<path d="m10 12-4 4 4 4"/>'
+        '</svg>'
+    )
+    renderer = QSvgRenderer(svg.encode())
+    icon_size = _scale(size)
+    pix = QPixmap(icon_size, icon_size)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pix)
+
+
 def _warning_icon(color: str | None = None, size: int = 14) -> QIcon:
     color = color or "#f0b429"
     svg = (

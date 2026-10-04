@@ -65,13 +65,11 @@ from core.logging import LogLevel, VerboseFileLogger, parse_log_level
 from core.runner import TaskSignals, _PCT_SENTINEL
 from core.subprocess_utils import subprocess_text_kwargs
 from core.update_check import (
-    UPDATE_CHECK_INTERVAL_S,
+    UPDATE_CHECK_TIMEOUT_S,
     UpdateInfo,
     UpdateCheckError,
     query_latest_release,
-    is_newer,
     normalize_update_channel,
-    release_page_url,
 )
 from core.update_install import (
     InstallKind,
@@ -84,9 +82,11 @@ from core.update_install import (
 )
 from core.version import APP_BUILD_VERSION, APP_IS_UNSTABLE_BUILD, APP_VERSION_LABEL, WRITING_APPLICATION_TAG
 from core.workflows.encode.backends import backend_id_for_codec
+from core.workflows.encode.interpolation import parse_rife_progress
 from core.workflows.encode import EncodeError
 from core.workflows.common.sync_rewrite import SYNC_REWRITE_STAGE_PREFIX
 from core.workflows.remux_models import RemuxError
+from ui.confirm import confirm_close_while_running, confirm_overwrite
 from ui.shutdown import Shutdown, defer_close
 from ui.panels.encode_panel import EncodePanel
 from ui.panels.encode_panel.theme import (
@@ -1456,6 +1456,20 @@ class MainWindow(QMainWindow):
         "settings": 5,
     }
 
+    @property
+    def _running(self) -> bool:
+        """Opération globale en cours (encodage, remux, extraction, DoVi…)."""
+        return getattr(self, "_running_flag", False)
+
+    @_running.setter
+    def _running(self, value: bool) -> None:
+        # Toute transition propage l'état au panneau Encodage (preview bloquée
+        # pendant une opération : GPU / disque partagés, état du workflow commun).
+        self._running_flag = bool(value)
+        set_operation_running = getattr(getattr(self, "_encode_panel", None), "set_operation_running", None)
+        if callable(set_operation_running):
+            set_operation_running(self._running_flag)
+
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
         self._config = config
@@ -1938,6 +1952,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _connect_signals(self) -> None:
+        self._dovi_panel.set_operation_start_guard(self._can_start_operation)
+        self._remux_panel.set_operation_start_guard(self._can_start_operation)
         self._sidebar.page_changed.connect(self._stack.setCurrentIndex)
         self.log_requested.connect(self._on_log_requested)
         self._log_panel.collapse_toggled.connect(self._on_log_collapsed)
@@ -1974,6 +1990,8 @@ class MainWindow(QMainWindow):
         self._remux_panel.extract_started.connect(self._on_remux_extract_started)
         self._remux_panel.audio_sync_started.connect(self._on_remux_audio_sync_started)
         self._remux_panel.audio_sync_finished.connect(self._on_remux_audio_sync_finished)
+        self._remux_panel.subtitle_sync_started.connect(self._on_remux_audio_sync_started)
+        self._remux_panel.subtitle_sync_finished.connect(self._on_remux_audio_sync_finished)
         # RemuxPanel → EncodePanel : pistes partagées + chemin de sortie commun
         self._remux_panel.video_tracks_changed.connect(self._encode_panel.set_video_tracks)
         self._remux_panel.audio_tracks_changed.connect(self._encode_panel.set_audio_tracks)
@@ -2090,7 +2108,7 @@ class MainWindow(QMainWindow):
         self._prog_bar.setStyleSheet(self._progress_bar_stylesheet(_Colors.WARN))
         self._prog_lbl.setText(label)
         self._prog_widget.setVisible(True)
-        self._status_lbl.setText(translate_text("Synchronisation audio en cours…"))
+        self._status_lbl.setText(label)
         self._start_prep_progress()
 
     def _on_remux_audio_sync_finished(self, success: bool, _metadata: object) -> None:
@@ -2098,13 +2116,19 @@ class MainWindow(QMainWindow):
             return
         self._on_op_finished(success=bool(success))
 
-    def _on_run(self) -> None:
+    def _can_start_operation(self) -> bool:
         if self._running:
-            return
+            return False
+        if self._encode_panel.is_preview_running():
+            self._report_blocking_errors([
+                translate_text("Une preview est en cours de génération : attendez sa fin ou annulez-la."),
+            ])
+            return False
+        return True
 
-        # Reset au démarrage : on veut voir la version ffmpeg de cette
-        # exécution (utile en diag), puis silence pour les invocations
-        # internes suivantes.
+    def _on_run(self) -> None:
+        if not self._can_start_operation():
+            return
         self._ffmpeg_version_logged = False
 
         remux_cfg  = self._remux_panel.collect_config()
@@ -2129,8 +2153,9 @@ class MainWindow(QMainWindow):
                 encode_cfg = self._merge_remux_extras(encode_cfg, remux_cfg)
             errors = self._encode_panel.validate_config(encode_cfg)
             if errors:
-                for e in errors:
-                    self.log_requested.emit("ERROR", e)
+                self._report_blocking_errors(errors)
+                return
+            if not confirm_overwrite(self, encode_cfg.output):
                 return
             self._op_mode = "encode"
             self._op_encode_config = encode_cfg
@@ -2138,22 +2163,23 @@ class MainWindow(QMainWindow):
             try:
                 signals = self._encode_panel.run_operation(encode_cfg)
             except EncodeError as exc:
-                self.log_requested.emit("ERROR", str(exc))
+                self._report_blocking_errors([str(exc)])
                 return
 
         elif remux_cfg is not None:
             self._op_encode_config = None
             errors = self._remux_panel.validate_config(remux_cfg)
             if errors:
-                for e in errors:
-                    self.log_requested.emit("ERROR", e)
+                self._report_blocking_errors(errors)
+                return
+            if not confirm_overwrite(self, remux_cfg.output):
                 return
             self._op_mode = "remux"
             self.log_requested.emit("INFO", f"Remuxage → {remux_cfg.output.name}")
             try:
                 signals = self._remux_panel.run_operation(remux_cfg)
             except RemuxError as exc:
-                self.log_requested.emit("ERROR", str(exc))
+                self._report_blocking_errors([str(exc)])
                 return
 
         else:
@@ -2388,6 +2414,9 @@ class MainWindow(QMainWindow):
             self._op_stage_label = raw_line.strip()
             self._prog_lbl.setText(raw_line)
             return True
+        if self._is_debug_tool_line(raw_line):
+            self._log_debug_only(raw_line, label=label)
+            return True
         self.log_requested.emit("INFO", raw_line)
         return True
 
@@ -2495,12 +2524,18 @@ class MainWindow(QMainWindow):
                 return
             if line.startswith("$ "):
                 self._stop_prep_progress()
+                self._tool_json_depth = 0  # bloc EditConfig éventuellement tronqué
                 self._op_encode_fps = None
                 self._op_encode_frame = None
                 self._eta_tracker_video.reset()
                 self._eta_tracker_frame.reset()
                 self.log_requested.emit("INFO", line)
                 return
+            rife_progress_line = parse_rife_progress(line) is not None
+            if self._is_debug_tool_line(line):
+                self._log_debug_only(line)
+                if not rife_progress_line:
+                    return
             progress_event = (
                 self._encode_panel.parse_progress_line(self._op_encode_config, line)
                 if self._op_encode_config is not None
@@ -2648,6 +2683,23 @@ class MainWindow(QMainWindow):
                 self._prog_lbl.setText(line)
             self.log_requested.emit("INFO", line)
 
+    def _expand_log_panel(self) -> None:
+        """Déplie le panneau de logs (erreur à lire) sans attendre une action de l'utilisateur."""
+        if self._log_panel.is_collapsed():
+            self._log_panel.set_collapsed(False)
+            self._on_log_collapsed(False)
+
+    def _report_blocking_errors(self, errors: list[str]) -> None:
+        """Erreurs empêchant le lancement : journal, logs dépliés et boîte récapitulative."""
+        for error in errors:
+            self.log_requested.emit("ERROR", error)
+        self._expand_log_panel()
+        self._status_lbl.setText(translate_text("Configuration invalide."))
+        shown = "\n".join(f"• {translate_text(error)}" for error in errors[:8])
+        if len(errors) > 8:
+            shown += "\n" + translate_text("… et {count} autre(s) (voir le journal).", count=len(errors) - 8)
+        QMessageBox.warning(self, translate_text("Impossible de lancer l'opération"), shown)
+
     def _on_cancel_op(self) -> None:
         reply = QMessageBox.question(
             self,
@@ -2750,6 +2802,7 @@ class MainWindow(QMainWindow):
             self._prog_bar.setValue(100)
             self._prog_lbl.setText(translate_text("100%  ·  terminé"))
             self._status_lbl.setText(translate_text("Terminé."))
+            self._status_lbl.setToolTip("")
             label = {
                 "encode": "Encodage terminé",
                 "extract": "Extraction terminée",
@@ -2760,7 +2813,14 @@ class MainWindow(QMainWindow):
         else:
             self._prog_widget.setVisible(False)
             self._prog_lbl.setText("")
-            self._status_lbl.setText(translate_text("Échec."))
+            first_line = next((line.strip() for line in str(error or "").splitlines() if line.strip()), "")
+            if len(first_line) > 120:
+                first_line = first_line[:117] + "…"
+            self._status_lbl.setText(
+                translate_text("Échec : {reason}", reason=first_line) if first_line else translate_text("Échec.")
+            )
+            self._status_lbl.setToolTip(str(error or ""))
+            self._expand_log_panel()
             if error:
                 self.log_requested.emit("ERROR", error)
 
@@ -2885,6 +2945,33 @@ class MainWindow(QMainWindow):
     ) -> None:
         _ensure_verbose_file_logger(self).append_tool_output(line, label=label)
 
+    def _is_debug_tool_line(self, line: str) -> bool:
+        """Détail d'outil réservé au debug : bloc ``EditConfig {…}`` de dovi_tool, progression muxiveo-rife."""
+        stripped = line.strip()
+        if stripped.startswith("$ "):
+            # Nouvelle commande : un bloc tronqué (outil interrompu) ne masque pas la suite.
+            self._tool_json_depth = 0
+            return False
+        depth = getattr(self, "_tool_json_depth", 0)
+        if depth == 0 and stripped == "EditConfig {":
+            self._tool_json_depth = 1
+            return True
+        if depth > 0:
+            delta = stripped.count("{") + stripped.count("[") - stripped.count("}") - stripped.count("]")
+            self._tool_json_depth = max(0, depth + delta)
+            return True
+        return parse_rife_progress(line) is not None
+
+    def _log_debug_only(self, line: str, *, label: str | None = None) -> None:
+        """Écrit ``line`` dans le log fichier verbose uniquement (absente du journal standard)."""
+        if not _config_file_logging_is_verbose(self._config):
+            return
+        encode_cfg = getattr(self, "_op_encode_config", None)
+        encode_codec = str(getattr(getattr(encode_cfg, "video", None), "codec", "") or "").strip().lower()
+        if label is None and encode_codec and backend_id_for_codec(encode_codec) == "nvencc":
+            return  # déjà capturée par _capture_verbose_progress_line
+        self._append_verbose_tool_output(line, label=label)
+
     def _capture_verbose_progress_line(self, line: str) -> None:
         if not _config_file_logging_is_verbose(self._config):
             return
@@ -2967,6 +3054,11 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         if not hasattr(self, "_shutdown"):
+            if self._running and not confirm_close_while_running(
+                self, time.monotonic() - getattr(self, "_op_start", time.monotonic()),
+            ):
+                event.ignore()
+                return
             self.setEnabled(False)
             self._update_request_id += 1
             if self._update_download_cancel is not None:
@@ -3002,7 +3094,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _schedule_update_check(self) -> None:
-        """Planifie une vérification de mise à jour (au plus une fois par 24 h)."""
+        """Planifie une vérification de mise à jour en arrière-plan à chaque lancement."""
         self._update_request_id = 0
         self._update_settings: tuple[str, bool] | None = None
         self._update_refresh_pending = False
@@ -3029,17 +3121,7 @@ class MainWindow(QMainWindow):
             self._update_download_cancel.set()
         if not enabled:
             return
-        last = float(getattr(self._config, "last_update_check", 0.0) or 0.0)
-        same_channel = str(getattr(self._config, "last_update_channel", "") or "") == channel
-        if same_channel and time.time() - last < UPDATE_CHECK_INTERVAL_S:
-            # Vérification récente : réafficher la version déjà trouvée, sans requête réseau.
-            known = str(getattr(self._config, "last_update_version", "") or "")
-            if is_newer(known):
-                self._update_info = UpdateInfo(
-                    version=known, url=release_page_url(known), prerelease="-unstable" in known
-                )
-                self._sidebar.set_update_available(self._update_info)
-            return
+        # Pas de cache : requête légère et bornée, sans impact sur le démarrage (thread daemon).
         QTimer.singleShot(3000, self, lambda: self._start_update_check(request_id, channel))
 
     def _is_current_update_request(self, request_id: int, channel: str) -> bool:
@@ -3063,7 +3145,8 @@ class MainWindow(QMainWindow):
         """Thread worker : interroge GitHub puis notifie le thread UI par signal."""
         try:
             try:
-                info = query_latest_release(channel, timeout=10.0 if prompt else 5.0)
+                timeout = 2 * UPDATE_CHECK_TIMEOUT_S if prompt else UPDATE_CHECK_TIMEOUT_S
+                info = query_latest_release(channel, timeout=timeout)
             except UpdateCheckError as exc:
                 self._update_check_failed.emit(request_id, channel, str(exc), prompt)
                 return
@@ -3113,7 +3196,7 @@ class MainWindow(QMainWindow):
         if info is None or self._update_refresh_pending:
             return
         if not info.assets:
-            # Info issue du cache 24 h : récupérer la liste des assets.
+            # Info sans liste d'assets : la récupérer avant de proposer l'installation.
             self._update_refresh_pending = True
             self._start_update_check(self._update_request_id, self._update_channel(), prompt=True)
             return

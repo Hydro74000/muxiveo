@@ -607,6 +607,10 @@ class MatroskaNativeMuxResult:
     frames_written: int
     cluster_count: int
     duration_ms: int
+    #: Horodatages source disponibles et AU écartées faute d'horodatage
+    #: (dérogation explicite au contrôle de comptage uniquement).
+    source_timestamps: int = 0
+    dropped_frames: int = 0
 
 
 class MatroskaNativeMuxer:
@@ -668,7 +672,16 @@ class MatroskaNativeMuxer:
         colour_element: bytes = b"",
         display_width: int | None = None,
         display_height: int | None = None,
+        allow_frame_count_mismatch: bool = False,
     ) -> MatroskaNativeMuxResult:
+        """Encapsule ``hevc_input`` avec les horodatages de ``source_for_timestamps``.
+
+        ``allow_frame_count_mismatch`` (dérogation explicite de l'utilisateur) :
+        écart AU / horodatages toléré. Association par position : flux plus
+        court → durée ramenée aux images écrites ; AU en excès (sans
+        horodatage) écartées en fin de flux. Images manquantes ailleurs qu'en
+        fin de flux → horodatages décalés (désynchronisation possible).
+        """
         if timestamp_order not in {"presentation", "packet"}:
             raise ValueError("timestamp_order doit être 'presentation' ou 'packet'.")
 
@@ -723,6 +736,7 @@ class MatroskaNativeMuxer:
             colour_element=colour_element,
             display_width=display_width,
             display_height=display_height,
+            allow_frame_count_mismatch=allow_frame_count_mismatch,
         )
 
     # ------------------------------------------------------------------
@@ -746,6 +760,7 @@ class MatroskaNativeMuxer:
         colour_element: bytes = b"",
         display_width: int | None = None,
         display_height: int | None = None,
+        allow_frame_count_mismatch: bool = False,
     ) -> MatroskaNativeMuxResult:
         import itertools
         from io import BytesIO
@@ -789,12 +804,18 @@ class MatroskaNativeMuxer:
         # reframée en vol à la fois.
         length_size = (codec_private[21] & 0x03) + 1
         total_frames = 0
+        dropped_frames = 0
 
         def packet_stream():
-            nonlocal total_frames
+            nonlocal total_frames, dropped_frames
             aus = itertools.chain(buffered_aus, au_iterator)
             for sequence, access_unit in enumerate(aus):
                 if sequence >= len(pts_seq.pts_ms):
+                    if allow_frame_count_mismatch:
+                        # AU finales en ordre de décodage : aucune AU écrite
+                        # n'en dépend.
+                        dropped_frames += 1
+                        continue
                     raise RuntimeError(
                         f"Désalignement frame count : le flux HEVC contient plus d'access units que les {len(pts_seq)} PTS source."
                     )
@@ -811,10 +832,19 @@ class MatroskaNativeMuxer:
                     ),
                     source_sequence=sequence,
                 )
-            if total_frames != len(pts_seq):
+            if total_frames != len(pts_seq) and not allow_frame_count_mismatch:
                 raise RuntimeError(
                     f"Désalignement frame count : {total_frames} access units HEVC vs {len(pts_seq)} PTS source."
                 )
+
+        def written_duration_ms() -> int:
+            """Fin de présentation des seules images écrites (flux tronqué)."""
+            count = min(total_frames, len(pts_seq))
+            return max(
+                (pts + max(0, duration) for pts, duration in
+                 zip(pts_seq.pts_ms[:count], pts_seq.durations_ms[:count])),
+                default=0,
+            )
 
         packets = packet_stream()
         MatroskaWriter().write(MatroskaMuxPlan(
@@ -822,6 +852,9 @@ class MatroskaNativeMuxer:
             duration_ms=pts_seq.total_duration_ms,
             duration_ns=pts_seq.total_duration_ms * 1_000_000,
             muxing_app=self._muxing_app, writing_app=self._writing_app,
+            final_duration_ns=(
+                (lambda: written_duration_ms() * 1_000_000) if allow_frame_count_mismatch else None
+            ),
         ))
         cluster_count = sum(
             item.element_id == CLUSTER_ID for item in MatroskaReader(output).top_level()
@@ -831,7 +864,9 @@ class MatroskaNativeMuxer:
             track_number=track_number,
             frames_written=total_frames,
             cluster_count=cluster_count,
-            duration_ms=pts_seq.total_duration_ms,
+            duration_ms=written_duration_ms() if allow_frame_count_mismatch else pts_seq.total_duration_ms,
+            source_timestamps=len(pts_seq),
+            dropped_frames=dropped_frames,
         )
 
 __all__ = [

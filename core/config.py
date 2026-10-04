@@ -40,10 +40,10 @@ from core.workflows.common.ffmpeg_runtime import (
     normalize_max_parallel_video_encodes as _normalize_max_parallel_video_encodes,
 )
 from core.workdir import (
+    cleanable_work_dir_entries,
     clear_work_dir as clear_work_dir_contents,
+    ensure_work_dir as ensure_work_dir_path,
     prepare_process_work_dir,
-    work_dir_entries as list_work_dir_entries,
-    work_dir_has_entries,
 )
 
 
@@ -162,6 +162,7 @@ _WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
     "hdr10plus_tool": ("hdr10plus_tool.exe",),
     "eac3to": ("eac3to.exe",),
     "nvencc": ("NVEncC64.exe", "NVEncC.exe"),
+    "muxiveo_rife": ("muxiveo-rife.exe",),
 }
 
 _WINDOWS_WINGET_PATTERNS: dict[str, tuple[str, ...]] = {
@@ -748,10 +749,27 @@ def _app_data_dir() -> Path:
     return p
 
 
+def _legacy_default_work_dir() -> Path:
+    """Ancien défaut (≤ 4.2.0) : dossier temporaire système."""
+    return Path(tempfile.gettempdir()) / APP_TEMP_WORK_DIR_NAME
+
+
 def _default_work_dir() -> Path:
-    tmp = Path(tempfile.gettempdir())
-    p = tmp / APP_TEMP_WORK_DIR_NAME
-    return p
+    """Work dir par défaut, toujours sur disque.
+
+    Linux : /tmp est souvent un tmpfs (RAM) — Fedora, Arch, Debian 13 — trop
+    petit pour des flux UHD intermédiaires de plusieurs dizaines de Go ; le
+    cache utilisateur XDG est utilisé à la place.
+    """
+    if sys.platform.startswith("linux"):
+        cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+        return cache / APP_CONFIG_DIR_NAME / "work"
+    return _legacy_default_work_dir()
+
+
+def _is_default_work_dir(path: Path) -> bool:
+    """Vrai pour un chemin par défaut de l'application (actuel ou ancien)."""
+    return path in {_default_work_dir(), _legacy_default_work_dir()}
 
 
 def _default_output_dir() -> Path:
@@ -858,6 +876,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "hdr10plus_tool", "attr": "tool_hdr10plus", "kind": "tool", "label": "hdr10plus_tool", "description": "Outil HDR10+ utilisé pour les workflows HDR."},
             {"key": "eac3to", "attr": "tool_eac3to", "kind": "tool", "label": "eac3to", "description": "Option facultative sous Windows pour la conversion audio avancée."},
             {"key": "nvencc", "attr": "tool_nvencc", "kind": "tool", "label": "NVEncC", "description": "Wrapper NVIDIA NVENC standalone (rigaya) — encodage avancé. Détecté uniquement si un GPU NVIDIA est présent."},
+            {"key": "muxiveo_rife", "attr": "tool_muxiveo_rife", "kind": "tool", "label": "muxiveo-rife", "description": "Interpolation d'images RIFE (Vulkan) livrée avec Muxiveo — multiplication de cadence à l'encodage."},
         ),
     },
     {
@@ -1110,9 +1129,10 @@ class AppConfig:
                     if candidate.is_file():
                         return str(candidate)
             else:
-                candidate = tools_dir / ini_key
-                if candidate.is_file():
-                    return str(candidate)
+                for name in dict.fromkeys((ini_key, Path(default).name)):
+                    candidate = tools_dir / name
+                    if candidate.is_file():
+                        return str(candidate)
 
         # Priorité 2 : config.ini
         ini_value = self._ini_lookup("tools", ini_key)
@@ -1131,9 +1151,10 @@ class AppConfig:
             resolved = shutil.which(default)
             if resolved:
                 return resolved
-            for candidate in _non_windows_tool_candidates(ini_key):
-                if candidate.is_file():
-                    return str(candidate)
+            for name in dict.fromkeys((ini_key, Path(default).name)):
+                for candidate in _non_windows_tool_candidates(name):
+                    if candidate.is_file():
+                        return str(candidate)
             return default
 
         # Priorité 3c : Windows — autodetect étendu + persistance dans QSettings
@@ -1156,6 +1177,15 @@ class AppConfig:
                 os.environ["PATH"] = f"{bundled_str}{os.pathsep}{current_path}"
 
         self.work_dir = self._resolve_path("paths", "work_dir", "paths/work_dir", _default_work_dir())
+        if (
+            self.work_dir == _legacy_default_work_dir()
+            and self.work_dir != _default_work_dir()
+            and self._ini_lookup("paths", "work_dir") is _MISSING
+        ):
+            # Valeur QSettings égale à l'ancien défaut (/tmp, souvent en RAM) :
+            # migrée vers le nouveau défaut sur disque. Un choix explicite dans
+            # config.ini est respecté.
+            self.work_dir = _default_work_dir()
         self.output_dir = self._resolve_path("paths", "output_dir", "paths/output_dir", _default_output_dir())
         self.config_dir = _INI_PATH.parent
         self.config_dir.mkdir(parents=True, exist_ok=True)
@@ -1184,6 +1214,12 @@ class AppConfig:
                 if fallback:
                     resolved = fallback
             self.tool_nvencc = resolved
+        # muxiveo-rife : binaire Muxiveo (native/muxiveo-rife), optionnel.
+        self.tool_muxiveo_rife = self._resolve_tool_value(
+            "muxiveo_rife",
+            "tools/muxiveo_rife",
+            "muxiveo-rife.exe" if _is_windows() else "muxiveo-rife",
+        )
         self._tool_versions = ToolVersionRegistry(self.tool_commands())
 
         self.ffmpeg_threads = _normalize_ffmpeg_thread_count(
@@ -1443,6 +1479,7 @@ class AppConfig:
             "dovi_tool": self.tool_dovi_tool,
             "hdr10plus_tool": self.tool_hdr10plus,
             "eac3to": self.tool_eac3to,
+            "muxiveo-rife": getattr(self, "tool_muxiveo_rife", "muxiveo-rife"),
         }
 
     def refresh_tool_versions(self) -> None:
@@ -1479,19 +1516,19 @@ class AppConfig:
         return {name: _command_exists(cmd) for name, cmd in self.tool_commands().items()}
 
     def ensure_work_dir(self) -> Path:
-        self.work_dir.mkdir(parents=True, exist_ok=True)
-        return self.work_dir
+        """Crée le work_dir ; un chemin par défaut de l'application est marqué Muxiveo."""
+        return ensure_work_dir_path(self.work_dir, adopt=_is_default_work_dir(self.work_dir))
 
     def work_dir_entries(self) -> list[Path]:
-        """Retourne les entrées présentes dans le work_dir."""
-        return list_work_dir_entries(self.ensure_work_dir())
+        """Entrées que le nettoyage supprimerait (exactement celles à montrer)."""
+        return cleanable_work_dir_entries(self.ensure_work_dir())
 
     def work_dir_has_leftovers(self) -> bool:
-        """True si le work_dir contient des éléments non nettoyés."""
-        return work_dir_has_entries(self.ensure_work_dir())
+        """True si le work_dir contient des éléments Muxiveo non nettoyés."""
+        return bool(self.work_dir_entries())
 
     def clear_work_dir(self) -> Path:
-        """Vide le contenu du work_dir (sans supprimer le dossier racine)."""
+        """Supprime les entrées nettoyables du work_dir (jamais la racine)."""
         root = self.ensure_work_dir()
         clear_work_dir_contents(root)
         return root
@@ -1503,10 +1540,10 @@ class AppConfig:
         process_name: str | None = None,
     ) -> Path:
         """
-        Prépare un dossier process dédié sous work_dir.
+        Crée un dossier process neuf sous work_dir.
 
-        Le nom du dossier est dérivé du nom du fichier de sortie.
-        Si le dossier existe déjà, il est vidé avant usage.
+        Le nom est dérivé du fichier de sortie, suffixé d'un identifiant
+        aléatoire ; aucun dossier existant n'est réutilisé ni vidé.
         """
         return prepare_process_work_dir(
             self.ensure_work_dir(),
@@ -1551,6 +1588,7 @@ class AppConfig:
                 "dovi_tool": self.tool_dovi_tool,
                 "hdr10plus_tool": self.tool_hdr10plus,
                 "eac3to": self.tool_eac3to,
+                "muxiveo_rife": getattr(self, "tool_muxiveo_rife", ""),
             },
             "tool_versions": {
                 name: {

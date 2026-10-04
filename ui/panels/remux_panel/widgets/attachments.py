@@ -1226,6 +1226,26 @@ class _AttachmentPanel(QFrame):
             return {}
         return merged
 
+    def restore_tag_overrides(
+        self,
+        overrides: dict[str, str] | None,
+        edits: dict[str, str | None] | None = None,
+    ) -> None:
+        """Restaure les valeurs et les éditions à préserver lors d'un changement de source."""
+        inherited = self._merged_source_tags()
+        self._panel_tag_overrides = dict(overrides) if overrides is not None else None
+        if overrides is None:
+            self._tag_edits = {}
+        elif edits is not None:
+            self._tag_edits = dict(edits)
+        else:
+            self._tag_edits = {
+                key: overrides.get(key)
+                for key in inherited.keys() | overrides.keys()
+                if inherited.get(key) != overrides.get(key)
+            }
+        self._refresh_edit_tags_button()
+
     def get_extras_per_file(self) -> dict:
         """
         Retourne les sélections par fichier source.

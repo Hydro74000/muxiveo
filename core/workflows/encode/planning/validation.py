@@ -7,6 +7,8 @@ from typing import Callable
 
 from core.file_types import windows_filename_error, windows_path_length_error
 from core.workflows.common.track_types import TrackTimeOffset
+from core.workflows.common.path_safety import same_filesystem_target
+from core.workflows.encode.planning.sources import resolve_source_layout
 from core.workflows.encode.catalog import (
     supports_dovi,
     supports_hdr10plus,
@@ -140,8 +142,17 @@ def validate_encode_config(
             "Dossier de sortie non inscriptible : "
             f"{output_dir} (vérifiez les protections Windows sur les dossiers Bibliothèques)."
         )
-    if config.source == config.output:
-        errors.append("Le fichier de sortie doit être différent du fichier source.")
+    input_paths = dict.fromkeys((
+        *resolve_source_layout(config).sources,
+        *config.tag_sources,
+        *config.extra_attachments,
+    ))
+    for path in input_paths:
+        if same_filesystem_target(Path(path), config.output):
+            errors.append(
+                "Le fichier de sortie doit être différent du fichier source. "
+                f"Source concernée : {path}"
+            )
     if any(video.quality_mode == QualityMode.SIZE and video.codec != "copy" for video in planned_video_tracks) and not (config.duration_s or 0) > 0:
         errors.append("Durée du fichier source inconnue — mode taille cible impossible.")
 

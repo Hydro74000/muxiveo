@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Callable
 
 from core.bluray import append_ffmpeg_input_args
-from core.subprocess_utils import subprocess_text_kwargs
+from core.subprocess_utils import run_cancellable_capture, subprocess_text_kwargs
+from core.workflows.common.validation_override import ValidationOverride, accept_validation_override
 
 from core.runner import TaskCancelledError, TaskSignals
 from core.workdir import remove_path
@@ -19,9 +20,20 @@ from core.workflows.encode.domain import should_reinject_static_hdr_metadata
 from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode
 from core.workflows.encode.planning.track_assembly import build_track_input_paths, resolve_track_assembly
 from core.workflows.encode.planning.plan_models import EncodePlan
+from core.workflows.encode.planning.offsets import track_offset_ms
+from core.workflows.encode.interpolation import (
+    expand_dynamic_hdr_metadata,
+    ffprobe_beside,
+    probe_frame_rate,
+    required_dovi_level,
+    resolve_frame_ratio,
+    stream_start_offset,
+    stream_start_time,
+)
 from core.workflows.encode.runtime.frame_count_guard import (
     FrameCountAuditError,
     FrameCountGuard,
+    MetadataAdjustment,
 )
 from core.workflows.hevc_static_hdr_metadata import inject_static_hdr_sei_file
 from core.dovi_profile_detector import DoviSubProfile
@@ -116,6 +128,7 @@ class MetadataInjectRunnerCallbacks:
     report_static_hdr_failure: Callable[[str, str], None]
     #: Assemblage final Matroska natif (lot 3). None → reconstruction FFmpeg.
     native_assemble: Callable[..., None] | None = None
+    validation_override: ValidationOverride | None = None
 
 
 class MetadataInjectRunner:
@@ -329,12 +342,21 @@ class MetadataInjectRunner:
                         # `config` original reste intact pour STEP 8/9
                         # (timestamps source, audio, subs, chapitres).
                         if continue_rebound:
+                            # annexB brut sans horodatage : cadence de la source d'origine
+                            source_rate = probe_frame_rate(
+                                ffprobe_beside(cb.ffmpeg_bin), selected_video_source, selected_video_stream,
+                            ) or ""
+                            video = dataclasses.replace(video, input_frame_rate=source_rate)
                             rebound_tracks = [
-                                dataclasses.replace(track, source_path=converted, stream_index=0)
+                                dataclasses.replace(
+                                    track, source_path=converted, stream_index=0, input_frame_rate=source_rate,
+                                )
                                 for track in config.video_tracks
                             ]
                             rebound_video = (
-                                dataclasses.replace(config.video, source_path=converted, stream_index=0)
+                                dataclasses.replace(
+                                    config.video, source_path=converted, stream_index=0, input_frame_rate=source_rate,
+                                )
                                 if config.video is not None
                                 else None
                             )
@@ -354,17 +376,20 @@ class MetadataInjectRunner:
                 # HEVC annexB brut. Pour MP4/MOV/TS/..., il faut extraire d'abord
                 # en HEVC annexB via ffmpeg + bsf hevc_mp4toannexb, sinon le
                 # parser HEVC panique sur le VPS.
+                # Les outils lisent la première piste vidéo : une autre piste est
+                # extraite en annexB, comme les conteneurs non MKV.
                 _RAW_HEVC_EXT = {".hevc", ".h265", ".265", ".x265"}
                 meta_src = cb.video_source_path(effective_config)
+                meta_stream = int(cb.video_stream_index(effective_config))
                 meta_src_ext = meta_src.suffix.lower()
-                needs_annexb = meta_src_ext not in _RAW_HEVC_EXT and meta_src_ext != ".mkv"
+                needs_annexb = (meta_src_ext not in _RAW_HEVC_EXT and meta_src_ext != ".mkv") or meta_stream != 0
                 if needs_annexb and (video.copy_dv or video.copy_hdr10plus):
                     annexb_src = _alloc("source.hevc", src_size_est)
                     signals.progress.emit("Extraction HEVC annexB pour outillage DoVi/HDR10+…")
                     annexb_cmd = [cb.ffmpeg_bin, "-nostdin", "-y"]
                     append_ffmpeg_input_args(annexb_cmd, meta_src)
                     annexb_cmd.extend([
-                        "-map", "0:v:0", "-c", "copy",
+                        "-map", f"0:{meta_stream}", "-c", "copy",
                         "-bsf:v", "hevc_mp4toannexb",
                         "-f", "hevc", str(annexb_src),
                     ])
@@ -394,6 +419,34 @@ class MetadataInjectRunner:
                 if needs_annexb and (video.copy_dv or video.copy_hdr10plus):
                     _free(meta_input)
 
+                # Interpolation RIFE : une trame source -> ``factor`` trames
+                # encodées ; chaque trame interpolée hérite des métadonnées
+                # dynamiques de la trame source qui la précède.
+                frame_ratio = resolve_frame_ratio(
+                    video,
+                    ffprobe_bin=ffprobe_beside(cb.ffmpeg_bin),
+                    source=cb.video_source_path(config),
+                    stream_index=cb.video_stream_index(config),
+                )
+                expand_dynamic_hdr_metadata(
+                    ratio=frame_ratio,
+                    rpu_bin=rpu_bin if video.copy_dv else None,
+                    hdr10p_json=hdr10p_json if video.copy_hdr10plus else None,
+                    dovi_tool_bin=cb.bins.get("dovi_tool"),
+                    run_cmd=_run,
+                    log=cb.log_info,
+                )
+                dovi_min_level = (
+                    required_dovi_level(
+                        ffprobe_beside(cb.ffmpeg_bin),
+                        cb.video_source_path(effective_config),
+                        cb.video_stream_index(effective_config),
+                        frame_ratio,
+                    )
+                    if video.copy_dv and frame_ratio > 1
+                    else None
+                )
+
                 native_dovi_record = None
                 if cb.native_assemble is not None and video.copy_dv:
                     if not rpu_bin.is_file():
@@ -407,6 +460,7 @@ class MetadataInjectRunner:
                             p7_router_decision=p7_router_decision,
                             user_dovi_profile=str(video.dovi_profile or "0"),
                         ),
+                        min_level=dovi_min_level,
                     )
                     if native_dovi_record is None:
                         raise EncodeError(
@@ -564,24 +618,42 @@ class MetadataInjectRunner:
                         mediainfo_bin=cb.bins.get("mediainfo", "mediainfo"),
                         ffprobe_bin=cb.bins.get("ffprobe", "ffprobe"),
                         dovi_tool_bin=cb.bins["dovi_tool"],
+                        run_command=lambda cmd, **kwargs: run_cancellable_capture(
+                            cmd, cancel_cb=signals._cancel_event.is_set,
+                            check_cancelled=_check,
+                            on_start=signals._register_proc, on_end=signals._unregister_proc,
+                            **kwargs,
+                        ),
                     )
                     audit = guard.audit(
                         source=cb.video_source_path(effective_config),
                         encoded=current_hevc,
+                        source_stream_index=cb.video_stream_index(effective_config),
                         rpu_bin=rpu_bin if (video.copy_dv and rpu_bin.exists()) else None,
                         hdr10p_json=hdr10p_json if (video.copy_hdr10plus and hdr10p_json.exists()) else None,
                         known_encoded_frames=skeleton_result.blocks_written,
+                        frame_ratio=frame_ratio,
                     )
                     try:
+                        # TRIM_TAIL : RPU / HDR10+ extraits du même fichier que
+                        # la vidéo encodée, début aligné par construction ; un
+                        # surplus final (≤ 4) est retiré, un manque bloque.
                         guard.enforce(
                             audit,
+                            adjustment=MetadataAdjustment.TRIM_TAIL,
                             rpu_bin=rpu_bin if (video.copy_dv and rpu_bin.exists()) else None,
                             hdr10p_json=hdr10p_json if (video.copy_hdr10plus and hdr10p_json.exists()) else None,
                             on_warn=lambda msg: signals.progress.emit(f"[WARN] {msg}"),
                             on_info=lambda msg: signals.progress.emit(msg),
                         )
                     except FrameCountAuditError as exc:
-                        raise RuntimeError(f"Audit frame count : {exc}") from exc
+                        _check()
+                        if not accept_validation_override(
+                            cb.validation_override, current_hevc, f"Audit frame count : {exc}",
+                            signals._cancel_event.is_set, cb.log_warn,
+                        ):
+                            _check()
+                            raise RuntimeError(f"Audit frame count : {exc}") from exc
                     _check()
 
                 # Si on avait converti P7/P5 → P8.1 en amont, le HEVC
@@ -709,6 +781,7 @@ class MetadataInjectRunner:
                             p7_router_decision=p7_router_decision,
                             user_dovi_profile=str(video.dovi_profile or "0"),
                         ),
+                        min_level=dovi_min_level,
                     )
                 signals.progress.emit(
                     "Réécriture des payloads vidéo (timestamps de l'encodeur conservés)…"
@@ -732,14 +805,31 @@ class MetadataInjectRunner:
                 current_video_input = wrapped_video
                 _check()
 
+                # Départ voulu de la vidéo : départ du flux dans la source d'origine
+                # (perdu par une conversion P7/P5 en annexB brut, ou par la remise à
+                # zéro des entrées FFmpeg) + décalage configuré.
+                encode_plan = plan or cb.build_encode_plan(config)
+                video_source = cb.video_source_path(config)
+                video_stream = cb.video_stream_index(config)
+                intended_video_ms = round(1000 * stream_start_offset(
+                    ffprobe_beside(cb.ffmpeg_bin), video_source, video_stream,
+                )) + max(0, track_offset_ms(
+                    dict(encode_plan.offset_lookup),
+                    track_type="video", source_path=video_source, stream_index=video_stream,
+                ))
+
                 if cb.native_assemble is not None:
                     cb.log_step(9, "Assemblage final Matroska natif")
+                    # L'assembleur natif décale les horodatages de l'artefact.
+                    artifact_ms = round(1000 * stream_start_time(
+                        ffprobe_beside(cb.ffmpeg_bin), current_video_input, 0,
+                    ))
                     cb.native_assemble(
                         config,
                         intermediate=current_video_input,
-                        video_offset_ms=0,
+                        video_offset_ms=max(intended_video_ms - artifact_ms, -artifact_ms),
                         signals=signals,
-                        plan=plan or cb.build_encode_plan(config),
+                        plan=encode_plan,
                         work_dir=tmp,
                     )
                     signals.finished.emit(str(config.output))
@@ -747,7 +837,6 @@ class MetadataInjectRunner:
 
                 cb.log_step(9, "Reconstruction finale du conteneur MKV")
                 signals.progress.emit("Reconstitution finale…")
-                encode_plan = plan or cb.build_encode_plan(config)
                 all_sources = list(encode_plan.all_sources)
                 extra_sources = all_sources[1:]
                 recon_source_idx = cb.source_input_index_map(all_sources)
@@ -810,12 +899,16 @@ class MetadataInjectRunner:
                     video_fallback_input=current_video_input,
                 )
 
+                # FFmpeg ramène chaque entrée à zéro : le départ voulu de la vidéo
+                # remplace son décalage configuré (entrée auxiliaire -itsoffset).
+                offset_lookup = dict(encode_plan.offset_lookup)
+                offset_lookup[("video", Path(video_source), int(video_stream))] = intended_video_ms
                 next_input_index, offset_remap = cb.append_offset_aux_inputs(
                     recon_cmd,
                     cb.build_offset_specs(
                         config,
                         track_mappings=list(track_assembly.track_mappings),
-                        offset_lookup=dict(encode_plan.offset_lookup),
+                        offset_lookup=offset_lookup,
                     ),
                     start_input_index=next_input_index,
                 )
@@ -867,6 +960,7 @@ class MetadataInjectRunner:
                             rpu_bin=rpu_bin,
                             dovi_tool_bin=cb.bins["dovi_tool"],
                             forced_compat_id=forced_compat_id,
+                            min_level=dovi_min_level,
                         )
                         if record is None:
                             signals.progress.emit(
@@ -977,6 +1071,7 @@ def _build_dovi_record_from_rpu(
     rpu_bin: Path,
     dovi_tool_bin: str,
     forced_compat_id: int | None = None,
+    min_level: int | None = None,
 ) -> DolbyVisionConfigRecord | None:
     """
     Interroge ``dovi_tool info -i RPU --summary`` et construit le record DOVI
@@ -1029,6 +1124,9 @@ def _build_dovi_record_from_rpu(
     level_match = re.search(r"DV\s+Level\s*:\s*(\d+)", text, re.IGNORECASE)
     raw_level = int(level_match.group(1)) if level_match else 6
     level = sanitize_dovi_level(raw_level)
+    if min_level is not None:
+        # Cadence de sortie supérieure à la source (interpolation) : niveau relevé.
+        level = max(level, int(min_level))
 
     # En sortie de pipeline metadata_inject, on a forcément un stream
     # mono-layer (le BL est ce que NVENC a encodé) avec RPU réinjecté.

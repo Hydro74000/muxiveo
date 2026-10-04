@@ -115,10 +115,70 @@ jobs:
             echo "appimage_update_release=$appimage_update_release"
           } >> "$GITHUB_OUTPUT"
 
+  muxiveo-rife-state:
+    name: muxiveo-rife release state
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.state.outputs.build }}
+      tag: ${{ steps.state.outputs.tag }}
+    steps:
+      - name: Checkout
+        shell: bash
+        env:
+          CHECKOUT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$CHECKOUT_SHA"
+          git checkout --detach --force "$CHECKOUT_SHA"
+
+      # Release de la version épinglée absente -> compilation + publication avant le
+      # packaging. Présente -> le code natif doit être identique à celui publié.
+      - name: Resolve state
+        id: state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -n 's/^project(muxiveo-rife VERSION \([0-9.]*\).*/\1/p' native/muxiveo-rife/CMakeLists.txt)
+          PINNED=$(sed -n 's/^MUXIVEO_RIFE_VERSION = "\([0-9.]*\)"/\1/p' core/version.py)
+          if [ -z "$VERSION" ] || [ "$VERSION" != "$PINNED" ]; then
+            echo "::error::Version muxiveo-rife incohérente : CMakeLists.txt ($VERSION) != core/version.py ($PINNED)"
+            exit 1
+          fi
+          TAG="muxiveo-rife-v${VERSION}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::notice::${TAG} absente : compilation et publication avant le packaging"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          NATIVE=(native/muxiveo-rife/src native/muxiveo-rife/cmake native/muxiveo-rife/CMakeLists.txt
+                  native/muxiveo-rife/models.json native/muxiveo-rife/scripts)
+          if ! git diff --quiet "$TAG" HEAD -- "${NATIVE[@]}"; then
+            echo "::error::Code natif modifié depuis ${TAG} : incrémenter la version (native/muxiveo-rife/CMakeLists.txt + MUXIVEO_RIFE_VERSION de core/version.py)"
+            git diff --stat "$TAG" HEAD -- "${NATIVE[@]}"
+            exit 1
+          fi
+          echo "build=false" >> "$GITHUB_OUTPUT"
+
+  muxiveo-rife:
+    name: muxiveo-rife
+    needs: muxiveo-rife-state
+    if: ${{ needs.muxiveo-rife-state.outputs.build == 'true' }}
+    uses: ./.github/workflows/muxiveo-rife.yml
+    with:
+      publish: true
+
   build-linux:
     name: Build Linux AppImage
     runs-on: ubuntu-latest
-    needs: release-metadata
+    # muxiveo-rife embarqué : release publiée (ou déjà existante) avant le packaging
+    needs: [release-metadata, muxiveo-rife-state, muxiveo-rife]
+    if: ${{ !cancelled() && needs.release-metadata.result == 'success' && needs.muxiveo-rife-state.result == 'success' && (needs.muxiveo-rife.result == 'success' || needs.muxiveo-rife.result == 'skipped') }}
     steps:
       - name: Checkout
         shell: bash
@@ -166,6 +226,11 @@ jobs:
         run: |
           python package_appimage.py --allinc --version "$PACKAGE_VERSION"
 
+      # Le packaging n'émet qu'un avertissement si muxiveo-rife manque : bloquant ici.
+      - name: Verify embedded muxiveo-rife
+        shell: bash
+        run: python scripts/check_allinc_rife.py dist/releases/Muxiveo-x86_64_allinc-*.AppImage
+
       - name: Collect Linux assets
         shell: bash
         run: |
@@ -185,7 +250,9 @@ jobs:
   build-windows:
     name: Build Windows installer
     runs-on: windows-latest
-    needs: release-metadata
+    # muxiveo-rife embarqué : release publiée (ou déjà existante) avant le packaging
+    needs: [release-metadata, muxiveo-rife-state, muxiveo-rife]
+    if: ${{ !cancelled() && needs.release-metadata.result == 'success' && needs.muxiveo-rife-state.result == 'success' && (needs.muxiveo-rife.result == 'success' || needs.muxiveo-rife.result == 'skipped') }}
     steps:
       - name: Checkout
         shell: pwsh
@@ -235,6 +302,16 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           python package.py --nsis --allinc --portable --version "$env:PACKAGE_VERSION"
+
+      # Le packaging n'émet qu'un avertissement si muxiveo-rife manque : bloquant ici.
+      - name: Verify embedded muxiveo-rife
+        shell: pwsh
+        env:
+          PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
+        run: |
+          python scripts/check_allinc_rife.py `
+            "dist\releases\Muxiveo-Setup-AllInc-$env:PACKAGE_VERSION.exe" `
+            "dist\releases\Muxiveo-Windows-x64-allinc-$env:PACKAGE_VERSION.zip"
 
       - name: Collect Windows assets
         shell: pwsh
@@ -401,6 +478,9 @@ jobs:
           HDR_JSON=$(python scripts/github_release_asset.py --repo quietvoid/hdr10plus_tool --pattern universal-macOS.zip --sha256)
           echo "dovi_json=$DOVI_JSON" >> "$GITHUB_OUTPUT"
           echo "hdr_json=$HDR_JSON" >> "$GITHUB_OUTPUT"
+          RIFE_TAG=$(python -c "from core.version import MUXIVEO_RIFE_RELEASE_TAG as t; print(t)")
+          RIFE_JSON=$(python scripts/github_release_asset.py --repo "$GITHUB_REPOSITORY" --tag "$RIFE_TAG" --pattern macos-arm64.tar.gz --sha256 || echo '{}')
+          echo "rife_json=$RIFE_JSON" >> "$GITHUB_OUTPUT"
 
       - name: Generate Homebrew formula
         shell: bash
@@ -410,6 +490,7 @@ jobs:
           RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
           DOVI_JSON: ${{ steps.tools.outputs.dovi_json }}
           HDR_JSON: ${{ steps.tools.outputs.hdr_json }}
+          RIFE_JSON: ${{ steps.tools.outputs.rife_json }}
         run: |
           set -euo pipefail
           mkdir -p release-assets/formula
@@ -432,6 +513,8 @@ jobs:
             --hdr10plus-tool-macos-url "$HDR_URL" \
             --hdr10plus-tool-macos-sha256 "$HDR_SHA" \
             --homepage "https://github.com/${REPO}" \
+            --muxiveo-rife-macos-url "$(python -c 'import json, os; print(json.loads(os.environ.get("RIFE_JSON") or "{}").get("url", ""))')" \
+            --muxiveo-rife-macos-sha256 "$(python -c 'import json, os; print(json.loads(os.environ.get("RIFE_JSON") or "{}").get("sha256", ""))')" \
             --output release-assets/formula/Muxiveo.rb
 
       - name: Upload formula artifact
@@ -469,6 +552,12 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+
+      # Archives du job muxiveo-rife du même run (publiées dans leur propre release) :
+      # download-artifact ne sait pas exclure par motif.
+      - name: Drop muxiveo-rife artifacts
+        shell: bash
+        run: rm -fv artifacts/muxiveo-rife-*
 
       - name: Add source archives
         shell: bash
@@ -513,12 +602,13 @@ jobs:
               --jq '[.[] | select(.isPrerelease == true and (.tagName | test("-unstable\\.")))][0].tagName // ""')"
           else
             previous_tag="$(gh release list --limit 100 --json tagName,isPrerelease \
-              --jq '[.[] | select(.isPrerelease == false)][0].tagName // ""')"
+              --jq '[.[] | select(.isPrerelease == false and (.tagName | startswith("v")))][0].tagName // ""')"
           fi
 
           if [ -z "$previous_tag" ]; then
+            # tags de l'app uniquement (muxiveo-rife-v* a ses propres releases)
             previous_tag="$(gh release list --limit 100 --json tagName \
-              --jq '.[0].tagName // ""')"
+              --jq '[.[] | select(.tagName | startswith("v"))][0].tagName // ""')"
           fi
 
           range=""

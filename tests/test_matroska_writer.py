@@ -28,6 +28,31 @@ def source_track(number: int, uid: int, codec: str, kind: int) -> MatroskaTrack:
     return MatroskaTrack(number, uid, kind, codec, b"", "", "und", "", raw)
 
 
+@pytest.mark.parametrize("accepted", [True, False])
+def test_native_structural_rejection_can_be_overridden_before_commit(tmp_path, accepted):
+    output = tmp_path / "out.mkv"
+    output.write_bytes(b"previous result")
+    track = MatroskaMuxTrack(Path("source.mkv"), source_track(1, 1, "V_MPEG4/ISO/AVC", 1), 1, 1)
+    plan = MatroskaMuxPlan(output, (track,), ())
+    messages = []
+
+    def decide(candidate, message):
+        assert output.read_bytes() == b"previous result"
+        assert candidate.is_file()
+        messages.append(message)
+        return accepted
+
+    if accepted:
+        MatroskaWriter().write(plan, validation_error_handler=decide)
+        assert len(MatroskaReader(output).tracks()) == 1
+    else:
+        with pytest.raises(ValueError, match="aucun paquet"):
+            MatroskaWriter().write(plan, validation_error_handler=decide)
+        assert output.read_bytes() == b"previous result"
+    assert len(messages) == 1
+    assert not output.with_suffix(".mkv.partial").exists()
+
+
 def test_writer_roundtrips_multiple_tracks_and_packets(tmp_path: Path) -> None:
     video = source_track(7, 70, "V_MPEG4/ISO/AVC", 1)
     audio = source_track(7, 71, "A_AAC", 2)
@@ -357,5 +382,4 @@ def test_writer_progress_reports_percent(tmp_path: Path) -> None:
     for p in progress_events:
         if p.percent is not None:
             assert 0 <= p.percent <= 100
-
 

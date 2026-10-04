@@ -78,6 +78,39 @@ def sanitize_dovi_level(
     return level
 
 
+# Niveaux Dolby Vision (Profiles and Levels) : largeur max, débit pixels max.
+_DOVI_LEVELS: tuple[tuple[int, int, int], ...] = (
+    (1, 1280, 22_118_400),     # 1280x720@24
+    (2, 1280, 27_648_000),     # 1280x720@30
+    (3, 1920, 49_766_400),     # 1920x1080@24
+    (4, 2560, 62_208_000),     # 1920x1080@30
+    (5, 3840, 124_416_000),    # 1920x1080@60
+    (6, 3840, 199_065_600),    # 3840x2160@24
+    (7, 3840, 248_832_000),    # 3840x2160@30
+    (8, 3840, 398_131_200),    # 3840x2160@48
+    (9, 3840, 497_664_000),    # 3840x2160@60
+    (10, 3840, 995_328_000),   # 3840x2160@120
+    (11, 7680, 995_328_000),   # 7680x4320@30
+    (12, 7680, 1_990_656_000), # 7680x4320@60
+    (13, 7680, 3_981_312_000), # 7680x4320@120
+)
+
+
+def minimum_dovi_level(width: int, height: int, fps: float) -> int:
+    """Plus petit niveau Dolby Vision couvrant ``width`` x ``height`` à ``fps`` images/s.
+
+    Sert à relever le niveau signalé quand la cadence de sortie dépasse celle
+    de la source (interpolation d'images) : un niveau sous-déclaré peut être
+    rejeté par les décodeurs matériels.
+    """
+    pixel_rate = max(0, int(width)) * max(0, int(height)) * max(0.0, float(fps))
+    longest = max(int(width), int(height))
+    for level, max_width, max_rate in _DOVI_LEVELS:
+        if longest <= max_width and pixel_rate <= max_rate * 1.001:
+            return level
+    return _DOVI_LEVELS[-1][0]
+
+
 # Element IDs Matroska (cf spec)
 _TRACKS_ID = b"\x16\x54\xae\x6b"
 _TRACK_ENTRY_ID = b"\xae"

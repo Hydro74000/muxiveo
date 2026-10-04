@@ -2,7 +2,7 @@
 
 L'hybridation dans Muxiveo permet de combiner le meilleur de plusieurs sources pour créer la version parfaite de vos films et séries : par exemple, associer une superbe image 4K ou Blu-ray (la **référence**) avec la piste audio française ou les sous-titres d'une autre édition (le **donneur**).
 
-Muxiveo se charge d'analyser le son des deux versions, de trouver automatiquement le décalage temporel à la milliseconde près, et de synchroniser parfaitement l'audio et les sous-titres sans aucun décalage dans vos lecteurs.
+Par défaut, Muxiveo analyse le son des deux versions pour estimer leur décalage temporel et recaler l'audio et les sous-titres. Le Studio Hybridation permet aussi d'utiliser un décalage manuel ou de désactiver entièrement ce recalage.
 
 ---
 
@@ -31,11 +31,13 @@ Pour traiter 10, 20 ou 50 épisodes d'un coup sans effort :
    - **Référence :** le dossier contenant vos épisodes avec la meilleure vidéo.
    - **Donneur :** le dossier contenant vos pistes audio ou sous-titres additionnels.
    - **Sortie :** le dossier où enregistrer les épisodes hybrides finaux.
-3. Cliquez sur **Analyser la saison** :
-   - Muxiveo apparie automatiquement chaque épisode (S01E01 avec S01E01, etc.).
-   - Le système calcule la synchronisation pour chaque fichier et affiche le résultat dans le tableau.
-4. *(Optionnel)* Cliquez sur un épisode pour visualiser les formes d'ondes sonores superposées et tester un extrait via le bouton **Pré-écoute**.
-5. Cliquez sur **Lancer l'hybridation** : vos épisodes complets et synchronisés sont générés les uns après les autres.
+3. Choisissez **Analyse synchro** :
+   - **Automatique** (défaut) : Muxiveo compare six fenêtres audio par donneur et recherche les coupures si l'option est cochée. Quand le donneur possède une piste audio dans la langue du master, cette piste sert de témoin pour calibrer les pistes retenues, même si elle n'est pas conservée dans la sortie. L'analyse peut prendre du temps sur une saison ou des fichiers sur réseau.
+   - **Décalage manuel** : renseignez un décalage initial en millisecondes, appliqué à chaque donneur sans analyse acoustique. Après la préparation rapide, sélectionnez un épisode et utilisez **Ajustement manuel** pour lui attribuer un décalage différent ; les autres épisodes gardent leur valeur. Le recalage des sous-titres suit l'option choisie.
+   - **Aucune synchronisation** : les pistes donneuses sont assemblées sans décalage ni préparation physique de synchro. Leur synchronisme avec la vidéo n'est pas vérifié.
+4. Cliquez sur **Analyser la saison** en mode automatique, ou sur **Préparer la saison** dans les autres modes, pour voir les appariements et régler les décalages avant le traitement. Vous pouvez aussi cliquer directement sur **Lancer l'hybridation** pour préparer puis traiter la saison selon le mode choisi.
+   - L'inspection des pistes reste nécessaire dans les trois modes.
+5. *(Optionnel)* Cliquez sur un épisode analysé pour visualiser les formes d'ondes sonores superposées et tester un extrait via le bouton **Pré-écoute**.
 
 ### B. Traiter un film individuel : le panneau Conteneur
 

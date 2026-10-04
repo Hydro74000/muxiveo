@@ -45,7 +45,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core.ui_language import system_ui_language
-from core.version import APP_CONFIG_DIR_NAME
+from core.github_release import THIRD_PARTY_TOOLS, asset_sha256, file_sha256, release_api_url, requested_tag
+from core.version import APP_CONFIG_DIR_NAME, APP_REPOSITORY, MUXIVEO_RIFE_RELEASE_TAG, MUXIVEO_RIFE_VERSION
 
 # ---------------------------------------------------------------------------
 # Terminal colours (no external deps)
@@ -146,6 +147,7 @@ WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
     "hdr10plus_tool": ("hdr10plus_tool.exe",),
     "eac3to": ("eac3to.exe",),
     "nvencc": ("NVEncC64.exe", "NVEncC.exe"),
+    "muxiveo_rife": ("muxiveo-rife.exe",),
 }
 
 WINDOWS_WINGET_PATTERNS: dict[str, tuple[str, ...]] = {
@@ -161,6 +163,7 @@ WINDOWS_CONFIG_TOOL_ORDER: tuple[str, ...] = (
     "dovi_tool",
     "hdr10plus_tool",
     "eac3to",
+    "muxiveo_rife",
 )
 
 # Outils qui écrivent dans les dossiers protégés (Windows CFA allowlist).
@@ -177,6 +180,12 @@ WINDOWS_REQUIRED_TOOLS: tuple[str, ...] = (
     "mediainfo",
     "dovi_tool",
     "hdr10plus_tool",
+)
+
+# Outils GitHub facultatifs sous Windows : installés (ou mis à jour) par le
+# setup sans conditionner la santé de l'installation.
+WINDOWS_OPTIONAL_GITHUB_TOOLS: tuple[str, ...] = (
+    "muxiveo_rife",
 )
 
 
@@ -231,13 +240,16 @@ SYSTEM_TOOLS: dict[str, dict] = {
         "apt":    "python3-pip",
         "dnf":    "python3-pip",
         "brew":   "python",
-        "winget": "buyukakyuz.install-nothing",
+        # Windows : pip est livré avec Python (appelé via ``sys.executable -m pip``).
+        "winget": "",
         "desc":   "Python Package Installer",
     },
     "openGL": {
-        "apt":    "libegl1-mesa",
+        # libegl1 (libglvnd) : libegl1-mesa n'existe plus (Debian 13, Ubuntu 24.04+).
+        "apt":    "libegl1",
         "dnf":    "mesa-libEGL",
-        "brew":   "xquartz",
+        # macOS : Qt (Cocoa) n'utilise ni X11 ni EGL, rien à installer.
+        "brew":   "",
         "winget": "",
         "desc":   "OpenGL libraries",
         "path_check": False,
@@ -276,6 +288,25 @@ SYSTEM_TOOLS: dict[str, dict] = {
 #   suffix  — substring that uniquely identifies the asset filename
 #   fmt     — "tar.gz" or "zip"
 GITHUB_TOOLS: dict[str, dict] = {
+    "muxiveo_rife": {
+        "repo": APP_REPOSITORY,
+        "release_tag": MUXIVEO_RIFE_RELEASE_TAG,
+        "desc": "Interpolation d'images RIFE (Vulkan) livrée avec Muxiveo",
+        # Archive complète : binaire + rife-models/ (+ MoltenVK sous macOS).
+        "bundle": True,
+        # Une installation plus ancienne est remplacée (modèles livrés par release).
+        "min_version": MUXIVEO_RIFE_VERSION,
+        "binary_name": {
+            "Linux":   "muxiveo-rife",
+            "Darwin":  "muxiveo-rife",
+            "Windows": "muxiveo-rife.exe",
+        },
+        "asset_patterns": {
+            ("Linux",   "x86_64"): {"suffix": "-linux-x86_64.tar.gz",   "fmt": "tar.gz", "name_prefix": "muxiveo-rife-"},
+            ("Darwin",  "arm64"):  {"suffix": "-macos-arm64.tar.gz",    "fmt": "tar.gz", "name_prefix": "muxiveo-rife-"},
+            ("Windows", "x86_64"): {"suffix": "-windows-x86_64.zip",    "fmt": "zip",    "name_prefix": "muxiveo-rife-"},
+        },
+    },
     "dovi_tool": {
         "repo": "quietvoid/dovi_tool",
         "desc": "Dolby Vision RPU extraction and injection",
@@ -285,12 +316,12 @@ GITHUB_TOOLS: dict[str, dict] = {
             "Windows": "dovi_tool.exe",
         },
         "asset_patterns": {
-            ("Linux",   "x86_64"): {"suffix": "x86_64-unknown-linux-musl.tar.gz",  "fmt": "tar.gz"},
-            ("Linux",   "arm64"):  {"suffix": "aarch64-unknown-linux-musl.tar.gz", "fmt": "tar.gz"},
-            ("Darwin",  "x86_64"): {"suffix": "universal-macOS.zip",               "fmt": "zip"},
-            ("Darwin",  "arm64"):  {"suffix": "universal-macOS.zip",               "fmt": "zip"},
-            ("Windows", "x86_64"): {"suffix": "x86_64-pc-windows-msvc.zip",        "fmt": "zip"},
-            ("Windows", "arm64"):  {"suffix": "aarch64-pc-windows-msvc.zip",       "fmt": "zip"},
+            ("Linux",   "x86_64"): {"suffix": "x86_64-unknown-linux-musl.tar.gz",  "fmt": "tar.gz", "name_prefix": "dovi_tool-"},
+            ("Linux",   "arm64"):  {"suffix": "aarch64-unknown-linux-musl.tar.gz", "fmt": "tar.gz", "name_prefix": "dovi_tool-"},
+            ("Darwin",  "x86_64"): {"suffix": "universal-macOS.zip",               "fmt": "zip", "name_prefix": "dovi_tool-"},
+            ("Darwin",  "arm64"):  {"suffix": "universal-macOS.zip",               "fmt": "zip", "name_prefix": "dovi_tool-"},
+            ("Windows", "x86_64"): {"suffix": "x86_64-pc-windows-msvc.zip",        "fmt": "zip", "name_prefix": "dovi_tool-"},
+            ("Windows", "arm64"):  {"suffix": "aarch64-pc-windows-msvc.zip",       "fmt": "zip", "name_prefix": "dovi_tool-"},
         },
     },
     "hdr10plus_tool": {
@@ -302,12 +333,12 @@ GITHUB_TOOLS: dict[str, dict] = {
             "Windows": "hdr10plus_tool.exe",
         },
         "asset_patterns": {
-            ("Linux",   "x86_64"): {"suffix": "x86_64-unknown-linux-musl.tar.gz",  "fmt": "tar.gz"},
-            ("Linux",   "arm64"):  {"suffix": "aarch64-unknown-linux-musl.tar.gz", "fmt": "tar.gz"},
-            ("Darwin",  "x86_64"): {"suffix": "universal-macOS.zip",               "fmt": "zip"},
-            ("Darwin",  "arm64"):  {"suffix": "universal-macOS.zip",               "fmt": "zip"},
-            ("Windows", "x86_64"): {"suffix": "x86_64-pc-windows-msvc.zip",        "fmt": "zip"},
-            ("Windows", "arm64"):  {"suffix": "aarch64-pc-windows-msvc.zip",       "fmt": "zip"},
+            ("Linux",   "x86_64"): {"suffix": "x86_64-unknown-linux-musl.tar.gz",  "fmt": "tar.gz", "name_prefix": "hdr10plus_tool-"},
+            ("Linux",   "arm64"):  {"suffix": "aarch64-unknown-linux-musl.tar.gz", "fmt": "tar.gz", "name_prefix": "hdr10plus_tool-"},
+            ("Darwin",  "x86_64"): {"suffix": "universal-macOS.zip",               "fmt": "zip", "name_prefix": "hdr10plus_tool-"},
+            ("Darwin",  "arm64"):  {"suffix": "universal-macOS.zip",               "fmt": "zip", "name_prefix": "hdr10plus_tool-"},
+            ("Windows", "x86_64"): {"suffix": "x86_64-pc-windows-msvc.zip",        "fmt": "zip", "name_prefix": "hdr10plus_tool-"},
+            ("Windows", "arm64"):  {"suffix": "aarch64-pc-windows-msvc.zip",       "fmt": "zip", "name_prefix": "hdr10plus_tool-"},
         },
     },
     "nvencc": {
@@ -938,18 +969,26 @@ def _non_windows_tool_candidates(tool_name: str, prefix: Path | None = None) -> 
     return _dedupe_paths(candidates)
 
 
+def _tool_binary_names(tool_name: str) -> tuple[str, ...]:
+    """Noms de binaire d'un outil : clé de config puis nom réel (ex. muxiveo_rife -> muxiveo-rife)."""
+    binary = GITHUB_TOOLS.get(tool_name, {}).get("binary_name", {})
+    return tuple(dict.fromkeys((tool_name, binary.get(OS, binary.get("Linux", tool_name)))))
+
+
 def _detect_non_windows_tool_path(tool_name: str, prefix: Path | None = None) -> str | None:
-    resolved = shutil.which(tool_name)
-    if resolved:
-        return resolved
+    for name in _tool_binary_names(tool_name):
+        resolved = shutil.which(name)
+        if resolved:
+            return resolved
 
     ini_value = _existing_ini_tool_values(_config_ini_path()).get(tool_name.lower(), "")
     if ini_value and Path(ini_value).is_file():
         return ini_value
 
-    for candidate in _non_windows_tool_candidates(tool_name, prefix):
-        if candidate.is_file():
-            return str(candidate)
+    for name in _tool_binary_names(tool_name):
+        for candidate in _non_windows_tool_candidates(name, prefix):
+            if candidate.is_file():
+                return str(candidate)
 
     return None
 
@@ -1218,12 +1257,6 @@ def install_winget(
         if not winget_id or winget_id in already_seen:
             continue
         already_seen.add(winget_id)
-        if winget_id == "buyukakyuz.install-nothing" and force:
-            if shutil.which(exe):
-                ok(f"{exe} already present")
-            else:
-                warn("Skipping pip force-reinstall on Windows (winget placeholder package)")
-            continue
         if not force and shutil.which(exe):
             ok(f"{exe} already present")
         else:
@@ -1249,9 +1282,13 @@ def install_winget(
 # Step 3 — GitHub binary tools
 # ---------------------------------------------------------------------------
 
-def _github_latest_release(repo: str) -> dict:
-    """Fetch latest release metadata from GitHub API."""
-    url = f"https://api.github.com/repos/{repo}/releases/latest"
+def _github_release(repo: str, tag: str | None) -> dict:
+    """Fetch release metadata (``releases/tags/<tag>``, or ``releases/latest`` if no tag)."""
+    return _github_release_json(release_api_url(repo, tag))
+
+
+def _github_release_json(url: str) -> dict:
+    """GET JSON GitHub API (repli PowerShell sous Windows)."""
     req = urllib.request.Request(url, headers={"User-Agent": "Muxiveo-setup/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -1263,10 +1300,10 @@ def _github_latest_release(repo: str) -> dict:
                 return json.loads(payload)
             except Exception as fallback_error:
                 raise RuntimeError(
-                    f"Cannot reach GitHub API for {repo}: {e} "
+                    f"Cannot reach GitHub API ({url}): {e} "
                     f"(Windows fallback failed: {fallback_error})"
                 ) from fallback_error
-        raise RuntimeError(f"Cannot reach GitHub API for {repo}: {e}") from e
+        raise RuntimeError(f"Cannot reach GitHub API ({url}): {e}") from e
 
 def _download_file(url: str, dest: Path) -> None:
     """Download url → dest with a simple progress indicator."""
@@ -1762,6 +1799,161 @@ def _find_asset(release: dict, suffix: str, *, name_prefix: str = "") -> Optiona
             return asset["browser_download_url"]
     return None
 
+def _expected_asset_sha256(release: dict, url: str) -> Optional[str]:
+    """Somme SHA-256 publiée (champ ``digest``) de l'asset téléchargé depuis ``url``."""
+    for asset in release.get("assets", []):
+        if asset.get("browser_download_url") == url:
+            return asset_sha256(asset)
+    return None
+
+
+def _verify_release_asset(release: dict, url: str, path: Path, *, required: bool) -> None:
+    """Vérifie la somme SHA-256 d'un asset téléchargé.
+
+    ``required`` (outil tiers) : somme non publiée ou différente → refus.
+    Sinon (release Muxiveo par tag) : la somme publiée par GitHub est vérifiée
+    si elle existe, avertissement dans le cas contraire.
+    """
+    name = url.rsplit("/", 1)[-1]
+    expected = _expected_asset_sha256(release, url)
+    if expected is None:
+        if required:
+            raise RuntimeError(f"No SHA-256 published by GitHub for {name}: installation refused.")
+        warn(f"{name}: no published SHA-256, integrity not verified.")
+        return
+    actual = file_sha256(path)
+    if actual != expected:
+        raise RuntimeError(
+            f"SHA-256 mismatch for {name} (expected {expected}, got {actual}): installation refused."
+        )
+    ok(f"SHA-256 verified: {name}")
+
+
+def _ensure_safe_archive_names(names) -> None:
+    """Refuse les chemins absolus ou remontants (``..``) d'une archive."""
+    for name in names:
+        parts = Path(name.replace("\\", "/")).parts
+        if Path(name).is_absolute() or ".." in parts or name.startswith(("/", "\\")):
+            raise RuntimeError(f"Unsafe path in archive: {name}")
+
+
+def _prefix_writable(prefix: Path) -> bool:
+    """Vrai si l'utilisateur peut écrire dans ``prefix`` (ou dans son premier parent existant)."""
+    probe = prefix
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    return os.access(probe, os.W_OK | (os.X_OK if probe.is_dir() else 0))
+
+
+def _tool_destination_writable(prefix: Path, bin_dir: Path, binary_name: str, *, bundle: bool) -> bool:
+    """Vérifie aussi les fichiers laissés par une ancienne installation avec sudo."""
+    paths = [prefix, bin_dir, bin_dir / binary_name]
+    lib_dir = prefix / "lib" / Path(binary_name).stem
+    if bundle:
+        paths.extend((lib_dir.parent, lib_dir))
+    if not all(_prefix_writable(path) for path in paths):
+        return False
+
+    def unreadable(error: OSError) -> None:
+        raise error
+
+    if bundle and lib_dir.is_dir():
+        try:
+            for root, directories, files in os.walk(lib_dir, onerror=unreadable):
+                if not all(_prefix_writable(Path(root) / name) for name in directories + files):
+                    return False
+        except OSError:
+            return False
+    return True
+
+
+def _tool_version(binary: Path) -> tuple[int, ...] | None:
+    """Version ``X.Y.Z`` annoncée par ``<binaire> --version`` (None si illisible)."""
+    kwargs: dict = {}
+    if OS == "Windows":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        out = subprocess.run([str(binary), "--version"], capture_output=True, text=True,
+                             timeout=15, check=False, stdin=subprocess.DEVNULL, **kwargs)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", (out.stdout or "") + (out.stderr or ""))
+    return tuple(int(x) for x in match.groups()) if match else None
+
+
+def _github_tool_outdated(exe: str, meta: dict, binary: Path) -> bool:
+    """Vrai si l'outil installé est plus ancien que ``meta["min_version"]`` (à remplacer)."""
+    wanted = meta.get("min_version")
+    if not wanted:
+        return False
+    installed = _tool_version(binary)
+    target = tuple(int(x) for x in str(wanted).split("."))
+    if installed is not None and installed >= target:
+        return False
+    found = ".".join(map(str, installed)) if installed else "inconnue"
+    info(f"{exe}: version installée {found} < {wanted} — mise à jour.")
+    return True
+
+
+def _install_tool_bundle(
+    archive_path: Path,
+    fmt: str,
+    binary_name: str,
+    *,
+    prefix: Path,
+    bin_dir: Path,
+    tmp_path: Path,
+    sudo: list[str],
+) -> Path:
+    """Installe une archive outil complète (binaire + ressources voisines).
+
+    Windows : contenu copié dans ``bin_dir`` (dossier tools/).
+    Linux/macOS : contenu dans ``<prefix>/lib/<outil>``, lien symbolique dans
+    ``bin_dir`` (le binaire résout ses ressources depuis son chemin réel).
+    """
+    staging = tmp_path / "bundle"
+    staging.mkdir(parents=True, exist_ok=True)
+    if fmt == "tar.gz":
+        with tarfile.open(archive_path, "r:gz") as tar:
+            members = [m for m in tar.getmembers() if m.isfile() or m.isdir()]
+            _ensure_safe_archive_names(m.name for m in members)
+            tar.extractall(staging, members=members)
+    elif fmt == "zip":
+        with zipfile.ZipFile(archive_path) as zf:
+            _ensure_safe_archive_names(zf.namelist())
+            zf.extractall(staging)
+    else:
+        raise RuntimeError(f"Unknown bundle format: {fmt}")
+
+    binary = next((p for p in staging.rglob(binary_name) if p.is_file()), None)
+    if binary is None:
+        raise RuntimeError(f"Binary '{binary_name}' not found inside archive")
+    root = binary.parent
+
+    if OS == "Windows":
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(root, bin_dir, dirs_exist_ok=True)
+        return bin_dir / binary_name
+
+    lib_dir = prefix / "lib" / Path(binary_name).stem
+    link = bin_dir / binary_name
+    if sudo and not is_root():
+        run(sudo + ["rm", "-rf", str(lib_dir)])
+        run(sudo + ["mkdir", "-p", str(lib_dir), str(bin_dir)])
+        run(sudo + ["cp", "-R", f"{root}/.", str(lib_dir)])
+        run(sudo + ["chmod", "755", str(lib_dir / binary_name)])
+        run(sudo + ["ln", "-sf", str(lib_dir / binary_name), str(link)])
+    else:
+        if lib_dir.exists():
+            shutil.rmtree(lib_dir)
+        shutil.copytree(root, lib_dir)
+        (lib_dir / binary_name).chmod(0o755)
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        link.unlink(missing_ok=True)
+        link.symlink_to(lib_dir / binary_name)
+    return link
+
+
 def _extract_binary(archive_path: Path, binary_name: str, fmt: str, dest_dir: Path) -> Path:
     """Extract binary_name from a tar.gz, ZIP, deb or RPM archive into dest_dir."""
     if fmt == "tar.gz":
@@ -2088,20 +2280,38 @@ def check_windows_required_tools(prefix: Path) -> ToolPresenceReport:
     return ToolPresenceReport(required, found, tuple(missing))
 
 
+def _optional_tool_needs_install(tool_name: str, prefix: Path, force: bool) -> bool:
+    """Outil GitHub facultatif absent ou plus ancien que sa ``min_version``."""
+    meta = GITHUB_TOOLS.get(tool_name)
+    if meta is None:
+        return False
+    if force:
+        return True
+    path = _detect_tool_path(tool_name, prefix)
+    return not path or _github_tool_outdated(tool_name, meta, Path(path))
+
+
 def ensure_windows_required_tools(
     prefix: Path,
     dry_run: bool = False,
     force: bool = False,
     install_github: bool = True,
 ) -> ToolPresenceReport:
-    """Install only missing required Windows dependencies and re-check them."""
+    """Install only missing required Windows dependencies and re-check them.
+
+    Les outils facultatifs (muxiveo-rife) absents ou trop anciens sont aussi installés.
+    """
     report = check_windows_required_tools(prefix)
-    if report.healthy and not force:
+    optional = {
+        name for name in WINDOWS_OPTIONAL_GITHUB_TOOLS
+        if install_github and _optional_tool_needs_install(name, prefix, force)
+    }
+    if report.healthy and not force and not optional:
         return report
 
     candidates = set(report.required if force else report.missing)
     system_missing = candidates.intersection(SYSTEM_TOOLS)
-    github_missing = candidates.intersection(GITHUB_TOOLS) if install_github else set()
+    github_missing = (candidates.intersection(GITHUB_TOOLS) | optional) if install_github else set()
     if system_missing:
         install_winget(dry_run, force=force, tool_names=system_missing)
     if github_missing:
@@ -2126,9 +2336,6 @@ def install_github_tools(
     else:
         bin_dir = prefix / "bin"
 
-    # On Windows we install to a user-writable directory (no sudo needed).
-    use_sudo = OS != "Windows"
-    sudo = sudo_prefix(dry_run) if use_sudo else []
     ini_path = _config_ini_path()
 
     path_reminder_shown = False
@@ -2152,15 +2359,18 @@ def install_github_tools(
         binary_name = meta["binary_name"].get(OS, meta["binary_name"].get("Linux"))
         dest = bin_dir / binary_name
 
-        if not force and dest.is_file():
+        if not force and dest.is_file() and not _github_tool_outdated(exe, meta, dest):
             ok(f"{exe} already present ({dest})")
             detected_tool_paths[exe] = str(dest)
             continue
 
         # Recherche tolérante à la casse : .rpm Fedora installe `nvencc` (minuscules)
         # alors que .deb Debian installe `NVEncC` (PascalCase). On accepte les deux.
-        existing = shutil.which(exe) or shutil.which(exe.lower()) or shutil.which(exe.capitalize())
-        if not force and existing:
+        existing = (
+            shutil.which(binary_name) or shutil.which(exe)
+            or shutil.which(exe.lower()) or shutil.which(exe.capitalize())
+        )
+        if not force and existing and not _github_tool_outdated(exe, meta, Path(existing)):
             ok(f"{exe} already present ({existing})")
             detected_tool_paths[exe] = existing
             continue
@@ -2175,7 +2385,10 @@ def install_github_tools(
             continue
 
         step(f"Installing {exe}  ({meta['desc']})")
-        info(f"Fetching latest release from github.com/{meta['repo']}")
+        # Outil tiers : dernière release, ou tag MUXIVEO_<OUTIL>_TAG ; SHA-256 GitHub obligatoire.
+        third_party = exe in THIRD_PARTY_TOOLS
+        release_tag = requested_tag(exe) if third_party else meta.get("release_tag")
+        info(f"Release {release_tag or 'latest'} from github.com/{meta['repo']}")
 
         if dry_run:
             info(f"[dry-run] Would download and install {exe} to {dest}")
@@ -2183,9 +2396,24 @@ def install_github_tools(
             ok(f"{exe} installed → {dest}")
             continue
 
-        release = _github_latest_release(meta["repo"])
+        # Décision par outil : le préfixe peut être accessible alors que son
+        # ancien binaire ou bundle appartient à root.
+        try:
+            use_sudo = OS != "Windows" and not _tool_destination_writable(
+                prefix, bin_dir, binary_name, bundle=bool(meta.get("bundle")),
+            )
+            sudo = sudo_prefix(dry_run) if use_sudo else []
+        except (RuntimeError, OSError) as exc:
+            warn(f"{exe}: installation failed ({exc}). Skipping.")
+            continue
+
+        try:
+            release = _github_release(meta["repo"], release_tag)
+        except RuntimeError as exc:
+            warn(f"{exe}: {exc}. Skipping.")
+            continue
         tag = release.get("tag_name", "?")
-        info(f"Latest release: {tag}")
+        info(f"Release: {tag}")
 
         # Sélection asset : suffix principal puis alt_suffix (ex: .deb → .rpm).
         download_url = _find_asset(
@@ -2211,6 +2439,11 @@ def install_github_tools(
             tmp_path = Path(tmp)
             archive_path = tmp_path / f"{exe}_archive.{chosen_fmt}"
             _download_file(download_url, archive_path)
+            try:
+                _verify_release_asset(release, download_url, archive_path, required=third_party)
+            except RuntimeError as exc:
+                warn(f"{exe}: {exc} Skipping.")
+                continue
 
             # Tentative d'installation native via package manager (Linux .deb/.rpm) :
             # gère automatiquement les dépendances (libcuda, libavformat, etc.).
@@ -2229,29 +2462,45 @@ def install_github_tools(
                         continue
                     warn(f"{exe}: native install reported success but binary not found on PATH.")
 
+            if meta.get("bundle"):
+                try:
+                    dest = _install_tool_bundle(
+                        archive_path, chosen_fmt, binary_name,
+                        prefix=prefix, bin_dir=bin_dir, tmp_path=tmp_path, sudo=sudo,
+                    )
+                except (RuntimeError, OSError) as exc:
+                    warn(f"{exe}: installation failed ({exc}). Skipping.")
+                    continue
+                detected_tool_paths[exe] = str(dest)
+                ok(f"{exe} installed → {dest}")
+                continue
+
             # Fallback : extraction binaire pure (pas de gestion des deps libs).
             try:
                 if OS == "Windows" and exe == "nvencc" and chosen_fmt == "zip":
                     extracted = _install_windows_nvencc_zip(archive_path, bin_dir)
                 else:
                     extracted = _extract_binary(archive_path, binary_name, chosen_fmt, tmp_path)
-            except RuntimeError as exc:
+            except (RuntimeError, OSError) as exc:
                 warn(f"{exe}: extraction failed ({exc}). Skipping.")
                 continue
 
             info(f"Installing to {dest}")
 
-            if OS == "Windows" and exe == "nvencc" and chosen_fmt == "zip":
-                # The native extractor above already copied the complete runtime
-                # next to NVEncC64.exe, including its required DLLs.
-                dest = extracted
-            elif use_sudo and not is_root():
-                run(sudo + ["mkdir", "-p", str(bin_dir)])
-                run(sudo + ["install", "-m", "755", str(extracted), str(dest)])
-            else:
-                bin_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(extracted, dest)
-                dest.chmod(dest.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+            try:
+                if OS == "Windows" and exe == "nvencc" and chosen_fmt == "zip":
+                    # The native extractor already copied the complete runtime.
+                    dest = extracted
+                elif use_sudo and not is_root():
+                    run(sudo + ["mkdir", "-p", str(bin_dir)])
+                    run(sudo + ["install", "-m", "755", str(extracted), str(dest)])
+                else:
+                    bin_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(extracted, dest)
+                    dest.chmod(dest.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+            except (RuntimeError, OSError) as exc:
+                warn(f"{exe}: installation failed ({exc}). Skipping.")
+                continue
 
         detected_tool_paths[exe] = str(dest)
         ok(f"{exe} installed → {dest}")
@@ -2304,7 +2553,7 @@ def check_tools_presence(prefix: Path | None = None) -> None:
         if meta.get("gate") == "nvenc_available" and not _check_nvenc_available():
             continue
 
-        path = shutil.which(exe)
+        path = next((found for name in _tool_binary_names(exe) if (found := shutil.which(name))), None)
         if not path and OS == "Windows" and prefix is not None and exe in WINDOWS_TOOL_FILENAMES:
             path = _detect_windows_tool_path(exe, prefix)
         if not path and OS != "Windows":

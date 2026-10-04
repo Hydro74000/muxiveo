@@ -6,13 +6,14 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
+from core.workdir import capture_process_work_dir
 from typing import Callable
 
 from PySide6.QtCore import Qt
 
 from core.runner import TaskCancelledError, TaskSignals
 from core.workflows.encode.models import EncodeConfig, EncodeError
-from core.workflows.encode.mux_backend import PIPELINE_FFMPEG_DIRECT, EncodeMuxDecision
+from core.workflows.encode.mux_backend import PIPELINE_FFMPEG_DIRECT, PIPELINE_MULTI_VIDEO, EncodeMuxDecision
 from core.workflows.encode.planning.plan_models import EncodePlan
 
 
@@ -43,6 +44,9 @@ class EncodePreparationRunnerCallbacks:
     run_direct_output: Callable[..., TaskSignals]
     #: Sélection du backend de muxage final (lot 2). None → FFmpeg historique.
     select_mux_backend: Callable[[EncodeConfig], EncodeMuxDecision] | None = None
+    #: Interpolation RIFE sur une piste unique sans injection : encode vidéo
+    #: découpé (pipeline multi-pistes) au lieu de la commande FFmpeg directe.
+    needs_split_video_encode: Callable[[EncodeConfig], bool] | None = None
 
 
 class EncodePreparationRunner:
@@ -129,6 +133,25 @@ class EncodePreparationRunner:
             output_path=config.output,
             fallback_name="encode_job",
         )
+        owned = capture_process_work_dir(process_work_dir, root=work_root)
+        try:
+            return self._run_prepared(config, work_root, process_work_dir, prep_signals)
+        except BaseException:
+            if owned is not None:
+                try:
+                    owned.remove()
+                except OSError as exc:
+                    cb.log("WARN", f"Nettoyage incomplet du workspace : {exc}")
+            raise
+
+    def _run_prepared(
+        self,
+        config: EncodeConfig,
+        work_root: Path,
+        process_work_dir: Path,
+        prep_signals: TaskSignals | None,
+    ) -> TaskSignals:
+        cb = self._cb
         cb.check_cancelled(prep_signals)
         relocated_attachments = cb.relocate_tmdb_covers_to_process_dir(
             [Path(p) for p in config.extra_attachments],
@@ -205,10 +228,11 @@ class EncodePreparationRunner:
                 f"pipeline={mux_decision.pipeline}",
             )
             diagnostics = mux_decision.diagnostics
-            if mux_decision.pipeline != PIPELINE_FFMPEG_DIRECT and any(
+            if mux_decision.pipeline not in {PIPELINE_FFMPEG_DIRECT, PIPELINE_MULTI_VIDEO} and any(
                 getattr(offset, "calibration", None) for offset in prepared_config.track_time_offsets or []
             ):
-                # Seul le chemin FFmpeg direct matérialise les calibrations (réécriture sync réelle).
+                # Seuls les assemblages FFmpeg direct et multi-pistes matérialisent les
+                # calibrations (réécriture sync réelle) ; le backend natif est écarté en amont.
                 raise EncodeError(
                     "Synchronisation multi-segments non prise en charge sur ce pipeline "
                     f"({mux_decision.pipeline}) : le décalage du 1er segment seul décalerait tout le fichier."
@@ -225,15 +249,21 @@ class EncodePreparationRunner:
                 )
 
         cb.check_cancelled(prep_signals)
-        if cb.is_multi_video(prepared_config):
-            cb.log_step(4, "Routage du workflow (pipeline multi-pistes vidéo)")
+        split_video_encode = cb.needs_split_video_encode is not None and cb.needs_split_video_encode(prepared_config)
+        if cb.is_multi_video(prepared_config) or split_video_encode:
+            cb.log_step(
+                4,
+                "Routage du workflow (pipeline multi-pistes vidéo)"
+                if not split_video_encode
+                else "Routage du workflow (encode vidéo interpolé puis assemblage)",
+            )
             plan = cb.build_encode_plan(prepared_config)
             if prep_signals is not None:
                 cb.bind_output_hooks(
                     prep_signals,
                     output=prepared_config.output,
                     cleanup_paths=cleanup_paths,
-                    include_nfo=native_mux,
+                    include_nfo=native_mux and prepared_config.write_nfo,
                 )
             signals = cb.run_multi_video_pipeline(
                 prepared_config,
@@ -247,7 +277,7 @@ class EncodePreparationRunner:
                     signals,
                     output=prepared_config.output,
                     cleanup_paths=cleanup_paths,
-                    include_nfo=native_mux,
+                    include_nfo=native_mux and prepared_config.write_nfo,
                 )
             return signals
 
@@ -269,7 +299,7 @@ class EncodePreparationRunner:
                     prep_signals,
                     output=prepared_config.output,
                     cleanup_paths=cleanup_paths,
-                    include_nfo=True,
+                    include_nfo=prepared_config.write_nfo,
                 )
             signals = cb.run_multi_video_pipeline(
                 prepared_config,
@@ -283,7 +313,7 @@ class EncodePreparationRunner:
                     signals,
                     output=prepared_config.output,
                     cleanup_paths=cleanup_paths,
-                    include_nfo=True,
+                    include_nfo=prepared_config.write_nfo,
                 )
             return signals
 
@@ -310,7 +340,7 @@ class EncodePreparationRunner:
                 prep_signals,
                 output=prepared_config.output,
                 cleanup_paths=cleanup_paths,
-                include_nfo=native_mux,
+                include_nfo=native_mux and prepared_config.write_nfo,
             )
 
         plan = cb.build_encode_plan(prepared_config)
@@ -335,6 +365,6 @@ class EncodePreparationRunner:
                 signals,
                 output=prepared_config.output,
                 cleanup_paths=cleanup_paths,
-                include_nfo=native_mux,
+                include_nfo=native_mux and prepared_config.write_nfo,
             )
         return signals

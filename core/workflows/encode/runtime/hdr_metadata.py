@@ -182,6 +182,7 @@ class HdrMetadataProbeService:
             "-v", "quiet",
             "-print_format", "json",
             "-show_streams",
+            "-show_format",
         ]
         cmd.extend(ffprobe_input_args(source))
         try:

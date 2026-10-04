@@ -1,0 +1,280 @@
+name: muxiveo-rife
+
+# Build, tests fonctionnels (Vulkan lavapipe sous Linux) et release du binaire
+# natif d'interpolation d'images (native/muxiveo-rife).
+# Release automatique : release.yml appelle ce workflow (publish: true) quand la
+# release `muxiveo-rife-vX.Y.Z` de la version épinglée n'existe pas encore
+# (version = project() du CMakeLists = MUXIVEO_RIFE_VERSION de core/version.py).
+# Release manuelle toujours possible : pousser le tag `muxiveo-rife-vX.Y.Z`.
+# Push/PR : compilation seulement si le code natif ou ses tests diffèrent de la
+# release publiée de la version épinglée (job `changes`) ; lancement manuel, tag
+# et appel depuis release.yml compilent toujours.
+
+on:
+  push:
+    # `branches` requis : avec `tags` seul, les pushes de branche ne déclenchent rien.
+    # Les filtres `paths` ne s'appliquent pas aux pushes de tags.
+    branches:
+      - "**"
+    paths:
+      - "native/muxiveo-rife/**"
+      - "tests/native/**"
+    tags:
+      - "muxiveo-rife-v*"
+  pull_request:
+    paths:
+      - "native/muxiveo-rife/**"
+      - "tests/native/**"
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      publish:
+        description: "Publier la release muxiveo-rife-vX.Y.Z sur le commit courant"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+# github.workflow : nom de l'appelant en workflow_call -> pas d'annulation
+# croisée avec le build déclenché par le même push.
+concurrency:
+  group: muxiveo-rife-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Changes
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.gate.outputs.build }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Gate
+        id: gate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.publish == true || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/muxiveo-rife-v') }}
+        run: |
+          set -euo pipefail
+          if [ "$FORCE" = "true" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          VERSION=$(sed -n 's/^project(muxiveo-rife VERSION \([0-9.]*\).*/\1/p' native/muxiveo-rife/CMakeLists.txt)
+          TAG="muxiveo-rife-v${VERSION}"
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # Branches de release.yml : il compile et publie lui-même la version (pas de double build).
+            if [ "$GITHUB_EVENT_NAME" = "push" ] && [[ "$GITHUB_REF_NAME" =~ ^(devel-cli|main)$ ]]; then
+              echo "::notice::${TAG} absente : compilée et publiée par release.yml"
+              echo "build=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "build=true" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          SOURCES=(native/muxiveo-rife/src native/muxiveo-rife/cmake native/muxiveo-rife/CMakeLists.txt
+                   native/muxiveo-rife/models.json native/muxiveo-rife/scripts tests/native)
+          if git diff --quiet "$TAG" HEAD -- "${SOURCES[@]}"; then
+            echo "::notice::Code natif identique à ${TAG} : compilation ignorée"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            git diff --stat "$TAG" HEAD -- "${SOURCES[@]}"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: changes
+    if: ${{ needs.changes.outputs.build == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+            exe: muxiveo-rife
+          - os: windows-2022
+            platform: windows-x86_64
+            exe: muxiveo-rife.exe
+          - os: macos-14
+            platform: macos-arm64
+            exe: muxiveo-rife
+    runs-on: ${{ matrix.os }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          CMAKE_VERSION=$(sed -n 's/^project(muxiveo-rife VERSION \([0-9.]*\).*/\1/p' native/muxiveo-rife/CMakeLists.txt)
+          APP_VERSION=$(python -c "import re,pathlib; print(re.search(r'MUXIVEO_RIFE_VERSION = \"([0-9.]+)\"', pathlib.Path('core/version.py').read_text()).group(1))")
+          if [ "$CMAKE_VERSION" != "$APP_VERSION" ]; then
+            echo "::error::Version CMake ($CMAKE_VERSION) != core/version.py ($APP_VERSION)"
+            exit 1
+          fi
+          if [[ "${GITHUB_REF_TYPE:-}" = "tag" && "${GITHUB_REF_NAME}" == muxiveo-rife-v* && "${GITHUB_REF_NAME}" != "muxiveo-rife-v${CMAKE_VERSION}" ]]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} != muxiveo-rife-v${CMAKE_VERSION}"
+            exit 1
+          fi
+          echo "version=${CMAKE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "package=muxiveo-rife-${CMAKE_VERSION}-${{ matrix.platform }}" >> "$GITHUB_OUTPUT"
+
+      - name: Toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y mesa-vulkan-drivers libvulkan1 ffmpeg
+
+      - name: Toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja molten-vk ffmpeg
+
+      - name: Configure
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake -S native/muxiveo-rife -B build -G "Visual Studio 17 2022" -A x64
+          else
+            cmake -S native/muxiveo-rife -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+          fi
+
+      - name: Build
+        if: runner.os != 'Linux'
+        run: cmake --build build --config Release --parallel
+
+      # Linux : build manylinux_2_28 (AlmaLinux 8) -> binaire exécutable dès glibc 2.28
+      # (Debian 11, Ubuntu 20.04, RHEL 8…) ; les tests tournent ensuite sur l'hôte.
+      - name: Build (Linux, manylinux_2_28)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD:/src" -w /src quay.io/pypa/manylinux_2_28_x86_64 bash -euo pipefail -c '
+            cmake -S native/muxiveo-rife -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release
+            cmake --build build --parallel "$(nproc)"'
+          sudo chown -R "$(id -u):$(id -g)" build
+          MAX=$(objdump -T build/muxiveo-rife | grep -oE 'GLIBC_[0-9.]+' | sort -V -u | tail -1)
+          echo "glibc requise : ${MAX}"
+          if [ "$(printf '%s\n' "$MAX" GLIBC_2.28 | sort -V | tail -1)" != "GLIBC_2.28" ]; then
+            echo "::error::${MAX} > GLIBC_2.28"
+            exit 1
+          fi
+
+      - name: Stage package
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="build/package/${{ steps.version.outputs.package }}"
+          mkdir -p "$PKG/LICENSES"
+          BIN=$(find build -maxdepth 2 -type f -name "${{ matrix.exe }}" | head -1)
+          cp "$BIN" "$PKG/"
+          python native/muxiveo-rife/scripts/fetch_models.py "$PKG/rife-models"
+          cp native/muxiveo-rife/README.md native/muxiveo-rife/UPSTREAM.md native/muxiveo-rife/models.json "$PKG/"
+          cp LICENSES/MIT-rife-ncnn-vulkan.txt LICENSES/BSD-3-Clause-ncnn.txt LICENSES/MIT-Practical-RIFE.txt "$PKG/LICENSES/"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            MVK="$(brew --prefix molten-vk)"
+            cp "$MVK/lib/libMoltenVK.dylib" "$PKG/"
+            cp "$MVK/LICENSE" "$PKG/LICENSES/Apache-2.0-MoltenVK.txt" 2>/dev/null \
+              || curl -fsSL https://raw.githubusercontent.com/KhronosGroup/MoltenVK/main/LICENSE -o "$PKG/LICENSES/Apache-2.0-MoltenVK.txt"
+          fi
+          echo "dir=$PKG" >> "$GITHUB_OUTPUT"
+          echo "bin=$PKG/${{ matrix.exe }}" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -uo pipefail
+          "${{ steps.stage.outputs.bin }}" --version
+          if ! "${{ steps.stage.outputs.bin }}" --list-gpus --verbose; then
+            # Runners macOS hébergés : pas de GPU Metal exploitable par MoltenVK.
+            if [ "$RUNNER_OS" = "macOS" ]; then
+              echo "::warning::--list-gpus a échoué (runner sans GPU Metal)"
+            else
+              exit 1
+            fi
+          fi
+
+      - name: Functional tests
+        shell: bash
+        env:
+          MUXIVEO_RIFE_BIN: ${{ steps.stage.outputs.bin }}
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet pytest numpy
+          # Sans GPU Vulkan (Windows/macOS hébergés), les tests sont ignorés.
+          # --noconftest : tests/conftest.py importe PySide6 (inutile ici)
+          python -m pytest -q -p no:cacheprovider --noconftest tests/native
+
+      - name: Archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd build/package
+          NAME="${{ steps.version.outputs.package }}"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a -tzip "${NAME}.zip" "${NAME}" > /dev/null
+          else
+            tar czf "${NAME}.tar.gz" "${NAME}"
+          fi
+          ls -la
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.package }}
+          path: |
+            build/package/*.tar.gz
+            build/package/*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/muxiveo-rife-v') || inputs.publish
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: assets
+          # appelé depuis release.yml, le run contient aussi les artefacts de Muxiveo
+          pattern: muxiveo-rife-*
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: muxiveo-rife-v${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          ls -la assets
+          # Deux releases Muxiveo simultanées (devel-cli, main) : la seconde n'a rien à faire.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::notice::$TAG déjà publiée"
+            exit 0
+          fi
+          (cd assets && sha256sum -- * > SHA256SUMS)
+          # --target : crée le tag sur le commit construit (appel depuis release.yml)
+          gh release create "$TAG" assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "muxiveo-rife ${TAG#muxiveo-rife-v}" \
+            --notes "Binaire d'interpolation d'images RIFE (Vulkan) utilisé par Muxiveo. Voir native/muxiveo-rife/README.md." \
+            --latest=false
