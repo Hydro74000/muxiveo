@@ -437,6 +437,9 @@ class HybridStudio(QWidget):
         self.executor = ThreadPoolExecutor(max_workers=1)
         self._executor = self.executor
         self.jobs: dict[int, tuple[Any, Any]] = {}
+        self._prepared_signature = None
+        self._matrix_signature = None
+        self._run_after_prepare = False
         self.execution_rows: list[int] = []
         self.exec_index: int = 0
         self.matrix = HybridMatrix()
@@ -570,6 +573,29 @@ class HybridStudio(QWidget):
         cadence_row.addWidget(self.cadence_method_combo)
         cadence_row.addStretch()
         cd_layout.addLayout(cadence_row)
+
+        sync_row = QHBoxLayout()
+        sync_row.addWidget(QLabel(translate_text("Analyse synchro :")))
+        self.sync_strategy = QComboBox()
+        self.sync_strategy.setStyleSheet(_input_style())
+        self.sync_strategy.addItem(translate_text("Automatique (analyse acoustique)"), "auto")
+        self.sync_strategy.addItem(translate_text("Décalage manuel (sans analyse)"), "manual")
+        self.sync_strategy.addItem(translate_text("Aucune synchronisation"), "none")
+        self.sync_strategy.setToolTip(translate_text(
+            "L'analyse automatique décode plusieurs fenêtres audio par donneur. "
+            "Le mode manuel applique le même décalage à chaque donneur ; aucune synchronisation conserve les pistes sans recalage."
+        ))
+        sync_row.addWidget(self.sync_strategy, stretch=1)
+        self.manual_shift_label = QLabel(translate_text("Décalage (ms) :"))
+        sync_row.addWidget(self.manual_shift_label)
+        self.manual_shift = QSpinBox()
+        self.manual_shift.setStyleSheet(_input_style())
+        self.manual_shift.setRange(-60000, 60000)
+        sync_row.addWidget(self.manual_shift)
+        self.manual_shift_label.setVisible(False)
+        self.manual_shift.setVisible(False)
+        self.sync_strategy.currentIndexChanged.connect(self._on_sync_strategy_changed)
+        cd_layout.addLayout(sync_row)
 
         layout.addWidget(card_dirs)
 
@@ -786,6 +812,9 @@ class HybridStudio(QWidget):
         self.run_button.clicked.connect(self.run)
         bar.addWidget(self.run_button)
 
+        for field in (self.reference, self.donor, self.output):
+            field.textChanged.connect(self._update_run_button)
+
         outer_layout.addLayout(bar)
 
         self.status = QLabel()
@@ -835,11 +864,13 @@ class HybridStudio(QWidget):
 
         source_info = {"widget": row_widget, "edit": edit, "role": role_combo, "label": label or f"Donneur {len(self.extra_sources) + 2}"}
         self.extra_sources.append(source_info)
+        edit.textChanged.connect(self._update_run_button)
 
         def remove_row():
             if source_info in self.extra_sources:
                 self.extra_sources.remove(source_info)
             row_widget.deleteLater()
+            self._update_run_button()
 
         del_btn.clicked.connect(remove_row)
         self.extra_sources_layout.addWidget(row_widget)
@@ -1047,7 +1078,7 @@ class HybridStudio(QWidget):
     def set_busy(self, busy: bool):
         self.busy = busy
         self.scan_button.setEnabled(not busy)
-        self.run_button.setEnabled(not busy and bool(self.jobs))
+        self._update_run_button()
         for field in (
             self.reference,
             self.donor,
@@ -1055,6 +1086,8 @@ class HybridStudio(QWidget):
             self.matching_mode_combo,
             self.profile,
             self.detect_cuts,
+            self.sync_strategy,
+            self.manual_shift,
             self.cadence_auto_apply,
             self.cadence_method_combo,
             self.mode,
@@ -1062,8 +1095,46 @@ class HybridStudio(QWidget):
             *self.controls.values(),
         ):
             field.setEnabled(not busy)
+        self._on_sync_strategy_changed()
 
-    def scan(self):
+    def _update_run_button(self, *_):
+        ready = bool(self.reference.text().strip() and self.output.text().strip() and
+                     (self.donor.text().strip() or any(s["edit"].text().strip() for s in self.extra_sources)))
+        ready = ready or bool(self.output.text().strip() and any(ep.is_complete for ep in self.matrix_episodes))
+        self.run_button.setEnabled(not self.busy and (ready or bool(self.jobs)))
+
+    def _on_sync_strategy_changed(self, *_):
+        manual = self.sync_strategy.currentData() == "manual"
+        self.manual_shift_label.setVisible(manual)
+        self.manual_shift.setVisible(manual)
+        self.adjust.setDecimals(0 if manual else 1)
+        self.adjust.setEnabled(not self.busy and self.sync_strategy.currentData() != "none")
+        automatic = self.sync_strategy.currentData() == "auto"
+        self.scan_button.setText(translate_text("Analyser la saison") if automatic
+                                 else translate_text("Préparer la saison"))
+        self.detect_cuts.setEnabled(automatic and not self.busy)
+        self.cadence_auto_apply.setEnabled(automatic and not self.busy)
+        self.cadence_method_combo.setEnabled(automatic and not self.busy)
+
+    def _settings_signature(self):
+        control_values = tuple((key, control.isChecked() if isinstance(control, QCheckBox)
+                                else control.value() if isinstance(control, QSpinBox) else control.text())
+                               for key, control in self.controls.items())
+        return (
+            self._source_signature(), self.output.text(), self.profile.text(), control_values,
+            self.sync_strategy.currentData(), self.manual_shift.value(),
+            self.mode.currentData(), self.mirror.isChecked(), self.detect_cuts.isChecked(),
+            self.cadence_auto_apply.isChecked(), self.cadence_method_combo.currentData(),
+            tuple(self.recipe.keep_master_audio_langs), tuple(self.recipe.donor_audio_langs),
+            tuple(self.recipe.donor_sub_langs), self.recipe.keep_master_video,
+        )
+
+    def _source_signature(self):
+        return (self.reference.text(), self.donor.text(),
+                tuple((s["edit"].text(), s["role"].currentData()) for s in self.extra_sources),
+                self.matching_mode_combo.currentData())
+
+    def scan(self, auto_run: bool = False, reuse_matrix: bool = False):
         from cli.parser import build_parser
 
         arguments = [
@@ -1094,6 +1165,10 @@ class HybridStudio(QWidget):
         ]
         self.recipe.cadence_auto_apply = self.cadence_auto_apply.isChecked()
         self.recipe.cadence_audio_method = self.cadence_method_combo.currentData() or "auto"
+        self.recipe.sync_mode = self.mode.currentData() or "physical"
+        self.recipe.sync_subtitles = "mirror" if self.mirror.isChecked() else "none"
+        self.recipe.sync_strategy = self.sync_strategy.currentData() or "auto"
+        self.recipe.manual_shift_ms = self.manual_shift.value()
         try:
             if not self.output.text().strip():
                 raise ValueError(translate_text("Choisir un dossier de sortie."))
@@ -1101,8 +1176,9 @@ class HybridStudio(QWidget):
             self.cancel_event.clear()
             self.args.cancel_event = self.cancel_event
 
-            self.matrix = self._build_matrix()
-            self.matrix_episodes = self.matrix.scan()
+            if not reuse_matrix:
+                self.matrix = self._build_matrix()
+                self.matrix_episodes = self.matrix.scan()
             if not self.matrix_episodes:
                 raise ValueError(translate_text("Aucun épisode trouvé dans les sources indiquées."))
 
@@ -1111,13 +1187,14 @@ class HybridStudio(QWidget):
             return
 
         self.jobs.clear()
+        self._matrix_signature = self._source_signature()
+        self._prepared_signature = self._settings_signature()
+        self._run_after_prepare = auto_run
         self.index, self.stopped = 0, False
-        self.table.setRowCount(0)
-        for row, ep in enumerate(self.matrix_episodes):
-            self._insert_table_row(row, ep)
-
-        if self.witness_table.rowCount() == 0:
-            self.inspect_witness()
+        if not reuse_matrix:
+            self.table.setRowCount(0)
+            for row, ep in enumerate(self.matrix_episodes):
+                self._insert_table_row(row, ep)
 
         self.set_busy(True)
         self.prepare_next()
@@ -1166,7 +1243,7 @@ class HybridStudio(QWidget):
 
         btn_calibrate = _secondary_button("", fixed_width=28)
         btn_calibrate.setIcon(_bolt_icon())
-        btn_calibrate.setToolTip(translate_text("Analyser / Recalibrer cet élément individuellement"))
+        btn_calibrate.setToolTip(translate_text("Préparer / Recalibrer cet élément individuellement"))
         btn_calibrate.clicked.connect(lambda checked=False, r=row: self.calibrate_single_row(r))
         act_l.addWidget(btn_calibrate)
 
@@ -1193,7 +1270,7 @@ class HybridStudio(QWidget):
             else:
                 item_status.setText(translate_text("Donneur manquant"))
                 item_status.setForeground(QColor(_C.WARN))
-        self.run_button.setEnabled(not self.busy and bool(self.jobs))
+        self._update_run_button()
         self.status.setText(translate_text("Donneur mis à jour pour : {name}", name=ep.display_name))
 
     def _choose_master_row(self, row: int):
@@ -1257,8 +1334,10 @@ class HybridStudio(QWidget):
         )
         row = len(self.matrix_episodes)
         self.matrix_episodes.append(new_ep)
+        self._matrix_signature = self._source_signature()
         self._insert_table_row(row, new_ep)
         self.table.selectRow(row)
+        self._update_run_button()
         self.status.setText(translate_text("Nouvelle paire associée : {name}", name=new_ep.display_name))
 
     def calibrate_single_row(self, row: int):
@@ -1271,23 +1350,35 @@ class HybridStudio(QWidget):
 
         item = self.table.item(row, 3)
         if item is not None:
-            item.setText(translate_text("Analyse en cours…"))
+            item.setText(translate_text("Analyse en cours…") if self.sync_strategy.currentData() == "auto"
+                         else translate_text("Préparation en cours…"))
             item.setForeground(QColor(_C.ACCENT))
 
-        self.recipe.cadence_auto_apply = self.cadence_auto_apply.isChecked()
-        self.recipe.cadence_audio_method = self.cadence_method_combo.currentData() or "auto"
+        recipe = replace(
+            self.recipe,
+            sync_mode=self.mode.currentData() or "physical",
+            sync_subtitles="mirror" if self.mirror.isChecked() else "none",
+            sync_strategy=self.sync_strategy.currentData() or "auto",
+            manual_shift_ms=self.manual_shift.value(),
+            cadence_auto_apply=self.cadence_auto_apply.isChecked(),
+            cadence_audio_method=self.cadence_method_combo.currentData() or "auto",
+        )
 
         # Widgets lus dans le thread GUI : le worker ne doit pas y toucher.
         output_dir = self.output.text().strip() or tempfile.gettempdir()
         detect_cuts = self.detect_cuts.isChecked()
-        args = self.args if hasattr(self, "args") else None
+        if hasattr(self, "args"):
+            args = self.args
+        else:
+            from cli.options import CommonOptions
+            args = CommonOptions(sync_mode=recipe.sync_mode, sync_subtitles=recipe.sync_subtitles)
 
         def task():
             from cli.logging import Logger
             try:
                 config, calibration = prepare_matrix_episode(
                     ep,
-                    self.recipe,
+                    recipe,
                     output_dir,
                     self.config,
                     args,
@@ -1330,10 +1421,11 @@ class HybridStudio(QWidget):
                 color = QColor(_C.OK) if len(calibration.segments) == 1 else QColor(_C.WARN)
                 item.setForeground(color)
             else:
-                item.setText(translate_text("Prêt"))
+                item.setText(translate_text("Sans synchro") if self.sync_strategy.currentData() == "none"
+                             else translate_text("Prêt (0 ms)"))
                 item.setForeground(QColor(_C.OK))
-        self.run_button.setEnabled(not self.busy and bool(self.jobs))
-        self.status.setText(translate_text("Calibration terminée pour : {name}", name=self.matrix_episodes[row].display_name))
+        self._update_run_button()
+        self.status.setText(translate_text("Préparation terminée pour : {name}", name=self.matrix_episodes[row].display_name))
         self.table.selectRow(row)
 
     def _on_single_calibration_failed(self, row: int, err: str):
@@ -1360,9 +1452,16 @@ class HybridStudio(QWidget):
     def prepare_next(self):
         if self.stopped or self.index >= len(self.matrix_episodes):
             self.set_busy(False)
+            if not self.stopped and self._run_after_prepare and self.jobs:
+                self._run_after_prepare = False
+                self.run()
             return
 
         episode = self.matrix_episodes[self.index]
+        if self.index in self.jobs:
+            self.index += 1
+            self.prepare_next()
+            return
         if not episode.is_complete:
             item = self.table.item(self.index, 3)
             if item is not None:
@@ -1374,20 +1473,34 @@ class HybridStudio(QWidget):
 
         item = self.table.item(self.index, 3)
         if item is not None:
-            item.setText(translate_text("Analyse en cours…"))
+            item.setText(translate_text("Analyse en cours…") if self.recipe.sync_strategy == "auto"
+                         else translate_text("Préparation en cours…"))
+        self.status.setText(translate_text(
+            "{step} {current}/{total} : {name}",
+            step=translate_text("Analyse synchro") if self.recipe.sync_strategy == "auto"
+            else translate_text("Préparation"),
+            current=self.index + 1,
+            total=len(self.matrix_episodes),
+            name=episode.display_name,
+        ))
+
+        recipe = replace(self.recipe)
+        output_dir = self.output.text().strip()
+        detect_cuts = self.detect_cuts.isChecked()
+        args = self.args
 
         def task():
             from cli.logging import Logger
             try:
                 config, calibration = prepare_matrix_episode(
                     episode,
-                    self.recipe,
-                    self.output.text().strip(),
+                    recipe,
+                    output_dir,
                     self.config,
-                    self.args,
+                    args,
                     Logger(),
-                    detect_cuts=self.detect_cuts.isChecked(),
-                    drift_threshold_ms=getattr(self.args, "drift_threshold_ms", 25) or 25,
+                    detect_cuts=detect_cuts,
+                    drift_threshold_ms=getattr(args, "drift_threshold_ms", 25) or 25,
                 )
                 self.prepared.emit(config, calibration)
             except Exception as exc:
@@ -1402,6 +1515,7 @@ class HybridStudio(QWidget):
         self.jobs[self.index] = (config, calibration)
         item = self.table.item(self.index, 3)
         if item is not None:
+            item.setToolTip("")
             if calibration and calibration.segments:
                 txt = f"{calibration.segments[0].shift_ms:+.1f} ms · {len(calibration.segments)} seg"
                 if calibration.cadence_mismatch and getattr(calibration.cadence_mismatch, "cadence_type", None) not in (None, "none"):
@@ -1414,13 +1528,15 @@ class HybridStudio(QWidget):
                 color = QColor(_C.OK) if len(calibration.segments) == 1 else QColor(_C.WARN)
                 item.setForeground(color)
             else:
-                item.setText(translate_text("Prêt"))
+                item.setText(translate_text("Sans synchro") if self.recipe.sync_strategy == "none"
+                             else translate_text("Prêt (0 ms)"))
                 item.setForeground(QColor(_C.OK))
-        self.run_button.setEnabled(not self.busy and bool(self.jobs))
+        self._update_run_button()
         self.index += 1
         self.prepare_next()
 
     def on_failed(self, message: str):
+        self._run_after_prepare = False
         self.status.setText(translate_text("Hybridation impossible : {err}", err=message))
         if self.index < self.table.rowCount():
             item = self.table.item(self.index, 3)
@@ -1479,13 +1595,23 @@ class HybridStudio(QWidget):
             calibration,
             segments=tuple(SyncSegment(s.start_ms, s.shift_ms + delta) for s in calibration.segments),
         )
-        if config.sync_mode == "physical":
-            config.sync_calibrations = {"1": calibration.to_dict()}
+        if self.sync_strategy.currentData() == "manual":
+            for source in config.sources[1:]:
+                for track in source.tracks:
+                    if track.enabled and (track.track_type == "audio" or
+                                          (track.track_type == "subtitle" and config.sync_subtitles == "mirror")):
+                        track.time_shift_ms = round(value)
+            config.sync_calibrations = {}
+        elif config.sync_mode == "physical":
+            config.sync_calibrations["1"] = calibration.to_dict()
         else:
             for track in config.sources[1].tracks:
                 if track.track_type == "audio" or (track.track_type == "subtitle" and config.sync_subtitles == "mirror"):
                     track.time_shift_ms = round(value)
         self.jobs[row] = (config, calibration)
+        item = self.table.item(row, 3)
+        if item is not None:
+            item.setText(f"{calibration.segments[0].shift_ms:+.1f} ms · {len(calibration.segments)} seg")
         self.waveform.shift_ms = value
         self.waveform.update()
 
@@ -1514,11 +1640,14 @@ class HybridStudio(QWidget):
         def task():
             from core.subprocess_utils import subprocess_text_kwargs
             from core.workflows.physical_sync import audio_filter
+            from core.workflows.sync_calibration import SyncCalibration
 
             source = config.sources[1]
             track = next(t for t in source.tracks if t.track_type == "audio" and t.enabled)
             path = Path(self.preview_temp.name) / (uuid.uuid4().hex + ".wav")
-            graph = audio_filter(calibration, config.crossfade_ms).replace("[0:a:0]", f"[0:{track.mkv_tid}]")
+            graph = audio_filter(calibration or SyncCalibration.linear(0), config.crossfade_ms).replace(
+                "[0:a:0]", f"[0:{track.mkv_tid}]"
+            )
             try:
                 scan = AudioSyncScanner(self.config.tool_ffmpeg, self.config.tool_ffprobe, cancel_event=self.cancel_event)
                 result = scan._run(
@@ -1573,7 +1702,20 @@ class HybridStudio(QWidget):
             self.on_failed(str(exc))
 
     def run(self):
-        if self.busy or not self.jobs:
+        if self.busy:
+            return
+        if self._prepared_signature != self._settings_signature():
+            self.scan(auto_run=True, reuse_matrix=bool(
+                self.matrix_episodes and self._matrix_signature == self._source_signature()
+            ))
+            return
+        if any(ep.is_complete and row not in self.jobs for row, ep in enumerate(self.matrix_episodes)):
+            self.index = 0
+            self._run_after_prepare = True
+            self.set_busy(True)
+            self.prepare_next()
+            return
+        if not self.jobs:
             return
         self.execution_rows = sorted(self.jobs.keys())
         self.exec_index = 0

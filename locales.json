@@ -1,4 +1,64 @@
 {
+  "Analyse synchro :": {
+    "fra": "Analyse synchro :",
+    "eng": "Sync analysis:"
+  },
+  "Automatique (analyse acoustique)": {
+    "fra": "Automatique (analyse acoustique)",
+    "eng": "Automatic (acoustic analysis)"
+  },
+  "Décalage manuel (sans analyse)": {
+    "fra": "Décalage manuel (sans analyse)",
+    "eng": "Manual offset (no analysis)"
+  },
+  "Aucune synchronisation": {
+    "fra": "Aucune synchronisation",
+    "eng": "No synchronization"
+  },
+  "L'analyse automatique décode plusieurs fenêtres audio par donneur. Le mode manuel applique le même décalage à chaque donneur ; aucune synchronisation conserve les pistes sans recalage.": {
+    "fra": "L'analyse automatique décode plusieurs fenêtres audio par donneur. Le mode manuel applique le même décalage à chaque donneur ; aucune synchronisation conserve les pistes sans recalage.",
+    "eng": "Automatic analysis decodes several audio windows per donor. Manual mode applies the same offset to every donor; no synchronization keeps tracks without adjustment."
+  },
+  "Décalage (ms) :": {
+    "fra": "Décalage (ms) :",
+    "eng": "Offset (ms):"
+  },
+  "Préparation en cours…": {
+    "fra": "Préparation en cours…",
+    "eng": "Preparing…"
+  },
+  "Sans synchro": {
+    "fra": "Sans synchro",
+    "eng": "No sync"
+  },
+  "Prêt (0 ms)": {
+    "fra": "Prêt (0 ms)",
+    "eng": "Ready (0 ms)"
+  },
+  "Préparer / Recalibrer cet élément individuellement": {
+    "fra": "Préparer / Recalibrer cet élément individuellement",
+    "eng": "Prepare / Recalibrate this item individually"
+  },
+  "Préparation terminée pour : {name}": {
+    "fra": "Préparation terminée pour : {name}",
+    "eng": "Preparation complete for: {name}"
+  },
+  "Analyse synchro": {
+    "fra": "Analyse synchro",
+    "eng": "Sync analysis"
+  },
+  "Préparation": {
+    "fra": "Préparation",
+    "eng": "Preparation"
+  },
+  "Préparer la saison": {
+    "fra": "Préparer la saison",
+    "eng": "Prepare season"
+  },
+  "{step} {current}/{total} : {name}": {
+    "fra": "{step} {current}/{total} : {name}",
+    "eng": "{step} {current}/{total}: {name}"
+  },
   "Contrôle final rejeté": {
     "fra": "Contrôle final rejeté",
     "eng": "Final validation rejected"
