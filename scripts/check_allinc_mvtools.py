@@ -30,7 +30,7 @@ def check(package: Path) -> list[str]:
             with zipfile.ZipFile(package) as zf:
                 for member in zf.infolist():
                     path = PurePosixPath(member.filename)
-                    if path.is_absolute() or ".." in path.parts or "\\" in member.filename:
+                    if path.is_absolute() or ".." in path.parts or "\\" in member.filename or ":" in member.filename:
                         raise ValueError("chemin d'archive invalide")
                     if "tools" in path.parts and (path.name == "muxiveo-mvtools.exe" or "mvtools-runtime" in path.parts) and not member.is_dir():
                         target = dest / path
@@ -53,7 +53,7 @@ def main():
     errors = []
     for package in args.packages:
         found = check(package)
-        print(package.name + " : " + (" ; ".join(found) if found else "MVTools complet, empreintes et rendu vérifiés"))
+        print(package.name + " : " + (" ; ".join(found) if found else "MVTools complet, contrôles réussis"))
         errors.extend(found)
     return bool(errors)
 

@@ -116,6 +116,15 @@ def test_archive_cannot_write_outside_installation(tmp_path):
     assert not (tmp_path / "outside").exists()
 
 
+def test_allinc_checker_refuses_windows_drive_path(tmp_path):
+    from scripts.check_allinc_mvtools import check
+    archive = tmp_path / "portable.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("C:/tools/muxiveo-mvtools.exe", b"invalid")
+    with pytest.raises(ValueError, match="chemin"):
+        check(archive)
+
+
 @pytest.mark.parametrize("payload", [[], None, {"version": MUXIVEO_MVTOOLS_VERSION, "files": []},
                                      {"version": MUXIVEO_MVTOOLS_VERSION, "files": {"muxiveo-mvtools": None}}])
 def test_malformed_manifest_reports_error(tmp_path, payload):
