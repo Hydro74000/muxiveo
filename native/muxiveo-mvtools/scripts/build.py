@@ -59,6 +59,12 @@ def main() -> None:
     if not meson:
         raise RuntimeError("Meson requis pour construire VapourSynth et MVTools")
     jobs = str(max(1, args.jobs))
+    if os.name == "nt":
+        compiler = shutil.which("cl.exe")
+        if not compiler:
+            raise RuntimeError("Environnement MSVC x64 requis")
+        # Git Bash expose aussi un link.exe GNU : préférer le linker de MSVC.
+        os.environ["PATH"] = str(Path(compiler).parent) + os.pathsep + os.environ["PATH"]
     os.environ["PKG_CONFIG_PATH"] = str(prefix / "lib/pkgconfig") + os.pathsep + os.environ.get("PKG_CONFIG_PATH", "")
     os.environ.setdefault("MACOSX_DEPLOYMENT_TARGET", "12.0")
 
@@ -74,8 +80,10 @@ def main() -> None:
             "add_library(zimg STATIC " + " ".join(units) + ")\n"
             "target_include_directories(zimg PRIVATE src/zimg)\n"
             "install(TARGETS zimg ARCHIVE DESTINATION lib)\n"
-            "install(FILES src/zimg/api/zimg.h DESTINATION include)\n"
+            "install(FILES src/zimg/api/zimg.h src/zimg/api/zimg++.hpp DESTINATION include)\n"
         )
+    # Cache de construction antérieur à l'ajout du wrapper C++ de zimg.
+    shutil.copy2(zimg / "src/zimg/api/zimg++.hpp", prefix / "include/zimg++.hpp") if (prefix / "include").is_dir() else None
     for name, opts in (("zimg", []), ("fftw", ["-DENABLE_FLOAT=ON", "-DBUILD_SHARED_LIBS=OFF", "-DBUILD_TESTS=OFF", "-DENABLE_FORTRAN=OFF"])):
         target = build / (name + "-build")
         run("cmake", "-S", str(sources[name]), "-B", str(target), "-G", "Ninja",

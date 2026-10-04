@@ -6,6 +6,7 @@ import math
 import os
 import shutil
 import subprocess
+import time
 from fractions import Fraction
 from pathlib import Path
 
@@ -142,3 +143,33 @@ def test_cancel_while_waiting_for_input(binary):
         child.terminate()
         child.wait(timeout=10)
         assert child.returncode != 0
+
+
+@pytest.mark.parametrize("bits", range(8, 17))
+@pytest.mark.parametrize("chroma", ["420", "422", "444"])
+def test_all_announced_depths(binary, bits, chroma):
+    data, frames = clip(2, bits=bits, chroma=chroma)
+    result = run(binary, data, "--factor", "2", "--scene-threshold", "0")
+    _, output = unpack(result, len(frames[0]))
+    assert output[0] == frames[0] and output[2:] == [frames[1], frames[1]]
+
+
+def test_memory_does_not_grow_with_duration(binary, tmp_path):
+    psutil = pytest.importorskip("psutil")
+    peaks = []
+    for n in (32, 512):
+        source = tmp_path / "source.y4m"
+        source.write_bytes(clip(n, width=160, height=96)[0])
+        with subprocess.Popen([str(binary), "-i", str(source), "--threads", "2", "--scene-threshold", "0"],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as child:
+            peak = 0
+            process = psutil.Process(child.pid)
+            while child.poll() is None:
+                try:
+                    peak = max(peak, process.memory_info().rss)
+                except psutil.NoSuchProcess:
+                    pass
+                time.sleep(0.01)
+            assert child.returncode == 0
+            peaks.append(peak)
+    assert peaks[1] < peaks[0] + 64 * 2**20, peaks
