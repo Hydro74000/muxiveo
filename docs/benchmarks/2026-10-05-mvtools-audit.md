@@ -65,8 +65,35 @@ donc son budget global est cohérent. La découverte du binaire Windows embarqu�
 
 ## Distribution et limites
 
-La qualification de la version 1.0.1 sur Linux x86_64, Windows x86_64 et
-macOS arm64, ses poids exacts et sa publication sont consignés après la CI.
+La [CI 1.0.1](https://github.com/Hydro74000/muxiveo/actions/runs/37238529933)
+a réussi sur les trois plateformes, au commit natif `76a988a` : **77 tests
+natifs par plateforme**, manifeste et rendu isolé, banc synthétique et
+mesures 4K 10 bits. Linux a également passé le contrôle ABI glibc ≤2.28 et
+le rendu QEMU Nehalem sans AVX2. Les trois autotests donnent l’empreinte
+`2b17510182ba8ed5`. Les sept indicateurs de qualité, pour les six scènes et
+les deux modes, sont identiques aux résultats 1.0.0 sur chaque plateforme.
+
+| Plateforme | Octets installés | Mio installés | Octets compressés | Mio compressés |
+|---|---:|---:|---:|---:|
+| Linux x86_64 | 24 842 487 | 23,69 | 8 198 759 | 7,82 |
+| Windows x86_64 | 11 940 222 | 11,39 | 4 156 225 | 3,96 |
+| macOS arm64 | 8 206 876 | 7,83 | 2 849 358 | 2,72 |
+
+La [release 1.0.1](https://github.com/Hydro74000/muxiveo/releases/tag/muxiveo-mvtools-v1.0.1)
+est publiée au commit `55c6149`, dont les sources natives sont identiques
+aux artefacts CI. Les 14 empreintes publiées par GitHub ont été comparées
+aux fichiers locaux. L’archive GPL des sources correspondantes
+(19 632 284 octets) a été comparée à la branche puis reconstruite dans un
+répertoire indépendant : rendu 8/10 bits et manifeste vérifiés, sans
+installation système de VapourSynth.
+
+Les contrôles du paquet Windows portable ont aussi été exercés avec le
+runtime CI réel depuis Linux (empreintes et présence des composants ; son
+rendu est vérifié sur le runner Windows). Le runtime Linux publié a été
+installé dans `~/.local` par le setup de Muxiveo ; les autres valeurs de
+configuration ont été conservées et son rendu vérifié. Un encodage réel
+NVEncC/HEVC, mode UHD, assemblage natif et décalage vidéo de +400 ms a
+ensuite réussi avec ce runtime installé.
 
 La [qualification 1.0.0](2026-10-04-mvtools-integration.md) conserve les mesures
 historiques. Les caches 512 Mio/1 Gio ne plafonnent pas la RAM totale.

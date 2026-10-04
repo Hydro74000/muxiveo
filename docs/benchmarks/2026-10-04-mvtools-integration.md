@@ -4,6 +4,10 @@ Intégration sur `devel-mvtools`, créée depuis `devel-cli`, publiée et suivie
 `origin/devel-mvtools`. RIFE reste le moteur par défaut. Le choix MVTools propose
 Standard et Lent UHD (CPU), sans modifier les paramètres RIFE enregistrés.
 
+Ce rapport conserve les mesures de la version 1.0.0. Les corrections et la
+qualification de la version 1.0.1 sont consignées dans
+[l’audit du 5 octobre](2026-10-05-mvtools-audit.md).
+
 ## Versions et méthode
 
 Wrapper 1.0.0 ; VapourSynth R80 ; MVTools v29_2 ; zimg 3.0.6 ; FFTW float 3.3.11.
