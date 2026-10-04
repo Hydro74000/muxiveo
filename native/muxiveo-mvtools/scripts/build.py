@@ -134,6 +134,18 @@ def main() -> None:
     text = re.sub(r"(?m)^incdir = include_directories\([^\n]+\)",
                   lambda _: "incdir = include_directories('" + (vs / "include").as_posix() + "')", text)
     (mv / "meson.build").write_text(text)
+    # Liaison explicite aux archives construites : Windows n'a pas forcément
+    # pkg-config et Meson ne doit jamais choisir une dépendance système/fallback.
+    for src, name in ((vs, "zimg"), (mv, "fftw3f")):
+        library = prefix / "lib" / (name + ".lib" if os.name == "nt" else "lib" + name + ".a")
+        dependency = ("declare_dependency(include_directories: include_directories('" +
+                      (prefix / "include").as_posix() + "'), link_args: ['" + library.as_posix() + "'])")
+        text = (src / "meson.build").read_text()
+        text = re.sub(r"dependency\('" + name + r"'[^)]*\)", lambda _: dependency, text)
+        # Recalculer également les chemins des sources correspondantes déplacées.
+        text = re.sub(r"declare_dependency\(include_directories: include_directories\('[^']*'\), link_args: \['[^']*" + name + r"\.(?:a|lib)'\]\)",
+                      lambda _: dependency, text)
+        (src / "meson.build").write_text(text)
     if sys.platform == "darwin":
         # Apple Clang du runner ne fournit pas roundevenf. FRINTN conserve
         # exactement l'arrondi pair indépendant du mode, sur ARMv8 baseline.
@@ -194,6 +206,8 @@ def main() -> None:
                         shutil.copy2(path, licenses / (src.name + "-" + path.name))
     shutil.copy2(ROOT / "LICENSE", licenses / "muxiveo-mvtools-GPL-3.0.txt")
     shutil.copy2(ROOT.parent.parent / "LICENSE", licenses / "Muxiveo-MIT.txt")
+    if sys.platform.startswith("linux"):
+        shutil.copy2(ROOT / "licenses/GCC-Runtime-Exception-3.1.txt", licenses / "GCC-Runtime-Exception-3.1.txt")
     internal_file = cache / "internal-revisions.json"
     internal = json.loads(internal_file.read_text()) if internal_file.exists() else {}
     for subproject in (vs / "subprojects").iterdir():

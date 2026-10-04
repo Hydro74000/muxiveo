@@ -88,6 +88,8 @@ l’application MIT. VapourSynth : LGPL-2.1-or-later ; MVTools : GPL-2.0-or-late
 FFTW : GPL-2.0-or-later ; zimg : WTFPL ; glslang et Vulkan-Headers : licences
 amont conservées dans `mvtools-runtime/licenses/`. Le lecteur Y4M provient du
 projet Muxiveo sous MIT (notice `Muxiveo-MIT.txt`).
+Sous Linux, libstdc++/libgcc statiques sont couverts par GPL-3.0 avec l’exception
+GCC Runtime Library 3.1, incluse avec les notices.
 
 L’archive `*-sources.tar.gz` contient le wrapper, ses scripts, les archives amont
 vérifiées et les sources effectivement modifiées pour la construction, y compris

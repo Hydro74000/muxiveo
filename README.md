@@ -713,6 +713,7 @@ Vous pouvez définir explicitement dans `config.ini` :
 - `mediainfo`
 - `dovi_tool`, `hdr10plus_tool`
 - `eac3to`
+- `muxiveo_rife`, `muxiveo_mvtools`
 
 Exemple :
 
