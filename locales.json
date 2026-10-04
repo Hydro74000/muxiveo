@@ -5102,5 +5102,9 @@
   "Interpolation d'images MVTools (CPU) livrée avec Muxiveo — multiplication de cadence à l'encodage.": {
     "fra": "Interpolation d'images MVTools (CPU) livrée avec Muxiveo — multiplication de cadence à l'encodage.",
     "eng": "MVTools frame interpolation (CPU) shipped with Muxiveo — frame rate multiplication during encoding."
+  },
+  "muxiveo-mvtools": {
+    "fra": "muxiveo-mvtools",
+    "eng": "muxiveo-mvtools"
   }
 }

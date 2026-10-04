@@ -22,7 +22,9 @@ MUXIVEO_MVTOOLS_BIN=build/muxiveo-mvtools/bundle/muxiveo-mvtools python -m pytes
 les sous-projets internes épinglés par VapourSynth. Le manifeste du runtime
 recense les révisions internes, tailles et empreintes des fichiers distribués.
 Les archives excluent bindings Python, SDK, symboles et variante CPU znver4.
-Les noyaux AVX2/AVX512 restent sélectionnés par détection CPU amont ; la variante
+Une adaptation ARM de l’arrondi pair d’AverageFrames (FRINTN, même résultat)
+permet la compilation avec Apple Clang du runner. Ce filtre n’est pas utilisé
+dans le graphe MVTools. Les noyaux AVX2/AVX512 restent sélectionnés par détection CPU amont ; la variante
 baseline est toujours livrée. zimg 3.0.6 et FFTW float 3.3.11 sont liés statiquement.
 
 ## Flux et cadences
@@ -92,3 +94,18 @@ vérifiées et les sources effectivement modifiées pour la construction, y comp
 les sous-projets internes. Elle est publiée séparément des paquets installés.
 La CI publie les poids exacts dans `*-sizes.json`, ainsi que les SHA-256.
 Les bancs comparatifs et limites de qualification sont dans `docs/benchmarks/`.
+
+## Banc comparatif
+
+Prérequis de développement : `pip install numpy psutil`.
+
+```sh
+python native/muxiveo-mvtools/scripts/benchmark.py --mvtools-bin build/muxiveo-mvtools/bundle/muxiveo-mvtools --rife-bin /chemin/muxiveo-rife --output build/quality.json
+python native/muxiveo-mvtools/scripts/benchmark.py --mvtools-bin build/muxiveo-mvtools/bundle/muxiveo-mvtools --width 3840 --height 2160 --frames 16 --threads 16 --scenes bars --resource-only --output build/resources-4k.json
+```
+
+La CI joint les mesures Standard/UHD sur chaque plateforme et une mesure
+4K 10 bits (4 images sources, budget 4 threads) aux artefacts. Le test RSS
+compare également 32 et 512 images et refuse une croissance supérieure à 64 Mio.
+Les mesures de contours/clignotement sont des indicateurs synthétiques ;
+l’examen visuel et les extraits du master restent nécessaires à la qualification.

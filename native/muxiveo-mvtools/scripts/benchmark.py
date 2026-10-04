@@ -78,7 +78,7 @@ def quality(output, scene, n, width, height, bits):
     raw = output.read_bytes().split(b"\n", 1)[1]
     dtype = "<u2" if bits > 8 else "u1"
     frame_bytes = width * height * 3 // 2 * (2 if bits > 8 else 1)
-    maes, edges, flicker, motions = [], [], [], []
+    maes, edges, flicker, motions, contours = [], [], [], [], []
     previous_error = previous_image = None
     repeated = 0
     count = 0
@@ -92,6 +92,13 @@ def quality(output, scene, n, width, height, bits):
         error = image - truth
         maes.append(float(np.abs(error).mean()))
         edges.append(float(np.abs(np.diff(image, axis=1) - np.diff(truth, axis=1)).mean()))
+        strong = np.abs(np.diff(image, axis=1)) > 20
+        reference_edges = np.abs(np.diff(truth, axis=1)) > 20
+        near = reference_edges.copy()
+        for shift in (1, 2):
+            near[:, shift:] |= reference_edges[:, :-shift]
+            near[:, :-shift] |= reference_edges[:, shift:]
+        contours.append(float(np.count_nonzero(strong & ~near) / max(1, np.count_nonzero(strong))))
         if previous_error is not None:
             flicker.append(float(np.abs(error - previous_error).mean()))
             repeated += int(np.array_equal(image, previous_image))
@@ -104,6 +111,7 @@ def quality(output, scene, n, width, height, bits):
     assert count == math.ceil(n * 2.5)
     return {"frames_out": count, "luma_mae_8bit": float(np.mean(maes)),
             "horizontal_edge_error": float(np.mean(edges)), "temporal_error_variation": float(np.mean(flicker)),
+            "false_contour_fraction": float(np.mean(contours)),
             "residual_horizontal_shift_px": float(np.mean(motions)) if motions else None,
             "repeated_adjacent_frames": repeated}
 

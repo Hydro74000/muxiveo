@@ -685,6 +685,26 @@ Limite Windows :
 - l'application ne s'appuie pas sur un backend RAM standard sur Windows
 - le chemin par défaut reste donc disque pour garantir un comportement stable et compatible avec les outils externes (`ffmpeg`, `dovi_tool`, `hdr10plus_tool`) qui attendent des chemins de fichiers classiques
 
+### Interpolation d’images
+
+Dans Encodage > Géométrie / Filtres, activer l’interpolation puis choisir le
+moteur **RIFE** (GPU, défaut) ou **MVTools** (CPU). MVTools propose **Traitement
+Standard (limiter coût CPU)** et **Traitement Lent UHD (CPU)**, tous deux à la
+résolution reçue après les filtres. UHD affine davantage le mouvement et reste
+utilisable en 1080p. Les cadences ×2/×3/×4, 59,94 et 60 i/s sont communes.
+
+Le setup installe l’outil facultatif `muxiveo-mvtools` et son runtime adjacent
+`mvtools-runtime/` ; aucun modèle ni runtime Python supplémentaire. Les anciens
+profils utilisent RIFE, les paramètres propres à chaque moteur sont conservés
+lors des changements. Un moteur absent provoque une erreur explicite au lancement.
+
+MVTools peut améliorer certains mouvements réguliers, mais ses résultats
+varient selon la scène. Des coupes ou vecteurs inutilisables provoquent une
+répétition d’image. La phase interne est limitée à 1/256. Voir le
+[rapport de qualification](docs/benchmarks/2026-10-04-mvtools-integration.md) et
+[la documentation native](native/muxiveo-mvtools/README.md) pour les paramètres,
+les ressources, les licences et les instructions de construction.
+
 ### Outils configurables
 
 Vous pouvez définir explicitement dans `config.ini` :
@@ -703,6 +723,7 @@ output_dir = /mnt/nas/videos
 [tools]
 ffmpeg = /opt/ffmpeg/bin/ffmpeg
 dovi_tool = /usr/local/bin/dovi_tool
+muxiveo_mvtools = /usr/local/bin/muxiveo-mvtools
 
 [matroska]
 mux_backend = ffmpeg

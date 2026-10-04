@@ -12,6 +12,7 @@ from core.pipeline_command import command_stages
 from core.workflows.encode import EncodeConfig, EncodeError, EncodePreset, EncodeWorkflow, FrameInterpolationSettings, VideoEncodeSettings
 from core.workflows.encode.interpolation import InterpolationSource, build_interpolation_stage, mvtools_thread_count, parse_interpolation_progress, frame_repeats
 from tests.test_encode_interpolation import _builder
+from core.workflows.encode.runtime_helpers import VideoPreparationResourcePolicy
 
 
 def test_old_profile_and_independent_parameters():
@@ -65,3 +66,13 @@ def test_hdr_counts_share_exact_cadence():
     ratio = video.frame_ratio("24000/1001")
     assert ratio == Fraction(1001, 400)
     assert sum(frame_repeats(i, ratio) for i in range(19)) == 48
+
+
+def test_parallel_scheduler_reserves_measured_cpu_memory():
+    policy = VideoPreparationResourcePolicy(ffmpeg_threads=4)
+    plain = VideoEncodeSettings(codec="libx265")
+    standard = replace(plain, interpolation=FrameInterpolationSettings(enabled=True, backend="mvtools"))
+    uhd = replace(standard, interpolation=replace(standard.interpolation, mvtools_mode="uhd"))
+    base = policy.estimated_ram_bytes(plain, source_size=1)
+    assert policy.estimated_ram_bytes(standard, source_size=1) >= base + 2 * 2**30
+    assert policy.estimated_ram_bytes(uhd, source_size=1) >= base + 6 * 2**30

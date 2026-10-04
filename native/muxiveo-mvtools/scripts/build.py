@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -127,6 +128,12 @@ def main() -> None:
         # clang-cl et MSVC n'acceptent pas -march comme option native.
         text = text.replace("cpp_args: '-march=x86-64-v3'", "cpp_args: meson.get_compiler('cpp').get_argument_syntax() == 'msvc' ? '/arch:AVX2' : '-march=x86-64-v3'")
         (mv / "meson.build").write_text(text)
+    # Les sources correspondantes contiennent aussi le Meson modifié ; son
+    # chemin d'en-têtes doit être recalculé après déplacement de l'archive.
+    text = (mv / "meson.build").read_text()
+    text = re.sub(r"(?m)^incdir = include_directories\([^\n]+\)",
+                  lambda _: "incdir = include_directories('" + (vs / "include").as_posix() + "')", text)
+    (mv / "meson.build").write_text(text)
     if sys.platform == "darwin":
         # Apple Clang du runner ne fournit pas roundevenf. FRINTN conserve
         # exactement l'arrondi pair indépendant du mode, sur ARMv8 baseline.
@@ -187,12 +194,14 @@ def main() -> None:
                         shutil.copy2(path, licenses / (src.name + "-" + path.name))
     shutil.copy2(ROOT / "LICENSE", licenses / "muxiveo-mvtools-GPL-3.0.txt")
     shutil.copy2(ROOT.parent.parent / "LICENSE", licenses / "Muxiveo-MIT.txt")
-    internal = {}
+    internal_file = cache / "internal-revisions.json"
+    internal = json.loads(internal_file.read_text()) if internal_file.exists() else {}
     for subproject in (vs / "subprojects").iterdir():
         if (subproject / ".git").exists():
             result = subprocess.run(["git", "-C", str(subproject), "rev-parse", "HEAD"],
                                     capture_output=True, text=True, check=True)
             internal[subproject.name] = result.stdout.strip()
+    internal_file.write_text(json.dumps(internal, indent=2) + "\n")
     manifest = {"version": "1.0.0", "dependencies": specs, "vapoursynth_internal_revisions": internal, "files": {}}
     for path in sorted(bundle.rglob("*")):
         if path.is_file():
