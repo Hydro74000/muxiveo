@@ -28,6 +28,8 @@ de construction ou une incohérence de configuration ; P3 un cas limite.
 L’extraction refuse également une destination non vide ou symbolique, ainsi
 que les entrées d’archive spéciales. Les chemins de manifeste refusent les
 remontées, les séparateurs Windows et les liens symboliques intermédiaires.
+Le contrôleur des paquets tout inclus refuse également les chemins ZIP avec
+un lecteur Windows, avant extraction dans son répertoire temporaire.
 Les autotests utilisent les options subprocess communes à l’application,
 notamment l’absence de fenêtre console supplémentaire sous Windows.
 
@@ -37,7 +39,7 @@ identiques ; l’empreinte du rendu de l’autotest reste `2b17510182ba8ed5`.
 
 ## Validation locale
 
-- **779 tests Python ciblés**, tous réussis : configuration, installation,
+- **780 tests Python ciblés**, tous réussis : configuration, installation,
   interface, profils, pipeline, progression, ressources, packaging,
   traductions et génération de la formule Homebrew. Les tests ont été exécutés
   par groupes ; seuls les groupes affectés ont été rejoués après correction.
@@ -51,6 +53,11 @@ identiques ; l’empreinte du rendu de l’autotest reste `2b17510182ba8ed5`.
   et un cas ignoré par la sonde NVENC ; ce cas a ensuite réussi isolément.
 - Deux compilations successives du runtime local, contrôles SHA-256 et rendu
   8/10 bits réussis. `git diff --check` réussi.
+- **76 tests natifs fonctionnels avec AddressSanitizer et
+  UndefinedBehaviorSanitizer**, sans erreur détectée sur le wrapper C++.
+  Les bibliothèques amont ne sont pas instrumentées ; le test de RAM selon
+  la durée est réservé au binaire normal pour éviter le coût d’allocation
+  propre aux sanitizers.
 
 Le budget CPU NVEncC a été vérifié : ce parcours n’accepte qu’une piste vidéo,
 donc son budget global est cohérent. La découverte du binaire Windows embarqué
