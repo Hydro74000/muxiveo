@@ -44,9 +44,23 @@ def _rife_bin() -> str | None:
 RIFE_BIN = _rife_bin()
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None or RIFE_BIN is None,
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
     reason="ffmpeg/ffprobe, muxiveo-rife et un périphérique Vulkan requis",
 )
+
+
+@pytest.fixture(params=["rife", "mvtools-standard", "mvtools-uhd"])
+def interpolation_engine(request):
+    """Chaque moteur est contrôlé indépendamment, sans repli."""
+    if request.param == "rife":
+        if not RIFE_BIN:
+            pytest.skip("muxiveo-rife/Vulkan requis")
+        return {}, {"rife_bin": RIFE_BIN}, "muxiveo-rife"
+    binary = os.environ.get("MUXIVEO_MVTOOLS_BIN") or shutil.which("muxiveo-mvtools")
+    if not binary:
+        pytest.skip("MUXIVEO_MVTOOLS_BIN requis")
+    mode = request.param.split("-", 1)[1]
+    return {"backend": "mvtools", "mvtools_mode": mode}, {"mvtools_bin": str(Path(binary).resolve())}, "muxiveo-mvtools"
 
 
 @pytest.fixture(autouse=True)
@@ -66,7 +80,7 @@ def _frame_count(path: Path) -> int:
 
 
 @pytest.mark.parametrize("mux_backend", ["ffmpeg", "native"])
-def test_encode_interpolation_doubles_frame_rate(tmp_path: Path, mux_backend: str) -> None:
+def test_encode_interpolation_doubles_frame_rate(tmp_path: Path, mux_backend: str, interpolation_engine) -> None:
     src = tmp_path / "src.mkv"
     make_av_container(src, duration=1.0)
     src_frames = _frame_count(src)
@@ -80,7 +94,7 @@ def test_encode_interpolation_doubles_frame_rate(tmp_path: Path, mux_backend: st
             quality_mode=QualityMode.CRF,
             crf=30,
             preset="ultrafast",
-            interpolation=FrameInterpolationSettings(enabled=True, factor=2, quality="fast"),
+            interpolation=FrameInterpolationSettings(enabled=True, factor=2, quality="fast", **interpolation_engine[0]),
         ),
         audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")],
         copy_subtitles=False,
@@ -93,7 +107,7 @@ def test_encode_interpolation_doubles_frame_rate(tmp_path: Path, mux_backend: st
         ram_buffer_enabled=False,
         ffmpeg_threads=1,
         generate_nfo=False,
-        rife_bin=RIFE_BIN,
+        **interpolation_engine[1],
     )
     assert wf.validate(cfg) == []
     state = wait_task(wf.run(cfg), timeout=180.0)
@@ -106,11 +120,11 @@ def test_encode_interpolation_doubles_frame_rate(tmp_path: Path, mux_backend: st
     assert _frame_count(out) == 2 * src_frames
     assert len(streams_of_type(probe, "audio")) == 1
     assert abs(float(probe["format"]["duration"]) - 1.0) < 0.15
-    assert any("muxiveo-rife" in str(line) for line in state["progress"])
+    assert any(interpolation_engine[2] in str(line) for line in state["progress"])
 
 
 @pytest.mark.parametrize("mux_backend", ["ffmpeg", "native"])
-def test_encode_interpolation_keeps_video_delay(tmp_path: Path, mux_backend: str) -> None:
+def test_encode_interpolation_keeps_video_delay(tmp_path: Path, mux_backend: str, interpolation_engine) -> None:
     """Un retard vidéo (+400 ms) survit à l'encode interpolé et à l'assemblage final."""
     src = tmp_path / "src.mkv"
     make_av_container(src, duration=2.0)
@@ -120,7 +134,7 @@ def test_encode_interpolation_keeps_video_delay(tmp_path: Path, mux_backend: str
         output=out,
         video=VideoEncodeSettings(
             codec="libx264", quality_mode=QualityMode.CRF, crf=30, preset="ultrafast",
-            interpolation=FrameInterpolationSettings(enabled=True, factor=2),
+            interpolation=FrameInterpolationSettings(enabled=True, factor=2, **interpolation_engine[0]),
         ),
         audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")],
         copy_subtitles=False,
@@ -130,7 +144,7 @@ def test_encode_interpolation_keeps_video_delay(tmp_path: Path, mux_backend: str
         track_time_offsets=[TrackTimeOffset(track_type="video", source_path=src, stream_index=0, offset_ms=400)],
     )
     wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", ram_buffer_enabled=False, ffmpeg_threads=1, generate_nfo=False,
-                        rife_bin=RIFE_BIN)
+                        **interpolation_engine[1])
     assert wf.validate(cfg) == []
     state = wait_task(wf.run(cfg), timeout=180.0)
     assert state["failed"] is None, f"Encode failed: {state['failed']}"

@@ -47,6 +47,12 @@ jobs:
         run: python -m pip install meson==1.12.1 ninja pytest numpy psutil
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
+      - name: Windows assembler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nasm --yes --no-progress
+          "C:\Program Files\NASM" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
       - name: macOS toolchain
         if: runner.os == 'macOS'
         run: brew install pkg-config
@@ -83,6 +89,11 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y qemu-user
           qemu-x86_64 -cpu Nehalem build/muxiveo-mvtools/bundle/muxiveo-mvtools --self-test --json
+      - name: Qualification synthétique et ressources 4K 10 bits
+        shell: bash
+        run: |
+          python native/muxiveo-mvtools/scripts/benchmark.py --mvtools-bin build/muxiveo-mvtools/bundle/${{ matrix.exe }} --threads 4 --output build/mvtools-assets/${{ matrix.platform }}-quality.json
+          python native/muxiveo-mvtools/scripts/benchmark.py --mvtools-bin build/muxiveo-mvtools/bundle/${{ matrix.exe }} --width 3840 --height 2160 --frames 4 --threads 4 --scenes bars --resource-only --output build/mvtools-assets/${{ matrix.platform }}-4k-resources.json
       - name: Archive and corresponding sources
         shell: bash
         run: python native/muxiveo-mvtools/scripts/archive.py --platform ${{ matrix.platform }} ${{ runner.os == 'Linux' && '--sources' || '' }}

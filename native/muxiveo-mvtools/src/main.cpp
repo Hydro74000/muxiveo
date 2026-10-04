@@ -148,6 +148,7 @@ struct Runtime {
         if(!message.empty())throw Failure(3,message);
         mv=api->getPluginByNamespace("mv",core);
         if(!mv)throw Failure(3,"plugin MVTools absent");
+        if(api->getPluginVersion(mv)!=VS_MAKE_VERSION(29,0))throw Failure(3,"MVTools v29 requis");
     }
     ~Runtime(){if(core)api->freeCore(core);}
 };
@@ -254,7 +255,7 @@ static void self_test(Runtime& runtime,const Options& opts) {
         Graph graph(runtime,window);auto data=graph.interpolate(2,128);
         for(auto b:data){hash^=b;hash*=1099511628211ULL;}
     }
-    std::printf("{\"ok\":true,\"version\":\"%s\",\"vapoursynth\":80,\"mvtools\":29,\"bits\":[8,10],\"modes\":[\"standard\",\"uhd\"],\"render_hash\":\"%llx\"}\n",MUXIVEO_MVTOOLS_VERSION,(unsigned long long)hash);
+    std::printf("{\"ok\":true,\"version\":\"%s\",\"vapoursynth\":80,\"mvtools\":29,\"mvtools_revision\":\"v29_2\",\"zimg\":\"3.0.6\",\"fftw\":\"3.3.11\",\"bits\":[8,10],\"modes\":[\"standard\",\"uhd\"],\"render_hash\":\"%llx\"}\n",MUXIVEO_MVTOOLS_VERSION,(unsigned long long)hash);
 }
 static int process(const Options& options) {
     FILE* input=stdin;FILE* output=stdout;

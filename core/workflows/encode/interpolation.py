@@ -348,6 +348,9 @@ def build_mvtools_stage(
     scene_threshold: float = 10.0, thread_budget: int | None = None,
 ) -> list[str]:
     """Étage CPU MVTools, Y4M en entrée/sortie et cadence rationnelle."""
+    resolved = shutil.which(mvtools_bin)
+    if resolved or Path(mvtools_bin).is_file():
+        mvtools_bin = str(Path(resolved or mvtools_bin).resolve())
     rate = ["--fps", target_fps] if target_fps else ["--factor", str(int(factor))]
     return [
         str(mvtools_bin), *rate, "--mode", mode,

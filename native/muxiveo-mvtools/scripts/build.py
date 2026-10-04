@@ -83,7 +83,8 @@ def main() -> None:
             "install(FILES src/zimg/api/zimg.h src/zimg/api/zimg++.hpp DESTINATION include)\n"
         )
     # Cache de construction antérieur à l'ajout du wrapper C++ de zimg.
-    shutil.copy2(zimg / "src/zimg/api/zimg++.hpp", prefix / "include/zimg++.hpp") if (prefix / "include").is_dir() else None
+    (prefix / "include").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(zimg / "src/zimg/api/zimg++.hpp", prefix / "include/zimg++.hpp")
     for name, opts in (("zimg", []), ("fftw", ["-DENABLE_FLOAT=ON", "-DBUILD_SHARED_LIBS=OFF", "-DBUILD_TESTS=OFF", "-DENABLE_FORTRAN=OFF"])):
         target = build / (name + "-build")
         run("cmake", "-S", str(sources[name]), "-B", str(target), "-G", "Ninja",
@@ -126,6 +127,15 @@ def main() -> None:
         # clang-cl et MSVC n'acceptent pas -march comme option native.
         text = text.replace("cpp_args: '-march=x86-64-v3'", "cpp_args: meson.get_compiler('cpp').get_argument_syntax() == 'msvc' ? '/arch:AVX2' : '-march=x86-64-v3'")
         (mv / "meson.build").write_text(text)
+    if sys.platform == "darwin":
+        # Apple Clang du runner ne fournit pas roundevenf. FRINTN conserve
+        # exactement l'arrondi pair indépendant du mode, sur ARMv8 baseline.
+        average = vs / "src/core/averageframesfilter.cpp"
+        text = average.read_text()
+        if "__builtin_roundevenf(x)" in text:
+            text = text.replace("#include <algorithm>", "#include <algorithm>\n#include <arm_neon.h>")
+            text = text.replace("__builtin_roundevenf(x)", "vget_lane_f32(vrndn_f32(vdup_n_f32(x)), 0)")
+            average.write_text(text)
     for name, src in (("vs", vs), ("mv", mv)):
         target = build / (name + "-build")
         command = [meson, "setup", str(target), str(src), "--buildtype=release", "--prefix=" + str(prefix)]

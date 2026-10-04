@@ -984,7 +984,7 @@ class EncodeWorkflow(QObject):
         video: VideoEncodeSettings,
         source: Path,
     ) -> list[str]:
-        """Ajoute l'étage muxiveo-rife derrière un décodage y4m (pipeline NVEncC)."""
+        """Ajoute le moteur d'interpolation sélectionné après décodage y4m (NVEncC)."""
         if not video.interpolates():
             return decode_cmd
         settings = video.interpolation
@@ -2585,7 +2585,7 @@ class EncodeWorkflow(QObject):
         return errors
 
     def _interpolation_validation_errors(self, config: EncodeConfig) -> list[str]:
-        """Contrôles propres à l'interpolation RIFE (outil, cadence, entrelacement)."""
+        """Contrôles du moteur sélectionné, de la cadence et de l'entrelacement."""
         errors: list[str] = []
         for video in self._video_tracks(config):
             settings = video.interpolation

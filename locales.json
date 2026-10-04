@@ -5099,8 +5099,8 @@
     "fra": "Outil d'interpolation sélectionné introuvable : Paramètres > Outils externes, ou relancer le setup.",
     "eng": "Selected interpolation tool not found: Settings > External tools, or run setup again."
   },
-  "Interpolation d’images MVTools (CPU) livrée avec Muxiveo — multiplication de cadence à l’encodage.": {
-    "fra": "Interpolation d’images MVTools (CPU) livrée avec Muxiveo — multiplication de cadence à l’encodage.",
+  "Interpolation d'images MVTools (CPU) livrée avec Muxiveo — multiplication de cadence à l'encodage.": {
+    "fra": "Interpolation d'images MVTools (CPU) livrée avec Muxiveo — multiplication de cadence à l'encodage.",
     "eng": "MVTools frame interpolation (CPU) shipped with Muxiveo — frame rate multiplication during encoding."
   }
 }

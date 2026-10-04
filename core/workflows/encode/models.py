@@ -366,7 +366,7 @@ class VideoEncodeSettings:
         )
 
     def interpolates(self) -> bool:
-        """Interpolation RIFE active sur une piste réencodée."""
+        """Interpolation active sur une piste réencodée."""
         return self.codec != "copy" and self.interpolation.is_active()
 
     def frame_ratio(self, source_rate: str | None = None) -> Fraction:

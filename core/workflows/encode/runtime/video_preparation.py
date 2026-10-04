@@ -40,7 +40,7 @@ class VideoOnlyCommandBuilderCallbacks:
     video_stream_from_settings: Callable[[VideoEncodeSettings], int]
     size_to_bitrate_kbps: Callable[[EncodeConfig], int]
     size_to_bitrate_kbps_for_video: Callable[[EncodeConfig, VideoEncodeSettings], int]
-    # Interpolation RIFE : binaire muxiveo-rife et propriétés couleur/départ de la source.
+    # Outils d'interpolation et propriétés couleur/départ de la source.
     rife_bin: str | None = None
     mvtools_bin: str | None = None
     interpolation_thread_budget: int = 1
