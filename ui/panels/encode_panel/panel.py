@@ -18,7 +18,7 @@ from fractions import Fraction
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import QSize, Qt, Signal, QTimer, QUrl
+from PySide6.QtCore import QSignalBlocker, QSize, Qt, Signal, QTimer, QUrl
 from PySide6.QtGui import QBrush, QColor, QFont, QPixmap, QCursor
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog,
@@ -1677,7 +1677,8 @@ class EncodePanel(QWidget):
         for label, value in (("Rapide", "fast"), ("Équilibré", "balanced"), ("Light", "light")):
             self._interp_quality_combo.addItem(label, value)
         self._set_combo_data(self._interp_quality_combo, "balanced")
-        self._interp_quality_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
+        self._interp_preserved_rife_quality = "balanced"
+        self._interp_quality_combo.currentIndexChanged.connect(self._on_interpolation_quality_changed)
         self._interp_mode_combo = QComboBox()
         self._interp_mode_combo.setStyleSheet(_combo_style())
         self._interp_mode_combo.setToolTip(
@@ -1685,7 +1686,8 @@ class EncodePanel(QWidget):
         )
         for label, value in (("Mode : Normal", "normal"), ("Mode : Fast", "fast")):
             self._interp_mode_combo.addItem(label, value)
-        self._interp_mode_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
+        self._interp_preserved_rife_mode = "normal"
+        self._interp_mode_combo.currentIndexChanged.connect(self._on_interpolation_mode_changed)
         self._interp_tta_combo = QComboBox()
         self._interp_tta_combo.setStyleSheet(_combo_style())
         self._interp_tta_combo.setToolTip(
@@ -1787,6 +1789,17 @@ class EncodePanel(QWidget):
         self._sync_interpolation_controls()
         self._rebuild_preview()
 
+    def _on_interpolation_quality_changed(self, _index: int) -> None:
+        self._interp_preserved_rife_quality = str(self._interp_quality_combo.currentData())
+        self._on_interpolation_changed()
+
+    def _on_interpolation_mode_changed(self, _index: int) -> None:
+        # Le mode Fast imposé visuellement par Light ne remplace pas le choix
+        # enregistré, notamment lorsque le moteur MVTools est sélectionné.
+        if self._interp_quality_combo.currentData() != "light":
+            self._interp_preserved_rife_mode = str(self._interp_mode_combo.currentData())
+        self._on_interpolation_changed()
+
     def _current_interpolation_settings(self) -> FrameInterpolationSettings:
         if not hasattr(self, "_interp_cb"):
             return FrameInterpolationSettings()
@@ -1800,9 +1813,8 @@ class EncodePanel(QWidget):
             gpu=self._interp_preserved_gpu,
             factor=2 if is_target else int(choice),
             target_fps=choice if is_target else "",
-            quality=str(self._interp_quality_combo.currentData() or "balanced"),
-            mode="fast" if self._interp_quality_combo.currentData() == "light"
-            else str(self._interp_mode_combo.currentData() or "normal"),
+            quality=self._interp_preserved_rife_quality,
+            mode=self._interp_preserved_rife_mode,
             tta=int(self._interp_tta_combo.currentData() or 1),
         )
 
@@ -1817,8 +1829,11 @@ class EncodePanel(QWidget):
         self._sync_interpolation_availability()
         self._set_combo_data(self._interp_factor_combo, settings.target_fps or str(int(settings.factor)))
         quality = settings.quality if settings.quality in ("fast", "balanced", "light") else "balanced"
-        self._set_combo_data(self._interp_quality_combo, quality)
+        with QSignalBlocker(self._interp_quality_combo):
+            self._set_combo_data(self._interp_quality_combo, quality)
+        self._interp_preserved_rife_quality = settings.quality
         self._set_combo_data(self._interp_mode_combo, "fast" if settings.fast_mode() else settings.mode)
+        self._interp_preserved_rife_mode = settings.mode
         self._set_combo_data(self._interp_tta_combo, int(settings.tta) if int(settings.tta) in INTERPOLATION_TTA_LEVELS else 1)
         self._sync_interpolation_controls()
 

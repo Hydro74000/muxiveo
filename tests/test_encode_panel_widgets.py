@@ -1905,6 +1905,20 @@ class TestEncodePanelRunOperation:
 
 
 class TestEncodePanelInterpolationTta:
+    @pytest.mark.parametrize("quality,mode", [("light", "normal"), ("max", "fast")])
+    def test_backend_switch_preserves_legacy_rife_values(self, qt_app, monkeypatch, quality, mode):
+        from core.workflows.encode import FrameInterpolationSettings
+
+        panel = EncodePanel(AppConfig())
+        monkeypatch.setattr(panel, "_interpolation_tool_available", lambda: True)
+        settings = FrameInterpolationSettings(enabled=True, backend="mvtools", quality=quality, mode=mode)
+        panel._apply_interpolation_settings(settings)
+        assert panel._current_interpolation_settings() == settings
+        panel._interp_backend_combo.setCurrentIndex(panel._interp_backend_combo.findData("rife"))
+        panel._interp_backend_combo.setCurrentIndex(panel._interp_backend_combo.findData("mvtools"))
+        assert panel._current_interpolation_settings() == settings
+        panel.close()
+
     def test_mvtools_roundtrip_and_independent_controls(self, qt_app, monkeypatch):
         from core.workflows.encode import FrameInterpolationSettings
 
