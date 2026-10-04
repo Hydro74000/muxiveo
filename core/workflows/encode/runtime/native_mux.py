@@ -127,7 +127,9 @@ def probe_source_streams(source: Path, ffprobe_bin: str) -> dict[int, ProbedStre
     d'un repli explicite.
     """
     try:
-        result = subprocess.run(
+        # ffprobe configuré, arguments séparés et chemin média protégé, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(  # nosec B603
             [
                 ffprobe_bin, "-v", "quiet", "-print_format", "json",
                 "-show_entries",

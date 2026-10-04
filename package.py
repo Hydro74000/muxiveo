@@ -2823,7 +2823,9 @@ def _dl_windows_mediainfo(tools_dir: Path) -> None:
 def _muxiveo_rife_version(exe: Path) -> str | None:
     """Version ``X.Y.Z`` annoncée par ``muxiveo-rife --version`` (None si illisible)."""
     try:
-        out = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=30, check=False)
+        # Outil du dossier de packaging choisi par l'utilisateur ; argv fixe, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        out = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=30, check=False)  # nosec B603
     except (OSError, subprocess.SubprocessError):
         return None
     match = re.search(r"muxiveo-rife (\d+\.\d+\.\d+)", out.stdout or "")

@@ -1833,7 +1833,7 @@ def _ensure_safe_archive_names(names) -> None:
     """Refuse les chemins absolus ou remontants (``..``) d'une archive."""
     for name in names:
         parts = Path(name.replace("\\", "/")).parts
-        if Path(name).is_absolute() or ".." in parts or name.startswith(("/", "\\")):
+        if Path(name).is_absolute() or ".." in parts or name.startswith(("/", "\\")) or any(":" in part for part in parts):
             raise RuntimeError(f"Unsafe path in archive: {name}")
 
 
@@ -1873,7 +1873,9 @@ def _tool_version(binary: Path) -> tuple[int, ...] | None:
     if OS == "Windows":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        out = subprocess.run([str(binary), "--version"], capture_output=True, text=True,
+        # Outil du préfixe d'installation choisi par l'utilisateur ; argv fixe, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args, python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        out = subprocess.run([str(binary), "--version"], capture_output=True, text=True,  # nosec B603
                              timeout=15, check=False, stdin=subprocess.DEVNULL, **kwargs)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -1911,17 +1913,42 @@ def _install_tool_bundle(
     Linux/macOS : contenu dans ``<prefix>/lib/<outil>``, lien symbolique dans
     ``bin_dir`` (le binaire résout ses ressources depuis son chemin réel).
     """
-    staging = tmp_path / "bundle"
-    staging.mkdir(parents=True, exist_ok=True)
+    # Dossier neuf : aucune entrée préexistante ne peut rediriger une écriture.
+    staging = Path(tempfile.mkdtemp(prefix="bundle-", dir=tmp_path))
     if fmt == "tar.gz":
         with tarfile.open(archive_path, "r:gz") as tar:
-            members = [m for m in tar.getmembers() if m.isfile() or m.isdir()]
+            members = tar.getmembers()
             _ensure_safe_archive_names(m.name for m in members)
-            tar.extractall(staging, members=members)
+            if any(not (m.isfile() or m.isdir()) for m in members):
+                raise RuntimeError("Unsafe entry type in bundle archive")
+            for member in members:
+                target = staging / member.name.replace("\\", "/")
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source = tar.extractfile(member)
+                if source is None:
+                    raise RuntimeError(f"Unreadable archive entry: {member.name}")
+                with source, target.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+                target.chmod(member.mode & 0o777)
     elif fmt == "zip":
         with zipfile.ZipFile(archive_path) as zf:
-            _ensure_safe_archive_names(zf.namelist())
-            zf.extractall(staging)
+            members = zf.infolist()
+            _ensure_safe_archive_names(m.filename for m in members)
+            for member in members:
+                kind = stat.S_IFMT(member.external_attr >> 16)
+                if kind not in (0, stat.S_IFREG, stat.S_IFDIR):
+                    raise RuntimeError(f"Unsafe archive entry type: {member.filename}")
+            for member in members:
+                target = staging / member.filename.replace("\\", "/")
+                if member.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(member) as source, target.open("wb") as output:
+                    shutil.copyfileobj(source, output)
     else:
         raise RuntimeError(f"Unknown bundle format: {fmt}")
 

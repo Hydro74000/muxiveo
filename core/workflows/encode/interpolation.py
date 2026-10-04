@@ -212,7 +212,9 @@ def stream_start_offset(ffprobe_bin: str, source: Path, stream_index: int) -> fl
     cmd = [ffprobe_bin, "-v", "error", "-print_format", "json", "-show_streams", "-show_format"]
     cmd.extend(ffprobe_input_args(source))
     try:
-        result = subprocess.run(cmd, capture_output=True, check=False, timeout=30, **subprocess_text_kwargs())
+        # ffprobe configuré, arguments séparés et chemin média protégé, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(cmd, capture_output=True, check=False, timeout=30, **subprocess_text_kwargs())  # nosec B603
         payload = json.loads(result.stdout or "{}")
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return 0.0
@@ -357,7 +359,9 @@ def rife_version(rife_bin: str) -> tuple[int, int, int] | None:
 def _rife_version_cached(rife_bin: str, identity: tuple[int, int, int]) -> tuple[int, int, int] | None:
     _ = identity
     try:
-        result = subprocess.run(
+        # Binaire RIFE configuré ; seul argument constant --version, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(  # nosec B603
             [str(rife_bin), "--version"], capture_output=True, check=False, timeout=15, **subprocess_text_kwargs()
         )
     except (OSError, subprocess.SubprocessError):

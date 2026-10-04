@@ -242,8 +242,7 @@ class FrameCountGuard:
         selected_source = source_stream_index is not None and source_stream_index != 0
         deferred_source = not source_known and (raw_source or selected_source)
         source_count: int | None
-        if source_known:
-            assert known_source_frames is not None
+        if known_source_frames is not None and known_source_frames > 0:
             source_count = math.ceil(known_source_frames * ratio)
         elif deferred_source:
             source_count = None

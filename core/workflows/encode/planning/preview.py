@@ -9,16 +9,16 @@ def format_preview_command(cmd: list[str], *, prefix: str = "") -> str:
     lines = [cmd[0]]
     index = 1
     while index < len(cmd):
-        token = cmd[index]
-        if token == "|" and index + 1 < len(cmd):
+        argument = cmd[index]
+        if argument == "|" and index + 1 < len(cmd):
             # étage suivant d'un pipeline (ex. décodage | muxiveo-rife | encodeur)
             lines.append(f"| {cmd[index + 1]}")
             index += 2
-        elif token.startswith("-") and index + 1 < len(cmd) and not cmd[index + 1].startswith("-") and cmd[index + 1] != "|":
-            lines.append(f"    {token} {cmd[index + 1]}")
+        elif argument.startswith("-") and index + 1 < len(cmd) and not cmd[index + 1].startswith("-") and cmd[index + 1] != "|":
+            lines.append(f"    {argument} {cmd[index + 1]}")
             index += 2
         else:
-            lines.append(f"    {token}")
+            lines.append(f"    {argument}")
             index += 1
     return prefix + " \\\n".join(lines)
 

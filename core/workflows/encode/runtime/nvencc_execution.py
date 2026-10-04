@@ -242,7 +242,9 @@ class NvenccPipeExecutor:
                 popen_kwargs = subprocess_windows_no_window_kwargs(include_stdin=prev_stdout is None)
                 if prev_stdout is not None:
                     popen_kwargs["stdin"] = prev_stdout
-                proc = subprocess.Popen(
+                # Étages construits par le planificateur : argv séparés, aucun shell.
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+                proc = subprocess.Popen(  # nosec B603
                     stage,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,

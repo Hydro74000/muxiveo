@@ -119,6 +119,15 @@ def test_version_and_gpu_listing() -> None:
     assert all({"index", "name", "type"} <= set(gpu) for gpu in GPUS)
 
 
+def test_overlong_y4m_header_is_rejected() -> None:
+    """Un en-tête excessif est refusé avant la lecture des trames."""
+    header = b"YUV4MPEG2 W160 H96 F25:1 Ip C420jpeg X" + b"a" * 4096 + b"\n"
+    result = run_rife(header, "--factor", "2")
+    assert result.returncode == 2
+    assert b"en-t\xc3\xaate illisible" in result.stderr
+    assert result.stdout == b""
+
+
 @pytest.mark.parametrize("pix_fmt", ["yuv420p", "yuv420p10le"])
 def test_factor_two_keeps_originals_bit_exact(pix_fmt: str) -> None:
     data = make_y4m("testsrc2=size=160x96:rate=25", frames=8, pix_fmt=pix_fmt)

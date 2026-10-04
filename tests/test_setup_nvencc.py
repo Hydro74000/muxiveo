@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import stat
 import subprocess
 import tarfile
+import zipfile
 from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
@@ -88,6 +90,100 @@ def test_deb_fallback_still_extracts_regular_binary(setup_mod, monkeypatch, tmp_
         archive.addfile(entry, io.BytesIO(b"binary"))
     setup_mod._extract_deb_binary(tmp_path / "input.deb", "NVEncC", dest)
     assert (dest / "NVEncC").read_bytes() == b"binary"
+
+
+def _write_tool_bundle(path, fmt, entries):
+    """Crée une archive de test avec fichiers, répertoires ou liens."""
+    if fmt == "tar.gz":
+        with tarfile.open(path, "w:gz") as archive:
+            for name, data, kind in entries:
+                entry = tarfile.TarInfo(name)
+                entry.mode = 0o755
+                if kind == "symlink":
+                    entry.type = tarfile.SYMTYPE
+                    entry.linkname = data.decode()
+                    archive.addfile(entry)
+                elif kind == "directory":
+                    entry.type = tarfile.DIRTYPE
+                    archive.addfile(entry)
+                else:
+                    entry.size = len(data)
+                    archive.addfile(entry, io.BytesIO(data))
+    else:
+        with zipfile.ZipFile(path, "w") as archive:
+            for name, data, kind in entries:
+                entry = zipfile.ZipInfo(name)
+                entry.create_system = 3
+                mode = stat.S_IFLNK if kind == "symlink" else stat.S_IFDIR if kind == "directory" else stat.S_IFREG
+                entry.external_attr = (mode | 0o755) << 16
+                archive.writestr(entry, data)
+
+
+def _install_test_bundle(setup_mod, monkeypatch, tmp_path, archive, fmt):
+    """Installe le bundle dans un préfixe local sans exécuter son binaire."""
+    monkeypatch.setattr(setup_mod, "OS", "Windows")
+    return setup_mod._install_tool_bundle(
+        archive, fmt, "muxiveo-rife.exe", prefix=tmp_path / "prefix",
+        bin_dir=tmp_path / "tools", tmp_path=tmp_path, sudo=[],
+    )
+
+
+@pytest.mark.parametrize("fmt", ["tar.gz", "zip"])
+@pytest.mark.parametrize("unsafe", [
+    "../outside/probe", "..\\outside\\probe", "/absolute/probe",
+    "C:/outside/probe", "C:probe", "tool:stream",
+])
+def test_tool_bundle_rejects_unsafe_paths(setup_mod, monkeypatch, tmp_path, fmt, unsafe):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "probe"
+    sentinel.write_bytes(b"original")
+    archive = tmp_path / f"input.{fmt}"
+    _write_tool_bundle(archive, fmt, [
+        ("muxiveo-rife.exe", b"binary", "file"), (unsafe, b"changed", "file"),
+    ])
+    with pytest.raises(RuntimeError, match="Unsafe path"):
+        _install_test_bundle(setup_mod, monkeypatch, tmp_path, archive, fmt)
+    assert sentinel.read_bytes() == b"original"
+    assert not (tmp_path / "tools").exists()
+
+
+@pytest.mark.parametrize("fmt", ["tar.gz", "zip"])
+def test_tool_bundle_rejects_links_before_writing(setup_mod, monkeypatch, tmp_path, fmt):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "probe"
+    sentinel.write_bytes(b"original")
+    archive = tmp_path / f"input.{fmt}"
+    _write_tool_bundle(archive, fmt, [
+        ("muxiveo-rife.exe", b"binary", "file"),
+        ("link", str(outside).encode(), "symlink"),
+        ("link/probe", b"changed", "file"),
+    ])
+    with pytest.raises(RuntimeError, match="Unsafe.*type"):
+        _install_test_bundle(setup_mod, monkeypatch, tmp_path, archive, fmt)
+    assert sentinel.read_bytes() == b"original"
+    assert not (tmp_path / "tools").exists()
+
+
+@pytest.mark.parametrize("fmt", ["tar.gz", "zip"])
+def test_tool_bundle_uses_fresh_staging_and_preserves_resources(setup_mod, monkeypatch, tmp_path, fmt):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "probe"
+    sentinel.write_bytes(b"original")
+    (tmp_path / "bundle").symlink_to(outside, target_is_directory=True)
+    archive = tmp_path / f"input.{fmt}"
+    _write_tool_bundle(archive, fmt, [
+        ("release/", b"", "directory"),
+        ("release/muxiveo-rife.exe", b"binary", "file"),
+        ("release/rife-models/model/flownet.param", b"model", "file"),
+    ])
+    installed = _install_test_bundle(setup_mod, monkeypatch, tmp_path, archive, fmt)
+    assert installed.read_bytes() == b"binary"
+    assert (installed.parent / "rife-models/model/flownet.param").read_bytes() == b"model"
+    assert sentinel.read_bytes() == b"original"
+    assert list(outside.iterdir()) == [sentinel]
 
 
 # ---------------------------------------------------------------------------

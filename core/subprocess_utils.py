@@ -93,7 +93,9 @@ def run_cancellable_capture(
     """Sonde avec sortie capturée, tuable même pendant une lecture silencieuse."""
     check_cancelled()
     timeout = kwargs.pop("timeout", None)
-    with subprocess.Popen(
+    # Commande fournie par les workflows sous forme d'argv, sans interprétation shell.
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+    with subprocess.Popen(  # nosec B603
         command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs,
     ) as proc:
         if on_start is not None:
@@ -102,6 +104,8 @@ def run_cancellable_capture(
             with watch_process_cancellation(proc, cancel_cb):
                 stdout, stderr = proc.communicate(timeout=timeout)
             check_cancelled()
+            # Simple objet résultat : aucun lancement de processus.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
             if check:
                 result.check_returncode()
