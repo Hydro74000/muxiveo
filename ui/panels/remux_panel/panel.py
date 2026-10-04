@@ -126,7 +126,7 @@ class _AudioSyncReferenceDialog(QDialog):
 
 
 class RemuxPanel(QWidget):
-    _workflow_loaded = Signal(object, object)
+    _workflow_loaded = Signal(object, object, object)
     _workflow_load_error = Signal(str)
     """
     Panneau de remuxage MKV/MP4 — support multi-sources.
@@ -740,6 +740,9 @@ class RemuxPanel(QWidget):
     def _rebuild_preview(self) -> None:
         if self._closing:
             return
+        if hasattr(self, "_autosave_timer"):
+            from ui.panels.remux_panel.functions.workflow import mark_dirty
+            mark_dirty(self)
         # Coalesce les rafales d'événements (cases, reorder) en une seule
         # recompilation via le timer single-shot. Invalider immédiatement le
         # résultat en vol évite d'afficher une commande devenue obsolète.
@@ -2375,6 +2378,8 @@ class RemuxPanel(QWidget):
 
     def closeEvent(self, event) -> None:
         if not hasattr(self, "_shutdown"):
+            from ui.panels.remux_panel.functions.workflow import autosave
+            autosave(self, retry_if_locked=False)
             self._closing = True
             self.setEnabled(False)
             self._scan_cancel.set()

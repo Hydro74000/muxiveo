@@ -11,11 +11,11 @@ if TYPE_CHECKING:
     from ui.panels.remux_panel.panel import RemuxPanel
 
 
-def current_config(panel: "RemuxPanel") -> RemuxConfig | None:
+def current_config(panel: "RemuxPanel", *, output_fallback: str = "") -> RemuxConfig | None:
     if not panel._has_ready_files():
         return None
 
-    output_str = panel._output_edit.text().strip()
+    output_str = panel._output_edit.text().strip() or output_fallback
     if not output_str:
         return None
 
