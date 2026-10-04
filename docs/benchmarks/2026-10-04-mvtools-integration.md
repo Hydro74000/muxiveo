@@ -92,6 +92,8 @@ sur tout le runtime et le rendu QEMU Nehalem sans AVX2.
 | macos-arm64 | 8,206,636 | 7.83 | 2,847,307 | 2.72 |
 
 L’archive des sources est séparée et exclue du poids installé.
+Les paquets qualifiés et leurs sources sont publiés dans la
+[release native 1.0.0](https://github.com/Hydro74000/muxiveo/releases/tag/muxiveo-mvtools-v1.0.0).
 
 Les artefacts CI contiennent, par plateforme, `*-sizes.json`,
 `*-quality.json`, `*-4k-resources.json`, l’archive native et ses licences.
@@ -129,9 +131,18 @@ Python dans le paquet, et le hash du rendu d’autotest est identique.
   et retard vidéo +400 ms conservé.
 - Tests de profils, paramètres indépendants, interfaces, progression, choix
   explicite de moteur et construction NVEncC ; compte HDR fractionnaire partagé.
+- Installation réelle depuis la release publiée, SHA-256 GitHub, empreintes et
+  rendu après extraction, détection du paquet déjà installé. Contrôle du runtime
+  Windows dans un ZIP portable ; réparation d’un runtime incomplet par le setup.
+- Installation utilisateur Linux sous `~/.local`, chemin ajouté à `config.ini`
+  avec conservation des autres valeurs ; encodage réel supplémentaire depuis
+  ce paquet installé. Reconstruction de l’archive de sources publiée depuis un
+  autre dossier : autotest identique (`render_hash=2b17510182ba8ed5`).
 - 352 tests ciblés initiaux et 296 tests du workflow ; contrôles supplémentaires
   modèles/encodeurs/i18n, réservation mémoire, empreintes d’installation et
   conservation des champs RIFE Light/historiques après les dernières corrections.
+- 65 tests du setup et de l’intégration MVTools après la correction du contrôle
+  de complétude Windows ; 116 tests finaux interfaces/modèles/i18n.
 
 La copie et l’expansion DoVi/HDR10+ utilisent les règles existantes, sans
 modification du calendrier des métadonnées. Le banc n’utilise pas de film HDR
