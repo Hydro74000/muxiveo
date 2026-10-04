@@ -1905,6 +1905,27 @@ class TestEncodePanelRunOperation:
 
 
 class TestEncodePanelInterpolationTta:
+    def test_mvtools_roundtrip_and_independent_controls(self, qt_app, monkeypatch):
+        from core.workflows.encode import FrameInterpolationSettings
+
+        panel = EncodePanel(AppConfig())
+        monkeypatch.setattr(panel, "_interpolation_tool_available", lambda: True)
+        settings = FrameInterpolationSettings(enabled=True, backend="mvtools", mvtools_mode="uhd",
+                                              quality="light", mode="fast", tta=8, gpu=2, scene_threshold=12)
+        panel._apply_interpolation_settings(settings)
+        assert panel._current_interpolation_settings() == settings
+        assert not panel._interp_mvtools_mode_combo.isHidden()
+        assert panel._interp_tta_combo.isHidden()
+        assert any("MVTools x2 Lent UHD (CPU)" in b for b in panel._video_filter_badges_from_state({"interpolation": settings}))
+        panel._interp_backend_combo.setCurrentIndex(panel._interp_backend_combo.findData("rife"))
+        restored = panel._current_interpolation_settings()
+        assert (restored.quality, restored.mode, restored.tta, restored.gpu) == ("light", "fast", 8, 2)
+        assert panel._interp_mvtools_mode_combo.isHidden()
+        monkeypatch.setattr(panel, "_interpolation_tool_available", lambda: False)
+        panel._sync_interpolation_availability()
+        assert panel._current_interpolation_settings().enabled
+        panel.close()
+
     def test_tta_combo_round_trip_badge_and_enabling(self, qt_app, monkeypatch):
         from core.workflows.encode import FrameInterpolationSettings
 

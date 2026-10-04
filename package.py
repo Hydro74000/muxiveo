@@ -72,6 +72,8 @@ from core.version import (
     MUXIVEO_RIFE_RELEASE_TAG,
     MUXIVEO_RIFE_VERSION,
     muxiveo_rife_asset_url,
+    MUXIVEO_MVTOOLS_RELEASE_TAG,
+    muxiveo_mvtools_asset_url,
 )
 
 ROOT = Path(__file__).parent
@@ -2865,6 +2867,27 @@ def _dl_windows_muxiveo_rife(tools_dir: Path) -> None:
     _ok("muxiveo-rife.exe installé dans tools/")
 
 
+def _dl_windows_muxiveo_mvtools(tools_dir: Path) -> None:
+    """Embarque et vérifie le runtime MVTools complet."""
+    from core.native_mvtools import bundle_errors, extract_bundle
+    exe = tools_dir / "muxiveo-mvtools.exe"
+    if exe.is_file() and not bundle_errors(exe):
+        return
+    _step(f"muxiveo-mvtools ({MUXIVEO_MVTOOLS_RELEASE_TAG})")
+    with tempfile.TemporaryDirectory() as tmp:
+        local = os.environ.get("MUXIVEO_MVTOOLS_ARCHIVE")
+        archive = Path(local) if local else Path(tmp) / "muxiveo-mvtools.zip"
+        if not local:
+            _download_file(muxiveo_mvtools_asset_url("windows-x86_64.zip"), archive, timeout=180)
+        staging = Path(tmp) / "stage"
+        binary = extract_bundle(archive, staging)
+        errors = bundle_errors(binary)
+        if errors:
+            raise RuntimeError(" ; ".join(errors))
+        shutil.copytree(staging, tools_dir, dirs_exist_ok=True)
+    _ok("muxiveo-mvtools et son runtime installés")
+
+
 def _dl_windows_dovi_tool(tools_dir: Path) -> None:
     if (tools_dir / "dovi_tool.exe").is_file():
         _ok("dovi_tool.exe déjà présent dans tools/")
@@ -2952,6 +2975,7 @@ def bundle_windows_tools(bundle_dir: Path) -> Path:
     _dl_windows_hdr10plus_tool(tools_dir)
     _dl_windows_nvencc(tools_dir)
     _dl_windows_muxiveo_rife(tools_dir)
+    _dl_windows_muxiveo_mvtools(tools_dir)
     bundle_windows_licenses(bundle_dir)
 
     # Pose le marqueur _ALLINC à côté de l'exécutable

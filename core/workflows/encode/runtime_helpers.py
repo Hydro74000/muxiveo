@@ -123,6 +123,9 @@ class VideoPreparationResourcePolicy:
         if source_size > 0:
             source_component = min(max(source_size // 32, 128 * mib), 1024 * mib)
 
+        if video.interpolates() and video.interpolation.backend == "mvtools":
+            # Réserve conservative pour une fenêtre UHD : pel=4 utilise davantage de plans.
+            base += (6144 if video.interpolation.mvtools_mode == "uhd" else 2048) * mib
         return base + source_component + (threads * per_thread)
 
 

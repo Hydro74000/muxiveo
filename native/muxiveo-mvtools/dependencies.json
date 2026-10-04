@@ -1,0 +1,24 @@
+{
+  "vapoursynth": {
+    "version": "R80",
+    "revision": "732845793a1caf5838d4f7b94f6ce668a19c908e",
+    "url": "https://codeload.github.com/vapoursynth/vapoursynth/tar.gz/732845793a1caf5838d4f7b94f6ce668a19c908e",
+    "sha256": "c014174f4468fefc0afacc7f020d3e41c5e3b22f2902197c506e752e6d71ac7e"
+  },
+  "mvtools": {
+    "version": "v29_2",
+    "revision": "17250aa979616ac48dfb0e18abfdcf2bd4e3afc0",
+    "url": "https://codeload.github.com/dubhatervapoursynth/vapoursynth-mvtools/tar.gz/17250aa979616ac48dfb0e18abfdcf2bd4e3afc0",
+    "sha256": "320d3e6d36da6d18066993f5a1d72456aaeaef37ce34a12f89a4fc504718b27e"
+  },
+  "zimg": {
+    "version": "3.0.6",
+    "url": "https://codeload.github.com/sekrit-twc/zimg/tar.gz/refs/tags/release-3.0.6",
+    "sha256": "be89390f13a5c9b2388ce0f44a5e89364a20c1c57ce46d382b1fcc3967057577"
+  },
+  "fftw": {
+    "version": "3.3.11",
+    "url": "https://www.fftw.org/fftw-3.3.11.tar.gz",
+    "sha256": "5630c24cdeb33b131612f7eb4b1a9934234754f9f388ff8617458d0be6f239a1"
+  }
+}

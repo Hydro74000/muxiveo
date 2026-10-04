@@ -956,13 +956,15 @@ def test_bundle_windows_tools_downloads_and_sets_allinc_marker(tmp_path, monkeyp
     monkeypatch.setattr(package_mod, "_dl_windows_dovi_tool", lambda d: calls.append("dovi_tool"))
     monkeypatch.setattr(package_mod, "_dl_windows_hdr10plus_tool", lambda d: calls.append("hdr10plus_tool"))
     monkeypatch.setattr(package_mod, "_dl_windows_nvencc", lambda d: calls.append("nvencc"))
+    monkeypatch.setattr(package_mod, "_dl_windows_muxiveo_rife", lambda d: calls.append("rife"))
+    monkeypatch.setattr(package_mod, "_dl_windows_muxiveo_mvtools", lambda d: calls.append("mvtools"))
 
     tools_dir = package_mod.bundle_windows_tools(bundle)
 
     assert tools_dir == bundle / "tools"
     assert tools_dir.is_dir()
     assert (bundle / "_ALLINC").is_file()
-    assert calls == ["ffmpeg", "mediainfo", "dovi_tool", "hdr10plus_tool", "nvencc"]
+    assert calls == ["ffmpeg", "mediainfo", "dovi_tool", "hdr10plus_tool", "nvencc", "rife", "mvtools"]
 
 
 def test_build_windows_portable_zip(tmp_path, monkeypatch):
@@ -1113,4 +1115,3 @@ def test_build_windows_allinc_produces_both_installers_and_portable_zip(tmp_path
     assert nsis_calls == ["Muxiveo-Setup-4.0.3.exe", "Muxiveo-Setup-AllInc-4.0.3.exe"]
     assert tools_bundled == [True]
     assert portable_built == [True]
-

@@ -71,6 +71,8 @@ from core.version import (
     APP_WEBSITE_URL,
     MUXIVEO_RIFE_RELEASE_TAG,
     muxiveo_rife_asset_url,
+    MUXIVEO_MVTOOLS_RELEASE_TAG,
+    muxiveo_mvtools_asset_url,
 )
 
 ROOT = Path(__file__).parent
@@ -724,6 +726,30 @@ def _dl_muxiveo_rife(tools_dir: Path, arch: str) -> None:
     ok("muxiveo-rife installé")
 
 
+def _dl_muxiveo_mvtools(tools_dir: Path, arch: str) -> None:
+    """Embarque et vérifie le runtime MVTools complet."""
+    if arch != "x86_64":
+        warn(f"MVTools : pas de build {arch}")
+        return
+    from core.native_mvtools import bundle_errors, extract_bundle
+    exe = tools_dir / "muxiveo-mvtools"
+    if exe.is_file() and not bundle_errors(exe):
+        return
+    step(f"muxiveo-mvtools ({MUXIVEO_MVTOOLS_RELEASE_TAG})")
+    with tempfile.TemporaryDirectory() as tmp:
+        local = os.environ.get("MUXIVEO_MVTOOLS_ARCHIVE")
+        archive = Path(local) if local else Path(tmp) / "muxiveo-mvtools.tar.gz"
+        if not local:
+            _download(muxiveo_mvtools_asset_url("linux-x86_64.tar.gz"), archive, timeout=180)
+        staging = Path(tmp) / "stage"
+        binary = extract_bundle(archive, staging)
+        errors = bundle_errors(binary)
+        if errors:
+            raise RuntimeError(" ; ".join(errors))
+        shutil.copytree(staging, tools_dir, dirs_exist_ok=True)
+    ok("muxiveo-mvtools et son runtime installés")
+
+
 def _dl_hdr10plus_tool(tools_dir: Path, arch: str) -> None:
     step("Téléchargement hdr10plus_tool (GitHub)")
     _sfx = {"x86_64": "x86_64-unknown-linux-musl", "aarch64": "aarch64-unknown-linux-musl"}.get(arch, arch)
@@ -835,6 +861,7 @@ def bundle_tools(appdir: Path, arch: str) -> None:
     _dl_hdr10plus_tool(tools_dir, arch)
     _dl_nvencc(tools_dir, arch)
     _dl_muxiveo_rife(tools_dir, arch)
+    _dl_muxiveo_mvtools(tools_dir, arch)
     _bundle_licenses(appdir)
 
     ok(f"Tous les outils embarqués dans {tools_dir}")

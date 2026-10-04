@@ -263,7 +263,7 @@ class VideoFilterSettings:
 
 @dataclass
 class FrameInterpolationSettings:
-    """Interpolation d'images RIFE (muxiveo-rife) : multiplication de la cadence."""
+    """Interpolation d'images RIFE ou MVTools : multiplication de la cadence."""
     enabled: bool = False
     factor: int = 2                   # multiplicateur entier de cadence (2 = 29,97 -> 59,94)
     target_fps: str = ""              # cadence cible (ex. "60000/1001"), prioritaire sur factor
@@ -272,6 +272,8 @@ class FrameInterpolationSettings:
     tta: int = 1                      # moyennage TTA (1 = désactivé, 2 / 4 / 8 passes, coût x n)
     scene_threshold: float = 10.0     # seuil de coupe 0-100 (0 = désactivé)
     gpu: int = -1                     # index GPU Vulkan (-1 = automatique)
+    backend: str = "rife"             # rife | mvtools (profils anciens : RIFE)
+    mvtools_mode: str = "standard"    # standard | uhd (calcul CPU)
 
     def is_active(self) -> bool:
         return bool(self.enabled) and (bool(self.target_fps) or int(self.factor) > 1)

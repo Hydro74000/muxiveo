@@ -5078,5 +5078,29 @@
   "comptage exact au lancement": {
     "fra": "comptage exact au lancement",
     "eng": "exact count at start"
+  },
+  "Traitement Standard (limiter coût CPU)": {
+    "fra": "Traitement Standard (limiter coût CPU)",
+    "eng": "Standard processing (limit CPU cost)"
+  },
+  "Traitement Lent UHD (CPU)": {
+    "fra": "Traitement Lent UHD (CPU)",
+    "eng": "Slow UHD processing (CPU)"
+  },
+  "MVTools calcule sur CPU à la résolution reçue. Le mode Lent UHD affine davantage les vecteurs et consomme plus de RAM.": {
+    "fra": "MVTools calcule sur CPU à la résolution reçue. Le mode Lent UHD affine davantage les vecteurs et consomme plus de RAM.",
+    "eng": "MVTools runs on the CPU at the input resolution. Slow UHD refines motion vectors further and uses more RAM."
+  },
+  "Génère des images intermédiaires. Dolby Vision et HDR10+ suivent la nouvelle cadence.": {
+    "fra": "Génère des images intermédiaires. Dolby Vision et HDR10+ suivent la nouvelle cadence.",
+    "eng": "Generates intermediate frames. Dolby Vision and HDR10+ follow the new frame rate."
+  },
+  "Outil d'interpolation sélectionné introuvable : Paramètres > Outils externes, ou relancer le setup.": {
+    "fra": "Outil d'interpolation sélectionné introuvable : Paramètres > Outils externes, ou relancer le setup.",
+    "eng": "Selected interpolation tool not found: Settings > External tools, or run setup again."
+  },
+  "Interpolation d’images MVTools (CPU) livrée avec Muxiveo — multiplication de cadence à l’encodage.": {
+    "fra": "Interpolation d’images MVTools (CPU) livrée avec Muxiveo — multiplication de cadence à l’encodage.",
+    "eng": "MVTools frame interpolation (CPU) shipped with Muxiveo — frame rate multiplication during encoding."
   }
 }

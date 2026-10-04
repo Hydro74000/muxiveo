@@ -20,6 +20,7 @@ from __future__ import annotations
 import functools
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -35,7 +36,7 @@ from core.subprocess_utils import subprocess_text_kwargs
 from core.pipeline_command import PipelineCommand, command_stages
 
 if TYPE_CHECKING:
-    from core.workflows.encode.models import VideoEncodeSettings
+    from core.workflows.encode.models import FrameInterpolationSettings, VideoEncodeSettings
 
 # Préréglage qualité → modèle RIFE embarqué (voir native/muxiveo-rife/models.json).
 # v4.6 : meilleur VMAF moyen, débit le plus élevé et VRAM la plus basse sur le banc
@@ -59,6 +60,9 @@ RIFE_MIN_VERSION: tuple[int, int, int] = (1, 1, 0)
 # Moyennage TTA (--tta) : nombre de passes moyennées par image interpolée (1 = désactivé).
 INTERPOLATION_TTA_LEVELS: tuple[int, ...] = (1, 2, 4, 8)
 RIFE_TTA_MIN_VERSION: tuple[int, int, int] = (1, 2, 0)
+INTERPOLATION_BACKENDS: tuple[str, ...] = ("rife", "mvtools")
+MVTOOLS_MODES: tuple[str, ...] = ("standard", "uhd")
+MVTOOLS_MIN_VERSION: tuple[int, int, int] = (1, 0, 0)
 
 # Intervalle des lignes ``progress`` de muxiveo-rife : alimentent la barre de
 # progression (non journalisées, log verbose uniquement).
@@ -332,6 +336,82 @@ def build_rife_stage(
     return cmd
 
 
+def mvtools_thread_count(mode: str, budget: int | None = None) -> int:
+    """Part du budget CPU affectée à MVTools, après répartition entre tâches."""
+    count = max(1, int(budget or os.cpu_count() or 1))
+    return max(1, min(4, count // 2)) if mode == "standard" else count
+
+
+def build_mvtools_stage(
+    mvtools_bin: str, *, factor: int = 2, target_fps: str = "",
+    mode: str = "standard", source: InterpolationSource,
+    scene_threshold: float = 10.0, thread_budget: int | None = None,
+) -> list[str]:
+    """Étage CPU MVTools, Y4M en entrée/sortie et cadence rationnelle."""
+    rate = ["--fps", target_fps] if target_fps else ["--factor", str(int(factor))]
+    return [
+        str(mvtools_bin), *rate, "--mode", mode,
+        "--threads", str(mvtools_thread_count(mode, thread_budget)),
+        "--matrix", source.matrix, "--range", source.color_range,
+        "--chroma-loc", source.chroma_location,
+        "--scene-threshold", f"{max(0.0, float(scene_threshold)):g}",
+        "--progress-interval", str(_RIFE_PROGRESS_INTERVAL_S),
+    ]
+
+
+def build_interpolation_stage(
+    settings: FrameInterpolationSettings, source: InterpolationSource, *,
+    rife_bin: str | None = None, mvtools_bin: str | None = None,
+    thread_budget: int | None = None,
+) -> list[str]:
+    """Sélectionne explicitement le moteur demandé, sans repli implicite."""
+    from core.workflows.encode.models import EncodeError
+    if settings.backend not in INTERPOLATION_BACKENDS:
+        raise EncodeError(f"Interpolation d'images : moteur « {settings.backend} » inconnu.")
+    binary = mvtools_bin if settings.backend == "mvtools" else rife_bin
+    if not binary:
+        raise EncodeError(f"Interpolation d'images : outil muxiveo-{settings.backend} introuvable.")
+    common = dict(factor=int(settings.factor), target_fps=settings.target_fps,
+                  source=source, scene_threshold=settings.scene_threshold)
+    if settings.backend == "mvtools":
+        return build_mvtools_stage(binary, **common, mode=settings.mvtools_mode, thread_budget=thread_budget)
+    return build_rife_stage(binary, **common, quality=settings.quality,
+                            gpu=settings.gpu, mode=settings.mode, tta=settings.tta)
+
+
+@functools.lru_cache(maxsize=8)
+def _mvtools_runtime_cached(binary: str, identity: tuple[object, ...]) -> dict[str, object] | None:
+    """Autotest du runtime embarqué, mémorisé jusqu'au remplacement du binaire."""
+    try:
+        # Outil configuré, arguments constants, aucun shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(  # nosec B603
+            [binary, "--self-test", "--json"], capture_output=True, check=False,
+            timeout=30, **subprocess_text_kwargs(),
+        )
+        payload = json.loads(result.stdout)
+        return payload if result.returncode == 0 and payload.get("ok") is True else None
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+        return None
+
+
+def mvtools_runtime_info(binary: str) -> dict[str, object] | None:
+    """Vérifie le chargement et un rendu 8/10 bits du moteur sélectionné."""
+    try:
+        path = Path(shutil.which(binary) or binary).resolve()
+        stat = path.stat()
+        runtime = path.parent / "mvtools-runtime"
+        identity = (stat.st_mtime_ns, stat.st_size, tuple(
+            (p.name, p.stat().st_size, p.stat().st_mtime_ns)
+            for p in sorted(runtime.iterdir()) if p.is_file()
+        ))
+        if not runtime.is_dir():
+            return None
+        return _mvtools_runtime_cached(str(path), identity)
+    except OSError:
+        return None
+
+
 def rife_model_available(rife_bin: str, model: str) -> bool:
     """Vrai si ``<dossier réel du binaire>/rife-models/<model>`` contient le modèle."""
     try:
@@ -404,6 +484,17 @@ def parse_rife_progress(line: str) -> RifeProgress | None:
     if match is None:
         return None
     return RifeProgress(int(match.group(1)), int(match.group(2)), float(match.group(3)))
+
+
+# Compatibilité des appelants historiques : même format et mêmes calculs.
+InterpolationProgress = RifeProgress
+_INTERPOLATION_PROGRESS_RE = re.compile(r"\[muxiveo-(?:rife|mvtools)\] progress in=(\d+) out=(\d+)\b.*?\bfps=([\d.]+)")
+
+
+def parse_interpolation_progress(line: str) -> InterpolationProgress | None:
+    """Reconnaît la progression de chacun des moteurs d'interpolation."""
+    match = _INTERPOLATION_PROGRESS_RE.search(line)
+    return InterpolationProgress(int(match[1]), int(match[2]), float(match[3])) if match else None
 
 
 # =============================================================================
@@ -661,6 +752,9 @@ def extract_hdr10plus_metadata(
 
 
 __all__ = [
+    "INTERPOLATION_BACKENDS", "MVTOOLS_MODES", "MVTOOLS_MIN_VERSION",
+    "build_mvtools_stage", "build_interpolation_stage", "mvtools_thread_count",
+    "mvtools_runtime_info", "parse_interpolation_progress", "InterpolationProgress",
     "INTERPOLATION_DEFAULT_QUALITY",
     "INTERPOLATION_FACTORS",
     "INTERPOLATION_TARGET_FPS",

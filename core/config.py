@@ -163,6 +163,7 @@ _WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
     "eac3to": ("eac3to.exe",),
     "nvencc": ("NVEncC64.exe", "NVEncC.exe"),
     "muxiveo_rife": ("muxiveo-rife.exe",),
+    "muxiveo_mvtools": ("muxiveo-mvtools.exe",),
 }
 
 _WINDOWS_WINGET_PATTERNS: dict[str, tuple[str, ...]] = {
@@ -877,6 +878,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "eac3to", "attr": "tool_eac3to", "kind": "tool", "label": "eac3to", "description": "Option facultative sous Windows pour la conversion audio avancée."},
             {"key": "nvencc", "attr": "tool_nvencc", "kind": "tool", "label": "NVEncC", "description": "Wrapper NVIDIA NVENC standalone (rigaya) — encodage avancé. Détecté uniquement si un GPU NVIDIA est présent."},
             {"key": "muxiveo_rife", "attr": "tool_muxiveo_rife", "kind": "tool", "label": "muxiveo-rife", "description": "Interpolation d'images RIFE (Vulkan) livrée avec Muxiveo — multiplication de cadence à l'encodage."},
+            {"key": "muxiveo_mvtools", "attr": "tool_muxiveo_mvtools", "kind": "tool", "label": "muxiveo-mvtools", "description": "Interpolation d'images MVTools (CPU) livrée avec Muxiveo — multiplication de cadence à l'encodage."},
         ),
     },
     {
@@ -1220,6 +1222,11 @@ class AppConfig:
             "tools/muxiveo_rife",
             "muxiveo-rife.exe" if _is_windows() else "muxiveo-rife",
         )
+        self.tool_muxiveo_mvtools = self._resolve_tool_value(
+            "muxiveo_mvtools",
+            "tools/muxiveo_mvtools",
+            "muxiveo-mvtools.exe" if _is_windows() else "muxiveo-mvtools",
+        )
         self._tool_versions = ToolVersionRegistry(self.tool_commands())
 
         self.ffmpeg_threads = _normalize_ffmpeg_thread_count(
@@ -1480,6 +1487,7 @@ class AppConfig:
             "hdr10plus_tool": self.tool_hdr10plus,
             "eac3to": self.tool_eac3to,
             "muxiveo-rife": getattr(self, "tool_muxiveo_rife", "muxiveo-rife"),
+            "muxiveo-mvtools": getattr(self, "tool_muxiveo_mvtools", "muxiveo-mvtools"),
         }
 
     def refresh_tool_versions(self) -> None:
@@ -1589,6 +1597,7 @@ class AppConfig:
                 "hdr10plus_tool": self.tool_hdr10plus,
                 "eac3to": self.tool_eac3to,
                 "muxiveo_rife": getattr(self, "tool_muxiveo_rife", ""),
+                "muxiveo_mvtools": getattr(self, "tool_muxiveo_mvtools", ""),
             },
             "tool_versions": {
                 name: {

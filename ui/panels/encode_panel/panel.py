@@ -132,6 +132,7 @@ class EncodePanel(QWidget):
             generate_nfo=config.generate_nfo,
             nvencc_bin=getattr(config, "tool_nvencc", None) or None,
             rife_bin=getattr(config, "tool_muxiveo_rife", None) or None,
+            mvtools_bin=getattr(config, "tool_muxiveo_mvtools", None) or None,
             sync_rewrite_enabled=config.sync_rewrite_enabled,
             aac_bitrate_per_channel_kbps=config.aac_bitrate_per_channel_kbps,
             eac3_bitrate_per_channel_kbps=config.eac3_bitrate_per_channel_kbps,
@@ -1645,6 +1646,19 @@ class EncodePanel(QWidget):
         self._interp_cb = QCheckBox("Interpolation")
         self._interp_cb.setStyleSheet(_checkbox_style())
         self._interp_cb.toggled.connect(lambda _: self._on_interpolation_changed())
+        self._interp_backend_combo = QComboBox()
+        self._interp_backend_combo.setStyleSheet(_combo_style())
+        for label, backend in (("RIFE", "rife"), ("MVTools", "mvtools")):
+            self._interp_backend_combo.addItem(label, backend)
+        self._interp_backend_combo.currentIndexChanged.connect(self._on_interpolation_backend_changed)
+        self._interp_mvtools_mode_combo = QComboBox()
+        self._interp_mvtools_mode_combo.setStyleSheet(_combo_style())
+        for label, value in (("Traitement Standard (limiter coût CPU)", "standard"), ("Traitement Lent UHD (CPU)", "uhd")):
+            self._interp_mvtools_mode_combo.addItem(translate_text(label), value)
+        self._interp_mvtools_mode_combo.setToolTip(translate_text("MVTools calcule sur CPU à la résolution reçue. Le mode Lent UHD affine davantage les vecteurs et consomme plus de RAM."))
+        self._interp_mvtools_mode_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
+        self._interp_preserved_scene_threshold = 10.0
+        self._interp_preserved_gpu = -1
         self._interp_factor_combo = QComboBox()
         self._interp_factor_combo.setStyleSheet(_combo_style())
         self._interp_factor_combo.setToolTip(
@@ -1685,7 +1699,8 @@ class EncodePanel(QWidget):
         self._interp_fps_label = self._filter_tech_label("")
         fl.addWidget(self._build_filter_row(
             self._interp_cb,
-            self._filter_tech_label("RIFE"),
+            self._interp_backend_combo,
+            self._interp_mvtools_mode_combo,
             self._interp_factor_combo,
             self._interp_quality_combo,
             self._interp_mode_combo,
@@ -1699,26 +1714,26 @@ class EncodePanel(QWidget):
         return card
 
     def _interpolation_tool_available(self) -> bool:
-        rife = getattr(self._config, "tool_muxiveo_rife", None) or ""
-        return bool(rife) and (Path(rife).is_file() or shutil.which(rife) is not None)
+        backend = str(self._interp_backend_combo.currentData() or "rife")
+        tool = getattr(self._config, "tool_muxiveo_" + backend, None) or ""
+        return bool(tool) and (Path(tool).is_file() or shutil.which(tool) is not None)
 
     def _sync_interpolation_availability(self) -> None:
         if not hasattr(self, "_interp_cb"):
             return
         available = self._interpolation_tool_available()
         self._interp_cb.setEnabled(available)
+        backend = str(self._interp_backend_combo.currentData() or "rife")
         self._interp_cb.setToolTip(
-            translate_text(
-                "Génère des images intermédiaires (RIFE, GPU Vulkan) pour multiplier la cadence. "
-                "Les images d'origine sont conservées ; les coupes de scène sont dupliquées. "
-                "Dolby Vision et HDR10+ suivent la nouvelle cadence."
-            )
-            if available
-            else translate_text("muxiveo-rife introuvable : Paramètres > Outils externes, ou relancer le setup.")
+            translate_text("Génère des images intermédiaires. Dolby Vision et HDR10+ suivent la nouvelle cadence.")
+            if available else translate_text("Outil d'interpolation sélectionné introuvable : Paramètres > Outils externes, ou relancer le setup.")
         )
-        if not available and self._interp_cb.isChecked():
-            self._interp_cb.setChecked(False)
         self._sync_interpolation_controls()
+
+    def _on_interpolation_backend_changed(self, _index: int = 0) -> None:
+        if hasattr(self, "_interp_factor_combo"):
+            self._sync_interpolation_availability()
+            self._rebuild_preview()
 
     def _interpolation_tool_flag(self) -> bool:
         """État propre de la case RIFE (outil disponible), indépendant des parents
@@ -1729,13 +1744,18 @@ class EncodePanel(QWidget):
     def _sync_interpolation_controls(self) -> None:
         enabled = self._interp_cb.isChecked() and self._interpolation_tool_flag()
         self._interp_factor_combo.setEnabled(enabled)
-        self._interp_quality_combo.setEnabled(enabled)
+        mvtools = self._interp_backend_combo.currentData() == "mvtools"
+        self._interp_mvtools_mode_combo.setVisible(mvtools)
+        self._interp_mvtools_mode_combo.setEnabled(enabled)
+        for widget in (self._interp_quality_combo, self._interp_mode_combo, self._interp_tta_combo):
+            widget.setVisible(not mvtools)
+        self._interp_quality_combo.setEnabled(enabled and not mvtools)
         # Light impose le mode Fast (v4.15 lite + flux à demi-résolution)
         light = self._interp_quality_combo.currentData() == "light"
         if light:
             self._set_combo_data(self._interp_mode_combo, "fast")
-        self._interp_mode_combo.setEnabled(enabled and not light)
-        self._interp_tta_combo.setEnabled(enabled)
+        self._interp_mode_combo.setEnabled(enabled and not light and not mvtools)
+        self._interp_tta_combo.setEnabled(enabled and not mvtools)
         self._interp_fps_label.setText(self._interpolation_fps_hint() if enabled else "")
 
     def _interpolation_fps_hint(self) -> str:
@@ -1773,7 +1793,11 @@ class EncodePanel(QWidget):
         choice = str(self._interp_factor_combo.currentData() or "2")
         is_target = "/" in choice
         return FrameInterpolationSettings(
-            enabled=self._interp_cb.isChecked() and self._interp_cb.isEnabled(),
+            enabled=self._interp_cb.isChecked(),
+            backend=str(self._interp_backend_combo.currentData() or "rife"),
+            mvtools_mode=str(self._interp_mvtools_mode_combo.currentData() or "standard"),
+            scene_threshold=self._interp_preserved_scene_threshold,
+            gpu=self._interp_preserved_gpu,
             factor=2 if is_target else int(choice),
             target_fps=choice if is_target else "",
             quality=str(self._interp_quality_combo.currentData() or "balanced"),
@@ -1785,7 +1809,12 @@ class EncodePanel(QWidget):
     def _apply_interpolation_settings(self, settings: FrameInterpolationSettings) -> None:
         if not hasattr(self, "_interp_cb"):
             return
-        self._interp_cb.setChecked(bool(settings.enabled) and self._interpolation_tool_flag())
+        self._set_combo_data(self._interp_backend_combo, settings.backend)
+        self._set_combo_data(self._interp_mvtools_mode_combo, settings.mvtools_mode)
+        self._interp_preserved_scene_threshold = settings.scene_threshold
+        self._interp_preserved_gpu = settings.gpu
+        self._interp_cb.setChecked(bool(settings.enabled))
+        self._sync_interpolation_availability()
         self._set_combo_data(self._interp_factor_combo, settings.target_fps or str(int(settings.factor)))
         quality = settings.quality if settings.quality in ("fast", "balanced", "light") else "balanced"
         self._set_combo_data(self._interp_quality_combo, quality)
@@ -4253,16 +4282,19 @@ class EncodePanel(QWidget):
             badges.append("Chroma")
         interpolation = FrameInterpolationSettings.from_value(state.get("interpolation"))
         if interpolation.is_active():
+            engine = "MVTools" if interpolation.backend == "mvtools" else "RIFE"
             badge = (
-                f"RIFE {_format_fps(float(Fraction(interpolation.target_fps)))}"
+                f"{engine} {_format_fps(float(Fraction(interpolation.target_fps)))}"
                 if interpolation.target_fps
-                else f"RIFE x{int(interpolation.factor)}"
+                else f"{engine} x{int(interpolation.factor)}"
             )
-            if interpolation.quality == "light":
+            if interpolation.backend == "mvtools":
+                badge += " Lent UHD (CPU)" if interpolation.mvtools_mode == "uhd" else " Standard (CPU)"
+            elif interpolation.quality == "light":
                 badge += " Light"
-            if interpolation.fast_mode():
+            if interpolation.backend == "rife" and interpolation.fast_mode():
                 badge += " Fast"
-            if int(interpolation.tta) > 1:
+            if interpolation.backend == "rife" and int(interpolation.tta) > 1:
                 badge += f" TTA ×{int(interpolation.tta)}"
             badges.append(badge)
         return tuple(badges)
@@ -5009,6 +5041,7 @@ class EncodePanel(QWidget):
         self._workflow.set_max_parallel_video_encodes(self._config.max_parallel_video_encodes)
         self._workflow.set_mediainfo_bin(self._config.tool_mediainfo)
         self._workflow.set_rife_bin(getattr(self._config, "tool_muxiveo_rife", None) or None)
+        self._workflow.set_mvtools_bin(getattr(self._config, "tool_muxiveo_mvtools", None) or None)
         self._sync_interpolation_availability()
         self._workflow.set_generate_nfo(self._config.generate_nfo)
         self._workflow.set_regenerate_statistics(getattr(self._config, "matroska_regenerate_statistics", True))

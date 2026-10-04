@@ -173,12 +173,70 @@ jobs:
     with:
       publish: true
 
+  muxiveo-mvtools-state:
+    name: muxiveo-mvtools release state
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.state.outputs.build }}
+      tag: ${{ steps.state.outputs.tag }}
+    steps:
+      - name: Checkout
+        shell: bash
+        env:
+          CHECKOUT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$CHECKOUT_SHA"
+          git checkout --detach --force "$CHECKOUT_SHA"
+
+      # Release de la version épinglée absente -> compilation + publication avant le
+      # packaging. Présente -> le code natif doit être identique à celui publié.
+      - name: Resolve state
+        id: state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -n 's/^project(muxiveo-mvtools VERSION \([0-9.]*\).*/\1/p' native/muxiveo-mvtools/CMakeLists.txt)
+          PINNED=$(sed -n 's/^MUXIVEO_MVTOOLS_VERSION = "\([0-9.]*\)"/\1/p' core/version.py)
+          if [ -z "$VERSION" ] || [ "$VERSION" != "$PINNED" ]; then
+            echo "::error::Version muxiveo-mvtools incohérente : CMakeLists.txt ($VERSION) != core/version.py ($PINNED)"
+            exit 1
+          fi
+          TAG="muxiveo-mvtools-v${VERSION}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::notice::${TAG} absente : compilation et publication avant le packaging"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          NATIVE=(native/muxiveo-mvtools/src native/muxiveo-mvtools/CMakeLists.txt
+                  native/muxiveo-mvtools/dependencies.json native/muxiveo-mvtools/scripts)
+          if ! git diff --quiet "$TAG" HEAD -- "${NATIVE[@]}"; then
+            echo "::error::Code natif modifié depuis ${TAG} : incrémenter la version (native/muxiveo-mvtools/CMakeLists.txt + MUXIVEO_MVTOOLS_VERSION de core/version.py)"
+            git diff --stat "$TAG" HEAD -- "${NATIVE[@]}"
+            exit 1
+          fi
+          echo "build=false" >> "$GITHUB_OUTPUT"
+
+  muxiveo-mvtools:
+    name: muxiveo-mvtools
+    needs: muxiveo-mvtools-state
+    if: ${{ needs.muxiveo-mvtools-state.outputs.build == 'true' }}
+    uses: ./.github/workflows/muxiveo-mvtools.yml
+    with:
+      publish: true
+
   build-linux:
     name: Build Linux AppImage
     runs-on: ubuntu-latest
     # muxiveo-rife embarqué : release publiée (ou déjà existante) avant le packaging
-    needs: [release-metadata, muxiveo-rife-state, muxiveo-rife]
-    if: ${{ !cancelled() && needs.release-metadata.result == 'success' && needs.muxiveo-rife-state.result == 'success' && (needs.muxiveo-rife.result == 'success' || needs.muxiveo-rife.result == 'skipped') }}
+    needs: [release-metadata, muxiveo-rife-state, muxiveo-rife, muxiveo-mvtools-state, muxiveo-mvtools]
+    if: ${{ !cancelled() && needs.release-metadata.result == 'success' && needs.muxiveo-rife-state.result == 'success' && (needs.muxiveo-rife.result == 'success' || needs.muxiveo-rife.result == 'skipped') && needs.muxiveo-mvtools-state.result == 'success' && (needs.muxiveo-mvtools.result == 'success' || needs.muxiveo-mvtools.result == 'skipped') }}
     steps:
       - name: Checkout
         shell: bash
@@ -231,6 +289,9 @@ jobs:
         shell: bash
         run: python scripts/check_allinc_rife.py dist/releases/Muxiveo-x86_64_allinc-*.AppImage
 
+      - name: Verify embedded muxiveo-mvtools
+        run: python scripts/check_allinc_mvtools.py dist/releases/Muxiveo-x86_64_allinc-*.AppImage
+
       - name: Collect Linux assets
         shell: bash
         run: |
@@ -251,8 +312,8 @@ jobs:
     name: Build Windows installer
     runs-on: windows-latest
     # muxiveo-rife embarqué : release publiée (ou déjà existante) avant le packaging
-    needs: [release-metadata, muxiveo-rife-state, muxiveo-rife]
-    if: ${{ !cancelled() && needs.release-metadata.result == 'success' && needs.muxiveo-rife-state.result == 'success' && (needs.muxiveo-rife.result == 'success' || needs.muxiveo-rife.result == 'skipped') }}
+    needs: [release-metadata, muxiveo-rife-state, muxiveo-rife, muxiveo-mvtools-state, muxiveo-mvtools]
+    if: ${{ !cancelled() && needs.release-metadata.result == 'success' && needs.muxiveo-rife-state.result == 'success' && (needs.muxiveo-rife.result == 'success' || needs.muxiveo-rife.result == 'skipped') && needs.muxiveo-mvtools-state.result == 'success' && (needs.muxiveo-mvtools.result == 'success' || needs.muxiveo-mvtools.result == 'skipped') }}
     steps:
       - name: Checkout
         shell: pwsh
@@ -310,6 +371,14 @@ jobs:
           PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
         run: |
           python scripts/check_allinc_rife.py `
+            "dist\releases\Muxiveo-Setup-AllInc-$env:PACKAGE_VERSION.exe" `
+            "dist\releases\Muxiveo-Windows-x64-allinc-$env:PACKAGE_VERSION.zip"
+      - name: Verify embedded muxiveo-mvtools
+        shell: pwsh
+        env:
+          PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
+        run: |
+          python scripts/check_allinc_mvtools.py `
             "dist\releases\Muxiveo-Setup-AllInc-$env:PACKAGE_VERSION.exe" `
             "dist\releases\Muxiveo-Windows-x64-allinc-$env:PACKAGE_VERSION.zip"
 
@@ -481,6 +550,9 @@ jobs:
           RIFE_TAG=$(python -c "from core.version import MUXIVEO_RIFE_RELEASE_TAG as t; print(t)")
           RIFE_JSON=$(python scripts/github_release_asset.py --repo "$GITHUB_REPOSITORY" --tag "$RIFE_TAG" --pattern macos-arm64.tar.gz --sha256 || echo '{}')
           echo "rife_json=$RIFE_JSON" >> "$GITHUB_OUTPUT"
+          MVTOOLS_TAG=$(python -c "from core.version import MUXIVEO_MVTOOLS_RELEASE_TAG as t; print(t)")
+          MVTOOLS_JSON=$(python scripts/github_release_asset.py --repo "$GITHUB_REPOSITORY" --tag "$MVTOOLS_TAG" --pattern macos-arm64.tar.gz --sha256)
+          echo "mvtools_json=$MVTOOLS_JSON" >> "$GITHUB_OUTPUT"
 
       - name: Generate Homebrew formula
         shell: bash
@@ -491,6 +563,7 @@ jobs:
           DOVI_JSON: ${{ steps.tools.outputs.dovi_json }}
           HDR_JSON: ${{ steps.tools.outputs.hdr_json }}
           RIFE_JSON: ${{ steps.tools.outputs.rife_json }}
+          MVTOOLS_JSON: ${{ steps.tools.outputs.mvtools_json }}
         run: |
           set -euo pipefail
           mkdir -p release-assets/formula
@@ -515,6 +588,8 @@ jobs:
             --homepage "https://github.com/${REPO}" \
             --muxiveo-rife-macos-url "$(python -c 'import json, os; print(json.loads(os.environ.get("RIFE_JSON") or "{}").get("url", ""))')" \
             --muxiveo-rife-macos-sha256 "$(python -c 'import json, os; print(json.loads(os.environ.get("RIFE_JSON") or "{}").get("sha256", ""))')" \
+            --muxiveo-mvtools-macos-url "$(python -c 'import json, os; print(json.loads(os.environ.get("MVTOOLS_JSON") or "{}").get("url", ""))')" \
+            --muxiveo-mvtools-macos-sha256 "$(python -c 'import json, os; print(json.loads(os.environ.get("MVTOOLS_JSON") or "{}").get("sha256", ""))')" \
             --output release-assets/formula/Muxiveo.rb
 
       - name: Upload formula artifact
@@ -557,7 +632,7 @@ jobs:
       # download-artifact ne sait pas exclure par motif.
       - name: Drop muxiveo-rife artifacts
         shell: bash
-        run: rm -fv artifacts/muxiveo-rife-*
+        run: rm -fv artifacts/muxiveo-rife-* artifacts/muxiveo-mvtools-*
 
       - name: Add source archives
         shell: bash

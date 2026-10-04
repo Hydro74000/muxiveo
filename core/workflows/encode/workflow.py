@@ -122,6 +122,10 @@ from core.workflows.encode.interpolation import (
     rife_model_available as _rife_model_available,
     InterpolationSource as _InterpolationSource,
     build_rife_stage as _build_rife_stage,
+    build_interpolation_stage as _build_interpolation_stage,
+    parse_interpolation_progress as _parse_interpolation_progress,
+    mvtools_runtime_info as _mvtools_runtime_info,
+    MVTOOLS_MIN_VERSION as _MVTOOLS_MIN_VERSION,
     parse_rife_progress as _parse_rife_progress,
     rife_version as _rife_version,
     interpolation_source_from_probe as _interpolation_source_from_probe,
@@ -373,6 +377,7 @@ class EncodeWorkflow(QObject):
         generate_nfo:              bool = True,
         nvencc_bin:                str | None = None,
         rife_bin:                  str | None = None,
+        mvtools_bin:               str | None = None,
         sync_rewrite_enabled:      bool = False,
         aac_bitrate_per_channel_kbps: int = 96,
         eac3_bitrate_per_channel_kbps: int = 96,
@@ -391,6 +396,7 @@ class EncodeWorkflow(QObject):
         self._nvencc_bin: str | None = nvencc_bin
         # muxiveo-rife (interpolation d'images) : optionnel, None = indisponible.
         self._rife_bin: str | None = rife_bin
+        self._mvtools_bin: str | None = mvtools_bin
         # Cache mémoire : évite de ré-exécuter ffprobe/mediainfo à chaque
         # reconstruction d'aperçu (preview_command peut être appelé des dizaines
         # de fois pour le même fichier lors de changements UI).
@@ -478,6 +484,10 @@ class EncodeWorkflow(QObject):
     def set_nvencc_bin(self, nvencc_bin: str | None) -> None:
         """Met à jour le chemin vers NVEncC (None = pipeline NVEncC indisponible)."""
         self._nvencc_bin = nvencc_bin or None
+
+    def set_mvtools_bin(self, mvtools_bin: str | None) -> None:
+        """Met à jour le moteur CPU et son runtime embarqué."""
+        self._mvtools_bin = mvtools_bin or None
 
     def set_rife_bin(self, rife_bin: str | None) -> None:
         """Met à jour le chemin vers muxiveo-rife (None = interpolation indisponible)."""
@@ -977,20 +987,11 @@ class EncodeWorkflow(QObject):
         """Ajoute l'étage muxiveo-rife derrière un décodage y4m (pipeline NVEncC)."""
         if not video.interpolates():
             return decode_cmd
-        if not self._rife_bin:
-            raise EncodeError("Interpolation d'images : outil muxiveo-rife introuvable.")
         settings = video.interpolation
         info = self._interpolation_source(video, source)
-        rife = _build_rife_stage(
-            self._rife_bin,
-            factor=int(settings.factor),
-            target_fps=settings.target_fps,
-            quality=settings.quality,
-            source=info,
-            scene_threshold=settings.scene_threshold,
-            gpu=settings.gpu,
-            mode=settings.mode,
-            tta=settings.tta,
+        rife = _build_interpolation_stage(
+            settings, info, rife_bin=self._rife_bin, mvtools_bin=self._mvtools_bin,
+            thread_budget=self._ffmpeg_threads or _default_ffmpeg_thread_count(),
         )
         return _PipelineCommand(rife, [_interpolation_decode_cmd(decode_cmd, info)])
 
@@ -1767,6 +1768,8 @@ class EncodeWorkflow(QObject):
                 size_to_bitrate_kbps=self._size_to_bitrate_kbps,
                 size_to_bitrate_kbps_for_video=self._size_to_bitrate_kbps_for_video,
                 rife_bin=self._rife_bin,
+                mvtools_bin=self._mvtools_bin,
+                interpolation_thread_budget=self._ffmpeg_threads or _default_ffmpeg_thread_count(),
                 interpolation_source=self._interpolation_source,
             )
         )
@@ -2628,42 +2631,60 @@ class EncodeWorkflow(QObject):
                     f"Interpolation d'images : facteur x{settings.factor} non supporté "
                     f"(valeurs : {', '.join(f'x{f}' for f in _INTERPOLATION_FACTORS)})."
                 )
-            if settings.quality not in _INTERPOLATION_MODELS:
-                errors.append(f"Interpolation d'images : qualité « {settings.quality} » inconnue.")
-            if settings.mode not in _INTERPOLATION_MODES:
-                errors.append(f"Interpolation d'images : mode « {settings.mode} » inconnu.")
-            if int(settings.tta) not in _INTERPOLATION_TTA_LEVELS:
-                errors.append(
-                    f"Interpolation d'images : TTA x{settings.tta} non supporté "
-                    f"(valeurs : {', '.join(f'x{n}' for n in _INTERPOLATION_TTA_LEVELS if n > 1)})."
-                )
-            rife_bin = self._rife_bin
-            if not rife_bin or not (Path(rife_bin).is_file() or shutil.which(rife_bin)):
-                errors.append(
-                    "Interpolation d'images : outil muxiveo-rife introuvable "
-                    "(Paramètres > Outils externes, ou relancer le setup)."
-                )
+            if settings.backend == "mvtools":
+                if settings.mvtools_mode not in ("standard", "uhd"):
+                    errors.append(f"Interpolation d'images : mode MVTools « {settings.mvtools_mode} » inconnu.")
+                binary = self._mvtools_bin
+                runtime = _mvtools_runtime_info(binary) if binary else None
+                if runtime is None:
+                    errors.append("Interpolation d'images : muxiveo-mvtools ou son runtime introuvable/incompatible "
+                                  "(Paramètres > Outils externes, ou relancer le setup).")
+                else:
+                    try:
+                        version = tuple(int(part) for part in str(runtime.get("version", "")).split("."))
+                    except ValueError:
+                        version = ()
+                    if version < _MVTOOLS_MIN_VERSION:
+                        errors.append("Interpolation d'images : muxiveo-mvtools 1.0.0 ou plus récent requis.")
+            elif settings.backend == "rife":
+                if settings.quality not in _INTERPOLATION_MODELS:
+                    errors.append(f"Interpolation d'images : qualité « {settings.quality} » inconnue.")
+                if settings.mode not in _INTERPOLATION_MODES:
+                    errors.append(f"Interpolation d'images : mode « {settings.mode} » inconnu.")
+                if int(settings.tta) not in _INTERPOLATION_TTA_LEVELS:
+                    errors.append(
+                        f"Interpolation d'images : TTA x{settings.tta} non supporté "
+                        f"(valeurs : {', '.join(f'x{n}' for n in _INTERPOLATION_TTA_LEVELS if n > 1)})."
+                    )
+                rife_bin = self._rife_bin
+                if not rife_bin or not (Path(rife_bin).is_file() or shutil.which(rife_bin)):
+                    errors.append(
+                        "Interpolation d'images : outil muxiveo-rife introuvable "
+                        "(Paramètres > Outils externes, ou relancer le setup)."
+                    )
+                else:
+                    resolved = str(shutil.which(rife_bin) or rife_bin)
+                    version = _rife_version(resolved)
+                    model = _INTERPOLATION_MODELS.get(settings.quality, "")
+                    if version is not None and version < _RIFE_MIN_VERSION:
+                        errors.append(
+                            "Interpolation d'images : muxiveo-rife "
+                            f"{'.'.join(map(str, _RIFE_MIN_VERSION))} ou plus récent requis "
+                            f"(installé : {'.'.join(map(str, version))}) ; relancer le setup."
+                        )
+                    elif version is not None and int(settings.tta) > 1 and version < _RIFE_TTA_MIN_VERSION:
+                        errors.append(
+                            "Interpolation d'images : le TTA requiert muxiveo-rife "
+                            f"{'.'.join(map(str, _RIFE_TTA_MIN_VERSION))} ou plus récent "
+                            f"(installé : {'.'.join(map(str, version))}) ; relancer le setup."
+                        )
+                    elif version is not None and model and not _rife_model_available(resolved, model):
+                        errors.append(
+                            f"Interpolation d'images : modèle RIFE « {model} » absent de "
+                            f"{Path(resolved).resolve().parent / 'rife-models'} ; relancer le setup."
+                        )
             else:
-                resolved = str(shutil.which(rife_bin) or rife_bin)
-                version = _rife_version(resolved)
-                model = _INTERPOLATION_MODELS.get(settings.quality, "")
-                if version is not None and version < _RIFE_MIN_VERSION:
-                    errors.append(
-                        "Interpolation d'images : muxiveo-rife "
-                        f"{'.'.join(map(str, _RIFE_MIN_VERSION))} ou plus récent requis "
-                        f"(installé : {'.'.join(map(str, version))}) ; relancer le setup."
-                    )
-                elif version is not None and int(settings.tta) > 1 and version < _RIFE_TTA_MIN_VERSION:
-                    errors.append(
-                        "Interpolation d'images : le TTA requiert muxiveo-rife "
-                        f"{'.'.join(map(str, _RIFE_TTA_MIN_VERSION))} ou plus récent "
-                        f"(installé : {'.'.join(map(str, version))}) ; relancer le setup."
-                    )
-                elif version is not None and model and not _rife_model_available(resolved, model):
-                    errors.append(
-                        f"Interpolation d'images : modèle RIFE « {model} » absent de "
-                        f"{Path(resolved).resolve().parent / 'rife-models'} ; relancer le setup."
-                    )
+                errors.append(f"Interpolation d'images : moteur « {settings.backend} » inconnu.")
             if self._video_stream_is_interlaced(source, self._video_stream_from_settings(video)) and not (
                 video.filters.yadif_enabled
             ):
@@ -2772,7 +2793,7 @@ class EncodeWorkflow(QObject):
         config: EncodeConfig,
         line: str,
     ) -> _ProgressEvent | None:
-        rife = _parse_rife_progress(line)
+        rife = _parse_interpolation_progress(line)
         if rife is not None:
             # Interpolation : RIFE est l'étage qui connaît la position dans la
             # source (l'encodeur lit un pipe sans durée ni nombre de trames).

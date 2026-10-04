@@ -23,7 +23,7 @@ from core.workflows.encode.domain import (
     video_codec_args,
     video_codec_args_bitrate,
 )
-from core.workflows.encode.interpolation import InterpolationSource, build_decode_stage, build_rife_stage
+from core.workflows.encode.interpolation import InterpolationSource, build_decode_stage, build_interpolation_stage
 from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode, VideoEncodeSettings
 from core.workflows.encode.runtime_helpers import VideoPreparationResourcePolicy, VideoTrackPrepSpec
 
@@ -42,6 +42,8 @@ class VideoOnlyCommandBuilderCallbacks:
     size_to_bitrate_kbps_for_video: Callable[[EncodeConfig, VideoEncodeSettings], int]
     # Interpolation RIFE : binaire muxiveo-rife et propriétés couleur/départ de la source.
     rife_bin: str | None = None
+    mvtools_bin: str | None = None
+    interpolation_thread_budget: int = 1
     interpolation_source: Callable[[VideoEncodeSettings, Path], InterpolationSource] | None = None
 
 
@@ -109,7 +111,7 @@ class VideoOnlyCommandBuilder:
         négatif (``-ss``) coupe au décodage.
         """
         cb = self._cb
-        if not cb.rife_bin or cb.interpolation_source is None:
+        if cb.interpolation_source is None:
             raise EncodeError("Interpolation d'images : outil muxiveo-rife introuvable.")
         domain = cb.codec_domain_callbacks()
         info = cb.interpolation_source(video, source)
@@ -129,16 +131,9 @@ class VideoOnlyCommandBuilder:
             vf=decode_vf,
             pre_input_args=decode_pre,
         )
-        rife = build_rife_stage(
-            cb.rife_bin,
-            factor=int(settings.factor),
-            target_fps=settings.target_fps,
-            quality=settings.quality,
-            source=info,
-            scene_threshold=settings.scene_threshold,
-            gpu=settings.gpu,
-            mode=settings.mode,
-            tta=settings.tta,
+        rife = build_interpolation_stage(
+            settings, info, rife_bin=cb.rife_bin, mvtools_bin=cb.mvtools_bin,
+            thread_budget=thread_count or cb.interpolation_thread_budget,
         )
 
         encoder_offset_s = info.start_offset_s + (offset_ms / 1000.0 if offset_ms > 0 else 0.0)

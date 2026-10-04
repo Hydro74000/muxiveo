@@ -46,7 +46,7 @@ from typing import Any, Optional
 
 from core.ui_language import system_ui_language
 from core.github_release import THIRD_PARTY_TOOLS, asset_sha256, file_sha256, release_api_url, requested_tag
-from core.version import APP_CONFIG_DIR_NAME, APP_REPOSITORY, MUXIVEO_RIFE_RELEASE_TAG, MUXIVEO_RIFE_VERSION
+from core.version import APP_CONFIG_DIR_NAME, APP_REPOSITORY, MUXIVEO_RIFE_RELEASE_TAG, MUXIVEO_RIFE_VERSION, MUXIVEO_MVTOOLS_RELEASE_TAG, MUXIVEO_MVTOOLS_VERSION
 
 # ---------------------------------------------------------------------------
 # Terminal colours (no external deps)
@@ -148,6 +148,7 @@ WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
     "eac3to": ("eac3to.exe",),
     "nvencc": ("NVEncC64.exe", "NVEncC.exe"),
     "muxiveo_rife": ("muxiveo-rife.exe",),
+    "muxiveo_mvtools": ("muxiveo-mvtools.exe",),
 }
 
 WINDOWS_WINGET_PATTERNS: dict[str, tuple[str, ...]] = {
@@ -164,6 +165,7 @@ WINDOWS_CONFIG_TOOL_ORDER: tuple[str, ...] = (
     "hdr10plus_tool",
     "eac3to",
     "muxiveo_rife",
+    "muxiveo_mvtools",
 )
 
 # Outils qui écrivent dans les dossiers protégés (Windows CFA allowlist).
@@ -186,6 +188,7 @@ WINDOWS_REQUIRED_TOOLS: tuple[str, ...] = (
 # setup sans conditionner la santé de l'installation.
 WINDOWS_OPTIONAL_GITHUB_TOOLS: tuple[str, ...] = (
     "muxiveo_rife",
+    "muxiveo_mvtools",
 )
 
 
@@ -305,6 +308,25 @@ GITHUB_TOOLS: dict[str, dict] = {
             ("Linux",   "x86_64"): {"suffix": "-linux-x86_64.tar.gz",   "fmt": "tar.gz", "name_prefix": "muxiveo-rife-"},
             ("Darwin",  "arm64"):  {"suffix": "-macos-arm64.tar.gz",    "fmt": "tar.gz", "name_prefix": "muxiveo-rife-"},
             ("Windows", "x86_64"): {"suffix": "-windows-x86_64.zip",    "fmt": "zip",    "name_prefix": "muxiveo-rife-"},
+        },
+    },
+    "muxiveo_mvtools": {
+        "repo": APP_REPOSITORY,
+        "release_tag": MUXIVEO_MVTOOLS_RELEASE_TAG,
+        "desc": "Interpolation d'images MVTools (CPU) livrée avec Muxiveo",
+        # Archive complète : binaire + mvtools-runtime/.
+        "bundle": True,
+        # Une installation plus ancienne est remplacée (runtime livré par release).
+        "min_version": MUXIVEO_MVTOOLS_VERSION,
+        "binary_name": {
+            "Linux":   "muxiveo-mvtools",
+            "Darwin":  "muxiveo-mvtools",
+            "Windows": "muxiveo-mvtools.exe",
+        },
+        "asset_patterns": {
+            ("Linux",   "x86_64"): {"suffix": "-linux-x86_64.tar.gz",   "fmt": "tar.gz", "name_prefix": "muxiveo-mvtools-"},
+            ("Darwin",  "arm64"):  {"suffix": "-macos-arm64.tar.gz",    "fmt": "tar.gz", "name_prefix": "muxiveo-mvtools-"},
+            ("Windows", "x86_64"): {"suffix": "-windows-x86_64.zip",    "fmt": "zip",    "name_prefix": "muxiveo-mvtools-"},
         },
     },
     "dovi_tool": {
@@ -1956,6 +1978,11 @@ def _install_tool_bundle(
     if binary is None:
         raise RuntimeError(f"Binary '{binary_name}' not found inside archive")
     root = binary.parent
+    if binary_name.startswith("muxiveo-mvtools"):
+        from core.native_mvtools import bundle_errors
+        errors = bundle_errors(binary)
+        if errors:
+            raise RuntimeError(" ; ".join(errors))
 
     if OS == "Windows":
         bin_dir.mkdir(parents=True, exist_ok=True)
@@ -2346,6 +2373,14 @@ def ensure_windows_required_tools(
     autofill_windows_config_ini(prefix, dry_run, force=force)
     return check_windows_required_tools(prefix)
 
+def _bundle_complete(exe: str, binary: Path) -> bool:
+    """MVTools : une version correcte ne suffit pas si son runtime manque."""
+    if exe != "muxiveo_mvtools":
+        return True
+    from core.native_mvtools import bundle_errors
+    return not bundle_errors(binary.resolve())
+
+
 def install_github_tools(
     prefix: Path,
     dry_run: bool,
@@ -2386,7 +2421,7 @@ def install_github_tools(
         binary_name = meta["binary_name"].get(OS, meta["binary_name"].get("Linux"))
         dest = bin_dir / binary_name
 
-        if not force and dest.is_file() and not _github_tool_outdated(exe, meta, dest):
+        if not force and dest.is_file() and not _github_tool_outdated(exe, meta, dest) and _bundle_complete(exe, dest):
             ok(f"{exe} already present ({dest})")
             detected_tool_paths[exe] = str(dest)
             continue
@@ -2397,7 +2432,7 @@ def install_github_tools(
             shutil.which(binary_name) or shutil.which(exe)
             or shutil.which(exe.lower()) or shutil.which(exe.capitalize())
         )
-        if not force and existing and not _github_tool_outdated(exe, meta, Path(existing)):
+        if not force and existing and not _github_tool_outdated(exe, meta, Path(existing)) and _bundle_complete(exe, Path(existing)):
             ok(f"{exe} already present ({existing})")
             detected_tool_paths[exe] = existing
             continue
