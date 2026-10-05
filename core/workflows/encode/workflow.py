@@ -251,6 +251,7 @@ from core.workflows.encode.planning.subtitles import (
     probe_stream_indices as _probe_stream_indices_plan,
     resolve_subtitle_tracks_for_encode as _resolve_subtitle_tracks_for_encode_plan,
 )
+from core.workflows.encode.hdr_policy import hdr_warnings as _hdr_warnings
 from core.workflows.encode.planning.validation import (
     is_dir_writable as _is_dir_writable_plan,
     validate_encode_config as _validate_encode_config_plan,
@@ -675,9 +676,12 @@ class EncodeWorkflow(QObject):
             stream_index if mapped_stream_index is None else int(mapped_stream_index),
         )
 
-    def _detect_source_dynamic_hdr_presence(self, source: Path) -> tuple[bool, bool] | None:
+    def _detect_source_dynamic_hdr_presence(
+        self, source: Path, stream_index: int | None = None,
+    ) -> tuple[bool, bool] | None:
         return self._hdr_metadata_service.detect_source_dynamic_hdr_presence(
             source,
+            stream_index=stream_index,
             ffprobe_streams_payload=self._ffprobe_streams_payload,
             ffprobe_stream_dicts=self._ffprobe_stream_dicts,
             mediainfo_hdr_flags=self._mediainfo_hdr_flags,
@@ -793,26 +797,28 @@ class EncodeWorkflow(QObject):
         source: Path,
         *,
         max_frames: int = 240,
+        stream_index: int | None = None,
     ) -> tuple[bool, bool] | None:
         return self._hdr_metadata_service.ffprobe_frame_dynamic_hdr_flags(
             source,
             max_frames=max_frames,
+            stream_index=stream_index,
         )
 
-    def _mediainfo_hdr_flags(self, source: Path) -> tuple[bool, bool] | None:
-        return self._hdr_metadata_service.mediainfo_hdr_flags(source)
+    def _mediainfo_hdr_flags(self, source: Path, stream_index: int | None = None) -> tuple[bool, bool] | None:
+        return self._hdr_metadata_service.mediainfo_hdr_flags(source, stream_index)
 
     def _build_master_display_for_primaries(self, primaries_label: str) -> str:
         return self._hdr_metadata_service.build_master_display_for_primaries(primaries_label)
 
-    def _color_primaries_label(self, source: Path) -> str:
-        return self._hdr_metadata_service.color_primaries_label(source)
+    def _color_primaries_label(self, source: Path, stream_index: int | None = None) -> str:
+        return self._hdr_metadata_service.color_primaries_label(source, stream_index)
 
-    def _extract_static_hdr_via_ffprobe(self, source: Path) -> tuple[str, str]:
-        return self._hdr_metadata_service.extract_static_hdr_via_ffprobe(source)
+    def _extract_static_hdr_via_ffprobe(self, source: Path, stream_index: int | None = None) -> tuple[str, str]:
+        return self._hdr_metadata_service.extract_static_hdr_via_ffprobe(source, stream_index)
 
-    def _extract_static_hdr_metadata(self, source: Path) -> tuple[str, str]:
-        return self._hdr_metadata_service.extract_static_hdr_metadata(source)
+    def _extract_static_hdr_metadata(self, source: Path, stream_index: int | None = None) -> tuple[str, str]:
+        return self._hdr_metadata_service.extract_static_hdr_metadata(source, stream_index)
 
     def _normalize_dynamic_hdr_config(self, config: EncodeConfig) -> EncodeConfig:
         return DynamicHdrConfigNormalizer(
@@ -2099,7 +2105,7 @@ class EncodeWorkflow(QObject):
             )
         signals.progress_pct.emit(25)
 
-        hdr_kind = self._hdr_metadata_service.source_hdr_transfer(source_path)
+        hdr_kind = self._hdr_metadata_service.source_hdr_transfer(source_path, source_stream)
         token = self._preview_token(config)
         captures: list[EncodePreviewCapture] = []
         warning = ""
@@ -2266,7 +2272,7 @@ class EncodeWorkflow(QObject):
         if not encoded_hdr_kind and not bool(getattr(source_video, "tonemap_to_sdr", False)):
             # Probe may miss the bitstream metadata when container lacks it; fall back
             # to the source's HDR signature since the encoder preserved the dynamic range.
-            encoded_hdr_kind = self._hdr_metadata_service.source_hdr_transfer(source_path)
+            encoded_hdr_kind = self._hdr_metadata_service.source_hdr_transfer(source_path, source_stream)
         thumbnails: list[EncodePreviewCapture] = []
         thumb_count = PREVIEW_VIDEO_THUMBNAIL_COUNT
         for idx in range(thumb_count):
@@ -2345,7 +2351,7 @@ class EncodeWorkflow(QObject):
     ) -> tuple[bool, bool]:
         has_dv = bool(video.copy_dv)
         has_hdr10plus = bool(video.copy_hdr10plus)
-        detected = self._detect_source_dynamic_hdr_presence(source)
+        detected = self._detect_source_dynamic_hdr_presence(source, self._video_stream_from_settings(video))
         if detected is not None:
             detected_dv, detected_hdr10plus = detected
             has_dv = has_dv or detected_dv
@@ -2635,6 +2641,39 @@ class EncodeWorkflow(QObject):
                     "n'est disponible qu'avec une seule piste vidéo. Traitez cette piste seule."
                 )
         return errors
+
+    def config_warnings(self, config: EncodeConfig) -> list[str]:
+        """Avertissements non bloquants, journalisés au lancement (paramètres avancés, HDR)."""
+        messages = self.extra_params_warnings(config)
+        for index, video in enumerate(self._video_tracks(config), start=1):
+            messages.extend(f"Piste vidéo #{index} — {warning}" for warning in _hdr_warnings(video))
+        return messages
+
+    def resolve_source_color_transfer(self, config: EncodeConfig) -> EncodeConfig:
+        """Renseigne ``source_color_transfer`` des pistes qui ne l'ont pas (payload ffprobe en cache)."""
+        tracks = self._video_tracks(config)
+        resolved: list[VideoEncodeSettings] = []
+        changed = False
+        for video in tracks:
+            if video.codec != "copy" and not video.source_color_transfer:
+                transfer = self._stream_color_transfer(
+                    self._video_source_from_settings(config, video),
+                    self._video_stream_from_settings(video),
+                )
+                if transfer:
+                    video = dataclasses.replace(video, source_color_transfer=transfer)
+                    changed = True
+            resolved.append(video)
+        if not changed:
+            return config
+        return dataclasses.replace(config, video=resolved[0], video_tracks=resolved)
+
+    def _stream_color_transfer(self, source: Path, stream_index: int) -> str:
+        payload = self._ffprobe_streams_payload(Path(source)) or {}
+        for stream in self._ffprobe_stream_dicts(payload):
+            if stream.get("index") == stream_index:
+                return str(stream.get("color_transfer") or "").strip().lower()
+        return ""
 
     def extra_params_warnings(self, config: EncodeConfig) -> list[str]:
         """Paramètres avancés retirés (incompatibles) ou remplaçant l'onglet Video."""
@@ -2990,7 +3029,8 @@ class EncodeWorkflow(QObject):
                 run_direct_output=self._run_direct_output,
                 select_mux_backend=self.select_mux_backend,
                 needs_split_video_encode=self._needs_split_video_encode,
-                extra_params_warnings=self.extra_params_warnings,
+                config_warnings=self.config_warnings,
+                resolve_source_color_transfer=self.resolve_source_color_transfer,
             )
         )
 

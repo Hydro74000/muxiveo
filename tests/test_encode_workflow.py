@@ -3127,28 +3127,27 @@ class TestRunCopyBypassesInject:
         assert not inject_mock.called, "libx265 ne doit pas passer par le fallback bitstream."
         assert mock_run.called, "libx265 doit rester sur le chemin encode standard."
 
-    def test_hevc_vaapi_with_explicit_hdr10_stays_on_native_codec_path(self, tmp_path):
-        """hevc_vaapi garde sa voie native via -sei +hdr."""
+    @pytest.mark.parametrize("codec", ["hevc_vaapi", "hevc_qsv", "hevc_amf"])
+    def test_side_data_hevc_encoders_reinject_explicit_hdr10(self, tmp_path, codec):
+        """V39 : comme hevc_nvenc, valeurs saisies réinjectées en SEI après un encode
+        vidéo séparé ; les métadonnées source sont retirées des images."""
+        from core.workflows.encode.domain import EncodeCodecDomainCallbacks, build_encoder_vf
+
         src = tmp_path / "source.mkv"
         src.write_bytes(b"\x00" * 1000)
-        config = _make_config(
-            source=src,
-            output=tmp_path / "output.mkv",
-            video=_make_video_settings(
-                codec="hevc_vaapi",
-                inject_hdr_meta=True,
-                master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)",
-                max_cll="1000,400",
-            ),
+        video = _make_video_settings(
+            codec=codec,
+            inject_hdr_meta=True,
+            master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)",
+            max_cll="1000,400",
         )
+        config = _make_config(source=src, output=tmp_path / "output.mkv", video=video)
         wf = _make_workflow()
 
-        with patch.object(wf, "_run_with_metadata_inject", return_value=MagicMock()) as inject_mock, \
-             patch.object(wf, "_finalize_ffmpeg_output", side_effect=_delayed_finalizer) as mock_run:
-            _collect_signals(wf.run(config))
-
-        assert not inject_mock.called, "hevc_vaapi ne doit pas passer par le fallback bitstream."
-        assert mock_run.called, "hevc_vaapi doit rester sur le chemin encode standard."
+        assert not wf._needs_metadata_inject(config)
+        assert wf._needs_split_video_encode(config)
+        vf = build_encoder_vf(video, callbacks=EncodeCodecDomainCallbacks(platform="linux"))
+        assert "sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA" in vf
 
     @pytest.mark.parametrize("copy_dv,copy_hdr10plus", [
         (True, False), (False, True), (True, True)

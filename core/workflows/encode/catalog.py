@@ -367,9 +367,10 @@ VIDEO_CODEC_HDR_CAPABILITIES: dict[str, VideoCodecHdrCapabilities] = {
     "libx264": _SDR_ONLY,
     "libsvtav1": _HDR(hdr=True, static_mode=_MODE.SVTAV1_PARAMS, manual_static=True),
     "hevc_nvenc": _HDR(hdr=True, static_mode=_MODE.BITSTREAM_PATCH, manual_static=True, hdr10plus=True),
-    "hevc_amf": _HDR(hdr=True, static_mode=_MODE.FRAME_SIDE_DATA, hdr10plus=True),
-    "hevc_vaapi": _HDR(hdr=True, static_mode=_MODE.VAAPI_SEI, hdr10plus=True),
-    "hevc_qsv": _HDR(hdr=True, static_mode=_MODE.FRAME_SIDE_DATA, hdr10plus=True),
+    # Valeurs HDR10 saisies : SEI réinjectés après encodage (comme hevc_nvenc).
+    "hevc_amf": _HDR(hdr=True, static_mode=_MODE.FRAME_SIDE_DATA, manual_static=True, hdr10plus=True),
+    "hevc_vaapi": _HDR(hdr=True, static_mode=_MODE.VAAPI_SEI, manual_static=True, hdr10plus=True),
+    "hevc_qsv": _HDR(hdr=True, static_mode=_MODE.FRAME_SIDE_DATA, manual_static=True, hdr10plus=True),
     "h264_nvenc": _SDR_ONLY,
     "h264_amf": _SDR_ONLY,
     "h264_vaapi": _SDR_ONLY,

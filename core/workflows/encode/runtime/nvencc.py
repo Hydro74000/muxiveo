@@ -29,7 +29,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from core.bluray import append_ffmpeg_input_args
-from core.workflows.encode.catalog import hdr_capabilities, supports_hdr_output
+from core.workflows.encode.catalog import hdr_capabilities
 from core.subprocess_utils import subprocess_text_kwargs
 from core.workflows.encode.models import (
     QualityMode,
@@ -43,6 +43,7 @@ from core.workflows.encode.domain.codecs import (
     build_vf as _build_ffmpeg_vf,
     classify_user_args,
     option_values,
+    output_hdr_transfer,
     resolve_resize_dimensions,
 )
 
@@ -355,12 +356,9 @@ def _output_depth_args(video: VideoEncodeSettings) -> list[str]:
         return ["--output-depth", "8"]
     if bool(getattr(video, "force_10bit", False)):
         return ["--output-depth", "10"]
-    # NVEncC sort en 8 bits par défaut, même depuis une source 10 bits : un
-    # HDR conservé exige le 10 bits (NVENC H.264 ne le propose pas).
-    keeps_hdr = not getattr(video, "tonemap_to_sdr", False) and any(
-        getattr(video, name, False) for name in ("copy_dv", "copy_hdr10plus", "inject_hdr_meta")
-    )
-    if keeps_hdr and supports_hdr_output(video.codec):
+    # NVEncC sort en 8 bits par défaut, même depuis une source 10 bits : une
+    # sortie HDR exige le 10 bits (NVENC H.264 ne le propose pas).
+    if output_hdr_transfer(video):
         return ["--output-depth", "10"]
     return []
 
@@ -431,15 +429,19 @@ def _auto_source_hdr_args(video: VideoEncodeSettings, *, direct_input: bool) -> 
     conservé. Le y4m ne transporte pas la couleur : HDR10 statique = BT.2020/PQ.
     """
     # NVEncC H.264 refuse toute signalisation HDR (--master-display/--max-cll).
-    if getattr(video, "tonemap_to_sdr", False) or not supports_hdr_output(video.codec):
+    # Sortie HDR (source PQ/HLG sans tone-mapping) : la VUI suit, même sans
+    # métadonnées statiques (case HDR10 décochée).
+    transfer = output_hdr_transfer(video)
+    if not transfer:
         return []
-    dynamic = bool(getattr(video, "copy_dv", False) or getattr(video, "copy_hdr10plus", False))
     static = bool(getattr(video, "inject_hdr_meta", False))
-    if not (dynamic or static):
-        return []
     if not direct_input:
-        args = ["--colormatrix", "bt2020nc", "--colorprim", "bt2020", "--transfer", "smpte2084"] if (static or dynamic) else []
-        if getattr(video, "copy_dv", False) and args:
+        args = [
+            "--colormatrix", "bt2020nc",
+            "--colorprim", "bt2020",
+            "--transfer", "arib-std-b67" if transfer == "hlg" else "smpte2084",
+        ]
+        if getattr(video, "copy_dv", False):
             args.extend(["--chromaloc", "2"])
         return args
     args = [
@@ -950,10 +952,7 @@ def _nvencc_locked_options(video: VideoEncodeSettings) -> frozenset[str]:
     if getattr(video, "copy_dv", False) and video.codec == "nvencc_hevc":
         # Conformité Dolby Vision P8.1 : Main10, tier High.
         locked |= {"profile", "tier"}
-    keeps_hdr = not getattr(video, "tonemap_to_sdr", False) and any(
-        getattr(video, name, False) for name in ("copy_dv", "copy_hdr10plus", "inject_hdr_meta")
-    )
-    if keeps_hdr and supports_hdr_output(video.codec):
+    if output_hdr_transfer(video):
         locked.add("output-depth")
     return frozenset(locked)
 

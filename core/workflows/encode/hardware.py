@@ -35,6 +35,7 @@ from core.workflows.encode.runtime.nvencc import (
 
 
 _NULLSRC = "nullsrc=s=256x256:r=25:d=0.1"   # ≥ 1 frame garantie (25fps × 0.1s)
+_AV1_NVENC = "av1_nvenc"
 _GENERIC_HW_FILTER = "format=nv12"
 _VAAPI_FILTER = "format=nv12,hwupload"
 
@@ -285,9 +286,55 @@ class HardwareEncoderDetector:
             return self._probe_codecs(ffmpeg_bin, compiled)
 
         if self._nvidia_ok():
-            return set(compiled)
+            available = set(compiled)
+            # L'encodeur AV1 n'existe qu'à partir de la 8e génération NVENC (RTX 40) :
+            # compilé dans ffmpeg ne suffit pas.
+            if _AV1_NVENC in available and not self._nvidia_av1_capable(ffmpeg_bin):
+                available.discard(_AV1_NVENC)
+            return available
 
         return self._probe_codecs(ffmpeg_bin, compiled)
+
+    def _nvidia_av1_capable(self, ffmpeg_bin: str) -> bool:
+        """GPU NVIDIA capable d'encoder l'AV1 (10 bits / HDR compris).
+
+        Compute capability ≥ 8.9 (Ada / RTX 40, Blackwell…) ; 9.0 (Hopper) n'a pas
+        de NVENC. Sans réponse de ``nvidia-smi``, sonde réelle en 10 bits.
+        """
+        capabilities = self._nvidia_compute_capabilities()
+        if capabilities:
+            return any(cap >= 8.9 and cap != 9.0 for cap in capabilities)
+        return self._probe_encoder([
+            ffmpeg_bin, "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", _NULLSRC,
+            "-vf", "format=p010le",
+            "-frames:v", "1",
+            "-c:v", _AV1_NVENC,
+            "-f", "null", "-",
+        ])
+
+    @staticmethod
+    def _nvidia_compute_capabilities() -> list[float]:
+        """Compute capabilities des GPU NVIDIA (``nvidia-smi``), liste vide si indisponible."""
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+                capture_output=True,
+                check=False,
+                timeout=5,
+                **subprocess_text_kwargs(),
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return []
+        if result.returncode != 0:
+            return []
+        capabilities: list[float] = []
+        for line in (result.stdout or "").splitlines():
+            try:
+                capabilities.append(float(line.strip()))
+            except ValueError:
+                continue
+        return capabilities
 
     def _probe_codecs(
         self,

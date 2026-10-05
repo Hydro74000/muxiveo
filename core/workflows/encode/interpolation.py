@@ -112,14 +112,16 @@ class InterpolationSource:
     transfer: str = ""
     colorspace: str = ""
 
-    def setparams_filter(self, *, hdr_pq: bool = False) -> str:
+    def setparams_filter(self, *, hdr_pq: bool = False, hdr_transfer: str = "") -> str:
         """Filtre ``setparams`` posant le marquage couleur sur les images y4m.
 
         Depuis ffmpeg 7, l'encodeur lit ces propriétés sur les images : les options
-        de sortie ``-color_*`` ne suffisent plus. ``hdr_pq`` : sortie HDR10 (BT.2020/PQ).
+        de sortie ``-color_*`` ne suffisent plus. ``hdr_pq`` : sortie HDR10 (BT.2020/PQ) ;
+        ``hdr_transfer`` : "pq" ou "hlg" (BT.2020 + transfert correspondant).
         """
-        if hdr_pq:
-            values = [("color_primaries", "bt2020"), ("color_trc", "smpte2084"), ("colorspace", "bt2020nc")]
+        if hdr_pq or hdr_transfer in {"pq", "hlg"}:
+            trc = "arib-std-b67" if hdr_transfer == "hlg" else "smpte2084"
+            values = [("color_primaries", "bt2020"), ("color_trc", trc), ("colorspace", "bt2020nc")]
             color_range = "tv"
         else:
             values = [(key, value) for key, value in (("color_primaries", self.primaries),

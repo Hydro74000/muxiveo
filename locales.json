@@ -5134,5 +5134,49 @@
   "Aucun (défaut pilote)": {
     "fra": "Aucun (défaut pilote)",
     "eng": "None (driver default)"
+  },
+  "Analyse HDR10 P5→P8.1 programmée : valeurs calculées au lancement.": {
+    "fra": "Analyse HDR10 P5→P8.1 programmée : valeurs calculées au lancement.",
+    "eng": "HDR10 P5→P8.1 analysis scheduled: values computed at launch."
+  },
+  "Aucune valeur connue : métadonnées de la source conservées si présentes.": {
+    "fra": "Aucune valeur connue : métadonnées de la source conservées si présentes.",
+    "eng": "No known value: source metadata kept if present."
+  },
+  "Indisponible avec le tone-mapping HDR → SDR (sortie SDR).": {
+    "fra": "Indisponible avec le tone-mapping HDR → SDR (sortie SDR).",
+    "eng": "Unavailable with HDR → SDR tone mapping (SDR output)."
+  },
+  "La source n'est pas détectée HDR : un tone-mapping HDR → SDR l'assombrirait probablement.": {
+    "fra": "La source n'est pas détectée HDR : un tone-mapping HDR → SDR l'assombrirait probablement.",
+    "eng": "The source is not detected as HDR: HDR → SDR tone mapping would probably darken it."
+  },
+  "Restaure les métadonnées HDR10 lues dans la source.": {
+    "fra": "Restaure les métadonnées HDR10 lues dans la source.",
+    "eng": "Restores the HDR10 metadata read from the source."
+  },
+  "Saisie manuelle.": {
+    "fra": "Saisie manuelle.",
+    "eng": "Manual entry."
+  },
+  "Valeurs de la source, non modifiables avec ce codec.": {
+    "fra": "Valeurs de la source, non modifiables avec ce codec.",
+    "eng": "Source values, not editable with this codec."
+  },
+  "Valeurs de la source.": {
+    "fra": "Valeurs de la source.",
+    "eng": "Source values."
+  },
+  "Valeurs estimées (analyse P5→P8.1, confiance {confidence}).": {
+    "fra": "Valeurs estimées (analyse P5→P8.1, confiance {confidence}).",
+    "eng": "Estimated values (P5→P8.1 analysis, confidence {confidence})."
+  },
+  "Vide : métadonnées de la source conservées au lancement (reconstruites si absentes et HDR dynamique copié).": {
+    "fra": "Vide : métadonnées de la source conservées au lancement (reconstruites si absentes et HDR dynamique copié).",
+    "eng": "Empty: source metadata kept at launch (rebuilt if missing and dynamic HDR is copied)."
+  },
+  "Valeurs source": {
+    "fra": "Valeurs source",
+    "eng": "Source values"
   }
 }

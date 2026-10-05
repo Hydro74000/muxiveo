@@ -64,9 +64,12 @@ class TestVideoCodecSpecs:
     def test_manual_static_hdr_edit_is_reserved_for_codecs_with_real_path(self):
         assert supports_manual_static_hdr_metadata("libx265") is True
         assert supports_manual_static_hdr_metadata("hevc_nvenc") is True
-        assert supports_manual_static_hdr_metadata("hevc_amf") is False
-        assert supports_manual_static_hdr_metadata("hevc_qsv") is False
-        assert supports_manual_static_hdr_metadata("hevc_vaapi") is False
+        # V39 : valeurs saisies réinjectées en SEI après encodage.
+        assert supports_manual_static_hdr_metadata("hevc_amf") is True
+        assert supports_manual_static_hdr_metadata("hevc_qsv") is True
+        assert supports_manual_static_hdr_metadata("hevc_vaapi") is True
+        # AV1 matériel : aucune voie d'écriture de valeurs saisies.
+        assert supports_manual_static_hdr_metadata("av1_nvenc") is False
 
     def test_nvencc_codecs_are_registered(self):
         from core.workflows.encode.catalog import (

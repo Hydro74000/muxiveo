@@ -19,6 +19,7 @@ from core.workflows.encode.domain import (
     hardware_input_args,
     hdr_meta_args,
     needs_hdr_vui,
+    output_hdr_transfer,
     p5_filter_device_args,
     video_codec_args,
     video_codec_args_bitrate,
@@ -151,7 +152,7 @@ class VideoOnlyCommandBuilder:
         # Le y4m ne transporte pas le marquage couleur : posé sur les images
         # (setparams) avant les éventuels format/upload matériels de l'encodeur.
         vf = ",".join(part for part in (
-            info.setparams_filter(hdr_pq=needs_hdr_vui(video) and not video.tonemap_to_sdr),
+            info.setparams_filter(hdr_transfer=output_hdr_transfer(video)),
             build_encoder_vf(video, callbacks=domain, piped_frames=True),
         ) if part)
         if vf:

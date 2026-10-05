@@ -335,6 +335,9 @@ class VideoEncodeSettings:
     copy_dv:          bool         = False
     copy_hdr10plus:   bool         = False
     dovi_profile:     str          = "0"
+    # color_transfer ffprobe du flux source ("smpte2084", "arib-std-b67", "bt709"…,
+    # "" si inconnu) : détermine si la sortie est HDR et sa VUI (PQ / HLG).
+    source_color_transfer: str = ""
     # Transformation interne P5 IPT -> base layer HDR10 BT.2020/PQ via
     # libplacebo. Activée par le workflow, jamais directement par le panel.
     p5_to_hdr10:      bool         = False

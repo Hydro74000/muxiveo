@@ -1487,7 +1487,8 @@ class TestEncodePanelDynamicHdrDefaults:
         assert panel._chroma_filter_combo.itemText(0) == "chromanr"
         panel.close()
 
-    def test_qsv_locks_manual_hdr_metadata_fields(self, qt_app):
+    def test_qsv_manual_hdr_metadata_fields_are_editable(self, qt_app):
+        """V39 : valeurs saisies réinjectées en SEI, comme pour hevc_nvenc."""
         panel = EncodePanel(AppConfig())
         panel._hw_encoders = {"hevc_qsv"}
         panel._populate_codec_combo()
@@ -1502,8 +1503,8 @@ class TestEncodePanelDynamicHdrDefaults:
         )
         panel._codec_combo.setCurrentIndex(idx_qsv)
 
-        assert panel._master_display.isReadOnly() is True
-        assert panel._max_cll.isReadOnly() is True
+        assert panel._master_display.isReadOnly() is False
+        assert panel._max_cll.isReadOnly() is False
         panel.close()
 
     def test_x265_keeps_manual_hdr_metadata_fields_editable(self, qt_app):
@@ -2048,3 +2049,77 @@ class TestEncodePanelAuditLot2:
         panel._preset_combo.setCurrentIndex(0)
         assert panel._current_video_settings().preset == ""
         panel.close()
+
+
+class TestEncodePanelAuditLot3:
+    _MD = "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)"
+
+    def _panel(self, hdr_type: HDRType, transfer: str | None = "smpte2084", entry_id: str = "video-lot3"):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = entry_id
+        track = dataclasses.replace(_video_track(0, hdr_type), color_transfer=transfer)
+        panel.set_video_tracks([(_file_info(_PATH_A, [track]), entry, _COLOR)])
+        _select_codec(panel, "libx265")
+        return panel
+
+    def test_v24_d2_unchecking_static_hdr_keeps_hdr_output_and_dolby_vision(self, qt_app):
+        panel = self._panel(HDRType.DOLBY_VISION)
+        assert panel._inject_hdr_cb.isChecked() and panel._copy_dv_cb.isChecked()
+        panel._inject_hdr_cb.setChecked(False)
+        assert panel._tonemap_cb.isChecked() is False
+        assert panel._copy_dv_cb.isChecked() and panel._copy_dv_cb.isEnabled()
+        video = panel._current_video_settings()
+        assert (video.inject_hdr_meta, video.copy_dv, video.source_color_transfer) == (False, True, "smpte2084")
+        panel.close()
+
+    def test_tonemap_greys_hdr_options_without_forgetting_them(self, qt_app):
+        panel = self._panel(HDRType.DOLBY_VISION)
+        panel._tonemap_cb.setChecked(True)
+        assert not panel._inject_hdr_cb.isEnabled() and not panel._copy_dv_cb.isEnabled()
+        assert panel._inject_hdr_cb.isChecked() and panel._copy_dv_cb.isChecked()
+        video = panel._current_video_settings()
+        assert (video.tonemap_to_sdr, video.inject_hdr_meta, video.copy_dv) == (True, False, False)
+        panel._tonemap_cb.setChecked(False)
+        assert panel._inject_hdr_cb.isEnabled() and panel._copy_dv_cb.isEnabled()
+        assert panel._current_video_settings().copy_dv is True
+        panel.close()
+
+    def test_v24_v25_manual_values_kept_and_source_values_restorable(self, qt_app):
+        panel = self._panel(HDRType.HDR10)
+        state = panel._video_settings_by_entry_id["video-lot3"]
+        state["default_master_display"], state["default_max_cll"] = self._MD, "1000,400"
+        panel._master_display.setText("G(1,1)B(1,1)R(1,1)WP(1,1)L(1,1)")
+        assert panel._hdr_meta_provenance.text() == "Saisie manuelle."
+        panel._inject_hdr_cb.setChecked(False)
+        panel._inject_hdr_cb.setChecked(True)
+        assert panel._master_display.text() == "G(1,1)B(1,1)R(1,1)WP(1,1)L(1,1)"
+        panel._hdr_meta_source_btn.click()
+        assert (panel._master_display.text(), panel._max_cll.text()) == (self._MD, "1000,400")
+        assert panel._hdr_meta_provenance.text() == "Valeurs de la source."
+        panel.close()
+
+    def test_d3_hlg_dolby_vision_static_hdr_unchecked_but_available(self, qt_app):
+        panel = self._panel(HDRType.DOLBY_VISION, transfer="arib-std-b67")
+        assert panel._inject_hdr_cb.isChecked() is False and panel._inject_hdr_cb.isEnabled()
+        assert panel._current_video_settings().source_color_transfer == "arib-std-b67"
+        panel.close()
+
+    def test_d1_tonemap_available_on_sdr_source_with_warning(self, qt_app):
+        panel = self._panel(HDRType.NONE, transfer="bt709")
+        assert panel._tonemap_cb.isEnabled()
+        assert "pas détectée HDR" in panel._tonemap_cb.toolTip()
+        panel.close()
+
+    def test_track_badge_follows_hdr_output_without_static_metadata(self, qt_app):
+        panel = self._panel(HDRType.HDR10)
+        panel._inject_hdr_cb.setChecked(False)
+        state = panel._video_settings_by_entry_id["video-lot3"]
+        source_video = panel._video_track_for_entry(*panel._video_tracks[0][:2])
+        assert panel._video_hdr_badges_from_state(state, source_video=source_video) == ("HDR",)
+        panel.close()
+        hlg = self._panel(HDRType.HLG, transfer="arib-std-b67", entry_id="video-hlg")
+        state = hlg._video_settings_by_entry_id["video-hlg"]
+        source_video = hlg._video_track_for_entry(*hlg._video_tracks[0][:2])
+        assert hlg._video_hdr_badges_from_state(state, source_video=source_video) == ("HLG",)
+        hlg.close()

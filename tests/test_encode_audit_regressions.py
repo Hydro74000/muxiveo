@@ -55,8 +55,9 @@ def test_explicit_static_hdr_strips_source_side_data():
         video = _hdr_video(codec)
         assert strips_source_static_hdr_side_data(video), codec
         assert "sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA" in build_encoder_vf(video, callbacks=_CB)
-    # encodeurs « side data » sans valeurs éditables : la source passe telle quelle
-    assert not strips_source_static_hdr_side_data(_hdr_video("hevc_qsv"))
+    # V39 : QSV / AMF / VAAPI réinjectent aussi les valeurs saisies.
+    assert strips_source_static_hdr_side_data(_hdr_video("hevc_qsv"))
+    # HDR10 coché sans valeurs : celles de la source passent telles quelles.
     assert not strips_source_static_hdr_side_data(VideoEncodeSettings(codec="libx265", inject_hdr_meta=True))
 
 
@@ -351,3 +352,135 @@ def test_v18a_nvencc_native_resize_keeps_aspect_ratio():
     same = VideoEncodeSettings(codec="nvencc_hevc", copy_dv=True,
                                resize=VideoResizeSettings(enabled=True, mode="preset", preset="2160p"))
     assert nvencc_dovi_resize_changes_scale(same, (3840, 1600)) is False
+
+
+# --- Lot 3 : intégrité HDR ---------------------------------------------------
+
+def test_lot3_output_hdr_transfer_follows_source_not_checkbox():
+    from core.workflows.encode.domain import output_hdr_transfer
+
+    pq = dict(codec="libx265", source_color_transfer="smpte2084")
+    assert output_hdr_transfer(VideoEncodeSettings(**pq, inject_hdr_meta=False)) == "pq"
+    assert output_hdr_transfer(VideoEncodeSettings(**pq, tonemap_to_sdr=True)) == ""
+    assert output_hdr_transfer(VideoEncodeSettings(codec="libx264", source_color_transfer="smpte2084")) == ""
+    assert output_hdr_transfer(VideoEncodeSettings(codec="libx265", source_color_transfer="arib-std-b67", copy_dv=True)) == "hlg"
+    assert output_hdr_transfer(VideoEncodeSettings(codec="libx265", source_color_transfer="bt709")) == ""
+    # Demande HDR explicite sur une source étiquetée SDR (PQ mal étiquetée) : PQ.
+    assert output_hdr_transfer(VideoEncodeSettings(codec="libx265", source_color_transfer="bt709",
+                                                   inject_hdr_meta=True)) == "pq"
+    # Transfert inconnu : une demande HDR vaut PQ (comportement historique).
+    assert output_hdr_transfer(VideoEncodeSettings(codec="libx265", inject_hdr_meta=True)) == "pq"
+    assert output_hdr_transfer(VideoEncodeSettings(codec="libx265")) == ""
+
+
+def test_lot3_v09_v10_vf_tags_hdr_and_strips_unchecked_static_metadata():
+    strip = "sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA"
+    for codec in ("libx265", "hevc_nvenc", "hevc_qsv", "av1_nvenc"):
+        unchecked = VideoEncodeSettings(codec=codec, source_color_transfer="smpte2084")
+        vf = build_encoder_vf(unchecked, callbacks=_CB)
+        assert vf.startswith("setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc"), codec
+        assert strip in vf, codec
+        kept = VideoEncodeSettings(codec=codec, source_color_transfer="smpte2084", inject_hdr_meta=True)
+        assert strip not in build_encoder_vf(kept, callbacks=_CB), codec
+    hlg = VideoEncodeSettings(codec="libx265", source_color_transfer="arib-std-b67")
+    assert "color_trc=arib-std-b67" in build_encoder_vf(hlg, callbacks=_CB)
+    assert build_encoder_vf(VideoEncodeSettings(codec="libx265", source_color_transfer="bt709"), callbacks=_CB) == ""
+
+
+def test_lot3_vaapi_metadata_filters_keep_hardware_frames():
+    """setparams / sidedata acceptent les images VAAPI : pas d'upload logiciel ajouté."""
+    video = VideoEncodeSettings(codec="hevc_vaapi", source_color_transfer="smpte2084")
+    vf = build_encoder_vf(video, callbacks=_CB)
+    assert "hwupload" not in vf and vf.startswith("setparams=")
+
+
+def test_lot3_hlg_vui_in_output_options():
+    from core.workflows.encode.domain import hdr_meta_args
+
+    args = hdr_meta_args(VideoEncodeSettings(codec="libx265", source_color_transfer="arib-std-b67", copy_dv=True))
+    assert args[args.index("-color_trc") + 1] == "arib-std-b67"
+
+
+def test_lot3_n1_nvencc_hdr_output_without_static_metadata_stays_10bit_tagged():
+    from core.workflows.encode.runtime.nvencc import build_nvencc_command
+
+    video = VideoEncodeSettings(codec="nvencc_hevc", quality_mode=QualityMode.CQ, source_color_transfer="smpte2084")
+    cmd = build_nvencc_command("nvencc", video, "/tmp/o.mkv", input_path="/in.mkv")
+    assert cmd[cmd.index("--output-depth") + 1] == "10"
+    assert cmd[cmd.index("--transfer") + 1] == "auto"
+    assert "--master-display" not in cmd and "--max-cll" not in cmd
+    piped = build_nvencc_command(
+        "nvencc", VideoEncodeSettings(codec="nvencc_hevc", source_color_transfer="arib-std-b67"), "/tmp/o.mkv",
+    )
+    assert piped[piped.index("--transfer") + 1] == "arib-std-b67"
+
+
+def test_lot3_v17_dynamic_hdr_detection_is_per_stream():
+    from core.workflows.encode.runtime.hdr_metadata import HdrMetadataProbeService, select_mediainfo_video_track
+
+    payload = {"streams": [
+        {"index": 0, "codec_type": "video", "side_data_list": [{"side_data_type": "DOVI configuration record"}]},
+        {"index": 1, "codec_type": "video", "side_data_list": []},
+    ]}
+    service = HdrMetadataProbeService.__new__(HdrMetadataProbeService)
+    common = dict(
+        ffprobe_streams_payload=lambda _source: payload,
+        ffprobe_stream_dicts=lambda data: list(data["streams"]),
+        mediainfo_hdr_flags=lambda _source, _stream=None: (False, False),
+        ffprobe_frame_dynamic_hdr_flags=lambda _source, **_kw: (False, False),
+    )
+    assert service.detect_source_dynamic_hdr_presence(Path("/x.mkv"), stream_index=0, **common) == (True, False)
+    assert service.detect_source_dynamic_hdr_presence(Path("/x.mkv"), stream_index=1, **common) == (False, False)
+    tracks = [{"StreamOrder": "0", "HDR_Format": "Dolby Vision"}, {"StreamOrder": "1", "HDR_Format": ""}]
+    assert select_mediainfo_video_track(tracks, 1) is tracks[1]
+    assert select_mediainfo_video_track(tracks, 5) is None
+
+
+def test_lot3_hdr_policy_defaults_and_warnings():
+    from core.inspector import HDRType
+    from core.workflows.encode.hdr_policy import default_static_hdr_checked, hdr_warnings
+
+    assert default_static_hdr_checked(HDRType.HDR10, "smpte2084")
+    assert not default_static_hdr_checked(HDRType.DOLBY_VISION, "arib-std-b67")  # D3 : P8.4
+    assert not default_static_hdr_checked(HDRType.HLG, "arib-std-b67")
+    assert not default_static_hdr_checked(HDRType.NONE, "bt709")
+    tonemap_sdr = hdr_warnings(VideoEncodeSettings(codec="libx265", tonemap_to_sdr=True, source_color_transfer="bt709"))
+    assert len(tonemap_sdr) == 1 and "source détectée SDR" in tonemap_sdr[0]  # D1
+    dv_only = hdr_warnings(VideoEncodeSettings(codec="libx265", copy_dv=True, source_color_transfer="smpte2084"))
+    assert len(dv_only) == 1 and "Dolby Vision sans HDR10 statique" in dv_only[0]  # D2
+    assert hdr_warnings(VideoEncodeSettings(codec="libx265", copy_dv=True, inject_hdr_meta=True)) == []
+    mistagged = hdr_warnings(VideoEncodeSettings(codec="libx265", inject_hdr_meta=True, source_color_transfer="bt709"))
+    assert len(mistagged) == 1 and "HDR demandé sur une source détectée SDR" in mistagged[0]
+
+
+def test_lot3_config_warnings_and_source_transfer_resolution(qt_app, tmp_path, monkeypatch):
+    _ = qt_app
+    (tmp_path / "a.mkv").write_bytes(b"")
+    video = VideoEncodeSettings(codec="libx265", copy_dv=True, source_path=tmp_path / "a.mkv")
+    cfg = EncodeConfig(source=tmp_path / "a.mkv", output=tmp_path / "o.mkv", video=video, duration_s=10)
+    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", generate_nfo=False)
+    monkeypatch.setattr(wf, "_ffprobe_streams_payload", lambda _src: {
+        "streams": [{"index": 0, "codec_type": "video", "color_transfer": "smpte2084"}],
+    })
+    resolved = wf.resolve_source_color_transfer(cfg)
+    assert resolved.video.source_color_transfer == "smpte2084"
+    warnings = wf.config_warnings(resolved)
+    assert warnings and warnings[0].startswith("Piste vidéo #1 — Dolby Vision sans HDR10 statique")
+
+
+def test_lot3_v44_av1_nvenc_requires_ada_or_newer(monkeypatch):
+    from core.workflows.encode.hardware import HardwareEncoderDetector
+
+    detector = HardwareEncoderDetector()
+    monkeypatch.setattr("core.workflows.encode.hardware.sys.platform", "linux")
+    monkeypatch.setattr(HardwareEncoderDetector, "_nvidia_ok", staticmethod(lambda: True))
+    compiled = {"hevc_nvenc", "av1_nvenc"}
+    for caps, expected in (([8.6], {"hevc_nvenc"}), ([8.9], compiled), ([12.0], compiled), ([7.5, 8.9], compiled)):
+        monkeypatch.setattr(HardwareEncoderDetector, "_nvidia_compute_capabilities", staticmethod(lambda c=caps: c))
+        assert detector._detect_nvenc("ffmpeg", set(compiled)) == expected, caps
+    # nvidia-smi sans compute_cap : sonde réelle 10 bits.
+    monkeypatch.setattr(HardwareEncoderDetector, "_nvidia_compute_capabilities", staticmethod(lambda: []))
+    probes: list[list[str]] = []
+    monkeypatch.setattr(HardwareEncoderDetector, "_probe_encoder", staticmethod(lambda cmd: probes.append(cmd) or False))
+    assert detector._detect_nvenc("ffmpeg", set(compiled)) == {"hevc_nvenc"}
+    assert "format=p010le" in probes[0] and "av1_nvenc" in probes[0]

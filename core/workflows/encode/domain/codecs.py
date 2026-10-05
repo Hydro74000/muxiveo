@@ -203,6 +203,55 @@ def svtav1_params(video: VideoEncodeSettings) -> str:
     return ":".join(part for part in parts if part)
 
 
+_PQ_TRANSFERS = frozenset({"smpte2084", "smpte-st-2084", "pq"})
+_HLG_TRANSFERS = frozenset({"arib-std-b67", "hlg"})
+_UNKNOWN_TRANSFERS = frozenset({"", "unknown", "unspecified", "reserved"})
+_VUI_TRANSFER = {"pq": "smpte2084", "hlg": "arib-std-b67"}
+
+
+def transfer_kind(color_transfer: str | None) -> str:
+    """Famille d'un color_transfer : "pq", "hlg", "sdr", ou "" si inconnu."""
+    value = str(color_transfer or "").strip().lower()
+    if value in _PQ_TRANSFERS:
+        return "pq"
+    if value in _HLG_TRANSFERS:
+        return "hlg"
+    if value in _UNKNOWN_TRANSFERS:
+        return ""
+    return "sdr"
+
+
+def output_hdr_transfer(video: VideoEncodeSettings) -> str:
+    """Transfert HDR de la sortie : "pq", "hlg", ou "" pour une sortie SDR.
+
+    La sortie est HDR quand la source l'est (ou après conversion P5 → HDR10),
+    sans tone-mapping, vers un codec capable de HDR. Une demande HDR explicite
+    (statique ou dynamique) sur une source au transfert inconnu ou SDR (source
+    PQ mal étiquetée) vaut PQ, comme avant.
+    """
+    if video.codec == "copy" or video.tonemap_to_sdr or not supports_hdr_output(video.codec):
+        return ""
+    if bool(getattr(video, "p5_to_hdr10", False)):
+        return "pq"
+    kind = transfer_kind(getattr(video, "source_color_transfer", ""))
+    if kind in {"pq", "hlg"}:
+        return kind
+    if video.inject_hdr_meta or video.copy_dv or video.copy_hdr10plus:
+        return "pq"
+    return ""
+
+
+def hdr_setparams_filter(video: VideoEncodeSettings) -> str:
+    """Marquage couleur HDR posé sur les images (ffmpeg ≥ 7 ignore ``-color_*`` en sortie)."""
+    transfer = output_hdr_transfer(video)
+    if not transfer:
+        return ""
+    return (
+        "setparams=color_primaries=bt2020:"
+        f"color_trc={_VUI_TRANSFER[transfer]}:colorspace=bt2020nc:range=tv"
+    )
+
+
 def requests_hdr_metadata(video: VideoEncodeSettings) -> bool:
     if video.tonemap_to_sdr or not supports_hdr_output(video.codec):
         return False
@@ -252,9 +301,11 @@ def strips_source_static_hdr_side_data(video: VideoEncodeSettings) -> bool:
     Valeurs écrites explicitement (paramètres x265 / SVT-AV1) ou SEI réinjectés :
     sinon l'encodeur ou le conteneur (éléments Colour) reprend celles de la source,
     et les valeurs saisies ne seraient visibles que dans le flux.
+    Case HDR10 décochée sur une sortie HDR : ffmpeg recopierait celles de la
+    source (images et conteneur), elles sont donc retirées.
     """
     if not should_reinject_static_hdr_metadata(video):
-        return False
+        return bool(output_hdr_transfer(video)) and not video.inject_hdr_meta
     explicit = static_hdr_metadata_mode(video.codec) in {
         StaticHdrMetadataMode.X265_PARAMS,
         StaticHdrMetadataMode.SVTAV1_PARAMS,
@@ -1089,14 +1140,21 @@ def build_encoder_vf(
     ``hw_decoded`` : faux si la vidéo provient d'une entrée sans ``-hwaccel``
     (entrée auxiliaire de décalage, autre source) — VAAPI exige alors un upload.
     """
-    vf = "" if piped_frames else build_vf(video)
-    if strips_source_static_hdr_side_data(video):
+    cpu_vf = "" if piped_frames else build_vf(video)
+    metadata_filters = [
+        # VUI posée sur les images (pipe y4m : posée par l'appelant avant l'upload).
+        "" if piped_frames else hdr_setparams_filter(video),
         # Valeurs voulues écrites par l'encodeur ou réinjectées en SEI (un SEI déjà
-        # présent n'est jamais remplacé) : celles de la source ne doivent pas suivre.
-        vf = f"{vf},{_STRIP_STATIC_HDR_SIDE_DATA}" if vf else _STRIP_STATIC_HDR_SIDE_DATA
+        # présent n'est jamais remplacé), ou case HDR10 décochée : celles de la
+        # source ne doivent pas suivre.
+        _STRIP_STATIC_HDR_SIDE_DATA if strips_source_static_hdr_side_data(video) else "",
+    ]
+    vf = ",".join(part for part in (cpu_vf, *metadata_filters) if part)
     force_8bit = force_h264_8bit(video)
     force_10bit = force_10bit_active(video)
-    software_filtering = bool(vf) or piped_frames
+    # setparams / sidedata acceptent les images matérielles (CUDA, VAAPI) :
+    # seuls les filtres CPU imposent un upload.
+    software_filtering = bool(cpu_vf) or piped_frames
     if video.codec not in VAAPI_VIDEO_CODECS:
         if (
             callbacks.platform == "win32"
@@ -1256,7 +1314,7 @@ def hdr_meta_args(video: VideoEncodeSettings) -> list[str]:
     # sans ce flag certains players/TV interprètent en full range → couleurs lavées.
     args = [
         "-color_primaries", "bt2020",
-        "-color_trc",       "smpte2084",
+        "-color_trc",       _VUI_TRANSFER.get(output_hdr_transfer(video), "smpte2084"),
         "-colorspace",      "bt2020nc",
         "-color_range",     "tv",
     ]
@@ -1283,13 +1341,14 @@ def hdr_meta_args(video: VideoEncodeSettings) -> list[str]:
 
 
 def needs_hdr_vui(video: VideoEncodeSettings) -> bool:
-    """Vrai si la sortie nécessite le tagging VUI bt2020/PQ.
+    """Vrai si la sortie nécessite le tagging VUI bt2020 + PQ / HLG.
 
     DoVi P8 RPU et HDR10+ s'appuient sur une base layer correctement taggée
     (bt2020 / smpte2084 / bt2020nc) — sans ces VUI les TV appliquent un
     tone-mapping bt709 incorrect même quand le RPU est ré-injecté ensuite.
+    Une sortie HDR sans métadonnées statiques reste aussi taggée.
     """
-    return requests_hdr_metadata(video)
+    return bool(output_hdr_transfer(video))
 
 
 def audio_codec_args(out_idx: int, audio: AudioTrackSettings) -> list[str]:

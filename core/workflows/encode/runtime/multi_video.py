@@ -13,7 +13,6 @@ from core.workflows.common.validation_override import ValidationOverride, accept
 from core.workflows.encode.runtime.frame_count_guard import FrameCountGuard, FrameCountAuditError, MetadataAdjustment
 from core.workdir import remove_path
 from core.workflows.encode.domain import (
-    interpolated_static_hdr_lost,
     needs_static_hdr_sei_reinjection,
     needs_static_hdr_bitstream_patch,
     should_reinject_static_hdr_metadata,
@@ -128,11 +127,6 @@ class MultiVideoPipelineRunner:
         cb.check_cancelled(signals)
         cb.log_info(f"Préparation vidéo {index}/{total_tracks}…")
 
-        if interpolated_static_hdr_lost(video):
-            cb.log_info(
-                f"Piste vidéo {index}: ATTENTION — l'interpolation ne transmet pas les métadonnées "
-                f"HDR10 statiques à {video.codec} (aucune réinjection possible en AV1)."
-            )
         if (
             video.copy_dv
             or video.copy_hdr10plus
