@@ -20,6 +20,7 @@ from core.workflows.encode.catalog import (
     supports_hdr10plus,
     supports_hdr_output,
 )
+from core.workflows.encode.domain.codecs import ExtraParamsReport
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
 from core.workflows.encode.planning.plan_models import EncodePlan
 from core.workflows.encode.runtime.nvencc import (
@@ -27,6 +28,8 @@ from core.workflows.encode.runtime.nvencc import (
     nvencc_requires_ffmpeg_prefilter,
     nvencc_supports_dynamic_hdr,
     nvencc_supports_manual_static_hdr,
+    nvencc_extra_params_report,
+    nvencc_workflow_option_values,
     sanitize_nvencc_extra_params,
 )
 
@@ -155,6 +158,12 @@ class NvenccEncodeBackend(EncodeBackend):
 
     def normalize_extra_params(self, video: VideoEncodeSettings) -> str:
         return " ".join(sanitize_nvencc_extra_params(video.extra_params)).strip()
+
+    def extra_params_report(self, video: VideoEncodeSettings) -> ExtraParamsReport:
+        return nvencc_extra_params_report(video)
+
+    def workflow_option_values(self, video: VideoEncodeSettings) -> dict[str, str]:
+        return nvencc_workflow_option_values(video)
 
     def parse_progress(self, line: str) -> ProgressEvent | None:
         return parse_nvencc_progress(line)

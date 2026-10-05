@@ -35,7 +35,12 @@ from core.workflows.encode.planning.track_assembly import (
     build_track_input_paths as _build_track_input_paths_plan,
     resolve_track_assembly as _resolve_track_assembly_plan,
 )
+from core.workflows.encode.domain.codecs import (
+    is_option_token as _is_option_token,
+    option_items as _option_items,
+)
 from core.workflows.encode.runtime.nvencc import (
+    nvencc_option_name as _nvencc_option_name,
     build_decode_pipe_cmd as _build_decode_pipe_cmd_runtime,
     build_nvencc_command as _build_nvencc_command_runtime,
     is_nvencc_codec as _is_nvencc_codec_runtime,
@@ -640,6 +645,7 @@ class NvenccDirectOutputRunner:
                     dovi_rpu=dovi_rpu_path,
                     dovi_rpu_prm=None if needs_ffmpeg_pipe else routing.dovi_rpu_prm,
                     vpp_pad=routing.vpp_pad,
+                    source_dimensions=routing.source_dimensions,
                 )
                 if "--colorprim" not in encode_cmd and "-o" in encode_cmd:
                     # Rétablir le marquage source : perdu en y4m et non repris
@@ -649,6 +655,16 @@ class NvenccDirectOutputRunner:
                         tonemap_to_sdr=bool(runtime_video.tonemap_to_sdr),
                     )
                     color_args = probed.nvencc_color_args() if probed is not None else []
+                    # Une valeur saisie en paramètres avancés (ex. --colorrange) l'emporte.
+                    present = {
+                        _nvencc_option_name(token) for token in encode_cmd if _is_option_token(token)
+                    }
+                    color_args = [
+                        token
+                        for item in _option_items(color_args)
+                        if _nvencc_option_name(item[0]) not in present
+                        for token in item
+                    ]
                     out_at = encode_cmd.index("-o")
                     encode_cmd = [*encode_cmd[:out_at], *color_args, *encode_cmd[out_at:]]
                 decode_cmd: list[str] | None = None
@@ -802,6 +818,7 @@ def build_nvencc_pipeline_commands(
         dovi_rpu=dovi_rpu_preview,
         dovi_rpu_prm=None if needs_ffmpeg_pipe else routing.dovi_rpu_prm,
         vpp_pad=routing.vpp_pad,
+        source_dimensions=routing.source_dimensions,
     )
     if needs_ffmpeg_pipe:
         decode = _build_decode_pipe_cmd_runtime(

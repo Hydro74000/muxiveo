@@ -1984,3 +1984,67 @@ class TestEncodePanelAuditLot1:
             assert panel._crf_spin.value() == 20
         assert len(warnings) == 2
         panel.close()
+
+
+class TestEncodePanelAuditLot2:
+
+    def test_v13_single_track_codecs_disabled_with_several_video_tracks(self, qt_app):
+        from PySide6.QtGui import QStandardItemModel
+
+        panel = EncodePanel(AppConfig())
+        panel._hw_encoders = {"nvencc_hevc"}
+        panel._populate_codec_combo()
+        row = panel._codec_combo.findData("nvencc_hevc")
+        model = panel._codec_combo.model()
+        assert isinstance(model, QStandardItemModel)
+        first = _video_entry(0)
+        first.entry_id = "v1"
+        second = _video_entry(1)
+        second.entry_id = "v2"
+        info = _file_info(_PATH_A, [_video_track(0), _video_track(1)])
+        panel.set_video_tracks([(info, first, _COLOR), (info, second, _COLOR)])
+        assert model.item(row).isEnabled() is False
+        panel.set_video_tracks([(info, first, _COLOR)])
+        assert model.item(row).isEnabled() is True
+        panel.close()
+
+    def test_v02_extra_params_are_kept_per_codec(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-extras"
+        panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0)]), entry, _COLOR)])
+        _select_codec(panel, "libx265")
+        panel._extra_params.setText("no-open-gop=1")
+        _select_codec(panel, "libx264")
+        assert panel._extra_params.text() == ""
+        panel._extra_params.setText("-tune film")
+        _select_codec(panel, "libx265")
+        assert panel._extra_params.text() == "no-open-gop=1"
+        _select_codec(panel, "libx264")
+        assert panel._extra_params.text() == "-tune film"
+        assert panel._current_video_settings().extra_params == "-tune film"
+        panel.close()
+
+    def test_v37_invalid_rate_is_not_replaced_silently(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-rate"
+        panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0)]), entry, _COLOR)])
+        for edit in (panel._bitrate_edit, panel._size_edit):
+            validator = edit.validator()
+            # Arbitrage : entiers > 0, sans borne haute applicative.
+            assert validator is not None and validator.bottom() == 1 and validator.top() == 2**31 - 1
+        panel._bitrate_edit.setText("")
+        assert panel._current_video_settings().bitrate_kbps == 0
+        panel.close()
+
+    def test_vaapi_offers_no_preset_entry(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        panel._hw_encoders = {"hevc_vaapi"}
+        panel._populate_codec_combo()
+        _select_codec(panel, "hevc_vaapi")
+        assert panel._preset_combo.itemData(0) == ""
+        assert panel._preset_combo.itemText(0) == "Aucun (défaut pilote)"
+        panel._preset_combo.setCurrentIndex(0)
+        assert panel._current_video_settings().preset == ""
+        panel.close()

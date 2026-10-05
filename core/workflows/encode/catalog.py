@@ -47,7 +47,8 @@ NVENC_PRESETS = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "slow", "medium", "fa
 # The experimental logical preset "safe" stays implemented in code for traceability
 # but is no longer exposed in the normal NVENC workflow/UI.
 HEVC_NVENC_PRESETS = [*NVENC_PRESETS]
-VAAPI_PRESETS = [str(i) for i in range(8)]
+# "" = aucun preset : -compression_level non transmis, qualité par défaut du pilote.
+VAAPI_PRESETS = ["", *(str(i) for i in range(8))]
 QSV_PRESETS = ["veryslow", "slower", "slow", "medium", "fast", "faster", "veryfast"]
 AMF_PRESETS = ["quality", "balanced", "speed"]
 NVENCC_PRESETS = ["default", "performance", "quality",

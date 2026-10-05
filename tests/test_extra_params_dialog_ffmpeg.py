@@ -49,3 +49,26 @@ def test_v35_amf_and_qsv_option_names_match_ffmpeg():
     assert "profile_tier" in keys("hevc_amf") and "tier" not in keys("hevc_amf")
     assert "look_ahead" not in keys("hevc_qsv")
     assert "look_ahead" in keys("h264_qsv")
+
+
+def test_options_set_by_video_tab_stay_editable_and_prefilled(qt_app):
+    """Arbitrage lot 2 : seules les options incompatibles sont grisées ; les autres
+    sont pré-remplies avec la valeur de l'onglet Video et modifiables."""
+    from PySide6.QtWidgets import QCheckBox, QSpinBox
+
+    from ui.dialogs.extra_params_dialog import ExtraParamsDialog, option_owned_by_workflow
+
+    _ = qt_app
+    assert not option_owned_by_workflow("hevc_vaapi", "qp")
+    assert not option_owned_by_workflow("hevc_vaapi", "compression_level")
+    assert not option_owned_by_workflow("nvencc_hevc", "preset")
+    assert not option_owned_by_workflow("nvencc_hevc", "cqp")
+    assert option_owned_by_workflow("nvencc_hevc", "vpp-resize")
+    dialog = ExtraParamsDialog("hevc_vaapi", "", workflow_values={"qp": "24", "rc_mode": "CQP"})
+    row = dialog._rows["qp"]
+    checkbox = row.findChild(QCheckBox)
+    assert checkbox is not None and checkbox.isEnabled() and not checkbox.isChecked()
+    assert isinstance(row._value_widget, QSpinBox) and row._value_widget.value() == 24
+    assert "24" in checkbox.toolTip()
+    assert dialog.result_text == ""
+    dialog.close()

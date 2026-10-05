@@ -36,6 +36,8 @@ from PySide6.QtWidgets import (
 )
 
 from core.workflows.encode.backends import backend_id_for_codec
+from core.workflows.encode.domain.codecs import ffmpeg_option_name, ffmpeg_option_owned_by_workflow
+from core.workflows.encode.runtime.nvencc import NVENCC_WORKFLOW_OWNED_FLAGS, nvencc_option_name
 from core.i18n import apply_translations, translate_text
 from ui.design_system import colors as _C
 from ui.styles import (
@@ -1889,6 +1891,25 @@ _NVENCC_SCHEMAS: dict[str, CodecSchema] = {
 }
 
 
+def option_owned_by_workflow(codec: str, key: str) -> bool:
+    """Option toujours retirée à l'exécution (incompatible avec le workflow)."""
+    if key.startswith("__"):
+        return False
+    normalized = str(codec or "").strip().lower()
+    if backend_id_for_codec(normalized) == "nvencc":
+        return f"--{key}" in NVENCC_WORKFLOW_OWNED_FLAGS
+    if normalized in {"libx265", "libsvtav1"}:
+        return False
+    return ffmpeg_option_owned_by_workflow(f"-{key}")
+
+
+def option_canonical_name(codec: str, key: str) -> str:
+    """Nom canonique de l'option d'une ligne (clé des valeurs posées par le workflow)."""
+    if backend_id_for_codec(str(codec or "").strip().lower()) == "nvencc":
+        return nvencc_option_name(f"--{key}")
+    return ffmpeg_option_name(f"-{key}")
+
+
 def schema_for(codec: str) -> CodecSchema | None:
     normalized = str(codec or "").strip().lower()
     if backend_id_for_codec(normalized) == "nvencc":
@@ -2256,6 +2277,8 @@ class _ParamRow(QWidget):
         spec: ParamSpec,
         initial: tuple[bool, Any] | None = None,
         infotip_filter: _InfotipFilter | None = None,
+        owned_by_workflow: bool = False,
+        workflow_value: str | None = None,
     ) -> None:
         super().__init__()
         self._spec = spec
@@ -2293,8 +2316,28 @@ class _ParamRow(QWidget):
 
         if initial is not None:
             enabled, raw = initial
-            self._enabled_cb.setChecked(enabled)
+            self._enabled_cb.setChecked(enabled and not owned_by_workflow)
             self._set_widget_value(raw)
+        if workflow_value is not None and not owned_by_workflow:
+            # Valeur posée par l'onglet Video : affichée, appliquée seulement si cochée.
+            if initial is None:
+                self._set_widget_value(workflow_value)
+            override_tip = translate_text(
+                "Valeur posée par l'onglet Video : {value}. Cocher pour la remplacer.",
+                value=workflow_value or translate_text("(activée)"),
+            )
+            base_tip = translate_text(spec.tooltip) if spec.tooltip else ""
+            full_tip = f"{base_tip}\n\n{override_tip}" if base_tip else override_tip
+            self._enabled_cb.setToolTip(full_tip)
+            lbl.setToolTip(full_tip)
+        if owned_by_workflow:
+            # Mapping des pistes, géométrie, HDR : la saisir ici serait retiré à l'exécution.
+            owned_tip = translate_text("Géré par le workflow (onglet Video) : option non modifiable ici.")
+            self._enabled_cb.setChecked(False)
+            self._enabled_cb.setEnabled(False)
+            self._enabled_cb.setToolTip(owned_tip)
+            lbl.setToolTip(owned_tip)
+            lbl.setEnabled(False)
 
     def _build_value_widget(self, spec: ParamSpec) -> QWidget:
         if spec.kind == "int":
@@ -2443,14 +2486,23 @@ class ExtraParamsDialog(QDialog):
     La sortie est récupérable via ``result_text`` après ``exec()``.
     """
 
-    def __init__(self, codec: str, current_value: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        codec: str,
+        current_value: str,
+        parent: QWidget | None = None,
+        *,
+        workflow_values: dict[str, str] | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._workflow_values = dict(workflow_values or {})
         self.setWindowTitle(translate_text("Paramètres avancés — {codec}", codec=codec))
         self.setModal(True)
         self.setMinimumSize(820, 540)
         self.setStyleSheet(f"QDialog{{background:{_C.BG_DEEP};}}")
 
         self._schema = schema_for(codec)
+        self._codec = codec
         self._rows: dict[str, _ParamRow] = {}
         self._result_text: str = current_value
         self._infotip_filter = _InfotipFilter(self)
@@ -2564,6 +2616,8 @@ class ExtraParamsDialog(QDialog):
                 spec,
                 initial=initial_values.get(spec.key),
                 infotip_filter=self._infotip_filter,
+                owned_by_workflow=option_owned_by_workflow(self._codec, spec.key),
+                workflow_value=self._workflow_values.get(option_canonical_name(self._codec, spec.key)),
             )
             self._rows[spec.key] = row
             row.findChild(QCheckBox).toggled.connect(self._refresh_preview)   # type: ignore[union-attr]
@@ -2660,9 +2714,19 @@ class ExtraParamsDialog(QDialog):
 # Helper one-shot
 # =============================================================================
 
-def edit_extra_params(codec: str, current: str, parent: QWidget | None = None) -> str | None:
-    """Ouvre la modale et retourne la nouvelle chaîne, ou None si annulé."""
-    dlg = ExtraParamsDialog(codec, current, parent)
+def edit_extra_params(
+    codec: str,
+    current: str,
+    parent: QWidget | None = None,
+    *,
+    workflow_values: dict[str, str] | None = None,
+) -> str | None:
+    """Ouvre la modale et retourne la nouvelle chaîne, ou None si annulé.
+
+    ``workflow_values`` : options posées par l'onglet Video (``{nom: valeur}``),
+    affichées en pré-remplissage des lignes non cochées.
+    """
+    dlg = ExtraParamsDialog(codec, current, parent, workflow_values=workflow_values)
     if dlg.exec() == QDialog.DialogCode.Accepted:
         return dlg.result_text
     return None

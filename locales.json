@@ -5114,5 +5114,25 @@
   "Texte ajouté après un tiret à la fin du nom de fichier proposé. Vide = « NoGroup ».": {
     "fra": "Texte ajouté après un tiret à la fin du nom de fichier proposé. Vide = « NoGroup ».",
     "eng": "Text appended after a hyphen at the end of the suggested file name. Empty = “NoGroup”."
+  },
+  "Géré par le workflow (onglet Video) : option non modifiable ici.": {
+    "fra": "Géré par le workflow (onglet Video) : option non modifiable ici.",
+    "eng": "Managed by the workflow (Video tab): option cannot be changed here."
+  },
+  "Ce codec n'encode qu'une seule piste vidéo par job.": {
+    "fra": "Ce codec n'encode qu'une seule piste vidéo par job.",
+    "eng": "This codec only encodes a single video track per job."
+  },
+  "Valeur posée par l'onglet Video : {value}. Cocher pour la remplacer.": {
+    "fra": "Valeur posée par l'onglet Video : {value}. Cocher pour la remplacer.",
+    "eng": "Value set by the Video tab: {value}. Check to override it."
+  },
+  "(activée)": {
+    "fra": "(activée)",
+    "eng": "(enabled)"
+  },
+  "Aucun (défaut pilote)": {
+    "fra": "Aucun (défaut pilote)",
+    "eng": "None (driver default)"
   }
 }

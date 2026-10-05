@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 import shlex
+import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from core.workflows.encode.catalog import (
@@ -24,6 +26,7 @@ from core.workflows.encode.models import (
     AudioTrackSettings,
     QualityMode,
     VideoEncodeSettings,
+    VideoResizeSettings,
     normalize_audio_bitrate_kbps,
 )
 
@@ -107,6 +110,12 @@ def ten_bit_args(video: VideoEncodeSettings) -> list[str]:
             return ["-profile:v", "main10"]
         return []
     return []
+
+
+def vaapi_compression_args(video: VideoEncodeSettings) -> list[str]:
+    """``-compression_level`` du preset VAAPI ; preset « Aucun » → défaut du pilote."""
+    level = str(video.preset or "").strip()
+    return ["-compression_level", level] if level else []
 
 
 def ffmpeg_extra_args(video: VideoEncodeSettings) -> list[str]:
@@ -285,6 +294,237 @@ def should_reinject_static_hdr_metadata(video: VideoEncodeSettings) -> bool:
     return bool(video.master_display or video.max_cll)
 
 
+# --- Paramètres avancés saisis à la main --------------------------------------
+#
+# Une option saisie est :
+#   - retirée si elle est incompatible avec le workflow (mapping des pistes,
+#     choix du codec, -vf quand le workflow pose déjà des filtres) ;
+#   - appliquée avec un avertissement si elle remplace un réglage de l'onglet
+#     Video (mode / valeur de qualité, preset, profil, pix_fmt) : ajoutée après
+#     les options du workflow, sa dernière occurrence l'emporte ;
+#   - appliquée sans message sinon (valeurs par défaut du workflow comprises,
+#     ex. -async_depth).
+
+# Codecs dont extra_params est une chaîne de paramètres de l'encodeur
+# (``-x265-params`` / ``-svtav1-params``), pas des flags ffmpeg.
+_PARAM_STRING_CODECS = frozenset({"libx265", "libsvtav1"})
+
+# Toujours retirées : casseraient l'assemblage des pistes ou changeraient d'encodeur.
+FFMPEG_WORKFLOW_OWNED_FLAGS: frozenset[str] = frozenset({"map", "c"})
+# Retirées si le workflow pose déjà des filtres : ffmpeg ne garde que le dernier
+# -vf, crop / upload matériel / suppression des side data seraient perdus.
+_FFMPEG_FILTER_FLAGS = frozenset({"vf", "filter_complex", "lavfi"})
+# Contrôle de débit : chaque mode qualité en pose au moins une.
+_FFMPEG_RATE_CONTROL_FLAGS = frozenset({
+    "rc", "rc_mode", "cq", "qp", "crf", "global_quality", "qp_i", "qp_p", "qp_b", "b", "q",
+})
+# Réglages de l'onglet Video : une saisie les remplace (avertissement).
+_FFMPEG_UI_FLAGS = frozenset({"preset", "quality", "compression_level", "profile", "pix_fmt"})
+_FFMPEG_FLAG_ALIASES = {"vcodec": "c", "codec": "c", "filter": "vf", "qscale": "q"}
+
+_NUMERIC_TOKEN_RE = re.compile(r"-?\d+(?:[.,]\d+)?[kKmMgG]?")
+
+
+@dataclass(frozen=True)
+class ExtraParamsReport:
+    """Tri des paramètres avancés saisis à la main."""
+
+    kept: tuple[str, ...] = ()
+    """Tokens ajoutés en fin de commande."""
+    removed: tuple[str, ...] = ()
+    """Tokens retirés (incompatibles avec le workflow)."""
+    overriding: tuple[str, ...] = ()
+    """Tokens conservés qui remplacent un réglage de l'onglet Video."""
+
+
+def is_option_token(token: str) -> bool:
+    """Vrai pour un flag (``-x`` / ``--x``), faux pour une valeur (y compris ``-1``)."""
+    return token.startswith("-") and len(token) > 1 and not _NUMERIC_TOKEN_RE.fullmatch(token)
+
+
+def option_items(tokens: list[str]) -> list[list[str]]:
+    """Regroupe les tokens en options ``[flag]`` ou ``[flag, valeur]``."""
+    items: list[list[str]] = []
+    i = 0
+    while i < len(tokens):
+        if is_option_token(tokens[i]) and i + 1 < len(tokens) and not is_option_token(tokens[i + 1]):
+            items.append(tokens[i:i + 2])
+            i += 2
+        else:
+            items.append([tokens[i]])
+            i += 1
+    return items
+
+
+def option_values(tokens: list[str], option_name: Callable[[str], str]) -> dict[str, str]:
+    """Options d'une commande : ``{nom canonique: valeur}`` ("" pour un flag seul)."""
+    values: dict[str, str] = {}
+    for item in option_items(tokens):
+        if is_option_token(item[0]):
+            values[option_name(item[0])] = item[1] if len(item) > 1 else ""
+    return values
+
+
+def ffmpeg_option_name(token: str) -> str:
+    """Nom canonique d'une option ffmpeg (``-b:v`` → ``b``, ``-vcodec`` → ``c``)."""
+    name = token.lstrip("-").split(":", 1)[0]
+    return _FFMPEG_FLAG_ALIASES.get(name, name)
+
+
+def classify_user_args(
+    user_args: list[str],
+    base_args: list[str],
+    *,
+    option_name: Callable[[str], str],
+    removed_names: frozenset[str] = frozenset(),
+    removed_if_set: frozenset[str] = frozenset(),
+    override_names: frozenset[str] = frozenset(),
+    exclusive_groups: tuple[frozenset[str], ...] = (),
+) -> ExtraParamsReport:
+    """Trie les options saisies face aux options déjà posées par le workflow.
+
+    - ``removed_names`` : toujours retirées ;
+    - ``removed_if_set`` : retirées si le workflow pose la même option ;
+    - ``override_names`` : conservées, signalées si le workflow pose la même
+      option (ou un membre du même groupe exclusif).
+    """
+    base_names = {option_name(token) for token in base_args if is_option_token(token)}
+    set_names = set(base_names)
+    for group in exclusive_groups:
+        if base_names & group:
+            set_names |= group
+    kept: list[str] = []
+    removed: list[str] = []
+    overriding: list[str] = []
+    for item in option_items(user_args):
+        name = option_name(item[0]) if is_option_token(item[0]) else None
+        if name is not None and (name in removed_names or (name in removed_if_set and name in set_names)):
+            removed.extend(item)
+            continue
+        kept.extend(item)
+        if name is not None and name in set_names and name in override_names:
+            overriding.extend(item)
+    return ExtraParamsReport(tuple(kept), tuple(removed), tuple(overriding))
+
+
+def classify_ffmpeg_extra_args(
+    user_args: list[str],
+    base_args: list[str],
+    *,
+    workflow_filters: bool,
+) -> ExtraParamsReport:
+    return classify_user_args(
+        user_args,
+        base_args,
+        option_name=ffmpeg_option_name,
+        removed_names=FFMPEG_WORKFLOW_OWNED_FLAGS | (_FFMPEG_FILTER_FLAGS if workflow_filters else frozenset()),
+        override_names=_FFMPEG_RATE_CONTROL_FLAGS | _FFMPEG_UI_FLAGS,
+        exclusive_groups=(_FFMPEG_RATE_CONTROL_FLAGS,),
+    )
+
+
+def ffmpeg_option_owned_by_workflow(name: str) -> bool:
+    """Option ffmpeg toujours retirée des paramètres avancés (mapping, codec)."""
+    return ffmpeg_option_name(name) in FFMPEG_WORKFLOW_OWNED_FLAGS
+
+
+def _split_user_extras(video: VideoEncodeSettings, args: list[str]) -> tuple[list[str], list[str]]:
+    """Sépare la fin de ``args`` (paramètres avancés bruts) du reste de la commande."""
+    if video.codec in _PARAM_STRING_CODECS or video.codec == "copy":
+        return args, []
+    extras = ffmpeg_extra_args(video)
+    if not extras or args[-len(extras):] != extras:
+        return args, []
+    return args[:-len(extras)], extras
+
+
+def _classify_built_args(
+    video: VideoEncodeSettings,
+    args: list[str],
+    callbacks: EncodeCodecDomainCallbacks,
+) -> tuple[list[str], ExtraParamsReport]:
+    base, extras = _split_user_extras(video, args)
+    if not extras:
+        return args, ExtraParamsReport()
+    workflow_filters = bool(build_encoder_vf(video, callbacks=callbacks))
+    return base, classify_ffmpeg_extra_args(extras, base, workflow_filters=workflow_filters)
+
+
+def _without_user_overrides(
+    video: VideoEncodeSettings,
+    args: list[str],
+    callbacks: EncodeCodecDomainCallbacks,
+) -> list[str]:
+    base, report = _classify_built_args(video, args, callbacks)
+    if base is args:
+        return args
+    return [*base, *report.kept]
+
+
+def _raw_video_codec_args(video: VideoEncodeSettings, callbacks: EncodeCodecDomainCallbacks) -> list[str]:
+    if video.quality_mode == QualityMode.CRF:
+        return _video_codec_args_crf_raw(video, callbacks=callbacks)
+    if video.quality_mode == QualityMode.CQ:
+        return _video_codec_args_cq_raw(video, callbacks=callbacks)
+    return _video_codec_args_bitrate_raw(video, video.bitrate_kbps, callbacks=callbacks)
+
+
+def ffmpeg_extra_params_report(
+    video: VideoEncodeSettings,
+    *,
+    callbacks: EncodeCodecDomainCallbacks | None = None,
+) -> ExtraParamsReport:
+    """Tri des paramètres avancés ffmpeg (retirés, remplaçant l'onglet Video)."""
+    if video.codec in NVENCC_VIDEO_CODECS:
+        return ExtraParamsReport()
+    callbacks = callbacks or EncodeCodecDomainCallbacks(platform=sys.platform)
+    return _classify_built_args(video, _raw_video_codec_args(video, callbacks), callbacks)[1]
+
+
+def ffmpeg_workflow_option_values(
+    video: VideoEncodeSettings,
+    *,
+    callbacks: EncodeCodecDomainCallbacks | None = None,
+) -> dict[str, str]:
+    """Options posées par le workflow pour ces réglages (pré-remplissage de l'éditeur)."""
+    if video.codec in NVENCC_VIDEO_CODECS or video.codec == "copy":
+        return {}
+    callbacks = callbacks or EncodeCodecDomainCallbacks(platform=sys.platform)
+    bare = VideoEncodeSettings(**{**video.__dict__, "extra_params": ""})
+    return option_values(_raw_video_codec_args(bare, callbacks), ffmpeg_option_name)
+
+
+_ENCODER_PARAM_KEY_RE = re.compile(r"[A-Za-z0-9][\w.-]*")
+
+
+def extra_params_syntax_error(codec: str, text: str) -> str:
+    """Erreur de syntaxe des paramètres avancés pour ce codec ("" si valides)."""
+    raw = (text or "").strip()
+    codec = str(codec or "").strip().lower()
+    if not raw or codec == "copy":
+        return ""
+    if codec in _PARAM_STRING_CODECS:
+        name = "x265-params" if codec == "libx265" else "svtav1-params"
+        for chunk in raw.strip(":").split(":"):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            key = chunk.split("=", 1)[0]
+            if any(char.isspace() for char in chunk) or not _ENCODER_PARAM_KEY_RE.fullmatch(key):
+                return f"syntaxe {name} attendue (clé=valeur:clé=valeur), reçu « {chunk} »"
+        return ""
+    try:
+        tokens = shlex.split(raw)
+    except ValueError as exc:
+        return f"guillemets non fermés ({exc})"
+    if tokens and not is_option_token(tokens[0]):
+        return f"« {tokens[0]} » n'est précédé d'aucune option"
+    for previous, token in zip(tokens, tokens[1:]):
+        if not is_option_token(previous) and not is_option_token(token):
+            return f"valeur « {token} » sans option"
+    return ""
+
+
 def video_codec_args(video: VideoEncodeSettings, bitrate_kbps: int, *, callbacks: EncodeCodecDomainCallbacks) -> list[str]:
     # NVEncC est un binaire externe (pas un encodeur ffmpeg) : la construction
     # de la commande passe par core/workflows/encode/runtime/nvencc.py. Côté
@@ -300,6 +540,27 @@ def video_codec_args(video: VideoEncodeSettings, bitrate_kbps: int, *, callbacks
 
 
 def video_codec_args_cq(video: VideoEncodeSettings, *, callbacks: EncodeCodecDomainCallbacks) -> list[str]:
+    return _without_user_overrides(video, _video_codec_args_cq_raw(video, callbacks=callbacks), callbacks)
+
+
+def video_codec_args_crf(video: VideoEncodeSettings, *, callbacks: EncodeCodecDomainCallbacks) -> list[str]:
+    return _without_user_overrides(video, _video_codec_args_crf_raw(video, callbacks=callbacks), callbacks)
+
+
+def video_codec_args_bitrate(
+    video: VideoEncodeSettings,
+    bitrate_kbps: int,
+    *,
+    callbacks: EncodeCodecDomainCallbacks,
+) -> list[str]:
+    return _without_user_overrides(
+        video,
+        _video_codec_args_bitrate_raw(video, bitrate_kbps, callbacks=callbacks),
+        callbacks,
+    )
+
+
+def _video_codec_args_cq_raw(video: VideoEncodeSettings, *, callbacks: EncodeCodecDomainCallbacks) -> list[str]:
     """Mode CQ — Constant Quality côté encodeurs HW.
 
     Sur les codecs software (x264/x265/svt-av1), CQ n'a pas d'équivalent natif :
@@ -376,21 +637,21 @@ def video_codec_args_cq(video: VideoEncodeSettings, *, callbacks: EncodeCodecDom
         case "hevc_vaapi":
             return [
                 "-c:v", "hevc_vaapi", "-rc_mode", "CQP", "-qp", str(cq),
-                "-compression_level", (video.preset or "4"), "-async_depth", "4",
+                *vaapi_compression_args(video), "-async_depth", "4",
                 *ten_bit_args(video),
                 *ffmpeg_extra_args(video),
             ]
         case "h264_vaapi":
             return [
                 "-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", str(cq),
-                "-compression_level", (video.preset or "4"), "-async_depth", "4",
+                *vaapi_compression_args(video), "-async_depth", "4",
                 *h264_8bit_pix_fmt_args(video),
                 *ffmpeg_extra_args(video),
             ]
         case "av1_vaapi":
             return [
                 "-c:v", "av1_vaapi", "-rc_mode", "CQP", "-qp", str(cq),
-                "-compression_level", (video.preset or "4"), "-async_depth", "4",
+                *vaapi_compression_args(video), "-async_depth", "4",
                 *ten_bit_args(video),
                 *ffmpeg_extra_args(video),
             ]
@@ -400,7 +661,7 @@ def video_codec_args_cq(video: VideoEncodeSettings, *, callbacks: EncodeCodecDom
             return video_codec_args_crf(override, callbacks=callbacks)
 
 
-def video_codec_args_crf(video: VideoEncodeSettings, *, callbacks: EncodeCodecDomainCallbacks) -> list[str]:
+def _video_codec_args_crf_raw(video: VideoEncodeSettings, *, callbacks: EncodeCodecDomainCallbacks) -> list[str]:
     match video.codec:
         case "copy":
             return ["-c:v", "copy"]
@@ -450,7 +711,7 @@ def video_codec_args_crf(video: VideoEncodeSettings, *, callbacks: EncodeCodecDo
         case "hevc_vaapi":
             return [
                 "-c:v", "hevc_vaapi", "-rc_mode", "CQP", "-qp", str(video.crf),
-                "-compression_level", (video.preset or "4"),
+                *vaapi_compression_args(video),
                 "-async_depth", "4",
                 *ten_bit_args(video),
                 *ffmpeg_extra_args(video),
@@ -479,7 +740,7 @@ def video_codec_args_crf(video: VideoEncodeSettings, *, callbacks: EncodeCodecDo
         case "h264_vaapi":
             return [
                 "-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", str(video.crf),
-                "-compression_level", (video.preset or "4"),
+                *vaapi_compression_args(video),
                 "-async_depth", "4",
                 *h264_8bit_pix_fmt_args(video),
                 *ffmpeg_extra_args(video),
@@ -508,7 +769,7 @@ def video_codec_args_crf(video: VideoEncodeSettings, *, callbacks: EncodeCodecDo
         case "av1_vaapi":
             return [
                 "-c:v", "av1_vaapi", "-rc_mode", "CQP", "-qp", str(video.crf),
-                "-compression_level", (video.preset or "4"),
+                *vaapi_compression_args(video),
                 "-async_depth", "4",
                 *ten_bit_args(video),
                 *ffmpeg_extra_args(video),
@@ -517,7 +778,7 @@ def video_codec_args_crf(video: VideoEncodeSettings, *, callbacks: EncodeCodecDo
             return ["-c:v", video.codec, "-crf", str(video.crf)]
 
 
-def video_codec_args_bitrate(
+def _video_codec_args_bitrate_raw(
     video: VideoEncodeSettings,
     bitrate_kbps: int,
     *,
@@ -572,7 +833,7 @@ def video_codec_args_bitrate(
         case "hevc_vaapi":
             return [
                 "-c:v", "hevc_vaapi", "-rc_mode", "VBR", "-b:v", f"{bitrate_kbps}k",
-                "-compression_level", (video.preset or "4"),
+                *vaapi_compression_args(video),
                 "-async_depth", "4",
                 *ten_bit_args(video),
                 *ffmpeg_extra_args(video),
@@ -601,7 +862,7 @@ def video_codec_args_bitrate(
         case "h264_vaapi":
             return [
                 "-c:v", "h264_vaapi", "-rc_mode", "VBR", "-b:v", f"{bitrate_kbps}k",
-                "-compression_level", (video.preset or "4"),
+                *vaapi_compression_args(video),
                 "-async_depth", "4",
                 *h264_8bit_pix_fmt_args(video),
                 *ffmpeg_extra_args(video),
@@ -630,7 +891,7 @@ def video_codec_args_bitrate(
         case "av1_vaapi":
             return [
                 "-c:v", "av1_vaapi", "-rc_mode", "VBR", "-b:v", f"{bitrate_kbps}k",
-                "-compression_level", (video.preset or "4"),
+                *vaapi_compression_args(video),
                 "-async_depth", "4",
                 *ten_bit_args(video),
                 *ffmpeg_extra_args(video),
@@ -698,6 +959,42 @@ def _build_crop_filter(video: VideoEncodeSettings) -> str:
             f"ih*{top}/100"
         )
     return f"crop=iw-{left}-{right}:ih-{top}-{bottom}:{left}:{top}"
+
+
+def resolve_resize_dimensions(src_w: int, src_h: int, resize: VideoResizeSettings) -> tuple[int, int]:
+    """Dimensions de sortie calculées comme le filtre ``scale`` de ``_build_resize_filter``.
+
+    ``src_w``/``src_h`` : image après recadrage. (0, 0) si la source est inconnue.
+    """
+    if src_w <= 0 or src_h <= 0:
+        return (0, 0)
+    if not resize.is_active():
+        return (src_w, src_h)
+    mode = str(resize.mode or "preset").strip().lower()
+    if mode == "percent":
+        pct = max(1, int(resize.percent or 100))
+        if not bool(resize.allow_upscale):
+            pct = min(pct, 100)
+        return (int(src_w * pct / 100 / 2) * 2, int(src_h * pct / 100 / 2) * 2)
+    if mode == "size":
+        width = max(2, int(resize.width or 2))
+        height = max(2, int(resize.height or 2))
+    else:
+        width, height, _label = _RESIZE_PRESETS.get(str(resize.preset or "720p"), _RESIZE_PRESETS["720p"])
+    if not bool(resize.allow_upscale):
+        width, height = min(width, src_w), min(height, src_h)
+    if not resize.keep_aspect:
+        return (width, height)
+    # force_original_aspect_ratio=decrease + force_divisible_by=2 (libavfilter/scale_eval.c) :
+    # chaque côté est ramené au multiple de 2 le plus proche du ratio source.
+    fit_w = _rescale(height, src_w, src_h * 2) * 2
+    fit_h = _rescale(width, src_h, src_w * 2) * 2
+    return (min(fit_w, width) // 2 * 2, min(fit_h, height) // 2 * 2)
+
+
+def _rescale(value: int, num: int, den: int) -> int:
+    """``av_rescale`` : value × num / den arrondi au plus proche."""
+    return (value * num + den // 2) // den
 
 
 def _build_resize_filter(video: VideoEncodeSettings) -> str:

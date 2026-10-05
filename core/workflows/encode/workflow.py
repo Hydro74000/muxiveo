@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -253,6 +254,7 @@ from core.workflows.encode.planning.subtitles import (
 from core.workflows.encode.planning.validation import (
     is_dir_writable as _is_dir_writable_plan,
     validate_encode_config as _validate_encode_config_plan,
+    video_settings_errors as _video_settings_errors_plan,
 )
 from core.workflows.encode.models import (
     EncodeConfig, EncodeError, EncodePreviewCapture, EncodePreviewMode, EncodePreviewRequest, EncodePreviewResult,
@@ -656,8 +658,8 @@ class EncodeWorkflow(QObject):
         _ = plan
         return errors
 
-    def _load_mediainfo_video_track(self, path: Path) -> dict | None:
-        return self._hdr_metadata_service.load_mediainfo_video_track(path)
+    def _load_mediainfo_video_track(self, path: Path, stream_index: int | None = None) -> dict | None:
+        return self._hdr_metadata_service.load_mediainfo_video_track(path, stream_index)
 
     @classmethod
     def _video_track_mapping(
@@ -2573,13 +2575,14 @@ class EncodeWorkflow(QObject):
             planned_video_tracks=plan.video_tracks,
             dir_writable=_is_dir_writable_plan,
         )
-        errors.extend(
-            self._backend_for_config(config).validate(
-                config,
-                plan=plan,
-                ctx=self._backend_context(plan=plan),
-            )
-        )
+        errors.extend(_video_settings_errors_plan(self._video_tracks(config)))
+        # Chaque backend présent valide la configuration : une piste NVEncC
+        # secondaire ne doit pas échapper à ses contrôles.
+        for backend in self._backends_for_config(config):
+            for error in backend.validate(config, plan=plan, ctx=self._backend_context(plan=plan)):
+                if error not in errors:
+                    errors.append(error)
+        errors.extend(self._dovi_multi_track_errors(config))
         errors.extend(self._interpolation_validation_errors(config))
         # Backend natif strict : toute incompatibilité est signalée avant
         # l'encodage lourd, aucun repli FFmpeg n'est autorisé.
@@ -2590,6 +2593,67 @@ class EncodeWorkflow(QObject):
                 for reason in mux_decision.diagnostics
             )
         return errors
+
+    def _backends_for_config(self, config: EncodeConfig) -> list[object]:
+        """Backends distincts des pistes vidéo (backend de la piste principale en tête)."""
+        backends = [self._backend_for_config(config)]
+        for video in self._video_tracks(config):
+            backend = self._backend_for_codec(video.codec)
+            if all(getattr(known, "backend_id", None) != backend.backend_id for known in backends):
+                backends.append(backend)
+        return backends
+
+    def _dovi_multi_track_errors(self, config: EncodeConfig) -> list[str]:
+        """Plusieurs pistes vidéo : routages DoVi réservés au chemin mono-piste refusés.
+
+        Le pipeline multi-pistes ne convertit ni P7 (EL) ni P5 (base IPT) et ne
+        normalise pas les pistes Copy : la sortie serait invalide.
+        """
+        videos = self._video_tracks(config)
+        if len(videos) < 2:
+            return []
+        from core.dovi_profile_detector import DoviProfileDetector
+
+        detector = DoviProfileDetector()
+        errors: list[str] = []
+        for index, video in enumerate(videos, start=1):
+            if not video.copy_dv:
+                continue
+            if video.codec == "copy":
+                if str(video.dovi_profile or "0").strip() == "2":
+                    errors.append(
+                        f"Piste vidéo #{index} — « Normaliser en P8.1 » n'est pas appliqué en copie "
+                        "quand le job contient plusieurs pistes vidéo. Traitez cette piste seule."
+                    )
+                continue
+            source = self._video_source_from_settings(config, video)
+            mi_video = self._load_mediainfo_video_track(source, self._video_stream_from_settings(video))
+            sub_profile = detector.detect_from_mediainfo(mi_video).sub_profile
+            if sub_profile.needs_p8_conversion:
+                errors.append(
+                    f"Piste vidéo #{index} — Dolby Vision {sub_profile.label} : la conversion P8.1 "
+                    "n'est disponible qu'avec une seule piste vidéo. Traitez cette piste seule."
+                )
+        return errors
+
+    def extra_params_warnings(self, config: EncodeConfig) -> list[str]:
+        """Paramètres avancés retirés (incompatibles) ou remplaçant l'onglet Video."""
+        messages: list[str] = []
+        for index, video in enumerate(self._video_tracks(config), start=1):
+            if video.codec == "copy" or not (video.extra_params or "").strip():
+                continue
+            report = self._backend_for_codec(video.codec).extra_params_report(video)
+            if report.removed:
+                messages.append(
+                    f"Piste vidéo #{index} — paramètres avancés ignorés (incompatibles avec le workflow) : "
+                    + shlex.join(report.removed)
+                )
+            if report.overriding:
+                messages.append(
+                    f"Piste vidéo #{index} — paramètres avancés qui remplacent les réglages de l'onglet Video : "
+                    + shlex.join(report.overriding)
+                )
+        return messages
 
     def _interpolation_validation_errors(self, config: EncodeConfig) -> list[str]:
         """Contrôles propres à l'interpolation RIFE (outil, cadence, entrelacement)."""
@@ -2926,6 +2990,7 @@ class EncodeWorkflow(QObject):
                 run_direct_output=self._run_direct_output,
                 select_mux_backend=self.select_mux_backend,
                 needs_split_video_encode=self._needs_split_video_encode,
+                extra_params_warnings=self.extra_params_warnings,
             )
         )
 

@@ -24,6 +24,7 @@ import re
 import shlex
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -37,7 +38,13 @@ from core.workflows.encode.models import (
     VideoFilterSettings,
     VideoResizeSettings,
 )
-from core.workflows.encode.domain.codecs import build_vf as _build_ffmpeg_vf
+from core.workflows.encode.domain.codecs import (
+    ExtraParamsReport,
+    build_vf as _build_ffmpeg_vf,
+    classify_user_args,
+    option_values,
+    resolve_resize_dimensions,
+)
 
 
 NVENCC_VIDEO_CODECS: frozenset[str] = frozenset({
@@ -78,6 +85,28 @@ NVENCC_WORKFLOW_OWNED_FLAGS: frozenset[str] = frozenset({
     "--vpp-nlmeans",
     "--vpp-pad",
 })
+
+# Contrôle de débit : posé par le mode qualité de l'UI, une saisie le remplace
+# (dernière option de débit appliquée par NVEncC).
+NVENCC_RATE_CONTROL_OPTIONS: frozenset[str] = frozenset({
+    "cqp", "vbr", "cbr", "qvbr", "vbrhq", "cbrhq", "vbr-quality",
+})
+# Entrée / sortie du pipeline : retirées si la commande les pose.
+_NVENCC_PIPELINE_OPTIONS = frozenset({
+    "codec", "input", "output", "input-format", "y4m", "fps", "avsync", "video-streamid",
+})
+# Réglages de l'onglet Video : une saisie les remplace (avertissement).
+_NVENCC_UI_OPTIONS = frozenset({"preset", "output-depth", "profile", "tier"})
+
+# Alias NVEncC courts → nom long, pour repérer une option déjà posée par le workflow.
+_NVENCC_OPTION_ALIASES = {"u": "preset", "c": "codec", "i": "input", "o": "output"}
+
+
+def nvencc_option_name(token: str) -> str:
+    """Nom canonique d'une option NVEncC (``-u`` → ``preset``, ``--x=y`` → ``x``)."""
+    name = token.lstrip("-").split("=", 1)[0]
+    return _NVENCC_OPTION_ALIASES.get(name, name)
+
 
 NVENCC_QP_TRIPLET_FLAGS: frozenset[str] = frozenset({
     "--cqp",
@@ -449,7 +478,10 @@ def map_nvencc_tonemap_args(video: VideoEncodeSettings) -> list[str]:
     ]
 
 
-def _nvencc_resize_args(video: VideoEncodeSettings) -> list[str]:
+def _nvencc_resize_args(
+    video: VideoEncodeSettings,
+    source_dimensions: tuple[int, int] | None = None,
+) -> list[str]:
     resize = video.resize
     if not resize.is_active():
         return []
@@ -458,17 +490,28 @@ def _nvencc_resize_args(video: VideoEncodeSettings) -> list[str]:
         # Percent resize needs source dimensions, so keep it in FFmpeg when
         # callers require exact scaling. Direct NVEncC keeps native settings.
         return []
-    if mode == "size":
-        width = max(2, int(resize.width or 2))
-        height = max(2, int(resize.height or 2))
-    else:
-        presets = {
-            "720p": (1280, 720),
-            "1080p": (1920, 1080),
-            "1440p": (2560, 1440),
-            "2160p": (3840, 2160),
-        }
-        width, height = presets.get(str(resize.preset or "720p"), presets["720p"])
+    # Même résultat que le filtre scale FFmpeg (ratio conservé, pas
+    # d'agrandissement) : calculé sur l'image recadrée.
+    src_w, src_h = source_dimensions or (0, 0)
+    crop_args = _nvencc_crop_args(video)
+    if crop_args and src_w > 0 and src_h > 0:
+        crop = video.crop
+        src_w -= max(0, int(crop.left)) + max(0, int(crop.right))
+        src_h -= max(0, int(crop.top)) + max(0, int(crop.bottom))
+    width, height = resolve_resize_dimensions(src_w, src_h, resize)
+    if width <= 0 or height <= 0:
+        # Source inconnue : dimensions demandées telles quelles.
+        if mode == "size":
+            width = max(2, int(resize.width or 2))
+            height = max(2, int(resize.height or 2))
+        else:
+            presets = {
+                "720p": (1280, 720),
+                "1080p": (1920, 1080),
+                "1440p": (2560, 1440),
+                "2160p": (3840, 2160),
+            }
+            width, height = presets.get(str(resize.preset or "720p"), presets["720p"])
     args = ["--output-res", f"{width}x{height}"]
     algo = str(resize.algorithm or "lanczos").strip().lower()
     nvencc_algo = {
@@ -520,12 +563,13 @@ def map_nvencc_video_transform_args(
     video: VideoEncodeSettings,
     *,
     vpp_pad: tuple[int, int, int, int] | None = None,
+    source_dimensions: tuple[int, int] | None = None,
 ) -> list[str]:
     args: list[str] = []
     args.extend(_nvencc_crop_args(video))
     if vpp_pad is not None and any(p > 0 for p in vpp_pad):
         args.extend(["--vpp-pad", f"{vpp_pad[0]},{vpp_pad[1]},{vpp_pad[2]},{vpp_pad[3]}"])
-    args.extend(_nvencc_resize_args(video))
+    args.extend(_nvencc_resize_args(video, source_dimensions))
     args.extend(_nvencc_filter_args(video))
     return args
 
@@ -552,9 +596,15 @@ def normalize_nvencc_parallel(value: str | None) -> str | None:
 
 def sanitize_nvencc_extra_params(extra_params: str) -> list[str]:
     """Retire les flags pilotés par le workflow et normalise les triplets QP."""
+    return split_nvencc_extra_params(extra_params)[0]
+
+
+def split_nvencc_extra_params(extra_params: str) -> tuple[list[str], list[str]]:
+    """Comme ``sanitize_nvencc_extra_params`` ; retourne aussi les tokens retirés."""
+    removed: list[str] = []
     raw = (extra_params or "").strip()
     if not raw:
-        return []
+        return [], removed
     try:
         tokens = shlex.split(raw)
     except ValueError:
@@ -572,6 +622,7 @@ def sanitize_nvencc_extra_params(extra_params: str) -> list[str]:
         if "=" in token:
             option, value = token.split("=", 1)
             if option in NVENCC_WORKFLOW_OWNED_FLAGS:
+                removed.append(token)
                 i += 1
                 continue
             if option == "--parallel":
@@ -592,6 +643,7 @@ def sanitize_nvencc_extra_params(extra_params: str) -> list[str]:
 
         next_is_value = i + 1 < len(tokens) and not tokens[i + 1].startswith("--")
         if token in NVENCC_WORKFLOW_OWNED_FLAGS:
+            removed.extend(tokens[i:i + 2] if next_is_value else [token])
             i += 2 if next_is_value else 1
             continue
         if token == "--parallel" and next_is_value:
@@ -611,7 +663,7 @@ def sanitize_nvencc_extra_params(extra_params: str) -> list[str]:
 
         sanitized.append(token)
         i += 1
-    return sanitized
+    return sanitized, removed
 
 
 def strip_nvencc_parallel_args(args: list[str]) -> list[str]:
@@ -779,6 +831,8 @@ def build_nvencc_command(
     dovi_rpu: Path | str | None = None,
     dovi_rpu_prm: str | None = None,
     vpp_pad: tuple[int, int, int, int] | None = None,
+    source_dimensions: tuple[int, int] | None = None,
+    on_extra_report: Callable[[ExtraParamsReport], None] | None = None,
 ) -> list[str]:
     """Phase 2 : commande NVEncC complète (stdin = yuv4mpegpipe phase 1).
 
@@ -788,6 +842,9 @@ def build_nvencc_command(
         output_path    : fichier intermédiaire (.hevc/.h264/.ivf).
         hdr10plus_json : JSON HDR10+ extrait amont (sinon ``copy_hdr10plus`` → 'copy').
         dovi_rpu       : RPU DoVi (.bin) extrait amont (sinon ``copy_dv`` → 'copy').
+        source_dimensions : image source (L×H), pour un ``--output-res`` au ratio conservé.
+        on_extra_report : reçoit le tri des paramètres avancés (retirés,
+                          remplaçant un réglage de l'onglet Video).
 
     Le caller appliquera les ``extra_params`` du dialog (``shlex.split``)
     en concaténation finale.
@@ -846,19 +903,76 @@ def build_nvencc_command(
             input_fps=source_fps or input_fps,
         )
     )
-    cmd.extend(map_nvencc_video_transform_args(video, vpp_pad=vpp_pad))
+    cmd.extend(map_nvencc_video_transform_args(
+        video, vpp_pad=vpp_pad, source_dimensions=source_dimensions,
+    ))
     cmd.extend(map_nvencc_tonemap_args(video))
 
-    # extra_params experts : on retire les flags possédés par le workflow
-    # standard avant de concaténer le reliquat en fin de commande.
-    extra_args = sanitize_nvencc_extra_params(video.extra_params)
+    # extra_params experts, concaténés en fin de commande : la saisie remplace
+    # les réglages de l'onglet Video ; seules les options incompatibles avec
+    # le workflow sont retirées.
+    extra_args, removed = split_nvencc_extra_params(video.extra_params)
     if getattr(video, "copy_dv", False) or getattr(video, "copy_hdr10plus", False):
-        extra_args = strip_nvencc_parallel_args(extra_args)
-        extra_args = strip_nvencc_latency_args(extra_args)
-    cmd.extend(extra_args)
+        kept = strip_nvencc_latency_args(strip_nvencc_parallel_args(extra_args))
+        removed.extend(_tokens_not_kept(extra_args, kept))
+        extra_args = kept
+    report = classify_user_args(
+        extra_args,
+        cmd,
+        option_name=nvencc_option_name,
+        removed_if_set=_NVENCC_PIPELINE_OPTIONS | _nvencc_locked_options(video),
+        override_names=NVENCC_RATE_CONTROL_OPTIONS | _NVENCC_UI_OPTIONS,
+        exclusive_groups=(NVENCC_RATE_CONTROL_OPTIONS,),
+    )
+    if on_extra_report is not None:
+        on_extra_report(ExtraParamsReport(report.kept, (*removed, *report.removed), report.overriding))
+    cmd.extend(report.kept)
 
     cmd.extend(["-o", str(output_path)])
     return cmd
+
+
+def _tokens_not_kept(before: list[str], after: list[str]) -> list[str]:
+    """Tokens de ``before`` absents de ``after`` (ordre conservé, ``after`` sous-suite)."""
+    removed: list[str] = []
+    j = 0
+    for token in before:
+        if j < len(after) and after[j] == token:
+            j += 1
+        else:
+            removed.append(token)
+    return removed
+
+
+def _nvencc_locked_options(video: VideoEncodeSettings) -> frozenset[str]:
+    """Options du workflow qu'une saisie rendrait incompatibles avec le HDR conservé."""
+    locked: set[str] = set()
+    if getattr(video, "copy_dv", False) and video.codec == "nvencc_hevc":
+        # Conformité Dolby Vision P8.1 : Main10, tier High.
+        locked |= {"profile", "tier"}
+    keeps_hdr = not getattr(video, "tonemap_to_sdr", False) and any(
+        getattr(video, name, False) for name in ("copy_dv", "copy_hdr10plus", "inject_hdr_meta")
+    )
+    if keeps_hdr and supports_hdr_output(video.codec):
+        locked.add("output-depth")
+    return frozenset(locked)
+
+
+def nvencc_extra_params_report(video: VideoEncodeSettings) -> ExtraParamsReport:
+    """Tri des paramètres avancés NVEncC (retirés, remplaçant l'onglet Video)."""
+    if not is_nvencc_codec(video.codec) or not (video.extra_params or "").strip():
+        return ExtraParamsReport()
+    reports: list[ExtraParamsReport] = []
+    build_nvencc_command("nvencc", video, "out.mkv", on_extra_report=reports.append)
+    return reports[0] if reports else ExtraParamsReport()
+
+
+def nvencc_workflow_option_values(video: VideoEncodeSettings) -> dict[str, str]:
+    """Options posées par le workflow pour ces réglages (pré-remplissage de l'éditeur)."""
+    if not is_nvencc_codec(video.codec):
+        return {}
+    cmd = build_nvencc_command("nvencc", replace(video, extra_params=""), "out.mkv")
+    return option_values(cmd[1:], nvencc_option_name)
 
 
 def build_remux_cmd(
@@ -994,6 +1108,10 @@ __all__ = [
     "map_nvencc_video_transform_args",
     "normalize_nvencc_qp_triplet",
     "sanitize_nvencc_extra_params",
+    "split_nvencc_extra_params",
+    "nvencc_extra_params_report",
+    "nvencc_workflow_option_values",
+    "nvencc_option_name",
     "nvencc_intermediate_path",
     "is_expected_nvencc_pipe_producer_exit",
 ]

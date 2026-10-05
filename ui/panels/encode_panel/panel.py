@@ -8,6 +8,7 @@ Public:
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import re
 import shutil
@@ -19,7 +20,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from PySide6.QtCore import QSize, Qt, Signal, QTimer, QUrl
-from PySide6.QtGui import QBrush, QColor, QFont, QPixmap, QCursor
+from PySide6.QtGui import QBrush, QColor, QFont, QIntValidator, QPixmap, QCursor, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
@@ -59,6 +60,7 @@ from core.workflows.encode.catalog import (
 )
 from core.workflows.encode.backends import (
     backend_capabilities_for_codec,
+    backend_for_codec,
 )
 from core.workflows.encode.runtime.static_hdr_estimator import (
     StaticHdrEstimate,
@@ -75,6 +77,10 @@ from ui.confirm import ValidationOverridePrompt
 from ui.design_system import scale as _scale
 from ui.dialogs.extra_params_dialog import edit_extra_params
 from ui.panels.encode_panel.widgets import _AudioSourceDialog, _AudioTable
+
+
+# Champs Débit / Taille cible : entiers > 0, sans borne haute (limite technique de QIntValidator).
+_INT_INPUT_MAX = 2**31 - 1
 
 
 def _format_fps(value: float) -> str:
@@ -157,6 +163,10 @@ class EncodePanel(QWidget):
         self._syncing_video_selectors = False
         self._video_selector_combos: list[QComboBox] = []
         self._video_apply_all = False
+        # Paramètres avancés mémorisés par codec : une syntaxe propre à un
+        # encodeur (x265-params, flags NVEncC…) ne suit pas un changement de codec.
+        self._extra_params_by_codec: dict[str, str] = {}
+        self._extra_params_codec: str | None = None
         self._audio_tracks_data: list[tuple] = []   # list[tuple[AudioTrack, str, Path, TrackEntry]]
         self._duration_s: float | None = None
         self._hw_encoders: set[str] = set()
@@ -727,6 +737,7 @@ class EncodePanel(QWidget):
         self._save_current_video_state()
         selected_entry_id = self._current_video_entry_id
         self._video_tracks = tracks
+        self._sync_codec_item_availability()
         self._video_list.blockSignals(True)
         self._video_list.clear()
 
@@ -1021,6 +1032,7 @@ class EncodePanel(QWidget):
         br_l.setContentsMargins(0, 0, 0, 0)
         br_l.setSpacing(6)
         self._bitrate_edit = QLineEdit("5000")
+        self._bitrate_edit.setValidator(QIntValidator(1, _INT_INPUT_MAX, self._bitrate_edit))
         self._bitrate_edit.setStyleSheet(_input_style())
         self._bitrate_edit.setFixedWidth(100)
         self._bitrate_edit.textChanged.connect(lambda _: self._rebuild_preview())
@@ -1037,6 +1049,7 @@ class EncodePanel(QWidget):
         sz_l.setContentsMargins(0, 0, 0, 0)
         sz_l.setSpacing(6)
         self._size_edit = QLineEdit("4000")
+        self._size_edit.setValidator(QIntValidator(1, _INT_INPUT_MAX, self._size_edit))
         self._size_edit.setStyleSheet(_input_style())
         self._size_edit.setFixedWidth(100)
         self._size_edit.textChanged.connect(lambda _: self._rebuild_preview())
@@ -2286,6 +2299,23 @@ class EncodePanel(QWidget):
             if codec_id in self._hw_encoders:
                 self._codec_combo.addItem(hw_icon, label, codec_id)
         self._codec_combo.blockSignals(False)
+        self._sync_codec_item_availability()
+
+    def _sync_codec_item_availability(self) -> None:
+        """Grise les codecs mono-piste (NVEncC) dès que plusieurs pistes vidéo sont actives."""
+        if not hasattr(self, "_codec_combo"):
+            return
+        model = self._codec_combo.model()
+        multi = len(self._video_tracks) > 1
+        tip = translate_text("Ce codec n'encode qu'une seule piste vidéo par job.")
+        for row in range(self._codec_combo.count()):
+            codec = str(self._codec_combo.itemData(row) or "")
+            if codec == "copy" or self._backend_capabilities(codec).supports_multi_video:
+                continue
+            item = model.item(row) if isinstance(model, QStandardItemModel) else None
+            if item is not None:
+                item.setEnabled(not multi)
+            self._codec_combo.setItemData(row, tip if multi else None, Qt.ItemDataRole.ToolTipRole)
 
     # ------------------------------------------------------------------
     # Changements UI → rebuild preview
@@ -2293,6 +2323,7 @@ class EncodePanel(QWidget):
 
     def _on_codec_changed(self, _idx: int = 0) -> None:
         codec = self._codec_combo.currentData() or "libx265"
+        self._swap_extra_params_for_codec(str(codec))
         if hasattr(self, "_video_encode_controls"):
             self._video_encode_controls.setVisible(codec != "copy")
         self._refresh_mode_combo(codec)
@@ -2300,7 +2331,7 @@ class EncodePanel(QWidget):
         self._preset_combo.blockSignals(True)
         self._preset_combo.clear()
         for p in presets:
-            self._preset_combo.addItem(p, p)
+            self._preset_combo.addItem(p if p else translate_text("Aucun (défaut pilote)"), p)
         # Sélectionne "slow" par défaut pour x265/x264, "6" pour SVT-AV1
         default = "slow" if codec not in ("libsvtav1",) else "6"
         idx = next((i for i in range(self._preset_combo.count())
@@ -2313,6 +2344,19 @@ class EncodePanel(QWidget):
         self._update_passthrough_controls()
         self._sync_transform_controls_enabled()
         self._rebuild_preview()
+
+    def _swap_extra_params_for_codec(self, codec: str) -> None:
+        """Mémorise les paramètres avancés du codec quitté et restaure ceux du nouveau."""
+        previous = self._extra_params_codec
+        self._extra_params_codec = codec
+        if previous is None or previous == codec or self._loading_video_settings:
+            return
+        if not hasattr(self, "_extra_params"):
+            return
+        self._extra_params_by_codec[previous] = self._extra_params.text()
+        self._extra_params.blockSignals(True)
+        self._extra_params.setText(self._extra_params_by_codec.get(codec, ""))
+        self._extra_params.blockSignals(False)
 
     def _sync_transform_controls_enabled(self) -> None:
         codec = str(self._codec_combo.currentData() or "copy").strip().lower() if hasattr(self, "_codec_combo") else "copy"
@@ -2946,7 +2990,17 @@ class EncodePanel(QWidget):
 
     def _open_extra_params_dialog(self) -> None:
         codec = self._codec_combo.currentData() or "libx265"
-        new_value = edit_extra_params(codec, self._extra_params.text(), self)
+        workflow_values: dict[str, str] = {}
+        if codec not in ("copy", "libx265", "libsvtav1"):
+            # Valeurs posées par l'onglet Video, affichées dans les lignes non cochées.
+            try:
+                video = dataclasses.replace(self._current_video_settings(), extra_params="")
+                workflow_values = backend_for_codec(codec).workflow_option_values(video)
+            except Exception:
+                workflow_values = {}
+        new_value = edit_extra_params(
+            codec, self._extra_params.text(), self, workflow_values=workflow_values,
+        )
         if new_value is not None:
             self._extra_params.setText(new_value)
 
@@ -3890,6 +3944,7 @@ class EncodePanel(QWidget):
             "bitrate_kbps": "5000",
             "target_size_mb": "4000",
             "extra_params": "",
+            "extra_params_by_codec": {},
             "force_10bit": default_10bit,
             "resize": VideoResizeSettings(),
             "crop": VideoCropSettings(),
@@ -4171,6 +4226,7 @@ class EncodePanel(QWidget):
             "bitrate_kbps": self._bitrate_edit.text(),
             "target_size_mb": self._size_edit.text(),
             "extra_params": self._extra_params.text(),
+            "extra_params_by_codec": dict(self._extra_params_by_codec),
             "force_10bit": bool(self._ten_bit_cb.isChecked()) if hasattr(self, "_ten_bit_cb") else False,
             "resize": self._current_resize_settings(),
             "crop": self._current_crop_settings(),
@@ -4193,7 +4249,9 @@ class EncodePanel(QWidget):
         }
 
     def _copy_video_state(self, state: dict[str, object]) -> dict[str, object]:
-        return dict(state)
+        copied = dict(state)
+        copied["extra_params_by_codec"] = dict(state.get("extra_params_by_codec") or {})
+        return copied
 
     def _propagate_current_video_state_to_all(self, *, force_current: bool = True) -> None:
         if not self._video_tracks:
@@ -4443,6 +4501,8 @@ class EncodePanel(QWidget):
             self._bitrate_edit.setText(str(state.get("bitrate_kbps") or "5000"))
             self._size_edit.setText(str(state.get("target_size_mb") or "4000"))
             self._extra_params.setText(str(state.get("extra_params") or ""))
+            self._extra_params_by_codec = dict(state.get("extra_params_by_codec") or {})
+            self._extra_params_codec = str(self._codec_combo.currentData() or "libx265")
             if hasattr(self, "_ten_bit_cb"):
                 self._ten_bit_cb.setChecked(bool(state.get("force_10bit")))
             self._apply_resize_settings(VideoResizeSettings.from_value(state.get("resize")))
@@ -4734,15 +4794,18 @@ class EncodePanel(QWidget):
         mode  = self._mode_combo.currentData() or QualityMode.CRF
         if not isinstance(mode, QualityMode):
             mode = QualityMode(str(mode))
-        preset = self._preset_combo.currentData() or "slow"
+        preset_data = self._preset_combo.currentData()
+        # "" = preset « Aucun » (VAAPI) : valeur valide, distincte d'une liste vide.
+        preset = "slow" if preset_data is None else str(preset_data)
+        # Saisie invalide → 0, refusé par la validation (pas de valeur de repli muette).
         try:
             bitrate = int(self._bitrate_edit.text())
         except ValueError:
-            bitrate = 5000
+            bitrate = 0
         try:
             size = int(self._size_edit.text())
         except ValueError:
-            size = 4000
+            size = 0
         force_8bit = bool(
             selected_file_info is not None
             and selected_track is not None
@@ -4813,8 +4876,8 @@ class EncodePanel(QWidget):
         mode = state.get("quality_mode") or QualityMode.CRF
         if not isinstance(mode, QualityMode):
             mode = QualityMode(str(mode))
-        bitrate = self._state_int(state, "bitrate_kbps", 5000)
-        size = self._state_int(state, "target_size_mb", 4000)
+        bitrate = self._state_int(state, "bitrate_kbps", 0)
+        size = self._state_int(state, "target_size_mb", 0)
         codec = str(state.get("codec") or "libx265")
         source_hdr = self._hdr_type_for_entry(file_info, track)
         copy_dv, copy_hdr10plus = self._effective_dynamic_hdr_flags(
@@ -4838,7 +4901,7 @@ class EncodePanel(QWidget):
             cq=self._state_int(state, "cq", 26),
             bitrate_kbps=bitrate,
             target_size_mb=size,
-            preset=str(state.get("preset") or "slow"),
+            preset="slow" if state.get("preset") is None else str(state.get("preset")),
             extra_params=str(state.get("extra_params") or "").strip(),
             force_8bit=self._video_force_8bit_for_codec(file_info, track, codec),
             force_10bit=self._effective_force_10bit(

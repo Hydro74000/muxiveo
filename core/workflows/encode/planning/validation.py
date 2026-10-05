@@ -14,6 +14,7 @@ from core.workflows.encode.catalog import (
     supports_hdr10plus,
     supports_hdr_output,
 )
+from core.workflows.encode.domain.codecs import extra_params_syntax_error
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
 from core.workflows.encode.planning.plan_models import PlannedVideoTrack
 
@@ -178,4 +179,20 @@ def validate_encode_config(
                 f"source={Path(raw.source_path)}, stream={int(raw.stream_index)}, "
                 f"offset={int(raw.offset_ms)} ms"
             )
+    return errors
+
+
+def video_settings_errors(videos: list[VideoEncodeSettings]) -> list[str]:
+    """Valeurs de l'onglet Video invalides (débit, taille, paramètres avancés)."""
+    errors: list[str] = []
+    for index, video in enumerate(videos, start=1):
+        if video.codec == "copy":
+            continue
+        if video.quality_mode == QualityMode.BITRATE and int(video.bitrate_kbps) <= 0:
+            errors.append(f"Piste vidéo #{index} — débit vidéo invalide (kbps > 0 attendu).")
+        if video.quality_mode == QualityMode.SIZE and int(video.target_size_mb) <= 0:
+            errors.append(f"Piste vidéo #{index} — taille cible invalide (Mo > 0 attendue).")
+        problem = extra_params_syntax_error(video.codec, video.extra_params)
+        if problem:
+            errors.append(f"Piste vidéo #{index} — paramètres avancés invalides : {problem}.")
     return errors

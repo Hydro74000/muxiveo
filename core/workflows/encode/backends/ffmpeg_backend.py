@@ -20,6 +20,11 @@ from core.workflows.encode.catalog import (
     supports_hdr_output,
     supports_manual_static_hdr_metadata,
 )
+from core.workflows.encode.domain.codecs import (
+    ExtraParamsReport,
+    ffmpeg_extra_params_report,
+    ffmpeg_workflow_option_values,
+)
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
 from core.workflows.encode.planning.plan_models import EncodePlan
 
@@ -115,6 +120,12 @@ class FfmpegEncodeBackend(EncodeBackend):
 
     def normalize_extra_params(self, video: VideoEncodeSettings) -> str:
         return str(video.extra_params or "")
+
+    def extra_params_report(self, video: VideoEncodeSettings) -> ExtraParamsReport:
+        return ffmpeg_extra_params_report(video)
+
+    def workflow_option_values(self, video: VideoEncodeSettings) -> dict[str, str]:
+        return ffmpeg_workflow_option_values(video)
 
     def parse_progress(self, line: str) -> ProgressEvent | None:
         return parse_ffmpeg_progress(line)

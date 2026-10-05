@@ -16,6 +16,21 @@ from core.bluray import ffprobe_input_args
 from core.subprocess_utils import subprocess_text_kwargs
 
 
+def select_mediainfo_video_track(tracks: list[dict], stream_index: int | None) -> dict | None:
+    """Track mediainfo dont ``StreamOrder`` vaut l'index ffprobe du flux.
+
+    Sans correspondance, seule une source à flux vidéo unique est acceptée.
+    """
+    if not tracks:
+        return None
+    if stream_index is None:
+        return tracks[0]
+    for track in tracks:
+        if str(track.get("StreamOrder") or "").strip() == str(int(stream_index)):
+            return track
+    return tracks[0] if len(tracks) == 1 else None
+
+
 class _LRUCache(OrderedDict):
     """Small bounded cache used for repeated preview probes."""
 
@@ -94,7 +109,11 @@ class HdrMetadataProbeService:
             return str(ffmpeg_path.with_name("ffprobe" + ffmpeg_path.suffix))
         return "ffprobe"
 
-    def load_mediainfo_video_track(self, path: Path) -> dict | None:
+    def load_mediainfo_video_track(self, path: Path, stream_index: int | None = None) -> dict | None:
+        """Track Video mediainfo du flux ``stream_index`` (premier flux vidéo si None)."""
+        return select_mediainfo_video_track(self.load_mediainfo_video_tracks(path), stream_index)
+
+    def load_mediainfo_video_tracks(self, path: Path) -> list[dict]:
         mediainfo_bin = self._tool_bin("mediainfo")
         try:
             result = subprocess.run(
@@ -104,18 +123,19 @@ class HdrMetadataProbeService:
                 **subprocess_text_kwargs(),
             )
         except (FileNotFoundError, OSError):
-            return None
+            return []
         if result.returncode != 0:
-            return None
+            return []
         try:
             data = json.loads(result.stdout or "{}")
         except json.JSONDecodeError:
-            return None
+            return []
         media = data.get("media") or {}
-        for track in media.get("track") or []:
-            if isinstance(track, dict) and track.get("@type") == "Video":
-                return track
-        return None
+        return [
+            track
+            for track in media.get("track") or []
+            if isinstance(track, dict) and track.get("@type") == "Video"
+        ]
 
     def detect_source_dynamic_hdr_presence(
         self,

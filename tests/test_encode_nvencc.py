@@ -849,6 +849,28 @@ class TestBuildNvenccCommand:
         assert positions
         assert cmd[positions[-1] + 1] == "18:18:18"
 
+    def test_rate_control_from_extra_params_overrides_ui_mode(self):
+        """La saisie remplace le mode qualité de l'UI (dernière option de débit), avec WARN."""
+        v = _video(extra_params="--cqp 18 --vbr 9000 --lookahead 32 -i other.mkv")
+        reports = []
+        cmd = build_nvencc_command("nvencc", v, "/tmp/out.hevc", input_path="/in.mkv",
+                                   on_extra_report=reports.append)
+        assert cmd[-8:-2] == ["--cqp", "18:18:18", "--vbr", "9000", "--lookahead", "32"]
+        assert cmd.count("-i") == 1 and "other.mkv" not in cmd
+        report = reports[0]
+        assert report.overriding == ("--cqp", "18:18:18", "--vbr", "9000")
+        assert report.removed == ("-i", "other.mkv")
+
+    def test_dolby_vision_locks_profile_tier_and_depth(self):
+        v = _video(codec="nvencc_hevc", copy_dv=True, inject_hdr_meta=True,
+                   extra_params="--profile main --tier main --output-depth 8 --aq")
+        reports = []
+        cmd = build_nvencc_command("nvencc", v, "/tmp/out.hevc", input_path="/in.mkv",
+                                   on_extra_report=reports.append)
+        assert cmd[cmd.index("--profile") + 1] == "main10" and cmd.count("--profile") == 1
+        assert cmd.count("--output-depth") == 1 and "--aq" in cmd
+        assert reports[0].removed == ("--profile", "main", "--tier", "main", "--output-depth", "8")
+
     def test_output_path(self):
         cmd = build_nvencc_command("nvencc", _video(), "/work/out.hevc")
         assert cmd[-1] == "/work/out.hevc"

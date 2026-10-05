@@ -32,6 +32,8 @@ class NvenccInputRouting:
     needs_rpu_alignment: bool = False
     pad_offsets: tuple[int, int, int, int] | None = None
     crop_offsets: tuple[int, int, int, int] | None = None
+    #: Image source (L×H) pour un redimensionnement natif au ratio conservé.
+    source_dimensions: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -316,19 +318,20 @@ class NvenccInputRouter:
         crop_offsets = None
         dovi_rpu_prm = self._cb.nvencc_dovi_rpu_prm(routed_video)
 
+        dims = (0, 0)
+        needs_dims = (video.copy_dv and video.codec == "nvencc_hevc") or video.resize.is_active()
+        if needs_dims and self._cb.source_video_dimensions is not None:
+            try:
+                dims = self._cb.source_video_dimensions(Path(input_path))
+                if dims == (0, 0) and Path(input_path) != Path(config.source):
+                    dims = self._cb.source_video_dimensions(Path(config.source))
+            except Exception:
+                dims = (0, 0)
+
         if video.copy_dv and video.codec == "nvencc_hevc":
             from core.workflows.encode.runtime.dovi_geometry import (
                 align_nvencc_dovi_geometry, nvencc_dovi_resize_changes_scale,
             )
-
-            dims = (0, 0)
-            if self._cb.source_video_dimensions is not None:
-                try:
-                    dims = self._cb.source_video_dimensions(Path(input_path))
-                    if dims == (0, 0) and Path(input_path) != Path(config.source):
-                        dims = self._cb.source_video_dimensions(Path(config.source))
-                except Exception:
-                    dims = (0, 0)
 
             l5 = None
             resamples = nvencc_dovi_resize_changes_scale(routed_video, dims)
@@ -378,4 +381,5 @@ class NvenccInputRouter:
             needs_rpu_alignment=needs_rpu_alignment,
             pad_offsets=pad_offsets,
             crop_offsets=crop_offsets,
+            source_dimensions=dims if dims != (0, 0) else None,
         )

@@ -18,6 +18,7 @@ from core.bluray import append_ffmpeg_input_args
 from core.subprocess_utils import subprocess_text_kwargs
 
 from core.workflows.encode.models import EncodeError, VideoCropSettings, VideoEncodeSettings, VideoResizeSettings
+from core.workflows.encode.domain.codecs import resolve_resize_dimensions
 from core.workflows.encode.runtime.nvencc_routing import nvencc_crop_offsets_from_extra_params
 from core.workflows.encode.runtime.crop_detector import align_crop_for_codec
 
@@ -61,11 +62,9 @@ def nvencc_dovi_resize_changes_scale(video: VideoEncodeSettings, dimensions: tup
         return True
     crop = absolute_dovi_crop(video, dimensions)
     cropped = (dimensions[0] - crop.left - crop.right, dimensions[1] - crop.top - crop.bottom)
-    target = ((max(2, resize.width), max(2, resize.height)) if resize.mode == "size" else {
-        "720p": (1280, 720), "1080p": (1920, 1080),
-        "1440p": (2560, 1440), "2160p": (3840, 2160),
-    }.get(resize.preset, (1280, 720)))
-    return target != cropped
+    # Dimensions effectives (ratio conservé, pas d'agrandissement) : un preset
+    # égal à l'image recadrée ne rééchantillonne pas.
+    return resolve_resize_dimensions(cropped[0], cropped[1], resize) != cropped
 
 
 def align_nvencc_dovi_geometry(

@@ -47,6 +47,8 @@ class EncodePreparationRunnerCallbacks:
     #: Interpolation RIFE sur une piste unique sans injection : encode vidéo
     #: découpé (pipeline multi-pistes) au lieu de la commande FFmpeg directe.
     needs_split_video_encode: Callable[[EncodeConfig], bool] | None = None
+    #: Paramètres avancés ignorés (options pilotées par le workflow), signalés en WARN.
+    extra_params_warnings: Callable[[EncodeConfig], list[str]] | None = None
 
 
 class EncodePreparationRunner:
@@ -124,6 +126,9 @@ class EncodePreparationRunner:
         cb.log_workflow_type("ENCODE")
         cb.log_step(1, "Validation configuration")
         cb.log("INFO", f"Encodage → {config.output.name}")
+        if cb.extra_params_warnings is not None:
+            for message in cb.extra_params_warnings(config):
+                cb.log("WARN", message)
 
         cb.log_step(2, "Préparation workspace et attachments")
         cb.check_cancelled(prep_signals)

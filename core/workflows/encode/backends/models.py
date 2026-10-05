@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from core.runner import TaskSignals
+from core.workflows.encode.domain.codecs import ExtraParamsReport
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
 
 if TYPE_CHECKING:
@@ -113,6 +114,16 @@ class EncodeBackend(ABC):
     @abstractmethod
     def normalize_extra_params(self, video: VideoEncodeSettings) -> str:
         raise NotImplementedError
+
+    def extra_params_report(self, video: VideoEncodeSettings) -> ExtraParamsReport:
+        """Tri des paramètres avancés (retirés, remplaçant un réglage de l'onglet Video)."""
+        _ = video
+        return ExtraParamsReport()
+
+    def workflow_option_values(self, video: VideoEncodeSettings) -> dict[str, str]:
+        """Options posées par le workflow pour ces réglages (``{nom: valeur}``)."""
+        _ = video
+        return {}
 
     @abstractmethod
     def parse_progress(self, line: str) -> ProgressEvent | None:

@@ -187,3 +187,167 @@ def test_v05_nvenc_crf_is_not_capped_by_default_bitrate():
         args = video_codec_args(video, 0, callbacks=_CB)
         assert args[args.index("-b:v") + 1] == "0", codec
         assert args[args.index("-cq:v") + 1] == "20", codec
+
+
+# --- Lot 2 : garde-fous ------------------------------------------------------
+
+_P7_MEDIAINFO = {
+    "HDR_Format": "Dolby Vision, Version 1.0, Profile 7.6, dvhe.07.06, BL+EL+RPU",
+    "HDR_Format_Profile": "dvhe.07 / 06",
+    "HDR_Format_Settings": "BL+EL+RPU",
+    "HDR_Format_Compatibility": "Blu-ray / HDR10",
+}
+
+
+def _two_track_config(tmp_path: Path, first: VideoEncodeSettings, second: VideoEncodeSettings) -> EncodeConfig:
+    for name in ("a.mkv", "b.mkv"):
+        (tmp_path / name).write_bytes(b"")
+    first = VideoEncodeSettings(**{**first.__dict__, "source_path": tmp_path / "a.mkv"})
+    second = VideoEncodeSettings(**{**second.__dict__, "source_path": tmp_path / "b.mkv"})
+    return EncodeConfig(source=tmp_path / "a.mkv", output=tmp_path / "o.mkv", video=first,
+                        video_tracks=[first, second], duration_s=10)
+
+
+def test_v13_nvencc_track_is_validated_whatever_its_position(qt_app, tmp_path):
+    _ = qt_app
+    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", nvencc_bin="nvencc", generate_nfo=False)
+    copy = VideoEncodeSettings(codec="copy")
+    nvencc = VideoEncodeSettings(codec="nvencc_hevc", quality_mode=QualityMode.CQ)
+    for order in ((copy, nvencc), (nvencc, copy)):
+        errors = wf.validate(_two_track_config(tmp_path, *order))
+        assert any("NVEncC ne supporte pas le mode multi-pistes" in error for error in errors), order
+
+
+def test_v11_v12_multi_track_dovi_routing_is_refused(qt_app, tmp_path, monkeypatch):
+    _ = qt_app
+    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", generate_nfo=False)
+    monkeypatch.setattr(wf, "_load_mediainfo_video_track", lambda _path, _stream=None: dict(_P7_MEDIAINFO))
+    p7_encode = VideoEncodeSettings(codec="libx265", copy_dv=True, inject_hdr_meta=True)
+    errors = wf._dovi_multi_track_errors(_two_track_config(tmp_path, p7_encode, VideoEncodeSettings(codec="copy")))
+    assert len(errors) == 1 and "P7 FEL" in errors[0]
+    normalize_copy = VideoEncodeSettings(codec="copy", copy_dv=True, dovi_profile="2")
+    errors = wf._dovi_multi_track_errors(_two_track_config(tmp_path, normalize_copy, VideoEncodeSettings(codec="copy")))
+    assert len(errors) == 1 and "Normaliser en P8.1" in errors[0]
+    # Piste unique : chemin mono-piste, conversion prise en charge.
+    single = EncodeConfig(source=tmp_path / "a.mkv", output=tmp_path / "o.mkv", video=p7_encode,
+                          video_tracks=[p7_encode], duration_s=10)
+    assert wf._dovi_multi_track_errors(single) == []
+
+
+def test_v02_v37_video_settings_are_validated():
+    from core.workflows.encode.planning.validation import video_settings_errors
+
+    errors = video_settings_errors([
+        VideoEncodeSettings(codec="hevc_nvenc", extra_params="no-open-gop=1:hdr10=1"),
+        VideoEncodeSettings(codec="libx265", extra_params="-tune grain"),
+        VideoEncodeSettings(codec="libx264", quality_mode=QualityMode.BITRATE, bitrate_kbps=0),
+        VideoEncodeSettings(codec="libx264", quality_mode=QualityMode.SIZE, target_size_mb=-5),
+        VideoEncodeSettings(codec="libx264", extra_params='-x264-params "aq-mode=3'),
+    ])
+    assert [error.split(" — ")[0] for error in errors] == [
+        "Piste vidéo #1", "Piste vidéo #2", "Piste vidéo #3", "Piste vidéo #4", "Piste vidéo #5",
+    ]
+    assert video_settings_errors([
+        VideoEncodeSettings(codec="libx265", extra_params="no-open-gop=1:aq-mode=3"),
+        VideoEncodeSettings(codec="hevc_nvenc", extra_params="-rc-lookahead 32 -spatial-aq 1"),
+        VideoEncodeSettings(codec="nvencc_hevc", extra_params="--lookahead 32 --aq"),
+    ]) == []
+
+
+def test_v16_ffmpeg_extras_override_ui_settings_with_warning():
+    """Saisie ajoutée après le workflow (la dernière occurrence l'emporte), sauf mapping / codec."""
+    from core.workflows.encode.domain import ffmpeg_extra_params_report
+
+    video = VideoEncodeSettings(codec="hevc_nvenc", quality_mode=QualityMode.CQ, preset="p5",
+                                extra_params="-cq 30 -pix_fmt yuv420p -preset p1 -map 0:1 -c:v libx264 -spatial-aq 1")
+    args = video_codec_args(video, 0, callbacks=_CB)
+    assert args[-8:] == ["-cq", "30", "-pix_fmt", "yuv420p", "-preset", "p1", "-spatial-aq", "1"]
+    assert "-map" not in args and args.count("-c:v") == 1
+    report = ffmpeg_extra_params_report(video, callbacks=_CB)
+    assert report.removed == ("-map", "0:1", "-c:v", "libx264")
+    # -pix_fmt : le workflow n'en pose pas (case 10-Bits décochée), pas de remplacement.
+    assert report.overriding == ("-cq", "30", "-preset", "p1")
+    ten_bit = VideoEncodeSettings(**{**video.__dict__, "force_10bit": True})
+    assert "-pix_fmt" in ffmpeg_extra_params_report(ten_bit, callbacks=_CB).overriding
+    # Valeur par défaut du workflow (async_depth) : surchargeable sans message.
+    qsv = VideoEncodeSettings(codec="hevc_qsv", quality_mode=QualityMode.CQ, preset="slow", extra_params="-async_depth 8")
+    assert video_codec_args(qsv, 0, callbacks=_CB)[-2:] == ["-async_depth", "8"]
+    assert ffmpeg_extra_params_report(qsv, callbacks=_CB).overriding == ()
+
+
+def test_v16_user_filter_kept_only_without_workflow_filters():
+    from core.workflows.encode.domain import ffmpeg_extra_params_report
+    from core.workflows.encode.models import VideoCropSettings
+
+    plain = VideoEncodeSettings(codec="libx264", extra_params="-vf hqdn3d")
+    assert video_codec_args(plain, 0, callbacks=_CB)[-2:] == ["-vf", "hqdn3d"]
+    cropped = VideoEncodeSettings(codec="libx264", extra_params="-vf hqdn3d",
+                                  crop=VideoCropSettings(enabled=True, top=140, bottom=140))
+    assert "-vf" not in video_codec_args(cropped, 0, callbacks=_CB)
+    assert ffmpeg_extra_params_report(cropped, callbacks=_CB).removed == ("-vf", "hqdn3d")
+
+
+def test_vaapi_none_preset_omits_compression_level():
+    from core.workflows.encode.catalog import presets_for_codec
+
+    assert presets_for_codec("hevc_vaapi")[0] == ""
+    for mode in (QualityMode.CRF, QualityMode.CQ, QualityMode.BITRATE):
+        args = video_codec_args(VideoEncodeSettings(codec="hevc_vaapi", quality_mode=mode, preset=""), 5000, callbacks=_CB)
+        assert "-compression_level" not in args, mode
+        args = video_codec_args(VideoEncodeSettings(codec="hevc_vaapi", quality_mode=mode, preset="4"), 5000, callbacks=_CB)
+        assert args[args.index("-compression_level") + 1] == "4", mode
+
+
+def test_v16_extra_params_warnings_are_reported(qt_app, tmp_path):
+    _ = qt_app
+    (tmp_path / "a.mkv").write_bytes(b"")
+    video = VideoEncodeSettings(codec="libx264", extra_params="-crf 10 -map 0:1 -tune film",
+                                source_path=tmp_path / "a.mkv")
+    cfg = EncodeConfig(source=tmp_path / "a.mkv", output=tmp_path / "o.mkv", video=video, duration_s=10)
+    warnings = EncodeWorkflow(ffmpeg_bin="ffmpeg", generate_nfo=False).extra_params_warnings(cfg)
+    assert warnings == [
+        "Piste vidéo #1 — paramètres avancés ignorés (incompatibles avec le workflow) : -map 0:1",
+        "Piste vidéo #1 — paramètres avancés qui remplacent les réglages de l'onglet Video : -crf 10",
+    ]
+
+
+def test_v16_workflow_option_values_for_dialog_prefill():
+    from core.workflows.encode.domain import ffmpeg_workflow_option_values
+    from core.workflows.encode.runtime.nvencc import nvencc_workflow_option_values
+
+    vaapi = VideoEncodeSettings(codec="hevc_vaapi", quality_mode=QualityMode.CQ, cq=24, preset="4", extra_params="-qp 30")
+    values = ffmpeg_workflow_option_values(vaapi, callbacks=_CB)
+    assert (values["rc_mode"], values["qp"], values["compression_level"]) == ("CQP", "24", "4")
+    nvencc = VideoEncodeSettings(codec="nvencc_hevc", quality_mode=QualityMode.CQ, cq=27, preset="P5")
+    values = nvencc_workflow_option_values(nvencc)
+    assert (values["qvbr"], values["preset"]) == ("27", "P5")
+
+
+def test_v18a_resize_dimensions_match_ffmpeg_scale():
+    """Valeurs relevées avec ffmpeg 8.1 (force_original_aspect_ratio=decrease:force_divisible_by=2)."""
+    from core.workflows.encode.domain import resolve_resize_dimensions
+
+    p720 = VideoResizeSettings(enabled=True, mode="preset", preset="720p")
+    p1080 = VideoResizeSettings(enabled=True, mode="preset", preset="1080p")
+    assert resolve_resize_dimensions(1920, 800, p720) == (1280, 534)
+    assert resolve_resize_dimensions(1440, 1080, p720) == (960, 720)
+    assert resolve_resize_dimensions(3840, 1600, p1080) == (1920, 800)
+    assert resolve_resize_dimensions(1920, 800, p1080) == (1920, 800)  # pas d'agrandissement
+    stretched = VideoResizeSettings(enabled=True, mode="size", width=1280, height=720, keep_aspect=False)
+    assert resolve_resize_dimensions(1920, 800, stretched) == (1280, 720)
+
+
+def test_v18a_nvencc_native_resize_keeps_aspect_ratio():
+    from core.workflows.encode.models import VideoCropSettings
+    from core.workflows.encode.runtime.dovi_geometry import nvencc_dovi_resize_changes_scale
+    from core.workflows.encode.runtime.nvencc import build_nvencc_command
+
+    video = VideoEncodeSettings(codec="nvencc_hevc", quality_mode=QualityMode.CQ,
+                                resize=VideoResizeSettings(enabled=True, mode="preset", preset="720p"),
+                                crop=VideoCropSettings(enabled=True, top=140, bottom=140))
+    cmd = build_nvencc_command("nvencc", video, "/tmp/o.mkv", input_path="/in.mkv", source_dimensions=(1920, 1080))
+    assert cmd[cmd.index("--output-res") + 1] == "1280x534"
+    # Preset égal à l'image : aucun rééchantillonnage, la copie DoVi reste possible.
+    same = VideoEncodeSettings(codec="nvencc_hevc", copy_dv=True,
+                               resize=VideoResizeSettings(enabled=True, mode="preset", preset="2160p"))
+    assert nvencc_dovi_resize_changes_scale(same, (3840, 1600)) is False
