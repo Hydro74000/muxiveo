@@ -147,7 +147,7 @@ def _session_job(panel):
     ready_indices = [index for index, source in enumerate(panel._source_files) if source.info is not None]
     pending_indices = [index for index, source in enumerate(panel._source_files) if source.info is None]
     first = panel._source_files[0].path
-    default_output = str(panel._config.output_dir / f"{first.stem}-MVO.mkv")
+    default_output = str(panel._config.default_output_path(first))
     config = config_builder.current_config(panel, output_fallback=default_output)
     if config is not None:
         full_to_compact = {full: compact for compact, full in enumerate(ready_indices)}
