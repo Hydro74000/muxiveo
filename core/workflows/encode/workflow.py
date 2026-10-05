@@ -778,6 +778,16 @@ class EncodeWorkflow(QObject):
     def _ffprobe_streams_payload(self, source: Path) -> dict[str, object] | None:
         return self._hdr_metadata_service.ffprobe_streams_payload(source)
 
+    def remember_ffprobe_payload(
+        self,
+        source: Path,
+        payload: dict[str, object] | None,
+        *,
+        source_key: tuple[str, int, int] | None = None,
+    ) -> None:
+        """Réutilise le JSON ffprobe de l'inspection pour les plans de cette source."""
+        self._hdr_metadata_service.remember_ffprobe_payload(Path(source), payload, source_key=source_key)
+
     @staticmethod
     def _source_cache_key(source: Path) -> tuple[str, int, int] | None:
         return HdrMetadataProbeService.source_cache_key(source)

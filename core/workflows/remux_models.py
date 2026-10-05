@@ -312,8 +312,12 @@ def _native_enabled_flags(info: FileInfo) -> dict[int, bool]:
 
     ``ffprobe`` n'expose pas cet élément (aucune disposition ne lui
     correspond) : sans cette lecture, une piste désactivée en source
-    apparaîtrait activée dans le panneau.
+    apparaîtrait activée dans le panneau. Déjà lu par l'inspection (worker) ;
+    relu ici seulement pour un ``FileInfo`` construit autrement.
     """
+    known = getattr(info, "track_enabled", None)
+    if known is not None:
+        return dict(known)
     path = Path(info.path)
     if path.suffix.lower() not in _MATROSKA_SOURCE_EXTENSIONS or not path.is_file():
         return {}

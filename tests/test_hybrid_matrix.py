@@ -209,6 +209,7 @@ def test_prepare_without_acoustic_scan(tmp_path, monkeypatch, strategy, shift, m
         assert calibration is None
         assert preparation_commands(result, tmp_path, "ffmpeg") == []
     else:
+        assert calibration is not None
         assert result.sync_mode == "physical" and calibration.segments[0].shift_ms == shift
         expected = (2 if mirror == "mirror" else 1) if shift else 0
         assert len(preparation_commands(result, tmp_path, "ffmpeg")) == expected
@@ -258,6 +259,7 @@ def test_prepare_scans_matching_language_even_when_track_is_not_kept(tmp_path, m
     )
 
     assert scanned == [(1, 2)]
+    assert calibration is not None
     assert calibration.segments[0].shift_ms == 0
     assert [(track.mkv_tid, track.enabled) for track in result.sources[1].tracks] == [
         (0, False), (1, True), (2, False), (3, True), (4, False),

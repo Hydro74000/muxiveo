@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from core.matroska.ebml import element, float_element
 from core.matroska.ids import EBML_HEADER_ID, INFO_ID, SEGMENT_ID
 from core.matroska.reader import MatroskaReader
@@ -281,3 +283,164 @@ def test_blocks_read_payload_false(tmp_path: Path) -> None:
     assert header_only.timestamp_ms == full.timestamp_ms
     assert header_only.flags == full.flags
 
+
+
+# ── Index level-1 via SeekHead (Tracks relocalisé après les Clusters) ─────────
+
+_SEEK_HEAD, _SEEK, _SEEK_ID, _SEEK_POS = (bytes.fromhex(v) for v in ("114d9b74", "4dbb", "53ab", "53ac"))
+_TRACKS, _ENTRY, _CLUSTER, _TAGS = (bytes.fromhex(v) for v in ("1654ae6b", "ae", "1f43b675", "1254c367"))
+_VOID = bytes.fromhex("ec")
+
+
+def _late_tracks_file(
+    tmp_path: Path,
+    *,
+    seek_targets: tuple[bytes, ...] | None,
+    wrong_id: bool = False,
+    tags: bool = True,
+    void_gap: bool = False,
+) -> Path:
+    """Segment ``[SeekHead] Info Cluster×3 Tracks [Void] [Tags]`` : Tracks et Tags après les Clusters."""
+    track = element(_ENTRY, element(bytes.fromhex("d7"), b"\x01") + element(bytes.fromhex("83"), b"\x01")
+                    + element(bytes.fromhex("86"), b"V_MPEGH/ISO/HEVC"))
+    cluster = element(_CLUSTER, element(bytes.fromhex("e7"), b"\x00") + element(bytes.fromhex("a3"), b"\x81\x00\x00\x80x"))
+    info = element(INFO_ID, b"")
+    late = {_TRACKS: element(_TRACKS, track), _VOID: element(_VOID, b"\x00" * 4),
+            _TAGS: element(_TAGS, element(bytes.fromhex("7373"), b""))}
+    tail = (_TRACKS,) + ((_VOID,) if void_gap else ()) + ((_TAGS,) if tags else ())
+
+    def seek_head(positions: dict[bytes, int]) -> bytes:
+        return element(_SEEK_HEAD, b"".join(
+            element(_SEEK, element(_SEEK_ID, target) + element(_SEEK_POS, positions.get(target, 0).to_bytes(8, "big")))
+            for target in seek_targets or ()
+        ))
+
+    head = seek_head({}) if seek_targets is not None else b""
+    cursor = len(head) + len(info) + 3 * len(cluster)
+    positions: dict[bytes, int] = {}
+    for target in tail:
+        positions[target] = cursor
+        cursor += len(late[target])
+    if wrong_id:
+        positions[_TRACKS] = len(head)  # pointe sur Info
+    if seek_targets is not None:
+        head = seek_head(positions)
+    path = tmp_path / "late-tracks.mkv"
+    path.write_bytes(element(EBML_HEADER_ID, b"") + SEGMENT_ID + b"\xff" + head + info
+                     + 3 * cluster + b"".join(late[target] for target in tail))
+    return path
+
+
+def test_reader_finds_relocated_tracks_through_seekhead_without_walking_clusters(tmp_path: Path, monkeypatch) -> None:
+    path = _late_tracks_file(tmp_path, seek_targets=(_TRACKS, _TAGS))
+
+    def no_walk(_self):
+        raise AssertionError("parcours des Clusters inattendu")
+
+    monkeypatch.setattr(MatroskaReader, "top_level", no_walk)
+    reader = MatroskaReader(path)
+    assert [track.codec_id for track in reader.tracks()] == ["V_MPEGH/ISO/HEVC"]
+    assert len(reader.raw_top_level(_TAGS)) == 1
+
+
+def test_reader_without_seekhead_falls_back_to_linear_walk(tmp_path: Path) -> None:
+    path = _late_tracks_file(tmp_path, seek_targets=None)
+    reader = MatroskaReader(path)
+    assert [track.codec_id for track in reader.tracks()] == ["V_MPEGH/ISO/HEVC"]
+    assert len(reader.raw_top_level(_TAGS)) == 1
+
+
+def test_reader_distrusts_seekhead_pointing_to_another_element(tmp_path: Path) -> None:
+    path = _late_tracks_file(tmp_path, seek_targets=(_TRACKS, _TAGS), wrong_id=True)
+    reader = MatroskaReader(path)
+    assert [track.codec_id for track in reader.tracks()] == ["V_MPEGH/ISO/HEVC"]
+    assert len(reader.raw_top_level(_TAGS)) == 1
+
+
+def test_reader_seekhead_index_matches_linear_walk(tmp_path: Path) -> None:
+    path = _late_tracks_file(tmp_path, seek_targets=(_TRACKS, _TAGS))
+    reader = MatroskaReader(path)
+    expected = [item for item in reader.top_level() if item.element_id != _CLUSTER]
+    assert list(MatroskaReader(path)._metadata_elements()) == expected
+
+
+def _early_tracks_file(tmp_path: Path, *, unknown_clusters: bool = False, bad_seek: bool = False) -> Path:
+    """Tracks avant les Clusters, Tags après ; l'index optionnel annonce Tags à la position de Tracks."""
+    tracks = element(_TRACKS, element(_ENTRY, element(bytes.fromhex("d7"), b"\x01")
+                     + element(bytes.fromhex("83"), b"\x01") + element(bytes.fromhex("86"), b"V_MPEGH/ISO/HEVC")))
+    info = element(INFO_ID, float_element(bytes.fromhex("4489"), 2000.0))
+    cluster_payload = element(bytes.fromhex("e7"), b"\x00") + element(bytes.fromhex("a3"), b"\x81\x00\x00\x80x")
+    cluster = _CLUSTER + b"\xff" + cluster_payload if unknown_clusters else element(_CLUSTER, cluster_payload)
+    tags = element(_TAGS, element(bytes.fromhex("7373"), b""))
+
+    def seek_head(position: int) -> bytes:
+        return element(_SEEK_HEAD, element(_SEEK, element(_SEEK_ID, _TAGS)
+                       + element(_SEEK_POS, position.to_bytes(8, "big"))))
+
+    head = seek_head(len(seek_head(0)) + len(info)) if bad_seek else b""
+    path = tmp_path / "early-tracks.mkv"
+    path.write_bytes(element(EBML_HEADER_ID, b"") + SEGMENT_ID + b"\xff" + head + info + tracks + 100 * cluster + tags)
+    return path
+
+
+@pytest.mark.parametrize("unknown_clusters", [False, True])
+def test_reader_reads_early_tracks_and_info_without_seekhead_or_cluster_walk(tmp_path: Path, monkeypatch, unknown_clusters: bool) -> None:
+    path = _early_tracks_file(tmp_path, unknown_clusters=unknown_clusters)
+
+    def no_walk(_self):
+        raise AssertionError("parcours des Clusters inattendu")
+
+    monkeypatch.setattr(MatroskaReader, "top_level", no_walk)
+    reader = MatroskaReader(path)
+    assert [track.codec_id for track in reader.tracks()] == ["V_MPEGH/ISO/HEVC"]
+    assert reader.segment_duration_ns() == 2_000_000_000
+
+
+def test_reader_rejects_wrong_seek_id_at_already_known_offset(tmp_path: Path) -> None:
+    path = _early_tracks_file(tmp_path, bad_seek=True)
+    reader = MatroskaReader(path)
+    # Tags pointe sur Tracks, déjà rencontré avant les Clusters. Le repli
+    # doit retrouver les vrais Tags même sans demander tracks() d'abord.
+    assert len(reader.raw_top_level(_TAGS)) == 1
+
+
+def test_reader_trusts_coherent_seekhead_for_missing_optional_elements(tmp_path: Path, monkeypatch) -> None:
+    """Élément facultatif non indexé = absent : pas de parcours des Clusters (gros fichiers)."""
+    path = _late_tracks_file(tmp_path, seek_targets=(_TRACKS,), tags=False, void_gap=True)
+
+    def no_walk(_self):
+        raise AssertionError("parcours des Clusters inattendu")
+
+    monkeypatch.setattr(MatroskaReader, "top_level", no_walk)
+    reader = MatroskaReader(path)
+    assert [track.codec_id for track in reader.tracks()] == ["V_MPEGH/ISO/HEVC"]
+    assert reader.raw_top_level(_TAGS) == ()
+    assert reader.attachment_headers() == []
+
+
+@pytest.mark.parametrize("void_gap", [False, True])
+def test_reader_finds_tags_appended_after_indexed_tail(tmp_path: Path, void_gap: bool) -> None:
+    """Tags non indexés juste après Tracks (Void éventuel) : index incomplet, repli."""
+    path = _late_tracks_file(tmp_path, seek_targets=(_TRACKS,), void_gap=void_gap)
+    reader = MatroskaReader(path)
+    assert [track.codec_id for track in reader.tracks()] == ["V_MPEGH/ISO/HEVC"]
+    assert len(reader.raw_top_level(_TAGS)) == 1
+
+
+def test_reader_walks_clusters_for_mandatory_tracks_missing_from_seekhead(tmp_path: Path) -> None:
+    path = _late_tracks_file(tmp_path, seek_targets=(_TAGS,))
+    reader = MatroskaReader(path)
+    assert [track.codec_id for track in reader.tracks()] == ["V_MPEGH/ISO/HEVC"]
+    assert len(reader.raw_top_level(_TAGS)) == 1
+
+
+@pytest.mark.parametrize("unknown_clusters", [False, True])
+def test_reader_without_seekhead_enumerates_tags_before_and_after_clusters(tmp_path: Path, unknown_clusters: bool) -> None:
+    path = _early_tracks_file(tmp_path, unknown_clusters=unknown_clusters)
+    raw = path.read_bytes()
+    tags = element(_TAGS, element(bytes.fromhex("7373"), b""))
+    segment_offset = len(element(EBML_HEADER_ID, b"")) + len(SEGMENT_ID) + 1
+    path.write_bytes(raw[:segment_offset] + tags + raw[segment_offset:])
+    reader = MatroskaReader(path)
+    assert len(reader.tracks()) == 1
+    assert reader.raw_top_level(_TAGS) == (tags, tags)

@@ -25,6 +25,7 @@ import pytest
 
 from core.workflows.common.track_types import TrackMetaPatch, TrackOffset
 from core.matroska.ebml import ascii_element, element, uint_element
+from core.matroska import reader as reader_module
 from core.workflows.encode.models import (
     AudioTrackSettings,
     EncodeConfig,
@@ -548,16 +549,22 @@ class TestRemuxPreviewPlanningCost:
         )
 
     def test_native_plan_scans_track_headers_once_per_source(self, tmp_path: Path, monkeypatch) -> None:
-        """Le préflight et le contrat partagent le reader d'une compilation."""
+        """Le préflight et le contrat partagent les en-têtes, sans parcourir les Clusters."""
         calls = 0
-        original = MatroskaReader.top_level
+        original = reader_module.read_element
 
-        def _counted_top_level(reader):
+        def _counted_read_element(*args, **kwargs):
             nonlocal calls
-            calls += 1
-            yield from original(reader)
+            item = original(*args, **kwargs)
+            if item is not None and item.element_id == TRACKS_ID:
+                calls += 1
+            return item
 
-        monkeypatch.setattr(MatroskaReader, "top_level", _counted_top_level)
+        def _unexpected_walk(_reader):
+            raise AssertionError("le préflight ne doit pas parcourir les Clusters")
+
+        monkeypatch.setattr(reader_module, "read_element", _counted_read_element)
+        monkeypatch.setattr(MatroskaReader, "top_level", _unexpected_walk)
 
         plan = plan_remux(self._config(tmp_path, backend="native"))
 
