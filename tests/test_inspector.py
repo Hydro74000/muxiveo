@@ -803,7 +803,7 @@ class TestInspect:
 
         mi_payload = MagicMock()
         mi_payload.returncode = 0
-        mi_payload.stdout     = "142857"
+        mi_payload.stdout     = "172627"  # 7200 s × 24000/1001
 
         mi_hdr = MagicMock()
         mi_hdr.returncode = 0
@@ -820,7 +820,38 @@ class TestInspect:
         assert isinstance(info, FileInfo)
         assert len(info.video_tracks) == 1
         assert len(info.audio_tracks) == 1
-        assert info.frame_count == 142857
+        assert info.frame_count == 172627
+
+    def _inspect_with_mediainfo_count(self, raw: dict, count: str) -> FileInfo:
+        """inspect() avec ffprobe ``raw`` et mediainfo ``%FrameCount%`` = ``count`` ; tout comptage complet échoue."""
+        ffprobe_result = MagicMock(returncode=0, stdout=json.dumps(raw), stderr="")
+
+        def fake_run(cmd, **kwargs):
+            if "-count_packets" in cmd:
+                raise AssertionError("lecture complète du fichier inattendue")
+            if "ffprobe" in cmd[0]:
+                return ffprobe_result
+            stdout = count if "%FrameCount%" in " ".join(cmd) else ""
+            return MagicMock(returncode=0, stdout=stdout, stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            return self.insp.inspect(self.path)
+
+    def test_inspect_uses_video_duration_when_audio_outlasts_video(self):
+        """Audio plus long que la vidéo : le compte mediainfo reste affiché, sans comptage complet."""
+        raw = _make_ffprobe_output(
+            video_streams=[_video_stream(tags={"DURATION": "02:00:00.000000000"})],
+            audio_streams=[_audio_stream()],
+            format_info={"format_name": "matroska,webm", "duration": "7215.0", "size": "1"},
+        )
+        info = self._inspect_with_mediainfo_count(raw, "172627")
+        assert info.frame_count == 172627
+        assert info.ffprobe_json == raw
+
+    def test_inspect_drops_implausible_frame_count_without_full_scan(self):
+        """Statistiques périmées : compte non affiché ; le workflow recomptera s'il en a besoin."""
+        raw = _make_ffprobe_output(video_streams=[_video_stream(tags={"DURATION": "00:00:10.010000000"})])
+        assert self._inspect_with_mediainfo_count(raw, "1000").frame_count is None
 
     def test_inspect_prefers_mediainfo_for_video_bitrate_and_subtitle_elements(self):
         info = FileInfo(

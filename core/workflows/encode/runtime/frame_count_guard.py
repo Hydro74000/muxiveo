@@ -54,7 +54,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Callable
 
-from core.frame_count import ffprobe_packet_count, frame_count_is_plausible, probe_duration_and_fps
+from core.frame_count import ffprobe_packet_count, frame_count_is_plausible, probe_video_timing
 from core.subprocess_utils import subprocess_text_kwargs
 
 
@@ -480,8 +480,11 @@ class FrameCountGuard:
             count = int(raw)
             # Tags de statistiques Matroska périmés (fichier coupé/remuxé) :
             # valeur écartée, la cascade passe au comptage ffprobe.
-            duration, fps = probe_duration_and_fps(self._ffprobe, path, run_command=self._run_command)
-            return count if frame_count_is_plausible(count, duration, fps) else None
+            timing = probe_video_timing(self._ffprobe, path, run_command=self._run_command)
+            plausible = frame_count_is_plausible(
+                count, timing.container_s, timing.fps, video_duration_s=timing.video_s,
+            )
+            return count if plausible else None
         return None
 
     def _ffprobe_nb_frames(self, path: Path) -> int | None:

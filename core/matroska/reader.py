@@ -242,6 +242,10 @@ class MatroskaReader:
     SIMPLE_TAG_ID = bytes.fromhex("67c8")
     TAG_NAME_ID = bytes.fromhex("45a3")
     TAG_STRING_ID = bytes.fromhex("4487")
+    SEEK_HEAD_ID = bytes.fromhex("114d9b74")
+    SEEK_ID = bytes.fromhex("4dbb")
+    SEEK_ID_FIELD_ID = bytes.fromhex("53ab")
+    SEEK_POSITION_ID = bytes.fromhex("53ac")
     LEVEL1_IDS = frozenset({
         bytes.fromhex(value) for value in (
             "114d9b74", "1549a966", "1654ae6b", "1f43b675",
@@ -258,6 +262,8 @@ class MatroskaReader:
         self._segment_cache: EbmlElement | None = None
         self._tracks_cache: tuple["MatroskaTrack", ...] | None = None
         self._clusters_cache: list[EbmlElement] | None = None
+        self._metadata_cache: tuple[EbmlElement, ...] | None = None
+        self._metadata_exhaustive = False
 
     def segment(self) -> EbmlElement:
         if self._segment_cache is not None:
@@ -315,6 +321,105 @@ class MatroskaReader:
                 )
                 fh.seek(boundary)
 
+    def _metadata_elements(self) -> tuple[EbmlElement, ...]:
+        """Éléments level-1 hors Clusters, sans parcourir les Clusters.
+
+        Ceux qui précèdent le premier Cluster sont lus directement ; ceux qui
+        le suivent (Cues, Tags, ou Tracks déplacé en fin de segment par un
+        éditeur) sont retrouvés par le SeekHead, comme le font les lecteurs
+        usuels. Sans SeekHead, ou si une entrée ne pointe pas sur l'élément
+        annoncé, repli sur le parcours linéaire complet.
+        """
+        if self._metadata_cache is not None:
+            return self._metadata_cache
+        size = self.path.stat().st_size
+        segment = self.segment()
+        segment_end = segment.end if segment.end is not None else size
+        found: dict[int, EbmlElement] = {}
+        reached_cluster = False
+        consistent = True
+        with self.path.open("rb") as fh:
+            fh.seek(segment.payload_offset)
+            while fh.tell() < segment_end:
+                item = read_element(fh, limit=segment_end)
+                if item is None:
+                    break
+                if item.element_id == self.CLUSTER_ID:
+                    reached_cluster = True
+                    break
+                found[item.offset] = item
+                if item.end is None:
+                    break
+                fh.seek(item.end)
+            pending = [item for item in found.values() if item.element_id == self.SEEK_HEAD_ID]
+            consistent = bool(pending) or not reached_cluster
+            visited: set[int] = set()
+            while reached_cluster and consistent and pending:
+                head = pending.pop()
+                if head.offset in visited:
+                    continue
+                visited.add(head.offset)
+                try:
+                    entries = self._seek_entries(head)
+                    for target_id, position in entries:
+                        offset = segment.payload_offset + position
+                        if target_id == self.CLUSTER_ID or offset in found:
+                            continue
+                        fh.seek(offset)
+                        item = read_element(fh, limit=segment_end) if offset < segment_end else None
+                        if item is None or item.element_id != target_id or item.size is None:
+                            consistent = False
+                            break
+                        found[offset] = item
+                        if item.element_id == self.SEEK_HEAD_ID:
+                            pending.append(item)
+                except ValueError:
+                    consistent = False
+        if not consistent:
+            return self._exhaustive_metadata_elements()
+        self._metadata_cache = tuple(sorted(found.values(), key=lambda item: item.offset))
+        self._metadata_exhaustive = not reached_cluster
+        return self._metadata_cache
+
+    def _exhaustive_metadata_elements(self) -> tuple[EbmlElement, ...]:
+        """Parcours linéaire complet (repli lent : chaque Cluster est visité)."""
+        if not self._metadata_exhaustive:
+            self._metadata_cache = tuple(
+                item for item in self.top_level() if item.element_id != self.CLUSTER_ID
+            )
+            self._metadata_exhaustive = True
+        return self._metadata_cache or ()
+
+    def _seek_entries(self, head: EbmlElement) -> list[tuple[bytes, int]]:
+        """Entrées ``(SeekID, SeekPosition)`` d'un SeekHead."""
+        entries: list[tuple[bytes, int]] = []
+        for seek_id, seek_payload in payload_children(self.payload(head)):
+            if seek_id != self.SEEK_ID:
+                continue
+            target_id = b""
+            position: int | None = None
+            for child_id, value in payload_children(seek_payload):
+                if child_id == self.SEEK_ID_FIELD_ID:
+                    target_id = value
+                elif child_id == self.SEEK_POSITION_ID:
+                    position = int.from_bytes(value, "big")
+            if target_id and position is not None:
+                entries.append((target_id, position))
+        return entries
+
+    def _level1(self, element_id: bytes) -> tuple[EbmlElement, ...]:
+        """Éléments level-1 d'un ID (ordre du fichier), Clusters exclus."""
+        if element_id == self.CLUSTER_ID:
+            return tuple(self.cluster_elements())
+        return tuple(item for item in self._metadata_elements() if item.element_id == element_id)
+
+    def _first_level1(self, element_id: bytes, *, required: bool = False) -> EbmlElement | None:
+        """Premier élément level-1 d'un ID ; ``required`` impose le parcours complet avant de conclure à son absence."""
+        items = self._level1(element_id)
+        if not items and required:
+            items = tuple(item for item in self._exhaustive_metadata_elements() if item.element_id == element_id)
+        return items[0] if items else None
+
     def payload(self, element: EbmlElement) -> bytes:
         if element.size is None:
             raise ValueError("Un élément de taille inconnue ne peut pas être lu brut")
@@ -330,11 +435,11 @@ class MatroskaReader:
             return _read_exact(fh, element.header_size + element.size)
 
     def raw_top_level(self, element_id: bytes) -> tuple[bytes, ...]:
-        return tuple(self.raw_element(item) for item in self.top_level() if item.element_id == element_id)
+        return tuple(self.raw_element(item) for item in self._level1(element_id))
 
     def attachment_headers(self) -> list["MatroskaAttachmentHeader"]:
         """Métadonnées d'attachments sans charger les contenus ``FileData``."""
-        root = next((item for item in self.top_level() if item.element_id == self.ATTACHMENTS_ID), None)
+        root = self._first_level1(self.ATTACHMENTS_ID)
         if root is None:
             return []
         result: list[MatroskaAttachmentHeader] = []
@@ -478,7 +583,7 @@ class MatroskaReader:
         """Return core TrackEntry metadata while retaining its raw EBML body."""
         if self._tracks_cache is not None:
             return list(self._tracks_cache)
-        tracks_element = next((item for item in self.top_level() if item.element_id == self.TRACKS_ID), None)
+        tracks_element = self._first_level1(self.TRACKS_ID, required=True)
         if tracks_element is None:
             self._tracks_cache = ()
             return []
@@ -666,7 +771,7 @@ class MatroskaReader:
 
     def segment_duration_ns(self) -> int | None:
         """Durée du segment en nanosecondes (Info.Duration × TimestampScale), ou None."""
-        info = next((item for item in self.top_level() if item.element_id == self.INFO_ID), None)
+        info = self._first_level1(self.INFO_ID, required=True)
         if info is None:
             return None
         size = self.path.stat().st_size
@@ -687,7 +792,7 @@ class MatroskaReader:
         return round(duration_ticks * self.timestamp_scale_ns())
 
     def segment_info_apps(self) -> tuple[str, str]:
-        info = next((item for item in self.top_level() if item.element_id == self.INFO_ID), None)
+        info = self._first_level1(self.INFO_ID, required=True)
         if info is None:
             return "", ""
         values: dict[bytes, str] = {}
@@ -700,7 +805,7 @@ class MatroskaReader:
         return values.get(self.MUXING_APP_ID, ""), values.get(self.WRITING_APP_ID, "")
 
     def segment_title(self) -> str:
-        info = next((item for item in self.top_level() if item.element_id == self.INFO_ID), None)
+        info = self._first_level1(self.INFO_ID, required=True)
         if info is None:
             return ""
         size = self.path.stat().st_size
@@ -712,7 +817,7 @@ class MatroskaReader:
         return ""
 
     def timestamp_scale_ns(self) -> int:
-        info = next((item for item in self.top_level() if item.element_id == self.INFO_ID), None)
+        info = self._first_level1(self.INFO_ID, required=True)
         if info is None:
             return 1_000_000
         size = self.path.stat().st_size

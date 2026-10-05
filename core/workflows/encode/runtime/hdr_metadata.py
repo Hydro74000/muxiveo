@@ -208,6 +208,14 @@ class HdrMetadataProbeService:
             self._ffprobe_payload_cache[cache_key] = payload
         return payload
 
+    def remember_ffprobe_payload(self, source: Path, payload: dict[str, object] | None) -> None:
+        """Mémorise un JSON ffprobe déjà obtenu (inspection) : pas de nouveau probe pour cette source."""
+        if not isinstance(payload, dict) or not isinstance(payload.get("streams"), list):
+            return
+        cache_key = self.source_cache_key(source)
+        if cache_key is not None:
+            self._ffprobe_payload_cache[cache_key] = payload
+
     @staticmethod
     def source_cache_key(source: Path) -> tuple[str, int, int] | None:
         try:

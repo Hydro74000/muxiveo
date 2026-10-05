@@ -718,6 +718,8 @@ class EncodePanel(QWidget):
 
     def set_video_tracks(self, tracks: list[tuple]) -> None:
         """Met à jour la liste des pistes vidéo depuis l'onglet Conteneur."""
+        for info, *_rest in tracks:
+            self._workflow.remember_ffprobe_payload(info.path, getattr(info, "ffprobe_json", None))
         self._save_current_video_state()
         selected_entry_id = self._current_video_entry_id
         self._video_tracks = tracks

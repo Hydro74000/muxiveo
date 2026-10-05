@@ -24,7 +24,6 @@ import json
 import re
 import shlex
 import subprocess
-from fractions import Fraction
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -37,8 +36,9 @@ from core.bluray import (
     is_bluray_playlist,
     title_for_playlist,
 )
-from core.frame_count import ffprobe_packet_count, frame_count_is_plausible
+from core.frame_count import frame_count_is_plausible, stream_duration_s, stream_fps
 from core.lang_tags import Rfc5646LanguageTags
+from core.matroska.reader import MatroskaReader
 from core.subprocess_utils import subprocess_text_kwargs
 
 
@@ -334,10 +334,16 @@ class FileInfo:
     bluray_playlist_id: int | None  = None
     bluray_segments: list[str]      = field(default_factory=list)
     mediainfo_json: dict[str, Any] | None = field(default=None, repr=False)
+    #: JSON ffprobe complet de l'inspection (-show_streams/-show_format/-show_chapters),
+    #: réutilisé par les workflows pour ne pas relancer ffprobe.
+    ffprobe_json: dict[str, Any] | None = field(default=None, repr=False)
     #: Balises MKV globales du conteneur (clés en MAJUSCULES, hors TITLE).
     #: Inclut les tags standard et propriétaires (ex. _PROGRAM_LABEL).
     #: Peuplé depuis ffprobe format.tags lors de l'inspection.
     global_tags:  dict[str, str]    = field(default_factory=dict)
+    #: FlagEnabled Matroska par index de piste, lu à l'inspection (ffprobe ne
+    #: l'expose pas). None = non lu : le consommateur relit le fichier.
+    track_enabled: dict[int, bool] | None = None
 
     @property
     def primary_video(self) -> VideoTrack | None:
@@ -460,6 +466,7 @@ class FileInspector:
         bluray_title = title_for_playlist(path) if is_bluray_playlist(path) else None
         raw = self._run_ffprobe(path)
         info = self._parse_ffprobe(path, raw)
+        info.ffprobe_json = raw
         mediainfo_path = path
         if bluray_title is not None:
             info.source_kind = "bluray"
@@ -496,15 +503,19 @@ class FileInspector:
             except Exception:
                 pass
         # Statistiques Matroska périmées (fichier coupé/remuxé en recopiant les
-        # tags) : compte incohérent avec durée × cadence → comptage réel ffprobe.
+        # tags) : compte incohérent avec durée vidéo × cadence → valeur écartée.
+        # Inspection = affichage : jamais de lecture complète du fichier ; les
+        # workflows qui exigent un compte exact le refont eux-mêmes.
         if bluray_title is None and info.frame_count is not None and info.primary_video is not None:
-            try:
-                fps = float(Fraction(str(info.primary_video.frame_rate or "0/0")))
-            except (ValueError, ZeroDivisionError):
-                fps = None
-            if not frame_count_is_plausible(info.frame_count, info.duration_s, fps):
-                self._emit_verbose(f"frame_count mediainfo implausible ({info.frame_count}) — comptage ffprobe.")
-                info.frame_count = ffprobe_packet_count(self._ffprobe, path) or info.frame_count
+            video_raw = info.primary_video.raw
+            if not frame_count_is_plausible(
+                info.frame_count,
+                info.duration_s,
+                stream_fps(video_raw),
+                video_duration_s=stream_duration_s(video_raw),
+            ):
+                self._emit_verbose(f"frame_count mediainfo implausible ({info.frame_count}) — non affiché.")
+                info.frame_count = None
 
         # Enrichit le profil DoVi depuis mediainfo si ffprobe ne l'a pas fourni
         # (certains builds ffprobe ne remontent pas DOVI configuration record).
@@ -530,6 +541,7 @@ class FileInspector:
                         track.language = lang if lang != "und" else None
             except Exception:
                 pass  # erreur non bloquante
+            info.track_enabled = self._read_track_enabled(path)
 
         # Passe de normalisation finale : homogénéise tous les tags langue en IETF
         # régional lorsque possible, pour les entrées ISO 639-2 (xxx) et RFC 5646
@@ -589,6 +601,15 @@ class FileInspector:
             apply_language(audio_track)
         for subtitle_track in info.subtitle_tracks:
             apply_language(subtitle_track)
+
+    def _read_track_enabled(self, path: Path) -> dict[int, bool] | None:
+        """FlagEnabled des TrackEntry (lecture native via SeekHead, quelques ms)."""
+        try:
+            tracks = MatroskaReader(path).tracks()
+        except (OSError, ValueError) as exc:
+            self._emit_verbose(f"Lecture native des pistes Matroska impossible : {exc}")
+            return None
+        return {index: track.flag_enabled for index, track in enumerate(tracks)}
 
     def get_frame_count(self, path: Path) -> int | None:
         """
