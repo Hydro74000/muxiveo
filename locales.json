@@ -1663,6 +1663,22 @@
     "fra": "Profil introuvable : {name}",
     "eng": "Profile not found: {name}"
   },
+  "Profil « {name} » non chargé : {reason}": {
+    "fra": "Profil « {name} » non chargé : {reason}",
+    "eng": "Profile \"{name}\" not loaded: {reason}"
+  },
+  "codec {codec} indisponible": {
+    "fra": "codec {codec} indisponible",
+    "eng": "codec {codec} unavailable"
+  },
+  "mode {mode} non supporté par {codec}": {
+    "fra": "mode {mode} non supporté par {codec}",
+    "eng": "mode {mode} not supported by {codec}"
+  },
+  "preset {preset} inconnu pour {codec}": {
+    "fra": "preset {preset} inconnu pour {codec}",
+    "eng": "preset {preset} unknown for {codec}"
+  },
   "Écraser le profil ?": {
     "fra": "Écraser le profil ?",
     "eng": "Overwrite profile?"
@@ -2779,9 +2795,13 @@
     "fra": "QP maximum sur les I-frames. Plafond bas de qualité.\nRéduire (~38-42) pour éviter une chute visible sur scènes complexes.",
     "eng": "Maximum QP on I-frames. Sets the lower quality bound.\nLower it (~38-42) to avoid visible quality drops on complex scenes."
   },
-  "Taille maximale d'une Access Unit (frame compressée) en bytes.\n0 = pas de limite. Utile pour streaming HLS/DASH avec limite par segment.": {
-    "fra": "Taille maximale d'une Access Unit (frame compressée) en bytes.\n0 = pas de limite. Utile pour streaming HLS/DASH avec limite par segment.",
-    "eng": "Size maximale d'a Access Unit (frame compressee) en bytes.\n0 = no limit. Useful for streaming HLS/DASH with limite by segment."
+  "Taille maximale d'une Access Unit (frame compressée) en bits.\n0 = pas de limite. Utile pour streaming HLS/DASH avec limite par segment.": {
+    "fra": "Taille maximale d'une Access Unit (frame compressée) en bits.\n0 = pas de limite. Utile pour streaming HLS/DASH avec limite par segment.",
+    "eng": "Maximum size of an Access Unit (compressed frame) in bits.\n0 = no limit. Useful for HLS/DASH streaming with a per-segment limit."
+  },
+  "Profondeur d'analyse en frames (0-100), active seulement avec Extended BRC.\n40 = bon défaut. Plus = qualité ↑, mémoire et latence ↑.": {
+    "fra": "Profondeur d'analyse en frames (0-100), active seulement avec Extended BRC.\n40 = bon défaut. Plus = qualité ↑, mémoire et latence ↑.",
+    "eng": "Look-ahead depth in frames (0-100), only active with Extended BRC.\n40 = good default. Higher = better quality, more memory and latency."
   },
   "Nombre de GOPs entre deux IDR (Instantaneous Decoder Refresh).\n1 = chaque keyframe est IDR (compatibilité maximale, recommandé).\nPlus grand = compression accrue mais seek dégradé.": {
     "fra": "Nombre de GOPs entre deux IDR (Instantaneous Decoder Refresh).\n1 = chaque keyframe est IDR (compatibilité maximale, recommandé).\nPlus grand = compression accrue mais seek dégradé.",

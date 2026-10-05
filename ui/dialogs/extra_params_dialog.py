@@ -64,6 +64,8 @@ class ParamSpec:
     bool_repr : pour kind="bool", paire (off_value, on_value) à émettre. Par
                 défaut ("0","1"). Mettre (None,"") pour les flags x265-params
                 booléens (la clé seule suffit).
+    unit_suffix : unité ffmpeg ajoutée à la valeur sérialisée (ex. "k" : le
+                  widget saisit des kbps, ffmpeg lit des bit/s sans suffixe).
     """
     key: str
     label: str
@@ -76,6 +78,7 @@ class ParamSpec:
     suffix: str = ""
     tooltip: str = ""
     bool_repr: tuple[str | None, str | None] = ("0", "1")
+    unit_suffix: str = ""
 
 
 @dataclass(frozen=True)
@@ -181,12 +184,12 @@ _NVENC_HEVC = CodecSchema(
                               "des B-frames et la décision de QP.\n"
                               "32 = bon compromis. 0 désactive (perte de qualité notable)."),
             ParamSpec("maxrate", "Max bitrate (kbps)", "int", default=80000, minimum=0, maximum=400000,
-                      suffix=" kbps",
+                      suffix=" kbps", unit_suffix="k",
                       tooltip="Plafond instantané du débit (mode VBR uniquement).\n"
                               "Doit être ≥ bitrate cible. Typiquement 1.5× à 2× le bitrate moyen "
                               "pour absorber les pics de complexité."),
             ParamSpec("bufsize", "Buffer size (kbps)", "int", default=160000, minimum=0, maximum=800000,
-                      suffix=" kbps",
+                      suffix=" kbps", unit_suffix="k",
                       tooltip="Taille du buffer VBV (Video Buffering Verifier).\n"
                               "Typiquement 2× le maxrate. Plus grand = plus de souplesse pour les pics, "
                               "mais latence de décodage accrue."),
@@ -293,11 +296,11 @@ _NVENC_H264 = CodecSchema(
                       tooltip="Frames analysées en avance pour optimiser B-frames et QP.\n"
                               "32 = bon compromis. 0 désactive (perte qualité notable)."),
             ParamSpec("maxrate", "Max bitrate (kbps)", "int", default=40000, minimum=0, maximum=200000,
-                      suffix=" kbps",
+                      suffix=" kbps", unit_suffix="k",
                       tooltip="Plafond instantané du débit (mode VBR).\n"
                               "Typique : 1.5-2× le bitrate cible. H.264 1080p HQ : ~40 Mbps suffit."),
             ParamSpec("bufsize", "Buffer size (kbps)", "int", default=80000, minimum=0, maximum=400000,
-                      suffix=" kbps",
+                      suffix=" kbps", unit_suffix="k",
                       tooltip="Taille du buffer VBV. Typiquement 2× maxrate.\n"
                               "Plus grand = plus de souplesse pour les pics."),
         )),
@@ -418,7 +421,7 @@ _AMF_HEVC = CodecSchema(
                       tooltip="QP maximum sur les I-frames. Plafond bas de qualité.\n"
                               "Réduire (~38-42) pour éviter une chute visible sur scènes complexes."),
             ParamSpec("max_au_size", "Max AU size", "int", default=0, minimum=0, maximum=100000000,
-                      tooltip="Taille maximale d'une Access Unit (frame compressée) en bytes.\n"
+                      tooltip="Taille maximale d'une Access Unit (frame compressée) en bits.\n"
                               "0 = pas de limite. Utile pour streaming HLS/DASH avec limite par segment."),
         )),
         ParamGroup("GOP / B-frames", (
@@ -443,7 +446,7 @@ _AMF_HEVC = CodecSchema(
                                     ("auto", "1", "2", "2.1", "3", "3.1", "4", "4.1", "5", "5.1", "5.2")),
                       tooltip="Level HEVC : limite résolution/framerate/bitrate.\n"
                               "auto recommandé. 5.1 = UHD 4K 60p (Blu-ray UHD)."),
-            ParamSpec("tier", "Tier", "enum", default="high",
+            ParamSpec("profile_tier", "Tier", "enum", default="high",
                       options=(("main", "main"), ("high", "high")),
                       tooltip="• main : bitrate consumer.\n"
                               "• high : bitrate étendu — requis pour UHD HDR haut débit."),
@@ -531,10 +534,9 @@ _QSV_HEVC = CodecSchema(
     style="ffmpeg_flags",
     groups=(
         ParamGroup("Rate control", (
-            ParamSpec("look_ahead", "Look-ahead", "bool", default="1",
-                      tooltip=_QSV_LOOKAHEAD_TIP),
             ParamSpec("look_ahead_depth", "Lookahead depth", "int", default=40, minimum=0, maximum=100,
-                      tooltip=_QSV_LOOKAHEAD_DEPTH_TIP),
+                      tooltip="Profondeur d'analyse en frames (0-100), active seulement avec Extended BRC.\n"
+                              "40 = bon défaut. Plus = qualité ↑, mémoire et latence ↑."),
             ParamSpec("async_depth", "Async depth", "int", default=4, minimum=1, maximum=8,
                       tooltip=_QSV_ASYNC_DEPTH_TIP),
             ParamSpec("extbrc", "Extended BRC", "bool",
@@ -1906,7 +1908,7 @@ def _serialize_value(spec: ParamSpec, raw: Any) -> str | None:
         off_v = spec.bool_repr[0]
         return on_v if raw else off_v
     if spec.kind in ("int", "float"):
-        return str(raw)
+        return f"{raw}{spec.unit_suffix}"
     if spec.kind == "enum":
         return str(raw)
     if spec.kind == "text":
@@ -1976,7 +1978,7 @@ def _serialize(schema: CodecSchema, values: dict[str, tuple[bool, Any]]) -> str:
                 if val is None:
                     continue
                 tokens_n.append(f"--{spec.key}")
-                tokens_n.append(val)
+                tokens_n.append(shlex.quote(val))
         out_n = " ".join(tokens_n)
         if free_n:
             out_n = (out_n + " " + " ".join(free_n)).strip()
@@ -2003,10 +2005,10 @@ def _serialize(schema: CodecSchema, values: dict[str, tuple[bool, Any]]) -> str:
             if val is None:
                 continue
             tokens.append(f"-{spec.key}")
-            tokens.append(val)
+            tokens.append(shlex.quote(val))
     out = " ".join(tokens)
     if x264_params_inline:
-        out = (out + f' -x264-params "{x264_params_inline}"').strip()
+        out = (out + f" -x264-params {shlex.quote(x264_params_inline)}").strip()
     if free_tokens:
         out = (out + " " + " ".join(free_tokens)).strip()
     return out
@@ -2022,6 +2024,39 @@ def _looks_like_number(token: str) -> bool:
     except (TypeError, ValueError):
         return False
     return True
+
+
+_BOOL_TRUE_TOKENS = frozenset({"1", "true", "on", "yes"})
+_BOOL_FALSE_TOKENS = frozenset({"0", "false", "off", "no"})
+_UNIT_MULTIPLIERS = {"": 0.001, "k": 1.0, "m": 1000.0, "g": 1_000_000.0}
+
+
+def _parse_bool_token(token: str | None) -> bool | None:
+    """Valeur booléenne ffmpeg explicite (0/1/true/false…), None sinon."""
+    text = str(token or "").strip().lower()
+    if text in _BOOL_TRUE_TOKENS:
+        return True
+    if text in _BOOL_FALSE_TOKENS:
+        return False
+    return None
+
+
+def _strip_unit_suffix(spec: ParamSpec | None, token: str) -> str:
+    """Ramène une valeur ffmpeg (bit/s, k, M…) dans l'unité du widget (kbps).
+
+    Un nombre nu est lu comme ffmpeg le lit : en bit/s.
+    """
+    if spec is None or spec.unit_suffix.lower() != "k":
+        return token
+    text = token.strip()
+    unit = text[-1:].lower() if text[-1:].isalpha() else ""
+    number = text[:-1] if unit else text
+    if unit not in _UNIT_MULTIPLIERS:
+        return token
+    try:
+        return str(round(float(number) * _UNIT_MULTIPLIERS[unit]))
+    except ValueError:
+        return token
 
 
 def _parse_existing(schema: CodecSchema, current: str) -> dict[str, tuple[bool, Any]]:
@@ -2128,7 +2163,7 @@ def _parse_existing(schema: CodecSchema, current: str) -> dict[str, tuple[bool, 
             leftovers.append(tok)
             i += 1
         if leftovers:
-            values["__free__"] = (True, " ".join(leftovers))
+            values["__free__"] = (True, shlex.join(leftovers))
         return values
 
     # ffmpeg_flags
@@ -2150,12 +2185,19 @@ def _parse_existing(schema: CodecSchema, current: str) -> dict[str, tuple[bool, 
                 spec_obj = spec_map.get(key)
                 next_tok = tokens[i + 1] if i + 1 < len(tokens) else None
                 if spec_obj is not None and spec_obj.kind == "bool":
-                    values[key] = (True, True)
-                    i += 1
+                    # "-spatial-aq 0" : la valeur suit le flag ; sans valeur
+                    # reconnue, le flag seul vaut activé.
+                    flag_value = _parse_bool_token(next_tok)
+                    if flag_value is None:
+                        values[key] = (True, True)
+                        i += 1
+                    else:
+                        values[key] = (True, flag_value)
+                        i += 2
                     continue
                 if next_tok is not None:
                     if not next_tok.startswith("-"):
-                        values[key] = (True, next_tok)
+                        values[key] = (True, _strip_unit_suffix(spec_obj, next_tok))
                         i += 2
                         continue
                     if spec_obj is not None and spec_obj.kind in ("int", "float") and _looks_like_number(next_tok):
@@ -2168,7 +2210,7 @@ def _parse_existing(schema: CodecSchema, current: str) -> dict[str, tuple[bool, 
         leftovers.append(tok)
         i += 1
     if leftovers:
-        values["__free__"] = (True, " ".join(leftovers))
+        values["__free__"] = (True, shlex.join(leftovers))
     return values
 
 

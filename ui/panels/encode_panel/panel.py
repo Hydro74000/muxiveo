@@ -942,6 +942,7 @@ class EncodePanel(QWidget):
         self._preset_combo = QComboBox()
         self._preset_combo.setStyleSheet(_combo_style())
         self._preset_combo.setMinimumWidth(120)
+        self._preset_combo.currentIndexChanged.connect(lambda _: self._rebuild_preview())
         rp.addWidget(self._preset_combo)
         rp.addStretch()
         enc_cl.addLayout(rp)
@@ -3395,6 +3396,15 @@ class EncodePanel(QWidget):
             return
         preset = presets[name]
         vs = preset.to_video_settings()
+        # Profil validé avant toute modification : un codec, mode ou preset
+        # indisponible ne doit pas appliquer le reste au codec courant.
+        problem = self._profile_incompatibility(vs)
+        if problem:
+            self.log_message.emit(
+                "WARN",
+                translate_text("Profil « {name} » non chargé : {reason}", name=name, reason=problem),
+            )
+            return
         # Codec — déclenche _on_codec_changed → reconstruit le mode_combo
         for i in range(self._codec_combo.count()):
             if self._codec_combo.itemData(i) == vs.codec:
@@ -3429,6 +3439,26 @@ class EncodePanel(QWidget):
         self._save_current_video_state()
         self._rebuild_preview()
         self.log_message.emit("OK", translate_text("Profil chargé : {name}", name=name))
+
+    def _profile_incompatibility(self, vs: VideoEncodeSettings) -> str:
+        """Raison pour laquelle un profil ne peut pas s'appliquer ("" si compatible)."""
+        available = {self._codec_combo.itemData(i) for i in range(self._codec_combo.count())}
+        if vs.codec not in available:
+            return translate_text("codec {codec} indisponible", codec=vs.codec)
+        if vs.quality_mode not in self._backend_capabilities(vs.codec).quality_modes:
+            return translate_text(
+                "mode {mode} non supporté par {codec}",
+                mode=vs.quality_mode.label(),
+                codec=vs.codec,
+            )
+        codec_presets = presets_for_codec(vs.codec)
+        if codec_presets and vs.preset not in codec_presets:
+            return translate_text(
+                "preset {preset} inconnu pour {codec}",
+                preset=vs.preset,
+                codec=vs.codec,
+            )
+        return ""
 
     def _save_profile(self) -> None:
         name = self._profile_name.text().strip()
@@ -3513,8 +3543,19 @@ class EncodePanel(QWidget):
         return self._current_config()
 
     def get_duration_s(self) -> "float | None":
-        """Durée de la source sélectionnée (pour le calcul de progression dans MainWindow)."""
-        return self._duration_s
+        """Durée du job (pour le calcul de progression dans MainWindow)."""
+        return self._job_duration_s()
+
+    def _job_duration_s(self) -> float | None:
+        """Durée de référence du job : piste vidéo principale, jamais la sélection affichée."""
+        if not self._video_tracks:
+            return self._duration_s
+        info, track, _color = self._video_tracks[0]
+        video = self._video_track_for_entry(info, track)
+        duration = getattr(video, "duration_s", None) if video is not None else None
+        if isinstance(duration, (int, float)) and duration > 0:
+            return float(duration)
+        return info.duration_s
 
     def get_total_frames(self) -> "int | None":
         """Nombre total de frames de la source (fallback progression quand out_time=N/A)."""
@@ -4949,7 +4990,7 @@ class EncodePanel(QWidget):
             video_tracks=video_tracks,
             audio_tracks=self._audio_table.current_audio_settings(),
             copy_subtitles=True,
-            duration_s=self._duration_s,
+            duration_s=self._job_duration_s(),
             copy_dv=video_tracks[0].copy_dv,
             copy_hdr10plus=video_tracks[0].copy_hdr10plus,
             dovi_profile=video_tracks[0].dovi_profile,

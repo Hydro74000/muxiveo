@@ -56,6 +56,7 @@ Exécution :
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Generator
 from pathlib import Path
 from types import SimpleNamespace
@@ -71,6 +72,7 @@ from PySide6.QtWidgets import (
 
 from core.config import AppConfig
 from core.inspector import AudioTrack, FileInfo, HDRType, VideoTrack
+from core.workflows.encode import EncodePreset, ProfileManager
 from core.workflows.remux_models import TrackEntry, clone_track_entry
 from ui.panels.encode_panel.panel import EncodePanel
 from ui.panels.encode_panel.widgets import _AudioTable
@@ -1931,4 +1933,54 @@ class TestEncodePanelInterpolationTta:
         # valeur hors liste (preset édité à la main) : retour à « Désactivé »
         panel._apply_interpolation_settings(FrameInterpolationSettings(enabled=True, tta=3))
         assert panel._current_interpolation_settings().tta == 1
+        panel.close()
+
+
+class TestEncodePanelAuditLot1:
+
+    def test_v28_preset_change_updates_track_state(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-preset"
+        panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0)]), entry, _COLOR)])
+        _select_codec(panel, "libx265")
+        panel._preset_combo.setCurrentIndex(panel._preset_combo.findData("veryfast"))
+        assert panel._video_settings_by_entry_id["video-preset"]["preset"] == "veryfast"
+        panel.close()
+
+    def test_v08_job_duration_follows_primary_track_not_selection(self, qt_app, tmp_path):
+        panel = EncodePanel(AppConfig())
+        panel.set_output_provider(lambda: tmp_path / "out.mkv")
+        first = _video_entry(0)
+        first.entry_id = "video-main"
+        second = _video_entry(0)
+        second.entry_id = "video-other"
+        short = dataclasses.replace(_file_info(_PATH_B, [_video_track(0)]), duration_s=3600.0)
+        panel.set_video_tracks([
+            (_file_info(_PATH_A, [_video_track(0)]), first, _COLOR),
+            (short, second, _COLOR),
+        ])
+        panel._video_list.setCurrentRow(1)
+        assert panel.get_duration_s() == 7200.0
+        config = panel.collect_config()
+        assert config is not None and config.duration_s == 7200.0
+        panel.close()
+
+    def test_v29b_incompatible_profile_is_not_applied(self, qt_app, tmp_path):
+        panel = EncodePanel(AppConfig())
+        panel._profiles = ProfileManager(tmp_path)
+        _select_codec(panel, "libx265")
+        panel._crf_spin.setValue(20)
+        warnings: list[str] = []
+        panel.log_message.connect(lambda level, msg: warnings.append(msg) if level == "WARN" else None)
+        for name, preset in (
+            ("absent", EncodePreset(name="absent", codec="libfoo", crf=30)),
+            ("mode", EncodePreset(name="mode", codec="libx265", quality_mode="cq", crf=30)),
+        ):
+            panel._profiles.save(preset)
+            panel._refresh_profiles(select=name)
+            panel._load_profile()
+            assert panel._codec_combo.currentData() == "libx265"
+            assert panel._crf_spin.value() == 20
+        assert len(warnings) == 2
         panel.close()

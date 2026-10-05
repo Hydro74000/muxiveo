@@ -169,3 +169,21 @@ def test_multi_video_assembly_materializes_calibrated_audio(qt_app, tmp_path, mo
     assert isinstance(cmd, list)
     assert calls["calibration"] == offset.calibration
     assert str(rewritten) in cmd and "-itsoffset" not in cmd
+
+
+def test_v01_libx264_extra_params_reach_command():
+    """Les paramètres avancés x264 (flags ffmpeg) sont transmis dans chaque mode."""
+    extra = '-tune film -x264-params "aq-mode=3"'
+    for mode in (QualityMode.CRF, QualityMode.CQ, QualityMode.BITRATE):
+        video = VideoEncodeSettings(codec="libx264", quality_mode=mode, preset="slow", extra_params=extra)
+        args = video_codec_args(video, 4000, callbacks=_CB)
+        assert args[-4:] == ["-tune", "film", "-x264-params", "aq-mode=3"], mode
+
+
+def test_v05_nvenc_crf_is_not_capped_by_default_bitrate():
+    """-cq sans -b:v 0 laisse nvenc viser son débit par défaut (2 Mb/s)."""
+    for codec in ("hevc_nvenc", "h264_nvenc", "av1_nvenc"):
+        video = VideoEncodeSettings(codec=codec, quality_mode=QualityMode.CRF, crf=20, preset="p5")
+        args = video_codec_args(video, 0, callbacks=_CB)
+        assert args[args.index("-b:v") + 1] == "0", codec
+        assert args[args.index("-cq:v") + 1] == "20", codec
