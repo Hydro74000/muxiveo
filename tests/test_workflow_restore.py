@@ -113,11 +113,15 @@ def test_restored_sources_keep_distinct_colors_order_and_tag_edits(qt_app, tmp_p
     assert len({source.id for source in panel._source_files}) == 2
     assert _pick_file_color(panel._color_index) not in {source.color for source in panel._source_files}
     assert [track.title for track in panel._track_table.current_tracks()] == ["Audio", "Other", "Video"]
-    assert [item[1] for item in panel.collect_config().track_order] == [1, 0, 0]
+    collected = panel.collect_config()
+    assert collected is not None
+    assert [item[1] for item in collected.track_order] == [1, 0, 0]
 
     tag_item = next(item for item in panel._attachment_panel._items if item.is_tag)
     tag_item._cb.setChecked(False)
-    assert panel.collect_config().tag_overrides == {"TITLE": "Custom"}
+    collected = panel.collect_config()
+    assert collected is not None
+    assert collected.tag_overrides == {"TITLE": "Custom"}
     panel.close()
 
 

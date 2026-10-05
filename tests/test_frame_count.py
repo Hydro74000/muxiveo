@@ -9,7 +9,12 @@ from unittest.mock import patch
 
 import pytest
 
-from core.frame_count import ffprobe_packet_count, frame_count_is_plausible, reliable_frame_count
+from core.frame_count import (
+    ffprobe_packet_count,
+    frame_count_is_plausible,
+    reliable_frame_count,
+    stream_duration_s,
+)
 
 
 def _completed(stdout: str) -> subprocess.CompletedProcess:
@@ -69,6 +74,41 @@ def test_display_mode_never_reads_whole_file():
 def test_small_cuts_do_not_reuse_stale_statistics(count, duration, fps, packets):
     with patch("core.frame_count.subprocess.run", side_effect=_fake_tools(count, duration, fps, packets)):
         assert reliable_frame_count(Path("cut.mkv"), mediainfo_bin="mi", ffprobe_bin="fp") == int(packets)
+
+
+def test_video_duration_is_the_reference_when_audio_outlasts_video():
+    """Piste audio plus longue que la vidéo : la durée conteneur ne borne que par le haut."""
+    # Cas réel : vidéo 11 840,703 s, conteneur 11 855,829 s (audio +15 s), 283 893 trames.
+    assert frame_count_is_plausible(283893, 11855.829, 24000 / 1001, video_duration_s=11840.703)
+    assert not frame_count_is_plausible(283893, 11855.829, 24000 / 1001)
+    # Coupe avec tags de piste recopiés tels quels : le compte dépasse le conteneur.
+    assert not frame_count_is_plausible(1000, 39.2, 25.0, video_duration_s=40.0)
+    # Tags NUMBER_OF_FRAMES périmés, DURATION réécrit par le muxer.
+    assert not frame_count_is_plausible(1000, 39.2, 25.0, video_duration_s=39.2)
+
+
+def test_stream_duration_reads_duration_field_then_matroska_tag():
+    assert stream_duration_s({"duration": "12.5"}) == 12.5
+    assert stream_duration_s({"tags": {"DURATION": "03:17:20.703000000"}}) == 11840.703
+    assert stream_duration_s({"tags": {"DURATION-eng": "00:00:01.500000000"}}) == 1.5
+    assert stream_duration_s({"duration": "N/A", "tags": {"DURATION": "bogus"}}) is None
+
+
+def test_reliable_frame_count_trusts_video_duration_tag_without_counting():
+    payload = json.dumps({
+        "streams": [{"avg_frame_rate": "24000/1001", "tags": {"DURATION": "03:17:20.703000000"}}],
+        "format": {"duration": "11855.829"},
+    })
+
+    def run(cmd, **_kwargs):
+        if "--Inform=Video;%FrameCount%" in cmd:
+            return _completed("283893")
+        if "-count_packets" in cmd:
+            raise AssertionError("comptage complet inattendu")
+        return _completed(payload)
+
+    with patch("core.frame_count.subprocess.run", side_effect=run):
+        assert reliable_frame_count(Path("a.mkv"), mediainfo_bin="mi", ffprobe_bin="fp") == 283893
 
 
 def test_packet_count_rejects_partial_stdout_when_ffprobe_fails():

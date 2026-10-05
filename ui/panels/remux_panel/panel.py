@@ -128,6 +128,9 @@ class _AudioSyncReferenceDialog(QDialog):
 class RemuxPanel(QWidget):
     _workflow_loaded = Signal(object, object, object)
     _workflow_load_error = Signal(str)
+    # Posés par functions/workflow.setup (chargement de session, autosave).
+    _workflow_loading: bool
+    _autosave_dirty: bool
     """
     Panneau de remuxage MKV/MP4 — support multi-sources.
 

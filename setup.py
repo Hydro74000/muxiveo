@@ -1935,19 +1935,19 @@ def _install_tool_bundle(
                 target.chmod(member.mode & 0o777)
     elif fmt == "zip":
         with zipfile.ZipFile(archive_path) as zf:
-            members = zf.infolist()
-            _ensure_safe_archive_names(m.filename for m in members)
-            for member in members:
-                kind = stat.S_IFMT(member.external_attr >> 16)
+            zip_members = zf.infolist()
+            _ensure_safe_archive_names(m.filename for m in zip_members)
+            for zip_member in zip_members:
+                kind = stat.S_IFMT(zip_member.external_attr >> 16)
                 if kind not in (0, stat.S_IFREG, stat.S_IFDIR):
-                    raise RuntimeError(f"Unsafe archive entry type: {member.filename}")
-            for member in members:
-                target = staging / member.filename.replace("\\", "/")
-                if member.is_dir():
+                    raise RuntimeError(f"Unsafe archive entry type: {zip_member.filename}")
+            for zip_member in zip_members:
+                target = staging / zip_member.filename.replace("\\", "/")
+                if zip_member.is_dir():
                     target.mkdir(parents=True, exist_ok=True)
                     continue
                 target.parent.mkdir(parents=True, exist_ok=True)
-                with zf.open(member) as source, target.open("wb") as output:
+                with zf.open(zip_member) as source, target.open("wb") as output:
                     shutil.copyfileobj(source, output)
     else:
         raise RuntimeError(f"Unknown bundle format: {fmt}")

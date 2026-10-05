@@ -304,3 +304,24 @@ def test_disabled_flag_reaches_the_ffmpeg_transaction_contract(tmp_path: Path) -
     MatroskaTrackEnabledPostAction(editor=cast(Any, _Editor())).apply_for_contract(output, contract)
 
     assert applied == [(output, {0: True, 1: False})]
+
+
+def test_each_source_is_read_once_per_resolution(tmp_path: Path, monkeypatch) -> None:
+    from core.matroska.reader import MatroskaReader
+
+    source = _mkv(tmp_path / "source.mkv", [
+        _entry(1, 1, "V_MPEG4/ISO/AVC"), _entry(2, 2, "A_AAC"), _entry(3, 17, "S_TEXT/UTF8"),
+    ], _cluster(1))
+    reads: list[Path] = []
+    original = MatroskaReader.tracks
+
+    def counted(self):
+        reads.append(self.path)
+        return original(self)
+
+    monkeypatch.setattr(MatroskaReader, "tracks", counted)
+    resolved = resolve_track_metadata(
+        _config(source, tmp_path / "out.mkv"), video_refs=[(source, 0)], subtitle_refs=[(source, 2)],
+    )
+    assert [item.track_type for item in resolved] == ["video", "audio", "subtitle"]
+    assert reads == [source]

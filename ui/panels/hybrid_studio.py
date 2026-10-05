@@ -1118,7 +1118,8 @@ class HybridStudio(QWidget):
 
     def _settings_signature(self):
         control_values = tuple((key, control.isChecked() if isinstance(control, QCheckBox)
-                                else control.value() if isinstance(control, QSpinBox) else control.text())
+                                else control.value() if isinstance(control, QSpinBox)
+                                else control.text() if isinstance(control, QLineEdit) else None)
                                for key, control in self.controls.items())
         return (
             self._source_signature(), self.output.text(), self.profile.text(), control_values,
@@ -1367,6 +1368,7 @@ class HybridStudio(QWidget):
         # Widgets lus dans le thread GUI : le worker ne doit pas y toucher.
         output_dir = self.output.text().strip() or tempfile.gettempdir()
         detect_cuts = self.detect_cuts.isChecked()
+        args: Any
         if hasattr(self, "args"):
             args = self.args
         else:

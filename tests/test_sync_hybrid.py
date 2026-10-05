@@ -255,7 +255,9 @@ def test_studio_manual_offset_can_be_changed_per_episode(qt_app, tmp_path, monke
     assert all(track.time_shift_ms == 325 for source in second.sources[1:] for track in source.tracks)
     assert second.sync_calibrations == {}
     assert dialog.jobs[1][1].segments[0].shift_ms == 325
-    assert "+325.0 ms" in dialog.table.item(1, 3).text()
+    shift_item = dialog.table.item(1, 3)
+    assert shift_item is not None
+    assert "+325.0 ms" in shift_item.text()
 
     launched = []
     monkeypatch.setattr(dialog, "run_next", lambda: launched.extend(dialog.jobs[row][0] for row in dialog.execution_rows))

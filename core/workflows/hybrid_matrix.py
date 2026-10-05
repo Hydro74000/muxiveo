@@ -632,7 +632,7 @@ def prepare_matrix_episode(
         "_allow_missing_output_dir": True,
     }
 
-    build_options = options
+    build_options: Any = options
     if recipe.sync_strategy != "auto":
         # Le fichier de calibration et l'auto-sync de la CLI ne doivent pas
         # réintroduire une analyse dans les deux modes sans analyse.
@@ -734,7 +734,7 @@ def prepare_matrix_episode(
             for track in donor_source.tracks:
                 track.time_shift_ms = 0
                 track.sync_calibration = None
-        elif sync_audio and ref_audio:
+        elif sync_audio and ref_audio and audio_scanner is not None:
             logger.emit(
                 "info",
                 f"[{episode.display_name}] Synchronisation audio donneur #{donor_idx} : "
@@ -750,7 +750,7 @@ def prepare_matrix_episode(
                 cadence_audio_method=cadence_audio_method,
                 log=lambda msg: logger.emit("info", f"[{episode.display_name}] {msg}"),
             )
-        elif target_sub:
+        elif target_sub and sub_scanner is not None:
             logger.emit("info", f"[{episode.display_name}] Synchronisation sous-titre donneur #{donor_idx}…")
             if ref_sub:
                 donor_calib = sub_scanner.scan(
