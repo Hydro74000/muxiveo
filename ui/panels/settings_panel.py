@@ -75,6 +75,13 @@ def _snap_slider_value(value: int, minimum: int, maximum: int, step: int) -> int
     return max(minimum, min(maximum, snapped))
 
 
+# Case à cocher maîtresse → champ activé seulement quand elle est cochée.
+_DEPENDENT_FIELDS: dict[tuple[str, str], tuple[str, str]] = {
+    ("ui", "enable_file_logging"): ("ui", "file_logging_level"),
+    ("paths", "release_group_tag_enabled"): ("paths", "release_group_tag"),
+}
+
+
 class SettingsPanel(QWidget):
     settings_saved = Signal()
 
@@ -86,7 +93,7 @@ class SettingsPanel(QWidget):
         self._status_label: QLabel | None = None
         self._build_ui()
         self._load_from_config()
-        self._sync_file_logging_level_state()
+        self._sync_dependent_field_states()
         apply_translations(self)
 
     def widget_for(self, section: str, key: str) -> QWidget:
@@ -202,8 +209,8 @@ class SettingsPanel(QWidget):
             checkbox.setStyleSheet(_checkbox_style())
             if tooltip:
                 checkbox.setToolTip(tooltip)
-            if section == "ui" and field["key"] == "enable_file_logging":
-                checkbox.toggled.connect(self._sync_file_logging_level_state)
+            if (section, field["key"]) in _DEPENDENT_FIELDS:
+                checkbox.toggled.connect(self._sync_dependent_field_states)
             layout.addWidget(checkbox)
             self._field_widgets[(section, field["key"])] = checkbox
         else:
@@ -382,12 +389,13 @@ class SettingsPanel(QWidget):
             return str(data if data is not None else widget.currentText())
         raise TypeError(f"Unsupported widget type: {type(widget)!r}")
 
-    def _sync_file_logging_level_state(self) -> None:
-        checkbox = self._field_widgets.get(("ui", "enable_file_logging"))
-        combo = self._field_widgets.get(("ui", "file_logging_level"))
-        if not isinstance(checkbox, QCheckBox) or not isinstance(combo, QComboBox):
-            return
-        combo.setEnabled(checkbox.isChecked())
+    def _sync_dependent_field_states(self) -> None:
+        """Active chaque champ dépendant selon l'état de sa case à cocher maîtresse."""
+        for master_key, dependent_key in _DEPENDENT_FIELDS.items():
+            checkbox = self._field_widgets.get(master_key)
+            dependent = self._field_widgets.get(dependent_key)
+            if isinstance(checkbox, QCheckBox) and dependent is not None:
+                dependent.setEnabled(checkbox.isChecked())
 
     def _load_from_config(self) -> None:
         for group in INI_FIELD_GROUPS:
@@ -423,7 +431,7 @@ class SettingsPanel(QWidget):
                     if index >= 0:
                         widget.setCurrentIndex(index)
 
-        self._sync_file_logging_level_state()
+        self._sync_dependent_field_states()
         if self._status_label is not None:
             self._status_label.clear()
 

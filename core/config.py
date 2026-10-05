@@ -864,6 +864,20 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
                 "label": "Dossier de sortie",
                 "description": "Répertoire par défaut des fichiers produits.",
             },
+            {
+                "key": "release_group_tag_enabled",
+                "attr": "release_group_tag_enabled",
+                "kind": "bool",
+                "label": "Ajouter automatiquement un tag de Release Group aux noms de fichier",
+                "description": "Ajoute « -<tag> » au nom de fichier de sortie proposé (ex. « ReleaseGROUP » → « Film-ReleaseGROUP.mkv »).",
+            },
+            {
+                "key": "release_group_tag",
+                "attr": "release_group_tag",
+                "kind": "text",
+                "label": "Tag de Release Group",
+                "description": "Texte ajouté après un tiret à la fin du nom de fichier proposé. Vide = « NoGroup ».",
+            },
         ),
     },
     {
@@ -1005,6 +1019,16 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         ),
     },
 )
+
+
+DEFAULT_RELEASE_GROUP_TAG = "NoGroup"
+_RELEASE_GROUP_FORBIDDEN_CHARS = frozenset('/\\:*?"<>|')
+
+
+def _normalize_release_group_tag(value: object) -> str:
+    """Nettoie le tag de Release Group : espaces et tirets de tête retirés, caractères interdits supprimés."""
+    raw = "".join(ch for ch in str(value or "") if ch not in _RELEASE_GROUP_FORBIDDEN_CHARS and ch.isprintable())
+    return raw.strip().lstrip("-").strip()
 
 
 def iter_ini_fields() -> list[dict[str, Any]]:
@@ -1189,6 +1213,12 @@ class AppConfig:
             # config.ini est respecté.
             self.work_dir = _default_work_dir()
         self.output_dir = self._resolve_path("paths", "output_dir", "paths/output_dir", _default_output_dir())
+        self.release_group_tag_enabled = self._resolve_bool(
+            "paths", "release_group_tag_enabled", "paths/release_group_tag_enabled", False
+        )
+        self.release_group_tag = _normalize_release_group_tag(
+            self._resolve_text("paths", "release_group_tag", "paths/release_group_tag", "")
+        )
         self.config_dir = _INI_PATH.parent
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.profiles_dir = self.config_dir / "profiles"
@@ -1391,6 +1421,8 @@ class AppConfig:
 
         s.setValue("paths/work_dir", str(self.work_dir))
         s.setValue("paths/output_dir", str(self.output_dir))
+        s.setValue("paths/release_group_tag_enabled", "true" if self.release_group_tag_enabled else "false")
+        s.setValue("paths/release_group_tag", self.release_group_tag)
 
         s.setValue("tools/ffmpeg", self.tool_ffmpeg)
         s.setValue("tools/ffprobe", self.tool_ffprobe)
@@ -1565,6 +1597,20 @@ class AppConfig:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         return self.output_dir
 
+    def release_group_suffix(self) -> str:
+        """Suffixe « -<tag> » à ajouter aux noms de fichier proposés, vide si désactivé (tag vide → NoGroup)."""
+        if not self.release_group_tag_enabled:
+            return ""
+        return f"-{_normalize_release_group_tag(self.release_group_tag) or DEFAULT_RELEASE_GROUP_TAG}"
+
+    def default_output_path(self, source: Path) -> Path:
+        """Chemin de sortie proposé pour ``source`` : dossier de sortie + stem + tag de Release Group."""
+        stem = Path(source).stem
+        suffix = self.release_group_suffix()
+        if suffix and stem.lower().endswith(suffix.lower()):
+            suffix = ""
+        return self.output_dir / f"{stem}{suffix}.mkv"
+
     def to_ini_sections(self) -> dict[str, dict[str, str]]:
         section_values: dict[str, dict[str, str]] = {}
         for group in INI_FIELD_GROUPS:
@@ -1586,6 +1632,8 @@ class AppConfig:
             "paths": {
                 "work_dir": str(self.work_dir),
                 "output_dir": str(self.output_dir),
+                "release_group_tag_enabled": self.release_group_tag_enabled,
+                "release_group_tag": self.release_group_tag,
                 "config_dir": str(self.config_dir),
                 "profiles_dir": str(self.profiles_dir),
                 "app_data": str(self.app_data_dir),

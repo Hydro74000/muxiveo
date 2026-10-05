@@ -5114,5 +5114,21 @@
   "Standard (CPU)": {
     "fra": "Standard (CPU)",
     "eng": "Standard (CPU)"
+  },
+  "Ajouter automatiquement un tag de Release Group aux noms de fichier": {
+    "fra": "Ajouter automatiquement un tag de Release Group aux noms de fichier",
+    "eng": "Automatically add a Release Group tag to file names"
+  },
+  "Ajoute « -<tag> » au nom de fichier de sortie proposé (ex. « ReleaseGROUP » → « Film-ReleaseGROUP.mkv »).": {
+    "fra": "Ajoute « -<tag> » au nom de fichier de sortie proposé (ex. « ReleaseGROUP » → « Film-ReleaseGROUP.mkv »).",
+    "eng": "Appends “-<tag>” to the suggested output file name (e.g. “ReleaseGROUP” → “Movie-ReleaseGROUP.mkv”)."
+  },
+  "Tag de Release Group": {
+    "fra": "Tag de Release Group",
+    "eng": "Release Group tag"
+  },
+  "Texte ajouté après un tiret à la fin du nom de fichier proposé. Vide = « NoGroup ».": {
+    "fra": "Texte ajouté après un tiret à la fin du nom de fichier proposé. Vide = « NoGroup ».",
+    "eng": "Text appended after a hyphen at the end of the suggested file name. Empty = “NoGroup”."
   }
 }
