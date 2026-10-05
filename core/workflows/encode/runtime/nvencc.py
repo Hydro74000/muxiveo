@@ -32,7 +32,6 @@ from core.bluray import append_ffmpeg_input_args
 from core.workflows.encode.catalog import hdr_capabilities
 from core.subprocess_utils import subprocess_text_kwargs
 from core.workflows.encode.models import (
-    QualityMode,
     VideoCropSettings,
     VideoEncodeSettings,
     VideoFilterSettings,
@@ -44,6 +43,7 @@ from core.workflows.encode.domain.codecs import (
     classify_user_args,
     option_values,
     output_hdr_transfer,
+    rate_control_values,
     resolve_resize_dimensions,
 )
 
@@ -330,23 +330,25 @@ def nvencc_pipe_encode_video(video: VideoEncodeSettings) -> VideoEncodeSettings:
 
 
 def _rate_control_args(video: VideoEncodeSettings) -> list[str]:
-    """Mode RC NVEncC dérivé de ``QualityMode``.
+    """Mode de débit NVEncC (catalog.VIDEO_RATE_CONTROLS).
 
-    - ``CRF``     → ``--cqp <crf>:<crf+2>:<crf+4>`` (qualité constante I/P/B)
-    - ``CQ``      → ``--qvbr <cq>`` (mode qualité-VBR, défaut NVEncC)
-    - ``BITRATE`` → ``--vbr <kbps>`` (bitrate moyen)
-    - ``SIZE``    → traité par le caller (conversion size→bitrate amont)
+    Taille cible : ``bitrate_kbps`` calculé en amont, VBR plafonné.
     """
-    mode = video.quality_mode
-    if mode == QualityMode.CRF:
-        crf = max(0, int(video.crf))
-        return ["--cqp", f"{crf}:{min(51, crf + 2)}:{min(51, crf + 4)}"]
-    if mode == QualityMode.CQ:
-        return ["--qvbr", str(int(video.cq))]
-    if mode == QualityMode.BITRATE:
-        return ["--vbr", str(int(video.bitrate_kbps))]
-    # SIZE : on suppose que bitrate_kbps a été calculé en amont.
-    return ["--vbr", str(int(video.bitrate_kbps))]
+    spec, quality = rate_control_values(video)
+    rc_id = spec.rc_id if spec is not None else "qvbr"
+    bitrate = int(video.bitrate_kbps)
+    if rc_id == "cqp":
+        high = spec.quality_range[1] if spec is not None else 51
+        return ["--cqp", f"{quality}:{min(high, quality + 2)}:{min(high, quality + 4)}"]
+    if rc_id == "qvbr":
+        return ["--qvbr", str(quality)]
+    if rc_id == "vbr_quality":
+        return ["--vbr", str(bitrate), "--vbr-quality", str(quality)]
+    if rc_id == "cbr":
+        return ["--cbr", str(bitrate)]
+    if rc_id == "size":
+        return ["--vbr", str(bitrate), "--max-bitrate", str(int(bitrate * 1.5))]
+    return ["--vbr", str(bitrate)]
 
 
 def _output_depth_args(video: VideoEncodeSettings) -> list[str]:

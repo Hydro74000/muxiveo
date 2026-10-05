@@ -67,8 +67,12 @@ def test_options_set_by_video_tab_stay_editable_and_prefilled(qt_app):
     dialog = ExtraParamsDialog("hevc_vaapi", "", workflow_values={"qp": "24", "rc_mode": "CQP"})
     row = dialog._rows["qp"]
     checkbox = row.findChild(QCheckBox)
-    assert checkbox is not None and checkbox.isEnabled() and not checkbox.isChecked()
+    # Lot 4 : le mode de débit VAAPI est choisi dans la liste Mode → ligne grisée.
+    assert checkbox is not None and not checkbox.isEnabled() and not checkbox.isChecked()
     assert isinstance(row._value_widget, QSpinBox) and row._value_widget.value() == 24
     assert "24" in checkbox.toolTip()
+    row = dialog._rows["compression_level"]
+    checkbox = row.findChild(QCheckBox)
+    assert checkbox is not None and checkbox.isEnabled() and not checkbox.isChecked()
     assert dialog.result_text == ""
     dialog.close()

@@ -13,7 +13,7 @@ from core.workflows.encode.backends.models import (
 )
 from core.workflows.encode.backends.progress import parse_ffmpeg_progress
 from core.workflows.encode.catalog import (
-    CQ_CAPABLE_VIDEO_CODECS,
+    rate_controls_for_codec,
     supports_dovi,
     supports_dynamic_hdr,
     supports_hdr10plus,
@@ -38,13 +38,12 @@ class FfmpegEncodeBackend(EncodeBackend):
         config_ctx: BackendContext | None = None,
     ) -> BackendCapabilities:
         _ = config_ctx
-        modes: list[QualityMode] = [QualityMode.CRF]
-        if codec in CQ_CAPABLE_VIDEO_CODECS:
-            modes.append(QualityMode.CQ)
-        modes.extend([QualityMode.BITRATE, QualityMode.SIZE])
+        controls = rate_controls_for_codec(codec)
+        modes = tuple(dict.fromkeys(QualityMode(spec.family) for spec in controls)) or (QualityMode.CRF,)
         return BackendCapabilities(
             backend_id=self.backend_id,
-            quality_modes=tuple(modes),
+            quality_modes=modes,
+            rate_controls=controls,
             supports_dynamic_hdr=supports_dynamic_hdr(codec),
             supports_dovi=supports_dovi(codec),
             supports_hdr10plus=supports_hdr10plus(codec),

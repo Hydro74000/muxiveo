@@ -53,12 +53,17 @@ from core.workflows.encode.interpolation import (
 from core.workflows.encode.catalog import (
     VIDEO_ENCODER_BADGES,
     VIDEO_HDR_BADGE_ORDER,
+    RateControlSpec,
+    default_preset_for_codec,
     encoder_badge,
     is_h264_video_codec,
+    rate_control_spec,
+    rate_controls_for_codec,
+    resolve_rate_control,
     supports_10bit,
     supports_hdr_output,
 )
-from core.workflows.encode.domain.codecs import transfer_kind
+from core.workflows.encode.domain.codecs import rate_control_values, transfer_kind
 from core.workflows.encode.hdr_policy import default_static_hdr_checked
 from core.workflows.encode.backends import (
     backend_capabilities_for_codec,
@@ -106,7 +111,8 @@ class EncodePanel(QWidget):
     audio_track_add_requested = Signal(object, str, str, int)  # (template TrackEntry, entry_id, codec, bitrate_kbps)
     audio_track_remove_requested = Signal(object)  # (entry_id)
     video_tracks_encoding_changed = Signal(object)
-    _hw_detected             = Signal(object, object, object)   # (hw: set[str], sw: set[str], hw_ffmpeg: str)
+    # (hw: set[str], sw: set[str], hw_ffmpeg: str, rate_controls: dict[str, frozenset[str]])
+    _hw_detected             = Signal(object, object, object, object)
     _hdr_meta_frame_probe_ready = Signal(int, str, str)
     _track_hdr_ready = Signal(str, object, object, str, str)
     _command_preview_ready = Signal(int, str)
@@ -167,6 +173,10 @@ class EncodePanel(QWidget):
         self._syncing_video_selectors = False
         self._video_selector_combos: list[QComboBox] = []
         self._video_apply_all = False
+        # Mode de débit affiché ; modes acceptés par le pilote, par codec sondé.
+        self._current_rc_spec: RateControlSpec | None = None
+        self._quality_scale_by_family: dict[str, tuple[tuple[int, int], str]] = {}
+        self._hw_rate_controls: dict[str, frozenset[str]] = {}
         # Paramètres avancés mémorisés par codec : une syntaxe propre à un
         # encodeur (x265-params, flags NVEncC…) ne suit pas un changement de codec.
         self._extra_params_by_codec: dict[str, str] = {}
@@ -969,14 +979,18 @@ class EncodePanel(QWidget):
         mode_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
         self._mode_combo = QComboBox()
         self._mode_combo.setStyleSheet(_combo_style())
-        # Peuplé dynamiquement par _refresh_mode_combo() — le mode CQ
-        # n'apparaît que pour les encodeurs HW.
+        # Modes de débit du codec (catalog.VIDEO_RATE_CONTROLS), peuplé par
+        # _refresh_mode_combo() ; les modes refusés par le pilote sont écartés.
         self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         r2.addWidget(mode_lbl)
         r2.addWidget(self._mode_combo)
         r2.addSpacing(16)
+        self._quality_value_label = QLabel("CRF")
+        self._quality_value_label.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        r2.addWidget(self._quality_value_label)
 
-        # Valeur qualité (stack : CRF slider+spin / bitrate edit / size edit)
+        # Valeur de qualité (pile : CRF logiciel / qualité matérielle / aucune),
+        # débit et taille cible affichés à côté selon le mode.
         self._quality_stack = QStackedWidget()
 
         # Page 0 : CRF
@@ -1029,7 +1043,12 @@ class EncodePanel(QWidget):
         cq_l.addWidget(self._cq_spin)
         self._quality_stack.addWidget(cq_w)
 
-        # Page 2 : Bitrate
+        # Page 2 : aucune valeur de qualité (modes à débit)
+        empty_w = QWidget()
+        empty_w.setStyleSheet("background:transparent;")
+        self._quality_stack.addWidget(empty_w)
+
+        # Débit (kbps)
         br_w = QWidget()
         br_w.setStyleSheet("background:transparent;")
         br_l = QHBoxLayout(br_w)
@@ -1044,9 +1063,9 @@ class EncodePanel(QWidget):
         br_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
         br_l.addWidget(self._bitrate_edit)
         br_l.addWidget(br_lbl)
-        self._quality_stack.addWidget(br_w)
+        self._bitrate_widget = br_w
 
-        # Page 3 : Taille cible
+        # Taille cible (Mo)
         sz_w = QWidget()
         sz_w.setStyleSheet("background:transparent;")
         sz_l = QHBoxLayout(sz_w)
@@ -1056,14 +1075,21 @@ class EncodePanel(QWidget):
         self._size_edit.setValidator(QIntValidator(1, _INT_INPUT_MAX, self._size_edit))
         self._size_edit.setStyleSheet(_input_style())
         self._size_edit.setFixedWidth(100)
+        self._size_edit.setToolTip(translate_text(
+            "Taille du fichier complet : audio, sous-titres, pièces jointes et vidéo copiée "
+            "sont déduits, le reste est réparti entre les pistes vidéo encodées.\n"
+            "Logiciel : 2 passes. Matériel : 1 passe VBR plafonnée (taille approchée)."
+        ))
         self._size_edit.textChanged.connect(lambda _: self._rebuild_preview())
         sz_lbl = QLabel("Mo")
         sz_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
         sz_l.addWidget(self._size_edit)
         sz_l.addWidget(sz_lbl)
-        self._quality_stack.addWidget(sz_w)
+        self._size_widget = sz_w
 
         r2.addWidget(self._quality_stack)
+        r2.addWidget(br_w)
+        r2.addWidget(sz_w)
         r2.addStretch()
         enc_cl.addLayout(r2)
 
@@ -2275,10 +2301,18 @@ class EncodePanel(QWidget):
         sw = detector.detect_software(ffmpeg)
         # hw_ffmpeg peut être le ffmpeg système si le ffmpeg embarqué manque de HW codecs.
         # On l'envoie avec le signal pour que le workflow l'utilise lors de l'encodage HW.
-        self._hw_detected.emit(hw, sw, hw_ffmpeg)
+        # Modes de débit acceptés par le pilote (VAAPI) : la liste Mode s'y limite.
+        self._hw_detected.emit(hw, sw, hw_ffmpeg, dict(detector.rate_controls))
 
-    def _on_hw_detected(self, hw: set[str], sw: set[str], hw_ffmpeg: str) -> None:
+    def _on_hw_detected(
+        self,
+        hw: set[str],
+        sw: set[str],
+        hw_ffmpeg: str,
+        rate_controls: dict[str, frozenset[str]] | None = None,
+    ) -> None:
         self._hw_encoders = hw
+        self._hw_rate_controls = dict(rate_controls or {})
         # Ne met à jour les codecs SW que si la détection a retourné au moins un résultat.
         # Un set vide signifie une erreur de détection (ffmpeg absent), pas "aucun codec".
         if sw:
@@ -2289,11 +2323,19 @@ class EncodePanel(QWidget):
             self._workflow.set_ffmpeg(hw_ffmpeg)
         current = self._codec_combo.currentData()
         self._populate_codec_combo()
-        # Restaure la sélection précédente si toujours disponible
-        for i in range(self._codec_combo.count()):
-            if self._codec_combo.itemData(i) == current:
-                self._codec_combo.setCurrentIndex(i)
-                break
+        # Restaure la sélection précédente si toujours disponible, sans relancer
+        # _on_codec_changed (qui remettrait preset et extras par défaut).
+        restored = next(
+            (i for i in range(self._codec_combo.count()) if self._codec_combo.itemData(i) == current),
+            None,
+        )
+        if restored is not None:
+            self._codec_combo.blockSignals(True)
+            self._codec_combo.setCurrentIndex(restored)
+            self._codec_combo.blockSignals(False)
+            self._refresh_mode_combo(str(current or "libx265"))
+        else:
+            self._on_codec_changed()
         all_detected = hw | sw
         if all_detected:
             self.log_message.emit(
@@ -2349,8 +2391,8 @@ class EncodePanel(QWidget):
         self._preset_combo.clear()
         for p in presets:
             self._preset_combo.addItem(p if p else translate_text("Aucun (défaut pilote)"), p)
-        # Sélectionne "slow" par défaut pour x265/x264, "6" pour SVT-AV1
-        default = "slow" if codec not in ("libsvtav1",) else "6"
+        # Preset par défaut du codec (catalogue : slow x264/x265, 6 SVT-AV1, p5 NVENC…)
+        default = default_preset_for_codec(codec)
         idx = next((i for i in range(self._preset_combo.count())
                     if self._preset_combo.itemData(i) == default), 0)
         self._preset_combo.setCurrentIndex(idx)
@@ -2500,26 +2542,46 @@ class EncodePanel(QWidget):
             return self._video_force_8bit_for_codec(file_info, track, codec)
         return False
 
-    def _refresh_mode_combo(self, codec: str) -> None:
-        """Reconstruit la liste des modes de qualité selon le codec sélectionné.
+    def _available_rate_controls(self, codec: str) -> tuple[RateControlSpec, ...]:
+        """Modes de débit du codec, sans ceux que le pilote a refusés à la détection."""
+        controls = rate_controls_for_codec(codec)
+        supported = self._hw_rate_controls.get(codec)
+        if supported is None:
+            return controls
+        return tuple(spec for spec in controls if spec.rc_id in supported) or controls
 
-        Le mode CQ n'est exposé que pour les encodeurs matériels (NVENC/AMF/QSV/VAAPI)
-        où il a un équivalent natif (-cq:v / cqp / global_quality).
+    def _refresh_mode_combo(self, codec: str) -> None:
+        """Reconstruit la liste Mode avec les modes de débit du codec.
+
+        Le mode courant est conservé s'il existe pour le nouveau codec, sinon le
+        mode de même famille (qualité constante, débit, taille cible).
         """
-        previous = self._mode_combo.currentData() if self._mode_combo.count() else QualityMode.CRF
-        caps = self._backend_capabilities(codec)
-        modes = list(caps.quality_modes)
+        previous = self._current_rc_spec
+        controls = self._available_rate_controls(codec)
+        ids = [spec.rc_id for spec in controls]
+        target = None
+        if previous is not None:
+            if previous.rc_id in ids:
+                target = previous.rc_id
+            else:
+                legacy = resolve_rate_control(codec, "", previous.family)
+                target = legacy.rc_id if legacy is not None and legacy.rc_id in ids else None
+        if target is None and controls:
+            default = resolve_rate_control(codec, "", QualityMode.CRF.value)
+            target = default.rc_id if default is not None and default.rc_id in ids else ids[0]
 
         self._mode_combo.blockSignals(True)
         self._mode_combo.clear()
-        for mode in modes:
-            self._mode_combo.addItem(mode.label(), mode)
-        target = previous if previous in modes else QualityMode.CRF
-        idx = next((i for i in range(self._mode_combo.count())
-                    if self._mode_combo.itemData(i) == target), 0)
-        self._mode_combo.setCurrentIndex(idx)
+        for spec in controls:
+            self._mode_combo.addItem(translate_text(spec.label), spec.rc_id)
+        if target is not None:
+            self._mode_combo.setCurrentIndex(ids.index(target))
         self._mode_combo.blockSignals(False)
         self._on_mode_changed()
+
+    def _current_rate_control(self) -> RateControlSpec | None:
+        codec = str(self._codec_combo.currentData() or "libx265")
+        return rate_control_spec(codec, self._mode_combo.currentData())
 
     def _on_apply_all_video_toggled(self, checked: bool) -> None:
         self._video_apply_all = bool(checked)
@@ -2956,14 +3018,31 @@ class EncodePanel(QWidget):
         self._dovi_profile_widget.setVisible(False)
 
     def _on_mode_changed(self, _idx: int = 0) -> None:
-        mode = self._mode_combo.currentData()
-        page = {
-            QualityMode.CRF: 0,
-            QualityMode.CQ: 1,
-            QualityMode.BITRATE: 2,
-            QualityMode.SIZE: 3,
-        }.get(mode, 0)
-        self._quality_stack.setCurrentIndex(page)
+        """Affiche la valeur de qualité et / ou le débit du mode, avec sa plage."""
+        spec = self._current_rate_control()
+        self._current_rc_spec = spec
+        uses_quality = spec is not None and spec.uses_quality
+        self._quality_value_label.setVisible(uses_quality)
+        self._bitrate_widget.setVisible(spec is not None and spec.bitrate)
+        self._size_widget.setVisible(spec is not None and spec.family == QualityMode.SIZE.value)
+        if not uses_quality:
+            self._quality_stack.setCurrentIndex(2)
+            self._rebuild_preview()
+            return
+        software = spec.family == QualityMode.CRF.value
+        slider, spin = (self._crf_slider, self._crf_spin) if software else (self._cq_slider, self._cq_spin)
+        self._quality_stack.setCurrentIndex(0 if software else 1)
+        self._quality_value_label.setText(translate_text(spec.quality_label))
+        low, high = spec.quality_range
+        slider.setRange(low, high)
+        spin.setRange(low, high)
+        # Autre échelle que la dernière affichée dans ce champ (QP AV1 0–255,
+        # CQ 1–63…) : valeur par défaut du mode ; même échelle : valeur gardée.
+        scale = (spec.quality_range, spec.quality_label)
+        previous_scale = self._quality_scale_by_family.get(spec.family)
+        self._quality_scale_by_family[spec.family] = scale
+        if previous_scale != scale and not self._loading_video_settings:
+            spin.setValue(spec.quality_default)
         self._rebuild_preview()
 
     def _on_hdr_toggle(self, _state: int) -> None:
@@ -3525,11 +3604,10 @@ class EncodePanel(QWidget):
             if self._codec_combo.itemData(i) == vs.codec:
                 self._codec_combo.setCurrentIndex(i)
                 break
-        # Mode qualité (après refresh par _on_codec_changed)
-        for i in range(self._mode_combo.count()):
-            if self._mode_combo.itemData(i) == QualityMode(preset.quality_mode):
-                self._mode_combo.setCurrentIndex(i)
-                break
+        # Mode de débit (après refresh par _on_codec_changed) ; ancien format migré.
+        rc_spec, rc_quality = rate_control_values(vs)
+        if rc_spec is not None:
+            self._set_combo_data(self._mode_combo, rc_spec.rc_id)
         # Preset codec
         for i in range(self._preset_combo.count()):
             if self._preset_combo.itemData(i) == preset.preset:
@@ -3537,6 +3615,9 @@ class EncodePanel(QWidget):
                 break
         self._crf_slider.setValue(vs.crf)
         self._cq_slider.setValue(vs.cq)
+        if rc_spec is not None and rc_spec.uses_quality:
+            target = self._crf_spin if rc_spec.family == QualityMode.CRF.value else self._cq_spin
+            target.setValue(rc_quality)
         self._bitrate_edit.setText(str(vs.bitrate_kbps))
         self._size_edit.setText(str(vs.target_size_mb))
         self._extra_params.setText(vs.extra_params)
@@ -3560,10 +3641,12 @@ class EncodePanel(QWidget):
         available = {self._codec_combo.itemData(i) for i in range(self._codec_combo.count())}
         if vs.codec not in available:
             return translate_text("codec {codec} indisponible", codec=vs.codec)
-        if vs.quality_mode not in self._backend_capabilities(vs.codec).quality_modes:
+        rc_spec = rate_control_values(vs)[0]
+        available_modes = {spec.rc_id for spec in self._available_rate_controls(vs.codec)}
+        if rc_spec is None or rc_spec.rc_id not in available_modes:
             return translate_text(
                 "mode {mode} non supporté par {codec}",
-                mode=vs.quality_mode.label(),
+                mode=rc_spec.label if rc_spec is not None else vs.quality_mode.label(),
                 codec=vs.codec,
             )
         codec_presets = presets_for_codec(vs.codec)
@@ -3607,6 +3690,7 @@ class EncodePanel(QWidget):
             name=name,
             codec=vs.codec,
             quality_mode=vs.quality_mode.value if isinstance(vs.quality_mode, QualityMode) else str(vs.quality_mode),
+            rate_control=vs.rate_control,
             crf=vs.crf,
             cq=vs.cq,
             bitrate_kbps=vs.bitrate_kbps,
@@ -4001,6 +4085,7 @@ class EncodePanel(QWidget):
         state: dict[str, object] = {
             "codec": "copy",
             "quality_mode": QualityMode.CRF,
+            "rate_control": "",
             "preset": "slow",
             "crf": 18,
             "cq": 26,
@@ -4296,7 +4381,12 @@ class EncodePanel(QWidget):
         ) or {}
         return {
             "codec": self._combo_data(self._codec_combo),
-            "quality_mode": self._combo_data(self._mode_combo),
+            "quality_mode": (
+                QualityMode(self._current_rc_spec.family)
+                if self._current_rc_spec is not None
+                else QualityMode.CRF
+            ),
+            "rate_control": self._current_rc_spec.rc_id if self._current_rc_spec is not None else "",
             "preset": self._combo_data(self._preset_combo),
             "crf": self._crf_spin.value(),
             "cq": self._cq_spin.value(),
@@ -4325,6 +4415,22 @@ class EncodePanel(QWidget):
             "tonemap_algorithm": self._combo_data(self._tonemap_algo),
         }
 
+    @staticmethod
+    def _rate_control_probe(state: dict[str, object]) -> VideoEncodeSettings:
+        """Réglages minimaux d'un état pour résoudre son mode de débit."""
+        mode = state.get("quality_mode") or QualityMode.CRF
+        return VideoEncodeSettings(
+            codec=str(state.get("codec") or "libx265"),
+            quality_mode=mode if isinstance(mode, QualityMode) else QualityMode(str(mode)),
+            rate_control=str(state.get("rate_control") or ""),
+            crf=EncodePanel._state_int(state, "crf", 18),
+            cq=EncodePanel._state_int(state, "cq", 26),
+        )
+
+    def _state_rate_control_id(self, state: dict[str, object]) -> str:
+        spec = rate_control_values(self._rate_control_probe(state))[0]
+        return spec.rc_id if spec is not None else ""
+
     def _copy_video_state(self, state: dict[str, object]) -> dict[str, object]:
         copied = dict(state)
         copied["extra_params_by_codec"] = dict(state.get("extra_params_by_codec") or {})
@@ -4342,24 +4448,20 @@ class EncodePanel(QWidget):
         self._propagate_state_to_active_tracks(state)
         self._emit_video_encoding_plans()
 
-    @staticmethod
-    def _quality_value_summary(mode: QualityMode, state: dict[str, object]) -> str:
-        if mode == QualityMode.CRF:
-            return str(state.get("crf") or 18)
-        if mode == QualityMode.CQ:
-            return str(state.get("cq") or 26)
-        if mode == QualityMode.BITRATE:
-            return f"{state.get('bitrate_kbps') or '5000'} kbps"
-        return f"{state.get('target_size_mb') or '4000'} Mo"
-
-    @staticmethod
-    def _summary_mode_label(mode: QualityMode) -> str:
-        return {
-            QualityMode.CRF: "CRF",
-            QualityMode.CQ: "CQ",
-            QualityMode.BITRATE: "Débit",
-            QualityMode.SIZE: "Taille",
-        }.get(mode, "CRF")
+    @classmethod
+    def _rate_control_summary(cls, state: dict[str, object]) -> str:
+        """Résumé « Mode (valeur) » d'un état vidéo, ex. « QVBR (Q 24, 8000 kbps) »."""
+        spec, quality = rate_control_values(cls._rate_control_probe(state))
+        if spec is None:
+            return f"CRF ({state.get('crf') or 18})"
+        values: list[str] = []
+        if spec.uses_quality:
+            values.append(str(quality) if spec.family == QualityMode.CRF.value else f"{spec.quality_label} {quality}")
+        if spec.bitrate:
+            values.append(f"{state.get('bitrate_kbps') or '?'} kbps")
+        if spec.family == QualityMode.SIZE.value:
+            values.append(f"{state.get('target_size_mb') or '?'} Mo")
+        return f"{translate_text(spec.label)} ({', '.join(values)})" if values else translate_text(spec.label)
 
     def _video_hdr_badges_from_state(
         self,
@@ -4469,18 +4571,14 @@ class EncodePanel(QWidget):
             source_hdr=source_hdr,
             target_codec=target_codec,
         )
-        mode = state.get("quality_mode") or QualityMode.CRF
-        if not isinstance(mode, QualityMode):
-            mode = QualityMode(str(mode))
         if codec == "copy":
             summary = "Copy"
         else:
-            summary = " - ".join([
-                codec,
-                str(state.get("preset") or "slow"),
-                self._summary_mode_label(mode),
-                f"({self._quality_value_summary(mode, state)})",
-            ])
+            summary = " - ".join(
+                part
+                for part in (codec, str(state.get("preset") or ""), self._rate_control_summary(state))
+                if part
+            )
 
         is_modified = bool(
             codec != "copy"
@@ -4577,10 +4675,16 @@ class EncodePanel(QWidget):
         self._loading_video_settings = True
         try:
             self._set_combo_data(self._codec_combo, state.get("codec"))
-            self._set_combo_data(self._mode_combo, state.get("quality_mode"))
+            self._set_combo_data(self._mode_combo, self._state_rate_control_id(state))
             self._set_combo_data(self._preset_combo, state.get("preset"))
             self._crf_spin.setValue(self._state_int(state, "crf", self._crf_spin.value()))
             self._cq_spin.setValue(self._state_int(state, "cq", self._cq_spin.value()))
+            if not state.get("rate_control"):
+                # Ancien format : valeur de qualité reportée dans le champ du mode.
+                spec, quality = rate_control_values(self._rate_control_probe(state))
+                if spec is not None and spec.uses_quality:
+                    target = self._crf_spin if spec.family == QualityMode.CRF.value else self._cq_spin
+                    target.setValue(quality)
             self._bitrate_edit.setText(str(state.get("bitrate_kbps") or "5000"))
             self._size_edit.setText(str(state.get("target_size_mb") or "4000"))
             self._extra_params.setText(str(state.get("extra_params") or ""))
@@ -4875,12 +4979,11 @@ class EncodePanel(QWidget):
             selected_file_info = file_info
             selected_track = track
         codec = self._codec_combo.currentData() or "libx265"
-        mode  = self._mode_combo.currentData() or QualityMode.CRF
-        if not isinstance(mode, QualityMode):
-            mode = QualityMode(str(mode))
+        rc_spec = self._current_rc_spec
+        mode = QualityMode(rc_spec.family) if rc_spec is not None else QualityMode.CRF
         preset_data = self._preset_combo.currentData()
         # "" = preset « Aucun » (VAAPI) : valeur valide, distincte d'une liste vide.
-        preset = "slow" if preset_data is None else str(preset_data)
+        preset = default_preset_for_codec(str(codec)) if preset_data is None else str(preset_data)
         # Saisie invalide → 0, refusé par la validation (pas de valeur de repli muette).
         try:
             bitrate = int(self._bitrate_edit.text())
@@ -4934,6 +5037,7 @@ class EncodePanel(QWidget):
             track_entry_id=track_entry_id,
             codec=codec,
             quality_mode=mode,
+            rate_control=rc_spec.rc_id if rc_spec is not None else "",
             crf=self._crf_slider.value(),
             cq=self._cq_slider.value(),
             bitrate_kbps=bitrate,
@@ -4971,6 +5075,7 @@ class EncodePanel(QWidget):
         mode = state.get("quality_mode") or QualityMode.CRF
         if not isinstance(mode, QualityMode):
             mode = QualityMode(str(mode))
+        rate_control = str(state.get("rate_control") or "")
         bitrate = self._state_int(state, "bitrate_kbps", 0)
         size = self._state_int(state, "target_size_mb", 0)
         codec = str(state.get("codec") or "libx265")
@@ -4994,11 +5099,12 @@ class EncodePanel(QWidget):
             track_entry_id=self._video_entry_id(track),
             codec=codec,
             quality_mode=mode,
+            rate_control=rate_control,
             crf=self._state_int(state, "crf", 18),
             cq=self._state_int(state, "cq", 26),
             bitrate_kbps=bitrate,
             target_size_mb=size,
-            preset="slow" if state.get("preset") is None else str(state.get("preset")),
+            preset=default_preset_for_codec(codec) if state.get("preset") is None else str(state.get("preset")),
             extra_params=str(state.get("extra_params") or "").strip(),
             force_8bit=self._video_force_8bit_for_codec(file_info, track, codec),
             force_10bit=self._effective_force_10bit(

@@ -17,6 +17,7 @@ from core.workflows.common.validation_override import ValidationOverride, accept
 from core.runner import TaskCancelledError, TaskSignals
 from core.workdir import remove_path
 from core.workflows.encode.domain import should_reinject_static_hdr_metadata
+from core.workflows.encode.domain.codecs import uses_two_pass_video
 from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode
 from core.workflows.encode.planning.track_assembly import build_track_input_paths, resolve_track_assembly
 from core.workflows.encode.planning.plan_models import EncodePlan
@@ -473,7 +474,7 @@ class MetadataInjectRunner:
                 signals.progress.emit("Encodage vidéo…")
                 passlog_prefix = (
                     cb.two_pass_log_prefix(tmp, "inject_video")
-                    if video.quality_mode == QualityMode.SIZE
+                    if uses_two_pass_video(video)
                     else None
                 )
                 encode_cmds = cb.build_video_track_encode_commands(

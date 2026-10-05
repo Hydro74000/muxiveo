@@ -21,6 +21,7 @@ from core.workflows.encode.domain import (
     needs_hdr_vui,
     output_hdr_transfer,
     p5_filter_device_args,
+    uses_two_pass_video,
     video_codec_args,
     video_codec_args_bitrate,
 )
@@ -193,6 +194,20 @@ class VideoOnlyCommandBuilder:
         cb = self._cb
         stream_index = cb.video_stream_from_settings(video)
 
+        if video.quality_mode == QualityMode.SIZE and not uses_two_pass_video(video):
+            # Encodeur matériel : une passe VBR plafonnée au débit calculé.
+            cmd = self.build_video_track_base_cmd(
+                video=video,
+                source=source,
+                stream_index=stream_index,
+                offset_ms=offset_ms,
+                thread_count=thread_count,
+            )
+            self.append_video_codec_and_hdr_args(
+                cmd, video, bitrate_kbps=cb.size_to_bitrate_kbps_for_video(config, video),
+            )
+            cmd.extend(["-an", "-sn", "-dn", str(output_path)])
+            return [cmd]
         if video.quality_mode == QualityMode.SIZE:
             bitrate = cb.size_to_bitrate_kbps_for_video(config, video)
             pass1 = self.build_video_track_base_cmd(

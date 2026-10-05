@@ -184,12 +184,14 @@ class TestHardwareEncoderDetector:
 
         assert detected == {"hevc_vaapi"}
         assert used_ff == "ffmpeg"
-        assert len(probe_cmds) == 1
-        cmd = probe_cmds[0]
+        cmd, *rc_probes = probe_cmds
+        assert "-rc_mode" not in cmd
         assert "-vaapi_device" in cmd
         assert cmd[cmd.index("-vaapi_device") + 1] == "/dev/dri/renderD128"
         assert "-vf" in cmd
         assert cmd[cmd.index("-vf") + 1] == "format=nv12,hwupload"
+        # Lot 4 : modes -rc_mode sondés ensuite sur le même périphérique.
+        assert rc_probes and all("-rc_mode" in probe for probe in rc_probes)
 
     def test_detect_skips_vaapi_when_device_missing_but_keeps_other_codecs(self):
         """

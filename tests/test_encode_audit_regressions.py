@@ -484,3 +484,207 @@ def test_lot3_v44_av1_nvenc_requires_ada_or_newer(monkeypatch):
     monkeypatch.setattr(HardwareEncoderDetector, "_probe_encoder", staticmethod(lambda cmd: probes.append(cmd) or False))
     assert detector._detect_nvenc("ffmpeg", set(compiled)) == {"hevc_nvenc"}
     assert "format=p010le" in probes[0] and "av1_nvenc" in probes[0]
+
+
+# ---------------------------------------------------------------------------
+# Lot 4 — qualité, débit, taille cible
+# ---------------------------------------------------------------------------
+
+
+def _rc_args(codec: str, rate_control: str, bitrate_kbps: int = 8000, **kw) -> list[str]:
+    video = VideoEncodeSettings(codec=codec, rate_control=rate_control, preset="", **kw)
+    return video_codec_args(video, bitrate_kbps, callbacks=_CB)
+
+
+def _after(args: list[str], flag: str) -> str:
+    return args[args.index(flag) + 1]
+
+
+def test_lot4_catalog_rate_controls_ranges_and_defaults():
+    from core.workflows.encode.catalog import (
+        default_preset_for_codec,
+        presets_for_codec,
+        rate_control_spec,
+        rate_controls_for_codec,
+        resolve_rate_control,
+    )
+
+    for codec in ("libx265", "hevc_nvenc", "hevc_amf", "hevc_qsv", "hevc_vaapi", "nvencc_hevc"):
+        controls = rate_controls_for_codec(codec)
+        assert controls and controls[-1].rc_id == "size"
+        for spec in controls:
+            low, high = spec.quality_range
+            assert not spec.uses_quality or low <= spec.quality_default <= high
+        assert default_preset_for_codec(codec) in presets_for_codec(codec)
+    assert rate_control_spec("libsvtav1", "crf").quality_range == (0, 63)
+    assert rate_control_spec("av1_nvenc", "constqp").quality_range == (0, 255)
+    assert rate_control_spec("av1_vaapi", "cqp").quality_range == (0, 255)
+    assert rate_control_spec("hevc_vaapi", "cqp").quality_range == (0, 52)
+    assert [s.rc_id for s in rate_controls_for_codec("hevc_vaapi")] == [
+        "cqp", "icq", "qvbr", "vbr", "cbr", "avbr", "size",
+    ]
+    assert rate_controls_for_codec("copy") == ()
+    # Anciens modes → mode équivalent du codec.
+    assert resolve_rate_control("hevc_nvenc", "", "crf").rc_id == "vbr_cq"
+    assert resolve_rate_control("libx265", "", "cq").rc_id == "crf"
+    assert resolve_rate_control("nvencc_hevc", "", "cq").rc_id == "qvbr"
+    assert resolve_rate_control("hevc_vaapi", "", "bitrate").rc_id == "vbr"
+    assert resolve_rate_control("libx265", "qvbr", "size").rc_id == "size"
+    assert default_preset_for_codec("hevc_nvenc") == "p5"
+    assert default_preset_for_codec("hevc_vaapi") == ""
+
+
+def test_lot4_v19_v20_hw_rate_control_args():
+    args = _rc_args("hevc_nvenc", "vbr_cq", cq=28)
+    assert args[args.index("-rc:v"):args.index("-rc:v") + 6] == ["-rc:v", "vbr", "-b:v", "0", "-cq:v", "28"]
+    args = _rc_args("av1_nvenc", "constqp", cq=120)
+    assert _after(args, "-rc:v") == "constqp" and _after(args, "-qp") == "120"
+    args = _rc_args("hevc_nvenc", "size", quality_mode=QualityMode.SIZE)
+    assert _after(args, "-maxrate:v") == "12000k" and _after(args, "-bufsize:v") == "16000k"
+    assert _after(args, "-multipass") == "fullres"
+    args = _rc_args("hevc_amf", "cqp", cq=22)
+    assert _after(args, "-qp_i") == "22" and "-qp_b" not in args
+    assert "-qp_b" in _rc_args("h264_amf", "cqp")
+    args = _rc_args("hevc_amf", "qvbr", cq=20)
+    assert _after(args, "-rc") == "qvbr" and _after(args, "-qvbr_quality_level") == "20" and "-b:v" in args
+    args = _rc_args("hevc_qsv", "cqp", cq=23)
+    assert _after(args, "-global_quality") == "23" and "-b:v" not in args
+    args = _rc_args("hevc_qsv", "cbr")
+    assert _after(args, "-maxrate:v") == _after(args, "-b:v") == "8000k"
+    args = _rc_args("hevc_vaapi", "icq", cq=30)
+    assert _after(args, "-rc_mode") == "ICQ" and _after(args, "-global_quality") == "30"
+    args = _rc_args("hevc_vaapi", "qvbr", cq=24)
+    assert _after(args, "-rc_mode") == "QVBR" and _after(args, "-b:v") == "8000k"
+    args = _rc_args("av1_vaapi", "cqp", cq=100)
+    assert _after(args, "-global_quality") == "100" and "-qp" not in args
+    # Valeur hors plage du mode : bornée.
+    assert _after(_rc_args("hevc_vaapi", "cqp", cq=90), "-qp") == "52"
+
+
+def test_lot4_preset_outside_codec_list_is_not_sent():
+    """Preset hérité d'un autre codec : ni -compression_level (VAAPI), ni -quality (AMF), ni -preset (QSV)."""
+    for codec, flag, preset in (
+        ("hevc_vaapi", "-compression_level", "slow"), ("hevc_amf", "-quality", "slow"), ("hevc_qsv", "-preset", "p5"),
+    ):
+        video = VideoEncodeSettings(codec=codec, rate_control="cqp", preset=preset)
+        assert flag not in video_codec_args(video, 8000, callbacks=_CB)
+    video = VideoEncodeSettings(codec="hevc_amf", rate_control="cqp", preset="quality")
+    assert _after(video_codec_args(video, 8000, callbacks=_CB), "-quality") == "quality"
+
+
+def test_lot4_nvencc_rate_control_args():
+    from core.workflows.encode.runtime.nvencc import build_nvencc_command
+
+    def cmd(rate_control: str, **kw) -> list[str]:
+        video = VideoEncodeSettings(codec="nvencc_hevc", rate_control=rate_control, **kw)
+        return build_nvencc_command("nvencc", video, "out.mkv")
+
+    assert _after(cmd("cqp", cq=50), "--cqp") == "50:51:51"
+    assert _after(cmd("qvbr", cq=27), "--qvbr") == "27"
+    vbr_q = cmd("vbr_quality", cq=25, bitrate_kbps=9000)
+    assert _after(vbr_q, "--vbr") == "9000" and _after(vbr_q, "--vbr-quality") == "25"
+    size = cmd("size", quality_mode=QualityMode.SIZE, bitrate_kbps=6000)
+    assert _after(size, "--vbr") == "6000" and _after(size, "--max-bitrate") == "9000"
+
+
+def test_lot4_legacy_settings_migrate_to_codec_rate_control(tmp_path):
+    from core.workflows.encode import EncodePreset
+    from core.workflows.encode.domain.codecs import rate_control_values
+
+    spec, value = rate_control_values(VideoEncodeSettings(codec="hevc_nvenc", quality_mode=QualityMode.CRF, crf=20))
+    assert (spec.rc_id, value) == ("vbr_cq", 20)
+    spec, value = rate_control_values(VideoEncodeSettings(codec="libx265", quality_mode=QualityMode.CQ, cq=24))
+    assert (spec.rc_id, value) == ("crf", 24)
+    # Mode explicite : famille synchronisée.
+    video = VideoEncodeSettings(codec="hevc_vaapi", rate_control="qvbr")
+    assert video.quality_mode == QualityMode.CQ
+    from core.workflows.encode import ProfileManager
+
+    manager = ProfileManager(tmp_path)
+    manager.save(EncodePreset(name="p", codec="hevc_vaapi", quality_mode="cq", rate_control="icq", cq=31))
+    restored = manager.load_all()[0].to_video_settings()
+    assert (restored.rate_control, restored.quality_mode, restored.cq) == ("icq", QualityMode.CQ, 31)
+    assert EncodePreset(name="s", codec="hevc_nvenc", preset="safe").preset == "p5"
+
+
+def test_lot4_v33_two_pass_only_for_software_codecs(qt_app, tmp_path):
+    from core.workflows.encode.domain import uses_two_pass_video
+
+    _ = qt_app
+    assert uses_two_pass_video(VideoEncodeSettings(codec="libx265", quality_mode=QualityMode.SIZE))
+    assert uses_two_pass_video(VideoEncodeSettings(codec="libsvtav1", quality_mode=QualityMode.SIZE))
+    for codec in ("hevc_nvenc", "hevc_qsv", "hevc_vaapi", "hevc_amf", "nvencc_hevc"):
+        assert not uses_two_pass_video(VideoEncodeSettings(codec=codec, quality_mode=QualityMode.SIZE))
+    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", generate_nfo=False)
+    video = VideoEncodeSettings(codec="libx265", quality_mode=QualityMode.SIZE, target_size_mb=1000)
+    cmds = wf.build_command(EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv",
+                                         video=video, duration_s=3600))
+    assert isinstance(cmds[0], list) and len(cmds) == 2
+
+
+def _size_workflow(monkeypatch, streams: list[dict]) -> EncodeWorkflow:
+    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", generate_nfo=False)
+    monkeypatch.setattr(wf, "_ffprobe_streams_payload", lambda _src: {"streams": streams})
+    return wf
+
+
+def test_lot4_v07_size_budget_deducts_copied_streams(qt_app, tmp_path, monkeypatch):
+    _ = qt_app
+    streams = [
+        {"index": 0, "codec_type": "video", "width": 3840, "height": 2160, "avg_frame_rate": "24/1"},
+        {"index": 1, "codec_type": "audio", "tags": {"BPS": "4000000"}},
+        {"index": 2, "codec_type": "subtitle", "bit_rate": "40000"},
+    ]
+    wf = _size_workflow(monkeypatch, streams)
+    video = VideoEncodeSettings(codec="libx265", quality_mode=QualityMode.SIZE, target_size_mb=4000)
+    cfg = EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv", video=video, duration_s=3600,
+                       audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")], copy_subtitles=True)
+    target_bps = 4000 * 8 * 1024 * 1024 / 3600
+    expected_kbps = int((target_bps * 0.995 - 4_000_000 - 40_000) / 1000)
+    assert abs(wf._size_to_bitrate_kbps(cfg) - expected_kbps) <= 1
+    assert wf.size_target_errors(cfg) == []
+    small = EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv", duration_s=3600,
+                         video=VideoEncodeSettings(codec="libx265", quality_mode=QualityMode.SIZE,
+                                                   target_size_mb=1500),
+                         audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")])
+    errors = wf.size_target_errors(small)
+    assert errors and "inatteignable" in errors[0]
+
+
+def test_lot4_v07_size_budget_split_by_pixel_rate(qt_app, tmp_path, monkeypatch):
+    _ = qt_app
+    streams = [
+        {"index": 0, "codec_type": "video", "width": 3840, "height": 2160, "avg_frame_rate": "24/1"},
+        {"index": 1, "codec_type": "video", "width": 1920, "height": 1080, "avg_frame_rate": "24/1"},
+    ]
+    wf = _size_workflow(monkeypatch, streams)
+    first = VideoEncodeSettings(codec="libx265", quality_mode=QualityMode.SIZE, target_size_mb=5000,
+                                stream_index=0, source_path=tmp_path / "s.mkv")
+    second = VideoEncodeSettings(codec="libx265", quality_mode=QualityMode.SIZE, target_size_mb=5000,
+                                 stream_index=1, source_path=tmp_path / "s.mkv")
+    cfg = EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv", video=first,
+                       video_tracks=[first, second], duration_s=3600)
+    big = wf._size_to_bitrate_kbps_for_video(cfg, first)
+    small = wf._size_to_bitrate_kbps_for_video(cfg, second)
+    assert abs(big - 4 * small) <= 4
+
+
+def test_lot4_vaapi_rate_controls_probed_from_driver(monkeypatch):
+    import subprocess
+
+    from core.workflows.encode.hardware import HardwareEncoderDetector
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **_kw):
+        calls.append(cmd)
+        stderr = "[hevc_vaapi] Driver does not support ICQ RC mode (supported modes: CQP, CBR, VBR, QVBR).\n"
+        return subprocess.CompletedProcess(cmd, 1, "", stderr)
+
+    detector = HardwareEncoderDetector()
+    monkeypatch.setattr(detector, "_cached_vaapi_device", lambda: "/dev/dri/renderD128")
+    monkeypatch.setattr("core.workflows.encode.hardware.subprocess.run", fake_run)
+    assert detector._probe_vaapi_rate_controls("ffmpeg", "hevc_vaapi") == frozenset(
+        {"cqp", "cbr", "vbr", "qvbr", "size"}
+    )
+    assert len(calls) == 1 and _after(calls[0], "-rc_mode") == "ICQ"

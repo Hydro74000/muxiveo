@@ -306,8 +306,11 @@ class VideoEncodeSettings:
     input_frame_rate: str          = ""
     codec:            str          = "libx265"
     quality_mode:     QualityMode  = QualityMode.CRF
-    crf:              int          = 18
-    cq:               int          = 26   # Quality target pour mode CQ (HW only)
+    # Mode de débit du codec (catalog.VIDEO_RATE_CONTROLS : "crf", "vbr_cq",
+    # "cqp", "qvbr", "cbr"…) ; "" = équivalent de ``quality_mode`` (ancien format).
+    rate_control:     str          = ""
+    crf:              int          = 18   # valeur de qualité des codecs logiciels
+    cq:               int          = 26   # valeur de qualité des codecs matériels
     bitrate_kbps:     int          = 5000
     target_size_mb:   int          = 4000
     preset:           str          = "slow"
@@ -355,6 +358,15 @@ class VideoEncodeSettings:
         self.crop = VideoCropSettings.from_value(self.crop)
         self.filters = VideoFilterSettings.from_value(self.filters)
         self.interpolation = FrameInterpolationSettings.from_value(self.interpolation)
+        if not isinstance(self.quality_mode, QualityMode):
+            self.quality_mode = QualityMode(str(self.quality_mode))
+        if self.rate_control:
+            # La famille du mode de débit fait foi (taille cible, 2 passes…).
+            from core.workflows.encode.catalog import rate_control_spec
+
+            spec = rate_control_spec(self.codec, self.rate_control)
+            if spec is not None:
+                self.quality_mode = QualityMode(spec.family)
 
     def has_video_transform(self) -> bool:
         return bool(
@@ -550,6 +562,7 @@ class EncodePreset:
     description:                str  = ""
     codec:                      str  = "libx265"
     quality_mode:               str  = QualityMode.CRF.value
+    rate_control:               str  = ""
     crf:                        int  = 18
     cq:                         int  = 26
     bitrate_kbps:               int  = 5000
@@ -574,11 +587,15 @@ class EncodePreset:
         self.crop = VideoCropSettings.from_value(self.crop)
         self.filters = VideoFilterSettings.from_value(self.filters)
         self.interpolation = FrameInterpolationSettings.from_value(self.interpolation)
+        # Ancien preset logique NVENC « safe » (retiré de l'interface) → p5, son équivalent.
+        if self.preset == "safe" and self.codec.endswith("_nvenc"):
+            self.preset = "p5"
 
     def to_video_settings(self) -> VideoEncodeSettings:
         return VideoEncodeSettings(
             codec=self.codec,
             quality_mode=QualityMode(self.quality_mode),
+            rate_control=self.rate_control,
             crf=self.crf,
             cq=self.cq,
             bitrate_kbps=self.bitrate_kbps,

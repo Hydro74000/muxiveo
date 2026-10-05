@@ -9,7 +9,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from core.workflows.encode.catalog import (
+    RateControlSpec,
     StaticHdrMetadataMode,
+    presets_for_codec,
+    resolve_rate_control,
     static_hdr_metadata_mode,
     AMF_VIDEO_CODECS,
     NVENC_VIDEO_CODECS,
@@ -42,6 +45,37 @@ class EncodeCodecDomainCallbacks:
     qsv_device: str | None = None
     amf_device: str | None = None
     nvenc_device: str | None = None
+
+
+def rate_control_values(video: VideoEncodeSettings) -> tuple[RateControlSpec | None, int]:
+    """Mode de débit effectif et valeur de qualité (bornée à la plage du mode).
+
+    Valeur : ``crf`` pour les modes logiciels, ``cq`` pour les modes matériels ;
+    ancien format (sans ``rate_control``) : CRF matériel → ``crf``, CQ logiciel → ``cq``.
+    """
+    spec = resolve_rate_control(video.codec, video.rate_control, video.quality_mode)
+    if spec is None:
+        return None, int(video.crf)
+    if spec.family == "crf":
+        legacy_cq = not video.rate_control and video.quality_mode == QualityMode.CQ
+        value = video.cq if legacy_cq else video.crf
+    else:
+        legacy_crf = not video.rate_control and video.quality_mode == QualityMode.CRF
+        value = video.crf if legacy_crf else video.cq
+    low, high = spec.quality_range
+    return spec, max(low, min(high, int(value)))
+
+
+_TWO_PASS_VIDEO_CODECS = frozenset({"libx264", "libx265", "libsvtav1"})
+
+
+def uses_two_pass_video(video: VideoEncodeSettings) -> bool:
+    """Taille cible en 2 passes : codecs logiciels uniquement.
+
+    Les encodeurs matériels ignorent ``-pass`` : une passe VBR plafonnée au débit
+    calculé (``_hw_rate_control_args``), sans passe d'analyse inutile.
+    """
+    return video.quality_mode == QualityMode.SIZE and video.codec in _TWO_PASS_VIDEO_CODECS
 
 
 def force_h264_8bit(video: VideoEncodeSettings) -> bool:
@@ -113,9 +147,13 @@ def ten_bit_args(video: VideoEncodeSettings) -> list[str]:
 
 
 def vaapi_compression_args(video: VideoEncodeSettings) -> list[str]:
-    """``-compression_level`` du preset VAAPI ; preset « Aucun » → défaut du pilote."""
+    """``-compression_level`` du preset VAAPI ; preset « Aucun » → défaut du pilote.
+
+    Une valeur hors de la liste du codec (ex. preset par défaut d'un autre
+    encodeur) ferait échouer ffmpeg : elle n'est pas transmise.
+    """
     level = str(video.preset or "").strip()
-    return ["-compression_level", level] if level else []
+    return ["-compression_level", level] if level and level in presets_for_codec(video.codec) else []
 
 
 def ffmpeg_extra_args(video: VideoEncodeSettings) -> list[str]:
@@ -513,10 +551,11 @@ def _without_user_overrides(
 
 
 def _raw_video_codec_args(video: VideoEncodeSettings, callbacks: EncodeCodecDomainCallbacks) -> list[str]:
-    if video.quality_mode == QualityMode.CRF:
+    if video.codec in _HW_FFMPEG_VIDEO_CODECS:
+        return _hw_codec_args_raw(video, video.bitrate_kbps, callbacks=callbacks)
+    spec, _quality = rate_control_values(video)
+    if spec is None or spec.family == "crf":
         return _video_codec_args_crf_raw(video, callbacks=callbacks)
-    if video.quality_mode == QualityMode.CQ:
-        return _video_codec_args_cq_raw(video, callbacks=callbacks)
     return _video_codec_args_bitrate_raw(video, video.bitrate_kbps, callbacks=callbacks)
 
 
@@ -576,6 +615,9 @@ def extra_params_syntax_error(codec: str, text: str) -> str:
     return ""
 
 
+_HW_FFMPEG_VIDEO_CODECS = NVENC_VIDEO_CODECS | AMF_VIDEO_CODECS | QSV_VIDEO_CODECS | VAAPI_VIDEO_CODECS
+
+
 def video_codec_args(video: VideoEncodeSettings, bitrate_kbps: int, *, callbacks: EncodeCodecDomainCallbacks) -> list[str]:
     # NVEncC est un binaire externe (pas un encodeur ffmpeg) : la construction
     # de la commande passe par core/workflows/encode/runtime/nvencc.py. Côté
@@ -583,18 +625,17 @@ def video_codec_args(video: VideoEncodeSettings, bitrate_kbps: int, *, callbacks
     # ait détecté NVEncC en amont et basculé sur le pipeline 3-process.
     if video.codec in NVENCC_VIDEO_CODECS:
         return []
-    if video.quality_mode == QualityMode.CRF:
+    if video.codec in _HW_FFMPEG_VIDEO_CODECS:
+        return _without_user_overrides(video, _hw_codec_args_raw(video, bitrate_kbps, callbacks=callbacks), callbacks)
+    spec, _quality = rate_control_values(video)
+    if spec is None or spec.family == "crf":
         return video_codec_args_crf(video, callbacks=callbacks)
-    if video.quality_mode == QualityMode.CQ:
-        return video_codec_args_cq(video, callbacks=callbacks)
     return video_codec_args_bitrate(video, bitrate_kbps, callbacks=callbacks)
 
 
-def video_codec_args_cq(video: VideoEncodeSettings, *, callbacks: EncodeCodecDomainCallbacks) -> list[str]:
-    return _without_user_overrides(video, _video_codec_args_cq_raw(video, callbacks=callbacks), callbacks)
-
-
 def video_codec_args_crf(video: VideoEncodeSettings, *, callbacks: EncodeCodecDomainCallbacks) -> list[str]:
+    if video.codec in _HW_FFMPEG_VIDEO_CODECS:
+        return video_codec_args(video, video.bitrate_kbps, callbacks=callbacks)
     return _without_user_overrides(video, _video_codec_args_crf_raw(video, callbacks=callbacks), callbacks)
 
 
@@ -604,6 +645,9 @@ def video_codec_args_bitrate(
     *,
     callbacks: EncodeCodecDomainCallbacks,
 ) -> list[str]:
+    """Arguments pour un débit imposé (débit moyen, taille cible convertie en débit)."""
+    if video.codec in _HW_FFMPEG_VIDEO_CODECS:
+        return _without_user_overrides(video, _hw_codec_args_raw(video, bitrate_kbps, callbacks=callbacks), callbacks)
     return _without_user_overrides(
         video,
         _video_codec_args_bitrate_raw(video, bitrate_kbps, callbacks=callbacks),
@@ -611,113 +655,98 @@ def video_codec_args_bitrate(
     )
 
 
-def _video_codec_args_cq_raw(video: VideoEncodeSettings, *, callbacks: EncodeCodecDomainCallbacks) -> list[str]:
-    """Mode CQ — Constant Quality côté encodeurs HW.
+def _hw_rate_control_args(video: VideoEncodeSettings, bitrate_kbps: int) -> list[str]:
+    """Options de débit d'un encodeur matériel ffmpeg selon son mode (catalog.VIDEO_RATE_CONTROLS).
 
-    Sur les codecs software (x264/x265/svt-av1), CQ n'a pas d'équivalent natif :
-    on retombe sur le mode CRF (qui est déjà la qualité constante de ces encodeurs).
+    Taille cible : une passe VBR plafonnée (``-pass`` est ignoré par ces encodeurs).
     """
-    cq = int(video.cq)
-    match video.codec:
-        case "copy":
-            return ["-c:v", "copy"]
-        case "hevc_nvenc":
-            return [
-                "-c:v", "hevc_nvenc", "-rc:v", "vbr", "-b:v", "0", "-cq:v", str(cq), "-preset:v", nvenc_effective_preset(video),
-                *nvenc_device_args(callbacks),
-                *ten_bit_args(video),
-                *nvenc_safe_extra_args(video),
-                *ffmpeg_extra_args(video),
-            ]
-        case "h264_nvenc":
-            return [
-                "-c:v", "h264_nvenc", "-rc:v", "vbr", "-b:v", "0", "-cq:v", str(cq), "-preset:v", nvenc_effective_preset(video),
-                *nvenc_device_args(callbacks),
-                *h264_8bit_pix_fmt_args(video),
-                *ffmpeg_extra_args(video),
-            ]
-        case "av1_nvenc":
-            return [
-                "-c:v", "av1_nvenc", "-rc:v", "vbr", "-b:v", "0", "-cq:v", str(cq), "-preset:v", nvenc_effective_preset(video),
-                *nvenc_device_args(callbacks),
-                *ten_bit_args(video),
-                *ffmpeg_extra_args(video),
-            ]
-        case "hevc_amf":
-            args = ["-c:v", "hevc_amf", "-rc", "cqp", "-qp_i", str(cq), "-qp_p", str(cq), "-qp_b", str(cq)]
-            if video.preset:
-                args.extend(["-quality", video.preset])
-            args.extend(ten_bit_args(video))
-            args.extend(ffmpeg_extra_args(video))
-            return args
-        case "h264_amf":
-            args = ["-c:v", "h264_amf", "-rc", "cqp", "-qp_i", str(cq), "-qp_p", str(cq), "-qp_b", str(cq)]
-            if video.preset:
-                args.extend(["-quality", video.preset])
-            args.extend(h264_8bit_pix_fmt_args(video))
-            args.extend(ffmpeg_extra_args(video))
-            return args
-        case "av1_amf":
-            args = ["-c:v", "av1_amf", "-rc", "cqp", "-qp_i", str(cq), "-qp_p", str(cq)]
-            if video.preset:
-                args.extend(["-quality", video.preset])
-            args.extend(ten_bit_args(video))
-            args.extend(ffmpeg_extra_args(video))
-            return args
-        case "hevc_qsv":
-            args = ["-c:v", "hevc_qsv", "-global_quality", str(cq), "-look_ahead", "0", "-async_depth", "4"]
-            if video.preset:
-                args.extend(["-preset", video.preset])
-            args.extend(ten_bit_args(video))
-            args.extend(ffmpeg_extra_args(video))
-            return args
-        case "h264_qsv":
-            args = ["-c:v", "h264_qsv", "-global_quality", str(cq), "-look_ahead", "0", "-async_depth", "4"]
-            if video.preset:
-                args.extend(["-preset", video.preset])
-            args.extend(h264_8bit_pix_fmt_args(video))
-            args.extend(ffmpeg_extra_args(video))
-            return args
-        case "av1_qsv":
-            args = ["-c:v", "av1_qsv", "-global_quality", str(cq), "-async_depth", "4"]
-            if video.preset:
-                args.extend(["-preset", video.preset])
-            args.extend(ten_bit_args(video))
-            args.extend(ffmpeg_extra_args(video))
-            return args
-        case "hevc_vaapi":
-            return [
-                "-c:v", "hevc_vaapi", "-rc_mode", "CQP", "-qp", str(cq),
-                *vaapi_compression_args(video), "-async_depth", "4",
-                *ten_bit_args(video),
-                *ffmpeg_extra_args(video),
-            ]
-        case "h264_vaapi":
-            return [
-                "-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", str(cq),
-                *vaapi_compression_args(video), "-async_depth", "4",
-                *h264_8bit_pix_fmt_args(video),
-                *ffmpeg_extra_args(video),
-            ]
-        case "av1_vaapi":
-            return [
-                "-c:v", "av1_vaapi", "-rc_mode", "CQP", "-qp", str(cq),
-                *vaapi_compression_args(video), "-async_depth", "4",
-                *ten_bit_args(video),
-                *ffmpeg_extra_args(video),
-            ]
-        case _:
-            # Software : pas d'équivalent natif → fallback sur CRF avec la valeur CQ.
-            override = VideoEncodeSettings(**{**video.__dict__, "crf": cq, "quality_mode": QualityMode.CRF})
-            return video_codec_args_crf(override, callbacks=callbacks)
+    spec, quality = rate_control_values(video)
+    rc_id = spec.rc_id if spec is not None else "vbr"
+    q = str(quality)
+    br = f"{int(bitrate_kbps)}k"
+    peak = f"{int(bitrate_kbps * 1.5)}k"
+    buffer = f"{int(bitrate_kbps) * 2}k"
+    capped = ["-maxrate:v", peak, "-bufsize:v", buffer]
+    codec = video.codec
+    if codec in NVENC_VIDEO_CODECS:
+        return {
+            "vbr_cq": ["-rc:v", "vbr", "-b:v", "0", "-cq:v", q],
+            "constqp": ["-rc:v", "constqp", "-qp", q],
+            "vbr": ["-rc:v", "vbr", "-b:v", br],
+            "cbr": ["-rc:v", "cbr", "-b:v", br],
+        }.get(rc_id, ["-rc:v", "vbr", "-b:v", br, *capped, "-multipass", "fullres"])
+    if codec in AMF_VIDEO_CODECS:
+        if rc_id == "cqp":
+            # hevc_amf n'expose pas -qp_b.
+            return ["-rc", "cqp", "-qp_i", q, "-qp_p", q, *([] if codec == "hevc_amf" else ["-qp_b", q])]
+        if rc_id == "qvbr":
+            return ["-rc", "qvbr", "-qvbr_quality_level", q, "-b:v", br]
+        if rc_id in {"vbr_peak", "hqvbr"}:
+            return ["-rc", rc_id, "-b:v", br, "-maxrate:v", peak]
+        if rc_id in {"vbr_latency", "cbr", "hqcbr"}:
+            return ["-rc", rc_id, "-b:v", br]
+        return ["-rc", "vbr_peak", "-b:v", br, *capped]
+    if codec in QSV_VIDEO_CODECS:
+        # Mode implicite : -global_quality seul = QP constant ; maxrate = débit → CBR.
+        return {
+            "cqp": ["-global_quality", q],
+            "vbr": ["-b:v", br, "-maxrate:v", peak],
+            "cbr": ["-b:v", br, "-maxrate:v", br],
+        }.get(rc_id, ["-b:v", br, *capped])
+    # VAAPI
+    cqp_value = ["-global_quality", q] if codec == "av1_vaapi" else ["-qp", q]
+    return {
+        "cqp": ["-rc_mode", "CQP", *cqp_value],
+        "icq": ["-rc_mode", "ICQ", "-global_quality", q],
+        "qvbr": ["-rc_mode", "QVBR", "-b:v", br, "-global_quality", q],
+        "vbr": ["-rc_mode", "VBR", "-b:v", br],
+        "cbr": ["-rc_mode", "CBR", "-b:v", br],
+        "avbr": ["-rc_mode", "AVBR", "-b:v", br],
+    }.get(rc_id, ["-rc_mode", "VBR", "-b:v", br, *capped])
+
+
+def _hw_codec_args_raw(
+    video: VideoEncodeSettings,
+    bitrate_kbps: int,
+    *,
+    callbacks: EncodeCodecDomainCallbacks,
+) -> list[str]:
+    """Codec, mode de débit, preset, périphérique, profondeur puis paramètres avancés."""
+    codec = video.codec
+    depth = h264_8bit_pix_fmt_args(video) if is_h264_video_codec(codec) else ten_bit_args(video)
+    rate = _hw_rate_control_args(video, bitrate_kbps)
+    if codec in NVENC_VIDEO_CODECS:
+        return [
+            "-c:v", codec, *rate, "-preset:v", nvenc_effective_preset(video),
+            *nvenc_device_args(callbacks),
+            *depth,
+            *nvenc_safe_extra_args(video),
+            *ffmpeg_extra_args(video),
+        ]
+    if codec in AMF_VIDEO_CODECS:
+        quality = ["-quality", video.preset] if video.preset in presets_for_codec(codec) else []
+        return ["-c:v", codec, *rate, *quality, *depth, *ffmpeg_extra_args(video)]
+    if codec in QSV_VIDEO_CODECS:
+        preset = ["-preset", video.preset] if video.preset in presets_for_codec(codec) else []
+        return ["-c:v", codec, *rate, "-async_depth", "4", *preset, *depth, *ffmpeg_extra_args(video)]
+    return [
+        "-c:v", codec, *rate,
+        *vaapi_compression_args(video),
+        "-async_depth", "4",
+        *depth,
+        *ffmpeg_extra_args(video),
+    ]
 
 
 def _video_codec_args_crf_raw(video: VideoEncodeSettings, *, callbacks: EncodeCodecDomainCallbacks) -> list[str]:
+    """Codecs logiciels en qualité constante (CRF)."""
+    _ = callbacks
+    crf = str(rate_control_values(video)[1])
     match video.codec:
         case "copy":
             return ["-c:v", "copy"]
         case "libx265":
-            args = ["-c:v", "libx265", "-crf", str(video.crf), "-preset", video.preset]
+            args = ["-c:v", "libx265", "-crf", crf, "-preset", video.preset]
             args.extend(ten_bit_args(video))
             x265 = x265_params(video)
             if x265:
@@ -725,108 +754,20 @@ def _video_codec_args_crf_raw(video: VideoEncodeSettings, *, callbacks: EncodeCo
             return args
         case "libx264":
             return [
-                "-c:v", "libx264", "-crf", str(video.crf), "-preset", video.preset,
+                "-c:v", "libx264", "-crf", crf, "-preset", video.preset,
                 *h264_8bit_pix_fmt_args(video),
                 *ten_bit_args(video),
                 *ffmpeg_extra_args(video),
             ]
         case "libsvtav1":
-            args = ["-c:v", "libsvtav1", "-crf", str(video.crf), "-preset", video.preset]
+            args = ["-c:v", "libsvtav1", "-crf", crf, "-preset", video.preset]
             args.extend(ten_bit_args(video))
             params = svtav1_params(video)
             if params:
                 args.extend(["-svtav1-params", params])
             return args
-        case "hevc_nvenc":
-            return [
-                "-c:v", "hevc_nvenc", "-rc:v", "vbr", "-b:v", "0", "-cq:v", str(video.crf), "-preset:v", nvenc_effective_preset(video),
-                *nvenc_device_args(callbacks),
-                *ten_bit_args(video),
-                *nvenc_safe_extra_args(video),
-                *ffmpeg_extra_args(video),
-            ]
-        case "hevc_amf":
-            args = ["-c:v", "hevc_amf", "-rc", "cqp", "-qp_p", str(video.crf), "-qp_i", str(video.crf)]
-            if video.preset:
-                args.extend(["-quality", video.preset])
-            args.extend(ten_bit_args(video))
-            args.extend(ffmpeg_extra_args(video))
-            return args
-        case "hevc_qsv":
-            args = ["-c:v", "hevc_qsv", "-global_quality", str(video.crf), "-look_ahead", "1", "-async_depth", "4"]
-            if video.preset:
-                args.extend(["-preset", video.preset])
-            args.extend(ten_bit_args(video))
-            args.extend(ffmpeg_extra_args(video))
-            return args
-        case "hevc_vaapi":
-            return [
-                "-c:v", "hevc_vaapi", "-rc_mode", "CQP", "-qp", str(video.crf),
-                *vaapi_compression_args(video),
-                "-async_depth", "4",
-                *ten_bit_args(video),
-                *ffmpeg_extra_args(video),
-            ]
-        case "h264_nvenc":
-            return [
-                "-c:v", "h264_nvenc", "-rc:v", "vbr", "-b:v", "0", "-cq:v", str(video.crf), "-preset:v", nvenc_effective_preset(video),
-                *nvenc_device_args(callbacks),
-                *h264_8bit_pix_fmt_args(video),
-                *ffmpeg_extra_args(video),
-            ]
-        case "h264_amf":
-            args = ["-c:v", "h264_amf", "-rc", "cqp", "-qp_p", str(video.crf), "-qp_i", str(video.crf)]
-            if video.preset:
-                args.extend(["-quality", video.preset])
-            args.extend(h264_8bit_pix_fmt_args(video))
-            args.extend(ffmpeg_extra_args(video))
-            return args
-        case "h264_qsv":
-            args = ["-c:v", "h264_qsv", "-global_quality", str(video.crf), "-async_depth", "4"]
-            if video.preset:
-                args.extend(["-preset", video.preset])
-            args.extend(h264_8bit_pix_fmt_args(video))
-            args.extend(ffmpeg_extra_args(video))
-            return args
-        case "h264_vaapi":
-            return [
-                "-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", str(video.crf),
-                *vaapi_compression_args(video),
-                "-async_depth", "4",
-                *h264_8bit_pix_fmt_args(video),
-                *ffmpeg_extra_args(video),
-            ]
-        case "av1_nvenc":
-            return [
-                "-c:v", "av1_nvenc", "-rc:v", "vbr", "-b:v", "0", "-cq:v", str(video.crf), "-preset:v", nvenc_effective_preset(video),
-                *nvenc_device_args(callbacks),
-                *ten_bit_args(video),
-                *ffmpeg_extra_args(video),
-            ]
-        case "av1_amf":
-            args = ["-c:v", "av1_amf", "-rc", "cqp", "-qp_p", str(video.crf), "-qp_i", str(video.crf)]
-            if video.preset:
-                args.extend(["-quality", video.preset])
-            args.extend(ten_bit_args(video))
-            args.extend(ffmpeg_extra_args(video))
-            return args
-        case "av1_qsv":
-            args = ["-c:v", "av1_qsv", "-global_quality", str(video.crf), "-async_depth", "4"]
-            if video.preset:
-                args.extend(["-preset", video.preset])
-            args.extend(ten_bit_args(video))
-            args.extend(ffmpeg_extra_args(video))
-            return args
-        case "av1_vaapi":
-            return [
-                "-c:v", "av1_vaapi", "-rc_mode", "CQP", "-qp", str(video.crf),
-                *vaapi_compression_args(video),
-                "-async_depth", "4",
-                *ten_bit_args(video),
-                *ffmpeg_extra_args(video),
-            ]
         case _:
-            return ["-c:v", video.codec, "-crf", str(video.crf)]
+            return ["-c:v", video.codec, "-crf", crf]
 
 
 def _video_codec_args_bitrate_raw(
@@ -835,6 +776,8 @@ def _video_codec_args_bitrate_raw(
     *,
     callbacks: EncodeCodecDomainCallbacks,
 ) -> list[str]:
+    """Codecs logiciels à débit imposé (débit moyen, taille cible en 2 passes)."""
+    _ = callbacks
     match video.codec:
         case "copy":
             return ["-c:v", "copy"]
@@ -859,94 +802,6 @@ def _video_codec_args_bitrate_raw(
             if params:
                 args.extend(["-svtav1-params", params])
             return args
-        case "hevc_nvenc":
-            return [
-                "-c:v", "hevc_nvenc", "-b:v", f"{bitrate_kbps}k", "-preset:v", nvenc_effective_preset(video),
-                *nvenc_device_args(callbacks),
-                *ten_bit_args(video),
-                *nvenc_safe_extra_args(video),
-                *ffmpeg_extra_args(video),
-            ]
-        case "hevc_amf":
-            args = ["-c:v", "hevc_amf", "-b:v", f"{bitrate_kbps}k"]
-            if video.preset:
-                args.extend(["-quality", video.preset])
-            args.extend(ten_bit_args(video))
-            args.extend(ffmpeg_extra_args(video))
-            return args
-        case "hevc_qsv":
-            args = ["-c:v", "hevc_qsv", "-b:v", f"{bitrate_kbps}k", "-async_depth", "4"]
-            if video.preset:
-                args.extend(["-preset", video.preset])
-            args.extend(ten_bit_args(video))
-            args.extend(ffmpeg_extra_args(video))
-            return args
-        case "hevc_vaapi":
-            return [
-                "-c:v", "hevc_vaapi", "-rc_mode", "VBR", "-b:v", f"{bitrate_kbps}k",
-                *vaapi_compression_args(video),
-                "-async_depth", "4",
-                *ten_bit_args(video),
-                *ffmpeg_extra_args(video),
-            ]
-        case "h264_nvenc":
-            return [
-                "-c:v", "h264_nvenc", "-b:v", f"{bitrate_kbps}k", "-preset:v", nvenc_effective_preset(video),
-                *nvenc_device_args(callbacks),
-                *h264_8bit_pix_fmt_args(video),
-                *ffmpeg_extra_args(video),
-            ]
-        case "h264_amf":
-            args = ["-c:v", "h264_amf", "-b:v", f"{bitrate_kbps}k"]
-            if video.preset:
-                args.extend(["-quality", video.preset])
-            args.extend(h264_8bit_pix_fmt_args(video))
-            args.extend(ffmpeg_extra_args(video))
-            return args
-        case "h264_qsv":
-            args = ["-c:v", "h264_qsv", "-b:v", f"{bitrate_kbps}k", "-async_depth", "4"]
-            if video.preset:
-                args.extend(["-preset", video.preset])
-            args.extend(h264_8bit_pix_fmt_args(video))
-            args.extend(ffmpeg_extra_args(video))
-            return args
-        case "h264_vaapi":
-            return [
-                "-c:v", "h264_vaapi", "-rc_mode", "VBR", "-b:v", f"{bitrate_kbps}k",
-                *vaapi_compression_args(video),
-                "-async_depth", "4",
-                *h264_8bit_pix_fmt_args(video),
-                *ffmpeg_extra_args(video),
-            ]
-        case "av1_nvenc":
-            return [
-                "-c:v", "av1_nvenc", "-b:v", f"{bitrate_kbps}k", "-preset:v", nvenc_effective_preset(video),
-                *nvenc_device_args(callbacks),
-                *ten_bit_args(video),
-                *ffmpeg_extra_args(video),
-            ]
-        case "av1_amf":
-            args = ["-c:v", "av1_amf", "-b:v", f"{bitrate_kbps}k"]
-            if video.preset:
-                args.extend(["-quality", video.preset])
-            args.extend(ten_bit_args(video))
-            args.extend(ffmpeg_extra_args(video))
-            return args
-        case "av1_qsv":
-            args = ["-c:v", "av1_qsv", "-b:v", f"{bitrate_kbps}k", "-async_depth", "4"]
-            if video.preset:
-                args.extend(["-preset", video.preset])
-            args.extend(ten_bit_args(video))
-            args.extend(ffmpeg_extra_args(video))
-            return args
-        case "av1_vaapi":
-            return [
-                "-c:v", "av1_vaapi", "-rc_mode", "VBR", "-b:v", f"{bitrate_kbps}k",
-                *vaapi_compression_args(video),
-                "-async_depth", "4",
-                *ten_bit_args(video),
-                *ffmpeg_extra_args(video),
-            ]
         case _:
             return ["-c:v", video.codec, "-b:v", f"{bitrate_kbps}k"]
 

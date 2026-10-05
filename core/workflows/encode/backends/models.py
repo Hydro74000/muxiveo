@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from core.runner import TaskSignals
+from core.workflows.encode.catalog import RateControlSpec
 from core.workflows.encode.domain.codecs import ExtraParamsReport
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
 
@@ -46,6 +47,8 @@ class BackendCapabilities:
     supports_dovi: bool = False
     supports_hdr10plus: bool = False
     supports_hdr: bool = True
+    #: Modes de débit proposés dans la liste Mode (catalog.VIDEO_RATE_CONTROLS).
+    rate_controls: tuple[RateControlSpec, ...] = ()
 
     def supports_quality_mode(self, mode: QualityMode) -> bool:
         return mode in self.quality_modes

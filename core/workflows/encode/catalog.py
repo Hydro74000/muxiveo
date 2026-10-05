@@ -407,6 +407,165 @@ STATIC_HDR_METADATA_MODE_BY_CODEC: dict[str, StaticHdrMetadataMode] = {
 }
 
 
+@dataclass(frozen=True)
+class RateControlSpec:
+    """Mode de débit proposé par un codec (liste Mode de l'onglet Video).
+
+    ``family`` : famille de valeurs, alignée sur ``QualityMode`` ("crf", "cq",
+    "bitrate", "size"). Une valeur de qualité est saisie si ``quality_label``
+    est renseigné ; un débit (kbps) si ``bitrate``.
+    """
+
+    rc_id: str
+    label: str
+    family: str
+    quality_label: str = ""
+    quality_range: tuple[int, int] = (0, 51)
+    quality_default: int = 0
+    bitrate: bool = False
+
+    @property
+    def uses_quality(self) -> bool:
+        return bool(self.quality_label)
+
+
+_RC = RateControlSpec
+_SIZE = _RC("size", "Taille cible (Mo)", "size")
+_BITRATE_SW = _RC("abr", "Débit moyen (kbps)", "bitrate", bitrate=True)
+
+
+def _nvenc_rate_controls(av1: bool) -> tuple[RateControlSpec, ...]:
+    return (
+        _RC("vbr_cq", "Qualité constante (VBR + CQ)", "cq", "CQ", (1, 63) if av1 else (1, 51), 32 if av1 else 26),
+        _RC("constqp", "QP constant (CQP)", "cq", "QP", (0, 255) if av1 else (0, 51), 96 if av1 else 24),
+        _RC("vbr", "Débit variable (VBR)", "bitrate", bitrate=True),
+        _RC("cbr", "Débit constant (CBR)", "bitrate", bitrate=True),
+        _SIZE,
+    )
+
+
+def _amf_rate_controls(av1: bool) -> tuple[RateControlSpec, ...]:
+    return (
+        _RC("cqp", "QP constant (CQP)", "cq", "QP", (0, 255) if av1 else (0, 51), 96 if av1 else 24),
+        _RC("qvbr", "Qualité VBR (QVBR)", "cq", "Qualité", (1, 51), 23, bitrate=True),
+        _RC("vbr_peak", "VBR (pic contraint)", "bitrate", bitrate=True),
+        _RC("vbr_latency", "VBR (latence contrainte)", "bitrate", bitrate=True),
+        _RC("hqvbr", "VBR haute qualité", "bitrate", bitrate=True),
+        _RC("cbr", "Débit constant (CBR)", "bitrate", bitrate=True),
+        _RC("hqcbr", "CBR haute qualité", "bitrate", bitrate=True),
+        _SIZE,
+    )
+
+
+# ffmpeg 8.1 choisit le mode QSV d'après les options : -global_quality seul donne
+# un QP constant (ICQ / QVBR non sélectionnables, vérifié sur Intel UHD 630).
+_QSV_RATE_CONTROLS: tuple[RateControlSpec, ...] = (
+    _RC("cqp", "QP constant (CQP)", "cq", "QP", (1, 51), 24),
+    _RC("vbr", "Débit variable (VBR)", "bitrate", bitrate=True),
+    _RC("cbr", "Débit constant (CBR)", "bitrate", bitrate=True),
+    _SIZE,
+)
+
+
+def _vaapi_rate_controls(av1: bool) -> tuple[RateControlSpec, ...]:
+    """Modes ``-rc_mode`` ; ceux que le pilote refuse sont écartés à la détection matérielle."""
+    return (
+        _RC("cqp", "QP constant (CQP)", "cq", "QP", (0, 255) if av1 else (0, 52), 96 if av1 else 25),
+        _RC("icq", "Qualité constante (ICQ)", "cq", "Qualité", (1, 51), 25),
+        _RC("qvbr", "Qualité VBR (QVBR)", "cq", "Qualité", (1, 51), 25, bitrate=True),
+        _RC("vbr", "Débit variable (VBR)", "bitrate", bitrate=True),
+        _RC("cbr", "Débit constant (CBR)", "bitrate", bitrate=True),
+        _RC("avbr", "Débit moyen (AVBR)", "bitrate", bitrate=True),
+        _SIZE,
+    )
+
+
+def _nvencc_rate_controls(av1: bool) -> tuple[RateControlSpec, ...]:
+    return (
+        _RC("qvbr", "Qualité constante (QVBR)", "cq", "Qualité", (0, 63) if av1 else (0, 51), 32 if av1 else 26),
+        _RC("cqp", "QP constant (CQP)", "cq", "QP", (0, 255) if av1 else (0, 51), 96 if av1 else 24),
+        _RC("vbr_quality", "VBR + qualité cible", "cq", "Qualité", (0, 63) if av1 else (0, 51),
+            32 if av1 else 26, bitrate=True),
+        _RC("vbr", "Débit variable (VBR)", "bitrate", bitrate=True),
+        _RC("cbr", "Débit constant (CBR)", "bitrate", bitrate=True),
+        _SIZE,
+    )
+
+
+VIDEO_RATE_CONTROLS: dict[str, tuple[RateControlSpec, ...]] = {
+    "libx264": (_RC("crf", "CRF", "crf", "CRF", (0, 51), 18), _BITRATE_SW, _SIZE),
+    "libx265": (_RC("crf", "CRF", "crf", "CRF", (0, 51), 18), _BITRATE_SW, _SIZE),
+    "libsvtav1": (_RC("crf", "CRF", "crf", "CRF", (0, 63), 30), _BITRATE_SW, _SIZE),
+    "hevc_nvenc": _nvenc_rate_controls(av1=False),
+    "h264_nvenc": _nvenc_rate_controls(av1=False),
+    "av1_nvenc": _nvenc_rate_controls(av1=True),
+    "hevc_amf": _amf_rate_controls(av1=False),
+    "h264_amf": _amf_rate_controls(av1=False),
+    "av1_amf": _amf_rate_controls(av1=True),
+    "hevc_qsv": _QSV_RATE_CONTROLS,
+    "h264_qsv": _QSV_RATE_CONTROLS,
+    "av1_qsv": _QSV_RATE_CONTROLS,
+    "hevc_vaapi": _vaapi_rate_controls(av1=False),
+    "h264_vaapi": _vaapi_rate_controls(av1=False),
+    "av1_vaapi": _vaapi_rate_controls(av1=True),
+    "nvencc_hevc": _nvencc_rate_controls(av1=False),
+    "nvencc_h264": _nvencc_rate_controls(av1=False),
+    "nvencc_av1": _nvencc_rate_controls(av1=True),
+}
+
+# Ancien choix (CRF / CQ / débit / taille) → mode de débit du codec.
+_LEGACY_RATE_CONTROL: dict[str, dict[str, str]] = {
+    "software": {"crf": "crf", "cq": "crf", "bitrate": "abr", "size": "size"},
+    "nvenc": {"crf": "vbr_cq", "cq": "vbr_cq", "bitrate": "vbr", "size": "size"},
+    "amf": {"crf": "cqp", "cq": "cqp", "bitrate": "vbr_peak", "size": "size"},
+    "qsv": {"crf": "cqp", "cq": "cqp", "bitrate": "vbr", "size": "size"},
+    "vaapi": {"crf": "cqp", "cq": "cqp", "bitrate": "vbr", "size": "size"},
+    "nvencc": {"crf": "cqp", "cq": "qvbr", "bitrate": "vbr", "size": "size"},
+}
+
+# Preset proposé par défaut au choix du codec (la liste complète reste disponible).
+_DEFAULT_PRESETS: dict[str, str] = {
+    "libx264": "slow", "libx265": "slow", "libsvtav1": "6",
+    "hevc_nvenc": "p5", "h264_nvenc": "p5", "av1_nvenc": "p5",
+    "hevc_amf": "balanced", "h264_amf": "balanced", "av1_amf": "balanced",
+    "hevc_qsv": "medium", "h264_qsv": "medium", "av1_qsv": "medium",
+    "hevc_vaapi": "", "h264_vaapi": "", "av1_vaapi": "",
+    "nvencc_hevc": "default", "nvencc_h264": "default", "nvencc_av1": "default",
+}
+
+
+def rate_controls_for_codec(codec: str | None) -> tuple[RateControlSpec, ...]:
+    """Modes de débit du codec (vide pour copy / codec inconnu)."""
+    return VIDEO_RATE_CONTROLS.get(str(codec or "").strip().lower(), ())
+
+
+def rate_control_spec(codec: str | None, rc_id: str | None) -> RateControlSpec | None:
+    return next((spec for spec in rate_controls_for_codec(codec) if spec.rc_id == rc_id), None)
+
+
+def resolve_rate_control(codec: str | None, rc_id: str | None, legacy_mode: str | None) -> RateControlSpec | None:
+    """Mode de débit effectif : choix explicite, sinon équivalent de l'ancien mode."""
+    spec = rate_control_spec(codec, rc_id)
+    if spec is not None:
+        return spec
+    family = video_codec_family(str(codec or ""))
+    table = _LEGACY_RATE_CONTROL.get(family.value, {})
+    mode = str(getattr(legacy_mode, "value", legacy_mode) or "crf").strip().lower()
+    spec = rate_control_spec(codec, table.get(mode))
+    if spec is not None:
+        return spec
+    controls = rate_controls_for_codec(codec)
+    return controls[0] if controls else None
+
+
+def default_preset_for_codec(codec: str | None) -> str:
+    normalized = str(codec or "").strip().lower()
+    if normalized in _DEFAULT_PRESETS:
+        return _DEFAULT_PRESETS[normalized]
+    presets = presets_for_codec(normalized)
+    return presets[0] if presets else ""
+
+
 def presets_for_codec(codec: str) -> list[str]:
     spec = video_codec_spec(codec)
     if spec is not None:
@@ -498,6 +657,12 @@ __all__ = [
     "hdr_capabilities",
     "AudioCodecSpec",
     "SOFTWARE_VIDEO_CODECS",
+    "RateControlSpec",
+    "VIDEO_RATE_CONTROLS",
+    "rate_controls_for_codec",
+    "rate_control_spec",
+    "resolve_rate_control",
+    "default_preset_for_codec",
     "HARDWARE_VIDEO_CODECS",
     "AUDIO_CODECS",
     "X265_PRESETS",

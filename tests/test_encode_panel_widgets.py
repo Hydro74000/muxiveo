@@ -1543,7 +1543,7 @@ class TestEncodePanelDynamicHdrDefaults:
         assert panel._max_cll.isReadOnly() is False
         panel.close()
 
-    def test_nvencc_h264_disables_dynamic_hdr_and_hides_size_mode(self, qt_app):
+    def test_nvencc_h264_disables_dynamic_hdr_and_offers_size_mode(self, qt_app):
         panel = EncodePanel(AppConfig())
         panel._hw_encoders = {"nvencc_h264"}
         panel._populate_codec_combo()
@@ -1563,7 +1563,8 @@ class TestEncodePanelDynamicHdrDefaults:
         assert panel._copy_hdr10plus_cb.isEnabled() is False
         assert panel._copy_dv_cb.isChecked() is False
         assert panel._copy_hdr10plus_cb.isChecked() is False
-        assert all(mode != "size" and getattr(mode, "value", None) != "size" for mode in mode_values)
+        # V33 : taille cible NVEncC en une passe VBR plafonnée.
+        assert mode_values == ["qvbr", "cqp", "vbr_quality", "vbr", "cbr", "size"]
         panel.close()
 
     def test_nvencc_av1_enables_dynamic_hdr_passthrough(self, qt_app):
@@ -1976,7 +1977,7 @@ class TestEncodePanelAuditLot1:
         panel.log_message.connect(lambda level, msg: warnings.append(msg) if level == "WARN" else None)
         for name, preset in (
             ("absent", EncodePreset(name="absent", codec="libfoo", crf=30)),
-            ("mode", EncodePreset(name="mode", codec="libx265", quality_mode="cq", crf=30)),
+            ("preset", EncodePreset(name="preset", codec="libx265", preset="p7", crf=30)),
         ):
             panel._profiles.save(preset)
             panel._refresh_profiles(select=name)
@@ -2123,3 +2124,112 @@ class TestEncodePanelAuditLot3:
         source_video = hlg._video_track_for_entry(*hlg._video_tracks[0][:2])
         assert hlg._video_hdr_badges_from_state(state, source_video=source_video) == ("HLG",)
         hlg.close()
+
+
+class TestEncodePanelAuditLot4:
+    """Lot 4 : modes de débit par codec (V19 / V20), presets par défaut (V41)."""
+
+    def _panel(self, hw: set[str], rate_controls: dict[str, frozenset[str]] | None = None, tracks: int = 1):
+        panel = EncodePanel(AppConfig())
+        panel._on_hw_detected(hw, panel._sw_encoders, panel._config.tool_ffmpeg, rate_controls or {})
+        info = _file_info(_PATH_A, [_video_track(i, HDRType.NONE) for i in range(tracks)])
+        entries = []
+        for i in range(tracks):
+            entry = _video_entry(i)
+            entry.entry_id = f"video-lot4-{i}"
+            entries.append((info, entry, _COLOR))
+        panel.set_video_tracks(entries)
+        return panel
+
+    @staticmethod
+    def _modes(panel: EncodePanel) -> list[str]:
+        return [panel._mode_combo.itemData(i) for i in range(panel._mode_combo.count())]
+
+    def test_v19_mode_list_follows_codec_and_driver(self, qt_app):
+        panel = self._panel({"hevc_vaapi"}, {"hevc_vaapi": frozenset({"cqp", "qvbr", "vbr", "size"})})
+        _select_codec(panel, "hevc_vaapi")
+        assert self._modes(panel) == ["cqp", "qvbr", "vbr", "size"]
+        assert panel._preset_combo.currentData() == ""
+        panel._set_combo_data(panel._mode_combo, "qvbr")
+        assert not panel._quality_value_label.isHidden() and panel._quality_value_label.text() == "Qualité"
+        assert not panel._bitrate_widget.isHidden() and panel._size_widget.isHidden()
+        panel._cq_spin.setValue(28)
+        panel._bitrate_edit.setText("9000")
+        video = panel._current_video_settings()
+        assert (video.rate_control, video.quality_mode.value, video.cq, video.bitrate_kbps) == (
+            "qvbr", "cq", 28, 9000,
+        )
+        plan = panel._video_plan_from_state(
+            entry_id="video-lot4-0", state=panel._current_video_state(), source_video=None,
+        )
+        assert plan.codec_summary == "hevc_vaapi - Qualité VBR (QVBR) (Qualité 28, 9000 kbps)"
+        panel._set_combo_data(panel._mode_combo, "size")
+        assert panel._quality_value_label.isHidden() and panel._bitrate_widget.isHidden()
+        assert not panel._size_widget.isHidden()
+        panel.close()
+
+    def test_quality_scale_follows_mode(self, qt_app):
+        panel = self._panel({"hevc_nvenc", "av1_nvenc"})
+        _select_codec(panel, "libx265")
+        panel._crf_spin.setValue(20)
+        _select_codec(panel, "hevc_nvenc")
+        assert panel._mode_combo.currentData() == "vbr_cq"
+        assert (panel._cq_spin.minimum(), panel._cq_spin.maximum(), panel._cq_spin.value()) == (1, 51, 26)
+        assert panel._preset_combo.currentData() == "p5"
+        panel._cq_spin.setValue(30)
+        panel._set_combo_data(panel._mode_combo, "constqp")
+        assert panel._quality_value_label.text() == "QP" and panel._cq_spin.value() == 24
+        _select_codec(panel, "av1_nvenc")
+        assert panel._mode_combo.currentData() == "constqp"
+        assert (panel._cq_spin.maximum(), panel._cq_spin.value()) == (255, 96)
+        _select_codec(panel, "libx265")
+        assert panel._mode_combo.currentData() == "crf" and panel._crf_spin.value() == 20
+        panel.close()
+
+    def test_rate_control_restored_per_track(self, qt_app):
+        panel = self._panel({"hevc_vaapi"}, tracks=2)
+        _select_codec(panel, "hevc_vaapi")
+        panel._set_combo_data(panel._mode_combo, "icq")
+        panel._cq_spin.setValue(33)
+        panel._video_list.setCurrentRow(1)
+        assert panel._codec_combo.currentData() == "copy"
+        panel._video_list.setCurrentRow(0)
+        assert panel._mode_combo.currentData() == "icq" and panel._cq_spin.value() == 33
+        panel.close()
+
+    def test_v41_hw_detection_keeps_codec_preset(self, qt_app):
+        panel = self._panel(set())
+        _select_codec(panel, "libx265")
+        panel._preset_combo.setCurrentIndex(panel._preset_combo.findData("veryslow"))
+        panel._on_hw_detected({"hevc_nvenc"}, panel._sw_encoders, panel._config.tool_ffmpeg, {})
+        assert panel._codec_combo.currentData() == "libx265"
+        assert panel._preset_combo.currentData() == "veryslow"
+        panel.close()
+
+    def test_legacy_profile_migrates_quality_value(self, qt_app, tmp_path):
+        panel = self._panel({"hevc_nvenc"})
+        panel._profiles = ProfileManager(tmp_path)
+        for name, preset, mode, spin in (
+            ("x265-cq", EncodePreset(name="x265-cq", codec="libx265", quality_mode="cq", cq=24), "crf", "_crf_spin"),
+            ("nvenc-crf", EncodePreset(name="nvenc-crf", codec="hevc_nvenc", quality_mode="crf", crf=21,
+                                       preset="p7"), "vbr_cq", "_cq_spin"),
+        ):
+            panel._profiles.save(preset)
+            panel._refresh_profiles(select=name)
+            panel._load_profile()
+            assert panel._mode_combo.currentData() == mode
+            assert getattr(panel, spin).value() == (24 if mode == "crf" else 21)
+        assert panel._preset_combo.currentData() == "p7"
+        panel.close()
+
+    def test_driver_refused_mode_profile_is_not_applied(self, qt_app, tmp_path):
+        panel = self._panel({"hevc_vaapi"}, {"hevc_vaapi": frozenset({"cqp", "vbr", "size"})})
+        panel._profiles = ProfileManager(tmp_path)
+        _select_codec(panel, "libx265")
+        warnings: list[str] = []
+        panel.log_message.connect(lambda level, msg: warnings.append(msg) if level == "WARN" else None)
+        panel._profiles.save(EncodePreset(name="icq", codec="hevc_vaapi", rate_control="icq", preset=""))
+        panel._refresh_profiles(select="icq")
+        panel._load_profile()
+        assert panel._codec_combo.currentData() == "libx265" and len(warnings) == 1
+        panel.close()

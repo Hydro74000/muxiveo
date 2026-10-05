@@ -1085,7 +1085,8 @@ class TestWorkflowNvenccShortCircuit:
         assert cmd[0] == "/usr/bin/NVEncC"
         assert "--cqp" in cmd
 
-    def test_validate_rejects_size_mode(self, tmp_path: Path):
+    def test_validate_accepts_size_mode(self, tmp_path: Path):
+        """V33 : taille cible NVEncC acceptée (une passe VBR plafonnée)."""
         wf = self._make_wf()
         config = _make_encode_config(
             tmp_path / "in.mkv", tmp_path / "out.mkv",
@@ -1093,7 +1094,7 @@ class TestWorkflowNvenccShortCircuit:
             target_size_mb=2000,
         )
         errors = wf.validate(config)
-        assert any("taille cible" in err.lower() for err in errors)
+        assert not any("taille cible" in err.lower() for err in errors)
 
     def test_validate_rejects_missing_binary(self, tmp_path: Path):
         wf = self._make_wf(nvencc=None)

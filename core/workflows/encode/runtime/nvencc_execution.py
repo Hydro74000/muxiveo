@@ -27,7 +27,7 @@ from core.subprocess_utils import (
     decode_subprocess_output,
     subprocess_windows_no_window_kwargs,
 )
-from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode, VideoEncodeSettings
+from core.workflows.encode.models import EncodeConfig, EncodeError, VideoEncodeSettings
 from core.workflows.encode.planning.offsets import track_offset_ms as _track_offset_ms_plan
 from core.workflows.encode.planning.offsets import build_offset_specs as _build_offset_specs_plan
 from core.workflows.encode.planning.plan_models import EncodePlan, MaterializedContainerMetadataPlan
@@ -786,8 +786,6 @@ def build_nvencc_pipeline_commands(
     if not _is_nvencc_codec_runtime(video.codec):
         return None
     if not nvencc_bin:
-        return None
-    if video.quality_mode == QualityMode.SIZE:
         return None
 
     work_dir = (config.work_dir or Path(tempfile.gettempdir())).resolve()

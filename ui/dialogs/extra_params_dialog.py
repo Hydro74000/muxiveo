@@ -37,7 +37,11 @@ from PySide6.QtWidgets import (
 
 from core.workflows.encode.backends import backend_id_for_codec
 from core.workflows.encode.domain.codecs import ffmpeg_option_name, ffmpeg_option_owned_by_workflow
-from core.workflows.encode.runtime.nvencc import NVENCC_WORKFLOW_OWNED_FLAGS, nvencc_option_name
+from core.workflows.encode.runtime.nvencc import (
+    NVENCC_RATE_CONTROL_OPTIONS,
+    NVENCC_WORKFLOW_OWNED_FLAGS,
+    nvencc_option_name,
+)
 from core.i18n import apply_translations, translate_text
 from ui.design_system import colors as _C
 from ui.styles import (
@@ -1903,6 +1907,20 @@ def option_owned_by_workflow(codec: str, key: str) -> bool:
     return ffmpeg_option_owned_by_workflow(f"-{key}")
 
 
+# Options VAAPI du mode de débit, réglées par la liste Mode de l'onglet Video.
+_VAAPI_RATE_CONTROL_OPTIONS = frozenset({"rc_mode", "qp", "q", "global_quality", "b"})
+
+
+def option_covered_by_mode(codec: str, key: str) -> bool:
+    """Option de débit couverte par la liste Mode (ligne grisée, saisie manuelle possible)."""
+    normalized = str(codec or "").strip().lower()
+    if backend_id_for_codec(normalized) == "nvencc":
+        return nvencc_option_name(f"--{key}") in NVENCC_RATE_CONTROL_OPTIONS
+    if normalized.endswith("_vaapi"):
+        return ffmpeg_option_name(f"-{key}") in _VAAPI_RATE_CONTROL_OPTIONS
+    return False
+
+
 def option_canonical_name(codec: str, key: str) -> str:
     """Nom canonique de l'option d'une ligne (clé des valeurs posées par le workflow)."""
     if backend_id_for_codec(str(codec or "").strip().lower()) == "nvencc":
@@ -2279,6 +2297,7 @@ class _ParamRow(QWidget):
         infotip_filter: _InfotipFilter | None = None,
         owned_by_workflow: bool = False,
         workflow_value: str | None = None,
+        covered_by_mode: bool = False,
     ) -> None:
         super().__init__()
         self._spec = spec
@@ -2318,7 +2337,21 @@ class _ParamRow(QWidget):
             enabled, raw = initial
             self._enabled_cb.setChecked(enabled and not owned_by_workflow)
             self._set_widget_value(raw)
-        if workflow_value is not None and not owned_by_workflow:
+        if covered_by_mode and not owned_by_workflow:
+            # Mode de débit choisi dans l'onglet Video : ligne grisée. Une saisie
+            # manuelle existante reste décochable (elle remplace le mode, WARN).
+            if workflow_value is not None and initial is None:
+                self._set_widget_value(workflow_value)
+            mode_tip = translate_text(
+                "Réglé par la liste Mode de l'onglet Video{value}.",
+                value=f" : {workflow_value}" if workflow_value else "",
+            )
+            manual = bool(initial is not None and initial[0])
+            self._enabled_cb.setEnabled(manual)
+            self._enabled_cb.setToolTip(mode_tip)
+            lbl.setToolTip(mode_tip)
+            lbl.setEnabled(manual)
+        elif workflow_value is not None and not owned_by_workflow:
             # Valeur posée par l'onglet Video : affichée, appliquée seulement si cochée.
             if initial is None:
                 self._set_widget_value(workflow_value)
@@ -2618,6 +2651,7 @@ class ExtraParamsDialog(QDialog):
                 infotip_filter=self._infotip_filter,
                 owned_by_workflow=option_owned_by_workflow(self._codec, spec.key),
                 workflow_value=self._workflow_values.get(option_canonical_name(self._codec, spec.key)),
+                covered_by_mode=option_covered_by_mode(self._codec, spec.key),
             )
             self._rows[spec.key] = row
             row.findChild(QCheckBox).toggled.connect(self._refresh_preview)   # type: ignore[union-attr]

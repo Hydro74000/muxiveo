@@ -36,6 +36,7 @@ from core.workflows.encode.runtime.nvencc import (
 
 _NULLSRC = "nullsrc=s=256x256:r=25:d=0.1"   # ≥ 1 frame garantie (25fps × 0.1s)
 _AV1_NVENC = "av1_nvenc"
+_VAAPI_SUPPORTED_MODES_RE = re.compile(r"supported modes:\s*([A-Z, ]+)")
 _GENERIC_HW_FILTER = "format=nv12"
 _VAAPI_FILTER = "format=nv12,hwupload"
 
@@ -65,6 +66,9 @@ class HardwareEncoderDetector:
         self._vaapi_device_cache: str | None = None
         self._vaapi_device_cached = False
         self._qsv_device_cache: dict[str, str | None] = {}
+        #: Modes de débit acceptés par le pilote, par codec sondé (VAAPI) :
+        #: identifiants de catalog.VIDEO_RATE_CONTROLS. Codec absent = non sondé.
+        self.rate_controls: dict[str, frozenset[str]] = {}
 
     @staticmethod
     def _resolve_ffmpeg(ffmpeg_bin: str) -> str:
@@ -209,6 +213,10 @@ class HardwareEncoderDetector:
             if nvenc_compiled:
                 available |= self._detect_nvenc(resolved, nvenc_compiled)
             available |= self._probe_codecs(resolved, compiled - _NVENC_CODECS)
+            for codec_id in sorted(available & _VAAPI_CODECS):
+                supported = self._probe_vaapi_rate_controls(resolved, codec_id)
+                if supported:
+                    self.rate_controls[codec_id] = supported
         else:
             ff = ffmpeg_bin
 
@@ -294,6 +302,56 @@ class HardwareEncoderDetector:
             return available
 
         return self._probe_codecs(ffmpeg_bin, compiled)
+
+    def _probe_vaapi_rate_controls(self, ffmpeg_bin: str, codec_id: str) -> frozenset[str]:
+        """Modes ``-rc_mode`` acceptés par le pilote VAAPI pour ce codec.
+
+        Un mode refusé fait lister à ffmpeg ceux du pilote (« supported modes: … ») :
+        une sonde suffit en général ; sinon chaque mode est essayé. La taille cible
+        (VBR plafonné) suit VBR.
+        """
+        device = self._cached_vaapi_device()
+        if device is None:
+            return frozenset()
+        quality = ["-global_quality", "25"]
+        cqp = quality if codec_id == "av1_vaapi" else ["-qp", "25"]
+        probes = (
+            ("ICQ", quality),
+            ("AVBR", ["-b:v", "1M"]),
+            ("QVBR", ["-b:v", "1M", *quality]),
+            ("CBR", ["-b:v", "1M"]),
+            ("VBR", ["-b:v", "1M"]),
+            ("CQP", cqp),
+        )
+        accepted: set[str] = set()
+        for mode, values in probes:
+            try:
+                result = subprocess.run(
+                    [
+                        ffmpeg_bin, "-hide_banner", "-loglevel", "verbose",
+                        "-vaapi_device", device,
+                        "-f", "lavfi", "-i", _NULLSRC,
+                        "-vf", _VAAPI_FILTER, "-frames:v", "1",
+                        "-c:v", codec_id, "-rc_mode", mode, *values,
+                        "-f", "null", "-",
+                    ],
+                    capture_output=True,
+                    check=False,
+                    timeout=15,
+                    **subprocess_text_kwargs(),
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                return frozenset()
+            listed = _VAAPI_SUPPORTED_MODES_RE.search(result.stderr or "")
+            if listed:
+                modes = {part.strip().lower() for part in listed.group(1).split(",") if part.strip()}
+                accepted |= modes
+                break
+            if result.returncode == 0:
+                accepted.add(mode.lower())
+        if "vbr" in accepted:
+            accepted.add("size")
+        return frozenset(accepted)
 
     def _nvidia_av1_capable(self, ffmpeg_bin: str) -> bool:
         """GPU NVIDIA capable d'encoder l'AV1 (10 bits / HDR compris).

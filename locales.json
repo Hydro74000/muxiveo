@@ -5178,5 +5178,77 @@
   "Valeurs source": {
     "fra": "Valeurs source",
     "eng": "Source values"
+  },
+  "Taille cible (Mo)": {
+    "fra": "Taille cible (Mo)",
+    "eng": "Target size (MB)"
+  },
+  "Débit moyen (kbps)": {
+    "fra": "Débit moyen (kbps)",
+    "eng": "Average bitrate (kbps)"
+  },
+  "Qualité constante (VBR + CQ)": {
+    "fra": "Qualité constante (VBR + CQ)",
+    "eng": "Constant quality (VBR + CQ)"
+  },
+  "QP constant (CQP)": {
+    "fra": "QP constant (CQP)",
+    "eng": "Constant QP (CQP)"
+  },
+  "Débit variable (VBR)": {
+    "fra": "Débit variable (VBR)",
+    "eng": "Variable bitrate (VBR)"
+  },
+  "Débit constant (CBR)": {
+    "fra": "Débit constant (CBR)",
+    "eng": "Constant bitrate (CBR)"
+  },
+  "Qualité VBR (QVBR)": {
+    "fra": "Qualité VBR (QVBR)",
+    "eng": "Quality VBR (QVBR)"
+  },
+  "VBR (pic contraint)": {
+    "fra": "VBR (pic contraint)",
+    "eng": "VBR (peak constrained)"
+  },
+  "VBR (latence contrainte)": {
+    "fra": "VBR (latence contrainte)",
+    "eng": "VBR (latency constrained)"
+  },
+  "VBR haute qualité": {
+    "fra": "VBR haute qualité",
+    "eng": "High quality VBR"
+  },
+  "CBR haute qualité": {
+    "fra": "CBR haute qualité",
+    "eng": "High quality CBR"
+  },
+  "Qualité constante (ICQ)": {
+    "fra": "Qualité constante (ICQ)",
+    "eng": "Constant quality (ICQ)"
+  },
+  "Débit moyen (AVBR)": {
+    "fra": "Débit moyen (AVBR)",
+    "eng": "Average bitrate (AVBR)"
+  },
+  "Qualité constante (QVBR)": {
+    "fra": "Qualité constante (QVBR)",
+    "eng": "Constant quality (QVBR)"
+  },
+  "VBR + qualité cible": {
+    "fra": "VBR + qualité cible",
+    "eng": "VBR + target quality"
+  },
+  "Qualité": {
+    "fra": "Qualité",
+    "eng": "Quality"
+  },
+  "Réglé par la liste Mode de l'onglet Video{value}.": {
+    "fra": "Réglé par la liste Mode de l'onglet Video{value}.",
+    "eng": "Set by the Mode list of the Video tab{value}."
+  },
+  "Taille du fichier complet : audio, sous-titres, pièces jointes et vidéo copiée sont déduits, le reste est réparti entre les pistes vidéo encodées.\nLogiciel : 2 passes. Matériel : 1 passe VBR plafonnée (taille approchée).": {
+    "fra": "Taille du fichier complet : audio, sous-titres, pièces jointes et vidéo copiée sont déduits, le reste est réparti entre les pistes vidéo encodées.\nLogiciel : 2 passes. Matériel : 1 passe VBR plafonnée (taille approchée).",
+    "eng": "Size of the whole file: audio, subtitles, attachments and copied video are deducted, the rest is shared between the encoded video tracks.\nSoftware: 2 passes. Hardware: 1 capped VBR pass (approximate size)."
   }
 }

@@ -15,7 +15,7 @@ from core.workflows.encode.backends.models import (
 )
 from core.workflows.encode.backends.progress import parse_nvencc_progress
 from core.workflows.encode.catalog import (
-    CQ_CAPABLE_VIDEO_CODECS,
+    rate_controls_for_codec,
     supports_dovi,
     supports_hdr10plus,
     supports_hdr_output,
@@ -46,13 +46,12 @@ class NvenccEncodeBackend(EncodeBackend):
         config_ctx: BackendContext | None = None,
     ) -> BackendCapabilities:
         _ = config_ctx
-        modes: list[QualityMode] = [QualityMode.CRF]
-        if codec in CQ_CAPABLE_VIDEO_CODECS:
-            modes.append(QualityMode.CQ)
-        modes.append(QualityMode.BITRATE)
+        controls = rate_controls_for_codec(codec)
+        modes = tuple(dict.fromkeys(QualityMode(spec.family) for spec in controls)) or (QualityMode.CRF,)
         return BackendCapabilities(
             backend_id=self.backend_id,
-            quality_modes=tuple(modes),
+            quality_modes=modes,
+            rate_controls=controls,
             supports_dynamic_hdr=nvencc_supports_dynamic_hdr(codec),
             supports_dovi=supports_dovi(codec),
             supports_hdr10plus=supports_hdr10plus(codec),
@@ -95,8 +94,6 @@ class NvenccEncodeBackend(EncodeBackend):
                 errors.append(str(exc))
         if not ctx.workflow._nvencc_bin:
             errors.append("NVEncC est sélectionné mais le binaire n'est pas configuré.")
-        if video.quality_mode == QualityMode.SIZE:
-            errors.append("NVEncC ne supporte pas le mode taille cible (2 passes) dans cette version.")
         if video.inject_hdr_meta and not supports_hdr_output(video.codec):
             errors.append(f"{video.codec} ne supporte pas les métadonnées HDR statiques.")
         if (video.copy_dv or video.copy_hdr10plus) and is_bluray_playlist(video.source_path or config.source):

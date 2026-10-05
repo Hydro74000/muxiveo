@@ -1904,11 +1904,12 @@ class TestBuildCommand:
         assert "-vf" in cmd
         assert cmd[cmd.index("-vf") + 1].endswith("format=nv12,hwupload")
 
-    def test_vaapi_two_pass_adds_device_on_both_passes(self, tmp_path):
+    def test_vaapi_size_mode_single_capped_pass_with_device(self, tmp_path):
+        """V33 : taille cible VAAPI en une passe VBR plafonnée (pas de -pass)."""
         src = tmp_path / "src.mkv"
         src.touch()
         with patch.object(EncodeWorkflow, "_vaapi_device", return_value="/dev/dri/renderD128"):
-            cmds = self.wf.build_command(
+            cmd = self.wf.build_command(
                 _make_config(
                     src,
                     tmp_path / "out.mkv",
@@ -1917,11 +1918,13 @@ class TestBuildCommand:
                 )
             )
 
-        for pass_cmd in cmds:
-            assert "-vaapi_device" in pass_cmd
-            assert pass_cmd[pass_cmd.index("-vaapi_device") + 1] == "/dev/dri/renderD128"
-            assert "-hwaccel" in pass_cmd and pass_cmd[pass_cmd.index("-hwaccel") + 1] == "vaapi"
-            assert "-vf" not in pass_cmd
+        assert isinstance(cmd[0], str)
+        assert "-pass" not in cmd
+        assert cmd[cmd.index("-vaapi_device") + 1] == "/dev/dri/renderD128"
+        assert "-hwaccel" in cmd and cmd[cmd.index("-hwaccel") + 1] == "vaapi"
+        assert "-vf" not in cmd
+        assert cmd[cmd.index("-rc_mode") + 1] == "VBR"
+        assert "-maxrate:v" in cmd and "-bufsize:v" in cmd
 
     def test_h264_vaapi_force_8bit_disables_hw_surface_decode_and_adds_upload(self, tmp_path):
         src = tmp_path / "src.mkv"

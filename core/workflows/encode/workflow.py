@@ -65,6 +65,7 @@ from core.workflows.encode.catalog import (
     supports_hdr_output,
 )
 from core.workflows.encode.domain import (
+    uses_two_pass_video as _uses_two_pass_video_domain,
     EncodeCodecDomainCallbacks as _EncodeCodecDomainCallbacks,
     needs_static_hdr_bitstream_patch as _needs_static_hdr_bitstream_patch_domain,
     needs_static_hdr_sei_reinjection as _needs_static_hdr_sei_reinjection_domain,
@@ -321,6 +322,17 @@ def _interpolation_decode_cmd(decode_cmd: list[str], info: _InterpolationSource)
     return cmd
 
 
+@dataclasses.dataclass(frozen=True)
+class _SizeBudget:
+    """Taille cible du fichier convertie en débits (bit/s)."""
+
+    target_bps: float
+    reserved_bps: float
+    video_bps: float
+    video_shares_bps: tuple[tuple[VideoEncodeSettings, float], ...]
+    duration_s: float
+
+
 class EncodeWorkflow(QObject):
     """
     Construit et exécute un encodage ffmpeg.
@@ -569,8 +581,7 @@ class EncodeWorkflow(QObject):
 
     @classmethod
     def _uses_two_pass(cls, config: EncodeConfig) -> bool:
-        video = cls._primary_video_settings(config)
-        return video.codec != "copy" and video.quality_mode == QualityMode.SIZE
+        return _uses_two_pass_video_domain(cls._primary_video_settings(config))
 
     @staticmethod
     def _wants_dynamic_hdr_copy(config: EncodeConfig) -> bool:
@@ -648,8 +659,6 @@ class EncodeWorkflow(QObject):
         video = videos[0]
         if not self._nvencc_bin:
             errors.append("NVEncC est sélectionné mais le binaire n'est pas configuré.")
-        if video.quality_mode == QualityMode.SIZE:
-            errors.append("NVEncC ne supporte pas le mode taille cible (2 passes) dans cette version.")
         if video.inject_hdr_meta and not supports_hdr_output(video.codec):
             errors.append(f"{video.codec} ne supporte pas les métadonnées HDR statiques.")
         if video.copy_dv and not supports_dovi(video.codec):
@@ -1182,7 +1191,7 @@ class EncodeWorkflow(QObject):
                     for_preview=True,
                 )
             ]
-            if video.quality_mode == QualityMode.SIZE:
+            if _uses_two_pass_video_domain(video):
                 commands.extend(track_commands)
             else:
                 commands.append(track_commands[-1])
@@ -1759,13 +1768,16 @@ class EncodeWorkflow(QObject):
         return ["-ss", f"{abs(offset_ms) / 1000.0:.3f}"]
 
     def _size_to_bitrate_kbps_for_video(self, config: EncodeConfig, video: VideoEncodeSettings) -> int:
-        # Mono-vidéo (encodage séparé : RIFE, réinjection HDR) : budget audio déduit.
-        if not self._is_multi_video(config):
-            return self._size_to_bitrate_kbps(config)
-        duration = config.duration_s or 3600.0
-        total_bits = video.target_size_mb * 8 * 1024 * 1024
-        video_bits = max(total_bits, int(duration * 500_000))
-        return max(500, int(video_bits / duration / 1000))
+        """Débit (kbps) d'une piste vidéo encodée pour tenir la taille cible du fichier."""
+        shares = self._size_budget(config).video_shares_bps
+        for candidate, share in shares:
+            if candidate is video:
+                return max(1, int(share / 1000))
+        key = (video.track_entry_id, video.source_path, video.stream_index)
+        for candidate, share in shares:
+            if (candidate.track_entry_id, candidate.source_path, candidate.stream_index) == key:
+                return max(1, int(share / 1000))
+        return self._size_to_bitrate_kbps(config)
 
     @staticmethod
     def _two_pass_log_prefix(work_dir: Path, token: str) -> Path:
@@ -1954,22 +1966,118 @@ class EncodeWorkflow(QObject):
         )
 
     def _size_to_bitrate_kbps(self, config: EncodeConfig) -> int:
-        video = self._primary_video_settings(config)
-        duration = config.duration_s or 3600.0
-        total_bits = video.target_size_mb * 8 * 1024 * 1024
-        audio_bps = sum(
-            normalize_audio_bitrate_kbps(
-                a.codec,
-                a.bitrate_kbps,
-                a.input_channels,
-                None,
-                a.input_channel_layout,
-            ) * 1000
-            for a in config.audio_tracks
-            if a.codec not in ("copy", "flac")
+        """Débit (kbps) de la piste vidéo principale pour tenir la taille cible du fichier."""
+        budget = self._size_budget(config)
+        primary = self._primary_video_settings(config)
+        for candidate, share in budget.video_shares_bps:
+            if candidate is primary:
+                return max(1, int(share / 1000))
+        return max(1, int(budget.video_bps / 1000))
+
+    def _size_budget(self, config: EncodeConfig) -> _SizeBudget:
+        """Répartition de la taille cible (fichier complet) entre les flux.
+
+        Déduit l'audio (encodé : débit choisi ; copié / FLAC : débit du flux source),
+        les sous-titres, les pièces jointes, la vidéo copiée et ~0,5 % de conteneur ;
+        le reste est réparti entre les pistes vidéo encodées au prorata pixels × cadence.
+        """
+        primary = self._primary_video_settings(config)
+        duration = float(config.duration_s or 3600.0)
+        target_bps = primary.target_size_mb * 8 * 1024 * 1024 / duration
+        reserved_bps = target_bps * 0.005
+        for audio in config.audio_tracks:
+            if audio.codec in ("copy", "flac"):
+                source = Path(audio.source_path or config.source)
+                reserved_bps += self._stream_bitrate_bps(source, int(audio.stream_index))
+            else:
+                reserved_bps += normalize_audio_bitrate_kbps(
+                    audio.codec, audio.bitrate_kbps, audio.input_channels, None, audio.input_channel_layout,
+                ) * 1000
+        subtitle_refs = list(config.subtitle_tracks)
+        if not subtitle_refs and config.copy_subtitles:
+            subtitle_refs = [
+                (Path(config.source), int(stream["index"]))
+                for stream in self._ffprobe_stream_dicts(self._ffprobe_streams_payload(Path(config.source)) or {})
+                if stream.get("codec_type") == "subtitle" and isinstance(stream.get("index"), int)
+            ]
+        reserved_bps += sum(self._stream_bitrate_bps(Path(src), int(idx)) for src, idx in subtitle_refs)
+        attachment_bytes = sum(Path(p).stat().st_size for p in config.extra_attachments if Path(p).is_file())
+        reserved_bps += attachment_bytes * 8 / duration
+        encoded: list[tuple[VideoEncodeSettings, float]] = []
+        for video in self._video_tracks(config):
+            source = self._video_source_from_settings(config, video)
+            index = self._video_stream_from_settings(video)
+            if video.codec == "copy":
+                reserved_bps += self._stream_bitrate_bps(source, index)
+            else:
+                encoded.append((video, self._stream_pixel_rate(source, index)))
+        video_bps = target_bps - reserved_bps
+        total_weight = sum(weight for _video, weight in encoded) or 1.0
+        shares = tuple((video, video_bps * weight / total_weight) for video, weight in encoded)
+        return _SizeBudget(target_bps=target_bps, reserved_bps=reserved_bps, video_bps=video_bps,
+                           video_shares_bps=shares, duration_s=duration)
+
+    def _stream_info(self, source: Path, stream_index: int) -> dict[str, object]:
+        payload = self._ffprobe_streams_payload(Path(source)) or {}
+        return next(
+            (stream for stream in self._ffprobe_stream_dicts(payload) if stream.get("index") == stream_index),
+            {},
         )
-        video_bits = total_bits - audio_bps * duration
-        return max(500, int(video_bits / duration / 1000))
+
+    def _stream_bitrate_bps(self, source: Path, stream_index: int) -> float:
+        """Débit d'un flux source : ``bit_rate`` ffprobe, sinon statistiques Matroska (BPS)."""
+        stream = self._stream_info(source, stream_index)
+        tags = stream.get("tags") if isinstance(stream.get("tags"), dict) else {}
+        for value in (stream.get("bit_rate"), tags.get("BPS"), tags.get("BPS-eng")):
+            try:
+                bitrate = float(str(value))
+            except (TypeError, ValueError):
+                continue
+            if bitrate > 0:
+                return bitrate
+        return 0.0
+
+    def _stream_pixel_rate(self, source: Path, stream_index: int) -> float:
+        """Poids d'une piste vidéo dans la répartition : largeur × hauteur × cadence."""
+        stream = self._stream_info(source, stream_index)
+        try:
+            pixels = float(stream.get("width") or 0) * float(stream.get("height") or 0)
+        except (TypeError, ValueError):
+            pixels = 0.0
+        try:
+            fps = float(Fraction(str(stream.get("avg_frame_rate") or stream.get("r_frame_rate") or "0")))
+        except (ValueError, ZeroDivisionError):
+            fps = 0.0
+        return pixels * fps if pixels > 0 and fps > 0 else 1.0
+
+    def size_target_errors(self, config: EncodeConfig) -> list[str]:
+        """Taille cible inatteignable : les flux conservés dépassent déjà la cible."""
+        if not any(v.codec != "copy" and v.quality_mode == QualityMode.SIZE for v in self._video_tracks(config)):
+            return []
+        if not (config.duration_s or 0) > 0:
+            return []
+        budget = self._size_budget(config)
+        if budget.video_bps > 0:
+            return []
+        reserved_mb = budget.reserved_bps * budget.duration_s / 8 / 1024 / 1024
+        return [
+            "Taille cible inatteignable : audio, sous-titres, pièces jointes et vidéo copiée "
+            f"occupent déjà ≈ {reserved_mb:.0f} Mo pour "
+            f"{self._primary_video_settings(config).target_size_mb} Mo demandés."
+        ]
+
+    def size_target_warnings(self, config: EncodeConfig) -> list[str]:
+        """Taille cible atteignable mais débit vidéo très bas (< 500 kbps par piste)."""
+        if not any(v.codec != "copy" and v.quality_mode == QualityMode.SIZE for v in self._video_tracks(config)):
+            return []
+        if not (config.duration_s or 0) > 0:
+            return []
+        budget = self._size_budget(config)
+        return [
+            f"Taille cible : débit vidéo de la piste #{index} ≈ {share / 1000:.0f} kbps (très bas)."
+            for index, (_video, share) in enumerate(budget.video_shares_bps, start=1)
+            if 0 < share < 500_000
+        ]
 
     # ------------------------------------------------------------------
     # Helpers RAM / buffer — cross-platform (Linux · macOS · Windows)
@@ -2589,6 +2697,7 @@ class EncodeWorkflow(QObject):
                 if error not in errors:
                     errors.append(error)
         errors.extend(self._dovi_multi_track_errors(config))
+        errors.extend(self.size_target_errors(config))
         errors.extend(self._interpolation_validation_errors(config))
         # Backend natif strict : toute incompatibilité est signalée avant
         # l'encodage lourd, aucun repli FFmpeg n'est autorisé.
@@ -2647,6 +2756,7 @@ class EncodeWorkflow(QObject):
         messages = self.extra_params_warnings(config)
         for index, video in enumerate(self._video_tracks(config), start=1):
             messages.extend(f"Piste vidéo #{index} — {warning}" for warning in _hdr_warnings(video))
+        messages.extend(self.size_target_warnings(config))
         return messages
 
     def resolve_source_color_transfer(self, config: EncodeConfig) -> EncodeConfig:
@@ -3758,7 +3868,14 @@ class EncodeWorkflow(QObject):
         return _nvencc_dovi_rpu_prm_runtime(video)
 
     def _resolve_nvencc_input_routing(self, config: EncodeConfig) -> _NvenccInputRouting:
-        return _NvenccInputRouter(self._nvencc_routing_callbacks(stream_index=self._video_stream_index(config))).resolve(config)
+        routing = _NvenccInputRouter(
+            self._nvencc_routing_callbacks(stream_index=self._video_stream_index(config))
+        ).resolve(config)
+        if routing.video.quality_mode == QualityMode.SIZE:
+            # Taille cible : VBR plafonné au débit calculé (une passe).
+            sized = dataclasses.replace(routing.video, bitrate_kbps=self._size_to_bitrate_kbps(config))
+            routing = dataclasses.replace(routing, video=sized)
+        return routing
 
     def _nvencc_routing_callbacks(self, *, stream_index: int = 0) -> _NvenccRoutingCallbacks:
         return _NvenccRoutingCallbacks(
