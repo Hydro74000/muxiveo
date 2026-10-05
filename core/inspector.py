@@ -344,6 +344,9 @@ class FileInfo:
     #: FlagEnabled Matroska par index de piste, lu à l'inspection (ffprobe ne
     #: l'expose pas). None = non lu : le consommateur relit le fichier.
     track_enabled: dict[int, bool] | None = None
+    #: Signature (chemin, mtime_ns, taille) stable pendant le probe ; None
+    #: interdit sa réutilisation si le fichier a changé ou si sa signature est illisible.
+    ffprobe_source_key: tuple[str, int, int] | None = field(default=None, repr=False)
 
     @property
     def primary_video(self) -> VideoTrack | None:
@@ -464,9 +467,13 @@ class FileInspector:
             raise InspectionError(path, "fichier introuvable")
 
         bluray_title = title_for_playlist(path) if is_bluray_playlist(path) else None
+        source_key = self._source_cache_key(path)
         raw = self._run_ffprobe(path)
+        probe_source_key = self._source_cache_key(path)
         info = self._parse_ffprobe(path, raw)
         info.ffprobe_json = raw
+        if source_key == probe_source_key:
+            info.ffprobe_source_key = source_key
         mediainfo_path = path
         if bluray_title is not None:
             info.source_kind = "bluray"
@@ -601,6 +608,15 @@ class FileInspector:
             apply_language(audio_track)
         for subtitle_track in info.subtitle_tracks:
             apply_language(subtitle_track)
+
+    @staticmethod
+    def _source_cache_key(path: Path) -> tuple[str, int, int] | None:
+        """Signature du fichier permettant de réutiliser un probe sans péremption."""
+        try:
+            st = path.stat()
+        except OSError:
+            return None
+        return (str(path), st.st_mtime_ns, st.st_size)
 
     def _read_track_enabled(self, path: Path) -> dict[int, bool] | None:
         """FlagEnabled des TrackEntry (lecture native via SeekHead, quelques ms)."""

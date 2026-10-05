@@ -215,6 +215,9 @@ class MatroskaReader:
     CODEC_STATE_ID = bytes.fromhex("a4")
     BLOCK_ADDITIONS_ID = bytes.fromhex("75a1")
     INFO_ID = bytes.fromhex("1549a966")
+    #: Éléments level-1 obligatoires : leur absence de l'index n'est jamais crue.
+    _MANDATORY_LEVEL1_IDS = frozenset({INFO_ID, TRACKS_ID})
+    VOID_ID = bytes.fromhex("ec")
     MUXING_APP_ID = bytes.fromhex("4d80")
     WRITING_APP_ID = bytes.fromhex("5741")
     TITLE_ID = bytes.fromhex("7ba9")
@@ -264,6 +267,7 @@ class MatroskaReader:
         self._clusters_cache: list[EbmlElement] | None = None
         self._metadata_cache: tuple[EbmlElement, ...] | None = None
         self._metadata_exhaustive = False
+        self._metadata_indexed = False
 
     def segment(self) -> EbmlElement:
         if self._segment_cache is not None:
@@ -327,8 +331,12 @@ class MatroskaReader:
         Ceux qui précèdent le premier Cluster sont lus directement ; ceux qui
         le suivent (Cues, Tags, ou Tracks déplacé en fin de segment par un
         éditeur) sont retrouvés par le SeekHead, comme le font les lecteurs
-        usuels. Sans SeekHead, ou si une entrée ne pointe pas sur l'élément
-        annoncé, repli sur le parcours linéaire complet.
+        usuels ; un élément absent d'un SeekHead cohérent est absent du fichier
+        (sauf Info/Tracks, obligatoires). Un élément non indexé juste après un
+        élément indexé de fin de segment rend l'index incohérent. Sans SeekHead, seuls les éléments
+        précédant les Clusters sont mémorisés : le parcours complet est différé
+        jusqu'à une recherche infructueuse ou une énumération. Une entrée
+        incohérente impose le repli.
         """
         if self._metadata_cache is not None:
             return self._metadata_cache
@@ -337,6 +345,7 @@ class MatroskaReader:
         segment_end = segment.end if segment.end is not None else size
         found: dict[int, EbmlElement] = {}
         reached_cluster = False
+        first_cluster_offset = segment_end
         consistent = True
         with self.path.open("rb") as fh:
             fh.seek(segment.payload_offset)
@@ -346,13 +355,14 @@ class MatroskaReader:
                     break
                 if item.element_id == self.CLUSTER_ID:
                     reached_cluster = True
+                    first_cluster_offset = item.offset
                     break
                 found[item.offset] = item
                 if item.end is None:
                     break
                 fh.seek(item.end)
             pending = [item for item in found.values() if item.element_id == self.SEEK_HEAD_ID]
-            consistent = bool(pending) or not reached_cluster
+            indexed = bool(pending)
             visited: set[int] = set()
             while reached_cluster and consistent and pending:
                 head = pending.pop()
@@ -363,10 +373,19 @@ class MatroskaReader:
                     entries = self._seek_entries(head)
                     for target_id, position in entries:
                         offset = segment.payload_offset + position
-                        if target_id == self.CLUSTER_ID or offset in found:
+                        if target_id == self.CLUSTER_ID:
                             continue
+                        known = found.get(offset)
+                        if known is not None:
+                            if known.element_id != target_id:
+                                consistent = False
+                                break
+                            continue
+                        if offset >= segment_end:
+                            consistent = False
+                            break
                         fh.seek(offset)
-                        item = read_element(fh, limit=segment_end) if offset < segment_end else None
+                        item = read_element(fh, limit=segment_end)
                         if item is None or item.element_id != target_id or item.size is None:
                             consistent = False
                             break
@@ -375,11 +394,44 @@ class MatroskaReader:
                             pending.append(item)
                 except ValueError:
                     consistent = False
+            if reached_cluster and consistent and indexed:
+                consistent = self._index_tail_complete(fh, found, first_cluster_offset, segment_end)
         if not consistent:
             return self._exhaustive_metadata_elements()
         self._metadata_cache = tuple(sorted(found.values(), key=lambda item: item.offset))
         self._metadata_exhaustive = not reached_cluster
+        self._metadata_indexed = indexed
         return self._metadata_cache
+
+    def _index_tail_complete(
+        self,
+        fh: BinaryIO,
+        found: dict[int, EbmlElement],
+        first_cluster_offset: int,
+        segment_end: int,
+    ) -> bool:
+        """Faux si un élément level-1 non indexé suit un élément indexé placé après
+        les Clusters (Void ignorés) : Tags ajoutés en fin de fichier sans mise à
+        jour du SeekHead. Aucune lecture si ces éléments finissent le segment."""
+        for item in tuple(found.values()):
+            if item.offset < first_cluster_offset or item.end is None:
+                continue
+            cursor = item.end
+            while cursor < segment_end and cursor not in found:
+                fh.seek(cursor)
+                try:
+                    follower = read_element(fh, limit=segment_end)
+                except ValueError:
+                    break
+                if follower is None:
+                    break
+                if follower.element_id == self.VOID_ID and follower.end is not None:
+                    cursor = follower.end
+                    continue
+                if follower.element_id in self.LEVEL1_IDS and follower.element_id != self.CLUSTER_ID:
+                    return False
+                break
+        return True
 
     def _exhaustive_metadata_elements(self) -> tuple[EbmlElement, ...]:
         """Parcours linéaire complet (repli lent : chaque Cluster est visité)."""
@@ -411,14 +463,22 @@ class MatroskaReader:
         """Éléments level-1 d'un ID (ordre du fichier), Clusters exclus."""
         if element_id == self.CLUSTER_ID:
             return tuple(self.cluster_elements())
-        return tuple(item for item in self._metadata_elements() if item.element_id == element_id)
-
-    def _first_level1(self, element_id: bytes, *, required: bool = False) -> EbmlElement | None:
-        """Premier élément level-1 d'un ID ; ``required`` impose le parcours complet avant de conclure à son absence."""
-        items = self._level1(element_id)
-        if not items and required:
+        items = tuple(item for item in self._metadata_elements() if item.element_id == element_id)
+        # Sans index, une énumération doit aussi retrouver les éléments répétés
+        # après les Clusters ; un SeekHead cohérent fait foi (comme les lecteurs
+        # usuels) : élément facultatif non indexé = absent, sans parcours.
+        if not self._metadata_indexed or (not items and element_id in self._MANDATORY_LEVEL1_IDS):
             items = tuple(item for item in self._exhaustive_metadata_elements() if item.element_id == element_id)
-        return items[0] if items else None
+        return items
+
+    def _first_level1(self, element_id: bytes) -> EbmlElement | None:
+        """Premier élément d'un ID ; parcours complet seulement sans index ou pour Info/Tracks introuvables."""
+        for item in self._metadata_elements():
+            if item.element_id == element_id:
+                return item
+        if self._metadata_indexed and element_id not in self._MANDATORY_LEVEL1_IDS:
+            return None
+        return next((item for item in self._exhaustive_metadata_elements() if item.element_id == element_id), None)
 
     def payload(self, element: EbmlElement) -> bytes:
         if element.size is None:
@@ -583,7 +643,7 @@ class MatroskaReader:
         """Return core TrackEntry metadata while retaining its raw EBML body."""
         if self._tracks_cache is not None:
             return list(self._tracks_cache)
-        tracks_element = self._first_level1(self.TRACKS_ID, required=True)
+        tracks_element = self._first_level1(self.TRACKS_ID)
         if tracks_element is None:
             self._tracks_cache = ()
             return []
@@ -771,7 +831,7 @@ class MatroskaReader:
 
     def segment_duration_ns(self) -> int | None:
         """Durée du segment en nanosecondes (Info.Duration × TimestampScale), ou None."""
-        info = self._first_level1(self.INFO_ID, required=True)
+        info = self._first_level1(self.INFO_ID)
         if info is None:
             return None
         size = self.path.stat().st_size
@@ -792,7 +852,7 @@ class MatroskaReader:
         return round(duration_ticks * self.timestamp_scale_ns())
 
     def segment_info_apps(self) -> tuple[str, str]:
-        info = self._first_level1(self.INFO_ID, required=True)
+        info = self._first_level1(self.INFO_ID)
         if info is None:
             return "", ""
         values: dict[bytes, str] = {}
@@ -805,7 +865,7 @@ class MatroskaReader:
         return values.get(self.MUXING_APP_ID, ""), values.get(self.WRITING_APP_ID, "")
 
     def segment_title(self) -> str:
-        info = self._first_level1(self.INFO_ID, required=True)
+        info = self._first_level1(self.INFO_ID)
         if info is None:
             return ""
         size = self.path.stat().st_size
@@ -817,7 +877,7 @@ class MatroskaReader:
         return ""
 
     def timestamp_scale_ns(self) -> int:
-        info = self._first_level1(self.INFO_ID, required=True)
+        info = self._first_level1(self.INFO_ID)
         if info is None:
             return 1_000_000
         size = self.path.stat().st_size

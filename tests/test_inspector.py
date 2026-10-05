@@ -847,6 +847,23 @@ class TestInspect:
         info = self._inspect_with_mediainfo_count(raw, "172627")
         assert info.frame_count == 172627
         assert info.ffprobe_json == raw
+        st = self.path.stat()
+        assert info.ffprobe_source_key == (str(self.path), st.st_mtime_ns, st.st_size)
+
+    def test_inspect_does_not_cache_probe_if_source_changes_during_probe(self):
+        raw = _make_ffprobe_output(video_streams=[_video_stream()])
+
+        def probe(path):
+            path.write_bytes(b"changed during ffprobe")
+            return raw
+
+        with patch.object(self.insp, "_run_ffprobe", side_effect=probe), \
+             patch.object(self.insp, "_run_mediainfo_json", return_value=None), \
+             patch.object(self.insp, "get_frame_count", return_value=None), \
+             patch.object(self.insp, "_read_track_enabled", return_value={}):
+            info = self.insp.inspect(self.path)
+        assert info.ffprobe_json == raw
+        assert info.ffprobe_source_key is None
 
     def test_inspect_drops_implausible_frame_count_without_full_scan(self):
         """Statistiques périmées : compte non affiché ; le workflow recomptera s'il en a besoin."""

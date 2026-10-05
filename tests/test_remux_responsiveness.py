@@ -1,5 +1,7 @@
 """Réactivité de la chaîne sources → remux → encodage, avec I/O lentes."""
 from dataclasses import replace
+import json
+import subprocess
 from threading import Event, get_ident
 import time
 from typing import cast
@@ -13,6 +15,7 @@ from shiboken6 import Shiboken
 from core.config import AppConfig
 from core.inspector import HDRType
 from core.runner import TaskSignals
+from core.workflows.encode.runtime.hdr_metadata import HdrMetadataProbeService
 from ui.panels.encode_panel.panel import EncodePanel
 from ui.panels.encode_panel.widgets import _AudioBitrateEditor, _AudioTable
 from ui.panels.remux_panel.panel import RemuxPanel
@@ -112,6 +115,33 @@ def test_multiple_sdr_sources_do_not_probe_hdr_in_ui(qt_app, monkeypatch, tmp_pa
         panel.set_video_tracks(list(reversed(tracks)))
         panel._current_video_settings_list()
         probe.assert_not_called()
+    finally:
+        panel.close()
+
+
+def test_video_track_refresh_cannot_reseed_stale_inspection(qt_app, monkeypatch, tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"x")
+    old_payload = {"streams": [{"index": 0, "codec_type": "video", "codec_name": "h264"}]}
+    new_payload = {"streams": [{"index": 0, "codec_type": "video", "codec_name": "hevc"}]}
+    info = _file_info(source, [_video_track(0)])
+    info.ffprobe_json = old_payload
+    info.ffprobe_source_key = HdrMetadataProbeService.source_cache_key(source)
+    panel = EncodePanel(AppConfig())
+    monkeypatch.setattr(panel, "_rebuild_preview", lambda: None)
+    probe = MagicMock(return_value=subprocess.CompletedProcess([], 0, json.dumps(new_payload), ""))
+    monkeypatch.setattr(subprocess, "run", probe)
+    try:
+        tracks = [(info, _video_entry(), "#fff")]
+        panel.set_video_tracks(tracks)
+        assert panel._workflow._ffprobe_streams_payload(source) is old_payload
+        probe.assert_not_called()
+
+        source.write_bytes(b"changed")
+        assert panel._workflow._ffprobe_streams_payload(source) == new_payload
+        panel.set_video_tracks(tracks)
+        assert panel._workflow._ffprobe_streams_payload(source) == new_payload
+        probe.assert_called_once()
     finally:
         panel.close()
 
