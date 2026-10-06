@@ -2125,6 +2125,25 @@ class TestEncodePanelAuditLot3:
         assert hlg._video_hdr_badges_from_state(state, source_video=source_video) == ("HLG",)
         hlg.close()
 
+    @pytest.mark.parametrize("unsupported", ["hevc_nvenc", "libx264"])
+    def test_review_hdr_preferences_survive_track_navigation(self, qt_app, unsupported):
+        panel = self._panel(HDRType.DOLBY_VISION_HDR10PLUS)
+        panel._on_hw_detected({"hevc_nvenc"}, panel._sw_encoders, panel._config.tool_ffmpeg, {})
+        first = panel._video_tracks[0]
+        other = _video_entry(0)
+        other.entry_id = "other-video"
+        panel.set_video_tracks([first, (_file_info(_PATH_B, [_video_track(0, HDRType.NONE)]), other, _COLOR)])
+        assert panel._copy_dv_cb.isChecked()
+        _select_codec(panel, unsupported)
+        assert not panel._copy_dv_cb.isChecked()
+        panel._video_list.setCurrentRow(1)
+        assert not panel._copy_dv_cb.isChecked()
+        panel._video_list.setCurrentRow(0)
+        _select_codec(panel, "libx265")
+        assert panel._copy_dv_cb.isChecked() and panel._copy_hdr10plus_cb.isChecked()
+        assert panel._inject_hdr_cb.isChecked()
+        panel.close()
+
 
 class TestEncodePanelAuditLot4:
     """Lot 4 : modes de débit par codec (V19 / V20), presets par défaut (V41)."""
@@ -2195,6 +2214,17 @@ class TestEncodePanelAuditLot4:
         assert panel._codec_combo.currentData() == "copy"
         panel._video_list.setCurrentRow(0)
         assert panel._mode_combo.currentData() == "icq" and panel._cq_spin.value() == 33
+        panel.close()
+
+    def test_review_profile_cannot_select_disabled_multi_video_codec(self, qt_app, tmp_path):
+        panel = self._panel({"nvencc_hevc"}, tracks=2)
+        _select_codec(panel, "libx265")
+        panel._profiles = ProfileManager(tmp_path)
+        panel._profiles.save(EncodePreset(name="nv", codec="nvencc_hevc", preset="default", rate_control="qvbr"))
+        panel._refresh_profiles(select="nv")
+        before = panel._current_video_state()
+        panel._load_profile()
+        assert panel._current_video_state() == before
         panel.close()
 
     def test_v41_hw_detection_keeps_codec_preset(self, qt_app):

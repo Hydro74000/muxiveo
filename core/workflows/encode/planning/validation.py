@@ -10,6 +10,7 @@ from core.workflows.common.track_types import TrackTimeOffset
 from core.workflows.common.path_safety import same_filesystem_target
 from core.workflows.encode.planning.sources import resolve_source_layout
 from core.workflows.encode.catalog import (
+    resolve_rate_control,
     supports_dovi,
     supports_hdr10plus,
     supports_hdr_output,
@@ -188,7 +189,9 @@ def video_settings_errors(videos: list[VideoEncodeSettings]) -> list[str]:
     for index, video in enumerate(videos, start=1):
         if video.codec == "copy":
             continue
-        if video.quality_mode == QualityMode.BITRATE and int(video.bitrate_kbps) <= 0:
+        spec = resolve_rate_control(video.codec, video.rate_control, video.quality_mode)
+        needs_bitrate = spec.bitrate if spec is not None else video.quality_mode == QualityMode.BITRATE
+        if needs_bitrate and int(video.bitrate_kbps) <= 0:
             errors.append(f"Piste vidéo #{index} — débit vidéo invalide (kbps > 0 attendu).")
         if video.quality_mode == QualityMode.SIZE and int(video.target_size_mb) <= 0:
             errors.append(f"Piste vidéo #{index} — taille cible invalide (Mo > 0 attendue).")

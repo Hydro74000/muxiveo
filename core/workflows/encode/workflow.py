@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import os
 import shlex
 import shutil
@@ -61,6 +62,7 @@ from core.workflows.common.timeline_sync import (
 from core.workflows.common.track_statistics import derive_output_statistics
 from core.workflows.encode.catalog import (
     is_h264_video_codec,
+    resolve_rate_control,
     supports_dovi,
     supports_hdr_output,
 )
@@ -331,6 +333,9 @@ class _SizeBudget:
     video_bps: float
     video_shares_bps: tuple[tuple[VideoEncodeSettings, float], ...]
     duration_s: float
+    target_size_mb: int
+    estimated_bps: float = 0.0
+    warnings: tuple[str, ...] = ()
 
 
 class EncodeWorkflow(QObject):
@@ -1979,20 +1984,29 @@ class EncodeWorkflow(QObject):
 
         Déduit l'audio (encodé : débit choisi ; copié / FLAC : débit du flux source),
         les sous-titres, les pièces jointes, la vidéo copiée et ~0,5 % de conteneur ;
-        le reste est réparti entre les pistes vidéo encodées au prorata pixels × cadence.
+        les vidéos à débit imposé sont également déduites. Le reste est réparti
+        entre les pistes en taille cible au prorata pixels × cadence × durée.
+        Pour une autre vidéo en qualité constante, le débit source est une
+        estimation du budget réservé, signalée à l'utilisateur.
         """
-        primary = self._primary_video_settings(config)
+        videos = self._video_tracks(config)
+        sized = [v for v in videos if v.codec != "copy" and v.quality_mode == QualityMode.SIZE]
+        target = sized[0] if sized else self._primary_video_settings(config)
         duration = float(config.duration_s or 3600.0)
-        target_bps = primary.target_size_mb * 8 * 1024 * 1024 / duration
+        target_bps = target.target_size_mb * 8 * 1024 * 1024 / duration
         reserved_bps = target_bps * 0.005
+        estimated_bps = 0.0
+        warnings: list[str] = []
         for audio in config.audio_tracks:
+            source = Path(audio.source_path or config.source)
+            stream_index = int(audio.stream_index)
             if audio.codec in ("copy", "flac"):
-                source = Path(audio.source_path or config.source)
-                reserved_bps += self._stream_bitrate_bps(source, int(audio.stream_index))
+                bitrate = self._stream_bitrate_bps(source, stream_index)
             else:
-                reserved_bps += normalize_audio_bitrate_kbps(
+                bitrate = normalize_audio_bitrate_kbps(
                     audio.codec, audio.bitrate_kbps, audio.input_channels, None, audio.input_channel_layout,
                 ) * 1000
+            reserved_bps += bitrate * self._stream_duration_s(source, stream_index, duration) / duration
         subtitle_refs = list(config.subtitle_tracks)
         if not subtitle_refs and config.copy_subtitles:
             subtitle_refs = [
@@ -2000,22 +2014,61 @@ class EncodeWorkflow(QObject):
                 for stream in self._ffprobe_stream_dicts(self._ffprobe_streams_payload(Path(config.source)) or {})
                 if stream.get("codec_type") == "subtitle" and isinstance(stream.get("index"), int)
             ]
-        reserved_bps += sum(self._stream_bitrate_bps(Path(src), int(idx)) for src, idx in subtitle_refs)
+        reserved_bps += sum(
+            self._stream_bitrate_bps(Path(src), int(idx))
+            * self._stream_duration_s(Path(src), int(idx), duration) / duration
+            for src, idx in subtitle_refs
+        )
         attachment_bytes = sum(Path(p).stat().st_size for p in config.extra_attachments if Path(p).is_file())
         reserved_bps += attachment_bytes * 8 / duration
-        encoded: list[tuple[VideoEncodeSettings, float]] = []
-        for video in self._video_tracks(config):
+        encoded: list[tuple[VideoEncodeSettings, float, float]] = []
+        for track_number, video in enumerate(videos, start=1):
             source = self._video_source_from_settings(config, video)
             index = self._video_stream_from_settings(video)
-            if video.codec == "copy":
-                reserved_bps += self._stream_bitrate_bps(source, index)
+            track_duration = self._stream_duration_s(source, index, duration)
+            if video.codec != "copy" and (video.quality_mode == QualityMode.SIZE or not sized):
+                encoded.append((video, self._stream_pixel_rate(source, index) * track_duration, track_duration))
+                continue
+            spec = resolve_rate_control(video.codec, video.rate_control, video.quality_mode)
+            if video.codec != "copy" and spec is not None and spec.bitrate:
+                bitrate = video.bitrate_kbps * 1000
             else:
-                encoded.append((video, self._stream_pixel_rate(source, index)))
+                bitrate = self._stream_bitrate_bps(source, index)
+                if video.codec != "copy":
+                    estimated_bps += bitrate * track_duration / duration
+                    warnings.append(
+                        f"Taille cible : budget de la piste vidéo #{track_number} en qualité constante "
+                        f"estimé depuis le débit source ({bitrate / 1000:.0f} kbps) ; taille finale approchée."
+                    )
+            reserved_bps += bitrate * track_duration / duration
         video_bps = target_bps - reserved_bps
-        total_weight = sum(weight for _video, weight in encoded) or 1.0
-        shares = tuple((video, video_bps * weight / total_weight) for video, weight in encoded)
+        total_weight = sum(weight for _video, weight, _duration in encoded) or 1.0
+        shares = tuple(
+            (video, video_bps * duration * weight / total_weight / track_duration)
+            for video, weight, track_duration in encoded
+        )
         return _SizeBudget(target_bps=target_bps, reserved_bps=reserved_bps, video_bps=video_bps,
-                           video_shares_bps=shares, duration_s=duration)
+                           video_shares_bps=shares, duration_s=duration,
+                           target_size_mb=target.target_size_mb, estimated_bps=estimated_bps,
+                           warnings=tuple(warnings))
+
+    def _stream_duration_s(self, source: Path, stream_index: int, fallback: float) -> float:
+        """Durée du flux (ffprobe ou tag Matroska), sinon durée de référence du job."""
+        stream = self._stream_info(source, stream_index)
+        tags = stream.get("tags") if isinstance(stream.get("tags"), dict) else {}
+        for value in (stream.get("duration"), tags.get("DURATION"), tags.get("DURATION-eng")):
+            try:
+                parts = str(value).split(":")
+                seconds = float(parts[-1])
+                if len(parts) == 3:
+                    seconds += int(parts[0]) * 3600 + int(parts[1]) * 60
+                elif len(parts) != 1:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(seconds) and seconds > 0:
+                return seconds
+        return fallback
 
     def _stream_info(self, source: Path, stream_index: int) -> dict[str, object]:
         payload = self._ffprobe_streams_payload(Path(source)) or {}
@@ -2057,27 +2110,38 @@ class EncodeWorkflow(QObject):
         if not (config.duration_s or 0) > 0:
             return []
         budget = self._size_budget(config)
-        if budget.video_bps > 0:
+        # Une estimation de qualité constante ne suffit pas à prouver que la
+        # cible est impossible : seuls les débits réservés connus sont bloquants.
+        known_reserved_bps = budget.reserved_bps - budget.estimated_bps
+        if budget.target_bps > known_reserved_bps:
             return []
-        reserved_mb = budget.reserved_bps * budget.duration_s / 8 / 1024 / 1024
+        reserved_mb = known_reserved_bps * budget.duration_s / 8 / 1024 / 1024
         return [
-            "Taille cible inatteignable : audio, sous-titres, pièces jointes et vidéo copiée "
+            "Taille cible inatteignable : audio, sous-titres, pièces jointes et vidéos hors taille cible "
             f"occupent déjà ≈ {reserved_mb:.0f} Mo pour "
-            f"{self._primary_video_settings(config).target_size_mb} Mo demandés."
+            f"{budget.target_size_mb} Mo demandés."
         ]
 
     def size_target_warnings(self, config: EncodeConfig) -> list[str]:
-        """Taille cible atteignable mais débit vidéo très bas (< 500 kbps par piste)."""
+        """Budget estimé et débits vidéo très bas (< 500 kbps par piste)."""
         if not any(v.codec != "copy" and v.quality_mode == QualityMode.SIZE for v in self._video_tracks(config)):
             return []
         if not (config.duration_s or 0) > 0:
             return []
         budget = self._size_budget(config)
-        return [
-            f"Taille cible : débit vidéo de la piste #{index} ≈ {share / 1000:.0f} kbps (très bas)."
-            for index, (_video, share) in enumerate(budget.video_shares_bps, start=1)
+        warnings = list(budget.warnings)
+        if budget.video_bps <= 0 and budget.estimated_bps > 0:
+            warnings.append(
+                "Taille cible : l'estimation des vidéos en qualité constante dépasse le budget disponible ; "
+                "taille finale non garantie."
+            )
+        track_numbers = {id(video): index for index, video in enumerate(self._video_tracks(config), start=1)}
+        warnings.extend(
+            f"Taille cible : débit vidéo de la piste #{track_numbers[id(video)]} ≈ {share / 1000:.0f} kbps (très bas)."
+            for video, share in budget.video_shares_bps
             if 0 < share < 500_000
-        ]
+        )
+        return warnings
 
     # ------------------------------------------------------------------
     # Helpers RAM / buffer — cross-platform (Linux · macOS · Windows)

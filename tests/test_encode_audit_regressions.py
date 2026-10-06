@@ -7,6 +7,8 @@ from functools import partial
 from pathlib import Path
 from typing import cast
 
+import pytest
+
 from core.workflows.common import TrackTimeOffset
 from core.workflows.encode import AudioTrackSettings, EncodeConfig, EncodeWorkflow, QualityMode, VideoEncodeSettings
 from core.workflows.encode.domain import (
@@ -688,3 +690,121 @@ def test_lot4_vaapi_rate_controls_probed_from_driver(monkeypatch):
         {"cqp", "cbr", "vbr", "qvbr", "size"}
     )
     assert len(calls) == 1 and _after(calls[0], "-rc_mode") == "ICQ"
+
+
+@pytest.mark.parametrize(("codec", "rate_control"), [
+    ("hevc_amf", "qvbr"), ("hevc_vaapi", "qvbr"), ("nvencc_hevc", "vbr_quality"),
+])
+@pytest.mark.parametrize("bitrate", [0, -1])
+def test_review_quality_with_bitrate_rejects_invalid_bitrate(codec, rate_control, bitrate):
+    from core.workflows.encode.planning.validation import video_settings_errors
+
+    video = VideoEncodeSettings(codec=codec, rate_control=rate_control, bitrate_kbps=bitrate)
+    assert video_settings_errors([video]) == [
+        "Piste vidéo #1 — débit vidéo invalide (kbps > 0 attendu).",
+    ]
+    video.bitrate_kbps = 8000
+    assert video_settings_errors([video]) == []
+
+
+@pytest.mark.parametrize("transfer", ["smpte2084", "arib-std-b67"])
+@pytest.mark.parametrize("p5", [False, True])
+def test_review_nvencc_tonemapped_pipe_is_sdr(transfer, p5):
+    from core.workflows.encode.runtime.nvencc import build_nvencc_command, nvencc_pipe_encode_video
+
+    source = VideoEncodeSettings(codec="nvencc_hevc", source_color_transfer=transfer,
+                                 p5_to_hdr10=p5, tonemap_to_sdr=True)
+    cmd = build_nvencc_command("nvencc", nvencc_pipe_encode_video(source), "out.mkv")
+    assert "--transfer" not in cmd and "--output-depth" not in cmd
+    assert "--vpp-libplacebo-tonemapping" not in cmd and "--vpp-colorspace" not in cmd
+    assert source.tonemap_to_sdr and source.p5_to_hdr10 == p5
+
+
+def test_review_size_target_comes_from_sized_track_with_copy_primary(qt_app, tmp_path, monkeypatch):
+    wf = _size_workflow(monkeypatch, [
+        {"index": 0, "codec_type": "video", "bit_rate": "2000000"},
+        {"index": 1, "codec_type": "video", "width": 1920, "height": 1080, "avg_frame_rate": "24/1"},
+    ])
+    copied = VideoEncodeSettings(codec="copy", stream_index=0)
+    sized = VideoEncodeSettings(codec="libx265", stream_index=1, rate_control="size", target_size_mb=500)
+    cfg = EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv",
+                       video=copied, video_tracks=[copied, sized], duration_s=1000)
+    expected = int((500 * 8 * 1024 * 1024 / 1000 * 0.995 - 2_000_000) / 1000)
+    assert wf._size_to_bitrate_kbps_for_video(cfg, sized) == expected
+    assert wf.size_target_errors(cfg) == []
+
+
+def test_review_size_budget_reserves_fixed_bitrate_video(qt_app, tmp_path, monkeypatch):
+    wf = _size_workflow(monkeypatch, [
+        {"index": index, "codec_type": "video", "width": 1920, "height": 1080, "avg_frame_rate": "24/1"}
+        for index in (0, 1)
+    ])
+    sized = VideoEncodeSettings(codec="libx265", stream_index=0, rate_control="size", target_size_mb=500)
+    fixed = VideoEncodeSettings(codec="libx265", stream_index=1, rate_control="abr", bitrate_kbps=2000)
+    cfg = EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv",
+                       video=sized, video_tracks=[sized, fixed], duration_s=1000)
+    expected = int((500 * 8 * 1024 * 1024 / 1000 * 0.995 - 2_000_000) / 1000)
+    assert wf._size_to_bitrate_kbps_for_video(cfg, sized) == expected
+
+
+def test_review_size_budget_accounts_for_each_track_duration(qt_app, tmp_path, monkeypatch):
+    wf = _size_workflow(monkeypatch, [
+        {"index": 0, "codec_type": "video", "width": 1920, "height": 1080,
+         "avg_frame_rate": "24/1", "tags": {"DURATION": "00:16:40.000000000"}},
+        {"index": 1, "codec_type": "video", "width": 1920, "height": 1080,
+         "avg_frame_rate": "24/1", "duration": "500"},
+        {"index": 2, "codec_type": "audio", "bit_rate": "2000000", "duration": "500"},
+    ])
+    videos = [VideoEncodeSettings(codec="libx265", stream_index=index, rate_control="size", target_size_mb=500)
+              for index in (0, 1)]
+    cfg = EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv",
+                       video=videos[0], video_tracks=videos, duration_s=1000,
+                       audio_tracks=[AudioTrackSettings(stream_index=2, codec="copy")])
+    rates = [wf._size_to_bitrate_kbps_for_video(cfg, video) for video in videos]
+    # Deux vidéos de même définition/cadence ont le même débit ; la courte occupe moins d'octets.
+    assert abs(rates[0] - rates[1]) <= 1
+    total_bits = rates[0] * 1000 * 1000 + rates[1] * 1000 * 500 + 2_000_000 * 500
+    assert 0 <= 500 * 8 * 1024 * 1024 * 0.995 - total_bits < 1_500_000
+
+
+def test_review_size_budget_marks_quality_track_estimate(qt_app, tmp_path, monkeypatch):
+    wf = _size_workflow(monkeypatch, [
+        {"index": 0, "codec_type": "video"},
+        {"index": 1, "codec_type": "video", "bit_rate": "2000000"},
+    ])
+    sized = VideoEncodeSettings(codec="libx265", stream_index=0, rate_control="size", target_size_mb=500)
+    quality = VideoEncodeSettings(codec="libx265", stream_index=1, rate_control="crf")
+    cfg = EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv",
+                       video=sized, video_tracks=[sized, quality], duration_s=1000)
+    expected = int((500 * 8 * 1024 * 1024 / 1000 * 0.995 - 2_000_000) / 1000)
+    assert wf._size_to_bitrate_kbps_for_video(cfg, sized) == expected
+    assert any("estim" in message and "#2" in message for message in wf.size_target_warnings(cfg))
+
+
+@pytest.mark.parametrize(("rate_control", "blocked"), [("crf", False), ("abr", True)])
+def test_review_size_target_blocks_known_budget_not_quality_estimate(qt_app, tmp_path, monkeypatch,
+                                                                    rate_control, blocked):
+    wf = _size_workflow(monkeypatch, [
+        {"index": 0, "codec_type": "video"},
+        {"index": 1, "codec_type": "video", "bit_rate": "6000000"},
+    ])
+    sized = VideoEncodeSettings(codec="libx265", stream_index=0, rate_control="size", target_size_mb=500)
+    other = VideoEncodeSettings(codec="libx265", stream_index=1, rate_control=rate_control, bitrate_kbps=6000)
+    cfg = EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv",
+                       video=sized, video_tracks=[sized, other], duration_s=1000)
+    assert bool(wf.size_target_errors(cfg)) is blocked
+    if not blocked:
+        assert any("non garantie" in message for message in wf.size_target_warnings(cfg))
+
+
+def test_review_size_warning_identifies_track_after_copied_primary(qt_app, tmp_path, monkeypatch):
+    wf = _size_workflow(monkeypatch, [
+        {"index": 0, "codec_type": "video", "bit_rate": "100000"},
+        {"index": 1, "codec_type": "video"},
+    ])
+    copied = VideoEncodeSettings(codec="copy", stream_index=0)
+    sized = VideoEncodeSettings(codec="libx265", stream_index=1, rate_control="size", target_size_mb=50)
+    cfg = EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv",
+                       video=copied, video_tracks=[copied, sized], duration_s=1000)
+    warnings = wf.size_target_warnings(cfg)
+    assert len(warnings) == 1 and "#2" in warnings[0]

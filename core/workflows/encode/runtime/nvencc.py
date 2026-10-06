@@ -323,6 +323,9 @@ def nvencc_pipe_encode_video(video: VideoEncodeSettings) -> VideoEncodeSettings:
         crop=VideoCropSettings(),
         filters=VideoFilterSettings(),
         tonemap_to_sdr=False,
+        # La source de l'encodeur est désormais la sortie du filtre FFmpeg.
+        source_color_transfer="bt709" if sdr else "smpte2084" if video.p5_to_hdr10 else video.source_color_transfer,
+        p5_to_hdr10=False,
         inject_hdr_meta=False if sdr else video.inject_hdr_meta,
         master_display="" if sdr else video.master_display,
         max_cll="" if sdr else video.max_cll,

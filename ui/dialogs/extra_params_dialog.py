@@ -2341,7 +2341,7 @@ class _ParamRow(QWidget):
             # Mode de débit choisi dans l'onglet Video : ligne grisée. Une saisie
             # manuelle existante reste décochable (elle remplace le mode, WARN).
             if workflow_value is not None and initial is None:
-                self._set_widget_value(workflow_value)
+                self._set_widget_value(_strip_unit_suffix(spec, workflow_value))
             mode_tip = translate_text(
                 "Réglé par la liste Mode de l'onglet Video{value}.",
                 value=f" : {workflow_value}" if workflow_value else "",
@@ -2354,7 +2354,7 @@ class _ParamRow(QWidget):
         elif workflow_value is not None and not owned_by_workflow:
             # Valeur posée par l'onglet Video : affichée, appliquée seulement si cochée.
             if initial is None:
-                self._set_widget_value(workflow_value)
+                self._set_widget_value(_strip_unit_suffix(spec, workflow_value))
             override_tip = translate_text(
                 "Valeur posée par l'onglet Video : {value}. Cocher pour la remplacer.",
                 value=workflow_value or translate_text("(activée)"),

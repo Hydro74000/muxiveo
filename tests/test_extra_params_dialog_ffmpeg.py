@@ -76,3 +76,20 @@ def test_options_set_by_video_tab_stay_editable_and_prefilled(qt_app):
     assert checkbox is not None and checkbox.isEnabled() and not checkbox.isChecked()
     assert dialog.result_text == ""
     dialog.close()
+
+
+def test_review_workflow_rate_units_prefill_in_kbps(qt_app):
+    from ui.dialogs.extra_params_dialog import ExtraParamsDialog
+
+    dialog = ExtraParamsDialog("hevc_nvenc", "", workflow_values={"maxrate": "12000k", "bufsize": "16M"})
+    try:
+        for key, expected in (("maxrate", 12000), ("bufsize", 16000)):
+            row = dialog._rows[key]
+            assert row.value() == (False, expected)
+            row._enabled_cb.setChecked(True)
+        values = {key: row.value() for key, row in dialog._rows.items()}
+        tokens = shlex.split(_serialize(dialog._schema, values))
+        assert _pairs(tokens)["-maxrate"] == "12000k"
+        assert _pairs(tokens)["-bufsize"] == "16000k"
+    finally:
+        dialog.close()

@@ -3638,7 +3638,12 @@ class EncodePanel(QWidget):
 
     def _profile_incompatibility(self, vs: VideoEncodeSettings) -> str:
         """Raison pour laquelle un profil ne peut pas s'appliquer ("" si compatible)."""
-        available = {self._codec_combo.itemData(i) for i in range(self._codec_combo.count())}
+        model = self._codec_combo.model()
+        available = {
+            self._codec_combo.itemData(i)
+            for i in range(self._codec_combo.count())
+            if model.flags(model.index(i, 0)) & Qt.ItemFlag.ItemIsEnabled
+        }
         if vs.codec not in available:
             return translate_text("codec {codec} indisponible", codec=vs.codec)
         rc_spec = rate_control_values(vs)[0]
@@ -4026,6 +4031,8 @@ class EncodePanel(QWidget):
         "static_hdr_metadata_confidence",
         "static_hdr_metadata_analysis_mode",
         "static_hdr_metadata_analysis_request",
+        "hdr_disabled_by_codec",
+        "dynamic_hdr_disabled_by_codec",
     )
 
     def _state_propagated_to_track(
@@ -4400,6 +4407,8 @@ class EncodePanel(QWidget):
             "filters": self._current_filter_settings(),
             "interpolation": self._current_interpolation_settings(),
             "inject_hdr_meta": self._inject_hdr_cb.isChecked(),
+            "hdr_disabled_by_codec": self._hdr_disabled_by_codec,
+            "dynamic_hdr_disabled_by_codec": self._dynamic_hdr_disabled_by_codec,
             "master_display": self._master_display.text(),
             "max_cll": self._max_cll.text(),
             "default_master_display": str(prev.get("default_master_display") or ""),
@@ -4712,6 +4721,13 @@ class EncodePanel(QWidget):
         finally:
             self._loading_video_settings = False
 
+        # Les choix désactivés temporairement par un codec suivent leur piste,
+        # même si une autre piste est affichée avant le retour au codec HDR.
+        self._hdr_disabled_by_codec = bool(state.get("hdr_disabled_by_codec"))
+        restore_flags = state.get("dynamic_hdr_disabled_by_codec")
+        if not isinstance(restore_flags, tuple) or len(restore_flags) != 2:
+            restore_flags = (False, False)
+        self._dynamic_hdr_disabled_by_codec = (bool(restore_flags[0]), bool(restore_flags[1]))
         self._video_encode_controls.setVisible((self._codec_combo.currentData() or "libx265") != "copy")
         self._hdr_meta_widget.setVisible(self._inject_hdr_cb.isChecked())
         self._dovi_profile_widget.setVisible(self._copy_dv_cb.isChecked())
