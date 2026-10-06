@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 
 from core.bluray import append_ffmpeg_input_args, ffprobe_input_args
 from core.matroska.editors.dovi import minimum_dovi_level
+from core.matroska.reader import strict_demuxer_reads_tracks
 from core.subprocess_utils import subprocess_text_kwargs
 from core.pipeline_command import PipelineCommand, command_stages
 
@@ -660,9 +661,15 @@ def extract_hdr10plus_metadata(
     run_cmd: Callable[[list[str]], object],
     cleanup_paths: list[Path],
 ) -> Path:
-    """Extrait le JSON HDR10+ (MKV/HEVC direct, autres conteneurs via Annex B)."""
+    """Extrait le JSON HDR10+ (MKV/HEVC direct, autres conteneurs via Annex B).
+
+    MKV dont Tracks échappe au premier SeekHead (lecteur strict de hdr10plus_tool) : Annex B.
+    """
     meta_input = source
-    if source.suffix.lower() not in {".mkv", ".hevc", ".h265", ".265", ".x265"} or stream_index != 0:
+    if (
+        source.suffix.lower() not in {".mkv", ".hevc", ".h265", ".265", ".x265"} or stream_index != 0
+        or (source.suffix.lower() == ".mkv" and not strict_demuxer_reads_tracks(source))
+    ):
         meta_input = work_dir / "source_hdr10plus.hevc"
         cleanup_paths.append(meta_input)
         cmd = [ffmpeg_bin, "-nostdin", "-y"]

@@ -106,7 +106,7 @@ from core.matroska.ids import (
 )
 from core.matroska.mux_plan import deterministic_source_identity
 from core.matroska.native_muxer import MatroskaNativeMuxer
-from core.matroska.reader import MatroskaReader
+from core.matroska.reader import MatroskaReader, strict_demuxer_reads_tracks
 from core.matroska.writer import MatroskaWriter
 
 # Outils dont la barre de progression XX% n'est émise qu'en TTY.
@@ -1342,6 +1342,9 @@ class MergeDoviWorkflow(QObject):
         needs_conversion = bool(routing and routing.conversion_needed)
         return (needs_conversion and not film2_is_raw) or (
             film2.suffix.lower() != ".mkv" and not film2_is_raw
+        ) or (
+            # Tracks hors du premier SeekHead : illisible par dovi_tool / hdr10plus_tool.
+            film2.suffix.lower() == ".mkv" and not strict_demuxer_reads_tracks(film2)
         )
 
     @staticmethod
@@ -2965,15 +2968,31 @@ class MergeDoviWorkflow(QObject):
             return self._extract_first_rpu(path, Path(tmp) / "rpu.bin")
 
     def _extract_first_rpu(self, path: Path, rpu: Path) -> bool:
-        """Extrait le premier RPU de ``path`` (``extract-rpu -l 1``) ; True si obtenu."""
+        """Extrait le premier RPU de ``path`` (``extract-rpu -l 1``) ; True si obtenu.
+
+        MKV dont Tracks échappe au premier SeekHead (lecteur strict de dovi_tool) :
+        premières images copiées en Annex B par FFmpeg, puis lues par dovi_tool.
+        """
+        source = path
         try:
+            if path.suffix.lower() == ".mkv" and not strict_demuxer_reads_tracks(path):
+                source = rpu.with_suffix(".hevc")
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+                self._run_probe(
+                    [self._bins["ffmpeg"], "-nostdin", "-v", "error", "-y", "-i", str(path), "-map", "0:v:0",
+                     "-c:v", "copy", "-bsf:v", "hevc_mp4toannexb", "-frames:v", "8", "-f", "hevc", str(source)],
+                    capture_output=True, check=False, timeout=120, **subprocess_text_kwargs(),
+                )
             # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             self._run_probe(
-                [self._bins["dovi_tool"], "extract-rpu", "-i", str(path), "-l", "1", "-o", str(rpu)],
+                [self._bins["dovi_tool"], "extract-rpu", "-i", str(source), "-l", "1", "-o", str(rpu)],
                 capture_output=True, check=False, timeout=120, **subprocess_text_kwargs(),
             )
         except (OSError, subprocess.TimeoutExpired):
             return False
+        finally:
+            if source != path:
+                source.unlink(missing_ok=True)
         return rpu.is_file() and rpu.stat().st_size > 0
 
     def _film1_dovi_record(self, film1: Path, hevc: Path) -> DolbyVisionConfigRecord | None:

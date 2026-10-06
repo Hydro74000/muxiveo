@@ -40,6 +40,7 @@ from core.workflows.hevc_static_hdr_metadata import inject_static_hdr_sei_file
 from core.dovi_profile_detector import DoviSubProfile
 from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router
 from core.workflows.encode.runtime.dovi_geometry import extract_dovi_rpu
+from core.matroska.reader import strict_demuxer_reads_tracks
 from core.workflows.encode.dovi_policy import P5_COPY_NORMALIZE_ERROR, dovi_output_compat_id_for
 from core.workflows.encode.runtime.hevc_sei_normalizer import (
     strip_pic_timing_from_annexb_file,
@@ -377,7 +378,12 @@ class MetadataInjectRunner:
                 meta_src = cb.video_source_path(effective_config)
                 meta_stream = int(cb.video_stream_index(effective_config))
                 meta_src_ext = meta_src.suffix.lower()
-                needs_annexb = (meta_src_ext not in _RAW_HEVC_EXT and meta_src_ext != ".mkv") or meta_stream != 0
+                needs_annexb = (
+                    (meta_src_ext not in _RAW_HEVC_EXT and meta_src_ext != ".mkv") or meta_stream != 0
+                    # MKV dont Tracks échappe au premier SeekHead (RFC 9559 §6.3
+                    # non respectée) : illisible par dovi_tool / hdr10plus_tool.
+                    or (meta_src_ext == ".mkv" and not strict_demuxer_reads_tracks(meta_src))
+                )
                 if needs_annexb and (video.copy_dv or video.copy_hdr10plus):
                     annexb_src = _alloc("source.hevc", src_size_est)
                     signals.progress.emit("Extraction HEVC annexB pour outillage DoVi/HDR10+…")

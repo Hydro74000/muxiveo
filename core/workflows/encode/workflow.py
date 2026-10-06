@@ -243,6 +243,7 @@ from core.workflows.encode.planning.offsets import (
 from core.workflows.encode.planning.preview import (
     format_preview_command as _format_preview_command_plan,
     format_preview_commands as _format_preview_commands_plan,
+    preview_comment as _preview_comment,
 )
 from core.workflows.encode.planning.track_assembly import (
     resolve_track_assembly as _resolve_track_assembly_plan,
@@ -2208,12 +2209,12 @@ class EncodeWorkflow(QObject):
         else:
             command_text = _format_preview_commands_plan(commands)
         header = [
-            f"# Muxage final Matroska : {mux_decision.selected} "
+            f"Muxage final Matroska : {mux_decision.selected} "
             f"(demandé : {mux_decision.requested})",
         ]
         if mux_decision.selected == "native":
             header.append(
-                "# Assemblage final interne ; les commandes ci-dessous préparent "
+                "Assemblage final interne ; les commandes ci-dessous préparent "
                 "les artefacts ou servent de référence."
             )
         primary = self._primary_video_settings(config)
@@ -2225,7 +2226,7 @@ class EncodeWorkflow(QObject):
                 piped = None
             if piped is not None:
                 header.append(
-                    "# Filtres et conversions couleur : "
+                    "Filtres et conversions couleur : "
                     + ("FFmpeg (pipe y4m vers NVEncC)." if piped else "NVEncC (natifs).")
                 )
         for index, video in enumerate(self._video_tracks(config), start=1):
@@ -2234,10 +2235,11 @@ class EncodeWorkflow(QObject):
                 and (not video.master_display.strip() or not video.max_cll.strip())
             ):
                 header.append(
-                    f"# Piste vidéo #{index} : HDR10 statique estimé au lancement depuis le RPU "
+                    f"Piste vidéo #{index} : HDR10 statique estimé au lancement depuis le RPU "
                     "Dolby Vision (P5), absent de cet aperçu."
                 )
-        return "\n".join((*header, command_text))
+        # Commentaires du shell cible (REM sous cmd.exe) : l'aperçu se colle tel quel.
+        return "\n".join((*(_preview_comment(line) for line in header), command_text))
 
     def run_preview(self, config: EncodeConfig, request: EncodePreviewRequest) -> TaskSignals:
         """Génère une preview réelle image ou vidéo dans un thread secondaire."""

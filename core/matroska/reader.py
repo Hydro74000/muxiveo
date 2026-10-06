@@ -442,6 +442,59 @@ class MatroskaReader:
             self._metadata_exhaustive = True
         return self._metadata_cache or ()
 
+    def tracks_indexed_for_strict_readers(self) -> bool:
+        """Tracks trouvable par un lecteur strict (matroska-demuxer de dovi_tool / hdr10plus_tool).
+
+        Ces lecteurs ne suivent que le premier SeekHead (et les SeekHead qu'il
+        référence) et ne parcourent pas les éléments level-1 dès qu'il en existe
+        un : un second SeekHead non chaîné (RFC 9559 §6.3 non respectée) rend
+        Tracks introuvable. Sans SeekHead, Tracks doit précéder les Clusters.
+        Seuls les en-têtes du début de fichier et les SeekHead sont lus.
+        """
+        size = self.path.stat().st_size
+        segment = self.segment()
+        segment_end = segment.end if segment.end is not None else size
+        first_head: EbmlElement | None = None
+        tracks_before_clusters = False
+        with self.path.open("rb") as fh:
+            fh.seek(segment.payload_offset)
+            while fh.tell() < segment_end:
+                item = read_element(fh, limit=segment_end)
+                if item is None or item.element_id == self.CLUSTER_ID:
+                    break
+                if item.element_id == self.SEEK_HEAD_ID and first_head is None:
+                    first_head = item
+                tracks_before_clusters |= item.element_id == self.TRACKS_ID
+                if item.end is None:
+                    break
+                fh.seek(item.end)
+            if first_head is None:
+                return tracks_before_clusters
+            pending, visited = [first_head], set()
+            while pending:
+                head = pending.pop()
+                if head.offset in visited or head.size is None:
+                    continue
+                visited.add(head.offset)
+                for target_id, position in self._seek_entries(head):
+                    if target_id not in (self.TRACKS_ID, self.SEEK_HEAD_ID):
+                        continue
+                    # L'entrée ne vaut que si elle désigne réellement l'élément annoncé.
+                    offset = segment.payload_offset + position
+                    if offset >= segment_end:
+                        continue
+                    fh.seek(offset)
+                    try:
+                        pointed = read_element(fh, limit=segment_end)
+                    except ValueError:
+                        continue
+                    if pointed is None or pointed.element_id != target_id or pointed.size is None:
+                        continue
+                    if target_id == self.TRACKS_ID:
+                        return True
+                    pending.append(pointed)
+        return False
+
     def _seek_entries(self, head: EbmlElement) -> list[tuple[bytes, int]]:
         """Entrées ``(SeekID, SeekPosition)`` d'un SeekHead."""
         entries: list[tuple[bytes, int]] = []
@@ -1530,9 +1583,17 @@ class MatroskaTag:
     values: tuple[tuple[str, str], ...]
 
 
+def strict_demuxer_reads_tracks(path: Path) -> bool:
+    """MKV lisible tel quel par dovi_tool / hdr10plus_tool ; vrai si l'analyse échoue (outil seul juge)."""
+    try:
+        return MatroskaReader(Path(path)).tracks_indexed_for_strict_readers()
+    except (OSError, ValueError):
+        return True
+
+
 __all__ = [
     "EbmlElement", "MatroskaAttachment", "MatroskaAttachmentHeader", "MatroskaBlock",
     "MatroskaBlockSummary", "MatroskaChapter",
     "MatroskaEdition", "MatroskaReader", "MatroskaTag", "MatroskaTrack",
-    "iter_children", "payload_children", "read_element",
+    "iter_children", "payload_children", "read_element", "strict_demuxer_reads_tracks",
 ]

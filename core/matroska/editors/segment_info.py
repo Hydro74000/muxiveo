@@ -12,7 +12,10 @@ Key goals:
 from __future__ import annotations
 
 import struct
+import tempfile
 import zlib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -27,6 +30,7 @@ _SEEKID_ID = b"\x53\xab"
 _SEEKPOS_ID = b"\x53\xac"
 _CLUSTER_ID = b"\x1f\x43\xb6\x75"
 _VOID_ID = b"\xec"
+_CRC32_ID = b"\xbf"
 _TRACKS_ID = b"\x16\x54\xae\x6b"
 _ATTACHMENTS_ID = b"\x19\x41\xa4\x69"
 
@@ -96,6 +100,65 @@ class _AnalyzerState:
     data: list[_EbmlElement]
 
 
+class _WriteJournal:
+    """Octets d'origine écrasés ou tronqués pendant une édition, pour la restaurer.
+
+    Chaque plage est sauvegardée avant sa modification (en mémoire
+    jusqu'à 32 Mo, sur disque au-delà : pièces jointes mises en Void, éléments
+    décalés). ``rollback`` rejoue les sauvegardes en ordre inverse puis rend
+    au fichier sa longueur initiale.
+    """
+
+    _COPY_CHUNK = 1 << 20
+
+    def __init__(self, fh: BinaryIO) -> None:
+        self._fh = fh
+        fh.seek(0, 2)
+        self.original_size = fh.tell()
+        self._spool = tempfile.SpooledTemporaryFile(max_size=32 << 20)
+        self._entries: list[tuple[int, int, int]] = []  # (offset fichier, offset spool, longueur)
+
+    def _save(self, offset: int, end: int) -> None:
+        self._fh.seek(0, 2)
+        # Une plage déjà tronquée a sa sauvegarde ; ne pas la relire lors d'un ajout.
+        end = min(end, self.original_size, self._fh.tell())
+        if offset >= end:
+            return
+        self._fh.seek(offset)
+        self._spool.seek(0, 2)
+        while offset < end:
+            data = self._fh.read(min(self._COPY_CHUNK, end - offset))
+            if not data:
+                raise ValueError("Sauvegarde du journal tronquée.")
+            spool_offset = self._spool.tell()
+            self._spool.write(data)
+            self._entries.append((offset, spool_offset, len(data)))
+            offset += len(data)
+
+    def before_write(self, offset: int, length: int) -> None:
+        self._save(offset, offset + length)
+
+    def before_truncate(self, size: int) -> None:
+        self._fh.seek(0, 2)
+        self._save(size, self._fh.tell())
+
+    def rollback(self) -> None:
+        for offset, spool_offset, length in reversed(self._entries):
+            self._spool.seek(spool_offset)
+            self._fh.seek(offset)
+            while length:
+                data = self._spool.read(min(self._COPY_CHUNK, length))
+                if not data:
+                    raise ValueError("Journal de restauration tronqué.")
+                self._fh.write(data)
+                length -= len(data)
+        self._fh.truncate(self.original_size)
+        self._fh.flush()
+
+    def close(self) -> None:
+        self._spool.close()
+
+
 class MatroskaSegmentInfoHeaderEditor:
     def __init__(
         self,
@@ -103,6 +166,8 @@ class MatroskaSegmentInfoHeaderEditor:
         options: MatroskaSegmentInfoHeaderEditorOptions | None = None,
     ) -> None:
         self.options = options or MatroskaSegmentInfoHeaderEditorOptions()
+        # Un éditeur réutilisé pour plusieurs fichiers ne partage pas leur journal.
+        self._journals: dict[BinaryIO, _WriteJournal] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -227,7 +292,7 @@ class MatroskaSegmentInfoHeaderEditor:
         if parsed.element_id != element_id:
             raise ValueError("ID du nouvel élément incohérent avec element_id.")
 
-        with path.open("r+b") as fh:
+        with path.open("r+b") as fh, self._journaled(fh):
             state = self._analyze_file(fh, parse_fast=self.options.parse_fast)
             before_size = state.file_size
 
@@ -278,7 +343,7 @@ class MatroskaSegmentInfoHeaderEditor:
         if not path.is_file():
             raise ValueError(f"Fichier introuvable: {path}")
 
-        with path.open("r+b") as fh:
+        with path.open("r+b") as fh, self._journaled(fh):
             state = self._analyze_file(fh, parse_fast=self.options.parse_fast)
             context = self._locate_context_in_file(fh, state)
 
@@ -753,26 +818,36 @@ class MatroskaSegmentInfoHeaderEditor:
             raise ValueError("Index élément invalide pour add_to_meta_seek.")
         target = state.data[element_index]
         seek_entry = self._build_seek_entry(target.element_id, target.offset - state.segment.payload_offset)
-        has_seek_head = any(e.element_id == _SEEKHEAD_ID for e in state.data)
-        if not has_seek_head:
-            created = self._create_new_meta_seek_at_start(fh, state, seek_entry)
-            if created:
+        first = self._first_seek_head_index(state)
+        if first is None:
+            # Aucun SeekHead : celui créé est le premier (et le seul).
+            if self._create_new_meta_seek_at_start(fh, state):
                 return
-            # Safe fallback: content has been patched, but no room to host a
-            # seek head without risky moves.
+            cluster = next((e for e in state.data if e.element_id == _CLUSTER_ID), None)
+            if cluster is not None and any(
+                e.element_id == _TRACKS_ID and e.offset > cluster.offset
+                for e in state.data
+            ):
+                raise ValueError("Tracks après les Clusters sans emplacement pour un SeekHead conforme.")
             return
 
-        added = self._try_adding_to_existing_meta_seek(fh, state, seek_entry)
-        if added:
+        # RFC 9559 §6.3 : une entrée hors Cluster va dans le premier SeekHead ;
+        # un second SeekHead doit être référencé par le premier et ne lister que
+        # des Clusters. Jamais de SeekHead supplémentaire ici (dovi_tool /
+        # matroska-demuxer ne lisent que le premier : Tracks introuvable).
+        if self._try_adding_to_seek_head(fh, state, first, seek_entry):
             return
-
-        created = self._create_new_meta_seek_at_start(fh, state, seek_entry)
-        if created:
+        if self._grow_first_seek_head(
+            fh, state, first, target.element_id, target.offset - state.segment.payload_offset,
+        ):
             return
 
         moved = self._move_level1_element_before_cluster_to_end_of_file(fh, state)
         if not moved:
-            raise ValueError("Aucun placement SeekHead disponible.")
+            raise ValueError(
+                "Premier SeekHead plein et aucun Void avant les Clusters pour l'agrandir : "
+                "entrée Seek impossible à placer de façon conforme (RFC 9559 §6.3)."
+            )
 
         # Re-locate target index after potential resort and retry once.
         for i, e in enumerate(state.data):
@@ -799,7 +874,9 @@ class MatroskaSegmentInfoHeaderEditor:
         updates: list[tuple[int, bytes]] = []
         offsets_by_id: dict[bytes, list[int]] = {}
         for entry in state.data:
-            if entry.element_id in (_VOID_ID, _SEEKHEAD_ID):
+            # Les Clusters ne sont jamais déplacés : préserver leur index, même
+            # s'il ne contient qu'une partie des Clusters ou les liste autrement.
+            if entry.element_id in (_VOID_ID, _SEEKHEAD_ID, _CLUSTER_ID):
                 continue
             if self._element_span(entry) == 0:
                 continue
@@ -855,55 +932,181 @@ class MatroskaSegmentInfoHeaderEditor:
                 updates.append((seek_head.payload_offset, new_payload))
         return updates
 
-    def _try_adding_to_existing_meta_seek(self, fh: BinaryIO, state: _AnalyzerState, seek_entry: bytes) -> bool:
-        for idx, sh in enumerate(state.data):
-            if sh.element_id != _SEEKHEAD_ID or sh.unknown_size:
-                continue
+    @staticmethod
+    def _first_seek_head_index(state: _AnalyzerState) -> int | None:
+        """Premier SeekHead du segment (ordre des offsets), seul hôte des entrées hors Cluster."""
+        return next((idx for idx, e in enumerate(state.data) if e.element_id == _SEEKHEAD_ID), None)
 
-            payload = self._read_exact(fh, sh.payload_offset, sh.size)
-            new_payload = payload + seek_entry
-            new_payload = self._refresh_crc32_in_payload(new_payload)
-            new_size = self._encode_ebml_size_prefer_length(len(new_payload), preferred_length=sh.size_len)
-            new_bytes = sh.element_id + new_size + new_payload
+    def _seek_head_with_entry(self, fh: BinaryIO, sh: _EbmlElement, seek_entry: bytes) -> bytes:
+        payload = self._refresh_crc32_in_payload(self._read_exact(fh, sh.payload_offset, sh.size) + seek_entry)
+        return sh.element_id + self._encode_ebml_size_prefer_length(len(payload), preferred_length=sh.size_len) + payload
 
-            available = self._element_span(sh)
-            if idx + 1 < len(state.data) and state.data[idx + 1].element_id == _VOID_ID:
-                available += self._element_span(state.data[idx + 1])
+    def _try_adding_to_seek_head(
+        self, fh: BinaryIO, state: _AnalyzerState, idx: int, seek_entry: bytes,
+    ) -> bool:
+        """Ajoute l'entrée au SeekHead ``idx`` sur place (Void suivant absorbé, ou fin de fichier)."""
+        sh = state.data[idx]
+        if sh.unknown_size:
+            raise ValueError("SeekHead de taille inconnue non supporté en patch sécurisé.")
+        new_bytes = self._seek_head_with_entry(fh, sh, seek_entry)
+        parsed = self._read_ebml_element_from_bytes(new_bytes, 0)
 
-            at_end = idx == len(state.data) - 1
-            if not at_end and len(new_bytes) > available:
-                continue
+        available = self._element_span(sh)
+        if idx + 1 < len(state.data) and state.data[idx + 1].element_id == _VOID_ID:
+            available += self._element_span(state.data[idx + 1])
+        at_end = idx == len(state.data) - 1
+        # Un reliquat d'un octet ne peut pas devenir un Void.
+        if not at_end and (len(new_bytes) > available or available - len(new_bytes) == 1):
+            return False
 
-            self._write_at(fh, sh.offset, new_bytes)
+        self._write_at(fh, sh.offset, new_bytes)
+        sh.size_offset = sh.offset + sh.id_len
+        sh.size_len = parsed.size_len
+        sh.payload_offset = sh.size_offset + sh.size_len
+        sh.size = parsed.size
+        if at_end:
+            self._adjust_segment_size(fh, state)
+        else:
+            self._handle_void_elements(fh, state, idx)
+        return True
 
-            sh.size_offset = sh.offset + sh.id_len
-            sh.size_len = len(new_size)
-            sh.payload_offset = sh.size_offset + sh.size_len
-            sh.size = len(new_payload)
+    # Décalage maximal d'éléments derrière le premier SeekHead (pièces jointes
+    # volumineuses : au-delà, l'élément cible est déplacé autrement ou refusé).
+    _MAX_SHIFT_BYTES = 64 << 20
 
-            if at_end:
-                self._adjust_segment_size(fh, state)
-            else:
-                self._handle_void_elements(fh, state, idx)
+    def _grow_first_seek_head(
+        self, fh: BinaryIO, state: _AnalyzerState, idx: int, target_id: bytes, target_rel: int,
+    ) -> bool:
+        """Agrandit le premier SeekHead sur place, en décalant les éléments qui le suivent.
 
-            self._ensure_front_seek_head_exists(fh, state, idx)
+        Les éléments compris entre le SeekHead et le premier Void (avant les
+        Clusters) assez grand glissent de l'écart ; leurs SeekPosition sont
+        recalculées. Le SeekHead reste le premier élément du segment, avant tout
+        second SeekHead éventuel (RFC 9559 §6.3, RV7-02).
+        """
+        sh = state.data[idx]
+        if sh.unknown_size:
+            return False
+        seg = state.segment.payload_offset
+        old_span = self._element_span(sh)
+        entries = self._iter_seek_entries(fh, sh)
+        payload = self._read_exact(fh, sh.payload_offset, sh.size)
+        crc = b""
+        if payload.startswith(_CRC32_ID):
+            crc_element = self._read_ebml_element_from_bytes(payload, 0)
+            crc = payload[:crc_element.end]
+
+        def rebuilt(seeks: list[bytes]) -> bytes:
+            new_payload = self._refresh_crc32_in_payload(crc + b"".join(seeks))
+            return sh.element_id + self._encode_ebml_size_prefer_length(
+                len(new_payload), preferred_length=sh.size_len,
+            ) + new_payload
+
+        compact = rebuilt([self._build_seek_entry(i, pos) for i, pos in entries]
+                          + [self._build_seek_entry(target_id, target_rel)])
+        if len(compact) <= old_span:
+            # Les SeekPosition paddées peuvent libérer assez de place sans
+            # décaler d'élément. Absorber un reliquat d'un octet dans le VINT.
+            parsed = self._read_ebml_element_from_bytes(compact, 0)
+            if old_span - len(compact) == 1:
+                compact = sh.element_id + self._encode_ebml_size(
+                    parsed.size, length=parsed.size_len + 1,
+                ) + compact[parsed.payload_offset:]
+                parsed = self._read_ebml_element_from_bytes(compact, 0)
+            self._write_at(fh, sh.offset, compact)
+            sh.size_offset = sh.offset + parsed.id_len
+            sh.size_len = parsed.size_len
+            sh.payload_offset = sh.size_offset + parsed.size_len
+            sh.size = parsed.size
+            self._handle_void_elements(fh, state, idx)
             return True
+        region_start = sh.offset + old_span
+        for void_idx in range(idx + 1, len(state.data)):
+            void = state.data[void_idx]
+            if void.element_id == _CLUSTER_ID or void.unknown_size or void.unresolved_size:
+                return False
+            if void.element_id != _VOID_ID:
+                continue
+            region = state.data[idx + 1:void_idx]
+            region_end = void.offset
+            if any(e.unknown_size or e.unresolved_size for e in region):
+                return False
+            if region_end - region_start > self._MAX_SHIFT_BYTES:
+                return False
+            delta = 0
+            new_sh = b""
+            for _ in range(8):
+                def moved(rel: int, shift: int = delta) -> int:
+                    return rel + shift if region_start <= seg + rel < region_end else rel
 
+                new_sh = rebuilt(
+                    [self._build_seek_entry(i, moved(pos)) for i, pos in entries]
+                    + [self._build_seek_entry(target_id, moved(target_rel))]
+                )
+                if len(new_sh) - old_span == delta:
+                    break
+                delta = len(new_sh) - old_span
+            else:
+                return False
+            remaining = self._element_span(void) - delta
+            if delta <= 0 or (remaining != 0 and remaining < 2):
+                continue
+            self._shift_bytes(fh, region_start, region_end, delta)
+            self._write_at(fh, sh.offset, new_sh)
+            parsed = self._read_ebml_element_from_bytes(new_sh, 0)
+            sh.size_offset = sh.offset + parsed.id_len
+            sh.size_len = parsed.size_len
+            sh.payload_offset = sh.size_offset + parsed.size_len
+            sh.size = parsed.size
+            for element in region:
+                element.offset += delta
+                element.size_offset += delta
+                element.payload_offset += delta
+            if remaining:
+                void_bytes = self._build_void_element(remaining)
+                self._write_at(fh, void.offset + delta, void_bytes)
+                header = self._read_ebml_element_from_bytes(void_bytes, 0)
+                void.offset += delta
+                void.size_offset = void.offset + header.id_len
+                void.size_len = header.size_len
+                void.payload_offset = void.size_offset + header.size_len
+                void.size = header.size
+            else:
+                del state.data[void_idx]
+            return True
         return False
 
-    def _create_new_meta_seek_at_start(self, fh: BinaryIO, state: _AnalyzerState, seek_entry: bytes) -> bool:
-        seekhead = self._build_seekhead_from_entries([seek_entry])
+    def _shift_bytes(self, fh: BinaryIO, start: int, end: int, delta: int) -> None:
+        """Recopie ``[start, end)`` en ``[start + delta, end + delta)`` (delta > 0), de la fin vers le début."""
+        chunk = 1 << 20
+        cursor = end
+        while cursor > start:
+            begin = max(start, cursor - chunk)
+            data = self._read_exact(fh, begin, cursor - begin)
+            self._write_at(fh, begin + delta, data)
+            cursor = begin
+
+    def _create_new_meta_seek_at_start(self, fh: BinaryIO, state: _AnalyzerState) -> bool:
+        """Crée un index complet dans le premier élément hors CRC, s'il s'agit d'un Void.
+
+        Indexer seulement la cible rendrait Info/Tracks invisibles aux lecteurs
+        stricts. Sans place en tête, conserver un segment sans SeekHead.
+        """
+        seekhead = self._build_seekhead_from_entries([
+            self._build_seek_entry(e.element_id, e.offset - state.segment.payload_offset)
+            for e in state.data if e.element_id not in (_VOID_ID, _CRC32_ID, _CLUSTER_ID, _SEEKHEAD_ID)
+        ])
         needed = len(seekhead)
 
         for idx, e in enumerate(state.data):
-            if e.element_id == _CLUSTER_ID:
-                break
-            if e.element_id != _VOID_ID:
+            if e.element_id == _CRC32_ID:
                 continue
+            if e.element_id != _VOID_ID:
+                return False
             # Guard: avoid "+1 byte" residual hole.
             slot_span = self._element_span(e)
             if slot_span != needed and slot_span < needed + 2:
-                continue
+                return False
 
             self._write_at(fh, e.offset, seekhead)
             parsed = self._read_ebml_element_from_bytes(seekhead, 0)
@@ -973,26 +1176,6 @@ class MatroskaSegmentInfoHeaderEditor:
         self._add_to_meta_seek(fh, state, moved_idx)
         return True
 
-    def _ensure_front_seek_head_exists(self, fh: BinaryIO, state: _AnalyzerState, seek_head_idx: int) -> None:
-        if seek_head_idx < 0 or seek_head_idx >= len(state.data):
-            return
-        sh = state.data[seek_head_idx]
-        if sh.element_id != _SEEKHEAD_ID:
-            return
-
-        for e in state.data:
-            if e.element_id == _CLUSTER_ID:
-                break
-            if e.element_id == _SEEKHEAD_ID:
-                return
-
-        # No seek head before first cluster: create forward one if possible.
-        rel_pos = sh.offset - state.segment.payload_offset
-        forward_seek = self._build_seek_entry(_SEEKHEAD_ID, rel_pos)
-        created = self._create_new_meta_seek_at_start(fh, state, forward_seek)
-        if not created:
-            raise ValueError("Impossible de créer un SeekHead en tête de segment.")
-
     # ------------------------------------------------------------------
     # Void handling
     # ------------------------------------------------------------------
@@ -1008,7 +1191,7 @@ class MatroskaSegmentInfoHeaderEditor:
         if end_idx == len(state.data):
             cur = state.data[data_idx]
             truncate_to = cur.offset + self._element_span(cur)
-            fh.truncate(truncate_to)
+            self._truncate(fh, truncate_to)
             state.file_size = truncate_to
             self._adjust_segment_size(fh, state)
             if self._element_span(cur) == 0:
@@ -1142,7 +1325,7 @@ class MatroskaSegmentInfoHeaderEditor:
 
         if start_idx < len(state.data):
             truncate_to = state.data[start_idx].offset
-            fh.truncate(truncate_to)
+            self._truncate(fh, truncate_to)
             state.file_size = truncate_to
             del state.data[start_idx:]
             self._adjust_segment_size(fh, state)
@@ -1758,10 +1941,34 @@ class MatroskaSegmentInfoHeaderEditor:
             raise ValueError("Lecture tronquée.")
         return data
 
-    @staticmethod
-    def _write_at(fh: BinaryIO, offset: int, data: bytes) -> None:
+    def _write_at(self, fh: BinaryIO, offset: int, data: bytes) -> None:
+        journal = self._journals.get(fh)
+        if journal is not None:
+            journal.before_write(offset, len(data))
         fh.seek(offset)
         fh.write(data)
+
+    def _truncate(self, fh: BinaryIO, size: int) -> None:
+        journal = self._journals.get(fh)
+        if journal is not None:
+            journal.before_truncate(size)
+        fh.truncate(size)
+
+    @contextmanager
+    def _journaled(self, fh: BinaryIO) -> Iterator[None]:
+        """Édition tout ou rien : un échec rend le fichier octet pour octet (RV7-01)."""
+        journal = _WriteJournal(fh)
+        self._journals[fh] = journal
+        try:
+            yield
+            # Les erreurs d'écriture différée doivent encore pouvoir être annulées.
+            fh.flush()
+        except BaseException:
+            journal.rollback()
+            raise
+        finally:
+            del self._journals[fh]
+            journal.close()
 
     @staticmethod
     def _find_pattern_in_file(fh: BinaryIO, pattern: bytes, file_size: int) -> int:

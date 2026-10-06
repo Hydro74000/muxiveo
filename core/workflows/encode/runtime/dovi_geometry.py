@@ -15,6 +15,9 @@ from pathlib import Path
 from typing import Callable
 
 from core.bluray import append_ffmpeg_input_args
+from core.matroska.reader import strict_demuxer_reads_tracks
+from core.pipeline_command import PipelineCommand
+from core.runner import TaskCancelledError
 from core.subprocess_utils import subprocess_text_kwargs
 
 from core.workflows.encode.models import EncodeError, VideoCropSettings, VideoEncodeSettings, VideoResizeSettings
@@ -198,8 +201,33 @@ def extract_dovi_rpu(
     ``mode`` : mode RPU de dovi_tool (``"3"`` : P5 converti en P8.1 à l'extraction,
     identique octet pour octet à ``-m 3 convert`` puis extraction).
     """
-    meta_input = source
-    if source.suffix.lower() not in {".mkv", ".hevc", ".h265", ".265", ".x265"} or stream_index != 0:
+    mode_args = ["-m", str(mode)] if mode else []
+    output_rpu.unlink(missing_ok=True)
+
+    def piped() -> None:
+        # Flux Annex B par FFmpeg, en pipe (aucun fichier HEVC intermédiaire).
+        decode = [ffmpeg_bin, "-nostdin", "-loglevel", "error"]
+        append_ffmpeg_input_args(decode, source)
+        decode.extend(["-map", f"0:{stream_index}", "-c:v", "copy", "-bsf:v", "hevc_mp4toannexb", "-f", "hevc", "-"])
+        output_rpu.unlink(missing_ok=True)
+        run_cmd(PipelineCommand([dovi_tool_bin, *mode_args, "extract-rpu", "-", "-o", str(output_rpu)], [decode]))
+
+    suffix = source.suffix.lower()
+    if suffix == ".mkv" and stream_index == 0 and not strict_demuxer_reads_tracks(source):
+        # Lecteur Matroska de dovi_tool (matroska-demuxer) : seul le premier
+        # SeekHead est suivi. Second SeekHead non chaîné (RFC 9559 §6.3 non
+        # respectée : anciens Muxiveo, autres outils) → « can't find Element: Tracks ».
+        piped()
+    elif suffix in {".mkv", ".hevc", ".h265", ".265", ".x265"} and stream_index == 0:
+        try:
+            run_cmd([dovi_tool_bin, *mode_args, "extract-rpu", "-i", str(source), "-o", str(output_rpu)])
+        except TaskCancelledError:
+            raise
+        except Exception:
+            if suffix != ".mkv":
+                raise
+            piped()  # autre limite du lecteur Matroska de dovi_tool
+    else:
         meta_input = work_dir / "source_meta.hevc"
         cleanup_paths.append(meta_input)
         cmd = [ffmpeg_bin, "-nostdin", "-y"]
@@ -207,10 +235,7 @@ def extract_dovi_rpu(
         cmd.extend(["-map", f"0:{stream_index}", "-c:v", "copy", "-bsf:v", "hevc_mp4toannexb",
                     "-f", "hevc", str(meta_input)])
         run_cmd(cmd)
-    output_rpu.unlink(missing_ok=True)
-    mode_args = ["-m", str(mode)] if mode else []
-    run_cmd([dovi_tool_bin, *mode_args, "extract-rpu", "-i", str(meta_input), "-o", str(output_rpu)])
-    if meta_input != source:
+        run_cmd([dovi_tool_bin, *mode_args, "extract-rpu", "-i", str(meta_input), "-o", str(output_rpu)])
         meta_input.unlink(missing_ok=True)
     if output_rpu.is_file() and output_rpu.stat().st_size == 0:
         raise EncodeError(f"Dolby Vision : l'extraction du RPU depuis '{source.name}' a produit un fichier vide.")

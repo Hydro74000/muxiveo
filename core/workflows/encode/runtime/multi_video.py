@@ -28,6 +28,7 @@ from core.workflows.encode.interpolation import (
     stream_start_offset,
 )
 from core.matroska.editors.dovi import DolbyVisionConfigRecord
+from core.matroska.reader import strict_demuxer_reads_tracks
 from core.workflows.encode.dovi_policy import dovi_output_compat_id_for
 from core.matroska.hevc.access_units import HevcStreamCancelled
 from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter
@@ -142,7 +143,11 @@ class MultiVideoPipelineRunner:
             _RAW_HEVC_EXT = {".hevc", ".h265", ".265", ".x265"}
             src_ext = source.suffix.lower()
             stream_index = int(spec.stream_index)
-            needs_annexb = (src_ext not in _RAW_HEVC_EXT and src_ext != ".mkv") or stream_index != 0
+            needs_annexb = (
+                (src_ext not in _RAW_HEVC_EXT and src_ext != ".mkv") or stream_index != 0
+                # MKV dont Tracks échappe au premier SeekHead : illisible par dovi_tool / hdr10plus_tool.
+                or (src_ext == ".mkv" and not strict_demuxer_reads_tracks(source))
+            )
             if needs_annexb and (video.copy_dv or video.copy_hdr10plus):
                 annexb_src = work_dir / f"video_{index}.source.hevc"
                 annexb_cmd = [cb.ffmpeg_bin, "-nostdin", "-y"]

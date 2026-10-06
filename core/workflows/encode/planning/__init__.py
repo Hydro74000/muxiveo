@@ -19,7 +19,7 @@ from .offsets import (
     track_time_offset_lookup,
     video_map_arg,
 )
-from .preview import format_preview_command, format_preview_commands
+from .preview import format_preview_command, format_preview_commands, preview_comment
 from .preview import format_preview_selection
 from .plan_models import (
     ContainerMetadataPlan,
@@ -72,6 +72,7 @@ __all__ = [
     "container_metadata_map_value",
     "format_preview_command",
     "format_preview_commands",
+    "preview_comment",
     "format_preview_selection",
     "is_dir_writable",
     "materialize_container_metadata_inputs",

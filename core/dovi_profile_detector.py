@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from core.matroska.reader import strict_demuxer_reads_tracks
 from core.subprocess_utils import subprocess_text_kwargs
 from core.video_sampling import probe_video_duration, video_sample_times
 
@@ -247,7 +248,9 @@ class DoviProfileDetector:
         rpu_dir = Path(tempfile.mkdtemp(prefix="dovi_detect_"))
         rpu_bin = rpu_dir / "rpu.bin"
         try:
-            if stream_index is None and ext in {".mkv", ".hevc", ".h265", ".265", ".x265"}:
+            # MKV dont Tracks échappe au premier SeekHead : lu par le pipe FFmpeg ci-dessous.
+            direct = ext != ".mkv" or strict_demuxer_reads_tracks(source)
+            if stream_index is None and direct and ext in {".mkv", ".hevc", ".h265", ".265", ".x265"}:
                 extract = subprocess.run(
                     [self._dovi_tool, "extract-rpu", "-i", str(source), "-l", "100", "-o", str(rpu_bin)],
                     capture_output=True, check=False, **subprocess_text_kwargs(),
