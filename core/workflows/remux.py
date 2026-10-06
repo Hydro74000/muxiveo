@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
+from core.command_preview import format_preview_command, preview_comment
 from core.output_commit import OutputBusyError, OutputReservation
 from core.runner import TaskSignals, ToolRunner
 from core.version import APP_VERSION_LABEL
@@ -267,12 +268,12 @@ class RemuxWorkflow(QObject):
             list[list[object]],
             report.get("preparation_commands") or [],
         )
-        prep_text = "\n".join(" ".join(map(str, command)) for command in preparations)
+        prep_text = "\n".join(format_preview_command([str(part) for part in command]) for command in preparations)
         sections = [
-            f"# Backend: native Matroska (plan v{report['plan_version']})",
+            preview_comment(f"Backend: native Matroska (plan v{report['plan_version']})"),
             prep_text,
-            f"# Écriture interne Matroska -> {config.output}",
-            "# Référence FFmpeg compatible v1:",
+            preview_comment(f"Écriture interne Matroska -> {config.output}"),
+            preview_comment("Référence FFmpeg compatible v1:"),
             reference,
         ]
         return "\n".join(section for section in sections if section)

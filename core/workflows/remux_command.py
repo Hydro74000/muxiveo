@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from core.bluray import append_ffmpeg_input_args
+from core.command_preview import format_preview_command, preview_comment
 from core.subtitle_codec import plan_subtitle_codec
 from core.workflows.common.sync_rewrite import (
     audio_bitrate_kbps_from_display_info,
@@ -216,19 +217,15 @@ def preview_remux_command(
     )
     if not parts:
         return ""
-
-    lines: list[str] = [parts[0]]
-    index = 1
-    while index < len(parts):
-        token = parts[index]
-        if token.startswith("-") and index + 1 < len(parts) and not parts[index + 1].startswith("-"):
-            lines.append(f"    {token} {parts[index + 1]}")
-            index += 2
-        else:
-            lines.append(f"    {token}")
-            index += 1
-
-    return " \\\n".join(lines)
+    # Arguments protégés pour le shell de la plateforme (POSIX ou cmd.exe) :
+    # la commande copiée restitue exactement l'argv exécuté.
+    prefix = ""
+    if config.chapter_overrides:
+        prefix = preview_comment(
+            "<chapitres.ffmetadata> : fichier de chapitres généré à l'exécution "
+            "(cette commande n'est pas exécutable telle quelle)."
+        ) + "\n"
+    return format_preview_command([str(part) for part in parts], prefix=prefix)
 
 
 __all__ = ["build_remux_command", "preview_remux_command"]
