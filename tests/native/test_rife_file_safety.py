@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -11,7 +12,32 @@ import pytest
 
 
 RIFE_BIN = os.environ.get("MUXIVEO_RIFE_BIN") or shutil.which("muxiveo-rife") or ""
-pytestmark = pytest.mark.skipif(not RIFE_BIN, reason="Binaire muxiveo-rife requis")
+if RIFE_BIN:
+    # Les tests changent de cwd : résoudre le binaire depuis le dossier initial.
+    RIFE_BIN = str(Path(shutil.which(RIFE_BIN) or RIFE_BIN).resolve())
+# Protection introduite en 1.2.2 : un binaire installé plus ancien ne la porte pas.
+_PROTECTION_MIN_VERSION = (1, 2, 2)
+
+
+def _rife_version() -> tuple[int, ...] | None:
+    """Version annoncée par ``--version`` (None si illisible)."""
+    if not RIFE_BIN:
+        return None
+    try:
+        out = subprocess.run(
+            [RIFE_BIN, "--version"], capture_output=True, text=True, timeout=15, check=False,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", out or "")
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+RIFE_VERSION = _rife_version()
+pytestmark = pytest.mark.skipif(
+    RIFE_VERSION is None or RIFE_VERSION < _PROTECTION_MIN_VERSION,
+    reason="Binaire muxiveo-rife ≥ 1.2.2 requis (MUXIVEO_RIFE_BIN ou PATH)",
+)
 
 
 @pytest.mark.parametrize("alias", ["same", "relative", "hardlink", "symlink"])
