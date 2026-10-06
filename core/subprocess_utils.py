@@ -79,10 +79,48 @@ def decode_subprocess_output(raw: bytes) -> str:
     return raw.decode(_TOOL_TEXT_ENCODING, errors=_TOOL_TEXT_ERRORS)
 
 
+class ProbeCancelledError(RuntimeError):
+    """Sonde interrompue par une annulation (fermeture de fenêtre, nouveau fichier)."""
+
+
+def run_probe(
+    command: list[str],
+    *,
+    timeout: float,
+    cancel_event: threading.Event | None = None,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess:
+    """Sonde texte à sortie capturée, bornée et annulable.
+
+    Le processus est tué (avec ses descendants) à l'expiration du délai ou à
+    l'annulation. Erreurs distinctes : ``FileNotFoundError`` (outil absent),
+    ``subprocess.TimeoutExpired`` (délai), :class:`ProbeCancelledError`
+    (annulation) ; un code de retour non nul est rendu à l'appelant.
+    """
+    def check_cancelled() -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise ProbeCancelledError("Sonde annulée.")
+
+    options = {**subprocess_text_kwargs(), **kwargs}
+    if cancel_event is None:
+        # Sans annulation possible : délai seul (le processus est tué à l'expiration).
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        return subprocess.run(  # nosec B603  # argv fourni par l'appelant, sans shell
+            list(command), capture_output=True, check=False, timeout=timeout, **options,
+        )
+    return run_cancellable_capture(
+        list(command),
+        cancel_cb=cancel_event.is_set if cancel_event is not None else None,
+        check_cancelled=check_cancelled,
+        timeout=timeout,
+        **options,
+    )
+
+
 def run_cancellable_capture(
     command: list[str],
     *,
-    cancel_cb: Callable[[], bool],
+    cancel_cb: Callable[[], bool] | None,
     check_cancelled: Callable[[], None],
     on_start: Callable[[subprocess.Popen], None] | None = None,
     on_end: Callable[[subprocess.Popen], None] | None = None,

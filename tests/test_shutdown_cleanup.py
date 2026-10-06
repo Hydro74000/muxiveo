@@ -97,6 +97,7 @@ def test_main_window_close_event_lifecycle(qt_app) -> None:
         def __init__(self):
             QWidget.__init__(self)
             self._scan_cancel = threading.Event()
+            self._probe_cancel = threading.Event()
             self._preview_timer = MagicMock()
             self._executor = executor
             self._preview_executor = ThreadPoolExecutor(max_workers=1)
@@ -124,6 +125,8 @@ def test_main_window_close_event_lifecycle(qt_app) -> None:
         assert time.monotonic() - start < 0.5
         assert not event.isAccepted()
         assert window._remux_panel._scan_cancel.is_set()
+        # Sondes d'inspection interrompues dès la fermeture.
+        assert window._remux_panel._probe_cancel.is_set()
         assert queued.cancelled()
         fake._config.save.assert_not_called()
         fake._verbose_file_logger.close.assert_not_called()

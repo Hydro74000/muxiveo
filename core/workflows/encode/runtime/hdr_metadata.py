@@ -80,6 +80,10 @@ class DynamicHdrPreviewSceneSelection:
     snapped: bool = False
 
 
+# MediaInfo JSON complet : borne haute (stockage réseau lent), jamais illimitée.
+_MEDIAINFO_JSON_TIMEOUT_S = 120
+
+
 class HdrMetadataProbeService:
     """Probe dynamic HDR presence and static HDR metadata with local caching."""
 
@@ -97,14 +101,30 @@ class HdrMetadataProbeService:
         *,
         ffmpeg_bin: Callable[[], str],
         tool_bin: Callable[[str], str],
+        ffprobe_bin: Callable[[], str] | None = None,
     ) -> None:
         self._ffmpeg_bin = ffmpeg_bin
         self._tool_bin = tool_bin
+        # FFprobe configuré ; à défaut, celui placé à côté de FFmpeg.
+        self._ffprobe_override = ffprobe_bin
         self._ffprobe_payload_cache: _LRUCache = _LRUCache(maxsize=256)
         self._ffprobe_frame_hdr_cache: _LRUCache = _LRUCache(maxsize=256)
         self._preview_scene_cache: _LRUCache = _LRUCache(maxsize=64)
         self._preview_keyframes_cache: _LRUCache = _LRUCache(maxsize=64)
         self._mediainfo_hdr_cache: _LRUCache = _LRUCache(maxsize=256)
+
+    def _ffprobe_bin(self) -> str:
+        if self._ffprobe_override is not None:
+            return self._ffprobe_override()
+        return self.ffprobe_bin_from_ffmpeg(self._ffmpeg_bin())
+
+    def clear_probe_caches(self) -> None:
+        """Oublie les résultats de sondes (changement de binaire FFprobe/MediaInfo)."""
+        for cache in (
+            self._ffprobe_payload_cache, self._ffprobe_frame_hdr_cache, self._preview_scene_cache,
+            self._preview_keyframes_cache, self._mediainfo_hdr_cache,
+        ):
+            cache.clear()
 
     @staticmethod
     def ffprobe_bin_from_ffmpeg(ffmpeg_bin: str) -> str:
@@ -125,9 +145,12 @@ class HdrMetadataProbeService:
                 [mediainfo_bin, "--Output=JSON", str(path)],
                 capture_output=True,
                 check=False,
+                # Lecture complète des en-têtes : large marge pour un stockage
+                # réseau lent, mais jamais d'attente illimitée.
+                timeout=_MEDIAINFO_JSON_TIMEOUT_S,
                 **subprocess_text_kwargs(),
             )
-        except (FileNotFoundError, OSError):
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
             return []
         if result.returncode != 0:
             return []
@@ -211,7 +234,7 @@ class HdrMetadataProbeService:
             return self._ffprobe_payload_cache[cache_key]
 
         cmd = [
-            self.ffprobe_bin_from_ffmpeg(self._ffmpeg_bin()),
+            self._ffprobe_bin(),
             "-v", "quiet",
             "-print_format", "json",
             "-show_streams",
@@ -226,6 +249,9 @@ class HdrMetadataProbeService:
                 timeout=20,
                 **subprocess_text_kwargs(),
             )
+        except subprocess.TimeoutExpired:
+            # Sonde expirée : pas de mise en cache, nouvelle tentative possible.
+            return None
         except FileNotFoundError:
             payload = None
         else:
@@ -286,7 +312,7 @@ class HdrMetadataProbeService:
             return self._ffprobe_frame_hdr_cache[cache_key]
 
         cmd = [
-            self.ffprobe_bin_from_ffmpeg(self._ffmpeg_bin()),
+            self._ffprobe_bin(),
             "-v", "quiet",
             "-print_format", "json",
             "-select_streams", stream_selector(stream_index),
@@ -303,6 +329,8 @@ class HdrMetadataProbeService:
                 timeout=30,
                 **subprocess_text_kwargs(),
             )
+        except subprocess.TimeoutExpired:
+            return None
         except FileNotFoundError:
             flags: tuple[bool, bool] | None = None
         else:
@@ -558,7 +586,7 @@ class HdrMetadataProbeService:
     def source_hdr_transfer(self, source: Path, stream_index: int | None = None) -> str:
         """Renvoie "pq" (HDR10/DoVi), "hlg" ou "" (SDR) selon le color_transfer du flux."""
         cmd = [
-            self.ffprobe_bin_from_ffmpeg(self._ffmpeg_bin()),
+            self._ffprobe_bin(),
             "-v", "quiet",
             "-select_streams", stream_selector(stream_index),
             "-show_entries", "stream=color_transfer",
@@ -599,7 +627,7 @@ class HdrMetadataProbeService:
             return self._preview_scene_cache[cache_key]
 
         cmd = [
-            self.ffprobe_bin_from_ffmpeg(self._ffmpeg_bin()),
+            self._ffprobe_bin(),
             "-v", "quiet",
             "-skip_frame", "nokey",
             "-print_format", "json",
@@ -700,7 +728,7 @@ class HdrMetadataProbeService:
         if not (require_dovi or require_hdr10plus):
             return True
         cmd = [
-            self.ffprobe_bin_from_ffmpeg(self._ffmpeg_bin()),
+            self._ffprobe_bin(),
             "-v", "quiet",
             "-read_intervals", f"{max(0.0, float(time_s)):.3f}%+#1",
             "-select_streams", f"v:{max(0, int(stream_index))}",
@@ -767,7 +795,7 @@ class HdrMetadataProbeService:
             return self._preview_keyframes_cache[cache_key]
 
         cmd = [
-            self.ffprobe_bin_from_ffmpeg(self._ffmpeg_bin()),
+            self._ffprobe_bin(),
             "-v", "quiet",
             "-select_streams", f"v:{max(0, int(stream_index))}",
             "-show_entries", "packet=pts_time,flags",
@@ -995,6 +1023,8 @@ class HdrMetadataProbeService:
                 timeout=20,
                 **subprocess_text_kwargs(),
             )
+        except subprocess.TimeoutExpired:
+            return None
         except FileNotFoundError:
             result: tuple[bool, bool] | None = None
         else:
@@ -1033,7 +1063,7 @@ class HdrMetadataProbeService:
 
     def color_primaries_label(self, source: Path, stream_index: int | None = None) -> str:
         cmd = [
-            self._tool_bin("ffprobe"),
+            self._ffprobe_bin(),
             "-v", "error",
             "-select_streams", stream_selector(stream_index),
             "-show_entries", "stream=color_primaries",
@@ -1046,13 +1076,13 @@ class HdrMetadataProbeService:
                 capture_output=True, check=False, timeout=10,
                 **subprocess_text_kwargs(),
             )
-        except (FileNotFoundError, OSError):
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
             return ""
         return (result.stdout or "").strip().lower()
 
     def extract_static_hdr_via_ffprobe(self, source: Path, stream_index: int | None = None) -> tuple[str, str]:
         cmd = [
-            self._tool_bin("ffprobe"),
+            self._ffprobe_bin(),
             "-v", "error",
             "-select_streams", stream_selector(stream_index),
             "-show_frames",
@@ -1066,7 +1096,7 @@ class HdrMetadataProbeService:
                 capture_output=True, check=False, timeout=20,
                 **subprocess_text_kwargs(),
             )
-        except (FileNotFoundError, OSError):
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
             return "", ""
         if result.returncode != 0:
             return "", ""

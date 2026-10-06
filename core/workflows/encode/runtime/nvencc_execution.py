@@ -453,7 +453,7 @@ class NvenccDirectOutputRunner:
                 # L'assemblage ramène l'intermédiaire à zéro, avec ou sans pipe
                 # RIFE : rétablir le départ du flux dans la source d'origine.
                 video_offset_ms += round(1000 * _stream_start_offset(
-                    _ffprobe_beside(cb.ffmpeg_bin),
+                    (cb.bins.get("ffprobe") or _ffprobe_beside(cb.ffmpeg_bin)),
                     cb.video_source_path(config),
                     cb.video_stream_index(config),
                 ))
@@ -521,7 +521,7 @@ class NvenccDirectOutputRunner:
                 frame_ratio = (
                     _resolve_frame_ratio(
                         runtime_video,
-                        ffprobe_bin=_ffprobe_beside(cb.ffmpeg_bin),
+                        ffprobe_bin=cb.bins.get("ffprobe") or _ffprobe_beside(cb.ffmpeg_bin),
                         source=routing.input_path,
                         stream_index=routing.stream_index,
                     )
@@ -600,7 +600,7 @@ class NvenccDirectOutputRunner:
                     # Rétablir le marquage source : perdu en y4m et non repris
                     # automatiquement par NVEncC sans pipe. Le HDR PQ est déjà explicite.
                     probed = _probe_interpolation_source(
-                        _ffprobe_beside(cb.ffmpeg_bin), routing.input_path, routing.stream_index,
+                        (cb.bins.get("ffprobe") or _ffprobe_beside(cb.ffmpeg_bin)), routing.input_path, routing.stream_index,
                         tonemap_to_sdr=bool(runtime_video.tonemap_to_sdr),
                         p5_to_hdr10=bool(runtime_video.p5_to_hdr10),
                     )

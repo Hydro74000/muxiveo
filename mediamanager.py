@@ -4,9 +4,10 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from collections import defaultdict
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -185,6 +186,33 @@ def _resolve_mediainfo_command():
 
     return [MEDIAINFO_EXECUTABLE_PATH or "mediainfo"]
 
+# Sonde MediaInfo : bornée (stockage lent) et interrompue à la fermeture.
+_MEDIAINFO_TIMEOUT_S = 120.0
+
+
+def _run_interruptible(cmd, is_interrupted, timeout_s=_MEDIAINFO_TIMEOUT_S):
+    """Lance ``cmd`` et retourne sa sortie standard ; None si interrompu ou trop long.
+
+    Le processus est tué dès qu'une interruption est demandée ou que le délai
+    expire : un thread ne survit jamais à la fenêtre à cause d'une sonde bloquée.
+    """
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+    proc = subprocess.Popen(  # nosec B603  # argv résolu localement, sans shell
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            out, _ = proc.communicate(timeout=0.2)
+            return out
+        except subprocess.TimeoutExpired:
+            if is_interrupted() or time.monotonic() >= deadline:
+                proc.kill()
+                proc.communicate()
+                return None
+
+
 # --- THREADS ASYNCHRONES ---
 class ScannerThread(QThread):
     file_found = Signal(dict) # Émet un dictionnaire structuré F ou S
@@ -261,15 +289,18 @@ class MediaInfoThread(QThread):
         try:
             cmd = _resolve_mediainfo_command() + [self.filepath]
             # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-            res = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', stdin=subprocess.DEVNULL)  # nosec B603
-            if res.stdout:
+            stdout = _run_interruptible(cmd, self.isInterruptionRequested)
+            if self.isInterruptionRequested():
+                return
+            stdout = stdout or ""
+            if stdout:
                 target = mediainfo_nfo_path if os.path.exists(nfo_path) else nfo_path
                 try:
                     with open(target, 'w', encoding='utf-8') as f:
-                        f.write(res.stdout)
+                        f.write(stdout)
                 except OSError:
                     pass
-            data = self.parse_content(res.stdout)
+            data = self.parse_content(stdout)
             if data:
                 data[0]["data"]["_Source"] = "⚙️ MediaInfo Engine"
             self.info_ready.emit(data)
@@ -1164,13 +1195,18 @@ class MediaManager(QMainWindow):
         return self.confirm_delete_item(item)
 
     def closeEvent(self, event):
-        if self.scanner is not None and self.scanner.isRunning():
-            self.scanner.requestInterruption()
-            self.scanner.wait(1000)
-        for t in list(self._threads):
-            if t.isRunning():
-                t.requestInterruption()
-                t.wait(1000)
+        # Arrêt coopératif : interruption demandée, puis fermeture différée tant
+        # qu'un thread tourne (boucle Qt active, aucun QThread détruit en cours).
+        running = [
+            t for t in [self.scanner, *self._threads]
+            if t is not None and t.isRunning()
+        ]
+        for t in running:
+            t.requestInterruption()
+        if running:
+            event.ignore()
+            QTimer.singleShot(50, self.close)
+            return
         super().closeEvent(event)
 
 if __name__ == "__main__":

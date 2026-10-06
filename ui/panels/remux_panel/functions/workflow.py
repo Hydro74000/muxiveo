@@ -289,7 +289,10 @@ def load(panel, path):
             from cli.logging import Logger
             from core.inspector import FileInspector
             config = build_remux_config(job, panel._config, CommonOptions(), Logger())
-            inspector = FileInspector(ffprobe_bin=str(panel._config.tool_ffprobe), mediainfo_bin=str(panel._config.tool_mediainfo))
+            inspector = FileInspector(
+                ffprobe_bin=str(panel._config.tool_ffprobe), mediainfo_bin=str(panel._config.tool_mediainfo),
+                cancel_event=getattr(panel, "_probe_cancel", None),
+            )
             infos = [inspector.inspect(s.path) for s in config.sources]
             session = job.get("_muxiveo_session")
             if isinstance(session, dict):

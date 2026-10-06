@@ -425,14 +425,20 @@ class EncodeWorkflow(QObject):
         aac_bitrate_per_channel_kbps: int = 96,
         eac3_bitrate_per_channel_kbps: int = 96,
         regenerate_statistics: bool = True,
+        ffprobe_bin:               str | None = None,
     ) -> None:
         super().__init__(parent)
         self._ffmpeg = ffmpeg_bin
+        # FFprobe configuré (réglage tools/ffprobe) ; sans valeur explicite, celui
+        # placé à côté de FFmpeg. Un FFmpeg système choisi pour le matériel ne
+        # remplace jamais un FFprobe explicite.
+        self._ffprobe_explicit: str | None = ffprobe_bin or None
         self._bins: dict[str, str] = {
             "dovi_tool":      dovi_tool_bin,
             "hdr10plus_tool": hdr10plus_bin,
             "mediainfo":      mediainfo_bin,
         }
+        self._bins["ffprobe"] = self._ffprobe_path()
         # NVEncC est optionnel : None signifie "pas configuré". Stocké séparément
         # pour permettre une vérification explicite avant d'invoquer le pipeline
         # ffmpeg → NVEncC → ffmpeg.
@@ -447,6 +453,7 @@ class EncodeWorkflow(QObject):
         self._hdr_metadata_service = HdrMetadataProbeService(
             ffmpeg_bin=lambda: self._ffmpeg,
             tool_bin=lambda name: self._bins.get(name) or name,
+            ffprobe_bin=self._ffprobe_path,
         )
         self._static_hdr_estimator = _StaticHdrEstimateService(
             ffmpeg_bin=self._ffmpeg,
@@ -467,7 +474,7 @@ class EncodeWorkflow(QObject):
         self._max_parallel_video_encodes = _normalize_max_parallel_video_encodes(max_parallel_video_encodes)
         self._writing_application = writing_application.strip()
         self._postprocess_service = RemuxPostprocessService(
-            ffprobe_bin=self._ffprobe_bin_from_ffmpeg(ffmpeg_bin),
+            ffprobe_bin=self._ffprobe_path(),
         )
         from core.workflows.common.matroska_finalize import MatroskaMuxingAppPostAction
         from core.workflows.common.matroska_finalize import MatroskaLanguagePostAction
@@ -501,8 +508,13 @@ class EncodeWorkflow(QObject):
 
     def set_ffmpeg(self, ffmpeg_bin: str) -> None:
         """Met à jour le binaire ffmpeg utilisé pour l'encodage (ex: ffmpeg système pour HW)."""
+        previous_ffprobe = self._ffprobe_path()
         self._ffmpeg = ffmpeg_bin
-        self._postprocess_service.set_ffprobe_bin(self._ffprobe_bin_from_ffmpeg(ffmpeg_bin))
+        self._bins["ffprobe"] = self._ffprobe_path()
+        self._postprocess_service.set_ffprobe_bin(self._bins["ffprobe"])
+        if self._bins["ffprobe"] != previous_ffprobe:
+            # Résultats de l'ancien FFprobe : à refaire avec le nouveau binaire.
+            self._hdr_metadata_service.clear_probe_caches()
         self._static_hdr_estimator = _StaticHdrEstimateService(
             ffmpeg_bin=self._ffmpeg,
             dovi_tool_bin=self._bins["dovi_tool"],
@@ -592,6 +604,10 @@ class EncodeWorkflow(QObject):
         (`out_time=...`) que l'UI peut parser de façon fiable.
         """
         return _common_ffmpeg_progress_args()
+
+    def _ffprobe_path(self) -> str:
+        """FFprobe effectif : configuré, sinon placé à côté du FFmpeg courant."""
+        return self._ffprobe_explicit or self._ffprobe_bin_from_ffmpeg(self._ffmpeg)
 
     @staticmethod
     def _ffprobe_bin_from_ffmpeg(ffmpeg_bin: str) -> str:
@@ -1110,7 +1126,7 @@ class EncodeWorkflow(QObject):
             ),
             log=self.log_message.emit,
             ffmpeg_bin=self._ffmpeg,
-            ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+            ffprobe_bin=self._ffprobe_path(),
         )
 
     def _native_assemble_multi(
@@ -1149,7 +1165,7 @@ class EncodeWorkflow(QObject):
             ),
             log=self.log_message.emit,
             ffmpeg_bin=self._ffmpeg,
-            ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+            ffprobe_bin=self._ffprobe_path(),
         )
 
     def _build_encode_plan(self, config: EncodeConfig) -> _EncodePlan:
@@ -1469,7 +1485,7 @@ class EncodeWorkflow(QObject):
             }
             rewrite_service = SyncRewriteService(
                 ffmpeg_bin=self._ffmpeg,
-                ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+                ffprobe_bin=self._ffprobe_path(),
                 ffmpeg_progress_args=self._ffmpeg_progress_args(),
                 ffmpeg_thread_args=self._ffmpeg_thread_args(None),
                 audio_bitrate_per_channel=self._sync_rewrite_audio_bitrates,
@@ -2861,7 +2877,7 @@ class EncodeWorkflow(QObject):
         detector = _DoviProfileDetector(
             dovi_tool_bin=self._bins.get("dovi_tool") or "dovi_tool",
             ffmpeg_bin=self._ffmpeg,
-            ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+            ffprobe_bin=self._ffprobe_path(),
         )
         sub_profile = cached
         if sub_profile is None:
@@ -3167,7 +3183,7 @@ class EncodeWorkflow(QObject):
     def _frame_count_guard(self) -> _FrameCountGuard:
         return _FrameCountGuard(
             mediainfo_bin=self._bins.get("mediainfo") or "mediainfo",
-            ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+            ffprobe_bin=self._ffprobe_path(),
             dovi_tool_bin=self._bins.get("dovi_tool") or "dovi_tool",
         )
 
@@ -3816,7 +3832,7 @@ class EncodeWorkflow(QObject):
                     ),
                     log=self.log_message.emit,
                     ffmpeg_bin=self._ffmpeg,
-                    ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+                    ffprobe_bin=self._ffprobe_path(),
                 )
                 signals.finished.emit(str(config.output))
             except TaskCancelledError:
@@ -4047,7 +4063,7 @@ class EncodeWorkflow(QObject):
         transaction = MatroskaOutputTransaction(
             output=config.output,
             contract=contract,
-            ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+            ffprobe_bin=self._ffprobe_path(),
             run_command=self._run_transaction_command,
             post_actions=(
                 self._muxing_post_action.apply_if_mkv,
@@ -4216,7 +4232,7 @@ class EncodeWorkflow(QObject):
         return _probe_attachment_stream_runtime(
             source,
             stream_idx,
-            ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+            ffprobe_bin=self._ffprobe_path(),
             subprocess_run=subprocess.run,
             text_kwargs_factory=subprocess_text_kwargs,
         )
@@ -4240,7 +4256,7 @@ class EncodeWorkflow(QObject):
         try:
             result = subprocess.run(
                 [
-                    self._ffprobe_bin_from_ffmpeg(self._ffmpeg), "-v", "error",
+                    self._ffprobe_path(), "-v", "error",
                     "-show_chapters", "-of", "json", str(source),
                 ],
                 capture_output=True,
@@ -4454,7 +4470,7 @@ class EncodeWorkflow(QObject):
             if getattr(self, "_dovi_geometry_detector_key", None) != key:
                 self._dovi_geometry_detector = DoviProfileDetector(
                     dovi_tool_bin=dovi_bin, ffmpeg_bin=self._ffmpeg,
-                    ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+                    ffprobe_bin=self._ffprobe_path(),
                 )
                 self._dovi_geometry_detector_key = key
             return self._dovi_geometry_detector.probe_l5_offsets(source, stream_index=stream_index)

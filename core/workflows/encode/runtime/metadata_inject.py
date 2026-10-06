@@ -340,7 +340,7 @@ class MetadataInjectRunner:
                         if continue_rebound:
                             # annexB brut sans horodatage : cadence de la source d'origine
                             source_rate = probe_frame_rate(
-                                ffprobe_beside(cb.ffmpeg_bin), selected_video_source, selected_video_stream,
+                                (cb.bins.get("ffprobe") or ffprobe_beside(cb.ffmpeg_bin)), selected_video_source, selected_video_stream,
                             ) or ""
                             video = dataclasses.replace(video, input_frame_rate=source_rate)
                             rebound_tracks = [
@@ -425,7 +425,7 @@ class MetadataInjectRunner:
                 # dynamiques de la trame source qui la précède.
                 frame_ratio = resolve_frame_ratio(
                     video,
-                    ffprobe_bin=ffprobe_beside(cb.ffmpeg_bin),
+                    ffprobe_bin=cb.bins.get("ffprobe") or ffprobe_beside(cb.ffmpeg_bin),
                     source=cb.video_source_path(config),
                     stream_index=cb.video_stream_index(config),
                 )
@@ -439,7 +439,7 @@ class MetadataInjectRunner:
                 )
                 dovi_min_level = (
                     required_dovi_level(
-                        ffprobe_beside(cb.ffmpeg_bin),
+                        (cb.bins.get("ffprobe") or ffprobe_beside(cb.ffmpeg_bin)),
                         cb.video_source_path(effective_config),
                         cb.video_stream_index(effective_config),
                         frame_ratio,
@@ -618,7 +618,7 @@ class MetadataInjectRunner:
                     cb.log_info("Audit alignement frame count (source/encoded/RPU/HDR10+)…")
                     guard = FrameCountGuard(
                         mediainfo_bin=cb.bins.get("mediainfo", "mediainfo"),
-                        ffprobe_bin=cb.bins.get("ffprobe", "ffprobe"),
+                        ffprobe_bin=cb.bins.get("ffprobe") or ffprobe_beside(cb.ffmpeg_bin),
                         dovi_tool_bin=cb.bins["dovi_tool"],
                         run_command=lambda cmd, **kwargs: run_cancellable_capture(
                             cmd, cancel_cb=signals._cancel_event.is_set,
@@ -815,7 +815,7 @@ class MetadataInjectRunner:
                 video_source = cb.video_source_path(config)
                 video_stream = cb.video_stream_index(config)
                 intended_video_ms = round(1000 * stream_start_offset(
-                    ffprobe_beside(cb.ffmpeg_bin), video_source, video_stream,
+                    (cb.bins.get("ffprobe") or ffprobe_beside(cb.ffmpeg_bin)), video_source, video_stream,
                 )) + max(0, track_offset_ms(
                     dict(encode_plan.offset_lookup),
                     track_type="video", source_path=video_source, stream_index=video_stream,
@@ -825,7 +825,7 @@ class MetadataInjectRunner:
                     cb.log_step(9, "Assemblage final Matroska natif")
                     # L'assembleur natif décale les horodatages de l'artefact.
                     artifact_ms = round(1000 * stream_start_time(
-                        ffprobe_beside(cb.ffmpeg_bin), current_video_input, 0,
+                        (cb.bins.get("ffprobe") or ffprobe_beside(cb.ffmpeg_bin)), current_video_input, 0,
                     ))
                     cb.native_assemble(
                         config,

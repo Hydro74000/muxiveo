@@ -188,6 +188,8 @@ class RemuxPanel(QWidget):
         self._path_executor = ThreadPoolExecutor(max_workers=1)
         self._executor = ThreadPoolExecutor(max_workers=2)
         self._scan_cancel = threading.Event()
+        # Sondes d'inspection (ffprobe/mediainfo) interrompues à la fermeture.
+        self._probe_cancel = threading.Event()
         # Le préflight du backend natif peut lire les sources ; il ne doit pas
         # partager le pool d'inspection ni bloquer la boucle Qt.
         self._preview_executor = ThreadPoolExecutor(max_workers=1)
@@ -2392,6 +2394,7 @@ class RemuxPanel(QWidget):
             self._closing = True
             self.setEnabled(False)
             self._scan_cancel.set()
+            self._probe_cancel.set()
             self._preview_timer.stop()
             self._shutdown = Shutdown(executors=(
                 self._preview_executor, self._path_executor,

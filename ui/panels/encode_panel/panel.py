@@ -148,6 +148,7 @@ class EncodePanel(QWidget):
         self._validation_prompt = ValidationOverridePrompt(self)
         self._workflow  = EncodeWorkflow(
             ffmpeg_bin=config.tool_ffmpeg,
+            ffprobe_bin=getattr(config, "tool_ffprobe", None) or None,
             dovi_tool_bin=config.tool_dovi_tool,
             hdr10plus_bin=config.tool_hdr10plus,
             mediainfo_bin=config.tool_mediainfo,

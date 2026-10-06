@@ -65,6 +65,7 @@ def inspect_file(panel: "RemuxPanel", file_id: str, path: Path) -> None:
             ffprobe_bin=panel._config.tool_ffprobe,
             mediainfo_bin=panel._config.tool_mediainfo,
             verbose_output=lambda line: panel.tool_output.emit("inspector", line),
+            cancel_event=getattr(panel, "_probe_cancel", None),
         )
         info = inspector.inspect(path)
         if not getattr(panel, "_closing", False):

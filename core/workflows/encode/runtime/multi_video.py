@@ -176,7 +176,7 @@ class MultiVideoPipelineRunner:
                 local_cleanup.append(hdr10p_json)
 
             frame_ratio = resolve_frame_ratio(
-                video, ffprobe_bin=ffprobe_beside(cb.ffmpeg_bin), source=source, stream_index=int(video.stream_index),
+                video, ffprobe_bin=cb.bins.get("ffprobe") or ffprobe_beside(cb.ffmpeg_bin), source=source, stream_index=int(video.stream_index),
             )
             expand_dynamic_hdr_metadata(
                 ratio=frame_ratio,
@@ -196,7 +196,7 @@ class MultiVideoPipelineRunner:
                     forced_compat_id=dovi_output_compat_id_for(video),
                     min_level=(
                         required_dovi_level(
-                            ffprobe_beside(cb.ffmpeg_bin), source, int(video.stream_index), frame_ratio,
+                            (cb.bins.get("ffprobe") or ffprobe_beside(cb.ffmpeg_bin)), source, int(video.stream_index), frame_ratio,
                         )
                         if frame_ratio > 1
                         else None
@@ -258,7 +258,7 @@ class MultiVideoPipelineRunner:
             if video.copy_dv or video.copy_hdr10plus:
                 guard = FrameCountGuard(
                     mediainfo_bin=cb.bins.get("mediainfo", "mediainfo"),
-                    ffprobe_bin=cb.bins.get("ffprobe", ffprobe_beside(cb.ffmpeg_bin)),
+                    ffprobe_bin=cb.bins.get("ffprobe") or ffprobe_beside(cb.ffmpeg_bin),
                     dovi_tool_bin=cb.bins.get("dovi_tool", "dovi_tool"),
                     run_command=lambda cmd, **kwargs: run_cancellable_capture(
                         cmd, cancel_cb=signals._cancel_event.is_set,
@@ -415,7 +415,7 @@ class MultiVideoPipelineRunner:
 
     def _intended_start_s(self, source: Path, stream_index: int, offset_ms: int) -> float:
         """Départ voulu d'une piste réencodée : décalage du flux dans la source + retard positif."""
-        start = stream_start_offset(ffprobe_beside(self._callbacks.ffmpeg_bin), source, stream_index)
+        start = stream_start_offset((self._callbacks.bins.get("ffprobe") or ffprobe_beside(self._callbacks.ffmpeg_bin)), source, stream_index)
         return round(start + max(0, offset_ms) / 1000.0, 6)
 
     def run(
