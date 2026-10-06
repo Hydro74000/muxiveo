@@ -63,7 +63,10 @@ from core.workflows.encode.catalog import (
     supports_10bit,
     supports_hdr_output,
 )
-from core.workflows.encode.domain.codecs import rate_control_values, transfer_kind
+from core.workflows.encode.domain.codecs import (
+    rate_control_values, transfer_kind, resolve_output_bit_depth, source_bit_depth_from_stream,
+)
+from core.workflows.encode.runtime.nvencc import detect_nvencc_10bit_codecs
 from core.workflows.encode.hdr_policy import default_static_hdr_checked, source_is_hdr
 from core.workflows.encode.dovi_policy import (
     NORMALIZE_P81,
@@ -116,8 +119,8 @@ class EncodePanel(QWidget):
     audio_track_add_requested = Signal(object, str, str, int)  # (template TrackEntry, entry_id, codec, bitrate_kbps)
     audio_track_remove_requested = Signal(object)  # (entry_id)
     video_tracks_encoding_changed = Signal(object)
-    # (hw: set[str], sw: set[str], hw_ffmpeg: str, rate_controls: dict[str, frozenset[str]])
-    _hw_detected             = Signal(object, object, object, object)
+    # Encodeurs HW/SW, binaire FFmpeg HW, modes de débit et capacités 10 bits NVEncC.
+    _hw_detected             = Signal(object, object, object, object, object)
     _hdr_meta_frame_probe_ready = Signal(int, str, str)
     _track_hdr_ready = Signal(str, object, object, str, str)
     _command_preview_ready = Signal(int, str)
@@ -166,7 +169,6 @@ class EncodePanel(QWidget):
         self._file_info: FileInfo | None = None
         self._video_tracks: list[tuple[FileInfo, TrackEntry, str]] = []
         self._video_settings_by_entry_id: dict[str, dict[str, object]] = {}
-        self._video_force_8bit_by_entry_id: dict[str, bool] = {}
         self._current_video_entry_id: str | None = None
         self._loading_video_settings = False
         # HDR statique décoché automatiquement par un codec sans HDR (H.264…) :
@@ -187,6 +189,7 @@ class EncodePanel(QWidget):
         self._current_rc_spec: RateControlSpec | None = None
         self._quality_scale_by_family: dict[str, tuple[tuple[int, int], str]] = {}
         self._hw_rate_controls: dict[str, frozenset[str]] = {}
+        self._nvencc_10bit_codecs: frozenset[str] = frozenset()
         # Paramètres avancés mémorisés par codec : une syntaxe propre à un
         # encodeur (x265-params, flags NVEncC…) ne suit pas un changement de codec.
         self._extra_params_by_codec: dict[str, str] = {}
@@ -775,7 +778,6 @@ class EncodePanel(QWidget):
             self.ready_changed.emit(False)
             self._video_list.blockSignals(False)
             self._current_video_entry_id = None
-            self._video_force_8bit_by_entry_id.clear()
             self.video_tracks_encoding_changed.emit([])
             self._rebuild_preview()
             return
@@ -797,11 +799,6 @@ class EncodePanel(QWidget):
         self._video_settings_by_entry_id = {
             entry_id: settings
             for entry_id, settings in self._video_settings_by_entry_id.items()
-            if entry_id in active_ids
-        }
-        self._video_force_8bit_by_entry_id = {
-            entry_id: forced
-            for entry_id, forced in self._video_force_8bit_by_entry_id.items()
             if entry_id in active_ids
         }
         target_row = 0
@@ -872,6 +869,13 @@ class EncodePanel(QWidget):
             else None
         )
         if settings is None and selected_video:
+            # La première piste n'a pas encore d'état : les signaux HDR qui
+            # suivent peuvent le sauvegarder. Auto suit la profondeur de la
+            # source sans figer une valeur qui fuirait vers d'autres pistes
+            # (« Appliquer à toutes ») ou dans un profil.
+            blocked = self._bit_depth_combo.blockSignals(True)
+            self._set_combo_data(self._bit_depth_combo, "auto")
+            self._bit_depth_combo.blockSignals(blocked)
             self._prefill_hdr_meta(
                 selected_video.raw,
                 info.path,
@@ -963,14 +967,19 @@ class EncodePanel(QWidget):
 
         rp = QHBoxLayout()
         rp.setSpacing(12)
-        self._ten_bit_cb = QCheckBox("10-Bits")
-        self._ten_bit_cb.setStyleSheet(_checkbox_style())
-        self._ten_bit_cb.setToolTip(
-            "Forcer une sortie 10-bit (profil main10/high10 + pix_fmt p010le/yuv420p10le).\n"
-            "Désactivé pour le codec Copy ou les codecs sans support 10-bit."
+        depth_lbl = QLabel("Profondeur")
+        depth_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        rp.addWidget(depth_lbl)
+        self._bit_depth_combo = QComboBox()
+        self._bit_depth_combo.addItem("Auto", "auto")
+        self._bit_depth_combo.addItem("8 bits", "8")
+        self._bit_depth_combo.addItem("10 bits", "10")
+        self._bit_depth_combo.setToolTip(
+            "Auto : profondeur source 8/10 bits, 10 bits pour une sortie HDR.\n"
+            "H.264 x264 10 bits utilise High10 : compatibilité limitée avec les lecteurs matériels."
         )
-        self._ten_bit_cb.toggled.connect(self._on_ten_bit_toggled)
-        rp.addWidget(self._ten_bit_cb)
+        self._bit_depth_combo.currentIndexChanged.connect(self._on_bit_depth_changed)
+        rp.addWidget(self._bit_depth_combo)
         preset_lbl = QLabel("Preset")
         preset_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
         rp.addWidget(preset_lbl)
@@ -2325,7 +2334,7 @@ class EncodePanel(QWidget):
         # hw_ffmpeg peut être le ffmpeg système si le ffmpeg embarqué manque de HW codecs.
         # On l'envoie avec le signal pour que le workflow l'utilise lors de l'encodage HW.
         # Modes de débit acceptés par le pilote (VAAPI) : la liste Mode s'y limite.
-        self._hw_detected.emit(hw, sw, hw_ffmpeg, dict(detector.rate_controls))
+        self._hw_detected.emit(hw, sw, hw_ffmpeg, dict(detector.rate_controls), detect_nvencc_10bit_codecs(nvencc))
 
     def _on_hw_detected(
         self,
@@ -2333,9 +2342,11 @@ class EncodePanel(QWidget):
         sw: set[str],
         hw_ffmpeg: str,
         rate_controls: dict[str, frozenset[str]] | None = None,
+        ten_bit_codecs: frozenset[str] | None = None,
     ) -> None:
         self._hw_encoders = hw
         self._hw_rate_controls = dict(rate_controls or {})
+        self._nvencc_10bit_codecs = frozenset(ten_bit_codecs or ())
         # Ne met à jour les codecs SW que si la détection a retourné au moins un résultat.
         # Un set vide signifie une erreur de détection (ffmpeg absent), pas "aucun codec".
         if sw:
@@ -2359,6 +2370,8 @@ class EncodePanel(QWidget):
             self._refresh_mode_combo(str(current or "libx265"))
         else:
             self._on_codec_changed()
+        self._update_bit_depth_control(str(self._codec_combo.currentData() or "copy"))
+        self._rebuild_preview()
         all_detected = hw | sw
         if all_detected:
             self.log_message.emit(
@@ -2421,7 +2434,7 @@ class EncodePanel(QWidget):
         self._preset_combo.setCurrentIndex(idx)
         self._preset_combo.setEnabled(bool(presets))
         self._preset_combo.blockSignals(False)
-        self._update_ten_bit_control(codec)
+        self._update_bit_depth_control(codec)
         self._sync_hdr_metadata_field_editability(str(codec))
         self._update_passthrough_controls()
         self._sync_transform_controls_enabled()
@@ -2454,7 +2467,7 @@ class EncodePanel(QWidget):
             if msg is not None:
                 msg.setVisible(not enabled)
 
-    def _on_ten_bit_toggled(self, _checked: bool) -> None:
+    def _on_bit_depth_changed(self, _index: int) -> None:
         if self._loading_video_settings:
             return
         self._save_current_video_state()
@@ -2528,42 +2541,23 @@ class EncodePanel(QWidget):
             return f"HDR10 estimé depuis analyse P5→P8.1 {mode} (confiance {confidence})."
         return ""
 
-    def _update_ten_bit_control(self, codec: str) -> None:
-        """Active/désactive la checkbox 10-Bits selon le codec et le force_8bit."""
-        if not hasattr(self, "_ten_bit_cb"):
+    def _update_bit_depth_control(self, codec: str) -> None:
+        """Actualise les capacités sans réappliquer la présélection de la source."""
+        if not hasattr(self, "_bit_depth_combo"):
             return
-        target_codec = (codec or "").strip().lower()
-        codec_ok = target_codec != "copy" and supports_10bit(target_codec)
-        # force_8bit (h264 + source >8bit) prend priorité — désactive 10-bit.
-        force_8bit = self._current_force_8bit_active(target_codec)
-        enabled = codec_ok and not force_8bit
-        self._ten_bit_cb.blockSignals(True)
-        self._ten_bit_cb.setEnabled(enabled)
-        if not enabled:
-            self._ten_bit_cb.setChecked(False)
-        elif not self._ten_bit_cb.isChecked() and self._current_default_force_10bit():
-            # Source ≥10-bit / DV / HDR10+ → coche par défaut quand le codec
-            # cible (re)devient compatible 10-bit (ex. passage copy → hevc_nvenc).
-            self._ten_bit_cb.setChecked(True)
-        self._ten_bit_cb.blockSignals(False)
+        capable = self._codec_supports_10bit(codec)
+        combo = self._bit_depth_combo
+        blocked = combo.blockSignals(True)
+        combo.setEnabled(codec != "copy")
+        combo.model().item(combo.findData("10")).setEnabled(codec == "copy" or capable)
+        if codec != "copy" and not capable and combo.currentData() == "10":
+            self._set_combo_data(combo, "auto")
+        combo.blockSignals(blocked)
 
-    def _current_default_force_10bit(self) -> bool:
-        """Default 10-bit pour la piste vidéo courante (source ≥10-bit / DV / HDR10+)."""
-        row = self._video_list.currentRow() if hasattr(self, "_video_list") else -1
-        if not (0 <= row < len(self._video_tracks)):
-            return False
-        file_info, track, _color = self._video_tracks[row]
-        bit_depth = self._video_source_bit_depth(file_info, track)
-        source_hdr = self._hdr_type_for_entry(file_info, track)
-        return bit_depth >= 10 or self._source_has_dv(source_hdr) or self._source_has_hdr10plus(source_hdr)
-
-    def _current_force_8bit_active(self, codec: str) -> bool:
-        """True si le précheck force_8bit s'applique pour la piste sélectionnée."""
-        row = self._video_list.currentRow() if hasattr(self, "_video_list") else -1
-        if 0 <= row < len(self._video_tracks):
-            file_info, track, _color = self._video_tracks[row]
-            return self._video_force_8bit_for_codec(file_info, track, codec)
-        return False
+    def _codec_supports_10bit(self, codec: str) -> bool:
+        if codec == "nvencc_h264":
+            return codec in self._nvencc_10bit_codecs
+        return supports_10bit(codec)
 
     def _available_rate_controls(self, codec: str) -> tuple[RateControlSpec, ...]:
         """Modes de débit du codec, sans ceux que le pilote a refusés à la détection."""
@@ -3671,6 +3665,7 @@ class EncodePanel(QWidget):
         self._bitrate_edit.setText(str(vs.bitrate_kbps))
         self._size_edit.setText(str(vs.target_size_mb))
         self._extra_params.setText(vs.extra_params)
+        self._set_combo_data(self._bit_depth_combo, vs.bit_depth)
         self._apply_resize_settings(vs.resize)
         self._apply_crop_settings(vs.crop)
         self._apply_filter_settings(vs.filters)
@@ -3688,6 +3683,12 @@ class EncodePanel(QWidget):
 
     def _profile_incompatibility(self, vs: VideoEncodeSettings) -> str:
         """Raison pour laquelle un profil ne peut pas s'appliquer ("" si compatible)."""
+        if vs.bit_depth not in {"auto", "8", "10"}:
+            return translate_text("profondeur invalide")
+        if vs.bit_depth == "10" and not self._codec_supports_10bit(vs.codec):
+            return translate_text("sortie 10 bits indisponible pour {codec}", codec=vs.codec)
+        if vs.bit_depth == "8" and supports_hdr_output(vs.codec) and self._selected_source_is_hdr() and not self._tonemap_cb.isChecked():
+            return translate_text("une sortie HDR exige une profondeur de 10 bits")
         model = self._codec_combo.model()
         available = {
             self._codec_combo.itemData(i)
@@ -3752,6 +3753,7 @@ class EncodePanel(QWidget):
             target_size_mb=vs.target_size_mb,
             preset=vs.preset,
             extra_params=vs.extra_params,
+            bit_depth=vs.bit_depth,
             resize=vs.resize,
             crop=vs.crop,
             filters=vs.filters,
@@ -4024,6 +4026,8 @@ class EncodePanel(QWidget):
         normalized = self._copy_video_state(state)
         source_hdr = self._hdr_type_for_entry(info, track)
         target_codec = self._video_state_target_codec(normalized)
+        depth = str(normalized.get("bit_depth") or "auto")
+        normalized["bit_depth"] = "auto" if depth == "10" and target_codec != "copy" and not self._codec_supports_10bit(target_codec) else depth
         self._apply_codec_hdr_policy_to_state(
             normalized,
             source_hdr=source_hdr,
@@ -4134,8 +4138,6 @@ class EncodePanel(QWidget):
             mediainfo_json=info.mediainfo_json or {},
             include_frame_probe=False,
         )
-        bit_depth = self._video_source_bit_depth(info, track)
-        default_10bit = bit_depth >= 10 or self._source_has_dv(source_hdr) or self._source_has_hdr10plus(source_hdr)
         # Source HDR (HDR10/HDR10+/DV) → injection HDR statique activée par
         # défaut. Sans master_display/max-cll dans le HEVC encodé, les TV
         # et players appliquent un tone-mapping générique → image fade.
@@ -4151,7 +4153,8 @@ class EncodePanel(QWidget):
             "target_size_mb": "4000",
             "extra_params": "",
             "extra_params_by_codec": {},
-            "force_10bit": default_10bit,
+            # Auto = profondeur source (10 bits si HDR) : jamais une valeur figée par piste.
+            "bit_depth": "auto",
             "resize": VideoResizeSettings(),
             "crop": VideoCropSettings(),
             "filters": VideoFilterSettings(),
@@ -4188,35 +4191,24 @@ class EncodePanel(QWidget):
     def _video_source_bit_depth(self, info: FileInfo, track: TrackEntry) -> int:
         video_track = self._video_track_for_entry(info, track)
         if video_track is None:
-            return 8
+            return 0
         try:
-            bit_depth = int(getattr(video_track, "bit_depth", 8) or 8)
+            bit_depth = int(getattr(video_track, "bit_depth", 0) or 0)
         except (TypeError, ValueError):
-            bit_depth = 8
-        return bit_depth if bit_depth > 0 else 8
+            bit_depth = 0
+        return bit_depth if bit_depth in {8, 10, 12, 16} else source_bit_depth_from_stream(video_track.raw or {})
 
-    def _video_force_8bit_for_codec(
-        self,
-        info: FileInfo,
-        track: TrackEntry,
-        codec: str,
-    ) -> bool:
-        return self._is_h264_codec(codec) and self._video_source_bit_depth(info, track) > 8
+    @staticmethod
+    def _video_source_pix_fmt(video: VideoTrack | None) -> str:
+        """pix_fmt ffprobe de la piste ("" inconnu) : sous-échantillonnage de la source."""
+        raw = getattr(video, "raw", None) or {}
+        return str(raw.get("pix_fmt") or "").strip().lower() if isinstance(raw, dict) else ""
 
-    def _effective_force_10bit(
-        self,
-        *,
-        info: FileInfo | None,
-        track: TrackEntry | None,
-        codec: str,
-        state_force_10bit: bool,
-    ) -> bool:
-        target = (codec or "").strip().lower()
-        if target == "copy" or not supports_10bit(target):
-            return False
-        if info is not None and track is not None and self._video_force_8bit_for_codec(info, track, target):
-            return False
-        return bool(state_force_10bit)
+    @staticmethod
+    def _source_dovi_profile(video: VideoTrack | None) -> str:
+        """Contexte inspecté pour la profondeur (P8.2 SDR), confirmé par le workflow."""
+        profile = sub_profile_from_track(getattr(video, "dovi_profile", None), getattr(video, "dovi_compat_id", None))
+        return "" if profile.value == "unknown" else profile.value
 
     def _video_source_row_text(
         self,
@@ -4239,8 +4231,9 @@ class EncodePanel(QWidget):
         target_codec = str(plan.target_codec or "copy").strip().lower()
         if target_codec != "copy":
             badges.append(encoder_badge(target_codec))
-        if self._video_force_8bit_for_codec(info, track, target_codec):
-            badges.append("8-bit")
+        if target_codec != "copy":
+            settings = self._video_settings_from_state(file_info=info, track=track, state=state)
+            badges.append(f"{resolve_output_bit_depth(settings)}-bit")
         badges.extend(self._sorted_video_hdr_badges(plan.hdr_badges))
         badges.extend(plan.filter_badges)
         if badges:
@@ -4509,7 +4502,7 @@ class EncodePanel(QWidget):
             "target_size_mb": self._size_edit.text(),
             "extra_params": self._extra_params.text(),
             "extra_params_by_codec": dict(self._extra_params_by_codec),
-            "force_10bit": bool(self._ten_bit_cb.isChecked()) if hasattr(self, "_ten_bit_cb") else False,
+            "bit_depth": self._bit_depth_combo.currentData() or "auto",
             "resize": self._current_resize_settings(),
             "crop": self._current_crop_settings(),
             "filters": self._current_filter_settings(),
@@ -4722,35 +4715,11 @@ class EncodePanel(QWidget):
 
     def _emit_video_encoding_plans(self) -> None:
         plans: list[VideoTrackEncodePlan] = []
-        next_force_8bit: dict[str, bool] = {}
-        for index, (info, track, _color) in enumerate(self._video_tracks, start=1):
+        for info, track, _color in self._video_tracks:
             entry_id = self._video_entry_id(track)
             state = self._video_settings_by_entry_id.get(entry_id)
             if state is None:
                 continue
-            target_codec = self._video_state_target_codec(state)
-            force_8bit = self._video_force_8bit_for_codec(info, track, target_codec)
-            previous_force_8bit = self._video_force_8bit_by_entry_id.get(entry_id)
-            if force_8bit != previous_force_8bit:
-                if force_8bit:
-                    self.log_message.emit(
-                        "WARN",
-                        translate_text(
-                            "Précheck piste vidéo #{index} : source {depth}-bit + codec {codec} → bascule auto en 8-bit.",
-                            index=index,
-                            depth=self._video_source_bit_depth(info, track),
-                            codec=target_codec.upper(),
-                        ),
-                    )
-                elif previous_force_8bit:
-                    self.log_message.emit(
-                        "INFO",
-                        translate_text(
-                            "Précheck piste vidéo #{index} : retour au mode source (8-bit auto désactivé).",
-                            index=index,
-                        ),
-                    )
-            next_force_8bit[entry_id] = force_8bit
             plans.append(
                 self._video_plan_from_state(
                     entry_id=entry_id,
@@ -4758,10 +4727,9 @@ class EncodePanel(QWidget):
                     source_video=self._video_track_for_entry(info, track),
                 )
             )
-        self._video_force_8bit_by_entry_id = next_force_8bit
         self._refresh_video_source_rows()
         if hasattr(self, "_codec_combo"):
-            self._update_ten_bit_control(self._codec_combo.currentData() or "libx265")
+            self._update_bit_depth_control(self._codec_combo.currentData() or "libx265")
         self.video_tracks_encoding_changed.emit(plans)
 
     def _save_current_video_state(self) -> None:
@@ -4809,8 +4777,7 @@ class EncodePanel(QWidget):
             self._extra_params.setText(str(state.get("extra_params") or ""))
             self._extra_params_by_codec = dict(state.get("extra_params_by_codec") or {})
             self._extra_params_codec = str(self._codec_combo.currentData() or "libx265")
-            if hasattr(self, "_ten_bit_cb"):
-                self._ten_bit_cb.setChecked(bool(state.get("force_10bit")))
+            self._set_combo_data(self._bit_depth_combo, state.get("bit_depth") or "auto")
             self._apply_resize_settings(VideoResizeSettings.from_value(state.get("resize")))
             self._apply_crop_settings(VideoCropSettings.from_value(state.get("crop")))
             self._apply_filter_settings(VideoFilterSettings.from_value(state.get("filters")))
@@ -4845,7 +4812,7 @@ class EncodePanel(QWidget):
         self._hdr_meta_widget.setVisible(self._inject_hdr_cb.isChecked())
         self._dovi_profile_widget.setVisible(self._copy_dv_cb.isChecked())
         self._tonemap_algo_widget.setVisible(self._tonemap_cb.isChecked())
-        self._update_ten_bit_control(self._codec_combo.currentData() or "libx265")
+        self._update_bit_depth_control(self._codec_combo.currentData() or "libx265")
         self._sync_hdr_metadata_field_editability(self._codec_combo.currentData() or "libx265")
         self._sync_hdr_controls_for_codec()
         self._sync_transform_controls_enabled()
@@ -5122,17 +5089,6 @@ class EncodePanel(QWidget):
             size = int(self._size_edit.text())
         except ValueError:
             size = 0
-        force_8bit = bool(
-            selected_file_info is not None
-            and selected_track is not None
-            and self._video_force_8bit_for_codec(selected_file_info, selected_track, str(codec))
-        )
-        force_10bit = self._effective_force_10bit(
-            info=selected_file_info,
-            track=selected_track,
-            codec=str(codec),
-            state_force_10bit=bool(self._ten_bit_cb.isChecked()) if hasattr(self, "_ten_bit_cb") else False,
-        )
         source_hdr = (
             self._hdr_type_for_entry(selected_file_info, selected_track)
             if selected_file_info is not None and selected_track is not None
@@ -5173,8 +5129,12 @@ class EncodePanel(QWidget):
             target_size_mb=size,
             preset=preset,
             extra_params=self._extra_params.text().strip(),
-            force_8bit=force_8bit,
-            force_10bit=force_10bit,
+            bit_depth=self._bit_depth_combo.currentData() or "auto",
+            source_bit_depth=self._video_source_bit_depth(selected_file_info, selected_track) if selected_file_info is not None and selected_track is not None else 0,
+            source_codec=str(getattr(self._selected_video_track(), "codec", "") or ""),
+            source_pix_fmt=self._video_source_pix_fmt(self._selected_video_track()),
+            dovi_source_profile=self._source_dovi_profile(self._selected_video_track()) if codec != "copy" else "",
+            encoder_supports_10bit=self._codec_supports_10bit(str(codec)),
             resize=self._current_resize_settings(),
             crop=self._current_crop_settings(),
             filters=self._current_filter_settings(),
@@ -5235,13 +5195,12 @@ class EncodePanel(QWidget):
             target_size_mb=size,
             preset=default_preset_for_codec(codec) if state.get("preset") is None else str(state.get("preset")),
             extra_params=str(state.get("extra_params") or "").strip(),
-            force_8bit=self._video_force_8bit_for_codec(file_info, track, codec),
-            force_10bit=self._effective_force_10bit(
-                info=file_info,
-                track=track,
-                codec=codec,
-                state_force_10bit=bool(state.get("force_10bit")),
-            ),
+            bit_depth=str(state.get("bit_depth") or "auto"),
+            source_bit_depth=self._video_source_bit_depth(file_info, track),
+            source_codec=str(getattr(self._video_track_for_entry(file_info, track), "codec", "") or ""),
+            source_pix_fmt=self._video_source_pix_fmt(self._video_track_for_entry(file_info, track)),
+            dovi_source_profile=self._source_dovi_profile(self._video_track_for_entry(file_info, track)) if codec != "copy" else "",
+            encoder_supports_10bit=self._codec_supports_10bit(codec),
             resize=VideoResizeSettings.from_value(state.get("resize")),
             crop=VideoCropSettings.from_value(state.get("crop")),
             filters=VideoFilterSettings.from_value(state.get("filters")),

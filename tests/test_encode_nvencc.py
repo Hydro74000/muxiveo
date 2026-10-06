@@ -327,7 +327,7 @@ class TestHardwareDetectorIntegration:
 # ---------------------------------------------------------------------------
 
 def _video(codec: str = "nvencc_hevc", **overrides: Any) -> VideoEncodeSettings:
-    return replace(VideoEncodeSettings(codec=codec), **overrides)
+    return VideoEncodeSettings(codec=codec, **overrides)
 
 
 class TestBuildDecodePipeCmd:
@@ -412,15 +412,15 @@ class TestBuildNvenccCommand:
         assert "--output-depth" in cmd
         assert cmd[cmd.index("--output-depth") + 1] == "10"
 
-    def test_force_8bit_only_for_h264(self):
+    def test_legacy_force_8bit_is_migrated_for_every_codec(self):
         # H.264 + force_8bit → --output-depth 8.
         v_h264 = _video(codec="nvencc_h264", force_8bit=True)
         cmd_h264 = build_nvencc_command("nvencc", v_h264, "/tmp/out.h264")
         assert cmd_h264[cmd_h264.index("--output-depth") + 1] == "8"
-        # HEVC + force_8bit → flag ignoré (NVEncC HEVC n'a pas de notion 8bit forcé).
+        # La nouvelle profondeur explicite s’applique aussi à HEVC.
         v_hevc = _video(codec="nvencc_hevc", force_8bit=True)
         cmd_hevc = build_nvencc_command("nvencc", v_hevc, "/tmp/out.hevc")
-        assert "--output-depth" not in cmd_hevc
+        assert cmd_hevc[cmd_hevc.index("--output-depth") + 1] == "8"
 
     def test_preset_p_levels(self):
         v = _video(preset="P5")
@@ -1409,9 +1409,9 @@ class TestNvenccHdrOutputDepth:
     @pytest.mark.parametrize("codec,extra,expected", [
         ("nvencc_hevc", {"inject_hdr_meta": True}, "10"),
         ("nvencc_av1", {"copy_dv": True}, "10"),
-        ("nvencc_hevc", {"copy_hdr10plus": True, "tonemap_to_sdr": True}, None),
-        ("nvencc_hevc", {}, None),
-        ("nvencc_h264", {"inject_hdr_meta": True}, None),
+        ("nvencc_hevc", {"copy_hdr10plus": True, "tonemap_to_sdr": True}, "8"),
+        ("nvencc_hevc", {}, "8"),
+        ("nvencc_h264", {"inject_hdr_meta": True}, "8"),
         ("nvencc_h264", {"inject_hdr_meta": True, "force_8bit": True}, "8"),
     ])
     def test_hdr_defaults_to_10bit(self, codec, extra, expected):

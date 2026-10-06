@@ -125,6 +125,8 @@ class EncodePreparationRunner:
         cb.check_cancelled(prep_signals)
         if cb.resolve_dovi_sources is not None:
             config = cb.resolve_dovi_sources(config)
+        if cb.resolve_source_color_transfer is not None:
+            config = cb.resolve_source_color_transfer(config)
         if validate:
             errors = cb.validate_config(config)
             if errors:
@@ -134,8 +136,6 @@ class EncodePreparationRunner:
         cb.log_workflow_type("ENCODE")
         cb.log_step(1, "Validation configuration")
         cb.log("INFO", f"Encodage → {config.output.name}")
-        if cb.resolve_source_color_transfer is not None:
-            config = cb.resolve_source_color_transfer(config)
         if cb.config_warnings is not None:
             for message in cb.config_warnings(config):
                 cb.log("WARN", message)

@@ -316,7 +316,8 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         encoder_badge="NVEncC",
         is_h264=True,
         supports_force_8bit=True,
-        supports_10bit=True,
+        # Confirmé par --check-features sur le GPU au moment de la résolution.
+        supports_10bit=False,
     ),
     "nvencc_av1": VideoCodecSpec(
         codec_id="nvencc_av1",

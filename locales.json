@@ -5294,5 +5294,33 @@
   "Saisie manuelle ; {field} estimé au lancement depuis le RPU Dolby Vision (P5).": {
     "fra": "Saisie manuelle ; {field} estimé au lancement depuis le RPU Dolby Vision (P5).",
     "eng": "Manual entry; {field} estimated at launch from the Dolby Vision RPU (P5)."
+  },
+  "Profondeur": {
+    "fra": "Profondeur",
+    "eng": "Bit depth"
+  },
+  "8 bits": {
+    "fra": "8 bits",
+    "eng": "8 bits"
+  },
+  "10 bits": {
+    "fra": "10 bits",
+    "eng": "10 bits"
+  },
+  "Auto : profondeur source 8/10 bits, 10 bits pour une sortie HDR.\nH.264 x264 10 bits utilise High10 : compatibilité limitée avec les lecteurs matériels.": {
+    "fra": "Auto : profondeur source 8/10 bits, 10 bits pour une sortie HDR.\nH.264 x264 10 bits utilise High10 : compatibilité limitée avec les lecteurs matériels.",
+    "eng": "Auto: source bit depth (8/10 bits), 10 bits for HDR output.\n10-bit x264 H.264 uses High10, with limited hardware player compatibility."
+  },
+  "profondeur invalide": {
+    "fra": "profondeur invalide",
+    "eng": "invalid bit depth"
+  },
+  "sortie 10 bits indisponible pour {codec}": {
+    "fra": "sortie 10 bits indisponible pour {codec}",
+    "eng": "10-bit output unavailable for {codec}"
+  },
+  "une sortie HDR exige une profondeur de 10 bits": {
+    "fra": "une sortie HDR exige une profondeur de 10 bits",
+    "eng": "HDR output requires a bit depth of 10 bits"
   }
 }

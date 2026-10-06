@@ -45,6 +45,7 @@ class EncodeCodecDomainCallbacks:
     qsv_device: str | None = None
     amf_device: str | None = None
     nvenc_device: str | None = None
+    depth_conversion_filters: frozenset[str] = frozenset()
 
 
 def rate_control_values(video: VideoEncodeSettings) -> tuple[RateControlSpec | None, int]:
@@ -78,8 +79,123 @@ def uses_two_pass_video(video: VideoEncodeSettings) -> bool:
     return video.quality_mode == QualityMode.SIZE and video.codec in _TWO_PASS_VIDEO_CODECS
 
 
+def supports_output_10bit(video: VideoEncodeSettings) -> bool:
+    """Capacité catalogue, avec confirmation GPU obligatoire pour NVEncC H.264."""
+    if video.codec == "nvencc_h264":
+        return video.encoder_supports_10bit is True
+    return supports_10bit(video.codec)
+
+
+def source_bit_depth_from_stream(stream: dict) -> int:
+    """Profondeur ffprobe ; 0 quand aucun format exploitable n'est déclaré."""
+    raw = stream.get("bits_per_raw_sample")
+    try:
+        depth = int(raw or 0)
+    except (TypeError, ValueError):
+        depth = 0
+    if depth in {8, 10, 12, 16}:
+        return depth
+    fmt = str(stream.get("pix_fmt") or "").lower()
+    if re.search(r"(?:p|gray|gbrp)(10|12|16)(?:le|be|msble)?$", fmt):
+        return int(re.search(r"(10|12|16)(?:le|be|msble)?$", fmt).group(1))
+    if fmt in {"p010le", "p010be"}:
+        return 10
+    if fmt in {"p016le", "p016be"}:
+        return 16
+    if fmt in {"nv12", "nv21", "yuv420p", "yuv422p", "yuv444p", "yuvj420p", "yuvj422p", "yuvj444p", "gbrp", "gray", "rgb24", "rgba", "bgra"}:
+        return 8
+    return 0
+
+
+def resolve_output_bit_depth(video: VideoEncodeSettings, source_bit_depth: int | None = None) -> int:
+    """Profondeur cible unique ; Copy conserve celle de la source sans conversion."""
+    source = video.source_bit_depth if source_bit_depth is None else source_bit_depth
+    if video.codec == "copy":
+        return int(source or 0)
+    if video.bit_depth in {"8", "10"}:
+        return int(video.bit_depth)
+    if output_hdr_transfer(video):
+        return 10
+    # Source > 8 bits (10, 12, 16) : 10 bits, la plus proche que les encodeurs proposent.
+    if source > 8 and supports_output_10bit(video):
+        return 10
+    return 8
+
+
+def bit_depth_error(video: VideoEncodeSettings) -> str:
+    """Refuse une demande incompatible, avant de lancer l'encodeur."""
+    if video.codec == "copy":
+        return ""
+    if video.bit_depth not in {"auto", "8", "10"}:
+        return "profondeur invalide : choisissez Auto, 8 ou 10 bits."
+    target = resolve_output_bit_depth(video)
+    if target == 8 and output_hdr_transfer(video):
+        return "une sortie HDR exige une profondeur de 10 bits."
+    if target == 10 and not supports_output_10bit(video):
+        return f"le codec '{video.codec}' ne supporte pas la sortie 10 bits sur cet encodeur."
+    return ""
+
+
+def _incompatible_pixel_format(video: VideoEncodeSettings, value: str, callbacks: EncodeCodecDomainCallbacks) -> bool:
+    """Formats incompatibles avec HDR/capacité ou avec l'upload matériel imposé."""
+    if video.codec in VAAPI_VIDEO_CODECS:
+        return value != "vaapi"
+    if video.codec in AMF_VIDEO_CODECS and callbacks.platform == "win32" and callbacks.amf_device is not None:
+        return value != "d3d11"
+    depth = source_bit_depth_from_stream({"pix_fmt": value})
+    return bool(depth and (
+        (bool(output_hdr_transfer(video)) and depth != 10)
+        or (depth > 8 and not supports_output_10bit(video))
+    ))
+
+
+def filtered_bit_depth(video: VideoEncodeSettings) -> int:
+    """Profondeur après les conversions couleur du workflow, avant encodage."""
+    if video.tonemap_to_sdr:
+        return 8
+    if video.p5_to_hdr10:
+        return 10
+    return int(video.source_bit_depth or 0)
+
+
+# Formats 4:2:0 de chaque profondeur cible (logiciel et matériel) : seuls
+# formats acceptés tels quels par les profils Main / Main10 / High / High10.
+_TARGET_420_FORMATS: dict[int, frozenset[str]] = {
+    8: frozenset({"yuv420p", "yuvj420p", "nv12"}),
+    10: frozenset({"yuv420p10le", "p010le"}),
+}
+
+
+def filtered_pix_fmt(video: VideoEncodeSettings) -> str:
+    """Format des images après les conversions du workflow ("" si inconnu)."""
+    if video.tonemap_to_sdr:
+        return "yuv420p"
+    if video.p5_to_hdr10:
+        return "yuv420p10le"
+    return str(video.source_pix_fmt or "").strip().lower()
+
+
+def source_is_420(video: VideoEncodeSettings) -> bool:
+    """Source 4:2:0 8/10 bits (ou format inconnu) : décodable et encodable telle quelle par le GPU."""
+    fmt = str(video.source_pix_fmt or "").strip().lower()
+    return not fmt or any(fmt in formats for formats in _TARGET_420_FORMATS.values())
+
+
+def frames_match_target(video: VideoEncodeSettings, target: int) -> bool:
+    """Images déjà au format 4:2:0 de la profondeur cible : aucune conversion à demander.
+
+    Une profondeur égale ne suffit pas : une source 4:2:2 / 4:4:4 10 bits ferait
+    refuser High10 par x264, échouer NVENC (p210) et passer x265 en Rext.
+    """
+    fmt = filtered_pix_fmt(video)
+    if fmt:
+        return fmt in _TARGET_420_FORMATS.get(target, frozenset())
+    return filtered_bit_depth(video) == target
+
+
 def force_h264_8bit(video: VideoEncodeSettings) -> bool:
-    return bool(getattr(video, "force_8bit", False)) and is_h264_video_codec(video.codec)
+    """Alias historique ; la profondeur canonique fait foi."""
+    return video.bit_depth == "8" and is_h264_video_codec(video.codec)
 
 
 def h264_8bit_pix_fmt_args(video: VideoEncodeSettings) -> list[str]:
@@ -91,15 +207,8 @@ def h264_8bit_pix_fmt_args(video: VideoEncodeSettings) -> list[str]:
 
 
 def force_10bit_active(video: VideoEncodeSettings) -> bool:
-    """Vrai quand l'utilisateur a activé 10-bit pour un codec compatible.
-
-    force_8bit (H.264 + source >8-bit) prend priorité et désactive 10-bit.
-    """
-    if force_h264_8bit(video):
-        return False
-    if not bool(getattr(video, "force_10bit", False)):
-        return False
-    return supports_10bit(video.codec)
+    """Alias historique : cible 10 bits résolue et encodeur compatible."""
+    return video.codec != "copy" and resolve_output_bit_depth(video) == 10 and supports_output_10bit(video)
 
 
 def has_video_transform(video: VideoEncodeSettings) -> bool:
@@ -120,30 +229,28 @@ def has_cpu_video_filter(video: VideoEncodeSettings) -> bool:
     )
 
 
-def ten_bit_args(video: VideoEncodeSettings) -> list[str]:
-    """Tokens ffmpeg pour forcer une sortie 10-bit (profile + pix_fmt).
-
-    Les codecs VAAPI gèrent leur pix_fmt via build_encoder_vf (hwupload p010).
-    """
-    if not force_10bit_active(video):
+def depth_args(video: VideoEncodeSettings, target: int | None = None, *, hw_frames: bool = False) -> list[str]:
+    """Format/profil cible ; aucune conversion logicielle d'images matérielles."""
+    if video.codec == "copy":
         return []
+    target = resolve_output_bit_depth(video) if target is None else target
     codec = video.codec
-    if codec == "libx265":
-        return ["-pix_fmt", "yuv420p10le"]
-    if codec == "libx264":
-        return ["-pix_fmt", "yuv420p10le", "-profile:v", "high10"]
-    if codec == "libsvtav1":
-        return ["-pix_fmt", "yuv420p10le"]
-    if codec in ("hevc_nvenc", "hevc_amf", "hevc_qsv"):
-        return ["-pix_fmt", "p010le", "-profile:v", "main10"]
-    if codec in ("av1_nvenc", "av1_amf", "av1_qsv"):
-        return ["-pix_fmt", "p010le"]
-    if codec in VAAPI_VIDEO_CODECS:
-        # pix_fmt géré dans build_encoder_vf via hwupload ; on ajoute le profile.
-        if codec == "hevc_vaapi":
-            return ["-profile:v", "main10"]
-        return []
-    return []
+    args: list[str] = []
+    software = codec in {"libx264", "libx265", "libsvtav1"}
+    if not hw_frames and codec not in VAAPI_VIDEO_CODECS and not frames_match_target(video, target):
+        fmt = ("yuv420p10le" if target == 10 else "yuv420p") if software else ("p010le" if target == 10 else "nv12")
+        args.extend(["-pix_fmt", fmt])
+    if target == 10:
+        if codec == "libx264":
+            args.extend(["-profile:v", "high10"])
+        elif codec.startswith("hevc_"):
+            args.extend(["-profile:v", "main10"])
+    return args
+
+
+def ten_bit_args(video: VideoEncodeSettings) -> list[str]:
+    """Alias historique, conservé pour les intégrations externes."""
+    return depth_args(video) if force_10bit_active(video) else []
 
 
 def vaapi_compression_args(video: VideoEncodeSettings) -> list[str]:
@@ -538,7 +645,20 @@ def _classify_built_args(
     if not extras:
         return args, ExtraParamsReport()
     workflow_filters = bool(build_encoder_vf(video, callbacks=callbacks))
-    return base, classify_ffmpeg_extra_args(extras, base, workflow_filters=workflow_filters)
+    kept: list[str] = []
+    removed: list[str] = []
+    for item in option_items(extras):
+        name = ffmpeg_option_name(item[0])
+        incompatible = name == "pix_fmt" and len(item) == 2 and _incompatible_pixel_format(video, item[1], callbacks)
+        if incompatible:
+            removed.extend(item)
+        else:
+            kept.extend(item)
+    # Même sans conversion (donc sans -pix_fmt émis), une saisie remplace le
+    # choix de profondeur de l'onglet Video : avertissement conservé.
+    warning_base = [*base, "-pix_fmt", "yuv420p10le" if resolve_output_bit_depth(video) == 10 else "yuv420p"]
+    report = classify_ffmpeg_extra_args(kept, warning_base, workflow_filters=workflow_filters)
+    return base, ExtraParamsReport(report.kept, (*removed, *report.removed), report.overriding)
 
 
 def _without_user_overrides(
@@ -715,7 +835,9 @@ def _hw_codec_args_raw(
 ) -> list[str]:
     """Codec, mode de débit, preset, périphérique, profondeur puis paramètres avancés."""
     codec = video.codec
-    depth = h264_8bit_pix_fmt_args(video) if is_h264_video_codec(codec) else ten_bit_args(video)
+    hw_frames = "-hwaccel_output_format" in hardware_input_args(video, callbacks=callbacks)
+    hw_frames |= codec in AMF_VIDEO_CODECS and callbacks.platform == "win32" and callbacks.amf_device is not None
+    depth = depth_args(video, hw_frames=hw_frames)
     rate = _hw_rate_control_args(video, bitrate_kbps)
     if codec in NVENC_VIDEO_CODECS:
         return [
@@ -749,7 +871,7 @@ def _video_codec_args_crf_raw(video: VideoEncodeSettings, *, callbacks: EncodeCo
             return ["-c:v", "copy"]
         case "libx265":
             args = ["-c:v", "libx265", "-crf", crf, "-preset", video.preset]
-            args.extend(ten_bit_args(video))
+            args.extend(depth_args(video))
             x265 = x265_params(video)
             if x265:
                 args.extend(["-x265-params", x265])
@@ -757,13 +879,12 @@ def _video_codec_args_crf_raw(video: VideoEncodeSettings, *, callbacks: EncodeCo
         case "libx264":
             return [
                 "-c:v", "libx264", "-crf", crf, "-preset", video.preset,
-                *h264_8bit_pix_fmt_args(video),
-                *ten_bit_args(video),
+                *depth_args(video),
                 *ffmpeg_extra_args(video),
             ]
         case "libsvtav1":
             args = ["-c:v", "libsvtav1", "-crf", crf, "-preset", video.preset]
-            args.extend(ten_bit_args(video))
+            args.extend(depth_args(video))
             params = svtav1_params(video)
             if params:
                 args.extend(["-svtav1-params", params])
@@ -785,7 +906,7 @@ def _video_codec_args_bitrate_raw(
             return ["-c:v", "copy"]
         case "libx265":
             args = ["-c:v", "libx265", "-b:v", f"{bitrate_kbps}k", "-preset", video.preset]
-            args.extend(ten_bit_args(video))
+            args.extend(depth_args(video))
             x265 = x265_params(video)
             if x265:
                 args.extend(["-x265-params", x265])
@@ -793,13 +914,12 @@ def _video_codec_args_bitrate_raw(
         case "libx264":
             return [
                 "-c:v", "libx264", "-b:v", f"{bitrate_kbps}k", "-preset", video.preset,
-                *h264_8bit_pix_fmt_args(video),
-                *ten_bit_args(video),
+                *depth_args(video),
                 *ffmpeg_extra_args(video),
             ]
         case "libsvtav1":
             args = ["-c:v", "libsvtav1", "-b:v", f"{bitrate_kbps}k", "-preset", video.preset]
-            args.extend(ten_bit_args(video))
+            args.extend(depth_args(video))
             params = svtav1_params(video)
             if params:
                 args.extend(["-svtav1-params", params])
@@ -1007,41 +1127,23 @@ def build_encoder_vf(
         _STRIP_STATIC_HDR_SIDE_DATA if strips_source_static_hdr_side_data(video) else "",
     ]
     vf = ",".join(part for part in (cpu_vf, *metadata_filters) if part)
-    force_8bit = force_h264_8bit(video)
-    force_10bit = force_10bit_active(video)
-    # setparams / sidedata acceptent les images matérielles (CUDA, VAAPI) :
-    # seuls les filtres CPU imposent un upload.
-    software_filtering = bool(cpu_vf) or piped_frames
-    if video.codec not in VAAPI_VIDEO_CODECS:
-        if (
-            callbacks.platform == "win32"
-            and video.codec in AMF_VIDEO_CODECS
-            and callbacks.amf_device is not None
-            and (software_filtering or force_8bit or force_10bit)
-        ):
-            if force_10bit and not force_8bit:
-                amf_upload = "format=p010le,hwupload"
-            else:
-                amf_upload = "format=nv12,hwupload"
-            if force_8bit:
-                if vf and "format=yuv420p" not in {part.strip() for part in vf.split(",")}:
-                    vf = f"{vf},format=yuv420p"
-                elif not vf:
-                    vf = "format=yuv420p"
-            return f"{vf},{amf_upload}" if vf else amf_upload
-        if force_8bit:
-            force_8bit_filter = "format=yuv420p"
-            if vf and force_8bit_filter in {part.strip() for part in vf.split(",")}:
-                return vf
-            return f"{vf},{force_8bit_filter}" if vf else force_8bit_filter
-        return vf
-    # VAAPI : besoin d'un hwupload depuis le pix_fmt cible.
-    if force_10bit and not force_8bit:
-        vaapi_upload = "format=p010,hwupload"
-        return f"{vf},{vaapi_upload}" if vf else vaapi_upload
-    if software_filtering or force_8bit or not hw_decoded:
-        vaapi_upload = "format=nv12,hwupload"
-        return f"{vf},{vaapi_upload}" if vf else vaapi_upload
+    hw_frames = hw_decoded and "-hwaccel_output_format" in hardware_input_args(
+        video, callbacks=callbacks, piped_frames=piped_frames,
+    )
+    if hw_frames:
+        conversion = _hardware_depth_filter(video, callbacks)
+        return ",".join(part for part in (vf, conversion) if part)
+    target = resolve_output_bit_depth(video)
+    if video.codec in VAAPI_VIDEO_CODECS or (
+        video.codec in AMF_VIDEO_CODECS and callbacks.platform == "win32" and callbacks.amf_device is not None
+    ):
+        upload = f"format={'p010' if target == 10 else 'nv12'},hwupload"
+        return f"{vf},{upload}" if vf else upload
+    # Une entrée auxiliaire ou un pipe n'a pas les surfaces GPU prévues par
+    # les options du codec : convertir ici plutôt que laisser l'encodeur deviner.
+    if (piped_frames or not hw_decoded) and not frames_match_target(video, target):
+        fmt = "yuv420p10le" if target == 10 else "yuv420p"
+        vf = ",".join(part for part in (vf, f"format={fmt}") if part)
     return vf
 
 
@@ -1084,6 +1186,20 @@ def build_vf(video: VideoEncodeSettings) -> str:
     return ",".join(chain)
 
 
+def _hardware_depth_filter(video: VideoEncodeSettings, callbacks: EncodeCodecDomainCallbacks) -> str:
+    """Convertit la profondeur sur GPU seulement si le filtre a été détecté."""
+    if video.source_bit_depth == resolve_output_bit_depth(video):
+        return ""
+    name = (
+        "scale_cuda" if video.codec in NVENC_VIDEO_CODECS else
+        "vpp_qsv" if video.codec in QSV_VIDEO_CODECS else
+        "scale_vaapi" if video.codec in VAAPI_VIDEO_CODECS else ""
+    )
+    if name not in callbacks.depth_conversion_filters or not video.source_bit_depth:
+        return ""
+    return f"{name}=format={'p010le' if resolve_output_bit_depth(video) == 10 else 'nv12'}"
+
+
 def hardware_input_args(
     video: VideoEncodeSettings,
     *,
@@ -1097,21 +1213,35 @@ def hardware_input_args(
     """
     args: list[str] = []
     tonemap = bool(video.tonemap_to_sdr)
-    software_filtering = has_cpu_video_filter(video) or piped_frames
-    force_8bit = force_h264_8bit(video)
-    force_10bit = force_10bit_active(video)
+    software_filtering = has_cpu_video_filter(video) or piped_frames or video.interpolates()
+    # H.264 High10 est décodé en logiciel : FFmpeg peut se replier seul,
+    # mais un scale_cuda ou un encodeur VAAPI recevrait alors des images CPU.
+    software_filtering |= video.source_codec in {"h264", "avc"} and video.source_bit_depth > 8
+    # 4:2:2 / 4:4:4 / 12 bits : rarement décodés par le GPU, jamais encodés en
+    # Main10 / High10 tels quels ; conversion 4:2:0 logicielle (-pix_fmt).
+    software_filtering |= not source_is_420(video)
+    # Une saisie -pix_fmt est un format en mémoire système. Éviter une
+    # conversion implicite impossible depuis les surfaces CUDA/QSV/D3D11.
+    software_filtering |= any(
+        ffmpeg_option_name(item[0]) == "pix_fmt" and len(item) == 2
+        and not _incompatible_pixel_format(video, item[1], callbacks)
+        and item[1] not in {"cuda", "qsv", "vaapi", "d3d11"}
+        for item in option_items(ffmpeg_extra_args(video))
+    )
+    depth_conversion = video.source_bit_depth != resolve_output_bit_depth(video)
+    software_filtering |= depth_conversion and not bool(_hardware_depth_filter(video, callbacks))
 
     if video.codec in VAAPI_VIDEO_CODECS:
         if callbacks.vaapi_device:
             args.extend(["-vaapi_device", callbacks.vaapi_device])
-            if not software_filtering and not tonemap and not force_8bit and not force_10bit:
+            if not software_filtering and not tonemap:
                 args.extend(["-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi"])
         return args
 
     if video.codec in QSV_VIDEO_CODECS:
         if callbacks.qsv_device:
             args.extend(["-qsv_device", callbacks.qsv_device])
-        if software_filtering or tonemap or force_8bit or force_10bit:
+        if software_filtering or tonemap:
             return args
         args.extend(["-hwaccel", "qsv", "-hwaccel_output_format", "qsv"])
         return args
@@ -1122,7 +1252,7 @@ def hardware_input_args(
                 "-init_hw_device", f"d3d11va=mre_amf:{callbacks.amf_device}",
                 "-filter_hw_device", "mre_amf",
             ])
-        if software_filtering or tonemap or force_8bit or force_10bit:
+        if software_filtering or tonemap:
             return args
         if callbacks.amf_device:
             args.extend([
@@ -1134,7 +1264,7 @@ def hardware_input_args(
             args.extend(["-hwaccel", "d3d11va", "-hwaccel_output_format", "d3d11"])
         return args
 
-    if software_filtering or tonemap or force_8bit or force_10bit:
+    if software_filtering or tonemap:
         return args
 
     if video.codec in NVENC_VIDEO_CODECS:

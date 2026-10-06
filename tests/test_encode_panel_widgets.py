@@ -74,6 +74,7 @@ from core.config import AppConfig
 from core.inspector import AudioTrack, FileInfo, HDRType, VideoTrack
 from core.workflows.encode import EncodePreset, ProfileManager
 from core.workflows.remux_models import TrackEntry, clone_track_entry
+from core.workflows.encode.domain.codecs import bit_depth_error, resolve_output_bit_depth
 from ui.panels.encode_panel.panel import EncodePanel
 from ui.panels.encode_panel.widgets import _AudioTable
 from core.workflows.encode.runtime.static_hdr_estimator import (
@@ -214,6 +215,85 @@ def _video_entry(mkv_tid: int = 0) -> TrackEntry:
 def _select_codec(panel: EncodePanel, codec: str) -> None:
     idx = next(i for i in range(panel._codec_combo.count()) if panel._codec_combo.itemData(i) == codec)
     panel._codec_combo.setCurrentIndex(idx)
+
+
+def test_lot6_depth_choice_survives_track_and_codec_changes(qt_app, monkeypatch):
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    first, second = _video_entry(0), _video_entry(1)
+    first.entry_id, second.entry_id = "first", "second"
+    info = _file_info(_PATH_A, [_video_track(0, bit_depth=10), _video_track(1, bit_depth=8)])
+    panel.set_video_tracks([(info, first, _COLOR), (info, second, _COLOR)])
+    try:
+        _select_codec(panel, "libx264")
+        # Présélection Auto : la source 10 bits donne High10 sans figer la valeur.
+        assert panel._bit_depth_combo.currentData() == "auto"
+        assert resolve_output_bit_depth(panel._current_video_settings()) == 10
+        panel._set_combo_data(panel._bit_depth_combo, "8")
+        panel._video_list.setCurrentRow(1)
+        _select_codec(panel, "libx265")
+        # Piste 2 : son propre Auto (source 8 bits), pas le choix de la piste 1.
+        assert panel._bit_depth_combo.currentData() == "auto"
+        assert resolve_output_bit_depth(panel._current_video_settings()) == 8
+        panel._video_list.setCurrentRow(0)
+        assert panel._bit_depth_combo.currentData() == "8"
+        _select_codec(panel, "libx265")
+        assert panel._bit_depth_combo.currentData() == "8"
+        panel._set_combo_data(panel._bit_depth_combo, "auto")
+        panel._video_list.setCurrentRow(1)
+        panel._video_list.setCurrentRow(0)
+        assert panel._bit_depth_combo.currentData() == "auto"
+        panel._set_combo_data(panel._bit_depth_combo, "10")
+        panel._on_hw_detected({"h264_nvenc"}, panel._sw_encoders, panel._config.tool_ffmpeg)
+        _select_codec(panel, "h264_nvenc")
+        assert panel._bit_depth_combo.currentData() == "auto"
+        assert not panel._bit_depth_combo.model().item(panel._bit_depth_combo.findData("10")).isEnabled()
+    finally:
+        panel.close()
+
+
+def test_lot6_profile_saves_and_restores_depth(qt_app, monkeypatch, tmp_path):
+    from core.workflows.encode.profiles import ProfileManager
+
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    panel._profiles = ProfileManager(tmp_path)
+    panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0)]), _video_entry(0), _COLOR)])
+    try:
+        _select_codec(panel, "libx264")
+        panel._set_combo_data(panel._bit_depth_combo, "10")
+        panel._profile_name.setText("High10")
+        panel._save_profile()
+        assert panel._profiles.load_all()[0].bit_depth == "10"
+        panel._set_combo_data(panel._bit_depth_combo, "8")
+        panel._load_profile()
+        assert panel._bit_depth_combo.currentData() == "10"
+        _select_codec(panel, "libx265")
+        panel._profile_name.setText("Auto")
+        panel._set_combo_data(panel._bit_depth_combo, "auto")
+        panel._save_profile()
+        panel._set_combo_data(panel._bit_depth_combo, "10")
+        panel._load_profile()
+        assert panel._bit_depth_combo.currentData() == "auto"
+    finally:
+        panel.close()
+
+
+def test_lot6_p82_auto_keeps_sdr_depth(qt_app, monkeypatch):
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    video = _video_track(0, HDRType.DOLBY_VISION, bit_depth=8)
+    video.dovi_profile, video.dovi_compat_id, video.color_transfer = 8, 2, "bt709"
+    panel.set_video_tracks([(_file_info(_PATH_A, [video]), _video_entry(0), _COLOR)])
+    try:
+        _select_codec(panel, "libx265")
+        panel._set_combo_data(panel._bit_depth_combo, "auto")
+        settings = panel._current_video_settings()
+        assert settings.copy_dv and settings.dovi_source_profile == "p8_2"
+        assert resolve_output_bit_depth(settings) == 8
+        assert "[8-bit]" in panel._video_list.item(0).text()
+    finally:
+        panel.close()
 
 
 # ===========================================================================
@@ -1649,7 +1729,7 @@ class TestEncodePanelDynamicHdrDefaults:
         assert panel._dovi_warning_widget.isHidden() is True
         panel.close()
 
-    def test_h264_precheck_forces_8bit_and_logs_switch(self, qt_app):
+    def test_x264_preserves_source_10bit_without_8bit_precheck(self, qt_app):
         cfg = AppConfig()
         cfg.language = "fra"
         panel = EncodePanel(cfg)
@@ -1668,10 +1748,10 @@ class TestEncodePanelDynamicHdrDefaults:
 
         row_item = panel._video_list.item(0)
         assert row_item is not None
-        assert "[8-bit]" in row_item.text()
+        assert "[10-bit]" in row_item.text()
         settings = panel._current_video_settings()
-        assert settings.force_8bit is True
-        assert any("bascule auto en 8-bit" in message for _lvl, message in logs)
+        assert settings.bit_depth == "auto" and resolve_output_bit_depth(settings) == 10
+        assert not any("bascule auto en 8-bit" in message for _lvl, message in logs)
 
         idx_x265 = next(
             i for i in range(panel._codec_combo.count())
@@ -1679,11 +1759,11 @@ class TestEncodePanelDynamicHdrDefaults:
         )
         panel._codec_combo.setCurrentIndex(idx_x265)
         settings = panel._current_video_settings()
-        assert settings.force_8bit is False
-        assert any("retour au mode source" in message for _lvl, message in logs)
+        assert settings.bit_depth == "auto" and resolve_output_bit_depth(settings) == 10
+        assert not any("retour au mode source" in message for _lvl, message in logs)
         panel.close()
 
-    def test_h264_8bit_switch_is_per_track_only(self, qt_app):
+    def test_x264_source_depth_is_preserved_per_track(self, qt_app):
         panel = EncodePanel(AppConfig())
         panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
         first_entry = _video_entry(0)
@@ -1713,8 +1793,27 @@ class TestEncodePanelDynamicHdrDefaults:
         cfg = panel.collect_config()
         assert cfg is not None
         by_entry = {str(video.track_entry_id): video for video in cfg.video_tracks}
-        assert by_entry["video-10bit"].force_8bit is True
-        assert by_entry["video-8bit"].force_8bit is False
+        assert resolve_output_bit_depth(by_entry["video-10bit"]) == 10
+        assert resolve_output_bit_depth(by_entry["video-8bit"]) == 8
+        panel.close()
+
+    def test_lot6_auto_preselection_does_not_leak_to_hdr_track(self, qt_app):
+        """« Appliquer à toutes » depuis une piste SDR 8 bits : la piste HDR10 reste en 10 bits."""
+        panel = EncodePanel(AppConfig())
+        sdr = dataclasses.replace(_video_track(0, HDRType.NONE, bit_depth=8), color_transfer="bt709")
+        hdr = dataclasses.replace(_video_track(0, HDRType.HDR10, bit_depth=10), color_transfer="smpte2084")
+        sdr_entry, hdr_entry = _video_entry(0), _video_entry(0)
+        sdr_entry.entry_id, hdr_entry.entry_id = "video-sdr", "video-hdr"
+        hdr_info = _file_info(_PATH_B, [hdr], HDRType.HDR10)
+        panel.set_video_tracks([(_file_info(_PATH_A, [sdr]), sdr_entry, _COLOR), (hdr_info, hdr_entry, _COLOR)])
+        panel._video_list.setCurrentRow(0)
+        _select_codec(panel, "libx265")
+        assert panel._bit_depth_combo.currentData() == "auto"
+        assert resolve_output_bit_depth(panel._current_video_settings()) == 8
+        panel._apply_all_video_cb.setChecked(True)
+        state = panel._video_settings_by_entry_id["video-hdr"]
+        settings = panel._video_settings_from_state(file_info=hdr_info, track=hdr_entry, state=state)
+        assert resolve_output_bit_depth(settings) == 10 and not bit_depth_error(settings)
         panel.close()
 
     def test_dynamic_hdr_settings_are_independent_per_video_entry_when_apply_all_is_disabled(self, qt_app):

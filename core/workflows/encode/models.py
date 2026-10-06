@@ -295,6 +295,13 @@ class FrameInterpolationSettings:
         return _dataclass_from_value(cls, value)
 
 
+def migrate_bit_depth(value: str | None, force_8bit: bool = False, force_10bit: bool = False) -> str:
+    """Migre les anciens flags ; un choix canonique, même Auto, reste prioritaire."""
+    if value is None:
+        return "8" if force_8bit else "10" if force_10bit else "auto"
+    return str(value).strip().lower()
+
+
 @dataclass
 class VideoEncodeSettings:
     """Paramètres d'encodage vidéo."""
@@ -315,11 +322,14 @@ class VideoEncodeSettings:
     target_size_mb:   int          = 4000
     preset:           str          = "slow"
     extra_params:     str          = ""    # x265-params / svtav1-params passthrough
-    # Précheck UI: forcer une sortie 8-bit pour les encodeurs H.264
-    # quand la source est > 8-bit (appliqué piste par piste).
+    # None à l'entrée distingue un ancien payload d'un Auto explicite.
+    bit_depth:        str | None  = None
+    source_bit_depth: int         = 0      # 0 = inconnue, renseignée piste par piste
+    source_pix_fmt:   str          = ""     # pix_fmt ffprobe ("" inconnu) : sous-échantillonnage
+    source_codec:     str         = ""     # codec ffprobe (vérification du décodage HW)
+    encoder_supports_10bit: bool | None = None  # capacité matérielle sondée (NVEncC H.264)
+    # Alias de lecture historiques, sans effet après migration vers bit_depth.
     force_8bit:       bool         = False
-    # Sortie 10-bit explicite (profile main10/high10 + pix_fmt p010le/yuv420p10le).
-    # Mutuellement exclusif avec force_8bit (qui prend priorité).
     force_10bit:      bool         = False
     # Transformations vidéo
     resize:           VideoResizeSettings = field(default_factory=VideoResizeSettings)
@@ -348,7 +358,7 @@ class VideoEncodeSettings:
     # libplacebo. Activée par le workflow, jamais directement par le panel.
     p5_to_hdr10:      bool         = False
     # Sous-profil Dolby Vision de la source ("p5", "p7_fel", "p8_1"… ; "" inconnu),
-    # renseigné par le workflow (``dovi_policy``), jamais par le panel.
+    # inspecté par le panel pour la profondeur, confirmé par le workflow (``dovi_policy``).
     dovi_source_profile: str       = ""
     # RPU d'une source P5 converti en P8.1 (``dovi_tool -m 3 extract-rpu``), extrait
     # une fois à la préparation et réutilisé par les runtimes (copie DV active).
@@ -363,6 +373,7 @@ class VideoEncodeSettings:
     tonemap_algorithm: str         = "hable"
 
     def __post_init__(self) -> None:
+        self.bit_depth = migrate_bit_depth(self.bit_depth, self.force_8bit, self.force_10bit)
         self.resize = VideoResizeSettings.from_value(self.resize)
         self.crop = VideoCropSettings.from_value(self.crop)
         self.filters = VideoFilterSettings.from_value(self.filters)
@@ -578,6 +589,8 @@ class EncodePreset:
     target_size_mb:             int  = 4000
     preset:                     str  = "slow"
     extra_params:               str  = ""
+    bit_depth:                 str | None = None
+    force_8bit:                 bool = False
     force_10bit:                bool = False
     resize:                     VideoResizeSettings = field(default_factory=VideoResizeSettings)
     crop:                       VideoCropSettings = field(default_factory=VideoCropSettings)
@@ -592,6 +605,7 @@ class EncodePreset:
     default_audio_bitrate_kbps: int  = 384
 
     def __post_init__(self) -> None:
+        self.bit_depth = migrate_bit_depth(self.bit_depth, self.force_8bit, self.force_10bit)
         self.resize = VideoResizeSettings.from_value(self.resize)
         self.crop = VideoCropSettings.from_value(self.crop)
         self.filters = VideoFilterSettings.from_value(self.filters)
@@ -611,7 +625,7 @@ class EncodePreset:
             target_size_mb=self.target_size_mb,
             preset=self.preset,
             extra_params=self.extra_params,
-            force_10bit=self.force_10bit,
+            bit_depth=self.bit_depth,
             resize=self.resize,
             crop=self.crop,
             filters=self.filters,
@@ -624,7 +638,10 @@ class EncodePreset:
         )
 
     def to_json_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        data.pop("force_8bit")
+        data.pop("force_10bit")
+        return data
 
 
 # =============================================================================

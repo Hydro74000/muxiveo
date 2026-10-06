@@ -342,7 +342,8 @@ def test_l5_02_pipe_consumes_conversion_and_describes_frames():
     assert "--vpp-libplacebo-tonemapping" not in cmd and _after(cmd, "--transfer") == "smpte2084"
     sdr = nvencc_pipe_encode_video(VideoEncodeSettings(codec="nvencc_hevc", p5_to_hdr10=True, tonemap_to_sdr=True))
     sdr_cmd = build_nvencc_command("nvencc", sdr, "out.mkv")
-    assert "--transfer" not in sdr_cmd and "--output-depth" not in sdr_cmd
+    assert "--transfer" not in sdr_cmd
+    assert sdr_cmd[sdr_cmd.index("--output-depth") + 1] == "8"
 
 
 def test_l5_05_no_dovi_option_without_effective_copy():

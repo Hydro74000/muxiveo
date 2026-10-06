@@ -252,6 +252,7 @@ class MetadataInjectRunner:
                             video,
                             force_8bit=False,
                             force_10bit=True,
+                            bit_depth="10",
                             p5_to_hdr10=True,
                         )
                         runtime_tracks = []

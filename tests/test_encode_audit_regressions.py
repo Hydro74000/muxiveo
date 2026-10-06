@@ -77,7 +77,7 @@ def test_svtav1_static_hdr_params():
 
 
 def test_vaapi_uploads_frames_from_inputs_without_hwaccel():
-    video = VideoEncodeSettings(codec="hevc_vaapi")
+    video = VideoEncodeSettings(codec="hevc_vaapi", source_bit_depth=8)
     assert build_encoder_vf(video, callbacks=_CB) == ""
     assert build_encoder_vf(video, callbacks=_CB, hw_decoded=False) == "format=nv12,hwupload"
 
@@ -268,9 +268,9 @@ def test_v16_ffmpeg_extras_override_ui_settings_with_warning():
     assert "-map" not in args and args.count("-c:v") == 1
     report = ffmpeg_extra_params_report(video, callbacks=_CB)
     assert report.removed == ("-map", "0:1", "-c:v", "libx264")
-    # -pix_fmt : le workflow n'en pose pas (case 10-Bits décochée), pas de remplacement.
-    assert report.overriding == ("-cq", "30", "-preset", "p1")
-    ten_bit = VideoEncodeSettings(**{**video.__dict__, "force_10bit": True})
+    # Source inconnue : le workflow pose un format 8 bits, surcharge signalée.
+    assert report.overriding == ("-cq", "30", "-pix_fmt", "yuv420p", "-preset", "p1")
+    ten_bit = VideoEncodeSettings(**{**video.__dict__, "bit_depth": "10"})
     assert "-pix_fmt" in ffmpeg_extra_params_report(ten_bit, callbacks=_CB).overriding
     # Valeur par défaut du workflow (async_depth) : surchargeable sans message.
     qsv = VideoEncodeSettings(codec="hevc_qsv", quality_mode=QualityMode.CQ, preset="slow", extra_params="-async_depth 8")
@@ -391,7 +391,7 @@ def test_lot3_v09_v10_vf_tags_hdr_and_strips_unchecked_static_metadata():
 
 def test_lot3_vaapi_metadata_filters_keep_hardware_frames():
     """setparams / sidedata acceptent les images VAAPI : pas d'upload logiciel ajouté."""
-    video = VideoEncodeSettings(codec="hevc_vaapi", source_color_transfer="smpte2084")
+    video = VideoEncodeSettings(codec="hevc_vaapi", source_color_transfer="smpte2084", source_bit_depth=10)
     vf = build_encoder_vf(video, callbacks=_CB)
     assert "hwupload" not in vf and vf.startswith("setparams=")
 
@@ -715,7 +715,8 @@ def test_review_nvencc_tonemapped_pipe_is_sdr(transfer, p5):
     source = VideoEncodeSettings(codec="nvencc_hevc", source_color_transfer=transfer,
                                  p5_to_hdr10=p5, tonemap_to_sdr=True)
     cmd = build_nvencc_command("nvencc", nvencc_pipe_encode_video(source), "out.mkv")
-    assert "--transfer" not in cmd and "--output-depth" not in cmd
+    assert "--transfer" not in cmd
+    assert cmd[cmd.index("--output-depth") + 1] == "8"
     assert "--vpp-libplacebo-tonemapping" not in cmd and "--vpp-colorspace" not in cmd
     assert source.tonemap_to_sdr and source.p5_to_hdr10 == p5
 

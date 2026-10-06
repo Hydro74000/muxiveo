@@ -1880,7 +1880,7 @@ class TestBuildCommand:
         with patch.object(EncodeWorkflow, "_vaapi_device", return_value="/dev/dri/renderD128"):
             cmd = self.wf.build_command_single(
                 _make_config(src, tmp_path / "out.mkv",
-                             video=_make_video_settings(codec="hevc_vaapi"))
+                             video=_make_video_settings(codec="hevc_vaapi", source_bit_depth=8))
             )
 
         assert "-vaapi_device" in cmd
@@ -1897,7 +1897,7 @@ class TestBuildCommand:
         with patch.object(EncodeWorkflow, "_vaapi_device", return_value="/dev/dri/renderD128"):
             cmd = self.wf.build_command_single(
                 _make_config(src, tmp_path / "out.mkv",
-                             video=_make_video_settings(codec="hevc_vaapi", tonemap_to_sdr=True))
+                             video=_make_video_settings(codec="hevc_vaapi", source_bit_depth=8, tonemap_to_sdr=True))
             )
 
         assert "-vaapi_device" in cmd
@@ -1913,7 +1913,7 @@ class TestBuildCommand:
                 _make_config(
                     src,
                     tmp_path / "out.mkv",
-                    video=_make_video_settings(codec="h264_vaapi", quality_mode=QualityMode.SIZE),
+                    video=_make_video_settings(codec="h264_vaapi", quality_mode=QualityMode.SIZE, source_bit_depth=8),
                     duration_s=3600.0,
                 )
             )
@@ -1942,8 +1942,7 @@ class TestBuildCommand:
         assert "-hwaccel_output_format" not in cmd
         assert "-vf" in cmd
         assert cmd[cmd.index("-vf") + 1].endswith("format=nv12,hwupload")
-        assert "-pix_fmt" in cmd
-        assert cmd[cmd.index("-pix_fmt") + 1] == "nv12"
+        assert "-pix_fmt" not in cmd  # Format porté par hwupload VAAPI.
 
     def test_h264_nvenc_force_8bit_disables_hw_decode_and_sets_nv12(self, tmp_path):
         src = tmp_path / "src.mkv"
@@ -1968,7 +1967,7 @@ class TestBuildCommand:
                 _make_config(
                     src,
                     tmp_path / "out.mkv",
-                    video=_make_video_settings(codec="hevc_qsv"),
+                    video=_make_video_settings(codec="hevc_qsv", source_bit_depth=8),
                 )
             )
 
@@ -1987,7 +1986,7 @@ class TestBuildCommand:
                 _make_config(
                     src,
                     tmp_path / "out.mkv",
-                    video=_make_video_settings(codec="h264_qsv"),
+                    video=_make_video_settings(codec="h264_qsv", source_bit_depth=8),
                 )
             )
 
@@ -2003,7 +2002,7 @@ class TestBuildCommand:
                 _make_config(
                     src,
                     tmp_path / "out.mkv",
-                    video=_make_video_settings(codec="hevc_qsv"),
+                    video=_make_video_settings(codec="hevc_qsv", source_bit_depth=8),
                 )
             )
 
@@ -2020,7 +2019,7 @@ class TestBuildCommand:
                 _make_config(
                     src,
                     tmp_path / "out.mkv",
-                    video=_make_video_settings(codec="h264_amf"),
+                    video=_make_video_settings(codec="h264_amf", source_bit_depth=8),
                 )
             )
 
@@ -2040,7 +2039,7 @@ class TestBuildCommand:
                 _make_config(
                     src,
                     tmp_path / "out.mkv",
-                    video=_make_video_settings(codec="hevc_amf", tonemap_to_sdr=True),
+                    video=_make_video_settings(codec="hevc_amf", source_bit_depth=8, tonemap_to_sdr=True),
                 )
             )
 
@@ -2058,7 +2057,7 @@ class TestBuildCommand:
                 _make_config(
                     src,
                     tmp_path / "out.mkv",
-                    video=_make_video_settings(codec="h264_nvenc"),
+                    video=_make_video_settings(codec="h264_nvenc", source_bit_depth=8),
                 )
             )
 

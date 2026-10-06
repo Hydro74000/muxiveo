@@ -11,6 +11,7 @@ import dataclasses
 import json
 import math
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -888,6 +889,7 @@ class EncodeWorkflow(QObject):
         """
         Retourne une commande (list[str]) ou deux commandes pour la double passe (list[list[str]]).
         """
+        config = self.resolve_source_color_transfer(config)
         plan = self._build_encode_plan(config)
         commands = self._backend_for_config(config).build_preview(
             config,
@@ -903,6 +905,7 @@ class EncodeWorkflow(QObject):
         En mode NVEncC, l'aperçu retourne la commande d'encode native, suivie
         au runtime d'un remux ffmpeg séparé.
         """
+        config = self.resolve_source_color_transfer(config)
         plan = self._build_encode_plan(config)
         return list(
             self._backend_for_config(config).build_single_preview(
@@ -1722,7 +1725,26 @@ class EncodeWorkflow(QObject):
             qsv_device=self._qsv_device(),
             amf_device=self._amf_device(),
             nvenc_device=self._nvenc_device(),
+            depth_conversion_filters=self.__dict__.get("_depth_filters_cache", {}).get(self._ffmpeg, frozenset()),
         )
+
+    def _depth_conversion_filters(self) -> frozenset[str]:
+        """Filtres GPU compilés ; un binaire sans ces filtres utilise le chemin logiciel."""
+        cached = self.__dict__.setdefault("_depth_filters_cache", {})
+        if self._ffmpeg not in cached:
+            try:
+                proc = subprocess.run(
+                    [self._ffmpeg, "-hide_banner", "-filters"], capture_output=True,
+                    check=False, timeout=10, **subprocess_text_kwargs(),
+                )
+                output = proc.stdout or ""
+                cached[self._ffmpeg] = frozenset(
+                    name for name in ("scale_cuda", "vpp_qsv", "scale_vaapi")
+                    if re.search(rf"\b{name}\b", output)
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                cached[self._ffmpeg] = frozenset()
+        return cached[self._ffmpeg]
 
     @staticmethod
     def _is_h264_codec(codec: str) -> bool:
@@ -2192,6 +2214,7 @@ class EncodeWorkflow(QObject):
 
     def preview_command(self, config: EncodeConfig) -> str:
         config = self.resolve_dovi_sources(config)
+        config = self.resolve_source_color_transfer(config)
         mux_decision = self.select_mux_backend(config)
         commands = self._backend_for_config(config).build_preview(
             config,
@@ -2764,6 +2787,7 @@ class EncodeWorkflow(QObject):
 
     def validate(self, config: EncodeConfig) -> list[str]:
         config = self.resolve_dovi_sources(config)
+        config = self.resolve_source_color_transfer(config)
         plan = _build_encode_plan_data(
             config,
             resolve_subtitle_tracks=lambda _config, _all_sources: ([], False),
@@ -3180,20 +3204,47 @@ class EncodeWorkflow(QObject):
         return messages
 
     def resolve_source_color_transfer(self, config: EncodeConfig) -> EncodeConfig:
-        """Renseigne ``source_color_transfer`` des pistes qui ne l'ont pas (payload ffprobe en cache)."""
+        """Renseigne transfert, profondeur et capacité matérielle depuis les sondes en cache."""
+        from core.workflows.encode.domain.codecs import source_bit_depth_from_stream
+        from core.workflows.encode.runtime.nvencc import detect_nvencc_10bit_codecs
+
         tracks = self._video_tracks(config)
         resolved: list[VideoEncodeSettings] = []
         changed = False
         for video in tracks:
-            if video.codec != "copy" and not video.source_color_transfer:
-                transfer = self._stream_color_transfer(
-                    self._video_source_from_settings(config, video),
-                    self._video_stream_from_settings(video),
-                )
-                if transfer:
-                    video = dataclasses.replace(video, source_color_transfer=transfer)
+            if video.codec != "copy":
+                updates: dict = {}
+                if (
+                    not video.source_color_transfer or not video.source_bit_depth
+                    or not video.source_codec or not video.source_pix_fmt
+                ):
+                    payload = self._ffprobe_streams_payload(self._video_source_from_settings(config, video)) or {}
+                    stream = next((s for s in self._ffprobe_stream_dicts(payload)
+                                   if s.get("index") == self._video_stream_from_settings(video)), {})
+                    if not video.source_color_transfer and stream.get("color_transfer"):
+                        updates["source_color_transfer"] = str(stream["color_transfer"]).strip().lower()
+                    if not video.source_bit_depth and (depth := source_bit_depth_from_stream(stream)):
+                        updates["source_bit_depth"] = depth
+                    if not video.source_codec and stream.get("codec_name"):
+                        updates["source_codec"] = str(stream["codec_name"]).strip().lower()
+                    if not video.source_pix_fmt and stream.get("pix_fmt"):
+                        updates["source_pix_fmt"] = str(stream["pix_fmt"]).strip().lower()
+                if video.codec == "nvencc_h264" and video.encoder_supports_10bit is None:
+                    updates["encoder_supports_10bit"] = video.codec in detect_nvencc_10bit_codecs(self._nvencc_bin)
+                if updates:
+                    video = dataclasses.replace(video, **updates)
                     changed = True
             resolved.append(video)
+        from core.workflows.encode.catalog import NVENC_VIDEO_CODECS, QSV_VIDEO_CODECS, VAAPI_VIDEO_CODECS
+        from core.workflows.encode.domain.codecs import has_cpu_video_filter, resolve_output_bit_depth
+
+        if any(
+            v.codec in (NVENC_VIDEO_CODECS | QSV_VIDEO_CODECS | VAAPI_VIDEO_CODECS)
+            and v.source_bit_depth and v.source_bit_depth != resolve_output_bit_depth(v)
+            and not has_cpu_video_filter(v) and not v.interpolates()
+            for v in resolved
+        ):
+            self._depth_conversion_filters()
         if not changed:
             return config
         return dataclasses.replace(config, video=resolved[0], video_tracks=resolved)

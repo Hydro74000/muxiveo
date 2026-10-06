@@ -24,6 +24,8 @@ import re
 import shlex
 import subprocess
 import sys
+import shutil
+from functools import lru_cache
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -44,6 +46,11 @@ from core.workflows.encode.domain.codecs import (
     option_values,
     output_hdr_transfer,
     rate_control_values,
+    resolve_output_bit_depth,
+    filtered_bit_depth,
+    filtered_pix_fmt,
+    supports_output_10bit,
+    option_items,
     resolve_resize_dimensions,
 )
 
@@ -259,6 +266,39 @@ def detect_nvencc_available(nvencc_bin: str | None) -> tuple[bool, set[str]]:
     return bool(supported), supported
 
 
+def _parse_10bit_codecs(output: str) -> frozenset[str]:
+    """Lit les profondeurs dans NVEnc, sans confondre sections encodeur et NVDec."""
+    codecs: set[str] = set()
+    current: str | None = None
+    for line in output.splitlines():
+        if re.search(r"\bNVDec\b", line, re.IGNORECASE):
+            break
+        match = _FEATURES_CODEC_RE.match(line)
+        if match:
+            current = _codec_from_label(match.group(1))
+        elif current and re.match(r"\s*10\s*bit\s+depth\s+(?:[:=]\s*)?yes\b", line, re.IGNORECASE):
+            codecs.add(current)
+    return frozenset(codecs)
+
+
+@lru_cache(maxsize=16)
+def _cached_10bit_codecs(binary: str, size: int, mtime_ns: int) -> frozenset[str]:
+    return _parse_10bit_codecs(_run_nvencc_probe(binary, "--check-features") or "")
+
+
+def detect_nvencc_10bit_codecs(nvencc_bin: str | None) -> frozenset[str]:
+    """Sonde conservatrice, cache invalidé lors d'un changement de binaire."""
+    if not nvencc_bin:
+        return frozenset()
+    binary = shutil.which(str(nvencc_bin)) or str(nvencc_bin)
+    try:
+        path = Path(binary).resolve()
+        stat = path.stat()
+    except OSError:
+        return frozenset()
+    return _cached_10bit_codecs(str(path), stat.st_size, stat.st_mtime_ns)
+
+
 # ---------------------------------------------------------------------------
 # Construction du pipeline ffmpeg → NVEncC → ffmpeg
 # ---------------------------------------------------------------------------
@@ -324,6 +364,9 @@ def nvencc_pipe_encode_video(video: VideoEncodeSettings) -> VideoEncodeSettings:
     sdr = bool(video.tonemap_to_sdr)
     return replace(
         video,
+        bit_depth=str(resolve_output_bit_depth(video)),
+        source_bit_depth=filtered_bit_depth(video),
+        source_pix_fmt=filtered_pix_fmt(video),
         resize=VideoResizeSettings(),
         crop=VideoCropSettings(),
         filters=VideoFilterSettings(),
@@ -360,17 +403,8 @@ def _rate_control_args(video: VideoEncodeSettings) -> list[str]:
 
 
 def _output_depth_args(video: VideoEncodeSettings) -> list[str]:
-    """``--output-depth 8/10`` : 10-bit obligatoire pour HDR, 8-bit forcé H.264."""
-    is_h264 = video.codec == "nvencc_h264"
-    if is_h264 and bool(getattr(video, "force_8bit", False)):
-        return ["--output-depth", "8"]
-    if bool(getattr(video, "force_10bit", False)):
-        return ["--output-depth", "10"]
-    # NVEncC sort en 8 bits par défaut, même depuis une source 10 bits : une
-    # sortie HDR exige le 10 bits (NVENC H.264 ne le propose pas).
-    if output_hdr_transfer(video):
-        return ["--output-depth", "10"]
-    return []
+    """NVEncC ne conserve pas la profondeur d'entrée : cible toujours explicite."""
+    return ["--output-depth", str(resolve_output_bit_depth(video))]
 
 
 def _hdr_static_args(video: VideoEncodeSettings) -> list[str]:
@@ -956,6 +990,15 @@ def build_nvencc_command(
     # les réglages de l'onglet Video ; seules les options incompatibles avec
     # le workflow sont retirées.
     extra_args, removed = split_nvencc_extra_params(video.extra_params)
+    compatible: list[str] = []
+    for item in option_items(extra_args):
+        name = nvencc_option_name(item[0])
+        value = item[1] if len(item) == 2 else item[0].split("=", 1)[1] if "=" in item[0] else ""
+        if name == "output-depth" and value == "10" and not supports_output_10bit(video):
+            removed.extend(item)
+        else:
+            compatible.extend(item)
+    extra_args = compatible
     if getattr(video, "copy_dv", False) or getattr(video, "copy_hdr10plus", False):
         kept = strip_nvencc_latency_args(strip_nvencc_parallel_args(extra_args))
         removed.extend(_tokens_not_kept(extra_args, kept))
