@@ -194,7 +194,7 @@ class TestMatroskaOutputTransaction:
                 signals=TaskSignals(),
             )
         assert output.read_bytes() == b"OLD"
-        assert not transaction.candidate.exists()
+        assert not list(tmp_path.glob("*.partial"))
 
     def test_success_orders_actions_commits_then_warns_on_nfo(self, tmp_path: Path) -> None:
         output = tmp_path / "out.mkv"
@@ -239,7 +239,7 @@ class TestMatroskaOutputTransaction:
         assert result == "ok"
         assert order == ["ffmpeg", "muxing", "language", "dovi", "ffprobe", "nfo"]
         assert output.read_bytes() != b"OLD"
-        assert not transaction.candidate.exists()
+        assert not list(tmp_path.glob("*.partial"))
         assert warnings and "NFO" in warnings[0]
 
     def test_cancellation_before_commit_preserves_old_output(self, tmp_path: Path) -> None:
@@ -264,7 +264,7 @@ class TestMatroskaOutputTransaction:
                 signals=signals,
             )
         assert output.read_bytes() == b"OLD"
-        assert not transaction.candidate.exists()
+        assert not list(tmp_path.glob("*.partial"))
 
 
 def _video_settings(**kw: Any) -> VideoEncodeSettings:

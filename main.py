@@ -80,14 +80,21 @@ def _prompt_work_dir_cleanup(config: AppConfig) -> None:
             "Souhaitez-vous les conserver ou nettoyer le work_dir ?"
         )
     )
-    box.setInformativeText(
-        translate_text(
-            "Work dir : {path}\nÉléments Muxiveo à supprimer ({count}) : {preview}",
-            path=str(config.work_dir),
-            count=len(entries),
-            preview=preview or "-",
-        )
+    informative = translate_text(
+        "Work dir : {path}\nÉléments Muxiveo à supprimer ({count}) : {preview}",
+        path=str(config.work_dir),
+        count=len(entries),
+        preview=preview or "-",
     )
+    active = config.work_dir_active_jobs()
+    if active:
+        # Jobs d'une autre instance (GUI, CLI) : conservés quel que soit le choix.
+        informative += "\n" + translate_text(
+            "Traitements en cours conservés ({count}) : {names}",
+            count=len(active),
+            names=", ".join(p.name for p in active[:6]),
+        )
+    box.setInformativeText(informative)
 
     clean_btn: QPushButton = box.addButton(
         translate_text("Nettoyer"),

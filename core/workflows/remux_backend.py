@@ -250,7 +250,6 @@ def run_native_remux(
 
     def task() -> None:
         canonical_root: Path | None = None
-        partial = config.output.with_suffix(config.output.suffix + ".partial")
 
         def _check_cancel() -> None:
             if signals._cancel_event.is_set():
@@ -525,11 +524,10 @@ def run_native_remux(
                 log("WARN", f"Post-traitement (NFO) échoué après commit : {exc}")
             signals.finished.emit(str(runtime_config.output))
         except (TaskCancelledError, MatroskaWriteCancelled):
-            # Nettoyage tolérant : garantit l'émission du signal terminal.
-            remove_path(partial)
+            # Le writer supprime lui-même son candidat réservé : aucun chemin
+            # `.partial` calculé n'est supprimé ici (il pourrait être celui d'un autre job).
             signals.cancelled.emit()
         except Exception as exc:
-            remove_path(partial)
             signals.failed.emit(str(exc), exc)
         finally:
             if canonical_root is not None:

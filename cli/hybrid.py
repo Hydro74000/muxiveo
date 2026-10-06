@@ -407,17 +407,35 @@ def prepare_pair(pair, args, config, logger):
 
 
 def cmd_hybrid(args, config, logger):
+    from cli.batch import PlannedBatchJob, assert_unique_batch_outputs
+
     pairs = pairs_from_args(args)
     if args.forced_threshold <= 0 or args.drift_threshold_ms <= 0 or not 0 <= args.crossfade_ms <= 1000:
         raise CliError("Seuils hybrides invalides.", EXIT_ARGS)
-    report, outputs = [], set()
+    # Phase 1 — préparation (analyse de synchro) de toutes les paires ; les
+    # collisions de sorties sont refusées avant le premier traitement.
+    report: list[dict[str, Any]] = []
+    prepared: list[tuple[Any, Any, Any, Exception | None]] = []
     for pair in pairs:
         try:
             result, calibration = prepare_pair(pair, args, config, logger)
-            key = str(result.output).casefold()
-            if key in outputs:
-                raise CliError("Collision des noms de sortie.", EXIT_EXISTS)
-            outputs.add(key)
+        except Exception as exc:
+            prepared.append((pair, None, None, exc))
+            if not args.continue_on_error:
+                break
+            continue
+        prepared.append((pair, result, calibration, None))
+    assert_unique_batch_outputs([
+        PlannedBatchJob(index, str(pair.reference), str(result.output), remux_config=result,
+                        template=str(getattr(args, "output_template", "") or ""))
+        for index, (pair, result, _calibration, _error) in enumerate(prepared)
+        if result is not None
+    ])
+    # Phase 2 — export, plan ou exécution, dans l'ordre des paires.
+    for pair, result, calibration, error in prepared:
+        try:
+            if error is not None:
+                raise error
             entry = {"reference": str(pair.reference), "donor": str(pair.donor),
                      "output": str(result.output), "calibration": calibration.to_dict()}
             if args.export_workflow:

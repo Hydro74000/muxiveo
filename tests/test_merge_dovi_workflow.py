@@ -944,3 +944,23 @@ def test_verify_override_relaxes_native_mux_frame_count(tmp_path: Path, accepted
 ])
 def test_hdr_state_label(hdr_format: str, transfer: str, label: str) -> None:
     assert HdrState.from_mediainfo(hdr_format, transfer).label == label
+
+
+def test_start_refuses_reserved_destination_before_workspace(tmp_path, monkeypatch):
+    from core.output_commit import OutputReservation
+    import core.workflows.merge_dovi as merge_mod
+
+    wf = MergeDoviWorkflow()
+    film1 = tmp_path / "film1.mkv"
+    film1.write_bytes(b"x")
+    output = wf.output_path_for(film1, tmp_path / "out", None)
+    failures: list[tuple[object, str]] = []
+    wf.workflow_failed.connect(lambda step, message: failures.append((step, message)))
+    monkeypatch.setattr(merge_mod, "create_process_work_dir", lambda *_a, **_k: pytest.fail("workspace créé"))
+    holder = OutputReservation.acquire(output)
+    try:
+        wf.start(film1, tmp_path / "film2.mkv", tmp_path / "work", tmp_path / "out")
+    finally:
+        holder.release()
+    assert failures and failures[0][0] == WorkflowStep.VALIDATION
+    assert "déjà en cours d'écriture" in failures[0][1]

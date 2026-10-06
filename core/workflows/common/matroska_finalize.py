@@ -26,6 +26,7 @@ from core.matroska.editors.track_flags import (
 )
 from core.matroska.reader import MatroskaReader
 from core.matroska.validation import MatroskaPacketValidation, validate_matroska_output
+from core.output_commit import OutputChangedError, candidate_pattern, publish_candidate, reserve_candidate
 from core.runner import TaskCancelledError, TaskSignals
 from core.workflows.common.validation_override import ValidationOverride, validate_final_output
 
@@ -300,14 +301,15 @@ class MatroskaOutputTransaction:
 
     @property
     def candidate(self) -> Path:
-        return self.output.with_suffix(self.output.suffix + ".partial")
+        """Forme du candidat (affichage) ; le chemin réel est réservé par :meth:`execute`."""
+        return candidate_pattern(self.output)
 
-    def candidate_command(self, command: list[str]) -> list[str]:
+    def candidate_command(self, command: list[str], candidate: Path | None = None) -> list[str]:
         if not command or Path(str(command[-1])) != self.output:
             raise ValueError(
                 "Commande de muxage final sans sortie utilisateur en dernière position."
             )
-        return [*command[:-1], "-f", "matroska", str(self.candidate)]
+        return [*command[:-1], "-f", "matroska", str(candidate or self.candidate)]
 
     @staticmethod
     def _check_cancelled(signals: TaskSignals) -> None:
@@ -323,13 +325,18 @@ class MatroskaOutputTransaction:
         signals: TaskSignals,
         extra_post_actions: Iterable[PostAction] = (),
     ) -> str:
-        """Écrit, patche, valide puis commit le candidat ou le supprime."""
-        candidate = self.candidate
-        candidate.unlink(missing_ok=True)
+        """Écrit, patche, valide puis commit le candidat ou le supprime.
+
+        Le candidat est réservé (nom unique) après le contrôle d'annulation :
+        aucun fichier préexistant n'est touché, seul ce candidat est supprimé
+        en cas d'échec.
+        """
+        self._check_cancelled(signals)
+        candidate = reserve_candidate(self.output)
         try:
             self._check_cancelled(signals)
             output = self.run_command(
-                self.candidate_command(command),
+                self.candidate_command(command, candidate),
                 cwd,
                 label,
                 lambda line: signals.progress.emit(line),
@@ -372,7 +379,7 @@ class MatroskaOutputTransaction:
                 warn=self.warn,
             )
             self._check_cancelled(signals)
-            candidate.replace(self.output)
+            publish_candidate(candidate, self.output)
             if self.write_nfo is not None:
                 try:
                     self.write_nfo(self.output)
@@ -380,6 +387,8 @@ class MatroskaOutputTransaction:
                     if self.warn is not None:
                         self.warn(f"Génération NFO échouée après commit : {exc}")
             return output
+        except OutputChangedError:
+            raise
         except BaseException:
             candidate.unlink(missing_ok=True)
             raise

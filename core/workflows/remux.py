@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
+from core.output_commit import OutputBusyError, OutputReservation
 from core.runner import TaskSignals, ToolRunner
 from core.version import APP_VERSION_LABEL
 from core.workflows.common.matroska_finalize import MatroskaMuxingAppPostAction
@@ -338,7 +339,24 @@ class RemuxWorkflow(QObject):
             command_callback=self.build_command,
         )
         backend = native_backend if plan.selected_backend == "native" else ffmpeg_backend
-        return backend.execute(config)
+        # Destination réservée pour toute la durée du job : un second job vers
+        # la même sortie échoue ici, avant toute préparation.
+        try:
+            reservation = OutputReservation.acquire(config.output)
+        except OutputBusyError as exc:
+            raise RemuxError(str(exc)) from exc
+        try:
+            signals = backend.execute(config)
+        except BaseException:
+            reservation.release()
+            raise
+        signals.connect_terminal(
+            finished=lambda *_args: reservation.release(),
+            failed=lambda *_args: reservation.release(),
+            cancelled=lambda *_args: reservation.release(),
+            direct=True,
+        )
+        return signals
 
     def _run_ffmpeg(self, config: RemuxConfig, plan: MuxExecutionPlan) -> TaskSignals:
         return RemuxRuntimeRunner(

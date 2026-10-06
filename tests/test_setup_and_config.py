@@ -652,15 +652,22 @@ class TestAppConfigRamBuffer:
 
         assert cfg.work_dir_has_leftovers() is False
 
-    def test_work_dir_leftovers_detects_tmdb_cover_file(self, tmp_path):
-        """tmdb_covers non vide (avec fichier cover) déclenche l'alerte startup."""
+    @pytest.mark.parametrize("owned_root", [True, False])
+    def test_work_dir_leftovers_detects_tmdb_cover_file(self, tmp_path, owned_root):
+        """tmdb_covers non vide : alerte startup dans une racine Muxiveo seulement.
+
+        Hors racine marquée, un dossier n'est pas adopté sur son seul nom (A03).
+        """
         import core.config as cfg_mod
         from core.config import AppConfig
+        from core.workdir import WORK_DIR_MARKER
 
         work_dir = tmp_path / "work"
         cover = work_dir / "tmdb_covers" / "deadbeef" / "cover.jpg"
         cover.parent.mkdir(parents=True, exist_ok=True)
         cover.write_bytes(b"cover")
+        if owned_root:
+            (work_dir / WORK_DIR_MARKER).write_text("muxiveo\n", encoding="utf-8")
         ini_path = tmp_path / "config.ini"
         ini_path.write_text(f"[paths]\nwork_dir = {work_dir}\n", encoding="utf-8")
 
@@ -672,7 +679,7 @@ class TestAppConfigRamBuffer:
                  patch.object(cfg_mod, "_INI_PATH", ini_path):
                 cfg = AppConfig()
 
-        assert cfg.work_dir_has_leftovers() is True
+        assert cfg.work_dir_has_leftovers() is owned_root
 
     def test_audio_encoding_ini_values_are_ignored(self, tmp_path):
         """Les anciens réglages audio ne sont plus pris en charge par AppConfig."""

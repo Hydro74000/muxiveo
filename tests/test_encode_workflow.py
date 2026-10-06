@@ -97,6 +97,8 @@ Exécution :
 
 from __future__ import annotations
 
+import re
+
 # Les imports du workflow suivent volontairement la fixture Qt de module.
 # ruff: noqa: E402
 
@@ -185,6 +187,15 @@ def _as_single_command(cmd: list[str] | list[list[str]]) -> list[str]:
     assert cmd and isinstance(cmd[0], str)
     return cast(list[str], cmd)
 
+
+
+def _targets_output(cmd, name: str) -> bool:
+    """Commande dont un argument est la sortie ``name`` ou un de ses candidats réservés."""
+    stem, dot, suffix = str(name).rpartition(".")
+    pattern = re.compile(
+        rf"(^|[\\/]){re.escape(stem)}(\.[0-9a-f]{{8}})?\.{re.escape(suffix)}(\.partial)?$"
+    )
+    return any(pattern.search(str(arg)) for arg in cmd)
 
 class _FakePayloadRewriteResult:
     def __init__(self, frames: int = 1) -> None:
@@ -1576,6 +1587,25 @@ class TestRuntimeCleanup:
         assert not process_dir.exists()
 
 
+    def test_run_refuses_reserved_destination_before_preparation(self, tmp_path):
+        from core.output_commit import OutputReservation
+
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 1000)
+        work_dir = tmp_path / "work"
+        cfg = _make_config(source=src, output=tmp_path / "output.mkv",
+                           video=_make_video_settings(codec="copy"), work_dir=work_dir)
+        wf = _make_workflow()
+        holder = OutputReservation.acquire(cfg.output)
+        try:
+            with pytest.raises(EncodeError, match="déjà en cours d'écriture"):
+                wf.run(cfg)
+        finally:
+            holder.release()
+        # Aucun workspace préparé pour le job refusé.
+        assert not list(work_dir.glob("output.*"))
+
+
 # ===========================================================================
 # Cleanup ext_files sur annulation / exception
 # ===========================================================================
@@ -2572,11 +2602,11 @@ class TestMetadataInjectCopyCodec:
         # La reconstitution finale est une commande ffmpeg avec 2 inputs et output.mkv
         recon_cmds = [
             c for c in cmds
-            if c[0] == "ffmpeg" and "output.mkv" in " ".join(c)
+            if c[0] == "ffmpeg" and _targets_output(c, "output.mkv")
         ]
         assert len(recon_cmds) == 1, \
             f"Commande de reconstitution ffmpeg absente ou dupliquée. Cmds : {[c[0] for c in cmds]}"
-        assert "output.mkv" in " ".join(recon_cmds[0])
+        assert _targets_output(recon_cmds[0], "output.mkv")
 
     def test_copy_dv_injects_rpu_into_enc_hevc(self, tmp_path):
         """
@@ -3670,7 +3700,7 @@ class TestMetadataInjectAudio:
 
     def _get_recon_cmd(self, cmds: list[list[str]]) -> list[str]:
         """Extrait la commande de reconstitution finale (ffmpeg avec output.mkv)."""
-        recon = [c for c in cmds if c[0] == "ffmpeg" and "output.mkv" in " ".join(c)]
+        recon = [c for c in cmds if c[0] == "ffmpeg" and _targets_output(c, "output.mkv")]
         assert len(recon) == 1, f"Commande de reconstitution introuvable. Cmds: {[c[0] for c in cmds]}"
         return recon[0]
 
@@ -3899,7 +3929,7 @@ class TestEncodeFileTitleCommand:
                 sigs = wf._run_with_metadata_inject(config)
                 _collect_signals(sigs)
 
-        recon = [c for c in cmds_run if c[0] == "ffmpeg" and "output.mkv" in " ".join(c)]
+        recon = [c for c in cmds_run if c[0] == "ffmpeg" and _targets_output(c, "output.mkv")]
         assert len(recon) == 1, f"Commande de reconstitution introuvable. Cmds: {cmds_run}"
         return recon[0]
 
@@ -3967,7 +3997,7 @@ class TestInjectPathIntegratedPostproc:
         return cmds_run
 
     def _get_recon_cmd(self, cmds: list[list[str]]) -> list[str]:
-        recon = [c for c in cmds if c[0] == "ffmpeg" and "output.mkv" in " ".join(c)]
+        recon = [c for c in cmds if c[0] == "ffmpeg" and _targets_output(c, "output.mkv")]
         assert len(recon) == 1, f"Attendu une seule commande ffmpeg de sortie, obtenu {len(recon)}"
         return recon[0]
 
@@ -4332,7 +4362,7 @@ class TestEncodeExtraAttachments:
         return cmds_run
 
     def _get_recon_cmd(self, cmds: list[list[str]]) -> list[str]:
-        recon = [c for c in cmds if c[0] == "ffmpeg" and "output.mkv" in " ".join(c)]
+        recon = [c for c in cmds if c[0] == "ffmpeg" and _targets_output(c, "output.mkv")]
         assert len(recon) == 1
         return recon[0]
 
@@ -4621,7 +4651,7 @@ class TestEncodeRuntimeMultiSourceSync:
                 sigs = wf._run_with_metadata_inject(cfg)
                 _collect_signals(sigs)
 
-        recon = [c for c in ran_cmds if str(out) + ".partial" in [str(x) for x in c]]
+        recon = [c for c in ran_cmds if _targets_output(c, out.name)]
         assert len(recon) == 1
         cmd = recon[0]
         assert str(sync_audio) in cmd
@@ -4686,7 +4716,7 @@ class TestEncodeRuntimeMultiSourceSync:
                 sigs = wf._run_with_metadata_inject(cfg)
                 _collect_signals(sigs)
 
-        recon = [c for c in ran_cmds if str(out) + ".partial" in [str(x) for x in c]]
+        recon = [c for c in ran_cmds if _targets_output(c, out.name)]
         assert len(recon) == 1
         cmd = recon[0]
         assert "-itsoffset" in cmd

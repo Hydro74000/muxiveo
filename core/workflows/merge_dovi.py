@@ -50,6 +50,7 @@ from core.workflows.common.validation_override import validate_final_output
 from core.runner import TaskCancelledError
 from core.matroska.validation import validate_matroska_output
 from core.subtitle_codec import plan_subtitle_codec
+from core.output_commit import OutputBusyError, OutputReservation
 from core.workdir import ProcessWorkDir, create_process_work_dir, filesystem_type
 from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router, P7RoutingDecision
 from core.workflows.encode.runtime.frame_count_guard import (
@@ -746,21 +747,33 @@ class MergeDoviWorkflow(QObject):
         """
         self._cancelled = False
         output_path = self.output_path_for(film1, output_dir, output_basename)
-        # Dossier process neuf, propriété exclusive de cette exécution.
-        process_dir = create_process_work_dir(
-            work_dir,
-            output_path=output_path,
-            fallback_name="dovi_job",
-        )
-        paths = _WorkflowPaths.from_config(
-            process_dir.path, output_dir, film1, output_path.stem, owned_dir=process_dir,
-        )
+        # Destination réservée pour toute la durée du job : un second job vers
+        # la même sortie échoue ici, avant toute préparation.
+        try:
+            reservation = OutputReservation.acquire(output_path)
+        except OutputBusyError as exc:
+            self.workflow_failed.emit(WorkflowStep.VALIDATION, str(exc))
+            return
+        try:
+            # Dossier process neuf, propriété exclusive de cette exécution.
+            process_dir = create_process_work_dir(
+                work_dir,
+                output_path=output_path,
+                fallback_name="dovi_job",
+            )
+            paths = _WorkflowPaths.from_config(
+                process_dir.path, output_dir, film1, output_path.stem, owned_dir=process_dir,
+            )
 
-        outer = ThreadPoolExecutor(max_workers=1)
-        outer.submit(
-            self._run, film1, film2, paths, dovi_profile, tuple(extra_subtitle_files), metadata_adjustment,
-        )
-        outer.shutdown(wait=False)
+            outer = ThreadPoolExecutor(max_workers=1)
+            outer.submit(
+                self._run, film1, film2, paths, dovi_profile, tuple(extra_subtitle_files), metadata_adjustment,
+                reservation=reservation,
+            )
+            outer.shutdown(wait=False)
+        except BaseException:
+            reservation.release()
+            raise
 
     def cancel(self) -> None:
         """
@@ -801,6 +814,28 @@ class MergeDoviWorkflow(QObject):
         profile: DoviProfile,
         extra_subtitle_files: tuple[Path, ...] = (),
         metadata_adjustment: MetadataAdjustment = MetadataAdjustment.EXACT,
+        *,
+        reservation: OutputReservation | None = None,
+    ) -> None:
+        try:
+            self._run_reserved(
+                film1, film2, paths, profile, extra_subtitle_files, metadata_adjustment,
+                reservation=reservation,
+            )
+        finally:
+            if reservation is not None:
+                reservation.release()
+
+    def _run_reserved(
+        self,
+        film1: Path,
+        film2: Path,
+        paths: _WorkflowPaths,
+        profile: DoviProfile,
+        extra_subtitle_files: tuple[Path, ...],
+        metadata_adjustment: MetadataAdjustment,
+        *,
+        reservation: OutputReservation | None,
     ) -> None:
         with self._procs_lock:
             self._run_procs = []
@@ -977,6 +1012,10 @@ class MergeDoviWorkflow(QObject):
             # Nettoyage AVANT le signal terminal : l'UI ne repasse au repos
             # qu'une fois les intermédiaires traités.
             self._discard_failed_run(paths, step)
+        # Destination libérée avant le signal terminal : un job enchaîné sur
+        # la même sortie peut la réserver aussitôt.
+        if reservation is not None:
+            reservation.release()
         if kind == "finished":
             self.workflow_finished.emit(str(paths.output_mkv))
         elif kind == "cancelled":

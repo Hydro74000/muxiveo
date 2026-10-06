@@ -17,7 +17,14 @@ from core.profiles.decision import (
 )
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry, normalize_mux_backend
 
-from cli.batch import discover_direct_batch_jobs, job_primary_input, log_batch_failures, write_batch_summary
+from cli.batch import (
+    PlannedBatchJob,
+    assert_unique_batch_outputs,
+    discover_direct_batch_jobs,
+    job_primary_input,
+    log_batch_failures,
+    write_batch_summary,
+)
 from cli.constants import EXIT_ARGS, EXIT_OK, EXIT_PARTIAL, EXIT_VALIDATION, EXIT_WORKFLOW
 from cli.errors import CliError
 from cli.inspection import inspect_sources, source_path_items
@@ -407,40 +414,47 @@ def profile_batch(
         roots=discovery.roots,
         recursive=recursive,
     )
-    failures = 0
-    summary_jobs: list[dict[str, Any]] = []
-    seen_rendered_outputs: dict[str, str] = {}
+    # Phase 1 — préparation de tous les jobs sans écriture ; collisions de
+    # sorties refusées avant le premier traitement, même avec --force.
+    planned: list[PlannedBatchJob] = []
     for job_index, job in enumerate(discovery.jobs):
-        input_label = job_primary_input(job)
-        output_label = str(job.get("output") or "")
+        entry = PlannedBatchJob(job_index, job_primary_input(job), str(job.get("output") or ""))
+        entry.template = output_template
+        entry.generated_output = True
+        planned.append(entry)
         try:
             inputs = [item["path"] for item in source_path_items(job)]
-            if not dry_run and output_label:
-                Path(output_label).expanduser().parent.mkdir(parents=True, exist_ok=True)
             remux_config, _report = build_profile_remux_config(
                 profile,
                 cli_inputs=inputs,
-                cli_output=output_label,
+                cli_output=entry.output_label,
                 config=config,
                 options=options,
                 logger=logger,
                 preview=dry_run,
                 metadata_job=metadata_template,
             )
-            output_label = str(remux_config.output)
-            if output_template:
-                previous_input = seen_rendered_outputs.get(output_label)
-                if previous_input is not None:
-                    raise CliError(
-                        f"Sortie générée en double : {output_label} pour "
-                        f"{previous_input} et {input_label}. Le template "
-                        f"'{output_template}' ne discrimine pas les deux "
-                        "sources — ajoutez {source_name}, {episode} ou {season_episode}.",
-                        EXIT_ARGS,
-                    )
-                seen_rendered_outputs[output_label] = input_label
-                if not dry_run:
-                    Path(output_label).expanduser().parent.mkdir(parents=True, exist_ok=True)
+            entry.remux_config = remux_config
+            entry.output_label = str(remux_config.output)
+        except Exception as exc:
+            entry.error = exc
+            if not continue_on_error:
+                break
+    assert_unique_batch_outputs(planned)
+
+    # Phase 2 — exécution dans l'ordre.
+    failures = 0
+    summary_jobs: list[dict[str, Any]] = []
+    for entry in planned:
+        job_index = entry.index
+        input_label = entry.input_label
+        output_label = entry.output_label
+        try:
+            if entry.error is not None:
+                raise entry.error
+            remux_config = entry.remux_config
+            if not dry_run and output_label:
+                Path(output_label).expanduser().parent.mkdir(parents=True, exist_ok=True)
             rc = preview_remux_config(config, options, logger, remux_config) if dry_run else run_remux_config(
                 config,
                 options,

@@ -5358,5 +5358,9 @@
   "Vulkan indisponible pour FFmpeg : {reason}": {
     "eng": "Vulkan unavailable for FFmpeg: {reason}",
     "fra": "Vulkan indisponible pour FFmpeg : {reason}"
+  },
+  "Traitements en cours conservés ({count}) : {names}": {
+    "fra": "Traitements en cours conservés ({count}) : {names}",
+    "eng": "Jobs in progress kept ({count}): {names}"
   }
 }

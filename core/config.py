@@ -40,6 +40,7 @@ from core.workflows.common.ffmpeg_runtime import (
     normalize_max_parallel_video_encodes as _normalize_max_parallel_video_encodes,
 )
 from core.workdir import (
+    active_process_dirs,
     cleanable_work_dir_entries,
     clear_work_dir as clear_work_dir_contents,
     ensure_work_dir as ensure_work_dir_path,
@@ -1561,6 +1562,10 @@ class AppConfig:
     def work_dir_has_leftovers(self) -> bool:
         """True si le work_dir contient des éléments Muxiveo non nettoyés."""
         return bool(self.work_dir_entries())
+
+    def work_dir_active_jobs(self) -> list[Path]:
+        """Dossiers de jobs en cours (autre instance, CLI) : jamais nettoyés."""
+        return active_process_dirs(self.ensure_work_dir())
 
     def clear_work_dir(self) -> Path:
         """Supprime les entrées nettoyables du work_dir (jamais la racine)."""

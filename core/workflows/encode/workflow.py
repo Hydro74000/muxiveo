@@ -287,6 +287,7 @@ from core.workflows.encode.planning.validation import (
     validate_encode_config as _validate_encode_config_plan,
     video_settings_errors as _video_settings_errors_plan,
 )
+from core.output_commit import OutputBusyError, OutputReservation
 from core.workflows.encode.models import (
     EncodeConfig, EncodeError, EncodePreviewCapture, EncodePreviewMode, EncodePreviewRequest, EncodePreviewResult,
     PREVIEW_FRAME_MIN_OFFSET_S, PREVIEW_FRAME_TAIL_OFFSET_S, PREVIEW_IMAGE_CAPTURE_COUNT,
@@ -3607,10 +3608,27 @@ class EncodeWorkflow(QObject):
         # Chemins absolus AVANT tout : plan, contrat, commande et transaction
         # doivent consommer exactement les mêmes chemins que l'exécution.
         config = self._absolute_paths_config(config)
-        if not validate:
-            return self._run_async_preparation(config)
-
-        return self._run_with_preparation(config, validate=True)
+        # Destination réservée pour toute la durée du job : un second job vers
+        # la même sortie échoue ici, avant toute préparation.
+        try:
+            reservation = OutputReservation.acquire(config.output)
+        except OutputBusyError as exc:
+            raise EncodeError(str(exc)) from exc
+        try:
+            if not validate:
+                signals = self._run_async_preparation(config)
+            else:
+                signals = self._run_with_preparation(config, validate=True)
+        except BaseException:
+            reservation.release()
+            raise
+        signals.connect_terminal(
+            finished=lambda *_args: reservation.release(),
+            failed=lambda *_args: reservation.release(),
+            cancelled=lambda *_args: reservation.release(),
+            direct=True,
+        )
+        return signals
 
     def _run_async_preparation(self, config: EncodeConfig) -> TaskSignals:
         return self._preparation_runner().run_async_preparation(config)
