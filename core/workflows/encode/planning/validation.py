@@ -200,7 +200,7 @@ def video_settings_errors(videos: list[VideoEncodeSettings]) -> list[str]:
         if needs_bitrate and int(video.bitrate_kbps) <= 0:
             errors.append(f"Piste vidéo #{index} — débit vidéo invalide (kbps > 0 attendu).")
         if video.quality_mode == QualityMode.SIZE and int(video.target_size_mb) <= 0:
-            errors.append(f"Piste vidéo #{index} — taille cible invalide (Mo > 0 attendue).")
+            errors.append(f"Piste vidéo #{index} — taille cible invalide (Mio > 0 attendue).")
         problem = extra_params_syntax_error(video.codec, video.extra_params)
         if problem:
             errors.append(f"Piste vidéo #{index} — paramètres avancés invalides : {problem}.")

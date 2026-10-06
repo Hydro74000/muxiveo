@@ -534,6 +534,10 @@ class EncodeConfig:
     track_time_offsets: list[TrackTimeOffset] = field(default_factory=list)
     file_title:       str          = ""     # balise Title du segment de sortie
     duration_s:       float | None = None   # requis pour le mode taille cible
+    #: Taille du fichier complet (Mio) visée par les pistes vidéo en mode taille.
+    #: None → valeur commune des pistes (configurations antérieures) ; des
+    #: valeurs divergentes sont refusées à la validation.
+    target_size_mb:   int | None = None
     # Passthrough métadonnées dynamiques (HEVC uniquement)
     copy_dv:          bool         = False  # compat legacy : miroir de la vidéo primaire
     copy_hdr10plus:   bool         = False  # compat legacy : miroir de la vidéo primaire

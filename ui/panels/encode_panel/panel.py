@@ -1110,8 +1110,8 @@ class EncodePanel(QWidget):
             "sont déduits, le reste est réparti entre les pistes vidéo encodées.\n"
             "Logiciel : 2 passes. Matériel : 1 passe VBR plafonnée (taille approchée)."
         ))
-        self._size_edit.textChanged.connect(lambda _: self._rebuild_preview())
-        sz_lbl = QLabel("Mo")
+        self._size_edit.textChanged.connect(self._on_file_size_changed)
+        sz_lbl = QLabel("Mio")
         sz_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
         sz_l.addWidget(self._size_edit)
         sz_l.addWidget(sz_lbl)
@@ -5382,6 +5382,22 @@ class EncodePanel(QWidget):
         """Reconstruit publiquement la preview après un changement partagé."""
         self._rebuild_preview()
 
+    def _on_file_size_changed(self, text: str) -> None:
+        """Taille du fichier : une seule valeur, partagée par toutes les pistes vidéo."""
+        if not self._loading_video_settings:
+            for state in self._video_settings_by_entry_id.values():
+                state["target_size_mb"] = text
+        self._rebuild_preview()
+
+    def _file_target_size_mb(self, video_tracks: list[VideoEncodeSettings]) -> int | None:
+        """Taille du fichier (Mio) si une piste vidéo est en mode taille, sinon None."""
+        if not any(v.codec != "copy" and v.quality_mode == QualityMode.SIZE for v in video_tracks):
+            return None
+        try:
+            return int(self._size_edit.text())
+        except ValueError:
+            return 0  # saisie invalide : refusée par la validation
+
     def _current_config(self) -> EncodeConfig | None:
         if self._file_info is None:
             return None
@@ -5391,8 +5407,15 @@ class EncodePanel(QWidget):
         video_tracks = self._current_video_settings_list()
         if not video_tracks:
             return None
+        target_size_mb = self._file_target_size_mb(video_tracks)
+        if target_size_mb is not None:
+            video_tracks = [
+                dataclasses.replace(v, target_size_mb=target_size_mb) if v.quality_mode == QualityMode.SIZE else v
+                for v in video_tracks
+            ]
         primary_source = video_tracks[0].source_path or self._file_info.path
         return EncodeConfig(
+            target_size_mb=target_size_mb,
             source=primary_source,
             output=output,
             video=video_tracks[0],

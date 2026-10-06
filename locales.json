@@ -5366,5 +5366,9 @@
   "Profil illisible ignoré : {path} ({reason})": {
     "fra": "Profil illisible ignoré : {path} ({reason})",
     "eng": "Unreadable profile skipped: {path} ({reason})"
+  },
+  "Mio": {
+    "fra": "Mio",
+    "eng": "MiB"
   }
 }

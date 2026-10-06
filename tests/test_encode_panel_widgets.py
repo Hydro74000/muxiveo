@@ -2506,3 +2506,20 @@ class TestEncodePanelAuditLot7:
         assert panel._video_settings_by_entry_id["video-1"]["codec"] == "copy"
         assert panel._video_settings_by_entry_id["video-2"]["codec"] == "libx265"
         panel.close()
+
+
+def test_file_target_size_is_shared_by_all_video_tracks(qt_app):
+    """A09 : la taille cible porte sur le fichier, une seule valeur pour toutes les pistes."""
+    from core.workflows.encode.models import QualityMode, VideoEncodeSettings
+
+    panel = EncodePanel(AppConfig())
+    try:
+        panel._video_settings_by_entry_id = {"a": {"target_size_mb": "4000"}, "b": {"target_size_mb": "900"}}
+        panel._size_edit.setText("1234")
+        assert {state["target_size_mb"] for state in panel._video_settings_by_entry_id.values()} == {"1234"}
+        sized = VideoEncodeSettings(codec="libx265", quality_mode=QualityMode.SIZE, target_size_mb=900)
+        crf = VideoEncodeSettings(codec="libx265", quality_mode=QualityMode.CRF)
+        assert panel._file_target_size_mb([crf, sized]) == 1234
+        assert panel._file_target_size_mb([crf]) is None
+    finally:
+        panel.deleteLater()

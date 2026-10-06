@@ -931,3 +931,93 @@ def test_review_preset_supported_by_codec(codec, preset, kind):
 
     error, warning = preset_problem(VideoEncodeSettings(codec=codec, preset=preset))
     assert (("error" if error else "warning" if warning else "")) == kind
+
+
+# ---------------------------------------------------------------------------
+# Audit complet 2026-10-06 — A09 (taille du fichier) et A10 (provenance du budget)
+# ---------------------------------------------------------------------------
+
+def _two_sized_tracks(tmp_path, first_mib: int, second_mib: int, *, swap: bool = False):
+    videos = [
+        VideoEncodeSettings(codec="libx265", stream_index=0, rate_control="size", target_size_mb=first_mib),
+        VideoEncodeSettings(codec="libx265", stream_index=1, rate_control="size", target_size_mb=second_mib),
+    ]
+    if swap:
+        videos.reverse()
+    return EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv",
+                        video=videos[0], video_tracks=videos, duration_s=10)
+
+
+_TWO_VIDEO_STREAMS = [
+    {"index": index, "codec_type": "video", "width": 1920, "height": 1080, "avg_frame_rate": "24/1"}
+    for index in (0, 1)
+]
+
+
+def test_audit_a09_divergent_track_sizes_refused_independently_of_order(qt_app, tmp_path, monkeypatch):
+    """Reproduction de l'audit : 1 et 10 Mio, budget dépendant de l'ordre des pistes."""
+    wf = _size_workflow(monkeypatch, _TWO_VIDEO_STREAMS)
+    for swap in (False, True):
+        cfg = _two_sized_tracks(tmp_path, 1, 10, swap=swap)
+        errors = wf.size_target_errors(cfg)
+        assert errors and "contradictoires" in errors[0] and "1 Mio, 10 Mio" in errors[0]
+        assert wf._size_budget(cfg).target_size_mb == 1
+
+
+def test_audit_a09_file_target_is_global_and_order_free(qt_app, tmp_path, monkeypatch):
+    wf = _size_workflow(monkeypatch, _TWO_VIDEO_STREAMS)
+    budgets = []
+    for swap in (False, True):
+        cfg = _two_sized_tracks(tmp_path, 1, 10, swap=swap)
+        cfg.target_size_mb = 8
+        assert wf.size_target_errors(cfg) == []
+        budgets.append(wf._size_budget(cfg).target_bps)
+    assert budgets[0] == budgets[1] == 8 * 8 * 1024 * 1024 / 10
+
+
+def test_audit_a09_invalid_file_size_refused(qt_app, tmp_path, monkeypatch):
+    wf = _size_workflow(monkeypatch, _TWO_VIDEO_STREAMS)
+    cfg = _two_sized_tracks(tmp_path, 5, 5)
+    cfg.target_size_mb = 0
+    assert wf.size_target_errors(cfg) == ["Taille du fichier invalide (Mio > 0 attendue)."]
+
+
+def test_audit_a10_flac_from_pcm_is_an_estimate_not_a_refusal(qt_app, tmp_path, monkeypatch):
+    """Reproduction de l'audit : PCM 1,536 Mb/s sur 10 s, sortie FLAC, cible 1 Mio."""
+    wf = _size_workflow(monkeypatch, [
+        {"index": 0, "codec_type": "video", "width": 1920, "height": 1080, "avg_frame_rate": "24/1"},
+        {"index": 1, "codec_type": "audio", "codec_name": "pcm_s16le", "bit_rate": "1536000"},
+    ])
+    video = VideoEncodeSettings(codec="libx265", rate_control="size", target_size_mb=1)
+    cfg = EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv", video=video, duration_s=10,
+                       audio_tracks=[AudioTrackSettings(stream_index=1, codec="flac")], copy_subtitles=False)
+    assert wf.size_target_errors(cfg) == []
+    warnings = wf.size_target_warnings(cfg)
+    assert any("FLAC" in message and "estimée" in message for message in warnings)
+    assert any("non garantie" in message for message in warnings)
+
+
+def test_audit_a10_copied_audio_without_bitrate_is_reported_unknown(qt_app, tmp_path, monkeypatch):
+    """Reproduction de l'audit : flux copié sans bit_rate/BPS, réserve nulle silencieuse."""
+    wf = _size_workflow(monkeypatch, [
+        {"index": 0, "codec_type": "video", "width": 1920, "height": 1080, "avg_frame_rate": "24/1"},
+        {"index": 1, "codec_type": "audio"},
+    ])
+    video = VideoEncodeSettings(codec="libx265", rate_control="size", target_size_mb=100)
+    cfg = EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv", video=video, duration_s=10,
+                       audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")], copy_subtitles=False)
+    budget = wf._size_budget(cfg)
+    assert budget.unknown == ("audio #1",)
+    assert any("débit inconnu pour audio #1" in message for message in wf.size_target_warnings(cfg))
+
+
+def test_audit_a10_measured_costs_still_block_in_mib(qt_app, tmp_path, monkeypatch):
+    wf = _size_workflow(monkeypatch, [
+        {"index": 0, "codec_type": "video", "width": 1920, "height": 1080, "avg_frame_rate": "24/1"},
+        {"index": 1, "codec_type": "audio", "tags": {"BPS": "4000000"}},
+    ])
+    video = VideoEncodeSettings(codec="libx265", rate_control="size", target_size_mb=1)
+    cfg = EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv", video=video, duration_s=10,
+                       audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")], copy_subtitles=False)
+    errors = wf.size_target_errors(cfg)
+    assert errors and "inatteignable" in errors[0] and "Mio demandés" in errors[0]
