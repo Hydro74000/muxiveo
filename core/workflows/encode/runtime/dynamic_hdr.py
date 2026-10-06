@@ -25,6 +25,9 @@ class DynamicHdrNormalizerCallbacks:
     extract_static_hdr_via_ffprobe: Callable[[Path, int], tuple[str, str]]
     color_primaries_label: Callable[[Path, int], str]
     build_master_display_for_primaries: Callable[[str], str]
+    #: Piste dont le HDR10 statique est complété plus tard (aperçu : P5 estimé
+    #: depuis le RPU au lancement) : aucun repli posé ici.
+    defer_static_hdr: Callable[[VideoEncodeSettings], bool] | None = None
 
 
 class DynamicHdrConfigNormalizer:
@@ -145,7 +148,7 @@ class DynamicHdrConfigNormalizer:
         auto_md, auto_cll = video.master_display, video.max_cll
         analysis_pending = bool(
             str(getattr(video, "static_hdr_metadata_analysis_request", "") or "").strip()
-        )
+        ) or bool(self._cb.defer_static_hdr is not None and self._cb.defer_static_hdr(video))
         if (
             (copy_dv or copy_hdr10plus)
             and video.inject_hdr_meta

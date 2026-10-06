@@ -5791,8 +5791,7 @@ class TestNvenccRuntimeRouting:
                 progress_pct_cb(42)
             return "remux-ok"
 
-        with patch.object(wf, "_prepare_nvencc_dynamic_hdr_assets", side_effect=AssertionError("plus d'extraction HDR externe attendue")), \
-             patch.object(wf._runner, "_run_cmd", side_effect=_capture_run_cmd):
+        with patch.object(wf._runner, "_run_cmd", side_effect=_capture_run_cmd):
             wf._run_nvencc_direct_output(
                 cfg,
                 cleanup_paths,
@@ -5968,11 +5967,7 @@ class TestNvenccRuntimeRouting:
                 captured_encode_cmds.append(list(cmd))
             return "ok"
 
-        with patch.object(
-            wf,
-            "_prepare_nvencc_dynamic_hdr_assets",
-            side_effect=AssertionError("le chemin natif NVEncC ne doit plus préparer d'assets HDR externes"),
-        ), patch.object(wf._runner, "_run_cmd", side_effect=_capture_run_cmd):
+        with patch.object(wf._runner, "_run_cmd", side_effect=_capture_run_cmd):
             wf._run_nvencc_direct_output(
                 cfg,
                 cleanup_paths,
@@ -6125,6 +6120,8 @@ class TestNvenccRuntimeRouting:
             ),
         )
         wf = self._make_workflow()
+        # Tone-mapping natif : NVEncC avec libplacebo (sinon pipe FFmpeg).
+        wf._nvencc_libplacebo_ready = lambda: True  # type: ignore[method-assign]
         cleanup_paths: list[Path] = []
         captured_encode_cmds: list[list[str]] = []
 

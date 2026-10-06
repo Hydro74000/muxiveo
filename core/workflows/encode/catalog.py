@@ -44,8 +44,8 @@ X265_PRESETS = [
 X264_PRESETS = X265_PRESETS
 SVTAV1_PRESETS = [str(i) for i in range(13)]
 NVENC_PRESETS = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "slow", "medium", "fast", "hp", "hq"]
-# The experimental logical preset "safe" stays implemented in code for traceability
-# but is no longer exposed in the normal NVENC workflow/UI.
+# Ancien preset logique "safe" : non proposé ; les profils et configurations qui le
+# contiennent sont migrés vers p5 (EncodePreset, nvenc_effective_preset).
 HEVC_NVENC_PRESETS = [*NVENC_PRESETS]
 # "" = aucun preset : -compression_level non transmis, qualité par défaut du pilote.
 VAAPI_PRESETS = ["", *(str(i) for i in range(8))]

@@ -53,13 +53,27 @@ from core.workflows.encode.runtime.nvencc import (
     nvencc_requires_ffmpeg_filter_pipe as _nvencc_requires_ffmpeg_filter_pipe_runtime,
 )
 from core.workflows.encode.runtime.nvencc_routing import NvenccInputRouting
-from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router
 from core.workflows.encode.runtime.frame_count_guard import FrameCountAuditError
 from core.workflows.common.validation_override import ValidationOverride, accept_validation_override
 from core.matroska.editors.dovi import sanitize_dovi_mkv
 from core.workflows.encode.dovi_policy import dovi_output_compat_id_for
 from core.workflows.common.timeline_sync import sync_cleanup_paths as _common_sync_cleanup_paths
 from core.workflows.remux_timeline_sync import LiveSyncSession
+
+
+def nvencc_needs_ffmpeg_pipe(routing: NvenccInputRouting, video: VideoEncodeSettings | None = None) -> bool:
+    """Images décodées et filtrées par FFmpeg (pipe y4m) plutôt que par NVEncC.
+
+    Préfiltres sans équivalent NVEncC, RIFE, playlist Blu-ray, source P5 sans
+    conversion native, tone-mapping sans libplacebo dans NVEncC.
+    """
+    video = routing.video if video is None else video
+    return bool(
+        _nvencc_requires_ffmpeg_filter_pipe_runtime(video)
+        or is_bluray_playlist(routing.input_path)
+        or (video.p5_to_hdr10 and not routing.p5_native)
+        or (video.tonemap_to_sdr and not routing.native_tonemap)
+    )
 
 
 _MISSING_RPU_MARKER = "failed to get dovi rpu"
@@ -95,139 +109,6 @@ class NvenccDoviRpuMonitor:
                 f"NVEncC : {self.encoded_frames} trames encodées pour {expected_frames} RPU Dolby Vision ; "
                 "sortie refusée (alignement impossible)."
             )
-
-
-@dataclass(frozen=True)
-class NvenccAssetPreparationCallbacks:
-    ffmpeg_bin: str
-    bins: dict[str, str]
-    log: Callable[[str, str], None]
-    primary_video_settings: Callable[[EncodeConfig], VideoEncodeSettings]
-    video_source_path: Callable[[EncodeConfig], Path]
-    video_stream_index: Callable[[EncodeConfig], int]
-    source_is_vfr: Callable[[Path], bool]
-    load_mediainfo_video_track: Callable[[Path], dict | None]
-
-
-class NvenccAssetPreparationService:
-    def __init__(self, callbacks: NvenccAssetPreparationCallbacks) -> None:
-        self._cb = callbacks
-
-    def prepare(
-        self,
-        config: EncodeConfig,
-        *,
-        work_dir: Path,
-        signals: TaskSignals,
-        run_cmd: Callable[[list[str], str], str],
-        cleanup_paths: list[Path] | None = None,
-    ) -> tuple[Path, int, Path | None, Path | None, bool, list[Path]]:
-        _ = signals
-        cb = self._cb
-        video = cb.primary_video_settings(config)
-        local_cleanup_paths: list[Path] = []
-        effective_source = cb.video_source_path(config)
-        effective_stream_index = cb.video_stream_index(config)
-        source_is_vfr = cb.source_is_vfr(effective_source)
-        converted_source: Path | None = None
-        hdr10plus_json: Path | None = None
-        dovi_rpu: Path | None = None
-        dovi_converted_to_p8 = False
-
-        def _track(path: Path) -> None:
-            local_cleanup_paths.append(path)
-            if cleanup_paths is not None:
-                cleanup_paths.append(path)
-
-        if video.copy_dv:
-            p7_router = DoviP7Router()
-            mi_video = cb.load_mediainfo_video_track(effective_source)
-            decision = p7_router.analyze(
-                source=effective_source,
-                mi_video=mi_video,
-                fallback_to_dovi_tool=True,
-            )
-            cb.log("INFO", f"Routage DV : {decision.reason}")
-            if decision.conversion_needed:
-                annexb_for_convert = work_dir / "source_annexb.hevc"
-                annexb_cmd = [cb.ffmpeg_bin, "-nostdin", "-y"]
-                append_ffmpeg_input_args(annexb_cmd, effective_source)
-                annexb_cmd.extend([
-                    "-map", f"0:{int(effective_stream_index)}",
-                    "-c", "copy",
-                    "-bsf:v", "hevc_mp4toannexb",
-                    "-f", "hevc", str(annexb_for_convert),
-                ])
-                run_cmd(annexb_cmd, "ffmpeg-dv-annexb")
-                _track(annexb_for_convert)
-                converted = p7_router.execute_conversion(
-                    source=annexb_for_convert,
-                    output_dir=work_dir,
-                    run_cmd=lambda cmd: run_cmd(cmd, "dovi-convert"),
-                    dovi_tool_bin=cb.bins["dovi_tool"],
-                    decision=decision,
-                )
-                _track(converted)
-                converted_source = converted
-                dovi_converted_to_p8 = True
-                if not source_is_vfr:
-                    effective_source = converted
-                    effective_stream_index = 0
-
-        if not (video.copy_dv or video.copy_hdr10plus):
-            return (
-                effective_source,
-                effective_stream_index,
-                hdr10plus_json,
-                dovi_rpu,
-                dovi_converted_to_p8,
-                local_cleanup_paths,
-            )
-
-        raw_hevc_ext = {".hevc", ".h265", ".265", ".x265"}
-        meta_input = effective_source
-        if effective_source.suffix.lower() not in raw_hevc_ext and effective_source.suffix.lower() != ".mkv":
-            meta_input = work_dir / "source_meta.hevc"
-            meta_cmd = [cb.ffmpeg_bin, "-nostdin", "-y"]
-            append_ffmpeg_input_args(meta_cmd, effective_source)
-            meta_cmd.extend([
-                "-map", f"0:{int(effective_stream_index)}",
-                "-c", "copy",
-                "-bsf:v", "hevc_mp4toannexb",
-                "-f", "hevc", str(meta_input),
-            ])
-            run_cmd(meta_cmd, "ffmpeg-hdr-annexb")
-            _track(meta_input)
-
-        if video.copy_dv and dovi_converted_to_p8 and source_is_vfr and converted_source is not None:
-            meta_input = converted_source
-
-        if video.copy_dv:
-            dovi_rpu = work_dir / "rpu.bin"
-            run_cmd([
-                cb.bins["dovi_tool"], "extract-rpu",
-                "-i", str(meta_input),
-                "-o", str(dovi_rpu),
-            ], "dovi_tool")
-            _track(dovi_rpu)
-
-        if video.copy_hdr10plus:
-            hdr10plus_json = work_dir / "hdr10p.json"
-            run_cmd([
-                cb.bins["hdr10plus_tool"], "extract",
-                str(meta_input),
-                "-o", str(hdr10plus_json),
-            ], "hdr10plus_tool")
-            _track(hdr10plus_json)
-
-        return (
-            effective_source,
-            effective_stream_index,
-            hdr10plus_json,
-            dovi_rpu,
-            dovi_converted_to_p8,
-            local_cleanup_paths,
-        )
 
 
 class NvenccPipeExecutor:
@@ -576,11 +457,7 @@ class NvenccDirectOutputRunner:
                     cb.video_stream_index(config),
                 ))
                 # Source P5 : conversion native NVEncC (routage) sinon pipe FFmpeg libplacebo.
-                needs_ffmpeg_pipe = (
-                    _nvencc_requires_ffmpeg_filter_pipe_runtime(runtime_video)
-                    or is_bluray_playlist(routing.input_path)
-                    or (runtime_video.p5_to_hdr10 and not routing.p5_native)
-                )
+                needs_ffmpeg_pipe = nvencc_needs_ffmpeg_pipe(routing, runtime_video)
                 if runtime_video.p5_to_hdr10:
                     cb.log_info(
                         "Dolby Vision P5 : couleurs converties en HDR10 par "
@@ -880,11 +757,7 @@ def build_nvencc_pipeline_commands(
     work_dir.mkdir(parents=True, exist_ok=True)
     intermediate = _nvencc_intermediate_path_runtime(work_dir, video.codec)
     routing = resolve_input_routing(config)
-    needs_ffmpeg_pipe = (
-        _nvencc_requires_ffmpeg_filter_pipe_runtime(routing.video)
-        or is_bluray_playlist(routing.input_path)
-        or (routing.video.p5_to_hdr10 and not routing.p5_native)
-    )
+    needs_ffmpeg_pipe = nvencc_needs_ffmpeg_pipe(routing)
     dovi_rpu_preview: Path | None = None
     if routing.video.copy_dv:
         if routing.needs_rpu_alignment:

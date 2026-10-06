@@ -20,7 +20,6 @@ from core.workflows.encode.catalog import (
     QSV_VIDEO_CODECS,
     VAAPI_VIDEO_CODECS,
     is_h264_video_codec,
-    needs_static_hdr_bitstream_patch_codec,
     supports_10bit,
     supports_hdr_output,
     supports_manual_static_hdr_metadata,
@@ -29,14 +28,10 @@ from core.workflows.encode.models import (
     AudioTrackSettings,
     QualityMode,
     VideoEncodeSettings,
+    VideoFilterSettings,
     VideoResizeSettings,
     normalize_audio_bitrate_kbps,
 )
-
-# Experimental NVENC-specific static HDR bitstream patch kept in-tree for
-# reference, but disabled in the active workflow.
-ENABLE_EXPERIMENTAL_NVENC_STATIC_HDR_PATCH = False
-
 
 @dataclass(frozen=True)
 class EncodeCodecDomainCallbacks:
@@ -297,13 +292,6 @@ def nvenc_effective_preset(video: VideoEncodeSettings) -> str:
     return video.preset
 
 
-def nvenc_safe_extra_args(video: VideoEncodeSettings) -> list[str]:
-    # Experimental NVENC "safe" patch kept in-tree for reference only.
-    # The workflow no longer injects these flags automatically.
-    _ = video
-    return []
-
-
 def x265_params(video: VideoEncodeSettings) -> str:
     parts: list[str] = []
     if video.extra_params:
@@ -403,16 +391,6 @@ def requests_hdr_metadata(video: VideoEncodeSettings) -> bool:
     if video.tonemap_to_sdr or not supports_hdr_output(video.codec):
         return False
     return bool(video.inject_hdr_meta or video.copy_dv or video.copy_hdr10plus)
-
-
-def needs_static_hdr_bitstream_patch(video: VideoEncodeSettings) -> bool:
-    if not ENABLE_EXPERIMENTAL_NVENC_STATIC_HDR_PATCH:
-        return False
-    if not requests_hdr_metadata(video):
-        return False
-    if not (video.master_display or video.max_cll):
-        return False
-    return needs_static_hdr_bitstream_patch_codec(video.codec)
 
 
 # Encodeurs ffmpeg qui posent le HDR10 statique depuis les side data des images
@@ -844,7 +822,6 @@ def _hw_codec_args_raw(
             "-c:v", codec, *rate, "-preset:v", nvenc_effective_preset(video),
             *nvenc_device_args(callbacks),
             *depth,
-            *nvenc_safe_extra_args(video),
             *ffmpeg_extra_args(video),
         ]
     if codec in AMF_VIDEO_CODECS:
@@ -950,6 +927,21 @@ _NLMEANS_PRESETS: dict[str, tuple[float, int, int]] = {
     "medium": (3.0, 7, 11),
     "strong": (5.0, 7, 15),
 }
+
+def nlmeans_settings(filters: VideoFilterSettings) -> tuple[str, float, int, int]:
+    """Préréglage NLMeans, facteur de force du profil, patch et recherche (FFmpeg et NVEncC)."""
+    preset = str(filters.nlmeans_strength or "light").strip().lower()
+    if preset not in _NLMEANS_PRESETS:
+        preset = "light"
+    _strength, patch, radius = _NLMEANS_PRESETS[preset]
+    profile = str(filters.nlmeans_profile or "").strip().lower()
+    scale = 1.0
+    if profile in {"grain", "animation"}:
+        scale = 0.75
+    elif profile in {"high motion", "highmotion", "sprite"}:
+        radius = max(5, radius - 2)
+    return preset, scale, patch, radius
+
 
 _CHROMA_PRESETS: dict[str, tuple[int, int]] = {
     "ultralight": (12, 3),
@@ -1078,15 +1070,9 @@ def _build_filters(video: VideoEncodeSettings) -> list[str]:
             f"alpha={alpha}:beta={beta}:gamma={gamma}:delta={delta}"
         )
     if filters.nlmeans_enabled:
-        strength, patch, radius = _NLMEANS_PRESETS.get(
-            str(filters.nlmeans_strength or "light").strip().lower(),
-            _NLMEANS_PRESETS["light"],
-        )
-        if str(filters.nlmeans_profile or "").strip().lower() in {"grain", "animation"}:
-            # ffmpeg nlmeans 's' a un minimum dur de 1.0 (ultralight*0.75=0.75 → erreur).
-            strength = max(1.0, strength * 0.75)
-        elif str(filters.nlmeans_profile or "").strip().lower() in {"high motion", "highmotion", "sprite"}:
-            radius = max(5, radius - 2)
+        preset, scale, patch, radius = nlmeans_settings(filters)
+        # ffmpeg nlmeans 's' a un minimum dur de 1.0 (ultralight*0.75=0.75 → erreur).
+        strength = max(1.0, _NLMEANS_PRESETS[preset][0] * scale)
         chain.append(f"nlmeans=s={strength}:p={patch}:r={radius}")
     if filters.chroma_smooth_enabled:
         thres, size = _CHROMA_PRESETS.get(

@@ -5322,5 +5322,29 @@
   "une sortie HDR exige une profondeur de 10 bits": {
     "fra": "une sortie HDR exige une profondeur de 10 bits",
     "eng": "HDR output requires a bit depth of 10 bits"
+  },
+  "Filtres FFmpeg": {
+    "fra": "Filtres FFmpeg",
+    "eng": "FFmpeg filters"
+  },
+  "Filtres NVEncC": {
+    "fra": "Filtres NVEncC",
+    "eng": "NVEncC filters"
+  },
+  "Profil DoVi (inutilisé)": {
+    "eng": "DoVi profile (unused)",
+    "fra": "Profil DoVi (inutilisé)"
+  },
+  "Compatibility ID DoVi (inutilisé)": {
+    "eng": "DoVi compatibility ID (unused)",
+    "fra": "Compatibility ID DoVi (inutilisé)"
+  },
+  "Réglage historique sans effet : Merge DoVi choisit le profil dans son panneau, l'encodage le décide piste par piste.": {
+    "eng": "Legacy setting with no effect: Merge DoVi picks the profile in its panel, encoding decides it per track.",
+    "fra": "Réglage historique sans effet : Merge DoVi choisit le profil dans son panneau, l'encodage le décide piste par piste."
+  },
+  "Réglage historique sans effet : la compatibilité du record Dolby Vision suit le profil de sortie de chaque workflow.": {
+    "eng": "Legacy setting with no effect: the Dolby Vision record compatibility follows each workflow's output profile.",
+    "fra": "Réglage historique sans effet : la compatibilité du record Dolby Vision suit le profil de sortie de chaque workflow."
   }
 }

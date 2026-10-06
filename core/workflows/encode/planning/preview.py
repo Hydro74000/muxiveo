@@ -1,25 +1,49 @@
 from __future__ import annotations
 
+import shlex
+import subprocess
+import sys
+
 from .plan_models import EncodeCommandSelection
 
 
-def format_preview_command(cmd: list[str], *, prefix: str = "") -> str:
+def quote_preview_argument(argument: str, *, platform: str | None = None) -> str:
+    """Argument protégé pour un collage dans un terminal (POSIX : shlex ; Windows : CreateProcess / cmd)."""
+    if (sys.platform if platform is None else platform) == "win32":
+        return subprocess.list2cmdline([str(argument)])
+    return shlex.quote(str(argument))
+
+
+def format_preview_command(cmd: list[str], *, prefix: str = "", platform: str | None = None) -> str:
+    """Commande lisible et collable telle quelle.
+
+    POSIX : une option par ligne, lignes continuées par ``\\``. Windows : une
+    seule ligne (aucune continuation commune à cmd et PowerShell). Le ``|``
+    d'un pipeline n'est jamais protégé.
+    """
     if not cmd:
         return ""
-    lines = [cmd[0]]
+    windows = (sys.platform if platform is None else platform) == "win32"
+
+    def q(argument: str) -> str:
+        return quote_preview_argument(argument, platform=platform)
+
+    lines = [q(cmd[0])]
     index = 1
     while index < len(cmd):
         argument = cmd[index]
         if argument == "|" and index + 1 < len(cmd):
             # étage suivant d'un pipeline (ex. décodage | muxiveo-rife | encodeur)
-            lines.append(f"| {cmd[index + 1]}")
+            lines.append(f"| {q(cmd[index + 1])}")
             index += 2
         elif argument.startswith("-") and index + 1 < len(cmd) and not cmd[index + 1].startswith("-") and cmd[index + 1] != "|":
-            lines.append(f"    {argument} {cmd[index + 1]}")
+            lines.append(f"    {q(argument)} {q(cmd[index + 1])}")
             index += 2
         else:
-            lines.append(f"    {argument}")
+            lines.append(f"    {q(argument)}")
             index += 1
+    if windows:
+        return prefix + " ".join(line.strip() for line in lines)
     return prefix + " \\\n".join(lines)
 
 

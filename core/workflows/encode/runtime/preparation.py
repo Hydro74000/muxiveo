@@ -30,8 +30,9 @@ class EncodePreparationRunnerCallbacks:
     relocate_tmdb_covers_to_process_dir: Callable[..., list[Path]]
     download_tmdb_cover: Callable[..., Path]
     is_multi_video: Callable[[EncodeConfig], bool]
-    normalize_dynamic_hdr_multi: Callable[[EncodeConfig], EncodeConfig]
-    normalize_dynamic_hdr_config: Callable[[EncodeConfig], EncodeConfig]
+    #: Normalisation HDR dynamique ; ``dry_run=True`` (aperçu) : journal muet, HDR10 P5 différé.
+    normalize_dynamic_hdr_multi: Callable[..., EncodeConfig]
+    normalize_dynamic_hdr_config: Callable[..., EncodeConfig]
     is_video_passthrough: Callable[[EncodeConfig], bool]
     wants_dynamic_hdr_copy: Callable[[EncodeConfig], bool]
     wants_dovi_profile_normalization: Callable[[EncodeConfig], bool]
@@ -159,6 +160,37 @@ class EncodePreparationRunner:
                     cb.log("WARN", f"Nettoyage incomplet du workspace : {exc}")
             raise
 
+    def dry_run(self, config: EncodeConfig) -> EncodeConfig:
+        """Décisions de la préparation, sans dossier de travail ni étape lourde (aperçu).
+
+        Mêmes résolutions qu'au lancement : sous-profil Dolby Vision, transfert
+        et profondeur source, normalisation HDR dynamique (journal muet). Restent
+        réservées au lancement : sonde NVEncC P5, extraction du RPU et HDR10
+        statique estimé d'une source P5.
+        """
+        cb = self._cb
+        if cb.resolve_dovi_sources is not None:
+            config = cb.resolve_dovi_sources(config)
+        if cb.resolve_source_color_transfer is not None:
+            config = cb.resolve_source_color_transfer(config)
+        return self._normalize_dynamic_hdr(config, dry_run=True)
+
+    def _normalize_dynamic_hdr(self, config: EncodeConfig, *, dry_run: bool = False) -> EncodeConfig:
+        """Étape 3 : copies DoVi/HDR10+ confrontées à la source, replis HDR10 statiques."""
+        cb = self._cb
+        kwargs = {"dry_run": True} if dry_run else {}
+        if cb.is_multi_video(config):
+            return cb.normalize_dynamic_hdr_multi(config, **kwargs)
+        if not cb.is_video_passthrough(config) or cb.wants_dovi_profile_normalization(config):
+            return cb.normalize_dynamic_hdr_config(config, **kwargs)
+        if cb.wants_dynamic_hdr_copy(config) and not dry_run:
+            cb.log(
+                "INFO",
+                "Codec COPY : injection DoVi/HDR10+ ignorée — "
+                "métadonnées préservées par passthrough ffmpeg.",
+            )
+        return config
+
     def _run_prepared(
         self,
         config: EncodeConfig,
@@ -220,19 +252,7 @@ class EncodePreparationRunner:
 
         cb.log_step(3, "Normalisation des options HDR dynamiques")
         cb.check_cancelled(prep_signals)
-        if cb.is_multi_video(prepared_config):
-            prepared_config = cb.normalize_dynamic_hdr_multi(prepared_config)
-        elif (
-            not cb.is_video_passthrough(prepared_config)
-            or cb.wants_dovi_profile_normalization(prepared_config)
-        ):
-            prepared_config = cb.normalize_dynamic_hdr_config(prepared_config)
-        elif cb.wants_dynamic_hdr_copy(prepared_config):
-            cb.log(
-                "INFO",
-                "Codec COPY : injection DoVi/HDR10+ ignorée — "
-                "métadonnées préservées par passthrough ffmpeg.",
-            )
+        prepared_config = self._normalize_dynamic_hdr(prepared_config)
 
         # Décision de backend de muxage final : prise au préflight, journalisée
         # avant toute écriture. Aucun repli après le démarrage effectif.

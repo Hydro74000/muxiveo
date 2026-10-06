@@ -14,7 +14,6 @@ from core.workflows.encode.runtime.frame_count_guard import FrameCountGuard, Fra
 from core.workdir import remove_path
 from core.workflows.encode.domain import (
     needs_static_hdr_sei_reinjection,
-    needs_static_hdr_bitstream_patch,
     should_reinject_static_hdr_metadata,
 )
 from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode, VideoEncodeSettings
@@ -131,7 +130,6 @@ class MultiVideoPipelineRunner:
         if (
             video.copy_dv
             or video.copy_hdr10plus
-            or needs_static_hdr_bitstream_patch(video)
             or needs_static_hdr_sei_reinjection(video)
         ):
             rpu_bin = work_dir / f"video_{index}.rpu.bin"

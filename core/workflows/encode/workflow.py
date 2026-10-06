@@ -70,7 +70,6 @@ from core.workflows.encode.catalog import (
 from core.workflows.encode.domain import (
     uses_two_pass_video as _uses_two_pass_video_domain,
     EncodeCodecDomainCallbacks as _EncodeCodecDomainCallbacks,
-    needs_static_hdr_bitstream_patch as _needs_static_hdr_bitstream_patch_domain,
     needs_static_hdr_sei_reinjection as _needs_static_hdr_sei_reinjection_domain,
 )
 from core.workflows.remux_timeline_sync import (
@@ -156,17 +155,17 @@ from core.workflows.encode.runtime.multisource_sync import (
 from core.workflows.encode.runtime.nvencc import (
     build_nvencc_command as _build_nvencc_command_runtime,
     is_nvencc_codec as _is_nvencc_codec_runtime,
+    nvencc_requires_ffmpeg_filter_pipe as _nvencc_requires_ffmpeg_filter_pipe,
     nvencc_supports_dynamic_hdr as _nvencc_supports_dynamic_hdr_runtime,
 )
 from core.workflows.encode.runtime.nvencc_execution import (
-    NvenccAssetPreparationCallbacks as _NvenccAssetPreparationCallbacks,
-    NvenccAssetPreparationService as _NvenccAssetPreparationService,
     NvenccDirectOutputRunner as _NvenccDirectOutputRunner,
     NvenccDirectOutputRunnerCallbacks as _NvenccDirectOutputRunnerCallbacks,
     NvenccPipeExecutor as _NvenccPipeExecutor,
     NvenccRuntimeRemuxBuilder as _NvenccRuntimeRemuxBuilder,
     NvenccRuntimeRemuxBuilderCallbacks as _NvenccRuntimeRemuxBuilderCallbacks,
     build_nvencc_pipeline_commands as _build_nvencc_pipeline_commands_runtime,
+    nvencc_needs_ffmpeg_pipe as _nvencc_needs_ffmpeg_pipe,
 )
 from core.workflows.encode.mux_backend import (
     EncodeMuxDecision as _EncodeMuxDecision,
@@ -273,6 +272,7 @@ from core.workflows.encode.runtime.dovi_static_hdr import (
 )
 from core.workflows.encode.runtime.nvencc_p5 import (
     binary_signature as _binary_signature,
+    nvencc_features as _nvencc_features,
     nvencc_p5_features as _nvencc_p5_features,
     run_nvencc_p5_probe as _run_nvencc_p5_probe,
 )
@@ -619,20 +619,13 @@ class EncodeWorkflow(QObject):
         video = EncodeWorkflow._primary_video_settings(config)
         return bool(video.copy_dv and str(video.dovi_profile or "0").strip() == "2")
 
-    @staticmethod
-    def _needs_static_hdr_bitstream_patch(config: EncodeConfig) -> bool:
-        video = EncodeWorkflow._primary_video_settings(config)
-        if video.codec == "copy":
-            return False
-        return _needs_static_hdr_bitstream_patch_domain(video)
-
     @classmethod
     def _needs_metadata_inject(cls, config: EncodeConfig) -> bool:
         if cls._is_video_passthrough(config):
             return cls._wants_dovi_profile_normalization(config)
         if _is_nvencc_codec_runtime(EncodeWorkflow._primary_video_settings(config).codec):
             return False
-        return cls._wants_dynamic_hdr_copy(config) or cls._needs_static_hdr_bitstream_patch(config)
+        return cls._wants_dynamic_hdr_copy(config)
 
     @staticmethod
     def _video_source_path(config: EncodeConfig) -> Path:
@@ -855,19 +848,21 @@ class EncodeWorkflow(QObject):
     def _extract_static_hdr_metadata(self, source: Path, stream_index: int | None = None) -> tuple[str, str]:
         return self._hdr_metadata_service.extract_static_hdr_metadata(source, stream_index)
 
-    def _normalize_dynamic_hdr_config(self, config: EncodeConfig) -> EncodeConfig:
+    def _normalize_dynamic_hdr_config(self, config: EncodeConfig, *, dry_run: bool = False) -> EncodeConfig:
         return DynamicHdrConfigNormalizer(
-            self._dynamic_hdr_normalizer_callbacks()
+            self._dynamic_hdr_normalizer_callbacks(dry_run=dry_run)
         ).normalize_single(config)
 
-    def _normalize_dynamic_hdr_multi(self, config: EncodeConfig) -> EncodeConfig:
+    def _normalize_dynamic_hdr_multi(self, config: EncodeConfig, *, dry_run: bool = False) -> EncodeConfig:
         return DynamicHdrConfigNormalizer(
-            self._dynamic_hdr_normalizer_callbacks()
+            self._dynamic_hdr_normalizer_callbacks(dry_run=dry_run)
         ).normalize_multi(config)
 
-    def _dynamic_hdr_normalizer_callbacks(self) -> DynamicHdrNormalizerCallbacks:
+    def _dynamic_hdr_normalizer_callbacks(self, *, dry_run: bool = False) -> DynamicHdrNormalizerCallbacks:
+        """``dry_run`` (aperçu) : journal muet ; HDR10 d'une source P5 laissé à l'estimation RPU du lancement."""
         return DynamicHdrNormalizerCallbacks(
-            log=self.log_message.emit,
+            log=(lambda _level, _message: None) if dry_run else self.log_message.emit,
+            defer_static_hdr=(lambda video: bool(video.p5_to_hdr10)) if dry_run else None,
             wants_dynamic_hdr_copy=self._wants_dynamic_hdr_copy,
             is_video_passthrough=self._is_video_passthrough,
             primary_video_settings=self._primary_video_settings,
@@ -979,34 +974,6 @@ class EncodeWorkflow(QObject):
         if len(selection.commands) <= 1:
             return list(selection.preview_command)
         return [list(cmd) for cmd in selection.commands]
-
-    def _prepare_nvencc_dynamic_hdr_assets(
-        self,
-        config: EncodeConfig,
-        *,
-        work_dir: Path,
-        signals: TaskSignals,
-        run_cmd: Callable[[list[str], str], str],
-        cleanup_paths: list[Path] | None = None,
-    ) -> tuple[Path, int, Path | None, Path | None, bool, list[Path]]:
-        return _NvenccAssetPreparationService(
-            _NvenccAssetPreparationCallbacks(
-                ffmpeg_bin=self._ffmpeg,
-                bins=dict(self._bins),
-                log=self.log_message.emit,
-                primary_video_settings=self._primary_video_settings,
-                video_source_path=self._video_source_path,
-                video_stream_index=self._video_stream_index,
-                source_is_vfr=self._source_is_vfr,
-                load_mediainfo_video_track=self._load_mediainfo_video_track,
-            )
-        ).prepare(
-            config,
-            work_dir=work_dir,
-            signals=signals,
-            run_cmd=run_cmd,
-            cleanup_paths=cleanup_paths,
-        )
 
     def _run_nvencc_pipe_commands(
         self,
@@ -2213,8 +2180,8 @@ class EncodeWorkflow(QObject):
     # ------------------------------------------------------------------
 
     def preview_command(self, config: EncodeConfig) -> str:
-        config = self.resolve_dovi_sources(config)
-        config = self.resolve_source_color_transfer(config)
+        # Préparation « à blanc » : mêmes décisions que le lancement (V38).
+        config = self._preparation_runner().dry_run(config)
         mux_decision = self.select_mux_backend(config)
         commands = self._backend_for_config(config).build_preview(
             config,
@@ -2233,6 +2200,27 @@ class EncodeWorkflow(QObject):
                 "# Assemblage final interne ; les commandes ci-dessous préparent "
                 "les artefacts ou servent de référence."
             )
+        primary = self._primary_video_settings(config)
+        if _is_nvencc_codec_runtime(primary.codec) and primary.has_video_transform():
+            # V18b : moteur réel des filtres et conversions couleur.
+            try:
+                piped = _nvencc_needs_ffmpeg_pipe(self._resolve_nvencc_input_routing(config))
+            except EncodeError:
+                piped = None
+            if piped is not None:
+                header.append(
+                    "# Filtres et conversions couleur : "
+                    + ("FFmpeg (pipe y4m vers NVEncC)." if piped else "NVEncC (natifs).")
+                )
+        for index, video in enumerate(self._video_tracks(config), start=1):
+            if (
+                video.p5_to_hdr10 and video.inject_hdr_meta and not video.tonemap_to_sdr
+                and (not video.master_display.strip() or not video.max_cll.strip())
+            ):
+                header.append(
+                    f"# Piste vidéo #{index} : HDR10 statique estimé au lancement depuis le RPU "
+                    "Dolby Vision (P5), absent de cet aperçu."
+                )
         return "\n".join((*header, command_text))
 
     def run_preview(self, config: EncodeConfig, request: EncodePreviewRequest) -> TaskSignals:
@@ -2992,6 +2980,16 @@ class EncodeWorkflow(QObject):
             cache[signature] = _nvencc_p5_features(signature[0])
         return cache[signature]
 
+    def _nvencc_libplacebo_ready(self) -> bool:
+        """libplacebo compilé dans NVEncC : tone-mapping natif (sinon pipe FFmpeg)."""
+        signature = _binary_signature(self._nvencc_bin)
+        if signature is None:
+            return False
+        cache: dict[tuple, bool] = self.__dict__.setdefault("_nvencc_libplacebo_cache", {})
+        if signature not in cache:
+            cache[signature] = bool(_nvencc_features(signature[0]).get("libplacebo"))
+        return cache[signature]
+
     def _nvencc_p5_native_ready(self) -> bool:
         """Conversion P5 native : prérequis compilés et sonde réussie (ou pas encore exécutée)."""
         if not self._nvencc_p5_features_ok():
@@ -3200,6 +3198,16 @@ class EncodeWorkflow(QObject):
         messages = self.extra_params_warnings(config)
         for index, video in enumerate(self._video_tracks(config), start=1):
             messages.extend(f"Piste vidéo #{index} — {warning}" for warning in _hdr_warnings(video))
+            if (
+                video.codec != "copy" and video.filters.nlmeans_enabled and video.source_bit_depth > 8
+                and (not _is_nvencc_codec_runtime(video.codec) or _nvencc_requires_ffmpeg_filter_pipe(video))
+            ):
+                # nlmeans FFmpeg n'accepte que des formats 8 bits (conversion implicite).
+                messages.append(
+                    f"Piste vidéo #{index} — NLMeans (FFmpeg) ne traite que le 8 bits : source "
+                    f"{video.source_bit_depth} bits réduite à 8 bits avant le débruitage "
+                    "(risque de banding, surtout en HDR)."
+                )
         messages.extend(self.size_target_warnings(config))
         return messages
 
@@ -4373,6 +4381,7 @@ class EncodeWorkflow(QObject):
             probe_dovi_l5_offsets=(self._probe_dovi_l5_offsets if stream_index == 0 else
                 lambda source: self._probe_dovi_l5_offsets(source, stream_index=stream_index)),
             p5_native_ready=self._nvencc_p5_native_ready,
+            libplacebo_ready=self._nvencc_libplacebo_ready,
         )
 
     def _probe_dovi_l5_offsets(self, source: Path, *, stream_index: int = 0) -> tuple[int, int, int, int] | None:

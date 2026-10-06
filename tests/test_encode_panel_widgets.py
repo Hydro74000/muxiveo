@@ -75,6 +75,7 @@ from core.inspector import AudioTrack, FileInfo, HDRType, VideoTrack
 from core.workflows.encode import EncodePreset, ProfileManager
 from core.workflows.remux_models import TrackEntry, clone_track_entry
 from core.workflows.encode.domain.codecs import bit_depth_error, resolve_output_bit_depth
+from core.workflows.encode.models import VideoFilterSettings
 from ui.panels.encode_panel.panel import EncodePanel
 from ui.panels.encode_panel.widgets import _AudioTable
 from core.workflows.encode.runtime.static_hdr_estimator import (
@@ -2465,4 +2466,43 @@ class TestEncodePanelAuditLot5:
         # Remux pur si aucune autre transformation n'est demandée (HDR10 statique source non réécrit).
         pure = dataclasses.replace(config.video, inject_hdr_meta=False)
         assert panel.is_pure_copy(dataclasses.replace(config, video=pure, video_tracks=[pure], audio_tracks=[]))
+        panel.close()
+
+
+class TestEncodePanelAuditLot7:
+    """Lot 7 : moteur des filtres NVEncC (V18b) et règle de propagation unique (V43)."""
+
+    def test_v18b_badge_shows_nvencc_filter_engine(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        panel._hw_encoders = {"nvencc_hevc"}
+        panel._populate_codec_combo()
+        entry = _video_entry(0)
+        entry.entry_id = "video-filters"
+        panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0, HDRType.NONE, bit_depth=8)]), entry, _COLOR)])
+        _select_codec(panel, "nvencc_hevc")
+        state = dict(panel._video_settings_by_entry_id["video-filters"])
+        state["filters"] = VideoFilterSettings(nlmeans_enabled=True)
+        assert "Filtres NVEncC" in panel._video_filter_badges_from_state(state)
+        state["filters"] = VideoFilterSettings(deblock_enabled=True)
+        assert "Filtres FFmpeg" in panel._video_filter_badges_from_state(state)
+        _select_codec(panel, "libx265")
+        state = dict(panel._video_settings_by_entry_id["video-filters"])
+        state["filters"] = VideoFilterSettings(nlmeans_enabled=True)
+        assert not any(badge.startswith("Filtres") for badge in panel._video_filter_badges_from_state(state))
+        panel.close()
+
+    def test_v43_copy_is_never_propagated_by_apply_all(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        first, second = _video_entry(0), _video_entry(1)
+        first.entry_id, second.entry_id = "video-1", "video-2"
+        info = _file_info(_PATH_A, [_video_track(0, HDRType.NONE), _video_track(1, HDRType.NONE)])
+        panel.set_video_tracks([(info, first, _COLOR), (info, second, _COLOR)])
+        panel._video_list.setCurrentRow(0)
+        panel._apply_all_video_cb.setChecked(True)
+        _select_codec(panel, "libx265")
+        assert panel._video_settings_by_entry_id["video-2"]["codec"] == "libx265"
+        # Retour en Copy sur la piste 1 : la piste 2 garde son encodage (même règle partout).
+        _select_codec(panel, "copy")
+        assert panel._video_settings_by_entry_id["video-1"]["codec"] == "copy"
+        assert panel._video_settings_by_entry_id["video-2"]["codec"] == "libx265"
         panel.close()

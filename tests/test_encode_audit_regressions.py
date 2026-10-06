@@ -809,3 +809,106 @@ def test_review_size_warning_identifies_track_after_copied_primary(qt_app, tmp_p
                        video=copied, video_tracks=[copied, sized], duration_s=1000)
     warnings = wf.size_target_warnings(cfg)
     assert len(warnings) == 1 and "#2" in warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# V38 — aperçu : préparation « à blanc » et arguments protégés
+# ---------------------------------------------------------------------------
+
+
+def test_v38_preview_arguments_round_trip_through_a_shell():
+    import shlex
+
+    from core.workflows.encode.planning.preview import format_preview_command
+
+    cmd = ["ffmpeg", "-i", "/m/Mon Film (2024).mkv", "-metadata", "title=L'été", "-vf", "a=1;b", "out dir/o.mkv"]
+    posix = format_preview_command(cmd, platform="linux")
+    assert shlex.split(posix.replace("\\\n", " ")) == cmd
+    windows = format_preview_command(cmd, platform="win32")
+    assert "\n" not in windows and '"/m/Mon Film (2024).mkv"' in windows and '"out dir/o.mkv"' in windows
+
+
+def test_v38_preview_applies_runtime_dynamic_hdr_normalisation_silently(qt_app, tmp_path, monkeypatch):
+    """HDR10+ demandé : repli HDR10 statique visible dans l'aperçu comme au lancement, sans journal."""
+    source = tmp_path / "src.mkv"
+    source.write_bytes(b"")
+    video = VideoEncodeSettings(
+        codec="libx265", copy_hdr10plus=True, inject_hdr_meta=True, source_path=source,
+        source_color_transfer="smpte2084", source_bit_depth=10, source_pix_fmt="yuv420p10le",
+    )
+    config = EncodeConfig(source=source, output=tmp_path / "out.mkv", video=video, video_tracks=[video], audio_tracks=[])
+    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg")
+    md = "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)"
+    monkeypatch.setattr(wf, "_detect_source_dynamic_hdr_presence", lambda *_a, **_k: (False, True))
+    monkeypatch.setattr(wf, "_extract_static_hdr_metadata", lambda *_a, **_k: (md, "1000,400"))
+    logs: list[str] = []
+    wf.log_message.connect(lambda _level, message: logs.append(message))
+    preview = wf.preview_command(config)
+    assert "master-display=" + md in preview and "max-cll=1000,400" in preview
+    assert not logs
+
+
+# ---------------------------------------------------------------------------
+# V18b — filtres NVEncC : équivalence FFmpeg et moteur affiché
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode,parity,expected", [
+    ("send_frame", "auto", "auto"), ("send_frame", "tff", "tff"), ("send_frame", "bff", "bff"),
+    ("send_field", "auto", "bob"), ("send_field", "tff", "bob_tff"), ("send_field", "bff", "bob_bff"),
+])
+def test_v18b_nvencc_yadif_follows_ffmpeg_mode_and_parity(mode, parity, expected):
+    from core.workflows.encode.models import VideoFilterSettings
+    from core.workflows.encode.runtime.nvencc import nvencc_yadif_mode
+
+    assert nvencc_yadif_mode(VideoFilterSettings(yadif_enabled=True, yadif_mode=mode, yadif_parity=parity)) == expected
+
+
+@pytest.mark.parametrize("strength,profile,ffmpeg,nvencc", [
+    ("light", "standard", "nlmeans=s=2.0:p=5:r=9", "sigma=0.0,h=0.08,patch=5,search=9"),
+    ("strong", "high motion", "nlmeans=s=5.0:p=7:r=13", "sigma=0.01,h=0.18,patch=7,search=13"),
+    ("ultralight", "grain", "nlmeans=s=1.0:p=3:r=7", "sigma=0.0,h=0.04,patch=3,search=7"),
+    ("medium", "animation", "nlmeans=s=2.25:p=7:r=11", "sigma=0.0,h=0.09,patch=7,search=11"),
+])
+def test_v18b_nvencc_nlmeans_calibrated_on_ffmpeg(strength, profile, ffmpeg, nvencc):
+    from core.workflows.encode.domain.codecs import build_vf
+    from core.workflows.encode.models import VideoFilterSettings
+    from core.workflows.encode.runtime.nvencc import _nvencc_filter_args
+
+    filters = VideoFilterSettings(nlmeans_enabled=True, nlmeans_strength=strength, nlmeans_profile=profile)
+    assert ffmpeg in build_vf(VideoEncodeSettings(codec="libx265", filters=filters))
+    args = _nvencc_filter_args(VideoEncodeSettings(codec="nvencc_hevc", filters=filters))
+    assert args[args.index("--vpp-nlmeans") + 1] == nvencc
+
+
+def test_v18b_preview_states_nvencc_filter_engine(qt_app, tmp_path):
+    from core.workflows.encode.models import VideoFilterSettings
+
+    source = tmp_path / "src.mkv"
+    source.write_bytes(b"")
+    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", nvencc_bin="nvencc")
+    for filters, expected in (
+        (VideoFilterSettings(nlmeans_enabled=True), "NVEncC (natifs)"),
+        (VideoFilterSettings(deblock_enabled=True), "FFmpeg (pipe y4m vers NVEncC)"),
+    ):
+        video = VideoEncodeSettings(codec="nvencc_hevc", source_path=source, filters=filters,
+                                    source_bit_depth=8, source_pix_fmt="yuv420p", source_color_transfer="bt709")
+        config = EncodeConfig(source=source, output=tmp_path / "o.mkv", video=video, video_tracks=[video], audio_tracks=[])
+        assert f"# Filtres et conversions couleur : {expected}" in wf.preview_command(config)
+
+
+def test_v18b_ffmpeg_nlmeans_on_high_bit_depth_warns(qt_app, tmp_path):
+    from core.workflows.encode.models import VideoFilterSettings
+
+    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg")
+    filters = VideoFilterSettings(nlmeans_enabled=True)
+
+    def warnings_for(codec: str, depth: int) -> list[str]:
+        video = VideoEncodeSettings(codec=codec, filters=filters, source_bit_depth=depth)
+        config = EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv", video=video,
+                              video_tracks=[video], audio_tracks=[])
+        return [w for w in wf.config_warnings(config) if "NLMeans" in w]
+
+    assert warnings_for("libx265", 10) and not warnings_for("libx265", 8)
+    # NVEncC débruite lui-même en 10 bits.
+    assert not warnings_for("nvencc_hevc", 10)

@@ -48,8 +48,8 @@ def parse_check_features(output: str) -> dict[str, bool]:
     return {name.lower(): value.lower() == "yes" for name, value in _FEATURE_RE.findall(output or "")}
 
 
-def nvencc_p5_features(nvencc_bin: str) -> bool:
-    """libdovi et libplacebo compilés dans ce NVEncC (prérequis, pas une preuve)."""
+def nvencc_features(nvencc_bin: str) -> dict[str, bool]:
+    """Bibliothèques compilées dans ce NVEncC (``--check-features``) ; vide si la sonde échoue."""
     try:
         result = subprocess.run(
             [nvencc_bin, "--check-features"],
@@ -59,8 +59,13 @@ def nvencc_p5_features(nvencc_bin: str) -> bool:
             **subprocess_text_kwargs(),
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-        return False
-    features = parse_check_features((result.stdout or "") + "\n" + (result.stderr or ""))
+        return {}
+    return parse_check_features((result.stdout or "") + "\n" + (result.stderr or ""))
+
+
+def nvencc_p5_features(nvencc_bin: str) -> bool:
+    """libdovi et libplacebo compilés dans ce NVEncC (prérequis, pas une preuve)."""
+    features = nvencc_features(nvencc_bin)
     return bool(features.get("libdovi") and features.get("libplacebo"))
 
 

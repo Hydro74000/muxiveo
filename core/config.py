@@ -910,8 +910,11 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         "section": "hdr",
         "title": "HDR",
         "fields": (
-            {"key": "dovi_profile", "attr": "dovi_profile", "kind": "text", "label": "Profil DoVi", "description": "Profil Dolby Vision utilisé lors de l'injection RPU."},
-            {"key": "dovi_compat_id", "attr": "dovi_compat_id", "kind": "text", "label": "Compatibility ID DoVi", "description": "Compatibility ID Dolby Vision appliqué lors de l'injection."},
+            # V42 : réglages historiques, lus par aucun workflow (Merge DoVi : liste de son
+            # panneau ; encodage : décision par piste). Conservés tant que leur retrait
+            # n'est pas validé ; libellés explicites pour ne pas laisser croire à un effet.
+            {"key": "dovi_profile", "attr": "dovi_profile", "kind": "text", "label": "Profil DoVi (inutilisé)", "description": "Réglage historique sans effet : Merge DoVi choisit le profil dans son panneau, l'encodage le décide piste par piste."},
+            {"key": "dovi_compat_id", "attr": "dovi_compat_id", "kind": "text", "label": "Compatibility ID DoVi (inutilisé)", "description": "Réglage historique sans effet : la compatibilité du record Dolby Vision suit le profil de sortie de chaque workflow."},
         ),
     },
     {

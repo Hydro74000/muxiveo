@@ -39,6 +39,8 @@ class NvenccInputRouting:
     source_dimensions: tuple[int, int] | None = None
     #: Source P5 convertie par NVEncC lui-même (sinon pipe FFmpeg libplacebo).
     p5_native: bool = False
+    #: Tone-mapping HDR → SDR fait par NVEncC (libplacebo), sinon pipe FFmpeg.
+    native_tonemap: bool = False
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,8 @@ class NvenccRoutingCallbacks:
     probe_dovi_l5_offsets: Callable[[Path], tuple[int, int, int, int] | None] | None = None
     #: NVEncC sait convertir une source P5 (libdovi + libplacebo, sonde réussie ou à venir).
     p5_native_ready: Callable[[], bool] | None = None
+    #: libplacebo compilé dans NVEncC (tone-mapping natif sans NVRTC).
+    libplacebo_ready: Callable[[], bool] | None = None
 
 
 def normalize_frame_rate_expr(value: object) -> str | None:
@@ -413,4 +417,7 @@ class NvenccInputRouter:
             crop_offsets=crop_offsets,
             source_dimensions=dims if dims != (0, 0) else None,
             p5_native=p5_native,
+            native_tonemap=bool(
+                video.tonemap_to_sdr and self._cb.libplacebo_ready is not None and self._cb.libplacebo_ready()
+            ),
         )

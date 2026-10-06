@@ -66,7 +66,9 @@ from core.workflows.encode.catalog import (
 from core.workflows.encode.domain.codecs import (
     rate_control_values, transfer_kind, resolve_output_bit_depth, source_bit_depth_from_stream,
 )
-from core.workflows.encode.runtime.nvencc import detect_nvencc_10bit_codecs
+from core.workflows.encode.runtime.nvencc import (
+    detect_nvencc_10bit_codecs, is_nvencc_codec, nvencc_requires_ffmpeg_filter_pipe,
+)
 from core.workflows.encode.hdr_policy import default_static_hdr_checked, source_is_hdr
 from core.workflows.encode.dovi_policy import (
     NORMALIZE_P81,
@@ -4184,6 +4186,7 @@ class EncodePanel(QWidget):
         )
 
     def _should_propagate_global_state(self, state: dict[str, object] | None) -> bool:
+        """Règle unique de « Appliquer à toutes » : réglages d'encodage, jamais Copy (passthrough par source)."""
         if not self._video_apply_all or state is None:
             return False
         return self._video_state_target_codec(state) != "copy"
@@ -4556,7 +4559,8 @@ class EncodePanel(QWidget):
         state = self._video_settings_by_entry_id.get(source_id)
         if state is None:
             state = self._current_video_state()
-        self._propagate_state_to_active_tracks(state)
+        if self._should_propagate_global_state(state):
+            self._propagate_state_to_active_tracks(state)
         self._emit_video_encoding_plans()
 
     @classmethod
@@ -4665,6 +4669,13 @@ class EncodePanel(QWidget):
             if int(interpolation.tta) > 1:
                 badge += f" TTA ×{int(interpolation.tta)}"
             badges.append(badge)
+        codec = self._video_state_target_codec(state)
+        if badges and is_nvencc_codec(codec):
+            # V18b : NVEncC filtre lui-même, sauf préfiltres sans équivalent ou RIFE (pipe FFmpeg).
+            piped = nvencc_requires_ffmpeg_filter_pipe(VideoEncodeSettings(
+                codec=codec, resize=resize, crop=crop, filters=filters, interpolation=interpolation,
+            ))
+            badges.append(translate_text("Filtres FFmpeg") if piped else translate_text("Filtres NVEncC"))
         return tuple(badges)
 
     def _video_plan_from_state(
@@ -4743,7 +4754,8 @@ class EncodePanel(QWidget):
             state,
         )
         self._video_settings_by_entry_id[self._current_video_entry_id] = state
-        if self._video_apply_all:
+        # V43 : une seule règle de propagation (Copy reste propre à chaque source).
+        if self._should_propagate_global_state(state):
             self._propagate_state_to_active_tracks(state)
         if analysis_cancelled:
             self.log_message.emit(
@@ -5014,7 +5026,7 @@ class EncodePanel(QWidget):
                 "et continuer l'encodage ?</p>"
             )
             apply_btn = dlg.addButton("Appliquer et continuer", QMessageBox.ButtonRole.AcceptRole)
-            cancel_btn = dlg.addButton("Annuler", QMessageBox.ButtonRole.RejectRole)
+            dlg.addButton("Annuler", QMessageBox.ButtonRole.RejectRole)
             dlg.setDefaultButton(apply_btn)
             dlg.exec()
 
@@ -5047,7 +5059,7 @@ class EncodePanel(QWidget):
                 "<p>Souhaitez-vous continuer avec cet alignement automatique ?</p>"
             )
             apply_btn = dlg.addButton("Continuer", QMessageBox.ButtonRole.AcceptRole)
-            cancel_btn = dlg.addButton("Annuler", QMessageBox.ButtonRole.RejectRole)
+            dlg.addButton("Annuler", QMessageBox.ButtonRole.RejectRole)
             dlg.setDefaultButton(apply_btn)
             dlg.exec()
 

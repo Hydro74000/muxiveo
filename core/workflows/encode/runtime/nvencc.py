@@ -49,6 +49,8 @@ from core.workflows.encode.domain.codecs import (
     resolve_output_bit_depth,
     filtered_bit_depth,
     filtered_pix_fmt,
+    transfer_kind,
+    nlmeans_settings,
     supports_output_10bit,
     option_items,
     resolve_resize_dimensions,
@@ -531,25 +533,26 @@ def _auto_source_hdr_args(video: VideoEncodeSettings, *, direct_input: bool) -> 
     return args
 
 
+_LIBPLACEBO_TONEMAP_FUNCTIONS = frozenset({"hable", "mobius", "reinhard", "gamma", "linear", "clip", "bt2390"})
+
+
 def map_nvencc_tonemap_args(video: VideoEncodeSettings) -> list[str]:
-    """Mappe le tone-map UI vers les VPP NVEncC."""
+    """Tone-mapping HDR → SDR natif par libplacebo (PQ ou HLG source).
+
+    ``--vpp-colorspace … hdr2sdr`` exige ``libnvrtc`` (absent des installations
+    Linux usuelles : échec immédiat) ; libplacebo n'en a pas besoin et propose
+    toutes les fonctions de l'interface. NVEncC sans libplacebo : pipe FFmpeg
+    (routage ``native_tonemap``).
+    """
     if not getattr(video, "tonemap_to_sdr", False):
         return []
-
     algo = str(getattr(video, "tonemap_algorithm", "") or "hable").strip().lower()
-    if algo in {"hable", "mobius", "reinhard", "bt2390"}:
-        return [
-            "--vpp-colorspace",
-            f"matrix=bt2020nc:bt709,hdr2sdr={algo}",
-        ]
-    if algo in {"clip", "gamma", "linear"}:
-        return [
-            "--vpp-libplacebo-tonemapping",
-            f"src_csp=hdr10,dst_csp=sdr,tonemapping_function={algo}",
-        ]
+    if algo not in _LIBPLACEBO_TONEMAP_FUNCTIONS:
+        algo = "hable"
+    source = "hlg" if transfer_kind(getattr(video, "source_color_transfer", "")) == "hlg" else "hdr10"
     return [
-        "--vpp-colorspace",
-        "matrix=bt2020nc:bt709,hdr2sdr=hable",
+        "--vpp-libplacebo-tonemapping",
+        f"src_csp={source},dst_csp=sdr,tonemapping_function={algo}",
     ]
 
 
@@ -610,26 +613,41 @@ def _nvencc_crop_args(video: VideoEncodeSettings) -> list[str]:
     return ["--crop", f"{left},{top},{right},{bottom}"]
 
 
+# (sigma, h) de --vpp-nlmeans au plus près de nlmeans FFmpeg (s = 1 / 2 / 3 / 5),
+# patch / search = p / r FFmpeg. Banc du 2026-10-06 : 720p, bruit temporel
+# (PSNR 33 dB), recherche sur grille ; sorties NVEncC et FFmpeg à ≈ 43 dB.
+_NVENCC_NLMEANS: dict[str, tuple[float, float]] = {
+    "ultralight": (0.0, 0.04),
+    "light": (0.0, 0.08),
+    "medium": (0.0, 0.12),
+    "strong": (0.01, 0.18),
+}
+
+
+def nvencc_yadif_mode(filters: VideoFilterSettings) -> str:
+    """Mode ``--vpp-yadif`` équivalent au yadif FFmpeg (mode × parité).
+
+    Frame (``send_frame``) : ``auto`` / ``tff`` / ``bff`` ; Bob (``send_field``,
+    cadence doublée) : ``bob`` / ``bob_tff`` / ``bob_bff``.
+    """
+    mode = str(filters.yadif_mode or "send_frame").strip().lower()
+    parity = str(filters.yadif_parity or "auto").strip().lower()
+    parity = parity if parity in {"tff", "bff"} else ""
+    if mode.startswith("send_field") or mode == "bob":
+        return f"bob_{parity}" if parity else "bob"
+    return parity or "auto"
+
+
 def _nvencc_filter_args(video: VideoEncodeSettings) -> list[str]:
     filters = video.filters
     args: list[str] = []
     if filters.yadif_enabled:
-        mode = str(filters.yadif_mode or "send_frame").strip().lower()
-        mapped = {
-            "send_frame": "auto",
-            "send_field": "bob",
-            "bob": "bob",
-            "auto": "auto",
-        }.get(mode, "auto")
-        args.extend(["--vpp-yadif", f"mode={mapped}"])
+        args.extend(["--vpp-yadif", f"mode={nvencc_yadif_mode(filters)}"])
     if filters.nlmeans_enabled:
-        strength = {
-            "ultralight": (0.003, 0.035, 3, 7),
-            "light": (0.005, 0.050, 5, 11),
-            "medium": (0.008, 0.065, 7, 13),
-            "strong": (0.012, 0.080, 7, 15),
-        }.get(str(filters.nlmeans_strength or "light").strip().lower(), (0.005, 0.050, 5, 11))
-        sigma, h, patch, search = strength
+        preset, scale, patch, search = nlmeans_settings(filters)
+        sigma, h = _NVENCC_NLMEANS[preset]
+        # Profil grain / animation : même réduction que FFmpeg, même plancher (ultralight).
+        h = max(_NVENCC_NLMEANS["ultralight"][1], round(h * scale, 4))
         args.extend(["--vpp-nlmeans", f"sigma={sigma},h={h},patch={patch},search={search}"])
     return args
 

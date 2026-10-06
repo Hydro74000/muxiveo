@@ -118,7 +118,7 @@ C'est pourquoi Muxiveo a formellement **abandonné et bloqué ce pipeline** dans
 ## 4. Architecture et Implémentation dans Muxiveo (v4.1+)
 
 Dans le module `core/workflows/encode/` :
-1. **Routage NVEncC natif (`nvencc_direct`)** : Quand `video.copy_dv` est actif et que l'utilisateur choisit le backend NVEncC, la commande injecte directement `--dolby-vision-profile 8.1` et `--dolby-vision-rpu copy`. Le calcul du GOP est dynamique (`--gop-len = 2 × fps`).
+1. **Routage NVEncC natif (`nvencc_direct`)** : Quand `video.copy_dv` est actif et que l'utilisateur choisit le backend NVEncC, la commande injecte `--dolby-vision-rpu copy` et le profil de sortie de la matrice Dolby Vision (`core/workflows/encode/dovi_policy.py`) : P8.4 (base HLG) et P8.2 (base SDR) sont conservés, les autres sources sortent en 8.1. Le calcul du GOP est dynamique (`--gop-len = 2 × fps`).
 2. **Sécurité et blocage des codecs incompatibles** : Le catalogue (`catalog.py`) sépare désormais explicitement `supports_dovi` et `supports_hdr10plus`. Les encodeurs incompatibles (`hevc_nvenc`, `hevc_vaapi`, `nvencc_av1`...) ont leur case DV désactivée avec un bandeau d'avertissement et une recommandation vers `nvencc_hevc` ou `libx265`.
 3. **Assainissement automatique post-encode** : La fonction `sanitize_dovi_mkv` s'exécute automatiquement après l'encodage NVEncC pour corriger le niveau (Level 6/9), standardiser le FourCC en `dvvC` et valider les blocs EBML.
 4. **Assemblage Matroska natif unifié** : L'assemblage final est pris en charge par le muxeur natif Matroska (`compile_assembly_plan`), qui préserve intégralement les éléments `Colour` (`0x55B0`) et `BlockAdditionMapping` sans dépendre d'un remux FFmpeg secondaire.
@@ -138,7 +138,13 @@ Dans le module `core/workflows/encode/` :
      - **Raccourci sans modification** : Si les offsets de crop et de padding sont nuls `(0, 0, 0, 0)`, le RPU extrait est réutilisé directement sans réédition superflue.
      - **Recalcul par scène** : Chaque bord devient `max(0, ancien_offset - crop) + padding`. L'éditeur fonctionne en mode 0 : les autres niveaux, trims, mapping et le nombre/ordre des images sont conservés. Le RPU ainsi édité est transmis à NVEncC ; `crop=true` n'est pas ajouté car il annulerait les offsets variables restants.
    - NVEncC conserve sa lecture directe du conteneur pour l'encodage. Sans modification géométrique, la copie native `--dolby-vision-rpu copy` reste utilisée.
-7. **Interface** :
+7. **Source Dolby Vision P5 (image de base IPT)** :
+   - Toute piste P5 réencodée est convertie en HDR10 BT.2020/PQ, Dolby Vision copié ou non : sans conversion, l'image sort violette/délavée.
+   - NVEncC convertit lui-même quand c'est possible (lecture d'un conteneur, sans tone-mapping, RIFE ni préfiltre FFmpeg) : `--vpp-libplacebo-tonemapping src_csp=dovi,dst_csp=hdr10,…,src_max=10000,dst_max=10000` puis `--vpp-tweak` (NVEncC sort en plage pleine dès que le RPU est P5) et `--colorrange limited`, sans NVRTC. Une sonde réelle (P5 synthétique, noir à 64) valide chaque binaire NVEncC ; sinon pipe FFmpeg `libplacebo`.
+   - Le RPU est extrait déjà converti (`dovi_tool -m 3 extract-rpu`) et transmis en fichier à NVEncC (jamais `copy`). Garde trames stricte avant et après encodage ; une ligne « Failed to get dovi rpu » (NVEncC renvoie 0) refuse la sortie.
+   - Le HDR10 statique vide est estimé depuis le RPU (L6, `source_max_pq`, L9, L1), champ par champ, sans écraser une saisie.
+   - Copy + « Normaliser en P8.1 » est refusé : une copie ne convertit jamais l'image.
+8. **Interface** :
    - Le passage à un resize effectif décoche Dolby Vision et affiche la raison dans le journal.
    - Le bouton Auto-crop renseigne les offsets en pixels et les aligne à 32 pour NVEncC + DV, à 2 sinon.
    - La confirmation avant encodage propose le crop/padding calculé. Le crop en pourcentage est matérialisé en pixels dans l'interface après acceptation.
