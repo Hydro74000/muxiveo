@@ -118,9 +118,43 @@ def test_decision_profile_cli_lookup_by_exact_name(tmp_path: Path) -> None:
     assert resolve_decision_profile_path("Film:4K", config) == second  # type: ignore[arg-type]
 
 
+def test_cli_prefers_exact_profile_to_historical_filename(tmp_path: Path) -> None:
+    from cli.profile import resolve_decision_profile_path
+
+    directory = tmp_path / "decision"
+    directory.mkdir()
+    (directory / "Film.json").write_text(json.dumps(_decision("film")), encoding="utf-8")
+    manager = DecisionProfileManager(directory)
+    wanted = manager.save(_decision("Film"))
+    assert wanted.name != "Film.json"
+    assert resolve_decision_profile_path("Film", SimpleNamespace(profiles_dir=tmp_path)) == wanted
+
+
 def test_unreadable_decision_profile_is_reported(tmp_path: Path) -> None:
     (tmp_path / "broken.json").write_text("[1, 2", encoding="utf-8")
     manager = DecisionProfileManager(tmp_path)
     manager.save(_decision("OK"))
     assert manager.names() == ["OK"]
     assert [e.path.name for e in manager.load_errors] == ["broken.json"]
+
+
+def test_concurrent_profile_save_cannot_overwrite_normalized_collision(tmp_path: Path, monkeypatch) -> None:
+    from core.profile_store import ProfileStore
+
+    first, second = ProfileManager(tmp_path), ProfileManager(tmp_path)
+    original = ProfileStore.path_for_name
+    attempted = []
+
+    def resolve_and_try_other_writer(store, name):
+        path = original(store, name)
+        if name == "Film/4K":
+            with pytest.raises(OSError, match="autre traitement"):
+                second.save(EncodePreset(name="Film:4K", crf=22))
+            attempted.append(True)
+        return path
+
+    monkeypatch.setattr(ProfileStore, "path_for_name", resolve_and_try_other_writer)
+    first.save(EncodePreset(name="Film/4K", crf=18))
+    second.save(EncodePreset(name="Film:4K", crf=22))
+    assert attempted == [True]
+    assert {p.name: p.crf for p in first.load_all()} == {"Film/4K": 18, "Film:4K": 22}

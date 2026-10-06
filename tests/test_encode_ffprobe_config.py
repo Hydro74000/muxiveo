@@ -67,6 +67,29 @@ def test_legacy_constructor_without_ffprobe_keeps_derivation() -> None:
     assert EncodeWorkflow(ffmpeg_bin="/x/ffmpeg.exe")._ffprobe_path() == "/x/ffprobe.exe"
 
 
+def test_live_ffprobe_change_invalidates_results(tmp_path: Path, captured) -> None:
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"x")
+    wf = EncodeWorkflow(ffmpeg_bin="/opt/a/ffmpeg", ffprobe_bin="/opt/b/ffprobe")
+    service = wf._hdr_metadata_service
+    service.ffprobe_streams_payload(source)
+    wf.set_ffprobe_bin("/opt/c/ffprobe")
+    service.ffprobe_streams_payload(source)
+    wf.set_ffprobe_bin(None)
+    service.ffprobe_streams_payload(source)
+    assert [cmd[0] for cmd in captured] == ["/opt/b/ffprobe", "/opt/c/ffprobe", "/opt/a/ffprobe"]
+
+
+def test_mediainfo_change_invalidates_results(tmp_path: Path, captured) -> None:
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"x")
+    wf = EncodeWorkflow()
+    wf._hdr_metadata_service.ffprobe_streams_payload(source)
+    wf.set_mediainfo_bin("/custom/mediainfo")
+    wf._hdr_metadata_service.ffprobe_streams_payload(source)
+    assert len(captured) == 2
+
+
 def test_encode_panel_passes_configured_ffprobe(qt_app, monkeypatch) -> None:
     from ui.panels.encode_panel import panel as panel_mod
 

@@ -101,3 +101,22 @@ def test_release_publication_requires_unit_tests_of_same_run():
     release = text[text.index("\n  release:\n"):text.index("\n  publish-homebrew-tap:")]
     assert "needs.unit-tests.result == 'success'" in release
     assert re.search(r"needs:\n(?:      - .*\n)*      - unit-tests\n", release)
+
+
+def test_native_publication_also_waits_for_application_gate():
+    text = _text("release.yml")
+    native = text[text.index("\n  muxiveo-rife:\n"):text.index("\n  build-linux:\n")]
+    assert "needs: [muxiveo-rife-state, unit-tests]" in native
+
+
+def test_release_downloads_only_deliverable_artifacts():
+    import fnmatch
+
+    text = _text("release.yml")
+    step = text[text.index("      - name: Download release assets"):]
+    match = re.search(r"pattern: '\{([^}]+)\}'", step)
+    assert match is not None
+    names = match.group(1).split(",")
+    assert all(name in names for name in ("appimage-linux", "binary-windows", "binary-macos"))
+    for report in ("pytest-linux-3.12", "pytest-windows", "muxiveo-rife-linux"):
+        assert not any(fnmatch.fnmatch(report, pattern) for pattern in names)

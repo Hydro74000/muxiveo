@@ -589,10 +589,13 @@ Règles importantes :
 
 - Film 1 et Film 2 doivent contenir de la **vidéo HEVC**
 - Film 2 doit contenir **Dolby Vision** et/ou **HDR10+**
-- l'écart de frame count doit être **<= 4 images**
+- les métadonnées de Film 2 doivent avoir **exactement** le nombre de trames de Film 1 ; en option, un
+  surplus de 4 trames au plus est retiré **en fin de flux** (Film 2 plus long). Des métadonnées plus courtes
+  sont toujours refusées
 - le remux final conserve l'audio et les sous-titres de Film 1
 
-Le workflow UI Fusion DoVi/HDR10+ est désormais **FFmpeg-only** pour l'extraction HEVC et le remux final.
+FFmpeg prépare les flux (extraction HEVC en Annex B, conversions) ; l'assemblage final est écrit par le
+**muxer Matroska natif** de Muxiveo, puis relu et validé avant de remplacer la sortie.
 
 Profils Dolby Vision proposés :
 
@@ -724,107 +727,103 @@ generate_nfo = true
 
 ```mermaid
 flowchart TD
-    A["Sources MKV, MP4 ou SRT"] --> B["Inspection via ffprobe"]
-    B --> C["Edition conteneur dans RemuxPanel"]
-    C --> D["Options video, audio et HDR dans EncodePanel"]
-    D --> E{"Video copy<br/>Audio copy<br/>Aucune transformation HDR"}
-
-    E -->|Oui| R0["WORKFLOW TYPE - REMUX"]
-    R0 --> R1["Workflow remux FFmpeg"]
-    R1 --> Z["Sortie MKV"]
-
-    E -->|Non| E0["WORKFLOW TYPE - ENCODE"]
-    E0 --> E1["Workflow encode FFmpeg"]
-    E1 --> Z
+    A[Sources] --> B[Inspection FFprobe et MediaInfo bornée]
+    B --> C{Traitement demandé}
+    C -->|Conteneur| R[Remux : FFmpeg ou writer Matroska natif]
+    C -->|Encodage| E[Encodage FFmpeg ou NVEncC]
+    R --> V[Candidat unique, validation, publication]
+    E --> V
+    V --> Z[Sortie MKV]
 ```
 
 ### Backends remux Matroska — Branches internes
 
 ```mermaid
 flowchart TD
-    A["WORKFLOW TYPE - REMUX"] --> B["STEP 1 - Validation configuration"]
-    B --> C["STEP 2 - Préparation workspace, attachments et cover TMDB"]
-    C --> D["STEP 3 - Analyse mapping pistes + pre-scan de risque<br/>extraction attached_pic si présent"]
-    D --> E{"Risque multi-source<br/>strict interleave"}
-    E -->|Oui| F["STEP 4 - Synchronisation timeline multi-source<br/>FIFO, Named Pipe ou fallback fichier"]
-    E -->|Non| G["STEP 4 - Synchronisation timeline non requise"]
-    F --> H["STEP 5 - Chapitres : override FFMetadata ou copie source"]
+    A[Configuration et plan] --> B[Réservation de la destination]
+    B --> C[Workspace propre au job, cover et pièces jointes]
+    C --> D[Préparations et synchronisation des pistes si nécessaire]
+    D --> E{Backend retenu}
+    E -->|FFmpeg| F[Remux vers le candidat réservé]
+    E -->|Natif| G[Assemblage par le writer Matroska]
+    F --> H[Post-actions et validation du candidat]
     G --> H
-    H --> I["STEP 6 - Construction de la commande ffmpeg remux"]
-    I --> J["STEP 7 - Exécution du remux ffmpeg"]
-    J --> K["STEP 8 - Post-action : Patch MuxingApp + Cleanup"]
-    K --> L["Sortie MKV"]
+    H --> I[Publication puis nettoyage du workspace]
+    I --> Z[Sortie MKV]
 ```
+
+En mode `auto`, le plan choisit le writer natif lorsque les opérations sont
+transposables, sinon FFmpeg. En mode `native`, une opération non transposable
+est refusée. La synchronisation physique peut préparer des flux audio ou
+sous-titres avant l'assemblage, quel que soit le backend.
 
 ### Encode workflow — Branches internes
 
 ```mermaid
 flowchart TD
-    A["WORKFLOW TYPE - ENCODE"] --> B["STEP 1 - Validation configuration"]
-    B --> C["STEP 2 - Préparation workspace et attachments"]
-    C --> D["STEP 3 - Normalisation des options HDR dynamiques"]
-    D --> E["STEP 4 - Routage du workflow"]
-    E --> F{"Injection fichier<br/>DoVi ou HDR10+<br/>nécessaire"}
-
-    F -->|Oui| K["STEP 5 - Extraction des metadata dynamiques<br/>DoVi et ou HDR10+"]
-    K --> L["STEP 6 - Encodage vidéo seule vers enc.hevc"]
-    L --> M["STEP 7 - Injection HDR10+ et ou DoVi"]
-    M --> N["STEP 8 - Encapsulation timeline vidéo injectée"]
-    N --> O["STEP 9 - Reconstruction finale MKV<br/>Sync timeline si risque détecté"]
-
-    F -->|Non| G["STEP 5 - Construction de la commande ffmpeg<br/>sortie directe"]
-    G --> H["STEP 6 - Préparation sync/remap + commande(s)"]
-    H --> P{"Quality mode = SIZE"}
-    P -->|Oui| Q["STEP 7 - Exécution ffmpeg en 2 passes<br/>sync timeline si risque détecté"]
-    P -->|Non| R["STEP 7 - Exécution ffmpeg en single pass<br/>sync timeline si risque détecté"]
-
-    O --> Z["Sortie MKV"]
-    Q --> Z
-    R --> Z
+    A[Configuration et validation] --> B[Destination réservée et workspace du job]
+    B --> C[Normalisation HDR et préparation des pistes]
+    C --> D{Interpolation RIFE demandée ?}
+    D -->|Oui| E[Pipe direct : FFmpeg vers RIFE vers encodeur]
+    D -->|Non| F[Encodage FFmpeg ou NVEncC, ou copie vidéo]
+    E --> G{Métadonnées dynamiques à réinjecter ?}
+    F --> G
+    G -->|Oui| H[Extraction et ajustement par trame, puis injection]
+    G -->|Non| I[Assemblage des pistes vidéo, audio et sous-titres]
+    H --> I
+    I --> J[Candidat final : backend natif ou FFmpeg selon le plan]
+    J --> K[Post-actions, validation, publication et nettoyage]
+    K --> Z[Sortie MKV]
 ```
 
-Lecture rapide :
-- Les demandes `copy_hdr10plus` et `copy_dv` sont évaluées après normalisation source.
-- L'injection "fichier" n'est requise que si une copie DoVi ou HDR10+ reste demandée et que la vidéo n'est pas en `copy`.
-- Si `codec=copy` avec injection désactivée, le workflow reste en sortie directe ffmpeg (STEP 5-7), y compris si l'audio est réencodé.
-- Le 2-pass n'existe que dans le chemin direct (`quality_mode=SIZE`, `codec!=copy`).
-- Le chemin injection utilise `enc.hevc`, puis `enc_wrapped.mkv`, puis un remux final ffmpeg (STEP 5-9).
-- La sync timeline multi-source est activée uniquement en cas de risque détecté par pre-scan ffprobe ; sinon le flux reste en chemin direct.
-- En mode TMDB, la cover est résolue en URL lors de la recherche puis téléchargée uniquement au lancement du workflow.
+- Le transfert FFmpeg → RIFE → encodeur reste direct, sans fichier ajouté entre ces étapes.
+- L'injection fichier dépend du codec, des métadonnées retenues et du routage de la piste ; la copie vidéo peut préserver ses métadonnées sans réencodage.
+- La taille cible porte sur le fichier complet en **Mio**, avec une seule valeur partagée par les pistes en mode taille. Les postes estimés ou inconnus sont signalés ; seuls les postes connus peuvent prouver une cible impossible.
+- Le mode taille utilise deux passes avec x264, x265 et SVT-AV1, y compris dans les préparations vidéo des chemins injection et multi-piste ; les encodeurs matériels utilisent une passe à débit demandé.
+- La cover TMDB est résolue en URL lors de la recherche puis téléchargée dans le workspace du job au lancement.
 
 ### Fusion DoVi / HDR10+
 
 ```mermaid
 flowchart TD
-    A([Film 1 + Film 2]) --> B[Validation<br/>fichiers, extensions, outils,<br/>HEVC Film 1/2, HDR dans Film 2]
-    B --> C[Comparaison frame count<br/>tolerance <= 4]
-    C --> D{Film 2 = MKV<br/>et DoVi + HDR10+ ?}
-
-    D -->|Oui| E1[Phase 1 parallel<br/>extract HEVC Film 1 si MKV<br/>+ extract HEVC Film 2]
-    E1 --> E2[Phase 2 parallel<br/>extract RPU + HDR10+<br/>depuis film2.hevc]
-    D -->|Non| E3[Extraction parallel directe<br/>HEVC Film 1 si MKV<br/>+ RPU/HDR10+ depuis Film 2]
-
-    E2 --> F
-    E3 --> F
-
-    F{DoVi présent ?}
-    F -->|Oui| G[dovi_tool inject-rpu]
-    F -->|Non| H
-    G --> H
-
-    H{HDR10+ présent ?}
-    H -->|Oui| I[hdr10plus_tool inject]
-    H -->|Non| J
-    I --> J
-
-    J{DoVi présent ?}
-    J -->|Oui| K[Vérification RPU frames]
-    J -->|Non| L
-    K --> L
-
-    L[ffmpeg final<br/>vidéo injectée + audio/subs/metadata Film 1<br/>map_metadata/map_chapters] --> M[Nettoyage]
-    M --> N([Sortie MKV])
+    A[Film 1 et Film 2] --> B[Validation des sources HEVC et des outils]
+    B --> C[Réservation de la destination et workspace du job]
+    C --> D[Comptages exacts et politique de métadonnées]
+    D --> E[Préparation de la vidéo Film 1 et extraction RPU ou HDR10+ Film 2]
+    E --> F[Ajustement autorisé : retrait du surplus en fin de flux]
+    F --> G[Injection DoVi ou HDR10+ dans la vidéo Film 1]
+    G --> H[Contrôle des métadonnées et des comptages]
+    H --> I[Assemblage Matroska natif : vidéo injectée et pistes Film 1]
+    I --> J[Validation du candidat, publication et nettoyage]
+    J --> Z[Sortie MKV]
 ```
+
+Par défaut, les comptages doivent être identiques. L'option explicite de retrait
+permet de supprimer au plus quatre trames de métadonnées excédentaires **en fin
+de flux** ; une source de métadonnées plus courte est toujours refusée.
+L'assemblage final utilise le writer Matroska natif. FFmpeg sert aux préparations
+nécessaires, notamment à la lecture Annex B des sources incompatibles avec le
+lecteur direct des outils HDR. Des comptages égaux ne prouvent pas à eux seuls
+l'alignement temporel des deux films.
+
+### Protection des fichiers
+
+Chaque traitement possède un workspace marqué et verrouillé. Un job actif est
+exclu du nettoyage, y compris lorsqu'une seconde instance partage le workdir.
+Les anciens dossiers marqués sans verrou restent nettoyables ; l'utilisation
+simultanée d'une ancienne version et d'une nouvelle sur le même workdir n'est
+pas couverte par cette protection.
+
+Le candidat final est unique et placé à côté de la sortie pour garder une
+publication atomique sur le même volume. Une sortie initialement absente est
+publiée sans écrasement. Pour une sortie existante dont le remplacement a été
+accepté, l'état est revérifié avant le remplacement ; un changement détecté
+conserve la sortie et le candidat. Le verrou exclut les autres jobs Muxiveo du
+même utilisateur ; il n'empêche pas un logiciel externe de modifier le fichier.
+Si le système de fichiers ne permet aucune publication atomique sans écrasement,
+le résultat est conservé comme candidat et son chemin est indiqué dans l'erreur.
+Les collisions internes d'un batch sont refusées avant son premier traitement,
+y compris avec `--force`.
 
 ### Inspection d'un fichier (ffprobe + mediainfo)
 

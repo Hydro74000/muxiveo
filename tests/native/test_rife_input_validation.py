@@ -80,3 +80,14 @@ def test_invalid_numeric_options_refused(args: list[str]) -> None:
 def test_invalid_rate_refused_before_gpu(args: list[str]) -> None:
     result = _run(args, stdin=b"YUV4MPEG2 W64 H32 F25:1 Ip C420jpeg\nFRAME\n" + bytes(64 * 32 * 3 // 2))
     assert result.returncode == 1, result.stderr
+
+
+@needs_vulkan_loader
+@pytest.mark.parametrize("args", [
+    ["--gpu", "256"], ["--threads", "1025"], ["--padding", "4097"],
+    ["--scene-threshold", "1e10"], ["--progress-interval", "86401"],
+])
+def test_finite_numeric_options_have_no_arbitrary_caps(args: list[str]) -> None:
+    frame = b"FRAME\n" + bytes(64 * 32 * 3 // 2)
+    result = _run(["--factor", "1", *args], stdin=b"YUV4MPEG2 W64 H32 F25:1 Ip C420jpeg\n" + frame)
+    assert result.returncode == 0, result.stderr

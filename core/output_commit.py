@@ -17,6 +17,7 @@ core/output_commit.py — Candidat unique, réservation de destination et public
 from __future__ import annotations
 
 import errno
+import ctypes
 import hashlib
 import os
 import secrets
@@ -42,7 +43,11 @@ class OutputBusyError(RuntimeError):
         )
 
 
-class OutputChangedError(RuntimeError):
+class OutputCommitError(RuntimeError):
+    """Publication refusée : le candidat doit être conservé pour récupération."""
+
+
+class OutputChangedError(OutputCommitError):
     """Destination apparue ou modifiée pendant le job : publication refusée."""
 
     def __init__(self, output: Path, candidate: Path) -> None:
@@ -51,6 +56,17 @@ class OutputChangedError(RuntimeError):
         super().__init__(
             f"La destination {output} a été créée ou modifiée pendant le traitement ; "
             f"elle est conservée. Résultat disponible dans {candidate}."
+        )
+
+
+class OutputPublicationError(OutputCommitError):
+    """Publication atomique sans écrasement indisponible sur cette destination."""
+
+    def __init__(self, output: Path, candidate: Path) -> None:
+        self.output, self.candidate = Path(output), Path(candidate)
+        super().__init__(
+            f"Publication sûre impossible vers {output} sur ce système de fichiers. "
+            f"Résultat conservé dans {candidate}."
         )
 
 
@@ -107,20 +123,30 @@ class _Snapshot:
     ino: int
     size: int
     mtime_ns: int
+    entry_ino: int
+    resolved: str
 
 
 def _snapshot(path: Path) -> _Snapshot | None:
     try:
         st = os.stat(path)
+        entry = os.lstat(path)
     except FileNotFoundError:
         return None
-    return _Snapshot(st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+    return _Snapshot(st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, entry.st_ino, destination_key(path))
 
 
 _ACTIVE_LOCK = threading.Lock()
 # Réservations détenues par ce processus, par clé de destination : la
 # publication y retrouve l'état initial relevé au lancement du job.
 _ACTIVE: dict[str, "OutputReservation"] = {}
+_ACTIVE_PATHS: dict[str, "OutputReservation"] = {}
+
+
+def _path_key(output: Path) -> str:
+    """Identité stable du chemin fourni, même si un lien change de cible."""
+    key = os.path.normcase(os.path.abspath(Path(output).expanduser()))
+    return key.casefold() if sys.platform in ("win32", "darwin") else key
 
 
 class OutputReservation:
@@ -129,6 +155,7 @@ class OutputReservation:
     def __init__(self, output: Path, *, lock_dir: Path | None = None) -> None:
         self.output = Path(output).expanduser().absolute()
         self.key = destination_key(self.output)
+        self.path_key = _path_key(self.output)
         self._lock_dir = Path(lock_dir) if lock_dir is not None else default_lock_dir()
         self._locks: list[FileLock] = []
         self.initial: _Snapshot | None = None
@@ -141,34 +168,40 @@ class OutputReservation:
         return reservation
 
     def _lock_keys(self) -> list[str]:
-        keys = [f"path:{self.key}"]
+        keys = {f"path:{self.key}", f"path:{self.path_key}"}
         snapshot = _snapshot(self.output)
         if snapshot is not None and snapshot.ino:
             # Alias d'un fichier existant (lien physique, autre chemin de montage).
-            keys.append(f"file:{snapshot.dev}:{snapshot.ino}")
+            keys.add(f"file:{snapshot.dev}:{snapshot.ino}")
         return sorted(keys)
 
     def _acquire(self) -> None:
-        self._lock_dir.mkdir(parents=True, exist_ok=True)
-        for key in self._lock_keys():
-            name = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32] + ".lock"
-            lock = FileLock(self._lock_dir / name)
-            if not lock.try_acquire():
-                self.release()
-                raise OutputBusyError(self.output)
-            self._locks.append(lock)
-        self.initial = _snapshot(self.output)
-        with _ACTIVE_LOCK:
-            if self.key in _ACTIVE:
-                self.release()
-                raise OutputBusyError(self.output)
-            _ACTIVE[self.key] = self
+        try:
+            self._lock_dir.mkdir(parents=True, exist_ok=True)
+            for key in self._lock_keys():
+                name = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32] + ".lock"
+                lock = FileLock(self._lock_dir / name)
+                if not lock.try_acquire():
+                    raise OutputBusyError(self.output)
+                self._locks.append(lock)
+            self.initial = _snapshot(self.output)
+            with _ACTIVE_LOCK:
+                if self.key in _ACTIVE or self.path_key in _ACTIVE_PATHS:
+                    raise OutputBusyError(self.output)
+                _ACTIVE[self.key] = self
+                _ACTIVE_PATHS[self.path_key] = self
+        except BaseException:
+            # Hors du mutex : release() prend lui-même ce verrou.
+            self.release()
+            raise
 
     def release(self) -> None:
         """Libère la destination (idempotent, appelable depuis tout thread)."""
         with _ACTIVE_LOCK:
             if _ACTIVE.get(self.key) is self:
                 del _ACTIVE[self.key]
+            if _ACTIVE_PATHS.get(self.path_key) is self:
+                del _ACTIVE_PATHS[self.path_key]
         locks, self._locks = self._locks, []
         for lock in locks:
             lock.release(unlink=True)
@@ -182,6 +215,8 @@ class OutputReservation:
     def publish(self, candidate: Path) -> None:
         """Publie ``candidate`` sur la destination selon l'état relevé au départ."""
         candidate = Path(candidate)
+        if destination_key(self.output) != self.key:
+            raise OutputChangedError(self.output, candidate)
         current = _snapshot(self.output)
         if self.initial is None:
             if current is not None:
@@ -197,7 +232,7 @@ class OutputReservation:
 
 def active_reservation(output: Path) -> OutputReservation | None:
     with _ACTIVE_LOCK:
-        return _ACTIVE.get(destination_key(output))
+        return _ACTIVE_PATHS.get(_path_key(output)) or _ACTIVE.get(destination_key(output))
 
 
 def publish_candidate(candidate: Path, output: Path) -> None:
@@ -240,18 +275,40 @@ def _publish_no_clobber(candidate: Path, output: Path) -> None:
     except OSError as exc:
         if exc.errno not in _NO_HARDLINK_ERRNOS:
             raise
-        # Système de fichiers sans liens physiques (FAT, certains partages) :
-        # le verrou de destination exclut les autres jobs Muxiveo ; dernier
-        # contrôle avant le remplacement.
-        if os.path.lexists(output):
-            raise OutputChangedError(output, candidate) from exc
-        os.replace(candidate, output)
+        _rename_no_clobber(candidate, output)
         return
     os.unlink(candidate)
 
 
+def _rename_no_clobber(candidate: Path, output: Path) -> None:
+    """Repli POSIX atomique ; jamais de contrôle suivi d'un os.replace()."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    source, target = os.fsencode(candidate), os.fsencode(output)
+    try:
+        if sys.platform.startswith("linux"):
+            rename = libc.renameat2
+            rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+            rename.restype = ctypes.c_int
+            result = rename(-100, source, -100, target, 1)  # AT_FDCWD, RENAME_NOREPLACE
+        elif sys.platform == "darwin":
+            rename = libc.renamex_np
+            rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+            rename.restype = ctypes.c_int
+            result = rename(source, target, 4)  # RENAME_EXCL
+        else:
+            raise OutputPublicationError(output, candidate)
+    except AttributeError as exc:
+        raise OutputPublicationError(output, candidate) from exc
+    if result != 0:
+        code = ctypes.get_errno()
+        if code in (errno.EEXIST, errno.ENOTEMPTY):
+            raise OutputChangedError(output, candidate)
+        raise OutputPublicationError(output, candidate) from OSError(code, os.strerror(code))
+
+
 __all__ = [
-    "CANDIDATE_SUFFIX", "OutputBusyError", "OutputChangedError", "OutputReservation",
+    "CANDIDATE_SUFFIX", "OutputBusyError", "OutputChangedError", "OutputCommitError",
+    "OutputPublicationError", "OutputReservation",
     "active_reservation", "candidate_pattern", "default_lock_dir", "destination_key",
     "publish_candidate", "reserve_candidate",
 ]

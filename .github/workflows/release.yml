@@ -173,7 +173,7 @@ jobs:
 
   muxiveo-rife:
     name: muxiveo-rife
-    needs: muxiveo-rife-state
+    needs: [muxiveo-rife-state, unit-tests]
     if: ${{ needs.muxiveo-rife-state.outputs.build == 'true' }}
     uses: ./.github/workflows/muxiveo-rife.yml
     with:
@@ -558,13 +558,8 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: '{appimage-linux,binary-windows,binary-macos,homebrew-macos-assets,homebrew-formula}'
           merge-multiple: true
-
-      # Archives du job muxiveo-rife du même run (publiées dans leur propre release) :
-      # download-artifact ne sait pas exclure par motif.
-      - name: Drop muxiveo-rife artifacts
-        shell: bash
-        run: rm -fv artifacts/muxiveo-rife-*
 
       - name: Add source archives
         shell: bash

@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import math
+from types import ModuleType
 from typing import Any
 
 try:
-    import numpy as np
+    import numpy as _numpy
 except ImportError:
-    np = None
+    np: ModuleType | None = None
+else:
+    np = _numpy
 
 from PySide6.QtCore import QLineF, QRect, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen, QWheelEvent

@@ -515,23 +515,23 @@ class TestGetFrameCount:
         return result
 
     def test_returns_int_on_valid_output(self):
-        with patch("subprocess.run", return_value=self._mock_run("142857\n")):
+        with patch("core.inspector.run_probe", return_value=self._mock_run("142857\n")):
             assert self.insp.get_frame_count(self.path) == 142857
 
     def test_returns_none_on_empty_output(self):
-        with patch("subprocess.run", return_value=self._mock_run("")):
+        with patch("core.inspector.run_probe", return_value=self._mock_run("")):
             assert self.insp.get_frame_count(self.path) is None
 
     def test_returns_none_on_non_numeric_output(self):
-        with patch("subprocess.run", return_value=self._mock_run("N/A")):
+        with patch("core.inspector.run_probe", return_value=self._mock_run("N/A")):
             assert self.insp.get_frame_count(self.path) is None
 
     def test_returns_none_when_mediainfo_missing(self):
-        with patch("subprocess.run", side_effect=FileNotFoundError):
+        with patch("core.inspector.run_probe", side_effect=FileNotFoundError):
             assert self.insp.get_frame_count(self.path) is None
 
     def test_strips_whitespace(self):
-        with patch("subprocess.run", return_value=self._mock_run("  48000  \n")):
+        with patch("core.inspector.run_probe", return_value=self._mock_run("  48000  \n")):
             assert self.insp.get_frame_count(self.path) == 48000
 
 
@@ -719,7 +719,7 @@ class TestRunFFprobe:
         self.path = fake_path
 
     def test_raises_when_ffprobe_missing(self):
-        with patch("subprocess.run", side_effect=FileNotFoundError):
+        with patch("core.inspector.run_probe", side_effect=FileNotFoundError):
             with pytest.raises(InspectionError) as exc:
                 self.insp._run_ffprobe(self.path)
             assert "ffprobe" in str(exc.value).lower()
@@ -729,7 +729,7 @@ class TestRunFFprobe:
         result.returncode = 1
         result.stderr     = "no such file"
         result.stdout     = ""
-        with patch("subprocess.run", return_value=result):
+        with patch("core.inspector.run_probe", return_value=result):
             with pytest.raises(InspectionError):
                 self.insp._run_ffprobe(self.path)
 
@@ -738,7 +738,7 @@ class TestRunFFprobe:
         result.returncode = 0
         result.stdout     = "ce n'est pas du json {"
         result.stderr     = ""
-        with patch("subprocess.run", return_value=result):
+        with patch("core.inspector.run_probe", return_value=result):
             with pytest.raises(InspectionError):
                 self.insp._run_ffprobe(self.path)
 
@@ -748,7 +748,7 @@ class TestRunFFprobe:
         result.returncode = 0
         result.stdout     = json.dumps(payload)
         result.stderr     = ""
-        with patch("subprocess.run", return_value=result):
+        with patch("core.inspector.run_probe", return_value=result):
             out = self.insp._run_ffprobe(self.path)
         assert out == payload
 
@@ -765,7 +765,7 @@ class TestRunFFprobe:
         result.stdout = json.dumps(payload)
         result.stderr = ""
 
-        with patch("subprocess.run", return_value=result):
+        with patch("core.inspector.run_probe", return_value=result):
             out = inspector._run_ffprobe(fake_path)
 
         assert out == payload
@@ -814,7 +814,7 @@ class TestInspect:
                 return payload
             return mi_payload if "%FrameCount%" in " ".join(cmd) else mi_hdr
 
-        with patch("subprocess.run", side_effect=fake_run):
+        with patch("core.inspector.run_probe", side_effect=fake_run):
             info = self.insp.inspect(self.path)
 
         assert isinstance(info, FileInfo)
@@ -834,7 +834,7 @@ class TestInspect:
             stdout = count if "%FrameCount%" in " ".join(cmd) else ""
             return MagicMock(returncode=0, stdout=stdout, stderr="")
 
-        with patch("subprocess.run", side_effect=fake_run):
+        with patch("core.inspector.run_probe", side_effect=fake_run):
             return self.insp.inspect(self.path)
 
     def test_inspect_uses_video_duration_when_audio_outlasts_video(self):
@@ -939,7 +939,7 @@ class TestInspect:
                 return ffprobe_result
             raise FileNotFoundError("mediainfo not found")
 
-        with patch("subprocess.run", side_effect=fake_run):
+        with patch("core.inspector.run_probe", side_effect=fake_run):
             info = self.insp.inspect(self.path)
 
         assert info.frame_count is None     # mediainfo absent → None

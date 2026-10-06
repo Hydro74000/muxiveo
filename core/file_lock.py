@@ -39,21 +39,21 @@ class FileLock:
         # encore présent à ce chemin, sinon on recommence.
         for _ in range(16):
             fd = os.open(self.path, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o600)
-            if not _lock_fd(fd):
-                os.close(fd)
-                return False
             try:
-                current = os.stat(self.path)
-            except FileNotFoundError:
-                _unlock_fd(fd)
-                os.close(fd)
-                continue
-            opened = os.fstat(fd)
-            if sys.platform == "win32" or (opened.st_dev, opened.st_ino) == (current.st_dev, current.st_ino):
-                self._fd = fd
-                return True
-            _unlock_fd(fd)
-            os.close(fd)
+                if not _lock_fd(fd):
+                    return False
+                try:
+                    current = os.stat(self.path)
+                except FileNotFoundError:
+                    continue
+                opened = os.fstat(fd)
+                if sys.platform == "win32" or (opened.st_dev, opened.st_ino) == (current.st_dev, current.st_ino):
+                    self._fd = fd
+                    return True
+            finally:
+                if self._fd != fd:
+                    _unlock_fd(fd)
+                    os.close(fd)
         return False
 
     def release(self, *, unlink: bool = False) -> None:

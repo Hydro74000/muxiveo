@@ -88,6 +88,62 @@ def test_distinct_destinations_are_independent(tmp_path: Path) -> None:
         OutputReservation.acquire(tmp_path / "b.mkv", lock_dir=_lock_dir(tmp_path)).release()
 
 
+def test_second_lock_directory_does_not_deadlock(tmp_path: Path) -> None:
+    script = textwrap.dedent(f"""
+        from pathlib import Path
+        from core.output_commit import OutputReservation, OutputBusyError
+        output = Path({str(tmp_path / 'out.mkv')!r})
+        with OutputReservation.acquire(output, lock_dir=Path({str(tmp_path / 'locks1')!r})):
+            try:
+                OutputReservation.acquire(output, lock_dir=Path({str(tmp_path / 'locks2')!r}))
+            except OutputBusyError:
+                pass
+            else:
+                raise AssertionError('double réservation')
+    """)
+    subprocess.run([sys.executable, "-c", script], cwd=REPO_ROOT, check=True, timeout=3)
+
+
+def test_changed_symlink_does_not_bypass_reservation(tmp_path: Path) -> None:
+    output = tmp_path / "film.mkv"
+    first, second = tmp_path / "a", tmp_path / "b"
+    first.write_bytes(b"OLD")
+    second.write_bytes(b"FOREIGN")
+    try:
+        output.symlink_to(first)
+    except OSError:
+        pytest.skip("liens symboliques indisponibles")
+    with OutputReservation.acquire(output, lock_dir=_lock_dir(tmp_path)):
+        candidate = reserve_candidate(output)
+        candidate.write_bytes(b"NEW")
+        output.unlink()
+        output.symlink_to(second)
+        with pytest.raises(OutputChangedError):
+            publish_candidate(candidate, output)
+    assert output.is_symlink() and output.read_bytes() == b"FOREIGN"
+    assert candidate.read_bytes() == b"NEW"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="repli POSIX")
+def test_no_hardlink_fallback_is_atomic_against_external_creation(tmp_path: Path, monkeypatch) -> None:
+    output = tmp_path / "film.mkv"
+
+    def create_then_refuse(*_args, **_kwargs):
+        output.write_bytes(b"FOREIGN")
+        raise OSError(errno.EPERM, "pas de lien")
+
+    monkeypatch.setattr(output_commit.os, "link", create_then_refuse)
+    # Simule l'apparition juste après le dernier contrôle de chemin du repli.
+    monkeypatch.setattr(output_commit.os.path, "lexists", lambda _path: False)
+    with OutputReservation.acquire(output, lock_dir=_lock_dir(tmp_path)):
+        candidate = reserve_candidate(output)
+        candidate.write_bytes(b"NEW")
+        with pytest.raises(OutputChangedError):
+            publish_candidate(candidate, output)
+    assert output.read_bytes() == b"FOREIGN"
+    assert candidate.read_bytes() == b"NEW"
+
+
 def test_relative_and_symlinked_aliases_share_the_reservation(tmp_path: Path, monkeypatch) -> None:
     real_dir = tmp_path / "real"
     real_dir.mkdir()
@@ -294,3 +350,42 @@ def test_native_writer_keeps_foreign_partial(tmp_path: Path) -> None:
     assert (tmp_path / "out.mkv").stat().st_size > 0
     assert foreign.read_bytes() == b"autre job"
     assert sorted(p.name for p in tmp_path.glob("*.partial")) == ["out.mkv.partial"]
+
+
+def test_native_writer_keeps_result_if_safe_publication_is_unavailable(tmp_path: Path, monkeypatch) -> None:
+    from core.matroska.writer import MatroskaWriter
+    from tests.test_remux_hardening import _writer_plan
+
+    def refuse_publication(candidate, output):
+        raise output_commit.OutputPublicationError(output, candidate)
+
+    monkeypatch.setattr(output_commit, "_publish_no_clobber", refuse_publication)
+    plan = _writer_plan(tmp_path)
+    with OutputReservation.acquire(plan.output, lock_dir=_lock_dir(tmp_path)):
+        with pytest.raises(output_commit.OutputPublicationError) as error:
+            MatroskaWriter().write(plan)
+    assert error.value.candidate.stat().st_size > 0
+    assert not plan.output.exists()
+
+
+def test_failed_acquisition_releases_already_acquired_locks(tmp_path: Path, monkeypatch) -> None:
+    from core.file_lock import FileLock
+
+    output = tmp_path / "film.mkv"
+    output.write_bytes(b"OLD")
+    original = FileLock.try_acquire
+    acquired = []
+
+    def fail_second(lock):
+        if acquired:
+            raise OSError("lecture du second verrou impossible")
+        result = original(lock)
+        acquired.append(lock)
+        return result
+
+    monkeypatch.setattr(FileLock, "try_acquire", fail_second)
+    with pytest.raises(OSError):
+        OutputReservation.acquire(output, lock_dir=_lock_dir(tmp_path))
+    assert acquired and not acquired[0].held
+    monkeypatch.setattr(FileLock, "try_acquire", original)
+    OutputReservation.acquire(output, lock_dir=_lock_dir(tmp_path)).release()

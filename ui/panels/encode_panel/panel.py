@@ -5490,6 +5490,7 @@ class EncodePanel(QWidget):
 
     def refresh_runtime_settings(self) -> None:
         self._audio_table.refresh_runtime_settings()
+        self._workflow.set_ffprobe_bin(getattr(self._config, "tool_ffprobe", None) or None)
         self._workflow.set_ffmpeg_threads(self._config.ffmpeg_threads)
         self._workflow.set_max_parallel_video_encodes(self._config.max_parallel_video_encodes)
         self._workflow.set_mediainfo_bin(self._config.tool_mediainfo)

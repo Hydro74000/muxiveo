@@ -77,3 +77,13 @@ def test_frozen_application_never_calls_pip(setup_module, monkeypatch):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     setup.install_python_packages(dry_run=False, force=True)
     assert commands == []
+
+
+@pytest.mark.parametrize(("version", "accepted"), [
+    ("6.6", True), ("6.6.0", True), ("6.6.0.0", True), ("6.6.0+mybuild", True),
+    ("6.6.0rc1", False), ("6.6.0.dev1", False), ("6.7.0rc1", True),
+])
+def test_minimum_release_comparison(monkeypatch, version, accepted):
+    monkeypatch.setattr(reqs, "installed_version", lambda _name: version)
+    requirement = next(r for r in read_requirements() if r.distribution == "PySide6")
+    assert bool(reqs.unsatisfied_requirements([requirement])) is not accepted

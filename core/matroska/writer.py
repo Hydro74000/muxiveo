@@ -38,7 +38,7 @@ from .native_muxer import (
 from .reader import read_element
 from .reader import MatroskaAttachment
 from .validation import MatroskaPacketValidation
-from core.output_commit import OutputChangedError, publish_candidate, reserve_candidate
+from core.output_commit import OutputCommitError, publish_candidate, reserve_candidate
 
 
 #: Charge utile maximale d'un Cluster (octets). Borne le pic mémoire du
@@ -777,7 +777,7 @@ class MatroskaWriter:
             _check_cancel("commit")
             _notify("commit", partial.stat().st_size)
             publish_candidate(partial, destination)
-        except OutputChangedError:
+        except OutputCommitError:
             # Destination apparue pendant l'écriture : elle et le résultat sont conservés.
             raise
         except BaseException:

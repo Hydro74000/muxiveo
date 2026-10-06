@@ -80,9 +80,21 @@ def unsatisfied_requirements(
     missing: list[tuple[PythonRequirement, str | None]] = []
     for requirement in requirements:
         version = installed_version(requirement.distribution)
-        if version is None or (requirement.minimum and parse_version(version) < requirement.minimum):
+        if version is None or (requirement.minimum and not _meets_minimum(version, requirement.minimum)):
             missing.append((requirement, version))
     return missing
+
+
+def _meets_minimum(version: str, minimum: tuple[int, ...]) -> bool:
+    """Composantes manquantes égales à zéro ; préversion inférieure à sa finale."""
+    release = parse_version(version)
+    width = max(len(release), len(minimum))
+    installed = release + (0,) * (width - len(release))
+    expected = minimum + (0,) * (width - len(minimum))
+    if installed != expected:
+        return installed > expected
+    public_version = version.split("+", 1)[0]
+    return re.search(r"(?:a|b|rc|dev|pre)\d*", public_version, re.IGNORECASE) is None
 
 
 __all__ = [

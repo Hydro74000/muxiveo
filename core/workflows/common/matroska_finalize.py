@@ -26,7 +26,7 @@ from core.matroska.editors.track_flags import (
 )
 from core.matroska.reader import MatroskaReader
 from core.matroska.validation import MatroskaPacketValidation, validate_matroska_output
-from core.output_commit import OutputChangedError, candidate_pattern, publish_candidate, reserve_candidate
+from core.output_commit import OutputCommitError, candidate_pattern, publish_candidate, reserve_candidate
 from core.runner import TaskCancelledError, TaskSignals
 from core.workflows.common.validation_override import ValidationOverride, validate_final_output
 
@@ -387,7 +387,7 @@ class MatroskaOutputTransaction:
                     if self.warn is not None:
                         self.warn(f"Génération NFO échouée après commit : {exc}")
             return output
-        except OutputChangedError:
+        except OutputCommitError:
             raise
         except BaseException:
             candidate.unlink(missing_ok=True)

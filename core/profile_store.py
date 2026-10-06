@@ -13,11 +13,14 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from core.atomic_io import atomic_write_text
+from core.file_lock import FileLock
+from core.json_documents import JsonDocumentError, read_json_document
 
 
 @dataclass(frozen=True)
@@ -44,8 +47,8 @@ class ProfileStore:
         errors: list[ProfileLoadError] = []
         for path in sorted(self.directory.glob("*.json")):
             try:
-                data = json.loads(path.read_text(encoding="utf-8-sig"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                data = read_json_document(path)
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, JsonDocumentError) as exc:
                 errors.append(ProfileLoadError(path, str(exc)))
                 continue
             if not isinstance(data, dict):
@@ -79,17 +82,30 @@ class ProfileStore:
 
     def write(self, name: str, content: str) -> Path:
         """Écrit atomiquement le profil ``name`` (même fichier s'il existe)."""
-        path = self.path_for_name(name)
-        atomic_write_text(path, content)
-        return path
+        with self._mutation():
+            path = self.path_for_name(name)
+            atomic_write_text(path, content)
+            return path
 
     def delete(self, name: str) -> bool:
         """Supprime le seul fichier du profil ``name`` ; False s'il n'existe pas."""
-        path = self.find(name)
-        if path is None:
-            return False
-        path.unlink(missing_ok=True)
-        return True
+        with self._mutation():
+            path = self.find(name)
+            if path is None:
+                return False
+            path.unlink(missing_ok=True)
+            return True
+
+    @contextmanager
+    def _mutation(self):
+        """Résolution du nom et écriture indivisibles entre instances."""
+        lock = FileLock(self.directory / ".profiles.lock")
+        if not lock.try_acquire():
+            raise OSError("Un autre traitement modifie les profils ; réessayez.")
+        try:
+            yield
+        finally:
+            lock.release(unlink=True)
 
 
 __all__ = ["ProfileLoadError", "ProfileStore"]

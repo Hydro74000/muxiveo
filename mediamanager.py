@@ -4,10 +4,10 @@ import re
 import shutil
 import subprocess
 import sys
-import time
 from collections import defaultdict
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from core.subprocess_utils import ProbeCancelledError, run_cancellable_capture
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -196,21 +196,19 @@ def _run_interruptible(cmd, is_interrupted, timeout_s=_MEDIAINFO_TIMEOUT_S):
     Le processus est tué dès qu'une interruption est demandée ou que le délai
     expire : un thread ne survit jamais à la fenêtre à cause d'une sonde bloquée.
     """
-    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-    proc = subprocess.Popen(  # nosec B603  # argv résolu localement, sans shell
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-        text=True, encoding="utf-8", errors="replace",
-    )
-    deadline = time.monotonic() + timeout_s
-    while True:
-        try:
-            out, _ = proc.communicate(timeout=0.2)
-            return out
-        except subprocess.TimeoutExpired:
-            if is_interrupted() or time.monotonic() >= deadline:
-                proc.kill()
-                proc.communicate()
-                return None
+    def check_cancelled():
+        if is_interrupted():
+            raise ProbeCancelledError("Sonde MediaInfo annulée.")
+
+    try:
+        result = run_cancellable_capture(
+            cmd, cancel_cb=is_interrupted, check_cancelled=check_cancelled,
+            timeout=timeout_s, stdin=subprocess.DEVNULL,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        return result.stdout
+    except (ProbeCancelledError, subprocess.TimeoutExpired):
+        return None
 
 
 # --- THREADS ASYNCHRONES ---

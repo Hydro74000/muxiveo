@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import math
 import os
 import re
 import shlex
@@ -63,7 +62,6 @@ from core.workflows.common.timeline_sync import (
 from core.workflows.common.track_statistics import derive_output_statistics
 from core.workflows.encode.catalog import (
     is_h264_video_codec,
-    resolve_rate_control,
     supports_dovi,
     supports_hdr_output,
 )
@@ -282,6 +280,16 @@ from core.workflows.encode.runtime.nvencc_p5 import (
     nvencc_p5_features as _nvencc_p5_features,
     run_nvencc_p5_probe as _run_nvencc_p5_probe,
 )
+from core.workflows.encode.planning.size_budget import (
+    SizeBudget,
+    SizeBudgetProbes,
+    compute_size_budget as _compute_size_budget,
+    size_target_errors as _size_target_errors,
+    size_target_warnings as _size_target_warnings,
+    stream_bitrate_bps as _stream_bitrate_from_info,
+    stream_duration_s as _stream_duration_from_info,
+    stream_pixel_rate as _stream_pixel_rate_from_info,
+)
 from core.workflows.encode.planning.validation import (
     is_dir_writable as _is_dir_writable_plan,
     validate_encode_config as _validate_encode_config_plan,
@@ -293,7 +301,6 @@ from core.workflows.encode.models import (
     PREVIEW_FRAME_MIN_OFFSET_S, PREVIEW_FRAME_TAIL_OFFSET_S, PREVIEW_IMAGE_CAPTURE_COUNT,
     PREVIEW_VIDEO_THUMBNAIL_COUNT, QualityMode,
     VideoEncodeSettings,
-    normalize_audio_bitrate_kbps,
 )
 from core.workflows.encode.output_contract import build_encode_output_contract
 from core.matroska.contract import ExpectedMatroskaAttachment
@@ -352,27 +359,8 @@ def _interpolation_decode_cmd(decode_cmd: list[str], info: _InterpolationSource)
     return cmd
 
 
-@dataclasses.dataclass(frozen=True)
-class _SizeBudget:
-    """Taille cible du fichier convertie en débits (bit/s).
-
-    Chaque poste réservé a une provenance : ``measured_bps`` (débit connu :
-    statistiques de flux copiés, débits imposés, pièces jointes),
-    ``estimated_bps`` (FLAC, qualité constante, conteneur) et ``unknown``
-    (flux sans débit connu, non déduits). Seuls les postes mesurés peuvent
-    prouver qu'une cible est inatteignable.
-    """
-
-    target_bps: float
-    reserved_bps: float
-    video_bps: float
-    video_shares_bps: tuple[tuple[VideoEncodeSettings, float], ...]
-    duration_s: float
-    target_size_mb: int
-    estimated_bps: float = 0.0
-    warnings: tuple[str, ...] = ()
-    measured_bps: float = 0.0
-    unknown: tuple[str, ...] = ()
+# Compatibilité : le budget est calculé par planning.size_budget.
+_SizeBudget = SizeBudget
 
 
 class EncodeWorkflow(QObject):
@@ -542,7 +530,19 @@ class EncodeWorkflow(QObject):
         self._max_parallel_video_encodes = _normalize_max_parallel_video_encodes(max_parallel_video_encodes)
 
     def set_mediainfo_bin(self, mediainfo_bin: str) -> None:
+        previous = self._bins.get("mediainfo")
         self._bins["mediainfo"] = mediainfo_bin
+        if previous != mediainfo_bin:
+            self._hdr_metadata_service.clear_probe_caches()
+
+    def set_ffprobe_bin(self, ffprobe_bin: str | None) -> None:
+        """Applique le FFprobe configuré et oublie les sondes de l'ancien outil."""
+        previous = self._ffprobe_path()
+        self._ffprobe_explicit = ffprobe_bin or None
+        self._bins["ffprobe"] = self._ffprobe_path()
+        self._postprocess_service.set_ffprobe_bin(self._bins["ffprobe"])
+        if previous != self._bins["ffprobe"]:
+            self._hdr_metadata_service.clear_probe_caches()
 
     def set_nvencc_bin(self, nvencc_bin: str | None) -> None:
         """Met à jour le chemin vers NVEncC (None = pipeline NVEncC indisponible)."""
@@ -2035,139 +2035,24 @@ class EncodeWorkflow(QObject):
                 return max(1, int(share / 1000))
         return max(1, int(budget.video_bps / 1000))
 
-    @staticmethod
-    def _sized_videos(videos: list[VideoEncodeSettings]) -> list[VideoEncodeSettings]:
-        return [v for v in videos if v.codec != "copy" and v.quality_mode == QualityMode.SIZE]
-
-    @classmethod
-    def _file_target_size_values(cls, config: EncodeConfig) -> list[int]:
-        """Taille du fichier (Mio) : globale, sinon valeurs distinctes des pistes en mode taille."""
-        if config.target_size_mb is not None:
-            return [int(config.target_size_mb)]
-        return sorted({int(v.target_size_mb) for v in cls._sized_videos(cls._video_tracks(config))})
-
-    def _size_budget(self, config: EncodeConfig) -> _SizeBudget:
-        """Répartition de la taille cible (fichier complet) entre les flux.
-
-        La cible porte sur le fichier : ``EncodeConfig.target_size_mb``, sinon
-        la valeur commune des pistes en mode taille (des valeurs divergentes
-        sont refusées par :meth:`size_target_errors` ; l'aperçu retient la
-        plus petite, indépendamment de l'ordre des pistes).
-        Postes déduits avec leur provenance : audio encodé (débit demandé,
-        mesuré), audio copié (statistiques du flux, mesuré), FLAC (débit
-        source, estimé), sous-titres et vidéo copiée (statistiques, mesuré),
-        pièces jointes (taille des fichiers, mesuré), vidéos à débit imposé
-        (mesuré), vidéos en qualité constante (débit source, estimé) et
-        ~0,5 % de conteneur (estimé). Un flux sans débit connu n'est pas
-        déduit et est signalé. Le reste est réparti entre les pistes en taille
-        cible au prorata pixels × cadence × durée.
-        """
-        videos = self._video_tracks(config)
-        sized = self._sized_videos(videos)
-        target_values = self._file_target_size_values(config)
-        target_size_mb = min(target_values) if target_values else int(self._primary_video_settings(config).target_size_mb)
-        duration = float(config.duration_s or 3600.0)
-        target_bps = target_size_mb * 8 * 1024 * 1024 / duration
-        measured_bps = 0.0
-        estimated_bps = target_bps * 0.005  # conteneur
-        unknown: list[str] = []
-        warnings: list[str] = []
-        for number, audio in enumerate(config.audio_tracks, start=1):
-            source = Path(audio.source_path or config.source)
-            stream_index = int(audio.stream_index)
-            share = self._stream_duration_s(source, stream_index, duration) / duration
-            if audio.codec in ("copy", "flac"):
-                bitrate = self._stream_bitrate_bps(source, stream_index)
-                if bitrate <= 0:
-                    unknown.append(f"audio #{number}")
-                elif audio.codec == "flac":
-                    # Compression FLAC inconnue avant encodage : débit source
-                    # retenu comme estimation haute, jamais comme preuve.
-                    estimated_bps += bitrate * share
-                    warnings.append(
-                        f"Taille cible : piste audio #{number} en FLAC estimée depuis le débit source "
-                        f"({bitrate / 1000:.0f} kbps) ; taille finale approchée."
-                    )
-                else:
-                    measured_bps += bitrate * share
-            else:
-                measured_bps += normalize_audio_bitrate_kbps(
-                    audio.codec, audio.bitrate_kbps, audio.input_channels, None, audio.input_channel_layout,
-                ) * 1000 * share
-        subtitle_refs = list(config.subtitle_tracks)
-        if not subtitle_refs and config.copy_subtitles:
-            subtitle_refs = [
-                (Path(config.source), index)
-                for stream in self._ffprobe_stream_dicts(self._ffprobe_streams_payload(Path(config.source)) or {})
+    def _size_budget_probes(self) -> SizeBudgetProbes:
+        """Sondes de flux du budget de taille (FFprobe configuré, payload en cache)."""
+        return SizeBudgetProbes(
+            video_tracks=self._video_tracks,
+            primary_video=self._primary_video_settings,
+            video_source=self._video_source_from_settings,
+            video_stream=self._video_stream_from_settings,
+            stream_info=self._stream_info,
+            subtitle_streams=lambda source: [
+                index
+                for stream in self._ffprobe_stream_dicts(self._ffprobe_streams_payload(Path(source)) or {})
                 if stream.get("codec_type") == "subtitle" and isinstance(index := stream.get("index"), int)
-            ]
-        for number, (src, idx) in enumerate(subtitle_refs, start=1):
-            bitrate = self._stream_bitrate_bps(Path(src), int(idx))
-            if bitrate <= 0:
-                unknown.append(f"sous-titres #{number}")
-                continue
-            measured_bps += bitrate * self._stream_duration_s(Path(src), int(idx), duration) / duration
-        attachment_bytes = sum(Path(p).stat().st_size for p in config.extra_attachments if Path(p).is_file())
-        measured_bps += attachment_bytes * 8 / duration
-        encoded: list[tuple[VideoEncodeSettings, float, float]] = []
-        for track_number, video in enumerate(videos, start=1):
-            source = self._video_source_from_settings(config, video)
-            index = self._video_stream_from_settings(video)
-            track_duration = self._stream_duration_s(source, index, duration)
-            if video.codec != "copy" and (video.quality_mode == QualityMode.SIZE or not sized):
-                encoded.append((video, self._stream_pixel_rate(source, index) * track_duration, track_duration))
-                continue
-            share = track_duration / duration
-            spec = resolve_rate_control(video.codec, video.rate_control, video.quality_mode)
-            if video.codec != "copy" and spec is not None and spec.bitrate:
-                measured_bps += video.bitrate_kbps * 1000 * share
-                continue
-            bitrate = self._stream_bitrate_bps(source, index)
-            if bitrate <= 0:
-                unknown.append(f"vidéo #{track_number}")
-            elif video.codec == "copy":
-                measured_bps += bitrate * share
-            else:
-                estimated_bps += bitrate * share
-                warnings.append(
-                    f"Taille cible : budget de la piste vidéo #{track_number} en qualité constante "
-                    f"estimé depuis le débit source ({bitrate / 1000:.0f} kbps) ; taille finale approchée."
-                )
-        if unknown:
-            warnings.append(
-                "Taille cible : débit inconnu pour " + ", ".join(unknown)
-                + " (non déduit du budget) ; la taille finale peut dépasser la cible."
-            )
-        reserved_bps = measured_bps + estimated_bps
-        video_bps = target_bps - reserved_bps
-        total_weight = sum(weight for _video, weight, _duration in encoded) or 1.0
-        shares = tuple(
-            (video, video_bps * duration * weight / total_weight / track_duration)
-            for video, weight, track_duration in encoded
+            ],
         )
-        return _SizeBudget(target_bps=target_bps, reserved_bps=reserved_bps, video_bps=video_bps,
-                           video_shares_bps=shares, duration_s=duration,
-                           target_size_mb=target_size_mb, estimated_bps=estimated_bps,
-                           warnings=tuple(warnings), measured_bps=measured_bps, unknown=tuple(unknown))
 
-    def _stream_duration_s(self, source: Path, stream_index: int, fallback: float) -> float:
-        """Durée du flux (ffprobe ou tag Matroska), sinon durée de référence du job."""
-        stream = self._stream_info(source, stream_index)
-        raw_tags = stream.get("tags")
-        tags: dict[str, object] = raw_tags if isinstance(raw_tags, dict) else {}
-        for value in (stream.get("duration"), tags.get("DURATION"), tags.get("DURATION-eng")):
-            try:
-                parts = str(value).split(":")
-                seconds = float(parts[-1])
-                if len(parts) == 3:
-                    seconds += int(parts[0]) * 3600 + int(parts[1]) * 60
-                elif len(parts) != 1:
-                    continue
-            except (TypeError, ValueError):
-                continue
-            if math.isfinite(seconds) and seconds > 0:
-                return seconds
-        return fallback
+    def _size_budget(self, config: EncodeConfig) -> SizeBudget:
+        """Répartition de la taille cible du fichier (voir :mod:`planning.size_budget`)."""
+        return _compute_size_budget(config, self._size_budget_probes())
 
     def _stream_info(self, source: Path, stream_index: int) -> dict[str, object]:
         payload = self._ffprobe_streams_payload(Path(source)) or {}
@@ -2176,82 +2061,25 @@ class EncodeWorkflow(QObject):
             {},
         )
 
+    def _stream_duration_s(self, source: Path, stream_index: int, fallback: float) -> float:
+        """Durée du flux (ffprobe ou tag Matroska), sinon durée de référence du job."""
+        return _stream_duration_from_info(self._stream_info(source, stream_index), fallback)
+
     def _stream_bitrate_bps(self, source: Path, stream_index: int) -> float:
         """Débit d'un flux source : ``bit_rate`` ffprobe, sinon statistiques Matroska (BPS)."""
-        stream = self._stream_info(source, stream_index)
-        raw_tags = stream.get("tags")
-        tags: dict[str, object] = raw_tags if isinstance(raw_tags, dict) else {}
-        for value in (stream.get("bit_rate"), tags.get("BPS"), tags.get("BPS-eng")):
-            try:
-                bitrate = float(str(value))
-            except (TypeError, ValueError):
-                continue
-            if bitrate > 0:
-                return bitrate
-        return 0.0
+        return _stream_bitrate_from_info(self._stream_info(source, stream_index))
 
     def _stream_pixel_rate(self, source: Path, stream_index: int) -> float:
         """Poids d'une piste vidéo dans la répartition : largeur × hauteur × cadence."""
-        stream = self._stream_info(source, stream_index)
-        try:
-            pixels = float(str(stream.get("width") or 0)) * float(str(stream.get("height") or 0))
-        except (TypeError, ValueError):
-            pixels = 0.0
-        try:
-            fps = float(Fraction(str(stream.get("avg_frame_rate") or stream.get("r_frame_rate") or "0")))
-        except (ValueError, ZeroDivisionError):
-            fps = 0.0
-        return pixels * fps if pixels > 0 and fps > 0 else 1.0
+        return _stream_pixel_rate_from_info(self._stream_info(source, stream_index))
 
     def size_target_errors(self, config: EncodeConfig) -> list[str]:
-        """Taille cible contradictoire, ou inatteignable d'après les seuls débits mesurés."""
-        if not self._sized_videos(self._video_tracks(config)):
-            return []
-        values = self._file_target_size_values(config)
-        if config.target_size_mb is not None and int(config.target_size_mb) <= 0:
-            return ["Taille du fichier invalide (Mio > 0 attendue)."]
-        if len(values) > 1:
-            return [
-                "Tailles cibles contradictoires entre pistes vidéo ("
-                + ", ".join(f"{value} Mio" for value in values)
-                + ") : la taille cible porte sur le fichier complet ; indiquez une seule valeur."
-            ]
-        if not (config.duration_s or 0) > 0:
-            return []
-        budget = self._size_budget(config)
-        # Une estimation (FLAC, qualité constante, conteneur) ne prouve pas
-        # qu'une cible est impossible : seuls les débits mesurés sont bloquants.
-        if budget.target_bps > budget.measured_bps:
-            return []
-        reserved_mib = budget.measured_bps * budget.duration_s / 8 / 1024 / 1024
-        return [
-            "Taille cible inatteignable : audio, sous-titres, pièces jointes et vidéos hors taille cible "
-            f"occupent déjà ≈ {reserved_mib:.0f} Mio pour "
-            f"{budget.target_size_mb} Mio demandés."
-        ]
+        """Taille cible invalide, contradictoire ou inatteignable (débits mesurés seuls)."""
+        return _size_target_errors(config, self._size_budget_probes())
 
     def size_target_warnings(self, config: EncodeConfig) -> list[str]:
-        """Budget estimé et débits vidéo très bas (< 500 kbps par piste)."""
-        if not any(v.codec != "copy" and v.quality_mode == QualityMode.SIZE for v in self._video_tracks(config)):
-            return []
-        if not (config.duration_s or 0) > 0:
-            return []
-        if len(self._file_target_size_values(config)) > 1:
-            return []
-        budget = self._size_budget(config)
-        warnings = list(budget.warnings)
-        if budget.video_bps <= 0 and budget.target_bps > budget.measured_bps:
-            warnings.append(
-                "Taille cible : les postes estimés (FLAC, qualité constante, conteneur) dépassent le budget "
-                "disponible ; taille finale non garantie."
-            )
-        track_numbers = {id(video): index for index, video in enumerate(self._video_tracks(config), start=1)}
-        warnings.extend(
-            f"Taille cible : débit vidéo de la piste #{track_numbers[id(video)]} ≈ {share / 1000:.0f} kbps (très bas)."
-            for video, share in budget.video_shares_bps
-            if 0 < share < 500_000
-        )
-        return warnings
+        """Postes estimés ou inconnus et débits vidéo très bas."""
+        return _size_target_warnings(config, self._size_budget_probes())
 
     # ------------------------------------------------------------------
     # Helpers RAM / buffer — cross-platform (Linux · macOS · Windows)
@@ -4529,7 +4357,7 @@ class EncodeWorkflow(QObject):
 
         dovi_bin = self._bins.get("dovi_tool") or "dovi_tool"
         try:
-            key = (dovi_bin, self._ffmpeg)
+            key = (dovi_bin, self._ffmpeg, self._ffprobe_path())
             if getattr(self, "_dovi_geometry_detector_key", None) != key:
                 self._dovi_geometry_detector = DoviProfileDetector(
                     dovi_tool_bin=dovi_bin, ffmpeg_bin=self._ffmpeg,

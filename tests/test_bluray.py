@@ -372,7 +372,7 @@ def test_inspector_uses_bluray_duration_segments_and_probe_args(
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"media": {"track": []}}), stderr="")
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unexpected command")
 
-    monkeypatch.setattr("core.inspector.subprocess.run", fake_run)
+    monkeypatch.setattr("core.inspector.run_probe", fake_run)
 
     info = FileInspector(ffprobe_bin="ffprobe", mediainfo_bin="mediainfo").inspect(playlist)
 
@@ -454,7 +454,7 @@ def test_inspector_enriches_bluray_track_languages_from_mpls(
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"media": {"track": []}}), stderr="")
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unexpected command")
 
-    monkeypatch.setattr("core.inspector.subprocess.run", fake_run)
+    monkeypatch.setattr("core.inspector.run_probe", fake_run)
 
     info = FileInspector(ffprobe_bin="ffprobe", mediainfo_bin="mediainfo").inspect(playlist)
 
@@ -502,7 +502,7 @@ def test_inspector_preserves_existing_ffprobe_language_over_mpls_language(
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"media": {"track": []}}), stderr="")
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unexpected command")
 
-    monkeypatch.setattr("core.inspector.subprocess.run", fake_run)
+    monkeypatch.setattr("core.inspector.run_probe", fake_run)
 
     info = FileInspector(ffprobe_bin="ffprobe", mediainfo_bin="mediainfo").inspect(playlist)
 

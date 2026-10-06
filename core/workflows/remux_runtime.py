@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
-from core.output_commit import OutputChangedError, publish_candidate, reserve_candidate
+from core.output_commit import OutputCommitError, publish_candidate, reserve_candidate
 from core.runner import TaskCancelledError, TaskSignals
 from core.workflows.common.validation_override import ValidationOverride, validate_final_output
 from core.workdir import (
@@ -440,7 +440,7 @@ class RemuxRuntimeRunner:
                 if candidate is not None:
                     remove_path(candidate)
                 signals.cancelled.emit()
-            except OutputChangedError as exc:
+            except OutputCommitError as exc:
                 # Destination apparue pendant le job : elle et le résultat sont conservés.
                 signals.failed.emit(str(exc), exc)
             except Exception as exc:

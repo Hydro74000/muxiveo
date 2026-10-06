@@ -187,3 +187,11 @@ def test_schema_and_validator_share_enumerations() -> None:
     assert properties["sync_subtitles"]["enum"] == list(SYNC_SUBTITLE_MODES)
     track_edit = schema["$defs"]["track_edit"]["properties"]
     assert track_edit["sync_rewrite_mode"]["enum"] == list(SYNC_REWRITE_MODES)
+
+
+@pytest.mark.parametrize("value", ["1e999", "-1e999"])
+def test_overflowing_json_number_is_rejected(value):
+    from core.json_documents import JsonDocumentError, parse_json_text
+
+    with pytest.raises(JsonDocumentError, match="non fini"):
+        parse_json_text('{"duration": ' + value + '}')

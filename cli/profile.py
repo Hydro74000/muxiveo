@@ -58,13 +58,15 @@ def _profile_path_candidates(raw_profile: str | Path, config: AppConfig | None =
 
     if config is not None:
         default_dir = Path(config.profiles_dir) / "decision"
+        # L'identité exacte prime sur un fichier historique homonyme, notamment
+        # « Film » / « film » sur un volume insensible à la casse.
+        safe_name = raw.stem if raw.suffix.lower() == ".json" else raw_text
+        if safe_name:
+            add(DecisionProfileManager(default_dir).path_for_name(safe_name))
         default_base = Path(raw.name) if raw.is_absolute() else raw
         add(default_dir / default_base)
         if not default_base.suffix:
             add(default_dir / default_base.with_suffix(".json"))
-        safe_name = raw.stem if raw.suffix.lower() == ".json" else raw_text
-        if safe_name:
-            add(DecisionProfileManager(default_dir).path_for_name(safe_name))
 
     return candidates
 

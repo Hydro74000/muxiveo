@@ -14,6 +14,7 @@ Règles communes GUI/CLI :
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
@@ -28,7 +29,13 @@ def _reject_constant(name: str) -> Any:
 
 def parse_json_text(text: str) -> Any:
     """JSON standard strict (sans NaN/Infinity)."""
-    return json.loads(text, parse_constant=_reject_constant)
+    def finite_float(value: str) -> float:
+        number = float(value)
+        if not math.isfinite(number):
+            raise JsonDocumentError(f"nombre JSON non fini interdit : {value}")
+        return number
+
+    return json.loads(text, parse_constant=_reject_constant, parse_float=finite_float)
 
 
 def read_json_document(path: Path) -> Any:

@@ -61,7 +61,6 @@ def test_run_probe_missing_tool_is_distinct() -> None:
         run_probe(["/nonexistent/muxiveo-ffprobe"], timeout=5)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Lanceur .cmd : le délai seul ne tue pas l'arbre de processus")
 def test_inspector_reports_hung_ffprobe_as_timeout(tmp_path: Path) -> None:
     ffprobe = _fake_tool(tmp_path, "ffprobe", "import time; time.sleep(30)\n")
     media = tmp_path / "film.mkv"
@@ -130,3 +129,51 @@ def test_mediamanager_close_waits_for_threads_without_blocking(qt_app, tmp_path:
         QCoreApplication.processEvents()
         time.sleep(0.06)
     assert not win.isVisible()
+
+
+@pytest.mark.parametrize("mode", ["timeout", "cancel", "exited-parent", "mediamanager"])
+def test_descendant_holding_stdout_cannot_keep_probe_alive(tmp_path: Path, mode: str) -> None:
+    import mediamanager
+
+    pidfile = tmp_path / "child.pid"
+    child = "import time; time.sleep(30)"
+    body = (
+        "import subprocess,sys,time; from pathlib import Path; "
+        f"p=subprocess.Popen([sys.executable,'-c',{child!r}]); "
+        f"Path({str(pidfile)!r}).write_text(str(p.pid)); "
+        + ("time.sleep(30)" if mode != "exited-parent" else "sys.exit(0)")
+    )
+    cancel = threading.Event()
+    started = time.monotonic()
+    if mode in ("cancel", "mediamanager"):
+        threading.Timer(0.5, cancel.set).start()
+    try:
+        if mode == "mediamanager":
+            assert mediamanager._run_interruptible([sys.executable, "-c", body], cancel.is_set) is None
+        else:
+            expected = ProbeCancelledError if mode == "cancel" else subprocess.TimeoutExpired
+            with pytest.raises(expected):
+                run_probe([sys.executable, "-c", body], timeout=0.8,
+                          cancel_event=cancel if mode == "cancel" else None)
+        assert time.monotonic() - started < 5
+        if sys.platform.startswith("linux") and pidfile.exists():
+            status = Path("/proc") / pidfile.read_text() / "status"
+            deadline = time.monotonic() + 2
+            while status.exists():
+                try:
+                    state = status.read_text()
+                except FileNotFoundError:
+                    break
+                # SIGKILL peut précéder de quelques millisecondes l'arrêt du
+                # descendant. Un zombie ne peut plus retenir les pipes.
+                if "State:\tZ" in state:
+                    break
+                assert time.monotonic() < deadline, "descendant encore vivant"
+                time.sleep(0.02)
+    finally:
+        # Nettoyage du descendant si une régression fait échouer le test.
+        if pidfile.exists():
+            import os
+            from contextlib import suppress
+            with suppress(OSError):
+                os.kill(int(pidfile.read_text()), 9)
