@@ -212,7 +212,7 @@ class DoviProfileDetector:
             if not isinstance(side_data, dict) or side_data.get("side_data_type") != "DOVI configuration record":
                 continue
             try:
-                profile = int(side_data.get("dv_profile"))
+                profile = int(side_data.get("dv_profile"))  # type: ignore[arg-type]  # None → TypeError traité
             except (TypeError, ValueError):
                 break
             compat = side_data.get("dv_bl_signal_compatibility_id")

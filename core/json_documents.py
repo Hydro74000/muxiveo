@@ -41,13 +41,14 @@ def read_json_document(path: Path) -> Any:
 
 
 def _is_absolute_anywhere(value: str) -> bool:
-    """Chemin absolu POSIX, ``~``, ou absolu Windows (lecteur, UNC) quel que soit l'OS."""
+    """Chemin absolu ou enraciné (POSIX, ``~``, lecteur ou UNC Windows), quel que soit l'OS."""
     if not value:
         return True
     if Path(value).expanduser().is_absolute():
         return True
-    windows = PureWindowsPath(value)
-    return bool(windows.drive) or value.startswith(("\\\\", "//"))
+    # « /x » ou « \\x » : enraciné (racine du lecteur sous Windows), jamais
+    # relatif au dossier du document.
+    return bool(PureWindowsPath(value).drive) or value.startswith(("/", "\\"))
 
 
 def _resolve(value: Any, base_dir: Path) -> Any:

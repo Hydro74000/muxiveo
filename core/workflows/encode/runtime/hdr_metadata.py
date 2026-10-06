@@ -997,6 +997,7 @@ class HdrMetadataProbeService:
         if cache_key is not None and cache_key in self._mediainfo_hdr_cache:
             return self._mediainfo_hdr_cache[cache_key]
 
+        result: tuple[bool, bool] | None
         if stream_index is not None:
             # Piste mediainfo du flux (StreamOrder) : --Inform concatène toutes les pistes.
             track = self.load_mediainfo_video_track(source, stream_index)
@@ -1026,7 +1027,7 @@ class HdrMetadataProbeService:
         except subprocess.TimeoutExpired:
             return None
         except FileNotFoundError:
-            result: tuple[bool, bool] | None = None
+            result = None
         else:
             result = self._dynamic_hdr_flags_from_text(
                 f"{hdr_format.stdout or ''}\n{hdr_compat.stdout or ''}"

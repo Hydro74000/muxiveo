@@ -165,6 +165,12 @@ jobs:
           fi
           echo "build=false" >> "$GITHUB_OUTPUT"
 
+  # Suite applicative complète (Linux + contrats Windows) sur le même SHA :
+  # condition de la publication, pour les branches, tags et lancements manuels.
+  unit-tests:
+    name: Unit tests (gate)
+    uses: ./.github/workflows/ci-unit-all.yml
+
   muxiveo-rife:
     name: muxiveo-rife
     needs: muxiveo-rife-state
@@ -527,9 +533,10 @@ jobs:
   release:
     name: Create or update GitHub Release
     runs-on: ubuntu-latest
-    if: ${{ always() && needs.release-metadata.result == 'success' && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' && needs.build-macos.result == 'success' && (needs.homebrew-formula.result == 'success' || needs.homebrew-formula.result == 'skipped') }}
+    if: ${{ always() && needs.release-metadata.result == 'success' && needs.unit-tests.result == 'success' && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' && needs.build-macos.result == 'success' && (needs.homebrew-formula.result == 'success' || needs.homebrew-formula.result == 'skipped') }}
     needs:
       - release-metadata
+      - unit-tests
       - build-linux
       - build-windows
       - build-macos

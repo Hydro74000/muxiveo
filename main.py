@@ -15,15 +15,17 @@ if str(ROOT) not in sys.path:
 
 APP_ICON_PATH = ROOT / "ui" / "assets" / "muxiveo.png"
 
-from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import QMessageBox, QPushButton, QSplashScreen
+# Imports différés volontairement : la racine du projet doit être dans
+# sys.path avant les paquets core/ui (lancement direct du script).
+from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtCore import Qt, QTimer  # noqa: E402
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap  # noqa: E402
+from PySide6.QtWidgets import QMessageBox, QPushButton, QSplashScreen  # noqa: E402
 
-from core.config import AppConfig
-from core.i18n import set_current_language, translate_text
-from core.version import APP_NAME, APP_VERSION
-from ui.design_system import DesignSystem, colors
+from core.config import AppConfig  # noqa: E402
+from core.i18n import set_current_language, translate_text  # noqa: E402
+from core.version import APP_NAME, APP_VERSION  # noqa: E402
+from ui.design_system import DesignSystem, colors  # noqa: E402
 
 
 def _show_startup_splash(app: QApplication) -> QSplashScreen:

@@ -38,6 +38,7 @@ from core.i18n import translate_text
 from core.workflows.audio_sync import AudioSyncTrack
 from core.workflows.audio_sync_scan import AudioSyncScanner
 from core.workflows.sync_calibration import SyncSegment
+from ui.widgets.waveform_view import WaveformView
 from core.workflows.hybrid_matrix import (
     HybridMatrix,
     HybridRecipe,
@@ -227,8 +228,6 @@ class DirectoryEdit(QLineEdit):
                 self.setText(str(p))
                 event.acceptProposedAction()
 
-
-from ui.widgets.waveform_view import WaveformView
 
 
 class ProfileSelector(QWidget):

@@ -92,7 +92,9 @@ def source_bit_depth_from_stream(stream: dict) -> int:
         return depth
     fmt = str(stream.get("pix_fmt") or "").lower()
     if re.search(r"(?:p|gray|gbrp)(10|12|16)(?:le|be|msble)?$", fmt):
-        return int(re.search(r"(10|12|16)(?:le|be|msble)?$", fmt).group(1))
+        depth_match = re.search(r"(10|12|16)(?:le|be|msble)?$", fmt)
+        if depth_match is not None:
+            return int(depth_match.group(1))
     if fmt in {"p010le", "p010be"}:
         return 10
     if fmt in {"p016le", "p016be"}:

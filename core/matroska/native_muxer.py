@@ -117,7 +117,6 @@ from .ids import (
 from .hevc.access_units import (
     HevcAccessUnit,
     iter_hevc_access_units,
-    split_into_access_units,
 )
 from .timestamps import (
     MatroskaTimestampReader,

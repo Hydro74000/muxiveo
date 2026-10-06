@@ -61,6 +61,7 @@ def test_reserved_candidate_uses_default_permissions(tmp_path: Path) -> None:
     assert candidate.stat().st_mode & 0o777 == 0o644
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Limite de chemin complet (MAX_PATH) sous Windows")
 def test_reserved_candidate_name_fits_filesystem_limit(tmp_path: Path) -> None:
     output = tmp_path / ("é" * 120 + ".mkv")  # 244 octets UTF-8
     candidate = reserve_candidate(output)
@@ -137,8 +138,16 @@ def test_reservation_held_by_another_process_until_it_dies(tmp_path: Path) -> No
     finally:
         child.kill()
         child.wait(timeout=10)
-    # Processus mort : le système a libéré le verrou.
-    OutputReservation.acquire(output, lock_dir=_lock_dir(tmp_path)).release()
+    # Processus mort : le système libère le verrou (avec un léger délai possible sous Windows).
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            OutputReservation.acquire(output, lock_dir=_lock_dir(tmp_path)).release()
+            break
+        except OutputBusyError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.1)
 
 
 # ---------------------------------------------------------------------------

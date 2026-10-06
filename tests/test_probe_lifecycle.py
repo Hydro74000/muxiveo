@@ -61,6 +61,7 @@ def test_run_probe_missing_tool_is_distinct() -> None:
         run_probe(["/nonexistent/muxiveo-ffprobe"], timeout=5)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Lanceur .cmd : le délai seul ne tue pas l'arbre de processus")
 def test_inspector_reports_hung_ffprobe_as_timeout(tmp_path: Path) -> None:
     ffprobe = _fake_tool(tmp_path, "ffprobe", "import time; time.sleep(30)\n")
     media = tmp_path / "film.mkv"

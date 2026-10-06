@@ -445,7 +445,13 @@ def test_active_job_of_another_process_is_never_cleaned(tmp_path: Path, owned_ro
     finally:
         child.kill()
         child.wait(timeout=10)
-    # Processus mort : verrou libéré par le système, dossier abandonné et nettoyable.
+    # Processus mort : verrou libéré par le système (léger délai possible sous
+    # Windows), dossier abandonné et nettoyable.
+    import time
+
+    deadline = time.monotonic() + 10
+    while workdir_mod.is_active_process_dir(active) and time.monotonic() < deadline:
+        time.sleep(0.1)
     assert not workdir_mod.is_active_process_dir(active)
     assert active in cleanable_work_dir_entries(root)
     clear_work_dir(root)

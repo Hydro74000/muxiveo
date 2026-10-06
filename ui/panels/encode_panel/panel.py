@@ -2580,7 +2580,11 @@ class EncodePanel(QWidget):
         combo = self._bit_depth_combo
         blocked = combo.blockSignals(True)
         combo.setEnabled(codec != "copy")
-        combo.model().item(combo.findData("10")).setEnabled(codec == "copy" or capable)
+        model = combo.model()
+        if isinstance(model, QStandardItemModel):
+            item = model.item(combo.findData("10"))
+            if item is not None:
+                item.setEnabled(codec == "copy" or capable)
         if codec != "copy" and not capable and combo.currentData() == "10":
             self._set_combo_data(combo, "auto")
         combo.blockSignals(blocked)
@@ -3088,7 +3092,7 @@ class EncodePanel(QWidget):
         self._quality_value_label.setVisible(uses_quality)
         self._bitrate_widget.setVisible(spec is not None and spec.bitrate)
         self._size_widget.setVisible(spec is not None and spec.family == QualityMode.SIZE.value)
-        if not uses_quality:
+        if spec is None or not uses_quality:
             self._quality_stack.setCurrentIndex(2)
             self._rebuild_preview()
             return
@@ -4585,7 +4589,8 @@ class EncodePanel(QWidget):
 
     def _copy_video_state(self, state: dict[str, object]) -> dict[str, object]:
         copied = dict(state)
-        copied["extra_params_by_codec"] = dict(state.get("extra_params_by_codec") or {})
+        by_codec = state.get("extra_params_by_codec")
+        copied["extra_params_by_codec"] = dict(by_codec) if isinstance(by_codec, dict) else {}
         return copied
 
     def _propagate_current_video_state_to_all(self, *, force_current: bool = True) -> None:
@@ -4829,7 +4834,8 @@ class EncodePanel(QWidget):
             self._bitrate_edit.setText(str(state.get("bitrate_kbps") or "5000"))
             self._size_edit.setText(str(state.get("target_size_mb") or "4000"))
             self._extra_params.setText(str(state.get("extra_params") or ""))
-            self._extra_params_by_codec = dict(state.get("extra_params_by_codec") or {})
+            by_codec = state.get("extra_params_by_codec")
+            self._extra_params_by_codec = dict(by_codec) if isinstance(by_codec, dict) else {}
             self._extra_params_codec = str(self._codec_combo.currentData() or "libx265")
             self._set_combo_data(self._bit_depth_combo, state.get("bit_depth") or "auto")
             self._apply_resize_settings(VideoResizeSettings.from_value(state.get("resize")))

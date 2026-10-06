@@ -4,8 +4,9 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - "core/workflows/matroska_*.py"
-      - "core/workflows/ebml_writer.py"
+      - "core/matroska/**"
+      - "core/workflows/common/matroska_*.py"
+      - "core/output_commit.py"
       - "core/workflows/remux*.py"
       - "cli/**"
       - "scripts/concat_video.py"
@@ -16,7 +17,20 @@ on:
       - "tests/integration/test_concat_video_native.py"
       - ".github/workflows/ci-matroska-native.yml"
   push:
-    branches: [devel-mkv]
+    branches: [main, devel-cli]
+    paths:
+      - "core/matroska/**"
+      - "core/workflows/common/matroska_*.py"
+      - "core/output_commit.py"
+      - "core/workflows/remux*.py"
+      - "cli/**"
+      - "scripts/concat_video.py"
+      - "scripts/matroska_semantic_report.py"
+      - "tests/corpus/matroska/**"
+      - "tests/test_matroska*.py"
+      - "tests/integration/test_remux_filetypes.py"
+      - "tests/integration/test_concat_video_native.py"
+      - ".github/workflows/ci-matroska-native.yml"
 
 jobs:
   native:

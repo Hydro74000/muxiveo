@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, Qt, Signal
@@ -2097,9 +2097,9 @@ class EncodeWorkflow(QObject):
         subtitle_refs = list(config.subtitle_tracks)
         if not subtitle_refs and config.copy_subtitles:
             subtitle_refs = [
-                (Path(config.source), int(stream["index"]))
+                (Path(config.source), index)
                 for stream in self._ffprobe_stream_dicts(self._ffprobe_streams_payload(Path(config.source)) or {})
-                if stream.get("codec_type") == "subtitle" and isinstance(stream.get("index"), int)
+                if stream.get("codec_type") == "subtitle" and isinstance(index := stream.get("index"), int)
             ]
         for number, (src, idx) in enumerate(subtitle_refs, start=1):
             bitrate = self._stream_bitrate_bps(Path(src), int(idx))
@@ -2153,7 +2153,8 @@ class EncodeWorkflow(QObject):
     def _stream_duration_s(self, source: Path, stream_index: int, fallback: float) -> float:
         """Durée du flux (ffprobe ou tag Matroska), sinon durée de référence du job."""
         stream = self._stream_info(source, stream_index)
-        tags = stream.get("tags") if isinstance(stream.get("tags"), dict) else {}
+        raw_tags = stream.get("tags")
+        tags: dict[str, object] = raw_tags if isinstance(raw_tags, dict) else {}
         for value in (stream.get("duration"), tags.get("DURATION"), tags.get("DURATION-eng")):
             try:
                 parts = str(value).split(":")
@@ -2178,7 +2179,8 @@ class EncodeWorkflow(QObject):
     def _stream_bitrate_bps(self, source: Path, stream_index: int) -> float:
         """Débit d'un flux source : ``bit_rate`` ffprobe, sinon statistiques Matroska (BPS)."""
         stream = self._stream_info(source, stream_index)
-        tags = stream.get("tags") if isinstance(stream.get("tags"), dict) else {}
+        raw_tags = stream.get("tags")
+        tags: dict[str, object] = raw_tags if isinstance(raw_tags, dict) else {}
         for value in (stream.get("bit_rate"), tags.get("BPS"), tags.get("BPS-eng")):
             try:
                 bitrate = float(str(value))
@@ -2192,7 +2194,7 @@ class EncodeWorkflow(QObject):
         """Poids d'une piste vidéo dans la répartition : largeur × hauteur × cadence."""
         stream = self._stream_info(source, stream_index)
         try:
-            pixels = float(stream.get("width") or 0) * float(stream.get("height") or 0)
+            pixels = float(str(stream.get("width") or 0)) * float(str(stream.get("height") or 0))
         except (TypeError, ValueError):
             pixels = 0.0
         try:
@@ -2908,7 +2910,7 @@ class EncodeWorkflow(QObject):
             )
         return errors
 
-    def _backends_for_config(self, config: EncodeConfig) -> list[object]:
+    def _backends_for_config(self, config: EncodeConfig) -> list[Any]:
         """Backends distincts des pistes vidéo (backend de la piste principale en tête)."""
         backends = [self._backend_for_config(config)]
         for video in self._video_tracks(config):
@@ -2940,7 +2942,7 @@ class EncodeWorkflow(QObject):
             ffmpeg_bin=self._ffmpeg,
             ffprobe_bin=self._ffprobe_path(),
         )
-        sub_profile = cached
+        sub_profile: _DoviSubProfile | None = cached
         if sub_profile is None:
             sub_profile = detector.detect_from_mediainfo(
                 self._load_mediainfo_video_track(Path(source), int(stream_index))
@@ -2965,8 +2967,8 @@ class EncodeWorkflow(QObject):
     def _first_video_stream_index(self, source: Path) -> int:
         payload = self._ffprobe_streams_payload(Path(source)) or {}
         for stream in self._ffprobe_stream_dicts(payload):
-            if stream.get("codec_type") == "video" and isinstance(stream.get("index"), int):
-                return int(stream["index"])
+            if stream.get("codec_type") == "video" and isinstance(index := stream.get("index"), int):
+                return index
         return 0
 
     def resolve_dovi_sources(self, config: EncodeConfig, *, allow_tool_fallback: bool = False) -> EncodeConfig:
@@ -3194,7 +3196,7 @@ class EncodeWorkflow(QObject):
                 cleanup_paths=[],
                 mode="3",
             )
-            updates: dict[str, object] = {"p5_rpu_path": rpu if video.copy_dv else None}
+            updates: dict[str, Any] = {"p5_rpu_path": rpu if video.copy_dv else None}
             if needs_static:
                 # Seuls les champs vides sont complétés ; une saisie n'est jamais écrasée.
                 estimate = _estimate_static_hdr_from_rpu(
