@@ -966,6 +966,48 @@ class MediaManager(QMainWindow):
             s_num = int(season_key.split('|')[-1]) if '|' in season_key else 0
             season_node.setText(C["nom"], f"Saison {s_num:02d} ({nb_eps} {'épisode' if nb_eps <= 1 else 'épisodes'})")
 
+    def _remove_file_item(self, item: QTreeWidgetItem) -> None:
+        """Retire un fichier de l'arbre et met à jour son groupe (taille, doublons, vide)."""
+        C = self.COL
+        parent_node = item.parent()
+        if parent_node is None:
+            return
+        file_size = item.data(C["taille"], Qt.ItemDataRole.UserRole) or 0
+        data_key = parent_node.data(C["type"], Qt.ItemDataRole.UserRole)
+
+        parent_node.removeChild(item)
+        self._reduce_size_upwards(parent_node, file_size)
+
+        season_node = parent_node.parent() if parent_node.parent() else None
+        show_node = season_node.parent() if season_node else None
+
+        if parent_node.childCount() == 0:
+            if season_node:  # Épisode devenu vide
+                season_node.removeChild(parent_node)
+                self.tree_items.pop(data_key, None)
+                self._cleanup_empty_season(season_node, show_node)
+            else:  # Film devenu vide
+                top_idx = self.tree.indexOfTopLevelItem(parent_node)
+                if top_idx >= 0:
+                    self.tree.takeTopLevelItem(top_idx)
+                self.tree_items.pop(data_key, None)
+        else:
+            # Il reste des doublons / versions
+            remaining = parent_node.childCount()
+            if season_node:
+                ep_num = int(data_key.split('|')[-1]) if '|' in data_key else 0
+                parent_node.setText(C["nom"], f"Épisode {ep_num:02d} ({remaining})")
+                if remaining == 1:
+                    parent_node.setForeground(C["nom"], QColor("#c0caf5"))
+                if show_node:
+                    show_node.setData(C["action"], Qt.ItemDataRole.UserRole, max(0, (show_node.data(C["action"], Qt.ItemDataRole.UserRole) or 0) - 1))
+            else:
+                title = data_key.split('|', 1)[1] if '|' in data_key else data_key
+                parent_node.setText(C["nom"], f"{title} ({remaining})")
+                if remaining == 1:
+                    parent_node.setForeground(C["nom"], QColor("#c0caf5"))
+                parent_node.setData(C["action"], Qt.ItemDataRole.UserRole, remaining - 1)
+
     def confirm_delete_item(self, item: QTreeWidgetItem) -> bool:
         """Supprime un fichier, un épisode, une saison, une série ou un film avec confirmation détaillée."""
         files_to_delete = self._get_files_under_item(item)
@@ -1054,15 +1096,19 @@ class MediaManager(QMainWindow):
         if not self._ask_delete_confirmation(dialog_title, dialog_text):
             return False
 
-        # 1. Suppression physique des fichiers et métadonnées
+        # 1. Suppression physique des fichiers et métadonnées.
+        # deleted_paths : supprimés ou déjà absents (quittent l'arbre) ;
+        # removed_now : réellement supprimés (espace libéré).
         errors = []
         deleted_paths = set()
+        removed_now = set()
         affected_directories = set()
 
         for path, _, _ in existing_files:
             try:
                 if os.path.exists(path):
                     os.remove(path)
+                    removed_now.add(path)
                 deleted_paths.add(path)
                 affected_directories.add(os.path.dirname(path))
 
@@ -1106,7 +1152,14 @@ class MediaManager(QMainWindow):
                         del self.full_data[k]
 
         # 3. Mise à jour de l'arbre selon le type d'élément supprimé
-        if item.parent() is None:
+        if errors:
+            # Suppression partielle : seuls les fichiers supprimés (ou déjà
+            # absents) quittent l'arbre, un par un ; les groupes, tailles et
+            # compteurs de doublons sont recalculés à partir de ce qui reste.
+            for path, file_item, _ in existing_files:
+                if path in deleted_paths:
+                    self._remove_file_item(file_item)
+        elif item.parent() is None:
             # Élément racine (Film complet ou Série complète)
             top_idx = self.tree.indexOfTopLevelItem(item)
             if top_idx >= 0:
@@ -1141,53 +1194,21 @@ class MediaManager(QMainWindow):
 
         else:
             # Fichier unique
-            parent_node = item.parent()
-            if parent_node is None:
-                return True
-            file_size = item.data(C["taille"], Qt.ItemDataRole.UserRole) or 0
-            data_key = parent_node.data(C["type"], Qt.ItemDataRole.UserRole)
-
-            parent_node.removeChild(item)
-            self._reduce_size_upwards(parent_node, file_size)
-
-            season_node = parent_node.parent() if parent_node.parent() else None
-            show_node = season_node.parent() if season_node else None
-
-            if parent_node.childCount() == 0:
-                if season_node:  # Épisode devenu vide
-                    season_node.removeChild(parent_node)
-                    self.tree_items.pop(data_key, None)
-                    self._cleanup_empty_season(season_node, show_node)
-                else:  # Film devenu vide
-                    top_idx = self.tree.indexOfTopLevelItem(parent_node)
-                    if top_idx >= 0:
-                        self.tree.takeTopLevelItem(top_idx)
-                    self.tree_items.pop(data_key, None)
-            else:
-                # Il reste des doublons / versions
-                remaining = parent_node.childCount()
-                if season_node:
-                    ep_num = int(data_key.split('|')[-1]) if '|' in data_key else 0
-                    parent_node.setText(C["nom"], f"Épisode {ep_num:02d} ({remaining})")
-                    if remaining == 1:
-                        parent_node.setForeground(C["nom"], QColor("#c0caf5"))
-                    if show_node:
-                        show_node.setData(C["action"], Qt.ItemDataRole.UserRole, max(0, (show_node.data(C["action"], Qt.ItemDataRole.UserRole) or 0) - 1))
-                else:
-                    title = data_key.split('|', 1)[1] if '|' in data_key else data_key
-                    parent_node.setText(C["nom"], f"{title} ({remaining})")
-                    if remaining == 1:
-                        parent_node.setForeground(C["nom"], QColor("#c0caf5"))
-                    parent_node.setData(C["action"], Qt.ItemDataRole.UserRole, remaining - 1)
+            self._remove_file_item(item)
 
         # 4. Nettoyage de l'interface
         if self._current_path in deleted_paths:
             self._current_path = None
             self._show_placeholder()
 
-        self.lbl_status.setText(
-            f"🗑️ Suppression effectuée : {len(deleted_paths)} fichier(s) supprimé(s) ({self.format_size(total_bytes)} libérés)."
+        freed_bytes = sum(size for path, _, size in existing_files if path in removed_now)
+        status = (
+            f"🗑️ Suppression effectuée : {len(deleted_paths)} fichier(s) supprimé(s) "
+            f"({self.format_size(freed_bytes)} libérés)."
         )
+        if errors:
+            status += f" ⚠️ {len(errors)} échec(s) : fichier(s) conservé(s) dans la liste."
+        self.lbl_status.setText(status)
         return True
 
     def confirm_delete(self, path, item):

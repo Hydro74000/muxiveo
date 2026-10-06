@@ -395,3 +395,91 @@ def test_delete_buttons_exist_on_all_levels(qapp, tmp_path):
 
     win.close()
 
+
+
+# ---------------------------------------------------------------------------
+# A17 — suppression partielle : arbre, compteurs et statut fidèles au disque
+# ---------------------------------------------------------------------------
+
+def _scanned(qapp, root):
+    win = mediamanager.MediaManager(startup_dir=str(root))
+    assert win.scanner is not None
+    win.scanner.wait(3000)
+    qapp.processEvents()
+    return win
+
+
+def _failing_remove(monkeypatch, *names):
+    real_remove = os.remove
+
+    def remove(path, *args, **kwargs):
+        if os.path.basename(path) in names:
+            raise PermissionError("fichier verrouillé")
+        return real_remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(mediamanager.os, "remove", remove)
+    monkeypatch.setattr(mediamanager.QMessageBox, "critical", lambda *_a, **_k: None)
+
+
+def test_partial_movie_deletion_keeps_failed_version_visible(qapp, tmp_path, monkeypatch):
+    """Reproduction de l'audit : 100 + 200 octets, échec sur le second."""
+    m1 = tmp_path / "Matrix.1999.1080p.mkv"
+    m1.write_bytes(b"X" * 100)
+    m2 = tmp_path / "Matrix.1999.2160p.mkv"
+    m2.write_bytes(b"Y" * 200)
+    win = _scanned(qapp, tmp_path)
+    movie = win.tree_items["F|Matrix"]
+    monkeypatch.setattr(win, "_ask_delete_confirmation", lambda *_a: True)
+    _failing_remove(monkeypatch, m2.name)
+
+    assert win.confirm_delete_item(movie) is True
+    assert not m1.exists() and m2.read_bytes() == b"Y" * 200
+    assert win.tree.topLevelItemCount() == 1
+    assert movie.childCount() == 1
+    assert movie.text(win.COL["nom"]) == "Matrix (1)"
+    assert movie.data(win.COL["taille"], mediamanager.Qt.ItemDataRole.UserRole) == 200
+    assert win.full_data["F|Matrix"] == [str(m2)]
+    status = win.lbl_status.text()
+    assert "1 fichier(s) supprimé(s)" in status and "1 échec(s)" in status
+    assert win.format_size(100) in status and win.format_size(300) not in status
+    win.close()
+
+
+def test_partial_season_deletion_keeps_failed_episode(qapp, tmp_path, monkeypatch):
+    season = tmp_path / "Lost" / "Season 01"
+    season.mkdir(parents=True)
+    ep1 = season / "Lost.S01E01.mkv"
+    ep1.write_bytes(b"A" * 50)
+    ep2 = season / "Lost.S01E02.mkv"
+    ep2.write_bytes(b"B" * 70)
+    win = _scanned(qapp, tmp_path)
+    season_item = win.tree_items["S|Lost|1"]
+    monkeypatch.setattr(win, "_ask_delete_confirmation", lambda *_a: True)
+    _failing_remove(monkeypatch, ep2.name)
+
+    assert win.confirm_delete_item(season_item) is True
+    assert not ep1.exists() and ep2.exists()
+    assert "S|Lost|1|1" not in win.tree_items
+    assert win.tree_items["S|Lost|1|2"].childCount() == 1
+    assert season_item.childCount() == 1
+    show = win.tree_items["S|Lost"]
+    assert show.data(win.COL["taille"], mediamanager.Qt.ItemDataRole.UserRole) == 70
+    win.close()
+
+
+def test_already_absent_file_leaves_tree_without_counting_freed_space(qapp, tmp_path, monkeypatch):
+    m1 = tmp_path / "Dune.2021.1080p.mkv"
+    m1.write_bytes(b"X" * 100)
+    m2 = tmp_path / "Dune.2021.2160p.mkv"
+    m2.write_bytes(b"Y" * 200)
+    win = _scanned(qapp, tmp_path)
+    movie = win.tree_items["F|Dune"]
+    monkeypatch.setattr(win, "_ask_delete_confirmation", lambda *_a: True)
+    m2.unlink()  # disparu entre le scan et la suppression
+    _failing_remove(monkeypatch, m1.name)
+
+    assert win.confirm_delete_item(movie) is True
+    assert m1.exists()
+    assert movie.childCount() == 1
+    assert win.format_size(0) in win.lbl_status.text()
+    win.close()
